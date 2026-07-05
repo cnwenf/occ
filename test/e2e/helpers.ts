@@ -42,7 +42,9 @@ export function runOcc(
     // suite (which crashed the host on a prior run).
     const child = spawn(OCC_BIN, [...OCC_ARGS, ...args], {
       env: { ...process.env, ...env },
-      cwd: process.env.OCC_CWD ?? REPO_ROOT,
+      // Read OCC_CWD from the per-call env override first (so a test can point
+      // OCC at a temp project dir), then fall back to the parent process env.
+      cwd: env.OCC_CWD ?? process.env.OCC_CWD ?? REPO_ROOT,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
