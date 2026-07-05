@@ -350,6 +350,17 @@ export const builtInCommandNames = memoize(
     new Set(COMMANDS().flatMap(_ => [_.name, ...(_.aliases ?? [])])),
 )
 
+/**
+ * Look up a built-in command by name or alias (from the raw COMMANDS() array,
+ * before isEnabled filtering). Used to inspect a command's type — e.g. to
+ * tell a local-jsx command (interactive-only) from a gated/ant-only command
+ * when deciding the "isn't available in this environment" vs "Unknown command"
+ * message in -p mode.
+ */
+export function getBuiltInCommandByName(name: string): Command | undefined {
+  return COMMANDS().find(_ => _.name === name || _.aliases?.includes(name))
+}
+
 async function getSkills(cwd: string): Promise<{
   skillDirCommands: Command[]
   pluginSkills: Command[]

@@ -87,4 +87,15 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       cleanup();
     }
   }, 90_000);
+
+  test("/model (local-jsx in -p) — matches official 'isn't available'", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(["-p", "/model", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
+      // Official 2.1.200: "/model isn't available in this environment."
+      expect(res.stdout).toContain("/model isn't available in this environment.");
+    } finally {
+      cleanup();
+    }
+  }, 90_000);
 });

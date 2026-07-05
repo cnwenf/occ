@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle';
 import type { ContentBlockParam, TextBlockParam } from '@anthropic-ai/sdk/resources';
 import { randomUUID } from 'crypto';
 import { setPromptId } from 'src/bootstrap/state.js';
-import { builtInCommandNames, type Command, type CommandBase, findCommand, getCommand, getCommandName, hasCommand, type PromptCommand } from 'src/commands.js';
+import { builtInCommandNames, type Command, type CommandBase, findCommand, getBuiltInCommandByName, getCommand, getCommandName, hasCommand, type PromptCommand } from 'src/commands.js';
 import { NO_CONTENT_MESSAGE } from 'src/constants/messages.js';
 import type { SetToolJSXFn, ToolUseContext } from 'src/Tool.js';
 import type { AssistantMessage, AttachmentMessage, Message, NormalizedUserMessage, ProgressMessage, UserMessage } from 'src/types/message.js';
@@ -331,6 +331,26 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
 
   // Check if it's a real command before processing
   if (!hasCommand(commandName, context.options.commands)) {
+    // 2.1.x: a known built-in local-jsx command (interactive-only) run in -p
+    // — the official 2.1.200 binary says "/<name> isn't available in this
+    // environment." rather than "Unknown command". Verified against the
+    // 2.1.200 binary for /model, /advisor, /release-notes, etc. Gated/ant-
+    // only commands (type !== 'local-jsx', e.g. /files) fall through to
+    // "Unknown command" — matching the official for non-ant users.
+    const builtInCmd = getBuiltInCommandByName(commandName)
+    if (
+      builtInCmd?.type === 'local-jsx' &&
+      (context.options?.isNonInteractiveSession ?? false)
+    ) {
+      const unavailableMessage = `/${commandName} isn't available in this environment.`
+      return {
+        messages: [createSyntheticUserCaveatMessage(), ...attachmentMessages, createUserMessage({
+          content: prepareUserContent({ inputString: unavailableMessage, precedingInputBlocks })
+        })],
+        shouldQuery: false,
+        resultText: unavailableMessage,
+      }
+    }
     // Check if this looks like a command name vs a file path or other input
     // Also check if it's an actual file path that exists
     let isFilePath = false;
