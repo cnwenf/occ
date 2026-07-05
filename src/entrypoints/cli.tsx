@@ -1,6 +1,15 @@
 #!/usr/bin/env bun
-// Runtime polyfill for bun:bundle (build-time macros)
-const feature = (_name: string) => false;
+// Runtime polyfill for bun:bundle (build-time macros). The official external
+// build includes the auto-mode (transcript classifier) code and gates it at
+// runtime via Statsig; OCC's build previously returned false for ALL feature
+// flags, which dead-code-eliminated the auto-mode code entirely (so /goal's
+// "auto" permission mode was unselectable). Enable the auto-mode features
+// here so the bundler keeps the code; runtime gating still applies.
+const _FEATURE_ALLOWLIST: Set<string> = new Set([
+  "TRANSCRIPT_CLASSIFIER", // auto permission mode (AI classifier)
+  "BASH_CLASSIFIER", // bash-command classification used by auto mode
+])
+const feature = (name: string): boolean => _FEATURE_ALLOWLIST.has(name)
 if (typeof globalThis.MACRO === "undefined") {
     (globalThis as any).MACRO = {
         VERSION: "2.1.200",

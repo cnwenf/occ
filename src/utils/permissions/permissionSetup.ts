@@ -1310,7 +1310,11 @@ export function getAutoModeUnavailableReason(): AutoModeUnavailableReason | null
  */
 export type AutoModeEnabledState = 'enabled' | 'disabled' | 'opt-in'
 
-const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'disabled'
+// OCC: GrowthBook/Statsig is stubbed (no remote config), so the
+// tengu_auto_mode_config gate is always empty. The official external build
+// has auto mode available (Statsig returns 'enabled'); default to 'enabled'
+// here so auto mode is selectable + functional without remote config.
+const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'enabled'
 
 function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {
   if (value === 'enabled' || value === 'disabled' || value === 'opt-in') {
