@@ -248,7 +248,7 @@ export function LogoV2() {
   }
   const layoutMode = getLayoutMode(columns);
   const userTheme = resolveThemeSetting(getGlobalConfig().theme);
-  const borderTitle = ` ${color("claude", userTheme)("Claude Code")} ${color("inactive", userTheme)(`v${version}`)} `;
+  const borderTitle = ` ${color("claude", userTheme)("OCC")} ${color("inactive", userTheme)(`v${version}`)} `;
   const compactBorderTitle = color("claude", userTheme)(" Claude Code ");
   if (layoutMode === "compact") {
     let welcomeMessage = formatWelcomeMessage(username);
