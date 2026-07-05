@@ -1,4 +1,4 @@
-import { feature } from 'bun:bundle'
+import { feature } from 'src/utils/featureFlags.js'
 import type { UUID } from 'crypto'
 import { dirname } from 'path'
 import {

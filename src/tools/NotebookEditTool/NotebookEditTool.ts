@@ -1,4 +1,4 @@
-import { feature } from 'bun:bundle'
+import { feature } from 'src/utils/featureFlags.js'
 import { extname, isAbsolute, resolve } from 'path'
 import { perforceReadOnlyError } from '../../utils/perforce.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'

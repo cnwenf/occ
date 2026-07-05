@@ -1,4 +1,4 @@
-import { feature } from 'bun:bundle'
+import { feature } from 'src/utils/featureFlags.js'
 
 export const DESCRIPTION = 'Send a message to another agent'
 
