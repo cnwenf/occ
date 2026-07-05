@@ -62,6 +62,29 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
     }
   }, 90_000);
 
+  test("/goal clear aliases (stop/off/reset/none/cancel) — all match 'No goal set'", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      for (const alias of ["stop", "off", "reset", "none", "cancel"]) {
+        const res = await runOcc(["-p", `/goal ${alias}`, "--dangerously-skip-permissions"], { OCC_CWD: dir }, 30_000);
+        expect(res.stdout).toContain("No goal set");
+      }
+    } finally {
+      cleanup();
+    }
+  }, 180_000);
+
+  test("/goal <over 4000 chars> — matches official char limit", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const longCondition = "a".repeat(4001);
+      const res = await runOcc(["-p", `/goal ${longCondition}`, "--dangerously-skip-permissions"], { OCC_CWD: dir }, 30_000);
+      expect(res.stdout).toContain("Goal condition is limited to 4000 characters (got 4001)");
+    } finally {
+      cleanup();
+    }
+  }, 60_000);
+
   // M1: the Stop-hook continuation — the defining behavior. /goal <condition>
   // sets a session prompt-type Stop hook (addSessionHook) + triggers a turn;
   // execPromptHook evaluates each turn and blocks stopping until the condition
