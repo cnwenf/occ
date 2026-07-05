@@ -54,35 +54,43 @@ export async function call(args: string, context: LocalJSXCommandContext): Promi
     const list = CONFIG_KEYS.map(k => `  ${k.key}=${k.hint ?? 'value'}`).join('\n')
     return { type: 'text', value: `Usage: /config key=value [key=value ...]\n${list}` }
   }
-  const m = trimmed.match(/^([A-Za-z0-9_]+)=(.*)$/)
-  if (!m) {
-    return { type: 'text', value: 'Usage: /config key=value [key=value ...]' }
-  }
-  const [, key, value] = m
-  if (!CONFIG_KEY_SET.has(key)) {
-    return { type: 'text', value: `${key} isn't a /config setting. Run /config to see what's available.` }
-  }
-  // Set the value: AppState fields via setAppState, settings via updateSettingsForSource.
-  if (APPSTATE_KEYS.has(key)) {
-    const boolVal = value === 'true'
-    context.setAppState((s: any) => ({ ...s, [key]: boolVal }))
-    return { type: 'text', value: `Set ${key} to ${value}` }
-  }
-  // Settings key — merge into user settings and write.
-  try {
-    const schemaKeys = getSettingsSchemaKeys()
-    if (schemaKeys.has(key)) {
-      const existing = getSettingsForSource('user' as any) ?? ({} as any)
-      const merged = { ...existing, [key]: value === 'true' ? true : value === 'false' ? false : value }
-      const r = updateSettingsForSource('user' as any, merged as any)
-      if (r.error) {
-        return { type: 'text', value: `${key} isn't a /config setting. Run /config to see what's available.` }
-      }
-      return { type: 'text', value: `Set ${key} to ${value}` }
+  // Multi-pair parser: split on spaces, each pair must be key=value.
+  const pairs = trimmed.split(/\s+/)
+  const results: string[] = []
+  for (const pair of pairs) {
+    const m = pair.match(/^([A-Za-z0-9_]+)=(.*)$/)
+    if (!m) {
+      return { type: 'text', value: `Expected key=value, got "${pair}". Run /config to see what's available.` }
     }
-    // Not in schema either — acknowledge (best-effort).
-    return { type: 'text', value: `Set ${key} to ${value}` }
-  } catch {
-    return { type: 'text', value: `Set ${key} to ${value}` }
+    const [, key, value] = m
+    if (!CONFIG_KEY_SET.has(key)) {
+      return { type: 'text', value: `${key} isn't a /config setting. Run /config to see what's available.` }
+    }
+    if (APPSTATE_KEYS.has(key)) {
+      const boolVal = value === 'true' || value === '1' || value === 'on' || value === 'yes'
+      context.setAppState((s: any) => ({ ...s, [key]: boolVal }))
+      results.push(`Set ${key} to ${value}`)
+    } else {
+      try {
+        const schemaKeys = getSettingsSchemaKeys()
+        if (schemaKeys.has(key)) {
+          const existing = getSettingsForSource('user' as any) ?? ({} as any)
+          const parsed = value === 'true' || value === '1' || value === 'on' || value === 'yes' ? true
+            : value === 'false' || value === '0' || value === 'off' || value === 'no' ? false
+            : value
+          const merged = { ...existing, [key]: parsed }
+          const r = updateSettingsForSource('user' as any, merged as any)
+          if (r.error) {
+            return { type: 'text', value: `${key} isn't a /config setting. Run /config to see what's available.` }
+          }
+          results.push(`Set ${key} to ${value}`)
+        } else {
+          results.push(`Set ${key} to ${value}`)
+        }
+      } catch {
+        results.push(`Set ${key} to ${value}`)
+      }
+    }
   }
+  return { type: 'text', value: results.join('\n') }
 }
