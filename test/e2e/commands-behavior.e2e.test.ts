@@ -169,4 +169,27 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       cleanup();
     }
   }, 90_000);
+
+  // Auto mode e2e: --permission-mode auto + a tool call. The classifier
+  // (classifyYoloAction) should auto-approve a safe Write (file in the
+  // working directory) WITHOUT manual approval. This is the core auto mode
+  // behavior — previously dead code (feature('TRANSCRIPT_CLASSIFIER') was
+  // DCE'd); now functional via src/utils/featureFlags.ts.
+  test("auto mode — classifier auto-approves a safe Write tool call", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(
+        ["-p", "Use the Write tool to create a file named auto.txt containing exactly AUTO_OK", "--permission-mode", "auto"],
+        { OCC_CWD: dir },
+        90_000,
+      );
+      expect(res.code).toBe(0);
+      expect(existsSync(join(dir, "auto.txt"))).toBe(true);
+      if (existsSync(join(dir, "auto.txt"))) {
+        expect(readFileSync(join(dir, "auto.txt"), "utf8")).toContain("AUTO_OK");
+      }
+    } finally {
+      cleanup();
+    }
+  }, 120_000);
 });

@@ -189,11 +189,11 @@ export function modelSupportsAutoMode(model: string): boolean {
       return true
     }
     // External allowlist (firstParty already checked above).
-    // OCC customization: the official restricts auto mode to
-    // claude-(opus|sonnet)-4-6 (the classifier is tuned for those). OCC
-    // supports non-Claude models via Anthropic-compatible proxies (e.g. GLM);
-    // the classifier is a model call that works with any firstParty model,
-    // so allow all firstParty models.
+    // Official denylist: block known-unsupported claude models, allow others
+    // (incl. non-Claude proxies like GLM — the classifier is a model call
+    // that works with any firstParty model).
+    if (m.includes('claude-3-')) return false
+    if (/claude-(opus|sonnet|haiku)-4(?!-[6-9])/.test(m)) return false
     return true
   }
   return false
