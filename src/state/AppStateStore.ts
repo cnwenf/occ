@@ -452,6 +452,10 @@ export type AppState = DeepImmutable<{
   // 2.1.139 /goal: the active goal (condition + progress). Mirrors the
   // official AppState.activeGoal; the GoalStatus panel reads this reactively.
   activeGoal?: ActiveGoal
+  // 2.1.139 /goal: the last-achieved goal (transient, for the "Goal achieved"
+  // panel state). Set by the goal Stop hook's onHookSuccess when the
+  // condition is met; mirrors the official goal_status attachment (met:true).
+  lastAchievedGoal?: { condition: string; durationMs: number; iterations: number }
 }
 
 /** 2.1.139 /goal state. Mirrors the official {condition, iterations, setAt, tokensAtStart, lastReason}. */

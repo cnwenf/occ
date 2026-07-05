@@ -47,7 +47,27 @@ function registerGoalHook(context: LocalJSXCommandContext, condition: string): v
   // Remove any prior goal hook (same condition) before adding — official
   // removes existing goal hooks in Rvt before adding the new one.
   removeSessionHook(context.setAppState, sessionId, 'Stop' as HookEvent, { type: 'prompt', prompt: condition })
-  addSessionHook(context.setAppState, sessionId, 'Stop' as HookEvent, '', { type: 'prompt', prompt: condition })
+  addSessionHook(
+    context.setAppState, sessionId, 'Stop' as HookEvent, '',
+    { type: 'prompt', prompt: condition },
+    // onHookSuccess: when the goal condition is met (execPromptHook returns
+    // ok:true), clear activeGoal + set lastAchievedGoal for the "Goal
+    // achieved" panel state + remove the hook (mirrors official goal_status
+    // attachment met:true + Dvt remove).
+    () => {
+      const achieved = context.getAppState().activeGoal
+      context.setAppState((s: any) => ({
+        ...s,
+        activeGoal: undefined,
+        lastAchievedGoal: achieved ? {
+          condition: achieved.condition,
+          durationMs: Date.now() - achieved.setAt,
+          iterations: achieved.iterations,
+        } : undefined,
+      }))
+      removeSessionHook(context.setAppState, sessionId, 'Stop' as HookEvent, { type: 'prompt', prompt: condition })
+    },
+  )
 }
 
 function unregisterGoalHook(context: LocalJSXCommandContext, condition: string): void {

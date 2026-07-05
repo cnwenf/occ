@@ -29,6 +29,7 @@ function formatTokens(n: number): string {
 
 export function GoalStatus({ onDone }: { onDone: () => void }) {
   const activeGoal = useAppState(s => s.activeGoal) as ActiveGoal | undefined;
+  const lastAchieved = useAppState(s => s.lastAchievedGoal);
   // Tick every second so the running duration updates live.
   const [, setTick] = React.useReducer(n => n + 1, 0);
   React.useEffect(() => {
@@ -38,6 +39,23 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
   useStdin((input, key) => {
     if (key.escape) onDone();
   });
+
+  // D8: Goal-achieved panel state (mirrors official VZ4 achieved branch).
+  if (!activeGoal && lastAchieved) {
+    const turns = lastAchieved.iterations > 0 ? `${lastAchieved.iterations} turn${lastAchieved.iterations === 1 ? '' : 's'}` : null;
+    const subtitle = [formatDuration(lastAchieved.durationMs), turns].filter(Boolean).join(' · ');
+    return (
+      <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={1} minWidth={40}>
+        <Text bold color="green">✓ Goal achieved</Text>
+        {subtitle ? <Text dimColor>{subtitle}</Text> : null}
+        <Box flexDirection="row">
+          <Text dimColor>Goal: </Text>
+          <Text wrap="wrap">{lastAchieved.condition}</Text>
+        </Box>
+        <Text dimColor>/goal &lt;condition&gt; to set another</Text>
+      </Box>
+    );
+  }
 
   if (!activeGoal) {
     return (
