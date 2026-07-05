@@ -449,6 +449,18 @@ export type AppState = DeepImmutable<{
   // Races against local UI + bridge + hooks + classifier via claim() in
   // interactiveHandler.ts. Constructed once in useManageMCPConnections.
   channelPermissionCallbacks?: ChannelPermissionCallbacks
+  // 2.1.139 /goal: the active goal (condition + progress). Mirrors the
+  // official AppState.activeGoal; the GoalStatus panel reads this reactively.
+  activeGoal?: ActiveGoal
+}
+
+/** 2.1.139 /goal state. Mirrors the official {condition, iterations, setAt, tokensAtStart, lastReason}. */
+export type ActiveGoal = {
+  condition: string
+  iterations: number
+  setAt: number
+  tokensAtStart: number
+  lastReason?: string
 }
 
 export type AppStateStore = Store<AppState>
@@ -565,5 +577,6 @@ export function getDefaultAppState(): AppState {
     effortValue: undefined,
     activeOverlays: new Set<string>(),
     fastMode: false,
+    activeGoal: undefined,
   }
 }

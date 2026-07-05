@@ -35,7 +35,7 @@ import {
   createUserMessage,
 } from '../utils/messages.js'
 import type { SystemPrompt } from '../utils/systemPromptType.js'
-import { isGoalActive, clearGoal, getGoalCondition } from '../commands/goal/goalState.js'
+import { isGoalActive, clearGoal, getGoalCondition, getGoalTurns } from '../commands/goal/goalState.js'
 import { evaluateGoal } from '../commands/goal/goalEvaluator.js'
 import { getRuntimeMainLoopModel } from '../utils/model/model.js'
 import { getTaskListId, listTasks } from '../utils/tasks.js'
@@ -363,7 +363,21 @@ export async function* handleStopHooks(
             ),
           }
           clearGoal()
+          // Mirror to AppState so the GoalStatus panel clears reactively.
+          toolUseContext.setAppState(prev =>
+            ({ ...prev, activeGoal: undefined } as typeof prev),
+          )
         } else {
+          // Mirror progress (iterations + last reason) to AppState for the panel.
+          const turns = getGoalTurns()
+          toolUseContext.setAppState(prev =>
+            ({
+              ...prev,
+              activeGoal: prev.activeGoal
+                ? { ...prev.activeGoal, iterations: turns, lastReason: evalResult.reason }
+                : prev.activeGoal,
+            } as typeof prev),
+          )
           const goalBlockingMessage = createUserMessage({
             content: `Continue working toward the goal: "${getGoalCondition()}". ${evalResult.reason}`,
             isMeta: true,
