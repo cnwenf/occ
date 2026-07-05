@@ -1343,6 +1343,11 @@ function getClassifierModel(): string {
   if (config?.model) {
     return config.model
   }
+  // Official uses claude-haiku-4-5 as the classifier model. For non-Claude
+  // proxies (GLM), fall back to the subagent model env var, then the main
+  // loop model (the classifier is a model call that works with any model).
+  const subagentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL
+  if (subagentModel) return subagentModel
   return getMainLoopModel()
 }
 
