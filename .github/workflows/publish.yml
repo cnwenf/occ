@@ -1,0 +1,51 @@
+name: Publish to npm
+
+# 打 tag（如 v1.0.0）后自动构建并发布到 npm。
+# 需要在仓库 Settings → Secrets → Actions 里添加 NPM_TOKEN（npmjs.com 的 access token）。
+# 首次发布 scoped 包需 publishConfig.access=public（已在 package.json 配置）。
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build
+        run: bun run build
+
+      - name: Verify bundle has shebang
+        run: head -1 dist/cli.js | grep -q "^#!/usr/bin/env bun"
+
+      - name: Set version from tag
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      # 剥离 workspace:* 依赖：这些是本地 stub 包（packages/@ant/*、*-napi），
+      # 没发布到 npm。npm publish 会把 workspace:* 改写成版本号，安装时会 404。
+      # bundle 已把这些 stub 的代码内联进 dist/cli.js，运行时不需要单独安装。
+      - name: Strip workspace dependencies
+        run: |
+          jq '.dependencies |= with_entries(select(.value != "workspace:*"))' package.json > package.json.tmp
+          mv package.json.tmp package.json
+          echo "Remaining dependencies: $(jq '.dependencies | length' package.json)"
+
+      - name: Publish
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> ~/.npmrc
+          npm publish --access public
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
