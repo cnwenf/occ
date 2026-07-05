@@ -5,6 +5,7 @@ import {
   setLastApiCompletionTimestamp,
 } from '../bootstrap/state.js'
 import { STRUCTURED_OUTPUTS_BETA_HEADER } from '../constants/betas.js'
+import { AFK_MODE_BETA_HEADER } from "../constants/betas.js";
 import type { QuerySource } from '../constants/querySource.js'
 import {
   getAttributionHeader,
@@ -127,6 +128,8 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     source: 'side_query',
   })
   const betas = [...getModelBetas(model)]
+  // #6: auto mode classifier sends afk-mode beta (matches official)
+  betas.push(AFK_MODE_BETA_HEADER)
   // Add structured-outputs beta if using output_format and provider supports it
   if (
     output_format &&
