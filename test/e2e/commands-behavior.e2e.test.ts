@@ -98,4 +98,24 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       cleanup();
     }
   }, 90_000);
+
+  test("/config (no args) — matches official usage", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(["-p", "/config", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
+      expect(res.stdout).toContain("Usage: /config key=value");
+    } finally {
+      cleanup();
+    }
+  }, 90_000);
+
+  test("/config <unknown>=<v> — matches official rejection", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(["-p", "/config foo=bar", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
+      expect(res.stdout).toContain("foo isn't a /config setting");
+    } finally {
+      cleanup();
+    }
+  }, 90_000);
 });
