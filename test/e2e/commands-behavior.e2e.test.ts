@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { runOcc, tempDir } from "./helpers";
@@ -192,4 +192,10 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       cleanup();
     }
   }, 120_000);
+
+  // Note: auto mode deny (destructive command not auto-approved) is
+  // model-dependent — the classifier's decision depends on the model's
+  // judgment. With GLM, the classifier may not be conservative enough to
+  // deny `rm`. The official uses a Claude-tuned classifier. This scenario
+  // is verified manually, not in e2e (model-quality, not code).
 });
