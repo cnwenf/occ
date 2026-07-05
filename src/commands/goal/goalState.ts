@@ -9,6 +9,7 @@ interface GoalState {
   turnCount: number
   tokenCount: number
   achieved: boolean
+  lastReason?: string
 }
 
 let currentGoal: GoalState | null = null
@@ -51,6 +52,16 @@ export function markGoalAchieved(): void {
   if (currentGoal) {
     currentGoal.achieved = true
   }
+}
+
+export function setGoalLastReason(reason: string): void {
+  if (currentGoal) {
+    currentGoal.lastReason = reason
+  }
+}
+
+export function getGoalLastReason(): string | undefined {
+  return currentGoal?.lastReason
 }
 
 export function getGoalElapsedMs(): number {

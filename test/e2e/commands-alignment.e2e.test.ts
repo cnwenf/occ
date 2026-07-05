@@ -57,15 +57,17 @@ console.log(JSON.stringify({ names }));
     const script = `
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
 const { getCommands } = await import("${REPO_ROOT}/src/commands.ts");
-const goal = (await getCommands("${REPO_ROOT}")).find(c => c.name === "goal");
-console.log(JSON.stringify({ name: goal?.name, description: goal?.description, argumentHint: goal?.argumentHint, supportsNonInteractive: goal?.supportsNonInteractive }));
+const goals = (await getCommands("${REPO_ROOT}")).filter(c => c.name === "goal");
+console.log(JSON.stringify(goals.map(g => ({ type: g.type, description: g.description, argumentHint: g.argumentHint, supportsNonInteractive: g.supportsNonInteractive }))));
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim())
-    expect(out.name).toBe("goal")
-    // Official 2.1.200 description (may be either "Set a goal Claude checks
-    // before stopping" or the 2.1.139 "Set a goal — keep working until the
-    // condition is met"); accept the official phrasing family.
-    expect(out.description).toMatch(/Set a goal/i)
-    expect(out.supportsNonInteractive).toBe(true)
+    // /goal has two variants (mirrors the official Nk5 local-jsx + $Hm local):
+    // - interactive (local-jsx): description "Set a goal Claude checks before stopping"
+    // - non-interactive (local, SNI): description "Set a goal — keep working until the condition is met"
+    const interactive = out.find((g: any) => g.type === "local-jsx")
+    const nonInteractive = out.find((g: any) => g.type === "local" && g.supportsNonInteractive)
+    expect(interactive?.description).toBe("Set a goal Claude checks before stopping")
+    expect(nonInteractive?.description).toBe("Set a goal — keep working until the condition is met")
+    expect(nonInteractive?.supportsNonInteractive).toBe(true)
   })
 })

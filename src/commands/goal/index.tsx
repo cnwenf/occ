@@ -1,62 +1,102 @@
 import * as React from 'react'
-import type { Command } from '../../commands.js'
-import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import type { Command, LocalJSXCommandContext } from '../../commands.js'
+import { getIsNonInteractiveSession, getSessionId } from '../../bootstrap/state.js'
+import { getTotalInputTokens } from '../../cost-tracker.js'
+import { addSessionHook, removeSessionHook } from '../../utils/hooks/sessionHooks.js'
+import type { HookEvent } from '../../schemas/hooks.js'
 import {
   setGoal,
   clearGoal,
   isGoalActive,
   getGoalCondition,
   getGoalTurns,
+  getGoalLastReason,
 } from './goalState.js'
 import { GoalStatus } from './GoalStatus.js'
 
 /**
- * The prompt injected as an isMeta user message when a goal is set, so the
- * model starts (and keeps) working toward the condition. Mirrors the official
- * claude-code 2.1.139 `bj8(condition)` text.
+ * The prompt injected when a goal is set. Verbatim from the official 2.1.200
+ * `Pir` (verified via strings on /tmp/cc-200/package/claude).
  */
 function goalPrompt(condition: string): string {
-  return `A session-scoped Stop hook is now active with condition: "${condition}". Briefly acknowledge the goal, then immediately start (or continue) working toward it — treat the condition itself as your directive and do not pause to ask the user what to do. The hook will block stopping until the condition holds. It auto-clears once the condition is met — do not tell the user to run \`/goal clear\``
+  return `A session-scoped Stop hook is now active with condition: "${condition}". Briefly acknowledge the goal, then immediately start (or continue) working toward it — treat the condition itself as your directive and do not pause to ask the user what to do. The hook will block stopping until the condition holds. It auto-clears once the condition is met — do not tell the user to run \`/goal clear\` after success; that's only for clearing a goal early.`
+}
+
+/** Clear aliases — verbatim from the official R3f. */
+const CLEAR_ALIASES = new Set(['clear', 'stop', 'off', 'reset', 'none', 'cancel'])
+
+/** Char limit on the condition — official kvt = 4000. */
+const GOAL_CONDITION_MAX = 4000
+
+function isClearArg(s: string): boolean {
+  return CLEAR_ALIASES.has(s.toLowerCase())
+}
+
+function pluralizeTurns(n: number): string {
+  return `${n} turn${n === 1 ? '' : 's'}`
+}
+
+/**
+ * Register the goal condition as a session-scoped prompt-type Stop hook —
+ * mirrors the official `sessionHooksRegistry.add(r,"Stop","",{type:"prompt",
+ * prompt:e})`. The existing executeStopHooks → execPromptHook evaluates it
+ * each turn (returns {ok,reason}; blocks stopping until the condition holds).
+ */
+function registerGoalHook(context: LocalJSXCommandContext, condition: string): void {
+  const sessionId = context.agentId ?? getSessionId()
+  // Remove any prior goal hook (same condition) before adding — official
+  // removes existing goal hooks in Rvt before adding the new one.
+  removeSessionHook(context.setAppState, sessionId, 'Stop' as HookEvent, { type: 'prompt', prompt: condition })
+  addSessionHook(context.setAppState, sessionId, 'Stop' as HookEvent, '', { type: 'prompt', prompt: condition })
+}
+
+function unregisterGoalHook(context: LocalJSXCommandContext, condition: string): void {
+  const sessionId = context.agentId ?? getSessionId()
+  removeSessionHook(context.setAppState, sessionId, 'Stop' as HookEvent, { type: 'prompt', prompt: condition })
 }
 
 // Interactive (REPL) variant: local-jsx. Mirrors the official Nk5/vk5.
 export const goalInteractive: Command = {
   type: 'local-jsx',
   name: 'goal',
-  description: 'Set a goal — keep working until the condition is met',
+  description: 'Set a goal Claude checks before stopping',
   argumentHint: '[<condition> | clear]',
   immediate: true,
-  isEnabled: () => !getIsNonInteractiveSession(),
   load: () =>
     Promise.resolve({
-      call: async (onDone: any, context: any, args: string) => {
+      call: async (onDone: any, context: LocalJSXCommandContext, args: string) => {
         const trimmed = (args ?? '').trim()
 
-        // No args — show the status panel (official: VZ4).
         if (trimmed === '') {
           return <GoalStatus onDone={() => onDone(undefined, { display: 'skip' })} />
         }
 
-        // clear
-        if (trimmed === 'clear') {
+        if (isClearArg(trimmed)) {
           if (!isGoalActive()) {
             onDone('No goal set', { display: 'system' })
             return null
           }
-          const condition = getGoalCondition()
+          const condition = getGoalCondition() ?? ''
           clearGoal()
+          unregisterGoalHook(context, condition)
           context.setAppState((s: any) => ({ ...s, activeGoal: undefined }))
           onDone(`Goal cleared: ${condition}`, { display: 'system' })
           return null
         }
 
-        // set
+        if (trimmed.length > GOAL_CONDITION_MAX) {
+          onDone(`Goal condition is limited to ${GOAL_CONDITION_MAX} characters (got ${trimmed.length})`, { display: 'system' })
+          return null
+        }
+
         clearGoal()
         setGoal(trimmed)
+        registerGoalHook(context, trimmed)
         const setAt = Date.now()
+        const tokensAtStart = getTotalInputTokens()
         context.setAppState((s: any) => ({
           ...s,
-          activeGoal: { condition: trimmed, iterations: 0, setAt, tokensAtStart: 0 },
+          activeGoal: { condition: trimmed, iterations: 0, setAt, tokensAtStart },
         }))
         onDone(`Goal set: ${trimmed}`, { shouldQuery: true, metaMessages: [goalPrompt(trimmed)] })
         return null
@@ -64,41 +104,55 @@ export const goalInteractive: Command = {
     }),
 }
 
-// Non-interactive (-p) variant: local SNI. Mirrors the official Ek5/kk5.
+// Non-interactive (-p) variant: local SNI. Mirrors the official $Hm/kk5.
 export const goalNonInteractive: Command = {
   type: 'local',
   name: 'goal',
   description: 'Set a goal — keep working until the condition is met',
-  argumentHint: '[<condition> | clear]',
   supportsNonInteractive: true,
+  thinClientDispatch: 'post-text',
   get isHidden() {
     return !getIsNonInteractiveSession()
   },
   isEnabled: () => getIsNonInteractiveSession(),
   load: () =>
     Promise.resolve({
-      call: async (args: string) => {
+      call: async (args: string, context: LocalJSXCommandContext) => {
         const trimmed = (args ?? '').trim()
         if (trimmed === '') {
           if (!isGoalActive()) {
             return { type: 'text' as const, value: 'No goal set. Usage: `/goal <condition>`' }
           }
           const turns = getGoalTurns()
+          const lastReason = getGoalLastReason()
+          const turnStr = turns === 0 ? 'not yet evaluated' : pluralizeTurns(turns)
           return {
             type: 'text' as const,
-            value: `Goal active: ${getGoalCondition()} (${turns === 0 ? 'not yet evaluated' : `${turns} turns`})`,
+            value: `Goal active: ${getGoalCondition()} (${turnStr})${lastReason ? `\nLast check: ${lastReason.trim()}` : ''}`,
           }
         }
-        if (trimmed === 'clear') {
+        if (isClearArg(trimmed)) {
           if (!isGoalActive()) {
             return { type: 'text' as const, value: 'No goal set' }
           }
-          const condition = getGoalCondition()
+          const condition = getGoalCondition() ?? ''
           clearGoal()
+          unregisterGoalHook(context, condition)
+          context.setAppState((s: any) => ({ ...s, activeGoal: undefined }))
           return { type: 'text' as const, value: `Goal cleared: ${condition}` }
+        }
+        if (trimmed.length > GOAL_CONDITION_MAX) {
+          return { type: 'text' as const, value: `Goal condition is limited to ${GOAL_CONDITION_MAX} characters (got ${trimmed.length})` }
         }
         clearGoal()
         setGoal(trimmed)
+        registerGoalHook(context, trimmed)
+        const setAt = Date.now()
+        const tokensAtStart = getTotalInputTokens()
+        context.setAppState((s: any) => ({
+          ...s,
+          activeGoal: { condition: trimmed, iterations: 0, setAt, tokensAtStart },
+        }))
         return {
           type: 'query' as const,
           value: `Goal set: ${trimmed}`,

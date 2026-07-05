@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
 import { runOcc, tempDir } from "./helpers";
 
@@ -59,6 +61,33 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       cleanup();
     }
   }, 90_000);
+
+  // M1: the Stop-hook continuation — the defining behavior. /goal <condition>
+  // sets a session prompt-type Stop hook (addSessionHook) + triggers a turn;
+  // execPromptHook evaluates each turn and blocks stopping until the condition
+  // holds. Verifies the loop TERMINATES (exit 0, not timeout) when the goal
+  // is achieved — the official architecture (sessionHooksRegistry), not a
+  // bespoke evaluator.
+  test("/goal <condition> — sets hook, works toward goal, terminates on achieve", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(
+        ["-p", "/goal create a file named done.txt containing exactly GOAL_DONE", "--dangerously-skip-permissions"],
+        { OCC_CWD: dir },
+        120_000,
+      );
+      // Loop must terminate (not time out → code !== -1).
+      expect(res.code).toBe(0);
+      // The goal was achieved: the file exists with the requested content.
+      const exists = existsSync(join(dir, "done.txt"));
+      expect(exists).toBe(true);
+      if (exists) {
+        expect(readFileSync(join(dir, "done.txt"), "utf8")).toContain("GOAL_DONE");
+      }
+    } finally {
+      cleanup();
+    }
+  }, 150_000);
 
   test("/files — ant-only, unknown in non-ant env (matches official)", async () => {
     const { dir, cleanup } = tempDir();

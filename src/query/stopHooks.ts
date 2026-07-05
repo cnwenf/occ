@@ -35,9 +35,6 @@ import {
   createUserMessage,
 } from '../utils/messages.js'
 import type { SystemPrompt } from '../utils/systemPromptType.js'
-import { isGoalActive, clearGoal, getGoalCondition, getGoalTurns } from '../commands/goal/goalState.js'
-import { evaluateGoal } from '../commands/goal/goalEvaluator.js'
-import { getRuntimeMainLoopModel } from '../utils/model/model.js'
 import { getTaskListId, listTasks } from '../utils/tasks.js'
 import { getAgentName, getTeamName, isTeammate } from '../utils/teammate.js'
 
@@ -334,58 +331,13 @@ export async function* handleStopHooks(
       return { blockingErrors, preventContinuation: false }
     }
 
-    // 2.1.139 /goal: session-scoped Stop hook. When a goal is active, the
-    // model must not stop until the condition holds. Evaluate the goal; if it
-    // is met, clear it and let the turn end. If not, block stopping with a
-    // continuation message so the model keeps working. This is the official
-    // mechanism (the goal prompt activates a "session-scoped Stop hook") and
-    // reuses the generic stop-hook block cap in query.ts for loop protection.
-    if (isGoalActive()) {
-      const goalModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL || getRuntimeMainLoopModel({})
-      const apiKey = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || ''
-      const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'
-      if (apiKey) {
-        const evalResult = await evaluateGoal(
-          [...messagesForQuery, ...assistantMessages].map((m: Message) => ({
-            role: m.type === 'assistant' ? 'assistant' : 'user',
-            content: typeof m.message?.content === 'string'
-              ? m.message.content
-              : JSON.stringify(m.message?.content ?? ''),
-          })),
-          goalModel,
-          apiKey,
-          baseUrl,
-        )
-        if (evalResult.achieved) {
-          yield {
-            message: createSystemMessage(
-              `Goal achieved: ${getGoalCondition()}\n${evalResult.reason}`,
-            ),
-          }
-          clearGoal()
-          // Mirror to AppState so the GoalStatus panel clears reactively.
-          toolUseContext.setAppState(prev =>
-            ({ ...prev, activeGoal: undefined } as typeof prev),
-          )
-        } else {
-          // Mirror progress (iterations + last reason) to AppState for the panel.
-          const turns = getGoalTurns()
-          toolUseContext.setAppState(prev =>
-            ({
-              ...prev,
-              activeGoal: prev.activeGoal
-                ? { ...prev.activeGoal, iterations: turns, lastReason: evalResult.reason }
-                : prev.activeGoal,
-            } as typeof prev),
-          )
-          const goalBlockingMessage = createUserMessage({
-            content: `Continue working toward the goal: "${getGoalCondition()}". ${evalResult.reason}`,
-            isMeta: true,
-          })
-          return { blockingErrors: [goalBlockingMessage], preventContinuation: false }
-        }
-      }
-    }
+    // 2.1.139 /goal: the goal is now a session-scoped prompt-type Stop hook
+    // registered via sessionHooksRegistry (mirrors the official
+    // `sessionHooksRegistry.add("Stop","",{type:"prompt",prompt:condition})`
+    // in Lvt). It is evaluated by the standard executeStopHooks →
+    // execPromptHook path below (which returns {ok,reason} and blocks
+    // stopping until the condition holds). The bespoke inline evaluator that
+    // used to live here was removed to align with the official architecture.
 
     // After Stop hooks pass, run TeammateIdle and TaskCompleted hooks if this is a teammate
     if (isTeammate()) {

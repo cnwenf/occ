@@ -1,3 +1,4 @@
+import { getTotalInputTokens } from '../../cost-tracker.js'
 import * as React from 'react';
 import { Box, Text, useStdin } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
@@ -50,8 +51,9 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
 
   const elapsed = Date.now() - activeGoal.setAt;
   const turns = activeGoal.iterations > 0 ? `${activeGoal.iterations} turn${activeGoal.iterations === 1 ? '' : 's'}` : null;
-  const tokens = formatTokens(/* tokensAtStart unknown; show 0 if unset */ 0);
-  const subtitle = [`running ${formatDuration(elapsed)}`, turns, formatTokens(0)].filter(Boolean).join(' · ');
+  // Token delta since the goal was set (official: gS() - tokensAtStart).
+  const tokenDelta = Math.max(0, getTotalInputTokens() - (activeGoal.tokensAtStart ?? 0));
+  const subtitle = [`running ${formatDuration(elapsed)}`, turns, formatTokens(tokenDelta)].filter(Boolean).join(' · ');
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} minWidth={40}>
