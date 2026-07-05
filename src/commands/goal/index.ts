@@ -4,6 +4,7 @@ import {
   clearGoal,
   isGoalActive,
   getGoalCondition,
+  getGoalTurns,
 } from './goalState.js'
 
 /**
@@ -20,27 +21,41 @@ function goalPrompt(condition: string): string {
 const goal: Command = {
   type: 'local',
   name: 'goal',
-  description: 'Set a completion condition — Claude keeps working across turns until it is met',
-  argumentHint: '<condition> | clear',
+  description: 'Set a goal — keep working until the condition is met',
+  argumentHint: '[<condition> | clear]',
   supportsNonInteractive: true,
   isEnabled: () => true,
   async load() {
     return {
+      // Mirrors the official 2.1.139 non-interactive goal command (kk5):
+      //   no args  -> status (or "No goal set. Usage: `/goal <condition>`")
+      //   clear    -> "No goal set" | "Goal cleared: <condition>"
+      //   <cond>   -> {type:'query', value:`Goal set: <cond>`, prompt:bj8(cond)}
       async call(args: string) {
         const trimmed = args.trim()
-        if (!trimmed || trimmed === 'clear') {
-          if (isGoalActive()) {
-            clearGoal()
-            return { type: 'text' as const, value: 'Goal cleared. Stopping early.' }
+
+        // No args — show status (official: no-args is the status query).
+        if (trimmed === '') {
+          if (!isGoalActive()) {
+            return { type: 'text' as const, value: 'No goal set. Usage: `/goal <condition>`' }
           }
-          return { type: 'text' as const, value: 'No active goal to clear.' }
-        }
-        if (trimmed === 'status') {
-          if (isGoalActive()) {
-            return { type: 'text' as const, value: `Goal active: ${getGoalCondition()}` }
+          const turns = getGoalTurns()
+          return {
+            type: 'text' as const,
+            value: `Goal active: ${getGoalCondition()} (${turns === 0 ? 'not yet evaluated' : `${turns} turns`})`,
           }
-          return { type: 'text' as const, value: 'No active goal. Use /goal <condition> to set one.' }
         }
+
+        // clear — official returns "No goal set" or "Goal cleared: <condition>".
+        if (trimmed === 'clear') {
+          if (!isGoalActive()) {
+            return { type: 'text' as const, value: 'No goal set' }
+          }
+          const condition = getGoalCondition()
+          clearGoal()
+          return { type: 'text' as const, value: `Goal cleared: ${condition}` }
+        }
+
         // Set a new goal — display the confirmation, then trigger a model
         // turn with the goal prompt (the {type:'query'} result) so Claude
         // actually starts working toward the condition.
@@ -48,7 +63,7 @@ const goal: Command = {
         setGoal(trimmed)
         return {
           type: 'query' as const,
-          value: `Goal set: "${trimmed}"\nClaude will keep working across turns until this condition is met. Use /goal clear to stop early.`,
+          value: `Goal set: ${trimmed}`,
           prompt: goalPrompt(trimmed),
         }
       },

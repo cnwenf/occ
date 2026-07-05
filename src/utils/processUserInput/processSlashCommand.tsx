@@ -344,7 +344,13 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
       logEvent('tengu_input_slash_invalid', {
         input: commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
-      const unknownMessage = `Unknown skill: ${commandName}`;
+      // 2.1.x: non-interactive (-p) sessions say "Unknown command: /<name>"
+      // (with the leading slash); interactive (REPL) sessions say
+      // "Unknown skill: <name>". Verified against the 2.1.200 binary.
+      const isNonInteractive = context.options?.isNonInteractiveSession ?? false
+      const unknownMessage = isNonInteractive
+        ? `Unknown command: /${commandName}`
+        : `Unknown skill: ${commandName}`
       return {
         messages: [createSyntheticUserCaveatMessage(), ...attachmentMessages, createUserMessage({
           content: prepareUserContent({
