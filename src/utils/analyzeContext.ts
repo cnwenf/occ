@@ -6,6 +6,7 @@ import {
 } from 'src/constants/prompts.js'
 import { microcompactMessages } from 'src/services/compact/microCompact.js'
 import { getSdkBetas } from '../bootstrap/state.js'
+import { getIsNonInteractiveSession } from '../bootstrap/state.js'
 import { getCommandName } from '../commands.js'
 import { getSystemContext } from '../context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
@@ -589,7 +590,7 @@ async function countSkillTokens(
     // (name, description, whenToUse) since full content is only loaded on invocation
     const skillFrontmatter: SkillFrontmatter[] = skills.map(skill => ({
       name: getCommandName(skill),
-      source: (skill.type === 'prompt' ? skill.source : 'plugin') as
+      source: (skill.type === 'prompt' ? (skill.source ?? 'built-in') : 'plugin') as
         | SettingSource
         | 'plugin',
       tokens: estimateSkillFrontmatterTokens(skill),
@@ -1114,6 +1115,7 @@ export async function analyzeContextUsage(
   // shouldAutoCompact, so the 33k buffer shown here would be a lie too.
   let reservedTokens = 0
   let skipReservedBuffer = false
+  if (getIsNonInteractiveSession()) skipReservedBuffer = true  // OCC: -p /context suppresses the buffer (matches official)
   if (feature('REACTIVE_COMPACT')) {
     if (getFeatureValue_CACHED_MAY_BE_STALE('tengu_cobalt_raccoon', false)) {
       skipReservedBuffer = true

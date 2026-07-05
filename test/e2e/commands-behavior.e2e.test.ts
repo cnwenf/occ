@@ -147,4 +147,26 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       cleanup();
     }
   }, 90_000);
+
+  test("/config <valid>=<v> — sets the setting (matches official)", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(["-p", "/config verbose=true", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
+      expect(res.stdout).toContain("Set verbose to true");
+    } finally {
+      cleanup();
+    }
+  }, 90_000);
+
+  test("/config (no args) — lists the settings key set", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(["-p", "/config", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
+      expect(res.stdout).toContain("Usage: /config key=value");
+      expect(res.stdout).toContain("autoCompact=");
+      expect(res.stdout).toContain("verbose=");
+    } finally {
+      cleanup();
+    }
+  }, 90_000);
 });
