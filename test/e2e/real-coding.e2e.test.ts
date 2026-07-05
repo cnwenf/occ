@@ -166,4 +166,24 @@ describe.skipIf(!!process.env.CI)("real coding tasks (e2e, real model)", () => {
       cleanup();
     }
   }, 220_000);
+
+  test("/init: generates a CLAUDE.md for a small project", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      seedFile(dir, "src/math.js", "export function add(a, b) { return a + b; }\n");
+      seedFile(dir, "package.json", '{"name":"demo","scripts":{"test":"node src/math.js"}}\n');
+      const res = await runOcc(
+        ["-p", "/init", "--dangerously-skip-permissions"],
+        { OCC_CWD: dir },
+        120_000,
+      );
+      expect(res.code).toBe(0);
+      expect(existsSync(join(dir, "CLAUDE.md"))).toBe(true);
+      const content = readFileSync(join(dir, "CLAUDE.md"), "utf8");
+      expect(content).toMatch(/CLAUDE\.md/i);
+      expect(content.toLowerCase()).toContain("commands");
+    } finally {
+      cleanup();
+    }
+  }, 150_000);
 });
