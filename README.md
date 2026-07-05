@@ -104,4 +104,4 @@ packages/                 # workspace stubs (@ant/*, *-napi)
 
 ## License
 
-For learning and research purposes. Claude Code is a trademark of [Anthropic](https://www.anthropic.com/); this project is an independent open-source implementation and is not affiliated with or endorsed by Anthropic.
+MIT License — see [LICENSE](./LICENSE).

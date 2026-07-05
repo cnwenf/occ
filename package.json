@@ -1,6 +1,7 @@
 {
     "name": "@cnwenf/occ",
     "version": "2.1.200",
+    "license": "MIT",
     "type": "module",
     "bin": {
         "occ": "dist/cli.js"

@@ -104,4 +104,4 @@ packages/                 # workspace stub（@ant/*、*-napi）
 
 ## 许可证
 
-仅供学习研究用途。Claude Code 是 [Anthropic](https://www.anthropic.com/) 的商标；本项目是独立的开源实现，与 Anthropic 无关联，也未获其认可。
+MIT 许可证 — 详见 [LICENSE](./LICENSE)。
