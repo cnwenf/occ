@@ -71,4 +71,20 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       cleanup();
     }
   }, 90_000);
+
+  // /feedback is an OCC customization (creates a GitHub issue on cnwenf/occ,
+  // not Anthropic-bound like the official). Only the no-args usage path is
+  // asserted here — the issue-creation path is verified manually (it would
+  // spam the repo if run in e2e).
+  test("/feedback (no args) — returns usage", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(["-p", "/feedback", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
+      expect(res.code).toBe(0);
+      expect(res.stdout).toContain("Usage: /feedback");
+      expect(res.stdout).toContain("cnwenf/occ");
+    } finally {
+      cleanup();
+    }
+  }, 90_000);
 });
