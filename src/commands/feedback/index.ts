@@ -1,4 +1,5 @@
 import type { Command } from '../../commands.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { execFileSync } from 'node:child_process'
 
 // OCC customization: /feedback creates a GitHub issue on the OCC repo
@@ -30,7 +31,7 @@ const feedback = {
   description: `Submit feedback — opens a GitHub issue on ${FEEDBACK_REPO}`,
   argumentHint: '<feedback>',
   supportsNonInteractive: true,
-  isEnabled: () => true,
+  isEnabled: () => !isEnvTruthy(process.env.DISABLE_FEEDBACK_COMMAND) && !isEnvTruthy(process.env.DISABLE_BUG_COMMAND),
   async load() {
     return {
       async call(args: string) {

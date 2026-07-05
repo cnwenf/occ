@@ -8,7 +8,7 @@ import {
   analyzeContextUsage,
   type ContextData,
 } from '../../utils/analyzeContext.js'
-import { formatTokens } from '../../utils/format.js'
+import { formatTokens, formatTokenEstimate } from '../../utils/format.js'
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
 import { getSourceDisplayName } from '../../utils/settings/constants.js'
 import { plural } from '../../utils/stringUtils.js'
@@ -283,7 +283,7 @@ function formatContextAsMarkdownTable(data: ContextData): string {
     output += `| Skill | Source | Tokens |\n`
     output += `|-------|--------|--------|\n`
     for (const skill of skills.skillFrontmatter) {
-      output += `| ${skill.name} | ${getSourceDisplayName(skill.source)} | ${formatTokens(skill.tokens)} |\n`
+      output += `| ${skill.name} | ${getSourceDisplayName(skill.source)} | ${formatTokenEstimate(skill.tokens)} |\n`
     }
     output += `\n`
   }

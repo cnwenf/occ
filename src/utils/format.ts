@@ -306,3 +306,12 @@ export {
   truncateToWidthNoEllipsis,
   wrapText,
 } from './truncate.js'
+
+/**
+ * Token estimate format for the /context Skills table (matches official
+ * formatTokenEstimate / jle): "< 20" for small, "~{rounded-to-10}" for ≥20.
+ */
+export function formatTokenEstimate(tokens: number): string {
+  if (tokens < 20) return '< 20'
+  return `~${Math.round(tokens / 10) * 10}`
+}
