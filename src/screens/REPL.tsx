@@ -288,6 +288,8 @@ import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type M
 import { setClipboard } from '../ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
+import { findGoalToRestore, setGoal, isGoalActive } from "../commands/goal/goalState.js";
+import { addSessionHook } from "../utils/hooks/sessionHooks.js";
 
 // Stable empty array for hooks that accept MCPServerConnection[] — avoids
 // creating a new [] literal on every render in remote mode, which would
@@ -1991,6 +1993,19 @@ export function REPL({
         getAppState: () => store.getState(),
         setAppState
       });
+      // GAP D: restore-on-resume — scan the transcript for the last active
+      // goal and re-register the Stop hook + activeGoal state. Mirrors the
+      // official restoreGoalFromTranscript / findGoalToRestore.
+      const goalCondition = findGoalToRestore(initialMessages);
+      if (goalCondition && !isGoalActive()) {
+        setGoal(goalCondition);
+        const sessionId = getSessionId();
+        addSessionHook(setAppState, sessionId, 'Stop' as any, '', { type: 'prompt', prompt: goalCondition });
+        setAppState(s => ({
+          ...s,
+          activeGoal: { condition: goalCondition, iterations: 0, setAt: Date.now(), tokensAtStart: getTotalInputTokens() },
+        }));
+      }
     }
     // Only run on mount - initialMessages shouldn't change during component lifetime
     // eslint-disable-next-line react-hooks/exhaustive-deps

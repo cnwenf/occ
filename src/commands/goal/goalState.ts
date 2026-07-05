@@ -80,3 +80,25 @@ export function getGoalTokens(): number {
 export function getGoalCondition(): string | null {
   return currentGoal?.condition ?? null
 }
+
+/**
+ * GAP D: restore-on-resume. Scan the transcript (in reverse) for the last
+ * "Goal set: <condition>" message. If a "Goal cleared" or "Goal achieved"
+ * appears after it, the goal was resolved — return null. Mirrors the
+ * official findGoalToRestore (scans goal_status attachments; OCC scans
+ * the command-stdout text since it doesn't emit goal_status attachments).
+ */
+export function findGoalToRestore(messages: Array<{ message?: { content?: unknown } }>): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const content = messages[i]?.message?.content
+    const text = typeof content === 'string' ? content : ''
+    if (text.includes('Goal cleared:') || text.includes('Goal achieved:')) {
+      return null
+    }
+    const match = text.match(/Goal set: (.+)/)
+    if (match) {
+      return match[1].trim()
+    }
+  }
+  return null
+}
