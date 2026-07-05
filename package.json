@@ -17,7 +17,7 @@
         "access": "public"
     },
     "scripts": {
-        "build": "bun build src/entrypoints/cli.tsx --outdir dist --target bun",
+        "build": "bun run scripts/build.ts",
         "dev": "bun run src/entrypoints/cli.tsx",
         "prepublishOnly": "bun run build",
         "lint": "biome lint src/",

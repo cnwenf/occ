@@ -1,0 +1,13 @@
+# Auto mode permission rules (external)
+
+## allow
+Patterns that are always safe to auto-approve.
+
+## soft_deny
+Patterns that should prompt the user (not auto-approved, but not hard-denied).
+
+## environment
+Environment-specific context (e.g., "the user is in a sandbox", "this is a CI run").
+
+## deny
+Patterns that are always denied (never auto-approved).
