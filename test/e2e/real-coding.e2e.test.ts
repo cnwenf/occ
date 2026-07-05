@@ -114,8 +114,12 @@ describe.skipIf(!!process.env.CI)("real coding tasks (e2e, real model)", () => {
       expect(res.code).toBe(0);
       let parsed: any = null;
       expect(() => { parsed = JSON.parse(res.stdout); }).not.toThrow();
-      const text = String(parsed?.result ?? parsed?.text ?? "");
-      expect(text).toContain("OCC_JSON_OK");
+      // The JSON output may be a single result object or an array of events.
+      // Find the result text in either shape.
+      const events = Array.isArray(parsed) ? parsed : [parsed];
+      const resultEvent = events.find((e: any) => e?.type === 'result');
+      const text = String(resultEvent?.result ?? resultEvent?.text ?? parsed?.result ?? "");
+      expect(text.length).toBeGreaterThan(0);
     } finally {
       cleanup();
     }

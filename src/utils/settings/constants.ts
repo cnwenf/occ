@@ -61,6 +61,9 @@ export function getSourceDisplayName(
       return 'Plugin'
     case 'built-in':
       return 'Built-in'
+    default:
+      // Built-in skills may have source unset/undefined — display as Built-in.
+      return 'Built-in'
   }
 }
 

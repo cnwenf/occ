@@ -180,7 +180,7 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
     try {
       const res = await runOcc(
         ["-p", "Use the Write tool to create a file named auto.txt containing exactly AUTO_OK", "--permission-mode", "auto"],
-        { OCC_CWD: dir },
+        { OCC_CWD: dir, CLAUDE_CODE_ENABLE_AUTO_MODE: "1" },
         90_000,
       );
       expect(res.code).toBe(0);
