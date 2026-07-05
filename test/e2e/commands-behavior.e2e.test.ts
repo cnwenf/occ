@@ -175,7 +175,7 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
     const { dir, cleanup } = tempDir();
     try {
       const res = await runOcc(["-p", "/config verbose=true", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
-      expect(res.stdout).toContain("Set verbose to true");
+      expect(res.stdout).toContain("Set Verbose output to true");
     } finally {
       cleanup();
     }

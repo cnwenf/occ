@@ -36,6 +36,32 @@ const CONFIG_KEYS: { key: string; hint?: string }[] = [
 
 const CONFIG_KEY_SET = new Set(CONFIG_KEYS.map(k => k.key))
 
+// Key → human-readable label (from the official settings panel definition
+// in Config.tsx). Used in the "Set <Label> to <value>" message.
+const KEY_LABELS: Record<string, string> = {
+  autoCompact: 'Auto-compact',
+  autoConnectIde: 'Auto-connect IDE',
+  autoScroll: 'Auto-scroll',
+  cleanupPeriodDays: 'Cleanup period (days)',
+  copyFullResponse: 'Copy full response',
+  copyOnSelect: 'Copy on select',
+  editor: 'Editor mode',
+  includeCoAuthoredBy: 'Include co-authored-by',
+  model: 'Model',
+  outputStyle: 'Output style',
+  permissionMode: 'Default permission mode',
+  promptSuggestionEnabled: 'Prompt suggestions',
+  theme: 'Theme',
+  thinking: 'Thinking mode',
+  tips: 'Show tips',
+  verbose: 'Verbose output',
+  worktree: 'Worktree',
+}
+
+function labelFor(key: string): string {
+  return KEY_LABELS[key] ?? key.charAt(0).toUpperCase() + key.slice(1)
+}
+
 function getSettingsSchemaKeys(): Set<string> {
   try {
     const shape = (SettingsSchema() as any)?.shape ?? {}
@@ -69,7 +95,7 @@ export async function call(args: string, context: LocalJSXCommandContext): Promi
     if (APPSTATE_KEYS.has(key)) {
       const boolVal = value === 'true' || value === '1' || value === 'on' || value === 'yes'
       context.setAppState((s: any) => ({ ...s, [key]: boolVal }))
-      results.push(`Set ${key} to ${value}`)
+      results.push(`Set ${labelFor(key)} to ${value}`)
     } else {
       try {
         const schemaKeys = getSettingsSchemaKeys()
@@ -83,12 +109,12 @@ export async function call(args: string, context: LocalJSXCommandContext): Promi
           if (r.error) {
             return { type: 'text', value: `${key} isn't a /config setting. Run /config to see what's available.` }
           }
-          results.push(`Set ${key} to ${value}`)
+          results.push(`Set ${labelFor(key)} to ${value}`)
         } else {
-          results.push(`Set ${key} to ${value}`)
+          results.push(`Set ${labelFor(key)} to ${value}`)
         }
       } catch {
-        results.push(`Set ${key} to ${value}`)
+        results.push(`Set ${labelFor(key)} to ${value}`)
       }
     }
   }
