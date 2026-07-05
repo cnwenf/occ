@@ -328,6 +328,30 @@ export async function* handleStopHooks(
 
     // Collect blocking errors from stop hooks
     if (blockingErrors.length > 0) {
+      // GAP A fix: when the goal Stop hook blocks (condition not met), update
+      // AppState.activeGoal.iterations + lastReason so the GoalStatus panel
+      // shows the live turn count + last evaluation reason. Mirrors the
+      // official `active_goal` event yield on each blocked Stop hook.
+      const appState = toolUseContext.getAppState()
+      if (appState.activeGoal) {
+        const reason = blockingErrors[0]?.message?.content
+          ? String(typeof blockingErrors[0].message.content === 'string'
+              ? blockingErrors[0].message.content
+              : JSON.stringify(blockingErrors[0].message.content ?? ''))
+          : 'Condition not yet met'
+        toolUseContext.setAppState(prev =>
+          ({
+            ...prev,
+            activeGoal: prev.activeGoal
+              ? {
+                  ...prev.activeGoal,
+                  iterations: (prev.activeGoal.iterations ?? 0) + 1,
+                  lastReason: reason,
+                }
+              : prev.activeGoal,
+          } as typeof prev),
+        )
+      }
       return { blockingErrors, preventContinuation: false }
     }
 

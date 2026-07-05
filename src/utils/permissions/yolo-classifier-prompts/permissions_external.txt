@@ -1,13 +1,21 @@
-# Auto mode permission rules (external)
+The user has the following custom setup in their environment:
 
-## allow
-Patterns that are always safe to auto-approve.
+User-defined allow rules (auto-approve these):
+<user_allow_rules_to_replace>
+- (none)
+</user_allow_rules_to_replace>
 
-## soft_deny
-Patterns that should prompt the user (not auto-approved, but not hard-denied).
+User-defined soft-deny rules (prompt the user for these):
+<user_soft_deny_rules_to_replace>
+- (none)
+</user_soft_deny_rules_to_replace>
 
-## environment
-Environment-specific context (e.g., "the user is in a sandbox", "this is a CI run").
+User-defined hard-deny rules (always block these):
+<user_hard_deny_rules_to_replace>
+- (none)
+</user_hard_deny_rules_to_replace>
 
-## deny
-Patterns that are always denied (never auto-approved).
+Environment context:
+<user_environment_to_replace>
+- (none)
+</user_environment_to_replace>

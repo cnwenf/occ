@@ -55,6 +55,7 @@ function registerGoalHook(context: LocalJSXCommandContext, condition: string): v
     // achieved" panel state + remove the hook (mirrors official goal_status
     // attachment met:true + Dvt remove).
     () => {
+      clearGoal()
       const achieved = context.getAppState().activeGoal
       context.setAppState((s: any) => ({
         ...s,
