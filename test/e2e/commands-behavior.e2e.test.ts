@@ -35,6 +35,13 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       expect(res.stdout).toContain("## Context Usage");
       expect(res.stdout).toContain("Model:");
       expect(res.stdout).toContain("Tokens:");
+      // Buffer suppressed in -p (matches official)
+      expect(res.stdout).not.toContain("Autocompact buffer");
+      // Skills source shows "Built-in" (not "undefined")
+      if (res.stdout.includes("### Skills")) {
+        expect(res.stdout).toContain("Built-in");
+        expect(res.stdout).not.toContain("| undefined |");
+      }
     } finally {
       cleanup();
     }
@@ -124,10 +131,36 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
     }
   }, 90_000);
 
-  // /feedback is an OCC customization (creates a GitHub issue on cnwenf/occ,
-  // not Anthropic-bound like the official). Only the no-args usage path is
-  // asserted here — the issue-creation path is verified manually (it would
-  // spam the repo if run in e2e).
+  // /feedback is an OCC customization (creates a GitHub issue on cnwenf/occ).
+  // Issue creation e2e: creates a real issue, asserts the URL, then closes it.
+  test("/feedback <text> — creates a GitHub issue (then closes it)", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(
+        ["-p", "/feedback e2e test issue — will be closed automatically", "--dangerously-skip-permissions"],
+        { OCC_CWD: dir },
+        60_000,
+      );
+      expect(res.code).toBe(0);
+      expect(res.stdout).toContain("Issue created:");
+      // Extract issue URL and close it.
+      const urlMatch = res.stdout.match(/Issue created: (https:\/\/github\.com\/cnwenf\/occ\/issues\/\d+)/);
+      if (urlMatch) {
+        const issueUrl = urlMatch[1];
+        const issueNum = issueUrl.match(/\/issues\/(\d+)/)?.[1];
+        if (issueNum) {
+          // Close the issue to avoid spam.
+          const { execFileSync } = await import("node:child_process");
+          try {
+            execFileSync("gh", ["issue", "close", issueNum, "--repo", "cnwenf/occ", "--comment", "e2e test — auto-closed"], { timeout: 15_000 });
+          } catch {}
+        }
+      }
+    } finally {
+      cleanup();
+    }
+  }, 90_000);
+
   test("/feedback (no args) — returns usage", async () => {
     const { dir, cleanup } = tempDir();
     try {
