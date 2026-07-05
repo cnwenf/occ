@@ -53,6 +53,19 @@ console.log(JSON.stringify({ names }));
     expect(missing).toEqual([])
   })
 
+  test("auto mode picker — canCycleToAuto gate is enabled", async () => {
+    const script = `
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
+process.env.CLAUDE_CODE_ENABLE_AUTO_MODE = "1";
+const { isAutoModeGateEnabled } = await import("${REPO_ROOT}/src/utils/permissions/permissionSetup.ts");
+console.log(JSON.stringify({ gateEnabled: isAutoModeGateEnabled() }));
+`;
+    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim())
+    // With CLAUDE_CODE_ENABLE_AUTO_MODE=1, the gate must be enabled
+    // (auto mode appears in the shift+tab picker). Mirrors official Olt.
+    expect(out.gateEnabled).toBe(true)
+  })
+
   test("/goal is registered with the official 2.1.200 description", async () => {
     const script = `
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
