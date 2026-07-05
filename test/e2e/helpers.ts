@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,4 +85,25 @@ export function tempFile(name: string, content: string): { path: string; cleanup
   const path = join(dir, name);
   writeFileSync(path, content);
   return { path, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/**
+ * Create a fresh empty temp directory for a "real coding task" e2e: point OCC
+ * at it via `OCC_CWD`, seed files, run, then assert on disk state. Returns the
+ * dir path + a cleanup handle.
+ */
+export function tempDir(prefix = "occ-e2e-"): { dir: string; cleanup: () => void } {
+  const dir = mkdtempSync(join(tmpdir(), prefix));
+  return { dir, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/**
+ * Write a seeded file into a temp project dir (creating parent dirs as needed).
+ */
+export function seedFile(dir: string, relPath: string, content: string): string {
+  const abs = join(dir, relPath);
+  const parent = abs.slice(0, Math.max(0, abs.lastIndexOf("/")));
+  if (parent && !existsSync(parent)) mkdirSync(parent, { recursive: true });
+  writeFileSync(abs, content);
+  return abs;
 }

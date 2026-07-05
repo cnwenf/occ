@@ -21,6 +21,11 @@ export type LocalCommandResult =
       displayText?: string
     }
   | { type: 'skip' } // Skip messages
+  // 2.1.139 /goal: a local command that, after running, kicks off a model
+  // turn with `prompt` injected as an isMeta user message. Mirrors the
+  // official `{type:"query", value, prompt}` shape — the command displays
+  // `value`, then the loop queries the model on `prompt`.
+  | { type: 'query'; value: string; prompt: string }
 
 export type PromptCommand = {
   type: 'prompt'

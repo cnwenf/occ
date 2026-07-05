@@ -64,13 +64,22 @@ export async function evaluateGoal(
     .slice(-8000) // Last 8KB to keep the eval fast
 
   try {
+    // Auth: ANTHROPIC_AUTH_TOKEN → Authorization: Bearer; ANTHROPIC_API_KEY → x-api-key.
+    // Using x-api-key with an auth token fails (401) on Anthropic-compatible
+    // proxies, which left the goal evaluator permanently reporting "not met"
+    // and the goal loop spinning forever.
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01',
+    }
+    if (process.env.ANTHROPIC_AUTH_TOKEN) {
+      headers['Authorization'] = `Bearer ${apiKey}`
+    } else {
+      headers['x-api-key'] = apiKey
+    }
     const response = await fetch(`${baseUrl}/v1/messages`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
+      headers,
       body: JSON.stringify({
         model,
         max_tokens: 200,

@@ -110,8 +110,7 @@ import {
 } from './bootstrap/state.js'
 import { createBudgetTracker, checkTokenBudget } from './query/tokenBudget.js'
 import { count } from './utils/array.js'
-import { isGoalActive, clearGoal, getGoalCondition, getGoalTurns, getGoalTokens, getGoalElapsedMs } from './commands/goal/goalState.js'
-import { evaluateGoal } from './commands/goal/goalEvaluator.js'
+
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const snipModule = feature('HISTORY_SNIP')
@@ -275,7 +274,6 @@ async function* queryLoop(
     maxOutputTokensOverride: params.maxOutputTokensOverride,
     autoCompactTracking: undefined,
     stopHookActive: undefined,
-    consecutiveStopHookBlocks: 0,
     consecutiveStopHookBlocks: 0,
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
@@ -1386,61 +1384,6 @@ async function* queryLoop(
             queryChainId: queryChainIdForAnalytics,
             queryDepth: queryTracking.depth,
           })
-        }
-      }
-
-      // 2.1.139: /goal — if a goal is active, evaluate it and auto-continue
-      // if the condition hasn't been met yet.
-      if (isGoalActive()) {
-        const goalModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL || getRuntimeMainLoopModel({})
-        const apiKey = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || ''
-        const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'
-        if (apiKey) {
-          logForDebugging('[goal] Evaluating goal condition...')
-          const evalResult = await evaluateGoal(
-            messagesForQuery.map((m: Message) => ({
-              role: m.type === 'assistant' ? 'assistant' : 'user',
-              content: typeof m.message?.content === 'string'
-                ? m.message.content
-                : JSON.stringify(m.message?.content ?? ''),
-            })),
-            goalModel,
-            apiKey,
-            baseUrl,
-          )
-          if (evalResult.achieved) {
-            logForDebugging(`[goal] Goal achieved: ${evalResult.reason}`)
-            yield {
-              message: createSystemMessage(
-                `Goal achieved: ${getGoalCondition()}\n${evalResult.reason}\nTurns: ${getGoalTurns()} | Tokens: ${getGoalTokens()} | Elapsed: ${Math.round(getGoalElapsedMs() / 1000)}s`,
-              ),
-            }
-            clearGoal()
-          } else {
-            logForDebugging(`[goal] Not yet achieved: ${evalResult.reason}`)
-            // Auto-continue with a nudge to keep working
-            state = {
-              messages: [
-                ...messagesForQuery,
-                ...assistantMessages,
-                createUserMessage({
-                  content: `Continue working toward the goal: "${getGoalCondition()}". ${evalResult.reason}`,
-                  isMeta: true,
-                }),
-              ],
-              toolUseContext,
-              autoCompactTracking: tracking,
-              maxOutputTokensRecoveryCount: 0,
-              hasAttemptedReactiveCompact: false,
-              maxOutputTokensOverride: undefined,
-              pendingToolUseSummary: undefined,
-              stopHookActive: undefined,
-              consecutiveStopHookBlocks: 0,
-              turnCount: turnCount + 1,
-              transition: { reason: 'goal_continuation' },
-            }
-            continue
-          }
         }
       }
 

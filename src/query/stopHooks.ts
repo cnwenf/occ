@@ -35,6 +35,9 @@ import {
   createUserMessage,
 } from '../utils/messages.js'
 import type { SystemPrompt } from '../utils/systemPromptType.js'
+import { isGoalActive, clearGoal, getGoalCondition } from '../commands/goal/goalState.js'
+import { evaluateGoal } from '../commands/goal/goalEvaluator.js'
+import { getRuntimeMainLoopModel } from '../utils/model/model.js'
 import { getTaskListId, listTasks } from '../utils/tasks.js'
 import { getAgentName, getTeamName, isTeammate } from '../utils/teammate.js'
 
@@ -329,6 +332,45 @@ export async function* handleStopHooks(
     // Collect blocking errors from stop hooks
     if (blockingErrors.length > 0) {
       return { blockingErrors, preventContinuation: false }
+    }
+
+    // 2.1.139 /goal: session-scoped Stop hook. When a goal is active, the
+    // model must not stop until the condition holds. Evaluate the goal; if it
+    // is met, clear it and let the turn end. If not, block stopping with a
+    // continuation message so the model keeps working. This is the official
+    // mechanism (the goal prompt activates a "session-scoped Stop hook") and
+    // reuses the generic stop-hook block cap in query.ts for loop protection.
+    if (isGoalActive()) {
+      const goalModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL || getRuntimeMainLoopModel({})
+      const apiKey = process.env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN || ''
+      const baseUrl = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com'
+      if (apiKey) {
+        const evalResult = await evaluateGoal(
+          [...messagesForQuery, ...assistantMessages].map((m: Message) => ({
+            role: m.type === 'assistant' ? 'assistant' : 'user',
+            content: typeof m.message?.content === 'string'
+              ? m.message.content
+              : JSON.stringify(m.message?.content ?? ''),
+          })),
+          goalModel,
+          apiKey,
+          baseUrl,
+        )
+        if (evalResult.achieved) {
+          yield {
+            message: createSystemMessage(
+              `Goal achieved: ${getGoalCondition()}\n${evalResult.reason}`,
+            ),
+          }
+          clearGoal()
+        } else {
+          const goalBlockingMessage = createUserMessage({
+            content: `Continue working toward the goal: "${getGoalCondition()}". ${evalResult.reason}`,
+            isMeta: true,
+          })
+          return { blockingErrors: [goalBlockingMessage], preventContinuation: false }
+        }
+      }
     }
 
     // After Stop hooks pass, run TeammateIdle and TaskCompleted hooks if this is a teammate

@@ -705,11 +705,27 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
             }
 
             // Text result — use system message so it doesn't render as a user bubble
+            if (result.type === 'text') {
+              return {
+                messages: [userMessage, createCommandInputMessage(`<local-command-stdout>${result.value}</local-command-stdout>`)],
+                shouldQuery: false,
+                command,
+                resultText: result.value
+              };
+            }
+
+            // 2.1.139 /goal: {type:'query'} — display the value, then kick off
+            // a model turn with `prompt` injected as an isMeta user message.
+            // Mirrors the official onDone(value, {shouldQuery:true, metaMessages}).
             return {
-              messages: [userMessage, createCommandInputMessage(`<local-command-stdout>${result.value}</local-command-stdout>`)],
-              shouldQuery: false,
+              messages: [
+                userMessage,
+                createCommandInputMessage(`<local-command-stdout>${result.value}</local-command-stdout>`),
+                createUserMessage({ content: result.prompt, isMeta: true }),
+              ],
+              shouldQuery: true,
               command,
-              resultText: result.value
+              resultText: result.value,
             };
           } catch (e) {
             logError(e);
