@@ -1117,8 +1117,12 @@ export async function verifyAutoModeGateAccess(
     modelSupportsAutoMode(mainModel) && !disableFastModeBreakerFires
   let carouselAvailable = false
   if (enabledState !== 'disabled' && !disabledBySettings && modelSupported) {
+    // OCC: no Statsig/remote-config. 'opt-in' default means the user hasn't
+    // explicitly opted in via CLAUDE_CODE_ENABLE_AUTO_MODE. But since OCC has
+    // no consent dialog either, treat 'opt-in' same as 'enabled' so auto mode
+    // appears in the shift+tab carousel without requiring an env var.
     carouselAvailable =
-      enabledState === 'enabled' || hasAutoModeOptInAnySource()
+      enabledState === 'enabled' || enabledState === 'opt-in' || hasAutoModeOptInAnySource()
   }
   // canEnterAuto gates explicit entry (--permission-mode auto, defaultMode: auto)
   // — explicit entry IS an opt-in, so we only block on circuit breaker + settings + model
