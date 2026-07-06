@@ -11,17 +11,17 @@ import { openBrowser } from '../../utils/browser.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logError } from '../../utils/log.js'
 
-type ExtraUsageResult =
+type UsageCreditsResult =
   | { type: 'message'; value: string }
   | { type: 'browser-opened'; url: string; opened: boolean }
 
-export async function runExtraUsage(): Promise<ExtraUsageResult> {
+export async function runUsageCredits(): Promise<UsageCreditsResult> {
   if (!getGlobalConfig().hasVisitedExtraUsage) {
     saveGlobalConfig(prev => ({ ...prev, hasVisitedExtraUsage: true }))
   }
   // Invalidate only the current org's entry so a follow-up read refetches
   // the granted state. Separate from the visited flag since users may run
-  // /extra-usage more than once while iterating on the claim flow.
+  // /usage-credits more than once while iterating on the claim flow.
   invalidateOverageCreditGrantCache()
 
   const subscriptionType = getSubscriptionType()

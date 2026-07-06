@@ -10,24 +10,23 @@ function isExtraUsageAllowed(): boolean {
   return isOverageProvisioningAllowed()
 }
 
-// 2.1.144: /extra-usage is now a hidden stub renamed to /usage-credits. It
-// delegates to the real /usage-credits command and surfaces a rename notice.
-export const extraUsage = {
+export const usageCredits = {
   type: 'local-jsx',
-  name: 'extra-usage',
-  description: 'Renamed to /usage-credits',
-  isHidden: true,
+  name: 'usage-credits',
+  description: 'Configure usage credits to keep working when you hit a limit',
   isEnabled: () => isExtraUsageAllowed() && !getIsNonInteractiveSession(),
   requires: { ink: true },
-  load: () => import('./extra-usage.js'),
+  load: () => import('./usage-credits.js'),
 } satisfies Command
 
-export const extraUsageNonInteractive = {
+export const usageCreditsNonInteractive = {
   type: 'local',
-  name: 'extra-usage',
+  name: 'usage-credits',
   supportsNonInteractive: true,
-  description: 'Renamed to /usage-credits',
-  isHidden: true,
+  description: 'Configure usage credits to keep working when you hit a limit',
   isEnabled: () => isExtraUsageAllowed() && getIsNonInteractiveSession(),
-  load: () => import('./extra-usage-noninteractive.js'),
+  get isHidden() {
+    return !getIsNonInteractiveSession()
+  },
+  load: () => import('./usage-credits-noninteractive.js'),
 } satisfies Command

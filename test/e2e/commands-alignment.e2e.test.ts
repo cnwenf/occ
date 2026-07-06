@@ -21,12 +21,17 @@ import { REPO_ROOT } from "./helpers";
 // Core slash commands that must remain registered in OCC (non-ant, always-on
 // or lightly-gated). Feature/entitlement-gated commands (extra-usage, fast,
 // install-github-app, install-slack-app, keybindings, remote-control,
-// remote-env, session, upgrade, usage, voice, web-setup, privacy-settings,
+// remote-env, session, upgrade, voice, web-setup, privacy-settings,
 // rate-limit-options) are excluded — they're not registered in the external
 // build. Verified against the official 2.1.200 binary + OCC's getCommands().
+//
+// 2.1.118 (E13): /cost and /stats were merged into /usage as aliases — they are
+// no longer standalone command names (the official 2.1.200 registers a single
+// /usage with aliases:["cost","stats"]). /usage itself is registered (local-jsx,
+// ungated) but is checked in version-2.1.144-commands-rename.e2e.test.ts.
 const EXPECTED = [
   "add-dir", "agents", "branch", "btw", "clear", "color", "compact", "config",
-  "context", "copy", "cost", "diff", "doctor", "effort", "exit", "export",
+  "context", "copy", "diff", "doctor", "effort", "exit", "export",
   "feedback", "goal", "heapdump", "help", "hooks", "ide", "init", "insights",
   "login", "logout", "mcp", "memory", "mobile", "model", "passes",
   "permissions", "plan", "plugin", "pr-comments", "release-notes",
