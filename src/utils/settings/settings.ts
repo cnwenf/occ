@@ -1129,3 +1129,94 @@ export function getRequiredVersionError(opts: {
   }
   return null
 }
+
+/**
+ * 2.1.129 (C2): resolve the per-skill listing override for a skill.
+ *
+ * Mirrors the official disable check `c=a.skillOverrides?.[e.name]` (where
+ * `a` is the merged settings). Looks up the merged `skillOverrides` by the
+ * skill's qualified name, falling back to its unqualified name. Returns the
+ * override enum ('on'|'name-only'|'user-invocable-only'|'off') or undefined
+ * (absent = 'on').
+ *
+ * The /skills toggle (cmd_skill_override_off) and override filtering wiring
+ * live in skill-loading code; this helper centralizes the lookup so callers
+ * don't each re-derive source precedence. (Skill filtering wiring = follow-up.)
+ */
+export function getSkillOverride(
+  name: string,
+  unqualifiedName?: string,
+): 'on' | 'name-only' | 'user-invocable-only' | 'off' | undefined {
+  const overrides = getInitialSettings().skillOverrides
+  if (!overrides) return undefined
+  return (
+    overrides[name] ??
+    (unqualifiedName ? overrides[unqualifiedName] : undefined)
+  )
+}
+
+/**
+ * 2.1.169 (C3): whether bundled skills/workflows are disabled.
+ *
+ * Mirrors the official `Mz`: true when CLAUDE_CODE_DISABLE_BUNDLED_SKILLS is
+ * truthy OR the `disableBundledSkills` setting === true. When true, bundled
+ * skills and workflows are removed entirely and built-in slash commands stay
+ * typable but are hidden from the model. Plugins, .claude/skills/, and
+ * .claude/commands/ are unaffected.
+ */
+export function isDisableBundledSkills(): boolean {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BUNDLED_SKILLS)) return true
+  return getInitialSettings().disableBundledSkills === true
+}
+
+/**
+ * 2.1.175 (A6): whether availableModels also constrains the Default model.
+ *
+ * Mirrors the official `enforceAvailableModels` flag. When true and
+ * availableModels is a non-empty array, the Default model must be in
+ * availableModels — otherwise Default resolves to the first allowed
+ * availableModels entry (see the surgical wire in model.ts
+ * `getDefaultMainLoopModelSetting`).
+ *
+ * Cascade-trust note (follow-up): the official binary refuses to honor
+ * user/project-level enforceAvailableModels when a policy source exists but
+ * failed to load ("enforceAvailableModels: a policy source exists but failed
+ * to load; refusing cascade-trust mode"). This helper reads the merged flag;
+ * the policy-failure refusal is a follow-up edge case.
+ */
+export function getEnforceAvailableModels(): boolean {
+  return getInitialSettings().enforceAvailableModels === true
+}
+
+/**
+ * 2.1.187 + 2.1.196 (A11): label suffix appended to a model display when an
+ * org-configured default model is in effect. Mirrors the official `qFa()`:
+ * ' · Org default'. (Verified: the binary has no "Role default" — only
+ * "Org default" and "tier default".)
+ */
+export const ORG_DEFAULT_MODEL_LABEL = ' · Org default'
+
+/**
+ * 2.1.187 + 2.1.196 (A11): the org-configured default model, if any.
+ *
+ * Mirrors the official `m5()` → `eue()` → `zVr()`, which reads
+ * `Pt().orgModelDefaultCache` ({name, updated_at, data_source,
+ * override_user_selection}) — a server-side (claude.ai) model_access cache.
+ * OCC does not yet plumb this cache; returns null until that lands (follow-up).
+ * The /model "Org default" label wiring (ModelPicker) consumes this helper.
+ */
+export function getOrgDefaultModel(): string | null {
+  // TODO(A11 follow-up): read orgModelDefaultCache from bootstrap state once
+  // the server-side model_access entitlement cache is plumbed, then resolve
+  // its `.name` the way the official vyi(e.name) does.
+  return null
+}
+
+/**
+ * 2.1.187 + 2.1.196 (A11): message fragment for a model rejected by org model
+ * restrictions. Mirrors the official wording (used in plan-mode upgrade
+ * refusals and the /model rejection path): "...is not permitted by the org
+ * model restrictions (availableModels allowlist or model_access entitlement)".
+ */
+export const ORG_MODEL_RESTRICTION_REASON =
+  'is not permitted by the org model restrictions (availableModels allowlist or model_access entitlement)'

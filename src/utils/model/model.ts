@@ -21,7 +21,10 @@ import {
 import { isEnvTruthy } from '../envUtils.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
-import { getSettings_DEPRECATED } from '../settings/settings.js'
+import {
+  getEnforceAvailableModels,
+  getSettings_DEPRECATED,
+} from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider } from './providers.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
@@ -198,26 +201,44 @@ export function getRuntimeMainLoopModel(params: {
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
+  let setting: ModelName | ModelAlias
   if (process.env.USER_TYPE === 'ant') {
-    return (
+    setting =
       (getAntModelOverrideConfig()?.defaultModel as string) ??
       getDefaultOpusModel() + '[1m]'
-    )
+  } else if (isMaxSubscriber()) {
+    // Max users get Opus as default
+    setting = getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
+  } else if (isTeamPremiumSubscriber()) {
+    // Team Premium gets Opus (same as Max)
+    setting = getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
+  } else {
+    // PAYG (1P and 3P), Enterprise, Team Standard, and Pro get Sonnet as default
+    // Note that PAYG (3P) may default to an older Sonnet model
+    setting = getDefaultSonnetModel()
   }
+  return enforceDefaultModelAllowlist(setting)
+}
 
-  // Max users get Opus as default
-  if (isMaxSubscriber()) {
-    return getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
+/**
+ * 2.1.175 (A6): when enforceAvailableModels is true and availableModels is a
+ * non-empty array, the Default model must be in availableModels — otherwise
+ * Default resolves to the first allowed availableModels entry. Mirrors the
+ * official binary. Surgical wire into getDefaultMainLoopModelSetting; alias
+ * expansion / family-prefix matching reuses isModelAllowed.
+ */
+function enforceDefaultModelAllowlist(
+  setting: ModelName | ModelAlias,
+): ModelName | ModelAlias {
+  if (!getEnforceAvailableModels()) return setting
+  const { availableModels } = getSettings_DEPRECATED() || {}
+  if (!availableModels || availableModels.length === 0) return setting
+  if (isModelAllowed(setting)) return setting
+  // Default not allowed → resolve to the first allowed availableModels entry.
+  for (const entry of availableModels) {
+    if (isModelAllowed(entry)) return entry
   }
-
-  // Team Premium gets Opus (same as Max)
-  if (isTeamPremiumSubscriber()) {
-    return getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
-  }
-
-  // PAYG (1P and 3P), Enterprise, Team Standard, and Pro get Sonnet as default
-  // Note that PAYG (3P) may default to an older Sonnet model
-  return getDefaultSonnetModel()
+  return availableModels[0]
 }
 
 /**

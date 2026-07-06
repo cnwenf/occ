@@ -493,6 +493,29 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Disable inline shell execution in skills and custom slash commands from user, project, or plugin sources. Commands are replaced with a placeholder instead of being run.',
         ),
+      // 2.1.129: per-skill listing overrides. Enum + describe verified verbatim
+      // against the official 2.1.200 binary (claude.strings). Override
+      // resolution + /skills toggle wiring live in skill-loading code; the
+      // getSkillOverride() helper in settings.ts centralizes the lookup.
+      skillOverrides: z
+        .record(
+          z.string(),
+          z.enum(['on', 'name-only', 'user-invocable-only', 'off']),
+        )
+        .optional()
+        .describe(
+          'Per-skill listing overrides keyed by skill name. "name-only" lists the skill without its description; "user-invocable-only" hides it from the model but keeps /name; "off" hides it from both. Absent = on.',
+        ),
+      // 2.1.169: disable bundled skills/workflows. Describe verified verbatim
+      // against the official 2.1.200 binary (claude.strings). Honors the
+      // CLAUDE_CODE_DISABLE_BUNDLED_SKILLS env var via isDisableBundledSkills()
+      // in settings.ts (official Mz: env OR setting === true).
+      disableBundledSkills: z
+        .boolean()
+        .optional()
+        .describe(
+          'Disable the skills and workflows that ship with Claude Code: bundled skills and workflows are removed entirely; built-in slash commands stay typable but are hidden from the model. Plugins, .claude/skills/, and .claude/commands/ are unaffected. Equivalent to CLAUDE_CODE_DISABLE_BUNDLED_SKILLS=1.',
+        ),
       // Which shell backs input-box `!` (see docs/design/ps-shell-selection.md §4.2)
       defaultShell: z
         .enum(['bash', 'powershell'])
@@ -827,11 +850,17 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Enable mouse-wheel scroll acceleration in fullscreen mode.'),
-      // 2.1.175: enforce availableModels.
+      // 2.1.175: enforce availableModels. Describe text verified verbatim
+      // against the official 2.1.200 binary (claude.strings). When true and
+      // availableModels is a non-empty array, the Default model must be in
+      // availableModels — otherwise Default resolves to the first allowed
+      // availableModels entry (see getEnforcedDefaultModel in settings.ts).
       enforceAvailableModels: z
         .boolean()
         .optional()
-        .describe('When true, availableModels also constrains the Default model.'),
+        .describe(
+          'When true and availableModels is a non-empty array, the Default model selection is also constrained: if the default model for the user tier is not in availableModels, Default resolves to the first allowed availableModels entry instead. Has no effect when availableModels is unset or an empty array. Typically set in managed settings by enterprise administrators.',
+        ),
       agent: z
         .string()
         .optional()
