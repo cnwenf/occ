@@ -85,6 +85,7 @@ const outputSchema = lazySchema(() =>
         'The original file content before the write (null for new files)',
       ),
     gitDiff: gitDiffSchema().optional(),
+    userModified: z.boolean().optional().describe('Whether the user manually edited the file after the write'),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
