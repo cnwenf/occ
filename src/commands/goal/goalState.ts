@@ -82,13 +82,31 @@ export function getGoalCondition(): string | null {
 }
 
 /**
- * GAP D: restore-on-resume. Scan the transcript (in reverse) for the last
- * "Goal set: <condition>" message. If a "Goal cleared" or "Goal achieved"
- * appears after it, the goal was resolved — return null. Mirrors the
- * official findGoalToRestore (scans goal_status attachments; OCC scans
- * the command-stdout text since it doesn't emit goal_status attachments).
+ * Restore-on-resume. Scan the transcript (in reverse) for the most recent
+ * goal_status marker. A met:true marker (cleared/achieved) after the last
+ * met:false marker means the goal was resolved → return null. A met:false
+ * marker → restore its condition. Mirrors official `m4l` (scans goal_status
+ * attachments). Falls back to scanning command-stdout text ("Goal set:",
+ * "Goal cleared:", "Goal achieved:") for transcripts that predate the
+ * goal_status attachment markers.
  */
-export function findGoalToRestore(messages: Array<{ message?: { content?: unknown } }>): string | null {
+export function findGoalToRestore(
+  messages: Array<{ message?: { content?: unknown }; type?: string; attachment?: { type?: string; met?: boolean; condition?: string } }>,
+): string | null {
+  // First pass: scan for goal_status attachment markers (structured, robust).
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (msg?.type === 'attachment' && msg.attachment?.type === 'goal_status') {
+      // Mirrors official S1c: met (cleared/achieved) OR failed → nothing to
+      // restore. Without the `failed` check, a failed goal would be incorrectly
+      // restored as active on resume.
+      if (msg.attachment.met || msg.attachment.failed) {
+        return null
+      }
+      return msg.attachment.condition ?? null
+    }
+  }
+  // Fallback: scan command-stdout text (legacy transcripts without markers).
   for (let i = messages.length - 1; i >= 0; i--) {
     const content = messages[i]?.message?.content
     const text = typeof content === 'string' ? content : ''

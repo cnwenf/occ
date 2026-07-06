@@ -20,6 +20,12 @@ export const hookResponseSchema = lazySchema(() =>
       .string()
       .describe('Reason, if the condition was not met')
       .optional(),
+    impossible: z
+      .boolean()
+      .describe(
+        'Whether the goal is impossible to achieve (not just "not yet met"). Only meaningful for /goal Stop hooks.',
+      )
+      .optional(),
   }),
 )
 

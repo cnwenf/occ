@@ -4,7 +4,7 @@ import { unwatchFile, watchFile } from 'fs'
 import memoize from 'lodash-es/memoize.js'
 import pickBy from 'lodash-es/pickBy.js'
 import { basename, dirname, join, resolve } from 'path'
-import { getOriginalCwd, getSessionTrustAccepted } from '../bootstrap/state.js'
+import { getIsNonInteractiveSession, getOriginalCwd, getSessionTrustAccepted } from '../bootstrap/state.js'
 import { getAutoMemEntrypoint } from '../memdir/paths.js'
 import { logEvent } from '../services/analytics/index.js'
 import type { McpServerConfig } from '../services/mcp/types.js'
@@ -703,6 +703,13 @@ export function checkHasTrustDialogAccepted(): boolean {
 }
 
 function computeTrustDialogAccepted(): boolean {
+  // Mirrors the official `jIm()` fast-paths: sandboxed mode
+  // (CLAUDE_CODE_SANDBOXED) and non-interactive (-p / headless, official Tle/ti)
+  // are considered trusted — the trust dialog is skipped, so trust-gated
+  // features work without a persisted trust entry.
+  if (process.env.CLAUDE_CODE_SANDBOXED || getIsNonInteractiveSession()) {
+    return true
+  }
   // Check session-level trust (for home directory case where trust is not persisted)
   // When running from home dir, trust dialog is shown but acceptance is stored
   // in memory only. This allows hooks and other features to work during the session.

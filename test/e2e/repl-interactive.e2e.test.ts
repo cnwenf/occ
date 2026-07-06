@@ -95,22 +95,30 @@ describe.skipIf(!!process.env.CI)("REPL interactive (tmux e2e)", () => {
     }
   }, 30_000)
 
-  test("Shift+Tab reaches auto mode", async () => {
+  test("Shift+Tab shows the auto-mode opt-in dialog", async () => {
     startRepl()
     try {
       await waitForText("shift+tab", 20_000)
 
-      // Cycle through modes with Shift+Tab
+      // Cycle through modes with Shift+Tab until the auto-mode opt-in dialog
+      // appears. Assert on the dialog TITLE ("Enable auto mode?") — not on the
+      // bare substring "auto", which is also matched by the dialog body text
+      // and would pass even when auto mode is NOT actually active (the dialog
+      // explicitly does not activate the classifier until the user confirms).
       for (let i = 0; i < 8; i++) {
         sendKeys("S-Tab")
-        await new Promise(r => setTimeout(r, 400))
-        const pane = capturePane()
-        if (pane.toLowerCase().includes("auto")) {
-          expect(true).toBe(true)
+        if (await waitForText("enable auto mode?", 2_000)) {
+          const pane = capturePane()
+          // All four options render (the 4th is gated on !declineExits, which
+          // is false in the REPL carousel, so "No, don't ask again" shows).
+          expect(pane).toContain("Yes, and make it my default mode")
+          expect(pane).toContain("Yes, enable auto mode")
+          expect(pane).toMatch(/No, (go back|exit)/)
+          expect(pane).toContain("No, don't ask again")
           return
         }
       }
-      // If we didn't find auto, fail
+      // If the dialog never appeared, fail.
       expect(false).toBe(true)
     } finally {
       killRepl()

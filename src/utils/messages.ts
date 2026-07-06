@@ -3760,6 +3760,12 @@ Read the team config to discover your teammates' names. Check the task list peri
       // are loaded separately and available via the Skill tool
       return []
     }
+    case 'goal_status': {
+      // Transcript marker for /goal set/clear/achieved (mirrors official
+      // goal_status attachment). Used by findGoalToRestore to restore the
+      // active goal on resume; not model-visible — filtered from the API.
+      return []
+    }
     case 'skill_listing': {
       if (!attachment.content) {
         return []

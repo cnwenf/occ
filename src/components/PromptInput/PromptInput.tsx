@@ -78,7 +78,7 @@ import { transitionPermissionMode } from '../../utils/permissions/permissionSetu
 import { getPlatform } from '../../utils/platform.js';
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js';
 import { editPromptInEditor } from '../../utils/promptEditor.js';
-import { hasAutoModeOptIn } from '../../utils/settings/settings.js';
+import { hasAutoModeOptIn, hasAutoModeOptInDismissed } from '../../utils/settings/settings.js';
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js';
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js';
 import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, subscribeKnownChannels } from '../../utils/suggestions/slackChannelSuggestions.js';
@@ -1456,7 +1456,7 @@ function PromptInput({
     // not bypass the safety text.
     let isEnteringAutoModeFirstTime = false;
     if (feature('TRANSCRIPT_CLASSIFIER')) {
-      isEnteringAutoModeFirstTime = nextMode === 'auto' && toolPermissionContext.mode !== 'auto' && !hasAutoModeOptIn() && !viewingAgentTaskId; // Only show for primary agent, not subagents
+      isEnteringAutoModeFirstTime = nextMode === 'auto' && toolPermissionContext.mode !== 'auto' && !hasAutoModeOptIn() && !hasAutoModeOptInDismissed() && !viewingAgentTaskId; // Only show for primary agent, not subagents; suppressed if user dismissed with "don't ask again"
     }
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       if (isEnteringAutoModeFirstTime) {
@@ -1585,9 +1585,9 @@ function PromptInput({
   }, [helpOpen, setHelpOpen, previousModeBeforeAuto, toolPermissionContext, setAppState, setToolPermissionContext]);
 
   // Handler for auto mode opt-in dialog decline
-  const handleAutoModeOptInDecline = useCallback(() => {
+  const handleAutoModeOptInDecline = useCallback((reason?: "go-back" | "dont-ask") => {
     if (feature('TRANSCRIPT_CLASSIFIER')) {
-      logForDebugging(`[auto-mode] handleAutoModeOptInDecline: reverting to ${previousModeBeforeAuto}, setting isAutoModeAvailable=false`);
+      logForDebugging(`[auto-mode] handleAutoModeOptInDecline: reason=${reason ?? "go-back"} reverting to ${previousModeBeforeAuto}, setting isAutoModeAvailable=false`);
       setShowAutoModeOptIn(false);
       if (autoModeOptInTimeoutRef.current) {
         clearTimeout(autoModeOptInTimeoutRef.current);

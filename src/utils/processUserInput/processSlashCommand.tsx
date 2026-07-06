@@ -590,7 +590,7 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
             const onDone = (result?: string, options?: {
               display?: CommandResultDisplay;
               shouldQuery?: boolean;
-              metaMessages?: string[];
+              metaMessages?: Array<string | AttachmentMessage>;
               nextInput?: string;
               submitNextInput?: boolean;
             }) => {
@@ -607,11 +607,14 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
                 return;
               }
 
-              // Meta messages are model-visible but hidden from the user
-              const metaMessages = (options?.metaMessages ?? []).map((content: string) => createUserMessage({
-                content,
-                isMeta: true
-              }));
+              // Meta messages are model-visible but hidden from the user.
+              // Strings become isMeta user messages; AttachmentMessage objects
+              // (e.g. /goal goal_status markers) are appended as-is.
+              const metaMessages = (options?.metaMessages ?? []).map(content =>
+                typeof content === 'string'
+                  ? createUserMessage({ content, isMeta: true })
+                  : content,
+              );
 
               // In fullscreen the command just showed as a centered modal
               // pane — the transient notification is enough feedback. The

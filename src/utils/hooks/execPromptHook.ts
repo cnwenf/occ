@@ -66,7 +66,8 @@ export async function execPromptHook(
 
 Your response must be a JSON object matching one of the following schemas:
 1. If the condition is met, return: {"ok": true}
-2. If the condition is not met, return: {"ok": false, "reason": "Reason for why it is not met"}`,
+2. If the condition is not met, return: {"ok": false, "reason": "Reason for why it is not met"}
+3. If the goal is impossible to achieve (can never be met, not just "not yet met"), return: {"ok": false, "impossible": true, "reason": "Reason the goal cannot be achieved"}`,
         ]),
         thinkingConfig: { type: 'disabled' as const },
         tools: toolUseContext.options.tools,
@@ -91,6 +92,7 @@ Your response must be a JSON object matching one of the following schemas:
               properties: {
                 ok: { type: 'boolean' },
                 reason: { type: 'string' },
+                impossible: { type: 'boolean' },
               },
               required: ['ok'],
               additionalProperties: false,
@@ -152,6 +154,22 @@ Your response must be a JSON object matching one of the following schemas:
 
       // Failed to meet condition
       if (!parsed.data.ok) {
+        // /goal D8: the goal was assessed as impossible to achieve (official
+        // `O.impossible`). Don't block forever — mark the goal as failed so
+        // the GoalStatus panel shows "Goal could not be achieved" and let the
+        // session stop. onHookSuccess (registerGoalHook) reads `impossible`
+        // off the aggregated result to set ActiveGoal.failed.
+        if (parsed.data.impossible) {
+          logForDebugging(
+            `Hooks: Prompt hook goal assessed as impossible: ${parsed.data.reason}`,
+          )
+          return {
+            hook,
+            outcome: 'success',
+            impossible: true,
+            stopReason: parsed.data.reason,
+          }
+        }
         logForDebugging(
           `Hooks: Prompt hook condition was not met: ${parsed.data.reason}`,
         )

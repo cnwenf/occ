@@ -911,6 +911,25 @@ export function hasAutoModeOptIn(): boolean {
 }
 
 /**
+ * Returns true if the user dismissed the auto mode opt-in dialog with
+ * "No, don't ask again". Mirrors official `autoModeOptInDismissed`. When true,
+ * the opt-in dialog must NOT be shown again on future Shift+Tab cycles
+ * (the user explicitly declined persistent opt-in). projectSettings excluded
+ * (RCE hardening, same as hasAutoModeOptIn).
+ */
+export function hasAutoModeOptInDismissed(): boolean {
+  if (feature('TRANSCRIPT_CLASSIFIER')) {
+    return !!(
+      getSettingsForSource('userSettings')?.autoModeOptInDismissed ||
+      getSettingsForSource('localSettings')?.autoModeOptInDismissed ||
+      getSettingsForSource('flagSettings')?.autoModeOptInDismissed ||
+      getSettingsForSource('policySettings')?.autoModeOptInDismissed
+    )
+  }
+  return false
+}
+
+/**
  * Returns whether plan mode should use auto mode semantics. Default true
  * (opt-out). Returns false if any trusted source explicitly sets false.
  * projectSettings is excluded so a malicious project can't control this.
@@ -940,12 +959,14 @@ export function getAutoModeConfig():
     const schema = z.object({
       allow: z.array(z.string()).optional(),
       soft_deny: z.array(z.string()).optional(),
+      hard_deny: z.array(z.string()).optional(),
       deny: z.array(z.string()).optional(),
       environment: z.array(z.string()).optional(),
     })
 
     const allow: string[] = []
     const soft_deny: string[] = []
+    const hard_deny: string[] = []
     const environment: string[] = []
 
     for (const source of [
@@ -962,6 +983,7 @@ export function getAutoModeConfig():
       if (result.success) {
         if (result.data.allow) allow.push(...result.data.allow)
         if (result.data.soft_deny) soft_deny.push(...result.data.soft_deny)
+        if (result.data.hard_deny) hard_deny.push(...result.data.hard_deny)
         if (process.env.USER_TYPE === 'ant') {
           if (result.data.deny) soft_deny.push(...result.data.deny)
         }
@@ -970,15 +992,41 @@ export function getAutoModeConfig():
       }
     }
 
-    if (allow.length > 0 || soft_deny.length > 0 || environment.length > 0) {
+    if (allow.length > 0 || soft_deny.length > 0 || hard_deny.length > 0 || environment.length > 0) {
       return {
         ...(allow.length > 0 && { allow }),
         ...(soft_deny.length > 0 && { soft_deny }),
+        ...(hard_deny.length > 0 && { hard_deny }),
         ...(environment.length > 0 && { environment }),
       }
     }
   }
   return undefined
+}
+
+/**
+ * Returns true if autoMode.classifyAllShell is set in any trusted settings
+ * source. Mirrors official `aFr`: when true AND the session is in auto mode,
+ * Bash/PowerShell allow rules are SUSPENDED so every shell command routes
+ * through the classifier (rather than being short-circuited by an allow rule).
+ * projectSettings excluded (RCE hardening, same as getAutoModeConfig).
+ */
+export function isAutoModeClassifyAllShellEnabled(): boolean {
+  if (feature('TRANSCRIPT_CLASSIFIER')) {
+    for (const source of [
+      'userSettings',
+      'localSettings',
+      'flagSettings',
+      'policySettings',
+    ] as const) {
+      const settings = getSettingsForSource(source)
+      if (settings && (settings as Record<string, unknown>)?.autoMode) {
+        const autoMode = (settings as Record<string, { classifyAllShell?: boolean }>).autoMode
+        if (autoMode?.classifyAllShell === true) return true
+      }
+    }
+  }
+  return false
 }
 
 export function rawSettingsContainsKey(key: string): boolean {

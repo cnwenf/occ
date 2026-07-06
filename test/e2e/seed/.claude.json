@@ -1,0 +1,25 @@
+{
+  "numStartups": 1,
+  "firstStartTime": "2026-07-06T00:00:00.000Z",
+  "opusProMigrationComplete": true,
+  "sonnet1m45MigrationComplete": true,
+  "migrationVersion": 11,
+  "userID": "occ-e2e-seed-0000000000000000000000000000000000000000000000aa",
+  "hasCompletedOnboarding": true,
+  "lastOnboardingVersion": "2.1.200",
+  "lastReleaseNotesSeen": "2.1.200",
+  "opus1mMergeNoticeSeenCount": 1,
+  "projects": {
+    "/occ": {
+      "allowedTools": [],
+      "mcpContextUris": [],
+      "mcpServers": {},
+      "enabledMcpjsonServers": [],
+      "disabledMcpjsonServers": [],
+      "hasTrustDialogAccepted": true,
+      "projectOnboardingSeenCount": 0,
+      "hasClaudeMdExternalIncludesApproved": false,
+      "hasClaudeMdExternalIncludesWarningShown": false
+    }
+  }
+}

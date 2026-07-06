@@ -37,6 +37,8 @@ import {
   getBashPromptAllowDescriptions,
   getBashPromptDenyDescriptions,
 } from './bashClassifier.js'
+import { expandWithDefaults } from './expandWithDefaults.js'
+export { expandWithDefaults } from './expandWithDefaults.js'
 import {
   extractToolUseBlock,
   parseClassifierResponse,
@@ -500,15 +502,26 @@ export async function buildYoloSystemPrompt(
   const includePowerShellGuidance = feature('POWERSHELL_AUTO_MODE')
     ? !usingExternal
     : false
+  // $defaults sentinel: expand the literal "$defaults" in user autoMode arrays
+  // to the built-in defaults at that position (mirrors official 2.1.118+).
+  const builtIn = getDefaultExternalAutoModeRules()
   const allowDescriptions = [
     ...(includeBashPromptRules ? getBashPromptAllowDescriptions(context) : []),
-    ...(autoMode?.allow ?? []),
+    ...expandWithDefaults(autoMode?.allow, builtIn.allow),
   ]
   const denyDescriptions = [
     ...(includeBashPromptRules ? getBashPromptDenyDescriptions(context) : []),
     ...(includePowerShellGuidance ? POWERSHELL_DENY_GUIDANCE : []),
-    ...(autoMode?.soft_deny ?? []),
+    ...expandWithDefaults(autoMode?.soft_deny, builtIn.soft_deny),
   ]
+  const hardDenyDescriptions = expandWithDefaults(
+    autoMode?.hard_deny,
+    builtIn.hard_deny,
+  )
+  const environmentDescriptions = expandWithDefaults(
+    autoMode?.environment,
+    builtIn.environment,
+  )
 
   // All three sections use the same <foo_to_replace>...</foo_to_replace>
   // delimiter pattern. The external template wraps its defaults inside the
@@ -522,8 +535,11 @@ export async function buildYoloSystemPrompt(
   const userDeny = denyDescriptions.length
     ? denyDescriptions.map(d => `- ${d}`).join('\n')
     : undefined
-  const userEnvironment = autoMode?.environment?.length
-    ? autoMode.environment.map(e => `- ${e}`).join('\n')
+  const userHardDeny = hardDenyDescriptions.length
+    ? hardDenyDescriptions.map(d => `- ${d}`).join('\n')
+    : undefined
+  const userEnvironment = environmentDescriptions.length
+    ? environmentDescriptions.map(e => `- ${e}`).join('\n')
     : undefined
 
   return systemPrompt
@@ -534,6 +550,10 @@ export async function buildYoloSystemPrompt(
     .replace(
       /<user_soft_deny_rules_to_replace>([\s\S]*?)<\/user_soft_deny_rules_to_replace>/,
       (_m, defaults: string) => userDeny ?? defaults,
+    )
+    .replace(
+      /<user_hard_deny_rules_to_replace>([\s\S]*?)<\/user_hard_deny_rules_to_replace>/,
+      (_m, defaults: string) => userHardDeny ?? defaults,
     )
     .replace(
       /<user_environment_to_replace>([\s\S]*?)<\/user_environment_to_replace>/,

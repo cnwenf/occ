@@ -529,6 +529,32 @@ export type Attachment =
       displayPath: string
     }
   | {
+      /**
+       * Goal status marker appended to the transcript on /goal set / clear /
+       * achieved. Mirrors the official `goal_status` attachment (met, sentinel,
+       * condition). Used by findGoalToRestore to robustly restore the active
+       * goal on resume (scanning structured attachments instead of command
+       * stdout text, which is fragile if a condition contains "Goal cleared:").
+       * Filtered from the API by normalizeAttachmentForAPI (case 'goal_status')
+       * — it is a transcript marker, not model-visible.
+       */
+      type: 'goal_status'
+      /** true when the goal was cleared/achieved; false when set. */
+      met: boolean
+      condition: string
+      sentinel: true
+      /** True when the goal was assessed as impossible (mirrors official O.impossible). */
+      failed?: boolean
+      /** The evaluator's stopReason for the failure/clear. */
+      reason?: string
+      /** Turn count at resolution (achieved/failed). */
+      iterations?: number
+      /** Elapsed ms at resolution. */
+      durationMs?: number
+      /** Token delta at resolution. */
+      tokens?: number
+    }
+  | {
       type: 'skill_listing'
       content: string
       skillCount: number

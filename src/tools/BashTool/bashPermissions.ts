@@ -55,6 +55,7 @@ import {
   createPermissionRequestMessage,
   getRuleByContentsForTool,
 } from '../../utils/permissions/permissions.js'
+import { isAutoModeClassifyAllShellEnabled } from '../../utils/settings/settings.js'
 import {
   parsePermissionRule,
   type ShellPermissionRule,
@@ -971,12 +972,20 @@ function matchingRulesForInput(
     BashTool,
     'allow',
   )
-  const matchingAllowRules = filterRulesByContentsMatchingInput(
-    input,
-    allowRuleByContents,
-    matchMode,
-    { skipCompoundCheck },
-  )
+  // Mirrors official `aFr`: when autoMode.classifyAllShell is on AND we're in
+  // auto mode, suspend allow rules so every shell command routes through the
+  // classifier instead of being short-circuited by an allow rule. Deny/ask
+  // rules still apply (deny wins; ask still prompts).
+  const suspendAllowRules =
+    toolPermissionContext.mode === 'auto' && isAutoModeClassifyAllShellEnabled()
+  const matchingAllowRules = suspendAllowRules
+    ? []
+    : filterRulesByContentsMatchingInput(
+        input,
+        allowRuleByContents,
+        matchMode,
+        { skipCompoundCheck },
+      )
 
   return {
     matchingDenyRules,

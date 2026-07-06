@@ -2,15 +2,16 @@ import { c as _c } from "react/compiler-runtime";
 import React from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
 import { Box, Link, Text } from '../ink.js';
-import { updateSettingsForSource } from '../utils/settings/settings.js';
+import { hasAutoModeOptInDismissed, updateSettingsForSource } from '../utils/settings/settings.js';
 import { Select } from './CustomSelect/index.js';
 import { Dialog } from './design-system/Dialog.js';
 
 // NOTE: This copy is legally reviewed — do not modify without Legal team approval.
-export const AUTO_MODE_DESCRIPTION = "Auto mode lets Claude handle permission prompts automatically — Claude checks each tool call for risky actions and prompt injection before executing. It runs the ones it assesses as lower-risk, and blocks the rest. Ideal for long-running tasks. Sessions are slightly more expensive. Claude can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to change mode.";
+// Verbatim from the official 2.1.200 `lPc` (the Enable auto mode? opt-in dialog description).
+export const AUTO_MODE_DESCRIPTION = "Auto mode lets Claude handle permission prompts automatically — Claude checks each tool call for risky actions and prompt injection before executing. Actions Claude identifies as safe are executed, while actions Claude identifies as risky are blocked and Claude may try a different approach. Ideal for long-running tasks. Sessions are slightly more expensive. Claude can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to change mode.";
 type Props = {
   onAccept(): void;
-  onDecline(): void;
+  onDecline(reason: "go-back" | "dont-ask"): void;
   // Startup gate: decline exits the process, so relabel accordingly.
   declineExits?: boolean;
 };
@@ -37,7 +38,10 @@ export function AutoModeOptInDialog(t0) {
           {
             logEvent("tengu_auto_mode_opt_in_dialog_accept", {});
             updateSettingsForSource("userSettings", {
-              skipAutoPermissionPrompt: true
+              skipAutoPermissionPrompt: true,
+              // Clear any prior dismissal (mirrors official A$m): accepting auto
+              // mode re-enables the opt-in dialog for future sessions.
+              autoModeOptInDismissed: hasAutoModeOptInDismissed() ? false : undefined,
             });
             onAccept();
             break bb3;
@@ -49,7 +53,8 @@ export function AutoModeOptInDialog(t0) {
               skipAutoPermissionPrompt: true,
               permissions: {
                 defaultMode: "auto"
-              }
+              },
+              autoModeOptInDismissed: hasAutoModeOptInDismissed() ? false : undefined,
             });
             onAccept();
             break bb3;
@@ -57,7 +62,23 @@ export function AutoModeOptInDialog(t0) {
         case "decline":
           {
             logEvent("tengu_auto_mode_opt_in_dialog_decline", {});
-            onDecline();
+            onDecline("go-back");
+            break bb3;
+          }
+        case "decline-dont-ask":
+          {
+            // "No, don't ask again" — persist dismissal so the opt-in dialog
+            // is not shown again on future Shift+Tab cycles. Mirrors official
+            // autoModeOptInDismissed + tengu_auto_mode_opt_in_dialog_decline_dont_ask.
+            // Idempotent guard (official: if(!Pt().autoModeOptInDismissed)_n(E$m)).
+            logEvent("tengu_auto_mode_opt_in_dialog_decline_dont_ask", {});
+            if (!hasAutoModeOptInDismissed()) {
+              updateSettingsForSource("userSettings", {
+                autoModeOptInDismissed: true
+              });
+            }
+            onDecline("dont-ask");
+            break bb3;
           }
       }
     };
@@ -101,10 +122,10 @@ export function AutoModeOptInDialog(t0) {
     t7 = [...t4, t5, {
       label: t6,
       value: "decline" as const
-    }, {
-      label: "Don't ask again",
-      value: "decline_dont_ask" as const
-    }];
+    }, ...(declineExits ? [] : [{
+      label: "No, don't ask again",
+      value: "decline-dont-ask" as const
+    }])];
     $[7] = t6;
     $[8] = t7;
   } else {
@@ -112,7 +133,7 @@ export function AutoModeOptInDialog(t0) {
   }
   let t8;
   if ($[9] !== onChange) {
-    t8 = value_0 => onChange(value_0 as 'accept' | 'accept-default' | 'decline' | 'decline_dont_ask');
+    t8 = value_0 => onChange(value_0 as 'accept' | 'accept-default' | 'decline' | 'decline-dont-ask');
     $[9] = onChange;
     $[10] = t8;
   } else {

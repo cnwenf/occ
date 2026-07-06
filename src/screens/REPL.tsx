@@ -143,7 +143,7 @@ import { handlePromptSubmit, type PromptInputHelpers } from '../utils/handleProm
 import { useQueueProcessor } from '../hooks/useQueueProcessor.js';
 import { useMailboxBridge } from '../hooks/useMailboxBridge.js';
 import { queryCheckpoint, logQueryProfileReport } from '../utils/queryProfiler.js';
-import type { Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
+import type { AttachmentMessage, Message as MessageType, UserMessage, ProgressMessage, HookResultMessage, PartialCompactDirection } from '../types/message.js';
 import { query } from '../query.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
 import { getQuerySourceForREPL } from '../utils/promptCategory.js';
@@ -1998,14 +1998,25 @@ export function REPL({
       // official restoreGoalFromTranscript / findGoalToRestore.
       const goalCondition = findGoalToRestore(initialMessages);
       if (goalCondition && !isGoalActive()) {
-        setGoal(goalCondition);
-      logEvent("tengu_goal_restored_on_resume", {});
-        const sessionId = getSessionId();
-        addSessionHook(setAppState, sessionId, 'Stop' as any, '', { type: 'prompt', prompt: goalCondition });
-        setAppState(s => ({
-          ...s,
-          activeGoal: { condition: goalCondition, iterations: 0, setAt: Date.now(), tokensAtStart: getTotalInputTokens() },
-        }));
+        // P0-2: mirror official `aFm` — call goalGate on resume. If hooks are
+        // restricted (disableAllHooks/allowManagedHooksOnly), do NOT restore
+        // the Stop hook (the official would refuse it); log goal_set with the
+        // code + clear activeGoal instead. Trust is already established on
+        // resume (the session is resuming = trusted), so only the hooks branch
+        // is reachable here.
+        const settings = store.getState().settings as { disableAllHooks?: boolean; allowManagedHooksOnly?: boolean } | undefined;
+        if (settings?.disableAllHooks || settings?.allowManagedHooksOnly) {
+          logEvent("goal_set", { code: "hooks_gate" });
+        } else {
+          setGoal(goalCondition);
+        logEvent("tengu_goal_restored_on_resume", {});
+          const sessionId = getSessionId();
+          addSessionHook(setAppState, sessionId, 'Stop' as any, '', { type: 'prompt', prompt: goalCondition });
+          setAppState(s => ({
+            ...s,
+            activeGoal: { condition: goalCondition, iterations: 0, setAt: Date.now(), tokensAtStart: getTotalInputTokens() },
+          }));
+        }
       }
     }
     // Only run on mount - initialMessages shouldn't change during component lifetime
@@ -3229,7 +3240,7 @@ export function REPL({
           let doneWasCalled = false;
           const onDone = (result?: string, doneOptions?: {
             display?: CommandResultDisplay;
-            metaMessages?: string[];
+            metaMessages?: Array<string | AttachmentMessage>;
           }): void => {
             doneWasCalled = true;
             setToolJSX({
@@ -3255,12 +3266,15 @@ export function REPL({
                 newMessages.push(createCommandInputMessage(formatCommandInputTags(getCommandName(matchingCommand), commandArgs)), createCommandInputMessage(`<${LOCAL_COMMAND_STDOUT_TAG}>${escapeXml(result)}</${LOCAL_COMMAND_STDOUT_TAG}>`));
               }
             }
-            // Inject meta messages (model-visible, user-hidden) into the transcript
+            // Inject meta messages (model-visible, user-hidden) into the transcript.
+            // Strings become isMeta user messages; AttachmentMessage objects (e.g.
+            // /goal goal_status markers) are appended as-is.
             if (doneOptions?.metaMessages?.length) {
-              newMessages.push(...doneOptions.metaMessages.map(content => createUserMessage({
-                content,
-                isMeta: true
-              })));
+              newMessages.push(...doneOptions.metaMessages.map(content =>
+                typeof content === 'string'
+                  ? createUserMessage({ content, isMeta: true })
+                  : content,
+              ));
             }
             if (newMessages.length) {
               setMessages(prev => [...prev, ...newMessages]);

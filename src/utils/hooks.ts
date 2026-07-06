@@ -348,6 +348,13 @@ export interface HookResult {
   outcome: 'success' | 'blocking' | 'non_blocking_error' | 'cancelled'
   preventContinuation?: boolean
   stopReason?: string
+  /**
+   * claude-code /goal: the goal Stop-hook evaluator assessed the goal as
+   * impossible to achieve (official `O.impossible`). Paired with outcome
+   * 'success' + stopReason — the goal is no longer blocking, but it is marked
+   * failed (ActiveGoal.failed) for the "Goal could not be achieved" panel.
+   */
+  impossible?: boolean
   permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough'
   hookPermissionDecisionReason?: string
   additionalContext?: string
@@ -369,6 +376,7 @@ export type AggregatedHookResult = {
   blockingError?: HookBlockingError
   preventContinuation?: boolean
   stopReason?: string
+  impossible?: boolean
   hookPermissionDecisionReason?: string
   hookSource?: string
   permissionBehavior?: PermissionResult['behavior']

@@ -455,7 +455,7 @@ export type AppState = DeepImmutable<{
   // 2.1.139 /goal: the last-achieved goal (transient, for the "Goal achieved"
   // panel state). Set by the goal Stop hook's onHookSuccess when the
   // condition is met; mirrors the official goal_status attachment (met:true).
-  lastAchievedGoal?: { condition: string; durationMs: number; iterations: number }
+  lastAchievedGoal?: { condition: string; durationMs: number; iterations: number; tokens?: number }
 }
 
 /** 2.1.139 /goal state. Mirrors the official {condition, iterations, setAt, tokensAtStart, lastReason}. */
@@ -465,6 +465,14 @@ export type ActiveGoal = {
   setAt: number
   tokensAtStart: number
   lastReason?: string
+  /**
+   * True when the goal evaluator assessed the goal as impossible to achieve
+   * (mirrors official `O.impossible`). Drives the "Goal could not be achieved"
+   * failure panel state in GoalStatus. When true, the goal is no longer
+   * blocking and `failureReason` holds the evaluator's stopReason.
+   */
+  failed?: boolean
+  failureReason?: string
 }
 
 export type AppStateStore = Store<AppState>
