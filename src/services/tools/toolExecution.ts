@@ -612,9 +612,34 @@ async function checkPermissionsAndCallTool(
   ) => void,
 ): Promise<MessageUpdateLazy[]> {
   // Validate input types with zod (surprisingly, the model is not great at generating valid input)
-  const parsedInput = tool.inputSchema.safeParse(input)
+  // 2.1.169 parity: let the tool auto-repair a malformed input (TodoWrite-style
+  // `tasks`/`todos` wrapper, Agent `prompt`/`subagent_type`, legacy `title`/
+  // `name`/`content` aliases, backfilled subject/description) before parsing.
+  let parseInput: { [key: string]: boolean | string | number } = input
+  const coerced = tool.coerceInput?.(input)
+  if (coerced) {
+    parseInput = coerced.input as { [key: string]: boolean | string | number }
+  }
+  const parsedInput = tool.inputSchema.safeParse(parseInput)
+  if (coerced) {
+    logEvent('tengu_tool_input_coerced', {
+      toolName: sanitizeToolNameForAnalytics(tool.name),
+      shapeClass: coerced.shapeClass,
+      outcome: parsedInput.success
+        ? ('coerced_valid' as const)
+        : ('coerced_still_invalid' as const),
+    })
+  }
   if (!parsedInput.success) {
     let errorContent = formatZodValidationError(tool.name, parsedInput.error)
+
+    // 2.1.169 parity: append a tool-specific usage hint when the input matches
+    // a known unrecoverable misuse (e.g. a `tasks` array or Agent params) so
+    // the model sees the correct shape instead of a generic Zod type error.
+    const steer = tool.validationErrorSteer?.(input)
+    if (steer) {
+      errorContent += steer
+    }
 
     const schemaHint = buildSchemaNotSentHint(
       tool,

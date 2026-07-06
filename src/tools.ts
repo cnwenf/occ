@@ -323,7 +323,29 @@ export const getTools = (permissionContext: ToolPermissionContext): Tools => {
   }
 
   const isEnabled = allowedTools.map(_ => _.isEnabled())
-  return allowedTools.filter((_, i) => isEnabled[i])
+  let enabledTools = allowedTools.filter((_, i) => isEnabled[i])
+
+  // 2.1.162 parity: on embedded-search builds (ant-native bfs/ugrep in the
+  // bun binary) Glob/Grep are excluded from getAllBaseTools() — the dedicated
+  // tools are unnecessary when find/grep in the shell already hit the fast
+  // embedded binaries. But the `--tools` flag must still be able to opt back
+  // into them, so re-add them here, filtered by the permission-context deny
+  // rules (which is what `--tools` populates via parseBaseToolsFromCLI). When
+  // `--tools` lists Glob/Grep they survive the deny filter and are re-added;
+  // when `--tools` omits them the deny rules strip them again. Mirrors the
+  // binary's `if(ZC()&&!s&&!i){l=[...l,...Nie([dK,y2].filter(!l.includes),e)]}`
+  // re-add path (ZC = hasEmbeddedSearchTools, !s/!i = not REPL mode).
+  if (hasEmbeddedSearchTools() && !isReplModeEnabled()) {
+    const reAddable = [GlobTool, GrepTool].filter(t => !enabledTools.includes(t))
+    if (reAddable.length > 0) {
+      enabledTools = [
+        ...enabledTools,
+        ...filterToolsByDenyRules(reAddable, permissionContext),
+      ]
+    }
+  }
+
+  return enabledTools
 }
 
 /**

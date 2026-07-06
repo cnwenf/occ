@@ -481,6 +481,30 @@ export type Tool<
   backfillObservableInput?(input: Record<string, unknown>): void
 
   /**
+   * Auto-repair malformed tool_use input BEFORE schema validation. The model
+   * sometimes wraps single-task tools (TaskCreate) in TodoWrite-style arrays
+   * (`tasks`/`todos`), Agent-style params (`prompt`/`subagent_type`), or uses
+   * legacy field aliases (`title`/`name`/`content`). When the input is
+   * recognizably one of these shapes, coerce it into the canonical shape so
+   * `inputSchema.safeParse` succeeds without a round-trip. Returns the repaired
+   * input plus a `shapeClass` repair-log tag (for analytics), or null to let
+   * validation proceed on the original input. Mirrors claude-code 2.1.169.
+   */
+  coerceInput?(
+    input: unknown,
+  ): { input: unknown; shapeClass: string } | null
+
+  /**
+   * Returns a tool-specific steering message appended to the InputValidationError
+   * when `coerceInput` could not repair the input (e.g. the model passed a
+   * `tasks`/`todos` array or Agent params). Tells the model the correct usage
+   * instead of a generic Zod "expected string" error. Null when the input
+   * doesn't match a known misuse pattern (then the raw Zod error stands).
+   * Mirrors claude-code 2.1.169.
+   */
+  validationErrorSteer?(input: unknown): string | null
+
+  /**
    * Determines if this tool is allowed to run with this input in the current context.
    * It informs the model of why the tool use failed, and does not directly display any UI.
    * @param input
