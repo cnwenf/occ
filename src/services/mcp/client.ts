@@ -28,6 +28,7 @@ import {
   type JSONRPCMessage,
   type ListPromptsResult,
   ListPromptsResultSchema,
+  type ListResourcesResult,
   ListResourcesResultSchema,
   ListRootsRequestSchema,
   type ListToolsResult,
@@ -1832,26 +1833,42 @@ export function mcpToolInputToAutoClassifierInput(
 /**
  * 2.1.132: retry tools/list on transient failure (official retries before
  * giving up + marking "tools fetch failed"). 3 attempts, 500ms backoff.
+ * 2.1.144: follow pagination (nextCursor) — accumulate all pages, retrying
+ * each page individually on transient failure.
  */
 async function requestToolsListWithRetry(
   client: Client,
   attempts = 3,
 ): Promise<ListToolsResult> {
-  let lastError: unknown
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return (await client.request(
-        { method: 'tools/list' },
-        ListToolsResultSchema,
-      )) as ListToolsResult
-    } catch (e) {
-      lastError = e
-      if (i < attempts - 1) {
-        await new Promise(r => setTimeout(r, 500 * (i + 1)))
+  const allTools: ListToolsResult['tools'] = []
+  let cursor: string | undefined
+  do {
+    let lastError: unknown
+    let result: ListToolsResult | undefined
+    for (let i = 0; i < attempts; i++) {
+      try {
+        result = (await client.request(
+          {
+            method: 'tools/list',
+            ...(cursor ? { params: { cursor } } : {}),
+          },
+          ListToolsResultSchema,
+        )) as ListToolsResult
+        break
+      } catch (e) {
+        lastError = e
+        if (i < attempts - 1) {
+          await new Promise(r => setTimeout(r, 500 * (i + 1)))
+        }
       }
     }
-  }
-  throw lastError
+    if (!result) {
+      throw lastError
+    }
+    allTools.push(...result.tools)
+    cursor = (result as { nextCursor?: string }).nextCursor
+  } while (cursor)
+  return { tools: allTools } as ListToolsResult
 }
 
 export const fetchToolsForClient = memoizeWithLRU(
@@ -2128,15 +2145,26 @@ export const fetchResourcesForClient = memoizeWithLRU(
         return []
       }
 
-      const result = await client.client.request(
-        { method: 'resources/list' },
-        ListResourcesResultSchema,
-      )
+      // 2.1.144: follow pagination (nextCursor) for resources/list.
+      let resources: NonNullable<ListResourcesResult['resources']> = []
+      let cursor: string | undefined
+      do {
+        const result = await client.client.request(
+          {
+            method: 'resources/list',
+            ...(cursor ? { params: { cursor } } : {}),
+          },
+          ListResourcesResultSchema,
+        )
+        if (!result.resources) break
+        resources = resources.concat(result.resources)
+        cursor = (result as { nextCursor?: string }).nextCursor
+      } while (cursor)
 
-      if (!result.resources) return []
+      if (!resources.length) return []
 
       // Add server name to each resource
-      return result.resources.map(resource => ({
+      return resources.map(resource => ({
         ...resource,
         server: client.name,
       }))
@@ -2161,16 +2189,26 @@ export const fetchCommandsForClient = memoizeWithLRU(
         return []
       }
 
-      // Request prompts list from client
-      const result = (await client.client.request(
-        { method: 'prompts/list' },
-        ListPromptsResultSchema,
-      )) as ListPromptsResult
+      // 2.1.144: follow pagination (nextCursor) for prompts/list.
+      const allPrompts: NonNullable<ListPromptsResult['prompts']> = []
+      let cursor: string | undefined
+      do {
+        const result = (await client.client.request(
+          {
+            method: 'prompts/list',
+            ...(cursor ? { params: { cursor } } : {}),
+          },
+          ListPromptsResultSchema,
+        )) as ListPromptsResult
+        if (!result.prompts) break
+        allPrompts.push(...result.prompts)
+        cursor = (result as { nextCursor?: string }).nextCursor
+      } while (cursor)
 
-      if (!result.prompts) return []
+      if (!allPrompts.length) return []
 
       // Sanitize prompt data from MCP server
-      const promptsToProcess = recursivelySanitizeUnicode(result.prompts)
+      const promptsToProcess = recursivelySanitizeUnicode(allPrompts)
 
       // Convert MCP prompts to our Command format
       return promptsToProcess.map(prompt => {
