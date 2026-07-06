@@ -11,6 +11,9 @@ export const HOOK_EVENTS = [
   'UserPromptExpansion',
   'SessionStart',
   'SessionEnd',
+  // 2.1.169: post-session lifecycle hook (self-hosted runner). Fires after
+  // the session ends so runner-side cleanup/finalization hooks can run.
+  'PostSession',
   'Stop',
   'StopFailure',
   'SubagentStart',

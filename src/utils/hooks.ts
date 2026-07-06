@@ -35,6 +35,7 @@ import {
   addToTurnHookDuration,
   getOriginalCwd,
   getMainThreadAgentType,
+  getSessionCronTasks,
 } from '../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from './config.js'
 import {
@@ -153,6 +154,7 @@ import { execPromptHook } from './hooks/execPromptHook.js'
 import type { Message, AssistantMessage } from '../types/message.js'
 import { execAgentHook } from './hooks/execAgentHook.js'
 import { execHttpHook } from './hooks/execHttpHook.js'
+import { execMcpToolHook } from './hooks/execMcpToolHook.js'
 import type { ShellCommand } from './ShellCommand.js'
 import {
   getSessionHooks,
@@ -342,6 +344,140 @@ export interface HookBlockingError {
   command: string
 }
 
+// 2.1.145: Stop/SubagentStop hook inputs include the session's in-flight
+// background tasks + session crons so hooks can distinguish "session is done"
+// from "session is paused waiting for background work to wake it". The shapes
+// below match the official 2.1.200 binary (E7c/A7c schemas + Oql/Nql mappers).
+
+// Friendly task-type labels (binary: Eko). Falls back to the raw discriminant
+// for unknown types, matching the official `Eko[type] ?? type` behaviour.
+const BACKGROUND_TASK_TYPE_LABELS: Record<string, string> = {
+  local_agent: 'subagent',
+  local_workflow: 'workflow',
+  local_bash: 'shell',
+  monitor_mcp: 'monitor',
+  monitor_ws: 'monitor',
+  mcp_task: 'MCP task',
+  in_process_teammate: 'teammate',
+  dream: 'dream',
+  remote_agent: 'cloud session',
+}
+
+// Cap a string at `limit` chars, appending a "… [+N chars]" marker when
+// clipped. Avoids splitting a UTF-16 surrogate pair at the boundary (binary:
+// MT + Jye). Description/command/prompt fields are all capped at 1000 chars.
+function capHookString(value: string, limit: number): string {
+  if (value.length <= limit) return value
+  let sliced = value.slice(0, limit)
+  const lastCode = sliced.charCodeAt(limit - 1)
+  // High surrogate (0xd800-0xdbff) at the boundary would orphan its pair.
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+    sliced = sliced.slice(0, -1)
+  }
+  return `${sliced}… [+${value.length - sliced.length} chars]`
+}
+
+const HOOK_STRING_CAP = 1000
+
+// Map the session's in-flight background tasks to the E7c hook-input shape.
+// Binary: Oql(taskRegistry.all()) — iterates task states, filters to
+// background (running/pending + backgrounded), maps type-specific fields.
+function getBackgroundTasksForHookInput(
+  appState: AppState | undefined,
+): Array<{
+  id: string
+  type: string
+  status: string
+  description: string
+  command?: string
+  agent_type?: string
+  server?: string
+  tool?: string
+  name?: string
+}> {
+  if (!appState?.tasks) return []
+  const result: Array<{
+    id: string
+    type: string
+    status: string
+    description: string
+    command?: string
+    agent_type?: string
+    server?: string
+    tool?: string
+    name?: string
+  }> = []
+  for (const task of Object.values(appState.tasks)) {
+    if (!task) continue
+    // isBackgroundTask: running/pending + explicitly backgrounded.
+    if (task.status !== 'running' && task.status !== 'pending') continue
+    if ('isBackgrounded' in task && task.isBackgrounded === false) continue
+    const entry: {
+      id: string
+      type: string
+      status: string
+      description: string
+      command?: string
+      agent_type?: string
+      server?: string
+      tool?: string
+      name?: string
+    } = {
+      id: task.id,
+      type: BACKGROUND_TASK_TYPE_LABELS[task.type] ?? task.type,
+      status: task.status,
+      description: capHookString(
+        task.description ?? '',
+        HOOK_STRING_CAP,
+      ),
+    }
+    switch (task.type) {
+      case 'local_bash':
+        if ('command' in task && typeof task.command === 'string') {
+          entry.command = capHookString(task.command, HOOK_STRING_CAP)
+        }
+        break
+      case 'local_agent':
+        if ('agentType' in task && typeof task.agentType === 'string') {
+          entry.agent_type = task.agentType
+        }
+        break
+      case 'monitor_mcp':
+        if ('server' in task) entry.server = task.server as string
+        if ('tool' in task) entry.tool = task.tool as string
+        break
+      case 'mcp_task':
+        if ('serverName' in task) entry.server = task.serverName as string
+        if ('toolName' in task) entry.tool = task.toolName as string
+        break
+      case 'local_workflow':
+        if ('workflowName' in task) {
+          entry.name = task.workflowName as string
+        }
+        break
+      // in_process_teammate / remote_agent / dream / monitor_ws: no extra fields.
+    }
+    result.push(entry)
+  }
+  return result
+}
+
+// Map session-scoped cron tasks to the A7c hook-input shape. Binary: Nql(cC())
+// — session-only crons (CronCreate/ScheduleWakeup//loop), not disk-backed.
+function getSessionCronsForHookInput(): Array<{
+  id: string
+  schedule: string
+  recurring: boolean
+  prompt: string
+}> {
+  return getSessionCronTasks().map(task => ({
+    id: task.id,
+    schedule: task.cron,
+    recurring: task.recurring ?? false,
+    prompt: capHookString(task.prompt ?? '', HOOK_STRING_CAP),
+  }))
+}
+
 /** Re-export ElicitResult from MCP SDK as ElicitationResponse for backward compat. */
 export type ElicitationResponse = ElicitResult
 
@@ -364,6 +500,8 @@ export interface HookResult {
   additionalContext?: string
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
+  // 2.1.121: updatedToolOutput replaces output for ALL tools.
+  updatedToolOutput?: unknown
   updatedMCPToolOutput?: unknown
   permissionRequestResult?: PermissionRequestResult
   elicitationResponse?: ElicitationResponse
@@ -389,6 +527,8 @@ export type AggregatedHookResult = {
   additionalContexts?: string[]
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
+  // 2.1.121: updatedToolOutput replaces output for ALL tools.
+  updatedToolOutput?: unknown
   updatedMCPToolOutput?: unknown
   permissionRequestResult?: PermissionRequestResult
   watchPaths?: string[]
@@ -552,6 +692,10 @@ interface TypedSyncHookOutput {
     | {
         hookEventName: 'PostToolUse'
         additionalContext?: string
+        // 2.1.121: updatedToolOutput replaces the output for ALL tools
+        // (binary: validated against the tool's outputSchema at the
+        // consumer). updatedMCPToolOutput is MCP-only and deprecated.
+        updatedToolOutput?: unknown
         updatedMCPToolOutput?: unknown
       }
     | {
@@ -768,7 +912,16 @@ export function processHookJSONOutput({
         break
       case 'PostToolUse':
         result.additionalContext = json.hookSpecificOutput.additionalContext
-        // Extract updatedMCPToolOutput if provided
+        // 2.1.121: updatedToolOutput replaces the output for ALL tools
+        // (binary: validated against the tool's outputSchema at the
+        // consumer). Extracted here unconditionally — the consumer decides
+        // whether to apply it.
+        if (json.hookSpecificOutput.updatedToolOutput !== undefined) {
+          result.updatedToolOutput =
+            json.hookSpecificOutput.updatedToolOutput
+        }
+        // Extract updatedMCPToolOutput if provided (MCP-only, deprecated
+        // in favour of updatedToolOutput which works for all tools).
         if (json.hookSpecificOutput.updatedMCPToolOutput) {
           result.updatedMCPToolOutput =
             json.hookSpecificOutput.updatedMCPToolOutput
@@ -1852,6 +2005,9 @@ export async function getMatchingHooks(
       case 'SessionEnd':
         matchQuery = hookInput.reason as string
         break
+      case 'PostSession':
+        matchQuery = hookInput.reason as string
+        break
       case 'StopFailure':
         matchQuery = hookInput.error as string
         break
@@ -2020,11 +2176,29 @@ export async function getMatchingHooks(
     const callbackHooks = matchedHooks.filter(m => m.hook.type === 'callback')
     // Function hooks don't need deduplication - each callback is unique
     const functionHooks = matchedHooks.filter(m => m.hook.type === 'function')
+    // 2.1.118: mcp_tool hooks dedup by server/tool identity.
+    const uniqueMcpToolHooks = Array.from(
+      new Map(
+        matchedHooks
+          .filter(
+            (m): m is MatchedHook & { hook: HookCommand & { type: 'mcp_tool' } } =>
+              m.hook.type === 'mcp_tool',
+          )
+          .map(m => [
+            hookDedupKey(
+              m,
+              `${m.hook.server}/${m.hook.tool}\0${getIfCondition(m.hook)}`,
+            ),
+            m,
+          ]),
+      ).values(),
+    )
     const uniqueHooks = [
       ...uniqueCommandHooks,
       ...uniquePromptHooks,
       ...uniqueAgentHooks,
       ...uniqueHttpHooks,
+      ...uniqueMcpToolHooks,
       ...callbackHooks,
       ...functionHooks,
     ]
@@ -2037,7 +2211,8 @@ export async function getMatchingHooks(
         (h.hook.type === 'command' ||
           h.hook.type === 'prompt' ||
           h.hook.type === 'agent' ||
-          h.hook.type === 'http') &&
+          h.hook.type === 'http' ||
+          h.hook.type === 'mcp_tool') &&
         (h.hook as { if?: string }).if,
     )
     const ifMatcher = hasIfCondition
@@ -2048,7 +2223,8 @@ export async function getMatchingHooks(
         h.hook.type !== 'command' &&
         h.hook.type !== 'prompt' &&
         h.hook.type !== 'agent' &&
-        h.hook.type !== 'http'
+        h.hook.type !== 'http' &&
+        h.hook.type !== 'mcp_tool'
       ) {
         return true
       }
@@ -2673,6 +2849,36 @@ async function* executeHooks({
         return
       }
 
+      // 2.1.118: mcp_tool hook — invoke an MCP tool on a configured server.
+      if (hook.type === 'mcp_tool') {
+        emitHookStarted(hookId, hookName, hookEvent)
+        const mcpResult = await execMcpToolHook({
+          hook,
+          hookEvent,
+          jsonInput,
+          signal: abortSignal,
+          timeoutMs: commandTimeoutMs,
+          mcpClients: toolUseContext?.options?.mcpClients,
+        })
+        emitHookResponse({
+          hookId,
+          hookName,
+          hookEvent,
+          output: '',
+          stdout: '',
+          stderr: '',
+          exitCode: 0,
+          outcome: mcpResult.outcome === 'success' ? 'success' : 'error',
+        })
+        yield {
+          message: mcpResult.message,
+          outcome: mcpResult.outcome,
+          hook,
+        }
+        cleanup?.()
+        return
+      }
+
       emitHookStarted(hookId, hookName, hookEvent)
 
       const result = await execCommandHook(
@@ -2784,6 +2990,18 @@ async function* executeHooks({
           durationMs,
         })
 
+        // 2.1.199: exit code 2 = blocking + show stderr, even when the hook
+        // emitted valid JSON. SessionStart/Setup/SubagentStart hooks
+        // previously hid stderr on exit code 2 because the JSON path yielded
+        // success and never consulted the exit code. Binary aggregation
+        // fallback: `if(status===2&&!blockingError)blockingError=[cmd]:stderr`.
+        if (result.status === 2 && !processed.blockingError) {
+          processed.blockingError = {
+            blockingError: `[${hookCommand}]: ${result.stderr || 'No stderr output'}`,
+            command: hookCommand,
+          }
+        }
+
         // Handle suppressOutput (skip for async responses)
         const syncJson = json as TypedSyncHookOutput
         if (
@@ -2838,7 +3056,9 @@ async function* executeHooks({
         })
         yield {
           ...processed,
-          outcome: 'success' as const,
+          outcome: processed.blockingError
+            ? ('blocking' as const)
+            : ('success' as const),
           hook,
         }
         return
@@ -3040,8 +3260,21 @@ async function* executeHooks({
       }
     }
 
-    // Yield updatedMCPToolOutput if provided (from PostToolUse hooks)
-    if (result.updatedMCPToolOutput) {
+    // 2.1.121: Yield updatedToolOutput if provided — works for ALL tools
+    // (binary: `if(updatedToolOutput!==void 0)yield{updatedToolOutput}`).
+    // The consumer validates it against the tool's outputSchema before
+    // applying. Takes precedence over updatedMCPToolOutput (MCP-only).
+    if (result.updatedToolOutput !== undefined) {
+      logForDebugging(
+        `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) replaced tool output`,
+      )
+      yield {
+        updatedToolOutput: result.updatedToolOutput,
+      }
+    } else if (result.updatedMCPToolOutput) {
+      // Yield updatedMCPToolOutput if provided (MCP-only; the consumer
+      // guards with isMcpTool). Binary:
+      // `if(updatedMCPToolOutput!==void 0&&isMcpTool)yield{updatedToolOutput}`.
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) replaced MCP tool output`,
       )
@@ -3969,6 +4202,10 @@ export async function* executeStopHooks(
         agent_transcript_path: getAgentTranscriptPath(subagentId),
         agent_type: agentType ?? '',
         last_assistant_message: lastAssistantText,
+        // 2.1.145: include background tasks + session crons so SubagentStop
+        // hooks can inspect pending work (binary: E7c/A7c via Oql/Nql).
+        background_tasks: getBackgroundTasksForHookInput(appState),
+        session_crons: getSessionCronsForHookInput(),
       }
     : {
         ...createBaseHookInput(permissionMode),
@@ -3976,9 +4213,9 @@ export async function* executeStopHooks(
         stop_hook_active: stopHookActive,
         last_assistant_message: lastAssistantText,
         // 2.1.145: include background tasks + session crons so Stop hooks
-        // can inspect pending work.
-        background_tasks: [],
-        session_crons: [],
+        // can inspect pending work (binary: E7c/A7c via Oql/Nql).
+        background_tasks: getBackgroundTasksForHookInput(appState),
+        session_crons: getSessionCronsForHookInput(),
       }
 
   // Trust check is now centralized in executeHooks()
@@ -4447,6 +4684,54 @@ export async function executeSessionEndHooks(
   if (setAppState) {
     const sessionId = getSessionId()
     clearSessionHooks(setAppState, sessionId)
+  }
+}
+
+/**
+ * Execute PostSession hooks (2.1.169: post-session lifecycle hook for
+ * self-hosted runners). Fires after the session ends so runner-side
+ * cleanup/finalization hooks can run. Like SessionEnd, it runs outside the
+ * REPL (Ink is already unmounted) and writes failures to stderr.
+ *
+ * @param reason The session end reason (mirrors SessionEnd's `reason`).
+ * @param options Optional getAppState/setAppState/signal/timeoutMs.
+ */
+export async function executePostSessionHooks(
+  reason: ExitReason,
+  options?: {
+    getAppState?: () => AppState
+    setAppState?: (updater: (prev: AppState) => AppState) => void
+    signal?: AbortSignal
+    timeoutMs?: number
+  },
+): Promise<void> {
+  const {
+    getAppState,
+    signal,
+    timeoutMs = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  } = options || {}
+
+  const hookInput = {
+    ...createBaseHookInput(undefined),
+    hook_event_name: 'PostSession' as const,
+    reason,
+  }
+
+  const results = await executeHooksOutsideREPL({
+    getAppState,
+    hookInput,
+    matchQuery: reason,
+    signal,
+    timeoutMs,
+  })
+
+  // During shutdown, Ink is unmounted so we can write directly to stderr.
+  for (const result of results) {
+    if (!result.succeeded && result.output) {
+      process.stderr.write(
+        `PostSession hook [${result.command}] failed: ${result.output}\n`,
+      )
+    }
   }
 }
 
