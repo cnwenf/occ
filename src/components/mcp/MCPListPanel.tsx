@@ -1,6 +1,6 @@
 import { c as _c } from "react/compiler-runtime";
 import figures from 'figures';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import type { CommandResultDisplay } from '../../commands.js';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
@@ -17,6 +17,10 @@ import type { AgentMcpServerInfo, ServerInfo } from './types.js';
 type Props = {
   servers: ServerInfo[];
   agentServers?: AgentMcpServerInfo[];
+  toolCountsByServer?: Record<string, number>;
+  unusedClaudeAiServers?: ServerInfo[];
+  showUnusedConnectors?: boolean;
+  onToggleUnusedConnectors?: () => void;
   onSelectServer: (server: ServerInfo) => void;
   onSelectAgentServer?: (agentServer: AgentMcpServerInfo) => void;
   onComplete: (result?: string, options?: {
@@ -90,10 +94,14 @@ function groupServersByScope(serverList: ServerInfo[]): Map<ConfigScope, ServerI
   return groups;
 }
 export function MCPListPanel(t0) {
-  const $ = _c(78);
+  const $ = _c(79);
   const {
     servers,
     agentServers: t1,
+    toolCountsByServer: tToolCounts,
+    unusedClaudeAiServers: tUnused,
+    showUnusedConnectors: tShowUnused,
+    onToggleUnusedConnectors: tToggleUnused,
     onSelectServer,
     onSelectAgentServer,
     onComplete
@@ -107,6 +115,14 @@ export function MCPListPanel(t0) {
     t2 = $[1];
   }
   const agentServers = t2;
+  const toolCountsByServer = tToolCounts;
+  const unusedClaudeAiServers = tUnused === undefined ? [] : tUnused;
+  const showUnusedConnectors = tShowUnused === true;
+  const onToggleUnusedConnectors = tToggleUnused;
+  // Ref so the memoized renderServerItem reads the latest tool counts without
+  // needing toolCountsByServer in its dependency array (avoids re-render churn).
+  const toolCountsRef = useRef(toolCountsByServer);
+  toolCountsRef.current = toolCountsByServer ?? {};
   const [theme] = useTheme();
   const [selectedIndex, setSelectedIndex] = useState(0);
   let t3;
@@ -309,11 +325,23 @@ export function MCPListPanel(t0) {
         statusText = "disabled";
       } else {
         if (server_3.client.type === "connected") {
-          statusIcon = color("success", theme)(figures.tick);
-          // 2.1.132: tools/list failed but server is connected.
-          statusText = server_3.client.toolsFetchError
-            ? "connected · tools fetch failed"
-            : "connected";
+          // 2.1.128+2.1.132+2.1.139: per-model tool count + 0-tools flag.
+          // Mirrors the official binary's renderServerItem status chain.
+          const hasToolsCapability = !!server_3.client.capabilities?.tools;
+          const toolCount = toolCountsRef.current?.[server_3.name];
+          if (server_3.client.toolsFetchError) {
+            statusIcon = color("warning", theme)(figures.triangleUpOutline);
+            statusText = "connected · tools fetch failed";
+          } else if (hasToolsCapability && toolCount === 0) {
+            statusIcon = color("warning", theme)(figures.triangleUpOutline);
+            statusText = "connected · no tools";
+          } else if (hasToolsCapability && toolCount !== undefined) {
+            statusIcon = color("success", theme)(figures.tick);
+            statusText = `connected · ${toolCount} ${plural(toolCount, "tool")}`;
+          } else {
+            statusIcon = color("success", theme)(figures.tick);
+            statusText = "connected";
+          }
         } else {
           if (server_3.client.type === "pending") {
             statusIcon = color("inactive", theme)(figures.radioOff);
@@ -365,6 +393,7 @@ export function MCPListPanel(t0) {
   }
   const renderAgentServerItem = t18;
   const totalServers = servers.length + agentServers.length;
+  const unusedConnectorCount = unusedClaudeAiServers.length;
   let t19;
   if ($[45] === Symbol.for("react.memo_cache_sentinel")) {
     t19 = <McpParsingWarnings />;
@@ -380,7 +409,10 @@ export function MCPListPanel(t0) {
   } else {
     t20 = $[47];
   }
-  const t21 = `${totalServers} ${t20}`;
+  // 2.1.139: subtitle surfaces "unused claude.ai connectors (N)" when present.
+  const t21 = unusedConnectorCount > 0
+    ? `${totalServers} ${t20} · unused claude.ai connectors (${unusedConnectorCount})`
+    : `${totalServers} ${t20}`;
   let t22;
   if ($[48] !== renderServerItem || $[49] !== serversByScope) {
     t22 = SCOPE_ORDER.map(scope_0 => {
@@ -406,6 +438,8 @@ export function MCPListPanel(t0) {
   } else {
     t23 = $[53];
   }
+  // 2.1.139: "Show unused connectors (N)" toggle for disused claude.ai servers.
+  const tUnusedSection = unusedClaudeAiServers.length > 0 ? <Box flexDirection="column" marginBottom={1}><Box paddingLeft={2}><Text color="suggestion">{showUnusedConnectors ? `${figures.pointer} ` : "  "}{showUnusedConnectors ? figures.arrowDown : figures.arrowRight} Show unused connectors </Text><Text dimColor={true}>({unusedClaudeAiServers.length})</Text></Box>{showUnusedConnectors && unusedClaudeAiServers.map(server_unused => renderServerItem(server_unused))}</Box> : null;
   let t24;
   if ($[54] !== agentServers || $[55] !== renderAgentServerItem) {
     t24 = agentServers.length > 0 && <Box flexDirection="column" marginBottom={1}><Box paddingLeft={2}><Text bold={true}>Agent MCPs</Text></Box>{[...new Set(agentServers.flatMap(_temp6))].map(agentName => <Box key={agentName} flexDirection="column" marginTop={1}><Box paddingLeft={2}><Text dimColor={true}>@{agentName}</Text></Box>{agentServers.filter(s_3 => s_3.sourceAgents.includes(agentName)).map(agentServer_2 => renderAgentServerItem(agentServer_2))}</Box>)}</Box>;
@@ -448,13 +482,14 @@ export function MCPListPanel(t0) {
     t28 = $[64];
   }
   let t29;
-  if ($[65] !== t22 || $[66] !== t23 || $[67] !== t24 || $[68] !== t25 || $[69] !== t28) {
-    t29 = <Box flexDirection="column">{t22}{t23}{t24}{t25}{t28}</Box>;
+  if ($[65] !== t22 || $[66] !== t23 || $[67] !== t24 || $[68] !== t25 || $[69] !== t28 || $[78] !== tUnusedSection) {
+    t29 = <Box flexDirection="column">{t22}{t23}{tUnusedSection}{t24}{t25}{t28}</Box>;
     $[65] = t22;
     $[66] = t23;
     $[67] = t24;
     $[68] = t25;
     $[69] = t28;
+    $[78] = tUnusedSection;
     $[70] = t29;
   } else {
     t29 = $[70];

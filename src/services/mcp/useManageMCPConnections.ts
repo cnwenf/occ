@@ -46,6 +46,7 @@ import {
   doesEnterpriseMcpConfigExist,
   filterMcpServersByPolicy,
   getClaudeCodeMcpConfigs,
+  getMcpConfigByName,
   isMcpServerDisabled,
   setMcpServerEnabled,
 } from 'src/services/mcp/config.js'
@@ -1059,7 +1060,12 @@ export function useManageMCPConnections(
         reconnectTimersRef.current.delete(serverName)
       }
 
-      const result = await reconnectMcpServerImpl(serverName, client.config)
+      // 2.1.128+2.1.132+2.1.139: Re-read the MCP config from disk (incl.
+      // .mcp.json) so reconnect picks up edits without a full restart. Falls
+      // back to the in-memory config if the server was removed from disk.
+      const freshConfig = getMcpConfigByName(serverName) ?? client.config
+
+      const result = await reconnectMcpServerImpl(serverName, freshConfig)
 
       onConnectionAttempt(result)
 

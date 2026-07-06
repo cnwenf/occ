@@ -2,12 +2,12 @@ import { c as _c } from "react/compiler-runtime";
 import * as React from 'react';
 import { useEffect, useState } from 'react';
 import { extraUsage as extraUsageCommand } from 'src/commands/extra-usage/index.js';
-import { formatCost } from 'src/cost-tracker.js';
+import { formatCost, formatModelUsage } from 'src/cost-tracker.js';
 import { getSubscriptionType } from 'src/utils/auth.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { type ExtraUsage, fetchUtilization, type RateLimit, type Utilization } from '../../services/api/usage.js';
+import { type ExtraUsage, fetchUtilizationWithStatus, formatApiModelUsage, type RateLimit, type Utilization } from '../../services/api/usage.js';
 import { formatResetText } from '../../utils/format.js';
 import { logError } from '../../utils/log.js';
 import { jsonStringify } from '../../utils/slowOperations.js';
@@ -175,6 +175,10 @@ export function Usage(): React.ReactNode {
   const [utilization, setUtilization] = useState<Utilization | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // 2.1.92: secondary message shown when the API-fetched per-model breakdown
+  // is unavailable (rate-limited / seeded fallback). Mirrors the official
+  // `sur()` seeded-case message.
+  const [breakdownMessage, setBreakdownMessage] = useState<string | null>(null);
   const {
     columns
   } = useTerminalSize();
@@ -183,9 +187,30 @@ export function Usage(): React.ReactNode {
   const loadUtilization = React.useCallback(async () => {
     setIsLoading(true);
     setError(null);
+    setBreakdownMessage(null);
     try {
-      const data = await fetchUtilization();
-      setUtilization(data);
+      const result = await fetchUtilizationWithStatus();
+      switch (result.status) {
+        case 'ok':
+          setUtilization(result.utilization ?? null);
+          break;
+        case 'empty_response':
+          setError('Failed to load usage data');
+          break;
+        case 'seeded':
+          // Keep existing utilization if present, else use the seeded fallback.
+          setUtilization(prev => prev ?? result.utilization ?? null);
+          setBreakdownMessage(result.isRateLimited ? 'Per-model breakdown unavailable (rate limited — try again in a moment)' : 'Could not refresh usage data');
+          break;
+        case 'unavailable':
+        default:
+          if (result.isRateLimited) {
+            setError('Usage endpoint is rate limited. Please try again in a moment.');
+          } else {
+            setError(result.responseBody ? `Failed to load usage data: ${result.responseBody}` : 'Failed to load usage data');
+          }
+          break;
+      }
     } catch (err) {
       logError(err as Error);
       const axiosError = err as {
@@ -206,7 +231,7 @@ export function Usage(): React.ReactNode {
     void loadUtilization();
   }, {
     context: 'Settings',
-    isActive: !!error && !isLoading
+    isActive: (!!error || !!breakdownMessage) && !isLoading
   });
   if (error) {
     return <Box flexDirection="column" gap={1}>
@@ -257,6 +282,21 @@ export function Usage(): React.ReactNode {
       {utilization.extra_usage && <ExtraUsageSection extraUsage={utilization.extra_usage} maxWidth={maxWidth} />}
 
       {isEligibleForOverageCreditGrant() && <OverageCreditUpsell maxWidth={maxWidth} />}
+
+      {(() => {
+        // 2.1.92: per-model + cache-hit breakdown for subscription users.
+        // Prefer the API-fetched model_usage; fall back to the local session
+        // tracker (formatModelUsage) so the breakdown is always present.
+        const apiBreakdown = formatApiModelUsage(utilization.model_usage);
+        const localBreakdown = formatModelUsage();
+        const breakdown = apiBreakdown || (localBreakdown.includes('Usage by model:') && !localBreakdown.startsWith('Usage:                 0 input') ? localBreakdown : '');
+        if (!breakdown) return null;
+        return <Box flexDirection="column" marginTop={1}>
+            {breakdown.split('\n').map((line, i) => <Text key={i} dimColor={i > 0}>{line}</Text>)}
+          </Box>;
+      })()}
+
+      {breakdownMessage && <Text dimColor>{breakdownMessage}</Text>}
 
       <Text dimColor>
         <ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="cancel" />

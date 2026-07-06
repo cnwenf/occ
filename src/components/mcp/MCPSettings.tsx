@@ -44,6 +44,8 @@ export function MCPSettings(t0) {
     t2 = $[1];
   }
   const [servers, setServers] = React.useState(t2);
+  // 2.1.139: toggle for the "Show unused connectors" fold in /mcp.
+  const [showUnusedConnectors, setShowUnusedConnectors] = React.useState(false);
   let t3;
   if ($[2] !== agentDefinitions.allAgents) {
     t3 = extractAgentMcpServers(agentDefinitions.allAgents);
@@ -183,12 +185,20 @@ export function MCPSettings(t0) {
           t9 = $[17];
         }
         let t11;
-        if ($[18] !== agentMcpServers || $[19] !== onComplete || $[20] !== servers || $[21] !== viewState.defaultTab) {
-          t11 = <MCPListPanel servers={servers} agentServers={agentMcpServers} onSelectServer={t9} onSelectAgentServer={t10} onComplete={onComplete} defaultTab={viewState.defaultTab} />;
+        if ($[18] !== agentMcpServers || $[19] !== onComplete || $[20] !== servers || $[21] !== viewState.defaultTab || $[23] !== mcp.tools) {
+          // 2.1.128+: per-server tool counts for the /mcp list ("connected · N tools").
+          const toolCountsByServer: Record<string, number> = {};
+          for (const s of servers) {
+            toolCountsByServer[s.name] = filterToolsByServer(mcp.tools, s.name).length;
+          }
+          // 2.1.139: "unused" claude.ai connectors — disused (not connected) proxies.
+          const unusedClaudeAiServers = servers.filter(s => s.client?.config?.type === "claudeai-proxy" && s.client?.type !== "connected");
+          t11 = <MCPListPanel servers={servers} agentServers={agentMcpServers} toolCountsByServer={toolCountsByServer} unusedClaudeAiServers={unusedClaudeAiServers} showUnusedConnectors={showUnusedConnectors} onToggleUnusedConnectors={() => setShowUnusedConnectors(v => !v)} onSelectServer={t9} onSelectAgentServer={t10} onComplete={onComplete} defaultTab={viewState.defaultTab} />;
           $[18] = agentMcpServers;
           $[19] = onComplete;
           $[20] = servers;
           $[21] = viewState.defaultTab;
+          $[23] = mcp.tools;
           $[22] = t11;
         } else {
           t11 = $[22];

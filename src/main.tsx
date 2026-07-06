@@ -4304,6 +4304,32 @@ async function run(): Promise<CommanderCommand> {
     await agentsHandler();
     process.exit(0);
   });
+
+  // Project command - manage Claude Code project state
+  const projectCmd = program.command('project').description('Manage Claude Code project state').configureHelp(createSortedHelpConfig());
+  projectCmd.command('purge [path]').description('Delete all Claude Code state for a project (transcripts, tasks, file history, config entry)').option('--dry-run', 'List what would be deleted without deleting').option('--all', 'Purge state for every project (mutually exclusive with [path])').option('-i, --interactive', 'Interactively select a project to purge').action(async (path: string | undefined, options: {
+    dryRun?: boolean;
+    all?: boolean;
+    interactive?: boolean;
+  }) => {
+    const {
+      purgeProjectHandler
+    } = await import('./cli/handlers/projectPurge.js');
+    await purgeProjectHandler(path, options);
+    process.exit(0);
+  });
+
+  // Ultrareview command - cloud-hosted multi-agent code review
+  program.command('ultrareview [target]').description('Run a cloud-hosted multi-agent code review of the current branch (or a PR number / base branch) and print the findings').option('--json', 'Print the raw bugs.json payload instead of formatted findings').option('--timeout <minutes>', 'Maximum minutes to wait for the review to finish (default: 30)').action(async (target: string | undefined, options: {
+    json?: boolean;
+    timeout?: string;
+  }) => {
+    const {
+      ultrareviewHandler
+    } = await import('./cli/handlers/ultrareview.js');
+    await ultrareviewHandler(target ?? '', options);
+    process.exit(0);
+  });
   if (feature('TRANSCRIPT_CLASSIFIER')) {
     // Skip when tengu_auto_mode_config.enabled === 'disabled' (circuit breaker).
     // Reads from disk cache — GrowthBook isn't initialized at registration time.

@@ -178,7 +178,7 @@ function formatCost(cost: number, maxDecimalPlaces: number = 4): string {
   return `$${cost > 0.5 ? round(cost, 100).toFixed(2) : cost.toFixed(maxDecimalPlaces)}`
 }
 
-function formatModelUsage(): string {
+export function formatModelUsage(): string {
   const modelUsageMap = getModelUsage()
   if (Object.keys(modelUsageMap).length === 0) {
     return 'Usage:                 0 input, 0 output, 0 cache read, 0 cache write'
