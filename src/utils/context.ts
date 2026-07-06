@@ -39,6 +39,26 @@ export function has1mContext(model: string): boolean {
   return /\[1m\]/i.test(model)
 }
 
+/**
+ * Returns the CLAUDE_CODE_MAX_CONTEXT_TOKENS override when DISABLE_COMPACT is
+ * set, mirroring the official 2.1.200 `cOi()`: the override is only honored
+ * while compaction is disabled, so users can cap the effective context window
+ * for local decisions (auto-compact thresholds, etc.) without compaction
+ * kicking in to undo it. Returns undefined when the gate does not apply.
+ */
+export function getMaxContextTokensOverride(): number | undefined {
+  if (
+    isEnvTruthy(process.env.DISABLE_COMPACT) &&
+    process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
+  ) {
+    const override = parseInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, 10)
+    if (!isNaN(override) && override > 0) {
+      return override
+    }
+  }
+  return undefined
+}
+
 // @[MODEL LAUNCH]: Update this pattern if the new model supports 1M context
 export function modelSupports1M(model: string): boolean {
   if (is1mContextDisabled()) {
@@ -58,10 +78,12 @@ export function getContextWindowForModel(
   model: string,
   betas?: string[],
 ): number {
-  // Allow override via environment variable (ant-only)
+  // Allow override via environment variable.
   // This takes precedence over all other context window resolution, including 1M detection,
   // so users can cap the effective context window for local decisions (auto-compact, etc.)
   // while still using a 1M-capable endpoint.
+  // Honored for ant users, and (2.1.111) whenever DISABLE_COMPACT is set —
+  // see getMaxContextTokensOverride (official cOi).
   if (
     process.env.USER_TYPE === 'ant' &&
     process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
@@ -70,6 +92,10 @@ export function getContextWindowForModel(
     if (!isNaN(override) && override > 0) {
       return override
     }
+  }
+  const disableCompactOverride = getMaxContextTokensOverride()
+  if (disableCompactOverride !== undefined) {
+    return disableCompactOverride
   }
 
   // [1m] suffix — explicit client-side opt-in, respected over all detection

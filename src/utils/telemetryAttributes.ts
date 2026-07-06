@@ -11,6 +11,43 @@ const METRICS_CARDINALITY_DEFAULTS = {
   OTEL_METRICS_INCLUDE_SESSION_ID: true,
   OTEL_METRICS_INCLUDE_VERSION: false,
   OTEL_METRICS_INCLUDE_ACCOUNT_UUID: true,
+  OTEL_METRICS_INCLUDE_ENTRYPOINT: false,
+}
+
+// Known entrypoint identifiers (mirrors the official 2.1.200 valid set).
+// CLAUDE_CODE_ENTRYPOINT is only surfaced as app.entrypoint when it appears
+// in this set, so unknown values do not leak into metrics cardinality.
+const VALID_ENTRYPOINTS = new Set([
+  'cli',
+  'mcp',
+  'sdk-cli',
+  'sdk-ts',
+  'sdk-py',
+  'bench',
+  'claude-vscode',
+  'claude-code-github-action',
+  'local-agent',
+  'local_agent',
+  'claude-desktop',
+  'remote',
+  'remote_baku',
+  'remote_cowork',
+  'remote_trigger',
+  'remote_desktop',
+  'remote_mobile',
+  'claude_in_slack',
+  'claude-in-slack',
+  'claude-in-teams',
+  'claude-desktop-3p',
+  'claude-security',
+  'ssh-remote',
+])
+
+// Returns the entrypoint name from CLAUDE_CODE_ENTRYPOINT when it is a known
+// value, otherwise undefined. Used for the app.entrypoint metric attribute.
+export function getEntrypointName(): string | undefined {
+  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+  return entrypoint && VALID_ENTRYPOINTS.has(entrypoint) ? entrypoint : undefined
 }
 
 function shouldIncludeAttribute(
@@ -39,6 +76,12 @@ export function getTelemetryAttributes(): Attributes {
   }
   if (shouldIncludeAttribute('OTEL_METRICS_INCLUDE_VERSION')) {
     attributes['app.version'] = MACRO.VERSION
+  }
+  if (shouldIncludeAttribute('OTEL_METRICS_INCLUDE_ENTRYPOINT')) {
+    const entrypoint = getEntrypointName()
+    if (entrypoint) {
+      attributes['app.entrypoint'] = entrypoint
+    }
   }
 
   // Only include OAuth account data when actively using OAuth authentication

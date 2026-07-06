@@ -11,12 +11,18 @@
  */
 
 import { feature } from 'src/utils/featureFlags.js'
-import { context as otelContext, type Span, trace } from '@opentelemetry/api'
+import {
+  context as otelContext,
+  propagation,
+  type Span,
+  trace,
+} from '@opentelemetry/api'
 import { AsyncLocalStorage } from 'async_hooks'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
 import { getTelemetryAttributes } from '../telemetryAttributes.js'
+import { getIsNonInteractiveSession } from 'src/bootstrap/state.js'
 import {
   addBetaInteractionAttributes,
   addBetaLLMRequestAttributes,
@@ -213,9 +219,19 @@ export function startInteractionSpan(userPrompt: string): Span {
     'interaction.sequence': interactionSequence,
   })
 
-  const span = tracer.startSpan('claude_code.interaction', {
-    attributes,
-  })
+  const span = tracer.startSpan(
+    'claude_code.interaction',
+    { attributes },
+    // 2.1.110 (F13): when non-interactive and an incoming TRACEPARENT is
+    // present in the env, link this interaction span to the parent trace
+    // (distributed trace linking). Mirrors official mr()&&env.TRACEPARENT.
+    getIsNonInteractiveSession() && process.env.TRACEPARENT
+      ? propagation.extract(otelContext.active(), {
+          traceparent: process.env.TRACEPARENT,
+          tracestate: process.env.TRACESTATE,
+        })
+      : otelContext.active(),
+  )
 
   // Add experimental attributes (new_context)
   addBetaInteractionAttributes(span, userPrompt)

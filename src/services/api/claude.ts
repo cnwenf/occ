@@ -249,6 +249,11 @@ import {
   logAPISuccessAndDuration,
   type NonNullableUsage,
 } from './logging.js'
+import { logRawApiBody } from 'src/utils/telemetry/rawApiBodies.js'
+import {
+  getIncomingTraceContext,
+  shouldPropagateTraceparent,
+} from 'src/utils/telemetry/traceparentPropagation.js'
 import {
   CACHE_TTL_1HOUR_MS,
   checkResponseForCacheBreak,
@@ -1864,6 +1869,11 @@ async function* queryModel(
 
         const params = paramsFromContext(context)
         captureAPIRequest(params, options.querySource) // Capture for bug reports
+        // 2.1.111 (F12): OTEL_LOG_RAW_API_BODIES — dump the request body to a
+        // file or OTel log event when enabled. Best-effort, fire-and-forget.
+        logRawApiBody('api_request_body', params, {
+          request_id: clientRequestId,
+        })
 
         maxOutputTokens = params.max_tokens
 
@@ -1887,14 +1897,26 @@ async function* queryModel(
         // BetaMessageStream calls partialParse() on every input_json_delta, which we don't need
         // since we handle tool input accumulation ourselves
         // biome-ignore lint/plugin: main conversation loop handles attribution separately
+        // 2.1.110 (F13): forward the incoming W3C trace context (traceparent/
+        // tracestate) to the API when distributed trace linking is enabled.
+        const incomingTrace =
+          shouldPropagateTraceparent() ? getIncomingTraceContext() : undefined
         const result = await anthropic.beta.messages
           .create(
             { ...params, stream: true },
             {
               signal,
-              ...(clientRequestId && {
-                headers: { [CLIENT_REQUEST_ID_HEADER]: clientRequestId },
-              }),
+              headers: {
+                ...(clientRequestId && {
+                  [CLIENT_REQUEST_ID_HEADER]: clientRequestId,
+                }),
+                ...(incomingTrace?.traceparent && {
+                  traceparent: incomingTrace.traceparent,
+                }),
+                ...(incomingTrace?.tracestate && {
+                  tracestate: incomingTrace.tracestate,
+                }),
+              },
             },
           )
           .withResponse()

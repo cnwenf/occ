@@ -18,6 +18,32 @@ export function redactIfDisabled(content: string): string {
   return isUserPromptLoggingEnabled() ? content : '<REDACTED>'
 }
 
+// Mirrors the official 2.1.193 OTEL_LOG_ASSISTANT_RESPONSES handling (iia):
+// when OTEL_LOG_ASSISTANT_RESPONSES is set it takes precedence; otherwise the
+// assistant response follows OTEL_LOG_USER_PROMPTS.
+export function isAssistantResponseLoggingEnabled(): boolean {
+  if (process.env.OTEL_LOG_ASSISTANT_RESPONSES !== undefined) {
+    return isEnvTruthy(process.env.OTEL_LOG_ASSISTANT_RESPONSES)
+  }
+  return isUserPromptLoggingEnabled()
+}
+
+// Max length (chars) of the assistant response body attached to the
+// assistant_response OTel log event (official WP/WAp = 61440).
+const ASSISTANT_RESPONSE_MAX_LENGTH = 61440
+
+// Returns the (truncated) assistant response for logging, or "<REDACTED>" when
+// assistant-response logging is disabled. Mirrors official WP(e).
+export function getAssistantResponseForLogging(content: string): string {
+  if (!isAssistantResponseLoggingEnabled()) {
+    return '<REDACTED>'
+  }
+  if (content.length <= ASSISTANT_RESPONSE_MAX_LENGTH) {
+    return content
+  }
+  return `${content.slice(0, ASSISTANT_RESPONSE_MAX_LENGTH)}[truncated]`
+}
+
 export async function logOTelEvent(
   eventName: string,
   metadata: { [key: string]: string | undefined } = {},

@@ -23,6 +23,8 @@ import { getAPIProviderForStatsig } from 'src/utils/model/providers.js'
 import type { PermissionMode } from 'src/utils/permissions/PermissionMode.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
 import { logOTelEvent } from 'src/utils/telemetry/events.js'
+import { getAssistantResponseForLogging } from 'src/utils/telemetry/events.js'
+import { logRawApiBody } from 'src/utils/telemetry/rawApiBodies.js'
 import {
   endLLMRequestSpan,
   isBetaTracingEnabled,
@@ -727,6 +729,45 @@ export function logAPISuccessAndDuration({
     duration_ms: String(durationMs),
     speed: fastMode ? 'fast' : 'normal',
   })
+
+  // 2.1.111 (F12): OTEL_LOG_RAW_API_BODIES — dump the response body when
+  // enabled. Best-effort, fire-and-forget.
+  if (newMessages) {
+    logRawApiBody('api_response_body', newMessages, {
+      request_id: requestId,
+    })
+  }
+
+  // 2.1.193 (F11): OTEL_LOG_ASSISTANT_RESPONSES — emit the assistant_response
+  // OTel log event with the (truncated, possibly redacted) response text.
+  if (newMessages) {
+    const responseText = newMessages
+      .flatMap(m => {
+        const content = (m as { message?: { content?: unknown[] } }).message
+          ?.content
+        if (!Array.isArray(content)) return []
+        return content
+          .filter(
+            c =>
+              typeof c !== 'string' && (c as { type?: string }).type === 'text',
+          )
+          .map(c => (c as { text?: string }).text ?? '')
+      })
+      .join('')
+    if (responseText) {
+      // iy(m): normalize agent:custom:* query sources to "agent:custom".
+      const querySourceNorm = querySource?.startsWith('agent:custom:')
+        ? 'agent:custom'
+        : querySource
+      void logOTelEvent('assistant_response', {
+        response_length: String(responseText.length),
+        response: getAssistantResponseForLogging(responseText),
+        request_id: requestId,
+        model,
+        query_source: querySourceNorm,
+      })
+    }
+  }
 
   // Extract model output, thinking output, and tool call flag when beta tracing is enabled
   let modelOutput: string | undefined

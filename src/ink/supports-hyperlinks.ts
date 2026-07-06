@@ -26,13 +26,22 @@ type SupportsHyperlinksOptions = {
 export function supportsHyperlinks(
   options?: SupportsHyperlinksOptions,
 ): boolean {
+  const env = options?.env ?? process.env
+
+  // FORCE_HYPERLINK explicitly overrides detection: when set, hyperlinks are
+  // enabled unless the value is non-empty and parses to 0 (e.g. "0").
+  // Honored from process.env, which includes values injected via settings.json
+  // env (SAFE_ENV_VARS allowlist).
+  if ('FORCE_HYPERLINK' in env) {
+    const value = env['FORCE_HYPERLINK'] ?? ''
+    return !(value.length > 0 && parseInt(value, 10) === 0)
+  }
+
   const stdoutSupported =
     options?.stdoutSupported ?? supportsHyperlinksLib.stdout
   if (stdoutSupported) {
     return true
   }
-
-  const env = options?.env ?? process.env
 
   // Check for additional terminals not detected by supports-hyperlinks
   const termProgram = env['TERM_PROGRAM']
