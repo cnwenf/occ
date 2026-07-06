@@ -356,6 +356,45 @@ export async function getAnthropicClient({
     return new AnthropicVertex(vertexArgs) as unknown as Anthropic
   }
 
+  // 2.1.198 (A12): Claude Platform on AWS (anthropicAws). Uses the standard
+  // Anthropic SDK client against an AWS endpoint (`aws-external-anthropic`),
+  // authenticated via ANTHROPIC_AWS_API_KEY (or desktop-app-managed creds),
+  // with an optional anthropic-workspace-id header from
+  // ANTHROPIC_AWS_WORKSPACE_ID. Auth may be skipped via
+  // CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH.
+  if (isEnvTruthy(process.env.CLAUDE_CODE_USE_ANTHROPIC_AWS)) {
+    const skipAwsAuth = isEnvTruthy(
+      process.env.CLAUDE_CODE_SKIP_ANTHROPIC_AWS_AUTH,
+    )
+    const awsBaseURL =
+      process.env.ANTHROPIC_AWS_BASE_URL ||
+      `https://aws-external-anthropic.${getAWSRegion()}.api.aws`
+    const awsWorkspaceId = process.env.ANTHROPIC_AWS_WORKSPACE_ID
+
+    const awsHeaders: Record<string, string> = {
+      ...(awsWorkspaceId
+        ? { 'anthropic-workspace-id': awsWorkspaceId }
+        : {}),
+    }
+    const awsArgs: ConstructorParameters<typeof Anthropic>[0] = {
+      ...ARGS,
+      baseURL: awsBaseURL,
+      // When auth is skipped, pass a dummy apiKey so the SDK does not throw
+      // on the missing ANTHROPIC_API_KEY env var.
+      ...(skipAwsAuth
+        ? { apiKey: 'sk-anthropic-aws-skip-auth' }
+        : { apiKey: process.env.ANTHROPIC_AWS_API_KEY ?? null }),
+      ...(isDebugToStdErr() && { logger: createStderrLogger() }),
+    }
+    if (Object.keys(awsHeaders).length > 0) {
+      awsArgs.defaultHeaders = {
+        ...(awsArgs.defaultHeaders as Record<string, string> | undefined),
+        ...awsHeaders,
+      }
+    }
+    return new Anthropic(awsArgs)
+  }
+
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof Anthropic>[0] = {
     apiKey: isClaudeAISubscriber() ? null : apiKey || getAnthropicApiKey(),

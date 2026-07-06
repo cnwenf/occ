@@ -57,6 +57,62 @@ const FLOOR_OUTPUT_TOKENS = 3000
 const MAX_529_RETRIES = 3
 export const BASE_DELAY_MS = 500
 
+// 2.1.186 (A13): CLAUDE_CODE_MAX_RETRIES is capped at 15 when the retry
+// watchdog is OFF (binary `uZo = 15`). With the watchdog ON
+// (CLAUDE_CODE_RETRY_WATCHDOG), the default is 300 (binary `zCm = 300`) and
+// the cap is not applied — overload/429 errors retry well past the normal
+// budget. Binary references (claude.strings):
+//   - `function vge(){return it(process.env.CLAUDE_CODE_RETRY_WATCHDOG)}`
+//   - `uZo=15` ... `zCm=300` ... `VCm=10`
+//   - `if(t>uZo&&!e){...v(\`CLAUDE_CODE_MAX_RETRIES=${t} clamped to ${uZo}\`...);return uZo}`
+const MAX_RETRIES_CLAMP = 15
+const WATCHDOG_DEFAULT_MAX_RETRIES = 300
+let maxRetriesClampWarned = false
+
+/**
+ * 2.1.186 (A13): whether the retry watchdog is enabled
+ * (CLAUDE_CODE_RETRY_WATCHDOG). When enabled, overload/429 errors are retried
+ * past the normal budget (up to WATCHDOG_DEFAULT_MAX_RETRIES by default), the
+ * MAX_RETRIES cap-at-15 is not applied, mid-stream 529s are retried, and the
+ * "background drop" / "custom 529 overload" / "retry-after too long" throws
+ * are suppressed. Mirrors the binary's `vge()`.
+ */
+export function isRetryWatchdogEnabled(): boolean {
+  return isEnvTruthy(process.env.CLAUDE_CODE_RETRY_WATCHDOG)
+}
+
+/**
+ * 2.1.186 (A13): default max retries, honoring CLAUDE_CODE_MAX_RETRIES with a
+ * cap-at-15 when the watchdog is OFF. When the watchdog is ON, the cap is not
+ * applied and the default rises to 300. Mirrors the binary's `T3o()`.
+ *
+ * @param watchdog - whether the retry watchdog is enabled (default: current
+ *   value of isRetryWatchdogEnabled()).
+ */
+export function getDefaultMaxRetries(
+  watchdog: boolean = isRetryWatchdogEnabled(),
+): number {
+  if (process.env.CLAUDE_CODE_MAX_RETRIES) {
+    const t = parseInt(process.env.CLAUDE_CODE_MAX_RETRIES, 10)
+    if (Number.isFinite(t) && t >= 0) {
+      // Only clamp when the watchdog is OFF — the watchdog opts into
+      // unbounded overload/429 retry, so capping would defeat it.
+      if (t > MAX_RETRIES_CLAMP && !watchdog) {
+        if (!maxRetriesClampWarned) {
+          maxRetriesClampWarned = true
+          logForDebugging(
+            `CLAUDE_CODE_MAX_RETRIES=${t} clamped to ${MAX_RETRIES_CLAMP}`,
+            { level: 'warn' },
+          )
+        }
+        return MAX_RETRIES_CLAMP
+      }
+      return t
+    }
+  }
+  return watchdog ? WATCHDOG_DEFAULT_MAX_RETRIES : DEFAULT_MAX_RETRIES
+}
+
 // Foreground query sources where the user IS blocking on the result — these
 // retry on 529. Everything else (summaries, titles, suggestions, classifiers)
 // bails immediately: during a capacity cascade each retry is 3-10× gateway
@@ -176,6 +232,17 @@ export class FallbackTriggeredError extends Error {
   constructor(
     public readonly originalModel: string,
     public readonly fallbackModel: string,
+    /**
+     * 2.1.152/2.1.166 (A16): why fallback was triggered. Mirrors the binary's
+     * trigger enum: "model_not_found" (model retired/unknown, 404),
+     * "permission_denied" (org lacks model access, 403), "overloaded" (529),
+     * "server_error" (5xx non-529, only when the watchdog is OFF).
+     */
+    public readonly trigger:
+      | 'model_not_found'
+      | 'permission_denied'
+      | 'overloaded'
+      | 'server_error' = 'overloaded',
   ) {
     super(`Model fallback triggered: ${originalModel} -> ${fallbackModel}`)
     this.name = 'FallbackTriggeredError'
@@ -334,7 +401,14 @@ export async function* withRetry<T>(
 
       // Non-foreground sources bail immediately on 529 — no retry amplification
       // during capacity cascades. User never sees these fail.
-      if (is529Error(error) && !shouldRetry529(options.querySource)) {
+      // 2.1.186 (A13): suppressed when the retry watchdog is ON (binary
+      // `!vge()` guard) — the watchdog keeps retrying overload instead of
+      // dropping background requests.
+      if (
+        is529Error(error) &&
+        !shouldRetry529(options.querySource) &&
+        !isRetryWatchdogEnabled()
+      ) {
         logEvent('tengu_api_529_background_dropped', {
           query_source:
             options.querySource as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -373,7 +447,8 @@ export async function* withRetry<T>(
           if (
             process.env.USER_TYPE === 'external' &&
             !process.env.IS_SANDBOX &&
-            !isPersistentRetryEnabled()
+            !isPersistentRetryEnabled() &&
+            !isRetryWatchdogEnabled()
           ) {
             logEvent('tengu_api_custom_529_overloaded_error', {})
             throw new CannotRetryError(
@@ -381,6 +456,48 @@ export async function* withRetry<T>(
               retryContext,
             )
           }
+        }
+      }
+
+      // 2.1.152/2.1.166 (A16): trigger model fallback immediately (no
+      // 529-counting) when the API rejects the requested model —
+      //   - model_not_found (404 not_found_error referencing a model), OR
+      //   - permission_denied (403 permission_error referencing a model), OR
+      //   - a 5xx server error that is NOT a 529 overload — but ONLY when the
+      //     retry watchdog is OFF (with the watchdog on, 5xx is retried
+      //     instead of falling back, matching the binary's `!vge()&&v3o(b)`).
+      // Mirrors the binary:
+      //   if((FTc(b)||UTc(b)||!vge()&&v3o(b))&&n.fallbackModel&&n.fallbackModel!==n.model)
+      //     {let R=FTc(b)?"model_not_found":UTc(b)?"permission_denied":"server_error"; ...}
+      const fallbackTriggerReason = getFallbackTriggerReason(error)
+      const is5xxTrigger =
+        is5xxServerError(error) && !isRetryWatchdogEnabled()
+      if (
+        (fallbackTriggerReason !== null || is5xxTrigger) &&
+        options.fallbackModel &&
+        options.fallbackModel.length > 0
+      ) {
+        const primaryFallback = options.fallbackModel[0]
+        if (primaryFallback !== options.model) {
+          const trigger =
+            fallbackTriggerReason ?? 'server_error'
+          if (trigger === 'model_not_found') {
+            logEvent('tengu_api_model_not_found_fallback_triggered', {
+              original_model:
+                options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              fallback_model:
+                primaryFallback as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              provider: getAPIProviderForStatsig(),
+            })
+            logForDebugging(`API model not found: ${options.model}`, {
+              level: 'error',
+            })
+          }
+          throw new FallbackTriggeredError(
+            options.model,
+            primaryFallback,
+            trigger,
+          )
         }
       }
 
@@ -416,7 +533,15 @@ export async function* withRetry<T>(
       // Only retry if the error indicates we should
       const persistent =
         isPersistentRetryEnabled() && isTransientCapacityError(error)
-      if (attempt > maxRetries && !persistent) {
+      // 2.1.186 (A17): with the retry watchdog ON, overload (529) / 429 errors
+      // retry past the normal budget instead of throwing on exhaustion — the
+      // watchdog keeps headless/unattended sessions alive through capacity
+      // cascades. Mirrors the binary's
+      //   `let T=vge()&&WTc(b); if(h>r&&!T) throw Ie("api_request","api_request_retry_exhausted")`
+      // (T = watchdog-enabled && (overloaded || 429); without T, exhaustion throws).
+      const watchdogRetryable =
+        isRetryWatchdogEnabled() && isWatchdogRetryable(error)
+      if (attempt > maxRetries && !persistent && !watchdogRetryable) {
         throw new CannotRetryError(error, retryContext)
       }
 
@@ -669,6 +794,76 @@ export function is529Error(error: unknown): boolean {
   )
 }
 
+/**
+ * 2.1.152 (A16): a 404 `not_found_error` whose message references a model —
+ * i.e. the API rejected the requested model id (retired/unknown). Mirrors the
+ * binary's `FTc`. Triggers model fallback immediately (no 529-counting).
+ */
+export function isModelNotFoundError(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 404) return false
+  const message = error.message ?? ''
+  return (
+    (error.type === 'not_found_error' ||
+      message.includes('"type":"not_found_error"')) &&
+    message.includes('model:')
+  )
+}
+
+/**
+ * 2.1.166 (A16): a 403 `permission_error` whose message references a model —
+ * i.e. the org is not permitted to use the requested model. Mirrors the
+ * binary's `UTc`. Triggers model fallback immediately.
+ */
+export function isModelPermissionDeniedError(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 403) return false
+  const message = error.message ?? ''
+  return (
+    (error.type === 'permission_error' ||
+      message.includes('"type":"permission_error"')) &&
+    message.includes('model:')
+  )
+}
+
+/**
+ * A 5xx server error that is NOT a 529 overload (e.g. 500/502/503/504).
+ * Mirrors the binary's `v3o`. Used as a fallback trigger (when the watchdog
+ * is OFF) and distinguished from overload, which has its own retry path.
+ */
+function is5xxServerError(error: unknown): boolean {
+  return (
+    error instanceof APIError &&
+    error.status !== undefined &&
+    error.status >= 500 &&
+    error.status < 600 &&
+    error.status !== 529
+  )
+}
+
+/**
+ * 2.1.186 (A13/A17): whether an error is "watchdog retryable" — an overload
+ * (529) or a 429 rate limit. When the retry watchdog is ON, these errors
+ * retry past the normal budget instead of throwing on exhaustion. Mirrors
+ * the binary's `WTc(b) = Hge(b) || (b instanceof Wo && b.status===429)`.
+ */
+export function isWatchdogRetryable(error: unknown): boolean {
+  return (
+    is529Error(error) || (error instanceof APIError && error.status === 429)
+  )
+}
+
+/**
+ * The fallback trigger reason for an error. Mirrors the binary's
+ * `R = FTc(b) ? "model_not_found" : UTc(b) ? "permission_denied" : "server_error"`.
+ */
+export function getFallbackTriggerReason(
+  error: unknown,
+): 'model_not_found' | 'permission_denied' | 'server_error' | null {
+  if (isModelNotFoundError(error)) return 'model_not_found'
+  if (isModelPermissionDeniedError(error)) return 'permission_denied'
+  if (is5xxServerError(error)) return 'server_error'
+  return null
+}
+
 function isOAuthTokenRevokedError(error: unknown): boolean {
   return (
     error instanceof APIError &&
@@ -765,6 +960,21 @@ function shouldRetry(error: APIError): boolean {
     return true
   }
 
+  // 2.1.198 (A12): Claude Platform on AWS failover — for anthropicAws (and
+  // mantle), a 403 or an AWS CredentialsProviderError is a transient auth
+  // blip (credential refresh flap), not bad credentials. Retry instead of
+  // failing the turn. Mirrors the binary's
+  //   `if(it(process.env.CLAUDE_CODE_USE_ANTHROPIC_AWS)||it(process.env.CLAUDE_CODE_USE_MANTLE))
+  //      {if(Uhi(e)||e instanceof Wo&&e.status===403)return!0}` (Uhi = CredentialsProviderError).
+  if (
+    (isEnvTruthy(process.env.CLAUDE_CODE_USE_ANTHROPIC_AWS) ||
+      isEnvTruthy(process.env.CLAUDE_CODE_USE_MANTLE)) &&
+    (isAwsCredentialsProviderError(error) ||
+      (error instanceof APIError && error.status === 403))
+  ) {
+    return true
+  }
+
   // Check for overloaded errors first by examining the message content
   // The SDK sometimes fails to properly pass the 529 status code during streaming,
   // so we need to check the error message directly
@@ -845,12 +1055,6 @@ function shouldRetry(error: APIError): boolean {
   return false
 }
 
-export function getDefaultMaxRetries(): number {
-  if (process.env.CLAUDE_CODE_MAX_RETRIES) {
-    return parseInt(process.env.CLAUDE_CODE_MAX_RETRIES, 10)
-  }
-  return DEFAULT_MAX_RETRIES
-}
 function getMaxRetries(options: RetryOptions): number {
   return options.maxRetries ?? getDefaultMaxRetries()
 }
