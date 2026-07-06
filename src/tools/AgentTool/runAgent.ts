@@ -6,6 +6,10 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
+  clearSessionSkillAllowlist,
+  setSessionSkillAllowlist,
+} from '../../skills/sessionSkillAllowlist.js'
+import {
   DEFAULT_AGENT_PROMPT,
   enhanceSystemPromptWithEnvDetails,
 } from '../../constants/prompts.js'
@@ -576,6 +580,14 @@ export async function* runAgent({
 
   // Preload skills from agent frontmatter
   const skillsToPreload = agentDefinition.skills ?? []
+  // 2.1.186+: `skills:` frontmatter is restrictive — the subagent's Skill
+  // tool only gets the declared skills (matched by exact name, plugin-
+  // qualified name, or ":name" suffix). Set the session allowlist for the
+  // duration of this agent run; cleared in the finally below. An undefined
+  // skills frontmatter means no restriction (open session).
+  if (agentDefinition.skills !== undefined) {
+    setSessionSkillAllowlist(agentDefinition.skills)
+  }
   if (skillsToPreload.length > 0) {
     const allSkills = await getSkillToolCommands(getProjectRoot())
 
@@ -816,6 +828,8 @@ export async function* runAgent({
   } finally {
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
+    // 2.1.186+: release the session skill allowlist scoped to this agent.
+    clearSessionSkillAllowlist()
     // Clean up agent's session hooks
     if (agentDefinition.hooks) {
       clearSessionHooks(rootSetAppState, agentId)

@@ -66,6 +66,14 @@ import {
 } from '../utils.js'
 import { SKILL_TOOL_NAME } from './constants.js'
 import { getPrompt } from './prompt.js'
+import { setSkillAttribution } from './skillAttribution.js'
+import {
+  dropShadowedSkills,
+} from '../../skills/loadSkillsDir.js'
+import {
+  getSessionSkillAllowlist,
+  isSkillAllowedBySession,
+} from '../../skills/sessionSkillAllowlist.js'
 import {
   renderToolResultMessage,
   renderToolUseErrorMessage,
@@ -88,9 +96,15 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
     .mcp.commands.filter(
       cmd => cmd.type === 'prompt' && cmd.loadedFrom === 'mcp',
     )
-  if (mcpSkills.length === 0) return getCommands(getProjectRoot())
+  if (mcpSkills.length === 0) {
+    // 2.1.186: drop bundled/fallback skills shadowed by a same-named
+    // user/plugin skill before exposing them to the model.
+    return dropShadowedSkills(await getCommands(getProjectRoot()))
+  }
   const localCommands = await getCommands(getProjectRoot())
-  return uniqBy([...localCommands, ...mcpSkills], 'name')
+  return dropShadowedSkills(
+    uniqBy([...localCommands, ...mcpSkills], 'name'),
+  )
 }
 
 // Re-export Progress from centralized types to break import cycles
@@ -418,6 +432,21 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
+    // 2.1.186+: session skill allowlist. When a subagent is launched with a
+    // `skills:` frontmatter list, only those skills are invocable in that
+    // session. A skill not on the allowlist is rejected with errorCode 8.
+    // Matching follows the same rules as AgentDefinition.skills (exact name,
+    // plugin-qualified name, or ":name" suffix).
+    if (getSessionSkillAllowlist() !== undefined) {
+      if (!isSkillAllowedBySession(normalizedCommandName)) {
+        return {
+          result: false,
+          message: `Skill ${normalizedCommandName} is not in this session's skills allowlist`,
+          errorCode: 8,
+        }
+      }
+    }
+
     // Check if command is a prompt-based command
     if (foundCommand.type !== 'prompt') {
       return {
@@ -618,6 +647,10 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
 
     // Track skill usage for ranking
     recordSkillUsage(commandName)
+
+    // 2.1.186+: record turn-level skill attribution so the API request
+    // telemetry can tag which skill contributed to this turn.
+    setSkillAttribution(commandName)
 
     // Check if skill should run as a forked sub-agent
     if (command?.type === 'prompt' && command.context === 'fork') {
@@ -1058,6 +1091,9 @@ async function executeRemoteSkill(
   })
 
   recordSkillUsage(commandName)
+
+  // 2.1.186+: turn-level attribution for the remote skill path too.
+  setSkillAttribution(commandName)
 
   logForDebugging(
     `SkillTool loaded remote skill ${slug} (cacheHit=${cacheHit}, ${latencyMs}ms, ${content.length} chars)`,

@@ -5,6 +5,7 @@ import {
   getSkillToolCommands,
   getSlashCommandToolSkills,
 } from 'src/commands.js'
+import { dropShadowedSkills } from '../../skills/loadSkillsDir.js'
 import { COMMAND_NAME_TAG } from '../../constants/xml.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import {
@@ -199,7 +200,10 @@ export async function getSkillToolInfo(cwd: string): Promise<{
   totalCommands: number
   includedCommands: number
 }> {
-  const agentCommands = await getSkillToolCommands(cwd)
+  // 2.1.186: drop bundled/fallback skills shadowed by a same-named user/
+  // plugin skill before counting, so the listing and token budget reflect
+  // what the model can actually invoke.
+  const agentCommands = dropShadowedSkills(await getSkillToolCommands(cwd))
 
   return {
     totalCommands: agentCommands.length,
@@ -211,7 +215,7 @@ export async function getSkillToolInfo(cwd: string): Promise<{
 // All commands are always included (descriptions may be truncated to fit budget).
 // Used by analyzeContext to count skill tokens.
 export function getLimitedSkillToolCommands(cwd: string): Promise<Command[]> {
-  return getSkillToolCommands(cwd)
+  return getSkillToolCommands(cwd).then(dropShadowedSkills)
 }
 
 export function clearPromptCache(): void {

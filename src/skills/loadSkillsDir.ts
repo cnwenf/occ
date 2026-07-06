@@ -39,6 +39,7 @@ import {
   coerceDescriptionToString,
   type FrontmatterData,
   type FrontmatterShell,
+  type ParsedMarkdown,
   parseBooleanFrontmatter,
   parseFrontmatter,
   parseShellFrontmatter,
@@ -182,6 +183,129 @@ function parseSkillPaths(frontmatter: FrontmatterData): string[] | undefined {
 }
 
 /**
+ * Kebab-case → camelCase key normalization for skill frontmatter (2.1.186+).
+ *
+ * The official parser accepts a `{ normalizeKeys: true }` option that
+ * normalizes YAML keys so `display-name` is readable as `displayName`,
+ * `default-enabled` as `defaultEnabled`, etc. OCC's shared frontmatter parser
+ * lives in src/utils/frontmatterParser.ts and is outside this module's scope,
+ * so we normalize as a post-parse step here.
+ *
+ * Only the 2.1.186 frontmatter additions are normalized — copying the kebab
+ * form onto a camelCase alias when the camelCase form isn't already set — so
+ * existing kebab-case reads (`allowed-tools`, `user-invocable`, …) keep
+ * working unchanged.
+ */
+const NORMALIZE_KEY_MAP: Record<string, string> = {
+  'display-name': 'displayName',
+  'default-enabled': 'defaultEnabled',
+}
+
+export function normalizeFrontmatterKeys(
+  frontmatter: FrontmatterData,
+): FrontmatterData {
+  const out: FrontmatterData = { ...frontmatter }
+  for (const [kebab, camel] of Object.entries(NORMALIZE_KEY_MAP)) {
+    const kebabVal = (frontmatter as Record<string, unknown>)[kebab]
+    if (
+      kebabVal !== undefined &&
+      (out as Record<string, unknown>)[camel] === undefined
+    ) {
+      ;(out as Record<string, unknown>)[camel] = kebabVal
+    }
+  }
+  return out
+}
+
+/**
+ * Parse frontmatter with optional key normalization. Mirrors the official
+ * `fm(content, path, { normalizeKeys: true })` call shape used at every skill
+ * load site.
+ */
+export function parseSkillFrontmatter(
+  content: string,
+  sourcePath?: string,
+  opts?: { normalizeKeys?: boolean },
+): ParsedMarkdown {
+  const parsed = parseFrontmatter(content, sourcePath)
+  if (opts?.normalizeKeys) {
+    parsed.frontmatter = normalizeFrontmatterKeys(parsed.frontmatter)
+  }
+  return parsed
+}
+
+/**
+ * Drop bundled skills shadowed by a same-named skill appearing earlier in the
+ * list (2.1.186+). A user/plugin skill named "foo" shadows a bundled "foo".
+ *
+ * Mirrors the official `dropShadowedBundledSkills`: track every name seen;
+ * drop a BUNDLED prompt skill whose name was already seen. Only bundled
+ * duplicates are removed — non-bundled duplicates are left to other
+ * deduplication layers.
+ */
+export function dropShadowedBundledSkills(skills: Command[]): Command[] {
+  const seen = new Set<string>()
+  let dropped = false
+  const filtered = skills.filter(skill => {
+    if (
+      skill.type === 'prompt' &&
+      skill.source === 'bundled' &&
+      seen.has(skill.name)
+    ) {
+      dropped = true
+      return false
+    }
+    seen.add(skill.name)
+    return true
+  })
+  return dropped ? filtered : skills
+}
+
+/**
+ * Drop fallback skills shadowed by a same-named real skill (2.1.186+).
+ *
+ * Mirrors the official `dropShadowedFallbackSkills`: collect the names of
+ * non-fallback, model-invocable skills from plugin/bundled/mcp sources (using
+ * the suffix after the last ":" for plugin-qualified names); then drop any
+ * fallback skill whose name appears in that set.
+ */
+export function dropShadowedFallbackSkills(skills: Command[]): Command[] {
+  const realNames = new Set<string>()
+  for (const skill of skills) {
+    if (skill.type !== 'prompt') continue
+    if (
+      skill.loadedFrom !== 'plugin' &&
+      skill.loadedFrom !== 'bundled' &&
+      skill.loadedFrom !== 'mcp'
+    ) {
+      continue
+    }
+    if (skill.disableModelInvocation) continue
+    const colonIdx = skill.name.lastIndexOf(':')
+    if (colonIdx > 0) {
+      realNames.add(skill.name.slice(colonIdx + 1))
+    } else {
+      realNames.add(skill.name)
+    }
+  }
+  if (realNames.size === 0) return skills
+  return skills.filter(skill => {
+    if (skill.type !== 'prompt') return true
+    const isFallback = (skill as { fallback?: boolean }).fallback === true
+    if (!isFallback) return true
+    return !realNames.has(skill.name)
+  })
+}
+
+/**
+ * Apply both shadowing passes (bundled then fallback) to a skill list.
+ * Convenience wrapper for the assembly sites that want the full pipeline.
+ */
+export function dropShadowedSkills(skills: Command[]): Command[] {
+  return dropShadowedFallbackSkills(dropShadowedBundledSkills(skills))
+}
+
+/**
  * Parses all skill frontmatter fields that are shared between file-based and
  * MCP skill loading. Caller supplies the resolved skill name and the
  * source/loadedFrom/baseDir/paths fields separately.
@@ -209,6 +333,9 @@ export function parseSkillFrontmatterFields(
   agent: string | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  defaultEnabled: boolean | undefined
+  fallback: boolean
+  metadata: Record<string, unknown> | undefined
 } {
   const validatedDescription = coerceDescriptionToString(
     frontmatter.description,
@@ -240,8 +367,16 @@ export function parseSkillFrontmatterFields(
   }
 
   return {
+    // 2.1.186: display-name frontmatter (normalized to displayName). Falls
+    // back to the `name` field for backwards compatibility.
     displayName:
-      frontmatter.name != null ? String(frontmatter.name) : undefined,
+      frontmatter.displayName != null
+        ? String(frontmatter.displayName)
+        : frontmatter['display-name'] != null
+          ? String(frontmatter['display-name'])
+          : frontmatter.name != null
+            ? String(frontmatter.name)
+            : undefined,
     description,
     hasUserSpecifiedDescription: validatedDescription !== null,
     allowedTools: parseSlashCommandToolsFromFrontmatter(
@@ -269,6 +404,20 @@ export function parseSkillFrontmatterFields(
     agent: frontmatter.agent as string | undefined,
     effort,
     shell: parseShellFrontmatter(frontmatter.shell, resolvedName),
+    // 2.1.186 frontmatter additions
+    defaultEnabled:
+      frontmatter.defaultEnabled !== undefined
+        ? parseBooleanFrontmatter(frontmatter.defaultEnabled)
+        : frontmatter['default-enabled'] !== undefined
+          ? parseBooleanFrontmatter(frontmatter['default-enabled'])
+          : undefined,
+    fallback: parseBooleanFrontmatter(frontmatter.fallback),
+    metadata:
+      frontmatter.metadata != null &&
+      typeof frontmatter.metadata === 'object' &&
+      !Array.isArray(frontmatter.metadata)
+        ? (frontmatter.metadata as Record<string, unknown>)
+        : undefined,
   }
 }
 
@@ -299,6 +448,9 @@ export function createSkillCommand({
   paths,
   effort,
   shell,
+  defaultEnabled,
+  fallback,
+  metadata,
 }: {
   skillName: string
   displayName: string | undefined
@@ -323,6 +475,9 @@ export function createSkillCommand({
   paths: string[] | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
+  defaultEnabled: boolean | undefined
+  fallback: boolean
+  metadata: Record<string, unknown> | undefined
 }): Command {
   return {
     type: 'prompt',
@@ -345,6 +500,14 @@ export function createSkillCommand({
     contentLength: markdownContent.length,
     isHidden: !userInvocable,
     progressMessage: 'running',
+    // 2.1.186: default-enabled gates whether a file skill loads at all.
+    // Exposed for the loader to consult; isEnabled() delegates to it so the
+    // command filter (isCommandEnabled) honors the frontmatter opt-out.
+    defaultEnabled,
+    fallback,
+    metadata,
+    isEnabled:
+      defaultEnabled === false ? () => false : undefined,
     userFacingName(): string {
       return displayName || skillName
     },
@@ -469,9 +632,10 @@ async function loadSkillsFromSkillsDir(
           return null
         }
 
-        const { frontmatter, content: markdownContent } = parseFrontmatter(
+        const { frontmatter, content: markdownContent } = parseSkillFrontmatter(
           content,
           skillFilePath,
+          { normalizeKeys: true },
         )
 
         const skillName = entry.name
@@ -481,6 +645,14 @@ async function loadSkillsFromSkillsDir(
           skillName,
         )
         const paths = parseSkillPaths(frontmatter)
+
+        // 2.1.186: default-enabled: false skips loading the skill entirely.
+        if (parsed.defaultEnabled === false) {
+          logForDebugging(
+            `[skills] Skipping '${skillName}' (default-enabled: false)`,
+          )
+          return null
+        }
 
         return {
           skill: createSkillCommand({
@@ -615,12 +787,23 @@ async function loadSkillsFromCommandsDir(
           source,
         })
 
+        // 2.1.186: normalize kebab-case frontmatter keys for the legacy
+        // /commands/ path too (loadMarkdownFilesForSubdir parses raw YAML).
+        const normalizedFrontmatter = normalizeFrontmatterKeys(frontmatter)
         const parsed = parseSkillFrontmatterFields(
-          frontmatter,
+          normalizedFrontmatter,
           content,
           cmdName,
           'Custom command',
         )
+
+        // 2.1.186: default-enabled: false skips loading.
+        if (parsed.defaultEnabled === false) {
+          logForDebugging(
+            `[commands] Skipping '${cmdName}' (default-enabled: false)`,
+          )
+          continue
+        }
 
         skills.push({
           skill: createSkillCommand({
