@@ -23,6 +23,24 @@ export function interpolateColor(
   }
 }
 
+// Thinking-text amber warm-up intensity. After 10s of thinking (no active
+// tools), the thinking-text color warms toward the theme `warning` (amber)
+// color. Intensity is 0 until 10s, then ramps linearly to 1 over the next
+// 10s (fully amber at 20s). Matches the official spinner's
+//   Math.min(Math.max((thinkingMs - 1e4) / 1e4, 0), 1)
+export const THINKING_AMBER_DELAY_MS = 10_000
+export const THINKING_AMBER_RAMP_MS = 10_000
+export function computeThinkingAmberIntensity(
+  thinkingMs: number,
+  hasActiveTools: boolean,
+  isThinking: boolean,
+  hasBurstStart: boolean,
+): number {
+  if (hasActiveTools) return 0
+  if (!isThinking || !hasBurstStart) return 0
+  return Math.min(Math.max((thinkingMs - THINKING_AMBER_DELAY_MS) / THINKING_AMBER_RAMP_MS, 0), 1)
+}
+
 // Convert RGB object to rgb() color string for Text component
 export function toRGBColor(color: RGBColorType): RGBColorString {
   return `rgb(${color.r},${color.g},${color.b})`

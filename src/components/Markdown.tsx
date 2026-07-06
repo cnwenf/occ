@@ -7,7 +7,50 @@ import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight
 import { hashContent } from '../utils/hash.js';
 import { configureMarked, formatToken } from '../utils/markdown.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
+import type { ThemeName } from '../utils/theme.js';
 import { MarkdownTable } from './MarkdownTable.js';
+
+// GFM task-list rendering. marked tokenizes "- [ ] foo" / "- [x] foo" as a
+// list_item with `task: true` + `checked`, plus a separate `checkbox` child
+// token. OCC's formatToken drops the checkbox child and only emits the bullet,
+// so task lists lose their [ ]/[x] marker. Render them here as
+// "- [ ] foo" / "- [x] foo" (bullet + checkbox + content), matching the
+// official listitem output ("${bullet} [${checked?'x':' '}] ${content}").
+const TASK_EOL = '\n';
+function listHasTaskItems(token: Tokens.List): boolean {
+  return (token.items ?? []).some(item => !!(item as Token & { task?: boolean }).task);
+}
+export function formatTaskList(
+  token: Tokens.List,
+  theme: ThemeName,
+  highlight: CliHighlight | null,
+): string {
+  return (token.items ?? [])
+    .map(item => {
+      const task = !!(item as Token & { task?: boolean }).task;
+      const checked = !!(item as Token & { checked?: boolean }).checked;
+      const bullet = task ? `- [${checked ? 'x' : ' '}]` : '-';
+      // Render the item's inline content WITHOUT the list_item bullet that
+      // formatToken's `text` case would add when parent is a list_item. Pass
+      // parent=null so the text child renders as plain text; for text children
+      // that carry inline tokens (emphasis/links), render those with the text
+      // token as parent so link/em handling still applies.
+      const content = (item.tokens ?? [])
+        .filter(t => t.type !== 'checkbox')
+        .map(t => {
+          const textToken = t as Token & { tokens?: Token[] };
+          if (t.type === 'text' && textToken.tokens) {
+            return textToken.tokens
+              .map(it => formatToken(it, theme, 1, null, t, highlight))
+              .join('');
+          }
+          return formatToken(t, theme, 1, null, null, highlight);
+        })
+        .join('');
+      return `${bullet} ${content}${TASK_EOL}`;
+    })
+    .join('');
+}
 type Props = {
   children: string;
   /** When true, render all text content as dim */
@@ -144,6 +187,10 @@ function MarkdownBody(t0) {
       if (token.type === "table") {
         flushNonTableContent();
         elements.push(<MarkdownTable key={elements.length} token={token as Tokens.Table} highlight={highlight} />);
+      } else if (token.type === "list" && listHasTaskItems(token as Tokens.List)) {
+        // GFM task list — render checkboxes ([ ]/[x]) instead of dropping them
+        flushNonTableContent();
+        elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatTaskList(token as Tokens.List, theme, highlight)}</Ansi>);
       } else {
         nonTableContent = nonTableContent + formatToken(token, theme, 0, null, null, highlight);
         nonTableContent;

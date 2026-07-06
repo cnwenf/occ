@@ -5,6 +5,13 @@ import useStdin from '../../ink/hooks/use-stdin.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { getSystemThemeName, type SystemTheme } from '../../utils/systemTheme.js';
 import type { ThemeName, ThemeSetting } from '../../utils/theme.js';
+import {
+  findCustomTheme,
+  isCustomThemeSetting,
+  loadCustomThemes,
+  parseCustomThemeSlug,
+  type CustomTheme,
+} from '../../commands/theme/customThemes.js';
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
   themeSetting: ThemeSetting;
@@ -52,6 +59,21 @@ export function ThemeProvider({
   // 'dark' if unset); the OSC 11 watcher corrects it on first poll.
   const [systemTheme, setSystemTheme] = useState<SystemTheme>(() => (initialState ?? themeSetting) === 'auto' ? getSystemThemeName() : 'dark');
 
+  // Custom named themes from ~/.claude/themes/*.json. A stored setting of the
+  // form "custom:<name>" resolves to the custom theme's base palette. (Per-key
+  // override application is layered on top of getTheme, which lives in
+  // src/utils/theme.ts.)
+  const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    loadCustomThemes().then(ct => {
+      if (!cancelled) setCustomThemes(ct);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // The setting currently in effect (preview wins while picker is open)
   const activeSetting = previewTheme ?? themeSetting;
   const {
@@ -78,7 +100,18 @@ export function ThemeProvider({
       };
     }
   }, [activeSetting, internal_querier]);
-  const currentTheme: ThemeName = activeSetting === 'auto' ? systemTheme : activeSetting;
+  const currentTheme: ThemeName = (() => {
+    if (activeSetting === 'auto') return systemTheme;
+    // Custom theme slug ("custom:<name>") → resolve to its base palette so
+    // getTheme() returns the correct base. Falls back to 'dark' if the
+    // custom theme file is missing or not yet loaded.
+    if (typeof activeSetting === 'string' && isCustomThemeSetting(activeSetting)) {
+      const slugName = parseCustomThemeSlug(activeSetting);
+      const ct = slugName ? findCustomTheme(customThemes, slugName) : undefined;
+      return ct?.base ?? 'dark';
+    }
+    return activeSetting;
+  })();
   const value = useMemo<ThemeContextValue>(() => ({
     themeSetting,
     setThemeSetting: (newSetting: ThemeSetting) => {

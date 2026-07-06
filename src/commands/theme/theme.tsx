@@ -5,6 +5,7 @@ import { Pane } from '../../components/design-system/Pane.js';
 import { ThemePicker } from '../../components/ThemePicker.js';
 import { useTheme } from '../../ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
+import { parseCustomThemeSlug } from './customThemes.js';
 type Props = {
   onDone: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -20,7 +21,8 @@ function ThemePickerCommand(t0) {
   if ($[0] !== onDone || $[1] !== setTheme) {
     t1 = setting => {
       setTheme(setting);
-      onDone(`Theme set to ${setting}`);
+      const customName = parseCustomThemeSlug(setting as string);
+      onDone(customName ? `Using custom theme "${customName}"` : `Theme set to ${setting}`);
     };
     $[0] = onDone;
     $[1] = setTheme;

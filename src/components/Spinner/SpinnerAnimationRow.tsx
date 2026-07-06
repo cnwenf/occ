@@ -3,17 +3,17 @@ import figures from 'figures';
 import * as React from 'react';
 import { useMemo, useRef } from 'react';
 import { stringWidth } from '../../ink/stringWidth.js';
-import { Box, Text, useAnimationFrame } from '../../ink.js';
+import { Box, Text, useAnimationFrame, useTheme } from '../../ink.js';
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js';
 import { formatDuration, formatNumber } from '../../utils/format.js';
 import { toInkColor } from '../../utils/ink.js';
-import type { Theme } from '../../utils/theme.js';
+import { getTheme, type Theme } from '../../utils/theme.js';
 import { Byline } from '../design-system/Byline.js';
 import { GlimmerMessage } from './GlimmerMessage.js';
 import { SpinnerGlyph } from './SpinnerGlyph.js';
 import type { SpinnerMode } from './types.js';
 import { useStalledAnimation } from './useStalledAnimation.js';
-import { interpolateColor, toRGBColor } from './utils.js';
+import { interpolateColor, parseRGB, toRGBColor, computeThinkingAmberIntensity } from './utils.js';
 const SEP_WIDTH = stringWidth(' · ');
 const THINKING_BARE_WIDTH = stringWidth('thinking');
 const SHOW_TOKENS_AFTER_MS = 30_000;
@@ -101,6 +101,12 @@ export function SpinnerAnimationRow({
   effortSuffix
 }: SpinnerAnimationRowProps): React.ReactNode {
   const [viewportRef, time] = useAnimationFrame(reducedMotion ? null : 50);
+  const [themeName] = useTheme();
+  // Track when the current thinking burst started (animation-clock ms), so
+  // we can warm the thinking text to amber after 10s. Reset on non-thinking.
+  const thinkingBurstStartRef = useRef<number | null>(null);
+  const amberIntensityRef = useRef(0);
+  const lastAmberSmoothRef = useRef(time);
 
   // === Elapsed time (wall-clock, derived from refs each frame) ===
   const now = Date.now();
@@ -197,7 +203,45 @@ export function SpinnerAnimationRow({
   // second useAnimationFrame(50) subscription.
   const thinkingElapsedSec = (time - THINKING_DELAY_MS) / 1000;
   const thinkingOpacity = time < THINKING_DELAY_MS ? 0 : (Math.sin(thinkingElapsedSec * Math.PI * 2 / THINKING_GLOW_PERIOD_S) + 1) / 2;
-  const thinkingShimmerColor = toRGBColor(interpolateColor(THINKING_INACTIVE, THINKING_INACTIVE_SHIMMER, thinkingOpacity));
+  // Warm to amber after 10s of thinking (no active tools). The raw intensity
+  // is a linear ramp; ease it in with the same 50ms/10% smoothing the stalled
+  // red interpolation uses so the warm-up doesn't step.
+  if (mode === 'thinking') {
+    if (thinkingBurstStartRef.current === null) thinkingBurstStartRef.current = time;
+  } else {
+    thinkingBurstStartRef.current = null;
+  }
+  const rawAmberIntensity = thinkingBurstStartRef.current === null
+    ? 0
+    : computeThinkingAmberIntensity(time - thinkingBurstStartRef.current, hasActiveTools, mode === 'thinking', true);
+  if (reducedMotion) {
+    amberIntensityRef.current = rawAmberIntensity;
+    lastAmberSmoothRef.current = time;
+  } else if (rawAmberIntensity > 0 || amberIntensityRef.current > 0) {
+    const dt = time - lastAmberSmoothRef.current;
+    if (dt >= 50) {
+      const steps = Math.floor(dt / 50);
+      let cur = amberIntensityRef.current;
+      for (let i = 0; i < steps; i++) {
+        const diff = rawAmberIntensity - cur;
+        if (Math.abs(diff) < 0.01) {
+          cur = rawAmberIntensity;
+          break;
+        }
+        cur += diff * 0.1;
+      }
+      amberIntensityRef.current = cur;
+      lastAmberSmoothRef.current = time;
+    }
+  } else {
+    lastAmberSmoothRef.current = time;
+  }
+  const amberIntensity = reducedMotion ? rawAmberIntensity : amberIntensityRef.current;
+  const warningRGB = parseRGB(getTheme(themeName).warning);
+  const thinkingShimmerRGB = interpolateColor(THINKING_INACTIVE, THINKING_INACTIVE_SHIMMER, thinkingOpacity);
+  const thinkingShimmerColor = warningRGB && amberIntensity > 0 ? toRGBColor(interpolateColor(thinkingShimmerRGB, warningRGB, amberIntensity)) : toRGBColor(thinkingShimmerRGB);
+  // Fallback for themes whose `warning` color isn't rgb-parseable (ansi themes)
+  const thinkingColorName = !warningRGB && amberIntensity > 0.5 ? 'warning' : undefined;
 
   // === Build status parts ===
   const parts = [...(spinnerSuffix ? [<Text dimColor key="suffix">
@@ -207,9 +251,9 @@ export function SpinnerAnimationRow({
           </Text>] : []), ...(showTokens ? [<Box flexDirection="row" key="tokens">
             {!hasRunningTeammates && <SpinnerModeGlyph mode={mode} />}
             <Text dimColor>{tokenCount} tokens</Text>
-          </Box>] : []), ...(showThinking && thinkingText ? [thinkingStatus === 'thinking' && !reducedMotion ? <Text key="thinking" color={thinkingShimmerColor}>
+          </Box>] : []), ...(showThinking && thinkingText ? [thinkingStatus === 'thinking' && !reducedMotion ? <Text key="thinking" color={thinkingColorName ?? thinkingShimmerColor}>
               {thinkingOnly ? `(${thinkingText})` : thinkingText}
-            </Text> : <Text dimColor key="thinking">
+            </Text> : <Text dimColor={amberIntensity <= 0} color={amberIntensity > 0 ? 'warning' : undefined} key="thinking">
               {thinkingText}
             </Text>] : [])];
   const status = foregroundedTeammate && !foregroundedTeammate.isIdle ? <>

@@ -8,6 +8,15 @@ import { useRegisterKeybindingContext } from '../keybindings/KeybindingContext.j
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
+import {
+  buildCustomThemeSlug,
+  isCustomThemeSetting,
+  loadCustomThemes,
+  NEW_CUSTOM_THEME_LABEL,
+  NEW_CUSTOM_THEME_VALUE,
+  parseCustomThemeSlug,
+} from '../commands/theme/customThemes.js';
+import type { CustomTheme } from '../commands/theme/customThemes.js';
 import { gracefulShutdown } from '../utils/gracefulShutdown.js';
 import { updateSettingsForSource } from '../utils/settings/settings.js';
 import type { ThemeSetting } from '../utils/theme.js';
@@ -28,7 +37,7 @@ export type ThemePickerProps = {
   onCancel?: () => void;
 };
 export function ThemePicker(t0) {
-  const $ = _c(59);
+  const $ = _c(63);
   const {
     onThemeSelect,
     showIntroText: t1,
@@ -72,6 +81,17 @@ export function ThemePicker(t0) {
   } = usePreviewTheme();
   const syntaxHighlightingDisabled = useAppState(_temp) ?? false;
   const setAppState = useSetAppState();
+  // Custom named themes from ~/.claude/themes/*.json (loaded once on mount)
+  const [customThemes, setCustomThemes] = React.useState<CustomTheme[]>([]);
+  React.useEffect(() => {
+    let cancelled = false;
+    loadCustomThemes().then(ct => {
+      if (!cancelled) setCustomThemes(ct);
+    }).catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   useRegisterKeybindingContext("ThemePicker", undefined);
   const syntaxToggleShortcut = useShortcutDisplay("theme:toggleSyntaxHighlighting", "ThemePicker", "ctrl+t");
   let t8;
@@ -137,6 +157,25 @@ export function ThemePicker(t0) {
     t10 = $[7];
   }
   const themeOptions = t10;
+  // Detect whether the saved setting is a custom theme (for the warning below)
+  const activeCustomSlug = typeof themeSetting === 'string' && isCustomThemeSetting(themeSetting) ? parseCustomThemeSlug(themeSetting) : null;
+  const activeCustomTheme = activeCustomSlug ? customThemes.find(ct => ct.slug === activeCustomSlug) : undefined;
+  // Augment preset options with loaded custom themes + a "New custom theme…" entry
+  let t10b;
+  if ($[59] !== customThemes) {
+    t10b = [...themeOptions, ...customThemes.map(ct => ({
+      label: ct.name,
+      value: buildCustomThemeSlug(ct.slug)
+    }), ), {
+      label: NEW_CUSTOM_THEME_LABEL,
+      value: NEW_CUSTOM_THEME_VALUE
+    }];
+    $[59] = customThemes;
+    $[60] = t10b;
+  } else {
+    t10b = $[60];
+  }
+  const allThemeOptions = t10b;
   let t11;
   if ($[8] !== showIntroText) {
     t11 = showIntroText ? <Text>Let's get started.</Text> : <Text bold={true} color="permission">Theme</Text>;
@@ -162,9 +201,10 @@ export function ThemePicker(t0) {
     t13 = $[13];
   }
   let t14;
-  if ($[14] !== t13) {
-    t14 = <Box flexDirection="column">{t12}{t13}</Box>;
+  if ($[14] !== t13 || $[61] !== activeCustomTheme) {
+    t14 = <Box flexDirection="column">{t12}{t13}{activeCustomTheme ? <Text dimColor={true}>{`Your saved theme "${activeCustomTheme.name}" is a custom theme; selecting a preset here replaces it`}</Text> : null}</Box>;
     $[14] = t13;
+    $[61] = activeCustomTheme;
     $[15] = t14;
   } else {
     t14 = $[15];
@@ -172,6 +212,8 @@ export function ThemePicker(t0) {
   let t15;
   if ($[16] !== setPreviewTheme) {
     t15 = setting => {
+      // "New custom theme…" is a navigation entry, not a theme — don't preview it
+      if (setting === NEW_CUSTOM_THEME_VALUE) return;
       setPreviewTheme(setting as ThemeSetting);
     };
     $[16] = setPreviewTheme;
@@ -182,6 +224,8 @@ export function ThemePicker(t0) {
   let t16;
   if ($[18] !== onThemeSelect || $[19] !== savePreview) {
     t16 = setting_0 => {
+      // "New custom theme…" — creation flow; selecting it does not change the theme
+      if (setting_0 === NEW_CUSTOM_THEME_VALUE) return;
       savePreview();
       onThemeSelect(setting_0 as ThemeSetting);
     };
@@ -208,12 +252,13 @@ export function ThemePicker(t0) {
     t17 = $[24];
   }
   let t18;
-  if ($[25] !== t15 || $[26] !== t16 || $[27] !== t17 || $[28] !== themeSetting) {
-    t18 = <Select options={themeOptions} onFocus={t15} onChange={t16} onCancel={t17} visibleOptionCount={themeOptions.length} defaultValue={themeSetting} defaultFocusValue={themeSetting} />;
+  if ($[25] !== t15 || $[26] !== t16 || $[27] !== t17 || $[28] !== themeSetting || $[62] !== allThemeOptions) {
+    t18 = <Select options={allThemeOptions} onFocus={t15} onChange={t16} onCancel={t17} visibleOptionCount={allThemeOptions.length} defaultValue={themeSetting} defaultFocusValue={themeSetting} />;
     $[25] = t15;
     $[26] = t16;
     $[27] = t17;
     $[28] = themeSetting;
+    $[62] = allThemeOptions;
     $[29] = t18;
   } else {
     t18 = $[29];
