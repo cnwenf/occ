@@ -1,5 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
+import { homedir } from 'os'
+import { isAbsolute, resolve, sep } from 'path'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
@@ -92,6 +94,341 @@ const splitCommand = splitCommand_DEPRECATED
 // Env-var assignment prefix (VAR=value). Shared across three while-loops that
 // skip safe env vars before extracting the command name.
 const ENV_VAR_ASSIGN_RE = /^[A-Za-z_]\w*=/
+
+// ─────────────────────────────────────────────────────────────────────────
+// Bash-specific redirect / pattern-file safety checks (G6/G7/G9).
+//
+// These complement the generic path-constraint flow (checkPathConstraints →
+// validatePath → isPathAllowed → checkPathSafetyForAutoEdit) for cases that
+// the generic flow either misses or mislabels:
+//   • G6 (2.1.126): --dangerously-skip-permissions (bypassPermissions mode)
+//     must bypass protected-path write prompts (.claude/.git/.vscode/shell
+//     configs). The generic flow marks these `safetyCheck`, which permissions.ts
+//     treats as bypass-immune; we skip such results here so the bypass
+//     auto-allow (permissions.ts step 2a) applies.
+//   • G7 (2.1.160): shell-startup-file detection in the generic flow (via
+//     DANGEROUS_FILES) is missing .zshenv/.zlogin/.bash_login/.zlogout and
+//     ~/.config/git. We detect the full startup-file set on output redirects so
+//     writes to them always prompt (even in acceptEdits).
+//   • G9 (2.1.98): input redirects to /dev/tcp,/dev/udp open network
+//     connections but slip past extractOutputRedirections (output-only) and are
+//     auto-allowed as read-only; grep/rg -f FILE reads a pattern file that is
+//     not validated against the working directory. Both must prompt.
+// ─────────────────────────────────────────────────────────────────────────
+
+// Shell startup files the official 2.1.200 binary protects from silent writes.
+// Mirrors the `${e}/.bashrc`…`${e}/.zlogout` list plus `~/.config/git`. The
+// generic DANGEROUS_FILES list (filesystem.ts) covers a subset; this fills in
+// .zshenv/.zlogin/.bash_login/.zlogout and the ~/.config/git directory.
+const SHELL_STARTUP_FILES = new Set([
+  '.bashrc',
+  '.bash_profile',
+  '.bash_login',
+  '.bash_logout',
+  '.zshrc',
+  '.zprofile',
+  '.zshenv',
+  '.zlogin',
+  '.zlogout',
+  '.profile',
+  '.gitconfig',
+  '.gitmodules',
+])
+
+// Bash pseudo-devices that open network connections when used as a redirect
+// target. Matches the binary message:
+//   "Redirect involving /dev/tcp or /dev/udp opens a network connection"
+const DEV_NETWORK_REDIRECT_RE = /\/dev\/(?:tcp|udp)(?:\/|$)/
+
+/**
+ * True if an output-redirect target resolves to a shell-startup file. Catches
+ * the startup files missing from DANGEROUS_FILES (.zshenv/.zlogin/.bash_login/
+ * .zlogout) plus the ~/.config/git directory (config/ignore/attributes).
+ */
+function isShellStartupFileTarget(target: string): boolean {
+  // Strip surrounding quotes (extractOutputRedirections leaves them on targets
+  // like "$HOME/.zshenv"); expandTilde resolves ~ to $HOME.
+  const stripped = target.replace(/^['"]|['"]$/g, '')
+  const expanded = stripped.startsWith('~/')
+    ? homedir() + stripped.slice(1)
+    : stripped
+  const basename = expanded.split('/').pop() ?? expanded
+  if (SHELL_STARTUP_FILES.has(basename)) {
+    return true
+  }
+  // ~/.config/git/ holds git's global config/ignore/attributes — a startup-file
+  // equivalent of ~/.gitconfig. Match the directory on any segment boundary.
+  if (/(?:^|\/)\.config\/git(?:\/|$)/.test(expanded)) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Extract `<`/`<>` redirect targets (input / read-write) from a command string.
+ * extractOutputRedirections (commands.ts) only handles `>`/`>>`; input
+ * redirects to /dev/tcp,/dev/udp therefore slip through and get auto-allowed as
+ * read-only. This regex fallback is only used when AST redirects are unavailable
+ * (tree-sitter off — the OCC dev build); the AST path passes real Redirect[].
+ */
+function extractInputRedirectTargets(command: string): string[] {
+  const targets: string[] = []
+  // Match a redirect operator (`<`, `<>`, `<&`) — not `<<` (heredoc) or `<<<`
+  // (here-string) — followed by an optional quoted/unquoted path token. We
+  // intentionally only need /dev/tcp,/dev/udp here, so a conservative regex is
+  // safe; other input redirects are read-only and handled by the read-only gate.
+  const re = /(^|[\s;&|}(])<>?\s*([^<\s;&|)]+)/g
+  let m: RegExpExecArray | null
+  while ((m = re.exec(command)) !== null) {
+    const raw = m[2]!
+    // Skip fd-dup forms like `0<&1` / `<&2` where the "target" is just a digit.
+    if (/^\d+$/.test(raw)) {
+      continue
+    }
+    targets.push(raw)
+  }
+  return targets
+}
+
+/**
+ * Collect pattern-file paths from `grep -f FILE` / `rg -f FILE` / `--file=FILE`.
+ * The generic read-only gate treats `-f` as a plain string arg, so a pattern
+ * file outside the working directory is never validated. Returns the FILE
+ * tokens so the caller can check them against the working directory.
+ *
+ * Uses shell-quote when available (astCommands) for accurate argv; falls back
+ * to splitCommand + a token scan on the legacy path.
+ */
+function extractPatternFilePaths(
+  command: string,
+  astCommands?: SimpleCommand[] | null,
+): string[] {
+  const files: string[] = []
+  const commands =
+    astCommands && astCommands.length > 0
+      ? astCommands.map(c => c.argv)
+      : (() => {
+          // Legacy fallback: split into subcommands and re-tokenize each.
+          const out: string[][] = []
+          for (const sub of splitCommand(command)) {
+            const parse = tryParseShellCommand(sub, env => `$${env}`)
+            if (parse.success) {
+              const args: string[] = []
+              for (const t of parse.tokens) {
+                if (typeof t === 'string') {
+                  args.push(t)
+                } else if (t && typeof t === 'object' && 'op' in t && (t as { op: string }).op === 'glob' && 'pattern' in t) {
+                  args.push(String((t as { pattern: string }).pattern))
+                }
+              }
+              out.push(args)
+            }
+          }
+          return out
+        })()
+
+  for (const argv of commands) {
+    const base = argv[0]
+    if (base !== 'grep' && base !== 'rg' && base !== 'rga') {
+      continue
+    }
+    for (let i = 1; i < argv.length; i++) {
+      const arg = argv[i]!
+      if (arg === '-f' || arg === '--file') {
+        const next = argv[i + 1]
+        if (next) {
+          files.push(next)
+        }
+        i++ // consume the file arg
+      } else if (arg.startsWith('--file=')) {
+        files.push(arg.slice('--file='.length))
+      } else if (/^-[^-]*f/.test(arg) && arg.length > 2) {
+        // Combined short flags like `-if FILE` or `-if=FILE`/`-rfFILE`.
+        // grep/rg attach the value to the cluster only as `-f=FILE`; bare
+        // `-rf foo` would have `foo` as the next arg (handled above). Be
+        // conservative: only pull `--file=`-style values.
+        const eq = arg.indexOf('=')
+        if (eq !== -1) {
+          files.push(arg.slice(eq + 1))
+        }
+      }
+    }
+  }
+  return files
+}
+
+/**
+ * True if `filePath` resolves outside the working directory (and any additional
+ * working directory in the context). /dev/null is always considered inside
+ * (it's a sink, not a real read). Tilde is expanded before resolving.
+ */
+function isPathOutsideWorkingDir(
+  filePath: string,
+  cwd: string,
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  if (!filePath || filePath === '/dev/null') {
+    return false
+  }
+  const stripped = filePath.replace(/^['"]|['"]$/g, '')
+  const expanded = stripped.startsWith('~/')
+    ? homedir() + stripped.slice(1)
+    : stripped
+  // If it still contains shell expansion we can't resolve it — treat as outside
+  // (fail-closed) so the user is prompted, matching validatePath's behavior.
+  if (expanded.includes('$') || expanded.startsWith('~')) {
+    return true
+  }
+  const abs = isAbsolute(expanded)
+    ? expanded
+    : resolve(cwd, expanded)
+  const workingDirs: string[] = [cwd]
+  for (const dir of toolPermissionContext.additionalWorkingDirectories.keys()) {
+    workingDirs.push(isAbsolute(dir) ? dir : resolve(cwd, dir))
+  }
+  const normalizedAbs = abs.replace(/\/+$/, '') || '/'
+  return !workingDirs.some(d => {
+    const nd = d.replace(/\/+$/, '') || '/'
+    return normalizedAbs === nd || normalizedAbs.startsWith(nd + sep)
+  })
+}
+
+/**
+ * Dedicated bash redirect / pattern-file safety check. Runs alongside (and
+ * before) checkPathConstraints to catch the G7/G9 cases the generic flow misses,
+ * and to attach the binary-exact messages. Returns 'passthrough' in bypass mode
+ * so G6 bypass semantics hold (the generic bypass auto-allow then applies).
+ */
+export function checkBashRedirectAndPatternSafety(
+  input: z.infer<typeof BashTool.inputSchema>,
+  toolPermissionContext: ToolPermissionContext,
+  astRedirects?: Redirect[] | null,
+  astCommands?: SimpleCommand[] | null,
+): PermissionResult {
+  // G6: --dangerously-skip-permissions bypasses these dedicated prompts. The
+  // generic permission flow (permissions.ts step 2a) performs the final bypass
+  // auto-allow; surfacing an 'ask' here would be treated as bypass-immune.
+  if (toolPermissionContext.mode === 'bypassPermissions') {
+    return {
+      behavior: 'passthrough',
+      message: 'Bypass mode skips bash-specific redirect/pattern safety checks',
+    }
+  }
+
+  const cwd = getCwd()
+
+  // Build the redirect list. Prefer AST-derived Redirect[]; fall back to
+  // extractOutputRedirections (output) + extractInputRedirectTargets (input)
+  // on the legacy path (tree-sitter unavailable in the OCC dev build).
+  let outputRedirects: Array<{ op: string; target: string }>
+  let inputRedirects: Array<{ op: string; target: string }>
+  if (astRedirects && astRedirects.length > 0) {
+    const isOutput = (op: string) =>
+      op === '>' ||
+      op === '>>' ||
+      op === '>|' ||
+      op === '&>' ||
+      op === '&>>' ||
+      (op === '>&' && true)
+    outputRedirects = astRedirects
+      .filter(r => isOutput(r.op))
+      .map(r => ({ op: r.op, target: r.target }))
+    inputRedirects = astRedirects
+      .filter(r => r.op === '<' || r.op === '<&' || r.op === '<>')
+      .map(r => ({ op: r.op, target: r.target }))
+  } else {
+    const extracted = extractOutputRedirections(input.command).redirections
+    outputRedirects = extracted.map(r => ({ op: r.operator, target: r.target }))
+    inputRedirects = extractInputRedirectTargets(input.command).map(t => ({
+      op: '<',
+      target: t,
+    }))
+  }
+
+  // G9: /dev/tcp,/dev/udp redirects (input OR output) open a network connection.
+  for (const r of [...outputRedirects, ...inputRedirects]) {
+    if (r.target && DEV_NETWORK_REDIRECT_RE.test(r.target)) {
+      const reason =
+        'Redirect involving /dev/tcp or /dev/udp opens a network connection'
+      return {
+        behavior: 'ask',
+        message: createPermissionRequestMessage(BashTool.name, {
+          type: 'other' as const,
+          reason,
+        }),
+        decisionReason: { type: 'other' as const, reason },
+        suggestions: [],
+      }
+    }
+  }
+
+  // G7: output redirects to shell-startup files (.zshenv/.zlogin/.bash_login/
+  // ~/.config/git/…) must always prompt, even in acceptEdits.
+  for (const r of outputRedirects) {
+    if (r.target && isShellStartupFileTarget(r.target)) {
+      const reason = `Claude requested permissions to edit ${r.target} which is a sensitive file.`
+      return {
+        behavior: 'ask',
+        message: createPermissionRequestMessage(BashTool.name, {
+          type: 'safetyCheck' as const,
+          reason,
+          classifierApprovable: true,
+        }),
+        decisionReason: {
+          type: 'safetyCheck' as const,
+          reason,
+          classifierApprovable: true,
+        },
+        suggestions: [],
+      }
+    }
+  }
+
+  // G9: grep/rg -f FILE reading a pattern file outside the working directory.
+  for (const pf of extractPatternFilePaths(input.command, astCommands ?? null)) {
+    if (isPathOutsideWorkingDir(pf, cwd, toolPermissionContext)) {
+      const reason = `${pf} is a grep/rg pattern file outside the working directory and requires approval to read`
+      return {
+        behavior: 'ask',
+        message: createPermissionRequestMessage(BashTool.name, {
+          type: 'other' as const,
+          reason,
+        }),
+        decisionReason: { type: 'other' as const, reason },
+        suggestions: [],
+      }
+    }
+  }
+
+  return { behavior: 'passthrough', message: 'No bash-specific safety issues' }
+}
+
+/**
+ * G6: In bypassPermissions mode, --dangerously-skip-permissions must bypass the
+ * protected-path write prompts (safetyCheck 'ask' from .claude/.git/.vscode/
+ * shell configs). permissions.ts treats safetyCheck as bypass-immune (step 1g),
+ * so we suppress such 'ask' results at the bash layer and let the generic
+ * bypass auto-allow (step 2a) apply. Explicit deny/ask *rules* (decisionReason
+ * type 'rule') are still honored — only safety/path 'ask' results are bypassed.
+ */
+function maybeSuppressForBypass(
+  pathResult: PermissionResult,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult {
+  if (
+    toolPermissionContext.mode === 'bypassPermissions' &&
+    pathResult.behavior === 'ask' &&
+    pathResult.decisionReason?.type !== 'rule'
+  ) {
+    return {
+      behavior: 'passthrough',
+      message: 'Protected-path/safety prompt bypassed in bypassPermissions mode',
+    }
+  }
+  return pathResult
+}
+
+
 
 // CC-643: On complex compound commands, splitCommand_DEPRECATED can produce a
 // very large subcommands array (possible exponential growth; #21405's ReDoS fix
@@ -1112,19 +1449,36 @@ export const bashToolCheckPermission = (
     }
   }
 
+  // 2.9. Bash-specific redirect / pattern-file safety (G6/G7/G9): catches
+  // /dev/tcp,/dev/udp network redirects, shell-startup-file output redirects
+  // (.zshenv/.zlogin/.bash_login/~/.config/git), and grep/rg -f pattern files
+  // outside the working directory. Returns passthrough in bypass mode (G6).
+  const bashSafetyResult = checkBashRedirectAndPatternSafety(
+    input,
+    toolPermissionContext,
+    astCommand?.redirects,
+    astCommand ? [astCommand] : null,
+  )
+  if (bashSafetyResult.behavior !== 'passthrough') {
+    return bashSafetyResult
+  }
+
   // 3. Check path constraints
   // This check comes after deny/ask rules so explicit rules take precedence.
   // SECURITY: When AST-derived argv is available for this subcommand, pass
   // it through so checkPathConstraints uses it directly instead of re-parsing
   // with shell-quote (which has a single-quote backslash bug that causes
   // parseCommandArguments to return [] and silently skip path validation).
-  const pathResult = checkPathConstraints(
-    input,
-    getCwd(),
+  const pathResult = maybeSuppressForBypass(
+    checkPathConstraints(
+      input,
+      getCwd(),
+      toolPermissionContext,
+      compoundCommandHasCd,
+      astCommand?.redirects,
+      astCommand ? [astCommand] : undefined,
+    ),
     toolPermissionContext,
-    compoundCommandHasCd,
-    astCommand?.redirects,
-    astCommand ? [astCommand] : undefined,
   )
   if (pathResult.behavior !== 'passthrough') {
     return pathResult
@@ -2051,13 +2405,25 @@ export async function bashToolHasPermission(
       // `| echo done` to `cd .claude && echo x > settings.json` routed through
       // this path with compoundCommandHasCd=false, letting the redirect write
       // to .claude/settings.json without the cd+redirect block firing.
-      const pathResult = checkPathConstraints(
+      const bashSafetyResult = checkBashRedirectAndPatternSafety(
         input,
-        getCwd(),
         appState.toolPermissionContext,
-        commandHasAnyCd(input.command),
         astRedirects,
-        astCommands,
+        astCommands ?? null,
+      )
+      if (bashSafetyResult.behavior !== 'passthrough') {
+        return bashSafetyResult
+      }
+      const pathResult = maybeSuppressForBypass(
+        checkPathConstraints(
+          input,
+          getCwd(),
+          appState.toolPermissionContext,
+          commandHasAnyCd(input.command),
+          astRedirects,
+          astCommands,
+        ),
+        appState.toolPermissionContext,
       )
       if (pathResult.behavior !== 'passthrough') {
         return pathResult
@@ -2282,13 +2648,31 @@ export async function bashToolHasPermission(
   // checkPathConstraints uses them directly instead of re-parsing with
   // shell-quote (which has a known single-quote backslash misparsing bug
   // that can silently hide redirect operators).
-  const pathResult = checkPathConstraints(
+  //
+  // G6/G7/G9: run the dedicated bash redirect/pattern safety check first
+  // (catches /dev/tcp,-dev/udp, shell-startup files, grep -f outside cwd),
+  // and suppress bypass-immune safetyCheck 'ask' from checkPathConstraints in
+  // bypassPermissions mode so --dangerously-skip-permissions skips protected-
+  // path write prompts.
+  const bashSafetyResult = checkBashRedirectAndPatternSafety(
     input,
-    getCwd(),
     appState.toolPermissionContext,
-    compoundCommandHasCd,
     astRedirects,
-    astCommands,
+    astCommands ?? null,
+  )
+  if (bashSafetyResult.behavior !== 'passthrough') {
+    return bashSafetyResult
+  }
+  const pathResult = maybeSuppressForBypass(
+    checkPathConstraints(
+      input,
+      getCwd(),
+      appState.toolPermissionContext,
+      compoundCommandHasCd,
+      astRedirects,
+      astCommands,
+    ),
+    appState.toolPermissionContext,
   )
   if (pathResult.behavior === 'deny') {
     return pathResult
