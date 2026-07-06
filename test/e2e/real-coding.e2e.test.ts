@@ -191,3 +191,23 @@ describe.skipIf(!!process.env.CI)("real coding tasks (e2e, real model)", () => {
     }
   }, 150_000);
 });
+
+  test("NotebookEdit: creates and edits a Jupyter notebook cell", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(
+        P("Create a Jupyter notebook file named test.ipynb with one code cell containing: print('OCC_NB_OK'). Then read the notebook back and confirm the cell content."),
+        { OCC_CWD: dir },
+        120_000,
+      );
+      expect(res.code).toBe(0);
+      // The notebook should exist
+      expect(existsSync(join(dir, "test.ipynb"))).toBe(true);
+      if (existsSync(join(dir, "test.ipynb"))) {
+        const content = readFileSync(join(dir, "test.ipynb"), "utf8");
+        expect(content).toContain("OCC_NB_OK");
+      }
+    } finally {
+      cleanup();
+    }
+  }, 150_000);

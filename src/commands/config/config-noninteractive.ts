@@ -17,12 +17,9 @@ const CONFIG_KEYS: { key: string; hint?: string; label: string }[] = [
   { key: 'autoCompact', hint: 'true|false', label: 'Auto-compact' },
   { key: 'autoConnectIde', hint: 'true|false', label: 'Auto-connect to IDE (external terminal)' },
   { key: 'autoScroll', hint: 'true|false', label: 'Auto-scroll' },
-  { key: 'cleanupPeriodDays', hint: 'number', label: 'Cleanup period (days)' },
   { key: 'copyFullResponse', hint: 'true|false', label: 'Skip the /copy picker' },
   { key: 'copyOnSelect', hint: 'true|false', label: 'Copy on select' },
   { key: 'editor', hint: 'normal|vim', label: 'Editor mode' },
-  { key: 'env', hint: 'KEY=VALUE', label: 'Environment variables' },
-  { key: 'includeCoAuthoredBy', hint: 'true|false', label: 'Include co-authored-by' },
   { key: 'model', hint: 'model', label: 'Model' },
   { key: 'outputStyle', hint: 'style', label: 'Output style' },
   { key: 'permissionMode', hint: 'default|acceptEdits|plan|bypassPermissions', label: 'Default permission mode' },
@@ -33,6 +30,10 @@ const CONFIG_KEYS: { key: string; hint?: string; label: string }[] = [
   { key: 'tips', hint: 'true|false', label: 'Show tips' },
   { key: 'verbose', hint: 'true|false', label: 'Verbose output' },
   { key: 'worktreeBaseRef', hint: 'fresh|head', label: 'Worktree base ref' },
+  { key: 'terminalProgressBarEnabled', hint: 'true|false', label: 'Terminal progress bar' },
+  { key: 'showTurnDuration', hint: 'true|false', label: 'Show turn duration' },
+  { key: 'respectGitignore', hint: 'true|false', label: 'Respect .gitignore' },
+  { key: 'language', hint: 'language', label: 'Language' },
 ].sort((a, b) => a.key.localeCompare(b.key))
 
 const CONFIG_KEY_SET = new Set(CONFIG_KEYS.map(k => k.key))
