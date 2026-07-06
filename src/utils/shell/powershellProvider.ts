@@ -9,7 +9,11 @@ import type { ShellProvider } from './shellProvider.js'
  * and the hook spawn path in hooks.ts so the flag set stays in one place.
  */
 export function buildPowerShellArgs(cmd: string): string[] {
-  return ['-NoProfile', '-NonInteractive', '-Command', cmd]
+  // 2.1.143: -ExecutionPolicy Bypass matches the official 2.1.200 binary's
+  // flag set: ["-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass",
+  // "-EncodedCommand",n]. Lets user scripts that call restricted cmdlets
+  // (e.g. Set-ExecutionPolicy-dependent profiles) run without policy blocks.
+  return ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', cmd]
 }
 
 /**
@@ -88,6 +92,8 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
             `'${shellPath.replace(/'/g, `'\\''`)}'`,
             '-NoProfile',
             '-NonInteractive',
+            '-ExecutionPolicy',
+            'Bypass',
             '-EncodedCommand',
             encodePowerShellCommand(psCommand),
           ].join(' ')
