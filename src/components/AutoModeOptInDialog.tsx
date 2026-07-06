@@ -101,6 +101,9 @@ export function AutoModeOptInDialog(t0) {
     t7 = [...t4, t5, {
       label: t6,
       value: "decline" as const
+    }, {
+      label: "Don't ask again",
+      value: "decline_dont_ask" as const
     }];
     $[7] = t6;
     $[8] = t7;
@@ -109,7 +112,7 @@ export function AutoModeOptInDialog(t0) {
   }
   let t8;
   if ($[9] !== onChange) {
-    t8 = value_0 => onChange(value_0 as 'accept' | 'accept-default' | 'decline');
+    t8 = value_0 => onChange(value_0 as 'accept' | 'accept-default' | 'decline' | 'decline_dont_ask');
     $[9] = onChange;
     $[10] = t8;
   } else {
