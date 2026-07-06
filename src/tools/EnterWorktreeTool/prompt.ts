@@ -25,6 +25,7 @@ export function getEnterWorktreeToolPrompt(): string {
 
 ## Parameters
 
-- \`name\` (optional): A name for the worktree. If not provided, a random name is generated.
+- \`name\` (optional): A name for the worktree. If not provided, a random name is generated. Mutually exclusive with \`path\`.
+- \`path\` (optional): Path to an existing worktree of the current repository to enter instead of creating one. Mutually exclusive with \`name\`.
 `
 }

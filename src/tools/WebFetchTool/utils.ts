@@ -464,7 +464,15 @@ export async function getURLMarkdownContent(
   let markdownContent: string
   let contentBytes: number
   if (contentType.includes('text/html')) {
-    markdownContent = (await getTurndownService()).turndown(htmlContent)
+    // claude-code 2.1.117: truncate the raw HTML BEFORE markdown conversion.
+    // Running Turndown's DOM parse on a multi-megabyte page can hang; bounding
+    // the input keeps conversion predictable. The markdown output is still
+    // capped separately in applyPromptToMarkdown.
+    const htmlToConvert =
+      htmlContent.length > MAX_MARKDOWN_LENGTH
+        ? htmlContent.slice(0, MAX_MARKDOWN_LENGTH)
+        : htmlContent
+    markdownContent = (await getTurndownService()).turndown(htmlToConvert)
     contentBytes = Buffer.byteLength(markdownContent)
   } else {
     // It's not HTML - just use it raw. The decoded string's UTF-8 byte

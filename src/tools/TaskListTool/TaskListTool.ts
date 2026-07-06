@@ -82,6 +82,16 @@ export const TaskListTool = buildTool({
       blockedBy: task.blockedBy.filter(id => !resolvedTaskIds.has(id)),
     }))
 
+    // claude-code 2.1.119: return tasks sorted by ID (numeric, lowest first)
+    // so the list is deterministic and matches the "prefer tasks in ID order"
+    // guidance given to the model. Falls back to lexicographic for non-numeric.
+    tasks.sort((a, b) => {
+      const na = Number(a.id)
+      const nb = Number(b.id)
+      if (!Number.isNaN(na) && !Number.isNaN(nb)) return na - nb
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
+    })
+
     return {
       data: {
         tasks,
