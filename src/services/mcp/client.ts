@@ -519,6 +519,62 @@ const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream'
  *
  * @param baseFetch - The fetch function to wrap
  */
+/**
+ * 2.1.139: cap MCP HTTP response bodies at 16MB, matching the official 2.1.200
+ * binary (axios maxContentLength/maxBodyLength = 16777216). Defends against a
+ * misbehaving server returning an enormous body that would exhaust memory.
+ * Enforced two ways: (1) reject early if Content-Length exceeds the limit;
+ * (2) wrap the body so a missing/lying Content-Length (chunked) still trips.
+ * Applied to POST responses only — GET is the long-lived SSE stream (skipped
+ * by the timeout above too), and the POST response is a buffered JSON-RPC
+ * body, so buffering up to the cap is safe.
+ */
+const MAX_MCP_RESPONSE_BYTES = 16 * 1024 * 1024
+
+async function capMcpResponseBody(response: Response): Promise<Response> {
+  const contentLength = parseInt(response.headers.get('content-length') ?? '', 10)
+  if (Number.isFinite(contentLength) && contentLength > MAX_MCP_RESPONSE_BYTES) {
+    throw new Error(
+      `MCP response body exceeds ${MAX_MCP_RESPONSE_BYTES} byte limit (${contentLength} bytes)`,
+    )
+  }
+  const body = response.body
+  if (!body) {
+    return response
+  }
+  const reader = body.getReader()
+  let received = 0
+  const chunks: Uint8Array[] = []
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) {
+        break
+      }
+      received += value.byteLength
+      if (received > MAX_MCP_RESPONSE_BYTES) {
+        throw new Error(
+          `MCP response body exceeds ${MAX_MCP_RESPONSE_BYTES} byte limit`,
+        )
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  const buf = new Uint8Array(received)
+  let off = 0
+  for (const c of chunks) {
+    buf.set(c, off)
+    off += c.byteLength
+  }
+  return new Response(buf, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
+
 export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
   return async (url: string | URL, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase()
@@ -571,7 +627,7 @@ export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
         signal: controller.signal,
       })
       cleanup()
-      return response
+      return capMcpResponseBody(response)
     } catch (error) {
       cleanup()
       throw error
