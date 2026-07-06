@@ -10,7 +10,7 @@ import type { SettingSource } from '../utils/settings/constants.js'
 import type { HooksSettings } from '../utils/settings/types.js'
 import type { ThemeName } from '../utils/theme.js'
 import type { LogOption } from './logs.js'
-import type { Message } from './message.js'
+import type { AttachmentMessage, Message } from './message.js'
 import type { PluginManifest } from './plugin.js'
 
 export type LocalCommandResult =
@@ -33,6 +33,8 @@ export type PromptCommand = {
   contentLength: number // Length of command content in characters (used for token estimation)
   argNames?: string[]
   allowedTools?: string[]
+  // 2.1.152: tools blocked while this skill/command is active.
+  disallowedTools?: string[]
   model?: string
   source: SettingSource | 'builtin' | 'mcp' | 'plugin' | 'bundled'
   pluginInfo?: {
@@ -117,14 +119,15 @@ export type CommandResultDisplay = 'skip' | 'system' | 'user'
  * @param options - Optional configuration for command completion
  * @param options.display - How to display the result: 'skip' | 'system' | 'user' (default)
  * @param options.shouldQuery - If true, send messages to the model after command completes
- * @param options.metaMessages - Additional messages to insert as isMeta (model-visible but hidden)
+ * @param options.metaMessages - Additional messages to insert as isMeta (model-visible but hidden).
+ * Strings become isMeta user messages; AttachmentMessage objects are appended as-is (used by /goal to emit goal_status markers).
  */
 export type LocalJSXCommandOnDone = (
   result?: string,
   options?: {
     display?: CommandResultDisplay
     shouldQuery?: boolean
-    metaMessages?: string[]
+    metaMessages?: Array<string | AttachmentMessage>
     nextInput?: string
     submitNextInput?: boolean
   },
