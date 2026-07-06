@@ -10,8 +10,12 @@ describe('Fast mode default + override no-op (2.1.142/2.1.160, e2e)', () => {
 
   test('getFastModeModel returns opus (default Opus 4.8)', async () => {
     const src = await Bun.file(`${REPO_ROOT}/src/utils/fastMode.ts`).text()
-    // No override branch — fast mode always uses 'opus'.
-    expect(src).not.toContain('CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE')
+    // The override is a no-op: the functional env check is gone (the string
+    // may still appear in a deprecation comment).
+    expect(src).not.toContain(
+      'isEnvTruthy(process.env.CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE)',
+    )
+    expect(src).not.toContain('useOpus46')
     expect(src).toMatch(/return 'opus'/)
   })
 })
