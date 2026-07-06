@@ -18,4 +18,7 @@ All operations require:
 - line: The line number (1-based, as shown in editors)
 - character: The character offset (1-based, as shown in editors)
 
+workspaceSymbol also accepts:
+- query: The symbol name or partial name to search for. Always provide it — most language servers return no results for an empty query.
+
 Note: LSP servers must be configured for the file type. If no server is available, an error will be returned.`

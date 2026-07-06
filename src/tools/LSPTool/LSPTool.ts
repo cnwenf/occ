@@ -472,7 +472,10 @@ function getMethodAndParams(
       return {
         method: 'workspace/symbol',
         params: {
-          query: '', // Empty query returns all symbols
+          // 2.1.162: Pass the caller-provided query through instead of
+          // hardcoding ''. Most language servers return no results for an
+          // empty query, so the model should always supply one.
+          query: input.query ?? '',
         },
       }
     case 'goToImplementation':

@@ -74,6 +74,7 @@ import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
+import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import {
   DESCRIPTION,
@@ -181,6 +182,101 @@ export class MaxFileReadTokenExceededError extends Error {
       `File content (${tokenCount} tokens) exceeds maximum allowed tokens (${maxTokens}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.`,
     )
     this.name = 'MaxFileReadTokenExceededError'
+  }
+}
+
+// 2.1.145: On token-limit excess, return a truncated "PARTIAL view" page
+// with a notice instead of throwing a hard error. The notice tells the
+// model how to fetch the next page (Read offset/limit) or search (Grep).
+// Matches the official binary: Djt="[Truncated: PARTIAL view — ", Kct=2000.
+const PARTIAL_VIEW_PREFIX = '[Truncated: PARTIAL view — '
+const PARTIAL_VIEW_MAX_LINES = 2000
+
+/**
+ * Side-channel from call() to mapToolResultToToolResultBlockParam: the
+ * PARTIAL-view notice for a truncated text read, keyed by the `data`
+ * object identity. Keeps the notice out of the output schema (which
+ * flows into SDK types) while still prepending it to the model-facing
+ * tool_result content. Auto-GCs when the data object becomes unreachable.
+ */
+const partialViewNotices = new WeakMap<object, string>()
+
+function partialViewNoticePrefix(data: object): string {
+  return partialViewNotices.get(data) ?? ''
+}
+
+/**
+ * Build a PARTIAL view (notice + truncated content) when the read content
+ * exceeds the token cap. Returns null when content fits.
+ *
+ * Line-based pagination is used when the file has more than
+ * PARTIAL_VIEW_MAX_LINES lines; otherwise a char-based excerpt is used
+ * (the file has "very long lines and cannot be paginated by line").
+ *
+ * Ranged reads (explicit limit) keep the throw path: the model picked the
+ * slice and should narrow it rather than receive an silently-truncated page.
+ * Full reads (limit === undefined) get the PARTIAL view.
+ */
+async function buildPartialViewIfNeeded(opts: {
+  content: string
+  ext: string
+  maxTokens: number
+  totalLines: number
+  limit: number | undefined
+}): Promise<{
+  notice: string
+  truncatedContent: string
+  numLines: number
+  tokenCount: number
+} | null> {
+  const { content, ext, maxTokens, totalLines, limit } = opts
+
+  // Cheap estimate first — skip the API roundtrip for small reads.
+  const tokenEstimate = roughTokenCountEstimationForFileType(content, ext)
+  if (!tokenEstimate || tokenEstimate <= maxTokens / 4) return null
+
+  const tokenCount = (await countTokensWithAPI(content)) ?? tokenEstimate
+  if (tokenCount <= maxTokens) return null
+
+  // Ranged read: throw so the model narrows its explicit slice.
+  if (limit !== undefined) {
+    throw new MaxFileReadTokenExceededError(tokenCount, maxTokens)
+  }
+
+  const cap = maxTokens
+
+  if (totalLines > PARTIAL_VIEW_MAX_LINES) {
+    const T = PARTIAL_VIEW_MAX_LINES
+    const lines = content.split('\n')
+    const truncatedContent = lines.slice(0, T).join('\n')
+    const notice =
+      '<system-reminder>' +
+      PARTIAL_VIEW_PREFIX +
+      `showing lines 1-${T} of ${totalLines} total (${tokenCount} tokens, cap ${cap}). ` +
+      `Call ${FILE_READ_TOOL_NAME} with offset=${T + 1} limit=${T} for the next page, ` +
+      `or ${GREP_TOOL_NAME} to find a specific section. ` +
+      `Do NOT answer from this page alone if the answer may be further in the file.` +
+      ']</system-reminder>'
+    return { notice, truncatedContent, numLines: T, tokenCount }
+  }
+
+  // Very long lines — cannot paginate by line. Truncate by character.
+  const totalChars = content.length
+  const charCap = Math.max(1, cap * 4)
+  const truncatedContent = content.slice(0, charCap)
+  const notice =
+    '<system-reminder>' +
+    PARTIAL_VIEW_PREFIX +
+    `showing the first ${truncatedContent.length} of ${totalChars} characters (${tokenCount} tokens, cap ${cap}); ` +
+    `this file has very long lines and cannot be paginated by line. ` +
+    `Use ${GREP_TOOL_NAME} to find a specific section, or ${FILE_READ_TOOL_NAME} with offset/limit to page through it. ` +
+    `Do NOT answer from this excerpt alone if the answer may be elsewhere in the file.` +
+    ']</system-reminder>'
+  return {
+    notice,
+    truncatedContent,
+    numLines: truncatedContent.split('\n').length,
+    tokenCount,
   }
 }
 
@@ -694,6 +790,7 @@ export const FileReadTool = buildTool({
 
         if (data.file.content) {
           content =
+            partialViewNoticePrefix(data) +
             memoryFileFreshnessPrefix(data) +
             formatFileLines(data.file) +
             (shouldIncludeFileReadMitigation()
@@ -1030,31 +1127,48 @@ async function callInner(
       context.abortController.signal,
     )
 
-  await validateContentTokens(content, ext, maxTokens)
+  // 2.1.145: On token-limit excess for a full read, return a truncated
+  // PARTIAL view page (with a notice) instead of throwing. Ranged reads
+  // (explicit limit) still throw via buildPartialViewIfNeeded. The cheap
+  // token estimate inside the builder short-circuits the API roundtrip for
+  // reads that are well under the cap.
+  const partial = await buildPartialViewIfNeeded({
+    content,
+    ext,
+    maxTokens,
+    totalLines,
+    limit,
+  })
+  const effectiveContent = partial?.truncatedContent ?? content
+  const effectiveNumLines = partial?.numLines ?? lineCount
 
   readFileState.set(fullFilePath, {
-    content,
+    content: partial ? partial.notice + effectiveContent : effectiveContent,
     timestamp: Math.floor(mtimeMs),
     offset,
     limit,
+    ...(partial && { isPartialView: true }),
   })
   context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
   // Snapshot before iterating — a listener that unsubscribes mid-callback
   // would splice the live array and skip the next listener.
   for (const listener of fileReadListeners.slice()) {
-    listener(resolvedFilePath, content)
+    listener(resolvedFilePath, effectiveContent)
   }
 
   const data = {
     type: 'text' as const,
     file: {
       filePath: file_path,
-      content,
-      numLines: lineCount,
+      content: effectiveContent,
+      numLines: effectiveNumLines,
       startLine: offset,
       totalLines,
     },
+  }
+  if (partial) {
+    partialViewNotices.set(data, partial.notice)
   }
   if (isAutoMemFile(fullFilePath)) {
     memoryFileMtimes.set(data, mtimeMs)
@@ -1071,10 +1185,11 @@ async function callInner(
   const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
   logEvent('tengu_session_file_read', {
     totalLines,
-    readLines: lineCount,
+    readLines: effectiveNumLines,
     totalBytes,
     readBytes,
     offset,
+    ...(partial && { truncatedByTokenCap: true }),
     ...(limit !== undefined && { limit }),
     ...(analyticsExt !== undefined && { ext: analyticsExt }),
     ...(messageId !== undefined && {

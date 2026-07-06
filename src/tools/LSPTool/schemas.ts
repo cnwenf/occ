@@ -99,6 +99,12 @@ export const lspToolInputSchema = lazySchema(() => {
       .int()
       .positive()
       .describe('The character offset (1-based, as shown in editors)'),
+    query: z
+      .string()
+      .optional()
+      .describe(
+        'The symbol name or partial name to search for (workspaceSymbol only). Most language servers return no results for an empty query, so always provide it when using workspaceSymbol.',
+      ),
   })
 
   /**
