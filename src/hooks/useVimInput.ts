@@ -12,22 +12,45 @@ import {
   executeOperatorTextObj,
   executeReplace,
   executeToggleCase,
+  executeVisualCase,
+  executeVisualIndent,
+  executeVisualJoin,
+  executeVisualOperator,
+  executeVisualPaste,
+  executeVisualReplace,
   executeX,
+  replayVisualCase,
+  replayVisualChange,
+  replayVisualOp,
+  replayVisualReplace,
   type OperatorContext,
 } from '../vim/operators.js'
-import { type TransitionContext, transition } from '../vim/transitions.js'
+import {
+  type TransitionContext,
+  transition,
+  transitionVisual,
+  type VisualTransitionResult,
+} from '../vim/transitions.js'
 import {
   createInitialPersistentState,
   createInitialVimState,
   type PersistentState,
   type RecordedChange,
   type VimState,
+  type VisualKind,
+  VISUAL_KINDS,
+  isVisualKindKey,
 } from '../vim/types.js'
 import { type UseTextInputProps, useTextInput } from './useTextInput.js'
 
 type UseVimInputProps = Omit<UseTextInputProps, 'inputFilter'> & {
   onModeChange?: (mode: VimMode) => void
   onUndo?: () => void
+  /**
+   * Opens reverse history search. Called when '/' is pressed in vim NORMAL
+   * idle mode (2.1.152+). Binary: `P.key==="/"&&a`.
+   */
+  onHistorySearch?: () => void
   inputFilter?: UseTextInputProps['inputFilter']
 }
 
@@ -44,7 +67,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   // run the filter — otherwise a stateful filter (e.g. lazy-space-after-
   // pill) stays armed across an Escape → NORMAL → INSERT round-trip.
   const textInput = useTextInput({ ...props, inputFilter: undefined })
-  const { onModeChange, inputFilter } = props
+  const { onModeChange, inputFilter, onHistorySearch } = props
 
   const switchToInsertMode = useCallback(
     (offset?: number): void => {
@@ -60,10 +83,23 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
 
   const switchToNormalMode = useCallback((): void => {
     const current = vimStateRef.current
-    if (current.mode === 'INSERT' && current.insertedText) {
-      persistentRef.current.lastChange = {
-        type: 'insert',
-        text: current.insertedText,
+    if (current.mode === 'INSERT') {
+      const last = persistentRef.current.lastChange
+      // 2.1.118: When exiting INSERT after a visual change (vc/Vc), capture
+      // the typed text into a visualChange record for dot-repeat.
+      // Binary: `if($?.type==="visualOp"&&$.op==="change")...visualChange`
+      if (last?.type === 'visualOp' && last.op === 'change') {
+        persistentRef.current.lastChange = {
+          type: 'visualChange',
+          span: last.span,
+          linewise: last.linewise,
+          text: current.insertedText ?? '',
+        }
+      } else if (current.insertedText) {
+        persistentRef.current.lastChange = {
+          type: 'insert',
+          text: current.insertedText,
+        }
       }
     }
 
@@ -78,6 +114,35 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     setMode('NORMAL')
     onModeChange?.('NORMAL')
   }, [onModeChange, textInput, props.value])
+
+  /**
+   * Enter VISUAL mode (2.1.118). Binary: `H(offset, kind)` sets
+   * `{mode:"VISUAL",kind,anchor:offset,command:{type:"idle"}}` and
+   * displays "VISUAL" (char) or "VISUAL LINE" (line).
+   */
+  const enterVisual = useCallback(
+    (offset: number, kind: VisualKind): void => {
+      vimStateRef.current = {
+        mode: 'VISUAL',
+        kind,
+        anchor: offset,
+        command: { type: 'idle' },
+      }
+      const displayMode = kind === 'line' ? 'VISUAL LINE' : 'VISUAL'
+      setMode(displayMode)
+      onModeChange?.(displayMode)
+    },
+    [onModeChange],
+  )
+
+  /**
+   * Exit VISUAL mode back to NORMAL. Binary: `S()`.
+   */
+  const exitVisual = useCallback((): void => {
+    vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
+    setMode('NORMAL')
+    onModeChange?.('NORMAL')
+  }, [onModeChange])
 
   function createOperatorContext(
     cursor: Cursor,
@@ -169,6 +234,27 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
           ctx,
         )
         break
+
+      case 'visualOp':
+        replayVisualOp(change.op, change.span, change.linewise, ctx)
+        break
+
+      case 'visualChange':
+        replayVisualChange(
+          change.span,
+          change.linewise,
+          change.text,
+          ctx,
+        )
+        break
+
+      case 'visualReplace':
+        replayVisualReplace(change.char, change.span, change.linewise, ctx)
+        break
+
+      case 'visualCase':
+        replayVisualCase(change.op, change.span, change.linewise, ctx)
+        break
     }
   }
 
@@ -182,7 +268,10 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     const cursor = Cursor.fromText(props.value, props.columns, textInput.offset)
 
     if (key.ctrl) {
-      textInput.onInput(input, key)
+      // Binary: ctrl/meta in VISUAL does not pass through to the base handler.
+      if (state.mode !== 'VISUAL') {
+        textInput.onInput(input, key)
+      }
       return
     }
 
@@ -200,8 +289,19 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       return
     }
 
-    // Pass Enter to base handler regardless of mode (allows submission from NORMAL)
-    if (key.return) {
+    // 2.1.118: Escape in VISUAL cancels a pending command, or exits to NORMAL.
+    // Binary: `if(P.name==="escape"&&L.mode==="VISUAL"){if(L.command.type!=="idle")...;else S()}`
+    if (key.escape && state.mode === 'VISUAL') {
+      if (state.command.type !== 'idle') {
+        vimStateRef.current = { ...state, command: { type: 'idle' } }
+      } else {
+        exitVisual()
+      }
+      return
+    }
+
+    // Pass Enter to base handler (not in VISUAL — binary: `return&&mode!=="VISUAL"`)
+    if (key.return && state.mode !== 'VISUAL') {
       textInput.onInput(input, key)
       return
     }
@@ -228,6 +328,102 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       return
     }
 
+    // 2.1.118: VISUAL mode (v / V) — handle visual selection and operators.
+    // Binary: `if(L.mode==="VISUAL"){...MKl(L.command,K,V)...}`
+    if (state.mode === 'VISUAL') {
+      const ctx: TransitionContext = {
+        ...createOperatorContext(cursor, false),
+        onUndo: props.onUndo,
+        onDotRepeat: replayLastChange,
+        onHistorySearch,
+      }
+
+      // Map arrow keys to motions (only in idle/count states)
+      const expectsMotion =
+        state.command.type === 'idle' ||
+        state.command.type === 'count'
+      let vimInput = input
+      if (key.leftArrow) vimInput = expectsMotion ? 'h' : ''
+      else if (key.rightArrow) vimInput = expectsMotion ? 'l' : ''
+      else if (key.upArrow) vimInput = expectsMotion ? 'k' : ''
+      else if (key.downArrow) vimInput = expectsMotion ? 'j' : ''
+
+      const result = transitionVisual(state.command, vimInput, ctx)
+      const linewise = state.kind === 'line'
+
+      if ('next' in result) {
+        result.move?.()
+        if (vimStateRef.current.mode === 'VISUAL') {
+          vimStateRef.current = {
+            mode: 'VISUAL',
+            kind: state.kind,
+            anchor: state.anchor,
+            command: result.next,
+          }
+        }
+      } else if (result.exit === 'operator') {
+        const forceLinewise = result.forceLinewise === true
+        executeVisualOperator(
+          result.op,
+          state.anchor,
+          ctx,
+          linewise || forceLinewise,
+        )
+        // Only exit if the operator didn't switch to INSERT (e.g. change)
+        if (vimStateRef.current.mode === 'VISUAL') exitVisual()
+      } else if (result.exit === 'replace') {
+        executeVisualReplace(result.char, state.anchor, ctx, linewise)
+        exitVisual()
+      } else if (result.exit === 'case') {
+        executeVisualCase(result.op, state.anchor, ctx, linewise)
+        exitVisual()
+      } else if (result.exit === 'paste') {
+        if (ctx.getRegister()) {
+          executeVisualPaste(state.anchor, ctx, linewise)
+          exitVisual()
+        } else {
+          vimStateRef.current = { ...state, command: { type: 'idle' } }
+        }
+      } else if (result.exit === 'join') {
+        executeVisualJoin(state.anchor, ctx)
+        exitVisual()
+      } else if (result.exit === 'indent') {
+        executeVisualIndent(result.dir, state.anchor, ctx)
+        exitVisual()
+      } else if (result.exit === 'swap') {
+        // Swap anchor and cursor positions
+        const curOffset = cursor.offset
+        textInput.setOffset(state.anchor)
+        vimStateRef.current = {
+          mode: 'VISUAL',
+          kind: state.kind,
+          anchor: curOffset,
+          command: { type: 'idle' },
+        }
+      } else if (result.exit === 'selectRange') {
+        // Binary: `ee=X.end>X.start?prevOffset(X.end):X.start`
+        const targetOffset =
+          result.end > result.start
+            ? cursor.measuredText.prevOffset(result.end)
+            : result.start
+        textInput.setOffset(targetOffset)
+        vimStateRef.current = {
+          mode: 'VISUAL',
+          kind: state.kind,
+          anchor: result.start,
+          command: { type: 'idle' },
+        }
+      } else if (result.exit === 'toggleKind') {
+        const newKind = result.key === 'V' ? 'line' : 'char'
+        if (newKind === state.kind) {
+          exitVisual()
+        } else {
+          enterVisual(state.anchor, newKind)
+        }
+      }
+      return
+    }
+
     if (state.mode !== 'NORMAL') {
       return
     }
@@ -246,6 +442,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       ...createOperatorContext(cursor, false),
       onUndo: props.onUndo,
       onDotRepeat: replayLastChange,
+      onHistorySearch,
     }
 
     // Backspace/Delete are only mapped in motion-expecting states. In
@@ -269,6 +466,16 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     else if (expectsMotion && key.backspace) vimInput = 'h'
     else if (expectsMotion && state.command.type !== 'count' && key.delete)
       vimInput = 'x'
+
+    // 2.1.118: Enter visual mode — v (char-wise) or V (line-wise).
+    // Binary: `if((W==="v"||W==="V")&&(command.type==="idle"||"count")){H(offset,kind);return}`
+    if (
+      isVisualKindKey(vimInput) &&
+      (state.command.type === 'idle' || state.command.type === 'count')
+    ) {
+      enterVisual(textInput.offset, VISUAL_KINDS[vimInput])
+      return
+    }
 
     const result = transition(state.command, vimInput, ctx)
 
@@ -298,13 +505,20 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     (newMode: VimMode) => {
       if (newMode === 'INSERT') {
         vimStateRef.current = { mode: 'INSERT', insertedText: '' }
+      } else if (newMode === 'VISUAL' || newMode === 'VISUAL LINE') {
+        vimStateRef.current = {
+          mode: 'VISUAL',
+          kind: newMode === 'VISUAL LINE' ? 'line' : 'char',
+          anchor: textInput.offset,
+          command: { type: 'idle' },
+        }
       } else {
         vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
       }
       setMode(newMode)
       onModeChange?.(newMode)
     },
-    [onModeChange],
+    [onModeChange, textInput],
   )
 
   return {

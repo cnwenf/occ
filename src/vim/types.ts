@@ -36,6 +36,17 @@ export type FindType = 'f' | 'F' | 't' | 'T'
 
 export type TextObjScope = 'inner' | 'around'
 
+/**
+ * Visual mode kind: char-wise (v) or line-wise (V).
+ * Matches the official binary's `kind: "char" | "line"`.
+ */
+export type VisualKind = 'char' | 'line'
+
+/**
+ * Case operation type for visual ~ / u / U.
+ */
+export type CaseOp = 'toggle' | 'lower' | 'upper'
+
 // ============================================================================
 // State Machine Types
 // ============================================================================
@@ -49,6 +60,13 @@ export type TextObjScope = 'inner' | 'around'
 export type VimState =
   | { mode: 'INSERT'; insertedText: string }
   | { mode: 'NORMAL'; command: CommandState }
+  | {
+      mode: 'VISUAL'
+      kind: VisualKind
+      /** Fixed end of the selection (does not move with the cursor). */
+      anchor: number
+      command: CommandState
+    }
 
 /**
  * Command state machine for NORMAL mode.
@@ -73,6 +91,7 @@ export type CommandState =
   | { type: 'operatorG'; op: Operator; count: number }
   | { type: 'replace'; count: number }
   | { type: 'indent'; dir: '>' | '<'; count: number }
+  | { type: 'textObject'; scope: TextObjScope; count: number }
 
 /**
  * Persistent state that survives across commands.
@@ -117,6 +136,31 @@ export type RecordedChange =
   | { type: 'indent'; dir: '>' | '<'; count: number }
   | { type: 'openLine'; direction: 'above' | 'below' }
   | { type: 'join'; count: number }
+  | {
+      type: 'visualOp'
+      op: Operator
+      /** grapheme count (char-wise) or line count (line-wise) — for dot-repeat */
+      span: number
+      linewise: boolean
+    }
+  | {
+      type: 'visualChange'
+      span: number
+      linewise: boolean
+      text: string
+    }
+  | {
+      type: 'visualReplace'
+      char: string
+      span: number
+      linewise: boolean
+    }
+  | {
+      type: 'visualCase'
+      op: CaseOp
+      span: number
+      linewise: boolean
+    }
 
 // ============================================================================
 // Key Groups - Named constants, no magic strings
@@ -130,6 +174,21 @@ export const OPERATORS = {
 
 export function isOperatorKey(key: string): key is keyof typeof OPERATORS {
   return key in OPERATORS
+}
+
+/**
+ * Maps the visual-mode entry key to its kind.
+ * v → char-wise, V → line-wise (matches the binary's `U==="V"?"line":"char"`).
+ */
+export const VISUAL_KINDS = {
+  v: 'char',
+  V: 'line',
+} as const satisfies Record<string, VisualKind>
+
+export function isVisualKindKey(
+  key: string,
+): key is keyof typeof VISUAL_KINDS {
+  return key in VISUAL_KINDS
 }
 
 export const SIMPLE_MOTIONS = new Set([

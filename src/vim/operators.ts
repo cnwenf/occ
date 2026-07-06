@@ -14,6 +14,7 @@ import {
 } from './motions.js'
 import { findTextObject } from './textObjects.js'
 import type {
+  CaseOp,
   FindType,
   Operator,
   RecordedChange,
@@ -553,4 +554,406 @@ export function executeOperatorGg(
   const range = getOperatorRange(ctx.cursor, target, 'gg', op, count)
   applyOperator(op, range.from, range.to, ctx, range.linewise)
   ctx.recordChange({ type: 'operator', op, motion: 'gg', count })
+}
+
+// ============================================================================
+// Visual Mode Operators
+// ============================================================================
+
+/**
+ * Calculate the [from, to) offset range of a visual selection.
+ *
+ * char-wise: inclusive of the cursor char → [min(anchor,cursor), nextOffset(max)]
+ * line-wise: full logical lines → [lineStart(min), lineEnd(max)]
+ *
+ * Matches the binary's Kcr(anchor, cursor, linewise).
+ */
+export function getVisualRange(
+  anchor: number,
+  cursor: Cursor,
+  linewise: boolean,
+): { from: number; to: number } {
+  const from = Math.min(anchor, cursor.offset)
+  const maxOff = Math.max(anchor, cursor.offset)
+  if (!linewise) {
+    return { from, to: cursor.measuredText.nextOffset(maxOff) }
+  }
+  const text = cursor.text
+  // Start of the logical line containing 'from'
+  let lineStart = from
+  if (from > 0) {
+    const idx = text.lastIndexOf('\n', from - 1)
+    lineStart = idx === -1 ? 0 : idx + 1
+  }
+  // End of the logical line containing 'maxOff' (include the newline)
+  const nextNl = text.indexOf('\n', maxOff)
+  const lineEnd = nextNl === -1 ? text.length : nextNl + 1
+  return { from: lineStart, to: lineEnd }
+}
+
+/**
+ * Count graphemes (char-wise) or lines (line-wise) in the selected content.
+ * Stored as the `span` field for dot-repeat replay.
+ */
+export function getVisualSpan(text: string, linewise: boolean): number {
+  if (linewise) return countCharInString(text, '\n')
+  let count = 0
+  let pos = 0
+  while (pos < text.length) {
+    const g = firstGrapheme(text.slice(pos))
+    pos += g.length || 1
+    count++
+  }
+  return count
+}
+
+/**
+ * Reconstruct a visual range from a stored span (for dot-repeat).
+ * Starts at the current cursor and extends `span` graphemes (char-wise)
+ * or `span` lines (line-wise).
+ */
+function getVisualRangeFromSpan(
+  span: number,
+  linewise: boolean,
+  ctx: OperatorContext,
+): { from: number; to: number } {
+  const text = ctx.text
+  if (linewise) {
+    const lineStart = ctx.cursor.startOfLogicalLine().offset
+    let end = lineStart
+    for (let i = 0; i < span; i++) {
+      const nl = text.indexOf('\n', end)
+      if (nl === -1) {
+        end = text.length
+        break
+      }
+      end = nl + 1
+    }
+    return { from: lineStart, to: end }
+  }
+  const from = ctx.cursor.offset
+  let to = from
+  for (let i = 0; i < span && to < text.length; i++) {
+    to = ctx.cursor.measuredText.nextOffset(to)
+  }
+  return { from, to }
+}
+
+/**
+ * Apply an operator (delete/change/yank) over a visual selection.
+ *
+ * Linewise delete/change are handled specially (matching the binary's gKl);
+ * char-wise and linewise-yank fall through to the regular applyOperator.
+ */
+export function executeVisualOperator(
+  op: Operator,
+  anchor: number,
+  ctx: OperatorContext,
+  linewise: boolean,
+): void {
+  const range = getVisualRange(anchor, ctx.cursor, linewise)
+  const content = ctx.text.slice(range.from, range.to)
+  const span = getVisualSpan(content, linewise)
+
+  // Linewise change: delete full lines, leave one empty line, enter insert
+  if (linewise && op === 'change') {
+    let yanked = content
+    if (!yanked.endsWith('\n')) yanked += '\n'
+    ctx.setRegister(yanked, true)
+    const before = ctx.text.slice(0, range.from)
+    const after = ctx.text.slice(range.to)
+    const hasAfter = after !== ''
+    ctx.setText(before + (hasAfter ? '\n' : '') + after)
+    ctx.enterInsert(range.from)
+    ctx.recordChange({ type: 'visualChange', span, linewise, text: '' })
+    return
+  }
+
+  // Linewise delete: delete full lines, adjusting for trailing newline
+  if (linewise && op === 'delete') {
+    let yanked = content
+    if (!yanked.endsWith('\n')) yanked += '\n'
+    ctx.setRegister(yanked, true)
+    let start = range.from
+    if (
+      range.to === ctx.text.length &&
+      range.from > 0 &&
+      ctx.text[range.from - 1] === '\n'
+    ) {
+      start -= 1
+    }
+    const newText = ctx.text.slice(0, start) + ctx.text.slice(range.to)
+    ctx.setText(newText)
+    const maxOff = Math.max(
+      0,
+      newText.length - (lastGrapheme(newText).length || 1),
+    )
+    ctx.setOffset(Math.min(start, maxOff))
+    ctx.recordChange({ type: 'visualOp', op, span, linewise })
+    return
+  }
+
+  // char-wise (all ops) + linewise yank → reuse applyOperator
+  applyOperator(op, range.from, range.to, ctx, linewise)
+  if (op !== 'yank') {
+    ctx.recordChange({ type: 'visualOp', op, span, linewise })
+  }
+}
+
+/**
+ * Replace every character in the visual selection with `char`.
+ */
+export function executeVisualReplace(
+  char: string,
+  anchor: number,
+  ctx: OperatorContext,
+  linewise: boolean,
+): void {
+  const range = getVisualRange(anchor, ctx.cursor, linewise)
+  if (range.from >= range.to) return
+  const content = ctx.text.slice(range.from, range.to)
+  const span = getVisualSpan(content, linewise)
+
+  // Count graphemes in the selection to repeat the replacement char
+  let count = getVisualSpan(content, false)
+  const replacement = char.repeat(count)
+
+  const newText =
+    ctx.text.slice(0, range.from) + replacement + ctx.text.slice(range.to)
+  ctx.setText(newText)
+  ctx.setOffset(range.from)
+  ctx.recordChange({ type: 'visualReplace', char, span, linewise })
+}
+
+/**
+ * Toggle / lowercase / uppercase every character in the visual selection.
+ */
+export function executeVisualCase(
+  op: CaseOp,
+  anchor: number,
+  ctx: OperatorContext,
+  linewise: boolean,
+): void {
+  const range = getVisualRange(anchor, ctx.cursor, linewise)
+  if (range.from >= range.to) return
+  const content = ctx.text.slice(range.from, range.to)
+  const span = getVisualSpan(content, linewise)
+
+  let transformed = ''
+  let pos = 0
+  while (pos < content.length) {
+    const g = firstGrapheme(content.slice(pos))
+    pos += g.length || 1
+    if (op === 'toggle') {
+      transformed += g === g.toUpperCase() ? g.toLowerCase() : g.toUpperCase()
+    } else if (op === 'lower') {
+      transformed += g.toLowerCase()
+    } else {
+      transformed += g.toUpperCase()
+    }
+  }
+
+  const newText =
+    ctx.text.slice(0, range.from) + transformed + ctx.text.slice(range.to)
+  ctx.setText(newText)
+  ctx.setOffset(range.from)
+  ctx.recordChange({ type: 'visualCase', op, span, linewise })
+}
+
+// ============================================================================
+// Visual Dot-Repeat Replays
+// ============================================================================
+
+/**
+ * Replay a visual operator (delete/yank) for dot-repeat.
+ */
+export function replayVisualOp(
+  op: Operator,
+  span: number,
+  linewise: boolean,
+  ctx: OperatorContext,
+): void {
+  const range = getVisualRangeFromSpan(span, linewise, ctx)
+  if (range.from === range.to) return
+  applyOperator(op, range.from, range.to, ctx, linewise)
+}
+
+/**
+ * Replay a visual change for dot-repeat: re-select the same span, delete it,
+ * and insert the previously-typed text.
+ */
+export function replayVisualChange(
+  span: number,
+  linewise: boolean,
+  text: string,
+  ctx: OperatorContext,
+): void {
+  const range = getVisualRangeFromSpan(span, linewise, ctx)
+  if (range.from === range.to && !text) return
+  const content = ctx.text.slice(range.from, range.to)
+  let yanked = content
+  if (text && !yanked.endsWith('\n')) yanked += '\n'
+  ctx.setRegister(yanked, !!text)
+  const after = ctx.text.slice(range.to)
+  const newAfter = text && after !== '' ? '\n' + after : after
+  const newText = ctx.text.slice(0, range.from) + text + newAfter
+  ctx.setText(newText)
+  const lastGr = lastGrapheme(text)
+  ctx.setOffset(
+    Math.max(range.from, range.from + text.length - (lastGr.length || 1)),
+  )
+}
+
+/**
+ * Replay a visual replace for dot-repeat.
+ */
+export function replayVisualReplace(
+  char: string,
+  span: number,
+  linewise: boolean,
+  ctx: OperatorContext,
+): void {
+  const range = getVisualRangeFromSpan(span, linewise, ctx)
+  if (range.from === range.to) return
+  const content = ctx.text.slice(range.from, range.to)
+  const count = getVisualSpan(content, false)
+  const replacement = char.repeat(count)
+  const newText =
+    ctx.text.slice(0, range.from) + replacement + ctx.text.slice(range.to)
+  ctx.setText(newText)
+  ctx.setOffset(range.from)
+}
+
+/**
+ * Replay a visual case operation for dot-repeat.
+ */
+export function replayVisualCase(
+  op: CaseOp,
+  span: number,
+  linewise: boolean,
+  ctx: OperatorContext,
+): void {
+  const range = getVisualRangeFromSpan(span, linewise, ctx)
+  if (range.from === range.to) return
+  const content = ctx.text.slice(range.from, range.to)
+  let transformed = ''
+  let pos = 0
+  while (pos < content.length) {
+    const g = firstGrapheme(content.slice(pos))
+    pos += g.length || 1
+    if (op === 'toggle') {
+      transformed += g === g.toUpperCase() ? g.toLowerCase() : g.toUpperCase()
+    } else if (op === 'lower') {
+      transformed += g.toLowerCase()
+    } else {
+      transformed += g.toUpperCase()
+    }
+  }
+  const newText =
+    ctx.text.slice(0, range.from) + transformed + ctx.text.slice(range.to)
+  ctx.setText(newText)
+  ctx.setOffset(range.from)
+}
+
+/**
+ * Paste the register over the visual selection (replaces the selection).
+ */
+export function executeVisualPaste(
+  anchor: number,
+  ctx: OperatorContext,
+  linewise: boolean,
+): void {
+  const register = ctx.getRegister()
+  if (!register) return
+  const range = getVisualRange(anchor, ctx.cursor, linewise)
+  const regLinewise = register.endsWith('\n')
+  const content = regLinewise ? register.slice(0, -1) : register
+
+  if (regLinewise) {
+    // Line-wise paste: replace selection lines with register lines
+    const newText =
+      ctx.text.slice(0, range.from) + content + '\n' + ctx.text.slice(range.to)
+    ctx.setText(newText)
+    ctx.setOffset(range.from)
+  } else {
+    // Char-wise paste: replace selection characters
+    const newText =
+      ctx.text.slice(0, range.from) + content + ctx.text.slice(range.to)
+    ctx.setText(newText)
+    const lastGr = lastGrapheme(content)
+    ctx.setOffset(
+      Math.max(range.from, range.from + content.length - (lastGr.length || 1)),
+    )
+  }
+}
+
+/**
+ * Join all lines within the visual selection.
+ */
+export function executeVisualJoin(
+  anchor: number,
+  ctx: OperatorContext,
+): void {
+  const range = getVisualRange(anchor, ctx.cursor, false)
+  const section = ctx.text.slice(range.from, range.to)
+  const joined = section.split('\n').map((l) => l.trimStart()).join(' ')
+  const newText =
+    ctx.text.slice(0, range.from) + joined + ctx.text.slice(range.to)
+  ctx.setText(newText)
+  ctx.setOffset(range.from)
+}
+
+/**
+ * Indent (> or <) all lines within the visual selection.
+ */
+export function executeVisualIndent(
+  dir: '>' | '<',
+  anchor: number,
+  ctx: OperatorContext,
+): void {
+  const range = getVisualRange(anchor, ctx.cursor, true)
+  const text = ctx.text
+  const lines = text.split('\n')
+  // Calculate which lines are in the range
+  let lineStart = 0
+  let startLine = 0
+  for (let i = 0; i < lines.length; i++) {
+    if (lineStart === range.from) {
+      startLine = i
+      break
+    }
+    if (lineStart > range.from) {
+      startLine = i
+      break
+    }
+    startLine = i
+    lineStart += lines[i].length + 1
+  }
+  let endLine = startLine
+  let pos = range.from
+  for (let i = startLine; i < lines.length; i++) {
+    pos += lines[i].length
+    if (pos >= range.to - 1) {
+      endLine = i
+      break
+    }
+    pos += 1 // newline
+    endLine = i
+  }
+  const indent = '  '
+  for (let i = startLine; i <= endLine; i++) {
+    const line = lines[i] ?? ''
+    if (dir === '>') {
+      lines[i] = indent + line
+    } else if (line.startsWith(indent)) {
+      lines[i] = line.slice(indent.length)
+    } else if (line.startsWith('\t')) {
+      lines[i] = line.slice(1)
+    }
+  }
+  const newText = lines.join('\n')
+  ctx.setText(newText)
+  const firstLineText = lines[startLine] ?? ''
+  const firstNonBlank = (firstLineText.match(/^\s*/)?.[0] ?? '').length
+  ctx.setOffset(range.from + firstNonBlank)
 }

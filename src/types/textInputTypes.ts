@@ -214,12 +214,18 @@ export type VimTextInputProps = BaseTextInputProps & {
    * Optional callback for mode changes
    */
   readonly onModeChange?: (mode: VimMode) => void
+
+  /**
+   * Opens reverse history search. Called when '/' is pressed in vim NORMAL
+   * idle mode (2.1.152+).
+   */
+  readonly onHistorySearch?: () => void
 }
 
 /**
  * Vim editor modes
  */
-export type VimMode = 'INSERT' | 'NORMAL'
+export type VimMode = 'INSERT' | 'NORMAL' | 'VISUAL' | 'VISUAL LINE'
 
 /**
  * Common properties for input hook results
