@@ -2,6 +2,7 @@ import * as React from 'react'
 import type { Command, LocalJSXCommandContext } from '../../commands.js'
 import { getIsNonInteractiveSession, getSessionId } from '../../bootstrap/state.js'
 import { getTotalInputTokens } from '../../cost-tracker.js'
+import { logEvent } from "../../services/analytics/index.js"
 import { addSessionHook, removeSessionHook } from '../../utils/hooks/sessionHooks.js'
 import type { HookEvent } from '../../schemas/hooks.js'
 import {
@@ -101,7 +102,7 @@ export const goalInteractive: Command = {
           clearGoal()
           unregisterGoalHook(context, condition)
           context.setAppState((s: any) => ({ ...s, activeGoal: undefined }))
-          onDone(`Goal cleared: ${condition}`, { display: 'system' })
+          logEvent("tengu_stop_hook_removed", { via: "goal" }), onDone(`Goal cleared: ${condition}`, { display: 'system' })
           return null
         }
 
@@ -119,7 +120,7 @@ export const goalInteractive: Command = {
           ...s,
           activeGoal: { condition: trimmed, iterations: 0, setAt, tokensAtStart },
         }))
-        onDone(`Goal set: ${trimmed}`, { shouldQuery: true, metaMessages: [goalPrompt(trimmed)] })
+        logEvent("tengu_stop_hook_added", { via: "goal" }), onDone(`Goal set: ${trimmed}`, { shouldQuery: true, metaMessages: [goalPrompt(trimmed)] })
         return null
       },
     }),

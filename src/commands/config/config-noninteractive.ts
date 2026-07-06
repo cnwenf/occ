@@ -5,61 +5,54 @@ import { getSettingsForSource, updateSettingsForSource } from '../../utils/setti
 
 // Non-interactive (-p) handler for /config. Mirrors the official 2.1.200
 // -p behavior:
-//   /config                        -> "Usage: /config key=value [key=value ...]" + key list
+//   /config                        -> "Usage: /config key=value [key=value ...]" + key list (sorted)
 //   /config <unknown>=<v>          -> "<key> isn't a /config setting. Run /config to see what's available."
-//   /config <known>=<v>            -> "Set <key> to <value>"
+//   /config <known>=<v>            -> "Set <Label> to <parsed_value>"
+//   /config <boolean_key>=<invalid> -> "<Label> takes true or false, not "<value>""
 // Verified against the 2.1.200 binary.
 
-// The official config key set (from the settings panel definition). These are
-// the user-addressable settings; some live in SettingsJson, some in AppState.
-const CONFIG_KEYS: { key: string; hint?: string }[] = [
-  { key: 'askUserQuestionTimeout', hint: 'never|60s|5m|10m' },
-  { key: 'autoCompact', hint: 'true|false' },
-  { key: 'autoConnectIde', hint: 'true|false' },
-  { key: 'autoScroll', hint: 'true|false' },
-  { key: 'cleanupPeriodDays', hint: 'number' },
-  { key: 'copyFullResponse', hint: 'true|false' },
-  { key: 'copyOnSelect', hint: 'true|false' },
-  { key: 'editor', hint: 'path' },
-  { key: 'env', hint: 'KEY=VALUE' },
-  { key: 'includeCoAuthoredBy', hint: 'true|false' },
-  { key: 'model', hint: 'model' },
-  { key: 'outputStyle', hint: 'style' },
-  { key: 'permissionMode', hint: 'default|acceptEdits|plan|bypassPermissions' },
-  { key: 'promptSuggestionEnabled', hint: 'true|false' },
-  { key: 'theme', hint: 'theme' },
-  { key: 'thinking', hint: 'enabled|adaptive|disabled' },
-  { key: 'tips', hint: 'true|false' },
-  { key: 'verbose', hint: 'true|false' },
-  { key: 'worktree', hint: 'true|false' },
-]
+// The official config key set (from the settings panel definition), sorted.
+const CONFIG_KEYS: { key: string; hint?: string; label: string }[] = [
+  { key: 'askUserQuestionTimeout', hint: 'never|60s|5m|10m', label: 'Ask User Question Timeout' },
+  { key: 'autoCompact', hint: 'true|false', label: 'Auto-compact' },
+  { key: 'autoConnectIde', hint: 'true|false', label: 'Auto-connect to IDE (external terminal)' },
+  { key: 'autoScroll', hint: 'true|false', label: 'Auto-scroll' },
+  { key: 'cleanupPeriodDays', hint: 'number', label: 'Cleanup period (days)' },
+  { key: 'copyFullResponse', hint: 'true|false', label: 'Skip the /copy picker' },
+  { key: 'copyOnSelect', hint: 'true|false', label: 'Copy on select' },
+  { key: 'editor', hint: 'normal|vim', label: 'Editor mode' },
+  { key: 'env', hint: 'KEY=VALUE', label: 'Environment variables' },
+  { key: 'includeCoAuthoredBy', hint: 'true|false', label: 'Include co-authored-by' },
+  { key: 'model', hint: 'model', label: 'Model' },
+  { key: 'outputStyle', hint: 'style', label: 'Output style' },
+  { key: 'permissionMode', hint: 'default|acceptEdits|plan|bypassPermissions', label: 'Default permission mode' },
+  { key: 'promptSuggestionEnabled', hint: 'true|false', label: 'Prompt suggestions' },
+  { key: 'reduceMotion', hint: 'true|false', label: 'Reduce motion' },
+  { key: 'theme', hint: 'theme', label: 'Theme' },
+  { key: 'thinking', hint: 'enabled|adaptive|disabled', label: 'Thinking mode' },
+  { key: 'tips', hint: 'true|false', label: 'Show tips' },
+  { key: 'verbose', hint: 'true|false', label: 'Verbose output' },
+  { key: 'worktreeBaseRef', hint: 'fresh|head', label: 'Worktree base ref' },
+].sort((a, b) => a.key.localeCompare(b.key))
 
 const CONFIG_KEY_SET = new Set(CONFIG_KEYS.map(k => k.key))
 
-// Key → human-readable label (from the official settings panel definition
-// in Config.tsx). Used in the "Set <Label> to <value>" message.
-const KEY_LABELS: Record<string, string> = {
-  autoCompact: 'Auto-compact',
-  autoConnectIde: 'Auto-connect IDE',
-  autoScroll: 'Auto-scroll',
-  cleanupPeriodDays: 'Cleanup period (days)',
-  copyFullResponse: 'Copy full response',
-  copyOnSelect: 'Copy on select',
-  editor: 'Editor mode',
-  includeCoAuthoredBy: 'Include co-authored-by',
-  model: 'Model',
-  outputStyle: 'Output style',
-  permissionMode: 'Default permission mode',
-  promptSuggestionEnabled: 'Prompt suggestions',
-  theme: 'Theme',
-  thinking: 'Thinking mode',
-  tips: 'Show tips',
-  verbose: 'Verbose output',
-  worktree: 'Worktree',
+function labelFor(key: string): string {
+  return CONFIG_KEYS.find(k => k.key === key)?.label ?? key.charAt(0).toUpperCase() + key.slice(1)
 }
 
-function labelFor(key: string): string {
-  return KEY_LABELS[key] ?? key.charAt(0).toUpperCase() + key.slice(1)
+// Boolean config keys — accept true/1/on/yes | false/0/off/no, reject others.
+const BOOLEAN_KEYS = new Set([
+  'autoCompact', 'autoConnectIde', 'autoScroll', 'copyFullResponse', 'copyOnSelect',
+  'includeCoAuthoredBy', 'promptSuggestionEnabled', 'reduceMotion', 'tips', 'verbose',
+])
+
+// Enum config keys — accept only the listed values.
+const ENUM_KEYS: Record<string, string[]> = {
+  editor: ['normal', 'vim'],
+  thinking: ['enabled', 'adaptive', 'disabled'],
+  permissionMode: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
+  worktreeBaseRef: ['fresh', 'head'],
 }
 
 function getSettingsSchemaKeys(): Set<string> {
@@ -72,51 +65,89 @@ function getSettingsSchemaKeys(): Set<string> {
 }
 
 // AppState-only config fields (not in SettingsJson) — set via setAppState.
-const APPSTATE_KEYS = new Set(['verbose', 'autoScroll', 'autoConnectIde', 'copyFullResponse', 'copyOnSelect'])
+const APPSTATE_KEYS = new Set(['verbose', 'autoScroll', 'autoConnectIde', 'copyFullResponse', 'copyOnSelect', 'reduceMotion', 'tips'])
+
+function parseBoolean(value: string): { ok: true; val: boolean } | { ok: false; msg: string } {
+  const v = value.toLowerCase()
+  if (['true', '1', 'on', 'yes'].includes(v)) return { ok: true, val: true }
+  if (['false', '0', 'off', 'no'].includes(v)) return { ok: true, val: false }
+  return { ok: false, msg: `takes true or false, not "${value}"` }
+}
 
 export async function call(args: string, context: LocalJSXCommandContext): Promise<LocalCommandResult> {
   const trimmed = args.trim()
   if (!trimmed) {
+    // C8: settings list sorted (official does .sort())
     const list = CONFIG_KEYS.map(k => `  ${k.key}=${k.hint ?? 'value'}`).join('\n')
     return { type: 'text', value: `Usage: /config key=value [key=value ...]\n${list}` }
   }
-  // Multi-pair parser: split on spaces, each pair must be key=value.
-  const pairs = trimmed.split(/\s+/)
+
+  // C5: single-pair-with-spaces — official treats the last pair's value as
+  // everything after the first `=` (spaces allowed in values). Multi-pair
+  // only when there are multiple `key=` tokens.
+  // Parse: find all key= positions, split there.
+  const pairs: { key: string; value: string }[] = []
+  const regex = /(\w+)=(?:(?!\w+=).)*/g
+  let match: RegExpExecArray | null
+  while ((match = regex.exec(trimmed)) !== null) {
+    const full = match[0]
+    const eqIdx = full.indexOf('=')
+    pairs.push({ key: full.slice(0, eqIdx), value: full.slice(eqIdx + 1).trim() })
+  }
+
+  if (pairs.length === 0) {
+    return { type: 'text', value: `Expected key=value, got "${trimmed}". Run /config to see what's available.` }
+  }
+
   const results: string[] = []
-  for (const pair of pairs) {
-    const m = pair.match(/^([A-Za-z0-9_]+)=(.*)$/)
-    if (!m) {
-      return { type: 'text', value: `Expected key=value, got "${pair}". Run /config to see what's available.` }
-    }
-    const [, key, value] = m
+  for (const { key, value } of pairs) {
     if (!CONFIG_KEY_SET.has(key)) {
       return { type: 'text', value: `${key} isn't a /config setting. Run /config to see what's available.` }
     }
-    if (APPSTATE_KEYS.has(key)) {
-      const boolVal = value === 'true' || value === '1' || value === 'on' || value === 'yes'
-      context.setAppState((s: any) => ({ ...s, [key]: boolVal }))
-      results.push(`Set ${labelFor(key)} to ${value}`)
-    } else {
-      try {
-        const schemaKeys = getSettingsSchemaKeys()
-        if (schemaKeys.has(key)) {
+
+    const label = labelFor(key)
+
+    // C2: boolean validation
+    if (BOOLEAN_KEYS.has(key)) {
+      const parsed = parseBoolean(value)
+      if (!parsed.ok) {
+        return { type: 'text', value: `${label} ${parsed.msg}` }
+      }
+      if (APPSTATE_KEYS.has(key)) {
+        context.setAppState((s: any) => ({ ...s, [key]: parsed.val }))
+      } else {
+        try {
           const existing = getSettingsForSource('user' as any) ?? ({} as any)
-          const parsed = value === 'true' || value === '1' || value === 'on' || value === 'yes' ? true
-            : value === 'false' || value === '0' || value === 'off' || value === 'no' ? false
-            : value
-          const merged = { ...existing, [key]: parsed }
-          const r = updateSettingsForSource('user' as any, merged as any)
-          if (r.error) {
-            return { type: 'text', value: `${key} isn't a /config setting. Run /config to see what's available.` }
-          }
-          results.push(`Set ${labelFor(key)} to ${value}`)
-        } else {
-          results.push(`Set ${labelFor(key)} to ${value}`)
-        }
-      } catch {
-        results.push(`Set ${labelFor(key)} to ${value}`)
+          updateSettingsForSource('user' as any, { ...existing, [key]: parsed.val } as any)
+        } catch {}
+      }
+      // C1: emit parsed value (true/false), not raw input
+      results.push(`Set ${label} to ${parsed.val}`)
+      continue
+    }
+
+    // C3: enum validation
+    if (ENUM_KEYS[key]) {
+      if (!ENUM_KEYS[key].includes(value)) {
+        return { type: 'text', value: `${label} takes ${ENUM_KEYS[key].join('|')}, not "${value}"` }
       }
     }
+
+    // Settings key — merge into user settings and write.
+    try {
+      const schemaKeys = getSettingsSchemaKeys()
+      if (schemaKeys.has(key)) {
+        const existing = getSettingsForSource('user' as any) ?? ({} as any)
+        const r = updateSettingsForSource('user' as any, { ...existing, [key]: value } as any)
+        if (r.error) {
+          return { type: 'text', value: `Couldn't save ${label}: ${r.error.message}` }
+        }
+      } else if (APPSTATE_KEYS.has(key)) {
+        context.setAppState((s: any) => ({ ...s, [key]: value }))
+      }
+    } catch {}
+    // C1: emit the value as-is for non-boolean
+    results.push(`Set ${label} to ${value}`)
   }
   return { type: 'text', value: results.join('\n') }
 }

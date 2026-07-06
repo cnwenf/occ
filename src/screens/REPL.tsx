@@ -1999,6 +1999,7 @@ export function REPL({
       const goalCondition = findGoalToRestore(initialMessages);
       if (goalCondition && !isGoalActive()) {
         setGoal(goalCondition);
+      logEvent("tengu_goal_restored_on_resume", {});
         const sessionId = getSessionId();
         addSessionHook(setAppState, sessionId, 'Stop' as any, '', { type: 'prompt', prompt: goalCondition });
         setAppState(s => ({
