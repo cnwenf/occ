@@ -5,7 +5,7 @@ import { useCallback, useMemo, useState } from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled } from 'src/utils/fastMode.js';
-import { Box, Text } from '../ink.js';
+import { Box, Text, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
 import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
@@ -22,6 +22,13 @@ export type Props = {
   initial: string | null;
   sessionModel?: ModelSetting;
   onSelect: (model: string | null, effort: EffortLevel | undefined) => void;
+  /**
+   * E18 (2.1.153): when provided, the model picker offers an 's'
+   * "use this session only" keybinding (and relabels Enter to
+   * "set as default"). The callback receives the focused model + effort,
+   * like onSelect, but the caller should NOT persist the choice.
+   */
+  onSessionOnlySelect?: (model: string | null, effort: EffortLevel | undefined) => void;
   onCancel?: () => void;
   isStandaloneCommand?: boolean;
   showFastModeNotice?: boolean;
@@ -42,6 +49,7 @@ export function ModelPicker(t0) {
     initial,
     sessionModel,
     onSelect,
+    onSessionOnlySelect,
     onCancel,
     isStandaloneCommand,
     showFastModeNotice,
@@ -221,6 +229,22 @@ export function ModelPicker(t0) {
     t13 = $[34];
   }
   useKeybindings(t12, t13);
+  // E18 (2.1.153): 's' = "use this session only" keybinding. Resolves the
+  // focused model + effort the same way Enter does, but hands off to the
+  // session-only callback (which does not persist the choice). Mirrors the
+  // official 2.1.200 binary: `chord:"s",action:"use this session only"`.
+  useInput((input, key) => {
+    if (input !== 's' || key.ctrl || !isStandaloneCommand || !onSessionOnlySelect) {
+      return;
+    }
+    const selectedModel = resolveOptionModel(focusedValue);
+    const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
+    if (focusedValue === NO_PREFERENCE) {
+      onSessionOnlySelect(null, selectedEffort);
+    } else {
+      onSessionOnlySelect(focusedValue, selectedEffort);
+    }
+  }, { isActive: isStandaloneCommand === true && onSessionOnlySelect !== undefined });
   let t14;
   if ($[35] !== effort || $[36] !== hasToggledEffort || $[37] !== onSelect || $[38] !== setAppState || $[39] !== skipSettingsWrite) {
     t14 = function handleSelect(value_0) {
@@ -354,10 +378,10 @@ export function ModelPicker(t0) {
     t26 = $[73];
   }
   let t27;
-  if ($[74] !== exitState || $[75] !== isStandaloneCommand) {
-    t27 = isStandaloneCommand && <Text dimColor={true} italic={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Byline><KeyboardShortcutHint shortcut="Enter" action="confirm" /><ConfigurableShortcutHint action="select:cancel" context="Select" fallback="Esc" description="exit" /></Byline>}</Text>;
+  if ($[74] !== exitState || $[75] !== (isStandaloneCommand && onSessionOnlySelect !== undefined)) {
+    t27 = isStandaloneCommand && <Text dimColor={true} italic={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Byline>{onSessionOnlySelect ? <><KeyboardShortcutHint shortcut="Enter" action="set as default" /><KeyboardShortcutHint shortcut="s" action="use this session only" /></> : <KeyboardShortcutHint shortcut="Enter" action="confirm" />}<ConfigurableShortcutHint action="select:cancel" context="Select" fallback="Esc" description="exit" /></Byline>}</Text>;
     $[74] = exitState;
-    $[75] = isStandaloneCommand;
+    $[75] = isStandaloneCommand && onSessionOnlySelect !== undefined;
     $[76] = t27;
   } else {
     t27 = $[76];

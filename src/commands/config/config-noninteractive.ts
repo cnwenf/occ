@@ -1,11 +1,13 @@
 import type { LocalCommandResult } from '../../commands.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
+import { COMMON_HELP_ARGS } from '../../constants/xml.js'
 import { SettingsSchema } from '../../utils/settings/types.js'
 import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'
 
 // Non-interactive (-p) handler for /config. Mirrors the official 2.1.200
 // -p behavior:
 //   /config                        -> "Usage: /config key=value [key=value ...]" + key list (sorted)
+//   /config --help | -h | help     -> same shorthand key listing (E24, 2.1.183)
 //   /config <unknown>=<v>          -> "<key> isn't a /config setting. Run /config to see what's available."
 //   /config <known>=<v>            -> "Set <Label> to <parsed_value>"
 //   /config <boolean_key>=<invalid> -> "<Label> takes true or false, not "<value>""
@@ -37,6 +39,15 @@ const CONFIG_KEYS: { key: string; hint?: string; label: string }[] = [
 ].sort((a, b) => a.key.localeCompare(b.key))
 
 const CONFIG_KEY_SET = new Set(CONFIG_KEYS.map(k => k.key))
+
+/**
+ * Build the sorted shorthand config key listing used by both the -p
+ * (`/config --help`) and interactive (`/config --help` in the REPL) paths.
+ * Mirrors the official 2.1.200 binary's `mtn(t)` key-list function.
+ */
+export function buildConfigKeyList(): string {
+  return CONFIG_KEYS.map(k => `  ${k.key}=${k.hint ?? 'value'}`).join('\n')
+}
 
 function labelFor(key: string): string {
   return CONFIG_KEYS.find(k => k.key === key)?.label ?? key.charAt(0).toUpperCase() + key.slice(1)
@@ -76,7 +87,10 @@ function parseBoolean(value: string): { ok: true; val: boolean } | { ok: false; 
 
 export async function call(args: string, context: LocalJSXCommandContext): Promise<LocalCommandResult> {
   const trimmed = args.trim()
-  if (!trimmed) {
+  // E24 (2.1.183): /config --help lists the shorthand config keys. The
+  // official binary treats help args (MW/lce — 'help', '-h', '--help') the
+  // same as no args: "Usage: /config key=value [key=value ...] <key list>".
+  if (!trimmed || COMMON_HELP_ARGS.includes(trimmed.toLowerCase())) {
     // C8: settings list sorted (official does .sort())
     const list = CONFIG_KEYS.map(k => `  ${k.key}=${k.hint ?? 'value'}`).join('\n')
     return { type: 'text', value: `Usage: /config key=value [key=value ...]\n${list}` }

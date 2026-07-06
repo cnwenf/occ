@@ -12,6 +12,7 @@ import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { clearFastModeCooldown, FAST_MODE_MODEL_DISPLAY, getFastModeModel, getFastModeRuntimeState, getFastModeUnavailableReason, isFastModeEnabled, isFastModeSupportedByModel, prefetchFastModeStatus } from '../../utils/fastMode.js';
 import { formatDuration } from '../../utils/format.js';
 import { formatModelPricing, getOpus46CostTier } from '../../utils/modelCost.js';
+import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 function applyFastMode(enable: boolean, setAppState: (f: (prev: AppState) => AppState) => void): void {
   clearFastModeCooldown();
@@ -228,6 +229,15 @@ async function handleFastModeShortcut(enable: boolean, getAppState: () => AppSta
   if (unavailableReason) {
     return `Fast mode unavailable: ${unavailableReason}`;
   }
+  // E33 (2.1.176): refuse to toggle fast mode ON when the fast model is
+  // outside the availableModels allowlist. Mirrors the official 2.1.200
+  // binary: `Fast mode unavailable: ${fastModel} is not in your organization's allowed models`.
+  if (enable) {
+    const fastModel = getFastModeModel();
+    if (!isModelAllowed(fastModel)) {
+      return `Fast mode unavailable: ${fastModel} is not in your organization's allowed models`;
+    }
+  }
   const {
     mainLoopModel
   } = getAppState();
@@ -261,8 +271,17 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
     return null;
   }
   const unavailableReason = getFastModeUnavailableReason();
+  // E33 (2.1.176): also block the picker when the fast model is outside the
+  // availableModels allowlist.
+  let effectiveUnavailable = unavailableReason;
+  if (!effectiveUnavailable) {
+    const fastModel = getFastModeModel();
+    if (!isModelAllowed(fastModel)) {
+      effectiveUnavailable = `${fastModel} is not in your organization's allowed models`;
+    }
+  }
   logEvent('tengu_fast_mode_picker_shown', {
-    unavailable_reason: (unavailableReason ?? '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    unavailable_reason: (effectiveUnavailable ?? '') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });
-  return <FastModePicker onDone={onDone} unavailableReason={unavailableReason} />;
+  return <FastModePicker onDone={onDone} unavailableReason={effectiveUnavailable} />;
 }

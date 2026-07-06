@@ -10,6 +10,7 @@ import {
   normalizeModelStringForAPI,
   parseUserSpecifiedModel,
 } from '../utils/model/model.js'
+import { isModelAllowed } from '../utils/model/modelAllowlist.js'
 import { validateModel } from '../utils/model/validateModel.js'
 import { updateSettingsForSource } from '../utils/settings/settings.js'
 
@@ -71,6 +72,17 @@ const call: LocalCommandCall = async (args, context) => {
     return {
       type: 'text',
       value: `The model ${arg} (${resolvedModel}) cannot be used as an advisor`,
+    }
+  }
+
+  // E34 (2.1.174): block a saved advisor model that's outside the
+  // availableModels allowlist. Mirrors the official 2.1.200 binary's model
+  // allowlist refusal: `Model '<model>' is not available. Your organization
+  // restricts model selection.`
+  if (!isModelAllowed(resolvedModel)) {
+    return {
+      type: 'text',
+      value: `Model '${resolvedModel}' is not available. Your organization restricts model selection.`,
     }
   }
 
