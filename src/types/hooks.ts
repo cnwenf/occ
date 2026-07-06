@@ -71,7 +71,13 @@ export const syncHookResponseSchema = lazySchema(() =>
       .union([
         z.object({
           hookEventName: z.literal('PreToolUse'),
-          permissionDecision: permissionBehaviorSchema().optional(),
+          // 2.1.89: hook-output permissionDecision is a superset of the
+          // permission-rule enum — it adds 'defer' (print-mode pause). Kept
+          // separate from permissionBehaviorSchema so permission rules stay
+          // restricted to allow/deny/ask.
+          permissionDecision: z
+            .enum(['allow', 'deny', 'ask', 'defer'])
+            .optional(),
           permissionDecisionReason: z.string().optional(),
           updatedInput: z.record(z.string(), z.unknown()).optional(),
           additionalContext: z.string().optional(),

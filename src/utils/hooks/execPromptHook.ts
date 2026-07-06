@@ -180,7 +180,13 @@ Your response must be a JSON object matching one of the following schemas:
             blockingError: `Prompt hook condition was not met: ${parsed.data.reason}`,
             command: hook.prompt,
           },
-          preventContinuation: true,
+          // 2.1.139: continueOnBlock — when true, feed the rejection reason
+          // back to Claude (via blockingError/stopReason) and continue the
+          // turn instead of hard-stopping. Matches the binary formula
+          // preventContinuation = !impossible && hook.continueOnBlock !== true
+          // (the impossible branch returns early above, so here !impossible
+          // is true and this reduces to hook.continueOnBlock !== true).
+          preventContinuation: hook.continueOnBlock !== true,
           stopReason: parsed.data.reason,
         }
       }

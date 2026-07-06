@@ -107,6 +107,13 @@ function buildHookSchemas() {
       .boolean()
       .optional()
       .describe('If true, hook runs once and is removed after execution'),
+    // 2.1.139: feed the hook's rejection reason back to Claude and continue.
+    continueOnBlock: z
+      .boolean()
+      .optional()
+      .describe(
+        'If true, feed the hook rejection reason back to Claude and continue the turn instead of blocking',
+      ),
   })
 
   const HttpHookSchema = z.object({

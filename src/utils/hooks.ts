@@ -355,7 +355,7 @@ export interface HookResult {
    * failed (ActiveGoal.failed) for the "Goal could not be achieved" panel.
    */
   impossible?: boolean
-  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough'
+  permissionBehavior?: 'ask' | 'deny' | 'allow' | 'passthrough' | 'defer'
   hookPermissionDecisionReason?: string
   additionalContext?: string
   initialUserMessage?: string
@@ -379,7 +379,7 @@ export type AggregatedHookResult = {
   impossible?: boolean
   hookPermissionDecisionReason?: string
   hookSource?: string
-  permissionBehavior?: PermissionResult['behavior']
+  permissionBehavior?: PermissionResult['behavior'] | 'defer'
   additionalContexts?: string[]
   initialUserMessage?: string
   updatedInput?: Record<string, unknown>
@@ -516,7 +516,7 @@ interface TypedSyncHookOutput {
   hookSpecificOutput?:
     | {
         hookEventName: 'PreToolUse'
-        permissionDecision?: 'ask' | 'deny' | 'allow' | 'passthrough'
+        permissionDecision?: 'ask' | 'deny' | 'allow' | 'passthrough' | 'defer'
         permissionDecisionReason?: string
         updatedInput?: Record<string, unknown>
         additionalContext?: string
@@ -672,10 +672,16 @@ export function processHookJSONOutput({
       case 'ask':
         result.permissionBehavior = 'ask'
         break
+      case 'defer':
+        // 2.1.89: pause the tool call (don't approve/deny); the session can
+        // resume with -p --resume to re-evaluate. Aggregation enforces the
+        // print-mode-only and solo-only guards.
+        result.permissionBehavior = 'defer'
+        break
       default:
         // Handle unknown decision types as errors
         throw new Error(
-          `Unknown hook permissionDecision type: ${json.hookSpecificOutput.permissionDecision}. Valid types are: allow, deny, ask`,
+          `Unknown hook permissionDecision type: ${json.hookSpecificOutput.permissionDecision}. Valid types are: allow, deny, ask, defer`,
         )
     }
   }
@@ -715,6 +721,10 @@ export function processHookJSONOutput({
               break
             case 'ask':
               result.permissionBehavior = 'ask'
+              break
+            case 'defer':
+              // 2.1.89: pause the tool call; resume with -p --resume.
+              result.permissionBehavior = 'defer'
               break
           }
         }
@@ -964,6 +974,12 @@ async function execCommandHook(
     }
   }
 
+  // 2.1.139: exec form — when `args` is set, spawn the command directly via
+  // argv (no shell), so path placeholders never need quoting. Capture the
+  // substituted command before the shell-specific wrapping below (.sh prepend
+  // + CLAUDE_CODE_SHELL_PREFIX), which only apply to the shell-spawned path.
+  const execCommand = command
+
   // On Windows (bash only), auto-prepend `bash` for .sh scripts so they
   // execute instead of opening in the default file handler. PowerShell
   // runs .ps1 files natively — no prepend needed.
@@ -1063,7 +1079,26 @@ async function execCommandHook(
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
   let child: ChildProcessWithoutNullStreams
-  if (shellType === 'powershell') {
+  if (hook.args && hook.args.length > 0) {
+    // 2.1.139: exec form — `command` is the executable and `args` is the
+    // argv. Spawn directly without a shell, so path placeholders never need
+    // quoting. Plugin root substitution still applies to the arg strings.
+    const execArgs = pluginRoot
+      ? hook.args.map(a =>
+          a.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, () =>
+            toHookPath(pluginRoot),
+          ),
+        )
+      : hook.args
+    child = spawn(execCommand, execArgs, {
+      env: envVars,
+      cwd: safeCwd,
+      // No shell — argv is passed directly to the executable.
+      shell: false,
+      // Prevent visible console window on Windows (no-op on other platforms)
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams
+  } else if (shellType === 'powershell') {
     const pwshPath = await getCachedPowerShellPath()
     if (!pwshPath) {
       throw new Error(
@@ -1443,29 +1478,68 @@ async function execCommandHook(
 }
 
 /**
+ * Hook events whose matchers admit comma-separated tool lists and hyphenated
+ * identifiers as exact-match literals (2.1.191/2.1.195). For these events the
+ * simple-match character class is widened to include `,`, space, and `-` so a
+ * matcher like `Bash,PowerShell` splits into two exact matches and a matcher
+ * like `mcp__foo-bar` is treated as a literal exact match instead of falling
+ * through to the regex path (which would substring-match).
+ */
+const MATCHER_COMMA_HYPHEN_EVENTS: ReadonlySet<HookEvent> = new Set([
+  'PreToolUse',
+  'PostToolUse',
+  'PostToolUseFailure',
+  'PermissionRequest',
+  'PermissionDenied',
+  'SessionStart',
+  'SessionEnd',
+  'Setup',
+  'PreCompact',
+  'PostCompact',
+  'Notification',
+  'SubagentStart',
+  'SubagentStop',
+  'Elicitation',
+  'ElicitationResult',
+  'ConfigChange',
+  'InstructionsLoaded',
+])
+
+/**
  * Check if a match query matches a hook matcher pattern
  * @param matchQuery The query to match (e.g., 'Write', 'Edit', 'Bash')
  * @param matcher The matcher pattern - can be:
  *   - Simple string for exact match (e.g., 'Write')
- *   - Pipe-separated list for multiple exact matches (e.g., 'Write|Edit')
+ *   - Pipe- or comma-separated list for multiple exact matches (e.g. 'Write|Edit', 'Bash,PowerShell')
  *   - Regex pattern (e.g., '^Write.*', '.*', '^(Write|Edit)$')
+ * @param commaHyphenSupport When true (matcher events), the simple-match char
+ *   class also admits comma/space/hyphen and the list is split on both `|` and
+ *   `,`; hyphenated identifiers then exact-match instead of substring-matching
+ *   as regex.
  * @returns true if the query matches the pattern
  */
-function matchesPattern(matchQuery: string, matcher: string): boolean {
+function matchesPattern(
+  matchQuery: string,
+  matcher: string,
+  commaHyphenSupport = false,
+): boolean {
   if (!matcher || matcher === '*') {
     return true
   }
-  // Check if it's a simple string or pipe-separated list (no regex special chars except |)
-  if (/^[a-zA-Z0-9_|]+$/.test(matcher)) {
-    // Handle pipe-separated exact matches
-    if (matcher.includes('|')) {
-      const patterns = matcher
-        .split('|')
-        .map(p => normalizeLegacyToolName(p.trim()))
-      return patterns.includes(matchQuery)
-    }
-    // Simple exact match
-    return matchQuery === normalizeLegacyToolName(matcher)
+  // Check if it's a simple string or pipe/comma-separated list (no regex
+  // special chars except | and, when commaHyphenSupport is on, , space and -).
+  const simpleCharClass = commaHyphenSupport
+    ? /^[a-zA-Z0-9_|, -]+$/
+    : /^[a-zA-Z0-9_|]+$/
+  if (simpleCharClass.test(matcher)) {
+    // Handle pipe/comma-separated exact matches. When commaHyphenSupport is
+    // enabled, split on both | and , so 'Bash,PowerShell' yields two patterns.
+    return matcher
+      .split(commaHyphenSupport ? /[|,]/ : '|')
+      .map(p => p.trim())
+      .filter(Boolean)
+      .flatMap(p => [normalizeLegacyToolName(p)])
+      .includes(matchQuery)
   }
 
   // Otherwise treat as regex
@@ -1786,10 +1860,14 @@ export async function getMatchingHooks(
     })
 
     // Extract hooks with their plugin context (if any)
+    // 2.1.191/2.1.195: matcher events admit comma-separated tool lists and
+    // hyphenated identifiers as exact-match literals.
+    const commaHyphenSupport = MATCHER_COMMA_HYPHEN_EVENTS.has(hookEvent)
     const filteredMatchers = matchQuery
       ? hookMatchers.filter(
           matcher =>
-            !matcher.matcher || matchesPattern(matchQuery, matcher.matcher),
+            !matcher.matcher ||
+            matchesPattern(matchQuery, matcher.matcher, commaHyphenSupport),
         )
       : hookMatchers
 
@@ -2331,8 +2409,11 @@ async function* executeHooks({
 
       if (hook.type === 'prompt') {
         if (!toolUseContext) {
+          // 2.1.142: prompt-type hooks need conversation context, which
+          // SessionStart/Setup/SubagentStart lack. Match the official wording
+          // so users are told to use a command-type hook instead.
           throw new Error(
-            'ToolUseContext is required for prompt hooks. This is a bug.',
+            `prompt-type hooks are not supported for ${hookEvent} events (no conversation context is available). Use a command-type hook instead.`,
           )
         }
         const promptResult = await execPromptHook(
@@ -2363,8 +2444,11 @@ async function* executeHooks({
 
       if (hook.type === 'agent') {
         if (!toolUseContext) {
+          // 2.1.142: agent-type hooks need conversation context, which
+          // SessionStart/Setup/SubagentStart lack. Match the official wording
+          // so users are told to use a command-type hook instead.
           throw new Error(
-            'ToolUseContext is required for agent hooks. This is a bug.',
+            `agent-type hooks are not supported for ${hookEvent} events (no conversation context is available). Use a command-type hook instead.`,
           )
         }
         if (!messages) {
@@ -2847,7 +2931,9 @@ async function* executeHooks({
     cancelled: 0,
   }
 
-  let permissionBehavior: PermissionResult['behavior'] | undefined
+  // 2.1.89: 'defer' (print-mode pause) is a hook-only behavior outside the
+  // PermissionResult['behavior'] union, so widen the aggregated type.
+  let permissionBehavior: (PermissionResult['behavior'] | 'defer') | undefined
 
   // Run all hooks in parallel and wait for all to complete
   for await (const result of all(hookPromises)) {
@@ -2931,15 +3017,55 @@ async function* executeHooks({
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) returned permissionDecision: ${result.permissionBehavior}${result.hookPermissionDecisionReason ? ` (reason: ${result.hookPermissionDecisionReason})` : ''}`,
       )
-      // Apply precedence rules
+      // Apply precedence rules: deny > defer > ask > allow
       switch (result.permissionBehavior) {
         case 'deny':
           // deny always takes precedence
           permissionBehavior = 'deny'
           break
-        case 'ask':
-          // ask takes precedence over allow but not deny
+        case 'defer':
+          // 2.1.89: defer pauses the tool call (don't approve/deny); the
+          // session can resume with -p --resume to re-evaluate. Print-mode
+          // only — interactive mode ignores defer (normal permission flow).
+          if (
+            toolUseContext &&
+            !toolUseContext.options.isNonInteractiveSession
+          ) {
+            logForDebugging(
+              `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) returned permissionDecision=defer in interactive mode; ignoring (defer is print-mode only)`,
+              { level: 'warn' },
+            )
+            break
+          }
+          // defer is solo-only — siblings would be orphaned on resume
+          {
+            const lastAssistant = toolUseContext
+              ? getLastAssistantMessage(
+                  toolUseContext.getAppState().messages,
+                )
+              : undefined
+            const toolCallCount =
+              lastAssistant &&
+              Array.isArray(lastAssistant.message.content)
+                ? lastAssistant.message.content.filter(
+                    (b: { type: string }) => b.type === 'tool_use',
+                  ).length
+                : 1
+            if (toolCallCount > 1) {
+              logForDebugging(
+                `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) returned permissionDecision=defer but ${toolCallCount} tool calls are in this batch; ignoring (defer is solo-only — siblings would be orphaned on resume)`,
+                { level: 'warn' },
+              )
+              break
+            }
+          }
           if (permissionBehavior !== 'deny') {
+            permissionBehavior = 'defer'
+          }
+          break
+        case 'ask':
+          // ask takes precedence over allow but not deny or defer
+          if (permissionBehavior !== 'deny' && permissionBehavior !== 'defer') {
             permissionBehavior = 'ask'
           }
           break
@@ -3557,6 +3683,7 @@ export async function* executePreToolHooks<ToolInput>(
  * @param permissionMode Optional permission mode from toolPermissionContext
  * @param signal Optional AbortSignal to cancel hook execution
  * @param timeoutMs Optional timeout in milliseconds for hook execution
+ * @param durationMs Optional duration of the tool execution in milliseconds (2.1.119)
  * @returns Async generator that yields progress messages and blocking errors for automated feedback
  */
 export async function* executePostToolHooks<ToolInput, ToolResponse>(
@@ -3568,6 +3695,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: PostToolUseHookInput = {
     ...createBaseHookInput(permissionMode, undefined, toolUseContext),
@@ -3576,6 +3704,8 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
     tool_input: toolInput,
     tool_response: toolResponse,
     tool_use_id: toolUseID,
+    // 2.1.119: expose the tool execution duration to PostToolUse hooks.
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({
@@ -3599,6 +3729,7 @@ export async function* executePostToolHooks<ToolInput, ToolResponse>(
  * @param permissionMode Optional permission mode from toolPermissionContext
  * @param signal Optional AbortSignal to cancel hook execution
  * @param timeoutMs Optional timeout in milliseconds for hook execution
+ * @param durationMs Optional duration of the tool execution in milliseconds (2.1.119)
  * @returns Async generator that yields progress messages and blocking errors
  */
 export async function* executePostToolUseFailureHooks<ToolInput>(
@@ -3611,6 +3742,7 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  durationMs?: number,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -3626,6 +3758,8 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     tool_use_id: toolUseID,
     error,
     is_interrupt: isInterrupt,
+    // 2.1.119: expose the tool execution duration to PostToolUseFailure hooks.
+    duration_ms: durationMs,
   }
 
   yield* executeHooks({
