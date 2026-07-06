@@ -12,3 +12,16 @@ const rewind = {
 } satisfies Command
 
 export default rewind
+
+// 2.1.191: /rewind can resume from BEFORE a /clear. The pre-clear conversation
+// is preserved on disk as a previous session; /rewind surfaces it as the
+// "previous-session entry at the top" and hydrates its messages on demand.
+export { rewindPastClearSituation } from './situations.js'
+export type { RewindSituation } from './situations.js'
+export {
+  findPreClearSession,
+  loadPreClearMessages,
+  preClearTranscriptPath,
+  readPreClearTranscript,
+  resumeFromBeforeClear,
+} from './resumeBeforeClear.js'
