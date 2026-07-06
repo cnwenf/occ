@@ -1,6 +1,6 @@
 import { getTotalInputTokens } from '../../cost-tracker.js'
 import * as React from 'react';
-import { Box, Text, useStdin } from '../../ink.js';
+import { Box, Text, useInput } from '../../ink.js';
 import { useAppState } from '../../state/AppState.js';
 import type { ActiveGoal } from '../../state/AppStateStore.js';
 
@@ -36,7 +36,7 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
     const i = setInterval(setTick, 1000);
     return () => clearInterval(i);
   }, []);
-  useStdin((input, key) => {
+  useInput((input, key) => {
     if (key.escape) onDone();
   });
 
