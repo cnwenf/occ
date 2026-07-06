@@ -406,6 +406,54 @@ export function getProjectMcpServerStatus(
 }
 
 /**
+ * Human-readable label for a project (.mcp.json) server awaiting trust
+ * approval. Mirrors the official 2.1.200 binary's `needs-approval` status
+ * surface used by `claude mcp list` / `claude mcp get` and the `/mcp`
+ * enable command.
+ *
+ * Binary strings (exact):
+ *   - list/get health: `MCP server "${name}" is pending approval — approve
+ *     it via /mcp first`
+ *   - /mcp enable: `"${name}" is pending approval. Approve it with \`/mcp\`
+ *     in the terminal first.`
+ */
+export const MCP_PENDING_APPROVAL_LABEL = 'pending approval'
+
+export function mcpServerPendingApprovalMessage(name: string): string {
+  return `MCP server "${name}" is pending approval — approve it via /mcp first`
+}
+
+export function mcpEnablePendingApprovalMessage(name: string): string {
+  return `"${name}" is pending approval. Approve it with \`/mcp\` in the terminal first.`
+}
+
+/**
+ * Convert a connection result from `connectToServer` into the health-check
+ * status label printed by `claude mcp list` / `claude mcp get`. Returns the
+ * binary's exact strings, including the G12 `pending approval` branch for
+ * project servers that have not been trust-approved (and therefore were not
+ * spawned).
+ */
+export function mcpServerHealthStatusLabel(
+  result: MCPServerConnection,
+): string {
+  switch (result.type) {
+    case 'connected':
+      return '✓ Connected'
+    case 'needs-auth':
+      return '! Needs authentication'
+    case 'needs-approval':
+      return mcpServerPendingApprovalMessage(result.name)
+    case 'pending':
+      return '… Connecting'
+    case 'failed':
+      return '✗ Failed to connect'
+    case 'disabled':
+      return '◯ Disabled'
+  }
+}
+
+/**
  * Get the scope/settings source for an MCP server from a tool name
  * @param toolName MCP tool name (format: mcp__serverName__toolName)
  * @returns ConfigScope or null if not an MCP tool or server not found

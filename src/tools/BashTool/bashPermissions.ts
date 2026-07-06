@@ -140,6 +140,63 @@ const SHELL_STARTUP_FILES = new Set([
 //   "Redirect involving /dev/tcp or /dev/udp opens a network connection"
 const DEV_NETWORK_REDIRECT_RE = /\/dev\/(?:tcp|udp)(?:\/|$)/
 
+// Build-tool config files that grant code execution (2.1.160, G8). Editing
+// these defines what a build tool will later run: package.json scripts +
+// npm/bun/yarn lifecycle hooks, make/just/task targets, Gruntfile/gulpfile
+// (JS executed on load), CMakeLists custom commands, setup.py (runs on
+// install), Cargo.toml/pyproject.toml build hooks, and the package-runner
+// rc files that can set script-shell / lifecycle hooks / a malicious
+// registry. The binary tracks this same set (package.json, Makefile,
+// .npmrc, .yarnrc, bunfig.toml, lockfiles, …) as code-execution surfaces.
+// In acceptEdits, bash output-redirects to these (`cat > Makefile`,
+// `sed -i package.json`, `echo >> .npmrc`) would otherwise auto-accept, so
+// we surface a safetyCheck 'ask' that prompts even in acceptEdits —
+// parallel to G7's shell-startup-file redirect check.
+const BUILD_TOOL_CONFIG_FILES = new Set([
+  // Package manifests + lockfiles (scripts / lifecycle hooks / pinned code)
+  'package.json',
+  'package-lock.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  // Task runners whose targets/recipes execute shell commands
+  'Makefile',
+  'makefile',
+  'GNUmakefile',
+  'justfile',
+  'Justfile',
+  'Taskfile.yml',
+  'Taskfile.yaml',
+  // JS task runners — the file itself executes on load
+  'Gruntfile.js',
+  'Gulpfile.js',
+  // Build systems with custom-command / build-script hooks
+  'CMakeLists.txt',
+  'setup.py',
+  'Cargo.toml',
+  'pyproject.toml',
+  // Package-runner rc: can set script-shell, lifecycle hooks, registry
+  '.npmrc',
+  '.yarnrc',
+  '.yarnrc.yml',
+  'bunfig.toml',
+  '.bunfig.toml',
+])
+
+/**
+ * True if an output-redirect target resolves to a build-tool config file
+ * that grants code execution. Catches the `cat > Makefile` /
+ * `sed -i package.json` / `echo >> .npmrc` writes that slip past the
+ * Edit-tool acceptEdits flow.
+ */
+function isBuildToolConfigTarget(target: string): boolean {
+  const stripped = target.replace(/^['"]|['"]$/g, '')
+  const expanded = stripped.startsWith('~/')
+    ? homedir() + stripped.slice(1)
+    : stripped
+  const basename = expanded.split('/').pop() ?? expanded
+  return BUILD_TOOL_CONFIG_FILES.has(basename)
+}
+
 /**
  * True if an output-redirect target resolves to a shell-startup file. Catches
  * the startup files missing from DANGEROUS_FILES (.zshenv/.zlogin/.bash_login/
@@ -367,6 +424,32 @@ export function checkBashRedirectAndPatternSafety(
   for (const r of outputRedirects) {
     if (r.target && isShellStartupFileTarget(r.target)) {
       const reason = `Claude requested permissions to edit ${r.target} which is a sensitive file.`
+      return {
+        behavior: 'ask',
+        message: createPermissionRequestMessage(BashTool.name, {
+          type: 'safetyCheck' as const,
+          reason,
+          classifierApprovable: true,
+        }),
+        decisionReason: {
+          type: 'safetyCheck' as const,
+          reason,
+          classifierApprovable: true,
+        },
+        suggestions: [],
+      }
+    }
+  }
+
+  // G8 (2.1.160): output redirects to build-tool config files that grant
+  // code execution (package.json scripts, Makefile/justfile/Taskfile targets,
+  // Gruntfile/gulpfile, CMakeLists, setup.py, .npmrc/.yarnrc/bunfig lifecycle
+  // hooks, lockfiles) must always prompt, even in acceptEdits — otherwise a
+  // `cat > Makefile` / `sed -i package.json` write auto-accepts and silently
+  // defines code the build tool will run.
+  for (const r of outputRedirects) {
+    if (r.target && isBuildToolConfigTarget(r.target)) {
+      const reason = `${r.target} is a build-tool config file that grants code execution and requires approval to edit`
       return {
         behavior: 'ask',
         message: createPermissionRequestMessage(BashTool.name, {

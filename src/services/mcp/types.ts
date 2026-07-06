@@ -222,6 +222,21 @@ export type PendingMCPServer = {
   maxReconnectAttempts?: number
 }
 
+/**
+ * A project-scoped (.mcp.json) server that is awaiting the user's trust
+ * approval (2.1.196, G12). The server is NOT spawned — `connectToServer`
+ * returns this result without launching the stdio subprocess so that
+ * `claude mcp list` / `claude mcp get` health checks surface "pending
+ * approval" instead of executing an unapproved project server.
+ *
+ * Mirrors the binary's `needs-approval` connection status.
+ */
+export type NeedsApprovalMCPServer = {
+  name: string
+  type: 'needs-approval'
+  config: ScopedMcpServerConfig
+}
+
 export type DisabledMCPServer = {
   name: string
   type: 'disabled'
@@ -233,6 +248,7 @@ export type MCPServerConnection =
   | FailedMCPServer
   | NeedsAuthMCPServer
   | PendingMCPServer
+  | NeedsApprovalMCPServer
   | DisabledMCPServer
 
 // Resource types

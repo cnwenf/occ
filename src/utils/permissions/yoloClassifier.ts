@@ -1491,6 +1491,58 @@ function logAutoModeOutcome(
 }
 
 /**
+ * The source of a subsequent approval for a previously auto-mode-denied
+ * action (2.1.193, G13). Mirrors the binary's `allowReasonType` enum: the
+ * kind of mechanism that permitted the retry after a denial. Used by
+ * `logAutoModeSubsequentApproval` so the denial→approval flow is visible
+ * in telemetry, not just the denial itself.
+ */
+export type AutoModeAllowReasonType =
+  | 'rule' // a permission rule (settings.json) now matches
+  | 'subcommandResults' // a hook subcommand returned allow
+  | 'plugin' // a plugin (hooks.json) allowed it
+  | 'skill' // a skill (SKILL.md) context allowed it
+  | 'config' // acceptEdits / mode change
+  | 'classifier' // the classifier itself now allows it (new transcript)
+  | 'user' // the user/coordinator explicitly approved
+
+/**
+ * 2.1.193 (G13): emit `tengu_auto_mode_subsequent_approval` when an action
+ * the auto-mode classifier previously denied is subsequently allowed. Makes
+ * the denial→approval flow visible (denial reason alone is only half the
+ * picture). `msSinceDeny` is the elapsed wall-clock ms since the denial;
+ * `allowReasonType` is the mechanism that permitted the retry.
+ *
+ * Callers: the auto-mode allow path in permissions.ts calls this with the
+ * value from `takeMsSinceAutoModeDenial()` (set by the deny path). If there
+ * was no prior denial in this session, the caller passes null and we no-op.
+ */
+export function logAutoModeSubsequentApproval(
+  msSinceDeny: number | null,
+  allowReasonType: AutoModeAllowReasonType,
+): void {
+  if (msSinceDeny === null) return
+  logEvent('tengu_auto_mode_subsequent_approval', {
+    msSinceDeny,
+    allowReasonType:
+      allowReasonType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  })
+}
+
+/**
+ * 2.1.193 (G13): the subagent-facing denial-visibility instruction. When
+ * auto-mode denies a tool, the denied agent reports back to the coordinator
+ * just the exact action, the denial reason, and "needs user approval for X"
+ * — the coordinator obtains the approval and relays it; the agent retries
+ * without re-narrating the denial. This keeps the denial reason visible to
+ * the orchestrator without leaking it into the user transcript verbatim.
+ *
+ * Binary source: the coordinator/subagent prompt's "## When Things Go Wrong"
+ * section.
+ */
+export const AUTO_MODE_DENIAL_VISIBILITY_INSTRUCTION = `If auto-mode denies a tool, report back just the exact action, the denial reason, and "needs user approval for X". The coordinator will get the approval and send it to you — retry once it arrives; don't narrate the earlier denial.`
+
+/**
  * Detect API 400 "prompt is too long: N tokens > M maximum" errors and
  * parse the token counts. Returns undefined for any other error.
  * These are deterministic (same transcript → same error) so retrying

@@ -113,7 +113,7 @@ import {
 } from './elicitationHandler.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
-import { getLoggingSafeMcpBaseUrl } from './utils.js'
+import { getLoggingSafeMcpBaseUrl, getProjectMcpServerStatus } from './utils.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const fetchMcpSkillsForClient = feature('MCP_SKILLS')
@@ -699,6 +699,22 @@ export const connectToServer = memoize(
       | undefined
     try {
       let transport
+
+      // G12 (2.1.196): a project-scoped (.mcp.json) server that the user has
+      // not trust-approved must NOT be spawned — `claude mcp list` / `claude
+      // mcp get` health checks and `/mcp` operations surface "pending
+      // approval" instead of launching the stdio subprocess. Return a
+      // needs-approval connection result before creating any transport.
+      if (
+        serverRef.scope === 'project' &&
+        getProjectMcpServerStatus(name) === 'pending'
+      ) {
+        return {
+          name,
+          type: 'needs-approval',
+          config: serverRef,
+        }
+      }
 
       // If we have the session ingress JWT, we will connect via the session ingress rather than
       // to remote MCP's directly.

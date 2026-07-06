@@ -104,7 +104,12 @@ import {
 import {
   classifyYoloAction,
   formatActionForClassifier,
+  logAutoModeSubsequentApproval,
 } from './yoloClassifier.js'
+import {
+  recordAutoModeDenialTimestamp,
+  takeMsSinceAutoModeDenial,
+} from './autoModeState.js'
 
 const CLASSIFIER_FAIL_CLOSED_REFRESH_MS = 30 * 60 * 1000 // 30 minutes
 
@@ -880,6 +885,11 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         const newDenialState = recordDenial(denialState)
         persistDenialState(context, newDenialState)
 
+        // G13 (2.1.193): record the denial timestamp so the next allow can
+        // emit tengu_auto_mode_subsequent_approval with msSinceDeny — making
+        // the denial→approval flow visible, not just the denial.
+        recordAutoModeDenialTimestamp()
+
         logForDebugging(
           `Auto mode classifier blocked action: ${classifierResult.reason}`,
           { level: 'warn' },
@@ -915,6 +925,15 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
       // Reset consecutive denials on success
       const newDenialState = recordSuccess(denialState)
       persistDenialState(context, newDenialState)
+
+      // G13 (2.1.193): if this allow followed an auto-mode denial in this
+      // session, emit tengu_auto_mode_subsequent_approval (msSinceDeny +
+      // allowReasonType) so the denial→approval flow is visible in
+      // telemetry. The classifier itself re-evaluated and now allows it.
+      logAutoModeSubsequentApproval(
+        takeMsSinceAutoModeDenial(),
+        'classifier',
+      )
 
       return {
         behavior: 'allow',
