@@ -1326,6 +1326,10 @@ type AutoModeConfig = {
    * Default false (old text-prefix format) for slow rollout / quick rollback.
    */
   jsonlTranscript?: boolean
+  priorAssistantContext?: number
+  permissionsAnthropicByMainModel?: Record<string, string>
+  s1SuffixByModel?: Record<string, string>
+  s2SuffixByModel?: Record<string, string>
 }
 
 /**

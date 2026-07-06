@@ -426,7 +426,7 @@ export const BashTool = buildTool({
   async description({
     description
   }) {
-    return description || 'Run shell command';
+    return description || 'Executes a bash command with optional timeout. Working directory persists between commands.';
   },
   async prompt() {
     return getSimplePrompt();
