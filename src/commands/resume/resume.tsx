@@ -11,7 +11,7 @@ import { Spinner } from '../../components/Spinner.js';
 import { useIsInsideModal } from '../../context/modalContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { setClipboard } from '../../ink/termio/osc.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text, useInput } from '../../ink.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import type { LogOption } from '../../types/logs.js';
 import { agenticSessionSearch } from '../../utils/agenticSessionSearch.js';
@@ -35,6 +35,80 @@ function resumeHelpMessage(result: ResumeResult): string {
     case 'multipleMatches':
       return `Found ${result.count} sessions matching ${chalk.bold(result.arg)}. Please use /resume to pick a specific session.`;
   }
+}
+
+// E23 (2.1.117+2.1.122): /resume offers to summarize stale large sessions, and
+// pasting a PR URL into /resume finds the creating session. Mirrors the 2.1.200
+// binary: sessions that create a PR store prNumber + prRepository; the resume
+// search parses the PR URL (regex `\/([^/]+)\/([^/]+)\/pull\/`) and matches.
+
+// A session is a summarize candidate when it is older than STALE_SESSION_AGE_DAYS
+// AND has more than LARGE_SESSION_MESSAGE_THRESHOLD messages.
+const STALE_SESSION_AGE_DAYS = 7;
+const LARGE_SESSION_MESSAGE_THRESHOLD = 50;
+const STALE_SESSION_AGE_MS = STALE_SESSION_AGE_DAYS * 24 * 60 * 60 * 1000;
+
+const PR_URL_PATTERN = /\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
+
+/** Parse a PR URL into { repository: "owner/repo", number }. null if not a PR URL. */
+export function parsePrUrl(arg: string): { repository: string; number: number } | null {
+  if (!arg || !arg.includes('/pull/')) return null;
+  const match = PR_URL_PATTERN.exec(arg);
+  if (!match) return null;
+  const [, owner, repo, numberStr] = match;
+  const number = parseInt(numberStr, 10);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  return { repository: `${owner}/${repo}`, number };
+}
+
+/** True when a session is both stale (old) and large (many messages). */
+export function isStaleLargeSession(log: LogOption, now: number = Date.now()): boolean {
+  const count = log.messageCount ?? 0;
+  if (count < LARGE_SESSION_MESSAGE_THRESHOLD) return false;
+  const modified = log.modified instanceof Date ? log.modified.getTime() : Number(log.modified);
+  if (!Number.isFinite(modified)) return false;
+  return now - modified >= STALE_SESSION_AGE_MS;
+}
+
+/** Find sessions that created a given PR (by prNumber + prRepository). */
+export function findSessionsByPrUrl(
+  logs: LogOption[],
+  prInfo: { repository: string; number: number },
+): LogOption[] {
+  return logs.filter(l => l.prNumber === prInfo.number && l.prRepository === prInfo.repository);
+}
+
+/**
+ * E23 (2.1.117): offer to summarize a stale, large session before resuming it.
+ * y = summarize (/compact) then resume · n = resume directly · esc = back.
+ */
+function SummarizeStaleOffer({
+  log,
+  onSummarize,
+  onResumeDirectly,
+  onCancel,
+}: {
+  log: LogOption;
+  onSummarize: () => void;
+  onResumeDirectly: () => void;
+  onCancel: () => void;
+}): React.ReactNode {
+  useInput((input, key) => {
+    if (input === 'y' || input === 'Y') onSummarize();
+    else if (input === 'n' || input === 'N') onResumeDirectly();
+    else if (key.escape) onCancel();
+  });
+  const modifiedMs = log.modified instanceof Date ? log.modified.getTime() : Number(log.modified);
+  const ageDays = Number.isFinite(modifiedMs)
+    ? Math.max(1, Math.round((Date.now() - modifiedMs) / (24 * 60 * 60 * 1000)))
+    : 0;
+  return (
+    <Box flexDirection="column">
+      <Text>{`This conversation is large (${log.messageCount} messages) and stale (${ageDays} days old).`}</Text>
+      <Text>Summarize it before resuming?</Text>
+      <Text dimColor={true}>y = summarize then resume · n = resume directly · esc = back</Text>
+    </Box>
+  );
 }
 function ResumeError(t0) {
   const $ = _c(10);
@@ -88,18 +162,22 @@ function ResumeError(t0) {
 }
 function ResumeCommand({
   onDone,
-  onResume
+  onResume,
+  onResumeAndSummarize
 }: {
   onDone: (result?: string, options?: {
     display?: CommandResultDisplay;
   }) => void;
   onResume: (sessionId: UUID, log: LogOption, entrypoint: ResumeEntrypoint) => Promise<void>;
+  onResumeAndSummarize: (sessionId: UUID, log: LogOption, entrypoint: ResumeEntrypoint) => Promise<void>;
 }): React.ReactNode {
   const [logs, setLogs] = React.useState<LogOption[]>([]);
   const [worktreePaths, setWorktreePaths] = React.useState<string[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [resuming, setResuming] = React.useState(false);
   const [showAllProjects, setShowAllProjects] = React.useState(false);
+  // E23: a stale, large session awaiting the summarize/confirm offer.
+  const [summarizeOfferLog, setSummarizeOfferLog] = React.useState<{ sessionId: UUID; fullLog: LogOption } | null>(null);
   const {
     rows
   } = useTerminalSize();
@@ -166,7 +244,27 @@ function ResumeCommand({
       return;
     }
 
+    // E23 (2.1.117): offer to summarize stale, large sessions before resuming.
+    if (isStaleLargeSession(fullLog)) {
+      setSummarizeOfferLog({ sessionId, fullLog });
+      return;
+    }
+
     // Same directory - proceed with resume
+    setResuming(true);
+    void onResume(sessionId, fullLog, 'slash_command_picker');
+  }
+  function confirmSummarize() {
+    if (!summarizeOfferLog) return;
+    const { sessionId, fullLog } = summarizeOfferLog;
+    setSummarizeOfferLog(null);
+    setResuming(true);
+    void onResumeAndSummarize(sessionId, fullLog, 'slash_command_picker');
+  }
+  function resumeWithoutSummarize() {
+    if (!summarizeOfferLog) return;
+    const { sessionId, fullLog } = summarizeOfferLog;
+    setSummarizeOfferLog(null);
     setResuming(true);
     void onResume(sessionId, fullLog, 'slash_command_picker');
   }
@@ -187,6 +285,9 @@ function ResumeCommand({
         <Text> Resuming conversation…</Text>
       </Box>;
   }
+  if (summarizeOfferLog) {
+    return <SummarizeStaleOffer log={summarizeOfferLog.fullLog} onSummarize={confirmSummarize} onResumeDirectly={resumeWithoutSummarize} onCancel={() => setSummarizeOfferLog(null)} />;
+  }
   return <LogSelector logs={logs} maxHeight={insideModal ? Math.floor(rows / 2) : rows - 2} onCancel={handleCancel} onSelect={handleSelect} onLogsChanged={() => loadLogs(showAllProjects, worktreePaths)} showAllProjects={showAllProjects} onToggleAllProjects={handleToggleAllProjects} onAgenticSearch={agenticSessionSearch} />;
 }
 export function filterResumableSessions(logs: LogOption[], currentSessionId: string): LogOption[] {
@@ -204,11 +305,26 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       onDone(`Failed to resume: ${(error as Error).message}`);
     }
   };
+  // E23 (2.1.117): resume a stale, large session AND queue /compact to
+  // summarize it. The /compact nextInput fires after the session is restored.
+  const onResumeAndSummarize = async (sessionId: UUID, log: LogOption, entrypoint: ResumeEntrypoint) => {
+    try {
+      await context.resume?.(sessionId, log, entrypoint);
+      onDone(undefined, {
+        display: 'skip',
+        nextInput: '/compact',
+        submitNextInput: true
+      });
+    } catch (error) {
+      logError(error as Error);
+      onDone(`Failed to resume: ${(error as Error).message}`);
+    }
+  };
   const arg = args?.trim();
 
   // No argument provided - show picker
   if (!arg) {
-    return <ResumeCommand key={Date.now()} onDone={onDone} onResume={onResume} />;
+    return <ResumeCommand key={Date.now()} onDone={onDone} onResume={onResume} onResumeAndSummarize={onResumeAndSummarize} />;
   }
 
   // Load logs to search (includes same-repo worktrees)
@@ -238,6 +354,32 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
       void onResume(maybeSessionId, directLog, 'slash_command_session_id');
       return null;
     }
+  }
+
+  // E23 (2.1.122): pasting a PR URL into /resume finds the creating session.
+  // Sessions that created a PR store prNumber + prRepository; match them.
+  const prInfo = parsePrUrl(arg);
+  if (prInfo) {
+    const prMatches = findSessionsByPrUrl(logs, prInfo).sort((a, b) => b.modified.getTime() - a.modified.getTime());
+    if (prMatches.length === 1) {
+      const log = prMatches[0]!;
+      const sessionId = validateUuid(getSessionIdFromLog(log));
+      if (sessionId) {
+        const fullLog = isLiteLog(log) ? await loadFullLog(log) : log;
+        void onResume(sessionId, fullLog, 'slash_command_session_id');
+        return null;
+      }
+    }
+    // Multiple PR matches - show error
+    if (prMatches.length > 1) {
+      const message = resumeHelpMessage({
+        resultType: 'multipleMatches',
+        arg,
+        count: prMatches.length
+      });
+      return <ResumeError message={message} args={arg} onDone={() => onDone(message)} />;
+    }
+    // 0 matches — fall through to the sessionNotFound error below.
   }
 
   // Next, try exact custom title match (only if feature is enabled)

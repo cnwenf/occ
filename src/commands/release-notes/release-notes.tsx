@@ -1,50 +1,84 @@
-import type { LocalCommandResult } from '../../types/command.js'
+import * as React from 'react'
+import { Box, Text, useInput } from '../../ink.js'
+import type { CommandResultDisplay } from '../../commands.js'
+import type { LocalJSXCommandCall } from '../../types/command.js'
 import {
-  CHANGELOG_URL,
   fetchAndStoreChangelog,
   getAllReleaseNotes,
   getStoredChangelog,
 } from '../../utils/releaseNotes.js'
 
-function formatReleaseNotes(notes: Array<[string, string[]]>): string {
-  return notes
-    .map(([version, notes]) => {
-      const header = `Version ${version}:`
-      const bulletPoints = notes.map(note => `· ${note}`).join('\n')
-      return `${header}\n${bulletPoints}`
-    })
-    .join('\n\n')
+type ReleaseNoteSet = Array<[string, string[]]>
+
+/**
+ * Format release notes into flat display lines (one block per version):
+ *   "Version X:" header followed by "· note" bullets.
+ */
+function formatReleaseNoteLines(notes: ReleaseNoteSet): string[] {
+  return notes.flatMap(([version, versionNotes]) => [
+    `Version ${version}:`,
+    ...versionNotes.map(note => `· ${note}`),
+  ])
 }
 
-export async function call(): Promise<LocalCommandResult> {
-  // Try to fetch the latest changelog with a 500ms timeout
-  let freshNotes: Array<[string, string[]]> = []
+/**
+ * E25 (2.1.92): /release-notes interactive "What's new" panel. Mirrors the
+ * 2.1.200 binary panel descriptor:
+ *   {title:"What's new", lines, footer:"/release-notes for more",
+ *    emptyMessage:"Check the Claude Code changelog for updates"}
+ * Press q / Esc to dismiss.
+ */
+function ReleaseNotesPanel({
+  notes,
+  onDone,
+}: {
+  notes: ReleaseNoteSet
+  onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void
+}): React.ReactNode {
+  useInput((input, key) => {
+    if (input === 'q' || key.escape) {
+      onDone(undefined, { display: 'skip' })
+    }
+  })
+  const lines = formatReleaseNoteLines(notes)
+  return (
+    <Box flexDirection="column">
+      <Text bold={true}>What's new</Text>
+      {lines.length === 0 ? (
+        <Text dimColor={true}>Check the Claude Code changelog for updates</Text>
+      ) : (
+        <Box flexDirection="column">
+          {lines.map((line, i) => (
+            <Text key={i}>{line}</Text>
+          ))}
+        </Box>
+      )}
+      {lines.length > 0 ? (
+        <Text dimColor={true}>/release-notes for more</Text>
+      ) : null}
+    </Box>
+  )
+}
 
+export const call: LocalJSXCommandCall = async onDone => {
+  // Best-effort fetch with a 500ms timeout (mirrors the prior non-interactive
+  // impl); fall back to the cached changelog on failure.
+  let notes: ReleaseNoteSet = []
   try {
     const timeoutPromise = new Promise<void>((_, reject) => {
-      setTimeout(rej => rej(new Error('Timeout')), 500, reject)
+      setTimeout(rej => reject(new Error('Timeout')), 500, reject)
     })
-
     await Promise.race([fetchAndStoreChangelog(), timeoutPromise])
-    freshNotes = getAllReleaseNotes(await getStoredChangelog())
+    notes = getAllReleaseNotes(await getStoredChangelog())
   } catch {
-    // Either fetch failed or timed out - just use cached notes
+    // fetch failed or timed out — fall through to cached notes
   }
-
-  // If we have fresh notes from the quick fetch, use those
-  if (freshNotes.length > 0) {
-    return { type: 'text', value: formatReleaseNotes(freshNotes) }
+  if (notes.length === 0) {
+    try {
+      notes = getAllReleaseNotes(await getStoredChangelog())
+    } catch {
+      // no cached notes either — render the empty-message panel
+    }
   }
-
-  // Otherwise check cached notes
-  const cachedNotes = getAllReleaseNotes(await getStoredChangelog())
-  if (cachedNotes.length > 0) {
-    return { type: 'text', value: formatReleaseNotes(cachedNotes) }
-  }
-
-  // Nothing available, show link
-  return {
-    type: 'text',
-    value: `See the full changelog at: ${CHANGELOG_URL}`,
-  }
+  return <ReleaseNotesPanel notes={notes} onDone={onDone} />
 }

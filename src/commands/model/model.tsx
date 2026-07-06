@@ -15,6 +15,13 @@ import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultMode
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
+// E19 (2.1.117): startup pin header. The picker header explains that the
+// selection becomes the default (pinned) for new sessions — i.e. it persists
+// across restarts. Mirrors the 2.1.200 binary ModelPicker header text:
+// "Switch between Claude models. Your pick becomes the default for new
+// sessions. For other/previous model names, specify with --model."
+const MODEL_PICKER_PIN_HEADER =
+  'Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.';
 function ModelPickerWrapper({ onDone }: {
   onDone: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -133,7 +140,7 @@ function ModelPickerWrapper({ onDone }: {
 
   const showFastModeNotice = isFastModeEnabled() && isFastMode && isFastModeSupportedByModel(mainLoopModel) && isFastModeAvailable();
 
-  return <ModelPicker initial={mainLoopModel} sessionModel={mainLoopModelForSession} onSelect={handleSelect} onSessionOnlySelect={handleSessionOnlySelect} onCancel={handleCancel} isStandaloneCommand={true} showFastModeNotice={showFastModeNotice} />;
+  return <ModelPicker initial={mainLoopModel} sessionModel={mainLoopModelForSession} onSelect={handleSelect} onSessionOnlySelect={handleSessionOnlySelect} onCancel={handleCancel} isStandaloneCommand={true} showFastModeNotice={showFastModeNotice} headerText={MODEL_PICKER_PIN_HEADER} />;
 }
 function SetModelAndClose({
   args,
@@ -209,8 +216,17 @@ function SetModelAndClose({
         mainLoopModel: modelValue,
         mainLoopModelForSession: null
       }));
-      let message = `Set model to ${chalk.bold(renderModelLabel(modelValue))}`;
-      let wasFastModeToggledOn: boolean | undefined;
+      // E19 (2.1.117): `/model default` resets to the workspace default for
+      // this session. Mirrors the 2.1.200 binary: `Model reset to default for
+      // this session`.
+      if (modelValue === null) {
+        onDone('Model reset to default for this session');
+        return;
+      }
+      // E19 (2.1.117): inline `/model <name>` is session-scoped — it does NOT
+      // persist across restarts (only the picker "set as default" path does).
+      // Mirrors the 2.1.200 binary: `Model set to X (session-scoped, not
+      // persisted)`. Fast mode is still auto-downgraded for unsupported models.
       if (isFastModeEnabled()) {
         clearFastModeCooldown();
         if (!isFastModeSupportedByModel(modelValue) && isFastMode) {
@@ -218,21 +234,10 @@ function SetModelAndClose({
             ...prev_0,
             fastMode: false
           }));
-          wasFastModeToggledOn = false;
           // Do not update fast mode in settings since this is an automatic downgrade
-        } else if (isFastModeSupportedByModel(modelValue) && isFastMode) {
-          message += ` · Fast mode ON`;
-          wasFastModeToggledOn = true;
         }
       }
-      if (isBilledAsExtraUsage(modelValue, wasFastModeToggledOn === true, isOpus1mMergeEnabled())) {
-        message += ` · Billed as extra usage`;
-      }
-      if (wasFastModeToggledOn === false) {
-        // Fast mode was toggled off, show suffix after extra usage billing
-        message += ` · Fast mode OFF`;
-      }
-      onDone(message);
+      onDone(`Model set to ${chalk.bold(renderModelLabel(modelValue))} (session-scoped, not persisted)`);
     }
     void handleModelChange();
   }, [model, onDone, setAppState]);
