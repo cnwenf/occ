@@ -42,7 +42,9 @@ export function isNonCustomOpusModel(model: ModelName): boolean {
     model === getModelStrings().opus40 ||
     model === getModelStrings().opus41 ||
     model === getModelStrings().opus45 ||
-    model === getModelStrings().opus46
+    model === getModelStrings().opus46 ||
+    model === getModelStrings().opus47 ||
+    model === getModelStrings().opus48
   )
 }
 
@@ -108,11 +110,13 @@ export function getDefaultOpusModel(): ModelName {
   }
   // 3P providers (Bedrock, Vertex, Foundry) — kept as a separate branch
   // even when values match, since 3P availability lags firstParty and
-  // these will diverge again at the next model launch.
+  // these will diverge again at the next model launch. Official 2.1.200
+  // per_provider cross-provider fallback maps opus-4-8 → opus-4-6 on
+  // bedrock/vertex/foundry, so 3P default stays on opus-4-6.
   if (getAPIProvider() !== 'firstParty') {
     return getModelStrings().opus46
   }
-  return getModelStrings().opus46
+  return getModelStrings().opus48
 }
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
@@ -120,11 +124,28 @@ export function getDefaultSonnetModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   }
-  // Default to Sonnet 4.5 for 3P since they may not have 4.6 yet
+  // Default to Sonnet 4.5 for 3P since they may not have 4.6/5 yet. Official
+  // 2.1.200 per_provider cross-provider fallback maps sonnet-5 →
+  // sonnet-4-5/4-6 on bedrock/vertex/foundry, so 3P default stays on sonnet-4-5.
   if (getAPIProvider() !== 'firstParty') {
     return getModelStrings().sonnet45
   }
-  return getModelStrings().sonnet46
+  return getModelStrings().sonnet5
+}
+
+/**
+ * Get the default Fable model. Reads the ANTHROPIC_DEFAULT_FABLE_MODEL env var
+ * (official 2.1.200 surfaces this alongside _NAME/_DESCRIPTION/_SUPPORTED_CAPABILITIES);
+ * otherwise falls back to the canonical Fable 5 id.
+ *
+ * Fable 5 / Mythos 5 share the same underlying model; mythos-5 canonicalizes to
+ * claude-fable-5 (see firstPartyNameToCanonical).
+ */
+export function getDefaultFableModel(): ModelName {
+  if (process.env.ANTHROPIC_DEFAULT_FABLE_MODEL) {
+    return process.env.ANTHROPIC_DEFAULT_FABLE_MODEL
+  }
+  return getModelStrings().fable5
 }
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
@@ -217,7 +238,13 @@ export function getDefaultMainLoopModel(): ModelName {
 export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
   // Special cases for Claude 4+ models to differentiate versions
-  // Order matters: check more specific versions first (4-5 before 4)
+  // Order matters: check more specific versions first (4-8/4-7 before 4-6 before 4)
+  if (name.includes('claude-opus-4-8')) {
+    return 'claude-opus-4-8'
+  }
+  if (name.includes('claude-opus-4-7')) {
+    return 'claude-opus-4-7'
+  }
   if (name.includes('claude-opus-4-6')) {
     return 'claude-opus-4-6'
   }
@@ -230,6 +257,11 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-opus-4')) {
     return 'claude-opus-4'
   }
+  // Sonnet 5 before 4-6: "claude-sonnet-5" is not a substring of "claude-sonnet-4-6"
+  // but check it first so it isn't caught by the broader claude-sonnet-4 patterns.
+  if (name.includes('claude-sonnet-5')) {
+    return 'claude-sonnet-5'
+  }
   if (name.includes('claude-sonnet-4-6')) {
     return 'claude-sonnet-4-6'
   }
@@ -241,6 +273,14 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   }
   if (name.includes('claude-haiku-4-5')) {
     return 'claude-haiku-4-5'
+  }
+  // Fable 5 / Mythos 5 share the same underlying model. Mythos canonicalizes
+  // to claude-fable-5 (mythos is the alias/equivalent for fable).
+  if (name.includes('claude-mythos-5')) {
+    return 'claude-fable-5'
+  }
+  if (name.includes('claude-fable-5')) {
+    return 'claude-fable-5'
   }
   // Claude 3.x models use a different naming scheme (claude-3-{family})
   if (name.includes('claude-3-7-sonnet')) {
@@ -283,23 +323,26 @@ export function getCanonicalName(fullModelName: ModelName): ModelShortName {
 }
 
 // @[MODEL LAUNCH]: Update the default model description strings shown to users.
+// Wording verified against the official 2.1.200 binary (claude.strings):
+//   Max/TeamPremium: `${Opus} · Best for everyday, complex tasks` (+ 1M variant)
+//   Pro/Standard:    `${Sonnet} · Efficient for routine tasks`
 export function getClaudeAiUserDefaultModelDescription(
   fastMode = false,
 ): string {
   if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
     if (isOpus1mMergeEnabled()) {
-      return `Opus 4.6 with 1M context · Most capable for complex work${fastMode ? getOpus46PricingSuffix(true) : ''}`
+      return `Opus 4.8 with 1M context · Best for everyday, complex tasks${fastMode ? getOpus46PricingSuffix(true) : ''}`
     }
-    return `Opus 4.6 · Most capable for complex work${fastMode ? getOpus46PricingSuffix(true) : ''}`
+    return `Opus 4.8 · Best for everyday, complex tasks${fastMode ? getOpus46PricingSuffix(true) : ''}`
   }
-  return 'Sonnet 4.6 · Best for everyday tasks'
+  return 'Sonnet 5 · Efficient for routine tasks'
 }
 
 export function renderDefaultModelSetting(
   setting: ModelName | ModelAlias,
 ): string {
   if (setting === 'opusplan') {
-    return 'Opus 4.6 in plan mode, else Sonnet 4.6'
+    return 'Opus in plan mode, else Sonnet'
   }
   return renderModelName(parseUserSpecifiedModel(setting))
 }
@@ -348,6 +391,14 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
   switch (model) {
+    case getModelStrings().opus48:
+      return 'Opus 4.8'
+    case getModelStrings().opus48 + '[1m]':
+      return 'Opus 4.8 (1M context)'
+    case getModelStrings().opus47:
+      return 'Opus 4.7'
+    case getModelStrings().opus47 + '[1m]':
+      return 'Opus 4.7 (1M context)'
     case getModelStrings().opus46:
       return 'Opus 4.6'
     case getModelStrings().opus46 + '[1m]':
@@ -358,6 +409,10 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Opus 4.1'
     case getModelStrings().opus40:
       return 'Opus 4'
+    case getModelStrings().sonnet5 + '[1m]':
+      return 'Sonnet 5 (1M context)'
+    case getModelStrings().sonnet5:
+      return 'Sonnet 5'
     case getModelStrings().sonnet46 + '[1m]':
       return 'Sonnet 4.6 (1M context)'
     case getModelStrings().sonnet46:
@@ -374,6 +429,8 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Sonnet 3.7'
     case getModelStrings().sonnet35:
       return 'Sonnet 3.5'
+    case getModelStrings().fable5:
+      return 'Fable 5'
     case getModelStrings().haiku45:
       return 'Haiku 4.5'
     case getModelStrings().haiku35:
@@ -463,6 +520,8 @@ export function parseUserSpecifiedModel(
         return getDefaultHaikuModel() + (has1mTag ? '[1m]' : '')
       case 'opus':
         return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
+      case 'fable':
+        return getDefaultFableModel() + (has1mTag ? '[1m]' : '')
       case 'best':
         return getBestModel()
       default:
@@ -576,6 +635,13 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   const has1m = modelId.toLowerCase().includes('[1m]')
   const canonical = getCanonicalName(modelId)
 
+  // Order matters: more specific versions (4-8/4-7) before 4-6 before bare 4.
+  if (canonical.includes('claude-opus-4-8')) {
+    return has1m ? 'Opus 4.8 (with 1M context)' : 'Opus 4.8'
+  }
+  if (canonical.includes('claude-opus-4-7')) {
+    return has1m ? 'Opus 4.7 (with 1M context)' : 'Opus 4.7'
+  }
   if (canonical.includes('claude-opus-4-6')) {
     return has1m ? 'Opus 4.6 (with 1M context)' : 'Opus 4.6'
   }
@@ -587,6 +653,10 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   }
   if (canonical.includes('claude-opus-4')) {
     return 'Opus 4'
+  }
+  // Sonnet 5 (native 1M) before the 4.x patterns.
+  if (canonical.includes('claude-sonnet-5')) {
+    return has1m ? 'Sonnet 5 (with 1M context)' : 'Sonnet 5'
   }
   if (canonical.includes('claude-sonnet-4-6')) {
     return has1m ? 'Sonnet 4.6 (with 1M context)' : 'Sonnet 4.6'
@@ -602,6 +672,9 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   }
   if (canonical.includes('claude-3-5-sonnet')) {
     return 'Claude 3.5 Sonnet'
+  }
+  if (canonical.includes('claude-fable-5')) {
+    return 'Fable 5'
   }
   if (canonical.includes('claude-haiku-4-5')) {
     return 'Haiku 4.5'

@@ -3,6 +3,18 @@ import type { APIProvider } from './providers.js'
 
 export type ModelConfig = Record<APIProvider, ModelName>
 
+/**
+ * For the 3 provider slots added to match the official 2.1.200 catalog
+ * (`anthropic_aws`, `mantle`, `gateway`):
+ * - On the 4 launch models (opus-4-7/4-8, sonnet-5, fable-5) and haiku-4-5,
+ *   `mantle` is binary-confirmed as `anthropic.<foundry>`.
+ * - On older dated models the strings table is deduplicated so the exact
+ *   mantle/anthropic_aws/gateway values can't be confirmed; we follow the
+ *   same pattern (`anthropic_aws`/`gateway` = foundry bare id, `mantle` =
+ *   `anthropic.<foundry>`). These slots are not read at runtime —
+ *   `getAPIProvider()` only returns firstParty/bedrock/vertex/foundry.
+ */
+
 // @[MODEL LAUNCH]: Add a new CLAUDE_*_CONFIG constant here. Double check the correct model strings
 // here since the pattern may change.
 
@@ -11,6 +23,9 @@ export const CLAUDE_3_7_SONNET_CONFIG = {
   bedrock: 'us.anthropic.claude-3-7-sonnet-20250219-v1:0',
   vertex: 'claude-3-7-sonnet@20250219',
   foundry: 'claude-3-7-sonnet',
+  anthropic_aws: 'claude-3-7-sonnet',
+  mantle: 'anthropic.claude-3-7-sonnet',
+  gateway: 'claude-3-7-sonnet',
 } as const satisfies ModelConfig
 
 export const CLAUDE_3_5_V2_SONNET_CONFIG = {
@@ -18,6 +33,9 @@ export const CLAUDE_3_5_V2_SONNET_CONFIG = {
   bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
   vertex: 'claude-3-5-sonnet-v2@20241022',
   foundry: 'claude-3-5-sonnet',
+  anthropic_aws: 'claude-3-5-sonnet',
+  mantle: 'anthropic.claude-3-5-sonnet',
+  gateway: 'claude-3-5-sonnet',
 } as const satisfies ModelConfig
 
 export const CLAUDE_3_5_HAIKU_CONFIG = {
@@ -25,6 +43,9 @@ export const CLAUDE_3_5_HAIKU_CONFIG = {
   bedrock: 'us.anthropic.claude-3-5-haiku-20241022-v1:0',
   vertex: 'claude-3-5-haiku@20241022',
   foundry: 'claude-3-5-haiku',
+  anthropic_aws: 'claude-3-5-haiku',
+  mantle: 'anthropic.claude-3-5-haiku',
+  gateway: 'claude-3-5-haiku',
 } as const satisfies ModelConfig
 
 export const CLAUDE_HAIKU_4_5_CONFIG = {
@@ -32,6 +53,9 @@ export const CLAUDE_HAIKU_4_5_CONFIG = {
   bedrock: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
   vertex: 'claude-haiku-4-5@20251001',
   foundry: 'claude-haiku-4-5',
+  anthropic_aws: 'claude-haiku-4-5',
+  mantle: 'anthropic.claude-haiku-4-5',
+  gateway: 'claude-haiku-4-5',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_CONFIG = {
@@ -39,6 +63,9 @@ export const CLAUDE_SONNET_4_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
   vertex: 'claude-sonnet-4@20250514',
   foundry: 'claude-sonnet-4',
+  anthropic_aws: 'claude-sonnet-4',
+  mantle: 'anthropic.claude-sonnet-4',
+  gateway: 'claude-sonnet-4',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_5_CONFIG = {
@@ -46,6 +73,9 @@ export const CLAUDE_SONNET_4_5_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
   vertex: 'claude-sonnet-4-5@20250929',
   foundry: 'claude-sonnet-4-5',
+  anthropic_aws: 'claude-sonnet-4-5',
+  mantle: 'anthropic.claude-sonnet-4-5',
+  gateway: 'claude-sonnet-4-5',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_CONFIG = {
@@ -53,6 +83,9 @@ export const CLAUDE_OPUS_4_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-20250514-v1:0',
   vertex: 'claude-opus-4@20250514',
   foundry: 'claude-opus-4',
+  anthropic_aws: 'claude-opus-4',
+  mantle: 'anthropic.claude-opus-4',
+  gateway: 'claude-opus-4',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_1_CONFIG = {
@@ -60,6 +93,9 @@ export const CLAUDE_OPUS_4_1_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-1-20250805-v1:0',
   vertex: 'claude-opus-4-1@20250805',
   foundry: 'claude-opus-4-1',
+  anthropic_aws: 'claude-opus-4-1',
+  mantle: 'anthropic.claude-opus-4-1',
+  gateway: 'claude-opus-4-1',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_5_CONFIG = {
@@ -67,6 +103,9 @@ export const CLAUDE_OPUS_4_5_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-5-20251101-v1:0',
   vertex: 'claude-opus-4-5@20251101',
   foundry: 'claude-opus-4-5',
+  anthropic_aws: 'claude-opus-4-5',
+  mantle: 'anthropic.claude-opus-4-5',
+  gateway: 'claude-opus-4-5',
 } as const satisfies ModelConfig
 
 export const CLAUDE_OPUS_4_6_CONFIG = {
@@ -74,6 +113,9 @@ export const CLAUDE_OPUS_4_6_CONFIG = {
   bedrock: 'us.anthropic.claude-opus-4-6-v1',
   vertex: 'claude-opus-4-6',
   foundry: 'claude-opus-4-6',
+  anthropic_aws: 'claude-opus-4-6',
+  mantle: 'anthropic.claude-opus-4-6',
+  gateway: 'claude-opus-4-6',
 } as const satisfies ModelConfig
 
 export const CLAUDE_SONNET_4_6_CONFIG = {
@@ -81,6 +123,54 @@ export const CLAUDE_SONNET_4_6_CONFIG = {
   bedrock: 'us.anthropic.claude-sonnet-4-6',
   vertex: 'claude-sonnet-4-6',
   foundry: 'claude-sonnet-4-6',
+  anthropic_aws: 'claude-sonnet-4-6',
+  mantle: 'anthropic.claude-sonnet-4-6',
+  gateway: 'claude-sonnet-4-6',
+} as const satisfies ModelConfig
+
+// @[MODEL LAUNCH]: New model configs below — provider_ids verified against the
+// official 2.1.200 binary (claude.strings). All four launch models use the
+// same shape: bedrock `us.anthropic.claude-<id>`, mantle `anthropic.claude-<id>`,
+// and vertex/foundry/anthropic_aws/gateway all = `claude-<id>`.
+
+export const CLAUDE_OPUS_4_7_CONFIG = {
+  firstParty: 'claude-opus-4-7',
+  bedrock: 'us.anthropic.claude-opus-4-7',
+  vertex: 'claude-opus-4-7',
+  foundry: 'claude-opus-4-7',
+  anthropic_aws: 'claude-opus-4-7',
+  mantle: 'anthropic.claude-opus-4-7',
+  gateway: 'claude-opus-4-7',
+} as const satisfies ModelConfig
+
+export const CLAUDE_OPUS_4_8_CONFIG = {
+  firstParty: 'claude-opus-4-8',
+  bedrock: 'us.anthropic.claude-opus-4-8',
+  vertex: 'claude-opus-4-8',
+  foundry: 'claude-opus-4-8',
+  anthropic_aws: 'claude-opus-4-8',
+  mantle: 'anthropic.claude-opus-4-8',
+  gateway: 'claude-opus-4-8',
+} as const satisfies ModelConfig
+
+export const CLAUDE_SONNET_5_CONFIG = {
+  firstParty: 'claude-sonnet-5',
+  bedrock: 'us.anthropic.claude-sonnet-5',
+  vertex: 'claude-sonnet-5',
+  foundry: 'claude-sonnet-5',
+  anthropic_aws: 'claude-sonnet-5',
+  mantle: 'anthropic.claude-sonnet-5',
+  gateway: 'claude-sonnet-5',
+} as const satisfies ModelConfig
+
+export const CLAUDE_FABLE_5_CONFIG = {
+  firstParty: 'claude-fable-5',
+  bedrock: 'us.anthropic.claude-fable-5',
+  vertex: 'claude-fable-5',
+  foundry: 'claude-fable-5',
+  anthropic_aws: 'claude-fable-5',
+  mantle: 'anthropic.claude-fable-5',
+  gateway: 'claude-fable-5',
 } as const satisfies ModelConfig
 
 // @[MODEL LAUNCH]: Register the new config here.
@@ -92,10 +182,14 @@ export const ALL_MODEL_CONFIGS = {
   sonnet40: CLAUDE_SONNET_4_CONFIG,
   sonnet45: CLAUDE_SONNET_4_5_CONFIG,
   sonnet46: CLAUDE_SONNET_4_6_CONFIG,
+  sonnet5: CLAUDE_SONNET_5_CONFIG,
   opus40: CLAUDE_OPUS_4_CONFIG,
   opus41: CLAUDE_OPUS_4_1_CONFIG,
   opus45: CLAUDE_OPUS_4_5_CONFIG,
   opus46: CLAUDE_OPUS_4_6_CONFIG,
+  opus47: CLAUDE_OPUS_4_7_CONFIG,
+  opus48: CLAUDE_OPUS_4_8_CONFIG,
+  fable5: CLAUDE_FABLE_5_CONFIG,
 } as const satisfies Record<string, ModelConfig>
 
 export type ModelKey = keyof typeof ALL_MODEL_CONFIGS
