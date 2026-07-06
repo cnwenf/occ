@@ -6,6 +6,10 @@ type CacheEntry<T> = {
   value: T
   timestamp: number
   refreshing: boolean
+  // Per-entry TTL override (ms). When present, used instead of the function's
+  // default cacheLifetimeMs — enables caching a result until its own expiry
+  // (e.g. AWS STS credentials cached until their Expiration timestamp).
+  cacheLifetimeMs?: number
 }
 
 type MemoizedFunction<Args extends unknown[], Result> = {
@@ -62,7 +66,8 @@ export function memoizeWithTTL<Args extends unknown[], Result>(
     // If we have a stale cache entry and it's not already refreshing
     if (
       cached &&
-      now - cached.timestamp > cacheLifetimeMs &&
+      now - cached.timestamp >
+        (cached.cacheLifetimeMs ?? cacheLifetimeMs) &&
       !cached.refreshing
     ) {
       // Mark as refreshing to prevent multiple parallel refreshes
@@ -120,6 +125,13 @@ export function memoizeWithTTL<Args extends unknown[], Result>(
 export function memoizeWithTTLAsync<Args extends unknown[], Result>(
   f: (...args: Args) => Promise<Result>,
   cacheLifetimeMs: number = 5 * 60 * 1000, // Default 5 minutes
+  // 2.1.176 (J10): optional per-result TTL. When the result carries its own
+  // expiry (e.g. AWS STS credentials with an Expiration field), cache it until
+  // that expiry instead of the fixed default TTL — avoids re-running the
+  // awsCredentialExport command on every request while creds are still valid,
+  // and refreshes before they actually expire. Returns undefined to fall back
+  // to the default cacheLifetimeMs.
+  getCacheLifetimeMs?: (result: Result) => number | undefined,
 ): ((...args: Args) => Promise<Result>) & { cache: { clear: () => void } } {
   const cache = new Map<string, CacheEntry<Result>>()
   // In-flight cold-miss dedup. The old memoizeWithTTL (sync) accidentally
@@ -152,6 +164,7 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
             value: result,
             timestamp: now,
             refreshing: false,
+            cacheLifetimeMs: getCacheLifetimeMs?.(result),
           })
         }
         return result
@@ -165,7 +178,8 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
     // If we have a stale cache entry and it's not already refreshing
     if (
       cached &&
-      now - cached.timestamp > cacheLifetimeMs &&
+      now - cached.timestamp >
+        (cached.cacheLifetimeMs ?? cacheLifetimeMs) &&
       !cached.refreshing
     ) {
       // Mark as refreshing to prevent multiple parallel refreshes
@@ -185,6 +199,7 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
               value: newValue,
               timestamp: Date.now(),
               refreshing: false,
+              cacheLifetimeMs: getCacheLifetimeMs?.(newValue),
             })
           }
         })

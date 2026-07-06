@@ -45,7 +45,10 @@ import {
   isMockRateLimitError,
 } from '../rateLimitMocking.js'
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
-import { extractConnectionErrorDetails } from './errorUtils.js'
+import {
+  extractConnectionErrorDetails,
+  isImageUnprocessableError,
+} from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -139,6 +142,18 @@ interface RetryOptions {
    * regardless of which request mode hit the overload.
    */
   initialConsecutive529Errors?: number
+  /**
+   * 2.1.157 (J9): when an API 400 indicates an image content block is
+   * unprocessable (corrupt/zero-byte), the retry loop calls this to strip the
+   * offending block from the request messages and retry immediately, rather
+   * than failing the whole turn. Returns the location of the stripped block
+   * (for telemetry), or null when no image block remains (stop stripping).
+   */
+  stripMediaBlock?: () => {
+    kind: string
+    messageIdx: number
+    contentIdx: number
+  } | null
 }
 
 export class CannotRetryError extends Error {
@@ -186,6 +201,10 @@ export async function* withRetry<T>(
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
   let persistentAttempt = 0
+  // 2.1.157 (J9): bound on media-block strips per request to guard against a
+  // misbehaving stripMediaBlock callback that never returns null.
+  let mediaStrips = 0
+  const MAX_MEDIA_STRIPS = 20
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     if (options.signal?.aborted) {
       throw new APIUserAbortError()
@@ -362,6 +381,35 @@ export async function* withRetry<T>(
               retryContext,
             )
           }
+        }
+      }
+
+      // 2.1.157 (J9): unprocessable images — the API rejects the whole request
+      // when any image content block is corrupt/zero-byte. Strip the offending
+      // block and retry immediately instead of failing the turn. Bounded by the
+      // number of image blocks (stripMediaBlock returns null when none remain)
+      // and the MAX_MEDIA_STRIPS guard.
+      if (
+        error instanceof APIError &&
+        isImageUnprocessableError(error) &&
+        options.stripMediaBlock &&
+        mediaStrips < MAX_MEDIA_STRIPS
+      ) {
+        const stripped = options.stripMediaBlock()
+        if (stripped) {
+          mediaStrips++
+          logForDebugging(
+            `Removed unprocessable ${stripped.kind} at messages.${stripped.messageIdx}.content.${stripped.contentIdx}; retrying.`,
+          )
+          logEvent('tengu_media_block_strip_retry', {
+            kind:
+              stripped.kind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            message_idx: stripped.messageIdx,
+            content_idx: stripped.contentIdx,
+          })
+          // Don't count the strip against the retry budget.
+          attempt--
+          continue
         }
       }
 

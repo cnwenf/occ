@@ -360,6 +360,13 @@ async function addToPromptHistory(
       ? { display: command, pastedContents: {} }
       : command
 
+  // 2.1.154: Skip consecutive duplicate prompts. If the display text matches
+  // the most recently recorded entry (pending or already flushed), don't write
+  // another line — otherwise Up-arrow shows the same prompt twice in a row.
+  if (lastAddedEntry && lastAddedEntry.display === entry.display) {
+    return
+  }
+
   const storedPastedContents: Record<number, StoredPastedContent> = {}
   if (entry.pastedContents) {
     for (const [id, content] of Object.entries(entry.pastedContents)) {

@@ -1,4 +1,5 @@
 import type { APIError } from '@anthropic-ai/sdk'
+import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 
 // SSL/TLS error codes from OpenSSL (used by both Node.js and Bun)
 // See: https://www.openssl.org/docs/man3.1/man3/X509_STORE_CTX_get_error.html
@@ -257,4 +258,102 @@ export function formatAPIError(error: APIError): string {
   return sanitizedMessage !== error.message && sanitizedMessage.length > 0
     ? sanitizedMessage
     : error.message
+}
+
+/**
+ * 2.1.157 (J9): substrings that appear in an API 400 error message when an
+ * image content block is unprocessable (zero-byte / corrupt / undetectable
+ * format). The API rejects the whole request when any image block is bad;
+ * rather than failing the request, the retry loop strips the offending block
+ * and retries (see withRetry.ts).
+ *
+ * Verified against the official 2.1.200 binary — see /tmp/occ-audit/claude.strings.
+ */
+const UNPROCESSABLE_IMAGE_MESSAGE_SUBSTRINGS = [
+  'Could not process image',
+  'Input file is missing',
+  'Input file has corrupt header',
+  'corrupt header',
+  'corrupt image',
+  'premature end',
+  'zlib: data error',
+  'zero width',
+  'zero height',
+  'Failed to decode image:',
+  'Failed to guess image format:',
+  'Unable to determine image format',
+] as const
+
+/**
+ * 2.1.157 (J9): returns true when an API error indicates an image content
+ * block is unprocessable. Such requests are retried after stripping the
+ * offending block rather than surfaced as a hard failure.
+ */
+export function isImageUnprocessableError(error: unknown): boolean {
+  if (!(error instanceof APIError) || error.status !== 400) {
+    return false
+  }
+  const message = error.message ?? ''
+  if (!message) {
+    return false
+  }
+  return UNPROCESSABLE_IMAGE_MESSAGE_SUBSTRINGS.some(s =>
+    message.includes(s),
+  )
+}
+
+/**
+ * 2.1.157 (J9): find and remove the most recent image content block from the
+ * API messages array. Returns the new array plus the location of the stripped
+ * block (for telemetry), or null when no image block remains (so the retry
+ * loop stops stripping and lets the error surface).
+ *
+ * The API error does not identify which specific block is bad, so the LAST
+ * image block (most recent paste/attachment) is stripped — matching the
+ * binary's "Removed unprocessable {kind} at messages.{idx}.content.{...}"
+ * behavior.
+ */
+export function stripLastImageBlock(
+  messages: MessageParam[],
+): {
+  messages: MessageParam[]
+  kind: string
+  messageIdx: number
+  contentIdx: number
+} | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (!msg) {
+      continue
+    }
+    const content = msg.content
+    if (!Array.isArray(content)) {
+      continue
+    }
+    for (let j = content.length - 1; j >= 0; j--) {
+      const block = content[j]
+      if (
+        block &&
+        typeof block === 'object' &&
+        (block as { type?: string }).type === 'image'
+      ) {
+        const newContent = content.filter((_, idx) => idx !== j)
+        const newMessages = messages.slice()
+        // An empty content array is itself an API error, so drop the message
+        // entirely if the stripped block was its only content.
+        if (newContent.length === 0) {
+          newMessages.splice(i, 1)
+        } else {
+          newMessages[i] = { ...msg, content: newContent }
+        }
+        return {
+          messages: newMessages,
+          kind: 'image',
+          messageIdx: i,
+          contentIdx: j,
+        }
+      }
+    }
+  }
+  return null
 }

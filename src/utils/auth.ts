@@ -606,6 +606,18 @@ export function prefetchApiKeyFromApiKeyHelperIfSafe(
 const DEFAULT_AWS_STS_TTL = 60 * 60 * 1000
 
 /**
+ * 2.1.176 (J10): Safety margin before the STS Expiration timestamp at which we
+ * treat cached awsCredentialExport credentials as stale and trigger a refresh.
+ * Refreshing slightly early avoids serving credentials that the AWS API would
+ * reject as expired (clock skew between the export command's host and the
+ * Bedrock endpoint). When Expiration is present, the cache TTL is
+ * `expiration - now - AWS_CREDENTIAL_EXPIRY_SAFETY_MARGIN_MS` (clamped to a
+ * minimum), instead of the fixed DEFAULT_AWS_STS_TTL.
+ */
+const AWS_CREDENTIAL_EXPIRY_SAFETY_MARGIN_MS = 5 * 60 * 1000
+const AWS_CREDENTIAL_MIN_CACHE_TTL_MS = 60 * 1000
+
+/**
  * Run awsAuthRefresh to perform interactive authentication (e.g., aws sso login)
  * Streams output in real-time for user visibility
  */
@@ -706,6 +718,9 @@ async function getAwsCredsFromCredentialExport(): Promise<{
   accessKeyId: string
   secretAccessKey: string
   sessionToken: string
+  // 2.1.176 (J10): parsed from the STS Credentials.Expiration field so the
+  // cache can hold the credentials until they actually expire.
+  expiration?: Date
 } | null> {
   const awsCredentialExport = getConfiguredAwsCredentialExport()
 
@@ -758,10 +773,20 @@ async function getAwsCredsFromCredentialExport(): Promise<{
       }
 
       logForDebugging('AWS credentials retrieved from awsCredentialExport')
+      const expirationStr = awsOutput.Credentials.Expiration
+      // Expiration is an RFC3339 string from `aws sts`. Invalid/missing dates
+      // are ignored (falls back to the default fixed TTL).
+      const expiration =
+        typeof expirationStr === 'string' && expirationStr.length > 0
+          ? new Date(expirationStr)
+          : undefined
       return {
         accessKeyId: awsOutput.Credentials.AccessKeyId,
         secretAccessKey: awsOutput.Credentials.SecretAccessKey,
         sessionToken: awsOutput.Credentials.SessionToken,
+        ...(expiration && !isNaN(expiration.getTime())
+          ? { expiration }
+          : {}),
       }
     } catch (e) {
       const message = chalk.red(
@@ -789,6 +814,7 @@ export const refreshAndGetAwsCredentials = memoizeWithTTLAsync(
     accessKeyId: string
     secretAccessKey: string
     sessionToken: string
+    expiration?: Date
   } | null> => {
     // First run auth refresh if needed
     const refreshed = await runAwsAuthRefresh()
@@ -804,6 +830,18 @@ export const refreshAndGetAwsCredentials = memoizeWithTTLAsync(
     return credentials
   },
   DEFAULT_AWS_STS_TTL,
+  // 2.1.176 (J10): when awsCredentialExport returns an Expiration, cache the
+  // credentials until just before that timestamp (minus a safety margin) rather
+  // than for the fixed DEFAULT_AWS_STS_TTL. This avoids re-executing the export
+  // command on every Bedrock request while the credentials are still valid, and
+  // refreshes proactively before they expire. A null result (no creds) falls
+  // back to the default TTL so a transient failure is retried promptly.
+  result => {
+    if (!result?.expiration) return undefined
+    const remaining =
+      result.expiration.getTime() - Date.now() - AWS_CREDENTIAL_EXPIRY_SAFETY_MARGIN_MS
+    return Math.max(remaining, AWS_CREDENTIAL_MIN_CACHE_TTL_MS)
+  },
 )
 
 export function clearAwsCredentialsCache(): void {

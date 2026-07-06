@@ -115,7 +115,10 @@ import {
   APIError,
   APIUserAbortError,
 } from '@anthropic-ai/sdk/error'
-import { extractConnectionErrorDetails } from './errorUtils.js'
+import {
+  extractConnectionErrorDetails,
+  stripLastImageBlock,
+} from './errorUtils.js'
 import {
   getAfkModeHeaderLatched,
   getCacheEditingHeaderLatched,
@@ -1907,6 +1910,22 @@ async function* queryModel(
         ...(isFastModeEnabled() ? { fastMode: isFastMode } : false),
         signal,
         querySource: options.querySource,
+        // 2.1.157 (J9): when the API rejects a request because an image block
+        // is unprocessable (corrupt/zero-byte), strip that block from
+        // messagesForAPI and retry. paramsFromContext reads messagesForAPI via
+        // live binding, so the reassignment is picked up on the next attempt.
+        stripMediaBlock: () => {
+          const result = stripLastImageBlock(messagesForAPI)
+          if (result) {
+            messagesForAPI = result.messages
+            return {
+              kind: result.kind,
+              messageIdx: result.messageIdx,
+              contentIdx: result.contentIdx,
+            }
+          }
+          return null
+        },
       },
     )
 

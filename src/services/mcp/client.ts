@@ -1043,6 +1043,10 @@ export const connectToServer = memoize(
             ...subprocessEnv(),
             // 2.1.139: MCP stdio servers receive CLAUDE_PROJECT_DIR, matching hooks.
             CLAUDE_PROJECT_DIR: getProjectRoot(),
+            // 2.1.147: stdio MCP servers receive CLAUDECODE=1 (alongside the
+            // CLAUDE_CODE_SESSION_ID already injected by subprocessEnv) so server
+            // processes can detect they're running under Claude Code.
+            CLAUDECODE: '1',
             ...stdioRef.env,
           } as Record<string, string>,
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
