@@ -6,6 +6,7 @@ import { registerDebugSkill } from './debug.js'
 import { registerKeybindingsSkill } from './keybindings.js'
 import { registerLoremIpsumSkill } from './loremIpsum.js'
 import { registerRememberSkill } from './remember.js'
+import { registerCodeReviewSkill } from './simplify.js'
 import { registerSimplifySkill } from './simplify.js'
 import { registerSkillifySkill } from './skillify.js'
 import { registerStuckSkill } from './stuck.js'
@@ -29,6 +30,9 @@ export function initBundledSkills(): void {
   registerLoremIpsumSkill()
   registerSkillifySkill()
   registerRememberSkill()
+  // 2.1.154 (E14): /code-review (bugs + cleanups) and /simplify (cleanup-only)
+  // are separate skills. 2.1.196 (E15): /code-review uses a single merged finder.
+  registerCodeReviewSkill()
   registerSimplifySkill()
   registerBatchSkill()
   registerStuckSkill()
