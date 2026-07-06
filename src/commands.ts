@@ -46,6 +46,11 @@ import skills from './commands/skills/index.js'
 import status from './commands/status/index.js'
 import tasks from './commands/tasks/index.js'
 import teleport from './commands/teleport/index.js'
+import autocompact from './commands/autocompact/index.js'
+import cd from './commands/cd/index.js'
+import recap from './commands/recap/index.js'
+import reloadSkills from './commands/reload-skills/index.js'
+import scrollSpeed from './commands/scroll-speed/index.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const agentsPlatform =
   process.env.USER_TYPE === 'ant'
@@ -260,8 +265,10 @@ const COMMANDS = memoize((): Command[] => [
   addDir,
   advisor,
   agents,
+  autocompact,
   branch,
   btw,
+  cd,
   chrome,
   clear,
   color,
@@ -294,8 +301,10 @@ const COMMANDS = memoize((): Command[] => [
   remoteEnv,
   plugin,
   pr_comments,
+  recap,
   releaseNotes,
   reloadPlugins,
+  reloadSkills,
   rename,
   resume,
   session,
@@ -311,6 +320,7 @@ const COMMANDS = memoize((): Command[] => [
   review,
   ultrareview,
   rewind,
+  scrollSpeed,
   securityReview,
   terminalSetup,
   upgrade,
