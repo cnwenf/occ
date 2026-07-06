@@ -1272,6 +1272,29 @@ async function* queryLoop(
       // error → hook blocking → retry → error → …
       if (lastMessage?.isApiErrorMessage) {
         void executeStopFailureHooks(lastMessage, toolUseContext)
+        // J3 (2.1.199): a subagent cut off by a rate-limit / server-error
+        // must report the API error to the parent instead of 'completed'
+        // success. The main thread returns 'completed' (the error message
+        // is already surfaced to the user); subagents surface model_error
+        // so the parent agent sees the failure rather than summarizing an
+        // API-error message as a successful result.
+        if (toolUseContext.agentId) {
+          return {
+            reason: 'model_error',
+            error: new Error(
+              lastMessage.message &&
+                Array.isArray(lastMessage.message.content) &&
+                lastMessage.message.content.some(
+                  b => b.type === 'text' && typeof b.text === 'string',
+                )
+                ? lastMessage.message.content
+                    .filter(b => b.type === 'text' && typeof b.text === 'string')
+                    .map(b => (b as { text: string }).text)
+                    .join('\n')
+                : 'subagent terminated due to API error',
+            ),
+          }
+        }
         return { reason: 'completed' }
       }
 

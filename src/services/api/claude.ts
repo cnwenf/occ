@@ -110,10 +110,12 @@ const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
 import { feature } from 'src/utils/featureFlags.js'
 import type { ClientOptions } from '@anthropic-ai/sdk'
 import {
+  APIConnectionError,
   APIConnectionTimeoutError,
   APIError,
   APIUserAbortError,
 } from '@anthropic-ai/sdk/error'
+import { extractConnectionErrorDetails } from './errorUtils.js'
 import {
   getAfkModeHeaderLatched,
   getCacheEditingHeaderLatched,
@@ -1024,6 +1026,57 @@ export function stripExcessMediaItems(
           message: { ...msg.message, content: stripped },
         }
   }) as (UserMessage | AssistantMessage)[]
+}
+
+/**
+ * J1 (2.1.199): classify a mid-stream error that should finalize the partial
+ * response (keep it + append an incomplete-response notice) rather than
+ * discard+retry. Returns null for errors that should keep the existing
+ * fallback/retry path.
+ *
+ * Mirrors the official `finalizing partial response` branch, which fires for
+ * three causes: watchdog idle-timeout (Zp), mid-stream server error /
+ * overloaded (Rd), and stream connection close (ln).
+ */
+function getMidStreamFinalizeCause(
+  streamingError: unknown,
+  streamIdleAborted: boolean,
+): 'watchdog' | 'server_error' | 'stale_connection' | null {
+  if (streamIdleAborted) {
+    return 'watchdog'
+  }
+  // Mid-stream overloaded / server error (529 or any 5xx). The SDK sometimes
+  // surfaces 529 only in the message body during streaming, so is529Error
+  // checks both status and the overloaded_error type.
+  if (is529Error(streamingError)) {
+    return 'server_error'
+  }
+  if (streamingError instanceof APIError && (streamingError.status ?? 0) >= 500) {
+    return 'server_error'
+  }
+  // Stream connection closed mid-response (ECONNRESET, EPIPE, etc.).
+  if (streamingError instanceof APIConnectionError) {
+    return 'stale_connection'
+  }
+  return null
+}
+
+/**
+ * J1 (2.1.199): the incomplete-response notice appended after finalizing a
+ * partial. Matches the official wording (prefix "API Error" is added by the
+ * caller via API_ERROR_MESSAGE_PREFIX).
+ */
+function getMidStreamPartialNotice(
+  cause: 'watchdog' | 'server_error' | 'stale_connection',
+): string {
+  switch (cause) {
+    case 'watchdog':
+      return 'Response stalled mid-stream. The response above may be incomplete.'
+    case 'server_error':
+      return 'Server error mid-response. The response above may be incomplete.'
+    case 'stale_connection':
+      return 'Connection closed mid-response. The response above may be incomplete.'
+  }
 }
 
 async function* queryModel(
@@ -2476,6 +2529,57 @@ async function* queryModel(
           // Throw a more specific error for timeout
           throw new APIConnectionTimeoutError({ message: 'Request timed out' })
         }
+      }
+
+      // J1 (2.1.199): mid-stream overloaded/server-error/idle-timeout partial
+      // responses are finalized (kept + notice) rather than discarded and
+      // retried from scratch. The partial content blocks were already yielded
+      // to the consumer; discarding them and falling back to a non-streaming
+      // retry produces duplicate content / double tool execution (inc-4258).
+      // Match the official: synthesize a stop_reason on the last yielded
+      // message, fire tengu_streaming_partial_finalized, append an
+      // incomplete-response notice, and return the partial. Only finalize
+      // when real output (text/tool_use) was yielded — thinking-only or
+      // empty streams keep the existing fallback/retry path.
+      const hasPartialOutput = newMessages.some(m => {
+        const c = m.message?.content
+        return (
+          Array.isArray(c) &&
+          c.some(b => b.type === 'text' || b.type === 'tool_use')
+        )
+      })
+      const midStreamCause = getMidStreamFinalizeCause(
+        streamingError,
+        streamIdleAborted,
+      )
+      if (hasPartialOutput && midStreamCause !== null) {
+        const lastYielded = newMessages.at(-1)
+        if (lastYielded && !lastYielded.message.stop_reason) {
+          const c = lastYielded.message.content
+          const hasToolUse =
+            Array.isArray(c) && c.some(b => b.type === 'tool_use')
+          lastYielded.message.stop_reason = hasToolUse
+            ? ('tool_use' as BetaStopReason)
+            : ('end_turn' as BetaStopReason)
+        }
+        logForDebugging(
+          `Mid-stream ${midStreamCause} after ${newMessages.length} block(s) yielded — finalizing partial response`,
+          { level: 'warn' },
+        )
+        logEvent('tengu_streaming_partial_finalized', {
+          model:
+            options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          blocks_yielded: newMessages.length,
+          cause:
+            midStreamCause as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          request_id: (streamRequestId ??
+            'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        })
+        yield createAssistantAPIErrorMessage({
+          content: `${API_ERROR_MESSAGE_PREFIX}: ${getMidStreamPartialNotice(midStreamCause)}`,
+          error: 'server_error',
+        })
+        return
       }
 
       // When the flag is enabled, skip the non-streaming fallback and let the

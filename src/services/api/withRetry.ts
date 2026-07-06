@@ -751,6 +751,16 @@ function shouldRetry(error: APIError): boolean {
   }
 
   if (error instanceof APIConnectionError) {
+    // 2.1.199 (J2): SSL/TLS certificate errors are never retryable — the
+    // certificate won't fix itself, and retrying burns the retry budget
+    // while surfacing the same opaque error. Fail immediately; the
+    // user-facing fix hint ("SSL certificate error (CODE). If you are
+    // behind a corporate proxy or TLS-intercepting firewall, set
+    // NODE_EXTRA_CA_CERTS …") is produced by formatAPIError /
+    // getSSLErrorHint from errorUtils.ts.
+    if (extractConnectionErrorDetails(error)?.isSSLError) {
+      return false
+    }
     return true
   }
 
