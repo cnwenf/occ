@@ -228,7 +228,7 @@ export const AgentTool = buildTool({
   aliases: [LEGACY_AGENT_TOOL_NAME],
   maxResultSizeChars: 100_000,
   async description() {
-    return 'Launch a new agent';
+    return "Launch a new agent to handle complex, multi-step tasks. Each agent type has specific capabilities and tools available to it.";
   },
   get inputSchema(): InputSchema {
     return inputSchema();

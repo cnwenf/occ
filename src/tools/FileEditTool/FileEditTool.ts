@@ -90,7 +90,7 @@ export const FileEditTool = buildTool({
   maxResultSizeChars: 100_000,
   strict: true,
   async description() {
-    return 'A tool for editing files'
+    return "Performs exact string replacement in a file."
   },
   async prompt() {
     return getEditToolDescription()
