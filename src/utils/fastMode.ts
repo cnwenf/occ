@@ -140,13 +140,13 @@ export function getFastModeUnavailableReason(): string | null {
 }
 
 // @[MODEL LAUNCH]: Update supported Fast Mode models.
-export const FAST_MODE_MODEL_DISPLAY = 'Opus 4.6'
+export const FAST_MODE_MODEL_DISPLAY = 'Opus 4.8'
 
 export function getFastModeModel(): string {
-  // 2.1.142: Fast mode defaults to Opus 4.7 (was Opus 4.6).
-  // CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE=1 pins to Opus 4.6.
-  const useOpus46 = isEnvTruthy(process.env.CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE)
-  return (useOpus46 ? 'opus-4-6' : 'opus') + (isOpus1mMergeEnabled() ? '[1m]' : '')
+  // 2.1.142: Fast mode uses the current default Opus (4.8).
+  // 2.1.160: CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE is a deprecated no-op —
+  // official made it a no-op; fast mode always uses the default Opus.
+  return 'opus' + (isOpus1mMergeEnabled() ? '[1m]' : '')
 }
 
 export function getInitialFastModeSetting(model: ModelSetting): boolean {
