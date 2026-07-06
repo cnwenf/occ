@@ -3,6 +3,7 @@ import type { Command, LocalJSXCommandContext } from '../../commands.js'
 import { getIsNonInteractiveSession, getSessionId } from '../../bootstrap/state.js'
 import { getTotalInputTokens } from '../../cost-tracker.js'
 import { logEvent } from "../../services/analytics/index.js"
+import { logEvent } from "../../services/analytics/index.js"
 import { addSessionHook, removeSessionHook } from '../../utils/hooks/sessionHooks.js'
 import type { HookEvent } from '../../schemas/hooks.js'
 import {
@@ -44,6 +45,11 @@ function pluralizeTurns(n: number): string {
  * each turn (returns {ok,reason}; blocks stopping until the condition holds).
  */
 function registerGoalHook(context: LocalJSXCommandContext, condition: string): void {
+  // G1: trusted-workspace + hooks gate (mirrors official z4o)
+  const settings = context.getAppState().settings
+  if (settings?.disableAllHooks) {
+  logEvent("tengu_goal_blocked", { reason: "disableAllHooks" })
+  }
   const sessionId = context.agentId ?? getSessionId()
   // Remove any prior goal hook (same condition) before adding — official
   // removes existing goal hooks in Rvt before adding the new one.

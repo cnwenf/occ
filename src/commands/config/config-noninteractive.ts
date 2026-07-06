@@ -45,7 +45,6 @@ function labelFor(key: string): string {
 // Boolean config keys — accept true/1/on/yes | false/0/off/no, reject others.
 const BOOLEAN_KEYS = new Set([
   'autoCompact', 'autoConnectIde', 'autoScroll', 'copyFullResponse', 'copyOnSelect',
-  'includeCoAuthoredBy', 'promptSuggestionEnabled', 'reduceMotion', 'tips', 'verbose',
 ])
 
 // Enum config keys — accept only the listed values.

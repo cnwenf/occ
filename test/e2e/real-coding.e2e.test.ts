@@ -211,3 +211,37 @@ describe.skipIf(!!process.env.CI)("real coding tasks (e2e, real model)", () => {
       cleanup();
     }
   }, 150_000);
+
+  test("FileEdit: edits multiple files in one task", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      seedFile(dir, "a.js", "export const VERSION = 1;\n");
+      seedFile(dir, "b.js", "export const VERSION = 1;\n");
+      const res = await runOcc(
+        P("Edit both a.js and b.js: change VERSION from 1 to 2 in each file. Use two separate Edit tool calls."),
+        { OCC_CWD: dir },
+        120_000,
+      );
+      expect(res.code).toBe(0);
+      expect(readFileSync(join(dir, "a.js"), "utf8")).toContain("VERSION = 2");
+      expect(readFileSync(join(dir, "b.js"), "utf8")).toContain("VERSION = 2");
+    } finally {
+      cleanup();
+    }
+  }, 150_000);
+
+  test("Agent: delegates with explicit subagent_type", async () => {
+    const { dir, cleanup } = tempDir();
+    try {
+      const res = await runOcc(
+        P("Use the Agent tool with subagent_type 'general-purpose' to spawn a sub-agent that creates a file named typed.txt containing SUBAGENT_TYPED. Wait for it to finish."),
+        { OCC_CWD: dir },
+        180_000,
+      );
+      expect(res.code).toBe(0);
+      expect(existsSync(join(dir, "typed.txt"))).toBe(true);
+      expect(readFileSync(join(dir, "typed.txt"), "utf8")).toContain("SUBAGENT_TYPED");
+    } finally {
+      cleanup();
+    }
+  }, 220_000);
