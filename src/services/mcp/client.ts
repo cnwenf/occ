@@ -1829,6 +1829,31 @@ export function mcpToolInputToAutoClassifierInput(
     : toolName
 }
 
+/**
+ * 2.1.132: retry tools/list on transient failure (official retries before
+ * giving up + marking "tools fetch failed"). 3 attempts, 500ms backoff.
+ */
+async function requestToolsListWithRetry(
+  client: Client,
+  attempts = 3,
+): Promise<ListToolsResult> {
+  let lastError: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return (await client.request(
+        { method: 'tools/list' },
+        ListToolsResultSchema,
+      )) as ListToolsResult
+    } catch (e) {
+      lastError = e
+      if (i < attempts - 1) {
+        await new Promise(r => setTimeout(r, 500 * (i + 1)))
+      }
+    }
+  }
+  throw lastError
+}
+
 export const fetchToolsForClient = memoizeWithLRU(
   async (client: MCPServerConnection): Promise<Tool[]> => {
     if (client.type !== 'connected') return []
@@ -1838,10 +1863,7 @@ export const fetchToolsForClient = memoizeWithLRU(
         return []
       }
 
-      const result = (await client.client.request(
-        { method: 'tools/list' },
-        ListToolsResultSchema,
-      )) as ListToolsResult
+      const result = await requestToolsListWithRetry(client.client)
 
       // Sanitize tool data from MCP server
       const toolsToProcess = recursivelySanitizeUnicode(result.tools)
@@ -3460,8 +3482,19 @@ export async function setupSdkMcpClients(
         // Fetch tools if the server has them
         const serverTools: Tool[] = []
         if (capabilities?.tools) {
-          const sdkTools = await fetchToolsForClient(connectedClient)
-          serverTools.push(...sdkTools)
+          try {
+            const sdkTools = await fetchToolsForClient(connectedClient)
+            serverTools.push(...sdkTools)
+          } catch (toolsError) {
+            // 2.1.132: tools/list failed but the server is connected — mark it
+            // so /mcp shows "connected · tools fetch failed" instead of failing
+            // the whole connection.
+            logMCPError(name, `tools fetch failed: ${toolsError}`)
+            ;(connectedClient as ConnectedMCPServer).toolsFetchError =
+              toolsError instanceof Error
+                ? toolsError.message
+                : String(toolsError)
+          }
         }
 
         return {

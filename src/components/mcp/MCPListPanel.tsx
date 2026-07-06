@@ -310,7 +310,10 @@ export function MCPListPanel(t0) {
       } else {
         if (server_3.client.type === "connected") {
           statusIcon = color("success", theme)(figures.tick);
-          statusText = "connected";
+          // 2.1.132: tools/list failed but server is connected.
+          statusText = server_3.client.toolsFetchError
+            ? "connected · tools fetch failed"
+            : "connected";
         } else {
           if (server_3.client.type === "pending") {
             statusIcon = color("inactive", theme)(figures.radioOff);

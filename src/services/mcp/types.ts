@@ -194,6 +194,11 @@ export type ConnectedMCPServer = {
   instructions?: string
   config: ScopedMcpServerConfig
   cleanup: () => Promise<void>
+  /**
+   * 2.1.132: set when tools/list failed but the server itself is connected.
+   * /mcp renders "connected · tools fetch failed" instead of hard-failing.
+   */
+  toolsFetchError?: string
 }
 
 export type FailedMCPServer = {
