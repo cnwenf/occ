@@ -40,6 +40,7 @@ import { isRestrictedToPluginOnly, isSourceAdminTrusted } from '../settings/plug
 import { parseSlashCommand } from '../slashCommandParsing.js';
 import { sleep } from '../sleep.js';
 import { recordSkillUsage } from '../suggestions/skillUsageTracking.js';
+import { loadStackedSkills, logStackedSlashCommands, splitStackedSlashCommands } from '../../skills/stackedSlashCommands.js';
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js';
 import { buildPluginCommandTelemetryFields } from '../telemetry/pluginTelemetry.js';
 import { getAssistantMessageContentLength } from '../tokens.js';
@@ -777,11 +778,52 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
       case 'prompt':
         {
           try {
+            // C14 (2.1.199): stacked slash-skill invocations. When args begins
+            // with `/skill-name ...`, load up to MAX_STACKED_SKILLS leading
+            // skills and pass the remaining text as trailing args. Skipped for
+            // forked commands and skills whose args may themselves contain slash
+            // commands (matches the official binary's gate on
+            // p.context==="fork" || p.argsMayContainSlashCommands).
+            const canStack = command.context !== 'fork' && !command.argsMayContainSlashCommands;
+            const split = canStack
+              ? splitStackedSlashCommands(args, context.options.commands)
+              : { stacked: [], trailingArgs: args, capped: false };
+            if (split.stacked.length > 0) logStackedSlashCommands(split.stacked.length);
+            const trailingArgs = split.stacked.length > 0 ? split.trailingArgs : args;
+
             // Check if command should run as forked sub-agent
             if (command.context === 'fork') {
-              return await executeForkedSlashCommand(command, args, context, precedingInputBlocks, setToolJSX, canUseTool ?? hasPermissionsToUseTool);
+              return await executeForkedSlashCommand(command, trailingArgs, context, precedingInputBlocks, setToolJSX, canUseTool ?? hasPermissionsToUseTool);
             }
-            return await getMessagesForPromptSlashCommand(command, args, context, precedingInputBlocks, imageContentBlocks, uuid);
+            const primary = await getMessagesForPromptSlashCommand(command, trailingArgs, context, precedingInputBlocks, imageContentBlocks, uuid);
+            if (split.stacked.length === 0) return primary;
+
+            // Tag the primary's first user message with the original stacked
+            // input so transcript replay reconstructs `/a /b args`.
+            const firstUser = primary.messages[0];
+            if (firstUser && firstUser.type === 'user' && !firstUser.isMeta) {
+              (firstUser as Message & { stackedOriginalInput?: string }).stackedOriginalInput = `/${command.name} ${args}`;
+            }
+
+            // Load each stacked skill with the shared trailing args and merge.
+            const stackedLoaded = await loadStackedSkills(
+              split.stacked,
+              trailingArgs,
+              (cmd, a) => getMessagesForPromptSlashCommand(cmd, a, context, [], imageContentBlocks),
+            );
+            const mergedAllowedTools = new Set(primary.allowedTools ?? []);
+            for (const t of stackedLoaded.allowedTools ?? []) mergedAllowedTools.add(t);
+            return {
+              messages: [...primary.messages, ...stackedLoaded.messages],
+              shouldQuery: primary.shouldQuery,
+              allowedTools: [...mergedAllowedTools],
+              model: primary.model,
+              effort: primary.effort,
+              command: primary.command,
+              resultText: primary.resultText,
+              nextInput: primary.nextInput,
+              submitNextInput: primary.submitNextInput,
+            };
           } catch (e) {
             // Handle abort errors specially to show proper "Interrupted" message
             if (e instanceof AbortError) {

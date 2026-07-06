@@ -17,36 +17,68 @@ import { logForDebugging } from '../../utils/debug.js'
 import { toError } from '../../utils/errors.js'
 import { truncate } from '../../utils/format.js'
 import { logError } from '../../utils/log.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 
-// Skill listing gets 1% of the context window (in characters)
+// Skill listing budget defaults. Both are overridable via settings.json
+// (skillListingBudgetFraction / skillListingMaxDescChars) — see CHe/fAo in the
+// official 2.1.200 binary. The settings schema uses .passthrough(), so these
+// keys survive parsing even without an explicit Zod entry.
+//   c3p = 0.01  (1% of the context window, in characters)
+//   d3p = 1536  (per-skill description character cap)
+//   u3p = 200000 (default context char baseline when no window is known)
 export const SKILL_BUDGET_CONTEXT_PERCENT = 0.01
 export const CHARS_PER_TOKEN = 4
-export const DEFAULT_CHAR_BUDGET = 8_000 // Fallback: 1% of 200k × 4
+export const DEFAULT_CONTEXT_CHARS = 200_000
+export const DEFAULT_CHAR_BUDGET = Math.floor(
+  DEFAULT_CONTEXT_CHARS * CHARS_PER_TOKEN * SKILL_BUDGET_CONTEXT_PERCENT,
+) // 8000: 1% of 200k × 4
 
 // Per-entry hard cap. The listing is for discovery only — the Skill tool loads
 // full content on invoke, so verbose whenToUse strings waste turn-1 cache_creation
 // tokens without improving match rate. Applies to all entries, including bundled,
 // since the cap is generous enough to preserve the core use case.
-export const MAX_LISTING_DESC_CHARS = 250
+export const MAX_LISTING_DESC_CHARS = 1536
+
+// C13 (2.1.105): settings-backed budget accessors. Match the official getters
+// CHe()/fAo(): read the setting, fall back to the binary default.
+type SkillListingSettings = {
+  skillListingMaxDescChars?: number
+  skillListingBudgetFraction?: number
+}
+export function getSkillListingBudgetFraction(): number {
+  const fraction = (
+    getInitialSettings() as SkillListingSettings
+  ).skillListingBudgetFraction
+  return typeof fraction === 'number' && fraction > 0 && fraction <= 1
+    ? fraction
+    : SKILL_BUDGET_CONTEXT_PERCENT
+}
+export function getSkillListingMaxDescChars(): number {
+  const max = (getInitialSettings() as SkillListingSettings)
+    .skillListingMaxDescChars
+  return typeof max === 'number' && Number.isInteger(max) && max > 0
+    ? max
+    : MAX_LISTING_DESC_CHARS
+}
 
 export function getCharBudget(contextWindowTokens?: number): number {
   if (Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET)) {
     return Number(process.env.SLASH_COMMAND_TOOL_CHAR_BUDGET)
   }
-  if (contextWindowTokens) {
-    return Math.floor(
-      contextWindowTokens * CHARS_PER_TOKEN * SKILL_BUDGET_CONTEXT_PERCENT,
-    )
-  }
-  return DEFAULT_CHAR_BUDGET
+  const fraction = getSkillListingBudgetFraction()
+  const totalChars =
+    (contextWindowTokens ?? DEFAULT_CONTEXT_CHARS / CHARS_PER_TOKEN) *
+    CHARS_PER_TOKEN
+  return Math.max(1, Math.floor(totalChars * fraction))
 }
 
 function getCommandDescription(cmd: Command): string {
   const desc = cmd.whenToUse
     ? `${cmd.description} - ${cmd.whenToUse}`
     : cmd.description
-  return desc.length > MAX_LISTING_DESC_CHARS
-    ? desc.slice(0, MAX_LISTING_DESC_CHARS - 1) + '\u2026'
+  const maxDescChars = getSkillListingMaxDescChars()
+  return desc.length > maxDescChars
+    ? desc.slice(0, maxDescChars - 1) + '\u2026'
     : desc
 }
 
