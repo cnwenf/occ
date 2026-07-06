@@ -319,6 +319,25 @@ async function main(): Promise<void> {
     const { startCapturingEarlyInput } = await import("../utils/earlyInput.js");
     startCapturingEarlyInput();
     profileCheckpoint("cli_before_main_import");
+
+    // 2.1.163: startup version gate. Refuse to start if the current OCC
+    // version is outside the managed requiredMinimumVersion/requiredMaximumVersion
+    // range (policySettings). update/install/doctor are exempt so users can
+    // remediate. Reads managed settings directly (no enableConfigs needed).
+    {
+        const { getRequiredVersionError } = await import("../utils/settings/settings.js");
+        const topLevelCommand = args.find(a => !a.startsWith('-'));
+        const versionError = getRequiredVersionError({
+            currentVersion: MACRO.VERSION,
+            topLevelCommand,
+        });
+        if (versionError) {
+            process.stderr.write(`${versionError}\n`);
+            // eslint-disable-next-line custom-rules/no-process-exit
+            process.exit(1);
+        }
+    }
+
     const { main: cliMain } = await import("../main.jsx");
     profileCheckpoint("cli_after_main_import");
     await cliMain();

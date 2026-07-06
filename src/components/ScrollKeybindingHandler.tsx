@@ -9,6 +9,7 @@ import { getClipboardPath } from '../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- Esc needs conditional propagation based on selection state
 import { type Key, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
+import { getInitialSettings } from '../utils/settings/settings.js';
 import { logForDebugging } from '../utils/debug.js';
 type Props = {
   scrollRef: RefObject<ScrollBoxHandle | null>;
@@ -167,6 +168,10 @@ export type WheelAccelState = {
    *  signature → disengage wheel mode so device-switch doesn't leak mouse
    *  accel to trackpad. */
   burstCount: number;
+  /** 2.1.174: wheelScrollAccelerationEnabled setting. When false, the ramp
+   *  and decay curve are skipped — each wheel event scrolls exactly `base`
+   *  rows (1 by default). Mirrors the official `accelEnabled` state field. */
+  accelEnabled: boolean;
 };
 
 /** Compute rows for one wheel event, mutating accel state. Returns 0 when
@@ -240,7 +245,7 @@ export function computeWheelStep(state: WheelAccelState, dir: 1 | -1, now: numbe
       }
     }
     // Re-check: may have disengaged above.
-    if (state.wheelMode) {
+    if (state.wheelMode && state.accelEnabled) {
       // xterm.js decay curve with STEP×3, higher cap. No idle threshold —
       // the curve handles it (gap=1000ms → m≈0.01 → mult≈1). No frac —
       // rounding loss is minor at high mult, and frac persisting across idle
@@ -256,7 +261,8 @@ export function computeWheelStep(state: WheelAccelState, dir: 1 | -1, now: numbe
     // Tight 40ms burst window: sub-40ms events ramp, anything slower resets.
     // Trackpad flick delivers 200+ events at <20ms gaps → rails to cap 6.
     // Trackpad slow swipe at 40-400ms gaps → resets every event → 1 row each.
-    if (gap > WHEEL_ACCEL_WINDOW_MS) {
+    // 2.1.174: when accelEnabled is false, skip the ramp (1 row/event).
+    if (gap > WHEEL_ACCEL_WINDOW_MS || !state.accelEnabled) {
       state.mult = state.base;
     } else {
       const cap = Math.max(WHEEL_ACCEL_MAX, state.base * 2);
@@ -279,6 +285,8 @@ export function computeWheelStep(state: WheelAccelState, dir: 1 | -1, now: numbe
   // native. For (a) the decay curve gives 3-5 rows. For sparse events
   // (100ms+, slow deliberate scroll) the curve gives 1-3.
   if (sameDir && gap < WHEEL_BURST_MS) return 1;
+  // 2.1.174: wheelScrollAccelerationEnabled=false → no decay curve, 1 row/event.
+  if (!state.accelEnabled) return Math.max(1, Math.floor(state.base));
   if (!sameDir || gap > WHEEL_DECAY_IDLE_MS) {
     // Direction reversal or long idle: start at 2 (not 1) so the first
     // click after a pause moves a visible amount. Without this, idle-
@@ -310,8 +318,10 @@ export function readScrollSpeedBase(): number {
 }
 
 /** Initial wheel accel state. xtermJs=true selects the decay curve.
- *  base is the native-path baseline rows/event (default 1). */
-export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
+ *  base is the native-path baseline rows/event (default 1).
+ *  accelEnabled (2.1.174) gates the ramp/decay curve — when false, each event
+ *  scrolls `base` rows with no acceleration. */
+export function initWheelAccel(xtermJs = false, base = 1, accelEnabled = true): WheelAccelState {
   return {
     time: 0,
     mult: base,
@@ -321,7 +331,8 @@ export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
     base,
     pendingFlip: false,
     wheelMode: false,
-    burstCount: 0
+    burstCount: 0,
+    accelEnabled
   };
 }
 
@@ -334,8 +345,11 @@ export function initWheelAccel(xtermJs = false, base = 1): WheelAccelState {
 function initAndLogWheelAccel(): WheelAccelState {
   const xtermJs = isXtermJs();
   const base = readScrollSpeedBase();
-  logForDebugging(`wheel accel: ${xtermJs ? 'decay (xterm.js)' : 'window (native)'} · base=${base} · TERM_PROGRAM=${process.env.TERM_PROGRAM ?? 'unset'}`);
-  return initWheelAccel(xtermJs, base);
+  // 2.1.174: wheelScrollAccelerationEnabled (default true). Read lazily so
+  // globalSettings/the settings cache have loaded by the first wheel event.
+  const accelEnabled = getInitialSettings().wheelScrollAccelerationEnabled ?? true;
+  logForDebugging(`wheel accel: ${xtermJs ? 'decay (xterm.js)' : 'window (native)'} · base=${base} · TERM_PROGRAM=${process.env.TERM_PROGRAM ?? 'unset'}${accelEnabled ? '' : ' · accelDisabled'}`);
+  return initWheelAccel(xtermJs, base, accelEnabled);
 }
 
 // Drag-to-scroll: when dragging past the viewport edge, scroll by this many

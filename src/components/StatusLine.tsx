@@ -269,6 +269,21 @@ function StatusLineInner({
     void doUpdate();
   }, [statusLineCommand, doUpdate]);
 
+  // 2.1.97: statusLine.refreshInterval — re-run the status line command every
+  // N seconds (in addition to event-driven updates). Mirrors the official
+  // `Qc(updateCb, refreshInterval != null ? Math.max(1, refreshInterval) * 1000 : null)`
+  // recurring timeout. Seconds→ms, clamped to a minimum of 1s.
+  const refreshIntervalMs = settings?.statusLine?.refreshInterval != null
+    ? Math.max(1, settings.statusLine.refreshInterval) * 1000
+    : null;
+  useEffect(() => {
+    if (refreshIntervalMs == null) return;
+    const id = setInterval(() => {
+      void doUpdate();
+    }, refreshIntervalMs);
+    return () => clearInterval(id);
+  }, [refreshIntervalMs, doUpdate]);
+
   // Separate effect for logging on mount
   useEffect(() => {
     const statusLine = settings?.statusLine;

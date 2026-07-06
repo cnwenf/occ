@@ -11,6 +11,7 @@ import { errorMessage, ShellError } from '../errors.js';
 import { createSyntheticUserCaveatMessage, createUserInterruptionMessage, createUserMessage, prepareUserContent } from '../messages.js';
 import { resolveDefaultShell } from '../shell/resolveDefaultShell.js';
 import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js';
+import { getInitialSettings } from '../settings/settings.js';
 import { processToolResultBlock } from '../toolResultStorage.js';
 import { escapeXml } from '../xml.js';
 import type { ProcessUserInputContext } from './processUserInput.js';
@@ -24,8 +25,13 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   // tool-list visibility. Computed up front so telemetry records the
   // actual shell, not the raw setting.
   const usePowerShell = isPowerShellToolEnabled() && resolveDefaultShell() === 'powershell';
+  // 2.1.186: respondToBashCommands (default true). When true, Claude responds
+  // to the `!`-prefixed bash command output (shouldQuery=true). When false,
+  // the output is recorded with a caveat and Claude is NOT queried.
+  const respond = getInitialSettings().respondToBashCommands ?? true;
   logEvent('tengu_input_bash', {
-    powershell: usePowerShell
+    powershell: usePowerShell,
+    respond
   });
   const userMessage = createUserMessage({
     content: prepareUserContent({
@@ -104,11 +110,16 @@ export async function processBashCommand(inputString: string, precedingInputBloc
     // tags into &lt;persisted-output&gt;, breaking the model's parse and
     // UserBashOutputMessage's extractTag. Escape the raw fallback only.
     const stdout = typeof mapped.content === 'string' ? mapped.content : escapeXml(data.stdout);
+    // 2.1.186: shouldQuery only when respond is enabled AND the command was
+    // not interrupted, not backgrounded, and the session wasn't aborted.
+    // The caveat is prepended only when NOT querying (so a future turn knows
+    // to ignore the bash output). Mirrors the official `tDm` S/p/d branches.
+    const shouldQuery = respond && !data.interrupted && !data.backgroundTaskId && !context.abortController.signal.aborted;
     return {
-      messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
+      messages: [...shouldQuery ? [] : [createSyntheticUserCaveatMessage()], userMessage, ...attachmentMessages, createUserMessage({
         content: `<bash-stdout>${stdout}</bash-stdout><bash-stderr>${escapeXml(stderr)}</bash-stderr>`
       })],
-      shouldQuery: false
+      shouldQuery
     };
   } catch (e) {
     if (e instanceof ShellError) {
@@ -120,18 +131,20 @@ export async function processBashCommand(inputString: string, precedingInputBloc
           shouldQuery: false
         };
       }
+      const shouldQuery = respond && !context.abortController.signal.aborted;
       return {
-        messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
+        messages: [...shouldQuery ? [] : [createSyntheticUserCaveatMessage()], userMessage, ...attachmentMessages, createUserMessage({
           content: `<bash-stdout>${escapeXml(e.stdout)}</bash-stdout><bash-stderr>${escapeXml(e.stderr)}</bash-stderr>`
         })],
-        shouldQuery: false
+        shouldQuery
       };
     }
+    const shouldQuery = respond && !context.abortController.signal.aborted;
     return {
-      messages: [createSyntheticUserCaveatMessage(), userMessage, ...attachmentMessages, createUserMessage({
+      messages: [...shouldQuery ? [] : [createSyntheticUserCaveatMessage()], userMessage, ...attachmentMessages, createUserMessage({
         content: `<bash-stderr>Command failed: ${escapeXml(errorMessage(e))}</bash-stderr>`
       })],
-      shouldQuery: false
+      shouldQuery
     };
   } finally {
     setToolJSX(null);

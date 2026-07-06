@@ -21,6 +21,7 @@ import { addFileGlobRuleToGitignore } from '../git/gitignore.js'
 import { safeParseJSON } from '../json.js'
 import { logError } from '../log.js'
 import { getPlatform } from '../platform.js'
+import { gte, lte, parseVersion } from '../semver.js'
 import { clone, jsonStringify } from '../slowOperations.js'
 import { profileCheckpoint } from '../startupProfiler.js'
 import {
@@ -1060,4 +1061,71 @@ export function rawSettingsContainsKey(key: string): boolean {
   }
 
   return false
+}
+
+/**
+ * Top-level commands exempt from the managed version gate. Users must be able
+ * to remediate an out-of-range version, so `update`/`install`/`doctor` always
+ * run regardless of requiredMinimumVersion/requiredMaximumVersion. Mirrors
+ * the official `Dxm` set (2.1.163).
+ */
+const VERSION_GATE_SKIP_COMMANDS = new Set(['update', 'install', 'doctor'])
+
+/**
+ * Startup version gate (2.1.163). Returns a human-readable error string when
+ * the current Claude Code version is outside the managed
+ * requiredMinimumVersion/requiredMaximumVersion range enforced via policy
+ * settings, or null to allow startup.
+ *
+ * Behavior mirrors the official `xwc`:
+ * - No constraints → null.
+ * - `topLevelCommand` in the skip set (update/install/doctor) → null (remediate).
+ * - Current version not valid semver → null (can't compare).
+ * - Invalid semver constraint → log at error level and ignore that constraint.
+ * - current < requiredMinimumVersion → "older than the minimum version…".
+ * - current > requiredMaximumVersion → "newer than the maximum version…".
+ *
+ * The caller writes the returned string to stderr and exits non-zero.
+ */
+export function getRequiredVersionError(opts: {
+  currentVersion: string
+  topLevelCommand?: string
+}): string | null {
+  const { currentVersion, topLevelCommand } = opts
+  const policy = getSettingsForSource('policySettings')
+  const requiredMinimumVersion = policy?.requiredMinimumVersion
+  const requiredMaximumVersion = policy?.requiredMaximumVersion
+  if (!requiredMinimumVersion && !requiredMaximumVersion) return null
+  if (
+    topLevelCommand !== undefined &&
+    VERSION_GATE_SKIP_COMMANDS.has(topLevelCommand)
+  ) {
+    return null
+  }
+  // Current version must be a valid semver to compare meaningfully.
+  if (!parseVersion(currentVersion)) return null
+
+  if (requiredMinimumVersion) {
+    const min = parseVersion(requiredMinimumVersion)
+    if (!min) {
+      logForDebugging(
+        `requiredMinimumVersion '${requiredMinimumVersion}' is not a valid semver version — ignoring`,
+        { level: 'error' },
+      )
+    } else if (!gte(currentVersion, min)) {
+      return `Claude Code ${currentVersion} is older than the minimum version required by your organization (${requiredMinimumVersion}).\nUpdate Claude Code using your organization's approved method, then try again. If automatic updates are available, \`claude update\` may also work.`
+    }
+  }
+  if (requiredMaximumVersion) {
+    const max = parseVersion(requiredMaximumVersion)
+    if (!max) {
+      logForDebugging(
+        `requiredMaximumVersion '${requiredMaximumVersion}' is not a valid semver version — ignoring`,
+        { level: 'error' },
+      )
+    } else if (!lte(currentVersion, max)) {
+      return `Claude Code ${currentVersion} is newer than the maximum version allowed by your organization (${requiredMaximumVersion}).\nYour organization requires version ${requiredMaximumVersion} or older. Install an approved version using your organization's approved method. \`claude install <version>\` may also work.`
+    }
+  }
+  return null
 }

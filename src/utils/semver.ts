@@ -57,3 +57,16 @@ export function order(a: string, b: string): -1 | 0 | 1 {
   }
   return getNpmSemver().compare(a, b, { loose: true })
 }
+
+/**
+ * Parse a version string and return the clean semver version, or null if it is
+ * not a valid semver. Mirrors the official `semver.parse(v)?.version` used by
+ * the startup version gate (requiredMinimumVersion/requiredMaximumVersion):
+ * validating the managed constraint before comparing, and logging+ignoring
+ * when it is not a valid semver. Always uses the npm `semver` package for
+ * parsing (the official binary uses the same package for parse, Bun.semver
+ * only for order/gte/lte).
+ */
+export function parseVersion(v: string): string | null {
+  return getNpmSemver().parse(v, { loose: true })?.version ?? null
+}

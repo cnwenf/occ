@@ -501,6 +501,13 @@ export const SettingsSchema = lazySchema(() =>
           'Default shell for input-box ! commands. ' +
             "Defaults to 'bash' on all platforms (no Windows auto-flip).",
         ),
+      // 2.1.186: whether Claude responds after an input-box ! bash command.
+      respondToBashCommands: z
+        .boolean()
+        .optional()
+        .describe(
+          'Whether Claude responds after an input-box ! bash command runs. Set to false to add the command output to context without a response. Default: true.',
+        ),
       // Only run hooks defined in managed settings (managed-settings.json)
       allowManagedHooksOnly: z
         .boolean()
