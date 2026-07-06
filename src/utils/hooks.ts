@@ -102,6 +102,10 @@ import type {
   PermissionRequestHookInput,
   ElicitationHookInput,
   ElicitationResultHookInput,
+  // 2.1.152 / cross-version: PostToolBatch, UserPromptExpansion, MessageDisplay
+  PostToolBatchHookInput,
+  UserPromptExpansionHookInput,
+  MessageDisplayHookInput,
   PermissionUpdate,
   ExitReason,
   SyncHookJSONOutput,
@@ -368,6 +372,8 @@ export interface HookResult {
   retry?: boolean
   // claude-code 2.1.94: session title set by a UserPromptSubmit hook.
   sessionTitle?: string
+  // 2.1.152: MessageDisplay hook replaces the on-screen delta (display-only).
+  displayContent?: string
   hook: HookCommand | HookCallback | FunctionHook
 }
 
@@ -391,6 +397,8 @@ export type AggregatedHookResult = {
   retry?: boolean
   // claude-code 2.1.94: session title set by a UserPromptSubmit hook.
   sessionTitle?: string
+  // 2.1.152: MessageDisplay hook replaces the on-screen delta (display-only).
+  displayContent?: string
 }
 
 /**
@@ -769,6 +777,13 @@ export function processHookJSONOutput({
       case 'PostToolUseFailure':
         result.additionalContext = json.hookSpecificOutput.additionalContext
         break
+      // 2.1.163: Stop/SubagentStop hooks can return additionalContext —
+      // non-error feedback delivered to the model/subagent so the
+      // conversation continues and it can act on it.
+      case 'Stop':
+      case 'SubagentStop':
+        result.additionalContext = json.hookSpecificOutput.additionalContext
+        break
       case 'PermissionDenied':
         result.retry = json.hookSpecificOutput.retry
         break
@@ -821,6 +836,21 @@ export function processHookJSONOutput({
             }
           }
         }
+        break
+      // 2.1.152: PostToolBatch — additionalContext injected before the next
+      // model request. Binary: u.additionalContext = ...additionalContext.
+      case 'PostToolBatch':
+        result.additionalContext = json.hookSpecificOutput.additionalContext
+        break
+      // cross-version: UserPromptExpansion — additionalContext appended to
+      // the expanded prompt. Binary: u.additionalContext = ...additionalContext.
+      case 'UserPromptExpansion':
+        result.additionalContext = json.hookSpecificOutput.additionalContext
+        break
+      // 2.1.152: MessageDisplay — display-only delta replacement. Binary:
+      // u.displayContent = ...displayContent. Does not change stored message.
+      case 'MessageDisplay':
+        result.displayContent = json.hookSpecificOutput.displayContent
         break
     }
   }
@@ -1491,6 +1521,9 @@ const MATCHER_COMMA_HYPHEN_EVENTS: ReadonlySet<HookEvent> = new Set([
   'PostToolUseFailure',
   'PermissionRequest',
   'PermissionDenied',
+  // cross-version: UserPromptExpansion matchers admit comma/hyphen literals
+  // (binary F8f set) so matcher like "/foo,/bar" splits into exact matches.
+  'UserPromptExpansion',
   'SessionStart',
   'SessionEnd',
   'Setup',
@@ -1846,6 +1879,11 @@ export async function getMatchingHooks(
         break
       case 'FileChanged':
         matchQuery = basename(hookInput.file_path as string)
+        break
+      // cross-version: UserPromptExpansion matches on the expanded command
+      // name (e.g. "/review", "mcp__foo__bar") — binary: command_name.
+      case 'UserPromptExpansion':
+        matchQuery = hookInput.command_name as string
         break
       default:
         break
@@ -5294,5 +5332,175 @@ function getHookDefinitionsForTelemetry(
       return { type: 'callback', name: 'callback' }
     }
     return { type: 'unknown' }
+  })
+}
+
+// ---------------------------------------------------------------------------
+// 2.1.152 / cross-version: PostToolBatch, UserPromptExpansion, MessageDisplay
+// hook event executors. These mirror the official 2.1.200 binary surface:
+//   - PostToolBatch: fires once after a batch of tool calls resolves, before
+//     the next model request. Blocking-capable (continue:false stops the turn
+//     with "Execution stopped by PostToolBatch hook"); additionalContext is
+//     injected before the next request. matchQuery: none (matches all
+//     matchers, like TeammateIdle).
+//   - UserPromptExpansion: fires when a user-typed slash command / MCP prompt
+//     expands into a prompt, before UserPromptSubmit. Blocking-capable
+//     ("blocked by UserPromptExpansion hook"); additionalContext appended to
+//     the expanded prompt. matchQuery: command_name.
+//   - MessageDisplay: fires with each batch of newly completed lines while an
+//     assistant message streams. Display-only: displayContent replaces the
+//     on-screen delta without changing the stored message. matchQuery: none.
+//     Prompt/agent hooks are rejected by the 2.1.142 contextless guard
+//     (no toolUseContext on the per-flush path) — command-only, as in binary.
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute PostToolBatch hooks if configured. Fired once after every tool call
+ * in a batch has resolved, before the next model request.
+ *
+ * @param toolCalls The resolved tool calls in this batch (name, input, id, response).
+ * @param toolUseContext ToolUseContext for prompt-based hooks.
+ * @param permissionMode Optional permission mode from toolPermissionContext.
+ * @param signal Optional AbortSignal to cancel hook execution.
+ * @param timeoutMs Optional timeout in milliseconds for hook execution.
+ * @returns Async generator that yields progress messages and blocking errors.
+ */
+export async function* executePostToolBatchHooks(
+  toolCalls: Array<{
+    tool_name: string
+    tool_input: unknown
+    tool_use_id: string
+    tool_response?: unknown
+  }>,
+  toolUseContext: ToolUseContext,
+  permissionMode?: string,
+  signal?: AbortSignal,
+  timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+): AsyncGenerator<AggregatedHookResult> {
+  const appState = toolUseContext.getAppState()
+  const sessionId = toolUseContext.agentId ?? getSessionId()
+  if (!hasHookForEvent('PostToolBatch', appState, sessionId)) {
+    return
+  }
+
+  const hookInput: PostToolBatchHookInput = {
+    ...createBaseHookInput(permissionMode, undefined, toolUseContext),
+    hook_event_name: 'PostToolBatch',
+    tool_calls: toolCalls,
+  }
+
+  yield* executeHooks({
+    hookInput,
+    // Binary: PostToolBatch matchQuery falls to default (no per-tool filter —
+    // it fires once for the whole batch).
+    toolUseID: `hook-${randomUUID()}`,
+    signal: signal ?? toolUseContext.abortController.signal,
+    timeoutMs,
+    toolUseContext,
+  })
+}
+
+/**
+ * Execute UserPromptExpansion hooks if configured. Fired when a user-typed
+ * slash command (or MCP prompt) expands into a prompt, before UserPromptSubmit.
+ *
+ * @param expansion The expanded command details (type, name, args, source, prompt).
+ * @param toolUseContext ToolUseContext for prompt-based hooks.
+ * @param permissionMode Optional permission mode from toolPermissionContext.
+ * @param signal Optional AbortSignal to cancel hook execution.
+ * @param timeoutMs Optional timeout in milliseconds for hook execution.
+ * @returns Async generator that yields progress messages and blocking errors.
+ */
+export async function* executeUserPromptExpansionHooks(
+  expansion: {
+    expansion_type: 'slash_command' | 'mcp_prompt'
+    command_name: string
+    command_args: string
+    command_source?: string
+    prompt: string
+  },
+  toolUseContext: ToolUseContext,
+  permissionMode?: string,
+  signal?: AbortSignal,
+  timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+): AsyncGenerator<AggregatedHookResult> {
+  const appState = toolUseContext.getAppState()
+  const sessionId = toolUseContext.agentId ?? getSessionId()
+  if (!hasHookForEvent('UserPromptExpansion', appState, sessionId)) {
+    return
+  }
+
+  const hookInput: UserPromptExpansionHookInput = {
+    ...createBaseHookInput(permissionMode, undefined, toolUseContext),
+    hook_event_name: 'UserPromptExpansion',
+    expansion_type: expansion.expansion_type,
+    command_name: expansion.command_name,
+    command_args: expansion.command_args,
+    command_source: expansion.command_source,
+    prompt: expansion.prompt,
+  }
+
+  yield* executeHooks({
+    hookInput,
+    // Binary: UserPromptExpansion matches on command_name.
+    matchQuery: expansion.command_name,
+    toolUseID: randomUUID(),
+    signal: signal ?? toolUseContext.abortController.signal,
+    timeoutMs,
+    toolUseContext,
+  })
+}
+
+/**
+ * Execute MessageDisplay hooks if configured. Fired with each batch of newly
+ * completed lines while an assistant message streams. Display-only: the
+ * displayContent returned by a hook replaces the on-screen delta without
+ * changing the stored message or what the model sees.
+ *
+ * @param display The per-flush display context (turn/message ids, index, final, delta).
+ * @param getAppState Optional accessor for the current app state (session hooks).
+ * @param agentId Optional subagent identifier.
+ * @param signal Optional AbortSignal to cancel hook execution.
+ * @param timeoutMs Optional timeout in milliseconds for hook execution.
+ * @returns Async generator that yields results carrying displayContent.
+ */
+export async function* executeMessageDisplayHooks(
+  display: {
+    turn_id: string
+    message_id: string
+    index: number
+    final: boolean
+    delta: string
+  },
+  getAppState?: () => AppState | undefined,
+  agentId?: string,
+  signal?: AbortSignal,
+  timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+): AsyncGenerator<AggregatedHookResult> {
+  const appState = getAppState?.()
+  const sessionId = agentId ?? getSessionId()
+  if (!hasHookForEvent('MessageDisplay', appState, sessionId)) {
+    return
+  }
+
+  const hookInput: MessageDisplayHookInput = {
+    ...createBaseHookInput(undefined),
+    hook_event_name: 'MessageDisplay',
+    turn_id: display.turn_id,
+    message_id: display.message_id,
+    index: display.index,
+    final: display.final,
+    delta: display.delta,
+  }
+
+  yield* executeHooks({
+    hookInput,
+    // Binary: MessageDisplay matchQuery falls to default (no filtering — it
+    // fires for every displayed message regardless of matcher).
+    toolUseID: randomUUID(),
+    signal,
+    timeoutMs,
+    // No toolUseContext: MessageDisplay is a display-only, per-flush event.
+    // Prompt/agent hooks are rejected by the 2.1.142 contextless guard.
   })
 }

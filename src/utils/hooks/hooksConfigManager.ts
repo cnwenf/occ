@@ -75,6 +75,9 @@ export const getHookEventMetadata = memoize(
             'elicitation_dialog',
             'elicitation_complete',
             'elicitation_response',
+            // 2.1.198+2.1.199: agent lifecycle notifications.
+            'agent_needs_input',
+            'agent_completed',
           ],
         },
       },
@@ -261,6 +264,30 @@ export const getHookEventMetadata = memoize(
         description:
           'Input to command is JSON with file_path and event (change, add, unlink).\nCLAUDE_ENV_FILE is set — write bash exports there to apply env to subsequent BashTool commands.\nThe matcher field specifies filenames to watch in the current directory (e.g. ".envrc|.env").\nHook output can include hookSpecificOutput.watchPaths (array of absolute paths) to dynamically update the watch list.\nExit code 0 - command completes successfully\nOther exit codes - show stderr to user only',
       },
+      // 2.1.152: PostToolBatch fires once after every tool call in a batch
+      // resolves, before the next model request.
+      PostToolBatch: {
+        summary: 'After a batch of tool calls resolves',
+        description:
+          'Fires once after every tool call in a batch has resolved, before the next model request. Input includes tool_calls (array of {tool_name, tool_input, tool_use_id, tool_response}).\nReturn additionalContext via hookSpecificOutput to inject context once for the whole batch.\nExit code 2 - stop the agentic loop (stderr shown to user only)\nOther exit codes - show stderr to user only',
+      },
+      // cross-version: UserPromptExpansion fires when a slash command / MCP
+      // prompt expands into a prompt, before UserPromptSubmit.
+      UserPromptExpansion: {
+        summary: 'When a user-typed slash command expands into a prompt',
+        description:
+          'Input to command is JSON with expansion_type, command_name, command_args, command_source, and original prompt.\nExit code 0 - stdout shown to Claude\nExit code 2 - block expansion and show stderr to user only\nOther exit codes - show stderr to user only',
+        matcherMetadata: {
+          fieldToMatch: 'command_name',
+          values: [],
+        },
+      },
+      // 2.1.152: MessageDisplay fires per flush of newly completed lines.
+      MessageDisplay: {
+        summary: 'While assistant message text is displayed',
+        description:
+          'Input to command is JSON with turn_id, message_id, index, final, and delta (the newly completed lines).\nOutput JSON with hookSpecificOutput containing displayContent to replace the delta on screen.\nDisplay-only: the stored message and what the model sees are untouched.\nExit code 0 - use hook response if provided\nOther exit codes - display the original delta',
+      },
     }
   },
   toolNames => toolNames.slice().sort().join(','),
@@ -299,6 +326,9 @@ export function groupHooksByEventAndMatcher(
     InstructionsLoaded: {},
     CwdChanged: {},
     FileChanged: {},
+    PostToolBatch: {},
+    UserPromptExpansion: {},
+    MessageDisplay: {},
   }
 
   const metadata = getHookEventMetadata(toolNames)

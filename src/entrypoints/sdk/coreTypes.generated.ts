@@ -96,6 +96,30 @@ export type ConfigChangeHookInput = HookInput
 export type InstructionsLoadedHookInput = HookInput
 export type CwdChangedHookInput = HookInput & { cwd: string }
 export type FileChangedHookInput = HookInput & { path: string }
+// 2.1.152 / cross-version: PostToolBatch, UserPromptExpansion, MessageDisplay
+export type PostToolBatchToolCall = {
+  tool_name: string
+  tool_input: unknown
+  tool_use_id: string
+  tool_response?: unknown
+}
+export type PostToolBatchHookInput = HookInput & {
+  tool_calls: PostToolBatchToolCall[]
+}
+export type UserPromptExpansionHookInput = HookInput & {
+  expansion_type: 'slash_command' | 'mcp_prompt'
+  command_name: string
+  command_args: string
+  command_source?: string
+  prompt: string
+}
+export type MessageDisplayHookInput = HookInput & {
+  turn_id: string
+  message_id: string
+  index: number
+  final: boolean
+  delta: string
+}
 
 // SDK Message types
 export type SDKMessage = { type: string; [key: string]: unknown }

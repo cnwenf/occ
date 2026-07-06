@@ -26,8 +26,14 @@ export const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'PostToolUseFailure',
+  // 2.1.152: PostToolBatch fires once after every tool call in a batch has
+  // resolved (before the next model request). PostToolUse fires per-tool.
+  'PostToolBatch',
   'Notification',
   'UserPromptSubmit',
+  // cross-version: UserPromptExpansion fires when a user-typed slash command
+  // (or MCP prompt) expands into a prompt, before UserPromptSubmit.
+  'UserPromptExpansion',
   'SessionStart',
   'SessionEnd',
   'Stop',
@@ -50,6 +56,9 @@ export const HOOK_EVENTS = [
   'InstructionsLoaded',
   'CwdChanged',
   'FileChanged',
+  // 2.1.152: MessageDisplay fires with each batch of newly completed lines
+  // while an assistant message is streamed (display-only, per-flush).
+  'MessageDisplay',
 ] as const
 
 export const EXIT_REASONS = [

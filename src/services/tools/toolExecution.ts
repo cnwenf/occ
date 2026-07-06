@@ -1,4 +1,3 @@
-import { feature } from 'src/utils/featureFlags.js'
 import type {
   ContentBlockParam,
   ToolResultBlockParam,
@@ -1097,8 +1096,11 @@ async function checkPermissionsAndCallTool(
 
     // Run PermissionDenied hooks for auto mode classifier denials.
     // If a hook returns {retry: true}, tell the model it may retry.
+    // 2.1.89: un-gated from feature('TRANSCRIPT_CLASSIFIER') — the hook now
+    // fires whenever an auto-mode classifier denies a tool call (the binary
+    // gates only on decisionReason.type === 'classifier' && classifier ===
+    // 'auto-mode', with no feature flag).
     if (
-      feature('TRANSCRIPT_CLASSIFIER') &&
       permissionDecision.decisionReason?.type === 'classifier' &&
       permissionDecision.decisionReason.classifier === 'auto-mode'
     ) {
@@ -1118,7 +1120,7 @@ async function checkPermissionsAndCallTool(
         resultingMessages.push({
           message: createUserMessage({
             content:
-              'The PermissionDenied hook indicated this command is now approved. You may retry it if you would like.',
+              'The PermissionDenied hook indicated you may retry this tool call.',
             isMeta: true,
           }),
         })

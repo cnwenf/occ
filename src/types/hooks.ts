@@ -115,6 +115,27 @@ export const syncHookResponseSchema = lazySchema(() =>
           hookEventName: z.literal('PostToolUseFailure'),
           additionalContext: z.string().optional(),
         }),
+        // 2.1.163: Stop/SubagentStop hooks can return additionalContext —
+        // non-error feedback delivered to the model (Stop) / subagent
+        // (SubagentStop); the conversation continues so it can act on it.
+        z.object({
+          hookEventName: z.literal('Stop'),
+          additionalContext: z
+            .string()
+            .describe(
+              'Hook-specific output for the Stop event. additionalContext is non-error feedback delivered to the model; the conversation continues so the model can act on it.',
+            )
+            .optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('SubagentStop'),
+          additionalContext: z
+            .string()
+            .describe(
+              'Hook-specific output for the SubagentStop event. additionalContext is non-error feedback delivered to the subagent; the subagent continues so it can act on it.',
+            )
+            .optional(),
+        }),
         z.object({
           hookEventName: z.literal('PermissionDenied'),
           retry: z.boolean().optional(),
@@ -166,6 +187,27 @@ export const syncHookResponseSchema = lazySchema(() =>
           hookEventName: z.literal('WorktreeCreate'),
           worktreePath: z.string(),
         }),
+        // 2.1.152 / cross-version: PostToolBatch, UserPromptExpansion,
+        // MessageDisplay hook-specific outputs.
+        z.object({
+          hookEventName: z.literal('PostToolBatch'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('UserPromptExpansion'),
+          additionalContext: z.string().optional(),
+        }),
+        z.object({
+          hookEventName: z.literal('MessageDisplay'),
+          displayContent: z
+            .string()
+            .describe(
+              'Text displayed in place of the delta. Omit (or return the delta unchanged) to display the original.',
+            )
+            .optional(),
+        }).describe(
+          'Hook-specific output for the MessageDisplay event. Display-only: replaces the delta on screen without changing the stored message.',
+        ),
       ])
       .optional(),
   }),

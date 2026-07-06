@@ -279,6 +279,25 @@ export async function* handleStopHooks(
         })
       }
 
+      // 2.1.163: Stop/SubagentStop hooks can return additionalContext —
+      // non-error feedback delivered to the model/subagent. Inject it as a
+      // hook_additional_context attachment so the conversation continues and
+      // the model can act on it (mirrors the official Stop/SubagentStop flow).
+      if (result.additionalContexts && result.additionalContexts.length > 0) {
+        const stopHookEvent = toolUseContext.agentId
+          ? 'SubagentStop'
+          : 'Stop'
+        const additionalContextMessage = createAttachmentMessage({
+          type: 'hook_additional_context',
+          content: result.additionalContexts,
+          hookName: stopHookEvent,
+          toolUseID: stopHookToolUseID,
+          hookEvent: stopHookEvent,
+        })
+        yield additionalContextMessage
+        hasOutput = true
+      }
+
       // Check if we were aborted during hook execution
       if (toolUseContext.abortController.signal.aborted) {
         logEvent('tengu_pre_stop_hooks_cancelled', {

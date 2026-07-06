@@ -5,8 +5,10 @@ export const HOOK_EVENTS = [
   'PreToolUse',
   'PostToolUse',
   'PostToolUseFailure',
+  'PostToolBatch',
   'Notification',
   'UserPromptSubmit',
+  'UserPromptExpansion',
   'SessionStart',
   'SessionEnd',
   'Stop',
@@ -29,6 +31,7 @@ export const HOOK_EVENTS = [
   'InstructionsLoaded',
   'CwdChanged',
   'FileChanged',
+  'MessageDisplay',
 ]
 
 export const EXIT_REASONS = [
