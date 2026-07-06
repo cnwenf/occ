@@ -23,6 +23,14 @@ export const externalPermissionModeSchema = lazySchema(() =>
   z.enum(EXTERNAL_PERMISSION_MODES),
 )
 
+/**
+ * 2.1.200: "manual" is accepted as a user-facing alias for the "default"
+ * permission mode (the mode titled "Manual"). It is NOT a real mode — input
+ * is normalized to "default" via normalizePermissionModeInput() below. Mirrors
+ * the official `PERMISSION_MODE_MANUAL_ALIAS` constant and `y_` transform.
+ */
+export const PERMISSION_MODE_MANUAL_ALIAS = 'manual'
+
 type ModeColorKey =
   | 'text'
   | 'planMode'
@@ -43,8 +51,11 @@ const PERMISSION_MODE_CONFIG: Partial<
   Record<PermissionMode, PermissionModeConfig>
 > = {
   default: {
-    title: 'Default',
-    shortTitle: 'Default',
+    // 2.1.200: the "default" permission mode is presented to users as "Manual"
+    // (the mode that prompts for manual approval). The internal value remains
+    // "default"; "manual" is accepted as an input alias (see below).
+    title: 'Manual',
+    shortTitle: 'Manual',
     symbol: '',
     color: 'text',
     external: 'default',
@@ -114,9 +125,19 @@ export function toExternalPermissionMode(
   return getModeConfig(mode).external
 }
 
+/**
+ * Normalize a user-provided mode string, mapping the "manual" alias to the
+ * internal "default" mode. Mirrors the official 2.1.200 `y_` transform:
+ * `e === "manual" ? "default" : e`.
+ */
+export function normalizePermissionModeInput(str: string): string {
+  return str === PERMISSION_MODE_MANUAL_ALIAS ? 'default' : str
+}
+
 export function permissionModeFromString(str: string): PermissionMode {
-  return (PERMISSION_MODES as readonly string[]).includes(str)
-    ? (str as PermissionMode)
+  const normalized = normalizePermissionModeInput(str)
+  return (PERMISSION_MODES as readonly string[]).includes(normalized)
+    ? (normalized as PermissionMode)
     : 'default'
 }
 

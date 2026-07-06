@@ -86,6 +86,8 @@ import {
   AUTO_REJECT_MESSAGE,
   buildClassifierUnavailableMessage,
   buildYoloRejectionMessage,
+  CLASSIFIER_TRANSCRIPT_TOO_LONG_REASON,
+  CLASSIFIER_UNAVAILABLE_REASON,
   DONT_ASK_REJECT_MESSAGE,
 } from '../messages.js'
 import { calculateCostFromTokens } from '../modelCost.js'
@@ -835,8 +837,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
             ...result,
             decisionReason: {
               type: 'other',
-              reason:
-                'Auto mode classifier transcript exceeded context window — falling back to manual approval',
+              reason: CLASSIFIER_TRANSCRIPT_TOO_LONG_REASON,
             },
           }
         }
@@ -859,7 +860,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
               decisionReason: {
                 type: 'classifier',
                 classifier: 'auto-mode',
-                reason: 'Classifier unavailable',
+                reason: CLASSIFIER_UNAVAILABLE_REASON,
               },
               message: buildClassifierUnavailableMessage(
                 tool.name,

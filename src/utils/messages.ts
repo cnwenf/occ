@@ -247,9 +247,25 @@ export const NO_RESPONSE_REQUESTED = 'No response requested.'
 export const SYNTHETIC_TOOL_RESULT_PLACEHOLDER =
   '[Tool result missing due to internal error]'
 
-// Prefix used by UI to detect classifier denials and render them concisely
+// Prefix used by UI to detect classifier denials and render them concisely.
+// Matches the official 2.1.200 auto-mode classifier denial prefix (Bhr).
 const AUTO_MODE_REJECTION_PREFIX =
-  'Permission for this action has been denied. Reason: '
+  'Permission for this action was denied by the Claude Code auto mode classifier. Reason: '
+
+// Auto-mode classifier reason taxonomy (official 2.1.200). These exact
+// strings are matched by getAutoModePermissionDecision() to classify a
+// classifier denial for the permissionDecision / analytics taxonomy.
+//
+// - iGe: classifier was unreachable (API error) — maps to "automode-unavailable".
+// - HIo: classifier responded but could not be parsed/evaluated — maps to
+//   "automode-parsing-error" (matched via startsWith, so suffixes are allowed).
+// - T$t: classifier transcript exceeded the context window — separate reason
+//   used by the transcript-too-long fallback path.
+export const CLASSIFIER_UNAVAILABLE_REASON = 'Classifier unavailable'
+export const CLASSIFIER_PARSING_ERROR_REASON_PREFIX =
+  'Auto mode could not evaluate this action and is blocking it for safety'
+export const CLASSIFIER_TRANSCRIPT_TOO_LONG_REASON =
+  'Auto mode classifier transcript exceeded context window — falling back to manual approval (try /compact to reduce conversation size)'
 
 /**
  * Check if a tool result message is a classifier denial.
@@ -296,6 +312,68 @@ export function buildClassifierUnavailableMessage(
     `If it keeps failing, continue with other tasks that don't require this action and come back to it later. ` +
     `Note: reading files, searching code, and other read-only operations do not require the classifier and can still be used.`
   )
+}
+
+/**
+ * Minimal structural view of a PermissionDecisionReason for taxonomy mapping.
+ * Kept structural (not imported) to avoid a circular dependency with
+ * types/permissions.ts via this messages module.
+ */
+type ClassifierDecisionReasonLike = {
+  type: string
+  classifier?: string
+  reason?: string
+}
+
+/**
+ * Build the classifier taxonomy string for a classifier decisionReason.
+ * Matches the official 2.1.200 `cZa` function: when the classifier was
+ * unavailable (reason === iGe), the taxonomy is `classifier:<name>:unavailable`;
+ * otherwise it is `classifier:<name>`.
+ */
+export function getClassifierDecisionTaxonomy(
+  decisionReason: ClassifierDecisionReasonLike,
+): string {
+  const classifier = decisionReason.classifier ?? 'auto-mode'
+  if (decisionReason.reason === CLASSIFIER_UNAVAILABLE_REASON) {
+    return `classifier:${classifier}:unavailable`
+  }
+  return `classifier:${classifier}`
+}
+
+/**
+ * Map a permission result to the auto-mode permissionDecision taxonomy used in
+ * hook/JSON output and analytics. Matches the official 2.1.200 mapping:
+ *   - behavior === 'deny' with classifier decisionReason:
+ *       reason === iGe                       -> "automode-unavailable"
+ *       reason startsWith HIo                -> "automode-parsing-error"
+ *       otherwise                            -> "automode-blocked"
+ *   - user-rejected deny                    -> "user-rejected"
+ *   - otherwise (rule/other deny)           -> "permission-rule"
+ *
+ * `userRejected` distinguishes a deny that came from an explicit user rejection
+ * (mapped to "user-rejected") from a rule/classifier deny.
+ */
+export function getAutoModePermissionDecision(args: {
+  behavior: 'allow' | 'deny' | 'ask'
+  decisionReason?: ClassifierDecisionReasonLike
+  userRejected?: boolean
+}): string {
+  const { behavior, decisionReason, userRejected } = args
+  if (behavior === 'allow') return 'allow'
+  if (userRejected) return 'user-rejected'
+  const t = decisionReason
+  if (
+    t?.type === 'classifier' &&
+    t.classifier === 'auto-mode'
+  ) {
+    if (t.reason === CLASSIFIER_UNAVAILABLE_REASON) return 'automode-unavailable'
+    if (typeof t.reason === 'string' && t.reason.startsWith(CLASSIFIER_PARSING_ERROR_REASON_PREFIX)) {
+      return 'automode-parsing-error'
+    }
+    return 'automode-blocked'
+  }
+  return 'permission-rule'
 }
 
 export const SYNTHETIC_MODEL = '<synthetic>'

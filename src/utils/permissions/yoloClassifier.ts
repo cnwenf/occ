@@ -26,7 +26,12 @@ import { isDebugMode, logForDebugging } from '../debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
 import { errorMessage } from '../errors.js'
 import { lazySchema } from '../lazySchema.js'
-import { extractTextContent } from '../messages.js'
+import {
+  CLASSIFIER_PARSING_ERROR_REASON_PREFIX,
+  CLASSIFIER_TRANSCRIPT_TOO_LONG_REASON,
+  CLASSIFIER_UNAVAILABLE_REASON,
+  extractTextContent,
+} from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
 import { getMainLoopModel } from '../model/model.js'
 import { getAutoModeConfig } from '../settings/settings.js'
@@ -850,7 +855,7 @@ async function classifyYoloActionXml(
           logAutoModeOutcome('parse_failure', model, { classifierType })
           return {
             shouldBlock: true,
-            reason: 'Classifier stage 1 unparseable - blocking for safety',
+            reason: `${CLASSIFIER_PARSING_ERROR_REASON_PREFIX} — stage 1 unparseable`,
             model,
             usage: stage1Usage,
             durationMs: stage1DurationMs,
@@ -921,7 +926,7 @@ async function classifyYoloActionXml(
       logAutoModeOutcome('parse_failure', model, { classifierType })
       return {
         shouldBlock: true,
-        reason: 'Classifier stage 2 unparseable - blocking for safety',
+        reason: `${CLASSIFIER_PARSING_ERROR_REASON_PREFIX} — stage 2 unparseable`,
         model,
         usage: totalUsage,
         durationMs: totalDurationMs,
@@ -995,10 +1000,10 @@ async function classifyYoloActionXml(
     return {
       shouldBlock: true,
       reason: tooLong
-        ? 'Classifier transcript exceeded context window'
+        ? CLASSIFIER_TRANSCRIPT_TOO_LONG_REASON
         : stage1Usage
-          ? 'Stage 2 classifier error - blocking based on stage 1 assessment'
-          : 'Classifier unavailable - blocking for safety',
+          ? `${CLASSIFIER_PARSING_ERROR_REASON_PREFIX} — stage 2 classifier error`
+          : CLASSIFIER_UNAVAILABLE_REASON,
       model,
       unavailable: stage1Usage === undefined,
       transcriptTooLong: Boolean(tooLong),
@@ -1224,7 +1229,7 @@ export async function classifyYoloAction(
       logAutoModeOutcome('parse_failure', model, { failureKind: 'no_tool_use' })
       return {
         shouldBlock: true,
-        reason: 'Classifier returned no tool use block - blocking for safety',
+        reason: `${CLASSIFIER_PARSING_ERROR_REASON_PREFIX} — no tool use block`,
         model,
         usage,
         durationMs,
@@ -1248,7 +1253,7 @@ export async function classifyYoloAction(
       })
       return {
         shouldBlock: true,
-        reason: 'Invalid classifier response - blocking for safety',
+        reason: `${CLASSIFIER_PARSING_ERROR_REASON_PREFIX} — invalid response`,
         model,
         usage,
         durationMs,
@@ -1317,8 +1322,8 @@ export async function classifyYoloAction(
     return {
       shouldBlock: true,
       reason: tooLong
-        ? 'Classifier transcript exceeded context window'
-        : 'Classifier unavailable - blocking for safety',
+        ? CLASSIFIER_TRANSCRIPT_TOO_LONG_REASON
+        : CLASSIFIER_UNAVAILABLE_REASON,
       model,
       unavailable: true,
       transcriptTooLong: Boolean(tooLong),

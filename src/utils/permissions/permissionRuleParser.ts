@@ -196,3 +196,93 @@ function findLastUnescapedChar(str: string, char: string): number {
   }
   return -1
 }
+
+// ============================================================================
+// Tool(param:value) rule syntax (2.1.178+)
+// ============================================================================
+
+/**
+ * Parse a `param:value` rule content (the part inside `Tool(...)`).
+ *
+ * A rule like `Agent(model:opus)` parses to `{toolName:'Agent', ruleContent:'model:opus'}`;
+ * this function splits that ruleContent into `{param:'model', value:'opus'}`.
+ * Returns null when the content has no `:` separator (e.g. a plain Bash command
+ * like `npm install` or a legacy `prefix:*` wildcard — those are not param rules).
+ *
+ * The split is on the FIRST `:` so values may themselves contain colons
+ * (e.g. `Bash(timeout:30s)`). A leading `:` (empty param) is not a param rule.
+ */
+export function parseParamValueRuleContent(
+  ruleContent: string,
+): { param: string; value: string } | null {
+  const colonIndex = ruleContent.indexOf(':')
+  if (colonIndex <= 0) return null // no colon, or colon at position 0 (empty param)
+  const param = ruleContent.slice(0, colonIndex)
+  const value = ruleContent.slice(colonIndex + 1)
+  if (param === '' || value === '') return null
+  return { param, value }
+}
+
+/**
+ * Check whether a tool call's input satisfies a `param:value` rule content.
+ *
+ * For `Agent(model:opus)` against input `{model:'opus', ...}` this returns true.
+ * Comparison is string-based so boolean/number input values match their literal
+ * rule spelling (`Bash(run_in_background:true)` matches `run_in_background: true`).
+ */
+export function matchesToolInputParam(
+  ruleContent: string,
+  input: unknown,
+): boolean {
+  const parsed = parseParamValueRuleContent(ruleContent)
+  if (parsed === null) return false
+  if (input == null || typeof input !== 'object') return false
+  const record = input as Record<string, unknown>
+  const actual = record[parsed.param]
+  if (actual === undefined) return false
+  return String(actual) === parsed.value
+}
+
+/**
+ * Result of validating a parsed permission rule value.
+ */
+export type PermissionRuleValidation = {
+  valid: boolean
+  error?: string
+  suggestion?: string
+}
+
+/**
+ * Validate a parsed permission rule value for the `Tool(param:value)` /
+ * `Tool(prefix:*)` syntax (2.1.178+).
+ *
+ * Checks (matching the official 2.1.200 validator):
+ *   - MCP rules (rules for `mcp__*` tools) do not support patterns in
+ *     parentheses — only the bare tool name is allowed.
+ *   - The legacy `:*` wildcard prefix syntax must be at the END of the rule
+ *     content (e.g. `npm:*` is fine; `npm:*:install` is not).
+ *
+ * `isMcp` may be passed explicitly for callers that already know the tool kind;
+ * otherwise an `mcp__`-prefixed toolName is treated as an MCP rule.
+ */
+export function validatePermissionRuleValue(
+  ruleValue: PermissionRuleValue,
+  opts: { isMcp?: boolean } = {},
+): PermissionRuleValidation {
+  const isMcp = opts.isMcp ?? ruleValue.toolName.startsWith('mcp__')
+  if (isMcp && ruleValue.ruleContent !== undefined) {
+    return {
+      valid: false,
+      error: 'MCP rules do not support patterns in parentheses',
+    }
+  }
+  const content = ruleValue.ruleContent
+  if (content !== undefined && content.includes(':*') && !content.endsWith(':*')) {
+    return {
+      valid: false,
+      error: 'The :* pattern must be at the end',
+      suggestion: 'Move :* to the end of the rule',
+    }
+  }
+  return { valid: true }
+}

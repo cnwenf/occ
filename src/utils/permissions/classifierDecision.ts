@@ -53,7 +53,12 @@ const WORKFLOW_TOOL_NAME = feature('WORKFLOW_SCRIPTS')
  * Does NOT include write/edit tools — those are handled by the
  * acceptEdits fast path (allowed in CWD, classified outside CWD).
  */
-const SAFE_YOLO_ALLOWLISTED_TOOLS = new Set([
+// Lazy-initialized to avoid a TDZ cycle: YOLO_CLASSIFIER_TOOL_NAME is
+// declared late in yoloClassifier.ts, and this module is imported early via
+// permissions.ts. Defer Set construction to first call (post-init).
+let SAFE_YOLO_ALLOWLISTED_TOOLS: Set<string> | undefined
+function getSafeYoloAllowlistedTools(): Set<string> {
+  return (SAFE_YOLO_ALLOWLISTED_TOOLS ??= new Set([
   // Read-only file operations
   FILE_READ_TOOL_NAME,
   // Search / read-only
@@ -91,8 +96,9 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS = new Set([
   ...(VERIFY_PLAN_EXECUTION_TOOL_NAME ? [VERIFY_PLAN_EXECUTION_TOOL_NAME] : []),
   // Internal classifier tool
   YOLO_CLASSIFIER_TOOL_NAME,
-])
+  ]))
+}
 
 export function isAutoModeAllowlistedTool(toolName: string): boolean {
-  return SAFE_YOLO_ALLOWLISTED_TOOLS.has(toolName)
+  return getSafeYoloAllowlistedTools().has(toolName)
 }
