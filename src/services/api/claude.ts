@@ -694,7 +694,7 @@ export type Options = {
   isNonInteractiveSession: boolean
   extraToolSchemas?: BetaToolUnion[]
   maxOutputTokensOverride?: number
-  fallbackModel?: string
+  fallbackModel?: string[]
   onStreamingFallback?: () => void
   querySource: QuerySource
   agents: AgentDefinition[]
@@ -837,7 +837,7 @@ export async function* executeNonStreamingRequest(
   },
   retryOptions: {
     model: string
-    fallbackModel?: string
+    fallbackModel?: string[]
     thinkingConfig: ThinkingConfig
     fastMode?: boolean
     signal: AbortSignal

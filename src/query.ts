@@ -81,6 +81,7 @@ import {
   getRuntimeMainLoopModel,
   renderModelName,
 } from './utils/model/model.js'
+import { getOrderedFallbackModels } from './utils/model/fallbackModel.js'
 import {
   doesMostRecentAssistantMessageExceed200k,
   finalContextTokensFromLastResponse,
@@ -186,7 +187,7 @@ export type QueryParams = {
   systemContext: { [k: string]: string }
   canUseTool: CanUseToolFn
   toolUseContext: ToolUseContext
-  fallbackModel?: string
+  fallbackModel?: string[]
   querySource: QuerySource
   maxOutputTokensOverride?: number
   maxTurns?: number
@@ -581,6 +582,15 @@ async function* queryLoop(
         doesMostRecentAssistantMessageExceed200k(messagesForQuery),
     })
 
+    // 2.1.166: fallbackModel may be an ordered list of up to 3 models. Build
+    // the de-duplicated retry chain (main model excluded) once per turn and
+    // advance through it on each FallbackTriggeredError.
+    const fallbackModelList = getOrderedFallbackModels(
+      currentModel,
+      fallbackModel,
+    )
+    let fallbackModelIndex = 0
+
     queryCheckpoint('query_setup_end')
 
     // Create fetch wrapper once per query session to avoid memory retention.
@@ -898,9 +908,20 @@ async function* queryLoop(
             }
           }
         } catch (innerError) {
-          if (innerError instanceof FallbackTriggeredError && fallbackModel) {
+          if (
+            innerError instanceof FallbackTriggeredError &&
+            fallbackModelList.length > 0
+          ) {
+            // 2.1.166: advance through the ordered fallback chain. The next
+            // model is picked by index so each fallback is tried at most once;
+            // when the chain is exhausted the original error propagates.
+            const nextFallbackModel = fallbackModelList[fallbackModelIndex]
+            if (nextFallbackModel === undefined) {
+              throw innerError
+            }
+            fallbackModelIndex++
             // Fallback was triggered - switch model and retry
-            currentModel = fallbackModel
+            currentModel = nextFallbackModel
             attemptWithFallback = true
 
             // Clear assistant messages since we'll retry the entire request
@@ -926,7 +947,7 @@ async function* queryLoop(
             }
 
             // Update tool use context with new model
-            toolUseContext.options.mainLoopModel = fallbackModel
+            toolUseContext.options.mainLoopModel = nextFallbackModel
 
             // Thinking signatures are model-bound: replaying a protected-thinking
             // block (e.g. capybara) to an unprotected fallback (e.g. opus) 400s.
@@ -940,7 +961,7 @@ async function* queryLoop(
               original_model:
                 innerError.originalModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               fallback_model:
-                fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                nextFallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               entrypoint:
                 'cli' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               queryChainId: queryChainIdForAnalytics,
@@ -950,7 +971,7 @@ async function* queryLoop(
             // Yield system message about fallback — use 'warning' level so
             // users see the notification without needing verbose mode
             yield createSystemMessage(
-              `Switched to ${renderModelName(innerError.fallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
+              `Switched to ${renderModelName(nextFallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
               'warning',
             )
 

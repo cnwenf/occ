@@ -143,7 +143,7 @@ export type QueryEngineConfig = {
   customSystemPrompt?: string
   appendSystemPrompt?: string
   userSpecifiedModel?: string
-  fallbackModel?: string
+  fallbackModel?: string[]
   thinkingConfig?: ThinkingConfig
   maxTurns?: number
   maxBudgetUsd?: number
@@ -1257,7 +1257,7 @@ export async function* ask({
   customSystemPrompt?: string
   appendSystemPrompt?: string
   userSpecifiedModel?: string
-  fallbackModel?: string
+  fallbackModel?: string[]
   jsonSchema?: Record<string, unknown>
   getAppState: () => AppState
   setAppState: (f: (prev: AppState) => AppState) => void

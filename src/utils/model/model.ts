@@ -488,6 +488,18 @@ export function getPublicModelName(model: ModelName): string {
 }
 
 /**
+ * Collapse a trailing `[1m]` suffix to a single occurrence.
+ *
+ * Matches the official 2.1.200 normalizer (`WF`): one or more trailing
+ * `[1m]` markers (case-insensitive, so `[1M][1m]` is covered) are stripped and
+ * exactly one `[1m]` is re-appended. Only call this on a model that should
+ * carry the 1M suffix.
+ */
+export function dedup1mSuffix(model: string): string {
+  return model.replace(/(\[1m\])+$/i, '') + '[1m]'
+}
+
+/**
  * Returns a full model name for use in this session, possibly after resolving
  * a model alias.
  *
@@ -559,7 +571,7 @@ export function parseUserSpecifiedModel(
   // Preserve original case for custom model names (e.g., Azure Foundry deployment IDs)
   // Only strip [1m] suffix if present, maintaining case of the base model
   if (has1mTag) {
-    return modelInputTrimmed.replace(/\[1m\]$/i, '').trim() + '[1m]'
+    return dedup1mSuffix(modelInputTrimmed)
   }
   return modelInputTrimmed
 }

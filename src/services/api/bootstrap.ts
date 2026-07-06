@@ -13,6 +13,7 @@ import { withOAuth401Retry } from '../../utils/http.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
+import { fetchAndCacheGatewayModels } from '../../utils/model/gatewayModelDiscovery.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
 
@@ -138,4 +139,9 @@ export async function fetchBootstrapData(): Promise<void> {
   } catch (error) {
     logError(error)
   }
+
+  // Discover models published by a custom-base-URL gateway (/v1/models).
+  // No-op when CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY is unset; failures
+  // are swallowed inside the helper so they never block bootstrap.
+  await fetchAndCacheGatewayModels()
 }

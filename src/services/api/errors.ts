@@ -1191,17 +1191,18 @@ export function getErrorMessageIfRefusal(
 
   logEvent('tengu_refusal_api_response', {})
 
+  // 2.1.142: the generic rephrase/change-model hint replaces the stale
+  // specific-model suggestion (the binary no longer recommends a pinned
+  // sonnet version here). `model` is retained on the signature for callers
+  // but no longer changes the message.
+  void model
+
   const baseMessage = getIsNonInteractiveSession()
-    ? `${API_ERROR_MESSAGE_PREFIX}: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request or attempting a different approach.`
+    ? `${API_ERROR_MESSAGE_PREFIX}: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Try rephrasing the request in a new session or change your model.`
     : `${API_ERROR_MESSAGE_PREFIX}: Claude Code is unable to respond to this request, which appears to violate our Usage Policy (https://www.anthropic.com/legal/aup). Please double press esc to edit your last message or start a new session for Claude Code to assist with a different task.`
 
-  const modelSuggestion =
-    model !== 'claude-sonnet-4-20250514'
-      ? ' If you are seeing this refusal repeatedly, try running /model claude-sonnet-4-20250514 to switch models.'
-      : ''
-
   return createAssistantAPIErrorMessage({
-    content: baseMessage + modelSuggestion,
+    content: baseMessage,
     error: 'invalid_request',
   })
 }

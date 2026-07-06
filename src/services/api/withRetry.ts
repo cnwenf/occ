@@ -127,7 +127,7 @@ export interface RetryContext {
 interface RetryOptions {
   maxRetries?: number
   model: string
-  fallbackModel?: string
+  fallbackModel?: string[]
   thinkingConfig: ThinkingConfig
   fastMode?: boolean
   signal?: AbortSignal
@@ -334,19 +334,20 @@ export async function* withRetry<T>(
         consecutive529Errors++
         if (consecutive529Errors >= MAX_529_RETRIES) {
           // Check if fallback model is specified
-          if (options.fallbackModel) {
+          if (options.fallbackModel && options.fallbackModel.length > 0) {
+            const primaryFallback = options.fallbackModel[0]
             logEvent('tengu_api_opus_fallback_triggered', {
               original_model:
                 options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               fallback_model:
-                options.fallbackModel as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                primaryFallback as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
               provider: getAPIProviderForStatsig(),
             })
 
             // Throw special error to indicate fallback was triggered
             throw new FallbackTriggeredError(
               options.model,
-              options.fallbackModel,
+              primaryFallback,
             )
           }
 
