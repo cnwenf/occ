@@ -326,25 +326,15 @@ async function logStartupTelemetry(): Promise<void> {
 // Bump this when adding a new sync migration so existing users re-run the set.
 const CURRENT_MIGRATION_VERSION = 11;
 function runMigrations(): void {
-  process.stderr.write(`[DIAG5] runMigrations entry\n`);
   if (getGlobalConfig().migrationVersion !== CURRENT_MIGRATION_VERSION) {
-    process.stderr.write(`[DIAG5] before migrateAutoUpdates\n`);
     migrateAutoUpdatesToSettings();
-    process.stderr.write(`[DIAG5] before migrateBypass\n`);
     migrateBypassPermissionsAcceptedToSettings();
-    process.stderr.write(`[DIAG5] before migrateEnableAllMcp\n`);
     migrateEnableAllProjectMcpServersToSettings();
-    process.stderr.write(`[DIAG5] before resetPro\n`);
     resetProToOpusDefault();
-    process.stderr.write(`[DIAG5] before migrateSonnet1m\n`);
     migrateSonnet1mToSonnet45();
-    process.stderr.write(`[DIAG5] before migrateLegacyOpus\n`);
     migrateLegacyOpusToCurrent();
-    process.stderr.write(`[DIAG5] before migrateSonnet45\n`);
     migrateSonnet45ToSonnet46();
-    process.stderr.write(`[DIAG5] before migrateOpus1m\n`);
     migrateOpusToOpus1m();
-    process.stderr.write(`[DIAG5] before migrateReplBridge\n`);
     migrateReplBridgeEnabledToRemoteControlAtStartup();
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer();
@@ -352,19 +342,15 @@ function runMigrations(): void {
     if (("external" as string) === 'ant') {
       migrateFennecToOpus();
     }
-    process.stderr.write(`[DIAG5] before saveGlobalConfig\n`);
     saveGlobalConfig(prev => prev.migrationVersion === CURRENT_MIGRATION_VERSION ? prev : {
       ...prev,
       migrationVersion: CURRENT_MIGRATION_VERSION
     });
-    process.stderr.write(`[DIAG5] after saveGlobalConfig\n`);
   }
-  process.stderr.write(`[DIAG5] before migrateChangelog\n`);
   // Async migration - fire and forget since it's non-blocking
   migrateChangelogFromConfig().catch(() => {
     // Silently ignore migration errors - will retry on next startup
   });
-  process.stderr.write(`[DIAG5] runMigrations exit\n`);
 }
 
 /**
@@ -972,14 +958,11 @@ async function run(): Promise<CommanderCommand> {
     // builds the type as options are added. Narrow with a runtime guard;
     // the collect accumulator + [] default guarantee string[] in practice.
     const pluginDir = thisCommand.getOptionValue('pluginDir');
-    process.stderr.write(`[DIAG4] before pluginDir check\n`);
     if (Array.isArray(pluginDir) && pluginDir.length > 0 && pluginDir.every(p => typeof p === 'string')) {
       setInlinePlugins(pluginDir);
       clearPluginCache('preAction: --plugin-dir inline plugins');
     }
-    process.stderr.write(`[DIAG4] before runMigrations\n`);
     runMigrations();
-    process.stderr.write(`[DIAG4] after runMigrations\n`);
     profileCheckpoint('preAction_after_migrations');
 
     // 2.1.92: forceRemoteSettingsRefresh policy — when set, block startup until

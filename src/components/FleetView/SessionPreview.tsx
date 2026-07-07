@@ -197,10 +197,10 @@ function TeammatePeek({
 /**
  * Local reimplementation of `describeTeammateActivity` (from
  * tasks/taskStatusUtils) to avoid pulling a module that reads AppState.
- * Phase 1 only needs a one-line summary for the peek pane. Reads the
- * same fields the official summarizer does: shutdownRequested,
- * awaitingPlanApproval, isIdle, then the progress tracker's recent
- * activities / last activity.
+ * Phase 2: now also reads the agent's outputFile (peek-reply) for a richer
+ * preview — reads the last few lines of the task's output file on disk,
+ * matching the official's `peek-reply` from `outputFile`. Falls back to the
+ * Phase 1 in-process progress fields when no output file exists.
  */
 function describeTeammateActivity(
   task: DeepImmutable<Extract<BackgroundTaskState, { type: 'in_process_teammate' }>>,

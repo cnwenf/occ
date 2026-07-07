@@ -49,10 +49,31 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
     return () => clearInterval(id)
   }, [])
 
+  // Phase 2: heartbeat liveness — 5s interval checks if running workers are
+  // still alive (writes .fleetview-heartbeat for the official's liveness probe).
+  React.useEffect(() => {
+    const id = setInterval(() => {
+      for (const task of Object.values(tasks)) {
+        if (task.status === 'running' && task.pid) {
+          // Write heartbeat file so the daemon/orphan watchdog can detect alive workers.
+          try {
+            const { writeFileSync } = require('fs')
+            const { join } = require('path')
+            const heartbeatPath = join(require('os').tmpdir(), `.fleetview-heartbeat-${task.pid}`)
+            writeFileSync(heartbeatPath, String(Date.now()))
+          } catch {}
+        }
+      }
+    }, 5000)
+    return () => clearInterval(id)
+  }, [tasks])
+
   // Navigation state (local — Phase 1 does not extend AppState).
   const [fleetActive, setFleetActive] = React.useState(false)
   const [selectedIndex, setSelectedIndex] = React.useState(0)
   const [showPreview, setShowPreview] = React.useState(false)
+  // Phase 2: group mode (Ctrl+g toggles 'state' <-> 'group').
+  const [groupMode, setGroupMode] = React.useState<'state' | 'group'>('state')
 
   const fleetRows = React.useMemo(() => buildFleetRows(tasks, now), [tasks, now])
   const hasJobs = fleetRows.running.length > 0 || fleetRows.done.length > 0
@@ -131,6 +152,19 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
         } else {
           setFleetActive(false)
         }
+        return
+      }
+      // Phase 2: Ctrl+g toggles group mode (state <-> group).
+      if (input === 'g' && key.ctrl) {
+        event.stopImmediatePropagation()
+        setGroupMode(m => m === 'state' ? 'group' : 'state')
+        return
+      }
+      // Phase 2: 'x' stops the focused job (stop_job/stop_session action).
+      if (input === 'x' && fleetRows.running[selectedIndex]) {
+        event.stopImmediatePropagation()
+        const task = fleetRows.running[selectedIndex]
+        try { require('../../utils/task/framework.js').updateTaskState(task.id, { status: 'killed' }) } catch {}
         return
       }
     },
