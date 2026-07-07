@@ -149,23 +149,25 @@ console.log(JSON.stringify({ a, b, skipA, skipB, urlDefault, urlOverride }));
   });
 });
 
-// ---------- ENABLE-FLAGS: MONITOR_TOOL / KAIROS / UDS_INBOX ----------
-describe("ENABLE-FLAGS MONITOR_TOOL / KAIROS / UDS_INBOX (2.1.200)", () => {
-  test("featureFlags allowlist enables the three tool flags", () => {
+// ---------- ENABLE-FLAGS: MONITOR_TOOL only (KAIROS/UDS_INBOX kept OFF — they hang) ----------
+describe("ENABLE-FLAGS MONITOR_TOOL only (2.1.200)", () => {
+  test("featureFlags allowlist enables MONITOR_TOOL; KAIROS/UDS_INBOX stay OFF (they gate blocking subsystems)", () => {
     const s = src("src/utils/featureFlags.ts");
     expect(s).toContain("'MONITOR_TOOL'");
-    expect(s).toContain("'KAIROS'");
-    expect(s).toContain("'UDS_INBOX'");
+    // KAIROS gates BriefTool's 5-min refresh loop + assistant + SendUserFile
+    // (hangs the query path when enabled in OCC's trimmed build).
+    expect(s).not.toContain("'KAIROS'");
+    // UDS_INBOX gates ListPeers' session-registry scan (also hangs).
+    expect(s).not.toContain("'UDS_INBOX'");
   });
 
-  test("feature() returns true for the three flags at runtime", async () => {
+  test("feature() returns true only for MONITOR_TOOL at runtime", async () => {
     const script = `
 const { feature } = await import("${REPO_ROOT}/src/utils/featureFlags.ts");
 console.log(JSON.stringify({
   MONITOR_TOOL: feature("MONITOR_TOOL"),
   KAIROS: feature("KAIROS"),
   UDS_INBOX: feature("UDS_INBOX"),
-  // an unrelated flag stays false (allowlist is selective)
   COORDINATOR_MODE: feature("COORDINATOR_MODE"),
 }));
 `;
@@ -173,12 +175,12 @@ console.log(JSON.stringify({
       (await $`bun -e ${script}`.quiet()).stdout.toString().trim(),
     );
     expect(out.MONITOR_TOOL).toBe(true);
-    expect(out.KAIROS).toBe(true);
-    expect(out.UDS_INBOX).toBe(true);
+    expect(out.KAIROS).toBe(false);
+    expect(out.UDS_INBOX).toBe(false);
     expect(out.COORDINATOR_MODE).toBe(false);
   });
 
-  test("getAllBaseTools() includes Monitor / PushNotification / ListAgents", async () => {
+  test("getAllBaseTools() includes Monitor; PushNotification/ListAgents stay OUT (KAIROS/UDS_INBOX off)", async () => {
     const script = `
 const { getAllBaseTools } = await import("${REPO_ROOT}/src/tools.ts");
 const names = getAllBaseTools().map(t => t.name);
@@ -193,8 +195,8 @@ console.log(JSON.stringify({
       (await $`bun -e ${script}`.quiet()).stdout.toString().trim(),
     );
     expect(out.Monitor).toBe(true);
-    expect(out.PushNotification).toBe(true);
-    expect(out.ListAgents).toBe(true);
+    expect(out.PushNotification).toBe(false);
+    expect(out.ListAgents).toBe(false);
     expect(out.total).toBeGreaterThan(0);
   });
 
