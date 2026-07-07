@@ -33,10 +33,11 @@ export function getEffortNotificationText(
   effortValue: EffortValue | undefined,
   model: string,
 ): string | undefined {
-  // Ultracode session mode: persistent text-mode badge. Mirrors the binary's
-  // `if(t)return`${n?"effort:":Cbn} ultracode · xhigh effort + …`` (text mode).
+  // Ultracode session mode: symbol-mode badge — just "ultracode" in the
+  // effortUltra theme color (rgb(135,0,255) = purple). Mirrors the binary's
+  // Ro("effortUltra",theme)("ultracode") — NOT the long text-mode string.
   if (isUltracodeEnabled()) {
-    return `effort: ultracode · ${ULTRACODE_EFFORT_DESCRIPTION}`
+    return '\x1b[38;2;135;0;255multracode\x1b[0m'
   }
   if (!modelSupportsEffort(model)) return undefined
   const level = getDisplayedEffortLevel(model, effortValue)
