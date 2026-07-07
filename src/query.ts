@@ -56,6 +56,12 @@ import {
 } from './utils/messages.js'
 import { generateToolUseSummary } from './services/toolUseSummary/toolUseSummaryGenerator.js'
 import { prependUserContext, appendSystemContext } from './utils/api.js'
+// K3 (ultracode): consume the ultracode system-reminder decision from
+// src/context.ts (re-exports src/utils/effort/ultracode.ts). When ultracode is
+// active for the session, the verbatim "Ultracode is on…" reminder is injected
+// as a per-turn isMeta system-reminder, mirroring the binary's
+// ultra_effort_enter reminder builder.
+import { getUltracodeSystemReminder } from './context.js'
 import {
   createAttachmentMessage,
   filterDuplicateMemoryAttachments,
@@ -670,8 +676,24 @@ async function* queryLoop(
         try {
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
+          // K3 (ultracode): when ultracode is active for the session, prepend
+          // the verbatim "Ultracode is on…" meta system-reminder for this turn
+          // (mirrors the binary's ultra_effort_enter reminder builder — a
+          // per-turn isMeta user message). getUltracodeSystemReminder() returns
+          // null when ultracode is off, so the non-ultracode path is unchanged.
+          const ultracodeReminder = getUltracodeSystemReminder()
+          const messagesForApi =
+            ultracodeReminder !== null
+              ? [
+                  createUserMessage({
+                    content: ultracodeReminder.content,
+                    isMeta: true,
+                  }),
+                  ...prependUserContext(messagesForQuery, userContext),
+                ]
+              : prependUserContext(messagesForQuery, userContext)
           for await (const message of deps.callModel({
-            messages: prependUserContext(messagesForQuery, userContext),
+            messages: messagesForApi,
             systemPrompt: fullSystemPrompt,
             thinkingConfig: toolUseContext.options.thinkingConfig,
             tools: toolUseContext.options.tools,

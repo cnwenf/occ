@@ -61,6 +61,11 @@ import { logForDebugging } from '../utils/debug.js'
 import { loadMemoryPrompt } from '../memdir/memdir.js'
 import { isUndercover } from '../utils/undercover.js'
 import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
+// K1 (lean prompt): consume the lean-prompt decision from src/context.ts (which
+// re-exports src/utils/effort/leanPrompt.ts). When the model is lean_prompt-
+// capable, the lean system prompt is the default — non-essential expanded
+// sections are stripped. Cycle-safe: src/context.ts does not import this module.
+import { shouldUseLeanSystemPrompt } from '../context.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -464,6 +469,12 @@ export async function getSystemPrompt(
   const settings = getInitialSettings()
   const enabledTools = new Set(tools.map(_ => _.name))
 
+  // K1 (lean prompt): lean_prompt-capable models (opus 4.8, sonnet 5, fable 5,
+  // mythos 5) get the lean system prompt by default — non-essential expanded
+  // sections are stripped. The full prompt is opt-in at higher effort
+  // (xhigh / max / ultracode), which shouldUseLeanSystemPrompt() reflects.
+  const lean = shouldUseLeanSystemPrompt(model)
+
   if (
     (feature('PROACTIVE') || feature('KAIROS')) &&
     proactiveModule?.isProactiveActive()
@@ -507,9 +518,16 @@ ${CYBER_RISK_INSTRUCTION}`,
       getOutputStyleSection(outputStyleConfig),
     ),
     // 2.1.107: thinking-frequency guidance (gated on opus-4-6 + server flag).
-    systemPromptSection('thinking_guidance', () =>
-      getThinkingGuidanceSection(model),
-    ),
+    // K1: stripped from the LEAN prompt — this guidance is opus-4-6-specific
+    // and the lean_prompt-capable models (opus 4.8, sonnet 5, fable 5,
+    // mythos 5) are not opus-4-6, so the expanded section is non-essential.
+    ...(lean
+      ? []
+      : [
+          systemPromptSection('thinking_guidance', () =>
+            getThinkingGuidanceSection(model),
+          ),
+        ]),
     // When delta enabled, instructions are announced via persisted
     // mcp_instructions_delta attachments (attachments.ts) instead of this
     // per-turn recompute, which busts the prompt cache on late MCP connect.

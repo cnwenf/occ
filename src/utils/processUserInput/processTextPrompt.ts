@@ -15,6 +15,13 @@ import {
   matchesKeepGoingKeyword,
   matchesNegativeKeyword,
 } from '../userPromptKeywords.js'
+// K3 (ultracode): the "ultracode" keyword in a user prompt opts that turn
+// into the Workflow tool (xhigh effort + dynamic-workflow orchestration for
+// the session). Consumes the decision logic in src/utils/effort/ultracode.ts.
+import {
+  shouldTriggerUltracodeFromPrompt,
+  enableUltracodeForSession,
+} from '../effort/ultracode.js'
 
 export function processTextPrompt(
   input: string | Array<ContentBlockParam>,
@@ -62,6 +69,18 @@ export function processTextPrompt(
     is_negative: isNegative,
     is_keep_going: isKeepGoing,
   })
+
+  // K3 (ultracode): if the user's prompt carries the "ultracode" keyword and
+  // the keyword trigger is enabled (default) and ultracode isn't already
+  // active, enable it for the session. The query loop (src/query.ts) then
+  // injects the "Ultracode is on…" system-reminder on each turn via
+  // getUltracodeSystemReminder().
+  if (shouldTriggerUltracodeFromPrompt(userPromptText)) {
+    enableUltracodeForSession()
+    logEvent('tengu_ultracode_keyword_triggered', {
+      source: 'user_prompt',
+    })
+  }
 
   // If we have pasted images, create a message with image content
   if (imageContentBlocks.length > 0) {
