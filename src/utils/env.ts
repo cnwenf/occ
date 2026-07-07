@@ -18,11 +18,14 @@ export const getGlobalClaudeFile = memoize((): string => {
       join(getClaudeConfigHomeDir(), '.config.json'),
     )
   ) {
+    process.stderr.write(`[DIAGCFG] getGlobalClaudeFile -> legacy .config.json at ${join(getClaudeConfigHomeDir(), '.config.json')}\n`)
     return join(getClaudeConfigHomeDir(), '.config.json')
   }
 
   const filename = `.claude${fileSuffixForOauthConfig()}.json`
-  return join(process.env.CLAUDE_CONFIG_DIR || homedir(), filename)
+  const p = join(process.env.CLAUDE_CONFIG_DIR || homedir(), filename)
+  process.stderr.write(`[DIAGCFG] getGlobalClaudeFile -> ${p} (homedir=${homedir()} CLAUDE_CONFIG_DIR=${process.env.CLAUDE_CONFIG_DIR ?? 'unset'})\n`)
+  return p
 })
 
 const hasInternetAccess = memoize(async (): Promise<boolean> => {

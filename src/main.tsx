@@ -326,15 +326,25 @@ async function logStartupTelemetry(): Promise<void> {
 // Bump this when adding a new sync migration so existing users re-run the set.
 const CURRENT_MIGRATION_VERSION = 11;
 function runMigrations(): void {
+  process.stderr.write(`[DIAG5] runMigrations entry\n`);
   if (getGlobalConfig().migrationVersion !== CURRENT_MIGRATION_VERSION) {
+    process.stderr.write(`[DIAG5] before migrateAutoUpdates\n`);
     migrateAutoUpdatesToSettings();
+    process.stderr.write(`[DIAG5] before migrateBypass\n`);
     migrateBypassPermissionsAcceptedToSettings();
+    process.stderr.write(`[DIAG5] before migrateEnableAllMcp\n`);
     migrateEnableAllProjectMcpServersToSettings();
+    process.stderr.write(`[DIAG5] before resetPro\n`);
     resetProToOpusDefault();
+    process.stderr.write(`[DIAG5] before migrateSonnet1m\n`);
     migrateSonnet1mToSonnet45();
+    process.stderr.write(`[DIAG5] before migrateLegacyOpus\n`);
     migrateLegacyOpusToCurrent();
+    process.stderr.write(`[DIAG5] before migrateSonnet45\n`);
     migrateSonnet45ToSonnet46();
+    process.stderr.write(`[DIAG5] before migrateOpus1m\n`);
     migrateOpusToOpus1m();
+    process.stderr.write(`[DIAG5] before migrateReplBridge\n`);
     migrateReplBridgeEnabledToRemoteControlAtStartup();
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       resetAutoModeOptInForDefaultOffer();
@@ -342,15 +352,19 @@ function runMigrations(): void {
     if (("external" as string) === 'ant') {
       migrateFennecToOpus();
     }
+    process.stderr.write(`[DIAG5] before saveGlobalConfig\n`);
     saveGlobalConfig(prev => prev.migrationVersion === CURRENT_MIGRATION_VERSION ? prev : {
       ...prev,
       migrationVersion: CURRENT_MIGRATION_VERSION
     });
+    process.stderr.write(`[DIAG5] after saveGlobalConfig\n`);
   }
+  process.stderr.write(`[DIAG5] before migrateChangelog\n`);
   // Async migration - fire and forget since it's non-blocking
   migrateChangelogFromConfig().catch(() => {
     // Silently ignore migration errors - will retry on next startup
   });
+  process.stderr.write(`[DIAG5] runMigrations exit\n`);
 }
 
 /**
@@ -804,6 +818,19 @@ export async function main() {
   const hasSdkUrl = cliArgs.some(arg => arg.startsWith('--sdk-url'));
   const isNonInteractive = hasPrintFlag || hasInitOnlyFlag || hasSdkUrl || !process.stdout.isTTY;
 
+  // Fast-path for `--daemon-worker <kind>` (internal — the B daemon supervisor
+  // spawns this per worker). Must come before program.parseAsync so the worker
+  // process is lean: no enableConfigs(), no analytics sinks, no REPL init.
+  // Mirrors the feature("DAEMON") fast-path in cli.tsx (which is dead in this
+  // build since feature() always returns false).
+  const daemonWorkerIdx = cliArgs.indexOf('--daemon-worker');
+  if (daemonWorkerIdx >= 0) {
+    const workerKind = cliArgs[daemonWorkerIdx + 1] ?? 'default';
+    const { runDaemonWorker } = await import('./daemon/workerRegistry.js');
+    await runDaemonWorker(workerKind);
+    return program;
+  }
+
   // Stop capturing early input for non-interactive modes
   if (isNonInteractive) {
     stopCapturingEarlyInput();
@@ -945,11 +972,14 @@ async function run(): Promise<CommanderCommand> {
     // builds the type as options are added. Narrow with a runtime guard;
     // the collect accumulator + [] default guarantee string[] in practice.
     const pluginDir = thisCommand.getOptionValue('pluginDir');
+    process.stderr.write(`[DIAG4] before pluginDir check\n`);
     if (Array.isArray(pluginDir) && pluginDir.length > 0 && pluginDir.every(p => typeof p === 'string')) {
       setInlinePlugins(pluginDir);
       clearPluginCache('preAction: --plugin-dir inline plugins');
     }
+    process.stderr.write(`[DIAG4] before runMigrations\n`);
     runMigrations();
+    process.stderr.write(`[DIAG4] after runMigrations\n`);
     profileCheckpoint('preAction_after_migrations');
 
     // 2.1.92: forceRemoteSettingsRefresh policy — when set, block startup until
@@ -3897,6 +3927,12 @@ async function run(): Promise<CommanderCommand> {
   // Enable SDK URL for all builds but hide from help
   program.addOption(new Option('--sdk-url <url>', 'Use remote WebSocket endpoint for SDK I/O streaming (only with -p and stream-json format)').hideHelp());
 
+  // Hidden: B daemon supervisor spawns worker subprocesses with this flag.
+  // The actual routing happens in the early-exit fast-path above (before
+  // parseAsync); this registration is defensive so Commander doesn't reject
+  // the flag if the fast-path is bypassed.
+  program.addOption(new Option('--daemon-worker <kind>', 'Run as a B daemon worker of the given kind (internal)').hideHelp());
+
   // Enable teleport/remote flags for all builds but keep them undocumented until GA
   program.addOption(new Option('--teleport [session]', 'Resume a teleport session, optionally specify session ID').hideHelp());
   program.addOption(new Option('--remote [description]', 'Create a remote session with the given description').hideHelp());
@@ -4170,6 +4206,78 @@ async function run(): Promise<CommanderCommand> {
       authLogout
     } = await import('./cli/handlers/auth.js');
     await authLogout();
+  });
+
+  // claude daemon — the B daemon supervisor + subcommand dispatcher.
+  // Dynamically imports the daemon handler only when a daemon subcommand runs,
+  // so daemon modules don't load during normal `claude -p` / REPL startup.
+  const daemonCmd = program.command('daemon').description('Manage the background-agent daemon (supervisor + workers)').configureHelp(createSortedHelpConfig());
+  daemonCmd.command('start', { isDefault: true }).description('Start the supervisor (default)').allowUnknownOption().action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('start', []);
+  });
+  daemonCmd.command('stop').description('Stop the supervisor').option('--any, -a', 'Displace any holder (force)').allowUnknownOption().action(async (opts: { any?: boolean; a?: boolean }) => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    const any = !!(opts.any || opts.a);
+    await daemonSubcommand('stop', any ? ['--any'] : []);
+  });
+  daemonCmd.command('restart').description('Restart the supervisor').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('restart', []);
+  });
+  daemonCmd.command('status').description('Show supervisor + worker status').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('status', []);
+  });
+  daemonCmd.command('logs').description('Tail the daemon log').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('logs', []);
+  });
+  daemonCmd.command('install').description('Install a persistent service (launchd/systemd)').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('install', []);
+  });
+  daemonCmd.command('uninstall').description('Remove the persistent service').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('uninstall', []);
+  });
+  const daemonScheduled = daemonCmd.command('scheduled').description('Manage scheduled daemon tasks').configureHelp(createSortedHelpConfig());
+  daemonScheduled.command('add <task-id>').description('Add a scheduled task').option('--schedule <cron>', 'Cron schedule (default: 0 * * * *)').option('--prompt <text>', 'Prompt to dispatch when the task fires').action(async (taskId: string, opts: { schedule?: string; prompt?: string }) => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    const args = ['add', taskId];
+    if (opts.schedule) args.push('--schedule', opts.schedule);
+    if (opts.prompt) args.push('--prompt', opts.prompt);
+    await daemonSubcommand('scheduled', args);
+  });
+  daemonScheduled.command('remove <task-id>').alias('rm').description('Remove a scheduled task').action(async (taskId: string) => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('scheduled', ['remove', taskId]);
+  });
+  daemonScheduled.command('list').description('List scheduled tasks').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('scheduled', ['list']);
+  });
+  daemonCmd.command('remote-control').description('Configure the remote-control daemon worker').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('remote-control', []);
+  });
+  daemonCmd.command('hub').description('Interactive daemon hub (TTY)').action(async () => {
+    const { daemonSubcommand } = await import('./cli/handlers/daemon.js');
+    await daemonSubcommand('hub', []);
+  });
+
+  // Top-level: claude stop|attach|logs <id> — background-session commands.
+  program.command('stop <id>').description('Stop a background session').action(async (id: string) => {
+    const { stopHandler } = await import('./cli/handlers/daemon.js');
+    await stopHandler(id);
+  });
+  program.command('attach <id>').description('Open/join the background session').action(async (id: string) => {
+    const { attachHandler } = await import('./cli/handlers/daemon.js');
+    await attachHandler(id);
+  });
+  program.command('logs <id>').description('Print the background session log').action(async (id: string) => {
+    const { logsHandler } = await import('./cli/handlers/daemon.js');
+    await logsHandler(id);
   });
 
   /**
