@@ -417,6 +417,42 @@ async function applySedEdit(simulatedEdit: {
     }
   };
 }
+// H10 (2.1.116): throttled gh GitHub API rate-limit hint. When a `gh`
+// command's output signals rate limiting, surface a <system-reminder>
+// nudging the model to check `gh api rate_limit` and back off. Throttled
+// to once per 60s so a tight retry loop doesn't spam the reminder.
+const GH_RATE_LIMIT_HINT_THROTTLE_MS = 60_000
+let ghRateLimitHintAfterMs = 0
+
+const GH_RATE_LIMIT_HINT =
+  '<system-reminder>GitHub API rate limit exceeded (5,000/hr shared across all tools and agents). Run `gh api rate_limit --jq .resources` and sleep until reset before further gh calls. If polling in a loop, use ScheduleWakeup instead of retrying.</system-reminder>'
+
+/**
+ * Matches a `gh` invocation that hits the API (not auth/help/version/alias/
+ * completion/config — those don't touch the rate-limited REST endpoints).
+ * Mirrors the binary's Iqp: command position (^ ; & | or after `then`/`do`),
+ * then `gh <subcommand>` with the no-rate-limit subcommands negative-
+ * lookahead. Keeps `echo gh rate limit` (an arg, not a command) from matching.
+ */
+const GH_COMMAND_RE = /(?:^|[;&|]|\b(?:then|do)\b)\s*gh\s+(?!auth\b|help\b|version\b|alias\b|completion\b|config\b)/
+/** Mirrors the binary's xqp (case-insensitive). */
+const GH_RATE_LIMIT_OUTPUT_RE =
+  /API rate limit (?:already )?exceeded|exceeded a secondary rate limit|\bRATE_LIMITED\b/i
+
+/**
+ * Returns the rate-limit hint string when `command` is a `gh` invocation
+ * whose output signals rate limiting (and the throttle window has elapsed),
+ * otherwise ''. The hint is a zero-token side channel the model sees inline.
+ */
+function maybeGhRateLimitHint(command: string, output: string): string {
+  if (!GH_COMMAND_RE.test(command ?? '')) return ''
+  if (!GH_RATE_LIMIT_OUTPUT_RE.test(output ?? '')) return ''
+  const now = Date.now()
+  if (now < ghRateLimitHintAfterMs) return ''
+  ghRateLimitHintAfterMs = now + GH_RATE_LIMIT_HINT_THROTTLE_MS
+  return GH_RATE_LIMIT_HINT
+}
+
 export const BashTool = buildTool({
   name: BASH_TOOL_NAME,
   searchHint: 'execute shell commands',
@@ -799,6 +835,13 @@ export const BashTool = buildTool({
         // fallthrough will send text, not an image block.
         isImage = false;
       }
+    }
+    // H10 (2.1.116): append the throttled gh rate-limit hint when a `gh`
+    // command hit GitHub's API rate limit. The hint rides along on stdout so
+    // the model sees it inline with the failing command's output.
+    const ghHint = maybeGhRateLimitHint(input.command, compressedStdout);
+    if (ghHint) {
+      compressedStdout = compressedStdout ? `${compressedStdout}\n${ghHint}` : ghHint;
     }
     const data: Out = {
       stdout: compressedStdout,
