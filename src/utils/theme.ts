@@ -68,6 +68,7 @@ export type Theme = {
   rate_limit_empty: string
   fastMode: string
   fastModeShimmer: string
+  effortUltra: string
   // Brief/assistant mode label colors
   briefLabelYou: string
   briefLabelClaude: string
@@ -171,6 +172,7 @@ const lightTheme: Theme = {
   rate_limit_empty: 'rgb(39,47,111)', // Dark blue
   fastMode: 'rgb(255,106,0)', // Electric orange
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
+  effortUltra: 'rgb(135,0,255)', // Purple — ultracode badge (dark theme)
   // Brief/assistant mode
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelClaude: 'rgb(215,119,87)', // Brand orange
@@ -253,6 +255,7 @@ const lightAnsiTheme: Theme = {
   rate_limit_empty: 'ansi:black',
   fastMode: 'ansi:red',
   fastModeShimmer: 'ansi:redBright',
+  effortUltra: 'ansi:magenta', // ANSI dark
   briefLabelYou: 'ansi:blue',
   briefLabelClaude: 'ansi:redBright',
   rainbow_red: 'ansi:red',
@@ -334,6 +337,7 @@ const darkAnsiTheme: Theme = {
   rate_limit_empty: 'ansi:white',
   fastMode: 'ansi:redBright',
   fastModeShimmer: 'ansi:redBright',
+  effortUltra: 'ansi:magentaBright', // ANSI bright
   briefLabelYou: 'ansi:blueBright',
   briefLabelClaude: 'ansi:redBright',
   rainbow_red: 'ansi:red',
@@ -415,6 +419,7 @@ const lightDaltonizedTheme: Theme = {
   rate_limit_empty: 'rgb(23,46,114)', // Dark blue
   fastMode: 'rgb(255,106,0)', // Electric orange (color-blind safe)
   fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
+  effortUltra: 'rgb(175,135,255)', // Lighter purple (light theme)
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelClaude: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches claude)
   rainbow_red: 'rgb(235,95,87)',
@@ -495,6 +500,7 @@ const darkTheme: Theme = {
   rate_limit_fill: 'rgb(177,185,249)', // Light blue-purple
   rate_limit_empty: 'rgb(80,83,112)', // Medium blue-purple
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg
+  effortUltra: 'rgb(175,135,255)', // Lighter purple (dark bg)
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
   briefLabelClaude: 'rgb(215,119,87)', // Brand orange
@@ -575,6 +581,7 @@ const darkDaltonizedTheme: Theme = {
   memoryBackgroundColor: 'rgb(55, 65, 70)',
   rate_limit_fill: 'rgb(153,204,255)', // Light blue
   rate_limit_empty: 'rgb(69,92,115)', // Dark blue
+  effortUltra: 'rgb(175,135,255)', // Lighter purple (dark bg colorblind)
   fastMode: 'rgb(255,120,20)', // Electric orange for dark bg (color-blind safe)
   fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue

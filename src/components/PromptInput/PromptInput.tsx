@@ -95,6 +95,8 @@ import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } fr
 import { findTokenBudgetPositions } from '../../utils/tokenBudget.js';
 import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../utils/ultraplan/keyword.js';
 import { isUltracodeKeywordTriggerEnabled, isUltracodeEnabled, ULTRACODE_EFFORT_DESCRIPTION } from '../../utils/effort/ultracode.js';
+import { color as themeColor } from 'src/components/design-system/color';
+import { useTheme } from 'src/components/design-system/ThemeProvider';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
 import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -333,6 +335,7 @@ function PromptInput({
   // trigger in processTextPrompt, which has no store access) so the badge
   // re-renders when ultracode activates via the keyword path.
   const [ultracodeBadgeActive, setUltracodeBadgeActive] = React.useState(isUltracodeEnabled());
+  const [themeName] = useTheme();
   useEffect(() => {
     const iv = setInterval(() => {
       const cur = isUltracodeEnabled();
@@ -2020,7 +2023,7 @@ function PromptInput({
   // brief/assistant mode (the value reflects the local client's effort, not
   // the connected agent's) and when the model doesn't support effort.
   const effortNotificationText = ultracodeBadgeActive
-    ? chalk.rgb(135, 0, 255)('ultracode')
+    ? themeColor('effortUltra', themeName)('ultracode')
     : briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
   useBuddyNotification();
   const companionSpeaking = feature('BUDDY') ?

@@ -1,4 +1,7 @@
 import chalk from 'chalk'
+import { color as themeColor } from 'src/components/design-system/color'
+import { useThemeSetting } from 'src/components/design-system/ThemeProvider'
+import { getInitialSettings } from 'src/utils/settings/settings'
 import {
   EFFORT_HIGH,
   EFFORT_LOW,
@@ -38,7 +41,8 @@ export function getEffortNotificationText(
   // effortUltra theme color (rgb(135,0,255) = purple). Mirrors the binary's
   // Ro("effortUltra",theme)("ultracode") — NOT the long text-mode string.
   if (isUltracodeEnabled()) {
-    return chalk.rgb(135, 0, 255)('ultracode')
+    const themeName = getInitialSettings().theme ?? 'dark'
+    return themeColor('effortUltra', themeName)('ultracode')
   }
   if (!modelSupportsEffort(model)) return undefined
   const level = getDisplayedEffortLevel(model, effortValue)
