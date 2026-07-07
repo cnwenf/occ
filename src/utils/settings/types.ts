@@ -801,6 +801,19 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether the conversation auto-scrolls to the bottom on new output in fullscreen mode (defaults to true). Set to false to keep the scroll position stable.',
         ),
+      // 2.1.110: terminal UI renderer selection (/tui command).
+      tui: z
+        .enum(['default', 'fullscreen'])
+        .optional()
+        .describe(
+          'Terminal UI renderer. "fullscreen" uses the flicker-free alt-screen renderer with virtualized scrollback (equivalent to CLAUDE_CODE_NO_FLICKER=1). "default" uses the classic main-screen renderer.',
+        ),
+      // 2.1.110: default transcript view mode on startup (/focus command).
+      viewMode: z
+        .enum(['default', 'verbose', 'focus'])
+        .optional()
+        .catch(undefined)
+        .describe('Default transcript view mode on startup'),
       // 2.1.119: point the footer PR badge at a custom code-review URL.
       prUrlTemplate: z
         .string()

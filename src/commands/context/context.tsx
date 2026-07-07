@@ -3,6 +3,7 @@ import * as React from 'react';
 import type { LocalJSXCommandContext } from '../../commands.js';
 import { ContextVisualization } from '../../components/ContextVisualization.js';
 import { microcompactMessages } from '../../services/compact/microCompact.js';
+import { rescaleSkillTokensForModel } from './context-noninteractive.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import type { Message } from '../../types/message.js';
 import { analyzeContextUsage } from '../../utils/analyzeContext.js';
@@ -55,6 +56,9 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
   // mainThreadAgentDefinition
   apiView // Original messages for API usage extraction
   );
+
+  // 2.1.139 (J18): rescale per-skill frontmatter tokens to the model's tokenizer.
+  await rescaleSkillTokensForModel(data, mainLoopModel);
 
   // Render to ANSI string to preserve colors and pass to onDone like local commands do.
   // 2.1.129: Use display:'system' so the ASCII grid doesn't enter the conversation

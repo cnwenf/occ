@@ -18,6 +18,7 @@ import {
   is1mContextDisabled,
   modelSupports1M,
 } from '../context.js'
+import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
@@ -27,6 +28,7 @@ import {
 } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getAPIProvider } from './providers.js'
+import { checkOpus1mAccess } from './check1mAccess.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
@@ -166,6 +168,17 @@ export function getDefaultHaikuModel(): ModelName {
  * @param params Subset of the runtime context to determine the model to use.
  * @returns The model to use
  */
+/**
+ * Once-per-session guard for the opusplan plan-mode org-restriction warning,
+ * mirroring the official `iN` Set dedupe so the message fires once, not per turn.
+ */
+let opusplanPlanWarningLogged = false
+
+/** @internal Reset the opusplan plan warning guard (tests). */
+export function _resetOpusplanPlanWarning(): void {
+  opusplanPlanWarningLogged = false
+}
+
 export function getRuntimeMainLoopModel(params: {
   permissionMode: PermissionMode
   mainLoopModel: string
@@ -173,17 +186,42 @@ export function getRuntimeMainLoopModel(params: {
 }): ModelName {
   const { permissionMode, mainLoopModel, exceeds200kTokens = false } = params
 
-  // opusplan uses Opus in plan mode without [1m] suffix.
+  // 2.1.172 (J16): opusplan in plan mode upgrades to Opus, and — for users
+  // entitled to Opus 1M (checkOpus1mAccess) or who pinned opusplan[1m] — ships
+  // the [1m] suffix so planning runs against the 1M context window. Previously
+  // the [1m] was always stripped, so entitled users never got 1M in plan mode.
+  // Mirrors the official:
+  //   let a = (o === "opusplan[1m]" || CH())
+  //     ? WF(X_())            // dedup1mSuffix(getDefaultOpusModel())
+  //     : X_()               // getDefaultOpusModel()
+  // When the resolved plan model isn't permitted by the org allowlist
+  // (availableModels / model_access), planning falls back to the resting
+  // model and logs a once-per-session warning.
+  const userSetting = getUserSpecifiedModelSetting()
   if (
-    getUserSpecifiedModelSetting() === 'opusplan' &&
+    (userSetting === 'opusplan' || userSetting === 'opusplan[1m]') &&
     permissionMode === 'plan' &&
     !exceeds200kTokens
   ) {
-    return getDefaultOpusModel()
+    const opusModel =
+      userSetting === 'opusplan[1m]' || checkOpus1mAccess()
+        ? dedup1mSuffix(getDefaultOpusModel())
+        : getDefaultOpusModel()
+    if (!isModelAllowed(opusModel)) {
+      if (!opusplanPlanWarningLogged) {
+        opusplanPlanWarningLogged = true
+        logForDebugging(
+          'Plan mode: the opusplan upgrade model is not permitted by the org model restrictions (availableModels allowlist or model_access entitlement); planning uses the resting model instead',
+          { level: 'warn' },
+        )
+      }
+      return parseUserSpecifiedModel(userSetting)
+    }
+    return opusModel
   }
 
   // sonnetplan by default
-  if (getUserSpecifiedModelSetting() === 'haiku' && permissionMode === 'plan') {
+  if (userSetting === 'haiku' && permissionMode === 'plan') {
     return getDefaultSonnetModel()
   }
 

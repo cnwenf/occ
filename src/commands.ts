@@ -47,9 +47,12 @@ import tasks from './commands/tasks/index.js'
 import teleport from './commands/teleport/index.js'
 import autocompact from './commands/autocompact/index.js'
 import cd from './commands/cd/index.js'
+import focus from './commands/focus/index.js'
+import powerup from './commands/powerup/index.js'
 import recap from './commands/recap/index.js'
 import reloadSkills from './commands/reload-skills/index.js'
 import scrollSpeed from './commands/scroll-speed/index.js'
+import tui from './commands/tui/index.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const agentsPlatform =
   process.env.USER_TYPE === 'ant'
@@ -286,6 +289,7 @@ const COMMANDS = memoize((): Command[] => [
   exit,
   fast,
   files,
+  focus,
   heapDump,
   help,
   ide,
@@ -299,6 +303,7 @@ const COMMANDS = memoize((): Command[] => [
   model,
   remoteEnv,
   plugin,
+  powerup,
   pr_comments,
   recap,
   releaseNotes,
@@ -312,6 +317,7 @@ const COMMANDS = memoize((): Command[] => [
   statusline,
   stickers,
   theme,
+  tui,
   feedback,
   goal,
   goalNonInteractive,

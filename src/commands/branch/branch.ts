@@ -31,6 +31,54 @@ type TranscriptEntry = TranscriptMessage & {
 }
 
 /**
+ * True if a content array contains any `tool_use` block.
+ * The API requires every assistant `tool_use` to be immediately followed by a
+ * user `tool_result`; a fork ending on an unanswered tool_use 400s with
+ * "`tool_use` ids were found without `tool_result` blocks immediately after".
+ */
+function contentHasToolUse(content: unknown): boolean {
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (block: any) =>
+        block && typeof block === 'object' && block.type === 'tool_use',
+    )
+  )
+}
+
+/**
+ * 2.1.122 (J17): drop trailing assistant messages whose `tool_use` blocks have
+ * no matching `tool_result` in a subsequent user message.
+ *
+ * A rewound timeline can land mid-turn — after the assistant emitted `tool_use`
+ * but before the user supplied `tool_result`. Forking that transcript verbatim
+ * produces a session whose last message is an assistant `tool_use` with no
+ * following `tool_result`, and resuming into it fails with a 400
+ * "tool_use ids were found without tool_result". Mirrors the official fork,
+ * which only carries messages up to a valid (tool_result-terminated) endpoint.
+ *
+ * Strips trailing assistant messages that contain `tool_use` and lack a
+ * subsequent user `tool_result` for those ids. Stops at the first message that
+ * is not a dangling-tool_use assistant message (a user message, or an assistant
+ * message with only text/thinking).
+ */
+function dropTrailingDanglingToolUse(
+  entries: TranscriptEntry[],
+): TranscriptEntry[] {
+  let result = entries
+  while (result.length > 0) {
+    const last = result[result.length - 1]
+    if (last.type !== 'assistant' || !contentHasToolUse(last.message?.content)) {
+      break
+    }
+    // Last message is an assistant turn ending in tool_use with no following
+    // user tool_result → drop it so the fork ends on a valid endpoint.
+    result = result.slice(0, -1)
+  }
+  return result
+}
+
+/**
  * Derive a single-line title base from the first user message.
  * Collapses whitespace — multiline first messages (pasted stacks, code)
  * otherwise flow into the saved title and break the resume hint.
@@ -90,9 +138,11 @@ async function createFork(customTitle?: string): Promise<{
   const entries = parseJSONL<Entry>(transcriptContent)
 
   // Filter to only main conversation messages (exclude sidechains and non-message entries)
-  const mainConversationEntries = entries.filter(
-    (entry): entry is TranscriptMessage =>
-      isTranscriptMessage(entry) && !entry.isSidechain,
+  const mainConversationEntries = dropTrailingDanglingToolUse(
+    entries.filter(
+      (entry): entry is TranscriptMessage =>
+        isTranscriptMessage(entry) && !entry.isSidechain,
+    ),
   )
 
   // Content-replacement entries for the original session. These record which

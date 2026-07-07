@@ -1,17 +1,94 @@
 import { feature } from 'src/utils/featureFlags.js'
+import { getCommandName } from '../../commands.js'
 import { microcompactMessages } from '../../services/compact/microCompact.js'
+import { roughTokenCountEstimation } from '../../services/tokenEstimation.js'
 import type { AppState } from '../../state/AppStateStore.js'
 import type { Tools, ToolUseContext } from '../../Tool.js'
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
+import { getLimitedSkillToolCommands } from '../../tools/SkillTool/prompt.js'
 import type { Message } from '../../types/message.js'
 import {
   analyzeContextUsage,
   type ContextData,
 } from '../../utils/analyzeContext.js'
+import { getCwd } from '../../utils/cwd.js'
 import { formatTokens, formatTokenEstimate } from '../../utils/format.js'
+import { getCanonicalName } from '../../utils/model/model.js'
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
 import { getSourceDisplayName } from '../../utils/settings/constants.js'
 import { plural } from '../../utils/stringUtils.js'
+
+/**
+ * 2.1.139 (J18): models whose tokenizer is ~4 bytes/token. All other models
+ * (opus-4-7/4-8, sonnet-5, fable-5, …) use a denser ~3 bytes/token. Mirrors
+ * the official `fRd` set consulted by `EE(model)`.
+ */
+const FOUR_BYTES_PER_TOKEN_MODELS = new Set([
+  'claude-3-opus',
+  'claude-3-sonnet',
+  'claude-3-haiku',
+  'claude-3-5-sonnet',
+  'claude-3-5-haiku',
+  'claude-3-7-sonnet',
+  'claude-opus-4-0',
+  'claude-opus-4-1',
+  'claude-opus-4-5',
+  'claude-opus-4-6',
+  'claude-sonnet-4-0',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+])
+
+/**
+ * Model-aware bytes-per-token ratio for the per-skill frontmatter estimate.
+ * Mirrors the official `EE(e)`:
+ *   if (!e) return 4;
+ *   let n = normalize(getCanonicalName(e)).replace(/[._]/g, '-');
+ *   return fRd.has(n) ? 4 : 3;
+ *
+ * The per-skill estimate previously hardcoded /4, so for denser-tokenizer
+ * models (3 bytes/token) it overcounted by ~33%. /context now rescales each
+ * skill's frontmatter tokens by the active model's ratio.
+ */
+function getBytesPerTokenForModel(model: string | undefined): number {
+  if (!model) return 4
+  const canonical = getCanonicalName(model).replace(/[._]/g, '-')
+  return FOUR_BYTES_PER_TOKEN_MODELS.has(canonical) ? 4 : 3
+}
+
+/**
+ * 2.1.139 (J18): recompute per-skill frontmatter token estimates using the
+ * active model's bytes-per-token ratio instead of the analyzer's hardcoded /4.
+ *
+ * `analyzeContextUsage` counts the *total* skill tokens via the API tokenizer
+ * but estimates the *per-skill* breakdown with `estimateSkillFrontmatterTokens`
+ * (chars/4), which isn't model-aware. For models with a denser tokenizer
+ * (3 bytes/token) that overcounts each skill, so the per-skill rows disagree
+ * with the model's actual tokenization. Mirrors the official per-skill
+ * `Rf(b(T), EE(model))` = `Math.round(text.length / modelRatio)`.
+ */
+export async function rescaleSkillTokensForModel(
+  data: ContextData,
+  model: string,
+): Promise<void> {
+  const ratio = getBytesPerTokenForModel(model)
+  if (ratio === 4) return // already matches the analyzer's /4
+  const frontmatter = data.skills?.skillFrontmatter
+  if (!frontmatter || frontmatter.length === 0) return
+
+  const skills = await getLimitedSkillToolCommands(getCwd())
+  const byName = new Map(skills.map(s => [getCommandName(s), s]))
+  for (const sf of frontmatter) {
+    const skill = byName.get(sf.name)
+    if (!skill) continue
+    const text = [getCommandName(skill), skill.description, skill.whenToUse]
+      .filter(Boolean)
+      .join(' ')
+    sf.tokens = roughTokenCountEstimation(text, ratio)
+  }
+}
+
 
 /**
  * Shared data-collection path for `/context` (slash command) and the SDK
@@ -51,7 +128,7 @@ export async function collectContextData(
   const { messages: compactedMessages } = await microcompactMessages(apiView)
   const appState = getAppState()
 
-  return analyzeContextUsage(
+  const data = await analyzeContextUsage(
     compactedMessages,
     mainLoopModel,
     async () => appState.toolPermissionContext,
@@ -67,6 +144,10 @@ export async function collectContextData(
     undefined, // mainThreadAgentDefinition
     apiView, // original messages for API usage extraction
   )
+
+  // 2.1.139 (J18): rescale per-skill frontmatter tokens to the model's tokenizer.
+  await rescaleSkillTokensForModel(data, mainLoopModel)
+  return data
 }
 
 export async function call(
