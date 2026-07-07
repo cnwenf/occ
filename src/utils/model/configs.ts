@@ -30,7 +30,7 @@ export const CLAUDE_3_7_SONNET_CONFIG = {
 
 export const CLAUDE_3_5_V2_SONNET_CONFIG = {
   firstParty: 'claude-3-5-sonnet-20241022',
-  bedrock: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+  bedrock: 'us.anthropic.claude-3-5-sonnet-20241022-v2:0',
   vertex: 'claude-3-5-sonnet-v2@20241022',
   foundry: 'claude-3-5-sonnet',
   anthropic_aws: 'claude-3-5-sonnet',

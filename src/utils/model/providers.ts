@@ -15,6 +15,7 @@ export function getAPIProvider(): APIProvider {
   //   CLAUDE_CODE_USE_BEDROCK       -> "bedrock"
   //   CLAUDE_CODE_USE_FOUNDRY       -> "foundry"
   //   CLAUDE_CODE_USE_ANTHROPIC_AWS -> "anthropicAws"   (2.1.198: Claude Platform on AWS)
+  //   CLAUDE_CODE_USE_MANTLE        -> "mantle"          (2.1.94: Bedrock Mantle)
   //   CLAUDE_CODE_USE_VERTEX        -> "vertex"
   //   default                       -> "firstParty"
   return isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
@@ -23,9 +24,62 @@ export function getAPIProvider(): APIProvider {
       ? 'foundry'
       : isEnvTruthy(process.env.CLAUDE_CODE_USE_ANTHROPIC_AWS)
         ? 'anthropic_aws'
-        : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
-          ? 'vertex'
-          : 'firstParty'
+        : isEnvTruthy(process.env.CLAUDE_CODE_USE_MANTLE)
+          ? 'mantle'
+          : isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX)
+            ? 'vertex'
+            : 'firstParty'
+}
+
+/**
+ * 2.1.94 (A15): Bedrock Mantle (`CLAUDE_CODE_USE_MANTLE`).
+ *
+ * Mantle is an Anthropic-operated Bedrock-derived offering routed through
+ * `https://bedrock-mantle.<region>.api.aws`. When a user sets BOTH
+ * `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_MANTLE`, the binary promotes
+ * the effective provider from "bedrock" to "mantle" (mantle wins). This mirrors
+ * the binary's promotion helper:
+ *   `if (fr() === "bedrock" && it(CLAUDE_CODE_USE_MANTLE)) return "mantle"`
+ *
+ * Binary references (claude.strings):
+ *   - `it(process.env.CLAUDE_CODE_USE_MANTLE)?"mantle"`
+ *   - `CLAUDE_CODE_SKIP_MANTLE_AUTH`, `CLAUDE_CODE_MANTLE_BASE_URL`
+ *   - `https://bedrock-mantle.${region}.api.aws`, `bedrock-mantle`,
+ *     `mantle-fallback`, `tengu_mantle_default_check`
+ */
+export function isMantleProvider(): boolean {
+  return getAPIProvider() === 'mantle'
+}
+
+/**
+ * The effective provider, applying the bedrock→mantle promotion when both
+ * `CLAUDE_CODE_USE_BEDROCK` and `CLAUDE_CODE_USE_MANTLE` are set. Matches the
+ * binary's promotion helper (fr()==="bedrock" && CLAUDE_CODE_USE_MANTLE => "mantle").
+ */
+export function getEffectiveAPIProvider(): APIProvider {
+  const provider = getAPIProvider()
+  if (provider === 'bedrock' && isEnvTruthy(process.env.CLAUDE_CODE_USE_MANTLE)) {
+    return 'mantle'
+  }
+  return provider
+}
+
+/**
+ * Whether auth is skipped for Bedrock Mantle (CLAUDE_CODE_SKIP_MANTLE_AUTH).
+ */
+export function isSkipMantleAuth(): boolean {
+  return isEnvTruthy(process.env.CLAUDE_CODE_SKIP_MANTLE_AUTH)
+}
+
+/**
+ * Default base URL for Bedrock Mantle, derived from the AWS region.
+ * Mirrors the binary's `https://bedrock-mantle.${region}.api.aws`.
+ */
+export function getMantleBaseURL(): string {
+  return (
+    process.env.CLAUDE_CODE_MANTLE_BASE_URL ||
+    `https://bedrock-mantle.${getAWSRegion()}.api.aws`
+  )
 }
 
 /**

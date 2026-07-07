@@ -12,5 +12,15 @@
 const FEATURE_ALLOWLIST: Set<string> = new Set([
   'TRANSCRIPT_CLASSIFIER',
   'BASH_CLASSIFIER',
+  // 2.1.200: tools that ship live in the official default registry.
+  //   MONITOR_TOOL  -> MonitorTool (H1)
+  //   KAIROS        -> PushNotificationTool (H2). (SleepTool/SendUserFileTool
+  //                   are .js stubs whose `undefined` export is filtered out of
+  //                   getAllBaseTools via the `...(T ? [T] : [])` spread, so
+  //                   only PushNotificationTool actually enters the registry.)
+  //   UDS_INBOX     -> ListPeersTool, exposed as "ListAgents" (H3)
+  'MONITOR_TOOL',
+  'KAIROS',
+  'UDS_INBOX',
 ])
 export const feature = (name: string): boolean => FEATURE_ALLOWLIST.has(name)
