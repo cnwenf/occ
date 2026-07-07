@@ -94,6 +94,7 @@ import type { Theme } from '../../utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../utils/thinking.js';
 import { findTokenBudgetPositions } from '../../utils/tokenBudget.js';
 import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../utils/ultraplan/keyword.js';
+import { isUltracodeKeywordTriggerEnabled } from '../../utils/effort/ultracode.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
 import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -524,6 +525,11 @@ function PromptInput({
   const ultrareviewTriggers = useMemo(() => isUltrareviewEnabled() ? findUltrareviewTriggerPositions(displayedValue) : [], [displayedValue]);
   const btwTriggers = useMemo(() => findBtwTriggerPositions(displayedValue), [displayedValue]);
   const buddyTriggers = useMemo(() => findBuddyTriggerPositions(displayedValue), [displayedValue]);
+  // Ultracode keyword trigger: live-highlight "ultracode" as the user types it
+  // (before submit), mirroring thinkTriggers/ultraplanTriggers/ultrareviewTriggers.
+  // Gated by the `ultracodeKeywordTrigger` setting (default true) so disabling
+  // the trigger also drops the highlight.
+  const ultracodeTriggers = useMemo(() => isUltracodeKeywordTriggerEnabled() ? findUltracodeTriggerPositions(displayedValue) : [], [displayedValue]);
   const slashCommandTriggers = useMemo(() => {
     const positions = findSlashCommandPositions(displayedValue);
     // Only highlight valid commands
@@ -726,6 +732,22 @@ function PromptInput({
       }
     }
 
+    // Blue + shimmer for the "ultracode" keyword. Unlike ultrathink/ultraplan/
+    // ultrareview/buddy (per-char rainbow cycling), ultracode reuses the
+    // HighlightedInput shimmer infrastructure with a solid 'suggestion' (blue)
+    // color + shimmerColor — matching the 2.1.200 binary's render path. The
+    // whole word is one highlight span (not per-char), so the shimmer sweep
+    // runs across the keyword as a single band.
+    for (const trigger of ultracodeTriggers) {
+      highlights.push({
+        start: trigger.start,
+        end: trigger.end,
+        color: 'suggestion',
+        shimmerColor: 'suggestion',
+        priority: 10
+      });
+    }
+
     // Rainbow for /buddy
     for (const trigger of buddyTriggers) {
       for (let i = trigger.start; i < trigger.end; i++) {
@@ -739,7 +761,7 @@ function PromptInput({
       }
     }
     return highlights;
-  }, [isSearchingHistory, historyQuery, historyMatch, historyFailedMatch, cursorOffset, btwTriggers, imageRefPositions, memberMentionHighlights, slashCommandTriggers, tokenBudgetTriggers, slackChannelTriggers, displayedValue, voiceInterimRange, thinkTriggers, ultraplanTriggers, ultrareviewTriggers, buddyTriggers]);
+  }, [isSearchingHistory, historyQuery, historyMatch, historyFailedMatch, cursorOffset, btwTriggers, imageRefPositions, memberMentionHighlights, slashCommandTriggers, tokenBudgetTriggers, slackChannelTriggers, displayedValue, voiceInterimRange, thinkTriggers, ultraplanTriggers, ultrareviewTriggers, buddyTriggers, ultracodeTriggers]);
   const {
     addNotification,
     removeNotification
@@ -1980,22 +2002,13 @@ function PromptInput({
   const showFastIcon = isFastModeEnabled() ? isFastMode && (isFastModeAvailable() || fastModeCooldown) : false;
   const showFastIconHint = useShowFastIconHint(showFastIcon ?? false);
 
-  // Show effort notification on startup and when effort changes.
-  // Suppressed in brief/assistant mode — the value reflects the local
-  // client's effort, not the connected agent's.
+  // Effort/ultracode badge text for the PERSISTENT top-right borderText
+  // (buildBorderText, below). The 2.1.200 binary renders this as a steady
+  // borderText segment via Nzl — not a 12s transient notification — so the
+  // badge stays visible while effort/ultracode is on. Suppressed in
+  // brief/assistant mode (the value reflects the local client's effort, not
+  // the connected agent's) and when the model doesn't support effort.
   const effortNotificationText = briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
-  useEffect(() => {
-    if (!effortNotificationText) {
-      removeNotification('effort-level');
-      return;
-    }
-    addNotification({
-      key: 'effort-level',
-      text: effortNotificationText,
-      priority: 'high',
-      timeoutMs: 12_000
-    });
-  }, [effortNotificationText, addNotification, removeNotification]);
   useBuddyNotification();
   const companionSpeaking = feature('BUDDY') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
@@ -2281,7 +2294,7 @@ function PromptInput({
             </Box>
           </Box>
           <Text color={swarmBanner.bgColor}>{'─'.repeat(columns)}</Text>
-        </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" borderLeft={false} borderRight={false} borderBottom width="100%" borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown)}>
+        </> : <Box flexDirection="row" alignItems="flex-start" justifyContent="flex-start" borderColor={getBorderColor()} borderStyle="round" borderLeft={false} borderRight={false} borderBottom width="100%" borderText={buildBorderText(showFastIcon ?? false, showFastIconHint, fastModeCooldown, effortNotificationText)}>
           <PromptInputModeIndicator mode={mode} isLoading={isLoading} viewingAgentName={viewingAgentName} viewingAgentColor={viewingAgentColor} />
           <Box flexGrow={1} flexShrink={1} onClick={handleInputClick}>
             {textInputElement}
@@ -2341,11 +2354,51 @@ function getInitialPasteId(messages: Message[]): number {
   }
   return maxId + 1;
 }
-function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastModeCooldown: boolean): BorderTextOptions | undefined {
-  if (!showFastIcon) return undefined;
-  const fastSeg = showFastIconHint ? `${getFastIconString(true, fastModeCooldown)} ${chalk.dim('/fast')}` : getFastIconString(true, fastModeCooldown);
+/**
+ * Find live-highlight positions for the "ultracode" keyword in the prompt
+ * input. Mirrors findThinkingTriggerPositions (thinking.ts) so PromptInput
+ * treats the ultracode trigger uniformly with ultrathink/ultraplan/ultrareview.
+ *
+ * Word-boundary, case-insensitive match — identical to the backend
+ * detectUltracodeKeyword (src/utils/effort/ultracode.ts) so the live highlight
+ * fires precisely when the keyword trigger would. A fresh /g literal each call
+ * (matchAll copies lastIndex from a shared regex, leaking state across
+ * renders). Defined here (not in ultracode.ts) to keep the highlight concern
+ * local to the render path.
+ */
+function findUltracodeTriggerPositions(text: string): Array<{
+  word: string;
+  start: number;
+  end: number;
+}> {
+  const positions: Array<{ word: string; start: number; end: number }> = [];
+  const matches = text.matchAll(/\bultracode\b/gi);
+  for (const match of matches) {
+    if (match.index !== undefined) {
+      positions.push({
+        word: match[0],
+        start: match.index,
+        end: match.index + match[0].length,
+      });
+    }
+  }
+  return positions;
+}
+function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastModeCooldown: boolean, effortBadgeText?: string): BorderTextOptions | undefined {
+  // Mirrors the binary's Nzl: segments joined with two spaces, padded with a
+  // leading/trailing space, positioned top-right of the input box border.
+  // `content` is a single pre-rendered string (BorderTextOptions.content) —
+  // the official concatenates segments rather than emitting multiple borderTexts.
+  const segments: string[] = [];
+  if (showFastIcon) {
+    segments.push(showFastIconHint ? `${getFastIconString(true, fastModeCooldown)} ${chalk.dim('/fast')}` : getFastIconString(true, fastModeCooldown));
+  }
+  if (effortBadgeText) {
+    segments.push(effortBadgeText);
+  }
+  if (segments.length === 0) return undefined;
   return {
-    content: ` ${fastSeg} `,
+    content: ` ${segments.join('  ')} `,
     position: 'top',
     align: 'end',
     offset: 0

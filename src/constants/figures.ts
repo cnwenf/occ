@@ -10,6 +10,10 @@ export const LIGHTNING_BOLT = '↯' // \u21af - used for fast mode indicator
 export const EFFORT_LOW = '○' // \u25cb - effort level: low
 export const EFFORT_MEDIUM = '◐' // \u25d0 - effort level: medium
 export const EFFORT_HIGH = '●' // \u25cf - effort level: high
+// ◍ - effort level: xhigh (between high and max, Opus 4.7/4.8). A circle
+// bisected by a vertical bar — visually distinct from EFFORT_HIGH (solid) and
+// EFFORT_MAX (fisheye). Mirrors the binary's `oOs` xhigh symbol.
+export const EFFORT_XHIGH = '◍' // \u25cd - effort level: xhigh
 export const EFFORT_MAX = '◉' // \u25c9 - effort level: max (Opus 4.6 only)
 
 // Media/trigger status indicators
