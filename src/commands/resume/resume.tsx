@@ -40,7 +40,8 @@ function resumeHelpMessage(result: ResumeResult): string {
 // E23 (2.1.117+2.1.122): /resume offers to summarize stale large sessions, and
 // pasting a PR URL into /resume finds the creating session. Mirrors the 2.1.200
 // binary: sessions that create a PR store prNumber + prRepository; the resume
-// search parses the PR URL (regex `\/([^/]+)\/([^/]+)\/pull\/`) and matches.
+// search parses the PR/MR URL (GitHub /pull/, GitLab /-/merge_requests/, or
+// Bitbucket /pull-requests/) and matches on owner/repo + number.
 
 // A session is a summarize candidate when it is older than STALE_SESSION_AGE_DAYS
 // AND has more than LARGE_SESSION_MESSAGE_THRESHOLD messages.
@@ -48,17 +49,36 @@ const STALE_SESSION_AGE_DAYS = 7;
 const LARGE_SESSION_MESSAGE_THRESHOLD = 50;
 const STALE_SESSION_AGE_MS = STALE_SESSION_AGE_DAYS * 24 * 60 * 60 * 1000;
 
-const PR_URL_PATTERN = /\/([^/]+)\/([^/]+)\/pull\/(\d+)/;
+// E31 (2.1.119): --from-pr accepts GitHub (incl. GitHub Enterprise), GitLab,
+// and Bitbucket PR/MR URLs. The host is unconstrained so internal GitHub
+// Enterprise installs (reviews.example.test/.../pull/N) match the same as
+// github.com. GitLab uses /owner/repo/-/merge_requests/N and Bitbucket
+// (Cloud + Server) uses /owner/repo/pull-requests/N. repository is normalized
+// to "owner/repo" across all three so session prRepository matching stays
+// host-agnostic.
+const PR_URL_PATTERNS = [
+  /\/([^/]+)\/([^/]+)\/pull\/(\d+)/, // GitHub (any host, incl. Enterprise)
+  /\/([^/]+)\/([^/]+)\/-\/merge_requests\/(\d+)/, // GitLab
+  /\/([^/]+)\/([^/]+)\/pull-requests\/(\d+)/, // Bitbucket
+];
 
-/** Parse a PR URL into { repository: "owner/repo", number }. null if not a PR URL. */
+const PR_URL_MARKERS = ['/pull/', '/-/merge_requests/', '/pull-requests/'];
+
+/**
+ * Parse a PR/MR URL into { repository: "owner/repo", number }. null if not a
+ * PR/MR URL. Accepts GitHub (incl. Enterprise), GitLab, and Bitbucket.
+ */
 export function parsePrUrl(arg: string): { repository: string; number: number } | null {
-  if (!arg || !arg.includes('/pull/')) return null;
-  const match = PR_URL_PATTERN.exec(arg);
-  if (!match) return null;
-  const [, owner, repo, numberStr] = match;
-  const number = parseInt(numberStr, 10);
-  if (!Number.isInteger(number) || number <= 0) return null;
-  return { repository: `${owner}/${repo}`, number };
+  if (!arg || !PR_URL_MARKERS.some(m => arg.includes(m))) return null;
+  for (const pattern of PR_URL_PATTERNS) {
+    const match = pattern.exec(arg);
+    if (!match) continue;
+    const [, owner, repo, numberStr] = match;
+    const number = parseInt(numberStr, 10);
+    if (!Number.isInteger(number) || number <= 0) continue;
+    return { repository: `${owner}/${repo}`, number };
+  }
+  return null;
 }
 
 /** True when a session is both stale (old) and large (many messages). */
