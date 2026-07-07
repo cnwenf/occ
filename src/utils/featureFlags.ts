@@ -15,5 +15,10 @@ const FEATURE_ALLOWLIST: Set<string> = new Set([
   'BASH_CLASSIFIER',
   // 2.1.200: Monitor tool ships live (self-contained, no blocking init).
   'MONITOR_TOOL',
+  // 2.1.154: Workflow engine — vm-sandboxed multi-agent workflow scripts.
+  // Self-contained (vm + runAgent reuse), no blocking init. Un-gates the
+  // Workflow tool (src/tools.ts) + /workflows command + getWorkflowCommands
+  // (src/commands.ts) in one switch.
+  'WORKFLOW_SCRIPTS',
 ])
 export const feature = (name: string): boolean => FEATURE_ALLOWLIST.has(name)

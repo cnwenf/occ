@@ -12,6 +12,7 @@
 import { existsSync, readdirSync, statSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
+import { feature } from '../featureFlags.js'
 
 // Directory names (relative to project root / home).
 export const PROJECT_WORKFLOWS_DIR = '.claude/workflows'
@@ -27,11 +28,19 @@ export interface DiscoveredWorkflow {
 
 /**
  * Runtime gate mirroring the binary's `CE()` (the /workflows command's
- * `isEnabled: () => CE()`). Default: enabled. Set
- * CLAUDE_CODE_WORKFLOWS_DISABLED=1 to turn the command + discovery off.
+ * `isEnabled: () => CE()`). The binary checks: (1) an opt-out, (2) a
+ * prerequisite DBn(), AND (3) a feature config {available, defaultOn}.
+ *
+ * In OCC: available = feature('WORKFLOW_SCRIPTS') (the same flag that gates
+ * the Workflow tool); defaultOn = true; opt-out =
+ * CLAUDE_CODE_WORKFLOWS_DISABLED=1.
  */
 export function isWorkflowsEnabled(): boolean {
-  return process.env.CLAUDE_CODE_WORKFLOWS_DISABLED !== '1'
+  if (process.env.CLAUDE_CODE_WORKFLOWS_DISABLED === '1') return false
+  // Align with the binary's feature-config gate (CE() checks a feature
+  // config {available, defaultOn}). featureFlags.ts is self-contained
+  // (no cycles) — safe to import at module load.
+  return feature('WORKFLOW_SCRIPTS')
 }
 
 function projectWorkflowsDir(cwd: string): string {
@@ -43,9 +52,12 @@ function userWorkflowsDir(): string {
 }
 
 /**
- * List `.js`/`.mjs`/`.cjs` scripts in a workflows directory. Returns names
+ * List `.js` scripts in a workflows directory. Returns names
  * (filename without extension) with their absolute paths. Silently returns []
  * if the directory does not exist.
+ *
+ * Mirrors the binary: `.claude/workflows/${L}.js` (`.js` only — the binary
+ * does not accept .mjs/.cjs).
  */
 function listScripts(dir: string, source: WorkflowSource): DiscoveredWorkflow[] {
   let entries: string[]
@@ -56,7 +68,7 @@ function listScripts(dir: string, source: WorkflowSource): DiscoveredWorkflow[] 
   }
   const out: DiscoveredWorkflow[] = []
   for (const entry of entries) {
-    if (!/\.(js|mjs|cjs)$/.test(entry)) continue
+    if (!/\.js$/.test(entry)) continue
     const full = join(dir, entry)
     try {
       if (!statSync(full).isFile()) continue
@@ -64,7 +76,7 @@ function listScripts(dir: string, source: WorkflowSource): DiscoveredWorkflow[] 
       continue
     }
     out.push({
-      name: entry.replace(/\.(js|mjs|cjs)$/, ''),
+      name: entry.replace(/\.js$/, ''),
       path: full,
       source,
     })
@@ -109,14 +121,13 @@ export function resolveWorkflowScript(
             [userWorkflowsDir(), 'user'],
           ]
   for (const [dir] of candidates) {
-    for (const ext of ['.js', '.mjs', '.cjs']) {
-      const full = join(dir, `${name}${ext}`)
-      if (existsSync(full)) {
-        try {
-          if (statSync(full).isFile()) return full
-        } catch {
-          continue
-        }
+    // Binary is .js-only: `.claude/workflows/${name}.js`.
+    const full = join(dir, `${name}.js`)
+    if (existsSync(full)) {
+      try {
+        if (statSync(full).isFile()) return full
+      } catch {
+        // stat failed — fall through to next candidate
       }
     }
   }
