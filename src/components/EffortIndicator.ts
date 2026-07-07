@@ -1,3 +1,4 @@
+import chalk from 'chalk'
 import {
   EFFORT_HIGH,
   EFFORT_LOW,
@@ -37,7 +38,7 @@ export function getEffortNotificationText(
   // effortUltra theme color (rgb(135,0,255) = purple). Mirrors the binary's
   // Ro("effortUltra",theme)("ultracode") — NOT the long text-mode string.
   if (isUltracodeEnabled()) {
-    return '\x1b[95multracode\x1b[0m'
+    return chalk.rgb(135, 0, 255)('ultracode')
   }
   if (!modelSupportsEffort(model)) return undefined
   const level = getDisplayedEffortLevel(model, effortValue)

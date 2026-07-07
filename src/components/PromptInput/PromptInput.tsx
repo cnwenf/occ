@@ -2020,7 +2020,7 @@ function PromptInput({
   // brief/assistant mode (the value reflects the local client's effort, not
   // the connected agent's) and when the model doesn't support effort.
   const effortNotificationText = ultracodeBadgeActive
-    ? '\x1b[95multracode\x1b[0m'
+    ? chalk.rgb(135, 0, 255)('ultracode')
     : briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
   useBuddyNotification();
   const companionSpeaking = feature('BUDDY') ?
