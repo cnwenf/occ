@@ -1,9 +1,9 @@
 import { c as _c } from "react/compiler-runtime";
 import capitalize from 'lodash-es/capitalize.js';
 import * as React from 'react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { type Command, type CommandBase, type CommandResultDisplay, getCommandName, type PromptCommand } from '../../commands.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text, useInput } from '../../ink.js';
 import { estimateSkillFrontmatterTokens, getSkillsPath } from '../../skills/loadSkillsDir.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatTokens } from '../../utils/format.js';
@@ -45,7 +45,7 @@ function getSourceSubtitle(source: SkillSource, skills: SkillCommand[]): string 
   return hasCommandsSkills ? `${skillsPath}, ${getDisplayPath(getSkillsPath(source, 'commands'))}` : skillsPath;
 }
 export function SkillsMenu(t0) {
-  const $ = _c(35);
+  const $ = _c(36);
   const {
     onExit,
     commands
@@ -59,8 +59,17 @@ export function SkillsMenu(t0) {
     t1 = $[1];
   }
   const skills = t1;
+  // I12 (2.1.111): press `t` to toggle sort between alphabetical and
+  // estimated frontmatter token count. Token sort uses the same
+  // estimateSkillFrontmatterTokens value already shown per skill.
+  const [sortByTokens, setSortByTokens] = useState(false);
+  useInput((input, key) => {
+    if (input === 't' && !key.ctrl && !key.meta) {
+      setSortByTokens(prev => !prev);
+    }
+  });
   let groups;
-  if ($[2] !== skills) {
+  if ($[2] !== skills || $[35] !== sortByTokens) {
     groups = {
       policySettings: [],
       userSettings: [],
@@ -77,9 +86,12 @@ export function SkillsMenu(t0) {
       }
     }
     for (const group of Object.values(groups)) {
-      (group as Array<{ name: string }>).sort(_temp2);
+      (group as Array<SkillCommand>).sort((a, b) => sortByTokens
+        ? estimateSkillFrontmatterTokens(a) - estimateSkillFrontmatterTokens(b)
+        : getCommandName(a).localeCompare(getCommandName(b)));
     }
     $[2] = skills;
+    $[35] = sortByTokens;
     $[3] = groups;
   } else {
     groups = $[3];
@@ -150,7 +162,7 @@ export function SkillsMenu(t0) {
   } else {
     t5 = $[13];
   }
-  const t6 = `${t4} ${t5}`;
+  const t6 = `${t4} ${t5} · ${sortByTokens ? 'by tokens' : 'alphabetical'} (press t to toggle)`;
   let t7;
   if ($[14] !== renderSkillGroup) {
     t7 = renderSkillGroup("projectSettings");
@@ -227,9 +239,6 @@ function _temp3(skill_0) {
   const tokenDisplay = `~${formatTokens(estimatedTokens)}`;
   const pluginName = skill_0.source === "plugin" ? skill_0.pluginInfo?.pluginManifest.name : undefined;
   return <Box key={`${skill_0.name}-${skill_0.source}`}><Text>{getCommandName(skill_0)}</Text><Text dimColor={true}>{pluginName ? ` · ${pluginName}` : ""} · {tokenDisplay} description tokens</Text></Box>;
-}
-function _temp2(a, b) {
-  return getCommandName(a).localeCompare(getCommandName(b));
 }
 function _temp(cmd) {
   return cmd.type === "prompt" && (cmd.loadedFrom === "skills" || cmd.loadedFrom === "commands_DEPRECATED" || cmd.loadedFrom === "plugin" || cmd.loadedFrom === "mcp");

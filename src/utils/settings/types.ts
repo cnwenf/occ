@@ -814,6 +814,16 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Default transcript view mode on startup'),
+      // 2.1.110: prepend the last assistant response as commented context when
+      // opening the prompt in the external editor (Ctrl+G). Mirrors the binary
+      // setting externalEditorContext (label: "Show last response in external
+      // editor"); off by default.
+      externalEditorContext: z
+        .boolean()
+        .optional()
+        .describe(
+          'Show the last assistant response as commented context above the prompt when opening the external editor (Ctrl+G).',
+        ),
       // 2.1.119: point the footer PR badge at a custom code-review URL.
       prUrlTemplate: z
         .string()

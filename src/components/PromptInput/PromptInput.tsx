@@ -78,7 +78,8 @@ import { transitionPermissionMode } from '../../utils/permissions/permissionSetu
 import { getPlatform } from '../../utils/platform.js';
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js';
 import { editPromptInEditor } from '../../utils/promptEditor.js';
-import { hasAutoModeOptIn, hasAutoModeOptInDismissed } from '../../utils/settings/settings.js';
+import { hasAutoModeOptIn, hasAutoModeOptInDismissed, getSettings_DEPRECATED } from '../../utils/settings/settings.js';
+import { getLastAssistantMessage } from '../../utils/messages.js';
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js';
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js';
 import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, subscribeKnownChannels } from '../../utils/suggestions/slackChannelSuggestions.js';
@@ -1322,8 +1323,23 @@ function PromptInput({
     logEvent('tengu_external_editor_used', {});
     setIsExternalEditorActive(true);
     try {
+      // I13 (2.1.110): when externalEditorContext is on, prepend the last
+      // assistant response as commented context so the user can see it while
+      // editing. The prefix is stripped on read-back by editPromptInEditor.
+      let commentedContext: string | undefined;
+      if (getSettings_DEPRECATED().externalEditorContext) {
+        const lastAssistant = getLastAssistantMessage(messages);
+        const content = lastAssistant?.message?.content;
+        if (Array.isArray(content)) {
+          commentedContext = content
+            .filter((b): b is { type: 'text'; text: string } => typeof b !== 'string' && b.type === 'text')
+            .map(b => b.text)
+            .join('\n')
+            .trim() || undefined;
+        }
+      }
       // Pass pastedContents to expand collapsed text references
-      const result = await editPromptInEditor(input, pastedContents);
+      const result = await editPromptInEditor(input, pastedContents, commentedContext);
       if (result.error) {
         addNotification({
           key: 'external-editor-error',
@@ -1351,7 +1367,7 @@ function PromptInput({
     } finally {
       setIsExternalEditorActive(false);
     }
-  }, [input, cursorOffset, pastedContents, pushToBuffer, trackAndSetInput, addNotification]);
+  }, [input, cursorOffset, pastedContents, pushToBuffer, trackAndSetInput, addNotification, messages]);
 
   // Handler for chat:stash - stash/unstash prompt
   const handleStash = useCallback(() => {

@@ -138,6 +138,7 @@ function recollapsePastedContent(
 export function editPromptInEditor(
   currentPrompt: string,
   pastedContents?: Record<number, PastedContent>,
+  commentedContext?: string,
 ): EditorResult {
   const fs = getFsImplementation()
   const tempFile = generateTempFilePath()
@@ -148,8 +149,16 @@ export function editPromptInEditor(
       ? expandPastedTextRefs(currentPrompt, pastedContents)
       : currentPrompt
 
+    // 2.1.110 (I13): when externalEditorContext is on, prepend the last
+    // assistant response as commented context so the user can see it while
+    // editing. Lines are prefixed with "# " (shell-style comment) and the
+    // block is separated from the prompt by a blank line. The prefix is
+    // stripped on read-back so it never leaks into the submitted prompt.
+    const contextBlock = buildCommentedContext(commentedContext)
+    const fileContent = contextBlock ? `${contextBlock}\n${expandedPrompt}` : expandedPrompt
+
     // Write expanded prompt to temp file
-    writeFileSync_DEPRECATED(tempFile, expandedPrompt, {
+    writeFileSync_DEPRECATED(tempFile, fileContent, {
       encoding: 'utf-8',
       flush: true,
     })
@@ -161,8 +170,12 @@ export function editPromptInEditor(
       return result
     }
 
-    // Trim a single trailing newline if present (common editor behavior)
     let finalContent = result.content
+    // Strip the commented context block back out so it isn't submitted as
+    // part of the prompt. Only removes a leading block produced above.
+    finalContent = stripCommentedContext(finalContent, contextBlock)
+
+    // Trim a single trailing newline if present (common editor behavior)
     if (finalContent.endsWith('\n') && !finalContent.endsWith('\n\n')) {
       finalContent = finalContent.slice(0, -1)
     }
@@ -185,4 +198,30 @@ export function editPromptInEditor(
       // Ignore cleanup errors
     }
   }
+}
+
+/**
+ * Build a "# "-prefixed comment block from the last assistant response text.
+ * Returns '' (falsy) when there's no context to show. The block is bounded by
+ * a header line so it's self-describing and easy to strip on read-back.
+ */
+function buildCommentedContext(commentedContext?: string): string {
+  if (!commentedContext || !commentedContext.trim()) return ''
+  const lines = commentedContext.split('\n')
+  const commented = lines.map(line => `# ${line}`).join('\n')
+  return `# Last response (commented — not part of your prompt):\n${commented}`
+}
+
+/**
+ * Remove the leading commented-context block from the editor output. Only
+ * strips the exact block written by buildCommentedContext (matched by its
+ * header) so user-authored leading comments are preserved.
+ */
+function stripCommentedContext(content: string, contextBlock: string): string {
+  if (!contextBlock) return content
+  if (content.startsWith(contextBlock)) {
+    const rest = content.slice(contextBlock.length)
+    return rest.startsWith('\n') ? rest.slice(1) : rest
+  }
+  return content
 }

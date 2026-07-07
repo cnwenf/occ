@@ -159,6 +159,7 @@ import { logForDebugging, setHasFormattedOutput } from 'src/utils/debug.js';
 import { errorMessage, getErrnoCode, isENOENT, TeleportOperationError, toError } from 'src/utils/errors.js';
 import { getFsImplementation, safeResolvePath } from 'src/utils/fsOperations.js';
 import { gracefulShutdown, gracefulShutdownSync } from 'src/utils/gracefulShutdown.js';
+import { findClosestSubcommand } from 'src/cli/subcommandSuggestion.js';
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js';
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js';
@@ -1040,6 +1041,20 @@ async function run(): Promise<CommanderCommand> {
       logEvent('tengu_single_word_prompt', {
         length: prompt.length
       });
+    }
+
+    // E32 (2.1.111): closest-matching subcommand suggestion. A bare single-word
+    // arg that closely matches (Levenshtein ≤2) a registered subcommand name or
+    // alias is almost certainly a typo — print "Unknown command: <word>. Did
+    // you mean '<suggestion>'?" and exit instead of silently treating it as a
+    // prompt. Mirrors the 2.1.200 binary's `Unknown command: ` handler.
+    if (prompt && typeof prompt === 'string' && !/\s/.test(prompt) && prompt.length > 0) {
+      const subcommandSuggestion = findClosestSubcommand(prompt, program);
+      if (subcommandSuggestion) {
+        process.stderr.write(`Unknown command: ${prompt}. Did you mean '${subcommandSuggestion}'?\n`);
+        await gracefulShutdown(1);
+        return program;
+      }
     }
 
     // Assistant mode: when .claude/settings.json has assistant: true AND

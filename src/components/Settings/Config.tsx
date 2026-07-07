@@ -492,6 +492,23 @@ export function Config({
       });
     }
   }, {
+    id: 'externalEditorContext',
+    label: 'Show last response in external editor',
+    value: settingsData?.externalEditorContext ?? false,
+    type: 'boolean' as const,
+    onChange(externalEditorContext: boolean) {
+      updateSettingsForSource('localSettings', {
+        externalEditorContext
+      });
+      setSettingsData(prev_4 => ({
+        ...prev_4,
+        externalEditorContext
+      }));
+      logEvent('tengu_external_editor_context_changed', {
+        enabled: externalEditorContext
+      });
+    }
+  }, {
     id: 'defaultPermissionMode',
     label: 'Default permission mode',
     value: settingsData?.permissions?.defaultMode || 'default',
