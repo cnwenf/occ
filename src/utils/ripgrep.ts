@@ -61,7 +61,21 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
       ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
       : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
 
-  return { mode: 'builtin', command, args: [] }
+  // Fallback: if the builtin rg binary doesn't exist (e.g. npm install
+  // without the vendor/ dir), try system rg, then 'grep -rn' as last resort.
+  try {
+    const fs = require('fs')
+    if (fs.existsSync(command)) {
+      return { mode: 'builtin', command, args: [] }
+    }
+  } catch {}
+  // Try system rg
+  const { cmd: systemRg } = findExecutable('rg', [])
+  if (systemRg !== 'rg') {
+    return { mode: 'system', command: 'rg', args: [] }
+  }
+  // Last resort: grep (recursive + line numbers; limited but functional)
+  return { mode: 'system', command: 'grep', args: ['-rn'] }
 })
 
 export function ripgrepCommand(): {
