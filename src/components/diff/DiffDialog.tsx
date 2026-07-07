@@ -5,13 +5,15 @@ import type { CommandResultDisplay } from '../../commands.js';
 import { useRegisterOverlay } from '../../context/overlayContext.js';
 import { type DiffData, useDiffData } from '../../hooks/useDiffData.js';
 import { type TurnDiff, useTurnDiffs } from '../../hooks/useTurnDiffs.js';
-import { Box, Text } from '../../ink.js';
+import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import { Box, Text, useInput } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import type { Message } from '../../types/message.js';
 import { plural } from '../../utils/stringUtils.js';
 import { Byline } from '../design-system/Byline.js';
 import { Dialog } from '../design-system/Dialog.js';
+import ScrollBox, { type ScrollBoxHandle } from '../../ink/components/ScrollBox.js';
 import { DiffDetailView } from './DiffDetailView.js';
 import { DiffFileList } from './DiffFileList.js';
 type Props = {
@@ -53,7 +55,7 @@ function turnDiffToDiffData(turn: TurnDiff): DiffData {
   };
 }
 export function DiffDialog(t0) {
-  const $ = _c(73);
+  const $ = _c(74);
   const {
     messages,
     onDone
@@ -63,6 +65,11 @@ export function DiffDialog(t0) {
   const [viewMode, setViewMode] = useState("list");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [sourceIndex, setSourceIndex] = useState(0);
+  // 2.1.149: /diff detail view is keyboard-scrollable. ScrollBox gives the
+  // detail content a constrained viewport + imperative scroll API; up/down
+  // (reusing diff:previousFile/nextFile) and PgUp/PgDn scroll it.
+  const scrollRef = useRef<ScrollBoxHandle>(null);
+  const { rows: terminalRows } = useTerminalSize();
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = {
@@ -197,6 +204,9 @@ export function DiffDialog(t0) {
     t13 = () => {
       if (viewMode === "list") {
         setSelectedIndex(_temp3);
+      } else {
+        // 2.1.149: in detail mode, ↑ scrolls the diff content up one line.
+        scrollRef.current?.scrollBy(-1);
       }
     };
     $[25] = viewMode;
@@ -209,6 +219,9 @@ export function DiffDialog(t0) {
     t14 = () => {
       if (viewMode === "list") {
         setSelectedIndex(prev_2 => Math.min(diffData.files.length - 1, prev_2 + 1));
+      } else {
+        // 2.1.149: in detail mode, ↓ scrolls the diff content down one line.
+        scrollRef.current?.scrollBy(1);
       }
     };
     $[27] = diffData.files.length;
@@ -247,6 +260,23 @@ export function DiffDialog(t0) {
     t16 = $[37];
   }
   useKeybindings(t15, t16);
+  // 2.1.149: PgUp/PgDn scroll the detail view by a viewport. Up/down are
+  // handled above via diff:previousFile/nextFile (bound by the DiffDialog
+  // context). PgUp/PgDn aren't bound in this context, so useInput sees them.
+  useInput((_input, key) => {
+    if (viewMode !== "detail") return;
+    const viewport = scrollRef.current?.getViewportHeight() ?? 10;
+    if (key.pageUp) {
+      scrollRef.current?.scrollBy(-Math.max(1, viewport - 1));
+    } else if (key.pageDown) {
+      scrollRef.current?.scrollBy(Math.max(1, viewport - 1));
+    }
+  });
+  // Reset scroll to top whenever the viewed file or source changes (and on
+  // entering detail mode), so a newly-selected file starts at its first hunk.
+  useEffect(() => {
+    scrollRef.current?.scrollTo(0);
+  }, [viewMode, selectedIndex, sourceIndex]);
   let t17;
   if ($[38] !== diffData.stats) {
     t17 = diffData.stats ? <Text dimColor={true}>{diffData.stats.filesCount} {plural(diffData.stats.filesCount, "file")}{" "}changed{diffData.stats.linesAdded > 0 && <Text color="diffAddedWord"> +{diffData.stats.linesAdded}</Text>}{diffData.stats.linesRemoved > 0 && <Text color="diffRemovedWord"> -{diffData.stats.linesRemoved}</Text>}</Text> : null;
@@ -328,7 +358,7 @@ export function DiffDialog(t0) {
   const handleCancel = t22;
   let t23;
   if ($[51] !== dismissShortcut || $[52] !== sources.length || $[53] !== viewMode) {
-    t23 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : viewMode === "list" ? <Byline>{sources.length > 1 && <Text>←/→ source</Text>}<Text>↑/↓ select</Text><Text>Enter view</Text><Text>{dismissShortcut} close</Text></Byline> : <Byline><Text>← back</Text><Text>{dismissShortcut} close</Text></Byline>;
+    t23 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : viewMode === "list" ? <Byline>{sources.length > 1 && <Text>←/→ source</Text>}<Text>↑/↓ select</Text><Text>Enter view</Text><Text>{dismissShortcut} close</Text></Byline> : <Byline><Text>↑/↓ scroll</Text><Text>← back</Text><Text>{dismissShortcut} close</Text></Byline>;
     $[51] = dismissShortcut;
     $[52] = sources.length;
     $[53] = viewMode;
@@ -337,8 +367,8 @@ export function DiffDialog(t0) {
     t23 = $[54];
   }
   let t24;
-  if ($[55] !== diffData.files || $[56] !== emptyMessage || $[57] !== selectedFile?.isBinary || $[58] !== selectedFile?.isLargeFile || $[59] !== selectedFile?.isTruncated || $[60] !== selectedFile?.isUntracked || $[61] !== selectedFile?.path || $[62] !== selectedHunks || $[63] !== selectedIndex || $[64] !== viewMode) {
-    t24 = diffData.files.length === 0 ? <Box marginTop={1}><Text dimColor={true}>{emptyMessage}</Text></Box> : viewMode === "list" ? <Box flexDirection="column" marginTop={1}><DiffFileList files={diffData.files} selectedIndex={selectedIndex} /></Box> : <Box flexDirection="column" marginTop={1}><DiffDetailView filePath={selectedFile?.path || ""} hunks={selectedHunks} isLargeFile={selectedFile?.isLargeFile} isBinary={selectedFile?.isBinary} isTruncated={selectedFile?.isTruncated} isUntracked={selectedFile?.isUntracked} /></Box>;
+  if ($[55] !== diffData.files || $[56] !== emptyMessage || $[57] !== selectedFile?.isBinary || $[58] !== selectedFile?.isLargeFile || $[59] !== selectedFile?.isTruncated || $[60] !== selectedFile?.isUntracked || $[61] !== selectedFile?.path || $[62] !== selectedHunks || $[63] !== selectedIndex || $[64] !== viewMode || $[73] !== terminalRows) {
+    t24 = diffData.files.length === 0 ? <Box marginTop={1}><Text dimColor={true}>{emptyMessage}</Text></Box> : viewMode === "list" ? <Box flexDirection="column" marginTop={1}><DiffFileList files={diffData.files} selectedIndex={selectedIndex} /></Box> : <Box flexDirection="column" marginTop={1}><ScrollBox ref={scrollRef} flexDirection="column" height={Math.max(3, terminalRows - 8)}><DiffDetailView filePath={selectedFile?.path || ""} hunks={selectedHunks} isLargeFile={selectedFile?.isLargeFile} isBinary={selectedFile?.isBinary} isTruncated={selectedFile?.isTruncated} isUntracked={selectedFile?.isUntracked} /></ScrollBox></Box>;
     $[55] = diffData.files;
     $[56] = emptyMessage;
     $[57] = selectedFile?.isBinary;
@@ -349,6 +379,7 @@ export function DiffDialog(t0) {
     $[62] = selectedHunks;
     $[63] = selectedIndex;
     $[64] = viewMode;
+    $[73] = terminalRows;
     $[65] = t24;
   } else {
     t24 = $[65];

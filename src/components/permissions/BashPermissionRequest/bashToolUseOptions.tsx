@@ -6,7 +6,13 @@ import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpda
 import { shouldShowAlwaysAllowOptions } from '../../../utils/permissions/permissionsLoader.js';
 import type { OptionWithDescription } from '../../CustomSelect/select.js';
 import { generateShellSuggestionsLabel } from '../shellPermissionHelpers.js';
-export type BashToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'yes-classifier-reviewed' | 'no';
+export type BashToolUseOption = 'yes' | 'yes-apply-suggestions' | 'yes-prefix-edited' | 'yes-classifier-reviewed' | 'yes-enable-auto-mode' | 'no';
+
+// 2.1.111 (cross): "Yes, and switch to auto mode" option shown on permission
+// prompts for workflow-agent contexts. Mirrors official SSr/ESr — the label
+// and description are legally-reviewed copy, do not modify.
+export const AUTO_MODE_OPTION_LABEL = 'Yes, and switch to auto mode';
+export const AUTO_MODE_OPTION_DESCRIPTION = '· workflows run best with it on';
 
 /**
  * Check if a description already exists in the allow list.
@@ -40,7 +46,9 @@ export function bashToolUseOptions({
   yesInputMode = false,
   noInputMode = false,
   editablePrefix,
-  onEditablePrefixChange
+  onEditablePrefixChange,
+  showEnableAutoModeOption = false,
+  enableAutoModeDescription = AUTO_MODE_OPTION_DESCRIPTION
 }: {
   suggestions?: PermissionUpdate[];
   decisionReason?: PermissionDecisionReason;
@@ -57,6 +65,14 @@ export function bashToolUseOptions({
   editablePrefix?: string;
   /** Callback when the user edits the prefix value. */
   onEditablePrefixChange?: (value: string) => void;
+  /**
+   * 2.1.111: When true, appends the "Yes, and switch to auto mode" option
+   * (offered for workflow-agent permission contexts where auto mode is
+   * available and not already active). Mirrors official showEnableAutoModeOption.
+   */
+  showEnableAutoModeOption?: boolean;
+  /** Description shown after the auto-mode option label. */
+  enableAutoModeDescription?: string;
 }): OptionWithDescription<BashToolUseOption>[] {
   const options: OptionWithDescription<BashToolUseOption>[] = [];
   if (yesInputMode) {
@@ -126,6 +142,16 @@ export function bashToolUseOptions({
         resetCursorOnUpdate: true
       });
     }
+  }
+  // 2.1.111: "Yes, and switch to auto mode" — offered for workflow-agent
+  // permission contexts. Placed after the yes-* allow options and before "No",
+  // matching the official option ordering (SSr/ESr).
+  if (showEnableAutoModeOption) {
+    options.push({
+      label: AUTO_MODE_OPTION_LABEL,
+      description: enableAutoModeDescription,
+      value: 'yes-enable-auto-mode'
+    });
   }
   if (noInputMode) {
     options.push({

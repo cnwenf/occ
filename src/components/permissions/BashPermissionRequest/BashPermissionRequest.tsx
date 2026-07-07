@@ -286,6 +286,12 @@ function BashPermissionRequestInner({
   }), []);
   usePermissionRequestLogging(toolUseConfirm, unaryEvent);
   const existingAllowDescriptions = useMemo(() => getBashPromptAllowDescriptions(toolPermissionContext), [toolPermissionContext]);
+  // 2.1.111: offer "Yes, and switch to auto mode" on workflow-agent (swarm
+  // worker) permission prompts when auto mode isn't already active. Mirrors
+  // the official canOfferAutoMode gate (toolPermissionContext.type ===
+  // "workflow-agent" && mode !== 'auto'); OCC's context has no `type` field,
+  // so workerBadge (swarm worker) is the workflow-agent signal.
+  const canOfferAutoMode = !!workerBadge && toolPermissionContext.mode !== 'auto';
   const options = useMemo(() => bashToolUseOptions({
     suggestions: toolUseConfirm.permissionResult.behavior === 'ask' ? toolUseConfirm.permissionResult.suggestions : undefined,
     decisionReason: toolUseConfirm.permissionResult.decisionReason,
@@ -298,8 +304,9 @@ function BashPermissionRequestInner({
     yesInputMode,
     noInputMode,
     editablePrefix,
-    onEditablePrefixChange
-  }), [toolUseConfirm, classifierDescription, initialClassifierDescriptionEmpty, existingAllowDescriptions, yesInputMode, noInputMode, editablePrefix, onEditablePrefixChange]);
+    onEditablePrefixChange,
+    showEnableAutoModeOption: canOfferAutoMode
+  }), [toolUseConfirm, classifierDescription, initialClassifierDescriptionEmpty, existingAllowDescriptions, yesInputMode, noInputMode, editablePrefix, onEditablePrefixChange, canOfferAutoMode]);
 
   // Toggle permission debug info with keybinding
   const handleToggleDebug = useCallback(() => {
@@ -323,7 +330,8 @@ function BashPermissionRequestInner({
       yes: 1,
       'yes-apply-suggestions': 2,
       'yes-prefix-edited': 2,
-      no: 3
+      'yes-enable-auto-mode': 3,
+      no: 4
     };
     if (feature('BASH_CLASSIFIER')) {
       optionIndex = {
@@ -331,7 +339,8 @@ function BashPermissionRequestInner({
         'yes-apply-suggestions': 2,
         'yes-prefix-edited': 2,
         'yes-classifier-reviewed': 3,
-        no: 4
+        'yes-enable-auto-mode': 4,
+        no: 5
       };
     }
     logEvent('tengu_permission_request_option_selected', {
@@ -376,6 +385,19 @@ function BashPermissionRequestInner({
         }];
         toolUseConfirm.onAllow(toolUseConfirm.input, permissionUpdates);
       }
+      onDone();
+      return;
+    }
+    // 2.1.111: "Yes, and switch to auto mode" — allow this tool call and
+    // switch the session permission mode to 'auto' so the classifier handles
+    // subsequent prompts. Mirrors official enableAutoMode (setMode:auto).
+    if (value_0 === 'yes-enable-auto-mode') {
+      logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept');
+      toolUseConfirm.onAllow(toolUseConfirm.input, [{
+        type: 'setMode',
+        mode: 'auto',
+        destination: 'session'
+      } as PermissionUpdate]);
       onDone();
       return;
     }

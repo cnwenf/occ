@@ -186,6 +186,17 @@ export function useTextInput({
   function killToLineStart(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteToLineStart()
     pushToKillRing(killed, 'prepend')
+    // 2.1.111: after Ctrl+U clears 3+ chars, surface a hint that Ctrl+Y
+    // restores the deleted text (mirrors official kill-paste-hint). Only
+    // Ctrl+U triggers this — Ctrl+K/Ctrl+W kills stay silent.
+    if (killed.length >= 3) {
+      addNotification({
+        key: 'kill-paste-hint',
+        text: 'Ctrl+Y to paste deleted text',
+        priority: 'immediate',
+        timeoutMs: 5000,
+      })
+    }
     return newCursor
   }
 
