@@ -1,5 +1,4 @@
 import { getSessionId } from '../bootstrap/state.js'
-import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import type { SessionId } from '../types/ids.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 
@@ -30,9 +29,11 @@ export function buildQueryConfig(): QueryConfig {
   return {
     sessionId: getSessionId(),
     gates: {
-      streamingToolExecution: checkStatsigFeatureGate_CACHED_MAY_BE_STALE(
-        'tengu_streaming_tool_execution2',
-      ),
+      // 2.1.154 (K2): streaming tool execution is always enabled. The
+      // tengu_streaming_tool_execution2 Statsig gate was removed from the
+      // official 2.1.200 binary (no gate string remains), so the executor is
+      // constructed unconditionally — the non-streaming fallback path is dead.
+      streamingToolExecution: true,
       emitToolUseSummaries: isEnvTruthy(
         process.env.CLAUDE_CODE_EMIT_TOOL_USE_SUMMARIES,
       ),

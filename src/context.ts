@@ -187,3 +187,34 @@ export const getUserContext = memoize(
     }
   },
 )
+
+// -- K1 (lean prompt) + K3 (ultracode) context-layer hooks ---------------
+//
+// These re-export the decision logic from src/utils/effort/ so the context /
+// system-prompt layer can consult them without importing the effort module
+// graph directly (and so source-grep verification can pin the wiring here).
+//
+// K1: lean_prompt-capable models get the lean system prompt by default; the
+// full prompt is opt-in at higher effort (xhigh / max).
+import { shouldUseLeanPrompt as _shouldUseLeanPrompt } from './utils/effort/leanPrompt.js'
+import {
+  isUltracodeEnabled as _isUltracodeEnabled,
+  getUltracodeReminderObject as _getUltracodeReminderObject,
+} from './utils/effort/ultracode.js'
+
+export function shouldUseLeanSystemPrompt(
+  model: string,
+  effort?: string,
+): boolean {
+  return _shouldUseLeanPrompt(model, effort)
+}
+
+// K3: when ultracode is active for the session, the context layer surfaces the
+// "Ultracode is on…" system-reminder (isMeta) to the query loop.
+export function getUltracodeSystemReminder():
+  | { content: string; isMeta: true }
+  | null {
+  if (!_isUltracodeEnabled()) return null
+  return _getUltracodeReminderObject('full')
+}
+
