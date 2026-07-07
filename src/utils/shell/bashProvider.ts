@@ -194,6 +194,18 @@ export async function createBashShellProvider(
         )
       }
 
+      // B12 (2.1.98): PID-namespace isolation for sandboxed subprocesses on Linux.
+      // Wraps the command with unshare --pid --fork --map-root-user so the
+      // subprocess runs in its own PID namespace (cannot see/signal host processes).
+      if (opts.useSandbox) {
+        try {
+          const { wrapWithPidNamespace } = require('./pidNamespace.js')
+          commandString = wrapWithPidNamespace(commandString)
+        } catch {
+          // pidNamespace unavailable — degrade gracefully (no PID isolation).
+        }
+      }
+
       return { commandString, cwdFilePath }
     },
 

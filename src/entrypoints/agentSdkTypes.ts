@@ -437,9 +437,34 @@ export type RemoteControlHandle = {
  * @internal
  */
 export async function connectRemoteControl(
-  _opts: ConnectRemoteControlOptions,
+  opts: ConnectRemoteControlOptions,
 ): Promise<RemoteControlHandle | null> {
-  throw new Error('not implemented')
+  // B7 (2.1.200): connectRemoteControl daemon-bridge.
+  // Official: applyRemoteControlToAppState + autoAddRemoteControlDaemonWorker
+  // (auto-adds an RC daemon worker, daemon subtype:"remote_control").
+  // RC requires a claude.ai account (OAuth). When unavailable, returns null.
+  const { getIsClaudeAISubscriber } = await import('../utils/auth.js').catch(() => ({ getIsClaudeAISubscriber: () => false }))
+  if (!getIsClaudeAISubscriber?.()) {
+    return null // Remote Control requires a claude.ai account.
+  }
+  // Auto-add the RC daemon worker (subtype: "remote_control") to the daemon registry.
+  try {
+    const { autoAddRemoteControlDaemonWorker } = await import('../daemon/workerRegistry.js')
+    await autoAddRemoteControlDaemonWorker(opts)
+  } catch {
+    // Daemon not available — RC degrades to in-process only (no persistence).
+  }
+  // Return a minimal handle. The full IPC (write query() yields in, read
+  // responses) requires the bridge layer (src/bridge/) which is partially
+  // implemented. This stub enables the API surface + daemon worker auto-add.
+  return {
+    query: async function* () {
+      // Full IPC is a follow-up (needs bridge transport + CCR session).
+    },
+    enableRemoteControl: async () => {},
+    disableRemoteControl: async () => {},
+    close: async () => {},
+  } as RemoteControlHandle
 }
 export type HookEvent = any;
 export type ExitReason = any;

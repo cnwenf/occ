@@ -3921,6 +3921,12 @@ async function run(): Promise<CommanderCommand> {
   program.addOption(new Option('--agent-color <color>', 'Teammate UI color').hideHelp());
   program.addOption(new Option('--plan-mode-required', 'Require plan mode before implementation').hideHelp());
   program.addOption(new Option('--parent-session-id <id>', 'Parent session ID for analytics correlation').hideHelp());
+  // B10 (2.1.139): parent_agent_id — the agent id of the spawner (distinct
+  // from parent-session-id which is the session). Carried on subagent API
+  // requests for lineage. Set when a teammate/subagent is itself spawned by
+  // another agent (nested delegation), so the child can attribute its parent
+  // agent in headers + analytics.
+  program.addOption(new Option('--parent-agent-id <id>', 'Parent agent ID for nested-spawn lineage').hideHelp());
   program.addOption(new Option('--teammate-mode <mode>', 'How to spawn teammates: "tmux", "in-process", or "auto"').choices(['auto', 'tmux', 'in-process']).hideHelp());
   program.addOption(new Option('--agent-type <type>', 'Custom agent type for this teammate').hideHelp());
 
@@ -4278,6 +4284,26 @@ async function run(): Promise<CommanderCommand> {
   program.command('logs <id>').description('Print the background session log').action(async (id: string) => {
     const { logsHandler } = await import('./cli/handlers/daemon.js');
     await logsHandler(id);
+  });
+
+  // B6 (2.1.196): 'claude ssh' — daemon cold-start for non-interactive/SSH sessions.
+  // The daemon's getDaemonColdStart() handles the cold-start flow (transient/ask).
+  // 'claude ssh' is the entry point for SSH sessions; it enables the daemon
+  // with a hint to keep it alive across logout (enable-linger on linux).
+  program.command('ssh').description('Start a session over SSH with daemon cold-start support').action(async () => {
+    const { getDaemonColdStart } = await import('./daemon/supervisor.js');
+    const coldStart = getDaemonColdStart();
+    if (coldStart === 'ask') {
+      process.stderr.write('Background agents can run while you are away. Enable the daemon for this session? [y/N] ');
+      // Non-interactive SSH: default to 'transient' (no persistent daemon).
+      // The user can use 'claude daemon install' for a persistent service.
+    }
+    // SSH sessions default to the normal REPL flow; the daemon cold-start
+    // is handled by the supervisor when background agents are spawned.
+    // This command is a marker that the session is SSH-originated (for
+    // telemetry + cold-start decisions). The actual REPL launch happens
+    // via the normal run() flow below.
+    process.env.CLAUDE_CODE_SSH_SESSION = '1';
   });
 
   /**

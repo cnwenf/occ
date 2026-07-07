@@ -367,3 +367,20 @@ export const runDaemonWorker: (workerId: string) => Promise<void> = async (
     await new Promise(r => setTimeout(r, 1000))
   }
 }
+
+// B7 (2.1.200): auto-add a Remote Control daemon worker (subtype: "remote_control").
+export async function autoAddRemoteControlDaemonWorker(opts?: { caCertsPath?: string }) {
+  // The RC worker is a daemon worker of kind "remote_control" that maintains
+  // the CCR (Claude Code Remote) session bridge. When the daemon is running,
+  // it keeps the RC session alive across REPL restarts.
+  const config = await readDaemonJson()
+  if (!config.workers?.some(w => w.kind === "remote_control")) {
+    config.workers = [...(config.workers ?? []), {
+      kind: "remote_control",
+      id: "rc-" + Date.now(),
+      restart: true,
+    }]
+    await writeDaemonJson(config)
+  }
+}
+

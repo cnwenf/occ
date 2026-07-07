@@ -291,6 +291,9 @@ export async function* runAgent({
   }
   model?: ModelAlias
   maxTurns?: number
+  /** B9 (2.1.172): subagent nesting depth. Default 0 (top-level). Cap = 5.
+   * Throws "Subagent nesting limit reached" when exceeded. */
+  subagentDepth?: number
   /** Preserve toolUseResult on messages for subagents with viewable transcripts */
   preserveToolUseResults?: boolean
   /** Precomputed tool pool for the worker agent. Computed by the caller
@@ -340,6 +343,16 @@ export async function* runAgent({
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
+
+  // B9 (2.1.172): subagent nesting depth cap. Default 0 (top-level), cap = 5.
+  const SUBAGENT_DEPTH_CAP = 5
+  const depth = subagentDepth ?? 0
+  if (depth >= SUBAGENT_DEPTH_CAP) {
+    logEvent('subagent_launch', 'subagent_depth_cap')
+    throw new Error(
+      `Subagent nesting limit reached (depth ${depth} of ${SUBAGENT_DEPTH_CAP})`,
+    )
+  }
 
   const resolvedAgentModel = getAgentModel(
     agentDefinition.model,

@@ -73,7 +73,8 @@ function getAutoBackgroundMs(): number {
   if (isEnvTruthy(process.env.CLAUDE_AUTO_BACKGROUND_TASKS) || getFeatureValue_CACHED_MAY_BE_STALE('tengu_auto_background_agents', false)) {
     return 120_000;
   }
-  return 0;
+  // B8 (2.1.198): subagents run in background by default (120s auto-background threshold).
+  return 120_000;
 }
 
 // Multi-agent type constants are defined inline inside gated blocks to enable dead code elimination
@@ -742,7 +743,7 @@ export const AgentTool = buildTool({
       void runWithAgentContext(asyncAgentContext, () => wrapWithCwd(() => runAsyncAgentLifecycle({
         taskId: agentBackgroundTask.agentId,
         abortController: agentBackgroundTask.abortController!,
-        makeStream: onCacheSafeParams => runAgent({
+        makeStream: onCacheSafeParams => runAgent({ subagentDepth: (toolUseContext.subagentDepth ?? 0) + 1,
           ...runAgentParams,
           override: {
             ...runAgentParams.override,
@@ -852,7 +853,7 @@ export const AgentTool = buildTool({
         const summaryTaskId = foregroundTaskId;
 
         // Get async iterator for the agent
-        const agentIterator = runAgent({
+        const agentIterator = runAgent({ subagentDepth: (toolUseContext.subagentDepth ?? 0) + 1,
           ...runAgentParams,
           override: {
             ...runAgentParams.override,
@@ -931,7 +932,7 @@ export const AgentTool = buildTool({
                     for (const existingMsg of agentMessages) {
                       updateProgressFromMessage(tracker, existingMsg, resolveActivity2, toolUseContext.options.tools);
                     }
-                    for await (const msg of runAgent({
+                    for await (const msg of runAgent({ subagentDepth: (toolUseContext.subagentDepth ?? 0) + 1,
                       ...runAgentParams,
                       isAsync: true,
                       // Agent is now running in background

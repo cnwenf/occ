@@ -142,6 +142,11 @@ export async function getAnthropicClient({
     'User-Agent': getUserAgent(),
     'X-Claude-Code-Session-Id': getSessionId(),
     ...customHeaders,
+    // B10 (2.1.139): agent-id headers for subagent API request attribution.
+    ...(process.env.CLAUDE_CODE_AGENT_ID
+      ? { 'x-claude-code-agent-id': process.env.CLAUDE_CODE_AGENT_ID } : {}),
+    ...(process.env.CLAUDE_CODE_PARENT_AGENT_ID
+      ? { 'parent-agent-id': process.env.CLAUDE_CODE_PARENT_AGENT_ID } : {}),
     ...(containerId ? { 'x-claude-remote-container-id': containerId } : {}),
     ...(remoteSessionId
       ? { 'x-claude-remote-session-id': remoteSessionId }
