@@ -139,6 +139,15 @@ export const SandboxSettingsSchema = lazySchema(() =>
             'when using httpProxyPort with a MITM proxy and custom CA. ' +
             '**Reduces security** — opens a potential data exfiltration vector through the trustd service. Default: false',
         ),
+      // 2.1.169: allow sandboxed commands to send Apple Events on macOS.
+      // Needed by tools that drive other apps via AppleScript / osascript.
+      allowAppleEvents: z
+        .boolean()
+        .optional()
+        .describe(
+          'macOS only: Allow sandboxed commands to send Apple Events to other ' +
+            'applications via the Apple Event service. Default: false',
+        ),
       excludedCommands: z.array(z.string()).optional(),
       // 2.1.187: block sandboxed commands from reading credential files
       // and secret environment variables.

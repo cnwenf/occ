@@ -55,14 +55,10 @@ export function getAttributionTexts(): AttributionTexts {
   }
 
   if (getClientType() === 'remote') {
-    const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
-    if (remoteSessionId) {
-      const ingressUrl = process.env.SESSION_INGRESS_URL
-      // Skip for local dev - URLs won't persist
-      if (!isRemoteSessionLocal(remoteSessionId, ingressUrl)) {
-        const sessionUrl = getRemoteSessionUrl(remoteSessionId, ingressUrl)
-        return { commit: sessionUrl, pr: sessionUrl }
-      }
+    // 2.1.183 (F20): honor attribution.sessionUrl === false (omit session link).
+    const sessionAttribution = getSessionAttributionUrl()
+    if (sessionAttribution) {
+      return { commit: sessionAttribution.url, pr: sessionAttribution.url }
     }
     return { commit: '', pr: '' }
   }
@@ -95,6 +91,38 @@ export function getAttributionTexts(): AttributionTexts {
   }
 
   return { commit: defaultCommit, pr: defaultAttribution }
+}
+
+/**
+ * 2.1.183 (F20): the claude.ai session URL to append to commit/PR attribution,
+ * or null when suppressed. Mirrors the official session-attribution-url
+ * resolver: returns null when `attribution.sessionUrl === false` (omit the
+ * claude.ai session link), otherwise returns `{ url, sessionId }` for remote
+ * sessions (skipping local-dev URLs that won't persist). Returns null in
+ * non-remote modes.
+ */
+export function getSessionAttributionUrl():
+  | { url: string; sessionId: string }
+  | null {
+  if (getInitialSettings().attribution?.sessionUrl === false) {
+    return null
+  }
+  if (getClientType() === 'remote') {
+    const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
+    if (!remoteSessionId) {
+      return null
+    }
+    const ingressUrl = process.env.SESSION_INGRESS_URL
+    // Skip for local dev - URLs won't persist
+    if (isRemoteSessionLocal(remoteSessionId, ingressUrl)) {
+      return null
+    }
+    return {
+      url: getRemoteSessionUrl(remoteSessionId, ingressUrl),
+      sessionId: remoteSessionId,
+    }
+  }
+  return null
 }
 
 /**
@@ -302,13 +330,10 @@ export async function getEnhancedPRAttribution(
   }
 
   if (getClientType() === 'remote') {
-    const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
-    if (remoteSessionId) {
-      const ingressUrl = process.env.SESSION_INGRESS_URL
-      // Skip for local dev - URLs won't persist
-      if (!isRemoteSessionLocal(remoteSessionId, ingressUrl)) {
-        return getRemoteSessionUrl(remoteSessionId, ingressUrl)
-      }
+    // 2.1.183 (F20): honor attribution.sessionUrl === false (omit session link).
+    const sessionAttribution = getSessionAttributionUrl()
+    if (sessionAttribution) {
+      return sessionAttribution.url
     }
     return ''
   }

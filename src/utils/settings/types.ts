@@ -350,6 +350,15 @@ export const SettingsSchema = lazySchema(() =>
               'Attribution text for pull request descriptions. ' +
                 'Empty string hides attribution.',
             ),
+          // 2.1.183: omit the claude.ai session link appended to commits.
+          // Default true (link appended). Set false to suppress the link.
+          sessionUrl: z
+            .boolean()
+            .optional()
+            .describe(
+              'Whether to append the claude.ai session link to commits and PRs. ' +
+                'Default: true. Set to false to omit the session link.',
+            ),
         })
         .optional()
         .describe(
@@ -469,8 +478,10 @@ export const SettingsSchema = lazySchema(() =>
             ),
           // 2.1.143: let background sessions edit the working copy directly
           // without EnterWorktree, for repos where worktrees are impractical.
+          // "worktree" (default) isolates bg sessions in a git worktree;
+          // "none" lets them edit the working copy directly.
           bgIsolation: z
-            .enum(['none'])
+            .enum(['worktree', 'none'])
             .optional()
             .describe(
               'Set to "none" to let background sessions edit the working copy directly without EnterWorktree.',
@@ -478,6 +489,15 @@ export const SettingsSchema = lazySchema(() =>
         })
         .optional()
         .describe('Git worktree configuration for --worktree flag.'),
+      // 2.1.139: disable the agent view (the on-demand daemon).
+      // Equivalent to CLAUDE_CODE_DISABLE_AGENT_VIEW=1.
+      disableAgentView: z
+        .boolean()
+        .optional()
+        .describe(
+          'Disable the agent view (the on-demand daemon). Typically set in managed settings. ' +
+            'Equivalent to CLAUDE_CODE_DISABLE_AGENT_VIEW=1.',
+        ),
       // Whether to disable all hooks and statusLine
       disableAllHooks: z
         .boolean()

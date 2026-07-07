@@ -589,6 +589,7 @@ export function getManagedSettingsKeysForLogging(
       'autoAllowBashIfSandboxed',
       'enableWeakerNestedSandbox',
       'enableWeakerNetworkIsolation',
+      'allowAppleEvents',
       'ripgrep',
     ]),
     // For hooks, we use z.record with enum keys, so we validate separately
@@ -1220,3 +1221,77 @@ export function getOrgDefaultModel(): string | null {
  */
 export const ORG_MODEL_RESTRICTION_REASON =
   'is not permitted by the org model restrictions (availableModels allowlist or model_access entitlement)'
+
+/**
+ * 2.1.139 (F7): CLAUDE_CODE_DISABLE_AGENT_VIEW env var + disableAgentView
+ * setting. Mirrors the official `vto()`: returns a human-readable reason
+ * string when the agent view (the on-demand daemon) is disabled, else null.
+ * The env var and the managed setting are equivalent.
+ */
+export function getDisableAgentViewReason(): string | null {
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_AGENT_VIEW)) {
+    return 'is disabled by CLAUDE_CODE_DISABLE_AGENT_VIEW'
+  }
+  if (getInitialSettings().disableAgentView === true) {
+    return 'is disabled by the disableAgentView setting'
+  }
+  return null
+}
+
+/**
+ * 2.1.98 (F8): CLAUDE_CODE_SCRIPT_CAPS — per-session script-invocation limit.
+ * Mirrors the official `bga()`: reads the env var once per session, JSON-parses
+ * it, and keeps only entries whose value is a finite number (script name →
+ * max invocations). Returns null when unset or unparseable. Cached in a
+ * module-level variable (EPe equivalent) so repeated calls don't re-parse.
+ */
+let scriptCapsCache: Record<string, number> | null | undefined
+export function getScriptCaps(): Record<string, number> | null {
+  if (scriptCapsCache !== undefined) {
+    return scriptCapsCache
+  }
+  const raw = process.env.CLAUDE_CODE_SCRIPT_CAPS
+  if (!raw) {
+    scriptCapsCache = null
+    return null
+  }
+  try {
+    const parsed = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const caps: Record<string, number> = {}
+      for (const [name, value] of Object.entries(
+        parsed as Record<string, unknown>,
+      )) {
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          caps[name] = value
+        }
+      }
+      scriptCapsCache = caps
+    } else {
+      scriptCapsCache = null
+    }
+  } catch {
+    scriptCapsCache = null
+  }
+  return scriptCapsCache
+}
+
+/**
+ * 2.1.181 (F21): CLAUDE_CLIENT_PRESENCE_FILE env var. Mirrors the official
+ * `qDm()`: when set, returns true iff the referenced presence-marker file
+ * exists and is stat-able (another client is active). Returns false when the
+ * env var is unset or the file cannot be statted.
+ */
+export function isClientPresenceFileActive(): boolean {
+  const presenceFile = process.env.CLAUDE_CLIENT_PRESENCE_FILE
+  if (!presenceFile) {
+    return false
+  }
+  try {
+    // statSync throws when the file is missing or inaccessible.
+    getFsImplementation().statSync(presenceFile)
+    return true
+  } catch {
+    return false
+  }
+}

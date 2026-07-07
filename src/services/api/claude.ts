@@ -833,6 +833,24 @@ function getNonstreamingFallbackTimeoutMs(): number {
 }
 
 /**
+ * 2.1.169 (F16): API_FORCE_IDLE_TIMEOUT — Vertex/Foundry stalled-stream abort.
+ * Mirrors the official `Ag(e)`: when set (ms) and the request targets the
+ * Anthropic API, the SDK's built-in request timeout is disabled
+ * (`timeout: false`) so the streaming idle watchdog (STREAM_IDLE_TIMEOUT_MS)
+ * owns the abort. This works around Vertex/Foundry backends that hold the
+ * connection open without sending chunks — the SDK timeout would fire a
+ * misleading APIConnectionTimeoutError before the idle watchdog can surface
+ * the real "stalled stream" signal. Returns the parsed ms when set and
+ * finite, else undefined.
+ */
+export function getApiForceIdleTimeout(): number | undefined {
+  const raw = process.env.API_FORCE_IDLE_TIMEOUT
+  if (!raw) return undefined
+  const ms = parseInt(raw, 10)
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined
+}
+
+/**
  * Helper generator for non-streaming API requests.
  * Encapsulates the common pattern of creating a withRetry generator,
  * iterating to yield system messages, and returning the final BetaMessage.
@@ -1906,6 +1924,12 @@ async function* queryModel(
             { ...params, stream: true },
             {
               signal,
+              // 2.1.169 (F16): API_FORCE_IDLE_TIMEOUT — disable the SDK request
+              // timeout so the streaming idle watchdog owns stalled-stream abort
+              // (Vertex/Foundry hold connections open without sending chunks).
+              ...(getApiForceIdleTimeout() !== undefined
+                ? { timeout: false as const }
+                : {}),
               headers: {
                 ...(clientRequestId && {
                   [CLIENT_REQUEST_ID_HEADER]: clientRequestId,
