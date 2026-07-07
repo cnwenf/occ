@@ -261,6 +261,7 @@ export async function* runAgent({
   override,
   model,
   maxTurns,
+  subagentDepth,
   preserveToolUseResults,
   availableTools,
   allowedTools,

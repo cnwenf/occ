@@ -445,6 +445,7 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       canShowPermissionPrompts: false,
       querySource: 'workflow' as never,
       model: opts.model as never,
+      subagentDepth: (ctx.toolUseContext.subagentDepth ?? 0) + 1,
       maxTurns: opts.schema ? 30 : undefined,
       availableTools: ctx.availableTools,
       // Don't restrict allowedTools — inherit parent rules so the agent can

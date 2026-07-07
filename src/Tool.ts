@@ -243,6 +243,8 @@ export type ToolUseContext = {
   ) => void
   setConversationId?: (id: UUID) => void
   agentId?: AgentId // Only set for subagents; use getSessionId() for session ID. Hooks use this to distinguish subagent calls.
+  /** B9 (2.1.172): subagent nesting depth. 0 = top-level (main loop). */
+  subagentDepth?: number
   agentType?: string // Subagent type name. For the main thread's --agent type, hooks fall back to getMainThreadAgentType().
   /** When true, canUseTool must always be called even when hooks auto-approve.
    *  Used by speculation for overlay file path rewriting. */
