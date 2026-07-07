@@ -893,6 +893,17 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Enable mouse-wheel scroll acceleration in fullscreen mode.'),
+      // 2.1.200: FleetView — inline agent/workflow list below the input box.
+      // When true (default), left-arrow at the start of an empty prompt
+      // opens the fleet (agents view); down-arrow on an empty prompt also
+      // opens it when background jobs are running. Mirrors the official
+      // `leftArrowOpensAgents` setting.
+      leftArrowOpensAgents: z
+        .boolean()
+        .optional()
+        .describe(
+          'When true (default), left-arrow at the start of an empty prompt opens the FleetView agent/workflow list. Set to false to keep left-arrow as cursor movement only.',
+        ),
       // 2.1.175: enforce availableModels. Describe text verified verbatim
       // against the official 2.1.200 binary (claude.strings). When true and
       // availableModels is a non-empty array, the Default model must be in
