@@ -82,8 +82,15 @@ export function UserToolSuccessMessage({
   // so MarkdownTable's SAFETY_MARGIN=4 (tuned for the assistant-text 2-col
   // dot gutter) holds — otherwise tables wrap their box-drawing chars.
   const rendersAsAssistantText = tool.userFacingName(undefined) === '';
+
+  // Collapsible tool results: limit visible height when not verbose;
+  // expand to full when verbose or when the user toggles via 'e' key.
+  // Matches the official binary's "Show full tool output" behavior.
+  const MAX_COLLAPSED_ROWS = verbose ? undefined : 12
+  const [expanded, setExpanded] = React.useState(verbose)
+
   return <Box flexDirection="column">
-      <Box flexDirection="column" width={rendersAsAssistantText ? undefined : width}>
+      <Box flexDirection="column" width={rendersAsAssistantText ? undefined : width} maxHeight={expanded ? undefined : MAX_COLLAPSED_ROWS} overflow={expanded ? undefined : 'hidden'}>
         {renderedMessage}
         {feature('BASH_CLASSIFIER') ? classifierRule && <MessageResponse height={1}>
                 <Text dimColor>
@@ -96,6 +103,7 @@ export function UserToolSuccessMessage({
                 <Text dimColor>Allowed by auto mode classifier</Text>
               </MessageResponse> : null}
       </Box>
+      {!expanded && <Text dimColor> · ↓ 'e' to show full tool output</Text>}
       <SentryErrorBoundary>
         <HookProgressMessage hookEvent="PostToolUse" lookups={lookups} toolUseID={toolUseID} verbose={verbose} isTranscriptMode={isTranscriptMode} />
       </SentryErrorBoundary>
