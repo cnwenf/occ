@@ -51,6 +51,7 @@ export function buildAuthUrl({
   loginWithClaudeAi,
   inferenceOnly,
   orgUUID,
+  workspaceId,
   loginHint,
   loginMethod,
 }: {
@@ -61,6 +62,7 @@ export function buildAuthUrl({
   loginWithClaudeAi?: boolean
   inferenceOnly?: boolean
   orgUUID?: string
+  workspaceId?: string
   loginHint?: string
   loginMethod?: string
 }): string {
@@ -89,6 +91,14 @@ export function buildAuthUrl({
   // Add orgUUID as URL param if provided
   if (orgUUID) {
     authUrl.searchParams.append('orgUUID', orgUUID)
+  }
+
+  // 2.1.141: append workspace_id so the OAuth authorize endpoint can scope the
+  // login to a specific workspace. Sourced from ANTHROPIC_WORKSPACE_ID env var,
+  // the 'workspace_id' config key, or an explicit workspaceId option. Mirrors
+  // official: if(e.workspaceId)n.workspace_id=e.workspaceId
+  if (workspaceId) {
+    authUrl.searchParams.append('workspace_id', workspaceId)
   }
 
   // Pre-populate email on the login form (standard OIDC parameter)

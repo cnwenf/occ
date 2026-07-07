@@ -88,8 +88,20 @@ let hasLoggedInitialLoad = false
 
 const MEMORY_INSTRUCTION_PROMPT =
   'Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.'
-// Recommended max character count for a memory file
-export const MAX_MEMORY_CHARACTER_COUNT = 40000
+// 2.1.169: the "too long" threshold for CLAUDE.md / memory files scales with
+// the active model's context window. Pure logic lives in memoryThreshold.ts
+// (kept separate so it can be unit-tested without loading this heavy module).
+import {
+  getMemoryCharThreshold,
+  MAX_CLAUDE_MD_TOKEN_CONTEXT_RATIO,
+  MIN_MEMORY_CHARACTER_COUNT,
+} from './memoryThreshold.js'
+
+export {
+  getMemoryCharThreshold,
+  MAX_CLAUDE_MD_TOKEN_CONTEXT_RATIO,
+  MIN_MEMORY_CHARACTER_COUNT,
+}
 
 // File extensions that are allowed for @include directives
 // This prevents binary files (images, PDFs, etc.) from being loaded into memory
@@ -1129,8 +1141,11 @@ export function resetGetMemoryFilesCache(
   clearMemoryFileCaches()
 }
 
-export function getLargeMemoryFiles(files: MemoryFileInfo[]): MemoryFileInfo[] {
-  return files.filter(f => f.content.length > MAX_MEMORY_CHARACTER_COUNT)
+export function getLargeMemoryFiles(
+  files: MemoryFileInfo[],
+  threshold: number = MIN_MEMORY_CHARACTER_COUNT,
+): MemoryFileInfo[] {
+  return files.filter(f => f.content.length > threshold)
 }
 
 /**

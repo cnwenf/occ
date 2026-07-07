@@ -202,6 +202,15 @@ export function isCommandInput(input: string): boolean {
 }
 
 /**
+ * Checks if a token is command-name-shaped: only [a-zA-Z0-9.:\-_].
+ * Used to gate the "No commands match" empty-state so it only fires for
+ * real command queries (not paths, URLs, or whitespace).
+ */
+export function isCommandNameToken(token: string): boolean {
+  return !/[^a-zA-Z0-9.:\-_]/.test(token)
+}
+
+/**
  * Checks if a command input has arguments
  * A command with just a trailing space is considered to have no arguments
  */

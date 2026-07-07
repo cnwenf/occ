@@ -1,11 +1,13 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { Box, Text } from '../ink.js';
 import * as React from 'react';
-import { getLargeMemoryFiles, MAX_MEMORY_CHARACTER_COUNT, type MemoryFileInfo } from './claudemd.js';
+import { getLargeMemoryFiles, getMemoryCharThreshold, type MemoryFileInfo } from './claudemd.js';
 import figures from 'figures';
+import { getContextWindowForModel } from './context.js';
 import { getCwd } from './cwd.js';
 import { relative } from 'path';
 import { formatNumber } from './format.js';
+import { getMainLoopModel } from './model/model.js';
 import type { getGlobalConfig } from './config.js';
 import { getAnthropicApiKeyWithSource, getApiKeyFromConfigOrMacOSKeychain, getAuthTokenSource, isClaudeAISubscriber } from './auth.js';
 import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js';
@@ -31,9 +33,16 @@ export type StatusNoticeDefinition = {
 const largeMemoryFilesNotice: StatusNoticeDefinition = {
   id: 'large-memory-files',
   type: 'warning',
-  isActive: ctx => getLargeMemoryFiles(ctx.memoryFiles).length > 0,
+  isActive: ctx =>
+    getLargeMemoryFiles(
+      ctx.memoryFiles,
+      getMemoryCharThreshold(getContextWindowForModel(getMainLoopModel())),
+    ).length > 0,
   render: ctx => {
-    const largeMemoryFiles = getLargeMemoryFiles(ctx.memoryFiles);
+    const threshold = getMemoryCharThreshold(
+      getContextWindowForModel(getMainLoopModel()),
+    );
+    const largeMemoryFiles = getLargeMemoryFiles(ctx.memoryFiles, threshold);
     return <>
         {largeMemoryFiles.map(file => {
         const displayPath = file.path.startsWith(getCwd()) ? relative(getCwd(), file.path) : file.path;
@@ -42,7 +51,7 @@ const largeMemoryFilesNotice: StatusNoticeDefinition = {
               <Text color="warning">
                 Large <Text bold>{displayPath}</Text> will impact performance (
                 {formatNumber(file.content.length)} chars &gt;{' '}
-                {formatNumber(MAX_MEMORY_CHARACTER_COUNT)})
+                {formatNumber(threshold)})
                 <Text dimColor> · /memory to edit</Text>
               </Text>
             </Box>;

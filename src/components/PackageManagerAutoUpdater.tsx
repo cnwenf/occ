@@ -6,6 +6,7 @@ import { Text } from '../ink.js';
 import { type AutoUpdaterResult, getLatestVersionFromGcs, getMaxVersion, shouldSkipVersion } from '../utils/autoUpdater.js';
 import { isAutoUpdaterDisabled } from '../utils/config.js';
 import { logForDebugging } from '../utils/debug.js';
+import { isEnvTruthy } from '../utils/envUtils.js';
 import { getPackageManager, type PackageManager } from '../utils/nativeInstaller/packageManagers.js';
 import { gt, gte } from '../utils/semver.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
@@ -29,6 +30,14 @@ export function PackageManagerAutoUpdater(t0) {
     t1 = async () => {
       false || false;
       if (isAutoUpdaterDisabled()) {
+        return;
+      }
+      // 2.1.129: package-manager (npm/bun/brew) auto-update is opt-in via
+      // CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE. The native installer path is
+      // the default; this gate keeps package-manager auto-updates dormant
+      // unless explicitly enabled. Mirrors official
+      // K=it(process.env.CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE); if(!K)return
+      if (!isEnvTruthy(process.env.CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE)) {
         return;
       }
       const [channel, pm] = await Promise.all([Promise.resolve(getInitialSettings()?.autoUpdatesChannel ?? "latest"), getPackageManager()]);

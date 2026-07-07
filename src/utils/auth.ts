@@ -1526,7 +1526,9 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
   let release
   try {
     logEvent('tengu_oauth_token_refresh_lock_acquiring', {})
-    release = await lockfile.lock(claudeDir)
+    release = await lockfile.lock(claudeDir, {
+      onCompromised: lockfile.lockCompromisedHandler('OAuth refresh'),
+    })
     logEvent('tengu_oauth_token_refresh_lock_acquired', {})
   } catch (err) {
     if ((err as { code?: string }).code === 'ELOCKED') {

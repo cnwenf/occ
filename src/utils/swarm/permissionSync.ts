@@ -226,7 +226,9 @@ export async function writePermissionRequest(
 
   let release: (() => Promise<void>) | undefined
   try {
-    release = await lockfile.lock(lockFilePath)
+    release = await lockfile.lock(lockFilePath, {
+      onCompromised: lockfile.lockCompromisedHandler('Permission sync write'),
+    })
 
     // Write the request file
     await writeFile(pendingPath, jsonStringify(request, null, 2), 'utf-8')
@@ -378,7 +380,9 @@ export async function resolvePermission(
 
   let release: (() => Promise<void>) | undefined
   try {
-    release = await lockfile.lock(lockFilePath)
+    release = await lockfile.lock(lockFilePath, {
+      onCompromised: lockfile.lockCompromisedHandler('Permission sync read'),
+    })
 
     // Read the pending request
     let content: string

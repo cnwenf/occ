@@ -7,7 +7,7 @@ import { logForDebugging } from './utils/debug.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from './utils/envUtils.js'
 import { getErrnoCode } from './utils/errors.js'
 import { readLinesReverse } from './utils/fsOperations.js'
-import { lock } from './utils/lockfile.js'
+import { lock, lockCompromisedHandler } from './utils/lockfile.js'
 import {
   hashPastedText,
   retrievePastedText,
@@ -311,6 +311,7 @@ async function immediateFlushHistory(): Promise<void> {
         retries: 3,
         minTimeout: 50,
       },
+      onCompromised: lockCompromisedHandler('History'),
     })
 
     const jsonLines = pendingEntries.map(entry => jsonStringify(entry) + '\n')

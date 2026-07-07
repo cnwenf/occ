@@ -4,9 +4,10 @@ import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js
 import { countMcpToolTokens } from './analyzeContext.js'
 import {
   getLargeMemoryFiles,
+  getMemoryCharThreshold,
   getMemoryFiles,
-  MAX_MEMORY_CHARACTER_COUNT,
 } from './claudemd.js'
+import { getContextWindowForModel } from './context.js'
 import { getMainLoopModel } from './model/model.js'
 import { permissionRuleValueToString } from './permissions/permissionRuleParser.js'
 import { detectUnreachableRules } from './permissions/shadowedRuleDetection.js'
@@ -41,9 +42,12 @@ export type ContextWarnings = {
 }
 
 async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
-  const largeFiles = getLargeMemoryFiles(await getMemoryFiles())
+  const threshold = getMemoryCharThreshold(
+    getContextWindowForModel(getMainLoopModel()),
+  )
+  const largeFiles = getLargeMemoryFiles(await getMemoryFiles(), threshold)
 
-  // This already filters for files > 40k chars each
+  // This already filters for files exceeding the (context-scaled) threshold each
   if (largeFiles.length === 0) {
     return null
   }
@@ -54,8 +58,8 @@ async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
 
   const message =
     largeFiles.length === 1
-      ? `Large CLAUDE.md file detected (${largeFiles[0]!.content.length.toLocaleString()} chars > ${MAX_MEMORY_CHARACTER_COUNT.toLocaleString()})`
-      : `${largeFiles.length} large CLAUDE.md files detected (each > ${MAX_MEMORY_CHARACTER_COUNT.toLocaleString()} chars)`
+      ? `Large CLAUDE.md file detected (${largeFiles[0]!.content.length.toLocaleString()} chars > ${threshold.toLocaleString()})`
+      : `${largeFiles.length} large CLAUDE.md files detected (each > ${threshold.toLocaleString()} chars)`
 
   return {
     type: 'claudemd_files',
@@ -63,7 +67,7 @@ async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
     message,
     details,
     currentValue: largeFiles.length, // Number of files exceeding threshold
-    threshold: MAX_MEMORY_CHARACTER_COUNT,
+    threshold,
   }
 }
 

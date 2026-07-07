@@ -204,6 +204,11 @@ type Props = {
   selectedSuggestion: number;
   maxColumnWidth?: number;
   /**
+   * When non-empty and suggestions is empty, render a dim empty-state row
+   * (e.g. `No commands match "<input>"`) instead of returning null.
+   */
+  emptyMessage?: string;
+  /**
    * When true, the suggestions are rendered inside a position=absolute
    * overlay. We omit minHeight and flex-end so the y-clamp in the
    * renderer doesn't push fewer items down into the prompt area.
@@ -216,6 +221,7 @@ export function PromptInputFooterSuggestions(t0) {
     suggestions,
     selectedSuggestion,
     maxColumnWidth: maxColumnWidthProp,
+    emptyMessage,
     overlay
   } = t0;
   const {
@@ -223,7 +229,13 @@ export function PromptInputFooterSuggestions(t0) {
   } = useTerminalSize();
   const maxVisibleItems = overlay ? OVERLAY_MAX_ITEMS : Math.min(6, Math.max(1, rows - 3));
   if (suggestions.length === 0) {
-    return null;
+    if (!emptyMessage) {
+      return null;
+    }
+    // I16h: dim "No commands match "<input>"" empty-state.
+    return <Box flexDirection="column" justifyContent={overlay ? undefined : "flex-end"}>
+        <Text dimColor>{emptyMessage}</Text>
+      </Box>;
   }
   let t1;
   if ($[0] !== maxColumnWidthProp || $[1] !== suggestions) {

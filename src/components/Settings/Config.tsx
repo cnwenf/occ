@@ -1068,7 +1068,11 @@ export function Config({
     return settingsItems.filter(setting => {
       if (setting.id.toLowerCase().includes(lowerQuery)) return true;
       const searchableText = 'searchText' in setting ? setting.searchText : setting.label;
-      return searchableText.toLowerCase().includes(lowerQuery);
+      if (searchableText.toLowerCase().includes(lowerQuery)) return true;
+      // I16f: also match enum option values (e.g. theme names) so typing a
+      // value surfaces the setting that offers it, not just the label/id.
+      if ('options' in setting && setting.options.some(opt => opt.toLowerCase().includes(lowerQuery))) return true;
+      return false;
     });
   }, [settingsItems, searchQuery]);
 

@@ -1175,12 +1175,10 @@ function saveConfigWithLock<A extends object>(
     const startTime = Date.now()
     release = lockfile.lockSync(file, {
       lockfilePath: lockFilePath,
-      onCompromised: err => {
-        // Default onCompromised throws from a setTimeout callback, which
-        // becomes an unhandled exception. Log instead -- the lock being
-        // stolen (e.g. after a 10s event-loop stall) is recoverable.
-        logForDebugging(`Config lock compromised: ${err}`, { level: 'error' })
-      },
+      // Default onCompromised throws from a setTimeout callback, which
+      // becomes an unhandled exception. Recover instead -- the lock being
+      // stolen (e.g. after a 10s event-loop stall) is recoverable (2.1.133).
+      onCompromised: lockfile.lockCompromisedHandler('Config'),
     })
     const lockTime = Date.now() - startTime
     if (lockTime > 100) {

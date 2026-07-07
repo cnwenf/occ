@@ -470,7 +470,11 @@ export async function cleanupNpmCacheForAnthropicPackages(): Promise<void> {
   }
 
   try {
-    await lockfile.lock(markerPath, { retries: 0, realpath: false })
+    await lockfile.lock(markerPath, {
+      retries: 0,
+      realpath: false,
+      onCompromised: lockfile.lockCompromisedHandler('Npm cache cleanup'),
+    })
   } catch {
     logForDebugging('npm cache cleanup: skipping, lock held')
     return
@@ -575,7 +579,11 @@ export async function cleanupOldVersionsThrottled(): Promise<void> {
   }
 
   try {
-    await lockfile.lock(markerPath, { retries: 0, realpath: false })
+    await lockfile.lock(markerPath, {
+      retries: 0,
+      realpath: false,
+      onCompromised: lockfile.lockCompromisedHandler('Version cleanup'),
+    })
   } catch {
     logForDebugging('version cleanup: skipping, lock held')
     return

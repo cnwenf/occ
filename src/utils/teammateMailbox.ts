@@ -38,6 +38,7 @@ const LOCK_OPTIONS = {
     minTimeout: 5,
     maxTimeout: 100,
   },
+  onCompromised: lockfile.lockCompromisedHandler('Teammate mailbox'),
 }
 
 export type TeammateMessage = {

@@ -61,11 +61,13 @@ export function formatToken(
         .join('')
       // Prefix each line with a dim vertical bar. Keep text italic but at
       // normal brightness — chalk.dim is nearly invisible on dark themes.
+      // Render the bar on every line — including blank lines between
+      // paragraphs — so the left bar is continuous across the whole blockquote.
       const bar = chalk.dim(BLOCKQUOTE_BAR)
       return inner
         .split(EOL)
         .map(line =>
-          stripAnsi(line).trim() ? `${bar} ${chalk.italic(line)}` : line,
+          stripAnsi(line).trim() ? `${bar} ${chalk.italic(line)}` : bar,
         )
         .join(EOL)
     }

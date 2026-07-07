@@ -4,13 +4,14 @@ import * as React from 'react';
 import { color, Text } from '../ink.js';
 import type { MCPServerConnection } from '../services/mcp/types.js';
 import { getAccountInformation, isClaudeAISubscriber } from './auth.js';
-import { getLargeMemoryFiles, getMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from './claudemd.js';
+import { getLargeMemoryFiles, getMemoryCharThreshold, getMemoryFiles } from './claudemd.js';
+import { getContextWindowForModel } from './context.js';
 import { getDoctorDiagnostic } from './doctorDiagnostic.js';
 import { getAWSRegion, getDefaultVertexRegion, isEnvTruthy } from './envUtils.js';
 import { getDisplayPath } from './file.js';
 import { formatNumber } from './format.js';
 import { getIdeClientName, type IDEExtensionInstallationStatus, isJetBrainsIde, toIDEDisplayName } from './ide.js';
-import { getClaudeAiUserDefaultModelDescription, modelDisplayString } from './model/model.js';
+import { getClaudeAiUserDefaultModelDescription, getMainLoopModel, modelDisplayString } from './model/model.js';
 import { getAPIProvider } from './model/providers.js';
 import { getMTLSConfig } from './mtls.js';
 import { checkInstall } from './nativeInstaller/index.js';
@@ -115,11 +116,14 @@ export function buildMcpProperties(clients: MCPServerConnection[] = [], theme: T
 }
 export async function buildMemoryDiagnostics(): Promise<Diagnostic[]> {
   const files = await getMemoryFiles();
-  const largeFiles = getLargeMemoryFiles(files);
+  const threshold = getMemoryCharThreshold(
+    getContextWindowForModel(getMainLoopModel()),
+  );
+  const largeFiles = getLargeMemoryFiles(files, threshold);
   const diagnostics: Diagnostic[] = [];
   largeFiles.forEach(file => {
     const displayPath = getDisplayPath(file.path);
-    diagnostics.push(`Large ${displayPath} will impact performance (${formatNumber(file.content.length)} chars > ${formatNumber(MAX_MEMORY_CHARACTER_COUNT)})`);
+    diagnostics.push(`Large ${displayPath} will impact performance (${formatNumber(file.content.length)} chars > ${formatNumber(threshold)})`);
   });
   return diagnostics;
 }

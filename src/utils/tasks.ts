@@ -105,6 +105,7 @@ const LOCK_OPTIONS = {
     minTimeout: 5,
     maxTimeout: 100,
   },
+  onCompromised: lockfile.lockCompromisedHandler('Task list'),
 }
 
 function getHighWaterMarkPath(taskListId: string): string {

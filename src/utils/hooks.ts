@@ -1191,6 +1191,13 @@ async function execCommandHook(
     CLAUDE_PROJECT_DIR: toHookPath(projectDir),
   }
 
+  // 2.1.153: pass terminal size to the child process so statusline (and other
+  // hooks) can render columns-aware output. Mirrors official
+  // {columns,rows}=process.stdout; if($)P.COLUMNS=String($); if(L)P.LINES=String(L)
+  const { columns, rows } = process.stdout
+  if (columns) envVars.COLUMNS = String(columns)
+  if (rows) envVars.LINES = String(rows)
+
   // Plugin and skill hooks both set CLAUDE_PLUGIN_ROOT (skills use the same
   // name for consistency — skills can migrate to plugins without code changes)
   if (pluginRoot) {
@@ -1427,7 +1434,6 @@ async function execCommandHook(
                 child.stdin.destroy()
               }
             })
-            continue
           }
         } catch {
           // Not JSON, just a normal line
@@ -1980,7 +1986,7 @@ export async function getMatchingHooks(
 
     // If you change the criteria below, then you must change
     // src/utils/hooks/hooksConfigManager.ts as well.
-    let matchQuery: string | undefined = undefined
+    let matchQuery: string | undefined 
     switch (hookInput.hook_event_name) {
       case 'PreToolUse':
       case 'PostToolUse':

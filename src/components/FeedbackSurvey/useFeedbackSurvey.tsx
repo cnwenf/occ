@@ -229,7 +229,7 @@ export function useFeedbackSurvey(messages: Message[], isLoading: boolean, submi
     if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY)) {
       return false;
     }
-    if (isFeedbackSurveyDisabled()) {
+    if (isFeedbackSurveyDisabled() && !isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_FEEDBACK_SURVEY_FOR_OTEL)) {
       return false;
     }
 

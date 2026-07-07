@@ -50,6 +50,7 @@ import { getViewedTeammateTask } from '../state/selectors.js'
 import { logError } from './log.js'
 import { logAntError } from './debug.js'
 import { isENOENT, toError } from './errors.js'
+import { logOTelEvent } from './telemetry/events.js'
 import type { DiagnosticFile } from '../services/diagnosticTracking.js'
 import { diagnosticTracker } from '../services/diagnosticTracking.js'
 import type {
@@ -1918,6 +1919,19 @@ async function getOpenedFileFromIDE(
   ]
 }
 
+// Mirrors official 2.1.122 at_mention OTEL log (X$): emits claude_code.at_mention
+// with mention_type + success after each @-mention resolution attempt.
+// Fire-and-forget (official au(...) is unawaited).
+function logAtMentionOtel(
+  mentionType: 'file' | 'directory' | 'agent' | 'mcp_resource',
+  success: boolean,
+): void {
+  void logOTelEvent('at_mention', {
+    mention_type: mentionType,
+    success: String(success),
+  })
+}
+
 async function processAtMentionedFiles(
   input: string,
   toolUseContext: ToolUseContext,
@@ -1956,6 +1970,7 @@ async function processAtMentionedFiles(
               }
               const stdout = names.join('\n')
               logEvent('tengu_at_mention_extracting_directory_success', {})
+              logAtMentionOtel('directory', true)
 
               return {
                 type: 'directory' as const,
@@ -1984,6 +1999,7 @@ async function processAtMentionedFiles(
         )
       } catch {
         logEvent('tengu_at_mention_extracting_filename_error', {})
+        logAtMentionOtel('file', false)
       }
     }),
   )
@@ -2003,10 +2019,12 @@ function processAgentMentions(
 
     if (!agentDef) {
       logEvent('tengu_at_mention_agent_not_found', {})
+      logAtMentionOtel('agent', false)
       return null
     }
 
     logEvent('tengu_at_mention_agent_success', {})
+    logAtMentionOtel('agent', true)
 
     return {
       type: 'agent_mention' as const,
@@ -2036,6 +2054,7 @@ async function processMcpResourceAttachments(
 
         if (!serverName || !uri) {
           logEvent('tengu_at_mention_mcp_resource_error', {})
+          logAtMentionOtel('mcp_resource', false)
           return null
         }
 
@@ -2043,6 +2062,7 @@ async function processMcpResourceAttachments(
         const client = mcpClients.find(c => c.name === serverName)
         if (!client || client.type !== 'connected') {
           logEvent('tengu_at_mention_mcp_resource_error', {})
+          logAtMentionOtel('mcp_resource', false)
           return null
         }
 
@@ -2052,6 +2072,7 @@ async function processMcpResourceAttachments(
         const resourceInfo = serverResources.find(r => r.uri === uri)
         if (!resourceInfo) {
           logEvent('tengu_at_mention_mcp_resource_error', {})
+          logAtMentionOtel('mcp_resource', false)
           return null
         }
 
@@ -2061,6 +2082,7 @@ async function processMcpResourceAttachments(
           })
 
           logEvent('tengu_at_mention_mcp_resource_success', {})
+          logAtMentionOtel('mcp_resource', true)
 
           return {
             type: 'mcp_resource' as const,
@@ -2072,11 +2094,13 @@ async function processMcpResourceAttachments(
           }
         } catch (error) {
           logEvent('tengu_at_mention_mcp_resource_error', {})
+          logAtMentionOtel('mcp_resource', false)
           logError(error)
           return null
         }
       } catch {
         logEvent('tengu_at_mention_mcp_resource_error', {})
+        logAtMentionOtel('mcp_resource', false)
         return null
       }
     }),
@@ -3123,6 +3147,7 @@ export async function generateFileAttachment(
         // File hasn't been modified, return already_read_file attachment
         // This tells the system the file is already in context and doesn't need to be sent to API
         logEvent(successEventName, {})
+        logAtMentionOtel('file', true)
         return {
           type: 'already_read_file',
           filename,
@@ -3181,6 +3206,7 @@ export async function generateFileAttachment(
         }
         const result = await FileReadTool.call(truncatedInput, toolUseContext)
         logEvent(successEventName, {})
+        if (mode === 'at-mention') logAtMentionOtel('file', true)
 
         return {
           type: 'file' as const,
@@ -3191,6 +3217,7 @@ export async function generateFileAttachment(
         }
       } catch {
         logEvent(errorEventName, {})
+        if (mode === 'at-mention') logAtMentionOtel('file', false)
         return null
       }
     }
@@ -3204,6 +3231,7 @@ export async function generateFileAttachment(
     try {
       const result = await FileReadTool.call(fileInput, toolUseContext)
       logEvent(successEventName, {})
+      if (mode === 'at-mention') logAtMentionOtel('file', true)
       return {
         type: 'file',
         filename,
@@ -3221,6 +3249,7 @@ export async function generateFileAttachment(
     }
   } catch {
     logEvent(errorEventName, {})
+    if (mode === 'at-mention') logAtMentionOtel('file', false)
     return null
   }
 }

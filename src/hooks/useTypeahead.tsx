@@ -22,7 +22,7 @@ import { generateProgressiveArgumentHint, parseArguments } from '../utils/argume
 import { getShellCompletions, type ShellCompletionType } from '../utils/bash/shellCompletion.js';
 import { formatLogMetadata } from '../utils/format.js';
 import { getSessionIdFromLog, searchSessionsByCustomTitle } from '../utils/sessionStorage.js';
-import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput } from '../utils/suggestions/commandSuggestions.js';
+import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput, isCommandNameToken } from '../utils/suggestions/commandSuggestions.js';
 import { getDirectoryCompletions, getPathCompletions, isPathLikeToken } from '../utils/suggestions/directoryCompletion.js';
 import { getShellHistoryCompletion } from '../utils/suggestions/shellHistoryCompletion.js';
 import { getSlackChannelSuggestions, hasSlackMcpServer } from '../utils/suggestions/slackChannelSuggestions.js';
@@ -91,15 +91,18 @@ type Props = {
     suggestions: SuggestionItem[];
     selectedSuggestion: number;
     commandArgumentHint?: string;
+    suggestionsEmptyMessage?: string;
   }) => {
     suggestions: SuggestionItem[];
     selectedSuggestion: number;
     commandArgumentHint?: string;
+    suggestionsEmptyMessage?: string;
   }) => void;
   suggestionsState: {
     suggestions: SuggestionItem[];
     selectedSuggestion: number;
     commandArgumentHint?: string;
+    suggestionsEmptyMessage?: string;
   };
   suppressSuggestions?: boolean;
   markAccepted: () => void;
@@ -111,6 +114,7 @@ type UseTypeaheadResult = {
   suggestionType: SuggestionType;
   maxColumnWidth?: number;
   commandArgumentHint?: string;
+  suggestionsEmptyMessage?: string;
   inlineGhostText?: InlineGhostText;
   handleKeyDown: (e: KeyboardEvent) => void;
 };
@@ -363,7 +367,8 @@ export function useTypeahead({
   suggestionsState: {
     suggestions,
     selectedSuggestion,
-    commandArgumentHint
+    commandArgumentHint,
+    suggestionsEmptyMessage
   },
   suppressSuggestions = false,
   markAccepted,
@@ -728,7 +733,7 @@ export function useTypeahead({
 
     // Determine whether to display the argument hint and command suggestions.
     if (mode === 'prompt' && isCommandInput(value) && effectiveCursorOffset > 0 && !hasCommandWithArguments(isAtEndWithWhitespace, value)) {
-      let commandArgumentHint: string | undefined = undefined;
+      let commandArgumentHint: string | undefined ;
       if (value.length > 1) {
         // We have a partial or complete command without arguments
         // Check if it matches a command exactly and has an argument hint
@@ -773,10 +778,21 @@ export function useTypeahead({
         // (set above when hasExactlyOneTrailingSpace is true)
       }
       const commandItems = generateCommandSuggestions(value, commands);
+      // I16h: when the typed /command matches no command, show a dim
+      // "No commands match "<input>"" empty-state. Gated on value.length>1
+      // (not just "/") and a command-name-shaped token so paths/URLs/whitespace
+      // don't trigger it.
+      const commandToken = value.length > 1
+        ? (value.indexOf(' ') === -1 ? value.slice(1) : value.slice(1, value.indexOf(' ')))
+        : '';
+      const emptyMessage = commandItems.length === 0 && value.length > 1 && isCommandNameToken(commandToken)
+        ? `No commands match "${value}"`
+        : undefined;
       setSuggestionsState(() => ({
         commandArgumentHint,
         suggestions: commandItems,
-        selectedSuggestion: commandItems.length > 0 ? 0 : -1
+        selectedSuggestion: commandItems.length > 0 ? 0 : -1,
+        suggestionsEmptyMessage: emptyMessage
       }));
       setSuggestionType(commandItems.length > 0 ? 'command' : 'none');
 
@@ -795,9 +811,10 @@ export function useTypeahead({
     } else if (isCommandInput(value) && hasCommandWithArguments(isAtEndWithWhitespace, value)) {
       // If we have a command with arguments (no trailing space), clear any stale hint
       // This prevents the hint from flashing when transitioning between states
-      setSuggestionsState(prev => prev.commandArgumentHint ? {
+      setSuggestionsState(prev => (prev.commandArgumentHint || prev.suggestionsEmptyMessage) ? {
         ...prev,
-        commandArgumentHint: undefined
+        commandArgumentHint: undefined,
+        suggestionsEmptyMessage: undefined
       } : prev);
     }
     if (suggestionType === 'custom-title') {
@@ -1378,6 +1395,7 @@ export function useTypeahead({
     suggestionType,
     maxColumnWidth,
     commandArgumentHint,
+    suggestionsEmptyMessage,
     inlineGhostText: effectiveGhostText,
     handleKeyDown
   };

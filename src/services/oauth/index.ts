@@ -36,6 +36,7 @@ export class OAuthService {
       inferenceOnly?: boolean
       expiresIn?: number
       orgUUID?: string
+      workspaceId?: string
       loginHint?: string
       loginMethod?: string
       /**
@@ -63,6 +64,9 @@ export class OAuthService {
       loginWithClaudeAi: options?.loginWithClaudeAi,
       inferenceOnly: options?.inferenceOnly,
       orgUUID: options?.orgUUID,
+      // 2.1.141: workspace_id for the authorize URL — explicit option wins,
+      // else fall back to ANTHROPIC_WORKSPACE_ID env var.
+      workspaceId: options?.workspaceId ?? process.env.ANTHROPIC_WORKSPACE_ID,
       loginHint: options?.loginHint,
       loginMethod: options?.loginMethod,
     }

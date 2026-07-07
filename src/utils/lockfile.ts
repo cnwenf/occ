@@ -10,6 +10,7 @@
  */
 
 import type { CheckOptions, LockOptions, UnlockOptions } from 'proper-lockfile'
+import { logForDebugging } from './debug.js'
 
 type Lockfile = typeof import('proper-lockfile')
 
@@ -40,4 +41,27 @@ export function unlock(file: string, options?: UnlockOptions): Promise<void> {
 
 export function check(file: string, options?: CheckOptions): Promise<boolean> {
   return getLockfile().check(file, options)
+}
+
+/**
+ * Builds an `onCompromised` handler for proper-lockfile that catches the
+ * ECOMPROMISED error and recovers (log + continue) instead of crashing.
+ *
+ * proper-lockfile's default `onCompromised` throws the ECOMPROMISED error from
+ * a setTimeout callback, which surfaces as an unhandled rejection and can
+ * crash the process. Every lock-write path must install a handler returned
+ * here so a compromised lock (e.g. after a 10s event-loop stall, or another
+ * process deleting the lock directory) is logged and recovered (2.1.133).
+ *
+ * The thrown error carries `error.code === 'ECOMPROMISED'`; this handler is
+ * the catch-and-recover for that code.
+ */
+export function lockCompromisedHandler(
+  context: string,
+): (err: Error) => void {
+  return (err: Error) => {
+    logForDebugging(`${context} lock compromised: ${err}`, {
+      level: 'error',
+    })
+  }
 }
