@@ -20,6 +20,8 @@
  *   return r;
  */
 import { z } from 'zod/v4'
+import React from 'react'
+import { Box, Text } from '../../ink.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionResult } from '../../types/permissions.js'
@@ -34,6 +36,17 @@ import {
 } from './WorkflowEngine.js'
 import { WorkflowJournal } from './journal.js'
 import { resolveWorkflowScript } from '../../utils/effort/workflowDiscovery.js'
+import { WorkflowProgressTree } from '../../components/WorkflowProgressTree.js'
+import {
+  registerWorkflowTask,
+  completeWorkflowTask,
+  failWorkflowTask,
+  updateWorkflowProgressBatch,
+  type LocalWorkflowTaskState,
+  type WorkflowPhaseProgress,
+  type WorkflowAgentStat,
+  type WorkflowProgressData,
+} from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
 
 const inputSchema = lazySchema(() =>
   z.object({
@@ -119,6 +132,48 @@ export const WorkflowTool = buildTool({
     const name = input.name ?? input.scriptPath
     return typeof name === 'string' ? `Workflow(${name})` : null
   },
+  /**
+   * Live progress renderer — mounts <WorkflowProgressTree> while call() runs.
+   * Reads the latest WorkflowProgressData snapshot from the progress message
+   * stream (emitted by the onProgress handler in call()). Mirrors the
+   * AgentTool/UI.tsx renderToolUseProgressMessage pattern. Uses
+   * React.createElement because this file is .ts (no JSX literals).
+   */
+  renderToolUseProgressMessage(
+    progressMessagesForMessage: Array<{ data?: unknown }>,
+    options: {
+      tools: unknown
+      verbose: boolean
+      terminalSize?: { columns: number; rows: number }
+      inProgressToolCallCount?: number
+      isTranscriptMode?: boolean
+    },
+): React.ReactNode {
+    // Find the latest workflow_progress snapshot in the stream.
+    let latest: WorkflowProgressData | undefined
+    for (let i = progressMessagesForMessage.length - 1; i >= 0; i--) {
+      const data = progressMessagesForMessage[i]?.data as
+        | WorkflowProgressData
+        | undefined
+      if (data && data.type === 'workflow_progress') {
+        latest = data
+        break
+      }
+    }
+    if (!latest) {
+      return React.createElement(
+        Box,
+        { height: 1 },
+        React.createElement(Text, { dimColor: true }, 'Running workflow…'),
+      )
+    }
+    return React.createElement(WorkflowProgressTree, {
+      phases: latest.phases,
+      narratorLines: latest.narratorLines,
+      shouldAnimate: true,
+      viewportRows: options.terminalSize?.rows ?? 10,
+    })
+  },
   async checkPermissions(
     input: { scriptPath?: string; name?: string; remote?: boolean } & {
       [key: string]: unknown
@@ -164,7 +219,7 @@ export const WorkflowTool = buildTool({
       content: parts,
     }
   },
-  async call(input, context, canUseTool) {
+  async call(input, context, canUseTool, _parentMessage, onProgress) {
     const { scriptPath: rawScriptPath, args, resumeFromRunId, name } = input as {
       scriptPath?: string
       args?: Record<string, unknown>
@@ -232,12 +287,13 @@ export const WorkflowTool = buildTool({
     // Set up journal for resume (if transcriptDir available).
     let journal: WorkflowJournal | undefined
     let cachedResults: Map<string, unknown> | undefined
+    let transcriptDir = ''
     try {
       const { getTaskOutputDir } = await import(
         '../../utils/task/diskOutput.js'
       )
       const { join } = await import('path')
-      const transcriptDir = join(
+      transcriptDir = join(
         getTaskOutputDir(),
         'wf-runs',
         runId,
@@ -256,6 +312,169 @@ export const WorkflowTool = buildTool({
       })
     }
 
+    // Register a local_workflow task at call() start so /workflows populates
+    // and the live progress tree can read task state. Mirrors binary
+    // registerWorkflowTask (line 472281). Seed phases from meta.phases.
+    const taskId = `wf_task_${runId}`
+    const seedPhases: WorkflowPhaseProgress[] = (loaded.meta.phases ?? []).map(
+      p => ({
+        phase: p,
+        completedAgents: 0,
+        totalAgents: 0,
+        agentCount: 0,
+        agents: [],
+      }),
+    )
+    const initialState: LocalWorkflowTaskState = {
+      id: taskId,
+      type: 'local_workflow',
+      status: 'running',
+      description: loaded.meta.description ?? loaded.meta.name ?? runId,
+      toolUseId: context.toolUseId,
+      startTime: Date.now(),
+      outputFile: '',
+      outputOffset: 0,
+      notified: false,
+      workflowRunId: runId,
+      transcriptDir,
+      scriptPath: loaded.scriptPath,
+      workflowName: loaded.meta.name,
+      summary: loaded.meta.description,
+      phases: loaded.meta.phases,
+      workflowProgress: seedPhases,
+      narratorLines: [],
+      logs: [],
+    }
+    registerWorkflowTask(initialState, context.setAppState)
+
+    // Mutable accumulator: individual engine events → full snapshot. The
+    // snapshot is emitted via ToolCallProgress (onProgress) for the live tree
+    // AND via updateWorkflowProgressBatch for the /workflows view.
+    const phases: WorkflowPhaseProgress[] = seedPhases.map(p => ({
+      ...p,
+      agents: [],
+    }))
+    const narratorLines: string[] = []
+
+    const handleProgress = (data: unknown): void => {
+      const ev = data as {
+        type?: string
+        phase?: string
+        id?: string
+        label?: string
+        agentType?: string
+        status?: 'running' | 'done' | 'error'
+        agentCount?: number
+        tokens?: number
+        toolUseCount?: number
+        latestInputTokens?: number
+        cumulativeOutputTokens?: number
+        recentActivities?: WorkflowAgentStat['recentActivities']
+        lastActivity?: string
+        line?: string
+      }
+      // Keep the existing analytics log.
+      logEvent('tengu_workflow_progress', {
+        workflow_run_id: runId,
+        data_type: ev?.type ?? 'unknown',
+      })
+
+      const phaseTitle = ev?.phase ?? ''
+      const getOrCreatePhase = (title: string): WorkflowPhaseProgress => {
+        let entry = phases.find(p => p.phase === title)
+        if (!entry) {
+          entry = {
+            phase: title,
+            completedAgents: 0,
+            totalAgents: 0,
+            agentCount: ev?.agentCount ?? 0,
+            agents: [],
+          }
+          phases.push(entry)
+        }
+        return entry
+      }
+
+      switch (ev?.type) {
+        case 'workflow_phase': {
+          const entry = getOrCreatePhase(phaseTitle)
+          entry.agentCount = ev.agentCount ?? entry.agentCount
+          break
+        }
+        case 'workflow_agent_started': {
+          const entry = getOrCreatePhase(phaseTitle)
+          if (ev.id && !entry.agents.find(a => a.id === ev.id)) {
+            entry.agents.push({
+              id: ev.id,
+              label: ev.label ?? '',
+              agentType: ev.agentType ?? 'workflow-agent',
+              status: 'running',
+              toolUseCount: 0,
+              latestInputTokens: 0,
+              cumulativeOutputTokens: 0,
+              recentActivities: [],
+              lastActivity: undefined,
+              isResolved: false,
+              isError: false,
+            })
+          }
+          break
+        }
+        case 'workflow_agent_completed': {
+          const entry = getOrCreatePhase(phaseTitle)
+          let agent = ev.id ? entry.agents.find(a => a.id === ev.id) : undefined
+          if (!agent) {
+            agent = {
+              id: ev.id ?? '',
+              label: ev.label ?? '',
+              agentType: ev.agentType ?? 'workflow-agent',
+              status: 'running',
+              toolUseCount: 0,
+              latestInputTokens: 0,
+              cumulativeOutputTokens: 0,
+              recentActivities: [],
+              lastActivity: undefined,
+              isResolved: false,
+              isError: false,
+            }
+            entry.agents.push(agent)
+          }
+          agent.status = ev.status ?? 'done'
+          agent.toolUseCount = ev.toolUseCount ?? 0
+          agent.latestInputTokens = ev.latestInputTokens ?? 0
+          agent.cumulativeOutputTokens = ev.cumulativeOutputTokens ?? 0
+          agent.recentActivities = ev.recentActivities ?? []
+          agent.lastActivity = ev.lastActivity
+          agent.isResolved = agent.status === 'done'
+          agent.isError = agent.status === 'error'
+          if (agent.status === 'done') {
+            entry.completedAgents++
+          }
+          entry.agentCount = ev.agentCount ?? entry.agentCount
+          break
+        }
+        case 'workflow_log': {
+          if (ev.line) narratorLines.push(ev.line)
+          break
+        }
+      }
+
+      // Update task state (for /workflows view + completion notifications).
+      updateWorkflowProgressBatch(taskId, phases, narratorLines, context.setAppState)
+
+      // Emit full snapshot via ToolCallProgress (for the live tree renderer).
+      onProgress?.({
+        toolUseID: context.toolUseId ?? '',
+        data: {
+          type: 'workflow_progress',
+          phases: phases.map(p => ({ ...p, agents: [...p.agents] })),
+          narratorLines: [...narratorLines],
+          agentCount: phases.reduce((s, p) => s + p.agentCount, 0),
+          runId,
+        } satisfies WorkflowProgressData,
+      })
+    }
+
     logEvent('tengu_workflow_launched', {
       invocation_mode: resumeFromRunId ? 'resume' : 'inline',
       workflow_run_id: runId,
@@ -264,28 +483,32 @@ export const WorkflowTool = buildTool({
       is_resume: !!resumeFromRunId,
     })
 
-    // Run the workflow.
-    const runResult = await runWorkflow({
-      script: loaded.source,
-      scriptPath: loaded.scriptPath,
-      meta: loaded.meta,
-      body: loaded.body,
-      hasDefaultExport: loaded.hasDefaultExport,
-      defaultExportExpr: loaded.defaultExportExpr,
-      args,
-      runId,
-      toolUseContext: context,
-      canUseTool,
-      onProgress: (data) => {
-        // Progress is surfaced via the tool result; no separate stream.
-        logEvent('tengu_workflow_progress', {
-          workflow_run_id: runId,
-          data_type: (data as { type?: string })?.type ?? 'unknown',
-        })
-      },
-      journal,
-      cachedResults,
-    })
+    // Run the workflow. Wire onProgress to the accumulator (handleProgress)
+    // which both updates task state and emits the live-tree snapshot. Complete
+    // or fail the task at the end so /workflows + task-notification fire.
+    let runResult
+    try {
+      runResult = await runWorkflow({
+        script: loaded.source,
+        scriptPath: loaded.scriptPath,
+        meta: loaded.meta,
+        body: loaded.body,
+        hasDefaultExport: loaded.hasDefaultExport,
+        defaultExportExpr: loaded.defaultExportExpr,
+        args,
+        runId,
+        toolUseContext: context,
+        canUseTool,
+        onProgress: handleProgress,
+        journal,
+        cachedResults,
+      })
+    } catch (e) {
+      failWorkflowTask(taskId, e as Error, context.setAppState)
+      throw e
+    }
+
+    completeWorkflowTask(taskId, context.setAppState, runResult.result)
 
     return {
       data: {

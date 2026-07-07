@@ -80,12 +80,31 @@ export interface WorkflowRuntimeContext {
   }
   /** Current phase title (mutable). */
   currentPhase: string
-  /** Phase progress entries for onProgress. */
+  /** Phase progress entries for onProgress. Includes per-agent stats. */
   workflowProgress: Array<{
     phase: string
     completedAgents: number
     totalAgents: number
     agentCount: number
+    agents: Array<{
+      id: string
+      label: string
+      agentType: string
+      status: 'running' | 'done' | 'error'
+      toolUseCount: number
+      latestInputTokens: number
+      cumulativeOutputTokens: number
+      recentActivities: Array<{
+        toolName: string
+        input: string
+        activityDescription: string
+        isSearch: boolean
+        isRead: boolean
+      }>
+      lastActivity?: string
+      isResolved: boolean
+      isError: boolean
+    }>
   }>
   /** Seed phase titles from meta.phases. */
   seedPhaseTitles?: string[]
@@ -196,6 +215,99 @@ function extractTokenUsage(messages: Message[]): number {
     }
   }
   return total
+}
+
+/**
+ * Extract a per-agent token breakdown from drained messages.
+ * Returns { latestInputTokens, cumulativeOutputTokens } mirroring the
+ * binary's g9n() accumulator: latestInputTokens = the last assistant
+ * message's input tokens; cumulativeOutputTokens = sum of output tokens
+ * across all assistant turns. Total = h9n(e) = latestInput + cumulative.
+ */
+function extractTokenBreakdown(messages: Message[]): {
+  latestInputTokens: number
+  cumulativeOutputTokens: number
+} {
+  let latestInputTokens = 0
+  let cumulativeOutputTokens = 0
+  for (const m of messages) {
+    if (m.type !== 'assistant') continue
+    const usage = m.message?.usage as
+      | {
+          input_tokens?: number
+          output_tokens?: number
+          cache_creation_input_tokens?: number
+          cache_read_input_tokens?: number
+        }
+      | undefined
+    if (!usage) continue
+    // Latest input = input + cache tokens of the most recent assistant msg.
+    latestInputTokens =
+      (usage.input_tokens ?? 0) +
+      (usage.cache_creation_input_tokens ?? 0) +
+      (usage.cache_read_input_tokens ?? 0)
+    cumulativeOutputTokens += usage.output_tokens ?? 0
+  }
+  return { latestInputTokens, cumulativeOutputTokens }
+}
+
+/**
+ * Extract tool-use stats from drained messages: toolUseCount + a small ring
+ * of recentActivities ({ toolName, input, activityDescription, isSearch,
+ * isRead }). Mirrors the binary's g9n().recentActivities. Cap at 5 to keep
+ * the progress payload small.
+ */
+function extractToolUseStats(messages: Message[]): {
+  toolUseCount: number
+  recentActivities: Array<{
+    toolName: string
+    input: string
+    activityDescription: string
+    isSearch: boolean
+    isRead: boolean
+  }>
+  lastActivity: string | undefined
+} {
+  const recentActivities: Array<{
+    toolName: string
+    input: string
+    activityDescription: string
+    isSearch: boolean
+    isRead: boolean
+  }> = []
+  let toolUseCount = 0
+  for (const m of messages) {
+    if (m.type !== 'assistant') continue
+    const content = (m.message?.content as Array<{ type: string; name?: string; input?: unknown }> | undefined) ?? []
+    for (const block of content) {
+      if (block.type !== 'tool_use') continue
+      toolUseCount++
+      const toolName = block.name ?? 'unknown'
+      const inputStr =
+        typeof block.input === 'string'
+          ? block.input
+          : (() => {
+              try {
+                return JSON.stringify(block.input).slice(0, 120)
+              } catch {
+                return String(block.input ?? '').slice(0, 120)
+              }
+            })()
+      const isSearch = /^(Grep|Glob)$/.test(toolName)
+      const isRead = toolName === 'Read'
+      recentActivities.push({
+        toolName,
+        input: inputStr,
+        activityDescription: inputStr,
+        isSearch,
+        isRead,
+      })
+    }
+  }
+  // Cap the ring at 5 most-recent activities.
+  const capped = recentActivities.slice(-5)
+  const lastActivity = capped.length > 0 ? capped[capped.length - 1].activityDescription : undefined
+  return { toolUseCount, recentActivities: capped, lastActivity }
 }
 
 /**
@@ -322,6 +434,8 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
 
     // Spawn the subagent via runAgent and drain to completion.
     const agentId = createAgentId('wf')
+    const agentShortId = agentId.slice(0, 16)
+    const agentLabel = opts.label ?? prompt.slice(0, 80)
     const gen = runAgent({
       agentDefinition: agentDef,
       promptMessages: promptMessages as unknown as Parameters<typeof runAgent>[0]['promptMessages'],
@@ -343,6 +457,17 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       override: { agentId: agentId as AgentId },
     })
 
+    // Emit workflow_agent_started BEFORE drain so the live tree shows the
+    // agent as "running" immediately (binary: narrator line + phase group
+    // populate before the agent finishes). Includes id/label/phase/agentType.
+    ctx.onProgress?.({
+      type: 'workflow_agent_started',
+      id: agentShortId,
+      label: agentLabel,
+      phase: ctx.currentPhase,
+      agentType: agentDef.agentType,
+    })
+
     let messages: Message[]
     try {
       messages = await drainGenerator(gen)
@@ -350,12 +475,33 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       // Record failure but rethrow — the workflow script decides how to handle.
       const msg = `Agent "${opts.label ?? prompt.slice(0, 40)}" failed: ${(e as Error).message}`
       ctx.counters.failures.push(msg)
+      // Emit workflow_agent_completed with status:'error' so the tree
+      // transitions running→error (binary includes id/label/status).
+      ctx.onProgress?.({
+        type: 'workflow_agent_completed',
+        id: agentShortId,
+        label: agentLabel,
+        phase: ctx.currentPhase,
+        agentType: agentDef.agentType,
+        status: 'error',
+        agentCount: ctx.counters.agentCount,
+        tokens: 0,
+        toolUseCount: 0,
+        latestInputTokens: 0,
+        cumulativeOutputTokens: 0,
+        recentActivities: [],
+        lastActivity: `Error: ${(e as Error).message.slice(0, 100)}`,
+      })
       throw e
     }
 
     // Track tokens.
     agentTokens = extractTokenUsage(messages)
     ctx.counters.spentTokens += agentTokens
+
+    // Extract per-agent stats for the rich workflow_agent_completed emit.
+    const tokenBreakdown = extractTokenBreakdown(messages)
+    const toolUseStats = extractToolUseStats(messages)
 
     // Extract result.
     let result: unknown
@@ -395,6 +541,7 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
           completedAgents: 0,
           totalAgents: 0,
           agentCount: 0,
+          agents: [],
         }
         ctx.workflowProgress.push(entry)
       }
@@ -402,12 +549,24 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       entry.agentCount = ctx.counters.agentCount
     }
 
-    // Fire progress.
+    // Fire progress. Rich payload mirrors the binary's workflow_agent_completed:
+    // includes id/label/status so the live tree transitions running→done, plus
+    // toolUseCount + token breakdown (latestInputTokens/cumulativeOutputTokens)
+    // + recentActivities for the per-agent row.
     ctx.onProgress?.({
       type: 'workflow_agent_completed',
-      agentCount: ctx.counters.agentCount,
+      id: agentShortId,
+      label: agentLabel,
       phase: ctx.currentPhase,
+      agentType: agentDef.agentType,
+      status: 'done',
+      agentCount: ctx.counters.agentCount,
       tokens: agentTokens,
+      toolUseCount: toolUseStats.toolUseCount,
+      latestInputTokens: tokenBreakdown.latestInputTokens,
+      cumulativeOutputTokens: tokenBreakdown.cumulativeOutputTokens,
+      recentActivities: toolUseStats.recentActivities,
+      lastActivity: toolUseStats.lastActivity,
     })
 
     return result
@@ -538,6 +697,7 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       completedAgents: 0,
       totalAgents: 0,
       agentCount: ctx.counters.agentCount,
+      agents: [],
     })
     logEvent('tengu_workflow_phase_started', {
       workflow_run_id: ctx.runId,
@@ -551,13 +711,19 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
   }
 
   /**
-   * log(...args) — append to workflow-scoped logs.
+   * log(...args) — append to workflow-scoped logs + emit a workflow_log
+   * narrator event (binary: "shown as a narrator line above the progress tree").
    */
   const log = (...args: unknown[]): void => {
     const msg = args
       .map(a => (typeof a === 'string' ? a : JSON.stringify(a)))
       .join(' ')
     ctx.counters.logs.push(msg)
+    // Emit workflow_log so the live tree renders the narrator line.
+    ctx.onProgress?.({
+      type: 'workflow_log',
+      line: msg,
+    })
   }
 
   /**

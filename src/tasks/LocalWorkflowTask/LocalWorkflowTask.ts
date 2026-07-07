@@ -32,11 +32,51 @@ import { getTaskOutputPath } from '../../utils/task/diskOutput.js'
 import { logEvent } from '../../services/analytics/index.js'
 import { WorkflowJournal } from '../../tools/WorkflowTool/journal.js'
 
+/**
+ * Per-agent statistics accumulator. Mirrors the binary's g9n() accumulator:
+ *   { toolUseCount, latestInputTokens, cumulativeOutputTokens,
+ *     recentActivities[] }.
+ * recentActivities mirrors the binary's { toolName, input,
+ * activityDescription, isSearch, isRead }.
+ */
+export type WorkflowAgentStat = {
+  /** Stable agent id (the runAgent agentId, truncated). */
+  id: string
+  /** Human label (opts.label or prompt preview). */
+  label: string
+  /** Agent type badge (e.g. "wf-research", "workflow-agent"). */
+  agentType: string
+  /** Lifecycle status for the tree row. */
+  status: 'running' | 'done' | 'error'
+  /** Number of tool_use blocks the agent emitted. */
+  toolUseCount: number
+  /** Input tokens from the agent's last assistant message usage. */
+  latestInputTokens: number
+  /** Sum of output tokens across the agent's turns. */
+  cumulativeOutputTokens: number
+  /** Recent tool activities (capped; binary keeps a small ring). */
+  recentActivities: Array<{
+    toolName: string
+    input: string
+    activityDescription: string
+    isSearch: boolean
+    isRead: boolean
+  }>
+  /** Last activity description for the AgentProgressLine lastToolInfo slot. */
+  lastActivity?: string
+  /** Resolved (done) — drives AgentProgressLine isResolved. */
+  isResolved: boolean
+  /** Errored — drives AgentProgressLine isError. */
+  isError: boolean
+}
+
 export type WorkflowPhaseProgress = {
   phase: string
   completedAgents: number
   totalAgents: number
   agentCount: number
+  /** Per-agent rows under this phase (NEW — mirrors binary workflowProgress.agents). */
+  agents: WorkflowAgentStat[]
 }
 
 export type LocalWorkflowTaskState = TaskStateBase & {
@@ -53,6 +93,9 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   args?: Record<string, unknown>
   /** Per-phase progress (mutable, updated as the workflow runs). */
   workflowProgress: WorkflowPhaseProgress[]
+  /** Narrator lines emitted by the script's log() primitive (shown above the
+   * progress tree; mirrors binary "narrator line above the progress tree"). */
+  narratorLines?: string[]
   /** Short summary (from meta.description). */
   summary?: string
   /** Workflow name (from meta.name). */
@@ -114,6 +157,28 @@ export function registerAdoptedWorkflowTask(
   state.isResume = true
   state.source = 'adopt'
   registerWorkflowTask(state, setAppState)
+}
+
+/**
+ * Batch-update a workflow task's progress (phases + narrator lines).
+ * Mirrors the binary's updateWorkflowProgressBatch (line 472281): mutates the
+ * task's workflowProgress + narratorLines fields so the React/Ink tree (live
+ * progress + /workflows detail) re-renders. Called from WorkflowTool's
+ * onProgress handler on every progress event.
+ */
+export function updateWorkflowProgressBatch(
+  taskId: string,
+  phases: WorkflowPhaseProgress[],
+  narratorLines: string[],
+  setAppState: SetAppState,
+): void {
+  updateTaskState<LocalWorkflowTaskState>(taskId, setAppState, task => ({
+    ...task,
+    workflowProgress: phases,
+    narratorLines,
+    // Keep the aggregate agentCount field in sync for the /tasks single-line.
+    agentCount: phases.reduce((sum, p) => sum + p.agentCount, 0),
+  }))
 }
 
 /**
@@ -308,6 +373,22 @@ export function buildResumePrompt(
 ): string {
   const pathPart = scriptPath ? `scriptPath: "${scriptPath}", ` : ''
   return `Workflow({${pathPart}resumeFromRunId: "${runId}"}) — completed agents return cached results (cached results marked with journal_started_hit_respawn). Only edited or new agent() calls re-run.`
+}
+
+/**
+ * The progress snapshot emitted via ToolCallProgress (Tool.onProgress) and
+ * consumed by renderToolUseProgressMessage. Carries the full phases + narrator
+ * lines snapshot so the live tree re-renders without reading appState.
+ * Mirrors the binary's workflow_progress_preview (line 560224).
+ */
+export type WorkflowProgressData = {
+  type: 'workflow_progress'
+  phases: WorkflowPhaseProgress[]
+  narratorLines: string[]
+  /** Overall agent count (cumulative across phases). */
+  agentCount: number
+  /** Run id for display. */
+  runId?: string
 }
 
 // Re-export the task type for the union in tasks/types.ts.
