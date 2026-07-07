@@ -25,7 +25,9 @@ describe("2.1.92 removed slash commands", () => {
   });
 
   test("core commands are still present (regression)", () => {
-    for (const name of ["clear", "help", "cost", "theme"]) {
+    // /cost + /stats were merged into /usage as aliases (2.1.118, E13) — they
+    // are no longer standalone registered commands. clear/help/theme stay.
+    for (const name of ["clear", "help", "theme"]) {
       expect(internalNames.includes(name) || remoteSafeNames.includes(name)).toBe(true);
     }
   });

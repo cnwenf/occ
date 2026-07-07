@@ -192,6 +192,7 @@ describe.skipIf(!!process.env.CI)("real coding tasks (e2e, real model)", () => {
   }, 150_000);
 });
 
+describe.skipIf(!!process.env.CI)("real coding tasks — extra (e2e, real model)", () => {
   test("NotebookEdit: creates and edits a Jupyter notebook cell", async () => {
     const { dir, cleanup } = tempDir();
     try {
@@ -245,3 +246,4 @@ describe.skipIf(!!process.env.CI)("real coding tasks (e2e, real model)", () => {
       cleanup();
     }
   }, 220_000);
+});
