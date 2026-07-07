@@ -425,6 +425,9 @@ export type AppState = DeepImmutable<{
   advisorModel?: string
   // Effort value
   effortValue?: EffortValue
+  // K3: ultracode session mode (keyword-trigger or /effort ultracode).
+  // In AppState (not just module-level) so the badge re-renders on trigger.
+  ultracode: boolean
   // Set synchronously in launchUltraplan before the detached flow starts.
   // Prevents duplicate launches during the ~5s window before
   // ultraplanSessionUrl is set by teleportToRemote. Cleared by launchDetached
@@ -587,6 +590,7 @@ export function getDefaultAppState(): AppState {
     authVersion: 0,
     initialMessage: null,
     effortValue: undefined,
+    ultracode: false,
     activeOverlays: new Set<string>(),
     fastMode: false,
     activeGoal: undefined,

@@ -94,7 +94,7 @@ import type { Theme } from '../../utils/theme.js';
 import { findThinkingTriggerPositions, getRainbowColor, isUltrathinkEnabled } from '../../utils/thinking.js';
 import { findTokenBudgetPositions } from '../../utils/tokenBudget.js';
 import { findUltraplanTriggerPositions, findUltrareviewTriggerPositions } from '../../utils/ultraplan/keyword.js';
-import { isUltracodeKeywordTriggerEnabled } from '../../utils/effort/ultracode.js';
+import { isUltracodeKeywordTriggerEnabled, isUltracodeEnabled, ULTRACODE_EFFORT_DESCRIPTION } from '../../utils/effort/ultracode.js';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
 import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -329,6 +329,17 @@ function PromptInput({
   const thinkingEnabled = useAppState(s => s.thinkingEnabled);
   const isFastMode = useAppState(s => isFastModeEnabled() ? s.fastMode : false);
   const effortValue = useAppState(s => s.effortValue);
+  // K3: poll isUltracodeEnabled() (module-level flag flipped by the keyword
+  // trigger in processTextPrompt, which has no store access) so the badge
+  // re-renders when ultracode activates via the keyword path.
+  const [ultracodeBadgeActive, setUltracodeBadgeActive] = React.useState(isUltracodeEnabled());
+  useEffect(() => {
+    const iv = setInterval(() => {
+      const cur = isUltracodeEnabled();
+      setUltracodeBadgeActive(prev => prev !== cur ? cur : prev);
+    }, 500);
+    return () => clearInterval(iv);
+  }, []);
   const viewedTeammate = getViewedTeammateTask(store.getState());
   const viewingAgentName = viewedTeammate?.identity.agentName;
   // identity.color is typed as `string | undefined` (not AgentColorName) because
@@ -2008,7 +2019,9 @@ function PromptInput({
   // badge stays visible while effort/ultracode is on. Suppressed in
   // brief/assistant mode (the value reflects the local client's effort, not
   // the connected agent's) and when the model doesn't support effort.
-  const effortNotificationText = briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
+  const effortNotificationText = ultracodeBadgeActive
+    ? `effort: ultracode · ${ULTRACODE_EFFORT_DESCRIPTION}`
+    : briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
   useBuddyNotification();
   const companionSpeaking = feature('BUDDY') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
