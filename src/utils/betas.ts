@@ -162,7 +162,15 @@ export function modelSupportsAutoMode(model: string): boolean {
     const m = getCanonicalName(model)
     const provider = getAPIProvider()
     // Official Olt: firstParty OR anthropicAws allowed without env var.
-    if (process.env.USER_TYPE !== 'ant' && provider !== 'firstParty' && provider !== 'anthropicAws') {
+    // CLAUDE_CODE_ENABLE_AUTO_MODE=1 opts in on Bedrock/Vertex/Foundry
+    // (auto-mode is Anthropic-only by default because the classifier is
+    // Anthropic's); the env var makes it available regardless of provider.
+    if (
+      process.env.USER_TYPE !== 'ant' &&
+      provider !== 'firstParty' &&
+      provider !== 'anthropicAws' &&
+      !isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_AUTO_MODE)
+    ) {
       return false
     }
     if (process.env.USER_TYPE === 'ant') {
