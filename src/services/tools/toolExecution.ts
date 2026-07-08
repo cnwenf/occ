@@ -1113,6 +1113,7 @@ async function checkPermissionsAndCallTool(
         toolUseContext,
         permissionMode,
         toolUseContext.abortController.signal,
+        permissionDecision.decisionReason.category,
       )) {
         if (result.retry) hookSaysRetry = true
       }

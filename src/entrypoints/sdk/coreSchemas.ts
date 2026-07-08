@@ -469,6 +469,15 @@ export const PermissionDeniedHookInputSchema = lazySchema(() =>
       tool_input: z.unknown(),
       tool_use_id: z.string(),
       reason: z.string(),
+      category: z
+        .string()
+        .optional()
+        .describe(
+          'Denial taxonomy category (official 2.1.200). Present when the ' +
+            'auto-mode classifier blocked the action: "behavioral_risk", ' +
+            '"information_exposure", or "high_impact_operation". Absent for ' +
+            'non-classifier denials and unavailable/parse-error paths.',
+        ),
     }),
   ),
 )

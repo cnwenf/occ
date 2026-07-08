@@ -263,10 +263,40 @@ const yoloClassifierResponseSchema = lazySchema(() =>
     thinking: z.string(),
     shouldBlock: z.boolean(),
     reason: z.string(),
+    category: z.string().optional(),
   }),
 )
 
 export const YOLO_CLASSIFIER_TOOL_NAME = 'classify_result'
+
+/**
+ * Denial taxonomy categories (official 2.1.200). The classifier LLM emits one
+ * of these in the `category` field when it blocks; the denial reason passed to
+ * hooks/analytics is prefixed with the matching identifier so consumers can
+ * route on the category without re-parsing the reason text.
+ */
+export const CLASSIFIER_CATEGORIES = [
+  'behavioral_risk',
+  'information_exposure',
+  'high_impact_operation',
+] as const
+export type ClassifierCategory = (typeof CLASSIFIER_CATEGORIES)[number]
+
+/**
+ * Prefix a classifier denial reason with its taxonomy category identifier,
+ * matching the official 2.1.200 denial-prefix behavior. When the classifier
+ * blocked with a recognized category, the denial reason becomes
+ * `[behavioral_risk] Blocked by auto-mode classifier: {reason}` (etc.).
+ * When no category is present (unavailable, parse-error, or XML path), the
+ * raw reason is returned unchanged.
+ */
+export function buildClassifierDenialReason(
+  category: string | undefined,
+  reason: string,
+): string {
+  if (!category) return reason
+  return `[${category}] Blocked by auto-mode classifier: ${reason}`
+}
 
 const YOLO_CLASSIFIER_TOOL_SCHEMA: BetaToolUnion = {
   type: 'custom',
@@ -287,6 +317,17 @@ const YOLO_CLASSIFIER_TOOL_SCHEMA: BetaToolUnion = {
       reason: {
         type: 'string',
         description: 'Brief explanation of the classification decision',
+      },
+      category: {
+        type: 'string',
+        description:
+          'When shouldBlock is true, the denial taxonomy category. ' +
+          'One of: "behavioral_risk" (actions that violate security boundaries — ' +
+          'credential theft, privilege escalation, data exfiltration), ' +
+          '"information_exposure" (actions that leak sensitive information — ' +
+          'PII, secrets, internal data), "high_impact_operation" (destructive or ' +
+          'irreversible actions — force push, terraform destroy, data deletion). ' +
+          'Pick the best-fitting category for the matched BLOCK rule. Omit when allowing.',
       },
     },
     required: ['thinking', 'shouldBlock', 'reason'],
@@ -623,6 +664,19 @@ function parseXmlReason(text: string): string | null {
 }
 
 /**
+ * Parse XML category: <category>behavioral_risk|information_exposure|high_impact_operation</category>
+ * Strips thinking content first to avoid matching tags inside reasoning.
+ * Returns null when absent (allow path, or LLM omitted it).
+ */
+function parseXmlCategory(text: string): string | null {
+  const matches = [
+    ...stripThinking(text).matchAll(/<category>([\s\S]*?)<\/category>/g),
+  ]
+  if (matches.length === 0) return null
+  return matches[0]![1]!.trim()
+}
+
+/**
  * Parse XML thinking content: <thinking>...</thinking>
  */
 function parseXmlThinking(text: string): string | null {
@@ -873,6 +927,7 @@ async function classifyYoloActionXml(
         return {
           shouldBlock: true,
           reason: parseXmlReason(stage1Text) ?? 'Blocked by fast classifier',
+          category: parseXmlCategory(stage1Text) ?? undefined,
           model,
           usage: stage1Usage,
           durationMs: stage1DurationMs,
@@ -951,6 +1006,7 @@ async function classifyYoloActionXml(
       thinking: parseXmlThinking(stage2Text) ?? undefined,
       shouldBlock: stage2Block,
       reason: parseXmlReason(stage2Text) ?? 'No reason provided',
+      category: parseXmlCategory(stage2Text) ?? undefined,
       model,
       usage: totalUsage,
       durationMs: totalDurationMs,
@@ -1267,6 +1323,7 @@ export async function classifyYoloAction(
       thinking: parsed.thinking,
       shouldBlock: parsed.shouldBlock,
       reason: parsed.reason ?? 'No reason provided',
+      category: parsed.category,
       model,
       usage,
       durationMs,

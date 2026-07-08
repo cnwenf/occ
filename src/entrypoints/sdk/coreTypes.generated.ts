@@ -75,7 +75,9 @@ export type PreToolUseHookInput = HookInput & { tool_name: string }
 export type PostToolUseHookInput = HookInput & { tool_name: string }
 export type PostToolUseFailureHookInput = HookInput & { tool_name: string }
 export type PermissionRequestHookInput = HookInput & { tool_name: string }
-export type PermissionDeniedHookInput = HookInput
+export type PermissionDeniedHookInput = HookInput & {
+  category?: string
+}
 export type NotificationHookInput = HookInput & { message: string }
 export type UserPromptSubmitHookInput = HookInput & { prompt: string }
 export type SessionStartHookInput = HookInput

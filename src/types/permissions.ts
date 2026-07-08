@@ -308,6 +308,14 @@ export type PermissionDecisionReason =
       type: 'classifier'
       classifier: string
       reason: string
+      /**
+       * Denial taxonomy category (official 2.1.200). One of:
+       * 'behavioral_risk' (Bhr), 'information_exposure' (iGe),
+       * 'high_impact_operation' (HIo). Present when the auto-mode
+       * classifier blocked with a category; absent for unavailable/
+       * parse-error paths and non-classifier decisions.
+       */
+      category?: string
     }
   | {
       type: 'workingDir'
@@ -351,6 +359,14 @@ export type YoloClassifierResult = {
   thinking?: string
   shouldBlock: boolean
   reason: string
+  /**
+   * Denial taxonomy category from the classifier LLM output (official
+   * 2.1.200). One of 'behavioral_risk', 'information_exposure', or
+   * 'high_impact_operation'. Present only when the classifier emitted a
+   * category (blocked actions); absent for unavailable/parse-error paths
+   * and the XML 2-stage classifier which has no category field.
+   */
+  category?: string
   unavailable?: boolean
   /**
    * API returned "prompt is too long" — the classifier transcript exceeded

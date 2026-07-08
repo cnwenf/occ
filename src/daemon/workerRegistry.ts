@@ -141,6 +141,19 @@ export function writeDaemonStatus(): void {
 }
 
 /**
+ * Write + serialize ~/.claude/daemon.json. Best-effort — wraps errors.
+ */
+export function writeDaemonJson(config: DaemonJsonConfig): void {
+  try {
+    writeFileSync(getDaemonJsonPath(), JSON.stringify(config, null, 2), {
+      encoding: 'utf-8',
+    })
+  } catch {
+    // daemon.json is best-effort; never crash over it.
+  }
+}
+
+/**
  * Validate that the workers configured in daemon.json are still reachable
  * (i.e. the kinds are known). Returns a list of warnings for the supervisor
  * to surface as "has configured workers but they do not ...".
@@ -455,18 +468,25 @@ export const runDaemonWorker: (workerId: string) => Promise<void> = async (
 }
 
 // B7 (2.1.200): auto-add a Remote Control daemon worker (subtype: "remote_control").
-export async function autoAddRemoteControlDaemonWorker(opts?: { caCertsPath?: string }) {
+export async function autoAddRemoteControlDaemonWorker(_opts?: {
+  caCertsPath?: string
+}): Promise<boolean> {
   // The RC worker is a daemon worker of kind "remote_control" that maintains
   // the CCR (Claude Code Remote) session bridge. When the daemon is running,
   // it keeps the RC session alive across REPL restarts.
-  const config = await readDaemonJson()
-  if (!config.workers?.some(w => w.kind === "remote_control")) {
-    config.workers = [...(config.workers ?? []), {
-      kind: "remote_control",
-      id: "rc-" + Date.now(),
-      restart: true,
-    }]
-    await writeDaemonJson(config)
+  const config = readDaemonJson()
+  const workers = config.workers ?? []
+  if (workers.some(w => w.kind === 'remote_control')) {
+    return false // already configured
   }
+  const next: DaemonJsonConfig = {
+    ...config,
+    workers: [
+      ...workers,
+      { kind: 'remote_control', id: `rc-${Date.now()}`, restart: true },
+    ],
+  }
+  writeDaemonJson(next)
+  return true
 }
 

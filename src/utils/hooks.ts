@@ -4076,6 +4076,7 @@ export async function* executePermissionDeniedHooks<ToolInput>(
   permissionMode?: string,
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+  category?: string,
 ): AsyncGenerator<AggregatedHookResult> {
   const appState = toolUseContext.getAppState()
   const sessionId = toolUseContext.agentId ?? getSessionId()
@@ -4090,6 +4091,7 @@ export async function* executePermissionDeniedHooks<ToolInput>(
     tool_input: toolInput,
     tool_use_id: toolUseID,
     reason,
+    ...(category !== undefined && { category }),
   }
 
   yield* executeHooks({

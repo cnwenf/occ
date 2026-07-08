@@ -103,6 +103,7 @@ import {
   shouldFallbackToPrompting,
 } from './denialTracking.js'
 import {
+  buildClassifierDenialReason,
   classifyYoloAction,
   formatActionForClassifier,
   logAutoModeSubsequentApproval,
@@ -917,7 +918,11 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           decisionReason: {
             type: 'classifier',
             classifier: 'auto-mode',
-            reason: classifierResult.reason,
+            reason: buildClassifierDenialReason(
+              classifierResult.category,
+              classifierResult.reason,
+            ),
+            category: classifierResult.category,
           },
           message: buildYoloRejectionMessage(classifierResult.reason),
         }
@@ -943,6 +948,7 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
           type: 'classifier',
           classifier: 'auto-mode',
           reason: classifierResult.reason,
+          category: classifierResult.category,
         },
       }
     }

@@ -47,6 +47,12 @@ export async function readLockfile(): Promise<LockfileContents | null> {
       supervisorPid: parsed.supervisorPid,
       supervisorProcStart: parsed.supervisorProcStart,
       holderPid: typeof parsed.holderPid === 'number' ? parsed.holderPid : parsed.supervisorPid,
+      remoteControlToken:
+        typeof parsed.remoteControlToken === 'string' ? parsed.remoteControlToken : undefined,
+      remoteControlSocketPath:
+        typeof parsed.remoteControlSocketPath === 'string'
+          ? parsed.remoteControlSocketPath
+          : undefined,
     }
   } catch {
     return null
@@ -160,6 +166,37 @@ export async function releaseLockfile(identity: SupervisorIdentity): Promise<voi
     } catch {
       /* ignore */
     }
+  }
+}
+
+/**
+ * Update the lockfile with remote-control connection details (B7).
+ *
+ * Called by the supervisor after it starts the RC server: writes the auth
+ * token + socket path back into the lockfile so clients (mobile, Slack,
+ * `claude remote-control`) can discover how to connect. Only the current
+ * holder may update it.
+ */
+export async function updateLockfileRemoteControl(
+  identity: SupervisorIdentity,
+  token: string,
+  socketPath: string,
+): Promise<void> {
+  const existing = await readLockfile()
+  if (!existing || existing.supervisorPid !== identity.supervisorPid) {
+    return
+  }
+  const updated: LockfileContents = {
+    ...existing,
+    remoteControlToken: token,
+    remoteControlSocketPath: socketPath,
+  }
+  try {
+    await writeFile(getDaemonLockfilePath(), JSON.stringify(updated), {
+      encoding: 'utf-8',
+    })
+  } catch {
+    // best-effort — clients fall back to no RC info
   }
 }
 

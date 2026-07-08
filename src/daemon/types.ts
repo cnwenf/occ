@@ -62,6 +62,10 @@ export interface LockfileContents {
   supervisorProcStart: number
   /** pid of the process that holds the lockfile (== supervisorPid in normal op). */
   holderPid: number
+  /** Remote-control auth token (B7). Present when the RC server is running. */
+  remoteControlToken?: string
+  /** Unix-socket path the RC server listens on (B7). */
+  remoteControlSocketPath?: string
 }
 
 /** A configured worker in ~/.claude/daemon.json. */
@@ -71,6 +75,10 @@ export interface DaemonJsonWorker {
   prompt?: string
   /** Repeat schedule hint (cron-ish). */
   schedule?: string
+  /** Optional friendly id (used by `claude stop|attach|logs <id>`). */
+  id?: string
+  /** Whether the supervisor should respawn this worker on exit. */
+  restart?: boolean
 }
 
 /** A scheduled task entry in ~/.claude/daemon.json + daemon.scheduled.status.json. */

@@ -20,5 +20,18 @@ const FEATURE_ALLOWLIST: Set<string> = new Set([
   // Workflow tool (src/tools.ts) + /workflows command + getWorkflowCommands
   // (src/commands.ts) in one switch.
   'WORKFLOW_SCRIPTS',
+  // 2.1.200: Skill discovery (turn-zero). Un-gates skill prefetch in
+  // src/query.ts, DiscoverSkills in SkillTool, the /skills clear-cache hook
+  // in commands.ts, attachment + compact skill paths, and the skill-search
+  // prompt sections. The prefetch + localSearch modules are self-contained
+  // (filesystem index + in-memory cache); enabling them does not block the
+  // query path.
+  'EXPERIMENTAL_SKILL_SEARCH',
+  // 2.1.200: MCP skills — fetches skill modules exposed by MCP servers that
+  // declare the io.modelcontextprotocol/skills extension. Wired through
+  // src/services/mcp/client.ts + useManageMCPConnections.ts; runs only when
+  // an MCP server is connected, so it is non-blocking when no MCP server is
+  // present.
+  'MCP_SKILLS',
 ])
 export const feature = (name: string): boolean => FEATURE_ALLOWLIST.has(name)

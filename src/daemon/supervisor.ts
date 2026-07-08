@@ -26,7 +26,7 @@ import { logEvent } from '../services/analytics/index.js'
 import { getGlobalConfig } from '../utils/config.js'
 import { isEnvTruthy } from '../utils/envUtils.js'
 import type { DaemonColdStart, DaemonJsonConfig, ShutdownCause, SupervisorIdentity } from './types.js'
-import { acquireLockfile, displaceHolder, readLockfile, releaseLockfile } from './lockfile.js'
+import { acquireLockfile, displaceHolder, readLockfile, releaseLockfile, updateLockfileRemoteControl } from './lockfile.js'
 import { ensureZombieKill, isPidAlive, sigtermWorker } from './process.js'
 import { recoverOrphanedWorkers } from './respawn.js'
 import {
@@ -36,6 +36,12 @@ import {
   validateDaemonJsonWorkers,
 } from './workerRegistry.js'
 import { installPersistentService, uninstallPersistentService } from './install.js'
+import {
+  generateRemoteControlToken,
+  startRemoteControlServer,
+  stopRemoteControlServer,
+  type RemoteControlServerHandle,
+} from './remoteControlServer.js'
 
 /** Idle threshold (ms) before an empty supervisor shuts itself down. */
 const IDLE_SHUTDOWN_MS = 60_000 // "idle 60s with no workers"
@@ -219,7 +225,22 @@ export async function runSupervisor(args: string[]): Promise<void> {
     console.warn(w)
   }
 
-  // 5. signal handlers
+  // 5. start the remote-control HTTP bridge (B7). Generates an auth token,
+  //    binds a Unix socket, and writes both back into the lockfile so
+  //    remote clients (mobile, Slack, `claude remote-control`) can connect.
+  let rcHandle: RemoteControlServerHandle | null = null
+  try {
+    const rcToken = generateRemoteControlToken()
+    rcHandle = await startRemoteControlServer(rcToken)
+    if (rcHandle) {
+      await updateLockfileRemoteControl(identity, rcHandle.token, rcHandle.socketPath)
+      console.log(`[daemon] remote-control listening on ${rcHandle.socketPath}`)
+    }
+  } catch {
+    // RC is best-effort — the daemon still works without it.
+  }
+
+  // 6. signal handlers
   let shutdownCause: ShutdownCause | null = null
   const handleSignal = (signal: 'SIGTERM' | 'SIGINT', cause: ShutdownCause) => {
     if (shutdownCause) return
@@ -229,7 +250,7 @@ export async function runSupervisor(args: string[]): Promise<void> {
   process.on('SIGTERM', () => handleSignal('SIGTERM', 'sigterm'))
   process.on('SIGINT', () => handleSignal('SIGINT', 'sigint'))
 
-  // 6. sweep loop
+  // 7. sweep loop
   running = true
   const startedAt = Date.now()
   let lastActivityAt = startedAt
@@ -269,6 +290,9 @@ export async function runSupervisor(args: string[]): Promise<void> {
       uptimeS,
     })
     await stopAllWorkers(3000)
+    if (rcHandle) {
+      await stopRemoteControlServer(rcHandle).catch(() => {})
+    }
     await releaseLockfile({
       supervisorPid: identity.supervisorPid,
       supervisorProcStart: identity.supervisorProcStart,

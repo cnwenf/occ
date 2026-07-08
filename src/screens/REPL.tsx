@@ -48,6 +48,7 @@ import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
 import { useWorkflowProgressPoller } from '../hooks/useWorkflowProgressPoller.js';
+import { useRemoteControlChannel } from '../hooks/useRemoteControlChannel.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
 import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
@@ -156,6 +157,7 @@ import { useManagePlugins } from '../hooks/useManagePlugins.js';
 import { Messages } from '../components/Messages.js';
 import { TaskListV2 } from '../components/TaskListV2.js';
 import { TeammateViewHeader } from '../components/TeammateViewHeader.js';
+import { SlackChannelHeader } from '../components/SlackChannelHeader.js';
 import { useTasksV2WithCollapseEffect } from '../hooks/useTasksV2.js';
 import { maybeMarkProjectOnboardingComplete } from '../projectOnboardingState.js';
 import type { MCPServerConnection } from '../services/mcp/types.js';
@@ -626,6 +628,11 @@ export function REPL({
   // update the matching local_workflow tasks from the main thread (safe — no
   // background setAppState, no Ink crash). See useWorkflowProgressPoller.
   useWorkflowProgressPoller();
+
+  // I14: poll the daemon's RC /status for the active Slack channel binding
+  // so the REPL can render a #channel header. No-op when the daemon / RC
+  // server isn't running (standalone REPL — no regression).
+  const remoteControlChannel = useRemoteControlChannel();
 
   // Agent definition is state so /resume can update it mid-session
   const [mainThreadAgentDefinition, setMainThreadAgentDefinition] = useState(initialMainThreadAgentDefinition);
@@ -4653,6 +4660,7 @@ export function REPL({
         jumpToNew(scrollRef.current);
       }} scrollable={<>
               <TeammateViewHeader />
+              <SlackChannelHeader channel={remoteControlChannel} />
               <Messages messages={displayedMessages} tools={tools} commands={commands} verbose={verbose} toolJSX={toolJSX} toolUseConfirmQueue={toolUseConfirmQueue} inProgressToolUseIDs={viewedTeammateTask ? viewedTeammateTask.inProgressToolUseIDs ?? new Set() : inProgressToolUseIDs} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={conversationId} screen={screen} streamingToolUses={streamingToolUses} showAllInTranscript={showAllInTranscript} agentDefinitions={agentDefinitions} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} streamingText={isLoading && !viewedAgentTask ? visibleStreamingText : null} isBriefOnly={viewedAgentTask ? false : isBriefOnly} unseenDivider={viewedAgentTask ? undefined : unseenDivider} scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined} trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined} cursor={cursor} setCursor={setCursor} cursorNavRef={cursorNavRef} />
               <AwsAuthStatusBox />
               {/* Hide the processing placeholder while a modal is showing —

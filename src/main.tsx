@@ -4464,12 +4464,16 @@ async function run(): Promise<CommanderCommand> {
     await setupTokenHandler(root);
   });
 
-  // Agents command - list configured agents
-  program.command('agents').description('List configured agents').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).').action(async () => {
+  // Agents command - background-sessions dashboard (default) or agent definitions
+  program.command('agents').description('Show background sessions dashboard (use --definitions to list configured agents)').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).').option('--definitions', 'List configured agent definitions instead of the sessions dashboard').option('--json', 'Emit a JSON array (sessions or definitions) for programmatic access').action(async (options: {
+    definitions?: boolean;
+    json?: boolean;
+    settingSources?: string;
+  }) => {
     const {
       agentsHandler
     } = await import('./cli/handlers/agents.js');
-    await agentsHandler();
+    await agentsHandler(options);
     process.exit(0);
   });
 

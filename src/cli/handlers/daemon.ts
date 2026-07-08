@@ -122,13 +122,38 @@ export async function daemonSubcommand(
     case 'scheduled':
       await scheduledHandler(args)
       break
-    case 'remote-control':
-      // B7 (connectRemoteControl) is a follow-up. Surface the setting.
-      console.log(
-        'remote-control daemon worker: configured via the remoteControlAtStartup setting (B7 follow-up).',
-      )
+    case 'remote-control': {
+      // B7: report the local remote-control bridge status. Connects to the
+      // daemon's RC HTTP server via the lockfile-discovered endpoint.
       logEvent('daemon_remote_control_cli', {})
+      const { connectRemoteControlClient, resolveRemoteControlEndpoint } =
+        await import('../../daemon/remoteControlClient.js')
+      const endpoint = await resolveRemoteControlEndpoint()
+      if (!endpoint) {
+        console.log(
+          'remote-control: daemon not running or RC server not configured. Run `claude daemon start` first.',
+        )
+        break
+      }
+      try {
+        const client = await connectRemoteControlClient()
+        const status = await client.getStatus()
+        console.log(`remote-control: connected (socket ${endpoint.socketPath})`)
+        console.log(`  supervisor pid: ${status.supervisorPid}`)
+        console.log(`  workers: ${status.workers.length}`)
+        console.log(`  pending prompts: ${status.pendingPrompts.length}`)
+        console.log(
+          `  channel: ${status.channel ? `#${status.channel.name}` : '(none)'}`,
+        )
+        for (const w of status.workers) {
+          console.log(`    - ${w.id} kind=${w.kind} pid=${w.pid} outcome=${w.outcome}`)
+        }
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err)
+        console.log(`remote-control: unable to connect — ${msg}`)
+      }
       break
+    }
     case 'hub':
       await renderDaemonHubStandalone()
       break

@@ -447,24 +447,25 @@ export async function connectRemoteControl(
   if (!getIsClaudeAISubscriber?.()) {
     return null // Remote Control requires a claude.ai account.
   }
-  // Auto-add the RC daemon worker (subtype: "remote_control") to the daemon registry.
+  // Auto-add the RC daemon worker (subtype: "remote_control") to the daemon
+  // registry so the supervisor keeps the RC session alive across REPL restarts.
   try {
     const { autoAddRemoteControlDaemonWorker } = await import('../daemon/workerRegistry.js')
     await autoAddRemoteControlDaemonWorker(opts)
   } catch {
     // Daemon not available — RC degrades to in-process only (no persistence).
   }
-  // Return a minimal handle. The full IPC (write query() yields in, read
-  // responses) requires the bridge layer (src/bridge/) which is partially
-  // implemented. This stub enables the API surface + daemon worker auto-add.
-  return {
-    query: async function* () {
-      // Full IPC is a follow-up (needs bridge transport + CCR session).
-    },
-    enableRemoteControl: async () => {},
-    disableRemoteControl: async () => {},
-    close: async () => {},
-  } as RemoteControlHandle
+  // The full CCR (Claude Code Remote) WebSocket bridge — which pipes query()
+  // yields to claude.ai and reads inbound prompts back — requires the bridge
+  // transport layer (src/bridge/, gated behind feature('BRIDGE_MODE')) and an
+  // OAuth-registered session. That transport is not live in this build, so we
+  // return null rather than a non-functional handle.
+  //
+  // The complementary *local* remote-control HTTP server (daemon-side,
+  // src/daemon/remoteControlServer.ts) is independent of this OAuth bridge:
+  // it runs whenever the daemon supervisor starts and is reachable via
+  // src/daemon/remoteControlClient.ts.
+  return null
 }
 export type HookEvent = any;
 export type ExitReason = any;
