@@ -210,14 +210,7 @@ function RunLine({
   const idMax = Math.max(8, Math.min(24, columns - 60))
   return (
     <Text>
-      <Text bold={true}>{name}</Text>
-      {' · '}
-      <Text color={statusColor(status)}>{status}</Text>
-      {' · '}
-      {agents} {agents === 1 ? 'agent' : 'agents'}
-      {tokens > 0 ? ` · ${formatNumber(tokens)} tok` : ''}
-      {' · '}
-      <Text dimColor={true}>{truncate(runId, idMax)}</Text>
+      {`${name} · ${status} · ${agents} ${agents === 1 ? 'agent' : 'agents'}${tokens > 0 ? ` · ${formatNumber(tokens)} tok` : ''} · ${truncate(runId, idMax)}`}
     </Text>
   )
 }
