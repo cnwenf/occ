@@ -65,6 +65,43 @@ function isColorString(v: unknown): boolean {
 }
 
 /**
+ * Accept a user-entered color and normalize it to a form the theme system
+ * stores: `rgb(r,g,b)` (from #hex or rgb()) or `ansi:name`. Returns null for
+ * anything that isn't a recognizable color. Used by the "New custom theme"
+ * creation flow so users can type `#1e1e1e` or `rgb(30,30,30)` interchangeably.
+ */
+export function normalizeColorInput(raw: string): string | null {
+  const v = raw.trim()
+  if (v === '') return null
+  // ansi:name (16-color form)
+  const ansiMatch = v.match(/^ansi:([a-zA-Z]+)$/)
+  if (ansiMatch) return `ansi:${ansiMatch[1]!.toLowerCase()}`
+  // rgb(r,g,b) — allow optional spaces; clamp 0-255
+  const rgbMatch = v.match(/^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i)
+  if (rgbMatch) {
+    const parts = [rgbMatch[1]!, rgbMatch[2]!, rgbMatch[3]!].map(n => {
+      const i = parseInt(n, 10)
+      return Number.isNaN(i) ? 0 : Math.min(255, Math.max(0, i))
+    })
+    return `rgb(${parts[0]},${parts[1]},${parts[2]})`
+  }
+  // #rrggbb
+  const hexMatch = v.match(/^#([0-9a-fA-F]{6})$/)
+  if (hexMatch) {
+    const n = parseInt(hexMatch[1]!, 16)
+    return `rgb(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255})`
+  }
+  // #rgb (3-digit)
+  const hex3Match = v.match(/^#([0-9a-fA-F]{3})$/)
+  if (hex3Match) {
+    const s = hex3Match[1]!
+    const expand = (c: string) => parseInt(c + c, 16)
+    return `rgb(${expand(s[0]!)},${expand(s[1]!)},${expand(s[2]!)})`
+  }
+  return null
+}
+
+/**
  * Parse one custom theme file's content into a {@link CustomTheme}.
  * Returns null for invalid JSON, non-object roots, or empty files. Overrides
  * are filtered to keys that exist on the base palette and look like colors.

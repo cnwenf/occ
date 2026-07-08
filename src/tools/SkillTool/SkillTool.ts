@@ -66,7 +66,7 @@ import {
 } from '../utils.js'
 import { SKILL_TOOL_NAME } from './constants.js'
 import { getPrompt } from './prompt.js'
-import { setSkillAttribution } from './skillAttribution.js'
+import { setSkillAttribution, hashSkillContent } from './skillAttribution.js'
 import {
   dropShadowedSkills,
 } from '../../skills/loadSkillsDir.js'
@@ -649,8 +649,12 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     recordSkillUsage(commandName)
 
     // 2.1.186+: record turn-level skill attribution so the API request
-    // telemetry can tag which skill contributed to this turn.
-    setSkillAttribution(commandName)
+    // telemetry can tag which skill contributed to this turn. Pass the
+    // SHA-256 content hash (computed at load time) for version tracking (C7).
+    setSkillAttribution(
+      commandName,
+      command?.type === 'prompt' ? command.skillContentHash : undefined,
+    )
 
     // Check if skill should run as a forked sub-agent
     if (command?.type === 'prompt' && command.context === 'fork') {
@@ -1093,7 +1097,8 @@ async function executeRemoteSkill(
   recordSkillUsage(commandName)
 
   // 2.1.186+: turn-level attribution for the remote skill path too.
-  setSkillAttribution(commandName)
+  // C7: pass SHA-256 of the downloaded skill content for version tracking.
+  setSkillAttribution(commandName, hashSkillContent(content))
 
   logForDebugging(
     `SkillTool loaded remote skill ${slug} (cacheHit=${cacheHit}, ${latencyMs}ms, ${content.length} chars)`,

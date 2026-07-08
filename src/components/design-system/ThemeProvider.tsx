@@ -21,6 +21,8 @@ type ThemeContextValue = {
   cancelPreview: () => void;
   /** The resolved theme to render with. Never 'auto'. */
   currentTheme: ThemeName;
+  /** Re-scan ~/.claude/themes/*.json so newly saved custom themes resolve. */
+  reloadCustomThemes: () => void;
 };
 
 // Non-'auto' default so useTheme() works without a provider (tests, tooling).
@@ -31,7 +33,8 @@ const ThemeContext = createContext<ThemeContextValue>({
   setPreviewTheme: () => {},
   savePreview: () => {},
   cancelPreview: () => {},
-  currentTheme: DEFAULT_THEME
+  currentTheme: DEFAULT_THEME,
+  reloadCustomThemes: () => {},
 });
 type Props = {
   children: React.ReactNode;
@@ -64,6 +67,10 @@ export function ThemeProvider({
   // override application is layered on top of getTheme, which lives in
   // src/utils/theme.ts.)
   const [customThemes, setCustomThemes] = useState<CustomTheme[]>([]);
+  // Bumped by reloadCustomThemes() to force loadCustomThemes() to re-run, so a
+  // theme saved mid-session (e.g. via the "New custom theme" flow) resolves
+  // without restarting the app.
+  const [customThemesVersion, bumpCustomThemes] = useState(0);
   useEffect(() => {
     let cancelled = false;
     loadCustomThemes().then(ct => {
@@ -72,7 +79,7 @@ export function ThemeProvider({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [customThemesVersion]);
 
   // The setting currently in effect (preview wins while picker is open)
   const activeSetting = previewTheme ?? themeSetting;
@@ -143,6 +150,7 @@ export function ThemeProvider({
         setPreviewTheme(null);
       }
     },
+    reloadCustomThemes: () => bumpCustomThemes(v => v + 1),
     currentTheme
   }), [themeSetting, previewTheme, currentTheme, onThemeSave]);
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
@@ -199,4 +207,12 @@ export function usePreviewTheme() {
     t0 = $[3];
   }
   return t0;
+}
+
+/**
+ * Returns a function that re-scans ~/.claude/themes/*.json so newly saved
+ * custom themes are picked up without an app restart.
+ */
+export function useReloadCustomThemes(): () => void {
+  return useContext(ThemeContext).reloadCustomThemes;
 }

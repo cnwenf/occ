@@ -107,6 +107,9 @@ describe("2.1.186 C6 frontmatter fields + normalizeKeys (e2e)", () => {
     expect(LOAD_SRC).toContain("normalizeKeys");
     expect(LOAD_SRC).toContain("normalizeFrontmatterKeys");
     expect(LOAD_SRC).toContain("parseSkillFrontmatter");
+    // C7: SHA-256 content hash computed at load time, stored on command.
+    expect(LOAD_SRC).toContain("skillContentHash");
+    expect(LOAD_SRC).toContain("createHash");
   });
 
   test("runtime: kebab fields normalized + parsed", async () => {
@@ -124,6 +127,22 @@ console.log(JSON.stringify({
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
     expect(out).toEqual({ displayName: "My Skill", defaultEnabled: false, fallback: true, metadataVersion: 2 });
   });
+
+  test("runtime: case-insensitive key normalization (Display-Name, Fallback, etc.)", async () => {
+    const script = `
+const { parseSkillFrontmatter, parseSkillFrontmatterFields } = await import("${REPO_ROOT}/src/skills/loadSkillsDir.ts");
+const fm = parseSkillFrontmatter('---\\nDisplay-Name: Title Case\\nDEFAULT-ENABLED: false\\nFallback: true\\nMetadata:\\n  version: 3\\n---\\nbody', 'x.md', { normalizeKeys: true });
+const pf = parseSkillFrontmatterFields(fm.frontmatter, 'body', 'myskill');
+console.log(JSON.stringify({
+  displayName: pf.displayName,
+  defaultEnabled: pf.defaultEnabled,
+  fallback: pf.fallback,
+  metadataVersion: pf.metadata?.version,
+}));
+`;
+    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
+    expect(out).toEqual({ displayName: "Title Case", defaultEnabled: false, fallback: true, metadataVersion: 3 });
+  });
 });
 
 describe("2.1.186 C7 skill attribution (e2e)", () => {
@@ -133,8 +152,12 @@ describe("2.1.186 C7 skill attribution (e2e)", () => {
     expect(ATTR_SRC).toContain("attributionPlugin");
     expect(ATTR_SRC).toContain("setSkillAttribution");
     expect(ATTR_SRC).toContain("getSkillAttribution");
-    // SkillTool records attribution on skill invocation.
+    // C7: SHA-256 content hash for version tracking.
+    expect(ATTR_SRC).toContain("hashSkillContent");
+    expect(ATTR_SRC).toContain("createHash");
+    // SkillTool records attribution on skill invocation + passes content hash.
     expect(SKILL_TOOL_SRC).toContain("setSkillAttribution");
+    expect(SKILL_TOOL_SRC).toContain("hashSkillContent");
   });
 
   test("runtime: attribution name/hash/plugin", async () => {
@@ -157,6 +180,29 @@ console.log(JSON.stringify(out));
     expect(out.hashMatches).toBe(true);
     expect(out.plugin).toBe("plugin");
     expect(out.frag).toEqual({ attributionSkill: "plugin:myskill", attributionPlugin: "plugin" });
+    expect(out.cleared).toBe(true);
+  });
+
+  test("runtime: SHA-256 content hash for version tracking", async () => {
+    const script = `
+const { setSkillAttribution, getAttributionSkillName, getAttributionSkillHash, hashSkillContent, clearSkillAttribution } = await import("${REPO_ROOT}/src/tools/SkillTool/skillAttribution.ts");
+const content = '# My Skill\\n\\nDoes useful things.';
+const expectedHash = hashSkillContent(content);
+setSkillAttribution('myskill', expectedHash);
+const out = {
+  name: getAttributionSkillName(),
+  hash: getAttributionSkillHash(),
+  hashMatches: getAttributionSkillHash() === expectedHash,
+  hashIsSha256: /^[0-9a-f]{64}$/.test(getAttributionSkillHash() ?? ''),
+};
+clearSkillAttribution();
+out.cleared = getAttributionSkillName() === undefined;
+console.log(JSON.stringify(out));
+`;
+    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
+    expect(out.name).toBe("myskill");
+    expect(out.hashMatches).toBe(true);
+    expect(out.hashIsSha256).toBe(true);
     expect(out.cleared).toBe(true);
   });
 });

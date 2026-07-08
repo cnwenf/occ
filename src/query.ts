@@ -53,6 +53,7 @@ import {
   createToolUseSummaryMessage,
   createMicrocompactBoundaryMessage,
   stripSignatureBlocks,
+  wrapInSystemReminder,
 } from './utils/messages.js'
 import { generateToolUseSummary } from './services/toolUseSummary/toolUseSummaryGenerator.js'
 import { prependUserContext, appendSystemContext } from './utils/api.js'
@@ -299,7 +300,7 @@ async function* queryLoop(
   // multiple compacts: each subtracts the final context at that compact's
   // trigger point. Loop-local (not on State) to avoid touching the 7 continue
   // sites.
-  let taskBudgetRemaining: number | undefined = undefined
+  let taskBudgetRemaining: number | undefined 
 
   // Snapshot immutable env/statsig/session state once at entry. See QueryConfig
   // for what's included and why feature() gates are intentionally excluded.
@@ -1356,9 +1357,21 @@ async function* queryLoop(
         return { reason: 'stop_hook_prevented' }
       }
 
-      if (stopHookResult.blockingErrors.length > 0) {
-        // 2.1.143: Cap consecutive stop-hook blocks to prevent infinite loops.
-        // Default 8; override via CLAUDE_CODE_STOP_HOOK_BLOCK_CAP.
+      // D6: Stop/SubagentStop hooks can return additionalContext — non-error
+      // feedback that continues the conversation so the model can act on it.
+      // Treat it like a stop-hook block (continuation) but inject the context
+      // as a system-reminder user message so the model sees what to do next,
+      // mirroring the official Stop/SubagentStop additionalContext flow.
+      const stopHookAdditionalContexts =
+        stopHookResult.additionalContexts ?? []
+      if (
+        stopHookResult.blockingErrors.length > 0 ||
+        stopHookAdditionalContexts.length > 0
+      ) {
+        // 2.1.143: Cap consecutive stop-hook continuations to prevent infinite
+        // loops. Default 8; override via CLAUDE_CODE_STOP_HOOK_BLOCK_CAP.
+        // D6: additionalContext-only continuations are capped the same way — a
+        // hook that always returns additionalContext would otherwise loop forever.
         const blockCap = parseInt(
           process.env.CLAUDE_CODE_STOP_HOOK_BLOCK_CAP ?? '8',
           10,
@@ -1366,23 +1379,34 @@ async function* queryLoop(
         const nextBlockCount = (state.consecutiveStopHookBlocks ?? 0) + 1
         if (nextBlockCount > blockCap) {
           logForDebugging(
-            `Stop hook blocked ${nextBlockCount - 1} consecutive times (cap: ${blockCap}); ending turn with warning`,
+            `Stop hook blocked/continued ${nextBlockCount - 1} consecutive times (cap: ${blockCap}); ending turn with warning`,
             { level: 'warn' },
           )
           yield {
             message: createSystemMessage(
-              `Stop hook has blocked ${nextBlockCount - 1} consecutive times. Ending turn to prevent an infinite loop. Check your Stop hook configuration.`,
+              `Stop hook has blocked or provided additional context ${nextBlockCount - 1} consecutive times. Ending turn to prevent an infinite loop. Check your Stop hook configuration.`,
               'warning',
             ),
           }
           return { reason: 'stop_hook_block_cap' }
         }
+        const continuationMessages: Message[] = [
+          ...messagesForQuery,
+          ...assistantMessages,
+          ...stopHookResult.blockingErrors,
+        ]
+        if (stopHookAdditionalContexts.length > 0) {
+          continuationMessages.push(
+            createUserMessage({
+              content: wrapInSystemReminder(
+                `Stop hook additional context:\n${stopHookAdditionalContexts.join('\n')}`,
+              ),
+              isMeta: true,
+            }),
+          )
+        }
         const next: State = {
-          messages: [
-            ...messagesForQuery,
-            ...assistantMessages,
-            ...stopHookResult.blockingErrors,
-          ],
+          messages: continuationMessages,
           toolUseContext,
           autoCompactTracking: tracking,
           maxOutputTokensRecoveryCount: 0,

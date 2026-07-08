@@ -151,7 +151,7 @@ function getLanguageSection(
   if (!languagePreference) return null
 
   return `# Language
-Always respond in ${languagePreference}. Use ${languagePreference} for all explanations, comments, and communications with the user. Technical terms and code identifiers should remain in their original form.`
+Always respond in ${languagePreference}. Use ${languagePreference} for all explanations, comments, and communications with the user. Technical terms and code identifiers should remain in their original form. If the user writes in another language, acknowledge their message but respond in ${languagePreference}.`
 }
 
 function getOutputStyleSection(

@@ -18,10 +18,12 @@ import {
 import type { CustomTheme } from '../commands/theme/customThemes.js';
 import { gracefulShutdown } from '../utils/gracefulShutdown.js';
 import { updateSettingsForSource } from '../utils/settings/settings.js';
-import type { ThemeSetting } from '../utils/theme.js';
+import type { ThemeName, ThemeSetting } from '../utils/theme.js';
 import { Select } from './CustomSelect/index.js';
 import { Byline } from './design-system/Byline.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
+import { useReloadCustomThemes } from './design-system/ThemeProvider.js';
+import { CustomThemeCreator } from './CustomThemeCreator.js';
 import { getColorModuleUnavailableReason, getSyntaxTheme } from './StructuredDiff/colorDiff.js';
 import { StructuredDiff } from './StructuredDiff.js';
 export type ThemePickerProps = {
@@ -51,8 +53,9 @@ export function ThemePicker(t0) {
   const showHelpTextBelow = t3 === undefined ? false : t3;
   const hideEscToCancel = t4 === undefined ? false : t4;
   const skipExitHandling = t5 === undefined ? false : t5;
-  const [theme] = useTheme();
+  const [theme, setThemeSetting] = useTheme();
   const themeSetting = useThemeSetting();
+  const reloadCustomThemes = useReloadCustomThemes();
   const {
     columns
   } = useTerminalSize();
@@ -127,6 +130,25 @@ export function ThemePicker(t0) {
   }
   useKeybinding("theme:toggleSyntaxHighlighting", t8, t9);
   const exitState = useExitOnCtrlCDWithKeybindings(skipExitHandling ? _temp2 : undefined);
+  // "New custom theme…" sub-screen. When active, the wizard replaces the
+  // theme Select; saving applies the new custom theme and returns here.
+  const [creating, setCreating] = React.useState(false);
+  if (creating) {
+    const handleCreated = (saved: { slug: string; name: string; base: ThemeName }) => {
+      setCreating(false);
+      // Pick up the new file so it appears in the list + resolves in the provider.
+      reloadCustomThemes();
+      loadCustomThemes().then(ct => setCustomThemes(ct)).catch(() => {});
+      // Apply immediately (persists to config + resolves to the base palette).
+      setThemeSetting(buildCustomThemeSlug(saved.slug) as ThemeSetting);
+    };
+    return (
+      <Box flexDirection="column" gap={1}>
+        <Text bold={true} color="permission">Theme</Text>
+        <CustomThemeCreator base={theme} onSaved={handleCreated} onCancel={() => setCreating(false)} />
+      </Box>
+    );
+  }
   let t10;
   if ($[7] === Symbol.for("react.memo_cache_sentinel")) {
     t10 = [{
@@ -223,8 +245,11 @@ export function ThemePicker(t0) {
   let t16;
   if ($[18] !== onThemeSelect || $[19] !== savePreview) {
     t16 = setting_0 => {
-      // "New custom theme…" — creation flow; selecting it does not change the theme
-      if (setting_0 === NEW_CUSTOM_THEME_VALUE) return;
+      // "New custom theme…" — open the creation sub-screen instead of applying.
+      if (setting_0 === NEW_CUSTOM_THEME_VALUE) {
+        setCreating(true);
+        return;
+      }
       savePreview();
       onThemeSelect(setting_0 as ThemeSetting);
     };

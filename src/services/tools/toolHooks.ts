@@ -546,13 +546,27 @@ export async function* runPreToolUseHooks(
             }
           } else {
             // deny - updatedInput is irrelevant since tool won't run
+            // D14 (continueOnBlock): When the hook set blockingError, prefer
+            // its message so the block reason is always fed back to the model
+            // as the tool_use_error. Without this, hookPermissionDecisionReason
+            // can be undefined (e.g. a hook uses
+            // hookSpecificOutput.permissionDecision='deny' without
+            // permissionDecisionReason, which overwrites the top-level reason
+            // at hooks.ts:884), and the generic "denies this tool" fallback
+            // would hide WHY the call was blocked — leaving the model unable
+            // to retry with a modified approach.
+            const denyMessage = result.blockingError
+              ? getPreToolHookBlockingMessage(
+                  `PreToolUse:${tool.name}`,
+                  result.blockingError,
+                )
+              : (result.hookPermissionDecisionReason ||
+                `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`)
             yield {
               type: 'hookPermissionResult',
               hookPermissionResult: {
                 behavior: result.permissionBehavior,
-                message:
-                  result.hookPermissionDecisionReason ||
-                  `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`,
+                message: denyMessage,
                 decisionReason,
               },
             }

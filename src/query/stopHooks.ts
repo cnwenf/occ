@@ -60,6 +60,11 @@ import {
 type StopHookResult = {
   blockingErrors: Message[]
   preventContinuation: boolean
+  // D6: Stop/SubagentStop hooks can return additionalContext — non-error
+  // feedback that continues the conversation so the model can act on it.
+  // Collected here so query.ts can inject it as a system-reminder before the
+  // next model response (mirrors the official Stop/SubagentStop flow).
+  additionalContexts?: string[]
 }
 
 export async function* handleStopHooks(
@@ -195,6 +200,9 @@ export async function* handleStopHooks(
     let stopReason = ''
     let hasOutput = false
     const hookErrors: string[] = []
+    // D6: collect non-error additionalContext from Stop/SubagentStop hooks so
+    // query.ts can inject it into the next turn's messages.
+    const collectedAdditionalContexts: string[] = []
     const hookInfos: StopHookInfo[] = []
 
     for await (const result of generator) {
@@ -283,7 +291,11 @@ export async function* handleStopHooks(
       // non-error feedback delivered to the model/subagent. Inject it as a
       // hook_additional_context attachment so the conversation continues and
       // the model can act on it (mirrors the official Stop/SubagentStop flow).
+      // D6: also collect into collectedAdditionalContexts so query.ts injects
+      // it as a system-reminder in the next turn's messages (the attachment
+      // alone is UI-only — it does not enter state.messages).
       if (result.additionalContexts && result.additionalContexts.length > 0) {
+        collectedAdditionalContexts.push(...result.additionalContexts)
         const stopHookEvent = toolUseContext.agentId
           ? 'SubagentStop'
           : 'Stop'
@@ -371,7 +383,11 @@ export async function* handleStopHooks(
           } as typeof prev),
         )
       }
-      return { blockingErrors, preventContinuation: false }
+      return {
+        blockingErrors,
+        preventContinuation: false,
+        additionalContexts: collectedAdditionalContexts,
+      }
     }
 
     // 2.1.139 /goal: the goal is now a session-scoped prompt-type Stop hook
@@ -499,11 +515,16 @@ export async function* handleStopHooks(
         return {
           blockingErrors: teammateBlockingErrors,
           preventContinuation: false,
+          additionalContexts: collectedAdditionalContexts,
         }
       }
     }
 
-    return { blockingErrors: [], preventContinuation: false }
+    return {
+      blockingErrors: [],
+      preventContinuation: false,
+      additionalContexts: collectedAdditionalContexts,
+    }
   } catch (error) {
     const durationMs = Date.now() - hookStartTime
     logEvent('tengu_stop_hook_error', {

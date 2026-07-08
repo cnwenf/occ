@@ -1,3 +1,4 @@
+import { createHash } from 'crypto'
 import { realpath } from 'fs/promises'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
@@ -183,7 +184,8 @@ function parseSkillPaths(frontmatter: FrontmatterData): string[] | undefined {
 }
 
 /**
- * Kebab-case → camelCase key normalization for skill frontmatter (2.1.186+).
+ * Kebab-case → camelCase + case-insensitive key normalization for skill
+ * frontmatter (2.1.186+).
  *
  * The official parser accepts a `{ normalizeKeys: true }` option that
  * normalizes YAML keys so `display-name` is readable as `displayName`,
@@ -191,27 +193,34 @@ function parseSkillPaths(frontmatter: FrontmatterData): string[] | undefined {
  * lives in src/utils/frontmatterParser.ts and is outside this module's scope,
  * so we normalize as a post-parse step here.
  *
- * Only the 2.1.186 frontmatter additions are normalized — copying the kebab
- * form onto a camelCase alias when the camelCase form isn't already set — so
- * existing kebab-case reads (`allowed-tools`, `user-invocable`, …) keep
- * working unchanged.
+ * Case normalization: frontmatter keys are matched case-insensitively, so
+ * `Display-Name`, `DISPLAY-NAME`, and `display-name` all resolve to
+ * `displayName`. This mirrors the official `normalizeKeys` behavior where
+ * key casing is not significant.
+ *
+ * Only the 2.1.186 frontmatter additions are normalized — copying a
+ * case-folded key onto its canonical alias when the canonical form isn't
+ * already set — so existing kebab-case reads (`allowed-tools`,
+ * `user-invocable`, …) keep working unchanged.
  */
 const NORMALIZE_KEY_MAP: Record<string, string> = {
   'display-name': 'displayName',
   'default-enabled': 'defaultEnabled',
+  'fallback': 'fallback',
+  'metadata': 'metadata',
 }
 
 export function normalizeFrontmatterKeys(
   frontmatter: FrontmatterData,
 ): FrontmatterData {
   const out: FrontmatterData = { ...frontmatter }
-  for (const [kebab, camel] of Object.entries(NORMALIZE_KEY_MAP)) {
-    const kebabVal = (frontmatter as Record<string, unknown>)[kebab]
+  for (const [key, value] of Object.entries(frontmatter)) {
+    const camel = NORMALIZE_KEY_MAP[key.toLowerCase()]
     if (
-      kebabVal !== undefined &&
+      camel !== undefined &&
       (out as Record<string, unknown>)[camel] === undefined
     ) {
-      ;(out as Record<string, unknown>)[camel] = kebabVal
+      ;(out as Record<string, unknown>)[camel] = value
     }
   }
   return out
@@ -451,6 +460,7 @@ export function createSkillCommand({
   defaultEnabled,
   fallback,
   metadata,
+  contentHash,
 }: {
   skillName: string
   displayName: string | undefined
@@ -478,6 +488,7 @@ export function createSkillCommand({
   defaultEnabled: boolean | undefined
   fallback: boolean
   metadata: Record<string, unknown> | undefined
+  contentHash: string | undefined
 }): Command {
   return {
     type: 'prompt',
@@ -506,6 +517,8 @@ export function createSkillCommand({
     defaultEnabled,
     fallback,
     metadata,
+    // SHA-256 of the skill file content for version tracking (C7 attribution).
+    skillContentHash: contentHash,
     isEnabled:
       defaultEnabled === false ? () => false : undefined,
     userFacingName(): string {
@@ -646,6 +659,11 @@ async function loadSkillsFromSkillsDir(
         )
         const paths = parseSkillPaths(frontmatter)
 
+        // C7: SHA-256 of the full skill file content for version tracking.
+        const contentHash = createHash('sha256')
+          .update(content)
+          .digest('hex')
+
         // 2.1.186: default-enabled: false skips loading the skill entirely.
         if (parsed.defaultEnabled === false) {
           logForDebugging(
@@ -659,6 +677,7 @@ async function loadSkillsFromSkillsDir(
             ...parsed,
             skillName,
             markdownContent,
+            contentHash,
             source,
             baseDir: skillDirPath,
             loadedFrom: 'skills',
@@ -805,12 +824,18 @@ async function loadSkillsFromCommandsDir(
           continue
         }
 
+        // C7: SHA-256 of the skill content for version tracking.
+        const contentHash = createHash('sha256')
+          .update(content)
+          .digest('hex')
+
         skills.push({
           skill: createSkillCommand({
             ...parsed,
             skillName: cmdName,
             displayName: undefined,
             markdownContent: content,
+            contentHash,
             source,
             baseDir: skillDirectory,
             loadedFrom: 'commands_DEPRECATED',

@@ -154,3 +154,166 @@ export function getDestructiveCommandCategory(
 ): string | null {
   return findDestructiveCommand(command)?.category ?? null
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// G3: Deterministic destructive-command BLOCKS (no classifier needed).
+//
+// The WARNING patterns above are purely informational — they decorate the
+// permission dialog and are gated behind the `tengu_destructive_command_warning`
+// Statsig flag. These BLOCK patterns instead HARD-DENY catastrophic commands
+// in the permission path itself: no AI classifier, no feature flag, no
+// network call. A regex match is sufficient to block.
+//
+// Scope (per the G3 alignment spec):
+//   - Git destructive: force push, push --delete, reset --hard, clean -f,
+//     commit --amend (amend is auto-mode-only — see autoModeOnly).
+//   - Infrastructure: terraform/tofu/pulumi/cdk destroy (NOT plan/apply).
+//   - Catastrophic: rm -rf targeting / or ~, dd to a raw block device, mkfs.
+//
+// Call site (bashToolHasPermission) skips bypassPermissions mode to respect
+// the --dangerously-skip-permissions contract, and gates autoModeOnly
+// patterns (just `--amend`) to the `auto` mode where the classifier would
+// otherwise auto-approve them.
+// ─────────────────────────────────────────────────────────────────────────
+
+type DestructiveBlockPattern = {
+  pattern: RegExp
+  /** Stable slug identifying the destructive command class. */
+  category: string
+  /** Human-readable reason appended to the deny message. */
+  reason: string
+  /**
+   * If true, the block only applies in `auto` mode (where the classifier
+   * might otherwise auto-approve). False (default) means the block applies
+   * in default/acceptEdits/auto modes. bypassPermissions is always skipped
+   * at the call site.
+   */
+  autoModeOnly?: boolean
+}
+
+// rm with recursive+force flags targeting root (/), home (~), or $HOME.
+// Uses \brm (word boundary) so sudo/env/time-prefixed invocations are caught
+// too. Covers combined short flags (-rf/-fr/-Rf/-rfv), separate short flags
+// (-r -f / -f -r), and long flags (--recursive --force). Only matches when
+// the target path is the root dir (/), home dir (~/$HOME), or their glob
+// equivalents (/* ~/* $HOME/*) — NOT /tmp/foo or ~/Documents, which are
+// legitimate scoped deletions.
+const RM_ROOT_HOME_PATTERN =
+  /\brm\s+(?:-[a-zA-Z]*[rR][a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*[rR]|--recursive\b[^;&|\n]*--force\b|--force\b[^;&|\n]*--recursive\b|-[a-zA-Z]*[rR]\b[^;&|\n]*?-[a-zA-Z]*f\b|-[a-zA-Z]*f\b[^;&|\n]*?-[a-zA-Z]*[rR]\b)\s+(?:\/(?:\s|$|[;&|\n])|\/\*|~(?:\s|$|[;&|\n])|~\/(?:\s|$|[;&|\n])|~\/\*|\$HOME(?:\s|$|[;&|\n])|\$HOME\/(?:\s|$|[;&|\n])|\$HOME\/\*)/
+
+const DESTRUCTIVE_BLOCK_PATTERNS: DestructiveBlockPattern[] = [
+  // Git — irreversible history/branch destruction
+  {
+    // --force matches both --force and --force-with-lease (substring).
+    // \s-[a-zA-Z]*f[a-zA-Z]*\b matches -f and combined short flags containing
+    // f (-fu, -qf) — for git push, f in a short flag always means force. The
+    // leading \s- (space + single dash) excludes long flags like --follow-tags.
+    pattern: /\bgit\s+push\b[^;&|\n]*(?:--force|\s-[a-zA-Z]*f[a-zA-Z]*\b)/,
+    category: 'git_force_push',
+    reason: 'git push --force overwrites remote history',
+  },
+  {
+    pattern: /\bgit\s+push\b[^;&|\n]*\s--delete\b/,
+    category: 'git_push_delete',
+    reason: 'git push --delete removes a remote branch/tag',
+  },
+  {
+    pattern: /\bgit\s+reset\b[^;&|\n]*\s--hard\b/,
+    category: 'git_reset_hard',
+    reason: 'git reset --hard discards uncommitted changes',
+  },
+  {
+    // git clean with -f (force) but not -n/--dry-run. Matches -fd, -df, -fxd.
+    pattern:
+      /\bgit\s+clean\b(?![^;&|\n]*(?:-[a-zA-Z]*n|--dry-run))[^;&|\n]*-[a-zA-Z]*f/,
+    category: 'git_clean_force',
+    reason: 'git clean -f permanently removes untracked files',
+  },
+  {
+    // Amend is only dangerous when auto-approved (rewrites history without
+    // a prompt). In default mode it naturally prompts, so no hard-deny.
+    pattern: /\bgit\s+commit\b[^;&|\n]*\s--amend\b/,
+    category: 'git_commit_amend',
+    reason: 'git commit --amend rewrites the last commit',
+    autoModeOnly: true,
+  },
+
+  // Infrastructure — tears down managed cloud resources
+  {
+    pattern: /\b(?:terraform|tofu)\s+destroy\b/,
+    category: 'terraform_destroy',
+    reason: 'terraform/tofu destroy tears down infrastructure',
+  },
+  {
+    pattern: /\bpulumi\s+destroy\b/,
+    category: 'pulumi_destroy',
+    reason: 'pulumi destroy tears down infrastructure',
+  },
+  {
+    pattern: /\bcdk\s+destroy\b/,
+    category: 'cdk_destroy',
+    reason: 'cdk destroy tears down infrastructure',
+  },
+
+  // Other — catastrophic, non-recoverable
+  {
+    pattern: RM_ROOT_HOME_PATTERN,
+    category: 'rm_root_home',
+    reason: 'rm -rf targets the root or home directory',
+  },
+  {
+    // dd writing TO a raw block device (of=/dev/sd*, nvme, disk, etc.).
+    // Reading FROM a device (if=/dev/sda of=/tmp/img) is NOT matched.
+    pattern:
+      /\bdd\b[^;&|\n]*of=\s*['"]?\/dev\/(?:sd|nvme|disk|hd|vd|xvd|mmcblk)/,
+    category: 'dd_disk_wipe',
+    reason: 'dd writes to a raw block device',
+  },
+  {
+    // mkfs and its typed variants (mkfs.ext4, mkfs.vfat, mkfs.xfs, ...).
+    // Command-position match (segment start or after ;/&/|, optionally
+    // preceded by sudo/env/time/nice/nohup) so `grep mkfs README.md` is not
+    // a false positive.
+    pattern:
+      /(?:^|[;&|\n]\s*)(?:sudo\s+|env\s+|time\s+|nice\s+|nohup\s+)*mkfs(?:\.[a-z0-9]+)?\b/,
+    category: 'mkfs_format',
+    reason: 'mkfs formats a disk',
+  },
+]
+
+export type DestructiveCommandBlock = {
+  category: string
+  reason: string
+  autoModeOnly: boolean
+}
+
+/**
+ * Find the first destructive BLOCK pattern matching a command. Returns the
+ * block info (category + reason + autoModeOnly) or null. Unlike
+ * findDestructiveCommand (informational warnings), a match here means the
+ * command should be HARD-DENIED in the permission path without consulting
+ * the AI classifier.
+ */
+export function findDestructiveCommandBlock(
+  command: string,
+): DestructiveCommandBlock | null {
+  const truncated = truncateForMatch(command)
+  for (const entry of DESTRUCTIVE_BLOCK_PATTERNS) {
+    if (entry.pattern.test(truncated)) {
+      return {
+        category: entry.category,
+        reason: entry.reason,
+        autoModeOnly: entry.autoModeOnly ?? false,
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Boolean wrapper over findDestructiveCommandBlock. Satisfies the G3 spec's
+ * requested `isDestructiveCommand(command): boolean` API.
+ */
+export function isDestructiveCommand(command: string): boolean {
+  return findDestructiveCommandBlock(command) !== null
+}

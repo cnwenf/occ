@@ -76,6 +76,7 @@ import {
   bashCommandIsSafeAsync_DEPRECATED,
   stripSafeHeredocSubstitutions,
 } from './bashSecurity.js'
+import { findDestructiveCommandBlock } from './destructiveCommandWarning.js'
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
@@ -2112,6 +2113,37 @@ export async function bashToolHasPermission(
   getCommandSubcommandPrefixFn = getCommandSubcommandPrefix,
 ): Promise<PermissionResult> {
   let appState = context.getAppState()
+
+  // G3: Deterministic destructive-command block (no classifier needed).
+  // Pattern-matches catastrophic commands and hard-denies them BEFORE any
+  // mode auto-allow, allow-rule, or classifier evaluation. Applies in
+  // default/acceptEdits/auto modes. bypassPermissions is skipped to respect
+  // the explicit --dangerously-skip-permissions contract. Patterns flagged
+  // autoModeOnly (just `git commit --amend`) are denied only in `auto` mode,
+  // where the classifier would otherwise auto-approve them; in default mode
+  // they fall through to the normal ask flow.
+  {
+    const mode = appState.toolPermissionContext.mode
+    if (mode !== 'bypassPermissions') {
+      const block = findDestructiveCommandBlock(input.command)
+      if (block !== null && (!block.autoModeOnly || mode === 'auto')) {
+        logEvent('tengu_destructive_command_blocked', {
+          category: block.category,
+          mode,
+          autoModeOnly: block.autoModeOnly,
+        })
+        const decisionReason: PermissionDecisionReason = {
+          type: 'other' as const,
+          reason: `Destructive command blocked: ${block.reason}`,
+        }
+        return {
+          behavior: 'deny',
+          message: `Destructive command blocked: ${block.reason}`,
+          decisionReason,
+        }
+      }
+    }
+  }
 
   // 0. AST-based security parse. This replaces both tryParseShellCommand
   // (the shell-quote pre-check) and the bashCommandIsSafe misparsing gate.

@@ -57,6 +57,9 @@ export type PromptCommand = {
   // Glob patterns for file paths this skill applies to
   // When set, the skill is only visible after the model touches matching files
   paths?: string[]
+  // SHA-256 hash of the skill file content (for version tracking in
+  // turn-level attribution). Computed at load time from the raw file content.
+  skillContentHash?: string
   getPromptForCommand(
     args: string,
     context: ToolUseContext,

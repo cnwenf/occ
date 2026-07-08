@@ -22,6 +22,7 @@ import { safeParseJSON } from './json.js'
 import { lazySchema } from './lazySchema.js'
 import { extractTextContent } from './messages.js'
 import { asSystemPrompt } from './systemPromptType.js'
+import { getInitialSettings } from './settings/settings.js'
 
 const MAX_CONVERSATION_TEXT = 1000
 
@@ -84,8 +85,12 @@ export async function generateSessionTitle(
   if (!trimmed) return null
 
   try {
+    const language = getInitialSettings()?.language
+    const prompt = language
+      ? `${SESSION_TITLE_PROMPT}\n\nGenerate the session title in ${language}.`
+      : SESSION_TITLE_PROMPT
     const result = await queryHaiku({
-      systemPrompt: asSystemPrompt([SESSION_TITLE_PROMPT]),
+      systemPrompt: asSystemPrompt([prompt]),
       userPrompt: trimmed,
       outputFormat: {
         type: 'json_schema',
