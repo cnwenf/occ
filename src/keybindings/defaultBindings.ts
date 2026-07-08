@@ -43,9 +43,7 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       // Global to avoid app:redraw shadowing clearInput when prompt is focused.
       'ctrl+t': 'app:toggleTodos',
       'ctrl+o': 'app:toggleTranscript',
-      ...(feature('KAIROS') || feature('KAIROS_BRIEF')
-        ? { 'ctrl+shift+b': 'app:toggleBrief' as const }
-        : {}),
+      'ctrl+shift+b': 'app:toggleBrief',
       'ctrl+shift+o': 'app:toggleTeammatePreview',
       'ctrl+r': 'history:search',
       // File navigation. cmd+ bindings only fire on kitty-protocol terminals;
@@ -134,6 +132,10 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       '/': 'settings:search',
       // Retry loading usage data (only active on error)
       r: 'settings:retry',
+      // Usage panel: period selection and sorting
+      d: 'settings:periodDay',
+      w: 'settings:periodWeek',
+      t: 'settings:sortByTokens',
     },
   },
   {
@@ -208,6 +210,8 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       pagedown: 'scroll:pageDown',
       wheelup: 'scroll:lineUp',
       wheeldown: 'scroll:lineDown',
+      'ctrl+up': 'scroll:lineUp',
+      'ctrl+down': 'scroll:lineDown',
       'ctrl+u': 'scroll:halfPageUp',
       'ctrl+d': 'scroll:halfPageDown',
       'ctrl+b': 'scroll:fullPageUp',
@@ -337,6 +341,14 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       k: 'select:previous',
       'ctrl+n': 'select:next',
       'ctrl+p': 'select:previous',
+      g: 'select:first',
+      'shift+g': 'select:last',
+      home: 'select:first',
+      end: 'select:last',
+      'ctrl+u': 'select:pageUp',
+      'ctrl+d': 'select:pageDown',
+      pageup: 'select:pageUp',
+      pagedown: 'select:pageDown',
       enter: 'select:accept',
       escape: 'select:cancel',
     },
@@ -348,6 +360,14 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
     bindings: {
       space: 'plugin:toggle',
       i: 'plugin:install',
+    },
+  },
+  // Doctor diagnostics screen (/doctor)
+  {
+    context: 'Doctor',
+    bindings: {
+      f: 'doctor:fix',
+      escape: 'doctor:exit',
     },
   },
 ]

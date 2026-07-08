@@ -47,7 +47,8 @@ import {
   type WorkflowAgentStat,
   type WorkflowProgressData,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
-import { spawnWorker } from '../../daemon/workerRegistry.js'
+import { createSubagentContext } from '../../utils/forkedAgent.js'
+import { writeWorkflowProgress } from '../../utils/wfProgress.js'
 
 const inputSchema = lazySchema(() =>
   z.object({
@@ -78,7 +79,7 @@ const inputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe(
-        'Launch the workflow asynchronously in a separate daemon-worker process. The tool returns immediately with a "started" status; progress is written to a file (~/.claude/wf-progress/<runId>.json) that the REPL polls from the main thread, so /workflows shows the running + completed workflow. This is the safe async path: the worker runs runWorkflow with a non-interactive toolUseContext (no Ink renderer), so its state updates cannot crash the main OCC. The inline (non-remote) path runs in-process for instant live progress.',
+        'Launch the workflow asynchronously in-process (background promise). The tool returns immediately with a "started" status; progress is written to a file (~/.claude/wf-progress/<runId>.json) that the REPL polls from the main thread, so /workflows shows the running + completed workflow. This is the safe async path: the background runWorkflow uses a NO-OP setAppState (prevents Ink cross-root flushSync crash); the main-thread poller reads the progress file and updates AppState safely. The inline (non-remote) path runs in-process for instant live progress.',
       ),
   }),
 )
@@ -99,6 +100,164 @@ type OutputSchema = ReturnType<typeof outputSchema>
 export type Output = z.infer<OutputSchema>
 
 const DESCRIPTION = `Run a multi-step workflow from a self-contained JavaScript script. The script runs in a sandboxed vm with access to primitives: agent(prompt, opts?) to spawn a subagent, parallel(items) for concurrent execution (max 4096 items, ~10 concurrent), pipeline(items, ...stages) for streaming, phase(title) to group agents, log(...args) for workflow-scoped logging, budget {total, remaining(), spent()} for token caps, and workflow(nameOrRef) / resolveWorkflow(name) for sub-workflows. Scripts are deterministic for resume (no Date/Math.random/import). Use the Workflow tool on substantive multi-agent tasks.`
+
+/** Shape of a raw progress event emitted by the workflow engine. */
+type WorkflowProgressEvent = {
+  type?: string
+  phase?: string
+  id?: string
+  label?: string
+  agentType?: string
+  status?: 'running' | 'done' | 'error'
+  agentCount?: number
+  tokens?: number
+  toolUseCount?: number
+  latestInputTokens?: number
+  cumulativeOutputTokens?: number
+  recentActivities?: WorkflowAgentStat['recentActivities']
+  lastActivity?: string
+  line?: string
+}
+
+/** A full progress snapshot — the output of the accumulator factory. */
+type WorkflowProgressSnapshot = {
+  type: 'workflow_progress'
+  phases: WorkflowPhaseProgress[]
+  narratorLines: string[]
+  agentCount: number
+  runId: string
+}
+
+/**
+ * Build a progress handler that accumulates engine events into phase/agent
+ * state and emits a full snapshot via `emit`. Shared by the inline path
+ * (emit → updateWorkflowProgressBatch + onProgress) and the background path
+ * (emit → writeWorkflowProgress file). The optional `onAgentEvent` callback
+ * is invoked for agent start/complete events — used by the background path
+ * to write subagent-level records for fleet visibility.
+ *
+ * This eliminates the triplication between the inline handler, the background
+ * handler, and the daemon-worker's buildProgressHandler (which remains as a
+ * fallback for the separate-process path).
+ */
+function buildWorkflowProgressHandler(
+  runId: string,
+  seedPhases: WorkflowPhaseProgress[],
+  emit: (snapshot: WorkflowProgressSnapshot) => void,
+  onAgentEvent?: (ev: WorkflowProgressEvent) => void,
+): (data: unknown) => void {
+  const phases: WorkflowPhaseProgress[] = seedPhases.map(p => ({
+    ...p,
+    agents: [],
+  }))
+  const narratorLines: string[] = []
+
+  const getOrCreatePhase = (title: string): WorkflowPhaseProgress => {
+    let entry = phases.find(p => p.phase === title)
+    if (!entry) {
+      entry = {
+        phase: title,
+        completedAgents: 0,
+        totalAgents: 0,
+        agentCount: 0,
+        agents: [],
+      }
+      phases.push(entry)
+    }
+    return entry
+  }
+
+  return (data: unknown): void => {
+    const ev = data as WorkflowProgressEvent
+    logEvent('tengu_workflow_progress', {
+      workflow_run_id: runId,
+      data_type: ev?.type ?? 'unknown',
+    })
+
+    const phaseTitle = ev?.phase ?? ''
+
+    switch (ev?.type) {
+      case 'workflow_phase': {
+        const entry = getOrCreatePhase(phaseTitle)
+        entry.agentCount = ev.agentCount ?? entry.agentCount
+        break
+      }
+      case 'workflow_agent_started': {
+        const entry = getOrCreatePhase(phaseTitle)
+        if (ev.id && !entry.agents.find(a => a.id === ev.id)) {
+          entry.agents.push({
+            id: ev.id,
+            label: ev.label ?? '',
+            agentType: ev.agentType ?? 'workflow-agent',
+            status: 'running',
+            toolUseCount: 0,
+            latestInputTokens: 0,
+            cumulativeOutputTokens: 0,
+            recentActivities: [],
+            lastActivity: undefined,
+            isResolved: false,
+            isError: false,
+          })
+        }
+        break
+      }
+      case 'workflow_agent_completed': {
+        const entry = getOrCreatePhase(phaseTitle)
+        let agent = ev.id ? entry.agents.find(a => a.id === ev.id) : undefined
+        if (!agent) {
+          agent = {
+            id: ev.id ?? '',
+            label: ev.label ?? '',
+            agentType: ev.agentType ?? 'workflow-agent',
+            status: 'running',
+            toolUseCount: 0,
+            latestInputTokens: 0,
+            cumulativeOutputTokens: 0,
+            recentActivities: [],
+            lastActivity: undefined,
+            isResolved: false,
+            isError: false,
+          }
+          entry.agents.push(agent)
+        }
+        agent.status = ev.status ?? 'done'
+        agent.toolUseCount = ev.toolUseCount ?? 0
+        agent.latestInputTokens = ev.latestInputTokens ?? 0
+        agent.cumulativeOutputTokens = ev.cumulativeOutputTokens ?? 0
+        agent.recentActivities = ev.recentActivities ?? []
+        agent.lastActivity = ev.lastActivity
+        agent.isResolved = agent.status === 'done'
+        agent.isError = agent.status === 'error'
+        if (agent.status === 'done') {
+          entry.completedAgents++
+        }
+        entry.agentCount = ev.agentCount ?? entry.agentCount
+        break
+      }
+      case 'workflow_log': {
+        if (ev.line) narratorLines.push(ev.line)
+        break
+      }
+    }
+
+    // Subagent-level callback (background path writes fleet-visibility records).
+    if (
+      onAgentEvent &&
+      ev.id &&
+      (ev.type === 'workflow_agent_started' || ev.type === 'workflow_agent_completed')
+    ) {
+      onAgentEvent(ev)
+    }
+
+    emit({
+      type: 'workflow_progress',
+      phases: phases.map(p => ({ ...p, agents: [...p.agents] })),
+      narratorLines: [...narratorLines],
+      agentCount: phases.reduce((s, p) => s + p.agentCount, 0),
+      runId,
+    })
+  }
+}
 
 export const WorkflowTool = buildTool({
   name: WORKFLOW_TOOL_NAME,
@@ -182,9 +341,10 @@ export const WorkflowTool = buildTool({
       [key: string]: unknown
     },
   ): Promise<PermissionResult> {
-    // Remote (async) launch is allowed: it spawns a separate daemon-worker
-    // process (no Ink renderer) so it cannot crash the main OCC. The user
-    // pre-approves the workflow launch by invoking the tool.
+    // Remote (async) launch is allowed: it runs runWorkflow in a background
+    // promise with a NO-OP setAppState (no Ink renderer reachable), so it
+    // cannot crash the main OCC. The user pre-approves the workflow launch
+    // by invoking the tool.
     return { behavior: 'allow', updatedInput: input }
   },
   mapToolResultToToolResultBlockParam(
@@ -347,35 +507,156 @@ export const WorkflowTool = buildTool({
     }
     registerWorkflowTask(initialState, context.setAppState)
 
-    // Async (remote) launch: spawn a separate daemon-worker process that runs
-    // runWorkflow with a non-interactive toolUseContext (no Ink renderer), so
-    // its state updates cannot crash the main OCC. The worker writes progress
-    // to ~/.claude/wf-progress/<runId>.json; a main-thread poller in the REPL
-    // reads that file and updates this task's state (safe — main thread). We
-    // register the task above (running) so /workflows populates immediately,
-    // then return "started" without awaiting runWorkflow inline.
+    // Async (remote) launch: run runWorkflow in a BACKGROUND PROMISE
+    // (in-process, NOT a separate daemon-worker process) with a NO-OP
+    // setAppState. This is the safe async path:
+    //   - The background context's setAppState AND setAppStateForTasks are
+    //     NO-OPs, so NO state update from the background promise can reach
+    //     the Ink store → no cross-root flushSyncWork crash.
+    //   - Progress is written to ~/.claude/wf-progress/<runId>.json (a FILE,
+    //     not setAppState). A main-thread poller (useWorkflowProgressPoller)
+    //     reads the file and updates this task's state safely from the main
+    //     thread.
+    //   - On completion/failure, completeWorkflowTask/failWorkflowTask are
+    //     called via setTimeout(0) using the MAIN THREAD's setAppState (safe —
+    //     fires on the next tick, not during a render).
+    // We register the task above (running) so /workflows populates immediately,
+    // then return "started" without awaiting runWorkflow.
     if (remote) {
-      const record = spawnWorker('workflow', {
-        id: runId,
-        env: {
-          CLAUDE_WORKFLOW_SCRIPT_PATH: resolvedScriptPath,
-          CLAUDE_WORKFLOW_ARGS: JSON.stringify(args ?? {}),
-          CLAUDE_WORKFLOW_RUN_ID: runId,
-          CLAUDE_WORKFLOW_NAME: name ?? loaded.meta.name ?? '',
-          CLAUDE_WORKFLOW_RESUME_FROM: resumeFromRunId ?? '',
+      // Create a background context with NO-OP setAppState — prevents Ink crash.
+      // createSubagentContext (without shareSetAppState) already makes
+      // setAppState a NO-OP, but setAppStateForTasks still reaches the root
+      // store. We explicitly NO-OP both so NO state update from the background
+      // promise can reach a React reconciler.
+      const bgContext = createSubagentContext(context)
+      const noop = () => {}
+      bgContext.setAppState = noop
+      bgContext.setAppStateForTasks = noop
+
+      // Build a file-writing progress handler. Emits snapshots to the
+      // wf-progress file (NOT setAppState). Also writes subagent-level
+      // records for fleet visibility (the poller creates local_agent tasks).
+      const handleBgProgress = buildWorkflowProgressHandler(
+        runId,
+        seedPhases,
+        (snap) => {
+          writeWorkflowProgress(runId, {
+            ...snap,
+            status: 'running',
+            workflowName: loaded.meta.name,
+            scriptPath: loaded.scriptPath,
+            transcriptDir,
+          })
         },
+        (ev) => {
+          // Subagent-level records for fleet visibility.
+          if (ev.status === 'running' && ev.id) {
+            writeWorkflowProgress(`${runId}.sub.${ev.id}`, {
+              type: 'subagent_spawn',
+              subagentId: ev.id,
+              name: ev.label,
+              agentType: ev.agentType,
+              status: 'running',
+              startedAt: Date.now(),
+              runId,
+            })
+          } else if ((ev.status === 'done' || ev.status === 'error') && ev.id) {
+            writeWorkflowProgress(`${runId}.sub.${ev.id}`, {
+              type: 'subagent_done',
+              subagentId: ev.id,
+              status: ev.status,
+              tokens: ev.cumulativeOutputTokens,
+              runId,
+            })
+          }
+        },
+      )
+
+      // Initial 'running' snapshot so the poller sees the run immediately.
+      writeWorkflowProgress(runId, {
+        type: 'workflow_progress',
+        phases: seedPhases.map(p => ({
+          phase: p.phase,
+          completedAgents: 0,
+          totalAgents: 0,
+          agentCount: 0,
+          agents: [],
+        })),
+        narratorLines: [],
+        agentCount: 0,
+        status: 'running',
+        workflowName: loaded.meta.name,
+        scriptPath: loaded.scriptPath,
+        transcriptDir,
       })
+
       logEvent('tengu_workflow_launched', {
-        invocation_mode: 'worker',
+        invocation_mode: 'in_process_async',
         workflow_run_id: runId,
         workflow_name: loaded.meta.name,
         workflow_description: loaded.meta.description,
         is_resume: !!resumeFromRunId,
       })
+
+      // Launch in-process (background promise, NOT awaited). The workflow
+      // runs with the NO-OP bgContext; progress goes to the file. On
+      // completion/failure, we write a terminal snapshot to the file AND
+      // call complete/fail via setTimeout(0) on the MAIN THREAD's setAppState.
+      void (async () => {
+        try {
+          const r = await runWorkflow({
+            script: loaded.source,
+            scriptPath: loaded.scriptPath,
+            meta: loaded.meta,
+            body: loaded.body,
+            hasDefaultExport: loaded.hasDefaultExport,
+            defaultExportExpr: loaded.defaultExportExpr,
+            args,
+            runId,
+            toolUseContext: bgContext,
+            canUseTool,
+            onProgress: handleBgProgress,
+            journal,
+            cachedResults,
+          })
+          // Write terminal snapshot for the poller (debugging + file cleanup).
+          writeWorkflowProgress(runId, {
+            type: 'workflow_completed',
+            status: 'completed',
+            result: r.result,
+            agentCount: r.agentCount,
+            logs: r.logs,
+            failures: r.failures,
+            durationMs: r.durationMs,
+            phases: [],
+            narratorLines: [],
+          })
+          // Complete the task via the MAIN THREAD's setAppState. setTimeout(0)
+          // ensures it fires on the next tick, not during a render cycle.
+          // The poller's terminal-snapshot handler checks the current task
+          // status before calling complete (avoids double-completion race).
+          setTimeout(
+            () => completeWorkflowTask(taskId, context.setAppState, r.result),
+            0,
+          )
+        } catch (e) {
+          const errMsg = (e as Error).message
+          writeWorkflowProgress(runId, {
+            type: 'workflow_failed',
+            status: 'failed',
+            error: errMsg,
+          })
+          setTimeout(
+            () => failWorkflowTask(taskId, e as Error, context.setAppState),
+            0,
+          )
+        }
+      })()
+
       return {
         data: {
           result: 'started',
-          message: `Workflow ${runId} launched in background worker (pid ${record.pid}). Use /workflows to browse progress; the task notification fires on completion.`,
+          message: `Workflow ${runId} started in background. Use /workflows to browse progress; the task notification fires on completion.`,
           agentCount: 0,
           logs: [],
           failures: [],
@@ -384,133 +665,26 @@ export const WorkflowTool = buildTool({
       }
     }
 
-    // Mutable accumulator: individual engine events → full snapshot. The
-    // snapshot is emitted via ToolCallProgress (onProgress) for the live tree
-    // AND via updateWorkflowProgressBatch for the /workflows view.
-    const phases: WorkflowPhaseProgress[] = seedPhases.map(p => ({
-      ...p,
-      agents: [],
-    }))
-    const narratorLines: string[] = []
-
-    const handleProgress = (data: unknown): void => {
-      const ev = data as {
-        type?: string
-        phase?: string
-        id?: string
-        label?: string
-        agentType?: string
-        status?: 'running' | 'done' | 'error'
-        agentCount?: number
-        tokens?: number
-        toolUseCount?: number
-        latestInputTokens?: number
-        cumulativeOutputTokens?: number
-        recentActivities?: WorkflowAgentStat['recentActivities']
-        lastActivity?: string
-        line?: string
-      }
-      // Keep the existing analytics log.
-      logEvent('tengu_workflow_progress', {
-        workflow_run_id: runId,
-        data_type: ev?.type ?? 'unknown',
-      })
-
-      const phaseTitle = ev?.phase ?? ''
-      const getOrCreatePhase = (title: string): WorkflowPhaseProgress => {
-        let entry = phases.find(p => p.phase === title)
-        if (!entry) {
-          entry = {
-            phase: title,
-            completedAgents: 0,
-            totalAgents: 0,
-            agentCount: ev?.agentCount ?? 0,
-            agents: [],
-          }
-          phases.push(entry)
-        }
-        return entry
-      }
-
-      switch (ev?.type) {
-        case 'workflow_phase': {
-          const entry = getOrCreatePhase(phaseTitle)
-          entry.agentCount = ev.agentCount ?? entry.agentCount
-          break
-        }
-        case 'workflow_agent_started': {
-          const entry = getOrCreatePhase(phaseTitle)
-          if (ev.id && !entry.agents.find(a => a.id === ev.id)) {
-            entry.agents.push({
-              id: ev.id,
-              label: ev.label ?? '',
-              agentType: ev.agentType ?? 'workflow-agent',
-              status: 'running',
-              toolUseCount: 0,
-              latestInputTokens: 0,
-              cumulativeOutputTokens: 0,
-              recentActivities: [],
-              lastActivity: undefined,
-              isResolved: false,
-              isError: false,
-            })
-          }
-          break
-        }
-        case 'workflow_agent_completed': {
-          const entry = getOrCreatePhase(phaseTitle)
-          let agent = ev.id ? entry.agents.find(a => a.id === ev.id) : undefined
-          if (!agent) {
-            agent = {
-              id: ev.id ?? '',
-              label: ev.label ?? '',
-              agentType: ev.agentType ?? 'workflow-agent',
-              status: 'running',
-              toolUseCount: 0,
-              latestInputTokens: 0,
-              cumulativeOutputTokens: 0,
-              recentActivities: [],
-              lastActivity: undefined,
-              isResolved: false,
-              isError: false,
-            }
-            entry.agents.push(agent)
-          }
-          agent.status = ev.status ?? 'done'
-          agent.toolUseCount = ev.toolUseCount ?? 0
-          agent.latestInputTokens = ev.latestInputTokens ?? 0
-          agent.cumulativeOutputTokens = ev.cumulativeOutputTokens ?? 0
-          agent.recentActivities = ev.recentActivities ?? []
-          agent.lastActivity = ev.lastActivity
-          agent.isResolved = agent.status === 'done'
-          agent.isError = agent.status === 'error'
-          if (agent.status === 'done') {
-            entry.completedAgents++
-          }
-          entry.agentCount = ev.agentCount ?? entry.agentCount
-          break
-        }
-        case 'workflow_log': {
-          if (ev.line) narratorLines.push(ev.line)
-          break
-        }
-      }
-
-      // Update task state (for /workflows view + completion notifications).
-      updateWorkflowProgressBatch(taskId, phases, narratorLines, context.setAppState)
-
-      // Emit full snapshot via ToolCallProgress (for the live tree renderer).
-      onProgress?.({
-        toolUseID: context.toolUseId ?? '',
-        data: {
-          type: 'workflow_progress',
-          phases: phases.map(p => ({ ...p, agents: [...p.agents] })),
-          narratorLines: [...narratorLines],
-          agentCount: phases.reduce((s, p) => s + p.agentCount, 0),
-          runId,
-        } satisfies WorkflowProgressData,
-      })
-    }
+    // Inline progress handler: emits snapshots via both
+    // updateWorkflowProgressBatch (for /workflows view) and onProgress
+    // (for the live tree renderer). Uses the shared factory to avoid
+    // duplicating the phase/agent accumulation logic.
+    const handleProgress = buildWorkflowProgressHandler(
+      runId,
+      seedPhases,
+      (snap) => {
+        updateWorkflowProgressBatch(
+          taskId,
+          snap.phases,
+          snap.narratorLines,
+          context.setAppState,
+        )
+        onProgress?.({
+          toolUseID: context.toolUseId ?? '',
+          data: snap satisfies WorkflowProgressData,
+        })
+      },
+    )
 
     logEvent('tengu_workflow_launched', {
       invocation_mode: resumeFromRunId ? 'resume' : 'inline',
@@ -521,10 +695,10 @@ export const WorkflowTool = buildTool({
     })
 
     // Run the workflow INLINE (await). The official launches async via a remote
-    // CCR (separate process); OCC's in-process async crashes the Ink renderer
-    // (background setAppState → cross-root flushSync). The retain fix below keeps
-    // COMPLETED workflows browsable in /workflows; full async (browsing RUNNING
-    // workflows) needs a daemon-worker (separate-process) launch — see memory.
+    // CCR (separate process); OCC's async path is the `remote: true` branch
+    // above (in-process background promise + NO-OP setAppState + progress file
+    // + poller). This inline path runs in-process for instant live progress
+    // (the handleProgress emit goes directly to setAppState + onProgress).
     let runResult
     try {
       runResult = await runWorkflow({

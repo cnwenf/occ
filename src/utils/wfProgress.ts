@@ -119,3 +119,55 @@ export function listWorkflowProgress(): WorkflowProgressFile[] {
   }
   return out
 }
+
+/**
+ * List subagent-level progress files for a run. Subagent records use the
+ * naming convention `<runId>.sub.<subagentId>.json` (written by the background
+ * progress handler's onAgentEvent callback). The poller reads these to create
+ * local_agent tasks in AppState for fleet visibility. Never throws.
+ */
+export function listSubagentProgress(runId: string): WorkflowProgressFile[] {
+  const dir = getWfProgressDir()
+  if (!existsSync(dir)) return []
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return []
+  }
+  const prefix = `${runId}.sub.`
+  const out: WorkflowProgressFile[] = []
+  for (const name of names) {
+    if (!name.startsWith(prefix) || !name.endsWith('.json')) continue
+    const subKey = name.slice(0, -5) // strip ".json"
+    const snap = readWorkflowProgress(subKey)
+    if (snap) out.push(snap)
+  }
+  return out
+}
+
+/**
+ * Delete all subagent-level progress files for a run. Called by the poller
+ * when the workflow reaches a terminal state (so stale subagent files don't
+ * accumulate). Best-effort.
+ */
+export function deleteSubagentProgress(runId: string): void {
+  const dir = getWfProgressDir()
+  if (!existsSync(dir)) return
+  const prefix = `${runId}.sub.`
+  let names: string[]
+  try {
+    names = readdirSync(dir)
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (name.startsWith(prefix) && name.endsWith('.json')) {
+      try {
+        unlinkSync(join(dir, name))
+      } catch {
+        // ignore — already gone
+      }
+    }
+  }
+}

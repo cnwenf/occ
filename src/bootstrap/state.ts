@@ -926,6 +926,7 @@ export function resetStateForTests(): void {
   outputTokensAtTurnStart = 0
   currentTurnTokenBudget = null
   budgetContinuationCount = 0
+  memoryLoadingPaused = false
   sessionSwitched.clear()
 }
 
@@ -1767,3 +1768,16 @@ export function setPromptId(id: string | null): void {
   STATE.promptId = id
 }
 export function isReplBridgeActive(): boolean { return false; }
+
+// Session-only flag to pause memory file (CLAUDE.md) loading into context.
+// Toggled by /pause-memory. When true, getUserContext() skips memory file
+// injection — the same as CLAUDE_CODE_DISABLE_CLAUDE_MDS but per-session.
+let memoryLoadingPaused = false
+
+export function setMemoryLoadingPaused(paused: boolean): void {
+  memoryLoadingPaused = paused
+}
+
+export function isMemoryLoadingPaused(): boolean {
+  return memoryLoadingPaused
+}

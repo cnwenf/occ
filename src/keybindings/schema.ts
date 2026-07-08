@@ -21,6 +21,7 @@ export const KEYBINDING_CONTEXTS = [
   'ThemePicker',
   'Settings',
   'Tabs',
+  'Scroll',
   // New contexts for keybindings migration
   'Attachments',
   'Footer',
@@ -29,6 +30,7 @@ export const KEYBINDING_CONTEXTS = [
   'ModelPicker',
   'Select',
   'Plugin',
+  'Doctor',
 ] as const
 
 /**
@@ -49,6 +51,7 @@ export const KEYBINDING_CONTEXT_DESCRIPTIONS: Record<
   ThemePicker: 'When the theme picker is open',
   Settings: 'When the settings menu is open',
   Tabs: 'When tab navigation is active',
+  Scroll: 'When scrolling through message history (ctrl+arrows, page up/down)',
   Attachments: 'When navigating image attachments in a select dialog',
   Footer: 'When footer indicators are focused',
   MessageSelector: 'When the message selector (rewind) is open',
@@ -56,6 +59,7 @@ export const KEYBINDING_CONTEXT_DESCRIPTIONS: Record<
   ModelPicker: 'When the model picker is open',
   Select: 'When a select/list component is focused',
   Plugin: 'When the plugin dialog is open',
+  Doctor: 'When the /doctor diagnostics screen is open',
 }
 
 /**
@@ -73,6 +77,9 @@ export const KEYBINDING_ACTIONS = [
   'app:redraw',
   'app:globalSearch',
   'app:quickOpen',
+  'app:toggleReplTab',
+  'app:openArtifact',
+  'app:cycleDiffBase',
   // History navigation
   'history:search',
   'history:previous',
@@ -160,6 +167,10 @@ export const KEYBINDING_ACTIONS = [
   'select:previous',
   'select:accept',
   'select:cancel',
+  'select:first',
+  'select:last',
+  'select:pageDown',
+  'select:pageUp',
   // Plugin dialog actions
   'plugin:toggle',
   'plugin:install',
@@ -169,6 +180,12 @@ export const KEYBINDING_ACTIONS = [
   'settings:search',
   'settings:retry',
   'settings:close',
+  'settings:periodDay',
+  'settings:periodWeek',
+  'settings:sortByTokens',
+  // Doctor screen actions
+  'doctor:fix',
+  'doctor:exit',
   // Voice actions
   'voice:pushToTalk',
   // Scroll actions (message history viewport)

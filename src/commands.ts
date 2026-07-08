@@ -1,7 +1,9 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { isEnvTruthy } from './utils/envUtils.js'
 import addDir from './commands/add-dir/index.js'
-import autofixPr from './commands/autofix-pr/index.js'
+import autofixPr from './commands/autofix-pr.js'
+import pauseMemory from './commands/pause-memory.js'
+import skillDoctor from './commands/skill-doctor.js'
 import backfillSessions from './commands/backfill-sessions/index.js'
 import background from './commands/background/index.js'
 import daemon from './commands/daemon/index.js'
@@ -269,7 +271,6 @@ export const INTERNAL_ONLY_COMMANDS = [
   oauthRefresh,
   debugToolCall,
   agentsPlatform,
-  autofixPr,
 ].filter(Boolean)
 
 // Declared as a function so that we don't run this until getCommands is called,
@@ -279,6 +280,7 @@ const COMMANDS = memoize((): Command[] => [
   advisor,
   agents,
   autocompact,
+  autofixPr,
   background,
   branch,
   btw,
@@ -311,6 +313,7 @@ const COMMANDS = memoize((): Command[] => [
   installSlackApp,
   mcp,
   memory,
+  pauseMemory,
   mobile,
   model,
   remoteEnv,
@@ -325,6 +328,7 @@ const COMMANDS = memoize((): Command[] => [
   resume,
   session,
   skills,
+  skillDoctor,
   status,
   statusline,
   stickers,

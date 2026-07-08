@@ -2,6 +2,7 @@ import { feature } from 'src/utils/featureFlags.js'
 import memoize from 'lodash-es/memoize.js'
 import {
   getAdditionalDirectoriesForClaudeMd,
+  isMemoryLoadingPaused,
   setCachedClaudeMdContent,
 } from './bootstrap/state.js'
 import { getLocalISODate } from './constants/common.js'
@@ -164,6 +165,7 @@ export const getUserContext = memoize(
     // --bare means "skip what I didn't ask for", not "ignore what I asked for".
     const shouldDisableClaudeMd =
       isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS) ||
+      isMemoryLoadingPaused() ||
       (isBareMode() && getAdditionalDirectoriesForClaudeMd().length === 0)
     // Await the async I/O (readFile/readdir directory walk) so the event
     // loop yields naturally at the first fs.readFile.

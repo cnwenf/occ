@@ -1,10 +1,18 @@
 /**
  * runWorkflowWorker — the 'workflow' daemon-worker entry point.
  *
- * Spawned by WorkflowTool.call()'s `remote: true` branch via
- * spawnWorker('workflow', { env, id: runId }). The worker is a SEPARATE OCC
- * process (same entrypoint cli.tsx → main.tsx fast-path → runDaemonWorker),
- * so it has NO Ink renderer and NO shared AppState store with the main OCC.
+ * NOTE: As of the in-process async refactor, this is a FALLBACK path. The
+ * primary async launch path is now in-process (WorkflowTool.ts `remote: true`
+ * branch runs runWorkflow in a background promise with NO-OP setAppState +
+ * progress file + poller). This daemon worker is retained for cases that need
+ * true process isolation (e.g. if the in-process path is unstable or for
+ * future separate-process fleet management). The worker can still be spawned
+ * manually if needed, but WorkflowTool.call() no longer uses spawnWorker.
+ *
+ * Spawned by spawnWorker('workflow', { env, id: runId }). The worker is a
+ * SEPARATE OCC process (same entrypoint cli.tsx → main.tsx fast-path →
+ * runDaemonWorker), so it has NO Ink renderer and NO shared AppState store
+ * with the main OCC.
  *
  * This is the crux of the async-launch safety model: the worker constructs a
  * NON-INTERACTIVE toolUseContext (mirroring mcp.ts) whose setAppState is a
