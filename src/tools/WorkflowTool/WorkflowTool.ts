@@ -77,7 +77,7 @@ const inputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe(
-        'Launch the workflow in a remote CCR environment (always async). Not available in this build.',
+        'Launch the workflow asynchronously (official uses a remote CCR — a separate process). NOT available in OCC: in-process async crashes the Ink renderer (background setAppState → cross-root flushSync). Full async requires a daemon-worker (separate-process) launch path. Completed workflows ARE retained 1h for /workflows browsing via the retain/evictAfter grace period.',
       ),
   }),
 )
@@ -86,6 +86,7 @@ type InputSchema = ReturnType<typeof inputSchema>
 const outputSchema = lazySchema(() =>
   z.object({
     result: z.unknown(),
+    message: z.string().optional(),
     agentCount: z.number(),
     logs: z.array(z.string()),
     failures: z.array(z.string()),
@@ -484,9 +485,11 @@ export const WorkflowTool = buildTool({
       is_resume: !!resumeFromRunId,
     })
 
-    // Run the workflow. Wire onProgress to the accumulator (handleProgress)
-    // which both updates task state and emits the live-tree snapshot. Complete
-    // or fail the task at the end so /workflows + task-notification fire.
+    // Run the workflow INLINE (await). The official launches async via a remote
+    // CCR (separate process); OCC's in-process async crashes the Ink renderer
+    // (background setAppState → cross-root flushSync). The retain fix below keeps
+    // COMPLETED workflows browsable in /workflows; full async (browsing RUNNING
+    // workflows) needs a daemon-worker (separate-process) launch — see memory.
     let runResult
     try {
       runResult = await runWorkflow({
