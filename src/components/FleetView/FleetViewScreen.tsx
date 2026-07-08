@@ -102,13 +102,10 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
     setSelectedIndex(i => Math.min(i, Math.max(0, fleetRows.running.length - 1)))
   }, [fleetRows.running.length])
 
-  // Deactivate when there are no jobs at all (e.g. everything completed).
-  React.useEffect(() => {
-    if (!hasJobs && fleetActive) {
-      setFleetActive(false)
-      setShowPreview(false)
-    }
-  }, [hasJobs, fleetActive])
+  // Note: we do NOT auto-deactivate when hasJobs is false. The official shows
+  // the dispatch/empty state (Researcher/Reviewer/Workflow suggestions) below
+  // the input even with no running jobs, so the user can down-arrow into the
+  // fleet + select + Enter to dispatch. Esc still exits (see the nav handler).
 
   const leftArrowOpensAgents = getInitialSettings().leftArrowOpensAgents ?? true
 
@@ -121,11 +118,12 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
     (input, key, event) => {
       if (disabled) return
 
-      // ENTRY: not yet active. Down/left-arrow on empty input when jobs
-      // exist activates the fleet and preempts the text input's history
-      // nav / footer-pill selection / cursor move.
+      // ENTRY: not yet active. Down/left-arrow on empty input activates the
+      // fleet and preempts the text input's history nav / footer-pill selection
+      // / cursor move. This fires EVEN with no running jobs so the dispatch/
+      // empty state (Researcher/Reviewer/Workflow) shows below the input —
+      // matching the official fleet UX.
       if (!fleetActive) {
-        if (!hasJobs) return
         if (inputValue !== '') return
         const downEntry = key.downArrow
         const leftEntry = key.leftArrow && leftArrowOpensAgents
@@ -187,7 +185,7 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
         return
       }
     },
-    { isActive: !disabled && (hasJobs || fleetActive) },
+    { isActive: !disabled && (hasJobs || fleetActive || inputValue === '') },
   )
 
   // Gate: Phase 1 stub is always open. Render nothing if disabled by flag.
