@@ -47,6 +47,7 @@ import {
   type WorkflowAgentStat,
   type WorkflowProgressData,
 } from '../../tasks/LocalWorkflowTask/LocalWorkflowTask.js'
+import { spawnWorker } from '../../daemon/workerRegistry.js'
 
 const inputSchema = lazySchema(() =>
   z.object({
@@ -77,7 +78,7 @@ const inputSchema = lazySchema(() =>
       .boolean()
       .optional()
       .describe(
-        'Launch the workflow asynchronously (official uses a remote CCR — a separate process). NOT available in OCC: in-process async crashes the Ink renderer (background setAppState → cross-root flushSync). Full async requires a daemon-worker (separate-process) launch path. Completed workflows ARE retained 1h for /workflows browsing via the retain/evictAfter grace period.',
+        'Launch the workflow asynchronously in a separate daemon-worker process. The tool returns immediately with a "started" status; progress is written to a file (~/.claude/wf-progress/<runId>.json) that the REPL polls from the main thread, so /workflows shows the running + completed workflow. This is the safe async path: the worker runs runWorkflow with a non-interactive toolUseContext (no Ink renderer), so its state updates cannot crash the main OCC. The inline (non-remote) path runs in-process for instant live progress.',
       ),
   }),
 )
@@ -181,13 +182,9 @@ export const WorkflowTool = buildTool({
       [key: string]: unknown
     },
   ): Promise<PermissionResult> {
-    if (input.remote) {
-      return {
-        behavior: 'deny',
-        message: 'Remote workflow execution is not available in this build.',
-        updatedInput: input,
-      }
-    }
+    // Remote (async) launch is allowed: it spawns a separate daemon-worker
+    // process (no Ink renderer) so it cannot crash the main OCC. The user
+    // pre-approves the workflow launch by invoking the tool.
     return { behavior: 'allow', updatedInput: input }
   },
   mapToolResultToToolResultBlockParam(
@@ -222,11 +219,12 @@ export const WorkflowTool = buildTool({
     }
   },
   async call(input, context, canUseTool, _parentMessage, onProgress) {
-    const { scriptPath: rawScriptPath, args, resumeFromRunId, name } = input as {
+    const { scriptPath: rawScriptPath, args, resumeFromRunId, name, remote } = input as {
       scriptPath?: string
       args?: Record<string, unknown>
       resumeFromRunId?: string
       name?: string
+      remote?: boolean
     }
 
     // Resolve the script path: by name (discovery) or by path.
@@ -348,6 +346,43 @@ export const WorkflowTool = buildTool({
       logs: [],
     }
     registerWorkflowTask(initialState, context.setAppState)
+
+    // Async (remote) launch: spawn a separate daemon-worker process that runs
+    // runWorkflow with a non-interactive toolUseContext (no Ink renderer), so
+    // its state updates cannot crash the main OCC. The worker writes progress
+    // to ~/.claude/wf-progress/<runId>.json; a main-thread poller in the REPL
+    // reads that file and updates this task's state (safe — main thread). We
+    // register the task above (running) so /workflows populates immediately,
+    // then return "started" without awaiting runWorkflow inline.
+    if (remote) {
+      const record = spawnWorker('workflow', {
+        id: runId,
+        env: {
+          CLAUDE_WORKFLOW_SCRIPT_PATH: resolvedScriptPath,
+          CLAUDE_WORKFLOW_ARGS: JSON.stringify(args ?? {}),
+          CLAUDE_WORKFLOW_RUN_ID: runId,
+          CLAUDE_WORKFLOW_NAME: name ?? loaded.meta.name ?? '',
+          CLAUDE_WORKFLOW_RESUME_FROM: resumeFromRunId ?? '',
+        },
+      })
+      logEvent('tengu_workflow_launched', {
+        invocation_mode: 'worker',
+        workflow_run_id: runId,
+        workflow_name: loaded.meta.name,
+        workflow_description: loaded.meta.description,
+        is_resume: !!resumeFromRunId,
+      })
+      return {
+        data: {
+          result: 'started',
+          message: `Workflow ${runId} launched in background worker (pid ${record.pid}). Use /workflows to browse progress; the task notification fires on completion.`,
+          agentCount: 0,
+          logs: [],
+          failures: [],
+          durationMs: 0,
+        } as Output,
+      }
+    }
 
     // Mutable accumulator: individual engine events → full snapshot. The
     // snapshot is emitted via ToolCallProgress (onProgress) for the live tree

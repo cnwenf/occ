@@ -47,6 +47,7 @@ import { registerLeaderToolUseConfirmQueue, unregisterLeaderToolUseConfirmQueue,
 import { endInteractionSpan } from '../utils/telemetry/sessionTracing.js';
 import { useLogMessages } from '../hooks/useLogMessages.js';
 import { useReplBridge } from '../hooks/useReplBridge.js';
+import { useWorkflowProgressPoller } from '../hooks/useWorkflowProgressPoller.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
 import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
@@ -614,6 +615,11 @@ export function REPL({
     logForDebugging(`[REPL:mount] REPL mounted, disabled=${disabled}`);
     return () => logForDebugging(`[REPL:unmount] REPL unmounting`);
   }, [disabled]);
+
+  // Poll wf-progress files for daemon-worker-launched (remote) workflows and
+  // update the matching local_workflow tasks from the main thread (safe — no
+  // background setAppState, no Ink crash). See useWorkflowProgressPoller.
+  useWorkflowProgressPoller();
 
   // Agent definition is state so /resume can update it mid-session
   const [mainThreadAgentDefinition, setMainThreadAgentDefinition] = useState(initialMainThreadAgentDefinition);

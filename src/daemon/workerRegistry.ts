@@ -148,7 +148,7 @@ export function writeDaemonStatus(): void {
 export function validateDaemonJsonWorkers(config: DaemonJsonConfig): string[] {
   const warnings: string[] = []
   if (!config.workers || config.workers.length === 0) return warnings
-  const knownKinds = new Set(['default', 'prewarm', 'remote_control'])
+  const knownKinds = new Set(['default', 'prewarm', 'remote_control', 'workflow'])
   for (const w of config.workers) {
     if (!w?.kind || !knownKinds.has(w.kind)) {
       warnings.push(
@@ -175,7 +175,10 @@ function getCliVersion(): string {
  * with). The main.tsx hidden --daemon-worker option routes the child into
  * runDaemonWorker(kind).
  */
-export function spawnWorker(kind: string, opts?: { cwd?: string; id?: string }): WorkerRecord {
+export function spawnWorker(
+  kind: string,
+  opts?: { cwd?: string; id?: string; env?: Record<string, string> },
+): WorkerRecord {
   const id = opts?.id ?? nextWorkerId()
   const cwd = opts?.cwd ?? getCwd()
   const entry = process.argv[1] ?? 'dist/cli.js'
@@ -188,12 +191,20 @@ export function spawnWorker(kind: string, opts?: { cwd?: string; id?: string }):
 
   const child = spawn(process.execPath, [entry, '--daemon-worker', kind], {
     cwd,
-    stdio: ['ignore', 'pipe', 'pipe'],
+    // Workflow workers write progress to a file (not stdout) and the
+    // supervisor doesn't drain child pipes, so 'ignore' avoids a full pipe
+    // buffer blocking the worker. Other kinds keep 'pipe' (existing behavior;
+    // they barely log so the buffer never fills).
+    stdio:
+      kind === 'workflow'
+        ? ['ignore', 'ignore', 'ignore']
+        : ['ignore', 'pipe', 'pipe'],
     detached: false,
     env: {
       ...process.env,
       CLAUDE_CODE_DAEMON_WORKER: '1',
       CLAUDE_CODE_DAEMON_WORKER_KIND: kind,
+      ...(opts?.env ?? {}),
     },
   })
 
@@ -392,6 +403,17 @@ export const runDaemonWorker: (workerId: string) => Promise<void> = async (
   const kind = workerId || process.env.CLAUDE_CODE_DAEMON_WORKER_KIND || 'default'
   const startMs = Date.now()
   const parentPpid = process.ppid
+
+  // Workflow branch: run a workflow script in this process with a
+  // non-interactive toolUseContext (no Ink, no shared AppState). This is the
+  // async-launch path — the worker writes progress to a file that the REPL
+  // poller reads from the main thread. Returns before the keepalive loop;
+  // runWorkflowWorker exits the process itself on completion/signal.
+  if (kind === 'workflow') {
+    const { runWorkflowWorker } = await import('./workflowWorker.js')
+    await runWorkflowWorker()
+    return
+  }
 
   console.log(`[daemon-worker] kind=${kind} pid=${process.pid} parent=${parentPpid} ready`)
 

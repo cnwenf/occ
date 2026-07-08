@@ -438,13 +438,11 @@ function WorkflowRunDetail({
           {phases.flatMap(p => p.agents).length > 0
             ? phases.flatMap((p, pi) =>
                 p.agents.map((a, ai) => (
-                  <Text key={`agent-${pi}-${ai}-${a.id}`} dimColor={a.status === 'running'}>
-                    {`  ${figures.pointerSmall} `}
-                    <Text bold={a.status === 'error'} color={a.status === 'error' ? 'red' : undefined}>{a.label}</Text>
-                    {` · ${a.toolUseCount} tool ${a.toolUseCount === 1 ? 'use' : 'uses'}`}
-                    {a.latestInputTokens > 0 ? ` · ${formatNumber(a.latestInputTokens)} tok` : ''}
-                    {a.status === 'running' ? ' · running' : a.status === 'error' ? ' · error' : ' · done'}
-                  </Text>
+                  <Box key={`agent-${pi}-${ai}-${a.id}`} flexDirection="row">
+                    <Text dimColor={a.status === 'running'}>{`  ${figures.pointerSmall} `}</Text>
+                    <Text bold={a.status === 'error'} color={a.status === 'error' ? 'red' : undefined} dimColor={a.status === 'running'}>{a.label}</Text>
+                    <Text dimColor={a.status === 'running'}>{` · ${a.toolUseCount} tool ${a.toolUseCount === 1 ? 'use' : 'uses'}${a.latestInputTokens > 0 ? ` · ${formatNumber(a.latestInputTokens)} tok` : ''}${a.status === 'running' ? ' · running' : a.status === 'error' ? ' · error' : ' · done'}`}</Text>
+                  </Box>
                 )),
               )
             : agentCount > 0
