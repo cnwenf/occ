@@ -120,6 +120,12 @@ export type LocalWorkflowTaskState = TaskStateBase & {
   isResume?: boolean
   /** Source of an adopted task. */
   source?: 'adopt' | 'inline'
+  /** Retain the completed task in the registry for /workflows browsing
+   *  (mirrors the LocalAgentTaskState retain/evictAfter grace period in
+   *  evictTerminalTask). When true + evictAfter is in the future, the task
+   *  is NOT evicted on completion so /workflows LIST+DETAIL stay reachable. */
+  retain?: boolean
+  evictAfter?: number
 }
 
 /**
@@ -194,6 +200,11 @@ export function completeWorkflowTask(
     status: 'completed',
     endTime: Date.now(),
     notified: true,
+    // Retain completed workflows for 1h so /workflows LIST+DETAIL stay
+    // reachable (matches the official keeping completed workflows browsable;
+    // evictTerminalTask honors retain + a future evictAfter).
+    retain: true,
+    evictAfter: Date.now() + 3_600_000,
     ...(result !== undefined ? { _completionResult: result } : {}),
   }))
   enqueueWorkflowNotification(taskId, 'completed', setAppState)
