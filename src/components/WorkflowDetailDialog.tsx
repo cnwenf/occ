@@ -260,14 +260,14 @@ function ListMode({
   }
   const subtitle =
     subtitleParts.length > 0 ? (
-      <Box>
+      <Text dimColor={true}>
         {subtitleParts.map((node, i) => (
           <React.Fragment key={i}>
-            {i > 0 ? <Text> · </Text> : null}
+            {i > 0 ? ' · ' : null}
             {node}
           </React.Fragment>
         ))}
-      </Box>
+      </Text>
     ) : undefined
 
   // Group by launch type (background first, then remote).
