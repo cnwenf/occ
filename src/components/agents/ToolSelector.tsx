@@ -50,7 +50,7 @@ function getToolBuckets(): ToolBuckets {
   return {
     READ_ONLY: {
       name: 'Read-only tools',
-      toolNames: new Set([GlobTool.name, GrepTool.name, ExitPlanModeV2Tool.name, FileReadTool.name, WebFetchTool.name, TodoWriteTool.name, WebSearchTool.name, TaskStopTool.name, TaskOutputTool.name, ListMcpResourcesTool.name, ReadMcpResourceTool.name])
+      toolNames: new Set([GlobTool.name, GrepTool.name, ExitPlanModeV2Tool.name, FileReadTool.name, WebFetchTool.name, TodoWriteTool.name, WebSearchTool.name, TaskStopTool.name, TaskOutputTool.name, ListMcpResourcesTool.name, ReadMcpResourceTool.name, 'get_page_text', 'screenshot', 'browser_batch'])
     },
     EDIT: {
       name: 'Edit tools',

@@ -68,6 +68,11 @@ function getSafeYoloAllowlistedTools(): Set<string> {
   TOOL_SEARCH_TOOL_NAME,
   LIST_MCP_RESOURCES_TOOL_NAME,
   'ReadMcpResourceTool', // no exported constant
+  // WebBrowser read-only actions (navigate is state-mutating → NOT allowlisted;
+  // browser_batch is gated by its own checkPermissions which only auto-allows
+  // when every sub-action is read-only).
+  'get_page_text',
+  'screenshot',
   // Task management (metadata only)
   TODO_WRITE_TOOL_NAME,
   TASK_CREATE_TOOL_NAME,

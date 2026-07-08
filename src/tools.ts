@@ -9,6 +9,12 @@ import { FileWriteTool } from './tools/FileWriteTool/FileWriteTool.js'
 import { GlobTool } from './tools/GlobTool/GlobTool.js'
 import { NotebookEditTool } from './tools/NotebookEditTool/NotebookEditTool.js'
 import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
+import {
+  WebBrowserBatchTool,
+  WebBrowserGetPageTextTool,
+  WebBrowserNavigateTool,
+  WebBrowserScreenshotTool,
+} from './tools/WebBrowserTool/WebBrowserTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
 // Dead code elimination: conditional import for ant-only tools
@@ -117,9 +123,9 @@ const TerminalCaptureTool = feature('TERMINAL_PANEL')
   ? require('./tools/TerminalCaptureTool/TerminalCaptureTool.js')
       .TerminalCaptureTool
   : null
-const WebBrowserTool = feature('WEB_BROWSER_TOOL')
-  ? require('./tools/WebBrowserTool/WebBrowserTool.js').WebBrowserTool
-  : null
+// WebBrowser tool family is built-in (puppeteer-core + system Chrome). Not
+// gated behind a feature flag — feature() is always false in OCC, so the
+// former flag-gated require dead-code-eliminated the whole tool.
 const coordinatorModeModule = feature('COORDINATOR_MODE')
   ? (require('./coordinator/coordinatorMode.js') as typeof import('./coordinator/coordinatorMode.js'))
   : null
@@ -217,7 +223,10 @@ export function getAllBaseTools(): Tools {
     ...(process.env.USER_TYPE === 'ant' ? [ConfigTool] : []),
     ...(process.env.USER_TYPE === 'ant' ? [TungstenTool] : []),
     ...(SuggestBackgroundPRTool ? [SuggestBackgroundPRTool] : []),
-    ...(WebBrowserTool ? [WebBrowserTool] : []),
+    WebBrowserNavigateTool,
+    WebBrowserGetPageTextTool,
+    WebBrowserScreenshotTool,
+    WebBrowserBatchTool,
     ...(isTodoV2Enabled()
       ? [TaskCreateTool, TaskGetTool, TaskUpdateTool, TaskListTool]
       : []),

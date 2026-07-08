@@ -251,6 +251,10 @@ export type AppState = DeepImmutable<{
   bagelUrl?: string
   // WebBrowser tool: sticky panel visibility toggle
   bagelPanelVisible?: boolean
+  // WebBrowser tool: captured browser console logs (ring buffer) shown in panel
+  webBrowserLogs?: string[]
+  // WebBrowser tool: whether the process-exit cleanup handler is registered
+  webBrowserCleanupRegistered?: boolean
   // chicago MCP session state. Types inlined (not imported from
   // @ant/computer-use-mcp/types) so external typecheck passes without the
   // ant-scoped dep resolved. Shapes match `AppGrant`/`CuGrantFlags`
