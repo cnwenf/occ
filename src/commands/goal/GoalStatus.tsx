@@ -52,7 +52,7 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
           <Text dimColor>Goal: </Text>
           <Text wrap="wrap">{lastAchieved.condition}</Text>
         </Box>
-        <Text dimColor>/goal &lt;condition&gt; to set another</Text>
+        <Text dimColor>/goal &lt;condition&gt; to set another · [esc] dismiss</Text>
       </Box>
     );
   }
@@ -62,7 +62,7 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
       <Box flexDirection="column" borderStyle="round" borderColor="gray" paddingX={1}>
         <Text bold color="claude">Goal</Text>
         <Text>No goal set</Text>
-        <Text dimColor>/goal &lt;condition&gt; to set one</Text>
+        <Text dimColor>/goal &lt;condition&gt; to set one · [esc] dismiss</Text>
       </Box>
     );
   }
@@ -114,7 +114,7 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
           <Text wrap="wrap">{activeGoal.lastReason.trim()}</Text>
         </Box>
       ) : null}
-      <Text dimColor>/goal clear to stop early</Text>
+      <Text dimColor>/goal clear to stop early · [esc] dismiss</Text>
     </Box>
   );
 }
