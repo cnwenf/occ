@@ -73,7 +73,9 @@ describe("I4 (2.1.111): Ctrl+U clear + Ctrl+Y restore (kill-paste-hint)", () => 
 
   test("Ctrl+U clears the buffer (deleteToLineStart) and Ctrl+Y yanks (kill ring)", () => {
     // Ctrl+U → killToLineStart (prepend to kill ring); Ctrl+Y → yank (getLastKill).
-    expect(src).toMatch(/\['u',\s*killToLineStart\]/);
+    // 2.1.200: Ctrl+U is NOOP'd in fullscreen (yields to scroll:halfPageUp);
+    // killToLineStart is the non-fullscreen fallback.
+    expect(src).toMatch(/\['u',.*killToLineStart\]/);
     expect(src).toMatch(/\['y',\s*yank\]/);
     expect(src).toContain("pushToKillRing(killed, 'prepend')");
     expect(src).toContain("getLastKill()");
