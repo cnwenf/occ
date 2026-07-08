@@ -432,18 +432,24 @@ function WorkflowRunDetail({
           )}
         </Box>
 
-        {/* Agents section (aggregate — per-agent rows land with WorkflowAgentStat) */}
+        {/* Agents section — per-agent rows (mirrors inline WorkflowProgressTree). */}
         <Box flexDirection="column">
           <Text bold={true}>Agents</Text>
-          {agentCount > 0 ? (
-            <Text>
-              {`  ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}`}
-              {tokens > 0 ? ` · ${formatNumber(tokens)} tok` : ''}
-              {toolCalls > 0 ? ` · ${toolCalls} tool ${toolCalls === 1 ? 'call' : 'calls'}` : ''}
-            </Text>
-          ) : (
-            <Text dimColor={true}>  No agents yet.</Text>
-          )}
+          {phases.flatMap(p => p.agents).length > 0
+            ? phases.flatMap((p, pi) =>
+                p.agents.map((a, ai) => (
+                  <Text key={`agent-${pi}-${ai}-${a.id}`} dimColor={a.status === 'running'}>
+                    {`  ${figures.pointerSmall} `}
+                    <Text bold={a.status === 'error'} color={a.status === 'error' ? 'red' : undefined}>{a.label}</Text>
+                    {` · ${a.toolUseCount} tool ${a.toolUseCount === 1 ? 'use' : 'uses'}`}
+                    {a.latestInputTokens > 0 ? ` · ${formatNumber(a.latestInputTokens)} tok` : ''}
+                    {a.status === 'running' ? ' · running' : a.status === 'error' ? ' · error' : ' · done'}
+                  </Text>
+                )),
+              )
+            : agentCount > 0
+              ? <Text>{`  ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}${tokens > 0 ? ` · ${formatNumber(tokens)} tok` : ''}${toolCalls > 0 ? ` · ${toolCalls} tool ${toolCalls === 1 ? 'call' : 'calls'}` : ''}`}</Text>
+              : <Text dimColor={true}>  No agents yet.</Text>}
         </Box>
 
         {/* Logs (narrator lines from the script's log() primitive) */}

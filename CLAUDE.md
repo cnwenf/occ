@@ -55,7 +55,7 @@ A `pre-commit` hook (`.githooks/`, wired via `bun run prepare` → `core.hooksPa
 ### Entry & Bootstrap
 
 1. **`src/entrypoints/cli.tsx`** — True entrypoint. Injects runtime polyfills at the top:
-   - `feature()` always returns `false` (all feature flags disabled, skipping unimplemented branches).
+   - `feature()` returns `true` for flags in the `FEATURE_ALLOWLIST` (`src/utils/featureFlags.ts` — includes `WORKFLOW_SCRIPTS`, `MONITOR_TOOL`, `TRANSCRIPT_CLASSIFIER`, `BASH_CLASSIFIER`), `false` otherwise. Most internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) remain disabled.
    - `globalThis.MACRO` — simulates build-time macro injection (VERSION, BUILD_TIME, etc.).
    - `BUILD_TARGET`, `BUILD_ENV`, `INTERFACE_TYPE` globals.
 2. **`src/main.tsx`** — Commander.js CLI definition. Parses args, initializes services (auth, analytics, policy), then launches the REPL or runs in pipe mode.
@@ -106,7 +106,7 @@ Other entrypoints in `src/entrypoints/`: `mcp.ts` (runs Claude Code as an MCP se
 
 ### Feature Flag System
 
-All `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In this build, `feature()` is polyfilled to always return `false` in `cli.tsx`. This means all internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) are disabled.
+All `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In OCC, `feature()` is implemented in `src/utils/featureFlags.ts` as `FEATURE_ALLOWLIST.has(name)` — it returns `true` for allowlisted flags (`WORKFLOW_SCRIPTS`, `MONITOR_TOOL`, `TRANSCRIPT_CLASSIFIER`, `BASH_CLASSIFIER`) and `false` for everything else. This means the workflow engine, Monitor tool, transcript classifier, and bash classifier are LIVE; most other internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) remain disabled.
 
 ### Stubbed/Deleted Modules
 

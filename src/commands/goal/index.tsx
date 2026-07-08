@@ -257,7 +257,7 @@ export const goalInteractive: Command = {
         // goal_set funnel: success (OCC logEvent = Statsig `xe("goal_set")` equivalent)
         logEvent("goal_set", {})
         logEvent("tengu_stop_hook_added", { via: "goal", promptLength: trimmed.length })
-        onDone(`Goal set: ${trimmed}`, { shouldQuery: true, metaMessages: [goalPrompt(trimmed), goalStatusAttachment(false, trimmed)] })
+        onDone(`Goal set: ${trimmed}`, { shouldQuery: true, metaMessages: [goalPrompt(trimmed)] })
         return null
       },
     }),
