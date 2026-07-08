@@ -29,6 +29,8 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { isAgentsFleetEnabled, buildFleetRows } from './rowHelpers.js'
 import { FleetView } from './FleetView.js'
+import { readDaemonStatus } from '../../daemon/workerRegistry.js'
+import type { WorkerRecord } from '../../daemon/types.js'
 
 export type FleetViewScreenProps = {
   /** Current prompt buffer (REPL inputValue). Entry keys only fire when empty. */
@@ -68,6 +70,23 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
     return () => clearInterval(id)
   }, [tasks])
 
+  // Phase 3: daemon-managed background sessions. The daemon (separate process)
+  // persists running worker records to ~/.claude/daemon-status.json; poll it so
+  // the fleet shows cross-process daemon sessions alongside in-process tasks.
+  const [daemonSessions, setDaemonSessions] = React.useState<WorkerRecord[]>([])
+  React.useEffect(() => {
+    const read = () => {
+      try {
+        setDaemonSessions(readDaemonStatus())
+      } catch {
+        // best-effort — leave stale
+      }
+    }
+    read()
+    const id = setInterval(read, 5000)
+    return () => clearInterval(id)
+  }, [])
+
   // Navigation state (local — Phase 1 does not extend AppState).
   const [fleetActive, setFleetActive] = React.useState(false)
   const [selectedIndex, setSelectedIndex] = React.useState(0)
@@ -76,7 +95,7 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
   const [groupMode, setGroupMode] = React.useState<'state' | 'group'>('state')
 
   const fleetRows = React.useMemo(() => buildFleetRows(tasks, now), [tasks, now])
-  const hasJobs = fleetRows.running.length > 0 || fleetRows.done.length > 0
+  const hasJobs = fleetRows.running.length > 0 || fleetRows.done.length > 0 || daemonSessions.length > 0
 
   // Clamp selection when rows shrink (e.g. an agent completes mid-nav).
   React.useEffect(() => {
@@ -190,6 +209,17 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
         now={now}
         terminalRows={rows}
       />
+      {daemonSessions.length > 0 && (
+        <Box flexDirection="column" flexShrink={0}>
+          <Text dimColor>Daemon sessions ({daemonSessions.length})</Text>
+          {daemonSessions.slice(0, 5).map(s => (
+            <Text key={s.id} dimColor>
+              {'  '}● {s.kind} · pid {s.pid} · {Math.max(0, Math.floor((now - s.startedAt) / 1000))}s
+              {s.cwd ? ` · ${s.cwd}` : ''}
+            </Text>
+          ))}
+        </Box>
+      )}
     </Box>
   )
 }

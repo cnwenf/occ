@@ -14,7 +14,7 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getCwd } from '../utils/cwd.js'
@@ -78,6 +78,66 @@ export function readDaemonJson(): DaemonJsonConfig {
       typeof parsed?.prewarmPerSweep === 'number' ? parsed.prewarmPerSweep : DEFAULT_PREWARM_PER_SWEEP,
   }
   return config
+}
+
+/**
+ * Phase 3 (FleetView ↔ daemon bridge): the daemon's running workers live in
+ * the in-memory `registry` (only visible inside the daemon process). To let
+ * the FleetView panel in ANY OCC process render daemon-managed background
+ * sessions, the daemon persists a snapshot of the registry to
+ * `~/.claude/daemon-status.json` (array of {pid,outcome,startedAt,cwd,kind,id}).
+ * FleetView polls `readDaemonStatus()` and renders the rows.
+ *
+ * Missing/malformed file → empty array (FleetView shows no daemon sessions).
+ */
+export function getDaemonStatusPath(): string {
+  return join(getClaudeConfigHomeDir(), 'daemon-status.json')
+}
+
+export function readDaemonStatus(): WorkerRecord[] {
+  const path = getDaemonStatusPath()
+  if (!existsSync(path)) return []
+  let raw: string
+  try {
+    raw = readFileSync(path, { encoding: 'utf-8' })
+  } catch {
+    return []
+  }
+  let parsed: any
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return []
+  }
+  const values: any[] = Array.isArray(parsed)
+    ? parsed
+    : parsed && typeof parsed === 'object'
+      ? Object.values(parsed)
+      : []
+  return values.filter(
+    (w: any) => w && typeof w.pid === 'number' && typeof w.kind === 'string',
+  ) as WorkerRecord[]
+}
+
+/** Persist the in-memory registry snapshot so other processes (FleetView) can read it. */
+export function writeDaemonStatus(): void {
+  try {
+    const records = Array.from(registry.values())
+    const snapshot = records.map(r => ({
+      pid: r.pid,
+      outcome: r.outcome,
+      cliVersion: r.cliVersion,
+      startedAt: r.startedAt,
+      cwd: r.cwd,
+      restart: r.restart,
+      kind: r.kind,
+      id: r.id,
+      exitCode: r.exitCode,
+    }))
+    writeFileSync(getDaemonStatusPath(), JSON.stringify(snapshot), { encoding: 'utf-8' })
+  } catch {
+    // Status file is best-effort — never crash the daemon over it.
+  }
 }
 
 /**
@@ -149,6 +209,7 @@ export function spawnWorker(kind: string, opts?: { cwd?: string; id?: string }):
   }
   registry.set(id, record)
   children.set(id, child)
+  writeDaemonStatus()
 
   child.on('exit', (code, signal) => {
     const rec = registry.get(id)
@@ -159,12 +220,14 @@ export function spawnWorker(kind: string, opts?: { cwd?: string; id?: string }):
     else if (code === 0) rec.outcome = 'exited_clean'
     else rec.outcome = 'exited_error'
     children.delete(id)
+    writeDaemonStatus()
   })
 
   child.on('error', () => {
     const rec = registry.get(id)
     if (rec) rec.outcome = 'exited_error'
     children.delete(id)
+    writeDaemonStatus()
   })
 
   return record
@@ -290,6 +353,7 @@ export async function stopAllWorkers(graceMs = 3000): Promise<void> {
   const ids = Array.from(registry.keys())
   await Promise.all(ids.map(id => settleWorker(id, graceMs)))
   registry.clear()
+  writeDaemonStatus()
   children.clear()
 }
 
