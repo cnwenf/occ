@@ -52,8 +52,9 @@ const inputSchema = lazySchema(() =>
   z.object({
     scriptPath: z
       .string()
+      .optional()
       .describe(
-        'Absolute path to a self-contained workflow script (.js). The script must begin with `export const meta = { name, description, phases }` and export a default async function receiving { agent, parallel, pipeline, phase, log, budget, workflow, resolveWorkflow, args }.',
+        'Absolute path to a self-contained workflow script (.js). The script must begin with `export const meta = { name, description, phases }` and export a default async function receiving { agent, parallel, pipeline, phase, log, budget, workflow, resolveWorkflow, args }. Optional if `name` is provided.',
       ),
     args: z
       .record(z.string(), z.unknown())

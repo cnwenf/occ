@@ -46,7 +46,7 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
     const subtitle = [formatDuration(lastAchieved.durationMs), turns, lastAchieved.tokens != null ? formatTokens(lastAchieved.tokens) : null].filter(Boolean).join(' · ');
     return (
       <Box flexDirection="column" borderStyle="round" borderColor="green" paddingX={1} minWidth={40}>
-        <Text bold color="green">Goal achieved</Text>
+        <Text bold color="green">✓ Goal achieved</Text>
         {subtitle ? <Text dimColor>{subtitle}</Text> : null}
         <Box flexDirection="row">
           <Text dimColor>Goal: </Text>
@@ -102,7 +102,7 @@ export function GoalStatus({ onDone }: { onDone: () => void }) {
 
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="claude" paddingX={1} minWidth={40}>
-      <Text bold color="claude"> Goal active</Text>
+      <Text bold color="claude">◎ Goal active</Text>
       <Text dimColor>{subtitle}</Text>
       <Box flexDirection="row" marginTop={0}>
         <Text dimColor>Goal: </Text>
