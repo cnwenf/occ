@@ -15,6 +15,8 @@ import { createAbortController, createChildAbortController } from '../../utils/a
 import { registerCleanup } from '../../utils/cleanupRegistry.js';
 import { getToolSearchOrReadInfo } from '../../utils/collapseReadSearch.js';
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
+import { executeNotificationHooks } from '../../utils/hooks.js';
+import { logError } from '../../utils/log.js';
 import { getAgentTranscriptPath } from '../../utils/sessionStorage.js';
 import { evictTaskOutput, getTaskOutputPath, initTaskOutputAsSymlink } from '../../utils/task/diskOutput.js';
 import { PANEL_GRACE_MS, registerTask, updateTaskState } from '../../utils/task/framework.js';
@@ -259,6 +261,19 @@ export function enqueueAgentNotification({
   enqueuePendingNotification({
     value: message,
     mode: 'task-notification'
+  });
+
+  // 2.1.198+2.1.199: fire the Notification hook so configured matchers
+  // (notification_type: 'agent_completed') can react to a background agent
+  // finishing. Fire-and-forget — hook failures must never block the task
+  // notification queue. Covers all terminal statuses (completed/failed/killed):
+  // the agent's run is over regardless of outcome.
+  void executeNotificationHooks({
+    message: summary,
+    title: 'Agent completed',
+    notificationType: 'agent_completed',
+  }).catch(error => {
+    logError(error);
   });
 }
 

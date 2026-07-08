@@ -572,6 +572,12 @@ export type Props = {
   thinkingConfig: ThinkingConfig;
 };
 export type Screen = 'prompt' | 'transcript';
+// I16d: stream-stall hint thresholds. Surface a "Streaming stalled…" hint when
+// no streaming token has arrived for 30s during a streaming phase. The F16
+// watchdog in claude.ts (STREAM_IDLE_TIMEOUT_MS, 5min) hard-aborts a dead
+// stream; this is just a UI hint before that fires.
+const STREAM_STALL_THRESHOLD_MS = 30_000;
+const STREAM_STALL_POLL_MS = 5_000;
 export function REPL({
   commands: initialCommands,
   debug,
@@ -940,10 +946,18 @@ export function REPL({
   const loadingStartTimeRef = React.useRef<number>(0);
   const totalPausedMsRef = React.useRef(0);
   const pauseStartTimeRef = React.useRef<number | null>(null);
+  // I16d: stream-stall hint. Wall-clock timestamp of the last streaming
+  // token received (updated in setResponseLength on every delta). A 5s
+  // interval (isStreamStalledEffect) checks this against a 30s threshold
+  // and surfaces a "Streaming stalled…" hint before the F16 hard abort
+  // (STREAM_IDLE_TIMEOUT_MS, 5min) fires in claude.ts.
+  const lastTokenTimeRef = React.useRef<number>(0);
   const resetTimingRefs = React.useCallback(() => {
     loadingStartTimeRef.current = Date.now();
     totalPausedMsRef.current = 0;
     pauseStartTimeRef.current = null;
+    // Start the stall clock at query start so TTFB > threshold is detected.
+    lastTokenTimeRef.current = Date.now();
   }, []);
 
   // Reset timing refs inline when isQueryActive transitions false→true.
@@ -1460,6 +1474,9 @@ export function REPL({
         lastEntry.lastTokenTime = Date.now();
         lastEntry.endResponseLength = responseLengthRef.current;
       }
+      // I16d: a streaming token arrived — reset the stall clock so the
+      // "Streaming stalled…" hint stays hidden.
+      lastTokenTimeRef.current = Date.now();
     }
   }, []);
 
@@ -1580,6 +1597,9 @@ export function REPL({
     setIsExternalLoading(false);
     setUserInputOnProcessing(undefined);
     responseLengthRef.current = 0;
+    // I16d: clear the stall clock at turn end so a subsequent chained turn
+    // (same isQueryActive window) doesn't inherit a stale lastTokenTime.
+    lastTokenTimeRef.current = Date.now();
     apiMetricsRef.current = [];
     setStreamingText(null);
     setStreamingToolUses([]);
@@ -1593,6 +1613,33 @@ export function REPL({
     // Promise chains for unconsumed checks (denied/aborted paths).
     clearSpeculativeChecks();
   }, [pickNewSpinnerTip]);
+
+  // I16d: stream-stall hint state. Polled every 5s while a query is active;
+  // set true when no streaming token has arrived for STREAM_STALL_THRESHOLD_MS
+  // during a streaming phase (requesting/thinking/responding — NOT tool-use,
+  // where a tool is running and no stream is expected). Reads streamModeRef
+  // and lastTokenTimeRef (both ref mirrors) so the interval closure stays
+  // stable across renders. setIsStreamStalled is a no-op when the value is
+  // unchanged, so this only re-renders the REPL on stall onset/offset.
+  const [isStreamStalled, setIsStreamStalled] = React.useState(false);
+  React.useEffect(() => {
+    if (!isLoading) {
+      setIsStreamStalled(false);
+      return;
+    }
+    setIsStreamStalled(false);
+    const interval = setInterval(() => {
+      const mode = streamModeRef.current;
+      const isStreamingPhase =
+        mode === 'requesting' || mode === 'thinking' || mode === 'responding';
+      if (isStreamingPhase && Date.now() - lastTokenTimeRef.current > STREAM_STALL_THRESHOLD_MS) {
+        setIsStreamStalled(true);
+      } else {
+        setIsStreamStalled(false);
+      }
+    }, STREAM_STALL_POLL_MS);
+    return () => clearInterval(interval);
+  }, [isLoading]);
 
   // Session backgrounding — hook is below, after getToolUseContext
 
@@ -4624,6 +4671,7 @@ export function REPL({
               <WebBrowserPanel />
               <Box flexGrow={1} />
               {showSpinner && <SpinnerWithVerb mode={streamMode} spinnerTip={spinnerTip} responseLengthRef={responseLengthRef} apiMetricsRef={apiMetricsRef} overrideMessage={spinnerMessage} spinnerSuffix={stopHookSpinnerSuffix} verbose={verbose} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} overrideColor={spinnerColor} overrideShimmerColor={spinnerShimmerColor} hasActiveTools={inProgressToolUseIDs.size > 0} leaderIsIdle={!isLoading} />}
+              {showSpinner && isStreamStalled && <Box marginTop={0}><Text dimColor>Streaming stalled…</Text></Box>}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}
               {isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
             </>} bottom={<Box flexDirection={feature('BUDDY') && companionNarrow ? 'column' : 'row'} width="100%" alignItems={feature('BUDDY') && companionNarrow ? undefined : 'flex-end'}>

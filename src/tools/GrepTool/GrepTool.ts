@@ -86,6 +86,16 @@ const inputSchema = lazySchema(() =>
     multiline: semanticBoolean(z.boolean().optional()).describe(
       'Enable multiline mode where . matches newlines and patterns can span lines (rg -U --multiline-dotall). Default: false.',
     ),
+    // H14: When inside an embedded agent (subagent) with a restricted tool list,
+    // passing --tools re-adds those tools to the subagent's permission allowlist
+    // so they can be used in subsequent turns.
+    tools: z
+      .array(z.string())
+      .optional()
+      .describe(
+        'Tool names to re-add to the subagent tool list when running inside an embedded agent. ' +
+          'No effect in the main REPL.',
+      ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -323,9 +333,32 @@ export const GrepTool = buildTool({
       head_limit,
       offset = 0,
       multiline = false,
+      tools: reAddTools,
     },
-    { abortController, getAppState },
+    { abortController, getAppState, setAppState },
   ) {
+    // H14: If --tools is specified, re-add those tools to the subagent's
+    // permission allowlist so they can be used in subsequent turns. Follows
+    // the createGetAppStateWithAllowedTools pattern (command-source rules).
+    if (reAddTools && reAddTools.length > 0) {
+      setAppState(prev => ({
+        ...prev,
+        toolPermissionContext: {
+          ...prev.toolPermissionContext,
+          alwaysAllowRules: {
+            ...prev.toolPermissionContext.alwaysAllowRules,
+            command: [
+              ...new Set([
+                ...(prev.toolPermissionContext.alwaysAllowRules.command ||
+                  []),
+                ...reAddTools!,
+              ]),
+            ],
+          },
+        },
+      }))
+    }
+
     const absolutePath = path ? expandPath(path) : getCwd()
     const args = ['--hidden']
 

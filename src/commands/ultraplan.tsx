@@ -10,6 +10,7 @@ import { checkRemoteAgentEligibility, formatPreconditionError, RemoteAgentTask, 
 import type { LocalJSXCommandCall } from '../types/command.js';
 import { logForDebugging } from '../utils/debug.js';
 import { errorMessage } from '../utils/errors.js';
+import { executeNotificationHooks } from '../utils/hooks.js';
 import { logError } from '../utils/log.js';
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js';
 import { ALL_MODEL_CONFIGS } from '../utils/model/configs.js';
@@ -82,6 +83,10 @@ function startDetachedPoll(taskId: string, sessionId: string, url: string, getAp
         executionTarget
       } = await pollForApprovedExitPlanMode(sessionId, ULTRAPLAN_TIMEOUT_MS, phase => {
         if (phase === 'needs_input') logEvent('tengu_ultraplan_awaiting_input', {});
+        // Capture the phase before the update so the Notification hook fires
+        // only on the transition INTO needs_input, not on every poll tick that
+        // re-reports the same state.
+        const prevPhase = getAppState().tasks?.[taskId]?.ultraplanPhase;
         updateTaskState<RemoteAgentTaskState>(taskId, setAppState, t => {
           if (t.status !== 'running') return t;
           const next = phase === 'running' ? undefined : phase;
@@ -90,6 +95,18 @@ function startDetachedPoll(taskId: string, sessionId: string, url: string, getAp
             ultraplanPhase: next
           };
         });
+        // 2.1.198+2.1.199: fire the Notification hook (notification_type:
+        // 'agent_needs_input') when a background agent transitions to needing
+        // user input. Fire-and-forget — executeNotificationHooks logs errors
+        // internally; the catch only guards against unhandled rejection.
+        if (phase === 'needs_input' && prevPhase !== 'needs_input') {
+          void executeNotificationHooks({
+            message: 'A background agent needs your input',
+            notificationType: 'agent_needs_input',
+          }).catch(error => {
+            logError(error);
+          });
+        }
       }, () => getAppState().tasks?.[taskId]?.status !== 'running');
       logEvent('tengu_ultraplan_approved', {
         duration_ms: Date.now() - started,

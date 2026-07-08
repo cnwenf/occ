@@ -89,6 +89,8 @@ import {
   renderModelName,
 } from './utils/model/model.js'
 import { getOrderedFallbackModels } from './utils/model/fallbackModel.js'
+import { isFableModel } from './utils/fable/isFableModel.js'
+import { incrementFableCredits } from './utils/fable/fableCredits.js'
 import {
   doesMostRecentAssistantMessageExceed200k,
   finalContextTokensFromLastResponse,
@@ -588,6 +590,11 @@ async function* queryLoop(
         permissionMode === 'plan' &&
         doesMostRecentAssistantMessageExceed200k(messagesForQuery),
     })
+
+    // Fable 5 research preview: debit one credit per query turn.
+    if (isFableModel(currentModel)) {
+      incrementFableCredits(1)
+    }
 
     // 2.1.166: fallbackModel may be an ordered list of up to 3 models. Build
     // the de-duplicated retry chain (main model excluded) once per turn and

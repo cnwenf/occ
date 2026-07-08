@@ -116,6 +116,7 @@ import { safeParseJSON } from './utils/json.js';
 import { logError } from './utils/log.js';
 import { getModelDeprecationWarning } from './utils/model/deprecation.js';
 import { getDefaultMainLoopModel, getUserSpecifiedModelSetting, normalizeModelStringForAPI, parseUserSpecifiedModel } from './utils/model/model.js';
+import { ensureFableConsent, ensureFableConsentSync } from './components/Fable5ConsentDialog.js';
 import { normalizeFallbackModels } from './utils/model/fallbackModel.js';
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js';
 import { PERMISSION_MODES } from './utils/permissions/PermissionMode.js';
@@ -2179,6 +2180,14 @@ async function run(): Promise<CommanderCommand> {
     setInitialMainLoopModel(getUserSpecifiedModelSetting() || null);
     const initialMainLoopModel = getInitialMainLoopModel();
     const resolvedInitialModel = parseUserSpecifiedModel(initialMainLoopModel ?? getDefaultMainLoopModel());
+    // Fable 5 research-preview consent. Non-interactive (pipe) sessions can't
+    // show a dialog, so they require prior consent and otherwise fall back to
+    // the default model. Interactive sessions prompt after setup screens below.
+    let effectiveMainLoopModel = initialMainLoopModel;
+    if (isNonInteractiveSession) {
+      effectiveMainLoopModel = ensureFableConsentSync(effectiveMainLoopModel);
+      setInitialMainLoopModel(effectiveMainLoopModel);
+    }
     let advisorModel: string | undefined;
     if (isAdvisorEnabled()) {
       const advisorOption = canUserConfigureAdvisor() ? (options as {
@@ -2305,6 +2314,12 @@ async function run(): Promise<CommanderCommand> {
       const setupScreensStart = Date.now();
       const onboardingShown = await showSetupScreens(root, permissionMode, allowDangerouslySkipPermissions, commands, enableClaudeInChrome, devChannels);
       logForDebugging(`[STARTUP] showSetupScreens() completed in ${Date.now() - setupScreensStart}ms`);
+
+      // Fable 5 consent dialog (first use only). Runs after setup screens so
+      // the Ink root is available. Decline / sticky-decline falls back to the
+      // default model for this session without mutating persisted settings.
+      effectiveMainLoopModel = await ensureFableConsent(root, effectiveMainLoopModel);
+      setInitialMainLoopModel(effectiveMainLoopModel);
 
       // Now that trust is established and GrowthBook has auth headers,
       // resolve the --remote-control / --rc entitlement gate.
@@ -2999,7 +3014,7 @@ async function run(): Promise<CommanderCommand> {
       tasks: {},
       agentNameRegistry: new Map(),
       verbose: verbose ?? getGlobalConfig().verbose ?? false,
-      mainLoopModel: initialMainLoopModel,
+      mainLoopModel: effectiveMainLoopModel,
       mainLoopModelForSession: null,
       isBriefOnly: initialIsBriefOnly,
       expandedView: getGlobalConfig().showSpinnerTree ? 'teammates' : getGlobalConfig().showExpandedTodos ? 'tasks' : 'none',

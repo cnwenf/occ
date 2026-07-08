@@ -35,6 +35,7 @@ import {
 } from './messages.js'
 import { createDenialTrackingState } from './permissions/denialTracking.js'
 import { parseToolListFromCLI } from './permissions/permissionSetup.js'
+import { getInitialSettings } from './settings/settings.js'
 import { recordSidechainTranscript } from './sessionStorage.js'
 import type { SystemPrompt } from './systemPromptType.js'
 import {
@@ -304,6 +305,36 @@ export type SubagentContextOverrides = {
 }
 
 /**
+ * Resolves the options for a subagent context based on the
+ * `parentSettingsBehavior` setting (F23).
+ *
+ * - `merge` (default): child overrides take precedence; parent fills gaps.
+ *   This is the pre-F23 behavior.
+ * - `override`: parent settings always win; child overrides are ignored.
+ * - `block`: parent settings do not propagate; only child overrides are used.
+ *   Falls back to parent when no overrides are provided (a subagent must have
+ *   tools/model to function).
+ */
+function resolveSubagentOptions(
+  parentContext: ToolUseContext,
+  overrides?: SubagentContextOverrides,
+): ToolUseContext['options'] {
+  const behavior = getInitialSettings().parentSettingsBehavior ?? 'merge'
+  if (behavior === 'override') {
+    // Parent settings replace child — parent always wins
+    return parentContext.options
+  }
+  if (behavior === 'block') {
+    // Don't propagate parent settings — use only child overrides
+    // Parent as fallback for basic operability (subagent needs tools/model)
+    return overrides?.options ?? parentContext.options
+  }
+  // merge (default): current behavior — child overrides if provided,
+  // parent fills gaps when child doesn't provide options
+  return overrides?.options ?? parentContext.options
+}
+
+/**
  * Creates an isolated ToolUseContext for subagents.
  *
  * By default, ALL mutable state is isolated to prevent interference:
@@ -442,7 +473,7 @@ export function createSubagentContext(
     openMessageSelector: undefined,
 
     // Fields that can be overridden or copied from parent
-    options: overrides?.options ?? parentContext.options,
+    options: resolveSubagentOptions(parentContext, overrides),
     messages: overrides?.messages ?? parentContext.messages,
     // Generate new agentId for subagents (each subagent should have its own ID)
     agentId: overrides?.agentId ?? createAgentId(),

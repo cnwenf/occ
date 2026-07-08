@@ -1,5 +1,6 @@
 export { FlashingChar } from './FlashingChar.js'
 export { GlimmerMessage } from './GlimmerMessage.js'
+export { InlineThinkingSpinner } from './InlineThinkingSpinner.js'
 export { ShimmerChar } from './ShimmerChar.js'
 export { SpinnerGlyph } from './SpinnerGlyph.js'
 export type { SpinnerMode } from './types.js'

@@ -4,6 +4,7 @@ import React from 'react';
 import { Box, Text } from '../../ink.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { Markdown } from '../Markdown.js';
+import { InlineThinkingSpinner } from '../Spinner/InlineThinkingSpinner.js';
 type Props = {
   // Accept either full ThinkingBlock/ThinkingBlockParam or a minimal shape with just type and thinking
   param: ThinkingBlock | ThinkingBlockParam | {
@@ -13,6 +14,9 @@ type Props = {
   addMargin: boolean;
   isTranscriptMode: boolean;
   verbose: boolean;
+  /** When true, the model is actively emitting this thinking block — show an
+   * animated inline spinner header instead of the static "∴ Thinking" label. */
+  isStreaming?: boolean;
   /** When true, hide this thinking block entirely (used for past thinking in transcript mode) */
   hideInTranscript?: boolean;
 };
@@ -23,7 +27,8 @@ export function AssistantThinkingMessage(t0) {
     addMargin: t2,
     isTranscriptMode,
     verbose,
-    hideInTranscript: t3
+    hideInTranscript: t3,
+    isStreaming
   } = t0;
   const {
     thinking
@@ -55,6 +60,21 @@ export function AssistantThinkingMessage(t0) {
       t6 = $[2];
     }
     return t6;
+  }
+  // I16e: while the model is actively streaming this thinking block, show an
+  // animated inline spinner header instead of the static "∴ Thinking" label.
+  // Bypasses the memo cache (normal JSX) — streaming re-renders on every
+  // thinking delta anyway, and an early return avoids stale-cache risk when
+  // isStreaming later flips false (the static verbose path takes over below).
+  if (isStreaming) {
+    return (
+      <Box flexDirection="column" gap={1} marginTop={addMargin ? 1 : 0} width="100%">
+        <InlineThinkingSpinner />
+        <Box paddingLeft={2}>
+          <Markdown dimColor={true}>{thinking}</Markdown>
+        </Box>
+      </Box>
+    );
   }
   const t4 = addMargin ? 1 : 0;
   let t5;

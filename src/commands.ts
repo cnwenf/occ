@@ -199,6 +199,11 @@ import {
 import rateLimitOptions from './commands/rate-limit-options/index.js'
 import statusline from './commands/statusline.js'
 import effort from './commands/effort/index.js'
+import teamOnboarding from './commands/team-onboarding.js'
+import setupBedrock from './commands/setup-bedrock.js'
+import setupVertex from './commands/setup-vertex.js'
+import lessPermissionPrompts from './commands/less-permission-prompts.js'
+import dataviz from './commands/dataviz.js'
 // insights.ts is 113KB (3200 lines, includes diffLines/html rendering). Lazy
 // shim defers the heavy module until /insights is actually invoked.
 const usageReport: Command = {
@@ -292,6 +297,7 @@ const COMMANDS = memoize((): Command[] => [
   diff,
   doctor,
   effort,
+  dataviz,
   exit,
   fast,
   files,
@@ -328,6 +334,10 @@ const COMMANDS = memoize((): Command[] => [
   feedback,
   goal,
   goalNonInteractive,
+  teamOnboarding,
+  setupBedrock,
+  setupVertex,
+  lessPermissionPrompts,
   review,
   ultrareview,
   rewind,

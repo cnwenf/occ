@@ -1260,6 +1260,19 @@ export const SettingsSchema = lazySchema(() =>
             'Useful for enterprise administrators to add organization-specific context ' +
             '(e.g., "All plugins from our internal marketplace are vetted and approved.").',
         ),
+      // F23: Controls how parent (managed/policy) settings propagate to child
+      // contexts (subagents/daughters). "merge" (default) merges parent and
+      // child settings. "override" makes parent settings replace child.
+      // "block" prevents parent settings from propagating.
+      parentSettingsBehavior: z
+        .enum(['merge', 'override', 'block'])
+        .optional()
+        .describe(
+          'Controls how parent (managed/policy) settings propagate to child contexts (subagents/daughters). ' +
+            '"merge" (default) merges parent and child settings. ' +
+            '"override" makes parent settings replace child settings. ' +
+            '"block" prevents parent settings from propagating to child contexts.',
+        ),
     })
     .passthrough(),
 )
