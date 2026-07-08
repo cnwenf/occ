@@ -27,7 +27,7 @@ import { Box, Text, useInput } from '../../ink.js'
 import { useAppState } from '../../state/AppState.js'
 import { useTerminalSize } from '../../hooks/useTerminalSize.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
-import { isAgentsFleetEnabled, buildFleetRows } from './rowHelpers.js'
+import { isAgentsFleetEnabled, buildFleetRows, fleetAgentSuggestions } from './rowHelpers.js'
 import { FleetView } from './FleetView.js'
 import { readDaemonStatus } from '../../daemon/workerRegistry.js'
 import type { WorkerRecord } from '../../daemon/types.js'
@@ -37,10 +37,12 @@ export type FleetViewScreenProps = {
   inputValue: string
   /** True when a modal/permission dialog is open — disables all fleet input. */
   disabled: boolean
+  /** Dispatch a dispatch-suggestion prompt (empty-state Enter). Wired by REPL to setInputValue + submit. */
+  onDispatch?: (prompt: string) => void
 }
 
 export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
-  const { inputValue, disabled } = props
+  const { inputValue, disabled, onDispatch } = props
   const tasks = useAppState(s => s.tasks)
   const { rows } = useTerminalSize()
 
@@ -138,27 +140,33 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
 
       // NAVIGATION: fleet is active. Capture up/down/enter/esc so the
       // text input doesn't also process them (cursor move / history).
+      // Navigation count: running sessions, or the dispatch suggestions when empty.
+      const navCount = fleetRows.running.length > 0 ? fleetRows.running.length : fleetAgentSuggestions().length
       if (key.upArrow) {
         event.stopImmediatePropagation()
-        setSelectedIndex(i =>
-          fleetRows.running.length === 0
-            ? 0
-            : (i - 1 + fleetRows.running.length) % fleetRows.running.length,
-        )
+        setSelectedIndex(i => navCount === 0 ? 0 : (i - 1 + navCount) % navCount)
         return
       }
       if (key.downArrow) {
         event.stopImmediatePropagation()
-        setSelectedIndex(i =>
-          fleetRows.running.length === 0
-            ? 0
-            : (i + 1) % fleetRows.running.length,
-        )
+        setSelectedIndex(i => navCount === 0 ? 0 : (i + 1) % navCount)
         return
       }
       if (key.return) {
         event.stopImmediatePropagation()
-        setShowPreview(v => !v)
+        if (fleetRows.running.length > 0) {
+          // Running session: peek/attach (toggle the live preview).
+          setShowPreview(v => !v)
+        } else {
+          // Empty state: dispatch the selected suggestion (run the agent/workflow).
+          const suggestions = fleetAgentSuggestions()
+          const sel = Math.min(Math.max(0, selectedIndex), suggestions.length - 1)
+          const s = suggestions[sel]
+          if (s && onDispatch) {
+            onDispatch(s.prompt)
+            setFleetActive(false)
+          }
+        }
         return
       }
       if (key.escape) {
@@ -206,6 +214,7 @@ export function FleetViewScreen(props: FleetViewScreenProps): React.ReactNode {
         showPreview={showPreview}
         now={now}
         terminalRows={rows}
+        onDispatch={onDispatch}
       />
       {daemonSessions.length > 0 && (
         <Box flexDirection="column" flexShrink={0}>

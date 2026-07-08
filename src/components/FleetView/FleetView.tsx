@@ -50,6 +50,8 @@ export type FleetViewProps = {
   now: number
   /** Terminal row count, for the vertical budget. */
   terminalRows: number
+  /** Dispatch a dispatch-suggestion prompt (empty-state Enter). */
+  onDispatch?: (prompt: string) => void
 }
 
 export function FleetView(props: FleetViewProps): React.ReactNode {
@@ -60,7 +62,7 @@ export function FleetView(props: FleetViewProps): React.ReactNode {
   // Empty state: no live jobs and no folded-done jobs. Show onboarding +
   // suggestions (mirrors `tengu_fleetview_empty_state_shown`).
   if (running.length === 0 && done.length === 0) {
-    return <FleetEmptyState focused={focused} />
+    return <FleetEmptyState focused={focused} selectedIndex={selectedIndex} onDispatch={props.onDispatch} />
   }
 
   const title = fleetTitle(running.length, done.length)
@@ -160,19 +162,23 @@ function FleetRow(props: {
   )
 }
 
-function FleetEmptyState({ focused }: { focused: boolean }): React.ReactNode {
+function FleetEmptyState({ focused, selectedIndex }: { focused: boolean; selectedIndex: number; onDispatch?: (prompt: string) => void }): React.ReactNode {
   const suggestions = fleetAgentSuggestions()
+  const sel = Math.min(Math.max(0, selectedIndex), suggestions.length - 1)
   return (
     <Box flexDirection="column" paddingLeft={1}>
       <Text bold>Agents</Text>
       <Text dimColor>No agents running.</Text>
-      <Text dimColor>{focused ? '↓/← navigate · esc back' : 'Dispatch an agent to populate the fleet:'}</Text>
-      {suggestions.map((s, i) => (
-        <Box key={i} flexDirection="row">
-          <Text dimColor>  • {s.label}: </Text>
-          <Text dimColor>{s.prompt.length > 60 ? s.prompt.slice(0, 57) + '…' : s.prompt}</Text>
-        </Box>
-      ))}
+      <Text dimColor>{focused ? '↑↓ navigate · ⏎ dispatch · esc back' : 'Dispatch an agent to populate the fleet:'}</Text>
+      {suggestions.map((s, i) => {
+        const isSel = focused && i === sel
+        return (
+          <Box key={i} flexDirection="row">
+            <Text dimColor={!isSel} bold={isSel}>{isSel ? '  ❯ ' : '  • '}{s.label}: </Text>
+            <Text dimColor={!isSel}>{s.prompt.length > 60 ? s.prompt.slice(0, 57) + '…' : s.prompt}</Text>
+          </Box>
+        )
+      })}
     </Box>
   )
 }
