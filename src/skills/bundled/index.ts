@@ -1,4 +1,5 @@
 import { feature } from 'src/utils/featureFlags.js'
+import { isSafeMode } from 'src/utils/envUtils.js'
 import { shouldAutoEnableClaudeInChrome } from 'src/utils/claudeInChrome/setup.js'
 import { registerBatchSkill } from './batch.js'
 import { registerClaudeInChromeSkill } from './claudeInChrome.js'
@@ -23,6 +24,11 @@ import { registerVerifySkill } from './verify.js'
  * 3. Import and call that function here
  */
 export function initBundledSkills(): void {
+  // --safe-mode: skip bundled skill registration entirely. Plugins,
+  // .claude/skills/, and .claude/commands/ are unaffected.
+  if (isSafeMode()) {
+    return
+  }
   registerUpdateConfigSkill()
   registerKeybindingsSkill()
   registerVerifySkill()

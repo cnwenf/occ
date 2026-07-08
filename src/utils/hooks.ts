@@ -2718,6 +2718,7 @@ async function* executeHooks({
           signal,
         )
         cleanup?.()
+        const durationMs = Date.now() - hookStartMs
 
         if (httpResult.aborted) {
           emitHookResponse({
@@ -2736,6 +2737,8 @@ async function* executeHooks({
               hookName,
               toolUseID,
               hookEvent,
+              command: hook.url,
+              durationMs,
             }),
             outcome: 'cancelled' as const,
             hook,
@@ -2765,6 +2768,8 @@ async function* executeHooks({
               stderr,
               stdout: '',
               exitCode: httpResult.statusCode ?? 0,
+              command: hook.url,
+              durationMs,
             }),
             outcome: 'non_blocking_error' as const,
             hook,
@@ -2796,6 +2801,8 @@ async function* executeHooks({
               stderr: `JSON validation failed: ${httpValidationError}`,
               stdout: httpResult.body,
               exitCode: httpResult.statusCode ?? 0,
+              command: hook.url,
+              durationMs,
             }),
             outcome: 'non_blocking_error' as const,
             hook,
@@ -2833,6 +2840,7 @@ async function* executeHooks({
             stdout: httpResult.body,
             stderr: '',
             exitCode: httpResult.statusCode,
+            durationMs,
           })
           emitHookResponse({
             hookId,
@@ -2866,6 +2874,16 @@ async function* executeHooks({
           timeoutMs: commandTimeoutMs,
           mcpClients: toolUseContext?.options?.mcpClients,
         })
+        // Inject timing field for hook visibility (D16: duration_ms)
+        if (mcpResult.message?.type === 'attachment') {
+          const att = mcpResult.message.attachment
+          if (
+            att.type === 'hook_success' ||
+            att.type === 'hook_non_blocking_error'
+          ) {
+            att.durationMs = Date.now() - hookStartMs
+          }
+        }
         emitHookResponse({
           hookId,
           hookName,

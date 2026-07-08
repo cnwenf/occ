@@ -14,10 +14,16 @@
  * 2. Call registerBuiltinPlugin() with the plugin definition here
  */
 
+import { isSafeMode } from 'src/utils/envUtils.js'
+
 /**
  * Initialize built-in plugins. Called during CLI startup.
  */
 export function initBuiltinPlugins(): void {
+  // --safe-mode: skip built-in plugin registration entirely.
+  if (isSafeMode()) {
+    return
+  }
   // No built-in plugins registered yet — this is the scaffolding for
   // migrating bundled skills that should be user-toggleable.
 }

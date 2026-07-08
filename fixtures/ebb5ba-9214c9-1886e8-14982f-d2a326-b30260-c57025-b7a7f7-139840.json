@@ -1,0 +1,538 @@
+{
+  "input": [
+    [
+      {
+        "type": "text",
+        "text": "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>all tests pass</command-args>\n"
+      },
+      {
+        "type": "text",
+        "text": "<local-command-stdout>Goal set: all tests pass</local-command-stdout>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Goal acknowledged: all tests pass. Let me start by examining the project and running the tests.",
+        "citations": []
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_79f7eba4df0b4d8aa179835e",
+        "name": "Bash",
+        "input": {
+          "command": "ls -la",
+          "description": "List project files"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f72590e1404c42f09fa2bb7f",
+        "name": "Bash",
+        "input": {
+          "command": "cat package.json 2>/dev/null | head -50",
+          "description": "Read package.json"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_79f7eba4df0b4d8aa179835e",
+        "type": "tool_result",
+        "content": "total 432\ndrwxr-xr-x 15 root root   4096 Jul  7 17:26 .\ndrwxr-xr-x  4 root root   4096 Jul  3 21:45 ..\n-rw-r--r--  1 root root   2075 Jul  4 22:15 biome.json\n-rw-r--r--  1 root root     34 Jul  5 10:27 bunfig.toml\n-rw-r--r--  1 root root 297889 Jul  3 21:45 bun.lock\ndrwxr-xr-x  2 root root   4096 Jul  5 10:04 .claude\n-rw-r--r--  1 root root   7875 Jul  5 11:20 CLAUDE.md\ndrwxr-xr-x  2 root root   4096 Jul  4 01:17 dist\n-rw-r--r--  1 root root     37 Jul  4 02:18 .dockerignore\ndrwxr-xr-x  9 root root   4096 Jul  4 01:18 docs\n-rw-r--r--  1 root root    244 Jul  3 21:45 .editorconfig\ndrwxr-xr-x  2 root root   4096 Jul  7 17:58 fixtures\ndrwxr-xr-x  8 root root   4096 Jul  7 17:56 .git\ndrwxr-xr-x  2 root root   4096 Jul  3 21:45 .githooks\ndrwxr-xr-x  3 root root   4096 Jul  3 21:45 .github\n-rw-r--r--  1 root root    145 Jul  4 02:18 .gitignore\n-rw-r--r--  1 root root    481 Jul  3 21:45 knip.json\n-rw-r--r--  1 root root   1063 Jul  5 11:40 LICENSE\ndrwxr-xr-x 16 root root   4096 Jul  3 22:16 node_modules\ndrwxr-xr-x 37 root root   4096 Jul  6 19:41 .occ-research\n-rw-r--r--  1 root root   5322 Jul  5 15:12 package.json\ndrwxr-xr-x  8 root root   4096 Jul  3 21:45 packages\n-rw-r--r--  1 root root   5191 Jul  5 11:40 README.md\n-rw-r--r--  1 root root   5168 Jul  5 11:40 README.zh-CN.md\n-rw-r--r--  1 root root   7985 Jul  5 11:28 RECORD.md\ndrwxr-xr-x  2 root root   4096 Jul  5 15:12 scripts\n-rw-r--r--  1 root root   2934 Jul  5 11:46 SECURITY.md\ndrwxr-xr-x 44 root root   4096 Jul  7 17:46 src\ndrwxr-xr-x  3 root root   4096 Jul  3 23:57 test\n-rw-r--r--  1 root root   1177 Jul  5 11:22 TODO.md\n-rw-r--r--  1 root root    520 Jul  3 21:45 tsconfig.json",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_f72590e1404c42f09fa2bb7f",
+        "type": "tool_result",
+        "content": "{\n    \"name\": \"@cnwenf/occ\",\n    \"version\": \"2.1.200\",\n    \"license\": \"MIT\",\n    \"type\": \"module\",\n    \"bin\": {\n        \"occ\": \"dist/cli.js\"\n    },\n    \"workspaces\": [\n        \"packages/*\",\n        \"packages/@ant/*\"\n    ],\n    \"files\": [\n        \"dist\"\n    ],\n    \"publishConfig\": {\n        \"access\": \"public\"\n    },\n    \"scripts\": {\n        \"build\": \"bun run scripts/build.ts\",\n        \"dev\": \"bun run src/entrypoints/cli.tsx\",\n        \"prepublishOnly\": \"bun run build\",\n        \"lint\": \"biome lint src/\",\n        \"lint:fix\": \"biome lint --fix src/\",\n        \"format\": \"biome format --write src/\",\n        \"prepare\": \"git config core.hooksPath .githooks\",\n        \"test\": \"bun test\",\n        \"check:unused\": \"knip-bun\",\n        \"health\": \"bun run scripts/health-check.ts\"\n    },\n    \"dependencies\": {\n        \"@alcalzone/ansi-tokenize\": \"^0.3.0\",\n        \"@ant/claude-for-chrome-mcp\": \"workspace:*\",\n        \"@ant/computer-use-input\": \"workspace:*\",\n        \"@ant/computer-use-mcp\": \"workspace:*\",\n        \"@ant/computer-use-swift\": \"workspace:*\",\n        \"@anthropic-ai/bedrock-sdk\": \"^0.26.4\",\n        \"@anthropic-ai/claude-agent-sdk\": \"^0.2.87\",\n        \"@anthropic-ai/foundry-sdk\": \"^0.2.3\",\n        \"@anthropic-ai/mcpb\": \"^2.1.2\",\n        \"@anthropic-ai/sandbox-runtime\": \"^0.0.44\",\n        \"@anthropic-ai/sdk\": \"^0.80.0\",\n        \"@anthropic-ai/vertex-sdk\": \"^0.14.4\",\n        \"@aws-sdk/client-bedrock\": \"^3.1020.0\",\n        \"@aws-sdk/client-bedrock-runtime\": \"^3.1020.0\",\n        \"@aws-sdk/client-sts\": \"^3.1020.0\",\n        \"@aws-sdk/credential-provider-node\": \"^3.972.28\",\n        \"@aws-sdk/credential-providers\": \"^3.1020.0\",\n        \"@azure/identity\": \"^4.13.1\",\n        \"@commander-js/extra-typings\": \"^14.0.0\",\n\n<system-reminder>\n## Auto Mode Active\n\nAuto mode is active. The user chose continuous, autonomous execution. You should:\n\n1. **Execute immediately** — Start implementing right away. Make reasonable assumptions and proceed on low-risk work.\n2. **Minimize interruptions** — Prefer making reasonable assumptions over asking questions for routine decisions.\n3. **Prefer action over planning** — Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.\n4. **Expect course corrections** — The user may provide suggestions or course corrections at any point; treat those as normal input.\n5. **Do not take overly destructive actions** — Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.\n6. **Avoid data exfiltration** — Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_84bf7bd90808416183a2d8dc",
+        "name": "Bash",
+        "input": {
+          "command": "bun test 2>&1 | tail -100",
+          "description": "Run tests",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_84bf7bd90808416183a2d8dc",
+        "type": "tool_result",
+        "content": "Command running in background with ID: b8vikdp8q. Output is being written to: /tmp/claude-0/-root-code-occ/df12abd5-0ef1-4f85-941f-38c43871121d/tasks/b8vikdp8q.output",
+        "is_error": false
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_cdd40c0e8ad54bddba5f4fb6",
+        "name": "TaskOutput",
+        "input": {
+          "task_id": "b8vikdp8q",
+          "block": true,
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_cdd40c0e8ad54bddba5f4fb6",
+        "type": "tool_result",
+        "content": "<retrieval_status>success</retrieval_status>\n\n<task_id>b8vikdp8q</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>failed</status>\n\n<exit_code>144</exit_code>\n\n<output>\n 98 |     startRepl(home);\n 99 |     try {\n100 |       expect(await waitForText(\"for shortcuts\", 20_000)).toBe(true);\n                                                               ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> ([CWD]/test/e2e/goal-gate.e2e.test.ts:100:58)\n(fail) /goal trusted/hooks gate (tmux e2e) > disableAllHooks: /goal <cond> is blocked, goal not set [20105.36ms]\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\ncan't find pane: occ-goal-gate-test\n112 | \n113 |   test(\"trusted + hooks enabled: /goal <cond> is NOT blocked by the gate\", async () => {\n114 |     const home = freshSeededHome({ trustForOcc: true });\n115 |     startRepl(home);\n116 |     try {\n117 |       expect(await waitForText(\"for shortcuts\", 20_000)).toBe(true);\n                                                               ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> ([CWD]/test/e2e/goal-gate.e2e.test.ts:117:58)\n(fail) /goal trusted/hooks gate (tmux e2e) > trusted + hooks enabled: /goal <cond> is NOT blocked by the gate [20034.38ms]\n\ntest/e2e/goal-panel.e2e.test.ts:\n50 |     });\n51 |     const captured = out.join(\"\");\n52 |     // Strip ANSI for matching.\n53 |     const stripped = captured.replace(/\\x1b\\[[0-9;]*[A-Za-z]/g, \"\");\n54 |     // The panel must render one of the status lines (no goal active here).\n55 |     expect(stripped).toMatch(/No goal set|Goal active|\\/goal <condition>/);\n                          ^\nerror: expect(received).toMatch(expected)\n\nExpected substring or pattern: /No goal set|Goal active|\\/goal <condition>/\nReceived: \"[DIAGCFG] getGlobalClaudeFile -> [CONFIG_HOME].json (homedir=/root CLAUDE_CONFIG_DIR=unset)\\r\\n[DIAG4] before pluginDir check\\r\\n[DIAG4] before runMigrations\\r\\n[DIAG5] runMigrations entry\\r\\n[DIAG5] before migrateAutoUpdates\\r\\n[DIAG5] before migrateBypass\\r\\n[DIAG5] before migrateEnableAllMcp\\r\\n[DIAG5] before resetPro\\r\\n[DIAG6] resetPro entry\\r\\n[DIAG6] after getGlobalConfig, opusProMigrationComplete=undefined\\r\\n[DIAG6] before getAPIProvider\\r\\n[DIAG6] after getAPIProvider=firstParty\\r\\n[DIAG6] before isProSubscriber\\r\\n[DIAG7] getSubscriptionType entry\\r\\n[DIAG7] before isAnthropicAuthEnabled\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] isAnthropicAuthEnabled=false\\r\\n[DIAG6] after isProSubscriber=false\\r\\n[DIAG5] before migrateSonnet1m\\r\\n[DIAG5] before migrateLegacyOpus\\r\\n[DIAG5] before migrateSonnet45\\r\\n[DIAG7] getSubscriptionType entry\\r\\n[DIAG7] before isAnthropicAuthEnabled\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] isAnthropicAuthEnabled=false\\r\\n[DIAG7] getSubscriptionType entry\\r\\n[DIAG7] before isAnthropicAuthEnabled\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] isAnthropicAuthEnabled=false\\r\\n[DIAG7] getSubscriptionType entry\\r\\n[DIAG7] before isAnthropicAuthEnabled\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] isAnthropicAuthEnabled=false\\r\\n[DIAG5] before migrateOpus1m\\r\\n[DIAG7] getSubscriptionType entry\\r\\n[DIAG7] before isAnthropicAuthEnabled\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] isAnthropicAuthEnabled=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG5] before migrateReplBridge\\r\\n[DIAG5] before saveGlobalConfig\\r\\n[DIAG5] after saveGlobalConfig\\r\\n[DIAG5] before migrateChangelog\\r\\n[DIAG5] runMigrations exit\\r\\n[DIAG4] after runMigrations\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] getSubscriptionType entry\\r\\n[DIAG7] before isAnthropicAuthEnabled\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] isAnthropicAuthEnabled=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] getSubscriptionType entry\\r\\n[DIAG7] before isAnthropicAuthEnabled\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n[DIAG7] isAnthropicAuthEnabled=false\\r\\n[DIAG8] isAnthropicAuthEnabled entry, bare=false\\r\\n[DIAG8] before getSettings_DEPRECATED\\r\\n[DIAG8] after getSettings_DEPRECATED\\r\\n[DIAG8] before getAnthropicApiKeyWithSource, hasExternalAuthToken=true\\r\\n[DIAG8] after getAnthropicApiKeyWithSource, source=ANTHROPIC_API_KEY\\r\\n[DIAG8] before isManagedOAuthContext\\r\\n[DIAG8] after isManagedOAuthContext=false\\r\\n\\u001b[?2026hWelcometoOCCv2.1.200\\r\\r\\n…………………………………………………………………………………………………………………………………………………………\\r\\r\\n\\r\\r\\n*█████▓▓░\\r\\r\\n*███▓░░░\\r\\r\\n░░░░░░███▓░\\r\\r\\n░░░░░░░░░░░░░███▓░\\r\\r\\n░░░░░░░░░░░░░░░░░░░*██▓░░▓\\r\\r\\n░▓▓███▓▓░\\r\\r\\n *░░░░\\r\\r\\n ░░░░░░░░\\r\\r\\n ░░░░░░░░░░░░░░░░\\r\\r\\n █████████*\\r\\r\\n██▄█████▄██*\\r\\r\\n █████████*\\r\\r\\n…………………████………………………………………………………………………………………………………………\\r\\r\\n\\r\\r\\nLet'sgetstarted.\\r\\r\\n\\r\\r\\nChoosethetextstylethatlooksbestwithyourterminal\\r\\r\\nTochangethislater,run/theme\\r\\r\\n\\r\\r\\n1.Auto(matchterminal)\\r\\r\\n❯2.Darkmode✔\\r\\r\\n3.Lightmode\\r\\r\\n4.Darkmode(colorblind-friendly)\\r\\r\\n5.Lightmode(colorblind-friendly)\\r\\r\\n6.Darkmode(ANSIcolorsonly)\\r\\r\\n7.Lightmode(ANSIcolorsonly)\\r\\r\\n8.Newcustomtheme…\\r\\r\\n\\r\\r\\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\\r\\r\\n 1 functiongreet(){\\r\\r\\n 2 -  console.log(\\\"Hello, World!\\\");                                            \\r\\r\\n 2 +  console.log(\\\"Hello, Claude!\\\");                                           \\r\\r\\n 3 }\\r\\r\\n╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌\\r\\r\\n Syntaxtheme:MonokaiExtended(ctrl+ttodisable)\\r\\r\\n\\u001b[?2026l\\u001b[?2004h\\u001b[?1004h\\u001b[>1u\\u001b[>4;2m\\u001b[?25l\\u001b[?2026h\\u001b[?2026l\\u001b[>0q\"\n\n      at <anonymous> ([CWD]/test/e2e/goal-panel.e2e.test.ts:55:22)\n(fail) /goal REPL panel (e2e, pty) > /goal (no args) renders the status panel [4504.75ms]\n</output>\n\n<system-reminder>\nA background agent completed a task:\n<task-notification>\n<task-id>b8vikdp8q</task-id>\n<tool-use-id>toolu_84bf7bd90808416183a2d8dc</tool-use-id>\n<output-file>/tmp/claude-0/-root-code-occ/df12abd5-0ef1-4f85-941f-38c43871121d/tasks/b8vikdp8q.output</output-file>\n<status>failed</status>\n<summary>Background command \"Run tests\" failed with exit code 144</summary>\n</task-notification>\n</system-reminder>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Let me get a better summary of test results."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_b053daed95fe498db6ad3b8e",
+        "name": "Bash",
+        "input": {
+          "command": "bun test 2>&1 | grep -E \"^(test/|pass|fail|error:|\\(fail\\)|\\(pass\\))\" | head -200",
+          "description": "Get test summary",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_result",
+        "content": "Exit code 1",
+        "is_error": true,
+        "tool_use_id": "toolu_b053daed95fe498db6ad3b8e"
+      }
+    ]
+  ],
+  "output": [
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_f1584d95-dcf4-43be-bb16-1f6f494cd752",
+          "type": "message",
+          "role": "assistant",
+          "model": "glm-5.2",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 24606,
+            "output_tokens": 0
+          }
+        }
+      },
+      "ttftMs": 1205
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_81bd793e0109498cbe511fe5",
+          "name": "Bash",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"command\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"bun"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " 2>&"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "1 >"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " /tmp"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "/test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "-output.txt"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "; echo"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \\\"EXIT"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ": $?"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\"; wc"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -l"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " /tmp"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "/test-output"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ".txt\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"description\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"Run tests"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " and save"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " output\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"timeout\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "600"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "000"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "}"
+        }
+      }
+    },
+    {
+      "uuid": "UUID-30",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:08:14.403Z",
+      "message": {
+        "id": "msg_f1584d95-dcf4-43be-bb16-1f6f494cd752",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_81bd793e0109498cbe511fe5",
+            "name": "Bash",
+            "input": {
+              "command": "bun test 2>&1 > /tmp/test-output.txt; echo \"EXIT: $?\"; wc -l /tmp/test-output.txt",
+              "description": "Run tests and save output",
+              "timeout": 600000
+            }
+          }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 234,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 32256,
+          "output_tokens": 55,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null
+        },
+        "usage": {
+          "input_tokens": 234,
+          "output_tokens": 55,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 32256,
+          "prompt_tokens_details": {
+            "cached_tokens": 32256
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_stop"
+      }
+    }
+  ]
+}

@@ -86,6 +86,8 @@ export const KEYBINDING_ACTIONS = [
   'chat:thinkingToggle',
   'chat:submit',
   'chat:newline',
+  'chat:clearInput',
+  'chat:clearScreen',
   'chat:undo',
   'chat:externalEditor',
   'chat:stash',
@@ -169,6 +171,19 @@ export const KEYBINDING_ACTIONS = [
   'settings:close',
   // Voice actions
   'voice:pushToTalk',
+  // Scroll actions (message history viewport)
+  'scroll:pageUp',
+  'scroll:pageDown',
+  'scroll:lineUp',
+  'scroll:lineDown',
+  'scroll:halfPageUp',
+  'scroll:halfPageDown',
+  'scroll:fullPageUp',
+  'scroll:fullPageDown',
+  'scroll:top',
+  'scroll:bottom',
+  // Selection copy (terminal text selection)
+  'selection:copy',
 ] as const
 
 /**

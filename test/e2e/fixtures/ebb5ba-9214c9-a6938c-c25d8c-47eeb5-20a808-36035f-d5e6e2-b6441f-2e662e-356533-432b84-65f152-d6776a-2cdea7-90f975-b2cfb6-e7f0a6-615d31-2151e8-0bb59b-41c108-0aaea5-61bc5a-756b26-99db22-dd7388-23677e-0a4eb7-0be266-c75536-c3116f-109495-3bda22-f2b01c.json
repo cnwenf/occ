@@ -1,0 +1,1062 @@
+{
+  "input": [
+    [
+      {
+        "type": "text",
+        "text": "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>all tests pass</command-args>\n"
+      },
+      {
+        "type": "text",
+        "text": "<local-command-stdout>Goal set: all tests pass</local-command-stdout>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Goal acknowledged: all tests pass. Let me start by examining the project and running the tests.",
+        "citations": []
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_79f7eba4df0b4d8aa179835e",
+        "name": "Bash",
+        "input": {
+          "command": "ls -la",
+          "description": "List project files"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f72590e1404c42f09fa2bb7f",
+        "name": "Bash",
+        "input": {
+          "command": "cat package.json 2>/dev/null | head -50",
+          "description": "Read package.json"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_79f7eba4df0b4d8aa179835e",
+        "type": "tool_result",
+        "content": "total 440\ndrwxr-xr-x 15 root root   4096 Jul  7 17:26 .\ndrwxr-xr-x  4 root root   4096 Jul  3 21:45 ..\n-rw-r--r--  1 root root   2075 Jul  4 22:15 biome.json\n-rw-r--r--  1 root root     34 Jul  5 10:27 bunfig.toml\n-rw-r--r--  1 root root 297889 Jul  3 21:45 bun.lock\ndrwxr-xr-x  2 root root   4096 Jul  5 10:04 .claude\n-rw-r--r--  1 root root   7875 Jul  5 11:20 CLAUDE.md\ndrwxr-xr-x  2 root root   4096 Jul  4 01:17 dist\n-rw-r--r--  1 root root     37 Jul  4 02:18 .dockerignore\ndrwxr-xr-x  9 root root   4096 Jul  4 01:18 docs\n-rw-r--r--  1 root root    244 Jul  3 21:45 .editorconfig\ndrwxr-xr-x  2 root root  12288 Jul  7 18:06 fixtures\ndrwxr-xr-x  8 root root   4096 Jul  7 17:56 .git\ndrwxr-xr-x  2 root root   4096 Jul  3 21:45 .githooks\ndrwxr-xr-x  3 root root   4096 Jul  3 21:45 .github\n-rw-r--r--  1 root root    145 Jul  4 02:18 .gitignore\n-rw-r--r--  1 root root    481 Jul  3 21:45 knip.json\n-rw-r--r--  1 root root   1063 Jul  5 11:40 LICENSE\ndrwxr-xr-x 16 root root   4096 Jul  3 22:16 node_modules\ndrwxr-xr-x 37 root root   4096 Jul  6 19:41 .occ-research\n-rw-r--r--  1 root root   5322 Jul  5 15:12 package.json\ndrwxr-xr-x  8 root root   4096 Jul  3 21:45 packages\n-rw-r--r--  1 root root   5191 Jul  5 11:40 README.md\n-rw-r--r--  1 root root   5168 Jul  5 11:40 README.zh-CN.md\n-rw-r--r--  1 root root   7985 Jul  5 11:28 RECORD.md\ndrwxr-xr-x  2 root root   4096 Jul  5 15:12 scripts\n-rw-r--r--  1 root root   2934 Jul  5 11:46 SECURITY.md\ndrwxr-xr-x 44 root root   4096 Jul  7 17:46 src\ndrwxr-xr-x  3 root root   4096 Jul  3 23:57 test\n-rw-r--r--  1 root root   1177 Jul  5 11:22 TODO.md\n-rw-r--r--  1 root root    520 Jul  3 21:45 tsconfig.json",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_f72590e1404c42f09fa2bb7f",
+        "type": "tool_result",
+        "content": "{\n    \"name\": \"@cnwenf/occ\",\n    \"version\": \"2.1.200\",\n    \"license\": \"MIT\",\n    \"type\": \"module\",\n    \"bin\": {\n        \"occ\": \"dist/cli.js\"\n    },\n    \"workspaces\": [\n        \"packages/*\",\n        \"packages/@ant/*\"\n    ],\n    \"files\": [\n        \"dist\"\n    ],\n    \"publishConfig\": {\n        \"access\": \"public\"\n    },\n    \"scripts\": {\n        \"build\": \"bun run scripts/build.ts\",\n        \"dev\": \"bun run src/entrypoints/cli.tsx\",\n        \"prepublishOnly\": \"bun run build\",\n        \"lint\": \"biome lint src/\",\n        \"lint:fix\": \"biome lint --fix src/\",\n        \"format\": \"biome format --write src/\",\n        \"prepare\": \"git config core.hooksPath .githooks\",\n        \"test\": \"bun test\",\n        \"check:unused\": \"knip-bun\",\n        \"health\": \"bun run scripts/health-check.ts\"\n    },\n    \"dependencies\": {\n        \"@alcalzone/ansi-tokenize\": \"^0.3.0\",\n        \"@ant/claude-for-chrome-mcp\": \"workspace:*\",\n        \"@ant/computer-use-input\": \"workspace:*\",\n        \"@ant/computer-use-mcp\": \"workspace:*\",\n        \"@ant/computer-use-swift\": \"workspace:*\",\n        \"@anthropic-ai/bedrock-sdk\": \"^0.26.4\",\n        \"@anthropic-ai/claude-agent-sdk\": \"^0.2.87\",\n        \"@anthropic-ai/foundry-sdk\": \"^0.2.3\",\n        \"@anthropic-ai/mcpb\": \"^2.1.2\",\n        \"@anthropic-ai/sandbox-runtime\": \"^0.0.44\",\n        \"@anthropic-ai/sdk\": \"^0.80.0\",\n        \"@anthropic-ai/vertex-sdk\": \"^0.14.4\",\n        \"@aws-sdk/client-bedrock\": \"^3.1020.0\",\n        \"@aws-sdk/client-bedrock-runtime\": \"^3.1020.0\",\n        \"@aws-sdk/client-sts\": \"^3.1020.0\",\n        \"@aws-sdk/credential-provider-node\": \"^3.972.28\",\n        \"@aws-sdk/credential-providers\": \"^3.1020.0\",\n        \"@azure/identity\": \"^4.13.1\",\n        \"@commander-js/extra-typings\": \"^14.0.0\",\n\n<system-reminder>\n## Auto Mode Active\n\nAuto mode is active. The user chose continuous, autonomous execution. You should:\n\n1. **Execute immediately** — Start implementing right away. Make reasonable assumptions and proceed on low-risk work.\n2. **Minimize interruptions** — Prefer making reasonable assumptions over asking questions for routine decisions.\n3. **Prefer action over planning** — Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.\n4. **Expect course corrections** — The user may provide suggestions or course corrections at any point; treat those as normal input.\n5. **Do not take overly destructive actions** — Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.\n6. **Avoid data exfiltration** — Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Let me run the tests to see the current state.",
+        "citations": []
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_5a3026dd85f5453789054b40",
+        "name": "Bash",
+        "input": {
+          "command": "bun test 2>&1 | tail -100",
+          "description": "Run all tests",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_result",
+        "content": "Exit code 144",
+        "is_error": true,
+        "tool_use_id": "toolu_5a3026dd85f5453789054b40"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_b55fde03efe241b6926e2a91",
+        "name": "Bash",
+        "input": {
+          "command": "bun test > /tmp/test_output.txt 2>&1; echo \"EXIT: $?\"",
+          "description": "Run tests and capture output",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_result",
+        "content": "Exit code 1",
+        "is_error": true,
+        "tool_use_id": "toolu_b55fde03efe241b6926e2a91"
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_5c3a5ba164264fa5b7c0617e",
+        "name": "Bash",
+        "input": {
+          "command": "tail -150 /tmp/test_output.txt",
+          "description": "Read test output tail"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_5c3a5ba164264fa5b7c0617e",
+        "type": "tool_result",
+        "content": "bun test v1.3.14 (0d9b296a)",
+        "is_error": false
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_66bf8cc9c95144c99272d414",
+        "name": "Bash",
+        "input": {
+          "command": "wc -l /tmp/test_output.txt; head -50 /tmp/test_output.txt",
+          "description": "Check test output size"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_66bf8cc9c95144c99272d414",
+        "type": "tool_result",
+        "content": "1 /tmp/test_output.txt\nbun test v1.3.14 (0d9b296a)",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "The test seems to hang. Let me investigate the test structure."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_c3245478a1fc45a09515b584",
+        "name": "Bash",
+        "input": {
+          "command": "ls test/ 2>&1; echo \"---\"; ls test/*/ 2>&1 | head -30",
+          "description": "List test directory"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_4ef93fe6589d4d0693ea1b5c",
+        "name": "Bash",
+        "input": {
+          "command": "find . -path ./node_modules -prune -o -name \"*.test.ts\" -print -o -name \"*.test.tsx\" -print 2>/dev/null | head -40",
+          "description": "Find test files"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_c3245478a1fc45a09515b584",
+        "type": "tool_result",
+        "content": "e2e\n---\ncleanupPeriodDays-zero.e2e.test.ts\ncommands-alignment.e2e.test.ts\ncommands-behavior.e2e.test.ts\nDockerfile\ngoal-gate.e2e.test.ts\ngoal-panel.e2e.test.ts\nhelpers.ts\nhusky-protected.e2e.test.ts\nmcp-connection-nonblocking.e2e.test.ts\nreal-coding.e2e.test.ts\nrepl-interactive.e2e.test.ts\nrunner.sh\nrun.sh\nseed\ntrust-gate.e2e.test.ts\nversion-2.1.101.e2e.test.ts\nversion-2.1.105.e2e.test.ts\nversion-2.1.105-skill-budget.e2e.test.ts\nversion-2.1.107.e2e.test.ts\nversion-2.1.108.e2e.test.ts\nversion-2.1.109.e2e.test.ts\nversion-2.1.110-commands.e2e.test.ts\nversion-2.1.110.e2e.test.ts\nversion-2.1.111.e2e.test.ts\nversion-2.1.111-env.e2e.test.ts\nversion-2.1.113.e2e.test.ts\nversion-2.1.116.e2e.test.ts\nversion-2.1.117.e2e.test.ts\nversion-2.1.118.e2e.test.ts\nversion-2.1.118-fork.e2e.test.ts",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_4ef93fe6589d4d0693ea1b5c",
+        "type": "tool_result",
+        "content": "./src/tools/PowerShellTool/__tests__/readOnlyValidation.test.ts\n./src/tools/WebFetchTool/__tests__/stripStyleScript.test.ts\n./src/tools/BashTool/__tests__/clampTimeout.test.ts\n./src/entrypoints/__tests__/sandbox-deniedDomains.test.ts\n./src/components/Spinner/__tests__/thinkingHints.test.ts\n./src/services/mcp/__tests__/maxResultSizeChars.test.ts\n./src/services/mcp/__tests__/waitForMcpConnectionBatch.test.ts\n./src/services/mcp/__tests__/alwaysLoad.test.ts\n./src/services/compact/__tests__/precompact-block.test.ts\n./src/services/remoteManagedSettings/__tests__/forceRemoteSettingsRefresh.test.ts\n./src/services/api/__tests__/bedrock-auth.test.ts\n./src/services/api/__tests__/prompt-cache-ttl.test.ts\n./src/commands/goal/__tests__/goal.test.ts\n./src/commands/rewind/__tests__/undo-alias.test.ts\n./src/commands/export/__tests__/export-path.test.ts\n./src/commands/__tests__/removed-commands.test.ts\n./src/utils/settings/__tests__/defaultMode-auto.test.ts\n./src/utils/settings/__tests__/autoScrollEnabled.test.ts\n./src/utils/settings/__tests__/cleanupPeriodDays.test.ts\n./src/utils/permissions/__tests__/yoloClassifier.test.ts\n./src/utils/permissions/__tests__/autoModeState.test.ts\n./src/utils/permissions/__tests__/filesystem.test.ts\n./src/utils/hooks/__tests__/hookHelpers.test.ts\n./src/utils/plugins/__tests__/cacheMarketplaceFromGit.test.ts\n./src/utils/deepLink/__tests__/parseDeepLink.test.ts\n./src/utils/__tests__/hide-cwd-prurl.test.ts\n./src/utils/__tests__/update-url.test.ts\n./src/utils/__tests__/trust.test.ts\n./src/utils/__tests__/ai-agent-effort.test.ts\n./src/utils/__tests__/cleanup-misc-dirs.test.ts\n./src/utils/__tests__/caCerts.test.ts\n./src/utils/__tests__/array.test.ts\n./src/utils/__tests__/disableSkillShellExecution.test.ts\n./src/utils/__tests__/thinking-guidance.test.ts\n./src/utils/__tests__/disable-updates.test.ts\n./src/utils/__tests__/userPromptSubmit-sessionTitle.test.ts\n./src/utils/__tests__/effort-xhigh.test.ts\n./src/utils/__tests__/perforce.test.ts\n./src/utils/__tests__/set.test.ts\n./src/utils/__tests__/statusline-2.1.97.test.ts\n\n<system-reminder>\nThe TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_d653b7c170c54d55a9cf8b8d",
+        "name": "Bash",
+        "input": {
+          "command": "cat bunfig.toml; echo \"---tsconfig---\"; cat tsconfig.json",
+          "description": "Read configs"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_2de3b939c2434fc685a3af69",
+        "name": "Bash",
+        "input": {
+          "command": "ls packages/ packages/@ant/ 2>&1",
+          "description": "List packages"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_d653b7c170c54d55a9cf8b8d",
+        "type": "tool_result",
+        "content": "[test]\nroot = \".\"\ntimeout = 10000\n---tsconfig---\n{\n    \"compilerOptions\": {\n        \"target\": \"ESNext\",\n        \"module\": \"ESNext\",\n        \"moduleResolution\": \"bundler\",\n        \"jsx\": \"react-jsx\",\n        \"strict\": false,\n        \"skipLibCheck\": true,\n        \"noEmit\": true,\n        \"esModuleInterop\": true,\n        \"allowSyntheticDefaultImports\": true,\n        \"resolveJsonModule\": true,\n        \"types\": [\"bun\"],\n        \"paths\": {\n            \"src/*\": [\"./src/*\"]\n        }\n    },\n    \"include\": [\"src/**/*.ts\", \"src/**/*.tsx\"],\n    \"exclude\": [\"node_modules\"]\n}",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_2de3b939c2434fc685a3af69",
+        "type": "tool_result",
+        "content": "packages/:\n@ant\naudio-capture-napi\ncolor-diff-napi\nimage-processor-napi\nmodifiers-napi\nurl-handler-napi\n\npackages/@ant/:\nclaude-for-chrome-mcp\ncomputer-use-input\ncomputer-use-mcp\ncomputer-use-swift",
+        "is_error": false
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_c60498f95de746bba5e6e52c",
+        "name": "Bash",
+        "input": {
+          "command": "timeout 60 bun test src/ 2>&1 | tail -80",
+          "description": "Run src unit tests",
+          "timeout": 90000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_c60498f95de746bba5e6e52c",
+        "type": "tool_result",
+        "content": "bun test v1.3.14 (0d9b296a)\nPreparing worktree (new branch 'feature')\nCloning into bare repository '/tmp/mm-pWmnSJ/src.git'...\ndone.\nCloning into bare repository '/tmp/mm-9AR65a/src.git'...\ndone.\nCloning into bare repository '/tmp/mm-0Ug0ok/src.git'...\ndone.\n\n 230 pass\n 0 fail\n 365 expect() calls\nRan 230 tests across 41 files. [11.52s]",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "All 230 unit tests in `src/` pass. Let me check the e2e tests now."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_71b95406649341699660fc23",
+        "name": "Bash",
+        "input": {
+          "command": "cat test/e2e/run.sh 2>&1 | head -60",
+          "description": "Read e2e run script"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_382a7e81c7134d1c9a23bf4d",
+        "name": "Bash",
+        "input": {
+          "command": "cat test/e2e/runner.sh 2>&1 | head -80",
+          "description": "Read e2e runner script"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_71b95406649341699660fc23",
+        "type": "tool_result",
+        "content": "#!/usr/bin/env bash\n# Build the OCC e2e Docker image and run the e2e test suite inside it.\n# Model config (URL / token / model id) is forwarded from the host env so the\n# containerized OCC talks to the same endpoint the host uses.\nset -euo pipefail\n\nROOT=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")/../..\" && pwd)\"\nIMAGE_TAG=\"occ-e2e:latest\"\n\n# --- 1. Build the image (cached after first run) --------------------------------\ndocker build -q -t \"$IMAGE_TAG\" -f \"$ROOT/test/e2e/Dockerfile\" \"$ROOT\"\n\n# --- 2. Forward model config into the container ---------------------------------\nENV_FILE=\"$(mktemp)\"\ntrap 'rm -f \"$ENV_FILE\"' EXIT\n: > \"$ENV_FILE\"\nprintenv_env() {\n  : \"${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL must be set on the host}\"\n  : \"${ANTHROPIC_AUTH_TOKEN:?ANTHROPIC_AUTH_TOKEN must be set on the host}\"\n  : \"${ANTHROPIC_MODEL:?ANTHROPIC_MODEL must be set on the host}\"\n}\nprintenv_env\n\n# --- 3. Run the e2e suite -------------------------------------------------------\n# Host test/e2e is mounted read-only so edits don't need a rebuild. The OCC\n# repo itself is baked into the image (rebuilt only when source changes).\ndocker run --rm \\\n  -e ANTHROPIC_BASE_URL \\\n  -e ANTHROPIC_AUTH_TOKEN \\\n  -e ANTHROPIC_MODEL \\\n  -e ANTHROPIC_DEFAULT_HAIKU_MODEL \\\n  -e ANTHROPIC_DEFAULT_SONNET_MODEL \\\n  -e ANTHROPIC_DEFAULT_OPUS_MODEL \\\n  -v \"$ROOT/test/e2e:/test/e2e:ro\" \\\n  -w /occ \\\n  \"$IMAGE_TAG\" \\\n  bash -lc 'bun test /test/e2e'",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_382a7e81c7134d1c9a23bf4d",
+        "type": "tool_result",
+        "content": "#!/usr/bin/env bash\n# Start a PERSISTENT e2e runner container. Stays up (tail -f /dev/null) so you\n# can `docker exec` into it to run/re-run the tmux-based interactive REPL tests\n# repeatedly without rebuilding the image each time.\n#\n# Image: occ-e2e:latest (built from test/e2e/Dockerfile; includes tmux).\n# Repo is baked into the image at /occ with dist/cli.js prebuilt.\n# test/e2e is mounted read-only at /test/e2e so test edits need no rebuild.\n# Model config is forwarded from the host env.\nset -euo pipefail\n\nROOT=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")/../..\" && pwd)\"\nIMAGE_TAG=\"occ-e2e:latest\"\nCONTAINER=\"occ-e2e-runner\"\n\n: \"${ANTHROPIC_BASE_URL:?ANTHROPIC_BASE_URL must be set on the host}\"\n: \"${ANTHROPIC_AUTH_TOKEN:?ANTHROPIC_AUTH_TOKEN must be set on the host}\"\n: \"${ANTHROPIC_MODEL:?ANTHROPIC_MODEL must be set on the host}\"\n\n# 1. Build image (cached; rebuilds only on source/Dockerfile change).\ndocker build -q -t \"$IMAGE_TAG\" -f \"$ROOT/test/e2e/Dockerfile\" \"$ROOT\"\n\n# 2. Replace any existing runner container.\ndocker rm -f \"$CONTAINER\" >/dev/null 2>&1 || true\n\n# 3. Run detached, creds forwarded, test dir mounted RO, stay alive.\n#    --user occ: non-root so the REPL tests can boot the CLI with\n#    --dangerously-skip-permissions (refused for root).\ndocker run -d --name \"$CONTAINER\" --user occ \\\n  -e HOME=/home/occ \\\n  -e ANTHROPIC_BASE_URL \\\n  -e ANTHROPIC_AUTH_TOKEN \\\n  -e ANTHROPIC_MODEL \\\n  -e ANTHROPIC_DEFAULT_HAIKU_MODEL \\\n  -e ANTHROPIC_DEFAULT_SONNET_MODEL \\\n  -e ANTHROPIC_DEFAULT_OPUS_MODEL \\\n  -v \"$ROOT/test/e2e:/test/e2e:ro\" \\\n  -w /occ \\\n  \"$IMAGE_TAG\" \\\n  tail -f /dev/null\n\necho \"Persistent runner '$CONTAINER' is up.\"\necho \"  Run REPL test: docker exec $CONTAINER bash -lc 'bun test /test/e2e/repl-interactive.e2e.test.ts'\"\necho \"  Run all e2e:   docker exec $CONTAINER bash -lc 'bun test /test/e2e'\"\necho \"  Shell:         docker exec -it $CONTAINER bash\"\necho \"  Stop:          docker rm -f $CONTAINER\"",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_f0c5f81f90244ff3a7891e1d",
+        "name": "Bash",
+        "input": {
+          "command": "head -30 test/e2e/repl-interactive.e2e.test.ts",
+          "description": "Read e2e test header"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_2d9d716edb114ccebf5488b4",
+        "name": "Bash",
+        "input": {
+          "command": "ls test/e2e/*.test.ts | wc -l; echo \"---\"; ls test/e2e/seed/ 2>&1",
+          "description": "Count e2e tests"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_f0c5f81f90244ff3a7891e1d",
+        "type": "tool_result",
+        "content": "import { describe, expect, test } from \"bun:test\";\nimport { execFileSync, execSync } from \"node:child_process\";\nimport { REPO_ROOT } from \"./helpers\";\n\n/**\n * REPL interactive e2e (tmux-based). Drives the BUILT dist/cli.js inside a\n * tmux session, sending real keystrokes (Shift+Tab, Escape, Enter) and\n * reading the decoded pane output via `tmux capture-pane -p`.\n *\n * This tests REPL-only features that -p mode can't reach:\n * - Shift+Tab permission mode cycling (default → acceptEdits → plan → auto)\n * - /goal panel open + Escape dismiss\n * - /feedback dialog\n * - /context interactive panel\n *\n * Gated out of CI (needs tmux + model creds).\n */\n\nconst BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;\nconst SESSION = \"occ-repl-test\"\n\nfunction tmux(args: string[]): string {\n  try {\n    return execFileSync(\"tmux\", args, { encoding: \"utf8\", timeout: 10_000 })\n  } catch {\n    return \"\"\n  }\n}\n\nfunction startRepl(env: Record<string, string> = {}) {",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_2d9d716edb114ccebf5488b4",
+        "type": "tool_result",
+        "content": "114\n---",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_8d23a26ec07d459aa709e1d7",
+        "name": "Bash",
+        "input": {
+          "command": "cat CLAUDE.md",
+          "description": "Read CLAUDE.md"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_8d23a26ec07d459aa709e1d7",
+        "type": "tool_result",
+        "content": "# CLAUDE.md\n\nThis file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.\n\n## Project Overview\n\nThis is an **independent open-source implementation** of a Claude Code–style coding agent. The goal is to provide core coding-agent functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. The codebase has ~1341 tsc type errors (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.\n\n## Commands\n\n```bash\n# Install dependencies\nbun install\n\n# Dev mode (direct execution via Bun). Version prints as 888 when working.\nbun run dev\n# equivalent to: bun run src/entrypoints/cli.tsx\n\n# Pipe mode\necho \"say hello\" | bun run src/entrypoints/cli.tsx -p\n\n# Build (outputs dist/cli.js, ~25MB)\nbun run build\n\n# Lint / format (Biome — formatter is DISABLED to avoid massive diffs; lint only)\nbun run lint\nbun run lint:fix\nbun run format\n\n# Tests (Bun test runner; config in bunfig.toml, root=\".\", timeout=10000)\nbun test\nbun test test/e2e               # run a directory\nbun test path/to/file.test.ts   # run a single file\n\n# Detect unused exports/dependencies\nbun run check:unused            # knip — config in knip.json\n\n# Code health check\nbun run health                  # scripts/health-check.ts\n```\n\nRequires Bun >= 1.3.11 (use `bun upgrade` — older Bun causes spurious errors). Requires a valid Anthropic API key (or Bedrock/Vertex creds).\n\nA `pre-commit` hook (`.githooks/`, wired via `bun run prepare` → `core.hooksPath .githooks`) runs `biome lint` on staged `src/*.{ts,tsx,js,jsx}` files. Bypass with `--no-verify` when lint errors are from pre-existing noise.\n\n## Architecture\n\n### Runtime & Build\n\n- **Runtime**: Bun (not Node.js). All imports, builds, and execution use Bun APIs.\n- **Build**: `bun build src/entrypoints/cli.tsx --outdir dist --target bun` — single-file bundle.\n- **Module system**: ESM (`\"type\": \"module\"`), TSX with `react-jsx` transform.\n- **Monorepo**: Bun workspaces — internal packages live in `packages/` resolved via `workspace:*`.\n\n### Entry & Bootstrap\n\n1. **`src/entrypoints/cli.tsx`** — True entrypoint. Injects runtime polyfills at the top:\n   - `feature()` always returns `false` (all feature flags disabled, skipping unimplemented branches).\n   - `globalThis.MACRO` — simulates build-time macro injection (VERSION, BUILD_TIME, etc.).\n   - `BUILD_TARGET`, `BUILD_ENV`, `INTERFACE_TYPE` globals.\n2. **`src/main.tsx`** — Commander.js CLI definition. Parses args, initializes services (auth, analytics, policy), then launches the REPL or runs in pipe mode.\n3. **`src/entrypoints/init.ts`** — One-time initialization (telemetry, config, trust dialog).\n\nOther entrypoints in `src/entrypoints/`: `mcp.ts` (runs Claude Code as an MCP server, exposing commands like `/review` as tools), and `sdk/` (type definitions + schemas for the `@anthropic-ai/claude-agent-sdk` surface: `coreTypes`, `controlTypes`, `runtimeTypes`, `settingsTypes`, `toolTypes`). The `sdk/` types are the public SDK contract — generated files are marked `.generated.ts`.\n\n### Core Loop\n\n- **`src/query.ts`** — The main API query function. Sends messages to Claude API, handles streaming responses, processes tool calls, and manages the conversation turn loop.\n- **`src/QueryEngine.ts`** — Higher-level orchestrator wrapping `query()`. Manages conversation state, compaction, file history snapshots, attribution, and turn-level bookkeeping. Used by the REPL screen.\n- **`src/screens/REPL.tsx`** — The interactive REPL screen (React/Ink component). Handles user input, message display, tool permission prompts, and keyboard shortcuts.\n\n### API Layer\n\n- **`src/services/api/claude.ts`** — Core API client. Builds request params (system prompt, messages, tools, betas), calls the Anthropic SDK streaming endpoint, and processes `BetaRawMessageStreamEvent` events.\n- Supports multiple providers: Anthropic direct, AWS Bedrock, Google Vertex, Azure.\n- Provider selection in `src/utils/model/providers.ts`.\n\n### Tool System\n\n- **`src/Tool.ts`** — Tool interface definition (`Tool` type) and utilities (`findToolByName`, `toolMatchesName`).\n- **`src/tools.ts`** — Tool registry. Assembles the tool list; some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.\n- **`src/tools/<ToolName>/`** — Each tool in its own directory (e.g., `BashTool`, `FileEditTool`, `GrepTool`, `AgentTool`).\n- Tools define: `name`, `description`, `inputSchema` (JSON Schema), `call()` (execution), and optionally a React component for rendering results.\n\n### UI Layer (Ink)\n\n- **`src/ink.ts`** — Ink render wrapper with ThemeProvider injection.\n- **`src/ink/`** — Custom Ink framework (forked/internal): custom reconciler, hooks (`useInput`, `useTerminalSize`, `useSearchHighlight`), virtual list rendering.\n- **`src/components/`** — React components rendered in terminal via Ink. Key ones:\n  - `App.tsx` — Root provider (AppState, Stats, FpsMetrics).\n  - `Messages.tsx` / `MessageRow.tsx` — Conversation message rendering.\n  - `PromptInput/` — User input handling.\n  - `permissions/` — Tool permission approval UI.\n- Components use React Compiler runtime (`react/compiler-runtime`) — output has `_c()` memoization calls throughout.\n\n### State Management\n\n- **`src/state/AppState.tsx`** — Central app state type and context provider. Contains messages, tools, permissions, MCP connections, etc.\n- **`src/state/store.ts`** — Zustand-style store for AppState.\n- **`src/bootstrap/state.ts`** — Module-level singletons for session-global state (session ID, CWD, project root, token counts).\n\n### Context & System Prompt\n\n- **`src/context.ts`** — Builds system/user context for the API call (git status, date, CLAUDE.md contents, memory files).\n- **`src/utils/claudemd.ts`** — Discovers and loads CLAUDE.md files from project hierarchy.\n\n### Feature Flag System\n\nAll `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In this build, `feature()` is polyfilled to always return `false` in `cli.tsx`. This means all internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) are disabled.\n\n### Stubbed/Deleted Modules\n\n| Module | Status |\n|--------|--------|\n| Computer Use (`@ant/*`) | Stub packages in `packages/@ant/` |\n| `*-napi` packages (audio, image, url, modifiers) | Stubs in `packages/` (except `color-diff-napi` which is fully implemented) |\n| Analytics / GrowthBook / Sentry | Empty implementations |\n| Magic Docs / Voice Mode / LSP Server | Removed |\n| Plugins / Marketplace | Removed |\n| MCP OAuth | Simplified |\n\n### Key Type Files\n\n- **`src/types/global.d.ts`** — Declares `MACRO`, `BUILD_TARGET`, `BUILD_ENV` and internal Anthropic-only identifiers.\n- **`src/types/internal-modules.d.ts`** — Type declarations for `bun:bundle`, `bun:ffi`, `@anthropic-ai/mcpb`.\n- **`src/types/message.ts`** — Message type hierarchy (UserMessage, AssistantMessage, SystemMessage, etc.).\n- **`src/types/permissions.ts`** — Permission mode and result types.\n\n## Working with This Codebase\n\n- **Don't try to fix all tsc errors** — they don't affect runtime. `tsconfig.json` has `strict: false` and `skipLibCheck: true`; `tsc` is not part of CI. Lint (Biome) is the gate, and many `suspicious` rules are deliberately off (see `biome.json`) to tolerate the loose output.\n- **`feature()` is always `false`** — any code behind a feature flag is dead code in this build.\n- **React Compiler output** — Components have memoization boilerplate (`const $ = _c(N)`). This is normal.\n- **`bun:bundle` import** — In `src/main.tsx` and other files, `import { feature } from 'bun:bundle'` works at build time. At dev-time, the polyfill in `cli.tsx` provides it.\n- **`src/` path alias** — tsconfig maps `src/*` to `./src/*`. Imports like `import { ... } from 'src/utils/...'` are valid.",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_833a1bdfbe534c958276260a",
+        "name": "Bash",
+        "input": {
+          "command": "head -50 test/e2e/goal-gate.e2e.test.ts",
+          "description": "Read goal-gate e2e test"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_1c4176fb99b44f499312ce77",
+        "name": "Bash",
+        "input": {
+          "command": "head -50 test/e2e/version-2.1.101.e2e.test.ts",
+          "description": "Read version e2e test"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_833a1bdfbe534c958276260a",
+        "type": "tool_result",
+        "content": "import { describe, expect, test } from \"bun:test\";\nimport { execSync, execFileSync } from \"node:child_process\";\nimport { mkdtempSync, rmSync, writeFileSync, mkdirSync } from \"node:fs\";\nimport { tmpdir } from \"node:os\";\nimport { join } from \"node:path\";\nimport { REPO_ROOT } from \"./helpers\";\n\n/**\n * /goal trusted/hooks gate e2e (tmux-based). Verifies the G1 gate (mirrors\n * official `z4o`): /goal must refuse to set a goal in an untrusted workspace\n * or when hooks are restricted, returning the official verbatim message and\n * NOT mutating goal state. Covers the REPL path (the gate is a command-level\n * check exercised via the interactive prompt).\n *\n * Gated out of CI (needs tmux + model creds).\n */\n\nconst BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;\nconst SESSION = \"occ-goal-gate-test\";\n\nfunction tmux(args: string[]): string {\n  try {\n    return execFileSync(\"tmux\", args, { encoding: \"utf8\", timeout: 10_000 });\n  } catch {\n    return \"\";\n  }\n}\nfunction startRepl(home: string) {\n  execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);\n  const envStr = Object.entries(process.env)\n    .filter(([k]) => k.startsWith(\"ANTHROPIC\"))\n    .map(([k, v]) => `${k}='${v}'`)\n    .join(\" \");\n  execSync(\n    `tmux new-session -d -s ${SESSION} -x 200 -y 50 \"env HOME='${home}' ${envStr} ${BIN}\"`,\n    { timeout: 5_000 },\n  );\n}\nfunction killRepl() {\n  execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);\n}\nfunction sendKeys(keys: string) {\n  tmux([\"send-keys\", \"-t\", SESSION, ...keys.split(\" \")]);\n}\n/** Send a literal text string (with spaces) as a single tmux arg, then Enter. */\nfunction sendLine(text: string) {\n  tmux([\"send-keys\", \"-t\", SESSION, text, \"Enter\"]);\n}\nfunction capturePane(): string {\n  return tmux([\"capture-pane\", \"-t\", SESSION, \"-p\", \"-S\", \"-\"]);",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_1c4176fb99b44f499312ce77",
+        "type": "tool_result",
+        "content": "import { describe, expect, test } from \"bun:test\";\nimport { $ } from \"bun\";\nimport { REPO_ROOT } from \"./helpers\";\n\n/**\n * claude-code 2.1.101 e2e (Docker): OS CA store trusted by default;\n * CLAUDE_CODE_CERT_STORE selects bundled/system.\n */\ndescribe(\"2.1.101 CA cert stores (e2e)\", () => {\n  test(\"default is bundled + system\", async () => {\n    const script = `\ndelete process.env.CLAUDE_CODE_CERT_STORE;\nconst { resolveCertStores, DEFAULT_CERT_STORES } = await import(\"${REPO_ROOT}/src/utils/caCerts.ts\");\nconsole.log(JSON.stringify({ def: DEFAULT_CERT_STORES, resolved: resolveCertStores() }));\n`;\n    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());\n    expect(out.def).toEqual([\"bundled\", \"system\"]);\n    expect(out.resolved).toEqual([\"bundled\", \"system\"]);\n  });\n\n  test(\"CLAUDE_CODE_CERT_STORE=bundled → bundled only\", async () => {\n    const script = `\nprocess.env.CLAUDE_CODE_CERT_STORE = \"bundled\";\nconst { resolveCertStores } = await import(\"${REPO_ROOT}/src/utils/caCerts.ts\");\nconsole.log(JSON.stringify(resolveCertStores()));\n`;\n    expect(JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim())).toEqual([\"bundled\"]);\n  });\n\n  test(\"CLAUDE_CODE_CERT_STORE=system → system only\", async () => {\n    const script = `\nprocess.env.CLAUDE_CODE_CERT_STORE = \"system\";\nconst { resolveCertStores } = await import(\"${REPO_ROOT}/src/utils/caCerts.ts\");\nconsole.log(JSON.stringify(resolveCertStores()));\n`;\n    expect(JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim())).toEqual([\"system\"]);\n  });\n});\n\n<system-reminder>\nThe TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Let me check if the e2e tests can run without docker/tmux/creds."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_79eb7b114b484ac5a23a2348",
+        "name": "Bash",
+        "input": {
+          "command": "timeout 30 bun test test/e2e/version-2.1.101.e2e.test.ts 2>&1 | tail -20",
+          "description": "Run one e2e test",
+          "timeout": 40000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_79eb7b114b484ac5a23a2348",
+        "type": "tool_result",
+        "content": "bun test v1.3.14 (0d9b296a)\n\n 3 pass\n 0 fail\n 4 expect() calls\nRan 3 tests across 1 file. [269.00ms]",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_ab5fbe2dc5de41bbbe156433",
+        "name": "Bash",
+        "input": {
+          "command": "cd test/e2e && grep -l \"tmux\" *.test.ts 2>/dev/null | head -30",
+          "description": "Find tmux-based tests"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_3b76b541b50544859031686e",
+        "name": "Bash",
+        "input": {
+          "command": "cd test/e2e && grep -L \"tmux\" *.test.ts 2>/dev/null | head -30",
+          "description": "Find non-tmux tests"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_ab5fbe2dc5de41bbbe156433",
+        "type": "tool_result",
+        "content": "goal-gate.e2e.test.ts\nrepl-interactive.e2e.test.ts\ntrust-gate.e2e.test.ts\nversion-2.1.200-fconfig-settings-env.e2e.test.ts",
+        "is_error": false
+      },
+      {
+        "type": "tool_result",
+        "content": "Exit code 1\n/bin/bash: line 1: cd: test/e2e: No such file or directory",
+        "is_error": true,
+        "tool_use_id": "toolu_3b76b541b50544859031686e"
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_9ae51e44b7a443808e285cf5",
+        "name": "Bash",
+        "input": {
+          "command": "grep -L \"tmux\" test/e2e/*.test.ts 2>/dev/null",
+          "description": "Find non-tmux tests"
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_result",
+        "content": "Exit code 2",
+        "is_error": true,
+        "tool_use_id": "toolu_9ae51e44b7a443808e285cf5"
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_7bf18a3b18b2464ea3cf9df1",
+        "name": "Bash",
+        "input": {
+          "command": "for f in test/e2e/*.test.ts; do if ! grep -q \"tmux\" \"$f\"; then echo \"$f\"; fi; done | head -60",
+          "description": "Find non-tmux tests"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_7bf18a3b18b2464ea3cf9df1",
+        "type": "tool_result",
+        "content": "grep: test/e2e/*.test.ts: No such file or directory\ntest/e2e/*.test.ts",
+        "is_error": false
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_4a824cab5b894215ac98a226",
+        "name": "Bash",
+        "input": {
+          "command": "for f in test/e2e/*.test.ts; do if ! grep -q \"tmux\" \"$f\"; then echo \"$f\"; fi; done",
+          "description": "Find non-tmux tests"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_4a824cab5b894215ac98a226",
+        "type": "tool_result",
+        "content": "grep: test/e2e/*.test.ts: No such file or directory\ntest/e2e/*.test.ts",
+        "is_error": false
+      }
+    ]
+  ],
+  "output": [
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_c1dc626b-f2a4-45c3-964d-eb1089425001",
+          "type": "message",
+          "role": "assistant",
+          "model": "glm-5.2",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 24655,
+            "output_tokens": 0
+          }
+        }
+      },
+      "ttftMs": 1149
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "thinking",
+          "thinking": "",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "Hmm"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": ", the"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " glob isn"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "'t working"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " as expected"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": ". Let"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " me use"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " a different"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " approach"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "signature_delta",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "uuid": "UUID-13",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:10:29.672Z",
+      "message": {
+        "id": "msg_c1dc626b-f2a4-45c3-964d-eb1089425001",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "Hmm, the glob isn't working as expected. Let me use a different approach.",
+            "signature": ""
+          }
+        ],
+        "stop_reason": null,
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 24655,
+          "output_tokens": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_57e33c67034446fe86320daa",
+          "name": "Bash",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"command\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"ls"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " test/e"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "2e"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "/*."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "test.ts"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " | while"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " read"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " f;"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " do if"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " ! grep"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -q"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \\\"tm"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ux\\\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \\\"$f"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\";"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " then echo"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \\\"$f"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\"; fi"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "; done"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"description\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"Find"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " non-tm"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "ux tests"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      }
+    },
+    {
+      "uuid": "UUID-44",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:10:30.365Z",
+      "message": {
+        "id": "msg_c1dc626b-f2a4-45c3-964d-eb1089425001",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_57e33c67034446fe86320daa",
+            "name": "Bash",
+            "input": {
+              "command": "ls test/e2e/*.test.ts | while read f; do if ! grep -q \"tmux\" \"$f\"; then echo \"$f\"; fi; done",
+              "description": "Find non-tmux tests"
+            }
+          }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 130,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 32256,
+          "output_tokens": 72,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null
+        },
+        "usage": {
+          "input_tokens": 130,
+          "output_tokens": 72,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 32256,
+          "prompt_tokens_details": {
+            "cached_tokens": 32256
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_stop"
+      }
+    }
+  ]
+}

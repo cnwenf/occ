@@ -39,7 +39,8 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       // will show an error if users try to override these keys.
       'ctrl+c': 'app:interrupt',
       'ctrl+d': 'app:exit',
-      'ctrl+l': 'app:redraw',
+      // ctrl+l is owned by Chat context (chat:clearInput) — removed from
+      // Global to avoid app:redraw shadowing clearInput when prompt is focused.
       'ctrl+t': 'app:toggleTodos',
       'ctrl+o': 'app:toggleTranscript',
       ...(feature('KAIROS') || feature('KAIROS_BRIEF')
@@ -71,6 +72,14 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'meta+o': 'chat:fastMode',
       'meta+t': 'chat:thinkingToggle',
       enter: 'chat:submit',
+      // Ctrl+L clears the whole input buffer (official 2.1.200 clearInput).
+      // Overrides Global ctrl+l=app:redraw while the prompt is focused.
+      'ctrl+l': 'chat:clearInput',
+      // Ctrl+J inserts a newline (alternative to Shift+Enter / Meta+Enter).
+      'ctrl+j': 'chat:newline',
+      // Ctrl+K / Cmd+K clears the terminal screen + scrollback.
+      'ctrl+k': 'chat:clearScreen',
+      'cmd+k': 'chat:clearScreen',
       up: 'history:previous',
       down: 'history:next',
       // Editing shortcuts (defined here, migration in progress)
@@ -199,6 +208,10 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       pagedown: 'scroll:pageDown',
       wheelup: 'scroll:lineUp',
       wheeldown: 'scroll:lineDown',
+      'ctrl+u': 'scroll:halfPageUp',
+      'ctrl+d': 'scroll:halfPageDown',
+      'ctrl+b': 'scroll:fullPageUp',
+      'ctrl+f': 'scroll:fullPageDown',
       'ctrl+home': 'scroll:top',
       'ctrl+end': 'scroll:bottom',
       // Selection copy. ctrl+shift+c is standard terminal copy.

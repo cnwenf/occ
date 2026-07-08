@@ -232,18 +232,26 @@ export function useTextInput({
     return Cursor.fromText(newText, columns, newOffset)
   }
 
+  // ctrl+b/d/f/u: in fullscreen mode these are yielded to the Scroll
+  // keybinding context (scroll:fullPageUp / halfPageDown / fullPageDown /
+  // halfPageUp) — same NOOP-then-fall-through pattern as pageUp/pageDown
+  // below. In non-fullscreen (native scrollback) the Scroll context is
+  // inactive, so they keep their readline behavior (cursor move / delete /
+  // kill-to-line-start).
+  // ctrl+k is removed entirely: chat:clearScreen (Chat context) owns it in
+  // all modes; keeping killToLineEnd here would double-fire with clearScreen.
+  const fullscreen = isFullscreenEnvEnabled()
   const handleCtrl = mapInput([
     ['a', () => cursor.startOfLine()],
-    ['b', () => cursor.left()],
+    ['b', fullscreen ? NOOP_HANDLER : () => cursor.left()],
     ['c', handleCtrlC],
-    ['d', handleCtrlD],
+    ['d', fullscreen ? NOOP_HANDLER : handleCtrlD],
     ['e', () => cursor.endOfLine()],
-    ['f', () => cursor.right()],
+    ['f', fullscreen ? NOOP_HANDLER : () => cursor.right()],
     ['h', () => cursor.deleteTokenBefore() ?? cursor.backspace()],
-    ['k', killToLineEnd],
     ['n', () => downOrHistoryDown()],
     ['p', () => upOrHistoryUp()],
-    ['u', killToLineStart],
+    ['u', fullscreen ? NOOP_HANDLER : killToLineStart],
     ['w', killWordBefore],
     ['y', yank],
   ])

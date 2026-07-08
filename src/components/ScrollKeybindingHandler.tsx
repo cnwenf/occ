@@ -526,10 +526,11 @@ export function ScrollKeybindingHandler({
     isActive
   });
 
-  // scroll:halfPage*/fullPage* have no default key bindings — ctrl+u/d/b/f
-  // all have real owners in normal mode (kill-line/exit/task:background/
-  // kill-agents). Transcript mode gets them via the isModal raw useInput
-  // below. These handlers stay for custom rebinds only.
+  // scroll:halfPage*/fullPage* are bound to ctrl+u/d/b/f in the Scroll context
+  // (defaultBindings.ts). In normal fullscreen mode, useTextInput NOOPs those
+  // ctrl keys so they fall through to these handlers. In transcript (modal)
+  // mode, PromptInput isn't mounted so there's no conflict — the isModal raw
+  // useInput below also maps them via modalPagerAction.
   useKeybindings({
     'scroll:halfPageUp': () => {
       const s_6 = scrollRef.current;

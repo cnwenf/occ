@@ -69,6 +69,7 @@ import {
   getTotalCacheReadInputTokens,
   getTotalInputTokens,
   getTotalOutputTokens,
+  isSkipProtectedPathsEnabled,
 } from '../../bootstrap/state.js'
 import { getFeatureValue_CACHED_WITH_REFRESH } from '../../services/analytics/growthbook.js'
 import {
@@ -1164,10 +1165,15 @@ export async function checkRuleBasedPermissions(
   // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
   // bypass-immune — they must prompt even when a PreToolUse hook returned
   // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
+  // --dangerously-skip-protected-paths: auto-allow protected-path writes
+  // instead of prompting. Return null (no objection) so the caller proceeds.
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
+    if (isSkipProtectedPathsEnabled()) {
+      return null
+    }
     return toolPermissionResult
   }
 
@@ -1272,10 +1278,24 @@ async function hasPermissionsToUseToolInner(
   // 1g. Safety checks (e.g. .git/, .claude/, .vscode/, shell configs) are
   // bypass-immune — they must prompt even in bypassPermissions mode.
   // checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these paths.
+  // --dangerously-skip-protected-paths: auto-allow protected-path writes
+  // instead of prompting. This applies in ALL modes (default, acceptEdits,
+  // auto, plan, bypass) so the flag works independently of the active mode.
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
+    if (isSkipProtectedPathsEnabled()) {
+      return {
+        behavior: 'allow',
+        updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),
+        decisionReason: {
+          type: 'other' as const,
+          reason:
+            'Protected-path write auto-allowed by --dangerously-skip-protected-paths',
+        },
+      }
+    }
     return toolPermissionResult
   }
 

@@ -1269,6 +1269,17 @@ export function getSessionBypassPermissionsMode(): boolean {
   return STATE.sessionBypassPermissionsMode
 }
 
+/**
+ * --dangerously-skip-protected-paths: bypass write permission prompts for
+ * protected paths (.claude/, .git/, .vscode/, shell configs). Stored in the
+ * CLAUDE_CODE_SKIP_PROTECTED_PATHS env var so child processes (ssh, subagents)
+ * inherit the bypass. permissions.ts step 1g checks this to auto-allow
+ * safetyCheck 'ask' results (protected-path writes) instead of prompting.
+ */
+export function isSkipProtectedPathsEnabled(): boolean {
+  return process.env.CLAUDE_CODE_SKIP_PROTECTED_PATHS === '1'
+}
+
 export function setScheduledTasksEnabled(enabled: boolean): void {
   STATE.scheduledTasksEnabled = enabled
 }

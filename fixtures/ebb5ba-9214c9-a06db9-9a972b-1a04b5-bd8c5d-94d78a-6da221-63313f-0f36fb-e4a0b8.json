@@ -1,0 +1,588 @@
+{
+  "input": [
+    [
+      {
+        "type": "text",
+        "text": "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>all tests pass</command-args>\n"
+      },
+      {
+        "type": "text",
+        "text": "<local-command-stdout>Goal set: all tests pass</local-command-stdout>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Goal acknowledged: all tests pass. Let me start by examining the project and running the tests.",
+        "citations": []
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_79f7eba4df0b4d8aa179835e",
+        "name": "Bash",
+        "input": {
+          "command": "ls -la",
+          "description": "List project files"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f72590e1404c42f09fa2bb7f",
+        "name": "Bash",
+        "input": {
+          "command": "cat package.json 2>/dev/null | head -50",
+          "description": "Read package.json"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_f72590e1404c42f09fa2bb7f",
+        "type": "tool_result",
+        "content": "{\n    \"name\": \"@cnwenf/occ\",\n    \"version\": \"2.1.200\",\n    \"license\": \"MIT\",\n    \"type\": \"module\",\n    \"bin\": {\n        \"occ\": \"dist/cli.js\"\n    },\n    \"workspaces\": [\n        \"packages/*\",\n        \"packages/@ant/*\"\n    ],\n    \"files\": [\n        \"dist\"\n    ],\n    \"publishConfig\": {\n        \"access\": \"public\"\n    },\n    \"scripts\": {\n        \"build\": \"bun run scripts/build.ts\",\n        \"dev\": \"bun run src/entrypoints/cli.tsx\",\n        \"prepublishOnly\": \"bun run build\",\n        \"lint\": \"biome lint src/\",\n        \"lint:fix\": \"biome lint --fix src/\",\n        \"format\": \"biome format --write src/\",\n        \"prepare\": \"git config core.hooksPath .githooks\",\n        \"test\": \"bun test\",\n        \"check:unused\": \"knip-bun\",\n        \"health\": \"bun run scripts/health-check.ts\"\n    },\n    \"dependencies\": {\n        \"@alcalzone/ansi-tokenize\": \"^0.3.0\",\n        \"@ant/claude-for-chrome-mcp\": \"workspace:*\",\n        \"@ant/computer-use-input\": \"workspace:*\",\n        \"@ant/computer-use-mcp\": \"workspace:*\",\n        \"@ant/computer-use-swift\": \"workspace:*\",\n        \"@anthropic-ai/bedrock-sdk\": \"^0.26.4\",\n        \"@anthropic-ai/claude-agent-sdk\": \"^0.2.87\",\n        \"@anthropic-ai/foundry-sdk\": \"^0.2.3\",\n        \"@anthropic-ai/mcpb\": \"^2.1.2\",\n        \"@anthropic-ai/sandbox-runtime\": \"^0.0.44\",\n        \"@anthropic-ai/sdk\": \"^0.80.0\",\n        \"@anthropic-ai/vertex-sdk\": \"^0.14.4\",\n        \"@aws-sdk/client-bedrock\": \"^3.1020.0\",\n        \"@aws-sdk/client-bedrock-runtime\": \"^3.1020.0\",\n        \"@aws-sdk/client-sts\": \"^3.1020.0\",\n        \"@aws-sdk/credential-provider-node\": \"^3.972.28\",\n        \"@aws-sdk/credential-providers\": \"^3.1020.0\",\n        \"@azure/identity\": \"^4.13.1\",\n        \"@commander-js/extra-typings\": \"^14.0.0\",",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_79f7eba4df0b4d8aa179835e",
+        "type": "tool_result",
+        "content": "total 444\ndrwxr-xr-x 15 root root   4096 Jul  7 17:26 .\ndrwxr-xr-x  4 root root   4096 Jul  3 21:45 ..\n-rw-r--r--  1 root root   2075 Jul  4 22:15 biome.json\n-rw-r--r--  1 root root     34 Jul  5 10:27 bunfig.toml\n-rw-r--r--  1 root root 297889 Jul  3 21:45 bun.lock\ndrwxr-xr-x  2 root root   4096 Jul  5 10:04 .claude\n-rw-r--r--  1 root root   7875 Jul  5 11:20 CLAUDE.md\ndrwxr-xr-x  2 root root   4096 Jul  4 01:17 dist\n-rw-r--r--  1 root root     37 Jul  4 02:18 .dockerignore\ndrwxr-xr-x  9 root root   4096 Jul  4 01:18 docs\n-rw-r--r--  1 root root    244 Jul  3 21:45 .editorconfig\ndrwxr-xr-x  2 root root  16384 Jul  7 18:06 fixtures\ndrwxr-xr-x  8 root root   4096 Jul  7 17:56 .git\ndrwxr-xr-x  2 root root   4096 Jul  3 21:45 .githooks\ndrwxr-xr-x  3 root root   4096 Jul  3 21:45 .github\n-rw-r--r--  1 root root    145 Jul  4 02:18 .gitignore\n-rw-r--r--  1 root root    481 Jul  3 21:45 knip.json\n-rw-r--r--  1 root root   1063 Jul  5 11:40 LICENSE\ndrwxr-xr-x 16 root root   4096 Jul  3 22:16 node_modules\ndrwxr-xr-x 37 root root   4096 Jul  6 19:41 .occ-research\n-rw-r--r--  1 root root   5322 Jul  5 15:12 package.json\ndrwxr-xr-x  8 root root   4096 Jul  3 21:45 packages\n-rw-r--r--  1 root root   5191 Jul  5 11:40 README.md\n-rw-r--r--  1 root root   5168 Jul  5 11:40 README.zh-CN.md\n-rw-r--r--  1 root root   7985 Jul  5 11:28 RECORD.md\ndrwxr-xr-x  2 root root   4096 Jul  5 15:12 scripts\n-rw-r--r--  1 root root   2934 Jul  5 11:46 SECURITY.md\ndrwxr-xr-x 44 root root   4096 Jul  7 17:46 src\ndrwxr-xr-x  3 root root   4096 Jul  3 23:57 test\n-rw-r--r--  1 root root   1177 Jul  5 11:22 TODO.md\n-rw-r--r--  1 root root    520 Jul  3 21:45 tsconfig.json\n\n<system-reminder>\n## Auto Mode Active\n\nAuto mode is active. The user chose continuous, autonomous execution. You should:\n\n1. **Execute immediately** — Start implementing right away. Make reasonable assumptions and proceed on low-risk work.\n2. **Minimize interruptions** — Prefer making reasonable assumptions over asking questions for routine decisions.\n3. **Prefer action over planning** — Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.\n4. **Expect course corrections** — The user may provide suggestions or course corrections at any point; treat those as normal input.\n5. **Do not take overly destructive actions** — Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.\n6. **Avoid data exfiltration** — Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_09c5dbb7b0c84698af296d14",
+        "name": "Bash",
+        "input": {
+          "command": "bun test 2>&1 | tail -80",
+          "description": "Run tests and see results",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_result",
+        "content": "Exit code 144",
+        "is_error": true,
+        "tool_use_id": "toolu_09c5dbb7b0c84698af296d14"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_395a07c555aa4a86a8b08d2b",
+        "name": "Bash",
+        "input": {
+          "command": "timeout 120 bun test 2>&1 | tail -100",
+          "description": "Run tests with timeout",
+          "timeout": 180000
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_result",
+        "content": "Exit code 1",
+        "is_error": true,
+        "tool_use_id": "toolu_395a07c555aa4a86a8b08d2b"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_0877942a7347467ba89988d7",
+        "name": "Bash",
+        "input": {
+          "command": "timeout 120 bun test 2>&1 | head -200; echo \"---EXIT: $?\"",
+          "description": "Run tests, capture head of output",
+          "timeout": 180000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_0877942a7347467ba89988d7",
+        "type": "tool_result",
+        "content": "bun test v1.3.14 (0d9b296a)\ncan't find pane: occ-repl-test\n\ntest/e2e/repl-interactive.e2e.test.ts:\n87 |       // At least one of the mode strings should differ from initial\n88 |       const modes = [\"default\", \"acceptEdits\", \"plan\", \"auto\", \"bypass\"]\n89 |       const found = [after1, after2, after3].some(pane =>\n90 |         modes.some(m => pane.toLowerCase().includes(m.toLowerCase()) && !before.toLowerCase().includes(m.toLowerCase())),\n91 |       )\n92 |       expect(found).toBe(true)\n                         ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> ([CWD]/test/e2e/repl-interactive.e2e.test.ts:92:21)\n(fail) REPL interactive (tmux e2e) > Shift+Tab cycles through permission modes [21697.67ms]\ncan't find pane: occ-repl-test\n(fail) REPL interactive (tmux e2e) > Shift+Tab shows the auto-mode opt-in dialog [30000.45ms]\n  ^ this test timed out after 30000ms.\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\n\n# Unhandled error between tests\n-------------------------------\n117 |           expect(pane).toContain(\"No, don't ask again\")\n118 |           return\n119 |         }\n120 |       }\n121 |       // If the dialog never appeared, fail.\n122 |       expect(false).toBe(true)\n                          ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> ([CWD]/test/e2e/repl-interactive.e2e.test.ts:122:21)\n-------------------------------\n\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\ncan't find pane: occ-repl-test\n134 |       tmux([\"send-keys\", \"-t\", SESSION, \"/goal\", \"Enter\"])\n135 |       await waitForText(\"Goal\", 5_000)\n136 | \n137 |       // Panel should be visible\n138 |       const panel = capturePane()\n139 |       expect(panel.toLowerCase()).toMatch(/goal|no goal set/i)\n  Terminated\n---EXIT:",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_1747cd9624894995a5bf6e4f",
+        "name": "Bash",
+        "input": {
+          "command": "find test -type f -name \"*.test.ts\" 2>/dev/null | head -30; echo \"---\"; find src -type f -name \"*.test.ts\" 2>/dev/null | head -30",
+          "description": "Find test files"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_1747cd9624894995a5bf6e4f",
+        "type": "tool_result",
+        "content": "test/e2e/version-2.1.139-mcp-16mb-cap.e2e.test.ts\ntest/e2e/version-2.1.169-commands-batch.e2e.test.ts\ntest/e2e/repl-interactive.e2e.test.ts\ntest/e2e/version-hooks-exec.e2e.test.ts\ntest/e2e/version-2.1.118-vim-visual.e2e.test.ts\ntest/e2e/version-2.1.109.e2e.test.ts\ntest/e2e/version-2.1.160-fast-mode-default.e2e.test.ts\ntest/e2e/version-2.1.107.e2e.test.ts\ntest/e2e/version-2.1.94-bedrock-mantle-flags.e2e.test.ts\ntest/e2e/version-2.1.144-commands-rename.e2e.test.ts\ntest/e2e/version-2.1.136.e2e.test.ts\ntest/e2e/version-2.1.113.e2e.test.ts\ntest/e2e/version-2.1.97.e2e.test.ts\ntest/e2e/version-2.1.162-lsp-workspace-symbol-query.e2e.test.ts\ntest/e2e/version-2.1.199-skill-stacked.e2e.test.ts\ntest/e2e/commands-behavior.e2e.test.ts\ntest/e2e/version-2.1.199-api.e2e.test.ts\ntest/e2e/version-2.1.116.e2e.test.ts\ntest/e2e/version-2.1.118-fork.e2e.test.ts\ntest/e2e/version-2.1.94.e2e.test.ts\ntest/e2e/version-2.1.200-tools-stream.e2e.test.ts\ntest/e2e/mcp-connection-nonblocking.e2e.test.ts\ntest/e2e/version-2.1.197-models.e2e.test.ts\ntest/e2e/version-2.1.121.e2e.test.ts\ntest/e2e/version-2.1.140.e2e.test.ts\ntest/e2e/version-2.1.110-commands.e2e.test.ts\ntest/e2e/version-2.1.91.e2e.test.ts\ntest/e2e/version-2.1.200-cli-subcommands.e2e.test.ts\ntest/e2e/version-2.1.200-uirest.e2e.test.ts\ntest/e2e/version-2.1.129-settings.e2e.test.ts\n---\nsrc/tools/PowerShellTool/__tests__/readOnlyValidation.test.ts\nsrc/tools/WebFetchTool/__tests__/stripStyleScript.test.ts\nsrc/tools/BashTool/__tests__/clampTimeout.test.ts\nsrc/entrypoints/__tests__/sandbox-deniedDomains.test.ts\nsrc/components/Spinner/__tests__/thinkingHints.test.ts\nsrc/services/mcp/__tests__/maxResultSizeChars.test.ts\nsrc/services/mcp/__tests__/waitForMcpConnectionBatch.test.ts\nsrc/services/mcp/__tests__/alwaysLoad.test.ts\nsrc/services/compact/__tests__/precompact-block.test.ts\nsrc/services/remoteManagedSettings/__tests__/forceRemoteSettingsRefresh.test.ts\nsrc/services/api/__tests__/bedrock-auth.test.ts\nsrc/services/api/__tests__/prompt-cache-ttl.test.ts\nsrc/commands/goal/__tests__/goal.test.ts\nsrc/commands/rewind/__tests__/undo-alias.test.ts\nsrc/commands/export/__tests__/export-path.test.ts\nsrc/commands/__tests__/removed-commands.test.ts\nsrc/utils/settings/__tests__/defaultMode-auto.test.ts\nsrc/utils/settings/__tests__/autoScrollEnabled.test.ts\nsrc/utils/settings/__tests__/cleanupPeriodDays.test.ts\nsrc/utils/permissions/__tests__/yoloClassifier.test.ts\nsrc/utils/permissions/__tests__/autoModeState.test.ts\nsrc/utils/permissions/__tests__/filesystem.test.ts\nsrc/utils/hooks/__tests__/hookHelpers.test.ts\nsrc/utils/plugins/__tests__/cacheMarketplaceFromGit.test.ts\nsrc/utils/deepLink/__tests__/parseDeepLink.test.ts\nsrc/utils/__tests__/hide-cwd-prurl.test.ts\nsrc/utils/__tests__/update-url.test.ts\nsrc/utils/__tests__/trust.test.ts\nsrc/utils/__tests__/ai-agent-effort.test.ts\nsrc/utils/__tests__/cleanup-misc-dirs.test.ts",
+        "is_error": false
+      }
+    ]
+  ],
+  "output": [
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_fdea9e7d-c643-4ada-b056-083a1b0af626",
+          "type": "message",
+          "role": "assistant",
+          "model": "glm-5.2",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 24594,
+            "output_tokens": 0
+          }
+        }
+      },
+      "ttftMs": 1206
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_2ef451463b344554b986eab9",
+          "name": "Bash",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"command\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"find"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " src"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -type"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " f -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "name \\\"*."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ".ts\\\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " 2"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ">/dev"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "/null"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " | wc"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -l"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "; find"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " test -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "type f"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -name"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \\\"*.test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ".ts"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " 2>/"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "dev/null"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " | wc"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -l"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"description\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"Count test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " files\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "}"
+        }
+      }
+    },
+    {
+      "uuid": "UUID-33",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:10:30.490Z",
+      "message": {
+        "id": "msg_fdea9e7d-c643-4ada-b056-083a1b0af626",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_2ef451463b344554b986eab9",
+            "name": "Bash",
+            "input": {
+              "command": "find src -type f -name \"*.test.ts\" 2>/dev/null | wc -l; find test -type f -name \"*.test.ts\" 2>/dev/null | wc -l",
+              "description": "Count test files"
+            }
+          }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 1115,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 25984,
+          "output_tokens": 60,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null
+        },
+        "usage": {
+          "input_tokens": 1115,
+          "output_tokens": 60,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 25984,
+          "prompt_tokens_details": {
+            "cached_tokens": 25984
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_stop"
+      }
+    }
+  ]
+}

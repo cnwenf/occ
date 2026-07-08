@@ -165,9 +165,22 @@ function coerceTaskCreateInput(
     n.subject = truncateForSubject(n.description as string)
     repairs.push('backfill_subject')
   }
-  // If we now have both required fields, strip unwanted keys + drop invalid
-  // optional fields so the repaired object passes strictObject.
-  if (isNonEmptyString(n.subject) && isNonEmptyString(n.description)) {
+  // H13 (input-repair): if both required fields are still missing after
+  // alias-mapping and cross-backfill (e.g. an empty payload or one carrying
+  // only metadata), default-fill so the call succeeds instead of surfacing an
+  // InputValidationError. `subject` defaults to "Untitled task"; `description`
+  // defaults to "" (a valid z.string()). Mirrors the binary's last-resort
+  // default for an otherwise-empty task payload.
+  if (!isNonEmptyString(n.subject) && !isNonEmptyString(n.description)) {
+    n.subject = 'Untitled task'
+    n.description = ''
+    repairs.push('default_subject', 'default_description')
+  }
+  // If we now have both required fields (possibly default-filled, where
+  // description may be ""), strip unwanted keys + drop invalid optional
+  // fields so the repaired object passes strictObject. Use a string check
+  // (not isNonEmptyString) so the empty-string default still triggers strip.
+  if (typeof n.subject === 'string' && typeof n.description === 'string') {
     for (const key of Object.keys(n)) {
       if (!ALLOWED_KEYS.has(key)) {
         delete n[key]
@@ -189,8 +202,11 @@ function coerceTaskCreateInput(
 
 /**
  * Steering message appended to the InputValidationError when the input matches
- * a known unrecoverable misuse. Returns null when the input isn't a recognized
- * misuse (the raw Zod error is enough).
+ * a known unrecoverable misuse (TodoWrite-style `tasks`/`todos` array, Agent
+ * `prompt`/`subagent_type`). For any other malformed plain-object input that
+ * coerceInput could not repair (e.g. a type mismatch), returns a concise
+ * inputSchema reminder so the model can self-correct on retry. Returns null
+ * only when the input is not a plain object.
  */
 function taskCreateValidationErrorSteer(raw: unknown): string | null {
   if (!isPlainObject(raw)) return null
@@ -204,7 +220,11 @@ function taskCreateValidationErrorSteer(raw: unknown): string | null {
   ) {
     return 'This call used Agent-tool parameters (`prompt`/`subagent_type`). TaskCreate adds an item to the task list and takes `subject` and `description` string parameters. To delegate work to a subagent, use the Agent tool instead.'
   }
-  return null
+  // H13 (input-repair): for any other malformed plain-object input that
+  // coerceInput could not repair (e.g. a type mismatch on subject/description),
+  // surface the expected inputSchema so the model can self-correct on retry
+  // instead of only seeing the generic Zod type error.
+  return 'TaskCreate inputSchema — `subject` (string, required): a brief title; `description` (string, required): what needs to be done; `activeForm` (string, optional): present-continuous spinner label; `metadata` (object, optional): arbitrary metadata. Pass these as top-level parameters and call TaskCreate once per task.'
 }
 
 export const TaskCreateTool = buildTool({

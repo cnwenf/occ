@@ -65,6 +65,23 @@ export function isBareMode(): boolean {
 }
 
 /**
+ * --safe-mode / CLAUDE_CODE_SAFE_MODE — disables all plugins, bundled skills,
+ * and hook execution for troubleshooting ("is a plugin/hook causing my
+ * problem?"). Prints restart-without-safe-mode guidance on startup.
+ *
+ * Checks argv directly (in addition to the env var) because several gates
+ * run before main.tsx's action handler sets CLAUDE_CODE_SAFE_MODE=1 from
+ * --safe-mode — notably hooks.ts executeHooks() and pluginLoader.ts which
+ * fire during setup before the action handler runs.
+ */
+export function isSafeMode(): boolean {
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_SAFE_MODE) ||
+    process.argv.includes('--safe-mode')
+  )
+}
+
+/**
  * Parses an array of environment variable strings into a key-value object
  * @param envVars Array of strings in KEY=VALUE format
  * @returns Object with key-value pairs

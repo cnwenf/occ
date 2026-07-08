@@ -3158,6 +3158,13 @@ async function assemblePluginLoadResult(
     errors: PluginError[]
   }>,
 ): Promise<PluginLoadResult> {
+  // --safe-mode / CLAUDE_CODE_SAFE_MODE: skip all plugin loading. Returns an
+  // empty result so getPluginCommands(), loadPluginAgents, and MCP/LSP config
+  // see zero plugins. Plugin hook execution is also gated in hooks.ts, so
+  // plugin hooks never run either.
+  if (isEnvTruthy(process.env.CLAUDE_CODE_SAFE_MODE)) {
+    return { enabled: [], disabled: [], errors: [] }
+  }
   // Load marketplace plugins and session-only plugins in parallel.
   // getInlinePlugins() is a synchronous state read with no dependency on
   // marketplace loading, so these two sources can be fetched concurrently.

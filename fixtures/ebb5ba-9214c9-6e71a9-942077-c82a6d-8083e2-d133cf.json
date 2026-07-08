@@ -1,0 +1,1006 @@
+{
+  "input": [
+    [
+      {
+        "type": "text",
+        "text": "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>all tests pass</command-args>\n"
+      },
+      {
+        "type": "text",
+        "text": "<local-command-stdout>Goal set: all tests pass</local-command-stdout>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Goal acknowledged: all tests pass. Let me start by examining the project and running the tests.",
+        "citations": []
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_79f7eba4df0b4d8aa179835e",
+        "name": "Bash",
+        "input": {
+          "command": "ls -la",
+          "description": "List project files"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f72590e1404c42f09fa2bb7f",
+        "name": "Bash",
+        "input": {
+          "command": "cat package.json 2>/dev/null | head -50",
+          "description": "Read package.json"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_f72590e1404c42f09fa2bb7f",
+        "type": "tool_result",
+        "content": "{\n    \"name\": \"@cnwenf/occ\",\n    \"version\": \"2.1.200\",\n    \"license\": \"MIT\",\n    \"type\": \"module\",\n    \"bin\": {\n        \"occ\": \"dist/cli.js\"\n    },\n    \"workspaces\": [\n        \"packages/*\",\n        \"packages/@ant/*\"\n    ],\n    \"files\": [\n        \"dist\"\n    ],\n    \"publishConfig\": {\n        \"access\": \"public\"\n    },\n    \"scripts\": {\n        \"build\": \"bun run scripts/build.ts\",\n        \"dev\": \"bun run src/entrypoints/cli.tsx\",\n        \"prepublishOnly\": \"bun run build\",\n        \"lint\": \"biome lint src/\",\n        \"lint:fix\": \"biome lint --fix src/\",\n        \"format\": \"biome format --write src/\",\n        \"prepare\": \"git config core.hooksPath .githooks\",\n        \"test\": \"bun test\",\n        \"check:unused\": \"knip-bun\",\n        \"health\": \"bun run scripts/health-check.ts\"\n    },\n    \"dependencies\": {\n        \"@alcalzone/ansi-tokenize\": \"^0.3.0\",\n        \"@ant/claude-for-chrome-mcp\": \"workspace:*\",\n        \"@ant/computer-use-input\": \"workspace:*\",\n        \"@ant/computer-use-mcp\": \"workspace:*\",\n        \"@ant/computer-use-swift\": \"workspace:*\",\n        \"@anthropic-ai/bedrock-sdk\": \"^0.26.4\",\n        \"@anthropic-ai/claude-agent-sdk\": \"^0.2.87\",\n        \"@anthropic-ai/foundry-sdk\": \"^0.2.3\",\n        \"@anthropic-ai/mcpb\": \"^2.1.2\",\n        \"@anthropic-ai/sandbox-runtime\": \"^0.0.44\",\n        \"@anthropic-ai/sdk\": \"^0.80.0\",\n        \"@anthropic-ai/vertex-sdk\": \"^0.14.4\",\n        \"@aws-sdk/client-bedrock\": \"^3.1020.0\",\n        \"@aws-sdk/client-bedrock-runtime\": \"^3.1020.0\",\n        \"@aws-sdk/client-sts\": \"^3.1020.0\",\n        \"@aws-sdk/credential-provider-node\": \"^3.972.28\",\n        \"@aws-sdk/credential-providers\": \"^3.1020.0\",\n        \"@azure/identity\": \"^4.13.1\",\n        \"@commander-js/extra-typings\": \"^14.0.0\",",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_79f7eba4df0b4d8aa179835e",
+        "type": "tool_result",
+        "content": "total 440\ndrwxr-xr-x 15 root root   4096 Jul  7 17:26 .\ndrwxr-xr-x  4 root root   4096 Jul  3 21:45 ..\n-rw-r--r--  1 root root   2075 Jul  4 22:15 biome.json\n-rw-r--r--  1 root root     34 Jul  5 10:27 bunfig.toml\n-rw-r--r--  1 root root 297889 Jul  3 21:45 bun.lock\ndrwxr-xr-x  2 root root   4096 Jul  5 10:04 .claude\n-rw-r--r--  1 root root   7875 Jul  5 11:20 CLAUDE.md\ndrwxr-xr-x  2 root root   4096 Jul  4 01:17 dist\n-rw-r--r--  1 root root     37 Jul  4 02:18 .dockerignore\ndrwxr-xr-x  9 root root   4096 Jul  4 01:18 docs\n-rw-r--r--  1 root root    244 Jul  3 21:45 .editorconfig\ndrwxr-xr-x  2 root root  12288 Jul  7 18:03 fixtures\ndrwxr-xr-x  8 root root   4096 Jul  7 17:56 .git\ndrwxr-xr-x  2 root root   4096 Jul  3 21:45 .githooks\ndrwxr-xr-x  3 root root   4096 Jul  3 21:45 .github\n-rw-r--r--  1 root root    145 Jul  4 02:18 .gitignore\n-rw-r--r--  1 root root    481 Jul  3 21:45 knip.json\n-rw-r--r--  1 root root   1063 Jul  5 11:40 LICENSE\ndrwxr-xr-x 16 root root   4096 Jul  3 22:16 node_modules\ndrwxr-xr-x 37 root root   4096 Jul  6 19:41 .occ-research\n-rw-r--r--  1 root root   5322 Jul  5 15:12 package.json\ndrwxr-xr-x  8 root root   4096 Jul  3 21:45 packages\n-rw-r--r--  1 root root   5191 Jul  5 11:40 README.md\n-rw-r--r--  1 root root   5168 Jul  5 11:40 README.zh-CN.md\n-rw-r--r--  1 root root   7985 Jul  5 11:28 RECORD.md\ndrwxr-xr-x  2 root root   4096 Jul  5 15:12 scripts\n-rw-r--r--  1 root root   2934 Jul  5 11:46 SECURITY.md\ndrwxr-xr-x 44 root root   4096 Jul  7 17:46 src\ndrwxr-xr-x  3 root root   4096 Jul  3 23:57 test\n-rw-r--r--  1 root root   1177 Jul  5 11:22 TODO.md\n-rw-r--r--  1 root root    520 Jul  3 21:45 tsconfig.json\n\n<system-reminder>\n## Auto Mode Active\n\nAuto mode is active. The user chose continuous, autonomous execution. You should:\n\n1. **Execute immediately** — Start implementing right away. Make reasonable assumptions and proceed on low-risk work.\n2. **Minimize interruptions** — Prefer making reasonable assumptions over asking questions for routine decisions.\n3. **Prefer action over planning** — Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.\n4. **Expect course corrections** — The user may provide suggestions or course corrections at any point; treat those as normal input.\n5. **Do not take overly destructive actions** — Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.\n6. **Avoid data exfiltration** — Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_36e0a360fb404729b037ed55",
+        "name": "Bash",
+        "input": {
+          "command": "bun test 2>&1 | tail -100",
+          "description": "Run all tests",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "type": "tool_result",
+        "content": "Exit code 144",
+        "is_error": true,
+        "tool_use_id": "toolu_36e0a360fb404729b037ed55"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_25bd5799ed894979b0085b36",
+        "name": "Bash",
+        "input": {
+          "command": "ls test/ 2>/dev/null; ls src/ | head -50",
+          "description": "List test directories"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_06e0b46612394cac84320e0f",
+        "name": "Bash",
+        "input": {
+          "command": "find . -path ./node_modules -prune -o -name \"*.test.ts\" -print 2>/dev/null | head -30",
+          "description": "Find test files"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_25bd5799ed894979b0085b36",
+        "type": "tool_result",
+        "content": "e2e\nassistant\nbootstrap\nbridge\nbuddy\ncli\ncommands\ncommands.ts\ncomponents\nconstants\ncontext\ncontext.ts\ncoordinator\ncostHook.ts\ncost-tracker.ts\ndaemon\ndialogLaunchers.tsx\nentrypoints\nenvironment-runner\nhistory.ts\nhooks\nink\nink.ts\ninteractiveHelpers.tsx\njobs\nkeybindings\nmain.tsx\nmemdir\nmigrations\nmoreright\nnative-ts\noutputStyles\nplugins\nproactive\nprojectOnboardingState.ts\nquery\nQueryEngine.ts\nquery.ts\nremote\nreplLauncher.tsx\nschemas\nscreens\nself-hosted-runner\nserver\nservices\nsetup.ts\nskills\nsrc\nssh\nstate\ntasks",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_06e0b46612394cac84320e0f",
+        "type": "tool_result",
+        "content": "./src/tools/PowerShellTool/__tests__/readOnlyValidation.test.ts\n./src/tools/WebFetchTool/__tests__/stripStyleScript.test.ts\n./src/tools/BashTool/__tests__/clampTimeout.test.ts\n./src/entrypoints/__tests__/sandbox-deniedDomains.test.ts\n./src/components/Spinner/__tests__/thinkingHints.test.ts\n./src/services/mcp/__tests__/maxResultSizeChars.test.ts\n./src/services/mcp/__tests__/waitForMcpConnectionBatch.test.ts\n./src/services/mcp/__tests__/alwaysLoad.test.ts\n./src/services/compact/__tests__/precompact-block.test.ts\n./src/services/remoteManagedSettings/__tests__/forceRemoteSettingsRefresh.test.ts\n./src/services/api/__tests__/bedrock-auth.test.ts\n./src/services/api/__tests__/prompt-cache-ttl.test.ts\n./src/commands/goal/__tests__/goal.test.ts\n./src/commands/rewind/__tests__/undo-alias.test.ts\n./src/commands/export/__tests__/export-path.test.ts\n./src/commands/__tests__/removed-commands.test.ts\n./src/utils/settings/__tests__/defaultMode-auto.test.ts\n./src/utils/settings/__tests__/autoScrollEnabled.test.ts\n./src/utils/settings/__tests__/cleanupPeriodDays.test.ts\n./src/utils/permissions/__tests__/yoloClassifier.test.ts\n./src/utils/permissions/__tests__/autoModeState.test.ts\n./src/utils/permissions/__tests__/filesystem.test.ts\n./src/utils/hooks/__tests__/hookHelpers.test.ts\n./src/utils/plugins/__tests__/cacheMarketplaceFromGit.test.ts\n./src/utils/deepLink/__tests__/parseDeepLink.test.ts\n./src/utils/__tests__/hide-cwd-prurl.test.ts\n./src/utils/__tests__/update-url.test.ts\n./src/utils/__tests__/trust.test.ts\n./src/utils/__tests__/ai-agent-effort.test.ts\n./src/utils/__tests__/cleanup-misc-dirs.test.ts",
+        "is_error": false
+      }
+    ]
+  ],
+  "output": [
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_ab790def-2b2a-48c9-a792-dd81d2fb0375",
+          "type": "message",
+          "role": "assistant",
+          "model": "glm-5.2",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 24594,
+            "output_tokens": 0
+          }
+        }
+      },
+      "ttftMs": 1342
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_65fc7424805c4aababada01b",
+          "name": "Bash",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"command\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"find"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " . -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "path"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " ./node"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "_modules -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "prune"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -o"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -name"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \\\"*.test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ".ts\\\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "print"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " 2>/"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "dev/null"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " | wc"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -l"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "; find"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " . -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "path"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " ./node"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "_modules -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "prune"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -o"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -name"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " \\\"*.test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ".tsx"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\" -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "print"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " 2>/"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "dev/null"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " | wc"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -l"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"description\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"Count"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " test files"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      }
+    },
+    {
+      "uuid": "UUID-42",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:08:11.368Z",
+      "message": {
+        "id": "msg_ab790def-2b2a-48c9-a792-dd81d2fb0375",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_65fc7424805c4aababada01b",
+            "name": "Bash",
+            "input": {
+              "command": "find . -path ./node_modules -prune -o -name \"*.test.ts\" -print 2>/dev/null | wc -l; find . -path ./node_modules -prune -o -name \"*.test.tsx\" -print 2>/dev/null | wc -l",
+              "description": "Count test files"
+            }
+          }
+        ],
+        "stop_reason": null,
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 24594,
+          "output_tokens": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_31f485c202bc42baba5c9af1",
+          "name": "Bash",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"command\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"cat"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " bunfig"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ".toml"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " 2>/"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "dev/null"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ";"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " echo \\\"---"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\\\"; ls"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "/e2"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "e/"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " 2"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ">/"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "dev/null"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " | head"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " -"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "20\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"description\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"Read bun"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "fig and"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " list e"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "2e"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"}"
+        }
+      }
+    },
+    {
+      "uuid": "UUID-72",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:08:12.237Z",
+      "message": {
+        "id": "msg_ab790def-2b2a-48c9-a792-dd81d2fb0375",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_31f485c202bc42baba5c9af1",
+            "name": "Bash",
+            "input": {
+              "command": "cat bunfig.toml 2>/dev/null; echo \"---\"; ls test/e2e/ 2>/dev/null | head -20",
+              "description": "Read bunfig and list e2e"
+            }
+          }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 759,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 24576,
+          "output_tokens": 130,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null
+        },
+        "usage": {
+          "input_tokens": 759,
+          "output_tokens": 130,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 24576,
+          "prompt_tokens_details": {
+            "cached_tokens": 24576
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_stop"
+      }
+    }
+  ]
+}

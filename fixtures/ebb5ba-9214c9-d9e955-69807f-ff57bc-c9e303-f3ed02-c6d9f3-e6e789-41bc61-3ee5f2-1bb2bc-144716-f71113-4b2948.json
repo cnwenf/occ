@@ -1,0 +1,1006 @@
+{
+  "input": [
+    [
+      {
+        "type": "text",
+        "text": "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>all tests pass</command-args>\n"
+      },
+      {
+        "type": "text",
+        "text": "<local-command-stdout>Goal set: all tests pass</local-command-stdout>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Goal acknowledged: all tests pass. Let me start by examining the project and running the tests.",
+        "citations": []
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_79f7eba4df0b4d8aa179835e",
+        "name": "Bash",
+        "input": {
+          "command": "ls -la",
+          "description": "List project files"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f72590e1404c42f09fa2bb7f",
+        "name": "Bash",
+        "input": {
+          "command": "cat package.json 2>/dev/null | head -50",
+          "description": "Read package.json"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_79f7eba4df0b4d8aa179835e",
+        "type": "tool_result",
+        "content": "total 432\ndrwxr-xr-x 15 root root   4096 Jul  7 17:26 .\ndrwxr-xr-x  4 root root   4096 Jul  3 21:45 ..\n-rw-r--r--  1 root root   2075 Jul  4 22:15 biome.json\n-rw-r--r--  1 root root     34 Jul  5 10:27 bunfig.toml\n-rw-r--r--  1 root root 297889 Jul  3 21:45 bun.lock\ndrwxr-xr-x  2 root root   4096 Jul  5 10:04 .claude\n-rw-r--r--  1 root root   7875 Jul  5 11:20 CLAUDE.md\ndrwxr-xr-x  2 root root   4096 Jul  4 01:17 dist\n-rw-r--r--  1 root root     37 Jul  4 02:18 .dockerignore\ndrwxr-xr-x  9 root root   4096 Jul  4 01:18 docs\n-rw-r--r--  1 root root    244 Jul  3 21:45 .editorconfig\ndrwxr-xr-x  2 root root   4096 Jul  7 17:51 fixtures\ndrwxr-xr-x  8 root root   4096 Jul  7 17:49 .git\ndrwxr-xr-x  2 root root   4096 Jul  3 21:45 .githooks\ndrwxr-xr-x  3 root root   4096 Jul  3 21:45 .github\n-rw-r--r--  1 root root    145 Jul  4 02:18 .gitignore\n-rw-r--r--  1 root root    481 Jul  3 21:45 knip.json\n-rw-r--r--  1 root root   1063 Jul  5 11:40 LICENSE\ndrwxr-xr-x 16 root root   4096 Jul  3 22:16 node_modules\ndrwxr-xr-x 37 root root   4096 Jul  6 19:41 .occ-research\n-rw-r--r--  1 root root   5322 Jul  5 15:12 package.json\ndrwxr-xr-x  8 root root   4096 Jul  3 21:45 packages\n-rw-r--r--  1 root root   5191 Jul  5 11:40 README.md\n-rw-r--r--  1 root root   5168 Jul  5 11:40 README.zh-CN.md\n-rw-r--r--  1 root root   7985 Jul  5 11:28 RECORD.md\ndrwxr-xr-x  2 root root   4096 Jul  5 15:12 scripts\n-rw-r--r--  1 root root   2934 Jul  5 11:46 SECURITY.md\ndrwxr-xr-x 44 root root   4096 Jul  7 17:46 src\ndrwxr-xr-x  3 root root   4096 Jul  3 23:57 test\n-rw-r--r--  1 root root   1177 Jul  5 11:22 TODO.md\n-rw-r--r--  1 root root    520 Jul  3 21:45 tsconfig.json",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_f72590e1404c42f09fa2bb7f",
+        "type": "tool_result",
+        "content": "{\n    \"name\": \"@cnwenf/occ\",\n    \"version\": \"2.1.200\",\n    \"license\": \"MIT\",\n    \"type\": \"module\",\n    \"bin\": {\n        \"occ\": \"dist/cli.js\"\n    },\n    \"workspaces\": [\n        \"packages/*\",\n        \"packages/@ant/*\"\n    ],\n    \"files\": [\n        \"dist\"\n    ],\n    \"publishConfig\": {\n        \"access\": \"public\"\n    },\n    \"scripts\": {\n        \"build\": \"bun run scripts/build.ts\",\n        \"dev\": \"bun run src/entrypoints/cli.tsx\",\n        \"prepublishOnly\": \"bun run build\",\n        \"lint\": \"biome lint src/\",\n        \"lint:fix\": \"biome lint --fix src/\",\n        \"format\": \"biome format --write src/\",\n        \"prepare\": \"git config core.hooksPath .githooks\",\n        \"test\": \"bun test\",\n        \"check:unused\": \"knip-bun\",\n        \"health\": \"bun run scripts/health-check.ts\"\n    },\n    \"dependencies\": {\n        \"@alcalzone/ansi-tokenize\": \"^0.3.0\",\n        \"@ant/claude-for-chrome-mcp\": \"workspace:*\",\n        \"@ant/computer-use-input\": \"workspace:*\",\n        \"@ant/computer-use-mcp\": \"workspace:*\",\n        \"@ant/computer-use-swift\": \"workspace:*\",\n        \"@anthropic-ai/bedrock-sdk\": \"^0.26.4\",\n        \"@anthropic-ai/claude-agent-sdk\": \"^0.2.87\",\n        \"@anthropic-ai/foundry-sdk\": \"^0.2.3\",\n        \"@anthropic-ai/mcpb\": \"^2.1.2\",\n        \"@anthropic-ai/sandbox-runtime\": \"^0.0.44\",\n        \"@anthropic-ai/sdk\": \"^0.80.0\",\n        \"@anthropic-ai/vertex-sdk\": \"^0.14.4\",\n        \"@aws-sdk/client-bedrock\": \"^3.1020.0\",\n        \"@aws-sdk/client-bedrock-runtime\": \"^3.1020.0\",\n        \"@aws-sdk/client-sts\": \"^3.1020.0\",\n        \"@aws-sdk/credential-provider-node\": \"^3.972.28\",\n        \"@aws-sdk/credential-providers\": \"^3.1020.0\",\n        \"@azure/identity\": \"^4.13.1\",\n        \"@commander-js/extra-typings\": \"^14.0.0\",\n\n<system-reminder>\n## Auto Mode Active\n\nAuto mode is active. The user chose continuous, autonomous execution. You should:\n\n1. **Execute immediately** — Start implementing right away. Make reasonable assumptions and proceed on low-risk work.\n2. **Minimize interruptions** — Prefer making reasonable assumptions over asking questions for routine decisions.\n3. **Prefer action over planning** — Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.\n4. **Expect course corrections** — The user may provide suggestions or course corrections at any point; treat those as normal input.\n5. **Do not take overly destructive actions** — Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.\n6. **Avoid data exfiltration** — Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_d38f4aa67e5b40a4bcd238a7",
+        "name": "Bash",
+        "input": {
+          "command": "bun test 2>&1 | tail -100",
+          "description": "Run all tests",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_d38f4aa67e5b40a4bcd238a7",
+        "type": "tool_result",
+        "content": "Command running in background with ID: b8yx74af9. Output is being written to: /tmp/claude-0/-root-code-occ/8cd212f4-b569-4b0c-be66-7f65941a21b6/tasks/b8yx74af9.output",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_cbf180211f134476bfdb9525",
+        "name": "TaskOutput",
+        "input": {
+          "task_id": "b8yx74af9",
+          "block": true,
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_cbf180211f134476bfdb9525",
+        "type": "tool_result",
+        "content": "<retrieval_status>success</retrieval_status>\n\n<task_id>b8yx74af9</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>completed</status>\n\n<exit_code>0</exit_code>\n\n<output>\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\n205 | \n206 |   test(\"bypass accept persists (one-time); second boot skips bypass dialog\", async () => {\n207 |     const home = freshSeededHome();\n208 |     startRepl(home, [\"--dangerously-skip-permissions\"]);\n209 |     try {\n210 |       expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n                                                                    ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> ([CWD]/test/e2e/trust-gate.e2e.test.ts:210:63)\n(fail) Trust gate (tmux e2e, fresh HOME) > bypass accept persists (one-time); second boot skips bypass dialog [20022.91ms]\nPreparing worktree (new branch 'feature')\nCloning into bare repository '/tmp/mm-qhd8gI/src.git'...\ndone.\nCloning into bare repository '/tmp/mm-eiuvCC/src.git'...\ndone.\nCloning into bare repository '/tmp/mm-BXF98K/src.git'...\ndone.\n\n 763 pass\n 12 fail\n 1 error\n 2280 expect() calls\nRan 775 tests across 155 files. [589.26s]\n</output>\n\n<system-reminder>\nA background agent completed a task:\n<task-notification>\n<task-id>b8yx74af9</task-id>\n<tool-use-id>toolu_d38f4aa67e5b40a4bcd238a7</tool-use-id>\n<output-file>/tmp/claude-0/-root-code-occ/8cd212f4-b569-4b0c-be66-7f65941a21b6/tasks/b8yx74af9.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run all tests\" completed (exit code 0)</summary>\n</task-notification>\n</system-reminder>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "12 tests failing. Let me see the full output to identify all failures."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_4f6d95fc15844e63b80b1c0f",
+        "name": "Bash",
+        "input": {
+          "command": "grep -E \"^\\(fail\\)|^error:|fail$\" /tmp/claude-0/-root-code-occ/8cd212f4-b569-4b0c-be66-7f65941a21b6/tasks/b8yx74af9.output | head -60",
+          "description": "Find all failure lines"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_1090bffe46304215bb6b3e3f",
+        "name": "Bash",
+        "input": {
+          "command": "grep -E \"^\\(fail\\)\" /tmp/claude-0/-root-code-occ/8cd212f4-b569-4b0c-be66-7f65941a21b6/tasks/b8yx74af9.output",
+          "description": "Find all failure test names"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_4f6d95fc15844e63b80b1c0f",
+        "type": "tool_result",
+        "content": "error: expect(received).toBe(expected)\n(fail) Trust gate (tmux e2e, fresh HOME) > bypass accept persists (one-time); second boot skips bypass dialog [20022.91ms]\n 12 fail",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_1090bffe46304215bb6b3e3f",
+        "type": "tool_result",
+        "content": "(fail) Trust gate (tmux e2e, fresh HOME) > bypass accept persists (one-time); second boot skips bypass dialog [20022.91ms]",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_6a629366a8954581bf6168ca",
+        "name": "Bash",
+        "input": {
+          "command": "wc -l /tmp/claude-0/-root-code-occ/8cd212f4-b569-4b0c-be66-7f65941a21b6/tasks/b8yx74af9.output",
+          "description": "Count output lines"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_6a629366a8954581bf6168ca",
+        "type": "tool_result",
+        "content": "100 /tmp/claude-0/-root-code-occ/8cd212f4-b569-4b0c-be66-7f65941a21b6/tasks/b8yx74af9.output",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Output was truncated. Let me run tests with output saved to a file."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f42a868caedd4b13818bb1d8",
+        "name": "Bash",
+        "input": {
+          "command": "bun test > /tmp/test-output.log 2>&1; echo \"EXIT: $?\"",
+          "description": "Run tests and save full output",
+          "timeout": 600000,
+          "run_in_background": true
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_f42a868caedd4b13818bb1d8",
+        "type": "tool_result",
+        "content": "Command running in background with ID: bfn5kcuts. Output is being written to: /tmp/claude-0/-root-code-occ/8cd212f4-b569-4b0c-be66-7f65941a21b6/tasks/bfn5kcuts.output\n\n<system-reminder>\nThe TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "While tests run, let me examine the failing test file."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_cdd653443927407aa7ace36e",
+        "name": "Read",
+        "input": {
+          "file_path": "[CWD]/test/e2e/trust-gate.e2e.test.ts"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_cdd653443927407aa7ace36e",
+        "type": "tool_result",
+        "content": "1\timport { describe, expect, test } from \"bun:test\";\n2\timport { execSync, execFileSync } from \"node:child_process\";\n3\timport { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from \"node:fs\";\n4\timport { tmpdir } from \"node:os\";\n5\timport { join } from \"node:path\";\n6\timport { REPO_ROOT } from \"./helpers\";\n7\t\n8\t/**\n9\t * Trust gate e2e (tmux-based). Exercises the first-run workspace trust dialog\n10\t * and the Bypass Permissions mode acceptance dialog — the security-critical\n11\t * gates that the rest of the e2e suite deliberately pre-seeds/skips.\n12\t *\n13\t * Each test boots the BUILT dist/cli.js inside tmux against a FRESH temp HOME\n14\t * seeded with `hasCompletedOnboarding:true` (so the theme picker / security\n15\t * notes are skipped) but with NO trust and NO skipDangerousModePermissionPrompt\n16\t * for the project — so the trust dialog (and, with --dangerously-skip-permissions,\n17\t * the bypass dialog) MUST appear.\n18\t *\n19\t * Gated out of CI (needs tmux + model creds).\n20\t */\n21\t\n22\tconst BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;\n23\tconst SESSION = \"occ-trust-test\";\n24\t\n25\tfunction tmux(args: string[]): string {\n26\t  try {\n27\t    return execFileSync(\"tmux\", args, { encoding: \"utf8\", timeout: 10_000 });\n28\t  } catch {\n29\t    return \"\";\n30\t  }\n31\t}\n32\t\n33\tfunction sessionAlive(): boolean {\n34\t  try {\n35\t    return execSync(\"tmux list-sessions 2>/dev/null\", { encoding: \"utf8\" }).includes(SESSION);\n36\t  } catch {\n37\t    return false;\n38\t  }\n39\t}\n40\t\n41\t/** A fresh temp HOME seeded to skip onboarding but NOT trust / bypass acceptance. */\n42\tfunction freshSeededHome(): string {\n43\t  const home = mkdtempSync(join(tmpdir(), \"occ-trust-\"));\n44\t  writeFileSync(\n45\t    join(home, \".claude.json\"),\n46\t    JSON.stringify({\n47\t      numStartups: 1,\n48\t      firstStartTime: \"2026-07-06T00:00:00.000Z\",\n49\t      migrationVersion: 11,\n50\t      userID: \"occ-trust-seed-0000000000000000000000000000000000000000000000aa\",\n51\t      hasCompletedOnboarding: true,\n52\t      lastOnboardingVersion: \"2.1.200\",\n53\t      lastReleaseNotesSeen: \"2.1.200\",\n54\t      projects: {},\n55\t    }),\n56\t  );\n57\t  return home;\n58\t}\n59\t\n60\tfunction startRepl(home: string, extraArgs: string[] = []) {\n61\t  execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);\n62\t  const envStr = Object.entries(process.env)\n63\t    .filter(([k]) => k.startsWith(\"ANTHROPIC\"))\n64\t    .map(([k, v]) => `${k}='${v}'`)\n65\t    .join(\" \");\n66\t  const args = extraArgs.join(\" \");\n67\t  execSync(\n68\t    `tmux new-session -d -s ${SESSION} -x 200 -y 50 \"env HOME='${home}' ${envStr} ${BIN} ${args}\"`,\n69\t    { timeout: 5_000 },\n70\t  );\n71\t}\n72\t\n73\tfunction killRepl() {\n74\t  execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);\n75\t}\n76\t\n77\tfunction sendKeys(keys: string) {\n78\t  tmux([\"send-keys\", \"-t\", SESSION, ...keys.split(\" \")]);\n79\t}\n80\t\n81\tfunction capturePane(): string {\n82\t  return tmux([\"capture-pane\", \"-t\", SESSION, \"-p\", \"-S\", \"-\"]);\n83\t}\n84\t\n85\t/** Poll capture-pane until `substr` appears or timeout. */\n86\tasync function waitForText(substr: string, timeoutMs = 20_000): Promise<boolean> {\n87\t  const deadline = Date.now() + timeoutMs;\n88\t  while (Date.now() < deadline) {\n89\t    if (capturePane().toLowerCase().includes(substr.toLowerCase())) return true;\n90\t    await new Promise((r) => setTimeout(r, 200));\n91\t  }\n92\t  return false;\n93\t}\n94\t\n95\t/** Poll until the tmux session is gone (the CLI exited). */\n96\tasync function waitForExit(timeoutMs = 10_000): Promise<boolean> {\n97\t  const deadline = Date.now() + timeoutMs;\n98\t  while (Date.now() < deadline) {\n99\t    if (!sessionAlive()) return true;\n100\t    await new Promise((r) => setTimeout(r, 200));\n101\t  }\n102\t  return false;\n103\t}\n104\t\n105\tfunction readSettingsTrust(home: string): { trust?: boolean; bypass?: boolean } {\n106\t  const cfgPath = join(home, \".claude.json\");\n107\t  const settingsPath = join(home, \".claude\", \"settings.json\");\n108\t  const out: { trust?: boolean; bypass?: boolean } = {};\n109\t  if (existsSync(cfgPath)) {\n110\t    try {\n111\t      const cfg = JSON.parse(readFileSync(cfgPath, \"utf8\"));\n112\t      const projects = cfg.projects ?? {};\n113\t      // trust is stored per-project; find any project with the flag.\n114\t      for (const k of Object.keys(projects)) {\n115\t        if (projects[k]?.hasTrustDialogAccepted) out.trust = true;\n116\t      }\n117\t    } catch {}\n118\t  }\n119\t  if (existsSync(settingsPath)) {\n120\t    try {\n121\t      out.bypass = !!JSON.parse(readFileSync(settingsPath, \"utf8\")).skipDangerousModePermissionPrompt;\n122\t    } catch {}\n123\t  }\n124\t  return out;\n125\t}\n126\t\n127\tdescribe.skipIf(!!process.env.CI || !process.env.ANTHROPIC_API_KEY)(\"Trust gate (tmux e2e, fresh HOME)\", () => {\n128\t  test(\"fresh project shows trust dialog; default Enter accepts → prompt\", async () => {\n129\t    const home = freshSeededHome();\n130\t    startRepl(home);\n131\t    try {\n132\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n133\t      const pane = capturePane();\n134\t      expect(pane).toContain(\"Yes, I trust this folder\");\n135\t      expect(pane).toContain(\"No, exit\");\n136\t\n137\t      // Default cursor is on \"Yes\" (first option) → Enter accepts.\n138\t      sendKeys(\"Enter\");\n139\t      expect(await waitForText(\"for shortcuts\", 15_000)).toBe(true);\n140\t\n141\t      // Trust persisted to .claude.json\n142\t      expect(readSettingsTrust(home).trust).toBe(true);\n143\t    } finally {\n144\t      killRepl();\n145\t      rmSync(home, { recursive: true, force: true });\n146\t    }\n147\t  }, 60_000);\n148\t\n149\t  test(\"second boot in same HOME skips the trust dialog\", async () => {\n150\t    const home = freshSeededHome();\n151\t    startRepl(home);\n152\t    try {\n153\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n154\t      sendKeys(\"Enter\"); // accept\n155\t      expect(await waitForText(\"for shortcuts\", 15_000)).toBe(true);\n156\t      killRepl();\n157\t\n158\t      // Reboot in the same HOME — trust already persisted.\n159\t      startRepl(home);\n160\t      expect(await waitForText(\"for shortcuts\", 15_000)).toBe(true);\n161\t      expect(capturePane().toLowerCase()).not.toContain(\"quick safety check\");\n162\t    } finally {\n163\t      killRepl();\n164\t      rmSync(home, { recursive: true, force: true });\n165\t    }\n166\t  }, 60_000);\n167\t\n168\t  test(\"'No, exit' exits the session\", async () => {\n169\t    const home = freshSeededHome();\n170\t    startRepl(home);\n171\t    try {\n172\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n173\t      sendKeys(\"Down\"); // move to \"No, exit\"\n174\t      sendKeys(\"Enter\");\n175\t      expect(await waitForExit(10_000)).toBe(true);\n176\t      // Decline must NOT persist trust.\n177\t      expect(readSettingsTrust(home).trust).not.toBe(true);\n178\t    } finally {\n179\t      killRepl();\n180\t      rmSync(home, { recursive: true, force: true });\n181\t    }\n182\t  }, 40_000);\n183\t\n184\t  test(\"bypass dialog: default cursor = 'No, exit'; Enter exits, no persist\", async () => {\n185\t    const home = freshSeededHome();\n186\t    startRepl(home, [\"--dangerously-skip-permissions\"]);\n187\t    try {\n188\t      // Trust dialog first (always shown).\n189\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n190\t      sendKeys(\"Enter\"); // accept trust\n191\t      // Bypass dialog next.\n192\t      expect(await waitForText(\"Bypass Permissions mode\", 15_000)).toBe(true);\n193\t      const pane = capturePane();\n194\t      expect(pane).toContain(\"No, exit\");\n195\t      expect(pane).toContain(\"Yes, I accept\");\n196\t      // Default cursor is \"No, exit\" → Enter declines → exit.\n197\t      sendKeys(\"Enter\");\n198\t      expect(await waitForExit(10_000)).toBe(true);\n199\t      expect(readSettingsTrust(home).bypass).not.toBe(true);\n200\t    } finally {\n201\t      killRepl();\n202\t      rmSync(home, { recursive: true, force: true });\n203\t    }\n204\t  }, 60_000);\n205\t\n206\t  test(\"bypass accept persists (one-time); second boot skips bypass dialog\", async () => {\n207\t    const home = freshSeededHome();\n208\t    startRepl(home, [\"--dangerously-skip-permissions\"]);\n209\t    try {\n210\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n211\t      sendKeys(\"Enter\"); // accept trust\n212\t      expect(await waitForText(\"Bypass Permissions mode\", 15_000)).toBe(true);\n213\t      sendKeys(\"Down\"); // move to \"Yes, I accept\"\n214\t      sendKeys(\"Enter\");\n215\t      // Bypass-mode prompt footer contains \"shift+tab\".\n216\t      expect(await waitForText(\"shift+tab\", 15_000)).toBe(true);\n217\t      expect(readSettingsTrust(home).bypass).toBe(true);\n218\t      killRepl();\n219\t\n220\t      // Reboot: trust + bypass acceptance persisted → straight to bypass prompt.\n221\t      startRepl(home, [\"--dangerously-skip-permissions\"]);\n222\t      expect(await waitForText(\"shift+tab\", 15_000)).toBe(true);\n223\t      expect(capturePane().toLowerCase()).not.toContain(\"bypass permissions mode\");\n224\t    } finally {\n225\t      killRepl();\n226\t      rmSync(home, { recursive: true, force: true });\n227\t    }\n228\t  }, 60_000);\n229\t});\n230\t"
+      }
+    ]
+  ],
+  "output": [
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_aa10d9b4-18b0-42d1-8bca-603b11a42274",
+          "type": "message",
+          "role": "assistant",
+          "model": "glm-5.2",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 24643,
+            "output_tokens": 0
+          }
+        }
+      },
+      "ttftMs": 1336
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "thinking",
+          "thinking": "",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "This"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " is a"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " tm"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "ux-based"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " e2"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "e test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " that"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " requires tm"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "ux and"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " API"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " credentials."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " The \""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "can't"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " find pane"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": ": occ"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "-trust"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "-test\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " errors"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " suggest tm"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "ux isn"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "'t available"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " or"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " the session"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " can't"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " be created"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": ". Let"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " me check"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " the"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " status of"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " the running"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " and look"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " at the"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " output"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " more carefully"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": ".\n\nLet"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " me wait"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " for the"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " test run"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " to complete"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " and"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " check the"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " full output"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "signature_delta",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "uuid": "UUID-47",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:03:14.083Z",
+      "message": {
+        "id": "msg_aa10d9b4-18b0-42d1-8bca-603b11a42274",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "This is a tmux-based e2e test that requires tmux and API credentials. The \"can't find pane: occ-trust-test\" errors suggest tmux isn't available or the session can't be created. Let me check the status of the running test and look at the output more carefully.\n\nLet me wait for the test run to complete and check the full output.",
+            "signature": ""
+          }
+        ],
+        "stop_reason": null,
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 24643,
+          "output_tokens": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_12f66ceb391d452ba38a580f",
+          "name": "TaskOutput",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"task_id\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"bfn"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "5k"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "cuts\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"block\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "true"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"timeout\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "600"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "000"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "}"
+        }
+      }
+    },
+    {
+      "uuid": "UUID-64",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T10:03:14.219Z",
+      "message": {
+        "id": "msg_aa10d9b4-18b0-42d1-8bca-603b11a42274",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_12f66ceb391d452ba38a580f",
+            "name": "TaskOutput",
+            "input": {
+              "task_id": "bfn5kcuts",
+              "block": true,
+              "timeout": 600000
+            }
+          }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 2539,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 26624,
+          "output_tokens": 107,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null
+        },
+        "usage": {
+          "input_tokens": 2539,
+          "output_tokens": 107,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 26624,
+          "prompt_tokens_details": {
+            "cached_tokens": 26624
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_stop"
+      }
+    }
+  ]
+}

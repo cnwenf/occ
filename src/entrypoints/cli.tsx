@@ -315,6 +315,13 @@ async function main(): Promise<void> {
         process.env.CLAUDE_CODE_SIMPLE = "1";
     }
 
+    // --safe-mode: set CLAUDE_CODE_SAFE_MODE early so gates fire during
+    // module eval / commander option building (hooks.ts, pluginLoader.ts,
+    // bundled skills/plugins init all read this before the action handler).
+    if (args.includes("--safe-mode")) {
+        process.env.CLAUDE_CODE_SAFE_MODE = "1";
+    }
+
     // No special flags detected, load and run the full CLI
     const { startCapturingEarlyInput } = await import("../utils/earlyInput.js");
     startCapturingEarlyInput();

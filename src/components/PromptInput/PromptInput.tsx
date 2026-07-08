@@ -34,6 +34,8 @@ import { useTypeahead } from '../../hooks/useTypeahead.js';
 import type { BorderTextOptions } from '../../ink/render-border.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Box, type ClickEvent, type Key, Text, useInput } from '../../ink.js';
+import { clearTerminal } from '../../ink/clearTerminal.js';
+import instances from '../../ink/instances.js';
 import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js';
 import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
@@ -1357,6 +1359,25 @@ function PromptInput({
     setCursorOffset(cursorOffset + 1);
   }, [input, cursorOffset, trackAndSetInput, setCursorOffset, pushToBuffer, pastedContents]);
 
+  // Handler for chat:clearInput - clear the entire input buffer (ctrl+l).
+  // Replaces the readline ctrl+u kill-line: clears the whole buffer, not just
+  // to the start of the current line. Pushes to the undo buffer so ctrl+_
+  // (chat:undo) can restore it.
+  const handleClearInput = useCallback(() => {
+    if (input === '') return;
+    pushToBuffer(input, cursorOffset, pastedContents);
+    trackAndSetInput('');
+    setCursorOffset(0);
+  }, [input, cursorOffset, pushToBuffer, trackAndSetInput, setCursorOffset, pastedContents]);
+
+  // Handler for chat:clearScreen - clear the terminal screen + scrollback (ctrl+k).
+  // Writes the scrollback-clearing escape sequence, then forces Ink to repaint
+  // the full UI from a clean slate.
+  const handleClearScreen = useCallback(() => {
+    process.stdout.write(clearTerminal);
+    instances.get(process.stdout)?.forceRedraw();
+  }, []);
+
   // Handler for chat:externalEditor - edit in $EDITOR
   const handleExternalEditor = useCallback(async () => {
     logEvent('tengu_external_editor_used', {});
@@ -1715,13 +1736,15 @@ function PromptInput({
   const chatHandlers = useMemo(() => ({
     'chat:undo': handleUndo,
     'chat:newline': handleNewline,
+    'chat:clearInput': handleClearInput,
+    'chat:clearScreen': handleClearScreen,
     'chat:externalEditor': handleExternalEditor,
     'chat:stash': handleStash,
     'chat:modelPicker': handleModelPicker,
     'chat:thinkingToggle': handleThinkingToggle,
     'chat:cycleMode': handleCycleMode,
     'chat:imagePaste': handleImagePaste
-  }), [handleUndo, handleNewline, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste]);
+  }), [handleUndo, handleNewline, handleClearInput, handleClearScreen, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste]);
   useKeybindings(chatHandlers, {
     context: 'Chat',
     isActive: !isModalOverlayActive

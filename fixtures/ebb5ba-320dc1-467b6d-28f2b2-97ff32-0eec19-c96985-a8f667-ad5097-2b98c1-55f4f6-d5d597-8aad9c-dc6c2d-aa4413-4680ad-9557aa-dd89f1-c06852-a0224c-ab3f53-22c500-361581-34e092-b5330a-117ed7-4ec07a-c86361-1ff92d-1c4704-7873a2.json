@@ -1,0 +1,1192 @@
+{
+  "input": [
+    [
+      {
+        "type": "text",
+        "text": "<command-name>/goal</command-name>\n            <command-message>goal</command-message>\n            <command-args>all tests pass</command-args>\n"
+      },
+      {
+        "type": "text",
+        "text": "<local-command-stdout>Goal set: all tests pass</local-command-stdout>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "Goal acknowledged: all tests pass. Let me start by examining the project and running the tests."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_79f7eba4df0b4d8aa179835e",
+        "name": "Bash",
+        "input": {
+          "command": "ls -la",
+          "description": "List project files"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f72590e1404c42f09fa2bb7f",
+        "name": "Bash",
+        "input": {
+          "command": "cat package.json 2>/dev/null | head -50",
+          "description": "Read package.json"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_f72590e1404c42f09fa2bb7f",
+        "type": "tool_result",
+        "content": "{\n    \"name\": \"@cnwenf/occ\",\n    \"version\": \"2.1.200\",\n    \"license\": \"MIT\",\n    \"type\": \"module\",\n    \"bin\": {\n        \"occ\": \"dist/cli.js\"\n    },\n    \"workspaces\": [\n        \"packages/*\",\n        \"packages/@ant/*\"\n    ],\n    \"files\": [\n        \"dist\"\n    ],\n    \"publishConfig\": {\n        \"access\": \"public\"\n    },\n    \"scripts\": {\n        \"build\": \"bun run scripts/build.ts\",\n        \"dev\": \"bun run src/entrypoints/cli.tsx\",\n        \"prepublishOnly\": \"bun run build\",\n        \"lint\": \"biome lint src/\",\n        \"lint:fix\": \"biome lint --fix src/\",\n        \"format\": \"biome format --write src/\",\n        \"prepare\": \"git config core.hooksPath .githooks\",\n        \"test\": \"bun test\",\n        \"check:unused\": \"knip-bun\",\n        \"health\": \"bun run scripts/health-check.ts\"\n    },\n    \"dependencies\": {\n        \"@alcalzone/ansi-tokenize\": \"^0.3.0\",\n        \"@ant/claude-for-chrome-mcp\": \"workspace:*\",\n        \"@ant/computer-use-input\": \"workspace:*\",\n        \"@ant/computer-use-mcp\": \"workspace:*\",\n        \"@ant/computer-use-swift\": \"workspace:*\",\n        \"@anthropic-ai/bedrock-sdk\": \"^0.26.4\",\n        \"@anthropic-ai/claude-agent-sdk\": \"^0.2.87\",\n        \"@anthropic-ai/foundry-sdk\": \"^0.2.3\",\n        \"@anthropic-ai/mcpb\": \"^2.1.2\",\n        \"@anthropic-ai/sandbox-runtime\": \"^0.0.44\",\n        \"@anthropic-ai/sdk\": \"^0.80.0\",\n        \"@anthropic-ai/vertex-sdk\": \"^0.14.4\",\n        \"@aws-sdk/client-bedrock\": \"^3.1020.0\",\n        \"@aws-sdk/client-bedrock-runtime\": \"^3.1020.0\",\n        \"@aws-sdk/client-sts\": \"^3.1020.0\",\n        \"@aws-sdk/credential-provider-node\": \"^3.972.28\",\n        \"@aws-sdk/credential-providers\": \"^3.1020.0\",\n        \"@azure/identity\": \"^4.13.1\",\n        \"@commander-js/extra-typings\": \"^14.0.0\",",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_79f7eba4df0b4d8aa179835e",
+        "type": "tool_result",
+        "content": "total 432\ndrwxr-xr-x 15 root root   4096 Jul  7 17:26 .\ndrwxr-xr-x  4 root root   4096 Jul  3 21:45 ..\n-rw-r--r--  1 root root   2075 Jul  4 22:15 biome.json\n-rw-r--r--  1 root root     34 Jul  5 10:27 bunfig.toml\n-rw-r--r--  1 root root 297889 Jul  3 21:45 bun.lock\ndrwxr-xr-x  2 root root   4096 Jul  5 10:04 .claude\n-rw-r--r--  1 root root   7875 Jul  5 11:20 CLAUDE.md\ndrwxr-xr-x  2 root root   4096 Jul  4 01:17 dist\n-rw-r--r--  1 root root     37 Jul  4 02:18 .dockerignore\ndrwxr-xr-x  9 root root   4096 Jul  4 01:18 docs\n-rw-r--r--  1 root root    244 Jul  3 21:45 .editorconfig\ndrwxr-xr-x  2 root root   4096 Jul  7 17:46 fixtures\ndrwxr-xr-x  8 root root   4096 Jul  7 17:46 .git\ndrwxr-xr-x  2 root root   4096 Jul  3 21:45 .githooks\ndrwxr-xr-x  3 root root   4096 Jul  3 21:45 .github\n-rw-r--r--  1 root root    145 Jul  4 02:18 .gitignore\n-rw-r--r--  1 root root    481 Jul  3 21:45 knip.json\n-rw-r--r--  1 root root   1063 Jul  5 11:40 LICENSE\ndrwxr-xr-x 16 root root   4096 Jul  3 22:16 node_modules\ndrwxr-xr-x 37 root root   4096 Jul  6 19:41 .occ-research\n-rw-r--r--  1 root root   5322 Jul  5 15:12 package.json\ndrwxr-xr-x  8 root root   4096 Jul  3 21:45 packages\n-rw-r--r--  1 root root   5191 Jul  5 11:40 README.md\n-rw-r--r--  1 root root   5168 Jul  5 11:40 README.zh-CN.md\n-rw-r--r--  1 root root   7985 Jul  5 11:28 RECORD.md\ndrwxr-xr-x  2 root root   4096 Jul  5 15:12 scripts\n-rw-r--r--  1 root root   2934 Jul  5 11:46 SECURITY.md\ndrwxr-xr-x 44 root root   4096 Jul  7 17:46 src\ndrwxr-xr-x  3 root root   4096 Jul  3 23:57 test\n-rw-r--r--  1 root root   1177 Jul  5 11:22 TODO.md\n-rw-r--r--  1 root root    520 Jul  3 21:45 tsconfig.json\n\n<system-reminder>\n## Auto Mode Active\n\nAuto mode is active. The user chose continuous, autonomous execution. You should:\n\n1. **Execute immediately** — Start implementing right away. Make reasonable assumptions and proceed on low-risk work.\n2. **Minimize interruptions** — Prefer making reasonable assumptions over asking questions for routine decisions.\n3. **Prefer action over planning** — Do not enter plan mode unless the user explicitly asks. When in doubt, start coding.\n4. **Expect course corrections** — The user may provide suggestions or course corrections at any point; treat those as normal input.\n5. **Do not take overly destructive actions** — Auto mode is not a license to destroy. Anything that deletes data or modifies shared or production systems still needs explicit user confirmation. If you reach such a decision point, ask and wait, or course correct to a safer method instead.\n6. **Avoid data exfiltration** — Post even routine messages to chat platforms or work tickets only if the user has directed you to. You must not share secrets (e.g. credentials, internal documentation) unless the user has explicitly authorized both that specific secret and its destination.\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_3361a9fe46ad4ea6a73e3364",
+        "name": "Bash",
+        "input": {
+          "command": "bun test 2>&1 | tail -100",
+          "description": "Run test suite",
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_3361a9fe46ad4ea6a73e3364",
+        "type": "tool_result",
+        "content": "Command running in background with ID: bp3iur2gv. Output is being written to: /tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/bp3iur2gv.output",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_77ec212ffebd4b1fa0efa608",
+        "name": "TaskOutput",
+        "input": {
+          "task_id": "bp3iur2gv",
+          "block": true,
+          "timeout": 300000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_77ec212ffebd4b1fa0efa608",
+        "type": "tool_result",
+        "content": "<retrieval_status>success</retrieval_status>\n\n<task_id>bp3iur2gv</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>completed</status>\n\n<exit_code>0</exit_code>\n\n<output>\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\ncan't find pane: occ-trust-test\n205 | \n206 |   test(\"bypass accept persists (one-time); second boot skips bypass dialog\", async () => {\n207 |     const home = freshSeededHome();\n208 |     startRepl(home, [\"--dangerously-skip-permissions\"]);\n209 |     try {\n210 |       expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n                                                                    ^\nerror: expect(received).toBe(expected)\n\nExpected: true\nReceived: false\n\n      at <anonymous> ([CWD]/test/e2e/trust-gate.e2e.test.ts:210:63)\n(fail) Trust gate (tmux e2e, fresh HOME) > bypass accept persists (one-time); second boot skips bypass dialog [20147.74ms]\nPreparing worktree (new branch 'feature')\nCloning into bare repository '/tmp/mm-Q539Vd/src.git'...\ndone.\nCloning into bare repository '/tmp/mm-fl333A/src.git'...\ndone.\nCloning into bare repository '/tmp/mm-WzO0Y4/src.git'...\ndone.\n\n 763 pass\n 12 fail\n 1 error\n 2280 expect() calls\nRan 775 tests across 155 files. [533.53s]\n</output>\n\n<system-reminder>\nA background agent completed a task:\n<task-notification>\n<task-id>bp3iur2gv</task-id>\n<tool-use-id>toolu_3361a9fe46ad4ea6a73e3364</tool-use-id>\n<output-file>/tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/bp3iur2gv.output</output-file>\n<status>completed</status>\n<summary>Background command \"Run test suite\" completed (exit code 0)</summary>\n</task-notification>\n</system-reminder>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "12 tests failing. Let me read the full output to see all failures."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_42791964db7247dc93710cb4",
+        "name": "Bash",
+        "input": {
+          "command": "grep -E \"(fail|error|✗|FAIL|Error)\" /tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/bp3iur2gv.output | head -80",
+          "description": "Find all failures in output"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_42791964db7247dc93710cb4",
+        "type": "tool_result",
+        "content": "error: expect(received).toBe(expected)\n(fail) Trust gate (tmux e2e, fresh HOME) > bypass accept persists (one-time); second boot skips bypass dialog [20147.74ms]\n 12 fail\n 1 error",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_d60fb14e87194715a80d7f57",
+        "name": "Bash",
+        "input": {
+          "command": "grep -E \"^\\(fail\\)|^\\s+\\(fail\\)\" /tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/bp3iur2gv.output",
+          "description": "Find all fail markers"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_d60fb14e87194715a80d7f57",
+        "type": "tool_result",
+        "content": "(fail) Trust gate (tmux e2e, fresh HOME) > bypass accept persists (one-time); second boot skips bypass dialog [20147.74ms]",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_ec6ce7b4e7274a1a9b52fe61",
+        "name": "Bash",
+        "input": {
+          "command": "wc -l /tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/bp3iur2gv.output",
+          "description": "Count output lines"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_fb0714a0befe4421a9caff86",
+        "name": "Bash",
+        "input": {
+          "command": "grep -nE \"fail|FAIL|✗|error:\" /tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/bp3iur2gv.output | grep -v \"can't find pane\" | head -50",
+          "description": "Find failures with line numbers"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_ec6ce7b4e7274a1a9b52fe61",
+        "type": "tool_result",
+        "content": "100 /tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/bp3iur2gv.output",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_fb0714a0befe4421a9caff86",
+        "type": "tool_result",
+        "content": "81:error: expect(received).toBe(expected)\n87:(fail) Trust gate (tmux e2e, fresh HOME) > bypass accept persists (one-time); second boot skips bypass dialog [20147.74ms]\n97: 12 fail\n\n<system-reminder>\nThe TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n\n</system-reminder>",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "The output was truncated by `tail -100`. I need to re-run with full output saved to see all 12 failures."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_049c5e87c2b14eb395cd8b60",
+        "name": "Bash",
+        "input": {
+          "command": "bun test > /tmp/test-output-full.txt 2>&1; echo \"EXIT: $?\"",
+          "description": "Run full test suite with output saved",
+          "timeout": 600000,
+          "run_in_background": true
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_049c5e87c2b14eb395cd8b60",
+        "type": "tool_result",
+        "content": "Command running in background with ID: b3xtqmkgj. Output is being written to: /tmp/claude-0/-root-code-occ/6d6d8d4c-9fee-488b-bd9b-e7992ab1458d/tasks/b3xtqmkgj.output",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "text",
+        "text": "While tests re-run, let me explore the failing test and project structure."
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_6b343247854b45b6b59f9a07",
+        "name": "Bash",
+        "input": {
+          "command": "ls test/e2e/ 2>/dev/null; ls test/ 2>/dev/null",
+          "description": "List test directories"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_f962c9c377684cdea27a52c7",
+        "name": "Glob",
+        "input": {
+          "pattern": "test/**/*.test.ts"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_6b343247854b45b6b59f9a07",
+        "type": "tool_result",
+        "content": "cleanupPeriodDays-zero.e2e.test.ts\ncommands-alignment.e2e.test.ts\ncommands-behavior.e2e.test.ts\nDockerfile\ngoal-gate.e2e.test.ts\ngoal-panel.e2e.test.ts\nhelpers.ts\nhusky-protected.e2e.test.ts\nmcp-connection-nonblocking.e2e.test.ts\nreal-coding.e2e.test.ts\nrepl-interactive.e2e.test.ts\nrunner.sh\nrun.sh\nseed\ntrust-gate.e2e.test.ts\nversion-2.1.101.e2e.test.ts\nversion-2.1.105.e2e.test.ts\nversion-2.1.105-skill-budget.e2e.test.ts\nversion-2.1.107.e2e.test.ts\nversion-2.1.108.e2e.test.ts\nversion-2.1.109.e2e.test.ts\nversion-2.1.110-commands.e2e.test.ts\nversion-2.1.110.e2e.test.ts\nversion-2.1.111.e2e.test.ts\nversion-2.1.111-env.e2e.test.ts\nversion-2.1.113.e2e.test.ts\nversion-2.1.116.e2e.test.ts\nversion-2.1.117.e2e.test.ts\nversion-2.1.118.e2e.test.ts\nversion-2.1.118-fork.e2e.test.ts\nversion-2.1.118-vim-visual.e2e.test.ts\nversion-2.1.119.e2e.test.ts\nversion-2.1.119-tools-batch.e2e.test.ts\nversion-2.1.120.e2e.test.ts\nversion-2.1.121.e2e.test.ts\nversion-2.1.122.e2e.test.ts\nversion-2.1.126.e2e.test.ts\nversion-2.1.128.e2e.test.ts\nversion-2.1.129.e2e.test.ts\nversion-2.1.129-settings.e2e.test.ts\nversion-2.1.132.e2e.test.ts\nversion-2.1.132-mcp-tools-fetch-retry.e2e.test.ts\nversion-2.1.133.e2e.test.ts\nversion-2.1.136.e2e.test.ts\nversion-2.1.139.e2e.test.ts\nversion-2.1.139-goal.e2e.test.ts\nversion-2.1.139-mcp-16mb-cap.e2e.test.ts\nversion-2.1.140.e2e.test.ts\nversion-2.1.141.e2e.test.ts\nversion-2.1.142.e2e.test.ts\nversion-2.1.143.e2e.test.ts\nversion-2.1.143-powershell-executionpolicy.e2e.test.ts\nversion-2.1.144-145.e2e.test.ts\nversion-2.1.144-commands-rename.e2e.test.ts\nversion-2.1.144-mcp-pagination.e2e.test.ts\nversion-2.1.145-read-partial-view.e2e.test.ts\nversion-2.1.147.e2e.test.ts\nversion-2.1.149.e2e.test.ts\nversion-2.1.149-ui.e2e.test.ts\nversion-2.1.152-198-model-retry-fallback.e2e.test.ts\nversion-2.1.152-skill-disallowed-tools.e2e.test.ts\nversion-2.1.152-vim-reverse-search.e2e.test.ts\nversion-2.1.154-160.e2e.test.ts\nversion-2.1.154-196-code-review-simplify.e2e.test.ts\nversion-2.1.154-k1-k2-k3.e2e.test.ts\nversion-2.1.154-k3-wire.e2e.test.ts\nversion-2.1.160-196-permission-gaps.e2e.test.ts\nversion-2.1.160-fast-mode-default.e2e.test.ts\nversion-2.1.161-200.e2e.test.ts\nversion-2.1.162-glob-grep-tools-readonly.e2e.test.ts\nversion-2.1.162-lsp-workspace-symbol-query.e2e.test.ts\nversion-2.1.163-skill-dollar-escape.e2e.test.ts\nversion-2.1.163-version-gate.e2e.test.ts\nversion-2.1.169-commands-batch.e2e.test.ts\nversion-2.1.169-taskcreate-autorepair.e2e.test.ts\nversion-2.1.169-taskcreate-wording.e2e.test.ts\nversion-2.1.174-wheel-scroll-accel.e2e.test.ts\nversion-2.1.178-perm-param-value.e2e.test.ts\nversion-2.1.183-commands-behaviors.e2e.test.ts\nversion-2.1.183-perm-destructive.e2e.test.ts\nversion-2.1.186-respond-to-bash.e2e.test.ts\nversion-2.1.186-skills-allowlist-shadow-attribution.e2e.test.ts\nversion-2.1.191.e2e.test.ts\nversion-2.1.196-stream-watchdog.e2e.test.ts\nversion-2.1.197-models.e2e.test.ts\nversion-2.1.198-explore-agent-model.e2e.test.ts\nversion-2.1.199-api.e2e.test.ts\nversion-2.1.199-skill-stacked.e2e.test.ts\nversion-2.1.200-automode-ungate.e2e.test.ts\nversion-2.1.200-cli-subcommands.e2e.test.ts\nversion-2.1.200-command-desc-drift-2.e2e.test.ts\nversion-2.1.200-command-desc-drift.e2e.test.ts\nversion-2.1.200-commands-E19-E23-E25.e2e.test.ts\nversion-2.1.200-cost.e2e.test.ts\nversion-2.1.200-fconfig-settings-env.e2e.test.ts\nversion-2.1.200-mcp.e2e.test.ts\nversion-2.1.200-model.e2e.test.ts\nversion-2.1.200-perm-manual.e2e.test.ts\nversion-2.1.200-readmcpresourcedir.e2e.test.ts\nversion-2.1.200-skill-discover.e2e.test.ts\nversion-2.1.200-tools-stream.e2e.test.ts\nversion-2.1.200-ui-i2-i4-i5-i11.e2e.test.ts\nversion-2.1.200-uirest.e2e.test.ts\nversion-2.1.91.e2e.test.ts\nversion-2.1.92.e2e.test.ts\nversion-2.1.94-bedrock-mantle-flags.e2e.test.ts\nversion-2.1.94.e2e.test.ts\nversion-2.1.96.e2e.test.ts\nversion-2.1.97.e2e.test.ts\nversion-2.1.97-statusline-refresh.e2e.test.ts\nversion-2.1.98-160-bashperm-safety-gaps.e2e.test.ts\nversion-2.1.98.e2e.test.ts\nversion-deferred-batch.e2e.test.ts\nversion-hooks-d7-d11-d12-d15-d17.e2e.test.ts\nversion-hooks-events.e2e.test.ts\nversion-hooks-exec.e2e.test.ts\nversion-hooks-matchers.e2e.test.ts\nversion-hooks-ungate.e2e.test.ts\nversion-jbugfix.e2e.test.ts\nversions\ne2e",
+        "is_error": false
+      },
+      {
+        "type": "tool_result",
+        "content": "ENOENT: no such file or directory, posix_spawn '/root/code/vendor/ripgrep/x64-linux/rg'",
+        "is_error": true,
+        "tool_use_id": "toolu_f962c9c377684cdea27a52c7"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_1a139aa001c24d55821c886c",
+        "name": "Bash",
+        "input": {
+          "command": "find test -name \"*.test.ts\" -type f | head -20; echo \"---\"; find src -name \"*.test.ts\" -type f | head -20",
+          "description": "Find test files"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_1a139aa001c24d55821c886c",
+        "type": "tool_result",
+        "content": "test/e2e/version-2.1.139-mcp-16mb-cap.e2e.test.ts\ntest/e2e/version-2.1.169-commands-batch.e2e.test.ts\ntest/e2e/repl-interactive.e2e.test.ts\ntest/e2e/version-hooks-exec.e2e.test.ts\ntest/e2e/version-2.1.118-vim-visual.e2e.test.ts\ntest/e2e/version-2.1.109.e2e.test.ts\ntest/e2e/version-2.1.160-fast-mode-default.e2e.test.ts\ntest/e2e/version-2.1.107.e2e.test.ts\ntest/e2e/version-2.1.94-bedrock-mantle-flags.e2e.test.ts\ntest/e2e/version-2.1.144-commands-rename.e2e.test.ts\ntest/e2e/version-2.1.136.e2e.test.ts\ntest/e2e/version-2.1.113.e2e.test.ts\ntest/e2e/version-2.1.97.e2e.test.ts\ntest/e2e/version-2.1.162-lsp-workspace-symbol-query.e2e.test.ts\ntest/e2e/version-2.1.199-skill-stacked.e2e.test.ts\ntest/e2e/commands-behavior.e2e.test.ts\ntest/e2e/version-2.1.199-api.e2e.test.ts\ntest/e2e/version-2.1.116.e2e.test.ts\ntest/e2e/version-2.1.118-fork.e2e.test.ts\ntest/e2e/version-2.1.94.e2e.test.ts\n---\nsrc/tools/PowerShellTool/__tests__/readOnlyValidation.test.ts\nsrc/tools/WebFetchTool/__tests__/stripStyleScript.test.ts\nsrc/tools/BashTool/__tests__/clampTimeout.test.ts\nsrc/entrypoints/__tests__/sandbox-deniedDomains.test.ts\nsrc/components/Spinner/__tests__/thinkingHints.test.ts\nsrc/services/mcp/__tests__/maxResultSizeChars.test.ts\nsrc/services/mcp/__tests__/waitForMcpConnectionBatch.test.ts\nsrc/services/mcp/__tests__/alwaysLoad.test.ts\nsrc/services/compact/__tests__/precompact-block.test.ts\nsrc/services/remoteManagedSettings/__tests__/forceRemoteSettingsRefresh.test.ts\nsrc/services/api/__tests__/bedrock-auth.test.ts\nsrc/services/api/__tests__/prompt-cache-ttl.test.ts\nsrc/commands/goal/__tests__/goal.test.ts\nsrc/commands/rewind/__tests__/undo-alias.test.ts\nsrc/commands/export/__tests__/export-path.test.ts\nsrc/commands/__tests__/removed-commands.test.ts\nsrc/utils/settings/__tests__/defaultMode-auto.test.ts\nsrc/utils/settings/__tests__/autoScrollEnabled.test.ts\nsrc/utils/settings/__tests__/cleanupPeriodDays.test.ts\nsrc/utils/permissions/__tests__/yoloClassifier.test.ts",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_ca45520dd5ba469a926043f6",
+        "name": "Read",
+        "input": {
+          "file_path": "[CWD]/test/e2e/trust-gate.e2e.test.ts"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_ca45520dd5ba469a926043f6",
+        "type": "tool_result",
+        "content": "1\timport { describe, expect, test } from \"bun:test\";\n2\timport { execSync, execFileSync } from \"node:child_process\";\n3\timport { existsSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from \"node:fs\";\n4\timport { tmpdir } from \"node:os\";\n5\timport { join } from \"node:path\";\n6\timport { REPO_ROOT } from \"./helpers\";\n7\t\n8\t/**\n9\t * Trust gate e2e (tmux-based). Exercises the first-run workspace trust dialog\n10\t * and the Bypass Permissions mode acceptance dialog — the security-critical\n11\t * gates that the rest of the e2e suite deliberately pre-seeds/skips.\n12\t *\n13\t * Each test boots the BUILT dist/cli.js inside tmux against a FRESH temp HOME\n14\t * seeded with `hasCompletedOnboarding:true` (so the theme picker / security\n15\t * notes are skipped) but with NO trust and NO skipDangerousModePermissionPrompt\n16\t * for the project — so the trust dialog (and, with --dangerously-skip-permissions,\n17\t * the bypass dialog) MUST appear.\n18\t *\n19\t * Gated out of CI (needs tmux + model creds).\n20\t */\n21\t\n22\tconst BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;\n23\tconst SESSION = \"occ-trust-test\";\n24\t\n25\tfunction tmux(args: string[]): string {\n26\t  try {\n27\t    return execFileSync(\"tmux\", args, { encoding: \"utf8\", timeout: 10_000 });\n28\t  } catch {\n29\t    return \"\";\n30\t  }\n31\t}\n32\t\n33\tfunction sessionAlive(): boolean {\n34\t  try {\n35\t    return execSync(\"tmux list-sessions 2>/dev/null\", { encoding: \"utf8\" }).includes(SESSION);\n36\t  } catch {\n37\t    return false;\n38\t  }\n39\t}\n40\t\n41\t/** A fresh temp HOME seeded to skip onboarding but NOT trust / bypass acceptance. */\n42\tfunction freshSeededHome(): string {\n43\t  const home = mkdtempSync(join(tmpdir(), \"occ-trust-\"));\n44\t  writeFileSync(\n45\t    join(home, \".claude.json\"),\n46\t    JSON.stringify({\n47\t      numStartups: 1,\n48\t      firstStartTime: \"2026-07-06T00:00:00.000Z\",\n49\t      migrationVersion: 11,\n50\t      userID: \"occ-trust-seed-0000000000000000000000000000000000000000000000aa\",\n51\t      hasCompletedOnboarding: true,\n52\t      lastOnboardingVersion: \"2.1.200\",\n53\t      lastReleaseNotesSeen: \"2.1.200\",\n54\t      projects: {},\n55\t    }),\n56\t  );\n57\t  return home;\n58\t}\n59\t\n60\tfunction startRepl(home: string, extraArgs: string[] = []) {\n61\t  execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);\n62\t  const envStr = Object.entries(process.env)\n63\t    .filter(([k]) => k.startsWith(\"ANTHROPIC\"))\n64\t    .map(([k, v]) => `${k}='${v}'`)\n65\t    .join(\" \");\n66\t  const args = extraArgs.join(\" \");\n67\t  execSync(\n68\t    `tmux new-session -d -s ${SESSION} -x 200 -y 50 \"env HOME='${home}' ${envStr} ${BIN} ${args}\"`,\n69\t    { timeout: 5_000 },\n70\t  );\n71\t}\n72\t\n73\tfunction killRepl() {\n74\t  execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);\n75\t}\n76\t\n77\tfunction sendKeys(keys: string) {\n78\t  tmux([\"send-keys\", \"-t\", SESSION, ...keys.split(\" \")]);\n79\t}\n80\t\n81\tfunction capturePane(): string {\n82\t  return tmux([\"capture-pane\", \"-t\", SESSION, \"-p\", \"-S\", \"-\"]);\n83\t}\n84\t\n85\t/** Poll capture-pane until `substr` appears or timeout. */\n86\tasync function waitForText(substr: string, timeoutMs = 20_000): Promise<boolean> {\n87\t  const deadline = Date.now() + timeoutMs;\n88\t  while (Date.now() < deadline) {\n89\t    if (capturePane().toLowerCase().includes(substr.toLowerCase())) return true;\n90\t    await new Promise((r) => setTimeout(r, 200));\n91\t  }\n92\t  return false;\n93\t}\n94\t\n95\t/** Poll until the tmux session is gone (the CLI exited). */\n96\tasync function waitForExit(timeoutMs = 10_000): Promise<boolean> {\n97\t  const deadline = Date.now() + timeoutMs;\n98\t  while (Date.now() < deadline) {\n99\t    if (!sessionAlive()) return true;\n100\t    await new Promise((r) => setTimeout(r, 200));\n101\t  }\n102\t  return false;\n103\t}\n104\t\n105\tfunction readSettingsTrust(home: string): { trust?: boolean; bypass?: boolean } {\n106\t  const cfgPath = join(home, \".claude.json\");\n107\t  const settingsPath = join(home, \".claude\", \"settings.json\");\n108\t  const out: { trust?: boolean; bypass?: boolean } = {};\n109\t  if (existsSync(cfgPath)) {\n110\t    try {\n111\t      const cfg = JSON.parse(readFileSync(cfgPath, \"utf8\"));\n112\t      const projects = cfg.projects ?? {};\n113\t      // trust is stored per-project; find any project with the flag.\n114\t      for (const k of Object.keys(projects)) {\n115\t        if (projects[k]?.hasTrustDialogAccepted) out.trust = true;\n116\t      }\n117\t    } catch {}\n118\t  }\n119\t  if (existsSync(settingsPath)) {\n120\t    try {\n121\t      out.bypass = !!JSON.parse(readFileSync(settingsPath, \"utf8\")).skipDangerousModePermissionPrompt;\n122\t    } catch {}\n123\t  }\n124\t  return out;\n125\t}\n126\t\n127\tdescribe.skipIf(!!process.env.CI || !process.env.ANTHROPIC_API_KEY)(\"Trust gate (tmux e2e, fresh HOME)\", () => {\n128\t  test(\"fresh project shows trust dialog; default Enter accepts → prompt\", async () => {\n129\t    const home = freshSeededHome();\n130\t    startRepl(home);\n131\t    try {\n132\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n133\t      const pane = capturePane();\n134\t      expect(pane).toContain(\"Yes, I trust this folder\");\n135\t      expect(pane).toContain(\"No, exit\");\n136\t\n137\t      // Default cursor is on \"Yes\" (first option) → Enter accepts.\n138\t      sendKeys(\"Enter\");\n139\t      expect(await waitForText(\"for shortcuts\", 15_000)).toBe(true);\n140\t\n141\t      // Trust persisted to .claude.json\n142\t      expect(readSettingsTrust(home).trust).toBe(true);\n143\t    } finally {\n144\t      killRepl();\n145\t      rmSync(home, { recursive: true, force: true });\n146\t    }\n147\t  }, 60_000);\n148\t\n149\t  test(\"second boot in same HOME skips the trust dialog\", async () => {\n150\t    const home = freshSeededHome();\n151\t    startRepl(home);\n152\t    try {\n153\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n154\t      sendKeys(\"Enter\"); // accept\n155\t      expect(await waitForText(\"for shortcuts\", 15_000)).toBe(true);\n156\t      killRepl();\n157\t\n158\t      // Reboot in the same HOME — trust already persisted.\n159\t      startRepl(home);\n160\t      expect(await waitForText(\"for shortcuts\", 15_000)).toBe(true);\n161\t      expect(capturePane().toLowerCase()).not.toContain(\"quick safety check\");\n162\t    } finally {\n163\t      killRepl();\n164\t      rmSync(home, { recursive: true, force: true });\n165\t    }\n166\t  }, 60_000);\n167\t\n168\t  test(\"'No, exit' exits the session\", async () => {\n169\t    const home = freshSeededHome();\n170\t    startRepl(home);\n171\t    try {\n172\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n173\t      sendKeys(\"Down\"); // move to \"No, exit\"\n174\t      sendKeys(\"Enter\");\n175\t      expect(await waitForExit(10_000)).toBe(true);\n176\t      // Decline must NOT persist trust.\n177\t      expect(readSettingsTrust(home).trust).not.toBe(true);\n178\t    } finally {\n179\t      killRepl();\n180\t      rmSync(home, { recursive: true, force: true });\n181\t    }\n182\t  }, 40_000);\n183\t\n184\t  test(\"bypass dialog: default cursor = 'No, exit'; Enter exits, no persist\", async () => {\n185\t    const home = freshSeededHome();\n186\t    startRepl(home, [\"--dangerously-skip-permissions\"]);\n187\t    try {\n188\t      // Trust dialog first (always shown).\n189\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n190\t      sendKeys(\"Enter\"); // accept trust\n191\t      // Bypass dialog next.\n192\t      expect(await waitForText(\"Bypass Permissions mode\", 15_000)).toBe(true);\n193\t      const pane = capturePane();\n194\t      expect(pane).toContain(\"No, exit\");\n195\t      expect(pane).toContain(\"Yes, I accept\");\n196\t      // Default cursor is \"No, exit\" → Enter declines → exit.\n197\t      sendKeys(\"Enter\");\n198\t      expect(await waitForExit(10_000)).toBe(true);\n199\t      expect(readSettingsTrust(home).bypass).not.toBe(true);\n200\t    } finally {\n201\t      killRepl();\n202\t      rmSync(home, { recursive: true, force: true });\n203\t    }\n204\t  }, 60_000);\n205\t\n206\t  test(\"bypass accept persists (one-time); second boot skips bypass dialog\", async () => {\n207\t    const home = freshSeededHome();\n208\t    startRepl(home, [\"--dangerously-skip-permissions\"]);\n209\t    try {\n210\t      expect(await waitForText(\"Quick safety check\", 20_000)).toBe(true);\n211\t      sendKeys(\"Enter\"); // accept trust\n212\t      expect(await waitForText(\"Bypass Permissions mode\", 15_000)).toBe(true);\n213\t      sendKeys(\"Down\"); // move to \"Yes, I accept\"\n214\t      sendKeys(\"Enter\");\n215\t      // Bypass-mode prompt footer contains \"shift+tab\".\n216\t      expect(await waitForText(\"shift+tab\", 15_000)).toBe(true);\n217\t      expect(readSettingsTrust(home).bypass).toBe(true);\n218\t      killRepl();\n219\t\n220\t      // Reboot: trust + bypass acceptance persisted → straight to bypass prompt.\n221\t      startRepl(home, [\"--dangerously-skip-permissions\"]);\n222\t      expect(await waitForText(\"shift+tab\", 15_000)).toBe(true);\n223\t      expect(capturePane().toLowerCase()).not.toContain(\"bypass permissions mode\");\n224\t    } finally {\n225\t      killRepl();\n226\t      rmSync(home, { recursive: true, force: true });\n227\t    }\n228\t  }, 60_000);\n229\t});\n230\t"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_60eee794165b40b68bebd3c1",
+        "name": "TaskOutput",
+        "input": {
+          "task_id": "b3xtqmkgj",
+          "block": false,
+          "timeout": 5000
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_60eee794165b40b68bebd3c1",
+        "type": "tool_result",
+        "content": "<retrieval_status>not_ready</retrieval_status>\n\n<task_id>b3xtqmkgj</task_id>\n\n<task_type>local_bash</task_type>\n\n<status>running</status>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_0efd9eb46cfa4862adf979e1",
+        "name": "Bash",
+        "input": {
+          "command": "wc -l /tmp/test-output-full.txt 2>/dev/null; tail -5 /tmp/test-output-full.txt 2>/dev/null",
+          "description": "Check test progress"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_0efd9eb46cfa4862adf979e1",
+        "type": "tool_result",
+        "content": "1 /tmp/test-output-full.txt\nbun test v1.3.14 (0d9b296a)",
+        "is_error": false
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_ad30f3eee2b242a58b024c33",
+        "name": "Read",
+        "input": {
+          "file_path": "[CWD]/CLAUDE.md"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_ad30f3eee2b242a58b024c33",
+        "type": "tool_result",
+        "content": "1\t# CLAUDE.md\n2\t\n3\tThis file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.\n4\t\n5\t## Project Overview\n6\t\n7\tThis is an **independent open-source implementation** of a Claude Code–style coding agent. The goal is to provide core coding-agent functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. The codebase has ~1341 tsc type errors (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.\n8\t\n9\t## Commands\n10\t\n11\t```bash\n12\t# Install dependencies\n13\tbun install\n14\t\n15\t# Dev mode (direct execution via Bun). Version prints as 888 when working.\n16\tbun run dev\n17\t# equivalent to: bun run src/entrypoints/cli.tsx\n18\t\n19\t# Pipe mode\n20\techo \"say hello\" | bun run src/entrypoints/cli.tsx -p\n21\t\n22\t# Build (outputs dist/cli.js, ~25MB)\n23\tbun run build\n24\t\n25\t# Lint / format (Biome — formatter is DISABLED to avoid massive diffs; lint only)\n26\tbun run lint\n27\tbun run lint:fix\n28\tbun run format\n29\t\n30\t# Tests (Bun test runner; config in bunfig.toml, root=\".\", timeout=10000)\n31\tbun test\n32\tbun test test/e2e               # run a directory\n33\tbun test path/to/file.test.ts   # run a single file\n34\t\n35\t# Detect unused exports/dependencies\n36\tbun run check:unused            # knip — config in knip.json\n37\t\n38\t# Code health check\n39\tbun run health                  # scripts/health-check.ts\n40\t```\n41\t\n42\tRequires Bun >= 1.3.11 (use `bun upgrade` — older Bun causes spurious errors). Requires a valid Anthropic API key (or Bedrock/Vertex creds).\n43\t\n44\tA `pre-commit` hook (`.githooks/`, wired via `bun run prepare` → `core.hooksPath .githooks`) runs `biome lint` on staged `src/*.{ts,tsx,js,jsx}` files. Bypass with `--no-verify` when lint errors are from pre-existing noise.\n45\t\n46\t## Architecture\n47\t\n48\t### Runtime & Build\n49\t\n50\t- **Runtime**: Bun (not Node.js). All imports, builds, and execution use Bun APIs.\n51\t- **Build**: `bun build src/entrypoints/cli.tsx --outdir dist --target bun` — single-file bundle.\n52\t- **Module system**: ESM (`\"type\": \"module\"`), TSX with `react-jsx` transform.\n53\t- **Monorepo**: Bun workspaces — internal packages live in `packages/` resolved via `workspace:*`.\n54\t\n55\t### Entry & Bootstrap\n56\t\n57\t1. **`src/entrypoints/cli.tsx`** — True entrypoint. Injects runtime polyfills at the top:\n58\t   - `feature()` always returns `false` (all feature flags disabled, skipping unimplemented branches).\n59\t   - `globalThis.MACRO` — simulates build-time macro injection (VERSION, BUILD_TIME, etc.).\n60\t   - `BUILD_TARGET`, `BUILD_ENV`, `INTERFACE_TYPE` globals.\n61\t2. **`src/main.tsx`** — Commander.js CLI definition. Parses args, initializes services (auth, analytics, policy), then launches the REPL or runs in pipe mode.\n62\t3. **`src/entrypoints/init.ts`** — One-time initialization (telemetry, config, trust dialog).\n63\t\n64\tOther entrypoints in `src/entrypoints/`: `mcp.ts` (runs Claude Code as an MCP server, exposing commands like `/review` as tools), and `sdk/` (type definitions + schemas for the `@anthropic-ai/claude-agent-sdk` surface: `coreTypes`, `controlTypes`, `runtimeTypes`, `settingsTypes`, `toolTypes`). The `sdk/` types are the public SDK contract — generated files are marked `.generated.ts`.\n65\t\n66\t### Core Loop\n67\t\n68\t- **`src/query.ts`** — The main API query function. Sends messages to Claude API, handles streaming responses, processes tool calls, and manages the conversation turn loop.\n69\t- **`src/QueryEngine.ts`** — Higher-level orchestrator wrapping `query()`. Manages conversation state, compaction, file history snapshots, attribution, and turn-level bookkeeping. Used by the REPL screen.\n70\t- **`src/screens/REPL.tsx`** — The interactive REPL screen (React/Ink component). Handles user input, message display, tool permission prompts, and keyboard shortcuts.\n71\t\n72\t### API Layer\n73\t\n74\t- **`src/services/api/claude.ts`** — Core API client. Builds request params (system prompt, messages, tools, betas), calls the Anthropic SDK streaming endpoint, and processes `BetaRawMessageStreamEvent` events.\n75\t- Supports multiple providers: Anthropic direct, AWS Bedrock, Google Vertex, Azure.\n76\t- Provider selection in `src/utils/model/providers.ts`.\n77\t\n78\t### Tool System\n79\t\n80\t- **`src/Tool.ts`** — Tool interface definition (`Tool` type) and utilities (`findToolByName`, `toolMatchesName`).\n81\t- **`src/tools.ts`** — Tool registry. Assembles the tool list; some tools are conditionally loaded via `feature()` flags or `process.env.USER_TYPE`.\n82\t- **`src/tools/<ToolName>/`** — Each tool in its own directory (e.g., `BashTool`, `FileEditTool`, `GrepTool`, `AgentTool`).\n83\t- Tools define: `name`, `description`, `inputSchema` (JSON Schema), `call()` (execution), and optionally a React component for rendering results.\n84\t\n85\t### UI Layer (Ink)\n86\t\n87\t- **`src/ink.ts`** — Ink render wrapper with ThemeProvider injection.\n88\t- **`src/ink/`** — Custom Ink framework (forked/internal): custom reconciler, hooks (`useInput`, `useTerminalSize`, `useSearchHighlight`), virtual list rendering.\n89\t- **`src/components/`** — React components rendered in terminal via Ink. Key ones:\n90\t  - `App.tsx` — Root provider (AppState, Stats, FpsMetrics).\n91\t  - `Messages.tsx` / `MessageRow.tsx` — Conversation message rendering.\n92\t  - `PromptInput/` — User input handling.\n93\t  - `permissions/` — Tool permission approval UI.\n94\t- Components use React Compiler runtime (`react/compiler-runtime`) — output has `_c()` memoization calls throughout.\n95\t\n96\t### State Management\n97\t\n98\t- **`src/state/AppState.tsx`** — Central app state type and context provider. Contains messages, tools, permissions, MCP connections, etc.\n99\t- **`src/state/store.ts`** — Zustand-style store for AppState.\n100\t- **`src/bootstrap/state.ts`** — Module-level singletons for session-global state (session ID, CWD, project root, token counts).\n101\t\n102\t### Context & System Prompt\n103\t\n104\t- **`src/context.ts`** — Builds system/user context for the API call (git status, date, CLAUDE.md contents, memory files).\n105\t- **`src/utils/claudemd.ts`** — Discovers and loads CLAUDE.md files from project hierarchy.\n106\t\n107\t### Feature Flag System\n108\t\n109\tAll `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In this build, `feature()` is polyfilled to always return `false` in `cli.tsx`. This means all internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) are disabled.\n110\t\n111\t### Stubbed/Deleted Modules\n112\t\n113\t| Module | Status |\n114\t|--------|--------|\n115\t| Computer Use (`@ant/*`) | Stub packages in `packages/@ant/` |\n116\t| `*-napi` packages (audio, image, url, modifiers) | Stubs in `packages/` (except `color-diff-napi` which is fully implemented) |\n117\t| Analytics / GrowthBook / Sentry | Empty implementations |\n118\t| Magic Docs / Voice Mode / LSP Server | Removed |\n119\t| Plugins / Marketplace | Removed |\n120\t| MCP OAuth | Simplified |\n121\t\n122\t### Key Type Files\n123\t\n124\t- **`src/types/global.d.ts`** — Declares `MACRO`, `BUILD_TARGET`, `BUILD_ENV` and internal Anthropic-only identifiers.\n125\t- **`src/types/internal-modules.d.ts`** — Type declarations for `bun:bundle`, `bun:ffi`, `@anthropic-ai/mcpb`.\n126\t- **`src/types/message.ts`** — Message type hierarchy (UserMessage, AssistantMessage, SystemMessage, etc.).\n127\t- **`src/types/permissions.ts`** — Permission mode and result types.\n128\t\n129\t## Working with This Codebase\n130\t\n131\t- **Don't try to fix all tsc errors** — they don't affect runtime. `tsconfig.json` has `strict: false` and `skipLibCheck: true`; `tsc` is not part of CI. Lint (Biome) is the gate, and many `suspicious` rules are deliberately off (see `biome.json`) to tolerate the loose output.\n132\t- **`feature()` is always `false`** — any code behind a feature flag is dead code in this build.\n133\t- **React Compiler output** — Components have memoization boilerplate (`const $ = _c(N)`). This is normal.\n134\t- **`bun:bundle` import** — In `src/main.tsx` and other files, `import { feature } from 'bun:bundle'` works at build time. At dev-time, the polyfill in `cli.tsx` provides it.\n135\t- **`src/` path alias** — tsconfig maps `src/*` to `./src/*`. Imports like `import { ... } from 'src/utils/...'` are valid.\n136\n\n<system-reminder>\nThe TodoWrite tool hasn't been used recently. If you're working on tasks that would benefit from tracking progress, consider using the TodoWrite tool to track progress. Also consider cleaning up the todo list if has become stale and no longer matches what you are working on. Only use it if it's relevant to the current work. This is just a gentle reminder - ignore if not applicable. Make sure that you NEVER mention this reminder to the user\n\n</system-reminder>"
+      }
+    ],
+    [
+      null,
+      {
+        "type": "tool_use",
+        "id": "toolu_8376f06029d34f1da5102f1f",
+        "name": "TodoWrite",
+        "input": {
+          "todos": [
+            {
+              "content": "Run full test suite and identify all failures",
+              "status": "in_progress",
+              "activeForm": "Running full test suite and identifying all failures"
+            },
+            {
+              "content": "Fix failing tests",
+              "status": "pending",
+              "activeForm": "Fixing failing tests"
+            },
+            {
+              "content": "Re-run tests to verify all pass",
+              "status": "pending",
+              "activeForm": "Re-running tests to verify all pass"
+            }
+          ]
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_8376f06029d34f1da5102f1f",
+        "type": "tool_result",
+        "content": "Todos have been modified successfully. Ensure that you continue to use the todo list to track your progress. Please proceed with the current tasks if applicable"
+      }
+    ],
+    [
+      {
+        "type": "tool_use",
+        "id": "toolu_6d0878008a3b4a6a9c84c33d",
+        "name": "Bash",
+        "input": {
+          "command": "git log --oneline -20",
+          "description": "Check recent git history"
+        }
+      },
+      {
+        "type": "tool_use",
+        "id": "toolu_48db27ae08be4053b99bd070",
+        "name": "Bash",
+        "input": {
+          "command": "git status",
+          "description": "Check git status"
+        }
+      }
+    ],
+    [
+      {
+        "tool_use_id": "toolu_6d0878008a3b4a6a9c84c33d",
+        "type": "tool_result",
+        "content": "9e330cb feat(daemon): B1-B5 background-agent supervisor + lockfile + worker registry + ERESPAWN + CLI (B1,B2,B3,B4,B5)\nf0b8f53 feat(fleetview): inline navigable agent/workflow list below input (Phase 1)\n68a0d84 fix(ultracode-ux): badge color uses theme system (color('effortUltra',themeName)) not hardcoded chalk.rgb\nd2f7339 fix(ultracode-ux): badge color uses chalk.rgb(135,0,255) matching official Ro('effortUltra',theme)\nc1ef320 fix(ultracode-ux): /effort argumentHint includes ultracode + badge color = ansi magentaBright\n12591e2 fix(ultracode-ux): badge text = just \"ultracode\" (symbol mode) + effortUltra purple color\n9293b86 fix(ultracode-ux): keyword-trigger badge reactivity via polling + AppState field\n2655a9f feat(ultracode-ux): input-box blue+shimmer highlight + persistent top-right effort badge\need282c feat(workflow-ui): progress tree + /workflows dialog + permission dialog + result display\ne18caa4 feat(workflow): COMPLETE Workflow engine — real VM + all primitives + journal + /workflows (K3 engine)\n758b986 feat: /skills sort-by-token + Ctrl+G editor context + subagent-spawn classifier + Did-you-mean (I12,I13,G11,E32)\ne4ea2b0 fix: occ -p hung — KAIROS/UDS_INBOX flags re-enable blocking subsystems (2.1.243 hotfix)\n951b4ac feat(commands): --from-pr / /resume PR-URL accepts GitHub/GitLab/Bitbucket (E31)\n437dd9d feat(model): Bedrock Sonnet inference profile + Mantle provider + enable Monitor/Push/ListAgents flags (A14,A15,enable-H1H2H3)\n900d6b3 test: fix CI failures — stale usage-credits + removed-commands + skip real-coding in CI\n5179695 feat(commands): /tui + /focus + /powerup + opusplan-1M + /branch fork fix + /context tokenizer (E3,E4,E5,J16,J17,J18)\n843b766 feat(tools): Monitor + PushNotification + ListAgents real impls + gh rate-limit hint (H1,H2,H3,H10)\n897367b feat(config): worktree bgIsolation + DISABLE_AGENT_VIEW + SCRIPT_CAPS + API_FORCE_IDLE_TIMEOUT + sandbox.allowAppleEvents + attribution.sessionUrl + CLIENT_PRESENCE_FILE + teammateMode iterm2 (F6,F7,F8,F16,F19,F20,F21,F22)\n468ced5 feat(arch): wire ultracode reminder + lean-prompt into query loop (K3-wire)\n8774b1b feat(ui): /diff scroll + Ctrl+U/Y hint + switch-to-auto option + Auto theme (I2,I4,I5,I11)",
+        "is_error": false
+      },
+      {
+        "tool_use_id": "toolu_48db27ae08be4053b99bd070",
+        "type": "tool_result",
+        "content": "On branch main\nYour branch is up to date with 'origin/main'.\n\nChanges not staged for commit:\n  (use \"git add <file>...\" to update what will be committed)\n  (use \"git restore <file>...\" to discard changes in working directory)\n\tmodified:   src/entrypoints/cli.tsx\n\tmodified:   src/migrations/resetProToOpusDefault.ts\n\tmodified:   src/utils/auth.ts\n\tmodified:   src/utils/config.ts\n\tmodified:   test/e2e/commands-behavior.e2e.test.ts\n\tmodified:   test/e2e/goal-gate.e2e.test.ts\n\tmodified:   test/e2e/goal-panel.e2e.test.ts\n\tmodified:   test/e2e/mcp-connection-nonblocking.e2e.test.ts\n\tmodified:   test/e2e/real-coding.e2e.test.ts\n\tmodified:   test/e2e/repl-interactive.e2e.test.ts\n\tmodified:   test/e2e/trust-gate.e2e.test.ts\n\tmodified:   test/e2e/version-2.1.139-goal.e2e.test.ts\n\nUntracked files:\n  (use \"git add <file>...\" to include in what will be committed)\n\tfixtures/\n\nno changes added to commit (use \"git add\" and/or \"git commit -a\")",
+        "is_error": false
+      }
+    ]
+  ],
+  "output": [
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_start",
+        "message": {
+          "id": "msg_7809d92d-09f6-4351-91aa-049a28541052",
+          "type": "message",
+          "role": "assistant",
+          "model": "glm-5.2",
+          "content": [],
+          "stop_reason": null,
+          "stop_sequence": null,
+          "usage": {
+            "input_tokens": 24656,
+            "output_tokens": 0
+          }
+        }
+      },
+      "ttftMs": 3459
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 0,
+        "content_block": {
+          "type": "thinking",
+          "thinking": "",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "There"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " are un"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "committed"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " changes."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " Let me"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " check"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " the diff"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " to understand"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " what changes"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " have been"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " made."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " The"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " modified files"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " include both"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " source and"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " files."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " Let me"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " look at"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " the"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " diffs to"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " understand what"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "'s happening"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": ".\n\nLet"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " me also"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " check if"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " the tests"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " are still"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " running."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 0,
+        "delta": {
+          "type": "signature_delta",
+          "signature": ""
+        }
+      }
+    },
+    {
+      "uuid": "UUID-32",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T09:56:42.901Z",
+      "message": {
+        "id": "msg_7809d92d-09f6-4351-91aa-049a28541052",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "thinking",
+            "thinking": "There are uncommitted changes. Let me check the diff to understand what changes have been made. The modified files include both source and test files. Let me look at the diffs to understand what's happening.\n\nLet me also check if the tests are still running.",
+            "signature": ""
+          }
+        ],
+        "stop_reason": null,
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 24656,
+          "output_tokens": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 1,
+        "content_block": {
+          "type": "text",
+          "text": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": "There"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " are un"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": "committed"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " changes to"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " both source"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " and test"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " files."
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " Let me"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " check the"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " diffs"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " while waiting"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": " for tests"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 1,
+        "delta": {
+          "type": "text_delta",
+          "text": "."
+        }
+      }
+    },
+    {
+      "uuid": "UUID-48",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T09:56:43.325Z",
+      "message": {
+        "id": "msg_7809d92d-09f6-4351-91aa-049a28541052",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "text",
+            "text": "There are uncommitted changes to both source and test files. Let me check the diffs while waiting for tests.",
+            "citations": []
+          }
+        ],
+        "stop_reason": null,
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 24656,
+          "output_tokens": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "index": 2,
+        "content_block": {
+          "type": "tool_use",
+          "id": "toolu_6bc513252a29487c8d2d8cc6",
+          "name": "Bash",
+          "input": {}
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "{"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"command\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"git"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " diff --"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "stat\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": ", "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"description\": "
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "\"Check diff"
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": " stats\""
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_delta",
+        "index": 2,
+        "delta": {
+          "type": "input_json_delta",
+          "partial_json": "}"
+        }
+      }
+    },
+    {
+      "uuid": "UUID-62",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-07T09:56:43.581Z",
+      "message": {
+        "id": "msg_7809d92d-09f6-4351-91aa-049a28541052",
+        "type": "message",
+        "role": "assistant",
+        "model": "glm-5.2",
+        "content": [
+          {
+            "type": "tool_use",
+            "id": "toolu_6bc513252a29487c8d2d8cc6",
+            "name": "Bash",
+            "input": {
+              "command": "git diff --stat",
+              "description": "Check diff stats"
+            }
+          }
+        ],
+        "stop_reason": "tool_use",
+        "stop_sequence": null,
+        "usage": {
+          "input_tokens": 1103,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 35200,
+          "output_tokens": 97,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 2
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_delta",
+        "delta": {
+          "stop_reason": "tool_use",
+          "stop_sequence": null
+        },
+        "usage": {
+          "input_tokens": 1103,
+          "output_tokens": 97,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 35200,
+          "prompt_tokens_details": {
+            "cached_tokens": 35200
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_stop"
+      }
+    }
+  ]
+}
