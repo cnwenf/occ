@@ -1,12 +1,14 @@
 import { c as _c } from "react/compiler-runtime";
 import { marked, type Token, type Tokens } from 'marked';
-import React, { Suspense, use, useMemo, useRef } from 'react';
+import React, { Suspense, use, useMemo, useRef, useSyncExternalStore } from 'react';
 import { useSettings } from '../hooks/useSettings.js';
-import { Ansi, Box, useTheme } from '../ink.js';
+import { Ansi, Box, Text, useTheme } from '../ink.js';
+import { BLACK_CIRCLE } from '../constants/figures.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
 import { configureMarked, formatToken } from '../utils/markdown.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
+import { streamingTextStore } from './streamingTextStore.js';
 import type { ThemeName } from '../utils/theme.js';
 import { MarkdownTable } from './MarkdownTable.js';
 
@@ -279,4 +281,48 @@ export function StreamingMarkdown({
       {stablePrefix && <Markdown>{stablePrefix}</Markdown>}
       {unstableSuffix && <Markdown>{unstableSuffix}</Markdown>}
     </Box>;
+}
+
+/**
+ * Live streaming-assistant preview. Subscribes to the module-level
+ * streamingTextStore via useSyncExternalStore so each streaming token
+ * re-renders ONLY this leaf — not the entire REPL/Messages tree (2.1.203:
+ * "live-preview updates no longer re-render the whole screen"). The store is
+ * written to from REPL's onStreamingText callback without touching React
+ * state, so the prompt input, footer, and already-rendered message rows stay
+ * untouched while a long response streams.
+ *
+ * `showStreamingText` gates the preview (reduced-motion / terminal-bug guard);
+ * `isBriefOnly` hides it in brief mode — both are stable booleans that don't
+ * change per token, so they don't reintroduce per-token parent re-renders.
+ */
+export function StreamingPreview({
+  showStreamingText,
+  isBriefOnly
+}: {
+  showStreamingText: boolean;
+  isBriefOnly: boolean;
+}): React.ReactNode {
+  const text = useSyncExternalStore(
+    streamingTextStore.subscribe,
+    streamingTextStore.getSnapshot,
+    streamingTextStore.getSnapshot,
+  );
+  // Hide the in-progress source line so text streams line-by-line, not
+  // char-by-char (mirrors the REPL visibleStreamingText truncation).
+  const visible =
+    text && showStreamingText
+      ? text.substring(0, text.lastIndexOf('\n') + 1) || null
+      : null;
+  if (!visible || isBriefOnly) return null;
+  return <Box alignItems="flex-start" flexDirection="row" marginTop={1} width="100%">
+    <Box flexDirection="row">
+      <Box minWidth={2}>
+        <Text color="text">{BLACK_CIRCLE}</Text>
+      </Box>
+      <Box flexDirection="column">
+        <StreamingMarkdown>{visible}</StreamingMarkdown>
+      </Box>
+    </Box>
+  </Box>;
 }

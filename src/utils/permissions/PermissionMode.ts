@@ -56,7 +56,7 @@ const PERMISSION_MODE_CONFIG: Partial<
     // "default"; "manual" is accepted as an input alias (see below).
     title: 'Manual',
     shortTitle: 'Manual',
-    symbol: '',
+    symbol: PAUSE_ICON, // 2.1.203: grey ⏸ badge makes manual (default) mode always visible in the footer
     color: 'text',
     external: 'default',
   },

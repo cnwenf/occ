@@ -110,6 +110,7 @@ import { applyToolResultBudget } from './utils/toolResultStorage.js'
 import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
+import { buildHarnessReminderMessage } from './query/harnessReminder.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
 import { feature } from 'src/utils/featureFlags.js'
@@ -684,19 +685,22 @@ async function* queryLoop(
         try {
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
-          // K3 (ultracode): when ultracode is active for the session, prepend
-          // the verbatim "Ultracode is on…" meta system-reminder for this turn
-          // (mirrors the binary's ultra_effort_enter reminder builder — a
-          // per-turn isMeta user message). getUltracodeSystemReminder() returns
+          // K3 (ultracode) + 2.1.201: when ultracode is active for the session,
+          // prepend the verbatim "Ultracode is on…" meta reminder for this turn.
+          // 2.1.201: "Claude Sonnet 5 sessions no longer use the mid-conversation
+          // system role for harness reminders" — buildHarnessReminderMessage()
+          // applies the model-aware gate (shouldUseSystemRoleForHarnessReminders)
+          // and injects the reminder as a user-role isMeta message (the
+          // non-system path), never a standalone system-role message. Returns
           // null when ultracode is off, so the non-ultracode path is unchanged.
           const ultracodeReminder = getUltracodeSystemReminder()
           const messagesForApi =
             ultracodeReminder !== null
               ? [
-                  createUserMessage({
-                    content: ultracodeReminder.content,
-                    isMeta: true,
-                  }),
+                  buildHarnessReminderMessage(
+                    ultracodeReminder,
+                    currentModel,
+                  ),
                   ...prependUserContext(messagesForQuery, userContext),
                 ]
               : prependUserContext(messagesForQuery, userContext)

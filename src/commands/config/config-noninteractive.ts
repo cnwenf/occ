@@ -22,6 +22,7 @@ const CONFIG_KEYS: { key: string; hint?: string; label: string }[] = [
   { key: 'copyFullResponse', hint: 'true|false', label: 'Skip the /copy picker' },
   { key: 'copyOnSelect', hint: 'true|false', label: 'Copy on select' },
   { key: 'editor', hint: 'normal|vim', label: 'Editor mode' },
+  { key: 'dynamicWorkflowSize', hint: 'small|medium|large', label: 'Dynamic workflow size' },
   { key: 'model', hint: 'model', label: 'Model' },
   { key: 'outputStyle', hint: 'style', label: 'Output style' },
   { key: 'permissionMode', hint: 'default|acceptEdits|plan|bypassPermissions', label: 'Default permission mode' },
@@ -64,6 +65,7 @@ const ENUM_KEYS: Record<string, string[]> = {
   thinking: ['enabled', 'adaptive', 'disabled'],
   permissionMode: ['default', 'acceptEdits', 'plan', 'bypassPermissions'],
   worktreeBaseRef: ['fresh', 'head'],
+  dynamicWorkflowSize: ['small', 'medium', 'large'],
 }
 
 function getSettingsSchemaKeys(): Set<string> {
@@ -131,8 +133,8 @@ export async function call(args: string, context: LocalJSXCommandContext): Promi
         context.setAppState((s: any) => ({ ...s, [key]: parsed.val }))
       } else {
         try {
-          const existing = getSettingsForSource('user' as any) ?? ({} as any)
-          updateSettingsForSource('user' as any, { ...existing, [key]: parsed.val } as any)
+          const existing = getSettingsForSource('userSettings') ?? ({} as any)
+          updateSettingsForSource('userSettings', { ...existing, [key]: parsed.val } as any)
         } catch {}
       }
       // C1: emit parsed value (true/false), not raw input
@@ -151,8 +153,8 @@ export async function call(args: string, context: LocalJSXCommandContext): Promi
     try {
       const schemaKeys = getSettingsSchemaKeys()
       if (schemaKeys.has(key)) {
-        const existing = getSettingsForSource('user' as any) ?? ({} as any)
-        const r = updateSettingsForSource('user' as any, { ...existing, [key]: value } as any)
+        const existing = getSettingsForSource('userSettings') ?? ({} as any)
+        const r = updateSettingsForSource('userSettings', { ...existing, [key]: value } as any)
         if (r.error) {
           return { type: 'text', value: `Couldn't save ${label}: ${r.error.message}` }
         }

@@ -13,6 +13,23 @@ const EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 const CODE_REVIEW_ARGUMENT_HINT =
   '[low|medium|high|xhigh|max] [--fix] [--comment] [<target>]'
 
+// 2.1.204 (#19): /code-review <level> <pr#>. The <target> may be a PR number,
+// a branch name, or omitted (reviews the current working diff). Mirrors the
+// official usage message: "PR number, a branch name, or no argument".
+const CODE_REVIEW_USAGE = `Usage: /code-review ${CODE_REVIEW_ARGUMENT_HINT}
+
+Multi-agent code review at a chosen effort level. The target may be a PR number, a branch name, or no argument (reviews your current working diff).
+
+- Effort: ${EFFORT_LEVELS.join(', ')} (default: high). Lower levels return fewer, high-confidence findings; higher levels broaden coverage and may include uncertain findings.
+- --fix: apply the verified findings to the working tree after the review.
+- --comment: post the verified findings as inline PR comments.
+
+Examples:
+  /code-review                # review your working diff at high effort
+  /code-review medium         # review working diff at medium effort
+  /code-review high 1234      # review GitHub PR #1234 at high effort
+  /code-review max --fix 1234 # review PR #1234 at max effort and apply fixes`
+
 // Per-effort finder budget. high/xhigh/max are verbatim from the official
 // 2.1.200 binary; low/medium are the smaller tiers that precede them.
 const EFFORT_CONFIG: Record<
@@ -46,22 +63,32 @@ const CODE_REVIEW_PROMPT = (opts: {
   fix: boolean
   comment: boolean
   target: string
+  prNumber?: string
 }) => {
   const cfg = EFFORT_CONFIG[opts.effort] ?? EFFORT_CONFIG.high
   const cleanupBudget = CLEANUP_ANGLES.length * cfg.perAngle
-  const targetLine = opts.target ? `\nReview target: \`${opts.target}\`\n` : ''
+  // 2.1.204 (#19): a numeric target is a GitHub PR number — fetch its diff
+  // with `gh pr diff` instead of the local working diff.
+  const targetLine = opts.prNumber
+    ? `\nReview target: GitHub pull request #${opts.prNumber}\n`
+    : opts.target
+      ? `\nReview target: \`${opts.target}\`\n`
+      : ''
   const modeLine = opts.fix
     ? '\nMode: --fix — apply the verified findings to the working tree after the review.\n'
     : opts.comment
       ? '\nMode: --comment — post the verified findings as inline PR comments.\n'
       : '\nMode: report only — present findings; do not edit files.\n'
+  const scopePhase = opts.prNumber
+    ? `This reviews GitHub PR #${opts.prNumber}. Run \`gh pr view ${opts.prNumber}\` for context (title, description, base) and \`gh pr diff ${opts.prNumber}\` to get the unified diff under review. Review ONLY the PR diff — do not use the local working diff.`
+    : `Run \`git diff\` (or \`git diff HEAD\` if staged changes exist) to gather the changed files, applicable CLAUDE.md files, and conventions. If there are no git changes, review the most recently modified files.`
   return `# Code Review${targetLine}${modeLine}
 Effort: ${opts.effort} → { correctnessAngles: ${cfg.correctnessAngles}, perAngle: ${cfg.perAngle}, maxFindings: ${cfg.maxFindings}, sweep: ${cfg.sweep} }
 
 Workflow: Scope → Find (barrier) → group-by-location → Verify → Sweep (xhigh/max) → Synthesize
 
 ## Phase 1: Scope
-Run \`git diff\` (or \`git diff HEAD\` if staged changes exist) to gather the changed files, applicable CLAUDE.md files, and conventions. If there are no git changes, review the most recently modified files.
+${scopePhase}
 
 ## Phase 2: Find (barrier)
 One finder per correctness angle plus one finder covering all cleanup angles, pooled before verify.
@@ -118,6 +145,7 @@ function parseCodeReviewArgs(args: string): {
   fix: boolean
   comment: boolean
   target: string
+  prNumber?: string
 } {
   const tokens = args.trim().split(/\s+/).filter(Boolean)
   let effort = 'high'
@@ -136,7 +164,12 @@ function parseCodeReviewArgs(args: string): {
     }
     rest.push(tok)
   }
-  return { effort, fix, comment, target: rest.join(' ') }
+  const target = rest.join(' ')
+  // 2.1.204 (#19): a purely-numeric target is a GitHub PR number — review
+  // that PR's diff (gh pr diff) instead of the local working diff. Anything
+  // else (branch/path/file) stays a verbatim review target label.
+  const prNumber = /^\d+$/.test(target) ? target : undefined
+  return { effort, fix, comment, target: prNumber ? '' : target, prNumber }
 }
 
 export function registerCodeReviewSkill(): void {
@@ -149,8 +182,12 @@ export function registerCodeReviewSkill(): void {
     argumentHint: CODE_REVIEW_ARGUMENT_HINT,
     userInvocable: true,
     async getPromptForCommand(args) {
-      const { effort, fix, comment, target } = parseCodeReviewArgs(args)
-      return [{ type: 'text', text: CODE_REVIEW_PROMPT({ effort, fix, comment, target }) }]
+      const trimmed = args.trim()
+      if (trimmed === '--help' || trimmed === '-h') {
+        return [{ type: 'text', text: CODE_REVIEW_USAGE }]
+      }
+      const { effort, fix, comment, target, prNumber } = parseCodeReviewArgs(args)
+      return [{ type: 'text', text: CODE_REVIEW_PROMPT({ effort, fix, comment, target, prNumber }) }]
     },
   })
 }

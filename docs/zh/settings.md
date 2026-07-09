@@ -86,6 +86,12 @@ occ --settings '{"model":"opus"}'
 | `outputStyle` | string | 输出风格 |
 | `apiKeyHelper` | string | 获取 API key 的命令（`--bare` 模式下唯一可用的 key 来源，不读 OAuth/keychain） |
 
+### 工作流
+
+| 键 | 类型 | 说明 |
+|----|------|------|
+| `dynamicWorkflowSize` | `small` \| `medium` \| `large` | 动态 workflow 规模的参考值（agent 数量），非强制上限。`small` ≈ 3 个 agent，`medium`（默认）≈ 6，`large` ≈ 12。用 `/config dynamicWorkflowSize=large` 设置。 |
+
 ### 权限规则格式
 
 `permissions.allow` / `deny` / `ask` 是字符串数组，格式为工具名 + 可选参数模式：

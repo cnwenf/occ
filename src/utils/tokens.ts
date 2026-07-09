@@ -137,12 +137,14 @@ export function messageTokenCountFromLastAPIResponse(
   return 0
 }
 
-export function getCurrentUsage(messages: Message[]): {
+export type ContextUsage = {
   input_tokens: number
   output_tokens: number
   cache_creation_input_tokens: number
   cache_read_input_tokens: number
-} | null {
+}
+
+export function getCurrentUsage(messages: Message[]): ContextUsage | null {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i]
     const usage = message ? getTokenUsage(message) : undefined
@@ -156,6 +158,43 @@ export function getCurrentUsage(messages: Message[]): {
     }
   }
   return null
+}
+
+/**
+ * Memoized context-usage read for the context-usage indicator (StatusLine).
+ *
+ * 2.1.203 perf fix: the context-usage indicator no longer re-analyzes the
+ * transcript after every turn. StatusLine re-runs its update callback on
+ * refresh-interval ticks, permission-mode changes, and model changes — all
+ * of which can fire while the transcript is unchanged. Without a cache, each
+ * of those ticks re-walked the message array to re-derive the same usage.
+ *
+ * Cache key = (messageCount, lastAssistantMessageId): the usage the
+ * indicator displays comes from the last usage-bearing assistant message,
+ * so when both the message count and the last assistant id are stable the
+ * result is guaranteed identical. Recomputes only when the transcript
+ * actually changes.
+ */
+let _contextUsageCacheKey: string | null = null
+let _contextUsageCacheValue: ContextUsage | null = null
+
+export function getCachedContextUsage(
+  messages: Message[],
+  lastAssistantMessageId: string | null,
+): ContextUsage | null {
+  const key = `${messages.length}:${lastAssistantMessageId ?? ''}`
+  if (key === _contextUsageCacheKey) {
+    return _contextUsageCacheValue
+  }
+  _contextUsageCacheKey = key
+  _contextUsageCacheValue = getCurrentUsage(messages)
+  return _contextUsageCacheValue
+}
+
+/** Reset the context-usage memo cache. For unit tests only. */
+export function _resetContextUsageCacheForTesting(): void {
+  _contextUsageCacheKey = null
+  _contextUsageCacheValue = null
 }
 
 export function doesMostRecentAssistantMessageExceed200k(

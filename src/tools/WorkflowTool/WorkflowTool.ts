@@ -36,6 +36,7 @@ import {
 } from './WorkflowEngine.js'
 import { WorkflowJournal } from './journal.js'
 import { resolveWorkflowScript } from '../../utils/effort/workflowDiscovery.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { WorkflowProgressTree } from '../../components/WorkflowProgressTree.js'
 import {
   registerWorkflowTask,
@@ -116,6 +117,12 @@ type WorkflowProgressEvent = {
   cumulativeOutputTokens?: number
   recentActivities?: WorkflowAgentStat['recentActivities']
   lastActivity?: string
+  /** Model the agent runs with (short model-name column). */
+  model?: string
+  /** Agent start time (ms epoch) — live time column while running. */
+  startTime?: number
+  /** Final elapsed run time (ms) — time column once resolved. */
+  elapsedMs?: number
   line?: string
 }
 
@@ -195,6 +202,9 @@ function buildWorkflowProgressHandler(
             cumulativeOutputTokens: 0,
             recentActivities: [],
             lastActivity: undefined,
+            model: ev.model,
+            startTime: ev.startTime,
+            elapsedMs: undefined,
             isResolved: false,
             isError: false,
           })
@@ -215,6 +225,9 @@ function buildWorkflowProgressHandler(
             cumulativeOutputTokens: 0,
             recentActivities: [],
             lastActivity: undefined,
+            model: ev.model,
+            startTime: ev.startTime,
+            elapsedMs: undefined,
             isResolved: false,
             isError: false,
           }
@@ -226,6 +239,9 @@ function buildWorkflowProgressHandler(
         agent.cumulativeOutputTokens = ev.cumulativeOutputTokens ?? 0
         agent.recentActivities = ev.recentActivities ?? []
         agent.lastActivity = ev.lastActivity
+        if (ev.model !== undefined) agent.model = ev.model
+        if (ev.startTime !== undefined) agent.startTime = ev.startTime
+        if (ev.elapsedMs !== undefined) agent.elapsedMs = ev.elapsedMs
         agent.isResolved = agent.status === 'done'
         agent.isError = agent.status === 'error'
         if (agent.status === 'done') {
@@ -264,7 +280,15 @@ export const WorkflowTool = buildTool({
   searchHint: 'run a multi-agent workflow from a script',
   maxResultSizeChars: 100_000,
   async description() {
-    return DESCRIPTION
+    // 2.1.202: advisory dynamic-workflow-size hint from settings (not a cap).
+    const size = getInitialSettings()?.dynamicWorkflowSize ?? 'medium'
+    const sizeHint =
+      size === 'small'
+        ? 'When creating a dynamic workflow, prefer a small number of agents (~3).'
+        : size === 'large'
+          ? 'When creating a dynamic workflow, prefer a large number of agents (~12).'
+          : 'When creating a dynamic workflow, prefer a medium number of agents (~6).'
+    return `${DESCRIPTION} ${sizeHint} (Per the dynamicWorkflowSize setting — advisory, not a cap.)`
   },
   async prompt() {
     return `Use this tool to run a workflow script. The script must start with \`export const meta = { name, description, phases }\` and export a default async function: \`export default async ({ agent, parallel, pipeline, phase, log, budget, workflow, resolveWorkflow, args }) => { ... }\`.`

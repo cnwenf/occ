@@ -155,6 +155,7 @@ import { useMergedCommands } from '../hooks/useMergedCommands.js';
 import { useSkillsChange } from '../hooks/useSkillsChange.js';
 import { useManagePlugins } from '../hooks/useManagePlugins.js';
 import { Messages } from '../components/Messages.js';
+import { streamingTextStore } from '../components/streamingTextStore.js';
 import { TaskListV2 } from '../components/TaskListV2.js';
 import { TeammateViewHeader } from '../components/TeammateViewHeader.js';
 import { SlackChannelHeader } from '../components/SlackChannelHeader.js';
@@ -1490,19 +1491,23 @@ export function REPL({
   // Streaming text display: set state directly per delta (Ink's 16ms render
   // throttle batches rapid updates). Cleared on message arrival (messages.ts)
   // so displayedMessages switches from deferredMessages to messages atomically.
-  const [streamingText, setStreamingText] = useState<string | null>(null);
+  // Live streaming text lives in streamingTextStore (module-level), NOT REPL
+  // state — each token written to the store re-renders only the <StreamingPreview>
+  // leaf via useSyncExternalStore, so the whole screen no longer re-renders
+  // while a long response streams (2.1.203). hasStreamingText is a stable
+  // boolean that flips only at stream start/end (never per token) so Messages
+  // can mark collapsed_read_search groups past-tense without per-token churn.
+  const [hasStreamingText, setHasStreamingText] = useState(false);
   const reducedMotion = useAppState(s => s.settings.prefersReducedMotion) ?? false;
   const showStreamingText = !reducedMotion && !hasCursorUpViewportYankBug();
   const onStreamingText = useCallback((f: (current: string | null) => string | null) => {
     if (!showStreamingText) return;
-    setStreamingText(f);
+    const next = f(streamingTextStore.get());
+    streamingTextStore.set(next);
+    // No-op once already true → React skips the re-render, so this never
+    // causes per-token REPL re-renders (only the false↔true flip does).
+    setHasStreamingText(next !== null && next.trim() !== '');
   }, [showStreamingText]);
-
-  // Hide the in-progress source line so text streams line-by-line, not
-  // char-by-char. lastIndexOf returns -1 when no newline, giving '' → null.
-  // Guard on showStreamingText so toggling reducedMotion mid-stream
-  // immediately hides the streaming preview.
-  const visibleStreamingText = streamingText && showStreamingText ? streamingText.substring(0, streamingText.lastIndexOf('\n') + 1) || null : null;
   const [lastQueryCompletionTime, setLastQueryCompletionTime] = useState(0);
   const [spinnerMessage, setSpinnerMessage] = useState<string | null>(null);
   const [spinnerColor, setSpinnerColor] = useState<keyof Theme | null>(null);
@@ -1608,7 +1613,8 @@ export function REPL({
     // (same isQueryActive window) doesn't inherit a stale lastTokenTime.
     lastTokenTimeRef.current = Date.now();
     apiMetricsRef.current = [];
-    setStreamingText(null);
+    streamingTextStore.clear();
+    setHasStreamingText(false);
     setStreamingToolUses([]);
     setSpinnerMessage(null);
     setSpinnerColor(null);
@@ -1747,7 +1753,7 @@ export function REPL({
   !pendingWorkerRequest && !onlySleepToolActive && (
   // Hide spinner when streaming text is visible (the text IS the feedback),
   // but keep it when isBriefOnly suppresses the streaming text display
-  !visibleStreamingText || isBriefOnly);
+  !(hasStreamingText && showStreamingText) || isBriefOnly);
 
   // Check if any permission or ask question prompt is currently visible
   // This is used to prevent the survey from opening while prompts are active
@@ -2212,9 +2218,10 @@ export function REPL({
     // generated before pressing Esc. Pushed before resetLoadingState clears
     // streamingText, and before query.ts yields the async interrupt marker,
     // giving final order [user, partial-assistant, [Request interrupted by user]].
-    if (streamingText?.trim()) {
+    const partialStreamingText = streamingTextStore.get();
+    if (partialStreamingText?.trim()) {
       setMessages(prev => [...prev, createAssistantMessage({
-        content: streamingText
+        content: partialStreamingText
       })]);
     }
     resetLoadingState();
@@ -2986,7 +2993,8 @@ export function REPL({
       }
       apiMetricsRef.current = [];
       setStreamingToolUses([]);
-      setStreamingText(null);
+      streamingTextStore.clear();
+      setHasStreamingText(false);
 
       // messagesRef is updated synchronously by the setMessages wrapper
       // above, so it already includes newMessages from the append at the
@@ -4661,7 +4669,7 @@ export function REPL({
       }} scrollable={<>
               <TeammateViewHeader />
               <SlackChannelHeader channel={remoteControlChannel} />
-              <Messages messages={displayedMessages} tools={tools} commands={commands} verbose={verbose} toolJSX={toolJSX} toolUseConfirmQueue={toolUseConfirmQueue} inProgressToolUseIDs={viewedTeammateTask ? viewedTeammateTask.inProgressToolUseIDs ?? new Set() : inProgressToolUseIDs} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={conversationId} screen={screen} streamingToolUses={streamingToolUses} showAllInTranscript={showAllInTranscript} agentDefinitions={agentDefinitions} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} streamingText={isLoading && !viewedAgentTask ? visibleStreamingText : null} isBriefOnly={viewedAgentTask ? false : isBriefOnly} unseenDivider={viewedAgentTask ? undefined : unseenDivider} scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined} trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined} cursor={cursor} setCursor={setCursor} cursorNavRef={cursorNavRef} />
+              <Messages messages={displayedMessages} tools={tools} commands={commands} verbose={verbose} toolJSX={toolJSX} toolUseConfirmQueue={toolUseConfirmQueue} inProgressToolUseIDs={viewedTeammateTask ? viewedTeammateTask.inProgressToolUseIDs ?? new Set() : inProgressToolUseIDs} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={conversationId} screen={screen} streamingToolUses={streamingToolUses} showAllInTranscript={showAllInTranscript} agentDefinitions={agentDefinitions} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hasStreamingText={isLoading && !viewedAgentTask && hasStreamingText} showStreamingText={showStreamingText} isBriefOnly={viewedAgentTask ? false : isBriefOnly} unseenDivider={viewedAgentTask ? undefined : unseenDivider} scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined} trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined} cursor={cursor} setCursor={setCursor} cursorNavRef={cursorNavRef} />
               <AwsAuthStatusBox />
               {/* Hide the processing placeholder while a modal is showing —
                   it would sit at the last visible transcript row right above

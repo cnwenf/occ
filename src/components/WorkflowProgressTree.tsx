@@ -9,13 +9,17 @@
  *   (2) PHASE GROUP BOXES — one per phase(title) call. Each box shows:
  *       - phase title (bold, "permission" color) + a dimColor agent count
  *       - PhaseScrollIndicator (when agents overflow the viewport)
- *       - agents.map(AgentProgressLine) — per-agent row with tree chars
- *         ├─/└─, tool-use count, tokens, status (running/done/error)
+ *       - agents.map(AgentRow) — per-agent row with tree chars ├─/└─, a wider
+ *         bold title, a short model-name column, a dedicated time column, and
+ *         the token total (NO per-row tool-call count, per the 2.1.201
+ *         /workflows agent-list layout change), plus a status sub-line.
  *
  * REUSES (do not rebuild):
- *   - src/components/AgentProgressLine.tsx — the per-agent row (tree chars,
- *     tokens, status "Initializing…"/"Done"/"Running in the background").
  *   - src/components/PhaseScrollIndicator.tsx — the ↑/↓ scroll hint.
+ *   The shared src/components/AgentProgressLine.tsx (still used by the live
+ *   AgentTool and FleetView rows for its tool-count+tokens line) is NOT used
+ *   here: the workflow list owns its wider-title / model / time / no-tool-count
+ *   layout directly.
  *
  * Data source: the WorkflowProgressData snapshot emitted via ToolCallProgress
  * (Tool.onProgress) and consumed by renderToolUseProgressMessage. Also reads
@@ -23,11 +27,13 @@
  */
 import React from 'react'
 import { Box, Text } from '../ink.js'
-import { AgentProgressLine } from './AgentProgressLine.js'
 import {
   PhaseScrollIndicator,
   computeVisibleWindow,
 } from './PhaseScrollIndicator.js'
+import { formatDuration, formatNumber } from '../utils/format.js'
+import { truncate } from '../utils/truncate.js'
+import { renderModelName } from '../utils/model/model.js'
 import type {
   WorkflowPhaseProgress,
   WorkflowAgentStat,
@@ -48,33 +54,64 @@ type WorkflowProgressTreeProps = {
 }
 
 /**
- * Render a single agent row. Maps a WorkflowAgentStat to AgentProgressLine's
- * props. Uses hideType=true + name=label so the agent's label is the
- * prominent bold text (not the redundant "wf-{label}" type badge).
+ * Render a single workflow-agent row with the 2.1.201 /workflows agent-list
+ * layout: a wider bold title, a short model-name column, a dedicated time
+ * column, and the token total — with NO per-row tool-call count (the shared
+ * AgentProgressLine still shows tool counts for the live AgentTool/FleetView
+ * rows; the workflow list drops it per the changelog). The status sub-line
+ * (last activity / Initializing… / Done) is preserved below, matching the
+ * binary's running→done tree transition.
+ *
+ * The title is dimmed while the agent is still running and full-bright once
+ * resolved, mirroring AgentProgressLine's dimColor={!isResolved} emphasis.
  */
 function AgentRow({
   stat,
   isLast,
-  shouldAnimate,
 }: {
   stat: WorkflowAgentStat
   isLast: boolean
   shouldAnimate: boolean
 }): React.ReactNode {
+  const treeChar = isLast ? '└─' : '├─'
+  const isDone = stat.isResolved
+  const isError = stat.isError
+  const tokens = stat.latestInputTokens + stat.cumulativeOutputTokens
+  // Time column: the final elapsed time once resolved, else a live value
+  // derived from the captured start time (refreshed on each progress emit).
+  const elapsed =
+    stat.elapsedMs ??
+    (stat.startTime != null
+      ? Math.max(0, Date.now() - stat.startTime)
+      : undefined)
+  const timeStr =
+    elapsed != null ? formatDuration(elapsed, { hideTrailingZeros: true }) : ''
+  const modelStr = stat.model ? truncate(renderModelName(stat.model), 14) : ''
+  const statusText = !isDone
+    ? stat.lastActivity ?? 'Initializing…'
+    : isError
+      ? 'error'
+      : 'Done'
+  const branch = isLast ? '   ⎿  ' : '│  ⎿  '
+  // Mirrors AgentProgressLine's render shape: a paddingLeft={3} Box holds the
+  // tree-char Text (always dim) + a content Text (dim while running, bright
+  // once done) whose inline " · "-separated segments guarantee spacing in the
+  // TTY renderer. Tool-call count is intentionally absent (2.1.201 layout).
+  const cols = `${modelStr ? ` · ${modelStr}` : ''}${timeStr ? ` · ${timeStr}` : ''}${tokens > 0 ? ` · ${formatNumber(tokens)} tok` : ''}`
   return (
-    <AgentProgressLine
-      agentType={stat.agentType}
-      name={stat.label}
-      description={undefined}
-      toolUseCount={stat.toolUseCount}
-      tokens={stat.latestInputTokens + stat.cumulativeOutputTokens}
-      isLast={isLast}
-      isResolved={stat.isResolved}
-      isError={stat.isError}
-      shouldAnimate={shouldAnimate}
-      lastToolInfo={stat.lastActivity}
-      hideType={true}
-    />
+    <Box flexDirection="column">
+      <Box paddingLeft={3}>
+        <Text dimColor>{treeChar} </Text>
+        <Text dimColor={!isDone}>
+          <Text bold>{truncate(stat.label || stat.agentType, 36)}</Text>
+          {cols}
+        </Text>
+      </Box>
+      <Box paddingLeft={3} flexDirection="row">
+        <Text dimColor>{branch}</Text>
+        <Text dimColor>{statusText}</Text>
+      </Box>
+    </Box>
   )
 }
 

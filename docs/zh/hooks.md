@@ -139,6 +139,10 @@ Hook 输出 JSON（`syncHookResponseSchema`，`src/types/hooks.ts`）：
 | `WorktreeCreate` | `worktreePath` |
 | `MessageDisplay` | `displayContent`（仅显示替换） |
 
+### 管道模式流式输出（`-p` / stream-json）
+
+管道模式中用 `--output-format=stream-json --include-hook-events` 时，所有 hook 生命周期事件（包括 `SessionStart`）实时流式输出为 `system` 消息（`subtype`：`hook_started`、`hook_progress`、`hook_response`），每个携带 `hook_id`、`hook_name`、`hook_event`、stdout/stderr/output 与 `exit_code`。`SessionStart` hook 还可发出 `initialUserMessage`，在 stdin 为空时作为首个用户轮次（适用于无头编排会话）。
+
 ## PreToolUse：阻止与修改
 
 PreToolUse 的 `permissionDecision` 控制工具执行：

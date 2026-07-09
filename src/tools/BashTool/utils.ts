@@ -4,6 +4,7 @@ import type {
   ToolResultBlockParam,
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import { readFile, stat } from 'fs/promises'
+import { sep } from 'path'
 import { getOriginalCwd } from 'src/bootstrap/state.js'
 import { logEvent } from 'src/services/analytics/index.js'
 import type { ToolPermissionContext } from 'src/Tool.js'
@@ -167,12 +168,39 @@ export function formatOutput(content: string): {
 export const stdErrAppendShellResetMessage = (stderr: string): string =>
   `${stderr.trim()}\nShell cwd was reset to ${getOriginalCwd()}`
 
+/**
+ * True if `cwd` is inside an OCC-managed worktree directory
+ * (`<repoRoot>/.claude/worktrees/<slug>`). Such paths are isolated working
+ * copies created by `git worktree add`; their cwd must never be reset to the
+ * parent checkout.
+ */
+function isInsideManagedWorktree(cwd: string): boolean {
+  // Match the `.claude/worktrees` segment on the platform separator so this
+  // is cross-platform without a per-OS join. Both "inside a worktree" (trailing
+  // sep) and "is the worktrees dir itself" are covered.
+  const marker = `${sep}.claude${sep}worktrees${sep}`
+  return cwd.includes(marker) || cwd.endsWith(marker.slice(0, -1))
+}
+
 export function resetCwdIfOutsideProject(
   toolPermissionContext: ToolPermissionContext,
 ): boolean {
   const cwd = getCwd()
   const originalCwd = getOriginalCwd()
   const shouldMaintain = shouldMaintainProjectWorkingDir()
+  // #30 (2.1.203): Don't reset away from an OCC-managed worktree. In a
+  // multi-repo workspace with nested repositories, a worktree path can land
+  // inside (or resolve through) a nested repo whose path isn't in the
+  // session's allowed working directories. Without this guard, every Bash
+  // command resets the worktree cwd back to the parent checkout — so
+  // background/agent sessions can't isolate and edit in their worktree
+  // (the worktree is effectively "rejected"). Worktrees are legitimate
+  // isolated working copies; never reject their cwd. This also covers the
+  // CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR branch, which would otherwise
+  // reset a worktree cwd to the parent even when the worktree path is allowed.
+  if (isInsideManagedWorktree(cwd)) {
+    return false
+  }
   if (
     shouldMaintain ||
     // Fast path: originalCwd is unconditionally in allWorkingDirectories

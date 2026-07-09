@@ -616,6 +616,19 @@ export function useVirtualScroll(
   // (reconciler.resetAfterCommit → onRender), that's two writes with
   // different spacer heights → visible flicker. Heights propagate to
   // offsets on the next natural render. One-frame lag, absorbed by overscan.
+  //
+  // Scroll-up anchor (2.1.203: "content jumping when scrolling up through
+  // long transcript history"). When the user has scrolled away from the
+  // bottom and a mounted item ABOVE the viewport gets re-measured (estimate
+  // → real Yoga height, or a resized row), everything below it shifts and
+  // the visible text jumps. Compensate by scrollBy()ing the cumulative
+  // height delta of items strictly above the viewport top, keeping the
+  // viewport pinned to the same content. scrollBy reuses the normal
+  // scroll-repaint path (DOM scrollTop mutation → Ink repaint, no React
+  // commit → no offset-rebuild flicker). Gated to non-sticky + scrollTop>0
+  // so it never fires at-bottom (render-node-to-output's follow handles
+  // that) and never fights a user scroll — wheel/keys change scrollTop, not
+  // item heights, so anchorDelta is 0 during pure scrolls.
   useLayoutEffect(() => {
     const spacerYoga = spacerRef.current?.yogaNode
     if (spacerYoga && spacerYoga.getComputedWidth() > 0) {
@@ -625,7 +638,13 @@ export function useVirtualScroll(
       skipMeasurementRef.current = false
       return
     }
+    const s = scrollRef.current
+    // Only anchor when scrolled up. isSticky() is the stable at-bottom signal;
+    // scrollTop>0 guards the cold-start/sticky-pinned case.
+    const canAnchor = !!s && !s.isSticky() && s.getScrollTop() > 0
+    const viewportTop = canAnchor ? s!.getScrollTop() : 0
     let anyChanged = false
+    let anchorDelta = 0
     for (const [key, el] of itemRefs.current) {
       const yoga = el.yogaNode
       if (!yoga) continue
@@ -633,6 +652,16 @@ export function useVirtualScroll(
       const prev = heightCache.current.get(key)
       if (h > 0) {
         if (prev !== h) {
+          // Compensate only for items strictly ABOVE the viewport top (in
+          // content-wrapper coords — same space as scrollTop). Items inside
+          // or below the viewport reflow naturally; anchoring them would
+          // double-correct. getComputedTop is fresh from this layout pass.
+          if (canAnchor) {
+            const top = yoga.getComputedTop()
+            if (top + h <= viewportTop) {
+              anchorDelta += h - (prev ?? DEFAULT_ESTIMATE)
+            }
+          }
           heightCache.current.set(key, h)
           anyChanged = true
         }
@@ -642,6 +671,12 @@ export function useVirtualScroll(
       }
     }
     if (anyChanged) offsetVersionRef.current++
+    if (anchorDelta !== 0) {
+      // Keep the viewport pinned to the same content. The Ink repaint this
+      // schedules reads the mutated scrollTop with the existing fiber tree
+      // (no React commit), so there's no second offset-rebuild write.
+      s!.scrollBy(anchorDelta)
+    }
   })
 
   // Stable per-key callback refs. React's ref-swap dance (old(null) then

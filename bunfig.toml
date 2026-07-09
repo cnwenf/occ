@@ -1,3 +1,4 @@
 [test]
 root = "."
 timeout = 10000
+preload = ["./test/preload.ts"]

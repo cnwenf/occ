@@ -24,7 +24,7 @@ import { formatLogMetadata } from '../utils/format.js';
 import { getSessionIdFromLog, searchSessionsByCustomTitle } from '../utils/sessionStorage.js';
 import { applyCommandSuggestion, findMidInputSlashCommand, generateCommandSuggestions, getBestCommandMatch, isCommandInput, isCommandNameToken } from '../utils/suggestions/commandSuggestions.js';
 import { getDirectoryCompletions, getPathCompletions, isPathLikeToken } from '../utils/suggestions/directoryCompletion.js';
-import { getShellHistoryCompletion } from '../utils/suggestions/shellHistoryCompletion.js';
+import { getShellHistoryCompletionSync, isShellHistoryCacheWarm, warmShellHistoryCache } from '../utils/suggestions/shellHistoryCompletion.js';
 import { getSlackChannelSuggestions, hasSlackMcpServer } from '../utils/suggestions/slackChannelSuggestions.js';
 import { TEAM_LEAD_NAME } from '../utils/swarm/constants.js';
 import { applyFileSuggestion, findLongestCommonPrefix, onIndexBuildComplete, startBackgroundCacheRefresh } from './fileSuggestions.js';
@@ -399,8 +399,12 @@ export function useTypeahead({
   // Access keybinding context to check for pending chord sequences
   const keybindingContext = useOptionalKeybindingContext();
 
-  // State for inline ghost text (bash history completion - async)
+  // State for inline ghost text (bash history completion - async fallback
+  // only; the render path uses syncBashGhostText below to avoid flicker).
   const [inlineGhostText, setInlineGhostText] = useState<InlineGhostText | undefined>(undefined);
+  // Bumped once when the shell-history cache transitions cold→warm so the
+  // sync bash ghost-text useMemo recomputes. See warm effect + syncBashGhostText.
+  const [shellHistoryWarmVersion, setShellHistoryWarmVersion] = useState(0);
 
   // Synchronous ghost text for prompt mode mid-input slash commands.
   // Computed during render via useMemo to eliminate the one-frame flicker
@@ -418,8 +422,38 @@ export function useTypeahead({
     };
   }, [input, cursorOffset, mode, commands, suppressSuggestions]);
 
-  // Merged ghost text: prompt mode uses synchronous useMemo, bash mode uses async useState
-  const effectiveGhostText = suppressSuggestions ? undefined : mode === 'prompt' ? syncPromptGhostText : inlineGhostText;
+  // Synchronous ghost text for bash mode shell-history completion (2.1.203:
+  // "terminal flickering and jumping while typing in bash mode when a
+  // shell-history suggestion was shown"). Previously this ran through the
+  // async getShellHistoryCompletion in updateSuggestions (an effect) and
+  // called setInlineGhostText AFTER the await — so every keystroke produced
+  // two renders (input, then ghost text popping in a frame late) and the
+  // terminal repaint flickered/jumped. Computing it synchronously during
+  // render from the in-memory cache makes the ghost text land in the SAME
+  // render as the keystroke. shellHistoryWarmVersion covers the cold-start
+  // case: the warm-up effect bumps it once the cache is populated so this
+  // useMemo recomputes without a per-keystroke setState.
+  const syncBashGhostText = useMemo((): InlineGhostText | undefined => {
+    if (mode !== 'bash' || suppressSuggestions) return undefined;
+    if (!input.trim()) return undefined;
+    const match = getShellHistoryCompletionSync(input);
+    if (!match) return undefined;
+    return {
+      text: match.suffix,
+      fullCommand: match.fullCommand,
+      // +1 for the bash '!' mode prefix: in bash mode the displayed value is
+      // "!"+input and the cursor offset (which useTextInput compares against)
+      // is in that displayed space, so the ghost must insert past the prefix.
+      insertPosition: input.length + 1
+    };
+    // shellHistoryWarmVersion is the only non-input dependency — it changes
+    // at most once per bash session (cold→warm), never per keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [input, mode, suppressSuggestions, shellHistoryWarmVersion]);
+
+  // Merged ghost text: prompt + bash use synchronous useMemo (no flicker);
+  // the async inlineGhostText state remains as a fallback for other modes.
+  const effectiveGhostText = suppressSuggestions ? undefined : mode === 'prompt' ? syncPromptGhostText : mode === 'bash' ? syncBashGhostText : inlineGhostText;
 
   // Use a ref for cursorOffset to avoid re-triggering suggestions on cursor movement alone
   // We only want to re-fetch suggestions when the actual search token changes
@@ -434,6 +468,8 @@ export function useTypeahead({
   const latestPathTokenRef = useRef('');
   // Track the latest bash input to discard stale results from history completion
   const latestBashInputRef = useRef('');
+  // Guards against concurrent shell-history cache warm-up reads.
+  const shellHistoryWarmingRef = useRef(false);
   // Track the latest slack channel token to discard stale results from MCP
   const latestSlackTokenRef = useRef('');
   // Track suggestions via ref to avoid updateSuggestions being recreated on selection changes
@@ -566,21 +602,16 @@ export function useTypeahead({
       }
     }
 
-    // Bash mode: check for history-based ghost text completion
+    // Bash mode: check for history-based ghost text completion.
+    // The ghost text itself is rendered synchronously via syncBashGhostText
+    // (useMemo) — this block only clears the dropdown when a ghost is showing
+    // and warms the shell-history cache on the cold-start keystroke. It no
+    // longer calls setInlineGhostText (that was the per-keystroke async
+    // setState that flickered/jumped the terminal; 2.1.203).
     if (mode === 'bash' && value.trim()) {
-      latestBashInputRef.current = value;
-      const historyMatch = await getShellHistoryCompletion(value);
-      // Discard stale results if input changed while waiting
-      if (latestBashInputRef.current !== value) {
-        return;
-      }
-      if (historyMatch) {
-        setInlineGhostText({
-          text: historyMatch.suffix,
-          fullCommand: historyMatch.fullCommand,
-          insertPosition: value.length
-        });
-        // Clear dropdown suggestions when showing ghost text
+      const syncMatch = getShellHistoryCompletionSync(value);
+      if (syncMatch) {
+        // Ghost text is shown by syncBashGhostText; just clear the dropdown.
         setSuggestionsState(() => ({
           commandArgumentHint: undefined,
           suggestions: [],
@@ -589,10 +620,21 @@ export function useTypeahead({
         setSuggestionType('none');
         setMaxColumnWidth(undefined);
         return;
-      } else {
-        // No history match, clear ghost text
-        setInlineGhostText(undefined);
       }
+      // Cache cold: warm it async. Once warm, bump shellHistoryWarmVersion so
+      // syncBashGhostText recomputes and shows the ghost in one render
+      // (instead of a setState per keystroke). Guarded so only one warm read
+      // is in flight at a time.
+      if (!isShellHistoryCacheWarm() && !shellHistoryWarmingRef.current) {
+        shellHistoryWarmingRef.current = true;
+        latestBashInputRef.current = value;
+        void warmShellHistoryCache().then(() => {
+          shellHistoryWarmingRef.current = false;
+          setShellHistoryWarmVersion(v => v + 1);
+        });
+      }
+      // No sync match: syncBashGhostText returns undefined (no ghost), fall
+      // through to other suggestion types.
     }
 
     // Check for @ to trigger team member / named subagent suggestions
@@ -923,6 +965,21 @@ export function useTypeahead({
     dismissedForInputRef.current = null;
     void updateSuggestions(input);
   }, [input, updateSuggestions]);
+
+  // Warm the shell-history cache on entering bash mode so the first keystroke
+  // already has synchronous ghost text (no cold-start flicker). One warm read
+  // per bash session; safe no-op if already warm or warming. Bumping
+  // shellHistoryWarmVersion makes syncBashGhostText recompute once the cache
+  // is populated. 2.1.203: bash-mode shell-history suggestion flicker.
+  useEffect(() => {
+    if (mode !== 'bash') return;
+    if (isShellHistoryCacheWarm() || shellHistoryWarmingRef.current) return;
+    shellHistoryWarmingRef.current = true;
+    void warmShellHistoryCache().then(() => {
+      shellHistoryWarmingRef.current = false;
+      setShellHistoryWarmVersion(v => v + 1);
+    });
+  }, [mode]);
 
   // Handle tab key press - complete suggestions or trigger file suggestions
   const handleTab = useCallback(async () => {

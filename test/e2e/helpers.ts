@@ -40,8 +40,20 @@ export function runOcc(
     // kill the WHOLE group (OCC + any MCP stdio grandchildren like `sleep`)
     // on timeout — prevents orphaned subprocesses leaking across the test
     // suite (which crashed the host on a prior run).
+    //
+    // Env overrides: the user's real ~/.claude/settings.json sets
+    // CLAUDE_CODE_MAX_RETRIES=500 + CLAUDE_CODE_UNATTENDED_RETRY=1 (great for
+    // an interactive session, fatal for e2e — a flaky proxy request hangs the
+    // spawned CLI for the full test timeout). Cap retries here so a failed
+    // request fails fast instead of stalling the suite. Per-call `env` still
+    // wins, so a test that wants different behavior can override.
     const child = spawn(OCC_BIN, [...OCC_ARGS, ...args], {
-      env: { ...process.env, ...env },
+      env: {
+        ...process.env,
+        CLAUDE_CODE_MAX_RETRIES: "3",
+        CLAUDE_CODE_UNATTENDED_RETRY: "0",
+        ...env,
+      },
       // Read OCC_CWD from the per-call env override first (so a test can point
       // OCC at a temp project dir), then fall back to the parent process env.
       cwd: env.OCC_CWD ?? process.env.OCC_CWD ?? REPO_ROOT,

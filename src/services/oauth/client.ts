@@ -187,9 +187,16 @@ export async function refreshOAuthToken(
       access_token: accessToken,
       refresh_token: newRefreshToken = refreshToken,
       expires_in: expiresIn,
+      refresh_token_expires_in: refreshExpiresIn,
     } = data
 
     const expiresAt = Date.now() + expiresIn * 1000
+    // 2.1.203: refresh tokens are re-issued with a fresh login expiry; track it
+    // so the login-expiry warning stays accurate after a refresh.
+    const refreshTokenExpiresAt =
+      typeof refreshExpiresIn === 'number'
+        ? Date.now() + refreshExpiresIn * 1000
+        : undefined
     const scopes = parseScopes(data.scope)
 
     logEvent('tengu_oauth_token_refresh_success', {})
@@ -252,6 +259,7 @@ export async function refreshOAuthToken(
       accessToken,
       refreshToken: newRefreshToken,
       expiresAt,
+      refreshTokenExpiresAt,
       scopes,
       subscriptionType:
         profileInfo?.subscriptionType ?? existing?.subscriptionType ?? null,

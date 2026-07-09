@@ -122,6 +122,10 @@ OCC 向模型暴露这些 MCP 工具（`src/tools/`）：
 | `ReadMcpResourceDirTool` | 读取 MCP 资源目录 |
 | `McpAuthTool` | 处理 MCP OAuth 认证流程 |
 
+## Roots
+
+OCC 向已连接的 MCP 服务器声明 `roots` 能力（含 `listChanged`）。`roots/list` 响应包含会话的原始工作目录以及通过 `/add-dir` 或权限授权添加的额外工作目录——每个均为 `file://` URI。当根目录集合变化时（如用 `/add-dir` 新增目录），OCC 发送 `notifications/roots/list_changed`，让服务器重新获取 `roots/list`。
+
 ## OCC 作为 MCP 服务器
 
 `src/entrypoints/mcp.ts` 实现 `startMCPServer(cwd, debug, verbose)`：

@@ -119,6 +119,12 @@ See [Hooks](./hooks.md) for the full hook system.
 }
 ```
 
+### Workflows
+
+| Key | Type | Description |
+|---|---|---|
+| `dynamicWorkflowSize` | `small` \| `medium` \| `large` | Advisory guideline for how large Claude makes dynamic workflows (agent counts). Not an enforced cap. `small` ≈ 3 agents, `medium` (default) ≈ 6, `large` ≈ 12. Set via `/config dynamicWorkflowSize=large`. |
+
 ### Memory
 
 | Key | Description |

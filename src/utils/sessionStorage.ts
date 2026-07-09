@@ -3816,7 +3816,10 @@ export async function loadTranscriptFile(
 /**
  * Loads all messages, summaries, file history snapshots, and attribution snapshots from a specific session file.
  */
-async function loadSessionFile(sessionId: UUID): Promise<{
+async function loadSessionFile(
+  sessionId: UUID,
+  filePath?: string,
+): Promise<{
   messages: Map<UUID, TranscriptMessage>
   summaries: Map<UUID, string>
   customTitles: Map<UUID, string>
@@ -3829,7 +3832,10 @@ async function loadSessionFile(sessionId: UUID): Promise<{
   contextCollapseCommits: ContextCollapseCommitEntry[]
   contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
 }> {
-  const sessionFile = join(
+  // Direct lookup: load the session by ID from the current project dir.
+  // For cross-worktree resume, callers chain getLastSessionLogFromWorktrees
+  // as a fallback — see loadConversationForResume (#14, 2.1.202).
+  const sessionFile = filePath ?? join(
     getSessionProjectDir() ?? getProjectDir(getOriginalCwd()),
     `${sessionId}.jsonl`,
   )
@@ -3869,6 +3875,7 @@ export async function doesMessageExistInSession(
 
 export async function getLastSessionLog(
   sessionId: UUID,
+  filePath?: string,
 ): Promise<LogOption | null> {
   // Single read: load all session data at once instead of reading the file twice
   const {
@@ -3883,7 +3890,7 @@ export async function getLastSessionLog(
     contentReplacements,
     contextCollapseCommits,
     contextCollapseSnapshot,
-  } = await loadSessionFile(sessionId)
+  } = await loadSessionFile(sessionId, filePath)
   if (messages.size === 0) return null
   // Prime getSessionMessages cache so recordTranscript (called after REPL
   // mount on --resume) skips a second full file load. -170~227ms on large sessions.
@@ -3916,7 +3923,7 @@ export async function getLastSessionLog(
       customTitle,
       buildFileHistorySnapshotChain(fileHistorySnapshots, transcript),
       tag,
-      getTranscriptPathForSession(sessionId),
+      filePath ?? getTranscriptPathForSession(sessionId),
       buildAttributionSnapshotChain(attributionSnapshots, transcript),
       agentSetting,
       contentReplacements.get(sessionId) ?? [],
@@ -3930,6 +3937,85 @@ export async function getLastSessionLog(
         ? contextCollapseSnapshot
         : undefined,
   }
+}
+
+/**
+ * Direct-lookup fallback for resuming a session by ID when the session lives
+ * in a different git worktree's project directory (#14, 2.1.202).
+ *
+ * Mirrors the official `l7g` path: instead of scanning every session file in
+ * every worktree (O(worktrees × sessions) reads via getStatOnlyLogsForWorktrees
+ * + enrichLogs → minutes and large memory in repos with many worktrees), it
+ * checks each worktree's project dir for the single `${sessionId}.jsonl` file
+ * — O(worktrees) single-file lookups, loading only on the one hit.
+ *
+ * `loadTranscriptFile` swallows ENOENT (returns empty maps), so a miss is a
+ * cheap stat + early return, never a throw. The current project dir is
+ * skipped because getLastSessionLog already checked it.
+ *
+ * Fires `tengu_resume_worktree_fallback` when the current-dir lookup missed
+ * and a sibling worktree dir held the session.
+ */
+export async function getLastSessionLogFromWorktrees(
+  sessionId: UUID,
+): Promise<LogOption | null> {
+  // Only worth scanning worktrees if there is more than one (the current dir
+  // was already checked by the caller). getWorktreePaths lists every worktree
+  // via `git worktree list --porcelain`, which is itself cheap; the cost this
+  // avoids is reading all session files in each worktree's project dir.
+  const worktreePaths = await getWorktreePaths(getOriginalCwd())
+  if (worktreePaths.length <= 1) return null
+
+  const projectsDir = getProjectsDir()
+  const currentProjectDir =
+    getSessionProjectDir() ?? getProjectDir(getOriginalCwd())
+
+  // Same prefix-matching rule as getStatOnlyLogsForWorktrees:
+  // dirName === prefix || dirName.startsWith(prefix + '-'). Longest prefix
+  // first so a more specific worktree wins over a shorter colliding one.
+  const caseInsensitive = process.platform === 'win32'
+  const indexed = worktreePaths.map(wt => {
+    const sanitized = sanitizePath(wt)
+    return {
+      path: wt,
+      prefix: caseInsensitive ? sanitized.toLowerCase() : sanitized,
+    }
+  })
+  indexed.sort((a, b) => b.prefix.length - a.prefix.length)
+
+  let allDirents: Dirent[]
+  try {
+    allDirents = await readdir(projectsDir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+
+  const seenDirs = new Set<string>()
+  for (const dirent of allDirents) {
+    if (!dirent.isDirectory()) continue
+    const dirName = caseInsensitive ? dirent.name.toLowerCase() : dirent.name
+    if (seenDirs.has(dirName)) continue
+
+    for (const { prefix } of indexed) {
+      if (dirName === prefix || dirName.startsWith(prefix + '-')) {
+        seenDirs.add(dirName)
+        const projectDir = join(projectsDir, dirent.name)
+        // Current project dir was already tried by getLastSessionLog.
+        if (projectDir !== currentProjectDir) {
+          const log = await getLastSessionLog(
+            sessionId,
+            join(projectDir, `${sessionId}.jsonl`),
+          )
+          if (log) {
+            logEvent('tengu_resume_worktree_fallback', {})
+            return log
+          }
+        }
+        break // a dirent matches at most one worktree prefix
+      }
+    }
+  }
+  return null
 }
 
 /**
@@ -4901,7 +4987,6 @@ function extractFirstPromptFromChunk(chunk: string): string {
         return result
       }
     } catch {
-      continue
     }
   }
   // Session started with a slash command but had no subsequent real message —

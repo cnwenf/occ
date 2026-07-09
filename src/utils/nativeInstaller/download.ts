@@ -287,18 +287,79 @@ class StallTimeoutError extends Error {
 }
 
 /**
+ * Network-level error codes that represent a transient connection drop —
+ * i.e. the connection was established and data was flowing, then the peer
+ * (or an intervening proxy) reset/timed out/aborted it mid-download.
+ * 2.1.202: previously the installer/updater failed immediately with
+ * "aborted"; these now retry.
+ */
+const TRANSIENT_NETWORK_ERROR_CODES = new Set([
+  'ECONNRESET', // socket reset by peer (proxy/network dropped mid-stream)
+  'ETIMEDOUT', // connection timed out
+  'ECONNABORTED', // connection aborted
+  'ERR_NETWORK', // axios umbrella for network-level failures
+])
+
+/**
+ * True iff `error` looks like a transient connection drop that is worth
+ * retrying: a known transient network code, an "aborted" message, or a
+ * fetch/axios network error where a request was sent but no response was
+ * ever received (the connection died mid-flight). HTTP status errors
+ * (which carry a `response`) and checksum mismatches (our own thrown
+ * Error with neither request nor response) are intentionally NOT retried.
+ */
+function isTransientConnectionError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const anyErr = error as {
+    code?: unknown
+    message?: string
+    response?: unknown
+    request?: unknown
+  }
+  const code = typeof anyErr.code === 'string' ? anyErr.code : undefined
+  const message = (anyErr.message ?? '').toLowerCase()
+
+  if (code !== undefined && TRANSIENT_NETWORK_ERROR_CODES.has(code)) return true
+  if (message.includes('aborted')) return true
+  // Request sent but no response received and no clearly-permanent code
+  // (ENOTFOUND = DNS miss, ECONNREFUSED = nothing listening) — treat the
+  // mid-stream drop as transient so a flaky proxy/network gets a retry.
+  if (!anyErr.response && anyErr.request && code !== 'ENOTFOUND' && code !== 'ECONNREFUSED') {
+    return true
+  }
+  return false
+}
+
+// Base delay (ms) for download-retry backoff. Doubled per attempt
+// (1s, 2s, 4s by default). Override via env for fast tests.
+const DEFAULT_DOWNLOAD_RETRY_BASE_DELAY_MS = 1000
+
+function getDownloadRetryBaseDelayMs(): number {
+  return (
+    Number(process.env.CLAUDE_CODE_DOWNLOAD_RETRY_DELAY_MS_FOR_TESTING) ||
+    DEFAULT_DOWNLOAD_RETRY_BASE_DELAY_MS
+  )
+}
+
+/**
  * Common logic for downloading and verifying a binary.
  * Includes stall detection (aborts if no bytes for 60s) and retry logic.
+ *
+ * `attemptDownload` is an injectable seam (defaults to the real
+ * fetch+checksum+write) so the retry loop can be unit-tested without mocking
+ * the network. Production callers never pass it.
  */
 async function downloadAndVerifyBinary(
   binaryUrl: string,
   expectedChecksum: string,
   binaryPath: string,
   requestConfig: Record<string, unknown> = {},
+  attemptDownload?: () => Promise<void>,
 ) {
-  let lastError: Error | undefined
-
-  for (let attempt = 1; attempt <= MAX_DOWNLOAD_RETRIES; attempt++) {
+  // Default per-attempt body: stall-guarded fetch, checksum, write to disk.
+  // The stall timer is cleared in `finally` so a thrown error never leaves a
+  // dangling abort timer.
+  const defaultAttemptDownload = async () => {
     const controller = new AbortController()
     let stallTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -329,8 +390,6 @@ async function downloadAndVerifyBinary(
         ...requestConfig,
       })
 
-      clearStallTimer()
-
       // Verify checksum
       const hash = createHash('sha256')
       hash.update(response.data)
@@ -345,14 +404,26 @@ async function downloadAndVerifyBinary(
       // Write binary to disk
       await writeFile(binaryPath, Buffer.from(response.data))
       await chmod(binaryPath, 0o755)
+    } finally {
+      clearStallTimer()
+    }
+  }
 
+  const doAttempt = attemptDownload ?? defaultAttemptDownload
+  let lastError: Error | undefined
+
+  for (let attempt = 1; attempt <= MAX_DOWNLOAD_RETRIES; attempt++) {
+    try {
+      await doAttempt()
       // Success - return early
       return
     } catch (error) {
-      clearStallTimer()
-
       // Check if this was a stall timeout (axios wraps abort signals in CanceledError)
       const isStallTimeout = axios.isCancel(error)
+      // 2.1.202: also retry transient connection drops — a proxy/network
+      // resetting/aborting the stream mid-download (ECONNRESET/ETIMEDOUT/
+      // ECONNABORTED). Previously these failed immediately with "aborted".
+      const isTransient = !isStallTimeout && isTransientConnectionError(error)
 
       if (isStallTimeout) {
         lastError = new StallTimeoutError()
@@ -360,17 +431,19 @@ async function downloadAndVerifyBinary(
         lastError = toError(error)
       }
 
-      // Only retry on stall timeouts
-      if (isStallTimeout && attempt < MAX_DOWNLOAD_RETRIES) {
+      // Retry on stall timeouts AND transient connection drops, sharing one
+      // retry budget so a flaky link can't retry forever.
+      if ((isStallTimeout || isTransient) && attempt < MAX_DOWNLOAD_RETRIES) {
+        const delay = getDownloadRetryBaseDelayMs() * 2 ** (attempt - 1)
         logForDebugging(
-          `Download stalled on attempt ${attempt}/${MAX_DOWNLOAD_RETRIES}, retrying...`,
+          `Download ${isStallTimeout ? 'stalled' : 'failed transiently'} on attempt ${attempt}/${MAX_DOWNLOAD_RETRIES} (${lastError.message}), retrying in ${delay}ms...`,
         )
-        // Brief pause before retry to let network recover
-        await sleep(1000)
+        // Exponential backoff to let the proxy/network recover
+        await sleep(delay)
         continue
       }
 
-      // Don't retry other errors (HTTP errors, checksum mismatches, etc.)
+      // Don't retry non-transient errors (HTTP status errors, checksum mismatches, etc.)
       throw lastError
     }
   }
@@ -520,4 +593,6 @@ export async function downloadVersion(
 // Exported for testing
 export { StallTimeoutError, MAX_DOWNLOAD_RETRIES }
 export const STALL_TIMEOUT_MS = DEFAULT_STALL_TIMEOUT_MS
+export const DOWNLOAD_RETRY_BASE_DELAY_MS = DEFAULT_DOWNLOAD_RETRY_BASE_DELAY_MS
+export { isTransientConnectionError }
 export const _downloadAndVerifyBinaryForTesting = downloadAndVerifyBinary

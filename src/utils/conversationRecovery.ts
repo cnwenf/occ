@@ -40,6 +40,7 @@ import {
   buildConversationChain,
   checkResumeConsistency,
   getLastSessionLog,
+  getLastSessionLogFromWorktrees,
   getSessionIdFromLog,
   isLiteLog,
   loadFullLog,
@@ -521,8 +522,15 @@ export async function loadConversationForResume(
       messages = loaded.messages
       sessionId = loaded.sessionId
     } else if (typeof source === 'string') {
-      // Load specific session by ID
-      log = await getLastSessionLog(source as UUID)
+      // Load specific session by ID. Direct lookup in the current project dir
+      // first, then a worktree fallback that checks each sibling worktree's
+      // project dir for `${sessionId}.jsonl` directly — O(worktrees)
+      // single-file lookups instead of scanning every session file in every
+      // worktree, which took minutes + large memory in repos with many
+      // worktrees (#14, 2.1.202).
+      log =
+        (await getLastSessionLog(source as UUID)) ??
+        (await getLastSessionLogFromWorktrees(source as UUID))
       sessionId = source as UUID
     } else {
       // Already have a LogOption

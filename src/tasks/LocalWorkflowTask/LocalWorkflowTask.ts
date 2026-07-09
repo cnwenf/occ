@@ -64,6 +64,12 @@ export type WorkflowAgentStat = {
   }>
   /** Last activity description for the AgentProgressLine lastToolInfo slot. */
   lastActivity?: string
+  /** Model the agent ran with (for the short model-name column). */
+  model?: string
+  /** Wall-clock start time (ms epoch) — drives the live time column. */
+  startTime?: number
+  /** Final elapsed run time (ms) — shown once the agent resolves. */
+  elapsedMs?: number
   /** Resolved (done) — drives AgentProgressLine isResolved. */
   isResolved: boolean
   /** Errored — drives AgentProgressLine isError. */

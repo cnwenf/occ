@@ -92,6 +92,18 @@ The pre-commit hook runs `biome lint` on staged `src/*.{ts,tsx,js,jsx}` files. B
 
 Run `/permissions` to add allow rules, or use `--allowedTools "Bash(git:*) Read"`. Use `--permission-mode acceptEdits` to auto-approve file edits, or `auto` mode (AI-classified, requires the live `TRANSCRIPT_CLASSIFIER` flag). See [Permissions](./permissions.md).
 
+### Bash "argument list too long" (E2BIG) in many-worktree repos
+
+**Symptom:** Bash commands fail with `E2BIG: argument list too long`.
+
+**Cause:** The Bash sandbox denies writes to per-worktree git internal files (`config.worktree`, `config.worktree.lock`, `commondir`) for *every* registered git worktree. That deny list grows without bound as you add worktrees, eventually pushing the sandboxed command line past the OS `ARG_MAX` limit.
+
+**Fix:** OCC surfaces a human-readable diagnostic naming the cause. To recover, prune stale worktrees (`git worktree remove` / `git worktree prune`) and restart, or relax the sandbox for the session.
+
+### Login-expiry warning
+
+When your OAuth login (refresh token) is within 5 days of expiring, OCC shows a persistent footer banner: "Your login expires in {n} days · run /login to renew". When expiry is within 1 day, a high-priority transient notification also fires. Run `/login` to re-authenticate before background sessions are interrupted.
+
 ## Debugging
 
 ### Debug mode

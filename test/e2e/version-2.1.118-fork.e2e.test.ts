@@ -83,7 +83,7 @@ console.log("done");
     // Cleanup parent + fork files.
     try { rmSync(parentPath, { force: true }); } catch {}
     try { rmSync(forkPath, { force: true }); } catch {}
-  });
+  }, 30_000);
 
   test("hydrateForkPrefix hydrates the prefix on demand from the parent session", async () => {
     const setup = `

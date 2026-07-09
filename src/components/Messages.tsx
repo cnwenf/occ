@@ -8,7 +8,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { every } from 'src/utils/set.js';
 import { getIsRemoteMode } from '../bootstrap/state.js';
 import type { Command } from '../commands.js';
-import { BLACK_CIRCLE } from '../constants/figures.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { useTerminalNotification } from '../ink/useTerminalNotification.js';
@@ -34,7 +33,7 @@ import { renderableSearchText } from '../utils/transcriptSearch.js';
 import { Divider } from './design-system/Divider.js';
 import type { UnseenDivider } from './FullscreenLayout.js';
 import { LogoV2 } from './LogoV2/LogoV2.js';
-import { StreamingMarkdown } from './Markdown.js';
+import { StreamingPreview } from './Markdown.js';
 import { hasContentAfterIndex, MessageRow } from './MessageRow.js';
 import { InVirtualListContext, type MessageActionsNav, MessageActionsSelectedContext, type MessageActionsState } from './messageActions.js';
 import { AssistantThinkingMessage } from './messages/AssistantThinkingMessage.js';
@@ -230,8 +229,17 @@ type Props = {
   hidePastThinking?: boolean;
   /** Streaming thinking content (live updates, not frozen) */
   streamingThinking?: StreamingThinking | null;
-  /** Streaming text preview (rendered as last item so transition to final message is positionally seamless) */
-  streamingText?: string | null;
+  /**
+   * True while assistant text is actively streaming. Replaces the former
+   * `streamingText` string prop: the live text now lives in streamingTextStore
+   * and is rendered by <StreamingPreview>, so this is a stable boolean that
+   * only flips at stream start/end — it no longer changes per token (which
+   * re-rendered the whole screen; 2.1.203). Used by collapsed_read_search to
+   * flip to past tense as soon as text starts streaming.
+   */
+  hasStreamingText?: boolean;
+  /** Gate for the <StreamingPreview> leaf (reduced-motion / terminal-bug guard). Stable boolean. */
+  showStreamingText?: boolean;
   /** When true, only show Brief tool output (hide everything else) */
   isBriefOnly?: boolean;
   /** Fullscreen-mode "─── N new ───" divider. Renders before the first
@@ -357,7 +365,8 @@ const MessagesImpl = ({
   isLoading,
   hidePastThinking = false,
   streamingThinking,
-  streamingText,
+  hasStreamingText,
+  showStreamingText = false,
   isBriefOnly = false,
   unseenDivider,
   scrollRef,
@@ -619,7 +628,7 @@ const MessagesImpl = ({
     // sibling after this map, so it's never in renderableMessages — OR it
     // in explicitly so the group flips to past tense as soon as text starts
     // streaming instead of waiting for the block to finalize.
-    const hasContentAfter = msg_8.type === 'collapsed_read_search' && (!!streamingText || hasContentAfterIndex(renderableMessages, index, tools, streamingToolUseIDs));
+    const hasContentAfter = msg_8.type === 'collapsed_read_search' && (!!hasStreamingText || hasContentAfterIndex(renderableMessages, index, tools, streamingToolUseIDs));
     const k_0 = messageKey(msg_8);
     const row = <MessageRow key={k_0} message={msg_8} isUserContinuation={isUserContinuation} hasContentAfter={hasContentAfter} tools={tools} commands={commands} verbose={verbose || isItemExpanded(msg_8) || cursor?.expanded === true && index === selectedIdx} inProgressToolUseIDs={inProgressToolUseIDs} streamingToolUseIDs={streamingToolUseIDs} screen={screen} canAnimate={canAnimate} onOpenRateLimitOptions={onOpenRateLimitOptions} lastThinkingBlockId={lastThinkingBlockId} latestBashOutputUUID={latestBashOutputUUID} columns={columns} isLoading={isLoading} lookups={lookups_0} />;
 
@@ -700,16 +709,7 @@ const MessagesImpl = ({
           <VirtualMessageList messages={renderableMessages} scrollRef={scrollRef} columns={columns} itemKey={messageKey} renderItem={renderMessageRow} onItemClick={onItemClick} isItemClickable={isItemClickable} isItemExpanded={isItemExpanded} trackStickyPrompt={trackStickyPrompt} selectedIndex={selectedIdx >= 0 ? selectedIdx : undefined} cursorNavRef={cursorNavRef} setCursor={setCursor} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} extractSearchText={extractSearchText} />
         </InVirtualListContext.Provider> : renderableMessages.flatMap(renderMessageRow)}
 
-      {streamingText && !isBriefOnly && <Box alignItems="flex-start" flexDirection="row" marginTop={1} width="100%">
-          <Box flexDirection="row">
-            <Box minWidth={2}>
-              <Text color="text">{BLACK_CIRCLE}</Text>
-            </Box>
-            <Box flexDirection="column">
-              <StreamingMarkdown>{streamingText}</StreamingMarkdown>
-            </Box>
-          </Box>
-        </Box>}
+      {<StreamingPreview showStreamingText={showStreamingText} isBriefOnly={isBriefOnly} />}
 
       {isStreamingThinkingVisible && streamingThinking && !isBriefOnly && <Box marginTop={1}>
           <AssistantThinkingMessage param={{

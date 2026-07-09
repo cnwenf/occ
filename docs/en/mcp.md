@@ -126,6 +126,10 @@ Resource tools:
 
 When a server needs auth, an `mcp__<server>__authenticate` pseudo-tool appears to start the OAuth flow.
 
+## Roots
+
+OCC declares the `roots` capability (with `listChanged`) to connected MCP servers. The `roots/list` response includes the session's original working directory plus any additional working directories added via `/add-dir` or permission grants — each as a `file://` URI. When the set of roots changes (e.g. a new directory is added with `/add-dir`), OCC sends a `notifications/roots/list_changed` so servers can re-fetch `roots/list`.
+
 ## MCP_SKILLS
 
 The `MCP_SKILLS` feature flag (live in OCC) fetches skill modules from MCP servers that declare the `io.modelcontextprotocol/skills` extension. This is non-blocking when no MCP server is connected. See [Skills](./skills.md).

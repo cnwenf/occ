@@ -660,6 +660,14 @@ export async function addMcpConfig(
     )
   }
 
+  // 2.1.202: clear error when a server config has `url` but no `type`. Without
+  // this the union falls through to the stdio schema and surfaces a misleading
+  // "command: expected string"; guide the user to set "type": "http" instead.
+  if (config && typeof config === 'object' && 'url' in config && !('type' in config)) {
+    throw new Error(
+      `Invalid configuration: server has "url" but no "type". Add "type": "http" (or "sse"/"ws") to specify the transport.`,
+    )
+  }
   // Validate config first (needed for command-based policy checks)
   const result = McpServerConfigSchema().safeParse(config)
   if (!result.success) {

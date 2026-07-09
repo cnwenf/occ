@@ -1256,6 +1256,10 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
+      // 2.1.203: persist the refresh-token (login) expiry so the login-expiry
+      // warning can be computed without a re-login. May be undefined for
+      // grants that don't return refresh_token_expires_in.
+      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
       scopes: tokens.scopes,
       // Profile fetch in refreshOAuthToken swallows errors and returns null on
       // transient failures (network, 5xx, rate limit). Don't clobber a valid

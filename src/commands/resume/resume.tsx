@@ -18,7 +18,7 @@ import { agenticSessionSearch } from '../../utils/agenticSessionSearch.js';
 import { checkCrossProjectResume } from '../../utils/crossProjectResume.js';
 import { getWorktreePaths } from '../../utils/getWorktreePaths.js';
 import { logError } from '../../utils/log.js';
-import { getLastSessionLog, getSessionIdFromLog, isCustomTitleEnabled, isLiteLog, loadAllProjectsMessageLogs, loadFullLog, loadSameRepoMessageLogs, searchSessionsByCustomTitle } from '../../utils/sessionStorage.js';
+import { getLastSessionLog, getLastSessionLogFromWorktrees, getSessionIdFromLog, isCustomTitleEnabled, isLiteLog, loadAllProjectsMessageLogs, loadFullLog, loadSameRepoMessageLogs, searchSessionsByCustomTitle } from '../../utils/sessionStorage.js';
 import { validateUuid } from '../../utils/uuid.js';
 type ResumeResult = {
   resultType: 'sessionNotFound';
@@ -347,33 +347,34 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     return <ResumeCommand key={Date.now()} onDone={onDone} onResume={onResume} onResumeAndSummarize={onResumeAndSummarize} />;
   }
 
-  // Load logs to search (includes same-repo worktrees)
+  // Resume by session ID: use a direct lookup (current project dir, then a
+  // worktree fallback that checks each sibling worktree's project dir for
+  // `${sessionId}.jsonl` directly) instead of loading every session file in
+  // every worktree. The full worktree scan took minutes + large memory in
+  // repos with many worktrees (#14, 2.1.202). Non-UUID args (PR URL /
+  // custom title) still need the scan below.
+  const maybeSessionId = validateUuid(arg);
+  if (maybeSessionId) {
+    const directLog = (await getLastSessionLog(maybeSessionId)) ?? (await getLastSessionLogFromWorktrees(maybeSessionId));
+    if (directLog) {
+      const fullLog = isLiteLog(directLog) ? await loadFullLog(directLog) : directLog;
+      void onResume(maybeSessionId, fullLog, 'slash_command_session_id');
+      return null;
+    }
+    const message = resumeHelpMessage({
+      resultType: 'sessionNotFound',
+      arg
+    });
+    return <ResumeError message={message} args={arg} onDone={() => onDone(message)} />;
+  }
+
+  // Non-UUID arg: load logs to search (includes same-repo worktrees) for
+  // PR-URL and custom-title matching.
   const worktreePaths = await getWorktreePaths(getOriginalCwd());
   const logs = await loadSameRepoMessageLogs(worktreePaths);
   if (logs.length === 0) {
     const message = 'No conversations found to resume.';
     return <ResumeError message={message} args={arg} onDone={() => onDone(message)} />;
-  }
-
-  // First, check if arg is a valid UUID
-  const maybeSessionId = validateUuid(arg);
-  if (maybeSessionId) {
-    const matchingLogs = logs.filter(l => getSessionIdFromLog(l) === maybeSessionId).sort((a, b) => b.modified.getTime() - a.modified.getTime());
-    if (matchingLogs.length > 0) {
-      const log = matchingLogs[0]!;
-      const fullLog = isLiteLog(log) ? await loadFullLog(log) : log;
-      void onResume(maybeSessionId, fullLog, 'slash_command_session_id');
-      return null;
-    }
-
-    // Enriched logs didn't find it — try direct file lookup. This handles
-    // sessions filtered out by enrichLogs (e.g., first message >16KB makes
-    // firstPrompt extraction fail, causing the session to be dropped).
-    const directLog = await getLastSessionLog(maybeSessionId);
-    if (directLog) {
-      void onResume(maybeSessionId, directLog, 'slash_command_session_id');
-      return null;
-    }
   }
 
   // E23 (2.1.122): pasting a PR URL into /resume finds the creating session.

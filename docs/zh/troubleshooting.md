@@ -102,6 +102,18 @@ bun run lint:fix    # 自动修复
 
 详见 [权限](./permissions.md)。
 
+### Bash "argument list too long"（E2BIG）——多 worktree 仓库
+
+**症状**：Bash 命令失败，报 `E2BIG: argument list too long`。
+
+**原因**：Bash 沙箱对*每个*已注册 git worktree 的内部文件（`config.worktree`、`config.worktree.lock`、`commondir`）禁止写入。该拒绝列表随 worktree 数量无限增长，最终使沙箱命令行超过 OS `ARG_MAX` 限制。
+
+**解决**：OCC 会给出可读的诊断信息说明原因。恢复方法：清理无用 worktree（`git worktree remove` / `git worktree prune`）后重启，或为本次会话放宽沙箱。
+
+### 登录即将过期警告
+
+当 OAuth 登录（refresh token）距过期不足 5 天时，OCC 显示持续页脚横幅："Your login expires in {n} days · run /login to renew"。距过期不足 1 天时，还会触发一条高优先级瞬时通知。运行 `/login` 重新认证，以免后台会话被中断。
+
 ### --bare 模式行为差异
 
 **症状**：`--bare` 模式下 CLAUDE.md、自动记忆、hooks 等不生效。

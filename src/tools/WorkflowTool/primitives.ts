@@ -38,6 +38,7 @@ import {
 } from './errors.js'
 import { computeAgentKey, type WorkflowJournal } from './journal.js'
 import type { WorkflowMeta } from './scriptLoader.js'
+import { getMainLoopModel } from '../../utils/model/model.js'
 
 /** Lifetime cap on total agent() calls across a workflow. Runaway backstop. */
 export const WORKFLOW_AGENT_LIFETIME_CAP = 1000
@@ -47,6 +48,22 @@ export const WORKFLOW_PARALLEL_MAX_ITEMS = 4096
 
 /** Default concurrency for parallel()/pipeline(). */
 export const WORKFLOW_DEFAULT_CONCURRENCY = 10
+
+/**
+ * 2.1.202: Build the OpenTelemetry attributes that tag workflow-spawned agent
+ * telemetry with the originating workflow run, so a run's activity can be
+ * reconstructed from OTel data. OCC's analytics sink is stubbed, so these
+ * attributes are no-op parity — the stubbed logEvent accepts them.
+ */
+export function workflowAgentTelemetryAttributes(
+  runId: string,
+  workflowName: string,
+): { 'workflow.run_id': string; 'workflow.name': string } {
+  return {
+    'workflow.run_id': runId,
+    'workflow.name': workflowName,
+  }
+}
 
 /** agent() options shape. */
 export interface AgentOpts {
@@ -61,6 +78,8 @@ export interface AgentOpts {
 /** The runtime context the engine passes to createPrimitives. */
 export interface WorkflowRuntimeContext {
   runId: string
+  /** Workflow meta.name — carried on agent-spawn telemetry (2.1.202). */
+  workflowName: string
   toolUseContext: ToolUseContext
   canUseTool: CanUseToolFn
   /** Full tool pool from the parent session. */
@@ -461,12 +480,26 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     // Emit workflow_agent_started BEFORE drain so the live tree shows the
     // agent as "running" immediately (binary: narrator line + phase group
     // populate before the agent finishes). Includes id/label/phase/agentType.
+    // Capture the wall-clock start + resolved model for the /workflows agent
+    // list's dedicated time column and short model-name column.
+    const agentStartTime = Date.now()
+    const agentModel = (opts.model as string | undefined) ?? getMainLoopModel()
+    // 2.1.202: tag agent-spawn telemetry with the workflow run so its
+    // activity can be reconstructed from OTel data (sink is stubbed in OCC).
+    logEvent('tengu_workflow_agent_started', {
+      ...workflowAgentTelemetryAttributes(ctx.runId, ctx.workflowName),
+      agent_id: agentShortId,
+      phase: ctx.currentPhase,
+      model: agentModel,
+    })
     ctx.onProgress?.({
       type: 'workflow_agent_started',
       id: agentShortId,
       label: agentLabel,
       phase: ctx.currentPhase,
       agentType: agentDef.agentType,
+      model: agentModel,
+      startTime: agentStartTime,
     })
 
     let messages: Message[]
@@ -478,6 +511,12 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       ctx.counters.failures.push(msg)
       // Emit workflow_agent_completed with status:'error' so the tree
       // transitions running→error (binary includes id/label/status).
+      logEvent('tengu_workflow_agent_completed', {
+        ...workflowAgentTelemetryAttributes(ctx.runId, ctx.workflowName),
+        agent_id: agentShortId,
+        status: 'error',
+        elapsed_ms: Math.max(0, Date.now() - agentStartTime),
+      })
       ctx.onProgress?.({
         type: 'workflow_agent_completed',
         id: agentShortId,
@@ -492,6 +531,9 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
         cumulativeOutputTokens: 0,
         recentActivities: [],
         lastActivity: `Error: ${(e as Error).message.slice(0, 100)}`,
+        model: agentModel,
+        startTime: agentStartTime,
+        elapsedMs: Math.max(0, Date.now() - agentStartTime),
       })
       throw e
     }
@@ -554,6 +596,14 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     // includes id/label/status so the live tree transitions running→done, plus
     // toolUseCount + token breakdown (latestInputTokens/cumulativeOutputTokens)
     // + recentActivities for the per-agent row.
+    logEvent('tengu_workflow_agent_completed', {
+      ...workflowAgentTelemetryAttributes(ctx.runId, ctx.workflowName),
+      agent_id: agentShortId,
+      status: 'done',
+      tokens: agentTokens,
+      tool_use_count: toolUseStats.toolUseCount,
+      elapsed_ms: Math.max(0, Date.now() - agentStartTime),
+    })
     ctx.onProgress?.({
       type: 'workflow_agent_completed',
       id: agentShortId,
@@ -568,6 +618,9 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       cumulativeOutputTokens: tokenBreakdown.cumulativeOutputTokens,
       recentActivities: toolUseStats.recentActivities,
       lastActivity: toolUseStats.lastActivity,
+      model: agentModel,
+      startTime: agentStartTime,
+      elapsedMs: Math.max(0, Date.now() - agentStartTime),
     })
 
     return result

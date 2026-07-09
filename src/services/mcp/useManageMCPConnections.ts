@@ -201,6 +201,41 @@ export function useManageMCPConnections(
   }, [setAppState])
   const { addNotification } = useNotifications()
 
+  // 2.1.203: When the session's additional working directories change
+  // (/add-dir, permission grants), notify connected MCP servers so they can
+  // re-fetch roots/list. We declare the roots capability (with listChanged)
+  // to every server at connect time, so all connected servers are notified.
+  // The set is selected as a stable primitive string so Object.is only
+  // re-runs the effect when the membership actually changes.
+  const additionalDirsKey = useAppState(
+    s =>
+      Array.from(
+        s.toolPermissionContext.additionalWorkingDirectories.keys(),
+      ).join('\n'),
+  )
+  const rootsListChangedMountedRef = useRef(false)
+  useEffect(() => {
+    // Skip the initial mount — the initial set is not a "change".
+    if (!rootsListChangedMountedRef.current) {
+      rootsListChangedMountedRef.current = true
+      return
+    }
+    const { mcp } = store.getState()
+    for (const c of mcp.clients) {
+      if (c.type !== 'connected') continue
+      c.client
+        .notification({ method: 'notifications/roots/list_changed' })
+        .catch(error => {
+          logMCPDebug(
+            c.name,
+            `Failed to send roots/list_changed notification: ${errorMessage(
+              error,
+            )}`,
+          )
+        })
+    }
+  }, [additionalDirsKey, store])
+
   // Batched MCP state updates: queue individual server updates and flush them
   // in a single setAppState call via setTimeout. Using a time-based window
   // (instead of queueMicrotask) ensures updates are batched even when

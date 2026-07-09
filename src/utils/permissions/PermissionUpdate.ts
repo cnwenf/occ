@@ -5,6 +5,7 @@ import type {
   AdditionalWorkingDirectory,
   WorkingDirectorySource,
 } from '../../types/permissions.js'
+import { setAdditionalWorkingDirectories } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
 import type { EditableSettingSource } from '../settings/constants.js'
 import {
@@ -130,6 +131,9 @@ export function applyPermissionUpdate(
           source: update.destination,
         })
       }
+      // Sync the bootstrap singleton so the MCP ListRoots handler sees the
+      // updated set. (2.1.203)
+      setAdditionalWorkingDirectories(Array.from(newAdditionalDirs.keys()))
       return {
         ...context,
         additionalWorkingDirectories: newAdditionalDirs,
@@ -176,6 +180,9 @@ export function applyPermissionUpdate(
       for (const directory of update.directories) {
         newAdditionalDirs.delete(directory)
       }
+      // Sync the bootstrap singleton so the MCP ListRoots handler sees the
+      // updated set. (2.1.203)
+      setAdditionalWorkingDirectories(Array.from(newAdditionalDirs.keys()))
       return {
         ...context,
         additionalWorkingDirectories: newAdditionalDirs,

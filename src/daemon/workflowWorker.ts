@@ -159,6 +159,9 @@ function buildProgressHandler(runId: string, seedPhases: string[]): (data: unkno
       cumulativeOutputTokens?: number
       recentActivities?: WorkflowAgentStat['recentActivities']
       lastActivity?: string
+      model?: string
+      startTime?: number
+      elapsedMs?: number
       line?: string
     }
     logEvent('tengu_workflow_progress', {
@@ -187,6 +190,9 @@ function buildProgressHandler(runId: string, seedPhases: string[]): (data: unkno
             cumulativeOutputTokens: 0,
             recentActivities: [],
             lastActivity: undefined,
+            model: ev.model,
+            startTime: ev.startTime,
+            elapsedMs: undefined,
             isResolved: false,
             isError: false,
           })
@@ -207,6 +213,9 @@ function buildProgressHandler(runId: string, seedPhases: string[]): (data: unkno
             cumulativeOutputTokens: 0,
             recentActivities: [],
             lastActivity: undefined,
+            model: ev.model,
+            startTime: ev.startTime,
+            elapsedMs: undefined,
             isResolved: false,
             isError: false,
           }
@@ -218,6 +227,9 @@ function buildProgressHandler(runId: string, seedPhases: string[]): (data: unkno
         agent.cumulativeOutputTokens = ev.cumulativeOutputTokens ?? 0
         agent.recentActivities = ev.recentActivities ?? []
         agent.lastActivity = ev.lastActivity
+        if (ev.model !== undefined) agent.model = ev.model
+        if (ev.startTime !== undefined) agent.startTime = ev.startTime
+        if (ev.elapsedMs !== undefined) agent.elapsedMs = ev.elapsedMs
         agent.isResolved = agent.status === 'done'
         agent.isError = agent.status === 'error'
         if (agent.status === 'done') {

@@ -205,6 +205,12 @@ type State = {
   lastEmittedDate: string | null
   // Additional directories from --add-dir flag (for CLAUDE.md loading)
   additionalDirectoriesForClaudeMd: string[]
+  // Mirror of appState.toolPermissionContext.additionalWorkingDirectories
+  // (the runtime /add-dir + permission-grant set). Lives in bootstrap so the
+  // non-React MCP client (ListRoots handler) can read it without React state.
+  // Kept in sync by PermissionUpdate.ts. (2.1.203: MCP roots/list inclusion +
+  // notifications/roots/list_changed when the set changes.)
+  additionalWorkingDirectories: string[]
   // Channel server allowlist from --channels flag (servers whose channel
   // notifications should register this session). Parsed once in main.tsx —
   // the tag decides trust model: 'plugin' → marketplace verification +
@@ -401,6 +407,9 @@ function getInitialState(): State {
     lastEmittedDate: null,
     // Additional directories from --add-dir flag (for CLAUDE.md loading)
     additionalDirectoriesForClaudeMd: [],
+    // Mirror of toolPermissionContext.additionalWorkingDirectories keys.
+    // Synced by PermissionUpdate.ts; read by the MCP ListRoots handler.
+    additionalWorkingDirectories: [],
     // Channel server allowlist from --channels flag
     allowedChannels: [],
     hasDevChannels: false,
@@ -1683,6 +1692,26 @@ export function setAdditionalDirectoriesForClaudeMd(
   directories: string[],
 ): void {
   STATE.additionalDirectoriesForClaudeMd = directories
+}
+
+/**
+ * Returns the session's additional working directories (the
+ * /add-dir + permission-grant set), mirrored from
+ * appState.toolPermissionContext.additionalWorkingDirectories. Read by the
+ * MCP ListRoots handler so servers see these dirs as roots. (2.1.203)
+ */
+export function getAdditionalWorkingDirectories(): string[] {
+  return STATE.additionalWorkingDirectories
+}
+
+/**
+ * Sync the bootstrap mirror of the additional working directory set.
+ * Called by PermissionUpdate.ts whenever the React-side
+ * toolPermissionContext.additionalWorkingDirectories Map changes.
+ * (2.1.203)
+ */
+export function setAdditionalWorkingDirectories(directories: string[]): void {
+  STATE.additionalWorkingDirectories = directories
 }
 
 export function getAllowedChannels(): ChannelEntry[] {

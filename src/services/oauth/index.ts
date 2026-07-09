@@ -180,6 +180,13 @@ export class OAuthService {
       accessToken: response.access_token,
       refreshToken: response.refresh_token,
       expiresAt: Date.now() + response.expires_in * 1000,
+      // 2.1.203: capture the refresh-token (login) expiry so we can warn the
+      // user before their login expires. The backend returns
+      // `refresh_token_expires_in` (seconds); absent for inference-only grants.
+      refreshTokenExpiresAt:
+        typeof response.refresh_token_expires_in === 'number'
+          ? Date.now() + response.refresh_token_expires_in * 1000
+          : undefined,
       scopes: client.parseScopes(response.scope),
       subscriptionType,
       rateLimitTier,

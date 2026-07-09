@@ -82,6 +82,7 @@ The body becomes the prompt sent to the model. Frontmatter keys include `descrip
 | Command | Description |
 |---|---|
 | `/review` | Review a GitHub PR; for your working diff use `/code-review`. Runs `gh pr view`/`gh pr diff` and produces a structured review. |
+| `/code-review [level] [--fix] [--comment] [<target>]` | Multi-agent code review at a chosen effort level (`low`/`medium`/`high`/`xhigh`/`max`, default `high`). The target may be a PR number, a branch name, or omitted (reviews your current working diff). `--fix` applies verified findings; `--comment` posts them as inline PR comments. Examples: `/code-review high 1234` reviews PR #1234; `/code-review max --fix 1234` reviews and fixes. |
 | `/security-review` | Security review of pending changes on the current branch (3-phase analysis, false-positive filtered) |
 | `/ultrareview` | Cloud-hosted multi-agent bug hunt (~10-20 min). Gated; checks overage/Extra-Usage balance. |
 

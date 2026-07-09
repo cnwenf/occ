@@ -5194,9 +5194,11 @@ async function loadInitialMessages(
     }
   }
 
-  // Join the SessionStart hooks promise kicked in main.tsx (or run fresh if
-  // it wasn't kicked — e.g. --continue with no prior session falls through
-  // here with sessionStartHooksPromise undefined because main.tsx guards on continue)
+  // Run SessionStart hooks here (after registerHookEventHandler wired up the
+  // hook event stream above) so lifecycle events stream in real-time to
+  // stream-json/remote consumers instead of buffering in pendingEvents.
+  // main.tsx now defers the kick-off to here for that reason (2.1.204). The
+  // ?? also handles the --continue-with-no-prior-session fallthrough.
   return {
     messages: await (options.sessionStartHooksPromise ??
       processSessionStartHooks('startup')),

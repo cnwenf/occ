@@ -58,6 +58,11 @@ export function useHistorySearch(
   }, [])
 
   const reset = useCallback((): void => {
+    // Abort any in-flight scan first. Without this, accepting or cancelling
+    // while the history file is still being scanned leaves a dangling
+    // searchHistory() promise running; it then either crashes (historyReader
+    // ref is nulled below) or stomps on the reset state. See 2.1.202.
+    searchAbortController.current?.abort()
     setIsSearching(false)
     setHistoryQuery('')
     setHistoryFailedMatch(false)
@@ -103,7 +108,21 @@ export function useHistorySearch(
           return
         }
 
+        // The reader ref can be nulled out from under us by reset()
+        // (accept/cancel/execute) while we were suspended on the previous
+        // next() call. Guard before reading so we don't crash on undefined.
+        if (!historyReader.current) {
+          return
+        }
+
         const item = await historyReader.current.next()
+        // While awaiting next(), the search may have been reset (accept/
+        // cancel) — the reader was closed and the ref nulled, and our signal
+        // aborted. Bail before touching any state so we neither crash nor
+        // stomp on the freshly-reset input/match.
+        if (signal?.aborted || !historyReader.current) {
+          return
+        }
         if (item.done) {
           // No match found - keep last match but mark as failed
           setHistoryFailedMatch(true)
@@ -166,7 +185,11 @@ export function useHistorySearch(
 
   // Handler: Find next match (when searching)
   const handleNextMatch = useCallback(() => {
-    void searchHistory(true)
+    // Pass the active abort signal so accept/cancel/query-change can cancel
+    // an in-flight next-match scan. Previously no signal was passed, so a
+    // scan started by Ctrl+R could outlive an accept/cancel and crash on the
+    // nulled historyReader ref. See 2.1.202.
+    void searchHistory(true, searchAbortController.current?.signal)
   }, [searchHistory])
 
   // Handler: Accept current match and exit search

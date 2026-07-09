@@ -117,3 +117,58 @@ export async function getShellHistoryCompletion(
 
   return null
 }
+
+/**
+ * Whether the in-memory shell-history cache has been populated at least once.
+ * Used by the render-path sync lookup to decide whether to fall back to the
+ * async warm-up.
+ */
+export function isShellHistoryCacheWarm(): boolean {
+  return shellHistoryCache != null
+}
+
+/**
+ * Synchronous shell-history completion from the in-memory cache.
+ *
+ * Returns null if the cache hasn't been populated yet (cold start) or no match
+ * exists. Use this in render paths (useMemo) to compute bash ghost text in the
+ * SAME render as the keystroke — the async getShellHistoryCompletion resolves
+ * in a microtask, so using it for ghost text caused a second render per
+ * keystroke and the terminal flickered/jumped while typing in bash mode
+ * (2.1.203). The async warm-up populates the cache on entering bash mode;
+ * once warm, this sync lookup is authoritative for the typing session (shell
+ * history only changes on command submit, which clears the cache).
+ */
+export function getShellHistoryCompletionSync(
+  input: string,
+): ShellHistoryMatch | null {
+  if (!input || input.length < 2) {
+    return null
+  }
+  if (!input.trim()) {
+    return null
+  }
+  // Cache not populated yet — caller should fire the async warm-up.
+  if (!shellHistoryCache) {
+    return null
+  }
+  for (const command of shellHistoryCache) {
+    if (command.startsWith(input) && command !== input) {
+      return {
+        fullCommand: command,
+        suffix: command.slice(input.length),
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Warm the shell-history cache by reading the history file once. Safe to call
+ * repeatedly — a no-op while a read is already in flight and returns fast once
+ * the cache is populated (TTL-bounded). Resolves when the cache is usable by
+ * getShellHistoryCompletionSync.
+ */
+export async function warmShellHistoryCache(): Promise<void> {
+  await getShellHistoryCommands()
+}

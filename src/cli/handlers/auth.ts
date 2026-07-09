@@ -34,6 +34,7 @@ import { saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isRunningOnHomespace } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
+import { createSignInHyperlink } from '../../utils/hyperlink.js'
 import { logError } from '../../utils/log.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
@@ -114,11 +115,13 @@ export async function authLogin({
   sso,
   console: useConsole,
   claudeai,
+  noBrowser,
 }: {
   email?: string
   sso?: boolean
   console?: boolean
   claudeai?: boolean
+  noBrowser?: boolean
 }): Promise<void> {
   if (useConsole && claudeai) {
     process.stderr.write(
@@ -193,15 +196,28 @@ export async function authLogin({
     logEvent('tengu_oauth_flow_start', { loginWithClaudeAi })
 
     const result = await oauthService.startOAuthFlow(
-      async url => {
-        process.stdout.write('Opening browser to sign in…\n')
-        process.stdout.write(`If the browser didn't open, visit: ${url}\n`)
+      async (url, automaticUrl) => {
+        if (noBrowser) {
+          // --no-browser: don't open a browser; print the sign-in URL as a
+          // single OSC 8 hyperlink so it stays clickable even when it wraps
+          // over SSH (where terminal-hyperlink detection is unreliable).
+          const signInUrl = automaticUrl ?? url
+          process.stdout.write(
+            `Visit this URL to sign in:\n${createSignInHyperlink(signInUrl)}\n`,
+          )
+        } else {
+          process.stdout.write('Opening browser to sign in…\n')
+          process.stdout.write(
+            `If the browser didn't open, visit: ${createSignInHyperlink(url)}\n`,
+          )
+        }
       },
       {
         loginWithClaudeAi,
         loginHint: email,
         loginMethod: resolvedLoginMethod,
         orgUUID,
+        skipBrowserOpen: noBrowser,
       },
     )
 

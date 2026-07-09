@@ -777,6 +777,30 @@ export function Config({
       });
     }
   }] : []), {
+    id: 'dynamicWorkflowSize',
+    label: 'Dynamic workflow size',
+    value: settingsData?.dynamicWorkflowSize ?? 'medium',
+    options: ['small', 'medium', 'large'],
+    type: 'enum' as const,
+    onChange(selected: string) {
+      const size = selected as 'small' | 'medium' | 'large';
+      updateSettingsForSource('userSettings', {
+        dynamicWorkflowSize: size,
+      });
+      setSettingsData(prev => ({
+        ...prev,
+        dynamicWorkflowSize: size,
+      }));
+      setChanges(prev => ({
+        ...prev,
+        'Dynamic workflow size': selected,
+      }));
+      logEvent('tengu_config_changed', {
+        setting: 'dynamicWorkflowSize' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILE_PATHS,
+        value: selected as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      });
+    },
+  }, {
     id: 'language',
     label: 'Language',
     value: currentLanguage ?? 'Default (English)',

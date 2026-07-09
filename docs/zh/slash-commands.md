@@ -63,6 +63,7 @@
 |------|------|------|
 | `/plan` | — | 启用 plan 模式或查看当前会话计划（`[open|<描述>]`） |
 | `/review` | — | 审查 GitHub PR（工作 diff 用 `/code-review`）。prompt 型内置 |
+| `/code-review` | — | 多代理代码审查，可选 effort 级别（`low`/`medium`/`high`/`xhigh`/`max`，默认 `high`）。目标可为 PR 号、分支名或省略（审查当前工作 diff）。`--fix` 应用已验证的发现；`--comment` 作为 PR 内联评论发布。示例：`/code-review high 1234` 审查 PR #1234；`/code-review max --fix 1234` 审查并修复 |
 | `/security-review` | — | 安全审查当前分支的待提交变更。已"迁移到插件" `security-review@claude-code-marketplace` |
 | `/doctor` | — | 诊断并校验安装与设置 |
 

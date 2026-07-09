@@ -847,6 +847,16 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),
+      // 2.1.202: advisory guideline for dynamic workflow size (agent counts).
+      // Not an enforced cap — injected into the workflow-generation prompt as a
+      // hint for how many agents Claude should generally spawn.
+      dynamicWorkflowSize: z
+        .enum(['small', 'medium', 'large'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Advisory guideline for how large Claude makes dynamic workflows (small/medium/large agent counts). Not an enforced cap.',
+        ),
       advisorModel: z
         .string()
         .optional()

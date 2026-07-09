@@ -2676,15 +2676,16 @@ async function run(): Promise<CommanderCommand> {
       // otelHeadersHelper (which requires trust to execute) are available.
       initializeTelemetryAfterTrust();
 
-      // Kick SessionStart hooks now so the subprocess spawn overlaps with
-      // MCP connect + plugin init + print.ts import below. loadInitialMessages
-      // joins this at print.ts:4397. Guarded same as loadInitialMessages —
-      // continue/resume/teleport paths don't fire startup hooks (or fire them
-      // conditionally inside the resume branch, where this promise is
-      // undefined and the ?? fallback runs). Also skip when setupTrigger is
-      // set — those paths run setup hooks first (print.ts:544), and session
-      // start hooks must wait until setup completes.
-      const sessionStartHooksPromise = options.continue || options.resume || teleport || setupTrigger ? undefined : processSessionStartHooks('startup');
+      // Defer SessionStart hooks to print.ts so hook lifecycle events stream
+      // in real-time. print.ts registers the hook event handler
+      // (registerHookEventHandler, print.ts ~629) before loadInitialMessages
+      // runs the ?? fallback that kicks off processSessionStartHooks('startup')
+      // (print.ts ~5201). Kicking them off here — before print.ts registers the
+      // handler — caused SessionStart hook events to buffer in pendingEvents
+      // (hookEvents.ts) instead of streaming, which could idle-reap remote
+      // workers mid-hook (2.1.204). continue/resume/teleport/setupTrigger
+      // already deferred (undefined); now the normal startup path defers too.
+      const sessionStartHooksPromise = undefined;
       // Suppress transient unhandledRejection if this rejects before
       // loadInitialMessages awaits it. Downstream await still observes the
       // rejection — this just prevents the spurious global handler fire.
@@ -4196,16 +4197,18 @@ async function run(): Promise<CommanderCommand> {
   // claude auth
 
   const auth = program.command('auth').description('Manage authentication').configureHelp(createSortedHelpConfig());
-  auth.command('login').description('Sign in to your Anthropic account').option('--email <email>', 'Pre-populate email address on the login page').option('--sso', 'Force SSO login flow').option('--console', 'Use Anthropic Console (API usage billing) instead of Claude subscription').option('--claudeai', 'Use Claude subscription (default)').action(async ({
+  auth.command('login').description('Sign in to your Anthropic account').option('--email <email>', 'Pre-populate email address on the login page').option('--sso', 'Force SSO login flow').option('--console', 'Use Anthropic Console (API usage billing) instead of Claude subscription').option('--claudeai', 'Use Claude subscription (default)').option('--no-browser', 'Print the sign-in URL as a hyperlink instead of opening a browser').action(async ({
     email,
     sso,
     console: useConsole,
-    claudeai
+    claudeai,
+    browser
   }: {
     email?: string;
     sso?: boolean;
     console?: boolean;
     claudeai?: boolean;
+    browser?: boolean;
   }) => {
     const {
       authLogin
@@ -4214,7 +4217,10 @@ async function run(): Promise<CommanderCommand> {
       email,
       sso,
       console: useConsole,
-      claudeai
+      claudeai,
+      // Commander maps --no-browser to `browser` (default true; false when
+      // the flag is passed). Translate to a positive noBrowser boolean.
+      noBrowser: browser === false
     });
   });
   auth.command('status').description('Show authentication status').option('--json', 'Output as JSON (default)').option('--text', 'Output as human-readable text').action(async (opts: {

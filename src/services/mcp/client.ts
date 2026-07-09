@@ -41,7 +41,7 @@ import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import zipObject from 'lodash-es/zipObject.js'
 import pMap from 'p-map'
-import { getOriginalCwd, getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
 import type { Command } from '../../commands.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { PRODUCT_URL } from '../../constants/product.js'
@@ -113,6 +113,7 @@ import {
 } from './elicitationHandler.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
+import { getMcpRoots } from './roots.js'
 import { getLoggingSafeMcpBaseUrl, getProjectMcpServerStatus } from './utils.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -1103,7 +1104,11 @@ export const connectToServer = memoize(
         },
         {
           capabilities: {
-            roots: {},
+            roots: {
+              // Declare that the client will send notifications/roots/list_changed
+              // when the set of roots changes (e.g. /add-dir). (2.1.203)
+              listChanged: true,
+            },
             // Empty object declares the capability. Sending {form:{},url:{}}
             // breaks Java MCP SDK servers (Spring AI) whose Elicitation class
             // has zero fields and fails on unknown properties.
@@ -1120,11 +1125,7 @@ export const connectToServer = memoize(
       client.setRequestHandler(ListRootsRequestSchema, async () => {
         logMCPDebug(name, `Received ListRoots request from server`)
         return {
-          roots: [
-            {
-              uri: `file://${getOriginalCwd()}`,
-            },
-          ],
+          roots: getMcpRoots(),
         }
       })
 
@@ -1554,7 +1555,8 @@ export const connectToServer = memoize(
               }
 
               // Wait for graceful shutdown with rapid escalation (total 500ms to keep CLI responsive)
-              await new Promise<void>(async resolve => {
+              await new Promise<void>((resolve, reject) => {
+                (async () => {
                 let resolved = false
 
                 // Set up a timer to check if process still exists
@@ -1665,6 +1667,7 @@ export const connectToServer = memoize(
                     resolve()
                   }
                 }
+              })().then(resolve, reject)
               })
             }
           } catch (processError) {

@@ -61,6 +61,7 @@ import {
 import type { TaskState } from '../tasks/types.js'
 import { formatDuration, formatNumber } from '../utils/format.js'
 import { truncate } from '../utils/truncate.js'
+import { renderModelName } from '../utils/model/model.js'
 import { useTerminalSize } from '../hooks/useTerminalSize.js'
 import { Box, Text, useInput } from '../ink.js'
 import { Byline } from './design-system/Byline.js'
@@ -430,13 +431,30 @@ function WorkflowRunDetail({
           <Text bold={true}>Agents</Text>
           {phases.flatMap(p => p.agents).length > 0
             ? phases.flatMap((p, pi) =>
-                p.agents.map((a, ai) => (
-                  <Box key={`agent-${pi}-${ai}-${a.id}`} flexDirection="row">
-                    <Text dimColor={a.status === 'running'}>{`  ${figures.pointerSmall} `}</Text>
-                    <Text bold={a.status === 'error'} color={a.status === 'error' ? 'red' : undefined} dimColor={a.status === 'running'}>{a.label}</Text>
-                    <Text dimColor={a.status === 'running'}>{` · ${a.toolUseCount} tool ${a.toolUseCount === 1 ? 'use' : 'uses'}${a.latestInputTokens > 0 ? ` · ${formatNumber(a.latestInputTokens)} tok` : ''}${a.status === 'running' ? ' · running' : a.status === 'error' ? ' · error' : ' · done'}`}</Text>
-                  </Box>
-                )),
+                p.agents.map((a, ai) => {
+                  // 2.1.201 agent-list layout: wider title + short model +
+                  // dedicated time column + tokens, NO per-row tool-call count.
+                  const aElapsed =
+                    a.elapsedMs ??
+                    (a.startTime != null
+                      ? Math.max(0, Date.now() - a.startTime)
+                      : undefined)
+                  const aTime =
+                    aElapsed != null
+                      ? formatDuration(aElapsed, { hideTrailingZeros: true })
+                      : ''
+                  const aModel = a.model
+                    ? truncate(renderModelName(a.model), 14)
+                    : ''
+                  const aTokens = a.latestInputTokens
+                  return (
+                    <Box key={`agent-${pi}-${ai}-${a.id}`} flexDirection="row">
+                      <Text dimColor={a.status === 'running'}>{`  ${figures.pointerSmall} `}</Text>
+                      <Text bold={a.status === 'error'} color={a.status === 'error' ? 'red' : undefined} dimColor={a.status === 'running'}>{truncate(a.label || a.agentType, 36)}</Text>
+                      <Text dimColor={a.status === 'running'}>{`${aModel ? ` · ${aModel}` : ''}${aTime ? ` · ${aTime}` : ''}${aTokens > 0 ? ` · ${formatNumber(aTokens)} tok` : ''}${a.status === 'running' ? ' · running' : a.status === 'error' ? ' · error' : ' · done'}`}</Text>
+                    </Box>
+                  )
+                }),
               )
             : agentCount > 0
               ? <Text>{`  ${agentCount} ${agentCount === 1 ? 'agent' : 'agents'}${tokens > 0 ? ` · ${formatNumber(tokens)} tok` : ''}${toolCalls > 0 ? ` · ${toolCalls} tool ${toolCalls === 1 ? 'call' : 'calls'}` : ''}`}</Text>

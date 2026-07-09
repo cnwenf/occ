@@ -496,6 +496,32 @@ export async function* runAgent({
       }
     }
 
+    // #29 (2.1.203): Register the worktree path as an additional working
+    // directory for worktree-isolated subagents. Without this, the BashTool's
+    // resetCwdIfOutsideProject() sees the worktree cwd as outside the allowed
+    // working paths (only originalCwd + the parent's additional dirs are
+    // recognized by allWorkingDirectories()) and resets it back to the parent
+    // checkout — so shell commands run in the parent repo instead of the
+    // worktree. Adding the worktree path makes pathInAllowedWorkingPath()
+    // return true for it, keeping the cwd pinned to the worktree and
+    // permitting file operations there.
+    if (
+      worktreePath &&
+      !toolPermissionContext.additionalWorkingDirectories.has(worktreePath)
+    ) {
+      const worktreeDirs = new Map(
+        toolPermissionContext.additionalWorkingDirectories,
+      )
+      worktreeDirs.set(worktreePath, {
+        path: worktreePath,
+        source: 'session',
+      })
+      toolPermissionContext = {
+        ...toolPermissionContext,
+        additionalWorkingDirectories: worktreeDirs,
+      }
+    }
+
     // Override effort level if agent defines one
     const effortValue =
       agentDefinition.effort !== undefined

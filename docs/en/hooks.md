@@ -162,6 +162,10 @@ Stdout can be JSON (`SyncHookJSONOutput`):
 
 PreToolUse permission resolution: a hook `allow` does **not** bypass `deny`/`ask` rules in settings.json (rule-based checks still apply); a hook `deny` always blocks; a hook `ask` forces a prompt.
 
+### Headless streaming (`-p` / stream-json)
+
+In pipe mode with `--output-format=stream-json --include-hook-events`, all hook lifecycle events — including `SessionStart` — stream in real time as `system` messages (`subtype`: `hook_started`, `hook_progress`, `hook_response`), each carrying `hook_id`, `hook_name`, `hook_event`, stdout/stderr/output, and `exit_code`. A `SessionStart` hook may also emit an `initialUserMessage`, which becomes the first user turn when stdin is empty (useful for headless orchestrator sessions).
+
 ## Configuration
 
 ```json

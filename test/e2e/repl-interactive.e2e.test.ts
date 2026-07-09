@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { execFileSync, execSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { REPO_ROOT } from "./helpers";
 
 /**
@@ -27,13 +30,54 @@ function tmux(args: string[]): string {
   }
 }
 
-function startRepl(env: Record<string, string> = {}) {
+function startRepl(home: string) {
   execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`)
-  const envStr = Object.entries({ ...process.env, ...env }).map(([k, v]) => `${k}='${v}'`).join(" ")
+  // Pass the FULL parent env (so CLAUDE_CODE_BUBBLEWRAP / IS_SANDBOX that
+  // allow --dangerously-skip-permissions under root are preserved — tmux does
+  // NOT re-export the parent env by default) but override HOME to the temp dir
+  // so the CLI reads the seeded .claude.json + .claude/settings.json instead
+  // of the real user config (which may have defaultMode:"auto" /
+  // skipAutoPermissionPrompt and falsely suppress the auto-mode opt-in dialog).
+  const envStr = Object.entries({ ...process.env, HOME: home })
+    .map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`)
+    .join(" ");
   execSync(
     `tmux new-session -d -s ${SESSION} -x 200 -y 50 "env ${envStr} ${BIN} --dangerously-skip-permissions"`,
     { timeout: 5_000 },
   )
+}
+
+/**
+ * Fresh temp HOME seeded to skip onboarding + bypass-acceptance + hooks, but
+ * WITHOUT pre-enabling auto mode (no `skipAutoPermissionPrompt`, no
+ * `autoModeOptInDismissed`, no `defaultMode: "auto"`) so the auto-mode opt-in
+ * dialog CAN appear on Shift+Tab. Mirrors the isolation pattern in
+ * trust-gate/goal-gate e2e tests.
+ */
+function freshSeededHome(): string {
+  const home = mkdtempSync(join(tmpdir(), "occ-repl-"));
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(
+    join(home, ".claude.json"),
+    JSON.stringify({
+      numStartups: 1,
+      firstStartTime: "2026-07-06T00:00:00.000Z",
+      migrationVersion: 11,
+      userID: "occ-repl-seed-0000000000000000000000000000000000000000000000aa",
+      hasCompletedOnboarding: true,
+      lastOnboardingVersion: "2.1.200",
+      lastReleaseNotesSeen: "2.1.200",
+      projects: { [REPO_ROOT]: { hasTrustDialogAccepted: true } },
+    }),
+  );
+  writeFileSync(
+    join(home, ".claude", "settings.json"),
+    JSON.stringify({
+      skipDangerousModePermissionPrompt: true,
+      disableAllHooks: true,
+    }),
+  );
+  return home;
 }
 
 function killRepl() {
@@ -61,7 +105,8 @@ async function waitForText(substr: string, timeoutMs = 15_000): Promise<boolean>
 
 describe.skipIf(!!process.env.CI)("REPL interactive (tmux e2e)", () => {
   test("Shift+Tab cycles through permission modes", async () => {
-    startRepl()
+    const home = freshSeededHome();
+    startRepl(home)
     try {
       // Wait for REPL to render
       await waitForText("shift+tab", 20_000)
@@ -92,11 +137,13 @@ describe.skipIf(!!process.env.CI)("REPL interactive (tmux e2e)", () => {
       expect(found).toBe(true)
     } finally {
       killRepl()
+      rmSync(home, { recursive: true, force: true })
     }
   }, 30_000)
 
   test("Shift+Tab shows the auto-mode opt-in dialog", async () => {
-    startRepl()
+    const home = freshSeededHome();
+    startRepl(home)
     try {
       await waitForText("shift+tab", 20_000)
 
@@ -122,11 +169,13 @@ describe.skipIf(!!process.env.CI)("REPL interactive (tmux e2e)", () => {
       expect(false).toBe(true)
     } finally {
       killRepl()
+      rmSync(home, { recursive: true, force: true })
     }
   }, 30_000)
 
   test("/goal panel opens and Escape dismisses it", async () => {
-    startRepl()
+    const home = freshSeededHome();
+    startRepl(home)
     try {
       await waitForText("shift+tab", 20_000)
 
@@ -147,6 +196,7 @@ describe.skipIf(!!process.env.CI)("REPL interactive (tmux e2e)", () => {
       expect(after.toLowerCase()).toContain("shift+tab")
     } finally {
       killRepl()
+      rmSync(home, { recursive: true, force: true })
     }
   }, 30_000)
 })

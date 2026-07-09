@@ -206,6 +206,7 @@ export async function runWorkflow(
 
   const runtimeCtx: WorkflowRuntimeContext = {
     runId,
+    workflowName: meta.name,
     toolUseContext,
     canUseTool,
     availableTools: toolUseContext.options.tools,

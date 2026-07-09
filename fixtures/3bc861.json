@@ -1,0 +1,290 @@
+{
+  "input": [
+    "say hi"
+  ],
+  "output": [
+    {
+      "type": "stream_event",
+      "event": {
+        "message": {
+          "model": "glm-5.2",
+          "id": "msg_9ded1f33-1387-4b25-8c16-8485fd35a1df",
+          "role": "assistant",
+          "type": "message",
+          "content": [],
+          "usage": {
+            "input_tokens": 3993,
+            "output_tokens": 0
+          }
+        },
+        "type": "message_start"
+      },
+      "ttftMs": 1622
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "content_block": {
+          "type": "thinking",
+          "signature": "",
+          "thinking": ""
+        },
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "The"
+        },
+        "type": "content_block_delta",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " user just"
+        },
+        "type": "content_block_delta",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " wants me"
+        },
+        "type": "content_block_delta",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " to say"
+        },
+        "type": "content_block_delta",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": " hi"
+        },
+        "type": "content_block_delta",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "thinking_delta",
+          "thinking": "."
+        },
+        "type": "content_block_delta",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "signature_delta",
+          "signature": ""
+        },
+        "type": "content_block_delta",
+        "index": 0
+      }
+    },
+    {
+      "uuid": "UUID-9",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-09T07:57:30.032Z",
+      "message": {
+        "model": "glm-5.2",
+        "id": "msg_9ded1f33-1387-4b25-8c16-8485fd35a1df",
+        "role": "assistant",
+        "type": "message",
+        "content": [
+          {
+            "type": "thinking",
+            "signature": "",
+            "thinking": "The user just wants me to say hi."
+          }
+        ],
+        "usage": {
+          "input_tokens": 3993,
+          "output_tokens": 0
+        }
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 0
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_start",
+        "content_block": {
+          "type": "text",
+          "text": ""
+        },
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "text_delta",
+          "text": "Hi!"
+        },
+        "type": "content_block_delta",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "text_delta",
+          "text": " 👋"
+        },
+        "type": "content_block_delta",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "text_delta",
+          "text": " How"
+        },
+        "type": "content_block_delta",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "text_delta",
+          "text": " can I"
+        },
+        "type": "content_block_delta",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "text_delta",
+          "text": " help you"
+        },
+        "type": "content_block_delta",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "type": "text_delta",
+          "text": " today?"
+        },
+        "type": "content_block_delta",
+        "index": 1
+      }
+    },
+    {
+      "uuid": "UUID-18",
+      "requestId": "REQUEST_ID",
+      "timestamp": "2026-07-09T07:57:30.131Z",
+      "message": {
+        "model": "glm-5.2",
+        "id": "msg_9ded1f33-1387-4b25-8c16-8485fd35a1df",
+        "role": "assistant",
+        "type": "message",
+        "content": [
+          {
+            "type": "text",
+            "text": "Hi! 👋 How can I help you today?",
+            "citations": []
+          }
+        ],
+        "usage": {
+          "input_tokens": 3934,
+          "cache_creation_input_tokens": 0,
+          "cache_read_input_tokens": 0,
+          "output_tokens": 22,
+          "server_tool_use": {
+            "web_search_requests": 0,
+            "web_fetch_requests": 0
+          },
+          "service_tier": "standard",
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 0,
+            "ephemeral_5m_input_tokens": 0
+          },
+          "inference_geo": "",
+          "iterations": [],
+          "speed": "standard"
+        },
+        "stop_reason": "end_turn"
+      },
+      "type": "assistant"
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "content_block_stop",
+        "index": 1
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "delta": {
+          "stop_reason": "end_turn"
+        },
+        "type": "message_delta",
+        "usage": {
+          "output_tokens": 22,
+          "cache_creation_input_tokens": 0,
+          "input_tokens": 3934,
+          "cache_read_input_tokens": 0,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          }
+        }
+      }
+    },
+    {
+      "type": "stream_event",
+      "event": {
+        "type": "message_stop"
+      }
+    }
+  ]
+}

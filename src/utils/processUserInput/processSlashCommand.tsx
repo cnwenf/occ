@@ -41,6 +41,8 @@ import { parseSlashCommand } from '../slashCommandParsing.js';
 import { sleep } from '../sleep.js';
 import { recordSkillUsage } from '../suggestions/skillUsageTracking.js';
 import { loadStackedSkills, logStackedSlashCommands, splitStackedSlashCommands } from '../../skills/stackedSlashCommands.js';
+import { isSkillAlreadyLoaded, markSkillLoaded } from '../../skills/loadedSkillsTracker.js';
+import { hashSkillContent } from '../../tools/SkillTool/skillAttribution.js';
 import { logOTelEvent, redactIfDisabled } from '../telemetry/events.js';
 import { buildPluginCommandTelemetryFields } from '../telemetry/pluginTelemetry.js';
 import { getAssistantMessageContentLength } from '../tokens.js';
@@ -978,30 +980,62 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
   // agent are restored during compaction (preventing cross-agent leaks).
   const skillPath = command.source ? `${command.source}:${command.name}` : command.name;
   const skillContent = result.filter((b): b is TextBlockParam => b.type === 'text').map(b => b.text).join('\n\n');
-  addInvokedSkill(command.name, skillPath, skillContent, getAgentContext()?.agentId ?? null);
+  const skillAgentId = getAgentContext()?.agentId ?? null;
+  addInvokedSkill(command.name, skillPath, skillContent, skillAgentId);
   const metadata = formatCommandLoadingMetadata(command, args);
   const additionalAllowedTools = parseToolListFromCLI(command.allowedTools ?? []);
 
-  // Create content for the main message, including any pasted images
-  const mainMessageContent: ContentBlockParam[] = imageContentBlocks.length > 0 || precedingInputBlocks.length > 0 ? [...imageContentBlocks, ...precedingInputBlocks, ...result] : result;
+  // 2.1.202: skip re-appending a skill's instructions when the same skill
+  // (by name + content hash of the rendered body) is already loaded this
+  // session. Re-invoking an already-loaded skill previously appended a
+  // duplicate copy of its instructions to context. The hash is of the
+  // rendered content, so an invocation with different args (different
+  // rendered body) is NOT a duplicate and is still appended — only a true
+  // duplicate is skipped, so no information (including new args) is lost.
+  const contentHash = hashSkillContent(skillContent);
+  const alreadyLoaded = isSkillAlreadyLoaded(command.name, contentHash, skillAgentId);
+  if (!alreadyLoaded) {
+    markSkillLoaded(command.name, contentHash, skillAgentId);
+  }
 
-  // Extract attachments from command arguments (@-mentions, MCP resources,
-  // agent mentions in SKILL.md). skipSkillDiscovery prevents the SKILL.md
-  // content itself from triggering discovery — it's meta-content, not user
-  // intent, and a large SKILL.md (e.g. 110KB) would fire chunked AKI queries
-  // adding seconds of latency to every skill invocation.
-  const attachmentMessages = await toArray(getAttachmentMessages(result.filter((block): block is TextBlockParam => block.type === 'text').map(block => block.text).join(' '), context, null, [],
-  // queuedCommands - handled by query.ts for mid-turn attachments
-  context.messages, 'repl_main_thread', {
-    skipSkillDiscovery: true
-  }));
+  // Non-skill user intent (pasted images, text preceding the slash command).
+  // Preserved even when the skill body is skipped on a re-invoke.
+  const nonSkillBlocks: ContentBlockParam[] = [...imageContentBlocks, ...precedingInputBlocks];
+
+  // When the instructions are already in context, don't re-append the body or
+  // its @-mention attachments (loaded on the first invocation).
+  let attachmentMessages: AttachmentMessage[] = [];
+  let mainMessageContent: ContentBlockParam[];
+  if (alreadyLoaded) {
+    mainMessageContent = nonSkillBlocks;
+  } else {
+    // Create content for the main message, including any pasted images
+    mainMessageContent = nonSkillBlocks.length > 0 ? [...nonSkillBlocks, ...result] : result;
+
+    // Extract attachments from command arguments (@-mentions, MCP resources,
+    // agent mentions in SKILL.md). skipSkillDiscovery prevents the SKILL.md
+    // content itself from triggering discovery — it's meta-content, not user
+    // intent, and a large SKILL.md (e.g. 110KB) would fire chunked AKI queries
+    // adding seconds of latency to every skill invocation.
+    attachmentMessages = await toArray(getAttachmentMessages(result.filter((block): block is TextBlockParam => block.type === 'text').map(block => block.text).join(' '), context, null, [],
+    // queuedCommands - handled by query.ts for mid-turn attachments
+    context.messages, 'repl_main_thread', {
+      skipSkillDiscovery: true
+    }));
+  }
+
+  // On a deduped re-invoke with no pasted images/preceding text, emit a short
+  // marker so the model knows the instructions were intentionally not
+  // re-appended (they are already in context from the first invocation).
+  const instructionMessage = mainMessageContent.length > 0
+    ? [createUserMessage({ content: mainMessageContent, isMeta: true })]
+    : alreadyLoaded
+      ? [createUserMessage({ content: `Skill "/${command.name}" is already loaded in this conversation; its instructions were not re-appended.`, isMeta: true })]
+      : [];
   const messages = [createUserMessage({
     content: metadata,
     uuid
-  }), createUserMessage({
-    content: mainMessageContent,
-    isMeta: true
-  }), ...attachmentMessages, createAttachmentMessage({
+  }), ...instructionMessage, ...attachmentMessages, createAttachmentMessage({
     type: 'command_permissions',
     allowedTools: additionalAllowedTools,
     model: command.model

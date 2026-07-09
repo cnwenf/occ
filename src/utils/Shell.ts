@@ -35,6 +35,10 @@ import { getPlatform } from './platform.js'
 import { SandboxManager } from './sandbox/sandbox-adapter.js'
 import { invalidateSessionEnvCache } from './sessionEnvironment.js'
 import { createBashShellProvider } from './shell/bashProvider.js'
+import {
+  formatE2BigError,
+  isE2BIG,
+} from './bash/e2bigError.js'
 import { getCachedPowerShellPath } from './shell/powershellDetection.js'
 import { createPowerShellProvider } from './shell/powershellProvider.js'
 import type { ShellProvider, ShellType } from './shell/shellProvider.js'
@@ -433,6 +437,39 @@ export async function exec(
     taskOutput.clear()
 
     logForDebugging(`Shell exec error: ${errorMessage(error)}`)
+
+    // E2BIG ("argument list too long"): in repos with many git worktrees the
+    // Bash sandbox profile denies writes to a per-worktree git file for every
+    // registered worktree, growing the sandboxed command line past ARG_MAX.
+    // Surface an actionable error instead of an opaque exec failure. (2.1.201)
+    if (isE2BIG(error)) {
+      let sandboxDenyPaths: string[] = []
+      if (shouldUseSandbox) {
+        try {
+          sandboxDenyPaths =
+            SandboxManager.getFsWriteConfig()?.denyWithinAllow ?? []
+        } catch {
+          sandboxDenyPaths = []
+        }
+      }
+      const e2bigMessage = formatE2BigError({
+        binary: spawnBinary,
+        argv: shellArgs,
+        env: {
+          ...subprocessEnv(),
+          SHELL: shellType === 'bash' ? binShell : undefined,
+          GIT_EDITOR: 'true',
+          CLAUDECODE: '1',
+          ...envOverrides,
+        },
+        sandboxDenyPaths,
+      })
+      logForDebugging(e2bigMessage)
+      return createAbortedCommand(undefined, {
+        code: 126, // Standard Unix code for execution errors
+        stderr: e2bigMessage,
+      })
+    }
 
     return createAbortedCommand(undefined, {
       code: 126, // Standard Unix code for execution errors

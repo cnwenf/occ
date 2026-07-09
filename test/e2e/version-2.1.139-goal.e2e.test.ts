@@ -45,7 +45,7 @@ describe.skipIf(!!process.env.CI)("/goal real -p run (e2e, real model)", () => {
     const script = `
 const { spawn } = require('child_process');
 const child = spawn('bun', [process.env.OCC_ENTRYPOINT || '${REPO_ROOT}/dist/cli.js', '-p', '/goal all tests pass'], {
-  env: { ...process.env },
+  env: { ...process.env, CLAUDE_CODE_MAX_RETRIES: '3', CLAUDE_CODE_UNATTENDED_RETRY: '0' },
   stdio: ['ignore', 'pipe', 'pipe'],
 });
 let stdout = '';
