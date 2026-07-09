@@ -1,6 +1,6 @@
 # Overview
 
-**Open C Code (OCC)** is an open-source coding agent whose capabilities are aligned with Anthropic's [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`2.1.200`). It is an independent, fully-auditable reconstruction — not a wrapper around the closed-source binary.
+**Open C Code (OCC)** is an open-source coding agent whose capabilities are aligned with Anthropic's [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (`2.1.204`). It is an independent, fully-auditable reconstruction — not a wrapper around the closed-source binary.
 
 ## Why OCC
 
@@ -18,17 +18,17 @@ If you worry that a closed-source CLI might hide backdoors, or that your code an
 | | |
 |---|---|
 | npm package | [`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ) |
-| Version | `2.1.200` (tracks Claude Code `2.1.200`) |
+| Version | `2.1.204` (tracks Claude Code `2.1.204`) |
 | License | MIT, Copyright (c) 2026 cnwenf |
 | Runtime | Bun (not Node.js), >= 1.3.11 |
 | Module system | ESM, TSX with `react-jsx` transform |
 | Binary | `occ` → `dist/cli.js` (~26 MB single-file bundle) |
 
-> The internal program name is `claude`, so `occ --version` prints `2.1.200 (Claude Code)` and help text references "Claude Code". You invoke the published binary as `occ`.
+> The internal program name is `claude`, so `occ --version` prints `2.1.204 (Claude Code)` and help text references "Claude Code". You invoke the published binary as `occ`.
 
 ## Relationship to Claude Code
 
-OCC mirrors the official binary's behavior. For example, provider selection order in `src/utils/model/providers.ts` is documented as matching the official `2.1.200` binary selection order exactly. Where Claude Code relies on closed-source Anthropic internal services (Statsig feature gating, telemetry, the plugin marketplace), OCC replaces them with transparent, open equivalents or trims them.
+OCC mirrors the official binary's behavior. For example, provider selection order in `src/utils/model/providers.ts` is documented as matching the official `2.1.204` binary selection order exactly. Where Claude Code relies on closed-source Anthropic internal services (Statsig feature gating, telemetry, the plugin marketplace), OCC replaces them with transparent, open equivalents or trims them.
 
 ## Supported API providers
 
@@ -91,7 +91,7 @@ packages/                 # workspace stubs (@ant/*, *-napi)
 
 ### Entry & bootstrap
 
-1. **`src/entrypoints/cli.tsx`** — true entrypoint. Injects runtime polyfills (`feature()`, `globalThis.MACRO`, `BUILD_TARGET`/`BUILD_ENV`/`INTERFACE_TYPE`). Fast-paths `--version`/`-v` to print `2.1.200 (Claude Code)` with zero imports, then loads `src/main.tsx`.
+1. **`src/entrypoints/cli.tsx`** — true entrypoint. Injects runtime polyfills (`feature()`, `globalThis.MACRO`, `BUILD_TARGET`/`BUILD_ENV`/`INTERFACE_TYPE`). Fast-paths `--version`/`-v` to print `2.1.204 (Claude Code)` with zero imports, then loads `src/main.tsx`.
 2. **`src/main.tsx`** — Commander.js CLI definition. Parses args, runs `init()` via a `preAction` hook, then launches the REPL or runs in pipe mode.
 3. **`src/entrypoints/init.ts`** — one-time initialization (telemetry, config, trust dialog, repo detection, graceful shutdown).
 

@@ -2,7 +2,7 @@
 
 ## OCC 是什么
 
-**Open C Code（OCC）** 是一个开源的编码智能体。它的能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.200`），但全部源码开放、无混淆、可逐行审计，构建产物可由源码复现。
+**Open C Code（OCC）** 是一个开源的编码智能体。它的能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.204`），但全部源码开放、无混淆、可逐行审计，构建产物可由源码复现。
 
 如果你担心闭源 CLI 可能植入后门、担心代码与凭据被上传到不可审计的服务，OCC 就是为你准备的：API 凭据只发往你自己配置的端点，无遥测黑盒、无隐藏上报。
 
@@ -17,7 +17,7 @@
 
 ## 与 Claude Code 的对比
 
-OCC 在功能层面与 Claude Code `2.1.200` 对齐，但有以下重要差异：
+OCC 在功能层面与 Claude Code `2.1.204` 对齐，但有以下重要差异：
 
 ### 相同点
 
@@ -93,7 +93,7 @@ packages/                 # workspace stub（@ant/*、*-napi）
 
 ## 当前状态与限制
 
-- 跟踪 Claude Code **`2.1.200`**。
+- 跟踪 Claude Code **`2.1.204`**。
 - 约 1300 个非阻塞 `tsc` 类型错误（大量松散的 `unknown`/`never`/`{}` 类型），**不影响 Bun 运行时执行**。`tsconfig.json` 设为 `strict: false` + `skipLibCheck: true`，tsc 不在 CI 中。门槛是 Biome lint。
 - 已发布到 npm：[`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ)。
 - 所有内部 feature flag（除白名单外）已关闭，相关功能为死代码。

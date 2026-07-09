@@ -24,7 +24,7 @@ Verify it works:
 
 ```bash
 occ --version
-# 2.1.200 (Claude Code)
+# 2.1.204 (Claude Code)
 ```
 
 ## Build from source
@@ -44,7 +44,7 @@ bun run dev
 # equivalent to: bun run src/entrypoints/cli.tsx
 ```
 
-When working, the version prints as `2.1.200 (Claude Code)`. The dev-time entrypoint (`src/entrypoints/cli.tsx`) injects the runtime polyfills (`feature()`, `globalThis.MACRO`) that the built bundle gets from `bun:bundle`.
+When working, the version prints as `2.1.204 (Claude Code)`. The dev-time entrypoint (`src/entrypoints/cli.tsx`) injects the runtime polyfills (`feature()`, `globalThis.MACRO`) that the built bundle gets from `bun:bundle`.
 
 ### Build the bundle
 

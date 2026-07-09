@@ -1,6 +1,6 @@
 # OCC Documentation
 
-**Open C Code (OCC)** — a safe, open-source coding agent whose capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) `2.1.200`.
+**Open C Code (OCC)** — a safe, open-source coding agent whose capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) `2.1.204`.
 
 OCC is fully open source, unobfuscated, and reproducible from source. Your API credentials stay on your machine and requests go only to endpoints you configure. Published to npm as [`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ).
 
@@ -40,7 +40,7 @@ OCC is fully open source, unobfuscated, and reproducible from source. Your API c
 | | |
 |---|---|
 | Package | `@cnwenf/occ` |
-| Version | `2.1.200` (tracks Claude Code `2.1.200`) |
+| Version | `2.1.204` (tracks Claude Code `2.1.204`) |
 | Runtime | Bun >= 1.3.11 (not Node.js) |
 | License | MIT |
 | Providers | Anthropic direct, AWS Bedrock, Google Vertex, Azure Foundry |

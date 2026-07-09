@@ -1,6 +1,6 @@
 # CLI Reference
 
-OCC's CLI is defined with [Commander.js](https://github.com/tj/commander.js) in `src/main.tsx`. The internal program name is `claude`, but the published binary is `occ` — so you invoke `occ`, and `--version` prints `2.1.200 (Claude Code)`.
+OCC's CLI is defined with [Commander.js](https://github.com/tj/commander.js) in `src/main.tsx`. The internal program name is `claude`, but the published binary is `occ` — so you invoke `occ`, and `--version` prints `2.1.204 (Claude Code)`.
 
 ```bash
 occ [prompt] [options]

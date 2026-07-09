@@ -158,7 +158,7 @@ Bun test runner (`bunfig.toml`): root `.`, 10s timeout per test. E2E tests are v
 
 ## Version tracking
 
-The `.occ-research/` directory tracks alignment between OCC and the official Claude Code binary, with per-version research notes (2.1.89 through 2.1.200+).
+The `.occ-research/` directory tracks alignment between OCC and the official Claude Code binary, with per-version research notes (2.1.89 through 2.1.204+).
 
 ## Reporting issues
 

@@ -15,7 +15,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."
 
 # Verify
 occ --version
-# 2.1.200 (Claude Code)
+# 2.1.204 (Claude Code)
 ```
 
 For other providers (Bedrock, Vertex, Azure Foundry), see [Installation](./installation.md).
