@@ -1,4 +1,4 @@
-import type { APIError } from '@anthropic-ai/sdk'
+import { APIError } from '@anthropic-ai/sdk'
 import type { MessageParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 
 // SSL/TLS error codes from OpenSSL (used by both Node.js and Bun)

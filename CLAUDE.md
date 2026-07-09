@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an **independent open-source implementation** of a Claude Code–style coding agent. The goal is to provide core coding-agent functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. The codebase has ~1341 tsc type errors (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.
+This is an **independent open-source implementation** of a Claude Code–style coding agent. The goal is to provide core coding-agent functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. It currently tracks Claude Code `2.1.204` (catch-up changelog in `.occ-research/`). The codebase has ~1341 tsc type errors (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.
 
 ## Commands
 
@@ -12,7 +12,8 @@ This is an **independent open-source implementation** of a Claude Code–style c
 # Install dependencies
 bun install
 
-# Dev mode (direct execution via Bun). Version prints as 888 when working.
+# Dev mode (direct execution via Bun). Version prints as 2.1.204 when the
+# cli.tsx MACRO polyfill is active; prints 888 if the polyfill is bypassed.
 bun run dev
 # equivalent to: bun run src/entrypoints/cli.tsx
 
@@ -55,7 +56,7 @@ A `pre-commit` hook (`.githooks/`, wired via `bun run prepare` → `core.hooksPa
 ### Entry & Bootstrap
 
 1. **`src/entrypoints/cli.tsx`** — True entrypoint. Injects runtime polyfills at the top:
-   - `feature()` returns `true` for flags in the `FEATURE_ALLOWLIST` (`src/utils/featureFlags.ts` — includes `WORKFLOW_SCRIPTS`, `MONITOR_TOOL`, `TRANSCRIPT_CLASSIFIER`, `BASH_CLASSIFIER`), `false` otherwise. Most internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) remain disabled.
+   - `feature()` returns `true` for flags in the `FEATURE_ALLOWLIST` (`src/utils/featureFlags.ts` — 6 flags: `TRANSCRIPT_CLASSIFIER`, `BASH_CLASSIFIER`, `MONITOR_TOOL`, `WORKFLOW_SCRIPTS`, `EXPERIMENTAL_SKILL_SEARCH`, `MCP_SKILLS`), `false` otherwise. Most internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) remain disabled. Note: `cli.tsx` has a *separate, smaller* 2-flag allowlist (`TRANSCRIPT_CLASSIFIER`, `BASH_CLASSIFIER`) for the dev-time polyfill — see the file header comment; `featureFlags.ts` is the canonical runtime source.
    - `globalThis.MACRO` — simulates build-time macro injection (VERSION, BUILD_TIME, etc.).
    - `BUILD_TARGET`, `BUILD_ENV`, `INTERFACE_TYPE` globals.
 2. **`src/main.tsx`** — Commander.js CLI definition. Parses args, initializes services (auth, analytics, policy), then launches the REPL or runs in pipe mode.
@@ -106,7 +107,15 @@ Other entrypoints in `src/entrypoints/`: `mcp.ts` (runs Claude Code as an MCP se
 
 ### Feature Flag System
 
-All `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In OCC, `feature()` is implemented in `src/utils/featureFlags.ts` as `FEATURE_ALLOWLIST.has(name)` — it returns `true` for allowlisted flags (`WORKFLOW_SCRIPTS`, `MONITOR_TOOL`, `TRANSCRIPT_CLASSIFIER`, `BASH_CLASSIFIER`) and `false` for everything else. This means the workflow engine, Monitor tool, transcript classifier, and bash classifier are LIVE; most other internal features (COORDINATOR_MODE, KAIROS, PROACTIVE, etc.) remain disabled.
+All `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In OCC, `feature()` is implemented in `src/utils/featureFlags.ts` as `FEATURE_ALLOWLIST.has(name)`. The 6 allowlisted (LIVE) flags and what they un-gate:
+
+- `TRANSCRIPT_CLASSIFIER` + `BASH_CLASSIFIER` — auto permission mode (AI classifier for transcripts + bash commands).
+- `MONITOR_TOOL` — self-contained monitoring tool (no blocking init).
+- `WORKFLOW_SCRIPTS` — vm-sandboxed multi-agent workflow engine (`/workflows` command + Workflow tool).
+- `EXPERIMENTAL_SKILL_SEARCH` — turn-zero skill discovery/prefetch (filesystem index + in-memory cache).
+- `MCP_SKILLS` — fetches skill modules exposed by MCP servers declaring the `io.modelcontextprotocol/skills` extension (only runs when an MCP server is connected).
+
+Every other flag (COORDINATOR_MODE, KAIROS, PROACTIVE, UDS_INBOX, ABLATION_BASELINE, …) returns `false` → that code path is dead in this build. The `featureFlags.ts` file header documents which flags are unsafe to re-enable (KAIROS and UDS_INBOX hang the query path when enabled).
 
 ### Stubbed/Deleted Modules
 
@@ -129,7 +138,7 @@ All `feature('FLAG_NAME')` calls come from `bun:bundle` (a build-time API). In O
 ## Working with This Codebase
 
 - **Don't try to fix all tsc errors** — they don't affect runtime. `tsconfig.json` has `strict: false` and `skipLibCheck: true`; `tsc` is not part of CI. Lint (Biome) is the gate, and many `suspicious` rules are deliberately off (see `biome.json`) to tolerate the loose output.
-- **`feature()` is always `false`** — any code behind a feature flag is dead code in this build.
+- **`feature()` returns `false` for non-allowlisted flags** — any code behind a flag *not* in the 6-flag `FEATURE_ALLOWLIST` (see above) is dead code in this build. Allowlisted subsystems (workflow, monitor, skills, auto-mode classifiers) are live.
 - **React Compiler output** — Components have memoization boilerplate (`const $ = _c(N)`). This is normal.
 - **`bun:bundle` import** — In `src/main.tsx` and other files, `import { feature } from 'bun:bundle'` works at build time. At dev-time, the polyfill in `cli.tsx` provides it.
 - **`src/` path alias** — tsconfig maps `src/*` to `./src/*`. Imports like `import { ... } from 'src/utils/...'` are valid.
