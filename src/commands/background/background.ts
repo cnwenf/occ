@@ -1,34 +1,46 @@
-import type { LocalCommandCall } from '../../types/command.js'
-import { spawnWorker } from '../../daemon/workerRegistry.js'
-import { getCwd } from '../../utils/cwd.js'
-
-function toMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err)
-}
+import type { ReactNode } from 'react'
+import type { ToolUseContext } from '../../Tool.js'
+import type {
+  LocalJSXCommandContext,
+  LocalJSXCommandOnDone,
+} from '../../types/command.js'
 
 /**
- * /background — spawn a 'default' daemon worker in the current working
- * directory so the current task can continue in the background while the
- * main prompt is freed.
+ * /background — background the current session query and free the foreground
+ * prompt. Mirrors official Claude Code's `/background` (`bg`): the running
+ * query continues as a background task (see startBackgroundSession in
+ * LocalMainSessionTask.ts) and notifies on completion.
  *
- * The worker is a real `claude --daemon-worker default` child process tracked
- * by the in-memory registry (and persisted to ~/.claude/daemon-status.json).
- * Use /stop <id> to stop it later.
+ * Previously this spawned a 'default' daemon worker via spawnWorker — wrong
+ * semantics (a fresh worker, not backgrounding the live query) and the daemon
+ * mechanism is stubbed in OCC.
+ *
+ * Implemented as `local-jsx` (not `local`) so that `immediate: true` actually
+ * bypasses the query queue during a running turn (REPL.tsx:3293 only honors
+ * `immediate` for `local-jsx` commands). This is the core use case —
+ * backgrounding a query that is actively streaming.
+ *
+ * Optional prompt arg is accepted for forward-compat with official CC's
+ * `[prompt]` form; the current implementation backgrounds the live messages
+ * as-is.
  */
-export const call: LocalCommandCall = async () => {
-  try {
-    const record = spawnWorker('default', { cwd: getCwd() })
-    return {
-      type: 'text',
-      value:
-        `Moved to background: worker id=${record.id} pid=${record.pid} ` +
-        `kind=${record.kind} cwd=${record.cwd}\n` +
-        `The main prompt is free. Run /stop ${record.id} to stop it later.`,
-    }
-  } catch (err: unknown) {
-    return {
-      type: 'text',
-      value: `Failed to spawn background worker: ${toMessage(err)}`,
-    }
+export async function call(
+  onDone: LocalJSXCommandOnDone,
+  context: ToolUseContext & LocalJSXCommandContext,
+  args: string,
+): Promise<ReactNode> {
+  if (!context.onBackgroundSession) {
+    onDone(
+      'Backgrounding is not available in this context (non-interactive / SDK session).',
+      { display: 'system' },
+    )
+    return null
   }
+  const prompt = args.trim()
+  context.onBackgroundSession(prompt || undefined)
+  onDone(
+    'Session sent to background. The foreground prompt is free; you will be notified when the backgrounded query completes. Run /tasks to inspect.',
+    { display: 'system' },
+  )
+  return null
 }

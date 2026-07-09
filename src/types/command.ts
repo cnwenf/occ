@@ -100,6 +100,16 @@ export type LocalJSXCommandContext = ToolUseContext & {
     config: Record<string, ScopedMcpServerConfig>,
   ) => void
   onInstallIDEExtension?: (ide: IdeType) => void
+  /**
+   * Background the current session query (mirrors Ctrl+B session
+   * backgrounding). Frees the foreground prompt; the query keeps running
+   * as a background task and notifies on completion. Optional `prompt`
+   * is a future hook for sending a fresh prompt to the backgrounded
+   * session (currently the live messages are backgrounded as-is).
+   *
+   * Undefined in non-interactive / QueryEngine contexts (no REPL).
+   */
+  onBackgroundSession?: (prompt?: string) => void
   resume?: (
     sessionId: UUID,
     log: LogOption,

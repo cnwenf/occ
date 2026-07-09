@@ -2486,6 +2486,12 @@ export function REPL({
       reject
     }]);
   }), []);
+  // Ref to the session-backgrounding handler so the getToolUseContext memo
+  // (defined below) can expose it as `onBackgroundSession` to slash commands
+  // without capturing a stale closure — handleBackgroundSession is constructed
+  // after the memo, and adding it to the memo's deps would churn the context
+  // object every render.
+  const handleBackgroundSessionRef = useRef<((prompt?: string) => void) | undefined>(undefined);
   const getToolUseContext = useCallback((messages: MessageType[], newMessages: MessageType[], abortController: AbortController, mainLoopModel: string): ProcessUserInputContext => {
     // Read mutable values fresh from the store rather than closure-capturing
     // useAppState() snapshots. Same values today (closure is refreshed by the
@@ -2565,6 +2571,7 @@ export function REPL({
         }
       },
       onChangeAPIKey: reverify,
+      onBackgroundSession: (prompt?: string) => handleBackgroundSessionRef.current?.(prompt),
       readFileState: readFileState.current,
       setToolJSX,
       addNotification,
@@ -2678,6 +2685,9 @@ export function REPL({
     setAbortController,
     onBackgroundQuery: handleBackgroundQuery
   });
+  // Keep the ref in sync so the getToolUseContext memo (defined above) always
+  // invokes the latest handler without re-rendering the context object.
+  handleBackgroundSessionRef.current = handleBackgroundSession;
   const onQueryEvent = useCallback((event: Parameters<typeof handleMessageFromStream>[0]) => {
     handleMessageFromStream(event, newMessage => {
       if (isCompactBoundaryMessage(newMessage)) {
