@@ -2,8 +2,12 @@ import { existsSync } from 'fs'
 import { spawnSync } from 'child_process'
 import type { LocalCommandCall } from '../../types/command.js'
 
-const PACKAGE_NAME = '@anthropic-ai/claude-code'
 const INSTALL_TIMEOUT_MS = 180_000
+
+/** The npm package name for OCC, injected at build time via MACRO.PACKAGE_URL. */
+function packageName(): string {
+  return (globalThis as { MACRO?: { PACKAGE_URL?: string } }).MACRO?.PACKAGE_URL ?? ''
+}
 
 /** Current OCC version from the build-time MACRO.VERSION global. */
 function currentVersion(): string {
@@ -20,10 +24,12 @@ function detectPackageManager(): 'bun' | 'npm' {
 
 /** Latest published version of the package, or null if it can't be resolved. */
 function latestVersion(): string | null {
+  const pkg = packageName()
+  if (!pkg) return null
   try {
     const res = spawnSync(
       'npm',
-      ['view', PACKAGE_NAME, 'version'],
+      ['view', pkg, 'version'],
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000 },
     )
     if (res.status === 0 && res.stdout) {
@@ -36,7 +42,11 @@ function latestVersion(): string | null {
 }
 
 function runUpdate(pm: 'bun' | 'npm'): string {
-  const args = pm === 'bun' ? ['install'] : ['install', '-g', `${PACKAGE_NAME}@latest`]
+  const pkg = packageName()
+  if (!pkg) {
+    return 'OCC package URL not configured; cannot update.'
+  }
+  const args = ['install', '-g', `${pkg}@latest`]
   try {
     const res = spawnSync(pm, args, {
       encoding: 'utf-8',
@@ -58,9 +68,13 @@ function runUpdate(pm: 'bun' | 'npm'): string {
 /**
  * /update — update OCC to the latest version.
  *
- * Shows current vs latest version, then runs the appropriate install command:
- *   bun → `bun install`
- *   npm → `npm install -g @anthropic-ai/claude-code@latest`
+ * Shows current vs latest version, then installs globally:
+ *   bun → `bun install -g @cnwenf/occ@latest`
+ *   npm → `npm install -g @cnwenf/occ@latest`
+ *
+ * The package name is read from MACRO.PACKAGE_URL; if it is unset (e.g. the
+ * polyfill was bypassed), the command reports that the URL is not configured
+ * and does not spawn an install.
  */
 export const call: LocalCommandCall = async () => {
   const cur = currentVersion()
