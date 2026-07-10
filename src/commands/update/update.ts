@@ -1,5 +1,11 @@
 import { existsSync } from 'fs'
-import { spawnSync } from 'child_process'
+// Default import + property access (cp.spawnSync) rather than a named import
+// binding ({ spawnSync }): tests monkey-patching require("child_process").spawnSync
+// need the fake picked up at call time. Named ESM bindings snapshot the value
+// at module-eval, so a mutation after that is invisible — which is why the
+// update-argv e2e test was flaky in CI (other test files import this module
+// first, caching the real spawnSync before the test's beforeEach patches it).
+import cp from 'child_process'
 import type { LocalCommandCall } from '../../types/command.js'
 
 const INSTALL_TIMEOUT_MS = 180_000
@@ -27,7 +33,7 @@ function latestVersion(): string | null {
   const pkg = packageName()
   if (!pkg) return null
   try {
-    const res = spawnSync(
+    const res = cp.spawnSync(
       'npm',
       ['view', pkg, 'version'],
       { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 15_000 },
@@ -48,7 +54,7 @@ function runUpdate(pm: 'bun' | 'npm'): string {
   }
   const args = ['install', '-g', `${pkg}@latest`]
   try {
-    const res = spawnSync(pm, args, {
+    const res = cp.spawnSync(pm, args, {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: INSTALL_TIMEOUT_MS,
