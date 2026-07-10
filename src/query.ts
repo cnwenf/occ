@@ -311,9 +311,12 @@ async function* queryLoop(
 
   // Fired once per user turn — the prompt is invariant across loop iterations,
   // so per-iteration firing would ask sideQuery the same question N times.
-  // Consume point polls settledAt (never blocks). `using` disposes on all
-  // generator exit paths — see MemoryPrefetch for dispose/telemetry semantics.
-  using pendingMemoryPrefetch = startRelevantMemoryPrefetch(
+  // Consume point polls settledAt (never blocks). NB: the `using` declaration
+  // was replaced with `const` for runtime compatibility — Bun < 1.3.14 and
+  // Node 20 cannot parse `using` declarations. Dispose is a no-op in external
+  // builds anyway (startRelevantMemoryPrefetch returns undefined when the
+  // tengu_moth_copse Statsig flag is off, which is always the case in OCC).
+  const pendingMemoryPrefetch = startRelevantMemoryPrefetch(
     state.messages,
     state.toolUseContext,
   )

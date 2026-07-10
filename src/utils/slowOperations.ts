@@ -149,12 +149,10 @@ function slowLoggingExternal(): Disposable {
  * zero timing. AntSlowLogger and buildDescription are dead-code-eliminated.
  *
  * @example
- * using _ = slowLogging`structuredClone(${value})`
+ * slowLogging`structuredClone(${value})`
  * const result = structuredClone(value)
  */
-export const slowLogging: {
-  (strings: TemplateStringsArray, ...values: unknown[]): Disposable
-} = feature('SLOW_OPERATION_LOGGING') ? slowLoggingAnt : slowLoggingExternal
+export const slowLogging: (strings: TemplateStringsArray, ...values: unknown[]) => Disposable = feature('SLOW_OPERATION_LOGGING') ? slowLoggingAnt : slowLoggingExternal
 
 // --- Wrapped operations ---
 
@@ -185,7 +183,7 @@ export function jsonStringify(
     | null,
   space?: string | number,
 ): string {
-  using _ = slowLogging`JSON.stringify(${value})`
+  slowLogging`JSON.stringify(${value})`
   return JSON.stringify(
     value,
     replacer as Parameters<typeof JSON.stringify>[1],
@@ -202,7 +200,7 @@ export function jsonStringify(
  * const data = jsonParse(jsonString)
  */
 export const jsonParse: typeof JSON.parse = (text, reviver) => {
-  using _ = slowLogging`JSON.parse(${text})`
+  slowLogging`JSON.parse(${text})`
   // V8 de-opts JSON.parse when a second argument is passed, even if undefined.
   // Branch explicitly so the common (no-reviver) path stays on the fast path.
   return typeof reviver === 'undefined'
@@ -219,7 +217,7 @@ export const jsonParse: typeof JSON.parse = (text, reviver) => {
  * const copy = clone(originalObject)
  */
 export function clone<T>(value: T, options?: StructuredSerializeOptions): T {
-  using _ = slowLogging`structuredClone(${value})`
+  slowLogging`structuredClone(${value})`
   return structuredClone(value, options)
 }
 
@@ -232,7 +230,7 @@ export function clone<T>(value: T, options?: StructuredSerializeOptions): T {
  * const copy = cloneDeep(originalObject)
  */
 export function cloneDeep<T>(value: T): T {
-  using _ = slowLogging`cloneDeep(${value})`
+  slowLogging`cloneDeep(${value})`
   return lodashCloneDeep(value)
 }
 
@@ -250,7 +248,7 @@ export function writeFileSync_DEPRECATED(
   data: string | NodeJS.ArrayBufferView,
   options?: WriteFileOptionsWithFlush,
 ): void {
-  using _ = slowLogging`fs.writeFileSync(${filePath}, ${data})`
+  slowLogging`fs.writeFileSync(${filePath}, ${data})`
 
   // Check if flush is requested (for object-style options)
   const needsFlush =

@@ -387,7 +387,7 @@ export const NodeFsOperations: FsOperations = {
   },
 
   existsSync(fsPath) {
-    using _ = slowLogging`fs.existsSync(${fsPath})`
+    slowLogging`fs.existsSync(${fsPath})`
     return fs.existsSync(fsPath)
   },
 
@@ -433,28 +433,28 @@ export const NodeFsOperations: FsOperations = {
   },
 
   statSync(fsPath) {
-    using _ = slowLogging`fs.statSync(${fsPath})`
+    slowLogging`fs.statSync(${fsPath})`
     return fs.statSync(fsPath)
   },
 
   lstatSync(fsPath) {
-    using _ = slowLogging`fs.lstatSync(${fsPath})`
+    slowLogging`fs.lstatSync(${fsPath})`
     return fs.lstatSync(fsPath)
   },
 
   readFileSync(fsPath, options) {
-    using _ = slowLogging`fs.readFileSync(${fsPath})`
+    slowLogging`fs.readFileSync(${fsPath})`
     return fs.readFileSync(fsPath, { encoding: options.encoding })
   },
 
   readFileBytesSync(fsPath) {
-    using _ = slowLogging`fs.readFileBytesSync(${fsPath})`
+    slowLogging`fs.readFileBytesSync(${fsPath})`
     return fs.readFileSync(fsPath)
   },
 
   readSync(fsPath, options) {
-    using _ = slowLogging`fs.readSync(${fsPath}, ${options.length} bytes)`
-    let fd: number | undefined = undefined
+    slowLogging`fs.readSync(${fsPath}, ${options.length} bytes)`
+    let fd: number | undefined 
     try {
       fd = fs.openSync(fsPath, 'r')
       const buffer = Buffer.alloc(options.length)
@@ -466,7 +466,7 @@ export const NodeFsOperations: FsOperations = {
   },
 
   appendFileSync(path, data, options) {
-    using _ = slowLogging`fs.appendFileSync(${path}, ${data.length} chars)`
+    slowLogging`fs.appendFileSync(${path}, ${data.length} chars)`
     // For new files with explicit mode, use 'ax' (atomic create-with-mode) to avoid
     // TOCTOU race between existence check and open. Fall back to normal append if exists.
     if (options?.mode !== undefined) {
@@ -487,22 +487,22 @@ export const NodeFsOperations: FsOperations = {
   },
 
   copyFileSync(src, dest) {
-    using _ = slowLogging`fs.copyFileSync(${src} → ${dest})`
+    slowLogging`fs.copyFileSync(${src} → ${dest})`
     fs.copyFileSync(src, dest)
   },
 
   unlinkSync(path: string) {
-    using _ = slowLogging`fs.unlinkSync(${path})`
+    slowLogging`fs.unlinkSync(${path})`
     fs.unlinkSync(path)
   },
 
   renameSync(oldPath: string, newPath: string) {
-    using _ = slowLogging`fs.renameSync(${oldPath} → ${newPath})`
+    slowLogging`fs.renameSync(${oldPath} → ${newPath})`
     fs.renameSync(oldPath, newPath)
   },
 
   linkSync(target: string, path: string) {
-    using _ = slowLogging`fs.linkSync(${target} → ${path})`
+    slowLogging`fs.linkSync(${target} → ${path})`
     fs.linkSync(target, path)
   },
 
@@ -511,22 +511,22 @@ export const NodeFsOperations: FsOperations = {
     path: string,
     type?: 'dir' | 'file' | 'junction',
   ) {
-    using _ = slowLogging`fs.symlinkSync(${target} → ${path})`
+    slowLogging`fs.symlinkSync(${target} → ${path})`
     fs.symlinkSync(target, path, type)
   },
 
   readlinkSync(path: string) {
-    using _ = slowLogging`fs.readlinkSync(${path})`
+    slowLogging`fs.readlinkSync(${path})`
     return fs.readlinkSync(path)
   },
 
   realpathSync(path: string) {
-    using _ = slowLogging`fs.realpathSync(${path})`
+    slowLogging`fs.realpathSync(${path})`
     return fs.realpathSync(path).normalize('NFC')
   },
 
   mkdirSync(dirPath, options) {
-    using _ = slowLogging`fs.mkdirSync(${dirPath})`
+    slowLogging`fs.mkdirSync(${dirPath})`
     const mkdirOptions: { recursive: boolean; mode?: number } = {
       recursive: true,
     }
@@ -546,28 +546,28 @@ export const NodeFsOperations: FsOperations = {
   },
 
   readdirSync(dirPath) {
-    using _ = slowLogging`fs.readdirSync(${dirPath})`
+    slowLogging`fs.readdirSync(${dirPath})`
     return fs.readdirSync(dirPath, { withFileTypes: true })
   },
 
   readdirStringSync(dirPath) {
-    using _ = slowLogging`fs.readdirStringSync(${dirPath})`
+    slowLogging`fs.readdirStringSync(${dirPath})`
     return fs.readdirSync(dirPath)
   },
 
   isDirEmptySync(dirPath) {
-    using _ = slowLogging`fs.isDirEmptySync(${dirPath})`
+    slowLogging`fs.isDirEmptySync(${dirPath})`
     const files = this.readdirSync(dirPath)
     return files.length === 0
   },
 
   rmdirSync(dirPath) {
-    using _ = slowLogging`fs.rmdirSync(${dirPath})`
+    slowLogging`fs.rmdirSync(${dirPath})`
     fs.rmdirSync(dirPath)
   },
 
   rmSync(path, options) {
-    using _ = slowLogging`fs.rmSync(${path})`
+    slowLogging`fs.rmSync(${path})`
     fs.rmSync(path, options)
   },
 
@@ -646,32 +646,36 @@ export async function readFileRange(
   offset: number,
   maxBytes: number,
 ): Promise<ReadFileRangeResult | null> {
-  await using fh = await open(path, 'r')
-  const size = (await fh.stat()).size
-  if (size <= offset) {
-    return null
-  }
-  const bytesToRead = Math.min(size - offset, maxBytes)
-  const buffer = Buffer.allocUnsafe(bytesToRead)
-
-  let totalRead = 0
-  while (totalRead < bytesToRead) {
-    const { bytesRead } = await fh.read(
-      buffer,
-      totalRead,
-      bytesToRead - totalRead,
-      offset + totalRead,
-    )
-    if (bytesRead === 0) {
-      break
+  const fh = await open(path, 'r')
+  try {
+    const size = (await fh.stat()).size
+    if (size <= offset) {
+      return null
     }
-    totalRead += bytesRead
-  }
+    const bytesToRead = Math.min(size - offset, maxBytes)
+    const buffer = Buffer.allocUnsafe(bytesToRead)
 
-  return {
-    content: buffer.toString('utf8', 0, totalRead),
-    bytesRead: totalRead,
-    bytesTotal: size,
+    let totalRead = 0
+    while (totalRead < bytesToRead) {
+      const { bytesRead } = await fh.read(
+        buffer,
+        totalRead,
+        bytesToRead - totalRead,
+        offset + totalRead,
+      )
+      if (bytesRead === 0) {
+        break
+      }
+      totalRead += bytesRead
+    }
+
+    return {
+      content: buffer.toString('utf8', 0, totalRead),
+      bytesRead: totalRead,
+      bytesTotal: size,
+    }
+  } finally {
+    await fh.close()
   }
 }
 
@@ -683,33 +687,37 @@ export async function tailFile(
   path: string,
   maxBytes: number,
 ): Promise<ReadFileRangeResult> {
-  await using fh = await open(path, 'r')
-  const size = (await fh.stat()).size
-  if (size === 0) {
-    return { content: '', bytesRead: 0, bytesTotal: 0 }
-  }
-  const offset = Math.max(0, size - maxBytes)
-  const bytesToRead = size - offset
-  const buffer = Buffer.allocUnsafe(bytesToRead)
-
-  let totalRead = 0
-  while (totalRead < bytesToRead) {
-    const { bytesRead } = await fh.read(
-      buffer,
-      totalRead,
-      bytesToRead - totalRead,
-      offset + totalRead,
-    )
-    if (bytesRead === 0) {
-      break
+  const fh = await open(path, 'r')
+  try {
+    const size = (await fh.stat()).size
+    if (size === 0) {
+      return { content: '', bytesRead: 0, bytesTotal: 0 }
     }
-    totalRead += bytesRead
-  }
+    const offset = Math.max(0, size - maxBytes)
+    const bytesToRead = size - offset
+    const buffer = Buffer.allocUnsafe(bytesToRead)
 
-  return {
-    content: buffer.toString('utf8', 0, totalRead),
-    bytesRead: totalRead,
-    bytesTotal: size,
+    let totalRead = 0
+    while (totalRead < bytesToRead) {
+      const { bytesRead } = await fh.read(
+        buffer,
+        totalRead,
+        bytesToRead - totalRead,
+        offset + totalRead,
+      )
+      if (bytesRead === 0) {
+        break
+      }
+      totalRead += bytesRead
+    }
+
+    return {
+      content: buffer.toString('utf8', 0, totalRead),
+      bytesRead: totalRead,
+      bytesTotal: size,
+    }
+  } finally {
+    await fh.close()
   }
 }
 

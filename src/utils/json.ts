@@ -203,26 +203,30 @@ export async function readJSONLFile<T>(filePath: string): Promise<T[]> {
   if (size <= MAX_JSONL_READ_BYTES) {
     return parseJSONL<T>(await readFile(filePath))
   }
-  await using fd = await open(filePath, 'r')
-  const buf = Buffer.allocUnsafe(MAX_JSONL_READ_BYTES)
-  let totalRead = 0
-  const fileOffset = size - MAX_JSONL_READ_BYTES
-  while (totalRead < MAX_JSONL_READ_BYTES) {
-    const { bytesRead } = await fd.read(
-      buf,
-      totalRead,
-      MAX_JSONL_READ_BYTES - totalRead,
-      fileOffset + totalRead,
-    )
-    if (bytesRead === 0) break
-    totalRead += bytesRead
+  const fd = await open(filePath, 'r')
+  try {
+    const buf = Buffer.allocUnsafe(MAX_JSONL_READ_BYTES)
+    let totalRead = 0
+    const fileOffset = size - MAX_JSONL_READ_BYTES
+    while (totalRead < MAX_JSONL_READ_BYTES) {
+      const { bytesRead } = await fd.read(
+        buf,
+        totalRead,
+        MAX_JSONL_READ_BYTES - totalRead,
+        fileOffset + totalRead,
+      )
+      if (bytesRead === 0) break
+      totalRead += bytesRead
+    }
+    // Skip the first partial line
+    const newlineIndex = buf.indexOf(0x0a)
+    if (newlineIndex !== -1 && newlineIndex < totalRead - 1) {
+      return parseJSONL<T>(buf.subarray(newlineIndex + 1, totalRead))
+    }
+    return parseJSONL<T>(buf.subarray(0, totalRead))
+  } finally {
+    await fd.close()
   }
-  // Skip the first partial line
-  const newlineIndex = buf.indexOf(0x0a)
-  if (newlineIndex !== -1 && newlineIndex < totalRead - 1) {
-    return parseJSONL<T>(buf.subarray(newlineIndex + 1, totalRead))
-  }
-  return parseJSONL<T>(buf.subarray(0, totalRead))
 }
 
 export function addItemToJSONCArray(content: string, newItem: unknown): string {
