@@ -7,6 +7,8 @@ export function useNpmDeprecationNotification() {
   useStartupNotification(_temp);
 }
 async function _temp() {
+  // OCC ships via npm as @cnwenf/occ — the upstream "switch to native installer" nag doesn't apply.
+  return null;
   if (isInBundledMode() || isEnvTruthy(process.env.DISABLE_INSTALLATION_CHECKS)) {
     return null;
   }
