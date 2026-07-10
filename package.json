@@ -1,6 +1,6 @@
 {
     "name": "@cnwenf/occ",
-    "version": "2.1.204",
+    "version": "2.1.261",
     "license": "MIT",
     "type": "module",
     "bin": {
@@ -106,7 +106,7 @@
         "picomatch": "^4.0.4",
         "plist": "^3.1.0",
         "proper-lockfile": "^4.1.2",
-        "puppeteer-core": "^25.3.0",
+        "puppeteer-core": "^24.0.0",
         "qrcode": "^1.5.4",
         "react": "^19.2.4",
         "react-compiler-runtime": "^1.0.0",
@@ -144,5 +144,8 @@
         "@types/turndown": "^5.0.6",
         "knip": "^6.1.1",
         "typescript": "^6.0.2"
+    },
+    "overrides": {
+        "uuid": "^11.0.0"
     }
 }

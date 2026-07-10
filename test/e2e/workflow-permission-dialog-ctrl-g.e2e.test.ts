@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { REPO_ROOT, runOcc, tempFile } from './helpers'
 
+// Read version from package.json so the assertion doesn't rot on each bump.
+const { version } = require('../../package.json') as { version: string }
+
 /**
  * E2E coverage for the WorkflowPermissionDialog ctrl+g "edit script in $EDITOR"
  * flow (2.1.204 catch-up).
@@ -234,7 +237,7 @@ describe('binary parse smoke (Bun 1.3.11 using-declaration crash fix)', () => {
   test('dist/cli.js launches and prints --version (no SyntaxError)', async () => {
     const r = await runOcc(['--version'], {}, 30_000)
     expect(r.code).toBe(0)
-    expect(r.stdout).toContain('2.1.204')
+    expect(r.stdout).toContain(version)
     expect(r.stderr).not.toContain('SyntaxError')
     expect(r.stderr).not.toContain('Unexpected identifier')
   })

@@ -26,7 +26,7 @@ describe("occ update argv", () => {
 
   test("npm branch installs @cnwenf/occ globally", async () => {
     const prevMacro = (globalThis as any).MACRO;
-    (globalThis as any).MACRO = { ...(prevMacro ?? {}), PACKAGE_URL: "@cnwenf/occ", VERSION: "2.1.204" };
+    (globalThis as any).MACRO = { ...(prevMacro ?? {}), PACKAGE_URL: "@cnwenf/occ", VERSION: "2.1.261" };
     try {
       delete require.cache[require.resolve("../../src/commands/update/update.ts")];
       const mod = await import("../../src/commands/update/update.ts");
@@ -42,7 +42,7 @@ describe("occ update argv", () => {
 
   test("falsy PACKAGE_URL no-ops without spawning install", async () => {
     const prevMacro = (globalThis as any).MACRO;
-    (globalThis as any).MACRO = { ...(prevMacro ?? {}), PACKAGE_URL: "", VERSION: "2.1.204" };
+    (globalThis as any).MACRO = { ...(prevMacro ?? {}), PACKAGE_URL: "", VERSION: "2.1.261" };
     try {
       delete require.cache[require.resolve("../../src/commands/update/update.ts")];
       const mod = await import("../../src/commands/update/update.ts");

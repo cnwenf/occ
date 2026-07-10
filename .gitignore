@@ -10,3 +10,5 @@ coverage
 *.lock
 # Version-catchup research notes (scratch, not source)
 .occ-research/
+# npm pack artifacts
+*.tgz
