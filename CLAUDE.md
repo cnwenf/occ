@@ -44,6 +44,22 @@ Requires Bun >= 1.3.11 (use `bun upgrade` — older Bun causes spurious errors).
 
 A `pre-commit` hook (`.githooks/`, wired via `bun run prepare` → `core.hooksPath .githooks`) runs `biome lint` on staged `src/*.{ts,tsx,js,jsx}` files. Bypass with `--no-verify` when lint errors are from pre-existing noise.
 
+## Release Workflow
+
+OCC publishes to npm as `@cnwenf/occ`. The version in `package.json` is the source of truth. CI auto-bumps and tags, but the manual flow is:
+
+1. **Update `CHANGELOG.md`** — add a `## <version> - YYYY-MM-DD` section at the top (below the header) with `- ` bullet entries for user-facing changes. The REPL "What's new" feed and `/release-notes` command fetch this file from GitHub (`src/utils/releaseNotes.ts` → `RAW_CHANGELOG_URL`). Format matters: `parseChangelog()` splits on `## ` headers and extracts `- ` bullets.
+2. **Bump version** — edit `"version"` in `package.json` to the new semver (e.g. `2.1.262`). Keep it monotonically increasing; OCC tracks upstream Claude Code but versions its own releases above the `2.1.204` baseline.
+3. **Commit** — `git commit -am "chore(release): <version>"` (or let CI do it).
+4. **Tag** — `git tag v<version>` (e.g. `v2.1.262`) and `git push --tags`. The tag marks the release point.
+5. **Publish** — `bun run build` produces `dist/cli.js`, then `npm publish` (the `prepublishOnly` script auto-builds). CI handles this on tag push.
+
+### How "What's new" works
+
+`src/setup.ts` calls `checkForReleaseNotes()` at startup → `fetchAndStoreChangelog()` pulls `RAW_CHANGELOG_URL` → writes `~/.claude/cache/changelog.md` → `parseChangelog()` parses it → `getRecentReleaseNotes()` returns up to 5 bullets newer than the user's last-seen version → `createWhatsNewFeed()` in `src/components/LogoV2/feedConfigs.tsx` renders the feed with footer `/release-notes for more`.
+
+So: **if `CHANGELOG.md` isn't updated or the tag isn't pushed, the REPL "What's new" won't reflect the new release.** The fetch is against the `main` branch raw URL, not the npm package.
+
 ## Architecture
 
 ### Runtime & Build
