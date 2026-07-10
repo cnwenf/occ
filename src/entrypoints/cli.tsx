@@ -17,7 +17,7 @@ if (typeof globalThis.MACRO === "undefined") {
         FEEDBACK_CHANNEL: "",
         ISSUES_EXPLAINER: "",
         NATIVE_PACKAGE_URL: "",
-        PACKAGE_URL: "",
+        PACKAGE_URL: "@cnwenf/occ",
         VERSION_CHANGELOG: "",
     };
 }
