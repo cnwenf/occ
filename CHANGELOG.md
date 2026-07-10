@@ -9,6 +9,11 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.265 - 2026-07-10
+
+- Silence the inherited "Claude Code has switched from npm to native installer" REPL nag: OCC ships via npm as `@cnwenf/occ`, so the upstream notification mis-fired on every launch. Short-circuited `useNpmDeprecationNotification`
+- Silence native-installer diagnostics in the REPL: `useInstallMessages` → `checkInstall()` would surface "installMethod is native, but directory X does not exist" and related shell-alias / symlink warnings whenever `~/.claude.json` carried a residual `installMethod: "native"` from a prior official Claude Code install. Short-circuited the hook
+
 ## 2.1.264 - 2026-07-10
 
 - Fix `occ update` aborting with "Cannot update development build": `scripts/build.ts` now passes `define: { 'process.env.NODE_ENV': '"production"' }` to `Bun.build()` so the bundler bakes `NODE_ENV` to `"production"` (was defaulting to `"development"`, which made `getCurrentInstallationType()` short-circuit to `"development"` and block updates)
