@@ -15,6 +15,11 @@ import {
   sortLogs,
 } from '../types/logs.js'
 import { CACHE_PATHS } from './cachePaths.js'
+import {
+  appendToDiskLog,
+  buildDiskLogEntry,
+  type ErrorKind,
+} from './diskErrorLog.js'
 import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './displayTags.js'
 import { isEnvTruthy } from './envUtils.js'
 import { toError } from './errors.js'
@@ -155,7 +160,7 @@ const isHardFailMode = memoize((): boolean => {
   return process.argv.includes('--hard-fail')
 })
 
-export function logError(error: unknown): void {
+export function logError(error: unknown, kind: ErrorKind = 'generic'): void {
   const err = toError(error)
   if (feature('HARD_FAIL') && isHardFailMode()) {
     // biome-ignore lint/suspicious/noConsole:: intentional crash output
@@ -164,9 +169,22 @@ export function logError(error: unknown): void {
     process.exit(1)
   }
   try {
-    // Check if error reporting should be disabled
+    const errorStr = err.stack || err.message
+    const errorInfo = {
+      error: errorStr,
+      timestamp: new Date().toISOString(),
+    }
+
+    // ALWAYS capture locally (in-memory + rotating disk log), for ALL
+    // users including cloud-provider (Bedrock/Vertex/Foundry). The gate
+    // below only blocks EXTERNAL analytics, not local capture — this
+    // fixes the gap where cloud-provider users had zero local error
+    // visibility.
+    addToInMemoryErrorLog(errorInfo)
+    void appendToDiskLog(buildDiskLogEntry(errorStr, kind))
+
+    // External analytics / sink send — still gated for cloud providers.
     if (
-      // Cloud providers (Bedrock/Vertex/Foundry) always disable features
       isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK) ||
       isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
       isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY) ||
@@ -175,16 +193,6 @@ export function logError(error: unknown): void {
     ) {
       return
     }
-
-    const errorStr = err.stack || err.message
-
-    const errorInfo = {
-      error: errorStr,
-      timestamp: new Date().toISOString(),
-    }
-
-    // Always add to in-memory log (no dependencies needed)
-    addToInMemoryErrorLog(errorInfo)
 
     // If sink not attached, queue the event
     if (errorLogSink === null) {

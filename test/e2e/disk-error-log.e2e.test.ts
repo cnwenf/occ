@@ -100,3 +100,41 @@ describe('diskErrorLog: rotation', () => {
     expect(total).toBeLessThanOrEqual(100 * 1024 * 1024)
   })
 })
+
+describe('logError: local capture outside the cloud-provider gate', () => {
+  let tmpDir: string
+  let logPath: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'occ-disklog-gate-'))
+    process.env.OCC_ERROR_LOG_PATH = join(tmpDir, 'occ-errors.log')
+    logPath = process.env.OCC_ERROR_LOG_PATH
+    process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+  })
+
+  afterEach(() => {
+    delete process.env.OCC_ERROR_LOG_PATH
+    delete process.env.CLAUDE_CODE_USE_BEDROCK
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('Bedrock user: logError still writes in-memory + disk', async () => {
+    const { logError, getInMemoryErrors } = await import(`${REPO_ROOT}/src/utils/log.js`)
+    const { readErrorLogTail } = await import(`${REPO_ROOT}/src/utils/diskErrorLog.js`)
+    logError(new Error('bedrock boom'))
+    await new Promise(r => setTimeout(r, 50))
+    const mem = getInMemoryErrors()
+    expect(mem.find(e => e.error.includes('bedrock boom'))).toBeDefined()
+    const disk = await readErrorLogTail(20)
+    expect(disk.find(e => e.message.includes('bedrock boom'))).toBeDefined()
+  })
+
+  test('logError accepts a kind argument reflected in the disk entry', async () => {
+    const { logError } = await import(`${REPO_ROOT}/src/utils/log.js`)
+    const { readErrorLogTail } = await import(`${REPO_ROOT}/src/utils/diskErrorLog.js`)
+    logError(new Error('api boom'), 'api')
+    await new Promise(r => setTimeout(r, 50))
+    const disk = await readErrorLogTail(20)
+    expect(disk.find(e => e.kind === 'api')).toBeDefined()
+  })
+})
