@@ -9,6 +9,11 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.263 - 2026-07-10
+
+- Fix version injection: `scripts/build.ts` now injects the real `MACRO.VERSION` from `package.json` into `dist/cli.js` (was hardcoded to the dev polyfill value, so every release reported a stale version)
+- `occ --version` and "What's new" version comparison now use the correct package version
+
 ## 2.1.262 - 2026-07-10
 
 - Point REPL "What's new" feed and `/release-notes` at OCC's own CHANGELOG (was fetching upstream `anthropics/claude-code`)
