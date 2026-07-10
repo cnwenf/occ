@@ -9,6 +9,12 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.267 - 2026-07-10
+
+- Fix `phase()` primitive silently dropping callbacks: models authoring workflow scripts under ultracode (e.g. GLM-5.2) naturally write `phase('scan', async () => { ...parallel/agent... })` (the grouping-callback idiom from test frameworks). The previous `phase(title: string): void` signature ignored any second argument, so the callback never ran — the workflow returned `undefined` with 0 agents in ~1ms. `phase` now accepts an optional `fn?: () => T | Promise<T>` callback: when present, it runs within the phase grouping and its return value becomes `phase()`'s result. Backward compatible — `phase('title')` without a callback still just sets the phase and returns void (binary-parity contract preserved). Verified by a capture-proxy e2e (run5): with the fix the callback ran and the model received real scan results instead of `undefined`.
+- Fix `parallel()` rejecting the model's natural call form with `thunk is not a function`: models write `parallel([agent(p1), agent(p2)])` (passing already-started Promises), but the primitive expected `Array<() => Promise<T>>` (thunks) and called each item as a function. `parallel` now auto-detects: functions are called under the concurrency semaphore (thunk path, unchanged); Promises and plain values are collected directly. Backward compatible — thunk-based scripts work identically. Verified by unit tests (promises, thunks, mixed, order-preservation, empty, non-array rejection).
+- Document the `phase(title, fn?)` callback form in the Workflow tool description so models can discover it from the API surface.
+
 ## 2.1.266 - 2026-07-10
 
 - Port ultracode per-turn reminders from official Claude Code 2.1.206: `workflow_keyword_request` (keyword-turn opt-in), `ultra_effort_enter("full")` on the keyword turn, `ultra_effort_enter("still")` on subsequent turns, and `ultra_effort_exit` when switching effort away from ultracode. The keyword turn now emits two reminders; later turns emit the "still" reminder. Matches the binary's dispatch table exactly.

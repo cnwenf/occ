@@ -334,9 +334,9 @@ function extractToolUseStats(messages: Message[]): {
  */
 export function createPrimitives(ctx: WorkflowRuntimeContext): {
   agent: (prompt: string, opts?: AgentOpts) => Promise<unknown>
-  parallel: <T>(items: Array<() => Promise<T>>) => Promise<Array<T>>
+  parallel: <T>(items: Array<(() => Promise<T>) | Promise<T> | T>) => Promise<Array<T>>
   pipeline: <T>(items: T[], ...stages: Array<(prev: T, original: T, index: number) => Promise<T>>) => Promise<Array<T>>
-  phase: (title: string) => void
+  phase: <T>(title: string, fn?: () => T | Promise<T>) => void | Promise<T>
   log: (...args: unknown[]) => void
   budget: {
     total: number | null
@@ -628,14 +628,21 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
 
   /**
    * parallel(items) — concurrent execution with ~10 cap, 4096 max.
+   * Accepts thunks `() => Promise<T>` (concurrency-gated start) OR already-
+   * started promises OR plain values. Models authoring workflow scripts
+   * (e.g. GLM-5.2 under ultracode) naturally write `parallel([agent(p1), agent(p2)])`
+   * — passing promises (agent() returns a Promise), not thunks. Without
+   * promise support, `items.map(thunk => thunk())` throws "thunk is not a
+   * function". Auto-detection: functions are called under the semaphore
+   * (thunk path, unchanged); promises/values are collected directly.
    * Returns results array (preserve order). Budget/cap errors per-branch
    * return null (matching the binary: results preserved, branch halted).
    */
   const parallel = async <T>(
-    items: Array<() => Promise<T>>,
+    items: Array<(() => Promise<T>) | Promise<T> | T>,
   ): Promise<Array<T>> => {
     if (!Array.isArray(items)) {
-      throw new Error('parallel() requires an array of thunks')
+      throw new Error('parallel() requires an array of thunks or promises')
     }
     if (items.length > WORKFLOW_PARALLEL_MAX_ITEMS) {
       throw new Error(
@@ -645,7 +652,13 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     }
     const sem = createSemaphore(concurrency)
     const settled = await Promise.allSettled(
-      items.map(thunk => sem(() => thunk())),
+      items.map(item =>
+        sem(() =>
+          typeof item === 'function'
+            ? (item as () => Promise<T>)()
+            : (item as Promise<T> | T),
+        ),
+      ),
     )
     const results: T[] = []
     let budgetHits = 0
@@ -738,9 +751,22 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
   }
 
   /**
-   * phase(title) — start a new phase; subsequent agent() calls are grouped.
+   * phase(title, fn?) — start a new phase; subsequent agent() calls are grouped.
+   *
+   * Supports two shapes:
+   *   (a) phase('title')           — binary-parity: sets phase, returns void.
+   *   (b) phase('title', async () => { ...agents/parallel... })  — callback form.
+   *
+   * Models authoring workflow scripts (e.g. GLM-5.2 under ultracode) naturally
+   * reach for the `phase(title, fn)` grouping pattern (from test-framework
+   * idioms like describe/test). Without callback support the fn is silently
+   * dropped → 0 agents spawn → the workflow returns `undefined` in ~1ms.
+   * The callback form runs fn within the phase grouping and returns its
+   * result, so `const r = await phase('scan', async () => parallel([...]))`
+   * works. Backward compatible: phase('title') without a callback still
+   * just sets the phase and returns void (binary-parity contract).
    */
-  const phase = (title: string): void => {
+  const phase = <T>(title: string, fn?: () => T | Promise<T>): void | Promise<T> => {
     if (typeof title !== 'string') {
       throw new Error('phase() requires a string title')
     }
@@ -762,6 +788,11 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       phase: title,
       agentCount: ctx.counters.agentCount,
     })
+    // Callback form: run fn within this phase grouping and return its result.
+    if (typeof fn === 'function') {
+      return Promise.resolve(fn()) as Promise<T>
+    }
+    // No callback: binary-parity phase(title): void.
   }
 
   /**
