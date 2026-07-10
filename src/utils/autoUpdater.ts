@@ -37,6 +37,7 @@ export type InstallStatus =
   | 'no_permissions'
   | 'install_failed'
   | 'in_progress'
+  | 'notice'
 
 export type AutoUpdaterResult = {
   version: string | null

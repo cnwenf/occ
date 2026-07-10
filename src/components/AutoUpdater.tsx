@@ -77,6 +77,18 @@ export function AutoUpdater({
       latest: latestVersion
     });
 
+    // OCC notice-only: never auto-install; surface a non-intrusive notice instead.
+    if (MACRO.PACKAGE_URL === '@cnwenf/occ' && currentVersion && latestVersion && !gte(currentVersion, latestVersion) && !shouldSkipVersion(latestVersion)) {
+      onAutoUpdaterResult({
+        version: latestVersion,
+        status: 'notice',
+        notifications: [
+          `New version ${latestVersion} available — run \`occ update\``,
+        ],
+      });
+      return;
+    }
+
     // Check if update needed and perform update
     if (!isDisabled && currentVersion && latestVersion && !gte(currentVersion, latestVersion) && !shouldSkipVersion(latestVersion)) {
       const startTime = Date.now();
@@ -177,6 +189,9 @@ export function AutoUpdater({
       {verbose && <Text dimColor wrap="truncate">
           globalVersion: {versions.global} &middot; latestVersion:{' '}
           {versions.latest}
+        </Text>}
+      {autoUpdaterResult?.status === 'notice' && <Text color="warning" wrap="truncate">
+          New version {autoUpdaterResult.version} available — run <Text bold>occ update</Text>
         </Text>}
       {isUpdating ? <>
           <Box>
