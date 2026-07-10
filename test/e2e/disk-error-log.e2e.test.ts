@@ -138,3 +138,37 @@ describe('logError: local capture outside the cloud-provider gate', () => {
     expect(disk.find(e => e.kind === 'api')).toBeDefined()
   })
 })
+
+describe('gracefulShutdown: uncaught/unhandled -> logError', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'occ-disklog-uncaught-'))
+    process.env.OCC_ERROR_LOG_PATH = join(tmpDir, 'occ-errors.log')
+  })
+
+  afterEach(() => {
+    delete process.env.OCC_ERROR_LOG_PATH
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('uncaughtException handler writes a kind:"uncaught" disk entry', async () => {
+    const { setupGracefulShutdown } = await import(`${REPO_ROOT}/src/utils/gracefulShutdown.js`)
+    setupGracefulShutdown()
+    const { readErrorLogTail } = await import(`${REPO_ROOT}/src/utils/diskErrorLog.js`)
+    process.emit('uncaughtException', new Error('uncaught boom'))
+    await new Promise(r => setTimeout(r, 50))
+    const disk = await readErrorLogTail(20)
+    expect(disk.find(e => e.kind === 'uncaught' && e.message.includes('uncaught boom'))).toBeDefined()
+  })
+
+  test('unhandledRejection handler writes a kind:"unhandledRejection" disk entry', async () => {
+    const { setupGracefulShutdown } = await import(`${REPO_ROOT}/src/utils/gracefulShutdown.js`)
+    setupGracefulShutdown()
+    const { readErrorLogTail } = await import(`${REPO_ROOT}/src/utils/diskErrorLog.js`)
+    process.emit('unhandledRejection', new Error('rejected boom'))
+    await new Promise(r => setTimeout(r, 50))
+    const disk = await readErrorLogTail(20)
+    expect(disk.find(e => e.kind === 'unhandledRejection' && e.message.includes('rejected boom'))).toBeDefined()
+  })
+})
