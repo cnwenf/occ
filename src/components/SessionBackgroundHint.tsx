@@ -47,7 +47,11 @@ export function SessionBackgroundHint(t0) {
           saveGlobalConfig(_temp2);
         }
       } else {
-        if (isEnvTruthy("false") && isLoading) {
+        // Session-level backgrounding: double-press Ctrl+B while a query is
+        // running. Mirrors official Claude Code — only gated by
+        // CLAUDE_CODE_DISABLE_BACKGROUND_TASKS (checked above), not by an
+        // always-false flag.
+        if (isLoading) {
           handleDoublePress();
         }
       }
@@ -64,7 +68,7 @@ export function SessionBackgroundHint(t0) {
   const hasForeground = useAppState(hasForegroundTasks);
   let t2;
   if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
-    t2 = isEnvTruthy("false");
+    t2 = true;
     $[5] = t2;
   } else {
     t2 = $[5];
