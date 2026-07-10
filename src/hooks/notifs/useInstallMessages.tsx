@@ -4,6 +4,11 @@ export function useInstallMessages() {
   useStartupNotification(_temp2);
 }
 async function _temp2() {
+  // OCC ships via npm as @cnwenf/occ — native-installer diagnostics (missing
+  // ~/.local/share/claude, symlink/alias warnings, "run claude install") don't
+  // apply. Residual config.installMethod === 'native' from a prior official CC
+  // install would otherwise trip checkInstall() into surfacing them.
+  return null;
   const messages = await checkInstall();
   return messages.map(_temp);
 }
