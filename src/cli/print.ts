@@ -10,6 +10,10 @@ import { waitForRemoteManagedSettingsToLoad } from 'src/services/remoteManagedSe
 import { StructuredIO } from 'src/cli/structuredIO.js'
 import { RemoteIO } from 'src/cli/remoteIO.js'
 import {
+  enableUltracodeForSession,
+  shouldTriggerUltracodeFromPrompt,
+} from 'src/utils/effort/ultracode.js'
+import {
   type Command,
   formatDescriptionWithSource,
   getCommandName,
@@ -500,6 +504,20 @@ export async function runHeadless(
     )
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
+  }
+
+  // K3 (ultracode): the headless / pipe (-p) / SDK path bypasses
+  // processTextPrompt (the interactive-REPL keyword trigger), so detect the
+  // "ultracode" keyword here on the string inputPrompt. This makes
+  // enableUltracodeForSession() fire in pipe mode, so getUltracodeTurnReminders()
+  // (called per-turn in src/query.ts) injects the workflow_keyword_request +
+  // ultra_effort_enter("full") reminders on this turn. Mirrors the
+  // shouldTriggerUltracodeFromPrompt() call in processTextPrompt.ts.
+  if (typeof inputPrompt === 'string' && shouldTriggerUltracodeFromPrompt(inputPrompt)) {
+    enableUltracodeForSession()
+    logEvent('tengu_ultracode_keyword_triggered', {
+      source: 'headless_prompt',
+    })
   }
 
   // Fire user settings download now so it overlaps with the MCP/tool setup

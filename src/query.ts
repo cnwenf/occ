@@ -62,7 +62,7 @@ import { prependUserContext, appendSystemContext } from './utils/api.js'
 // active for the session, the verbatim "Ultracode is on…" reminder is injected
 // as a per-turn isMeta system-reminder, mirroring the binary's
 // ultra_effort_enter reminder builder.
-import { getUltracodeSystemReminder } from './context.js'
+import { getUltracodeSystemReminders } from './context.js'
 import {
   createAttachmentMessage,
   filterDuplicateMemoryAttachments,
@@ -688,22 +688,27 @@ async function* queryLoop(
         try {
           let streamingFallbackOccured = false
           queryCheckpoint('query_api_streaming_start')
-          // K3 (ultracode) + 2.1.201: when ultracode is active for the session,
-          // prepend the verbatim "Ultracode is on…" meta reminder for this turn.
+          // K3 (ultracode) + 2.1.206: when ultracode is active for the session,
+          // prepend the per-turn ultracode meta reminders. The array matches the
+          // binary's per-turn dispatch:
+          //   keyword-trigger turn → [workflow_keyword_request, ultra_effort_enter("full")]
+          //   subsequent turns    → [ultra_effort_enter("still")]
+          //   turn ultracode off  → [ultra_effort_exit]
+          //   otherwise           → []
           // 2.1.201: "Claude Sonnet 5 sessions no longer use the mid-conversation
           // system role for harness reminders" — buildHarnessReminderMessage()
           // applies the model-aware gate (shouldUseSystemRoleForHarnessReminders)
-          // and injects the reminder as a user-role isMeta message (the
-          // non-system path), never a standalone system-role message. Returns
-          // null when ultracode is off, so the non-ultracode path is unchanged.
-          const ultracodeReminder = getUltracodeSystemReminder()
+          // and injects each reminder as a user-role isMeta message (the
+          // non-system path), never a standalone system-role message. An empty
+          // array leaves the non-ultracode path unchanged.
+          const ultracodeReminders = getUltracodeSystemReminders()
+          const ultracodeMessages = ultracodeReminders.map(r =>
+            buildHarnessReminderMessage(r, currentModel),
+          )
           const messagesForApi =
-            ultracodeReminder !== null
+            ultracodeMessages.length > 0
               ? [
-                  buildHarnessReminderMessage(
-                    ultracodeReminder,
-                    currentModel,
-                  ),
+                  ...ultracodeMessages,
                   ...prependUserContext(messagesForQuery, userContext),
                 ]
               : prependUserContext(messagesForQuery, userContext)

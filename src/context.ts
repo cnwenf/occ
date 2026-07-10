@@ -200,8 +200,8 @@ export const getUserContext = memoize(
 // full prompt is opt-in at higher effort (xhigh / max).
 import { shouldUseLeanPrompt as _shouldUseLeanPrompt } from './utils/effort/leanPrompt.js'
 import {
-  isUltracodeEnabled as _isUltracodeEnabled,
-  getUltracodeReminderObject as _getUltracodeReminderObject,
+  getUltracodeTurnReminders as _getUltracodeTurnReminders,
+  type UltracodeReminder as _UltracodeReminder,
 } from './utils/effort/ultracode.js'
 
 export function shouldUseLeanSystemPrompt(
@@ -212,11 +212,15 @@ export function shouldUseLeanSystemPrompt(
 }
 
 // K3: when ultracode is active for the session, the context layer surfaces the
-// "Ultracode is on…" system-reminder (isMeta) to the query loop.
-export function getUltracodeSystemReminder():
-  | { content: string; isMeta: true }
-  | null {
-  if (!_isUltracodeEnabled()) return null
-  return _getUltracodeReminderObject('full')
+// per-turn ultracode meta reminders (isMeta) to the query loop. The array
+// matches the 2.1.206 binary's per-turn reminder dispatch:
+//   keyword-trigger turn → [workflow_keyword_request, ultra_effort_enter("full")]
+//   subsequent turns    → [ultra_effort_enter("still")]
+//   turn ultracode off  → [ultra_effort_exit]
+//   otherwise           → []
+// src/query.ts maps each reminder into a user-role isMeta message via
+// buildHarnessReminderMessage() (the 2.1.201 non-system path).
+export function getUltracodeSystemReminders(): _UltracodeReminder[] {
+  return _getUltracodeTurnReminders()
 }
 

@@ -28,7 +28,7 @@ import type { PermissionResult } from '../../types/permissions.js'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { logEvent } from '../../services/analytics/index.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
-import { loadScript, validateScriptPath } from './scriptLoader.js'
+import { loadScript, loadScriptFromSource, validateScriptPath, type LoadedScript } from './scriptLoader.js'
 import {
   runWorkflow,
   generateWorkflowRunId,
@@ -57,7 +57,13 @@ const inputSchema = lazySchema(() =>
       .string()
       .optional()
       .describe(
-        'Absolute path to a self-contained workflow script (.js). The script must begin with `export const meta = { name, description, phases }` and export a default async function receiving { agent, parallel, pipeline, phase, log, budget, workflow, resolveWorkflow, args }. Optional if `name` is provided.',
+        'Absolute path to a self-contained workflow script (.js). The script must begin with `export const meta = { name, description, phases }` and export a default async function receiving { agent, parallel, pipeline, phase, log, budget, workflow, resolveWorkflow, args }. Optional if `name` or `script` is provided.',
+      ),
+    script: z
+      .string()
+      .optional()
+      .describe(
+        'Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/parallel()/pipeline()/phase().',
       ),
     args: z
       .record(z.string(), z.unknown())
@@ -100,7 +106,26 @@ type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
 
-const DESCRIPTION = `Run a multi-step workflow from a self-contained JavaScript script. The script runs in a sandboxed vm with access to primitives: agent(prompt, opts?) to spawn a subagent, parallel(items) for concurrent execution (max 4096 items, ~10 concurrent), pipeline(items, ...stages) for streaming, phase(title) to group agents, log(...args) for workflow-scoped logging, budget {total, remaining(), spent()} for token caps, and workflow(nameOrRef) / resolveWorkflow(name) for sub-workflows. Scripts are deterministic for resume (no Date/Math.random/import). Use the Workflow tool on substantive multi-agent tasks.`
+const DESCRIPTION = `Run a multi-step workflow from a self-contained JavaScript script. The script runs in a sandboxed vm with access to primitives: agent(prompt, opts?) to spawn a subagent, parallel(items) for concurrent execution (max 4096 items, ~10 concurrent), pipeline(items, ...stages) for streaming, phase(title) to group agents, log(...args) for workflow-scoped logging, budget {total, remaining(), spent()} for token caps, and workflow(nameOrRef) / resolveWorkflow(name) for sub-workflows. Scripts are deterministic for resume (no Date/Math.random/import). Use the Workflow tool on substantive multi-agent tasks.
+
+- Ultracode is on for the session (a system-reminder confirms it) — see **Ultracode** below.
+
+**Ultracode.** When a system-reminder confirms ultracode is on, that opt-in is standing: author and run a workflow for every substantive task by default. The goal is the most exhaustive, correct answer you can produce — token cost is not a constraint. For multi-phase work (understand → design → implement → review), that often means several workflows in sequence — one per phase — so you stay in the loop between them. The quality patterns below (adversarial verify, multi-modal sweep, completeness critic, loop-until-dry) are the tools; pick what fits the task. Lean toward orchestrating with workflows and adversarially verifying your findings — unless the work is trivial or already verified. Solo only on conversational turns or trivial mechanical edits. When a reminder says ultracode is off, revert to the opt-in rule above.
+
+Quality patterns:
+- Adversarial verify: spawn N independent skeptics per finding, each prompted to REFUTE. Kill if ≥majority refute. Prevents plausible-but-wrong findings from surviving.
+- Loop-until-dry: for unknown-size discovery (bugs, issues, edge cases), keep spawning finders until K consecutive rounds return nothing new. Simple counters (while count < N) miss the tail.
+- Multi-modal sweep: parallel agents each searching a different way (by-container, by-content, by-entity, by-time). Each is blind to what the others surface; useful when one search angle won't find everything.
+- Completeness critic: a final agent that asks "what's missing — modality not run, claim unverified, source unread?" What it finds becomes the next round of work.
+- **Research** — multi-modal sweep → deep-read → synthesize
+
+Composing patterns — exhaustive review (find → dedup vs seen → diverse-lens panel → loop-until-dry):
+  while (dry < 2) {                                              // loop-until-dry
+    found = await agent(\`find more in bucket \${bucket}\`)        // multi-modal sweep (by bucket)
+    novel = dedupVsSeen(found)                                   // dedup vs seen
+    panel = await parallel(lenses.map(L => agent(\`critique as \${L}\`)))  // diverse-lens panel
+    dry = novel.length === 0 ? dry + 1 : 0                       // reset on any hit
+  }`
 
 /** Shape of a raw progress event emitted by the workflow engine. */
 type WorkflowProgressEvent = {
@@ -291,7 +316,13 @@ export const WorkflowTool = buildTool({
     return `${DESCRIPTION} ${sizeHint} (Per the dynamicWorkflowSize setting — advisory, not a cap.)`
   },
   async prompt() {
-    return `Use this tool to run a workflow script. The script must start with \`export const meta = { name, description, phases }\` and export a default async function: \`export default async ({ agent, parallel, pipeline, phase, log, budget, workflow, resolveWorkflow, args }) => { ... }\`.`
+    // The API tool `description` field is populated from prompt() (see
+    // toolToAPISchema in src/utils/api.ts:171), so this is what the model
+    // sees. Return the full DESCRIPTION (which includes the verbatim
+    // "**Ultracode.**" section + quality patterns from the 2.1.206 binary)
+    // plus the script-format usage hint, so ultracode's standing opt-in
+    // reaches the model on every turn.
+    return `${DESCRIPTION}\n\nUse this tool to run a workflow script. The script must start with \`export const meta = { name, description, phases }\` and export a default async function: \`export default async ({ agent, parallel, pipeline, phase, log, budget, workflow, resolveWorkflow, args }) => { ... }\`.`
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -361,7 +392,7 @@ export const WorkflowTool = buildTool({
     })
   },
   async checkPermissions(
-    input: { scriptPath?: string; name?: string; remote?: boolean } & {
+    input: { scriptPath?: string; script?: string; name?: string; remote?: boolean } & {
       [key: string]: unknown
     },
   ): Promise<PermissionResult> {
@@ -399,6 +430,14 @@ export const WorkflowTool = buildTool({
           message: `Invalid workflow script path: ${(err as Error).message}`,
           decisionReason: { type: 'other', reason: 'invalid script path' },
         }
+      }
+    } else if (input.script) {
+      // Inline script mode: no file path to validate. The script content is
+      // parsed + validated in call(). Still ask for consent (dynamic fan-out).
+      return {
+        behavior: 'ask',
+        message: `Run the inline workflow script?`,
+        updatedInput: input,
       }
     }
     return {
@@ -442,16 +481,18 @@ export const WorkflowTool = buildTool({
     }
   },
   async call(input, context, canUseTool, _parentMessage, onProgress) {
-    const { scriptPath: rawScriptPath, args, resumeFromRunId, name, remote } = input as {
+    const { scriptPath: rawScriptPath, script, args, resumeFromRunId, name, remote } = input as {
       scriptPath?: string
+      script?: string
       args?: Record<string, unknown>
       resumeFromRunId?: string
       name?: string
       remote?: boolean
     }
 
-    // Resolve the script path: by name (discovery) or by path.
-    let resolvedScriptPath: string
+    // Resolve the script: by name (discovery), by path (file), or inline.
+    // Mirrors official CC 2.1.206's `scriptPath | named | inline` modes.
+    let loaded: LoadedScript
     if (name) {
       const found = resolveWorkflowScript(name)
       if (!found) {
@@ -459,17 +500,20 @@ export const WorkflowTool = buildTool({
           `Workflow tool: could not resolve workflow "${name}". Add scripts to .claude/workflows/ (project) or ~/.claude/workflows/ (user).`,
         )
       }
-      resolvedScriptPath = found
+      loaded = loadScript(found)
     } else if (rawScriptPath) {
-      resolvedScriptPath = validateScriptPath(rawScriptPath)
+      loaded = loadScript(validateScriptPath(rawScriptPath))
+    } else if (script) {
+      // Inline mode: the model provides the full script content directly —
+      // no file needed. This is the mode models naturally reach for when
+      // ultracode is on (they author a script and pass it inline rather than
+      // writing it to disk first).
+      loaded = loadScriptFromSource(script)
     } else {
       throw new Error(
-        'Workflow tool requires either `scriptPath` or `name`.',
+        'Workflow tool requires one of `script`, `scriptPath`, or `name`.',
       )
     }
-
-    // Load + parse the script.
-    const loaded = loadScript(resolvedScriptPath)
 
     // Determine run ID.
     let runId: string

@@ -55,6 +55,20 @@ export const ULTRACODE_REMINDER_FULL =
 export const ULTRACODE_REMINDER_STILL =
   'Ultracode is still on — use the Workflow tool; see its Ultracode section.'
 
+// workflow_keyword_request reminder (verbatim from the 2.1.206 binary's
+// workflow_keyword_request builder): injected on the keyword-trigger turn,
+// alongside ultra_effort_enter("full"), to tell the model the user opted this
+// turn into multi-agent orchestration and it should use the Workflow tool.
+export const ULTRACODE_WORKFLOW_KEYWORD_REQUEST =
+  'The user included the keyword "ultracode", opting this turn into multi-agent orchestration — use the Workflow tool to fulfill the request.'
+
+// ultra_effort_exit reminder (verbatim from the 2.1.206 binary's
+// ultra_effort_exit builder): injected on the turn ultracode is turned off,
+// telling the model the standing opt-in has ended and the Workflow tool's
+// standard opt-in rule applies again.
+export const ULTRACODE_EXIT_REMINDER =
+  "Ultracode is off — the Workflow tool's standard opt-in rule applies again."
+
 export type UltracodeReminderType = 'full' | 'still'
 
 /**
@@ -116,6 +130,16 @@ export function isUltracodeKeywordTriggerEnabled(): boolean {
 // module (which is outside this gap's file scope).
 let ultracodeActive = false
 
+// Turn-state flags consumed by getUltracodeTurnReminders(). `ultracodeJustEnabled`
+// is set by enableUltracodeForSession() (keyword trigger or /effort ultracode) and
+// cleared on the first turn's reminder read — so the keyword-trigger turn emits both
+// the workflow_keyword_request reminder and the ultra_effort_enter("full") reminder,
+// matching the 2.1.206 binary. `ultracodeJustDisabled` is set by
+// disableUltracodeForSession() and cleared on the next turn — emitting the
+// ultra_effort_exit reminder for one turn, then nothing.
+let ultracodeJustEnabled = false
+let ultracodeJustDisabled = false
+
 function readEnvUltracode(): boolean {
   const env = process.env.CLAUDE_CODE_ULTRACODE
   if (env !== undefined) {
@@ -136,15 +160,69 @@ export function isUltracodeEnabled(): boolean {
  * Enable ultracode for the session (session-scoped; never persisted by
  * interactive toggles, matching the binary). Also set effort to xhigh and
  * enable dynamic-workflow orchestration — the caller wires those via the
- * effort/workflow modules.
+ * effort/workflow modules. Sets `ultracodeJustEnabled` so the keyword-trigger
+ * turn (or /effort ultracode turn) emits the workflow_keyword_request +
+ * ultra_effort_enter("full") reminders via getUltracodeTurnReminders().
  */
 export function enableUltracodeForSession(): void {
   ultracodeActive = true
+  ultracodeJustEnabled = true
+  ultracodeJustDisabled = false
+}
+
+/**
+ * Disable ultracode for the session. Sets `ultracodeJustDisabled` so the next
+ * turn emits the ultra_effort_exit reminder via getUltracodeTurnReminders(),
+ * matching the 2.1.206 binary's ultra_effort_exit builder.
+ */
+export function disableUltracodeForSession(): void {
+  if (ultracodeActive || readEnvUltracode()) {
+    ultracodeJustDisabled = true
+  }
+  ultracodeActive = false
+  ultracodeJustEnabled = false
 }
 
 /** Reset ultracode (tests / session restart). */
 export function resetUltracode(): void {
   ultracodeActive = false
+  ultracodeJustEnabled = false
+  ultracodeJustDisabled = false
+}
+
+/**
+ * The per-turn ultracode reminders to inject into the API request, matching
+ * the 2.1.206 binary's per-turn reminder dispatch:
+ *
+ * - keyword-trigger turn (ultracodeJustEnabled): [workflow_keyword_request, ultra_effort_enter("full")]
+ * - subsequent ultracode turns:                [ultra_effort_enter("still")]
+ * - the turn ultracode is turned off:          [ultra_effort_exit]
+ * - otherwise (ultracode never on):            []
+ *
+ * Consumes (clears) the `ultracodeJustEnabled` / `ultracodeJustDisabled` flags
+ * so the keyword-request and exit reminders fire for exactly one turn. The
+ * query loop (src/query.ts) calls this once per turn and maps each returned
+ * reminder into a user-role isMeta message via buildHarnessReminderMessage().
+ */
+export function getUltracodeTurnReminders(): UltracodeReminder[] {
+  const reminders: UltracodeReminder[] = []
+  if (ultracodeJustDisabled) {
+    reminders.push({ content: ULTRACODE_EXIT_REMINDER, isMeta: true })
+    ultracodeJustDisabled = false
+    return reminders
+  }
+  if (!isUltracodeEnabled()) return reminders
+  if (ultracodeJustEnabled) {
+    reminders.push({
+      content: ULTRACODE_WORKFLOW_KEYWORD_REQUEST,
+      isMeta: true,
+    })
+    reminders.push(getUltracodeReminderObject('full'))
+    ultracodeJustEnabled = false
+  } else {
+    reminders.push(getUltracodeReminderObject('still'))
+  }
+  return reminders
 }
 
 /**

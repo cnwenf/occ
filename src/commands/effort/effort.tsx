@@ -5,7 +5,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, toPersistableEffort } from '../../utils/effort.js';
-import { enableUltracodeForSession, ULTRACODE_ACTIVATION_MESSAGE, ULTRACODE_EFFORT_DESCRIPTION } from '../../utils/effort/ultracode.js';
+import { disableUltracodeForSession, enableUltracodeForSession, isUltracodeEnabled, ULTRACODE_ACTIVATION_MESSAGE, ULTRACODE_EFFORT_DESCRIPTION } from '../../utils/effort/ultracode.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 type EffortCommandResult = {
@@ -126,6 +126,11 @@ function enableUltracode(): EffortCommandResult {
 export function executeEffort(args: string): EffortCommandResult {
   const normalized = args.toLowerCase();
   if (normalized === 'auto' || normalized === 'unset') {
+    // K3: switching to auto turns ultracode off (if it was on), emitting the
+    // ultra_effort_exit reminder on the next turn via getUltracodeTurnReminders().
+    if (isUltracodeEnabled()) {
+      disableUltracodeForSession();
+    }
     return unsetEffortLevel();
   }
   // K3: ultracode is a session mode, not a persistable effort level — handle
@@ -137,6 +142,11 @@ export function executeEffort(args: string): EffortCommandResult {
     return {
       message: `Invalid argument: ${args}. Valid options are: low, medium, high, max, ultracode, auto`
     };
+  }
+  // K3: switching to a concrete non-ultracode effort level turns ultracode off
+  // (if it was on), emitting the ultra_effort_exit reminder on the next turn.
+  if (isUltracodeEnabled()) {
+    disableUltracodeForSession();
   }
   return setEffortValue(normalized);
 }

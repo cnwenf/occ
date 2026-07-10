@@ -9,6 +9,15 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.266 - 2026-07-10
+
+- Port ultracode per-turn reminders from official Claude Code 2.1.206: `workflow_keyword_request` (keyword-turn opt-in), `ultra_effort_enter("full")` on the keyword turn, `ultra_effort_enter("still")` on subsequent turns, and `ultra_effort_exit` when switching effort away from ultracode. The keyword turn now emits two reminders; later turns emit the "still" reminder. Matches the binary's dispatch table exactly.
+- Wire the ultracode keyword trigger into headless/pipe mode (`-p`): `runHeadless` in `src/cli/print.ts` now calls `shouldTriggerUltracodeFromPrompt()` + `enableUltracodeForSession()`, so the keyword works outside the interactive REPL (was only wired in `processTextPrompt.ts`).
+- Port the verbatim `**Ultracode.**` section + quality patterns (adversarial verify, loop-until-dry, multi-modal sweep, completeness critic, composing patterns) into the Workflow tool description. Surfaces via `prompt()` (which `toolToAPISchema` uses for the API `description` field, not `description()`).
+- Add inline `script` field to the Workflow tool input schema (verbatim description from the 2.1.206 binary: "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }`..."). Models can now provide the full workflow script content directly in the tool call — no need to write a `.js` file to disk first. Mirrors the binary's `scriptPath | named | inline` invocation modes.
+- Improve the Workflow script file-not-found error: now emits recovery guidance ("Create the file first (Write tool, or via shell if Write is unavailable), then retry with the same path") on `ENOENT`, matching the 2.1.206 binary. Previously the error was a bare `Failed to read workflow script ... ENOENT` with no recovery hint.
+- Refactor `loadScript` to extract parse logic into `loadScriptFromSource(source, scriptPath?)` so inline `script` content and file-based `scriptPath` share the same parser.
+
 ## 2.1.265 - 2026-07-10
 
 - Silence the inherited "Claude Code has switched from npm to native installer" REPL nag: OCC ships via npm as `@cnwenf/occ`, so the upstream notification mis-fired on every launch. Short-circuited `useNpmDeprecationNotification`

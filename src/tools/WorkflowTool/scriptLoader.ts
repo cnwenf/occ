@@ -243,22 +243,21 @@ function extractDefaultExport(
 }
 
 /**
- * Read a workflow script file, extract meta + body, validate. The main
- * entry mirroring the binary's V5e(scriptPath).
+ * Parse a workflow script from its source text. Used for both file-based
+ * loading (loadScript reads the file then calls this) and inline `script`
+ * content (the Workflow tool's inline invocation mode — the model provides
+ * the full script body directly in the tool call, no file needed).
+ *
+ * Mirrors official CC 2.1.206's inline `script` field + the
+ * `scriptPath | named | inline` invocation modes.
  */
-export function loadScript(scriptPath: string): LoadedScript {
-  const resolved = validateScriptPath(scriptPath)
-  let source: string
-  try {
-    source = readFileSync(resolved, 'utf8')
-  } catch (e) {
-    const err = e as NodeJS.ErrnoException
-    throw new WorkflowScriptError(
-      `Failed to read workflow script ${scriptPath}: ${err.message}`,
-    )
-  }
+export function loadScriptFromSource(
+  source: string,
+  scriptPath?: string,
+): LoadedScript {
+  const label = scriptPath ?? '<inline>'
   if (!source.trim()) {
-    throw new WorkflowScriptError(`Workflow script ${scriptPath} is empty`)
+    throw new WorkflowScriptError(`Workflow script ${label} is empty`)
   }
 
   const { metaJson, bodyStart } = extractMetaStatement(source)
@@ -267,7 +266,7 @@ export function loadScript(scriptPath: string): LoadedScript {
   let body = source.slice(bodyStart).trim()
   if (!body) {
     throw new WorkflowScriptError(
-      `Workflow script ${scriptPath} has no body after \`export const meta\``,
+      `Workflow script ${label} has no body after \`export const meta\``,
     )
   }
 
@@ -281,7 +280,37 @@ export function loadScript(scriptPath: string): LoadedScript {
     body: cleanedBody,
     hasDefaultExport,
     defaultExportExpr,
-    scriptPath: resolved,
+    scriptPath: scriptPath ?? '<inline>',
     source,
   }
+}
+
+/**
+ * Read a workflow script file, extract meta + body, validate. The main
+ * entry mirroring the binary's V5e(scriptPath).
+ */
+export function loadScript(scriptPath: string): LoadedScript {
+  const resolved = validateScriptPath(scriptPath)
+  let source: string
+  try {
+    source = readFileSync(resolved, 'utf8')
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException
+    if (err.code === 'ENOENT') {
+      // Mirrors official CC 2.1.206: "Workflow script file not found: <path>"
+      // plus the recovery guidance the binary emits for file-not-found.
+      throw new WorkflowScriptError(
+        `Workflow script file not found: ${scriptPath}. ` +
+          'Create the file first (Write tool, or via shell if Write is unavailable), ' +
+          'then retry with the same path. The script must begin with ' +
+          '`export const meta = { name, description, phases }` and export a default ' +
+          'async function: `export default async ({ agent, parallel, pipeline, phase, ' +
+          'log, budget, workflow, resolveWorkflow, args }) => { ... }`.',
+      )
+    }
+    throw new WorkflowScriptError(
+      `Failed to read workflow script ${scriptPath}: ${err.message}`,
+    )
+  }
+  return loadScriptFromSource(source, resolved)
 }
