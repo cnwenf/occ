@@ -302,7 +302,7 @@ export function logAPIError({
     )
   }
 
-  logError(error as Error)
+  logError(error as Error, 'api')
   logEvent('tengu_api_error', {
     model: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     error: errStr as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
