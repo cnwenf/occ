@@ -21,6 +21,15 @@ const FEATURE_ALLOWLIST = new Set([
   'BASH_CLASSIFIER', // bash-command classification used by auto mode
 ])
 
+// Force production NODE_ENV at build time. Bun's bundler statically replaces
+// `process.env.NODE_ENV` (it captures the OS env at process spawn, so setting
+// process.env inside this script is too late). Without this define, Bun
+// defaults to "development", which bakes `=== 'development'` to `true`
+// everywhere — e.g. doctorDiagnostic.ts → getCurrentInstallationType returns
+// "development", blocking `occ update` with "Cannot update development build".
+// It also keeps React's dev checks + warnings in the bundle.
+const NODE_ENV_DEFINE = { 'process.env.NODE_ENV': '"production"' }
+
 const occBundlePlugin = {
   name: 'occ-bundle',
   setup(build: any) {
@@ -42,6 +51,7 @@ const result = await Bun.build({
   outdir: 'dist',
   target: 'bun',
   plugins: [occBundlePlugin],
+  define: NODE_ENV_DEFINE,
 })
 
 if (!result.success) {

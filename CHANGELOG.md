@@ -9,6 +9,11 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.264 - 2026-07-10
+
+- Fix `occ update` aborting with "Cannot update development build": `scripts/build.ts` now passes `define: { 'process.env.NODE_ENV': '"production"' }` to `Bun.build()` so the bundler bakes `NODE_ENV` to `"production"` (was defaulting to `"development"`, which made `getCurrentInstallationType()` short-circuit to `"development"` and block updates)
+- React dev checks + warnings are now stripped from the production bundle (side effect of the NODE_ENV fix; ~0.5 MB smaller)
+
 ## 2.1.263 - 2026-07-10
 
 - Fix version injection: `scripts/build.ts` now injects the real `MACRO.VERSION` from `package.json` into `dist/cli.js` (was hardcoded to the dev polyfill value, so every release reported a stale version)
