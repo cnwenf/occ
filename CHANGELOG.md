@@ -9,6 +9,12 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.262 - 2026-07-10
+
+- Point REPL "What's new" feed and `/release-notes` at OCC's own CHANGELOG (was fetching upstream `anthropics/claude-code`)
+- Add `CHANGELOG.md` at repo root with OCC-specific release notes (v2.1.242–v2.1.261)
+- Document the release workflow (version bump, tag, publish) in `CLAUDE.md`
+
 ## 2.1.261 - 2026-07-10
 
 - Rebrand `occ --version` to print `OCC <version>` instead of the raw Claude Code version
