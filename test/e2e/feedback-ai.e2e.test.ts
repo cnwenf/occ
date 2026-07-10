@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'bun:test'
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 import { writeFileSync, chmodSync, mkdtempSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -80,6 +80,40 @@ describe('/feedback: redaction safety', () => {
     const text = (blocks[0] as { type: 'text'; text: string }).text
     expect(text).not.toContain('sk-ant-api03-deadbeef')
     expect(text).toContain('[REDACTED_API_KEY]')
+  })
+})
+
+describe('/feedback: disk tail source', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'occ-feedback-disk-'))
+    process.env.OCC_ERROR_LOG_PATH = join(tmpDir, 'occ-errors.log')
+  })
+
+  afterEach(() => {
+    delete process.env.OCC_ERROR_LOG_PATH
+    rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('reads errors written directly to the disk log', async () => {
+    // Write a unique marker directly to disk via appendToDiskLog — it is NOT
+    // in the in-memory store, so the only way it reaches the prompt is via
+    // readErrorLogTail. This proves the /feedback disk-tail merge path.
+    const { appendToDiskLog } = await import(`${REPO_ROOT}/src/utils/diskErrorLog.js`)
+    await appendToDiskLog({
+      ts: new Date().toISOString(),
+      level: 'error',
+      kind: 'api',
+      message: 'disk-tail-direct-boom',
+    })
+    const mod = await import(`${REPO_ROOT}/src/commands/feedback/index.ts`)
+    const blocks = await mod.default.getPromptForCommand(
+      'feedback about a disk-only error',
+      { messages: [], abortController: new AbortController() } as never,
+    )
+    const text = (blocks[0] as { type: 'text'; text: string }).text
+    expect(text).toContain('disk-tail-direct-boom')
   })
 })
 

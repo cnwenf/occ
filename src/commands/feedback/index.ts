@@ -1,6 +1,7 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.js'
 import type { Command } from '../../commands.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { readErrorLogTail } from '../../utils/diskErrorLog.js'
 import { getInMemoryErrors } from '../../utils/log.js'
 import { getLastAPIRequest } from '../../bootstrap/state.js'
 import { env } from '../../utils/env.js'
@@ -92,7 +93,7 @@ function redactSensitiveInfo(text: string): string {
   return redacted
 }
 
-const MAX_ERRORS = 5
+const MAX_ERRORS = 20
 const MAX_ERROR_LEN = 4000
 const MAX_TRANSCRIPT_MESSAGES = 12
 const MAX_TRANSCRIPT_LEN = 8000
@@ -203,23 +204,54 @@ async function buildPromptText(
   question: string,
   messages: unknown[],
 ): Promise<string> {
-  const [git, errors, lastApiReq] = await Promise.all([
+  const [git, memErrors, diskTail, lastApiReq] = await Promise.all([
     collectGitInfo(),
     Promise.resolve(getInMemoryErrors()),
+    // Disk tail is best-effort — on read failure, fall back to memory only.
+    readErrorLogTail(40).catch(() => []),
     Promise.resolve(getLastAPIRequest()),
   ])
 
+  // Merge in-memory + disk tail, normalize to { timestamp, errorText }.
+  const normalized: Array<{ timestamp: string; errorText: string }> = [
+    ...memErrors.map(e => ({
+      timestamp: e.timestamp ?? '',
+      errorText: e.error ?? '',
+    })),
+    ...diskTail.map(e => ({
+      timestamp: e.ts ?? '',
+      errorText: e.stack ?? e.message ?? '',
+    })),
+  ]
+
+  // Dedupe by (timestamp[:19]=seconds-precision, errorText[:200]) so the same
+  // error captured to both memory + disk only appears once. Seconds precision
+  // tolerates the sub-ms gap between the two new Date().toISOString() calls.
+  const seen = new Set<string>()
+  const deduped: typeof normalized = []
+  for (const e of normalized) {
+    const key = `${e.timestamp.slice(0, 19)}|${e.errorText.slice(0, 200)}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    deduped.push(e)
+  }
+
+  // Sort by timestamp ascending, take the most recent MAX_ERRORS.
+  deduped.sort((a, b) =>
+    a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0,
+  )
+  const recentErrors = deduped.slice(-MAX_ERRORS)
+
   const errLines =
-    errors
-      .slice(-MAX_ERRORS)
+    recentErrors
       .map(
         e =>
-          `- [${e.timestamp ?? 'no-time'}] ${truncate(
-            redactSensitiveInfo(e.error ?? ''),
+          `- [${e.timestamp || 'no-time'}] ${truncate(
+            redactSensitiveInfo(e.errorText),
             MAX_ERROR_LEN,
           )}`,
       )
-      .join('\n') || '- (no in-memory errors captured this session)'
+      .join('\n') || '- (no errors captured)'
 
   const apiReqText = lastApiReq
     ? truncate(redactSensitiveInfo(jsonStringify(lastApiReq)), MAX_API_REQUEST_LEN)
@@ -269,7 +301,7 @@ ${redactSensitiveInfo(question)}
 - Git: ${gitLine}
 - Captured at: ${new Date().toISOString()}
 
-## 错误日志 / Error Logs (in-memory, last ${MAX_ERRORS}, redacted)
+## 错误日志 / Error Logs (in-memory + disk tail, last ${MAX_ERRORS}, redacted)
 ${errLines}
 
 ## 最近 API 请求 / Last API Request (redacted)
