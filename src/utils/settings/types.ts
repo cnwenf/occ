@@ -370,7 +370,8 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .describe(
           'Deprecated: Use attribution instead. ' +
-            "Whether to include Claude's co-authored by attribution in commits and PRs (defaults to true)",
+            "Whether to include Claude's co-authored by attribution in commits and PRs. " +
+            'OCC defaults to false — set true to enable the attribution trailer.',
         ),
       includeGitInstructions: z
         .boolean()

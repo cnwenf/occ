@@ -46,8 +46,9 @@ export type AttributionTexts = {
  * - Remote mode: returns session URL for attribution
  *
  * By default the commit trailer is empty — OCC does not inject a
- * "Co-Authored-By" line. Users who want it can set `attribution.commit`
- * or enable the deprecated `includeCoAuthoredBy` setting.
+ * "Co-Authored-By" line. The `includeCoAuthoredBy` setting defaults
+ * to false; set it to true to enable the attribution trailer, or set
+ * `attribution.commit` for custom commit attribution text.
  */
 export function getAttributionTexts(): AttributionTexts {
   if (process.env.USER_TYPE === 'ant' && isUndercover()) {
@@ -76,8 +77,9 @@ export function getAttributionTexts(): AttributionTexts {
     }
   }
 
-  // Backward compatibility: deprecated includeCoAuthoredBy setting
-  if (settings.includeCoAuthoredBy === false) {
+  // Backward compatibility: deprecated includeCoAuthoredBy setting.
+  // OCC defaults to false — attribution is off unless explicitly enabled.
+  if (settings.includeCoAuthoredBy !== true) {
     return { commit: '', pr: '' }
   }
 
@@ -336,8 +338,9 @@ export async function getEnhancedPRAttribution(
     return settings.attribution.pr
   }
 
-  // Backward compatibility: deprecated includeCoAuthoredBy setting
-  if (settings.includeCoAuthoredBy === false) {
+  // Backward compatibility: deprecated includeCoAuthoredBy setting.
+  // OCC defaults to false — attribution is off unless explicitly enabled.
+  if (settings.includeCoAuthoredBy !== true) {
     return ''
   }
 
