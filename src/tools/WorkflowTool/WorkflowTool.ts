@@ -369,7 +369,46 @@ export const WorkflowTool = buildTool({
     // promise with a NO-OP setAppState (no Ink renderer reachable), so it
     // cannot crash the main OCC. The user pre-approves the workflow launch
     // by invoking the tool.
-    return { behavior: 'allow', updatedInput: input }
+    if (input.remote) {
+      return { behavior: 'allow', updatedInput: input }
+    }
+    // Local launch: resolve the script path, then ask for explicit consent.
+    // Dynamic workflows fan out across multiple subagents, so the standard
+    // permission prompt (which cannot surface phase breakdown or script
+    // source) is insufficient — WorkflowPermissionDialog shows both.
+    let resolvedScriptPath: string | undefined
+    if (input.name) {
+      const found = resolveWorkflowScript(input.name)
+      if (!found) {
+        return {
+          behavior: 'deny',
+          message: `Could not resolve workflow "${input.name}". Add scripts to .claude/workflows/ (project) or ~/.claude/workflows/ (user).`,
+          decisionReason: {
+            type: 'other',
+            reason: 'workflow script not found',
+          },
+        }
+      }
+      resolvedScriptPath = found
+    } else if (input.scriptPath) {
+      try {
+        resolvedScriptPath = validateScriptPath(input.scriptPath)
+      } catch (err) {
+        return {
+          behavior: 'deny',
+          message: `Invalid workflow script path: ${(err as Error).message}`,
+          decisionReason: { type: 'other', reason: 'invalid script path' },
+        }
+      }
+    }
+    return {
+      behavior: 'ask',
+      message: `Run the dynamic workflow "${input.name ?? input.scriptPath ?? ''}"?`,
+      updatedInput: {
+        ...input,
+        scriptPath: resolvedScriptPath ?? input.scriptPath,
+      },
+    }
   },
   mapToolResultToToolResultBlockParam(
     data: Output,

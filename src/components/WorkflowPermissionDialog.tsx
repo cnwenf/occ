@@ -30,10 +30,15 @@
  */
 import * as React from 'react'
 import { Box, Text, useInput } from '../ink.js'
+import { useKeybinding } from '../keybindings/useKeybinding.js'
 import { logEvent } from '../services/analytics/index.js'
+import { toIDEDisplayName } from '../utils/ide.js'
+import { editFileInEditor } from '../utils/promptEditor.js'
+import { getExternalEditor } from '../utils/editor.js'
 import { Byline } from './design-system/Byline.js'
 import { Dialog } from './design-system/Dialog.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
+import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js'
 import { Select } from './CustomSelect/select.js'
 
 /** Consent outcome — mirrors the binary's accept / yes-always / reject. */
@@ -268,7 +273,7 @@ export function WorkflowPermissionDialog(props: Props): React.ReactNode {
     phases,
     estimatedAgents,
     scriptSummary,
-    scriptSource,
+    scriptSource: scriptSourceProp,
     scriptPath,
     args,
     onAccept,
@@ -276,6 +281,12 @@ export function WorkflowPermissionDialog(props: Props): React.ReactNode {
     onCancel,
   } = props
   const [subView, setSubView] = React.useState<SubView>('options')
+  // Track the live script source so the raw-script view updates after a
+  // ctrl+g edit (the editor mutates the file on disk; we re-read it here).
+  const [scriptSource, setScriptSource] = React.useState<string | undefined>(
+    scriptSourceProp,
+  )
+  const [showSaveMessage, setShowSaveMessage] = React.useState(false)
 
   React.useEffect(() => {
     logEvent('tengu_workflow_permission_dialog_shown', {
@@ -284,6 +295,37 @@ export function WorkflowPermissionDialog(props: Props): React.ReactNode {
     } as never)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // Auto-hide the "Script updated!" message after 5 seconds.
+  React.useEffect(() => {
+    if (showSaveMessage) {
+      const timer = setTimeout(() => setShowSaveMessage(false), 5000)
+      return () => clearTimeout(timer)
+    }
+  }, [showSaveMessage])
+
+  const handleEditScript = React.useCallback(() => {
+    if (!scriptPath) return
+    logEvent('tengu_workflow_external_editor_used', {} as never)
+    const result = editFileInEditor(scriptPath)
+    if (result.error) {
+      // Surface editor errors via the save-message slot — there is no
+      // notification channel inside the consent dialog.
+      return
+    }
+    if (result.content !== null && result.content !== scriptSource) {
+      setScriptSource(result.content)
+      setShowSaveMessage(true)
+    }
+  }, [scriptPath, scriptSource])
+
+  // ctrl+g to edit the workflow script in $EDITOR — mirrors the official
+  // binary's byline "ctrl+g to edit script in $EDITOR". Active in the
+  // options and raw-script views (not summary, where no source is shown).
+  useKeybinding('chat:externalEditor', handleEditScript, {
+    context: 'Chat',
+    isActive: !!scriptPath && subView !== 'summary',
+  })
 
   const handleCancel = (): void => {
     logEvent('tengu_workflow_permission_dialog_reject', {} as never)
@@ -329,6 +371,13 @@ export function WorkflowPermissionDialog(props: Props): React.ReactNode {
   // a no-op cancel in those sub-views and let the sub-view own Esc.
   const dialogOnCancel = subView === 'options' ? handleCancel : () => {}
 
+  // Resolve the editor display name once (module-level cache would be
+  // ideal, but reading per-render is cheap and avoids stale state if
+  // $EDITOR changes mid-session).
+  const editor = getExternalEditor()
+  const editorName = editor ? toIDEDisplayName(editor) : '$EDITOR'
+  const showEditHint = !!scriptPath && subView !== 'summary'
+
   return (
     <Dialog
       title="Run a dynamic workflow?"
@@ -337,6 +386,22 @@ export function WorkflowPermissionDialog(props: Props): React.ReactNode {
       isCancelActive={subView === 'options'}
     >
       {body}
+      {showEditHint ? (
+        <Box flexDirection="row" gap={1} marginTop={1}>
+          <ConfigurableShortcutHint
+            action="chat:externalEditor"
+            context="Chat"
+            fallback="ctrl+g"
+            description={`edit script in ${editorName}`}
+          />
+          {showSaveMessage ? (
+            <>
+              <Text dimColor={true}>{' · '}</Text>
+              <Text color="green">{'✓ Script updated!'}</Text>
+            </>
+          ) : null}
+        </Box>
+      ) : null}
     </Dialog>
   )
 }
