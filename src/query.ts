@@ -79,9 +79,8 @@ const jobClassifier = feature('TEMPLATES')
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
   remove as removeFromQueue,
-  getCommandsByMaxPriority,
-  isSlashCommand,
 } from './utils/messageQueueManager.js'
+import { getQueuedCommandDrainSnapshot } from './utils/queuedCommandDrain.js'
 import { notifyCommandLifecycle } from './utils/commandLifecycle.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import {
@@ -1709,14 +1708,12 @@ async function* queryLoop(
     const isMainThread =
       querySource.startsWith('repl_main_thread') || querySource === 'sdk'
     const currentAgentId = toolUseContext.agentId
-    const queuedCommandsSnapshot = getCommandsByMaxPriority(
-      sleepRan ? 'later' : 'next',
-    ).filter(cmd => {
-      if (isSlashCommand(cmd)) return false
-      if (isMainThread) return cmd.agentId === undefined
-      // Subagents only drain task-notifications addressed to them — never
-      // user prompts, even if someone stamps an agentId on one.
-      return cmd.mode === 'task-notification' && cmd.agentId === currentAgentId
+    const queuedCommandsSnapshot = getQueuedCommandDrainSnapshot({
+      sleepRan,
+      isMainThread,
+      currentAgentId,
+      maxTurns,
+      turnCount,
     })
 
     for await (const attachment of getAttachmentMessages(
