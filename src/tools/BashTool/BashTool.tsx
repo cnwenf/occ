@@ -39,7 +39,10 @@ import { TaskOutput } from '../../utils/task/TaskOutput.js';
 import { isOutputLineTruncated } from '../../utils/terminal.js';
 import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, getToolResultPath, PREVIEW_SIZE_BYTES } from '../../utils/toolResultStorage.js';
 import { userFacingName as fileEditUserFacingName } from '../FileEditTool/UI.js';
-import { trackGitOperations } from '../shared/gitOperationTracking.js';
+import {
+  getStdoutWithGitTail,
+  trackGitOperations,
+} from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
 import { interpretCommandResult } from './commandSemantics.js';
 import { clampTimeoutMs, getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
@@ -836,7 +839,13 @@ export const BashTool = buildTool({
 
       // Get the final result from the generator's return value
       result = generatorResult.value;
-      trackGitOperations(input.command, result.code, result.stdout);
+      // 2.1.205 #8: append the output-file tail so a PR URL printed beyond the
+      // ~30K inline limit is still scanned by trackGitOperations.
+      const stdoutForGitTracking = await getStdoutWithGitTail(
+        result.stdout,
+        result.outputFilePath,
+      );
+      trackGitOperations(input.command, result.code, stdoutForGitTracking);
       const isInterrupt = result.interrupted && abortController.signal.reason === 'interrupt';
 
       // stderr is interleaved in stdout (merged fd) — result.stdout has both

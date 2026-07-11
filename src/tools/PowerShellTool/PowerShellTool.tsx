@@ -36,7 +36,10 @@ import { buildLargeToolResultMessage, ensureToolResultsDir, generatePreview, get
 import { shouldUseSandbox } from '../BashTool/shouldUseSandbox.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { buildImageToolResult, isImageOutput, resetCwdIfOutsideProject, resizeShellImageOutput, stdErrAppendShellResetMessage, stripEmptyLines } from '../BashTool/utils.js';
-import { trackGitOperations } from '../shared/gitOperationTracking.js';
+import {
+  getStdoutWithGitTail,
+  trackGitOperations,
+} from '../shared/gitOperationTracking.js';
 import { interpretCommandResult } from './commandSemantics.js';
 import { powershellToolHasPermission } from './powershellPermissions.js';
 import { getDefaultTimeoutMs, getMaxTimeoutMs, getPrompt } from './prompt.js';
@@ -501,7 +504,13 @@ export const PowerShellTool = buildTool({
       // (code: 1) so tracking early-returns. Skip tracking on this sentinel.
       const isPreFlightSentinel = result.code === 0 && !result.stdout && result.stderr && !result.backgroundTaskId;
       if (!isPreFlightSentinel) {
-        trackGitOperations(input.command, result.code, result.stdout);
+        // 2.1.205 #8: append the output-file tail so a PR URL printed beyond
+        // the ~30K inline limit is still scanned by trackGitOperations.
+        const stdoutForGitTracking = await getStdoutWithGitTail(
+          result.stdout,
+          result.outputFilePath,
+        );
+        trackGitOperations(input.command, result.code, stdoutForGitTracking);
       }
 
       // Distinguish user-driven interrupt (new message submitted) from other

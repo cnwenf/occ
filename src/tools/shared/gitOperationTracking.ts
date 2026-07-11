@@ -13,6 +13,38 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../../services/analytics/index.js'
+import { tailFile } from '../../utils/fsOperations.js'
+
+/**
+ * 2.1.205 #8: When `gh pr create` output exceeds the inline limit (~30K),
+ * `result.stdout` is truncated to the first chunk and the PR URL — which gh
+ * prints at the END of its output — is lost, so `findPrInStdout` never sees it
+ * and the session is never linked to the PR.
+ *
+ * The fix reads the last `GIT_OUTPUT_TAIL_BYTES` of the output file (the tail,
+ * where the URL lives) and appends it to the truncated stdout before scanning.
+ * Mirrors the binary's `_zn(stdout, outputFilePath)` helper:
+ *   `if(!t)return e; try{let{content:r}=await FR(t,ncg); return r?`${e}\n${r}`:e} catch{return e}`
+ * where `FR(path, 8192)` reads the last 8192 bytes (`tailFile` here) and
+ * `ncg = 8192`.
+ *
+ * No-op when `outputFilePath` is unset (output fit inline, or the shell didn't
+ * file-back the output). Returns `stdout` unchanged on any read error.
+ */
+const GIT_OUTPUT_TAIL_BYTES = 8192
+
+export async function getStdoutWithGitTail(
+  stdout: string,
+  outputFilePath?: string,
+): Promise<string> {
+  if (!outputFilePath) return stdout
+  try {
+    const { content } = await tailFile(outputFilePath, GIT_OUTPUT_TAIL_BYTES)
+    return content ? `${stdout}\n${content}` : stdout
+  } catch {
+    return stdout
+  }
+}
 
 /**
  * Build a regex that matches `git <subcmd>` while tolerating git's global
