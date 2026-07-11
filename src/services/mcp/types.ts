@@ -33,6 +33,10 @@ export const McpStdioServerConfigSchema = lazySchema(() =>
     env: z.record(z.string(), z.string()).optional(),
     // 2.1.121: alwaysLoad — all tools from this server skip tool-search deferral.
     alwaysLoad: z.boolean().optional(),
+    // 2.1.206: per-server request timeout (ms). When set, overrides the 60s
+    // per-HTTP-request timeout and the default tool-call timeout for this
+    // server. Matches official CC 2.1.206's request_timeout_ms.
+    request_timeout_ms: z.number().int().positive().optional(),
   }),
 )
 
@@ -65,6 +69,8 @@ export const McpSSEServerConfigSchema = lazySchema(() =>
     headersHelper: z.string().optional(),
     oauth: McpOAuthConfigSchema().optional(),
     alwaysLoad: z.boolean().optional(),
+    // 2.1.206: per-server request timeout (ms). See McpStdioServerConfigSchema.
+    request_timeout_ms: z.number().int().positive().optional(),
   }),
 )
 
@@ -97,6 +103,8 @@ export const McpHTTPServerConfigSchema = lazySchema(() =>
     headersHelper: z.string().optional(),
     oauth: McpOAuthConfigSchema().optional(),
     alwaysLoad: z.boolean().optional(),
+    // 2.1.206: per-server request timeout (ms). See McpStdioServerConfigSchema.
+    request_timeout_ms: z.number().int().positive().optional(),
   }),
 )
 
@@ -107,6 +115,8 @@ export const McpWebSocketServerConfigSchema = lazySchema(() =>
     headers: z.record(z.string(), z.string()).optional(),
     headersHelper: z.string().optional(),
     alwaysLoad: z.boolean().optional(),
+    // 2.1.206: per-server request timeout (ms). See McpStdioServerConfigSchema.
+    request_timeout_ms: z.number().int().positive().optional(),
   }),
 )
 

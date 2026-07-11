@@ -496,6 +496,28 @@ function getConnectionTimeoutMs(): number {
 const MCP_REQUEST_TIMEOUT_MS = 60000
 
 /**
+ * 2.1.206 alignment: resolve the per-server request timeout (ms) from config.
+ * When `request_timeout_ms` is set on a server config, it overrides the 60s
+ * per-HTTP-request default AND the default tool-call timeout for that server.
+ * Matches official CC 2.1.206's per-server `request_timeout_ms` handling —
+ * previously the field was silently ignored, causing long-running MCP tool
+ * calls to time out at the 60s default in fresh sessions.
+ *
+ * Returns `undefined` when unset so callers can fall back to their own default.
+ */
+export function getServerRequestTimeoutMs(
+  serverRef: ScopedMcpServerConfig,
+): number | undefined {
+  const t = (
+    serverRef as { request_timeout_ms?: unknown }
+  ).request_timeout_ms
+  if (typeof t === 'number' && Number.isFinite(t) && t > 0) {
+    return t
+  }
+  return undefined
+}
+
+/**
  * MCP Streamable HTTP spec requires clients to advertise acceptance of both
  * JSON and SSE on every POST. Servers that enforce this strictly reject
  * requests without it (HTTP 406).
@@ -578,7 +600,10 @@ async function capMcpResponseBody(response: Response): Promise<Response> {
   })
 }
 
-export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
+export function wrapFetchWithTimeout(
+  baseFetch: FetchLike,
+  requestTimeoutMs: number = MCP_REQUEST_TIMEOUT_MS,
+): FetchLike {
   return async (url: string | URL, init?: RequestInit) => {
     const method = (init?.method ?? 'GET').toUpperCase()
 
@@ -606,7 +631,7 @@ export function wrapFetchWithTimeout(baseFetch: FetchLike): FetchLike {
     const timer = setTimeout(
       c =>
         c.abort(new DOMException('The operation timed out.', 'TimeoutError')),
-      MCP_REQUEST_TIMEOUT_MS,
+      requestTimeoutMs,
       controller,
     )
     timer.unref?.()
@@ -736,6 +761,7 @@ export const connectToServer = memoize(
           // SDK's handler calls auth() → tokens().
           fetch: wrapFetchWithTimeout(
             wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
+            getServerRequestTimeoutMs(serverRef),
           ),
           requestInit: {
             headers: {
@@ -930,6 +956,7 @@ export const connectToServer = memoize(
           // SDK's handler calls auth() → tokens().
           fetch: wrapFetchWithTimeout(
             wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
+            getServerRequestTimeoutMs(serverRef),
           ),
           requestInit: {
             ...proxyOptions,
@@ -959,7 +986,8 @@ export const connectToServer = memoize(
             url: serverRef.url,
             headers: headersForLogging,
             hasAuthProvider: !!authProvider,
-            timeoutMs: MCP_REQUEST_TIMEOUT_MS,
+            timeoutMs:
+              getServerRequestTimeoutMs(serverRef) ?? MCP_REQUEST_TIMEOUT_MS,
           })}`,
         )
 
@@ -3308,7 +3336,11 @@ async function callMCPTool({
 
     // Use Promise.race with our own timeout to handle cases where SDK's
     // internal timeout doesn't work (e.g., SSE stream breaks mid-request)
-    const timeoutMs = getMcpToolTimeoutMs()
+    // 2.1.206: per-server request_timeout_ms (if set) overrides the default
+    // tool-call timeout, so a configured server honors its own limit. Falls
+    // back to the env/default (MCP_TOOL_TIMEOUT or ~27.8h).
+    const timeoutMs =
+      getServerRequestTimeoutMs(config) ?? getMcpToolTimeoutMs()
     let timeoutId: NodeJS.Timeout | undefined
 
     const timeoutPromise = new Promise<never>((_, reject) => {
