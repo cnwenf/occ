@@ -742,65 +742,60 @@ async function getAwsCredsFromCredentialExport(): Promise<{
     }
   }
 
+  // 2.1.206 #24: Run the export command directly — no STS caller-identity
+  // pre-check. The binary's getAwsCredsFromCredentialExport (verified across
+  // 2.1.204/205/206 — the "caller identity for credential export" string is
+  // absent) does not pre-check STS; the pre-check hung for minutes on
+  // restricted-egress networks where the AWS SDK falls through to the IMDS
+  // (169.254.169.254). Running the export directly matches upstream and
+  // resolves the Bedrock startup hang.
   try {
-    logForDebugging(
-      'Fetching AWS caller identity for credential export command',
-    )
-    await checkStsCallerIdentity()
-    logForDebugging(
-      'Fetched AWS caller identity, skipping AWS credential export command',
-    )
-    return null
-  } catch {
-    // only actually do the export if caller-identity calls
-    try {
-      logForDebugging('Running AWS credential export command')
-      const result = await execa(awsCredentialExport, {
-        shell: true,
-        reject: false,
-      })
-      if (result.exitCode !== 0 || !result.stdout) {
-        throw new Error('awsCredentialExport did not return a valid value')
-      }
-
-      // Parse the JSON output from aws sts commands
-      const awsOutput = jsonParse(result.stdout.trim())
-
-      if (!isValidAwsStsOutput(awsOutput)) {
-        throw new Error(
-          'awsCredentialExport did not return valid AWS STS output structure',
-        )
-      }
-
-      logForDebugging('AWS credentials retrieved from awsCredentialExport')
-      const expirationStr = awsOutput.Credentials.Expiration
-      // Expiration is an RFC3339 string from `aws sts`. Invalid/missing dates
-      // are ignored (falls back to the default fixed TTL).
-      const expiration =
-        typeof expirationStr === 'string' && expirationStr.length > 0
-          ? new Date(expirationStr)
-          : undefined
-      return {
-        accessKeyId: awsOutput.Credentials.AccessKeyId,
-        secretAccessKey: awsOutput.Credentials.SecretAccessKey,
-        sessionToken: awsOutput.Credentials.SessionToken,
-        ...(expiration && !isNaN(expiration.getTime())
-          ? { expiration }
-          : {}),
-      }
-    } catch (e) {
-      const message = chalk.red(
-        'Error getting AWS credentials from awsCredentialExport (in settings or ~/.claude.json):',
-      )
-      if (e instanceof Error) {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(message, e.message)
-      } else {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.error(message, e)
-      }
-      return null
+    logForDebugging('Running AWS credential export command')
+    const result = await execa(awsCredentialExport, {
+      shell: true,
+      reject: false,
+    })
+    if (result.exitCode !== 0 || !result.stdout) {
+      throw new Error('awsCredentialExport did not return a valid value')
     }
+
+    // Parse the JSON output from aws sts commands
+    const awsOutput = jsonParse(result.stdout.trim())
+
+    if (!isValidAwsStsOutput(awsOutput)) {
+      throw new Error(
+        'awsCredentialExport did not return valid AWS STS output structure',
+      )
+    }
+
+    logForDebugging('AWS credentials retrieved from awsCredentialExport')
+    const expirationStr = awsOutput.Credentials.Expiration
+    // Expiration is an RFC3339 string from `aws sts`. Invalid/missing dates
+    // are ignored (falls back to the default fixed TTL).
+    const expiration =
+      typeof expirationStr === 'string' && expirationStr.length > 0
+        ? new Date(expirationStr)
+        : undefined
+    return {
+      accessKeyId: awsOutput.Credentials.AccessKeyId,
+      secretAccessKey: awsOutput.Credentials.SecretAccessKey,
+      sessionToken: awsOutput.Credentials.SessionToken,
+      ...(expiration && !isNaN(expiration.getTime())
+        ? { expiration }
+        : {}),
+    }
+  } catch (e) {
+    const message = chalk.red(
+      'Error getting AWS credentials from awsCredentialExport (in settings or ~/.claude.json):',
+    )
+    if (e instanceof Error) {
+      // biome-ignore lint/suspicious/noConsole:: intentional console output
+      console.error(message, e.message)
+    } else {
+      // biome-ignore lint/suspicious/noConsole:: intentional console output
+      console.error(message, e)
+    }
+    return null
   }
 }
 
