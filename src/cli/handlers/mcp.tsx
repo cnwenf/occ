@@ -16,12 +16,14 @@ import { connectToServer, getMcpServerConnectionBatchSize } from '../../services
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel } from '../../services/mcp/utils.js';
+import { partitionMcpServersByName } from '../../services/mcp/normalization.js';
 import { AppStateProvider } from '../../state/AppState.js';
 import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
 import { isFsInaccessible } from '../../utils/errors.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
 import { safeParseJSON } from '../../utils/json.js';
 import { getPlatform } from '../../utils/platform.js';
+import { writeToStderr } from '../../utils/process.js';
 import { cliError, cliOk } from '../exit.js';
 async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig): Promise<string> {
   try {
@@ -329,14 +331,29 @@ export async function mcpAddFromDesktopHandler(options: {
       readClaudeDesktopMcpServers
     } = await import('../../utils/claudeDesktop.js');
     const servers = await readClaudeDesktopMcpServers();
+    // 2.1.205 #9: report servers with invalid name characters and continue
+    // importing the remaining (valid) servers instead of aborting on the
+    // first invalid name encountered by `addMcpConfig`.
+    const { valid: validServers, invalid } = partitionMcpServersByName(servers);
+    if (invalid.length > 0) {
+      const lines = invalid
+        .map(i => `  - "${i.name}": ${i.reason}`)
+        .join('\n');
+      writeToStderr(
+        `${invalid.length} server${invalid.length === 1 ? '' : 's'} from Claude Desktop skipped due to invalid name characters:\n${lines}\n`,
+      );
+    }
     if (Object.keys(servers).length === 0) {
       cliOk('No MCP servers found in Claude Desktop configuration or configuration file does not exist.');
+    }
+    if (Object.keys(validServers).length === 0) {
+      cliOk('No importable MCP servers found in Claude Desktop configuration.');
     }
     const {
       unmount
     } = await render(<AppStateProvider>
         <KeybindingSetup>
-          <MCPServerDesktopImportDialog servers={servers} scope={scope} onDone={() => {
+          <MCPServerDesktopImportDialog servers={validServers} scope={scope} onDone={() => {
           unmount();
         }} />
         </KeybindingSetup>

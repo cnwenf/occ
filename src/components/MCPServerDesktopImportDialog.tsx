@@ -71,6 +71,7 @@ export function MCPServerDesktopImportDialog(t0) {
   const collisions = t5;
   const onSubmit = async function onSubmit(selectedServers) {
     let importedCount = 0;
+    const failed: { name: string; error: string }[] = [];
     for (const serverName of selectedServers) {
       const serverConfig = servers[serverName];
       if (serverConfig) {
@@ -82,9 +83,22 @@ export function MCPServerDesktopImportDialog(t0) {
           }
           finalName = `${serverName}_${counter}`;
         }
-        await addMcpConfig(finalName, serverConfig, scope);
-        importedCount++;
+        // 2.1.205 #9: a single rejected server (reserved name, policy block,
+        // etc.) must not abort the whole import — report and continue.
+        try {
+          await addMcpConfig(finalName, serverConfig, scope);
+          importedCount++;
+        } catch (e) {
+          failed.push({
+            name: serverName,
+            error: (e as Error)?.message ?? String(e),
+          });
+        }
       }
+    }
+    if (failed.length > 0) {
+      const lines = failed.map(f => `  - "${f.name}": ${f.error}`).join('\n');
+      writeToStdout(`\n${failed.length} server${failed.length === 1 ? '' : 's'} failed to import:\n${lines}\n`);
     }
     done(importedCount);
   };
