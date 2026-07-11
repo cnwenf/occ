@@ -1,5 +1,5 @@
 import { realpath } from 'node:fs/promises'
-import { basename, resolve } from 'node:path'
+import { basename, resolve, sep } from 'node:path'
 import { z } from 'zod/v4'
 import { getSessionId, setOriginalCwd } from '../../bootstrap/state.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
@@ -80,6 +80,64 @@ export const EnterWorktreeTool: Tool<InputSchema, Output> = buildTool({
     return 'Creating worktree'
   },
   shouldDefer: true,
+  async checkPermissions(input) {
+    // 2.1.206 #5: Ask confirmation before entering a worktree outside
+    // `.claude/worktrees/`. The create flow (no `path`) always lands in
+    // `.claude/worktrees/`, so allow without prompting. An existing-worktree
+    // `path` is allowed only if it resolves under the repo's
+    // `.claude/worktrees/` dir; otherwise ask with a `safetyCheck` reason
+    // (`classifierApprovable: false` — auto mode cannot pre-approve a
+    // permission-root relocation). Mirrors the binary's `checkPermissions`
+    // gate: `d3i(e.path)?.managed` → allow; else ask.
+    if (!input.path) {
+      return { behavior: 'allow', updatedInput: input }
+    }
+    const gitRoot = findCanonicalGitRoot(getCwd())
+    if (!gitRoot) {
+      // No git repo → can't determine the managed dir. Defer to call()
+      // which throws an actionable "not in a git repository" error.
+      return { behavior: 'allow', updatedInput: input }
+    }
+    const managedDir = resolve(gitRoot, '.claude', 'worktrees')
+    const resolved = resolve(getCwd(), input.path)
+    let realResolved: string
+    try {
+      realResolved = await realpath(resolved)
+    } catch {
+      // Path doesn't resolve → can't prove it's managed. Ask before
+      // entering (call()/enterExistingWorktree will throw the realpath
+      // error if the user approves).
+      return {
+        behavior: 'ask',
+        message: `Enter the worktree at ${resolved}? This moves the session's working directory and write access there, and loads project configuration (CLAUDE.md, settings) from that location.`,
+        updatedInput: { ...input, path: resolved },
+        decisionReason: {
+          type: 'safetyCheck',
+          reason:
+            'permission-root relocation to a model-supplied worktree outside .claude/worktrees/',
+          classifierApprovable: false,
+        },
+      }
+    }
+    const isManaged =
+      realResolved === managedDir || realResolved.startsWith(managedDir + sep)
+    if (isManaged) {
+      return { behavior: 'allow', updatedInput: { ...input, path: realResolved } }
+    }
+    const note =
+      realResolved !== resolved ? ` (resolves to ${realResolved})` : ''
+    return {
+      behavior: 'ask',
+      message: `Enter the worktree at ${resolved}${note}? This moves the session's working directory and write access there, and loads project configuration (CLAUDE.md, settings) from that location.`,
+      updatedInput: { ...input, path: resolved },
+      decisionReason: {
+        type: 'safetyCheck',
+        reason:
+          'permission-root relocation to a model-supplied worktree outside .claude/worktrees/',
+        classifierApprovable: false,
+      },
+    }
+  },
   toAutoClassifierInput(input) {
     return input.name ?? ''
   },
