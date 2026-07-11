@@ -47,6 +47,7 @@
         "@smithy/core": "^3.23.13",
         "@smithy/node-http-handler": "^4.5.1",
         "ajv": "^8.18.0",
+        "ajv-formats": "^3.0.1",
         "asciichart": "^1.5.25",
         "audio-capture-napi": "workspace:*",
         "auto-bind": "^5.0.1",

@@ -1,4 +1,5 @@
 import { Ajv } from 'ajv'
+import addFormats from 'ajv-formats'
 import { z } from 'zod/v4'
 import type { Tool, ToolInputJSONSchema } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -129,6 +130,11 @@ function buildSyntheticOutputTool(
 ): CreateResult {
   try {
     const ajv = new Ajv({ allErrors: true })
+    // 2.1.205 #2: register the standard JSON Schema "format" vocabulary
+    // (date-time, email, uri, …) so the format keyword is actually enforced
+    // against --json-schema / agent({schema}) output instead of silently
+    // being ignored.
+    addFormats(ajv)
     const isValidSchema = ajv.validateSchema(jsonSchema)
     if (!isValidSchema) {
       return { error: ajv.errorsText(ajv.errors) }
