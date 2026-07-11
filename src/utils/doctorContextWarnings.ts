@@ -41,32 +41,129 @@ export type ContextWarnings = {
   unreachableRulesWarning: ContextWarning | null
 }
 
+/**
+ * A CLAUDE.md section whose content Claude could derive from the code or git
+ * history, and that `/doctor` proposes trimming (claude-code 2.1.206 #2).
+ */
+export type DerivableClaudeMdSection = {
+  path: string
+  header: string
+  reason: string
+}
+
+// Header patterns whose section body is typically derivable. Matching is
+// case-insensitive on the bare header text (e.g. "## Project Structure").
+const STRUCTURE_HEADER_RE =
+  /^\s*#{2,}\s+(project structure|file structure|directory structure|folder structure|directory)\s*$/i
+const COMMANDS_HEADER_RE =
+  /^\s*#{2,}\s+(commands|scripts|build commands)\s*$/i
+const DEPS_HEADER_RE =
+  /^\s*#{2,}\s+(dependencies|tech stack|stack)\s*$/i
+const PACKAGE_MANAGER_CMD_RE =
+  /\b(?:npm|bun|yarn|pnpm|npx)\s+(?:run\s+)?[\w:-]+\b|\bmake\s+\w+/
+
+/**
+ * Find CLAUDE.md sections whose content Claude can derive from the code or
+ * git history. `/doctor` uses this to propose trimming checked-in memory
+ * files instead of only flagging them by size (claude-code 2.1.206 #2).
+ *
+ * Exported for testing.
+ */
+export function findDerivableClaudeMdSections(
+  files: ReadonlyArray<{ path: string; content: string }>,
+): DerivableClaudeMdSection[] {
+  const sections: DerivableClaudeMdSection[] = []
+  for (const file of files) {
+    const lines = file.content.split('\n')
+    let i = 0
+    while (i < lines.length) {
+      const line = lines[i]!
+      const struct = line.match(STRUCTURE_HEADER_RE)
+      const cmds = line.match(COMMANDS_HEADER_RE)
+      const deps = line.match(DEPS_HEADER_RE)
+      if (struct || cmds || deps) {
+        const header = line.trim()
+        // Collect the body up to the next same-or-higher level header.
+        const bodyStart = i + 1
+        let end = bodyStart
+        while (end < lines.length && !/^\s*#{2,}\s+/.test(lines[end]!)) {
+          end++
+        }
+        const body = lines.slice(bodyStart, end)
+        let reason: string
+        if (struct) {
+          reason =
+            'directory/file structure is derivable from the filesystem'
+        } else if (cmds) {
+          // Only flag a commands section if it actually restates package
+          // manager scripts; otherwise it may carry non-derivable notes.
+          if (!body.some(l => PACKAGE_MANAGER_CMD_RE.test(l))) {
+            i = end
+            continue
+          }
+          reason = 'commands are derivable from package.json scripts'
+        } else {
+          reason = 'dependencies are derivable from the package manifest'
+        }
+        sections.push({ path: file.path, header, reason })
+        i = end
+        continue
+      }
+      i++
+    }
+  }
+  return sections
+}
+
 async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
   const threshold = getMemoryCharThreshold(
     getContextWindowForModel(getMainLoopModel()),
   )
-  const largeFiles = getLargeMemoryFiles(await getMemoryFiles(), threshold)
+  const allFiles = await getMemoryFiles()
+  const largeFiles = getLargeMemoryFiles(allFiles, threshold)
+  // 2.1.206 #2: also flag content Claude could derive (file structure,
+  // commands, dependencies) and propose trimming — even when the file
+  // isn't large by the size threshold.
+  const derivable = findDerivableClaudeMdSections(allFiles)
 
   // This already filters for files exceeding the (context-scaled) threshold each
-  if (largeFiles.length === 0) {
+  if (largeFiles.length === 0 && derivable.length === 0) {
     return null
   }
 
-  const details = largeFiles
-    .sort((a, b) => b.content.length - a.content.length)
-    .map(file => `${file.path}: ${file.content.length.toLocaleString()} chars`)
+  const details: string[] = []
+  for (const file of [...largeFiles].sort(
+    (a, b) => b.content.length - a.content.length,
+  )) {
+    details.push(`${file.path}: ${file.content.length.toLocaleString()} chars`)
+  }
+  for (const section of derivable.slice(0, 10)) {
+    details.push(
+      `${section.path}: consider trimming "${section.header}" — ${section.reason}`,
+    )
+  }
 
-  const message =
-    largeFiles.length === 1
-      ? `Large CLAUDE.md file detected (${largeFiles[0]!.content.length.toLocaleString()} chars > ${threshold.toLocaleString()})`
-      : `${largeFiles.length} large CLAUDE.md files detected (each > ${threshold.toLocaleString()} chars)`
+  const parts: string[] = []
+  if (largeFiles.length > 0) {
+    parts.push(
+      largeFiles.length === 1
+        ? `Large CLAUDE.md file detected (${largeFiles[0]!.content.length.toLocaleString()} chars > ${threshold.toLocaleString()})`
+        : `${largeFiles.length} large CLAUDE.md files detected (each > ${threshold.toLocaleString()} chars)`,
+    )
+  }
+  if (derivable.length > 0) {
+    parts.push(
+      `${derivable.length} CLAUDE.md section${derivable.length === 1 ? '' : 's'} with content Claude could derive — consider trimming`,
+    )
+  }
+  const message = parts.join('; ')
 
   return {
     type: 'claudemd_files',
     severity: 'warning',
     message,
     details,
-    currentValue: largeFiles.length, // Number of files exceeding threshold
+    currentValue: largeFiles.length,
     threshold,
   }
 }
