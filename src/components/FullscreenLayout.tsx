@@ -4,6 +4,8 @@ import React, { createContext, type ReactNode, type RefObject, useCallback, useE
 import { fileURLToPath } from 'url';
 import { ModalContext } from '../context/modalContext.js';
 import { PromptOverlayProvider, usePromptOverlay, usePromptOverlayDialog } from '../context/promptOverlayContext.js';
+import { useShortcutDisplay } from '../keybindings/useShortcutDisplay.js';
+import { stringWidth } from '../ink/stringWidth.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import ScrollBox, { type ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import instances from '../ink/instances.js';
@@ -11,6 +13,7 @@ import { Box, Text } from '../ink.js';
 import type { Message } from '../types/message.js';
 import { openBrowser, openPath } from '../utils/browser.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
+import { getPlatform } from '../utils/platform.js';
 import { plural } from '../utils/stringUtils.js';
 import { isNullRenderingAttachment } from './messages/nullRenderingAttachments.js';
 import PromptInputFooterSuggestions from './PromptInput/PromptInputFooterSuggestions.js';
@@ -489,52 +492,83 @@ function _temp2(url) {
   }
 }
 function _temp() {}
-function NewMessagesPill(t0) {
-  const $ = _c(10);
-  const {
-    count,
-    onClick
-  } = t0;
+/**
+ * 2.1.206 #23: Compute the fullscreen "new messages" pill text, including
+ * the user's rebound scroll:bottom chord and truncation to fit the terminal.
+ * Mirrors the binary's `J8s` pill logic.
+ *
+ * Branches (binary `Wcr`, where `miH` = fullscreen+pillVisible is always true
+ * here since the pill only mounts in that state):
+ * - macOS with default scroll:bottom chord (no rebound) → "$ct (click) ↓"
+ * - has a rebound scroll:bottom chord (any platform)    → "$ct (chord) ↓"
+ * - otherwise (non-macOS default)                       → "$ct ↓"
+ *
+ * Truncation: pick the first of [full, "$ct ↓", "$ct] whose display width
+ * fits `columns - 2`; fall back to bare "$ct".
+ *
+ * The binary also has a macOS pageDown-chord branch ("$ct: <pagedown> to
+ * scroll") gated on `!miH` (non-fullscreen). OCC's pill only mounts in
+ * fullscreen+pillVisible, so that branch is unreachable here and omitted.
+ *
+ * `bottomChord` is the display text for the user's configured scroll:bottom
+ * binding (from `useShortcutDisplay`). The canonical default is "ctrl+End";
+ * a non-empty value that isn't the default (case-insensitive "ctrl+end")
+ * indicates a user-rebound chord worth showing.
+ */
+export function computeNewMessagesPillText(args: {
+  count: number;
+  bottomChord: string;
+  platform: string;
+  columns: number;
+}): string {
+  const { count, bottomChord, platform, columns } = args;
+  const baseText =
+    count > 0 ? `${count} new ${plural(count, 'message')}` : 'Jump to bottom';
+  const hasRebound =
+    bottomChord !== '' && bottomChord.toLowerCase() !== 'ctrl+end';
+  const isMacosDefault = platform === 'macos' && !hasRebound;
+  const arrow = figures.arrowDown;
+  let full: string;
+  if (isMacosDefault) {
+    full = `${baseText} (click) ${arrow}`;
+  } else if (hasRebound) {
+    full = `${baseText} (${bottomChord}) ${arrow}`;
+  } else {
+    full = `${baseText} ${arrow}`;
+  }
+  const budget = columns - 2;
+  const withArrow = `${baseText} ${arrow}`;
+  const candidates = [full, withArrow, baseText];
+  return candidates.find(c => stringWidth(c) <= budget) ?? baseText;
+}
+function NewMessagesPill(t0: { count: number; onClick?: () => void }) {
+  const { count, onClick } = t0;
   const [hover, setHover] = useState(false);
-  let t1;
-  let t2;
-  if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
-    t1 = () => setHover(true);
-    t2 = () => setHover(false);
-    $[0] = t1;
-    $[1] = t2;
-  } else {
-    t1 = $[0];
-    t2 = $[1];
-  }
-  const t3 = hover ? "userMessageBackgroundHover" : "userMessageBackground";
-  let t4;
-  if ($[2] !== count) {
-    t4 = count > 0 ? `${count} new ${plural(count, "message")}` : "Jump to bottom";
-    $[2] = count;
-    $[3] = t4;
-  } else {
-    t4 = $[3];
-  }
-  let t5;
-  if ($[4] !== t3 || $[5] !== t4) {
-    t5 = <Text backgroundColor={t3} dimColor={true}>{" "}{t4}{" "}{figures.arrowDown}{" "}</Text>;
-    $[4] = t3;
-    $[5] = t4;
-    $[6] = t5;
-  } else {
-    t5 = $[6];
-  }
-  let t6;
-  if ($[7] !== onClick || $[8] !== t5) {
-    t6 = <Box position="absolute" bottom={0} left={0} right={0} justifyContent="center"><Box onClick={onClick} onMouseEnter={t1} onMouseLeave={t2}>{t5}</Box></Box>;
-    $[7] = onClick;
-    $[8] = t5;
-    $[9] = t6;
-  } else {
-    t6 = $[9];
-  }
-  return t6;
+  const { columns } = useTerminalSize();
+  const platform = getPlatform();
+  const bottomChord = useShortcutDisplay(
+    'scroll:bottom',
+    'Scroll',
+    'ctrl+end',
+  );
+  const bg = hover ? 'userMessageBackgroundHover' : 'userMessageBackground';
+  const text = computeNewMessagesPillText({
+    count,
+    bottomChord,
+    platform,
+    columns,
+  });
+  return (
+    <Box position="absolute" bottom={0} left={0} right={0} justifyContent="center">
+      <Box
+        onClick={onClick}
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
+      >
+        <Text backgroundColor={bg} dimColor>{' '}{text}{' '}</Text>
+      </Box>
+    </Box>
+  );
 }
 
 // Context breadcrumb: when scrolled up into history, pin the current
