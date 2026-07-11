@@ -9,7 +9,10 @@
 import { feature } from 'src/utils/featureFlags.js'
 import axios from 'axios'
 import { createHash } from 'crypto'
-import { chmod, writeFile } from 'fs/promises'
+import { createWriteStream } from 'fs'
+import { chmod, unlink } from 'fs/promises'
+import { PassThrough } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { join } from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import type { ReleaseChannel } from '../config.js'
@@ -379,30 +382,55 @@ async function downloadAndVerifyBinary(
       // Start the stall timer before the request
       resetStallTimer()
 
+      // 2.1.205 #17: stream the binary to disk chunk-by-chunk (−~400MB peak
+      // memory) instead of buffering the whole response in an ArrayBuffer.
+      // The sha256 is updated incrementally as each chunk lands, and the
+      // stall timer is reset per chunk so a stalled peer still aborts.
       const response = await axios.get(binaryUrl, {
-        timeout: 5 * 60000, // 5 minute total timeout
-        responseType: 'arraybuffer',
+        timeout: 5 * 60000, // 5 minute total timeout (time to first byte)
+        responseType: 'stream',
         signal: controller.signal,
-        onDownloadProgress: () => {
-          // Reset stall timer on each chunk of data received
-          resetStallTimer()
-        },
         ...requestConfig,
       })
 
-      // Verify checksum
       const hash = createHash('sha256')
-      hash.update(response.data)
-      const actualChecksum = hash.digest('hex')
+      const hashAndStall = new PassThrough()
+      hashAndStall.on('data', chunk => {
+        hash.update(chunk)
+        resetStallTimer()
+      })
 
+      try {
+        await pipeline(
+          response.data as NodeJS.ReadableStream,
+          hashAndStall,
+          createWriteStream(binaryPath),
+        )
+      } catch (streamError) {
+        // A partial file may remain on disk; clean it up so a retry or a
+        // later attempt doesn't mistake a truncated binary for a valid one.
+        try {
+          await unlink(binaryPath)
+        } catch {
+          // ignore — the file may not exist or the dir is read-only
+        }
+        throw streamError
+      }
+
+      const actualChecksum = hash.digest('hex')
       if (actualChecksum !== expectedChecksum) {
+        // The full (but wrong) binary landed on disk; remove it so a later
+        // attempt doesn't mistake a truncated/mismatched file for valid.
+        try {
+          await unlink(binaryPath)
+        } catch {
+          // ignore — the file may not exist or the dir is read-only
+        }
         throw new Error(
           `Checksum mismatch: expected ${expectedChecksum}, got ${actualChecksum}`,
         )
       }
 
-      // Write binary to disk
-      await writeFile(binaryPath, Buffer.from(response.data))
       await chmod(binaryPath, 0o755)
     } finally {
       clearStallTimer()
