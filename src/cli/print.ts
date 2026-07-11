@@ -4287,11 +4287,42 @@ export function createCanUseToolWithPermissionPrompt(
 
 // Exported for testing — regression: this used to crash at construction when
 // getMcpTools() was empty (before per-server connects populated appState).
+export const PERMISSION_PROMPT_TOOL_CONNECT_WAIT_MS = 10_000
+
+/**
+ * Resolve the MCP tool named by `--permission-prompt-tool` from the currently
+ * available tool set. On a cold start the backing MCP server may not have
+ * connected yet, so the first lookup can miss. Poll (bounded by
+ * `connectWaitMs`) for it to register before giving up (claude-code 2.1.206 #12).
+ *
+ * Exported for testing.
+ */
+export async function waitForPermissionPromptTool(
+  getMcpTools: () => Tool[],
+  permissionPromptToolName: string,
+  connectWaitMs: number = PERMISSION_PROMPT_TOOL_CONNECT_WAIT_MS,
+): Promise<PermissionPromptTool | undefined> {
+  const lookup = () =>
+    getMcpTools().find(t =>
+      toolMatchesName(t, permissionPromptToolName),
+    ) as PermissionPromptTool | undefined
+  let tool = lookup()
+  if (!tool) {
+    const deadline = Date.now() + connectWaitMs
+    while (!tool && Date.now() < deadline) {
+      await sleep(100)
+      tool = lookup()
+    }
+  }
+  return tool
+}
+
 export function getCanUseToolFn(
   permissionPromptToolName: string | undefined,
   structuredIO: StructuredIO,
   getMcpTools: () => Tool[],
   onPermissionPrompt?: (details: RequiresActionDetails) => void,
+  connectWaitMs: number = PERMISSION_PROMPT_TOOL_CONNECT_WAIT_MS,
 ): CanUseToolFn {
   if (permissionPromptToolName === 'stdio') {
     return structuredIO.createCanUseTool(onPermissionPrompt)
@@ -4327,11 +4358,16 @@ export function getCanUseToolFn(
     forceDecision,
   ) => {
     if (!resolved) {
-      const mcpTools = getMcpTools()
-      const permissionPromptTool = mcpTools.find(t =>
-        toolMatchesName(t, permissionPromptToolName),
-      ) as PermissionPromptTool | undefined
+      // 2.1.206 #12: on a cold start the MCP server backing
+      // --permission-prompt-tool may not have connected by the first prompt.
+      // Wait (bounded) for it to register before declaring "not found".
+      const permissionPromptTool = await waitForPermissionPromptTool(
+        getMcpTools,
+        permissionPromptToolName,
+        connectWaitMs,
+      )
       if (!permissionPromptTool) {
+        const mcpTools = getMcpTools()
         const error = `Error: MCP tool ${permissionPromptToolName} (passed via --permission-prompt-tool) not found. Available MCP tools: ${mcpTools.map(t => t.name).join(', ') || 'none'}`
         process.stderr.write(`${error}\n`)
         gracefulShutdownSync(1)
