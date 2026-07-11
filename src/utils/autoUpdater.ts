@@ -398,6 +398,37 @@ export async function getLatestVersionFromGcs(
 }
 
 /**
+ * 2.1.206 #22: Fetch the latest version of a Homebrew cask from
+ * formulae.brew.sh. Homebrew installs track their own cask's version (not the
+ * settings `autoUpdatesChannel`): the `claude-code` cask tracks stable and
+ * `claude-code@latest` tracks latest. The cask's version can lag the npm/GCS
+ * channels by hours to days, so comparing against the cask's own version (not
+ * the faster/slower settings channel) is what tells the user whether their
+ * cask is actually behind.
+ *
+ * Mirrors the binary's `A9g(caskName)`: GET
+ * `https://formulae.brew.sh/api/cask/<cask-name>.json` with a 5s timeout,
+ * return `data.version` as a string.
+ */
+export async function getLatestVersionFromHomebrewCask(
+  caskName: string,
+): Promise<string | null> {
+  try {
+    const response = await axios.get(
+      `https://formulae.brew.sh/api/cask/${caskName}.json`,
+      { timeout: 5000, responseType: 'json' },
+    )
+    const version = (response.data as { version?: unknown } | null)?.version
+    return typeof version === 'string' ? version : null
+  } catch (error) {
+    logForDebugging(
+      `Failed to fetch ${caskName} from formulae.brew.sh: ${error}`,
+    )
+    return null
+  }
+}
+
+/**
  * Get available versions from GCS bucket (for native installations).
  * Fetches both latest and stable channel pointers.
  */

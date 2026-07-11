@@ -122,6 +122,34 @@ export function detectHomebrew(): boolean {
 }
 
 /**
+ * 2.1.206 #22: Extract the Homebrew cask name from the running executable's
+ * path. The path segment after `/Caskroom/` is the cask name — `claude-code`
+ * for the stable cask, `claude-code@latest` for the latest-channel cask.
+ * Returns null when not running from a Homebrew cask install.
+ *
+ * Homebrew installs choose their release channel by cask name, NOT the
+ * `autoUpdatesChannel` setting: the `claude-code` cask tracks stable and
+ * `claude-code@latest` tracks latest. The update check fetches the cask's own
+ * version from formulae.brew.sh to compare against the installed version,
+ * avoiding a mismatch where a stable-cask user reads as perpetually "behind"
+ * the faster latest channel (or a latest-cask user reads as "up to date"
+ * against the lagging stable channel).
+ */
+export function getHomebrewCaskName(): string | null {
+  const platform = getPlatform()
+  if (platform !== 'macos' && platform !== 'linux' && platform !== 'wsl') {
+    return null
+  }
+  const execPath = process.execPath || process.argv[0] || ''
+  const caskroomMarker = '/Caskroom/'
+  const idx = execPath.indexOf(caskroomMarker)
+  if (idx === -1) return null
+  const afterCaskroom = execPath.slice(idx + caskroomMarker.length)
+  const caskName = afterCaskroom.split('/')[0]
+  return caskName || null
+}
+
+/**
  * Detects if the currently running Claude instance was installed via winget
  * by checking if the executable path is within a WinGet directory.
  *

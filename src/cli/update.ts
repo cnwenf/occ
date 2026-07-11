@@ -2,6 +2,8 @@ import chalk from 'chalk'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
   getLatestVersion,
+  getLatestVersionFromGcs,
+  getLatestVersionFromHomebrewCask,
   type InstallStatus,
   installGlobalPackage,
 } from 'src/utils/autoUpdater.js'
@@ -22,7 +24,10 @@ import {
   installLatest as installLatestNative,
   removeInstalledSymlink,
 } from 'src/utils/nativeInstaller/index.js'
-import { getPackageManager } from 'src/utils/nativeInstaller/packageManagers.js'
+import {
+  getHomebrewCaskName,
+  getPackageManager,
+} from 'src/utils/nativeInstaller/packageManagers.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { gte } from 'src/utils/semver.js'
 import { getInitialSettings } from 'src/utils/settings/settings.js'
@@ -121,12 +126,31 @@ export async function update() {
 
     if (packageManager === 'homebrew') {
       writeToStdout('Claude is managed by Homebrew.\n')
-      const latest = await getLatestVersion(channel)
+      // 2.1.206 #22: Homebrew installs choose their release channel by cask
+      // name, NOT the settings `autoUpdatesChannel`: the `claude-code` cask
+      // tracks stable and `claude-code@latest` tracks latest. Fetch the
+      // cask's own version from formulae.brew.sh (matching the Caskroom
+      // segment of the running executable), falling back to the GCS channel
+      // version if the brew fetch fails. Comparing against the settings
+      // channel would show a stable-cask user as perpetually "behind" the
+      // faster latest channel (or a latest-cask user as "up to date" against
+      // the lagging stable channel). Mirrors the binary's
+      // `bWr(caskName, channel) = A9g(caskName) ?? jso(channel)`.
+      const caskName = getHomebrewCaskName() ?? 'claude-code'
+      const [caskVersion, gcsVersion] = await Promise.all([
+        getLatestVersionFromHomebrewCask(caskName),
+        getLatestVersionFromGcs(channel),
+      ])
+      const latest = caskVersion ?? gcsVersion
       if (latest && !gte(MACRO.VERSION, latest)) {
         writeToStdout(`Update available: ${MACRO.VERSION} → ${latest}\n`)
         writeToStdout('\n')
         writeToStdout('To update, run:\n')
-        writeToStdout(chalk.bold('  brew upgrade claude-code') + '\n')
+        writeToStdout(
+          chalk.bold(
+            `  brew uninstall --cask ${caskName} && brew install --cask claude-code@latest`,
+          ) + '\n',
+        )
       } else {
         writeToStdout('Claude is up to date!\n')
       }
