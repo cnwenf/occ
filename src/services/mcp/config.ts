@@ -55,6 +55,7 @@ import {
   type ScopedMcpServerConfig,
 } from './types.js'
 import { getProjectMcpServerStatus } from './utils.js'
+import { isReservedClaudeBrowserName } from './normalization.js'
 
 /**
  * Get the path to the managed MCP configuration file
@@ -635,6 +636,12 @@ export async function addMcpConfig(
 
   // Block reserved server name "claude-in-chrome"
   if (isClaudeInChromeMCPServer(name)) {
+    throw new Error(`Cannot add MCP server "${name}": this name is reserved.`)
+  }
+  // 2.1.205 #22: "Claude Browser" and "Claude Preview" are reserved server
+  // names. Mirrors the binary's `t5n(e)` gate (`ONh.has(Fc(e))`) where
+  // `Fc` === normalizeNameForMCP and ONh = {"Claude_Preview","Claude_Browser"}.
+  if (isReservedClaudeBrowserName(name)) {
     throw new Error(`Cannot add MCP server "${name}": this name is reserved.`)
   }
   // 2.1.128: "workspace" is a reserved server name.

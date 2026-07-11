@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { McpServerConfig } from '../types.js'
 import {
   getInvalidMcpServerNameReason,
+  isReservedClaudeBrowserName,
   partitionMcpServersByName,
 } from '../normalization.js'
 
@@ -103,5 +104,36 @@ describe('partitionMcpServersByName', () => {
     const { invalid } = partitionMcpServersByName(servers)
     expect(invalid).toHaveLength(1)
     expect(invalid[0].reason).toBe('name is longer than 64 characters')
+  })
+})
+
+// 2.1.205 #22: "Claude Browser" and "Claude Preview" are reserved MCP server
+// names. Mirrors the binary's `t5n(e)` = `ONh.has(Fc(e))` where
+// `Fc` === normalizeNameForMCP and ONh = {"Claude_Preview","Claude_Browser"}.
+describe('isReservedClaudeBrowserName (2.1.205 #22)', () => {
+  test('reserves "Claude Browser" and "Claude Preview" (canonical casing)', () => {
+    expect(isReservedClaudeBrowserName('Claude Browser')).toBe(true)
+    expect(isReservedClaudeBrowserName('Claude Preview')).toBe(true)
+  })
+
+  test('reserves names that normalize to the canonical forms (spaces→underscores)', () => {
+    // Fc("Claude Browser") === "Claude_Browser" (space → underscore)
+    expect(isReservedClaudeBrowserName('Claude_Browser')).toBe(true)
+    expect(isReservedClaudeBrowserName('Claude_Preview')).toBe(true)
+  })
+
+  test('does NOT reserve lowercased / differently-cased variants', () => {
+    // Official set is case-sensitive on the normalized form: "Claude_Browser"
+    // only. Lowercase "claude browser" → "claude_browser" ∉ ONh.
+    expect(isReservedClaudeBrowserName('claude browser')).toBe(false)
+    expect(isReservedClaudeBrowserName('CLAUDE BROWSER')).toBe(false)
+    expect(isReservedClaudeBrowserName('claude-browser')).toBe(false)
+  })
+
+  test('does NOT reserve other Claude-adjacent names', () => {
+    expect(isReservedClaudeBrowserName('claude-in-chrome')).toBe(false)
+    expect(isReservedClaudeBrowserName('workspace')).toBe(false)
+    expect(isReservedClaudeBrowserName('my-server')).toBe(false)
+    expect(isReservedClaudeBrowserName('')).toBe(false)
   })
 })
