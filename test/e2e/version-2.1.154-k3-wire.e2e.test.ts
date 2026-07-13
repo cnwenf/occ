@@ -28,13 +28,13 @@ const read = (p: string): string =>
 // -- (a) Ultracode reminder wired into the query loop ------------------------
 
 describe("2.1.154 K3-wire ultracode reminder in query loop (e2e)", () => {
-  test("src/query.ts imports + consumes getUltracodeSystemReminder", () => {
+  test("src/query.ts imports + consumes getUltracodeSystemReminders", () => {
     const src = read("src/query.ts");
     // imports the context-layer wrapper (no duplicated reminder text)
     expect(src).toMatch(/from ['"]\.\/context\.js['"]/);
-    expect(src).toContain("getUltracodeSystemReminder");
+    expect(src).toContain("getUltracodeSystemReminders");
     // injects the reminder as a per-turn isMeta system-reminder at callModel
-    expect(src).toContain("ultracodeReminder");
+    expect(src).toContain("ultracodeReminders");
     expect(src).toMatch(/isMeta:\s*true/);
   });
 
@@ -47,23 +47,27 @@ describe("2.1.154 K3-wire ultracode reminder in query loop (e2e)", () => {
 
   test("reminder injection mirrors the binary's ultra_effort_enter shape", () => {
     const src = read("src/query.ts");
-    // null when ultracode is off → non-ultracode path unchanged
-    expect(src).toMatch(/ultracodeReminder !== null/);
+    // 2.1.206: per-turn dispatch returns an array; an empty array leaves the
+    // non-ultracode path unchanged (replaces the old singular `!== null` guard).
+    expect(src).toMatch(/ultracodeMessages\.length > 0/);
     // prepended ahead of prependUserContext so it is its own meta message
     expect(src).toMatch(/prependUserContext\(messagesForQuery, userContext\)/);
   });
 
-  test("runtime: getUltracodeSystemReminder() returns null off, isMeta reminder on", async () => {
+  test("runtime: getUltracodeSystemReminders() returns [] off, isMeta reminder on", async () => {
     const ctx = await import(`${REPO_ROOT}/src/context.ts`);
     const uc = await import(`${REPO_ROOT}/src/utils/effort/ultracode.ts`);
     uc.resetUltracode();
-    expect(ctx.getUltracodeSystemReminder()).toBe(null);
+    expect(ctx.getUltracodeSystemReminders()).toEqual([]);
     uc.enableUltracodeForSession();
-    const r = ctx.getUltracodeSystemReminder();
-    expect(r).not.toBe(null);
-    expect(r!.isMeta).toBe(true);
-    expect(r!.content).toContain("Ultracode is on:");
-    expect(r!.content).toContain("Use the Workflow tool on every substantive task");
+    const reminders = ctx.getUltracodeSystemReminders();
+    // 2.1.206: the keyword-trigger turn emits [workflow_keyword_request,
+    // ultra_effort_enter("full")] — a non-empty array of isMeta reminders.
+    expect(reminders.length).toBeGreaterThan(0);
+    const full = reminders.find(r => r.content.includes("Ultracode is on:"));
+    expect(full).toBeDefined();
+    expect(full!.isMeta).toBe(true);
+    expect(full!.content).toContain("Use the Workflow tool on every substantive task");
     uc.resetUltracode();
   });
 });

@@ -161,13 +161,18 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
     }
   }, 90_000);
 
-  test("/feedback (no args) — returns usage", async () => {
+  // /feedback is an OCC customization (AI-powered prompt command, see
+  // src/commands/feedback/index.ts → getPromptForCommand). With no args it does
+  // NOT print a hardcoded "Usage:" string; instead it returns a prompt that has
+  // the model ask the user what to report (one short turn, no issue filed).
+  // The model's reply always mentions the repo + the word "feedback".
+  test("/feedback (no args) — model solicits feedback (AI-powered)", async () => {
     const { dir, cleanup } = tempDir();
     try {
       const res = await runOcc(["-p", "/feedback", "--dangerously-skip-permissions"], { OCC_CWD: dir }, 60_000);
       expect(res.code).toBe(0);
-      expect(res.stdout).toContain("Usage: /feedback");
       expect(res.stdout).toContain("cnwenf/occ");
+      expect(res.stdout.toLowerCase()).toContain("feedback");
     } finally {
       cleanup();
     }

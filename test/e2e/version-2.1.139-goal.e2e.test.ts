@@ -3,8 +3,9 @@ import { $ } from "bun";
 import { REPO_ROOT } from "./helpers";
 
 /**
- * /goal command e2e (Docker): command exists, state management works,
- * and a real -p run with /goal set works end-to-end.
+ * /goal command e2e: command exists + state management works.
+ * /goal <condition> in -p mode (sets a session Stop hook, works toward the
+ * goal, terminates on achieve) is covered by commands-behavior.e2e.test.ts.
  */
 describe("/goal command exists (e2e)", () => {
   test("goal command is in the command list", async () => {
@@ -38,23 +39,11 @@ console.log(JSON.stringify({ active, cond, inactive }));
   });
 });
 
-// 真实模型 e2e：跑 dist/cli.js -p 调用真实模型，需要本地凭证。
-// GitHub Actions 上无凭证且 CI=true，自动跳过；本地 CI 未设，正常运行。
-describe.skipIf(!!process.env.CI)("/goal real -p run (e2e, real model)", () => {
-  test("/goal set + clear works in -p mode", async () => {
-    const script = `
-const { spawn } = require('child_process');
-const child = spawn('bun', [process.env.OCC_ENTRYPOINT || '${REPO_ROOT}/dist/cli.js', '-p', '/goal all tests pass'], {
-  env: { ...process.env, CLAUDE_CODE_MAX_RETRIES: '3', CLAUDE_CODE_UNATTENDED_RETRY: '0' },
-  stdio: ['ignore', 'pipe', 'pipe'],
-});
-let stdout = '';
-child.stdout.on('data', d => stdout += d);
-child.on('close', () => {
-  console.log(JSON.stringify({ hasGoalSet: stdout.includes('Goal set') }));
-});
-`;
-    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
-    expect(out.hasGoalSet).toBe(true);
-  }, 30000);
-});
+// /goal <condition> in -p mode (sets a session Stop hook, works toward the
+// goal, terminates on achieve) is covered by commands-behavior.e2e.test.ts
+// ("/goal <condition> — sets hook, works toward goal, terminates on achieve").
+// The previous "real -p run" test here asserted stdout contains "Goal set",
+// but that ack is internal in -p mode — only the model's final response is
+// printed (verified: `dist/cli.js -p '/goal reply with the word OK'` → stdout
+// "OK") — so the assertion could never pass. Removed (see also ec1f85f for
+// the precedent of dropping redundant/broken real-model e2e tests).
