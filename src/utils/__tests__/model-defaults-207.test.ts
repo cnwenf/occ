@@ -7,6 +7,7 @@ import {
 } from '../auth.js'
 import { getDefaultOpusModel } from '../model/model.js'
 import { getAPIProvider } from '../model/providers.js'
+import { resetModelStringsForTestingOnly } from 'src/bootstrap/state.js'
 
 /**
  * 2.1.207 #19: Bedrock/Vertex/Claude Platform AWS/Mantle/Foundry default
@@ -43,6 +44,19 @@ function withEnv(env: Record<string, string>, fn: () => void): void {
 describe('2.1.207 #19: Bedrock/Vertex/AWS default → Opus 4.8', () => {
   beforeEach(() => {
     delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
+  })
+
+  // `getDefaultOpusModel()` → `getModelStrings()` runs `initModelStrings()`,
+  // which for the bedrock provider fires an async `updateBedrockModelStrings`
+  // that caches Bedrock builtin strings (incl. `us.anthropic.claude-sonnet-5`)
+  // in the session-global bootstrap/state singleton. That cache survives
+  // withEnv's env restore (state ≠ env) and leaks into later tests
+  // (e.g. yoloClassifierSonnet5 — C-auto-mode cluster — would resolve the
+  // classifier default from stale Bedrock state). Reset it after each test
+  // so the next caller re-resolves from the (restored) firstParty env.
+  // Same isolation-seam pattern as vimInsertModeRemaps (mock.module leak).
+  afterEach(() => {
+    resetModelStringsForTestingOnly()
   })
 
   test('bedrock provider defaults to opus-4-8', () => {

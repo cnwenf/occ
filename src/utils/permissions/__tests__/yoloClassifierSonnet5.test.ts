@@ -3,6 +3,7 @@ import {
   getClassifierSonnet5Default,
   _resetClassifierSonnet5DefaultCache,
 } from "../yoloClassifier.js";
+import { resetModelStringsForTestingOnly } from "src/bootstrap/state.js";
 
 /**
  * C-auto-mode cluster (2.1.210 #27):
@@ -21,10 +22,22 @@ import {
  */
 describe("2.1.210 #27: classifier Sonnet 5 default + pin", () => {
   beforeEach(() => {
+    // `getClassifierSonnet5Default()` reads `getModelStrings().sonnet5`, which
+    // is provider-dependent. The modelStrings result is memoized in the
+    // session-global bootstrap/state singleton — an earlier test file that
+    // sets a Bedrock/Vertex env (e.g. model-defaults-207) can leave a stale
+    // non-firstParty cache (sonnet5 = "us.anthropic.claude-sonnet-5") that
+    // survives that test's own cleanup because the bedrock profile fetch is
+    // async fire-and-forget and resolves after its afterEach. Resetting the
+    // classifier's own cache (below) is not enough — reset the modelStrings
+    // singleton too so this test re-resolves from the (clean, firstParty)
+    // env. Same isolation-seam pattern as vimInsertModeRemaps.
+    resetModelStringsForTestingOnly();
     _resetClassifierSonnet5DefaultCache();
   });
 
   afterEach(() => {
+    resetModelStringsForTestingOnly();
     _resetClassifierSonnet5DefaultCache();
   });
 
