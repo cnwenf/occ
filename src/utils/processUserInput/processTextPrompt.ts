@@ -21,7 +21,10 @@ import {
 import {
   shouldTriggerUltracodeFromPrompt,
   enableUltracodeForSession,
+  isHumanTypedPrompt,
+  HUMAN_PROMPT_ORIGIN,
 } from '../effort/ultracode.js'
+import type { PromptOrigin } from '../effort/ultracode.js'
 
 export function processTextPrompt(
   input: string | Array<ContentBlockParam>,
@@ -31,6 +34,12 @@ export function processTextPrompt(
   uuid?: string,
   permissionMode?: PermissionMode,
   isMeta?: boolean,
+  // CC 2.1.210 #4: the origin of the prompt. Human-typed input (interactive
+  // REPL, `occ -p`, SDK) carries kind:"human"; programmatic / relayed input
+  // (webhook payloads, relayed PR comments) carries a non-"human" kind so the
+  // ultracode keyword opt-in does not fire on it. Defaults to human — the only
+  // callers that reach processTextPrompt today are human-typed prompt paths.
+  promptOrigin: PromptOrigin = HUMAN_PROMPT_ORIGIN,
 ): {
   messages: (UserMessage | AttachmentMessage | SystemMessage)[]
   shouldQuery: boolean
@@ -72,10 +81,15 @@ export function processTextPrompt(
 
   // K3 (ultracode): if the user's prompt carries the "ultracode" keyword and
   // the keyword trigger is enabled (default) and ultracode isn't already
-  // active, enable it for the session. The query loop (src/query.ts) then
-  // injects the "Ultracode is on…" system-reminder on each turn via
-  // getUltracodeSystemReminder().
-  if (shouldTriggerUltracodeFromPrompt(userPromptText)) {
+  // active, enable it for the session. CC 2.1.210 #4: the opt-in must only
+  // fire on human-originated input — webhook payloads and relayed PR comments
+  // carry a non-"human" origin and must NOT trigger it. Mirrors the 2.1.210
+  // binary's `workflow_keyword_request` gate:
+  //   s?.isHumanTypedPrompt && !s.suppressWorkflowKeyword && WFn() && keyword
+  // shouldTriggerUltracodeFromPrompt() also enforces the human-origin guard
+  // when an origin is passed; isHumanTypedPrompt(promptOrigin) is applied here
+  // to mirror the binary's separate isHumanTypedPrompt gate on the opt-in.
+  if (shouldTriggerUltracodeFromPrompt(userPromptText) && isHumanTypedPrompt(promptOrigin)) {
     enableUltracodeForSession()
     logEvent('tengu_ultracode_keyword_triggered', {
       source: 'user_prompt',
