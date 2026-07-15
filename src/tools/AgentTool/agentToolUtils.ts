@@ -47,6 +47,7 @@ import {
   extractTextContent,
   getLastAssistantMessage,
 } from '../../utils/messages.js'
+import { sanitizeSubagentOutput, sanitizeLastAssistantOutput, sanitizeLastAssistantOutputWithFindings, reportFlaggedSubagentOutput } from './subagentOutputSanitizer.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
 import {
@@ -474,7 +475,12 @@ export async function classifyHandoffIfNeeded({
         `Handoff classifier flagged sub-agent output: ${classifierResult.reason}`,
         { level: 'warn' },
       )
-      return `SECURITY WARNING: This sub-agent performed actions that may violate security policy. Reason: ${classifierResult.reason}. Review the sub-agent's actions carefully before acting on its output.`
+      // 2.1.210: sanitize the classifier reason before inlining it into the
+      // SECURITY WARNING — the reason may quote subagent-read content carrying
+      // injection-shaped patterns. ser() neutralizes forged control tags and
+      // prepends no marker (the SECURITY WARNING prefix already frames it).
+      const sanitizedReason = sanitizeSubagentOutput(classifierResult.reason, { prependMarker: false }).sanitized
+      return `SECURITY WARNING: This sub-agent performed actions that may violate security policy. Reason: ${sanitizedReason}. Review the sub-agent's actions carefully before acting on its output.`
     }
   }
 
@@ -603,7 +609,25 @@ export async function runAsyncAgentLifecycle({
     // not gate the status transition (gh-20236).
     completeAsyncAgent(agentResult, rootSetAppState)
 
-    let finalMessage = extractTextContent(agentResult.content, '\n')
+    // 2.1.210: harden the boundary against indirect prompt injection via
+    // content a subagent read. The subagent's final assistant-message text is
+    // the surface a parent agent / user reads on completion - sanitize it
+    // (binary: aer / ser) which neutralizes forged control tags and prepends a
+    // [harness: ...] marker when escalation-shaped patterns matched, so
+    // injection carried in content the subagent read cannot commandeer the
+    // parent. Falls back to the raw content text when no assistant text exists.
+    //
+    // Analyze the raw text ONCE (not the already-sanitized text - re-analysis
+    // would match the marker we prepend, creating a feedback loop). The findings
+    // feed telemetry (binary: wNu / tengu_subagent_output_flagged).
+    const sanitizedFinal = sanitizeLastAssistantOutputWithFindings(agentMessages)
+    let finalMessage = sanitizedFinal?.sanitized ?? extractTextContent(agentResult.content, '\n')
+    if (sanitizedFinal && sanitizedFinal.findings.some(f => f.reportable)) {
+      reportFlaggedSubagentOutput(sanitizedFinal.findings, {
+        agentId: taskId,
+        surface: 'async_final_message',
+      })
+    }
 
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       const handoffWarning = await classifyHandoffIfNeeded({
@@ -656,7 +680,10 @@ export async function runAsyncAgentLifecycle({
           'user_kill_async' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       const worktreeResult = await getWorktreeResult()
-      const partialResult = extractPartialResult(agentMessages)
+      // 2.1.210: sanitize the partial result (binary: finalMessage: aer(g))
+      // so injection carried in content a killed subagent read cannot
+      // commandeer the parent via the kill notification.
+      const partialResult = sanitizeLastAssistantOutput(agentMessages) ?? extractPartialResult(agentMessages)
       enqueueAgentNotification({
         taskId,
         description,

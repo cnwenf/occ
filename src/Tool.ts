@@ -246,6 +246,15 @@ export type ToolUseContext = {
   /** B9 (2.1.172): subagent nesting depth. 0 = top-level (main loop). */
   subagentDepth?: number
   agentType?: string // Subagent type name. For the main thread's --agent type, hooks fall back to getMainThreadAgentType().
+  /**
+   * 2.1.210 #3: worktree path a subagent was launched with via
+   * `isolation: 'worktree'`. Propagated to the subagent's ToolUseContext so
+   * shell-executing tools (Bash/PowerShell) can block commands whose cwd
+   * escapes the worktree and would run git-mutating operations against the
+   * parent's main checkout instead. Undefined on the main thread and for
+   * non-worktree-isolated subagents.
+   */
+  agentWorktree?: string
   /** When true, canUseTool must always be called even when hooks auto-approve.
    *  Used by speculation for overlay file path rewriting. */
   requireCanUseTool?: boolean

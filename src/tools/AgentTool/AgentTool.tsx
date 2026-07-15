@@ -45,7 +45,7 @@ import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
-import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, runAsyncAgentLifecycle } from './agentToolUtils.js';
+import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, resolveAgentTools, runAsyncAgentLifecycle } from './agentToolUtils.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
@@ -585,6 +585,40 @@ export const AgentTool = buildTool({
       mode: selectedAgent.permissionMode ?? 'acceptEdits'
     };
     const workerTools = assembleToolPool(workerPermissionContext, appState.mcp.tools);
+
+    // 2.1.208 #22: refuse to spawn a subagent whose tools frontmatter resolves
+    // to zero recognized tools. Previously a bogus `tools:` list silently
+    // launched a toolless worker. Now return a clear error naming the
+    // unrecognized entries so the user can fix the frontmatter. Mirrors the
+    // binary's `subagent zero-tool spawn refused` throw + tengu_subagent_
+    // zero_tools telemetry. Skipped for the fork path (useExactTools inherits
+    // the parent's full tool array and never calls resolveAgentTools).
+    if (!isForkPath) {
+      const resolved = resolveAgentTools(selectedAgent, workerTools, shouldRunAsync);
+      if (resolved.resolvedTools.length === 0 && !resolved.hasWildcard) {
+        // Build the reason string naming the unrecognized entries. The binary
+        // surfaces three categories (unrecognized / not available to subagents
+        // / recognized but matched no tools in this session); OCC's
+        // resolveAgentTools collapses the latter two into `invalidTools`, so we
+        // surface them as "unrecognized" which is the common typo case.
+        const reason = resolved.invalidTools.length > 0
+          ? `unrecognized [${resolved.invalidTools.join(', ')}]`
+          : 'no recognized tools matched in this session';
+        logEvent('tengu_subagent_zero_tools', {
+          agent_type: selectedAgent.agentType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          isBuiltIn: isBuiltInAgent(selectedAgent),
+          invalidCount: resolved.invalidTools.length,
+          availablePoolSize: workerTools.length,
+          isAsync: shouldRunAsync,
+          refused: true,
+        });
+        throw new Error(
+          `Agent '${selectedAgent.agentType}' would be spawned with zero tools \u2014 refusing. `
+          + `Its tools list resolved to nothing: ${reason}. `
+          + `Fix the agent's tools frontmatter or pass a different subagent_type.`,
+        );
+      }
+    }
 
     // Create a stable agent ID early so it can be used for worktree slug
     const earlyAgentId = createAgentId();

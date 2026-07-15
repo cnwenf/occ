@@ -770,6 +770,14 @@ export async function* runAgent({
     agentToolUseContext.preserveToolUseResults = true
   }
 
+  // 2.1.210 #3: Propagate the worktree path so shell-executing tools
+  // (Bash/PowerShell) can block commands whose cwd escapes the worktree and
+  // would run git-mutating operations against the parent's main checkout.
+  // Undefined on the main thread and for non-worktree-isolated subagents.
+  if (worktreePath) {
+    agentToolUseContext.agentWorktree = worktreePath
+  }
+
   // Expose cache-safe params for background summarization (prompt cache sharing)
   if (onCacheSafeParams) {
     onCacheSafeParams({
