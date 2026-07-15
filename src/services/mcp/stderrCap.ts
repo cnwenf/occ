@@ -11,9 +11,12 @@
  *   handler = (Q) => { if (g.length < 67108864) try { g += Q.toString() } catch {} }
  *
  * - Cap value: `64 * 1024 * 1024` (67108864 bytes).
- * - Retention: head-retention — appending stops once the cap is reached, so
- *   the retained string never exceeds the cap. The most recent *connect-time*
- *   output that fit within the cap is retained; later bytes are dropped.
+ * - Retention: head-retention with a SOFT cap — `g.length < cap` is checked
+ *   BEFORE appending the whole chunk, so appending stops once the cap is
+ *   reached. The chunk that crosses the boundary is appended in full, so the
+ *   retained string may exceed the cap by up to one chunk; all subsequent
+ *   chunks are dropped (memory is bounded, not unbounded). The most recent
+ *   *connect-time* output that fit is retained; later bytes are dropped.
  * - `toString()` conversion + `try/catch` swallow errors from exceeding the
  *   max safe string length.
  *
@@ -27,7 +30,7 @@ export const MAX_MCP_STDERR_BYTES = 64 * 1024 * 1024
 export interface CappedStderrAccumulator {
   /** Stable 'data' listener to attach to a stderr Readable stream. */
   readonly handler: (data: Buffer) => void
-  /** The currently accumulated stderr string (never exceeds `capBytes` in length). */
+  /** The currently accumulated stderr string (soft cap: at most `capBytes` + one chunk in length). */
   getOutput: () => string
   /** Release the accumulated string to free memory. */
   reset: () => void
