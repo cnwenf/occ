@@ -47,6 +47,7 @@ import {
   splitPathInFrontmatter,
 } from '../utils/frontmatterParser.js'
 import { getFsImplementation } from '../utils/fsOperations.js'
+import { filterValidIgnorePatterns } from '../utils/globPatternValidation.js'
 import { isPathGitignored } from '../utils/git/gitignore.js'
 import { logError } from '../utils/log.js'
 import {
@@ -1242,7 +1243,9 @@ export function activateConditionalSkillsForPaths(
       continue
     }
 
-    const skillIgnore = ignore().add(skill.paths)
+    const skillIgnore = ignore().add(
+      filterValidIgnorePatterns(skill.paths, 'skill_paths'),
+    )
     for (const filePath of filePaths) {
       const relativePath = isAbsolute(filePath)
         ? relative(cwd, filePath)

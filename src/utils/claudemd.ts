@@ -65,6 +65,7 @@ import {
   splitPathInFrontmatter,
 } from './frontmatterParser.js'
 import { getFsImplementation, safeResolvePath } from './fsOperations.js'
+import { filterValidIgnorePatterns } from './globPatternValidation.js'
 import { findCanonicalGitRoot, findGitRoot } from './git.js'
 import {
   executeInstructionsLoadedHooks,
@@ -1407,7 +1408,9 @@ export async function processConditionedMdRules(
     ) {
       return false
     }
-    return ignore().add(file.globs).ignores(relativePath)
+    return ignore()
+      .add(filterValidIgnorePatterns(file.globs, 'claudemd_rule_globs'))
+      .ignores(relativePath)
   })
 }
 

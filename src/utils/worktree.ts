@@ -40,6 +40,10 @@ import {
 import { containsPathTraversal } from './path.js'
 import { getPlatform } from './platform.js'
 import {
+  filterValidIgnorePatterns,
+  splitIgnorePatternLines,
+} from './globPatternValidation.js'
+import {
   getInitialSettings,
   getRelativeSettingsFilePathForSource,
 } from './settings/settings.js'
@@ -461,7 +465,12 @@ export async function copyWorktreeIncludeFiles(
   }
 
   const entries = gitignored.stdout.trim().split('\n').filter(Boolean)
-  const matcher = ignore().add(includeContent)
+  const matcher = ignore().add(
+    filterValidIgnorePatterns(
+      splitIgnorePatternLines(includeContent),
+      'worktreeinclude',
+    ),
+  )
 
   // --directory emits collapsed dirs with a trailing slash; everything else is
   // an individual file.
