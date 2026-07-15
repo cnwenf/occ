@@ -24,6 +24,22 @@ const MIN_COLUMN_WIDTH = 3;
  */
 const MAX_ROW_LINES = 4;
 
+/** Maximum number of data rows rendered before truncating a markdown table.
+ *  Tables with more rows than this render only the first 200 and append a
+ *  notice, to avoid stalling the terminal on very large tables. Matches the
+ *  official binary's `DYd = 200` cap. */
+export const MAX_TABLE_ROWS = 200;
+
+/**
+ * Build the user-facing notice for rows omitted from a large markdown table.
+ * Matches the official binary (`CHo`): `… <count> more row(s) not shown`,
+ * where `…` is U+2026 and the count is locale-formatted (e.g. `1,050`).
+ */
+export function formatTruncationNotice(omittedCount: number): string {
+  const noun = omittedCount === 1 ? 'row' : 'rows';
+  return `\u2026 ${omittedCount.toLocaleString()} more ${noun} not shown`;
+}
+
 /** ANSI escape codes for text formatting */
 const ANSI_BOLD_START = '\x1b[1m';
 const ANSI_BOLD_END = '\x1b[22m';
@@ -80,6 +96,14 @@ export function MarkdownTable({
   } = useTerminalSize();
   const terminalWidth = forceWidth ?? actualTerminalWidth;
 
+  // Cap very large tables to the first MAX_TABLE_ROWS data rows and append a
+  // notice for the rest, to avoid stalling the terminal on huge tables. The
+  // capped rows feed BOTH the column-width calculation and the rendering.
+  const omittedRowCount = Math.max(0, token.rows.length - MAX_TABLE_ROWS);
+  const displayRows = omittedRowCount > 0
+    ? token.rows.slice(0, MAX_TABLE_ROWS)
+    : token.rows;
+
   // Format cell content to ANSI string
   function formatCell(tokens: Token[] | undefined): string {
     return tokens?.map(_ => formatToken(_, theme, 0, null, null, highlight)).join('') ?? '';
@@ -107,14 +131,14 @@ export function MarkdownTable({
   // Step 1: Get minimum (longest word) and ideal (full content) widths
   const minWidths = token.header.map((header, colIndex) => {
     let maxMinWidth = getMinWidth(header.tokens);
-    for (const row of token.rows) {
+    for (const row of displayRows) {
       maxMinWidth = Math.max(maxMinWidth, getMinWidth(row[colIndex]?.tokens));
     }
     return maxMinWidth;
   });
   const idealWidths = token.header.map((header_0, colIndex_0) => {
     let maxIdeal = getIdealWidth(header_0.tokens);
-    for (const row_0 of token.rows) {
+    for (const row_0 of displayRows) {
       maxIdeal = Math.max(maxIdeal, getIdealWidth(row_0[colIndex_0]?.tokens));
     }
     return maxIdeal;
@@ -167,7 +191,7 @@ export function MarkdownTable({
       maxLines = Math.max(maxLines, wrapped.length);
     }
     // Check rows
-    for (const row_1 of token.rows) {
+    for (const row_1 of displayRows) {
       for (let i_2 = 0; i_2 < row_1.length; i_2++) {
         const content_0 = formatCell(row_1[i_2]?.tokens);
         const wrapped_0 = wrapText(content_0, columnWidths[i_2]!, {
@@ -245,7 +269,7 @@ export function MarkdownTable({
     const separator = '─'.repeat(separatorWidth);
     // Small indent for wrapped lines (just 2 spaces)
     const wrapIndent = '  ';
-    token.rows.forEach((row_2, rowIndex) => {
+    displayRows.forEach((row_2, rowIndex) => {
       if (rowIndex > 0) {
         lines_2.push(separator);
       }
@@ -284,6 +308,14 @@ export function MarkdownTable({
         }
       });
     });
+    // When rows were truncated, append a separator and the notice (matches
+    // the official binary's vertical-format renderer `sNs`).
+    if (omittedRowCount > 0) {
+      if (lines_2.length > 0) {
+        lines_2.push(separator);
+      }
+      lines_2.push(formatTruncationNotice(omittedRowCount));
+    }
     return lines_2.join('\n');
   }
 
@@ -297,9 +329,9 @@ export function MarkdownTable({
   tableLines.push(renderBorderLine('top'));
   tableLines.push(...renderRowLines(token.header, true));
   tableLines.push(renderBorderLine('middle'));
-  token.rows.forEach((row_3, rowIndex_0) => {
+  displayRows.forEach((row_3, rowIndex_0) => {
     tableLines.push(...renderRowLines(row_3, false));
-    if (rowIndex_0 < token.rows.length - 1) {
+    if (rowIndex_0 < displayRows.length - 1) {
       tableLines.push(renderBorderLine('middle'));
     }
   });
@@ -314,6 +346,12 @@ export function MarkdownTable({
   // to account for terminal resize race conditions.
   if (maxLineWidth > terminalWidth - SAFETY_MARGIN) {
     return <Ansi>{renderVerticalFormat()}</Ansi>;
+  }
+
+  // When rows were truncated, append the notice as a final line after the
+  // bottom border (matches the official binary's horizontal renderer `OYd`).
+  if (omittedRowCount > 0) {
+    tableLines.push(formatTruncationNotice(omittedRowCount));
   }
 
   // Render as a single Ansi block to prevent Ink from wrapping mid-row
