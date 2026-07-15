@@ -34,6 +34,8 @@ import {
 } from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
 import { getMainLoopModel } from '../model/model.js'
+import { getModelStrings } from '../model/modelStrings.js'
+import { getAPIProvider } from '../model/providers.js'
 import { getAutoModeConfig } from '../settings/settings.js'
 import { sideQuery } from '../sideQuery.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -1415,9 +1417,38 @@ type AutoModeConfig = {
 }
 
 /**
+ * 2.1.210 #27: the Sonnet 5 (1M context) model the permission classifier
+ * defaults to for external sessions. Mirrors official `jdh`:
+ * `VI(yh().sonnet5 + "[1m]")` — the lineage sonnet5 model ID with the 1M-
+ * context variant suffix. Resolved once and pinned per session: the official
+ * binary validates the model on the first classifier request via the 3P probe
+ * (`CLAUDE_CODE_3P_PROBE_WROTE_SONNET_DEFAULT` marker) and pins the result.
+ * OCC has no Statsig-driven 3P probe, so the pin is the canonical per-provider
+ * resolve (the load-bearing "default + pin" behavior). The live API
+ * availability probe is not ported — OCC has no model-availability probing
+ * infra and no remote Statsig config to drive the probe targeting.
+ */
+let cachedClassifierSonnet5Default: string | undefined
+
+export function getClassifierSonnet5Default(): string {
+  if (cachedClassifierSonnet5Default) return cachedClassifierSonnet5Default
+  cachedClassifierSonnet5Default = `${getModelStrings().sonnet5}[1m]`
+  return cachedClassifierSonnet5Default
+}
+
+/** @internal reset the Sonnet 5 default pin for tests. */
+export function _resetClassifierSonnet5DefaultCache(): void {
+  cachedClassifierSonnet5Default = undefined
+}
+
+/**
  * Get the model for the classifier.
- * Ant-only env var takes precedence, then GrowthBook JSON config override,
- * then the main loop model.
+ * Ant-only env var takes precedence, then GrowthBook JSON config override.
+ * 2.1.210 #27: for external (non-firstParty) sessions, defaults to Sonnet 5
+ * (1M) via `getClassifierSonnet5Default` — "validated on first request +
+ * pinned". `ANTHROPIC_DEFAULT_SONNET_MODEL` overrides for external sessions
+ * (unless it equals the 3P-probe marker, which OCC cannot drive without
+ * Statsig — treated as a normal override). Explicit overrides above still win.
  */
 function getClassifierModel(): string {
   if (process.env.USER_TYPE === 'ant') {
@@ -1431,9 +1462,23 @@ function getClassifierModel(): string {
   if (config?.model) {
     return config.model
   }
-  // Official uses claude-haiku-4-5 as the classifier model. For non-Claude
-  // proxies (GLM), fall back to the subagent model env var, then the main
-  // loop model (the classifier is a model call that works with any model).
+  // 2.1.210 #27: external (non-firstParty) sessions default the classifier to
+  // Sonnet 5 (1M context) — mirrors official `jdh`. Checked BEFORE the
+  // subagent-model/main-loop fallback so external providers get Sonnet 5 even
+  // when CLAUDE_CODE_SUBAGENT_MODEL is unset. ANTHROPIC_DEFAULT_SONNET_MODEL
+  // still overrides (matches the binary's Sonnet-default resolver, minus the
+  // 3P-probe re-probe marker which OCC can't drive).
+  if (getAPIProvider() !== 'firstParty') {
+    const envSonnet = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
+    const probeMarker = process.env.CLAUDE_CODE_3P_PROBE_WROTE_SONNET_DEFAULT
+    if (envSonnet && envSonnet !== probeMarker) {
+      return envSonnet
+    }
+    return getClassifierSonnet5Default()
+  }
+  // For non-Claude proxies (GLM), fall back to the subagent model env var,
+  // then the main loop model (the classifier is a model call that works with
+  // any model).
   const subagentModel = process.env.CLAUDE_CODE_SUBAGENT_MODEL
   if (subagentModel) return subagentModel
   return getMainLoopModel()

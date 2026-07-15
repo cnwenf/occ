@@ -23,6 +23,10 @@ import { logError } from '../log.js'
 import { getPlatform } from '../platform.js'
 import { gte, lte, parseVersion } from '../semver.js'
 import { clone, jsonStringify } from '../slowOperations.js'
+import {
+  logEvent,
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+} from '../../services/analytics/index.js'
 import { profileCheckpoint } from '../startupProfiler.js'
 import {
   type EditableSettingSource,
@@ -891,25 +895,16 @@ export function hasSkipDangerousModePermissionPrompt(): boolean {
 }
 
 /**
- * Returns true if any trusted settings source has accepted the auto
- * mode opt-in dialog. projectSettings is intentionally excluded —
- * a malicious project could otherwise auto-bypass the dialog (RCE risk).
+ * 2.1.207 #1: auto mode no longer requires opt-in. Mirrors official `fui`,
+ * which unconditionally returns `!0` — the opt-in dialog (`AutoModeOptInDialog`
+ * / `showAutoModeOptIn`) was removed by 2.1.210. Auto mode is available without
+ * consent on every provider, including Bedrock/Vertex/Foundry. The
+ * `skipAutoPermissionPrompt` setting is no longer consulted here; the default
+ * offer (`hasResetAutoModeOptInForDefaultOffer`) is a separate, one-time
+ * migration flow. `disableAutoMode` (settings) still turns auto mode off.
  */
 export function hasAutoModeOptIn(): boolean {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
-    const user = getSettingsForSource('userSettings')?.skipAutoPermissionPrompt
-    const local =
-      getSettingsForSource('localSettings')?.skipAutoPermissionPrompt
-    const flag = getSettingsForSource('flagSettings')?.skipAutoPermissionPrompt
-    const policy =
-      getSettingsForSource('policySettings')?.skipAutoPermissionPrompt
-    const result = !!(user || local || flag || policy)
-    logForDebugging(
-      `[auto-mode] hasAutoModeOptIn=${result} skipAutoPermissionPrompt: user=${user} local=${local} flag=${flag} policy=${policy}`,
-    )
-    return result
-  }
-  return false
+  return feature('TRANSCRIPT_CLASSIFIER')
 }
 
 /**
@@ -949,10 +944,35 @@ export function getUseAutoModeDuringPlan(): boolean {
 }
 
 /**
+ * 2.1.207 #20: `mXe` — true when projectSettings and userSettings resolve to the
+ * same file path. The binary skips the projectSettings ignore-warning in that
+ * case (a single-file setup must not double-fire the warning).
+ */
+function isProjectSettingsSameAsUserSettings(): boolean {
+  const projectPath = getSettingsFilePathForSource('projectSettings')
+  const userPath = getSettingsFilePathForSource('userSettings')
+  return (
+    !!projectPath &&
+    !!userPath &&
+    resolve(projectPath) === resolve(userPath)
+  )
+}
+
+// 2.1.207 #20: fire-once flag for the untrusted-source warning (binary `Lhl`).
+// Re-running the scan on every getAutoModeConfig call would re-warn; the
+// official binary sets `Lhl=!0` once and skips thereafter.
+let autoModeUntrustedSourceWarningEmitted = false
+
+/**
  * Returns the merged autoMode config from trusted settings sources.
  * Only available when TRANSCRIPT_CLASSIFIER is active; returns undefined otherwise.
- * projectSettings is intentionally excluded — a malicious project could
- * otherwise inject classifier allow/deny rules (RCE risk).
+ *
+ * 2.1.207 #20: `autoMode` is no longer read from repo-controllable settings
+ * (projectSettings/localSettings) — a malicious project could otherwise inject
+ * classifier allow/deny rules (RCE risk). Mirrors official `Pve`: the read loop
+ * only consumes `$hl = ["userSettings","flagSettings","policySettings"]`; when
+ * `autoMode` is present in a repo-controllable source, warn once + emit
+ * `tengu_settings_auto_mode_rules_untrusted_source_ignored`.
  */
 export function getAutoModeConfig():
   | { allow?: string[]; soft_deny?: string[]; environment?: string[] }
@@ -966,14 +986,52 @@ export function getAutoModeConfig():
       environment: z.array(z.string()).optional(),
     })
 
+    // Ignore-warn loop: repo-controllable sources are NOT trusted for classifier
+    // rules. Scan once per process; warn + telemetry when `autoMode` is present.
+    if (!autoModeUntrustedSourceWarningEmitted) {
+      for (const untrusted of [
+        'projectSettings',
+        'localSettings',
+      ] as const) {
+        if (
+          untrusted === 'projectSettings' &&
+          isProjectSettingsSameAsUserSettings()
+        ) {
+          continue
+        }
+        const untrustedSettings = getSettingsForSource(untrusted)
+        if (!untrustedSettings) continue
+        if (
+          schema.safeParse(
+            (untrustedSettings as Record<string, unknown>).autoMode,
+          ).success
+        ) {
+          autoModeUntrustedSourceWarningEmitted = true
+          logForDebugging(
+            `settings autoMode in ${untrusted} ignored — only user/flag/managed settings may set classifier rules (projectSettings and localSettings are repo-controllable)`,
+            { level: 'warn' },
+          )
+          logEvent(
+            'tengu_settings_auto_mode_rules_untrusted_source_ignored',
+            {
+              source:
+                untrusted as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            },
+          )
+          break
+        }
+      }
+    }
+
     const allow: string[] = []
     const soft_deny: string[] = []
     const hard_deny: string[] = []
     const environment: string[] = []
 
+    // 2.1.207 #20: trusted sources only (binary `$hl`). localSettings/projectSettings
+    // are excluded — see the ignore-warn loop above.
     for (const source of [
       'userSettings',
-      'localSettings',
       'flagSettings',
       'policySettings',
     ] as const) {
@@ -1015,9 +1073,11 @@ export function getAutoModeConfig():
  */
 export function isAutoModeClassifyAllShellEnabled(): boolean {
   if (feature('TRANSCRIPT_CLASSIFIER')) {
+    // 2.1.207 #20: trusted sources only (binary `$hl`). localSettings is
+    // repo-controllable and excluded — a malicious project must not be able to
+    // force classifyAllShell (which suspends shell allow rules).
     for (const source of [
       'userSettings',
-      'localSettings',
       'flagSettings',
       'policySettings',
     ] as const) {
@@ -1029,6 +1089,15 @@ export function isAutoModeClassifyAllShellEnabled(): boolean {
     }
   }
   return false
+}
+
+/**
+ * Test-only reset for the fire-once `autoModeUntrustedSourceWarningEmitted`
+ * flag. Mirrors the `_resetClassifierSonnet5DefaultCache` pattern in
+ * yoloClassifier.ts. Not wired into any production code path.
+ */
+export function _resetAutoModeUntrustedSourceWarning(): void {
+  autoModeUntrustedSourceWarningEmitted = false
 }
 
 export function rawSettingsContainsKey(key: string): boolean {
