@@ -113,13 +113,16 @@ export function getDefaultOpusModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
-  // 3P providers (Bedrock, Vertex, Foundry) — kept as a separate branch
-  // even when values match, since 3P availability lags firstParty and
-  // these will diverge again at the next model launch. Official 2.1.200
-  // per_provider cross-provider fallback maps opus-4-8 → opus-4-6 on
-  // bedrock/vertex/foundry, so 3P default stays on opus-4-6.
-  if (getAPIProvider() !== 'firstParty') {
-    return getModelStrings().opus46
+  // 2.1.207 #19: Bedrock/Vertex/Claude Platform AWS/Mantle/Foundry default
+  // changed to Claude Opus 4.8 (was Opus 4.7 in 2.1.206). Only the gateway
+  // provider retains the Opus 4.7 default. Official 2.1.210 binary:
+  //   DEFAULT_BEDROCK_OPUS_KEY = DEFAULT_VERTEX_OPUS_KEY
+  //     = DEFAULT_MANTLE_OPUS_KEY = "opus48"
+  //   case"anthropicAws":case"bedrock":case"foundry":case"vertex":return aS(); // → opus48
+  //   case"firstParty":return yh().opus48;
+  //   default:return yh().opus47  // gateway
+  if (getAPIProvider() === 'gateway') {
+    return getModelStrings().opus47
   }
   return getModelStrings().opus48
 }
