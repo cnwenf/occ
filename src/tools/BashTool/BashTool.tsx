@@ -289,6 +289,7 @@ const outputSchema = lazySchema(() => z.object({
   backgroundTaskId: z.string().optional().describe('ID of the background task if command is running in background'),
   backgroundedByUser: z.boolean().optional().describe('True if the user manually backgrounded the command with Ctrl+B'),
   assistantAutoBackgrounded: z.boolean().optional().describe('True if assistant-mode auto-backgrounded a long-running blocking command'),
+  timedOutAfterMs: z.number().optional().describe('Set when the command hit its timeout and was auto-backgrounded; the timeout value in ms'),
   backgroundCwdHint: z.string().optional().describe("Model-facing note that the session cwd was not changed by a backgrounded command containing a directory-change builtin (cd/pushd/popd/chdir)"),
   dangerouslyDisableSandbox: z.boolean().optional().describe('Flag to indicate if sandbox mode was overridden'),
   returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
@@ -721,6 +722,7 @@ export const BashTool = buildTool({
     backgroundTaskId,
     backgroundedByUser,
     assistantAutoBackgrounded,
+    timedOutAfterMs,
     backgroundCwdHint,
     structuredContent,
     persistedOutputPath,
@@ -772,6 +774,17 @@ export const BashTool = buildTool({
         backgroundInfo = `Command exceeded the assistant-mode blocking budget (${ASSISTANT_BLOCKING_BUDGET_MS / 1000}s) and was moved to the background with ID: ${backgroundTaskId}. It is still running — you will be notified when it completes. Output is being written to: ${outputPath}. In assistant mode, delegate long-running work to a subagent or use run_in_background to keep this conversation responsive.`;
       } else if (backgroundedByUser) {
         backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`;
+      } else if (timedOutAfterMs !== undefined) {
+        // 2.1.210 #26: when a command hits its timeout and is auto-backgrounded,
+        // tell the model the timeout value + where to find interim output. Mirrors
+        // the official binary chain (backgroundedByUser → timedOutAfterMs → generic):
+        //   else if(l!==void 0)p=`Command did not complete within its
+        //   ${Math.max(1,Math.round(l/1000))}s timeout and was moved to the
+        //   background (ID: ${s}). Output is being written to: ${f}. You will be
+        //   notified when it completes. To check interim output, use ${Mi} on
+        //   that file path.`  (l=timeoutMs, s=backgroundTaskId, f=outputPath,
+        //   Mi="Read")
+        backgroundInfo = `Command did not complete within its ${Math.max(1, Math.round(timedOutAfterMs / 1000))}s timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use Read on that file path.`;
       } else {
         backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`;
       }
@@ -985,6 +998,7 @@ export const BashTool = buildTool({
       backgroundTaskId: result.backgroundTaskId,
       backgroundedByUser: result.backgroundedByUser,
       assistantAutoBackgrounded: result.assistantAutoBackgrounded,
+      timedOutAfterMs: result.timedOutAfterMs,
       // 2.1.210 #10: when a command containing a directory-change builtin
       // (cd/pushd/popd/chdir) is auto-backgrounded, the session cwd did NOT
       // actually change — the cd runs in the backgrounded subshell. Tell the
@@ -1061,6 +1075,11 @@ async function* runShellCommand({
   let lastTotalBytes = 0;
   let backgroundShellId: string | undefined ;
   let assistantAutoBackgrounded = false;
+  // 2.1.210 #26: set when the command hit its timeout and was auto-backgrounded
+  // (via shellCommand.onTimeout). Surfaces the timeout value to the model in the
+  // backgroundInfo message so it knows how long the budget was. Mirrors binary
+  // field `timedOutAfterMs` (l!==void 0 branch).
+  let timedOutAfterMs: number | undefined;
 
   // Progress signal: resolved by onProgress callback from the shared poller,
   // waking the generator to yield a progress update.
@@ -1163,6 +1182,9 @@ async function* runShellCommand({
   // Only background commands that are allowed to be auto-backgrounded (not sleep, etc.)
   if (shellCommand.onTimeout && shouldAutoBackground) {
     shellCommand.onTimeout(backgroundFn => {
+      // 2.1.210 #26: record the timeout value so mapToolResultToToolResultBlockParam
+      // emits the timeout-specific backgroundInfo (not the generic message).
+      timedOutAfterMs = timeoutMs;
       startBackgrounding('tengu_bash_command_timeout_backgrounded', backgroundFn);
     });
   }
@@ -1216,7 +1238,8 @@ async function* runShellCommand({
         code: 0,
         interrupted: false,
         backgroundTaskId: backgroundShellId,
-        assistantAutoBackgrounded
+        assistantAutoBackgrounded,
+        timedOutAfterMs
       };
     }
   }
@@ -1279,7 +1302,8 @@ async function* runShellCommand({
           code: 0,
           interrupted: false,
           backgroundTaskId: backgroundShellId,
-          assistantAutoBackgrounded
+          assistantAutoBackgrounded,
+          timedOutAfterMs
         };
       }
 
