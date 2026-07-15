@@ -30,6 +30,8 @@ import {
   detectWinget,
   getPackageManager,
 } from './nativeInstaller/packageManagers.js'
+import { isExternallyManagedLauncher } from './nativeInstaller/launcherOwnership.js'
+import { getUserBinDir } from './xdg.js'
 import { getPlatform } from './platform.js'
 import { getRipgrepStatus } from './ripgrep.js'
 import { SandboxManager } from './sandbox/sandbox-adapter.js'
@@ -372,6 +374,17 @@ async function detectConfigurationIssues(
 
   // Check if ~/.local/bin is in PATH for native installations
   if (type === 'native') {
+    // 2.1.207 #5: report an externally-managed launcher (a custom
+    // script/symlink the user placed at ~/.local/bin/claude that the native
+    // installer did not create and will not overwrite).
+    const launcherPath = join(getUserBinDir(), 'claude')
+    if (await isExternallyManagedLauncher(launcherPath)) {
+      warnings.push({
+        issue: `${launcherPath} was not created by the native installer (it is not a symlink into the versions/ directory), so auto-update leaves it untouched.`,
+        fix: `If you put a launcher wrapper there on purpose, this is expected — new versions still install under $XDG_DATA_HOME/claude/versions, your launcher decides what runs, and automatic version cleanup is disabled on this machine (the installer cannot tell which version your launcher needs, so it keeps them all). To let Claude Code manage the launcher again, remove ${launcherPath} and run \`claude update\`.`,
+      })
+    }
+
     const path = process.env.PATH || ''
     const pathDirectories = path.split(delimiter)
     const homeDir = homedir()

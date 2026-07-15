@@ -70,6 +70,11 @@ import {
   readLockContent,
   withLock,
 } from './pidLock.js'
+import {
+  isExternallyManagedLauncher,
+  isNativeManagedLauncher,
+  isNpmManagedLauncher,
+} from './launcherOwnership.js'
 
 export const VERSION_RETENTION_COUNT = 2
 
@@ -481,7 +486,7 @@ async function performVersionUpdate(
     throw new Error(
       `Failed to create executable at ${executablePath}. ` +
         `Source file exists: ${installPathExists}. ` +
-        `Check write permissions to ${executablePath}.`,
+        `Either ${executablePath} is not writable, or the existing file there was not created by the native installer and is not a working launcher — the updater will not overwrite a launcher it does not own. Remove it and re-run the update.`,
     )
   }
   return needsInstall
@@ -759,6 +764,23 @@ async function updateSymlink(
         }
       } catch {
         // Path exists but is not a symlink - will remove it below
+      }
+
+      // 2.1.207 #5: refuse to overwrite an externally-managed launcher (a
+      // custom script/symlink the user placed at ~/.local/bin/claude). The
+      // installer only overwrites launchers it owns — a native symlink into
+      // the versions/ directory, or an npm shim (node_modules / .js). Anything
+      // else is left untouched so the user's wrapper wins; new versions still
+      // install under versions/.
+      if (
+        !(await isNativeManagedLauncher(symlinkPath)) &&
+        !(await isNpmManagedLauncher(symlinkPath).catch(() => false))
+      ) {
+        logForDebugging(
+          `Not replacing ${symlinkPath}: it was not created by the native installer (not a symlink into a claude/versions/ directory) and is not an npm shim, so this update will not overwrite it. New versions still install under the versions/ directory; remove ${symlinkPath} and re-run the update to let the installer manage the launcher again.`,
+          { level: 'warn' },
+        )
+        return false
       }
 
       // Remove existing file/symlink before creating new one
@@ -1337,6 +1359,17 @@ export async function cleanupOldVersions(): Promise<void> {
   }
 
   if (versionFiles.length === 0) {
+    return
+  }
+
+  // 2.1.207 #5: skip version cleanup when the launcher is externally managed —
+  // the installer can't tell which version the launcher needs, so it keeps them
+  // all rather than deleting a version the user's wrapper still points at.
+  if (await isExternallyManagedLauncher(dirs.executable)) {
+    logForDebugging(
+      `Skipping native version cleanup: the launcher at ${dirs.executable} is externally managed, so the version(s) it needs cannot be determined`,
+    )
+    logEvent('tengu_native_version_cleanup_skipped_external_launcher', {})
     return
   }
 

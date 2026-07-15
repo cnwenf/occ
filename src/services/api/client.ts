@@ -29,6 +29,7 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import { assertBedrockStreamingContentType } from './bedrockContentTypeGuard.js'
 
 /**
  * Environment variables for different client types:
@@ -470,7 +471,7 @@ function getCustomHeaders(): Record<string, string> {
 
 export const CLIENT_REQUEST_ID_HEADER = 'x-client-request-id'
 
-function buildFetch(
+export function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,
 ): ClientOptions['fetch'] {
@@ -480,7 +481,11 @@ function buildFetch(
   // and unknown headers risk rejection by strict proxies (inc-4029 class).
   const injectClientRequestId =
     getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
-  return (input, init) => {
+  // 2.1.208 (#16): capture the provider at build time (matches the binary's
+  // `n` resolved once when the fetch wrapper is constructed) for the Bedrock
+  // content-type guard below.
+  const provider = getAPIProvider()
+  return async (input, init) => {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)
     // Generate a client-side request ID so timeouts (which return no server
@@ -489,9 +494,10 @@ function buildFetch(
     if (injectClientRequestId && !headers.has(CLIENT_REQUEST_ID_HEADER)) {
       headers.set(CLIENT_REQUEST_ID_HEADER, randomUUID())
     }
+    let url = ''
     try {
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const url = input instanceof Request ? input.url : String(input)
+      url = input instanceof Request ? input.url : String(input)
       const id = headers.get(CLIENT_REQUEST_ID_HEADER)
       logForDebugging(
         `[API REQUEST] ${new URL(url).pathname}${id ? ` ${CLIENT_REQUEST_ID_HEADER}=${id}` : ''} source=${source ?? 'unknown'}`,
@@ -499,6 +505,13 @@ function buildFetch(
     } catch {
       // never let logging crash the fetch
     }
-    return inner(input, { ...init, headers })
+    const response = await inner(input, { ...init, headers })
+    // 2.1.208 (#16): Bedrock streaming content-type guard. If a gateway/proxy
+    // transformed the binary event-stream response (content-type is no longer
+    // application/vnd.amazon.eventstream), throw a clear, actionable error
+    // naming the content-type + pointing at the proxy, instead of letting the
+    // AWS SDK parser surface the misleading "Truncated event message received."
+    assertBedrockStreamingContentType(response, url, provider)
+    return response
   }
 }
