@@ -18,6 +18,10 @@ import { getCwd } from '../utils/cwd.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
 import { execFileNoThrowWithCwd } from '../utils/execFileNoThrow.js'
+import {
+  filterValidIgnorePatterns,
+  splitIgnorePatternLines,
+} from '../utils/globPatternValidation.js'
 import { getFsImplementation } from '../utils/fsOperations.js'
 import { findGitRoot, gitExe } from '../utils/git.js'
 import {
@@ -225,7 +229,12 @@ async function loadRipgrepIgnorePatterns(
   )
   for (const [i, content] of contents.entries()) {
     if (content === null) continue
-    ig.add(content)
+    ig.add(
+      filterValidIgnorePatterns(
+        splitIgnorePatternLines(content),
+        'file_suggestions_ignore',
+      ),
+    )
     hasPatterns = true
     logForDebugging(`[FileIndex] loaded ignore patterns from ${paths[i]}`)
   }
