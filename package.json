@@ -1,20 +1,24 @@
 {
     "name": "@cnwenf/occ",
-    "version": "2.1.268",
+    "version": "2.1.269",
     "license": "MIT",
     "type": "module",
     "bin": {
-        "occ": "dist/cli.js"
+        "occ": "bin/occ.cjs"
     },
     "workspaces": [
         "packages/*",
         "packages/@ant/*"
     ],
     "files": [
-        "dist"
+        "dist",
+        "bin"
     ],
     "publishConfig": {
         "access": "public"
+    },
+    "optionalDependencies": {
+        "bun": "^1.3.11"
     },
     "scripts": {
         "build": "bun run scripts/build.ts",

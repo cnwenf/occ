@@ -921,7 +921,7 @@ function validateSinglePathCommandArgv(
   return pathChecker(args, cwd, toolPermissionContext, compoundCommandHasCd)
 }
 
-function validateOutputRedirections(
+export function validateOutputRedirections(
   redirections: Array<{ target: string; operator: '>' | '>>' }>,
   cwd: string,
   toolPermissionContext: ToolPermissionContext,
@@ -932,7 +932,16 @@ function validateOutputRedirections(
   // Example attack: cd .claude/ && echo "malicious" > settings.json
   // The redirection target would be validated relative to the original CWD, but the
   // actual write happens in the changed directory after 'cd' executes.
-  if (compoundCommandHasCd && redirections.length > 0) {
+  //
+  // 2.1.207 #6: A redirect to /dev/null is always safe (it's a sink, not a real
+  // write), so a compound `cd foo && do_thing > /dev/null` must NOT prompt solely
+  // because of the redirect. Only prompt when at least one redirect targets a path
+  // OTHER than /dev/null. Mirrors the binary's `lIg`:
+  //   if(n && e.some((o)=>o.target !== "/dev/null")) return {behavior:"ask",...}
+  if (
+    compoundCommandHasCd &&
+    redirections.some(r => r.target !== '/dev/null')
+  ) {
     return {
       behavior: 'ask',
       message: `Commands that change directories and write via output redirection require explicit approval to ensure paths are evaluated correctly. For security, Claude Code cannot automatically determine the final working directory when 'cd' is used in compound commands.`,

@@ -1,7 +1,10 @@
 import { z } from 'zod/v4'
 import { mcpInfoFromString } from '../../services/mcp/mcpStringUtils.js'
 import { lazySchema } from '../lazySchema.js'
-import { permissionRuleValueFromString } from '../permissions/permissionRuleParser.js'
+import {
+  permissionRuleValueFromString,
+  permissionRuleValueToString,
+} from '../permissions/permissionRuleParser.js'
 import { capitalize } from '../stringUtils.js'
 import {
   getCustomValidation,
@@ -60,6 +63,7 @@ export function validatePermissionRule(rule: string): {
   error?: string
   suggestion?: string
   examples?: string[]
+  warning?: string
 } {
   // Empty rule check
   if (!rule || rule.trim() === '') {
@@ -231,6 +235,27 @@ export function validatePermissionRule(rule: string): {
           `${parsed.toolName}(src/*) - all files directly in src`,
           `${parsed.toolName}(src/**) - all files recursively in src`,
         ],
+      }
+    }
+  }
+
+  // Write/Glob/NotebookEdit startup warning (2.1.210+)
+  // These tool names are not matched by file permission checks — only
+  // Edit(path) / Read(path) rules are. Warn the user to use the canonical
+  // file-permission tool name instead.
+  if (parsed.ruleContent !== undefined) {
+    const replacement =
+      parsed.toolName === 'Write' ||
+      parsed.toolName === 'NotebookEdit' ||
+      parsed.toolName === 'MultiEdit'
+        ? 'Edit'
+        : parsed.toolName === 'Glob'
+          ? 'Read'
+          : undefined
+    if (replacement !== undefined && !parsed.ruleContent.includes(':*')) {
+      return {
+        valid: true,
+        warning: `${permissionRuleValueToString(parsed)} is not matched by file permission checks \u2014 only ${replacement}(path) rules are. Use ${permissionRuleValueToString({ toolName: replacement, ruleContent: parsed.ruleContent })} instead (${replacement} rules cover all file-${replacement === 'Edit' ? 'editing' : 'reading'} tools).`,
       }
     }
   }

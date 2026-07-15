@@ -110,6 +110,9 @@ export function detectUltracodeKeyword(input: string): boolean {
 /**
  * Is the keyword trigger enabled? Reads the `ultracodeKeywordTrigger` setting
  * (default: true). Set to false to disable the trigger entirely.
+ *
+ * Mirrors the 2.1.210 binary's `WFn()`:
+ *   function WFn(){return IP()?.settings.workflowKeywordTriggerEnabled ?? !0}
  */
 export function isUltracodeKeywordTriggerEnabled(): boolean {
   // Env override (eval harnesses / tests): CLAUDE_CODE_ULTRACODE_KEYWORD_TRIGGER
@@ -225,13 +228,69 @@ export function getUltracodeTurnReminders(): UltracodeReminder[] {
   return reminders
 }
 
+// -- CC 2.1.210 #4: human-origin guard ---------------------------------------
+//
+// 2.1.210 fixed the ultracode keyword opt-in firing on non-human-originated
+// input such as webhook payloads and relayed PR comments. The binary gates the
+// workflow_keyword_request (ultracode keyword) opt-in behind `isHumanTypedPrompt`:
+//
+//   function UVn(e){return e?.kind==="human"}                 // origin check
+//   let X = (mode === "prompt") && !skip                       // isRegularUserPrompt
+//   let J = X && UVn(b)                                        // isHumanTypedPrompt
+//   {isRegularUserPrompt:X, isHumanTypedPrompt:J, ...}        // attachment opts `s`
+//   workflow_keyword_request fires iff
+//     s?.isHumanTypedPrompt && !s.suppressWorkflowKeyword && WFn() && keyword
+//
+// `origin` is a `{ kind }` object. `kind:"human"` is asserted only for
+// claude_code_cli / claude_code_vscode platforms (interactive REPL, `occ -p`,
+// SDK); programmatic / relayed input (webhook payloads, relayed PR comments,
+// auto-continuations, task notifications, peer messages) carries a different
+// kind or no origin, so `UVn` returns false and the opt-in does not fire.
+
+export type PromptOriginKind =
+  | 'human'
+  | 'webhook'
+  | 'relay'
+  | 'auto-continuation'
+  | 'task-notification'
+  | 'peer'
+  // (string & {}) keeps the union open to arbitrary literal kinds without
+  // widening to `string`, mirroring the binary's permissive `{ kind }` shape.
+  | (string & {})
+
+export interface PromptOrigin {
+  kind: PromptOriginKind
+}
+
+/** The origin carried by human-typed prompts (interactive REPL, `occ -p`, SDK). */
+export const HUMAN_PROMPT_ORIGIN: PromptOrigin = { kind: 'human' }
+
+/**
+ * Mirrors the 2.1.210 binary's `UVn(e){return e?.kind==="human"}`: returns true
+ * only when the prompt origin is explicitly human-typed. Non-human origins
+ * (webhook payloads, relayed PR comments, auto-continuations, task
+ * notifications, peer/relayed messages) return false, so the ultracode keyword
+ * opt-in does not fire on them (CC 2.1.210 #4).
+ */
+export function isHumanTypedPrompt(origin?: PromptOrigin | null): boolean {
+  return origin?.kind === 'human'
+}
+
 /**
  * Decide whether the keyword trigger should fire for a given prompt: the
  * keyword is present AND the trigger setting is enabled AND ultracode isn't
- * already active.
+ * already active AND the prompt is human-originated. The human-origin guard is
+ * CC 2.1.210 #4 — the opt-in must not fire on webhook payloads / relayed PR
+ * comments / other non-human input. `origin` defaults to human for
+ * human-typed callers (interactive REPL, `occ -p`, SDK); programmatic /
+ * relayed callers pass a non-human origin so the trigger is suppressed.
  */
-export function shouldTriggerUltracodeFromPrompt(input: string): boolean {
+export function shouldTriggerUltracodeFromPrompt(
+  input: string,
+  origin: PromptOrigin = HUMAN_PROMPT_ORIGIN,
+): boolean {
   if (isUltracodeEnabled()) return false
   if (!isUltracodeKeywordTriggerEnabled()) return false
+  if (!isHumanTypedPrompt(origin)) return false
   return detectUltracodeKeyword(input)
 }

@@ -1,3 +1,4 @@
+import { LRUCache } from 'lru-cache'
 import { detectFileEncoding } from './file.js'
 import { getFsImplementation } from './fsOperations.js'
 
@@ -7,13 +8,32 @@ type CachedFileData = {
   mtime: number
 }
 
+// claude-code 2.1.208 #34: bound the file edit read cache by total bytes
+// (~16 MB) instead of pinning up to 1,000 full files. Mirrors the official
+// binary's read cache: an LRU with max=1000 entries, maxSize=16*1024*1024,
+// and per-entry size = max(1, content.length). When total cached content
+// exceeds 16 MB the least-recently-used entries are evicted, so a single huge
+// file (or many large files) can no longer pin the cache indefinitely.
+const MAX_ENTRIES = 1000
+const MAX_CACHE_BYTES = 16 * 1024 * 1024
+
 /**
  * A simple in-memory cache for file contents with automatic invalidation based on modification time.
  * This eliminates redundant file reads in FileEditTool operations.
  */
 class FileReadCache {
-  private cache = new Map<string, CachedFileData>()
-  private readonly maxCacheSize = 1000
+  private cache: LRUCache<string, CachedFileData>
+
+  constructor() {
+    this.cache = new LRUCache<string, CachedFileData>({
+      max: MAX_ENTRIES,
+      maxSize: MAX_CACHE_BYTES,
+      // Match the official size function: per-entry size is the character
+      // length of the cached content (minimum 1). calculatedSize is therefore
+      // reported as totalChars in getStats().
+      sizeCalculation: data => Math.max(1, data.content.length),
+    })
+  }
 
   /**
    * Reads a file with caching. Returns both content and encoding.
@@ -33,6 +53,7 @@ class FileReadCache {
     }
 
     const cacheKey = filePath
+    // LRU recency is updated on get(), keeping hot entries alive.
     const cachedData = this.cache.get(cacheKey)
 
     // Check if we have valid cached data
@@ -49,20 +70,13 @@ class FileReadCache {
       .readFileSync(filePath, { encoding })
       .replaceAll('\r\n', '\n')
 
-    // Update cache
+    // Update cache. LRUCache evicts least-recently-used entries as needed to
+    // keep both the entry count (max) and total size (maxSize) in bounds.
     this.cache.set(cacheKey, {
       content,
       encoding,
       mtime: stats.mtimeMs,
     })
-
-    // Evict oldest entries if cache is too large
-    if (this.cache.size > this.maxCacheSize) {
-      const firstKey = this.cache.keys().next().value
-      if (firstKey) {
-        this.cache.delete(firstKey)
-      }
-    }
 
     return { content, encoding }
   }
@@ -83,10 +97,13 @@ class FileReadCache {
 
   /**
    * Gets cache statistics for debugging/monitoring.
+   * `totalChars` is the sum of per-entry sizes (the LRU calculatedSize),
+   * matching the official read cache's reported metric.
    */
-  getStats(): { size: number; entries: string[] } {
+  getStats(): { size: number; totalChars: number; entries: string[] } {
     return {
       size: this.cache.size,
+      totalChars: this.cache.calculatedSize,
       entries: Array.from(this.cache.keys()),
     }
   }

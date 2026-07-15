@@ -303,12 +303,30 @@ export async function fileHistoryMakeSnapshot(
       }
 
       const allSnapshots = [...state.snapshots, newSnapshot]
+      // claude-code 2.1.208 #35: when snapshots overflow MAX_SNAPSHOTS, prune
+      // the backup files of the evicted snapshots that no kept snapshot still
+      // references. Fire-and-forget; an unlink failure must not block the turn.
+      let snapshots: FileHistorySnapshot[]
+      if (allSnapshots.length > MAX_SNAPSHOTS) {
+        const evicted = allSnapshots.slice(
+          0,
+          allSnapshots.length - MAX_SNAPSHOTS,
+        )
+        const kept = allSnapshots.slice(-MAX_SNAPSHOTS)
+        void pruneSupersededBackups(evicted, kept).catch(error => {
+          logError(
+            new Error(
+              `FileHistory: failed to prune superseded backups: ${error}`,
+            ),
+          )
+        })
+        snapshots = kept
+      } else {
+        snapshots = allSnapshots
+      }
       const updatedState: FileHistoryState = {
         ...state,
-        snapshots:
-          allSnapshots.length > MAX_SNAPSHOTS
-            ? allSnapshots.slice(-MAX_SNAPSHOTS)
-            : allSnapshots,
+        snapshots,
         snapshotSequence: (state.snapshotSequence ?? 0) + 1,
       }
       maybeDumpStateForDebug(updatedState)
@@ -728,6 +746,74 @@ function getBackupFileName(filePath: string, version: number): string {
     .digest('hex')
     .slice(0, 16)
   return `${fileNameHash}@v${version}`
+}
+
+// claude-code 2.1.208 #35: safety guard matching the on-disk backup name
+// format ({16 hex chars}@v{version}). pruneSupersededBackups only deletes
+// files whose name matches this pattern, so a corrupted/foreign entry in the
+// tracked-file map can never trick the pruner into deleting an unrelated file.
+const BACKUP_FILE_NAME_REGEX = /^[0-9a-f]{16}@v\d+$/
+
+/**
+ * claude-code 2.1.208 #35: prune superseded file-history backups from disk.
+ *
+ * When snapshots overflow MAX_SNAPSHOTS, the oldest snapshots are dropped from
+ * the in-memory state. Previously their backup files (under
+ * ~/.claude/file-history/<sessionId>/) were left on disk forever, so an
+ * edit-heavy session accumulated unbounded checkpoint disk usage (and the
+ * transcript that re-listed them grew without bound — up to 79x larger in
+ * edit-heavy sessions). This deletes the backup files referenced *only* by
+ * the evicted snapshots:
+ *   - still referenced by a kept snapshot → keep (it's not superseded yet)
+ *   - version === 1 → keep (the pre-edit baseline, always retained for rewind)
+ *   - name doesn't match BACKUP_FILE_NAME_REGEX → keep (safety guard)
+ * ENOENT during unlink is expected (already gone) and silently ignored.
+ *
+ * Ports the official binary's TSg(evictedSnapshots, keptSnapshots).
+ */
+export async function pruneSupersededBackups(
+  evictedSnapshots: FileHistorySnapshot[],
+  keptSnapshots: FileHistorySnapshot[],
+): Promise<void> {  const sessionId = getSessionId()
+
+  // Collect every backup file name still referenced by a kept snapshot.
+  const stillReferenced = new Set<string>()
+  for (const snapshot of keptSnapshots) {
+    for (const backup of Object.values(snapshot.trackedFileBackups)) {
+      if (backup.backupFileName !== null) {
+        stillReferenced.add(backup.backupFileName)
+      }
+    }
+  }
+
+  // Collect superseded backup file names from the evicted snapshots.
+  const toDelete = new Set<string>()
+  for (const snapshot of evictedSnapshots) {
+    for (const backup of Object.values(snapshot.trackedFileBackups)) {
+      if (
+        backup.backupFileName !== null &&
+        !stillReferenced.has(backup.backupFileName) &&
+        backup.version !== 1 &&
+        BACKUP_FILE_NAME_REGEX.test(backup.backupFileName)
+      ) {
+        toDelete.add(backup.backupFileName)
+      }
+    }
+  }
+
+  for (const backupFileName of toDelete) {
+    try {
+      await unlink(resolveBackupPath(backupFileName, sessionId))
+    } catch (error) {
+      if (!isENOENT(error)) {
+        logError(
+          new Error(
+            `FileHistory: failed to delete evicted backup ${backupFileName}: ${error}`,
+          ),
+        )
+      }
+    }
+  }
 }
 
 function resolveBackupPath(backupFileName: string, sessionId?: string): string {

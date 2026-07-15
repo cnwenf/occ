@@ -101,7 +101,19 @@ export const GlobTool = buildTool({
   async preparePermissionMatcher({ pattern }) {
     return rulePattern => matchWildcardPattern(rulePattern, pattern)
   },
-  async validateInput({ path }): Promise<ValidationResult> {
+  async validateInput({ pattern, path }): Promise<ValidationResult> {
+    // 2.1.208 #14d: Reject null bytes in pattern/path before any FS work.
+    // Mirrors binary SJn(vd, [["pattern",pattern],["path",path]]).
+    const nullByteField = (
+      [["pattern", pattern], ["path", path]] as [string, string | undefined][]
+    ).find(([, v]) => v?.includes("\0"))
+    if (nullByteField) {
+      return {
+        result: false,
+        message: `${GLOB_TOOL_NAME} ${nullByteField[0]} cannot contain null bytes (\\0). Remove the null byte and try again.`,
+        errorCode: 2,
+      }
+    }
     // If path is provided, validate that it exists and is a directory
     if (path) {
       const fs = getFsImplementation()

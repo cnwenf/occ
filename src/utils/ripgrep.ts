@@ -6,6 +6,7 @@ import * as path from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import { fileURLToPath } from 'url'
 import { isInBundledMode } from './bundledMode.js'
+import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
@@ -117,6 +118,60 @@ export class RipgrepTimeoutError extends Error {
     super(message)
     this.name = 'RipgrepTimeoutError'
   }
+}
+
+// 2.1.208 #14b: ripgrep exit code 2 with a pattern-parse-error stderr means
+// the regex/glob/type was invalid — NOT "no matches". Surfaces as a tool error
+// so the model can correct the pattern instead of seeing "No files found".
+// Mirrors binary FYh regex and K6c (RipgrepUsageError).
+const RG_PATTERN_ERROR_REGEX =
+  /^rg: (?:regex parse error|error parsing glob|unrecognized file type|error parsing flag|compiled regex exceeds size limit)/m
+
+export class SearchPatternError extends Error {
+  constructor(public readonly stderr: string) {
+    super(
+      `Search failed \u2014 ripgrep rejected the pattern, glob, or file type without searching:\n${stderr.trim().slice(0, 2000)}`,
+    )
+    this.name = 'RipgrepUsageError'
+  }
+}
+
+// 2.1.208 #14d: null byte in args/target/cwd would cause spawn to fail with
+// a cryptic error. Mirrors binary Y6c (RipgrepNullByteError).
+export class RipgrepNullByteError extends Error {
+  name = 'RipgrepNullByteError'
+}
+
+// Options for ripGrep.  rejectOnInputError (binary n?.rejectOnInputError)
+// converts invalid-pattern exit-code-2 into a rejected promise instead of
+// silently returning [].
+export type RipGrepOptions = {
+  rejectOnInputError?: boolean
+}
+
+// 2.1.208 #14d: Returns the error message for a null-byte in args/target/cwd,
+// or null if no null byte is found. Priority: cwd > target > args (matches
+// binary X6c). The returned string is the full error message.
+function checkRipgrepNullByte(
+  args: string[],
+  target: string,
+  cwd: string,
+): string | null {
+  let local: string | null = null
+  if (cwd.includes('\x00')) {
+    local = 'the session working directory'
+  } else if (target.includes('\x00')) {
+    local = 'the target path'
+  } else {
+    const argIdx = args.findIndex(a => a.includes('\x00'))
+    if (argIdx !== -1) {
+      local = `caller argument ${argIdx}`
+    }
+  }
+  if (local) {
+    return `Cannot spawn ripgrep: ${local} contains a null byte (\\0)`
+  }
+  return null
 }
 
 function ripGrepRaw(
@@ -360,8 +415,18 @@ export async function ripGrep(
   args: string[],
   target: string,
   abortSignal: AbortSignal,
+  options?: RipGrepOptions,
 ): Promise<string[]> {
   await codesignRipgrepIfNecessary()
+
+  // 2.1.208 #14d: Reject null bytes in args/target/cwd before spawning
+  // ripgrep — a null byte causes a cryptic spawn failure. Mirrors binary
+  // X6c(args, target, cwd) with priority cwd > target > args.
+  const cwd = getCwd()
+  const nullByteError = checkRipgrepNullByte(args, target, cwd)
+  if (nullByteError) {
+    throw new RipgrepNullByteError(nullByteError)
+  }
 
   // Test ripgrep on first use and cache the result (fire and forget)
   void testRipgrepOnFirstUse().catch(error => {
@@ -464,6 +529,20 @@ export async function ripGrep(
             lines,
           ),
         )
+        return
+      }
+
+      // 2.1.208 #14b: exit code 2 + pattern-parse-error stderr = invalid regex/
+      // glob/type, not "no matches". Reject so the model sees a tool error
+      // instead of silently returning "No files found".
+      // Binary: n?.rejectOnInputError && a.code===2 && y.length===0 && FYh.test(c)
+      if (
+        options?.rejectOnInputError &&
+        error.code === 2 &&
+        lines.length === 0 &&
+        RG_PATTERN_ERROR_REGEX.test(stderr)
+      ) {
+        reject(new SearchPatternError(stderr))
         return
       }
 

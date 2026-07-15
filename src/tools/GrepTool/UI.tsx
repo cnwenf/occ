@@ -122,7 +122,9 @@ type Output = {
   filenames: string[];
   content?: string;
   numLines?: number; // For content mode
+  totalLines?: number; // For content mode — full count before pagination (2.1.210 #14)
   numMatches?: number; // For count mode
+  totalFiles?: number; // For files_with_matches — full count before pagination (2.1.210 #14)
 };
 export function renderToolUseMessage({
   pattern,

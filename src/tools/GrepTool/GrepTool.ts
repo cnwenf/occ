@@ -157,8 +157,10 @@ const outputSchema = lazySchema(() =>
     numFiles: z.number(),
     filenames: z.array(z.string()),
     content: z.string().optional(),
-    numLines: z.number().optional(), // For content mode
-    numMatches: z.number().optional(), // For count mode
+    numLines: z.number().optional(), // For content mode (paginated line count)
+    totalLines: z.number().optional(), // For content mode — FULL line count before pagination (2.1.210 #14)
+    numMatches: z.number().optional(), // For count mode (FULL match total)
+    totalFiles: z.number().optional(), // For files_with_matches — FULL file count before pagination (2.1.210 #14)
     appliedLimit: z.number().optional(), // The limit that was applied (if any)
     appliedOffset: z.number().optional(), // The offset that was applied
   }),
@@ -208,7 +210,24 @@ export const GrepTool = buildTool({
   async preparePermissionMatcher({ pattern }) {
     return rulePattern => matchWildcardPattern(rulePattern, pattern)
   },
-  async validateInput({ path }): Promise<ValidationResult> {
+  async validateInput({ pattern, path, glob, type, head_limit, offset }): Promise<ValidationResult> {
+    // 2.1.208 #14d: Reject null bytes in pattern/path/glob/type before any FS work.
+    // Mirrors binary SJn(sd, [["pattern",pattern],["path",path],["glob",glob],["type",type]]).
+    const nullByteField = (
+      [
+        ["pattern", pattern],
+        ["path", path],
+        ["glob", glob],
+        ["type", type],
+      ] as [string, string | undefined][]
+    ).find(([, v]) => v?.includes("\0"))
+    if (nullByteField) {
+      return {
+        result: false,
+        message: `${GREP_TOOL_NAME} ${nullByteField[0]} cannot contain null bytes (\\0). Remove the null byte and try again.`,
+        errorCode: 2,
+      }
+    }
     // If path is provided, validate that it exists
     if (path) {
       const fs = getFsImplementation()
@@ -268,15 +287,23 @@ export const GrepTool = buildTool({
       filenames,
       content,
       numLines: _numLines,
+      totalLines,
       numMatches,
+      totalFiles,
       appliedLimit,
       appliedOffset,
     },
     toolUseID,
   ) {
     if (mode === 'content') {
+      // 2.1.210 #14: "No entries at this offset" when paginated past end with
+      // a non-zero total (full) line count, instead of "No matches found".
       const limitInfo = formatLimitInfo(appliedLimit, appliedOffset)
-      const resultContent = content || 'No matches found'
+      const resultContent =
+        content ||
+        (appliedOffset && (totalLines ?? 0) > 0
+          ? 'No entries at this offset'
+          : 'No matches found')
       const finalContent = limitInfo
         ? `${resultContent}\n\n[Showing results with pagination = ${limitInfo}]`
         : resultContent
@@ -288,8 +315,11 @@ export const GrepTool = buildTool({
     }
 
     if (mode === 'count') {
+      // 2.1.210 #14 / 2.1.208 #14c: numMatches is the FULL total (computed
+      // before pagination) so the summary and past-end detection are correct.
       const limitInfo = formatLimitInfo(appliedLimit, appliedOffset)
-      const rawContent = content || 'No matches found'
+      const rawContent =
+        content || ((numMatches ?? 0) > 0 ? 'No entries at this offset' : 'No matches found')
       const matches = numMatches ?? 0
       const files = numFiles ?? 0
       const summary = `\n\nFound ${matches} total ${matches === 1 ? 'occurrence' : 'occurrences'} across ${files} ${files === 1 ? 'file' : 'files'}.${limitInfo ? ` with pagination = ${limitInfo}` : ''}`
@@ -303,6 +333,15 @@ export const GrepTool = buildTool({
     // files_with_matches mode
     const limitInfo = formatLimitInfo(appliedLimit, appliedOffset)
     if (numFiles === 0) {
+      // 2.1.210 #14: "No entries at this offset" when paginated past end with
+      // a non-zero total (full) file count, instead of "No files found".
+      if (appliedOffset && (totalFiles ?? 0) > 0) {
+        return {
+          tool_use_id: toolUseID,
+          type: 'tool_result',
+          content: `No entries at this offset. [Showing results with pagination = ${limitInfo}]`,
+        }
+      }
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
@@ -471,7 +510,11 @@ export const GrepTool = buildTool({
     // We don't use AbortController for timeout to avoid interrupting the agent loop
     // If ripgrep times out, it throws RipgrepTimeoutError which propagates up
     // so Claude knows the search didn't complete (rather than thinking there were no matches)
-    const results = await ripGrep(args, absolutePath, abortController.signal)
+    // We also need to reject invalid regex/glob/type patterns (exit code 2 +
+    // pattern-error stderr) instead of silently returning "No files found".
+    const results = await ripGrep(args, absolutePath, abortController.signal, {
+      rejectOnInputError: true,
+    })
 
     if (output_mode === 'content') {
       // For content mode, results are the actual content lines
@@ -502,6 +545,8 @@ export const GrepTool = buildTool({
         filenames: [],
         content: finalLines.join('\n'),
         numLines: finalLines.length,
+        // 2.1.210 #14: full count (before pagination) for past-end detection.
+        totalLines: results.length,
         ...(appliedLimit !== undefined && { appliedLimit }),
         ...(offset > 0 && { appliedOffset: offset }),
       }
@@ -529,10 +574,11 @@ export const GrepTool = buildTool({
         return line
       })
 
-      // Parse count output to extract total matches and file count
+      // 2.1.208 #14c: Compute totals from the FULL results array (before
+      // pagination) so the summary and past-end detection are correct.
       let totalMatches = 0
       let fileCount = 0
-      for (const line of finalCountLines) {
+      for (const line of results) {
         const colonIndex = line.lastIndexOf(':')
         if (colonIndex > 0) {
           const countStr = line.substring(colonIndex + 1)
@@ -599,6 +645,8 @@ export const GrepTool = buildTool({
       mode: 'files_with_matches' as const,
       filenames: relativeMatches,
       numFiles: relativeMatches.length,
+      // 2.1.210 #14: full count (before pagination) for past-end detection.
+      totalFiles: sortedMatches.length,
       ...(appliedLimit !== undefined && { appliedLimit }),
       ...(offset > 0 && { appliedOffset: offset }),
     }

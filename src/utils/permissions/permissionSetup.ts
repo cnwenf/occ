@@ -61,6 +61,7 @@ import { modelSupportsAutoMode } from '../betas.js'
 import { logForDebugging } from '../debug.js'
 import { gracefulShutdown } from '../gracefulShutdown.js'
 import { getMainLoopModel } from '../model/model.js'
+import { validatePermissionRule } from '../settings/permissionValidation.js'
 import {
   CROSS_PLATFORM_CODE_EXEC,
   DANGEROUS_BASH_PATTERNS,
@@ -1021,6 +1022,35 @@ export async function initializeToolPermissionContext({
       // was working under /tmp and it got cleared), silently skip. They'll get
       // prompted again if they try to access it later.
       warnings.push(addDirHelpMessage(result))
+    }
+  }
+
+  // Startup warning for Write(path)/NotebookEdit(path)/Glob(path) rules (2.1.210+).
+  // These tool names bypass file-permission checks — only Edit(path)/Read(path)
+  // rules are matched. Warn the user to use the canonical tool name.
+  for (const rule of rulesFromDisk) {
+    const ruleStr = permissionRuleValueToString(rule.ruleValue)
+    const result = validatePermissionRule(ruleStr)
+    if (result.valid && result.warning) {
+      warnings.push(
+        `Permission ${rule.ruleBehavior} rule (${formatPermissionSource(rule.source)}): ${result.warning}`,
+      )
+    }
+  }
+  for (const ruleStr of parsedAllowedToolsCli) {
+    const result = validatePermissionRule(ruleStr)
+    if (result.valid && result.warning) {
+      warnings.push(
+        `Permission allow rule (--allowed-tools): ${result.warning}`,
+      )
+    }
+  }
+  for (const ruleStr of parsedDisallowedToolsCli) {
+    const result = validatePermissionRule(ruleStr)
+    if (result.valid && result.warning) {
+      warnings.push(
+        `Permission deny rule (--disallowed-tools): ${result.warning}`,
+      )
     }
   }
 

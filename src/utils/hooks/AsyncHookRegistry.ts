@@ -177,6 +177,12 @@ export async function checkForAsyncHookResponses(): Promise<
           `Hooks: Skipping hook ${hook.processId} - already delivered/sent or no stdout`,
         )
         hook.stopProgressInterval()
+        // #29 (2.1.208): Release retained async hook output. Without
+        // cleanup(), the ShellCommand's StreamWrapper event listeners and
+        // TaskOutput's in-memory buffers (CircularBuffer, DiskTaskOutput
+        // handle) persist for the session lifetime — a memory leak in long
+        // sessions with many backgrounded async hooks.
+        hook.shellCommand?.cleanup()
         return { type: 'remove' as const, processId: hook.processId }
       }
 
@@ -273,6 +279,10 @@ export function removeDeliveredAsyncHooks(processIds: string[]): void {
     if (hook && hook.responseAttachmentSent) {
       logForDebugging(`Hooks: Removing delivered hook ${processId}`)
       hook.stopProgressInterval()
+      // #29 (2.1.208): Release retained async hook output after delivery.
+      // Without cleanup(), the ShellCommand and its TaskOutput (with in-memory
+      // CircularBuffer + DiskTaskOutput) persist — a leak in long sessions.
+      hook.shellCommand?.cleanup()
       pendingHooks.delete(processId)
     }
   }

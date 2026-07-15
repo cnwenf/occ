@@ -815,6 +815,18 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Default transcript view mode on startup'),
+      // 2.1.208: vim INSERT-mode key-sequence remaps (e.g. "jj" → Escape).
+      // Mirrors the official schema field + IS_ normalizer: each key is exactly
+      // two printable code points (regex /^[^\p{C}\p{Z}]{2}$/u) AND exactly two
+      // grapheme clusters (cae); the value must case-insensitively equal
+      // "<esc>" and is normalized to "<Esc>". Read via settings sources (G5t).
+      vimInsertModeRemaps: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Vim INSERT-mode key-sequence remaps, e.g. {"jj": "<Esc>"}. Each key is exactly two printable characters typed in sequence; "<Esc>" (return to NORMAL mode) is the only supported target. Applies when editorMode is "vim".',
+        ),
       // 2.1.110: prepend the last assistant response as commented context when
       // opening the prompt in the external editor (Ctrl+G). Mirrors the binary
       // setting externalEditorContext (label: "Show last response in external

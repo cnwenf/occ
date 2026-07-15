@@ -4,6 +4,11 @@ import type { VimInputState, VimMode } from '../types/textInputTypes.js'
 import { Cursor } from '../utils/Cursor.js'
 import { lastGrapheme } from '../utils/intl.js'
 import {
+  detectInsertModeRemap,
+  getVimInsertModeRemaps,
+  type PendingRemap,
+} from '../utils/vimInsertModeRemaps.js'
+import {
   executeIndent,
   executeJoin,
   executeOpenLine,
@@ -54,6 +59,31 @@ type UseVimInputProps = Omit<UseTextInputProps, 'inputFilter'> & {
   inputFilter?: UseTextInputProps['inputFilter']
 }
 
+/**
+ * Map an ink `Key` (boolean flags only — no `.name`) to the binary's
+ * `ParsedKey.name` string used by the INSERT-mode remap detection (`B.name`).
+ * Typeable keys return `''` (matching the binary's empty name for printable
+ * chars); special keys return their canonical name so the `c6s` membership
+ * check in `detectInsertModeRemap` can exclude them. Arrows map to
+ * non-`c6s` names so they are excluded via the single-codepoint guard.
+ */
+function keyNameFromKey(key: Key): string {
+  if (key.backspace) return 'backspace'
+  if (key.delete) return 'delete'
+  if (key.tab) return 'tab'
+  if (key.return) return 'enter'
+  if (key.escape) return 'escape'
+  if (key.home) return 'home'
+  if (key.end) return 'end'
+  if (key.pageUp) return 'pageup'
+  if (key.pageDown) return 'pagedown'
+  if (key.upArrow) return 'up'
+  if (key.downArrow) return 'down'
+  if (key.leftArrow) return 'left'
+  if (key.rightArrow) return 'right'
+  return ''
+}
+
 export function useVimInput(props: UseVimInputProps): VimInputState {
   const vimStateRef = React.useRef<VimState>(createInitialVimState())
   const [mode, setMode] = useState<VimMode>('INSERT')
@@ -61,6 +91,11 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   const persistentRef = React.useRef<PersistentState>(
     createInitialPersistentState(),
   )
+
+  // 2.1.208: Pending state for INSERT-mode key-sequence remap detection
+  // (e.g. "jj" → Escape). Mirrors the binary's `_.current` / `G`. Cleared on
+  // any mode transition out of INSERT.
+  const pendingRemapRef = React.useRef<PendingRemap>(null)
 
   // inputFilter is applied once at the top of handleVimInput (not here) so
   // vim-handled paths that return without calling textInput.onInput still
@@ -75,14 +110,18 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
         textInput.setOffset(offset)
       }
       vimStateRef.current = { mode: 'INSERT', insertedText: '' }
+      pendingRemapRef.current = null
       setMode('INSERT')
       onModeChange?.('INSERT')
     },
     [textInput, onModeChange],
   )
 
-  const switchToNormalMode = useCallback((): void => {
-    const current = vimStateRef.current
+  const switchToNormalMode = useCallback(
+    (opts?: { keepOffset?: boolean }): void => {
+      // Leaving INSERT invalidates any pending remap sequence.
+      pendingRemapRef.current = null
+      const current = vimStateRef.current
     if (current.mode === 'INSERT') {
       const last = persistentRef.current.lastChange
       // 2.1.118: When exiting INSERT after a visual change (vc/Vc), capture
@@ -104,10 +143,15 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     }
 
     // Vim behavior: move cursor left by 1 when exiting insert mode
-    // (unless at beginning of line or at offset 0)
-    const offset = textInput.offset
-    if (offset > 0 && props.value[offset - 1] !== '\n') {
-      textInput.setOffset(offset - 1)
+    // (unless at beginning of line or at offset 0). Skipped when the caller
+    // already positioned the cursor (e.g. the 2.1.208 INSERT-mode remap path
+    // removes the first key of the sequence and switches to NORMAL at the
+    // corrected offset — binary: `k({buffer:{text:ce,offset:ue}})`).
+    if (!opts?.keepOffset) {
+      const offset = textInput.offset
+      if (offset > 0 && props.value[offset - 1] !== '\n') {
+        textInput.setOffset(offset - 1)
+      }
     }
 
     vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
@@ -307,6 +351,72 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
     }
 
     if (state.mode === 'INSERT') {
+      // 2.1.208: vim INSERT-mode key-sequence remaps (e.g. "jj" → Escape).
+      // Detect a configured two-key sequence before inserting the current key.
+      // On match, both keys are removed from the buffer (the first, already
+      // inserted, is sliced off; the second is never inserted) and the editor
+      // returns to NORMAL mode. Mirrors the binary's INSERT-mode handler with
+      // the Edp=1000 inter-key timeout. Only typeable keys can start/complete
+      // a sequence; backspace/delete and cursor-movement keys invalidate it.
+      if (!key.backspace && !key.delete) {
+        const remaps = getVimInsertModeRemaps()
+        if (remaps.size > 0) {
+          const result = detectInsertModeRemap({
+            remaps,
+            pending: pendingRemapRef.current,
+            key: input,
+            keyName: keyNameFromKey(key),
+            now: Date.now(),
+            offset: textInput.offset,
+            text: props.value,
+          })
+          if (result.action === 'remap') {
+            // twoKey: the first key was already inserted — remove it.
+            if (result.kind === 'twoKey') {
+              const prev = pendingRemapRef.current
+              const { charLen, recorded } = result.removeFirstChar
+              const curOffset = textInput.offset
+              const removeAt = curOffset - charLen
+              if (
+                prev &&
+                removeAt >= 0 &&
+                props.value.startsWith(prev.char, removeAt)
+              ) {
+                // Binary: `if(G.recorded&&U.insertedText.endsWith(G.char))
+                //   p.current={mode:"INSERT",insertedText:...slice(0,-G.char.length)}`
+                if (recorded && state.insertedText.endsWith(prev.char)) {
+                  vimStateRef.current = {
+                    mode: 'INSERT',
+                    insertedText: state.insertedText.slice(0, -charLen),
+                  }
+                }
+                // Binary: `ce=j.text.slice(0,ue)+j.text.slice(j.offset); r(ce)`
+                const newText =
+                  props.value.slice(0, removeAt) +
+                  props.value.slice(curOffset)
+                props.onChange(newText)
+                textInput.setOffset(removeAt)
+              }
+            }
+            // singleKey: the 2-codepoint key is itself the whole sequence —
+            // nothing was inserted, so no buffer change is needed.
+            pendingRemapRef.current = null
+            // Binary: `k({buffer:{text:ce,offset:ue},claimEmptyInsert:!0})` —
+            // switch to NORMAL at the corrected offset (no cursor left-move).
+            switchToNormalMode({ keepOffset: true })
+            return
+          }
+          // No remap fired — carry forward the next pending state.
+          pendingRemapRef.current = result.nextPending
+        } else {
+          pendingRemapRef.current = null
+        }
+      } else {
+        // Backspace/delete changes the buffer/cursor — invalidate any pending
+        // sequence (mirrors the offset-mismatch guard in the binary's check).
+        pendingRemapRef.current = null
+      }
+
       // Track inserted text for dot-repeat
       if (key.backspace || key.delete) {
         if (state.insertedText.length > 0) {

@@ -19,6 +19,12 @@ export type ExecResult = {
   backgroundedByUser?: boolean
   /** Set when assistant-mode auto-backgrounded a long-running blocking command. */
   assistantAutoBackgrounded?: boolean
+  /**
+   * Set when the command hit its timeout and was auto-backgrounded (2.1.210 #26).
+   * Holds the timeout value in ms so the tool can surface it in the model-facing
+   * backgroundInfo message. Mirrors the official `timedOutAfterMs` field.
+   */
+  timedOutAfterMs?: number
   /** Set when stdout was too large to fit inline — points to the output file on disk. */
   outputFilePath?: string
   /** Total size of the output file in bytes (set when outputFilePath is set). */

@@ -255,7 +255,8 @@ const outputSchema = lazySchema(() => z.object({
   persistedOutputSize: z.number().optional().describe('Total output size in bytes when persisted'),
   backgroundTaskId: z.string().optional().describe('ID of the background task if command is running in background'),
   backgroundedByUser: z.boolean().optional().describe('True if the user manually backgrounded the command with Ctrl+B'),
-  assistantAutoBackgrounded: z.boolean().optional().describe('True if the command was auto-backgrounded by the assistant-mode blocking budget')
+  assistantAutoBackgrounded: z.boolean().optional().describe('True if the command was auto-backgrounded by the assistant-mode blocking budget'),
+  timedOutAfterMs: z.number().optional().describe('Set when the command hit its timeout and was auto-backgrounded; the timeout value in ms')
 }));
 type OutputSchema = ReturnType<typeof outputSchema>;
 export type Out = z.infer<OutputSchema>;
@@ -392,7 +393,8 @@ export const PowerShellTool = buildTool({
     persistedOutputSize,
     backgroundTaskId,
     backgroundedByUser,
-    assistantAutoBackgrounded
+    assistantAutoBackgrounded,
+    timedOutAfterMs
   }: Out, toolUseID: string): ToolResultBlockParam {
     // For image data, format as image content block for Claude
     if (isImage) {
@@ -426,6 +428,9 @@ export const PowerShellTool = buildTool({
         backgroundInfo = `Command exceeded the assistant-mode blocking budget (${ASSISTANT_BLOCKING_BUDGET_MS / 1000}s) and was moved to the background with ID: ${backgroundTaskId}. It is still running — you will be notified when it completes. Output is being written to: ${outputPath}. In assistant mode, delegate long-running work to a subagent or use run_in_background to keep this conversation responsive.`;
       } else if (backgroundedByUser) {
         backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`;
+      } else if (timedOutAfterMs !== undefined) {
+        // 2.1.210 #26: timeout + auto-backgrounded → surface the timeout value.
+        backgroundInfo = `Command did not complete within its ${Math.max(1, Math.round(timedOutAfterMs / 1000))}s timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use Read on that file path.`;
       } else {
         backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`;
       }
@@ -549,7 +554,8 @@ export const PowerShellTool = buildTool({
             interrupted: false,
             backgroundTaskId: result.backgroundTaskId,
             backgroundedByUser: result.backgroundedByUser,
-            assistantAutoBackgrounded: result.assistantAutoBackgrounded
+            assistantAutoBackgrounded: result.assistantAutoBackgrounded,
+            timedOutAfterMs: result.timedOutAfterMs
           }
         };
       }
@@ -712,6 +718,8 @@ async function* runPowerShellCommand({
   let backgroundShellId: string | undefined ;
   let interruptBackgroundingStarted = false;
   let assistantAutoBackgrounded = false;
+  // 2.1.210 #26: set when the command hit its timeout and was auto-backgrounded.
+  let timedOutAfterMs: number | undefined;
 
   // Progress signal: resolved when backgroundShellId is set in the async
   // .then() path, waking the generator's Promise.race immediately instead of
@@ -832,6 +840,7 @@ async function* runPowerShellCommand({
   // Set up auto-backgrounding on timeout if enabled
   if (shellCommand.onTimeout && shouldAutoBackground) {
     shellCommand.onTimeout(backgroundFn => {
+      timedOutAfterMs = timeoutMs;
       startBackgrounding('tengu_powershell_command_timeout_backgrounded', backgroundFn);
     });
   }
@@ -927,7 +936,8 @@ async function* runPowerShellCommand({
           code: 0,
           interrupted: false,
           backgroundTaskId: backgroundShellId,
-          assistantAutoBackgrounded
+          assistantAutoBackgrounded,
+          timedOutAfterMs
         };
       }
 
