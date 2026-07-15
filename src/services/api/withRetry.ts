@@ -11,13 +11,15 @@ import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import { createSystemAPIErrorMessage } from 'src/utils/messages.js'
-import { getAPIProviderForStatsig } from 'src/utils/model/providers.js'
+import { getAPIProvider, getAPIProviderForStatsig } from 'src/utils/model/providers.js'
 import {
   clearApiKeyHelperCache,
   clearAwsCredentialsCache,
   clearGcpCredentialsCache,
+  getApiKeyHelperError,
   getClaudeAIOAuthTokens,
   handleOAuth401Error,
+  isApiKeyHelperAuthSource,
   isClaudeAISubscriber,
   isEnterpriseSubscriber,
 } from '../../utils/auth.js'
@@ -268,6 +270,14 @@ export async function* withRetry<T>(
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
   let persistentAttempt = 0
+  // 2.1.208 (#15): count 401s caused by a failed apiKeyHelper so the real
+  // error surfaces within 3 attempts instead of silently retrying up to
+  // DEFAULT_MAX_RETRIES (10) and showing a generic 401. Mirrors the binary's
+  //   `if(b instanceof ui && b.status===401 && Pu() && K8t() && d1r()!==null)
+  //      { if(f>=$jy) throw he("api_request","api_request_api_key_helper_failed"),
+  //        new s2(b,o); f++ }` ($jy = 2 → throws on the 3rd occurrence).
+  let apiKeyHelperAuthRetries = 0
+  const API_KEY_HELPER_AUTH_RETRY_CAP = 2
   // 2.1.157 (J9): bound on media-block strips per request to guard against a
   // misbehaving stripMediaBlock callback that never returns null.
   let mediaStrips = 0
@@ -543,6 +553,32 @@ export async function* withRetry<T>(
         isRetryWatchdogEnabled() && isWatchdogRetryable(error)
       if (attempt > maxRetries && !persistent && !watchdogRetryable) {
         throw new CannotRetryError(error, retryContext)
+      }
+
+      // 2.1.208 (#15): a 401 caused by a failed apiKeyHelper must surface the
+      // real error within 3 attempts instead of silently retrying up to
+      // DEFAULT_MAX_RETRIES (10) and showing a generic 401. Mirrors the
+      // binary's
+      //   `if(b instanceof ui && b.status===401 && Pu() && K8t() && d1r()!==null)
+      //      { if(f>=$jy) throw he("api_request","api_request_api_key_helper_failed"),
+      //        new s2(b,o); f++ }`
+      // ($jy = 2 → throws on the 3rd 401; Pu = Cn()==="firstParty" via
+      //  getAPIProvider; K8t = isApiKeyHelperAuthSource; d1r = getApiKeyHelperError;
+      //  s2 = CannotRetryError).
+      if (
+        error instanceof APIError &&
+        error.status === 401 &&
+        getAPIProvider() === 'firstParty' &&
+        isApiKeyHelperAuthSource() &&
+        getApiKeyHelperError() !== null
+      ) {
+        if (apiKeyHelperAuthRetries >= API_KEY_HELPER_AUTH_RETRY_CAP) {
+          logEvent('api_request', {
+            reason: 'api_request_api_key_helper_failed',
+          })
+          throw new CannotRetryError(error, retryContext)
+        }
+        apiKeyHelperAuthRetries++
       }
 
       // AWS/GCP errors aren't always APIError, but can be retried

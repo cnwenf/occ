@@ -460,6 +460,12 @@ let _apiKeyHelperInflight: {
   startedAt: number | null
 } | null = null
 let _apiKeyHelperEpoch = 0
+// 2.1.208 (#15): caches the last apiKeyHelper failure detail so the retry loop
+// can surface the real error within 3 attempts instead of a generic 401 after
+// ~10 silent retries. Mirrors the binary's `WLi` module state. Cleared on a
+// successful helper run; NOT cleared by clearApiKeyHelperCache() (a 401-retry
+// must still see the prior failure to count toward the cap).
+let _apiKeyHelperError: string | null = null
 
 export function getApiKeyHelperElapsedMs(): number {
   const startedAt = _apiKeyHelperInflight?.startedAt
@@ -508,6 +514,8 @@ async function _runAndCache(
     if (epoch !== _apiKeyHelperEpoch) return value
     if (value !== null) {
       _apiKeyHelperCache = { value, timestamp: Date.now() }
+      // 2.1.208 (#15): a successful run clears the cached failure detail.
+      _apiKeyHelperError = null
     }
     return value
   } catch (e) {
@@ -525,7 +533,18 @@ async function _runAndCache(
       _apiKeyHelperCache = { ..._apiKeyHelperCache, timestamp: Date.now() }
       return _apiKeyHelperCache.value
     }
-    // Cold cache or prior error — cache ' ' so callers don't fall back to OAuth
+    // Cold cache or prior error — cache ' ' so callers don't fall back to OAuth.
+    // 2.1.208 (#15): cache the failure detail and surface it on the auth
+    // status box when apiKeyHelper is the active source. Mirrors the binary's
+    //   `if(WLi=o, K8t()){ e$.getInstance().startAuthentication();
+    //     e$.setError(`apiKeyHelper failed: ${o}`); e$.endAuthentication(false) }`
+    _apiKeyHelperError = detail
+    if (isApiKeyHelperAuthSource()) {
+      const authStatusManager = AwsAuthStatusManager.getInstance()
+      authStatusManager.startAuthentication()
+      authStatusManager.setError(`apiKeyHelper failed: ${detail}`)
+      authStatusManager.endAuthentication(false)
+    }
     _apiKeyHelperCache = { value: ' ', timestamp: Date.now() }
     return ' '
   } finally {
@@ -586,6 +605,32 @@ export function clearApiKeyHelperCache(): void {
   _apiKeyHelperEpoch++
   _apiKeyHelperCache = null
   _apiKeyHelperInflight = null
+}
+
+/**
+ * 2.1.208 (#15): returns the cached apiKeyHelper failure detail, or null when
+ * no failure is cached / apiKeyHelper isn't configured. Mirrors the binary's
+ *   `function d1r(){ if(!t$()) return null; return WLi }`.
+ * Used by the retry loop to detect a 401 caused by a failed helper (not a bad
+ * key) so it can surface the real error within 3 attempts.
+ */
+export function getApiKeyHelperError(): string | null {
+  if (!getConfiguredApiKeyHelper()) return null
+  return _apiKeyHelperError
+}
+
+/**
+ * 2.1.208 (#15): whether the active first-party auth source is apiKeyHelper.
+ * Mirrors the binary's `K8t()`:
+ *   `!dAt() && fY({skipRetrievingKeyFromApiKeyHelper:!0}).source==="apiKeyHelper"`
+ * `dAt()` (CCR/remote/managed-entrypoint mode) is already excluded by
+ * `isManagedOAuthContext()` inside getAuthTokenSource, so the source check
+ * alone is sufficient. Uses getAuthTokenSource (not getAnthropicApiKeyWithSource)
+ * to avoid the CI/test-mode throw when no env key is set — matches the
+ * binary's fY, which returns {source:'none'} rather than throwing.
+ */
+export function isApiKeyHelperAuthSource(): boolean {
+  return getAuthTokenSource().source === 'apiKeyHelper'
 }
 
 export function prefetchApiKeyFromApiKeyHelperIfSafe(

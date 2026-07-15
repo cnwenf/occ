@@ -16,8 +16,10 @@ import type {
 } from 'src/types/message.js'
 import {
   getAnthropicApiKeyWithSource,
+  getApiKeyHelperError,
   getClaudeAIOAuthTokens,
   getOauthAccountInfo,
+  isApiKeyHelperAuthSource,
   isClaudeAISubscriber,
 } from 'src/utils/auth.js'
 import {
@@ -163,6 +165,11 @@ export const TOKEN_REVOKED_ERROR_MESSAGE =
   'OAuth token revoked · Please run /login'
 export const CCR_AUTH_ERROR_MESSAGE =
   'Authentication error · This may be a temporary network issue, please try again'
+// 2.1.208 (#15): surfaced when apiKeyHelper is failing — shown within 3
+// attempts instead of a generic 401 after ~10 silent retries. Mirrors the
+// binary's `hgg` string.
+export const API_KEY_HELPER_FAILED_MESSAGE =
+  'Your apiKeyHelper script is failing · This usually means you need to re-authenticate with your provider · Run /status to see the script\'s error output'
 export const REPEATED_529_ERROR_MESSAGE = 'Repeated 529 Overloaded errors'
 export const CUSTOM_OFF_SWITCH_MESSAGE =
   'Opus is experiencing high load, please use /model to switch to Sonnet'
@@ -866,6 +873,22 @@ export function getAssistantMessageFromError(
     error instanceof APIError &&
     (error.status === 401 || error.status === 403)
   ) {
+    // 2.1.208 (#15): when apiKeyHelper is the first-party auth source and it
+    // has failed, surface the specific message instead of a generic 401.
+    // Mirrors the binary's
+    //   `if((e.status===401||e.status===403)&&Cn()==="firstParty"&&K8t())
+    //      { if(d1r()) return Jc({error:"invalid_request",content:hgg}) }`
+    if (
+      getAPIProvider() === 'firstParty' &&
+      isApiKeyHelperAuthSource() &&
+      getApiKeyHelperError() !== null
+    ) {
+      return createAssistantAPIErrorMessage({
+        error: 'invalid_request',
+        content: API_KEY_HELPER_FAILED_MESSAGE,
+      })
+    }
+
     // In CCR mode, auth is via JWTs - this is likely a transient network issue
     if (isCCRMode()) {
       return createAssistantAPIErrorMessage({
