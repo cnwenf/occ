@@ -26,6 +26,7 @@ import { truncate } from '../../utils/format.js';
 import { getFsImplementation } from '../../utils/fsOperations.js';
 import { lazySchema } from '../../utils/lazySchema.js';
 import { expandPath } from '../../utils/path.js';
+import { getCwd } from '../../utils/cwd.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec } from '../../utils/Shell.js';
@@ -288,6 +289,7 @@ const outputSchema = lazySchema(() => z.object({
   backgroundTaskId: z.string().optional().describe('ID of the background task if command is running in background'),
   backgroundedByUser: z.boolean().optional().describe('True if the user manually backgrounded the command with Ctrl+B'),
   assistantAutoBackgrounded: z.boolean().optional().describe('True if assistant-mode auto-backgrounded a long-running blocking command'),
+  backgroundCwdHint: z.string().optional().describe("Model-facing note that the session cwd was not changed by a backgrounded command containing a directory-change builtin (cd/pushd/popd/chdir)"),
   dangerouslyDisableSandbox: z.boolean().optional().describe('Flag to indicate if sandbox mode was overridden'),
   returnCodeInterpretation: z.string().optional().describe('Semantic interpretation for non-error exit codes with special meaning'),
   noOutputExpected: z.boolean().optional().describe('Whether the command is expected to produce no output on success'),
@@ -719,6 +721,7 @@ export const BashTool = buildTool({
     backgroundTaskId,
     backgroundedByUser,
     assistantAutoBackgrounded,
+    backgroundCwdHint,
     structuredContent,
     persistedOutputPath,
     persistedOutputSize
@@ -776,7 +779,7 @@ export const BashTool = buildTool({
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: [processedStdout, errorMessage, backgroundInfo].filter(Boolean).join('\n'),
+      content: [processedStdout, errorMessage, backgroundInfo, backgroundCwdHint].filter(Boolean).join('\n'),
       is_error: interrupted
     };
   },
@@ -982,6 +985,19 @@ export const BashTool = buildTool({
       backgroundTaskId: result.backgroundTaskId,
       backgroundedByUser: result.backgroundedByUser,
       assistantAutoBackgrounded: result.assistantAutoBackgrounded,
+      // 2.1.210 #10: when a command containing a directory-change builtin
+      // (cd/pushd/popd/chdir) is auto-backgrounded, the session cwd did NOT
+      // actually change — the cd runs in the backgrounded subshell. Tell the
+      // model explicitly so it doesn't assume subsequent commands run in the
+      // cd'd directory. Mirrors the binary:
+      //   g.backgroundTaskId && fQt(e.command)
+      //     ? `Session cwd remains ${At()}; directory changes made by the
+      //        backgrounded command do not apply to subsequent commands.`
+      //     : void 0
+      backgroundCwdHint:
+        result.backgroundTaskId && commandHasAnyCd(input.command)
+          ? `Session cwd remains ${getCwd()}; directory changes made by the backgrounded command do not apply to subsequent commands.`
+          : undefined,
       dangerouslyDisableSandbox: 'dangerouslyDisableSandbox' in input ? input.dangerouslyDisableSandbox as boolean | undefined : undefined,
       persistedOutputPath,
       persistedOutputSize

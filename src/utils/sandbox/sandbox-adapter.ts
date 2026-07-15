@@ -20,7 +20,7 @@ import {
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
 } from '@anthropic-ai/sandbox-runtime'
-import { rmSync, statSync } from 'fs'
+import { lstatSync, readdirSync, realpathSync, rmSync, statSync } from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
 import { join, resolve, sep } from 'path'
@@ -263,6 +263,21 @@ export function convertToSandboxRuntimeConfig(
     denyWrite.push(resolve(cwd, '.claude', 'skills'))
   }
 
+  // 2.1.210 #24: Reconcile late-appearing `.claude/*` symlinks into the
+  // deny-write list. The sandbox config is rebuilt per command, but a symlink
+  // planted at `.claude/<name>` (or a `.claude/*` path that is itself a
+  // symlink) after the previous command's sandbox setup would resolve OUTSIDE
+  // the literal deny paths above — a write through the symlink would bypass
+  // the deny. The official 2.1.210 binary's deny-write builder (`f9h`/`J4c`)
+  // resolves symlinks and mounts /dev/null at the symlink to prevent the
+  // replacement attack; here at the adapter level we add the realpath'd
+  // target of every `.claude/*` symlink to denyWrite so the runtime denies
+  // writes through it. Scanning per-config-build is what reconciles
+  // "late-appearing" symlinks.
+  denyWrite.push(...reconcileClaudeSymlinks(
+    cwd === originalCwd ? [originalCwd] : [originalCwd, cwd],
+  ))
+
   // SECURITY: Git's is_git_directory() treats cwd as a bare repo if it has
   // HEAD + objects/ + refs/. An attacker planting these (plus a config with
   // core.fsmonitor) escapes the sandbox when Claude's unsandboxed git runs.
@@ -404,6 +419,63 @@ let worktreeMainRepoPath: string | null | undefined
 // Bare-repo files at cwd that didn't exist at config time and should be
 // scrubbed if they appear after a sandboxed command. See anthropics/claude-code#29316.
 const bareGitRepoScrubPaths: string[] = []
+
+/**
+ * 2.1.210 #24: Reconcile late-appearing `.claude/*` symlinks into the
+ * sandbox deny-write list. For each `.claude` directory in `dirs`, scans
+ * entries for symlinks and returns the realpath'd target of each (plus the
+ * symlink path itself when the target is unresolvable, to fail closed).
+ *
+ * Pure (no input mutation): callers push the returned entries into denyWrite.
+ * Mirrors the official binary's deny-write symlink reconciliation (`f9h`/`J4c`)
+ * at the adapter level — the runtime then mounts /dev/null at the symlink to
+ * prevent the replacement attack.
+ */
+export function reconcileClaudeSymlinks(dirs: string[]): string[] {
+  const out: string[] = []
+  for (const dir of dirs) {
+    const claudeDir = resolve(dir, '.claude')
+    let entries: string[]
+    try {
+      entries = readdirSync(claudeDir)
+    } catch {
+      // .claude doesn't exist or isn't a directory — nothing to reconcile.
+      continue
+    }
+    for (const name of entries) {
+      const entryPath = join(claudeDir, name)
+      try {
+        // lstat so a symlink is reported as a symlink (not its target).
+        if (!lstatSync(entryPath).isSymbolicLink()) {
+          continue
+        }
+      } catch {
+        continue
+      }
+      // The symlink path itself is already covered by the deny entries above
+      // when it matches a protected name; ensure the realpath target is also
+      // deny-written so a write that resolves through the symlink is denied.
+      try {
+        const target = realpathSync(entryPath)
+        if (!out.includes(target)) {
+          out.push(target)
+          logForDebugging(
+            `[Sandbox] reconciled late .claude/* symlink: ${entryPath} -> ${target}`,
+          )
+        }
+      } catch {
+        // Unresolvable symlink — fail closed by denying the symlink path.
+        if (!out.includes(entryPath)) {
+          out.push(entryPath)
+          logForDebugging(
+            `[Sandbox] deny path could not be resolved through symlinks, failing closed: ${entryPath}`,
+          )
+        }
+      }
+    }
+  }
+  return out
+}
 
 /**
  * Delete bare-repo files planted at cwd during a sandboxed command, before

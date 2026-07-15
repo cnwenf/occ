@@ -317,3 +317,231 @@ export function findDestructiveCommandBlock(
 export function isDestructiveCommand(command: string): boolean {
   return findDestructiveCommandBlock(command) !== null
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// 2.1.208 #41: Catastrophic removals inside command substitutions.
+//
+// A `rm -rf $VAR/*` (or `rm -rf ~` / `rm -rf /`) hidden inside `$(…)`,
+// backticks, or `<(…)` must trigger the same destructive-command block as the
+// plain form — even under `--dangerously-skip-permissions` (bypassPermissions)
+// and in auto mode, where the classifier would otherwise auto-approve. The
+// official 2.1.210 binary implements this in `GRg` (substitution extractor) +
+// `hXi` (per-command rm-target detector). `hXi`'s `GGe` return carries
+// `classifierApprovable: false`, which is what stops the auto-mode classifier
+// from overriding the block.
+//
+// OCC ports `hXi` + `GRg` here as pure functions and calls them from
+// bashToolHasPermission in ALL permission modes (the call site deliberately
+// does NOT skip bypassPermissions, so catastrophic removals inside
+// substitutions are blocked even with --dangerously-skip-permissions).
+//
+// In addition to the binary's variable-path detector (`eIg`/`hXi`, which
+// catches `rm -rf $UNSET/*`-style removals that turn into a root wipe when the
+// variable is empty), OCC also re-applies RM_ROOT_HOME_PATTERN to each
+// extracted substitution so a literal `rm -rf ~` / `rm -rf /` inside a
+// substitution is caught — the plain form already blocks these, and #41 says
+// the substitution form must "match the plain form".
+// ─────────────────────────────────────────────────────────────────────────
+
+import { splitCommand_DEPRECATED as splitCommandForRm } from '../../utils/bash/commands.js'
+
+// Binary `tIg`: matches a command segment that is an `rm`/`rmdir` invocation,
+// allowing an env-var-assignment prefix (VAR=value) and a path-prefixed binary
+// (e.g. /usr/bin/rm). Capture group 1 is the command name.
+const CATASTROPHIC_RM_COMMAND_RE =
+  /^(?:[A-Za-z_][A-Za-z0-9_]*\+?=[^\s]*\s+)*\\?(?:[^\s=]*\/)?(rm|rmdir)(?:\s|$)/
+
+// Binary `eIg`: matches a rm/rmdir TARGET that is a shell variable expansion
+// pointing at the filesystem root (or a top-level dir) when the variable is
+// unset/empty. e.g. `$UNSET/*` → `/*` (root wipe). `$VAR/`, `${VAR}/*`,
+// `$VAR/$`, `$VAR//`, `$VAR/"'`, `$VAR/` (end) all match.
+//
+// Constructed via new RegExp to avoid the slash-escaping ambiguity of a
+// regex literal (the pattern contains a literal `/` that must not close the
+// literal prematurely).
+const CATASTROPHIC_VAR_PATH_TARGET_RE = new RegExp(
+  '^"?\\$(?:\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*)"?\\/(?:\\*|\\$|\\/|["\']|$)',
+)
+
+// Redirect token that may carry a filename operand in the next argv slot, so
+// hXi can skip over it without mistaking the operand for a target. Mirrors
+// the binary's `/^(?:[0-9]+|&)?(?:>>?[|&]?|<<?<?|<>)$/`.
+const REDIRECT_OP_RE = /^(?:[0-9]+|&)?(?:>>?[|&]?|<<?<?|<>)$/
+
+// A token that starts with an optional fd/& prefix and a redirect char — used
+// to detect redirect operators among rm args. Mirrors `/^[\d&]*[<>]/`.
+const REDIRECT_TOKEN_START_RE = /^[\d&]*[<>]/
+
+export type CatastrophicRmMatch = { command: string; target: string }
+
+/**
+ * Port of the official 2.1.210 `hXi(e)`. Detects a `rm`/`rmdir` invocation
+ * targeting a shell-variable path that resolves to the filesystem root (or a
+ * top-level directory) when the variable is unset/empty — e.g.
+ * `rm -rf $UNSET/*` becomes `rm -rf /*`.
+ *
+ * Returns `{command, target}` on the first dangerous match, or null.
+ *
+ * Statically walks splitCommand output, strips command substitutions and
+ * grouping braces/parens, splits on `;|&` and newlines, then for each `rm`/
+ * `rmdir` segment inspects each non-flag operand. A target matching
+ * CATASTROPHIC_VAR_PATH_TARGET_RE (`eIg`) is returned.
+ */
+export function findCatastrophicRmInCommand(
+  command: string,
+): CatastrophicRmMatch | null {
+  // Gate: only analyze commands that contain a `$` and an `rm`/`rmdir` token.
+  // (Mirrors `if(!e.includes("$")||!/\brm(?:dir)?\b/.test(e))return null`.)
+  if (!command.includes('$') || !/\brm(?:dir)?\b/.test(command)) {
+    return null
+  }
+  for (const sub of splitCommandForRm(command)) {
+    let r = sub
+      .replace(/\\\r?\n/g, ' ')
+      .replace(/`[^`]*`/g, ' ')
+      .trimStart()
+    while (r.startsWith('(') || r.startsWith('{')) {
+      r = r.slice(1).trimStart()
+    }
+    // Collapse `$(…)` and bare `(…)` groups so their contents don't masquerade
+    // as rm targets at the top level (the substitution form is handled by
+    // findCatastrophicSubstitutionBlock, which calls this on each extracted
+    // substitution body).
+    for (let prev = ''; prev !== r; ) {
+      prev = r
+      r = r.replace(/\$\([^()]*\)/g, ' ').replace(/(?<!\$)\([^()]*\)/g, ' ')
+    }
+    r = r.replace(/(?<![<>&])&(?![<>&])/g, ';')
+    for (const seg of r.split(/[;|\n\r]|&&/)) {
+      const o = seg.trimStart()
+      const m = o.match(CATASTROPHIC_RM_COMMAND_RE)
+      if (m === null) {
+        continue
+      }
+      const cmd = m[1] === 'rmdir' ? 'rmdir' : 'rm'
+      const args = o.slice(m[0].length).split(/\s+/)
+      for (let l = 0; l < args.length; l++) {
+        const c = args[l]!.replace(/[)\]}]+$/, '')
+        if (c === '' || c.startsWith('-') || c.startsWith("'")) {
+          continue
+        }
+        if (REDIRECT_TOKEN_START_RE.test(c)) {
+          if (REDIRECT_OP_RE.test(c)) {
+            l++ // consume the redirect operator, skip its filename operand
+          }
+          continue
+        }
+        if (CATASTROPHIC_VAR_PATH_TARGET_RE.test(c)) {
+          return { command: cmd, target: c }
+        }
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Regex-based extraction of command-substitution bodies from a command string,
+ * mirroring the official `GRg` AST walker. Returns the inner command text for
+ * each `$(…)`, backtick, `<(…)`, `>(…)`, and `${ |…}` (the expansion form
+ * whose `${` is followed by whitespace/`|`/newline — a command substitution,
+ * not a variable). Nested `$(…)` one level deep is preserved.
+ */
+export function extractCommandSubstitutions(command: string): string[] {
+  const out: string[] = []
+  // $( … ) and <( … ) / >( … ) — one level of nested parens allowed.
+  // Prefix must be non-empty ($, <, or >) so a bare grouping ( … ) is NOT
+  // mistaken for a command substitution (the binary's GRg walker only visits
+  // command_substitution / process_substitution nodes).
+  const parenRe = /(?:\$|[<>])\(((?:[^()]|\([^()]*\))*)\)/g
+  let m: RegExpExecArray | null
+  while ((m = parenRe.exec(command)) !== null) {
+    if (m[1] !== undefined) {
+      out.push(m[1].trim())
+    }
+  }
+  // Backtick command substitutions.
+  const backtickRe = /`([^`]*)`/g
+  while ((m = backtickRe.exec(command)) !== null) {
+    if (m[1] !== undefined) {
+      out.push(m[1].trim())
+    }
+  }
+  // `${ |…}` / `${\n…}` — the expansion form that is actually a command
+  // substitution (bash treats `${ ls; }` as a command, not a variable).
+  const braceSubRe = /\$\{[ \t\n|]([^}]*)\}/g
+  while ((m = braceSubRe.exec(command)) !== null) {
+    if (m[1] !== undefined) {
+      out.push(m[1].replace(/^\|/, '').replace(/;$/, '').trim())
+    }
+  }
+  return out
+}
+
+export type CatastrophicSubstitutionBlock = {
+  category: string
+  reason: string
+}
+
+/**
+ * Port of the official 2.1.210 `GRg(e, t, r)`. Detects a catastrophic
+ * `rm`/`rmdir` hidden inside a command substitution (`$(…)`, backticks,
+ * `<(…)`, `${ |…}`).
+ *
+ * Two detection paths, both mirroring the binary:
+ *  1. >64 substitutions + the command contains `rm`/`rmdir` → block with
+ *     "too many to analyze for catastrophic removals" (can't statically prove
+ *     safety).
+ *  2. For each substitution body (and the outer command text), run
+ *     findCatastrophicRmInCommand (`hXi`) — a variable-path target like
+ *     `$UNSET/*` inside the substitution is caught.
+ *
+ * OCC additionally re-applies RM_ROOT_HOME_PATTERN to each body so a literal
+ * `rm -rf ~` / `rm -rf /` inside a substitution is caught too — the plain form
+ * already blocks these and #41 requires the substitution form to match.
+ *
+ * Returns the block info or null.
+ */
+export function findCatastrophicSubstitutionBlock(
+  command: string,
+): CatastrophicSubstitutionBlock | null {
+  const subs = extractCommandSubstitutions(command)
+  if (subs.length > 64) {
+    if (/\brm(?:dir)?\b/.test(command)) {
+      return {
+        category: 'rm_substitution_too_many',
+        reason: `This command contains ${subs.length} command substitutions — too many to analyze for catastrophic removals. This requires explicit approval.`,
+      }
+    }
+    return null
+  }
+  for (const body of [command, ...subs]) {
+    let c = body.trim()
+    // Strip a single layer of grouping braces/parens so `{ rm -rf $x/*; }`
+    // and `( rm -rf $x/* )` are analyzed as their inner command.
+    if (
+      (c.startsWith('{') && /;?\s*\}$/.test(c)) ||
+      (c.startsWith('(') && c.endsWith(')'))
+    ) {
+      c = c.slice(1).replace(/;?\s*[)}]$/, '').trim()
+    }
+    const varMatch = findCatastrophicRmInCommand(c)
+    if (varMatch !== null) {
+      return {
+        category: 'rm_substitution_var_path',
+        reason: `Dangerous ${varMatch.command} operation detected inside command substitution: '${varMatch.target}'`,
+      }
+    }
+    // Literal root/home catastrophic removal inside the substitution body.
+    // RM_ROOT_HOME_PATTERN's `~`/`/`/`$HOME` follow-set matches end-of-string,
+    // so a body like `rm -rf ~` or `rm -rf /` is caught here.
+    if (RM_ROOT_HOME_PATTERN.test(c)) {
+      return {
+        category: 'rm_substitution_root_home',
+        reason:
+          'rm -rf targeting the root or home directory detected inside command substitution',
+      }
+    }
+  }
+  return null
+}

@@ -76,7 +76,10 @@ import {
   bashCommandIsSafeAsync_DEPRECATED,
   stripSafeHeredocSubstitutions,
 } from './bashSecurity.js'
-import { findDestructiveCommandBlock } from './destructiveCommandWarning.js'
+import {
+  findDestructiveCommandBlock,
+  findCatastrophicSubstitutionBlock,
+} from './destructiveCommandWarning.js'
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
@@ -2114,6 +2117,38 @@ export async function bashToolHasPermission(
 ): Promise<PermissionResult> {
   let appState = context.getAppState()
 
+  // 2.1.208 #41: Catastrophic removals (e.g. `rm -rf ~` / `rm -rf $UNSET/*`)
+  // hidden inside command substitutions (`$(…)`, backticks, `<(…)`) must
+  // prompt even under --dangerously-skip-permissions (bypassPermissions) and
+  // in auto mode — matching the plain form. The official 2.1.210 binary's
+  // `GRg` returns a block with `classifierApprovable: false`, which is what
+  // stops the auto-mode classifier from overriding it.
+  //
+  // This check deliberately runs in ALL modes (it is NOT gated by
+  // bypassPermissions, unlike findDestructiveCommandBlock below) so that
+  // catastrophic removals inside substitutions cannot be silently auto-allowed.
+  // It returns `behavior: 'deny'` (OCC's plain-form destructive-block style)
+  // so the generic bypass auto-allow cannot dismiss it either.
+  {
+    const subBlock = findCatastrophicSubstitutionBlock(input.command)
+    if (subBlock !== null) {
+      const mode = appState.toolPermissionContext.mode
+      logEvent('tengu_bash_dangerous_rm_too_complex', {
+        category: subBlock.category,
+        mode,
+      })
+      const decisionReason: PermissionDecisionReason = {
+        type: 'other' as const,
+        reason: `Destructive command blocked: ${subBlock.reason}`,
+      }
+      return {
+        behavior: 'deny',
+        message: `Destructive command blocked: ${subBlock.reason}`,
+        decisionReason,
+      }
+    }
+  }
+
   // G3: Deterministic destructive-command block (no classifier needed).
   // Pattern-matches catastrophic commands and hard-denies them BEFORE any
   // mode auto-allow, allow-rule, or classifier evaluation. Applies in
@@ -3113,9 +3148,11 @@ export function isNormalizedCdCommand(command: string): boolean {
   const parsed = tryParseShellCommand(stripped)
   if (parsed.success && parsed.tokens.length > 0) {
     const cmd = parsed.tokens[0]
-    return cmd === 'cd' || cmd === 'pushd' || cmd === 'popd'
+    // 2.1.210 #10: binary `HMe` also recognizes `chdir` (a bash builtin alias
+    // for cd). Including it here keeps the backgrounded-cd cwd hint faithful.
+    return cmd === 'cd' || cmd === 'pushd' || cmd === 'popd' || cmd === 'chdir'
   }
-  return /^(?:cd|pushd|popd)(?:\s|$)/.test(stripped)
+  return /^(?:cd|pushd|popd|chdir)(?:\s|$)/.test(stripped)
 }
 
 /**
