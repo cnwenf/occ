@@ -255,7 +255,17 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // Sync disk so VerifyPlanExecution / Read see the edit. Re-snapshot
     // after: the only other persistFileSnapshotIfRemote call (api.ts) runs
     // in normalizeToolInput, pre-permission — it captured the old plan.
-    if (inputPlan !== undefined && filePath) {
+    //
+    // `normalizeToolInput` (api.ts) injects BOTH `plan` and `planFilePath`
+    // from disk pre-permission. When the permission UI approves with no edit
+    // (or auto-accept bypasses it), that injected input flows through
+    // unchanged — `inputPlan` is set but it is the pre-approval snapshot,
+    // NOT a user edit. Detect injection via `planFilePath` presence: the
+    // permission UI's `updatedInput` only ever carries `plan` (never
+    // `planFilePath`), so its absence marks a genuine edit. Mirrors the
+    // claude-code 2.1.210 fix (which strips plan/planFilePath from the
+    // no-edit permission fallback) without touching the SDK response handler.
+    if (inputPlan !== undefined && !('planFilePath' in input) && filePath) {
       await writeFile(filePath, inputPlan, 'utf-8').catch(e => logError(e))
       void persistFileSnapshotIfRemote()
     }
@@ -412,7 +422,13 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
         isAgent,
         filePath,
         hasTaskTool: hasTaskTool || undefined,
-        planWasEdited: inputPlan !== undefined || undefined,
+        // Only label as edited when a plan arrived WITHOUT `planFilePath` —
+        // i.e. a real user edit via permission `updatedInput`, not the
+        // `normalizeToolInput` injection (which always carries both keys).
+        // Without this guard, an unedited approval is mislabeled
+        // "Approved Plan (edited by user)" (CC 2.1.210 #12).
+        planWasEdited:
+          (inputPlan !== undefined && !('planFilePath' in input)) || undefined,
       },
     }
   },
