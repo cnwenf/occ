@@ -742,6 +742,20 @@ export const connectToServer = memoize(
         }
       }
 
+      // CC 2.1.208 #43: a remote (sse/http/ws) server whose URL is empty or
+      // whitespace should show as "not configured" in /mcp instead of throwing
+      // `new URL("")` and surfacing a generic "failed" status. The binary's
+      // `zcs()` classifier returns "unconfigured" when
+      // `configErrorReason === "url_empty" || (!configError && "url" in config
+      // && url.trim() === "")`. We short-circuit before any transport setup.
+      if ('url' in serverRef && typeof serverRef.url === 'string' && serverRef.url.trim() === '') {
+        return {
+          name,
+          type: 'unconfigured',
+          config: serverRef,
+        }
+      }
+
       // If we have the session ingress JWT, we will connect via the session ingress rather than
       // to remote MCP's directly.
       const sessionIngressToken = getSessionIngressAuthToken()

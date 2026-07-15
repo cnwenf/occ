@@ -266,15 +266,15 @@ export function useManageMCPConnections(
           ...client
         } = update
         const tools =
-          client.type === 'disabled' || client.type === 'failed'
+          client.type === 'disabled' || client.type === 'failed' || client.type === 'unconfigured'
             ? (rawTools ?? [])
             : rawTools
         const commands =
-          client.type === 'disabled' || client.type === 'failed'
+          client.type === 'disabled' || client.type === 'failed' || client.type === 'unconfigured'
             ? (rawCmds ?? [])
             : rawCmds
         const resources =
-          client.type === 'disabled' || client.type === 'failed'
+          client.type === 'disabled' || client.type === 'failed' || client.type === 'unconfigured'
             ? (rawRes ?? [])
             : rawRes
 

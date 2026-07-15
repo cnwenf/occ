@@ -253,6 +253,21 @@ export type DisabledMCPServer = {
   config: ScopedMcpServerConfig
 }
 
+/**
+ * A remote (sse/http/ws) server whose URL field is empty or whitespace.
+ * CC 2.1.208 #43: such servers show as "not configured" in `/mcp` instead of
+ * a generic config error. The binary's `zcs()` classifier checks
+ * `configErrorReason === "url_empty" || (!configError && "url" in config
+ * && url.trim() === "")`. We return this type from `connectToServer` before
+ * attempting `new URL("")` (which would throw and produce a misleading
+ * "failed" status).
+ */
+export type UnconfiguredMCPServer = {
+  name: string
+  type: 'unconfigured'
+  config: ScopedMcpServerConfig
+}
+
 export type MCPServerConnection =
   | ConnectedMCPServer
   | FailedMCPServer
@@ -260,6 +275,7 @@ export type MCPServerConnection =
   | PendingMCPServer
   | NeedsApprovalMCPServer
   | DisabledMCPServer
+  | UnconfiguredMCPServer
 
 // Resource types
 export type ServerResource = Resource & { server: string }
@@ -281,7 +297,7 @@ export interface SerializedTool {
 
 export interface SerializedClient {
   name: string
-  type: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'
+  type: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled' | 'unconfigured'
   capabilities?: ServerCapabilities
 }
 

@@ -359,8 +359,15 @@ export function MCPListPanel(t0) {
               statusIcon = color("warning", theme)(figures.triangleUpOutline);
               statusText = "needs authentication";
             } else {
-              statusIcon = color("error", theme)(figures.cross);
-              statusText = "failed";
+              if (server_3.client.type === "unconfigured") {
+                // 2.1.208 #43: empty-URL servers show "not configured" instead
+                // of "failed". Mirrors the binary's `- Not configured` status.
+                statusIcon = color("inactive", theme)(figures.radioOff);
+                statusText = "not configured";
+              } else {
+                statusIcon = color("error", theme)(figures.cross);
+                statusText = "failed";
+              }
             }
           }
         }

@@ -547,6 +547,8 @@ export function MCPRemoteServerMenu({
               </> : server.client.type === 'needs-auth' ? <Text>
                 {color('warning', theme)(figures.triangleUpOutline)} needs
                 authentication
+              </Text> : server.client.type === 'unconfigured' ? <Text>
+                {color('inactive', theme)(figures.radioOff)} not configured
               </Text> : <Text>{color('error', theme)(figures.cross)} failed</Text>}
           </Box>
 
