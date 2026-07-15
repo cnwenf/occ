@@ -25,6 +25,7 @@ function makeMockContext(): any {
         alwaysDenyRules: emptyRules,
         denyRules: emptyRules,
         additionalDirectories: [],
+        additionalWorkingDirectories: new Map(),
         hasFlaggedPermissions: false,
       },
     }),
