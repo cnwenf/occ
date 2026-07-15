@@ -32,6 +32,13 @@
  *                     Invoke as /<name> or Workflow({name: …})"
  *                                                             (542138-42)
  *
+ * 2.1.208 #25: the save dialog's user-scope path + display now honor
+ * `CLAUDE_CONFIG_DIR` (via getClaudeConfigHomeDir), not a hardcoded
+ * `~/.claude/workflows/`. Path math lives in
+ * `src/utils/effort/workflowSavePath.ts` (mirrors the binary's `zab` /
+ * `tkt` / `BP`). The dialog (WorkflowSaveDialog) toggles scope with Tab
+ * and shows `{Scope} scope · {displayPath}` in the subtitle.
+ *
  * Auto-refresh: the component subscribes to AppState via useAppState, so
  * the list and detail re-render live as the engine mutates task state
  * (workflowProgress / agentCount / status) — the "watch live progress"
@@ -48,7 +55,6 @@
  */
 import * as React from 'react'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
 import figures from 'figures'
 import { logEvent } from '../services/analytics/index.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
@@ -68,13 +74,19 @@ import { Byline } from './design-system/Byline.js'
 import { Dialog } from './design-system/Dialog.js'
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js'
 import { Select } from './CustomSelect/select.js'
+import {
+  displayWorkflowPath,
+  resolveWorkflowFilePath,
+  resolveWorkflowsDir,
+  type WorkflowSaveScope,
+} from '../utils/effort/workflowSavePath.js'
 
-/** Project workflows dir (matches workflowDiscovery.PROJECT_WORKFLOWS_DIR). */
-const WORKFLOWS_DIR = '.claude/workflows'
+/** Project workflows dir lives in `workflowSavePath.ts` / `workflowDiscovery.ts`. */
 
 type ViewState =
   | { mode: 'list' }
   | { mode: 'detail'; taskId: string }
+  | { mode: 'save'; taskId: string }
 
 type Props = {
   /** Called when the dialog is dismissed (Esc on the list). */
@@ -125,24 +137,43 @@ function durationOf(task: LocalWorkflowTaskState): number {
 }
 
 /**
- * Persist a one-off workflow script to .claude/workflows/<name>.js so it
- * can be re-invoked by name. Reads the script source from the task's
- * scriptPath. Returns a user-visible result message.
+ * Sanitize a workflow name into a safe filename stem. Mirrors the binary's
+ * `wme(name)`: replace non [A-Za-z0-9._-] with `-`, trim leading/trailing
+ * dashes, fall back to "workflow" when empty.
  */
-function saveDynamicWorkflow(task: LocalWorkflowTaskState): {
-  ok: boolean
-  msg: string
-} {
-  const name = (task.workflowName ?? 'workflow')
-    .replace(/[^A-Za-z0-9._-]/g, '-')
-    .replace(/^-+|-+$/g, '')
-    || 'workflow'
-  const targetDir = join(process.cwd(), WORKFLOWS_DIR)
-  const targetPath = join(targetDir, `${name}.js`)
+function sanitizeWorkflowName(raw: string | undefined): string {
+  return (
+    (raw ?? 'workflow')
+      .replace(/[^A-Za-z0-9._-]/g, '-')
+      .replace(/^-+|-+$/g, '') || 'workflow'
+  )
+}
+
+/**
+ * Persist a one-off workflow script so it can be re-invoked by name.
+ * Scope-aware (2.1.208 #25): user scope writes under the effective config
+ * dir (`CLAUDE_CONFIG_DIR`/workflows) via `resolveWorkflowsDir`; project
+ * scope writes under `<cwd>/.claude/workflows`. Returns a user-visible
+ * result. `overwrite` arms a second Enter to clobber an existing file
+ * (binary's EEXIST → "Press Enter again to overwrite" flow).
+ */
+type SaveOutcome =
+  | { ok: true; msg: string; overwritten: boolean }
+  | { ok: false; msg: string; exists: boolean }
+
+function saveDynamicWorkflow(
+  task: LocalWorkflowTaskState,
+  scope: WorkflowSaveScope,
+  overwrite: boolean,
+): SaveOutcome {
+  const name = sanitizeWorkflowName(task.workflowName)
+  const targetDir = resolveWorkflowsDir(scope, process.cwd())
+  const targetPath = resolveWorkflowFilePath(scope, name, process.cwd())
   if (!task.scriptPath || !existsSync(task.scriptPath)) {
     return {
       ok: false,
       msg: 'Script source is not available; cannot save this workflow.',
+      exists: false,
     }
   }
   let source: string
@@ -152,24 +183,41 @@ function saveDynamicWorkflow(task: LocalWorkflowTaskState): {
     return {
       ok: false,
       msg: `Could not read script at ${task.scriptPath}.`,
+      exists: false,
+    }
+  }
+  const fileExists = existsSync(targetPath)
+  if (fileExists && !overwrite) {
+    return {
+      ok: false,
+      exists: true,
+      msg: `Workflow "${name}" already exists at ${targetPath}. Press Enter again to overwrite, or toggle scope (Tab).`,
     }
   }
   try {
     mkdirSync(targetDir, { recursive: true })
-    writeFileSync(targetPath, source, 'utf8')
+    writeFileSync(targetPath, source, {
+      encoding: 'utf8',
+      flag: overwrite ? 'w' : 'wx',
+    })
   } catch (e) {
     return {
       ok: false,
+      exists: false,
       msg: `Failed to save: ${(e as Error).message}`,
     }
   }
   logEvent('tengu_workflow_saved', {
     workflow_name: name,
     target_path: targetPath,
+    scope,
+    overwritten: fileExists && overwrite,
   } as never)
+  const displayPath = displayWorkflowPath(scope, name, process.cwd())
   return {
     ok: true,
-    msg: `Dynamic workflow saved to ${targetPath}. Invoke as /${name} or Workflow({name: "${name}"}) in future sessions.`,
+    overwritten: fileExists && overwrite,
+    msg: `Dynamic workflow saved to ${displayPath}. Invoke as /${name} or Workflow({name: "${name}"}) in future sessions.`,
   }
 }
 
@@ -326,10 +374,13 @@ function WorkflowRunDetail({
   task,
   onBack,
   onDone,
+  onSave,
 }: {
   task: LocalWorkflowTaskState
   onBack: () => void
   onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void
+  /** Open the scope-aware save dialog (2.1.208 #25). */
+  onSave: () => void
 }): React.ReactNode {
   const setAppState = useSetAppState()
   const [saveMsg, setSaveMsg] = React.useState<{ ok: boolean; msg: string } | null>(null)
@@ -346,8 +397,7 @@ function WorkflowRunDetail({
       return
     }
     if (input === 's') {
-      const res = saveDynamicWorkflow(task)
-      setSaveMsg(res)
+      onSave()
       return
     }
     // 'r' restart / 'p' pause-resume are declared in the binary but require
@@ -483,6 +533,111 @@ function WorkflowRunDetail({
 }
 
 // ─────────────────────────────────────────────────────────────────────────
+// Save dialog (2.1.208 #25 — CLAUDE_CONFIG_DIR-aware user-scope path)
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Scope-aware save dialog. Mirrors the 2.1.210 binary's "Save dynamic
+ * workflow" dialog: a Tab-toggleable scope (default "project"), a subtitle
+ * showing `{Scope} scope · {displayPath}` (config-dir-aware for user
+ * scope), and Enter to save / Esc to cancel. On EEXIST, a second Enter
+ * overwrites (binary's "Press Enter again to overwrite" flow).
+ *
+ * The path math (resolveWorkflowsDir / displayWorkflowPath) honors
+ * CLAUDE_CONFIG_DIR via getClaudeConfigHomeDir, so a relocated config dir
+ * is reflected in BOTH the displayed path and the actual write target —
+ * the 2.1.208 fix.
+ */
+function WorkflowSaveDialog({
+  task,
+  onDone,
+  onBack,
+}: {
+  task: LocalWorkflowTaskState
+  onDone: (result?: string, options?: { display?: CommandResultDisplay }) => void
+  onBack: () => void
+}): React.ReactNode {
+  // Binary default scope is "project" (useState("project")); Tab toggles.
+  const [scope, setScope] = React.useState<WorkflowSaveScope>('project')
+  const [overwriteArmed, setOverwriteArmed] = React.useState(false)
+  const [outcome, setOutcome] = React.useState<SaveOutcome | null>(null)
+
+  const name = React.useMemo(
+    () => sanitizeWorkflowName(task.workflowName),
+    [task.workflowName],
+  )
+  const displayPath = displayWorkflowPath(scope, name, process.cwd())
+
+  const handleToggleScope = (): void => {
+    setScope(prev => (prev === 'project' ? 'user' : 'project'))
+    setOverwriteArmed(false)
+    setOutcome(null)
+  }
+
+  const handleSave = (): void => {
+    const res = saveDynamicWorkflow(task, scope, overwriteArmed)
+    if (!res.ok && res.exists) {
+      // Arm overwrite: next Enter clobbers the existing file.
+      setOverwriteArmed(true)
+      setOutcome(res)
+      return
+    }
+    if (res.ok) {
+      onDone(res.msg, { display: 'system' })
+      return
+    }
+    setOutcome(res)
+  }
+
+  useInput((input, key) => {
+    if (key.escape) {
+      onBack()
+      return
+    }
+    if (key.tab) {
+      handleToggleScope()
+      return
+    }
+    if (key.return) {
+      handleSave()
+      return
+    }
+  })
+
+  const scopeLabel = scope === 'project' ? 'Project' : 'User'
+  const actionLabel = overwriteArmed ? 'overwrite' : 'save'
+
+  return (
+    <Dialog
+      title="Save dynamic workflow"
+      subtitle={
+        <Text>
+          {scopeLabel} scope · {displayPath}
+        </Text>
+      }
+      onCancel={onBack}
+      isCancelActive={false}
+      inputGuide={() => (
+        <Byline>
+          <KeyboardShortcutHint shortcut="Enter" action={actionLabel} />
+          <KeyboardShortcutHint shortcut="Tab" action="toggle scope" />
+          <KeyboardShortcutHint shortcut="Esc" action="cancel" />
+        </Byline>
+      )}
+    >
+      <Box flexDirection="column" gap={1}>
+        <Text>
+          Save as: <Text bold={true}>{name}</Text>
+        </Text>
+        {outcome ? (
+          <Text color={outcome.ok ? 'success' : 'warning'}>{outcome.msg}</Text>
+        ) : null}
+      </Box>
+    </Dialog>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────
 // Parent dialog (mode switch)
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -502,9 +657,10 @@ export function WorkflowDetailDialog(props: Props): React.ReactNode {
   const allTasks: TaskState[] = Object.values(tasks) as TaskState[]
   const runs = allTasks.filter(isLocalWorkflowTask) as LocalWorkflowTaskState[]
 
-  // Detail-mode task (live reference, or undefined if evicted).
+  // Focused task (live reference, or undefined if evicted). Resolved for
+  // both detail and save modes so the save dialog stays on the same run.
   const detailTask =
-    viewState.mode === 'detail'
+    viewState.mode === 'detail' || viewState.mode === 'save'
       ? ((tasks as Record<string, TaskState> | undefined)?.[viewState.taskId] as
           | LocalWorkflowTaskState
           | undefined)
@@ -517,7 +673,7 @@ export function WorkflowDetailDialog(props: Props): React.ReactNode {
   // dismiss the dialog entirely. Done in an effect to avoid updating state
   // during render.
   React.useEffect(() => {
-    if (viewState.mode !== 'detail') return
+    if (viewState.mode !== 'detail' && viewState.mode !== 'save') return
     if (detailTaskValid) return
     if (initialTaskId && runs.length === 0) {
       onDone('Dynamic workflows dialog dismissed', { display: 'system' })
@@ -532,6 +688,17 @@ export function WorkflowDetailDialog(props: Props): React.ReactNode {
         task={detailTask}
         onBack={() => setViewState({ mode: 'list' })}
         onDone={onDone}
+        onSave={() => setViewState({ mode: 'save', taskId: detailTask.id })}
+      />
+    )
+  }
+
+  if (viewState.mode === 'save' && detailTaskValid && detailTask) {
+    return (
+      <WorkflowSaveDialog
+        task={detailTask}
+        onDone={onDone}
+        onBack={() => setViewState({ mode: 'detail', taskId: detailTask.id })}
       />
     )
   }
