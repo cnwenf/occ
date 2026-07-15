@@ -786,6 +786,9 @@ export const FileReadTool = buildTool({
           content: FILE_UNCHANGED_STUB,
         }
       case 'text': {
+        // 2.1.208 #14a / 2.1.210: 4-case mapper (was 2-case). Distinguishes
+        // a file with blank lines (case 2) from an empty file (case 3) from a
+        // file shorter than the requested offset (case 4).
         let content: string
 
         if (data.file.content) {
@@ -796,12 +799,22 @@ export const FileReadTool = buildTool({
             (shouldIncludeFileReadMitigation()
               ? CYBER_RISK_MITIGATION_REMINDER
               : '')
-        } else {
-          // Determine the appropriate warning message
+        } else if (data.file.numLines >= 1 && data.file.totalLines > 1) {
+          // Case 2: the range has ≥1 line but content is empty (blank lines).
+          // Show a single line-numbered empty line: jxn("", startLine, "\t").
           content =
-            data.file.totalLines === 0
-              ? '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
-              : `<system-reminder>Warning: the file exists but is shorter than the provided offset (${data.file.startLine}). The file has ${data.file.totalLines} lines.</system-reminder>`
+            partialViewNoticePrefix(data) +
+            memoryFileFreshnessPrefix(data) +
+            `${data.file.startLine}\t`
+        } else if (data.file.numLines >= 1 || data.file.totalLines === 0) {
+          // Case 3: empty file (0 bytes → numLines≥1 via final fragment, or
+          // totalLines===0). Previously reported "shorter than offset" for
+          // empty files read with the default offset — the #14a bug.
+          content =
+            '<system-reminder>Warning: the file exists but the contents are empty.</system-reminder>'
+        } else {
+          // Case 4: offset beyond the file's line count.
+          content = `<system-reminder>Warning: the file exists but is shorter than the provided offset (${data.file.startLine}). The file has ${data.file.totalLines} lines.</system-reminder>`
         }
 
         return {
@@ -1118,6 +1131,14 @@ async function callInner(
 
   // --- Text file (single async read via readFileInRange) ---
   const lineOffset = offset === 0 ? 0 : offset - 1
+  // 2.1.208 #30: For ranged reads (limit defined), pass maxSelectedBytes so
+  // readFileInRange can reject a single extremely long line (no newline) that
+  // would otherwise balloon memory. w9i = 128 → maxTokens * 128 bytes.
+  // Binary: s===void 0 ? void 0 : {maxSelectedBytes: c*w9i}
+  const readOptions =
+    limit === undefined
+      ? undefined
+      : { maxSelectedBytes: maxTokens * 128 }
   const { content, lineCount, totalLines, totalBytes, readBytes, mtimeMs } =
     await readFileInRange(
       resolvedFilePath,
@@ -1125,6 +1146,7 @@ async function callInner(
       limit,
       limit === undefined ? maxSizeBytes : undefined,
       context.abortController.signal,
+      readOptions,
     )
 
   // 2.1.145: On token-limit excess for a full read, return a truncated

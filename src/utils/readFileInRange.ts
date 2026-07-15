@@ -66,6 +66,21 @@ export class FileTooLargeError extends Error {
   }
 }
 
+// 2.1.208 #30: Thrown when a ranged read's SELECTED content (including a
+// single very long line without newlines) exceeds maxSelectedBytes. Mirrors
+// binary Wtr / SelectedRangeTooLargeError.
+export class SelectedRangeTooLargeError extends Error {
+  constructor(
+    public selectedBytes: number,
+    public maxSelectedBytes: number,
+  ) {
+    super(
+      `The requested line range contains over ${formatFileSize(maxSelectedBytes)} of text, more than a read can return. Use a smaller limit — or, if a single line is this large, no limit will fit it: search for specific content instead.`,
+    )
+    this.name = 'SelectedRangeTooLargeError'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
@@ -76,10 +91,11 @@ export async function readFileInRange(
   maxLines?: number,
   maxBytes?: number,
   signal?: AbortSignal,
-  options?: { truncateOnByteLimit?: boolean },
+  options?: { truncateOnByteLimit?: boolean; maxSelectedBytes?: number },
 ): Promise<ReadFileRangeResult> {
   signal?.throwIfAborted()
   const truncateOnByteLimit = options?.truncateOnByteLimit ?? false
+  let maxSelectedBytes = options?.maxSelectedBytes
 
   // stat to decide the code path and guard against OOM.
   // For regular files under 10 MB: readFile + in-memory split (fast).
@@ -90,6 +106,13 @@ export async function readFileInRange(
     throw new Error(
       `EISDIR: illegal operation on a directory, read '${filePath}'`,
     )
+  }
+
+  // 2.1.208 #30: If the whole file fits within maxSelectedBytes, the cap can
+  // never trigger — drop it to avoid per-line byte accounting overhead.
+  // Binary: if(a!==void 0&&l.isFile()&&l.size<=a)a=void 0
+  if (maxSelectedBytes !== undefined && stats.isFile() && stats.size <= maxSelectedBytes) {
+    maxSelectedBytes = undefined
   }
 
   if (stats.isFile() && stats.size < FAST_PATH_MAX_SIZE) {
@@ -108,6 +131,7 @@ export async function readFileInRange(
       offset,
       maxLines,
       truncateOnByteLimit ? maxBytes : undefined,
+      maxSelectedBytes,
     )
   }
 
@@ -118,6 +142,7 @@ export async function readFileInRange(
     maxBytes,
     truncateOnByteLimit,
     signal,
+    maxSelectedBytes,
   )
 }
 
@@ -131,6 +156,7 @@ function readFileInRangeFast(
   offset: number,
   maxLines: number | undefined,
   truncateAtBytes: number | undefined,
+  maxSelectedBytes: number | undefined,
 ): ReadFileRangeResult {
   const endLine = maxLines !== undefined ? offset + maxLines : Infinity
 
@@ -146,12 +172,17 @@ function readFileInRangeFast(
   let truncatedByBytes = false
 
   function tryPush(line: string): boolean {
-    if (truncateAtBytes !== undefined) {
+    if (truncateAtBytes !== undefined || maxSelectedBytes !== undefined) {
       const sep = selectedLines.length > 0 ? 1 : 0
       const nextBytes = selectedBytes + sep + Buffer.byteLength(line)
-      if (nextBytes > truncateAtBytes) {
+      if (truncateAtBytes !== undefined && nextBytes > truncateAtBytes) {
         truncatedByBytes = true
         return false
+      }
+      // 2.1.208 #30: throw (not truncate) when the selected range exceeds
+      // maxSelectedBytes — a single long line would otherwise OOM.
+      if (maxSelectedBytes !== undefined && nextBytes > maxSelectedBytes) {
+        throw new SelectedRangeTooLargeError(nextBytes, maxSelectedBytes)
       }
       selectedBytes = nextBytes
     }
@@ -202,6 +233,7 @@ type StreamState = {
   offset: number
   endLine: number
   maxBytes: number | undefined
+  maxSelectedBytes: number | undefined
   truncateOnByteLimit: boolean
   resolve: (value: ReadFileRangeResult) => void
   totalBytesRead: number
@@ -210,6 +242,7 @@ type StreamState = {
   currentLineIndex: number
   selectedLines: string[]
   partial: string
+  partialBytes: number
   isFirstChunk: boolean
   resolveMtime: (ms: number) => void
   mtimeReady: Promise<number>
@@ -241,8 +274,20 @@ function streamOnData(this: StreamState, chunk: string): void {
     return
   }
 
+  // 2.1.208 #30: o = this.partialBytes + r — the ACCUMULATED byte count of
+  // the carried-over partial plus this chunk. Mirrors binary gXg: `let n=...,
+  // o=this.partialBytes+r; this.partial=""; this.partialBytes=0;`. When the
+  // selected range has no newline (startPos===0), the partial grows across
+  // chunks and o is the running total — a single long line is rejected once
+  // it crosses maxSelectedBytes, regardless of chunk boundaries. (The prior
+  // impl used Buffer.byteLength(chunk) for the startPos===0 case, which
+  // under-counted the accumulated partial and let a multi-chunk long line
+  // blow past the cap.)
+  const chunkBytes = Buffer.byteLength(chunk)
+  const accumulatedPartialBytes = this.partialBytes + chunkBytes
   const data = this.partial.length > 0 ? this.partial + chunk : chunk
   this.partial = ''
+  this.partialBytes = 0
 
   let startPos = 0
   let newlinePos: number
@@ -255,14 +300,25 @@ function streamOnData(this: StreamState, chunk: string): void {
       if (line.endsWith('\r')) {
         line = line.slice(0, -1)
       }
-      if (this.truncateOnByteLimit && this.maxBytes !== undefined) {
+      const truncateMode = this.truncateOnByteLimit && this.maxBytes !== undefined
+      if (truncateMode || this.maxSelectedBytes !== undefined) {
         const sep = this.selectedLines.length > 0 ? 1 : 0
         const nextBytes = this.selectedBytes + sep + Buffer.byteLength(line)
-        if (nextBytes > this.maxBytes) {
+        if (truncateMode && nextBytes > this.maxBytes!) {
           // Cap hit — collapse the selection range so nothing more is
           // accumulated.  Stream continues (to count totalLines).
           this.truncatedByBytes = true
           this.endLine = this.currentLineIndex
+        } else if (
+          this.maxSelectedBytes !== undefined &&
+          nextBytes > this.maxSelectedBytes
+        ) {
+          // 2.1.208 #30: a single line (or cumulative range) exceeds the
+          // selected-bytes cap — destroy with SelectedRangeTooLargeError.
+          this.stream.destroy(
+            new SelectedRangeTooLargeError(nextBytes, this.maxSelectedBytes),
+          )
+          return
         } else {
           this.selectedBytes = nextBytes
           this.selectedLines.push(line)
@@ -284,21 +340,39 @@ function streamOnData(this: StreamState, chunk: string): void {
       this.currentLineIndex < this.endLine
     ) {
       const fragment = data.slice(startPos)
-      // In truncate mode, `partial` can grow unboundedly if the selected
-      // range contains a huge single line (no newline across many chunks).
-      // Once the fragment alone would overflow the remaining budget, we know
-      // the completed line can never fit — set truncated, collapse the
-      // selection range, and discard the fragment to stop accumulation.
-      if (this.truncateOnByteLimit && this.maxBytes !== undefined) {
+      // Binary: l = i===0 ? o : Buffer.byteLength(a). o = accumulated partial
+      // bytes (carried over + this chunk); a = fragment after the last newline.
+      const fragBytes =
+        startPos === 0 ? accumulatedPartialBytes : Buffer.byteLength(fragment)
+      const truncateMode = this.truncateOnByteLimit && this.maxBytes !== undefined
+      if (truncateMode || this.maxSelectedBytes !== undefined) {
         const sep = this.selectedLines.length > 0 ? 1 : 0
-        const fragBytes = this.selectedBytes + sep + Buffer.byteLength(fragment)
-        if (fragBytes > this.maxBytes) {
+        const nextBytes = this.selectedBytes + sep + fragBytes
+        if (truncateMode && nextBytes > this.maxBytes!) {
+          // In truncate mode, `partial` can grow unboundedly if the selected
+          // range contains a huge single line (no newline across many chunks).
+          // Once the fragment alone would overflow the remaining budget, we know
+          // the completed line can never fit — set truncated, collapse the
+          // selection range, and discard the fragment to stop accumulation.
           this.truncatedByBytes = true
           this.endLine = this.currentLineIndex
           return
         }
+        if (
+          this.maxSelectedBytes !== undefined &&
+          nextBytes > this.maxSelectedBytes
+        ) {
+          // 2.1.208 #30: the partial (incomplete) line alone already exceeds
+          // the cap — destroy with SelectedRangeTooLargeError before the
+          // partial grows further.
+          this.stream.destroy(
+            new SelectedRangeTooLargeError(nextBytes, this.maxSelectedBytes),
+          )
+          return
+        }
       }
       this.partial = fragment
+      this.partialBytes = fragBytes
     }
   }
 }
@@ -312,12 +386,28 @@ function streamOnEnd(this: StreamState): void {
     this.currentLineIndex >= this.offset &&
     this.currentLineIndex < this.endLine
   ) {
-    if (this.truncateOnByteLimit && this.maxBytes !== undefined) {
+    const truncateMode = this.truncateOnByteLimit && this.maxBytes !== undefined
+    if (truncateMode || this.maxSelectedBytes !== undefined) {
       const sep = this.selectedLines.length > 0 ? 1 : 0
-      const nextBytes = this.selectedBytes + sep + Buffer.byteLength(line)
-      if (nextBytes > this.maxBytes) {
+      // Use partialBytes (tracked in streamOnData) for the final line's byte
+      // length — matches binary yXg which uses this.partialBytes.
+      const nextBytes =
+        this.selectedBytes + sep + (this.partialBytes || Buffer.byteLength(line))
+      if (truncateMode && nextBytes > this.maxBytes!) {
         this.truncatedByBytes = true
+      } else if (
+        this.maxSelectedBytes !== undefined &&
+        nextBytes > this.maxSelectedBytes
+      ) {
+        // 2.1.208 #30: final partial line exceeds the cap.
+        this.mtimeReady.then(() => {
+          this.stream.destroy(
+            new SelectedRangeTooLargeError(nextBytes, this.maxSelectedBytes!),
+          )
+        })
+        return
       } else {
+        this.selectedBytes = nextBytes
         this.selectedLines.push(line)
       }
     } else {
@@ -348,6 +438,7 @@ function readFileInRangeStreaming(
   maxBytes: number | undefined,
   truncateOnByteLimit: boolean,
   signal?: AbortSignal,
+  maxSelectedBytes?: number,
 ): Promise<ReadFileRangeResult> {
   return new Promise((resolve, reject) => {
     const state: StreamState = {
@@ -359,6 +450,7 @@ function readFileInRangeStreaming(
       offset,
       endLine: maxLines !== undefined ? offset + maxLines : Infinity,
       maxBytes,
+      maxSelectedBytes,
       truncateOnByteLimit,
       resolve,
       totalBytesRead: 0,
@@ -367,6 +459,7 @@ function readFileInRangeStreaming(
       currentLineIndex: 0,
       selectedLines: [],
       partial: '',
+      partialBytes: 0,
       isFirstChunk: true,
       resolveMtime: () => {},
       mtimeReady: null as unknown as Promise<number>,
