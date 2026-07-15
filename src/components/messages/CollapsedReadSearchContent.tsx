@@ -17,7 +17,9 @@ import type { ThemeName } from '../../utils/theme.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { useSelectedMessageBg } from '../messageActions.js';
 import { PrBadge } from '../PrBadge.js';
+import { ToolElapsedCounter } from './ToolElapsedCounter.js';
 import { ToolUseLoader } from '../ToolUseLoader.js';
+import { wrapToolResultMessage } from './wrapToolResultMessage.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemCollapsed = feature('TEAMMEM') ? require('./teamMemCollapsed.js') as typeof import('./teamMemCollapsed.js') : null;
@@ -113,11 +115,11 @@ function VerboseToolUse(t0) {
       } else {
         t8 = $[23];
       }
-      t1 = <Box key={content.id} flexDirection="column" marginTop={1} backgroundColor={bg}><Box flexDirection="row">{t8}<Text><Text bold={true}>{userFacingName}</Text>{toolUseMessage && <Text>({toolUseMessage})</Text>}</Text>{input && tool.renderToolUseTag?.(input)}</Box>{isResolved && !isError && toolResult !== undefined && <Box>{tool.renderToolResultMessage?.(toolResult, [], {
+      t1 = <Box key={content.id} flexDirection="column" marginTop={1} backgroundColor={bg}><Box flexDirection="row">{t8}<Text><Text bold={true}>{userFacingName}</Text>{toolUseMessage && <Text>({toolUseMessage})</Text>}</Text>{input && tool.renderToolUseTag?.(input)}</Box>{isResolved && !isError && toolResult !== undefined && <Box>{wrapToolResultMessage(tool.renderToolResultMessage?.(toolResult, [], {
             verbose: true,
             tools,
             theme
-          })}</Box>}</Box>;
+          }), tool)}</Box>}</Box>;
     }
     $[0] = bg;
     $[1] = content.id;
@@ -291,6 +293,29 @@ export function CollapsedReadSearchContent({
     }
   }
 
+  // Live elapsed-time anchor: timestamp of the most recent assistant message
+  // in this group that contains an in-progress tool_use. The ToolElapsedCounter
+  // ticks `Date.now() - anchorMs` every 1s so the summary line shows a live
+  // duration while the tool runs — not just the final value after completion.
+  // Matches the official 2.1.210 binary's `tool-elapsed` anchor (De).
+  let anchorMs = 0;
+  if (isActiveGroup && isFullscreenEnvEnabled()) {
+    for (let i = groupMessages.length - 1; i >= 0 && !anchorMs; i--) {
+      const msg = groupMessages[i]!;
+      const inner: NormalizedAssistantMessage[] = msg.type === 'grouped_tool_use' ? msg.messages : msg.type === 'assistant' ? [msg as NormalizedAssistantMessage] : [];
+      for (const m of inner) {
+        const content = m.message?.content;
+        if (Array.isArray(content) && content.some((c): boolean => typeof c === 'object' && c !== null && (c as { type?: string; id?: string }).type === 'tool_use' && inProgressToolUseIDs.has((c as { id: string }).id))) {
+          const ts = Date.parse((m as unknown as { timestamp?: string }).timestamp ?? '');
+          if (Number.isFinite(ts)) {
+            anchorMs = ts;
+          }
+          break;
+        }
+      }
+    }
+  }
+
   // Build non-memory parts first (search, read, repl, mcp, bash) — these render
   // before memory so the line reads "Ran 3 bash commands, recalled 1 memory".
   const nonMemParts: React.ReactNode[] = [];
@@ -456,6 +481,7 @@ export function CollapsedReadSearchContent({
           isActiveGroup,
           hasPrecedingParts: hasPrecedingNonMem || memParts.length > 0
         }) : null}
+          {anchorMs > 0 && <ToolElapsedCounter key="tool-elapsed" anchorMs={anchorMs} shouldAnimate={shouldAnimate} />}
           {isActiveGroup && <Text key="ellipsis">…</Text>} <CtrlOToExpand />
         </Text>
       </Box>
