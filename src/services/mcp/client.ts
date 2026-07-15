@@ -1,4 +1,6 @@
 import { feature } from 'src/utils/featureFlags.js'
+import { Readable } from 'node:stream'
+import { createCappedStderrAccumulator } from './stderrCap.js'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -1102,23 +1104,18 @@ export const connectToServer = memoize(
 
       // Set up stderr logging for stdio transport before connecting in case there are any stderr
       // outputs emitted during the connection start (this can be useful for debugging failed connections).
-      // Store handler reference for cleanup to prevent memory leaks
+      // Store handler + stream references for cleanup to prevent memory leaks.
+      const stderrAcc = createCappedStderrAccumulator()
       let stderrHandler: ((data: Buffer) => void) | undefined
-      let stderrOutput = ''
+      let stderrStream: Readable | undefined
       if (serverRef.type === 'stdio' || !serverRef.type) {
         const stdioTransport = transport as StdioClientTransport
-        if (stdioTransport.stderr) {
-          stderrHandler = (data: Buffer) => {
-            // Cap stderr accumulation to prevent unbounded memory growth
-            if (stderrOutput.length < 64 * 1024 * 1024) {
-              try {
-                stderrOutput += data.toString()
-              } catch {
-                // Ignore errors from exceeding max string length
-              }
-            }
-          }
-          stdioTransport.stderr.on('data', stderrHandler)
+        if (stdioTransport.stderr instanceof Readable) {
+          stderrStream = stdioTransport.stderr
+          stderrHandler = stderrAcc.handler
+          // Cap stderr accumulation (head-retention, 64MB) to prevent unbounded
+          // memory growth from a chatty/faulty stdio server (CC 2.1.208 #29).
+          stderrStream.on('data', stderrHandler)
         }
       }
 
@@ -1218,9 +1215,19 @@ export const connectToServer = memoize(
 
       try {
         await Promise.race([connectPromise, timeoutPromise])
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
-          stderrOutput = '' // Release accumulated string to prevent memory growth
+        const stderrCaptured = stderrAcc.getOutput()
+        if (stderrCaptured) {
+          logMCPError(name, `Server stderr: ${stderrCaptured}`)
+          stderrAcc.reset() // Release accumulated string to prevent memory growth
+        }
+        // Connection succeeded — stop capturing stderr. Detach the listener and
+        // resume the stream so it drains freely for the rest of the connection
+        // lifetime instead of accumulating (capped or not) in memory. This is
+        // the 2.1.208 fix for the MCP stdio stderr memory leak.
+        if (stderrHandler && stderrStream) {
+          stderrStream.off('data', stderrHandler)
+          stderrStream.resume()
+          stderrHandler = undefined
         }
         const elapsed = Date.now() - connectStartTime
         logMCPDebug(
@@ -1288,8 +1295,9 @@ export const connectToServer = memoize(
           inProcessServer.close().catch(() => {})
         }
         transport.close().catch(() => {})
-        if (stderrOutput) {
-          logMCPError(name, `Server stderr: ${stderrOutput}`)
+        const stderrCaptured = stderrAcc.getOutput()
+        if (stderrCaptured) {
+          logMCPError(name, `Server stderr: ${stderrCaptured}`)
         }
         throw error
       }
@@ -1557,10 +1565,11 @@ export const connectToServer = memoize(
           return
         }
 
-        // Remove stderr event listener to prevent memory leaks
-        if (stderrHandler && (serverRef.type === 'stdio' || !serverRef.type)) {
-          const stdioTransport = transport as StdioClientTransport
-          stdioTransport.stderr?.off('data', stderrHandler)
+        // Remove stderr event listener to prevent memory leaks. On a successful
+        // connection the listener is already detached above, so this only runs
+        // when the connection failed or is being torn down.
+        if (stderrHandler && stderrStream) {
+          stderrStream.off('data', stderrHandler)
         }
 
         // For stdio transports, explicitly terminate the child process with proper signals
