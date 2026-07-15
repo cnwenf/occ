@@ -3,6 +3,7 @@ import figures from 'figures';
 import type { ReactNode } from 'react';
 import React from 'react';
 import { useDeclaredCursor } from '../../ink/hooks/use-declared-cursor.js';
+import type { ClickEvent } from '../../ink/events/click-event.js';
 import { Box, Text } from '../../ink.js';
 type ListItemProps = {
   /**
@@ -60,6 +61,12 @@ type ListItemProps = {
    * @default true
    */
   declareCursor?: boolean;
+
+  /**
+   * Mouse-click handler (CC 2.1.208#4). Fired on left-button release without
+   * drag, only inside <AlternateScreen> with mouse tracking enabled.
+   */
+  onClick?: (event: ClickEvent) => void;
 };
 
 /**
@@ -102,7 +109,7 @@ type ListItemProps = {
  * </ListItem>
  */
 export function ListItem(t0) {
-  const $ = _c(32);
+  const $ = _c(33);
   const {
     isFocused,
     isSelected: t1,
@@ -112,7 +119,8 @@ export function ListItem(t0) {
     showScrollUp,
     styled: t2,
     disabled: t3,
-    declareCursor
+    declareCursor,
+    onClick
   } = t0;
   const isSelected = t1 === undefined ? false : t1;
   const styled = t2 === undefined ? true : t2;
@@ -230,11 +238,12 @@ export function ListItem(t0) {
     t12 = $[27];
   }
   let t13;
-  if ($[28] !== cursorRef || $[29] !== t11 || $[30] !== t12) {
-    t13 = <Box ref={cursorRef} flexDirection="column">{t11}{t12}</Box>;
+  if ($[28] !== cursorRef || $[29] !== t11 || $[30] !== t12 || $[32] !== onClick) {
+    t13 = <Box ref={cursorRef} flexDirection="column" onClick={onClick}>{t11}{t12}</Box>;
     $[28] = cursorRef;
     $[29] = t11;
     $[30] = t12;
+    $[32] = onClick;
     $[31] = t13;
   } else {
     t13 = $[31];

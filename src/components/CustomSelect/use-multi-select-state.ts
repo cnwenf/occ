@@ -9,6 +9,7 @@ import {
   normalizeFullWidthSpace,
 } from '../../utils/stringUtils.js'
 import type { OptionWithDescription } from './select.js'
+import { toggleValueInSelection } from './selection-utils.js'
 import { useSelectNavigation } from './use-select-navigation.js'
 
 export type UseMultiSelectStateProps<T> = {
@@ -140,6 +141,12 @@ export type MultiSelectState<T> = {
   isSubmitFocused: boolean
 
   /**
+   * Toggle a value in/out of the selected set. No-op for disabled options.
+   * Mouse-click dispatch path for multi-select (CC 2.1.208#4).
+   */
+  toggleValue: (value: T) => void
+
+  /**
    * Update an input field value.
    */
   updateInputValue: (value: T, inputValue: string) => void
@@ -198,6 +205,18 @@ export function useMultiSelectState<T>({
       onChange?.(newValues)
     },
     [selectedValues, onChange],
+  )
+
+  // Mouse-click toggle (CC 2.1.208#4). Mirrors the official binary's
+  // toggleValue: no-op when the option is disabled, otherwise add/remove.
+  // Delegates to the pure toggleValueInSelection helper (testable without
+  // rendering React/Ink).
+  const toggleValue = useCallback(
+    (value: T) => {
+      if (options.find(opt => opt.value === value)?.disabled === true) return
+      updateSelectedValues(prev => toggleValueInSelection(prev, value))
+    },
+    [options, updateSelectedValues],
   )
 
   const navigation = useSelectNavigation<T>({
@@ -405,10 +424,17 @@ export function useMultiSelectState<T>({
 
   return {
     ...navigation,
+    // Clear submit focus whenever an option is focused (mouse or keyboard),
+    // matching the binary's focusOption wrapper.
+    focusOption: (value: T | undefined) => {
+      setIsSubmitFocused(false)
+      navigation.focusOption(value)
+    },
     selectedValues,
     inputValues,
     isSubmitFocused,
     updateInputValue,
+    toggleValue,
     onCancel,
   }
 }

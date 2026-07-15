@@ -145,15 +145,18 @@ export function SelectMulti(t0) {
       const areMoreOptionsBelow = state.visibleToIndex < options.length;
       const areMoreOptionsAbove = state.visibleFromIndex > 0;
       const i = state.visibleFromIndex + index + 1;
+      // Mouse-click dispatch (CC 2.1.208#4). Matches the official binary:
+      // disabled → no handler; input ("Other") → focusOption; else → toggleValue.
+      const onClick = isDisabled || option.disabled === true ? undefined : option.type === "input" ? () => state.focusOption(option.value) : () => state.toggleValue(option.value);
       if (option.type === "input") {
         const inputValue = state.inputValues.get(option.value) || "";
-        return <Box key={String(option.value)} gap={1}><SelectInputOption option={option} isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} inputValue={inputValue} onInputChange={value => {
+        return <Box key={String(option.value)} gap={1} onClick={onClick}><SelectInputOption option={option} isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} maxIndexWidth={maxIndexWidth} index={i} inputValue={inputValue} onInputChange={value => {
             state.updateInputValue(option.value, value);
           }} onSubmit={_temp} onExit={() => {
             onCancel();
           }} layout="compact" onOpenEditor={onOpenEditor} onImagePaste={onImagePaste} pastedContents={pastedContents} onRemoveImage={onRemoveImage}><Text color={isSelected ? "success" : undefined}>[{isSelected ? figures.tick : " "}]{" "}</Text></SelectInputOption></Box>;
       }
-      return <Box key={String(option.value)} gap={1}><SelectOption isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} description={option.description}>{!hideIndexes && <Text dimColor={true}>{`${i}.`.padEnd(maxIndexWidth)}</Text>}<Text color={isSelected ? "success" : undefined}>[{isSelected ? figures.tick : " "}]</Text><Text color={isOptionFocused ? "suggestion" : undefined}>{option.label}</Text></SelectOption></Box>;
+      return <Box key={String(option.value)} gap={1} onClick={onClick}><SelectOption isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} description={option.description}>{!hideIndexes && <Text dimColor={true}>{`${i}.`.padEnd(maxIndexWidth)}</Text>}<Text color={isSelected ? "success" : undefined}>[{isSelected ? figures.tick : " "}]</Text><Text color={isOptionFocused ? "suggestion" : undefined}>{option.label}</Text></SelectOption></Box>;
     });
     $[17] = hideIndexes;
     $[18] = isDisabled;

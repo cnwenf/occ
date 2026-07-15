@@ -37,9 +37,14 @@ export type SelectOptionProps = {
    * Set false when a child declares its own cursor (e.g. BaseTextInput).
    */
   readonly declareCursor?: boolean;
+
+  /**
+   * Mouse-click handler (CC 2.1.208#4). Forwarded to the root ListItem Box.
+   */
+  readonly onClick?: (event: import('../../ink/events/click-event.js').ClickEvent) => void;
 };
 export function SelectOption(t0) {
-  const $ = _c(8);
+  const $ = _c(9);
   const {
     isFocused,
     isSelected,
@@ -47,11 +52,12 @@ export function SelectOption(t0) {
     description,
     shouldShowDownArrow,
     shouldShowUpArrow,
-    declareCursor
+    declareCursor,
+    onClick
   } = t0;
   let t1;
-  if ($[0] !== children || $[1] !== declareCursor || $[2] !== description || $[3] !== isFocused || $[4] !== isSelected || $[5] !== shouldShowDownArrow || $[6] !== shouldShowUpArrow) {
-    t1 = <ListItem isFocused={isFocused} isSelected={isSelected} description={description} showScrollDown={shouldShowDownArrow} showScrollUp={shouldShowUpArrow} styled={false} declareCursor={declareCursor}>{children}</ListItem>;
+  if ($[0] !== children || $[1] !== declareCursor || $[2] !== description || $[3] !== isFocused || $[4] !== isSelected || $[5] !== shouldShowDownArrow || $[6] !== shouldShowUpArrow || $[8] !== onClick) {
+    t1 = <ListItem isFocused={isFocused} isSelected={isSelected} description={description} showScrollDown={shouldShowDownArrow} showScrollUp={shouldShowUpArrow} styled={false} declareCursor={declareCursor} onClick={onClick}>{children}</ListItem>;
     $[0] = children;
     $[1] = declareCursor;
     $[2] = description;
@@ -59,6 +65,7 @@ export function SelectOption(t0) {
     $[4] = isSelected;
     $[5] = shouldShowDownArrow;
     $[6] = shouldShowUpArrow;
+    $[8] = onClick;
     $[7] = t1;
   } else {
     t1 = $[7];

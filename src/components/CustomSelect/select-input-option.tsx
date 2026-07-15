@@ -74,9 +74,13 @@ type Props<T> = {
    * Callback to change the selected image index.
    */
   onSelectedImageIndexChange?: (index: number) => void;
+  /**
+   * Mouse-click handler (CC 2.1.208#4). Forwarded to the root SelectOption.
+   */
+  onClick?: (event: import('../../ink/events/click-event.js').ClickEvent) => void;
 };
 export function SelectInputOption(t0) {
-  const $ = _c(100);
+  const $ = _c(101);
   const {
     option,
     isFocused,
@@ -100,7 +104,8 @@ export function SelectInputOption(t0) {
     imagesSelected,
     selectedImageIndex: t3,
     onImagesSelectedChange,
-    onSelectedImageIndexChange
+    onSelectedImageIndexChange,
+    onClick
   } = t0;
   const showLabelProp = t1 === undefined ? false : t1;
   const resetCursorOnUpdate = t2 === undefined ? false : t2;
@@ -426,13 +431,14 @@ export function SelectInputOption(t0) {
     t33 = $[74];
   }
   let t34;
-  if ($[75] !== isFocused || $[76] !== isSelected || $[77] !== shouldShowDownArrow || $[78] !== shouldShowUpArrow || $[79] !== t33) {
-    t34 = <SelectOption isFocused={isFocused} isSelected={isSelected} shouldShowDownArrow={shouldShowDownArrow} shouldShowUpArrow={shouldShowUpArrow} declareCursor={false}>{t33}</SelectOption>;
+  if ($[75] !== isFocused || $[76] !== isSelected || $[77] !== shouldShowDownArrow || $[78] !== shouldShowUpArrow || $[79] !== t33 || $[100] !== onClick) {
+    t34 = <SelectOption isFocused={isFocused} isSelected={isSelected} shouldShowDownArrow={shouldShowDownArrow} shouldShowUpArrow={shouldShowUpArrow} declareCursor={false} onClick={onClick}>{t33}</SelectOption>;
     $[75] = isFocused;
     $[76] = isSelected;
     $[77] = shouldShowDownArrow;
     $[78] = shouldShowUpArrow;
     $[79] = t33;
+    $[100] = onClick;
     $[80] = t34;
   } else {
     t34 = $[80];
