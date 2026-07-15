@@ -884,8 +884,135 @@ export const refreshAndGetAwsCredentials = memoizeWithTTLAsync(
   },
 )
 
+/**
+ * 2.1.207 #16: Per-region cache of memoized AWS credential providers.
+ *
+ * When no explicit credentials (awsCredentialExport) are configured, the
+ * Bedrock SDK falls back to its internal credential provider chain
+ * (fromNodeProviderChain), which re-resolves SSO tokens on EVERY API request
+ * because getAnthropicClient() creates a fresh AnthropicBedrock client per
+ * call (each with a fresh _authState).
+ *
+ * The official 2.1.210 binary introduced `a3` (binary var): a per-region
+ * memoized credential provider that calls
+ * `fromNodeProviderChain({ignoreCache:true})()` ONCE and caches the resolved
+ * credentials (including SSO tokens) with TTL based on their Expiration. It is
+ * passed to the SDK as `providerChainResolver: () => a3(region)`, gated by
+ * `!CLAUDE_CODE_SKIP_AWS_CRED_CACHE`. This avoids re-running the full provider
+ * chain (SSO token retrieval, IMDS, profile reads) on every request.
+ *
+ * Binary evidence (210 vs 206):
+ *   - `clearAwsHelperCredentialsCache` (iDi): 0 occurrences in 206, 2 in 210 (NEW)
+ *   - `CLAUDE_CODE_SKIP_AWS_CRED_CACHE`: 6 occurrences in 210 (NEW env var)
+ *   - call site: `...!Se.CLAUDE_CODE_SKIP_AWS_CRED_CACHE&&{providerChainResolver:()=>a3(o)}`
+ *   - `a3=RYe(async(e)=>{...Xpe(async()=>{...fromNodeProviderChain({ignoreCache:!0,...})()...})})`
+ *   - `X8t(region)` = rate-limited invalidation: `a3.cache.delete(key)`
+ *   - `PAe()` (clearAwsCredentialsCache) clears BOTH `q7.cache` and `a3.cache`
+ */
+type AwsCredentialLike = {
+  accessKeyId: string
+  secretAccessKey: string
+  sessionToken?: string
+  expiration?: Date
+}
+
+type CredentialProviderFn = () => Promise<AwsCredentialLike>
+
+const awsCredentialProviderCache = new Map<string, CredentialProviderFn>()
+
+/**
+ * Minimum interval between per-region provider invalidations. The binary
+ * rate-limits invalidation (`sOh`) so a 401 retry loop doesn't thrash the
+ * provider chain (re-running SSO login on every retry would be worse than
+ * serving stale creds briefly).
+ */
+const AWS_PROVIDER_INVALIDATE_MIN_INTERVAL_MS = 30 * 1000
+
+const awsProviderInvalidateTimestamps = new Map<string, number>()
+
+/**
+ * Returns a memoized credential provider for the given AWS region. The provider
+ * resolves credentials via `fromNodeProviderChain({ignoreCache:true})` ONCE and
+ * caches them until their Expiration (minus a safety margin). Subsequent calls
+ * return the cached credentials without re-running the provider chain.
+ *
+ * `ignoreCache:true` tells the AWS SDK to skip its own internal cache so that
+ * OCC's cache is authoritative — matching the official binary's `a3`.
+ */
+export function getDefaultAwsCredentialProvider(
+  region: string,
+): CredentialProviderFn {
+  let provider = awsCredentialProviderCache.get(region)
+  if (!provider) {
+    provider = memoizeWithTTLAsync(
+      async (): Promise<AwsCredentialLike> => {
+        logForDebugging(
+          `[API:auth] resolving default AWS provider chain (region: ${region})`,
+        )
+        const { fromNodeProviderChain } = await import(
+          '@aws-sdk/credential-providers'
+        )
+        const chain = fromNodeProviderChain({
+          ignoreCache: true,
+          clientConfig: { region },
+        })
+        const credentials = (await chain()) as AwsCredentialLike
+        return credentials
+      },
+      DEFAULT_AWS_STS_TTL,
+      result => {
+        if (!result?.expiration) return undefined
+        const remaining =
+          result.expiration.getTime() -
+          Date.now() -
+          AWS_CREDENTIAL_EXPIRY_SAFETY_MARGIN_MS
+        return Math.max(remaining, AWS_CREDENTIAL_MIN_CACHE_TTL_MS)
+      },
+    )
+    awsCredentialProviderCache.set(region, provider)
+  }
+  return provider
+}
+
+/**
+ * Rate-limited per-region invalidation of the cached AWS credential provider.
+ * The binary's `X8t(region)` debounces invalidations per region so a 401 retry
+ * loop doesn't thrash the provider chain. Returns true if invalidated, false if
+ * rate-limited.
+ */
+export function invalidateAwsCredentialProvider(region: string): boolean {
+  const now = Date.now()
+  if (
+    now - (awsProviderInvalidateTimestamps.get(region) ?? 0) <
+    AWS_PROVIDER_INVALIDATE_MIN_INTERVAL_MS
+  ) {
+    return false
+  }
+  awsProviderInvalidateTimestamps.set(region, now)
+  awsCredentialProviderCache.delete(region)
+  return true
+}
+
+/**
+ * Clears only the awsCredentialExport-based credential cache
+ * (refreshAndGetAwsCredentials). Matches the official 2.1.210 binary's
+ * `clearAwsHelperCredentialsCache` (iDi = `q7.cache.clear()`), which was split
+ * out from `clearAwsCredentialsCache` in 2.1.207 so that invalidating the
+ * export cache does NOT also drop the cached SSO provider chain.
+ */
+export function clearAwsHelperCredentialsCache(): void {
+  refreshAndGetAwsCredentials.cache.clear()
+}
+
+/**
+ * Clears BOTH the awsCredentialExport cache (refreshAndGetAwsCredentials) and
+ * the per-region provider-chain cache (getDefaultAwsCredentialProvider).
+ * Matches the official 2.1.210 binary's `clearAwsCredentialsCache`
+ * (PAe = `q7.cache.clear(), a3.cache.clear()`).
+ */
 export function clearAwsCredentialsCache(): void {
   refreshAndGetAwsCredentials.cache.clear()
+  awsCredentialProviderCache.clear()
 }
 
 /**

@@ -6,6 +6,7 @@ import {
   getAnthropicApiKey,
   getApiKeyFromApiKeyHelper,
   getClaudeAIOAuthTokens,
+  getDefaultAwsCredentialProvider,
   isClaudeAISubscriber,
   refreshAndGetAwsCredentials,
   refreshGcpCredentialsIfNeeded,
@@ -247,6 +248,17 @@ export async function getAnthropicClient({
         bedrockArgs.awsAccessKey = cachedCredentials.accessKeyId
         bedrockArgs.awsSecretKey = cachedCredentials.secretAccessKey
         bedrockArgs.awsSessionToken = cachedCredentials.sessionToken
+      } else if (!isEnvTruthy(process.env.CLAUDE_CODE_SKIP_AWS_CRED_CACHE)) {
+        // 2.1.207 #16: No awsCredentialExport configured → the SDK falls back
+        // to its internal fromNodeProviderChain, which re-resolves SSO tokens
+        // on EVERY request (each getAnthropicClient() call creates a fresh
+        // AnthropicBedrock client with a fresh _authState). Pass a cached
+        // providerChainResolver so the provider chain runs ONCE per region and
+        // the resolved credentials (SSO tokens included) are reused. Gated by
+        // CLAUDE_CODE_SKIP_AWS_CRED_CACHE to allow opt-out. Official 2.1.210
+        // binary: `...!Se.CLAUDE_CODE_SKIP_AWS_CRED_CACHE&&{providerChainResolver:()=>a3(o)}`
+        bedrockArgs.providerChainResolver = async () =>
+          getDefaultAwsCredentialProvider(awsRegion)
       }
     }
     // we have always been lying about the return type - this doesn't support batching or models
