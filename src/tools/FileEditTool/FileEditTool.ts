@@ -72,8 +72,10 @@ import {
 } from './UI.js'
 import {
   areFileEditsInputsEquivalent,
+  checkEditWouldApply,
   findActualString,
   getPatchForEdit,
+  isStaleReadRecoverable,
   preserveQuoteStyle,
 } from './utils.js'
 
@@ -312,13 +314,34 @@ export const FileEditTool = buildTool({
         if (isFullRead && fileContent === readTimestamp.content) {
           // Content unchanged, safe to proceed
         } else {
-          return {
-            result: false,
-            behavior: 'ask',
-            message:
-              'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
-            errorCode: 7,
+          // claude-code 2.1.208 #13: the file changed after Read, but the edit
+          // can still succeed when the target text matches uniquely and the
+          // agent could re-read the file. Recover instead of fail-staling on a
+          // content mismatch. If the target is gone/ambiguous or reads are
+          // denied, fall back to the stale-read error.
+          const wouldApply = checkEditWouldApply(
+            fileContent,
+            old_string,
+            replace_all ?? false,
+          )
+          const recovered =
+            wouldApply === 'applies' &&
+            isStaleReadRecoverable(fullFilePath, toolUseContext)
+          logEvent('tengu_edit_tool_stale_read', {
+            wouldHaveResult: wouldApply,
+            recovered,
+          })
+          if (!recovered) {
+            return {
+              result: false,
+              behavior: 'ask',
+              message:
+                'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+              errorCode: 7,
+            }
           }
+          // Recovered: fall through to the normal findActualString/uniqueness
+          // validation, which will succeed because wouldApply === 'applies'.
         }
       }
     }
@@ -399,15 +422,12 @@ export const FileEditTool = buildTool({
   },
   async call(
     input: FileEditInput,
-    {
-      readFileState,
-      userModified,
-      updateFileHistoryState,
-      dynamicSkillDirTriggers,
-    },
+    toolUseContext: ToolUseContext,
     _,
     parentMessage,
   ) {
+    const { readFileState, userModified, updateFileHistoryState, dynamicSkillDirTriggers } =
+      toolUseContext
     const { file_path, old_string, new_string, replace_all = false } = input
 
     // 1. Get current state
@@ -475,7 +495,24 @@ export const FileEditTool = buildTool({
         const contentUnchanged =
           isFullRead && originalFileContents === lastRead.content
         if (!contentUnchanged) {
-          throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+          // claude-code 2.1.208 #13: recover from a stale read when the target
+          // text still matches uniquely and the agent could re-read the file.
+          const wouldApply = checkEditWouldApply(
+            originalFileContents,
+            old_string,
+            replace_all,
+          )
+          const recovered =
+            wouldApply === 'applies' &&
+            isStaleReadRecoverable(absoluteFilePath, toolUseContext)
+          logEvent('tengu_edit_tool_stale_read', {
+            wouldHaveResult: wouldApply,
+            recovered,
+          })
+          if (!recovered) {
+            throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
+          }
+          // Recovered: proceed with the edit using the fresh on-disk content.
         }
       }
     }

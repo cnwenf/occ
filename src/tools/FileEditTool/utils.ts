@@ -2,6 +2,7 @@ import { type StructuredPatchHunk, structuredPatch } from 'diff'
 import { logError } from 'src/utils/log.js'
 import { expandPath } from 'src/utils/path.js'
 import { countCharInString } from 'src/utils/stringUtils.js'
+import type { ToolUseContext } from '../../Tool.js'
 import {
   DIFF_TIMEOUT_MS,
   getPatchForDisplay,
@@ -13,6 +14,8 @@ import {
   convertLeadingTabsToSpaces,
   readFileSyncCached,
 } from '../../utils/file.js'
+import { matchingRuleForInput } from '../../utils/permissions/filesystem.js'
+import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import type { EditInput, FileEdit } from './types.js'
 
 // Claude can't output curly quotes, so we define them as constants here for Claude to use
@@ -90,6 +93,71 @@ export function findActualString(
   }
 
   return null
+}
+
+/**
+ * Result of classifying whether an edit would still apply to `fileContent`.
+ * Ports claude-code 2.1.208's wouldHaveResult classifier (j9i) used by the
+ * Edit tool's stale-read recovery.
+ */
+export type EditWouldApplyResult = 'applies' | 'no_match' | 'ambiguous'
+
+/**
+ * Checks whether an edit (old_string → new_string, with replace_all) would
+ * successfully apply to `fileContent`. Mirrors the official j9i():
+ * - "no_match": old_string is empty or not present (even via quote
+ *   normalization) in the file.
+ * - "ambiguous": old_string occurs more than once and replace_all is false.
+ * - "applies": old_string is present and uniquely identified (or replace_all
+ *   is true, in which case multiple occurrences are fine).
+ *
+ * Uses findActualString so a quote-normalized match counts as a hit.
+ */
+export function checkEditWouldApply(
+  fileContent: string,
+  oldString: string,
+  replaceAll: boolean,
+): EditWouldApplyResult {
+  if (oldString === '') return 'no_match'
+  const actualOldString = findActualString(fileContent, oldString)
+  if (!actualOldString) return 'no_match'
+  if (!replaceAll) {
+    const first = fileContent.indexOf(actualOldString)
+    if (first === -1) return 'no_match'
+    if (
+      fileContent.indexOf(actualOldString, first + actualOldString.length) !==
+      -1
+    ) {
+      return 'ambiguous'
+    }
+  }
+  return 'applies'
+}
+
+/**
+ * Whether a stale-read (file modified after the model's last Read) may still
+ * be edited when the target text still matches uniquely. Ports claude-code
+ * 2.1.208 #13's recovery guard U9i: the agent must have the Read tool
+ * available (not a restricted edit-only subagent that lacks Read) and a Read
+ * of this file must not be denied by an explicit permission rule. When both
+ * hold, recovering is safe because the agent could re-read the file if it
+ * needed to; the Edit should not fail-stale on a content mismatch when the
+ * target is still uniquely present.
+ */
+export function isStaleReadRecoverable(
+  filePath: string,
+  toolUseContext: ToolUseContext,
+): boolean {
+  const tools = toolUseContext.options.tools ?? []
+  const hasReadTool = tools.some(tool => tool.name === FILE_READ_TOOL_NAME)
+  const appState = toolUseContext.getAppState()
+  const denyReadRule = matchingRuleForInput(
+    filePath,
+    appState.toolPermissionContext,
+    'read',
+    'deny',
+  )
+  return hasReadTool && denyReadRule === null
 }
 
 /**
