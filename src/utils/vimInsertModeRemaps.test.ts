@@ -1,5 +1,9 @@
-import { mock, describe, expect, test, beforeEach } from 'bun:test'
-import { SettingsSchema } from './settings/types.js'
+import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
+import { SettingsSchema, type SettingsJson } from './settings/types.js'
+import {
+  setCachedSettingsForSource,
+  resetSettingsCache,
+} from './settings/settingsCache.js'
 import {
   VIM_INSERT_REMAP_TIMEOUT_MS,
   detectInsertModeRemap,
@@ -339,41 +343,53 @@ describe('2.1.208 detectInsertModeRemap (binary INSERT handler)', () => {
 })
 
 describe('2.1.208 getVimInsertModeRemaps reader (binary n6s)', () => {
+  // Use the real per-source settings cache as the test seam (setCachedSettingsForSource)
+  // instead of `mock.module('./settings/settings.js')` — `mock.module` registrations are
+  // process-wide and NOT cleared by `mock.clearAllMocks()`, so they leak into other test
+  // files in the same `bun test` process (broke autoMode207.test.ts after the 3-merge
+  // file-order shift). The cache seam is module-local state reset in afterEach.
   beforeEach(() => {
-    mock.clearAllMocks()
+    resetSettingsCache()
+  })
+  afterEach(() => {
+    resetSettingsCache()
   })
 
-  test('returns an empty Map when the setting is unset', async () => {
-    // Arrange — mock the settings module so no source defines the key.
-    mock.module('./settings/settings.js', () => ({
-      getSettingsForSource: () => null,
-    }))
-    // Re-import so the mock takes effect.
-    const mod = await import('./vimInsertModeRemaps.js?t=' + Date.now())
+  test('returns an empty Map when the setting is unset', () => {
+    // Arrange — no source defines vimInsertModeRemaps (cache is empty).
     // Act
-    const remaps = mod.getVimInsertModeRemaps()
+    const remaps = getVimInsertModeRemaps()
     // Assert — mirrors n6s: IS_(G5t("vimInsertModeRemaps")[0] ?? {}).
     expect(remaps.size).toBe(0)
     expect(remaps).toBeInstanceOf(Map)
   })
 
-  test('reads and normalizes the value from the first defining source', async () => {
-    // Arrange — userSettings defines {"jj": "<Esc>"}; policy/flag do not.
-    let calls = 0
-    mock.module('./settings/settings.js', () => ({
-      getSettingsForSource: (source: string) => {
-        calls++
-        if (source === 'userSettings') return { vimInsertModeRemaps: { jj: '<esc>' } }
-        return null
-      },
-    }))
-    const mod = await import('./vimInsertModeRemaps.js?u=' + Date.now())
+  test('reads and normalizes the value from the first defining source', () => {
+    // Arrange — userSettings defines {"jj": "<esc>"}; policy/flag do not.
+    setCachedSettingsForSource('userSettings', {
+      vimInsertModeRemaps: { jj: '<esc>' },
+    } as SettingsJson)
     // Act
-    const remaps = mod.getVimInsertModeRemaps()
+    const remaps = getVimInsertModeRemaps()
     // Assert
     expect(remaps.size).toBe(1)
     expect(remaps.get('jj')).toBe('<Esc>')
-    // policy > flag > user order: user is checked last.
-    expect(calls).toBe(3)
+  })
+
+  test('policySettings takes priority over userSettings (first defined wins)', () => {
+    // Arrange — both policy and user define remaps. Binary `G5t` reads
+    // policySettings → flagSettings → userSettings (first defining source wins).
+    setCachedSettingsForSource('policySettings', {
+      vimInsertModeRemaps: { kk: '<esc>' },
+    } as SettingsJson)
+    setCachedSettingsForSource('userSettings', {
+      vimInsertModeRemaps: { jj: '<esc>' },
+    } as SettingsJson)
+    // Act
+    const remaps = getVimInsertModeRemaps()
+    // Assert — policy's "kk" wins; user's "jj" is never read.
+    expect(remaps.size).toBe(1)
+    expect(remaps.get('kk')).toBe('<Esc>')
+    expect(remaps.has('jj')).toBe(false)
   })
 })
