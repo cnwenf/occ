@@ -9,6 +9,10 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.268 - 2026-07-15
+
+- Fix the `/tasks` background-tasks browser trapping the user in a blank screen when pressing Enter on a background `local_workflow` or `monitor_mcp` task. Both detail dialogs were auto-generated `() => null` stubs — they rendered nothing and bound no keys, so Esc/left-arrow/Enter did nothing and the only exit was force-quitting the REPL. Replaced both with real implementations following the canonical `ShellDetailDialog` keybinding pattern (Esc/Enter/Space → close, ← → back to list, `x` → kill the running task). `WorkflowDetailDialog` renders run id, duration, script path, summary, phases, agents, and logs; `MonitorMcpDetailDialog` renders status, runtime, and description. Also wired the missing `onDone` prop into the `monitor_mcp` case of `BackgroundTasksDialog` (mirrored the `dream` case).
+
 ## 2.1.267 - 2026-07-10
 
 - Fix `phase()` primitive silently dropping callbacks: models authoring workflow scripts under ultracode (e.g. GLM-5.2) naturally write `phase('scan', async () => { ...parallel/agent... })` (the grouping-callback idiom from test frameworks). The previous `phase(title: string): void` signature ignored any second argument, so the callback never ran — the workflow returned `undefined` with 0 agents in ~1ms. `phase` now accepts an optional `fn?: () => T | Promise<T>` callback: when present, it runs within the phase grouping and its return value becomes `phase()`'s result. Backward compatible — `phase('title')` without a callback still just sets the phase and returns void (binary-parity contract preserved). Verified by a capture-proxy e2e (run5): with the fix the callback ran and the model received real scan results instead of `undefined`.
