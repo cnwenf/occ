@@ -841,13 +841,13 @@ export function normalizePatternsToPath(
 export function getFileReadIgnorePatterns(
   toolPermissionContext: ToolPermissionContext,
 ): Map<string | null, string[]> {
-  const patternsByRoot = getPatternsByRoot(
+  const matchersByRoot = getCachedPatternMatchers(
     toolPermissionContext,
     'read',
     'deny',
   )
   const result = new Map<string | null, string[]>()
-  for (const [patternRoot, patternMap] of patternsByRoot.entries()) {
+  for (const [patternRoot, { patternMap }] of matchersByRoot.entries()) {
     result.set(patternRoot, Array.from(patternMap.keys()))
   }
 
@@ -920,6 +920,157 @@ function patternWithRoot(
   }
 }
 
+// ============================================================================
+// Cached permission rule matchers (2.1.208+)
+// Compiles deny/ask rule matchers once and caches them across turns to avoid
+// multi-second slowdowns with many rules. Keyed by the rules object reference
+// (WeakMap) + a composite string key (platform, homedir, cwd, etc.).
+// Mirrors the official binary's K0s / G0s cache.
+// ============================================================================
+
+const MATCHER_RECOMPILE_THRESHOLD = 1e4
+const MATCHER_CACHE_MAX_ENTRIES = 16
+
+type CachedMatcherEntry = {
+  patternMap: Map<string, PermissionRule>
+  getIg: () => ReturnType<typeof ignore>
+}
+
+type CachedMatcherResult = Map<string | null, CachedMatcherEntry>
+
+// WeakMap: rules object → (composite key → compiled matchers).
+// When the context is updated with new rules, a new rules object is created
+// and old cache entries are garbage collected automatically.
+let matcherCache = new WeakMap<object, Map<string, CachedMatcherResult>>()
+
+/**
+ * Normalize a pattern for the ignore library.
+ * Mirrors the binary's `aDd` function: strips `/**` suffix unless the
+ * remaining part is empty or slashes-only (in which case keep `/**`).
+ */
+function normalizeIgnorePattern(pattern: string): string {
+  if (pattern.endsWith('/**')) {
+    const withoutSuffix = pattern.slice(0, -3)
+    return /[^/]/.test(withoutSuffix) ? withoutSuffix : '/**'
+  }
+  return pattern
+}
+
+/**
+ * Build (or retrieve from cache) pattern matchers for permission rules.
+ *
+ * For 'deny' and 'ask' rules, the compiled matchers are cached in a WeakMap
+ * keyed by the rules object reference, with a composite string sub-key that
+ * includes platform, homedir, cwd, and additional working directories.
+ * This avoids re-compiling regex/path matchers on every turn when the rules
+ * haven't changed (2.1.208+).
+ *
+ * For 'allow' rules, no caching is applied (returns fresh result each call).
+ *
+ * LRU eviction at {@link MATCHER_CACHE_MAX_ENTRIES} entries per rules reference.
+ * The lazy `getIg` getter re-compiles the ignore matcher after
+ * {@link MATCHER_RECOMPILE_THRESHOLD} uses to prevent stale-matchers buildup.
+ */
+function getCachedPatternMatchers(
+  toolPermissionContext: ToolPermissionContext,
+  toolType: 'edit' | 'read',
+  behavior: 'allow' | 'deny' | 'ask',
+): CachedMatcherResult {
+  const rulesObject =
+    behavior === 'deny'
+      ? (toolPermissionContext.alwaysDenyRules as object)
+      : behavior === 'ask'
+        ? (toolPermissionContext.alwaysAskRules as object)
+        : null
+
+  const additionalDirs = JSON.stringify(
+    [...toolPermissionContext.additionalWorkingDirectories.keys()].sort(),
+  )
+  const cacheKey = [
+    toolType,
+    behavior,
+    getPlatform(),
+    homedir(),
+    getCwd(),
+    getOriginalCwd(),
+    additionalDirs,
+  ].join('\x00')
+
+  // Cache lookup (deny/ask only)
+  if (rulesObject !== null) {
+    const innerMap = matcherCache.get(rulesObject)
+    if (innerMap !== undefined) {
+      const cached = innerMap.get(cacheKey)
+      if (cached !== undefined) {
+        // LRU touch: move to end (most recently used)
+        innerMap.delete(cacheKey)
+        innerMap.set(cacheKey, cached)
+        return cached
+      }
+    }
+  }
+
+  // Build the patterns map (cache miss or 'allow' behavior)
+  const patternsByRoot = getPatternsByRoot(
+    toolPermissionContext,
+    toolType,
+    behavior,
+  )
+
+  // Build the cached result with lazy ignore-matcher compilation
+  const result: CachedMatcherResult = new Map()
+  for (const [root, patternMap] of patternsByRoot.entries()) {
+    let ig: ReturnType<typeof ignore> | undefined
+    let useCount = 0
+    result.set(root, {
+      patternMap,
+      getIg: () => {
+        if (ig === undefined || ++useCount > MATCHER_RECOMPILE_THRESHOLD) {
+          useCount = 1
+          ig = ignore().add(
+            Array.from(patternMap.keys(), normalizeIgnorePattern),
+          )
+        }
+        return ig
+      },
+    })
+  }
+
+  // Cache store (deny/ask only)
+  if (rulesObject !== null) {
+    let innerMap = matcherCache.get(rulesObject)
+    if (innerMap === undefined) {
+      innerMap = new Map()
+      matcherCache.set(rulesObject, innerMap)
+    }
+    // LRU eviction at max entries
+    if (innerMap.size >= MATCHER_CACHE_MAX_ENTRIES) {
+      const oldestKey = innerMap.keys().next().value
+      if (oldestKey !== undefined) {
+        innerMap.delete(oldestKey)
+      }
+    }
+    innerMap.set(cacheKey, result)
+  }
+
+  return result
+}
+
+/** Clear the matcher cache (test-only). */
+export function _clearMatcherCacheForTesting(): void {
+  matcherCache = new WeakMap()
+}
+
+/** Get the cache entry count for a given rules object (test-only). */
+export function _getMatcherCacheSizeForTesting(
+  rulesObject: object,
+): number {
+  return matcherCache.get(rulesObject)?.size ?? 0
+}
+
+/** @internal — exported for cache-reuse testing. */
+export { getCachedPatternMatchers as _getCachedPatternMatchersForTesting }
+
 function getPatternsByRoot(
   toolPermissionContext: ToolPermissionContext,
   toolType: 'edit' | 'read',
@@ -969,28 +1120,15 @@ export function matchingRuleForInput(
     fileAbsolutePath = windowsPathToPosixPath(fileAbsolutePath)
   }
 
-  const patternsByRoot = getPatternsByRoot(
+  const matchersByRoot = getCachedPatternMatchers(
     toolPermissionContext,
     toolType,
     behavior,
   )
 
   // Check each root for a matching pattern
-  for (const [root, patternMap] of patternsByRoot.entries()) {
-    // Transform patterns for the ignore library
-    const patterns = Array.from(patternMap.keys()).map(pattern => {
-      let adjustedPattern = pattern
-
-      // Remove /** suffix - ignore library treats 'path' as matching both
-      // the path itself and everything inside it
-      if (adjustedPattern.endsWith('/**')) {
-        adjustedPattern = adjustedPattern.slice(0, -3)
-      }
-
-      return adjustedPattern
-    })
-
-    const ig = ignore().add(patterns)
+  for (const [root, { patternMap, getIg }] of matchersByRoot.entries()) {
+    const ig = getIg()
 
     // Use cross-platform relative path helper for POSIX-style patterns
     const relativePathStr = relativePath(
