@@ -10,6 +10,7 @@ import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierAppro
 import type { buildMessageLookups } from '../../../utils/messages.js';
 import { MessageResponse } from '../../MessageResponse.js';
 import { HookProgressMessage } from '../HookProgressMessage.js';
+import { wrapToolResultMessage } from '../wrapToolResultMessage.js';
 type Props = {
   message: NormalizedUserMessage;
   lookups: ReturnType<typeof buildMessageLookups>;
@@ -62,7 +63,7 @@ export function UserToolSuccessMessage({
     return null;
   }
   const toolResult = parsedOutput?.data ?? message.toolUseResult;
-  const renderedMessage = tool.renderToolResultMessage?.(toolResult as never, filterToolProgressMessages(progressMessagesForMessage), {
+  const renderedMessage = wrapToolResultMessage(tool.renderToolResultMessage?.(toolResult as never, filterToolProgressMessages(progressMessagesForMessage), {
     style,
     theme,
     tools,
@@ -70,7 +71,7 @@ export function UserToolSuccessMessage({
     isTranscriptMode,
     isBriefOnly,
     input: lookups.toolUseByToolUseID.get(toolUseID)?.input
-  }) ?? null;
+  }), tool) ?? null;
 
   // Don't render anything if the tool result message is null
   if (renderedMessage === null) {
