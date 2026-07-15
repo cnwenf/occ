@@ -66,6 +66,15 @@ import { isMcpInstructionsDeltaEnabled } from '../utils/mcpInstructionsDelta.js'
 // capable, the lean system prompt is the default — non-essential expanded
 // sections are stripped. Cycle-safe: src/context.ts does not import this module.
 import { shouldUseLeanSystemPrompt } from '../context.js'
+// 2.1.207 #4: mid-conversation-system instruction gate. When the active model
+// supports mid-conversation system turns (and isn't Sonnet 5 / Opus 4.8), the
+// system prompt tells the model that system-generated updates are
+// "system-controlled, unlike function results" so benign system-generated
+// updates don't trigger spurious prompt-injection warnings.
+import {
+  shouldUseMidConversationSystemInstruction,
+  MID_CONVERSATION_SYSTEM_INSTRUCTION,
+} from '../utils/model/midConversationSystem.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -134,8 +143,16 @@ function getHooksSection(): string {
   return `Users may configure 'hooks', shell commands that execute in response to events like tool calls, in settings. Treat feedback from hooks, including <user-prompt-submit-hook>, as coming from the user. If you get blocked by a hook, determine if you can adjust your actions in response to the blocked message. If not, ask the user to check their hooks configuration.`
 }
 
-function getSystemRemindersSection(): string {
-  return `- Tool results and user messages may include <system-reminder> tags. <system-reminder> tags contain useful information and reminders. They are automatically added by the system, and bear no direct relation to the specific tool results or user messages in which they appear.
+function getSystemRemindersSection(model: string): string {
+  // 2.1.207 #4 (binary Kkd(e,"standard")): for models that support
+  // mid-conversation system turns (and aren't Sonnet 5 / Opus 4.8), substitute
+  // the mid-conversation-system instruction for the regular <system-reminder>
+  // explanation — telling the model that system-generated updates are
+  // system-controlled, unlike function results.
+  const reminderLine = shouldUseMidConversationSystemInstruction(model)
+    ? `- ${MID_CONVERSATION_SYSTEM_INSTRUCTION}`
+    : '- Tool results and user messages may include <system-reminder> tags. <system-reminder> tags contain useful information and reminders. They are automatically added by the system, and bear no direct relation to the specific tool results or user messages in which they appear.'
+  return `${reminderLine}
 - The conversation has unlimited context through automatic summarization.`
 }
 
@@ -191,14 +208,23 @@ You are an interactive agent that helps users ${outputStyleConfig !== null ? 'ac
 ${CYBER_RISK_INSTRUCTION}`
 }
 
-function getSimpleSystemSection(): string {
+function getSimpleSystemSection(model: string): string {
   // 2.1.206 alignment: "# Harness" — 5 condensed bullets replacing the
   // verbose 6-bullet "# System" section. Merges the "prefer dedicated tools"
   // guidance from the old "# Using your tools" section (bullet 4).
+  // 2.1.207 #4 (binary Kkd(t,"lean")): bullet 3's lead clause is the
+  // mid-conversation-system instruction when the active model supports
+  // mid-conversation system turns (and isn't Sonnet 5 / Opus 4.8); otherwise
+  // the regular <system-reminder> explanation. The trailing
+  // "Hooks may intercept tool calls; treat hook output as user feedback."
+  // clause is always appended (binary-verbatim bullet shape).
+  const reminderInstruction = shouldUseMidConversationSystemInstruction(model)
+    ? MID_CONVERSATION_SYSTEM_INSTRUCTION
+    : '`<system-reminder>` tags in messages and tool results are injected by the harness, not the user.'
   const items = [
     `Text you output outside of tool use is displayed to the user as Github-flavored markdown in a terminal.`,
     `Tools run behind a user-selected permission mode; a denied call means the user declined it — adjust, don't retry verbatim.`,
-    `\`<system-reminder>\` tags in messages and tool results are injected by the harness, not the user. Hooks may intercept tool calls; treat hook output as user feedback.`,
+    `${reminderInstruction} Hooks may intercept tool calls; treat hook output as user feedback.`,
     `Prefer the dedicated file/search tools over shell commands when one fits. Independent tool calls can run in parallel in one response.`,
     `Reference code as \`file_path:line_number\` — it's clickable.`,
   ]
@@ -404,7 +430,7 @@ export async function getSystemPrompt(
       `\nYou are an autonomous agent. Use the available tools to do useful work.
 
 ${CYBER_RISK_INSTRUCTION}`,
-      getSystemRemindersSection(),
+      getSystemRemindersSection(model),
       await loadMemoryPrompt(),
       envInfo,
       getLanguageSection(settings.language),
@@ -509,7 +535,7 @@ ${CYBER_RISK_INSTRUCTION}`,
     // sections (their key points are folded into # Harness bullet 4 and
     // the actions paragraph's "Report outcomes faithfully" clause).
     getSimpleIntroSection(outputStyleConfig),
-    getSimpleSystemSection(),
+    getSimpleSystemSection(model),
     outputStyleConfig === null ||
     outputStyleConfig.keepCodingInstructions === true
       ? getSimpleDoingTasksSection()
