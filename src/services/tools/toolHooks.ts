@@ -20,6 +20,7 @@ import {
   executePostToolUseFailureHooks,
   executePreToolHooks,
   getPreToolHookBlockingMessage,
+  PRE_TOOL_USE_HOOK_TIMEOUT_MESSAGE,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -664,6 +665,13 @@ export async function* runPreToolUseHooks(
     }
   } catch (error) {
     logError(error)
+    // #9 (2.1.210): A hook dispatch failure that is NOT a user-initiated
+    // cancel (parent abort signal still live) must surface the official
+    // timeout reason — not a bare stop that becomes "Error: undefined" and
+    // makes unattended sessions interpret it as a user rejection and halt.
+    if (!toolUseContext.abortController.signal.aborted) {
+      yield { type: 'stopReason', stopReason: PRE_TOOL_USE_HOOK_TIMEOUT_MESSAGE }
+    }
     yield { type: 'stop' }
     return
   }

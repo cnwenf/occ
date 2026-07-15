@@ -172,6 +172,48 @@ import { errorMessage, getErrnoCode } from './errors.js'
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000
 
 /**
+ * PreToolUse hook timeout reason (2.1.210 #9). When a hook callback times out
+ * (per-hook combined abort signal fires but the parent signal is still live),
+ * the model must see THIS message — not a bare "Error: undefined" stop that
+ * unattended sessions misread as a user rejection and halt on.
+ *
+ * Matches the official 2.1.210 string `aVg`:
+ * "PreToolUse hook did not respond before its timeout (host client may be
+ * unreachable). The tool call was not executed; other configured hooks may
+ * not have completed."
+ */
+export const PRE_TOOL_USE_HOOK_TIMEOUT_MESSAGE =
+  'PreToolUse hook did not respond before its timeout (host client may be unreachable). The tool call was not executed; other configured hooks may not have completed.'
+
+/**
+ * #9 (2.1.210): classify a hook-callback error as a per-hook TIMEOUT that
+ * must be swallowed (surfaced as a blockingError) vs rethrown. A per-hook
+ * timeout fires the combined abort signal while the PARENT signal is still
+ * live (i.e. the user did not cancel). The official 210 fix swallows this
+ * case (`callback hook timed out; swallowed rejection`) so the model sees a
+ * timeout — not a bare "Error: undefined" stop that unattended sessions
+ * misread as a user rejection and halt on. User-cancels and non-timeout
+ * errors still rethrow.
+ */
+export function isPerHookCallbackTimeout(
+  abortSignalAborted: boolean,
+  parentSignalAborted: boolean,
+): boolean {
+  return abortSignalAborted && !parentSignalAborted
+}
+
+/**
+ * #9 (2.1.210): the blockingError text the model sees when a callback hook
+ * times out. Matches the official `hook callback timed out after ${ue}ms`.
+ */
+export function hookCallbackTimeoutMessage(
+  hookName: string,
+  timeoutMs: number,
+): string {
+  return `${hookName} hook callback timed out after ${timeoutMs}ms`
+}
+
+/**
  * SessionEnd hooks run during shutdown/clear and need a much tighter bound
  * than TOOL_HOOK_EXECUTION_TIMEOUT_MS. This value is used by callers as both
  * the per-hook default timeout AND the overall AbortSignal cap (hooks run in
@@ -2556,15 +2598,54 @@ async function* executeHooks({
         signal,
         { timeoutMs: callbackTimeoutMs },
       )
-      yield executeHookCallback({
-        toolUseID,
-        hook,
-        hookEvent,
-        hookInput,
-        signal: abortSignal,
-        hookIndex,
-        toolUseContext,
-      }).finally(cleanup)
+      // #9 (2.1.210): A callback hook timeout must be swallowed and surfaced
+      // as a blockingError — NOT propagated as a bare stop. The official 210
+      // fix: `${f} callback hook timed out; swallowed rejection: ${le(be)}`
+      // + emit tengu_sdk_hook_callback_timeout + yield blockingError. Without
+      // this, the rejection propagates through all()/executeHooks → toolHooks
+      // outer catch → bare {type:'stop'} → "Error: undefined" → model
+      // interprets as user rejection → unattended sessions halt.
+      //
+      // NOTE: `yield await` (not bare `yield`) so the promise resolves before
+      // yielding — a bare `yield promise` yields the Promise object, which the
+      // all()-consumer receives as-is (no auto-await in async generators),
+      // silently dropping the result and leaking the rejection.
+      try {
+        yield await executeHookCallback({
+          toolUseID,
+          hook,
+          hookEvent,
+          hookInput,
+          signal: abortSignal,
+          hookIndex,
+          toolUseContext,
+        })
+      } catch (error) {
+        if (isPerHookCallbackTimeout(abortSignal.aborted, !!signal?.aborted)) {
+          logForDebugging(
+            `${hookName} callback hook timed out; swallowed rejection: ${errorMessage(error)}`,
+          )
+          logEvent('tengu_sdk_hook_callback_timeout', {
+            hookEvent:
+              hookEvent as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+          yield {
+            blockingError: {
+              blockingError: hookCallbackTimeoutMessage(
+                hookName,
+                callbackTimeoutMs,
+              ),
+              command: 'callback',
+            },
+            outcome: 'blocking',
+            hook,
+          }
+        } else {
+          throw error
+        }
+      } finally {
+        cleanup()
+      }
       return
     }
 
