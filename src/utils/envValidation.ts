@@ -15,7 +15,23 @@ export function validateBoundedIntEnvVar(
   if (!value) {
     return { effective: defaultValue, status: 'valid' }
   }
-  const parsed = parseInt(value, 10)
+  // CC 2.1.208 #11: parseInt('1e6', 10) stops at 'e' and silently returns 1,
+  // so scientific-notation values like CLAUDE_CODE_MAX_OUTPUT_TOKENS=1e6 were
+  // treated as their mantissa. Detect scientific notation and parse via Number()
+  // (which honors the exponent), accepting only integer results. Mirrors CC 2.1.210
+  // binary `aDe`: /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/ -> Number.isInteger.
+  const raw = String(value)
+  const trimmed = raw.trim()
+  let parsed: number
+  if (
+    trimmed.length <= 32 &&
+    /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/.test(trimmed)
+  ) {
+    const asNumber = Number(trimmed)
+    parsed = Number.isInteger(asNumber) ? asNumber : NaN
+  } else {
+    parsed = parseInt(raw, 10)
+  }
   if (isNaN(parsed) || parsed <= 0) {
     const result: EnvVarValidationResult = {
       effective: defaultValue,

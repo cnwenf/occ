@@ -1,3 +1,5 @@
+import { withTimeout } from './sleep.js'
+
 function handleEPIPE(
   stream: NodeJS.WriteStream,
 ): (err: NodeJS.ErrnoException) => void {
@@ -19,10 +21,11 @@ function writeOut(stream: NodeJS.WriteStream, data: string): void {
     return
   }
 
-  // Note: we don't handle backpressure (write() returning false).
-  //
-  // We should consider handling the callback to ensure we wait for data to flush.
-  stream.write(data /* callback to handle here */)
+  // Note: we don't handle backpressure (write() returning false) per-write.
+  // Instead, drainStdoutBeforeExit() flushes the whole buffer (via stdout.end)
+  // right before process.exit so piped `claude -p` output — including the final
+  // result message — is not truncated on large responses (CC 2.1.208 #10).
+  stream.write(data)
 }
 
 export function writeToStdout(data: string): void {
@@ -31,6 +34,45 @@ export function writeToStdout(data: string): void {
 
 export function writeToStderr(data: string): void {
   writeOut(process.stderr, data)
+}
+
+// Per-stream cached drain promise (mirrors CC 2.1.210 `oti`), so a second call
+// reuses the in-flight drain rather than calling end() twice.
+const stdoutDrainPromises = new WeakMap<NodeJS.WriteStream, Promise<void>>()
+
+/**
+ * Flush stdout before process.exit so large piped `claude -p` responses are not
+ * truncated and the final result message is delivered (CC 2.1.208 #10).
+ *
+ * When stdout is a pipe (non-TTY) and the response is large, `process.exit()`
+ * kills the event loop before the OS drains the write buffer — dropping the tail
+ * (the result message). `stream.end(cb)` flushes the buffer and resolves once
+ * drained, capped by `timeoutMs` so a dead pipe can't hang shutdown.
+ *
+ * No-op for TTY (interactive), already-destroyed, or already-ended stdout.
+ * Mirrors CC 2.1.210 binary `drainStdoutBeforeExit` (`S_t`):
+ *   if (t.isTTY || t.destroyed || t.writableEnded) return;
+ *   await Ha(new Promise(r => t.end(r)), e, "stdout drain timeout (exit)").catch(()=>{})
+ */
+export async function drainStdoutBeforeExit(
+  timeoutMs = 2000,
+  stream: NodeJS.WriteStream = process.stdout,
+): Promise<void> {
+  let drain = stdoutDrainPromises.get(stream)
+  if (drain === undefined) {
+    if (stream.isTTY || stream.destroyed || stream.writableEnded) {
+      drain = Promise.resolve()
+    } else {
+      drain = new Promise<void>(resolve => {
+        stream.end(() => resolve())
+      })
+    }
+    stdoutDrainPromises.set(stream, drain)
+  }
+  // withTimeout rejects on expiry; swallow so a dead pipe never blocks exit.
+  await withTimeout(drain, timeoutMs, 'stdout drain timeout (exit)').catch(
+    () => {},
+  )
 }
 
 // Write error to stderr and exit with code 1. Consolidates the

@@ -42,6 +42,7 @@ import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { toError } from './errors.js'
 import { isEnvTruthy } from './envUtils.js'
 import { logError } from './log.js'
+import { drainStdoutBeforeExit } from './process.js'
 import { getCurrentSessionTitle, sessionIdExists } from './sessionStorage.js'
 import { sleep } from './sleep.js'
 import { profileReport } from './startupProfiler.js'
@@ -351,10 +352,13 @@ export function gracefulShutdownSync(
   process.exitCode = exitCode
 
   pendingShutdown = gracefulShutdown(exitCode, reason, options)
-    .catch(error => {
+    .catch(async error => {
       logForDebugging(`Graceful shutdown failed: ${error}`, { level: 'error' })
       cleanupTerminalModes()
       printResumeHint()
+      // CC 2.1.208 #10: flush piped stdout before exit so large `claude -p`
+      // output (incl. the result message) isn't truncated. No-op for TTY.
+      await drainStdoutBeforeExit()
       forceExit(exitCode)
     })
     // Prevent unhandled rejection: forceExit re-throws in test mode,
@@ -419,9 +423,12 @@ export async function gracefulShutdown(
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
   // Budget = max(5s, hook budget + 3.5s headroom for cleanup + analytics flush).
   failsafeTimer = setTimeout(
-    code => {
+    async code => {
       cleanupTerminalModes()
       printResumeHint()
+      // CC 2.1.208 #10: flush piped stdout before exit. Shorter 500ms budget
+      // inside the failsafe so the drain can't itself blow the failsafe window.
+      await drainStdoutBeforeExit(500)
       forceExit(code)
     },
     Math.max(5000, sessionEndTimeoutMs + 3500),
@@ -523,6 +530,10 @@ export async function gracefulShutdown(
     }
   }
 
+  // CC 2.1.208 #10: flush piped stdout before forceExit so large `claude -p`
+  // responses are not truncated and the final result message is delivered.
+  // No-op for TTY (interactive), destroyed, or already-ended stdout.
+  await drainStdoutBeforeExit()
   forceExit(exitCode)
 }
 
