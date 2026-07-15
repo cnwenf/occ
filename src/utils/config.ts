@@ -334,6 +334,18 @@ export type GlobalConfig = {
   overageCreditUpsellSeenCount?: number // Number of times the overage credit upsell has been shown
   hasVisitedExtraUsage?: boolean // Whether the user has visited /extra-usage — hides credit upsells
 
+  // CC 2.1.208 #44: persisted usage-seed cache. When the /api/oauth/usage
+  // endpoint is rate-limited, /usage shows last-known bars with an "as of"
+  // note instead of an error screen. Mirrors the binary's
+  // `cachedUsageUtilization` field in the global config (read by `tlu()`,
+  // written by `elu()`). `fetchedAtMs` drives the "as of" timestamp;
+  // `accountUuid` prevents cross-account staleness.
+  cachedUsageUtilization?: {
+    fetchedAtMs: number
+    accountUuid?: string
+    utilization: Record<string, unknown>
+  }
+
   // Voice mode notice tracking
   voiceNoticeSeenCount?: number // Number of times the voice-mode-available notice has been shown
   voiceLangHintShownCount?: number // Number of times the /voice dictation-language hint has been shown

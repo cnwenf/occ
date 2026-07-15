@@ -109,7 +109,7 @@ export function MCPStdioServerMenu({
             {server.client.type === 'disabled' ? <Text>{color('inactive', theme)(figures.radioOff)} disabled</Text> : server.client.type === 'connected' ? <Text>{color('success', theme)(figures.tick)} connected</Text> : server.client.type === 'pending' ? <>
                 <Text dimColor>{figures.radioOff}</Text>
                 <Text> connecting…</Text>
-              </> : <Text>{color('error', theme)(figures.cross)} failed</Text>}
+              </> : server.client.type === 'unconfigured' ? <Text>{color('inactive', theme)(figures.radioOff)} not configured</Text> : <Text>{color('error', theme)(figures.cross)} failed</Text>}
           </Box>
 
           <Box>

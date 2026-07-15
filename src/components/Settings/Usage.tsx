@@ -8,7 +8,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
 import { type ExtraUsage, fetchUtilizationWithStatus, formatApiModelUsage, type RateLimit, type Utilization } from '../../services/api/usage.js';
-import { formatResetText } from '../../utils/format.js';
+import { formatRelativeTimeAgo, formatResetText } from '../../utils/format.js';
 import { logError } from '../../utils/log.js';
 import { jsonStringify } from '../../utils/slowOperations.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -198,9 +198,32 @@ export function Usage(): React.ReactNode {
           setError('Failed to load usage data');
           break;
         case 'seeded':
-          // Keep existing utilization if present, else use the seeded fallback.
-          setUtilization(prev => prev ?? result.utilization ?? null);
-          setBreakdownMessage(result.isRateLimited ? 'Per-model breakdown unavailable (rate limited — try again in a moment)' : 'Could not refresh usage data');
+          {
+            // CC 2.1.208 #23/#44: distinguish persisted (disk cache, has
+            // fetchedAtMs → "Showing last-known usage as of <time>") from
+            // headers (fresh-ish rate-limit data → "Per-model breakdown
+            // unavailable"). Mirrors the binary's `seedSource` switch.
+            if (result.seedSource === 'persisted') {
+              // Don't overwrite fresher in-memory data with stale persisted
+              // cache (the 208#23 "stale cached bars over fresher data" fix).
+              setUtilization(prev => prev ?? result.utilization ?? null);
+              const asOf = result.seedFetchedAtMs != null
+                ? ` as of ${formatRelativeTimeAgo(new Date(result.seedFetchedAtMs))}`
+                : '';
+              setBreakdownMessage(
+                `Showing last-known usage${asOf}${result.rateLimitedVia != null ? ' (rate limited \u2014 try again in a moment)' : ' (could not refresh)'}`,
+              );
+            } else {
+              // headers source (or undefined for backward compat): overwrite
+              // with the fresh-ish header data.
+              setUtilization(result.utilization ?? null);
+              setBreakdownMessage(
+                result.rateLimitedVia != null
+                  ? 'Per-model breakdown unavailable (rate limited \u2014 try again in a moment)'
+                  : 'Could not refresh usage data',
+              );
+            }
+          }
           break;
         case 'unavailable':
         default:
