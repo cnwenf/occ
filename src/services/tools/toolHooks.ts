@@ -6,6 +6,9 @@ import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js
 import type z from 'zod/v4'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AnyObject, Tool, ToolUseContext } from '../../Tool.js'
+import { checkMemoryEntrypointOverCap } from '../../memdir/memdir.js'
+import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
+import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
   AssistantMessage,
@@ -187,6 +190,42 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
             hookEvent: 'PostToolUse',
           }),
         }
+      }
+    }
+
+    // 2.1.210 #29: built-in post-write guard for the memory index. Mirrors the
+    // official internal PostToolUse hook — after a Write/Edit lands on MEMORY.md,
+    // measure the index and surface an explicit over-cap error (or approaching-cap
+    // warning) as additionalContext so the model trims it. The write itself is NOT
+    // rejected (was silent truncation on the next read before this guard).
+    if (
+      (tool.name === FILE_WRITE_TOOL_NAME ||
+        tool.name === FILE_EDIT_TOOL_NAME) &&
+      typeof toolInput.file_path === 'string'
+    ) {
+      try {
+        const overCap = await checkMemoryEntrypointOverCap(toolInput.file_path)
+        if (overCap !== null) {
+          logEvent('tengu_memdir_entrypoint_near_cap', {
+            over_cap: overCap.overCap,
+          })
+          yield {
+            message: createAttachmentMessage({
+              type: 'hook_additional_context',
+              content: [overCap.text],
+              hookName: `PostToolUse:${tool.name}`,
+              toolUseID,
+              hookEvent: 'PostToolUse',
+            }),
+          }
+        }
+      } catch (error) {
+        // Match the binary: never block the tool on a guard failure. Swallow
+        // and debug-log so a read/stat error can't break the post-write path.
+        logForDebugging(
+          `memory entrypoint over-cap check failed for ${toolInput.file_path}: ${formatError(error)}`,
+          { level: 'debug' },
+        )
       }
     }
   } catch (error) {

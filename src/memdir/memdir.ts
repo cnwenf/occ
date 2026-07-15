@@ -1,7 +1,12 @@
 import { feature } from 'src/utils/featureFlags.js'
-import { join } from 'path'
+import { basename, join, resolve } from 'path'
 import { getFsImplementation } from '../utils/fsOperations.js'
-import { getAutoMemPath, isAutoMemoryEnabled } from './paths.js'
+import {
+  getAutoMemEntrypoint,
+  getAutoMemPath,
+  isAutoMemPath,
+  isAutoMemoryEnabled,
+} from './paths.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -100,6 +105,153 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
     wasLineTruncated,
     wasByteTruncated,
   }
+}
+
+/**
+ * ----------------------------------------------------------------------------
+ * 2.1.210 #29 — write-time over-cap guard for the memory index.
+ * ----------------------------------------------------------------------------
+ * Memory writes that leave MEMORY.md over (or approaching) its read limit now
+ * surface an explicit error as PostToolUse `additionalContext` so the model
+ * trims the index. Previously the write succeeded silently and truncation only
+ * happened on the next read (`truncateEntrypointContent` above). The write
+ * itself is still NOT rejected — the message tells the model to compact.
+ *
+ * Mirrors the official 2.1.210 binary verbatim:
+ *   - `meo`  → getMemoryIndexOverCapMessage (exact error/warning text)
+ *   - `bVt`  → measureMemoryIndexContent (trim; lineCount = newlineCount + 1;
+ *              byteCount = trimmed.length)
+ *   - `YEu`  → checkMemoryEntrypointOverCap (only the auto-memory MEMORY.md;
+ *              reads up to 4x the byte cap)
+ * Constants: Sxg=0.8 (approaching threshold), KEu=0.7 (target fraction),
+ *            z5n=4*Eme=100000 (guard read cap), Pee=200, Eme=25000.
+ * The read-time `truncateEntrypointContent` warning STAYS as the fallback for
+ * pre-existing over-limit files (confirmed present in the 2.1.210 binary).
+ */
+export const MEMORY_INDEX_APPROACHING_THRESHOLD = 0.8 // Sxg
+export const MEMORY_INDEX_TARGET_FRACTION = 0.7 // KEu
+// Guard reads up to 4x the byte cap (z5n = 4 * Eme) so it can measure the true
+// size of an over-cap index without loading a multi-MB file wholesale.
+const WRITE_GUARD_READ_LIMIT = 4 * MAX_ENTRYPOINT_BYTES
+
+export type MemoryIndexOverCapResult = {
+  text: string
+  overCap: boolean
+}
+
+export type MemoryIndexSizeInfo = {
+  byteCount: number
+  lineCount: number
+}
+
+/**
+ * Measure MEMORY.md content the way the official 2.1.210 guard (bVt) does:
+ * trim, then lineCount = (number of newlines in trimmed) + 1, byteCount =
+ * trimmed.length (char count — matches the binary's bVt.byteCount and OCC's
+ * existing read-time truncateEntrypointContent semantics).
+ */
+export function measureMemoryIndexContent(raw: string): MemoryIndexSizeInfo {
+  const trimmed = raw.trim()
+  const lineCount = trimmed.length === 0 ? 1 : trimmed.split('\n').length
+  return { byteCount: trimmed.length, lineCount }
+}
+
+/**
+ * Build the over-cap / approaching-cap message for a memory index write.
+ * Mirrors the official 2.1.210 `meo` exactly:
+ *  - returns null when the worst dimension is under APPROACHING_THRESHOLD (0.8)
+ *  - returns {text, overCap:true} when over the cap (text starts with "Error:")
+ *  - returns {text, overCap:false} when approaching (0.8 <= frac < 1.0)
+ * The worst dimension (bytes vs lines, whichever fraction is higher) drives
+ * the message. The exact text — including the em-dash and "The write succeeded,
+ * but everything past the limit is silently dropped …" — is copied verbatim
+ * from the binary's `meo` function.
+ */
+export function getMemoryIndexOverCapMessage(params: {
+  label: string
+  displayPath: string
+  sizeBytes: number
+  byteCap: number
+  lineCount?: number
+  lineCap?: number
+}): MemoryIndexOverCapResult | null {
+  const { label, displayPath, sizeBytes, byteCap, lineCount, lineCap } = params
+  const dimensions = [
+    {
+      frac: sizeBytes / byteCap,
+      over: sizeBytes > byteCap,
+      sizeDesc: formatFileSize(sizeBytes),
+      capDesc: formatFileSize(byteCap),
+      targetDesc: formatFileSize(Math.floor(byteCap * MEMORY_INDEX_TARGET_FRACTION)),
+    },
+  ]
+  if (lineCap !== undefined && lineCount !== undefined) {
+    dimensions.push({
+      frac: lineCount / lineCap,
+      over: lineCount > lineCap,
+      sizeDesc: `${lineCount} lines`,
+      capDesc: `${lineCap}-line`,
+      targetDesc: `${Math.floor(lineCap * MEMORY_INDEX_TARGET_FRACTION)} lines`,
+    })
+  }
+  const worst = dimensions.reduce((acc, d) => (d.frac > acc.frac ? d : acc))
+  if (worst.frac < MEMORY_INDEX_APPROACHING_THRESHOLD) {
+    return null
+  }
+  const text = `${worst.over
+    ? `Error: this write left the ${label} at ${displayPath} at ${worst.sizeDesc}, over its ${worst.capDesc} read limit. The write succeeded, but everything past the limit is silently dropped each time the index is loaded — entries at the end are already invisible to readers. Rewrite it`
+    : `The ${label} at ${displayPath} is ${worst.sizeDesc}, approaching the ${worst.capDesc} read limit. Compact it`
+  } to under ${worst.targetDesc} now: keep one line per entry, move detail into topic files, and merge or drop stale entries.`
+  return { text, overCap: worst.over }
+}
+
+/**
+ * Post-write guard for the auto-memory MEMORY.md index (2.1.210 #29).
+ * Mirrors the official `YEu`: only acts on the auto-memory MEMORY.md path,
+ * reads up to 4x the byte cap, measures the content, and returns the over-cap
+ * message (or null when under the approaching threshold). The write itself is
+ * not rejected — the caller surfaces `text` as PostToolUse additionalContext.
+ *
+ * Returns null when auto-memory is disabled, the path is not the memory index,
+ * or the file cannot be read (e.g. just deleted) — matching the binary, which
+ * swallows read errors and returns null rather than blocking the tool.
+ */
+export async function checkMemoryEntrypointOverCap(
+  filePath: string,
+): Promise<MemoryIndexOverCapResult | null> {
+  if (!isAutoMemoryEnabled()) return null
+  // Match the official: path resolves to the auto-memory MEMORY.md, OR the
+  // basename is MEMORY.md and the path is inside the auto-memory directory.
+  const isAutoMemIndex =
+    resolve(filePath) === resolve(getAutoMemEntrypoint()) ||
+    (basename(filePath) === ENTRYPOINT_NAME && isAutoMemPath(filePath))
+  if (!isAutoMemIndex) return null
+
+  const fs = getFsImplementation()
+  let content: string
+  try {
+    content = fs.readFileSync(filePath, { encoding: 'utf-8' }) as string
+  } catch {
+    // File unreadable / just deleted — match the binary: return null, do not
+    // block. The next read's truncateEntrypointContent handles real files.
+    return null
+  }
+  // Bound the measurement at 4x the byte cap to mirror the binary's bounded
+  // read (O7e with maxBytes z5n=4*Eme). For ASCII indexes (the common case)
+  // a char-slice == a byte-slice; the over/approaching determination is
+  // unchanged for files above the cap regardless.
+  if (content.length > WRITE_GUARD_READ_LIMIT) {
+    content = content.slice(0, WRITE_GUARD_READ_LIMIT)
+  }
+  const { byteCount, lineCount } = measureMemoryIndexContent(content)
+  return getMemoryIndexOverCapMessage({
+    label: 'memory index',
+    displayPath: ENTRYPOINT_NAME,
+    sizeBytes: byteCount,
+    byteCap: MAX_ENTRYPOINT_BYTES,
+    lineCount,
+    lineCap: MAX_ENTRYPOINT_LINES,
+  })
 }
 
 /* eslint-disable @typescript-eslint/no-require-imports */
