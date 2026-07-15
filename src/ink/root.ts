@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { logForDebugging } from 'src/utils/debug.js'
+import { isScreenReaderEnabled } from 'src/utils/screenReader.js'
 import { Stream } from 'stream'
 import type { FrameEvent } from './frame.js'
 import Ink, { type Options as InkOptions } from './ink.js'
@@ -84,6 +85,10 @@ export const renderSync = (
     stderr: process.stderr,
     exitOnCtrlC: true,
     patchConsole: true,
+    // 2.1.208: SR render-options builder (binary: `r.isScreenReaderEnabled =
+    // K2()`). Always sourced from the toggle so the Ink class sees the live
+    // resolution (flag/env/setting) at instance construction time.
+    isScreenReaderEnabled: isScreenReaderEnabled(),
     ...opts,
   }
 
@@ -143,6 +148,7 @@ export async function createRoot({
     exitOnCtrlC,
     patchConsole,
     onFrame,
+    isScreenReaderEnabled: isScreenReaderEnabled(),
   })
 
   // Register in the instances map so that code that looks up the Ink

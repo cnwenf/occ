@@ -76,7 +76,9 @@ import { logError } from '../../utils/log.js';
 import { isOpus1mMergeEnabled, modelDisplayString } from '../../utils/model/model.js';
 import { setAutoModeActive } from '../../utils/permissions/autoModeState.js';
 import { cyclePermissionMode, getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js';
+import { permissionModeIndicator } from '../../utils/permissions/PermissionMode.js';
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js';
+import { pushScreenReaderAnnouncement } from '../../utils/screenReader.js';
 import { getPlatform } from '../../utils/platform.js';
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js';
 import { editPromptInEditor } from '../../utils/promptEditor.js';
@@ -1594,6 +1596,12 @@ function PromptInput({
     const {
       context: preparedContext
     } = cyclePermissionMode(toolPermissionContext, teamContext);
+    // 2.1.210 #30: announce the new permission mode aloud when SR is on
+    // (binary: `cxc(\`[${lse($t)} on]\`)`). Pushed to the SR announce queue;
+    // the next SR flat-render frame drains it and writes the line so the
+    // screen reader speaks it. No-op when SR is off (drain only runs in
+    // onRenderScreenReader).
+    pushScreenReaderAnnouncement(`[${permissionModeIndicator(nextMode)} on]`);
     logEvent('tengu_mode_cycle', {
       to: nextMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
     });

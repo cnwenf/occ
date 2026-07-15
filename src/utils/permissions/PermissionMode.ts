@@ -45,6 +45,12 @@ type PermissionModeConfig = {
   symbol: string
   color: ModeColorKey
   external: ExternalPermissionMode
+  /**
+   * Spoken label for screen-reader announce (binary: `_ml[mode].indicator`,
+   * accessor `lse(mode)`). Used by the 2.1.210 #30 SR announce on Shift+Tab
+   * permission-mode cycle: `pushScreenReaderAnnouncement(\`[${indicator} on]\`)`.
+   */
+  indicator: string
 }
 
 const PERMISSION_MODE_CONFIG: Partial<
@@ -59,6 +65,7 @@ const PERMISSION_MODE_CONFIG: Partial<
     symbol: PAUSE_ICON, // 2.1.203: grey ⏸ badge makes manual (default) mode always visible in the footer
     color: 'text',
     external: 'default',
+    indicator: 'manual mode',
   },
   plan: {
     title: 'Plan Mode',
@@ -66,6 +73,7 @@ const PERMISSION_MODE_CONFIG: Partial<
     symbol: PAUSE_ICON,
     color: 'planMode',
     external: 'plan',
+    indicator: 'plan mode',
   },
   acceptEdits: {
     title: 'Accept edits',
@@ -73,6 +81,7 @@ const PERMISSION_MODE_CONFIG: Partial<
     symbol: '⏵⏵',
     color: 'autoAccept',
     external: 'acceptEdits',
+    indicator: 'accept edits',
   },
   bypassPermissions: {
     title: 'Bypass Permissions',
@@ -80,6 +89,7 @@ const PERMISSION_MODE_CONFIG: Partial<
     symbol: '⏵⏵',
     color: 'error',
     external: 'bypassPermissions',
+    indicator: 'bypass permissions',
   },
   dontAsk: {
     title: "Don't Ask",
@@ -87,6 +97,7 @@ const PERMISSION_MODE_CONFIG: Partial<
     symbol: '⏵⏵',
     color: 'error',
     external: 'dontAsk',
+    indicator: "don't ask",
   },
   ...(feature('TRANSCRIPT_CLASSIFIER')
     ? {
@@ -96,6 +107,7 @@ const PERMISSION_MODE_CONFIG: Partial<
           symbol: '⏵⏵',
           color: 'warning' as ModeColorKey,
           external: 'default' as ExternalPermissionMode,
+          indicator: 'auto mode',
         },
       }
     : {}),
@@ -155,6 +167,15 @@ export function permissionModeShortTitle(mode: PermissionMode): string {
 
 export function permissionModeSymbol(mode: PermissionMode): string {
   return getModeConfig(mode).symbol
+}
+
+/**
+ * Spoken label for SR announce (binary: `lse(mode)` → `_ml[mode].indicator`).
+ * 2.1.210 #30: Shift+Tab mode-cycle handler calls
+ * `pushScreenReaderAnnouncement(\`[${permissionModeIndicator(nextMode)} on]\`)`.
+ */
+export function permissionModeIndicator(mode: PermissionMode): string {
+  return getModeConfig(mode).indicator
 }
 
 export function getModeColor(mode: PermissionMode): ModeColorKey {

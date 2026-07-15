@@ -9,6 +9,7 @@ import {
   clearYogaNodeReferences,
   createNode,
   createTextNode,
+  type AccessibilityProps,
   type DOMElement,
   type DOMNodeAttribute,
   type ElementNames,
@@ -131,6 +132,13 @@ function applyProp(node: DOMElement, key: string, value: unknown): void {
 
   if (key === 'textStyles') {
     node.textStyles = value as TextStyles
+    return
+  }
+
+  // 2.1.208: accessibility prop → direct field (binary reads `e.accessibility`
+  // directly in the SR flat-render serializer `mPr`/`mIi`).
+  if (key === 'accessibility') {
+    node.accessibility = value as AccessibilityProps | undefined
     return
   }
 
@@ -441,6 +449,13 @@ const reconciler = createReconciler<
 
         if (key === 'textStyles') {
           setTextStyles(node, value as TextStyles)
+          continue
+        }
+
+        // 2.1.208: accessibility prop → direct field (mirrors applyProp).
+        if (key === 'accessibility') {
+          node.accessibility = value as AccessibilityProps | undefined
+          markDirty(node)
           continue
         }
 

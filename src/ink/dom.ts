@@ -13,6 +13,24 @@ type InkNode = {
   parentNode: DOMElement | undefined
   yogaNode?: LayoutNode
   style: Styles
+  accessibility?: AccessibilityProps
+}
+
+/**
+ * Accessibility metadata for screen-reader rendering (binary: the
+ * `e.accessibility` field read by `mPr`/`mIi` in the SR flat-render path).
+ * Components set this via the `accessibility` prop; when absent, the SR
+ * serializer falls back to the node's text content.
+ */
+export type AccessibilityProps = {
+  /** Flat text the screen reader should announce instead of child text. */
+  label?: string
+  /** When true, the node (and its subtree) is skipped in SR output. */
+  hidden?: boolean
+  /** ARIA-like role, e.g. "button"; prefixed to the node's serialized text. */
+  role?: string
+  /** Boolean state flags (e.g. {checked, expanded}); prefixed in parens. */
+  state?: Record<string, boolean>
 }
 
 export type TextName = '#text'

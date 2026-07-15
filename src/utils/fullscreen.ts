@@ -3,6 +3,7 @@ import { getIsInteractive } from '../bootstrap/state.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
+import { isScreenReaderEnabled } from './screenReader.js'
 
 let loggedTmuxCcDisable = false
 let checkedTmuxMouseHint = false
@@ -164,6 +165,13 @@ export function isMouseClicksDisabled(): boolean {
  * should gate on this.
  */
 export function isFullscreenActive(): boolean {
+  // 2.1.208: screen reader mode forces the classic (non-fullscreen) renderer
+  // (binary `qi()`: `if(K2())return!1`). SR renders flat text with no
+  // decorative borders/animations, which the alt-screen fullscreen path would
+  // undermine. Also gates the flicker-source reason ("sr_auto_off" in the
+  // official `a4e()`), which OCC surfaces only as a boolean — the effect
+  // (no fullscreen under SR) is covered here.
+  if (isScreenReaderEnabled()) return false
   return getIsInteractive() && isFullscreenEnvEnabled()
 }
 

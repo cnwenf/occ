@@ -1,5 +1,6 @@
 import { getSessionId } from '../bootstrap/state.js'
 import { isEnvTruthy } from './envUtils.js'
+import { getScreenReaderEnv } from './screenReader.js'
 
 /**
  * Env vars to strip from subprocess environments when running inside GitHub
@@ -109,7 +110,12 @@ export function subprocessEnv(): NodeJS.ProcessEnv {
         delete baseEnv[k]
       }
     }
-    return baseEnv
+    // 2.1.208: propagate screen-reader-on state to subprocesses (binary
+    // `QXe()` → `...QXe()` in the /tui restart + MCP spawn env). When SR is
+    // enabled via flag/setting (not env), process.env doesn't carry
+    // CLAUDE_AX_SCREEN_READER, so child processes wouldn't know; this
+    // synthesizes it. No-op when SR is off.
+    return { ...baseEnv, ...getScreenReaderEnv() }
   }
   const env = { ...process.env, ...proxyEnv }
   // 2.1.128: Scrub OTEL_* even in scrub mode.
@@ -124,5 +130,5 @@ export function subprocessEnv(): NodeJS.ProcessEnv {
     // secrets like INPUT_ANTHROPIC_API_KEY. No-op for vars that aren't action inputs.
     delete env[`INPUT_${k}`]
   }
-  return env
+  return { ...env, ...getScreenReaderEnv() }
 }

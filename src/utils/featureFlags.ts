@@ -33,5 +33,17 @@ const FEATURE_ALLOWLIST: Set<string> = new Set([
   // an MCP server is connected, so it is non-blocking when no MCP server is
   // present.
   'MCP_SKILLS',
+  // 2.1.208: Screen reader mode (accessibility subsystem). Gates the SR
+  // feature gate `tengu_ax_screen_reader` read by the toggle in
+  // src/utils/screenReader.ts. This is a SHIPPING accessibility subsystem
+  // with no blocking init (no KAIROS-style loop, no UDS_INBOX scan) — enabling
+  // it only un-gates the SR toggle's feature-gate default. The official
+  // feature("tengu_ax_screen_reader", true) returns true | undefined and
+  // `?? true` defaults ON when unregistered; OCC's feature() returns boolean
+  // (false when unregistered), so membership here is what makes
+  // `feature('tengu_ax_screen_reader') ?? true` evaluate to `true` instead of
+  // `false` (false is not nullish → would permanently disable SR). Safe —
+  // hang-smoke verified.
+  'tengu_ax_screen_reader',
 ])
 export const feature = (name: string): boolean => FEATURE_ALLOWLIST.has(name)

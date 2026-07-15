@@ -9,7 +9,9 @@ import { onExit } from 'signal-exit';
 import { flushInteractionTime } from 'src/bootstrap/state.js';
 import { getYogaCounters } from 'src/native-ts/yoga-layout/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
+import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { logError } from 'src/utils/log.js';
+import { isScreenReaderEnabled as isScreenReaderEnabledFlag } from 'src/utils/screenReader.js';
 import { format } from 'util';
 import { colorize } from './colorize.js';
 import App from './components/App.js';
@@ -38,6 +40,8 @@ import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABL
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, setClipboard, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js';
 import { TerminalWriteProvider } from './useTerminalNotification.js';
+import { ScreenReaderContext } from './components/ScreenReaderContext.js';
+import { ScreenReaderDiffState, renderScreenReaderDiff, type CursorDeclaration as SrCursorDeclaration } from './screen-reader-render.js';
 
 // Alt-screen: renderer.ts sets cursor.visible = !isTTY || screen.height===0,
 // which is always false in alt-screen (TTY + content fills screen).
@@ -72,6 +76,13 @@ export type Options = {
   patchConsole: boolean;
   waitUntilExit?: () => Promise<void>;
   onFrame?: (event: FrameEvent) => void;
+  /**
+   * Whether screen-reader flat-render should be active (binary:
+   * `F6t` constructor `e.isScreenReaderEnabled`). When omitted, falls back to
+   * `stdout.isTTY && INK_SCREEN_READER` env (binary fallback). OCC's render
+   * entry (root.ts) passes `isScreenReaderEnabled: isScreenReaderEnabled()`.
+   */
+  isScreenReaderEnabled?: boolean;
 };
 export default class Ink {
   private readonly log: LogUpdate;
@@ -169,6 +180,17 @@ export default class Ink {
   // screen readers / screen magnifiers track it — so parking at the text
   // input's caret makes CJK input appear inline and lets a11y tools follow.
   private cursorDeclaration: CursorDeclaration | null = null;
+  // 2.1.208: screen-reader flat-render path (binary: `F6t` fields). When
+  // `isScreenReaderEnabled` is true, `onRender` delegates to
+  // `onRenderScreenReader` (a line-diff flat-text render) instead of the
+  // screen-buffer blit path. `accessibilityMode` mirrors the binary's
+  // `CLAUDE_CODE_ACCESSIBILITY`-derived flag (SR implies accessibility mode,
+  // which keeps the cursor visible). `nativeCursorVisible` is the binary's
+  // `nativeCursorVisible` (SR keeps the native cursor visible).
+  private isScreenReaderEnabled: boolean;
+  private accessibilityMode: boolean;
+  private nativeCursorVisible: boolean;
+  private readonly screenReaderState = new ScreenReaderDiffState();
   // Main-screen: physical cursor position after the declared-cursor move,
   // tracked separately from frame.cursor (which must stay at content-bottom
   // for log-update's relative-move invariants). Alt-screen doesn't need
@@ -189,6 +211,21 @@ export default class Ink {
     };
     this.terminalColumns = options.stdout.columns || 80;
     this.terminalRows = options.stdout.rows || 24;
+    // 2.1.208: SR field init (binary: `this.isScreenReaderEnabled =
+    // e.isScreenReaderEnabled ?? (!!e.stdout.isTTY &&
+    // ut(process.env.INK_SCREEN_READER))`). `accessibilityMode` (binary
+    // `Te.CLAUDE_CODE_ACCESSIBILITY` + `gEe()` K2 gate) and `nativeCursorVisible`
+    // (binary `bIi()` K2 gate) both turn on when SR is enabled.
+    this.isScreenReaderEnabled =
+      options.isScreenReaderEnabled ??
+      (!!options.stdout.isTTY && isEnvTruthy(process.env.INK_SCREEN_READER));
+    this.accessibilityMode =
+      isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY) ||
+      this.isScreenReaderEnabled;
+    this.nativeCursorVisible =
+      isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY) ||
+      isEnvTruthy(process.env.CLAUDE_CODE_NATIVE_CURSOR) ||
+      this.isScreenReaderEnabled;
     this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows);
     this.stylePool = new StylePool();
     this.charPool = new CharPool();
@@ -398,7 +435,11 @@ export default class Ink {
     // re-enable mouse (skip if CLAUDE_CODE_DISABLE_MOUSE)
     this.altScreenActive ? '' : '\x1b[?1049l') +
     // exit alt (non-fullscreen only)
-    '\x1b[?25l' // hide cursor (Ink manages)
+    // 2.1.208: screen-reader/accessibility keeps the cursor VISIBLE (binary:
+    // `if(!this.accessibilityMode&&!this.isScreenReaderEnabled)...write(TZ)`).
+    // A screen reader/magnifier tracks the physical cursor; hiding it breaks
+    // focus tracking, so skip the hide when SR or accessibility mode is on.
+    (this.accessibilityMode || this.isScreenReaderEnabled ? '' : '\x1b[?25l')
     );
     this.resumeStdin();
     if (this.altScreenActive) {
@@ -415,6 +456,35 @@ export default class Ink {
     // without the pop we'd accumulate depth on each editor round-trip).
     this.options.stdout.write('\x1b[?1004h' + (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : ''));
   }
+
+  /**
+   * Reset the screen-reader line-diff state (binary:
+   * `resetScreenReaderDiffState()`). Called on resize/repaint/forceRedraw so
+   * the next SR frame rewrites the full output instead of diffing against a
+   * stale prev-frame.
+   */
+  private resetScreenReaderDiffState(): void {
+    this.screenReaderState.reset();
+  }
+
+  /**
+   * Screen-reader flat-render (binary: `onRenderScreenReader()`). Serializes
+   * the root DOM to flat text, wraps to terminal columns, diffs against the
+   * previous frame's lines, and writes only the changed tail + cursor-park
+   * moves to stdout. Replaces the screen-buffer blit path when SR is on.
+   */
+  private onRenderScreenReader(): void {
+    const columns = this.terminalColumns;
+    renderScreenReaderDiff(
+      this.rootNode,
+      columns,
+      this.screenReaderState,
+      this.cursorDeclaration as SrCursorDeclaration | null,
+      (data: string) => {
+        this.options.stdout.write(data);
+      },
+    );
+  }
   onRender() {
     if (this.isUnmounted || this.isPaused) {
       return;
@@ -425,6 +495,14 @@ export default class Ink {
     if (this.drainTimer !== null) {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;
+    }
+
+    // 2.1.208: screen-reader flat-render dispatch (binary:
+    // `if(kbr(),this.isScreenReaderEnabled){this.onRenderScreenReader();return}`).
+    // SR render REPLACES the normal screen-buffer blit path entirely.
+    if (this.isScreenReaderEnabled) {
+      this.onRenderScreenReader();
+      return;
     }
 
     // Flush deferred interaction-time update before rendering so we call
@@ -586,7 +664,13 @@ export default class Ink {
     // renders the scrolled-but-not-yet-repainted intermediate state.
     // tmux is the main case (re-emits DECSTBM with its own timing and
     // doesn't implement DEC 2026, so SYNC_OUTPUT_SUPPORTED is false).
-    SYNC_OUTPUT_SUPPORTED);
+    SYNC_OUTPUT_SUPPORTED &&
+    // 2.1.208: screen-reader mode disables DECSTBM (binary `SRe` gate:
+    // `if(K2())return SRe=!1`). SR forces the classic flat renderer — the
+    // DECSTBM scroll-region optimization is moot. Structurally redundant
+    // with isFullscreenActive()→false under SR (no alt-screen), but gated
+    // explicitly to match the binary.
+    !this.isScreenReaderEnabled);
     const diffMs = performance.now() - tDiff;
     // Swap buffers
     this.backFrame = this.frontFrame;
@@ -809,6 +893,9 @@ export default class Ink {
     // Clear displayCursor so the cursor preamble doesn't emit a stale
     // relative move from where we last parked it.
     this.displayCursor = null;
+    // 2.1.208: reset SR line-diff state so the next frame rewrites the full
+    // output (binary: `repaint()` → `this.resetScreenReaderDiffState()`).
+    this.resetScreenReaderDiffState();
   }
 
   /**
@@ -831,6 +918,9 @@ export default class Ink {
       // diff sees no content. onRender resets the flag at frame end.
       this.prevFrameContaminated = true;
     }
+    // 2.1.208: reset SR diff state (binary: `forceRedraw()` →
+    // `this.resetScreenReaderDiffState()`).
+    this.resetScreenReaderDiffState();
     this.onRender();
   }
 
@@ -1439,9 +1529,11 @@ export default class Ink {
   render(node: ReactNode): void {
     this.currentNode = node;
     const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
-        <TerminalWriteProvider value={this.writeRaw}>
-          {node}
-        </TerminalWriteProvider>
+        <ScreenReaderContext.Provider value={this.isScreenReaderEnabled}>
+          <TerminalWriteProvider value={this.writeRaw}>
+            {node}
+          </TerminalWriteProvider>
+        </ScreenReaderContext.Provider>
       </App>;
 
     reconciler.updateContainerSync(tree, this.container, null, noop);

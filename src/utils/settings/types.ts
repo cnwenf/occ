@@ -809,6 +809,18 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Terminal UI renderer. "fullscreen" uses the flicker-free alt-screen renderer with virtualized scrollback (equivalent to CLAUDE_CODE_NO_FLICKER=1). "default" uses the classic main-screen renderer.',
         ),
+      // 2.1.208: screen reader mode (accessibility). Binary declares this
+      // under a `screenReader` schema group with shape { axScreenReader } but
+      // the toggle reads it FLAT as `Bn().axScreenReader` (the group wrapper
+      // is cosmetic schema organization); OCC exposes it as a flat key to
+      // match the access path in src/utils/screenReader.ts. Overridden by the
+      // CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag.
+      axScreenReader: z
+        .boolean()
+        .optional()
+        .describe(
+          'Render screen-reader friendly output (flat text, no decorative borders or animations). Overridden by the CLAUDE_AX_SCREEN_READER env var and the --ax-screen-reader CLI flag.',
+        ),
       // 2.1.110: default transcript view mode on startup (/focus command).
       viewMode: z
         .enum(['default', 'verbose', 'focus'])

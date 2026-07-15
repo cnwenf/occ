@@ -5,6 +5,7 @@ import {
   updateSettingsForSource,
 } from '../../utils/settings/settings.js'
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
+import { isScreenReaderEnabled } from '../../utils/screenReader.js'
 
 /**
  * Valid /tui renderer values. Mirrors the official `nYo` array — the binary
@@ -42,6 +43,16 @@ function getCurrentRenderer(): Renderer {
  * same "restart Claude Code to apply it" message when the live switch fails.
  */
 export const call: LocalJSXCommandCall = async (onDone, _context, args) => {
+  // 2.1.208: screen reader mode always uses the classic renderer, so /tui is
+  // a no-op while it is active (binary:
+  // `if(K2())return e("Screen-reader mode always uses the classic renderer, so the tui setting has no effect while it is active.",{display:"system"}),null`).
+  if (isScreenReaderEnabled()) {
+    onDone(
+      'Screen-reader mode always uses the classic renderer, so the tui setting has no effect while it is active.',
+      { display: 'system' },
+    )
+    return null
+  }
   const trimmed = (args ?? '').trim().toLowerCase()
   const current = getCurrentRenderer()
 
