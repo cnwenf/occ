@@ -9,6 +9,10 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.270 - 2026-07-16
+
+- **Behavior change** (CC 2.1.211 port): auto mode no longer overrides a PreToolUse hook's `ask` decision for unsandboxed Bash. When a PreToolUse hook returns `ask` and rules also require `ask`, the decision is floored at "prompt the user" — the auto-mode classifier cannot silently auto-approve or auto-deny. In headless mode where prompts are unavailable, the tool is denied. This ports the upstream `hookAskFloor` logic: `resolveHookPermissionDecision` now passes `hookAskFloor: true` to `canUseTool` when the hook returned `ask` and the rule check also returns `ask`, and `hasPermissionsToUseTool` respects this flag to prevent classifier override.
+
 ## 2.1.269 - 2026-07-15
 
 - Catch up to Claude Code `2.1.210` — 25 upstream-feature clusters ported from the official 2.1.206→2.1.210 binaries (every identifier binary-verified; each port passed the done-gate: real-not-stub, behavioral e2e, 903/0 regression suite, `occ -p` smoke). Full per-cluster recon + verdicts in `.occ-research/occ-vs-2.1.210-gaps.md`. User-facing highlights:
