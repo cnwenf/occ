@@ -166,6 +166,7 @@ import { findClosestSubcommand } from 'src/cli/subcommandSuggestion.js';
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js';
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js';
+import { checkForwardSubagentTextGuard } from 'src/utils/forwardSubagentTextGuard.js';
 import { setCwd } from 'src/utils/Shell.js';
 import { type ProcessedResume, processResumedConversation } from 'src/utils/sessionRestore.js';
 import { parseSettingSourcesFlag } from 'src/utils/settings/constants.js';
@@ -1933,13 +1934,16 @@ async function run(): Promise<CommanderCommand> {
     // Validate forwardSubagentText is only used with print mode and stream-json output.
     // Binary: if(pe){if(!St||L!=="stream-json"){if(k)return ls("Error: --forward-subagent-text requires --print and --output-format=stream-json.");pe=!1}}
     // Only errors when the CLI flag `k` is explicitly set; env-only silently disables.
-    if (effectiveForwardSubagentText) {
-      if (!isNonInteractiveSession || outputFormat !== 'stream-json') {
-        if (forwardSubagentText) {
-          writeToStderr(`Error: --forward-subagent-text requires --print and --output-format=stream-json.`);
-          process.exit(1);
-        }
-        // Env-only: silently disable (matches upstream behavior)
+    {
+      const guardError = checkForwardSubagentTextGuard(
+        effectiveForwardSubagentText,
+        isNonInteractiveSession,
+        outputFormat,
+        forwardSubagentText,
+      );
+      if (guardError) {
+        writeToStderr(guardError);
+        process.exit(1);
       }
     }
 

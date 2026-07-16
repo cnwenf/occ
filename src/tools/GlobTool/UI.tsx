@@ -7,7 +7,14 @@ import { TOOL_SUMMARY_MAX_LENGTH } from '../../constants/toolLimits.js';
 import { Text } from '../../ink.js';
 import { FILE_NOT_FOUND_CWD_NOTE, getDisplayPath } from '../../utils/file.js';
 import { truncate } from '../../utils/format.js';
-import { GrepTool } from '../GrepTool/GrepTool.js';
+
+// Re-export GrepTool's renderToolResultMessage directly from its UI module.
+// This avoids importing the GrepTool tool object (../GrepTool/GrepTool.js)
+// which would create a circular dependency: GrepTool.ts imports ./UI.js,
+// and if GlobTool/UI.tsx imported GrepTool.ts, GlobTool/UI.tsx would be
+// evaluated while GrepTool is still in its TDZ, causing
+// "Cannot access 'GrepTool' before initialization".
+export { renderToolResultMessage } from '../GrepTool/UI.js';
 export function userFacingName(): string {
   return 'Search';
 }
@@ -48,9 +55,6 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   }
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }
-
-// Note: GlobTool reuses GrepTool's renderToolResultMessage
-export const renderToolResultMessage = GrepTool.renderToolResultMessage;
 export function getToolUseSummary(input: Partial<{
   pattern: string;
   path: string;
