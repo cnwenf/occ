@@ -49,8 +49,11 @@ export function renderToolUseErrorMessage(result: ToolResultBlockParam['content'
   return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
 }
 
-// Note: GlobTool reuses GrepTool's renderToolResultMessage
-export const renderToolResultMessage = GrepTool.renderToolResultMessage;
+// Note: GlobTool reuses GrepTool's renderToolResultMessage.
+// Re-export directly from GrepTool/UI.js to avoid a circular-dep TDZ
+// (accessing GrepTool.renderToolResultMessage at module-eval time fails
+// when GrepTool isn't yet initialized — manifests in per-file test isolation).
+export { renderToolResultMessage } from '../GrepTool/UI.js';
 export function getToolUseSummary(input: Partial<{
   pattern: string;
   path: string;
