@@ -31,6 +31,7 @@ import {
   handleOAuth401Error,
 } from '../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+import { isBgSession } from '../utils/concurrentSessions.js'
 import { logForDebugging } from '../utils/debug.js'
 import { stripDisplayTagsAllowEmpty } from '../utils/displayTags.js'
 import { errorMessage } from '../utils/errors.js'
@@ -146,7 +147,11 @@ export async function initReplBridge(
   // instead of a misleading policy error from a stale/wrong-org cache.
   if (!getBridgeAccessToken()) {
     logBridgeSkip('no_oauth', '[bridge:repl] Skipping: no OAuth tokens')
-    onStateChange?.('failed', '/login')
+    // 2.1.211: Background sessions share credentials — don't trigger login
+    // state for background sessions (see line ~232 for full rationale).
+    if (!isBgSession()) {
+      onStateChange?.('failed', '/login')
+    }
     return null
   }
 
@@ -221,7 +226,15 @@ export async function initReplBridge(
         'oauth_expired_unrefreshable',
         '[bridge:repl] Skipping: OAuth token expired and refresh failed (re-login required)',
       )
-      onStateChange?.('failed', '/login')
+      // 2.1.211: Background sessions share a credential store with the main
+      // terminal session. After wake-from-sleep, all parallel sessions detect
+      // the expired token simultaneously. If background sessions also trigger
+      // the '/login' state, all sessions appear "logged out" at once. Skip
+      // the state change for background sessions — only the main terminal
+      // session should surface the re-login prompt.
+      if (!isBgSession()) {
+        onStateChange?.('failed', '/login')
+      }
       // Persist for the next process. Increments failCount when re-discovering
       // the same dead token (matched by expiresAt); resets to 1 for a different
       // token. Once count reaches 3, step 2a's early-return fires and this path
@@ -390,7 +403,11 @@ export async function initReplBridge(
   const orgUUID = await getOrganizationUUID()
   if (!orgUUID) {
     logBridgeSkip('no_org_uuid', '[bridge:repl] Skipping: no org UUID')
-    onStateChange?.('failed', '/login')
+    // 2.1.211: Background sessions share credentials — don't trigger login
+    // state for background sessions (see line ~232 for full rationale).
+    if (!isBgSession()) {
+      onStateChange?.('failed', '/login')
+    }
     return null
   }
 

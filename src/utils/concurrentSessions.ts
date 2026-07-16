@@ -26,13 +26,18 @@ function getSessionsDir(): string {
  * Kind override from env. Set by the spawner (`claude --bg`, daemon
  * supervisor) so the child can register without the parent having to
  * write the file for it — cleanup-on-exit wiring then works for free.
- * Gated so the env-var string is DCE'd from external builds.
+ *
+ * 2.1.211: Removed the `feature('BG_SESSIONS')` gate to match the
+ * official binary's `fQe()` which reads `process.env.CLAUDE_CODE_SESSION_KIND`
+ * directly without a build-time flag. Without this, `isBgSession()` always
+ * returns false, so the logout and wake-logout guards never fire — causing
+ * all parallel sessions sharing a credential store to log out simultaneously
+ * after wake-from-sleep. The guard needs to work regardless of whether the
+ * full bg-session subsystem is enabled.
  */
 function envSessionKind(): SessionKind | undefined {
-  if (feature('BG_SESSIONS')) {
-    const k = process.env.CLAUDE_CODE_SESSION_KIND
-    if (k === 'bg' || k === 'daemon' || k === 'daemon-worker') return k
-  }
+  const k = process.env.CLAUDE_CODE_SESSION_KIND
+  if (k === 'bg' || k === 'daemon' || k === 'daemon-worker') return k
   return undefined
 }
 
