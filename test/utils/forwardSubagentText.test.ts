@@ -306,6 +306,11 @@ function runCli(
   })
 }
 
+// CI-env gate (NOT isolation-leak): these smoke tests spawn the full built
+// dist/cli.js as a subprocess. In CI (GitHub Actions), the CLI spawn returns
+// empty stdout/stderr after ~15s — a CI spawn/startup profile difference, not
+// a guard-logic bug. The pure-function guard tests above run in CI and verify
+// the guard logic without spawning. Kept skipIf(CI) per batch4 decision.
 describe.skipIf(process.env.CI)('CLI guard smoke test: --forward-subagent-text', () => {
   test(
     'errors without --print and --output-format=stream-json',

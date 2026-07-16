@@ -32,6 +32,19 @@ jobs:
         # 先构建再测试：e2e 测试会运行 dist/cli.js，需要产物已存在。
 
       - name: Test
-        run: bun test --timeout 10000
-        # bunfig.toml [test] timeout 在 bun 1.3.14 不生效（CLI flag 才生效），
-        # 默认 5s 会让接近 5s 的时序测试在 CI 慢机器上 flake。用 CLI flag 兜底。
+        run: bash scripts/ci-test.sh
+        # Per-file isolation: runs each test file in its own bun process.
+        #
+        # Root cause: bun's mock.module() is PERMANENT per-process (no restore
+        # between files, and mock.restore() does NOT undo mock.module on bun
+        # 1.3.14). A file that mocks a shared module (auth, analytics, growthbook,
+        # config, hooks) leaks that mock to ALL subsequent files in a single
+        # `bun test` process, breaking their assertions. Module-scope memoized
+        # state (settings cache, credential provider cache, analytics sink
+        # registry) also leaks across files in a shared process.
+        #
+        # Fix: each file gets a fresh process → fresh module registry → no leak.
+        # This is what Jest/Vitest do by default (per-file process isolation).
+        #
+        # --timeout 10000: per-test timeout (CLI flag; bunfig.toml [test] timeout
+        # doesn't work in bun 1.3.14, CLI flag is the fallback).

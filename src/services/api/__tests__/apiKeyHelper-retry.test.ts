@@ -95,14 +95,12 @@ const { getClaudeConfigHomeDir } = require('../../../utils/envUtils.js') as {
   getClaudeConfigHomeDir: (() => string) & { cache?: Map<unknown, string> }
 }
 
-// These apiKeyHelper tests pass in isolation (locally) but fail in the GitHub
-// Actions full-suite run: the tmp CLAUDE_CONFIG_DIR settings.json that points
-// apiKeyHelper at the rewriteable script is not picked up under CI's shared
-// process (getClaudeConfigHomeDir / settings-cache memoization state leaks
-// across test files), so getConfiguredApiKeyHelper() resolves null. The setup
-// works locally. Skip under CI=true (runs locally where it passes); deeper
-// cross-test settings-cache isolation root-cause deferred to a later CI batch.
-describe.skipIf(process.env.CI)(
+// apiKeyHelper tests. Previously gated with skipIf(CI) because cross-test
+// settings-cache memoization state leaked across files in `bun test`'s shared
+// process, so getConfiguredApiKeyHelper() resolved null under CI. Fixed by
+// ci.yml per-file process isolation (scripts/ci-test.sh) — each file gets its
+// own bun process, so no memoized-state leak.
+describe(
   '2.1.208 #15 apiKeyHelper error caching',
   () => {
   beforeEach(() => {
@@ -163,7 +161,7 @@ describe.skipIf(process.env.CI)(
   })
 })
 
-describe.skipIf(process.env.CI)(
+describe(
   '2.1.208 #15 apiKeyHelper retry cap (within 3, not 10)',
   () => {
   // The retry loop throws CannotRetryError on the 3rd 401-from-apiKeyHelper-
