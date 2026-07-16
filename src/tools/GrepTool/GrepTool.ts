@@ -526,7 +526,7 @@ export const GrepTool = buildTool({
       )
     }
 
-    console.error('error: [DBG #14c] ripgrep args:', JSON.stringify(args), 'path:', absolutePath)
+    console.error('error: [DBG #14c] ripgrep args:', JSON.stringify(args), 'path:', absolutePath, 'dir contents:', JSON.stringify(require('fs').readdirSync(absolutePath)))
     const results = await ripGrep(args, absolutePath, abortController.signal, {
       rejectOnInputError: true,
     })
