@@ -24,17 +24,17 @@ import { handleInteractivePermission } from './toolPermission/handlers/interacti
 import { handleSwarmWorkerPermission } from './toolPermission/handlers/swarmWorkerHandler.js';
 import { createPermissionContext, createPermissionQueueOps } from './toolPermission/PermissionContext.js';
 import { logPermissionDecision } from './toolPermission/permissionLogging.js';
-export type CanUseToolFn<Input extends Record<string, unknown> = Record<string, unknown>> = (tool: ToolType, input: Input, toolUseContext: ToolUseContext, assistantMessage: AssistantMessage, toolUseID: string, forceDecision?: PermissionDecision<Input>) => Promise<PermissionDecision<Input>>;
+export type CanUseToolFn<Input extends Record<string, unknown> = Record<string, unknown>> = (tool: ToolType, input: Input, toolUseContext: ToolUseContext, assistantMessage: AssistantMessage, toolUseID: string, forceDecision?: PermissionDecision<Input>, hookAskFloor?: boolean) => Promise<PermissionDecision<Input>>;
 function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
   const $ = _c(3);
   let t0;
   if ($[0] !== setToolPermissionContext || $[1] !== setToolUseConfirmQueue) {
-    t0 = async (tool, input, toolUseContext, assistantMessage, toolUseID, forceDecision) => new Promise(resolve => {
+    t0 = async (tool, input, toolUseContext, assistantMessage, toolUseID, forceDecision, hookAskFloor) => new Promise(resolve => {
       const ctx = createPermissionContext(tool, input, toolUseContext, assistantMessage, toolUseID, setToolPermissionContext, createPermissionQueueOps(setToolUseConfirmQueue));
       if (ctx.resolveIfAborted(resolve)) {
         return;
       }
-      const decisionPromise = forceDecision !== undefined ? Promise.resolve(forceDecision) : hasPermissionsToUseTool(tool, input, toolUseContext, assistantMessage, toolUseID);
+      const decisionPromise = forceDecision !== undefined ? Promise.resolve(forceDecision) : hasPermissionsToUseTool(tool, input, toolUseContext, assistantMessage, toolUseID, hookAskFloor);
       return decisionPromise.then(async result => {
         if (result.behavior === "allow") {
           if (ctx.resolveIfAborted(resolve)) {

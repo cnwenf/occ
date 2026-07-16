@@ -252,6 +252,7 @@ export class QueryEngine {
       assistantMessage,
       toolUseID,
       forceDecision,
+      hookAskFloor,
     ) => {
       const result = await canUseTool(
         tool,
@@ -260,6 +261,7 @@ export class QueryEngine {
         assistantMessage,
         toolUseID,
         forceDecision,
+        hookAskFloor,
       )
 
       // Track denials for SDK reporting
