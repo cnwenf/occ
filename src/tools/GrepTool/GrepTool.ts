@@ -526,11 +526,11 @@ export const GrepTool = buildTool({
       )
     }
 
-    console.error('[DBG #14c] ripgrep args:', JSON.stringify(args), 'path:', absolutePath)
+    console.error('error: [DBG #14c] ripgrep args:', JSON.stringify(args), 'path:', absolutePath)
     const results = await ripGrep(args, absolutePath, abortController.signal, {
       rejectOnInputError: true,
     })
-    console.error('[DBG #14c] results:', JSON.stringify(results), 'CI:', !!process.env.CI)
+    console.error('error: [DBG #14c] results:', JSON.stringify(results), 'CI:', !!process.env.CI)
 
     if (output_mode === 'content') {
       // For content mode, results are the actual content lines
