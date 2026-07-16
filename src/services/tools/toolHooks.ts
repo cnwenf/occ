@@ -390,54 +390,46 @@ export async function resolveHookPermissionDecision(
   const requiresInteraction = tool.requiresUserInteraction?.()
   const requireCanUseTool = toolUseContext.requireCanUseTool
 
-  if (hookPermissionResult?.behavior === 'allow') {
-    const hookInput = hookPermissionResult.updatedInput ?? input
+  // Hook deny — always honored
+  if (hookPermissionResult?.behavior === 'deny') {
+    logForDebugging(`Hook denied tool use for ${tool.name}`)
+    return { decision: hookPermissionResult, input }
+  }
 
-    // Hook provided updatedInput for an interactive tool — the hook IS the
-    // user interaction (e.g. headless wrapper that collected AskUserQuestion
-    // answers). Treat as non-interactive for the rule-check path.
-    const interactionSatisfied =
-      requiresInteraction && hookPermissionResult.updatedInput !== undefined
+  // Only handle 'allow' and 'ask' hook results below.
+  // No hook decision → normal permission flow.
+  if (
+    hookPermissionResult?.behavior !== 'allow' &&
+    hookPermissionResult?.behavior !== 'ask'
+  ) {
+    return {
+      decision: await canUseTool(
+        tool,
+        input,
+        toolUseContext,
+        assistantMessage,
+        toolUseID,
+      ),
+      input,
+    }
+  }
 
-    if ((requiresInteraction && !interactionSatisfied) || requireCanUseTool) {
-      logForDebugging(
-        `Hook approved tool use for ${tool.name}, but canUseTool is required`,
-      )
-      return {
-        decision: await canUseTool(
-          tool,
-          hookInput,
-          toolUseContext,
-          assistantMessage,
-          toolUseID,
-        ),
-        input: hookInput,
-      }
-    }
+  const hookBehavior = hookPermissionResult.behavior
+  const hookInput = hookPermissionResult.updatedInput ?? input
 
-    // Hook allow skips the interactive prompt, but deny/ask rules still apply.
-    const ruleCheck = await checkRuleBasedPermissions(
-      tool,
-      hookInput,
-      toolUseContext,
-    )
-    if (ruleCheck === null) {
-      logForDebugging(
-        interactionSatisfied
-          ? `Hook satisfied user interaction for ${tool.name} via updatedInput`
-          : `Hook approved tool use for ${tool.name}, bypassing permission prompt`,
-      )
-      return { decision: hookPermissionResult, input: hookInput }
-    }
-    if (ruleCheck.behavior === 'deny') {
-      logForDebugging(
-        `Hook approved tool use for ${tool.name}, but deny rule overrides: ${ruleCheck.message}`,
-      )
-      return { decision: ruleCheck, input: hookInput }
-    }
-    // ask rule — dialog required despite hook approval
+  // Hook provided updatedInput for an interactive tool — the hook IS the
+  // user interaction (e.g. headless wrapper that collected AskUserQuestion
+  // answers). Treat as non-interactive for the rule-check path.
+  const interactionSatisfied =
+    requiresInteraction && hookPermissionResult.updatedInput !== undefined
+
+  // Hook allow + requireCanUseTool → still need permission pipeline
+  if (
+    hookBehavior === 'allow' &&
+    ((requiresInteraction && !interactionSatisfied) || requireCanUseTool)
+  ) {
     logForDebugging(
-      `Hook approved tool use for ${tool.name}, but ask rule requires prompt`,
+      `Hook approved tool use for ${tool.name}, but canUseTool is required`,
     )
     return {
       decision: await canUseTool(
@@ -451,30 +443,67 @@ export async function resolveHookPermissionDecision(
     }
   }
 
-  if (hookPermissionResult?.behavior === 'deny') {
-    logForDebugging(`Hook denied tool use for ${tool.name}`)
-    return { decision: hookPermissionResult, input }
+  // Rule check applies to BOTH hook allow and hook ask (CC 2.1.211).
+  // This is the key change: hook 'ask' now goes through rule checks,
+  // same as hook 'allow'.
+  const ruleCheck = await checkRuleBasedPermissions(
+    tool,
+    hookInput,
+    toolUseContext,
+  )
+
+  if (ruleCheck?.behavior === 'deny') {
+    logForDebugging(
+      `Hook returned '${hookBehavior}' for ${tool.name}, but deny rule overrides: ${ruleCheck.message}`,
+    )
+    return { decision: ruleCheck, input: hookInput }
   }
 
-  // No hook decision or 'ask' — normal permission flow, possibly with
-  // forceDecision so the dialog shows the hook's ask message.
-  const forceDecision =
-    hookPermissionResult?.behavior === 'ask' ? hookPermissionResult : undefined
-  const askInput =
-    hookPermissionResult?.behavior === 'ask' &&
-    hookPermissionResult.updatedInput
-      ? hookPermissionResult.updatedInput
-      : input
+  if (ruleCheck?.behavior === 'ask') {
+    // Hook returned 'ask' or 'allow', but rules require 'ask'.
+    // CC 2.1.211 hookAskFloor: when the hook itself returned 'ask',
+    // pass hookAskFloor=true so auto mode floors the decision at prompt
+    // instead of overriding with a classifier allow.
+    const isHookAsk = hookBehavior === 'ask'
+    logForDebugging(
+      `Hook returned '${hookBehavior}' for ${tool.name}, but ask rule/safety check requires full permission pipeline${isHookAsk ? ' (hookAskFloor — a classifier allow re-surfaces as this ask)' : ''}`,
+    )
+    return {
+      decision: await canUseTool(
+        tool,
+        hookInput,
+        toolUseContext,
+        assistantMessage,
+        toolUseID,
+        undefined, // no forceDecision — let hasPermissionsToUseTool run
+        isHookAsk, // hookAskFloor — floor at prompt if hook returned ask
+      ),
+      input: hookInput,
+    }
+  }
+
+  // Rule check passed (null) — hook decision stands
+  if (hookBehavior === 'allow') {
+    logForDebugging(
+      interactionSatisfied
+        ? `Hook satisfied user interaction for ${tool.name} via updatedInput`
+        : `Hook approved tool use for ${tool.name}, bypassing permission prompt`,
+    )
+    return { decision: hookPermissionResult, input: hookInput }
+  }
+
+  // hookBehavior === 'ask', rule check passed — use forceDecision
+  // so the dialog shows the hook's ask message (skips hasPermissionsToUseTool)
   return {
     decision: await canUseTool(
       tool,
-      askInput,
+      hookInput,
       toolUseContext,
       assistantMessage,
       toolUseID,
-      forceDecision,
+      hookPermissionResult, // forceDecision — skip classifier, show dialog
     ),
-    input: askInput,
+    input: hookInput,
   }
 }
 

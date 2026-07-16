@@ -237,13 +237,16 @@ export function ansiToSvg(
   const width = Math.ceil(maxLineLength * charWidthEstimate + paddingX * 2)
   const height = lines.length * lineHeight + paddingY * 2
 
-  // Build SVG - use tspan elements so renderer handles character positioning
-  let svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n`
-  svg += `  <rect width="100%" height="100%" fill="${backgroundColor}" rx="${borderRadius}" ry="${borderRadius}"/>\n`
-  svg += `  <style>\n`
-  svg += `    text { font-family: ${fontFamily}; font-size: ${fontSize}px; white-space: pre; }\n`
-  svg += `    .b { font-weight: bold; }\n`
-  svg += `  </style>\n`
+  // Build SVG - use tspan elements so renderer handles character positioning.
+  // Accumulate fragments in an array and join once at the end to avoid
+  // O(n²) string concatenation in the span/line rendering loops.
+  const parts: string[] = []
+  parts.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">\n`)
+  parts.push(`  <rect width="100%" height="100%" fill="${backgroundColor}" rx="${borderRadius}" ry="${borderRadius}"/>\n`)
+  parts.push(`  <style>\n`)
+  parts.push(`    text { font-family: ${fontFamily}; font-size: ${fontSize}px; white-space: pre; }\n`)
+  parts.push(`    .b { font-weight: bold; }\n`)
+  parts.push(`  </style>\n`)
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const spans = lines[lineIndex]!
@@ -252,7 +255,7 @@ export function ansiToSvg(
 
     // Build a single <text> element with <tspan> children for each colored segment
     // xml:space="preserve" prevents SVG from collapsing whitespace
-    svg += `  <text x="${paddingX}" y="${y}" xml:space="preserve">`
+    parts.push(`  <text x="${paddingX}" y="${y}" xml:space="preserve">`)
 
     for (const span of spans) {
       if (!span.text) continue
@@ -260,13 +263,13 @@ export function ansiToSvg(
       const colorStr = `rgb(${span.color.r}, ${span.color.g}, ${span.color.b})`
       const boldClass = span.bold ? ' class="b"' : ''
 
-      svg += `<tspan fill="${colorStr}"${boldClass}>${escapeXml(span.text)}</tspan>`
+      parts.push(`<tspan fill="${colorStr}"${boldClass}>${escapeXml(span.text)}</tspan>`)
     }
 
-    svg += `</text>\n`
+    parts.push(`</text>\n`)
   }
 
-  svg += `</svg>`
+  parts.push(`</svg>`)
 
-  return svg
+  return parts.join('')
 }

@@ -18,6 +18,7 @@ import {
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
+import { parseEnvInt } from 'src/utils/envValidation.js'
 import {
   getIsNonInteractiveSession,
   getSessionId,
@@ -183,7 +184,7 @@ export async function getAnthropicClient({
   const ARGS = {
     defaultHeaders,
     maxRetries,
-    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+    timeout: parseEnvInt(process.env.API_TIMEOUT_MS) ?? 600_000,
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({
       forAnthropicAPI: true,

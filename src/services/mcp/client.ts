@@ -60,6 +60,7 @@ import { ReadMcpResourceTool } from '../../tools/ReadMcpResourceTool/ReadMcpReso
 import { ReadMcpResourceDirTool } from '../../tools/ReadMcpResourceDirTool/ReadMcpResourceDirTool.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { count } from '../../utils/array.js'
+import { parseEnvInt } from '../../utils/envValidation.js'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getClaudeAIOAuthTokens,
@@ -258,7 +259,7 @@ const MAX_MCP_DESCRIPTION_LENGTH = 2048
  */
 function getMcpToolTimeoutMs(): number {
   return (
-    parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10) ||
+    parseEnvInt(process.env.MCP_TOOL_TIMEOUT) ??
     DEFAULT_MCP_TOOL_TIMEOUT_MS
   )
 }
@@ -489,7 +490,7 @@ const IMAGE_MIME_TYPES = new Set([
 ])
 
 function getConnectionTimeoutMs(): number {
-  return parseInt(process.env.MCP_TIMEOUT || '', 10) || 30000
+  return parseEnvInt(process.env.MCP_TIMEOUT) ?? 30000
 }
 
 /**
@@ -666,12 +667,12 @@ export function wrapFetchWithTimeout(
 }
 
 export function getMcpServerConnectionBatchSize(): number {
-  return parseInt(process.env.MCP_SERVER_CONNECTION_BATCH_SIZE || '', 10) || 3
+  return parseEnvInt(process.env.MCP_SERVER_CONNECTION_BATCH_SIZE) ?? 3
 }
 
 function getRemoteMcpServerConnectionBatchSize(): number {
   return (
-    parseInt(process.env.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE || '', 10) ||
+    parseEnvInt(process.env.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE) ??
     20
   )
 }

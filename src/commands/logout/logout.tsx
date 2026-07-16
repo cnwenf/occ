@@ -1,5 +1,6 @@
 import * as React from 'react';
 import { clearTrustedDeviceTokenCache } from '../../bridge/trustedDevice.js';
+import { isBgSession } from '../../utils/concurrentSessions.js';
 import { Text } from '../../ink.js';
 import { refreshGrowthBookAfterAuthChange } from '../../services/analytics/growthbook.js';
 import { getGroveNoticeConfig, getGroveSettings } from '../../services/api/grove.js';
@@ -70,6 +71,18 @@ export async function clearAuthRelatedCaches(): Promise<void> {
   await clearPolicyLimitsCache();
 }
 export async function call(): Promise<React.ReactNode> {
+  // 2.1.211: Background sessions share a credential store with the main
+  // terminal session. Logging out from a background session would wipe
+  // the shared store, causing all parallel sessions to log out
+  // simultaneously — especially after wake-from-sleep when many sessions
+  // detect expired tokens at once. The guard shows a warning instead of
+  // shutting down, matching the official binary's $K_ / Di() check:
+  //   "This background session shares credentials with other sessions;
+  //    /logout here has no effect. Run /logout from your main terminal
+  //    to sign out."
+  if (isBgSession()) {
+    return <Text>This background session shares credentials with other sessions; /logout here has no effect. Run /logout from your main terminal to sign out.</Text>;
+  }
   await performLogout({
     clearOnboarding: true
   });

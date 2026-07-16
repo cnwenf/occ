@@ -4,6 +4,7 @@
  */
 import { createServer } from 'http'
 import { getPlatform } from '../../utils/platform.js'
+import { parseEnvInt } from '../../utils/envValidation.js'
 
 // Windows dynamic port range 49152-65535 is reserved
 const REDIRECT_PORT_RANGE =
@@ -25,7 +26,7 @@ export function buildRedirectUri(
 }
 
 function getMcpOAuthCallbackPort(): number | undefined {
-  const port = parseInt(process.env.MCP_OAUTH_CALLBACK_PORT || '', 10)
+  const port = parseEnvInt(process.env.MCP_OAUTH_CALLBACK_PORT)
   return port > 0 ? port : undefined
 }
 

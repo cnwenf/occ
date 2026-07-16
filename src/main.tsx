@@ -108,6 +108,7 @@ import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
 import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace, isSafeMode } from './utils/envUtils.js';
+import { parseEnvInt } from './utils/envValidation.js';
 import { refreshExampleCommands } from './utils/exampleCommands.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
 import { getWorktreePaths } from './utils/getWorktreePaths.js';
@@ -1001,7 +1002,7 @@ async function run(): Promise<CommanderCommand> {
     // If not provided but flag is present, value will be true
     // The actual filtering is handled in debug.ts by parsing process.argv
     return true;
-  }).addOption(new Option('--debug-to-stderr', 'Enable debug mode (to stderr)').argParser(Boolean).hideHelp()).option('--debug-file <path>', 'Write debug logs to a specific file path (implicitly enables debug mode)', () => true).option('--verbose', 'Override verbose mode setting from config', () => true).option('-p, --print', 'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.', () => true).option('--bare', 'Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.', () => true).option('--safe-mode', 'Start in safe mode: disable all plugins, bundled skills, and hooks. Used for troubleshooting ("is a plugin/hook causing my problem?").', () => true).option('--ax-screen-reader', 'Render screen-reader friendly output (flat text, no decorative borders or animations). Overridden by the CLAUDE_AX_SCREEN_READER env var and the axScreenReader setting.', () => true).addOption(new Option('--init', 'Run Setup hooks with init trigger, then continue').hideHelp()).addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp()).addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp()).addOption(new Option('--output-format <format>', 'Output format (only works with --print): "text" (default), "json" (single result), or "stream-json" (realtime streaming)').choices(['text', 'json', 'stream-json'])).addOption(new Option('--json-schema <schema>', 'JSON Schema for structured output validation. ' + 'Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}').argParser(String)).option('--include-hook-events', 'Include all hook lifecycle events in the output stream (only works with --output-format=stream-json)', () => true).option('--include-partial-messages', 'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)', () => true).addOption(new Option('--input-format <format>', 'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)').choices(['text', 'stream-json'])).option('--mcp-debug', '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)', () => true).option('--dangerously-skip-permissions', 'Bypass all permission checks. Recommended only for sandboxes with no internet access.', () => true).option('--allow-dangerously-skip-permissions', 'Enable bypassing all permission checks as an option, without it being enabled by default. Recommended only for sandboxes with no internet access.', () => true).option('--dangerously-skip-protected-paths', 'Skip permission prompts for writes to protected paths (.claude/, .git/, .vscode/, shell configs). These paths are protected because editing them can execute code or alter tool behavior. Use with caution.', () => true).addOption(new Option('--thinking <mode>', 'Thinking mode: enabled (equivalent to adaptive), disabled').choices(['enabled', 'adaptive', 'disabled']).hideHelp()).addOption(new Option('--max-thinking-tokens <tokens>', '[DEPRECATED. Use --thinking instead for newer models] Maximum number of thinking tokens (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-turns <turns>', 'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-budget-usd <amount>', 'Maximum dollar amount to spend on API calls (only works with --print)').argParser(value => {
+  }).addOption(new Option('--debug-to-stderr', 'Enable debug mode (to stderr)').argParser(Boolean).hideHelp()).option('--debug-file <path>', 'Write debug logs to a specific file path (implicitly enables debug mode)', () => true).option('--verbose', 'Override verbose mode setting from config', () => true).option('-p, --print', 'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run with the -p mode. Only use this flag in directories you trust.', () => true).option('--bare', 'Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.', () => true).option('--safe-mode', 'Start in safe mode: disable all plugins, bundled skills, and hooks. Used for troubleshooting ("is a plugin/hook causing my problem?").', () => true).option('--ax-screen-reader', 'Render screen-reader friendly output (flat text, no decorative borders or animations). Overridden by the CLAUDE_AX_SCREEN_READER env var and the axScreenReader setting.', () => true).addOption(new Option('--init', 'Run Setup hooks with init trigger, then continue').hideHelp()).addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp()).addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp()).addOption(new Option('--output-format <format>', 'Output format (only works with --print): "text" (default), "json" (single result), or "stream-json" (realtime streaming)').choices(['text', 'json', 'stream-json'])).addOption(new Option('--json-schema <schema>', 'JSON Schema for structured output validation. ' + 'Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}').argParser(String)).option('--include-hook-events', 'Include all hook lifecycle events in the output stream (only works with --output-format=stream-json)', () => true).option('--include-partial-messages', 'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)', () => true).option('--forward-subagent-text', 'Forward subagent text and thinking blocks as assistant/user messages with parent_tool_use_id set (only works with --print and --output-format=stream-json)', () => true).addOption(new Option('--input-format <format>', 'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)').choices(['text', 'stream-json'])).option('--mcp-debug', '[DEPRECATED. Use --debug instead] Enable MCP debug mode (shows MCP server errors)', () => true).option('--dangerously-skip-permissions', 'Bypass all permission checks. Recommended only for sandboxes with no internet access.', () => true).option('--allow-dangerously-skip-permissions', 'Enable bypassing all permission checks as an option, without it being enabled by default. Recommended only for sandboxes with no internet access.', () => true).option('--dangerously-skip-protected-paths', 'Skip permission prompts for writes to protected paths (.claude/, .git/, .vscode/, shell configs). These paths are protected because editing them can execute code or alter tool behavior. Use with caution.', () => true).addOption(new Option('--thinking <mode>', 'Thinking mode: enabled (equivalent to adaptive), disabled').choices(['enabled', 'adaptive', 'disabled']).hideHelp()).addOption(new Option('--max-thinking-tokens <tokens>', '[DEPRECATED. Use --thinking instead for newer models] Maximum number of thinking tokens (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-turns <turns>', 'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-budget-usd <amount>', 'Maximum dollar amount to spend on API calls (only works with --print)').argParser(value => {
     const amount = Number(value);
     if (isNaN(amount) || amount <= 0) {
       throw new Error('--max-budget-usd must be a positive number greater than 0');
@@ -1160,7 +1161,8 @@ async function run(): Promise<CommanderCommand> {
       ide = false,
       sessionId,
       includeHookEvents,
-      includePartialMessages
+      includePartialMessages,
+      forwardSubagentText
     } = options;
     if (options.prefill) {
       seedEarlyInput(options.prefill);
@@ -1291,6 +1293,9 @@ async function run(): Promise<CommanderCommand> {
 
     // Allow env var to enable partial messages (used by sandbox gateway for baku)
     const effectiveIncludePartialMessages = includePartialMessages || isEnvTruthy(process.env.CLAUDE_CODE_INCLUDE_PARTIAL_MESSAGES);
+
+    // Resolve --forward-subagent-text from CLI flag or CLAUDE_CODE_FORWARD_SUBAGENT_TEXT env var
+    const effectiveForwardSubagentText = forwardSubagentText || isEnvTruthy(process.env.CLAUDE_CODE_FORWARD_SUBAGENT_TEXT);
 
     // Enable all hook event types when explicitly requested via SDK option
     // or when running in CLAUDE_CODE_REMOTE mode (CCR needs them).
@@ -1922,6 +1927,19 @@ async function run(): Promise<CommanderCommand> {
       if (!isNonInteractiveSession || outputFormat !== 'stream-json') {
         writeToStderr(`Error: --include-partial-messages requires --print and --output-format=stream-json.`);
         process.exit(1);
+      }
+    }
+
+    // Validate forwardSubagentText is only used with print mode and stream-json output.
+    // Binary: if(pe){if(!St||L!=="stream-json"){if(k)return ls("Error: --forward-subagent-text requires --print and --output-format=stream-json.");pe=!1}}
+    // Only errors when the CLI flag `k` is explicitly set; env-only silently disables.
+    if (effectiveForwardSubagentText) {
+      if (!isNonInteractiveSession || outputFormat !== 'stream-json') {
+        if (forwardSubagentText) {
+          writeToStderr(`Error: --forward-subagent-text requires --print and --output-format=stream-json.`);
+          process.exit(1);
+        }
+        // Env-only: silently disable (matches upstream behavior)
       }
     }
 
@@ -2561,7 +2579,7 @@ async function run(): Promise<CommanderCommand> {
         type: 'disabled'
       };
     } else {
-      const maxThinkingTokens = process.env.MAX_THINKING_TOKENS ? parseInt(process.env.MAX_THINKING_TOKENS, 10) : options.maxThinkingTokens;
+      const maxThinkingTokens = process.env.MAX_THINKING_TOKENS ? parseEnvInt(process.env.MAX_THINKING_TOKENS) : options.maxThinkingTokens;
       if (maxThinkingTokens !== undefined) {
         if (maxThinkingTokens > 0) {
           thinkingEnabled = true;
@@ -2946,6 +2964,7 @@ async function run(): Promise<CommanderCommand> {
         sdkUrl,
         replayUserMessages: effectiveReplayUserMessages,
         includePartialMessages: effectiveIncludePartialMessages,
+        forwardSubagentText: effectiveForwardSubagentText,
         forkSession: options.forkSession || false,
         resumeSessionAt: options.resumeSessionAt || undefined,
         rewindFiles: options.rewindFiles,

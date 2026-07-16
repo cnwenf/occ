@@ -131,6 +131,7 @@ export type RecordedChange =
       count: number
     }
   | { type: 'replace'; char: string; count: number }
+  | { type: 'substitute'; count: number }
   | { type: 'x'; count: number }
   | { type: 'toggleCase'; count: number }
   | { type: 'indent'; dir: '>' | '<'; count: number }

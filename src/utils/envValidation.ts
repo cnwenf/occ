@@ -6,6 +6,89 @@ export type EnvVarValidationResult = {
   message?: string
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.211 generalized integer env-var parser (`zl` in the upstream binary).
+//
+// 2.1.208 #11 fixed scientific-notation parsing (`1e6`) for
+// CLAUDE_CODE_MAX_OUTPUT_TOKENS only. 2.1.211 generalizes the fix to ALL
+// integer env vars AND adds digit-separator support (`64_000`, `1,000`).
+//
+// Accepted forms:
+//   1e6       → 1000000   (scientific notation, integer result required)
+//   64_000    → 64000      (digit separators: _ , NBSP NNBSP space)
+//   1_000_000 → 1000000    (multi-group digit separators)
+//   1000      → 1000       (plain decimal)
+//   abc       → NaN        (invalid → caller supplies default)
+// ---------------------------------------------------------------------------
+
+/** Max string length eligible for notation-matched parsing. Mirrors binary. */
+const MAX_NOTATION_LENGTH = 32
+
+/**
+ * Scientific-notation regex — same as 2.1.210 binary `T9f` / `aDe`.
+ * Accepts optional sign, mantissa with optional fractional part, exponent.
+ */
+const SCIENTIFIC_NOTATION_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/
+
+/**
+ * Digit-separator regex — NEW in 2.1.211 (`_Ka`).
+ * Groups of 1-3 digits separated by a consistent separator character.
+ * The backreference `\1` enforces the SAME separator throughout.
+ */
+const DIGIT_SEPARATOR_RE = /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/
+
+/** Strip class for removing separators before parseInt — binary `bKa`. */
+const SEPARATOR_STRIP_RE = /[_,\u00A0\u202F ]/g
+
+/**
+ * Core notation parser — mirrors binary `C9f`.
+ * Returns the parsed integer, NaN for non-integer scientific results,
+ * or undefined when no notation pattern matches (caller falls back).
+ */
+function parseNotationInt(s: string): number | undefined {
+  if (s.length <= MAX_NOTATION_LENGTH) {
+    if (SCIENTIFIC_NOTATION_RE.test(s)) {
+      const asNumber = Number(s)
+      return Number.isInteger(asNumber) ? asNumber : NaN
+    }
+    if (DIGIT_SEPARATOR_RE.test(s)) {
+      return parseInt(s.replace(SEPARATOR_STRIP_RE, ''), 10)
+    }
+  }
+  return undefined
+}
+
+/**
+ * Parse an integer env-var value supporting scientific notation and digit
+ * separators. Mirrors CC 2.1.211 binary `zl`.
+ *
+ * Returns `undefined` for invalid/unset values so callers can use `?? default`
+ * to preserve a legitimate `0` (0 is falsy under `||`, dropping it to the
+ * default — the foot-gun fixed in CC 2.1.211 hardening).
+ */
+export function parseEnvInt(value: string | undefined): number | undefined {
+  const trimmed = String(value).trim()
+  const notationResult = parseNotationInt(trimmed)
+  if (notationResult !== undefined) {
+    return Number.isNaN(notationResult) ? undefined : notationResult
+  }
+  const parseIntResult = parseInt(trimmed, 10)
+  return Number.isNaN(parseIntResult) ? undefined : parseIntResult
+}
+
+/**
+ * Parse an integer env-var with a default fallback.
+ * Uses `??` (not `||`) so that a legitimate `0` is preserved — mirrors the
+ * CC 2.1.211 binary `zl` which returns the parsed int (incl. 0) for valid
+ * input and the default for invalid input.
+ */
+export function parseEnvIntWithDefault(
+  value: string | undefined,
+  defaultValue: number,
+): number {
+  return parseEnvInt(value) ?? defaultValue
+}
+
 export function validateBoundedIntEnvVar(
   name: string,
   value: string | undefined,
@@ -15,24 +98,10 @@ export function validateBoundedIntEnvVar(
   if (!value) {
     return { effective: defaultValue, status: 'valid' }
   }
-  // CC 2.1.208 #11: parseInt('1e6', 10) stops at 'e' and silently returns 1,
-  // so scientific-notation values like CLAUDE_CODE_MAX_OUTPUT_TOKENS=1e6 were
-  // treated as their mantissa. Detect scientific notation and parse via Number()
-  // (which honors the exponent), accepting only integer results. Mirrors CC 2.1.210
-  // binary `aDe`: /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/ -> Number.isInteger.
-  const raw = String(value)
-  const trimmed = raw.trim()
-  let parsed: number
-  if (
-    trimmed.length <= 32 &&
-    /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/.test(trimmed)
-  ) {
-    const asNumber = Number(trimmed)
-    parsed = Number.isInteger(asNumber) ? asNumber : NaN
-  } else {
-    parsed = parseInt(raw, 10)
-  }
-  if (isNaN(parsed) || parsed <= 0) {
+  // CC 2.1.211: route through the shared parseEnvInt so bounded vars
+  // also gain digit-separator support (`64_000`, `1,000`, etc.).
+  const parsed = parseEnvInt(value)
+  if (parsed === undefined || parsed <= 0) {
     const result: EnvVarValidationResult = {
       effective: defaultValue,
       status: 'invalid',

@@ -220,6 +220,13 @@ export type VimTextInputProps = BaseTextInputProps & {
    * idle mode (2.1.152+).
    */
   readonly onHistorySearch?: () => void
+
+  /**
+   * Toggles the shortcuts/help panel. Called when '?' is pressed in vim
+   * NORMAL idle mode (2.1.211+). Replaces the old onChange('?') swallow.
+   * Binary: `B.command.type==="idle"&&j.key==="?"&&l){l(),j.preventDefault();return}`
+   */
+  readonly onToggleHelp?: () => void
 }
 
 /**

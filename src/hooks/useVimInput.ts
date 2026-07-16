@@ -16,6 +16,7 @@ import {
   executeOperatorMotion,
   executeOperatorTextObj,
   executeReplace,
+  executeSubstitute,
   executeToggleCase,
   executeVisualCase,
   executeVisualIndent,
@@ -56,6 +57,12 @@ type UseVimInputProps = Omit<UseTextInputProps, 'inputFilter'> & {
    * idle mode (2.1.152+). Binary: `P.key==="/"&&a`.
    */
   onHistorySearch?: () => void
+  /**
+   * Toggles the shortcuts/help panel. Called when '?' is pressed in vim
+   * NORMAL idle mode (2.1.211+). Replaces the old onChange('?') swallow.
+   * Binary: `B.command.type==="idle"&&j.key==="?"&&l){l(),...}`
+   */
+  onToggleHelp?: () => void
   inputFilter?: UseTextInputProps['inputFilter']
 }
 
@@ -102,7 +109,7 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   // run the filter — otherwise a stateful filter (e.g. lazy-space-after-
   // pill) stays armed across an Escape → NORMAL → INSERT round-trip.
   const textInput = useTextInput({ ...props, inputFilter: undefined })
-  const { onModeChange, inputFilter, onHistorySearch } = props
+  const { onModeChange, inputFilter, onHistorySearch, onToggleHelp } = props
 
   const switchToInsertMode = useCallback(
     (offset?: number): void => {
@@ -233,6 +240,10 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
 
       case 'x':
         executeX(change.count, ctx)
+        break
+
+      case 'substitute':
+        executeSubstitute(change.count, ctx)
         break
 
       case 'replace':
@@ -602,12 +613,15 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       }
     }
 
+    // 2.1.211: '?' in vim NORMAL idle toggles help via onToggleHelp,
+    // not via onChange('?') which was silently swallowed.
+    // Binary: `B.command.type==="idle"&&j.key==="?"&&l){l(),j.preventDefault();return}`
     if (
       input === '?' &&
       state.mode === 'NORMAL' &&
       state.command.type === 'idle'
     ) {
-      props.onChange('?')
+      onToggleHelp?.()
     }
   }
 

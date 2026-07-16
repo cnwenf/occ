@@ -1299,35 +1299,39 @@ export async function getMemoryFilesForNestedDirectory(
     )
   }
 
-  const rulesDir = join(dir, '.claude', 'rules')
+  // CC 2.1.211: nested .claude/rules/*.md are checked-in project files — skip
+  // them when project settings are excluded, just like CLAUDE.md above.
+  if (isSettingSourceEnabled('projectSettings')) {
+    const rulesDir = join(dir, '.claude', 'rules')
 
-  // Process project unconditional .claude/rules/*.md files, which were not eagerly loaded
-  // Use a separate processedPaths set to avoid marking conditional rule files as processed
-  const unconditionalProcessedPaths = new Set(processedPaths)
-  result.push(
-    ...(await processMdRules({
-      rulesDir,
-      type: 'Project',
-      processedPaths: unconditionalProcessedPaths,
-      includeExternal: false,
-      conditionalRule: false,
-    })),
-  )
+    // Process project unconditional .claude/rules/*.md files, which were not eagerly loaded
+    // Use a separate processedPaths set to avoid marking conditional rule files as processed
+    const unconditionalProcessedPaths = new Set(processedPaths)
+    result.push(
+      ...(await processMdRules({
+        rulesDir,
+        type: 'Project',
+        processedPaths: unconditionalProcessedPaths,
+        includeExternal: false,
+        conditionalRule: false,
+      })),
+    )
 
-  // Process project conditional .claude/rules/*.md files
-  result.push(
-    ...(await processConditionedMdRules(
-      targetPath,
-      rulesDir,
-      'Project',
-      processedPaths,
-      false,
-    )),
-  )
+    // Process project conditional .claude/rules/*.md files
+    result.push(
+      ...(await processConditionedMdRules(
+        targetPath,
+        rulesDir,
+        'Project',
+        processedPaths,
+        false,
+      )),
+    )
 
-  // processedPaths must be seeded with unconditional paths for subsequent directories
-  for (const path of unconditionalProcessedPaths) {
-    processedPaths.add(path)
+    // processedPaths must be seeded with unconditional paths for subsequent directories
+    for (const path of unconditionalProcessedPaths) {
+      processedPaths.add(path)
+    }
   }
 
   return result
@@ -1347,6 +1351,11 @@ export async function getConditionalRulesForCwdLevelDirectory(
   targetPath: string,
   processedPaths: Set<string>,
 ): Promise<MemoryFileInfo[]> {
+  // CC 2.1.211: skip nested project .claude/rules/*.md when project settings
+  // are excluded — these are checked-in files, same as CLAUDE.md.
+  if (!isSettingSourceEnabled('projectSettings')) {
+    return []
+  }
   const rulesDir = join(dir, '.claude', 'rules')
   return processConditionedMdRules(
     targetPath,

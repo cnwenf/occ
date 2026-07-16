@@ -19,6 +19,7 @@ import { execFileNoThrow } from '../../utils/execFileNoThrow.js';
 import { addItemToJSONCArray, safeParseJSONC } from '../../utils/json.js';
 import { logError } from '../../utils/log.js';
 import { getPlatform } from '../../utils/platform.js';
+import { isScreenReaderEnabled } from '../../utils/screenReader.js';
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js';
 const EOL = '\n';
 
@@ -267,18 +268,26 @@ async function installBindingsForVSCodeTerminal(editor: 'VSCode' | 'Cursor' | 'W
     throw new Error(`Failed to install ${editor} terminal Shift+Enter key binding`);
   }
 }
-async function enableOptionAsMetaForProfile(profileName: string): Promise<boolean> {
+type ExecResult = { stdout: string; stderr: string; code: number; error?: string };
+type ExecFileFn = (file: string, args: string[], options?: Record<string, unknown>) => Promise<ExecResult>;
+type GetPlistPathFn = () => string;
+
+async function enableOptionAsMetaForProfile(
+  profileName: string,
+  execFile: ExecFileFn,
+  getPlistPath: GetPlistPathFn,
+): Promise<boolean> {
   // First try to add the property (in case it doesn't exist)
   // Quote the profile name to handle names with spaces (e.g., "Man Page", "Red Sands")
   const {
     code: addCode
-  } = await execFileNoThrow('/usr/libexec/PlistBuddy', ['-c', `Add :'Window Settings':'${profileName}':useOptionAsMetaKey bool true`, getTerminalPlistPath()]);
+  } = await execFile('/usr/libexec/PlistBuddy', ['-c', `Add :'Window Settings':'${profileName}':useOptionAsMetaKey bool true`, getPlistPath()]);
 
   // If adding fails (likely because it already exists), try setting it instead
   if (addCode !== 0) {
     const {
       code: setCode
-    } = await execFileNoThrow('/usr/libexec/PlistBuddy', ['-c', `Set :'Window Settings':'${profileName}':useOptionAsMetaKey true`, getTerminalPlistPath()]);
+    } = await execFile('/usr/libexec/PlistBuddy', ['-c', `Set :'Window Settings':'${profileName}':useOptionAsMetaKey true`, getPlistPath()]);
     if (setCode !== 0) {
       logError(new Error(`Failed to enable Option as Meta key for Terminal.app profile: ${profileName}`));
       return false;
@@ -286,18 +295,22 @@ async function enableOptionAsMetaForProfile(profileName: string): Promise<boolea
   }
   return true;
 }
-async function disableAudioBellForProfile(profileName: string): Promise<boolean> {
+async function disableAudioBellForProfile(
+  profileName: string,
+  execFile: ExecFileFn,
+  getPlistPath: GetPlistPathFn,
+): Promise<boolean> {
   // First try to add the property (in case it doesn't exist)
   // Quote the profile name to handle names with spaces (e.g., "Man Page", "Red Sands")
   const {
     code: addCode
-  } = await execFileNoThrow('/usr/libexec/PlistBuddy', ['-c', `Add :'Window Settings':'${profileName}':Bell bool false`, getTerminalPlistPath()]);
+  } = await execFile('/usr/libexec/PlistBuddy', ['-c', `Add :'Window Settings':'${profileName}':Bell bool false`, getPlistPath()]);
 
   // If adding fails (likely because it already exists), try setting it instead
   if (addCode !== 0) {
     const {
       code: setCode
-    } = await execFileNoThrow('/usr/libexec/PlistBuddy', ['-c', `Set :'Window Settings':'${profileName}':Bell false`, getTerminalPlistPath()]);
+    } = await execFile('/usr/libexec/PlistBuddy', ['-c', `Set :'Window Settings':'${profileName}':Bell false`, getPlistPath()]);
     if (setCode !== 0) {
       logError(new Error(`Failed to disable audio bell for Terminal.app profile: ${profileName}`));
       return false;
@@ -306,11 +319,41 @@ async function disableAudioBellForProfile(profileName: string): Promise<boolean>
   return true;
 }
 
+/**
+ * Injectable dependencies for `enableOptionAsMetaForTerminal`.
+ *
+ * Production callers pass nothing (defaults to the real leaf collaborators).
+ * Tests inject mocks for the leaf collaborators (execFile, backup, restore)
+ * — no `mock.module` (which leaks across test files in this Bun version).
+ */
+type TerminalSetupDeps = {
+  execFile?: ExecFileFn;
+  backupPrefs?: typeof backupTerminalPreferences;
+  restoreBackup?: typeof checkAndRestoreTerminalBackup;
+  markComplete?: typeof markTerminalSetupComplete;
+  getPlistPath?: GetPlistPathFn;
+};
+
 // Enable Option as Meta key for Terminal.app
-async function enableOptionAsMetaForTerminal(theme: ThemeName): Promise<string> {
+// CC 2.1.211: when screen-reader mode is on, the audible bell is NOT disabled
+// (SR users rely on it). Binary fix: `$Vy` → `r = bM(); ... d = r ? false :
+// await xBd(c)`. The success message reflects whether the bell was touched.
+export async function enableOptionAsMetaForTerminal(
+  theme: ThemeName,
+  deps: TerminalSetupDeps = {},
+): Promise<string> {
+  const {
+    execFile = execFileNoThrow as ExecFileFn,
+    backupPrefs = backupTerminalPreferences,
+    restoreBackup = checkAndRestoreTerminalBackup,
+    markComplete = markTerminalSetupComplete,
+    getPlistPath = getTerminalPlistPath,
+  } = deps;
+  // CC 2.1.211: SR mode preserves the audible bell (binary: `bM()` → `r`)
+  const screenReaderOn = isScreenReaderEnabled();
   try {
     // Create a backup of the current plist file
-    const backupPath = await backupTerminalPreferences();
+    const backupPath = await backupPrefs();
     if (!backupPath) {
       throw new Error('Failed to create backup of Terminal.app preferences, bailing out');
     }
@@ -319,21 +362,22 @@ async function enableOptionAsMetaForTerminal(theme: ThemeName): Promise<string> 
     const {
       stdout: defaultProfile,
       code: readCode
-    } = await execFileNoThrow('defaults', ['read', 'com.apple.Terminal', 'Default Window Settings']);
+    } = await execFile('defaults', ['read', 'com.apple.Terminal', 'Default Window Settings']);
     if (readCode !== 0 || !defaultProfile.trim()) {
       throw new Error('Failed to read default Terminal.app profile');
     }
     const {
       stdout: startupProfile,
       code: startupCode
-    } = await execFileNoThrow('defaults', ['read', 'com.apple.Terminal', 'Startup Window Settings']);
+    } = await execFile('defaults', ['read', 'com.apple.Terminal', 'Startup Window Settings']);
     if (startupCode !== 0 || !startupProfile.trim()) {
       throw new Error('Failed to read startup Terminal.app profile');
     }
     let wasAnyProfileUpdated = false;
     const defaultProfileName = defaultProfile.trim();
-    const optionAsMetaEnabled = await enableOptionAsMetaForProfile(defaultProfileName);
-    const audioBellDisabled = await disableAudioBellForProfile(defaultProfileName);
+    const optionAsMetaEnabled = await enableOptionAsMetaForProfile(defaultProfileName, execFile, getPlistPath);
+    // CC 2.1.211: skip bell-disable when SR is on (binary: `r ? false : await xBd(c)`)
+    const audioBellDisabled = screenReaderOn ? false : await disableAudioBellForProfile(defaultProfileName, execFile, getPlistPath);
     if (optionAsMetaEnabled || audioBellDisabled) {
       wasAnyProfileUpdated = true;
     }
@@ -341,8 +385,8 @@ async function enableOptionAsMetaForTerminal(theme: ThemeName): Promise<string> 
 
     // Only proceed if the startup profile is different from the default profile
     if (startupProfileName !== defaultProfileName) {
-      const startupOptionAsMetaEnabled = await enableOptionAsMetaForProfile(startupProfileName);
-      const startupAudioBellDisabled = await disableAudioBellForProfile(startupProfileName);
+      const startupOptionAsMetaEnabled = await enableOptionAsMetaForProfile(startupProfileName, execFile, getPlistPath);
+      const startupAudioBellDisabled = screenReaderOn ? false : await disableAudioBellForProfile(startupProfileName, execFile, getPlistPath);
       if (startupOptionAsMetaEnabled || startupAudioBellDisabled) {
         wasAnyProfileUpdated = true;
       }
@@ -352,14 +396,18 @@ async function enableOptionAsMetaForTerminal(theme: ThemeName): Promise<string> 
     }
 
     // Flush the preferences cache
-    await execFileNoThrow('killall', ['cfprefsd']);
-    markTerminalSetupComplete();
-    return `${color('success', theme)(`Configured Terminal.app settings:`)}${EOL}${color('success', theme)('- Enabled "Use Option as Meta key"')}${EOL}${color('success', theme)('- Switched to visual bell')}${EOL}${chalk.dim('Option+Enter will now enter a newline.')}${EOL}${chalk.dim('You must restart Terminal.app for changes to take effect.', theme)}${EOL}`;
+    await execFile('killall', ['cfprefsd']);
+    markComplete();
+    // CC 2.1.211: message reflects whether the bell was touched
+    const bellLine = screenReaderOn
+      ? chalk.dim('- Left the audible bell setting unchanged (screen-reader mode uses it)', theme)
+      : color('success', theme)('- Disabled the audible bell');
+    return `${color('success', theme)(`Configured Terminal.app settings:`)}${EOL}${color('success', theme)('- Enabled "Use Option as Meta key"')}${EOL}${bellLine}${EOL}${chalk.dim('Option+Enter will now enter a newline.')}${EOL}${chalk.dim('You must restart Terminal.app for changes to take effect.', theme)}${EOL}`;
   } catch (error) {
     logError(error);
 
     // Attempt to restore from backup
-    const restoreResult = await checkAndRestoreTerminalBackup();
+    const restoreResult = await restoreBackup();
     const errorMessage = 'Failed to enable Option as Meta key for Terminal.app.';
     if (restoreResult.status === 'restored') {
       throw new Error(`${errorMessage} Your settings have been restored from backup.`);

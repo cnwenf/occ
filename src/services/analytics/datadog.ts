@@ -2,6 +2,7 @@ import axios from 'axios'
 import { createHash } from 'crypto'
 import memoize from 'lodash-es/memoize.js'
 import { getOrCreateUserID } from '../../utils/config.js'
+import { parseEnvInt } from '../../utils/envValidation.js'
 import { logError } from '../../utils/log.js'
 import { getCanonicalName } from '../../utils/model/model.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
@@ -301,7 +302,7 @@ const getUserBucket = memoize((): number => {
 function getFlushIntervalMs(): number {
   // Allow tests to override to not block on the default flush interval.
   return (
-    parseInt(process.env.CLAUDE_CODE_DATADOG_FLUSH_INTERVAL_MS || '', 10) ||
+    parseEnvInt(process.env.CLAUDE_CODE_DATADOG_FLUSH_INTERVAL_MS) ??
     DEFAULT_FLUSH_INTERVAL_MS
   )
 }

@@ -9,6 +9,7 @@ import {
   checkMemoryEntrypointOverCap,
   getMemoryIndexOverCapMessage,
   measureMemoryIndexContent,
+  stripNonLoadedContent,
 } from '../memdir.js'
 import { getAutoMemPath } from '../paths.js'
 
@@ -253,6 +254,167 @@ describe('2.1.210 #29 checkMemoryEntrypointOverCap (post-write guard)', () => {
       const entry = join(tmpDir, 'MEMORY.md')
       const result = await checkMemoryEntrypointOverCap(entry)
       expect(result).toBeNull()
+    } finally {
+      teardown()
+    }
+  })
+})
+
+/**
+ * claude-code 2.1.211: The memory index over-limit warning now measures only
+ * LOADED content — frontmatter (---\n...\n---) and HTML comments (<!--...-->)
+ * are stripped before measuring, matching the binary's
+ * `lwt(vXc(Zm(content).content).content)` refinement.
+ *
+ * Before the fix, `measureMemoryIndexContent` counted ALL bytes/lines including
+ * frontmatter + HTML comments, causing false over-cap warnings when non-loaded
+ * content pushed the total over the limit while the actual loaded content was
+ * well under it.
+ */
+describe('2.1.211 stripNonLoadedContent (frontmatter + HTML comment stripping)', () => {
+  test('strips a frontmatter block from the start of content', () => {
+    const raw = '---\nname: test\ndescription: stuff\n---\nreal content here'
+    const stripped = stripNonLoadedContent(raw)
+    expect(stripped).toBe('real content here')
+  })
+
+  test('strips HTML comments (single line)', () => {
+    const raw = '<!-- this is a comment -->\nreal content'
+    const stripped = stripNonLoadedContent(raw)
+    // The marked Lexer treats the comment + trailing newline as one HTML
+    // block, so the newline is absorbed into the stripped token.
+    expect(stripped).toBe('real content')
+  })
+
+  test('strips HTML comments (multi-line)', () => {
+    const raw = '<!-- multi\nline\ncomment -->\nreal content'
+    const stripped = stripNonLoadedContent(raw)
+    expect(stripped).toBe('real content')
+  })
+
+  test('strips both frontmatter and HTML comments', () => {
+    const raw =
+      '---\nname: index\n---\n<!-- comment 1 -->\n<!-- comment 2 -->\nreal line'
+    const stripped = stripNonLoadedContent(raw)
+    expect(stripped).toBe('real line')
+  })
+
+  test('content with no frontmatter and no HTML comments → unchanged', () => {
+    const raw = '- [item](file.md) — hook\n- [item2](file2.md) — hook2'
+    const stripped = stripNonLoadedContent(raw)
+    expect(stripped).toBe(raw)
+  })
+
+  test('empty content → empty string', () => {
+    expect(stripNonLoadedContent('')).toBe('')
+  })
+
+  test('frontmatter only (no real content) → empty', () => {
+    const raw = '---\nname: test\n---\n'
+    const stripped = stripNonLoadedContent(raw)
+    expect(stripped).toBe('')
+  })
+})
+
+describe('2.1.211 checkMemoryEntrypointOverCap — measures only loaded content', () => {
+  let tmpDir: string
+
+  function setup(): string {
+    delete process.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY
+    delete process.env.CLAUDE_CODE_SIMPLE
+    delete process.env.CLAUDE_CODE_REMOTE
+    tmpDir = mkdtempSync(join(tmpdir(), 'occ-memguard-211-'))
+    process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE = tmpDir
+    getAutoMemPath.cache.clear?.()
+    return tmpDir
+  }
+
+  function teardown(): void {
+    delete process.env.CLAUDE_COWORK_MEMORY_PATH_OVERRIDE
+    getAutoMemPath.cache.clear?.()
+    if (tmpDir) {
+      rmSync(tmpDir, { recursive: true, force: true })
+    }
+  }
+
+  test('TOTAL over byte cap but LOADED content under 0.8 threshold → null (no false warn)', async () => {
+    // BEFORE FIX (2.1.210 measurement): total > 25000 → overCap=true (false positive).
+    // AFTER FIX (2.1.211 measurement): stripped content ~30 bytes → null.
+    setup()
+    try {
+      const entry = join(tmpDir, 'MEMORY.md')
+      const frontmatter = '---\nname: test-index\ndescription: test\n---\n'
+      const htmlComment1 = `<!-- ${'x'.repeat(15000)} -->\n`
+      const htmlComment2 = `<!-- ${'x'.repeat(15000)} -->\n`
+      const realContent = '- [item](file.md) — hook\n'
+      const content = frontmatter + htmlComment1 + htmlComment2 + realContent
+      // Total > 30000 bytes → over the 25000 byte cap.
+      // Stripped (frontmatter + HTML comments removed) ~30 bytes → null.
+      writeFileSync(entry, content, 'utf8')
+
+      const result = await checkMemoryEntrypointOverCap(entry)
+      expect(result).toBeNull()
+    } finally {
+      teardown()
+    }
+  })
+
+  test('TOTAL approaching byte cap but LOADED content well under → null', async () => {
+    // BEFORE FIX: total ~21000 → 0.84 > 0.8 → approaching warning (false positive).
+    // AFTER FIX: stripped ~500 bytes → null.
+    setup()
+    try {
+      const entry = join(tmpDir, 'MEMORY.md')
+      const frontmatter = '---\nname: test\n---\n'
+      const htmlComment = `<!-- ${'x'.repeat(20000)} -->\n`
+      const realContent = '- [item](file.md) — hook\n'
+      const content = frontmatter + htmlComment + realContent
+      writeFileSync(entry, content, 'utf8')
+
+      const result = await checkMemoryEntrypointOverCap(entry)
+      expect(result).toBeNull()
+    } finally {
+      teardown()
+    }
+  })
+
+  test('LOADED content over byte cap → still warns (stripping does not suppress real warnings)', async () => {
+    setup()
+    try {
+      const entry = join(tmpDir, 'MEMORY.md')
+      const frontmatter = '---\nname: test\n---\n'
+      const htmlComment = '<!-- small comment -->\n'
+      // Real content alone exceeds the 25000 byte cap.
+      const realContent = 'x'.repeat(26000)
+      const content = frontmatter + htmlComment + realContent
+      writeFileSync(entry, content, 'utf8')
+
+      const result = await checkMemoryEntrypointOverCap(entry)
+      expect(result).not.toBeNull()
+      if (result === null) return
+      expect(result.overCap).toBe(true)
+      expect(result.text).toContain('over its 24.4KB read limit')
+    } finally {
+      teardown()
+    }
+  })
+
+  test('LOADED content approaching byte cap → still warns', async () => {
+    setup()
+    try {
+      const entry = join(tmpDir, 'MEMORY.md')
+      const frontmatter = '---\nname: test\n---\n'
+      const htmlComment = '<!-- comment -->\n'
+      // Real content alone is approaching the cap (21000/25000 = 0.84 > 0.8).
+      const realContent = 'x'.repeat(21000)
+      const content = frontmatter + htmlComment + realContent
+      writeFileSync(entry, content, 'utf8')
+
+      const result = await checkMemoryEntrypointOverCap(entry)
+      expect(result).not.toBeNull()
+      if (result === null) return
+      expect(result.overCap).toBe(false)
+      expect(result.text).toContain('approaching the 24.4KB read limit')
     } finally {
       teardown()
     }

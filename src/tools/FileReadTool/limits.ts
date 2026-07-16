@@ -14,6 +14,7 @@
  */
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
+import { parseEnvInt } from 'src/utils/envValidation.js'
 import { MAX_OUTPUT_SIZE } from 'src/utils/file.js'
 export const DEFAULT_MAX_OUTPUT_TOKENS = 25000
 
@@ -24,8 +25,8 @@ export const DEFAULT_MAX_OUTPUT_TOKENS = 25000
 function getEnvMaxTokens(): number | undefined {
   const override = process.env.CLAUDE_CODE_FILE_READ_MAX_OUTPUT_TOKENS
   if (override) {
-    const parsed = parseInt(override, 10)
-    if (!isNaN(parsed) && parsed > 0) {
+    const parsed = parseEnvInt(override)
+    if (parsed !== undefined && parsed > 0) {
       return parsed
     }
   }

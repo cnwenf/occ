@@ -11,6 +11,7 @@ import { logEvent } from '../../services/analytics/index.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logMCPError } from '../../utils/log.js'
+import { parseEnvInt } from '../../utils/envValidation.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
 import { DESCRIPTION, PROMPT, READ_MCP_RESOURCE_DIR_TOOL_NAME } from './prompt.js'
@@ -27,7 +28,7 @@ const MCP_SKILLS_EXTENSION = 'io.modelcontextprotocol/skills'
  * official binary's Wz() (env MCP_TIMEOUT or 60s).
  */
 function getDirectoryReadTimeoutMs(): number {
-  return parseInt(process.env.MCP_TIMEOUT || '', 10) || 60_000
+  return parseEnvInt(process.env.MCP_TIMEOUT) ?? 60_000
 }
 
 /**

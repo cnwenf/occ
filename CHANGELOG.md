@@ -6,10 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
-versions above that are OCC-specific releases. See `.occ-research/` for the
-upstream catch-up changelog.
+versions above that are OCC-specific releases. Currently caught up through
+Claude Code `2.1.211` — see `docs/upstream-version-gap.md` for the version-gap
+report and `.occ-research/` for the upstream catch-up changelog.
 
 ## 2.1.270 - 2026-07-16
+
+- **Behavior change** (CC 2.1.211 port): auto mode no longer overrides a PreToolUse hook's `ask` decision for unsandboxed Bash. When a PreToolUse hook returns `ask` and rules also require `ask`, the decision is floored at "prompt the user" — the auto-mode classifier cannot silently auto-approve or auto-deny. In headless mode where prompts are unavailable, the tool is denied. This ports the upstream `hookAskFloor` logic: `resolveHookPermissionDecision` now passes `hookAskFloor: true` to `canUseTool` when the hook returned `ask` and the rule check also returns `ask`, and `hasPermissionsToUseTool` respects this flag to prevent classifier override.
 
 - **Fix: `occ` failed to launch after `npm i -g @cnwenf/occ` on glibc hosts** (OCC-6). The Node launcher shim (`bin/occ.cjs`) died with `occ: failed to launch bun: spawn .../@oven/bun-linux-x64-musl/bin/bun ENOENT`. Root cause: `bun` is an *optional* dependency, so npm does not link `bun` onto PATH — the shim had to fall back to the bundled `@oven/bun-*` platform binaries; but the `bun` meta-package ships both glibc and musl variants without an `os.libc` filter, so npm installs all of them, and the old shim's first-`existsSync`-true ordering picked the musl ELF on a glibc host (its `/lib/ld-musl-x86_64.so.1` interpreter is absent → ENOENT). The fix mirrors the official `@anthropic-ai/claude-code` `cli-wrapper.cjs`: detect the host libc via `process.report.getReport().header.glibcVersionRuntime`, restrict candidates to the matching libc only, resolve each package directory via `require.resolve(pkg + '/package.json')` (reliable, unlike `require.resolve('pkg/bin/bun')` which false-negatives on absent files / `exports`), and **probe-run** (`<bin> --version`) each candidate before committing so a present-but-unrunnable binary is skipped, not fatal. Verified in clean `node:20` (glibc), `--ignore-scripts`, and `node:20-alpine` (musl) containers. Added `test/launcher.test.ts` (9 tests) pinning the libc filtering and probe behavior.
 
@@ -24,7 +27,7 @@ upstream catch-up changelog.
 - **Externally-managed launcher detection**: `/doctor` warns and the installer refuses/skips when OCC wasn't installed by the native installer (e.g. Homebrew or external script). Ports CC 2.1.207 #5.
 - **apiKeyHelper 401 retry**: the API-key helper retries on `bad credentials` with a 2-attempt cap + clearer messages. Ports CC 2.1.208 #15.
 - **Auto-mode permission classifier defaults to Sonnet 5** for external (non-first-party) sessions, resolved once per session and pinned. Ports CC 2.1.207 #1 + #20 + 2.1.210 #27.
-- **Memory write over-limit guard**: writes that leave `MEMORY.md` over the read limit emit an explicit error (was silent truncation) plus an approaching-limit notice. Ports CC 2.1.210 #29.
+- **Memory write over-limit guard**: writes that leave `MEMORY.md` over the read limit emit an explicit error (was silent truncation) plus an approaching-limit notice. Ports CC 2.1.210 #29. Refined in 2.1.211: the guard now measures only loaded content (strips frontmatter `---\n...\n---` and HTML comments `<!--...-->` before measuring), preventing false warnings when non-loaded content pushes the total over the limit.
 - **MCP stdio stderr 64MB cap**: prevents unbounded MCP server stderr from OOMing the CLI. Ports CC 2.1.208 #29.
 - **Plan-mode edited-by-user guard + stale snapshot**: detects user edits to files changed since the plan snapshot was taken. Ports CC 2.1.210 #12.
 - **Pipe-mode output fixes**: `drainStdoutBeforeExit` flushes the pipe before exit (no truncated stream-json/JSON), and `CLAUDE_CODE_MAX_OUTPUT_TOKENS` now parses scientific notation (`1e6`→1000000, not mantissa `1`). Ports CC 2.1.208 #10 + #11.

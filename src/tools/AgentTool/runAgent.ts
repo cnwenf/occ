@@ -799,6 +799,9 @@ export async function* runAgent({
     agentType: agentDefinition.agentType,
     ...(worktreePath && { worktreePath }),
     ...(description && { description }),
+    // CC 2.1.211: persist the explicit model override so resume/follow-up
+    // preserves it instead of reverting to the parent's model.
+    ...(model && { model }),
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity

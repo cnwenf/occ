@@ -479,12 +479,13 @@ async function runPermissionRequestHooksForHeadlessAgent(
   return null
 }
 
-export const hasPermissionsToUseTool: CanUseToolFn = async (
-  tool,
-  input,
-  context,
-  assistantMessage,
-  toolUseID,
+export const hasPermissionsToUseTool = async (
+  tool: Parameters<CanUseToolFn>[0],
+  input: Parameters<CanUseToolFn>[1],
+  context: Parameters<CanUseToolFn>[2],
+  assistantMessage: Parameters<CanUseToolFn>[3],
+  toolUseID: Parameters<CanUseToolFn>[4],
+  hookAskFloor?: boolean,
 ): Promise<PermissionDecision> => {
   const result = await hasPermissionsToUseToolInner(tool, input, context)
 
@@ -556,6 +557,25 @@ export const hasPermissionsToUseTool: CanUseToolFn = async (
         return result
       }
       if (tool.requiresUserInteraction?.() && result.behavior === 'ask') {
+        return result
+      }
+
+      // CC 2.1.211 hookAskFloor: when a PreToolUse hook returned 'ask' and
+      // rules also require 'ask', floor the decision at "prompt the user."
+      // Auto mode's classifier must NOT override the hook's ask with an allow.
+      // In headless mode where prompts are unavailable, deny instead.
+      if (hookAskFloor) {
+        if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
+          return {
+            behavior: 'deny',
+            message: result.message,
+            decisionReason: {
+              type: 'asyncAgent',
+              reason:
+                'Hook ask requires interactive approval and permission prompts are not available in this context',
+            },
+          }
+        }
         return result
       }
 

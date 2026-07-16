@@ -203,7 +203,7 @@ import {
 } from '../../tools/ToolSearchTool/prompt.js'
 import { count } from '../../utils/array.js'
 import { insertBlockAfterToolResults } from '../../utils/contentArray.js'
-import { validateBoundedIntEnvVar } from '../../utils/envValidation.js'
+import { parseEnvInt, validateBoundedIntEnvVar } from '../../utils/envValidation.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { getInferenceProfileBackingModel } from '../../utils/model/bedrock.js'
 import {
@@ -827,7 +827,7 @@ function shouldDeferLspTool(tool: Tool): boolean {
  * approaching the API's 10-minute non-streaming boundary.
  */
 function getNonstreamingFallbackTimeoutMs(): number {
-  const override = parseInt(process.env.API_TIMEOUT_MS || '', 10)
+  const override = parseEnvInt(process.env.API_TIMEOUT_MS)
   if (override) return override
   return isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? 120_000 : 300_000
 }
@@ -2010,7 +2010,7 @@ async function* queryModel(
     )
     // 2.1.196: 5min default idle timeout (was 90s).
     const STREAM_IDLE_TIMEOUT_MS =
-      parseInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS || '', 10) || 300_000
+      parseEnvInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS) ?? 300_000
     const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay

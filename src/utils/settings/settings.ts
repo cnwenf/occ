@@ -17,6 +17,7 @@ import { getErrnoCode, isENOENT } from '../errors.js'
 import { writeFileSyncAndFlush_DEPRECATED } from '../file.js'
 import { readFileSync } from '../fileRead.js'
 import { getFsImplementation, safeResolvePath } from '../fsOperations.js'
+import { findCanonicalGitRoot } from '../git.js'
 import { addFileGlobRuleToGitignore } from '../git/gitignore.js'
 import { safeParseJSON } from '../json.js'
 import { logError } from '../log.js'
@@ -246,9 +247,17 @@ export function getSettingsRootPathForSource(source: SettingSource): string {
     case 'userSettings':
       return resolve(getClaudeConfigHomeDir())
     case 'policySettings':
+      return resolve(getOriginalCwd())
     case 'projectSettings':
     case 'localSettings': {
-      return resolve(getOriginalCwd())
+      // CC 2.1.211: Resolve project/local settings to the canonical git
+      // repository root (not the worktree directory) so approvals granted
+      // in a git worktree persist across sessions and worktrees.
+      // Binary evidence: "it resolves localSettings to the canonical repo
+      // root, so a copy would become a stale, revocation-resurrecting
+      // legacy overlay"
+      const canonicalRoot = findCanonicalGitRoot(getOriginalCwd())
+      return resolve(canonicalRoot ?? getOriginalCwd())
     }
     case 'flagSettings': {
       const path = getFlagSettingsPath()

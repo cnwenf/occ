@@ -314,6 +314,7 @@ import {
   restoreSessionStateFromLog,
 } from 'src/utils/sessionRestore.js'
 import { SandboxManager } from 'src/utils/sandbox/sandbox-adapter.js'
+import { parseEnvInt } from 'src/utils/envValidation.js'
 import {
   headlessProfilerStartTurn,
   headlessProfilerCheckpoint,
@@ -485,6 +486,7 @@ export async function runHeadless(
     sdkUrl: string | undefined
     replayUserMessages: boolean | undefined
     includePartialMessages: boolean | undefined
+    forwardSubagentText: boolean | undefined
     forkSession: boolean | undefined
     rewindFiles: string | undefined
     enableAuthStatus: boolean | undefined
@@ -1017,6 +1019,7 @@ function runHeadlessStreaming(
     fallbackModel: string[] | undefined
     replayUserMessages?: boolean | undefined
     includePartialMessages?: boolean | undefined
+    forwardSubagentText?: boolean | undefined
     enableAuthStatus?: boolean | undefined
     agent?: string | undefined
     setSDKStatus?: (status: SDKStatus) => void
@@ -1905,9 +1908,8 @@ function runHeadlessStreaming(
     // If CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS is set, races against that
     // deadline and proceeds without plugins on timeout (logging an error).
     if (pluginInstallPromise) {
-      const timeoutMs = parseInt(
-        process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS || '',
-        10,
+      const timeoutMs = parseEnvInt(
+        process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL_TIMEOUT_MS,
       )
       if (timeoutMs > 0) {
         const timeout = sleep(timeoutMs).then(() => 'timeout' as const)
@@ -2208,6 +2210,7 @@ function runHeadlessStreaming(
               abortController,
               replayUserMessages: options.replayUserMessages,
               includePartialMessages: options.includePartialMessages,
+              forwardSubagentText: options.forwardSubagentText,
               handleElicitation: (serverName, params, elicitSignal) =>
                 structuredIO.handleElicitation(
                   serverName,

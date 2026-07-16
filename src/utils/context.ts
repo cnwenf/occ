@@ -1,6 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { getGlobalConfig } from './config.js'
+import { parseEnvInt } from './envValidation.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { getModelCapability } from './model/modelCapabilities.js'
@@ -51,8 +52,8 @@ export function getMaxContextTokensOverride(): number | undefined {
     isEnvTruthy(process.env.DISABLE_COMPACT) &&
     process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
   ) {
-    const override = parseInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, 10)
-    if (!isNaN(override) && override > 0) {
+    const override = parseEnvInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)
+    if (override !== undefined && override > 0) {
       return override
     }
   }
@@ -88,8 +89,8 @@ export function getContextWindowForModel(
     process.env.USER_TYPE === 'ant' &&
     process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
   ) {
-    const override = parseInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, 10)
-    if (!isNaN(override) && override > 0) {
+    const override = parseEnvInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)
+    if (override !== undefined && override > 0) {
       return override
     }
   }

@@ -3,12 +3,11 @@ import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
+import { parseEnvInt } from '../../utils/envValidation.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 
 function getMaxToolUseConcurrency(): number {
-  return (
-    parseInt(process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY || '', 10) || 10
-  )
+  return parseEnvInt(process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY) ?? 10
 }
 
 export type MessageUpdate = {
