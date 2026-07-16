@@ -7,6 +7,7 @@ import { NOTEBOOK_EDIT_TOOL_NAME } from 'src/tools/NotebookEditTool/constants.js
 import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
 import { WEB_SEARCH_TOOL_NAME } from 'src/tools/WebSearchTool/prompt.js'
 import { SHELL_TOOL_NAMES } from 'src/utils/shell/shellToolUtils.js'
+import { parseEnvInt } from 'src/utils/envValidation.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 
 // docs: https://docs.google.com/document/d/1oCT4evvWTh3P6z-kcfNQwWTCxAhkoFndSaNS9Gm40uw/edit?tab=t.0
@@ -103,10 +104,10 @@ export function getAPIContextManagement(options?: {
 
   if (useClearToolResults) {
     const triggerThreshold = process.env.API_MAX_INPUT_TOKENS
-      ? parseInt(process.env.API_MAX_INPUT_TOKENS)
+      ? parseEnvInt(process.env.API_MAX_INPUT_TOKENS)
       : DEFAULT_MAX_INPUT_TOKENS
     const keepTarget = process.env.API_TARGET_INPUT_TOKENS
-      ? parseInt(process.env.API_TARGET_INPUT_TOKENS)
+      ? parseEnvInt(process.env.API_TARGET_INPUT_TOKENS)
       : DEFAULT_TARGET_INPUT_TOKENS
 
     const strategy: ContextEditStrategy = {
@@ -127,10 +128,10 @@ export function getAPIContextManagement(options?: {
 
   if (useClearToolUses) {
     const triggerThreshold = process.env.API_MAX_INPUT_TOKENS
-      ? parseInt(process.env.API_MAX_INPUT_TOKENS)
+      ? parseEnvInt(process.env.API_MAX_INPUT_TOKENS)
       : DEFAULT_MAX_INPUT_TOKENS
     const keepTarget = process.env.API_TARGET_INPUT_TOKENS
-      ? parseInt(process.env.API_TARGET_INPUT_TOKENS)
+      ? parseEnvInt(process.env.API_TARGET_INPUT_TOKENS)
       : DEFAULT_TARGET_INPUT_TOKENS
 
     const strategy: ContextEditStrategy = {

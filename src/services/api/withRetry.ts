@@ -24,6 +24,7 @@ import {
   isEnterpriseSubscriber,
 } from '../../utils/auth.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { parseEnvInt } from '../../utils/envValidation.js'
 import { errorMessage } from '../../utils/errors.js'
 import {
   type CooldownReason,
@@ -95,7 +96,7 @@ export function getDefaultMaxRetries(
   watchdog: boolean = isRetryWatchdogEnabled(),
 ): number {
   if (process.env.CLAUDE_CODE_MAX_RETRIES) {
-    const t = parseInt(process.env.CLAUDE_CODE_MAX_RETRIES, 10)
+    const t = parseEnvInt(process.env.CLAUDE_CODE_MAX_RETRIES)
     if (Number.isFinite(t) && t >= 0) {
       // Only clamp when the watchdog is OFF — the watchdog opts into
       // unbounded overload/429 retry, so capping would defeat it.

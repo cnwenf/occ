@@ -6,6 +6,7 @@
 import { basename } from 'path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
 import { pathExists } from './file.js'
+import { parseEnvInt } from './envValidation.js'
 import { wrapSpawn } from './ShellCommand.js'
 import { TaskOutput } from './task/TaskOutput.js'
 import { getCwd } from './cwd.js'
@@ -223,7 +224,7 @@ export function hookCallbackTimeoutMessage(
 const SESSION_END_HOOK_TIMEOUT_MS_DEFAULT = 1500
 export function getSessionEndHookTimeoutMs(): number {
   const raw = process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS
-  const parsed = raw ? parseInt(raw, 10) : NaN
+  const parsed = raw ? parseEnvInt(raw) : NaN
   return Number.isFinite(parsed) && parsed > 0
     ? parsed
     : SESSION_END_HOOK_TIMEOUT_MS_DEFAULT

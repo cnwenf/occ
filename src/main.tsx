@@ -108,6 +108,7 @@ import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
 import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace, isSafeMode } from './utils/envUtils.js';
+import { parseEnvInt } from './utils/envValidation.js';
 import { refreshExampleCommands } from './utils/exampleCommands.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
 import { getWorktreePaths } from './utils/getWorktreePaths.js';
@@ -2578,7 +2579,7 @@ async function run(): Promise<CommanderCommand> {
         type: 'disabled'
       };
     } else {
-      const maxThinkingTokens = process.env.MAX_THINKING_TOKENS ? parseInt(process.env.MAX_THINKING_TOKENS, 10) : options.maxThinkingTokens;
+      const maxThinkingTokens = process.env.MAX_THINKING_TOKENS ? parseEnvInt(process.env.MAX_THINKING_TOKENS) : options.maxThinkingTokens;
       if (maxThinkingTokens !== undefined) {
         if (maxThinkingTokens > 0) {
           thinkingEnabled = true;
