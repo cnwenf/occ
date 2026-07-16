@@ -231,7 +231,7 @@ export function resolveAgentTools(
 // construction → factory runs → accesses agentToolResultSchema → TDZ if
 // agentToolUtils hasn't finished loading). Function declarations are hoisted,
 // so agentToolResultSchema is available before its definition is reached.
-let _agentToolResultSchemaCache: z.ZodObject<any, any> | undefined
+var _agentToolResultSchemaCache: z.ZodObject<any, any> | undefined
 export function agentToolResultSchema() {
   return (_agentToolResultSchemaCache ??= z.object({
     agentId: z.string(),
