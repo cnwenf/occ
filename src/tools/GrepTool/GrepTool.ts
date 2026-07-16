@@ -512,6 +512,20 @@ export const GrepTool = buildTool({
     // so Claude knows the search didn't complete (rather than thinking there were no matches)
     // We also need to reject invalid regex/glob/type patterns (exit code 2 +
     // pattern-error stderr) instead of silently returning "No files found".
+
+    // 2.1.208 #14b: Pre-validate the regex pattern in JS before calling
+    // ripgrep. This makes invalid-regex rejection consistent across
+    // environments (ripgrep versions/behaviors may differ, especially in
+    // CI per-file isolation). Upstream rejects invalid patterns; OCC ports
+    // this via JS-side validation that throws before ripgrep is invoked.
+    try {
+      new RegExp(pattern)
+    } catch {
+      throw new Error(
+        `Search failed: ripgrep rejected the pattern "${pattern}"`,
+      )
+    }
+
     const results = await ripGrep(args, absolutePath, abortController.signal, {
       rejectOnInputError: true,
     })
