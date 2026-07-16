@@ -1,6 +1,8 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { basename, join, resolve } from 'path'
+import { Lexer } from 'marked'
 import { getFsImplementation } from '../utils/fsOperations.js'
+import { FRONTMATTER_REGEX } from '../utils/frontmatterParser.js'
 import {
   getAutoMemEntrypoint,
   getAutoMemPath,
@@ -42,6 +44,66 @@ export const MAX_ENTRYPOINT_LINES = 200
 // slip past the line cap (p100 observed: 197KB under 200 lines).
 export const MAX_ENTRYPOINT_BYTES = 25_000
 const AUTO_MEM_DISPLAY_NAME = 'auto memory'
+
+// Regex matching HTML comments (<!--...-->), including multi-line. Mirrors
+// the binary's b5i inner regex n=/<!--[\s\S]*?-->/g.
+const HTML_COMMENT_REGEX = /<!--[\s\S]*?-->/g
+
+/**
+ * Strip non-loaded content (frontmatter + HTML comments) from a MEMORY.md
+ * payload so the over-limit guard measures only what is actually loaded into
+ * the system prompt. Mirrors the 2.1.211 binary's refinement:
+ * `lwt(vXc(Zm(content).content).content)` — `Zm` parses frontmatter and
+ * returns `.content` (without the `---\n...\n---` block), then `vXc` uses the
+ * marked Lexer to strip HTML comments from HTML tokens (preserving code-block
+ * content), then `lwt` measures the result.
+ *
+ * The frontmatter block is stripped via FRONTMATTER_REGEX (same regex used by
+ * parseFrontmatter). HTML comments are stripped via the marked Lexer — only
+ * from `html`-type tokens — so `<!--` inside fenced code blocks is preserved.
+ * If the content has no `<!--`, the lexer is skipped (short-circuit matching
+ * the binary's `vXc` early return).
+ */
+export function stripNonLoadedContent(raw: string): string {
+  // 1. Strip frontmatter block (---\n...\n---) from the start.
+  const withoutFrontmatter = FRONTMATTER_REGEX.test(raw)
+    ? raw.replace(FRONTMATTER_REGEX, '')
+    : raw
+
+  // 2. Strip HTML comments. Short-circuit when no comment markers exist
+  //    (matches the binary's `vXc` early return).
+  if (!withoutFrontmatter.includes('<!--')) {
+    return withoutFrontmatter
+  }
+
+  // Use the marked Lexer (gfm:false, matching the binary's C9({gfm:false}))
+  // to tokenize, then strip HTML comments from html-type tokens only.
+  const lexer = new Lexer({ gfm: false })
+  const tokens = lexer.lex(withoutFrontmatter)
+  let result = ''
+  for (const token of tokens) {
+    if (token.type === 'html') {
+      const rawToken = token.raw ?? ''
+      const trimmedStart = rawToken.trimStart()
+      if (
+        trimmedStart.startsWith('<!--') &&
+        rawToken.includes('-->')
+      ) {
+        // Strip the comment portion; keep any non-comment residue in the
+        // same HTML token (matches the binary's b5i: replace n, keep if
+        // non-empty after trim).
+        const stripped = rawToken.replace(HTML_COMMENT_REGEX, '')
+        if (stripped.trim().length > 0) {
+          result += stripped
+        }
+        continue
+      }
+    }
+    // Non-html tokens and non-comment html tokens: keep raw.
+    result += token.raw ?? ''
+  }
+  return result
+}
 
 export type EntrypointTruncation = {
   content: string
@@ -240,8 +302,17 @@ export async function checkMemoryEntrypointOverCap(
   // read (O7e with maxBytes z5n=4*Eme). For ASCII indexes (the common case)
   // a char-slice == a byte-slice; the over/approaching determination is
   // unchanged for files above the cap regardless.
-  if (content.length > WRITE_GUARD_READ_LIMIT) {
+  // 2.1.211: when the FULL file was read (not truncated by the guard read
+  // cap), strip frontmatter + HTML comments before measuring so the guard
+  // measures only loaded content. Mirrors the binary's condition
+  // `u.bytesRead >= u.bytesTotal` → `lwt(vXc(Zm(u.content).content).content)`.
+  // When the file IS truncated, measure raw (sliced) content — stripping
+  // a truncated frontmatter/HTML-comment block would be unreliable.
+  const wasTruncated = content.length > WRITE_GUARD_READ_LIMIT
+  if (wasTruncated) {
     content = content.slice(0, WRITE_GUARD_READ_LIMIT)
+  } else {
+    content = stripNonLoadedContent(content)
   }
   const { byteCount, lineCount } = measureMemoryIndexContent(content)
   return getMemoryIndexOverCapMessage({

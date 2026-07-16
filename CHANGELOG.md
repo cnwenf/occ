@@ -24,7 +24,7 @@ upstream catch-up changelog.
 - **Externally-managed launcher detection**: `/doctor` warns and the installer refuses/skips when OCC wasn't installed by the native installer (e.g. Homebrew or external script). Ports CC 2.1.207 #5.
 - **apiKeyHelper 401 retry**: the API-key helper retries on `bad credentials` with a 2-attempt cap + clearer messages. Ports CC 2.1.208 #15.
 - **Auto-mode permission classifier defaults to Sonnet 5** for external (non-first-party) sessions, resolved once per session and pinned. Ports CC 2.1.207 #1 + #20 + 2.1.210 #27.
-- **Memory write over-limit guard**: writes that leave `MEMORY.md` over the read limit emit an explicit error (was silent truncation) plus an approaching-limit notice. Ports CC 2.1.210 #29.
+- **Memory write over-limit guard**: writes that leave `MEMORY.md` over the read limit emit an explicit error (was silent truncation) plus an approaching-limit notice. Ports CC 2.1.210 #29. Refined in 2.1.211: the guard now measures only loaded content (strips frontmatter `---\n...\n---` and HTML comments `<!--...-->` before measuring), preventing false warnings when non-loaded content pushes the total over the limit.
 - **MCP stdio stderr 64MB cap**: prevents unbounded MCP server stderr from OOMing the CLI. Ports CC 2.1.208 #29.
 - **Plan-mode edited-by-user guard + stale snapshot**: detects user edits to files changed since the plan snapshot was taken. Ports CC 2.1.210 #12.
 - **Pipe-mode output fixes**: `drainStdoutBeforeExit` flushes the pipe before exit (no truncated stream-json/JSON), and `CLAUDE_CODE_MAX_OUTPUT_TOKENS` now parses scientific notation (`1e6`→1000000, not mantissa `1`). Ports CC 2.1.208 #10 + #11.
