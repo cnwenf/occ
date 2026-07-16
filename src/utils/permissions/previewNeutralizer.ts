@@ -135,6 +135,16 @@ export function neutralizePreviewInput(
 
 function neutralizeValue(value: unknown, depth: number): unknown {
   if (depth > MAX_NEUTRALIZE_DEPTH) {
+    // Fail-secure: string leaves still get neutralized; non-string
+    // (object/array) leaves return U+FFFD replacement char to prevent
+    // un-neutralized content from passing through. Primitives (number,
+    // boolean, null) are inherently safe — no Unicode spoofing possible.
+    if (typeof value === 'string') {
+      return neutralizePreviewText(value)
+    }
+    if (value !== null && typeof value === 'object') {
+      return REPLACEMENT_CHAR
+    }
     return value
   }
   if (typeof value === 'string') {

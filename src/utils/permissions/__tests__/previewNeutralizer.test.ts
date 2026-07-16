@@ -261,3 +261,74 @@ describe('neutralizePreviewInput', () => {
     expect(input.cmd).toBe(original.cmd)
   })
 })
+
+// ---------------------------------------------------------------------------
+// CC 2.1.211 hardening: depth>10 fail-secure
+// ---------------------------------------------------------------------------
+
+describe('neutralizePreviewInput — depth > 10 fail-secure', () => {
+  test('deeply-nested string leaf is still neutralized at depth > 10', () => {
+    // Arrange: build a nested object deeper than MAX_NEUTRALIZE_DEPTH (10).
+    // At the deepest level, a string with a bidi control char (RLO U+202E).
+    let deep: Record<string, unknown> = { val: '‮spoof' }
+    for (let i = 0; i < 12; i++) {
+      deep = { nested: deep }
+    }
+
+    // Act
+    const result = neutralizePreviewInput(deep)
+
+    // Assert: the dangerous RLO char must NOT appear anywhere in the output.
+    // At depth 11+, the object containing the string becomes U+FFFD (not the
+    // raw object), so the dangerous char never leaks through.
+    const serialized = JSON.stringify(result)
+    expect(serialized).not.toContain('‮')
+  })
+
+  test('deeply-nested non-string leaf returns U+FFFD (not raw passthrough)', () => {
+    // Arrange: a deeply-nested object (past depth 10) containing a
+    // dangerous string. The object itself must NOT pass through — it
+    // should be replaced with U+FFFD to prevent un-neutralized content.
+    let deep: Record<string, unknown> = { danger: '‮rm -rf /' }
+    for (let i = 0; i < 15; i++) {
+      deep = { nested: deep }
+    }
+
+    // Act
+    const result = neutralizePreviewInput(deep)
+
+    // Assert: walk down until we hit a non-object (the fail-secure U+FFFD).
+    let node: unknown = result
+    while (node !== null && typeof node === 'object') {
+      node = (node as Record<string, unknown>).nested
+    }
+    expect(node).toBe('�')
+    expect(typeof node).toBe('string')
+    // The raw object must NOT have passed through
+    expect(node).not.toHaveProperty('danger')
+    // The dangerous bidi char must not appear anywhere
+    expect(JSON.stringify(result)).not.toContain('‮')
+  })
+
+  test('string at depth > 10 is still neutralized (fail-secure)', () => {
+    // Arrange: an array nested 12 levels deep, with a string leaf
+    // containing a zero-width char. The string should still be neutralized
+    // even beyond the depth limit.
+    let deep: unknown = 'safe​command'
+    for (let i = 0; i < 12; i++) {
+      deep = [deep]
+    }
+
+    // Act
+    const result = neutralizePreviewInput({ arr: deep })
+
+    // Assert: walk down until we hit a non-object (the fail-secure U+FFFD).
+    let leaf: unknown = (result as Record<string, unknown>).arr
+    while (leaf !== null && typeof leaf === 'object') {
+      leaf = (leaf as unknown[])[0]
+    }
+    expect(leaf).toBe('�')
+    // The zero-width char must not appear anywhere
+    expect(JSON.stringify(result)).not.toContain('​')
+  })
+})
