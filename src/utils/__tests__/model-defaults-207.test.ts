@@ -117,14 +117,12 @@ describe('2.1.207 #19: Bedrock/Vertex/AWS default → Opus 4.8', () => {
   })
 })
 
-// These AWS SSO credential-provider cache tests pass in isolation (locally)
-// but fail in the GitHub Actions full-suite run — getDefaultAwsCredentialProvider
-// resolves to null when the cross-test module state differs (the AWS SDK
-// provider-chain cache / mock state leaks across files in `bun test`'s shared
-// process). The behavior is correct in isolation; the full-suite CI env cannot
-// reliably exercise it. Skip under CI=true (runs locally where it passes).
-// Deeper cross-test isolation root-cause deferred to a later CI batch.
-describe.skipIf(process.env.CI)(
+// AWS SSO credential-provider cache tests. Previously gated with
+// skipIf(CI) because cross-test module-state leaks (AWS SDK provider-chain
+// cache / mock state from other files) broke these in the full-suite run.
+// Fixed by ci.yml per-file process isolation (scripts/ci-test.sh) — each
+// file gets its own bun process, so no module-state leak.
+describe(
   '2.1.207 #16: AWS SSO credential provider cache',
   () => {
   afterEach(() => {
