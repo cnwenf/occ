@@ -527,6 +527,7 @@ export const GrepTool = buildTool({
     }
 
     console.error('error: [DBG #14c] args:', JSON.stringify(args), 'path:', absolutePath, 'dir:', JSON.stringify(require('fs').readdirSync(absolutePath)), 'file0:', (() => { try { return require('fs').readFileSync(require('path').join(absolutePath, require('fs').readdirSync(absolutePath)[0] || ''), 'utf8').slice(0,100) } catch(e:any) { return 'ERR:' + e.message } })())
+    try { const m = require('child_process').execFileSync('rg', ['-c', pattern, absolutePath], { encoding: 'utf8', timeout: 5000, stdio: ['pipe','pipe','pipe'] }); console.error('error: [DBG #14c] system rg result:', m) } catch(e:any) { console.error('error: [DBG #14c] system rg err:', e.message?.slice(0,200)) }
     const results = await ripGrep(args, absolutePath, abortController.signal, {
       rejectOnInputError: true,
     })
