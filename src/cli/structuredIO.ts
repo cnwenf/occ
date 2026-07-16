@@ -35,6 +35,10 @@ import type {
   PermissionDecision,
   PermissionDecisionReason,
 } from 'src/utils/permissions/PermissionResult.js'
+import {
+  neutralizePreviewInput,
+  neutralizePreviewText,
+} from 'src/utils/permissions/previewNeutralizer.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
 import { writeToStdout } from 'src/utils/process.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
@@ -91,7 +95,7 @@ function serializeDecisionReason(
   }
 }
 
-function buildRequiresActionDetails(
+export function buildRequiresActionDetails(
   tool: Tool,
   input: Record<string, unknown>,
   toolUseID: string,
@@ -108,12 +112,19 @@ function buildRequiresActionDetails(
   } catch {
     description = tool.name
   }
+
+  // CC 2.1.211: Neutralize bidi-override, zero-width, and look-alike quote
+  // characters in the permission preview relayed to chat channels so tool
+  // inputs cannot visually alter the approval message.
+  const neutralizedDescription = neutralizePreviewText(description)
+  const neutralizedInput = neutralizePreviewInput(input)
+
   return {
     tool_name: tool.name,
-    action_description: description,
+    action_description: neutralizedDescription,
     tool_use_id: toolUseID,
     request_id: requestId,
-    input,
+    input: neutralizedInput,
   }
 }
 
@@ -590,14 +601,24 @@ export class StructuredIO {
 
         // Start the SDK permission prompt immediately (don't wait for hooks)
         const requestId = randomUUID()
+        // CC 2.1.211: Neutralize preview text relayed to chat channels so
+        // tool inputs cannot visually alter the approval message. Both the
+        // onPermissionPrompt callback and the can_use_tool control_request
+        // carry neutralized input (security-reviewer HIGH fix).
+        const neutralizedRequestInput = neutralizePreviewInput(input)
         onPermissionPrompt?.(
-          buildRequiresActionDetails(tool, input, toolUseID, requestId),
+          buildRequiresActionDetails(
+            tool,
+            neutralizedRequestInput,
+            toolUseID,
+            requestId,
+          ),
         )
         const sdkPromise = this.sendRequest<PermissionToolOutput>(
           {
             subtype: 'can_use_tool',
             tool_name: tool.name,
-            input,
+            input: neutralizedRequestInput,
             permission_suggestions: mainPermissionResult.suggestions,
             blocked_path: mainPermissionResult.blockedPath,
             decision_reason: serializeDecisionReason(
