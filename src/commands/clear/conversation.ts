@@ -9,6 +9,7 @@ import {
   getOriginalCwd,
   getSessionId,
   regenerateSessionId,
+  resetCostState,
 } from '../../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -197,6 +198,11 @@ export async function clearConversation({
   // Clear cached session metadata (title, tag, agent name/color)
   // so the new session doesn't inherit the previous session's identity
   clearSessionMetadata()
+
+  // Reset the session cost counter so the statusline's cost starts at $0
+  // after /clear (CC 2.1.211). Placed before regenerateSessionId to match
+  // the upstream binary order: sessionEnd → resetCostState → regenId.
+  resetCostState()
 
   // Generate new session ID to provide fresh state
   // Set the old session as parent for analytics lineage tracking
