@@ -412,3 +412,154 @@ describe('hookAskFloor behavioral contract (CC 2.1.211)', () => {
     expect(result.decision.behavior).toBe('allow')
   })
 })
+
+// -- REAL-decision tests: exercise the actual hasPermissionsToUseTool --
+// These tests call the REAL hasPermissionsToUseTool (not a mock) to verify
+// the hookAskFloor guard actually fires in the auto-mode block.
+
+describe('hasPermissionsToUseTool REAL decision code — hookAskFloor guard', () => {
+  // This test calls the actual hasPermissionsToUseTool function with
+  // hookAskFloor=true. The tool is set up so that:
+  // 1. hasPermissionsToUseToolInner returns {behavior:'ask'} (safety check, classifierApprovable)
+  // 2. The auto-mode block is entered (mode='auto')
+  // 3. The safety check guard is skipped (classifierApprovable=true)
+  // 4. The acceptEdits fast-path WOULD return allow (tool returns allow in acceptEdits mode)
+  //
+  // WITHOUT the fix: hookAskFloor lands in the wrong param slot (6th=_forceDecision,
+  // not 7th=hookAskFloor), so the guard never fires → acceptEdits fast-path
+  // returns allow (THE BUG).
+  //
+  // WITH the fix: hookAskFloor is the 6th param, the guard fires → returns ask.
+
+  test('hookAskFloor=true in auto mode → REAL hasPermissionsToUseTool returns ask (NOT allow)', async () => {
+    const { hasPermissionsToUseTool } = await import(
+      '../../src/utils/permissions/permissions.js'
+    )
+
+    // Mock tool: returns ask in auto mode, allow in acceptEdits mode
+    const tool = {
+      name: 'Bash',
+      userFacingName: () => 'Bash',
+      inputSchema: {
+        parse: (i: unknown) => i,
+        safeParse: (i: unknown) => ({ success: true, data: i }),
+      },
+      checkPermissions: async (_input: unknown, ctx: { getAppState: () => { toolPermissionContext: { mode: string } } }) => {
+        const mode = ctx.getAppState().toolPermissionContext.mode
+        if (mode === 'acceptEdits') {
+          return { behavior: 'allow' as const }
+        }
+        return {
+          behavior: 'ask' as const,
+          decisionReason: {
+            type: 'safetyCheck' as const,
+            classifierApprovable: true,
+          },
+          message: 'Safety check requires approval',
+        }
+      },
+      description: async () => 'Bash',
+      isMcp: false,
+    } as unknown as Tool
+
+    const ctx = {
+      abortController: { signal: { aborted: false } },
+      getAppState: () => ({
+        toolPermissionContext: {
+          mode: 'auto',
+          shouldAvoidPermissionPrompts: false,
+          alwaysAllowRules: {},
+          alwaysDenyRules: {},
+          alwaysAskRules: {},
+        },
+        denialTracking: undefined,
+      }),
+      setAppState: (_fn: (prev: unknown) => unknown) => {},
+      options: { isNonInteractiveSession: false, tools: [] },
+      localDenialTracking: undefined,
+    } as unknown as ToolUseContext
+
+    const msg = createMockAssistantMessage()
+
+    // Act: call the REAL hasPermissionsToUseTool with hookAskFloor=true
+    // The 6th arg is hookAskFloor (after the fix) or _forceDecision (before the fix)
+    const result = await hasPermissionsToUseTool(
+      tool,
+      { command: 'rm -rf /' },
+      ctx,
+      msg,
+      'real-test-1',
+      true, // hookAskFloor=true — should floor at ask
+    )
+
+    // Assert: with the fix, this should be 'ask' (floored at prompt)
+    // Without the fix, this would be 'allow' (acceptEdits fast-path overrides)
+    expect(result.behavior).toBe('ask')
+    expect(result.behavior).not.toBe('allow')
+  })
+
+  test('hookAskFloor=true in headless auto mode → REAL hasPermissionsToUseTool returns deny', async () => {
+    const { hasPermissionsToUseTool } = await import(
+      '../../src/utils/permissions/permissions.js'
+    )
+
+    const tool = {
+      name: 'Bash',
+      userFacingName: () => 'Bash',
+      inputSchema: {
+        parse: (i: unknown) => i,
+        safeParse: (i: unknown) => ({ success: true, data: i }),
+      },
+      checkPermissions: async (_input: unknown, ctx: { getAppState: () => { toolPermissionContext: { mode: string } } }) => {
+        const mode = ctx.getAppState().toolPermissionContext.mode
+        if (mode === 'acceptEdits') {
+          return { behavior: 'allow' as const }
+        }
+        return {
+          behavior: 'ask' as const,
+          decisionReason: {
+            type: 'safetyCheck' as const,
+            classifierApprovable: true,
+          },
+          message: 'Safety check requires approval',
+        }
+      },
+      description: async () => 'Bash',
+      isMcp: false,
+    } as unknown as Tool
+
+    const ctx = {
+      abortController: { signal: { aborted: false } },
+      getAppState: () => ({
+        toolPermissionContext: {
+          mode: 'auto',
+          shouldAvoidPermissionPrompts: true, // headless
+          alwaysAllowRules: {},
+          alwaysDenyRules: {},
+          alwaysAskRules: {},
+        },
+        denialTracking: undefined,
+      }),
+      setAppState: (_fn: (prev: unknown) => unknown) => {},
+      options: { isNonInteractiveSession: false, tools: [] },
+      localDenialTracking: undefined,
+    } as unknown as ToolUseContext
+
+    const msg = createMockAssistantMessage()
+
+    // Act: call REAL hasPermissionsToUseTool with hookAskFloor=true in headless
+    const result = await hasPermissionsToUseTool(
+      tool,
+      { command: 'rm -rf /' },
+      ctx,
+      msg,
+      'real-test-2',
+      true, // hookAskFloor=true — should deny in headless
+    )
+
+    // Assert: with the fix, headless + hookAskFloor → deny
+    // Without the fix, this would be 'allow' (acceptEdits fast-path overrides)
+    expect(result.behavior).toBe('deny')
+    expect(result.behavior).not.toBe('allow')
+  })
+})

@@ -148,28 +148,124 @@ console.log(JSON.stringify({
     expect(out.capturedHookAskFloor).toBeNull()
   })
 
-  test('source: hookAskFloor is present in permissions.ts and toolHooks.ts', async () => {
-    const permSrc = await Bun.file(`${REPO_ROOT}/src/utils/permissions/permissions.ts`).text()
-    const toolHooksSrc = await Bun.file(`${REPO_ROOT}/src/services/tools/toolHooks.ts`).text()
-    const useCanUseToolSrc = await Bun.file(`${REPO_ROOT}/src/hooks/useCanUseTool.tsx`).text()
+  test('REAL hasPermissionsToUseTool: hookAskFloor=true floors at ask in auto mode (not overridden by acceptEdits fast-path)', async () => {
+    // This test calls the REAL hasPermissionsToUseTool (not a mock) via bun -e.
+    // It verifies that hookAskFloor=true prevents the auto-mode acceptEdits
+    // fast-path from overriding an ask decision with allow.
+    //
+    // Without the CRITICAL-1 fix (hookAskFloor in wrong param slot), this test
+    // fails: the fast-path returns allow instead of ask.
+    const script = `
+import { hasPermissionsToUseTool } from "${REPO_ROOT}/src/utils/permissions/permissions.ts";
 
-    // permissions.ts: hookAskFloor parameter + floor logic
-    expect(permSrc).toContain('hookAskFloor')
-    expect(permSrc).toContain('Hook ask requires interactive approval')
+// Tool that returns ask (classifierApprovable safety check) in auto mode,
+// but allow in acceptEdits mode (triggers the fast-path that would override).
+const tool = {
+  name: 'Bash',
+  userFacingName: () => 'Bash',
+  inputSchema: { parse: (i) => i, safeParse: (i) => ({ success: true, data: i }) },
+  checkPermissions: async (_input, ctx) => {
+    const mode = ctx.getAppState().toolPermissionContext.mode;
+    if (mode === 'acceptEdits') return { behavior: 'allow' };
+    return {
+      behavior: 'ask',
+      decisionReason: { type: 'safetyCheck', classifierApprovable: true },
+      message: 'Safety check',
+    };
+  },
+  description: async () => 'Bash',
+  isMcp: false,
+};
 
-    // toolHooks.ts: hookAskFloor passed to canUseTool
-    expect(toolHooksSrc).toContain('hookAskFloor')
-    expect(toolHooksSrc).toContain('hookAskFloor — a classifier allow re-surfaces as this ask')
+const ctx = {
+  abortController: { signal: { aborted: false } },
+  getAppState: () => ({
+    toolPermissionContext: {
+      mode: 'auto',
+      shouldAvoidPermissionPrompts: false,
+      alwaysAllowRules: {},
+      alwaysDenyRules: {},
+      alwaysAskRules: {},
+    },
+    denialTracking: undefined,
+  }),
+  setAppState: () => {},
+  options: { isNonInteractiveSession: false, tools: [] },
+  localDenialTracking: undefined,
+};
 
-    // useCanUseTool.tsx: hookAskFloor in CanUseToolFn type + passed to hasPermissionsToUseTool
-    expect(useCanUseToolSrc).toContain('hookAskFloor')
+const msg = { message: { id: 'msg1', content: [] } };
+
+// Call the REAL hasPermissionsToUseTool with hookAskFloor=true (6th arg)
+const result = await hasPermissionsToUseTool(
+  tool, { command: 'rm -rf /' }, ctx, msg, 'e2e-real-1', true
+);
+
+console.log(JSON.stringify({ behavior: result.behavior }));
+`
+    const out = JSON.parse(
+      (await $`bun -e ${script}`.quiet()).stdout.toString().trim(),
+    )
+
+    // With fix: hookAskFloor floors at ask → behavior is 'ask'
+    // Without fix: hookAskFloor in wrong slot, fast-path overrides → 'allow'
+    expect(out.behavior).toBe('ask')
+    expect(out.behavior).not.toBe('allow')
   })
 
-  test('source: CanUseToolFn type includes hookAskFloor parameter', async () => {
-    const src = await Bun.file(`${REPO_ROOT}/src/hooks/useCanUseTool.tsx`).text()
-    // Type signature should include hookAskFloor
-    expect(src).toMatch(/hookAskFloor\?:\s*boolean/)
-    // hasPermissionsToUseTool call should pass hookAskFloor
-    expect(src).toMatch(/hasPermissionsToUseTool\(.*hookAskFloor\)/)
+  test('REAL hasPermissionsToUseTool: hookAskFloor=true denies in headless auto mode', async () => {
+    const script = `
+import { hasPermissionsToUseTool } from "${REPO_ROOT}/src/utils/permissions/permissions.ts";
+
+const tool = {
+  name: 'Bash',
+  userFacingName: () => 'Bash',
+  inputSchema: { parse: (i) => i, safeParse: (i) => ({ success: true, data: i }) },
+  checkPermissions: async (_input, ctx) => {
+    const mode = ctx.getAppState().toolPermissionContext.mode;
+    if (mode === 'acceptEdits') return { behavior: 'allow' };
+    return {
+      behavior: 'ask',
+      decisionReason: { type: 'safetyCheck', classifierApprovable: true },
+      message: 'Safety check',
+    };
+  },
+  description: async () => 'Bash',
+  isMcp: false,
+};
+
+const ctx = {
+  abortController: { signal: { aborted: false } },
+  getAppState: () => ({
+    toolPermissionContext: {
+      mode: 'auto',
+      shouldAvoidPermissionPrompts: true, // headless
+      alwaysAllowRules: {},
+      alwaysDenyRules: {},
+      alwaysAskRules: {},
+    },
+    denialTracking: undefined,
+  }),
+  setAppState: () => {},
+  options: { isNonInteractiveSession: false, tools: [] },
+  localDenialTracking: undefined,
+};
+
+const msg = { message: { id: 'msg1', content: [] } };
+
+const result = await hasPermissionsToUseTool(
+  tool, { command: 'rm -rf /' }, ctx, msg, 'e2e-real-2', true
+);
+
+console.log(JSON.stringify({ behavior: result.behavior }));
+`
+    const out = JSON.parse(
+      (await $`bun -e ${script}`.quiet()).stdout.toString().trim(),
+    )
+
+    // With fix: headless + hookAskFloor → deny (cannot prompt)
+    // Without fix: fast-path overrides → 'allow'
+    expect(out.behavior).toBe('deny')
+    expect(out.behavior).not.toBe('allow')
   })
 })

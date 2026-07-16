@@ -479,14 +479,13 @@ async function runPermissionRequestHooksForHeadlessAgent(
   return null
 }
 
-export const hasPermissionsToUseTool: CanUseToolFn = async (
-  tool,
-  input,
-  context,
-  assistantMessage,
-  toolUseID,
-  _forceDecision?,
-  hookAskFloor?,
+export const hasPermissionsToUseTool = async (
+  tool: Parameters<CanUseToolFn>[0],
+  input: Parameters<CanUseToolFn>[1],
+  context: Parameters<CanUseToolFn>[2],
+  assistantMessage: Parameters<CanUseToolFn>[3],
+  toolUseID: Parameters<CanUseToolFn>[4],
+  hookAskFloor?: boolean,
 ): Promise<PermissionDecision> => {
   const result = await hasPermissionsToUseToolInner(tool, input, context)
 
