@@ -1,5 +1,12 @@
 # OCC vs. official Claude Code — version-gap report (2026-07-16)
 
+> **CLOSED — resolved (2026-07-16).** OCC is now caught up to official Claude Code
+> `2.1.211` (= official latest as of 2026-07-15). The 2.1.210→2.1.211 gap documented
+> below was closed by OCC releases `2.1.269` (→2.1.210) and `2.1.270`/`2.1.271` (→2.1.211;
+> re-published as `2.1.271` because the `2.1.270` npm tag had fallen behind `main`).
+> See `docs/upstream-version-gap-occ7.md` (OCC-7) for the parity confirmation. The body
+> below is retained for historical recon.
+
 > Gap-research deliverable for OCC-5. Methodology: `upstream-tracking` + `aligning-with-official-binary` skills (no memory recital). Version truth from the npm registry (`@anthropic-ai/claude-code`) and the official Anthropic `CHANGELOG.md` on GitHub; feature truth binary-verified against the decompiled native ELF (`strings -n 8 | sort -u`, `comm -13`).
 
 ## 1. Version truth
