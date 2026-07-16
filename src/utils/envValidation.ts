@@ -62,25 +62,31 @@ function parseNotationInt(s: string): number | undefined {
  * Parse an integer env-var value supporting scientific notation and digit
  * separators. Mirrors CC 2.1.211 binary `zl`.
  *
- * Returns NaN for invalid/unset values — callers use `|| default` or
- * explicit `isNaN` checks, matching the upstream pattern.
+ * Returns `undefined` for invalid/unset values so callers can use `?? default`
+ * to preserve a legitimate `0` (0 is falsy under `||`, dropping it to the
+ * default — the foot-gun fixed in CC 2.1.211 hardening).
  */
-export function parseEnvInt(value: string | undefined): number {
+export function parseEnvInt(value: string | undefined): number | undefined {
   const trimmed = String(value).trim()
-  return parseNotationInt(trimmed) ?? parseInt(trimmed, 10)
+  const notationResult = parseNotationInt(trimmed)
+  if (notationResult !== undefined) {
+    return Number.isNaN(notationResult) ? undefined : notationResult
+  }
+  const parseIntResult = parseInt(trimmed, 10)
+  return Number.isNaN(parseIntResult) ? undefined : parseIntResult
 }
 
 /**
  * Parse an integer env-var with a default fallback.
- * Equivalent to `parseEnvInt(value) || defaultValue` — mirrors the
- * upstream `zl(process.env.X) || DEFAULT` pattern.
- * Note: 0 is falsy, so `parseEnvIntWithDefault('0', 10)` returns 10.
+ * Uses `??` (not `||`) so that a legitimate `0` is preserved — mirrors the
+ * CC 2.1.211 binary `zl` which returns the parsed int (incl. 0) for valid
+ * input and the default for invalid input.
  */
 export function parseEnvIntWithDefault(
   value: string | undefined,
   defaultValue: number,
 ): number {
-  return parseEnvInt(value) || defaultValue
+  return parseEnvInt(value) ?? defaultValue
 }
 
 export function validateBoundedIntEnvVar(
@@ -95,7 +101,7 @@ export function validateBoundedIntEnvVar(
   // CC 2.1.211: route through the shared parseEnvInt so bounded vars
   // also gain digit-separator support (`64_000`, `1,000`, etc.).
   const parsed = parseEnvInt(value)
-  if (isNaN(parsed) || parsed <= 0) {
+  if (parsed === undefined || parsed <= 0) {
     const result: EnvVarValidationResult = {
       effective: defaultValue,
       status: 'invalid',

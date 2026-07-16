@@ -2010,7 +2010,7 @@ async function* queryModel(
     )
     // 2.1.196: 5min default idle timeout (was 90s).
     const STREAM_IDLE_TIMEOUT_MS =
-      parseEnvInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS) || 300_000
+      parseEnvInt(process.env.CLAUDE_STREAM_IDLE_TIMEOUT_MS) ?? 300_000
     const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay

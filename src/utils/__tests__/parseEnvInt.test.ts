@@ -33,8 +33,8 @@ describe('parseEnvInt — scientific notation', () => {
     expect(parseEnvInt('1.5e1')).toBe(15)
   })
 
-  test('1.5e0 (==1.5) is rejected (not integer) → NaN', () => {
-    expect(parseEnvInt('1.5e0')).toBeNaN()
+  test('1.5e0 (==1.5) is rejected (not integer) → undefined', () => {
+    expect(parseEnvInt('1.5e0')).toBeUndefined()
   })
 
   test('negative -1e3 is parsed as -1000 (caller validates sign)', () => {
@@ -96,20 +96,20 @@ describe('parseEnvInt — plain integers', () => {
 })
 
 describe('parseEnvInt — invalid / edge cases', () => {
-  test('non-numeric "abc" → NaN', () => {
-    expect(parseEnvInt('abc')).toBeNaN()
+  test('non-numeric "abc" → undefined', () => {
+    expect(parseEnvInt('abc')).toBeUndefined()
   })
 
-  test('undefined → NaN', () => {
-    expect(parseEnvInt(undefined)).toBeNaN()
+  test('undefined → undefined', () => {
+    expect(parseEnvInt(undefined)).toBeUndefined()
   })
 
-  test('empty string → NaN', () => {
-    expect(parseEnvInt('')).toBeNaN()
+  test('empty string → undefined', () => {
+    expect(parseEnvInt('')).toBeUndefined()
   })
 
-  test('whitespace-only "  " → NaN', () => {
-    expect(parseEnvInt('  ')).toBeNaN()
+  test('whitespace-only "  " → undefined', () => {
+    expect(parseEnvInt('  ')).toBeUndefined()
   })
 
   test('trimmed " 1000 " parses to 1000', () => {
@@ -134,10 +134,11 @@ describe('parseEnvIntWithDefault', () => {
     expect(parseEnvIntWithDefault('abc', 10)).toBe(10)
   })
 
-  test('0 with default 10 → 0 (0 is falsy but not NaN)', () => {
-    // parseEnvIntWithDefault uses || so 0 → default. This mirrors
-    // the binary's `zl(...) || default` pattern.
-    expect(parseEnvIntWithDefault('0', 10)).toBe(10)
+  test('0 with default 10 → 0 (0 preserved, NOT dropped to default)', () => {
+    // CC 2.1.211 hardening: parseEnvIntWithDefault uses ?? (not ||) so a
+    // legitimate 0 is preserved. The old `||` pattern dropped 0 to the
+    // default because 0 is falsy.
+    expect(parseEnvIntWithDefault('0', 10)).toBe(0)
   })
 })
 

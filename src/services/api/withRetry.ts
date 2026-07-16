@@ -97,7 +97,7 @@ export function getDefaultMaxRetries(
 ): number {
   if (process.env.CLAUDE_CODE_MAX_RETRIES) {
     const t = parseEnvInt(process.env.CLAUDE_CODE_MAX_RETRIES)
-    if (Number.isFinite(t) && t >= 0) {
+    if (t !== undefined && t >= 0) {
       // Only clamp when the watchdog is OFF — the watchdog opts into
       // unbounded overload/429 retry, so capping would defeat it.
       if (t > MAX_RETRIES_CLAMP && !watchdog) {

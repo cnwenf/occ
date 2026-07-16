@@ -302,7 +302,7 @@ const getUserBucket = memoize((): number => {
 function getFlushIntervalMs(): number {
   // Allow tests to override to not block on the default flush interval.
   return (
-    parseEnvInt(process.env.CLAUDE_CODE_DATADOG_FLUSH_INTERVAL_MS) ||
+    parseEnvInt(process.env.CLAUDE_CODE_DATADOG_FLUSH_INTERVAL_MS) ??
     DEFAULT_FLUSH_INTERVAL_MS
   )
 }
