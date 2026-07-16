@@ -1145,9 +1145,13 @@ export const AgentTool = buildTool({
               }
             }
             const normalizedNew = normalizeMessages([message]);
+            // Binary gate (CC 2.1.211): if(!St&&Vt.type!=="tool_use"&&Vt.type!=="tool_result")continue;
+            // When forwardSubagentText is false, only tool_use/tool_result are forwarded.
+            // When true, text/thinking blocks are also forwarded as agent_progress.
+            const forwardSubagentText = toolUseContext.options.forwardSubagentText ?? false;
             for (const m of normalizedNew) {
               for (const content of (m.message.content as unknown as Array<{ type: string; [key: string]: unknown }>)) {
-                if (content.type !== 'tool_use' && content.type !== 'tool_result') {
+                if (!forwardSubagentText && content.type !== 'tool_use' && content.type !== 'tool_result') {
                   continue;
                 }
 
