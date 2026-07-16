@@ -65,10 +65,10 @@ const HTML_COMMENT_REGEX = /<!--[\s\S]*?-->/g
  * the binary's `vXc` early return).
  */
 export function stripNonLoadedContent(raw: string): string {
-  // 1. Strip frontmatter block (---\n...\n---) from the start.
-  const withoutFrontmatter = FRONTMATTER_REGEX.test(raw)
-    ? raw.replace(FRONTMATTER_REGEX, '')
-    : raw
+  // 1. Strip frontmatter block (---\n...\n---) from the start. .replace()
+  //    returns the original string unchanged when no match (no need for
+  //    a separate .test() call).
+  const withoutFrontmatter = raw.replace(FRONTMATTER_REGEX, '')
 
   // 2. Strip HTML comments. Short-circuit when no comment markers exist
   //    (matches the binary's `vXc` early return).
@@ -312,7 +312,16 @@ export async function checkMemoryEntrypointOverCap(
   if (wasTruncated) {
     content = content.slice(0, WRITE_GUARD_READ_LIMIT)
   } else {
-    content = stripNonLoadedContent(content)
+    // 2.1.211: strip frontmatter + HTML comments before measuring. Match
+    // the binary's `try{d=lwt(vXc(Zm(u.content).content).content)}catch{}`
+    // — if stripping throws (e.g. lexer error on malformed input), fall
+    // back to the raw content so the guard still measures something
+    // rather than crashing the PostToolUse hook path.
+    try {
+      content = stripNonLoadedContent(content)
+    } catch {
+      // Keep raw content — the guard will measure it as-is.
+    }
   }
   const { byteCount, lineCount } = measureMemoryIndexContent(content)
   return getMemoryIndexOverCapMessage({
