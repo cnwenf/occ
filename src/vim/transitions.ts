@@ -18,6 +18,7 @@ import {
   executeOperatorTextObj,
   executePaste,
   executeReplace,
+  executeSubstitute,
   executeToggleCase,
   executeVisualCase,
   executeVisualOperator,
@@ -158,6 +159,18 @@ function handleNormalInput(
   }
   if (input === 'x') {
     return { execute: () => executeX(count, ctx) }
+  }
+  // 2.1.211: s = substitute char (delete char at cursor, enter insert).
+  // Binary: `s:(e,t)=>({execute:()=>fPo(e,t)})` where fPo deletes count chars
+  // (stopping at newline), records type "substitute", and enters insert mode.
+  if (input === 's') {
+    return { execute: () => executeSubstitute(count, ctx) }
+  }
+  // 2.1.211: S = substitute line (delete line content, enter insert = cc).
+  // Binary: `S:(e,t)=>({execute:()=>KOt("change",e,t)})` where KOt is
+  // executeLineOp with op="change" (same as cc).
+  if (input === 'S') {
+    return { execute: () => executeLineOp('change', count, ctx) }
   }
   if (input === 'J') {
     return { execute: () => executeJoin(count, ctx) }

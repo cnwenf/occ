@@ -892,10 +892,18 @@ function PromptInput({
     submitCount,
     viewingAgentName
   });
+  // 2.1.211: Only toggle help on a fresh '?' typed into an empty input.
+  // Edits that leave the input as '?' (e.g. deleting chars until only '?'
+  // remains) must NOT be swallowed or toggle the shortcuts panel.
+  // Binary: `Bt.key==="?"&&Z===""` (non-vim keypress handler checks empty input).
+  // Vim NORMAL mode uses onToggleHelp (separate from onChange).
+  const toggleHelp = useCallback(() => {
+    logEvent('tengu_help_toggled', {});
+    setHelpOpen(v => !v);
+  }, []);
   const onChange = useCallback((value: string) => {
-    if (value === '?') {
-      logEvent('tengu_help_toggled', {});
-      setHelpOpen(v => !v);
+    if (value === '?' && input === '') {
+      toggleHelp();
       return;
     }
     setHelpOpen(false);
@@ -2319,7 +2327,7 @@ function PromptInput({
         </Text>
       </Box>;
   }
-  const textInputElement = isVimModeEnabled() ? <VimTextInput {...baseProps} initialMode={vimMode} onModeChange={setVimMode} onHistorySearch={() => setIsSearchingHistory(true)} /> : <TextInput {...baseProps} />;
+  const textInputElement = isVimModeEnabled() ? <VimTextInput {...baseProps} initialMode={vimMode} onModeChange={setVimMode} onHistorySearch={() => setIsSearchingHistory(true)} onToggleHelp={toggleHelp} /> : <TextInput {...baseProps} />;
   return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
       {hasSuppressedDialogs && <Box marginTop={1} marginLeft={2}>

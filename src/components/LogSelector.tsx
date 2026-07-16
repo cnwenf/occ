@@ -277,28 +277,12 @@ export function LogSelector(t0) {
     setQuery: setSearchQuery,
     cursorOffset: searchCursorOffset
   } = useSearchInput(t14);
+  // 2.1.211: Removed 300ms delay — useDeferredValue already
+  // provides React-level deferral without an artificial 300ms wait.
+  // Binary: the 300ms timeout on the deferred query was removed;
+  // deferred value feeds directly into the deep-search effect.
   const deferredSearchQuery = React.useDeferredValue(searchQuery);
-  const [debouncedDeepSearchQuery, setDebouncedDeepSearchQuery] = React.useState("");
-  let t15;
-  let t16;
-  if ($[14] !== deferredSearchQuery) {
-    t15 = () => {
-      if (!deferredSearchQuery) {
-        setDebouncedDeepSearchQuery("");
-        return;
-      }
-      const timeoutId = setTimeout(setDebouncedDeepSearchQuery, 300, deferredSearchQuery);
-      return () => clearTimeout(timeoutId);
-    };
-    t16 = [deferredSearchQuery];
-    $[14] = deferredSearchQuery;
-    $[15] = t15;
-    $[16] = t16;
-  } else {
-    t15 = $[15];
-    t16 = $[16];
-  }
-  React.useEffect(t15, t16);
+  const debouncedDeepSearchQuery = deferredSearchQuery;
   const [deepSearchResults, setDeepSearchResults] = React.useState(null);
   const [isSearching, setIsSearching] = React.useState(false);
   let t17;
