@@ -225,8 +225,15 @@ export function resolveAgentTools(
   }
 }
 
-export const agentToolResultSchema = lazySchema(() =>
-  z.object({
+// Hoisted function declaration (not const) to avoid circular-dep TDZ:
+// AgentTool.tsx ↔ agentToolUtils.ts have a circular import. A `const` is in
+// TDZ when accessed during module-eval (buildTool calls outputSchema() at
+// construction → factory runs → accesses agentToolResultSchema → TDZ if
+// agentToolUtils hasn't finished loading). Function declarations are hoisted,
+// so agentToolResultSchema is available before its definition is reached.
+let _agentToolResultSchemaCache: z.ZodObject<any, any> | undefined
+export function agentToolResultSchema() {
+  return (_agentToolResultSchemaCache ??= z.object({
     agentId: z.string(),
     // Optional: older persisted sessions won't have this (resume replays
     // results verbatim without re-validation). Used to gate the sync
@@ -255,8 +262,8 @@ export const agentToolResultSchema = lazySchema(() =>
         })
         .nullable(),
     }),
-  }),
-)
+  }))
+}
 
 export type AgentToolResult = z.input<ReturnType<typeof agentToolResultSchema>>
 
