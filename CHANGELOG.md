@@ -9,6 +9,10 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. See `.occ-research/` for the
 upstream catch-up changelog.
 
+## 2.1.270 - 2026-07-16
+
+- **Fix: `occ` failed to launch after `npm i -g @cnwenf/occ` on glibc hosts** (OCC-6). The Node launcher shim (`bin/occ.cjs`) died with `occ: failed to launch bun: spawn .../@oven/bun-linux-x64-musl/bin/bun ENOENT`. Root cause: `bun` is an *optional* dependency, so npm does not link `bun` onto PATH — the shim had to fall back to the bundled `@oven/bun-*` platform binaries; but the `bun` meta-package ships both glibc and musl variants without an `os.libc` filter, so npm installs all of them, and the old shim's first-`existsSync`-true ordering picked the musl ELF on a glibc host (its `/lib/ld-musl-x86_64.so.1` interpreter is absent → ENOENT). The fix mirrors the official `@anthropic-ai/claude-code` `cli-wrapper.cjs`: detect the host libc via `process.report.getReport().header.glibcVersionRuntime`, restrict candidates to the matching libc only, resolve each package directory via `require.resolve(pkg + '/package.json')` (reliable, unlike `require.resolve('pkg/bin/bun')` which false-negatives on absent files / `exports`), and **probe-run** (`<bin> --version`) each candidate before committing so a present-but-unrunnable binary is skipped, not fatal. Verified in clean `node:20` (glibc), `--ignore-scripts`, and `node:20-alpine` (musl) containers. Added `test/launcher.test.ts` (9 tests) pinning the libc filtering and probe behavior.
+
 ## 2.1.269 - 2026-07-15
 
 - Catch up to Claude Code `2.1.210` — 25 upstream-feature clusters ported from the official 2.1.206→2.1.210 binaries (every identifier binary-verified; each port passed the done-gate: real-not-stub, behavioral e2e, 903/0 regression suite, `occ -p` smoke). Full per-cluster recon + verdicts in `.occ-research/occ-vs-2.1.210-gaps.md`. User-facing highlights:
