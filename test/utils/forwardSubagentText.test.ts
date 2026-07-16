@@ -235,17 +235,27 @@ function runCli(
 }
 
 describe('CLI guard: --forward-subagent-text', () => {
-  test('errors without --print and --output-format=stream-json', async () => {
-    // --forward-subagent-text alone (no --print, no --output-format) should
-    // emit the upstream guard error and exit non-zero.
-    const result = await runCli(
-      ['--forward-subagent-text', '-p', 'hello'],
-      { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
-    )
-    const combined = result.stdout + result.stderr
-    expect(combined).toContain('--forward-subagent-text requires --print and --output-format=stream-json')
-    expect(result.code).not.toBe(0)
-  })
+  test(
+    'errors without --print and --output-format=stream-json',
+    async () => {
+      // --forward-subagent-text alone (no --print, no --output-format) should
+      // emit the upstream guard error and exit non-zero.
+      //
+      // This spawns the full built CLI (dist/cli.js), which under the GitHub
+      // Actions runner takes longer than the suite's default 10s per-test
+      // cap (locally ~5s; CI is slower). The guard is real and must run —
+      // raise the per-test timeout rather than skipping. ci.yml builds dist
+      // before `bun test`, so the entrypoint exists in CI.
+      const result = await runCli(
+        ['--forward-subagent-text', '-p', 'hello'],
+        { CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' },
+      )
+      const combined = result.stdout + result.stderr
+      expect(combined).toContain('--forward-subagent-text requires --print and --output-format=stream-json')
+      expect(result.code).not.toBe(0)
+    },
+    { timeout: 30_000 },
+  )
 
   test('env var alone does not error (silently disables)', async () => {
     // When only the env var is set (not the CLI flag), upstream silently

@@ -65,8 +65,13 @@ console.log(JSON.stringify({
     const src = await Bun.file(`${REPO_ROOT}/src/services/api/usage.ts`).text();
     // The seeded-case message is rendered in Usage.tsx, but the rate-limit
     // detection lives in usage.ts. Verify the wording lives in the codebase.
+    // Usage.tsx is a React-Compiler-compiled artifact; the em-dash inside the
+    // seeded-case message is stored as a — escape (not a literal em-dash
+    // byte), so assert the wording on either side of the dash rather than the
+    // exact dash byte to stay robust to the compiled encoding.
     const usageSrc = await Bun.file(`${REPO_ROOT}/src/components/Settings/Usage.tsx`).text();
-    expect(usageSrc).toContain("Per-model breakdown unavailable (rate limited — try again in a moment)");
+    expect(usageSrc).toContain("Per-model breakdown unavailable (rate limited");
+    expect(usageSrc).toContain("try again in a moment)");
     expect(usageSrc).toContain("Could not refresh usage data");
   });
 

@@ -12,7 +12,11 @@ describe('Streaming idle watchdog default-on + 5min (2.1.196, e2e)', () => {
 
   test('idle timeout default is 5min (300000ms), not 90s', async () => {
     const src = await Bun.file(`${REPO_ROOT}/src/services/api/claude.ts`).text()
-    expect(src).toContain('|| 300_000')
+    // 2.1.196: default idle timeout is 300000ms. The source uses nullish
+    // coalescing (`?? 300_000`) so an explicit `0` env override is honored —
+    // assert on `?? 300_000` (the correct, current operator) rather than the
+    // legacy `|| 300_000` string.
+    expect(src).toContain('?? 300_000')
     expect(src).not.toContain('|| 90_000')
   })
 })
