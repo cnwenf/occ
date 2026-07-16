@@ -259,7 +259,7 @@ const MAX_MCP_DESCRIPTION_LENGTH = 2048
  */
 function getMcpToolTimeoutMs(): number {
   return (
-    parseEnvInt(process.env.MCP_TOOL_TIMEOUT) ||
+    parseEnvInt(process.env.MCP_TOOL_TIMEOUT) ??
     DEFAULT_MCP_TOOL_TIMEOUT_MS
   )
 }
@@ -490,7 +490,7 @@ const IMAGE_MIME_TYPES = new Set([
 ])
 
 function getConnectionTimeoutMs(): number {
-  return parseEnvInt(process.env.MCP_TIMEOUT) || 30000
+  return parseEnvInt(process.env.MCP_TIMEOUT) ?? 30000
 }
 
 /**
@@ -667,12 +667,12 @@ export function wrapFetchWithTimeout(
 }
 
 export function getMcpServerConnectionBatchSize(): number {
-  return parseEnvInt(process.env.MCP_SERVER_CONNECTION_BATCH_SIZE) || 3
+  return parseEnvInt(process.env.MCP_SERVER_CONNECTION_BATCH_SIZE) ?? 3
 }
 
 function getRemoteMcpServerConnectionBatchSize(): number {
   return (
-    parseEnvInt(process.env.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE) ||
+    parseEnvInt(process.env.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE) ??
     20
   )
 }

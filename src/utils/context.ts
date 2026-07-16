@@ -53,7 +53,7 @@ export function getMaxContextTokensOverride(): number | undefined {
     process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
   ) {
     const override = parseEnvInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)
-    if (!isNaN(override) && override > 0) {
+    if (override !== undefined && override > 0) {
       return override
     }
   }
@@ -90,7 +90,7 @@ export function getContextWindowForModel(
     process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS
   ) {
     const override = parseEnvInt(process.env.CLAUDE_CODE_MAX_CONTEXT_TOKENS)
-    if (!isNaN(override) && override > 0) {
+    if (override !== undefined && override > 0) {
       return override
     }
   }

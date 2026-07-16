@@ -28,7 +28,7 @@ const MCP_SKILLS_EXTENSION = 'io.modelcontextprotocol/skills'
  * official binary's Wz() (env MCP_TIMEOUT or 60s).
  */
 function getDirectoryReadTimeoutMs(): number {
-  return parseEnvInt(process.env.MCP_TIMEOUT) || 60_000
+  return parseEnvInt(process.env.MCP_TIMEOUT) ?? 60_000
 }
 
 /**

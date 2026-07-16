@@ -7,7 +7,7 @@ import { parseEnvInt } from '../../utils/envValidation.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 
 function getMaxToolUseConcurrency(): number {
-  return parseEnvInt(process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY) || 10
+  return parseEnvInt(process.env.CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY) ?? 10
 }
 
 export type MessageUpdate = {

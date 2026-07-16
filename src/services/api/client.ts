@@ -184,7 +184,7 @@ export async function getAnthropicClient({
   const ARGS = {
     defaultHeaders,
     maxRetries,
-    timeout: parseEnvInt(process.env.API_TIMEOUT_MS) || 600_000,
+    timeout: parseEnvInt(process.env.API_TIMEOUT_MS) ?? 600_000,
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({
       forAnthropicAPI: true,
