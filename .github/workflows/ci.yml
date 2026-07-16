@@ -31,6 +31,9 @@ jobs:
         run: bun run build
         # 先构建再测试：e2e 测试会运行 dist/cli.js，需要产物已存在。
 
+      - name: Install ripgrep
+        run: sudo apt-get install -y ripgrep
+
       - name: Test
         run: bash scripts/ci-test.sh
         # Per-file isolation: runs each test file in its own bun process.
