@@ -10,6 +10,10 @@ versions above that are OCC-specific releases. Currently caught up through
 Claude Code `2.1.211` — see `docs/upstream-version-gap.md` for the version-gap
 report and `.occ-research/` for the upstream catch-up changelog.
 
+## 2.1.271 - 2026-07-16
+
+- **Release-integrity re-publish (no new behavior vs `main`).** The published `2.1.270` npm artifact was built from a git tag (`v2.1.270` → `8530b17`) that had fallen 16 commits behind `main` HEAD (`6efd4a2`). Because `.github/workflows/publish.yml` builds from the pushed tag, the 2.1.270 package shipped **without** the `src/` behavior fixes that had already landed on `main` after the tag — most notably the `--forward-subagent-text` guard (`src/utils/forwardSubagentTextGuard.ts`, absent at the tag: `git cat-file -e v2.1.270:src/utils/forwardSubagentTextGuard.ts` → ABSENT) and the Grep invalid-regex pre-validation fix, plus the other post-tag `src/` fixes. `2.1.271` re-tags `main` HEAD so the published artifact includes every fix already on `main`. **No code or behavior change relative to `main`** — this is purely a tag/publish-integrity correction (the root cause surfaced by OCC-7's gap research and the acceptance officer's behavioral parity re-check). Verified post-publish: `npm view @cnwenf/occ version` → `2.1.271`, and the guard file is present in the published tarball.
+
 ## 2.1.270 - 2026-07-16
 
 - **Behavior change** (CC 2.1.211 port): auto mode no longer overrides a PreToolUse hook's `ask` decision for unsandboxed Bash. When a PreToolUse hook returns `ask` and rules also require `ask`, the decision is floored at "prompt the user" — the auto-mode classifier cannot silently auto-approve or auto-deny. In headless mode where prompts are unavailable, the tool is denied. This ports the upstream `hookAskFloor` logic: `resolveHookPermissionDecision` now passes `hookAskFloor: true` to `canUseTool` when the hook returned `ask` and the rule check also returns `ask`, and `hasPermissionsToUseTool` respects this flag to prevent classifier override.
