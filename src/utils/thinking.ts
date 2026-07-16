@@ -2,6 +2,7 @@
 import type { Theme } from './theme.js'
 import { feature } from 'src/utils/featureFlags.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
+import { parseEnvInt } from './envValidation.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { getAPIProvider } from './model/providers.js'
@@ -145,7 +146,7 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
 
 export function shouldEnableThinkingByDefault(): boolean {
   if (process.env.MAX_THINKING_TOKENS) {
-    return parseInt(process.env.MAX_THINKING_TOKENS, 10) > 0
+    return parseEnvInt(process.env.MAX_THINKING_TOKENS) > 0
   }
 
   const { settings } = getSettingsWithErrors()

@@ -7,6 +7,7 @@
  */
 
 import { feature } from 'src/utils/featureFlags.js'
+import { parseEnvInt } from 'src/utils/envValidation.js'
 import axios from 'axios'
 import { createHash } from 'crypto'
 import { createWriteStream } from 'fs'
@@ -277,7 +278,7 @@ const MAX_DOWNLOAD_RETRIES = 3
 
 function getStallTimeoutMs(): number {
   return (
-    Number(process.env.CLAUDE_CODE_STALL_TIMEOUT_MS_FOR_TESTING) ||
+    parseEnvInt(process.env.CLAUDE_CODE_STALL_TIMEOUT_MS_FOR_TESTING) ||
     DEFAULT_STALL_TIMEOUT_MS
   )
 }
@@ -339,7 +340,7 @@ const DEFAULT_DOWNLOAD_RETRY_BASE_DELAY_MS = 1000
 
 function getDownloadRetryBaseDelayMs(): number {
   return (
-    Number(process.env.CLAUDE_CODE_DOWNLOAD_RETRY_DELAY_MS_FOR_TESTING) ||
+    parseEnvInt(process.env.CLAUDE_CODE_DOWNLOAD_RETRY_DELAY_MS_FOR_TESTING) ||
     DEFAULT_DOWNLOAD_RETRY_BASE_DELAY_MS
   )
 }
