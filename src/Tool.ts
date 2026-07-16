@@ -176,6 +176,8 @@ export type ToolUseContext = {
     querySource?: QuerySource
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools
+    /** Forward subagent text/thinking into stream-json output (CC 2.1.211) */
+    forwardSubagentText?: boolean
   }
   abortController: AbortController
   readFileState: FileStateCache

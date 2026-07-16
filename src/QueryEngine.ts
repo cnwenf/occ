@@ -154,6 +154,7 @@ export type QueryEngineConfig = {
   /** Handler for URL elicitations triggered by MCP tool -32042 errors. */
   handleElicitation?: ToolUseContext['handleElicitation']
   includePartialMessages?: boolean
+  forwardSubagentText?: boolean
   setSDKStatus?: (status: SDKStatus) => void
   abortController?: AbortController
   orphanedPermission?: OrphanedPermission
@@ -232,6 +233,7 @@ export class QueryEngine {
       setAppState,
       replayUserMessages = false,
       includePartialMessages = false,
+      forwardSubagentText = false,
       agents = [],
       setSDKStatus,
       orphanedPermission,
@@ -365,6 +367,7 @@ export class QueryEngine {
         agentDefinitions: { activeAgents: agents, allAgents: [] },
         theme: resolveThemeSetting(getGlobalConfig().theme),
         maxBudgetUsd,
+        forwardSubagentText,
       },
       getAppState,
       setAppState,
@@ -513,6 +516,7 @@ export class QueryEngine {
         theme: resolveThemeSetting(getGlobalConfig().theme),
         agentDefinitions: { activeAgents: agents, allAgents: [] },
         maxBudgetUsd,
+        forwardSubagentText,
       },
       getAppState,
       setAppState,
@@ -1235,6 +1239,7 @@ export async function* ask({
   abortController,
   replayUserMessages = false,
   includePartialMessages = false,
+  forwardSubagentText = false,
   handleElicitation,
   agents = [],
   setSDKStatus,
@@ -1266,6 +1271,7 @@ export async function* ask({
   abortController?: AbortController
   replayUserMessages?: boolean
   includePartialMessages?: boolean
+  forwardSubagentText?: boolean
   handleElicitation?: ToolUseContext['handleElicitation']
   agents?: AgentDefinition[]
   setSDKStatus?: (status: SDKStatus) => void
@@ -1295,6 +1301,7 @@ export async function* ask({
     handleElicitation,
     replayUserMessages,
     includePartialMessages,
+    forwardSubagentText,
     setSDKStatus,
     abortController,
     orphanedPermission,
