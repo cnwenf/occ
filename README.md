@@ -143,7 +143,7 @@ Requires [Bun](https://bun.sh/) >= 1.3.11 (use `bun upgrade` — older Bun cause
 
 ```bash
 bun install
-bun run dev          # run from source; version prints 2.1.210 when working
+bun run dev          # run from source; version prints 2.1.270 (dev polyfill; build overrides with pkg.version) when working
 bun run build        # output: dist/cli.js (~26 MB, single-file bundle)
 bun test             # test suite (Bun test runner)
 bun run lint         # Biome lint (formatter disabled to avoid large diffs)

@@ -80,7 +80,7 @@ Glob、Grep（默认启用）；TaskCreate/Get/Update/List（Todo v2）、EnterW
 
 ```bash
 bun install
-bun run dev          # 从源码运行；版本号显示 2.1.210 即正常
+bun run dev          # 从源码运行；版本号显示 2.1.270（dev polyfill；build 用 pkg.version 覆盖）即正常
 bun run build        # 产物：dist/cli.js（~26MB，5300+ 模块，单文件 bundle）
 bun test             # 测试套件
 bun run lint         # Biome lint（禁用格式化以避免大 diff）

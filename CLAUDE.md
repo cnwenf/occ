@@ -12,8 +12,9 @@ This is an **independent open-source implementation** of a Claude Code–style c
 # Install dependencies
 bun install
 
-# Dev mode (direct execution via Bun). Version prints as 2.1.210 when the
-# cli.tsx MACRO polyfill is active; prints 888 if the polyfill is bypassed.
+# Dev mode (direct execution via Bun). Version prints as 2.1.270 (dev polyfill;
+# build overrides with pkg.version) when the cli.tsx MACRO polyfill is active;
+# prints 888 if the polyfill is bypassed.
 bun run dev
 # equivalent to: bun run src/entrypoints/cli.tsx
 

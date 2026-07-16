@@ -12,7 +12,7 @@ const _FEATURE_ALLOWLIST: Set<string> = new Set([
 const feature = (name: string): boolean => _FEATURE_ALLOWLIST.has(name)
 if (typeof globalThis.MACRO === "undefined") {
     (globalThis as any).MACRO = {
-        VERSION: "2.1.262",
+        VERSION: "2.1.270",
         BUILD_TIME: new Date().toISOString(),
         FEEDBACK_CHANNEL: "",
         ISSUES_EXPLAINER: "",
