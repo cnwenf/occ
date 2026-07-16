@@ -6,8 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
-versions above that are OCC-specific releases. See `.occ-research/` for the
-upstream catch-up changelog.
+versions above that are OCC-specific releases. Currently caught up through
+Claude Code `2.1.211` — see `docs/upstream-version-gap.md` for the version-gap
+report and `.occ-research/` for the upstream catch-up changelog.
 
 ## 2.1.270 - 2026-07-16
 
