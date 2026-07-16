@@ -269,6 +269,11 @@ export type AgentMetadata = {
    * resumed agent's notification can show the original description instead
    * of a placeholder. Optional — older metadata files lack this field. */
   description?: string
+  /** CC 2.1.211: explicit model override passed at spawn time (e.g. 'sonnet',
+   * 'opus', 'haiku'). Persisted so resume/follow-up preserves the override
+   * instead of reverting to the parent's model. Optional — older metadata
+   * files and fork-path spawns lack this field. */
+  model?: string
 }
 
 /**
