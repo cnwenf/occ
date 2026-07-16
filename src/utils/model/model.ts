@@ -76,12 +76,64 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     specifiedModel = process.env.ANTHROPIC_MODEL || settings.model || undefined
   }
 
-  // Ignore the user-specified model if it's not in the availableModels allowlist.
+  // CC 2.1.211: when a model is explicitly configured but not in the
+  // availableModels allowlist, try getEnforcedDefaultModel before falling
+  // through to undefined. On Bedrock/Vertex, returning undefined causes
+  // the startup code to resolve getDefaultMainLoopModel() → the default
+  // Opus model, which may not be available on the user's deployment —
+  // producing a spurious fallback notice. getEnforcedDefaultModel resolves
+  // a valid model from the org's availableModels/modelOverrides instead.
   if (specifiedModel && !isModelAllowed(specifiedModel)) {
-    return undefined
+    return getEnforcedDefaultModel(specifiedModel) ?? undefined
   }
 
   return specifiedModel
+}
+
+/**
+ * CC 2.1.211: resolve an enforced default model when the user's explicitly
+ * configured model is not in the availableModels allowlist.
+ *
+ * Mirrors the official binary's getEnforcedDefaultModel (zFn): when
+ * enforceAvailableModels is true and availableModels is a non-empty array,
+ * the model resolves to the first allowed availableModels entry. When
+ * modelOverrides are configured, they take precedence (canonical ID →
+ * provider-specific string).
+ *
+ * Returns null when enforcement is inactive or no valid model can be
+ * resolved — caller falls through to getDefaultMainLoopModel().
+ */
+export function getEnforcedDefaultModel(
+  requestedModel: string,
+): string | null {
+  const settings = getSettings_DEPRECATED() || {}
+  const { availableModels, modelOverrides } = settings
+
+  // Without enforcement or an availableModels list, no enforced default
+  if (!getEnforceAvailableModels() || !availableModels || availableModels.length === 0) {
+    return null
+  }
+
+  // Check modelOverrides first (canonical ID → provider-specific string).
+  // The override key is matched case-insensitively against the requested
+  // model's canonical form.
+  if (modelOverrides) {
+    const requestedLower = requestedModel.trim().toLowerCase()
+    for (const [canonicalId, override] of Object.entries(modelOverrides)) {
+      if (override && canonicalId.trim().toLowerCase() === requestedLower) {
+        return override
+      }
+    }
+  }
+
+  // Resolve to the first allowed availableModels entry
+  for (const entry of availableModels) {
+    if (isModelAllowed(entry)) {
+      return entry
+    }
+  }
+
+  return availableModels[0] ?? null
 }
 
 /**

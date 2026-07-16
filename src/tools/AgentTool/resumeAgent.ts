@@ -176,7 +176,12 @@ export async function resumeAgentBackground({
       selectedAgent.agentType,
       isBuiltInAgent(selectedAgent),
     ),
-    model: undefined,
+    // CC 2.1.211: preserve the explicit model override from the original
+    // spawn. Previously hardcoded to undefined, causing getAgentModel to
+    // resolve the agent definition's model or 'inherit' (→ parent model)
+    // instead of the user's explicit override. Fork resume stays undefined
+    // (fork path never carries an explicit override).
+    model: isResumedFork ? undefined : meta?.model,
     // Fork resume: pass parent's system prompt (cache-identical prefix).
     // Non-fork: undefined → runAgent recomputes under wrapWithCwd so
     // getCwd() sees resumedWorktreePath.
