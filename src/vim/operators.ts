@@ -167,6 +167,33 @@ export function executeLineOp(
 }
 
 /**
+ * Execute substitute char (s command). 2.1.211: `s` in NORMAL mode.
+ * Deletes count chars at cursor (stopping at newline), then enters insert.
+ * Binary: `fPo(e,t)` — delete chars, recordChange type "substitute", enterInsert.
+ */
+export function executeSubstitute(count: number, ctx: OperatorContext): void {
+  const from = ctx.cursor.offset
+
+  // Advance by graphemes, stopping at end-of-text or newline
+  // Binary: `imp(e,t)` — `for(let n=0;n<t&&!r.isAtEnd();n++){if(text[r.offset]==="\n")break;r=r.right()}`
+  let endCursor = ctx.cursor
+  for (let i = 0; i < count && !endCursor.isAtEnd(); i++) {
+    if (ctx.text[endCursor.offset] === '\n') break
+    endCursor = endCursor.right()
+  }
+  const to = endCursor.offset
+
+  if (to > from) {
+    const deleted = ctx.text.slice(from, to)
+    const newText = ctx.text.slice(0, from) + ctx.text.slice(to)
+    ctx.setRegister(deleted, false)
+    ctx.setText(newText)
+  }
+  ctx.recordChange({ type: 'substitute', count })
+  ctx.enterInsert(from)
+}
+
+/**
  * Execute delete character (x command).
  */
 export function executeX(count: number, ctx: OperatorContext): void {

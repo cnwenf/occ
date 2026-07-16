@@ -39,7 +39,7 @@ export default function VimTextInput(props) {
     t15 = $[1];
   }
   let t16;
-  if ($[2] !== props.columns || $[3] !== props.cursorOffset || $[4] !== props.disableCursorMovementForUpDownKeys || $[5] !== props.disableEscapeDoublePress || $[6] !== props.focus || $[7] !== props.highlightPastedText || $[8] !== props.inputFilter || $[9] !== props.mask || $[10] !== props.maxVisibleLines || $[11] !== props.multiline || $[12] !== props.onChange || $[13] !== props.onChangeCursorOffset || $[14] !== props.onClearInput || $[15] !== props.onExit || $[16] !== props.onExitMessage || $[17] !== props.onHistoryDown || $[18] !== props.onHistoryReset || $[19] !== props.onHistoryUp || $[20] !== props.onImagePaste || $[21] !== props.onModeChange || $[22] !== props.onSubmit || $[23] !== props.onUndo || $[24] !== props.value || $[25] !== t12 || $[26] !== t14 || $[27] !== t15 || $[38] !== props.onHistorySearch) {
+  if ($[2] !== props.columns || $[3] !== props.cursorOffset || $[4] !== props.disableCursorMovementForUpDownKeys || $[5] !== props.disableEscapeDoublePress || $[6] !== props.focus || $[7] !== props.highlightPastedText || $[8] !== props.inputFilter || $[9] !== props.mask || $[10] !== props.maxVisibleLines || $[11] !== props.multiline || $[12] !== props.onChange || $[13] !== props.onChangeCursorOffset || $[14] !== props.onClearInput || $[15] !== props.onExit || $[16] !== props.onExitMessage || $[17] !== props.onHistoryDown || $[18] !== props.onHistoryReset || $[19] !== props.onHistoryUp || $[20] !== props.onImagePaste || $[21] !== props.onModeChange || $[22] !== props.onSubmit || $[23] !== props.onUndo || $[24] !== props.value || $[25] !== t12 || $[26] !== t14 || $[27] !== t15 || $[38] !== props.onHistorySearch || $[39] !== props.onToggleHelp) {
     t16 = {
       value: t0,
       onChange: t1,
@@ -67,7 +67,8 @@ export default function VimTextInput(props) {
       inputFilter: props.inputFilter,
       onModeChange: props.onModeChange,
       onUndo: props.onUndo,
-      onHistorySearch: props.onHistorySearch
+      onHistorySearch: props.onHistorySearch,
+      onToggleHelp: props.onToggleHelp
     };
     $[2] = props.columns;
     $[3] = props.cursorOffset;
@@ -96,6 +97,7 @@ export default function VimTextInput(props) {
     $[26] = t14;
     $[27] = t15;
     $[38] = props.onHistorySearch;
+    $[39] = props.onToggleHelp;
     $[28] = t16;
   } else {
     t16 = $[28];
