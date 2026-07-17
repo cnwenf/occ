@@ -1,85 +1,52 @@
-import type { Message } from '../../types/message.js'
-
 /**
  * CC 2.1.212 — fork session naming.
  *
- * Mirrors the official `deriveForkName` symbol in the 2.1.212 binary (and the
- * `deriveFirstPrompt` fallback it builds on). The 2.1.212 changelog (P2 #39):
+ * Mirrors the official `uwd` symbol in the 2.1.212 binary (the fork-name
+ * derivation used by `/fork` and `/subtask` via the shared `SZr` fork body,
+ * where `s = uwd(e)` and `e` is the directive). The changelog (P2 #39):
  * "/fork [names] the copy after your prompt when the session has no title, so
- * the row is recognizable in the agent view." The fork's `custom-title`
- * entry (the `custom-title` field at binary offset 135647888, sibling of the
- * `Forked session` + ` (fork)` output) is set to this name.
+ * the row is recognizable in the agent view." The fork's `custom-title` entry
+ * is set to this name.
  *
- * The directive (`/fork <directive>`) is the user's prompt for the fork, so it
- * is preferred. When absent, the first user message of the inherited
- * conversation is used. A stable fallback covers sessions with no extractable
- * prompt.
+ * The directive (`/fork <directive>`) is the ONLY input — `uwd` takes a single
+ * string (the directive) and derives the name from it. There is no
+ * first-prompt fallback inside `uwd`; the `/fork` command requires a directive
+ * (see `fork.ts`), so the directive is always present when this runs.
+ *
+ * Algorithm (verbatim from `uwd` in the 2.1.212 native ELF):
+ *
+ *   e.trim().split(/\s+/).slice(0,3).join("-").toLowerCase()
+ *    .replace(/[^a-z0-9-]/g,"").replace(/-+/g,"-").replace(/^-|-$/g,"")
+ *    .slice(0,24) || "fork"
+ *
+ * i.e. take the first 3 whitespace-separated words, join with `-`, lowercase,
+ * drop everything outside `[a-z0-9-]`, collapse runs of `-`, trim leading and
+ * trailing `-`, cap at 24 chars, and fall back to `"fork"` when the result is
+ * empty.
  */
 
-/** Max length of a derived fork name (matches deriveFirstPrompt). */
-const MAX_NAME = 100
-
-/** Fallback when no directive and no extractable first prompt. */
-export const FORK_NAME_FALLBACK = 'Forked session'
+/** Official `uwd` fallback when the directive yields no usable name. */
+export const FORK_NAME_FALLBACK = 'fork'
 
 /**
- * Collapse whitespace and cap length so multiline / pasted directives don't
- * break the saved title or the resume hint. Returns the fallback when the
- * normalized result is empty.
- */
-function normalizeName(raw: string): string {
-  return raw.replace(/\s+/g, ' ').trim().slice(0, MAX_NAME) || FORK_NAME_FALLBACK
-}
-
-/**
- * Extract single-line text from a user message's content.
+ * Derive the fork session's display name from the `/fork` directive.
  *
- * `Message.message.content` is either a plain string or an array of content
- * blocks; we pick the first `text` block (matching `deriveFirstPrompt`).
- * Returns `undefined` when there is no extractable text.
- */
-function extractUserText(
-  msg: Message | undefined,
-): string | undefined {
-  const content = (msg as { message?: { content?: unknown } } | undefined)
-    ?.message?.content
-  if (!content) {
-    return undefined
-  }
-  if (typeof content === 'string') {
-    return content
-  }
-  if (Array.isArray(content)) {
-    const textBlock = content.find(
-      (block): block is { type: 'text'; text: string } =>
-        typeof block === 'object' &&
-        block !== null &&
-        (block as { type?: string }).type === 'text',
-    )
-    return textBlock?.text
-  }
-  return undefined
-}
-
-/**
- * Derive the fork session's display name.
+ * Verbatim mirror of the official `uwd` (single-argument; the directive is the
+ * only input).
  *
- * Preference order:
- *  1. The `/fork` directive (the user's prompt for the fork).
- *  2. The first user message text of the inherited conversation.
- *  3. `FORK_NAME_FALLBACK`.
- *
- * @param directive The `/fork <directive>` argument string (may be empty).
- * @param messages  The parent conversation messages the fork inherits.
+ * @example deriveForkName('Deploy to staging') === 'deploy-to-staging'
  */
-export function deriveForkName(
-  directive: string,
-  messages: readonly Message[],
-): string {
-  const trimmed = directive.trim()
-  if (trimmed) {
-    return normalizeName(trimmed)
-  }
-  const firstUser = messages.find((m) => m.type === 'user')
-  return normalizeName(extractUserText(firstUser) ?? '')
+export function deriveForkName(directive: string): string {
+  return (
+    directive
+      .trim()
+      .split(/\s+/)
+      .slice(0, 3)
+      .join('-')
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, '')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '')
+      .slice(0, 24) || FORK_NAME_FALLBACK
+  )
 }

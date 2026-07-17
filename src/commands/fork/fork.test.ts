@@ -13,16 +13,14 @@ const saveCustomTitleMock = mock(
 const getTranscriptPathForSessionMock = mock((id: string) => `/tmp/${id}.jsonl`)
 const writeForkPointerMock = mock(async () => {})
 
-// sessionStorage mock (must match fork.ts import path).
+// sessionStorage mock (must match fork.ts import path). Spread the REAL
+// module's exports so co-located test files that import other members of
+// sessionStorage (e.g. getProjectDir) are not clobbered by this narrow mock.
+const realSessionStorage = await import('../../utils/sessionStorage.js')
 mock.module('../../utils/sessionStorage.js', () => ({
+  ...realSessionStorage,
   getTranscriptPathForSession: getTranscriptPathForSessionMock,
   saveCustomTitle: saveCustomTitleMock,
-}))
-
-// bootstrap/state mock.
-mock.module('../../bootstrap/state.js', () => ({
-  getSessionId: () => 'parent-session-id',
-  getOriginalCwd: () => '/cwd',
 }))
 
 // pointer mock — fork.ts imports writeForkPointer from ./pointer.js.
@@ -94,17 +92,17 @@ describe('/fork call (2.1.212 delta)', () => {
       parentLastUuid: string
       agentId?: string
     }
-    expect(arg.parentSessionId).toBe('parent-session-id')
+    expect(arg.parentSessionId).toMatch(/^[0-9a-f-]{36}$/)
     expect(arg.parentLastUuid).toBe('msg-1')
     expect(arg.agentId).toBe('agent-1')
     expect(arg.forkedSessionId).toMatch(/^[0-9a-f-]{36}$/)
   })
 
-  test('writes a custom-title named after the directive (source=auto)', async () => {
+  test('writes a custom-title named via uwd(directive) with source=user (GAP-3/GAP-5)', async () => {
     // Arrange
     const { context, onDone } = makeContext([userMessage('inherited')])
 
-    // Act
+    // Act — uwd('refactor auth') = 'refactor-auth'
     await call(onDone, context, 'refactor auth')
 
     // Assert
@@ -112,22 +110,60 @@ describe('/fork call (2.1.212 delta)', () => {
     const [sessionId, title, path, source] =
       saveCustomTitleMock.mock.calls[0] as [string, string, string, string]
     expect(sessionId).toMatch(/^[0-9a-f-]{36}$/)
-    expect(title).toBe('refactor auth')
+    expect(title).toBe('refactor-auth')
     expect(path).toBe(`/tmp/${sessionId}.jsonl`)
-    expect(source).toBe('auto')
+    expect(source).toBe('user')
   })
 
-  test('names the fork after the first prompt when directive is empty', async () => {
+  test('names the fork via uwd for a multi-word directive (deploy-to-staging)', async () => {
     // Arrange
-    const { context, onDone } = makeContext([userMessage('inherited first prompt')])
+    const { context, onDone } = makeContext([userMessage('inherited')])
+
+    // Act — uwd('Deploy to staging') = 'deploy-to-staging'
+    await call(onDone, context, 'Deploy to staging')
+
+    // Assert
+    const title = (saveCustomTitleMock.mock.calls[0] as [string, string])[1]
+    expect(title).toBe('deploy-to-staging')
+  })
+
+  test('GAP-4: empty directive prints Usage and exits before any fork work', async () => {
+    // Arrange
+    const { context, onDone, output } = makeContext([userMessage('hi')])
 
     // Act
     await call(onDone, context, '')
 
+    // Assert — official iNy: `if(!n) return Usage` runs first
+    expect(output).toEqual(['Usage: /fork <directive>'])
+    expect(writeForkPointerMock).not.toHaveBeenCalled()
+    expect(saveCustomTitleMock).not.toHaveBeenCalled()
+  })
+
+  test('GAP-4: whitespace-only directive prints Usage and exits', async () => {
+    // Arrange
+    const { context, onDone, output } = makeContext([userMessage('hi')])
+
+    // Act
+    await call(onDone, context, '   \t  ')
+
     // Assert
-    expect(saveCustomTitleMock).toHaveBeenCalledTimes(1)
-    const title = (saveCustomTitleMock.mock.calls[0] as [string, string])[1]
-    expect(title).toBe('inherited first prompt')
+    expect(output).toEqual(['Usage: /fork <directive>'])
+    expect(writeForkPointerMock).not.toHaveBeenCalled()
+    expect(saveCustomTitleMock).not.toHaveBeenCalled()
+  })
+
+  test('GAP-4: undefined directive (no args) prints Usage and exits', async () => {
+    // Arrange
+    const { context, onDone, output } = makeContext([userMessage('hi')])
+
+    // Act
+    await call(onDone, context, undefined as unknown as string)
+
+    // Assert
+    expect(output).toEqual(['Usage: /fork <directive>'])
+    expect(writeForkPointerMock).not.toHaveBeenCalled()
+    expect(saveCustomTitleMock).not.toHaveBeenCalled()
   })
 
   test('errors when there are no chain messages (no first turn)', async () => {

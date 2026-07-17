@@ -17,18 +17,35 @@ import { writeForkPointer } from './pointer.js'
  * context but keeps its tool output out of the parent's context.
  *
  * 2.1.212 delta: the fork is now a named, recognizable row in the agent view.
- * A `custom-title` entry (the `custom-title` field at binary offset 135647888,
- * sibling of the `Forked session` + ` (fork)` output strings) is written to
- * the fork's session file, named after the directive (or the first prompt
- * when the session has no title) via `deriveForkName` — changelog P2 #39. The
- * in-session output gains the ` (fork)` suffix: `Forked session <id> (fork)`.
+ * A `custom-title` entry is written to the fork's session file, named after
+ * the directive via `deriveForkName` (the official `uwd`) — changelog P2 #39.
+ * The in-session output gains the ` (fork)` suffix: `Forked session <id> (fork)`.
  *
- * Official error when there is no first turn:
- *   "Cannot fork before the first conversation turn"
+ * Mirrors the official `iNy` handler order:
+ *  1. directive required — `Usage: /fork <directive>` and exit when absent;
+ *  2. fork body — `Cannot fork before the first conversation turn` when there
+ *     is no first turn to branch from;
+ *  3. write the `fork-context-ref` pointer + the `custom-title` entry;
+ *  4. emit the `Forked session … (fork)` row.
+ *
+ * The `custom-title` `source` follows the official `/branch` `awd`→`wne`
+ * contract (`f = s ? "user" : "auto"`): `"user"` when a directive is provided,
+ * `"auto"` only when the name is derived (no directive). Because step 1
+ * rejects an absent directive, the reachable path is `"user"`; the `"auto"`
+ * branch is retained for parity with `awd`.
  */
 export const call: LocalJSXCommandCall = async (onDone, context, args) => {
+  const directive = (args ?? '').trim()
+
+  // 1. Directive is required (official `iNy`: `if(!n) return Usage`).
+  if (!directive) {
+    onDone('Usage: /fork <directive>', { display: 'system' })
+    return null
+  }
+
   const messages = context.messages
-  // The fork branches from the last chain-participant message.
+  // 2. The fork branches from the last chain-participant message — there must
+  //    be a first turn to fork from.
   const lastChain = [...messages].reverse().find((m) => m.type !== 'progress')
   if (!lastChain?.uuid) {
     onDone('Cannot fork before the first conversation turn', {
@@ -36,6 +53,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     })
     return null
   }
+
   const forkedSessionId = randomUUID()
   const forkPath = getTranscriptPathForSession(forkedSessionId)
   await writeForkPointer({
@@ -44,12 +62,15 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
     parentLastUuid: lastChain.uuid,
     agentId: context.agentId,
   })
-  // 2.1.212: name the fork after the directive (or first prompt) and write a
-  // `custom-title` entry so the fork is a recognizable row in the agent view.
-  // `source: 'auto'` — derived (non-user) title, mirrors the official
-  // `deriveForkName` + `custom-title` field in the 2.1.212 binary.
-  const forkName = deriveForkName(args, messages)
-  await saveCustomTitle(forkedSessionId, forkName, forkPath, 'auto')
+
+  // 3. Name the fork after the directive (official `uwd`) and write a
+  //    `custom-title` entry so the fork is a recognizable row in the agent
+  //    view. `source` mirrors `/branch` `awd`'s `f = s ? "user" : "auto"`.
+  const forkName = deriveForkName(directive)
+  const source = directive ? 'user' : 'auto'
+  await saveCustomTitle(forkedSessionId, forkName, forkPath, source)
+
+  // 4. Emit the forked-session row.
   onDone(`Forked session ${forkedSessionId} (fork)`, { display: 'system' })
   return null
 }

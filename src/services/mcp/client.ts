@@ -4,6 +4,7 @@ import {
   callMcpToolWithAutoBackground,
   getMcpAutoBackgroundMs,
   makeAppStateTaskRegistry,
+  mcpBackgroundedMessage,
 } from './autoBackground.js'
 import { createCappedStderrAccumulator } from './stderrCap.js'
 import type {
@@ -2177,7 +2178,11 @@ export const fetchToolsForClient = memoizeWithLRU(
                       })
                     }
                     return {
-                      data: `MCP tool "${client.name}/${tool.name}" is taking longer than expected and has been moved to the background so the session stays usable. Task ID: ${autoBackgroundOutcome.task.mcpTaskId}. The result will arrive when the tool completes.`,
+                      data: mcpBackgroundedMessage(
+                        tool.name,
+                        Math.floor((Date.now() - startTime) / 1000),
+                        autoBackgroundOutcome.task.mcpTaskId,
+                      ),
                     }
                   }
 

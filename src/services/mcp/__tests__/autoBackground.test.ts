@@ -5,6 +5,7 @@ import {
   EXCLUDED_TOOL_TYPES,
   getMcpAutoBackgroundMs,
   MAX_MCP_AUTO_BACKGROUND_MS,
+  mcpBackgroundedMessage,
   type McpBackgroundTaskRegistry,
 } from '../autoBackground.js'
 import {
@@ -117,9 +118,35 @@ describe('getMcpAutoBackgroundMs (2.1.212 ladder)', () => {
     ).toBe(0)
   })
 
-  test('excluded tool types never auto-background', () => {
-    // EXCLUDED_TOOL_TYPES is empty by contract; verify the ladder still
-    // respects membership when we mutate the set for this test only.
+  test('GAP-1: official Fcy members sse-ide / ws-ide never auto-background', () => {
+    // Mirrors the official `Fcy=new Set(["sse-ide","ws-ide"])` — the IDE-managed
+    // MCP transports are driven by the editor's lifecycle and must not be moved
+    // to the background by the CLI.
+    expect(EXCLUDED_TOOL_TYPES.has('sse-ide')).toBe(true)
+    expect(EXCLUDED_TOOL_TYPES.has('ws-ide')).toBe(true)
+    expect(
+      getMcpAutoBackgroundMs(
+        { type: 'sse-ide' },
+        {
+          isNonInteractiveSession: false,
+          isPipeNonInteractiveMode: () => false,
+        },
+      ),
+    ).toBe(0)
+    expect(
+      getMcpAutoBackgroundMs(
+        { type: 'ws-ide' },
+        {
+          isNonInteractiveSession: false,
+          isPipeNonInteractiveMode: () => false,
+        },
+      ),
+    ).toBe(0)
+  })
+
+  test('excluded tool types never auto-background (membership respected)', () => {
+    // Verify the ladder respects set membership when we add a type for this
+    // test only.
     const original = new Set(EXCLUDED_TOOL_TYPES)
     try {
       ;(EXCLUDED_TOOL_TYPES as Set<string>).add('never_background')
@@ -135,7 +162,7 @@ describe('getMcpAutoBackgroundMs (2.1.212 ladder)', () => {
     } finally {
       // Restore — the set is module-singleton.
       for (const k of EXCLUDED_TOOL_TYPES) {
-        if (!original.has(k)) EXCLUDED_TOOL_TYPES.delete(k)
+        if (!original.has(k)) (EXCLUDED_TOOL_TYPES as Set<string>).delete(k)
       }
     }
   })
@@ -149,6 +176,49 @@ describe('getMcpAutoBackgroundMs (2.1.212 ladder)', () => {
         isPipeNonInteractiveMode: () => false,
       }),
     ).toBe(7000)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// mcpBackgroundedMessage (GAP-2 — official verbatim model-facing message)
+// ---------------------------------------------------------------------------
+
+describe('mcpBackgroundedMessage (GAP-2)', () => {
+  test('matches the official 2.1.212 message verbatim', () => {
+    // Reconstructed from the adjacent string fragments in the 2.1.212 native
+    // ELF: `MCP tool "` + tool + `" is still running after ` + S + `s. It was
+    // moved to the background as task ` + y + ` and keeps running; you'll
+    // receive a notification with the result when it completes. You can keep
+    // working in the meantime. To stop it, use TaskStop with task_id "` + y +
+    // `". Note: it does not survive exiting this session.`
+    const msg = mcpBackgroundedMessage('search_web', 12, 'mcp_task_42')
+    expect(msg).toBe(
+      'MCP tool "search_web" is still running after 12s. It was moved to the background as task mcp_task_42 and keeps running; you\'ll receive a notification with the result when it completes. You can keep working in the meantime. To stop it, use TaskStop with task_id "mcp_task_42". Note: it does not survive exiting this session.',
+    )
+  })
+
+  test('uses the tool name only, not server/tool (GAP-2 contract)', () => {
+    const msg = mcpBackgroundedMessage('my_tool', 5, 't1')
+    expect(msg).toContain('MCP tool "my_tool"')
+    expect(msg).not.toContain('/')
+  })
+
+  test('uses the task id twice (still-running + TaskStop guidance)', () => {
+    const msg = mcpBackgroundedMessage('t', 1, 'TASKID')
+    const occurrences = msg.split('TASKID').length - 1
+    expect(occurrences).toBe(2)
+  })
+
+  test('uses the elapsed whole seconds with an "s" suffix', () => {
+    const msg = mcpBackgroundedMessage('t', 0, 'y')
+    expect(msg).toContain('after 0s.')
+  })
+
+  test('includes the TaskStop + does-not-survive-exit guidance', () => {
+    const msg = mcpBackgroundedMessage('t', 1, 'y')
+    expect(msg).toContain('TaskStop with task_id "y"')
+    expect(msg).toContain('does not survive exiting this session')
+    expect(msg).toContain('keep working in the meantime')
   })
 })
 

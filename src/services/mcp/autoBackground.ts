@@ -40,12 +40,45 @@ export const DEFAULT_MCP_AUTO_BACKGROUND_MS = 120000
 export const MAX_MCP_AUTO_BACKGROUND_MS = 2147483647
 
 /**
- * Tool kinds that never auto-background (official EXCLUDED_TOOL_TYPES). The
- * exact set could not be determined from the binary; per the task contract,
- * an empty set is used (no exclusions) rather than inventing ones. Document
- * here so a future binary re-verification can fill it in.
+ * Tool kinds that never auto-background. Mirrors the official `Fcy` set
+ * (`Fcy=new Set(["sse-ide","ws-ide"])` in the 2.1.212 binary): the IDE-managed
+ * MCP tool transports (`sse-ide`, `ws-ide`) are driven by the editor's own
+ * lifecycle and must NOT be moved to the background by the CLI.
  */
-export const EXCLUDED_TOOL_TYPES: Set<string> = new Set()
+export const EXCLUDED_TOOL_TYPES: ReadonlySet<string> = new Set([
+  'sse-ide',
+  'ws-ide',
+])
+
+/**
+ * The model-facing message returned when an MCP tool call is auto-backgrounded.
+ *
+ * Verbatim mirror of the official 2.1.212 string (reconstructed from the
+ * adjacent `MCP tool "` / ` is still running after ` / `s. It was moved to the
+ * background as task ` / ` and keeps running; you'll receive a notification
+ * with the result when it completes. You can keep working in the meantime. To
+ * stop it, use TaskStop with task_id "` / `". Note: it does not survive
+ * exiting this session.` fragment cluster in the native ELF):
+ *
+ *   MCP tool "${tool}" is still running after ${S}s. It was moved to the
+ *   background as task ${y} and keeps running; you'll receive a notification
+ *   with the result when it completes. You can keep working in the meantime.
+ *   To stop it, use TaskStop with task_id "${y}". Note: it does not survive
+ *   exiting this session.
+ *
+ * - `${tool}` is the tool name ONLY (not `${server}/${tool}`).
+ * - `${S}` is the elapsed whole seconds since the call started.
+ * - `${y}` is the background `mcp_task` id (used twice).
+ *
+ * Extracted as a pure helper so the exact text is unit-testable verbatim.
+ */
+export function mcpBackgroundedMessage(
+  toolName: string,
+  elapsedSeconds: number,
+  taskId: string,
+): string {
+  return `MCP tool "${toolName}" is still running after ${elapsedSeconds}s. It was moved to the background as task ${taskId} and keeps running; you'll receive a notification with the result when it completes. You can keep working in the meantime. To stop it, use TaskStop with task_id "${taskId}". Note: it does not survive exiting this session.`
+}
 
 /**
  * True when running in strict pipe/print non-interactive mode (official pv()).
