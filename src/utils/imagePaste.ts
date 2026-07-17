@@ -1,5 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { randomBytes } from 'crypto'
+import { writeFileSync } from 'fs'
+import { tmpdir } from 'os'
 import { execa } from 'execa'
 import { basename, extname, isAbsolute, join } from 'path'
 import {
@@ -94,8 +96,28 @@ export type ImageWithDimensions = {
  * Check if clipboard contains an image without retrieving it.
  */
 export async function hasImageInClipboard(): Promise<boolean> {
+  // Test / scp escape hatch: a configured source file counts as "has image".
+  // This lets the OCC_CLIPBOARD_IMAGE_SRC path (and REPL tests on headless
+  // machines) report truthfully without a live clipboard.
+  const overrideSrc = getClipboardImageSrcOverride()
+  if (overrideSrc && getFsImplementation().existsSync(overrideSrc)) {
+    return true
+  }
   if (process.platform !== 'darwin') {
-    return false
+    // Linux/Win32: shell out to the platform check command. On a dev machine
+    // with a graphical session (or a clipboard-synced SSH session), xclip /
+    // wl-paste / powershell report image targets. Headless sandboxes return
+    // false — callers fall through to the no-image hint.
+    const { commands } = getClipboardCommands()
+    try {
+      const result = await execa(commands.checkImage, {
+        shell: true,
+        reject: false,
+      })
+      return result.exitCode === 0
+    } catch {
+      return false
+    }
   }
   if (
     feature('NATIVE_CLIPBOARD_IMAGE') &&
@@ -263,6 +285,84 @@ export async function getImagePathFromClipboard(): Promise<string | null> {
     return null
   }
 }
+
+/**
+ * Env var that, when set to an existing image file path, makes the clipboard
+ * image readers use that file as the clipboard source instead of shelling
+ * out. Two purposes:
+ *   1. REPL/headless test hook — drive `chat:imagePaste` without a live
+ *      clipboard or display.
+ *   2. SSH escape hatch — `scp` a screenshot to a known path on the dev
+ *      machine, set this var, and Ctrl+V drops the path into the REPL.
+ */
+export const CLIPBOARD_IMAGE_SRC_ENV = 'OCC_CLIPBOARD_IMAGE_SRC'
+
+/** Returns the configured override file path, or undefined if unset. */
+export function getClipboardImageSrcOverride(): string | undefined {
+  const v = process.env[CLIPBOARD_IMAGE_SRC_ENV]
+  return v && v.length > 0 ? v : undefined
+}
+
+export type SavedClipboardImage = {
+  path: string
+  mediaType: string
+  dimensions?: ImageDimensions
+}
+
+/**
+ * Read the clipboard image (or the `$OCC_CLIPBOARD_IMAGE_SRC` override file)
+ * and persist it to a unique temp file, returning the file path.
+ *
+ * This is the SSH-friendly paste path: the file path is inserted into the
+ * REPL input box, and the agent reads it via FileReadTool — no in-band
+ * base64 image needs to survive the SSH terminal paste transport.
+ *
+ * Returns null when no image is available (no clipboard image and no valid
+ * override). Never throws — callers show the no-image hint.
+ */
+export async function saveClipboardImageToTempFile(): Promise<SavedClipboardImage | null> {
+  try {
+    const overrideSrc = getClipboardImageSrcOverride()
+    if (overrideSrc && getFsImplementation().existsSync(overrideSrc)) {
+      const buffer = getFsImplementation().readFileBytesSync(overrideSrc)
+      const mediaType = detectImageFormatFromBase64(buffer.toString('base64'))
+      return writeUniqueTempImageFile(buffer, mediaType)
+    }
+
+    const image = await getImageFromClipboard()
+    if (!image) {
+      return null
+    }
+    const buffer = Buffer.from(image.base64, 'base64')
+    return writeUniqueTempImageFile(buffer, image.mediaType, image.dimensions)
+  } catch (e) {
+    logError(e as Error)
+    return null
+  }
+}
+
+const TEMP_IMAGE_EXT_ALLOW = /^(png|jpe?g|gif|webp|bmp)$/i
+
+function writeUniqueTempImageFile(
+  buffer: Buffer,
+  mediaType: string,
+  dimensions?: ImageDimensions,
+): SavedClipboardImage {
+  const baseTmpDir =
+    process.env.CLAUDE_CODE_TMPDIR ||
+    (process.platform === 'win32' ? process.env.TEMP || 'C:\\Temp' : tmpdir())
+  const ext = mediaType.replace(/^image\//, '').toLowerCase()
+  const safeExt = TEMP_IMAGE_EXT_ALLOW.test(ext) ? ext.replace('jpeg', 'jpg') : 'png'
+  const name = `occ-clipboard-${Date.now()}-${randomBytes(6).toString('hex')}.${safeExt}`
+  const filePath = join(baseTmpDir, name)
+  writeFileSync(filePath, buffer)
+  return {
+    path: filePath,
+    mediaType: `image/${safeExt === 'jpg' ? 'jpeg' : safeExt}`,
+    dimensions,
+  }
+}
+
 
 /**
  * Regex pattern to match supported image file extensions. Kept in sync with
