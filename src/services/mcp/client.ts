@@ -1,5 +1,11 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { Readable } from 'node:stream'
+import {
+  callMcpToolWithAutoBackground,
+  getMcpAutoBackgroundMs,
+  makeAppStateTaskRegistry,
+  mcpBackgroundedMessage,
+} from './autoBackground.js'
 import { createCappedStderrAccumulator } from './stderrCap.js'
 import type {
   Base64ImageSource,
@@ -2075,25 +2081,112 @@ export const fetchToolsForClient = memoizeWithLRU(
               for (let attempt = 0; ; attempt++) {
                 try {
                   const connectedClient = await ensureConnectedClient(client)
-                  const mcpResult = await callMCPToolWithUrlElicitationRetry({
-                    client: connectedClient,
-                    clientConnection: client,
-                    tool: tool.name,
-                    args,
-                    meta,
-                    signal: context.abortController.signal,
-                    setAppState: context.setAppState,
-                    onProgress:
-                      onProgress && toolUseId
-                        ? progressData => {
+
+                  // 2.1.212: wrap the MCP tool call with the auto-background
+                  // primitive. If the call exceeds the threshold (default
+                  // 120000ms, CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS), it moves to
+                  // the background and the model sees a "moved to background"
+                  // result immediately; the tool keeps running under its own
+                  // AbortController and its result arrives later via the
+                  // background-tasks system.
+                  const autoBackgroundMs = getMcpAutoBackgroundMs()
+                  const autoBackgroundOutcome = autoBackgroundMs > 0
+                    ? await callMcpToolWithAutoBackground({
+                        run: signal =>
+                          callMCPToolWithUrlElicitationRetry({
+                            client: connectedClient,
+                            clientConnection: client,
+                            tool: tool.name,
+                            args,
+                            meta,
+                            signal,
+                            setAppState: context.setAppState,
+                            onProgress:
+                              onProgress && toolUseId
+                                ? progressData => {
+                                    onProgress({
+                                      toolUseID: toolUseId,
+                                      data: progressData,
+                                    })
+                                  }
+                                : undefined,
+                            handleElicitation: context.handleElicitation,
+                          }),
+                        serverName: client.name,
+                        toolName: tool.name,
+                        toolUseId,
+                        parentAbortController: context.abortController,
+                        taskRegistry: makeAppStateTaskRegistry(
+                          context.setAppState,
+                        ),
+                        autoBackgroundMs,
+                        hasPendingElicitation: () =>
+                          (context.getAppState()?.elicitation?.queue
+                            ?.length ?? 0) > 0,
+                        onBackgrounded: () => {
+                          if (onProgress && toolUseId) {
                             onProgress({
                               toolUseID: toolUseId,
-                              data: progressData,
+                              data: {
+                                type: 'mcp_progress',
+                                status: 'backgrounded',
+                                serverName: client.name,
+                                toolName: tool.name,
+                                elapsedTimeMs: Date.now() - startTime,
+                              },
                             })
                           }
-                        : undefined,
-                    handleElicitation: context.handleElicitation,
-                  })
+                        },
+                      })
+                    : {
+                        kind: 'settled' as const,
+                        result: await callMCPToolWithUrlElicitationRetry({
+                          client: connectedClient,
+                          clientConnection: client,
+                          tool: tool.name,
+                          args,
+                          meta,
+                          signal: context.abortController.signal,
+                          setAppState: context.setAppState,
+                          onProgress:
+                            onProgress && toolUseId
+                              ? progressData => {
+                                  onProgress({
+                                    toolUseID: toolUseId,
+                                    data: progressData,
+                                  })
+                                }
+                              : undefined,
+                          handleElicitation: context.handleElicitation,
+                        }),
+                      }
+
+                  // Tool was moved to the background — return a backgrounded
+                  // result so the model knows the task id and that the result
+                  // will arrive later.
+                  if (autoBackgroundOutcome.kind === 'backgrounded') {
+                    if (onProgress && toolUseId) {
+                      onProgress({
+                        toolUseID: toolUseId,
+                        data: {
+                          type: 'mcp_progress',
+                          status: 'backgrounded',
+                          serverName: client.name,
+                          toolName: tool.name,
+                          elapsedTimeMs: Date.now() - startTime,
+                        },
+                      })
+                    }
+                    return {
+                      data: mcpBackgroundedMessage(
+                        tool.name,
+                        Math.floor((Date.now() - startTime) / 1000),
+                        autoBackgroundOutcome.task.mcpTaskId,
+                      ),
+                    }
+                  }
+
+                  const mcpResult = autoBackgroundOutcome.result
 
                   // Emit progress when tool completes successfully
                   if (onProgress && toolUseId) {

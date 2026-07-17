@@ -310,6 +310,14 @@ export type ToolUseContext = {
    * and bust the cache. See forkSubagent.ts.
    */
   renderedSystemPrompt?: SystemPrompt
+  /** CC 2.1.212: per-session task registry backing the
+   * CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION and
+   * CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION caps. Real instance on the
+   * interactive/REPL session; no-op stub (returns 0, no-ops) on
+   * headless/SDK/pipe contexts. Undefined here means "no registry
+   * available" — cap helpers treat undefined as a zero-count no-op so
+   * headless paths don't crash. */
+  taskRegistry?: import('./utils/taskRegistry.js').TaskRegistry
 }
 
 // Re-export ToolProgressData from centralized location

@@ -11,6 +11,8 @@ export type TaskType =
   | 'local_workflow'
   | 'monitor_mcp'
   | 'dream'
+  // 2.1.212: MCP tool calls that exceed the auto-background threshold.
+  | 'mcp_task'
 
 export type TaskStatus =
   | 'pending'
@@ -84,6 +86,7 @@ const TASK_ID_PREFIXES: Record<string, string> = {
   local_workflow: 'w',
   monitor_mcp: 'm',
   dream: 'd',
+  mcp_task: 'p', // 2.1.212: MCP auto-background task
 }
 
 // Get task ID prefix

@@ -45,5 +45,15 @@ const FEATURE_ALLOWLIST: Set<string> = new Set([
   // `false` (false is not nullish → would permanently disable SR). Safe —
   // hang-smoke verified.
   'tengu_ax_screen_reader',
+  // 2.1.212: MCP tool auto-background. Upstream gates the default-on
+  // threshold via feature("tengu_mcp_auto_background", true) — the second
+  // arg is the default-true, so the 120000ms auto-background is ON by
+  // default. OCC's feature() returns boolean (false when unregistered), so
+  // membership here is what makes the default 120000ms threshold active.
+  // The env overrides (CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS,
+  // CLAUDE_AUTO_BACKGROUND_TASKS) work regardless of this flag. Safe —
+  // the auto-background primitive is self-contained and only wraps the MCP
+  // tool-call dispatch site.
+  'tengu_mcp_auto_background',
 ])
 export const feature = (name: string): boolean => FEATURE_ALLOWLIST.has(name)

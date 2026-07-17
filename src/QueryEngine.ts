@@ -3,6 +3,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import { randomUUID } from 'crypto'
 import last from 'lodash-es/last.js'
 import {
+  getHeadlessTaskRegistry,
   getSessionId,
   isSessionPersistenceDisabled,
 } from 'src/bootstrap/state.js'
@@ -400,6 +401,11 @@ export class QueryEngine {
         })
       },
       setSDKStatus,
+      // CC 2.1.212: headless/SDK contexts use the no-op TaskRegistry stub —
+      // getters return 0, increments are no-ops. This keeps the cap logic
+      // from crashing when no per-session registry exists. The real
+      // registry lives only on the interactive/REPL session.
+      taskRegistry: getHeadlessTaskRegistry(),
     }
 
     // Handle orphaned permission (only once per engine lifetime)
@@ -533,6 +539,8 @@ export class QueryEngine {
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
+      // CC 2.1.212: headless/SDK contexts use the no-op TaskRegistry stub.
+      taskRegistry: getHeadlessTaskRegistry(),
     }
 
     headlessProfilerCheckpoint('before_skills_plugins')

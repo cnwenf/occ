@@ -6,6 +6,7 @@ import type { InProcessTeammateTaskState } from './InProcessTeammateTask/types.j
 import type { LocalAgentTaskState } from './LocalAgentTask/LocalAgentTask.js'
 import type { LocalShellTaskState } from './LocalShellTask/guards.js'
 import type { LocalWorkflowTaskState } from './LocalWorkflowTask/LocalWorkflowTask.js'
+import type { McpBackgroundTaskState } from './McpBackgroundTask/McpBackgroundTask.js'
 import type { MonitorMcpTaskState } from './MonitorMcpTask/MonitorMcpTask.js'
 import type { RemoteAgentTaskState } from './RemoteAgentTask/RemoteAgentTask.js'
 
@@ -17,6 +18,8 @@ export type TaskState =
   | LocalWorkflowTaskState
   | MonitorMcpTaskState
   | DreamTaskState
+  // 2.1.212: MCP tool calls auto-backgrounded after the threshold.
+  | McpBackgroundTaskState
 
 // Task types that can appear in the background tasks indicator
 export type BackgroundTaskState =
@@ -27,6 +30,7 @@ export type BackgroundTaskState =
   | LocalWorkflowTaskState
   | MonitorMcpTaskState
   | DreamTaskState
+  | McpBackgroundTaskState
 
 /**
  * Check if a task should be shown in the background tasks indicator.

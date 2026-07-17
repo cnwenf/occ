@@ -4568,6 +4568,13 @@ async function run(): Promise<CommanderCommand> {
         await autoModeCritiqueHandler(options);
         process.exit();
       });
+      autoModeCmd.command('reset').description('Restore the default auto mode configuration by removing the autoMode section from user settings').option('--yes', 'Skip the confirmation prompt').action(async options => {
+        const {
+          autoModeResetHandler
+        } = await import('./cli/handlers/autoMode.js');
+        await autoModeResetHandler({ yes: options.yes === true });
+        process.exit(0);
+      });
     }
   }
 

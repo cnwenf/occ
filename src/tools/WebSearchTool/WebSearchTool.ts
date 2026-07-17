@@ -3,6 +3,7 @@ import type {
   BetaWebSearchTool20250305,
 } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { getAPIProvider } from 'src/utils/model/providers.js'
+import { getMaxWebSearchesPerSession } from 'src/utils/sessionLimits.js'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
 import { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
@@ -254,6 +255,25 @@ export const WebSearchTool = buildTool({
   async call(input, context, _canUseTool, _parentMessage, onProgress) {
     const startTime = performance.now()
     const { query } = input
+    // CC 2.1.212: per-session WebSearch cap. Read max, read current count,
+    // then check BEFORE doing any search work. Does NOT increment on the
+    // capped (rejected) path — only on the proceeding path. Matches the
+    // official binary's WebSearchTool.call() order: start time, read query,
+    // then the cap check before any search work.
+    const maxWebSearches = getMaxWebSearchesPerSession()
+    const webSearchCount = context.taskRegistry?.getWebSearchCalls() ?? 0
+    if (webSearchCount >= maxWebSearches) {
+      return {
+        data: {
+          query,
+          results: [
+            `Web search was not performed: this session has used its web search budget (${webSearchCount} of ${maxWebSearches} WebSearch calls). Continue with the information already gathered instead of issuing more searches. If more searches are genuinely needed, ask the user to raise CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION.`,
+          ],
+          durationSeconds: 0,
+        },
+      }
+    }
+    context.taskRegistry?.incrementWebSearchCalls()
     const userMessage = createUserMessage({
       content: 'Perform a web search for the query: ' + query,
     })
