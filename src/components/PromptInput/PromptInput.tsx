@@ -68,7 +68,7 @@ import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js';
-import { getImageFromClipboard, PASTE_THRESHOLD } from '../../utils/imagePaste.js';
+import { getImageFromClipboard, PASTE_THRESHOLD, saveClipboardImageToTempFile } from '../../utils/imagePaste.js';
 import type { ImageDimensions } from '../../utils/imageResizer.js';
 import { cacheImagePath, storeImage } from '../../utils/imageStore.js';
 import { isMacosOptionChar, MACOS_OPTION_SPECIAL_CHARS } from '../../utils/keyboardShortcuts.js';
@@ -1708,23 +1708,43 @@ function PromptInput({
     }
   }, [previousModeBeforeAuto, toolPermissionContext, setAppState, setToolPermissionContext]);
 
-  // Handler for chat:imagePaste - paste image from clipboard
+  // Handler for chat:imagePaste - paste image from clipboard.
+  //
+  // SSH-friendly design (OCC-8): instead of inlining the clipboard image as
+  // base64 (which requires the image bytes to survive the SSH terminal paste
+  // transport), we save the clipboard image to a temp file and insert the
+  // file *path* into the input box. The agent reads the file via
+  // FileReadTool. This works on a dev machine whose clipboard has the image
+  // (graphical session or clipboard-synced SSH) and degrades to a hint when
+  // no image is reachable. The `OCC_CLIPBOARD_IMAGE_SRC` env override lets a
+  // user `scp` a screenshot to a known path and paste by path.
   const handleImagePaste = useCallback(() => {
-    void getImageFromClipboard().then(imageData => {
-      if (imageData) {
-        onImagePaste(imageData.base64, imageData.mediaType);
+    void saveClipboardImageToTempFile().then(saved => {
+      if (saved) {
+        // Insert the path on its own line so the agent treats it as a file
+        // reference to read.
+        insertTextAtCursor(`${saved.path}\n`);
+        addNotification({
+          key: 'clipboard-image-saved',
+          text: `Saved clipboard image → ${saved.path}`,
+          priority: 'immediate',
+          timeoutMs: 4000,
+        });
       } else {
         const shortcutDisplay = getShortcutDisplay('chat:imagePaste', 'Chat', 'ctrl+v');
-        const message = env.isSSH() ? "No image found in clipboard. You're SSH'd; try scp?" : `No image found in clipboard. Use ${shortcutDisplay} to paste images.`;
+        const message = env.isSSH()
+          ? "No image found in clipboard. You're SSH'd — copy the screenshot to the dev machine (e.g. scp) and set OCC_CLIPBOARD_IMAGE_SRC to its path, then press Ctrl+V."
+          : `No image found in clipboard. Use ${shortcutDisplay} to paste images.`;
         addNotification({
           key: 'no-image-in-clipboard',
           text: message,
           priority: 'immediate',
-          timeoutMs: 1000
+          timeoutMs: 6000,
         });
       }
     });
-  }, [addNotification, onImagePaste]);
+  }, [addNotification, insertTextAtCursor]);
+
 
   // Register chat:submit handler directly in the handler registry (not via
   // useKeybindings) so that only the ChordInterceptor can invoke it for chord
