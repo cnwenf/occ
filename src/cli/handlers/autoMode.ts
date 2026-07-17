@@ -3,7 +3,10 @@
  * critique user-written rules. Dynamically imported when `claude auto-mode ...` runs.
  */
 
-import { errorMessage } from '../../utils/errors.js'
+import { readFileSync } from 'node:fs'
+import * as readline from 'node:readline/promises'
+import { errorMessage, isENOENT } from '../../utils/errors.js'
+import { logError } from '../../utils/log.js'
 import {
   getMainLoopModel,
   parseUserSpecifiedModel,
@@ -13,9 +16,18 @@ import {
   buildDefaultExternalSystemPrompt,
   getDefaultExternalAutoModeRules,
 } from '../../utils/permissions/yoloClassifier.js'
+import { logEvent } from '../../services/analytics/index.js'
+import { plural } from '../../utils/stringUtils.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
+import {
+  getSettingsFilePathForSource,
+  parseSettingsFile,
+  updateSettingsForSource,
+} from '../../utils/settings/settings.js'
+import { SettingsSchema, type SettingsJson } from '../../utils/settings/types.js'
+import type { ValidationError } from '../../utils/settings/validation.js'
 import { getAutoModeConfig } from '../../utils/settings/settings.js'
 import { sideQuery } from '../../utils/sideQuery.js'
-import { jsonStringify } from '../../utils/slowOperations.js'
 
 function writeRules(rules: AutoModeRules): void {
   process.stdout.write(jsonStringify(rules, null, 2) + '\n')
@@ -166,5 +178,270 @@ function formatRulesForCritique(
     'Defaults being replaced:\n' +
     defaultLines +
     '\n\n'
+  )
+}
+
+// ---------------------------------------------------------------------------
+// `claude auto-mode reset` (CC 2.1.212)
+//
+// Restores the default auto-mode configuration by removing the `autoMode`
+// section from the user settings file. Prompts for confirmation by default;
+// `--yes` skips the prompt. Refuses a lossy auto-reset (`--yes`) when the
+// settings file contains entries this version of Claude Code cannot parse —
+// the user must run without `--yes` to review, or fix the entries first.
+// Mirrors the official minified `MbS` (reset handler).
+// ---------------------------------------------------------------------------
+
+/** Outcome codes emitted with the `cli_auto_mode_reset` analytics event. */
+type AutoModeResetOutcome =
+  | 'no_user_settings_path'
+  | 'settings_file_unreadable'
+  | 'settings_file_invalid'
+  | 'lossy_write_unconfirmed'
+  | 'declined'
+  | 'write_failed'
+  | 'success'
+
+/**
+ * Injectable seams for the reset handler. Defaults call the real OCC
+ * settings layer; tests substitute the boundary they need to control
+ * (path resolution, raw read, write, or confirmation).
+ */
+export interface AutoModeResetDeps {
+  /** Resolve the user settings file path. Returns undefined when unresolvable. */
+  readonly resolvePath: () => string | undefined
+  /**
+   * Read raw file content. Returns null for a missing file (ENOENT).
+   * Throws for genuine read errors (permissions, I/O).
+   */
+  readonly readRawFile: (path: string) => string | null
+  /** Parse + validate a settings file. `settings` is null on failure. */
+  readonly parseSettings: (
+    path: string,
+  ) => { settings: SettingsJson | null; errors: ValidationError[] }
+  /** Detect unrecognized top-level keys in raw JSON content. */
+  readonly detectUnrecognized: (content: string) => string[]
+  /** Write the settings patch (removes autoMode). Returns error on failure. */
+  readonly writeSettings: () => { error: Error | null }
+  /** Confirmation prompt. Returns true to proceed. */
+  readonly confirm: (message: string) => Promise<boolean>
+}
+
+/** Capture stdout writes so tests can assert on printed messages. */
+type StdoutWriter = (message: string) => void
+
+const defaultStdout: StdoutWriter = message => {
+  process.stdout.write(message)
+}
+
+/**
+ * Emit the `cli_auto_mode_reset` analytics event with an outcome code.
+ * Mirrors the official `ib("cli_auto_mode_reset")` / outcome pattern.
+ */
+function emitResetMetric(outcome: AutoModeResetOutcome): void {
+  logEvent('cli_auto_mode_reset', {
+    outcome:
+      outcome as unknown as Parameters<typeof logEvent>[1][string],
+  })
+}
+
+/**
+ * Format a settings-validation failure for the reset action. The official
+ * delegates to a settings-error formatter keyed by path + action ("reset");
+ * OCC has no such formatter, so this builds an equivalent concise message.
+ */
+function formatResetSettingsError(
+  path: string,
+  errors: ValidationError[],
+): string {
+  if (errors.length === 0) {
+    return `Invalid settings in ${path}. Fix the errors before resetting auto mode.`
+  }
+  const lines = errors.map(
+    e => `  - ${e.path || '(root)'}: ${e.message}`,
+  )
+  return `Invalid settings in ${path}:\n${lines.join('\n')}`
+}
+
+/**
+ * Detect unrecognized top-level entries in raw settings JSON — keys this CLI
+ * version cannot parse. The official's `validateSettingsFile` surfaces these
+ * as severity="warning" errors; OCC's schema uses `.passthrough()` (preserves
+ * unknown keys silently), so a strict parse is used to surface them. Matches
+ * the official's lossy-write guard input.
+ */
+export function detectUnrecognizedEntries(content: string): string[] {
+  let data: unknown
+  try {
+    data = JSON.parse(content)
+  } catch {
+    return []
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return []
+  }
+  const result = SettingsSchema()
+    .strict()
+    .safeParse(data)
+  if (result.success) return []
+  const entries: string[] = []
+  for (const issue of result.error.issues) {
+    if (issue.code === 'unrecognized_keys') {
+      const keys = (issue as { keys?: string[] }).keys
+      if (keys) for (const k of keys) entries.push(k)
+    }
+  }
+  return entries
+}
+
+/**
+ * Read the user settings file raw content. Returns null for a missing file
+ * (ENOENT — treated as empty/defaults, not an error). Throws for genuine
+ * read errors. Mirrors the official's `ar(c)` "is an actual error, not a
+ * NotFound" check.
+ */
+function readUserSettingsRaw(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch (error) {
+    if (isENOENT(error)) return null
+    throw error
+  }
+}
+
+/** Default confirmation prompt via stdin (y/N). */
+async function defaultConfirm(message: string): Promise<boolean> {
+  if (!process.stdin.isTTY) return false
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  })
+  try {
+    const answer = await rl.question(`${message} (y/N) `)
+    const trimmed = answer.trim().toLowerCase()
+    return trimmed === 'y' || trimmed === 'yes'
+  } finally {
+    rl.close()
+  }
+}
+
+/** Default dependency wiring — calls the real OCC settings layer. */
+export const defaultAutoModeResetDeps: AutoModeResetDeps = {
+  resolvePath: () => getSettingsFilePathForSource('userSettings'),
+  readRawFile: readUserSettingsRaw,
+  parseSettings: path => parseSettingsFile(path),
+  detectUnrecognized: detectUnrecognizedEntries,
+  writeSettings: () =>
+    updateSettingsForSource('userSettings', {
+      autoMode: undefined,
+    } as SettingsJson),
+  confirm: defaultConfirm,
+}
+
+/**
+ * `claude auto-mode reset` handler. Removes the `autoMode` section from the
+ * user settings file, restoring defaults. See file-header comment for the
+ * faithful outcome map.
+ *
+ * @param options.yes  Skip the confirmation prompt (refuses lossy writes).
+ * @param deps         Injectable seams (tests substitute as needed).
+ * @param stdout       Output sink (defaults to process.stdout).
+ */
+export async function autoModeResetHandler(
+  options: { yes: boolean },
+  deps: AutoModeResetDeps = defaultAutoModeResetDeps,
+  stdout: StdoutWriter = defaultStdout,
+): Promise<void> {
+  // 1. Resolve the user settings file path.
+  const path = deps.resolvePath()
+  if (!path) {
+    emitResetMetric('no_user_settings_path')
+    stdout('Could not resolve the user settings file path.\n')
+    return
+  }
+
+  // 2. Read raw content. Missing file = empty/defaults (not an error);
+  //    a genuine read error is unrecoverable.
+  let content: string | null
+  try {
+    content = deps.readRawFile(path)
+  } catch (error) {
+    emitResetMetric('settings_file_unreadable')
+    stdout(`Could not read ${path}: ${errorMessage(error)}\n`)
+    return
+  }
+
+  // 3. Parse + validate. A non-empty file that fails to parse is invalid.
+  const hasContent = content !== null && content.trim() !== ''
+  const parsed = hasContent ? deps.parseSettings(path) : null
+  const settings = parsed?.settings ?? null
+  if (hasContent && settings === null) {
+    emitResetMetric('settings_file_invalid')
+    stdout(formatResetSettingsError(path, parsed?.errors ?? []))
+    return
+  }
+
+  // 4. If autoMode is absent, the config is already at defaults (success).
+  const autoMode = settings
+    ? (settings as Record<string, unknown>).autoMode
+    : undefined
+  if (autoMode === undefined) {
+    stdout(
+      `Auto mode configuration is already at defaults — ${path} has no autoMode section.\n`,
+    )
+    emitResetMetric('success')
+    return
+  }
+
+  // 5. Detect unrecognized entries this CLI version cannot parse. These would
+  //    be lost on a lossy write (the official re-serializes only known fields).
+  const unrecognized = hasContent && content !== null
+    ? deps.detectUnrecognized(content)
+    : []
+
+  // 6. Lossy-write guard: --yes must not silently drop unrecognized entries.
+  if (unrecognized.length > 0 && options.yes) {
+    emitResetMetric('lossy_write_unconfirmed')
+    stdout(
+      `Not resetting: ${path} also contains ${plural(
+        unrecognized.length,
+        'entry',
+        'entries',
+      )} this version of Claude Code cannot parse (${unrecognized.join(
+        ', ',
+      )}), and saving the file would delete ${
+        unrecognized.length === 1 ? 'it' : 'them'
+      } too. Fix or remove ${
+        unrecognized.length === 1 ? 'that entry' : 'those entries'
+      } first, or run the command without --yes to review and confirm.\n`,
+    )
+    return
+  }
+
+  // 7. Confirmation (skipped with --yes).
+  if (!options.yes) {
+    const confirmed = await deps.confirm(
+      'Reset auto mode configuration to defaults?',
+    )
+    if (!confirmed) {
+      emitResetMetric('declined')
+      stdout('Aborted.\n')
+      return
+    }
+  }
+
+  // 8. Write — remove the autoMode section.
+  const { error } = deps.writeSettings()
+  if (error) {
+    logError('auto-mode reset write failed: ' + error.message)
+    emitResetMetric('write_failed')
+    stdout(`Failed to reset auto mode: ${error.message}\n`)
+    return
+  }
+
+  // 9. Success.
+  emitResetMetric('success')
+  stdout(
+    `Auto mode configuration reset to defaults — autoMode section removed from ${path}.\nRun \`claude auto-mode config\` to see the effective rules.\n`,
   )
 }
