@@ -937,6 +937,9 @@ export function resetStateForTests(): void {
   budgetContinuationCount = 0
   memoryLoadingPaused = false
   sessionSwitched.clear()
+  // CC 2.1.212: reset the per-session task registry so cap counters
+  // don't leak across tests.
+  sessionTaskRegistry = null
 }
 
 // You shouldn't use this directly. See src/utils/model/modelStrings.ts::getModelStrings()
@@ -1795,6 +1798,45 @@ export function getPromptId(): string | null {
 
 export function setPromptId(id: string | null): void {
   STATE.promptId = id
+}
+
+// CC 2.1.212: per-session TaskRegistry singleton backing the
+// CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION and
+// CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION caps. Lazily created on first
+// access (interactive/REPL session). Headless/SDK paths use the no-op
+// stub (see src/utils/taskRegistry.ts getNoopTaskRegistry) instead of
+// this real instance. Module-level so it survives re-renders but resets
+// with the rest of the session state via resetStateForTests below.
+import type { TaskRegistry } from 'src/utils/taskRegistry.js'
+import {
+  TaskRegistryImpl,
+  getNoopTaskRegistry,
+} from 'src/utils/taskRegistry.js'
+
+let sessionTaskRegistry: TaskRegistry | null = null
+
+/**
+ * Get the per-session TaskRegistry for the interactive/REPL session.
+ * Lazily creates a real TaskRegistryImpl on first call. Headless/SDK
+ * callers should use `getNoopTaskRegistry()` from
+ * `src/utils/taskRegistry.ts` instead — this accessor is for contexts
+ * that own a real interactive session.
+ */
+export function getSessionTaskRegistry(): TaskRegistry {
+  if (!sessionTaskRegistry) {
+    sessionTaskRegistry = new TaskRegistryImpl()
+  }
+  return sessionTaskRegistry
+}
+
+/**
+ * No-op TaskRegistry for headless/SDK/pipe contexts where no per-session
+ * registry exists. Re-exported here as a convenience so callers don't
+ * need a second import; the source of truth is
+ * `src/utils/taskRegistry.ts`.
+ */
+export function getHeadlessTaskRegistry(): TaskRegistry {
+  return getNoopTaskRegistry()
 }
 export function isReplBridgeActive(): boolean { return false; }
 

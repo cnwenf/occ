@@ -60,6 +60,7 @@ import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterH
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
+import { assertSubagentCapAndIncrement } from '../../utils/sessionLimits.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
@@ -336,6 +337,12 @@ export async function* runAgent({
   onQueryProgress?: () => void
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
+
+  // CC 2.1.212: per-session subagent-spawn cap. Check once per spawn
+  // attempt, before the runner starts. Throws on cap exceeded (matches the
+  // official — does NOT silently return). Covers the normal runAgent path
+  // AND the fork path, since fork spawns also go through runAgent.
+  assertSubagentCapAndIncrement(toolUseContext)
 
   const appState = toolUseContext.getAppState()
   const permissionMode = appState.toolPermissionContext.mode

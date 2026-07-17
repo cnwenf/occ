@@ -489,6 +489,12 @@ export function createSubagentContext(
     criticalSystemReminder_EXPERIMENTAL:
       overrides?.criticalSystemReminder_EXPERIMENTAL,
     requireCanUseTool: overrides?.requireCanUseTool,
+    // CC 2.1.212: per-session task registry is shared across the whole
+    // session — subagents inherit the parent's registry instance so cap
+    // counters accumulate across all spawns in the session (not per-agent).
+    // Undefined on headless contexts (no-op stub there) → subagents inherit
+    // undefined too, and the cap helpers treat undefined as a no-op.
+    taskRegistry: parentContext.taskRegistry,
   }
 }
 

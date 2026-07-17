@@ -26,6 +26,7 @@ import { errorMessage } from '../../utils/errors.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { parseUserSpecifiedModel } from '../../utils/model/model.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
+import { assertSubagentCapAndIncrement } from '../../utils/sessionLimits.js'
 import { isTmuxAvailable } from '../../utils/swarm/backends/detection.js'
 import {
   detectAndGetBackend,
@@ -1089,5 +1090,11 @@ export async function spawnTeammate(
   config: SpawnTeammateConfig,
   context: ToolUseContext,
 ): Promise<{ data: SpawnOutput }> {
+  // CC 2.1.212: per-session subagent-spawn cap. Check once per spawn
+  // attempt, before the teammate runner starts. Covers the teammate /
+  // foreground spawn path (in-process, split-pane, separate-window all
+  // route through this entry point). Throws on cap exceeded — matches
+  // the official binary.
+  assertSubagentCapAndIncrement(context)
   return handleSpawn(config, context)
 }
