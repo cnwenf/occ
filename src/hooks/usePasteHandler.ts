@@ -3,12 +3,14 @@ import React from 'react'
 import { logError } from 'src/utils/log.js'
 import { useDebounceCallback } from 'usehooks-ts'
 import type { InputEvent, Key } from '../ink.js'
+import type { TerminalQuerier } from '../ink/terminal-querier.js'
 import {
   getImageFromClipboard,
   isImageFilePath,
   PASTE_THRESHOLD,
   tryReadImageFromPath,
 } from '../utils/imagePaste.js'
+import { readClipboardImageViaOSC52 } from '../utils/osc52ClipboardRead.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { getPlatform } from '../utils/platform.js'
 
@@ -25,12 +27,18 @@ type PasteHandlerProps = {
     dimensions?: ImageDimensions,
     sourcePath?: string,
   ) => void
+  /** Stdin querier — used to read the local clipboard image via OSC 52
+   *  on an empty bracketed paste (the Cmd+V-on-Mac-over-SSH case, where
+   *  the terminal pastes nothing because the clipboard holds an image).
+   *  Null outside the Ink tree. */
+  querier?: TerminalQuerier | null
 }
 
 export function usePasteHandler({
   onPaste,
   onInput,
   onImagePaste,
+  querier,
 }: PasteHandlerProps): {
   wrappedOnInput: (input: string, key: Key, event: InputEvent) => void
   pasteState: {
@@ -63,8 +71,28 @@ export function usePasteHandler({
   const checkClipboardForImageImpl = React.useCallback(() => {
     if (!onImagePaste || !isMountedRef.current) return
 
-    void getImageFromClipboard()
-      .then(imageData => {
+    // OSC 52 read first (SSH path): the terminal returns the local
+    // clipboard image bytes inline. Works only on terminals that allow
+    // OSC 52 read (iTerm2/kitty/wezterm, opt-in). This is the only way to
+    // pull a *local* clipboard image to a remote process over plain SSH —
+    // bracketed paste cannot carry image bytes, so an image clipboard
+    // arrives as an empty paste. Falls through to the native clipboard
+    // reader (macOS) when OSC 52 is unsupported/empty.
+    void (async () => {
+      try {
+        if (querier) {
+          const osc52 = await readClipboardImageViaOSC52(querier)
+          if (osc52 && isMountedRef.current) {
+            onImagePaste(
+              osc52.buffer.toString('base64'),
+              osc52.mediaType,
+              undefined,
+              undefined,
+            )
+            return
+          }
+        }
+        const imageData = await getImageFromClipboard()
         if (imageData && isMountedRef.current) {
           onImagePaste(
             imageData.base64,
@@ -73,18 +101,17 @@ export function usePasteHandler({
             imageData.dimensions,
           )
         }
-      })
-      .catch(error => {
+      } catch (error) {
         if (isMountedRef.current) {
           logError(error as Error)
         }
-      })
-      .finally(() => {
+      } finally {
         if (isMountedRef.current) {
           setIsPasting(false)
         }
-      })
-  }, [onImagePaste])
+      }
+    })()
+  }, [onImagePaste, querier])
 
   const checkClipboardForImage = useDebounceCallback(
     checkClipboardForImageImpl,
@@ -104,6 +131,7 @@ export function usePasteHandler({
           setIsPasting,
           checkClipboardForImage,
           isMacOS,
+          hasQuerier,
           pastePendingRef,
         ) => {
           pastePendingRef.current = false
@@ -177,8 +205,10 @@ export function usePasteHandler({
             }
 
             // If paste is empty (common when trying to paste images with Cmd+V),
-            // check if clipboard has an image (macOS only)
-            if (isMacOS && onImagePaste && pastedText.length === 0) {
+            // check if clipboard has an image (macOS), or try OSC 52 read under
+            // SSH (the querier path — the terminal pastes empty because the
+            // clipboard holds an image, not text).
+            if ((isMacOS || hasQuerier) && onImagePaste && pastedText.length === 0) {
               checkClipboardForImage()
               return { chunks: [], timeoutId: null }
             }
@@ -199,10 +229,11 @@ export function usePasteHandler({
         setIsPasting,
         checkClipboardForImage,
         isMacOS,
+        !!querier,
         pastePendingRef,
       )
     },
-    [checkClipboardForImage, isMacOS, onImagePaste, onPaste],
+    [checkClipboardForImage, isMacOS, onImagePaste, onPaste, querier],
   )
 
   // Paste detection is now done via the InputEvent's keypress.isPasted flag,
@@ -238,11 +269,12 @@ export function usePasteHandler({
       .flatMap(part => part.split('\n'))
       .some(line => isImageFilePath(line.trim()))
 
-    // Handle empty paste (clipboard image on macOS)
+    // Handle empty paste (clipboard image on macOS, or OSC 52 read under SSH)
     // When the user pastes an image with Cmd+V, the terminal sends an empty
     // bracketed paste sequence. The keypress parser emits this as isPasted=true
-    // with empty input.
-    if (isFromPaste && input.length === 0 && isMacOS && onImagePaste) {
+    // with empty input. On macOS we check the local clipboard; under SSH (or
+    // whenever a querier is available) we try OSC 52 read first.
+    if (isFromPaste && input.length === 0 && (isMacOS || querier) && onImagePaste) {
       checkClipboardForImage()
       // Reset isPasting since there's no text content to process
       setIsPasting(false)

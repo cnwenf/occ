@@ -33,7 +33,7 @@ import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { useTypeahead } from '../../hooks/useTypeahead.js';
 import type { BorderTextOptions } from '../../ink/render-border.js';
 import { stringWidth } from '../../ink/stringWidth.js';
-import { Box, type ClickEvent, type Key, Text, useInput } from '../../ink.js';
+import { Box, type ClickEvent, type Key, Text, useInput, useStdin } from '../../ink.js';
 import { clearTerminal } from '../../ink/clearTerminal.js';
 import instances from '../../ink/instances.js';
 import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js';
@@ -1718,8 +1718,9 @@ function PromptInput({
   // (graphical session or clipboard-synced SSH) and degrades to a hint when
   // no image is reachable. The `OCC_CLIPBOARD_IMAGE_SRC` env override lets a
   // user `scp` a screenshot to a known path and paste by path.
+  const { internal_querier } = useStdin();
   const handleImagePaste = useCallback(() => {
-    void saveClipboardImageToTempFile().then(saved => {
+    void saveClipboardImageToTempFile({ querier: internal_querier }).then(saved => {
       if (saved) {
         // Insert the path on its own line so the agent treats it as a file
         // reference to read.
@@ -1733,17 +1734,17 @@ function PromptInput({
       } else {
         const shortcutDisplay = getShortcutDisplay('chat:imagePaste', 'Chat', 'ctrl+v');
         const message = env.isSSH()
-          ? "No image found in clipboard. You're SSH'd — copy the screenshot to the dev machine (e.g. scp) and set OCC_CLIPBOARD_IMAGE_SRC to its path, then press Ctrl+V."
+          ? "No image found. SSH clipboard paths tried: OSC 52 read (terminal may block it), local clipboard, ~/.occ/clipboard-latest.png. Fix: enable OSC 52 read in your terminal (iTerm2/kitty/wezterm), or run `occ-clipboard-watch` on your Mac to auto-scp screenshots here, then press Ctrl+V."
           : `No image found in clipboard. Use ${shortcutDisplay} to paste images.`;
         addNotification({
           key: 'no-image-in-clipboard',
           text: message,
           priority: 'immediate',
-          timeoutMs: 6000,
+          timeoutMs: 8000,
         });
       }
     });
-  }, [addNotification, insertTextAtCursor]);
+  }, [addNotification, insertTextAtCursor, internal_querier]);
 
 
   // Register chat:submit handler directly in the handler registry (not via

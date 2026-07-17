@@ -3,7 +3,7 @@ import React from 'react';
 import { renderPlaceholder } from '../hooks/renderPlaceholder.js';
 import { usePasteHandler } from '../hooks/usePasteHandler.js';
 import { useDeclaredCursor } from '../ink/hooks/use-declared-cursor.js';
-import { Ansi, Box, Text, useInput } from '../ink.js';
+import { Ansi, Box, Text, useInput, useStdin } from '../ink.js';
 import type { BaseInputState, BaseTextInputProps } from '../types/textInputTypes.js';
 import type { TextHighlight } from '../utils/textHighlighting.js';
 import { HighlightedInput } from './PromptInput/ShimmeredInput.js';
@@ -51,6 +51,7 @@ export function BaseTextInput(t0) {
     t2 = $[3];
   }
   const cursorRef = useDeclaredCursor(t2);
+  const { internal_querier } = useStdin();
   const {
     wrappedOnInput,
     isPasting: t3
@@ -62,7 +63,8 @@ export function BaseTextInput(t0) {
       }
       onInput(input, key);
     },
-    onImagePaste: props.onImagePaste
+    onImagePaste: props.onImagePaste,
+    querier: internal_querier
   });
   const isPasting = t3;
   const {
