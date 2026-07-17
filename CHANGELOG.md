@@ -7,8 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. Currently caught up through
-Claude Code `2.1.211` — see `docs/upstream-version-gap.md` for the version-gap
-report and `.occ-research/` for the upstream catch-up changelog.
+Claude Code `2.1.212` — see `docs/upstream-version-gap-occ9.md` (OCC-9) for the
+2.1.211→2.1.212 version-gap report, and `docs/upstream-version-gap.md` (OCC-5)
+for the earlier 2.1.204→2.1.211 history.
+
+## 2.1.274 - 2026-07-17
+
+- **Catch up to Claude Code `2.1.212` (OCC-9, P0).** OCC now aligns to official Claude Code `2.1.212` (was `2.1.211`). Each feature is reverse-engineered from the 2.1.212 native ELF per the `aligning-with-official-binary` skill — binary-verified, no invention. 118/0 across the P0+GAP suite. Full per-feature recon + the `/fork` live-dispatch follow-up in `docs/upstream-version-gap-occ9.md`.
+- **New feature: per-session WebSearch cap (`CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION`, default 200) + per-session subagent-spawn cap (`CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION`, default 200).** Both via a shared per-session `TaskRegistry` primitive (`getTotalAgentSpawns`/`incrementTotalAgentSpawns`/`resetTotalAgentSpawns` + `getWebSearchCalls`/`incrementWebSearchCalls`/`resetWebSearchCalls`) with a no-op stub for headless/SDK contexts. Stops runaway search loops / runaway subagent delegation; cap-exceeded returns the official's exact budget/limit message. (`src/utils/sessionLimits.ts`, `src/utils/taskRegistry.ts`, `src/tools/WebSearchTool/WebSearchTool.ts`, `src/tools/AgentTool/runAgent.ts`, `src/tools/shared/spawnMultiAgent.ts`, `src/Tool.ts`, `src/bootstrap/state.ts`, `src/screens/REPL.tsx`)
+- **New feature: `claude auto-mode reset` subcommand.** Restores the default auto-mode config by removing the `autoMode` section from user settings. Confirmation prompt by default; `--yes` skips it. `--yes` **refuses** a lossy auto-reset when the settings file has entries this version can't parse (must run without `--yes` to review, or fix the entries first). Exact outcome codes + messages mirror the official `MbS`. (`src/cli/handlers/autoMode.ts`, `src/main.tsx`)
+- **New feature: MCP tool calls auto-background after 2 min.** Long MCP tool calls move to the background so the session stays usable; the tool keeps running under its own `AbortController`, result delivered via the background-tasks system. Default `120000` ms, `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` override (clamp `[0, INT_MAX]`), non-interactive sessions opt in via `CLAUDE_AUTO_BACKGROUND_TASKS`. IDE-managed transports (`sse-ide`, `ws-ide`) are excluded (official `Fcy`). The model-facing message is the official verbatim text with elapsed seconds + TaskStop guidance + exit-survival note. (`src/services/mcp/autoBackground.ts`, `src/services/mcp/client.ts`, `src/tasks/McpBackgroundTask/McpBackgroundTask.ts`, `src/tasks/types.ts`)
+- **New feature: `/fork` naming surface.** `/fork` derives the fork name via the official `uwd` (first 3 words → join `-` → lowercase → keep `[a-z0-9-]` → collapse `-` → trim edges → cap 24 → `||"fork"`) and writes a `custom-title` entry so the fork row is recognizable in the agent view; output gains the ` (fork)` suffix. `/fork` now requires a directive (`Usage: /fork <directive>` when absent). The `custom-title` `source` mirrors `/branch` `awd`'s `f = s ? "user" : "auto"`. (`src/commands/fork/name.ts`, `src/commands/fork/fork.ts`)
+- **Known follow-up (NOT in this release): `/fork` live background-session dispatch (incl. GAP-6/7 agentId/same-name dedup).** The 2.1.212 `/fork` "copy into a new live background session (its own row in `claude agents`)" delta is deferred — the binary's `spawnBackgroundFork` dispatch is fragmented and OCC's `claude agents` live-dispatch is a REPL-internal path unreachable from `/fork`'s command context; per the never-invent rule it is not guessed. Tracked in `docs/upstream-version-gap-occ9.md` and the PR #172 follow-up section.
 
 ## 2.1.273 - 2026-07-17
 
