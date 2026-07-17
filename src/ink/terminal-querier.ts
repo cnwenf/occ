@@ -22,7 +22,7 @@
 
 import type { TerminalResponse } from './parse-keypress.js'
 import { csi } from './termio/csi.js'
-import { osc } from './termio/osc.js'
+import { osc, OSC } from './termio/osc.js'
 
 /** A terminal query: an outbound request sequence paired with a matcher
  *  that recognizes the expected inbound response. Built by `decrqm()`,
@@ -97,6 +97,24 @@ export function oscColor(code: number): TerminalQuery<OscResponse> {
   return {
     request: osc(code, '?'),
     match: (r): r is OscResponse => r.type === 'osc' && r.code === code,
+  }
+}
+
+/** OSC 52 clipboard read query (ESC ] 52 ; c ; ? ST/BEL).
+ *  Asks the terminal to reply with the clipboard contents as
+ *  `ESC ] 52 ; c ; <base64> ST`. The terminal must support OSC 52 *read*
+ *  (iTerm2/kitty/wezterm, usually opt-in; Alacritty/Windows Terminal do
+ *  not). When the clipboard holds an image, supporting terminals return
+ *  the raw image bytes base64-encoded. Resolves `undefined` when the
+ *  terminal ignores the query (detected via the DA1 sentinel in flush()).
+ *  This is the only mechanism that can pull a *local* clipboard image to a
+ *  remote process over a plain SSH session — bracketed paste cannot carry
+ *  image bytes. SSH-survives: the query/reply goes through the pty, not the
+ *  environment. */
+export function osc52Read(): TerminalQuery<OscResponse> {
+  return {
+    request: osc(OSC.CLIPBOARD, 'c', '?'),
+    match: (r): r is OscResponse => r.type === 'osc' && r.code === OSC.CLIPBOARD,
   }
 }
 

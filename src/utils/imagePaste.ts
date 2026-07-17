@@ -1,7 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { randomBytes } from 'crypto'
+import { homedir, tmpdir } from 'os'
 import { writeFileSync } from 'fs'
-import { tmpdir } from 'os'
 import { execa } from 'execa'
 import { basename, extname, isAbsolute, join } from 'path'
 import {
@@ -20,6 +20,8 @@ import {
   maybeResizeAndDownsampleImageBuffer,
 } from './imageResizer.js'
 import { logError } from './log.js'
+import { readClipboardImageViaOSC52 } from './osc52ClipboardRead.js'
+import type { TerminalQuerier } from '../ink/terminal-querier.js'
 
 // Native NSPasteboard reader. GrowthBook gate tengu_collage_kaleidoscope is
 // a kill switch (default on). Falls through to osascript when off.
@@ -303,6 +305,30 @@ export function getClipboardImageSrcOverride(): string | undefined {
   return v && v.length > 0 ? v : undefined
 }
 
+/**
+ * Env var pointing at the local-watcher inbox file on the dev machine. The
+ * shipped `scripts/occ-clipboard-watch.sh` auto-scps new local screenshots
+ * to `DEFAULT_CLIPBOARD_WATCH_PATH`; set this to override the destination.
+ * Set to an empty string to disable the watch-path branch entirely.
+ */
+export const CLIPBOARD_WATCH_PATH_ENV = 'OCC_CLIPBOARD_WATCH_PATH'
+
+/** Default inbox path for the local clipboard watcher. */
+export const DEFAULT_CLIPBOARD_WATCH_PATH = join(homedir(), '.occ', 'clipboard-latest.png')
+
+/**
+ * Returns the watch-path file path, or undefined when disabled.
+ *
+ * - Unset → `DEFAULT_CLIPBOARD_WATCH_PATH` (~/.occ/clipboard-latest.png).
+ * - Set to a non-empty string → that path.
+ * - Set to empty string → undefined (watch-path branch disabled).
+ */
+export function getClipboardWatchPath(): string | undefined {
+  const v = process.env[CLIPBOARD_WATCH_PATH_ENV]
+  if (v !== undefined) return v.length > 0 ? v : undefined
+  return DEFAULT_CLIPBOARD_WATCH_PATH
+}
+
 export type SavedClipboardImage = {
   path: string
   mediaType: string
@@ -320,8 +346,11 @@ export type SavedClipboardImage = {
  * Returns null when no image is available (no clipboard image and no valid
  * override). Never throws — callers show the no-image hint.
  */
-export async function saveClipboardImageToTempFile(): Promise<SavedClipboardImage | null> {
+export async function saveClipboardImageToTempFile(
+  opts: { querier?: TerminalQuerier | null } = {},
+): Promise<SavedClipboardImage | null> {
   try {
+    // 1. Explicit override (test hook + scp escape hatch).
     const overrideSrc = getClipboardImageSrcOverride()
     if (overrideSrc && getFsImplementation().existsSync(overrideSrc)) {
       const buffer = getFsImplementation().readFileBytesSync(overrideSrc)
@@ -329,6 +358,57 @@ export async function saveClipboardImageToTempFile(): Promise<SavedClipboardImag
       return writeUniqueTempImageFile(buffer, mediaType)
     }
 
+    // 2. OSC 52 read (SSH path): the terminal returns the local clipboard
+    //    image bytes inline. This is the only mechanism that can pull a
+    //    *local* clipboard image to a remote process over a plain SSH
+    //    session — bracketed paste cannot carry image bytes. Works only on
+    //    terminals that allow OSC 52 read (iTerm2/kitty/wezterm, opt-in).
+    //    Returns null when unsupported or when the clipboard holds text;
+    //    callers fall through to the next branch.
+    if (opts.querier) {
+      const osc52 = await readClipboardImageViaOSC52(opts.querier)
+      if (osc52) {
+        const ext = osc52.mediaType.replace(/^image\//, '') || 'png'
+        const resized = await maybeResizeAndDownsampleImageBuffer(
+          osc52.buffer,
+          osc52.buffer.length,
+          ext,
+        )
+        return writeUniqueTempImageFile(
+          resized.buffer,
+          `image/${resized.mediaType}`,
+          resized.dimensions,
+        )
+      }
+    }
+
+    // 3. Default watch path (local-watcher escape hatch): a local script
+    //    (scripts/occ-clipboard-watch.sh) auto-scps new screenshots to this
+    //    path on the dev machine; Ctrl+V reads it. Reliable and
+    //    terminal-agnostic — works even when OSC 52 read is blocked. Not
+    //    deleted after read: it's the watcher's inbox, not a one-shot.
+    const watchPath = getClipboardWatchPath()
+    if (watchPath && getFsImplementation().existsSync(watchPath)) {
+      const buffer = getFsImplementation().readFileBytesSync(watchPath)
+      if (buffer.length > 0) {
+        const ext = detectImageFormatFromBase64(buffer.toString('base64'))
+        const extName = ext.replace(/^image\//, '') || 'png'
+        const resized = await maybeResizeAndDownsampleImageBuffer(
+          buffer,
+          buffer.length,
+          extName,
+        )
+        return writeUniqueTempImageFile(
+          resized.buffer,
+          `image/${resized.mediaType}`,
+          resized.dimensions,
+        )
+      }
+    }
+
+    // 4. Local clipboard (macOS native / Linux xclip / wl-paste). On a
+    //    headless SSH box with no clipboard tools this returns null —
+    //    callers show the no-image hint.
     const image = await getImageFromClipboard()
     if (!image) {
       return null
