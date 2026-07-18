@@ -1027,9 +1027,29 @@ function getCachedPatternMatchers(
       getIg: () => {
         if (ig === undefined || ++useCount > MATCHER_RECOMPILE_THRESHOLD) {
           useCount = 1
-          ig = ignore().add(
-            Array.from(patternMap.keys(), normalizeIgnorePattern),
-          )
+          // 2.1.214 (M1): single-segment `dir/**` allow rules must anchor to the
+          // rule root, not match a same-named directory at any depth. The `ignore`
+          // library (gitignore semantics) treats a bare name (`dir`) as matching
+          // at ANY depth — so the old `normalizeIgnorePattern` strip turned
+          // `dir/**` into `dir`, silently auto-approving writes to
+          // `<cwd>/a/dir/secret.ts` (fail-open over-permission bypass).
+          //
+          // Fix: for `allow` only, pass the RAW pattern to `ignore`. A raw
+          // `dir/**` is already root-anchored by gitignore `**` semantics (it
+          // matches `<root>/dir/**` and rejects `<root>/nested/dir/**`), and the
+          // matched `rule.pattern` equals the patternMap key, so the lookup-back
+          // in matchingRuleForInput is unaffected.
+          //
+          // `deny`/`ask` KEEP any-depth matching per the official 2.1.214 spec,
+          // so they still go through `normalizeIgnorePattern` (bare-name form).
+          // NOTE: this matcher is also reached by hook `if:` conditions and the
+          // hook exit-2 / S24 path; those are intentionally untouched here
+          // (S24 is a separate Stage2 PR).
+          const patternsToAdd =
+            behavior === 'allow'
+              ? Array.from(patternMap.keys())
+              : Array.from(patternMap.keys(), normalizeIgnorePattern)
+          ig = ignore().add(patternsToAdd)
         }
         return ig
       },
