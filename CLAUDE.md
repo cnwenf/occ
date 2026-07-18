@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is an **independent open-source implementation** of a Claude Code–style coding agent. The goal is to provide core coding-agent functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. It currently tracks Claude Code `2.1.211` (catch-up changelog in `.occ-research/`). The codebase has ~1341 tsc type errors (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.
+This is an **independent open-source implementation** of a Claude Code–style coding agent. The goal is to provide core coding-agent functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. It currently tracks Claude Code `2.1.214` (catch-up changelog in `.occ-research/`). The codebase has ~1341 tsc type errors (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.
 
 ## Commands
 
@@ -50,7 +50,7 @@ A `pre-commit` hook (`.githooks/`, wired via `bun run prepare` → `core.hooksPa
 OCC publishes to npm as `@cnwenf/occ`. The version in `package.json` is the source of truth. CI auto-bumps and tags, but the manual flow is:
 
 1. **Update `CHANGELOG.md`** — add a `## <version> - YYYY-MM-DD` section at the top (below the header) with `- ` bullet entries for user-facing changes. The REPL "What's new" feed and `/release-notes` command fetch this file from GitHub (`src/utils/releaseNotes.ts` → `RAW_CHANGELOG_URL`). Format matters: `parseChangelog()` splits on `## ` headers and extracts `- ` bullets.
-2. **Bump version** — edit `"version"` in `package.json` to the new semver (e.g. `2.1.262`). Keep it monotonically increasing; OCC tracks upstream Claude Code but versions its own releases above the `2.1.211` baseline.
+2. **Bump version** — edit `"version"` in `package.json` to the new semver (e.g. `2.1.262`). Keep it monotonically increasing; OCC tracks upstream Claude Code but versions its own releases above the `2.1.214` baseline.
 3. **Commit** — `git commit -am "chore(release): <version>"` (or let CI do it).
 4. **Tag** — `git tag v<version>` (e.g. `v2.1.262`) and `git push --tags`. The tag marks the release point.
 5. **Publish** — `bun run build` produces `dist/cli.js`, then `npm publish` (the `prepublishOnly` script auto-builds). CI handles this on tag push.

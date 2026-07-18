@@ -7,9 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. Currently caught up through
-Claude Code `2.1.212` — see `docs/upstream-version-gap-occ9.md` (OCC-9) for the
-2.1.211→2.1.212 version-gap report, and `docs/upstream-version-gap.md` (OCC-5)
-for the earlier 2.1.204→2.1.211 history.
+Claude Code `2.1.214` — see `docs/upstream-version-gap-occ10.md` (OCC-10) for the
+2.1.212→2.1.214 version-gap report, and `docs/upstream-version-gap-occ9.md` (OCC-9)
+for the earlier 2.1.211→2.1.212 history.
+
+## 2.1.275 - 2026-07-19
+
+- **Catch up to Claude Code `2.1.214` (OCC-10).** OCC now aligns to official Claude Code `2.1.214` (was `2.1.212`). The 2.1.212→2.1.214 wave is one combined port (2.1.213 has no standalone changelog entry; its identifiers are folded into 2.1.214).
+- **Security Musts (fail-open):**
+  - `dir/**` single-segment allow rules now anchor to cwd (M1, #173)
+  - Hook exit code 2 blocks even when stdout JSON fails schema validation (S24, #174)
+  - Settings >2MiB / non-regular files rejected at startup (M9, #175)
+  - Frontmatter `#`-truncation fix (M10, #176)
+  - ISO `modified` timestamp on memory file save (M11, #177)
+  - Docker daemon-redirect flags prompt (M7, #178)
+  - `file -m/-f/--magic-file` requires permission (M6, #179)
+  - `pkill -f` self-match: shell-function shim via ShellSnapshot (M8, #180/#187/#188)
+- **Correctness:**
+  - Commands >10,000 chars always prompt (M3, #182)
+  - fd-redirect fail-closed on all output-redirect ops (M2, #184)
+  - zsh `[[ ]]` subscripts prompt (M4, #185)
+  - `help`/`man` with command substitution / backslash paths prompt (M5, #186)
+- **Parity fixes (acceptance reviewer diverge fixes):**
+  - M8: pkill shell-shim sole mechanism (permission-deny removed; 8-case arg-parser; printf em-dash) (#187/#188)
+  - M9: `/dev/zero` message aligned to official text (#187/#188)
+- **Doc bump:** README/CLAUDE.md/skill pointer updated from `2.1.211` to `2.1.214`.
 
 ## 2.1.274 - 2026-07-17
 
