@@ -2301,6 +2301,17 @@ export function isOutputRedirectOp(op: string): boolean {
   return op.includes('>') && !op.includes('<')
 }
 
+/** M4 (CC 2.1.214): zsh variable subscripts and modifiers in [[ ]] comparisons
+ * were treated as inert text → auto-allowed. Now prompt. Detects [[ ]] + zsh
+ * subscript/modifier patterns: ${var[...]} / ${#var} / ${var:off:len}. */
+export function hasZshSubscriptInConditional(command: string): boolean {
+  if (!command.includes('[[')) return false
+  if (/\$\{[^}]*\[/.test(command)) return true
+  if (/\$\{#/.test(command)) return true
+  if (/\$\{[^}]*:[^}]*:/.test(command)) return true
+  return false
+}
+
 export async function bashToolHasPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
@@ -2404,6 +2415,18 @@ export async function bashToolHasPermission(
       return {
         behavior: 'ask',
         message: `Command exceeds ${MAX_COMMAND_LENGTH_PROMPT} characters; please confirm before running.`,
+      }
+    }
+  }
+
+  // M4 (2.1.214): zsh variable subscripts/modifiers in [[ ]] comparisons were
+  // treated as inert text → auto-allowed. Now prompt. bypass respects opt-out.
+  {
+    const mode = appState.toolPermissionContext.mode
+    if (mode !== 'bypassPermissions' && hasZshSubscriptInConditional(input.command)) {
+      return {
+        behavior: 'ask',
+        message: 'zsh subscript/modifier in [[ ]] conditional requires confirmation.',
       }
     }
   }
