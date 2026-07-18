@@ -7,6 +7,7 @@ import type z from 'zod/v4'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { AnyObject, Tool, ToolUseContext } from '../../Tool.js'
 import { checkMemoryEntrypointOverCap } from '../../memdir/memdir.js'
+import { normalizeMemoryFileModified } from '../../memdir/memorySaveNormalizer.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 import type { HookProgress } from '../../types/hooks.js'
@@ -224,6 +225,22 @@ export async function* runPostToolUseHooks<Input extends AnyObject, Output>(
         // and debug-log so a read/stat error can't break the post-write path.
         logForDebugging(
           `memory entrypoint over-cap check failed for ${toolInput.file_path}: ${formatError(error)}`,
+          { level: 'debug' },
+        )
+      }
+
+      // 2.1.214 (M11): stamp/update an ISO `modified` timestamp in the memory
+      // file's frontmatter after a Write/Edit. Mirrors the over-cap guard above
+      // (same Write|Edit + file_path guard, same don't-block error policy).
+      // Anti-loop: normalizeMemoryFileModified writes via direct fs
+      // (fs.writeFileSync), NOT the Write/Edit tool, so PostToolUse does not
+      // re-fire. L2 (exact-ISO idempotency) + L3 (sync reentrance Set) are
+      // belt-and-suspenders inside the normalizer.
+      try {
+        normalizeMemoryFileModified(toolInput.file_path)
+      } catch (error) {
+        logForDebugging(
+          `memory save-normalizer failed for ${toolInput.file_path}: ${formatError(error)}`,
           { level: 'debug' },
         )
       }
