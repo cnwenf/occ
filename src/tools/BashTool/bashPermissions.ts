@@ -2292,6 +2292,14 @@ export function findPkillSelfMatchBlock(command: string): {
     : null
 }
 
+/** M3 (CC 2.1.214): commands over this length always prompt (never auto-run). */
+export const MAX_COMMAND_LENGTH_PROMPT = 10000
+
+/** M3: true iff `command` exceeds the max length that auto-runs. Pure, testable. */
+export function shouldPromptForCommandLength(command: string): boolean {
+  return command.length > MAX_COMMAND_LENGTH_PROMPT
+}
+
 export async function bashToolHasPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
@@ -2381,6 +2389,20 @@ export async function bashToolHasPermission(
           message: `Destructive command blocked: ${block.reason}`,
           decisionReason,
         }
+      }
+    }
+  }
+
+  // M3 (2.1.214): commands over 10,000 characters always prompt instead of
+  // running automatically — the permission analyzer may misjudge very long
+  // commands. After deny blocks (catastrophic/pkill/G3), before auto-allow /
+  // read-only / prefix-allow. bypassPermissions respects the explicit opt-out.
+  {
+    const mode = appState.toolPermissionContext.mode
+    if (mode !== 'bypassPermissions' && shouldPromptForCommandLength(input.command)) {
+      return {
+        behavior: 'ask',
+        message: `Command exceeds ${MAX_COMMAND_LENGTH_PROMPT} characters; please confirm before running.`,
       }
     }
   }
