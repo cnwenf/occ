@@ -2368,28 +2368,12 @@ export async function bashToolHasPermission(
     }
   }
 
-  // M8 (2.1.214): `pkill -f <pattern>` matching the CLI's own process would
-  // kill the session (Linux). Deny before execution — ALL modes (incl
-  // bypassPermissions): self-kill is catastrophic (data loss), not a prompt
-  // decision; mirrors findCatastrophicSubstitutionBlock's ALL-modes deny.
-  // binary-verify caveat: bypass behavior not deterministically scriptable
-  // (-p default-allow + would kill the test process); ALL-modes chosen per
-  // the catastrophic-substitution precedent + reviewer safety lean.
-  {
-    const block = findPkillSelfMatchBlock(input.command)
-    if (block !== null) {
-      logEvent('tengu_bash_pkill_self_match', {})
-      const decisionReason: PermissionDecisionReason = {
-        type: 'other' as const,
-        reason: `Destructive command blocked: ${block.reason}`,
-      }
-      return {
-        behavior: 'deny',
-        message: `Destructive command blocked: ${block.reason}`,
-        decisionReason,
-      }
-    }
-  }
+  // M8 (2.1.214): pkill -f self-match is now handled by the shell-function
+  // shim injected via ShellSnapshot (permit + shim refuse at shell-execution
+  // time). The old permission-deny block is REMOVED — it was a dead-code
+  // precursor that blocked the command before the shim could run, diverging
+  // from the official (which has NO permission-deny, only the shim).
+  // The shim uses CLAUDE_PID + pgrep + grep -qx self-match detection.
 
   // G3: Deterministic destructive-command block (no classifier needed).
   // Pattern-matches catastrophic commands and hard-denies them BEFORE any
