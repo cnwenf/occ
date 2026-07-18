@@ -152,6 +152,7 @@ import { createAttachmentMessage } from './attachments.js'
 import { all } from './generators.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
 import { execPromptHook } from './hooks/execPromptHook.js'
+import { exit2BlockReason } from './hooks/hookExit2Block.js'
 import type { Message, AssistantMessage } from '../types/message.js'
 import { execAgentHook } from './hooks/execAgentHook.js'
 import { execHttpHook } from './hooks/execHttpHook.js'
@@ -3044,6 +3045,41 @@ async function* executeHooks({
       )
 
       if (validationError) {
+        // S24 (2.1.214): exit code 2 MUST block even when stdout JSON is
+        // malformed/truncated/schema-failing. Previously this branch returned
+        // non_blocking_error, dropping the exit-2 block (fail-open on a
+        // security-enforcement hook path). When JSON IS valid the structured
+        // path below (processHookJSONOutput + the `if (json)` exit-2 block)
+        // handles it and keeps the hook's reason; here we only synthesize a
+        // block for exit-2-with-malformed-JSON.
+        const exit2Block = exit2BlockReason({
+          status: result.status,
+          validationError,
+          hasJson: !!json,
+          stderr: result.stderr,
+          command: hookCommand,
+        })
+        if (exit2Block) {
+          emitHookResponse({
+            hookId,
+            hookName,
+            hookEvent,
+            output: result.output,
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: result.status,
+            outcome: 'error',
+          })
+          yield {
+            blockingError: {
+              blockingError: exit2Block.blockingError,
+              command: exit2Block.command,
+            },
+            outcome: 'blocking' as const,
+            hook,
+          }
+          return
+        }
         emitHookResponse({
           hookId,
           hookName,
@@ -3929,6 +3965,27 @@ async function executeHooksOutsideREPL({
         // Parse JSON for any messages to print out.
         const { json, validationError } = parseHookOutput(result.stdout)
         if (validationError) {
+          // S24 (2.1.214): exit code 2 MUST block even when stdout JSON is
+          // malformed/truncated/schema-failing. Previously this branch threw
+          // before the `blocked = result.status === 2 || ...` line, dropping
+          // the block (fail-open on a security-enforcement hook path).
+          const exit2Block = exit2BlockReason({
+            status: result.status,
+            validationError,
+            hasJson: !!json,
+            stderr: result.stderr,
+            command: hook.command,
+          })
+          if (exit2Block) {
+            return {
+              command: hook.command,
+              succeeded: false,
+              output: result.stderr || '',
+              blocked: true,
+              watchPaths: undefined,
+              systemMessage: undefined,
+            }
+          }
           // Validation error is logged via logForDebugging and returned in output
           throw new Error(validationError)
         }
