@@ -179,7 +179,6 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '--exclude-quiet': 'string',
       '--print0': 'none',
       '-0': 'none',
-      '-f': 'string',
       '-F': 'string',
       '--separator': 'string',
       '--help': 'none',
@@ -190,9 +189,10 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '-h': 'none',
       '--dereference': 'none',
       '-L': 'none',
-      // Magic file options (safe when just reading)
-      '--magic-file': 'string',
-      '-m': 'string',
+      // M6 (2.1.214): -m/--magic-file and -f/--files-from are NOT safe — they
+      // read an arbitrary magic DB / filename list. Removed from safeFlags so
+      // `file -f namefile` / `file -m magic` / `file --magic-file=x` route to
+      // ask instead of being auto-allowed as read-only (fail-open).
       // Other safe options
       '--keep-going': 'none',
       '-k': 'none',
