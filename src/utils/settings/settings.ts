@@ -231,7 +231,7 @@ function parseSettingsFileUncached(path: string): {
           {
             file: path,
             path: '',
-            message: `Settings file is not a regular file: ${path}`,
+            message: `Cannot use settings file (Not a regular file (device, FIFO, or socket)): ${path}`,
           },
         ],
       }

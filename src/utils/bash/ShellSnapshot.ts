@@ -337,9 +337,27 @@ FIND_GREP_FUNC_END
     # M8 (2.1.214): pkill -f self-match shim
     cat >> "$SNAPSHOT_FILE" << 'PKILL_SHIM_END'
 function pkill() {
-  local _pattern="$1"
-  if [ -n "\${CLAUDE_PID}" ] && pgrep -f "$_pattern" 2>/dev/null | grep -qx "$CLAUDE_PID"; then
-    echo "pkill: refusing to run - this pattern matches the Claude CLI process (PID $CLAUDE_PID). Narrow the pattern, or target your own children with \`pkill -P $$ ...\`." >&2
+  local _pattern=""
+  local _arg
+  local _skip_next=0
+  for _arg in "$@"; do
+    if [ "$_skip_next" -eq 1 ]; then
+      _skip_next=0
+      continue
+    fi
+    case "$_arg" in
+      --signal) _skip_next=1 ;;
+      --signal=*) ;;
+      -[0-9]*) ;;
+      -[PUGOF]*) ;;
+      -[A-Z]*) ;;
+      --*) ;;
+      -*) ;;
+      *) if [ -z "$_pattern" ]; then _pattern="$_arg"; fi ;;
+    esac
+  done
+  if [ -n "\${CLAUDE_PID}" ] && [ -n "$_pattern" ] && pgrep -f "$_pattern" 2>/dev/null | grep -qx "$CLAUDE_PID"; then
+    printf 'pkill: refusing to run \xE2\x80\x94 this pattern matches the Claude CLI process (PID %s). Narrow the pattern, or target your own children with \`pkill -P $$ ...\`.\\n' "$CLAUDE_PID" >&2
     return 1
   fi
   command pkill "$@"

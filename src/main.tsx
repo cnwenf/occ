@@ -471,7 +471,7 @@ function loadSettingsFromFlag(settingsFile: string): void {
         // files (official: "Error: Settings file exceeds the 2MiB limit: <path>").
         const stats = getFsImplementation().statSync(resolvedSettingsPath);
         if (!stats.isFile()) {
-          process.stderr.write(chalk.red(`Error: Settings file is not a regular file: ${resolvedSettingsPath}\n`));
+          process.stderr.write(chalk.red(`Cannot use settings file (Not a regular file (device, FIFO, or socket)): ${resolvedSettingsPath}\n`));
           process.exit(1);
         }
         if (stats.size > 2 * 1024 * 1024) {
