@@ -385,13 +385,7 @@ export function checkBashRedirectAndPatternSafety(
   let outputRedirects: Array<{ op: string; target: string }>
   let inputRedirects: Array<{ op: string; target: string }>
   if (astRedirects && astRedirects.length > 0) {
-    const isOutput = (op: string) =>
-      op === '>' ||
-      op === '>>' ||
-      op === '>|' ||
-      op === '&>' ||
-      op === '&>>' ||
-      (op === '>&' && true)
+    const isOutput = isOutputRedirectOp
     outputRedirects = astRedirects
       .filter(r => isOutput(r.op))
       .map(r => ({ op: r.op, target: r.target }))
@@ -2298,6 +2292,13 @@ export const MAX_COMMAND_LENGTH_PROMPT = 10000
 /** M3: true iff `command` exceeds the max length that auto-runs. Pure, testable. */
 export function shouldPromptForCommandLength(command: string): boolean {
   return command.length > MAX_COMMAND_LENGTH_PROMPT
+}
+
+/** M2 (CC 2.1.214): fail-closed on fd-redirect forms the analyzer parses
+ * differently. Broadened from exact-match to catch numeric-fd redirect ops
+ * (2>/1>>/2>& etc.) so their targets get validated instead of being missed. */
+export function isOutputRedirectOp(op: string): boolean {
+  return op.includes('>') && !op.includes('<')
 }
 
 export async function bashToolHasPermission(
