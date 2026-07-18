@@ -122,6 +122,48 @@ function quoteProblematicValues(frontmatterText: string): string {
   return result.join('\n')
 }
 
+/**
+ * Pre-processes frontmatter text to quote simple `key: value` lines whose
+ * value contains a YAML-comment `#` (a leading `#` or a ` #` — a `#` preceded
+ * by whitespace). YAML treats such a `#` as the start of a comment, silently
+ * truncating the value. {@link quoteProblematicValues} already handles `#`
+ * but only runs on the parse-ERROR retry path, so a `#`-value that parses
+ * "successfully" (truncated) was never quoted (M10, Claude Code 2.1.214).
+ *
+ * Narrower than {@link quoteProblematicValues}: only `#`-comment values are
+ * quoted here (so glob patterns / flow sequences that currently parse fine
+ * are untouched on the primary path; they still get the full retry treatment
+ * if the primary parse throws).
+ */
+function quoteHashCommentValues(frontmatterText: string): string {
+  const lines = frontmatterText.split('\n')
+  const result: string[] = []
+
+  for (const line of lines) {
+    // Match simple key: value lines (not indented, not list items, not block scalars)
+    const match = line.match(/^([a-zA-Z_-]+):\s+(.+)$/)
+    if (match) {
+      const [, key, value] = match
+      if (key && value) {
+        const alreadyQuoted =
+          (value.startsWith('"') && value.endsWith('"')) ||
+          (value.startsWith("'") && value.endsWith("'"))
+        // YAML comment `#`: at value start, or preceded by whitespace.
+        const hasCommentHash =
+          value.startsWith('#') || /\s#/.test(value)
+        if (!alreadyQuoted && hasCommentHash) {
+          const escaped = value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')
+          result.push(`${key}: "${escaped}"`)
+          continue
+        }
+      }
+    }
+    result.push(line)
+  }
+
+  return result.join('\n')
+}
+
 export const FRONTMATTER_REGEX = /^---\s*\n([\s\S]*?)---\s*\n?/
 
 /**
@@ -147,8 +189,13 @@ export function parseFrontmatter(
   const content = markdown.slice(match[0].length)
 
   let frontmatter: FrontmatterData = {}
+  // M10 (2.1.214): pre-quote `#`-comment values so YAML doesn't silently
+  // truncate them. quoteProblematicValues (retry path below) only runs on
+  // parse errors; a `#`-value parses "successfully" (truncated) so it never
+  // reached the retry.
+  const preprocessedText = quoteHashCommentValues(frontmatterText)
   try {
-    const parsed = parseYaml(frontmatterText) as FrontmatterData | null
+    const parsed = parseYaml(preprocessedText) as FrontmatterData | null
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       frontmatter = parsed
     }
