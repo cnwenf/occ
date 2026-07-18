@@ -204,12 +204,50 @@ export function parseSettingsFile(path: string): {
   }
 }
 
+/**
+ * M9 (Claude Code 2.1.214): cap settings-file size and require a regular
+ * file. `--settings` (or any settings source) pointing at a device file or a
+ * multi-GB file previously caused unbounded memory growth via readFileSync;
+ * oversized (>2 MiB) and non-regular files now fail fast with a clear error.
+ * Mirrors official 2.1.214: "oversized (>2 MiB) settings files now fail at
+ * startup with a clear error."
+ */
+const MAX_SETTINGS_FILE_BYTES = 2 * 1024 * 1024 // 2 MiB
+
 function parseSettingsFileUncached(path: string): {
   settings: SettingsJson | null
   errors: ValidationError[]
 } {
   try {
     const { resolvedPath } = safeResolvePath(getFsImplementation(), path)
+    // M9: stat before read. Reject non-regular files (char/block devices,
+    // FIFOs, directories — e.g. --settings /dev/zero) and files over 2 MiB,
+    // so readFileSync never ingests an unbounded / multi-GB payload.
+    const stats = getFsImplementation().statSync(resolvedPath)
+    if (!stats.isFile()) {
+      return {
+        settings: null,
+        errors: [
+          {
+            file: path,
+            path: '',
+            message: `Settings file is not a regular file: ${path}`,
+          },
+        ],
+      }
+    }
+    if (stats.size > MAX_SETTINGS_FILE_BYTES) {
+      return {
+        settings: null,
+        errors: [
+          {
+            file: path,
+            path: '',
+            message: `Settings file exceeds the 2MiB limit: ${path}`,
+          },
+        ],
+      }
+    }
     const content = readFileSync(resolvedPath)
 
     if (content.trim() === '') {
