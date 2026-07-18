@@ -92,6 +92,8 @@ export function subprocessEnv(): NodeJS.ProcessEnv {
       process.env.CLAUDE_CODE_SESSION_ID = sid
     }
   }
+  // M8 (2.1.214): CLAUDE_PID so the pkill shell shim can detect self-match.
+  process.env.CLAUDE_PID = String(process.pid)
   // CCR upstreamproxy: inject HTTPS_PROXY + CA bundle vars so curl/gh/python
   // in agent subprocesses route through the local relay. Returns {} when the
   // proxy is disabled or not registered (non-CCR), so this is a no-op outside

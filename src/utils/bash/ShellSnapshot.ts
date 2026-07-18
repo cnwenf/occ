@@ -329,6 +329,24 @@ FIND_GREP_FUNC_END
     `
   }
 
+  // M8 (2.1.214): pkill -f self-match shim. Injected into the shell snapshot
+  // so `declare -f pkill` prints the shim. At execution time, if the pattern
+  // matches the CLI's own PID (CLAUDE_PID), refuse + return 1 with the
+  // official stderr message. Mirrors official Claude Code 2.1.214.
+  content += `
+    # M8 (2.1.214): pkill -f self-match shim
+    cat >> "$SNAPSHOT_FILE" << 'PKILL_SHIM_END'
+function pkill() {
+  local _pattern="$1"
+  if [ -n "\${CLAUDE_PID}" ] && pgrep -f "$_pattern" 2>/dev/null | grep -qx "$CLAUDE_PID"; then
+    echo "pkill: refusing to run - this pattern matches the Claude CLI process (PID $CLAUDE_PID). Narrow the pattern, or target your own children with \`pkill -P $$ ...\`." >&2
+    return 1
+  fi
+  command pkill "$@"
+}
+PKILL_SHIM_END
+  `
+
   // Add PATH to the file
   content += `
 
@@ -421,6 +439,7 @@ export const createAndSaveSnapshot = async (
 
   logForDebugging(`Creating shell snapshot for ${shellType} (${binShell})`)
 
+  // biome-ignore lint/suspicious/noAsyncPromiseExecutor: pre-existing
   return new Promise(async resolve => {
     try {
       const configFile = getConfigFile(binShell)

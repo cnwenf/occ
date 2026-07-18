@@ -467,6 +467,17 @@ function loadSettingsFromFlag(settingsFile: string): void {
         resolvedPath: resolvedSettingsPath
       } = safeResolvePath(getFsImplementation(), settingsFile);
       try {
+        // M9 (2.1.214): stat BEFORE readFileSync — fatal abort for large/device
+        // files (official: "Error: Settings file exceeds the 2MiB limit: <path>").
+        const stats = getFsImplementation().statSync(resolvedSettingsPath);
+        if (!stats.isFile()) {
+          process.stderr.write(chalk.red(`Error: Settings file is not a regular file: ${resolvedSettingsPath}\n`));
+          process.exit(1);
+        }
+        if (stats.size > 2 * 1024 * 1024) {
+          process.stderr.write(chalk.red(`Error: Settings file exceeds the 2MiB limit: ${resolvedSettingsPath}\n`));
+          process.exit(1);
+        }
         readFileSync(resolvedSettingsPath, 'utf8');
       } catch (e) {
         if (isENOENT(e)) {
