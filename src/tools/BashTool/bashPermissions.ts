@@ -1359,6 +1359,88 @@ function filterRulesByContentsMatchingInput(
     .map(([, rule]) => rule)
 }
 
+/**
+ * M7 (Claude Code 2.1.214): quote-aware tokenizer for docker-redirect flag
+ * detection. Splits on whitespace + compound separators (&& ; | ( ); keeps `&&`
+ * as one token. Not a full bash tokenizer — only enough to locate
+ * docker/podman command positions and their flag args without substring false
+ * hits (no `includes`: `--url-list` must NOT match `--url`).
+ */
+function tokenizeForFlags(command: string): string[] {
+  const tokens: string[] = []
+  let cur = ''
+  let quote: '' | "'" | '"' = ''
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i]
+    if (quote) {
+      if (c === quote) quote = ''
+      else cur += c
+      continue
+    }
+    if (c === "'" || c === '"') {
+      quote = c
+      continue
+    }
+    if (c === '&' && command[i + 1] === '&') {
+      if (cur) { tokens.push(cur); cur = '' }
+      tokens.push('&&')
+      i++
+      continue
+    }
+    if (c === ';' || c === '|' || c === '(') {
+      if (cur) { tokens.push(cur); cur = '' }
+      tokens.push(c)
+      continue
+    }
+    if (c === ' ' || c === '\t' || c === '\n') {
+      if (cur) { tokens.push(cur); cur = '' }
+      continue
+    }
+    cur += c
+  }
+  if (cur) tokens.push(cur)
+  return tokens
+}
+
+const SEPARATOR_TOKENS = new Set(['&&', ';', '|', '('])
+
+/**
+ * M7 (Claude Code 2.1.214): true iff a docker/podman command in `command`
+ * carries a daemon-redirect flag. `--url`/`--connection`/`--identity` (docker
+ * or podman) + `--remote` (podman only — Podman's remote mode; for plain
+ * docker `--remote` is an unknown flag, not a redirect). Token equality or
+ * `--flag=` prefix; never `includes` (avoids `--url-list` etc.). Covers both
+ * `--flag value` (space) and `--flag=value` (equals). docker/podman must be at
+ * a command-start position (start, or after `&&`/`;`/`|`/`(`) so
+ * `echo docker --url=x` is NOT a redirect.
+ */
+export function hasDockerDaemonRedirectFlag(command: string): boolean {
+  if (!command) return false
+  const tokens = tokenizeForFlags(command)
+  let commandStart = true
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!
+    if (SEPARATOR_TOKENS.has(t)) {
+      commandStart = true
+      continue
+    }
+    if (commandStart && (t === 'docker' || t === 'podman')) {
+      for (let j = i + 1; j < tokens.length; j++) {
+        const a = tokens[j]!
+        if (SEPARATOR_TOKENS.has(a)) break
+        if (a === '--url' || a.startsWith('--url=')) return true
+        if (a === '--connection' || a.startsWith('--connection=')) return true
+        if (a === '--identity' || a.startsWith('--identity=')) return true
+        if (t === 'podman' && (a === '--remote' || a.startsWith('--remote='))) {
+          return true
+        }
+      }
+    }
+    commandStart = false
+  }
+  return false
+}
+
 function matchingRulesForInput(
   input: z.infer<typeof BashTool.inputSchema>,
   toolPermissionContext: ToolPermissionContext,
@@ -1411,12 +1493,23 @@ function matchingRulesForInput(
         { skipCompoundCheck },
       )
 
+  // M7 (Claude Code 2.1.214): docker/podman daemon-redirect flags
+  // (--url/--connection/--identity, + --remote for podman) must prompt, not
+  // auto-allow via a prefix rule — otherwise `docker --url=tcp://evil ps` would
+  // slip past `Bash(docker:*)` and redirect the daemon to an attacker endpoint.
+  // Clear allow matches so the command falls to default ask. Only the allow
+  // side is touched; deny/ask matching is unchanged (deny still wins).
+  const dockerRedirectOverridesAllow =
+    matchingAllowRules.length > 0 && hasDockerDaemonRedirectFlag(input.command)
   return {
     matchingDenyRules,
     matchingAskRules,
-    matchingAllowRules,
+    matchingAllowRules: dockerRedirectOverridesAllow ? [] : matchingAllowRules,
   }
 }
+
+/** @internal — exported for M7 integration testing. */
+export { matchingRulesForInput as _matchingRulesForInputForTesting }
 
 /**
  * Checks if the subcommand is an exact match for a permission rule
