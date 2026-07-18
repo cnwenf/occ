@@ -2312,6 +2312,23 @@ export function hasZshSubscriptInConditional(command: string): boolean {
   return false
 }
 
+/** M5 (CC 2.1.214): help/man with command substitutions, backtick, or backslash
+ * paths no longer auto-approved as read-only. Plain `man ls`/`help ls` still OK. */
+export function hasUnsafeHelpManForm(command: string): boolean {
+  if (!command) return false
+  const tokens = tokenizeForFlags(command)
+  let commandStart = true
+  for (const t of tokens) {
+    if (SEPARATOR_TOKENS.has(t)) { commandStart = true; continue }
+    if (commandStart && (t === 'help' || t === 'man')) {
+      if (command.includes('$(') || command.includes('`') || /\\/.test(command)) return true
+      return false
+    }
+    commandStart = false
+  }
+  return false
+}
+
 export async function bashToolHasPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
@@ -2427,6 +2444,18 @@ export async function bashToolHasPermission(
       return {
         behavior: 'ask',
         message: 'zsh subscript/modifier in [[ ]] conditional requires confirmation.',
+      }
+    }
+  }
+
+  // M5 (2.1.214): help/man with command substitutions, backticks, or
+  // backslash paths no longer auto-approved as read-only. Plain forms OK.
+  {
+    const mode = appState.toolPermissionContext.mode
+    if (mode !== 'bypassPermissions' && hasUnsafeHelpManForm(input.command)) {
+      return {
+        behavior: 'ask',
+        message: 'help/man with command substitution or backslash path requires confirmation.',
       }
     }
   }
