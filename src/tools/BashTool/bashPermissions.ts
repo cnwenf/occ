@@ -2,6 +2,7 @@ import { feature } from 'src/utils/featureFlags.js'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import { homedir } from 'os'
 import { isAbsolute, resolve, sep } from 'path'
+import { readFileSync } from 'node:fs'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import {
@@ -2203,6 +2204,94 @@ export async function executeAsyncClassifierCheck(
 /**
  * The main implementation to check if we need to ask for user permission to call BashTool with a given input
  */
+/**
+ * M8 (Claude Code 2.1.214): pure — does `command` (a `pkill -f` invocation)
+ * carry a pattern that matches `selfCmdline`? Returns { pattern } if so, else
+ * null. pkill -f matches processes by full cmdline (ERE); a self-match would
+ * kill the CLI session.
+ *
+ * - `-f` detected in combined short-flags (`-9f`, `-f9`) via `includes('f')`
+ *   on any `-XYZ` single-dash combo (NOT `--long`).
+ * - pattern = first non-flag token after pkill (token NOT starting with `-`).
+ * - ERE approximated with `new RegExp(pattern)`; invalid ERE → null (pkill
+ *   errors+exits without killing; let it self-protect).
+ * - pkill must be at command-start (start / after `&&`/`;`/`|`/`(`) so
+ *   `echo pkill -f x` is NOT a match.
+ * - `pgrep`/`killall` out of scope (changelog: `pkill -f` only).
+ */
+export function pkillSelfMatchDeny(
+  command: string,
+  selfCmdline: string,
+): { pattern: string } | null {
+  if (!command || !selfCmdline) return null
+  const tokens = tokenizeForFlags(command)
+  let commandStart = true
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i]!
+    if (SEPARATOR_TOKENS.has(t)) {
+      commandStart = true
+      continue
+    }
+    if (commandStart && t === 'pkill') {
+      let hasF = false
+      let pattern: string | null = null
+      for (let j = i + 1; j < tokens.length; j++) {
+        const a = tokens[j]!
+        if (SEPARATOR_TOKENS.has(a)) break
+        if (a.startsWith('--')) continue // long flag (--signal etc.); pkill -f is short
+        if (a.startsWith('-') && a.length > 1) {
+          // short-flag combo; any 'f' → full-match mode
+          if (a.includes('f')) hasF = true
+          continue
+        }
+        // first non-flag token = pattern
+        if (pattern === null) pattern = a
+      }
+      if (!hasF || pattern === null) return null
+      try {
+        if (new RegExp(pattern).test(selfCmdline)) return { pattern }
+      } catch {
+        // invalid ERE — pkill will error without killing; degrade
+        return null
+      }
+      return null
+    }
+    commandStart = false
+  }
+  return null
+}
+
+/** OCC's own process cmdline — ground truth for pkill -f self-match. Uses
+ * /proc/self/cmdline (Linux; what pkill actually matches against), fallback
+ * process.argv.join(' ') if unreadable (better次优 than not blocking). */
+function getSelfCmdline(): string {
+  try {
+    const buf = readFileSync('/proc/self/cmdline')
+    const joined = buf
+      .toString()
+      .split('\0')
+      .filter(Boolean)
+      .join(' ')
+    if (joined) return joined
+  } catch {
+    // not Linux / unreadable
+  }
+  return process.argv.join(' ')
+}
+
+/** M8: returns a deny reason if `command` is `pkill -f <pattern>` matching the
+ * CLI's own process, else null. */
+export function findPkillSelfMatchBlock(command: string): {
+  reason: string
+} | null {
+  const m = pkillSelfMatchDeny(command, getSelfCmdline())
+  return m
+    ? {
+        reason: `pkill -f pattern matches the CLI's own process: ${m.pattern}`,
+      }
+    : null
+}
+
 export async function bashToolHasPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
@@ -2237,6 +2326,29 @@ export async function bashToolHasPermission(
       return {
         behavior: 'deny',
         message: `Destructive command blocked: ${subBlock.reason}`,
+        decisionReason,
+      }
+    }
+  }
+
+  // M8 (2.1.214): `pkill -f <pattern>` matching the CLI's own process would
+  // kill the session (Linux). Deny before execution — ALL modes (incl
+  // bypassPermissions): self-kill is catastrophic (data loss), not a prompt
+  // decision; mirrors findCatastrophicSubstitutionBlock's ALL-modes deny.
+  // binary-verify caveat: bypass behavior not deterministically scriptable
+  // (-p default-allow + would kill the test process); ALL-modes chosen per
+  // the catastrophic-substitution precedent + reviewer safety lean.
+  {
+    const block = findPkillSelfMatchBlock(input.command)
+    if (block !== null) {
+      logEvent('tengu_bash_pkill_self_match', {})
+      const decisionReason: PermissionDecisionReason = {
+        type: 'other' as const,
+        reason: `Destructive command blocked: ${block.reason}`,
+      }
+      return {
+        behavior: 'deny',
+        message: `Destructive command blocked: ${block.reason}`,
         decisionReason,
       }
     }
