@@ -7,9 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. Currently caught up through
-Claude Code `2.1.214` — see `docs/upstream-version-gap-occ10.md` (OCC-10) for the
-2.1.212→2.1.214 version-gap report, and `docs/upstream-version-gap-occ9.md` (OCC-9)
+Claude Code `2.1.215` — see `docs/upstream-version-gap-occ11.md` (OCC-11) for the
+2.1.214→2.1.215 version-gap report, `docs/upstream-version-gap-occ10.md` (OCC-10)
+for the 2.1.212→2.1.214 wave, and `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
+
+## 2.1.276 - 2026-07-19
+
+- **Catch up to Claude Code `2.1.215` (OCC-11).** OCC now aligns to official Claude Code `2.1.215` (was `2.1.214`). The entire 2.1.215 changelog is a single behavioral change: the model no longer auto-invokes the `/verify` and `/code-review` skills on its own — they are manual-only, invoked explicitly with `/verify` or `/code-review`. The skills themselves are unchanged.
+- **No feature port required.** OCC never ported the auto-invocation that 2.1.215 removes (no auto-run logic, no system-prompt instruction to auto-run `/verify`/`/code-review` — grep-verified). OCC's behavior already matched 2.1.215: `/verify` and `/code-review` are manual-only skills. Binary-verified (2.1.214 vs 2.1.215 ELF): both skills still present, no new env vars / flags / settings / commands / contextual providers.
+- **E2e (behavior-driven-done gate, `occ -p` pipe mode on built `dist/cli.js`):** (1) backend smoke — `occ -p` responds, prints `OCC 2.1.276`, no hang; (2) **core 2.1.215 contract verified** — after a work-producing turn (file create), the `Skill` tool was never auto-invoked for `/verify` or `/code-review` (the only "skill" mention was the SessionStart hook's stale prior-session summary, which itself says STALE-BY-DEFAULT / MUST NOT be re-executed) → silent unless explicitly invoked, matching official 2.1.215; (3) `/code-review low` on explicit manual invocation runs and emits a Code Review Report. Note: `/verify` is `USER_TYPE=ant`-gated in OCC (one of 6 ant-gated bundled skills) — pre-existing exposure, not a 2.1.215 regression and not auto-run; flagged separately. (Interactive tmux REPL didn't render in this sandbox — MCP-init stall / Ink alt-screen capture quirk; pipe mode reached the behavior per the skill's "prefer -p when it can reach the behavior" guidance.)
+- **Doc bump:** README / README.zh-CN badges + CLAUDE.md "tracks `2.1.214`"→`2.1.215`; catch-up pointer updated to `docs/upstream-version-gap-occ11.md`.
 
 ## 2.1.275 - 2026-07-19
 
