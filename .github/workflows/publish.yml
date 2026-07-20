@@ -10,7 +10,7 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  contents: write   # needed by `gh release create` to publish the Release object
 
 jobs:
   publish:
@@ -49,3 +49,23 @@ jobs:
           npm publish --access public
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # 在 npm publish 成功后为该 tag 建一条 GitHub Release 条目。
+      # GitHub 的 Releases 页与 git tag 是两个对象：打 tag 只产生 /tags 条目，
+      # 不会自动在 /releases 页落一条。这里补上，让两个页面一致。
+      # 用 Actions 自带的 GITHUB_TOKEN（无需额外 secret）；idempotent——
+      # 重跑 workflow 时若 Release 已存在则跳过，避免 CI 红。
+      - name: Create GitHub Release
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists — skipping creation"
+          else
+            # tag 已经指向目标 commit，无需 --target（传短 SHA 会被 API 拒为
+            # invalid target_commitish，传全 SHA 又冗余；用 tag 默认 commit 即可）
+            gh release create "$GITHUB_REF_NAME" \
+              --generate-notes \
+              --title "$GITHUB_REF_NAME"
+          fi
