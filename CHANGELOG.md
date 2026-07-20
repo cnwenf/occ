@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. Currently caught up through
-Claude Code `2.1.215` — see `docs/upstream-version-gap-occ11.md` (OCC-11) for the
-2.1.214→2.1.215 version-gap report, `docs/upstream-version-gap-occ10.md` (OCC-10)
-for the 2.1.212→2.1.214 wave, and `docs/upstream-version-gap-occ9.md` (OCC-9)
+Claude Code `2.1.215` — see `docs/upstream-version-gap-occ13.md` (OCC-13) for the
+2026-07-20 no-gap confirmation (OCC already at official latest `2.1.215`),
+`docs/upstream-version-gap-occ11.md` (OCC-11) for the 2.1.214→2.1.215 version-gap report,
+`docs/upstream-version-gap-occ10.md` (OCC-10) for the 2.1.212→2.1.214 wave, and
+`docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
 ## 2.1.276 - 2026-07-19
