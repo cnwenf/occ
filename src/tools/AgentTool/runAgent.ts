@@ -60,7 +60,12 @@ import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterH
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
 import { executeSubagentStartHooks } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
-import { assertSubagentCapAndIncrement } from '../../utils/sessionLimits.js'
+import {
+  assertSubagentCapAndIncrement,
+  claimConcurrentSubagentSlot,
+  getMaxSubagentSpawnDepth,
+} from '../../utils/sessionLimits.js'
+import { getTotalCost } from '../../cost-tracker.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
@@ -352,14 +357,29 @@ export async function* runAgent({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
 
-  // B9 (2.1.172): subagent nesting depth cap. Default 0 (top-level), cap = 5.
-  const SUBAGENT_DEPTH_CAP = 5
-  const depth = subagentDepth ?? 0
-  if (depth >= SUBAGENT_DEPTH_CAP) {
+  // CC 2.1.217: nested-subagent spawn-depth cap (default 1 = no nesting).
+  // Official AgentTool.call: `let m = parentDepth, g = getMaxSubagentSpawnDepth();
+  // if (m >= g) throw "Subagent nesting limit reached (depth ${m} of ${g})..."`.
+  // OCC's `subagentDepth` is the CHILD's depth (parent + 1), so parent depth =
+  // subagentDepth - 1. Default max=1 → a depth-1 subagent (parent 0) may spawn,
+  // but that depth-1 subagent (parent 1) may NOT spawn further (no nesting).
+  // Supersedes the B9 (2.1.172) hardcoded cap of 5.
+  const maxSpawnDepth = getMaxSubagentSpawnDepth()
+  const parentDepth = Math.max(0, (subagentDepth ?? 1) - 1)
+  if (parentDepth >= maxSpawnDepth) {
     logEvent('subagent_launch', 'subagent_depth_cap')
     throw new Error(
-      `Subagent nesting limit reached (depth ${depth} of ${SUBAGENT_DEPTH_CAP})`,
+      `Subagent nesting limit reached (depth ${parentDepth} of ${maxSpawnDepth}). Complete this task directly using your tools instead of spawning another agent. If the user explicitly requested deeper nesting, ask them to raise CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH.`,
     )
+  }
+
+  // CC 2.1.217 (#20): deny new subagent spawns once the USD budget cap is
+  // reached. Running background agents are halted in QueryEngine's budget
+  // path via killAllRunningAgentTasks; this guard denies NEW spawns at the
+  // source so a budget-exhausted session can't fan out further.
+  const maxBudgetUsd = toolUseContext.options?.maxBudgetUsd
+  if (maxBudgetUsd !== undefined && getTotalCost() >= maxBudgetUsd) {
+    throw new Error(`Reached maximum budget ($${maxBudgetUsd})`)
   }
 
   const resolvedAgentModel = getAgentModel(
@@ -814,6 +834,12 @@ export async function* runAgent({
   // Track the last recorded message UUID for parent chain continuity
   let lastRecordedUuid: UUID | null = initialMessages.at(-1)?.uuid ?? null
 
+  // CC 2.1.217: concurrent-running subagent cap (default 20). Claim a slot
+  // just before the run loop so the try/finally below guarantees release on
+  // settle (complete/abort/error). If claimConcurrentSubagentSlot throws
+  // (cap exceeded), it is before `try` → no slot taken → nothing to release.
+  const releaseConcurrentSubagentSlot = claimConcurrentSubagentSlot(toolUseContext)
+
   try {
     for await (const message of query({
       messages: initialMessages,
@@ -884,6 +910,10 @@ export async function* runAgent({
       agentDefinition.callback()
     }
   } finally {
+    // CC 2.1.217: release the concurrent-subagent slot claimed before the run
+    // loop. Idempotent (the registry's release fn guards double-release) and
+    // runs on normal completion, abort, or error.
+    releaseConcurrentSubagentSlot()
     // Clean up agent-specific MCP servers (runs on normal completion, abort, or error)
     await mcpCleanup()
     // 2.1.186+: release the session skill allowlist scoped to this agent.

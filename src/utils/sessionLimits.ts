@@ -130,3 +130,38 @@ export function assertSubagentCapAndIncrement(
   }
   context.taskRegistry?.incrementTotalAgentSpawns()
 }
+
+/**
+ * CC 2.1.217: claim a concurrent-running subagent slot.
+ *
+ * Mirrors the official spawn-site flow
+ *   D = () => { let Me = getMaxConcurrentSubagents();
+ *                if (taskRegistry.getConcurrentSubagents() < Me) return;   // under cap → OK
+ *                ... growthbook `tengu_amber_kestrel` + ultracode exemptions (OCC stubs both) ...
+ *                throw "Concurrent subagent limit reached. You can run ${Me} subagents at once. ..." }
+ *   U = async () => { let Me = D(); if (Me) throw Me; return taskRegistry.takeConcurrencySlot() }
+ *
+ * I.e.: if the running count is already >= the cap (default 20), throw the
+ * official `subagent_concurrency_cap` message; otherwise take a slot and
+ * return its idempotent release function. The caller MUST release the slot
+ * when the subagent settles (complete/abort/error) — typically in a
+ * `finally` block — so the running count stays accurate.
+ *
+ * OCC stubs the two official exemptions (growthbook flag
+ * `tengu_amber_kestrel`, and the ultracode/effort/model exemption `j8(...)`),
+ * so the cap applies uniformly; that is stricter than upstream when ultracode
+ * is on, but ultracode itself is feature-flagged in OCC. The headless/noop
+ * registry returns 0 running → never blocks (matches the official no-op stub).
+ */
+export function claimConcurrentSubagentSlot(
+  context: ContextWithTaskRegistry,
+): () => void {
+  const max = getMaxConcurrentSubagents()
+  const running = context.taskRegistry?.getConcurrentSubagents() ?? 0
+  if (running >= max) {
+    throw new Error(
+      `Concurrent subagent limit reached. You can run ${max} subagents at once. Do not retry. If the user wants more concurrent subagents, ask them to increase CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS.`,
+    )
+  }
+  return context.taskRegistry?.takeConcurrencySlot() ?? (() => {})
+}

@@ -18,6 +18,12 @@ export interface TaskRegistry {
   getWebSearchCalls(): number
   incrementWebSearchCalls(): void
   resetWebSearchCalls(): void
+  // CC 2.1.217: concurrent-running subagent cap. Slot pattern mirroring the
+  // official `takeConcurrencySlot`/`getConcurrentSubagents`: take a slot on
+  // spawn (inc), return an idempotent release function to call on settle
+  // (dec, clamped at 0). `getConcurrentSubagents` reads the running count.
+  takeConcurrencySlot(): () => void
+  getConcurrentSubagents(): number
 }
 
 /**
@@ -27,6 +33,8 @@ export interface TaskRegistry {
 export class TaskRegistryImpl implements TaskRegistry {
   private totalAgentSpawns = 0
   private webSearchCalls = 0
+  // CC 2.1.217: concurrently-running subagent count (slot pattern).
+  private runningSubagents = 0
 
   getTotalAgentSpawns(): number {
     return this.totalAgentSpawns
@@ -51,6 +59,31 @@ export class TaskRegistryImpl implements TaskRegistry {
   resetWebSearchCalls(): void {
     this.webSearchCalls = 0
   }
+
+  /**
+   * Take a concurrency slot (increment running count), returning an
+   * idempotent release function. Mirrors the official `takeConcurrencySlot`:
+   *   t(i => ({...i, runningSubagents: i.runningSubagents + 1}));
+   *   let o = false;
+   *   return () => { if (o) return; o = true;
+   *     t(i => ({...i, runningSubagents: Math.max(0, i.runningSubagents - 1)})) }
+   * OCC uses a mutable counter (matching the existing totalAgentSpawns
+   * idiom) rather than the immutable-state store; the release is still
+   * idempotent (the `released` flag) and clamped at 0, matching upstream.
+   */
+  takeConcurrencySlot(): () => void {
+    this.runningSubagents += 1
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      this.runningSubagents = Math.max(0, this.runningSubagents - 1)
+    }
+  }
+
+  getConcurrentSubagents(): number {
+    return this.runningSubagents
+  }
 }
 
 /** Object literal is fine — biome's noStaticOnlyClass is off anyway. */
@@ -66,6 +99,14 @@ const noopRegistry: TaskRegistry = {
   },
   incrementWebSearchCalls() {},
   resetWebSearchCalls() {},
+  // CC 2.1.217: headless never blocks — no-op slot (no-op release) + 0
+  // concurrent subagents. Mirrors the official no-op stub.
+  takeConcurrencySlot() {
+    return () => {}
+  },
+  getConcurrentSubagents() {
+    return 0
+  },
 }
 
 /**

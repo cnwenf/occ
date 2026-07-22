@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
   assertSubagentCapAndIncrement,
+  claimConcurrentSubagentSlot,
   getMaxConcurrentSubagents,
   getMaxSubagentsPerSession,
   getMaxSubagentSpawnDepth,
@@ -343,5 +344,94 @@ describe('getMaxSubagentSpawnDepth (CC 2.1.217, Stage 1)', () => {
   test('fractional value falls back to 1 (must be a positive integer)', () => {
     process.env[DEPTH_ENV] = '2.5'
     expect(getMaxSubagentSpawnDepth()).toBe(1)
+  })
+})
+
+describe('claimConcurrentSubagentSlot (CC 2.1.217, Stage 2)', () => {
+  test('under the cap: returns a release fn and increments running count', () => {
+    // Arrange — default cap 20, empty registry (0 running)
+    const reg = new TaskRegistryImpl()
+    const context = { taskRegistry: reg }
+
+    // Act
+    const release = claimConcurrentSubagentSlot(context)
+
+    // Assert — slot taken
+    expect(typeof release).toBe('function')
+    expect(reg.getConcurrentSubagents()).toBe(1)
+
+    // release decrements back
+    release()
+    expect(reg.getConcurrentSubagents()).toBe(0)
+  })
+
+  test('at the cap: throws the official subagent_concurrency_cap message', () => {
+    // Arrange — default cap 20; pre-fill to the cap
+    const reg = new TaskRegistryImpl()
+    for (let i = 0; i < 20; i++) reg.takeConcurrencySlot()
+    const context = { taskRegistry: reg }
+
+    // Act + Assert
+    expect(() => claimConcurrentSubagentSlot(context)).toThrow(
+      /Concurrent subagent limit reached\. You can run 20 subagents at once\. Do not retry\. If the user wants more concurrent subagents, ask them to increase CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS\./,
+    )
+    // No slot taken on a denied claim
+    expect(reg.getConcurrentSubagents()).toBe(20)
+  })
+
+  test('above the cap: also throws (>= semantics)', () => {
+    const reg = new TaskRegistryImpl()
+    for (let i = 0; i < 25; i++) reg.takeConcurrencySlot()
+    expect(() =>
+      claimConcurrentSubagentSlot({ taskRegistry: reg }),
+    ).toThrow(/Concurrent subagent limit reached/)
+  })
+
+  test('env override raises the cap (default 20 → 3)', () => {
+    process.env[CONCURRENT_ENV] = '3'
+    const reg = new TaskRegistryImpl()
+    reg.takeConcurrencySlot()
+    reg.takeConcurrencySlot()
+    // 2 < 3 → allowed
+    const release = claimConcurrentSubagentSlot({ taskRegistry: reg })
+    expect(reg.getConcurrentSubagents()).toBe(3)
+    release()
+    // Now at cap (3) → next claim throws
+    reg.takeConcurrencySlot()
+    expect(() =>
+      claimConcurrentSubagentSlot({ taskRegistry: reg }),
+    ).toThrow(/You can run 3 subagents at once/)
+  })
+
+  test('the thrown error names CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS', () => {
+    const reg = new TaskRegistryImpl()
+    for (let i = 0; i < 20; i++) reg.takeConcurrencySlot()
+    let caught: Error | null = null
+    try {
+      claimConcurrentSubagentSlot({ taskRegistry: reg })
+    } catch (e) {
+      caught = e as Error
+    }
+    expect(caught).not.toBeNull()
+    expect(caught!.message).toContain('CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS')
+  })
+
+  test('headless/noop registry never blocks (getConcurrentSubagents=0)', () => {
+    // Arrange — noop registry returns 0 running → always under cap
+    const context = { taskRegistry: getNoopTaskRegistry() }
+
+    // Act + Assert — claim succeeds, release is a no-op
+    const release = claimConcurrentSubagentSlot(context)
+    expect(() => release()).not.toThrow()
+    expect(context.taskRegistry.getConcurrentSubagents()).toBe(0)
+  })
+
+  test('undefined taskRegistry is treated as 0 running (does not block)', () => {
+    // Arrange — no registry (defensive)
+    const context = { taskRegistry: undefined }
+
+    // Act — claim does not throw; release is a no-op
+    const release = claimConcurrentSubagentSlot(context)
+    expect(() => release()).not.toThrow()
   })
 })
