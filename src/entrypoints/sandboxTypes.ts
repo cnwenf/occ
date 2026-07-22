@@ -55,6 +55,23 @@ export const SandboxNetworkConfigSchema = lazySchema(() =>
 export const SandboxFilesystemConfigSchema = lazySchema(() =>
   z
     .object({
+      // 2.1.216: skip filesystem isolation while keeping network egress control.
+      // Stage 1 adds the schema field only; the bwrap/seccomp wiring that
+      // actually skips filesystem rules is security-sensitive and lands in a
+      // later, security-reviewed stage. Official behavior: when true, the
+      // sandbox drops filesystem deny rules (`yl.filesystem.disabled` short-
+      // circuits the deny-path computation) while keeping network isolation.
+      disabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'macOS and Linux/WSL only: skip filesystem isolation entirely while ' +
+            'keeping network and seccomp isolation. Ignored on native Windows, ' +
+            'where the sandboxed process runs as a separate user with no ' +
+            'inherent rights, so skipping the filesystem rules would withhold ' +
+            'every access grant rather than loosen them — filesystem isolation ' +
+            'stays on there.',
+        ),
       allowWrite: z
         .array(z.string())
         .optional()

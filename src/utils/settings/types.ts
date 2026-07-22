@@ -905,6 +905,18 @@ export const SettingsSchema = lazySchema(() =>
           'When false, prompt suggestions are disabled. When absent or true, ' +
             'prompt suggestions are enabled.',
         ),
+      // 2.1.217: emoji shortcode typeahead in the prompt input.
+      // Default-on: enabled unless explicitly false (official usage is
+      // `emojiCompletionEnabled !== false`). Stage 1 adds the schema + default
+      // only; the prompt-input UI wiring lands in Stage 6.
+      emojiCompletionEnabled: z
+        .boolean()
+        .optional()
+        .describe(
+          'When false, the :emoji: shortcode typeahead (the suggestion popup ' +
+            'and the :name: inline replacement) is disabled. When absent or ' +
+            'true, it is enabled.',
+        ),
       showClearContextOnPlanAccept: z
         .boolean()
         .optional()
