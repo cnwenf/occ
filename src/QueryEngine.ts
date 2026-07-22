@@ -31,6 +31,7 @@ import {
   getTotalAPIDuration,
   getTotalCost,
 } from './cost-tracker.js'
+import { killAllRunningAgentTasks } from './tasks/LocalAgentTask/LocalAgentTask.js'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { loadMemoryPrompt } from './memdir/memdir.js'
 import { hasAutoMemPathOverride } from './memdir/paths.js'
@@ -1009,6 +1010,12 @@ export class QueryEngine {
 
       // Check if USD budget has been exceeded
       if (maxBudgetUsd !== undefined && getTotalCost() >= maxBudgetUsd) {
+        // CC 2.1.217 (#20): halt running background subagents once the budget
+        // cap is reached (new spawns are denied at the runAgent spawn site).
+        // killAllRunningAgentTasks aborts every running local_agent task's
+        // abortController and marks it killed — the same hook ESC uses in
+        // coordinator mode to stop all subagents.
+        killAllRunningAgentTasks(getAppState().tasks, setAppState)
         if (persistSession) {
           if (
             isEnvTruthy(process.env.CLAUDE_CODE_EAGER_FLUSH) ||
