@@ -538,6 +538,92 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
       expect(b!.mechanism).toBe('bash -c')
     })
 
+    // #194 repass2 (direction 2): arg-taking-flag value ambiguity — the
+    // prior command-position walker stopped at the flag's VALUE and missed a
+    // later shell. These all escaped before; now blocked via "wrapper +
+    // shell-anywhere-after".
+    test('exec bash -c (exec wrapper) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `exec bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('sudo -u user bash -c (arg-taking flag -u value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `sudo -u user bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('env -C dir bash -c (env -C value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `env -C ${SHARED} bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('env -u VAR bash -c (env -u value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `env -u FOO bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('timeout 5 bash -c (timeout numeric value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `timeout 5 bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('pkexec bash -c (extended wrapper) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `pkexec bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('runuser -u root bash -c (extended wrapper, bare shell) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `runuser -u root bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      // runuser is a wrapper → bash (bare token) found after → block
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('su root bash -c (extended wrapper su) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `su root bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('chroot / bash -c (extended wrapper chroot) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `chroot / bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
     test('plain echo (no wrapper) -> ok', () => {
       expect(checkWorktreeGitRedirect('echo hi', WORKTREE, CWD)).toBeNull()
     })

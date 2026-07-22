@@ -249,34 +249,34 @@ const COMMAND_WRAPPERS = new Set([
   'doas',
   'stdbuf',
   'time',
+  'exec',
+  'pkexec',
+  'chroot',
+  'runuser',
+  'su',
 ])
 
 /**
- * Find a shell interpreter at COMMAND POSITION (not as an arg): argv[0] is a
- * shell, OR argv[0] is a `COMMAND_WRAPPERS` entry and the command word after
- * the wrapper's leading flags + KEY=VAL env assignments is a shell. Returns
- * the index, or -1. This narrows the previous "argv anywhere" scan so `bash`
- * appearing as a search string / filename (`grep -rn bash .`, `rg bash .`,
- * `git grep bash file`) is NOT mistaken for a shell wrapper.
+ * Find a shell-escape (security review #194 repass2, direction 2):
+ *   - argv[0] is a shell → return 0 (command-position shell).
+ *   - argv[0] is a `COMMAND_WRAPPERS` entry → scan the REST (argv[1:]) for a
+ *     shell ANYWHERE. This avoids the arg-taking-flag value ambiguity that
+ *     broke the prior command-position walker (`sudo -u user bash -c`,
+ *     `env -C dir bash -c`, `env -u VAR bash -c`, `timeout 5 bash -c` — the
+ *     walker stopped at the flag's value and missed the later shell).
+ *   - otherwise (argv[0] not a shell, not a wrapper) → -1: `bash`/`sh`
+ *     appearing as a search string / filename (`grep -rn bash .`,
+ *     `rg bash .`, `git grep bash file`) is NOT an escape.
+ * Returns the argv index of the shell, or -1.
  */
-function findShellAtCommandPosition(argv: string[]): number {
-  let i = 0
-  while (i < argv.length) {
-    const b = basename(argv[i] ?? '').toLowerCase()
-    if (SHELL_INTERPRETERS.has(b)) return i
-    if (COMMAND_WRAPPERS.has(b)) {
-      i++
-      // skip the wrapper's own leading flags (-E, -i, --preserve-env, …) +
-      // KEY=VAL env assignments (env FOO=bar …) until the command word.
-      while (
-        i < argv.length &&
-        ((argv[i] ?? '').startsWith('-') || ENV_ASSIGN_RE.test(argv[i] ?? ''))
-      ) {
-        i++
-      }
-      continue
-    }
-    break // not a shell, not a wrapper → command word isn't a shell
+function findShellEscapeIdx(argv: string[]): number {
+  if (argv.length === 0) return -1
+  const first = basename(argv[0] ?? '').toLowerCase()
+  if (SHELL_INTERPRETERS.has(first)) return 0
+  if (COMMAND_WRAPPERS.has(first)) {
+    return argv.findIndex(
+      (o, i) => i > 0 && SHELL_INTERPRETERS.has(basename(o ?? '').toLowerCase()),
+    )
   }
   return -1
 }
@@ -319,7 +319,7 @@ function checkShellWrapperObfuscation(
   // `eval "git …"`). Command-position only — `bash`/`sh` appearing as a
   // search string or filename (`grep -rn bash .`, `rg bash .`, `git grep
   // bash file`) is NOT mistaken for a shell wrapper.
-  const shellIdx = findShellAtCommandPosition(argv)
+  const shellIdx = findShellEscapeIdx(argv)
   if (shellIdx !== -1) {
     const rest = argv.slice(shellIdx + 1)
     const hasCFlag = rest.includes('-c')
