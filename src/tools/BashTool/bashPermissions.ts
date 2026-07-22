@@ -2423,32 +2423,37 @@ export async function bashToolHasPermission(
 
   // CC 2.1.216 #8: worktree-isolated subagents must not redirect git into the
   // shared/parent checkout via `git -C` / `--git-dir` / `--work-tree` /
-  // `GIT_DIR` / `GIT_WORK_TREE` / `--bare` (isolation escape). Gated on
-  // agentWorktree (only set for isolation: "worktree" subagents). bypass
-  // respects the explicit opt-out (consistent with M3/M4/M5).
+  // `GIT_DIR` / `GIT_WORK_TREE` / `GIT_COMMON_DIR` / `GIT_OBJECT_DIRECTORY`
+  // / `GIT_INDEX_FILE` / `GIT_SHALLOW_FILE` / `--bare` / `-c core.worktree=…`
+  // (isolation escape). Gated on agentWorktree (only set for isolation:
+  // "worktree" subagents).
+  //
+  // bypass-IMMUNE per the 2.1.217 ELF (point 2): the official's guard is
+  // `if (agentWorktree) { … return block }` with NO mode check — it's a
+  // shell-exec-time hard block that runs in every mode (unlike M3/M4/M5,
+  // which are bypass-skip). `behavior: 'deny'` is bypass-immune (same as the
+  // catastrophic-substitution guard), so this blocks even under
+  // --dangerously-skip-permissions.
   {
     if (context.agentWorktree) {
-      const mode = appState.toolPermissionContext.mode
-      if (mode !== 'bypassPermissions') {
-        const block = checkWorktreeGitRedirect(
-          input.command,
-          context.agentWorktree,
-          getCwd(),
-        )
-        if (block) {
-          logEvent('tengu_bash_worktree_git_redirect', {
-            mechanism: block.mechanism,
-            mode,
-          })
-          const decisionReason: PermissionDecisionReason = {
-            type: 'other' as const,
-            reason: block.reason,
-          }
-          return {
-            behavior: 'deny',
-            message: block.reason,
-            decisionReason,
-          }
+      const block = checkWorktreeGitRedirect(
+        input.command,
+        context.agentWorktree,
+        getCwd(),
+      )
+      if (block) {
+        logEvent('tengu_bash_worktree_git_redirect', {
+          mechanism: block.mechanism,
+          mode: appState.toolPermissionContext.mode,
+        })
+        const decisionReason: PermissionDecisionReason = {
+          type: 'other' as const,
+          reason: block.reason,
+        }
+        return {
+          behavior: 'deny',
+          message: block.reason,
+          decisionReason,
         }
       }
     }
