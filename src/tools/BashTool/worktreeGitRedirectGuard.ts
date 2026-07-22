@@ -212,6 +212,27 @@ const STDIN_FEED_WRAPPERS = new Set(['xargs', 'parallel'])
 const FIND_PERMATCH_FLAGS = new Set(['-execdir', '-okdir'])
 
 /**
+ * Shell interpreters that run a `-c` string or a scriptfile (Follow-up A
+ * supplement): `bash`/`sh`/`zsh`/`dash`/`fish`/`csh`/`ksh`/`tcsh` (+
+ * `rbash`). These are NOT in the official's `rLu` (builtins), so the official
+ * `ozg` doesn't catch `bash -c`/`sh -c`; OCC doesn't recursively parse `-c`
+ * strings, so `bash -c 'git -C /shared …'` is a direct worktree escape — block
+ * it at the ozg layer (security review decision; going beyond the official
+ * `ozg` by explicit leader sign-off, since OCC lacks -c recursion).
+ */
+const SHELL_INTERPRETERS = new Set([
+  'bash',
+  'sh',
+  'zsh',
+  'dash',
+  'fish',
+  'csh',
+  'ksh',
+  'tcsh',
+  'rbash',
+])
+
+/**
  * Official `ozg(e)`: detect an unverifiable wrapper around git in one
  * simple-command's argv. Returns a block (with the official reason) or null.
  *
@@ -240,6 +261,26 @@ function checkShellWrapperObfuscation(
       mechanism: 'find -execdir/-okdir',
       reason:
         'changes directory per match (find -execdir/-okdir) before running git, so its repository cannot be verified',
+    }
+  }
+  // Shell interpreter running a `-c` string or a scriptfile (bash -c 'git …',
+  // sh -c '…', bash script.sh) — the payload can't be verified to stay inside
+  // the worktree (OCC doesn't recurse into -c strings → direct escape, same
+  // class as `eval "git …"`). Minimum: `<shell> -c`; `<shell> <scriptfile>`
+  // is the same vector (mirrors `source script.sh`).
+  const shellIdx = argv.findIndex(o =>
+    SHELL_INTERPRETERS.has(basename(o).toLowerCase()),
+  )
+  if (shellIdx !== -1) {
+    const rest = argv.slice(shellIdx + 1)
+    const hasCFlag = rest.includes('-c')
+    const hasScriptfile = rest.some(a => a.length > 0 && !a.startsWith('-'))
+    if (hasCFlag || hasScriptfile) {
+      const name = basename(argv[shellIdx])
+      return {
+        mechanism: `${name} -c`,
+        reason: `runs a string through ${name} -c, which can't be verified to stay inside the worktree; run the command directly instead`,
+      }
     }
   }
   // `.` matches only at position 0; other builtins match anywhere (official `rLu`).
