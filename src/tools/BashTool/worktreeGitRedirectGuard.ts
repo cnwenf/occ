@@ -233,6 +233,55 @@ const SHELL_INTERPRETERS = new Set([
 ])
 
 /**
+ * Command wrappers that exec their args as a command (the leader's list,
+ * aligned with `bashPermissions`'s `BARE_SHELL_PREFIXES` wrapper subset):
+ * env/sudo/command/nice/nohup/timeout/doas/stdbuf/time. Used to find the real
+ * command word after leading wrappers (so `sudo bash -c …`, `env FOO=bar
+ * bash …` still catch the shell at command position).
+ */
+const COMMAND_WRAPPERS = new Set([
+  'env',
+  'sudo',
+  'command',
+  'nice',
+  'nohup',
+  'timeout',
+  'doas',
+  'stdbuf',
+  'time',
+])
+
+/**
+ * Find a shell interpreter at COMMAND POSITION (not as an arg): argv[0] is a
+ * shell, OR argv[0] is a `COMMAND_WRAPPERS` entry and the command word after
+ * the wrapper's leading flags + KEY=VAL env assignments is a shell. Returns
+ * the index, or -1. This narrows the previous "argv anywhere" scan so `bash`
+ * appearing as a search string / filename (`grep -rn bash .`, `rg bash .`,
+ * `git grep bash file`) is NOT mistaken for a shell wrapper.
+ */
+function findShellAtCommandPosition(argv: string[]): number {
+  let i = 0
+  while (i < argv.length) {
+    const b = basename(argv[i] ?? '').toLowerCase()
+    if (SHELL_INTERPRETERS.has(b)) return i
+    if (COMMAND_WRAPPERS.has(b)) {
+      i++
+      // skip the wrapper's own leading flags (-E, -i, --preserve-env, …) +
+      // KEY=VAL env assignments (env FOO=bar …) until the command word.
+      while (
+        i < argv.length &&
+        ((argv[i] ?? '').startsWith('-') || ENV_ASSIGN_RE.test(argv[i] ?? ''))
+      ) {
+        i++
+      }
+      continue
+    }
+    break // not a shell, not a wrapper → command word isn't a shell
+  }
+  return -1
+}
+
+/**
  * Official `ozg(e)`: detect an unverifiable wrapper around git in one
  * simple-command's argv. Returns a block (with the official reason) or null.
  *
@@ -263,14 +312,14 @@ function checkShellWrapperObfuscation(
         'changes directory per match (find -execdir/-okdir) before running git, so its repository cannot be verified',
     }
   }
-  // Shell interpreter running a `-c` string or a scriptfile (bash -c 'git …',
-  // sh -c '…', bash script.sh) — the payload can't be verified to stay inside
-  // the worktree (OCC doesn't recurse into -c strings → direct escape, same
-  // class as `eval "git …"`). Minimum: `<shell> -c`; `<shell> <scriptfile>`
-  // is the same vector (mirrors `source script.sh`).
-  const shellIdx = argv.findIndex(o =>
-    SHELL_INTERPRETERS.has(basename(o).toLowerCase()),
-  )
+  // Shell interpreter at COMMAND POSITION running a `-c` string or a
+  // scriptfile (bash -c 'git …', sh -c '…', bash script.sh, env/sudo/command
+  // … bash …). The payload can't be verified to stay inside the worktree
+  // (OCC doesn't recurse into -c strings → direct escape, same class as
+  // `eval "git …"`). Command-position only — `bash`/`sh` appearing as a
+  // search string or filename (`grep -rn bash .`, `rg bash .`, `git grep
+  // bash file`) is NOT mistaken for a shell wrapper.
+  const shellIdx = findShellAtCommandPosition(argv)
   if (shellIdx !== -1) {
     const rest = argv.slice(shellIdx + 1)
     const hasCFlag = rest.includes('-c')

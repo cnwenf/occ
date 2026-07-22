@@ -493,6 +493,51 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
       ).toBeNull()
     })
 
+    test('grep -rn bash . (bash as search string) -> ok', () => {
+      // bash is an ARG of grep, not at command position — must NOT block.
+      expect(
+        checkWorktreeGitRedirect(`grep -rn bash .`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('rg bash . (bash as search string) -> ok', () => {
+      expect(
+        checkWorktreeGitRedirect(`rg bash .`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('git grep bash file (bash as search string) -> ok', () => {
+      expect(
+        checkWorktreeGitRedirect(`git grep bash file`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('sed -n 1p /tmp/wt/bash (bash as filename) -> ok', () => {
+      expect(
+        checkWorktreeGitRedirect(`sed -n 1p ${WORKTREE}/bash`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('env bash -c "git …" (wrapper + shell at command pos) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `env bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b).not.toBeNull()
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('sudo bash script.sh (wrapper + shell + scriptfile) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `sudo bash ${SHARED}/evil.sh`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b).not.toBeNull()
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
     test('plain echo (no wrapper) -> ok', () => {
       expect(checkWorktreeGitRedirect('echo hi', WORKTREE, CWD)).toBeNull()
     })
