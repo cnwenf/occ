@@ -84,6 +84,7 @@ import {
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
+import { checkWorktreeGitRedirect } from './worktreeGitRedirectGuard.js'
 import { shouldUseSandbox } from './shouldUseSandbox.js'
 
 // DCE cliff: Bun's feature() evaluator has a per-function complexity budget.
@@ -2416,6 +2417,39 @@ export async function bashToolHasPermission(
       return {
         behavior: 'ask',
         message: `Command exceeds ${MAX_COMMAND_LENGTH_PROMPT} characters; please confirm before running.`,
+      }
+    }
+  }
+
+  // CC 2.1.216 #8: worktree-isolated subagents must not redirect git into the
+  // shared/parent checkout via `git -C` / `--git-dir` / `--work-tree` /
+  // `GIT_DIR` / `GIT_WORK_TREE` / `--bare` (isolation escape). Gated on
+  // agentWorktree (only set for isolation: "worktree" subagents). bypass
+  // respects the explicit opt-out (consistent with M3/M4/M5).
+  {
+    if (context.agentWorktree) {
+      const mode = appState.toolPermissionContext.mode
+      if (mode !== 'bypassPermissions') {
+        const block = checkWorktreeGitRedirect(
+          input.command,
+          context.agentWorktree,
+          getCwd(),
+        )
+        if (block) {
+          logEvent('tengu_bash_worktree_git_redirect', {
+            mechanism: block.mechanism,
+            mode,
+          })
+          const decisionReason: PermissionDecisionReason = {
+            type: 'other' as const,
+            reason: block.reason,
+          }
+          return {
+            behavior: 'deny',
+            message: block.reason,
+            decisionReason,
+          }
+        }
       }
     }
   }
