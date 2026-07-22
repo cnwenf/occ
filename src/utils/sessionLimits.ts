@@ -19,6 +19,19 @@ import type { TaskRegistry } from './taskRegistry.js'
 const DEFAULT_MAX_WEB_SEARCHES_PER_SESSION = 200
 const DEFAULT_MAX_SUBAGENTS_PER_SESSION = 200
 
+// CC 2.1.217: concurrent-running subagent cap + nested-subagent spawn depth.
+// Reverse-engineered from the 2.1.217 native ELF (aligning-with-official-binary):
+//   function Bvu(){ return Z.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS ?? TUg }   // TUg = 20
+//   function Nue(){ let e = Z.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH;
+//                   if (e !== void 0) return e;            // env wins if set
+//                   ... growthbook flag "tengu_hazel_trellis", default Avu=1,
+//                       accepted only if Number.isInteger(r) && r >= 1 }
+// OCC stubs growthbook (feature()=false), so the depth getter collapses to:
+// env-if-set-else-1. These two knobs are SCHEMA/ENV-ONLY in Stage 1 — the
+// concurrent-run counter and depth enforcement land in Stage 2 (do not wire here).
+const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 20
+const DEFAULT_MAX_SUBAGENT_SPAWN_DEPTH = 1
+
 /**
  * Parse an env value as an integer, returning `null` if absent or not a
  * finite positive integer. Mirrors the upstream `?? 200` fallback: a
@@ -49,6 +62,45 @@ export function getMaxSubagentsPerSession(): number {
   return (
     parsePositiveIntEnv(process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION) ??
     DEFAULT_MAX_SUBAGENTS_PER_SESSION
+  )
+}
+
+/**
+ * CC 2.1.217: cap on **concurrently-running** subagents (default 20).
+ *
+ * Distinct from `getMaxSubagentsPerSession()` (the 2.1.212 *total-spawn*
+ * cap, default 200): this bounds how many subagents may run at once within a
+ * single message/turn, so one message can't fan out unbounded background
+ * agents. Env: `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`.
+ *
+ * Stage 1 (schema/env only): the getter + default exist; the concurrent-run
+ * counter and enforcement at spawn sites land in Stage 2.
+ */
+export function getMaxConcurrentSubagents(): number {
+  return (
+    parsePositiveIntEnv(process.env.CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS) ??
+    DEFAULT_MAX_CONCURRENT_SUBAGENTS
+  )
+}
+
+/**
+ * CC 2.1.217: max **nested-subagent spawn depth** (default 1 = no nesting).
+ *
+ * Subagents no longer spawn nested subagents by default; set
+ * `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to allow deeper nesting. The official
+ * also consults a growthbook flag (`tengu_hazel_trellis`, default 1, accepted
+ * only if an integer ≥ 1); OCC stubs growthbook, so this collapses to
+ * env-if-set-else-1. `parsePositiveIntEnv` enforces the integer-≥-1 invariant
+ * (a 0 or negative env value falls back to the default, matching the
+ * official's `r >= 1` guard).
+ *
+ * Stage 1 (schema/env only): the getter + default exist; depth enforcement at
+ * the spawn sites lands in Stage 2.
+ */
+export function getMaxSubagentSpawnDepth(): number {
+  return (
+    parsePositiveIntEnv(process.env.CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH) ??
+    DEFAULT_MAX_SUBAGENT_SPAWN_DEPTH
   )
 }
 
