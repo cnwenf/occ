@@ -322,4 +322,118 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
       ).toBeNull()
     })
   })
+
+  // Follow-up A (ozg shell-wrapper obfuscation): a worktree subagent must not
+  // run git through an unverifiable wrapper — a builtin that runs a string
+  // (eval/source/./…), xargs/parallel feeding git from stdin, or
+  // find -execdir/-okdir cd-ing per match. Reverse-engineered from the
+  // 2.1.217 ELF `ozg`/`NZt`/`tzg`/`nzg`. Note: `bash -c`/`sh -c` are NOT in
+  // the official's `rLu` (builtins only), so ozg does NOT catch them —
+  // matching the official, not inventing.
+  describe('ozg shell-wrapper obfuscation (Follow-up A)', () => {
+    test('eval "git …" -> block (builtin string-exec)', () => {
+      const b = checkWorktreeGitRedirect(
+        `eval "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('eval')
+      expect(b!.reason).toContain("runs a string through eval")
+    })
+
+    test('source <script> -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `source ${SHARED}/x.sh`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('source')
+    })
+
+    test('. <script> (pos 0) -> block', () => {
+      const b = checkWorktreeGitRedirect(`. ${SHARED}/x.sh`, WORKTREE, CWD)
+      expect(b!.mechanism).toBe('.')
+    })
+
+    test('eval "echo hi" (no git) -> block (branch 3 ungated, matches official)', () => {
+      // ozg's builtin-string-exec branch is NOT git-gated — worktree
+      // isolation forbids unverifiable string-exec, per the official.
+      const b = checkWorktreeGitRedirect(`eval "echo hi"`, WORKTREE, CWD)
+      expect(b!.mechanism).toBe('eval')
+    })
+
+    test('xargs git -> block (feeds git from stdin)', () => {
+      const b = checkWorktreeGitRedirect(
+        `xargs git -C ${SHARED}`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('xargs/parallel')
+      expect(b!.reason).toContain('stdin at runtime')
+    })
+
+    test('parallel git -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `parallel git -C ${SHARED} :::`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('xargs/parallel')
+    })
+
+    test('find -execdir git -> block (cd per match)', () => {
+      const b = checkWorktreeGitRedirect(
+        `find . -execdir git status \\;`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('find -execdir/-okdir')
+      expect(b!.reason).toContain('changes directory per match')
+    })
+
+    test('find -okdir git -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `find . -okdir git status \\;`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('find -execdir/-okdir')
+    })
+
+    test('eval; git -C <shared> -> block (rLu builtin before a later git)', () => {
+      const b = checkWorktreeGitRedirect(
+        `eval; git -C ${SHARED} status`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('eval')
+      expect(b!.reason).toContain('before a git command')
+    })
+
+    test('bash -c "git …" -> ok (bash NOT in rLu; matches official, not inventing)', () => {
+      // bash/sh are shells, not bash builtins — the official's ozg does NOT
+      // catch `bash -c`/`sh -c`. Catching them would be beyond the official.
+      expect(
+        checkWorktreeGitRedirect(
+          `bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        ),
+      ).toBeNull()
+    })
+
+    test('sh -c "git …" -> ok (sh NOT in rLu)', () => {
+      expect(
+        checkWorktreeGitRedirect(
+          `sh -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        ),
+      ).toBeNull()
+    })
+
+    test('plain echo (no wrapper) -> ok', () => {
+      expect(checkWorktreeGitRedirect('echo hi', WORKTREE, CWD)).toBeNull()
+    })
+  })
 })
