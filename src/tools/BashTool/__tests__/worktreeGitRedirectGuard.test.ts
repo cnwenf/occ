@@ -628,4 +628,238 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
       expect(checkWorktreeGitRedirect('echo hi', WORKTREE, CWD)).toBeNull()
     })
   })
+
+  // Follow-up B (OCC-16): `findShellEscapeIdx` only saw argv, so a shell that
+  // reads its script from a NON-argv source — a pipe (`echo … | bash`), a `<`
+  // redirection (`bash < script.sh`), a `<(...)` process substitution, or an
+  // `su -c`/`runuser -c` whose `-c` hangs on the wrapper — slipped past it
+  // (the payload never enters argv, so #194's `bash -c`/scriptfile branch
+  // never fired). This closes those vectors on the same "unverifiable
+  // payload" principle as #194 (OCC has no -c/stdin recursion → must block
+  // at the guard layer; safety over alignment with the official `ozg`, which
+  // doesn't list bash/sh). Each block asserts the mechanism/reason carries a
+  // stdin/su-c/runuser-c identifier — NOT a coincidental anywhere KEY=VAL hit.
+  describe('ozg non-REPL stdin feed (Follow-up B)', () => {
+    describe('blocks shells reading a script from stdin', () => {
+      test("echo 'git …' | bash (pipe) -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `echo 'git -C ${SHARED} status' | bash`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('bash (stdin: pipe)')
+        expect(b!.reason).toContain('stdin')
+        expect(b!.reason).toContain('pipe')
+        // Proves it's the new stdin path, not a KEY=VAL env hit: no env
+        // assignment is present in the command.
+        expect(b!.reason).not.toContain('GIT_DIR')
+        expect(b!.reason).not.toContain('shared checkout')
+      })
+
+      test("printf 'git …' | sh (pipe) -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `printf 'git -C ${SHARED} status' | sh`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('sh (stdin: pipe)')
+        expect(b!.reason).toContain('stdin')
+      })
+
+      test('cat script.sh | bash (pipe) -> block', () => {
+        const b = checkWorktreeGitRedirect(
+          `cat ${SHARED}/evil.sh | bash`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash (stdin: pipe)')
+      })
+
+      test('bash < script.sh (redirect) -> block', () => {
+        const b = checkWorktreeGitRedirect(
+          `bash < ${SHARED}/evil.sh`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('bash (stdin: redirect)')
+        expect(b!.reason).toContain('stdin')
+        expect(b!.reason).toContain('redirect')
+        expect(b!.reason).not.toContain('GIT_DIR')
+      })
+
+      test("bash <(echo 'git …') (process substitution) -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `bash <(echo 'git -C ${SHARED} status')`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('bash (stdin: process substitution)')
+        expect(b!.reason).toContain('stdin')
+        expect(b!.reason).toContain('process substitution')
+      })
+
+      test('bash < /shared/evil.sh (absolute redirect) -> block', () => {
+        const b = checkWorktreeGitRedirect(
+          `bash < ${SHARED}/evil.sh`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash (stdin: redirect)')
+      })
+
+      test("echo 'git …' | bash -l (pipe to login shell) -> block", () => {
+        // `-l` alone is a REPL (pass), but a piped script still executes —
+        // the stdin-feed branch fires even with login/interactive flags.
+        const b = checkWorktreeGitRedirect(
+          `echo 'git -C ${SHARED} status' | bash -l`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash (stdin: pipe)')
+      })
+    })
+
+    describe('blocks su -c / runuser -c', () => {
+      test("su -c 'git …' -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `su -c 'git -C ${SHARED} status'`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('su -c')
+        expect(b!.reason).toContain('su -c')
+        // Not a coincidental KEY=VAL hit — no env assignment present.
+        expect(b!.reason).not.toContain('GIT_DIR')
+      })
+
+      test("runuser -u root -c 'git …' -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `runuser -u root -c 'git -C ${SHARED} status'`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('runuser -c')
+        expect(b!.reason).toContain('runuser -c')
+      })
+    })
+
+    describe('REPL shells (no payload) are NOT blocked', () => {
+      test('bare bash -> ok', () => {
+        expect(checkWorktreeGitRedirect('bash', WORKTREE, CWD)).toBeNull()
+      })
+
+      test('bash -l (login REPL) -> ok', () => {
+        expect(checkWorktreeGitRedirect('bash -l', WORKTREE, CWD)).toBeNull()
+      })
+
+      test('bash -i (interactive REPL) -> ok', () => {
+        expect(checkWorktreeGitRedirect('bash -i', WORKTREE, CWD)).toBeNull()
+      })
+    })
+
+    describe('#194 does not regress', () => {
+      test('bash -c "git …" still -> block (bash -c, not stdin)', () => {
+        const b = checkWorktreeGitRedirect(
+          `bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash -c')
+      })
+
+      test('env bash -c still -> block (bash -c)', () => {
+        const b = checkWorktreeGitRedirect(
+          `env bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash -c')
+      })
+
+      test('sudo -u user bash -c still -> block (bash -c)', () => {
+        const b = checkWorktreeGitRedirect(
+          `sudo -u user bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash -c')
+      })
+
+      test('exec bash -c still -> block (bash -c)', () => {
+        const b = checkWorktreeGitRedirect(
+          `exec bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash -c')
+      })
+
+      test('timeout 5 bash -c still -> block (bash -c)', () => {
+        const b = checkWorktreeGitRedirect(
+          `timeout 5 bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash -c')
+      })
+
+      test('bash script.sh still -> block (scriptfile)', () => {
+        const b = checkWorktreeGitRedirect(
+          `bash ${SHARED}/evil.sh`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.reason).toContain('runs a string through bash -c')
+      })
+
+      test('grep -rn bash . still -> ok (bash as search string)', () => {
+        expect(
+          checkWorktreeGitRedirect(`grep -rn bash .`, WORKTREE, CWD),
+        ).toBeNull()
+      })
+
+      test('rg bash . still -> ok', () => {
+        expect(checkWorktreeGitRedirect(`rg bash .`, WORKTREE, CWD)).toBeNull()
+      })
+
+      test('git grep bash file still -> ok', () => {
+        expect(
+          checkWorktreeGitRedirect(`git grep bash file`, WORKTREE, CWD),
+        ).toBeNull()
+      })
+
+      test('sed -n 1p bash still -> ok (bash as filename)', () => {
+        expect(
+          checkWorktreeGitRedirect(`sed -n 1p bash`, WORKTREE, CWD),
+        ).toBeNull()
+      })
+
+      // Nested-shell precedence: a shell interpreter behind su/runuser is
+      // reported as `bash -c` (the more accurate mechanism), NOT as `su -c`/
+      // `runuser -c` — the Follow-up B su/runuser branch only fires when no
+      // nested shell is present.
+      test('runuser -u root bash -c -> block as bash -c (not runuser -c)', () => {
+        const b = checkWorktreeGitRedirect(
+          `runuser -u root bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash -c')
+      })
+
+      test('su root bash -c -> block as bash -c (not su -c)', () => {
+        const b = checkWorktreeGitRedirect(
+          `su root bash -c "git -C ${SHARED} status"`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash -c')
+      })
+    })
+  })
 })

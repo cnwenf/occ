@@ -77,6 +77,12 @@ function isWithinWorktree(
 
 interface ArgvSpan {
   argv: string[]
+  /** This span receives its stdin from a pipe (preceded by a `|` operator). */
+  stdinFromPipe: boolean
+  /** A `<` redirection attaches to this span (reads a script file from stdin). */
+  stdinFromRedirect: boolean
+  /** A `<(...)` process substitution feeds this span's stdin. */
+  stdinFromProcsub: boolean
 }
 
 /**
@@ -84,6 +90,11 @@ interface ArgvSpan {
  * operators. Uses shell-quote so quoting is respected. On parse failure,
  * returns an empty list — callers treat parse-failure as fail-closed via
  * the existing redirect-safety path, not here.
+ *
+ * Spans carry stdin-source flags (Follow-up B): a `<`/`<(` operator that
+ * flushes a span marks THAT span as reading a script from stdin (the
+ * redirection attaches to the preceding command, e.g. `bash < script.sh`);
+ * a `|` operator marks the NEXT span as a pipe-receiver (`echo … | bash`).
  */
 function commandToArgvSpans(command: string): ArgvSpan[] {
   const parsed = tryParseShellCommand(command, (env: string) => `$${env}`)
@@ -91,6 +102,19 @@ function commandToArgvSpans(command: string): ArgvSpan[] {
   const tokens = parsed.tokens
   const spans: ArgvSpan[] = []
   let cur: string[] = []
+  // True while the next span begins as the receiver of a pipe (`|`).
+  let nextSpanPipeRecv = false
+  const flush = (flushingOp: string | null): void => {
+    if (cur.length === 0) return
+    spans.push({
+      argv: cur,
+      stdinFromPipe: nextSpanPipeRecv,
+      stdinFromRedirect: flushingOp === '<',
+      stdinFromProcsub: flushingOp === '<(',
+    })
+    cur = []
+    nextSpanPipeRecv = false
+  }
   for (const tok of tokens) {
     if (typeof tok === 'string') {
       cur.push(tok)
@@ -99,12 +123,15 @@ function commandToArgvSpans(command: string): ArgvSpan[] {
       // pattern as a string so -C/--git-dir glob targets are detected.
       cur.push((tok as { pattern: string }).pattern)
     } else if (tok && typeof tok === 'object' && 'op' in tok) {
-      // operator boundary (&&, ||, ;, |, etc.) — flush current span
-      if (cur.length) spans.push({ argv: cur })
-      cur = []
+      const op = (tok as { op: string }).op
+      // operator boundary (&&, ||, ;, |, <, >, <(, ), …) — flush current
+      // span. A `<`/`<(` flushing op marks the flushed span as
+      // stdin-fed (the redirect attaches to the preceding command).
+      flush(op)
+      if (op === '|') nextSpanPipeRecv = true
     }
   }
-  if (cur.length) spans.push({ argv: cur })
+  flush(null)
   return spans
 }
 
@@ -282,6 +309,26 @@ function findShellEscapeIdx(argv: string[]): number {
 }
 
 /**
+ * Per-span stdin-source context for `checkShellWrapperObfuscation` (Follow-up
+ * B): tells the shell-escape check whether the span's shell reads its script
+ * from a non-REPL stdin source (pipe / `<` redirect / `<(` process
+ * substitution). When it does, and the shell has no `-c`/scriptfile, the
+ * payload can't be verified → block (same "unverifiable payload" principle as
+ * `bash -c`).
+ */
+interface ShellWrapperCtx {
+  stdinFromPipe: boolean
+  stdinFromRedirect: boolean
+  stdinFromProcsub: boolean
+}
+
+const EMPTY_CTX: ShellWrapperCtx = {
+  stdinFromPipe: false,
+  stdinFromRedirect: false,
+  stdinFromProcsub: false,
+}
+
+/**
  * Official `ozg(e)`: detect an unverifiable wrapper around git in one
  * simple-command's argv. Returns a block (with the official reason) or null.
  *
@@ -291,9 +338,17 @@ function findShellEscapeIdx(argv: string[]): number {
  *   - a `rLu` builtin (eval/source/./…) with any other arg → "runs a string
  *     through <wrapper>, can't verify" (NOT git-gated — worktree isolation
  *     forbids unverifiable string-exec via builtins, matching the official).
+ *
+ * Follow-up A supplement: a shell interpreter at command position running a
+ * `-c` string or scriptfile (bash -c '…', bash script.sh, sudo … bash …).
+ * Follow-up B supplement: a shell interpreter reading a script from a
+ * non-REPL stdin source (echo … | bash, bash < script.sh, bash <(…)); and
+ * `su -c`/`runuser -c` (the `-c` hangs on su/runuser, not bash -c, so the
+ * shell-escape scan misses it).
  */
 function checkShellWrapperObfuscation(
   argv: string[],
+  ctx: ShellWrapperCtx = EMPTY_CTX,
 ): WorktreeGitRedirectBlock | null {
   if (argv.length === 0) return null
   const t = argv.some(o => GIT_NAME_RE.test(basename(o)))
@@ -330,6 +385,41 @@ function checkShellWrapperObfuscation(
         mechanism: `${name} -c`,
         reason: `runs a string through ${name} -c, which can't be verified to stay inside the worktree; run the command directly instead`,
       }
+    }
+    // Follow-up B: no `-c`/scriptfile, but the shell reads its script from a
+    // non-REPL stdin source (pipe / `<` redirect / `<(` process
+    // substitution). shell-quote doesn't surface the piped payload, so OCC
+    // can't verify it stays inside the worktree → direct escape, same class
+    // as `bash -c`. REPL (`bash`, `bash -l`, `bash -i` with no stdin feed)
+    // is NOT blocked here.
+    const stdinFed =
+      ctx.stdinFromPipe || ctx.stdinFromRedirect || ctx.stdinFromProcsub
+    if (stdinFed) {
+      const name = basename(argv[shellIdx])
+      const source = ctx.stdinFromPipe
+        ? 'pipe'
+        : ctx.stdinFromProcsub
+          ? 'process substitution'
+          : 'redirect'
+      return {
+        mechanism: `${name} (stdin: ${source})`,
+        reason: `reads a script from stdin (${source}), which can't be verified to stay inside the worktree; run the command directly instead`,
+      }
+    }
+  }
+  // Follow-up B: `su -c`/`runuser -c` — the `-c` string hangs on su/runuser
+  // (not `bash -c`), so `findShellEscapeIdx` sees no shell interpreter and
+  // the branch above misses it. Auth-gated, but the payload is unverifiable
+  // → block (same "unverifiable payload" principle as `bash -c`). Placed
+  // AFTER the shell-escape block so a nested `su … bash -c` is still
+  // reported as `bash -c` (the more accurate mechanism). argv[0]-only, per
+  // the issue scope; `sudo su -c`/`env su -c` (su behind another wrapper) is
+  // a known boundary — same direction-2 limit as #194's no-recursive -c.
+  const head = basename(argv[0] ?? '').toLowerCase()
+  if ((head === 'su' || head === 'runuser') && argv.includes('-c')) {
+    return {
+      mechanism: `${head} -c`,
+      reason: `runs a string through ${head} -c, which can't be verified to stay inside the worktree; run the command directly instead`,
     }
   }
   // `.` matches only at position 0; other builtins match anywhere (official `rLu`).
@@ -383,7 +473,13 @@ export function checkWorktreeGitRedirect(
     //    a string, xargs/parallel feeding git, find -execdir/-okdir. Branch 3
     //    (builtin string-exec) is NOT git-gated — worktree isolation forbids
     //    unverifiable string-exec via builtins, matching the official `ozg`.
-    const ozgBlock = checkShellWrapperObfuscation(argv)
+    //    Follow-up B: pass the span's stdin-source flags so a shell reading a
+    //    script from a pipe/`<`/`<(` (and `su -c`/`runuser -c`) is also caught.
+    const ozgBlock = checkShellWrapperObfuscation(argv, {
+      stdinFromPipe: spans[f].stdinFromPipe,
+      stdinFromRedirect: spans[f].stdinFromRedirect,
+      stdinFromProcsub: spans[f].stdinFromProcsub,
+    })
     if (ozgBlock) return ozgBlock
 
     // 0b. A `rLu` builtin (eval/source/./…) in a span that precedes a git
