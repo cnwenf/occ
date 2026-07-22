@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. Last fully caught up through
-Claude Code `2.1.215`; a `2.1.216`→`2.1.217` catch-up (OCC-15) is in progress — see
+Claude Code `2.1.215`; a `2.1.216`→`2.1.217` catch-up (OCC-15) is in progress
+(Stage 1 schema/env knobs + Stage 2 subagent fan-out caps/budget + Stage 3 bash
+parsing #13/#21 regression tests have landed; Stages 4–6 pending) — see
 `docs/upstream-version-gap-occ15.md` (OCC-15) for the 2026-07-22 two-version gap
 report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) for the
 2026-07-20 no-gap confirmation (OCC already at official latest `2.1.215`),
