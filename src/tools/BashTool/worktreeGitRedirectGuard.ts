@@ -25,7 +25,7 @@
  * `--bare` is unverifiable (no worktree to bound against) → block.
  */
 
-import { resolve, isAbsolute, sep } from 'node:path'
+import { resolve, isAbsolute, sep, basename } from 'node:path'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 
 export interface WorktreeGitRedirectBlock {
@@ -35,9 +35,17 @@ export interface WorktreeGitRedirectBlock {
   mechanism: string
 }
 
+/**
+ * Official `Jss`: a token whose basename is exactly a git command name
+ * (`git`, `git.exe`, `git.real`, `git-receive-pack`, `git-upload-pack`, …),
+ * case-insensitive. Used by `ozg`'s `t` (git-presence) and `isGitToken`.
+ */
+const GIT_NAME_RE = /^git(?:\.exe|\.real|-[a-z][\w-]*)?$/i
+
 function isGitToken(tok: string): boolean {
   if (!tok) return false
-  return tok === 'git' || tok.endsWith('/git')
+  // Match `git`, `/usr/bin/git`, `git-receive-pack`, `git.exe`, …
+  return GIT_NAME_RE.test(basename(tok))
 }
 
 function isGlobTarget(path: string): boolean {
@@ -161,6 +169,184 @@ function isRedirectConfigKey(key: string): boolean {
 
 const ENV_ASSIGN_RE = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 
+// ─────────────────────────────────────────────────────────────────────────
+// Official `ozg` shell-wrapper / opaque-feed detection (Follow-up A).
+// Reverse-engineered from the 2.1.217 ELF `ozg`/`NZt`/`rzg`/`tzg`/`nzg`.
+// `ozg` is called per simple-command in a worktree subagent and blocks
+// commands that run git through an unverifiable wrapper — a builtin that runs
+// a string (eval/source/./…), xargs/parallel feeding git from stdin, or
+// `find -execdir/-okdir` cd-ing per match before git.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Bash builtins that run a string/script (official `rLu` = `NZt` \ `rzg`):
+ *   eval, source, ., fc, coproc, trap, enable, mapfile, readarray, hash,
+ *   bind, complete, compgen, alias, let
+ * (`exec`/`nocorrect` are excluded by `rzg`.) These are BUILTINS, not shells
+ * — `bash -c`/`sh -c` are NOT in `rLu`, so the official's `ozg` does NOT
+ * catch them (see the report's bash/sh note). Matching the official = not
+ * inventing bash/sh handling.
+ */
+const SHELL_BUILTIN_WRAPPERS = new Set([
+  'eval',
+  'source',
+  '.',
+  'fc',
+  'coproc',
+  'trap',
+  'enable',
+  'mapfile',
+  'readarray',
+  'hash',
+  'bind',
+  'complete',
+  'compgen',
+  'alias',
+  'let',
+])
+
+/** Commands that feed git's args from stdin (official `tzg`). */
+const STDIN_FEED_WRAPPERS = new Set(['xargs', 'parallel'])
+
+/** find flags that cd per match before running git (official `nzg`). */
+const FIND_PERMATCH_FLAGS = new Set(['-execdir', '-okdir'])
+
+/**
+ * Shell interpreters that run a `-c` string or a scriptfile (Follow-up A
+ * supplement): `bash`/`sh`/`zsh`/`dash`/`fish`/`csh`/`ksh`/`tcsh` (+
+ * `rbash`). These are NOT in the official's `rLu` (builtins), so the official
+ * `ozg` doesn't catch `bash -c`/`sh -c`; OCC doesn't recursively parse `-c`
+ * strings, so `bash -c 'git -C /shared …'` is a direct worktree escape — block
+ * it at the ozg layer (security review decision; going beyond the official
+ * `ozg` by explicit leader sign-off, since OCC lacks -c recursion).
+ */
+const SHELL_INTERPRETERS = new Set([
+  'bash',
+  'sh',
+  'zsh',
+  'dash',
+  'fish',
+  'csh',
+  'ksh',
+  'tcsh',
+  'rbash',
+])
+
+/**
+ * Command wrappers that exec their args as a command (the leader's list,
+ * aligned with `bashPermissions`'s `BARE_SHELL_PREFIXES` wrapper subset):
+ * env/sudo/command/nice/nohup/timeout/doas/stdbuf/time. Used to find the real
+ * command word after leading wrappers (so `sudo bash -c …`, `env FOO=bar
+ * bash …` still catch the shell at command position).
+ */
+const COMMAND_WRAPPERS = new Set([
+  'env',
+  'sudo',
+  'command',
+  'nice',
+  'nohup',
+  'timeout',
+  'doas',
+  'stdbuf',
+  'time',
+  'exec',
+  'pkexec',
+  'chroot',
+  'runuser',
+  'su',
+])
+
+/**
+ * Find a shell-escape (security review #194 repass2, direction 2):
+ *   - argv[0] is a shell → return 0 (command-position shell).
+ *   - argv[0] is a `COMMAND_WRAPPERS` entry → scan the REST (argv[1:]) for a
+ *     shell ANYWHERE. This avoids the arg-taking-flag value ambiguity that
+ *     broke the prior command-position walker (`sudo -u user bash -c`,
+ *     `env -C dir bash -c`, `env -u VAR bash -c`, `timeout 5 bash -c` — the
+ *     walker stopped at the flag's value and missed the later shell).
+ *   - otherwise (argv[0] not a shell, not a wrapper) → -1: `bash`/`sh`
+ *     appearing as a search string / filename (`grep -rn bash .`,
+ *     `rg bash .`, `git grep bash file`) is NOT an escape.
+ * Returns the argv index of the shell, or -1.
+ */
+function findShellEscapeIdx(argv: string[]): number {
+  if (argv.length === 0) return -1
+  const first = basename(argv[0] ?? '').toLowerCase()
+  if (SHELL_INTERPRETERS.has(first)) return 0
+  if (COMMAND_WRAPPERS.has(first)) {
+    return argv.findIndex(
+      (o, i) => i > 0 && SHELL_INTERPRETERS.has(basename(o ?? '').toLowerCase()),
+    )
+  }
+  return -1
+}
+
+/**
+ * Official `ozg(e)`: detect an unverifiable wrapper around git in one
+ * simple-command's argv. Returns a block (with the official reason) or null.
+ *
+ *   t = argv contains a token whose basename is a git command name (`Jss`).
+ *   - t && xargs/parallel present  → "feeds git from stdin at runtime"
+ *   - t && find && -execdir/-okdir → "changes directory per match before git"
+ *   - a `rLu` builtin (eval/source/./…) with any other arg → "runs a string
+ *     through <wrapper>, can't verify" (NOT git-gated — worktree isolation
+ *     forbids unverifiable string-exec via builtins, matching the official).
+ */
+function checkShellWrapperObfuscation(
+  argv: string[],
+): WorktreeGitRedirectBlock | null {
+  if (argv.length === 0) return null
+  const t = argv.some(o => GIT_NAME_RE.test(basename(o)))
+  if (t && argv.some(o => STDIN_FEED_WRAPPERS.has(basename(o).toLowerCase()))) {
+    return {
+      mechanism: 'xargs/parallel',
+      reason:
+        'feeds git its arguments from stdin at runtime (xargs/parallel), so the repository it targets cannot be verified',
+    }
+  }
+  const hasFind = argv.some(o => basename(o).toLowerCase() === 'find')
+  if (t && hasFind && argv.some(o => FIND_PERMATCH_FLAGS.has(o))) {
+    return {
+      mechanism: 'find -execdir/-okdir',
+      reason:
+        'changes directory per match (find -execdir/-okdir) before running git, so its repository cannot be verified',
+    }
+  }
+  // Shell interpreter at COMMAND POSITION running a `-c` string or a
+  // scriptfile (bash -c 'git …', sh -c '…', bash script.sh, env/sudo/command
+  // … bash …). The payload can't be verified to stay inside the worktree
+  // (OCC doesn't recurse into -c strings → direct escape, same class as
+  // `eval "git …"`). Command-position only — `bash`/`sh` appearing as a
+  // search string or filename (`grep -rn bash .`, `rg bash .`, `git grep
+  // bash file`) is NOT mistaken for a shell wrapper.
+  const shellIdx = findShellEscapeIdx(argv)
+  if (shellIdx !== -1) {
+    const rest = argv.slice(shellIdx + 1)
+    const hasCFlag = rest.includes('-c')
+    const hasScriptfile = rest.some(a => a.length > 0 && !a.startsWith('-'))
+    if (hasCFlag || hasScriptfile) {
+      const name = basename(argv[shellIdx])
+      return {
+        mechanism: `${name} -c`,
+        reason: `runs a string through ${name} -c, which can't be verified to stay inside the worktree; run the command directly instead`,
+      }
+    }
+  }
+  // `.` matches only at position 0; other builtins match anywhere (official `rLu`).
+  const n = argv.find((o, i) => {
+    const b = basename(o).toLowerCase()
+    return b === '.' ? i === 0 : SHELL_BUILTIN_WRAPPERS.has(b)
+  })
+  if (n !== undefined && argv.filter(i => i !== n).length > 0) {
+    const name = basename(n)
+    return {
+      mechanism: name,
+      reason: `runs a string through ${name}, which can't be verified to stay inside the worktree; run the command directly instead`,
+    }
+  }
+  return null
+}
+
 /**
  * Check a command for git-redirect-escape in a worktree-isolated subagent.
  * Returns a block (with the official reason) if the command would redirect
@@ -178,9 +364,44 @@ export function checkWorktreeGitRedirect(
   cwd: string,
 ): WorktreeGitRedirectBlock | null {
   const spans = commandToArgvSpans(command)
-  for (const span of spans) {
-    const argv = span.argv
+
+  // c[f]: does span f or any LATER span contain a git command word? (official
+  // `c[]`, computed right-to-left from `nLu` git-index.) Used by the
+  // rLu-builtin-before-git check.
+  const hasGitAtOrAfter: boolean[] = new Array(spans.length).fill(false)
+  let seenGit = false
+  for (let f = spans.length - 1; f >= 0; f--) {
+    seenGit = seenGit || spans[f].argv.some(o => isGitToken(o ?? ''))
+    hasGitAtOrAfter[f] = seenGit
+  }
+
+  for (let f = 0; f < spans.length; f++) {
+    const argv = spans[f].argv
     if (argv.length === 0) continue
+
+    // 0. ozg shell-wrapper obfuscation (Follow-up A): eval/source/./… running
+    //    a string, xargs/parallel feeding git, find -execdir/-okdir. Branch 3
+    //    (builtin string-exec) is NOT git-gated — worktree isolation forbids
+    //    unverifiable string-exec via builtins, matching the official `ozg`.
+    const ozgBlock = checkShellWrapperObfuscation(argv)
+    if (ozgBlock) return ozgBlock
+
+    // 0b. A `rLu` builtin (eval/source/./…) in a span that precedes a git
+    //     command (in this or a later span) → its string payload can't be
+    //     verified (official `_` check, gated on `c[f]`).
+    if (hasGitAtOrAfter[f]) {
+      const builtinIdx = argv.findIndex((o, i) => {
+        const b = basename(o).toLowerCase()
+        return b === '.' ? i === 0 : SHELL_BUILTIN_WRAPPERS.has(b)
+      })
+      if (builtinIdx !== -1) {
+        const name = basename(argv[builtinIdx])
+        return {
+          mechanism: name,
+          reason: `runs ${name} before a git command, whose string payload can't be verified to leave the worktree alone`,
+        }
+      }
+    }
 
     // 1. Scan ALL `KEY=VAL` env-assignments anywhere in the span. Catches
     //    `env GIT_DIR=/shared/.git git …`, `sudo GIT_WORK_TREE=/x git …`,

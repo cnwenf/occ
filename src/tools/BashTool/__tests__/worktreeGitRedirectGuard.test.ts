@@ -322,4 +322,310 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
       ).toBeNull()
     })
   })
+
+  // Follow-up A (ozg shell-wrapper obfuscation): a worktree subagent must not
+  // run git through an unverifiable wrapper — a builtin that runs a string
+  // (eval/source/./…), xargs/parallel feeding git from stdin, or
+  // find -execdir/-okdir cd-ing per match. Reverse-engineered from the
+  // 2.1.217 ELF `ozg`/`NZt`/`tzg`/`nzg`. Note: `bash -c`/`sh -c` are NOT in
+  // the official's `rLu` (builtins only), so ozg does NOT catch them —
+  // matching the official, not inventing.
+  describe('ozg shell-wrapper obfuscation (Follow-up A)', () => {
+    test('eval "git …" -> block (builtin string-exec)', () => {
+      const b = checkWorktreeGitRedirect(
+        `eval "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('eval')
+      expect(b!.reason).toContain("runs a string through eval")
+    })
+
+    test('source <script> -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `source ${SHARED}/x.sh`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('source')
+    })
+
+    test('. <script> (pos 0) -> block', () => {
+      const b = checkWorktreeGitRedirect(`. ${SHARED}/x.sh`, WORKTREE, CWD)
+      expect(b!.mechanism).toBe('.')
+    })
+
+    test('eval "echo hi" (no git) -> block (branch 3 ungated, matches official)', () => {
+      // ozg's builtin-string-exec branch is NOT git-gated — worktree
+      // isolation forbids unverifiable string-exec, per the official.
+      const b = checkWorktreeGitRedirect(`eval "echo hi"`, WORKTREE, CWD)
+      expect(b!.mechanism).toBe('eval')
+    })
+
+    test('xargs git -> block (feeds git from stdin)', () => {
+      const b = checkWorktreeGitRedirect(
+        `xargs git -C ${SHARED}`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('xargs/parallel')
+      expect(b!.reason).toContain('stdin at runtime')
+    })
+
+    test('parallel git -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `parallel git -C ${SHARED} :::`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('xargs/parallel')
+    })
+
+    test('find -execdir git -> block (cd per match)', () => {
+      const b = checkWorktreeGitRedirect(
+        `find . -execdir git status \\;`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('find -execdir/-okdir')
+      expect(b!.reason).toContain('changes directory per match')
+    })
+
+    test('find -okdir git -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `find . -okdir git status \\;`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('find -execdir/-okdir')
+    })
+
+    test('eval; git -C <shared> -> block (rLu builtin before a later git)', () => {
+      const b = checkWorktreeGitRedirect(
+        `eval; git -C ${SHARED} status`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('eval')
+      expect(b!.reason).toContain('before a git command')
+    })
+
+    test('bash -c "git …" -> block (Follow-up A supplement: shell -c escape)', () => {
+      // OCC doesn't recursively parse -c strings, so `bash -c 'git -C /shared
+      // …'` is a direct worktree escape (equivalent to `eval "git …"`) — block
+      // at the ozg layer (beyond the official ozg's rLu builtins, by explicit
+      // leader sign-off). Confirms the escape-PATH block, not a coincidental
+      // KEY=VAL hit: the redirect is inside the quoted -c string.
+      const b = checkWorktreeGitRedirect(
+        `bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b).not.toBeNull()
+      expect(b!.mechanism).toBe('bash -c')
+      expect(b!.reason).toContain('runs a string through bash -c')
+      // No GIT_DIR= env-assignment here → proves it's the shell -c path, not
+      // the anywhere-KEY=VAL scan that blocked it.
+      expect(b!.reason).not.toContain('GIT_DIR')
+    })
+
+    test('sh -c "git …" -> block (Follow-up A supplement)', () => {
+      const b = checkWorktreeGitRedirect(
+        `sh -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b).not.toBeNull()
+      expect(b!.mechanism).toBe('sh -c')
+    })
+
+    test('bash -c single-quoted git redirect -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `bash -c 'git -C ${SHARED} status'`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('sh -c single-quoted git redirect -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `sh -c 'git -C ${SHARED} status'`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('sh -c')
+    })
+
+    test('zsh -c "git …" -> block (portable shell)', () => {
+      const b = checkWorktreeGitRedirect(
+        `zsh -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('zsh -c')
+    })
+
+    test('dash -c "git …" -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `dash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('dash -c')
+    })
+
+    test('bash script.sh (scriptfile) -> block (same class as source)', () => {
+      const b = checkWorktreeGitRedirect(
+        `bash ${SHARED}/evil.sh`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b).not.toBeNull()
+      expect(b!.reason).toContain('runs a string through bash -c')
+    })
+
+    test('bash with no -c and no scriptfile (REPL) -> ok', () => {
+      // `bash` alone / `bash -l` (login) starts a REPL — no string/script
+      // payload → not the -c escape vector.
+      expect(
+        checkWorktreeGitRedirect(`bash -l`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('grep -rn bash . (bash as search string) -> ok', () => {
+      // bash is an ARG of grep, not at command position — must NOT block.
+      expect(
+        checkWorktreeGitRedirect(`grep -rn bash .`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('rg bash . (bash as search string) -> ok', () => {
+      expect(
+        checkWorktreeGitRedirect(`rg bash .`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('git grep bash file (bash as search string) -> ok', () => {
+      expect(
+        checkWorktreeGitRedirect(`git grep bash file`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('sed -n 1p /tmp/wt/bash (bash as filename) -> ok', () => {
+      expect(
+        checkWorktreeGitRedirect(`sed -n 1p ${WORKTREE}/bash`, WORKTREE, CWD),
+      ).toBeNull()
+    })
+
+    test('env bash -c "git …" (wrapper + shell at command pos) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `env bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b).not.toBeNull()
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('sudo bash script.sh (wrapper + shell + scriptfile) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `sudo bash ${SHARED}/evil.sh`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b).not.toBeNull()
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    // #194 repass2 (direction 2): arg-taking-flag value ambiguity — the
+    // prior command-position walker stopped at the flag's VALUE and missed a
+    // later shell. These all escaped before; now blocked via "wrapper +
+    // shell-anywhere-after".
+    test('exec bash -c (exec wrapper) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `exec bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('sudo -u user bash -c (arg-taking flag -u value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `sudo -u user bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('env -C dir bash -c (env -C value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `env -C ${SHARED} bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('env -u VAR bash -c (env -u value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `env -u FOO bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('timeout 5 bash -c (timeout numeric value) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `timeout 5 bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('pkexec bash -c (extended wrapper) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `pkexec bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('runuser -u root bash -c (extended wrapper, bare shell) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `runuser -u root bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      // runuser is a wrapper → bash (bare token) found after → block
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('su root bash -c (extended wrapper su) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `su root bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('chroot / bash -c (extended wrapper chroot) -> block', () => {
+      const b = checkWorktreeGitRedirect(
+        `chroot / bash -c "git -C ${SHARED} status"`,
+        WORKTREE,
+        CWD,
+      )
+      expect(b!.mechanism).toBe('bash -c')
+    })
+
+    test('plain echo (no wrapper) -> ok', () => {
+      expect(checkWorktreeGitRedirect('echo hi', WORKTREE, CWD)).toBeNull()
+    })
+  })
 })
