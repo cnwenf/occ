@@ -619,6 +619,19 @@ export async function* withRetry<T>(
             (retryContext.thinkingConfig.type === 'enabled'
               ? retryContext.thinkingConfig.budgetTokens
               : 0) + 1
+          // 2.1.218 (#22): when the thinking budget alone exceeds the available
+          // context, the adjusted max_tokens would still overflow on retry —
+          // the loop would re-send an identical doomed request forever. Fail
+          // fast instead of looping. Mirrors the binary's guard that compares
+          // the thinking budget against the remaining context window.
+          if (minRequired > availableContext) {
+            logError(
+              new Error(
+                `thinking budget (${minRequired - 1}) exceeds available context (${availableContext}); cannot retry context-overflow`,
+              ),
+            )
+            throw error
+          }
           const adjustedMaxTokens = Math.max(
             FLOOR_OUTPUT_TOKENS,
             availableContext,
