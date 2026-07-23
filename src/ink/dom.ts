@@ -246,19 +246,31 @@ function collectRemovedRects(
   underAbsolute = false,
 ): void {
   if (removed.nodeName === '#text') return
-  const elem = removed as DOMElement
-  // If this node or any ancestor in the removed subtree was absolute,
-  // its painted pixels may overlap non-siblings — flag for global blit
-  // disable. Normal-flow removals only affect direct siblings, which
-  // hasRemovedChild already handles.
-  const isAbsolute = underAbsolute || elem.style.position === 'absolute'
-  const cached = nodeCache.get(elem)
-  if (cached) {
-    addPendingClear(parent, cached, isAbsolute)
-    nodeCache.delete(elem)
-  }
-  for (const child of elem.childNodes) {
-    collectRemovedRects(parent, child, isAbsolute)
+  // 2.1.218 #16 (UI half): iterative descent — a recursive walk risked
+  // overflowing on deeply-nested UI trees. The `underAbsolute` flag is
+  // accumulated per-frame on the explicit stack (a removed subtree can be
+  // arbitrarily deep). Order is immaterial: this only collects cached
+  // rects and deletes cache entries.
+  const work: { node: DOMNode; underAbsolute: boolean }[] = [
+    { node: removed, underAbsolute },
+  ]
+  while (work.length > 0) {
+    const { node: cur, underAbsolute: curAbsolute } = work.pop()!
+    if (cur.nodeName === '#text') continue
+    const elem = cur as DOMElement
+    // If this node or any ancestor in the removed subtree was absolute,
+    // its painted pixels may overlap non-siblings — flag for global blit
+    // disable. Normal-flow removals only affect direct siblings, which
+    // hasRemovedChild already handles.
+    const isAbsolute = curAbsolute || elem.style.position === 'absolute'
+    const cached = nodeCache.get(elem)
+    if (cached) {
+      addPendingClear(parent, cached, isAbsolute)
+      nodeCache.delete(elem)
+    }
+    for (const child of elem.childNodes) {
+      work.push({ node: child, underAbsolute: isAbsolute })
+    }
   }
 }
 
@@ -462,12 +474,19 @@ function isDOMElement(node: DOMElement | TextNode): node is DOMElement {
 // freeRecursive() frees the node and ALL its children, so we must clear
 // all yogaNode references to prevent dangling pointers.
 export const clearYogaNodeReferences = (node: DOMElement | TextNode): void => {
-  if ('childNodes' in node) {
-    for (const child of node.childNodes) {
-      clearYogaNodeReferences(child)
+  // 2.1.218 #16 (UI half): iterative descent — a recursive walk risked
+  // overflowing on deeply-nested UI trees. Order is immaterial: this
+  // only clears yogaNode references across the subtree.
+  const work: (DOMElement | TextNode)[] = [node]
+  while (work.length > 0) {
+    const cur = work.pop()!
+    if ('childNodes' in cur) {
+      for (const child of cur.childNodes) {
+        work.push(child)
+      }
     }
+    cur.yogaNode = undefined
   }
-  node.yogaNode = undefined
 }
 
 /**
@@ -482,21 +501,27 @@ export const clearYogaNodeReferences = (node: DOMElement | TextNode): void => {
  */
 export function findOwnerChainAtRow(root: DOMElement, y: number): string[] {
   let best: string[] = []
-  walk(root, 0)
-  return best
-
-  function walk(node: DOMElement, offsetY: number): void {
+  // 2.1.218 #16 (UI half): iterative DFS — the recursive walk risked
+  // overflowing on deeply-nested UI trees. Explicit stack of
+  // (node, offsetY); order-independence is fine since this attributes a
+  // row to the deepest matching owner (children overwrite `best`).
+  const work: { node: DOMElement; offsetY: number }[] = [
+    { node: root, offsetY: 0 },
+  ]
+  while (work.length > 0) {
+    const { node, offsetY } = work.pop()!
     const yoga = node.yogaNode
-    if (!yoga || yoga.getDisplay() === LayoutDisplay.None) return
+    if (!yoga || yoga.getDisplay() === LayoutDisplay.None) continue
 
     const top = offsetY + yoga.getComputedTop()
     const height = yoga.getComputedHeight()
-    if (y < top || y >= top + height) return
+    if (y < top || y >= top + height) continue
 
     if (node.debugOwnerChain) best = node.debugOwnerChain
 
     for (const child of node.childNodes) {
-      if (isDOMElement(child)) walk(child, top)
+      if (isDOMElement(child)) work.push({ node: child, offsetY: top })
     }
   }
+  return best
 }

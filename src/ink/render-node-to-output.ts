@@ -383,7 +383,27 @@ function applyPaddingToText(
   return text
 }
 
-// After nodes are laid out, render each to output object, which later gets rendered to terminal
+// A deferred unit of render work, processed by the iterative driver's
+// explicit stack. 2.1.218 #16 (UI-trees half): the renderer used to
+// recurse mutually (renderNodeToOutput → renderChildren →
+// renderNodeToOutput), consuming ~2 native call-stack frames per nesting
+// level. A deeply-nested UI tree (~3–5k+ levels) blew the JS stack with
+// "Maximum call stack size exceeded". The descent is now driven by an
+// explicit heap-allocated stack of closures, so nesting depth grows the
+// HEAP (unbounded) instead of the native call stack (bounded). Per-node
+// self-work and ordering (clip → children → unclip → border → cache)
+// are unchanged — only the recursion mechanism changed.
+type RenderFrame = () => void
+
+// After nodes are laid out, render each to output object, which later gets rendered to terminal.
+//
+// This is the iterative driver. It maintains an explicit stack of
+// deferred-work closures and drains it in a loop, never recursing across
+// nesting levels. Per-node self-work lives in renderNodeSelf; container
+// nodes (non-scroll ink-box, ink-root) push a post-frame + child
+// enter-frames onto `stack` instead of recursing. Scroll-container
+// children and the scroll fast-path call back into this driver (a nested
+// iterative walk, bounded by visible-child count, not nesting depth).
 function renderNodeToOutput(
   node: DOMElement,
   output: Output,
@@ -405,6 +425,45 @@ function renderNodeToOutput(
     skipSelfBlit?: boolean
     inheritedBackgroundColor?: Color
   },
+): void {
+  const stack: RenderFrame[] = []
+  stack.push(() =>
+    renderNodeSelf(
+      node,
+      output,
+      {
+        offsetX,
+        offsetY,
+        prevScreen,
+        skipSelfBlit,
+        inheritedBackgroundColor,
+      },
+      stack,
+    ),
+  )
+  while (stack.length > 0) {
+    const frame = stack.pop()!
+    frame()
+  }
+}
+
+function renderNodeSelf(
+  node: DOMElement,
+  output: Output,
+  {
+    offsetX = 0,
+    offsetY = 0,
+    prevScreen,
+    skipSelfBlit = false,
+    inheritedBackgroundColor,
+  }: {
+    offsetX?: number
+    offsetY?: number
+    prevScreen: Screen | undefined
+    skipSelfBlit?: boolean
+    inheritedBackgroundColor?: Color
+  },
+  stack: RenderFrame[],
 ): void {
   const { yogaNode } = node
 
@@ -1178,6 +1237,22 @@ function renderNodeToOutput(
           }
         }
 
+        // 2.1.218 #16 (UI half): defer children + post-work to the
+        // iterative driver's explicit stack instead of recursing. The
+        // post-frame (unclip → border → cache → clear dirty) runs AFTER
+        // all children, matching the old synchronous order exactly.
+        stack.push(() => {
+          if (needsClip) {
+            output.unclip()
+          }
+          renderBorder(x, y, node, output)
+          const postRect = { x, y, width, height, top: yogaTop }
+          nodeCache.set(node, postRect)
+          if (node.style.position === 'absolute') {
+            absoluteRectsCur.push(postRect)
+          }
+          node.dirty = false
+        })
         renderChildren(
           node,
           output,
@@ -1193,7 +1268,13 @@ function renderNodeToOutput(
           // on re-render → /permissions body blanked on Down arrow, #25436).
           ownBackgroundColor || node.style.opaque ? undefined : prevScreen,
           boxBackgroundColor,
+          stack,
         )
+        // Post-work (unclip/border/cache/dirty) is scheduled on `stack`
+        // above; return so the shared unclip/border/cache/dirty below is
+        // skipped for the non-scroll path (it runs only for scroll boxes
+        // and leaf nodes, which don't defer children).
+        return
       }
 
       if (needsClip) {
@@ -1205,6 +1286,16 @@ function renderNodeToOutput(
       // which may overlap with where the parent's border now is.
       renderBorder(x, y, node, output)
     } else if (node.nodeName === 'ink-root') {
+      // 2.1.218 #16 (UI half): defer children + cache/dirty post-work to
+      // the iterative driver's stack (root has no clip/border).
+      stack.push(() => {
+        const postRect = { x, y, width, height, top: yogaTop }
+        nodeCache.set(node, postRect)
+        if (node.style.position === 'absolute') {
+          absoluteRectsCur.push(postRect)
+        }
+        node.dirty = false
+      })
       renderChildren(
         node,
         output,
@@ -1213,7 +1304,9 @@ function renderNodeToOutput(
         hasRemovedChild,
         prevScreen,
         inheritedBackgroundColor,
+        stack,
       )
+      return
     }
 
     // Cache layout bounds for dirty tracking
@@ -1262,27 +1355,48 @@ function renderChildren(
   hasRemovedChild: boolean,
   prevScreen: Screen | undefined,
   inheritedBackgroundColor: Color | undefined,
+  stack: RenderFrame[],
 ): void {
   let seenDirtyChild = false
   let seenDirtyClipped = false
+  // 2.1.218 #16 (UI half): instead of recursing into renderNodeToOutput
+  // per child (which made nesting depth grow the native call stack), we
+  // precompute each child's render options from dirty flags — equivalent
+  // to the old sequential accumulator because rendering a node only
+  // clears ITS OWN dirty flag, never a sibling's — then push child
+  // enter-frames onto the driver stack. The post-frame pushed by the
+  // caller (box unclip/border/cache or root cache) is already beneath
+  // these children on the LIFO stack, so it runs AFTER them, preserving
+  // the old clip → children → unclip → border → cache order exactly.
+  const frames: RenderFrame[] = []
   for (const childNode of node.childNodes) {
     const childElem = childNode as DOMElement
     // Capture dirty before rendering — renderNodeToOutput clears the flag
     const wasDirty = childElem.dirty
     const isAbsolute = childElem.style.position === 'absolute'
-    renderNodeToOutput(childElem, output, {
-      offsetX,
-      offsetY,
-      prevScreen: hasRemovedChild || seenDirtyChild ? undefined : prevScreen,
-      // Short-circuits on seenDirtyClipped (false in the common case) so
-      // the opaque/bg reads don't happen per-child per-frame.
-      skipSelfBlit:
-        seenDirtyClipped &&
-        isAbsolute &&
-        !childElem.style.opaque &&
-        childElem.style.backgroundColor === undefined,
-      inheritedBackgroundColor,
-    })
+    const childPrevScreen =
+      hasRemovedChild || seenDirtyChild ? undefined : prevScreen
+    const childSkipSelfBlit =
+      seenDirtyClipped &&
+      isAbsolute &&
+      !childElem.style.opaque &&
+      childElem.style.backgroundColor === undefined
+    frames.push(() =>
+      renderNodeSelf(
+        childElem,
+        output,
+        {
+          offsetX,
+          offsetY,
+          prevScreen: childPrevScreen,
+          // Short-circuits on seenDirtyClipped (false in the common case) so
+          // the opaque/bg reads don't happen per-child per-frame.
+          skipSelfBlit: childSkipSelfBlit,
+          inheritedBackgroundColor,
+        },
+        stack,
+      ),
+    )
     if (wasDirty && !seenDirtyChild) {
       if (!clipsBothAxes(childElem) || isAbsolute) {
         seenDirtyChild = true
@@ -1290,6 +1404,11 @@ function renderChildren(
         seenDirtyClipped = true
       }
     }
+  }
+  // Push in reverse so the LIFO stack pops children in forward order; the
+  // caller's post-frame (already pushed) sits beneath them and runs last.
+  for (let i = frames.length - 1; i >= 0; i--) {
+    stack.push(frames[i]!)
   }
 }
 
@@ -1345,26 +1464,33 @@ function blitEscapingAbsoluteDescendants(
 ): void {
   const pr = px + pw
   const pb = py + ph
-  for (const child of node.childNodes) {
-    if (child.nodeName === '#text') continue
-    const elem = child as DOMElement
-    if (elem.style.position === 'absolute') {
-      const cached = nodeCache.get(elem)
-      if (cached) {
-        absoluteRectsCur.push(cached)
-        const cx = Math.floor(cached.x)
-        const cy = Math.floor(cached.y)
-        const cw = Math.floor(cached.width)
-        const ch = Math.floor(cached.height)
-        // Only blit rects that extend outside the parent's layout bounds —
-        // cells within the parent rect are already covered by the parent blit.
-        if (cx < px || cy < py || cx + cw > pr || cy + ch > pb) {
-          output.blit(prevScreen, cx, cy, cw, ch)
+  // 2.1.218 #16 (UI half): iterative descent — absolute descendants can
+  // be nested arbitrarily deep, so a recursive walk risked overflowing
+  // on deeply-nested UI trees. Explicit stack replaces the recursion.
+  const work: DOMElement[] = [node]
+  while (work.length > 0) {
+    const current = work.pop()!
+    for (const child of current.childNodes) {
+      if (child.nodeName === '#text') continue
+      const elem = child as DOMElement
+      if (elem.style.position === 'absolute') {
+        const cached = nodeCache.get(elem)
+        if (cached) {
+          absoluteRectsCur.push(cached)
+          const cx = Math.floor(cached.x)
+          const cy = Math.floor(cached.y)
+          const cw = Math.floor(cached.width)
+          const ch = Math.floor(cached.height)
+          // Only blit rects that extend outside the parent's layout bounds —
+          // cells within the parent rect are already covered by the parent blit.
+          if (cx < px || cy < py || cx + cw > pr || cy + ch > pb) {
+            output.blit(prevScreen, cx, cy, cw, ch)
+          }
         }
       }
+      // Descend — absolute descendants can be nested arbitrarily deep.
+      work.push(elem)
     }
-    // Recurse — absolute descendants can be nested arbitrarily deep
-    blitEscapingAbsoluteDescendants(elem, output, prevScreen, px, py, pw, ph)
   }
 }
 
@@ -1448,10 +1574,16 @@ function renderScrolledChildren(
 }
 
 function dropSubtreeCache(node: DOMElement): void {
-  nodeCache.delete(node)
-  for (const child of node.childNodes) {
-    if (child.nodeName !== '#text') {
-      dropSubtreeCache(child as DOMElement)
+  // 2.1.218 #16 (UI half): iterative descent — a recursive walk risked
+  // overflowing on deeply-nested UI trees. Explicit stack instead.
+  const work: DOMElement[] = [node]
+  while (work.length > 0) {
+    const current = work.pop()!
+    nodeCache.delete(current)
+    for (const child of current.childNodes) {
+      if (child.nodeName !== '#text') {
+        work.push(child as DOMElement)
+      }
     }
   }
 }
