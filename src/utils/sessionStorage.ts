@@ -98,6 +98,82 @@ import { validateUuid } from './uuid.js'
 // See: https://github.com/oven-sh/bun/issues/26168
 const VERSION = typeof MACRO !== 'undefined' ? MACRO.VERSION : 'unknown'
 
+/**
+ * 2.1.217 #2 — Mutable fs surface for transcript writes, so tests can inject
+ * write failures (ENOSPC / EACCES / EIO) without mocking the entire
+ * `fs/promises` module process-wide (which breaks the cross-process lockfile
+ * that uses `graceful-fs` over sync `fs`, not `fs/promises`).
+ * Mirrors the `historyFs` pattern in `history.ts`.
+ */
+export const transcriptWriteFs = {
+  appendFile: fsAppendFile,
+  mkdir,
+}
+
+/**
+ * 2.1.217 #2 — Dedup flags for transcript-loss warnings.
+ * Each flag is set once on the first occurrence and never re-warns, so the
+ * user is alerted without spam on every failed write / skipped entry.
+ */
+let transcriptWriteFailureWarned = false
+let sessionSavingOffWarned = false
+
+/**
+ * 2.1.217 #2 — Reset warning dedup flags for testing. Call between test
+ * cases so each starts with a clean warning state.
+ */
+export function resetTranscriptWriteWarnings(): void {
+  transcriptWriteFailureWarned = false
+  sessionSavingOffWarned = false
+}
+
+/**
+ * 2.1.217 #2 — Emit a one-time, user-facing warning to stderr when a
+ * transcript write fails (disk full / EACCES / EIO / ENOSPC). Previously
+ * the error propagated through the drain-queue `setTimeout` callback as an
+ * unhandled rejection — swallowed silently, transcripts lost with no signal.
+ *
+ * Also logs the error via `logError` for local in-memory + disk error log
+ * capture (cloud-provider users still get local capture).
+ */
+function warnTranscriptWriteFailure(error: unknown): void {
+  if (transcriptWriteFailureWarned) return
+  transcriptWriteFailureWarned = true
+  try {
+    const errObj = error as NodeJS.ErrnoException
+    const code = errObj?.code ?? 'unknown'
+    const message = errObj?.message ?? String(error)
+    const warning =
+      `Warning: transcript write failed (${code}: ${message}). ` +
+      `Session transcripts are not being saved (e.g. disk full, permissions). ` +
+      `This warning will not repeat; fix the underlying issue to resume saving.\n`
+    process.stderr.write(warning)
+  } catch {
+    // Don't let the warning mechanism itself crash
+  }
+  logError(error instanceof Error ? error : new Error(String(error)))
+}
+
+/**
+ * 2.1.217 #2 — Emit a one-time, user-facing warning to stderr when session
+ * saving is off due to an inherited environment variable. Previously
+ * `shouldSkipPersistence()` returned true silently and `appendEntry()` returned
+ * early — the user had no idea transcripts were not being saved.
+ */
+function warnSessionSavingOff(envVarName: string): void {
+  if (sessionSavingOffWarned) return
+  sessionSavingOffWarned = true
+  try {
+    const warning =
+      `Warning: session transcript saving is OFF — ${envVarName} is set in ` +
+      `the environment. Transcripts will not be persisted. ` +
+      `This warning will not repeat; unset ${envVarName} to resume saving.\n`
+    process.stderr.write(warning)
+  } catch {
+    // Don't let the warning mechanism itself crash
+  }
+}
+
 type Transcript = (
   | UserMessage
   | AssistantMessage
@@ -559,6 +635,16 @@ export function setSessionFileForTesting(path: string): void {
   getProject().sessionFile = path
 }
 
+/**
+ * 2.1.217 #2 — Test-only entry point to call the private `appendEntry`
+ * method without going through the full message-insertion pipeline.
+ * Used by transcriptWriteWarnings.test.ts to trigger drain-queue writes
+ * and session-saving-off paths in isolation.
+ */
+export async function appendEntryForTesting(entry: Entry): Promise<void> {
+  await getProject().appendEntry(entry)
+}
+
 type InternalEventWriter = (
   eventType: string,
   payload: Record<string, unknown>,
@@ -705,12 +791,21 @@ class Project {
 
   private async appendToFile(filePath: string, data: string): Promise<void> {
     try {
-      await fsAppendFile(filePath, data, { mode: 0o600 })
-    } catch {
+      await transcriptWriteFs.appendFile(filePath, data, { mode: 0o600 })
+    } catch (firstError) {
       // Directory may not exist — some NFS-like filesystems return
       // unexpected error codes, so don't discriminate on code.
-      await mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
-      await fsAppendFile(filePath, data, { mode: 0o600 })
+      try {
+        await transcriptWriteFs.mkdir(dirname(filePath), { recursive: true, mode: 0o700 })
+        await transcriptWriteFs.appendFile(filePath, data, { mode: 0o600 })
+      } catch (retryError) {
+        // 2.1.217 #2: The retry also failed (disk full / EACCES / EIO /
+        // ENOSPC). Previously this propagated through the drain-queue
+        // setTimeout callback as an unhandled rejection — swallowed
+        // silently, transcripts lost with no user signal. Now emit a
+        // one-time user-facing warning instead of losing silently.
+        warnTranscriptWriteFailure(retryError)
+      }
     }
   }
 
@@ -1200,6 +1295,15 @@ class Project {
 
   async appendEntry(entry: Entry, sessionId: UUID = getSessionId() as UUID) {
     if (this.shouldSkipPersistence()) {
+      // 2.1.217 #2: Session saving is off — previously this returned
+      // silently with no user signal. Now emit a one-time warning naming
+      // the env var that disables persistence, so the user knows
+      // transcripts are not being saved.
+      if (isEnvTruthy(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY)) {
+        warnSessionSavingOff('CLAUDE_CODE_SKIP_PROMPT_HISTORY')
+      } else if (isSessionPersistenceDisabled()) {
+        warnSessionSavingOff('session persistence disabled')
+      }
       return
     }
 
