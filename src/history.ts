@@ -1,4 +1,9 @@
-import { appendFile, writeFile } from 'fs/promises'
+import {
+  readFile as fsReadFile,
+  rename as fsRename,
+  unlink as fsUnlink,
+  writeFile as fsWriteFile,
+} from 'fs/promises'
 import { join } from 'path'
 import { getProjectRoot, getSessionId } from './bootstrap/state.js'
 import { registerCleanup } from './utils/cleanupRegistry.js'
@@ -283,6 +288,22 @@ let isWriting = false
 let currentFlushPromise: Promise<void> | null = null
 let cleanupRegistered = false
 let lastAddedEntry: LogEntry | null = null
+
+/**
+ * Injectable fs surface for the atomic history write. Tests swap
+ * `writeFile`/`rename` to inject a transient write failure without mocking
+ * the whole `fs/promises` module — `mock.module('fs/promises')` leaks
+ * process-wide and would also break the cross-process lockfile, which uses
+ * `graceful-fs` over the sync `fs` rather than `fs/promises`. The ensure-exists
+ * step and the lockfile keep using the directly-imported real `fsWriteFile`
+ * so they are unaffected by a test-injected failure on this seam.
+ */
+export const historyFs = {
+  readFile: fsReadFile,
+  writeFile: fsWriteFile,
+  rename: fsRename,
+  unlink: fsUnlink,
+}
 // Timestamps of entries already flushed to disk that should be skipped when
 // reading. Used by removeLastFromHistory when the entry has raced past the
 // pending buffer. Session-scoped (module state resets on process restart).
@@ -298,8 +319,11 @@ async function immediateFlushHistory(): Promise<void> {
   try {
     const historyPath = join(getClaudeConfigHomeDir(), 'history.jsonl')
 
-    // Ensure the file exists before acquiring lock (append mode creates if missing)
-    await writeFile(historyPath, '', {
+    // The cross-process lockfile calls realpath on the target, so the file
+    // must exist before locking. Append-mode create is a no-op if it exists.
+    // Uses the directly-imported real writeFile (not the historyFs seam) so a
+    // test-injected failure on the atomic write never blocks file creation.
+    await fsWriteFile(historyPath, '', {
       encoding: 'utf8',
       mode: 0o600,
       flag: 'a',
@@ -314,16 +338,93 @@ async function immediateFlushHistory(): Promise<void> {
       onCompromised: lockCompromisedHandler('History'),
     })
 
-    const jsonLines = pendingEntries.map(entry => jsonStringify(entry) + '\n')
-    pendingEntries = []
+    // Remove the entries from the buffer under the lock; restore them on
+    // failure so they are retried by the next flush instead of being silently
+    // dropped (2.1.218 #21: history writes raced or failed → dropped/dupe).
+    const snapshot = pendingEntries.splice(0)
+    if (snapshot.length === 0) {
+      return
+    }
 
-    await appendFile(historyPath, jsonLines.join(''), { mode: 0o600 })
+    try {
+      await appendHistoryAtomically(historyPath, snapshot)
+    } catch (error) {
+      // Atomic write failed before the rename: existing history on disk is
+      // untouched. Re-queue the snapshot so the next flush retries it — never
+      // silently drop entries when a write races or fails.
+      pendingEntries.unshift(...snapshot)
+      logForDebugging(`Failed to write prompt history: ${error}`)
+    }
   } catch (error) {
     logForDebugging(`Failed to write prompt history: ${error}`)
   } finally {
     if (release) {
       await release()
     }
+  }
+}
+
+/**
+ * Atomically append `entries` (as JSONL lines) to `historyPath`.
+ *
+ * Reads the existing file content, writes `existing + newLines` to a temp
+ * file, then `rename`s the temp into place. `rename` is atomic on POSIX, so
+ * a failure at any step before the rename leaves the existing history
+ * untouched — no partial line is ever visible to readers, which prevents
+ * both dropped and duplicated entries when writes race or fail. The caller
+ * holds the cross-process lockfile, so concurrent processes (and the
+ * in-process serialized flush) cannot interleave a read-modify-write and
+ * clobber each other's entries.
+ */
+async function appendHistoryAtomically(
+  historyPath: string,
+  entries: LogEntry[],
+): Promise<void> {
+  if (entries.length === 0) {
+    return
+  }
+
+  const tmpPath = `${historyPath}.${process.pid}.${Date.now()}.tmp`
+  try {
+    let existing = ''
+    try {
+      existing = await historyFs.readFile(historyPath, 'utf8')
+    } catch (error) {
+      // First-ever write: no existing content to preserve.
+      if (getErrnoCode(error) !== 'ENOENT') {
+        throw error
+      }
+    }
+
+    const newLines = entries.map(entry => jsonStringify(entry) + '\n').join('')
+    await historyFs.writeFile(tmpPath, existing + newLines, {
+      encoding: 'utf8',
+      mode: 0o600,
+    })
+    await historyFs.rename(tmpPath, historyPath)
+  } finally {
+    // Clean up an orphaned temp file if the rename never happened (write or
+    // rename threw). On success the temp was renamed away and this is a
+    // harmless ENOENT.
+    try {
+      await historyFs.unlink(tmpPath)
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Read raw history lines for tests. Not part of the public prompt-history
+ * API; the read path readers use `readLinesReverse` instead.
+ */
+export async function readHistoryForTest(path: string): Promise<string[]> {
+  try {
+    const content = await fsReadFile(path, 'utf8')
+    return content.split('\n').filter(line => line.length > 0)
+  } catch (error) {
+    if (getErrnoCode(error) === 'ENOENT') return []
+    throw error
   }
 }
 
