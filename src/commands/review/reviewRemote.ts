@@ -29,6 +29,12 @@ import { detectCurrentRepositoryWithHost } from '../../utils/detectRepository.js
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
 import { getDefaultBranch, gitExe } from '../../utils/git.js'
 import { teleportToRemote } from '../../utils/teleport.js'
+import {
+  collectDiffTooLargeStats,
+  configuredDiffLimitBytes,
+  formatDiffTooLargeError,
+} from './diffTooLargeError.js'
+import { reviewNoteEnv } from './reviewNote.js'
 
 // One-time session flag: once the user confirms overage billing via the
 // dialog, all subsequent /ultrareview invocations in this session proceed
@@ -276,14 +282,31 @@ export async function launchRemoteReview(
       environmentVariables: {
         BUGHUNTER_BASE_BRANCH: mergeBaseSha,
         ...commonEnvVars,
+        // CC 2.1.218 #8: descriptive free-text args ride into the cloud
+        // bughunter as a review note (BUGHUNTER_REVIEW_NOTE) so they shape
+        // the findings instead of being dropped.
+        ...reviewNoteEnv(args),
       },
     })
     if (!session) {
+      // CC 2.1.216 #32: surface configured limit, measured diff size, and
+      // largest contributing files so the user can act on the failure.
+      const stats = await collectDiffTooLargeStats(mergeBaseSha).catch(
+        () => ({
+          filesChanged: 0,
+          insertions: 0,
+          deletions: 0,
+          largestFiles: [],
+        }),
+      )
       logEvent('tengu_review_remote_teleport_failed', {})
       return [
         {
           type: 'text',
-          text: 'Repo is too large. Push a PR and use `/ultrareview <PR#>` instead.',
+          text: formatDiffTooLargeError({
+            configuredLimitBytes: configuredDiffLimitBytes(),
+            stats,
+          }),
         },
       ]
     }
