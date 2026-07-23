@@ -429,3 +429,46 @@ and render-touching fixes are flagged for 验收员 non-sandbox e2e.
 **Assess is now closed.** Remaining pending tail = TUI/a11y cluster only
 (218#16 UI half, #1, #2, #4, #6, #14; 217#8; 216#12/#27/#28/#30/#38/#6) — the next
 batch (recon-based port + alternative verification, OCC-11 e2e deferred per item).
+
+### §8.3 — TUI/a11y batch (2026-07-24, PRs #221–#225): final alignment cluster
+
+The last pending cluster (TUI/a11y, §8 "Still pending"). Recon-first per item;
+PORT only where OCC has the surface and the fix wasn't already done. All PORTs
+TDD RED→GREEN, `bunx biome lint` clean, `bun run build` green; merged to `main`
+(squash) atop 2.1.277. Remote branches + worktrees cleaned.
+
+| Item | Verdict | PR | Note |
+|------|---------|----|------|
+| 218#2 screen-reader deleted-text announce (word/line deletions) | PORT | #221 | `announceDeletedText` on kill-handlers (Ctrl+W/Cmd+Backspace/Ctrl+U/Option+Delete) in ax-screen-reader mode |
+| 218#14 VoiceOver "new line" vs typed space | PORT | #221 | `srEchoTypedChar(' ')` returns `' '`; insert path echoes trailing space |
+| 217#8 startup announce cut off + thinking-row re-render | PORT | #221 | startup announce routed through SR queue; thinking-row gated to on-change only + reduced-motion in SR mode |
+| 218#6 multi-line paste Ctrl+J | ALREADY DONE | #222 | `decodePastedNewlines` already decodes kitty CSIu newline codepoints (incl. 106=`j`) to `\n`; characterized |
+| 218#4 left-arrow discard confirm + Esc agent-view | ALREADY DONE | #222 | `messageActionsLeftArrowGate` already gates discard-after-edit; `exitTeammateView` already returns to backgrounded conversation; 9 new characterization tests |
+| 216#27 slash-menu hot-reload | ALREADY DONE | #223 | chokidar → `clearSkillCaches`+`clearCommandsCache` → `skillsChanged` → `useSkillsChange` → `useTypeahead` already wired; characterized |
+| 216#28 plugin-skill prefix in autocomplete | PORT | #223 | `pluginSkillUserFacingName` always returns plugin-qualified name (was dropping `plugin:` prefix when `name` frontmatter set) |
+| 216#30 `/fork` one-line confirmation | PORT | #223 | `formatForkConfirmation(name, sessionId, sharesCheckout)` — one line with name + `claude attach` id + shares-checkout note |
+| 218#16 UI-trees half (deeply-nested render stack guard) | PORT | #224 | Ink `renderNodeToOutput`↔`renderChildren` mutual recursion → iterative driver (heap stack of closures); 5 recursive walkers de-recursed; 10k/30k-level trees no longer overflow |
+| 216#38 dataviz skill content | SKIP | #224 | OCC ships dataviz as a builtin `/dataviz` **command** (prompt), NOT the official dataviz **SKILL** with `references/palette.md` + four-series guidance — no palette/guidance to port; characterized |
+| 216#6 @-mention empty after hooks + vim dot-repeat + statusline-twice + resume-picker hang | PORT (all 4 sub-bugs) | #225 | `hookReadFileStateGate` (#6a); vim `c`-operator dot-repeat + paste (#6b); `statusLineUpdateGate` (#6c); `resumeFailureGate` (#6d) |
+| 216#12 Esc-Esc rewind picker in long sessions | ALREADY DONE | #225 | `escEscGate` already opens rewind on idle Esc-Esc with bg tasks; characterized |
+| 218#1 `/code-review` as background subagent | PORT | #225 | wired `/code-review` to background-subagent dispatch (the #200-deferred item); 2 RED→GREEN |
+
+Post-merge fresh-`main` worktree: 510 pass / 0 fail on TUI-affected dirs
+(`src/components/PromptInput/__tests__`, `src/ink/__tests__`, `src/utils/__tests__`,
+`src/commands/__tests__`, `src/services/tools/__tests__`, `src/vim/__tests__`,
+`src/skills/__tests__`, `src/hooks`); `bun run build` green (cli.js 28.76 MB).
+
+**Verification (OCC-11 sandbox-stall constraint — every item noted, no silent
+skip):** no tmux/REPL e2e this batch. PORTs unit-tested at the logic/decision
+layer (pure helpers + mock sinks + synthetic deep UI tree + content assertions).
+Live-render / keystroke / SR-speech / paste-in-TTY behavior is **DEFERRED to
+验收员 non-sandbox acceptance e2e** — specifically: 218#2/#14/217#8 SR render,
+218#6 live paste, 218#4 live left-arrow/Esc, 216#27 live slash-menu, 216#30
+live `/fork` row, 218#16 live TTY render, 216#6 live statusline/resume-picker/vim,
+218#1 live `/code-review` background dispatch.
+
+**TUI/a11y cluster is now CLOSED.** Combined with §8.1 (batch-2 verifiable backend
+tail) + §8.2 (assess) + the earlier P0/P1/P2 slices, all of `2.1.218`/`2.1.216`/`2.1.217`
+portable items are now on `main`. The ONLY remaining gate is the 验收员 non-sandbox
+acceptance e2e (OCC-11 environment block, deferred-with-reason per the execution
+discipline) + the final security scan + release.
