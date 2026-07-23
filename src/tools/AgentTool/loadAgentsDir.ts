@@ -1,6 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import memoize from 'lodash-es/memoize.js'
-import { basename } from 'path'
+import { basename, dirname, resolve, join } from 'path'
+import { homedir } from 'os'
 import type { SettingSource } from 'src/utils/settings/constants.js'
 import { z } from 'zod/v4'
 import { isAutoMemoryEnabled } from '../../memdir/paths.js'
@@ -36,6 +37,12 @@ import {
   clearPluginAgentCache,
   loadPluginAgents,
 } from '../../utils/plugins/loadPluginAgents.js'
+import {
+  checkHasTrustDialogAccepted,
+  isPathTrusted,
+} from '../../utils/config.js'
+import { normalizePathForConfigKey } from '../../utils/path.js'
+import { isSourceAdminTrusted } from '../../utils/settings/pluginOnlyPolicy.js'
 import { HooksSchema, type HooksSettings } from '../../utils/settings/types.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { FILE_EDIT_TOOL_NAME } from '../FileEditTool/constants.js'
@@ -254,6 +261,136 @@ export function filterAgentsByMcpRequirements(
   return agents.filter(agent => hasRequiredMcpServers(agent, availableServers))
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.218 #23: agent frontmatter hooks must NOT run from untrusted folders.
+// Hooks now require the agent file's OWN folder to be trusted. Mirrors the
+// official's `dAo()` (trust check), `osd()` (trust-root resolution), `fAo()`
+// (has-hooks check), `vIy()`/`oW()` (trust-key resolution), and `nsd()`
+// (control-char sanitisation) functions reverse-engineered from the 2.1.218 ELF.
+// ---------------------------------------------------------------------------
+
+// NOTE: the admin-trust check for agent frontmatter hooks goes through
+// `isSourceAdminTrusted` (imported above), which mirrors the official's `dAo`
+// (`Kxe(source)` for admin-trusted sources, then explicit userSettings/
+// flagSettings). No separate HOOK_TRUSTED_SOURCES set is needed.
+
+/**
+ * Resolve the trust root from an agent's base directory.
+ * Mirrors the official's `osd()`: if baseDir is `<project>/.claude/agents`,
+ * resolve to `<project>` (the project root). Otherwise return baseDir as-is.
+ */
+export function resolveAgentTrustRoot(baseDir: string): string {
+  const parent = dirname(baseDir)
+  if (basename(baseDir) === 'agents' && basename(parent) === '.claude') {
+    return dirname(parent)
+  }
+  return baseDir
+}
+
+/**
+ * Check if an agent definition has any frontmatter hooks.
+ * Mirrors the official's `fAo()`: iterates over hook event types and
+ * returns true if any have actual hook entries (non-empty hooks arrays).
+ */
+export function hasFrontmatterHooks(
+  hooks: HooksSettings | undefined,
+): boolean {
+  if (!hooks || Object.keys(hooks).length === 0) {
+    return false
+  }
+  for (const event of Object.keys(hooks)) {
+    const matchers = (hooks as Record<string, unknown>)[event]
+    if (!Array.isArray(matchers) || matchers.length === 0) continue
+    for (const m of matchers) {
+      if (
+        m &&
+        typeof m === 'object' &&
+        'hooks' in m &&
+        Array.isArray((m as { hooks: unknown[] }).hooks) &&
+        (m as { hooks: unknown[] }).hooks.length > 0
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/**
+ * Resolve the trust key for an agent definition.
+ * Mirrors the official's `vIy(e) ?? oW()`: if the agent has a baseDir,
+ * resolve the trust root and normalise; otherwise use the CWD's trust key.
+ */
+export function getAgentHookTrustKey(agentDef: {
+  baseDir?: string
+}): string {
+  if (agentDef.baseDir) {
+    return normalizePathForConfigKey(
+      resolve(resolveAgentTrustRoot(agentDef.baseDir)),
+    )
+  }
+  // Fallback: CWD trust key (equivalent to oW())
+  return normalizePathForConfigKey(resolve(process.cwd()))
+}
+
+/**
+ * Sanitise a trust key for display: replace control characters with their
+ * `\uXXXX` escape sequences. Mirrors the official's `nsd()`.
+ */
+export function sanitizeTrustKey(key: string): string {
+  return key.replace(
+    /[\u007F-\u009F\u2028\u2029\p{Cf}]/gu,
+    char =>
+      char
+        .split('')
+        .map(c => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0'))
+        .join(''),
+  )
+}
+
+/**
+ * Check if an agent's hooks origin is trusted.
+ * Mirrors the official's `dAo()`:
+ *   - Admin-trusted sources (plugin, policySettings, built-in, etc.) → true
+ *   - userSettings, flagSettings → true (user's own config, not untrusted dir)
+ *   - No baseDir → checkHasTrustDialogAccepted() (CWD trust)
+ *   - Otherwise → isPathTrusted(resolveAgentTrustRoot(baseDir))
+ *
+ * This prevents a malicious agent file dropped in an untrusted folder from
+ * running hooks — the agent definition still loads, but its hooks are skipped.
+ */
+export function isAgentHooksOriginTrusted(agentDef: {
+  source: string | undefined
+  baseDir?: string
+}): boolean {
+  // Admin-trusted sources: plugin, policySettings, built-in, builtin, bundled
+  if (isSourceAdminTrusted(agentDef.source)) {
+    return true
+  }
+  // userSettings and flagSettings are always trusted (they come from the
+  // user's own ~/.claude or --settings flag, not from an untrusted folder)
+  if (
+    agentDef.source === 'userSettings' ||
+    agentDef.source === 'flagSettings'
+  ) {
+    return true
+  }
+  // No baseDir: check the current working directory trust
+  if (!agentDef.baseDir) {
+    return checkHasTrustDialogAccepted()
+  }
+  // Check if the agent's resolved folder is trusted
+  return isPathTrusted(resolveAgentTrustRoot(agentDef.baseDir))
+}
+
+/**
+ * Get the global config file path for the skip message.
+ * Mirrors the official's `ov()` — returns the path to ~/.claude.json.
+ */
+export function getGlobalConfigFilePath(): string {
+  return join(homedir(), '.claude.json')
+}
+
 /**
  * Check for and initialize agent memory from project snapshots.
  * For agents with memory enabled, copies snapshot to local if no local memory exists.
@@ -400,12 +537,17 @@ export function clearAgentDefinitionsCache(): void {
 /**
  * Helper to determine the specific parsing error for an agent file
  */
-function getParseError(frontmatter: Record<string, unknown>): string {
+export function getParseError(frontmatter: Record<string, unknown>): string {
   const agentType = frontmatter['name']
   const description = frontmatter['description']
 
   if (!agentType || typeof agentType !== 'string') {
     return 'Missing required "name" field in frontmatter'
+  }
+
+  // CC 2.1.218 #34: ":" in an agent name is reserved for plugin namespacing.
+  if (agentType.normalize('NFKC').includes(':')) {
+    return 'Invalid "name": names must not contain ":" (reserved for plugin namespacing)'
   }
 
   if (!description || typeof description !== 'string') {
@@ -552,6 +694,17 @@ export function parseAgentFromMarkdown(
     // Validate required fields — silently skip files without any agent
     // frontmatter (they're likely co-located reference documentation)
     if (!agentType || typeof agentType !== 'string') {
+      return null
+    }
+    // CC 2.1.218 #34: an agent `name` containing ":" is rejected — ":" is
+    // reserved for plugin namespacing (e.g. `pluginName:agentName`). Match
+    // the official verbatim error, checked after NFKC normalization so that
+    // fullwidth ":" (U+FF1A) and other colon-like codepoints are also caught.
+    if (agentType.normalize('NFKC').includes(':')) {
+      logForDebugging(
+        'Invalid "name": names must not contain ":" (reserved for plugin namespacing)',
+        { level: 'error' },
+      )
       return null
     }
     if (!whenToUse || typeof whenToUse !== 'string') {

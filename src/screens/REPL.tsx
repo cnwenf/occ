@@ -167,6 +167,8 @@ import type { ScopedMcpServerConfig } from '../services/mcp/types.js';
 import { randomUUID, type UUID } from 'crypto';
 import { processSessionStartHooks } from '../utils/sessionStart.js';
 import { executeSessionEndHooks, getSessionEndHookTimeoutMs } from '../utils/hooks.js';
+import { registerMainThreadAgentHooks } from '../utils/hooks/registerFrontmatterHooks.js';
+import { isRestrictedToPluginOnly, isSourceAdminTrusted } from '../utils/settings/pluginOnlyPolicy.js';
 import { type IDESelection, useIdeSelection } from '../hooks/useIdeSelection.js';
 import { getTools, assembleToolPool } from '../tools.js';
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js';
@@ -288,6 +290,7 @@ import { isFullscreenEnvEnabled, maybeGetTmuxMouseHint, isMouseTrackingEnabled }
 import { AlternateScreen } from '../ink/components/AlternateScreen.js';
 import { ScrollKeybindingHandler } from '../components/ScrollKeybindingHandler.js';
 import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type MessageActionsState, type MessageActionsNav, type MessageActionCaps } from '../components/messageActions.js';
+import { shouldConfirmLeftArrowDiscard } from '../components/messageActionsLeftArrowGate.js';
 import { setClipboard } from '../ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
@@ -821,6 +824,27 @@ export function REPL({
     if (isRemoteSession) return;
     void performStartupChecks(setAppState);
   }, [setAppState, isRemoteSession]);
+
+  // CC 2.1.218 #23 (mainThread closure): Register frontmatter hooks for the
+  // main-thread agent (e.g. `--agent <custom-agent-with-hooks>`). Mirrors the
+  // subagent path (runAgent.ts:636-668) but passes isAgent=false so Stop hooks
+  // remain Stop (main-thread sessions trigger Stop, not SubagentStop). This
+  // closes the dead 'mainThread' surface branch — the surface is now reachable.
+  // Runs after the trust dialog is confirmed (same guarantee as performStartupChecks).
+  useEffect(() => {
+    if (isRemoteSession) return;
+    if (!mainThreadAgentDefinition) return;
+    const hooksAllowedByPolicy =
+      !isRestrictedToPluginOnly('hooks') ||
+      isSourceAdminTrusted(mainThreadAgentDefinition.source);
+    registerMainThreadAgentHooks(
+      mainThreadAgentDefinition,
+      setAppState,
+      getSessionId(),
+      hooksAllowedByPolicy,
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once at mount
+  }, []);
 
   // Allow Claude in Chrome MCP to send prompts through MCP notifications
   // and sync permission mode changes to the Chrome extension
@@ -3884,12 +3908,22 @@ export function REPL({
     }),
     edit: async msg => {
       // Same skip-confirm check as /rewind: lossless → direct, else confirm dialog.
+      // Routed through shouldConfirmLeftArrowDiscard (CC 2.1.218 #4): left-arrow
+      // at the discard boundary ASKS TO CONFIRM when the user has edited
+      // (file changes or non-synthetic trailing messages) — no undo otherwise.
       const rawIdx = findRawIndex(msg.uuid);
       const raw = rawIdx >= 0 ? messages[rawIdx] : undefined;
       if (!raw || !selectableUserMessagesFilter(raw)) return;
       const noFileChanges = !(await fileHistoryHasAnyChanges(fileHistory, raw.uuid));
       const onlySynthetic = messagesAfterAreOnlySynthetic(messages, rawIdx);
-      if (noFileChanges && onlySynthetic) {
+      const hasEdits = !(noFileChanges && onlySynthetic);
+      // The message-actions edit entry is the left-arrow discard boundary
+      // (cursor at start of the conversation selection). The buffer text isn't
+      // the edit itself here, so we pass the raw message text as the signal;
+      // an empty/blank message can't be rewound to anyway.
+      const rawText = (raw.message.content[0] as { text?: string } | undefined)?.text ?? '';
+      const mustConfirm = shouldConfirmLeftArrowDiscard(rawText, hasEdits, true);
+      if (!mustConfirm) {
         // rewindConversationTo's setMessages races stream appends — cancel first (idempotent).
         onCancel();
         // handleRestoreMessage also restores pasted images.
@@ -5026,7 +5060,7 @@ export function REPL({
                           match the existing tasks-dialog gating; disabled while a
                           modal/local-jsx dialog is open so it never steals keys. */}
                       {isFullscreenEnvEnabled() && <FleetViewScreen inputValue={inputValue} disabled={!!focusedInputDialog || isShowingLocalJSXCommand || !!showBashesDialog} onDispatch={(prompt: string) => { setInputValue(prompt); setSubmitCount(c => c + 1); }} />}
-                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
+                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} isQueryActive={isQueryActive} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
             // Works during isLoading — edit cancels first; uuid selection survives appends.
             feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={feature('VOICE_MODE') ? insertTextRef : undefined} voiceInterimRange={voice.interimRange} />
                       <SessionBackgroundHint onBackgroundSession={handleBackgroundSession} isLoading={isLoading} />

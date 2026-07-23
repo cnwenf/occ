@@ -26,6 +26,7 @@ import type {
   UserMessage,
 } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import type { PermissionDecision } from 'src/utils/permissions/PermissionResult.js'
 import { getRuleByContentsForTool } from 'src/utils/permissions/permissions.js'
 import {
@@ -51,6 +52,7 @@ import { errorMessage } from '../../utils/errors.js'
 import {
   extractResultText,
   prepareForkedCommandContext,
+  shouldForkedSkillRunAsync,
 } from '../../utils/forkedAgent.js'
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -111,6 +113,12 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
 export type { SkillToolProgress as Progress } from '../../types/tools.js'
 
 import type { SkillToolProgress as Progress } from '../../types/tools.js'
+
+// CC 2.1.218 #35: Check if background tasks are disabled at module load time.
+// Mirrors AgentTool.tsx's gate so forked skills honor the same env kill-switch
+// (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) as agent spawns.
+const isBackgroundTasksDisabled =
+  isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
 
 // Conditional require for remote skill modules — static imports here would
 // pull in akiBackend.ts (via remoteSkillLoader → akiBackend), which has
@@ -232,6 +240,12 @@ async function executeForkedSkill(
     `SkillTool executing forked skill ${commandName} with agent ${agentDefinition.agentType}`,
   )
 
+  // CC 2.1.218 #35: forked skills run in the background by default unless
+  // `background: false` opts out. Gated by the same env kill-switch as agent
+  // spawns (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS).
+  const shouldRunAsync =
+    shouldForkedSkillRunAsync(command) && !isBackgroundTasksDisabled
+
   try {
     // Run the sub-agent
     for await (const message of runAgent({
@@ -242,7 +256,7 @@ async function executeForkedSkill(
         getAppState: modifiedGetAppState,
       },
       canUseTool,
-      isAsync: false,
+      isAsync: shouldRunAsync,
       querySource: 'agent:custom',
       model: command.model as ModelAlias | undefined,
       availableTools: context.options.tools,

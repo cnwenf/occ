@@ -32,7 +32,32 @@ import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { FORK_AGENT, isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
 import { isBuiltInAgent } from './loadAgentsDir.js'
-import { runAgent } from './runAgent.js'
+import { runAgent as _realRunAgent } from './runAgent.js'
+
+// Test seam for the runAgent entry point. Defaults to the real `runAgent` so
+// production behavior is unchanged. A process-wide `mock.module('./runAgent.js')`
+// in resumeModelBehavioral.test.ts leaked into subagentCap.test.ts (which
+// imports the real runAgent to exercise the per-session spawn cap), making the
+// cap logic never run. Tests swap this via `_setRunAgentForTesting` and restore
+// via `_resetForTesting` in afterEach instead of a global module mock.
+const runAgentType: typeof _realRunAgent = _realRunAgent
+let runAgentImpl: typeof _realRunAgent = runAgentType
+
+/** @internal — test seam to override runAgent(); returns a restore function. */
+export function _setRunAgentForTesting(
+  fn: typeof _realRunAgent,
+): () => void {
+  const prev = runAgentImpl
+  runAgentImpl = fn
+  return () => {
+    runAgentImpl = prev
+  }
+}
+
+/** @internal — restore the real runAgent. */
+export function _resetRunAgentForTesting(): void {
+  runAgentImpl = runAgentType
+}
 
 export type ResumeAgentResult = {
   agentId: string
@@ -106,7 +131,23 @@ export async function resumeAgentBackground({
     const found = toolUseContext.options.agentDefinitions.activeAgents.find(
       a => a.agentType === meta.agentType,
     )
-    selectedAgent = found ?? GENERAL_PURPOSE_AGENT
+    if (found) {
+      selectedAgent = found
+    } else if (meta.systemPrompt) {
+      // CC 2.1.216 #7: the agent type isn't in activeAgents (e.g. custom agent
+      // file deleted, or a dynamically-provided agent no longer available).
+      // Restore the agent's own prompt and tool restrictions from persisted
+      // metadata instead of reverting to the default (general-purpose) agent.
+      selectedAgent = {
+        agentType: meta.agentType,
+        whenToUse: meta.description ?? `(resumed ${meta.agentType})`,
+        ...(meta.disallowedTools && { disallowedTools: meta.disallowedTools }),
+        getSystemPrompt: () => meta.systemPrompt!,
+        source: 'resumed-metadata' as any,
+      } as AgentDefinition
+    } else {
+      selectedAgent = GENERAL_PURPOSE_AGENT
+    }
   } else {
     selectedAgent = GENERAL_PURPOSE_AGENT
   }
@@ -163,7 +204,7 @@ export async function resumeAgentBackground({
     ? toolUseContext.options.tools
     : assembleToolPool(workerPermissionContext, appState.mcp.tools)
 
-  const runAgentParams: Parameters<typeof runAgent>[0] = {
+  const runAgentParams: Parameters<typeof _realRunAgent>[0] = {
     agentDefinition: selectedAgent,
     promptMessages: [
       ...resumedMessages,
@@ -238,7 +279,7 @@ export async function resumeAgentBackground({
         taskId: agentBackgroundTask.agentId,
         abortController: agentBackgroundTask.abortController!,
         makeStream: onCacheSafeParams =>
-          runAgent({
+          runAgentImpl({
             ...runAgentParams,
             override: {
               ...runAgentParams.override,

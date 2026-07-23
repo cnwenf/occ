@@ -61,4 +61,44 @@ export function _resetForTesting(): void {
   autoModeFlagCli = false
   autoModeCircuitBroken = false
   lastAutoModeDenialMs = null
+  planModeAutoBashActive = false
+}
+
+// ---------------------------------------------------------------------------
+// CC 2.1.218 #31: plan mode + auto — bash commands the static analyzer
+// can't prove read-only are auto-handled (not prompted).
+//
+// When the user enters plan mode while auto-mode is active, the auto-mode
+// classifier handles bash commands that the static analyzer can't prove are
+// read-only, instead of opening a permission dialog. This flag is set by
+// EnterPlanModeTool when transitioning into plan mode with auto-mode active.
+//
+// Binary evidence:
+//   - "static analysis does" — the official binary's bash static analyzer
+//     determines read-only status; unprovable commands previously prompted.
+//   - In plan mode + auto, the classifier takes them instead.
+// ---------------------------------------------------------------------------
+
+let planModeAutoBashActive = false
+
+/**
+ * Set whether plan mode + auto is active for bash command handling.
+ * Called from EnterPlanModeTool when entering plan mode with auto-mode active.
+ */
+export function setPlanModeAutoBashActive(active: boolean): void {
+  planModeAutoBashActive = active
+}
+
+/**
+ * Returns true when plan mode + auto is active, meaning bash commands the
+ * static analyzer can't prove read-only should be auto-handled (not prompted).
+ * Checked by the permission flow to decide: classifier vs dialog.
+ */
+export function isPlanModeAutoBashActive(): boolean {
+  return planModeAutoBashActive
+}
+
+/** Test-only: clear the plan-mode-auto-bash flag. */
+export function _resetPlanModeAutoBashForTesting(): void {
+  planModeAutoBashActive = false
 }

@@ -319,12 +319,31 @@ export function killAsyncAgent(taskId: string, setAppState: SetAppState): void {
 }
 
 /**
+ * CC 2.1.216 #15: Background subagents in their startup window (just spawned,
+ * haven't fully initialized yet) should not be cancelled by a high-priority
+ * message that triggers a bulk kill. The startup window protects freshly
+ * spawned agents from being caught in a cascade cancellation before they've
+ * had a chance to begin running. Direct killAsyncAgent (explicit TaskStop)
+ * is NOT guarded — only the bulk killAllRunningAgentTasks path.
+ */
+const STARTUP_WINDOW_MS = 5000
+
+/**
  * Kill all running agent tasks.
  * Used by ESC cancellation in coordinator mode to stop all subagents.
+ *
+ * CC 2.1.216 #15: Skips agents within their startup window (STARTUP_WINDOW_MS
+ * after startTime) so a high-priority message doesn't cancel a subagent that
+ * is still initializing.
  */
 export function killAllRunningAgentTasks(tasks: Record<string, TaskState>, setAppState: SetAppState): void {
+  const now = Date.now()
   for (const [taskId, task] of Object.entries(tasks)) {
     if (task.type === 'local_agent' && task.status === 'running') {
+      // CC 2.1.216 #15: don't cancel a background subagent in its startup window
+      if (now - task.startTime < STARTUP_WINDOW_MS) {
+        continue
+      }
       killAsyncAgent(taskId, setAppState);
     }
   }

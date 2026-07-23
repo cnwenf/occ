@@ -1806,6 +1806,11 @@ export const connectToServer = memoize(
         type: 'failed' as const,
         config: serverRef,
         error: errorMessage(error),
+        // CC 2.1.218 #5: surface HTTP status / named failure code so
+        // `mcp list`, `/mcp`, and the "configured MCP servers failed to
+        // connect" warning can show HTTP status + error text. Mirrors the
+        // binary's failed-client `errorCode` field consumed by `TQo`/`kbo`.
+        errorCode: extractMcpFailureErrorCode(error),
       }
     }
   },
@@ -3092,6 +3097,32 @@ export async function transformMCPResult(
 }
 
 /**
+ * CC 2.1.218 #5: classify a connection failure into the `errorCode` carried on
+ * a `FailedMCPServer`. Returns a numeric HTTP status as a string ("401"),
+ * "23" for a request timeout, or `undefined` when no classifiable code is
+ * available. Mirrors the numeric branch of the binary's `TQo` extractor.
+ */
+export function extractMcpFailureErrorCode(error: unknown): string | undefined {
+  if (!error) return undefined
+  // StreamableHTTPError / fetch errors carry an HTTP status on `.code`.
+  if (typeof error === 'object' && 'code' in error) {
+    const code = (error as { code?: unknown }).code
+    if (typeof code === 'number' && Number.isInteger(code) && code >= 100 && code <= 599) {
+      return String(code)
+    }
+  }
+  // OAuthError embeds the HTTP status in the message ("HTTP 401: …") when the
+  // response body was unparseable (auth.ts:1298 note: SDK doesn't attach it).
+  if (error instanceof Error) {
+    const statusMatch = error.message.match(/^HTTP (\d{3}):/)
+    if (statusMatch) return statusMatch[1]
+    // Request timeout — the binary uses "23" for request-timed-out.
+    if (/timed?\s*out|ETIMEDOUT|timeout/i.test(error.message)) return '23'
+  }
+  return undefined
+}
+
+/**
  * Check if MCP content contains any image blocks.
  * Used to decide whether to persist to file (images should use truncation instead
  * to preserve image compression and viewability).
@@ -3101,6 +3132,44 @@ function contentContainsImages(content: MCPToolResult): boolean {
     return false
   }
   return content.some(block => block.type === 'image')
+}
+
+/**
+ * CC 2.1.217 #3 (A2): drop the full untruncated MCP tool result reference.
+ *
+ * `truncateMcpContent` returns a substring (`String.prototype.slice`) and new
+ * text blocks whose `.text` is a sliced substring. V8 represents such a
+ * substring as a `SlicedString` that shares the original (potentially huge)
+ * string's backing character buffer — so as long as the truncated form is
+ * held (in the conversation for the rest of the session), the full
+ * untruncated result stays resident. This helper forces a fresh flat
+ * allocation (Buffer round-trip) for every text string and rebuilds content
+ * blocks as new objects, so the original full result and its buffer become
+ * unreachable and can be GC'd.
+ *
+ * Matches the official 2.1.217 #3 fix: keep only the truncated form, drop the
+ * reference to the full untruncated result.
+ */
+export function detachMcpToolResultContent(
+  content: MCPToolResult,
+): MCPToolResult {
+  if (!content) return content
+  if (typeof content === 'string') {
+    // Buffer round-trip allocates a new string that does not share the
+    // original SlicedString's backing store.
+    return Buffer.from(content, 'utf8').toString('utf8')
+  }
+  // Rebuild the block array with fresh objects + flat-copied text so the
+  // original blocks (and their sliced-text buffers) are not retained.
+  return content.map(block => {
+    if (block.type === 'text' && typeof block.text === 'string') {
+      return {
+        ...block,
+        text: Buffer.from(block.text, 'utf8').toString('utf8'),
+      }
+    }
+    return { ...block }
+  })
 }
 
 export async function processMCPResult(
@@ -3130,7 +3199,11 @@ export async function processMCPResult(
       reason: 'env_disabled',
       sizeEstimateTokens,
     } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
-    return await truncateMcpContentIfNeeded(content)
+    // CC 2.1.217 #3: detach the truncated form so the full untruncated
+    // result's backing buffer is not retained for the rest of the session.
+    return detachMcpToolResultContent(
+      await truncateMcpContentIfNeeded(content),
+    )
   }
 
   // Save large output to file and return instructions for reading it
@@ -3147,7 +3220,10 @@ export async function processMCPResult(
       reason: 'contains_images',
       sizeEstimateTokens,
     } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
-    return await truncateMcpContentIfNeeded(content)
+    // CC 2.1.217 #3: detach so the full untruncated result can be GC'd.
+    return detachMcpToolResultContent(
+      await truncateMcpContentIfNeeded(content),
+    )
   }
 
   // Generate a unique ID for the persisted file (server__tool-timestamp)

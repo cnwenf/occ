@@ -62,6 +62,12 @@ const classifierDecisionModule = feature('TRANSCRIPT_CLASSIFIER')
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? (require('./autoModeState.js') as typeof import('./autoModeState.js'))
   : null
+// CC 2.1.218 #27: pattern-based auto-deny (dangerous-rm, background-&) that
+// fires before the (stubbed, ant-only) classifier so these patterns don't
+// fail-open to a dialog in external builds.
+const autoModeDenialsModule = feature('TRANSCRIPT_CLASSIFIER')
+  ? (require('../autoModeDenials.js') as typeof import('../autoModeDenials.js'))
+  : null
 
 import {
   addToTurnClassifierDuration,
@@ -531,7 +537,8 @@ export const hasPermissionsToUseTool = async (
       feature('TRANSCRIPT_CLASSIFIER') &&
       (appState.toolPermissionContext.mode === 'auto' ||
         (appState.toolPermissionContext.mode === 'plan' &&
-          (autoModeStateModule?.isAutoModeActive() ?? false)))
+          ((autoModeStateModule?.isAutoModeActive() ?? false) ||
+            (autoModeStateModule?.isPlanModeAutoBashActive() ?? false))))
     ) {
       // Non-classifier-approvable safetyCheck decisions stay immune to ALL
       // auto-approve paths: the acceptEdits fast-path, the safe-tool allowlist,
@@ -585,6 +592,40 @@ export const hasPermissionsToUseTool = async (
         context.localDenialTracking ??
         appState.denialTracking ??
         createDenialTrackingState()
+
+      // CC 2.1.218 #27: auto-deny dangerous-rm and background-& patterns
+      // BEFORE the (stubbed, ant-only) classifier. Without this, these
+      // patterns reach the classifier path which, in external builds,
+      // fail-opens to a permission dialog. By pattern-matching here we
+      // auto-decide (deny) them without a dialog and without the classifier.
+      // Binary evidence: `dangerousPatterns` + `background_amp` compound type
+      // (`/(^|[^&])&\s*$/m`) in the CC 2.1.218 ELF.
+      if (tool.name === BASH_TOOL_NAME) {
+        const command =
+          typeof input.command === 'string' ? input.command : ''
+        const autoDeny = autoModeDenialsModule?.shouldAutoDenyInAutoMode(
+          tool.name,
+          command,
+        )
+        if (autoDeny?.deny) {
+          const newDenialState = recordDenial(denialState)
+          persistDenialState(context, newDenialState)
+          recordAutoModeDenialTimestamp()
+          logForDebugging(
+            `Auto mode auto-denied ${tool.name}: ${autoDeny.reason}`,
+            { level: 'warn' },
+          )
+          return {
+            behavior: 'deny',
+            decisionReason: {
+              type: 'classifier',
+              classifier: 'auto-mode',
+              reason: autoDeny.reason,
+            },
+            message: `${autoDeny.reason} auto-denied in auto mode`,
+          }
+        }
+      }
 
       // PowerShell requires explicit user permission in auto mode unless
       // POWERSHELL_AUTO_MODE (ant-only build flag) is on. When disabled, this

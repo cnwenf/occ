@@ -281,6 +281,23 @@ export function splitPathInFrontmatter(input: string | string[]): string[] {
 }
 
 /**
+ * Maximum number of brace expansions a single `paths` frontmatter value may
+ * produce before the parser aborts. Matches the official Claude Code binary,
+ * which delegates brace expansion to Bun's native globber (`BunObject.rs`):
+ *
+ *   const MAX_BRACE_EXPANSIONS: u32 = 65536;
+ *   if expansion_count > MAX_BRACE_EXPANSIONS {
+ *       throw "Too many brace expansions ({} > {})", expansion_count, MAX_BRACE_EXPANSIONS
+ *   }
+ *
+ * CC 2.1.217 #13: a CLAUDE.md/SKILL.md `paths` value with many brace groups
+ * could OOM-kill or stall the CLI at startup; the expansion is now
+ * budget-bounded. The cap is checked *during* recursion so an exponential
+ * pattern (e.g. 30 nested `{a,b}` groups) aborts before allocating gigabytes.
+ */
+const MAX_BRACE_EXPANSIONS = 65536
+
+/**
  * Expands brace patterns in a glob string.
  * @example
  * expandBraces("src/*.{ts,tsx}") // returns ["src/*.ts", "src/*.tsx"]
@@ -308,6 +325,16 @@ function expandBraces(pattern: string): string[] {
     const combined = prefix + part + suffix
     // Recursively handle additional brace groups
     const furtherExpanded = expandBraces(combined)
+    // CC 2.1.217 #13: budget-bound the expansion count to prevent OOM/stall
+    // on pathological patterns. Check before the push so `expanded` never
+    // exceeds the cap; `furtherExpanded` is itself bounded by the recursion's
+    // own check, so total live allocations stay ≤ ~2× the cap.
+    const projected = expanded.length + furtherExpanded.length
+    if (projected > MAX_BRACE_EXPANSIONS) {
+      throw new Error(
+        `Too many brace expansions (${projected} > ${MAX_BRACE_EXPANSIONS})`,
+      )
+    }
     expanded.push(...furtherExpanded)
   }
 
@@ -375,11 +402,53 @@ export function coerceDescriptionToString(
 }
 
 /**
+ * Tokens (case-insensitive) accepted as boolean `true`/`false` in skill &
+ * plugin frontmatter, beyond literal `true`/`false`. CC 2.1.218 #36: the
+ * official accepts `yes/no/on/off/1/0` (case-insensitive) in addition to
+ * `true/false`. An unrecognized value throws a "must be a boolean" error.
+ */
+const BOOLEAN_TRUE_TOKENS = new Set(['true', 'yes', 'on', '1'])
+const BOOLEAN_FALSE_TOKENS = new Set(['false', 'no', 'off', '0'])
+
+/**
+ * Coerce a frontmatter value to a boolean token, returning `undefined` when
+ * the value is not a recognized boolean literal. Shared by the strict
+ * ({@link parseBooleanFrontmatter}) and degrade ({@link parseBackgroundFrontmatter}
+ * in loadSkillsDir) coercion sites so both accept the same token set.
+ */
+export function coerceBooleanToken(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  if (typeof value === 'string') {
+    const lower = value.trim().toLowerCase()
+    if (BOOLEAN_TRUE_TOKENS.has(lower)) {
+      return true
+    }
+    if (BOOLEAN_FALSE_TOKENS.has(lower)) {
+      return false
+    }
+  }
+  return undefined
+}
+
+/**
  * Parse a boolean frontmatter value.
- * Only returns true for literal true or "true" string.
+ *
+ * CC 2.1.218 #36: accepts `true`/`false` and the case-insensitive aliases
+ * `yes`/`no`/`on`/`off`/`1`/`0`. Absent (`undefined`/`null`) returns `false`
+ * (the field is optional). Any other value throws `"<value>" must be a
+ * boolean`, matching the official's "must be a boolean" error style.
  */
 export function parseBooleanFrontmatter(value: unknown): boolean {
-  return value === true || value === 'true'
+  if (value === undefined || value === null) {
+    return false
+  }
+  const result = coerceBooleanToken(value)
+  if (result !== undefined) {
+    return result
+  }
+  throw new Error(`"${String(value)}" must be a boolean`)
 }
 
 /**

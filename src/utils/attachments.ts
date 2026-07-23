@@ -1548,14 +1548,12 @@ export function getAgentListingDeltaAttachment(
     filtered = filtered.filter(a => allowedAgentTypes.includes(a.agentType))
   }
 
-  // Reconstruct announced set from prior deltas in the transcript.
-  const announced = new Set<string>()
-  for (const msg of messages ?? []) {
-    if (msg.type !== 'attachment') continue
-    if (msg.attachment.type !== 'agent_listing_delta') continue
-    for (const t of msg.attachment.addedTypes as string[]) announced.add(t)
-    for (const t of msg.attachment.removedTypes as string[]) announced.delete(t)
-  }
+  // Reconstruct announced set from prior deltas in the transcript. Uses
+  // reconstructAnnouncedAgentTypes so malformed delta entries (missing
+  // addedTypes/removedTypes arrays) are skipped rather than throwing — CC
+  // 2.1.218 #25: a malformed delta attachment in history must not fail every
+  // turn.
+  const announced = reconstructAnnouncedAgentTypes(messages ?? [])
 
   const currentTypes = new Set(filtered.map(a => a.agentType))
   const added = filtered.filter(a => !announced.has(a.agentType))
@@ -3252,6 +3250,57 @@ export async function generateFileAttachment(
     if (mode === 'at-mention') logAtMentionOtel('file', false)
     return null
   }
+}
+
+/**
+ * CC 2.1.217 #10 / 2.1.218 #25: a transcript can hold a malformed attachment
+ * entry (corrupted JSONL, partial write, old/unknown shape) where `attachment`
+ * is not an object or has no string `type`. Accessing `.type` on such an entry
+ * throws a TypeError, which crashed `--resume`/`/resume` and, for malformed
+ * *delta* attachments in history, failed every subsequent turn during API
+ * prep. This guard lets callers skip/validate such entries instead of
+ * crashing. Returns true when the entry is NOT safe to process.
+ */
+export function isMalformedAttachment(entry: unknown): boolean {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    return true
+  }
+  const type = (entry as { type?: unknown }).type
+  return typeof type !== 'string' || type === ''
+}
+
+/**
+ * Returns `value` when it is a `string[]`, else `[]`. Delta attachments in
+ * history (agent_listing_delta, deferred_tools_delta, mcp_instructions_delta)
+ * carry `addedTypes`/`removedTypes`/`addedNames`/`removedNames` arrays; a
+ * malformed persisted delta may have these fields missing or non-array, which
+ * would throw "undefined is not iterable" in the reconstruction loops that
+ * run every turn. Use this to read those fields defensively.
+ */
+export function safeStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? (value as string[]) : []
+}
+
+/**
+ * Reconstruct the set of announced agent types from prior
+ * `agent_listing_delta` attachments in the transcript. Extracted from
+ * `getAgentListingDeltaAttachment` so the malformed-delta guard is unit
+ * testable without a full ToolUseContext. Malformed delta entries (missing
+ * `addedTypes`/`removedTypes` arrays) are skipped, not thrown on — CC 2.1.218
+ * #25: a malformed delta attachment in history must not fail every turn.
+ */
+export function reconstructAnnouncedAgentTypes(
+  messages: ReadonlyArray<Message>,
+): Set<string> {
+  const announced = new Set<string>()
+  for (const msg of messages) {
+    if (msg.type !== 'attachment') continue
+    const attachment = msg.attachment as { type?: string; [k: string]: unknown }
+    if (attachment.type !== 'agent_listing_delta') continue
+    for (const t of safeStringArray(attachment.addedTypes)) announced.add(t)
+    for (const t of safeStringArray(attachment.removedTypes)) announced.delete(t)
+  }
+  return announced
 }
 
 export function createAttachmentMessage(

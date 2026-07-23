@@ -186,6 +186,32 @@ export type PreparedForkedContext = {
 }
 
 /**
+ * CC 2.1.218 #35: Decide whether a forked skill runs as a background agent.
+ *
+ * `background` is only meaningful when `context: fork` (per the official
+ * frontmatter describe "Only for `context: fork`"). On a non-fork skill it
+ * is ignored (the skill expands inline). When `context: fork` AND
+ * `background` is not explicitly `false`, the fork runs in the background by
+ * default (reports back as a task); `background: false` opts out → inline.
+ *
+ * Binary-verified (s21218.txt):
+ *   - "If true, the agent runs in the background by default."
+ *   - "Only for `context: fork`. Forks run as background agents that report
+ *      back as a task"
+ *
+ * This returns the skill's *intent*; callers must still gate on
+ * `isBackgroundTasksDisabled` (env / feature flag) at the dispatch site,
+ * matching AgentTool.tsx's pattern for agent spawns.
+ */
+export function shouldForkedSkillRunAsync(command: {
+  context?: 'inline' | 'fork'
+  background?: boolean
+}): boolean {
+  if (command.context !== 'fork') return false
+  return command.background !== false
+}
+
+/**
  * Prepares the context for executing a forked command/skill.
  * This handles the common setup that both SkillTool and slash commands need.
  */

@@ -136,3 +136,79 @@ export async function hydrateForkPrefix(args: {
 export function _clearHydrateCache(): void {
   HYDRATE_CACHE.clear()
 }
+
+/**
+ * CC 2.1.218 #24: fork-session lineage was lost after compaction in headless
+ * and SDK sessions. A fork's transcript begins with a `fork-context-ref`
+ * pointer (parentSessionId + parentLastUuid) that `hydrateForkPrefix` reads to
+ * rebuild the fork's conversation prefix from the parent session. Compaction
+ * replaces the older transcript entries with a single compact-summary message;
+ * if the pointer lived in the summarized (pruned) segment, the fork lost its
+ * lineage and could no longer hydrate its prefix on resume.
+ *
+ * The helpers below let the compaction path carry the pointer forward so the
+ * post-compact transcript still begins with the fork-context-ref. They are
+ * pure (no I/O) so the lineage-preservation contract is unit-testable.
+ */
+
+type TranscriptEntry = { type?: string; [k: string]: unknown }
+
+function isForkContextRef(
+  entry: unknown,
+): entry is ForkContextRef {
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    return false
+  }
+  const e = entry as Partial<ForkContextRef>
+  return (
+    e.type === 'fork-context-ref' &&
+    typeof e.parentSessionId === 'string' &&
+    e.parentSessionId !== '' &&
+    typeof e.parentLastUuid === 'string' &&
+    e.parentLastUuid !== ''
+  )
+}
+
+/**
+ * Scan a list of transcript entries (pre- or post-compact) for a well-formed
+ * `fork-context-ref` pointer. Returns the first match, or null when none is
+ * present (or the entry is malformed — missing parentSessionId/parentLastUuid).
+ */
+export function extractForkLineage(
+  entries: ReadonlyArray<unknown>,
+): ForkContextRef | null {
+  for (const entry of entries) {
+    if (isForkContextRef(entry)) return entry
+  }
+  return null
+}
+
+/**
+ * Preserve fork-session lineage across compaction. Given the pre-compact
+ * transcript entries and the post-compact (compacted) entries, ensure the
+ * fork-context-ref pointer survives at the head of the post-compact
+ * transcript so a fork resumed after compaction can still hydrate its prefix.
+ *
+ * - If a pointer existed pre-compact and is absent post-compact, prepend it.
+ * - If a well-formed pointer is already present post-compact, leave it (no
+ *   duplication).
+ * - If no pointer existed pre-compact, this is a no-op (the session was not a
+ *   fork).
+ *
+ * Pure: returns a new array, never mutates inputs.
+ */
+export function preserveForkLineageAcrossCompaction(
+  preCompactEntries: ReadonlyArray<unknown>,
+  postCompactEntries: ReadonlyArray<unknown>,
+): unknown[] {
+  const ref = extractForkLineage(preCompactEntries)
+  if (!ref) {
+    // Not a fork session, or lineage already absent — nothing to preserve.
+    return [...postCompactEntries]
+  }
+  // Already preserved by the compaction path? Don't duplicate.
+  if (extractForkLineage(postCompactEntries)) {
+    return [...postCompactEntries]
+  }
+  return [ref, ...postCompactEntries]
+}

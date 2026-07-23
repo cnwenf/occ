@@ -19,6 +19,7 @@ import { normalizeNameForMCP } from './normalization.js'
 import {
   type ConfigScope,
   ConfigScopeSchema,
+  type FailedMCPServer,
   type MCPServerConnection,
   type McpHTTPServerConfig,
   type McpServerConfig,
@@ -433,6 +434,10 @@ export function mcpEnablePendingApprovalMessage(name: string): string {
  * binary's exact strings, including the G12 `pending approval` branch for
  * project servers that have not been trust-approved (and therefore were not
  * spawned).
+ *
+ * CC 2.1.218 #5: the `failed` branch now distinguishes `UNCONFIGURED`
+ * (`- Not configured`) from other failures (`✗ Failed to connect`), matching
+ * the binary's `wee(r)` classifier in the `whp` health-check function.
  */
 export function mcpServerHealthStatusLabel(
   result: MCPServerConnection,
@@ -447,10 +452,95 @@ export function mcpServerHealthStatusLabel(
     case 'pending':
       return '… Connecting'
     case 'failed':
-      return '✗ Failed to connect'
+      // Mirrors binary: wee(r) ? "- Not configured" : "✗ Failed to connect"
+      return isUnconfiguredMcpServer(result) ? '- Not configured' : '✗ Failed to connect'
     case 'disabled':
       return '◯ Disabled'
   }
+}
+
+/**
+ * Named failure codes that surface `error ?? errorCode` in the failure
+ * message (the binary's `TQo` named-code branch). Defined in
+ * `src/services/mcp/types.ts` on `FailedMCPServer.errorCode`.
+ */
+const NAMED_FAILURE_ERROR_CODES = new Set([
+  'INVALID_CONFIG',
+  'UNCONFIGURED',
+  'AUTH_HEADER_REJECTED',
+  'CLI_OWNED_BEARER_REJECTED',
+  'FIRST_PARTY_AUTH_REJECTED',
+  'ENDPOINT_NOT_FOUND',
+])
+
+/**
+ * CC 2.1.218 #5: True for a failed server whose `errorCode` is `UNCONFIGURED`.
+ * Mirrors the binary's `wee(e)` classifier, used by the `whp` health-check to
+ * render `- Not configured` instead of `✗ Failed to connect`.
+ */
+export function isUnconfiguredMcpServer(
+  result: MCPServerConnection,
+): boolean {
+  return result.type === 'failed' && result.errorCode === 'UNCONFIGURED'
+}
+
+/**
+ * CC 2.1.218 #5: Extract the human-readable failure message from a failed MCP
+ * server connection result. Mirrors the binary's `TQo(e)` exactly:
+ *   - named codes (INVALID_CONFIG, UNCONFIGURED, …) → `error ?? errorCode`
+ *   - numeric HTTP status (100–599) → `HTTP <status>` (+ ` at <url>`)
+ *   - `"23"` → `request timed out` (+ ` at <url>`)
+ *   - otherwise → `error ?? ""`
+ *
+ * Binary evidence (s21218.txt):
+ *   TQo(e){let t="url"in e.config?e.config.url:null,r=e.errorCode;
+ *     if(r==="INVALID_CONFIG"||r==="UNCONFIGURED"||r==="AUTH_HEADER_REJECTED"
+ *        ||r==="CLI_OWNED_BEARER_REJECTED"||r==="FIRST_PARTY_AUTH_REJECTED"
+ *        ||r==="ENDPOINT_NOT_FOUND")return e.error??r;
+ *     if(r){let n=Number(r),o=r==="23"?"request timed out"
+ *        :Number.isInteger(n)&&n>=100&&n<=599?`HTTP ${r}`:r;
+ *        return t?`${o} at ${t}`:o}
+ *     return e.error??""}
+ */
+export function getMcpServerFailureMessage(
+  result: FailedMCPServer,
+): string {
+  const errorCode = result.errorCode
+  if (errorCode && NAMED_FAILURE_ERROR_CODES.has(errorCode)) {
+    return result.error ?? errorCode
+  }
+  if (errorCode) {
+    const numeric = Number(errorCode)
+    const message =
+      errorCode === '23'
+        ? 'request timed out'
+        : Number.isInteger(numeric) && numeric >= 100 && numeric <= 599
+          ? `HTTP ${errorCode}`
+          : errorCode
+    const url =
+      'url' in result.config && typeof result.config.url === 'string'
+        ? result.config.url
+        : null
+    return url ? `${message} at ${url}` : message
+  }
+  return result.error ?? ''
+}
+
+/**
+ * CC 2.1.218 #5: Format a failed MCP server for the "these configured MCP
+ * servers failed to connect" system warning. Mirrors the binary's `kbo(e)`:
+ *   `${name}${errorCode ? ` (${errorCode})` : ""}${error ? `: "${error}"` : ""}`
+ *
+ * Binary evidence (s21218.txt):
+ *   kbo(e){let t=e.errorCode?` (${e.errorCode})`:"",r=e.error?`: "${e.error}"`:"";
+ *     return`${e.name}${t}${r}`}
+ */
+export function formatFailedMcpServerForWarning(
+  result: FailedMCPServer,
+): string {
+  const codeSuffix = result.errorCode ? ` (${result.errorCode})` : ''
+  const errorSuffix = result.error ? `: "${result.error}"` : ''
+  return `${result.name}${codeSuffix}${errorSuffix}`
 }
 
 /**

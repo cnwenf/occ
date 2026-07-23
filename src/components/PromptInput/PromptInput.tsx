@@ -118,6 +118,8 @@ import { shouldHideTasksFooter } from '../tasks/taskStatusUtils.js';
 import { TeamsDialog } from '../teams/TeamsDialog.js';
 import VimTextInput from '../VimTextInput.js';
 import { getModeFromInput, getValueFromInput } from './inputModes.js';
+import { shouldOpenRewindOnEscEsc } from './escEscGate.js';
+import { decodePastedNewlines } from './pasteNewlineDecoder.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
 import PromptInputFooter from './PromptInputFooter.js';
 import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
@@ -138,6 +140,14 @@ type Props = {
   commands: Command[];
   agents: AgentDefinition[];
   isLoading: boolean;
+  /**
+   * Whether the MAIN query loop is in flight (from REPL.tsx's queryGuard).
+   * Distinct from `isLoading`, which is also true for background/external
+   * loading. CC 2.1.216 #12: Esc-Esc opens the rewind picker whenever the
+   * main loop is idle, even if background tasks are active — so the gate
+   * keys off `isQueryActive`, not `isLoading`.
+   */
+  isQueryActive: boolean;
   verbose: boolean;
   messages: Message[];
   onAutoUpdaterResult: (result: AutoUpdaterResult) => void;
@@ -208,6 +218,7 @@ function PromptInput({
   commands,
   agents,
   isLoading,
+  isQueryActive,
   verbose,
   messages,
   onAutoUpdaterResult,
@@ -1252,8 +1263,10 @@ function PromptInput({
   }, [input, setPastedContents]);
   function onTextPaste(rawText: string) {
     pendingSpaceAfterPillRef.current = false;
-    // Clean up pasted text - strip ANSI escape codes and normalize line endings and tabs
-    let text = stripAnsi(rawText).replace(/\r/g, '\n').replaceAll('\t', '    ');
+    // Clean up pasted text - strip ANSI escape codes and normalize line endings and tabs.
+    // CC 2.1.218 #6: decode paste-encoded newlines (kitty CSIu 'j' sequences)
+    // BEFORE stripAnsi would strip them and collapse the multi-line paste.
+    let text = decodePastedNewlines(stripAnsi(rawText)).replaceAll('\t', '    ');
 
     // Match typed/auto-suggest: `!cmd` pasted into empty input enters bash mode.
     if (input.length === 0) {
@@ -2066,7 +2079,11 @@ function PromptInput({
         void popAllCommandsFromQueue();
         return;
       }
-      if (messages.length > 0 && !input && !isLoading) {
+      // CC 2.1.216 #12: Esc-Esc opens the rewind picker whenever the MAIN
+      // query loop is idle, even if background/external loading is active.
+      // Gate off `isQueryActive` (not `isLoading`) so long-running sessions
+      // with background tasks can still rewind via Esc-Esc.
+      if (shouldOpenRewindOnEscEsc(input, messages.length, isQueryActive)) {
         doublePressEscFromEmpty();
       }
     }

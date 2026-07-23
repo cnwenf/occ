@@ -211,7 +211,10 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
     lastReportedTotalLines: 0,
     isBackgrounded: true,
     agentId,
-    kind
+    kind,
+    // CC 2.1.217 #12: store PID as fallback kill path for when shellCommand
+    // becomes null (after backgrounding or session reload).
+    pid: shellCommand.pid
   };
   registerTask(taskState, setAppState);
 
@@ -280,7 +283,9 @@ export function registerForeground(input: LocalShellSpawnInput & {
     lastReportedTotalLines: 0,
     isBackgrounded: false,
     // Not yet backgrounded - running in foreground
-    agentId
+    agentId,
+    // CC 2.1.217 #12: store PID as fallback kill path
+    pid: shellCommand.pid
   };
   registerTask(taskState, setAppState);
   return taskId;

@@ -15,6 +15,7 @@ import { deleteRemoteAgentMetadata, listRemoteAgentMetadata, type RemoteAgentMet
 import { jsonStringify } from '../../utils/slowOperations.js';
 import { appendTaskOutput, evictTaskOutput, getTaskOutputPath, initTaskOutput } from '../../utils/task/diskOutput.js';
 import { registerTask, updateTaskState } from '../../utils/task/framework.js';
+import { isDeletedSession, loadDeletedSessionsFromDisk } from '../../components/tasks/backgroundTaskDelete.js';
 import { fetchSession } from '../../utils/teleport/api.js';
 import { archiveRemoteSession, pollRemoteSessionEvents } from '../../utils/teleport.js';
 import type { TodoList } from '../../utils/todo/types.js';
@@ -97,6 +98,15 @@ export function registerCompletionChecker(remoteTaskType: RemoteTaskType, checke
  * Fire-and-forget — persistence failures must not block task registration.
  */
 async function persistRemoteAgentMetadata(meta: RemoteAgentMetadata): Promise<void> {
+  // CC 2.1.216 #14 no-resurrect (spawn-vs-delete race): a spawn racing in
+  // after the user deleted the session must not re-create the sidecar. If the
+  // tombstone is set (in-memory Set, hydrated from disk at restore), refuse to
+  // write — otherwise restoreRemoteAgentTasks would re-scan the re-created
+  // sidecar on the next worker-death/restart and resurrect the session.
+  if (isDeletedSession(meta.taskId)) {
+    logForDebugging(`persistRemoteAgentMetadata: refusing to write sidecar for deleted session ${meta.taskId}`);
+    return;
+  }
   try {
     await writeRemoteAgentMetadata(meta.taskId, meta);
   } catch (e) {
@@ -489,9 +499,24 @@ export async function restoreRemoteAgentTasks(context: TaskContext): Promise<voi
   }
 }
 async function restoreRemoteAgentTasksImpl(context: TaskContext): Promise<void> {
+  // CC 2.1.216 #14 no-resurrect: hydrate the tombstone from disk so sessions
+  // deleted in a prior client lifetime are skipped. The in-memory Set does
+  // not survive a restart; the disk list (deleted-sessions.json) is the
+  // source of truth read fresh here. Must run before the restore scan so the
+  // per-meta isDeletedSession check below is authoritative.
+  await loadDeletedSessionsFromDisk();
   const persisted = await listRemoteAgentMetadata();
   if (persisted.length === 0) return;
   for (const meta of persisted) {
+    // Skip sessions the user explicitly deleted — never resurrect, even if a
+    // stray sidecar survived (raced write, unlink failure). registerTask also
+    // guards, but skipping here avoids the CCR fetch + poll restart for a
+    // session that must not come back, and drops the stale sidecar.
+    if (isDeletedSession(meta.taskId)) {
+      logForDebugging(`restoreRemoteAgentTasks: skipping deleted ${meta.taskId}`);
+      void removeRemoteAgentMetadata(meta.taskId);
+      continue;
+    }
     let remoteStatus: string;
     try {
       const session = await fetchSession(meta.sessionId);

@@ -9,8 +9,9 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js'
 import { prepareContextForPlanMode } from '../../utils/permissions/permissionSetup.js'
+import { setPlanModeAutoBashActive } from '../../utils/permissions/autoModeState.js'
 import { isPlanModeInterviewPhaseEnabled } from '../../utils/planModeV2.js'
-import { ENTER_PLAN_MODE_TOOL_NAME } from './constants.js'
+import { ENTER_PLAN_MODE_TOOL_NAME, PLAN_MODE_AUTO_BASH_HANDLING_ENABLED } from './constants.js'
 import { getEnterPlanModeToolPrompt } from './prompt.js'
 import {
   renderToolResultMessage,
@@ -81,6 +82,17 @@ export const EnterPlanModeTool: Tool<InputSchema, Output> = buildTool({
 
     const appState = context.getAppState()
     handlePlanModeTransition(appState.toolPermissionContext.mode, 'plan')
+
+    // CC 2.1.218 #31: When entering plan mode with auto-mode active (or the
+    // user's defaultMode is 'auto'), set the plan-mode-auto-bash flag so the
+    // permission flow auto-handles bash commands the static analyzer can't
+    // prove read-only, instead of opening a dialog.
+    if (PLAN_MODE_AUTO_BASH_HANDLING_ENABLED) {
+      const wasAutoMode =
+        appState.toolPermissionContext.mode === 'auto' ||
+        appState.toolPermissionContext.defaultMode === 'auto'
+      setPlanModeAutoBashActive(wasAutoMode)
+    }
 
     // Update the permission mode to 'plan'. prepareContextForPlanMode runs
     // the classifier activation side effects when the user's defaultMode is

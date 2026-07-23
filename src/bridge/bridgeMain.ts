@@ -20,6 +20,7 @@ import { truncateToWidth } from '../utils/format.js'
 import { logError } from '../utils/log.js'
 import { sleep } from '../utils/sleep.js'
 import { createAgentWorktree, removeAgentWorktree } from '../utils/worktree.js'
+import { canonicalizeWorkerCwd } from '../daemon/workerRegistry.js'
 import {
   BridgeFatalError,
   createBridgeApiClient,

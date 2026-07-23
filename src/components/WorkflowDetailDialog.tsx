@@ -57,6 +57,7 @@ import * as React from 'react'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import figures from 'figures'
 import { logEvent } from '../services/analytics/index.js'
+import { assertWriteInsideProject } from '../utils/claudeWriteGuard.js'
 import { useAppState, useSetAppState } from '../state/AppState.js'
 import type { CommandResultDisplay } from '../commands.js'
 import {
@@ -195,6 +196,12 @@ function saveDynamicWorkflow(
     }
   }
   try {
+    // CC 2.1.216 #18: refuse project-scope saves when `.claude` (or the
+    // workflow target) is a symlink that resolves outside the project, so
+    // a repository-committed symlink can't redirect the save outside.
+    if (scope === 'project') {
+      assertWriteInsideProject(targetPath, process.cwd())
+    }
     mkdirSync(targetDir, { recursive: true })
     writeFileSync(targetPath, source, {
       encoding: 'utf8',

@@ -14,11 +14,32 @@
  */
 
 import { spawn, type ChildProcess } from 'child_process'
-import { existsSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
 import { getCwd } from '../utils/cwd.js'
 import { logEvent } from '../services/analytics/index.js'
+
+// Test seam for the spawn entry point. Defaults to the real `spawn` so
+// production behavior is unchanged. Tests that need to intercept spawn()
+// (without a process-wide `mock.module('child_process')` that leaks into
+// unrelated test files) swap this via `_setSpawnForTesting` and restore via
+// `_resetForTesting` in afterEach.
+let spawnImpl: typeof spawn = spawn
+
+/** @internal — test seam for spawn(); restores the real spawn. */
+export function _resetForTesting(): void {
+  spawnImpl = spawn
+}
+
+/** @internal — test seam to override spawn(); returns a restore function. */
+export function _setSpawnForTesting(fn: typeof spawn): () => void {
+  const prev = spawnImpl
+  spawnImpl = fn
+  return () => {
+    spawnImpl = prev
+  }
+}
 import type {
   DaemonJsonConfig,
   DaemonJsonWorker,
@@ -128,7 +149,12 @@ export function writeDaemonStatus(): void {
       outcome: r.outcome,
       cliVersion: r.cliVersion,
       startedAt: r.startedAt,
-      cwd: r.cwd,
+      // CC 2.1.217 #5 fold-in: canonicalize cwd on the SAVE side too,
+      // mirroring the spawn-side canonicalizeWorkerCwd. Defense-in-depth:
+      // even if a non-canonical cwd somehow enters the registry (e.g.
+      // from respawnWorker passing a stale rec.cwd), the persisted form
+      // is always the realpath + NFC-normalized path.
+      cwd: canonicalizeWorkerCwd(r.cwd),
       restart: r.restart,
       kind: r.kind,
       id: r.id,
@@ -188,12 +214,32 @@ function getCliVersion(): string {
  * with). The main.tsx hidden --daemon-worker option routes the child into
  * runDaemonWorker(kind).
  */
+/**
+ * Canonicalize a worker (background session) cwd by resolving symlinks via
+ * realpath + NFC normalization, matching the official's "Canonical (realpath)
+ * working directory the session now runs in." behavior. A symlinked cwd is
+ * resolved to its real target so a background session cannot hide behind a
+ * symlink to escape its workspace folder — the recorded/spawned cwd is the
+ * real path. Falls back to NFC-only normalization when realpath is unavailable
+ * (e.g. EPERM on CloudStorage mounts), mirroring bootstrap/state.ts.
+ */
+export function canonicalizeWorkerCwd(rawCwd: string): string {
+  try {
+    return realpathSync(rawCwd).normalize('NFC')
+  } catch {
+    return rawCwd.normalize('NFC')
+  }
+}
+
 export function spawnWorker(
   kind: string,
   opts?: { cwd?: string; id?: string; env?: Record<string, string> },
 ): WorkerRecord {
   const id = opts?.id ?? nextWorkerId()
-  const cwd = opts?.cwd ?? getCwd()
+  // Canonicalize the cwd before spawning so a symlinked cwd resolves to its
+  // real target — the background session cannot escape its workspace folder
+  // via a symlink (CC 2.1.217 #5).
+  const cwd = canonicalizeWorkerCwd(opts?.cwd ?? getCwd())
   const entry = process.argv[1] ?? 'dist/cli.js'
 
   // Stop any existing worker with this id first.
@@ -202,7 +248,7 @@ export function spawnWorker(
     sigtermWorker(existing.pid)
   }
 
-  const child = spawn(process.execPath, [entry, '--daemon-worker', kind], {
+  const child = spawnImpl(process.execPath, [entry, '--daemon-worker', kind], {
     cwd,
     // Workflow workers write progress to a file (not stdout) and the
     // supervisor doesn't drain child pipes, so 'ignore' avoids a full pipe

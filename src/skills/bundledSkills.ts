@@ -28,6 +28,12 @@ export type BundledSkillDefinition = {
   context?: 'inline' | 'fork'
   agent?: string
   /**
+   * CC 2.1.218 #35: Only meaningful when `context: fork`. When the forked
+   * skill runs, `background !== false` (default) → run as a background agent
+   * that reports back as a task; `background: false` → runs inline.
+   */
+  background?: boolean
+  /**
    * Additional reference files to extract to disk on first invocation.
    * Keys are relative paths (forward slashes, no `..`), values are content.
    * When set, the skill prompt is prefixed with a "Base directory for this
@@ -93,6 +99,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
     skillRoot,
     context: definition.context,
     agent: definition.agent,
+    background: definition.background,
     isEnabled: definition.isEnabled,
     isHidden: !(definition.userInvocable ?? true),
     progressMessage: 'running',

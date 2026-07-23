@@ -20,6 +20,7 @@ import { isInBundledMode } from './bundledMode.js'
 import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
 import { isEnvTruthy } from './envUtils.js'
+import { isBilledAsExtraUsage } from './extraUsage.js'
 import {
   getDefaultMainLoopModelSetting,
   isOpus1mMergeEnabled,
@@ -178,6 +179,47 @@ export function isFastModeSupportedByModel(
   // 2.1.142: Fast mode now supports both Opus 4.6 and 4.7 (4.7 is default).
   const lower = parsedModel.toLowerCase()
   return lower.includes('opus-4-6') || lower.includes('opus-4-7') || lower === 'opus'
+}
+
+/**
+ * 2.1.218 #32: Announce when fast mode changes as a result of switching models
+ * via /config model=<x> or Remote Control.
+ *
+ * Mirrors the official binary's `RDd(e, t, r)` helper:
+ *   function RDd(e,t,r){if(!!e===t)return null;return t
+ *     ?`Fast mode ON${aNs(r,!0,OO())?" · Draws from usage credits":""}`
+ *     :"Fast mode OFF"}
+ *
+ * - Returns null when the fast-mode state did not change (no announcement).
+ * - "Fast mode ON" (+ " · Draws from usage credits" when the model is billed
+ *   as extra usage) when turning ON.
+ * - "Fast mode OFF" when turning OFF.
+ *
+ * Callers pass the previous and new fast-mode-enabled booleans plus the
+ * new model (for the extra-usage check).
+ */
+export function getFastModeChangeAnnouncement(
+  previousEnabled: boolean,
+  newEnabled: boolean,
+  model: ModelSetting,
+): string | null {
+  // !!e === t: no change in fast-mode state → no announcement.
+  if (Boolean(previousEnabled) === newEnabled) {
+    return null
+  }
+  if (newEnabled) {
+    const modelStr = model ?? getDefaultMainLoopModelSetting()
+    const parsedModel = parseUserSpecifiedModel(modelStr)
+    const drawsFromUsageCredits = isBilledAsExtraUsage(
+      parsedModel,
+      true,
+      isOpus1mMergeEnabled(),
+    )
+    return drawsFromUsageCredits
+      ? 'Fast mode ON · Draws from usage credits'
+      : 'Fast mode ON'
+  }
+  return 'Fast mode OFF'
 }
 
 // --- Fast mode runtime state ---

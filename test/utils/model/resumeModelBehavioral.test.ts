@@ -25,7 +25,7 @@ import { randomUUID } from 'node:crypto'
 
 // --- REAL imports (before mocks — these stay real) ---
 import { writeAgentMetadata } from 'src/utils/sessionStorage.js'
-import { switchSession, setOriginalCwd } from 'src/bootstrap/state.js'
+import { switchSession, setOriginalCwd, setCwdState, getCwdState, getOriginalCwd } from 'src/bootstrap/state.js'
 import { asAgentId } from 'src/types/ids.js'
 import type { AgentId } from 'src/types/ids.js'
 import type { ToolUseContext } from 'src/Tool.js'
@@ -37,15 +37,21 @@ import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
 
 let capturedModel: string | undefined | null = null
 
-// Mock runAgent — captures the model param from resumeAgentBackground
-mock.module('src/tools/AgentTool/runAgent.js', () => ({
-  runAgent: async function* (params: { model?: string }) {
-    capturedModel = params.model
-    yield
-    return
-  },
-  filterIncompleteToolCalls: (messages: unknown[]) => messages,
-}))
+// runAgent seam — REPLACED `mock.module('src/tools/AgentTool/runAgent.js')`.
+// A process-wide mock of runAgent.js leaked into subagentCap.test.ts (which
+// imports the real runAgent to exercise the per-session spawn cap), so the
+// cap logic never fired. resumeAgent.ts now exposes a `_setRunAgentForTesting`
+// seam; we swap it here and restore in afterEach — no global mock leak.
+let restoreRunAgent: (() => void) | undefined
+function installRunAgentSeam(): void {
+  restoreRunAgent = _setRunAgentForTesting(
+    (async function* (params: { model?: string }) {
+      capturedModel = params.model
+      yield
+      return
+    }) as never,
+  )
+}
 
 // Mock registerAsyncAgent — returns a fake background task
 mock.module('src/tasks/LocalAgentTask/LocalAgentTask.js', () => ({
@@ -72,11 +78,13 @@ mock.module('src/utils/agentContext.js', () => ({
   runWithAgentContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }))
 
-// Mock runWithCwdOverride — call the function directly
-mock.module('src/utils/cwd.js', () => ({
-  runWithCwdOverride: (_cwd: string, fn: () => unknown) => fn(),
-  getCwd: () => '/tmp',
-}))
+// Mock runWithCwdOverride — REMOVED. A process-wide `mock.module('src/utils/cwd.js')`
+// leaked `getCwd: () => '/tmp'` into unrelated test files (permission matcher
+// tests use getCwd() as the rule root → '/tmp' ≠ process.cwd() → every
+// path-relative allow/deny rule returned null). We now use the REAL cwd module
+// and pin STATE.cwd to the temp project dir via setCwdState() in setupTempSession.
+// Real runWithCwdOverride wraps fn in an AsyncLocalStorage context — transparent
+// to the test.
 
 // Mock assembleToolPool — return empty tools
 mock.module('src/tools.js', () => ({
@@ -84,13 +92,14 @@ mock.module('src/tools.js', () => ({
 }))
 
 // --- Import resumeAgentBackground AFTER mocks are set up ---
-const { resumeAgentBackground } = require('src/tools/AgentTool/resumeAgent.ts') as {
+const { resumeAgentBackground, _setRunAgentForTesting } = require('src/tools/AgentTool/resumeAgent.ts') as {
   resumeAgentBackground: (args: {
     agentId: string
     prompt: string
     toolUseContext: ToolUseContext
     canUseTool: () => Promise<boolean>
   }) => Promise<{ agentId: string; description: string; outputFile: string }>
+  _setRunAgentForTesting: (fn: never) => () => void
 }
 
 // --- Helpers ---
@@ -110,6 +119,7 @@ function setupTempSession(): { agentId: string; agentIdTyped: AgentId } {
   const agentIdStr = 'test-agent-resume-001'
   mkdirSync(join(tempProjectDir, sessionId, 'subagents'), { recursive: true })
   setOriginalCwd(tempProjectDir)
+  setCwdState(tempProjectDir)
   const agentIdTyped = asAgentId(agentIdStr)
   switchSession(sessionId as never, tempProjectDir)
   return { agentId: agentIdStr, agentIdTyped }
@@ -181,11 +191,21 @@ function makeMinimalToolUseContext(): ToolUseContext {
 
 // --- Tests ---
 
+// Saved bootstrap STATE so afterEach can restore it — this file mutates
+// sessionId / originalCwd / cwd via switchSession + setCwdState; without
+// restore, the leak breaks downstream files (fork UUID assertion, permission
+// cwd-root matching, resumeAgentPrompt path resolution).
+let savedCwd: string
+let savedOriginalCwd: string
+
 describe('① Resume model-override preservation — REAL resumeAgentBackground', () => {
   let agentId: string
   let agentIdTyped: AgentId
 
   beforeEach(() => {
+    savedCwd = getCwdState()
+    savedOriginalCwd = getOriginalCwd()
+    installRunAgentSeam()
     const setup = setupTempSession()
     agentId = setup.agentId
     agentIdTyped = setup.agentIdTyped
@@ -193,6 +213,12 @@ describe('① Resume model-override preservation — REAL resumeAgentBackground'
   })
 
   afterEach(() => {
+    // Restore the global session cwd so it doesn't leak into other files.
+    setCwdState(savedCwd)
+    setOriginalCwd(savedOriginalCwd)
+    // Restore the real runAgent so the seam does not leak into other files
+    // (subagentCap imports the real runAgent).
+    restoreRunAgent?.()
     if (tempDir && existsSync(tempDir)) {
       rmSync(tempDir, { recursive: true, force: true })
     }

@@ -368,6 +368,9 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       if (prev.toolPermissionContext.mode !== 'plan') return prev
       setHasExitedPlanMode(true)
       setNeedsPlanModeExitAttachment(true)
+      // CC 2.1.218 #31: reset the plan-mode-auto-bash flag on exit so it
+      // doesn't stay stale and route non-plan bash into the classifier path.
+      autoModeStateModule?.setPlanModeAutoBashActive(false)
       let restoreMode = prev.toolPermissionContext.prePlanMode ?? 'default'
       if (feature('TRANSCRIPT_CLASSIFIER')) {
         if (

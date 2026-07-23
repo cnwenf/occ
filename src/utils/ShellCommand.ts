@@ -50,6 +50,9 @@ export type ShellCommand = {
   ) => void
   /** The TaskOutput instance that owns all stdout/stderr data and progress. */
   taskOutput: TaskOutput
+  /** CC 2.1.217 #12: child process PID. Exposed so the task state can store
+   * it as a fallback kill path when the shellCommand reference is null. */
+  pid?: number
 }
 
 const SIGKILL = 137
@@ -187,6 +190,12 @@ class ShellCommandImpl implements ShellCommand {
 
   get status(): 'running' | 'backgrounded' | 'completed' | 'killed' {
     return this.#status
+  }
+
+  /** CC 2.1.217 #12: expose PID so task state can store it as a fallback
+   * kill path when the shellCommand reference is null after backgrounding. */
+  get pid(): number | undefined {
+    return this.#childProcess?.pid
   }
 
   #abortHandler(): void {

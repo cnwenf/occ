@@ -15,7 +15,7 @@ import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientCo
 import { connectToServer, getMcpServerConnectionBatchSize } from '../../services/mcp/client.js';
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
-import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel } from '../../services/mcp/utils.js';
+import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, mcpServerHealthStatusLabel, getMcpServerFailureMessage } from '../../services/mcp/utils.js';
 import { partitionMcpServersByName } from '../../services/mcp/normalization.js';
 import { AppStateProvider } from '../../state/AppState.js';
 import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
@@ -28,13 +28,23 @@ import { cliError, cliOk } from '../exit.js';
 async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig): Promise<string> {
   try {
     const result = await connectToServer(name, server);
-    if (result.type === 'connected') {
-      return '✓ Connected';
-    } else if (result.type === 'needs-auth') {
-      return '! Needs authentication';
-    } else {
-      return '✗ Failed to connect';
+    // CC 2.1.218 #5: surface the binary's exact health-check status label
+    // (✓ Connected / ! Needs authentication / - Not configured / ✗ Failed
+    // to connect / … Connecting / pending approval / ◯ Disabled) instead of
+    // the inline branch above, which only distinguished three states and
+    // never rendered the UNCONFIGURED (- Not configured) variant.
+    const label = mcpServerHealthStatusLabel(result);
+    // For a failed server, append the human-readable failure detail (HTTP
+    // status + error text) so `claude mcp list` / `claude mcp get` show WHY
+    // the connection failed, not just that it did. Mirrors the binary's `TQo`
+    // detail surfaced alongside the `whp` status label.
+    if (result.type === 'failed') {
+      const detail = getMcpServerFailureMessage(result);
+      if (detail) {
+        return `${label} — ${detail}`;
+      }
     }
+    return label;
   } catch (_error) {
     return '✗ Connection error';
   }

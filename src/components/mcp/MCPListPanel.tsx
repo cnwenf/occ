@@ -5,7 +5,7 @@ import type { CommandResultDisplay } from '../../commands.js';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { ConfigScope } from '../../services/mcp/types.js';
-import { describeMcpConfigFilePath } from '../../services/mcp/utils.js';
+import { describeMcpConfigFilePath, getMcpServerFailureMessage } from '../../services/mcp/utils.js';
 import { isDebugMode } from '../../utils/debug.js';
 import { plural } from '../../utils/stringUtils.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
@@ -366,7 +366,12 @@ export function MCPListPanel(t0) {
                 statusText = "not configured";
               } else {
                 statusIcon = color("error", theme)(figures.cross);
-                statusText = "failed";
+                // CC 2.1.218 #5: surface the failure detail (HTTP status +
+                // error text, the binary's `TQo` extractor) instead of a bare
+                // "failed", so the /mcp panel shows WHY a server failed to
+                // connect (e.g. "HTTP 401 at https://…", "request timed out").
+                // Falls back to "failed" when no detail is available.
+                statusText = getMcpServerFailureMessage(server_3.client) || "failed";
               }
             }
           }

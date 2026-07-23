@@ -1,6 +1,10 @@
 import type { LocalCommandResult } from '../../commands.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
 import { COMMON_HELP_ARGS } from '../../constants/xml.js'
+import {
+  getFastModeChangeAnnouncement,
+  getInitialFastModeSetting,
+} from '../../utils/fastMode.js'
 import { SettingsSchema } from '../../utils/settings/types.js'
 import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'
 
@@ -164,6 +168,26 @@ export async function call(args: string, context: LocalJSXCommandContext): Promi
     } catch {}
     // C1: emit the value as-is for non-boolean
     results.push(`Set ${label} to ${value}`)
+
+    // 2.1.218 #32: announce when a model switch toggles fast mode.
+    // Mirrors the official RDd helper — only fires when the fast-mode state
+    // actually changes as a result of the model switch.
+    if (key === 'model') {
+      const prevModel = context.options.mainLoopModel
+      // 'default' / 'Default (recommended)' → null (the default model)
+      const newModel =
+        value.toLowerCase() === 'default' ? null : value
+      const prevFastOn = getInitialFastModeSetting(prevModel)
+      const newFastOn = getInitialFastModeSetting(newModel)
+      const announcement = getFastModeChangeAnnouncement(
+        prevFastOn,
+        newFastOn,
+        newModel,
+      )
+      if (announcement) {
+        results.push(announcement)
+      }
+    }
   }
   return { type: 'text', value: results.join('\n') }
 }

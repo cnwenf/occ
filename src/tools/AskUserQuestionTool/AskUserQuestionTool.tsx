@@ -222,6 +222,7 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
     };
   },
   mapToolResultToToolResultBlockParam({
+    questions,
     answers,
     annotations
   }, toolUseID) {
@@ -236,9 +237,43 @@ export const AskUserQuestionTool: Tool<InputSchema, Output> = buildTool({
       }
       return parts.join(' ');
     }).join(', ');
+
+    // CC 2.1.216 #4: free-text answers (user typed custom text via "Other")
+    // get NEUTRAL wording — no "continue" directive. Multiple-choice answers
+    // (all answers match known option labels) keep the "continue" directive.
+    // Build a set of all known option labels across all questions.
+    const knownOptionLabels = new Set<string>();
+    for (const q of questions) {
+      for (const opt of q.options) {
+        knownOptionLabels.add(opt.label);
+      }
+    }
+
+    // An answer is "multiple-choice" if it matches a known option label, or
+    // (for multi-select) all comma-separated parts match known option labels.
+    const isMultipleChoiceAnswer = (answer: string): boolean => {
+      if (knownOptionLabels.has(answer)) return true;
+      const parts = answer.split(', ');
+      return parts.length > 1 && parts.every(part => knownOptionLabels.has(part));
+    };
+
+    const hasAnswers = Object.keys(answers).length > 0;
+    const allMultipleChoice = hasAnswers &&
+      Object.values(answers).every(isMultipleChoiceAnswer);
+
+    let content: string;
+    if (!hasAnswers) {
+      content = 'The user did not answer the questions.';
+    } else if (allMultipleChoice) {
+      content = `Your questions have been answered: ${answersText}. You can now continue with these answers in mind.`;
+    } else {
+      // Free-text answer: neutral wording, no "continue" directive
+      content = `The user answered: ${answersText}. Read the answers carefully — they may request clarification, changes, or that you not proceed — and follow what they actually say.`;
+    }
+
     return {
       type: 'tool_result',
-      content: `User has answered your questions: ${answersText}. You can now continue with the user's answers in mind.`,
+      content,
       tool_use_id: toolUseID
     };
   }
