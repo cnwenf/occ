@@ -3,6 +3,7 @@ import * as React from 'react';
 import { DIAMOND_FILLED, DIAMOND_OPEN } from '../../constants/figures.js';
 import { NO_CONTENT_MESSAGE } from '../../constants/messages.js';
 import { Box, Text } from '../../ink.js';
+import { LOCAL_COMMAND_ERROR_MARKER } from '../../utils/localCommandOutput.js';
 import { extractTag } from '../../utils/messages.js';
 import { Markdown } from '../Markdown.js';
 import { MessageResponse } from '../MessageResponse.js';
@@ -37,7 +38,12 @@ export function UserLocalCommandOutputMessage(t0) {
         lines.push(<IndentedContent key="stdout">{stdout.trim()}</IndentedContent>);
       }
       if (stderr?.trim()) {
-        lines.push(<IndentedContent key="stderr">{stderr.trim()}</IndentedContent>);
+        // 2.1.216 #35 (b): a failed /compact (and any local-command failure)
+        // is wrapped in <local-command-stderr> by processSlashCommand. Render
+        // it as an ERROR — a red ✘ marker (the same glyph StatusIcon uses for
+        // status:'error') — so a failed /compact displays as an error, not as
+        // a normal result line indistinguishable from stdout.
+        lines.push(<Box key="stderr" flexDirection="column"><Text color="error" bold={true}>{LOCAL_COMMAND_ERROR_MARKER} Error</Text><IndentedContent>{stderr.trim()}</IndentedContent></Box>);
       }
     }
     $[0] = content;

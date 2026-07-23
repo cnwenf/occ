@@ -251,7 +251,7 @@ export async function call(
   }
 }
 
-function formatContextAsMarkdownTable(data: ContextData): string {
+export function formatContextAsMarkdownTable(data: ContextData): string {
   const {
     categories,
     totalTokens,
@@ -270,6 +270,17 @@ function formatContextAsMarkdownTable(data: ContextData): string {
   let output = `## Context Usage\n\n`
   output += `**Model:** ${model}  \n`
   output += `**Tokens:** ${formatTokens(totalTokens)} / ${formatTokens(rawMaxTokens)} (${percentage}%)\n`
+
+  // 2.1.216 #35 (a): explicit warning when the conversation exceeds the
+  // context window. Mirrors the interactive renderer's over-window suggestion
+  // (contextSuggestions.checkExceedsContextWindow) so non-interactive /context
+  // surfaces the same over-the-hard-limit signal.
+  if (totalTokens > rawMaxTokens && rawMaxTokens > 0) {
+    const overBy = totalTokens - rawMaxTokens
+    output += `\n> ⚠ **Context exceeds the context window** — conversation is ${formatTokens(
+      overBy,
+    )} over the ${formatTokens(rawMaxTokens)} token limit. Run \`/compact\` to summarize and continue.\n`
+  }
 
   // Context-collapse status. Always show when the runtime gate is on —
   // the user needs to know which strategy is managing their context
