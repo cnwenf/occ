@@ -340,6 +340,11 @@ export function parseSkillFrontmatterFields(
   userInvocable: boolean
   hooks: HooksSettings | undefined
   executionContext: 'fork' | undefined
+  // 2.1.218 #35: background execution flag for fork skills.
+  // - fork + absent  → true (background by default)
+  // - fork + present → parseBooleanFrontmatter(value)
+  // - non-fork       → undefined (background is a no-op for inline skills)
+  background: boolean | undefined
   agent: string | undefined
   effort: EffortValue | undefined
   shell: FrontmatterShell | undefined
@@ -376,6 +381,18 @@ export function parseSkillFrontmatterFields(
     )
   }
 
+  // 2.1.218 #35: fork skills run in the background by default; `background:
+  // false` opts back into inline execution. For non-fork skills, background is
+  // a no-op (undefined) regardless of the frontmatter value.
+  const isFork = frontmatter.context === 'fork'
+  const backgroundRaw = frontmatter.background
+  const background =
+    isFork && backgroundRaw === undefined
+      ? true
+      : isFork
+        ? parseBooleanFrontmatter(backgroundRaw)
+        : undefined
+
   return {
     // 2.1.186: display-name frontmatter (normalized to displayName). Falls
     // back to the `name` field for backwards compatibility.
@@ -411,6 +428,7 @@ export function parseSkillFrontmatterFields(
     userInvocable,
     hooks: parseHooksFromFrontmatter(frontmatter, resolvedName),
     executionContext: frontmatter.context === 'fork' ? 'fork' : undefined,
+    background,
     agent: frontmatter.agent as string | undefined,
     effort,
     shell: parseShellFrontmatter(frontmatter.shell, resolvedName),
@@ -454,6 +472,7 @@ export function createSkillCommand({
   loadedFrom,
   hooks,
   executionContext,
+  background,
   agent,
   paths,
   effort,
@@ -482,6 +501,10 @@ export function createSkillCommand({
   loadedFrom: LoadedFrom
   hooks: HooksSettings | undefined
   executionContext: 'inline' | 'fork' | undefined
+  // 2.1.218 #35: background flag for fork skills. true = run in background
+  // (default for fork), false = opt into inline execution. undefined for
+  // non-fork skills.
+  background: boolean | undefined
   agent: string | undefined
   paths: string[] | undefined
   effort: EffortValue | undefined
@@ -506,6 +529,10 @@ export function createSkillCommand({
     disableModelInvocation,
     userInvocable,
     context: executionContext,
+    // 2.1.218 #35: background flag — only set for fork skills. SkillTool's
+    // fork dispatch reads this to pick the background (isAsync) vs inline
+    // (isAsync: false) execution path.
+    background,
     agent,
     effort,
     paths,

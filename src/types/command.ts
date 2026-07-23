@@ -50,6 +50,10 @@ export type PromptCommand = {
   // 'inline' = skill content expands into the current conversation
   // 'fork' = skill runs in a sub-agent with separate context and token budget
   context?: 'inline' | 'fork'
+  // 2.1.218 #35: only meaningful when context === 'fork'. true (default for
+  // fork) = run the forked skill in the background; false = opt into inline
+  // execution. undefined for non-fork skills.
+  background?: boolean
   // Agent type to use when forked (e.g., 'Bash', 'general-purpose')
   // Only applicable when context is 'fork'
   agent?: string

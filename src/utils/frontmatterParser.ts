@@ -44,6 +44,11 @@ export type FrontmatterData = {
   // 'inline' = skill content expands into the current conversation
   // 'fork' = skill runs in a sub-agent with separate context and token budget
   context?: 'inline' | 'fork' | null
+  // 2.1.218 #35: opt a `context: fork` skill OUT of background execution.
+  // Only meaningful when `context: fork`; ignored for inline skills. Parsed
+  // via parseBooleanFrontmatter (accepts yes/no/on/off/1/0/true/false).
+  // Default for fork skills: true (background); `background: false` forces inline.
+  background?: string | boolean | number | null
   // Agent type to use when forked (e.g., 'Bash', 'general-purpose')
   // Only applicable when context is 'fork'
   agent?: string | null

@@ -140,7 +140,11 @@ async function executeForkedSkill(
   context: ToolUseContext,
   canUseTool: CanUseToolFn,
   parentMessage: AssistantMessage,
-  onProgress?: ToolCallProgress<Progress>,
+  onProgress: ToolCallProgress<Progress> | undefined,
+  // 2.1.218 #35: true (default for fork) = run in the background via OCC's
+  // existing async agent execution path (isAsync); false = opt into inline
+  // synchronous fork execution (previous behavior).
+  runInBackground: boolean,
 ): Promise<ToolResult<Output>> {
   const startTime = Date.now()
   const agentId = createAgentId()
@@ -242,7 +246,18 @@ async function executeForkedSkill(
         getAppState: modifiedGetAppState,
       },
       canUseTool,
-      isAsync: false,
+      // 2.1.218 #35: fork skills default to background execution, which maps
+      // to runAgent's existing async path (isolated abort controller, no
+      // permission prompts, non-interactive session). `background: false`
+      // restores the previous synchronous inline fork (isAsync: false).
+      //
+      // TODO(OCC): full LocalAgentTask backgrounding (registerAsyncAgent +
+      // notify-on-completion, as AgentTool does for run_in_background) is not
+      // yet wired for the SkillTool fork path — the SkillTool still collects
+      // sub-agent messages via this async iterator and returns the result
+      // once the agent finishes. The parse + opt-out are fully implemented;
+      // only the immediate-return-with-notification UX is pending.
+      isAsync: runInBackground,
       querySource: 'agent:custom',
       model: command.model as ModelAlias | undefined,
       availableTools: context.options.tools,
@@ -658,6 +673,12 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
 
     // Check if skill should run as a forked sub-agent
     if (command?.type === 'prompt' && command.context === 'fork') {
+      // 2.1.218 #35: fork skills run in the background by default; a skill
+      // may opt back into inline execution with `background: false`. The
+      // resolved `background` (true | false | undefined) is set at load time
+      // in parseSkillFrontmatterFields. `background !== false` engages OCC's
+      // existing async agent execution path (isAsync); `background === false`
+      // keeps the previous synchronous inline fork execution.
       return executeForkedSkill(
         command,
         commandName,
@@ -666,6 +687,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
         canUseTool,
         parentMessage,
         onProgress,
+        command.background !== false,
       )
     }
 
