@@ -132,6 +132,7 @@ import {
   runPostToolUseHooks,
   runPreToolUseHooks,
 } from './toolHooks.js'
+import { shouldInvalidateReadFileStateAfterHooks } from './hookReadFileStateGate.js'
 
 /** Minimum total hook duration (ms) to show inline timing summary */
 export const HOOK_TIMING_DISPLAY_THRESHOLD_MS = 500
@@ -746,6 +747,7 @@ async function checkPermissionsAndCallTool(
   let hookPermissionResult: PermissionResult | undefined
   const preToolHookInfos: StopHookInfo[] = []
   const preToolHookStart = Date.now()
+  let preToolHooksRan = false
   for await (const result of runPreToolUseHooks(
     toolUseContext,
     tool,
@@ -756,6 +758,7 @@ async function checkPermissionsAndCallTool(
     mcpServerType,
     mcpServerBaseUrl,
   )) {
+    preToolHooksRan = true
     switch (result.type) {
       case 'message':
         if (result.message.message.type === 'progress') {
@@ -795,6 +798,10 @@ async function checkPermissionsAndCallTool(
         resultingMessages.push(result.message)
         break
       case 'stop':
+        // CC 2.1.216 #6 (a): hooks may have modified files before stopping
+        if (shouldInvalidateReadFileStateAfterHooks(preToolHooksRan)) {
+          toolUseContext.readFileState.clear()
+        }
         getStatsStore()?.observe(
           'pre_tool_hook_duration_ms',
           Date.now() - preToolHookStart,
@@ -811,6 +818,13 @@ async function checkPermissionsAndCallTool(
   }
   const preToolHookDurationMs = Date.now() - preToolHookStart
   getStatsStore()?.observe('pre_tool_hook_duration_ms', preToolHookDurationMs)
+  // CC 2.1.216 #6 (a): Invalidate readFileState after PreToolUse hooks to
+  // prevent @-mentions silently attaching nothing when hooks modify files
+  // externally (the already_read_file optimization returns stale/empty content
+  // when the hook-modified mtime matches the cached timestamp).
+  if (shouldInvalidateReadFileStateAfterHooks(preToolHooksRan)) {
+    toolUseContext.readFileState.clear()
+  }
   if (preToolHookDurationMs >= SLOW_PHASE_LOG_THRESHOLD_MS) {
     logForDebugging(
       `Slow PreToolUse hooks: ${preToolHookDurationMs}ms for ${tool.name} (${preToolHookInfos.length} hooks)`,

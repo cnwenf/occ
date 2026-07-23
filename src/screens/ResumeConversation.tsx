@@ -10,6 +10,10 @@ import { Spinner } from '../components/Spinner.js';
 import { restoreCostStateForSession } from '../cost-tracker.js';
 import { setClipboard } from '../ink/termio/osc.js';
 import { Box, Text } from '../ink.js';
+import {
+  shouldResetResumingOnError,
+  shouldRethrowResumeError,
+} from './resumeFailureGate.js';
 import { useKeybinding } from '../keybindings/useKeybinding.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../services/analytics/index.js';
 import type { MCPServerConnection, ScopedMcpServerConfig } from '../services/mcp/types.js';
@@ -287,7 +291,16 @@ export function ResumeConversation({
         success: false
       });
       logError(e as Error);
-      throw e;
+      // CC 2.1.216 #6 (d): reset resuming state so the UI falls back to the
+      // selector instead of hanging on the spinner. LogSelector calls onSelect
+      // fire-and-forget (not awaited), so re-throwing creates an unhandled
+      // rejection and leaves resuming=true forever. Do not re-throw.
+      if (shouldResetResumingOnError(e as Error)) {
+        setResuming(false);
+      }
+      if (shouldRethrowResumeError(false)) {
+        throw e;
+      }
     }
   }
   if (crossProjectCommand) {
