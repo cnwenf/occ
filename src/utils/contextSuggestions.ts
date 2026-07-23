@@ -33,6 +33,12 @@ export function generateContextSuggestions(
 ): ContextSuggestion[] {
   const suggestions: ContextSuggestion[] = []
 
+  // 2.1.216 #35 (a): an explicit warning when the conversation EXCEEDS the
+  // context window. Runs before checkNearCapacity so the over-window state is
+  // signalled distinctly rather than read as a generic "X% full" near-capacity
+  // line. Only triggers strictly over-window (>rawMaxTokens); exactly full is
+  // left to checkNearCapacity.
+  checkExceedsContextWindow(data, suggestions)
   checkNearCapacity(data, suggestions)
   checkLargeToolResults(data, suggestions)
   checkReadResultBloat(data, suggestions)
@@ -212,6 +218,31 @@ function checkMemoryBloat(
       title: `Memory files using ${formatTokens(totalMemoryTokens)} tokens (${memoryPercent.toFixed(0)}%)`,
       detail: `Largest: ${largestFiles}. Use /memory to review and prune stale entries.`,
       savingsTokens: Math.floor(totalMemoryTokens * 0.3),
+    })
+  }
+}
+
+/**
+ * 2.1.216 #35 (a): explicit warning when the conversation EXCEEDS the context
+ * window (totalTokens > rawMaxTokens). The existing checkNearCapacity fires at
+ * >=80% ("Context is X% full"), which presents an over-window state as just
+ * another full-ish context. This emits a distinct, unambiguous "exceeds the
+ * context window" warning so the user knows they are past the hard limit and
+ * must compact to continue. Reuses the existing ContextData token math — no
+ * new counter is introduced.
+ */
+function checkExceedsContextWindow(
+  data: ContextData,
+  suggestions: ContextSuggestion[],
+): void {
+  if (data.totalTokens > data.rawMaxTokens && data.rawMaxTokens > 0) {
+    const overBy = data.totalTokens - data.rawMaxTokens
+    suggestions.push({
+      severity: 'warning',
+      title: 'Context exceeds the context window',
+      detail: `Conversation is ${formatTokens(overBy)} over the ${formatTokens(
+        data.rawMaxTokens,
+      )} token limit. Run /compact to summarize and continue.`,
     })
   }
 }
