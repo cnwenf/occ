@@ -38,6 +38,10 @@ import { registerCleanup } from '../utils/cleanupRegistry.js'
 import { logForDebugging } from '../utils/debug.js'
 import { logError } from '../utils/log.js'
 import { enqueuePendingNotification } from '../utils/messageQueueManager.js'
+import {
+  assertSubagentCapAndIncrement,
+  claimConcurrentSubagentSlot,
+} from '../utils/sessionLimits.js'
 import { emitTaskTerminatedSdk } from '../utils/sdkEventQueue.js'
 import {
   getAgentTranscriptPath,
@@ -373,7 +377,18 @@ export function startBackgroundSession({
   }
 
   void runWithAgentContext(agentContext, async () => {
+    // 2.1.218 (#22): Ctrl+B backgrounding applies the same subagent caps
+    // as other spawn paths (runAgent). assertSubagentCapAndIncrement
+    // checks the per-session total-spawn cap; claimConcurrentSubagentSlot
+    // checks the concurrent-running cap. Both throw on cap exceeded —
+    // caught below, which marks the task as failed (same as runAgent).
+    let releaseConcurrentSubagentSlot: (() => void) | null = null
     try {
+      assertSubagentCapAndIncrement(queryParams.toolUseContext)
+      releaseConcurrentSubagentSlot = claimConcurrentSubagentSlot(
+        queryParams.toolUseContext,
+      )
+
       const bgMessages: Message[] = [...messages]
       const recentActivities: ToolActivity[] = []
       let toolCount = 0
@@ -474,6 +489,10 @@ export function startBackgroundSession({
     } catch (error) {
       logError(error)
       completeMainSessionTask(taskId, false, setAppState)
+    } finally {
+      // 2.1.218 (#22): release the concurrent subagent slot on settle
+      // (complete/abort/error), matching runAgent's finally pattern.
+      releaseConcurrentSubagentSlot?.()
     }
   })
 
