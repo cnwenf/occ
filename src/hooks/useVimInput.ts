@@ -12,6 +12,7 @@ import {
   executeIndent,
   executeJoin,
   executeOpenLine,
+  executePaste,
   executeOperatorFind,
   executeOperatorMotion,
   executeOperatorTextObj,
@@ -25,6 +26,7 @@ import {
   executeVisualPaste,
   executeVisualReplace,
   executeX,
+  replayOperatorChange,
   replayVisualCase,
   replayVisualChange,
   replayVisualOp,
@@ -139,6 +141,17 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
           type: 'visualChange',
           span: last.span,
           linewise: last.linewise,
+          text: current.insertedText ?? '',
+        }
+      } else if (last?.type === 'operator' && last.op === 'change') {
+        // CC 2.1.216 #6 (b): capture the typed text for `c`-operator
+        // dot-repeat. Without this, `.` after `cw{text}<Esc>` re-deletes
+        // the range and enters INSERT but does NOT re-insert the text.
+        persistentRef.current.lastChange = {
+          type: 'operatorChange',
+          op: last.op,
+          motion: last.motion,
+          count: last.count,
           text: current.insertedText ?? '',
         }
       } else if (current.insertedText) {
@@ -309,6 +322,22 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
 
       case 'visualCase':
         replayVisualCase(change.op, change.span, change.linewise, ctx)
+        break
+
+      case 'paste':
+        // CC 2.1.216 #6 (b): replay paste for dot-repeat.
+        executePaste(change.after, change.count, ctx)
+        break
+
+      case 'operatorChange':
+        // CC 2.1.216 #6 (b): replay c-operator change — re-delete range
+        // and re-insert the typed text.
+        replayOperatorChange(
+          change.motion,
+          change.count,
+          change.text,
+          ctx,
+        )
         break
     }
   }

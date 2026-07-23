@@ -12,6 +12,7 @@ import { getInitialSettings } from '../utils/settings/settings.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
 import { type ReadonlySettings, useSettings } from '../hooks/useSettings.js';
 import { Ansi, Box, Text } from '../ink.js';
+import { initStatusLinePreviousMessageId } from './statusLineUpdateGate.js';
 import { getRawUtilization } from '../services/claudeAiLimits.js';
 import type { Message } from '../types/message.js';
 import type { StatusLineCommandInput } from '../types/statusLine.js';
@@ -186,7 +187,10 @@ function StatusLineInner({
     vimMode: VimMode | undefined;
     mainLoopModel: ModelName;
   }>({
-    messageId: null,
+    // CC 2.1.216 #6 (c): initialize to the initial prop value (not null) so
+    // the change-detection effect does not fire on mount when resuming a
+    // session with existing assistant messages — preventing a double-run.
+    messageId: initStatusLinePreviousMessageId(lastAssistantMessageId),
     exceeds200kTokens: false,
     permissionMode,
     vimMode,

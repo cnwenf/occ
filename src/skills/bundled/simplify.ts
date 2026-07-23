@@ -177,6 +177,14 @@ export function registerCodeReviewSkill(): void {
     // 2.1.154 (E14): /code-review is the bug-finding + cleanup review.
     // /simplify is now its own cleanup-only skill (no longer an alias here).
     name: 'code-review',
+    // CC 2.1.218 #1: run as a background subagent so review work no longer
+    // fills the main conversation and keeps stacked slash commands as its
+    // review target. `context: 'fork'` routes through executeForkedSkill;
+    // `background` is unset → default background (shouldForkedSkillRunAsync
+    // returns true). Inner finders (AGENT_TOOL_NAME calls in the prompt) are
+    // not blocked by the spawn-depth cap — createSubagentContext does not
+    // propagate subagentDepth into the subagent's own ToolUseContext.
+    context: 'fork',
     description:
       'Review the current diff for correctness bugs and reuse/simplification/efficiency cleanups at the given effort level (low/medium: fewer, high-confidence findings; high→max: broader coverage, may include uncertain findings). Pass --comment to post findings as inline PR comments, or --fix to apply the findings to the working tree after the review.',
     argumentHint: CODE_REVIEW_ARGUMENT_HINT,

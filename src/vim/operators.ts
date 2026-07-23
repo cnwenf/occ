@@ -368,6 +368,10 @@ export function executePaste(
     ctx.setText(newText)
     ctx.setOffset(Math.max(insertPoint, newOffset))
   }
+  // CC 2.1.216 #6 (b): record paste for dot-repeat. Previously paste was
+  // the only operator that never called recordChange, so `.` after p/P
+  // did nothing.
+  ctx.recordChange({ type: 'paste', after, count, linewise: isLinewise })
 }
 
 /**
@@ -824,6 +828,31 @@ export function replayVisualChange(
   const after = ctx.text.slice(range.to)
   const newAfter = text && after !== '' ? '\n' + after : after
   const newText = ctx.text.slice(0, range.from) + text + newAfter
+  ctx.setText(newText)
+  const lastGr = lastGrapheme(text)
+  ctx.setOffset(
+    Math.max(range.from, range.from + text.length - (lastGr.length || 1)),
+  )
+}
+
+/**
+ * CC 2.1.216 #6 (b): Replay a `c`-operator change for dot-repeat.
+ * Re-resolves the motion to get the range, yanks the old content into the
+ * register, deletes the range, and inserts the previously-typed text —
+ * without entering INSERT mode (unlike the original `applyOperator` call).
+ */
+export function replayOperatorChange(
+  motion: string,
+  count: number,
+  text: string,
+  ctx: OperatorContext,
+): void {
+  const target = resolveMotion(motion, ctx.cursor, count)
+  if (target.equals(ctx.cursor) && !text) return
+  const range = getOperatorRange(ctx.cursor, target, motion, 'change', count)
+  const content = ctx.text.slice(range.from, range.to)
+  ctx.setRegister(content, range.linewise)
+  const newText = ctx.text.slice(0, range.from) + text + ctx.text.slice(range.to)
   ctx.setText(newText)
   const lastGr = lastGrapheme(text)
   ctx.setOffset(

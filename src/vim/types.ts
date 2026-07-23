@@ -162,6 +162,26 @@ export type RecordedChange =
       span: number
       linewise: boolean
     }
+  // CC 2.1.216 #6 (b): paste was never recorded for dot-repeat. The `paste`
+  // variant captures the count, direction (after), and linewise flag so `.`
+  // can re-apply the paste.
+  | {
+      type: 'paste'
+      after: boolean
+      count: number
+      linewise: boolean
+    }
+  // CC 2.1.216 #6 (b): `c`-operator's inserted text was not captured for
+  // dot-repeat. When exiting INSERT after a `c`-operator, the lastChange is
+  // upgraded to `operatorChange` carrying the motion + typed text so `.`
+  // re-deletes the range and re-inserts the text.
+  | {
+      type: 'operatorChange'
+      op: Operator
+      motion: string
+      count: number
+      text: string
+    }
 
 // ============================================================================
 // Key Groups - Named constants, no magic strings
