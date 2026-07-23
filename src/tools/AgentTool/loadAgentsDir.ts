@@ -554,6 +554,16 @@ export function parseAgentFromMarkdown(
     if (!agentType || typeof agentType !== 'string') {
       return null
     }
+    // 2.1.218: reject agent names containing `:` — that character is reserved
+    // for plugin namespacing (e.g. `plugin:agent`). Letting a user/project
+    // agent name itself contain `:` would collide with the plugin-qualified
+    // lookup convention and shadow/masquerade as a plugin agent.
+    if (agentType.includes(':')) {
+      logForDebugging(
+        `Agent file ${filePath} has a name '${agentType}' containing ':', which is reserved for plugin namespacing. Rejecting.`,
+      )
+      return null
+    }
     if (!whenToUse || typeof whenToUse !== 'string') {
       logForDebugging(
         `Agent file ${filePath} is missing required 'description' in frontmatter`,
