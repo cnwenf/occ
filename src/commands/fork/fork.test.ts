@@ -65,16 +65,19 @@ describe('/fork call (2.1.212 delta)', () => {
     writeForkPointerMock.mockClear()
   })
 
-  test('outputs "Forked session <id> (fork)" with the 2.1.212 suffix', async () => {
+  test('outputs the 2.1.216 #30 one-line confirmation with name + attach id + shares-checkout note', async () => {
     // Arrange
     const { context, onDone, output } = makeContext([userMessage('hi')])
 
-    // Act
+    // Act — deriveForkName('do the thing') === 'do-the-thing'
     await call(onDone, context, 'do the thing')
 
-    // Assert
+    // Assert — one line: name, claude attach id, shares-checkout note
     expect(output).toHaveLength(1)
-    expect(output[0]).toMatch(/^Forked session [0-9a-f-]{36} \(fork\)$/)
+    expect(output[0]).toMatch(
+      /^Forked session do-the-thing \(claude attach [0-9a-f-]{36}\) \(shares your checkout\)$/,
+    )
+    expect(output[0].includes('\n')).toBe(false)
   })
 
   test('writes the fork-context-ref pointer', async () => {
