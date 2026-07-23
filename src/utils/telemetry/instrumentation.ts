@@ -53,6 +53,7 @@ import { getHasFormattedOutput, logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { errorMessage } from '../errors.js'
 import { getMTLSConfig } from '../mtls.js'
+import { applyManagedOtelEndpointGovernance } from './managedOtelEndpoint.js'
 import { getProxyUrl, shouldBypassProxy } from '../proxy.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import { jsonStringify } from '../slowOperations.js'
@@ -114,6 +115,16 @@ export function bootstrapTelemetry() {
   if (!process.env.OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE) {
     process.env.OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE = 'delta'
   }
+
+  // CC 2.1.217 #9: when the managed (policy) env sets
+  // OTEL_EXPORTER_OTLP_ENDPOINT, lower-scope signal-specific endpoints
+  // (OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT) must not redirect a
+  // signal's telemetry away from the managed collector. Run after the
+  // ANT_* copy above and after settings env has been applied (via
+  // applySafeConfigEnvironmentVariables / applyConfigEnvironmentVariables
+  // in init.ts) so process.env reflects the merged value, and before any
+  // OTel SDK exporter is constructed so they read the governed env.
+  applyManagedOtelEndpointGovernance()
 }
 
 // Per OTEL spec, "none" means "no automatically configured exporter for this signal".
