@@ -23,7 +23,22 @@ import { findGitRoot, gitExe } from '../git.js'
 import { generateTempFilePath } from '../tempfile.js'
 
 // Tunable via tengu_ccr_bundle_max_bytes.
-const DEFAULT_BUNDLE_MAX_BYTES = 100 * 1024 * 1024
+export const DEFAULT_BUNDLE_MAX_BYTES = 100 * 1024 * 1024
+
+/**
+ * Configured bundle size limit (bytes). GrowthBook-tunable via
+ * `tengu_ccr_bundle_max_bytes`, falling back to the 100 MB default.
+ * Exported so the `/ultrareview` diff-too-large error (CC 2.1.216 #32) can
+ * surface the same configured limit the bundle path enforces.
+ */
+export function getBundleMaxBytes(): number {
+  return (
+    getFeatureValue_CACHED_MAY_BE_STALE<number | null>(
+      'tengu_ccr_bundle_max_bytes',
+      null,
+    ) ?? DEFAULT_BUNDLE_MAX_BYTES
+  )
+}
 
 type BundleScope = 'all' | 'head' | 'squashed'
 
@@ -216,11 +231,7 @@ export async function createAndUploadGitBundle(
 
   // git leaves a partial file on nonzero exit (e.g. empty-repo 128).
   try {
-    const maxBytes =
-      getFeatureValue_CACHED_MAY_BE_STALE<number | null>(
-        'tengu_ccr_bundle_max_bytes',
-        null,
-      ) ?? DEFAULT_BUNDLE_MAX_BYTES
+    const maxBytes = getBundleMaxBytes()
 
     const bundle = await _bundleWithFallback(
       gitRoot,
