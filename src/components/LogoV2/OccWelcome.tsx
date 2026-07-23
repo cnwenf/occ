@@ -4,13 +4,6 @@ import { Box, Text, useAnimationFrame } from '../../ink.js'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { truncate } from '../../utils/format.js'
 
-export const OCC_WORDMARK = [
-  '  ___   ___   ___ ',
-  ' / _ \\ / __| / __|',
-  '| (_) | (__ | (__  ',
-  ' \\___/ \\___| \\___|',
-] as const
-
 const WELCOME_MAX_WIDTH = 84
 const WIDE_MIN_COLUMNS = 76
 const COMPACT_MIN_COLUMNS = 44
@@ -19,6 +12,46 @@ const SHIMMER_DURATION_MS = 1_850
 const SHIMMER_BAND_WIDTH = 0.24
 
 export type OccWelcomeMode = 'wide' | 'compact' | 'plain'
+
+export type OccLogoArt = readonly string[]
+
+function normalizeLogo(lines: readonly string[]): OccLogoArt {
+  const width = Math.max(...lines.map(stringWidth))
+  return lines.map(line => line + ' '.repeat(width - stringWidth(line)))
+}
+
+/**
+ * OCC's open-orbit mark: a code kernel held inside an unfinished ring, with a
+ * detached cursor spark at the opening. Each tier is drawn independently so it
+ * stays legible instead of relying on terminal glyph scaling.
+ */
+export const OCC_LOGOS = {
+  wide: normalizeLogo([
+    '      ⢀⣠⣤⣀',
+    '   ⢀⣾⠟⠉⠉⠻⣷⣄',
+    '  ⣰⣿⠃  ⣀  ⠘⣿⣆',
+    ' ⢸⣿⡇  ⣿⣿⡇  ⣿⣿  ⠰⡄',
+    '  ⢿⣷  ⠻⠟  ⣰⣿⠏ ⢀⠞',
+    '   ⠻⣷⣄  ⣠⣾⠟  ⡰⠋',
+    '     ⠙⠿⠿⠛⠁  ⠘⠁',
+  ]),
+  compact: normalizeLogo([
+    '   ⣠⣤⣄',
+    ' ⣰⡿⠋⠙⢿⣆',
+    '⢰⣿  ⣿⡇ ⣿⡇⢠',
+    ' ⢿⣧ ⠛ ⣰⡿⢠⠃',
+    '  ⠙⠿⣶⠿⠋ ⠘',
+  ]),
+  plain: normalizeLogo([' ⣠⣄', '⢸⡇⣿⡇⢠', ' ⠻⠶⠋⠘']),
+} satisfies Record<OccWelcomeMode, OccLogoArt>
+
+export function getOccLogo(mode: OccWelcomeMode): OccLogoArt {
+  return OCC_LOGOS[mode]
+}
+
+export function getOccLogoWidth(art: OccLogoArt): number {
+  return Math.max(...art.map(stringWidth))
+}
 
 export type OccWelcomeProps = {
   columns: number
@@ -79,22 +112,25 @@ export function welcomeTip(
  * Build color runs for the one-shot diagonal shimmer.
  *
  * Progress is normalized to [0, 1]. The band starts and finishes outside the
- * wordmark, which avoids a hard flash on mount or when the animation settles.
+ * mark, which avoids a hard flash on mount or when the animation settles.
  */
 export function getShimmerRuns(
   line: string,
   row: number,
   progress: number | null,
+  art: OccLogoArt = OCC_LOGOS.wide,
 ): ShimmerRun[] {
   const chars = [...line]
   if (chars.length === 0) return []
 
   const runs: ShimmerRun[] = []
+  const artWidth = getOccLogoWidth(art)
+  let displayColumn = 0
   for (let column = 0; column < chars.length; column++) {
     const char = chars[column]!
     const diagonal =
-      (column + (OCC_WORDMARK.length - 1 - row) * 1.6) /
-      (OCC_WORDMARK[0].length + OCC_WORDMARK.length * 1.6)
+      (displayColumn + (art.length - 1 - row) * 1.6) /
+      (artWidth + art.length * 1.6)
     const bandPosition =
       progress === null ? -1 : -SHIMMER_BAND_WIDTH + progress * 1.45
     const highlighted =
@@ -107,13 +143,16 @@ export function getShimmerRuns(
     } else {
       runs.push({ text: char, highlighted })
     }
+    displayColumn += stringWidth(char)
   }
   return runs
 }
 
-function OccWordmark({
+function OccLogo({
+  art,
   animate,
 }: {
+  art: OccLogoArt
   animate: boolean
 }): React.ReactNode {
   const [done, setDone] = useState(!animate)
@@ -136,9 +175,9 @@ function OccWordmark({
 
   return (
     <Box ref={ref} flexDirection="column" flexShrink={0}>
-      {OCC_WORDMARK.map((line, row) => (
-        <Text key={line}>
-          {getShimmerRuns(line, row, progress).map((run, index) => (
+      {art.map((line, row) => (
+        <Text key={row}>
+          {getShimmerRuns(line, row, progress, art).map((run, index) => (
             <Text
               key={`${row}-${index}`}
               color={run.highlighted ? 'claudeShimmer' : 'claude'}
@@ -217,9 +256,16 @@ function PlainWelcome(props: OccWelcomeProps): React.ReactNode {
   const width = Math.max(props.columns, 1)
   const location = formatWelcomeLocation(props.branch, props.cwd, width)
   const modelLine = truncate(`${props.model} · ${props.billing}`, width)
+  const logo = getOccLogo('plain')
+  const showLogo = !props.plain && width >= getOccLogoWidth(logo)
 
   return (
     <Box flexDirection="column">
+      {showLogo && (
+        <Box marginBottom={1}>
+          <OccLogo art={logo} animate={!props.reducedMotion} />
+        </Box>
+      )}
       <Text>
         <Text bold>OCC</Text>
         <Text dimColor> v{props.version} · Open C Code</Text>
@@ -244,11 +290,13 @@ export function OccWelcome(props: OccWelcomeProps): React.ReactNode {
 
   const cardWidth = Math.min(Math.max(props.columns, 1), WELCOME_MAX_WIDTH)
   const contentWidth = Math.max(cardWidth - 4, 1)
+  const logo = getOccLogo(mode)
+  const logoWidth = getOccLogoWidth(logo)
   const location = formatWelcomeLocation(
     props.branch,
     props.cwd,
     mode === 'wide'
-      ? Math.max(contentWidth - OCC_WORDMARK[0].length - 3, 1)
+      ? Math.max(contentWidth - logoWidth - 3, 1)
       : contentWidth,
   )
   const animate = !props.reducedMotion
@@ -269,12 +317,9 @@ export function OccWelcome(props: OccWelcomeProps): React.ReactNode {
       />
       {mode === 'wide' ? (
         <Box marginTop={1} flexDirection="row" gap={3} alignItems="center">
-          <OccWordmark animate={animate} />
+          <OccLogo art={logo} animate={animate} />
           <Metadata
-            width={Math.max(
-              contentWidth - OCC_WORDMARK[0].length - 3,
-              1,
-            )}
+            width={Math.max(contentWidth - logoWidth - 3, 1)}
             model={props.model}
             billing={props.billing}
             location={location}
@@ -283,7 +328,7 @@ export function OccWelcome(props: OccWelcomeProps): React.ReactNode {
         </Box>
       ) : (
         <Box marginTop={1} flexDirection="column" alignItems="center">
-          <OccWordmark animate={animate} />
+          <OccLogo art={logo} animate={animate} />
           <Box marginTop={1} width={contentWidth}>
             <Metadata
               width={contentWidth}

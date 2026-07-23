@@ -1,24 +1,36 @@
 import { describe, expect, test } from 'bun:test';
 import { execFileSync, execSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { REPO_ROOT } from './helpers';
 
 /**
- * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-18).
+ * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-20).
  *
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
  * -p`. Verifies the responsive condensed welcome (wide / compact / plain) and
- * the forced full logo. The condensed path renders OCC's wordmark, context,
- * and a session-stable tip; the full path keeps the two-tone doge mascot.
+ * the forced full logo. The condensed path renders OCC's open-orbit mark,
+ * context, and a session-stable tip; the full path keeps the two-tone doge
+ * mascot.
  *
  * Gated out of CI because it requires tmux; no model call is made.
  */
 
 const BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;
 const SESSION = 'occ-welcome-test';
+const VERSION = (
+  JSON.parse(
+    readFileSync(join(REPO_ROOT, 'package.json'), 'utf8'),
+  ) as { version: string }
+).version;
 
 function tmux(args: string[]): string {
   try {
@@ -105,14 +117,17 @@ function startRepl(
   tmux(['resize-window', '-t', SESSION, '-x', String(width), '-y', '50']);
 }
 
-const OCC_WORDMARK = '___   ___   ___';
+const LARGE_LOGO_GLYPH = '⢀⣾⠟⠉⠉⠻⣷⣄';
+const MEDIUM_LOGO_GLYPH = '⣰⡿⠋⠙⢿⣆';
+const SMALL_LOGO_GLYPH = '⢸⡇⣿⡇⢠';
+const OLD_WORDMARK = '___   ___   ___';
 
 // Doge art glyphs that must remain in the forced full-logo pane.
 const DOGE_GLYPHS = ['/\\___/\\', '=w=', '~~'];
 
-describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => {
-  test('wide welcome renders brand, version, context, tip, and wordmark', async () => {
-    const home = freshSeededHome('2.1.276');
+describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-20)', () => {
+  test('wide welcome renders brand, version, context, tip, and large mark', async () => {
+    const home = freshSeededHome(VERSION);
     startRepl(home, {}, 100);
     try {
       // Wait for the REPL prompt / welcome to paint.
@@ -122,8 +137,9 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => 
 
       // Brand + version.
       expect(pane.toLowerCase()).toContain('occ');
-      expect(pane).toContain('v2.1.276');
-      expect(pane).toContain(OCC_WORDMARK);
+      expect(pane).toContain(`v${VERSION}`);
+      expect(pane).toContain(LARGE_LOGO_GLYPH);
+      expect(pane).not.toContain(OLD_WORDMARK);
       expect(pane).toContain('Open C Code');
       // One of the welcome tips is shown.
       const tipShown = [
@@ -144,14 +160,14 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => 
   });
 
   test('forced full logo renders the bordered welcome box with doge', async () => {
-    const home = freshSeededHome('2.1.276');
+    const home = freshSeededHome(VERSION);
     startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' });
     try {
       await waitForText('occ', 20_000);
       await new Promise((r) => setTimeout(r, 800));
       const pane = capturePane();
 
-      expect(pane).toContain('v2.1.276');
+      expect(pane).toContain(`v${VERSION}`);
       // The full logo is a rounded border titled "OCC v…".
       expect(pane).toContain('OCC');
       // Doge glyphs still render inside the full box.
@@ -164,16 +180,18 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => 
     }
   });
 
-  test('compact terminal keeps the wordmark without overflowing', async () => {
-    const home = freshSeededHome('2.1.276');
+  test('compact terminal uses the medium mark without overflowing', async () => {
+    const home = freshSeededHome(VERSION);
     startRepl(home, {}, 60);
     try {
       await waitForText('occ', 20_000);
       await new Promise((r) => setTimeout(r, 800));
       const pane = capturePane();
-      // Still renders the brand and stacked wordmark without crashing.
+      // Still renders the brand and stacked medium mark without crashing.
       expect(pane.toLowerCase()).toContain('occ');
-      expect(pane).toContain(OCC_WORDMARK);
+      expect(pane).toContain(MEDIUM_LOGO_GLYPH);
+      expect(pane).not.toContain(LARGE_LOGO_GLYPH);
+      expect(pane).not.toContain(OLD_WORDMARK);
       expect(pane).toContain('Open C Code');
     } finally {
       killRepl();
@@ -181,17 +199,19 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => 
     }
   });
 
-  test('very narrow terminal falls back to plain ASCII-safe output', async () => {
-    const home = freshSeededHome('2.1.276');
+  test('very narrow terminal uses the small borderless mark', async () => {
+    const home = freshSeededHome(VERSION);
     startRepl(home, {}, 36);
     try {
       await waitForText('occ', 20_000);
       await new Promise((r) => setTimeout(r, 800));
       const pane = capturePane();
 
-      expect(pane).toContain('OCC v2.1.276');
+      expect(pane).toContain(`OCC v${VERSION}`);
       expect(pane).toContain('Open C Code');
-      expect(pane).not.toContain(OCC_WORDMARK);
+      expect(pane).toContain(SMALL_LOGO_GLYPH);
+      expect(pane).not.toContain(MEDIUM_LOGO_GLYPH);
+      expect(pane).not.toContain(OLD_WORDMARK);
       expect(pane).not.toContain('╭');
     } finally {
       killRepl();

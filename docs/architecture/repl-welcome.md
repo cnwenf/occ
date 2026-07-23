@@ -19,21 +19,22 @@ The design was informed by the Apache-2.0 `xai-org/grok-build` welcome screen
   version, cwd, model, and a single command hint.
 
 OCC reimplements those ideas in its own TypeScript/Ink architecture and uses
-original ASCII artwork and copy. No grok-build source or logo asset is copied.
+original artwork and copy. No grok-build source or logo asset is copied. The
+OCC-20 mark and its sizing decisions are recorded in
+`docs/welcome-logo-occ20.md`.
 
 ## Information hierarchy
 
 The card deliberately limits the first screen to four levels:
 
 1. **Identity:** `OCC`, version, and `Open C Code`.
-2. **Hero:** an ASCII OCC wordmark with a short readiness line.
+2. **Hero:** OCC's open-orbit icon with a short readiness line.
 3. **Context:** model/billing, Git branch, agent name, and cwd.
 4. **Action:** one deterministic, session-stable command or shortcut hint.
 
-The previous condensed startup view showed a small mascot next to
-model/billing/cwd. It did not expose the Git branch or a useful first action,
-and its inherited pose animation had no visible effect because OCC's mascot was
-static.
+The icon is not a rendering of the letters `OCC`. It combines an unfinished
+orbit, a central code kernel, and a detached cursor spark. The same geometry is
+redrawn at three resolutions instead of mechanically cropped or scaled.
 
 ## Responsive tiers
 
@@ -41,13 +42,14 @@ static.
 
 | Terminal width | Layout | Behavior |
 |---|---|---|
-| 76+ columns | Wide hero | Wordmark and metadata render side by side |
-| 44–75 columns | Compact card | Wordmark stacks above metadata |
-| Under 44 columns | Plain | No border or decorative art; essential text only |
+| 76+ columns | Wide hero | Seven-row large mark and metadata render side by side |
+| 44–75 columns | Compact card | Five-row medium mark stacks above metadata |
+| Under 44 columns | Plain | Three-row small mark, no border, essential text |
 
 The card caps itself at 84 columns so it remains readable in very wide
 terminals. All context strings use display-width-aware truncation, including
-CJK paths.
+CJK paths. Screen-reader mode and `TERM=dumb` explicitly force a separate
+text-only variant of the plain layout.
 
 ## Motion and compatibility
 
@@ -56,10 +58,11 @@ CJK paths.
 - The existing `welcomeTips.ts` picker supplies one deterministic hint per
   session, so the copy does not jump during a re-render.
 - `prefersReducedMotion` disables the shimmer.
-- Screen-reader mode and `TERM=dumb` use the plain layout, with no border,
-  decorative ASCII art, or animation.
-- The animated logo contains ASCII characters only, avoiding Braille/block
-  glyph failures on legacy fonts.
+- Screen-reader mode and `TERM=dumb` use the forced plain layout, with no
+  border, decorative art, or animation.
+- Normal UTF-8 terminals render the mark with single-cell Braille and block
+  characters. The three resources are display-width normalized before render,
+  preventing ragged flex sizing and shimmer seams.
 - `useAnimationFrame` pauses the effect when the card leaves the viewport, so
   it does not keep repainting scrollback.
 
@@ -68,7 +71,9 @@ CJK paths.
 - `src/components/LogoV2/CondensedLogo.tsx` gathers live REPL state, including
   the cached Git branch.
 - `src/components/LogoV2/OccWelcome.tsx` owns responsive presentation and the
-  one-shot shimmer.
+  three logo resources plus the one-shot shimmer.
 - `src/components/__tests__/OccWelcome.test.tsx` covers tier boundaries,
-  width-aware context, shimmer stability, and rendered wide/compact/plain
-  layouts.
+  width-normalized art, width-aware context, shimmer stability, and rendered
+  wide/compact/plain layouts.
+- `test/e2e/repl-welcome-visual.e2e.test.ts` boots the built REPL in tmux at
+  100, 60, and 36 columns to verify real terminal glyph rendering.

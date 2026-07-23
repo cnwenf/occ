@@ -4,9 +4,11 @@ import { stringWidth } from '../../ink/stringWidth.js'
 import { renderToString } from '../../utils/staticRender.js'
 import {
   formatWelcomeLocation,
+  getOccLogo,
+  getOccLogoWidth,
   getOccWelcomeMode,
   getShimmerRuns,
-  OCC_WORDMARK,
+  OCC_LOGOS,
   OccWelcome,
   welcomeTip,
 } from '../LogoV2/OccWelcome.js'
@@ -30,6 +32,21 @@ describe('OCC REPL welcome layout', () => {
     expect(getOccWelcomeMode(120, true)).toBe('plain')
   })
 
+  test('provides aligned, distinct logo art for all three tiers', () => {
+    expect(getOccLogo('wide')).toBe(OCC_LOGOS.wide)
+    expect(getOccLogo('compact')).toBe(OCC_LOGOS.compact)
+    expect(getOccLogo('plain')).toBe(OCC_LOGOS.plain)
+    expect(OCC_LOGOS.wide.length).toBeGreaterThan(OCC_LOGOS.compact.length)
+    expect(OCC_LOGOS.compact.length).toBeGreaterThan(OCC_LOGOS.plain.length)
+
+    for (const art of Object.values(OCC_LOGOS)) {
+      const width = getOccLogoWidth(art)
+      expect(art.every(line => stringWidth(line) === width)).toBe(true)
+      expect(art.join('\n')).not.toContain('OCC')
+      expect(art.join('\n')).not.toContain('___   ___   ___')
+    }
+  })
+
   test('keeps git and CJK cwd context within the requested width', () => {
     const location = formatWelcomeLocation(
       'feature/欢迎页视觉优化',
@@ -40,13 +57,14 @@ describe('OCC REPL welcome layout', () => {
     expect(stringWidth(location)).toBeLessThanOrEqual(30)
   })
 
-  test('shimmer preserves the ASCII art and settles without highlights', () => {
-    const active = getShimmerRuns(OCC_WORDMARK[1], 1, 0.5)
-    expect(active.map(run => run.text).join('')).toBe(OCC_WORDMARK[1])
+  test('shimmer preserves the braille art and settles without highlights', () => {
+    const line = OCC_LOGOS.wide[3]!
+    const active = getShimmerRuns(line, 3, 0.5, OCC_LOGOS.wide)
+    expect(active.map(run => run.text).join('')).toBe(line)
     expect(active.some(run => run.highlighted)).toBe(true)
 
-    const settled = getShimmerRuns(OCC_WORDMARK[1], 1, null)
-    expect(settled.map(run => run.text).join('')).toBe(OCC_WORDMARK[1])
+    const settled = getShimmerRuns(line, 3, null, OCC_LOGOS.wide)
+    expect(settled.map(run => run.text).join('')).toBe(line)
     expect(settled.every(run => !run.highlighted)).toBe(true)
   })
 
@@ -66,7 +84,8 @@ describe('OCC REPL welcome layout', () => {
     expect(output).toContain('OCC')
     expect(output).toContain('v2.1.276')
     expect(output).toContain('Open C Code')
-    expect(output).toContain(OCC_WORDMARK[0].trim())
+    expect(output).toContain(OCC_LOGOS.wide[1]!.trim())
+    expect(output).not.toContain('___   ___   ___')
     expect(output).toContain('git:feature/welcome')
     expect(output).toContain('/work/occ')
     expect(output).toContain(welcomeTip('wide'))
@@ -81,12 +100,28 @@ describe('OCC REPL welcome layout', () => {
 
     expect(output).toContain(welcomeTip('compact'))
     expect(output).toContain('Open C Code')
+    expect(output).toContain(OCC_LOGOS.compact[1]!.trim())
+    expect(output).not.toContain(OCC_LOGOS.wide[1]!.trim())
     for (const line of output.split('\n')) {
       expect(stringWidth(line)).toBeLessThanOrEqual(columns)
     }
   })
 
-  test('plain mode removes decorative art and keeps essential information', async () => {
+  test('narrow mode uses the small mark without a decorative border', async () => {
+    const output = await renderToString(
+      <OccWelcome columns={36} {...BASE_PROPS} />,
+      36,
+    )
+
+    expect(output).toContain(OCC_LOGOS.plain[1]!.trim())
+    expect(output).toContain('OCC v2.1.276 · Open C Code')
+    expect(output).not.toContain('╭')
+    for (const line of output.split('\n')) {
+      expect(stringWidth(line)).toBeLessThanOrEqual(36)
+    }
+  })
+
+  test('forced plain mode removes art and keeps essential information', async () => {
     const output = await renderToString(
       <OccWelcome columns={36} {...BASE_PROPS} plain />,
       36,
@@ -96,7 +131,8 @@ describe('OCC REPL welcome layout', () => {
     expect(output).toContain('Claude Sonnet 4.5')
     expect(output).toContain('git:feature/welcome')
     expect(output).toContain(welcomeTip('plain'))
-    expect(output).not.toContain(OCC_WORDMARK[0].trim())
+    expect(output).not.toContain(OCC_LOGOS.plain[1]!.trim())
+    expect(output).not.toContain('___   ___   ___')
     expect(output).not.toContain('╭')
   })
 })
