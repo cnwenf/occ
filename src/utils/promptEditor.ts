@@ -57,10 +57,12 @@ export function editFileInEditor(filePath: string): EditorResult {
     // state so the next render writes from scratch.
     inkInstance.enterAlternateScreen()
   } else {
-    // GUI editors (code, subl, etc.) open in a separate window — just pause
-    // Ink and release stdin while they're open.
-    inkInstance.pause()
-    inkInstance.suspendStdin()
+    // GUI editors (code, subl, etc.) open in a separate window — suspend
+    // terminal modes (mouse tracking + focus reporting + kitty keyboard)
+    // while the editor is open. Without this, SGR mouse sequences and focus
+    // events accumulate as garbage in the input buffer while stdin is
+    // suspended (2.1.216 #16).
+    inkInstance.enterGuiEditorHandoff()
   }
 
   try {
@@ -94,8 +96,7 @@ export function editFileInEditor(filePath: string): EditorResult {
     if (useAlternateScreen) {
       inkInstance.exitAlternateScreen()
     } else {
-      inkInstance.resumeStdin()
-      inkInstance.resume()
+      inkInstance.exitGuiEditorHandoff()
     }
   }
 }
