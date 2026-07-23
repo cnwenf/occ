@@ -18,6 +18,10 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## Unreleased
+
+- **REPL startup welcome page visual polish (OCC-18).** The condensed startup logo (the default every-run view) now renders a two-tone doge mascot — body in the brand `clawd_body` orange, eyes/snout/tail in the lighter `claudeShimmer`, padded to a clean rectangle — plus a new per-session welcome tip line (e.g. `Press / for commands, ? for shortcuts`). Tips are picked deterministically via an FNV-1a hash of the session id (no `Math.random`), so a given boot always shows the same hint and the logo never re-renders a different tip mid-session. The full (version-bump / `CLAUDE_CODE_FORCE_FULL_LOGO=1`) welcome box inherits the richer doge. Design study and rationale: `docs/welcome-page-visual-occ18.md` — learned layout / tips-banner / hero-box ideas from grok-build's welcome screen; no grok-build code copied. Verified by real tmux REPL e2e (condensed / full / 60-col narrow) + unit tests for the tip picker.
+
 ## 2.1.276 - 2026-07-19
 
 - **Catch up to Claude Code `2.1.215` (OCC-11).** OCC now aligns to official Claude Code `2.1.215` (was `2.1.214`). The entire 2.1.215 changelog is a single behavioral change: the model no longer auto-invokes the `/verify` and `/code-review` skills on its own — they are manual-only, invoked explicitly with `/verify` or `/code-review`. The skills themselves are unchanged.

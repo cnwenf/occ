@@ -1,0 +1,180 @@
+import { describe, expect, test } from 'bun:test';
+import { execFileSync, execSync } from 'node:child_process';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { REPO_ROOT } from './helpers';
+
+/**
+ * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-18).
+ *
+ * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
+ * + trust already accepted) and reads the decoded pane via `tmux capture-pane
+ * -p`. Verifies the condensed logo (default) and the forced full logo both
+ * render the brand, version, context, and a welcome tip — and that the doge
+ * mascot art is present (ears + snout + tail glyphs).
+ *
+ * Gated out of CI (needs tmux + model creds).
+ */
+
+const BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;
+const SESSION = 'occ-welcome-test';
+
+function tmux(args: string[]): string {
+  try {
+    return execFileSync('tmux', args, { encoding: 'utf8', timeout: 10_000 });
+  } catch {
+    return '';
+  }
+}
+
+function killRepl() {
+  execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);
+}
+
+function capturePane(): string {
+  return tmux(['capture-pane', '-t', SESSION, '-p', '-S', '-']);
+}
+
+async function waitForText(
+  substr: string,
+  timeoutMs = 20_000,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pane = capturePane();
+    if (pane.toLowerCase().includes(substr.toLowerCase())) return true;
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  return false;
+}
+
+// Seed onboarding + trust as done, and "last release notes seen" = current
+// version so the CONDENSED logo is what renders by default.
+function freshSeededHome(lastReleaseNotesSeen: string): string {
+  const home = mkdtempSync(join(tmpdir(), 'occ-welcome-'));
+  mkdirSync(join(home, '.claude'), { recursive: true });
+  writeFileSync(
+    join(home, '.claude.json'),
+    JSON.stringify({
+      numStartups: 7,
+      firstStartTime: '2026-07-06T00:00:00.000Z',
+      migrationVersion: 11,
+      userID:
+        'occ-welcome-seed-0000000000000000000000000000000000000000000aa',
+      hasCompletedOnboarding: true,
+      lastOnboardingVersion: '2.1.200',
+      lastReleaseNotesSeen,
+      projects: { [REPO_ROOT]: { hasTrustDialogAccepted: true } },
+    }),
+  );
+  writeFileSync(
+    join(home, '.claude', 'settings.json'),
+    JSON.stringify({
+      skipDangerousModePermissionPrompt: true,
+      disableAllHooks: true,
+    }),
+  );
+  return home;
+}
+
+function startRepl(
+  home: string,
+  extraEnv: Record<string, string> = {},
+  width = 200,
+) {
+  killRepl();
+  // Strip ANTHROPIC_API_KEY so the "Detected a custom API key" approval dialog
+  // (src/interactiveHelpers.tsx) does not block the welcome render — auth uses
+  // ANTHROPIC_AUTH_TOKEN + ANTHROPIC_BASE_URL instead, same as the e2e runner.
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    HOME: home,
+    ...extraEnv,
+  };
+  delete env.ANTHROPIC_API_KEY;
+  const envStr = Object.entries(env)
+    .filter(([, v]) => v !== undefined)
+    .map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`)
+    .join(' ');
+  execSync(
+    `tmux new-session -d -s ${SESSION} -x ${width} -y 50 "env ${envStr} ${BIN} --dangerously-skip-permissions"`,
+    { timeout: 5_000 },
+  );
+}
+
+// Doge art glyphs that must appear in the welcome pane (ears, snout, tail).
+const DOGE_GLYPHS = ['/\\___/\\', '=w=', '~~'];
+
+describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => {
+  test('condensed logo renders brand, version, context, tip, and doge', async () => {
+    const home = freshSeededHome('2.1.276');
+    startRepl(home);
+    try {
+      // Wait for the REPL prompt / welcome to paint.
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      // Brand + version.
+      expect(pane.toLowerCase()).toContain('occ');
+      expect(pane).toContain('v2.1.276');
+      // One of the welcome tips is shown.
+      const tipShown = [
+        'press / for commands',
+        'type @ to reference',
+        'use # to pin',
+        'press ! to run',
+        'ctrl+o expands',
+        'run /help',
+        'use the tab key',
+        'press esc twice',
+      ].some((t) => pane.toLowerCase().includes(t));
+      expect(tipShown).toBe(true);
+      // Doge mascot glyphs present.
+      for (const glyph of DOGE_GLYPHS) {
+        expect(pane).toContain(glyph);
+      }
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('forced full logo renders the bordered welcome box with doge', async () => {
+    const home = freshSeededHome('2.1.276');
+    startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' });
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      expect(pane).toContain('v2.1.276');
+      // The full logo is a rounded border titled "OCC v…".
+      expect(pane).toContain('OCC');
+      // Doge glyphs still render inside the full box.
+      for (const glyph of DOGE_GLYPHS) {
+        expect(pane).toContain(glyph);
+      }
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('narrow terminal does not crash / tear the welcome layout', async () => {
+    const home = freshSeededHome('2.1.276');
+    startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' }, 60);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+      // Still renders brand + doge ears without crashing.
+      expect(pane.toLowerCase()).toContain('occ');
+      expect(pane).toContain('/\\___/\\');
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
