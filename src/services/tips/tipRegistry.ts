@@ -53,7 +53,11 @@ import {
   formatCreditAmount,
   getCachedReferrerReward,
 } from '../api/referral.js'
-import { getSessionsSinceLastShown } from './tipHistory.js'
+import {
+  FRONTEND_DESIGN_TIP_MAX_IMPRESSIONS,
+  getSessionsSinceLastShown,
+  isTipLifetimeCapped,
+} from './tipHistory.js'
 import type { Tip, TipContext } from './types.js'
 
 let _isOfficialMarketplaceInstalledCache: boolean | undefined
@@ -494,6 +498,10 @@ const externalTips: Tip[] = [
       return `Working with HTML/CSS? Install the frontend-design plugin:\n${blue(`/plugin install frontend-design@${OFFICIAL_MARKETPLACE_NAME}`)}`
     },
     cooldownSessions: 3,
+    // 2.1.217 #17: cap at 3 lifetime impressions instead of repeating
+    // indefinitely. After 3 shows (persisted per-user in tipsShownCount) the
+    // tip is permanently suppressed regardless of cooldown elapsing.
+    maxImpressions: FRONTEND_DESIGN_TIP_MAX_IMPRESSIONS,
     isRelevant: async context =>
       isMarketplacePluginRelevant('frontend-design', context, {
         filePath: /\.(html|css|htm)$/i,
@@ -680,6 +688,8 @@ export async function getRelevantTips(context?: TipContext): Promise<Tip[]> {
   const isRelevant = await Promise.all(tips.map(_ => _.isRelevant(context)))
   const filtered = tips
     .filter((_, index) => isRelevant[index])
+    // 2.1.217 #17: drop tips that have hit their lifetime impression cap.
+    .filter(_ => !isTipLifetimeCapped(_.id, _.maxImpressions))
     .filter(_ => getSessionsSinceLastShown(_.id) >= _.cooldownSessions)
 
   return [...filtered, ...customTips]
