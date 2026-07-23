@@ -275,3 +275,90 @@ the `2.1.218` ELF (not invented) and gated by behavioral e2e per
    (blocks P1 #6)
 
 These are recon questions, not blockers for the P0 headline work.
+
+---
+
+## 8. Status update — 2026-07-23 (post PR #199 / #200 / #203 / #204 / #206 / #207 / #208)
+
+The §5 checklist has been substantially executed on `main`. This section supersedes
+the "pending" markers above for the items listed. **Read this before porting anything
+in §5 — duplicate avoidance.**
+
+### Already landed on `main` (do NOT re-port)
+
+**Via concurrent OCC-19 session PR #200 (commit `e9ee98c`):** 2.1.218 #34 (agent `:`-reject),
+#36 (frontmatter bools), #35 (context:fork background), #19 (monotonic timing), #12
+(engine teardown race), #13 (spurious `[Request interrupted]` + unpaired `tool_use`),
+#27 (auto-mode dangerous-rm/bg-`&` auto-deny), #31 (plan+auto bash no-dialog), #29
+(trust-dialog repo-root), #5 (mcp list HTTP status), #20 (MCP needs-auth over-count),
+#3 (217 — MCP truncated-output memleak), #23 (agent frontmatter-hook folder trust),
+#25 (malformed-delta attachment resume), #24 (fork-lineage after compaction); 2.1.216
+#14 (Ctrl+X delete + no-resurrect), #18 (.claude symlink write-guard), #36 (/rewind
+link/hardlink skip), 2.1.217 #13 (frontmatter brace-OOM), #5 (bg-session cwd
+canonicalize), #4 (AskUserQuestion neutral), #2 (216 — message-normalization
+quadratic), 2.1.217 #10 (--resume malformed attachment), #8 (216 — bg subagent
+startup-window guard), #15 (216 — resumed bg agent restore), #12 (217 — bg-shell
+stoppable), #16 (218 — fast-mode change announce), #7 (218 — /context stale
+pre-compact). Deferred in #200: live-classifier gap (`CLAUDE_CODE_AUTO_MODE_CLASSIFIER_QUEUE`),
+sandbox-IDE, `/code-review` background subagent.
+
+**Via this session's PRs (all merged to `main`, squash):**
+- PR #199 — P0: 2.1.218 #36 (frontmatter bools, superceded by #200's version on the
+  overlapping hunks but consistent), #34 (agent `:` — #200's NFKC version is the one on
+  main), #30 (`/deep-research` manual-only — no-op, grep-verified no auto-launch).
+- PR #203 — 2.1.218 #21 (race-safe prompt-history writes: serialize + atomic, requeue
+  on failure). **Unique — not in #200.**
+- PR #204 — 2.1.218 #16 directory half (iterative guard for deeply-nested
+  watched-directory tree traversal; BFS queue, injectable readdir, 50k-depth test).
+  **Unique — not in #200.** (The "deeply nested UI trees" rendering half of #16 is
+  still pending — TUI.)
+- PR #206 — 2.1.217 #16 (login-expiry warning 5→3 days). **Unique.**
+- PR #207 — 2.1.217 #2 (warn on transcript-write failure / session-saving-off, no
+  silent loss). **Unique.**
+- PR #208 — 2.1.218 #22 (no identical-retry on context-overflow + Ctrl+B background-shell
+  caps). **Unique.**
+
+**Closed as duplicates of #200 (do NOT resurrect):** PR #201 (monotonic timing),
+PR #202 (context:fork background).
+
+### Verification (per the sandbox-stall constraint)
+- All merged slices verified by unit/integration TDD (RED→GREEN), `bunx biome lint`
+  clean on changed files, `bun run build` succeeds (cli.js 28.74 MB, MACRO.VERSION
+  injected). Post-merge fresh-`main` worktree: 696 pass / 0 fail on alignment dirs
+  (`src/utils/__tests__`, `src/tools/AgentTool/__tests__`, `src/skills/__tests__`,
+  `test/utils`, `test/tools`) + the 3 new test files. (1 pre-existing launcher test
+  requires a built `dist/cli.js` — build-then-run order artifact, not a regression.)
+- **tmux/REPL e2e NOT run on any slice this session** — the sandbox interactive-REPL
+  stall (OCC-11, see CLAUDE.md) blocks it. Per the OCC-19 constraint, every slice
+  above used an alternative verification: unit test (with mocked clock / mocked
+  write failure / synthetic deep tree / threshold boundaries) + integration via the
+  real parse/load path + binary diff (§3) for new-identifier confirmation. This is
+  flagged for the acceptance reviewer to re-run under a non-sandbox REPL.
+
+### Still pending (genuinely not yet on `main`)
+- 2.1.218 #16 **UI-trees half** (deeply nested UI rendering stack guard) — TUI, tmux e2e.
+- 2.1.218 #1 (`/code-review` as background subagent) — deferred in #200; recon OCC's
+  `/code-review` + background path.
+- 2.1.218 #2 (screen-reader deleted-text announce), #4 (left-arrow discard confirm),
+  #6 (multi-line paste Ctrl+J — #200 touched `pasteNewlineDecoder`, verify if done),
+  #14 (217 — transcript-preview one-line gap), #8 (217 — screen-reader fixes) — TUI/a11y, tmux.
+- 2.1.216 #12 (Esc-Esc rewind picker in long sessions) — TUI, tmux.
+- 2.1.216 #27 (slash-menu hot-reload of changed skills/commands), #28 (plugin-skill
+  prefix in autocomplete), #30 (`/fork` one-line confirmation), #35 (216 — `/context`
+  over-window warning + failed-`/compact` error; #200 did the stale-token half —
+  verify the over-window + compact-error halves), #38 (dataviz bundled-skill content),
+  #6 (@-mention attach after file-modifying hooks + statusline-twice-on-resume +
+  resume-picker hang).
+- 2.1.217 #9 (managed-OTEL governs all signals), #17 (frontend-design tip cap), #26
+  (216 — Prometheus `# UNIT`), #29 (216 — telemetry permission-denial misreport).
+- 🟡 assess items still open: 2.1.218 #8/#26 (`/ultrareview`), #17 (PR events lost),
+  #28 (sandbox-IDE — deferred in #200), live-classifier gap (`classifierQueueDepth` /
+  `CLAUDE_CODE_AUTO_MODE_CLASSIFIER_QUEUE` — deferred in #200), 2.1.216 #3 (auto-mode
+  401), #11 (daemon lockfile `--any`), #16 (GUI editor mouse garbage), #19 (MCP
+  re-auth), #34 (spend-limit), #37 (background `/mcp` park), #32/#33 (`/ultrareview` /
+  `/code-review ultra`), `/working` command, `setScheduledTasksEnabled`.
+
+### Release
+A `2.1.277` release was cut (PR #205, `chore(release): 2.1.277`) on `main` (between
+#204 and #206). The 发版 three-step (git tag + npm + GitHub Release) status should be
+confirmed by the 验收员 before the final acceptance gate.
