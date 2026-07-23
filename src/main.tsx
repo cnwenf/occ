@@ -20,6 +20,7 @@ import { ensureKeychainPrefetchCompleted, startKeychainPrefetch } from './utils/
 startKeychainPrefetch();
 import { feature } from 'src/utils/featureFlags.js';
 import { getScreenReaderAnnouncement, isScreenReaderEnabled } from 'src/utils/screenReader.js';
+import { emitStartupSrAnnouncement } from 'src/utils/srA11y.js';
 import { Command as CommanderCommand, InvalidArgumentError, Option } from '@commander-js/extra-typings';
 import chalk from 'chalk';
 import { readFileSync } from 'fs';
@@ -1203,14 +1204,16 @@ async function run(): Promise<CommanderCommand> {
     const initOnly = options.initOnly ?? false;
     const maintenance = options.maintenance ?? false;
 
-    // 2.1.208: screen reader startup announce (binary:
+    // 2.1.208 / 2.1.217 #8(a): screen reader startup announce (binary:
     // `if(!B&&process.stdout.isTTY&&K2()){let Kr=Ghc();if(Kr!==null)console.log(Kr)}`).
     // `B = a.print` (print-mode flag) — announce only in INTERACTIVE sessions,
-    // not `-p` pipe mode. Writes the bracketed status line once so a screen
-    // reader can announce the mode aloud at startup.
+    // not `-p` pipe mode. 2.1.217 #8: the standalone `console.log` was cut off
+    // by the first prompt render overwriting the line; route the announce
+    // through the SR announce queue so the SR flat-render emits it as part of
+    // the render stream (not a standalone stdout write that gets cut off).
     if (!print && process.stdout.isTTY && isScreenReaderEnabled()) {
       const announce = getScreenReaderAnnouncement();
-      if (announce !== null) console.log(announce);
+      emitStartupSrAnnouncement(announce);
     }
 
     // Extract disable slash commands flag
