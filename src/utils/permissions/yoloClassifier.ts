@@ -1036,6 +1036,16 @@ async function classifyYoloActionXml(
         promptLengths,
       }
     }
+    // 2.1.216 #3: An auth error (HTTP 401/403 — OAuth token expired or
+    // rotated mid-session) must NOT be swallowed as "classifier
+    // unavailable" and mis-categorized as a command denial. The withRetry
+    // layer already attempted a token refresh and failed; re-throw so the
+    // error surfaces as an authentication failure (the main loop prompts
+    // re-auth), not a permission denial that blocks the bash command.
+    if (isClassifierAuthError(error)) {
+      logAutoModeOutcome('error', model, { classifierType })
+      throw error
+    }
     const tooLong = detectPromptTooLong(error)
     logForDebugging(
       `Auto mode classifier (XML) error: ${errorMessage(error)}`,
@@ -1354,6 +1364,16 @@ export async function classifyYoloAction(
         unavailable: true,
       }
     }
+    // 2.1.216 #3: An auth error (HTTP 401/403 — OAuth token expired or
+    // rotated mid-session) must NOT be swallowed as "classifier
+    // unavailable" and mis-categorized as a command denial. The withRetry
+    // layer already attempted a token refresh and failed; re-throw so the
+    // error surfaces as an authentication failure (the main loop prompts
+    // re-auth), not a permission denial that blocks the bash command.
+    if (isClassifierAuthError(error)) {
+      logAutoModeOutcome('error', model)
+      throw error
+    }
     const tooLong = detectPromptTooLong(error)
     logForDebugging(`Auto mode classifier error: ${errorMessage(error)}`, {
       level: 'warn',
@@ -1658,6 +1678,32 @@ function detectPromptTooLong(
     return undefined
   }
   return parsePromptTooLongTokenCounts(error.message)
+}
+
+/**
+ * 2.1.216 #3: detect whether a classifier API error is an authentication
+ * failure (HTTP 401/403). When the OAuth token expired or rotated
+ * mid-session, the withRetry layer has already attempted a token refresh
+ * and failed — the 401 propagates to the classifier's catch block. Such
+ * errors must NOT be swallowed as "classifier unavailable" and
+ * mis-categorized as a command denial; the caller re-throws them so they
+ * surface as an authentication failure (the main loop prompts re-auth).
+ *
+ * Checks structurally (Error + numeric status 401/403) rather than
+ * `instanceof APIError` so this module does not add a top-level value
+ * import of @anthropic-ai/sdk (which changes module init order and
+ * exposes a pre-existing circular dependency with envUtils in the test
+ * runner). The classifier's only API call is via sideQuery (Anthropic
+ * SDK), so the only errors reaching this check are SDK APIError subclasses
+ * — a structural status check is unambiguous here.
+ */
+export function isClassifierAuthError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    typeof (error as { status?: unknown }).status === 'number' &&
+    ((error as { status: number }).status === 401 ||
+      (error as { status: number }).status === 403)
+  )
 }
 
 /**
