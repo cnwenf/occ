@@ -9,7 +9,12 @@ OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. Last fully caught up through
 Claude Code `2.1.215`; a `2.1.216`→`2.1.217` catch-up (OCC-15) is in progress
 (Stage 1 schema/env knobs + Stage 2 subagent fan-out caps/budget + Stage 3 bash
-parsing #13/#21 regression tests have landed; Stages 4–6 pending) — see
+parsing #13/#21 regression tests + Stage 4 worktree git-redirect guard + Follow-ups A/B
+have landed; Stages 5–6 pending), and a `2.1.218` catch-up (OCC-19) has started
+(P0 slice landed — frontmatter boolean tokens, agent-name `:` rejection,
+`/deep-research` manual-only verified) — see
+`docs/upstream-version-gap-occ19.md` (OCC-19) for the 2026-07-23 `2.1.218` gap
+report + prioritized P0–P4 alignment checklist,
 `docs/upstream-version-gap-occ15.md` (OCC-15) for the 2026-07-22 two-version gap
 report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) for the
 2026-07-20 no-gap confirmation (OCC already at official latest `2.1.215`),
@@ -17,6 +22,14 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ10.md` (OCC-10) for the 2.1.212→2.1.214 wave, and
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
+
+## Unreleased
+
+- **Gap research + start of Claude Code `2.1.218` catch-up (OCC-19).** Official latest moved to `2.1.218` (published 2026-07-22). Full version-gap report — versions, binary-verified `2.1.217`→`2.1.218` ELF string-diff, portability classification of all 37 `2.1.218` changelog items, reconciled state of the `2.1.216/2.1.217` (OCC-15) wave, and a prioritized P0–P4 alignment checklist — is in `docs/upstream-version-gap-occ19.md`. Conclusion: **gap exists** — `2.1.218` unported plus `2.1.216/2.1.217` Stages 5–6 pending. This entry lands the first P0 slice; remaining items are queued per the checklist.
+- **Frontmatter boolean tokens (2.1.218 #36, OCC-19 P0).** `parseBooleanFrontmatter` (`src/utils/frontmatterParser.ts`) now accepts `yes`/`no`/`on`/`off`/`1`/`0` (case-insensitive, whitespace-trimmed) for skill and plugin frontmatter booleans, alongside the existing `true`/`false`. Binary-verified: feature introduced in `2.1.218`, absent in `2.1.217`. OCC's YAML yields `yes`/`no`/`on`/`off` as strings and `1`/`0` as numbers, so the coercion lands in the shared parser (covers `user-invocable`, `disable-model-invocation`, `default-enabled`, `fallback`, etc.). Verified by unit + loader-integration tests (`src/utils/__tests__/frontmatterBooleanTokens.test.ts`, 27 cases incl. end-to-end `parseSkillFrontmatterFields`).
+- **Agent name rejects `:` (2.1.218 #34, OCC-19 P0).** `parseAgentFromMarkdown` (`src/tools/AgentTool/loadAgentsDir.ts`) now rejects agent markdown files whose frontmatter `name` contains `:` — that character is reserved for plugin namespacing (`plugin:agent`); a user/project agent name with `:` would collide with the plugin-qualified lookup convention. Verified by `src/tools/AgentTool/__tests__/agentNameColonReject.test.ts`; full AgentTool suite (48 tests) green.
+- **`/deep-research` manual-only (2.1.218 #30, OCC-19 P0 — no port required).** Mirrors the 2.1.215 `/verify`+`/code-review` manual-only change OCC already did: grep-verified OCC bundles no `deep-research` skill and has no system-prompt instruction auto-launching `/deep-research`, so OCC's behavior already matches 2.1.218 (manual-only). No code change.
+- **REPL startup welcome page visual polish (OCC-18).** The condensed startup logo (the default every-run view) now renders a two-tone doge mascot — body in the brand `clawd_body` orange, eyes/snout/tail in the lighter `claudeShimmer`, padded to a clean rectangle — plus a new per-session welcome tip line (e.g. `Press / for commands, ? for shortcuts`). Tips are picked deterministically via an FNV-1a hash of the session id (no `Math.random`), so a given boot always shows the same hint and the logo never re-renders a different tip mid-session. The full (version-bump / `CLAUDE_CODE_FORCE_FULL_LOGO=1`) welcome box inherits the richer doge. Design study and rationale: `docs/welcome-page-visual-occ18.md` — learned layout / tips-banner / hero-box ideas from grok-build's welcome screen; no grok-build code copied. Verified by real tmux REPL e2e (condensed / full / 60-col narrow) + unit tests for the tip picker.
 
 ## 2.1.276 - 2026-07-19
 

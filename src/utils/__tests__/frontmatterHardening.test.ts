@@ -95,12 +95,12 @@ describe('CC 2.1.218 #36: frontmatter booleans accept yes/no/on/off/1/0', () => 
     expect(parseBooleanFrontmatter(undefined)).toBe(false)
   })
 
-  test('an invalid value errors with a "must be a boolean" message', () => {
-    expect(() => parseBooleanFrontmatter('maybe')).toThrow(/must be a boolean/)
+  test('an invalid value degrades to false (lenient, not throw)', () => {
+    expect(parseBooleanFrontmatter('maybe')).toBe(false)
   })
 
-  test('a non-string non-boolean value errors', () => {
-    expect(() => parseBooleanFrontmatter(42)).toThrow(/must be a boolean/)
+  test('a non-recognized number degrades to false', () => {
+    expect(parseBooleanFrontmatter(42)).toBe(false)
   })
 })
 

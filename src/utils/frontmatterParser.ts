@@ -402,53 +402,53 @@ export function coerceDescriptionToString(
 }
 
 /**
- * Tokens (case-insensitive) accepted as boolean `true`/`false` in skill &
- * plugin frontmatter, beyond literal `true`/`false`. CC 2.1.218 #36: the
- * official accepts `yes/no/on/off/1/0` (case-insensitive) in addition to
- * `true/false`. An unrecognized value throws a "must be a boolean" error.
+ * Truthy string tokens accepted for skill/plugin frontmatter booleans.
+ *
+ * Claude Code 2.1.218: "`yes`/`no`/`on`/`off`/`1`/`0` (case-insensitive)
+ * as accepted values for skill and plugin frontmatter booleans, alongside
+ * `true`/`false`." Binary-verified feature intro in 2.1.218 (absent in
+ * 2.1.217). OCC's YAML parser yields `yes`/`no`/`on`/`off` as strings and
+ * `1`/`0` as numbers, so all of these must coerce here.
  */
-const BOOLEAN_TRUE_TOKENS = new Set(['true', 'yes', 'on', '1'])
-const BOOLEAN_FALSE_TOKENS = new Set(['false', 'no', 'off', '0'])
-
-/**
- * Coerce a frontmatter value to a boolean token, returning `undefined` when
- * the value is not a recognized boolean literal. Shared by the strict
- * ({@link parseBooleanFrontmatter}) and degrade ({@link parseBackgroundFrontmatter}
- * in loadSkillsDir) coercion sites so both accept the same token set.
- */
-export function coerceBooleanToken(value: unknown): boolean | undefined {
-  if (typeof value === 'boolean') {
-    return value
-  }
-  if (typeof value === 'string') {
-    const lower = value.trim().toLowerCase()
-    if (BOOLEAN_TRUE_TOKENS.has(lower)) {
-      return true
-    }
-    if (BOOLEAN_FALSE_TOKENS.has(lower)) {
-      return false
-    }
-  }
-  return undefined
-}
+const TRUTHY_BOOLEAN_TOKENS = new Set(['true', 'yes', 'on', '1'])
+const FALSY_BOOLEAN_TOKENS = new Set(['false', 'no', 'off', '0'])
 
 /**
  * Parse a boolean frontmatter value.
  *
- * CC 2.1.218 #36: accepts `true`/`false` and the case-insensitive aliases
- * `yes`/`no`/`on`/`off`/`1`/`0`. Absent (`undefined`/`null`) returns `false`
- * (the field is optional). Any other value throws `"<value>" must be a
- * boolean`, matching the official's "must be a boolean" error style.
+ * Accepts (case-insensitive, whitespace-trimmed): `true`/`yes`/`on`/`1` →
+ * true; `false`/`no`/`off`/`0` → false. Literal booleans and numbers are
+ * honored directly (`true`→true, `false`→false, `1`→true, `0`→false).
+ * Any other / unknown value returns false (not truthy).
  */
 export function parseBooleanFrontmatter(value: unknown): boolean {
-  if (value === undefined || value === null) {
-    return false
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value === 1
+  if (typeof value !== 'string') return false
+  const token = value.trim().toLowerCase()
+  if (token === '') return false
+  // Explicit falsy tokens resolve to false; everything else is truthy only
+  // if it is a known truthy token. This avoids `maybe`/`2` becoming true.
+  return TRUTHY_BOOLEAN_TOKENS.has(token) && !FALSY_BOOLEAN_TOKENS.has(token)
+}
+
+/**
+ * Coerce a frontmatter value to a boolean token, returning `undefined` when
+ * the value is not a recognized boolean literal. Shared with the degrade
+ * site `parseBackgroundFrontmatter` in loadSkillsDir (CC 2.1.218 #35:
+ * `background` frontmatter) so both accept the same token set.
+ */
+export function coerceBooleanToken(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    return value === 1 ? true : value === 0 ? false : undefined
   }
-  const result = coerceBooleanToken(value)
-  if (result !== undefined) {
-    return result
+  if (typeof value === 'string') {
+    const token = value.trim().toLowerCase()
+    if (TRUTHY_BOOLEAN_TOKENS.has(token)) return true
+    if (FALSY_BOOLEAN_TOKENS.has(token)) return false
   }
-  throw new Error(`"${String(value)}" must be a boolean`)
+  return undefined
 }
 
 /**
