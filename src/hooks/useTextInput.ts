@@ -23,6 +23,11 @@ import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { isModifierPressed, prewarmModifiers } from '../utils/modifiers.js'
 import { useDoublePress } from './useDoublePress.js'
+import { announceDeletedText, srEchoTypedChar } from '../utils/srA11y.js'
+import {
+  isScreenReaderEnabled,
+  pushScreenReaderAnnouncement,
+} from '../utils/screenReader.js'
 
 type MaybeCursor = void | Cursor
 type InputHandler = (input: string) => MaybeCursor
@@ -180,6 +185,9 @@ export function useTextInput({
   function killToLineEnd(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteToLineEnd()
     pushToKillRing(killed, 'append')
+    // 2.1.218 #2: announce the deleted text in SR mode (Option+Delete kills
+    // forward to line end). No-op when SR is off (drain only runs in SR render).
+    announceDeletedText(killed)
     return newCursor
   }
 
@@ -197,12 +205,18 @@ export function useTextInput({
         timeoutMs: 5000,
       })
     }
+    // 2.1.218 #2: announce the deleted text in SR mode (Ctrl+U kills to line
+    // start).
+    announceDeletedText(killed)
     return newCursor
   }
 
   function killWordBefore(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteWordBefore()
     pushToKillRing(killed, 'prepend')
+    // 2.1.218 #2: announce the deleted text in SR mode (Ctrl+W / Cmd+Backspace
+    // / Meta+Backspace kill the word before the cursor).
+    announceDeletedText(killed)
     return newCursor
   }
 
@@ -420,6 +434,18 @@ export function useTextInput({
                 // eslint-disable-next-line custom-rules/no-lookbehind-regex -- .replace(re, str) on 1-2 char keystrokes: no-match returns same string (Object.is), regex never runs
                 .replace(/(?<=[^\\\r\n])\r$/, '')
                 .replace(/\r/g, '\n')
+              // 2.1.218 #14: VoiceOver read "new line" instead of echoing a
+              // typed space at the end of the input — the SR flat-render trims
+              // trailing whitespace. Echo the space explicitly so it is spoken
+              // as a space, not "new line". Only at the end of the input.
+              if (
+                isScreenReaderEnabled() &&
+                text === ' ' &&
+                cursor.offset === cursor.text.length
+              ) {
+                const echo = srEchoTypedChar(text)
+                if (echo !== null) pushScreenReaderAnnouncement(echo)
+              }
               if (cursor.isAtStart() && isInputModeCharacter(input)) {
                 return cursor.insert(text).left()
               }

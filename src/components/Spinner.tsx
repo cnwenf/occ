@@ -28,6 +28,8 @@ import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js
 import { isBackgroundTask } from '../tasks/types.js';
 import { getAllInProcessTeammateTasks } from '../tasks/InProcessTeammateTask/InProcessTeammateTask.js';
 import { getEffortSuffix } from '../utils/effort.js';
+import { computeSpinnerReducedMotion } from '../utils/srA11y.js';
+import { isScreenReaderEnabled } from '../utils/screenReader.js';
 import { getMainLoopModel } from '../utils/model/model.js';
 import { getViewedTeammateTask } from '../state/selectors.js';
 import { TEARDROP_ASTERISK } from '../constants/figures.js';
@@ -97,7 +99,14 @@ function SpinnerWithVerbInner({
   leaderIsIdle = false
 }: Props): React.ReactNode {
   const settings = useSettings();
-  const reducedMotion = settings.prefersReducedMotion ?? false;
+  // 2.1.217 #8(b): in SR mode the 50ms animation clock drove re-renders that
+  // updated the elapsed-time timer and token counts every few seconds; each
+  // such update re-emitted the SR flat-render and interrupted the screen
+  // reader. Force reduced motion in SR mode to stop the periodic re-renders.
+  const reducedMotion = computeSpinnerReducedMotion(
+    settings.prefersReducedMotion ?? false,
+    isScreenReaderEnabled(),
+  );
 
   // NOTE: useAnimationFrame(50) lives in SpinnerAnimationRow, not here.
   // This component only re-renders when props or app state change —

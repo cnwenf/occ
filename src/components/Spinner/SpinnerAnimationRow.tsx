@@ -9,6 +9,7 @@ import { formatDuration, formatNumber } from '../../utils/format.js';
 import { toInkColor } from '../../utils/ink.js';
 import { getTheme, type Theme } from '../../utils/theme.js';
 import { Byline } from '../design-system/Byline.js';
+import { shouldThinkingRowUpdate } from '../../utils/srA11y.js';
 import { GlimmerMessage } from './GlimmerMessage.js';
 import { SpinnerGlyph } from './SpinnerGlyph.js';
 import type { SpinnerMode } from './types.js';
@@ -166,13 +167,30 @@ export function SpinnerAnimationRow({
   const leaderTokens = Math.round(displayedResponseLength / 4);
   const effectiveElapsedMs = hasRunningTeammates ? Math.max(elapsedTimeMs, now - turnStartRef.current) : elapsedTimeMs;
   const timerText = formatDuration(effectiveElapsedMs);
-  const timerWidth = stringWidth(timerText);
 
   // === Token count (leader + teammates, or foregrounded teammate) ===
   const totalTokens = foregroundedTeammate && !foregroundedTeammate.isIdle ? foregroundedTeammate.progress?.tokenCount ?? 0 : leaderTokens + teammateTokens;
   const tokenCount = formatNumber(totalTokens);
-  const tokensText = hasRunningTeammates ? `${tokenCount} tokens` : `${figures.arrowDown} ${tokenCount} tokens`;
-  const tokensWidth = stringWidth(tokensText);
+
+  // 2.1.217 #8(b): the thinking status row should only update when the
+  // DISPLAYED value (rounded seconds or token count) actually changes — not
+  // on every animation tick. Hold the last-displayed {seconds, tokens} in a
+  // ref; when unchanged, reuse the stable strings so the SR flat-render diff
+  // skips the re-emit (no interrupting the screen reader every few seconds).
+  const displayedSeconds = Math.floor(effectiveElapsedMs / 1000);
+  const displayedTokensCount = totalTokens;
+  const thinkingRowGateRef = useRef({ seconds: displayedSeconds, tokens: displayedTokensCount, timerText, tokenCount });
+  if (shouldThinkingRowUpdate(
+    { seconds: thinkingRowGateRef.current.seconds, tokens: thinkingRowGateRef.current.tokens },
+    { seconds: displayedSeconds, tokens: displayedTokensCount },
+  )) {
+    thinkingRowGateRef.current = { seconds: displayedSeconds, tokens: displayedTokensCount, timerText, tokenCount };
+  }
+  const stableTimerText = thinkingRowGateRef.current.timerText;
+  const stableTimerWidth = stringWidth(stableTimerText);
+  const stableTokenCount = thinkingRowGateRef.current.tokenCount;
+  const stableTokensText = hasRunningTeammates ? `${stableTokenCount} tokens` : `${figures.arrowDown} ${stableTokenCount} tokens`;
+  const stableTokensWidth = stringWidth(stableTokensText);
 
   // === Thinking text (may shrink to fit) ===
   let thinkingText = thinkingStatus === 'thinking' ? `thinking${effortSuffix}` : typeof thinkingStatus === 'number' ? `thought for ${Math.max(1, Math.round(thinkingStatus / 1000))}s` : null;
@@ -193,9 +211,9 @@ export function SpinnerAnimationRow({
     }
   }
   const usedAfterThinking = showThinking ? thinkingWidthValue + sep : 0;
-  const showTimer = wantsTimerAndTokens && availableSpace > usedAfterThinking + timerWidth;
-  const usedAfterTimer = usedAfterThinking + (showTimer ? timerWidth + sep : 0);
-  const showTokens = wantsTimerAndTokens && totalTokens > 0 && availableSpace > usedAfterTimer + tokensWidth;
+  const showTimer = wantsTimerAndTokens && availableSpace > usedAfterThinking + stableTimerWidth;
+  const usedAfterTimer = usedAfterThinking + (showTimer ? stableTimerWidth + sep : 0);
+  const showTokens = wantsTimerAndTokens && totalTokens > 0 && availableSpace > usedAfterTimer + stableTokensWidth;
   const thinkingOnly = showThinking && thinkingStatus === 'thinking' && !spinnerSuffix && !showTimer && !showTokens && true;
 
   // === Thinking shimmer color (formerly ThinkingShimmerText's own timer) ===
@@ -247,10 +265,10 @@ export function SpinnerAnimationRow({
   const parts = [...(spinnerSuffix ? [<Text dimColor key="suffix">
             {spinnerSuffix}
           </Text>] : []), ...(showTimer ? [<Text dimColor key="elapsedTime">
-            {timerText}
+            {stableTimerText}
           </Text>] : []), ...(showTokens ? [<Box flexDirection="row" key="tokens">
             {!hasRunningTeammates && <SpinnerModeGlyph mode={mode} />}
-            <Text dimColor>{tokenCount} tokens</Text>
+            <Text dimColor>{stableTokenCount} tokens</Text>
           </Box>] : []), ...(showThinking && thinkingText ? [thinkingStatus === 'thinking' && !reducedMotion ? <Text key="thinking" color={thinkingColorName ?? thinkingShimmerColor}>
               {thinkingOnly ? `(${thinkingText})` : thinkingText}
             </Text> : <Text dimColor={amberIntensity <= 0} color={amberIntensity > 0 ? 'warning' : undefined} key="thinking">
