@@ -272,7 +272,7 @@ export type ToolUseContext = {
     string,
     {
       source: string
-      decision: 'accept' | 'reject'
+      decision: 'accept' | 'reject' | 'abort'
       timestamp: number
     }
   >
