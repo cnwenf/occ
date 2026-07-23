@@ -362,3 +362,31 @@ PR #202 (context:fork background).
 A `2.1.277` release was cut (PR #205, `chore(release): 2.1.277`) on `main` (between
 #204 and #206). The 发版 three-step (git tag + npm + GitHub Release) status should be
 confirmed by the 验收员 before the final acceptance gate.
+
+### §8.1 — Batch 2 landed (2026-07-23, PRs #210–#214): the "verifiable backend tail"
+
+Per OCC Leader's batch-2 scope (telemetry cluster + `/context` #35 halves). All
+**genuinely missing on main → ported**, TDD RED→GREEN, `bunx biome lint` clean,
+`bun run build` green. Merged to `main` (squash) atop the 2.1.277 release. Remote
+branches + worktrees cleaned.
+
+| PR | Item | Verdict | Verification (sandbox-stall constraint) |
+|----|------|---------|------------------------------------------|
+| #210 | 2.1.217 #9 — managed `OTEL_EXPORTER_OTLP_ENDPOINT` governs all signals (lower-scope signal-specific overrides no longer redirect away) | ported | unit test, injected env/policyEnv (no network) |
+| #211 | 2.1.216 #29 — telemetry: failed permission-prompt requests ≠ user rejections; user interrupts = aborts (not rejections) | ported | unit test, mock analytics sink + pure SDK-classification functions |
+| #212 | 2.1.217 #17 — frontend-design suggestion tip capped at 3 lifetime impressions | ported | unit test, in-memory config seam |
+| #213 | 2.1.216 #26 — Prometheus exporter no longer emits invalid `# UNIT` lines (OCC DOES have the surface: `@opentelemetry/exporter-prometheus`) | ported | unit test, `stripUnitLines` pure helper + serializer-patch factory |
+| #214 | 2.1.216 #35 halves — `/context` explicit over-window warning + failed `/compact` renders as error (stale-token half was #200's 2.1.218 #7 — untouched) | ported | unit test, mock token-counter/compaction + render-logic; render flagged for 验收员 non-sandbox e2e |
+
+Post-merge fresh-`main` worktree: 507 pass / 0 fail on the affected dirs
+(`src/utils/telemetry`, `src/services/tips/__tests__`, `src/commands/context/__tests__`,
+`src/commands/compact/__tests__`, `src/hooks/toolPermission/__tests__`,
+`src/utils/__tests__`, `src/tools/AgentTool/__tests__`); `bun run build` green
+(cli.js 28.75 MB). No tmux/REPL e2e this batch (OCC-11 sandbox stall) — every slice
+unit-tested at the logic/render layer; flagged for 验收员 non-sandbox e2e.
+
+**These move from §8 "Still pending" to "Already landed".** Remaining pending tail is
+unchanged from §8 "Still pending" minus the five items above: TUI/a11y cluster
+(218#16 UI half, #1, #2, #4, #6, #14; 217#8; 216#12/#27/#28/#30/#38/#6), the 🟡 assess
+items, and the #200-deferred items (live-classifier gap, sandbox-IDE, `/code-review`
+background).
