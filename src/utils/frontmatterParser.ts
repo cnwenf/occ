@@ -375,11 +375,34 @@ export function coerceDescriptionToString(
 }
 
 /**
+ * Truthy string tokens accepted for skill/plugin frontmatter booleans.
+ *
+ * Claude Code 2.1.218: "`yes`/`no`/`on`/`off`/`1`/`0` (case-insensitive)
+ * as accepted values for skill and plugin frontmatter booleans, alongside
+ * `true`/`false`." Binary-verified feature intro in 2.1.218 (absent in
+ * 2.1.217). OCC's YAML parser yields `yes`/`no`/`on`/`off` as strings and
+ * `1`/`0` as numbers, so all of these must coerce here.
+ */
+const TRUTHY_BOOLEAN_TOKENS = new Set(['true', 'yes', 'on', '1'])
+const FALSY_BOOLEAN_TOKENS = new Set(['false', 'no', 'off', '0'])
+
+/**
  * Parse a boolean frontmatter value.
- * Only returns true for literal true or "true" string.
+ *
+ * Accepts (case-insensitive, whitespace-trimmed): `true`/`yes`/`on`/`1` →
+ * true; `false`/`no`/`off`/`0` → false. Literal booleans and numbers are
+ * honored directly (`true`→true, `false`→false, `1`→true, `0`→false).
+ * Any other / unknown value returns false (not truthy).
  */
 export function parseBooleanFrontmatter(value: unknown): boolean {
-  return value === true || value === 'true'
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value === 1
+  if (typeof value !== 'string') return false
+  const token = value.trim().toLowerCase()
+  if (token === '') return false
+  // Explicit falsy tokens resolve to false; everything else is truthy only
+  // if it is a known truthy token. This avoids `maybe`/`2` becoming true.
+  return TRUTHY_BOOLEAN_TOKENS.has(token) && !FALSY_BOOLEAN_TOKENS.has(token)
 }
 
 /**
