@@ -59,6 +59,28 @@ function isSkillFile(filePath: string): boolean {
 }
 
 /**
+ * Resolve the user-facing (autocomplete) name for a plugin skill.
+ *
+ * 2.1.216 #28: a plugin skill's `name` frontmatter field is a human-readable
+ * display name, NOT a replacement for the plugin-qualified invokable name. The
+ * slash-command autocomplete (built via `getCommandName(cmd)` →
+ * `cmd.userFacingName()`) must keep the `plugin:skill` prefix so the user can
+ * invoke the skill by typing `/plugin:skill`. Returning the bare `name` here
+ * dropped the prefix and made the skill uninvokable from the menu until
+ * restart.
+ *
+ * @param commandName The plugin-qualified invokable name (`plugin:skill`).
+ * @param _displayName The `name`/`display-name` frontmatter value (unused for
+ *   autocomplete — retained for callers that may surface it elsewhere).
+ */
+export function pluginSkillUserFacingName(
+  commandName: string,
+  _displayName?: string,
+): string {
+  return commandName
+}
+
+/**
  * Get command name from file path, handling both regular files and skills
  */
 function getCommandNameFromFile(
@@ -270,6 +292,9 @@ function createPluginCommand(
     )
     const whenToUse = frontmatter.when_to_use as string | undefined
     const version = frontmatter.version as string | undefined
+    // 2.1.186: `name` frontmatter (human-readable display name). For plugin
+    // skills this does NOT override the plugin-qualified invokable name in
+    // autocomplete — see pluginSkillUserFacingName (2.1.216 #28).
     const displayName = frontmatter.name as string | undefined
 
     // Handle model configuration, resolving aliases like 'haiku', 'sonnet', 'opus'
@@ -325,7 +350,9 @@ function createPluginCommand(
       isHidden: !userInvocable,
       progressMessage: isSkill || config.isSkillMode ? 'loading' : 'running',
       userFacingName(): string {
-        return displayName || commandName
+        // 2.1.216 #28: keep the plugin: prefix in autocomplete even when a
+        // `name` frontmatter display name is set.
+        return pluginSkillUserFacingName(commandName, displayName)
       },
       async getPromptForCommand(args, context) {
         // For skills from skills/ directory, include base directory
