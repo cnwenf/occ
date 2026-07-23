@@ -9,11 +9,13 @@ const DESCRIPTION =
     ? frontmatter.description
     : 'Verify a code change does what it should by running the app.'
 
+// Official Claude Code 2.1.215 registers `/verify` unconditionally (no
+// USER_TYPE gate, no isEnabled) — it is reachable by every user, not just
+// internal `ant` builds. OCC previously early-returned for non-ant users,
+// which made `/verify` return "Unknown command" for them — a divergence
+// from upstream. The gate is removed so OCC matches official reachability.
+// See OCC-12.
 export function registerVerifySkill(): void {
-  if (process.env.USER_TYPE !== 'ant') {
-    return
-  }
-
   registerBundledSkill({
     name: 'verify',
     description: DESCRIPTION,
