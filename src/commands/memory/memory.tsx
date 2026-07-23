@@ -11,6 +11,7 @@ import { getClaudeConfigHomeDir } from '../../utils/envUtils.js';
 import { getErrnoCode } from '../../utils/errors.js';
 import { logError } from '../../utils/log.js';
 import { editFileInEditor } from '../../utils/promptEditor.js';
+import { classifyGuiEditor, getExternalEditor, openFileInExternalEditor } from '../../utils/editor.js';
 function MemoryCommand({
   onDone
 }: {
@@ -39,7 +40,18 @@ function MemoryCommand({
           throw e;
         }
       }
-      await editFileInEditor(memoryPath);
+      // 2.1.216 #16: /memory no longer waits for the editor to close.
+      // GUI editors (code, subl, ...) open in a separate window — spawn them
+      // detached and return immediately so the REPL stays interactive.
+      // Terminal editors (vi, nano, ...) still block via the alt-screen
+      // handoff since they take over the terminal.
+      const editor = getExternalEditor();
+      const isGui = editor ? classifyGuiEditor(editor) !== undefined : false;
+      if (isGui) {
+        openFileInExternalEditor(memoryPath);
+      } else {
+        await editFileInEditor(memoryPath);
+      }
 
       // Determine which environment variable controls the editor
       let editorSource = 'default';

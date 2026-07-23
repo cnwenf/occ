@@ -38,6 +38,7 @@ import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelec
 import { SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
+import { guiEditorModeDisableSeq, guiEditorModeRestoreSeq } from './termio/guiEditorHandoff.js';
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, setClipboard, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js';
 import { TerminalWriteProvider } from './useTerminalNotification.js';
 import { ScreenReaderContext } from './components/ScreenReaderContext.js';
@@ -455,6 +456,40 @@ export default class Ink {
     // Kitty stack balanced (a well-behaved editor restores our entry, so
     // without the pop we'd accumulate depth on each editor round-trip).
     this.options.stdout.write('\x1b[?1004h' + (supportsExtendedKeys() ? DISABLE_KITTY_KEYBOARD + ENABLE_KITTY_KEYBOARD + ENABLE_MODIFY_OTHER_KEYS : ''));
+  }
+
+  /**
+   * 2.1.216 #16: Suspend terminal modes (mouse tracking, focus reporting,
+   * kitty/modifyOtherKeys keyboard) before a blocking GUI-editor launch
+   * (`/plan`, `/keybindings`, Ctrl+G). Unlike {@link enterAlternateScreen}
+   * this does NOT switch the alt buffer — GUI editors open in their own
+   * window, so we keep the paused alt-screen frame visible and only toggle
+   * the protocols that emit spurious events while stdin is suspended.
+   *
+   * Call {@link exitGuiEditorHandoff} when the editor returns to restore.
+   */
+  enterGuiEditorHandoff(): void {
+    this.pause();
+    this.suspendStdin();
+    if (this.options.stdout.isTTY) {
+      this.options.stdout.write(
+        guiEditorModeDisableSeq(this.altScreenMouseTracking),
+      );
+    }
+  }
+
+  /**
+   * 2.1.216 #16: Restore terminal modes suspended by
+   * {@link enterGuiEditorHandoff} after a blocking GUI editor returns.
+   */
+  exitGuiEditorHandoff(): void {
+    this.resumeStdin();
+    if (this.options.stdout.isTTY) {
+      this.options.stdout.write(
+        guiEditorModeRestoreSeq(this.altScreenMouseTracking),
+      );
+    }
+    this.resume();
   }
 
   /**
