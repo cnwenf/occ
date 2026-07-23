@@ -34,9 +34,11 @@ mock.module('../../../src/utils/hooks.js', () => ({
   getSessionEndHookTimeoutMs: () => 1500,
 }))
 
-mock.module('../../../src/services/analytics/index.js', () => ({
-  logEvent: () => {},
-}))
+// analytics mock REMOVED — a process-wide `mock.module` here leaked into
+// unrelated test files (agentTelemetry attaches a test sink via the real
+// attachAnalyticsSink; the leaked mock replaced the module so the sink never
+// captured events). The real logEvent is already a no-op stub in OCC, so no
+// mock is needed here.
 
 mock.module('../../../src/commands/clear/caches.js', () => ({
   clearSessionCaches: () => {},
@@ -50,14 +52,10 @@ mock.module('../../../src/utils/plans.js', () => ({
   clearAllPlanSlugs: () => {},
 }))
 
-mock.module('../../../src/utils/sessionStorage.js', () => ({
-  clearSessionMetadata: () => {},
-  resetSessionFilePointer: async () => {},
-  getAgentTranscriptPath: () => '',
-  saveWorktreeState: () => {},
-  saveMode: () => {},
-}))
-
+// sessionStorage mock REMOVED — leaked process-wide; the getAgentTranscriptPath: () => ''
+// override broke resumeModel/resumeAgentPrompt agent-metadata path resolution. The
+// real sessionStorage functions are safe (no heavy boot); clearConversation
+// reads CLAUDE_CONFIG_DIR which the test sets.
 mock.module('../../../src/utils/sessionStart.js', () => ({
   processSessionStartHooks: async () => [],
 }))
@@ -87,9 +85,11 @@ mock.module('../../../src/tasks/LocalAgentTask/LocalAgentTask.js', () => ({
   isLocalAgentTask: () => false,
 }))
 
-mock.module('../../../src/tasks/LocalShellTask/guards.js', () => ({
-  isLocalShellTask: () => false,
-}))
+// LocalShellTask/guards.js mock REMOVED — `isLocalShellTask: () => false`
+// leaked process-wide into killShellTasks.js, so backgroundShellStop's killTask
+// skipped the local_bash treeKill/shellCommand.kill path (guard returned false).
+// The real isLocalShellTask checks task.type === 'local_bash' — safe to use
+// un-mocked here (clearConversation has no local_bash tasks in this suite).
 
 // -- Real imports (NOT mocked) --
 import {

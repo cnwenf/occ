@@ -2,8 +2,10 @@ import type { PermissionRule } from 'src/utils/permissions/PermissionRule.js'
 import { getSettingsForSource } from 'src/utils/settings/settings.js'
 import type { SettingsJson } from 'src/utils/settings/types.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { findGitRoot } from '../../utils/git.js'
 import { SAFE_ENV_VARS } from '../../utils/managedEnvConstants.js'
 import { getPermissionRulesForSource } from '../../utils/permissions/permissionsLoader.js'
+import { getCwd } from '../../utils/cwd.js'
 
 function hasHooks(settings: SettingsJson | null): boolean {
   if (settings === null || settings.disableAllHooks) {
@@ -242,4 +244,22 @@ export function getDangerousEnvVarsSources(): string[] {
   }
 
   return sources
+}
+
+/**
+ * CC 2.1.218 #29: trust dialogs now name the repository root the grant covers.
+ *
+ * Returns the git repository root for the current working directory. When not
+ * inside a git repo, falls back to the cwd so the dialog always shows a path.
+ *
+ * Binary evidence:
+ *   - "Accessing workspace:" — trust dialog title
+ *   - findGitRoot — official binary computes the git root
+ *   - The trust grant covers the repository root, which may differ from cwd
+ *     when the user launches from a subdirectory.
+ */
+export function getTrustDialogRepoRoot(): string {
+  const cwd = getCwd()
+  const gitRoot = findGitRoot(cwd)
+  return gitRoot ?? cwd
 }

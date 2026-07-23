@@ -164,6 +164,8 @@ import { getFsImplementation, safeResolvePath } from 'src/utils/fsOperations.js'
 import { gracefulShutdown, gracefulShutdownSync } from 'src/utils/gracefulShutdown.js';
 import { findClosestSubcommand } from 'src/cli/subcommandSuggestion.js';
 import { setAllHookEventsEnabled } from 'src/utils/hooks/hookEvents.js';
+import { registerMainThreadAgentHooks } from 'src/utils/hooks/registerFrontmatterHooks.js';
+import { isRestrictedToPluginOnly, isSourceAdminTrusted } from 'src/utils/settings/pluginOnlyPolicy.js';
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js';
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js';
 import { checkForwardSubagentTextGuard } from 'src/utils/forwardSubagentTextGuard.js';
@@ -2776,6 +2778,22 @@ async function run(): Promise<CommanderCommand> {
 
       // Init app state
       const headlessStore = createStore(headlessInitialState, onChangeAppState);
+
+      // CC 2.1.218 #23 (mainThread closure): Register frontmatter hooks for
+      // the main-thread agent in non-interactive (pipe) mode too. The REPL
+      // useEffect handles interactive mode; this mirrors it for -p sessions.
+      // isAgent=false → Stop hooks stay Stop (not SubagentStop).
+      if (mainThreadAgentDefinition) {
+        const hooksAllowedByPolicy =
+          !isRestrictedToPluginOnly('hooks') ||
+          isSourceAdminTrusted(mainThreadAgentDefinition.source);
+        registerMainThreadAgentHooks(
+          mainThreadAgentDefinition,
+          headlessStore.setState,
+          getSessionId(),
+          hooksAllowedByPolicy,
+        );
+      }
 
       // Check if bypassPermissions should be disabled based on Statsig gate
       // This runs in parallel to the code below, to avoid blocking the main loop.

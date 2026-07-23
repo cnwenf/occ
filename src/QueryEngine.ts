@@ -42,6 +42,7 @@ import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
+import { preserveForkLineageAcrossCompaction } from './commands/fork/pointer.js'
 import type { APIError } from '@anthropic-ai/sdk'
 import type { CompactMetadata, Message, SystemCompactBoundaryMessage } from './types/message.js'
 import type { OrphanedPermission } from './types/textInputTypes.js'
@@ -131,6 +132,34 @@ const snipProjection = feature('HISTORY_SNIP')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
+// CC 2.1.218 #19: turn-duration must come from a MONOTONIC source so a
+// system clock adjustment (NTP step, manual change) can never produce a
+// negative or wildly incorrect duration. The official binary exposes
+// `monotonicTimeNow` and uses `performance.now()` for time-deadline math;
+// turn-duration previously used `Date.now()` (wall clock, subject to
+// rollback). `performance.now()` is monotonic relative to the time origin
+// (process start) and never regresses on a wall-clock step.
+/**
+ * Monotonic timestamp in ms. Never regresses across a wall-clock adjustment
+ * (unlike `Date.now()`). Use for turn-duration start/end markers.
+ */
+export function monotonicNow(): number {
+  if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
+    return performance.now()
+  }
+  return Date.now() // fallback only when performance.now is unavailable
+}
+
+/**
+ * Pure, testable duration helper for monotonic timestamps. Clamps at 0 so a
+ * captured start that (impossibly) exceeds end — e.g. a non-monotonic source
+ * mixed in, or a simulated clock rollback in tests — never yields a negative
+ * duration. With monotonic sources end >= start always holds.
+ */
+export function monotonicDurationMs(start: number, end: number): number {
+  return end >= start ? end - start : 0
+}
+
 export type QueryEngineConfig = {
   cwd: string
   tools: Tools
@@ -201,6 +230,12 @@ export class QueryEngine {
   // many turns in SDK mode.
   private discoveredSkillNames = new Set<string>()
   private loadedNestedMemoryPaths = new Set<string>()
+  // CC 2.1.218 #12: teardown/close flag. Once true, submitMessage must drop
+  // any incoming turn intent (no phantom turn can start after close).
+  // Mirrors the official `[engine] dropped turn intent received after close()`
+  // guard in the queued-message handler — a teardown race that enqueues a
+  // turn after close must not start/abandon a phantom turn.
+  private isClosed = false
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -215,6 +250,17 @@ export class QueryEngine {
     prompt: string | ContentBlockParam[],
     options?: { uuid?: string; isMeta?: boolean },
   ): AsyncGenerator<SDKMessage, void, unknown> {
+    // CC 2.1.218 #12: a turn intent received after close() must be dropped,
+    // never started. Without this guard a teardown race could enqueue and
+    // abandon a phantom turn. Matches the official
+    // `[engine] dropped turn intent received after close()` warn-and-break.
+    if (this.isClosed) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        '[engine] dropped turn intent received after close()',
+      )
+      return
+    }
     const {
       cwd,
       commands,
@@ -244,7 +290,7 @@ export class QueryEngine {
     this.discoveredSkillNames.clear()
     setCwd(cwd)
     const persistSession = !isSessionPersistenceDisabled()
-    const startTime = Date.now()
+    const startTime = monotonicNow()
 
     // Wrap canUseTool to track permission denials
     const wrappedCanUseTool: CanUseToolFn = async (
@@ -638,7 +684,7 @@ export class QueryEngine {
         type: 'result',
         subtype: 'success',
         is_error: false,
-        duration_ms: Date.now() - startTime,
+        duration_ms: monotonicDurationMs(startTime, monotonicNow()),
         duration_api_ms: getTotalAPIDuration(),
         num_turns: messages.length - 1,
         result: resultText ?? '',
@@ -885,7 +931,7 @@ export class QueryEngine {
             yield {
               type: 'result',
               subtype: 'error_max_turns',
-              duration_ms: Date.now() - startTime,
+              duration_ms: monotonicDurationMs(startTime, monotonicNow()),
               duration_api_ms: getTotalAPIDuration(),
               is_error: true,
               num_turns: attachment.turnCount as number,
@@ -962,7 +1008,27 @@ export class QueryEngine {
             // post-boundary messages are needed going forward.
             const mutableBoundaryIdx = this.mutableMessages.length - 1
             if (mutableBoundaryIdx > 0) {
+              // CC 2.1.218 #24: capture the pre-compact entries before the
+              // splice, then run them through preserveForkLineageAcrossCompaction
+              // so a fork-context-ref pointer that lived in the pruned segment
+              // is re-emitted at the head of the post-compact transcript. Without
+              // this, a fork session resumed after compaction in headless/SDK
+              // mode lost its lineage and could no longer hydrate its prefix.
+              const preCompactEntries = this.mutableMessages.slice(
+                0,
+                mutableBoundaryIdx,
+              )
               this.mutableMessages.splice(0, mutableBoundaryIdx)
+              const preserved = preserveForkLineageAcrossCompaction(
+                preCompactEntries,
+                this.mutableMessages,
+              )
+              if (preserved.length !== this.mutableMessages.length) {
+                this.mutableMessages.length = 0
+                this.mutableMessages.push(
+                  ...(preserved as unknown as Message[]),
+                )
+              }
             }
             const localBoundaryIdx = messages.length - 1
             if (localBoundaryIdx > 0) {
@@ -1027,7 +1093,7 @@ export class QueryEngine {
         yield {
           type: 'result',
           subtype: 'error_max_budget_usd',
-          duration_ms: Date.now() - startTime,
+          duration_ms: monotonicDurationMs(startTime, monotonicNow()),
           duration_api_ms: getTotalAPIDuration(),
           is_error: true,
           num_turns: turnCount,
@@ -1070,7 +1136,7 @@ export class QueryEngine {
           yield {
             type: 'result',
             subtype: 'error_max_structured_output_retries',
-            duration_ms: Date.now() - startTime,
+            duration_ms: monotonicDurationMs(startTime, monotonicNow()),
             duration_api_ms: getTotalAPIDuration(),
             is_error: true,
             num_turns: turnCount,
@@ -1129,7 +1195,7 @@ export class QueryEngine {
       yield {
         type: 'result',
         subtype: 'error_during_execution',
-        duration_ms: Date.now() - startTime,
+        duration_ms: monotonicDurationMs(startTime, monotonicNow()),
         duration_api_ms: getTotalAPIDuration(),
         is_error: true,
         num_turns: turnCount,
@@ -1182,7 +1248,7 @@ export class QueryEngine {
       type: 'result',
       subtype: 'success',
       is_error: isApiError,
-      duration_ms: Date.now() - startTime,
+      duration_ms: monotonicDurationMs(startTime, monotonicNow()),
       duration_api_ms: getTotalAPIDuration(),
       num_turns: turnCount,
       result: textResult,
@@ -1202,6 +1268,19 @@ export class QueryEngine {
   }
 
   interrupt(): void {
+    this.abortController.abort()
+  }
+
+  // CC 2.1.218 #12: mark the engine closed. Subsequent submitMessage calls
+  // drop the turn intent with a warn (see the guard at the top of
+  // submitMessage) so a teardown race cannot start a phantom turn. Also
+  // aborts the in-flight controller so a turn already running unwinds.
+  // Idempotent — calling twice is a no-op.
+  close(): void {
+    if (this.isClosed) {
+      return
+    }
+    this.isClosed = true
     this.abortController.abort()
   }
 

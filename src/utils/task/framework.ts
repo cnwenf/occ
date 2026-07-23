@@ -17,6 +17,8 @@ import type { TaskState } from '../../tasks/types.js'
 import { enqueuePendingNotification } from '../messageQueueManager.js'
 import { enqueueSdkEvent } from '../sdkEventQueue.js'
 import { getTaskOutputDelta, getTaskOutputPath } from './diskOutput.js'
+import { logForDebugging } from '../debug.js'
+import { isDeletedSession } from '../../components/tasks/backgroundTaskDelete.js'
 
 // Standard polling interval for all tasks
 export const POLL_INTERVAL_MS = 1000
@@ -75,6 +77,18 @@ export function updateTaskState<T extends TaskState>(
  * Register a new task in AppState.
  */
 export function registerTask(task: TaskState, setAppState: SetAppState): void {
+  // CC 2.1.216 #14 no-resurrect: never re-register a session the user
+  // explicitly deleted. The restore path (restoreRemoteAgentTasks) and the
+  // spawn path both funnel through registerTask; skipping here closes the
+  // worker-death resurrect vector (a deleted session whose sidecar survived
+  // would otherwise be re-registered when the worker died and the restore
+  // scan re-read the sidecar).
+  if (isDeletedSession(task.id)) {
+    logForDebugging(
+      `registerTask: skipping deleted session ${task.id} (no-resurrect)`,
+    )
+    return
+  }
   let isReplacement = false
   setAppState(prev => {
     const existing = prev.tasks[task.id]

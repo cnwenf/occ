@@ -36,6 +36,10 @@ import { Dialog } from '../design-system/Dialog.js';
 import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { AsyncAgentDetailDialog } from './AsyncAgentDetailDialog.js';
 import { BackgroundTask as BackgroundTaskComponent } from './BackgroundTask.js';
+// CC 2.1.216 #14: double Ctrl+X deletes a session + tombstones it so the
+// worker-death restore path cannot resurrect it. Pure logic lives here so
+// it is unit-testable without rendering the dialog.
+import { deleteBackgroundSession, shouldDeleteOnDoubleCtrlX } from './backgroundTaskDelete.js';
 import { DreamDetailDialog } from './DreamDetailDialog.js';
 import { InProcessTeammateDetailDialog } from './InProcessTeammateDetailDialog.js';
 import { RemoteSessionDetailDialog } from './RemoteSessionDetailDialog.js';
@@ -138,6 +142,12 @@ export function BackgroundTasksDialog({
 
   // Track if we skipped list view on mount (for back button behavior)
   const skippedListOnMount = useRef(false);
+
+  // CC 2.1.216 #14: timestamp of the last Ctrl+X press in the agent list.
+  // A second Ctrl+X within DOUBLE_CTRL_X_TIMEOUT_MS deletes the selected
+  // session (running OR completed); a single press keeps the existing
+  // 'x' stop behavior. 0 = no prior press.
+  const lastCtrlXPressRef = useRef<number>(0);
 
   // Compute initial view state - skip list if caller provided a specific task,
   // or if there's exactly one task
@@ -266,6 +276,21 @@ export function BackgroundTasksDialog({
     if (!currentSelection_0) return; // everything below requires a selection
 
     if (e.key === 'x') {
+      // CC 2.1.216 #14: double Ctrl+X deletes the selected session (running
+      // OR completed) and tombstones it so the worker-death restore path can't
+      // resurrect it. Single Ctrl+X keeps the existing stop behavior.
+      const now = Date.now();
+      const timeSinceLast = now - lastCtrlXPressRef.current;
+      const currentForDelete = allSelectableItems[selectedIndex];
+      const isDoublePress = currentForDelete !== null && currentForDelete !== undefined && currentForDelete.type !== 'leader' && shouldDeleteOnDoubleCtrlX(timeSinceLast);
+      lastCtrlXPressRef.current = now;
+      if (isDoublePress && currentForDelete) {
+        e.preventDefault();
+        // Reset the window so a third rapid press isn't treated as a delete.
+        lastCtrlXPressRef.current = 0;
+        void deleteBackgroundSession({ id: currentForDelete.id, type: currentForDelete.type }, setAppState as never);
+        return;
+      }
       e.preventDefault();
       if (currentSelection_0.type === 'local_bash' && currentSelection_0.status === 'running') {
         void killShellTask(currentSelection_0.id);
@@ -413,7 +438,7 @@ export function BackgroundTasksDialog({
               {runningAgentCount}{' '}
               {runningAgentCount !== 1 ? 'active agents' : 'active agent'}
             </Text>] : [])], index => <Text key={`separator-${index}`}> · </Text>);
-  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
+  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(currentSelection !== null && currentSelection !== undefined && currentSelection.type !== 'leader' ? [<KeyboardShortcutHint key="delete" shortcut="x x" action="delete" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
   const handleCancel = () => onDone('Background tasks dialog dismissed', {
     display: 'system'
   });

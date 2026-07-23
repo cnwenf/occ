@@ -131,6 +131,24 @@ const taskSummaryModule = feature('BG_SESSIONS')
   : null
 /* eslint-enable @typescript-eslint/no-require-imports */
 
+// CC 2.1.218 #13: after an interrupted tool call the official selects the
+// tool-use-specific interrupt marker (`[Request interrupted by user for
+// tool use]`, binary const `GI`) when tool_use blocks are present, not the
+// generic `[Request interrupted by user]` (binary const `t8`). The
+// streaming-abort path previously emitted the generic variant
+// unconditionally — a spurious generic interrupt after an interrupted tool
+// call. This helper drives the selection. Pure/testable.
+export function hasToolUseBlocks(
+  assistantMessages: AssistantMessage[],
+): boolean {
+  return assistantMessages.some(am =>
+    Array.isArray(am.message?.content) &&
+    am.message.content.some(
+      (content: { type: string }) => content.type === 'tool_use',
+    ),
+  )
+}
+
 function* yieldMissingToolResultBlocks(
   assistantMessages: AssistantMessage[],
   errorMessage: string,
@@ -1112,9 +1130,14 @@ async function* queryLoop(
 
       // Skip the interruption message for submit-interrupts — the queued
       // user message that follows provides sufficient context.
+      // CC 2.1.218 #13: when tool_use blocks were present in the aborted
+      // assistant trajectory, emit the tool-use-specific interrupt marker
+      // (`[Request interrupted by user for tool use]`), not the spurious
+      // generic `[Request interrupted by user]`. The two are distinct
+      // constants in the official binary (GI vs t8).
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
         yield createUserInterruptionMessage({
-          toolUse: false,
+          toolUse: hasToolUseBlocks(assistantMessages),
         })
       }
       return { reason: 'aborted_streaming' }

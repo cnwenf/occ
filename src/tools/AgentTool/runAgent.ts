@@ -58,7 +58,10 @@ import {
 } from '../../utils/forkedAgent.js'
 import { registerFrontmatterHooks } from '../../utils/hooks/registerFrontmatterHooks.js'
 import { clearSessionHooks } from '../../utils/hooks/sessionHooks.js'
-import { executeSubagentStartHooks } from '../../utils/hooks.js'
+import {
+  executeSubagentStartHooks,
+  skipFrontmatterHooksForUntrustedOrigin,
+} from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
 import {
   assertSubagentCapAndIncrement,
@@ -90,7 +93,12 @@ import {
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
 import { resolveAgentTools } from './agentToolUtils.js'
-import { type AgentDefinition, isBuiltInAgent } from './loadAgentsDir.js'
+import {
+  type AgentDefinition,
+  hasFrontmatterHooks,
+  isAgentHooksOriginTrusted,
+  isBuiltInAgent,
+} from './loadAgentsDir.js'
 
 /**
  * Initialize agent-specific MCP servers
@@ -632,17 +640,33 @@ export async function* runAgent({
   // frontmatter-hook REGISTRATION here where source is known, rather than
   // blanket-blocking all session hooks at execution time (which would
   // also kill plugin agents' hooks).
+  //
+  // CC 2.1.218 #23: even when the policy gate passes, the agent file's OWN
+  // folder must be trusted — prevents a malicious agent file dropped in an
+  // untrusted dir from running hooks. Mirrors the official's dAo/fAo/pAo.
   const hooksAllowedForThisAgent =
     !isRestrictedToPluginOnly('hooks') ||
     isSourceAdminTrusted(agentDefinition.source)
-  if (agentDefinition.hooks && hooksAllowedForThisAgent) {
-    registerFrontmatterHooks(
-      rootSetAppState,
-      agentId,
-      agentDefinition.hooks,
-      `agent '${agentDefinition.agentType}'`,
-      true, // isAgent - converts Stop to SubagentStop
-    )
+  if (
+    agentDefinition.hooks &&
+    hasFrontmatterHooks(agentDefinition.hooks) &&
+    hooksAllowedForThisAgent
+  ) {
+    if (isAgentHooksOriginTrusted(agentDefinition)) {
+      registerFrontmatterHooks(
+        rootSetAppState,
+        agentId,
+        agentDefinition.hooks,
+        `agent '${agentDefinition.agentType}'`,
+        true, // isAgent - converts Stop to SubagentStop
+      )
+    } else {
+      // Skip hooks: the agent's folder is not trusted
+      skipFrontmatterHooksForUntrustedOrigin(
+        agentDefinition,
+        'subagent',
+      )
+    }
   }
 
   // Preload skills from agent frontmatter
@@ -829,6 +853,19 @@ export async function* runAgent({
     // CC 2.1.211: persist the explicit model override so resume/follow-up
     // preserves it instead of reverting to the parent's model.
     ...(model && { model }),
+    // CC 2.1.216 #7: persist the agent's system prompt and tool restrictions
+    // so a resumed background session restores them instead of reverting to
+    // the default (general-purpose) agent when the agent type is no longer in
+    // activeAgents (e.g. custom agent file deleted, or dynamically provided).
+    ...(agentDefinition.disallowedTools && {
+      disallowedTools: agentDefinition.disallowedTools,
+    }),
+    ...(!isBuiltInAgent(agentDefinition) && {
+      systemPrompt:
+        typeof (agentDefinition as any).getSystemPrompt === 'function'
+          ? (agentDefinition as any).getSystemPrompt()
+          : undefined,
+    }),
   }).catch(_err => logForDebugging(`Failed to write agent metadata: ${_err}`))
 
   // Track the last recorded message UUID for parent chain continuity

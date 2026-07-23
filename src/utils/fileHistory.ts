@@ -5,8 +5,10 @@ import {
   chmod,
   copyFile,
   link,
+  lstat,
   mkdir,
   readFile,
+  realpath,
   stat,
   unlink,
 } from 'fs/promises'
@@ -397,13 +399,26 @@ export async function fileHistoryRewind(
     logForDebugging(
       `FileHistory: [Rewind] Rewinding to snapshot for ${messageId}`,
     )
-    const filesChanged = await applySnapshot(captured, targetSnapshot)
+    const { filesChanged, skippedLinks } = await applySnapshot(
+      captured,
+      targetSnapshot,
+    )
 
     logForDebugging(`FileHistory: [Rewind] Finished rewinding to ${messageId}`)
     logEvent('tengu_file_history_rewind_success', {
       trackedFilesCount: captured.trackedFiles.size,
       filesChangedCount: filesChanged.length,
+      skippedLinksCount: skippedLinks,
     })
+    // 2.1.216 #36: report skipped link/non-regular paths. Matches the
+    // official binary's stderr warning (`Warning: N tracked path[s] skipped:
+    // <reason>. Run with --debug for the paths.`).
+    if (skippedLinks > 0) {
+      const noun = skippedLinks === 1 ? 'path was' : 'paths were'
+      process.stderr.write(
+        `Warning: ${skippedLinks} tracked ${noun} skipped: ${REWIND_SKIP_REASON}. Run with --debug for the paths.\n`,
+      )
+    }
   } catch (error) {
     logError(error)
     logEvent('tengu_file_history_rewind_failed', {
@@ -549,14 +564,116 @@ export async function fileHistoryHasAnyChanges(
 }
 
 /**
+ * claude-code 2.1.216 #36: user-facing reason printed when /rewind skips
+ * tracked paths that are links or otherwise unsafe to touch. Grep-verified
+ * against the official 2.1.216 binary (identifier `b7n`).
+ */
+export const REWIND_SKIP_REASON =
+  'the tracked path is (or became) a link or other non-regular file, its directory changed since the checkpoint, or its backup could not be safely read'
+
+type RewindSafetyVerdict =
+  | { verdict: 'safe' }
+  | { verdict: 'refused'; detail: string }
+
+/**
+ * claude-code 2.1.216 #36: safety gate run before /rewind restores or deletes
+ * a file at a tracked path. Mirrors the official binary's `z4g(filePath,
+ * realParentDir)` link/non-regular/nlink checks. A refused verdict means the
+ * path must NOT be touched — restoring or deleting through it would write
+ * through (or unlink) a symlink/hardlink target, which is a filesystem
+ * integrity hazard. ENOENT falls through as "safe" (creating a new file at a
+ * path that does not yet exist is fine).
+ *
+ * `realParentDir` is the parent directory's realpath captured at backup time.
+ * When supplied, the parent-directory-moved / dangling-symlink checks run;
+ * when undefined (OCC snapshots don't currently track it), only the
+ * destination-file checks run. Exported for testing.
+ */
+export async function checkRewindDestinationSafety(
+  filePath: string,
+  realParentDir?: string,
+): Promise<RewindSafetyVerdict> {
+  const refuse = (detail: string): RewindSafetyVerdict => ({
+    verdict: 'refused',
+    detail,
+  })
+  try {
+    const s = await lstat(filePath)
+    if (s.isSymbolicLink()) return refuse('destination is a symlink')
+    if (!s.isFile()) return refuse('destination is not a regular file')
+    if (s.nlink > 1) {
+      return refuse(`destination is hard-linked (nlink=${s.nlink})`)
+    }
+  } catch (e: unknown) {
+    const code = getErrnoCode(e)
+    if (code === 'ELOOP' || code === 'ENOTDIR') {
+      return refuse(`destination path does not resolve (${code})`)
+    }
+    if (!isENOENT(e)) throw e
+    // ENOENT: path does not exist — safe to (re)create. Fall through.
+  }
+  if (realParentDir !== undefined) {
+    const parent = dirname(filePath)
+    let resolved: string | undefined
+    try {
+      resolved = await realpath(parent)
+    } catch (s: unknown) {
+      const code = getErrnoCode(s)
+      if (code === 'ELOOP' || code === 'ENOTDIR') {
+        return refuse(`parent path does not resolve (${code})`)
+      }
+      if (!isENOENT(s)) throw s
+      // Parent doesn't resolve; probe whether it's a dangling symlink.
+      try {
+        if ((await lstat(parent)).isSymbolicLink()) {
+          return refuse('parent directory is a dangling symlink')
+        }
+      } catch (c: unknown) {
+        if (!isENOENT(c)) throw c
+      }
+      // Walk up to the first ancestor that exists, then resolve relative.
+      let ancestor = parent
+      for (;;) {
+        const up = dirname(ancestor)
+        if (up === ancestor) break
+        ancestor = up
+        try {
+          await lstat(ancestor)
+        } catch (u: unknown) {
+          if (!isENOENT(u)) throw u
+          continue
+        }
+        resolved = await realpath(ancestor).then(r =>
+          join(r, relative(ancestor, parent)),
+        )
+        break
+      }
+    }
+    if (resolved !== undefined && resolved !== realParentDir) {
+      return refuse(`parent directory moved (${resolved} != ${realParentDir})`)
+    }
+    const parentStat = await stat(parent).catch((s: unknown) => {
+      if (isENOENT(s)) return undefined
+      throw s
+    })
+    if (parentStat !== undefined && !parentStat.isDirectory()) {
+      return refuse('parent path is not a directory')
+    }
+  }
+  return { verdict: 'safe' }
+}
+
+/**
  * Applies the given file snapshot state to the tracked files (writes/deletes
- * on disk), returning the list of changed file paths. Async IO only.
+ * on disk), returning the changed file paths and the count of skipped link /
+ * non-regular paths. Async IO only.
  */
 async function applySnapshot(
   state: FileHistoryState,
   targetSnapshot: FileHistorySnapshot,
-): Promise<string[]> {
+): Promise<{ filesChanged: string[]; skippedLinks: number }> {
   const filesChanged: string[] = []
+  let skippedLinks = 0
   for (const trackingPath of state.trackedFiles) {
     try {
       const filePath = maybeExpandFilePath(trackingPath)
@@ -577,6 +694,22 @@ async function applySnapshot(
         continue
       }
 
+      // 2.1.216 #36: refuse to restore/delete through a symlink or hardlink at
+      // a tracked path. The official binary runs this check (z4g) before any
+      // unlink/copyFile; we match that ordering so the path is never touched.
+      const safety = await checkRewindDestinationSafety(filePath)
+      if (safety.verdict === 'refused') {
+        skippedLinks++
+        logEvent('tengu_file_history_rewind_restore_file_failed', {
+          dryRun: false,
+        })
+        logForDebugging(
+          `FileHistory: [Rewind] Refusing to touch ${filePath}: ${safety.detail}`,
+          { level: 'error' },
+        )
+        continue
+      }
+
       if (backupFileName === null) {
         // File did not exist at the target version; delete it if present.
         try {
@@ -584,6 +717,20 @@ async function applySnapshot(
           logForDebugging(`FileHistory: [Rewind] Deleted ${filePath}`)
           filesChanged.push(filePath)
         } catch (e: unknown) {
+          const code = getErrnoCode(e)
+          if (
+            code === 'ENOTDIR' ||
+            code === 'ELOOP' ||
+            code === 'EISDIR'
+          ) {
+            // Path resolves to something we can't unlink safely — count as
+            // skipped, matching the official applySnapshot catch block.
+            skippedLinks++
+            logEvent('tengu_file_history_rewind_restore_file_failed', {
+              dryRun: false,
+            })
+            continue
+          }
           if (!isENOENT(e)) throw e
           // Already absent; nothing to do.
         }
@@ -605,7 +752,7 @@ async function applySnapshot(
       })
     }
   }
-  return filesChanged
+  return { filesChanged, skippedLinks }
 }
 
 /**

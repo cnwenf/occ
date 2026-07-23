@@ -4,7 +4,7 @@ import { useEffect } from 'react';
 import { useNotifications } from 'src/context/notifications.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
 import { Text } from '../../ink.js';
-import { hasClaudeAiMcpEverConnected } from '../../services/mcp/claudeai.js';
+import { hasClaudeAiMcpEverConnected, getMcpNeedsAuthCount } from '../../services/mcp/claudeai.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 type Props = {
   mcpClients?: MCPServerConnection[];
@@ -28,9 +28,15 @@ export function useMcpConnectivityStatus(t0) {
       }
       const failedLocalClients = mcpClients.filter(_temp);
       const failedClaudeAiClients = mcpClients.filter(_temp2);
-      const needsAuthLocalServers = mcpClients.filter(_temp3);
-      const needsAuthClaudeAiServers = mcpClients.filter(_temp4);
-      if (failedLocalClients.length === 0 && failedClaudeAiClients.length === 0 && needsAuthLocalServers.length === 0 && needsAuthClaudeAiServers.length === 0) {
+      // CC 2.1.218 #20: the needs-auth count is derived from the shared
+      // `getMcpNeedsAuthCount` helper instead of two inline predicates, so
+      // disconnected claude.ai connectors (eligible===false && not currently
+      // connected) and IDE internals are excluded exactly as the binary's
+      // Zka/H7o filter does. The previous inline _temp4 only checked
+      // hasClaudeAiMcpEverConnected, over-counting connectors that were ever
+      // connected but are now disconnected + ineligible.
+      const needsAuthCount = getMcpNeedsAuthCount(mcpClients);
+      if (failedLocalClients.length === 0 && failedClaudeAiClients.length === 0 && needsAuthCount === 0) {
         return;
       }
       if (failedLocalClients.length > 0) {
@@ -47,17 +53,10 @@ export function useMcpConnectivityStatus(t0) {
           priority: "medium"
         });
       }
-      if (needsAuthLocalServers.length > 0) {
+      if (needsAuthCount > 0) {
         addNotification({
           key: "mcp-needs-auth",
-          jsx: <><Text color="warning">{needsAuthLocalServers.length} MCP{" "}{needsAuthLocalServers.length === 1 ? "server needs" : "servers need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
-          priority: "medium"
-        });
-      }
-      if (needsAuthClaudeAiServers.length > 0) {
-        addNotification({
-          key: "mcp-claudeai-needs-auth",
-          jsx: <><Text color="warning">{needsAuthClaudeAiServers.length} claude.ai{" "}{needsAuthClaudeAiServers.length === 1 ? "connector needs" : "connectors need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
+          jsx: <><Text color="warning">{needsAuthCount} MCP{" "}{needsAuthCount === 1 ? "server needs" : "servers need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
           priority: "medium"
         });
       }
@@ -72,12 +71,6 @@ export function useMcpConnectivityStatus(t0) {
     t3 = $[3];
   }
   useEffect(t2, t3);
-}
-function _temp4(client_2) {
-  return client_2.type === "needs-auth" && client_2.config.type === "claudeai-proxy" && hasClaudeAiMcpEverConnected(client_2.name);
-}
-function _temp3(client_1) {
-  return client_1.type === "needs-auth" && client_1.config.type !== "claudeai-proxy";
 }
 function _temp2(client_0) {
   return client_0.type === "failed" && client_0.config.type === "claudeai-proxy" && hasClaudeAiMcpEverConnected(client_0.name);

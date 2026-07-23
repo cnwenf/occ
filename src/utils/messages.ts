@@ -79,7 +79,9 @@ import {
   type Attachment,
   type HookAttachment,
   type HookPermissionDecisionAttachment,
+  isMalformedAttachment,
   memoryHeader,
+  safeStringArray,
 } from './attachments.js'
 import { quote } from './bash/shellQuote.js'
 import { formatNumber, formatTokens } from './format.js'
@@ -1029,7 +1031,6 @@ export function reorderMessagesInUI(
         })
       }
       toolUseGroups.get(toolUseID)!.postHooks.push(message)
-      continue
     }
   }
 
@@ -2083,12 +2084,58 @@ function relocateToolReferenceSiblings(
   return result
 }
 
+// ─── Per-message normalization cache ─────────────────────────────────
+// CC 2.1.216 #2: normalizeMessagesForAPI is called from claude.ts on every
+// API request with the FULL message history. Over N turns that's O(n²)
+// total. The cache stores the per-message processing result (tool reference
+// stripping, tool input normalization) keyed by the message object + a
+// version derived from tools and tool-search state. Messages that haven't
+// changed since the last call are cache hits — only new messages are
+// processed, making each call O(k) for per-message work (k = new messages)
+// instead of O(n) (n = total messages). The full-array scans (reorder,
+// stripTargets, merge) still run per call but are cheap relative to the
+// per-message processing.
+const _normalizationCache = {
+  map: new WeakMap<
+    object,
+    { version: string; message: UserMessage | AssistantMessage }
+  >(),
+  stats: { cacheHits: 0, cacheMisses: 0 },
+}
+
+/** @internal Reset cache and stats for testing. */
+export function _resetNormalizationCacheForTesting(): void {
+  _normalizationCache.map = new WeakMap()
+  _normalizationCache.stats.cacheHits = 0
+  _normalizationCache.stats.cacheMisses = 0
+}
+
+/** @internal Get cache hit/miss stats for testing. */
+export function _getNormalizationCacheStats(): {
+  cacheHits: number
+  cacheMisses: number
+} {
+  return { ..._normalizationCache.stats }
+}
+
+function computeNormalizationCacheVersion(tools: Tools): string {
+  // Version changes when tool names or tool-search state changes, which
+  // invalidates the per-message processing (stripping, normalization).
+  return `${tools.map(t => t.name).join('\x00')}\x01${isToolSearchEnabledOptimistic()}`
+}
+
 export function normalizeMessagesForAPI(
   messages: Message[],
   tools: Tools = [],
 ): (UserMessage | AssistantMessage)[] {
   // Build set of available tool names for filtering unavailable tool references
   const availableToolNames = new Set(tools.map(t => t.name))
+  // Cache version — invalidates per-message cache when tools or tool-search
+  // state changes (affects stripUnavailableToolReferences & normalizeToolInputForAPI).
+  const cacheVersion = computeNormalizationCacheVersion(tools)
+  // Reset per-call stats so _getNormalizationCacheStats reflects THIS call only
+  _normalizationCache.stats.cacheHits = 0
+  _normalizationCache.stats.cacheMisses = 0
 
   // First, reorder attachments to bubble up until they hit a tool result or assistant message
   // Then strip virtual messages — they're display-only (e.g. REPL inner tool
@@ -2197,14 +2244,29 @@ export function normalizeMessagesForAPI(
           // tool_result content, as these are only valid with the tool search beta.
           // When tool search IS enabled, strip only tool_reference blocks for
           // tools that no longer exist (e.g., MCP server was disconnected).
-          let normalizedMessage = message
-          if (!isToolSearchEnabledOptimistic()) {
-            normalizedMessage = stripToolReferenceBlocksFromUserMessage(message)
+          //
+          // CC 2.1.216 #2: Cache the per-message stripping result so that
+          // messages already processed in a prior turn aren't re-scanned.
+          // The cache is keyed by message object + tools/tool-search version.
+          let normalizedMessage: UserMessage
+          const cachedUser = _normalizationCache.map.get(message)
+          if (cachedUser && cachedUser.version === cacheVersion) {
+            _normalizationCache.stats.cacheHits++
+            normalizedMessage = cachedUser.message as UserMessage
           } else {
-            normalizedMessage = stripUnavailableToolReferencesFromUserMessage(
-              message,
-              availableToolNames,
-            )
+            _normalizationCache.stats.cacheMisses++
+            if (!isToolSearchEnabledOptimistic()) {
+              normalizedMessage = stripToolReferenceBlocksFromUserMessage(message)
+            } else {
+              normalizedMessage = stripUnavailableToolReferencesFromUserMessage(
+                message,
+                availableToolNames,
+              )
+            }
+            _normalizationCache.map.set(message, {
+              version: cacheVersion,
+              message: normalizedMessage,
+            })
           }
 
           // Strip document/image blocks from the specific meta user message that
@@ -2300,46 +2362,63 @@ export function normalizeMessagesForAPI(
           // When tool search is NOT enabled, we must strip tool_search-specific fields
           // like 'caller' from tool_use blocks, as these are only valid with the
           // tool search beta header
+          //
+          // CC 2.1.216 #2: Cache the per-message tool input normalization so
+          // that assistant messages already processed in a prior turn aren't
+          // re-normalized (normalizeToolInputForAPI + tools.find are the
+          // expensive per-message ops for assistant messages).
           const toolSearchEnabled = isToolSearchEnabledOptimistic()
-          const normalizedMessage: AssistantMessage = {
-            ...message,
-            message: {
-              ...message.message,
-              content: (Array.isArray(message.message.content) ? message.message.content : []).map(block => {
-                if (typeof block === 'string') return block
-                if (block.type === 'tool_use') {
-                  const toolUseBlk = block as ToolUseBlock
-                  const tool = tools.find(t => toolMatchesName(t, toolUseBlk.name))
-                  const normalizedInput = tool
-                    ? normalizeToolInputForAPI(
-                        tool,
-                        toolUseBlk.input as Record<string, unknown>,
-                      )
-                    : toolUseBlk.input
-                  const canonicalName = tool?.name ?? toolUseBlk.name
+          let normalizedMessage: AssistantMessage
+          const cachedAssistant = _normalizationCache.map.get(message)
+          if (cachedAssistant && cachedAssistant.version === cacheVersion) {
+            _normalizationCache.stats.cacheHits++
+            normalizedMessage = cachedAssistant.message as AssistantMessage
+          } else {
+            _normalizationCache.stats.cacheMisses++
+            normalizedMessage = {
+              ...message,
+              message: {
+                ...message.message,
+                content: (Array.isArray(message.message.content) ? message.message.content : []).map(block => {
+                  if (typeof block === 'string') return block
+                  if (block.type === 'tool_use') {
+                    const toolUseBlk = block as ToolUseBlock
+                    const tool = tools.find(t => toolMatchesName(t, toolUseBlk.name))
+                    const normalizedInput = tool
+                      ? normalizeToolInputForAPI(
+                          tool,
+                          toolUseBlk.input as Record<string, unknown>,
+                        )
+                      : toolUseBlk.input
+                    const canonicalName = tool?.name ?? toolUseBlk.name
 
-                  // When tool search is enabled, preserve all fields including 'caller'
-                  if (toolSearchEnabled) {
+                    // When tool search is enabled, preserve all fields including 'caller'
+                    if (toolSearchEnabled) {
+                      return {
+                        ...block,
+                        name: canonicalName,
+                        input: normalizedInput,
+                      }
+                    }
+
+                    // When tool search is NOT enabled, explicitly construct tool_use
+                    // block with only standard API fields to avoid sending fields like
+                    // 'caller' that may be stored in sessions from tool search runs
                     return {
-                      ...block,
+                      type: 'tool_use' as const,
+                      id: toolUseBlk.id,
                       name: canonicalName,
                       input: normalizedInput,
                     }
                   }
-
-                  // When tool search is NOT enabled, explicitly construct tool_use
-                  // block with only standard API fields to avoid sending fields like
-                  // 'caller' that may be stored in sessions from tool search runs
-                  return {
-                    type: 'tool_use' as const,
-                    id: toolUseBlk.id,
-                    name: canonicalName,
-                    input: normalizedInput,
-                  }
-                }
-                return block
-              }),
-            },
+                  return block
+                }),
+              },
+            }
+            _normalizationCache.map.set(message, {
+              version: cacheVersion,
+              message: normalizedMessage,
+            })
           }
 
           // Find a previous assistant message with the same message ID and merge.
@@ -2358,7 +2437,6 @@ export function normalizeMessagesForAPI(
                 result[i] = mergeAssistantMessages(msg, normalizedMessage)
                 return
               }
-              continue
             }
           }
 
@@ -3566,6 +3644,16 @@ function getAutoModeSparseInstructions(): UserMessage[] {
 export function normalizeAttachmentForAPI(
   attachment: Attachment,
 ): UserMessage[] {
+  // CC 2.1.217 #10 / 2.1.218 #25: a transcript can hold a malformed
+  // attachment entry (non-object, or no string `type`, or a delta attachment
+  // missing its required arrays). Such an entry previously threw a TypeError
+  // — crashing `--resume`/`/resume` (one-time) and, for malformed delta
+  // attachments in history, failing every subsequent turn during API prep.
+  // Skip malformed entries gracefully (returns no API messages) instead of
+  // crashing the resume / turn path.
+  if (isMalformedAttachment(attachment)) {
+    return []
+  }
   if (isAgentSwarmsEnabled()) {
     if (attachment.type === 'teammate_mailbox') {
       return [
@@ -4299,15 +4387,26 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'deferred_tools_delta': {
+      // CC 2.1.218 #25: a persisted delta attachment may be malformed
+      // (missing addedLines/removedNames arrays). Read defensively; when the
+      // expected array fields are entirely absent (malformed), skip the
+      // entry instead of emitting an empty / crashing message.
+      const rawAdded = (attachment as { addedLines?: unknown }).addedLines
+      const rawRemoved = (attachment as { removedNames?: unknown }).removedNames
+      if (!Array.isArray(rawAdded) && !Array.isArray(rawRemoved)) {
+        return []
+      }
       const parts: string[] = []
-      if (attachment.addedLines.length > 0) {
+      const addedLines = safeStringArray(rawAdded)
+      const removedNames = safeStringArray(rawRemoved)
+      if (addedLines.length > 0) {
         parts.push(
-          `The following deferred tools are now available via ToolSearch:\n${attachment.addedLines.join('\n')}`,
+          `The following deferred tools are now available via ToolSearch:\n${addedLines.join('\n')}`,
         )
       }
-      if (attachment.removedNames.length > 0) {
+      if (removedNames.length > 0) {
         parts.push(
-          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${attachment.removedNames.join('\n')}`,
+          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them — ToolSearch will return no match:\n${removedNames.join('\n')}`,
         )
       }
       return wrapMessagesInSystemReminder([
@@ -4315,19 +4414,32 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'agent_listing_delta': {
+      // CC 2.1.218 #25: read arrays defensively; when the expected array
+      // fields are entirely absent (malformed), skip the entry.
+      const rawAdded = (attachment as { addedLines?: unknown }).addedLines
+      const rawRemoved = (attachment as { removedTypes?: unknown }).removedTypes
+      if (!Array.isArray(rawAdded) && !Array.isArray(rawRemoved)) {
+        return []
+      }
       const parts: string[] = []
-      if (attachment.addedLines.length > 0) {
-        const header = attachment.isInitial
+      const addedLines = safeStringArray(rawAdded)
+      const removedTypes = safeStringArray(rawRemoved)
+      if (addedLines.length > 0) {
+        const header = (attachment as { isInitial?: boolean }).isInitial
           ? 'Available agent types for the Agent tool:'
           : 'New agent types are now available for the Agent tool:'
-        parts.push(`${header}\n${attachment.addedLines.join('\n')}`)
+        parts.push(`${header}\n${addedLines.join('\n')}`)
       }
-      if (attachment.removedTypes.length > 0) {
+      if (removedTypes.length > 0) {
         parts.push(
-          `The following agent types are no longer available:\n${attachment.removedTypes.map(t => `- ${t}`).join('\n')}`,
+          `The following agent types are no longer available:\n${removedTypes.map(t => `- ${t}`).join('\n')}`,
         )
       }
-      if (attachment.isInitial && attachment.showConcurrencyNote) {
+      if (
+        (attachment as { isInitial?: boolean; showConcurrencyNote?: boolean })
+          .isInitial &&
+        (attachment as { showConcurrencyNote?: boolean }).showConcurrencyNote
+      ) {
         parts.push(
           `Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses.`,
         )
@@ -4337,15 +4449,24 @@ You have exited auto mode. The user may now want to interact more directly. You 
       ])
     }
     case 'mcp_instructions_delta': {
+      // CC 2.1.218 #25: read arrays defensively; when the expected array
+      // fields are entirely absent (malformed), skip the entry.
+      const rawAdded = (attachment as { addedBlocks?: unknown }).addedBlocks
+      const rawRemoved = (attachment as { removedNames?: unknown }).removedNames
+      if (!Array.isArray(rawAdded) && !Array.isArray(rawRemoved)) {
+        return []
+      }
       const parts: string[] = []
-      if (attachment.addedBlocks.length > 0) {
+      const addedBlocks = safeStringArray(rawAdded)
+      const removedNames = safeStringArray(rawRemoved)
+      if (addedBlocks.length > 0) {
         parts.push(
-          `# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n${attachment.addedBlocks.join('\n\n')}`,
+          `# MCP Server Instructions\n\nThe following MCP servers have provided instructions for how to use their tools and resources:\n\n${addedBlocks.join('\n\n')}`,
         )
       }
-      if (attachment.removedNames.length > 0) {
+      if (removedNames.length > 0) {
         parts.push(
-          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${attachment.removedNames.join('\n')}`,
+          `The following MCP servers have disconnected. Their instructions above no longer apply:\n${removedNames.join('\n')}`,
         )
       }
       return wrapMessagesInSystemReminder([

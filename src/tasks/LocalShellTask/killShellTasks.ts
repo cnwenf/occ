@@ -2,6 +2,7 @@
 // Extracted so runAgent.ts can kill agent-scoped bash tasks without pulling
 // React/Ink into its module graph (same rationale as guards.ts).
 
+import treeKill from 'tree-kill'
 import type { AppState } from '../../state/AppState.js'
 import type { AgentId } from '../../types/ids.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -21,8 +22,16 @@ export function killTask(taskId: string, setAppState: SetAppStateFn): void {
 
     try {
       logForDebugging(`LocalShellTask ${taskId} kill requested`)
-      task.shellCommand?.kill()
-      task.shellCommand?.cleanup()
+      if (task.shellCommand) {
+        task.shellCommand.kill()
+        task.shellCommand.cleanup()
+      } else if (task.pid) {
+        // CC 2.1.217 #12: shellCommand is null (reference lost after
+        // backgrounding or reload) but we have the PID — use treeKill
+        // directly so the shell process is actually stopped.
+        logForDebugging(`LocalShellTask ${taskId} shellCommand null, killing by PID ${task.pid}`)
+        treeKill(task.pid, 'SIGKILL')
+      }
     } catch (error) {
       logError(error)
     }

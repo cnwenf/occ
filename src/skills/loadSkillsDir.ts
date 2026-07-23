@@ -40,6 +40,7 @@ import {
   coerceDescriptionToString,
   type FrontmatterData,
   type FrontmatterShell,
+  coerceBooleanToken,
   type ParsedMarkdown,
   parseBooleanFrontmatter,
   parseFrontmatter,
@@ -316,6 +317,33 @@ export function dropShadowedSkills(skills: Command[]): Command[] {
 }
 
 /**
+ * CC 2.1.218 #35: Parse the `background` frontmatter field (boolean, only
+ * meaningful when `context: fork`). Accepts YAML `true`/`false` booleans or
+ * the string forms `"true"`/`"false"`. Absent/null → undefined (dispatch
+ * defaults to background for fork skills). Invalid values log a debug
+ * warning and degrade to undefined, matching the effort/shell degradation
+ * pattern — the skill still loads.
+ *
+ * Binary-verified (s21218.txt): zod `background` is
+ * `.optional().describe("Only for \`context: fork\`...")`.
+ */
+function parseBackgroundFrontmatter(
+  raw: unknown,
+  skillName: string,
+): boolean | undefined {
+  if (raw === undefined || raw === null) return undefined
+  // CC 2.1.218 #36: accept yes/no/on/off/1/0 (case-insensitive) in addition
+  // to true/false, via the shared boolean-token coercion. `background` keeps
+  // its degrade-on-invalid contract (warn + undefined) from #35.
+  const coerced = coerceBooleanToken(raw)
+  if (coerced !== undefined) return coerced
+  logForDebugging(
+    `Skill ${skillName} has invalid background value '${raw}'. Must be a boolean (true/false/yes/no/on/off/1/0), or omitted.`,
+  )
+  return undefined
+}
+
+/**
  * Parses all skill frontmatter fields that are shared between file-based and
  * MCP skill loading. Caller supplies the resolved skill name and the
  * source/loadedFrom/baseDir/paths fields separately.
@@ -346,6 +374,7 @@ export function parseSkillFrontmatterFields(
   defaultEnabled: boolean | undefined
   fallback: boolean
   metadata: Record<string, unknown> | undefined
+  background: boolean | undefined
 } {
   const validatedDescription = coerceDescriptionToString(
     frontmatter.description,
@@ -375,6 +404,16 @@ export function parseSkillFrontmatterFields(
       `Skill ${resolvedName} has invalid effort '${effortRaw}'. Valid options: ${EFFORT_LEVELS.join(', ')} or an integer`,
     )
   }
+
+  // CC 2.1.218 #35: `background` frontmatter (boolean, only meaningful when
+  // `context: fork`). Accepts true/false (or "true"/"false" YAML strings);
+  // invalid values degrade to undefined. `background: false` opts out of
+  // the default-background behavior; absent → undefined (dispatch defaults
+  // to background for fork skills).
+  const background = parseBackgroundFrontmatter(
+    frontmatter.background,
+    resolvedName,
+  )
 
   return {
     // 2.1.186: display-name frontmatter (normalized to displayName). Falls
@@ -412,6 +451,7 @@ export function parseSkillFrontmatterFields(
     hooks: parseHooksFromFrontmatter(frontmatter, resolvedName),
     executionContext: frontmatter.context === 'fork' ? 'fork' : undefined,
     agent: frontmatter.agent as string | undefined,
+    background,
     effort,
     shell: parseShellFrontmatter(frontmatter.shell, resolvedName),
     // 2.1.186 frontmatter additions
@@ -461,6 +501,7 @@ export function createSkillCommand({
   defaultEnabled,
   fallback,
   metadata,
+  background,
   contentHash,
 }: {
   skillName: string
@@ -489,6 +530,7 @@ export function createSkillCommand({
   defaultEnabled: boolean | undefined
   fallback: boolean
   metadata: Record<string, unknown> | undefined
+  background: boolean | undefined
   contentHash: string | undefined
 }): Command {
   return {
@@ -507,6 +549,8 @@ export function createSkillCommand({
     userInvocable,
     context: executionContext,
     agent,
+    // CC 2.1.218 #35: only meaningful when context === 'fork'.
+    background,
     effort,
     paths,
     contentLength: markdownContent.length,

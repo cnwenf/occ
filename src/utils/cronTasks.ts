@@ -23,6 +23,7 @@ import { computeNextCronRun, parseCronExpression } from './cron.js'
 import { logForDebugging } from './debug.js'
 import { isFsInaccessible } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
+import { assertWriteInsideProject } from './claudeWriteGuard.js'
 import { safeParseJSON } from './json.js'
 import { logError } from './log.js'
 import { jsonStringify } from './slowOperations.js'
@@ -167,6 +168,10 @@ export async function writeCronTasks(
   dir?: string,
 ): Promise<void> {
   const root = dir ?? getProjectRoot()
+  // CC 2.1.216 #18: refuse the write if `.claude` (or the file target) is a
+  // symlink that resolves outside the project root, so a repository-committed
+  // symlink can't redirect scheduled-task state outside the project.
+  assertWriteInsideProject(getCronFilePath(root), root)
   await mkdir(join(root, '.claude'), { recursive: true })
   // Strip the runtime-only `durable` flag — everything on disk is durable
   // by definition, and keeping the flag out means readCronTasks() naturally

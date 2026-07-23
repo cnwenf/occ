@@ -14,7 +14,10 @@ import {
 import { getCwd } from '../../utils/cwd.js'
 import { formatTokens, formatTokenEstimate } from '../../utils/format.js'
 import { getCanonicalName } from '../../utils/model/model.js'
-import { getMessagesAfterCompactBoundary } from '../../utils/messages.js'
+import {
+  findLastCompactBoundaryIndex,
+  getMessagesAfterCompactBoundary,
+} from '../../utils/messages.js'
 import { getSourceDisplayName } from '../../utils/settings/constants.js'
 import { plural } from '../../utils/stringUtils.js'
 
@@ -91,6 +94,90 @@ export async function rescaleSkillTokensForModel(
 
 
 /**
+ * 2.1.218 #7 (B6): /context reported stale pre-compact token usage after
+ * compacting from the message picker.
+ *
+ * Bug: after a partial compact, messagesToKeep (the preserved segment) retain
+ * their pre-compact token usage. getCurrentUsage scans backwards and returns
+ * the last usage-bearing message — a kept message whose usage reflects the
+ * pre-compact (larger) context, not the post-compact context.
+ *
+ * Fix: strip usage from messages in the compact boundary's preservedSegment
+ * (headUuid..tailUuid inclusive) so getCurrentUsage falls through to the
+ * compact summary (fresh) or new post-compact turns (fresh), or returns null
+ * (estimation). Returns the array as-is when there is no boundary or no
+ * preserved segment. Never mutates the input.
+ */
+export function stripStaleUsageFromPreservedSegment(
+  messages: Message[],
+): Message[] {
+  const boundaryIndex = findLastCompactBoundaryIndex(messages)
+  if (boundaryIndex === -1) {
+    return messages
+  }
+  const boundary = messages[boundaryIndex] as
+    | (Message & {
+        compactMetadata?: {
+          preservedSegment?: {
+            headUuid: string
+            tailUuid: string
+            anchorUuid: string
+          }
+        }
+      })
+    | undefined
+  const segment = boundary?.compactMetadata?.preservedSegment
+  if (!segment) {
+    return messages
+  }
+
+  // Build a set of UUIDs in the preserved segment for O(1) lookup.
+  // The preserved segment is contiguous (headUuid..tailUuid), but some loaders
+  // may relink or omit messages, so a set is safer than an index range.
+  let needsStrip = false
+  const preservedUuids = new Set<string>()
+  for (let i = boundaryIndex + 1; i < messages.length; i++) {
+    const msg = messages[i]
+    const uuid = msg?.uuid
+    if (uuid === segment.headUuid) {
+      needsStrip = true
+    }
+    if (needsStrip) {
+      if (uuid) {
+        preservedUuids.add(uuid)
+      }
+      if (uuid === segment.tailUuid) {
+        break
+      }
+    }
+  }
+
+  if (preservedUuids.size === 0) {
+    return messages
+  }
+
+  // Immutably strip usage from assistant messages in the preserved segment.
+  let changed = false
+  const result = messages.map(msg => {
+    if (
+      msg?.type === 'assistant' &&
+      msg.uuid !== undefined &&
+      preservedUuids.has(msg.uuid as string) &&
+      msg.message &&
+      'usage' in msg.message
+    ) {
+      changed = true
+      // Remove the `usage` key so getTokenUsage skips this message.
+      const { usage: _omit, ...rest } = msg.message as Record<string, unknown>
+      return { ...msg, message: rest } as Message
+    }
+    return msg
+  })
+
+  return changed ? result : messages
+}
+
+/**
  * Shared data-collection path for `/context` (slash command) and the SDK
  * `get_context_usage` control request. Mirrors query.ts's pre-API transforms
  * (compact boundary, projectView, microcompact) so the token count reflects
@@ -142,7 +229,10 @@ export async function collectContextData(
       'options'
     >,
     undefined, // mainThreadAgentDefinition
-    apiView, // original messages for API usage extraction
+    // 2.1.218 #7: strip stale pre-compact usage from the preserved segment so
+    // /context shows fresh (post-compact) token usage, not the pre-compact
+    // numbers carried by kept messages.
+    stripStaleUsageFromPreservedSegment(apiView), // original messages for API usage extraction
   )
 
   // 2.1.139 (J18): rescale per-skill frontmatter tokens to the model's tokenizer.

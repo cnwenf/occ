@@ -274,6 +274,17 @@ export type AgentMetadata = {
    * instead of reverting to the parent's model. Optional — older metadata
    * files and fork-path spawns lack this field. */
   model?: string
+  /** CC 2.1.216 #7: the agent's system prompt. Persisted so a resumed
+   * background session restores the agent's own prompt instead of
+   * reverting to the default (general-purpose) agent when the agent type
+   * is no longer in activeAgents (e.g. custom agent file deleted).
+   * Optional — older metadata files lack this field. */
+  systemPrompt?: string
+  /** CC 2.1.216 #7: tool restrictions (disallowedTools) from the agent
+   * definition. Persisted alongside systemPrompt so a resumed session
+   * preserves the agent's tool restrictions. Optional — older metadata
+   * files lack this field. */
+  disallowedTools?: string[]
 }
 
 /**
@@ -366,7 +377,19 @@ export async function deleteRemoteAgentMetadata(taskId: string): Promise<void> {
   try {
     await unlink(path)
   } catch (e) {
-    if (isFsInaccessible(e)) return
+    const code = (e as NodeJS.ErrnoException | undefined)?.code
+    if (code === 'ENOENT') return // already absent — benign, no-op
+    // CC 2.1.216 #14 no-resurrect: any OTHER failure (EACCES/EPERM/ENOTDIR/
+    // EISDIR/...) must NOT be silently swallowed. The old code's
+    // isFsInaccessible catch returned for EACCES/EPERM/ENOTDIR/ELOOP too,
+    // hiding real unlink failures. Log so the no-resurrect guard's failure
+    // is observable, then rethrow — the tombstone (markSessionDeleted +
+    // appendDeletedSession) keeps the session skipped even if the sidecar
+    // unlink fails, but a failed unlink must surface, not vanish into a
+    // `.catch(() => {})`.
+    logForDebugging(
+      `deleteRemoteAgentMetadata: unlink failed for ${taskId} (${code ?? String(e)})`,
+    )
     throw e
   }
 }
@@ -401,6 +424,50 @@ export async function listRemoteAgentMetadata(): Promise<
     }
   }
   return results
+}
+
+/**
+ * CC 2.1.216 #14 no-resurrect: path to the deleted-sessions tombstone list.
+ * Sibling to remote-agents/ under the session dir. Survives client restart so
+ * restoreRemoteAgentTasks can skip sessions the user explicitly deleted even
+ * when the in-memory tombstone Set is gone (worker-death / restart path).
+ */
+function getDeletedSessionsPath(): string {
+  const projectDir = getSessionProjectDir() ?? getProjectDir(getOriginalCwd())
+  return join(projectDir, getSessionId(), 'deleted-sessions.json')
+}
+
+/**
+ * Read the deleted-sessions tombstone list from disk. Source of truth for the
+ * no-resurrect guard after a client restart (the in-memory Set does not survive
+ * restart). Returns an empty array if the file does not exist yet.
+ */
+export async function readDeletedSessions(): Promise<string[]> {
+  const path = getDeletedSessionsPath()
+  try {
+    const raw = await readFile(path, 'utf-8')
+    const parsed: unknown = JSON.parse(raw)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((x): x is string => typeof x === 'string')
+  } catch (e) {
+    if (isFsInaccessible(e)) return []
+    throw e
+  }
+}
+
+/**
+ * Append a task id to the deleted-sessions tombstone list on disk. Idempotent
+ * — re-appending an existing id is a no-op. The in-memory tombstone Set is the
+ * hot-path check (isDeletedSession); this disk list is the restart-time
+ * backstop read by loadDeletedSessionsFromDisk.
+ */
+export async function appendDeletedSession(taskId: string): Promise<void> {
+  const path = getDeletedSessionsPath()
+  const existing = await readDeletedSessions()
+  if (existing.includes(taskId)) return
+  existing.push(taskId)
+  await mkdir(dirname(path), { recursive: true, mode: 0o700 })
+  await writeFile(path, JSON.stringify(existing), { mode: 0o600 })
 }
 
 export function sessionIdExists(sessionId: string): boolean {

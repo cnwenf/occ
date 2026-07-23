@@ -133,6 +133,15 @@ export const McpClaudeAIProxyServerConfigSchema = lazySchema(() =>
     type: z.literal('claudeai-proxy'),
     url: z.string(),
     id: z.string(),
+    /**
+     * CC 2.1.218 #20: whether the connector is eligible to connect (the
+     * claude.ai account has access). `false` means the connector is
+     * org-configured but the account cannot use it. The "N MCP servers need
+     * authentication" startup notice must NOT count such connectors when they
+     * are not currently connected — matching the binary's
+     * `config.eligible === false && !Pgs.has(name)` exclusion in H7o.
+     */
+    eligible: z.boolean().optional(),
   }),
 )
 
@@ -216,6 +225,16 @@ export type FailedMCPServer = {
   type: 'failed'
   config: ScopedMcpServerConfig
   error?: string
+  /**
+   * CC 2.1.218 #5: machine-readable failure classifier carried alongside
+   * `error`. Either a named code (INVALID_CONFIG, UNCONFIGURED,
+   * AUTH_HEADER_REJECTED, CLI_OWNED_BEARER_REJECTED, FIRST_PARTY_AUTH_REJECTED,
+   * ENDPOINT_NOT_FOUND), a numeric HTTP status as a string ("401", "503"),
+   * or "23" for a request timeout. Surfaces HTTP status + error text in
+   * `claude mcp list` / `/mcp` and the "configured MCP servers failed to
+   * connect" warning. Mirrors the binary's failed-client `errorCode` field.
+   */
+  errorCode?: string
 }
 
 export type NeedsAuthMCPServer = {

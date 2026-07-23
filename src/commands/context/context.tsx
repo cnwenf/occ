@@ -3,7 +3,7 @@ import * as React from 'react';
 import type { LocalJSXCommandContext } from '../../commands.js';
 import { ContextVisualization } from '../../components/ContextVisualization.js';
 import { microcompactMessages } from '../../services/compact/microCompact.js';
-import { rescaleSkillTokensForModel } from './context-noninteractive.js';
+import { rescaleSkillTokensForModel, stripStaleUsageFromPreservedSegment } from './context-noninteractive.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import type { Message } from '../../types/message.js';
 import { analyzeContextUsage } from '../../utils/analyzeContext.js';
@@ -54,7 +54,10 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
   // Pass full context for system prompt calculation
   undefined,
   // mainThreadAgentDefinition
-  apiView // Original messages for API usage extraction
+  // 2.1.218 #7: strip stale pre-compact usage from the preserved segment so
+  // /context shows fresh (post-compact) token usage, not the pre-compact
+  // numbers carried by kept messages.
+  stripStaleUsageFromPreservedSegment(apiView) // Original messages for API usage extraction
   );
 
   // 2.1.139 (J18): rescale per-skill frontmatter tokens to the model's tokenizer.

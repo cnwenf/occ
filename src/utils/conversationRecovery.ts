@@ -18,7 +18,7 @@ import type {
   NormalizedUserMessage,
 } from '../types/message.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
-import { suppressNextSkillListing } from './attachments.js'
+import { suppressNextSkillListing, isMalformedAttachment } from './attachments.js'
 import {
   copyFileHistoryForResume,
   type FileHistorySnapshot,
@@ -77,6 +77,17 @@ const SEND_USER_FILE_TOOL_NAME: string | null = feature('KAIROS')
  */
 function migrateLegacyAttachmentTypes(message: Message): Message {
   if (message.type !== 'attachment') {
+    return message
+  }
+
+  // CC 2.1.217 #10 / 2.1.218 #25: a transcript can hold a malformed
+  // attachment entry (corrupted JSONL, partial write, old/unknown shape)
+  // where `attachment` is not a well-formed object with a string `type`.
+  // Accessing `.type` / `in` on a non-object attachment throws a TypeError
+  // that crashed `--resume`/`/resume`. Skip such entries — return them
+  // as-is so the rest of the transcript can still load. Mirrors the binary's
+  // defensive skip in the legacy-attachment migration path.
+  if (isMalformedAttachment(message.attachment)) {
     return message
   }
 

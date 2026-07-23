@@ -29,6 +29,11 @@ export type LocalShellTaskState = TaskStateBase & {
   // UI display variant. 'monitor' → shows description instead of command,
   // 'Monitor details' dialog title, distinct status bar pill.
   kind?: BashTaskKind
+  /** CC 2.1.217 #12: child process PID. Fallback for killTask when
+   * shellCommand is null (e.g. after session backgrounding or reload).
+   * Without this, a backgrounded shell becomes impossible to stop because
+   * shellCommand is the only kill path and it can be null. */
+  pid?: number
 }
 
 export function isLocalShellTask(task: unknown): task is LocalShellTaskState {

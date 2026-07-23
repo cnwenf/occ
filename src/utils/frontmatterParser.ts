@@ -281,6 +281,23 @@ export function splitPathInFrontmatter(input: string | string[]): string[] {
 }
 
 /**
+ * Maximum number of brace expansions a single `paths` frontmatter value may
+ * produce before the parser aborts. Matches the official Claude Code binary,
+ * which delegates brace expansion to Bun's native globber (`BunObject.rs`):
+ *
+ *   const MAX_BRACE_EXPANSIONS: u32 = 65536;
+ *   if expansion_count > MAX_BRACE_EXPANSIONS {
+ *       throw "Too many brace expansions ({} > {})", expansion_count, MAX_BRACE_EXPANSIONS
+ *   }
+ *
+ * CC 2.1.217 #13: a CLAUDE.md/SKILL.md `paths` value with many brace groups
+ * could OOM-kill or stall the CLI at startup; the expansion is now
+ * budget-bounded. The cap is checked *during* recursion so an exponential
+ * pattern (e.g. 30 nested `{a,b}` groups) aborts before allocating gigabytes.
+ */
+const MAX_BRACE_EXPANSIONS = 65536
+
+/**
  * Expands brace patterns in a glob string.
  * @example
  * expandBraces("src/*.{ts,tsx}") // returns ["src/*.ts", "src/*.tsx"]
@@ -308,6 +325,16 @@ function expandBraces(pattern: string): string[] {
     const combined = prefix + part + suffix
     // Recursively handle additional brace groups
     const furtherExpanded = expandBraces(combined)
+    // CC 2.1.217 #13: budget-bound the expansion count to prevent OOM/stall
+    // on pathological patterns. Check before the push so `expanded` never
+    // exceeds the cap; `furtherExpanded` is itself bounded by the recursion's
+    // own check, so total live allocations stay ≤ ~2× the cap.
+    const projected = expanded.length + furtherExpanded.length
+    if (projected > MAX_BRACE_EXPANSIONS) {
+      throw new Error(
+        `Too many brace expansions (${projected} > ${MAX_BRACE_EXPANSIONS})`,
+      )
+    }
     expanded.push(...furtherExpanded)
   }
 
@@ -403,6 +430,25 @@ export function parseBooleanFrontmatter(value: unknown): boolean {
   // Explicit falsy tokens resolve to false; everything else is truthy only
   // if it is a known truthy token. This avoids `maybe`/`2` becoming true.
   return TRUTHY_BOOLEAN_TOKENS.has(token) && !FALSY_BOOLEAN_TOKENS.has(token)
+}
+
+/**
+ * Coerce a frontmatter value to a boolean token, returning `undefined` when
+ * the value is not a recognized boolean literal. Shared with the degrade
+ * site `parseBackgroundFrontmatter` in loadSkillsDir (CC 2.1.218 #35:
+ * `background` frontmatter) so both accept the same token set.
+ */
+export function coerceBooleanToken(value: unknown): boolean | undefined {
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') {
+    return value === 1 ? true : value === 0 ? false : undefined
+  }
+  if (typeof value === 'string') {
+    const token = value.trim().toLowerCase()
+    if (TRUTHY_BOOLEAN_TOKENS.has(token)) return true
+    if (FALSY_BOOLEAN_TOKENS.has(token)) return false
+  }
+  return undefined
 }
 
 /**

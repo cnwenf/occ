@@ -259,3 +259,35 @@ from the `2.1.216`/`2.1.217` ELF (not invented) and gated by behavioral e2e per
    vulnerable shape? (blocks 2.1.216 #11/#19)
 
 These are recon questions, not blockers for the headline work (Stages 1–3).
+
+## 8. Tracked feature gaps (implementation deferred — not in current scope)
+
+### Additional-directory agent/skill/command discovery missing
+
+**Upstream binary (2.1.218 ELF):** The official computes `fromAdditionalDirectory`
+on agent definitions discovered via `--add-dir` (additional directories). Binary
+recon confirms:
+
+```
+{...H, baseDir:I, source:"projectSettings", fromAdditionalDirectory:!0}
+```
+
+Agents discovered from additional directories are tagged with
+`fromAdditionalDirectory: true`, and this field is read by the
+`tengu_agent_hooks_origin_untrusted` telemetry event:
+
+```
+fromAdditionalDirectory: me(e.fromAdditionalDirectory===!0?"true":"false")
+```
+
+**OCC gap:** OCC has no `--add-dir`-driven agent/skill/command discovery
+feature. The `fromAdditionalDirectory` telemetry field in
+`skipFrontmatterHooksForUntrustedOrigin` (hooks.ts) is hard-coded to `'false'`.
+A TODO comment marks the spot. When the additional-directory discovery feature
+lands, `fromAdditionalDirectory` MUST be computed from the agent definition's
+metadata field instead of being hard-coded.
+
+**Status:** Tracked — implementation NOT in current scope. Only the TODO
+comment + this gap-doc entry are done. The `mainThread` frontmatter-hook
+registration path (CC 2.1.218 #23 closure) is already wired and works
+independently of this feature.

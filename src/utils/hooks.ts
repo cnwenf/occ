@@ -40,6 +40,11 @@ import {
 } from '../bootstrap/state.js'
 import { checkHasTrustDialogAccepted } from './config.js'
 import {
+  getAgentHookTrustKey,
+  getGlobalConfigFilePath,
+  sanitizeTrustKey,
+} from '../tools/AgentTool/loadAgentsDir.js'
+import {
   getHooksConfigFromSnapshot,
   shouldAllowManagedHooksOnly,
   shouldDisableAllHooksIncludingManaged,
@@ -343,6 +348,44 @@ export function shouldSkipHookDueToTrust(): boolean {
   // In interactive mode, ALL hooks require trust
   const hasTrust = checkHasTrustDialogAccepted()
   return !hasTrust
+}
+
+/**
+ * CC 2.1.218 #23: Skip frontmatter hooks for an agent whose origin folder is
+ * not trusted. Logs the official's verbatim message and emits telemetry.
+ * Mirrors the official's `pAo()` function.
+ *
+ * @param agentDef The agent definition (needs agentType, source, baseDir)
+ * @param surface 'subagent' or 'mainThread' — affects the message wording
+ */
+export function skipFrontmatterHooksForUntrustedOrigin(
+  agentDef: {
+    agentType: string
+    source: string | undefined
+    baseDir?: string
+  },
+  surface: 'subagent' | 'mainThread',
+): void {
+  const trustKey = getAgentHookTrustKey(agentDef)
+  const sanitizedKey = sanitizeTrustKey(trustKey)
+  const agentLabel =
+    surface === 'mainThread' ? 'main-thread agent' : 'agent'
+  const configPath = getGlobalConfigFilePath()
+
+  logForDebugging(
+    `Skipping frontmatter hooks for ${agentLabel} '${agentDef.agentType}': the folder its definition file came from is not trusted (source: ${agentDef.source}, trust key: ${sanitizedKey}). Run Claude Code there once and accept the trust dialog, or set projects[${sanitizedKey}].hasTrustDialogAccepted: true in ${configPath}.`,
+    { level: 'error' },
+  )
+  logEvent('tengu_agent_hooks_origin_untrusted', {
+    source: String(agentDef.source) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    surface: surface as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    // TODO: fromAdditionalDirectory is currently always false. When the
+    // additional-directory agent/skill/command discovery feature lands
+    // (--add-dir), this MUST be computed from the agent definition's
+    // fromAdditionalDirectory metadata field — don't silently leave it false.
+    fromAdditionalDirectory:
+      'false' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  })
 }
 
 /**
