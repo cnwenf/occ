@@ -9,7 +9,7 @@
 //
 // Official thresholds (verbatim from the binary):
 //   NYd = 86_400_000          // one day in ms
-//   OYd = 5 * NYd             // warn window: 5 days
+//   OYd = 3 * NYd             // warn window: 3 days (2.1.217 #16, was 5)
 //   slr():
 //     - require firstParty (Claude.ai) OAuth AND mE() (claude.ai subscriber)
 //     - require refreshTokenExpiresAt to be a number
@@ -28,8 +28,9 @@ import type { OAuthTokens } from '../services/oauth/types.js'
 
 /** One day in milliseconds. */
 export const MS_PER_DAY = 86_400_000
-/** Warn window: a login expiring within this many ms triggers the warning. */
-export const LOGIN_EXPIRY_WARN_WINDOW_MS = 5 * MS_PER_DAY
+/** Warn window: a login expiring within this many ms triggers the warning.
+ * 2.1.217 #16: narrowed from 5 days to 3 days before expiry. */
+export const LOGIN_EXPIRY_WARN_WINDOW_MS = 3 * MS_PER_DAY
 
 export type OAuthLoginExpiryInfo = {
   /** Whole days left until the refresh token (login) expires (always >= 1). */
