@@ -9,7 +9,8 @@ import { setClipboard } from '../../ink/termio/osc.js';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw j/k/arrow menu navigation
 import { Box, color, Link, Text, useInput, useTheme } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { AuthenticationCancelledError, performMCPOAuthFlow, revokeServerTokens } from '../../services/mcp/auth.js';
+import { AuthenticationCancelledError, captureServerTokenData, performMCPOAuthFlow, revokeServerTokens } from '../../services/mcp/auth.js';
+import { reauthenticateWithSafeOrdering } from '../../services/mcp/reauthOrdering.js';
 import { clearServerCache } from '../../services/mcp/client.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
 import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../services/mcp/utils.js';
@@ -260,18 +261,28 @@ export function MCPRemoteServerMenu({
     const controller = new AbortController();
     authAbortControllerRef.current = controller;
     try {
-      // Revoke existing tokens if re-authenticating, but preserve step-up
-      // auth state so the next OAuth flow can reuse cached scope/discovery.
-      if (server.isAuthenticated && server.config) {
-        await revokeServerTokens(server.name, server.config, {
-          preserveStepUpState: true
-        });
-      }
+      // 2.1.216 #19 — capture old tokens BEFORE the new sign-in so they
+      // can be revoked AFTER it succeeds. Previously, revokeServerTokens
+      // ran before performMCPOAuthFlow, so a failed/cancelled re-auth
+      // left the user credentialless (server-side tokens irreversibly
+      // revoked + local tokens cleared).
+      const capturedOldTokens = server.isAuthenticated && server.config
+        ? captureServerTokenData(server.name, server.config)
+        : undefined;
+
       if (server.config) {
-        await performMCPOAuthFlow(server.name, server.config, setAuthorizationUrl, controller.signal, {
-          onWaitingForCallback: submit => {
-            setManualCallbackSubmit(() => submit);
-          }
+        // Complete the new sign-in FIRST; only revoke old tokens after
+        // success. If the sign-in fails, old credentials remain intact.
+        await reauthenticateWithSafeOrdering({
+          wasAuthenticated: server.isAuthenticated,
+          performNewSignIn: () => performMCPOAuthFlow(server.name, server.config, setAuthorizationUrl, controller.signal, {
+            onWaitingForCallback: submit => {
+              setManualCallbackSubmit(() => submit);
+            }
+          }),
+          revokeOldTokens: () => revokeServerTokens(server.name, server.config, {
+            capturedTokenData: capturedOldTokens
+          }),
         });
         logEvent('tengu_mcp_auth_config_authenticate', {
           wasAuthenticated: server.isAuthenticated

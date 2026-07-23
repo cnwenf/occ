@@ -459,23 +459,16 @@ async function revokeToken({
 }
 
 /**
- * Revokes tokens on the OAuth server if a revocation endpoint is available.
- * Per RFC 7009, we revoke the refresh token first (the long-lived credential),
- * then the access token. Revoking the refresh token prevents generation of new
- * access tokens and many servers implicitly invalidate associated access tokens.
+ * Performs best-effort server-side RFC 7009 token revocation for the given
+ * token data. Does NOT clear local storage — the caller is responsible for
+ * that. Extracted from `revokeServerTokens` so it can be reused for
+ * post-success revocation of old (captured) tokens (2.1.216 #19).
  */
-export async function revokeServerTokens(
+async function revokeServerSideTokens(
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
-  { preserveStepUpState = false }: { preserveStepUpState?: boolean } = {},
+  tokenData: Record<string, unknown> | undefined,
 ): Promise<void> {
-  const storage = getSecureStorage()
-  const existingData = storage.read()
-  if (!existingData?.mcpOAuth) return
-
-  const serverKey = getServerKey(serverName, serverConfig)
-  const tokenData = existingData.mcpOAuth[serverKey]
-
   // Attempt server-side revocation if there are tokens to revoke (best-effort)
   if (tokenData?.accessToken || tokenData?.refreshToken) {
     try {
@@ -571,6 +564,47 @@ export async function revokeServerTokens(
   } else {
     logMCPDebug(serverName, 'No tokens to revoke')
   }
+}
+
+/**
+ * Revokes tokens on the OAuth server if a revocation endpoint is available.
+ * Per RFC 7009, we revoke the refresh token first (the long-lived credential),
+ * then the access token. Revoking the refresh token prevents generation of new
+ * access tokens and many servers implicitly invalidate associated access tokens.
+ *
+ * When `capturedTokenData` is provided (2.1.216 #19), only the server-side
+ * revocation of those specific (old) tokens is performed — local storage is
+ * NOT cleared and step-up state is NOT rewritten. This is used after a
+ * successful re-authentication to revoke the previous credentials without
+ * touching the newly-stored tokens.
+ */
+export async function revokeServerTokens(
+  serverName: string,
+  serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
+  {
+    preserveStepUpState = false,
+    capturedTokenData,
+  }: {
+    preserveStepUpState?: boolean
+    capturedTokenData?: Record<string, unknown>
+  } = {},
+): Promise<void> {
+  // When called with captured (old) token data, use that instead of reading
+  // current local storage — the new sign-in may have already overwritten it.
+  if (capturedTokenData) {
+    await revokeServerSideTokens(serverName, serverConfig, capturedTokenData)
+    return
+  }
+
+  const storage = getSecureStorage()
+  const existingData = storage.read()
+  if (!existingData?.mcpOAuth) return
+
+  const serverKey = getServerKey(serverName, serverConfig)
+  const tokenData = existingData.mcpOAuth[serverKey]
+
+  // Server-side revocation (best-effort, does not touch local storage).
+  await revokeServerSideTokens(serverName, serverConfig, tokenData)
 
   // Always clear local tokens, regardless of server-side revocation result.
   clearServerTokensFromLocalStorage(serverName, serverConfig)
@@ -631,6 +665,24 @@ export function clearServerTokensFromLocalStorage(
     storage.update(existingData)
     logMCPDebug(serverName, 'Cleared stored tokens')
   }
+}
+
+/**
+ * Captures the current token data for a server so it can be revoked
+ * AFTER a new sign-in succeeds (2.1.216 #19). The returned snapshot
+ * is passed to `revokeServerTokens` via the `capturedTokenData` option,
+ * which performs server-side revocation only (no local clear) — the new
+ * tokens already in local storage are left untouched.
+ */
+export function captureServerTokenData(
+  serverName: string,
+  serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
+): Record<string, unknown> | undefined {
+  const storage = getSecureStorage()
+  const existingData = storage.read()
+  if (!existingData?.mcpOAuth) return undefined
+  const serverKey = getServerKey(serverName, serverConfig)
+  return existingData.mcpOAuth[serverKey]
 }
 
 type WWWAuthenticateParams = {
