@@ -564,6 +564,80 @@ async function uploadTeamMemory(
  * (not uploaded) and collected in skippedSecrets so the caller can
  * warn the user.
  */
+/**
+ * Iteratively walk a directory tree rooted at `root`, invoking `onFile` for
+ * every regular file. Directories are descended via an explicit queue (BFS)
+ * so the traversal does NOT recurse — a deeply-nested watched directory tree
+ * (e.g. deleted/moved under the fs.watch watcher) cannot overflow the JS
+ * call stack.
+ *
+ * Claude Code 2.1.218 #16 (directory-tree half): "Fixed crashes (maximum call
+ * stack exceeded) when a deeply nested watched directory tree was deleted or
+ * moved." The pre-fix walk recursed (`await walkDir(fullPath)`); this
+ * iterative form is the ported guard. Per-directory file reads still run
+ * concurrently via `Promise.all` to preserve the prior read-throughput shape;
+ * only directory DESCENT was de-recursed.
+ *
+ * `readdirImpl` is injectable for testing (synthetic deep trees beyond the host
+ * filesystem PATH_MAX). Callers use the real `readdir` from `fs/promises`.
+ *
+ * Readdir errors for a single directory (ENOENT / EACCES / EPERM — e.g. the
+ * directory was deleted/moved mid-walk) are swallowed to match the prior
+ * behavior; any other error rethrows. Errors from `onFile` are swallowed per
+ * file so one unreadable file doesn't abort the walk (prior behavior).
+ */
+export async function walkTeamMemoryTree(
+  root: string,
+  onFile: (fullPath: string) => Promise<void>,
+  readdirImpl: (
+    dir: string,
+    opts: { withFileTypes: true },
+  ) => Promise<import('fs').Dirent[]> = readdir as unknown as (
+    dir: string,
+    opts: { withFileTypes: true },
+  ) => Promise<import('fs').Dirent[]>,
+): Promise<void> {
+  // BFS queue — never grows the native call stack with nesting depth.
+  const queue: string[] = [root]
+  while (queue.length > 0) {
+    const dir = queue.shift()!
+    let dirEntries: import('fs').Dirent[]
+    try {
+      dirEntries = await readdirImpl(dir, { withFileTypes: true })
+    } catch (e) {
+      if (isErrnoException(e)) {
+        if (
+          e.code === 'ENOENT' ||
+          e.code === 'EACCES' ||
+          e.code === 'EPERM'
+        ) {
+          continue
+        }
+      }
+      throw e
+    }
+    // Preserve per-directory concurrency for file reads (prior shape).
+    const fileTasks: Promise<void>[] = []
+    for (const entry of dirEntries) {
+      const fullPath = join(dir, entry.name)
+      if (entry.isDirectory()) {
+        queue.push(fullPath)
+      } else if (entry.isFile()) {
+        fileTasks.push(
+          (async () => {
+            try {
+              await onFile(fullPath)
+            } catch {
+              // Skip unreadable files — prior behavior.
+            }
+          })(),
+        )
+      }
+    }
+    await Promise.all(fileTasks)
+  }
+}
+
 async function readLocalTeamMemory(maxEntries: number | null): Promise<{
   entries: Record<string, string>
   skippedSecrets: SkippedSecretFile[]
@@ -572,67 +646,42 @@ async function readLocalTeamMemory(maxEntries: number | null): Promise<{
   const entries: Record<string, string> = {}
   const skippedSecrets: SkippedSecretFile[] = []
 
-  async function walkDir(dir: string): Promise<void> {
-    try {
-      const dirEntries = await readdir(dir, { withFileTypes: true })
-      await Promise.all(
-        dirEntries.map(async entry => {
-          const fullPath = join(dir, entry.name)
-          if (entry.isDirectory()) {
-            await walkDir(fullPath)
-          } else if (entry.isFile()) {
-            try {
-              const stats = await stat(fullPath)
-              if (stats.size > MAX_FILE_SIZE_BYTES) {
-                logForDebugging(
-                  `team-memory-sync: skipping oversized file ${entry.name} (${stats.size} > ${MAX_FILE_SIZE_BYTES} bytes)`,
-                  { level: 'info' },
-                )
-                return
-              }
-              const content = await readFile(fullPath, 'utf8')
-              const relPath = relative(teamDir, fullPath).replaceAll('\\', '/')
-
-              // PSR M22174: scan for secrets BEFORE adding to the upload
-              // payload. If a secret is detected, skip this file entirely
-              // so it never leaves the machine.
-              const secretMatches = scanForSecrets(content)
-              if (secretMatches.length > 0) {
-                // Report only the first match per file — one secret is
-                // enough to skip the file and we don't want to log more
-                // than necessary about credential locations.
-                const firstMatch = secretMatches[0]!
-                skippedSecrets.push({
-                  path: relPath,
-                  ruleId: firstMatch.ruleId,
-                  label: firstMatch.label,
-                })
-                logForDebugging(
-                  `team-memory-sync: skipping "${relPath}" — detected ${firstMatch.label}`,
-                  { level: 'warn' },
-                )
-                return
-              }
-
-              entries[relPath] = content
-            } catch {
-              // Skip unreadable files
-            }
-          }
-        }),
+  await walkTeamMemoryTree(teamDir, async fullPath => {
+    const stats = await stat(fullPath)
+    if (stats.size > MAX_FILE_SIZE_BYTES) {
+      const name = fullPath.split(sep).pop() ?? fullPath
+      logForDebugging(
+        `team-memory-sync: skipping oversized file ${name} (${stats.size} > ${MAX_FILE_SIZE_BYTES} bytes)`,
+        { level: 'info' },
       )
-    } catch (e) {
-      if (isErrnoException(e)) {
-        if (e.code !== 'ENOENT' && e.code !== 'EACCES' && e.code !== 'EPERM') {
-          throw e
-        }
-      } else {
-        throw e
-      }
+      return
     }
-  }
+    const content = await readFile(fullPath, 'utf8')
+    const relPath = relative(teamDir, fullPath).replaceAll('\\', '/')
 
-  await walkDir(teamDir)
+    // PSR M22174: scan for secrets BEFORE adding to the upload payload.
+    // If a secret is detected, skip this file entirely so it never
+    // leaves the machine.
+    const secretMatches = scanForSecrets(content)
+    if (secretMatches.length > 0) {
+      // Report only the first match per file — one secret is enough to
+      // skip the file and we don't want to log more than necessary
+      // about credential locations.
+      const firstMatch = secretMatches[0]!
+      skippedSecrets.push({
+        path: relPath,
+        ruleId: firstMatch.ruleId,
+        label: firstMatch.label,
+      })
+      logForDebugging(
+        `team-memory-sync: skipping "${relPath}" — detected ${firstMatch.label}`,
+        { level: 'warn' },
+      )
+      return
+    }
+
+    entries[relPath] = content
+  })
 
   // Truncate only if we've LEARNED a cap from the server (via a structured
   // 413's extra_details.max_entries — anthropic/anthropic#293258).  The
