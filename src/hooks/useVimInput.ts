@@ -33,6 +33,7 @@ import {
   replayVisualReplace,
   type OperatorContext,
 } from '../vim/operators.js'
+import { upgradeLastChangeOnInsertExit } from '../vim/lastChangeUpgrade.js'
 import {
   type TransitionContext,
   transition,
@@ -132,33 +133,16 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       pendingRemapRef.current = null
       const current = vimStateRef.current
     if (current.mode === 'INSERT') {
-      const last = persistentRef.current.lastChange
-      // 2.1.118: When exiting INSERT after a visual change (vc/Vc), capture
-      // the typed text into a visualChange record for dot-repeat.
-      // Binary: `if($?.type==="visualOp"&&$.op==="change")...visualChange`
-      if (last?.type === 'visualOp' && last.op === 'change') {
-        persistentRef.current.lastChange = {
-          type: 'visualChange',
-          span: last.span,
-          linewise: last.linewise,
-          text: current.insertedText ?? '',
-        }
-      } else if (last?.type === 'operator' && last.op === 'change') {
-        // CC 2.1.216 #6 (b): capture the typed text for `c`-operator
-        // dot-repeat. Without this, `.` after `cw{text}<Esc>` re-deletes
-        // the range and enters INSERT but does NOT re-insert the text.
-        persistentRef.current.lastChange = {
-          type: 'operatorChange',
-          op: last.op,
-          motion: last.motion,
-          count: last.count,
-          text: current.insertedText ?? '',
-        }
-      } else if (current.insertedText) {
-        persistentRef.current.lastChange = {
-          type: 'insert',
-          text: current.insertedText,
-        }
+      // CC 2.1.216 #6 (b): upgrade lastChange for dot-repeat on INSERT-exit.
+      // Extracted to a pure helper so the upgrade decision — incl. the
+      // `cc`/`S` line-op guard that prevents `replayOperatorChange` from
+      // clearing the register via a no-op pseudo-motion — is unit-testable.
+      const upgraded = upgradeLastChangeOnInsertExit(
+        persistentRef.current.lastChange,
+        current.insertedText ?? '',
+      )
+      if (upgraded) {
+        persistentRef.current.lastChange = upgraded
       }
     }
 
