@@ -665,6 +665,7 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
         )
         expect(b!.mechanism).toBe('sh (stdin: pipe)')
         expect(b!.reason).toContain('stdin')
+        expect(b!.reason).not.toContain('GIT_DIR')
       })
 
       test('cat script.sh | bash (pipe) -> block', () => {
@@ -674,6 +675,7 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
           CWD,
         )
         expect(b!.mechanism).toBe('bash (stdin: pipe)')
+        expect(b!.reason).not.toContain('GIT_DIR')
       })
 
       test('bash < script.sh (redirect) -> block', () => {
@@ -699,6 +701,7 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
         expect(b!.mechanism).toBe('bash (stdin: process substitution)')
         expect(b!.reason).toContain('stdin')
         expect(b!.reason).toContain('process substitution')
+        expect(b!.reason).not.toContain('GIT_DIR')
       })
 
       test('bash < /shared/evil.sh (absolute redirect) -> block', () => {
@@ -708,6 +711,7 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
           CWD,
         )
         expect(b!.mechanism).toBe('bash (stdin: redirect)')
+        expect(b!.reason).not.toContain('GIT_DIR')
       })
 
       test("echo 'git …' | bash -l (pipe to login shell) -> block", () => {
@@ -719,6 +723,7 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
           CWD,
         )
         expect(b!.mechanism).toBe('bash (stdin: pipe)')
+        expect(b!.reason).not.toContain('GIT_DIR')
       })
     })
 
@@ -744,6 +749,104 @@ describe('CC 2.1.216 #8 — worktree git-redirect guard', () => {
         )
         expect(b!.mechanism).toBe('runuser -c')
         expect(b!.reason).toContain('runuser -c')
+        expect(b!.reason).not.toContain('GIT_DIR')
+      })
+    })
+
+    // P1/P2 (reviewer repass): the `<`-family beyond plain `<` and `<(` —
+    // here-string `<<<`, heredoc `<<`/`<<-`, fd-dup `<&`. shell-quote emits
+    // `<<<`/`<&` as single ops (the prior exact-`=== '<'` match missed them
+    // → P1 escape), and `<<` as two `<` ops (only coincidentally blocked, no
+    // test pinned it). Now matched by `startsWith('<')` so all are covered
+    // and a future shell-quote single-`<<` op can't reopen the gap.
+    describe('blocks the rest of the < family (here-string / heredoc / fd-dup)', () => {
+      test("bash <<< 'git …' (here-string) -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `bash <<< 'git -C ${SHARED} status'`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('bash (stdin: here-string)')
+        expect(b!.reason).toContain('stdin')
+        expect(b!.reason).toContain('here-string')
+        expect(b!.reason).not.toContain('GIT_DIR')
+      })
+
+      test("sudo bash <<< 'git …' (wrapper + here-string) -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `sudo bash <<< 'git -C ${SHARED} status'`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash (stdin: here-string)')
+      })
+
+      test("env bash <<< 'git …' (env wrapper + here-string) -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `env bash <<< 'git -C ${SHARED} status'`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash (stdin: here-string)')
+      })
+
+      test("exec bash <<< 'git …' (exec wrapper + here-string) -> block", () => {
+        const b = checkWorktreeGitRedirect(
+          `exec bash <<< 'git -C ${SHARED} status'`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b!.mechanism).toBe('bash (stdin: here-string)')
+      })
+
+      test("bash <<'EOF'… (heredoc, quoted delim) -> block", () => {
+        // shell-quote splits `<<` into two `<` ops; the first flushes the
+        // `bash` span as stdin-fed. Pinned so a future single-`<<` op stays
+        // covered (startsWith('<') matches either form).
+        const b = checkWorktreeGitRedirect(
+          `bash <<'EOF'\ngit -C ${SHARED} status\nEOF`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('bash (stdin: redirect)')
+        expect(b!.reason).toContain('stdin')
+        expect(b!.reason).not.toContain('GIT_DIR')
+      })
+
+      test('bash <<-EOF… (dedent heredoc) -> block', () => {
+        const b = checkWorktreeGitRedirect(
+          `bash <<-EOF\ngit -C ${SHARED} status\nEOF`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('bash (stdin: redirect)')
+      })
+
+      test('exec 3< file; bash <&3 (fd-dup) -> block', () => {
+        // `bash <&3` reads fd 3 as stdin; fd 3 was opened to an external
+        // script by the prior `exec 3<`. shell-quote emits `<&` as a single
+        // op — the prior exact match missed it (P2 escape). Now blocked.
+        const b = checkWorktreeGitRedirect(
+          `exec 3< ${SHARED}/evil.sh; bash <&3`,
+          WORKTREE,
+          CWD,
+        )
+        expect(b).not.toBeNull()
+        expect(b!.mechanism).toBe('bash (stdin: fd-dup)')
+        expect(b!.reason).toContain('stdin')
+        expect(b!.reason).toContain('fd-dup')
+        expect(b!.reason).not.toContain('GIT_DIR')
+      })
+
+      test('bash >&2 (OUTPUT redirect) -> ok (not a stdin feed)', () => {
+        // `>&` starts with `>`, not `<` — stdout fd-dup, must NOT be flagged
+        // as stdin-fed. `bash >&2` with no payload is a REPL anyway.
+        expect(
+          checkWorktreeGitRedirect(`bash >&2`, WORKTREE, CWD),
+        ).toBeNull()
       })
     })
 

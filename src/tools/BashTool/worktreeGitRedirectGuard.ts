@@ -79,10 +79,30 @@ interface ArgvSpan {
   argv: string[]
   /** This span receives its stdin from a pipe (preceded by a `|` operator). */
   stdinFromPipe: boolean
-  /** A `<` redirection attaches to this span (reads a script file from stdin). */
-  stdinFromRedirect: boolean
-  /** A `<(...)` process substitution feeds this span's stdin. */
-  stdinFromProcsub: boolean
+  /**
+   * The `<`-family operator that flushed this span and feeds its stdin, or
+   * null. shell-quote emits these as single ops: `<` (redirect), `<<<`
+   * (here-string), `<<` (heredoc — currently split into two `<` ops, but
+   * matched by the prefix check either way), `<<-` (dedent heredoc), `<&`
+   * (fd-dup), `<(` (process substitution). Output redirections (`>`, `>>`,
+   * `>&`) start with `>` and are excluded — they don't feed stdin.
+   */
+  stdinFeedOp: string | null
+}
+
+/**
+ * Map a stdin-feeding operator to the user-facing source label embedded in
+ * the block's mechanism/reason (Follow-up B). Distinct labels = honest
+ * reporting, not a lumped "redirect".
+ */
+function stdinSourceLabel(op: string): string {
+  if (op === '<(') return 'process substitution'
+  if (op === '<<<') return 'here-string'
+  if (op === '<&') return 'fd-dup'
+  // `<`, or the first `<` of a `<<`/`<<-` heredoc (shell-quote splits
+  // heredoc into two `<` ops, so the stored op is `<`). Both feed stdin
+  // from a redirected source — "redirect" is accurate for both.
+  return 'redirect'
 }
 
 /**
@@ -91,10 +111,13 @@ interface ArgvSpan {
  * returns an empty list — callers treat parse-failure as fail-closed via
  * the existing redirect-safety path, not here.
  *
- * Spans carry stdin-source flags (Follow-up B): a `<`/`<(` operator that
+ * Spans carry stdin-source info (Follow-up B): any `<`-family operator that
  * flushes a span marks THAT span as reading a script from stdin (the
- * redirection attaches to the preceding command, e.g. `bash < script.sh`);
- * a `|` operator marks the NEXT span as a pipe-receiver (`echo … | bash`).
+ * redirection attaches to the preceding command, e.g. `bash < script.sh`,
+ * `bash <<< '…'`, `bash <&3`); a `|` operator marks the NEXT span as a
+ * pipe-receiver (`echo … | bash`). The op is matched by `startsWith('<')`
+ * (NOT exact `=== '<'`) so `<<<`/`<<`/`<<-`/`<&` are covered and a future
+ * shell-quote change to a single `<<` op can't silently reopen the gap.
  */
 function commandToArgvSpans(command: string): ArgvSpan[] {
   const parsed = tryParseShellCommand(command, (env: string) => `$${env}`)
@@ -109,8 +132,8 @@ function commandToArgvSpans(command: string): ArgvSpan[] {
     spans.push({
       argv: cur,
       stdinFromPipe: nextSpanPipeRecv,
-      stdinFromRedirect: flushingOp === '<',
-      stdinFromProcsub: flushingOp === '<(',
+      stdinFeedOp:
+        flushingOp !== null && flushingOp.startsWith('<') ? flushingOp : null,
     })
     cur = []
     nextSpanPipeRecv = false
@@ -125,7 +148,7 @@ function commandToArgvSpans(command: string): ArgvSpan[] {
     } else if (tok && typeof tok === 'object' && 'op' in tok) {
       const op = (tok as { op: string }).op
       // operator boundary (&&, ||, ;, |, <, >, <(, ), …) — flush current
-      // span. A `<`/`<(` flushing op marks the flushed span as
+      // span. A `<`-family flushing op marks the flushed span as
       // stdin-fed (the redirect attaches to the preceding command).
       flush(op)
       if (op === '|') nextSpanPipeRecv = true
@@ -311,21 +334,19 @@ function findShellEscapeIdx(argv: string[]): number {
 /**
  * Per-span stdin-source context for `checkShellWrapperObfuscation` (Follow-up
  * B): tells the shell-escape check whether the span's shell reads its script
- * from a non-REPL stdin source (pipe / `<` redirect / `<(` process
- * substitution). When it does, and the shell has no `-c`/scriptfile, the
- * payload can't be verified → block (same "unverifiable payload" principle as
- * `bash -c`).
+ * from a non-REPL stdin source — a pipe, or any `<`-family redirect
+ * (`<`/`<<<`/`<<`/`<<-`/`<&`/`<(`). When it does, and the shell has no
+ * `-c`/scriptfile, the payload can't be verified → block (same
+ * "unverifiable payload" principle as `bash -c`).
  */
 interface ShellWrapperCtx {
   stdinFromPipe: boolean
-  stdinFromRedirect: boolean
-  stdinFromProcsub: boolean
+  stdinFeedOp: string | null
 }
 
 const EMPTY_CTX: ShellWrapperCtx = {
   stdinFromPipe: false,
-  stdinFromRedirect: false,
-  stdinFromProcsub: false,
+  stdinFeedOp: null,
 }
 
 /**
@@ -387,20 +408,18 @@ function checkShellWrapperObfuscation(
       }
     }
     // Follow-up B: no `-c`/scriptfile, but the shell reads its script from a
-    // non-REPL stdin source (pipe / `<` redirect / `<(` process
-    // substitution). shell-quote doesn't surface the piped payload, so OCC
-    // can't verify it stays inside the worktree → direct escape, same class
-    // as `bash -c`. REPL (`bash`, `bash -l`, `bash -i` with no stdin feed)
-    // is NOT blocked here.
-    const stdinFed =
-      ctx.stdinFromPipe || ctx.stdinFromRedirect || ctx.stdinFromProcsub
+    // non-REPL stdin source — a pipe (`echo … | bash`), a `<`/`<<<`/`<<`/
+    // `<<-` redirect/heredoc/here-string, a `<&` fd-dup, or a `<(`
+    // process substitution. shell-quote doesn't surface the fed payload,
+    // so OCC can't verify it stays inside the worktree → direct escape, same
+    // class as `bash -c`. REPL (`bash`, `bash -l`, `bash -i` with no stdin
+    // feed) is NOT blocked here.
+    const stdinFed = ctx.stdinFromPipe || ctx.stdinFeedOp !== null
     if (stdinFed) {
       const name = basename(argv[shellIdx])
       const source = ctx.stdinFromPipe
         ? 'pipe'
-        : ctx.stdinFromProcsub
-          ? 'process substitution'
-          : 'redirect'
+        : stdinSourceLabel(ctx.stdinFeedOp!)
       return {
         mechanism: `${name} (stdin: ${source})`,
         reason: `reads a script from stdin (${source}), which can't be verified to stay inside the worktree; run the command directly instead`,
@@ -477,8 +496,7 @@ export function checkWorktreeGitRedirect(
     //    script from a pipe/`<`/`<(` (and `su -c`/`runuser -c`) is also caught.
     const ozgBlock = checkShellWrapperObfuscation(argv, {
       stdinFromPipe: spans[f].stdinFromPipe,
-      stdinFromRedirect: spans[f].stdinFromRedirect,
-      stdinFromProcsub: spans[f].stdinFromProcsub,
+      stdinFeedOp: spans[f].stdinFeedOp,
     })
     if (ozgBlock) return ozgBlock
 
