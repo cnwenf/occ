@@ -10,11 +10,11 @@ import { REPO_ROOT } from './helpers';
  *
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
- * -p`. Verifies the condensed logo (default) and the forced full logo both
- * render the brand, version, context, and a welcome tip — and that the doge
- * mascot art is present (ears + snout + tail glyphs).
+ * -p`. Verifies the responsive condensed welcome (wide / compact / plain) and
+ * the forced full logo. The condensed path renders OCC's wordmark, context,
+ * and a session-stable tip; the full path keeps the two-tone doge mascot.
  *
- * Gated out of CI (needs tmux + model creds).
+ * Gated out of CI because it requires tmux; no model call is made.
  */
 
 const BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;
@@ -90,6 +90,7 @@ function startRepl(
   const env: Record<string, string | undefined> = {
     ...process.env,
     HOME: home,
+    TERM: 'xterm-256color',
     ...extraEnv,
   };
   delete env.ANTHROPIC_API_KEY;
@@ -101,15 +102,18 @@ function startRepl(
     `tmux new-session -d -s ${SESSION} -x ${width} -y 50 "env ${envStr} ${BIN} --dangerously-skip-permissions"`,
     { timeout: 5_000 },
   );
+  tmux(['resize-window', '-t', SESSION, '-x', String(width), '-y', '50']);
 }
 
-// Doge art glyphs that must appear in the welcome pane (ears, snout, tail).
+const OCC_WORDMARK = '___   ___   ___';
+
+// Doge art glyphs that must remain in the forced full-logo pane.
 const DOGE_GLYPHS = ['/\\___/\\', '=w=', '~~'];
 
 describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => {
-  test('condensed logo renders brand, version, context, tip, and doge', async () => {
+  test('wide welcome renders brand, version, context, tip, and wordmark', async () => {
     const home = freshSeededHome('2.1.276');
-    startRepl(home);
+    startRepl(home, {}, 100);
     try {
       // Wait for the REPL prompt / welcome to paint.
       await waitForText('occ', 20_000);
@@ -119,6 +123,8 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => 
       // Brand + version.
       expect(pane.toLowerCase()).toContain('occ');
       expect(pane).toContain('v2.1.276');
+      expect(pane).toContain(OCC_WORDMARK);
+      expect(pane).toContain('Open C Code');
       // One of the welcome tips is shown.
       const tipShown = [
         'press / for commands',
@@ -131,10 +137,6 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => 
         'press esc twice',
       ].some((t) => pane.toLowerCase().includes(t));
       expect(tipShown).toBe(true);
-      // Doge mascot glyphs present.
-      for (const glyph of DOGE_GLYPHS) {
-        expect(pane).toContain(glyph);
-      }
     } finally {
       killRepl();
       rmSync(home, { recursive: true, force: true });
@@ -162,16 +164,35 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-18)', () => 
     }
   });
 
-  test('narrow terminal does not crash / tear the welcome layout', async () => {
+  test('compact terminal keeps the wordmark without overflowing', async () => {
     const home = freshSeededHome('2.1.276');
-    startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' }, 60);
+    startRepl(home, {}, 60);
     try {
       await waitForText('occ', 20_000);
       await new Promise((r) => setTimeout(r, 800));
       const pane = capturePane();
-      // Still renders brand + doge ears without crashing.
+      // Still renders the brand and stacked wordmark without crashing.
       expect(pane.toLowerCase()).toContain('occ');
-      expect(pane).toContain('/\\___/\\');
+      expect(pane).toContain(OCC_WORDMARK);
+      expect(pane).toContain('Open C Code');
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('very narrow terminal falls back to plain ASCII-safe output', async () => {
+    const home = freshSeededHome('2.1.276');
+    startRepl(home, {}, 36);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      expect(pane).toContain('OCC v2.1.276');
+      expect(pane).toContain('Open C Code');
+      expect(pane).not.toContain(OCC_WORDMARK);
+      expect(pane).not.toContain('╭');
     } finally {
       killRepl();
       rmSync(home, { recursive: true, force: true });

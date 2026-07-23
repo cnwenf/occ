@@ -41,6 +41,7 @@ execution — Biome lint is the gate, not `tsc`.
 | [workflows.md](./workflows.md) | Workflow engine, VM sandbox, primitives, journal, async launch |
 | [daemon.md](./daemon.md) | Daemon supervisor, workers, lockfile, FleetView, remote control |
 | [keybindings.md](./keybindings.md) | Keybinding contexts, default bindings, vim mode |
+| [repl-welcome.md](./repl-welcome.md) | Startup welcome hierarchy, responsive tiers, motion, compatibility |
 | [configuration.md](./configuration.md) | Settings hierarchy, feature flags, env vars, providers |
 | [build-and-runtime.md](./build-and-runtime.md) | Bun runtime, build pipeline, entrypoints, polyfills |
 
