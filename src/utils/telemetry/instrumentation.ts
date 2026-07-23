@@ -60,6 +60,7 @@ import { jsonStringify } from '../slowOperations.js'
 import { profileCheckpoint } from '../startupProfiler.js'
 import { isBetaTracingEnabled } from './betaSessionTracing.js'
 import { BigQueryMetricsExporter } from './bigqueryExporter.js'
+import { createPrometheusExporterWithoutUnitLines } from './prometheusExporter.js'
 import { ClaudeCodeDiagLogger } from './logger.js'
 import { initializePerfettoTracing } from './perfettoTracing.js'
 import {
@@ -203,10 +204,13 @@ async function getOtlpReaders() {
           )
       }
     } else if (exporterType === 'prometheus') {
-      const { PrometheusExporter } = await import(
-        '@opentelemetry/exporter-prometheus'
+      // 2.1.216 #26 — The library PrometheusSerializer emits `# UNIT` comment
+      // lines that are invalid for the `text/plain` content-type the exporter
+      // sets. Wrap the exporter so its serialized output never contains a
+      // `# UNIT` line.
+      exporters.push(
+        await createPrometheusExporterWithoutUnitLines(),
       )
-      exporters.push(new PrometheusExporter())
     } else {
       throw new Error(
         `Unknown exporter type set in OTEL_EXPORTER_OTLP_METRICS_PROTOCOL or OTEL_EXPORTER_OTLP_PROTOCOL env var: ${exporterType}`,
