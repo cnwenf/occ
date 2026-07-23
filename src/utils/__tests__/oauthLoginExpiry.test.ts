@@ -67,7 +67,7 @@ test('suppresses when the access token outlives the refresh token by more than t
 })
 
 test('does NOT suppress when the access token is within the warn window past refresh expiry', () => {
-  // expiresAt is 3 days past refreshTokenExpiresAt (<= 5 days) → guard does not fire.
+  // expiresAt is 3 days past refreshTokenExpiresAt (== warn window) → guard does not fire.
   const refreshExpiry = NOW + 1 * MS_PER_DAY
   const tokens = tokenWith(refreshExpiry, refreshExpiry + 3 * MS_PER_DAY)
   const result = computeOAuthLoginExpiry(tokens, SUBSCRIBER_CTX, NOW)
@@ -75,12 +75,40 @@ test('does NOT suppress when the access token is within the warn window past ref
   expect(result?.daysLeft).toBe(1)
 })
 
-// -- threshold boundaries (faithful to slr: warn when 0 < remaining <= 5d) ---
+// -- threshold boundaries (faithful to slr: warn when 0 < remaining <= 3d) ---
+// 2.1.217 #16: warn window narrowed from 5 days to 3 days before expiry.
 
-test('returns null when more than 5 days remain', () => {
+test('returns null when more than 3 days remain', () => {
   expect(
-    computeOAuthLoginExpiry(tokenWith(NOW + 6 * MS_PER_DAY), SUBSCRIBER_CTX, NOW),
+    computeOAuthLoginExpiry(tokenWith(NOW + 4 * MS_PER_DAY), SUBSCRIBER_CTX, NOW),
   ).toBeNull()
+})
+
+// 2.1.217 #16 behavior change: 4 days before expiry no longer warns (was 5d).
+test('does NOT warn at 4 days before expiry (narrowed from 5d to 3d)', () => {
+  expect(
+    computeOAuthLoginExpiry(tokenWith(NOW + 4 * MS_PER_DAY), SUBSCRIBER_CTX, NOW),
+  ).toBeNull()
+})
+
+test('warns at exactly 3 days before expiry (the new boundary)', () => {
+  const result = computeOAuthLoginExpiry(
+    tokenWith(NOW + 3 * MS_PER_DAY),
+    SUBSCRIBER_CTX,
+    NOW,
+  )
+  expect(result).not.toBeNull()
+  expect(result?.daysLeft).toBe(3)
+})
+
+test('warns at 2 days before expiry', () => {
+  const result = computeOAuthLoginExpiry(
+    tokenWith(NOW + 2 * MS_PER_DAY),
+    SUBSCRIBER_CTX,
+    NOW,
+  )
+  expect(result).not.toBeNull()
+  expect(result?.daysLeft).toBe(2)
 })
 
 test('returns null when the login has already expired (remaining <= 0)', () => {
@@ -92,21 +120,21 @@ test('returns null when the login has already expired (remaining <= 0)', () => {
   ).toBeNull() // remaining < 0
 })
 
-test('warns at exactly the 5-day boundary (remaining == warn window)', () => {
+test('warns at exactly the warn-window boundary (remaining == warn window)', () => {
   const result = computeOAuthLoginExpiry(
     tokenWith(NOW + LOGIN_EXPIRY_WARN_WINDOW_MS),
     SUBSCRIBER_CTX,
     NOW,
   )
-  expect(result?.daysLeft).toBe(5)
+  expect(result?.daysLeft).toBe(3)
 })
 
 test('daysLeft is the ceiling of remaining days', () => {
-  // 3.5 days left → ceil → 4
+  // 2.5 days left → ceil → 3
   expect(
-    computeOAuthLoginExpiry(tokenWith(NOW + 3.5 * MS_PER_DAY), SUBSCRIBER_CTX, NOW)
+    computeOAuthLoginExpiry(tokenWith(NOW + 2.5 * MS_PER_DAY), SUBSCRIBER_CTX, NOW)
       ?.daysLeft,
-  ).toBe(4)
+  ).toBe(3)
   // 0.01 days left (~14 min) → ceil → 1
   expect(
     computeOAuthLoginExpiry(tokenWith(NOW + 0.01 * MS_PER_DAY), SUBSCRIBER_CTX, NOW)

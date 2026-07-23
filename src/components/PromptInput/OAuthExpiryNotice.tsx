@@ -4,7 +4,7 @@
 //
 // Faithful port of the official surfaces (decompiled from the 2.1.204 binary):
 //   - `OXd`: a persistent warning banner rendered while `slr()` returns
-//     non-null (login within the 5-day warn window).
+//     non-null (login within the 3-day warn window).
 //   - `oauth-expiry-warning`: a transient notification (priority "high",
 //     timeout 15s) fired only when `daysLeft <= 1`.
 // Both render: "Your login expires in {n} {day/days} · run /login to renew".
@@ -72,7 +72,7 @@ export function OAuthExpiryNotice() {
 
   if (!info) return null
 
-  // Persistent banner — visible for the whole warn window (up to 5 days).
+  // Persistent banner — visible for the whole warn window (up to 3 days).
   return (
     <Box>
       <Text color="warning" wrap="truncate">
