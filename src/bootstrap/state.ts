@@ -16,6 +16,8 @@ import type { HookCallbackMatcher } from 'src/types/hooks.js'
 // (rule only checks ./ and / prefixes); explicit disable documents intent.
 // eslint-disable-next-line custom-rules/bootstrap-isolation
 import { randomUUID } from 'src/utils/crypto.js'
+// eslint-disable-next-line custom-rules/bootstrap-isolation
+import { monotonicNowMs } from 'src/utils/monotonicTiming.js'
 import type { ModelSetting } from 'src/utils/model/model.js'
 import type { ModelStrings } from 'src/utils/model/modelStrings.js'
 import type { SettingSource } from 'src/utils/settings/constants.js'
@@ -293,7 +295,7 @@ function getInitialState(): State {
     turnToolCount: 0,
     turnHookCount: 0,
     turnClassifierCount: 0,
-    startTime: Date.now(),
+    startTime: monotonicNowMs(),
     lastInteractionTime: Date.now(),
     totalLinesAdded: 0,
     totalLinesRemoved: 0,
@@ -581,7 +583,7 @@ export function getTotalAPIDuration(): number {
 }
 
 export function getTotalDuration(): number {
-  return Date.now() - STATE.startTime
+  return monotonicNowMs() - STATE.startTime
 }
 
 export function getTotalAPIDurationWithoutRetries(): number {
@@ -875,7 +877,7 @@ export function resetCostState(): void {
   STATE.totalAPIDuration = 0
   STATE.totalAPIDurationWithoutRetries = 0
   STATE.totalToolDuration = 0
-  STATE.startTime = Date.now()
+  STATE.startTime = monotonicNowMs()
   STATE.totalLinesAdded = 0
   STATE.totalLinesRemoved = 0
   STATE.hasUnknownModelCost = false
@@ -920,7 +922,7 @@ export function setCostStateForRestore({
 
   // Adjust startTime to make wall duration accumulate
   if (lastDuration) {
-    STATE.startTime = Date.now() - lastDuration
+    STATE.startTime = monotonicNowMs() - lastDuration
   }
 }
 

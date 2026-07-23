@@ -51,6 +51,7 @@ import { getGlobalConfig } from './utils/config.js'
 import { getCwd } from './utils/cwd.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
 import { getFastModeState } from './utils/fastMode.js'
+import { monotonicNowMs } from './utils/monotonicTiming.js'
 import {
   type FileHistoryState,
   fileHistoryEnabled,
@@ -244,7 +245,7 @@ export class QueryEngine {
     this.discoveredSkillNames.clear()
     setCwd(cwd)
     const persistSession = !isSessionPersistenceDisabled()
-    const startTime = Date.now()
+    const startTime = monotonicNowMs()
 
     // Wrap canUseTool to track permission denials
     const wrappedCanUseTool: CanUseToolFn = async (
@@ -638,7 +639,7 @@ export class QueryEngine {
         type: 'result',
         subtype: 'success',
         is_error: false,
-        duration_ms: Date.now() - startTime,
+        duration_ms: monotonicNowMs() - startTime,
         duration_api_ms: getTotalAPIDuration(),
         num_turns: messages.length - 1,
         result: resultText ?? '',
@@ -885,7 +886,7 @@ export class QueryEngine {
             yield {
               type: 'result',
               subtype: 'error_max_turns',
-              duration_ms: Date.now() - startTime,
+              duration_ms: monotonicNowMs() - startTime,
               duration_api_ms: getTotalAPIDuration(),
               is_error: true,
               num_turns: attachment.turnCount as number,
@@ -1027,7 +1028,7 @@ export class QueryEngine {
         yield {
           type: 'result',
           subtype: 'error_max_budget_usd',
-          duration_ms: Date.now() - startTime,
+          duration_ms: monotonicNowMs() - startTime,
           duration_api_ms: getTotalAPIDuration(),
           is_error: true,
           num_turns: turnCount,
@@ -1070,7 +1071,7 @@ export class QueryEngine {
           yield {
             type: 'result',
             subtype: 'error_max_structured_output_retries',
-            duration_ms: Date.now() - startTime,
+            duration_ms: monotonicNowMs() - startTime,
             duration_api_ms: getTotalAPIDuration(),
             is_error: true,
             num_turns: turnCount,
@@ -1129,7 +1130,7 @@ export class QueryEngine {
       yield {
         type: 'result',
         subtype: 'error_during_execution',
-        duration_ms: Date.now() - startTime,
+        duration_ms: monotonicNowMs() - startTime,
         duration_api_ms: getTotalAPIDuration(),
         is_error: true,
         num_turns: turnCount,
@@ -1182,7 +1183,7 @@ export class QueryEngine {
       type: 'result',
       subtype: 'success',
       is_error: isApiError,
-      duration_ms: Date.now() - startTime,
+      duration_ms: monotonicNowMs() - startTime,
       duration_api_ms: getTotalAPIDuration(),
       num_turns: turnCount,
       result: textResult,
