@@ -390,3 +390,42 @@ unchanged from §8 "Still pending" minus the five items above: TUI/a11y cluster
 (218#16 UI half, #1, #2, #4, #6, #14; 217#8; 216#12/#27/#28/#30/#38/#6), the 🟡 assess
 items, and the #200-deferred items (live-classifier gap, sandbox-IDE, `/code-review`
 background).
+
+### §8.2 — Assess batch (2026-07-24, PRs #216–#219): port/skip verdicts
+
+The 🟡 assess items from §8 are now resolved. Recon-first per item; PORT only where
+OCC has the affected surface and the fix wasn't already done. All PORTs TDD
+RED→GREEN, `bunx biome lint` clean, `bun run build` green; merged to `main` (squash)
+atop 2.1.277. Remote branches + worktrees cleaned.
+
+| Item | Verdict | PR | Note |
+|------|---------|----|------|
+| 218#8 `/ultrareview` descriptive args → review note | PORT | #216 | text passed as `BUGHUNTER_REVIEW_NOTE` env (only OCC-controlled channel into cloud bughunter) |
+| 218#26 `/ultrareview` correctable-error feedback | ALREADY DONE | #216 | recoverable errors already return `ContentBlockParam[]`; characterized |
+| 216#32 `/ultrareview` diff-too-large error shows limits + size + largest files | PORT | #216 | surfaces bundle limit + `--shortstat` size + top-5 `--numstat` files |
+| 216#33 `/code-review ultra` empty-diff names base ref | ALREADY DONE (base-ref) + SKIP (explicit-base) | #216 | OCC has no `/code-review ultra` command; suggesting a non-existent feature would mislead |
+| 216#19 MCP re-auth revokes working creds before new sign-in | PORT | #217 | `reauthenticateWithSafeOrdering` — sign-in first, revoke old only on success |
+| 216#19 bg reconnect needs-auth → unusable command | SKIP | #217 | OCC bg path emits generic `needs-auth` (no `/mcp` ref); `/mcp` suppressed in bg; bug absent |
+| 216#37 bg `/mcp` + `/install-github-app` park needs-input | SKIP | #217 | both are `local-jsx` commands filtered out in headless; "no client attached" unreachable |
+| 216#11 `daemon stop --any` stale-lockfile kills unrelated proc | ALREADY DONE | #218 | `displaceHolder()` validates PID via `getProcessStartMs`+start-time match before kill; characterized |
+| 216#3 auto-mode 401 classifier error → denial | PORT | #218 | `isClassifierAuthError()` re-throws 401/403 as auth error (→ re-auth), not a command denial |
+| 216#16 GUI editor mouse/focus garbage; `/memory` non-blocking | PORT | #219 | `guiEditorHandoff` disables mouse/focus/modifyOtherKeys around editor launch; `/memory` detached non-blocking |
+| 218#28 sandbox-IDE command restrictions | SKIP | #219 | OCC's sandbox is BashTool fs/network egress; the IDE *connector* doesn't route commands through OCC's sandbox — not portable |
+
+**Clear SKIPs (no OCC counterpart / internal feature flag — no PR needed):**
+- live-classifier gap (`CLAUDE_CODE_AUTO_MODE_CLASSIFIER_QUEUE` / `classifierQueueDepth`) — #200-deferred internal classifier-queue flag; OCC's `BASH_CLASSIFIER` is a simpler stub; porting would invent the feature. SKIP.
+- `setScheduledTasksEnabled` setting — internal feature flag for scheduled-tasks gating; OCC's cron is always-on infra, no gated surface. SKIP.
+- 218#17 PR events lost on session exit — OCC has no PR-event lifecycle (`prEvent`/`linkPullRequest`/`createPullRequest` grep = 0). SKIP.
+- 216#34 spend-limit adjustment shows server's reason — server-side spend-limit; OCC has no spend-limit surface (`spendLimit` grep = 0). SKIP.
+- 218 `/working` command — OCC has no `/working` command; new official command OCC doesn't replicate. SKIP.
+
+Post-merge fresh-`main` worktree: 843 pass / 0 fail on affected dirs
+(`src/commands/review`, `src/cli/handlers`, `src/services/mcp`, `src/daemon`,
+`src/utils/permissions`, `src/ink/termio`, `src/commands/memory`, `src/utils`);
+`bun run build` green (cli.js 28.76 MB). No tmux/REPL e2e this batch (OCC-11 sandbox
+stall) — PORTs unit-tested at the logic/helper layer; the GUI-editor handoff (#16)
+and render-touching fixes are flagged for 验收员 non-sandbox e2e.
+
+**Assess is now closed.** Remaining pending tail = TUI/a11y cluster only
+(218#16 UI half, #1, #2, #4, #6, #14; 217#8; 216#12/#27/#28/#30/#38/#6) — the next
+batch (recon-based port + alternative verification, OCC-11 e2e deferred per item).
