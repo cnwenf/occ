@@ -41,7 +41,7 @@ function isCodeEditingTool(toolName: string): boolean {
 async function buildCodeEditToolAttributes(
   tool: ToolType,
   input: unknown,
-  decision: 'accept' | 'reject',
+  decision: 'accept' | 'reject' | 'abort',
   source: string,
 ): Promise<Record<string, string>> {
   // Derive language from file path if the tool exposes one (e.g., Edit, Write)
@@ -184,12 +184,27 @@ function logPermissionDecision(
   permissionPromptStartTimeMs?: number,
 ): void {
   const { tool, input, toolUseContext, messageId, toolUseID } = ctx
-  const { decision, source } = args
+  const { source } = args
 
   const waiting_for_user_permission_ms =
     permissionPromptStartTimeMs !== undefined
       ? Date.now() - permissionPromptStartTimeMs
       : undefined
+
+  // CC 2.1.216 #29 — telemetry misreporting permission denials:
+  // A user INTERRUPT (user_abort) is not a rejection. The abort analytics
+  // event (tengu_tool_use_cancelled) is already emitted by the caller via
+  // logCancelled(); we must NOT also fire the rejection analytics event or
+  // telemeter the OTel tool_decision as 'reject'. Interrupts are reported as
+  // user aborts instead.
+  const isAbort =
+    args.decision === 'reject' &&
+    source !== 'config' &&
+    source.type === 'user_abort'
+  // OTel decision label: 'abort' for interrupts, otherwise the raw decision.
+  const decision: 'accept' | 'reject' | 'abort' = isAbort
+    ? 'abort'
+    : args.decision
 
   // Log the analytics event
   if (args.decision === 'accept') {
@@ -199,7 +214,8 @@ function logPermissionDecision(
       args.source,
       waiting_for_user_permission_ms,
     )
-  } else {
+  } else if (!isAbort) {
+    // Genuine rejections only — aborts are covered by tengu_tool_use_cancelled.
     logRejectionEvent(
       tool,
       messageId,

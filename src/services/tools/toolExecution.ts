@@ -26,6 +26,11 @@ import {
   buildCodeEditToolAttributes,
   isCodeEditingTool,
 } from '../../hooks/toolPermission/permissionLogging.js'
+import {
+  decisionReasonToOTelSource,
+  isSdkPermissionAbort,
+  sdkPermissionDecisionLabel,
+} from '../../hooks/toolPermission/sdkPermissionTelemetry.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import {
   findToolByName,
@@ -77,7 +82,6 @@ import {
   withMemoryCorrectionHint,
 } from '../../utils/messages.js'
 import type {
-  PermissionDecisionReason,
   PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
 import {
@@ -167,85 +171,6 @@ export function classifyToolError(error: unknown): string {
     return 'Error'
   }
   return 'UnknownError'
-}
-
-/**
- * Map a rule's origin to the documented OTel `source` vocabulary, matching
- * the interactive path's semantics (permissionLogging.ts:81): session-scoped
- * grants are temporary, on-disk grants are permanent, and user-authored
- * denies are user_reject regardless of persistence. Everything the user
- * didn't write (cliArg, policySettings, projectSettings, flagSettings) is
- * config.
- */
-function ruleSourceToOTelSource(
-  ruleSource: string,
-  behavior: 'allow' | 'deny',
-): string {
-  switch (ruleSource) {
-    case 'session':
-      return behavior === 'allow' ? 'user_temporary' : 'user_reject'
-    case 'localSettings':
-    case 'userSettings':
-      return behavior === 'allow' ? 'user_permanent' : 'user_reject'
-    default:
-      return 'config'
-  }
-}
-
-/**
- * Map a PermissionDecisionReason to the OTel `source` label for the
- * non-interactive tool_decision path, staying within the documented
- * vocabulary (config, hook, user_permanent, user_temporary, user_reject).
- *
- * For permissionPromptTool, the SDK host may set decisionClassification on
- * the PermissionResult to tell us exactly what happened (once vs always vs
- * cache hit — the host knows, we can't tell from {behavior:'allow'} alone).
- * Without it, we fall back conservatively: allow → user_temporary,
- * deny → user_reject.
- */
-function decisionReasonToOTelSource(
-  reason: PermissionDecisionReason | undefined,
-  behavior: 'allow' | 'deny',
-): string {
-  if (!reason) {
-    return 'config'
-  }
-  switch (reason.type) {
-    case 'permissionPromptTool': {
-      // toolResult is typed `unknown` on PermissionDecisionReason but carries
-      // the parsed Output from PermissionPromptToolResultSchema. Narrow at
-      // runtime rather than widen the cross-file type.
-      const toolResult = reason.toolResult as
-        | { decisionClassification?: string }
-        | undefined
-      const classified = toolResult?.decisionClassification
-      if (
-        classified === 'user_temporary' ||
-        classified === 'user_permanent' ||
-        classified === 'user_reject'
-      ) {
-        return classified
-      }
-      return behavior === 'allow' ? 'user_temporary' : 'user_reject'
-    }
-    case 'rule':
-      return ruleSourceToOTelSource(reason.rule.source, behavior)
-    case 'hook':
-      return 'hook'
-    case 'mode':
-    case 'classifier':
-    case 'subcommandResults':
-    case 'asyncAgent':
-    case 'sandboxOverride':
-    case 'workingDir':
-    case 'safetyCheck':
-    case 'other':
-      return 'config'
-    default: {
-      const _exhaustive: never = reason
-      return 'config'
-    }
-  }
 }
 
 function getNextImagePasteId(messages: Message[]): number {
@@ -977,8 +902,12 @@ async function checkPermissionsAndCallTool(
     permissionDecision.behavior !== 'ask' &&
     !toolUseContext.toolDecisions?.has(toolUseID)
   ) {
-    const decision =
-      permissionDecision.behavior === 'allow' ? 'accept' : 'reject'
+    // CC 2.1.216 #29: a failed/interrupted permission-prompt request is
+    // reported as an abort, not a user rejection.
+    const decision = sdkPermissionDecisionLabel(
+      permissionDecision.behavior,
+      permissionDecision.decisionReason,
+    )
     const source = decisionReasonToOTelSource(
       permissionDecision.decisionReason,
       permissionDecision.behavior,
@@ -1019,31 +948,41 @@ async function checkPermissionsAndCallTool(
   if (permissionDecision.behavior !== 'allow') {
     logForDebugging(`${tool.name} tool permission denied`)
     const decisionInfo = toolUseContext.toolDecisions?.get(toolUseID)
-    endToolBlockedOnUserSpan('reject', decisionInfo?.source || 'unknown')
+    // CC 2.1.216 #29: a failed/interrupted permission-prompt request is an
+    // abort, not a user rejection — do not label the blocked-on-user span as
+    // a rejection, and do not fire the can_use_tool_rejected analytics event
+    // for it.
+    const isAbort = isSdkPermissionAbort(permissionDecision.decisionReason)
+    endToolBlockedOnUserSpan(
+      isAbort ? 'abort' : 'reject',
+      decisionInfo?.source || 'unknown',
+    )
     endToolSpan()
 
-    logEvent('tengu_tool_use_can_use_tool_rejected', {
-      messageID:
-        messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      toolName: sanitizeToolNameForAnalytics(tool.name),
+    if (!isAbort) {
+      logEvent('tengu_tool_use_can_use_tool_rejected', {
+        messageID:
+          messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        toolName: sanitizeToolNameForAnalytics(tool.name),
 
-      queryChainId: toolUseContext.queryTracking
-        ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      queryDepth: toolUseContext.queryTracking?.depth,
-      ...(mcpServerType && {
-        mcpServerType:
-          mcpServerType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      }),
-      ...(mcpServerBaseUrl && {
-        mcpServerBaseUrl:
-          mcpServerBaseUrl as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      }),
-      ...(requestId && {
-        requestId:
-          requestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      }),
-      ...mcpToolDetailsForAnalytics(tool.name, mcpServerType, mcpServerBaseUrl),
-    })
+        queryChainId: toolUseContext.queryTracking
+          ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        queryDepth: toolUseContext.queryTracking?.depth,
+        ...(mcpServerType && {
+          mcpServerType:
+            mcpServerType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        }),
+        ...(mcpServerBaseUrl && {
+          mcpServerBaseUrl:
+            mcpServerBaseUrl as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        }),
+        ...(requestId && {
+          requestId:
+            requestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        }),
+        ...mcpToolDetailsForAnalytics(tool.name, mcpServerType, mcpServerBaseUrl),
+      })
+    }
     let errorMessage = permissionDecision.message
     // Only use generic "Execution stopped" message if we don't have a detailed hook message
     if (shouldPreventContinuation && !errorMessage) {
