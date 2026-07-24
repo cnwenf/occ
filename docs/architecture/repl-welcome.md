@@ -20,21 +20,24 @@ The design was informed by the Apache-2.0 `xai-org/grok-build` welcome screen
 
 OCC reimplements those ideas in its own TypeScript/Ink architecture and uses
 original artwork and copy. No grok-build source or logo asset is copied. The
-OCC-20 mark and its sizing decisions are recorded in
-`docs/welcome-logo-occ20.md`.
+current OCC-25 mark, its alternatives, and its sizing decisions are recorded in
+`docs/welcome-logo-occ25.md`; `docs/welcome-logo-occ20.md` remains as the
+retired mark's historical record.
 
 ## Information hierarchy
 
 The card deliberately limits the first screen to four levels:
 
 1. **Identity:** `OCC`, version, and `Open C Code`.
-2. **Hero:** OCC's open-orbit icon with a short readiness line.
+2. **Hero:** OCC's solid open-C icon with a short readiness line.
 3. **Context:** model/billing, Git branch, agent name, and cwd.
 4. **Action:** one deterministic, session-stable command or shortcut hint.
 
-The icon is not a rendering of the letters `OCC`. It combines an unfinished
-orbit, a central code kernel, and a detached cursor spark. The same geometry is
-redrawn at three resolutions instead of mechanically cropped or scaled.
+The icon is not a literal rendering of all three letters in `OCC`. One bold C
+uses a consistent two-cell stroke and a generous right-hand opening to carry
+both “C” and “open” without a secondary kernel, orbit, or cursor metaphor. The
+geometry is optically redrawn at three resolutions instead of mechanically
+cropped or scaled.
 
 ## Responsive tiers
 
@@ -60,7 +63,7 @@ text-only variant of the plain layout.
 - `prefersReducedMotion` disables the shimmer.
 - Screen-reader mode and `TERM=dumb` use the forced plain layout, with no
   border, decorative art, or animation.
-- Normal UTF-8 terminals render the mark with single-cell Braille and block
+- Normal UTF-8 terminals render the mark with solid and quadrant-block
   characters. The three resources are display-width normalized before render,
   preventing ragged flex sizing and shimmer seams.
 - `useAnimationFrame` pauses the effect when the card leaves the viewport, so

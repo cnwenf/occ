@@ -1,4 +1,4 @@
-import { describe, test, expect } from 'bun:test'
+import { beforeEach, describe, expect, test } from 'bun:test'
 import { getFastModeChangeAnnouncement } from '../../src/utils/fastMode.js'
 
 /**
@@ -17,6 +17,10 @@ import { getFastModeChangeAnnouncement } from '../../src/utils/fastMode.js'
  */
 
 describe('getFastModeChangeAnnouncement', () => {
+  beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY ??= 'test-placeholder'
+  })
+
   test('returns null when fast mode state is unchanged (OFF→OFF)', () => {
     expect(getFastModeChangeAnnouncement(false, false, null)).toBeNull()
   })

@@ -23,11 +23,17 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
-## 2.1.281 - 2026-07-24
+## 2.1.282 - 2026-07-24
 
 - **OCC-27 — resume hints now use OCC's real executable name.** The interactive exit banner now prints `occ --resume <session-id>` instead of the inherited `claude --resume <session-id>`. The binary name is injected at build time from the sole `package.json.bin` entry, so the published executable and user-facing resume command share one source of truth.
 - **OCC command-name audit.** Corrected inherited `claude` command examples across cross-project resume copy, `/fork` and `/branch` hints, print-mode validation, tips, help/errors, updater diagnostics, MCP/plugins/daemon, remote-control, teleport, and related user-facing flows. Legitimate Claude API/model names, `claude.ai` URLs, `.claude` configuration paths, and `@claude` GitHub mentions are unchanged.
 - **Verification.** Added regression coverage tying the runtime CLI name to `package.json.bin`; focused command/resume tests pass; production build injects `MACRO.BINARY_NAME=occ`. A real PTY REPL round-trip starts the local `occ` launcher, exits, captures the emitted session ID, and successfully restores it with `occ --resume <session-id>`.
+
+## 2.1.281 - 2026-07-24
+
+- **OCC-25 — design record and acceptance hardening.** Completes the solid open-C welcome-logo release with the requested three-candidate design study, research sources, selection matrix, production-resource rationale, and an explicit historical pointer from OCC-20. Unit coverage now enforces one contiguous occupied run per row and at least 3:1 settled-mark contrast against reference light/dark backgrounds.
+- **Real terminal coverage.** The tmux acceptance suite now exercises the built REPL at 100, 60, and 36 columns, retains the forced-full legacy path, and adds a settled light-theme render plus a replacement-character check. The responsive wide/compact/plain resources, one-shot shimmer, reduced-motion behavior, and text-only accessibility fallback remain unchanged.
+- **CI hermeticity.** Three isolated rule/model-selection tests seed a test-only placeholder credential when the environment has none. They exercise local code paths and make no API calls, restoring credential-free GitHub CI after the concurrently published `2.1.280` run exposed their hidden environment dependency without changing production authentication.
 
 ## 2.1.280 - 2026-07-24
 
