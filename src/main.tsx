@@ -4073,9 +4073,13 @@ async function run(): Promise<CommanderCommand> {
   if (feature('UDS_INBOX')) {
     program.addOption(new Option('--messaging-socket-path <path>', 'Unix domain socket path for the UDS messaging server (defaults to a tmp path)'));
   }
-  if (feature('KAIROS') || feature('KAIROS_BRIEF')) {
-    program.addOption(new Option('--brief', 'Enable SendUserMessage tool for agent-to-user communication'));
-  }
+  // --brief is exposed in --help for parity with official 2.1.218, but the
+  // BriefTool *behavior* stays gated: maybeActivateBrief() and the KAIROS
+  // activation path (opts.brief = true at the kairosEnabled latch) early-return
+  // / are unreachable when KAIROS/KAIROS_BRIEF are off the build allowlist, so
+  // the flag is parsed but inert (flag visible ≠ behavior on). Do NOT add
+  // KAIROS to the allowlist without re-checking the BriefTool 5-min loop risk.
+  program.addOption(new Option('--brief', 'Enable SendUserMessage tool for agent-to-user communication'));
   if (feature('KAIROS')) {
     program.addOption(new Option('--assistant', 'Force assistant mode (Agent SDK daemon use)').hideHelp());
   }
@@ -4113,8 +4117,17 @@ async function run(): Promise<CommanderCommand> {
   // Enable teleport/remote flags for all builds but keep them undocumented until GA
   program.addOption(new Option('--teleport [session]', 'Resume a teleport session, optionally specify session ID').hideHelp());
   program.addOption(new Option('--remote [description]', 'Create a remote session with the given description').hideHelp());
+  // --remote-control + --remote-control-session-name-prefix are exposed in
+  // --help for parity with official 2.1.218, but the bridge *behavior* stays
+  // gated: the entitlement check at the BRIDGE_MODE gate and the
+  // fullRemoteControl resolution keep `remoteControl` false when BRIDGE_MODE
+  // is off the build allowlist, so the flag is parsed but inert (flag visible
+  // ≠ behavior on). Do NOT add BRIDGE_MODE to the allowlist without
+  // re-checking the remote-control bridge hang risk. --rc stays a hidden
+  // alias gated to BRIDGE_MODE (official does not list --rc in --help).
+  program.addOption(new Option('--remote-control [name]', 'Start an interactive session with Remote Control enabled (optionally named)').argParser(value => value || true));
+  program.addOption(new Option('--remote-control-session-name-prefix <prefix>', 'Prefix for auto-generated Remote Control session names (default: hostname)'));
   if (feature('BRIDGE_MODE')) {
-    program.addOption(new Option('--remote-control [name]', 'Start an interactive session with Remote Control enabled (optionally named)').argParser(value => value || true).hideHelp());
     program.addOption(new Option('--rc [name]', 'Alias for --remote-control').argParser(value => value || true).hideHelp());
   }
   if (feature('HARD_FAIL')) {
