@@ -126,6 +126,20 @@ describe('2.1.218 #5 — failed MCP server status + error text', () => {
     ).toBe('✗ Failed to connect')
   })
 
+  // OCC-21 Gap-2c: binary renders U+2714 (✔) for the connected label, not
+  // U+2713 (✓) — live A/B verified against `claude mcp list`.
+  test('health label: connected renders ✔ (U+2714), not ✓ (U+2713)', () => {
+    const connected = {
+      type: 'connected',
+      name: 's',
+      config: { type: 'http', url: 'https://srv.test/mcp', scope: 'user' },
+    } as MCPServerConnection
+    const label = mcpServerHealthStatusLabel(connected)
+    expect(label).toBe('✔ Connected')
+    expect(label).not.toContain('✓')
+    expect(label.codePointAt(0)).toBe(0x2714)
+  })
+
   test('extractMcpFailureErrorCode: numeric HTTP status from .code', () => {
     expect(extractMcpFailureErrorCode({ code: 401 })).toBe('401')
     expect(extractMcpFailureErrorCode({ code: 503 })).toBe('503')

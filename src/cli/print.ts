@@ -746,6 +746,44 @@ export async function runHeadless(
     }
   }
 
+  // OCC-21 Gap-2a: --exclude-dynamic-system-prompt-sections (2.1.218). When
+  // set and no custom --system-prompt / agent prompt, relocate the per-machine
+  // dynamic sections (cwd, env info, memory, git status, …) from the system
+  // prompt into the first user message so the system prompt is cross-user
+  // cache-reusable. The static tail ("# Context management") stays in the
+  // system prompt. Binary-verified mechanism: the official splits at the
+  // dynamic-boundary marker; getSystemPrompt emits it when this flag is set.
+  if (options.excludeDynamicSections && !options.systemPrompt) {
+    const { getSystemPrompt, SYSTEM_PROMPT_DYNAMIC_BOUNDARY } = await import(
+      '../constants/prompts.js'
+    )
+    const addDirs = (options as { addDir?: string[] }).addDir
+    const parts = await getSystemPrompt(
+      tools,
+      options.userSpecifiedModel ?? getMainLoopModel(),
+      addDirs,
+      [],
+      { excludeDynamicSections: true },
+    )
+    const joined = parts.join('\n\n')
+    const boundaryIdx = joined.indexOf(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+    if (boundaryIdx !== -1) {
+      const staticPre = joined.slice(0, boundaryIdx).replace(/\s+$/, '')
+      const after = joined.slice(boundaryIdx + SYSTEM_PROMPT_DYNAMIC_BOUNDARY.length)
+      const tailMarker = '# Context management'
+      const tailIdx = after.indexOf(tailMarker)
+      const dynamicPart = (tailIdx !== -1 ? after.slice(0, tailIdx) : after).trim()
+      const tailPart = tailIdx !== -1 ? after.slice(tailIdx).trim() : ''
+      const staticSystemPrompt = [staticPre, tailPart].filter(Boolean).join('\n\n')
+      if (staticSystemPrompt) {
+        options.systemPrompt = staticSystemPrompt
+      }
+      if (dynamicPart) {
+        structuredIO.prependUserMessage(dynamicPart)
+      }
+    }
+  }
+
   // gracefulShutdownSync schedules an async shutdown and sets process.exitCode.
   // If a loadInitialMessages error path triggered it, bail early to avoid
   // unnecessary work while the process winds down.
@@ -1024,6 +1062,11 @@ function runHeadlessStreaming(
     agent?: string | undefined
     setSDKStatus?: (status: SDKStatus) => void
     promptSuggestions?: boolean | undefined
+    // OCC-21 Gap-2a: --exclude-dynamic-system-prompt-sections (2.1.218).
+    // When set and no custom --system-prompt, the headless path relocates
+    // per-machine dynamic sections into the first user message (see the
+    // split applied near getStructuredIO).
+    excludeDynamicSections?: boolean | undefined
     workload?: string | undefined
   },
   turnInterruptionState?: TurnInterruptionState,

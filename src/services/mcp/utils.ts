@@ -444,7 +444,9 @@ export function mcpServerHealthStatusLabel(
 ): string {
   switch (result.type) {
     case 'connected':
-      return '✓ Connected'
+      // 2.1.218 #5: binary renders U+2714 (✔), not U+2713 (✓) — live A/B
+      // verified against `claude mcp list` (OCC-21 Gap-2c).
+      return '✔ Connected'
     case 'needs-auth':
       return '! Needs authentication'
     case 'needs-approval':

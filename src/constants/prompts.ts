@@ -398,6 +398,7 @@ export async function getSystemPrompt(
   model: string,
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
+  opts?: { excludeDynamicSections?: boolean },
 ): Promise<string[]> {
   if (isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)) {
     return [
@@ -542,7 +543,13 @@ ${CYBER_RISK_INSTRUCTION}`,
       : null,
     getActionsSection(),
     // === BOUNDARY MARKER - DO NOT MOVE OR REMOVE ===
-    ...(shouldUseGlobalCacheScope() ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY] : []),
+    // OCC-21 Gap-2a: force the boundary marker when --exclude-dynamic-system-
+    // prompt-sections is set so callers (print.ts headless path) can split
+    // static (cacheable) from dynamic (per-machine) sections and relocate the
+    // dynamic half into the first user message.
+    ...((shouldUseGlobalCacheScope() || opts?.excludeDynamicSections)
+      ? [SYSTEM_PROMPT_DYNAMIC_BOUNDARY]
+      : []),
     // --- Dynamic content (registry-managed) ---
     ...resolvedDynamicSections,
     // 2.1.206 alignment: # Context management — tail section after dynamic

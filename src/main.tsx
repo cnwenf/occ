@@ -976,9 +976,30 @@ async function run(): Promise<CommanderCommand> {
     // builds the type as options are added. Narrow with a runtime guard;
     // the collect accumulator + [] default guarantee string[] in practice.
     const pluginDir = thisCommand.getOptionValue('pluginDir');
+    const pluginUrl = thisCommand.getOptionValue('pluginUrl');
+    // OCC-21 Gap-2a: --plugin-url fetches each https .zip into a session temp
+    // file (see src/utils/plugins/fetchPluginZip.ts) and combines with
+    // --plugin-dir paths. setInlinePlugins REPLACES state, so both sources are
+    // merged into one call.
+    const inlinePluginPaths: string[] = [];
     if (Array.isArray(pluginDir) && pluginDir.length > 0 && pluginDir.every(p => typeof p === 'string')) {
-      setInlinePlugins(pluginDir);
-      clearPluginCache('preAction: --plugin-dir inline plugins');
+      inlinePluginPaths.push(...pluginDir);
+    }
+    if (Array.isArray(pluginUrl) && pluginUrl.length > 0 && pluginUrl.every(p => typeof p === 'string')) {
+      const { fetchPluginZipFromUrl } = await import('./utils/plugins/fetchPluginZip.js');
+      for (const url of pluginUrl) {
+        try {
+          const fetched = await fetchPluginZipFromUrl(url);
+          inlinePluginPaths.push(fetched.path);
+        } catch (error) {
+          const { exitWithError } = await import('./utils/process.js');
+          exitWithError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    }
+    if (inlinePluginPaths.length > 0) {
+      setInlinePlugins(inlinePluginPaths);
+      clearPluginCache('preAction: --plugin-dir/--plugin-url inline plugins');
     }
     runMigrations();
     profileCheckpoint('preAction_after_migrations');
@@ -1042,6 +1063,25 @@ async function run(): Promise<CommanderCommand> {
     }
     return value;
   })).option('--agent <agent>', `Agent for the current session. Overrides the 'agent' setting.`).option('--betas <betas...>', 'Beta headers to include in API requests (API key users only)').option('--fallback-model <model>', 'Enable automatic fallback to specified model when default model is overloaded (only works with --print)').addOption(new Option('--workload <tag>', 'Workload tag for billing-header attribution (cc_workload). Process-scoped; set by SDK daemon callers that spawn subprocesses for cron work. (only works with --print)').hideHelp()).option('--settings <file-or-json>', 'Path to a settings JSON file or a JSON string to load additional settings from').option('--add-dir <directories...>', 'Additional directories to allow tool access to').option('--ide', 'Automatically connect to IDE on startup if exactly one valid IDE is available', () => true).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config, ignoring all other MCP configurations', () => true).option('--session-id <uuid>', 'Use a specific session ID for the conversation (must be a valid UUID)').option('-n, --name <name>', 'Set a display name for this session (shown in /resume and terminal title)').option('--agents <json>', 'JSON object defining custom agents (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).')
+  // OCC-21 Gap-2a: three 2.1.218 --help flags OCC previously rejected as
+  // "unknown option". Descriptions/specs binary-verified against the official
+  // 2.1.218 ELF (see docs/upstream-version-gap-occ19.md + aligning-with-
+  // official-binary skill).
+  .addOption(new Option('--prompt-suggestions [value]', 'Enable prompt suggestions. In print/SDK mode, emits a prompt_suggestion message after each turn with a predicted next user prompt').choices(['true', 'false', '1', '0', 'yes', 'no', 'on', 'off']).preset('true').argParser((raw: string) => {
+    const allowed = ['true', 'false', '1', '0', 'yes', 'no', 'on', 'off'];
+    if (!allowed.includes(raw)) {
+      throw new InvalidArgumentError('Allowed choices are true, false, 1, 0, yes, no, on, off.');
+    }
+    // Official: returns !isFalsyToken(value) — true unless an explicit falsy
+    // token. With --preset('true') the bare flag resolves to true.
+    return !['false', '0', 'no', 'off'].includes(raw);
+  })).addOption(new Option('--exclude-dynamic-system-prompt-sections', 'Move per-machine sections (cwd, env info, memory paths, git status) from the system prompt into the first user message. Improves cross-user prompt-cache reuse. Only applies with the default system prompt (ignored with --system-prompt).').default(false)).option('--plugin-url <url>', 'Fetch a plugin .zip from a URL for this session only (repeatable: --plugin-url A --plugin-url B)', (val: string, prev: string[]) => [...prev, val], [] as string[])
+  // OCC-21 Gap-2b: OCC manages background sessions via the `daemon`/`agents`
+  // subcommands (self-built daemon supervisor) rather than the `--bg` flag.
+  // The flag is registered for CLI compatibility + documented (option B per
+  // the verifier) so it is not rejected as "unknown option"; invoking it
+  // prints a redirect to the working daemon subcommands. See CLAUDE.md.
+  .option('--bg, --background', 'Start the session as a background agent. OCC note: background sessions are managed via the `daemon` and `agents` subcommands (e.g. `occ daemon start`, `occ agents`, `occ attach <id>`) — see `occ daemon --help`. This flag is accepted for CLI compatibility but does not start a foreground REPL.')
   // gh-33508: <paths...> (variadic) consumed everything until the next
   // --flag. `claude --plugin-dir /path mcp add --transport http` swallowed
   // `mcp` and `add` as paths, then choked on --transport as an unknown
@@ -1049,6 +1089,28 @@ async function run(): Promise<CommanderCommand> {
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
   .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Claude in Chrome integration').option('--no-chrome', 'Disable Claude in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
     profileCheckpoint('action_handler_start');
+
+    // OCC-21 Gap-2b: --bg/--background is registered for CLI compatibility
+    // (so it is not rejected as "unknown option") but OCC manages background
+    // sessions via the self-built daemon supervisor, not this flag. Redirect
+    // users to the working subcommands instead of silently starting a REPL.
+    // Commander exposes the value under whichever long flag it canonicalizes
+    // (bg or background), so check both.
+    const bgFlag =
+      (options as { bg?: boolean }).bg ||
+      (options as { background?: boolean }).background;
+    if (bgFlag) {
+      // biome-ignore lint/suspicious/noConsole:: intentional console output
+      console.error(
+        'Error: OCC manages background sessions via the `daemon` and `agents` subcommands, not the `--bg` flag.\n' +
+          '  Start a background daemon:  `occ daemon start`\n' +
+          '  View background sessions:   `occ agents`\n' +
+          '  Resume a background session: `occ attach <id>`\n' +
+          '  See `occ daemon --help` and `occ agents --help`.',
+      );
+      // eslint-disable-next-line custom-rules/no-process-exit
+      process.exit(1);
+    }
 
     // --bare = one-switch minimal mode. Sets SIMPLE so all the existing
     // gates fire (CLAUDE.md, skills, hooks inside executeHooks, agent
@@ -1338,6 +1400,22 @@ async function run(): Promise<CommanderCommand> {
       if (!options.print) {
         print = true;
       }
+    }
+
+    // OCC-21 Gap-2a: --prompt-suggestions is only meaningful in print/SDK
+    // stream-json mode (prompt_suggestion messages are surfaced there).
+    // Binary-verified 2.1.218 guard.
+    if (
+      (options as { promptSuggestions?: boolean }).promptSuggestions !==
+        undefined &&
+      !(print && outputFormat === 'stream-json')
+    ) {
+      // biome-ignore lint/suspicious/noConsole:: intentional console output
+      console.error(
+        'Error: --prompt-suggestions requires --print and --output-format=stream-json (prompt_suggestion messages are only surfaced in stream-json output).',
+      );
+      // eslint-disable-next-line custom-rules/no-process-exit
+      process.exit(1);
     }
 
     // Extract teleport option
@@ -3008,7 +3086,14 @@ async function run(): Promise<CommanderCommand> {
         agent: agentCli,
         workload: options.workload,
         setupTrigger: setupTrigger ?? undefined,
-        sessionStartHooksPromise
+        sessionStartHooksPromise,
+        // OCC-21 Gap-2a: 2.1.218 --help alignment — thread the new flags into
+        // the headless path. promptSuggestions is already consumed by the
+        // print loop (print.ts ~L2301 emits prompt_suggestion messages);
+        // excludeDynamicSections relocates per-machine system-prompt sections
+        // into the first user message (see print.ts).
+        promptSuggestions: (options as { promptSuggestions?: boolean }).promptSuggestions,
+        excludeDynamicSections: (options as { excludeDynamicSystemPromptSections?: boolean }).excludeDynamicSystemPromptSections || undefined,
       });
       return;
     }
