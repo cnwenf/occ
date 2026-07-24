@@ -439,14 +439,14 @@ If a hook isn't running:
 3. **Check the matcher** - Does it match the tool name? (e.g., "Bash", "Write", "Edit")
 4. **Check hook type** - Is it "command", "prompt", or "agent"?
 5. **Test the command** - Run the hook command manually to see if it works
-6. **Use --debug** - Run \`claude --debug\` to see hook execution logs
+6. **Use --debug** - Run \`occ --debug\` to see hook execution logs
 `
 
 export function registerUpdateConfigSkill(): void {
   registerBundledSkill({
     name: 'update-config',
     description:
-      'Use this skill to configure the Claude Code harness via settings.json. Automated behaviors ("from now on when X", "each time X", "whenever X", "before/after X") require hooks configured in settings.json - the harness executes these, not Claude, so memory/preferences cannot fulfill them. Also use for: permissions ("allow X", "add permission", "move permission to"), env vars ("set X=Y"), hook troubleshooting, or any changes to settings.json/settings.local.json files. Examples: "allow npm commands", "add bq permission to global settings", "move permission to user settings", "set DEBUG=true", "when claude stops show X". For simple settings like theme/model, use Config tool.',
+      'Use this skill to configure the OCC harness via settings.json. Automated behaviors ("from now on when X", "each time X", "whenever X", "before/after X") require hooks configured in settings.json - the harness executes these, not the model, so memory/preferences cannot fulfill them. Also use for: permissions ("allow X", "add permission", "move permission to"), env vars ("set X=Y"), hook troubleshooting, or any changes to settings.json/settings.local.json files. Examples: "allow npm commands", "add bq permission to global settings", "move permission to user settings", "set DEBUG=true", "when OCC stops show X". For simple settings like theme/model, use Config tool.',
     allowedTools: ['Read'],
     userInvocable: true,
     async getPromptForCommand(args) {

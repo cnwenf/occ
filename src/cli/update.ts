@@ -276,7 +276,7 @@ export async function update() {
     } catch (error) {
       process.stderr.write('Error: Failed to install native update\n')
       process.stderr.write(String(error) + '\n')
-      process.stderr.write('Try running "claude doctor" for diagnostics\n')
+      process.stderr.write('Try running "occ doctor" for diagnostics\n')
       await gracefulShutdown(1)
     }
   }
@@ -415,7 +415,7 @@ export async function update() {
       } else {
         process.stderr.write('Try running with sudo or fix npm permissions\n')
         process.stderr.write(
-          'Or consider using native installation with: claude install\n',
+          'Or consider using native installation with: occ install\n',
         )
       }
       await gracefulShutdown(1)
@@ -429,7 +429,7 @@ export async function update() {
         )
       } else {
         process.stderr.write(
-          'Or consider using native installation with: claude install\n',
+          'Or consider using native installation with: occ install\n',
         )
       }
       await gracefulShutdown(1)

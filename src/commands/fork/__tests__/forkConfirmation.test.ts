@@ -3,7 +3,7 @@ import { formatForkConfirmation } from '../confirmation.js'
 
 /**
  * 2.1.216 #30 — `/fork` confirmation is one line with the new session's
- * name, the `claude attach` id, and a note when the copy shares your
+ * name, the `occ attach` id, and a note when the copy shares your
  * checkout.
  *
  * The 2.1.212 format was `Forked session <id> (fork)` — it named only the
@@ -14,14 +14,14 @@ import { formatForkConfirmation } from '../confirmation.js'
  * (not the visual render — that's the OCC-11 e2e surface).
  */
 describe('2.1.216 #30 — /fork one-line confirmation', () => {
-  test('includes the fork name and the claude attach id on one line', () => {
+  test('includes the fork name and the occ attach id on one line', () => {
     const name = 'refactor-auth'
     const sessionId = '11111111-2222-3333-4444-555555555555'
 
     const line = formatForkConfirmation(name, sessionId, false)
 
     expect(line).toBe(
-      'Forked session refactor-auth (claude attach 11111111-2222-3333-4444-555555555555)',
+      'Forked session refactor-auth (occ attach 11111111-2222-3333-4444-555555555555)',
     )
     expect(line.includes('\n')).toBe(false)
   })
@@ -33,7 +33,7 @@ describe('2.1.216 #30 — /fork one-line confirmation', () => {
     const line = formatForkConfirmation(name, sessionId, true)
 
     expect(line).toBe(
-      'Forked session deploy-to-staging (claude attach aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee) (shares your checkout)',
+      'Forked session deploy-to-staging (occ attach aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee) (shares your checkout)',
     )
     expect(line.includes('\n')).toBe(false)
     expect(line.endsWith('(shares your checkout)')).toBe(true)
@@ -44,7 +44,7 @@ describe('2.1.216 #30 — /fork one-line confirmation', () => {
 
     expect(line).not.toContain('shares your checkout')
     expect(line).toBe(
-      'Forked session fix-bug (claude attach cccccccc-0000-0000-0000-000000000000)',
+      'Forked session fix-bug (occ attach cccccccc-0000-0000-0000-000000000000)',
     )
   })
 

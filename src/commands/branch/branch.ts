@@ -2,6 +2,7 @@ import { randomUUID, type UUID } from 'crypto'
 import { mkdir, readFile, writeFile } from 'fs/promises'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import type { LocalJSXCommandContext } from '../../commands.js'
+import { CLI_BINARY_NAME } from '../../constants/cli.js'
 import { logEvent } from '../../services/analytics/index.js'
 import type { LocalJSXCommandOnDone } from '../../types/command.js'
 import type {
@@ -323,7 +324,7 @@ export async function call(
 
     // Resume into the fork
     const titleInfo = title ? ` "${title}"` : ''
-    const resumeHint = `\nTo resume the original: claude -r ${originalSessionId}`
+    const resumeHint = `\nTo resume the original: ${CLI_BINARY_NAME} -r ${originalSessionId}`
     const successMessage = `Branched conversation${titleInfo}. You are now in the branch.${resumeHint}`
 
     if (context.resume) {

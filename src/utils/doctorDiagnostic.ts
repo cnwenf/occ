@@ -381,7 +381,7 @@ async function detectConfigurationIssues(
     if (await isExternallyManagedLauncher(launcherPath)) {
       warnings.push({
         issue: `${launcherPath} was not created by the native installer (it is not a symlink into the versions/ directory), so auto-update leaves it untouched.`,
-        fix: `If you put a launcher wrapper there on purpose, this is expected — new versions still install under $XDG_DATA_HOME/claude/versions, your launcher decides what runs, and automatic version cleanup is disabled on this machine (the installer cannot tell which version your launcher needs, so it keeps them all). To let Claude Code manage the launcher again, remove ${launcherPath} and run \`claude update\`.`,
+        fix: `If you put a launcher wrapper there on purpose, this is expected — new versions still install under $XDG_DATA_HOME/claude/versions, your launcher decides what runs, and automatic version cleanup is disabled on this machine (the installer cannot tell which version your launcher needs, so it keeps them all). To let OCC manage the launcher again, remove ${launcherPath} and run \`occ update\`.`,
       })
     }
 
@@ -448,14 +448,14 @@ async function detectConfigurationIssues(
     if (type === 'npm-local' && config.installMethod !== 'local') {
       warnings.push({
         issue: `Running from local installation but config install method is '${config.installMethod}'`,
-        fix: 'Consider using native installation: claude install',
+        fix: 'Consider using native installation: occ install',
       })
     }
 
     if (type === 'native' && config.installMethod !== 'native') {
       warnings.push({
         issue: `Running native installation but config install method is '${config.installMethod}'`,
-        fix: 'Run claude install to update configuration',
+        fix: 'Run occ install to update configuration',
       })
     }
   }
@@ -463,7 +463,7 @@ async function detectConfigurationIssues(
   if (type === 'npm-global' && (await localInstallationExists())) {
     warnings.push({
       issue: 'Local installation exists but not being used',
-      fix: 'Consider using native installation: claude install',
+      fix: 'Consider using native installation: occ install',
     })
   }
 
@@ -593,7 +593,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     if (!hasUpdatePermissions && !getAutoUpdaterDisabledReason()) {
       warnings.push({
         issue: 'Insufficient permissions for auto-updates',
-        fix: 'Do one of: (1) Re-install node without sudo, or (2) Use `claude install` for native installation',
+        fix: 'Do one of: (1) Re-install node without sudo, or (2) Use `occ install` for native installation',
       })
     }
   }

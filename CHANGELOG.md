@@ -23,6 +23,12 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## 2.1.281 - 2026-07-24
+
+- **OCC-27 — resume hints now use OCC's real executable name.** The interactive exit banner now prints `occ --resume <session-id>` instead of the inherited `claude --resume <session-id>`. The binary name is injected at build time from the sole `package.json.bin` entry, so the published executable and user-facing resume command share one source of truth.
+- **OCC command-name audit.** Corrected inherited `claude` command examples across cross-project resume copy, `/fork` and `/branch` hints, print-mode validation, tips, help/errors, updater diagnostics, MCP/plugins/daemon, remote-control, teleport, and related user-facing flows. Legitimate Claude API/model names, `claude.ai` URLs, `.claude` configuration paths, and `@claude` GitHub mentions are unchanged.
+- **Verification.** Added regression coverage tying the runtime CLI name to `package.json.bin`; focused command/resume tests pass; production build injects `MACRO.BINARY_NAME=occ`. A real PTY REPL round-trip starts the local `occ` launcher, exits, captures the emitted session ID, and successfully restores it with `occ --resume <session-id>`.
+
 ## 2.1.280 - 2026-07-24
 
 - **OCC-25 — welcome logo redesign.** Replaced the OCC-20 "open-orbit" Braille mark (unfinished ring + code kernel + detached cursor spark — three stacked metaphors, inconsistent stroke, speckled texture that blurred at small sizes) with a single bold, rounded **C** drawn in solid block/half-block cells. The C is the C of "Open C Code" and the C language the project is built on; the right side is deliberately open (the "open" in Open C Code). One metaphor, one consistent 2-cell stroke, one clean silhouette that stays crisp at small sizes and across terminal/font variation.

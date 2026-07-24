@@ -179,7 +179,7 @@ describe('auto-mode reset: outcome branches', () => {
     expect(writeSettings).toHaveBeenCalledTimes(1)
     expect(out.output()).toContain('reset to defaults')
     expect(out.output()).toContain('autoMode section removed from /user/settings.json')
-    expect(out.output()).toContain('Run `claude auto-mode config`')
+    expect(out.output()).toContain('Run `occ auto-mode config`')
   })
 
   test('no --yes, confirm declined → "Aborted."', async () => {

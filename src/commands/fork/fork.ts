@@ -22,7 +22,7 @@ import { formatForkConfirmation } from './confirmation.js'
  * the directive via `deriveForkName` (the official `uwd`) — changelog P2 #39.
  *
  * 2.1.216 #30: the in-session confirmation is now one line carrying the new
- * session's name, the `claude attach` id, and a note when the copy shares
+ * session's name, the `occ attach` id, and a note when the copy shares
  * your checkout — see `formatForkConfirmation`. (Replaces the 2.1.212
  * `Forked session <id> (fork)` row.)
  *
@@ -76,7 +76,7 @@ export const call: LocalJSXCommandCall = async (onDone, context, args) => {
   await saveCustomTitle(forkedSessionId, forkName, forkPath, source)
 
   // 4. Emit the one-line confirmation (2.1.216 #30): the fork's name, the
-  //    `claude attach` id, and a note when the copy shares your checkout.
+  //    `occ attach` id, and a note when the copy shares your checkout.
   //    OCC's /fork does not spin up a separate worktree for the copy (the
   //    live background-session dispatch is deferred — see
   //    docs/upstream-version-gap-occ9.md), so the copy always shares the

@@ -1230,7 +1230,7 @@ export function getRequiredVersionError(opts: {
         { level: 'error' },
       )
     } else if (!gte(currentVersion, min)) {
-      return `Claude Code ${currentVersion} is older than the minimum version required by your organization (${requiredMinimumVersion}).\nUpdate Claude Code using your organization's approved method, then try again. If automatic updates are available, \`claude update\` may also work.`
+      return `OCC ${currentVersion} is older than the minimum version required by your organization (${requiredMinimumVersion}).\nUpdate OCC using your organization's approved method, then try again. If automatic updates are available, \`occ update\` may also work.`
     }
   }
   if (requiredMaximumVersion) {
@@ -1241,7 +1241,7 @@ export function getRequiredVersionError(opts: {
         { level: 'error' },
       )
     } else if (!lte(currentVersion, max)) {
-      return `Claude Code ${currentVersion} is newer than the maximum version allowed by your organization (${requiredMaximumVersion}).\nYour organization requires version ${requiredMaximumVersion} or older. Install an approved version using your organization's approved method. \`claude install <version>\` may also work.`
+      return `OCC ${currentVersion} is newer than the maximum version allowed by your organization (${requiredMaximumVersion}).\nYour organization requires version ${requiredMaximumVersion} or older. Install an approved version using your organization's approved method. \`occ install <version>\` may also work.`
     }
   }
   return null

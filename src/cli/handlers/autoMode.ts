@@ -95,7 +95,7 @@ export async function autoModeCritiqueHandler(options: {
     process.stdout.write(
       'No custom auto mode rules found.\n\n' +
         'Add rules to your settings file under autoMode.{allow, soft_deny, environment}.\n' +
-        'Run `claude auto-mode defaults` to see the default rules for reference.\n',
+        'Run `occ auto-mode defaults` to see the default rules for reference.\n',
     )
     return
   }
@@ -442,6 +442,6 @@ export async function autoModeResetHandler(
   // 9. Success.
   emitResetMetric('success')
   stdout(
-    `Auto mode configuration reset to defaults — autoMode section removed from ${path}.\nRun \`claude auto-mode config\` to see the effective rules.\n`,
+    `Auto mode configuration reset to defaults — autoMode section removed from ${path}.\nRun \`occ auto-mode config\` to see the effective rules.\n`,
   )
 }
