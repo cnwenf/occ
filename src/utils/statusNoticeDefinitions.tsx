@@ -1,6 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { Box, Text } from '../ink.js';
 import * as React from 'react';
+import { CLI_BINARY_NAME } from '../constants/cli.js';
 import { getLargeMemoryFiles, getMemoryCharThreshold, type MemoryFileInfo } from './claudemd.js';
 import figures from 'figures';
 import { getContextWindowForModel } from './context.js';
@@ -73,7 +74,7 @@ const claudeAiSubscriberExternalTokenNotice: StatusNoticeDefinition = {
         <Text color="warning">
           Auth conflict: Using {authTokenInfo.source} instead of Claude account
           subscription token. Either unset {authTokenInfo.source}, or run
-          `claude /logout`.
+          {`\`${CLI_BINARY_NAME} /logout\`.`}
         </Text>
       </Box>;
   }
@@ -99,7 +100,7 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
         <Text color="warning">{figures.warning}</Text>
         <Text color="warning">
           Auth conflict: Using {apiKeySource} instead of Anthropic Console key.
-          Either unset {apiKeySource}, or run `occ /logout`.
+          Either unset {apiKeySource}, or run {`\`${CLI_BINARY_NAME} /logout\`.`}.
         </Text>
       </Box>;
   }
@@ -136,11 +137,11 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
             · Trying to use{' '}
             {authTokenInfo.source === 'claude.ai' ? 'claude.ai' : authTokenInfo.source}
             ?{' '}
-            {apiKeySource === 'ANTHROPIC_API_KEY' ? 'Unset the ANTHROPIC_API_KEY environment variable, or claude /logout then say "No" to the API key approval before login.' : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : 'claude /logout'}
+            {apiKeySource === 'ANTHROPIC_API_KEY' ? `Unset the ANTHROPIC_API_KEY environment variable, or ${CLI_BINARY_NAME} /logout then say "No" to the API key approval before login.` : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : `${CLI_BINARY_NAME} /logout`}
           </Text>
           <Text color="warning">
             · Trying to use {apiKeySource}?{' '}
-            {authTokenInfo.source === 'claude.ai' ? 'claude /logout to sign out of claude.ai.' : `Unset the ${authTokenInfo.source} environment variable.`}
+            {authTokenInfo.source === 'claude.ai' ? `${CLI_BINARY_NAME} /logout to sign out of claude.ai.` : `Unset the ${authTokenInfo.source} environment variable.`}
           </Text>
         </Box>
       </Box>;

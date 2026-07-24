@@ -1,6 +1,7 @@
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
 import { logForDebugging } from '../../../utils/debug.js'
 import { getPlatform } from '../../../utils/platform.js'
+import { CLI_BINARY_NAME } from '../../../constants/cli.js'
 import {
   isInITerm2,
   isInsideTmux,
@@ -263,24 +264,24 @@ function getTmuxInstallInstructions(): string {
     case 'macos':
       return `To use agent swarms, install tmux:
   brew install tmux
-Then start a tmux session with: tmux new-session -s claude`
+Then start a tmux session with: tmux new-session -s ${CLI_BINARY_NAME}`
 
     case 'linux':
     case 'wsl':
       return `To use agent swarms, install tmux:
   sudo apt install tmux    # Ubuntu/Debian
   sudo dnf install tmux    # Fedora/RHEL
-Then start a tmux session with: tmux new-session -s claude`
+Then start a tmux session with: tmux new-session -s ${CLI_BINARY_NAME}`
 
     case 'windows':
       return `To use agent swarms, you need tmux which requires WSL (Windows Subsystem for Linux).
 Install WSL first, then inside WSL run:
   sudo apt install tmux
-Then start a tmux session with: tmux new-session -s claude`
+Then start a tmux session with: tmux new-session -s ${CLI_BINARY_NAME}`
 
     default:
       return `To use agent swarms, install tmux using your system's package manager.
-Then start a tmux session with: tmux new-session -s claude`
+Then start a tmux session with: tmux new-session -s ${CLI_BINARY_NAME}`
   }
 }
 
