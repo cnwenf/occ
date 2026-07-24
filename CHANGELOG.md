@@ -23,6 +23,18 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## 2.1.279 - 2026-07-24
+
+- **OCC-21 Gap-1 — doc alignment.** `README.md` / `README.zh-CN.md` / `CLAUDE.md` "tracks 2.1.215" → `2.1.218` to match the actual aligned code state (full portable alignment via OCC-19, PRs #199–#228). PR #229.
+- **OCC-21 Gap-2 — `2.1.218` `--help` CLI flag alignment + mcp-list glyphs.** Three flags OCC previously rejected as "unknown option" are now registered with binary-verified descriptions/specs (PR #230):
+  - `--plugin-url <url>` (repeatable): preAction fetches an https-only (OCC hardening) 100 MiB-capped `.zip` to a session temp file, reusing the existing inline-plugin `.zip` load path (`src/utils/plugins/fetchPluginZip.ts`).
+  - `--exclude-dynamic-system-prompt-sections`: relocates per-machine dynamic sections from the system prompt into the first user message (boundary-marker split, headless path; ignored with `--system-prompt`).
+  - `--prompt-suggestions [value]`: registered (choices/preset/argParser) + the `--print`+`stream-json` guard + wired to the existing SDK `promptSuggestions` path.
+  - `--bg`/`--background` (Gap-2b): registered for CLI compatibility; invoking redirects to the `daemon`/`agents` subcommands (OCC's self-built background-session model). Documented in CLAUDE.md "CLI Flag Divergences".
+  - `mcp list` glyphs `...`→`…` (U+2026), `✓`→`✔` (U+2714) (Gap-2c).
+- **OCC-21 Gap-2 security LOW hardening (PR #231).** `fetchPluginZipFromUrl` now bounds the fetch with an `AbortController` + 45s timeout (prevents a slow/stalled server from hanging `--plugin-url`) and `rm`s the session temp dir on every failure branch (oversize / empty / write-error / timeout) so no `occ-plugin-url-<uuid>/` residue is left in `tmpdir`.
+- **Verification.** `bunx biome lint` clean on new/changed non-mcp files; `bun run build` green (cli.js 28.77 MB); hang-smoke of all four flags on the built CLI; `mcpSlice218` (26) + `fetchPluginZip` (13) = 39 tests pass / 0 fail. Gap-2 live REPL复验 PASS (验收员 sign-off) + security delta clean (no CRITICAL/HIGH). Two non-blocking observations (--exclude-dynamic protocol-layer parity recheck + result-schema telemetry subset diff) noted as known items for a later autopilot cycle.
+
 ## 2.1.278 - 2026-07-24
 
 - **Catch up to Claude Code `2.1.218` — full portable alignment (OCC-19).** Completes the `2.1.216`/`2.1.217`/`2.1.218` catch-up: every portable upstream item is now on `main` (P0→P4 + assess + TUI/a11y cluster, PRs #199–#227). Full port-by-port ledger — versions, binary-verified `2.1.217`→`2.1.218` ELF diff, portability classification, and per-item port/already-done/skip verdicts — is in `docs/upstream-version-gap-occ19.md` (§8.1/§8.2/§8.3). Acceptance passed (验收员 sign-off); independent security scan CLEAN. Each item binary-verified per `aligning-with-official-binary`; behavioral tests per `behavior-driven-done` (unit/integration at the logic layer — live interactive TUI behavior is deferred to non-sandbox REPL per OCC-11).
