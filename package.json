@@ -1,6 +1,6 @@
 {
     "name": "@cnwenf/occ",
-    "version": "2.1.278",
+    "version": "2.1.279",
     "license": "MIT",
     "type": "module",
     "bin": {
