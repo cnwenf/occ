@@ -36,6 +36,18 @@ These OCC-absent tools **exist in OCC source** (`src/tools.ts` `getBaseTools()` 
 
 `createSortedHelpConfig()` now pins `helpWidth: 80` for non-TTY stdout (TTY stays dynamic — no new interactive divergence). This makes **leaf subcommand** `--help` (e.g. `mcp login --help`, `mcp logout --help`, `mcp get --help`, `mcp list --help`) byte-identical to the 2.1.218 binary, including description wrapping. The **top-level `occ --help`** and **multi-subcommand `mcp --help` Commands list** still render long option/command descriptions on a single wide line (no wrap), diverging from the binary's separate-indented-line + wrap layout. Root cause: OCC's bundled Commander `Help` layout algorithm differs from the binary's for long signatures, and the `helpWidth` knob does not change that algorithm. Forcing a custom `helpInformation` override to match would risk regressing the byte-identical leaf-subcommand helps and is low priority — deferred with rationale.
 
+## Bundled workflows & safe-mode divergences (OCC-31)
+
+### Bundled workflows (incl. `/deep-research`) — trimmed by design
+
+Official Claude Code 2.1.218 ships built-in **bundled workflows** registered via `initBundledWorkflows()` — notably `deep-research` (manual-only, `disableModelInvocation: true`; a multi-agent harness: 5 parallel WebSearch agents → URL-dedup → fetch top 15 sources → extract falsifiable claims → 3-vote adversarial verification → synthesize a cited report), plus `code-review`/`pr-review-artifact` and others. These surface as slash commands (e.g. `/deep-research`) and via the `Workflow({name: ...})` tool.
+
+OCC keeps the bundled-workflow **infrastructure** wired (`src/tools/WorkflowTool/bundled/index.js` `initBundledWorkflows`/`getBundledWorkflow`/`listBundledWorkflows`, `createWorkflowCommand.ts`, the `WORKFLOW_SCRIPTS` feature flag — all live) but ships **zero bundled workflows** (`BUNDLED_WORKFLOWS = new Map()`). OCC discovers user-defined workflows from `.claude/workflows/` + `~/.claude/workflows/` at runtime instead. This is an intentional trim, not alignment debt: faithfully porting `deep-research` would require extracting a large minified multi-agent orchestration script from the native ELF and re-implementing it byte-faithfully, which conflicts with OCC's "safe, auditable, trim secondary capabilities" ethos and risks an invented/partial implementation (forbidden by the `aligning-with-official-binary` skill — "Never invent"). OCC's `/code-review` surface is implemented separately (not via bundled workflow). Users who need `deep-research`-style behavior can drop a workflow script into `.claude/workflows/`. Tracked as a documented divergence rather than silently missing.
+
+### `--safe-mode` — narrower disabled scope than official (by design)
+
+Official `--safe-mode` disables a broad set: CLAUDE.md, skills, plugins, hooks, MCP servers, custom commands/agents, output styles, workflows, custom themes, keybindings, and more. OCC's `--safe-mode` (`CLAUDE_CODE_SAFE_MODE`) disables a **narrower** set: plugins (`pluginLoader.ts`), bundled skills (`src/skills/bundled/index.ts`), and SessionStart/setup hooks (`src/utils/sessionStart.ts`). It does NOT disable CLAUDE.md auto-discovery, user skills, MCP servers, custom commands/agents, output styles, workflows, themes, or keybindings. OCC's `--safe-mode` help text intentionally describes only what OCC actually disables (accurate but shorter than the official text) rather than copying the official wording (which would overstate OCC's behavior). Aligning the disabled scope to the full official set is a broad behavioral change deferred from the release path; tracked here as a documented by-design divergence.
+
 ```bash
 # Install dependencies
 bun install

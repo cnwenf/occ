@@ -4,11 +4,15 @@
  * Called by src/tools.ts when feature('WORKFLOW_SCRIPTS') is enabled:
  *   require('./tools/WorkflowTool/bundled/index.js').initBundledWorkflows()
  *
- * Registers any built-in/predefined workflows + returns the tool. For OCC's
- * reconstruction, there are no bundled workflows yet (discovery scans
- * .claude/workflows/ + ~/.claude/workflows/ for user-defined scripts), so
- * this is a no-op that keeps the require() call from throwing. The binary
- * uses this to register built-in workflows like code-review, etc.
+ * Registers any built-in/predefined workflows + returns the tool. The official
+ * binary uses this to register built-in workflows like deep-research,
+ * code-review, pr-review-artifact, etc. OCC ships ZERO bundled workflows by
+ * design (see CLAUDE.md § "Bundled workflows & safe-mode divergences (OCC-31)"
+ * — trimmed, not alignment debt; faithfully porting deep-research's minified
+ * multi-agent orchestration risks an invented/partial implementation). OCC
+ * discovers user-defined workflows from .claude/workflows/ +
+ * ~/.claude/workflows/ at runtime instead. This no-op keeps the require()
+ * call from throwing while the infrastructure stays wired for future use.
  */
 
 // Built-in workflow registry (empty for now — wired for future bundled
