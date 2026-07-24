@@ -33,8 +33,37 @@ function writeRules(rules: AutoModeRules): void {
   process.stdout.write(jsonStringify(rules, null, 2) + '\n')
 }
 
-export function autoModeDefaultsHandler(): void {
-  writeRules(getDefaultExternalAutoModeRules())
+/**
+ * Normalize a rule for `--label` prefix matching: strip markdown emphasis
+ * (`*`), trim, lowercase. The official 2.1.218 `auto-mode defaults --label`
+ * matches rules whose label starts with the prefix (case-insensitive); a
+ * prefix with leading `**` (e.g. `--label '**Data'`) matches the same rules
+ * as without, so `*` is stripped from both the rule and the prefix.
+ */
+function normalizeForLabel(rule: string): string {
+  return rule.replace(/\*/g, '').trim().toLowerCase()
+}
+
+function filterRulesByLabel(
+  rules: string[],
+  label: string | undefined,
+): string[] {
+  if (!label) return rules
+  const prefix = label.replace(/\*/g, '').trim().toLowerCase()
+  if (!prefix) return rules
+  return rules.filter(rule => normalizeForLabel(rule).startsWith(prefix))
+}
+
+export function autoModeDefaultsHandler(options: {
+  label?: string
+} = {}): void {
+  const defaults = getDefaultExternalAutoModeRules()
+  writeRules({
+    allow: filterRulesByLabel(defaults.allow, options.label),
+    soft_deny: filterRulesByLabel(defaults.soft_deny, options.label),
+    hard_deny: filterRulesByLabel(defaults.hard_deny, options.label),
+    environment: filterRulesByLabel(defaults.environment, options.label),
+  })
 }
 
 /**
@@ -52,6 +81,9 @@ export function autoModeConfigHandler(): void {
     soft_deny: config?.soft_deny?.length
       ? config.soft_deny
       : defaults.soft_deny,
+    hard_deny: config?.hard_deny?.length
+      ? config.hard_deny
+      : defaults.hard_deny,
     environment: config?.environment?.length
       ? config.environment
       : defaults.environment,
