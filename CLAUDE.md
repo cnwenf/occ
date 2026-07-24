@@ -6,7 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is an **independent open-source implementation** of a Claude Code–style coding agent. The goal is to provide core coding-agent functionality while trimming secondary capabilities. Many modules are stubbed or feature-flagged off. It last fully aligned to Claude Code `2.1.218` (official latest as of 2026-07-22; full portable alignment via OCC-19, PRs #199–#228 — every portable 2.1.216/217/218 item is on `main`; see `docs/upstream-version-gap-occ19.md` for the 2.1.216/217/218 catch-up ledger, `docs/upstream-version-gap-occ13.md` for the prior no-gap confirmation, and `docs/upstream-version-gap-occ11.md` for the 2.1.214→2.1.215 catch-up). Live TUI/REPL acceptance e2e is deferred to a non-sandbox environment per the OCC-11 sandbox-stall constraint. The codebase has ~1341 tsc type errors (mostly `unknown`/`never`/`{}` types) — these do **not** block Bun runtime execution.
 
-## Commands
+## CLI Flag Divergences (OCC-21)
+
+OCC tracks Claude Code `2.1.218` `--help` but diverges by design on a few flags:
+
+- **`--bg` / `--background`** — accepted for CLI compatibility (not rejected as "unknown option") but OCC manages background sessions via the self-built **daemon supervisor** subcommands (`occ daemon start`, `occ agents`, `occ attach <id>`, `occ logs`, `occ stop`) rather than this flag. Invoking `--bg` prints a redirect to those subcommands and exits. This is option B of the OCC-21 Gap-2b verdict: the `feature('BG_SESSIONS')` fast-path in `cli.tsx` is dead code (upstream 2.1.211 removed the gate; OCC's trimmed build keeps it off), so reactivating it is riskier than documenting the daemon replacement.
+- **`--plugin-url <url>`** — registered + implemented, but **HTTPS-only** (OCC hardening; the official accepts any URL). A plaintext/local plugin URL is a tampering/SSRF footgun and conflicts with OCC's "safe, auditable" ethos. Fetch is size-capped (100 MiB) and streamed to a session temp `.zip`; extraction reuses OCC's existing zip-cache path-traversal guard. See `src/utils/plugins/fetchPluginZip.ts`.
+- **`--exclude-dynamic-system-prompt-sections`** — registered + wired: relocates per-machine dynamic sections from the system prompt into the first user message (headless path only; `--print` / SDK), matching the 2.1.218 boundary-marker split.
+- **`--prompt-suggestions [value]`** — registered + wired to the existing SDK `promptSuggestions` path; requires `--print --output-format=stream-json` (binary-verified guard).
+
+
 
 ```bash
 # Install dependencies

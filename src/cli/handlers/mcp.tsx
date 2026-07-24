@@ -163,7 +163,7 @@ export async function mcpListHandler(): Promise<void> {
     console.log('No MCP servers configured. Use `claude mcp add` to add a server.');
   } else {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log('Checking MCP server health...\n');
+    console.log('Checking MCP server health…\n');
 
     // Check servers concurrently
     const entries = Object.entries(configs);
