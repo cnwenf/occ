@@ -97,7 +97,7 @@ legitimately `claude` (Claude Desktop protocol / removing upstream aliases).
 
 ## REPL / runtime verification (this release)
 
-- `bun run build` → `injected MACRO.BINARY_NAME=occ`, `MACRO.VERSION=2.1.283`.
+- `bun run build` → `injected MACRO.BINARY_NAME=occ`, `MACRO.VERSION=2.1.284`.
 - `occ --help` → `Usage: occ [options] [command] [prompt]` (was `claude`).
 - `occ mcp --help` → `Usage: occ mcp [options] [command]`.
 - `occ daemon --help` → `Usage: occ daemon [options] [command]`.
@@ -117,4 +117,4 @@ legitimately `claude` (Claude Desktop protocol / removing upstream aliases).
 - [x] Unified bin-name source (`CLI_BINARY_NAME`); all fix sites route through it.
 - [x] All user-facing command names consistently `occ`; no `claude` residue.
 - [x] REPL/runtime verification of `--help`, subcommand `--help`, error path.
-- [ ] Merged to `main` + released (tag `v2.1.283`, `/releases` ↔ `/tags`).
+- [ ] Merged to `main` + released (tag `v2.1.284`, `/releases` ↔ `/tags`).

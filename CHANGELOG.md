@@ -23,11 +23,20 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
-## 2.1.283 - 2026-07-24
+## 2.1.284 - 2026-07-24
 
 - **OCC-29 — closed the `claude`-command-name residuals OCC-27 missed.** `occ --help` now prints `Usage: occ [options] [command]` (Commander `program.name` was still `'claude'`), the terminal/`ps` process title is `occ` (was `'claude'`), and the auth-conflict status notices now read `occ /logout` across all three notices (one notice had already been fixed by OCC-27; two still said `claude /logout`). The agent-swarm tmux install hint's example session label is `occ` (was `claude`). All fixes route through the single `CLI_BINARY_NAME` constant (build-injected from `package.json.bin`), so no `occ` is hardcoded at the fix sites.
 - **Audit deliverable.** A full sweep classified every `claude` token in `src/`: user-facing command-name residuals were fixed; legitimate brand/model names, `claude.ai` URLs, `.claude` config paths, the `claude://` Claude-Desktop deep-link protocol, `@claude` GitHub mentions, and code comments were intentionally left unchanged. The OCC-27 hardcoded-`occ` strings (already display correct `occ`) and the inherited native-installer/doctor/deep-link on-disk binary-name layout are documented as a follow-up consolidation — left untouched here to avoid a risky string refactor on the release path.
 - **Verification.** Production build injects `MACRO.BINARY_NAME=occ`; `occ --help`, `occ mcp --help`, `occ daemon --help`, and the unknown-option error path all show `occ` with zero `claude` command-name residue; the exit banner renders `occ --resume` via `CLI_BINARY_NAME`. The PTY resume e2e remains the spec for the exit banner (sandbox-stalled per OCC-11, unchanged by this work).
+
+## 2.1.283 - 2026-07-24
+
+- **OCC-28 self-acceptance — `auto-mode` subcommand parity with Claude Code 2.1.218.** Self-acceptance against the official `2.1.218` binary surfaced stale `auto-mode` help text and a stubbed default-ruleset; all now byte-identical to the official binary.
+  - **`auto-mode` / `auto-mode defaults` / `auto-mode reset` `--help`** — descriptions updated to the 2.1.218 wording (`Inspect or reset…`, `…allow, soft_deny, and hard_deny rules…`, `Reset auto mode configuration to the shipped defaults by removing the autoMode section from your user settings file`); `reset` now exposes the `-y, --yes` short alias. Leaf-subcommand `--help` is byte-identical to `claude` 2.1.218.
+  - **`auto-mode defaults --label <prefix>`** — new option (matches 2.1.218): filters rules whose label starts with the prefix (case-insensitive, `*` emphasis stripped). Verified against the official binary across a 17-label battery.
+  - **`auto-mode defaults` output** — replaced the 21-line `(none)` stub in `permissions_external.txt` with the real 2.1.218 default ruleset (allow 17 / soft_deny 65 / hard_deny 1 / environment 20), extracted from the official binary and JS-unescaped. Fixed `extractTaggedBullets` to preserve multi-line rules (the single `hard_deny` Data Exfiltration rule spans several physical lines and is kept as one entry, matching the binary). Output is now byte-identical to `claude auto-mode defaults`.
+  - **`auto-mode config` output** — now includes the `hard_deny` section (was omitted); byte-identical to `claude auto-mode config`.
+- **Verification.** `auto-mode`/`defaults`/`config`/`reset`/`critique --help`, `defaults` output, and `--label` all diff-clean against the official 2.1.218 binary. Existing `autoModeReset` / `autoModeDenials` / `automode-ungate` tests pass; lint clean. The `gateway` root command remains absent by design (enterprise auth/telemetry gateway — OCC trims enterprise/telemetry capabilities; OCC-19 already marked gateway items ⛔ skip). The node-pty `resume-command-name` e2e stalls in-sandbox (pre-existing OCC-11 sandbox-stall, fails identically on clean `main`); human-like REPL e2e via tmux (trust dialog, startup banner, prompt + `2+2 → ● 4`, `/help`, `/exit`, error handling) is consistent with the official binary.
 
 ## 2.1.282 - 2026-07-24
 
