@@ -23,6 +23,12 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## 2.1.281 - 2026-07-24
+
+- **OCC-25 — design record and acceptance hardening.** Completes the solid open-C welcome-logo release with the requested three-candidate design study, research sources, selection matrix, production-resource rationale, and an explicit historical pointer from OCC-20. Unit coverage now enforces one contiguous occupied run per row and at least 3:1 settled-mark contrast against reference light/dark backgrounds.
+- **Real terminal coverage.** The tmux acceptance suite now exercises the built REPL at 100, 60, and 36 columns, retains the forced-full legacy path, and adds a settled light-theme render plus a replacement-character check. The responsive wide/compact/plain resources, one-shot shimmer, reduced-motion behavior, and text-only accessibility fallback remain unchanged.
+- **CI hermeticity.** Three isolated rule/model-selection tests seed a test-only placeholder credential when the environment has none. They exercise local code paths and make no API calls, restoring credential-free GitHub CI after the concurrently published `2.1.280` run exposed their hidden environment dependency without changing production authentication.
+
 ## 2.1.280 - 2026-07-24
 
 - **OCC-25 — welcome logo redesign.** Replaced the OCC-20 "open-orbit" Braille mark (unfinished ring + code kernel + detached cursor spark — three stacked metaphors, inconsistent stroke, speckled texture that blurred at small sizes) with a single bold, rounded **C** drawn in solid block/half-block cells. The C is the C of "Open C Code" and the C language the project is built on; the right side is deliberately open (the "open" in Open C Code). One metaphor, one consistent 2-cell stroke, one clean silhouette that stays crisp at small sizes and across terminal/font variation.

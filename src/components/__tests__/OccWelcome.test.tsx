@@ -15,7 +15,7 @@ import {
 } from '../LogoV2/OccWelcome.js'
 
 const BASE_PROPS = {
-  version: '2.1.280',
+  version: '2.1.281',
   model: 'Claude Sonnet 4.5',
   billing: 'API Usage Billing',
   cwd: '/work/occ',
@@ -84,7 +84,7 @@ describe('OCC REPL welcome layout', () => {
     expect(stringWidth(location)).toBeLessThanOrEqual(30)
   })
 
-  test('shimmer preserves the braille art and settles without highlights', () => {
+  test('shimmer preserves the logo art and settles without highlights', () => {
     const line = OCC_LOGOS.wide[3]!
     const active = getShimmerRuns(line, 3, 0.5, OCC_LOGOS.wide)
     expect(active.map(run => run.text).join('')).toBe(line)
@@ -118,7 +118,7 @@ describe('OCC REPL welcome layout', () => {
     )
 
     expect(output).toContain('OCC')
-    expect(output).toContain('v2.1.280')
+    expect(output).toContain('v2.1.281')
     expect(output).toContain('Open C Code')
     expect(output).toContain(OCC_LOGOS.wide[1]!.trim())
     expect(output).not.toContain('___   ___   ___')
@@ -150,7 +150,7 @@ describe('OCC REPL welcome layout', () => {
     )
 
     expect(output).toContain(OCC_LOGOS.plain[1]!.trim())
-    expect(output).toContain('OCC v2.1.280 · Open C Code')
+    expect(output).toContain('OCC v2.1.281 · Open C Code')
     expect(output).not.toContain('╭')
     for (const line of output.split('\n')) {
       expect(stringWidth(line)).toBeLessThanOrEqual(36)
@@ -163,7 +163,7 @@ describe('OCC REPL welcome layout', () => {
       36,
     )
 
-    expect(output).toContain('OCC v2.1.280 · Open C Code')
+    expect(output).toContain('OCC v2.1.281 · Open C Code')
     expect(output).toContain('Claude Sonnet 4.5')
     expect(output).toContain('git:feature/welcome')
     expect(output).toContain(welcomeTip('plain'))

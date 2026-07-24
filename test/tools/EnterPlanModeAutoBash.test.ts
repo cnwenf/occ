@@ -91,6 +91,7 @@ function createAssistantMessage(): AssistantMessage {
 
 describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', () => {
   beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY ??= 'test-placeholder'
     resetAutoModeState()
   })
 
