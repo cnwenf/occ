@@ -6,7 +6,6 @@
  * to avoid circular dependencies.
  */
 
-import { feature } from 'src/utils/featureFlags.js'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 
 // ============================================================================
@@ -34,9 +33,14 @@ export type PermissionMode = InternalPermissionMode
 
 // Runtime validation set: modes that are user-addressable (settings.json
 // defaultMode, --permission-mode CLI flag, conversation recovery).
+// NOTE: 'auto' is already in EXTERNAL_PERMISSION_MODES (added in claude-code
+// 2.1.91 so `permissions.defaultMode: "auto"` validates in settings.json).
+// Do not append it again here — a feature-gated append left over from before
+// 'auto' was promoted to EXTERNAL produced a duplicate `auto` in the CLI
+// choices list. Mirrors the official 2.1.218 choices
+// `["acceptEdits","auto","bypassPermissions","default","dontAsk","plan"]`.
 export const INTERNAL_PERMISSION_MODES = [
   ...EXTERNAL_PERMISSION_MODES,
-  ...(feature('TRANSCRIPT_CLASSIFIER') ? (['auto'] as const) : ([] as const)),
 ] as const satisfies readonly PermissionMode[]
 
 export const PERMISSION_MODES = INTERNAL_PERMISSION_MODES
