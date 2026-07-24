@@ -8,7 +8,7 @@
 
 ## 这是什么
 
-**Open C Code（OCC）** 是一个开源的编码智能体。能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.215`）。代码全开放、可审计、无暗门，数据由你掌控。
+**Open C Code（OCC）** 是一个开源的编码智能体。能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.218`）。代码全开放、可审计、无暗门，数据由你掌控。
 
 如果你担心闭源 CLI 可能植入后门、担心代码与凭据被上传到不可审计的服务，OCC 就是为你准备的：全部源码开放、无混淆，构建产物可由源码复现，API 凭据只发往你自己配置的端点。
 
@@ -21,7 +21,7 @@
 
 ## 现状
 
-- 跟踪 Claude Code **`2.1.215`**。
+- 跟踪 Claude Code **`2.1.218`**。
 - 代码库有约 1300 个不阻塞的 `tsc` 类型错误（大量松散的 `unknown`/`never`/`{}` 类型），**不影响 Bun 运行时执行**。门槛是 Biome lint，不是 `tsc`。
 - 所有内部 feature flag（`feature(...)`）已被 polyfill 为 `false` —— 内部功能（COORDINATOR_MODE、KAIROS、PROACTIVE 等）全部关闭。
 - 已发布到 npm：[`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ)。
