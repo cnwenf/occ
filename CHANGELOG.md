@@ -23,6 +23,12 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## 2.1.283 - 2026-07-24
+
+- **OCC-29 — closed the `claude`-command-name residuals OCC-27 missed.** `occ --help` now prints `Usage: occ [options] [command]` (Commander `program.name` was still `'claude'`), the terminal/`ps` process title is `occ` (was `'claude'`), and the auth-conflict status notices now read `occ /logout` across all three notices (one notice had already been fixed by OCC-27; two still said `claude /logout`). The agent-swarm tmux install hint's example session label is `occ` (was `claude`). All fixes route through the single `CLI_BINARY_NAME` constant (build-injected from `package.json.bin`), so no `occ` is hardcoded at the fix sites.
+- **Audit deliverable.** A full sweep classified every `claude` token in `src/`: user-facing command-name residuals were fixed; legitimate brand/model names, `claude.ai` URLs, `.claude` config paths, the `claude://` Claude-Desktop deep-link protocol, `@claude` GitHub mentions, and code comments were intentionally left unchanged. The OCC-27 hardcoded-`occ` strings (already display correct `occ`) and the inherited native-installer/doctor/deep-link on-disk binary-name layout are documented as a follow-up consolidation — left untouched here to avoid a risky string refactor on the release path.
+- **Verification.** Production build injects `MACRO.BINARY_NAME=occ`; `occ --help`, `occ mcp --help`, `occ daemon --help`, and the unknown-option error path all show `occ` with zero `claude` command-name residue; the exit banner renders `occ --resume` via `CLI_BINARY_NAME`. The PTY resume e2e remains the spec for the exit banner (sandbox-stalled per OCC-11, unchanged by this work).
+
 ## 2.1.282 - 2026-07-24
 
 - **OCC-27 — resume hints now use OCC's real executable name.** The interactive exit banner now prints `occ --resume <session-id>` instead of the inherited `claude --resume <session-id>`. The binary name is injected at build time from the sole `package.json.bin` entry, so the published executable and user-facing resume command share one source of truth.
