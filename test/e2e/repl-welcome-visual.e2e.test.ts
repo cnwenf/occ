@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { REPO_ROOT } from './helpers';
 
 /**
- * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-20).
+ * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-25).
  *
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
@@ -63,7 +63,10 @@ async function waitForText(
 
 // Seed onboarding + trust as done, and "last release notes seen" = current
 // version so the CONDENSED logo is what renders by default.
-function freshSeededHome(lastReleaseNotesSeen: string): string {
+function freshSeededHome(
+  lastReleaseNotesSeen: string,
+  theme: 'dark' | 'light' = 'dark',
+): string {
   const home = mkdtempSync(join(tmpdir(), 'occ-welcome-'));
   mkdirSync(join(home, '.claude'), { recursive: true });
   writeFileSync(
@@ -83,6 +86,7 @@ function freshSeededHome(lastReleaseNotesSeen: string): string {
   writeFileSync(
     join(home, '.claude', 'settings.json'),
     JSON.stringify({
+      theme,
       skipDangerousModePermissionPrompt: true,
       disableAllHooks: true,
     }),
@@ -129,7 +133,7 @@ const OLD_WORDMARK = '___   ___   ___';
 // Doge art glyphs that must remain in the forced full-logo pane.
 const DOGE_GLYPHS = ['/\\___/\\', '=w=', '~~'];
 
-describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-20)', () => {
+describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-25)', () => {
   test('wide welcome renders brand, version, context, tip, and large mark', async () => {
     const home = freshSeededHome(VERSION);
     startRepl(home, {}, 100);
@@ -157,6 +161,23 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-20)', () => 
         'press esc twice',
       ].some((t) => pane.toLowerCase().includes(t));
       expect(tipShown).toBe(true);
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('light theme renders the complete wide aperture without replacement glyphs', async () => {
+    const home = freshSeededHome(VERSION, 'light');
+    startRepl(home, {}, 100);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      expect(pane).toContain(LARGE_LOGO_GLYPH);
+      expect(pane).not.toContain('�');
+      expect(pane).toContain('Open C Code');
     } finally {
       killRepl();
       rmSync(home, { recursive: true, force: true });

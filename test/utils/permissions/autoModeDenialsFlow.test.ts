@@ -70,6 +70,7 @@ function createAssistantMessage(): AssistantMessage {
 
 describe('CC 2.1.218 #27: shouldAutoDenyInAutoMode wired into permission flow', () => {
   beforeEach(() => {
+    process.env.ANTHROPIC_API_KEY ??= 'test-placeholder'
     _resetDenialsForTesting()
     resetAutoModeState()
     setAutoModeActive(true)
