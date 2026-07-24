@@ -20,11 +20,14 @@
  * already guards path traversal for OCC's existing `.zip` plugin cache.
  */
 import { randomUUID } from 'node:crypto'
-import { mkdir, open } from 'node:fs/promises'
+import { mkdir, open, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 export const MAX_PLUGIN_ZIP_BYTES = 100 * 1024 * 1024 // 100 MiB
+// OCC-21 Gap-2 hardening: bound the fetch so a slow/stalled server cannot hang
+// `--plugin-url` indefinitely. 45s sits in the reviewer's 30–60s band.
+export const DEFAULT_PLUGIN_ZIP_TIMEOUT_MS = 45_000
 
 export type FetchedPluginZip = {
   path: string
@@ -75,53 +78,79 @@ async function openForWrite(path: string): Promise<ChunkWriter> {
  */
 export async function fetchPluginZipFromUrl(
   rawUrl: string,
-  options: { fetchImpl?: typeof fetch; maxBytes?: number } = {},
+  options: { fetchImpl?: typeof fetch; maxBytes?: number; timeoutMs?: number } = {},
 ): Promise<FetchedPluginZip> {
   const url = validatePluginZipUrl(rawUrl)
   const maxBytes = options.maxBytes ?? MAX_PLUGIN_ZIP_BYTES
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PLUGIN_ZIP_TIMEOUT_MS
   const doFetch = options.fetchImpl ?? fetch
 
-  const response = await doFetch(url, {
-    method: 'GET',
-    redirect: 'error',
-  })
-  if (!response.ok) {
-    throw new Error(
-      `--plugin-url: fetch "${rawUrl}" failed: HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
-    )
-  }
-  if (response.body === null) {
-    throw new Error(`--plugin-url: response from "${rawUrl}" has no body`)
-  }
+  // OCC-21 hardening: bound the fetch + body read so a slow/stalled server
+  // cannot hang `--plugin-url`. AbortController aborts the fetch; the body
+  // reader rejects on abort in compliant runtimes (Bun/Node).
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
 
-  const sessionTmp = join(tmpdir(), `occ-plugin-url-${randomUUID()}`)
-  await mkdir(sessionTmp, { recursive: true })
-  const zipPath = join(sessionTmp, 'plugin.zip')
-
-  const reader = response.body.getReader()
-  const writer = await openForWrite(zipPath)
-  let received = 0
+  let sessionTmp: string | null = null
   try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) {
-        break
-      }
-      received += value.byteLength
-      if (received > maxBytes) {
-        throw new Error(
-          `--plugin-url: zip from "${rawUrl}" exceeds the ${maxBytes}-byte limit (received >= ${received} bytes).`,
-        )
-      }
-      await writer.write(value)
+    const response = await doFetch(url, {
+      method: 'GET',
+      redirect: 'error',
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      throw new Error(
+        `--plugin-url: fetch "${rawUrl}" failed: HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
+      )
     }
+    if (response.body === null) {
+      throw new Error(`--plugin-url: response from "${rawUrl}" has no body`)
+    }
+
+    sessionTmp = join(tmpdir(), `occ-plugin-url-${randomUUID()}`)
+    await mkdir(sessionTmp, { recursive: true })
+    const zipPath = join(sessionTmp, 'plugin.zip')
+
+    const reader = response.body.getReader()
+    const writer = await openForWrite(zipPath)
+    let received = 0
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) {
+          break
+        }
+        received += value.byteLength
+        if (received > maxBytes) {
+          throw new Error(
+            `--plugin-url: zip from "${rawUrl}" exceeds the ${maxBytes}-byte limit (received >= ${received} bytes).`,
+          )
+        }
+        await writer.write(value)
+      }
+    } finally {
+      await writer.close()
+    }
+
+    if (received === 0) {
+      throw new Error(`--plugin-url: response from "${rawUrl}" was empty`)
+    }
+
+    return { path: zipPath, url: rawUrl }
+  } catch (error) {
+    // OCC-21 hardening: clean the session temp dir on any failure branch
+    // (oversize / empty / write-error / timeout / abort) so we don't leave
+    // occ-plugin-url-<uuid>/ residue in tmpdir.
+    if (sessionTmp !== null) {
+      await rm(sessionTmp, { recursive: true, force: true }).catch(() => {})
+    }
+    if (controller.signal.aborted) {
+      throw new Error(
+        `--plugin-url: fetch "${rawUrl}" timed out after ${timeoutMs}ms.`,
+      )
+    }
+    throw error
   } finally {
-    await writer.close()
+    clearTimeout(timer)
   }
-
-  if (received === 0) {
-    throw new Error(`--plugin-url: response from "${rawUrl}" was empty`)
-  }
-
-  return { path: zipPath, url: rawUrl }
 }
