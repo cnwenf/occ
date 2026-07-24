@@ -1,87 +1,152 @@
 # OCC terminal logo redesign (OCC-25)
 
-> This supersedes the OCC-20 "open-orbit" mark in `docs/welcome-logo-occ20.md`.
-> The implementation lives in `src/components/LogoV2/OccWelcome.tsx`; the
-> responsive layout, shimmer, and accessibility fallback described in OCC-20
-> are unchanged — only the art asset and its rationale changed.
+> This supersedes the OCC-20 open-orbit mark in
+> `docs/welcome-logo-occ20.md`. The implementation lives in
+> `src/components/LogoV2/OccWelcome.tsx`; responsive layout, shimmer, and the
+> accessibility fallback remain intact.
 
-## Why redesign
+## Brief
 
-OCC-20 shipped an "open orbit": an unfinished outer ring + a solid code kernel
-+ a detached diagonal cursor spark at the opening. In practice it read as three
-stacked metaphors rendered in dense Braille dots:
+OCC-20 combined an unfinished orbit, a code kernel, and a detached cursor. At
+only three to seven terminal rows, those ideas became unrelated fragments with
+inconsistent visual weight. OCC-25 starts again with one constraint: the mark
+must remain a confident silhouette when it is only three rows tall.
 
-- the speckled dot texture blurred on common terminals at small sizes;
-- the three-piece composition (ring · kernel · spark) felt fragmented, with no
-  single dominant form;
-- stroke weight was inconsistent (the spark is one cell, the ring is two-cell,
-  the kernel is a fill), so nothing read as one confident mark.
+## Design study
 
-OCC-25 keeps exactly one metaphor and draws it as one clean silhouette.
+The redesign uses four practical rules:
 
-## The new mark: an open C
+1. **One silhouette, one opening.** Adobe's
+   [minimalist logo guidance](https://www.adobe.com/uk/creativecloud/design/discover/minimalist-logo-design.html)
+   recommends removing detail that muddies at small sizes and treating negative
+   space as deliberately as filled space. The new mark therefore has no
+   satellite, center glyph, or secondary metaphor.
+2. **Grid discipline and consistent weight.** IBM's
+   [pictogram guidance](https://www.ibm.com/design/language/iconography/pictograms/design/)
+   calls for a stable master grid, consistent strokes, safe exterior padding,
+   and optical adjustments at each size. Each OCC resource is redrawn for its
+   own grid rather than cropped from the large asset.
+3. **Respect terminal cells.** Unicode defines all 256 eight-dot
+   [Braille patterns](https://www.unicode.org/versions/Unicode17.0.0/core-spec/chapter-21/)
+   on a 2×4 grid but does not prescribe physical glyph dimensions. Braille is
+   useful for sketches and fine curves; solid block and quadrant-block cells
+   produce the more stable final mass. OCC measures both with `stringWidth()`
+   and never depends on a hairline surviving a particular font.
+4. **Contrast before decoration.** W3C treats symbolic text glyphs as
+   [non-text graphics](https://www.w3.org/WAI/WCAG22/Understanding/non-text-contrast)
+   and uses 3:1 as a useful graphical-object contrast threshold. Although
+   logotypes are exempt, OCC keeps the settled silhouette in the established
+   base brand token and uses only its brighter companion for transient shimmer.
+   Meaning never depends on the second color.
 
-A single bold, rounded **C** — the C of "Open C Code" and the C language the
-project is built on. It is the only element on the mark.
+Grok Build remains a useful terminal reference for a single hero mark and a
+low-frequency shimmer. Its [changelog](https://x.ai/build/changelog) also
+records a legacy Windows welcome-logo rendering fix, reinforcing OCC's separate
+text-only fallback. OCC copies neither Grok geometry nor source.
 
-Design principles applied:
+## Candidates
 
-- **One metaphor, one silhouette.** No kernel, no separate cursor spark. The C
-  carries the brand alone; the product name stays in the header text where
-  version and tagline already live.
-- **Consistent stroke weight.** Every tier is a 2-cell-thick stroke. There is
-  no thin accent breaking the silhouette — the thing the OCC-20 spark did
-  worst.
-- **Open on the right.** The right side is deliberately incomplete, which is
-  the "open" in Open C Code. The opening is the negative space, not a second
-  glyph.
-- **Rounded corners, not a square bracket.** The four outer corners and the
-  two bar-end inner corners are rounded with quadrant/half-block cells
-  (`▟▙▜▛`) so the form reads as a letterform, not `[` or a chunky bracket.
-- **Solid block fills, not Braille dots.** Full and half blocks (`█ ▀ ▄`)
-  produce a solid silhouette that stays crisp at small sizes and across
-  font/terminal variation, instead of speckling into noise.
+All candidates were evaluated monochrome and without animation.
 
-## Multi-resolution assets
+### A — Solid open C (selected)
 
-The three tiers share geometry but are redrawn, not scaled:
+```text
+▟████████▙
+█████████▛
+██
+██
+██
+█████████▜
+▜████████▛
+```
 
-| Mode | Width trigger | Asset | Top-row signature glyph |
-|---|---:|---|---|
-| Wide | 76+ columns | 7-row × 10-col C | `▟████████▙` |
-| Compact | 44–75 columns | 5-row × 8-col C | `▟██████▙` |
-| Plain/narrow | under 44 columns | 3-row × 6-col C | `▟████▙` |
+A single rounded C uses one two-cell stroke system and one broad opening. Solid
+block mass stays crisp across common fonts, and the opening carries “Open C
+Code” without adding another object.
 
-The consecutive-block run length (8 / 6 / 4) is unique per tier, so the e2e
-signature-glyph checks never match a wider tier inside a narrower pane.
+### B — Rounded Braille aperture
 
-`normalizeLogo()` still pads every row to the resource's display width, and
-layout math still uses `stringWidth()` so block cells stay aligned in Ink.
+```text
+   ⢀⣠⣤⣶⣶⣤⣄⡀
+ ⢀⣴⣿⣿⡿⠿⠿⢿⣿⣿⣦⡀
+ ⣾⣿⡿⠁
+⢸⣿⣿⡇
+ ⢿⣿⣷⡀
+ ⠈⠻⣿⣿⣷⣶⣶⣾⣿⣿⠟⠁
+   ⠈⠙⠛⠿⠿⠛⠋⠁
+```
 
-## Motion
+The continuous curve has a calm center of gravity and a generous counter, but
+its dense dot texture softens under terminal fonts with small Braille dots.
 
-Unchanged from OCC-20: one 1.85s diagonal shimmer pass, 84 ms frame interval,
-base brand color with a brighter highlighted band, no animation under reduced
-motion, subscription released after the pass. Because the shimmer walks display
-columns and only flips color/bold (never drops glyphs), the solid C stays
-intact through the sweep.
+### C — Nested C
 
-## Information hierarchy
+```text
+   ⢀⣠⣤⣤⣤⣤⣄⡀
+ ⢀⣴⡿⠟⠉⣉⣉⠉⠻⢿⣦⡀
+ ⣾⡟⠁⣴⡿⠟⠻⢿⣦
+ ⣿⡇⢸⣿⡁
+ ⢿⣧⡀⠻⣷⣦⣴⣾⠟
+ ⠈⠻⣷⣦⣀⣉⣉⣀⣴⣾⠟⠁
+   ⠈⠙⠛⠛⠛⠛⠋⠁
+```
 
-Unchanged. The icon replaces only the hero art; the welcome screen still shows
-product name + version, model + billing, git/working-directory/agent context,
-and one stable shortcut tip. The forced full legacy welcome (doge mascot +
-feed) is untouched.
+The concentric Cs make the initials more explicit, but the inner mark
+reintroduces competing hierarchy and fragile small detail.
 
-## Acceptance coverage
+| Criterion | Solid C | Braille aperture | Nested C |
+|---|---:|---:|---:|
+| Three-row recognition | Strong | Strong | Weak |
+| Consistent apparent weight | Strong | Medium | Medium |
+| Clean negative space | Strong | Strong | Weak |
+| Cross-font stability | Strong | Medium | Weak |
 
-- Unit (`src/components/__tests__/OccWelcome.test.tsx`): stable width tiers,
-  equal display width per row, distinct wide > compact > plain row counts, no
-  `OCC` substring, no legacy `___   ___   ___` wordmark, shimmer preserves the
-  art and settles without highlights, and per-tier art appears at 100/60/36
-  columns — all green.
-- Real REPL tmux e2e (`test/e2e/repl-welcome-visual.e2e.test.ts`): boots the
-  built `dist/cli.js` inside tmux at 100, 60, and 36 columns and asserts the
-  correct tier's signature glyph renders at each width with no overflow, plus
-  the forced full-logo path — 4/4 pass.
-- `bunx biome lint` clean on changed files; `bun run build` green.
+**Selected: A, the solid open C.** It is the only candidate that preserves its
+weight, opening, and identity at three rows without a second element.
+
+## Production resources
+
+The selected form is optically redrawn at every responsive tier:
+
+```text
+wide · 7 rows      compact · 5 rows   narrow · 3 rows
+
+▟████████▙          ▟██████▙           ▟████▙
+█████████▛          ██                 ██
+██                  ██                 ▜████▛
+██                  ██
+██                  ▜██████▛
+█████████▜
+▜████████▛
+```
+
+- Wide terminals (76+ columns) place the 7×10 mark beside metadata.
+- Compact terminals (44–75 columns) center the 5×8 mark above metadata.
+- Narrow UTF-8 terminals use the 3×6 mark without a decorative border.
+- Screen-reader mode, explicit plain mode, and `TERM=dumb` omit decorative art
+  and animation entirely.
+
+Every occupied row is a single contiguous run, and all strokes are two cells
+thick. Quadrant-block corners (`▟▙▜▛`) soften the exterior and bar terminals so
+the shape reads as a letterform rather than a square bracket.
+
+## Motion and color
+
+- base silhouette: `claude`;
+- moving highlight: `claudeShimmer`, bold;
+- one diagonal pass over 1.85 seconds at an 84 ms cadence;
+- animation disabled for reduced motion;
+- the settled mark is monochrome and the base token measures at least 3:1
+  against the reference white/black backgrounds in light and dark themes. The
+  lighter shimmer is transient decoration and carries no structural detail.
+
+## Acceptance
+
+- Unit tests confirm normalized display widths, distinct resources, one
+  contiguous occupied run per row, stable shimmer text, light/dark contrast,
+  and the forced text-only path.
+- Static Ink renders fit 100, 60, and 36 display columns.
+- The built `occ` REPL is captured in tmux at those widths with the expected
+  resource, no replacement characters, and no torn alignment.
+- Both the default dark theme and a light theme preserve the complete
+  silhouette after shimmer settles.

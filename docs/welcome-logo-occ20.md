@@ -1,5 +1,9 @@
 # OCC terminal logo design (OCC-20)
 
+> Historical specification for the retired open-orbit mark. OCC-25 replaces it
+> with the single-silhouette aperture documented in
+> [`welcome-logo-occ25.md`](welcome-logo-occ25.md).
+
 ## Goal
 
 Replace the condensed REPL welcome screen's literal `OCC` ASCII wordmark with a

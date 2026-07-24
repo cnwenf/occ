@@ -2,6 +2,7 @@ import * as React from 'react'
 import { describe, expect, test } from 'bun:test'
 import { stringWidth } from '../../ink/stringWidth.js'
 import { renderToString } from '../../utils/staticRender.js'
+import { getTheme } from '../../utils/theme.js'
 import {
   formatWelcomeLocation,
   getOccLogo,
@@ -14,12 +15,36 @@ import {
 } from '../LogoV2/OccWelcome.js'
 
 const BASE_PROPS = {
-  version: '2.1.276',
+  version: '2.1.280',
   model: 'Claude Sonnet 4.5',
   billing: 'API Usage Billing',
   cwd: '/work/occ',
   branch: 'feature/welcome',
   reducedMotion: true,
+}
+
+function relativeLuminance(rgb: string): number {
+  const channels = rgb.match(/\d+/g)?.map(Number)
+  if (!channels || channels.length !== 3) return 0
+  const [red, green, blue] = channels.map(channel => {
+    const normalized = channel! / 255
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4
+  })
+  return 0.2126 * red! + 0.7152 * green! + 0.0722 * blue!
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const lighter = Math.max(
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  )
+  const darker = Math.min(
+    relativeLuminance(foreground),
+    relativeLuminance(background),
+  )
+  return (lighter + 0.05) / (darker + 0.05)
 }
 
 describe('OCC REPL welcome layout', () => {
@@ -42,6 +67,8 @@ describe('OCC REPL welcome layout', () => {
     for (const art of Object.values(OCC_LOGOS)) {
       const width = getOccLogoWidth(art)
       expect(art.every(line => stringWidth(line) === width)).toBe(true)
+      expect(art.every(line => line.trim().length > 0)).toBe(true)
+      expect(art.every(line => !line.trim().includes(' '))).toBe(true)
       expect(art.join('\n')).not.toContain('OCC')
       expect(art.join('\n')).not.toContain('___   ___   ___')
     }
@@ -68,6 +95,15 @@ describe('OCC REPL welcome layout', () => {
     expect(settled.every(run => !run.highlighted)).toBe(true)
   })
 
+  test('settled mark retains graphical contrast in light and dark themes', () => {
+    expect(
+      contrastRatio(getTheme('light').claude, 'rgb(255,255,255)'),
+    ).toBeGreaterThanOrEqual(3)
+    expect(
+      contrastRatio(getTheme('dark').claude, 'rgb(0,0,0)'),
+    ).toBeGreaterThanOrEqual(3)
+  })
+
   test('keeps the per-session hint stable across layout tiers', () => {
     const tip = 'Press / for commands, ? for shortcuts'
     expect(welcomeTip('wide', tip)).toBe(tip)
@@ -82,7 +118,7 @@ describe('OCC REPL welcome layout', () => {
     )
 
     expect(output).toContain('OCC')
-    expect(output).toContain('v2.1.276')
+    expect(output).toContain('v2.1.280')
     expect(output).toContain('Open C Code')
     expect(output).toContain(OCC_LOGOS.wide[1]!.trim())
     expect(output).not.toContain('___   ___   ___')
@@ -114,7 +150,7 @@ describe('OCC REPL welcome layout', () => {
     )
 
     expect(output).toContain(OCC_LOGOS.plain[1]!.trim())
-    expect(output).toContain('OCC v2.1.276 · Open C Code')
+    expect(output).toContain('OCC v2.1.280 · Open C Code')
     expect(output).not.toContain('╭')
     for (const line of output.split('\n')) {
       expect(stringWidth(line)).toBeLessThanOrEqual(36)
@@ -127,7 +163,7 @@ describe('OCC REPL welcome layout', () => {
       36,
     )
 
-    expect(output).toContain('OCC v2.1.276 · Open C Code')
+    expect(output).toContain('OCC v2.1.280 · Open C Code')
     expect(output).toContain('Claude Sonnet 4.5')
     expect(output).toContain('git:feature/welcome')
     expect(output).toContain(welcomeTip('plain'))
