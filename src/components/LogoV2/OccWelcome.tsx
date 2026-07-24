@@ -21,28 +21,33 @@ function normalizeLogo(lines: readonly string[]): OccLogoArt {
 }
 
 /**
- * OCC's open-orbit mark: a code kernel held inside an unfinished ring, with a
- * detached cursor spark at the opening. Each tier is drawn independently so it
- * stays legible instead of relying on terminal glyph scaling.
+ * OCC's mark: a single bold, rounded "C" — the C of "Open C Code" and the C
+ * language the project is built on. One clean silhouette, one consistent
+ * 2-cell stroke, one metaphor. The right side is deliberately open (the
+ * "open" in Open C Code); the four outer corners and the two bar-end inner
+ * corners are rounded with quadrant/half block cells so the form stays a
+ * confident letterform instead of a square bracket. Each tier is drawn
+ * independently so it stays legible instead of relying on terminal glyph
+ * scaling.
  */
 export const OCC_LOGOS = {
   wide: normalizeLogo([
-    '      ⢀⣠⣤⣀',
-    '   ⢀⣾⠟⠉⠉⠻⣷⣄',
-    '  ⣰⣿⠃  ⣀  ⠘⣿⣆',
-    ' ⢸⣿⡇  ⣿⣿⡇  ⣿⣿  ⠰⡄',
-    '  ⢿⣷  ⠻⠟  ⣰⣿⠏ ⢀⠞',
-    '   ⠻⣷⣄  ⣠⣾⠟  ⡰⠋',
-    '     ⠙⠿⠿⠛⠁  ⠘⠁',
+    '▟████████▙',
+    '█████████▛',
+    '██        ',
+    '██        ',
+    '██        ',
+    '█████████▜',
+    '▜████████▛',
   ]),
   compact: normalizeLogo([
-    '   ⣠⣤⣄',
-    ' ⣰⡿⠋⠙⢿⣆',
-    '⢰⣿  ⣿⡇ ⣿⡇⢠',
-    ' ⢿⣧ ⠛ ⣰⡿⢠⠃',
-    '  ⠙⠿⣶⠿⠋ ⠘',
+    '▟██████▙',
+    '██      ',
+    '██      ',
+    '██      ',
+    '▜██████▛',
   ]),
-  plain: normalizeLogo([' ⣠⣄', '⢸⡇⣿⡇⢠', ' ⠻⠶⠋⠘']),
+  plain: normalizeLogo(['▟████▙', '██    ', '▜████▛']),
 } satisfies Record<OccWelcomeMode, OccLogoArt>
 
 export function getOccLogo(mode: OccWelcomeMode): OccLogoArt {

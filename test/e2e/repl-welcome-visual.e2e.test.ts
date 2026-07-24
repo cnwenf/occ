@@ -17,7 +17,7 @@ import { REPO_ROOT } from './helpers';
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
  * -p`. Verifies the responsive condensed welcome (wide / compact / plain) and
- * the forced full logo. The condensed path renders OCC's open-orbit mark,
+ * the forced full logo. The condensed path renders OCC's open-C mark,
  * context, and a session-stable tip; the full path keeps the two-tone doge
  * mascot.
  *
@@ -117,9 +117,13 @@ function startRepl(
   tmux(['resize-window', '-t', SESSION, '-x', String(width), '-y', '50']);
 }
 
-const LARGE_LOGO_GLYPH = '⢀⣾⠟⠉⠉⠻⣷⣄';
-const MEDIUM_LOGO_GLYPH = '⣰⡿⠋⠙⢿⣆';
-const SMALL_LOGO_GLYPH = '⢸⡇⣿⡇⢠';
+// Signature glyphs from the redesigned OCC-25 "open C" mark
+// (src/components/LogoV2/OccWelcome.tsx). Each is the top row of its tier;
+// the consecutive-block run length (8 / 6 / 4) is unique per tier so a wider
+// tier's glyph never appears inside a narrower pane.
+const LARGE_LOGO_GLYPH = '▟████████▙';
+const MEDIUM_LOGO_GLYPH = '▟██████▙';
+const SMALL_LOGO_GLYPH = '▟████▙';
 const OLD_WORDMARK = '___   ___   ___';
 
 // Doge art glyphs that must remain in the forced full-logo pane.

@@ -23,6 +23,12 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## 2.1.280 - 2026-07-24
+
+- **OCC-25 — welcome logo redesign.** Replaced the OCC-20 "open-orbit" Braille mark (unfinished ring + code kernel + detached cursor spark — three stacked metaphors, inconsistent stroke, speckled texture that blurred at small sizes) with a single bold, rounded **C** drawn in solid block/half-block cells. The C is the C of "Open C Code" and the C language the project is built on; the right side is deliberately open (the "open" in Open C Code). One metaphor, one consistent 2-cell stroke, one clean silhouette that stays crisp at small sizes and across terminal/font variation.
+- **Multi-resolution + motion preserved.** Wide (7×10) / compact (5×8) / plain (3×6) tiers are redrawn independently with rounded quadrant-block corners; the 1.85s diagonal shimmer, 84 ms frame interval, reduced-motion fallback, and responsive layout math are unchanged. Forced full legacy welcome (doge mascot + feed) untouched.
+- **Verification.** Unit (`OccWelcome.test.tsx`, 9/9) + real REPL tmux e2e at 100/60/36 columns (`repl-welcome-visual.e2e.test.ts`, 4/4) green; `bunx biome lint` clean; `bun run build` green (cli.js 28.77 MB). Design rationale in `docs/welcome-logo-occ25.md`.
+
 ## 2.1.279 - 2026-07-24
 
 - **OCC-21 Gap-1 — doc alignment.** `README.md` / `README.zh-CN.md` / `CLAUDE.md` "tracks 2.1.215" → `2.1.218` to match the actual aligned code state (full portable alignment via OCC-19, PRs #199–#228). PR #229.
