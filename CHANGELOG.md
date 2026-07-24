@@ -6,15 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
-versions above that are OCC-specific releases. Last fully caught up through
-Claude Code `2.1.215`; a `2.1.216`→`2.1.217` catch-up (OCC-15) is in progress
-(Stage 1 schema/env knobs + Stage 2 subagent fan-out caps/budget + Stage 3 bash
-parsing #13/#21 regression tests + Stage 4 worktree git-redirect guard + Follow-ups A/B
-have landed; Stages 5–6 pending), and a `2.1.218` catch-up (OCC-19) has started
-(P0 slice landed — frontmatter boolean tokens, agent-name `:` rejection,
-`/deep-research` manual-only verified) — see
+versions above that are OCC-specific releases. **Last fully caught up through
+Claude Code `2.1.218`** (= official latest as of 2026-07-22). The
+`2.1.216`→`2.1.217` staged catch-up (OCC-15) and the `2.1.218` catch-up
+(OCC-19) are both **complete** — every portable 2.1.216/217/218 item landed on
+`main` via OCC-19 PRs #199–#228 (release `2.1.278`), with the no-gap
+confirmation recorded by OCC-28 (PR #239) and re-verified by OCC-31 on
+2026-07-24. See `docs/upstream-version-gap-occ31.md` (OCC-31) for the
+2026-07-24 no-gap re-confirmation + self-acceptance plan,
 `docs/upstream-version-gap-occ19.md` (OCC-19) for the 2026-07-23 `2.1.218` gap
-report + prioritized P0–P4 alignment checklist,
+report + prioritized P0–P4 alignment checklist (now fully landed),
 `docs/upstream-version-gap-occ15.md` (OCC-15) for the 2026-07-22 two-version gap
 report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) for the
 2026-07-20 no-gap confirmation (OCC already at official latest `2.1.215`),
