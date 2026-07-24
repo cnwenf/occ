@@ -23,6 +23,12 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## 2.1.282 - 2026-07-24
+
+- **OCC-27 — exit resume banner now shows the OCC binary name.** The exit "Resume this session with:" banner hardcoded the upstream `claude` command (`claude --resume <id>`); it now derives the actual invoked binary name via a new `src/utils/cliName.ts` helper, so it prints `occ --resume <id>` for the published `occ` bin (and falls back to `occ` for the bundled `dist/cli.js` and dev `.tsx` entry). The upstream `claude` name is suppressed defensively so it can never leak into OCC copy.
+- **Sweep of `claude`-as-`occ` residue in user-facing copy.** Replaced the upstream command name with `occ` across the exit banner, cross-project resume command, shell-completion hints, `/help`/`--help` and error/usage messages (auth login, `occ install`, `occ --debug`, `occ --teleport`, `occ --chrome`, `occ --remote`, `occ ssh`, `occ assistant`, `occ auto-mode`, `occ daemon`, `occ remote-control`, `occ --resume/--continue`). Code comments, the `~/.claude` config-dir path, the `claude.ai` domain, the "Claude Code" product name, and the bash read-only-validation allowlist regex are intentionally untouched.
+- **Verification.** New `test/utils/cliName.test.ts` (8/8) covers bin-name derivation for the `occ` symlink, `.cjs`/`.mjs` extensions, `dist/cli.js` + dev `.tsx` fallbacks, and the upstream-`claude` suppression guard; `autoModeReset` test updated in lockstep; `bunx biome lint` clean on all 26 touched files; `bun run build` green (cli.js 28.77 MB). Live REPL banner acceptance is consistent with the OCC-11 sandbox-stall constraint (non-sandbox).
+
 ## 2.1.281 - 2026-07-24
 
 - **OCC-25 — design record and acceptance hardening.** Completes the solid open-C welcome-logo release with the requested three-candidate design study, research sources, selection matrix, production-resource rationale, and an explicit historical pointer from OCC-20. Unit coverage now enforces one contiguous occupied run per row and at least 3:1 settled-mark contrast against reference light/dark backgrounds.

@@ -94,7 +94,7 @@ export async function daemonSubcommand(
       } else {
         const res = await stopExistingSupervisor()
         if (res.holder && !res.stopped) {
-          console.error('Run `claude daemon stop --any` to stop any background sessions and report on the holder')
+          console.error('Run `occ daemon stop --any` to stop any background sessions and report on the holder')
           process.exitCode = 1
         } else if (res.stopped && res.holder) {
           console.log(`Stopped daemon (pid=${res.holder.supervisorPid}).`)
@@ -131,7 +131,7 @@ export async function daemonSubcommand(
       const endpoint = await resolveRemoteControlEndpoint()
       if (!endpoint) {
         console.log(
-          'remote-control: daemon not running or RC server not configured. Run `claude daemon start` first.',
+          'remote-control: daemon not running or RC server not configured. Run `occ daemon start` first.',
         )
         break
       }

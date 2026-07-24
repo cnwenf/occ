@@ -415,7 +415,7 @@ export async function update() {
       } else {
         process.stderr.write('Try running with sudo or fix npm permissions\n')
         process.stderr.write(
-          'Or consider using native installation with: claude install\n',
+          'Or consider using native installation with: occ install\n',
         )
       }
       await gracefulShutdown(1)
@@ -429,7 +429,7 @@ export async function update() {
         )
       } else {
         process.stderr.write(
-          'Or consider using native installation with: claude install\n',
+          'Or consider using native installation with: occ install\n',
         )
       }
       await gracefulShutdown(1)
