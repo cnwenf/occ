@@ -6,12 +6,13 @@
 import { stat } from 'fs/promises';
 import pMap from 'p-map';
 import { cwd } from 'process';
+import readline from 'node:readline';
 import React from 'react';
 import { MCPServerDesktopImportDialog } from '../../components/MCPServerDesktopImportDialog.js';
 import { render } from '../../ink.js';
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
-import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientConfig, readClientSecret, saveMcpClientSecret } from '../../services/mcp/auth.js';
+import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientConfig, performMCPOAuthFlow, readClientSecret, revokeServerTokens, saveMcpClientSecret } from '../../services/mcp/auth.js';
 import { connectToServer, getMcpServerConnectionBatchSize } from '../../services/mcp/client.js';
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
@@ -385,4 +386,77 @@ export async function mcpResetChoicesHandler(): Promise<void> {
     enableAllProjectMcpServers: false
   }));
   cliOk('All project-scoped (.mcp.json) server approvals and rejections have been reset.\n' + 'You will be prompted for approval next time you start Claude Code.');
+}
+
+// mcp login (2.1.218): per-server OAuth for HTTP/SSE MCP servers.
+// claude.ai connector servers authenticate via the Anthropic account, not
+// per-server OAuth — route those to `auth login` rather than the consent flow.
+export async function mcpLoginHandler(name: string, options: {
+  noBrowser?: boolean;
+}): Promise<void> {
+  logEvent('tengu_mcp_oauth_login', {
+    name: name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+  });
+  const server = getMcpConfigByName(name);
+  if (!server) {
+    const { servers } = await getAllMcpConfigs();
+    cliError(`No MCP server named "${name}". Configured servers: ${Object.keys(servers).join(', ')}`);
+  }
+  // claude.ai connector authenticates via the Anthropic account, not per-server
+  // OAuth. (No connector configured in-sandbox to verify the binary's exact
+  // connector-login behavior — deferred with rationale.)
+  if (server.type === 'claudeai-proxy') {
+    cliError(`"${name}" is a claude.ai connector — it authenticates via your Anthropic account. Run \`claude auth login\` instead.`);
+  }
+  if (server.type !== 'http' && server.type !== 'sse') {
+    cliError(`"${name}" doesn't support OAuth login — it's only available for HTTP and SSE servers.`);
+  }
+  const noBrowser = options.noBrowser === true;
+  const onAuthorizationUrl = (url: string) => {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log(noBrowser ? `Open this URL in a browser to authorize:\n${url}` : `Opening browser to authorize MCP server "${name}"…\n${url}`);
+  };
+  // --no-browser: print the auth URL, then prompt the user to paste the
+  // redirect URL back (SSH/headless). The browser flow otherwise resolves
+  // the callback via the local loopback listener.
+  const onWaitingForCallback = noBrowser ? (submit: (callbackUrl: string) => void) => {
+    // biome-ignore lint/suspicious/noConsole:: intentional console output
+    console.log('\nAfter authorizing, paste the full redirect URL here and press Enter:');
+    const rl = readline.createInterface({ input: process.stdin });
+    rl.question('> ', (answer: string) => {
+      rl.close();
+      submit(answer.trim());
+    });
+  } : undefined;
+  try {
+    await performMCPOAuthFlow(name, server, onAuthorizationUrl, undefined, {
+      skipBrowserOpen: noBrowser,
+      onWaitingForCallback
+    });
+    cliOk(`Successfully authenticated with MCP server "${name}".`);
+  } catch (error) {
+    cliError(`Failed to authenticate with MCP server "${name}": ${(error as Error).message}`);
+  }
+}
+
+// mcp logout (2.1.218): clear stored OAuth credentials for an MCP server.
+export async function mcpLogoutHandler(name: string): Promise<void> {
+  logEvent('tengu_mcp_oauth_logout', {
+    name: name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+  });
+  const server = getMcpConfigByName(name);
+  if (!server) {
+    const { servers } = await getAllMcpConfigs();
+    cliError(`No MCP server named "${name}". Configured servers: ${Object.keys(servers).join(', ')}`);
+  }
+  if (server.type !== 'http' && server.type !== 'sse') {
+    cliError(`"${name}" doesn't use OAuth — there are no stored credentials to clear.`);
+  }
+  try {
+    await revokeServerTokens(name, server, {});
+    clearMcpClientConfig(name, server);
+    cliOk(`Cleared stored OAuth credentials for MCP server "${name}".`);
+  } catch (error) {
+    cliError(`Failed to clear credentials for MCP server "${name}": ${(error as Error).message}`);
+  }
 }

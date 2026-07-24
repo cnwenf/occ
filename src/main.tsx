@@ -923,13 +923,22 @@ async function run(): Promise<CommanderCommand> {
   function createSortedHelpConfig(): {
     sortSubcommands: true;
     sortOptions: true;
+    helpWidth?: number;
   } {
     const getOptionSortKey = (opt: Option): string => opt.long?.replace(/^--/, '') ?? opt.short?.replace(/^-/, '') ?? '';
+    // Gap-5 (2.1.218): match the official binary's piped --help wrapping.
+    // Official wraps descriptions at a fixed width (~80) when stdout is NOT a
+    // TTY; in a TTY it uses the terminal width (dynamic). OCC's commander
+    // default left piped output un-wrapped (lines up to ~600 chars), diverging
+    // from official byte-for-byte. Only pin helpWidth in the non-TTY case so
+    // TTY behavior stays dynamic (no new divergence in interactive use).
     return Object.assign({
       sortSubcommands: true,
       sortOptions: true
     } as const, {
       compareOptions: (a: Option, b: Option) => getOptionSortKey(a).localeCompare(getOptionSortKey(b))
+    }, process.stdout.isTTY ? {} : {
+      helpWidth: 80
     });
   }
   const program = new CommanderCommand().configureHelp(createSortedHelpConfig()).enablePositionalOptions();
@@ -4184,17 +4193,31 @@ async function run(): Promise<CommanderCommand> {
     } = await import('./cli/handlers/mcp.js');
     await mcpRemoveHandler(name, options);
   });
-  mcp.command('list').description('List configured MCP servers. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.').action(async () => {
+  mcp.command('list').description('List configured MCP servers. Unapproved .mcp.json servers are shown as ⏸ Pending approval and not connected to; approved servers are health-checked.').action(async () => {
     const {
       mcpListHandler
     } = await import('./cli/handlers/mcp.js');
     await mcpListHandler();
   });
-  mcp.command('get <name>').description('Get details about an MCP server. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.').action(async (name: string) => {
+  mcp.command('get <name>').description('Get details about an MCP server. Unapproved .mcp.json servers are shown as ⏸ Pending approval and not connected to; approved servers are health-checked.').action(async (name: string) => {
     const {
       mcpGetHandler
     } = await import('./cli/handlers/mcp.js');
     await mcpGetHandler(name);
+  });
+  mcp.command('login <name>').description('Authenticate with an MCP server (HTTP, SSE, or claude.ai connector)').option('--no-browser', 'Print the authorization URL instead of opening a browser (for SSH/headless sessions — paste the redirect URL back when prompted)').action(async (name: string, options: {
+    noBrowser?: boolean;
+  }) => {
+    const {
+      mcpLoginHandler
+    } = await import('./cli/handlers/mcp.js');
+    await mcpLoginHandler(name, options);
+  });
+  mcp.command('logout <name>').description('Clear stored OAuth credentials for an MCP server').action(async (name: string) => {
+    const {
+      mcpLogoutHandler
+    } = await import('./cli/handlers/mcp.js');
+    await mcpLogoutHandler(name);
   });
   mcp.command('add-json <name> <json>').description('Add an MCP server (stdio or SSE) with a JSON string').option('-s, --scope <scope>', 'Configuration scope (local, user, or project)', 'local').option('--client-secret', 'Prompt for OAuth client secret (or set MCP_CLIENT_SECRET env var)').action(async (name: string, json: string, options: {
     scope?: string;
