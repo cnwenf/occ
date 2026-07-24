@@ -121,11 +121,17 @@ function extractTaggedBullets(tagName: string): string[] {
     new RegExp(`<${tagName}>([\\s\\S]*?)</${tagName}>`),
   )
   if (!match) return []
-  return (match[1] ?? '')
-    .split('\n')
-    .map(line => line.trim())
-    .filter(line => line.startsWith('- '))
-    .map(line => line.slice(2))
+  // The official 2.1.218 `auto-mode defaults` keeps a multi-line rule (e.g. the
+  // single `hard_deny` Data Exfiltration rule, which spans several physical
+  // lines) as ONE array entry — continuation lines that do not start with `- `
+  // are part of the preceding bullet, not separate entries. Splitting on `\n`
+  // and keeping only `- `-prefixed lines would truncate such rules. Match the
+  // binary by splitting on the bullet separator `\n- ` (after stripping the
+  // leading `- ` of the first bullet), so each entry is one full bullet,
+  // newlines included.
+  const raw = (match[1] ?? '').replace(/^\s+/, '').replace(/\s+$/, '')
+  if (!raw.startsWith('- ')) return []
+  return raw.slice(2).split('\n- ')
 }
 
 /**

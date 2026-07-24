@@ -4699,12 +4699,12 @@ async function run(): Promise<CommanderCommand> {
     // Skip when tengu_auto_mode_config.enabled === 'disabled' (circuit breaker).
     // Reads from disk cache — GrowthBook isn't initialized at registration time.
     if (getAutoModeEnabledStateIfCached() !== 'disabled') {
-      const autoModeCmd = program.command('auto-mode').description('Inspect auto mode classifier configuration');
-      autoModeCmd.command('defaults').description('Print the default auto mode environment, allow, and deny rules as JSON').action(async () => {
+      const autoModeCmd = program.command('auto-mode').description('Inspect or reset auto mode classifier configuration');
+      autoModeCmd.command('defaults').description('Print the default auto mode environment, allow, soft_deny, and hard_deny rules as JSON').option('--label <prefix>', 'Show only rules whose label starts with this prefix (case-insensitive)').action(async options => {
         const {
           autoModeDefaultsHandler
         } = await import('./cli/handlers/autoMode.js');
-        autoModeDefaultsHandler();
+        autoModeDefaultsHandler({ label: options.label });
         process.exit(0);
       });
       autoModeCmd.command('config').description('Print the effective auto mode config as JSON: your settings where set, defaults otherwise').action(async () => {
@@ -4721,7 +4721,7 @@ async function run(): Promise<CommanderCommand> {
         await autoModeCritiqueHandler(options);
         process.exit();
       });
-      autoModeCmd.command('reset').description('Restore the default auto mode configuration by removing the autoMode section from user settings').option('--yes', 'Skip the confirmation prompt').action(async options => {
+      autoModeCmd.command('reset').description('Reset auto mode configuration to the shipped defaults by removing the autoMode section from your user settings file').option('-y, --yes', 'Skip the confirmation prompt').action(async options => {
         const {
           autoModeResetHandler
         } = await import('./cli/handlers/autoMode.js');

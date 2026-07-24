@@ -23,6 +23,15 @@ report and staged alignment plan, `docs/upstream-version-gap-occ13.md` (OCC-13) 
 `docs/upstream-version-gap-occ9.md` (OCC-9)
 for the earlier 2.1.211→2.1.212 history.
 
+## 2.1.283 - 2026-07-24
+
+- **OCC-28 self-acceptance — `auto-mode` subcommand parity with Claude Code 2.1.218.** Self-acceptance against the official `2.1.218` binary surfaced stale `auto-mode` help text and a stubbed default-ruleset; all now byte-identical to the official binary.
+  - **`auto-mode` / `auto-mode defaults` / `auto-mode reset` `--help`** — descriptions updated to the 2.1.218 wording (`Inspect or reset…`, `…allow, soft_deny, and hard_deny rules…`, `Reset auto mode configuration to the shipped defaults by removing the autoMode section from your user settings file`); `reset` now exposes the `-y, --yes` short alias. Leaf-subcommand `--help` is byte-identical to `claude` 2.1.218.
+  - **`auto-mode defaults --label <prefix>`** — new option (matches 2.1.218): filters rules whose label starts with the prefix (case-insensitive, `*` emphasis stripped). Verified against the official binary across a 17-label battery.
+  - **`auto-mode defaults` output** — replaced the 21-line `(none)` stub in `permissions_external.txt` with the real 2.1.218 default ruleset (allow 17 / soft_deny 65 / hard_deny 1 / environment 20), extracted from the official binary and JS-unescaped. Fixed `extractTaggedBullets` to preserve multi-line rules (the single `hard_deny` Data Exfiltration rule spans several physical lines and is kept as one entry, matching the binary). Output is now byte-identical to `claude auto-mode defaults`.
+  - **`auto-mode config` output** — now includes the `hard_deny` section (was omitted); byte-identical to `claude auto-mode config`.
+- **Verification.** `auto-mode`/`defaults`/`config`/`reset`/`critique --help`, `defaults` output, and `--label` all diff-clean against the official 2.1.218 binary. Existing `autoModeReset` / `autoModeDenials` / `automode-ungate` tests pass; lint clean. The `gateway` root command remains absent by design (enterprise auth/telemetry gateway — OCC trims enterprise/telemetry capabilities; OCC-19 already marked gateway items ⛔ skip). The node-pty `resume-command-name` e2e stalls in-sandbox (pre-existing OCC-11 sandbox-stall, fails identically on clean `main`); human-like REPL e2e via tmux (trust dialog, startup banner, prompt + `2+2 → ● 4`, `/help`, `/exit`, error handling) is consistent with the official binary.
+
 ## 2.1.282 - 2026-07-24
 
 - **OCC-27 — resume hints now use OCC's real executable name.** The interactive exit banner now prints `occ --resume <session-id>` instead of the inherited `claude --resume <session-id>`. The binary name is injected at build time from the sole `package.json.bin` entry, so the published executable and user-facing resume command share one source of truth.
