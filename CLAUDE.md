@@ -15,7 +15,26 @@ OCC tracks Claude Code `2.1.218` `--help` but diverges by design on a few flags:
 - **`--exclude-dynamic-system-prompt-sections`** — registered + wired: relocates per-machine dynamic sections from the system prompt into the first user message (headless path only; `--print` / SDK), matching the 2.1.218 boundary-marker split.
 - **`--prompt-suggestions [value]`** — registered + wired to the existing SDK `promptSuggestions` path; requires `--print --output-format=stream-json` (binary-verified guard).
 
+## Tool Set & Help Divergences (OCC-24)
 
+OCC tracks Claude Code `2.1.218` `mcp`/`--help` surface. The divergences below are **by design** (flag-safety or OCC-specific features), not alignment debt.
+
+### `mcp login` / `mcp logout` (aligned in OCC-24)
+
+`claude mcp login <name>` / `claude mcp logout <name>` are registered + implemented (OAuth for HTTP/SSE via `performMCPOAuthFlow`; `--no-browser` prints the auth URL and accepts a pasted redirect URL for SSH/headless). `mcp login/logout/get/list --help` are byte-identical to the 2.1.218 binary. A claude.ai connector (`claudeai-proxy`) authenticates via the Anthropic account, so `mcp login` on one routes to `auth login` rather than the per-server consent flow; `mcp logout` on a stdio/connector server reports no stored OAuth credentials.
+
+### stream-json `init` tool set (Obs C — by design)
+
+`occ -p --output-format=stream-json` exposes a different default tool set than the 2.1.218 binary:
+
+- **OCC-only** (not in official `-p`): `AskUserQuestion`, `EnterPlanMode`, `ExitPlanMode` (OCC enables interactive tools in print mode to support stream-json interactive `-p`); `browser_batch` / `navigate` / `screenshot` / `get_page_text` (OCC's WebBrowser tool — real Chrome via CDP, an OCC-specific feature official does not ship as a built-in).
+- **Official-only** (not in OCC `-p`): `CronCreate` / `CronDelete` / `CronList`, `SendMessage` / `BriefTool`, `TaskCreate` / `TaskGet` / `TaskList` / `TaskUpdate`, `PushNotification`, `ReportFindings`, `ScheduleWakeup`, `DesignSync`.
+
+These OCC-absent tools **exist in OCC source** (`src/tools.ts` `getBaseTools()` registers them) but are filtered from the `-p` init event because their `isEnabled()` gates on feature flags that are **intentionally off** in the production build (`KAIROS`/`KAIROS_BRIEF` for `BriefTool`/`SendMessage`; `isTodoV2Enabled()` for the `Task*` set; etc.). Re-enabling those flags is unsafe — `feature('KAIROS')` re-activates the BriefTool 5-minute loop that hangs `occ` (the same risk the `aligning-with-official-binary` guidance warns about and that the OCC-24 `--brief` flag exposure deliberately avoided by separating flag visibility from behavior activation). The interactive REPL (non-`-p`) path still surfaces these tools through its own enablement. Aligning the `-p` default set to official would require either re-enabling unsafe flags or a deeper rework of the print-mode enablement conditions — deferred with this rationale rather than risk a regression.
+
+### `--help` wrapping (Gap-5 — partial fix + deferral)
+
+`createSortedHelpConfig()` now pins `helpWidth: 80` for non-TTY stdout (TTY stays dynamic — no new interactive divergence). This makes **leaf subcommand** `--help` (e.g. `mcp login --help`, `mcp logout --help`, `mcp get --help`, `mcp list --help`) byte-identical to the 2.1.218 binary, including description wrapping. The **top-level `occ --help`** and **multi-subcommand `mcp --help` Commands list** still render long option/command descriptions on a single wide line (no wrap), diverging from the binary's separate-indented-line + wrap layout. Root cause: OCC's bundled Commander `Help` layout algorithm differs from the binary's for long signatures, and the `helpWidth` knob does not change that algorithm. Forcing a custom `helpInformation` override to match would risk regressing the byte-identical leaf-subcommand helps and is low priority — deferred with rationale.
 
 ```bash
 # Install dependencies
