@@ -54,7 +54,7 @@ export function systemdUnitPath(): string {
 export function installPersistentService(): string {
   const plat = detectInstallPlatform()
   if (plat === 'unsupported') {
-    const msg = `claude daemon install isn't available on ${process.platform} (no launchd/systemd)`
+    const msg = `occ daemon install isn't available on ${process.platform} (no launchd/systemd)`
     logEvent('daemon_install_unsupported', { platform: process.platform as any })
     return msg
   }
@@ -159,5 +159,5 @@ export function uninstallPersistentService(): string {
     logEvent('daemon_uninstall_systemd', {})
     return `systemd unit removed`
   }
-  return `claude daemon uninstall isn't available on ${process.platform} (no launchd/systemd)`
+  return `occ daemon uninstall isn't available on ${process.platform} (no launchd/systemd)`
 }

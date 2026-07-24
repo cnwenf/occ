@@ -72,10 +72,10 @@ describe('/fork call (2.1.212 delta)', () => {
     // Act — deriveForkName('do the thing') === 'do-the-thing'
     await call(onDone, context, 'do the thing')
 
-    // Assert — one line: name, claude attach id, shares-checkout note
+    // Assert — one line: name, occ attach id, shares-checkout note
     expect(output).toHaveLength(1)
     expect(output[0]).toMatch(
-      /^Forked session do-the-thing \(claude attach [0-9a-f-]{36}\) \(shares your checkout\)$/,
+      /^Forked session do-the-thing \(occ attach [0-9a-f-]{36}\) \(shares your checkout\)$/,
     )
     expect(output[0].includes('\n')).toBe(false)
   })

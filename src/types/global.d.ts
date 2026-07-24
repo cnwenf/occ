@@ -9,6 +9,7 @@
 // Also supports property access like MACRO.VERSION (compile-time constants).
 declare namespace MACRO {
   export const VERSION: string
+  export const BINARY_NAME: string
   export const BUILD_TIME: string
   export const FEEDBACK_CHANNEL: string
   export const ISSUES_EXPLAINER: string

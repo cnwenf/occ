@@ -432,7 +432,7 @@ export async function initReplBridge(
         `[bridge:repl] Skipping: ${versionError}`,
         true,
       )
-      onStateChange?.('failed', 'run `claude update` to upgrade')
+      onStateChange?.('failed', 'run `occ update` to upgrade')
       return null
     }
     logForDebugging(
@@ -473,7 +473,7 @@ export async function initReplBridge(
   const versionError = checkBridgeMinVersion()
   if (versionError) {
     logBridgeSkip('version_too_old', `[bridge:repl] Skipping: ${versionError}`)
-    onStateChange?.('failed', 'run `claude update` to upgrade')
+    onStateChange?.('failed', 'run `occ update` to upgrade')
     return null
   }
 

@@ -1,4 +1,5 @@
 import chalk from 'chalk'
+import { CLI_BINARY_NAME } from '../../constants/cli.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { fileHistoryEnabled } from 'src/utils/fileHistory.js'
 import {
@@ -380,7 +381,7 @@ const externalTips: Tip[] = [
   {
     id: 'continue',
     content: async () =>
-      'Run claude --continue or claude --resume to resume a conversation',
+      `Run ${CLI_BINARY_NAME} --continue or ${CLI_BINARY_NAME} --resume to resume a conversation`,
     cooldownSessions: 10,
     isRelevant: async () => true,
   },

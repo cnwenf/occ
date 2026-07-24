@@ -50,7 +50,7 @@ function scheduledStatusPath(): string {
 
 /** Print usage for `claude daemon`. */
 function printDaemonUsage(): void {
-  console.log(`Usage: claude daemon <subcommand>
+  console.log(`Usage: occ daemon <subcommand>
 
 Subcommands:
   start              Start the supervisor (default)
@@ -94,7 +94,7 @@ export async function daemonSubcommand(
       } else {
         const res = await stopExistingSupervisor()
         if (res.holder && !res.stopped) {
-          console.error('Run `claude daemon stop --any` to stop any background sessions and report on the holder')
+          console.error('Run `occ daemon stop --any` to stop any background sessions and report on the holder')
           process.exitCode = 1
         } else if (res.stopped && res.holder) {
           console.log(`Stopped daemon (pid=${res.holder.supervisorPid}).`)
@@ -131,7 +131,7 @@ export async function daemonSubcommand(
       const endpoint = await resolveRemoteControlEndpoint()
       if (!endpoint) {
         console.log(
-          'remote-control: daemon not running or RC server not configured. Run `claude daemon start` first.',
+          'remote-control: daemon not running or RC server not configured. Run `occ daemon start` first.',
         )
         break
       }
@@ -225,7 +225,7 @@ async function logsHandlerDaemon(): Promise<void> {
 async function scheduledHandler(args: string[]): Promise<void> {
   const op = args[0]
   if (op !== 'add' && op !== 'remove' && op !== 'rm' && op !== 'list') {
-    console.error('Usage: claude daemon scheduled add|remove <task-id> [--schedule <cron>] [--prompt <text>]')
+    console.error('Usage: occ daemon scheduled add|remove <task-id> [--schedule <cron>] [--prompt <text>]')
     process.exitCode = 1
     return
   }
@@ -316,7 +316,7 @@ function writeScheduledConfig(tasks: ScheduledTask[]): void {
  * subcommand is functional, not a stub.
  */
 async function renderDaemonHubStandalone(): Promise<void> {
-  console.log('Claude daemon hub')
+  console.log('OCC daemon hub')
   await statusHandler()
   console.log('\n(Press q to quit — interactive hub is a follow-up.)')
 }

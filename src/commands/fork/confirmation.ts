@@ -1,3 +1,5 @@
+import { CLI_BINARY_NAME } from '../../constants/cli.js'
+
 /**
  * 2.1.216 #30 — `/fork` one-line confirmation.
  *
@@ -7,7 +9,7 @@
  *
  *   1. the new session's name (derived from the directive via `deriveForkName`,
  *      the official `uwd`);
- *   2. the `claude attach` id (the forked session's id, so the user can
+ *   2. the `occ attach` id (the forked session's id, so the user can
  *      re-open / join the copy);
  *   3. a note when the copy shares your checkout.
  *
@@ -19,7 +21,7 @@
  * Format the `/fork` confirmation as a single line.
  *
  * @param forkName The derived fork session name (official `uwd`).
- * @param sessionId The forked session's id — the value `claude attach` takes.
+ * @param sessionId The forked session's id — the value `occ attach` takes.
  * @param sharesCheckout `true` when the fork runs in the parent's git
  *   checkout (no separate worktree). OCC's `/fork` does not spin up a
  *   separate worktree for the copy (the live background-session dispatch is
@@ -31,6 +33,6 @@ export function formatForkConfirmation(
   sessionId: string,
   sharesCheckout: boolean,
 ): string {
-  const base = `Forked session ${forkName} (claude attach ${sessionId})`
+  const base = `Forked session ${forkName} (${CLI_BINARY_NAME} attach ${sessionId})`
   return sharesCheckout ? `${base} (shares your checkout)` : base
 }

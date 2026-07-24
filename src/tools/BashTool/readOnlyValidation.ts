@@ -1518,6 +1518,8 @@ const READONLY_COMMAND_REGEXES = new Set([
   // Claude CLI help
   /^claude -h$/,
   /^claude --help$/,
+  /^occ -h$/,
+  /^occ --help$/,
 
   // Git readonly commands are now handled via COMMAND_ALLOWLIST with explicit flag validation
   // (git status, git blame, git ls-files, git config --get, git remote, git tag, git branch)

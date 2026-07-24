@@ -93,7 +93,7 @@ async function agentsDashboard(json: boolean | undefined): Promise<void> {
   const supervisorPid = rows[0]?.supervisorPid
   if (rows.length === 0) {
     console.log('No background sessions found.')
-    console.log('\nStart the daemon with: claude daemon start')
+    console.log('\nStart the daemon with: occ daemon start')
     return
   }
 

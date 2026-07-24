@@ -1279,7 +1279,7 @@ export const SettingsSchema = lazySchema(() =>
                 'Default working directory on the remote host. ' +
                   'Supports tilde expansion (e.g. ~/projects). ' +
                   'If not specified, defaults to the remote user home directory. ' +
-                  'Can be overridden by the [dir] positional argument in `claude ssh <config> [dir]`.',
+                  'Can be overridden by the [dir] positional argument in `occ ssh <config> [dir]`.',
               ),
           }),
         )

@@ -24,18 +24,18 @@ describe('requiredMinimumVersion/requiredMaximumVersion startup gate (2.1.163)',
     expect(src).toMatch(/export function getRequiredVersionError/)
   })
 
-  test('gate messages match the official wording exactly', async () => {
+  test('gate messages keep the official semantics with OCC command names', async () => {
     const src = await Bun.file(`${REPO_ROOT}/src/utils/settings/settings.ts`).text()
     // Min: "older than the minimum version required by your organization".
     expect(src).toContain('is older than the minimum version required by your organization')
-    expect(src).toContain("Update Claude Code using your organization's approved method, then try again.")
+    expect(src).toContain("Update OCC using your organization's approved method, then try again.")
     expect(src).toContain('If automatic updates are available')
-    expect(src).toContain('claude update')
+    expect(src).toContain('occ update')
     // Max: "newer than the maximum version allowed by your organization".
     expect(src).toContain('is newer than the maximum version allowed by your organization')
     expect(src).toContain('Your organization requires version')
     expect(src).toContain('or older. Install an approved version using your organization')
-    expect(src).toContain('claude install')
+    expect(src).toContain('occ install')
     // Invalid semver constraint is logged and ignored (official hyr.parse guard).
     expect(src).toContain('is not a valid semver version — ignoring')
     // Comparison helpers (gte = current>=min ok; lte = current<=max ok).

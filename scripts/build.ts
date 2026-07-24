@@ -15,6 +15,13 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const pkg = JSON.parse(readFileSync('package.json', 'utf-8'))
+const binaryNames = Object.keys(pkg.bin ?? {})
+if (binaryNames.length !== 1) {
+  throw new Error(
+    `Expected package.json to expose exactly one CLI binary, found ${binaryNames.length}`,
+  )
+}
+const binaryName = binaryNames[0]
 
 const FEATURE_ALLOWLIST = new Set([
   'TRANSCRIPT_CLASSIFIER', // auto permission mode (AI classifier)
@@ -69,6 +76,7 @@ for (const o of result.outputs) {
 // check skip the hardcoded fallback.
 const macros = {
   VERSION: pkg.version,
+  BINARY_NAME: binaryName,
   BUILD_TIME: new Date().toISOString(),
   FEEDBACK_CHANNEL: '',
   ISSUES_EXPLAINER: '',
@@ -83,3 +91,4 @@ const prelude = `globalThis.MACRO=${JSON.stringify(macros)};`
 dist = dist.replace(/^(#![^\n]*\n)/, `$1${prelude}\n`)
 writeFileSync(distPath, dist)
 console.log(`  injected MACRO.VERSION=${macros.VERSION}`)
+console.log(`  injected MACRO.BINARY_NAME=${macros.BINARY_NAME}`)
