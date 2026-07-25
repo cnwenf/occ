@@ -17,7 +17,7 @@ import { TaskRegistryImpl, getNoopTaskRegistry } from '../taskRegistry.js'
  *
  * CC 2.1.217 (Stage 1, schema/env only):
  *   CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS (default 20, concurrent-running cap)
- *   CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (default 1, nested-spawn depth)
+ *   CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (default 3 since CC 2.1.219, nested-spawn depth)
  */
 
 const WEB_ENV = 'CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION'
@@ -306,44 +306,44 @@ describe('getMaxConcurrentSubagents (CC 2.1.217, Stage 1)', () => {
   })
 })
 
-describe('getMaxSubagentSpawnDepth (CC 2.1.217, Stage 1)', () => {
-  test('defaults to 1 (no nested subagents) when the env var is unset', () => {
+describe('getMaxSubagentSpawnDepth (CC 2.1.219: default 3, was 1 in 2.1.217)', () => {
+  test('defaults to 3 (nested subagents allowed to depth 3) when the env var is unset', () => {
     // Arrange — env unset by beforeEach
     // Act
     const depth = getMaxSubagentSpawnDepth()
 
-    // Assert — official default Avu = 1 (no nesting by default)
-    expect(depth).toBe(1)
+    // Assert — CC 2.1.219 raised the official default Avu 1 → 3
+    expect(depth).toBe(3)
   })
 
   test('env override raises the allowed nesting depth', () => {
-    process.env[DEPTH_ENV] = '3'
-    expect(getMaxSubagentSpawnDepth()).toBe(3)
+    process.env[DEPTH_ENV] = '5'
+    expect(getMaxSubagentSpawnDepth()).toBe(5)
   })
 
-  test('explicit depth of 1 is accepted (equals the default, still no nesting)', () => {
+  test('explicit depth of 1 disables nesting (CC 2.1.219 opt-out)', () => {
     process.env[DEPTH_ENV] = '1'
     expect(getMaxSubagentSpawnDepth()).toBe(1)
   })
 
-  test('bad env value (non-numeric) falls back to 1', () => {
+  test('bad env value (non-numeric) falls back to the default 3', () => {
     process.env[DEPTH_ENV] = 'garbage'
-    expect(getMaxSubagentSpawnDepth()).toBe(1)
+    expect(getMaxSubagentSpawnDepth()).toBe(3)
   })
 
-  test('zero falls back to 1 (official guard: depth must be an integer ≥ 1)', () => {
+  test('zero falls back to 3 (official guard: depth must be an integer ≥ 1)', () => {
     process.env[DEPTH_ENV] = '0'
-    expect(getMaxSubagentSpawnDepth()).toBe(1)
+    expect(getMaxSubagentSpawnDepth()).toBe(3)
   })
 
-  test('negative value falls back to 1', () => {
+  test('negative value falls back to 3', () => {
     process.env[DEPTH_ENV] = '-2'
-    expect(getMaxSubagentSpawnDepth()).toBe(1)
+    expect(getMaxSubagentSpawnDepth()).toBe(3)
   })
 
-  test('fractional value falls back to 1 (must be a positive integer)', () => {
+  test('fractional value falls back to 3 (must be a positive integer)', () => {
     process.env[DEPTH_ENV] = '2.5'
-    expect(getMaxSubagentSpawnDepth()).toBe(1)
+    expect(getMaxSubagentSpawnDepth()).toBe(3)
   })
 })
 

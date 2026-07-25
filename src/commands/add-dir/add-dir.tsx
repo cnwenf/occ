@@ -11,6 +11,7 @@ import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { applyPermissionUpdate, persistPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js';
 import type { PermissionUpdateDestination } from '../../utils/permissions/PermissionUpdateSchema.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
+import { executeDirectoryAddedHooks } from '../../utils/hooks.js';
 import { addDirHelpMessage, validateDirectoryForWorkspace } from './validation.js';
 function AddDirError(t0) {
   const $ = _c(10);
@@ -88,10 +89,22 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
     // dirs are picked up via the settings subscription, but we refresh
     // eagerly here to avoid a race when the user acts immediately.
     const currentDirs = getAdditionalDirectoriesForClaudeMd();
-    if (!currentDirs.includes(path)) {
+    const wasNewlyRegistered = !currentDirs.includes(path);
+    if (wasNewlyRegistered) {
       setAdditionalDirectoriesForClaudeMd([...currentDirs, path]);
     }
     SandboxManager.refreshConfig();
+    // CC 2.1.219: fire `DirectoryAdded` hooks after the sandbox config refresh
+    // (so sandboxed tools already see the new dir) — but only for a genuinely
+    // new registration. Per upstream: "a directory that is already a registered
+    // working directory ... the registration pipeline and DirectoryAdded hooks
+    // do not re-run." Fire-and-forget; the executor handles its own errors.
+    if (wasNewlyRegistered) {
+      void executeDirectoryAddedHooks(path, 'add-dir').catch(() => {
+        // Swallow — hook exec failures are surfaced to the user by the hook
+        // runner itself; they must never break the /add-dir flow.
+      });
+    }
     let message: string;
     if (remember) {
       try {

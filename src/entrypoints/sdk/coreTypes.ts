@@ -62,6 +62,10 @@ export const HOOK_EVENTS = [
   // 2.1.152: MessageDisplay fires with each batch of newly completed lines
   // while an assistant message is streamed (display-only, per-flush).
   'MessageDisplay',
+  // 2.1.219: DirectoryAdded fires after /add-dir or the register_repo_root
+  // SDK control request registers a new working directory mid-session (after
+  // the sandbox config refresh). Observability-only, non-blocking.
+  'DirectoryAdded',
 ] as const
 
 export const EXIT_REASONS = [

@@ -259,6 +259,15 @@ export const getHookEventMetadata = memoize(
         description:
           'Input to command is JSON with old_cwd and new_cwd.\nCLAUDE_ENV_FILE is set — write bash exports there to apply env to subsequent BashTool commands.\nHook output can include hookSpecificOutput.watchPaths (array of absolute paths) to register with the FileChanged watcher.\nExit code 0 - command completes successfully\nOther exit codes - show stderr to user only',
       },
+      // 2.1.219: DirectoryAdded fires after /add-dir or the register_repo_root
+      // SDK control request registers a new working directory mid-session,
+      // after the sandbox config refresh (hook commands themselves run
+      // unsandboxed). Observability-only, non-blocking.
+      DirectoryAdded: {
+        summary: 'After a working directory is added mid-session',
+        description:
+          'Fires after /add-dir or the register_repo_root SDK control request registers a new working directory, after the sandbox configuration has been refreshed — so sandboxed tools and permission state already see the new directory (hook commands themselves run unsandboxed).\nInput to command is JSON with directory (the added path) and source (the add origin).\nA directory that is already a registered working directory (including a duplicate of an earlier request) is denied with an error; the registration pipeline and DirectoryAdded hooks do not re-run.\nExit code 0 - command completes successfully\nOther exit codes - show stderr to user only',
+      },
       FileChanged: {
         summary: 'When a watched file changes',
         description:
@@ -329,6 +338,7 @@ export function groupHooksByEventAndMatcher(
     PostToolBatch: {},
     UserPromptExpansion: {},
     MessageDisplay: {},
+    DirectoryAdded: {},
   }
 
   const metadata = getHookEventMetadata(toolNames)

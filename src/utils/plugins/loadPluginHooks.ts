@@ -59,6 +59,7 @@ function convertPluginHooksToMatchers(
     PostToolBatch: [],
     UserPromptExpansion: [],
     MessageDisplay: [],
+    DirectoryAdded: [],
   }
 
   if (!plugin.hooksConfig) {
@@ -124,6 +125,7 @@ export const loadPluginHooks = memoize(async (): Promise<void> => {
     PostToolBatch: [],
     UserPromptExpansion: [],
     MessageDisplay: [],
+    DirectoryAdded: [],
   }
 
   // Process each enabled plugin

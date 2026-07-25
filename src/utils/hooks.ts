@@ -104,6 +104,7 @@ import type {
   ConfigChangeHookInput,
   CwdChangedHookInput,
   FileChangedHookInput,
+  DirectoryAddedHookInput,
   InstructionsLoadedHookInput,
   UserPromptSubmitHookInput,
   PermissionRequestHookInput,
@@ -2121,6 +2122,11 @@ export async function getMatchingHooks(
         matchQuery = hookInput.mcp_server_name as string
         break
       case 'ConfigChange':
+        matchQuery = hookInput.source as string
+        break
+      // 2.1.219: DirectoryAdded matches on the add origin (decompiled `a2t`
+      // invokes the executor with matchQuery: source).
+      case 'DirectoryAdded':
         matchQuery = hookInput.source as string
         break
       case 'InstructionsLoaded':
@@ -5076,6 +5082,57 @@ export function executeCwdChangedHooks(
     new_cwd: newCwd,
   }
   return executeEnvHooks(hookInput, timeoutMs)
+}
+
+/**
+ * CC 2.1.219: `DirectoryAdded` hook — fires after `/add-dir` or the
+ * `register_repo_root` SDK control request registers a new working directory
+ * mid-session, **after the sandbox configuration has been refreshed** (so
+ * sandboxed tools and permission state already see the new directory; hook
+ * commands themselves run unsandboxed). Fire-and-forget / observability —
+ * non-blocking (mirrors `CwdChanged`).
+ *
+ * Decompiled upstream executor (official `a2t`, from the 2.1.220 ELF):
+ *   async function a2t(e, t, r=Hm) {
+ *     let n = {...Kf(void 0), hook_event_name: "DirectoryAdded", directory: e, source: t},
+ *         o = await EM({hookInput: n, matchQuery: t, timeoutMs: r}),
+ *         i = o.map((s) => s.systemMessage).filter((s) => !!s);
+ *     return {results: o, systemMessages: i}
+ *   }
+ * Payload = `{...baseHookInput, hook_event_name:"DirectoryAdded", directory, source}`;
+ * the executor is invoked with `matchQuery = source` (so a hook `matcher` can
+ * target a specific add origin), and returns `{results, systemMessages}` (no
+ * `watchPaths` — a directory add does not register file-watch paths). Duplicate
+ * suppression ("a directory already registered ... the registration pipeline
+ * and `DirectoryAdded` hooks do not re-run") is enforced at the dispatch site
+ * (`/add-dir`), not here.
+ */
+export async function executeDirectoryAddedHooks(
+  directory: string,
+  source: string,
+  timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+): Promise<{
+  results: HookOutsideReplResult[]
+  systemMessages: string[]
+}> {
+  const hookInput: DirectoryAddedHookInput = {
+    ...createBaseHookInput(undefined),
+    hook_event_name: 'DirectoryAdded',
+    directory,
+    source,
+  }
+  const results = await executeHooksOutsideREPL({
+    hookInput,
+    timeoutMs,
+    matchQuery: source,
+  })
+  if (results.length > 0) {
+    invalidateSessionEnvCache()
+  }
+  const systemMessages = results
+    .map(r => r.systemMessage)
+    .filter((m): m is string => !!m)
+  return { results, systemMessages }
 }
 
 export function executeFileChangedHooks(
