@@ -35,6 +35,9 @@ export const HOOK_EVENTS = [
   'CwdChanged',
   'FileChanged',
   'MessageDisplay',
+  // 2.1.219: fires after /add-dir or the register_repo_root SDK control
+  // request registers a new working directory mid-session (after sandbox refresh).
+  'DirectoryAdded',
 ]
 
 export const EXIT_REASONS = [

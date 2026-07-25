@@ -27,10 +27,16 @@ const DEFAULT_MAX_SUBAGENTS_PER_SESSION = 200
 //                   ... growthbook flag "tengu_hazel_trellis", default Avu=1,
 //                       accepted only if Number.isInteger(r) && r >= 1 }
 // OCC stubs growthbook (feature()=false), so the depth getter collapses to:
-// env-if-set-else-1. These two knobs are SCHEMA/ENV-ONLY in Stage 1 — the
+// env-if-set-else-default. These two knobs are SCHEMA/ENV-ONLY in Stage 1 — the
 // concurrent-run counter and depth enforcement land in Stage 2 (do not wire here).
 const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 20
-const DEFAULT_MAX_SUBAGENT_SPAWN_DEPTH = 1
+// CC 2.1.219: nested-subagent spawn depth default raised 1 → 3 ("Subagents can
+// now spawn nested subagents up to depth 3 by default (was 1); set
+// CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1 to disable nesting"). The growthbook
+// default `Avu` moved from 1 (2.1.217) to 3 (2.1.219); with growthbook stubbed
+// (feature()=false) the getter collapses to env-if-set-else-3. Env override
+// (`=1` to disable, or any positive int) still wins — see OCC-34 gap doc §5 P0-A.
+const DEFAULT_MAX_SUBAGENT_SPAWN_DEPTH = 3
 
 /**
  * Parse an env value as an integer, returning `null` if absent or not a
@@ -84,10 +90,11 @@ export function getMaxConcurrentSubagents(): number {
 }
 
 /**
- * CC 2.1.217: max **nested-subagent spawn depth** (default 1 = no nesting).
+ * CC 2.1.219: max **nested-subagent spawn depth** (default 3).
  *
- * Subagents no longer spawn nested subagents by default; set
- * `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH` to allow deeper nesting. The official
+ * Subagents can now spawn nested subagents up to depth 3 by default (was 1 in
+ * 2.1.217); set `CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=1` to disable nesting
+ * (the 2.1.217 behavior). The official
  * also consults a growthbook flag (`tengu_hazel_trellis`, default 1, accepted
  * only if an integer ≥ 1); OCC stubs growthbook, so this collapses to
  * env-if-set-else-1. `parsePositiveIntEnv` enforces the integer-≥-1 invariant

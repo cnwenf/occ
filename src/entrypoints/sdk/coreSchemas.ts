@@ -383,6 +383,9 @@ export const HOOK_EVENTS = [
   'CwdChanged',
   'FileChanged',
   'MessageDisplay',
+  // 2.1.219: fires after /add-dir or the register_repo_root SDK control
+  // request registers a new working directory mid-session (after sandbox refresh).
+  'DirectoryAdded',
 ] as const
 
 export const HookEventSchema = lazySchema(() => z.enum(HOOK_EVENTS))
@@ -756,6 +759,18 @@ export const FileChangedHookInputSchema = lazySchema(() =>
   ),
 )
 
+// CC 2.1.219: DirectoryAdded — decompiled payload (official `a2t`):
+//   { ...baseHookInput, hook_event_name: "DirectoryAdded", directory, source }
+export const DirectoryAddedHookInputSchema = lazySchema(() =>
+  BaseHookInputSchema().and(
+    z.object({
+      hook_event_name: z.literal('DirectoryAdded'),
+      directory: z.string(),
+      source: z.string(),
+    }),
+  ),
+)
+
 // 2.1.152: PostToolBatch — fires once after every tool call in a batch has
 // resolved, before the next model request. PostToolUse fires per-tool.
 export const PostToolBatchToolCallSchema = lazySchema(() =>
@@ -885,6 +900,7 @@ export const HookInputSchema = lazySchema(() =>
     PostToolBatchHookInputSchema(),
     UserPromptExpansionHookInputSchema(),
     MessageDisplayHookInputSchema(),
+    DirectoryAddedHookInputSchema(),
   ]),
 )
 

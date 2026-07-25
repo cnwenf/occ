@@ -98,6 +98,14 @@ export type ConfigChangeHookInput = HookInput
 export type InstructionsLoadedHookInput = HookInput
 export type CwdChangedHookInput = HookInput & { cwd: string }
 export type FileChangedHookInput = HookInput & { path: string }
+// CC 2.1.219: fires after /add-dir or the register_repo_root SDK control
+// request registers a new working directory mid-session, after the sandbox
+// config has been refreshed. Decompiled payload (official `a2t`):
+//   { ...baseHookInput, hook_event_name: "DirectoryAdded", directory, source }
+export type DirectoryAddedHookInput = HookInput & {
+  directory: string
+  source: string
+}
 // 2.1.152 / cross-version: PostToolBatch, UserPromptExpansion, MessageDisplay
 export type PostToolBatchToolCall = {
   tool_name: string
