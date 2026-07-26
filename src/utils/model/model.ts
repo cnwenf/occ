@@ -353,6 +353,11 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
   // Special cases for Claude 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-8/4-7 before 4-6 before 4)
+  // Opus 5 before 4-x: "claude-opus-5" is not a substring of "claude-opus-4-8"
+  // but check it first so it isn't caught by the broader claude-opus-4 patterns.
+  if (name.includes('claude-opus-5')) {
+    return 'claude-opus-5'
+  }
   if (name.includes('claude-opus-4-8')) {
     return 'claude-opus-4-8'
   }
@@ -505,6 +510,10 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
   switch (model) {
+    case getModelStrings().opus5:
+      return 'Opus 5'
+    case getModelStrings().opus5 + '[1m]':
+      return 'Opus 5 (1M context)'
     case getModelStrings().opus48:
       return 'Opus 4.8'
     case getModelStrings().opus48 + '[1m]':
@@ -762,6 +771,10 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   const canonical = getCanonicalName(modelId)
 
   // Order matters: more specific versions (4-8/4-7) before 4-6 before bare 4.
+  // Opus 5 is checked first so it isn't caught by a broader claude-opus pattern.
+  if (canonical.includes('claude-opus-5')) {
+    return has1m ? 'Opus 5 (with 1M context)' : 'Opus 5'
+  }
   if (canonical.includes('claude-opus-4-8')) {
     return has1m ? 'Opus 4.8 (with 1M context)' : 'Opus 4.8'
   }

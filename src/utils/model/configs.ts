@@ -153,6 +153,22 @@ export const CLAUDE_OPUS_4_8_CONFIG = {
   gateway: 'claude-opus-4-8',
 } as const satisfies ModelConfig
 
+// Claude Opus 5 (`claude-opus-5`) — added in official Claude Code 2.1.219.
+// Provider IDs verified against the official 2.1.220 linux-x64 binary
+// (strings dump): `claude-opus-5` (firstParty/vertex/foundry/anthropic_aws/
+// gateway), `us.anthropic.claude-opus-5` (bedrock),
+// `anthropic.claude-opus-5` (mantle). Same launch-model shape as
+// opus-4-7/4-8, sonnet-5, fable-5.
+export const CLAUDE_OPUS_5_CONFIG = {
+  firstParty: 'claude-opus-5',
+  bedrock: 'us.anthropic.claude-opus-5',
+  vertex: 'claude-opus-5',
+  foundry: 'claude-opus-5',
+  anthropic_aws: 'claude-opus-5',
+  mantle: 'anthropic.claude-opus-5',
+  gateway: 'claude-opus-5',
+} as const satisfies ModelConfig
+
 export const CLAUDE_SONNET_5_CONFIG = {
   firstParty: 'claude-sonnet-5',
   bedrock: 'us.anthropic.claude-sonnet-5',
@@ -189,6 +205,7 @@ export const ALL_MODEL_CONFIGS = {
   opus46: CLAUDE_OPUS_4_6_CONFIG,
   opus47: CLAUDE_OPUS_4_7_CONFIG,
   opus48: CLAUDE_OPUS_4_8_CONFIG,
+  opus5: CLAUDE_OPUS_5_CONFIG,
   fable5: CLAUDE_FABLE_5_CONFIG,
 } as const satisfies Record<string, ModelConfig>
 
