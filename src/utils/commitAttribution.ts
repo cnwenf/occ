@@ -152,7 +152,9 @@ export function sanitizeSurfaceKey(surfaceKey: string): string {
  * Maps internal variants to their public names based on model family.
  */
 export function sanitizeModelName(shortName: string): string {
-  // Map internal variants to public equivalents based on model family
+  // Map internal variants to public equivalents based on model family.
+  // Opus 5 before 4-x: 'opus-5' is not matched by the 'opus-4' includes below.
+  if (shortName.includes('opus-5')) return 'claude-opus-5'
   if (shortName.includes('opus-4-6')) return 'claude-opus-4-6'
   if (shortName.includes('opus-4-5')) return 'claude-opus-4-5'
   if (shortName.includes('opus-4-1')) return 'claude-opus-4-1'
