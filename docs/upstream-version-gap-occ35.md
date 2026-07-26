@@ -117,7 +117,7 @@ recognized canonical ID first. This round lands that faithful foundation.
 | Config object | `src/utils/model/configs.ts` | `CLAUDE_OPUS_5_CONFIG` (firstParty/vertex/foundry/anthropic_aws/gateway = `claude-opus-5`; bedrock = `us.anthropic.claude-opus-5`; mantle = `anthropic.claude-opus-5`) + `opus5` key in `ALL_MODEL_CONFIGS` | ✓ provider IDs |
 | Canonical mapping | `src/utils/model/model.ts` `firstPartyNameToCanonical` | `if (name.includes('claude-opus-5')) return 'claude-opus-5'` (top of opus group, before `claude-opus-4-8`) | ✓ canonical ID |
 | Display name | `src/utils/model/model.ts` `getPublicModelDisplayName` | `opus5` → `'Opus 5'`; `opus5 + '[1m]'` → `'Opus 5 (1M context)'` | ✓ "Opus 5" |
-| Marketing name | `src/utils/model/model.ts` `getMarketingNameForModel` | `claude-opus-5` → `'Opus 5'` / `'Opus 5 (with 1M context)'` | ✓ "Opus 5", "Opus 5 with 1M context" |
+| Marketing name | `src/utils/model/model.ts` `getMarketingNameForModel` | `claude-opus-5` → `'Opus 5'` / `'Opus 5 (with 1M context)'` | ✓ binary "Opus 5" + "Opus 5 with 1M context" (merged picker label); impl uses OCC's parenthetical form "Opus 5 (with 1M context)" to match the opus-4-8 pattern |
 | Commit attribution | `src/utils/commitAttribution.ts` `sanitizeModelName` | `if (shortName.includes('opus-5')) return 'claude-opus-5'` (before the `opus-4` fallthrough) | ✓ public name `claude-opus-5` |
 
 **Why faithful, not invented**: every provider ID, the canonical ID, and the
@@ -144,8 +144,8 @@ runtime breakage.
 - `bun test test/utils/model/` (bedrockVertexFallback + subagentModelOverride) → 13 pass, 0 fail.
 - `bun test src/utils/__tests__/model-defaults-207.test.ts src/utils/model/__tests__/` → 26 pass, 0 fail.
 - biome lint clean on all 4 changed files.
-- `bun run build` green (`dist/cli.js` 28.84 MB, `MACRO.VERSION=2.1.286`, `MACRO.BINARY_NAME=occ`).
-- REPL smoke (built artifact): `occ --version` → `OCC 2.1.286`; `occ --model claude-opus-5 --version` accepts the new model ID (no "unknown model" rejection); `echo "say PONG" | occ -p` → `PONG` (no regression).
+- `bun run build` green (`dist/cli.js` 28.84 MB, `MACRO.VERSION=2.1.287`, `MACRO.BINARY_NAME=occ`).
+- REPL smoke (built artifact): `occ --version` → `OCC 2.1.287`; `occ --model claude-opus-5 --version` accepts the new model ID (no "unknown model" rejection); `echo "say PONG" | occ -p` → `PONG` (no regression).
 - Direct resolver round-trip: `firstPartyNameToCanonical` / `getCanonicalName` / `CANONICAL_ID_TO_KEY` / `getMarketingNameForModel` / `getPublicModelDisplayName` / `sanitizeModelName` all return the binary-verified values for `claude-opus-5`.
 
 ## 5. Staged follow-up (remaining Opus 5 + 2.1.219 P1–P4) — for subsequent runs
