@@ -109,6 +109,28 @@ console.log(JSON.stringify({
     expect(out.opus48).toBe("Opus 4.8");
   });
 
+  test("getPublicModelDisplayName returns Opus 5 display names", async () => {
+    const script = `
+import { getPublicModelDisplayName } from "${REPO_ROOT}/src/utils/model/model.ts";
+import { getModelStrings } from "${REPO_ROOT}/src/utils/model/modelStrings.ts";
+delete process.env.CLAUDE_CODE_USE_BEDROCK;
+delete process.env.CLAUDE_CODE_USE_VERTEX;
+delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+const opus5 = getModelStrings().opus5;
+console.log(JSON.stringify({
+  opus5: getPublicModelDisplayName(opus5),
+  opus5_1m: getPublicModelDisplayName(opus5 + "[1m]"),
+  opus48: getPublicModelDisplayName(getModelStrings().opus48),
+  unknown: getPublicModelDisplayName("not-a-real-model"),
+}));
+`;
+    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
+    expect(out.opus5).toBe("Opus 5");
+    expect(out.opus5_1m).toBe("Opus 5 (1M context)");
+    expect(out.opus48).toBe("Opus 4.8");
+    expect(out.unknown).toBeNull();
+  });
+
   test("sanitizeModelName maps opus-5 to claude-opus-5 (no false capture of opus-4-x)", async () => {
     const script = `
 import { sanitizeModelName } from "${REPO_ROOT}/src/utils/commitAttribution.ts";
