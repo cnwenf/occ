@@ -166,16 +166,25 @@ export function getDefaultOpusModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
   // 2.1.219 # OCC-36: Claude Opus 5 is now the default Opus model for all
-  // non-gateway providers. Official 2.1.220 linux-x64 ELF strings:
-  //   DEFAULT_OPUS_MODEL ?? Km().opus5
-  //   aliases:{opus:{default:"claude-opus-5",per_provider:{
-  //     bedrock:"claude-opus-5",vertex:"claude-opus-5",foundry:"claude-opus-5",
-  //     anthropic_aws:"claude-opus-5",anthropic_google_cloud:"claude-opus-5",
-  //     mantle:"anthropic.claude-opus-5",gateway:"claude-opus-4-7"}}}
+  // non-gateway providers. Official 2.1.220 linux-x64 ELF `getDefaultOpusModel`
+  // (provider switch `Bko()`): firstParty → opus5; gateway → opus47;
+  // bedrock/vertex/foundry/anthropic_aws/mantle → resolved via the per_provider
+  // alias table:
+  //   per_provider:{bedrock:"claude-opus-5",vertex:"claude-opus-5",
+  //     foundry:"claude-opus-4-6",  ← foundry lags at Opus 4.6
+  //     mantle:"claude-opus-5",anthropic_aws:"claude-opus-5",
+  //     gateway:"claude-opus-4-7"}
   // History: 2.1.206 → Opus 4.7; 2.1.207 #19 → Opus 4.8 for non-gateway
   // (gateway stayed 4.7); 2.1.219 → Opus 5 for non-gateway (gateway stays 4.7).
-  // 3P providers may lag, but the binary maps all non-gateway providers to
-  // opus5, so we mirror that exactly.
+  // (Note: `ANTHROPIC_DEFAULT_OPUS_MODEL ?? Km().opus5` lives in a SEPARATE
+  // name-fallback function keyed on `.includes("fable_5")`, not here — the
+  // env override above is OCC's faithful equivalent of that fallback.)
+  // OCC flattens non-gateway into one `opus5` return, matching the binary for
+  // bedrock/vertex/anthropic_aws/mantle/firstParty. DIVERGENCE (Gap-1, LOW,
+  // staged with 1g): foundry → binary `claude-opus-4-6`, OCC `claude-opus-5`.
+  // Pre-existing (foundry lagged in 2.1.218 too: binary opus-4-6 vs OCC
+  // opus-4-8); not a regression from this round. Fix needs a per_provider
+  // table or a foundry branch — deferred per `aligning-with-official-binary`.
   if (getAPIProvider() === 'gateway') {
     return getModelStrings().opus47
   }
