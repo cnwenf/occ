@@ -12,7 +12,13 @@ import { resetModelStringsForTestingOnly } from 'src/bootstrap/state.js'
 /**
  * 2.1.207 #19: Bedrock/Vertex/Claude Platform AWS/Mantle/Foundry default
  * changed to Claude Opus 4.8 (was Opus 4.7 in 2.1.206). Only the gateway
- * provider retains the Opus 4.7 default.
+ * provider retained the Opus 4.7 default.
+ *
+ * 2.1.219 # OCC-36: default Opus advanced to Claude Opus 5 for all non-gateway
+ * providers (gateway stays Opus 4.7). Official 2.1.220 linux-x64 ELF strings:
+ * `DEFAULT_OPUS_MODEL ?? Km().opus5`; `aliases.opus.default = "claude-opus-5"`
+ * with `per_provider.gateway = "claude-opus-4-7"`. This file now asserts the
+ * 2.1.219 default (opus-5) for every non-gateway provider.
  *
  * 2.1.207 #16: Fixed Bedrock repeatedly requesting fresh AWS SSO credentials
  * every API request — the SDK's fromNodeProviderChain is now cached per region.
@@ -41,7 +47,7 @@ function withEnv(env: Record<string, string>, fn: () => void): void {
   }
 }
 
-describe('2.1.207 #19: Bedrock/Vertex/AWS default → Opus 4.8', () => {
+describe('2.1.219 # OCC-36: non-gateway default → Opus 5 (was Opus 4.8 in 2.1.207)', () => {
   beforeEach(() => {
     delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   })
@@ -59,54 +65,54 @@ describe('2.1.207 #19: Bedrock/Vertex/AWS default → Opus 4.8', () => {
     resetModelStringsForTestingOnly()
   })
 
-  test('bedrock provider defaults to opus-4-8', () => {
+  test('bedrock provider defaults to opus-5', () => {
     withEnv(BEDROCK_ENV, () => {
       expect(getAPIProvider()).toBe('bedrock')
       const model = getDefaultOpusModel()
-      expect(model).toContain('claude-opus-4-8')
+      expect(model).toContain('claude-opus-5')
     })
   })
 
-  test('vertex provider defaults to opus-4-8', () => {
+  test('vertex provider defaults to opus-5', () => {
     withEnv(VERTEX_ENV, () => {
       expect(getAPIProvider()).toBe('vertex')
       const model = getDefaultOpusModel()
-      expect(model).toContain('claude-opus-4-8')
+      expect(model).toContain('claude-opus-5')
     })
   })
 
-  test('foundry provider defaults to opus-4-8', () => {
+  test('foundry provider defaults to opus-5', () => {
     withEnv(FOUNDRY_ENV, () => {
       expect(getAPIProvider()).toBe('foundry')
       const model = getDefaultOpusModel()
-      expect(model).toContain('claude-opus-4-8')
+      expect(model).toContain('claude-opus-5')
     })
   })
 
-  test('anthropic_aws provider defaults to opus-4-8', () => {
+  test('anthropic_aws provider defaults to opus-5', () => {
     withEnv(ANTHROPIC_AWS_ENV, () => {
       expect(getAPIProvider()).toBe('anthropic_aws')
       const model = getDefaultOpusModel()
-      expect(model).toContain('claude-opus-4-8')
+      expect(model).toContain('claude-opus-5')
     })
   })
 
-  test('mantle provider defaults to opus-4-8', () => {
+  test('mantle provider defaults to opus-5', () => {
     withEnv(MANTLE_ENV, () => {
       // getAPIProvider() returns 'bedrock' even with CLAUDE_CODE_USE_MANTLE set;
       // the bedrock→mantle promotion only happens in getEffectiveAPIProvider().
       // Since getDefaultOpusModel() uses getAPIProvider(), mantle users resolve
-      // via the 'bedrock' branch → opus48. The official binary's mantle case
-      // also returns aS() → opus48, so the behavior matches.
+      // via the 'bedrock' branch → opus5 (bedrock id `us.anthropic.claude-opus-5`).
+      // The official binary's mantle case also returns opus5, so behavior matches.
       expect(getAPIProvider()).toBe('bedrock')
       const model = getDefaultOpusModel()
-      expect(model).toContain('claude-opus-4-8')
+      expect(model).toContain('claude-opus-5')
     })
   })
 
-  test('firstParty provider defaults to opus-4-8', () => {
+  test('firstParty provider defaults to opus-5', () => {
     const model = getDefaultOpusModel()
-    expect(model).toContain('claude-opus-4-8')
+    expect(model).toContain('claude-opus-5')
   })
 
   test('ANTHROPIC_DEFAULT_OPUS_MODEL override still wins', () => {
