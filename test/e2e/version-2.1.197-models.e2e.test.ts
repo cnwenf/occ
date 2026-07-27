@@ -68,7 +68,7 @@ console.log(JSON.stringify({
     expect(out.opus47_fast).toBe("claude-opus-4-7");
   });
 
-  test("getDefaultOpusModel (1P, no env) resolves to claude-opus-4-8", async () => {
+  test("getDefaultOpusModel (1P, no env) resolves to claude-opus-5 (2.1.219)", async () => {
     const script = `
 import { getDefaultOpusModel } from "${REPO_ROOT}/src/utils/model/model.ts";
 // Ensure firstParty + no env override
@@ -79,7 +79,11 @@ delete process.env.CLAUDE_CODE_USE_FOUNDRY;
 console.log(JSON.stringify({ opus: getDefaultOpusModel() }));
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
-    expect(out.opus).toContain("claude-opus-4-8");
+    // 2.1.197 → 2.1.218: default Opus was claude-opus-4-8.
+    // 2.1.219 (OCC-36): default Opus advanced to claude-opus-5 for non-gateway
+    // providers (gateway stays claude-opus-4-7), matching the official 2.1.220
+    // binary `DEFAULT_OPUS_MODEL ?? Km().opus5`.
+    expect(out.opus).toContain("claude-opus-5");
   });
 
   test("getDefaultSonnetModel (1P, no env) resolves to claude-sonnet-5", async () => {

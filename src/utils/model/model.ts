@@ -165,18 +165,21 @@ export function getDefaultOpusModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
-  // 2.1.207 #19: Bedrock/Vertex/Claude Platform AWS/Mantle/Foundry default
-  // changed to Claude Opus 4.8 (was Opus 4.7 in 2.1.206). Only the gateway
-  // provider retains the Opus 4.7 default. Official 2.1.210 binary:
-  //   DEFAULT_BEDROCK_OPUS_KEY = DEFAULT_VERTEX_OPUS_KEY
-  //     = DEFAULT_MANTLE_OPUS_KEY = "opus48"
-  //   case"anthropicAws":case"bedrock":case"foundry":case"vertex":return aS(); // → opus48
-  //   case"firstParty":return yh().opus48;
-  //   default:return yh().opus47  // gateway
+  // 2.1.219 # OCC-36: Claude Opus 5 is now the default Opus model for all
+  // non-gateway providers. Official 2.1.220 linux-x64 ELF strings:
+  //   DEFAULT_OPUS_MODEL ?? Km().opus5
+  //   aliases:{opus:{default:"claude-opus-5",per_provider:{
+  //     bedrock:"claude-opus-5",vertex:"claude-opus-5",foundry:"claude-opus-5",
+  //     anthropic_aws:"claude-opus-5",anthropic_google_cloud:"claude-opus-5",
+  //     mantle:"anthropic.claude-opus-5",gateway:"claude-opus-4-7"}}}
+  // History: 2.1.206 → Opus 4.7; 2.1.207 #19 → Opus 4.8 for non-gateway
+  // (gateway stayed 4.7); 2.1.219 → Opus 5 for non-gateway (gateway stays 4.7).
+  // 3P providers may lag, but the binary maps all non-gateway providers to
+  // opus5, so we mirror that exactly.
   if (getAPIProvider() === 'gateway') {
     return getModelStrings().opus47
   }
-  return getModelStrings().opus48
+  return getModelStrings().opus5
 }
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).

@@ -149,3 +149,67 @@ console.log(JSON.stringify({
     expect(out.opus48).toBe("claude-opus-4");
   });
 });
+
+/**
+ * OCC-36 downstream ports (e2e) — the three decoupled, binary-verified,
+ * non-breaking Opus 5 launch sites that advance the OCC-35 §5 carryover
+ * without the coupled/intricate sites (picker row, MODEL_COSTS pricing,
+ * fast-mode model-resolution, effort/thinking tier values, claude-api skill
+ * content, highlight-newest UI) which need dedicated per-site decompilation.
+ *
+ *   1a — getDefaultOpusModel firstParty default → claude-opus-5
+ *        (gateway stays claude-opus-4-7). Binary 2.1.220:
+ *        `DEFAULT_OPUS_MODEL ?? Km().opus5`;
+ *        `aliases.opus.default = "claude-opus-5"`,
+ *        `per_provider.gateway = "claude-opus-4-7"`.
+ *   1e — modelSupports1M covers claude-opus-5. Binary 2.1.220 1M check:
+ *        `t.includes("claude-fable-5")||t.includes("claude-opus-4")||
+ *         t.includes("claude-opus-5")||t.includes("claude-sonnet-5")||…`.
+ *   1j — --model help text matches the binary byte-recovered string:
+ *        "Provide an alias for the latest model (e.g. 'fable', 'opus', or
+ *         'sonnet') or a model's full name (e.g. 'claude-fable-5')."
+ */
+describe("2.1.219 Opus 5 OCC-36 downstream ports (e2e)", () => {
+  test("1a: getDefaultOpusModel firstParty → claude-opus-5", async () => {
+    const script = `
+import { getDefaultOpusModel } from "${REPO_ROOT}/src/utils/model/model.ts";
+delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
+delete process.env.CLAUDE_CODE_USE_BEDROCK;
+delete process.env.CLAUDE_CODE_USE_VERTEX;
+delete process.env.CLAUDE_CODE_USE_FOUNDRY;
+delete process.env.CLAUDE_CODE_USE_ANTHROPIC_AWS;
+delete process.env.CLAUDE_CODE_USE_MANTLE;
+console.log(JSON.stringify({ model: getDefaultOpusModel() }));
+`;
+    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
+    expect(out.model).toBe("claude-opus-5");
+  });
+
+  test("1e: modelSupports1M covers claude-opus-5 (no opus-4-8 regression)", async () => {
+    const script = `
+import { modelSupports1M } from "${REPO_ROOT}/src/utils/context.ts";
+delete process.env.CLAUDE_CODE_DISABLE_1M_CONTEXT;
+console.log(JSON.stringify({
+  opus5: modelSupports1M("claude-opus-5"),
+  opus5_1m: modelSupports1M("claude-opus-5[1m]"),
+  opus48: modelSupports1M("claude-opus-4-8"),
+  sonnet5: modelSupports1M("claude-sonnet-5"),
+  haiku45: modelSupports1M("claude-haiku-4-5"),
+}));
+`;
+    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
+    expect(out.opus5).toBe(true);
+    expect(out.opus5_1m).toBe(true);
+    // No regression: opus-4-8 / sonnet-5 still 1M-capable; haiku-4-5 is not.
+    expect(out.opus48).toBe(true);
+    expect(out.sonnet5).toBe(true);
+    expect(out.haiku45).toBe(false);
+  });
+
+  test("1j: --model help text matches the official 2.1.220 binary", async () => {
+    // Source-level: the option string carries the binary-verified example.
+    const src = await Bun.file(`${REPO_ROOT}/src/main.tsx`).text();
+    expect(src).toContain("'fable', 'opus', or 'sonnet'");
+    expect(src).toContain("'claude-fable-5'");
+  });
+});
