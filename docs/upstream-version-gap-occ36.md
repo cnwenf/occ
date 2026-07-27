@@ -177,9 +177,17 @@ implementations, per `aligning-with-official-binary`).
 | 1b | `/model` picker Opus row → Opus 5, label `Opus 5 with 1M context` + pricing suffix | `src/utils/model/modelOptions.ts` | staged (needs exact picker row shape + pricing suffix) |
 | 1c | `MODEL_COSTS` pricing tier for opus-5 | `src/utils/modelCost.ts` | staged (fast-mode $10/$50 confirmed; base tier needs careful binary extraction — do NOT guess) |
 | 1d | Fast-mode model-resolution + support set (Opus 5 + Opus 4.8; remove 4.7) | `src/utils/fastMode.ts:146,171` | staged (coupled — needs full `a7n`/`UIc` resolution extraction) |
-| 1g | effort/thinking/betas/advisor allowlists for opus-5 (exact tier cells e.g. `o5-bmin`) | `src/utils/{effort,thinking,betas,advisor}.ts` | staged (mirror opus-4-8 per binary — extract verbatim tier values) |
+| 1g | effort/thinking/betas/advisor allowlists for opus-5 (exact tier cells e.g. `o5-bmin`) + **per-provider Opus default table** (Gap-1: foundry lags at `claude-opus-4-6`) | `src/utils/{effort,thinking,betas,advisor}.ts`; `src/utils/model/model.ts` `getDefaultOpusModel` | staged (mirror opus-4-8 per binary — extract verbatim tier values; build per_provider alias table or add a foundry branch) |
 | 1h | `claude-api` bundled skill default Opus 5 + migration from 4.8 | `src/skills/bundled/claudeApiContent.ts` | staged (skill content sync) |
 | 1i | `/model` picker "highlight newest only" (Opus 5) | model picker | staged (UI) |
+
+### Acceptance-verified LOW gaps (OCC-36 验收, 2026-07-28)
+Two LOW gaps surfaced by the acceptance agent's byte-level re-verification of the official 2.1.220 ELF (independently re-confirmed by the programmer this round — `per_provider` table re-extracted verbatim). Neither blocks the 2.1.288 release.
+
+| Gap | Severity | Finding (binary-verified) | Status |
+|-----|----------|--------------------------|--------|
+| **Gap-1** (foundry per-provider default) | LOW | ELF `getDefaultOpusModel` (`Bko()`) resolves foundry via the per_provider alias table to **`claude-opus-4-6`** (foundry lags); OCC's flattened non-gateway return gives foundry `claude-opus-5`. Affects `CLAUDE_CODE_USE_FOUNDRY` users (Azure AI Foundry, niche 3P) only. firstParty/bedrock/vertex/anthropic_aws/mantle/gateway all aligned. **Pre-existing** (foundry lagged in 2.1.218 too: binary opus-4-6 vs OCC opus-4-8) — not a regression from OCC-36. Fix needs a per_provider alias table or a foundry branch; folded into 1g for a dedicated per-site round. | staged (1g) |
+| **Gap-2** (model.ts comment accuracy) | LOW | The OCC-36 comment in `getDefaultOpusModel` misattributed `ANTHROPIC_DEFAULT_OPUS_MODEL ?? Km().opus5` to `getDefaultOpusModel`; that expression actually lives in a **separate name-fallback function** keyed on `.includes("fable_5")`. The comment also listed `foundry:"claude-opus-5"` (should be `claude-opus-4-6`). **Comment corrected this follow-up** to describe the real `Bko()` provider-switch + the verbatim per_provider table + the foundry divergence. Runtime behavior unchanged (1a body was already correct for the aligned providers). | **fixed** (comment only) |
 
 ### Other 2.1.219 P1–P4 (unchanged from OCC-34/35 §4, restated for completeness)
 | # | 2.1.219 item | Priority | Status |
