@@ -117,8 +117,16 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
     return supported3P
   }
   const canonical = getCanonicalName(model)
-  // Supported by a subset of Claude 4 models
-  if (canonical.includes('opus-4-6') || canonical.includes('sonnet-4-6')) {
+  // Supported by a subset of Claude 4+ models. OCC-37 (1g): opus-5 added —
+  // binary 2.1.220 model registry `capabilities` array for `claude-opus-5`
+  // (recovered via `dd` around offset 177163000) lists "adaptive_thinking"
+  // verbatim, mirroring opus-4-8. Pre-existing OCC gap: opus-4-7/4-8 also
+  // declare "adaptive_thinking" but are not yet ported here (separate item).
+  if (
+    canonical.includes('opus-4-6') ||
+    canonical.includes('sonnet-4-6') ||
+    canonical.includes('opus-5')
+  ) {
     return true
   }
   // Exclude any other known legacy models (allowlist above catches 4-6 variants first)

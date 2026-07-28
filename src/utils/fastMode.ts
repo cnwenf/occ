@@ -176,9 +176,25 @@ export function isFastModeSupportedByModel(
   }
   const model = modelSetting ?? getDefaultMainLoopModelSetting()
   const parsedModel = parseUserSpecifiedModel(model)
-  // 2.1.142: Fast mode now supports both Opus 4.6 and 4.7 (4.7 is default).
+  // 2.1.219 changelog: "Removed Opus 4.7 from fast mode; /fast now applies to
+  // Opus 5 and Opus 4.8". NOTE: the official 2.1.220 linux-x64 binary's actual
+  // `mv(e)` (this function) keeps the string fallback verbatim as
+  //   n.includes("opus-4-7")||n.includes("opus-4-8")||n.includes("opus-5")
+  // — opus-4-7 is RETAINED in the fallback, opus-4-6 is removed, and bare
+  // "opus" is no longer special-cased. The binary is canonical per the
+  // aligning-with-official-binary skill, so we mirror it exactly even though
+  // it diverges from the changelog's prose.
+  //
+  // The binary's primary path is a model-capability check
+  // `M$(lo(r),"fast_mode")` against the runtime model registry
+  // (`ww(r).capabilities.includes("fast_mode")`). OCC's model-capability infra
+  // (`src/utils/model/modelCapabilities.ts`) is ant-only/stubbed (schema has
+  // no `capabilities` array), so that path is recovered-but-staged — porting
+  // it faithfully requires the model-capability registry, which is out of
+  // scope for this single-file port. The string fallback below is the
+  // load-bearing, self-contained predicate.
   const lower = parsedModel.toLowerCase()
-  return lower.includes('opus-4-6') || lower.includes('opus-4-7') || lower === 'opus'
+  return lower.includes('opus-4-7') || lower.includes('opus-4-8') || lower.includes('opus-5')
 }
 
 /**

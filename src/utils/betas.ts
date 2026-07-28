@@ -134,7 +134,13 @@ export function modelSupportsContextManagement(model: string): boolean {
   return (
     canonical.includes('claude-opus-4') ||
     canonical.includes('claude-sonnet-4') ||
-    canonical.includes('claude-haiku-4')
+    canonical.includes('claude-haiku-4') ||
+    // OCC-37 (1g): opus-5 declares "context_management" in its binary 2.1.220
+    // `capabilities` array (recovered via `dd` around offset 177163000),
+    // mirroring opus-4-8. Without this branch opus-5 would be denied
+    // context management on 3P (its canonical id `claude-opus-5` does not
+    // match the `claude-opus-4` prefix).
+    canonical.includes('claude-opus-5')
   )
 }
 
