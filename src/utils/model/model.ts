@@ -165,29 +165,35 @@ export function getDefaultOpusModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
-  // 2.1.219 # OCC-36: Claude Opus 5 is now the default Opus model for all
-  // non-gateway providers. Official 2.1.220 linux-x64 ELF `getDefaultOpusModel`
-  // (provider switch `Bko()`): firstParty → opus5; gateway → opus47;
-  // bedrock/vertex/foundry/anthropic_aws/mantle → resolved via the per_provider
-  // alias table:
-  //   per_provider:{bedrock:"claude-opus-5",vertex:"claude-opus-5",
-  //     foundry:"claude-opus-4-6",  ← foundry lags at Opus 4.6
-  //     mantle:"claude-opus-5",anthropic_aws:"claude-opus-5",
-  //     gateway:"claude-opus-4-7"}
+  // 2.1.219 # OCC-36/37 (1g): Claude Opus 5 is the default Opus model. The
+  // official 2.1.220 linux-x64 ELF ships a verbatim per_provider alias table
+  // (recovered via `grep -aboF "per_provider"` → offset 247207842, then `dd`
+  // around 247196400–247209200):
+  //   aliases:{opus:{default:"claude-opus-5",
+  //     per_provider:{bedrock:"claude-opus-5",vertex:"claude-opus-5",
+  //       foundry:"claude-opus-4-6",   ← foundry lags one generation at Opus 4.6
+  //       mantle:"claude-opus-5",anthropic_aws:"claude-opus-5",
+  //       gateway:"claude-opus-4-7"}}}
+  // `firstParty` and `anthropic_google_cloud` have no per_provider entry, so
+  // they fall through to `default` → `claude-opus-5`. Foundry is the only
+  // non-gateway provider that lags (binary resolves foundry opus to
+  // `claude-opus-4-6`, NOT `claude-opus-5`) — Gap-1, now closed.
   // History: 2.1.206 → Opus 4.7; 2.1.207 #19 → Opus 4.8 for non-gateway
-  // (gateway stayed 4.7); 2.1.219 → Opus 5 for non-gateway (gateway stays 4.7).
+  // (gateway stayed 4.7); 2.1.219 → Opus 5 for non-gateway (gateway stays 4.7,
+  // foundry lags at 4.6).
   // (Note: `ANTHROPIC_DEFAULT_OPUS_MODEL ?? Km().opus5` lives in a SEPARATE
   // name-fallback function keyed on `.includes("fable_5")`, not here — the
   // env override above is OCC's faithful equivalent of that fallback.)
-  // OCC flattens non-gateway into one `opus5` return, matching the binary for
-  // bedrock/vertex/anthropic_aws/mantle/firstParty. DIVERGENCE (Gap-1, LOW,
-  // staged with 1g): foundry → binary `claude-opus-4-6`, OCC `claude-opus-5`.
-  // Pre-existing (foundry lagged in 2.1.218 too: binary opus-4-6 vs OCC
-  // opus-4-8); not a regression from this round. Fix needs a per_provider
-  // table or a foundry branch — deferred per `aligning-with-official-binary`.
-  if (getAPIProvider() === 'gateway') {
+  const provider = getAPIProvider()
+  if (provider === 'foundry') {
+    return getModelStrings().opus46
+  }
+  if (provider === 'gateway') {
     return getModelStrings().opus47
   }
+  // firstParty / bedrock / vertex / anthropic_aws / mantle → default
+  // "claude-opus-5" (anthropic_google_cloud also falls to default; OCC's
+  // APIProvider type folds it into firstParty).
   return getModelStrings().opus5
 }
 

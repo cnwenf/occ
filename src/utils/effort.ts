@@ -31,8 +31,16 @@ export function modelSupportsEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Supported by a subset of Claude 4 models
-  if (m.includes('opus-4-6') || m.includes('sonnet-4-6')) {
+  // Supported by a subset of Claude 4+ models. OCC-37 (1g): opus-5 added —
+  // binary 2.1.220 model registry `capabilities` array for `claude-opus-5`
+  // (recovered via `dd` around offset 177163000) lists "effort" verbatim,
+  // mirroring opus-4-8's "effort" entry. Pre-existing OCC gap: opus-4-7/4-8
+  // also declare "effort" but are not yet ported here (separate item).
+  if (
+    m.includes('opus-4-6') ||
+    m.includes('sonnet-4-6') ||
+    m.includes('opus-5')
+  ) {
     return true
   }
   // Exclude any other known legacy models (haiku, older opus/sonnet variants)
@@ -57,7 +65,13 @@ export function modelSupportsMaxEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  if (model.toLowerCase().includes('opus-4-6')) {
+  // OCC-37 (1g): opus-5 declares "max_effort" in its binary capabilities
+  // array (offset ~177163000), mirroring opus-4-8. Official per API docs
+  // 'max' is Opus 4.6+ for public models; opus-5 carries the capability.
+  if (
+    model.toLowerCase().includes('opus-4-6') ||
+    model.toLowerCase().includes('opus-5')
+  ) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {
@@ -76,8 +90,14 @@ export function modelSupportsXhighEffort(model: string): boolean {
     return supported3P
   }
   const lower = model.toLowerCase()
-  // 2.1.111: xhigh for Opus 4.7; 2.1.154: also Opus 4.8.
-  if (lower.includes('opus-4-7') || lower.includes('opus-4-8')) {
+  // 2.1.111: xhigh for Opus 4.7; 2.1.154: also Opus 4.8; 2.1.219 (OCC-37 1g):
+  // also Opus 5. Binary 2.1.220 `capabilities` array for `claude-opus-5`
+  // (offset ~177163000) lists "xhigh_effort" verbatim, mirroring opus-4-8.
+  if (
+    lower.includes('opus-4-7') ||
+    lower.includes('opus-4-8') ||
+    lower.includes('opus-5')
+  ) {
     return true
   }
   if (process.env.USER_TYPE === 'ant' && resolveAntModel(model)) {

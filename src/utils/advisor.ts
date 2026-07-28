@@ -86,11 +86,16 @@ export function getExperimentAdvisorModels():
 
 // @[MODEL LAUNCH]: Add the new model if it supports the advisor tool.
 // Checks whether the main loop model supports calling the advisor tool.
+// OCC-37 (1g): opus-5 added — binary 2.1.220 model registry entry for
+// `claude-opus-5` (recovered via `dd` around offset 177163000) carries
+// `advisor_rank:4` verbatim, mirroring opus-4-8. Pre-existing OCC gap:
+// opus-4-7/4-8 also carry an advisor_rank but are not yet ported here.
 export function modelSupportsAdvisor(model: string): boolean {
   const m = model.toLowerCase()
   return (
     m.includes('opus-4-6') ||
     m.includes('sonnet-4-6') ||
+    m.includes('opus-5') ||
     process.env.USER_TYPE === 'ant'
   )
 }
@@ -101,6 +106,7 @@ export function isValidAdvisorModel(model: string): boolean {
   return (
     m.includes('opus-4-6') ||
     m.includes('sonnet-4-6') ||
+    m.includes('opus-5') ||
     process.env.USER_TYPE === 'ant'
   )
 }

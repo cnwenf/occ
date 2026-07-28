@@ -12,6 +12,7 @@ import {
   CLAUDE_OPUS_4_5_CONFIG,
   CLAUDE_OPUS_4_6_CONFIG,
   CLAUDE_OPUS_4_CONFIG,
+  CLAUDE_OPUS_5_CONFIG,
   CLAUDE_SONNET_4_5_CONFIG,
   CLAUDE_SONNET_4_6_CONFIG,
   CLAUDE_SONNET_4_CONFIG,
@@ -68,6 +69,21 @@ export const COST_TIER_30_150 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Fast mode pricing for Opus 5 (`claude-opus-5`): $10 input / $50 output per Mtok.
+// Recovered verbatim from the official 2.1.220 linux-x64 binary: the baked
+// fast-mode cost tier `a7n = {inputTokens:10, outputTokens:50,
+// promptCacheWriteTokens:12.5, promptCacheWrite1hTokens:20,
+// promptCacheReadTokens:1, webSearchRequests:0.01}` (OCC's ModelCosts shape
+// omits the promptCacheWrite1hTokens field, present in the binary). The 2.1.219
+// changelog confirms "fast mode at $10/$50 per Mtok" for claude-opus-5.
+export const COST_TIER_10_50 = {
+  inputTokens: 10,
+  outputTokens: 50,
+  promptCacheWriteTokens: 12.5,
+  promptCacheReadTokens: 1,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing for Haiku 3.5: $0.80 input / $4 output per Mtok
 export const COST_HAIKU_35 = {
   inputTokens: 0.8,
@@ -98,6 +114,22 @@ export function getOpus46CostTier(fastMode: boolean): ModelCosts {
   return COST_TIER_5_25
 }
 
+/**
+ * Get the cost tier for Opus 5 based on fast mode.
+ *
+ * Mirrors the official 2.1.220 binary's `Dji` (getModelCosts) fast-mode branch:
+ * `if(t.speed==="fast"){if(r==="claude-opus-4-8"||r==="claude-opus-5")return a7n; ...}`.
+ * Base tier is `tier_5_25` ($5/$25, from the baked model catalog's
+ * `pricing:"tier_5_25"` entry for `claude-opus-5`); fast tier is `a7n`
+ * ($10/$50, the `COST_TIER_10_50` constant).
+ */
+export function getOpus5CostTier(fastMode: boolean): ModelCosts {
+  if (isFastModeEnabled() && fastMode) {
+    return COST_TIER_10_50
+  }
+  return COST_TIER_5_25
+}
+
 // @[MODEL LAUNCH]: Add a pricing entry for the new model below.
 // Costs from https://platform.claude.com/docs/en/about-claude/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
@@ -122,6 +154,11 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_5_CONFIG.firstParty)]:
     COST_TIER_5_25,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_6_CONFIG.firstParty)]:
+    COST_TIER_5_25,
+  // Opus 5 base tier is `tier_5_25` ($5/$25) — binary-verified: the baked model
+  // catalog entry for `claude-opus-5` carries `pricing:"tier_5_25"`. Fast mode
+  // ($10/$50) is handled separately in getModelCosts via getOpus5CostTier.
+  [firstPartyNameToCanonical(CLAUDE_OPUS_5_CONFIG.firstParty)]:
     COST_TIER_5_25,
 }
 
@@ -150,6 +187,16 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
   ) {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)
+  }
+
+  // Check if this is an Opus 5 model with fast mode active.
+  // Mirrors the official 2.1.220 binary's `Dji` fast-mode branch:
+  // `if(t.speed==="fast"){if(r==="claude-opus-4-8"||r==="claude-opus-5")return a7n; ...}`.
+  if (
+    shortName === firstPartyNameToCanonical(CLAUDE_OPUS_5_CONFIG.firstParty)
+  ) {
+    const isFastMode = usage.speed === 'fast'
+    return getOpus5CostTier(isFastMode)
   }
 
   const costs = MODEL_COSTS[shortName]

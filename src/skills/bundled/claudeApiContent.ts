@@ -33,9 +33,23 @@ import typescriptClaudeApiToolUse from './claude-api/typescript/claude-api/tool-
 // After updating these constants, manually update the two files that still hardcode models:
 //   - claude-api/SKILL.md (Current Models pricing table)
 //   - claude-api/shared/models.md (full model catalog with legacy versions and alias mappings)
+//
+// 2.1.219 Opus 5 migration (OCC-37, item 1h): official Claude Code 2.1.219 made
+// `claude-opus-5` the default Opus model. The 2.1.220 linux-x64 binary's bundled
+// claude-api skill model-var table (recovered via `grep -aboF` + `dd` around the
+// OPUS_ID string-table region, offset ~243150700–243157400) carries:
+//   OPUS_ID=claude-opus-5  OPUS_NAME=Claude Opus 5
+//   PREV_OPUS_ID=claude-opus-4-8  PREV_OPUS_NAME=Claude Opus 4.8
+//   (also FABLE/MYTHOS/SONNET/HAIKU/PREV_SONNET vars — out of scope for item 1h).
+// We migrate the default Opus vars to match and add PREV_OPUS_* mirroring the
+// official "migration from 4.8" structure. Sonnet/Fable/Mythos vars are not
+// touched here (separate items).
 export const SKILL_MODEL_VARS = {
-  OPUS_ID: 'claude-opus-4-6',
-  OPUS_NAME: 'Claude Opus 4.6',
+  OPUS_ID: 'claude-opus-5',
+  OPUS_NAME: 'Claude Opus 5',
+  // Previous Opus ID — official 2.1.220 skill keeps the 4.8 predecessor as PREV_OPUS.
+  PREV_OPUS_ID: 'claude-opus-4-8',
+  PREV_OPUS_NAME: 'Claude Opus 4.8',
   SONNET_ID: 'claude-sonnet-4-6',
   SONNET_NAME: 'Claude Sonnet 4.6',
   HAIKU_ID: 'claude-haiku-4-5',
