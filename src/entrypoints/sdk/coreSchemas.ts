@@ -1620,6 +1620,21 @@ export const SDKSystemMessageSchema = lazySchema(() =>
         status: z.string(),
       }),
     ),
+    // @internal MCP server config errors. Emitted ONLY when the filtered
+    // array is non-empty (errors for servers already in mcp_clients are
+    // dropped). Key is OMITTED when empty.
+    mcp_server_errors: z
+      .array(
+        z.object({
+          name: z.string(),
+          type: z.string(),
+          message: z.string(),
+        }),
+      )
+      .optional()
+      .describe(
+        '@internal MCP server config errors collected during connection',
+      ),
     model: z.string(),
     permissionMode: PermissionModeSchema(),
     slash_commands: z.array(z.string()),

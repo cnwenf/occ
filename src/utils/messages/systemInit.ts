@@ -29,6 +29,21 @@ type CommandLike = { name: string; userInvocable?: boolean }
 export type SystemInitInputs = {
   tools: ReadonlyArray<{ name: string }>
   mcpClients: ReadonlyArray<{ name: string; type: string }>
+  /**
+   * MCP server config errors collected during connection. Each element is
+   * `{name, type, message}`. Emitted as `mcp_server_errors` in the init event
+   * ONLY when the filtered array is non-empty — the key is OMITTED when there
+   * are no errors (after filtering against `mcpClients` names).
+   *
+   * Binary evidence (2.1.220 tAr):
+   *   let t=new Set(e.mcpClients.map((o)=>o.name)),
+   *       r=e.mcpServerErrors.filter((o)=>!t.has(o.name));
+   *   ...r.length>0&&{mcp_server_errors:r.map((o)=>({...o}))}
+   * Errors whose `name` already appears in `mcpClients` (connected/known)
+   * are filtered out — `mcp_server_errors` only surfaces errors for servers
+   * NOT in the mcpClients list.
+   */
+  mcpServerErrors: ReadonlyArray<{ name: string; type: string; message: string }>
   model: string
   permissionMode: PermissionMode
   commands: ReadonlyArray<CommandLike>
@@ -54,6 +69,14 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
   const settings = getSettings_DEPRECATED()
   const outputStyle = settings?.outputStyle ?? DEFAULT_OUTPUT_STYLE_NAME
 
+  // Binary tAr: filter mcpServerErrors to exclude names already in mcpClients
+  // (errors for connected/known servers are dropped), then emit only when the
+  // filtered array is non-empty — key is OMITTED when empty.
+  const mcpClientNames = new Set(inputs.mcpClients.map(client => client.name))
+  const filteredMcpServerErrors = inputs.mcpServerErrors.filter(
+    error => !mcpClientNames.has(error.name),
+  )
+
   const initMessage: SDKMessage = {
     type: 'system',
     subtype: 'init',
@@ -64,6 +87,14 @@ export function buildSystemInitMessage(inputs: SystemInitInputs): SDKMessage {
       name: client.name,
       status: client.type,
     })),
+    // Binary: ...r.length>0&&{mcp_server_errors:r.map((o)=>({...o}))}
+    ...(filteredMcpServerErrors.length > 0 && {
+      mcp_server_errors: filteredMcpServerErrors.map(error => ({
+        name: error.name,
+        type: error.type,
+        message: error.message,
+      })),
+    }),
     model: inputs.model,
     permissionMode: inputs.permissionMode,
     slash_commands: inputs.commands

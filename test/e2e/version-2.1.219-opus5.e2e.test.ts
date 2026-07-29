@@ -312,10 +312,13 @@ console.log(JSON.stringify({ key, entry, noFast }));
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
     // Base tier (no fast speed) is the binary-recovered tier_5_25 ($5/$25).
+    // promptCacheWrite1hTokens:10 (OCC-38 1c carryover — baked Dig + pricing
+    // _tiers.tier_5_25 cache_write_1h=10, now a required ModelCosts field).
     const tier525 = {
       inputTokens: 5,
       outputTokens: 25,
       promptCacheWriteTokens: 6.25,
+      promptCacheWrite1hTokens: 10,
       promptCacheReadTokens: 0.5,
       webSearchRequests: 0.01,
     };
@@ -343,10 +346,14 @@ console.log(JSON.stringify({ fast }));
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
     // Fast tier (speed:"fast") is the binary-recovered a7n ($10/$50).
+    // promptCacheWrite1hTokens:20 (OCC-38 1c carryover — baked a7n +
+    // pricing_tiers.tier_10_50 cache_write_1h=20, now a required ModelCosts
+    // field).
     const a7n = {
       inputTokens: 10,
       outputTokens: 50,
       promptCacheWriteTokens: 12.5,
+      promptCacheWrite1hTokens: 20,
       promptCacheReadTokens: 1,
       webSearchRequests: 0.01,
     };
