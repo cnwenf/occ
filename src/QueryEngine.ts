@@ -604,6 +604,15 @@ export class QueryEngine {
     yield buildSystemInitMessage({
       tools,
       mcpClients,
+      // TODO(workflowSizeGuideline-round): wire MCP server config errors here.
+      // The binary's tAr builder receives e.mcpServerErrors (a separate list of
+      // {name,type,message} for servers that failed config validation before
+      // connection). QueryEngine currently receives mcpClients
+      // (MCPServerConnection[]) but not a separate config-error list — that
+      // plumbing through the MCP connection layer is deferred. An empty array
+      // is correct: the key is OMITTED from the init event (binary:
+      // r.length>0&&{mcp_server_errors:...}).
+      mcpServerErrors: [],
       model: mainLoopModel,
       permissionMode: initialAppState.toolPermissionContext
         .mode as PermissionMode, // TODO: avoid the cast

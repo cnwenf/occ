@@ -164,12 +164,23 @@ export const AllowedMcpServerEntrySchema = lazySchema(() =>
 export const DeniedMcpServerEntrySchema = lazySchema(() =>
   z
     .object({
+      // Binary (_Wn): serverName uses .min(1) + whitespace .refine() checks
+      // (not .regex like the allowed entry). The denied entry is more
+      // permissive — it accepts any non-empty, non-whitespace-only name
+      // without leading/trailing whitespace, because denylist entries may
+      // include names with characters outside [a-zA-Z0-9_-] (e.g., URLs,
+      // paths). The allowed entry keeps .regex since allowlist names follow
+      // the strict naming convention.
       serverName: z
         .string()
-        .regex(
-          /^[a-zA-Z0-9_-]+$/,
-          'Server name can only contain letters, numbers, hyphens, and underscores',
-        )
+        .min(1, 'Server name must be non-empty')
+        .refine(name => name.trim().length > 0, {
+          message: 'Server name must not be whitespace-only',
+        })
+        .refine(name => name === name.trim(), {
+          message:
+            'Server name has leading or trailing whitespace and will never match (names are compared verbatim)',
+        })
         .optional()
         .describe('Name of the MCP server that is explicitly blocked'),
       serverCommand: z

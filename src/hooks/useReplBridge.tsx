@@ -307,6 +307,9 @@ export function useReplBridge(messages: Message[], setMessages: (action: React.S
                           // full lists — SDK consumers expect full telemetry.
                           tools: [],
                           mcpClients: [],
+                          // Redacted alongside mcpClients — MCP server error
+                          // names leak integration wiring. Empty → key omitted.
+                          mcpServerErrors: [],
                           model: mainLoopModelRef.current,
                           permissionMode: state_0.toolPermissionContext.mode as PermissionMode,
                           // TODO: avoid the cast
