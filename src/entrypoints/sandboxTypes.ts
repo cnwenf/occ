@@ -30,6 +30,19 @@ export const SandboxNetworkConfigSchema = lazySchema(() =>
           'When true (and set in managed settings), only allowedDomains and WebFetch(domain:...) allow rules from managed settings are respected. ' +
             'User, project, local, and flag settings domains are ignored. Denied domains are still respected from all sources.',
         ),
+      // 2.1.219: deny non-allowlisted hosts for sandboxed commands without
+      // prompting. Recovered verbatim from the 2.1.220 linux-x64 ELF settings
+      // schema (offset ~247994700). Only honored from user, flag (--settings),
+      // or policy (managed) sources — project settings are ignored.
+      strictAllowlist: z
+        .boolean()
+        .optional()
+        .describe(
+          'When true, the sandbox runtime deterministically denies hosts not in allowedDomains instead of prompting. ' +
+            'Enforced for sandboxed commands only — in-process tools such as WebFetch are not gated by this setting. ' +
+            'Only honored from user, managed/policy, or CLI (--settings) settings — ' +
+            'project settings (.claude/settings.json and .claude/settings.local.json) are ignored.',
+        ),
       allowUnixSockets: z
         .array(z.string())
         .optional()
