@@ -156,6 +156,39 @@ export function shouldAllowManagedSandboxDomainsOnly(): boolean {
   )
 }
 
+/**
+ * 2.1.219: `sandbox.network.strictAllowlist` — when true, the sandbox denies
+ * non-allowlisted hosts WITHOUT prompting (the ask callback is bypassed).
+ *
+ * Mirrors the 2.1.220 linux-x64 ELF: the runtime config builder computes
+ * `strictAllowlist: YLt().some((K) => K?.sandbox?.network?.strictAllowlist === !0) || void 0`,
+ * and the runtime gate then does `if (!r || Hl.network.strictAllowlist) return deny`
+ * (`r` = the ask/prompt callback). The `.describe()` text is authoritative
+ * that `YLt()` enumerates ONLY user, managed/policy, and CLI (--settings)
+ * sources — project settings (`.claude/settings.json`, `.claude/settings.local.json`)
+ * are ignored.
+ *
+ * OCC's installed `@anthropic-ai/sandbox-runtime@0.0.44` `NetworkConfigSchema`
+ * has no `strictAllowlist` field (zod `"strip"` would drop it), so the runtime
+ * cannot enforce it natively. The identical observable contract (deny without
+ * prompt for non-allowlisted hosts when strictAllowlist is on) is enforced in
+ * the wrappedCallback next to the `allowManagedDomainsOnly` branch — see
+ * `initialize()`.
+ */
+export function shouldEnforceStrictAllowlist(): boolean {
+  // Only user, flag (CLI --settings), and policy (managed) sources are honored;
+  // projectSettings and localSettings are ignored per the binary's .describe().
+  const honoredSources: SettingSource[] = [
+    'userSettings',
+    'flagSettings',
+    'policySettings',
+  ]
+  return honoredSources.some(
+    (source) =>
+      getSettingsForSource(source)?.sandbox?.network?.strictAllowlist === true,
+  )
+}
+
 function shouldAllowManagedReadPathsOnly(): boolean {
   return (
     getSettingsForSource('policySettings')?.sandbox?.filesystem
@@ -828,6 +861,17 @@ async function initialize(
         if (shouldAllowManagedSandboxDomainsOnly()) {
           logForDebugging(
             `[sandbox] Blocked network request to ${hostPattern.host} (allowManagedDomainsOnly)`,
+          )
+          return false
+        }
+        // 2.1.219: sandbox.network.strictAllowlist — deny non-allowlisted
+        // hosts without prompting. Binary gate:
+        // `if (!r || Hl.network.strictAllowlist) return deny`. OCC enforces
+        // here (runtime@0.0.44 has no strictAllowlist field); the contract is
+        // identical — deny before the prompt callback runs.
+        if (shouldEnforceStrictAllowlist()) {
+          logForDebugging(
+            `[sandbox] Blocked network request to ${hostPattern.host} (strictAllowlist)`,
           )
           return false
         }
