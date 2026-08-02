@@ -57,19 +57,34 @@ function startRepl(home: string) {
 function freshSeededHome(): string {
   const home = mkdtempSync(join(tmpdir(), "occ-repl-"));
   mkdirSync(join(home, ".claude"), { recursive: true });
-  writeFileSync(
-    join(home, ".claude.json"),
-    JSON.stringify({
-      numStartups: 1,
-      firstStartTime: "2026-07-06T00:00:00.000Z",
-      migrationVersion: 11,
-      userID: "occ-repl-seed-0000000000000000000000000000000000000000000000aa",
-      hasCompletedOnboarding: true,
-      lastOnboardingVersion: "2.1.200",
-      lastReleaseNotesSeen: "2.1.200",
-      projects: { [REPO_ROOT]: { hasTrustDialogAccepted: true } },
-    }),
-  );
+  // When ANTHROPIC_API_KEY is forwarded into the spawned REPL (the test's
+  // startRepl passes the full parent env), OCC detects the custom key and
+  // shows the "Detected a custom API key / Do you want to use this API key?"
+  // approval dialog BEFORE the welcome screen — which makes waitForText(
+  // "shift+tab") time out and every REPL test fail with an empty pane. Pre-
+  // approve the key's truncated form (last 20 chars, matching
+  // normalizeApiKeyForConfig in src/utils/authPortable.ts →
+  // getCustomApiKeyStatus in src/utils/config.ts) so the dialog is suppressed
+  // and the REPL goes straight to the welcome. This mirrors what a real user's
+  // ~/.claude.json accumulates after answering the dialog once.
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const config: Record<string, unknown> = {
+    numStartups: 1,
+    firstStartTime: "2026-07-06T00:00:00.000Z",
+    migrationVersion: 11,
+    userID: "occ-repl-seed-0000000000000000000000000000000000000000000000aa",
+    hasCompletedOnboarding: true,
+    lastOnboardingVersion: "2.1.200",
+    lastReleaseNotesSeen: "2.1.200",
+    projects: { [REPO_ROOT]: { hasTrustDialogAccepted: true } },
+  };
+  if (apiKey && apiKey.length >= 20) {
+    config.customApiKeyResponses = {
+      approved: [apiKey.slice(-20)],
+      rejected: [],
+    };
+  }
+  writeFileSync(join(home, ".claude.json"), JSON.stringify(config));
   writeFileSync(
     join(home, ".claude", "settings.json"),
     JSON.stringify({
