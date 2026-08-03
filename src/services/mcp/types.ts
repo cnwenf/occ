@@ -71,6 +71,10 @@ export const McpSSEServerConfigSchema = lazySchema(() =>
     alwaysLoad: z.boolean().optional(),
     // 2.1.206: per-server request timeout (ms). See McpStdioServerConfigSchema.
     request_timeout_ms: z.number().int().positive().optional(),
+    // Binary `Ilr` (2.1.220): set post-parse when `${VAR}` expansion turns a
+    // non-empty `url` into an empty string (`configErrorReason:"url_invalid"`).
+    configError: z.string().optional(),
+    configErrorReason: z.string().optional(),
   }),
 )
 
@@ -97,7 +101,11 @@ export const McpWebSocketIDEServerConfigSchema = lazySchema(() =>
 
 export const McpHTTPServerConfigSchema = lazySchema(() =>
   z.object({
-    type: z.literal('http'),
+    // Binary `J5n` (2.1.220): `v.enum(["http","streamable-http"])
+    // .transform(()=>"http")` — "streamable-http" is accepted as an alias of
+    // "http" and normalized to "http" (live-verified: the official loads a
+    // streamable-http entry instead of skipping it).
+    type: z.enum(['http', 'streamable-http']).transform(() => 'http' as const),
     url: z.string(),
     headers: z.record(z.string(), z.string()).optional(),
     headersHelper: z.string().optional(),
@@ -105,6 +113,10 @@ export const McpHTTPServerConfigSchema = lazySchema(() =>
     alwaysLoad: z.boolean().optional(),
     // 2.1.206: per-server request timeout (ms). See McpStdioServerConfigSchema.
     request_timeout_ms: z.number().int().positive().optional(),
+    // Binary `Ilr` (2.1.220): set post-parse when `${VAR}` expansion turns a
+    // non-empty `url` into an empty string (`configErrorReason:"url_invalid"`).
+    configError: z.string().optional(),
+    configErrorReason: z.string().optional(),
   }),
 )
 
@@ -117,6 +129,10 @@ export const McpWebSocketServerConfigSchema = lazySchema(() =>
     alwaysLoad: z.boolean().optional(),
     // 2.1.206: per-server request timeout (ms). See McpStdioServerConfigSchema.
     request_timeout_ms: z.number().int().positive().optional(),
+    // Binary `Ilr` (2.1.220): set post-parse when `${VAR}` expansion turns a
+    // non-empty `url` into an empty string (`configErrorReason:"url_invalid"`).
+    configError: z.string().optional(),
+    configErrorReason: z.string().optional(),
   }),
 )
 
@@ -199,6 +215,40 @@ export const McpJsonConfigSchema = lazySchema(() =>
 )
 
 export type McpJsonConfig = z.infer<ReturnType<typeof McpJsonConfigSchema>>
+
+/**
+ * Top-level shape for PER-ENTRY MCP config validation — binary `Ilr`
+ * (2.1.220 linux-x64 ELF): `v.object({mcpServers:v.record(v.string(),
+ * v.unknown())})`. Entries are `unknown` here because each one is validated
+ * INDIVIDUALLY against `MCP_SERVER_TYPE_SCHEMA_REGISTRY` (invalid entries are
+ * skipped with a `skipReason` warning instead of rejecting the whole config).
+ * Used by the `--mcp-config` path (`parseDynamicMcpConfig`).
+ */
+export const McpJsonConfigShapeSchema = lazySchema(() =>
+  z.object({
+    mcpServers: z.record(z.string(), z.unknown()),
+  }),
+)
+
+/**
+ * Per-type schema registry for per-entry validation — binary `oSs` (2.1.220):
+ * `{stdio, sse, http, "streamable-http"→http schema, ws, sdk,
+ * "claudeai-proxy"}`. `sse-ide`/`ws-ide` are intentionally absent: they are
+ * internal IDE transports, not user-configurable types (the official error
+ * text is "Valid types are: stdio, sse, http (or streamable-http), ws, sdk").
+ */
+export const MCP_SERVER_TYPE_SCHEMA_REGISTRY: Record<
+  string,
+  () => z.ZodType<McpServerConfig>
+> = {
+  stdio: McpStdioServerConfigSchema,
+  sse: McpSSEServerConfigSchema,
+  http: McpHTTPServerConfigSchema,
+  'streamable-http': McpHTTPServerConfigSchema,
+  ws: McpWebSocketServerConfigSchema,
+  sdk: McpSdkServerConfigSchema,
+  'claudeai-proxy': McpClaudeAIProxyServerConfigSchema,
+}
 
 // Server connection types
 export type ConnectedMCPServer = {

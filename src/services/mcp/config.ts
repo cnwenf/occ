@@ -7,6 +7,7 @@ import { getPlatform } from 'src/utils/platform.js'
 import type { PluginError } from '../../types/plugin.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isClaudeInChromeMCPServer } from '../../utils/claudeInChrome/common.js'
+import { isComputerUseMCPServer } from '../../utils/computerUse/common.js'
 import {
   getCurrentProjectConfig,
   getGlobalConfig,
@@ -47,6 +48,8 @@ import {
   type McpHTTPServerConfig,
   type McpJsonConfig,
   McpJsonConfigSchema,
+  McpJsonConfigShapeSchema,
+  MCP_SERVER_TYPE_SCHEMA_REGISTRY,
   type McpServerConfig,
   McpServerConfigSchema,
   type McpSSEServerConfig,
@@ -552,13 +555,22 @@ export function filterMcpServersByPolicy<T>(configs: Record<string, T>): {
 }
 
 /**
- * Internal utility: Expands environment variables in an MCP server config
+ * Internal utility: Expands environment variables in an MCP server config.
+ *
+ * Mirrors the binary's `Yyy` (2.1.220 linux-x64 ELF): per-type expansion of
+ * command/args/env (stdio) or url/headers (sse/http/ws), plus the
+ * `urlExpandedToEmpty` flag — true when a NON-empty original url expands to
+ * an EMPTY string (binary: `r=i.url.trim()!==""&&s.trim()===""`). The caller
+ * turns that into `configError`/`configErrorReason:"url_invalid"` on the
+ * expanded config (binary `Ilr`).
  */
 function expandEnvVars(config: McpServerConfig): {
   expanded: McpServerConfig
   missingVars: string[]
+  urlExpandedToEmpty: boolean
 } {
   const missingVars: string[] = []
+  let urlExpandedToEmpty = false
 
   function expandString(str: string): string {
     const { expanded, missingVars: vars } = expandEnvVarsInString(str)
@@ -589,9 +601,13 @@ function expandEnvVars(config: McpServerConfig): {
         | McpSSEServerConfig
         | McpHTTPServerConfig
         | McpWebSocketServerConfig
+      const expandedUrl = expandString(remoteConfig.url)
+      // Binary `Yyy`: r=i.url.trim()!==""&&s.trim()===""
+      urlExpandedToEmpty =
+        remoteConfig.url.trim() !== '' && expandedUrl.trim() === ''
       expanded = {
         ...remoteConfig,
-        url: expandString(remoteConfig.url),
+        url: expandedUrl,
         headers: remoteConfig.headers
           ? mapValues(remoteConfig.headers, expandString)
           : undefined,
@@ -613,6 +629,7 @@ function expandEnvVars(config: McpServerConfig): {
   return {
     expanded,
     missingVars: [...new Set(missingVars)],
+    urlExpandedToEmpty,
   }
 }
 
@@ -1412,6 +1429,30 @@ export function parseMcpConfigFromFilePath(params: {
   errors: ValidationError[]
 } {
   const { filePath, expandVars, scope } = params
+  const read = readMcpConfigFileContents({ filePath, scope })
+  if (read.errors) {
+    return { config: null, errors: read.errors }
+  }
+
+  return parseMcpConfig({
+    configObject: read.parsedJson,
+    expandVars,
+    scope,
+    filePath,
+  })
+}
+
+/**
+ * Shared file gates for MCP config file parsing (binary `Rlr` preamble,
+ * dynamic-scope path: plain `readFileSync`, no size/regular-file gate).
+ * ENOENT → "MCP config file not found", read error → "Failed to read file",
+ * invalid JSON → "MCP config is not a valid JSON" — all fatal.
+ */
+function readMcpConfigFileContents(params: {
+  filePath: string
+  scope: ConfigScope
+}): { parsedJson: unknown; errors?: undefined } | { parsedJson?: undefined; errors: ValidationError[] } {
+  const { filePath, scope } = params
   const fs = getFsImplementation()
 
   let configContent: string
@@ -1421,7 +1462,6 @@ export function parseMcpConfigFromFilePath(params: {
     const code = getErrnoCode(error)
     if (code === 'ENOENT') {
       return {
-        config: null,
         errors: [
           {
             file: filePath,
@@ -1441,7 +1481,6 @@ export function parseMcpConfigFromFilePath(params: {
       { level: 'error' },
     )
     return {
-      config: null,
       errors: [
         {
           file: filePath,
@@ -1465,7 +1504,6 @@ export function parseMcpConfigFromFilePath(params: {
       { level: 'error' },
     )
     return {
-      config: null,
       errors: [
         {
           file: filePath,
@@ -1481,8 +1519,302 @@ export function parseMcpConfigFromFilePath(params: {
     }
   }
 
-  return parseMcpConfig({
-    configObject: parsedJson,
+  return { parsedJson }
+}
+
+/**
+ * Reserved MCP server names — binary `UIt` (2.1.220 linux-x64 ELF):
+ * `xY(e)||J_e(e)||Ler(e)||e===dWn`, i.e. the normalized name equals
+ * `claude-in-chrome` or `computer-use`, normalizes into the Claude
+ * Preview/Browser reserved set, or the name is exactly `workspace`. The
+ * binary's second parameter (`hostCarrier`) is unused in 2.1.220.
+ */
+function isReservedMcpServerName(name: string): boolean {
+  return (
+    isClaudeInChromeMCPServer(name) ||
+    isComputerUseMCPServer(name) ||
+    isReservedClaudeBrowserName(name) ||
+    name === 'workspace'
+  )
+}
+
+/**
+ * Whitespace check for a validated server entry — binary `Xyy` (2.1.220).
+ * Returns labels of fields whose values have leading/trailing whitespace
+ * (command/url/args/env/headers, plus env/header NAME whitespace). Whitespace
+ * is a WARNING, not a skip — the entry still loads ("they are used exactly
+ * as written").
+ */
+function findMcpConfigWhitespaceIssues(config: McpServerConfig): string[] {
+  const issues: string[] = []
+  function check(label: string, value: string): void {
+    if (value !== value.trim()) {
+      issues.push(label)
+    }
+  }
+  if ('command' in config) {
+    check('command', config.command)
+  }
+  if ('url' in config) {
+    check('url', config.url)
+  }
+  if ('args' in config && config.args) {
+    config.args.forEach((arg, index) => check(`args[${index}]`, arg))
+  }
+  if ('env' in config && config.env) {
+    for (const [envName, envValue] of Object.entries(config.env)) {
+      if (envName !== envName.trim()) {
+        issues.push(`env name ${jsonStringify(envName)}`)
+      }
+      check(`env.${envName}`, envValue)
+    }
+  }
+  if ('headers' in config && config.headers) {
+    for (const [headerName, headerValue] of Object.entries(config.headers)) {
+      if (headerName !== headerName.trim()) {
+        issues.push(`header name ${jsonStringify(headerName)}`)
+      }
+      check(`headers.${headerName}`, headerValue)
+    }
+  }
+  return issues
+}
+
+/**
+ * Per-entry MCP config validation for `--mcp-config` entries — verbatim port
+ * of the binary's `Ilr` (2.1.220 linux-x64 ELF, offset ~253245xxx), the
+ * parser the CLI entry uses for `--mcp-config` values (inline JSON with
+ * `filePath: "command line"`, and files via the `Rlr` gates).
+ *
+ * Unlike `parseMcpConfig` (union-reject: one invalid entry fails the whole
+ * config), the binary validates each entry independently — invalid entries
+ * are SKIPPED with a `skipReason` warning while valid entries load. Skip
+ * categories (binary-verified stable set): `unknown_type` (type not in the
+ * registry), `url_missing_type` (has url, no type, no command),
+ * `invalid_config` (per-type schema failure, issues joined `"; "`),
+ * `reserved_name` (binary `UIt`; `type: "sdk"` entries are exempt). The
+ * skip warnings feed `mcp_server_errors` in the stream-json init event
+ * (2.1.219 item 4 — see `skippedMcpServerErrors.ts`).
+ *
+ * Top-level shape failures (not an object with `mcpServers`) stay fatal and
+ * reject the whole entry — binary-verified against the live 2.1.220 binary:
+ * `{"servers":{...}}` → `Missing "mcpServers" — found "servers" instead...`
+ * with the rename suggestion; `{}` → raw zod issue (the fatal branch does
+ * NOT strip the `Invalid input: ` prefix — only per-entry `invalid_config`
+ * details do).
+ */
+export function parseDynamicMcpConfig(params: {
+  configObject: unknown
+  expandVars: boolean
+  scope: ConfigScope
+  filePath?: string
+}): {
+  config: McpJsonConfig | null
+  errors: ValidationError[]
+} {
+  const { configObject, expandVars, scope, filePath } = params
+
+  // Binary: v.object({mcpServers:v.record(v.string(),v.unknown())}).safeParse(t)
+  const shapeResult = McpJsonConfigShapeSchema().safeParse(configObject)
+  if (!shapeResult.success) {
+    const foundServersKeyInstead =
+      configObject !== null &&
+      typeof configObject === 'object' &&
+      'servers' in configObject &&
+      !('mcpServers' in configObject)
+    return {
+      config: null,
+      errors: shapeResult.error.issues.map(issue => ({
+        ...(filePath && { file: filePath }),
+        path: issue.path.join('.'),
+        message: foundServersKeyInstead
+          ? 'Missing "mcpServers" — found "servers" instead. Claude Code reads MCP servers from the "mcpServers" key.'
+          : issue.message,
+        ...(foundServersKeyInstead && {
+          suggestion: `Rename the top-level "servers" key to "mcpServers" in ${filePath ?? 'your MCP config'}.`,
+        }),
+        mcpErrorMetadata: {
+          scope,
+          severity: 'fatal' as const,
+        },
+      })),
+    }
+  }
+
+  const errors: ValidationError[] = []
+  const validatedServers: Record<string, McpServerConfig> = {}
+
+  // Binary `l(u,d,p,f)`: push a per-entry warning error.
+  function pushEntryError(
+    serverName: string,
+    message: string,
+    suggestion: string | undefined,
+    skipReason: string | undefined,
+  ): void {
+    errors.push({
+      ...(filePath && { file: filePath }),
+      path: `mcpServers.${serverName}`,
+      message,
+      ...(suggestion && { suggestion }),
+      mcpErrorMetadata: {
+        scope,
+        serverName,
+        severity: 'warning' as const,
+        ...(skipReason && { skipReason }),
+      },
+    })
+  }
+
+  const rawServers = (configObject as { mcpServers: Record<string, unknown> })
+    .mcpServers
+  // Binary `__proto__` guard: the raw object has an own `__proto__` key that
+  // zod's record parse dropped.
+  if (
+    Object.hasOwn(rawServers, '__proto__') &&
+    !Object.hasOwn(shapeResult.data.mcpServers, '__proto__')
+  ) {
+    pushEntryError(
+      '__proto__',
+      '"__proto__" is a reserved MCP server name and was not loaded',
+      'Rename this server in your MCP config — "__proto__" cannot be used as a server name',
+      'reserved_name',
+    )
+  }
+
+  for (const [name, rawEntry] of Object.entries(shapeResult.data.mcpServers)) {
+    // Binary: type defaults to "stdio" when absent or not a string.
+    const declaredType =
+      rawEntry &&
+      typeof rawEntry === 'object' &&
+      'type' in rawEntry &&
+      typeof (rawEntry as { type: unknown }).type === 'string'
+        ? (rawEntry as { type: string }).type
+        : 'stdio'
+    const schemaGetter = Object.hasOwn(
+      MCP_SERVER_TYPE_SCHEMA_REGISTRY,
+      declaredType,
+    )
+      ? MCP_SERVER_TYPE_SCHEMA_REGISTRY[declaredType]
+      : undefined
+    if (!schemaGetter) {
+      pushEntryError(
+        name,
+        `Skipped — unknown MCP server type "${declaredType}" for server "${name}"`,
+        'Valid types are: stdio, sse, http (or streamable-http), ws, sdk',
+        'unknown_type',
+      )
+      continue
+    }
+    const entryResult = schemaGetter().safeParse(rawEntry)
+    if (!entryResult.success) {
+      // Binary url_missing_type heuristic: no explicit type, has url, no
+      // command (the default-stdio parse failed because of the missing
+      // command, but the real problem is the missing transport type).
+      if (
+        rawEntry !== null &&
+        typeof rawEntry === 'object' &&
+        !('type' in rawEntry) &&
+        'url' in rawEntry &&
+        !('command' in rawEntry)
+      ) {
+        pushEntryError(
+          name,
+          `Skipped — MCP server "${name}" has a "url" but no "type"; add "type": "http" (or "sse" / "ws") to this entry`,
+          undefined,
+          'url_missing_type',
+        )
+        continue
+      }
+      const details = entryResult.error.issues
+        .map(issue => {
+          const issueMessage = issue.message.replace(/^Invalid input: /, '')
+          return `${issue.path.join('.') || '(root)'}: ${issueMessage}`
+        })
+        .join('; ')
+      pushEntryError(
+        name,
+        `Skipped — invalid MCP server config for "${name}": ${details}`,
+        undefined,
+        'invalid_config',
+      )
+      continue
+    }
+    const validated = entryResult.data
+    // Binary: reserved names are skipped unless the entry is type "sdk"
+    // (SDK hosts own their server naming).
+    if (isReservedMcpServerName(name) && validated.type !== 'sdk') {
+      pushEntryError(
+        name,
+        `"${name}" is a reserved MCP server name and was not loaded`,
+        `Rename this server in your MCP config — "${name}" is reserved for internal use`,
+        'reserved_name',
+      )
+      continue
+    }
+    const whitespaceIssues = findMcpConfigWhitespaceIssues(validated)
+    if (whitespaceIssues.length > 0) {
+      pushEntryError(
+        name,
+        `Leading or trailing whitespace in: ${whitespaceIssues.join(', ')}`,
+        `Remove the whitespace from these values in the "${name}" entry — they are used exactly as written`,
+        undefined,
+      )
+    }
+    let serverConfig: McpServerConfig = validated
+    if (expandVars) {
+      const { expanded, missingVars, urlExpandedToEmpty } =
+        expandEnvVars(validated)
+      if (missingVars.length > 0) {
+        pushEntryError(
+          name,
+          `Missing environment variables: ${missingVars.join(', ')}`,
+          `Set the following environment variables: ${missingVars.join(', ')}`,
+          undefined,
+        )
+      }
+      serverConfig = expanded
+      // Binary: a non-empty url that expands to empty carries the error on
+      // the config itself (`configErrorReason: "url_invalid"`).
+      if (urlExpandedToEmpty && 'url' in validated) {
+        serverConfig = {
+          ...expanded,
+          configError: `'url' ${jsonStringify(
+            (validated as { url: string }).url,
+          )} expanded to an empty string. Set the referenced environment variable, or update the server's config and reconnect.`,
+          configErrorReason: 'url_invalid',
+        } as McpServerConfig
+      }
+    }
+    validatedServers[name] = serverConfig
+  }
+
+  return {
+    config: { mcpServers: validatedServers },
+    errors,
+  }
+}
+
+/**
+ * `--mcp-config` file-path entry point — binary `Rlr` (file gates) + `Ilr`
+ * (per-entry validation). Dynamic scope in the binary uses a plain
+ * `readFileSync` (no size/regular-file gate — that applies only to
+ * non-dynamic scopes), matching `readMcpConfigFileContents`.
+ */
+export function parseDynamicMcpConfigFromFile(params: {
+  filePath: string
+  expandVars: boolean
+  scope: ConfigScope
+}): {
+  config: McpJsonConfig | null
+  errors: ValidationError[]
+} {
+  const { filePath, expandVars, scope } = params
+  const read = readMcpConfigFileContents({ filePath, scope })
+  if (read.errors) {
+    return { config: null, errors: read.errors }
+  }
+  return parseDynamicMcpConfig({
+    configObject: read.parsedJson,
     expandVars,
     scope,
     filePath,

@@ -30,10 +30,11 @@ export type SystemInitInputs = {
   tools: ReadonlyArray<{ name: string }>
   mcpClients: ReadonlyArray<{ name: string; type: string }>
   /**
-   * MCP server config errors collected during connection. Each element is
-   * `{name, type, message}`. Emitted as `mcp_server_errors` in the init event
-   * ONLY when the filtered array is non-empty — the key is OMITTED when there
-   * are no errors (after filtering against `mcpClients` names).
+   * MCP server config entries from `--mcp-config` that failed validation and
+   * were skipped (2.1.219 item 4). Each element is `{name, type, message}`.
+   * Emitted as `mcp_server_errors` in the init event ONLY when the filtered
+   * array is non-empty — the key is OMITTED when there are no errors (after
+   * filtering against `mcpClients` names).
    *
    * Binary evidence (2.1.220 tAr):
    *   let t=new Set(e.mcpClients.map((o)=>o.name)),
@@ -42,6 +43,11 @@ export type SystemInitInputs = {
    * Errors whose `name` already appears in `mcpClients` (connected/known)
    * are filtered out — `mcp_server_errors` only surfaces errors for servers
    * NOT in the mcpClients list.
+   *
+   * Callers: the QueryEngine passes the module store populated by the CLI
+   * entry's `--mcp-config` block (`getSkippedMcpServerErrors()`, binary
+   * `CEm()`); the REPL Remote-Control bridge passes `[]` (binary offset
+   * ~264053443).
    */
   mcpServerErrors: ReadonlyArray<{ name: string; type: string; message: string }>
   model: string

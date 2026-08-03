@@ -23,9 +23,14 @@ describe("2.1.219 mcp_server_errors in init event (e2e)", () => {
   // Helper: run buildSystemInitMessage in a subprocess with MACRO polyfilled.
   // systemInit.ts uses MACRO.VERSION (build-time macro) which is only defined
   // via bun:bundle or the cli.tsx dev polyfill — bun -e has neither.
+  // buildSystemInitMessage also reads the API-key source (auth.ts), which
+  // throws when CI=true and no key is present — seed a dummy key so the
+  // builder runs in credential-less CI (same seed pattern as the OCC-42
+  // repl-interactive fix; the key never leaves the subprocess).
   async function runBuild(inputs: string): Promise<Record<string, unknown>> {
     const script = `
 globalThis.MACRO = { VERSION: "2.1.220" };
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-dummy-init-builder";
 const { buildSystemInitMessage } = await import("${REPO_ROOT}/src/utils/messages/systemInit.ts");
 const msg = buildSystemInitMessage(${inputs});
 console.log(JSON.stringify(msg));

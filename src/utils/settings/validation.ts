@@ -68,6 +68,16 @@ export type ValidationError = {
     serverName?: string
     /** Severity of the error */
     severity?: 'fatal' | 'warning'
+    /**
+     * Stable skip category when the entry was skipped (2.1.219 item 4 —
+     * binary `Ilr` per-entry validation). Currently one of: `unknown_type`,
+     * `url_missing_type`, `invalid_config`, `reserved_name` (open set per
+     * the `mcp_server_errors` schema description). Entries carrying a
+     * `skipReason` + `serverName` are collected by the CLI entry's
+     * `--mcp-config` block and surfaced as `mcp_server_errors` in the
+     * stream-json init event.
+     */
+    skipReason?: string
   }
 }
 

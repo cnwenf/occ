@@ -149,12 +149,12 @@ import { registerMcpXaaIdpCommand } from 'src/commands/mcp/xaaIdpCommand.js';
 import { logPermissionContextForAnts } from 'src/services/internalLogging.js';
 import { fetchClaudeAIMcpConfigsIfEligible } from 'src/services/mcp/claudeai.js';
 import { clearServerCache } from 'src/services/mcp/client.js';
-import { areMcpConfigsAllowedWithEnterpriseMcpConfig, dedupClaudeAiMcpServers, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getClaudeCodeMcpConfigs, getMcpServerSignature, parseMcpConfig, parseMcpConfigFromFilePath } from 'src/services/mcp/config.js';
+import { areMcpConfigsAllowedWithEnterpriseMcpConfig, dedupClaudeAiMcpServers, doesEnterpriseMcpConfigExist, filterMcpServersByPolicy, getClaudeCodeMcpConfigs, getMcpServerSignature, parseDynamicMcpConfig, parseDynamicMcpConfigFromFile } from 'src/services/mcp/config.js';
 import { excludeCommandsByServer, excludeResourcesByServer } from 'src/services/mcp/utils.js';
 import { isXaaEnabled } from 'src/services/mcp/xaaIdpLogin.js';
 import { getRelevantTips } from 'src/services/tips/tipRegistry.js';
 import { logContextMetrics } from 'src/utils/api.js';
-import { CLAUDE_IN_CHROME_MCP_SERVER_NAME, isClaudeInChromeMCPServer } from 'src/utils/claudeInChrome/common.js';
+import { type SkippedMcpServerError, recordSkippedMcpServerErrors } from 'src/services/mcp/skippedMcpServerErrors.js';
 import { registerCleanup } from 'src/utils/cleanupRegistry.js';
 import { eagerParseCliFlag } from 'src/utils/cliArgs.js';
 import { createEmptyAttributionState } from 'src/utils/commitAttribution.js';
@@ -1609,13 +1609,18 @@ async function run(): Promise<CommanderCommand> {
       }
     }
 
-    // Parse the MCP config files/strings if provided
+    // Parse the MCP config files/strings if provided — binary 2.1.220
+    // CLI-entry `--mcp-config` block (2.1.219 item 4): per-entry validation,
+    // invalid entries are SKIPPED with a warning (surfaced later as
+    // `mcp_server_errors` in the stream-json init event) while valid entries
+    // load; only entries that fail to parse AT ALL are fatal.
     let dynamicMcpConfig: Record<string, ScopedMcpServerConfig> = {};
     if (mcpConfig && mcpConfig.length > 0) {
       // Process mcpConfig array
       const processedConfigs = mcpConfig.map(config => config.trim()).filter(config => config.length > 0);
       let allConfigs: Record<string, McpServerConfig> = {};
-      const allErrors: ValidationError[] = [];
+      const fatalErrors: ValidationError[] = [];
+      const skippedCandidates: SkippedMcpServerError[] = [];
       for (const configItem of processedConfigs) {
         let configs: Record<string, McpServerConfig> | null = null;
         let errors: ValidationError[] = [];
@@ -1623,7 +1628,7 @@ async function run(): Promise<CommanderCommand> {
         // First try to parse as JSON string
         const parsedJson = safeParseJSON(configItem);
         if (parsedJson) {
-          const result = parseMcpConfig({
+          const result = parseDynamicMcpConfig({
             configObject: parsedJson,
             filePath: 'command line',
             expandVars: true,
@@ -1631,63 +1636,86 @@ async function run(): Promise<CommanderCommand> {
           });
           if (result.config) {
             configs = result.config.mcpServers;
-          } else {
-            errors = result.errors;
           }
+          errors = result.errors;
         } else {
           // Try as file path
           const configPath = resolve(configItem);
-          const result = parseMcpConfigFromFilePath({
+          const result = parseDynamicMcpConfigFromFile({
             filePath: configPath,
             expandVars: true,
             scope: 'dynamic'
           });
           if (result.config) {
             configs = result.config.mcpServers;
-          } else {
-            errors = result.errors;
           }
+          errors = result.errors;
         }
-        if (errors.length > 0) {
-          allErrors.push(...errors);
-        } else if (configs) {
+
+        if (configs) {
           // Merge configs, later ones override earlier ones
           allConfigs = {
             ...allConfigs,
             ...configs
           };
+          if (errors.length > 0) {
+            // Binary: `--mcp-config: N entry warning(s): path: message; ...`
+            logForDebugging(`--mcp-config: ${errors.length} entry warning(s): ${errors.map(err => `${err.path ? err.path + ': ' : ''}${err.message}`).join('; ')}`, {
+              level: 'warn'
+            });
+            // Binary: collect skipReason errors as mcp_server_errors
+            // candidates ({name, type: skipReason, message}).
+            for (const err of errors) {
+              const metadata = err.mcpErrorMetadata;
+              if (metadata?.skipReason && metadata.serverName != null) {
+                skippedCandidates.push({
+                  name: metadata.serverName,
+                  type: metadata.skipReason,
+                  message: err.message
+                });
+              }
+            }
+          }
+        } else {
+          fatalErrors.push(...errors);
         }
       }
-      if (allErrors.length > 0) {
-        const formattedErrors = allErrors.map(err => `${err.path ? err.path + ': ' : ''}${err.message}`).join('\n');
-        logForDebugging(`--mcp-config validation failed (${allErrors.length} errors): ${formattedErrors}`, {
+      if (fatalErrors.length > 0) {
+        const formattedErrors = fatalErrors.map(err => `${err.path ? err.path + ': ' : ''}${err.message}`).join('\n');
+        logForDebugging(`--mcp-config validation failed (${fatalErrors.length} errors): ${formattedErrors}`, {
           level: 'error'
         });
         process.stderr.write(`Error: Invalid MCP configuration:\n${formattedErrors}\n`);
         process.exit(1);
       }
+      // Binary: keep only errors for servers that were ACTUALLY skipped
+      // (absent from the merged config — a later valid entry with the same
+      // name clears the skip), deduped by name via Map (last error wins).
+      const skippedByName = new Map<string, SkippedMcpServerError>();
+      for (const candidate of skippedCandidates) {
+        if (!Object.hasOwn(allConfigs, candidate.name)) {
+          skippedByName.set(candidate.name, candidate);
+        }
+      }
+      if (skippedByName.size > 0) {
+        const skipped = Array.from(skippedByName.values());
+        recordSkippedMcpServerErrors(skipped);
+        // Binary: stderr warning only when stderr is a TTY; each message is
+        // ANSI-stripped, control chars replaced with spaces, trimmed.
+        if (process.stderr.isTTY) {
+          const sanitize = (message: string): string => {
+            const stripped = typeof Bun !== 'undefined' && typeof Bun.stripANSI === 'function' ? Bun.stripANSI(message) : message;
+            // biome-ignore lint/suspicious/noControlCharactersInRegex: binary-verbatim sanitizer (2.1.220 CLI entry) — control chars become spaces
+            return stripped.replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ').trim();
+          };
+          process.stderr.write(`Warning: ${skipped.length} ${plural(skipped.length, 'MCP server')} skipped due to invalid config:\n${skipped.map(err => `  - ${sanitize(err.message)}`).join('\n')}\n`);
+        }
+      }
       if (Object.keys(allConfigs).length > 0) {
-        // SDK hosts (Nest/Desktop) own their server naming and may reuse
-        // built-in names — skip reserved-name checks for type:'sdk'.
-        const nonSdkConfigNames = Object.entries(allConfigs).filter(([, config]) => config.type !== 'sdk').map(([name]) => name);
-        let reservedNameError: string | null = null;
-        if (nonSdkConfigNames.some(isClaudeInChromeMCPServer)) {
-          reservedNameError = `Invalid MCP configuration: "${CLAUDE_IN_CHROME_MCP_SERVER_NAME}" is a reserved MCP name.`;
-        } else if (feature('CHICAGO_MCP')) {
-          const {
-            isComputerUseMCPServer,
-            COMPUTER_USE_MCP_SERVER_NAME
-          } = await import('src/utils/computerUse/common.js');
-          if (nonSdkConfigNames.some(isComputerUseMCPServer)) {
-            reservedNameError = `Invalid MCP configuration: "${COMPUTER_USE_MCP_SERVER_NAME}" is a reserved MCP name.`;
-          }
-        }
-        if (reservedNameError) {
-          // stderr+exit(1) — a throw here becomes a silent unhandled
-          // rejection in stream-json mode (void main() in cli.tsx).
-          process.stderr.write(`Error: ${reservedNameError}\n`);
-          process.exit(1);
-        }
+        // Reserved names (claude-in-chrome, computer-use, Claude
+        // Preview/Browser, workspace) are handled per-entry by
+        // parseDynamicMcpConfig (binary `Ilr` reserved_name skip, sdk
+        // entries exempt) instead of a fatal exit — matching the binary.
 
         // Add dynamic scope to all configs. type:'sdk' entries pass through
         // unchanged — they're extracted into sdkMcpConfigs downstream and
