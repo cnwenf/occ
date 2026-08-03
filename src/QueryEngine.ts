@@ -38,6 +38,7 @@ import { hasAutoMemPathOverride } from './memdir/paths.js'
 import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
+import { getSkippedMcpServerErrors } from './services/mcp/skippedMcpServerErrors.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
@@ -604,15 +605,13 @@ export class QueryEngine {
     yield buildSystemInitMessage({
       tools,
       mcpClients,
-      // TODO(workflowSizeGuideline-round): wire MCP server config errors here.
-      // The binary's tAr builder receives e.mcpServerErrors (a separate list of
-      // {name,type,message} for servers that failed config validation before
-      // connection). QueryEngine currently receives mcpClients
-      // (MCPServerConnection[]) but not a separate config-error list — that
-      // plumbing through the MCP connection layer is deferred. An empty array
-      // is correct: the key is OMITTED from the init event (binary:
-      // r.length>0&&{mcp_server_errors:...}).
-      mcpServerErrors: [],
+      // 2.1.219 item 4 caller-wiring (binary offset ~267738589:
+      // `mcpServerErrors:CEm()`). The CLI entry's `--mcp-config` block
+      // records skipped config entries ({name, type, message}) into the
+      // module store during startup parsing; the init builder reads them
+      // here and `buildSystemInitMessage` (binary `tAr`) filters out names
+      // already in mcpClients and omits the key when empty.
+      mcpServerErrors: getSkippedMcpServerErrors(),
       model: mainLoopModel,
       permissionMode: initialAppState.toolPermissionContext
         .mode as PermissionMode, // TODO: avoid the cast

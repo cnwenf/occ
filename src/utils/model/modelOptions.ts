@@ -16,7 +16,7 @@ import {
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import { checkOpus1mAccess, checkSonnet1mAccess } from './check1mAccess.js'
-import { getAPIProvider } from './providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import {
   getCanonicalName,
@@ -126,11 +126,43 @@ function getSonnet46Option(): ModelOption {
   }
 }
 
+/**
+ * Whether the `/model` picker shows the "Custom <tier> model" rows for
+ * `ANTHROPIC_DEFAULT_*_MODEL` overrides — binary `xJn` (2.1.220 linux-x64
+ * ELF, offset ~249523655):
+ *
+ *   function xJn(){return!rm()||iW()||!Yd()}
+ *   rm(p) = p==="firstParty"||iW(p)||p==="gateway"
+ *   iW(p) = p==="anthropicAws"||p==="anthropicGoogleCloud"
+ *   Yd()  = _CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL || base URL unset ||
+ *           base URL host === api.anthropic.com
+ *
+ * i.e. custom rows appear when the provider is NOT Anthropic-owned
+ * (bedrock/vertex/foundry/mantle/…), OR it is anthropicAws/
+ * anthropicGoogleCloud, OR `ANTHROPIC_BASE_URL` points away from the
+ * first-party API (a firstParty provider behind a proxy — the common
+ * LiteLLM/GLM-style setup). OCC's APIProvider folds anthropicGoogleCloud
+ * into firstParty; the base-URL clause covers it. OCC-43: this used to gate
+ * on provider alone, so a firstParty provider with a custom base URL
+ * wrongly showed the stock rows (divergence caught by REPL self-acceptance).
+ */
+function shouldUseCustomModelOptions(): boolean {
+  const provider = getAPIProvider()
+  const isAnthropicOwned =
+    provider === 'firstParty' ||
+    provider === 'anthropic_aws' ||
+    provider === 'gateway'
+  const isAwsOrGoogleCloud = provider === 'anthropic_aws'
+  return (
+    !isAnthropicOwned || isAwsOrGoogleCloud || !isFirstPartyAnthropicBaseUrl()
+  )
+}
+
 function getCustomFableOption(): ModelOption | undefined {
-  const is3P = getAPIProvider() !== 'firstParty'
   const customFableModel = process.env.ANTHROPIC_DEFAULT_FABLE_MODEL
-  // When a 3P user has a custom fable model string, show it directly
-  if (is3P && customFableModel) {
+  // When a custom-model user has a custom fable model string, show it
+  // directly (binary NBc: `if(xJn()&&e)`).
+  if (shouldUseCustomModelOptions() && customFableModel) {
     return {
       value: 'fable',
       label:
@@ -159,10 +191,10 @@ function getFable5Option(): ModelOption {
 }
 
 function getCustomSonnetOption(): ModelOption | undefined {
-  const is3P = getAPIProvider() !== 'firstParty'
   const customSonnetModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
-  // When a 3P user has a custom sonnet model string, show it directly
-  if (is3P && customSonnetModel) {
+  // When a custom-model user has a custom sonnet model string, show it
+  // directly (binary OBc: `if(xJn()&&e)`).
+  if (shouldUseCustomModelOptions() && customSonnetModel) {
     const is1m = has1mContext(customSonnetModel)
     return {
       value: 'sonnet',
@@ -177,10 +209,10 @@ function getCustomSonnetOption(): ModelOption | undefined {
 }
 
 function getCustomOpusOption(): ModelOption | undefined {
-  const is3P = getAPIProvider() !== 'firstParty'
   const customOpusModel = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
-  // When a 3P user has a custom opus model string, show it directly
-  if (is3P && customOpusModel) {
+  // When a custom-model user has a custom opus model string, show it
+  // directly (binary FBc: `if(xJn()&&e)`).
+  if (shouldUseCustomModelOptions() && customOpusModel) {
     const is1m = has1mContext(customOpusModel)
     return {
       value: 'opus',
@@ -285,10 +317,10 @@ export function getOpus46_1MOption(fastMode = false): ModelOption {
 }
 
 function getCustomHaikuOption(): ModelOption | undefined {
-  const is3P = getAPIProvider() !== 'firstParty'
   const customHaikuModel = process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
-  // When a 3P user has a custom haiku model string, show it directly
-  if (is3P && customHaikuModel) {
+  // When a custom-model user has a custom haiku model string, show it
+  // directly (binary OBc-haiku: `if(xJn()&&e)`).
+  if (shouldUseCustomModelOptions() && customHaikuModel) {
     return {
       value: 'haiku',
       label: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME ?? customHaikuModel,
@@ -501,7 +533,48 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   }
 
   // PAYG 1P API: Default (Sonnet 5) + Sonnet 5 1M + Fable 5 + Opus 5 + Opus 1M + Haiku
+  // Binary `Fug` rm()-branch (2.1.220): the Anthropic-owned-provider path
+  // consults the custom `ANTHROPIC_DEFAULT_*_MODEL` options FIRST (FBc/OBc/
+  // NBc/jBc, each gated on xJn — see shouldUseCustomModelOptions) and only
+  // falls back to the stock rows. A firstParty provider behind a custom
+  // ANTHROPIC_BASE_URL (xJn true) therefore shows "Custom Opus/Sonnet/Haiku
+  // model" rows, not the stock ones (live-verified against the official
+  // 2.1.220 picker in OCC-43). When any custom row is active the binary's
+  // row order is Default → Opus → [Fable] → Sonnet → Haiku.
   if (getAPIProvider() === 'firstParty') {
+    const customOpus = getCustomOpusOption()
+    const customSonnet = getCustomSonnetOption()
+    const customHaiku = getCustomHaikuOption()
+    // Binary: `let c=NBc();if(c!==void 0)$Qt(s,c);else if(iW()&&
+    // M_e("fable5"))$Qt(s,HWi())` — the stock Fable 5 row only appears for
+    // anthropicAws/anthropicGoogleCloud (iW), which never enter this
+    // firstParty branch; a firstParty picker gets Fable only via
+    // ANTHROPIC_DEFAULT_FABLE_MODEL (live-verified: no Fable row otherwise).
+    const customFable = getCustomFableOption()
+    if (customOpus || customSonnet || customHaiku || customFable) {
+      const customOptions = [getDefaultOptionForUser(fastMode)]
+      if (customOpus !== undefined) {
+        customOptions.push(customOpus)
+      } else if (isOpus1mMergeEnabled()) {
+        customOptions.push(getMergedOpus1MOption(fastMode))
+      } else {
+        customOptions.push(getOpus5Option(fastMode))
+        if (checkOpus1mAccess()) {
+          customOptions.push(getOpus5_1MOption(fastMode))
+        }
+      }
+      if (customFable !== undefined) {
+        customOptions.push(customFable)
+      }
+      if (customSonnet !== undefined) {
+        customOptions.push(customSonnet)
+      } else if (checkSonnet1mAccess()) {
+        customOptions.push(getSonnet5_1MOption())
+      }
+      customOptions.push(customHaiku ?? getHaiku45Option())
+      return customOptions
+    }
+    // Stock firstParty layout (no ANTHROPIC_DEFAULT_*_MODEL overrides).
     const payg1POptions = [getDefaultOptionForUser(fastMode)]
     if (checkSonnet1mAccess()) {
       payg1POptions.push(getSonnet5_1MOption())

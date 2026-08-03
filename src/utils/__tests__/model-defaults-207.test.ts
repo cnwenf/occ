@@ -81,11 +81,14 @@ describe('2.1.219 # OCC-36: non-gateway default → Opus 5 (was Opus 4.8 in 2.1.
     })
   })
 
-  test('foundry provider defaults to opus-5', () => {
+  test('foundry provider lags at opus-4-6 (binary per_provider table, Gap-1)', () => {
     withEnv(FOUNDRY_ENV, () => {
       expect(getAPIProvider()).toBe('foundry')
       const model = getDefaultOpusModel()
-      expect(model).toContain('claude-opus-5')
+      // OCC-37 Gap-1: the official 2.1.220 binary's per_provider alias table
+      // resolves foundry opus to claude-opus-4-6 (foundry lags one
+      // generation), NOT claude-opus-5 — see getDefaultOpusModel.
+      expect(model).toContain('claude-opus-4-6')
     })
   })
 
