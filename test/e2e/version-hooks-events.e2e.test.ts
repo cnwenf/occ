@@ -31,8 +31,9 @@ describe('D2/D3/D4 hook event registration (source-grep)', () => {
     expect(core).toContain("'PostToolBatch'")
     // UserPromptExpansion after UserPromptSubmit
     expect(core).toContain("'UserPromptExpansion'")
-    // MessageDisplay at the end (after FileChanged)
-    expect(core).toMatch(/'FileChanged',\s*\n[^]*'MessageDisplay',\s*\n\] as const/)
+    // MessageDisplay after FileChanged, then DirectoryAdded (2.1.219 P0-B,
+    // OCC-34) last before the closing `] as const` — binary order.
+    expect(core).toMatch(/'FileChanged',\s*\n[^]*'MessageDisplay',\s*\n[^]*'DirectoryAdded',\s*\n\] as const/)
   })
 
   test('runtime HOOK_EVENTS bundle (agentSdkTypes.js) is not stale', async () => {
@@ -40,6 +41,7 @@ describe('D2/D3/D4 hook event registration (source-grep)', () => {
     expect(js).toContain("'PostToolBatch'")
     expect(js).toContain("'UserPromptExpansion'")
     expect(js).toContain("'MessageDisplay'")
+    expect(js).toContain("'DirectoryAdded'")
   })
 
   test('SDK HOOK_EVENTS + HookInputSchema + SyncHookJSONOutputSchema parity', async () => {

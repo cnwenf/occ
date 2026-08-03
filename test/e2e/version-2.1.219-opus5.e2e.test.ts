@@ -679,10 +679,13 @@ console.log(JSON.stringify({
     expect(out.opus47).toBe(true);
   });
 
-  test("1d: opus-4-6 is NOT fast-mode supported and bare 'opus' is not special-cased", async () => {
+  test("1d: opus-4-6 is NOT fast-mode supported and bare 'opus' resolves through the alias", async () => {
     const script = `
 import { isFastModeSupportedByModel } from "${REPO_ROOT}/src/utils/fastMode.ts";
 delete process.env.CLAUDE_CODE_DISABLE_FAST_MODE;
+// Deterministic alias resolution across environments (CI has no
+// ANTHROPIC_DEFAULT_OPUS_MODEL; local endpoints may override it).
+delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
 console.log(JSON.stringify({
   opus46: isFastModeSupportedByModel("claude-opus-4-6"),
   bareOpus: isFastModeSupportedByModel("opus"),
@@ -691,8 +694,13 @@ console.log(JSON.stringify({
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
     // opus-4-6 was removed from the support set (absent from binary fallback).
     expect(out.opus46).toBe(false);
-    // Bare "opus" is no longer special-cased in the binary fallback
-    // (previously `lower === 'opus'` in OCC; binary has no such clause).
-    expect(out.bareOpus).toBe(false);
+    // Bare "opus" is not special-cased in the binary's STRING fallback
+    // (previously `lower === 'opus'` in OCC; binary has no such clause) —
+    // but the binary's primary path resolves the alias FIRST (`M$(lo(r),
+    // "fast_mode")`, lo = parseUserSpecifiedModel): bare "opus" →
+    // claude-opus-5 (the 2.1.219+ default Opus), which IS fast-mode
+    // supported. OCC mirrors that: parseUserSpecifiedModel("opus") →
+    // getDefaultOpusModel() → claude-opus-5 → matches the opus-5 fallback.
+    expect(out.bareOpus).toBe(true);
   });
 });
