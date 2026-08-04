@@ -251,6 +251,9 @@ const BRACE_EXPANSION_RE = /\{[^{}\s]*(,|\.\.)[^{}\s]*\}/
  * word boundaries.
  */
 // eslint-disable-next-line no-control-regex
+// This regex INTENTIONALLY matches control characters — it is the security
+// pre-check that rejects commands containing them (parser-differential guard).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (security pre-check).
 const CONTROL_CHAR_RE = /[\x00-\x08\x0B-\x1F\x7F]/
 
 /**
@@ -720,7 +723,6 @@ function collectCommands(
         child.type === 'select' ||
         child.type === ';'
       ) {
-        continue // structural tokens
       } else if (child.type === 'command_substitution') {
         // `for i in $(seq 1 3)` — inner cmd IS extracted and rule-checked.
         const err = collectCommandSubstitution(child, commands, varScope)
@@ -992,12 +994,105 @@ function walkTestExpr(
       argv.push(node.text)
       return null
     case 'regex':
-    case 'extglob_pattern':
-      // RHS of =~ or ==/!= in [[ ]]. Pattern text only — no code execution.
-      // Parser emits these as leaf nodes with no children (any $(...) or ${...}
-      // inside the pattern is a sibling, not a child, and is walked separately).
+    case 'extglob_pattern': {
+      // RHS of =~ or ==/!=/= in [[ ]]. Pattern text only — no code execution
+      // in BASH, but zsh disagrees on what belongs to the pattern, so the
+      // pattern text is defensively validated before being trusted as inert
+      // (2.1.221 security fix — zsh could execute hidden commands smuggled
+      // in `[[ ]]` regex conditionals; affected commands now prompt).
+      // Verbatim port of the 2.1.221 binary's test-expression RHS case:
+      // expansion check on both node types, unquoted-& scan for
+      // extglob_pattern, and glued-|| / unquoted-& / paren-balance scan for
+      // regex. Anything suspicious → too-complex → permission prompt.
+      if (/\$[({[\w#?!*@$'"+~^=-]|`|[<>]\(/.test(node.text)) {
+        return {
+          kind: 'too-complex',
+          reason: `[[ ]] ${node.type} contains expansion / command / process substitution`,
+          nodeType: node.type,
+        }
+      }
+      if (node.type === 'extglob_pattern') {
+        const text = node.text
+        let i = 0
+        while (i < text.length) {
+          if (text[i] === '\\' && i + 1 < text.length) {
+            i += 2
+            continue
+          }
+          if (text[i] === '&') {
+            return {
+              kind: 'too-complex',
+              reason:
+                '[[ ]] pattern contains unquoted & (zsh splits the word at & at any depth)',
+            }
+          }
+          i++
+        }
+      }
+      if (node.type === 'regex') {
+        const text = node.text
+        let parenDepth = 0
+        let i = 0
+        while (i < text.length) {
+          const ch = text[i]!
+          if (ch === '\\' && i + 1 < text.length) {
+            i += 2
+            continue
+          }
+          if (parenDepth === 0 && ch === '|' && text[i + 1] === ch) {
+            return {
+              kind: 'too-complex',
+              reason:
+                '[[ ]] regex contains glued || (zsh splits it as a cond operator)',
+              nodeType: node.type,
+            }
+          }
+          if (ch === '&') {
+            return {
+              kind: 'too-complex',
+              reason:
+                '[[ ]] regex contains unquoted & (zsh splits the word at & at any depth)',
+              nodeType: node.type,
+            }
+          }
+          if (ch === '"' || ch === "'") {
+            const quote = ch
+            i++
+            while (i < text.length && text[i] !== quote) {
+              if (quote === '"' && text[i] === '\\' && i + 1 < text.length) {
+                i++
+              }
+              i++
+            }
+            if (i < text.length) i++
+            continue
+          }
+          if (ch === '(') {
+            parenDepth++
+          } else if (ch === ')') {
+            parenDepth--
+            if (parenDepth < 0) {
+              return {
+                kind: 'too-complex',
+                reason:
+                  '[[ ]] regex has unbalanced parentheses (parser desync)',
+                nodeType: node.type,
+              }
+            }
+          }
+          i++
+        }
+        if (parenDepth !== 0) {
+          return {
+            kind: 'too-complex',
+            reason: '[[ ]] regex has unbalanced parentheses (parser desync)',
+            nodeType: node.type,
+          }
+        }
+      }
       argv.push(node.text)
       return null
+    }
     default: {
       // Operand — word, string, number, etc. Validate via walkArgument.
       const arg = walkArgument(node, innerCommands, varScope)
@@ -1792,7 +1887,6 @@ function walkVariableAssignment(
       // node. Without this case it falls through to walkArgument below
       // → tooComplex on unknown type `+=`.
       isAppend = child.type === '+='
-      continue
     } else if (child.type === 'command_substitution') {
       // $() as the variable's value. The output becomes a STRING stored in
       // the variable — it's NOT a positional argument (no path/flag concern).
@@ -1899,7 +1993,7 @@ function walkVariableAssignment(
       return {
         kind: 'too-complex',
         reason:
-          'PS4 value outside safe charset — only ${VAR} refs and [A-Za-z0-9 _+:.=/[]-] allowed',
+          `PS4 value outside safe charset — only \${VAR} refs and [A-Za-z0-9 _+:.=/[]-] allowed`,
         nodeType: 'variable_assignment',
       }
     }

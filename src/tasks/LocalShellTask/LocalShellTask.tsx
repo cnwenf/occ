@@ -1,4 +1,5 @@
 import { feature } from 'src/utils/featureFlags.js';
+import { statSync } from 'fs';
 import { stat } from 'fs/promises';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../constants/xml.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
@@ -102,6 +103,18 @@ The command is likely blocked on an interactive prompt. Kill this task and re-ru
     clearInterval(timer);
   };
 }
+/**
+ * 2.1.221: Monitor completion summary. A watch that exits without producing
+ * any output says so instead of reporting "stream ended" (binary qZs:
+ * `o === 0` → "ended without producing output" + exit suffix; the plain
+ * "stream ended" branch carries no exit suffix). `outputBytes === undefined`
+ * (unknown) falls through to "stream ended" — `undefined === 0` is false.
+ */
+export function monitorCompletedSummary(description: string, exitCode: number | undefined, outputBytes: number | undefined): string {
+  return outputBytes === 0
+    ? `Monitor "${description}" ended without producing output${exitCode !== undefined ? ` (exit ${exitCode})` : ''}`
+    : `Monitor "${description}" stream ended`;
+}
 function enqueueShellNotification(taskId: string, description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, setAppState: SetAppState, toolUseId?: string, kind: BashTaskKind = 'bash', agentId?: AgentId): void {
   // Atomically check and set notified flag to prevent duplicate notifications.
   // If the task was already marked as notified (e.g., by TaskStopTool), skip
@@ -125,6 +138,7 @@ function enqueueShellNotification(taskId: string, description: string, status: '
   // results may reference stale task output. The prompt suggestion text is
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState);
+  const outputPath = getTaskOutputPath(taskId);
   let summary: string;
   if (feature('MONITOR_TOOL') && kind === 'monitor') {
     // Monitor is streaming-only (post-#22764) — the script exiting means
@@ -132,9 +146,20 @@ function enqueueShellNotification(taskId: string, description: string, status: '
     // so Monitor completions don't fold into the "N background commands
     // completed" collapse.
     switch (status) {
-      case 'completed':
-        summary = `Monitor "${description}" stream ended`;
+      case 'completed': {
+        // 2.1.221: a watch that exits without producing any output says so
+        // instead of reporting "stream ended" (binary qZs `o === 0` branch;
+        // OCC's monitor output lands in the task output file, so its size is
+        // the output-count signal — missing file means zero output).
+        let outputBytes = 0;
+        try {
+          outputBytes = statSync(outputPath).size;
+        } catch {
+          outputBytes = 0;
+        }
+        summary = monitorCompletedSummary(description, exitCode, outputBytes);
         break;
+      }
       case 'failed':
         summary = `Monitor "${description}" script failed${exitCode !== undefined ? ` (exit ${exitCode})` : ''}`;
         break;
@@ -155,7 +180,6 @@ function enqueueShellNotification(taskId: string, description: string, status: '
         break;
     }
   }
-  const outputPath = getTaskOutputPath(taskId);
   const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
   const message = `<${TASK_NOTIFICATION_TAG}>
 <${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
