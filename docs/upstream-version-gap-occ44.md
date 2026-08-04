@@ -75,7 +75,7 @@ the surface.
 | Fixed renaming a session from Desktop/claude.ai not updating the CLI session name; session names sanitized everywhere | Desktop/claude.ai bridge surface; OCC has no Desktop bridge |
 | Fixed plugin/org skills named after terminal-only built-ins un-invocable non-interactively | Plugin-skill surface (trimmed in OCC) |
 | Fixed "Plugins changed" notification lingering | Plugin surface |
-| Fixed Vim mode: yank register survives dialogs/history/transcript; undo-to-empty arms the ← confirm | OCC ships no Vim mode (2.1.219 P3 Vim items already staged) |
+| Fixed Vim mode: yank register survives dialogs/history/transcript; undo-to-empty arms the ← confirm | **OCC HAS a full Vim mode** — the earlier "no OCC Vim mode" note was WRONG (see §3d re-triage). Both fixes apply to OCC's real vim surface and are staged pending per-site decompilation + OCC-vim behavior verification |
 | Improved tool search on Google Vertex AI (re-enabled for Claude-4.5-gen+) | Vertex-backend-bound |
 | Improved auto mode: cache-efficient parallel permission checks; stale pending-check no longer applied after mode switch; reduced prompt-cache costs reusing the cached prefix | Auto-mode classifier/backend request economics — classifier calls go to the Anthropic backend; OCC's auto mode runs the classifiers but the caching economics are backend-side |
 | Improved Stats panel to count cache tokens with breakdown | Stats-panel TUI; needs the panel's site recovered |
@@ -148,12 +148,71 @@ Binary `qZs(e,t,r,n,o)` recovered verbatim (2.1.221): for `monitor` kind,
 \`Monitor "${t}" stream ended\`` where `i = n!==void 0 ? \` (exit ${n})\` : ""`
 (the exit suffix rides ONLY on the no-output branch); callers pass
 `taskOutput.pipedStdoutBytes` (undefined when `stdoutToFile`). OCC port:
-`monitorCompletedSummary()` in `src/tasks/LocalShellTask/LocalShellTask.tsx`;
-OCC's monitor output lands in the task output file, so its post-flush size is
-the output-count signal (missing file ⇒ 0 ⇒ the new message). 5 unit tests
-(`src/tasks/LocalShellTask/__tests__/monitorNoOutput221.test.ts`). Note:
-OCC's `MonitorTool` currently uses a side-channel emitter and does not create
-LocalShellTask records, so this aligns the structural notification path.
+`monitorCompletedSummary()` in `src/tasks/LocalShellTask/LocalShellTask.tsx`.
+5 unit tests
+(`src/tasks/LocalShellTask/__tests__/monitorNoOutput221.test.ts`).
+
+**STRUCTURAL-ONLY / dormant in the shipped build (acceptance follow-up).**
+OCC's `MonitorTool` spawns via `Bun.spawn` + a side-channel emitter and does
+NOT register a `LocalShellTask` with `kind:'monitor'`, so **no production code
+path reaches the `kind === 'monitor'` branch** and no user-visible behavior
+changes this release. This lands the faithful `qZs` contract + contract tests
+ahead of wiring a producer. Two fidelity caveats, documented rather than
+papered over: (a) OCC's output-count signal is the task output FILE size
+(combined stdout+stderr), whereas the official counts stdout-only
+`pipedStdoutBytes` — exact parity needs the producer wired; (b) `completed` in
+this branch implies exit code 0, so the exit suffix renders `(exit 0)`. The
+output-count read was also hardened: a missing output file (ENOENT) counts as
+zero output, but any other stat error (EACCES/ELOOP/…) now falls back to
+"stream ended" instead of being misread as zero output.
+
+### 3d. Vim re-triage (correction — OCC HAS a full Vim mode)
+
+The §2 triage originally dismissed the two 2.1.221 Vim fixes with "OCC ships
+no Vim mode." That was **factually wrong** (flagged by 验收员). OCC ships a
+complete, working Vim mode; the evidence:
+
+- **Engine**: `src/vim/` — `operators.ts` (delete/change/yank, linewise +
+  charwise, visual variants), `motions.ts`, `textObjects.ts`, `transitions.ts`
+  (NORMAL/INSERT/VISUAL state machine), `types.ts`, `lastChangeUpgrade.ts`
+  (dot-repeat). ~2.4k lines.
+- **Input wiring**: `src/hooks/useVimInput.ts` + `src/components/VimTextInput.tsx`,
+  rendered by `PromptInput.tsx` when `isVimModeEnabled()`; `editorMode`
+  (`'normal'`/`'vim'`) is a real `/config` option (`src/utils/config.ts:231`,
+  `src/components/Settings/Config.tsx:810`).
+- **Features**: yank **register** (`persistentRef.current.register` /
+  `registerIsLinewise` in `useVimInput.ts`), **undo** (`u` → `onUndo`,
+  `transitions.ts:210`), VISUAL + VISUAL LINE, dot-repeat, INSERT-mode remaps
+  (`vimInsertModeRemaps.ts`, e.g. `jj`→`<Esc>`), reverse history search (`/`),
+  substitute (`s`/`S`).
+- **Tests**: `src/vim/__tests__/vimDotRepeat.test.ts`,
+  `lastChangeUpgrade.test.ts`, `src/utils/vimInsertModeRemaps.test.ts`, plus
+  e2e `version-2.1.118-vim-visual`, `version-2.1.152-vim-reverse-search`,
+  `version-2.1.211-repl-input-vim-substitute`. Prior vim ports exist (2.1.211
+  `s`/`S`, visual mode; 2.1.216 `cc`/`S` dot-repeat register fix — CHANGELOG).
+
+**Re-triage of the two 2.1.221 Vim fixes against this real surface:**
+
+1. **Yank register survives dialogs / history search / transcript view.** OCC
+   stores the register in a `useRef` (`persistentRef`) inside `useVimInput`
+   (i.e. inside `VimTextInput`). It persists across re-renders as long as
+   `VimTextInput` is not unmounted; no code path resets it. History search
+   (`isSearchingHistory`) is PromptInput-local state and `textInputElement`
+   stays mounted, so the register should survive history search — but whether
+   dialogs / the transcript view unmount the prompt (and thus drop the ref) is
+   NOT yet verified. **Disposition: applicable to OCC; staged pending a
+   targeted vim tmux probe (yank → open dialog/history/transcript → paste) to
+   confirm whether OCC is affected, then port the official fix if so.**
+2. **Undo-to-empty arms the "press ← again" confirm.** OCC has vim undo
+   (`u` → `onUndo`). The "← at empty prompt returns to the agent view, and
+   undo-to-empty should arm a confirm first" behavior needs OCC's empty-prompt
+   ← navigation recovered before porting. **Disposition: applicable to OCC;
+   staged pending per-site decompilation + OCC-vim behavior verification.**
+
+Both remain staged (P3 vim polish; faithful port requires per-site
+decompilation of the exact official fix + behavior verification against OCC's
+vim engine — not guessed), but the rationale is now the correct one: **OCC has
+the surface; these are real, applicable items**, not a nonexistent vim mode.
 
 ## 4. Staged backlog (end of round)
 
@@ -164,6 +223,9 @@ Most-natural next-round follow-ups:
 2. `/status` Session-kind row — resolve the `· attached` attacher-state
    question first (daemon-side signal?), then land the faithful subset.
 3. Sandbox `mode: "mask"` — dedicated decompilation round (proxy egress).
+4. **Vim fixes (§3d)** — OCC HAS a full vim mode. Probe the yank register
+   across dialog/history/transcript and the undo-to-empty ← confirm against
+   OCC's vim engine; port the 2.1.221 fixes if OCC is affected.
 
 **Carried from 2.1.219 (unchanged from OCC-43 §4):** item 5
 `workflowSizeGuideline`, item 6 nested-subagent forwarding, item 7 `-p`
@@ -201,6 +263,17 @@ not silently ignored.
   `ast.ts:254` are decompilation noise, unchanged, bypassed per repo
   convention).
 - Build green: `dist/cli.js` 28.85 MB.
+
+**Acceptance follow-up (post-rejection, this doc's §3c/§3d corrections):**
+after 验收员 rejected v2.1.293, added the committed LIVE-path zsh security test
+(`zshRegexConditionalLivePath221.test.ts`, 7 tests, kills the
+splitter-atomize mutant), the committed resume-turn wiring e2e
+(`resume-interrupted-turn-221.e2e.test.ts`, reproduces the original bug on
+revert), the walkTestExpr negative-depth / `${` / `<(` / `>(` branch tests
+(+6, mutation-verified), and the `readMonitorOutputBytes` stat-error tests
+(+3). Full `src/` suite now **1751 pass / 0 fail / 3848 expect()**; new-file
+unit tests **44 pass**; e2e resume + 2.1.219 subset **37 pass**; biome clean;
+build green (`dist/cli.js` 2.1.293).
 
 ## 6. Release decision
 

@@ -109,11 +109,32 @@ The command is likely blocked on an interactive prompt. Kill this task and re-ru
  * `o === 0` → "ended without producing output" + exit suffix; the plain
  * "stream ended" branch carries no exit suffix). `outputBytes === undefined`
  * (unknown) falls through to "stream ended" — `undefined === 0` is false.
+ *
+ * STRUCTURAL-ONLY in the shipped build: this contract backs the
+ * `kind === 'monitor'` branch of `enqueueShellNotification`, which no
+ * production code path reaches yet (MonitorTool uses a side-channel emitter
+ * and does not register a LocalShellTask). This is a faithful port of the
+ * binary's qZs, pinned by unit tests, awaiting a real producer.
  */
 export function monitorCompletedSummary(description: string, exitCode: number | undefined, outputBytes: number | undefined): string {
   return outputBytes === 0
     ? `Monitor "${description}" ended without producing output${exitCode !== undefined ? ` (exit ${exitCode})` : ''}`
     : `Monitor "${description}" stream ended`;
+}
+/**
+ * Read the task output file size as the output-count signal for
+ * `monitorCompletedSummary`. A MISSING file (ENOENT) is genuinely zero output.
+ * Any OTHER stat error (EACCES/ELOOP/…) means the count is UNKNOWN and must be
+ * reported as `undefined` so the caller falls back to "stream ended" — the qZs
+ * contract only reports no-output on a real zero, not on a read failure.
+ * Exported for testing.
+ */
+export function readMonitorOutputBytes(outputPath: string): number | undefined {
+  try {
+    return statSync(outputPath).size;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 0 : undefined;
+  }
 }
 function enqueueShellNotification(taskId: string, description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, setAppState: SetAppState, toolUseId?: string, kind: BashTaskKind = 'bash', agentId?: AgentId): void {
   // Atomically check and set notified flag to prevent duplicate notifications.
@@ -148,15 +169,19 @@ function enqueueShellNotification(taskId: string, description: string, status: '
     switch (status) {
       case 'completed': {
         // 2.1.221: a watch that exits without producing any output says so
-        // instead of reporting "stream ended" (binary qZs `o === 0` branch;
-        // OCC's monitor output lands in the task output file, so its size is
-        // the output-count signal — missing file means zero output).
-        let outputBytes = 0;
-        try {
-          outputBytes = statSync(outputPath).size;
-        } catch {
-          outputBytes = 0;
-        }
+        // instead of reporting "stream ended" (binary qZs `o === 0` branch).
+        //
+        // STRUCTURAL-ONLY in the shipped build (acceptance follow-up): OCC's
+        // MonitorTool spawns via Bun.spawn + a side-channel emitter and never
+        // registers a LocalShellTask with kind:'monitor', so no production
+        // code path reaches this branch yet. It is a faithful port of the
+        // binary's qZs, ready for when a producer is wired. Note also that the
+        // output-count signal here is the task output FILE size (combined
+        // stdout+stderr), whereas the official counts stdout-only
+        // `pipedStdoutBytes` — the proxy is only exact once a real producer
+        // exists. `completed` in this branch implies exit code 0, so the exit
+        // suffix renders as "(exit 0)".
+        const outputBytes = readMonitorOutputBytes(outputPath);
         summary = monitorCompletedSummary(description, exitCode, outputBytes);
         break;
       }
