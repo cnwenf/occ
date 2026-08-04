@@ -13,7 +13,7 @@
 
 ## What is OCC
 
-**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.219` — 2.1.218 fully aligned, 2.1.219 partial per OCC-43 gap report). The code is fully open, auditable, backdoor-free, and your data stays under your control.
+**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.221` — 2.1.218 fully aligned, 2.1.219 + 2.1.221 partial per OCC-44 gap report). The code is fully open, auditable, backdoor-free, and your data stays under your control.
 
 If you worry that a closed-source CLI might hide backdoors, or that your code and credentials are uploaded to unauditable services, OCC is for you: all source is open and unobfuscated, the build is reproducible from source, and API credentials are sent only to endpoints you configure.
 
