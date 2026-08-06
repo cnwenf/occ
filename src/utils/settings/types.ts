@@ -341,6 +341,18 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Number of days to retain chat transcripts before automatic cleanup (default: 30). Minimum 1. Use a large value for long retention; use --no-session-persistence to disable transcript writes entirely.',
         ),
+      // claude-code 2.1.221 (silent addition — no changelog entry; OCC-58):
+      // session auto-compact window in tokens. Set via this settings key
+      // (persisted) or per-run via the --autocompact flag. Schema is
+      // byte-verbatim from the official flag-settings zod definition.
+      autoCompactWindow: z
+        .number()
+        .int()
+        .min(100_000)
+        .max(1_000_000)
+        .optional()
+        .catch(undefined)
+        .describe('Auto-compact window size'),
       env: EnvironmentVariablesSchema()
         .optional()
         .describe('Environment variables to set for Claude Code sessions'),

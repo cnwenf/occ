@@ -4,6 +4,7 @@ import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
+import { getSessionAutoCompactWindow } from '../../utils/autoCompactWindow.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -38,11 +39,22 @@ export function getEffectiveContextWindowSize(model: string): number {
   )
   let contextWindow = getContextWindowForModel(model, getSdkBetas())
 
+  // Official precedence (2.1.221+, OCC-58): the CLAUDE_CODE_AUTO_COMPACT_WINDOW
+  // env var takes precedence over everything ("/autocompact" refuses to change
+  // the setting while it is set). Otherwise the session window resolved from
+  // the --autocompact flag / autoCompactWindow setting applies. In both cases
+  // the window only ever shrinks the effective context (capped by the model's
+  // native window) — mirroring the official "capped to model limit" behavior.
   const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
   if (autoCompactWindow) {
     const parsed = parseInt(autoCompactWindow, 10)
     if (!isNaN(parsed) && parsed > 0) {
       contextWindow = Math.min(contextWindow, parsed)
+    }
+  } else {
+    const sessionWindow = getSessionAutoCompactWindow()
+    if (sessionWindow !== undefined) {
+      contextWindow = Math.min(contextWindow, sessionWindow)
     }
   }
 

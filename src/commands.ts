@@ -52,6 +52,7 @@ import status from './commands/status/index.js'
 import tasks from './commands/tasks/index.js'
 import teleport from './commands/teleport/index.js'
 import autocompact from './commands/autocompact/index.js'
+import { autocompactNonInteractive } from './commands/autocompact/autocompact-noninteractive.js'
 import cd from './commands/cd/index.js'
 import focus from './commands/focus/index.js'
 import powerup from './commands/powerup/index.js'
@@ -280,6 +281,7 @@ const COMMANDS = memoize((): Command[] => [
   advisor,
   agents,
   autocompact,
+  autocompactNonInteractive,
   autofixPr,
   background,
   branch,
