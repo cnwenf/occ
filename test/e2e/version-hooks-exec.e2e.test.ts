@@ -112,9 +112,16 @@ console.log(JSON.stringify({ success: r.success, continueOnBlock: r.success ? r.
     const src = await Bun.file(
       `${REPO_ROOT}/src/utils/hooks/execPromptHook.ts`,
     ).text()
-    // binary: preventContinuation = !impossible && hook.continueOnBlock !== true
-    // (impossible returns early, so the blocking branch reduces to the RHS)
-    expect(src).toMatch(/preventContinuation: hook\.continueOnBlock !== true/)
+    // OCC-51: official 2.1.139 binary formula is
+    //   preventContinuation = !isStopEvent && hook.continueOnBlock !== true
+    // (isStopEvent = hookEvent is Stop/SubagentStop). On Stop events a
+    // blocking prompt hook never hard-stops — the reason is fed back and the
+    // turn continues (this is what makes /goal's keep-working loop run).
+    // The earlier port dropped the event guard (read it as `!impossible`),
+    // which hard-stopped every blocking Stop prompt hook.
+    expect(src).toMatch(
+      /preventContinuation:\s*hookEvent !== 'Stop' &&\s*hookEvent !== 'SubagentStop' &&\s*hook\.continueOnBlock !== true/,
+    )
   })
 
   test('source: schemas/hooks.ts PromptHookSchema has continueOnBlock', async () => {
