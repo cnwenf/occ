@@ -12,14 +12,14 @@ import { join } from 'node:path';
 import { REPO_ROOT } from './helpers';
 
 /**
- * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-25).
+ * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-45).
  *
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
  * -p`. Verifies the responsive condensed welcome (wide / compact / plain) and
- * the forced full logo. The condensed path renders OCC's open-C mark,
- * context, and a session-stable tip; the full path keeps the two-tone doge
- * mascot.
+ * the forced full logo. Both paths render the OCC-45 gradient "Ion Aperture"
+ * open-C mark (`src/components/LogoV2/OccMark.tsx`), labeled context rows,
+ * and a session-stable tip; the retired doge mascot must not render.
  *
  * Gated out of CI because it requires tmux; no model call is made.
  */
@@ -114,26 +114,29 @@ function startRepl(
     .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`)
     .join(' ');
+  // `env VAR=…` only adds/overrides — it still inherits whatever the tmux
+  // server carries (which may include ANTHROPIC_API_KEY). Pass `-u` so the
+  // approval-triggering key is genuinely unset inside the pane.
   execSync(
-    `tmux new-session -d -s ${SESSION} -x ${width} -y 50 "env ${envStr} ${BIN} --dangerously-skip-permissions"`,
+    `tmux new-session -d -s ${SESSION} -x ${width} -y 50 "env -u ANTHROPIC_API_KEY ${envStr} ${BIN} --dangerously-skip-permissions"`,
     { timeout: 5_000 },
   );
   tmux(['resize-window', '-t', SESSION, '-x', String(width), '-y', '50']);
 }
 
-// Signature glyphs from the redesigned OCC-25 "open C" mark
-// (src/components/LogoV2/OccWelcome.tsx). Each is the top row of its tier;
-// the consecutive-block run length (8 / 6 / 4) is unique per tier so a wider
-// tier's glyph never appears inside a narrower pane.
-const LARGE_LOGO_GLYPH = '▟████████▙';
-const MEDIUM_LOGO_GLYPH = '▟██████▙';
-const SMALL_LOGO_GLYPH = '▟████▙';
+// Signature glyphs from the OCC-45 "Ion Aperture" gradient mark
+// (src/components/LogoV2/OccMark.tsx). Each is the top row of its tier;
+// the consecutive-block run length (12 / 8 / 6) is unique per tier so a
+// wider tier's glyph never appears inside a narrower pane.
+const LARGE_LOGO_GLYPH = '▟████████████▙';
+const MEDIUM_LOGO_GLYPH = '▟████████▙';
+const SMALL_LOGO_GLYPH = '▟██████▙';
 const OLD_WORDMARK = '___   ___   ___';
 
-// Doge art glyphs that must remain in the forced full-logo pane.
+// Retired doge art glyphs that must NOT render anywhere anymore.
 const DOGE_GLYPHS = ['/\\___/\\', '=w=', '~~'];
 
-describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-25)', () => {
+describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => {
   test('wide welcome renders brand, version, context, tip, and large mark', async () => {
     const home = freshSeededHome(VERSION);
     startRepl(home, {}, 100);
@@ -184,7 +187,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-25)', () => 
     }
   });
 
-  test('forced full logo renders the bordered welcome box with doge', async () => {
+  test('forced full logo renders the bordered welcome box with the aperture mark', async () => {
     const home = freshSeededHome(VERSION);
     startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' });
     try {
@@ -195,9 +198,11 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-25)', () => 
       expect(pane).toContain(`v${VERSION}`);
       // The full logo is a rounded border titled "OCC v…".
       expect(pane).toContain('OCC');
-      // Doge glyphs still render inside the full box.
+      // The full box renders the compact aperture mark tier…
+      expect(pane).toContain(MEDIUM_LOGO_GLYPH);
+      // …and the retired doge mascot is gone.
       for (const glyph of DOGE_GLYPHS) {
-        expect(pane).toContain(glyph);
+        expect(pane).not.toContain(glyph);
       }
     } finally {
       killRepl();

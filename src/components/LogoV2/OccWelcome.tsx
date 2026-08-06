@@ -1,62 +1,20 @@
 import * as React from 'react'
-import { useEffect, useRef, useState } from 'react'
-import { Box, Text, useAnimationFrame } from '../../ink.js'
-import { stringWidth } from '../../ink/stringWidth.js'
+import { Box, color, Text } from '../../ink.js'
 import { truncate } from '../../utils/format.js'
+import { useTheme } from '../design-system/ThemeProvider.js'
+import {
+  getOccMark,
+  getOccMarkWidth,
+  OccMark,
+  type OccMarkMode,
+} from './OccMark.js'
 
 const WELCOME_MAX_WIDTH = 84
 const WIDE_MIN_COLUMNS = 76
 const COMPACT_MIN_COLUMNS = 44
-const SHIMMER_FRAME_MS = 84
-const SHIMMER_DURATION_MS = 1_850
-const SHIMMER_BAND_WIDTH = 0.24
+const LABEL_COLUMN_WIDTH = 7
 
 export type OccWelcomeMode = 'wide' | 'compact' | 'plain'
-
-export type OccLogoArt = readonly string[]
-
-function normalizeLogo(lines: readonly string[]): OccLogoArt {
-  const width = Math.max(...lines.map(stringWidth))
-  return lines.map(line => line + ' '.repeat(width - stringWidth(line)))
-}
-
-/**
- * OCC's mark: a single bold, rounded "C" — the C of "Open C Code" and the C
- * language the project is built on. One clean silhouette, one consistent
- * 2-cell stroke, one metaphor. The right side is deliberately open (the
- * "open" in Open C Code); the four outer corners and the two bar-end inner
- * corners are rounded with quadrant/half block cells so the form stays a
- * confident letterform instead of a square bracket. Each tier is drawn
- * independently so it stays legible instead of relying on terminal glyph
- * scaling.
- */
-export const OCC_LOGOS = {
-  wide: normalizeLogo([
-    '▟████████▙',
-    '█████████▛',
-    '██        ',
-    '██        ',
-    '██        ',
-    '█████████▜',
-    '▜████████▛',
-  ]),
-  compact: normalizeLogo([
-    '▟██████▙',
-    '██      ',
-    '██      ',
-    '██      ',
-    '▜██████▛',
-  ]),
-  plain: normalizeLogo(['▟████▙', '██    ', '▜████▛']),
-} satisfies Record<OccWelcomeMode, OccLogoArt>
-
-export function getOccLogo(mode: OccWelcomeMode): OccLogoArt {
-  return OCC_LOGOS[mode]
-}
-
-export function getOccLogoWidth(art: OccLogoArt): number {
-  return Math.max(...art.map(stringWidth))
-}
 
 export type OccWelcomeProps = {
   columns: number
@@ -70,11 +28,6 @@ export type OccWelcomeProps = {
   reducedMotion: boolean
   plain?: boolean
   children?: React.ReactNode
-}
-
-type ShimmerRun = {
-  text: string
-  highlighted: boolean
 }
 
 export function getOccWelcomeMode(
@@ -114,112 +67,34 @@ export function welcomeTip(
 }
 
 /**
- * Build color runs for the one-shot diagonal shimmer.
- *
- * Progress is normalized to [0, 1]. The band starts and finishes outside the
- * mark, which avoids a hard flash on mount or when the animation settles.
+ * HUD-style key/value readout row: a dim uppercase micro-label in a fixed
+ * column, then the live value. Keeps startup context scannable the way a
+ * status panel reads, instead of a prose block.
  */
-export function getShimmerRuns(
-  line: string,
-  row: number,
-  progress: number | null,
-  art: OccLogoArt = OCC_LOGOS.wide,
-): ShimmerRun[] {
-  const chars = [...line]
-  if (chars.length === 0) return []
-
-  const runs: ShimmerRun[] = []
-  const artWidth = getOccLogoWidth(art)
-  let displayColumn = 0
-  for (let column = 0; column < chars.length; column++) {
-    const char = chars[column]!
-    const diagonal =
-      (displayColumn + (art.length - 1 - row) * 1.6) /
-      (artWidth + art.length * 1.6)
-    const bandPosition =
-      progress === null ? -1 : -SHIMMER_BAND_WIDTH + progress * 1.45
-    const highlighted =
-      progress !== null &&
-      char !== ' ' &&
-      Math.abs(diagonal - bandPosition) < SHIMMER_BAND_WIDTH
-    const previous = runs[runs.length - 1]
-    if (previous?.highlighted === highlighted) {
-      previous.text += char
-    } else {
-      runs.push({ text: char, highlighted })
-    }
-    displayColumn += stringWidth(char)
-  }
-  return runs
-}
-
-function OccLogo({
-  art,
-  animate,
+function DataRow({
+  label,
+  value,
+  width,
 }: {
-  art: OccLogoArt
-  animate: boolean
+  label: string
+  value: string
+  width: number
 }): React.ReactNode {
-  const [done, setDone] = useState(!animate)
-  const startTimeRef = useRef<number | null>(null)
-  const [ref, time] = useAnimationFrame(done ? null : SHIMMER_FRAME_MS)
-
-  useEffect(() => {
-    if (done) return
-    const timer = setTimeout(setDone, SHIMMER_DURATION_MS, true)
-    return () => clearTimeout(timer)
-  }, [done])
-
-  if (startTimeRef.current === null) {
-    startTimeRef.current = time
-  }
-  const elapsed = Math.max(0, time - startTimeRef.current)
-  const progress = done
-    ? null
-    : Math.min(elapsed / SHIMMER_DURATION_MS, 1)
-
+  const labelCell = `${label}  `.slice(0, LABEL_COLUMN_WIDTH).padEnd(LABEL_COLUMN_WIDTH)
   return (
-    <Box ref={ref} flexDirection="column" flexShrink={0}>
-      {art.map((line, row) => (
-        <Text key={row}>
-          {getShimmerRuns(line, row, progress, art).map((run, index) => (
-            <Text
-              key={`${row}-${index}`}
-              color={run.highlighted ? 'claudeShimmer' : 'claude'}
-              bold={run.highlighted}
-            >
-              {run.text}
-            </Text>
-          ))}
-        </Text>
-      ))}
-    </Box>
+    <Text wrap="truncate">
+      <Text color="inactive">{labelCell}</Text>
+      <Text>{truncate(value, Math.max(width - LABEL_COLUMN_WIDTH, 1))}</Text>
+    </Text>
   )
 }
 
-function Header({
-  version,
-  showTagline,
-  width,
-}: {
-  version: string
-  showTagline: boolean
-  width: number
-}): React.ReactNode {
+/** Dashed HUD separator rendered as text so it stays double-dash styled. */
+function DashedRule({ width }: { width: number }): React.ReactNode {
   return (
-    <Box width={width} justifyContent="space-between">
-      <Text>
-        <Text color="claude" bold>
-          OCC
-        </Text>
-        <Text dimColor> v{version}</Text>
-      </Text>
-      {showTagline && (
-        <Text dimColor wrap="truncate">
-          Open C Code
-        </Text>
-      )}
-    </Box>
+    <Text color="inactive" dimColor wrap="truncate">
+      {'╌'.repeat(Math.max(width, 1))}
+    </Text>
   )
 }
 
@@ -238,21 +113,15 @@ function Metadata({
 }): React.ReactNode {
   const modelLine = truncate(`${model} · ${billing}`, Math.max(width, 1))
   const agentPrefix = agentName ? `@${agentName} · ` : ''
-  const locationWidth = Math.max(width - stringWidth(agentPrefix), 1)
+  const locationValue = `${agentPrefix}${location}`
 
   return (
     <Box flexDirection="column" minWidth={0}>
-      <Text bold>Ready when you are.</Text>
-      <Text dimColor wrap="truncate">
-        {modelLine}
+      <Text bold wrap="truncate">
+        Ready when you are.
       </Text>
-      <Text wrap="truncate">
-        {agentPrefix && <Text color="claude">{agentPrefix}</Text>}
-        <Text dimColor>{truncate(location, locationWidth)}</Text>
-      </Text>
-      <Text dimColor wrap="truncate">
-        Safe, open, and auditable.
-      </Text>
+      <DataRow label="MODEL" value={modelLine} width={width} />
+      <DataRow label="PROJ" value={locationValue} width={width} />
     </Box>
   )
 }
@@ -261,14 +130,15 @@ function PlainWelcome(props: OccWelcomeProps): React.ReactNode {
   const width = Math.max(props.columns, 1)
   const location = formatWelcomeLocation(props.branch, props.cwd, width)
   const modelLine = truncate(`${props.model} · ${props.billing}`, width)
-  const logo = getOccLogo('plain')
-  const showLogo = !props.plain && width >= getOccLogoWidth(logo)
+  const logo = getOccMark('plain')
+  const showLogo = !props.plain && width >= getOccMarkWidth(logo)
+  const animate = !props.reducedMotion && !props.plain
 
   return (
     <Box flexDirection="column">
       {showLogo && (
         <Box marginBottom={1}>
-          <OccLogo art={logo} animate={!props.reducedMotion} />
+          <OccMark mode="plain" animate={animate} />
         </Box>
       )}
       <Text>
@@ -287,44 +157,47 @@ function PlainWelcome(props: OccWelcomeProps): React.ReactNode {
   )
 }
 
+/**
+ * The OCC-45 welcome card. The version/tabline lives in the border itself
+ * (HUD title tab), the gradient aperture mark is the hero, and context is
+ * rendered as labeled readout rows over a dashed rule + one tip.
+ */
 export function OccWelcome(props: OccWelcomeProps): React.ReactNode {
   const mode = getOccWelcomeMode(props.columns, props.plain)
   if (mode === 'plain') {
     return <PlainWelcome {...props} />
   }
 
+  const [themeName] = useTheme()
   const cardWidth = Math.min(Math.max(props.columns, 1), WELCOME_MAX_WIDTH)
   const contentWidth = Math.max(cardWidth - 4, 1)
-  const logo = getOccLogo(mode)
-  const logoWidth = getOccLogoWidth(logo)
-  const location = formatWelcomeLocation(
-    props.branch,
-    props.cwd,
-    mode === 'wide'
-      ? Math.max(contentWidth - logoWidth - 3, 1)
-      : contentWidth,
-  )
+  const markMode: OccMarkMode = mode === 'wide' ? 'wide' : 'compact'
+  const logo = getOccMark(markMode)
+  const logoWidth = getOccMarkWidth(logo)
+  const metaWidth =
+    mode === 'wide' ? Math.max(contentWidth - logoWidth - 3, 1) : contentWidth
+  const location = formatWelcomeLocation(props.branch, props.cwd, metaWidth)
   const animate = !props.reducedMotion
+
+  const borderTitle = `${color('claude', themeName)('OCC')}${color(
+    'inactive',
+    themeName,
+  )(` v${props.version} · Open C Code`)}`
 
   return (
     <Box
       width={cardWidth}
       flexDirection="column"
       borderStyle="round"
-      borderColor="inactive"
-      borderDimColor
+      borderColor="claude"
+      borderText={{ content: borderTitle, position: 'top', align: 'start', offset: 2 }}
       paddingX={1}
     >
-      <Header
-        version={props.version}
-        showTagline
-        width={contentWidth}
-      />
       {mode === 'wide' ? (
         <Box marginTop={1} flexDirection="row" gap={3} alignItems="center">
-          <OccLogo art={logo} animate={animate} />
+          <OccMark mode="wide" animate={animate} />
           <Metadata
-            width={Math.max(contentWidth - logoWidth - 3, 1)}
+            width={metaWidth}
             model={props.model}
             billing={props.billing}
             location={location}
@@ -333,7 +206,7 @@ export function OccWelcome(props: OccWelcomeProps): React.ReactNode {
         </Box>
       ) : (
         <Box marginTop={1} flexDirection="column" alignItems="center">
-          <OccLogo art={logo} animate={animate} />
+          <OccMark mode="compact" animate={animate} />
           <Box marginTop={1} width={contentWidth}>
             <Metadata
               width={contentWidth}
@@ -345,18 +218,13 @@ export function OccWelcome(props: OccWelcomeProps): React.ReactNode {
           </Box>
         </Box>
       )}
-      <Box
-        marginTop={1}
-        borderStyle="single"
-        borderColor="inactive"
-        borderDimColor
-        borderBottom={false}
-        borderLeft={false}
-        borderRight={false}
-      >
-        <Text dimColor wrap="truncate">
-          {welcomeTip(mode, props.tip)}
-        </Text>
+      <Box marginTop={1} flexDirection="column">
+        <DashedRule width={contentWidth} />
+        <Box marginTop={0}>
+          <Text dimColor wrap="truncate">
+            {`▸ ${welcomeTip(mode, props.tip)}`}
+          </Text>
+        </Box>
       </Box>
       {props.children && <Box marginTop={1}>{props.children}</Box>}
     </Box>
