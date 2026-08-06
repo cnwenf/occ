@@ -2330,6 +2330,65 @@ export function hasUnsafeHelpManForm(command: string): boolean {
   return false
 }
 
+/** 2.1.223 P0 (live-path compensation guard): a `]]` conditional closer hidden
+ * inside a QUOTED operand lets a crafted command smuggle a trailing command past
+ * the permission check. The legacy splitter/quote parser sees the whole thing as
+ * one benign `[[ …` token (the quotes protect the `]]`), so a permissive
+ * `Bash([[ *)` prefix rule auto-allows it — while zsh's cond-lexer can close the
+ * conditional at the hidden `]]` and execute the tail. A legitimate conditional
+ * closer is never quoted, so a STANDALONE `]]` (one not embedded in a word) inside
+ * a quoted span is the smuggling signal. Mirrors the AST default-case `]]` desync /
+ * standalone-closer checks (which sit behind the dormant TREE_SITTER_BASH path);
+ * this guard makes the LIVE path fail closed the same way. Over-matching only
+ * costs an extra prompt (ask), never an auto-allow. */
+export function hasQuotedBracketCloserInConditional(command: string): boolean {
+  if (!command.includes('[[')) return false
+  if (!command.includes(']]')) return false
+  const isWordChar = (c: string | undefined): boolean =>
+    c !== undefined && /[A-Za-z0-9_]/.test(c)
+  let inSingle = false
+  let inDouble = false
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    // Backslash handling: inside single quotes a backslash is always literal.
+    // Outside quotes it escapes any following character (skip it). Inside
+    // DOUBLE quotes a backslash only escapes $ ` " \ and newline — for any
+    // other character (notably `]`) the backslash is literal and the next
+    // character must still be scanned, so we must NOT skip it there.
+    if (ch === '\\' && !inSingle) {
+      const next = command[i + 1]
+      const isEscape =
+        !inDouble ||
+        next === '$' ||
+        next === '`' ||
+        next === '"' ||
+        next === '\\' ||
+        next === '\n'
+      if (isEscape && next !== undefined) i++ // consume the escaped char
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      continue
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      continue
+    }
+    if ((inSingle || inDouble) && ch === ']' && command[i + 1] === ']') {
+      // Standalone-closer test (cys-equivalent): a `]]` with word chars on BOTH
+      // sides is embedded in a pattern word (benign); otherwise it could close
+      // the conditional early.
+      const before = command[i - 1]
+      const after = command[i + 2]
+      if (!(isWordChar(before) && isWordChar(after))) return true
+      // Embedded in a word — skip the second `]` and keep scanning.
+      i++
+    }
+  }
+  return false
+}
+
 export async function bashToolHasPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
@@ -2479,6 +2538,24 @@ export async function bashToolHasPermission(
       return {
         behavior: 'ask',
         message: 'help/man with command substitution or backslash path requires confirmation.',
+      }
+    }
+  }
+
+  // 2.1.223 P0: a `]]` conditional closer hidden inside a quoted operand can
+  // smuggle a trailing command past the permission check (zsh cond-lexer
+  // divergence; official 2.1.223 rejects these on its AST path, which is
+  // dormant here — this live-path guard fails closed the same way).
+  {
+    const mode = appState.toolPermissionContext.mode
+    if (
+      mode !== 'bypassPermissions' &&
+      hasQuotedBracketCloserInConditional(input.command)
+    ) {
+      return {
+        behavior: 'ask',
+        message:
+          'Potential `]]` closer hidden in a quoted [[ ]] operand requires confirmation.',
       }
     }
   }

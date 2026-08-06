@@ -904,15 +904,40 @@ function collectCommands(
     // Push as a synthetic command with argv[0]='[[' so permission rules
     // can match — `Bash([[ :*)` would be unusual but legal.
     // Walk arguments to validate (no cmdsub/expansion inside operands).
+    //
+    // 2.1.223 (P0): before walking, verify the parser did not drop any bytes
+    // the shell will still see. Gaps between children (and after the last
+    // child) must be whitespace-only — inside `[[ ]]` also newlines/comments,
+    // matching the official binary's gap checker byte-for-byte. Anything
+    // else means tree-sitter and the shell disagree about what belongs to
+    // the conditional → too-complex → permission prompt.
+    const inBracketBracket = node.children.some((c) => c?.type === '[[')
+    const gapErr = checkTestCommandUnparsedBytes(node, inBracketBracket)
+    if (gapErr) return gapErr
     const argv: string[] = ['[[']
     for (const child of node.children) {
       if (!child) continue
-      if (child.type === '[[' || child.type === ']]') continue
-      if (child.type === '[' || child.type === ']') continue
+      if (
+        child.type === '[[' ||
+        child.type === ']]' ||
+        child.type === '[' ||
+        child.type === ']'
+      ) {
+        // 2.1.223: an empty operator token means a quote landed in operator
+        // position and the parser closed the conditional early — the shell
+        // sees a different structure. Fail closed.
+        if (child.text === '') {
+          return {
+            kind: 'too-complex',
+            reason: 'test_command early-close (quote in operator position)',
+          }
+        }
+        continue
+      }
       // Recurse into test expression structure: unary_expression,
       // binary_expression, parenthesized_expression, negated_expression.
       // The leaves are test_operator (-f, -d, ==) and operand words.
-      const err = walkTestExpr(child, argv, commands, varScope)
+      const err = walkTestExpr(child, argv, commands, varScope, inBracketBracket)
       if (err) return err
     }
     commands.push({ argv, envVars: [], redirects: [], text: node.text })
@@ -957,24 +982,177 @@ function collectCommands(
 }
 
 /**
+ * Node types that compose a test_command expression tree. Used by the
+ * unparsed-bytes walker to recurse into expression children. Verbatim from
+ * the official 2.1.223 binary's expression-type set.
+ */
+const TEST_EXPR_TYPES = new Set([
+  'unary_expression',
+  'binary_expression',
+  'negated_expression',
+  'parenthesized_expression',
+])
+
+/**
+ * True when `text` consists solely of bytes the shell treats as
+ * insignificant between test_command children: spaces/tabs and
+ * backslash-newline continuations always; inside `[[ ]]`
+ * (inBracketBracket) also newlines and `#` comments. Verbatim port of the
+ * official 2.1.223 binary's gap checker.
+ */
+function isWhitespaceOrCommentGap(
+  text: string,
+  inBracketBracket: boolean,
+): boolean {
+  let i = 0
+  while (i < text.length) {
+    const ch = text[i]
+    if (ch === ' ' || ch === '\t') {
+      i++
+      continue
+    }
+    if (ch === '\\' && text[i + 1] === '\n') {
+      i += 2
+      continue
+    }
+    if (inBracketBracket && ch === '\n') {
+      i++
+      continue
+    }
+    if (inBracketBracket && ch === '#') {
+      i++
+      while (i < text.length && text[i] !== '\n') i++
+      continue
+    }
+    return false
+  }
+  return true
+}
+
+/**
+ * Verify the parser did not drop any bytes of a test_command that the shell
+ * will still see. Walks the children in source order; every gap between
+ * children (and after the last child) must be whitespace/comment-only, and
+ * no child may extend past the parent span. Recurses into expression nodes.
+ * Verbatim port of the official 2.1.223 binary's test-command gap walker.
+ */
+function checkTestCommandUnparsedBytes(
+  node: Node,
+  inBracketBracket: boolean,
+): ParseForSecurityResult | null {
+  const bytes = Buffer.from(node.text, 'utf8')
+  let cursor = node.startIndex
+  for (const child of node.children) {
+    if (!child) continue
+    if (child.endIndex > node.endIndex || child.startIndex < node.startIndex) {
+      return {
+        kind: 'too-complex',
+        reason:
+          'Test command child extends past the node span — gap byte accounting is untrustworthy',
+      }
+    }
+    if (child.startIndex > cursor) {
+      const gap = bytes
+        .subarray(
+          cursor - node.startIndex,
+          child.startIndex - node.startIndex,
+        )
+        .toString('utf8')
+      if (!isWhitespaceOrCommentGap(gap, inBracketBracket)) {
+        return {
+          kind: 'too-complex',
+          reason:
+            'Test command has unparsed bytes between children — parser dropped content that shell will see',
+        }
+      }
+    }
+    cursor = Math.max(cursor, child.endIndex)
+    if (TEST_EXPR_TYPES.has(child.type)) {
+      const err = checkTestCommandUnparsedBytes(child, inBracketBracket)
+      if (err) return err
+    }
+  }
+  if (cursor < node.endIndex) {
+    const tail = bytes.subarray(cursor - node.startIndex).toString('utf8')
+    if (!isWhitespaceOrCommentGap(tail, inBracketBracket)) {
+      return {
+        kind: 'too-complex',
+        reason:
+          'Test command has unparsed bytes after its last child — parser dropped content that shell will see',
+      }
+    }
+  }
+  return null
+}
+
+/**
+ * Detect a potential standalone `]]` closer inside pattern/operand text.
+ * POSIX bracket-expression forms that legally END in `]]` (`[[:alpha:]]`,
+ * `[=x=]`, `[.x.]`, `[]]`, `[^x]`) are masked first; any `]]` left whose
+ * preceding or following character is not a word char could close a zsh
+ * conditional early. Verbatim port of the official 2.1.223 binary helper —
+ * masked positions become NUL bytes exactly as the binary does.
+ */
+function containsStandaloneBracketCloser(text: string): boolean {
+  const masked = text.replace(
+    /\[(?::[a-zA-Z]+:|=[A-Za-z0-9-]*=|\.[A-Za-z0-9-]*\.|[!^]?)\]\](?!\])/g,
+    '\u0000',
+  )
+  const wordChar = /[A-Za-z0-9_]/
+  let idx = masked.indexOf(']]')
+  while (idx !== -1) {
+    const before = idx > 0 ? masked[idx - 1] : ''
+    const after = idx + 2 < masked.length ? masked[idx + 2] : ''
+    if (!(wordChar.test(before) && wordChar.test(after))) return true
+    idx = masked.indexOf(']]', idx + 1)
+  }
+  return false
+}
+
+/**
  * Recursively walk a test_command expression tree (unary/binary/negated/
  * parenthesized expressions). Leaves are test_operator tokens and operands
  * (word/string/number/etc). Operands are validated via walkArgument.
+ *
+ * `inBracketBracket` is true when the enclosing test_command is a `[[ ]]`
+ * (vs single-bracket `[ ]`). It selects the gap-byte allowance (newlines and
+ * comments are legal between `[[ ]]` children) and the quoted-operand
+ * `]]`-desync reason wording, matching the official 2.1.223 binary exactly.
  */
 function walkTestExpr(
   node: Node,
   argv: string[],
   innerCommands: SimpleCommand[],
   varScope: Map<string, string>,
+  inBracketBracket: boolean,
 ): ParseForSecurityResult | null {
   switch (node.type) {
     case 'unary_expression':
     case 'binary_expression':
     case 'negated_expression':
     case 'parenthesized_expression': {
-      for (const c of node.children) {
+      for (let i = 0; i < node.children.length; i++) {
+        const c = node.children[i]
         if (!c) continue
-        const err = walkTestExpr(c, argv, innerCommands, varScope)
+        // 2.1.221+ (zsh): `$name[expr]` / `$name:mod` inside a `[[ ]]`
+        // operand is recursively evaluated by zsh — an expansion followed by
+        // `[...` or a `:x` modifier (or a special variable whose name can
+        // absorb the subscript) is code, not pattern text. Verbatim port of
+        // the official binary's recursion-precheck.
+        if (
+          (c.type === 'simple_expansion' || c.type === 'expansion') &&
+          (node.children[i + 1]?.text.startsWith('[') ||
+            /^:[a-zA-Z&]/.test(node.children[i + 1]?.text ?? '') ||
+            (c.children.some((cc) => cc?.type === 'special_variable_name') &&
+              /^\w*(\[|:[a-zA-Z&])/.test(node.children[i + 1]?.text ?? '')))
+        ) {
+          return {
+            kind: 'too-complex',
+            reason:
+              'zsh $name[expr] / $name:mod in [[ ]] operand — recursive eval',
+          }
+        }
+        const err = walkTestExpr(c, argv, innerCommands, varScope, inBracketBracket)
         if (err) return err
       }
       return null
@@ -991,6 +1169,16 @@ function walkTestExpr(
     case '<':
     case '>':
     case '=~':
+      // 2.1.223: an empty operator token means the parser synthesized a
+      // zero-width token (quote in operator position) — it diverged from
+      // what the shell will lex. Fail closed.
+      if (node.text === '') {
+        return {
+          kind: 'too-complex',
+          reason:
+            'Test command has a synthesized zero-width token — parser diverged from shell',
+        }
+      }
       argv.push(node.text)
       return null
     case 'regex':
@@ -1000,10 +1188,13 @@ function walkTestExpr(
       // pattern text is defensively validated before being trusted as inert
       // (2.1.221 security fix — zsh could execute hidden commands smuggled
       // in `[[ ]]` regex conditionals; affected commands now prompt).
-      // Verbatim port of the 2.1.221 binary's test-expression RHS case:
+      // Verbatim port of the official binary's test-expression RHS case:
       // expansion check on both node types, unquoted-& scan for
       // extglob_pattern, and glued-|| / unquoted-& / paren-balance scan for
-      // regex. Anything suspicious → too-complex → permission prompt.
+      // regex. 2.1.223 (P0) adds the leaf-level `&&` and standalone-`]]`
+      // checks below — a crafted pattern leaf could otherwise hide part of
+      // the command from permission checks (zsh cond-lexer divergence).
+      // Anything suspicious → too-complex → permission prompt.
       if (/\$[({[\w#?!*@$'"+~^=-]|`|[<>]\(/.test(node.text)) {
         return {
           kind: 'too-complex',
@@ -1090,13 +1281,63 @@ function walkTestExpr(
           }
         }
       }
+      // 2.1.223 (P0) leaf checks, applied to BOTH regex and extglob_pattern
+      // after the type-specific scans. A pattern leaf carrying `&&` is split
+      // by zsh's cond-lexer into a command separator; a standalone `]]` can
+      // close the conditional early. Either lets a crafted command hide part
+      // of itself from permission checks — fail closed.
+      if (node.text.includes('&&')) {
+        return {
+          kind: 'too-complex',
+          reason:
+            '[[ ]] pattern leaf contains `&&` — shell cond-lexer divergence (zsh splits the word there)',
+          nodeType: node.type,
+        }
+      }
+      if (containsStandaloneBracketCloser(node.text)) {
+        return {
+          kind: 'too-complex',
+          reason:
+            '[[ ]] pattern leaf contains a potential standalone `]]` closer — shell cond-lexer divergence (zsh may close the conditional early)',
+          nodeType: node.type,
+        }
+      }
       argv.push(node.text)
       return null
     }
+    case 'test_rhs_missing':
+      // 2.1.223: the parser consumed a comparison with no right-hand side —
+      // dropped bytes the shell may still see. Fail closed.
+      return {
+        kind: 'too-complex',
+        reason:
+          'Test command comparison is missing its right-hand side — parser dropped consumed bytes',
+      }
     default: {
       // Operand — word, string, number, etc. Validate via walkArgument.
       const arg = walkArgument(node, innerCommands, varScope)
       if (typeof arg !== 'string') return arg
+      // 2.1.223 quoted-operand desync check. A `]]` followed by a command
+      // separator inside the unquoted operand means the parser's quote state
+      // desynced from the shell's — the shell may close the conditional and
+      // execute the tail. In `[[ ]]` context additionally reject any
+      // potential standalone `]]` closer (in the resolved text or the raw
+      // node text). Reasons are byte-identical to the official binary and
+      // branch on the bracket context.
+      if (
+        (inBracketBracket &&
+          (containsStandaloneBracketCloser(arg) ||
+            containsStandaloneBracketCloser(node.text))) ||
+        /]].*[;\n&|<>]/s.test(arg)
+      ) {
+        return {
+          kind: 'too-complex',
+          reason: inBracketBracket
+            ? '[[ ]] quoted operand contains `]]` closer or `]]`+separator bytes — possible parser quote-state desync'
+            : 'test command quoted operand contains `]]`+separator bytes — possible parser quote-state desync',
+          nodeType: node.type,
+        }
+      }
       argv.push(arg)
       return null
     }

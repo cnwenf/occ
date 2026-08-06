@@ -63,6 +63,7 @@ import {
   skipFrontmatterHooksForUntrustedOrigin,
 } from '../../utils/hooks.js'
 import { createUserMessage } from '../../utils/messages.js'
+import { isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js'
 import {
   assertSubagentCapAndIncrement,
   claimConcurrentSubagentSlot,
@@ -480,9 +481,25 @@ export async function* runAgent({
         state.toolPermissionContext.mode === 'auto'
       )
     ) {
+      let effectiveMode = agentPermissionMode
+      // 2.1.223 security fix: an agent definition's `bypassPermissions` must
+      // not override the org bypass-permissions disable policy. When bypass
+      // is policy-disabled (GrowthBook gate or settings
+      // `disableBypassPermissionsMode: "disable"`), keep the parent mode and
+      // warn — message byte-identical to the official binary.
+      if (
+        agentPermissionMode === 'bypassPermissions' &&
+        isBypassPermissionsModeDisabled()
+      ) {
+        logForDebugging(
+          `Subagent declared permissionMode: bypassPermissions but this session is not running in a contained no-internet environment (or bypass is policy-disabled); keeping parent mode '${state.toolPermissionContext.mode}'.`,
+          { level: 'warn' },
+        )
+        effectiveMode = state.toolPermissionContext.mode
+      }
       toolPermissionContext = {
         ...toolPermissionContext,
-        mode: agentPermissionMode,
+        mode: effectiveMode,
       }
     }
 
