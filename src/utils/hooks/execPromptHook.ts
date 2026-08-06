@@ -180,13 +180,22 @@ Your response must be a JSON object matching one of the following schemas:
             blockingError: `Prompt hook condition was not met: ${parsed.data.reason}`,
             command: hook.prompt,
           },
-          // 2.1.139: continueOnBlock — when true, feed the rejection reason
-          // back to Claude (via blockingError/stopReason) and continue the
-          // turn instead of hard-stopping. Matches the binary formula
-          // preventContinuation = !impossible && hook.continueOnBlock !== true
-          // (the impossible branch returns early above, so here !impossible
-          // is true and this reduces to hook.continueOnBlock !== true).
-          preventContinuation: hook.continueOnBlock !== true,
+          // 2.1.139 (OCC-51): official binary formula (2.1.139 linux-x64
+          // bundle, prompt-hook judge) is
+          //   preventContinuation = !isStopEvent && hook.continueOnBlock !== true
+          // with isStopEvent = hookEvent === 'Stop' || hookEvent === 'SubagentStop'.
+          // On Stop/SubagentStop a blocking prompt hook NEVER hard-stops: the
+          // rejection reason is fed back ("Stop hook feedback:") and the turn
+          // continues — that is what makes /goal's keep-working loop run.
+          // The earlier port misread the event guard as the `impossible` flag
+          // (which returns early above), so every blocking Stop prompt hook
+          // hard-stopped the session ('stop_hook_prevented') and left the
+          // feedback-retry chain + block cap in query.ts unreachable.
+          // continueOnBlock only has effect on non-Stop events (e.g. PostToolUse).
+          preventContinuation:
+            hookEvent !== 'Stop' &&
+            hookEvent !== 'SubagentStop' &&
+            hook.continueOnBlock !== true,
           stopReason: parsed.data.reason,
         }
       }
