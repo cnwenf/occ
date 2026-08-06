@@ -12,14 +12,16 @@ import { join } from 'node:path';
 import { REPO_ROOT } from './helpers';
 
 /**
- * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-45).
+ * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-45,
+ * redesigned in OCC-50).
  *
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
  * -p`. Verifies the responsive condensed welcome (wide / compact / plain) and
- * the forced full logo. Both paths render the OCC-45 gradient "Ion Aperture"
- * open-C mark (`src/components/LogoV2/OccMark.tsx`), labeled context rows,
- * and a session-stable tip; the retired doge mascot must not render.
+ * the forced full logo. Both paths render the OCC-50 "Monolith Rising" cool
+ * plasma mark (`src/components/LogoV2/OccMark.tsx`) — a quadrant-rounded slab
+ * on an underscore horizon — plus labeled context rows and a session-stable
+ * tip; the retired doge mascot must not render.
  *
  * Gated out of CI because it requires tmux; no model call is made.
  */
@@ -124,19 +126,21 @@ function startRepl(
   tmux(['resize-window', '-t', SESSION, '-x', String(width), '-y', '50']);
 }
 
-// Signature glyphs from the OCC-45 "Ion Aperture" gradient mark
-// (src/components/LogoV2/OccMark.tsx). Each is the top row of its tier;
-// the consecutive-block run length (12 / 8 / 6) is unique per tier so a
-// wider tier's glyph never appears inside a narrower pane.
-const LARGE_LOGO_GLYPH = '▟████████████▙';
-const MEDIUM_LOGO_GLYPH = '▟████████▙';
-const SMALL_LOGO_GLYPH = '▟██████▙';
+// Signature glyphs from the OCC-50 "Monolith Rising" mark
+// (src/components/LogoV2/OccMark.tsx). The wide and compact tiers are
+// identified by their quadrant-rounded crowns (4 vs 2 inner blocks — unique
+// per tier, so a wider tier's glyph never appears inside a narrower pane);
+// the plain tier drops the rounded crown at five rows, so it is identified
+// by its quarter-block ground course instead.
+const LARGE_LOGO_GLYPH = '▟████▙';
+const MEDIUM_LOGO_GLYPH = '▟██▙';
+const SMALL_LOGO_GLYPH = '▂▂████▂▂';
 const OLD_WORDMARK = '___   ___   ___';
 
 // Retired doge art glyphs that must NOT render anywhere anymore.
 const DOGE_GLYPHS = ['/\\___/\\', '=w=', '~~'];
 
-describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => {
+describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-50)', () => {
   test('wide welcome renders brand, version, context, tip, and large mark', async () => {
     const home = freshSeededHome(VERSION);
     startRepl(home, {}, 100);
@@ -170,7 +174,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
     }
   });
 
-  test('light theme renders the complete wide aperture without replacement glyphs', async () => {
+  test('light theme renders the complete wide monolith without replacement glyphs', async () => {
     const home = freshSeededHome(VERSION, 'light');
     startRepl(home, {}, 100);
     try {
@@ -187,7 +191,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
     }
   });
 
-  test('forced full logo renders the bordered welcome box with the aperture mark', async () => {
+  test('forced full logo renders the bordered welcome box with the monolith mark', async () => {
     const home = freshSeededHome(VERSION);
     startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' });
     try {
@@ -198,7 +202,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
       expect(pane).toContain(`v${VERSION}`);
       // The full logo is a rounded border titled "OCC v…".
       expect(pane).toContain('OCC');
-      // The full box renders the compact aperture mark tier…
+      // The full box renders the compact monolith mark tier…
       expect(pane).toContain(MEDIUM_LOGO_GLYPH);
       // …and the retired doge mascot is gone.
       for (const glyph of DOGE_GLYPHS) {

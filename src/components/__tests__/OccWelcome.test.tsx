@@ -92,6 +92,22 @@ describe('OCC REPL welcome layout', () => {
     }
   })
 
+  test('keeps each tier silhouette distinct so panes never cross-match', () => {
+    // The wide crown, compact crown, and plain ground are the e2e signature
+    // glyphs; none may appear inside another tier's art.
+    const wideTop = OCC_MARKS.wide[0]!.trim()
+    const compactTop = OCC_MARKS.compact[0]!.trim()
+    const plainGround = OCC_MARKS.plain[OCC_MARKS.plain.length - 1]!.trim()
+    for (const [name, art] of Object.entries(OCC_MARKS) as Array<
+      [keyof typeof OCC_MARKS, readonly string[]]
+    >) {
+      const joined = art.join('\n')
+      if (name !== 'wide') expect(joined).not.toContain(wideTop)
+      if (name !== 'compact') expect(joined).not.toContain(compactTop)
+      if (name !== 'plain') expect(joined).not.toContain(plainGround)
+    }
+  })
+
   test('keeps git and CJK cwd context within the requested width', () => {
     const location = formatWelcomeLocation(
       'feature/欢迎页视觉优化',
@@ -110,7 +126,7 @@ describe('OCC REPL welcome layout', () => {
   })
 })
 
-describe('OCC Ion Aperture gradient engine', () => {
+describe('OCC Monolith Rising gradient engine', () => {
   test('resolves the gradient family from the theme name', () => {
     expect(gradientThemeFamily('dark')).toBe('dark')
     expect(gradientThemeFamily('dark-ansi')).toBe('dark')
@@ -139,12 +155,19 @@ describe('OCC Ion Aperture gradient engine', () => {
     }
   })
 
-  test('markCellT flows diagonally across the mark', () => {
+  test('markCellT rises from the grounded base to the lit crown', () => {
     const art = OCC_MARKS.wide
-    const topLeft = markCellT(art, 0, 0)
-    const bottomRight = markCellT(art, art.length - 1, getOccMarkWidth(art) - 1)
-    expect(topLeft).toBeCloseTo(0)
-    expect(bottomRight).toBeCloseTo(1)
+    const bottomLeft = markCellT(art, art.length - 1, 0)
+    const topRight = markCellT(art, 0, getOccMarkWidth(art) - 1)
+    expect(bottomLeft).toBeCloseTo(0)
+    expect(topRight).toBeCloseTo(1)
+    // The vertical component dominates: the full base→crown rise spans more
+    // of the gradient than the full left→right sweep.
+    const totalRise = markCellT(art, 0, 0) - markCellT(art, art.length - 1, 0)
+    const totalHorizontal =
+      markCellT(art, art.length - 1, getOccMarkWidth(art) - 1) -
+      markCellT(art, art.length - 1, 0)
+    expect(totalRise).toBeGreaterThan(totalHorizontal)
     for (let row = 0; row < art.length; row++) {
       for (let column = 0; column < getOccMarkWidth(art); column++) {
         const t = markCellT(art, row, column)
@@ -191,6 +214,26 @@ describe('OCC Ion Aperture gradient engine', () => {
         expect(isShimmerCell(art, row, column, null)).toBe(false)
       }
     }
+  })
+
+  test('the ignition sweep rises from base toward crown', () => {
+    const art = OCC_MARKS.wide
+    const meanRow = (progress: number): number => {
+      let sum = 0
+      let count = 0
+      for (let row = 0; row < art.length; row++) {
+        for (let column = 0; column < getOccMarkWidth(art); column++) {
+          if (isShimmerCell(art, row, column, progress)) {
+            sum += row
+            count++
+          }
+        }
+      }
+      return count === 0 ? -1 : sum / count
+    }
+    // Row index 0 is the crown and the last row the base: an early band must
+    // sit lower (larger mean row) than a late band.
+    expect(meanRow(0.15)).toBeGreaterThan(meanRow(0.85))
   })
 })
 
