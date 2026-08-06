@@ -53,6 +53,7 @@ import { count, uniq } from './utils/array.js';
 import { installAsciicastRecorder } from './utils/asciicast.js';
 import { getSubscriptionType, isClaudeAISubscriber, prefetchAwsCredentialsAndBedRockInfoIfSafe, prefetchGcpCredentialsIfSafe, validateForceLoginOrg } from './utils/auth.js';
 import { checkHasTrustDialogAccepted, getGlobalConfig, getRemoteControlAtStartup, isAutoUpdaterDisabled, saveGlobalConfig } from './utils/config.js';
+import { parseAutoCompactWindowInput, resolveAutoCompactWindowOverride, setSessionAutoCompactWindow } from './utils/autoCompactWindow.js';
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js';
 import { EFFORT_LEVELS, getInitialEffortSetting, parseEffortValue } from './utils/effort.js';
 import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, resolveFastModeStatusFromCache } from './utils/fastMode.js';
@@ -1115,6 +1116,18 @@ async function run(): Promise<CommanderCommand> {
   // --plugin-dir takes exactly one arg; repeat the flag for multiple dirs.
   .option('--plugin-dir <path>', 'Load plugins from a directory for this session only (repeatable: --plugin-dir A --plugin-dir B)', (val: string, prev: string[]) => [...prev, val], [] as string[]).option('--disable-slash-commands', 'Disable all skills', () => true).option('--chrome', 'Enable Claude in Chrome integration').option('--no-chrome', 'Disable Claude in Chrome integration').option('--file <specs...>', 'File resources to download at startup. Format: file_id:relative_path (e.g., --file file_abc:doc.txt file_def:img.png)').action(async (prompt, options) => {
     profileCheckpoint('action_handler_start');
+
+    // claude-code 2.1.221 (OCC-58): resolve the session auto-compact window
+    // once, before either the headless or the REPL path starts. Official
+    // semantics (`Fju`): the --autocompact flag overrides the settings key;
+    // the literal flag value "auto" clears a settings override for this
+    // session. The CLAUDE_CODE_AUTO_COMPACT_WINDOW env var still wins over
+    // both at the consumption site (official: it "takes precedence").
+    setSessionAutoCompactWindow(
+      resolveAutoCompactWindowOverride(
+        (options as { autocompact?: 'auto' | number }).autocompact,
+      ),
+    );
 
     // OCC-21 Gap-2b: --bg/--background is registered for CLI compatibility
     // (so it is not rejected as "unknown option") but OCC manages background
@@ -4105,6 +4118,17 @@ async function run(): Promise<CommanderCommand> {
   if (canUserConfigureAdvisor()) {
     program.addOption(new Option('--advisor <model>', 'Enable the server-side advisor tool with the specified model (alias or full ID).').hideHelp());
   }
+  // claude-code 2.1.221 silently added --autocompact (no changelog entry).
+  // Registration, help text, argParser semantics and the error message are
+  // byte-verbatim from the official 2.1.223 binary (OCC-58). Official
+  // surface order: --advisor (hidden) → --autocompact → --enable-auto-mode.
+  program.addOption(new Option('--autocompact <auto|tokens>', 'Auto-compact window size (auto, or 100k–1M tokens)').argParser((value: string) => {
+    const parsed = parseAutoCompactWindowInput(value);
+    if (parsed === undefined) {
+      throw new InvalidArgumentError("It must be 'auto', or between 100k and 1M (e.g. 500k, 200000, or 200 as shorthand)");
+    }
+    return parsed;
+  }));
   if (("external" as string) === 'ant') {
     program.addOption(new Option('--delegate-permissions', '[ANT-ONLY] Alias for --permission-mode auto.').implies({
       permissionMode: 'auto'

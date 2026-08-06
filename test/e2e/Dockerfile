@@ -24,8 +24,11 @@ COPY . /occ
 
 # --ignore-scripts: the `prepare` script sets a git hooks path which fails
 # without .git (excluded from the image). Native deps are stubs (pure JS).
+# Use the real build script (not a raw `bun build`) so MACRO.VERSION is
+# injected from package.json — a raw build leaves the cli.tsx dev polyfill
+# active and the REPL prints v2.1.270, breaking version-asserting e2e (OCC-58).
 RUN bun install --ignore-scripts \
-    && bun build src/entrypoints/cli.tsx --outdir dist --target bun
+    && bun run build
 
 # The occ entrypoint: the built artifact (no run-time transpilation, avoids
 # bun transpiler-cache lock when `bun test` spawns the CLI as a child).
