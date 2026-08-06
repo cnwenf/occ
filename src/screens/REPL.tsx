@@ -2101,7 +2101,10 @@ export function REPL({
           setGoal(goalCondition);
         logEvent("tengu_goal_restored_on_resume", {});
           const sessionId = getSessionId();
-          addSessionHook(setAppState, sessionId, 'Stop' as any, '', { type: 'prompt', prompt: goalCondition });
+          // continueOnBlock: see registerGoalHook — without it a blocked goal
+          // hook hard-stops the turn via stop_hook_prevented instead of
+          // feeding the judge's reason back and continuing.
+          addSessionHook(setAppState, sessionId, 'Stop' as any, '', { type: 'prompt', prompt: goalCondition, continueOnBlock: true });
           setAppState(s => ({
             ...s,
             activeGoal: { condition: goalCondition, iterations: 0, setAt: Date.now(), tokensAtStart: getTotalInputTokens() },

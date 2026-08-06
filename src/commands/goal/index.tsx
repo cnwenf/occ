@@ -109,7 +109,13 @@ function registerGoalHook(context: LocalJSXCommandContext, condition: string): v
   removeSessionHook(context.setAppState, sessionId, 'Stop' as HookEvent, { type: 'prompt', prompt: condition })
   addSessionHook(
     context.setAppState, sessionId, 'Stop' as HookEvent, '',
-    { type: 'prompt', prompt: condition },
+    // continueOnBlock: keep working until the condition is met. The official
+    // binary computes preventContinuation = !(event is Stop/SubagentStop) &&
+    // continueOnBlock !== true, so a blocked goal hook NEVER hard-stops there;
+    // occ's execPromptHook keys only on continueOnBlock, so it must be set
+    // explicitly or the judge's ok:false short-circuits the retry chain
+    // (query.ts stop_hook_blocking continuation + cap) via stop_hook_prevented.
+    { type: 'prompt', prompt: condition, continueOnBlock: true },
     // onHookSuccess: when the goal condition is met (execPromptHook returns
     // ok:true), clear activeGoal + set lastAchievedGoal for the "Goal
     // achieved" panel state + remove the hook (mirrors official goal_status
