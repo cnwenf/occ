@@ -1,43 +1,52 @@
 # REPL Welcome Screen
 
 The OCC REPL opens with a responsive, terminal-native welcome card implemented
-by `src/components/LogoV2/OccWelcome.tsx`. It keeps the familiar Claude Code
-startup information while giving OCC a distinct visual identity.
+by `src/components/LogoV2/OccWelcome.tsx`, with the gradient mark drawn by
+`src/components/LogoV2/OccMark.tsx`. It keeps the familiar Claude Code startup
+information while giving OCC a distinct, high-tech visual identity.
 
 ## Design research
 
-The design was informed by the Apache-2.0 `xai-org/grok-build` welcome screen
-(source snapshot `a5727c5960452e7527a154b25cb5bf00cda0545e`), especially:
+OCC-45 reframed the welcome screen around a "tech" aesthetic. The design
+language was assembled from well-known terminal/TUI techniques (studied, not
+copied):
 
-- `views/welcome/logo.rs`: low-frequency, time-based shimmer instead of
-  repainting at the terminal's maximum frame rate.
-- `views/welcome/top_bar.rs`: branch and working-directory context is useful at
-  startup and should be visually quieter than the product identity.
-- `views/welcome/hero_box.rs`: a soft border and a strong two-column hierarchy
-  work well on wide terminals.
-- `xai-grok-pager-minimal/src/welcome.rs`: compact layouts should retain the
-  version, cwd, model, and a single command hint.
+- **Diagonal truecolor gradient** across the mark's cells — the multi-line
+  gradient approach popularized by `gradient-string`. Color flows from a solar
+  gold at the top-left through ember to an ion rose at the bottom-right.
+- **Low-frequency one-shot light sweep** instead of repainting at the
+  terminal's maximum frame rate (the `grok-build` shimmer principle, carried
+  over from the earlier design).
+- **HUD panel framing** in the style of `btop`/`lipgloss` panels: a title tab
+  embedded in the top border, labeled key/value readout rows, a dashed rule,
+  and a bullet-prefixed hint line.
+- **Block/quadrant silhouettes** rather than ASCII line art, so the mark stays
+  crisp across monospace fonts (the `figlet` "ANSI Shadow" lineage reads as
+  modern rather than retro).
+- **Luma hierarchy** — identity bright, context dim, hint dimmest — so the eye
+  lands on the mark first (the `grok-build` top-bar principle).
 
-OCC reimplements those ideas in its own TypeScript/Ink architecture and uses
-original artwork and copy. No grok-build source or logo asset is copied. The
-current OCC-25 mark, its alternatives, and its sizing decisions are recorded in
-`docs/welcome-logo-occ25.md`; `docs/welcome-logo-occ20.md` remains as the
-retired mark's historical record.
+Earlier rounds (`OCC-18`, `OCC-20`, `OCC-25`) established the underlying
+letterform, the per-session tip, and the accessibility fallback. Their records
+live in `docs/welcome-page-visual-occ18.md`, `docs/welcome-logo-occ20.md`, and
+`docs/welcome-logo-occ25.md`. The OCC-45 redesign rationale and candidate
+evaluation are recorded in `docs/welcome-logo-occ45.md`.
 
 ## Information hierarchy
 
 The card deliberately limits the first screen to four levels:
 
-1. **Identity:** `OCC`, version, and `Open C Code`.
-2. **Hero:** OCC's solid open-C icon with a short readiness line.
-3. **Context:** model/billing, Git branch, agent name, and cwd.
-4. **Action:** one deterministic, session-stable command or shortcut hint.
+1. **Identity:** `OCC`, version, and `Open C Code` — embedded in the top border
+   as a title tab.
+2. **Hero:** the gradient open-C "Ion Aperture" mark with a short readiness
+   line (`Ready when you are.`).
+3. **Context:** labeled readout rows — `MODEL` (model + billing) and `PROJ`
+   (Git branch + cwd, agent-prefixed when present).
+4. **Action:** one deterministic, session-stable hint after a dashed rule.
 
-The icon is not a literal rendering of all three letters in `OCC`. One bold C
-uses a consistent two-cell stroke and a generous right-hand opening to carry
-both “C” and “open” without a secondary kernel, orbit, or cursor metaphor. The
-geometry is optically redrawn at three resolutions instead of mechanically
-cropped or scaled.
+The mark keeps the OCC-25 open-C silhouette (two-cell stroke, quadrant-rounded
+corners, generous right-hand opening) and renders it at monumental scale on
+wide terminals. Color, not geometry, is the OCC-45 transformation.
 
 ## Responsive tiers
 
@@ -45,38 +54,49 @@ cropped or scaled.
 
 | Terminal width | Layout | Behavior |
 |---|---|---|
-| 76+ columns | Wide hero | Seven-row large mark and metadata render side by side |
-| 44–75 columns | Compact card | Five-row medium mark stacks above metadata |
-| Under 44 columns | Plain | Three-row small mark, no border, essential text |
+| 76+ columns | Wide hero | Seven-row, 14-column mark beside labeled metadata |
+| 44–75 columns | Compact card | Seven-row, 10-column mark stacks above metadata |
+| Under 44 columns | Plain | Five-row, 8-column mark, no border, essential text |
 
 The card caps itself at 84 columns so it remains readable in very wide
 terminals. All context strings use display-width-aware truncation, including
 CJK paths. Screen-reader mode and `TERM=dumb` explicitly force a separate
-text-only variant of the plain layout.
+text-only variant of the plain layout (no mark, no border).
 
-## Motion and compatibility
+The same mark component (`OccMark`) also replaces the retired doge mascot in
+the full-logo path (`LogoV2.tsx`), so both condensed and full startup screens
+share one identity.
 
-- The diagonal shimmer runs once for 1.85 seconds at roughly 12 frames per
-  second, then unsubscribes from the shared animation clock.
+## Color, motion, and compatibility
+
+- The gradient is theme-aware: luminous plasma stops on dark themes and darker
+  saturated stops on light themes, so every stop keeps at least 3:1 contrast
+  (the WCAG non-text-graphics threshold) against the reference background.
+- **Degradation ladder** is automatic via chalk's color-level detection:
+  truecolor terminals get the smooth ramp; 256-color terminals get the nearest
+  cube colors; 16-color terminals get the nearest basic colors; `NO_COLOR`
+  terminals get plain glyphs — the silhouette always survives. Screen-reader
+  mode and `TERM=dumb` skip the art entirely.
+- The diagonal light sweep runs once for 1.85 seconds at roughly 12 frames per
+  second, then settles into the static gradient and unsubscribes from the
+  shared animation clock. `prefersReducedMotion` disables it.
 - The existing `welcomeTips.ts` picker supplies one deterministic hint per
   session, so the copy does not jump during a re-render.
-- `prefersReducedMotion` disables the shimmer.
-- Screen-reader mode and `TERM=dumb` use the forced plain layout, with no
-  border, decorative art, or animation.
-- Normal UTF-8 terminals render the mark with solid and quadrant-block
-  characters. The three resources are display-width normalized before render,
-  preventing ragged flex sizing and shimmer seams.
 - `useAnimationFrame` pauses the effect when the card leaves the viewport, so
   it does not keep repainting scrollback.
 
 ## Code map
 
+- `src/components/LogoV2/OccMark.tsx` owns the three mark tiers, the gradient
+  engine (`sampleGradient`, `markCellT`, `isShimmerCell`), and the one-shot
+  shimmer.
 - `src/components/LogoV2/CondensedLogo.tsx` gathers live REPL state, including
   the cached Git branch.
-- `src/components/LogoV2/OccWelcome.tsx` owns responsive presentation and the
-  three logo resources plus the one-shot shimmer.
+- `src/components/LogoV2/OccWelcome.tsx` owns responsive presentation: the HUD
+  title tab, labeled readout rows, dashed rule, and tip line.
 - `src/components/__tests__/OccWelcome.test.tsx` covers tier boundaries,
-  width-normalized art, width-aware context, shimmer stability, and rendered
-  wide/compact/plain layouts.
+  width-normalized art, gradient sampling and contrast, shimmer stability, and
+  rendered wide/compact/plain layouts.
 - `test/e2e/repl-welcome-visual.e2e.test.ts` boots the built REPL in tmux at
-  100, 60, and 36 columns to verify real terminal glyph rendering.
+  100, 60, and 36 columns (plus the forced full logo) to verify real terminal
+  glyph rendering and that the retired doge no longer appears.
