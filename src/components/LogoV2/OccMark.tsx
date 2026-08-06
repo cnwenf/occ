@@ -6,24 +6,32 @@ import { getInitialSettings } from '../../utils/settings/settings.js'
 import { useTheme } from '../design-system/ThemeProvider.js'
 
 /**
- * The OCC-45 "Ion Aperture" mark.
+ * The OCC-50 "Ascendant" comet mark.
  *
- * Design language (researched from terminal/TUI practice — gradient-string
- * multi-line gradients, btop-style HUD panels, ANSI Shadow block lettering,
- * grok-build's low-frequency shimmer; re-implemented originally, nothing
- * copied):
+ * Design exploration ran through the brandkit skill (dark-developer mode):
+ * three directions were studied as terminal-native block art — "Lodestar"
+ * compass star (guidance), "Core Frame" viewfinder (precision), and
+ * "Ascendant" (momentum) — and Ascendant was selected: a signal climbing
+ * its own trail. The stepped trail is scaffold momentum, one completed
+ * step per row; the flared diamond head is the spark of intent. The mark
+ * is a pure abstract trajectory — deliberately decoupled from any "OCC"
+ * letterform. Exploration boards and rationale live in
+ * `docs/welcome-logo-occ50.md`.
  *
- * - One silhouette: OCC's open C, the validated OCC-25 letterform, kept as
- *   solid block + quadrant cells so it stays crisp in every monospace font.
- * - Diagonal truecolor gradient across every occupied cell (gold → ember →
- *   ion rose). chalk down-converts automatically where truecolor is missing:
- *   256-color terminals get the nearest cube colors, 16-color terminals get
- *   the nearest basic colors, NO_COLOR terminals get plain glyphs — the
- *   silhouette always survives.
+ * The rendering language is carried over from OCC-45 (the technique was
+ * validated; only the identity changed):
+ *
+ * - One silhouette at three tiers, solid block + quadrant cells so it
+ *   stays crisp in every monospace font.
+ * - Diagonal truecolor gradient across every occupied cell (launch gold →
+ *   ember thrust → signal rose). chalk down-converts automatically where
+ *   truecolor is missing: 256-color terminals get the nearest cube colors,
+ *   16-color terminals get the nearest basic colors, NO_COLOR terminals
+ *   get plain glyphs — the silhouette always survives.
  * - One-shot diagonal light sweep (~12 fps, 1.85 s) that settles into the
  *   static gradient; reduced motion disables it entirely.
- * - Three optically redrawn tiers so the mark is monumental on wide
- *   terminals and still confident at three-ish rows.
+ * - Monumental 14-column tier on wide terminals, 12-column compact, and a
+ *   5-row plain tier for narrow borderless startup.
  */
 
 export type OccMarkMode = 'wide' | 'compact' | 'plain'
@@ -38,33 +46,43 @@ function normalizeMark(lines: readonly string[]): OccMarkArt {
 }
 
 /**
- * The open C at three resolutions. Each tier keeps the OCC-25 geometry —
- * two-cell strokes, quadrant-rounded exterior corners and aperture lips —
- * and differs only in overall scale.
+ * The Ascendant comet at three resolutions. Every tier is the same
+ * gesture — a 45° trail of stepped momentum flaring into a signal head at
+ * the summit — redrawn optically per tier. Quadrant caps (▟/▛/▙/▄) taper
+ * the trail's tail and flare the head; the right edge cascades one column
+ * per row so the silhouette reads as a smooth trajectory, never a bar
+ * chart. No internal gaps, so the silhouette survives any monospace font.
  */
 export const OCC_MARKS = {
   // Monumental tier for wide terminals (7 × 14).
   wide: normalizeMark([
-    '▟████████████▙',
-    '█████████████▛',
-    '██',
-    '██',
-    '██',
-    '█████████████▜',
-    '▜████████████▛',
+    '           ▄▄',
+    '          ▟██▙',
+    '        ▟████▛',
+    '      ▟████▛',
+    '    ▟████▛',
+    '  ▟████▛',
+    '▟████▛',
   ]),
-  // Standard tier (7 × 10) — compact cards and the full-logo panel.
+  // Standard tier (7 × 12) — compact cards and the full-logo panel. The
+  // trail curves (step 2 then 1) so the launch accelerates at small scale.
   compact: normalizeMark([
-    '▟████████▙',
-    '█████████▛',
-    '██',
-    '██',
-    '██',
-    '█████████▜',
-    '▜████████▛',
+    '          ▄▄',
+    '        ▟██▙',
+    '      ▟███▙',
+    '    ▟███▛',
+    '   ▟███▛',
+    ' ▟███▛',
+    '▟███▛',
   ]),
   // Small tier (5 × 8) — narrow borderless welcome.
-  plain: normalizeMark(['▟██████▙', '██', '██', '██', '▜██████▛']),
+  plain: normalizeMark([
+    '      ▄▄',
+    '    ▟██▙',
+    '  ▟██▛',
+    ' ▟██▛',
+    '▟██▛',
+  ]),
 } satisfies Record<OccMarkMode, OccMarkArt>
 
 export function getOccMark(mode: OccMarkMode): OccMarkArt {
@@ -76,21 +94,21 @@ export function getOccMarkWidth(art: OccMarkArt): number {
 }
 
 /**
- * Gradient stops per theme family. Dark terminals get luminous plasma tones;
- * light terminals get darker saturated tones so every stop keeps ≥ 3:1
- * contrast (WCAG non-text graphics threshold) against the reference
- * background.
+ * Gradient stops per theme family. Dark terminals get the luminous launch
+ * ramp (gold → ember thrust → signal rose); light terminals get darker
+ * saturated tones so every stop keeps ≥ 3:1 contrast (WCAG non-text
+ * graphics threshold) against the reference background.
  */
 export const GRADIENT_STOPS: Record<'dark' | 'light', readonly Rgb[]> = {
   dark: [
-    [255, 199, 110], // solar gold
-    [255, 116, 64], // ember orange
-    [233, 60, 136], // ion rose
+    [252, 211, 77], // launch gold
+    [251, 146, 60], // ember thrust
+    [244, 63, 94], // signal rose
   ],
   light: [
-    [181, 110, 0], // deep amber
-    [194, 62, 24], // vermilion
-    [162, 22, 82], // crimson rose
+    [180, 83, 9], // deep amber
+    [194, 65, 12], // vermilion
+    [159, 18, 57], // crimson rose
   ],
 }
 

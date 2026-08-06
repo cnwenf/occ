@@ -12,8 +12,9 @@ language was assembled from well-known terminal/TUI techniques (studied, not
 copied):
 
 - **Diagonal truecolor gradient** across the mark's cells — the multi-line
-  gradient approach popularized by `gradient-string`. Color flows from a solar
-  gold at the top-left through ember to an ion rose at the bottom-right.
+  gradient approach popularized by `gradient-string`. Color flows from a
+  launch gold at the top-left through ember thrust to a signal rose at the
+  bottom-right.
 - **Low-frequency one-shot light sweep** instead of repainting at the
   terminal's maximum frame rate (the `grok-build` shimmer principle, carried
   over from the earlier design).
@@ -32,21 +33,34 @@ live in `docs/welcome-page-visual-occ18.md`, `docs/welcome-logo-occ20.md`, and
 `docs/welcome-logo-occ25.md`. The OCC-45 redesign rationale and candidate
 evaluation are recorded in `docs/welcome-logo-occ45.md`.
 
+**OCC-50 replaced the identity itself**, designed through the `brandkit`
+skill in dark-developer mode: three free-form directions (no "OCC"
+letterform) were explored as terminal-native block art — "Lodestar" compass
+star (rejected: arm imbalance reads as a cross), "Core Frame" viewfinder
+(rejected: UI glyph, low ownability), and the selected **"Ascendant"**: a
+signal climbing its own trail — scaffold momentum flaring into a spark of
+intent at the summit. The OCC-45 rendering engine (gradient, shimmer,
+degradation ladder) was kept; only the silhouette and palette changed. Full
+boards, rationale, and tier drawings are recorded in
+`docs/welcome-logo-occ50.md`.
+
 ## Information hierarchy
 
 The card deliberately limits the first screen to four levels:
 
 1. **Identity:** `OCC`, version, and `Open C Code` — embedded in the top border
    as a title tab.
-2. **Hero:** the gradient open-C "Ion Aperture" mark with a short readiness
+2. **Hero:** the gradient "Ascendant" comet mark with a short readiness
    line (`Ready when you are.`).
 3. **Context:** labeled readout rows — `MODEL` (model + billing) and `PROJ`
    (Git branch + cwd, agent-prefixed when present).
 4. **Action:** one deterministic, session-stable hint after a dashed rule.
 
-The mark keeps the OCC-25 open-C silhouette (two-cell stroke, quadrant-rounded
-corners, generous right-hand opening) and renders it at monumental scale on
-wide terminals. Color, not geometry, is the OCC-45 transformation.
+The mark is a pure abstract trajectory — a 45° trail of stepped momentum
+flaring into a diamond signal head — deliberately decoupled from any
+letterform. Quadrant caps taper the tail and flare the head; the right edge
+cascades one column per row so the silhouette reads as a smooth trajectory.
+It renders at monumental scale on wide terminals.
 
 ## Responsive tiers
 
@@ -55,7 +69,7 @@ wide terminals. Color, not geometry, is the OCC-45 transformation.
 | Terminal width | Layout | Behavior |
 |---|---|---|
 | 76+ columns | Wide hero | Seven-row, 14-column mark beside labeled metadata |
-| 44–75 columns | Compact card | Seven-row, 10-column mark stacks above metadata |
+| 44–75 columns | Compact card | Seven-row, 12-column mark stacks above metadata |
 | Under 44 columns | Plain | Five-row, 8-column mark, no border, essential text |
 
 The card caps itself at 84 columns so it remains readable in very wide
@@ -69,9 +83,11 @@ share one identity.
 
 ## Color, motion, and compatibility
 
-- The gradient is theme-aware: luminous plasma stops on dark themes and darker
-  saturated stops on light themes, so every stop keeps at least 3:1 contrast
-  (the WCAG non-text-graphics threshold) against the reference background.
+- The gradient is theme-aware: the luminous launch ramp (launch gold → ember
+  thrust → signal rose) on dark themes and darker saturated stops (deep amber
+  → vermilion → crimson rose) on light themes, so every stop keeps at least
+  3:1 contrast (the WCAG non-text-graphics threshold) against the reference
+  background.
 - **Degradation ladder** is automatic via chalk's color-level detection:
   truecolor terminals get the smooth ramp; 256-color terminals get the nearest
   cube colors; 16-color terminals get the nearest basic colors; `NO_COLOR`
