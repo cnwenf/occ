@@ -110,7 +110,7 @@ describe('OCC REPL welcome layout', () => {
   })
 })
 
-describe('OCC Ion Aperture gradient engine', () => {
+describe('OCC Ascendant gradient engine', () => {
   test('resolves the gradient family from the theme name', () => {
     expect(gradientThemeFamily('dark')).toBe('dark')
     expect(gradientThemeFamily('dark-ansi')).toBe('dark')
@@ -205,8 +205,9 @@ describe('OCC REPL welcome card render', () => {
     expect(output).toContain('OCC')
     expect(output).toContain('v2.1.281')
     expect(output).toContain('Open C Code')
-    // Gradient mark art survives the render (ANSI stripped).
-    expect(output).toContain(OCC_MARKS.wide[1]!.trim())
+    // Gradient mark art survives the render (ANSI stripped). Row 2 is the
+    // tier signature (unique consecutive-block run per tier).
+    expect(output).toContain(OCC_MARKS.wide[2]!.trim())
     expect(output).not.toContain('___   ___   ___')
     // Labeled readout rows.
     expect(output).toContain('MODEL')
@@ -225,8 +226,8 @@ describe('OCC REPL welcome card render', () => {
     )
 
     expect(output).toContain(welcomeTip('compact'))
-    expect(output).toContain(OCC_MARKS.compact[1]!.trim())
-    expect(output).not.toContain(OCC_MARKS.wide[1]!.trim())
+    expect(output).toContain(OCC_MARKS.compact[2]!.trim())
+    expect(output).not.toContain(OCC_MARKS.wide[2]!.trim())
     for (const line of output.split('\n')) {
       expect(stringWidth(line)).toBeLessThanOrEqual(columns)
     }
@@ -238,7 +239,7 @@ describe('OCC REPL welcome card render', () => {
       36,
     )
 
-    expect(output).toContain(OCC_MARKS.plain[1]!.trim())
+    expect(output).toContain(OCC_MARKS.plain[2]!.trim())
     expect(output).toContain('OCC v2.1.281 · Open C Code')
     expect(output).not.toContain('╭')
     for (const line of output.split('\n')) {
@@ -256,7 +257,7 @@ describe('OCC REPL welcome card render', () => {
     expect(output).toContain('Claude Sonnet 4.5')
     expect(output).toContain('git:feature/welcome')
     expect(output).toContain(welcomeTip('plain'))
-    expect(output).not.toContain(OCC_MARKS.plain[1]!.trim())
+    expect(output).not.toContain(OCC_MARKS.plain[2]!.trim())
     expect(output).not.toContain('___   ___   ___')
     expect(output).not.toContain('╭')
   })
