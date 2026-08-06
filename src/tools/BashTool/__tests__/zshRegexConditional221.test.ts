@@ -66,12 +66,21 @@ describe('2.1.221: zsh [[ ]] regex conditional guards', () => {
     expect(r.kind).toBe('simple')
   })
 
-  test('[[ abc =~ (a(b ]] → too-complex (unbalanced parens, end of text)', () => {
+  test('[[ abc =~ (a(b ]] → too-complex (unparsed-bytes gap walker, official ordering)', () => {
+    // Malformed unclosed paren: tree-sitter emits a child whose span
+    // extends past the test_command node. Since 2.1.223 alignment the
+    // official-ordered gap walker (checkTestCommandUnparsedBytes) runs
+    // BEFORE the expression walk and rejects it here — same fail-closed
+    // outcome, official-faithful reason (the official binary runs its gap
+    // walker first too). Probed: every unclosed-paren form tree-sitter
+    // produces extends the child span, so the paren-balance scan below it
+    // stays a defensive layer (identical to the official binary, where the
+    // same ordering applies).
     const r = parseSecurity('[[ abc =~ (a(b ]]')
     expect(r.kind).toBe('too-complex')
     if (r.kind === 'too-complex') {
       expect(r.reason).toBe(
-        '[[ ]] regex has unbalanced parentheses (parser desync)',
+        'Test command child extends past the node span — gap byte accounting is untrustworthy',
       )
     }
   })
