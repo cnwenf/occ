@@ -6,31 +6,24 @@ import {
 } from '../taskRegistry.js'
 
 /**
- * CC 2.1.212: per-session TaskRegistry primitive. The real implementation
+ * CC 2.1.212: per-session TaskRegistry primitives. The real implementation
  * is a mutable counter by nature (matches the official binary); the no-op
  * stub returns 0 / no-ops for headless/SDK contexts.
+ *
+ * CC 2.1.224: the total-subagent-spawn counter (getTotalAgentSpawns /
+ * incrementTotalAgentSpawns / resetTotalAgentSpawns) was REMOVED upstream
+ * along with the CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION cap — the registry
+ * now tracks only web-search calls and the concurrent-subagent slot count.
  */
 
 describe('TaskRegistryImpl (real registry)', () => {
-  test('starts at zero for both counters', () => {
+  test('starts at zero', () => {
     // Arrange
     const reg = new TaskRegistryImpl()
 
     // Assert
-    expect(reg.getTotalAgentSpawns()).toBe(0)
     expect(reg.getWebSearchCalls()).toBe(0)
-  })
-
-  test('incrementTotalAgentSpawns increases the count by one', () => {
-    // Arrange
-    const reg = new TaskRegistryImpl()
-
-    // Act
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-
-    // Assert
-    expect(reg.getTotalAgentSpawns()).toBe(2)
+    expect(reg.getConcurrentSubagents()).toBe(0)
   })
 
   test('incrementWebSearchCalls increases the count by one', () => {
@@ -46,20 +39,6 @@ describe('TaskRegistryImpl (real registry)', () => {
     expect(reg.getWebSearchCalls()).toBe(3)
   })
 
-  test('resetTotalAgentSpawns sets the count back to zero', () => {
-    // Arrange
-    const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-
-    // Act
-    reg.resetTotalAgentSpawns()
-
-    // Assert
-    expect(reg.getTotalAgentSpawns()).toBe(0)
-  })
-
   test('resetWebSearchCalls sets the count back to zero', () => {
     // Arrange
     const reg = new TaskRegistryImpl()
@@ -73,34 +52,18 @@ describe('TaskRegistryImpl (real registry)', () => {
     expect(reg.getWebSearchCalls()).toBe(0)
   })
 
-  test('the two counters are independent', () => {
-    // Arrange
-    const reg = new TaskRegistryImpl()
-
-    // Act
-    reg.incrementTotalAgentSpawns()
-    reg.incrementWebSearchCalls()
-    reg.incrementWebSearchCalls()
-
-    // Assert
-    expect(reg.getTotalAgentSpawns()).toBe(1)
-    expect(reg.getWebSearchCalls()).toBe(2)
-  })
-
   test('each instance is isolated from other instances', () => {
     // Arrange
     const a = new TaskRegistryImpl()
     const b = new TaskRegistryImpl()
 
     // Act
-    a.incrementTotalAgentSpawns()
+    a.incrementWebSearchCalls()
     b.incrementWebSearchCalls()
     b.incrementWebSearchCalls()
 
     // Assert
-    expect(a.getTotalAgentSpawns()).toBe(1)
-    expect(a.getWebSearchCalls()).toBe(0)
-    expect(b.getTotalAgentSpawns()).toBe(0)
+    expect(a.getWebSearchCalls()).toBe(1)
     expect(b.getWebSearchCalls()).toBe(2)
   })
 
@@ -108,32 +71,19 @@ describe('TaskRegistryImpl (real registry)', () => {
     // Arrange + Act
     const reg: TaskRegistry = new TaskRegistryImpl()
 
-    // Assert — typecheck-only; exercises all six methods.
-    expect(reg.getTotalAgentSpawns()).toBe(0)
+    // Assert — typecheck-only; exercises the remaining methods.
     expect(reg.getWebSearchCalls()).toBe(0)
-    reg.incrementTotalAgentSpawns()
     reg.incrementWebSearchCalls()
-    reg.resetTotalAgentSpawns()
     reg.resetWebSearchCalls()
-    expect(reg.getTotalAgentSpawns()).toBe(0)
     expect(reg.getWebSearchCalls()).toBe(0)
+    const release = reg.takeConcurrencySlot()
+    expect(reg.getConcurrentSubagents()).toBe(1)
+    release()
+    expect(reg.getConcurrentSubagents()).toBe(0)
   })
 })
 
 describe('getNoopTaskRegistry (headless/SDK stub)', () => {
-  test('getTotalAgentSpawns always returns 0 and does not accumulate', () => {
-    // Arrange
-    const reg = getNoopTaskRegistry()
-
-    // Act — increment is a no-op
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-
-    // Assert
-    expect(reg.getTotalAgentSpawns()).toBe(0)
-  })
-
   test('getWebSearchCalls always returns 0 and does not accumulate', () => {
     // Arrange
     const reg = getNoopTaskRegistry()
@@ -151,9 +101,7 @@ describe('getNoopTaskRegistry (headless/SDK stub)', () => {
     const reg = getNoopTaskRegistry()
 
     // Act + Assert — no throw
-    expect(() => reg.resetTotalAgentSpawns()).not.toThrow()
     expect(() => reg.resetWebSearchCalls()).not.toThrow()
-    expect(reg.getTotalAgentSpawns()).toBe(0)
     expect(reg.getWebSearchCalls()).toBe(0)
   })
 
@@ -220,12 +168,12 @@ describe('TaskRegistryImpl concurrent-subagent slot (CC 2.1.217)', () => {
     expect(reg.getConcurrentSubagents()).toBe(0)
   })
 
-  test('concurrent counter is independent of the total-spawn counter', () => {
+  test('concurrent counter is independent of the web-search counter', () => {
     const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
+    reg.incrementWebSearchCalls()
     reg.takeConcurrencySlot()
     reg.takeConcurrencySlot()
-    expect(reg.getTotalAgentSpawns()).toBe(1)
+    expect(reg.getWebSearchCalls()).toBe(1)
     expect(reg.getConcurrentSubagents()).toBe(2)
   })
 })

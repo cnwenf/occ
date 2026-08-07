@@ -14,6 +14,7 @@ import { getWorktreePathsPortable } from './getWorktreePathsPortable.js'
 import type { LiteSessionFile } from './sessionStoragePortable.js'
 import {
   canonicalizePath,
+  dirMatchesProjectPath,
   extractFirstPromptFromHead,
   extractJsonStringField,
   extractLastJsonStringField,
@@ -376,13 +377,23 @@ async function gatherProjectCandidates(
     if (seenDirs.has(dirName)) continue
 
     for (const { path: wtPath, prefix } of indexed) {
-      // Only use startsWith for truncated paths (>MAX_SANITIZED_LENGTH) where
-      // a hash suffix follows. For short paths, require exact match to avoid
-      // /root/project matching /root/project-foo.
+      // CC 2.1.224 (official listing-side match `p===m || (h!==void 0 &&
+      // p.startsWith(h+"-") && gar)`): exact name match, or a
+      // truncated-prefix match confirmed by session-file content. Only
+      // truncated paths (>MAX_SANITIZED_LENGTH) carry a hash suffix — the
+      // on-disk name keeps just the first MAX_SANITIZED_LENGTH chars of the
+      // sanitized path, so that slice (not the full prefix) is what a
+      // startsWith check must use. For short paths, require exact match to
+      // avoid /root/project matching /root/project-foo.
       const isMatch =
         dirName === prefix ||
-        (prefix.length >= MAX_SANITIZED_LENGTH &&
-          dirName.startsWith(prefix + '-'))
+        (prefix.length > MAX_SANITIZED_LENGTH &&
+          dirName.startsWith(prefix.slice(0, MAX_SANITIZED_LENGTH) + '-') &&
+          (await dirMatchesProjectPath(
+            join(projectsDir, dirent.name),
+            wtPath,
+            caseInsensitive,
+          )))
       if (isMatch) {
         seenDirs.add(dirName)
         all.push(

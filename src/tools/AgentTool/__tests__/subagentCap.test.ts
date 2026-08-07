@@ -1,27 +1,36 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import {
-  resetStateForTests,
-} from '../../../bootstrap/state.js'
+import { resetStateForTests } from '../../../bootstrap/state.js'
+import { markInProcessFallback } from '../../../utils/swarm/backends/registry.js'
 import { TaskRegistryImpl } from '../../../utils/taskRegistry.js'
 import { runAgent } from '../runAgent.js'
 import { spawnTeammate } from '../../shared/spawnMultiAgent.js'
 
 /**
- * CC 2.1.212: real behavioral e2e for the per-session subagent-spawn cap.
+ * CC 2.1.224: the 2.1.212 per-session total-spawn cap was REMOVED upstream.
  *
- * Drives the actual spawn entry points (runAgent + spawnTeammate) with a
- * TaskRegistry pre-filled to the limit and asserts the thrown cap error.
- * The cap check is the very first statement of each spawn entry point, so
- * it throws before any real spawn / network / pane work — no API key or
- * tmux backend required.
+ * These tests pin the removal behaviorally: the two spawn entry points
+ * (runAgent + spawnTeammate) must no longer throw "Subagent spawn limit
+ * reached", and CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION must be a no-op —
+ * even when set to 1 with a registry that used to count as "at the cap".
+ * Spawns now proceed past where the cap check sat and fail (in this stub
+ * harness) only on downstream missing wiring, never on a cap error.
+ *
+ * Binary proof (2.1.224 linux-x64 ELF): zero hits for "agents spawned"
+ * (2 in 2.1.223) and no "Subagent spawn limit reached" string; only the
+ * concurrency cap (20) and spawn-depth cap (3) remain.
  */
 
 const AGENT_ENV = 'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION'
 const originalAgent = process.env[AGENT_ENV]
 
 beforeEach(() => {
-  delete process.env[AGENT_ENV]
+  // The removed env var is set to its most restrictive value on every test:
+  // under 2.1.212–2.1.223 semantics this would refuse the very first spawn.
+  process.env[AGENT_ENV] = '1'
   if (process.env.NODE_ENV !== 'test') process.env.NODE_ENV = 'test'
+  // Keep spawnTeammate on the in-process path so the stub-context harness
+  // fails on missing wiring instead of touching a live pane backend.
+  markInProcessFallback()
   resetStateForTests()
 })
 
@@ -32,10 +41,11 @@ afterEach(() => {
 })
 
 /**
- * Minimal fake ToolUseContext carrying only the taskRegistry. Both
- * assertSubagentCapAndIncrement (runAgent) and spawnTeammate read the
- * registry as their first action and throw before any other field is
- * touched, so a stub context is sufficient.
+ * Minimal fake ToolUseContext carrying only the taskRegistry. Under the old
+ * cap, the entry points read the registry first and threw before any other
+ * field was touched. With the cap gone, the same stub proceeds until it hits
+ * missing downstream wiring (getAppState etc.) — which is exactly the
+ * observable difference these tests assert.
  */
 function makeFakeContext(reg: TaskRegistryImpl) {
   return { taskRegistry: reg } as unknown as Parameters<
@@ -43,13 +53,10 @@ function makeFakeContext(reg: TaskRegistryImpl) {
   >[0]['toolUseContext']
 }
 
-describe('runAgent — per-session subagent cap (CC 2.1.212)', () => {
-  test('throws subagent-cap error when getTotalAgentSpawns() >= max', async () => {
-    // Arrange — cap=1, pre-fill to 1
-    process.env[AGENT_ENV] = '1'
+describe('runAgent — total-spawn cap removed (CC 2.1.224)', () => {
+  test('does not throw the spawn-cap error even at the old cap', async () => {
+    // Arrange — env=1 (would have capped at 1 spawn under 2.1.223)
     const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
-
     const params = {
       agentDefinition: { agentType: 'general-purpose' },
       promptMessages: [],
@@ -63,7 +70,7 @@ describe('runAgent — per-session subagent cap (CC 2.1.212)', () => {
       availableTools: [],
     } as unknown as Parameters<typeof runAgent>[0]
 
-    // Act — runAgent is an async generator; the cap throws on first next()
+    // Act — runAgent is an async generator; the old cap threw on first next()
     const gen = runAgent(params)
     let caught: unknown = null
     try {
@@ -72,148 +79,76 @@ describe('runAgent — per-session subagent cap (CC 2.1.212)', () => {
       caught = e
     }
 
-    // Assert
-    expect(caught).toBeInstanceOf(Error)
-    expect((caught as Error).message).toContain(
-      'Subagent spawn limit reached',
-    )
-    expect((caught as Error).message).toContain('1 of 1')
+    // Assert — whatever fails now is downstream stub wiring, NEVER the cap
+    if (caught !== null) {
+      expect(caught).toBeInstanceOf(Error)
+      expect((caught as Error).message).not.toContain(
+        'Subagent spawn limit reached',
+      )
+      expect((caught as Error).message).not.toContain(
+        'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION',
+      )
+    }
   })
 
-  test('increments only on the proceeding path (under the cap)', async () => {
-    // Arrange — cap=200 (default), count=0. runAgent will proceed past the
-    // cap check (increment to 1) then fail downstream on the stub context.
-    // We assert the counter advanced exactly once — proving the increment
-    // ran before the actual spawn work.
+  test('a second spawn in the same session is also not cap-refused', async () => {
+    // Arrange — under 2.1.223 the second spawn with env=1 was the guaranteed
+    // refusal case. Drive two sequential spawns through the entry point.
     const reg = new TaskRegistryImpl()
-    const params = {
-      agentDefinition: { agentType: 'general-purpose' },
-      promptMessages: [],
-      toolUseContext: makeFakeContext(reg),
-      canUseTool: (async () => ({
-        behavior: 'allow',
-        updatedInput: {},
-      })) as never,
-      isAsync: false,
-      querySource: 'agent:builtin:general-purpose',
-      availableTools: [],
-    } as unknown as Parameters<typeof runAgent>[0]
+    const makeParams = () =>
+      ({
+        agentDefinition: { agentType: 'general-purpose' },
+        promptMessages: [],
+        toolUseContext: makeFakeContext(reg),
+        canUseTool: (async () => ({
+          behavior: 'allow',
+          updatedInput: {},
+        })) as never,
+        isAsync: false,
+        querySource: 'agent:builtin:general-purpose',
+        availableTools: [],
+      }) as unknown as Parameters<typeof runAgent>[0]
 
-    // Act — proceeds past the cap check (increments), then fails downstream
-    const gen = runAgent(params)
-    try {
-      await gen.next()
-    } catch {
-      // expected — downstream stub context lacks real wiring
+    // Act + Assert — neither spawn produces the cap error
+    for (let spawn = 0; spawn < 2; spawn++) {
+      const gen = runAgent(makeParams())
+      try {
+        await gen.next()
+      } catch (e) {
+        expect((e as Error).message).not.toContain(
+          'Subagent spawn limit reached',
+        )
+      }
     }
-
-    // Assert — increment ran exactly once on the proceeding path
-    expect(reg.getTotalAgentSpawns()).toBe(1)
-  })
-
-  test('does not increment on the capped (rejected) path', async () => {
-    // Arrange — cap=2, pre-fill to 2
-    process.env[AGENT_ENV] = '2'
-    const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-
-    const params = {
-      agentDefinition: { agentType: 'general-purpose' },
-      promptMessages: [],
-      toolUseContext: makeFakeContext(reg),
-      canUseTool: (async () => ({
-        behavior: 'allow',
-        updatedInput: {},
-      })) as never,
-      isAsync: false,
-      querySource: 'agent:builtin:general-purpose',
-      availableTools: [],
-    } as unknown as Parameters<typeof runAgent>[0]
-
-    // Act
-    const gen = runAgent(params)
-    try {
-      await gen.next()
-    } catch {
-      // expected cap throw
-    }
-
-    // Assert — counter unchanged (still 2)
-    expect(reg.getTotalAgentSpawns()).toBe(2)
-  })
-
-  test('the cap error mentions CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION', async () => {
-    // Arrange
-    process.env[AGENT_ENV] = '1'
-    const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
-
-    const params = {
-      agentDefinition: { agentType: 'general-purpose' },
-      promptMessages: [],
-      toolUseContext: makeFakeContext(reg),
-      canUseTool: (async () => ({ behavior: 'allow', updatedInput: {} })) as never,
-      isAsync: false,
-      querySource: 'agent:builtin:general-purpose',
-      availableTools: [],
-    } as unknown as Parameters<typeof runAgent>[0]
-
-    // Act
-    const gen = runAgent(params)
-    let msg = ''
-    try {
-      await gen.next()
-    } catch (e) {
-      msg = (e as Error).message
-    }
-
-    // Assert
-    expect(msg).toContain('CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION')
   })
 })
 
-describe('spawnTeammate — per-session subagent cap (CC 2.1.212)', () => {
-  test('throws subagent-cap error when getTotalAgentSpawns() >= max', async () => {
-    // Arrange — cap=1, pre-fill to 1. spawnTeammate's first statement is
-    // assertSubagentCapAndIncrement(context), which throws before
-    // handleSpawn (pane/in-process work) is ever reached.
-    process.env[AGENT_ENV] = '1'
-    const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
-
-    const config = {
-      agent_type: 'general-purpose',
-      prompt: 'do something',
-    } as unknown as Parameters<typeof spawnTeammate>[0]
-
-    // Act + Assert
-    await expect(
-      spawnTeammate(config, makeFakeContext(reg)),
-    ).rejects.toThrow(/Subagent spawn limit reached/)
-
-    // Counter unchanged on the rejected path
-    expect(reg.getTotalAgentSpawns()).toBe(1)
-  })
-
-  test('increments on the proceeding path (under the cap)', async () => {
-    // Arrange — cap=200 (default), count=0. spawnTeammate will increment
-    // (to 1) then proceed into handleSpawn, which will fail on the stub
-    // context. We assert the increment ran exactly once.
+describe('spawnTeammate — total-spawn cap removed (CC 2.1.224)', () => {
+  test('does not throw the spawn-cap error even at the old cap', async () => {
+    // Arrange — env=1; under 2.1.223 spawnTeammate's first statement threw
+    // before handleSpawn was ever reached.
     const reg = new TaskRegistryImpl()
     const config = {
       agent_type: 'general-purpose',
+      name: 'cap-removal-probe',
+      team_name: 'cap-removal-team',
       prompt: 'do something',
     } as unknown as Parameters<typeof spawnTeammate>[0]
 
-    // Act — increments then fails downstream on the stub context
+    // Act + Assert — rejection (if any) is downstream wiring, not the cap
+    let caught: unknown = null
     try {
       await spawnTeammate(config, makeFakeContext(reg))
-    } catch {
-      // expected — downstream stub lacks real pane / in-process wiring
+    } catch (e) {
+      caught = e
     }
-
-    // Assert — increment ran exactly once on the proceeding path
-    expect(reg.getTotalAgentSpawns()).toBe(1)
+    if (caught !== null) {
+      expect((caught as Error).message).not.toContain(
+        'Subagent spawn limit reached',
+      )
+      expect((caught as Error).message).not.toContain(
+        'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION',
+      )
+    }
   })
 })

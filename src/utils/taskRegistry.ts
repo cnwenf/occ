@@ -1,20 +1,21 @@
 /**
  * CC 2.1.212: per-session task registry — shared primitive backing the
- * `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION` and
- * `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` caps.
+ * `CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION` cap (and, since CC 2.1.217, the
+ * concurrent-subagent slot count).
  *
- * The official binary stores a `taskRegistry` object on the tool-use context
- * with six methods (get/increment/reset for both web searches and agent
- * spawns). This module provides the real implementation (mutable counters
- * by nature — that is what the upstream does) plus a no-op stub variant for
+ * CC 2.1.224: the `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` total-spawn cap
+ * was removed upstream, so the total-spawn counter
+ * (get/increment/resetTotalAgentSpawns) was removed here too — its only
+ * consumer (assertSubagentCapAndIncrement) is gone.
+ *
+ * The official binary stores a `taskRegistry` object on the tool-use context.
+ * This module provides the real implementation (mutable counters by nature —
+ * that is what the upstream does) plus a no-op stub variant for
  * headless/SDK/pipe contexts where no registry exists so those paths don't
  * crash when the registry is absent.
  */
 
 export interface TaskRegistry {
-  getTotalAgentSpawns(): number
-  incrementTotalAgentSpawns(): void
-  resetTotalAgentSpawns(): void
   getWebSearchCalls(): number
   incrementWebSearchCalls(): void
   resetWebSearchCalls(): void
@@ -31,22 +32,9 @@ export interface TaskRegistry {
  * upstream binary mutates them in place via increment/reset.
  */
 export class TaskRegistryImpl implements TaskRegistry {
-  private totalAgentSpawns = 0
   private webSearchCalls = 0
   // CC 2.1.217: concurrently-running subagent count (slot pattern).
   private runningSubagents = 0
-
-  getTotalAgentSpawns(): number {
-    return this.totalAgentSpawns
-  }
-
-  incrementTotalAgentSpawns(): void {
-    this.totalAgentSpawns += 1
-  }
-
-  resetTotalAgentSpawns(): void {
-    this.totalAgentSpawns = 0
-  }
 
   getWebSearchCalls(): number {
     return this.webSearchCalls
@@ -67,9 +55,9 @@ export class TaskRegistryImpl implements TaskRegistry {
    *   let o = false;
    *   return () => { if (o) return; o = true;
    *     t(i => ({...i, runningSubagents: Math.max(0, i.runningSubagents - 1)})) }
-   * OCC uses a mutable counter (matching the existing totalAgentSpawns
-   * idiom) rather than the immutable-state store; the release is still
-   * idempotent (the `released` flag) and clamped at 0, matching upstream.
+   * OCC uses a mutable counter rather than the immutable-state store; the
+   * release is still idempotent (the `released` flag) and clamped at 0,
+   * matching upstream.
    */
   takeConcurrencySlot(): () => void {
     this.runningSubagents += 1
@@ -89,11 +77,6 @@ export class TaskRegistryImpl implements TaskRegistry {
 /** Object literal is fine — biome's noStaticOnlyClass is off anyway. */
 
 const noopRegistry: TaskRegistry = {
-  getTotalAgentSpawns() {
-    return 0
-  },
-  incrementTotalAgentSpawns() {},
-  resetTotalAgentSpawns() {},
   getWebSearchCalls() {
     return 0
   },

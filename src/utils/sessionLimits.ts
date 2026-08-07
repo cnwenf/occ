@@ -1,23 +1,32 @@
 /**
- * CC 2.1.212: per-session cap primitives for WebSearch and subagent spawns.
+ * CC 2.1.212: per-session cap primitives for WebSearch spawns.
  *
- * Both default to `200`. Read from env with `?? 200` semantics — if the env
+ * Defaults to `200`. Read from env with `?? 200` semantics — if the env
  * value is present but not a finite positive integer, fall back to 200
  * (match the upstream `??` semantics; do not throw on bad input).
  *
  *   function getMaxWebSearchesPerSession() { return process.env.CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION ?? 200 }
- *   function getMaxSubagentsPerSession()   { return process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION   ?? 200 }
  *
- * The subagent cap is enforced at every spawn site via
- * `assertSubagentCapAndIncrement(context)`, which throws when the cap is
- * exceeded and increments only on the proceeding path. The WebSearch cap is
- * enforced inline in WebSearchTool.call() (see that file).
+ * The WebSearch cap is enforced inline in WebSearchTool.call() (see that
+ * file).
+ *
+ * CC 2.1.224: the official REMOVED the companion 200-subagent total-spawn
+ * cap ("Removed the 200-subagent-per-session spawn cap; long-running
+ * sessions no longer refuse new agents (concurrency and depth limits still
+ * apply)"). Verified against the 2.1.224 linux-x64 ELF: the
+ * `CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION` getter and the spawn-site assert
+ * ("Subagent spawn limit reached (N of M agents spawned)...") are gone; the
+ * name survives only in the env allowlist arrays. OCC parity:
+ * `assertSubagentCapAndIncrement` and `getMaxSubagentsPerSession` were
+ * removed together with their spawn-site call sites, and the total-spawn
+ * counter left the TaskRegistry. The concurrency cap (20), the spawn-depth
+ * cap (3), and the WebSearch cap (200) all REMAIN in the 224 binary and stay
+ * enforced here.
  */
 
 import type { TaskRegistry } from './taskRegistry.js'
 
 const DEFAULT_MAX_WEB_SEARCHES_PER_SESSION = 200
-const DEFAULT_MAX_SUBAGENTS_PER_SESSION = 200
 
 // CC 2.1.217: concurrent-running subagent cap + nested-subagent spawn depth.
 // Reverse-engineered from the 2.1.217 native ELF (aligning-with-official-binary):
@@ -64,23 +73,14 @@ export function getMaxWebSearchesPerSession(): number {
   )
 }
 
-export function getMaxSubagentsPerSession(): number {
-  return (
-    parsePositiveIntEnv(process.env.CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION) ??
-    DEFAULT_MAX_SUBAGENTS_PER_SESSION
-  )
-}
-
 /**
  * CC 2.1.217: cap on **concurrently-running** subagents (default 20).
  *
- * Distinct from `getMaxSubagentsPerSession()` (the 2.1.212 *total-spawn*
- * cap, default 200): this bounds how many subagents may run at once within a
- * single message/turn, so one message can't fan out unbounded background
- * agents. Env: `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`.
- *
- * Stage 1 (schema/env only): the getter + default exist; the concurrent-run
- * counter and enforcement at spawn sites land in Stage 2.
+ * Bounds how many subagents may run at once within a single message/turn, so
+ * one message can't fan out unbounded background agents. (The 2.1.212
+ * *total-spawn* cap of 200 was removed upstream in CC 2.1.224 — this
+ * concurrency cap and the spawn-depth cap are what remain.) Env:
+ * `CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS`.
  */
 export function getMaxConcurrentSubagents(): number {
   return (
@@ -111,31 +111,10 @@ export function getMaxSubagentSpawnDepth(): number {
   )
 }
 
-/** Minimal structural shape `assertSubagentCapAndIncrement` reads. Keeping
- *  it local avoids a circular import on ToolUseContext. */
+/** Minimal structural shape the cap helpers read. Keeping it local avoids
+ *  a circular import on ToolUseContext. */
 type ContextWithTaskRegistry = {
   taskRegistry?: TaskRegistry
-}
-
-/**
- * Check the per-session subagent-spawn cap and increment the counter.
- *
- * MUST be called at every site that spawns a subagent (the normal `runAgent`
- * path, the teammate/foreground path, and the fork path). The increment
- * happens AFTER the cap passes, BEFORE the actual spawn — matching the
- * official: throw (do not silently return) on cap exceeded.
- */
-export function assertSubagentCapAndIncrement(
-  context: ContextWithTaskRegistry,
-): void {
-  const max = getMaxSubagentsPerSession()
-  const count = context.taskRegistry?.getTotalAgentSpawns() ?? 0
-  if (count >= max) {
-    throw new Error(
-      `Subagent spawn limit reached (${count} of ${max} agents spawned). Complete the remaining work directly with your tools instead of spawning more agents. If more agents are genuinely needed, ask the user to raise CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION.`,
-    )
-  }
-  context.taskRegistry?.incrementTotalAgentSpawns()
 }
 
 /**

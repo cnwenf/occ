@@ -65,7 +65,6 @@ import {
 import { createUserMessage } from '../../utils/messages.js'
 import { isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js'
 import {
-  assertSubagentCapAndIncrement,
   claimConcurrentSubagentSlot,
   getMaxSubagentSpawnDepth,
 } from '../../utils/sessionLimits.js'
@@ -352,11 +351,10 @@ export async function* runAgent({
 }): AsyncGenerator<Message, void> {
   // Track subagent usage for feature discovery
 
-  // CC 2.1.212: per-session subagent-spawn cap. Check once per spawn
-  // attempt, before the runner starts. Throws on cap exceeded (matches the
-  // official — does NOT silently return). Covers the normal runAgent path
-  // AND the fork path, since fork spawns also go through runAgent.
-  assertSubagentCapAndIncrement(toolUseContext)
+  // CC 2.1.224: the 2.1.212 per-session total-spawn cap
+  // (assertSubagentCapAndIncrement) was removed upstream — long-running
+  // sessions no longer refuse new agents. The concurrency cap and the
+  // spawn-depth cap below still apply.
 
   const appState = toolUseContext.getAppState()
   const permissionMode = appState.toolPermissionContext.mode

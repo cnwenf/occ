@@ -311,8 +311,9 @@ export type ToolUseContext = {
    */
   renderedSystemPrompt?: SystemPrompt
   /** CC 2.1.212: per-session task registry backing the
-   * CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION and
-   * CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION caps. Real instance on the
+   * CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION cap and (CC 2.1.217) the
+   * concurrent-subagent slot count. (The CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION
+   * total-spawn cap was removed upstream in CC 2.1.224.) Real instance on the
    * interactive/REPL session; no-op stub (returns 0, no-ops) on
    * headless/SDK/pipe contexts. Undefined here means "no registry
    * available" — cap helpers treat undefined as a zero-count no-op so
