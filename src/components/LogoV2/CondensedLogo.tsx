@@ -78,8 +78,11 @@ export function CondensedLogo(): React.ReactNode {
     }
   }, [showGuestPassesUpsell, showOverageCreditUpsell])
 
-  const plain =
-    isScreenReaderEnabled() || process.env.TERM?.toLowerCase() === 'dumb'
+  // Screen readers get the text-only variant (braille art would be read
+  // aloud as noise). TERM=dumb keeps the card but the mark itself falls
+  // back to an uncolored, static silhouette via OccMark's color gate.
+  const plain = isScreenReaderEnabled()
+  const dumbTerminal = process.env.TERM?.toLowerCase() === 'dumb'
   const upsell = showGuestPassesUpsell ? (
     <GuestPassesUpsell />
   ) : showOverageCreditUpsell ? (
@@ -100,7 +103,7 @@ export function CondensedLogo(): React.ReactNode {
         branch={branch}
         agentName={agentName}
         tip={tip}
-        reducedMotion={reducedMotion || plain}
+        reducedMotion={reducedMotion || plain || dumbTerminal}
         plain={plain}
       >
         {upsell}
