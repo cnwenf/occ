@@ -2649,8 +2649,8 @@ export function REPL({
       requestPrompt: feature('HOOK_PROMPTS') ? requestPrompt : undefined,
       contentReplacementState: contentReplacementStateRef.current,
       // CC 2.1.212: real per-session TaskRegistry for the interactive/REPL
-      // session — backs the CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION and
-      // CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION caps.
+      // session — backs the CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION cap and
+      // the concurrent-subagent slot count.
       taskRegistry: getSessionTaskRegistry()
     };
   }, [commands, combinedInitialTools, mainThreadAgentDefinition, debug, initialMcpClients, ideInstallationStatus, dynamicMcpConfig, theme, allowedAgentTypes, store, setAppState, reverify, addNotification, setMessages, onChangeDynamicMcpConfig, resume, requestPrompt, disabled, customSystemPrompt, appendSystemPrompt, setConversationId]);

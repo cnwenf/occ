@@ -82,9 +82,11 @@ import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import { sanitizePath } from './path.js'
 import {
+  dirMatchesProjectPath,
   extractJsonStringField,
   extractLastJsonStringField,
   LITE_READ_BUF_SIZE,
+  MAX_SANITIZED_LENGTH,
   readHeadAndTail,
   readTranscriptForLoad,
   SKIP_PRECOMPACT_THRESHOLD,
@@ -4146,9 +4148,10 @@ export async function getLastSessionLogFromWorktrees(
   const currentProjectDir =
     getSessionProjectDir() ?? getProjectDir(getOriginalCwd())
 
-  // Same prefix-matching rule as getStatOnlyLogsForWorktrees:
-  // dirName === prefix || dirName.startsWith(prefix + '-'). Longest prefix
-  // first so a more specific worktree wins over a shorter colliding one.
+  // CC 2.1.224 (official listing-side match `p===m || (h!==void 0 &&
+  // p.startsWith(h+"-") && gar)`): exact name match, or a truncated-prefix
+  // match confirmed by session-file content. Longest prefix first so a more
+  // specific worktree wins over a shorter colliding one.
   const caseInsensitive = process.platform === 'win32'
   const indexed = worktreePaths.map(wt => {
     const sanitized = sanitizePath(wt)
@@ -4172,8 +4175,22 @@ export async function getLastSessionLogFromWorktrees(
     const dirName = caseInsensitive ? dirent.name.toLowerCase() : dirent.name
     if (seenDirs.has(dirName)) continue
 
-    for (const { prefix } of indexed) {
-      if (dirName === prefix || dirName.startsWith(prefix + '-')) {
+    for (const { path: wtPath, prefix } of indexed) {
+      // Only truncated paths (>MAX_SANITIZED_LENGTH) carry a hash suffix —
+      // the on-disk name keeps just the first MAX_SANITIZED_LENGTH chars of
+      // the sanitized path, so that slice (not the full prefix) is what a
+      // startsWith check must use. For short paths, require exact match to
+      // avoid /root/project matching /root/project-foo.
+      const isMatch =
+        dirName === prefix ||
+        (prefix.length > MAX_SANITIZED_LENGTH &&
+          dirName.startsWith(prefix.slice(0, MAX_SANITIZED_LENGTH) + '-') &&
+          (await dirMatchesProjectPath(
+            join(projectsDir, dirent.name),
+            wtPath,
+            caseInsensitive,
+          )))
+      if (isMatch) {
         seenDirs.add(dirName)
         const projectDir = join(projectsDir, dirent.name)
         // Current project dir was already tried by getLastSessionLog.
@@ -4424,7 +4441,24 @@ async function getStatOnlyLogsForWorktrees(
     if (seenDirs.has(dirName)) continue
 
     for (const { path: wtPath, prefix } of indexed) {
-      if (dirName === prefix || dirName.startsWith(prefix + '-')) {
+      // CC 2.1.224 (official listing-side match `p===m || (h!==void 0 &&
+      // p.startsWith(h+"-") && gar)`): exact name match, or a
+      // truncated-prefix match confirmed by session-file content. Only
+      // truncated paths (>MAX_SANITIZED_LENGTH) carry a hash suffix — the
+      // on-disk name keeps just the first MAX_SANITIZED_LENGTH chars of the
+      // sanitized path, so that slice (not the full prefix) is what a
+      // startsWith check must use. For short paths, require exact match to
+      // avoid /root/project matching /root/project-foo.
+      const isMatch =
+        dirName === prefix ||
+        (prefix.length > MAX_SANITIZED_LENGTH &&
+          dirName.startsWith(prefix.slice(0, MAX_SANITIZED_LENGTH) + '-') &&
+          (await dirMatchesProjectPath(
+            join(projectsDir, dirent.name),
+            wtPath,
+            caseInsensitive,
+          )))
+      if (isMatch) {
         seenDirs.add(dirName)
         allLogs.push(
           ...(await getSessionFilesLite(

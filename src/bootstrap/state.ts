@@ -1801,8 +1801,9 @@ export function setPromptId(id: string | null): void {
 }
 
 // CC 2.1.212: per-session TaskRegistry singleton backing the
-// CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION and
-// CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION caps. Lazily created on first
+// CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION cap and the concurrent-subagent
+// slot count (the CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION total-spawn cap was
+// removed upstream in CC 2.1.224). Lazily created on first
 // access (interactive/REPL session). Headless/SDK paths use the no-op
 // stub (see src/utils/taskRegistry.ts getNoopTaskRegistry) instead of
 // this real instance. Module-level so it survives re-renders but resets

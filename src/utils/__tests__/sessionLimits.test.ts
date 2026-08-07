@@ -1,9 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
 import {
-  assertSubagentCapAndIncrement,
   claimConcurrentSubagentSlot,
   getMaxConcurrentSubagents,
-  getMaxSubagentsPerSession,
   getMaxSubagentSpawnDepth,
   getMaxWebSearchesPerSession,
 } from '../sessionLimits.js'
@@ -12,12 +10,16 @@ import { TaskRegistryImpl, getNoopTaskRegistry } from '../taskRegistry.js'
 /**
  * CC 2.1.212: per-session cap primitives.
  *   CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION (default 200)
- *   CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION   (default 200)
  * Bad env values fall back to 200 (match the upstream `??` semantics).
  *
  * CC 2.1.217 (Stage 1, schema/env only):
  *   CLAUDE_CODE_MAX_CONCURRENT_SUBAGENTS (default 20, concurrent-running cap)
  *   CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH (default 3 since CC 2.1.219, nested-spawn depth)
+ *
+ * CC 2.1.224: the CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION total-spawn cap was
+ * REMOVED upstream — no getter reads that env var anymore (verified against
+ * the 2.1.224 linux-x64 ELF: the getter and the "Subagent spawn limit
+ * reached" assert are gone; only the concurrency and depth caps remain).
  */
 
 const WEB_ENV = 'CLAUDE_CODE_MAX_WEB_SEARCHES_PER_SESSION'
@@ -136,126 +138,18 @@ describe('getMaxWebSearchesPerSession', () => {
   })
 })
 
-describe('getMaxSubagentsPerSession', () => {
-  test('defaults to 200 when the env var is unset', () => {
-    expect(getMaxSubagentsPerSession()).toBe(200)
-  })
-
-  test('env override changes the limit', () => {
-    process.env[AGENT_ENV] = '3'
-    expect(getMaxSubagentsPerSession()).toBe(3)
-  })
-
-  test('bad env value (non-numeric) falls back to 200', () => {
-    process.env[AGENT_ENV] = 'garbage'
-    expect(getMaxSubagentsPerSession()).toBe(200)
-  })
-
-  test('zero falls back to 200 (not a valid positive limit)', () => {
-    process.env[AGENT_ENV] = '0'
-    expect(getMaxSubagentsPerSession()).toBe(200)
-  })
-})
-
-describe('assertSubagentCapAndIncrement', () => {
-  test('throws subagent-cap error when getTotalAgentSpawns() >= max', () => {
-    // Arrange — set a low cap and pre-fill the registry to the limit
-    process.env[AGENT_ENV] = '2'
-    const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-    const context = { taskRegistry: reg }
-
-    // Act + Assert
-    expect(() => assertSubagentCapAndIncrement(context)).toThrow(
-      /Subagent spawn limit reached \(2 of 2 agents spawned\)/,
-    )
-  })
-
-  test('throws when count already exceeds the max', () => {
-    // Arrange
-    process.env[AGENT_ENV] = '3'
-    const reg = new TaskRegistryImpl()
-    // Pre-fill above the limit
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-    reg.incrementTotalAgentSpawns()
-
-    // Act + Assert
-    expect(() =>
-      assertSubagentCapAndIncrement({ taskRegistry: reg }),
-    ).toThrow(/Subagent spawn limit reached/)
-  })
-
-  test('increments only on the proceeding path (under the cap)', () => {
-    // Arrange
-    process.env[AGENT_ENV] = '5'
-    const reg = new TaskRegistryImpl()
-    expect(reg.getTotalAgentSpawns()).toBe(0)
-
-    // Act — under the cap, proceeds and increments
-    assertSubagentCapAndIncrement({ taskRegistry: reg })
-
-    // Assert
-    expect(reg.getTotalAgentSpawns()).toBe(1)
-  })
-
-  test('increment happens after the cap passes, before returning', () => {
-    // Arrange — set max=2, fill to 1 (one slot left)
-    process.env[AGENT_ENV] = '2'
-    const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
-
-    // Act — still under the cap, proceeds
-    assertSubagentCapAndIncrement({ taskRegistry: reg })
-
-    // Assert — incremented to the limit
-    expect(reg.getTotalAgentSpawns()).toBe(2)
-
-    // Next call must throw (now AT the limit) — does not increment further
-    expect(() => assertSubagentCapAndIncrement({ taskRegistry: reg })).toThrow()
-    expect(reg.getTotalAgentSpawns()).toBe(2)
-  })
-
-  test('the thrown error message mentions CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION', () => {
-    // Arrange
+describe('CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION (removed in CC 2.1.224)', () => {
+  test('no exported getter reads the removed total-spawn env var', () => {
+    // Arrange — the env var is set to a value that used to matter
     process.env[AGENT_ENV] = '1'
-    const reg = new TaskRegistryImpl()
-    reg.incrementTotalAgentSpawns()
 
-    // Act
-    let caught: Error | null = null
-    try {
-      assertSubagentCapAndIncrement({ taskRegistry: reg })
-    } catch (e) {
-      caught = e as Error
-    }
-
-    // Assert
-    expect(caught).not.toBeNull()
-    expect(caught!.message).toContain(
-      'CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION',
-    )
-  })
-
-  test('treats an undefined taskRegistry as a zero-count no-op (headless path)', () => {
-    // Arrange — no registry, default cap of 200
-    // Act + Assert — must not throw, must not crash
-    expect(() =>
-      assertSubagentCapAndIncrement({ taskRegistry: undefined }),
-    ).not.toThrow()
-  })
-
-  test('the no-op stub registry never throws and never counts up', () => {
-    // Arrange — the headless no-op stub; getters always return 0
-    const reg = getNoopTaskRegistry()
-
-    // Act — under the cap (0 < 200), should "proceed" and call increment (no-op)
-    assertSubagentCapAndIncrement({ taskRegistry: reg })
-
-    // Assert — still 0
-    expect(reg.getTotalAgentSpawns()).toBe(0)
+    // Act + Assert — the module no longer exports the cap primitives. This
+    // is a compile-time fact mirrored at runtime: importing the removed
+    // names would fail module resolution. The remaining getters are
+    // unaffected by the removed env var.
+    expect(getMaxConcurrentSubagents()).toBe(20)
+    expect(getMaxSubagentSpawnDepth()).toBe(3)
+    expect(getMaxWebSearchesPerSession()).toBe(200)
   })
 })
 
@@ -293,16 +187,6 @@ describe('getMaxConcurrentSubagents (CC 2.1.217, Stage 1)', () => {
   test('negative value falls back to 20', () => {
     process.env[CONCURRENT_ENV] = '-3'
     expect(getMaxConcurrentSubagents()).toBe(20)
-  })
-
-  test('is distinct from the per-session total-spawn cap (200), not the same knob', () => {
-    // Arrange — set both to prove they read independent env vars
-    process.env[CONCURRENT_ENV] = '7'
-    process.env[AGENT_ENV] = '99'
-
-    // Assert — two independent knobs, two independent defaults
-    expect(getMaxConcurrentSubagents()).toBe(7)
-    expect(getMaxSubagentsPerSession()).toBe(99)
   })
 })
 

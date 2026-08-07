@@ -111,6 +111,76 @@ export function extractLastJsonStringField(
 }
 
 // ---------------------------------------------------------------------------
+// Line-based JSONL field extraction — CC 2.1.224 binary-verified ports
+// ---------------------------------------------------------------------------
+
+/**
+ * Port of the official `ndt`: scans JSONL text BACKWARDS line by line and
+ * returns the string field `field` of the LAST line whose `"type"` equals
+ * `type`. Lines are fully JSON-parsed (substring pre-filter first); malformed
+ * lines are skipped. Used to read `relocatedCwd` from the newest
+ * `"type":"relocated"` entry in a session file tail.
+ */
+export function extractLastTypedLineField(
+  text: string,
+  type: string,
+  field: string,
+): string | undefined {
+  const typeMarker = `"type":"${type}"`
+  const fieldMarker = `"${field}":`
+  let end = text.length
+  while (end > 0) {
+    const lineStart = text.lastIndexOf('\n', end - 1)
+    const line = text.slice(lineStart + 1, end)
+    end = lineStart
+    if (line.includes(typeMarker) && line.includes(fieldMarker)) {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        if (typeof parsed === 'object' && parsed !== null && parsed.type === type) {
+          const value = parsed[field]
+          if (typeof value === 'string') return value
+        }
+      } catch {
+        // malformed line — keep scanning
+      }
+    }
+    if (lineStart < 0) break
+  }
+  return undefined
+}
+
+/**
+ * Port of the official `loo`: scans JSONL text FORWARDS line by line and
+ * returns the string field `field` of the FIRST line that carries it. Lines
+ * are fully JSON-parsed (substring pre-filter first); malformed lines are
+ * skipped. Used to read the session's original `cwd` from the head.
+ */
+export function extractFirstLineField(
+  text: string,
+  field: string,
+): string | undefined {
+  const fieldMarker = `"${field}":`
+  let start = 0
+  while (start < text.length) {
+    const lineEnd = text.indexOf('\n', start)
+    const line = lineEnd < 0 ? text.slice(start) : text.slice(start, lineEnd)
+    start = lineEnd < 0 ? text.length : lineEnd + 1
+    if (line.includes(fieldMarker)) {
+      try {
+        const parsed = JSON.parse(line) as Record<string, unknown>
+        if (typeof parsed === 'object' && parsed !== null) {
+          const value = parsed[field]
+          if (typeof value === 'string') return value
+        }
+      } catch {
+        // malformed line — keep scanning
+      }
+    }
+  }
+  return undefined
+}
+
+// ---------------------------------------------------------------------------
 // First prompt extraction from head chunk
 // ---------------------------------------------------------------------------
 
@@ -194,7 +264,6 @@ export function extractFirstPromptFromHead(head: string): string {
         return result
       }
     } catch {
-      continue
     }
   }
   if (commandFallback) return commandFallback
@@ -292,7 +361,15 @@ export async function readSessionLite(
  */
 export const MAX_SANITIZED_LENGTH = 200
 
-function simpleHash(str: string): string {
+/**
+ * djb2 hash suffix for truncated path components. CC 2.1.224 binary-verified
+ * (`GHg`/`hut`): the official ALWAYS uses `Math.abs(djb2(name)).toString(36)`
+ * here — never Bun.hash (wyhash), which is runtime-specific and produced
+ * different directory suffixes under Bun vs Node. djb2 is deterministic
+ * across runtimes, so a directory created by one runtime is found by the
+ * other without needing the content-verification fallback.
+ */
+function pathHashSuffix(str: string): string {
   return Math.abs(djb2Hash(str)).toString(36)
 }
 
@@ -303,7 +380,8 @@ function simpleHash(str: string): string {
  * where characters like colons are reserved.
  *
  * For deeply nested paths that would exceed filesystem limits (255 bytes),
- * truncates and appends a hash suffix for uniqueness.
+ * truncates to MAX_SANITIZED_LENGTH and appends a djb2 hash suffix for
+ * uniqueness — byte-for-byte the official `Gw` (CC 2.1.224).
  *
  * @param name - The string to make safe (e.g., '/Users/foo/my-project' or 'plugin:name:server')
  * @returns A safe name (e.g., '-Users-foo-my-project' or 'plugin-name-server')
@@ -313,9 +391,7 @@ export function sanitizePath(name: string): string {
   if (sanitized.length <= MAX_SANITIZED_LENGTH) {
     return sanitized
   }
-  const hash =
-    typeof Bun !== 'undefined' ? Bun.hash(name).toString(36) : simpleHash(name)
-  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${hash}`
+  return `${sanitized.slice(0, MAX_SANITIZED_LENGTH)}-${pathHashSuffix(name)}`
 }
 
 // ---------------------------------------------------------------------------
@@ -345,11 +421,59 @@ export async function canonicalizePath(dir: string): Promise<string> {
 }
 
 /**
+ * Content-verification for truncated project directories — port of the
+ * official `gar` (CC 2.1.224, byte-verified). A prefix match on the directory
+ * NAME alone is ambiguous: two different long paths share the same 200-char
+ * sanitized prefix, and hash suffixes differ across writers/versions. The
+ * official resolves the ambiguity by reading each `.jsonl` in the candidate
+ * directory and checking its recorded working directory: the newest
+ * `"type":"relocated"` entry's `relocatedCwd` wins, else the first `cwd`
+ * field in the head. Both values are compared in sanitized
+ * (non-alphanumeric → '-') form against the sanitized requested path.
+ *
+ * Returns true if any session file in `dir` was recorded for `projectPath`.
+ */
+export async function dirMatchesProjectPath(
+  dir: string,
+  projectPath: string,
+  caseInsensitive = false,
+): Promise<boolean> {
+  const want = projectPath.replace(/[^a-zA-Z0-9]/g, '-')
+  let dirents: Awaited<ReturnType<typeof readdir>>
+  try {
+    dirents = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return false
+  }
+  for (const entry of dirents) {
+    if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue
+    const lite = await readSessionLite(join(dir, entry.name))
+    if (lite === null) continue
+    const recordedCwd =
+      extractLastTypedLineField(lite.tail, 'relocated', 'relocatedCwd') ??
+      extractFirstLineField(lite.head, 'cwd')
+    if (recordedCwd === undefined) continue
+    const candidate = recordedCwd.replace(/[^a-zA-Z0-9]/g, '-')
+    if (
+      caseInsensitive
+        ? candidate.toLowerCase() === want.toLowerCase()
+        : candidate === want
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
  * Finds the project directory for a given path, tolerating hash mismatches
- * for long paths (>200 chars). The CLI uses Bun.hash while the SDK under
- * Node.js uses simpleHash — for paths that exceed MAX_SANITIZED_LENGTH,
- * these produce different directory suffixes. This function falls back to
- * prefix-based scanning when the exact match doesn't exist.
+ * for long paths (>200 chars). Port of the official filesystem branch of
+ * `uN` + `vXi` (CC 2.1.224, byte-verified): try the exact directory first;
+ * for truncated names, scan the projects dir for directories starting with
+ * the 200-char prefix + '-' and accept a candidate ONLY after the `gar`
+ * content check confirms a session inside was recorded for this path. The
+ * pre-2.1.224 prefix-only fallback could return a directory belonging to a
+ * different project that shared the same 200-char prefix.
  */
 export async function findProjectDir(
   projectPath: string,
@@ -360,7 +484,7 @@ export async function findProjectDir(
     return exact
   } catch {
     // Exact match failed — for short paths this means no sessions exist.
-    // For long paths, try prefix matching to handle hash mismatches.
+    // For long paths, try prefix matching with content verification.
     const sanitized = sanitizePath(projectPath)
     if (sanitized.length <= MAX_SANITIZED_LENGTH) {
       return undefined
@@ -369,10 +493,15 @@ export async function findProjectDir(
     const projectsDir = getProjectsDir()
     try {
       const dirents = await readdir(projectsDir, { withFileTypes: true })
-      const match = dirents.find(
-        d => d.isDirectory() && d.name.startsWith(prefix + '-'),
-      )
-      return match ? join(projectsDir, match.name) : undefined
+      for (const d of dirents) {
+        if (!d.isDirectory() || !d.name.startsWith(prefix + '-')) continue
+        const candidate = join(projectsDir, d.name)
+        if (candidate === exact) continue
+        if (await dirMatchesProjectPath(candidate, projectPath)) {
+          return candidate
+        }
+      }
+      return undefined
     } catch {
       return undefined
     }

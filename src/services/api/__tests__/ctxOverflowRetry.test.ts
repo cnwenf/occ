@@ -12,10 +12,11 @@ import { APIError } from '@anthropic-ai/sdk'
  * oversized request.
  *
  * Part (ii): Ctrl+B backgrounding (`startBackgroundSession`) must apply the
- * same subagent caps (`assertSubagentCapAndIncrement` +
- * `claimConcurrentSubagentSlot`) as other spawn paths (`runAgent`). When the
- * concurrent cap is reached, the background session must be denied (the query
- * is never called), matching how `runAgent` throws on cap exceeded.
+ * same concurrent-subagent cap (`claimConcurrentSubagentSlot`) as other
+ * spawn paths (`runAgent`). When the concurrent cap is reached, the
+ * background session must be denied (the query is never called), matching
+ * how `runAgent` throws on cap exceeded. (CC 2.1.224 removed the per-session
+ * total-spawn cap; only the concurrent-running cap remains.)
  */
 
 // --- Part (i): withRetry context-overflow --------------------------------

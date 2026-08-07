@@ -40,10 +40,23 @@ export const getBedrockInferenceProfiles = memoize(async function (): Promise<
   }
 })
 
+/**
+ * Find the first inference profile matching `substring`.
+ * CC 2.1.224 (binary `Fpt`, byte-verified): when `preferredPrefix` is given,
+ * profiles starting with `<preferredPrefix>.` win; a plain substring match is
+ * the fallback. Returns null when nothing matches.
+ */
 export function findFirstMatch(
   profiles: string[],
   substring: string,
+  preferredPrefix?: BedrockRegionPrefix,
 ): string | null {
+  if (preferredPrefix) {
+    const preferred = profiles.find(
+      p => p.startsWith(`${preferredPrefix}.`) && p.includes(substring),
+    )
+    if (preferred) return preferred
+  }
   return profiles.find(p => p.includes(substring)) ?? null
 }
 
@@ -185,8 +198,31 @@ export function isFoundationModel(modelId: string): boolean {
 /**
  * Cross-region inference profile prefixes for Bedrock.
  * These prefixes allow routing requests to models in specific regions.
+ * CC 2.1.224 (binary `hsr`, byte-verified): ['us','eu','apac','jp','au','us-gov','global']
  */
-const BEDROCK_REGION_PREFIXES = ['us', 'eu', 'apac', 'global'] as const
+const BEDROCK_REGION_PREFIXES = [
+  'us',
+  'eu',
+  'apac',
+  'jp',
+  'au',
+  'us-gov',
+  'global',
+] as const
+
+/**
+ * Values accepted for the ANTHROPIC_BEDROCK_REGION_PREFIX env var.
+ * CC 2.1.224 (binary `cdc`, byte-verified): ['us','eu','apac','jp','au','global']
+ * — note: 'us-gov' is deliberately NOT settable via the env var.
+ */
+export const BEDROCK_REGION_PREFIX_ENV_VALUES = [
+  'us',
+  'eu',
+  'apac',
+  'jp',
+  'au',
+  'global',
+] as const
 
 /**
  * Extract the model/inference profile ID from a Bedrock ARN.
@@ -262,4 +298,44 @@ export function applyBedrockRegionPrefix(
 
   // Not a Bedrock model format, return as-is
   return modelId
+}
+
+/**
+ * Derive the region prefix from an AWS region name.
+ * CC 2.1.224 (binary `Upt`, byte-verified):
+ *   us-gov-* → 'us-gov'; us-* → 'us'; eu-* → 'eu'; ap-* → 'apac'; else 'global'
+ */
+export function deriveBedrockRegionPrefixFromRegion(
+  region: string | undefined,
+): BedrockRegionPrefix {
+  const r = region ?? ''
+  if (r.startsWith('us-gov-')) return 'us-gov'
+  if (r.startsWith('us-')) return 'us'
+  if (r.startsWith('eu-')) return 'eu'
+  if (r.startsWith('ap-')) return 'apac'
+  return 'global'
+}
+
+/**
+ * The effective region prefix: ANTHROPIC_BEDROCK_REGION_PREFIX override,
+ * falling back to the derivation from the AWS region.
+ * CC 2.1.224 (binary `eur`, byte-verified): a us-gov region ALWAYS yields
+ * 'us-gov' (checked BEFORE the env override); otherwise the env var wins.
+ * The official zod-validates the env var against the 6-value enum `cdc`
+ * at startup (invalid → unset); OCC has no zod env layer, so the value is
+ * validated here instead — an invalid value is treated as unset, matching
+ * the official observable behavior.
+ */
+export function getEffectiveBedrockRegionPrefix(
+  region: string | undefined,
+): BedrockRegionPrefix {
+  if (region?.startsWith('us-gov-')) return 'us-gov'
+  const envValue = process.env.ANTHROPIC_BEDROCK_REGION_PREFIX
+  if (
+    envValue &&
+    (BEDROCK_REGION_PREFIX_ENV_VALUES as readonly string[]).includes(envValue)
+  ) {
+    return envValue as BedrockRegionPrefix
+  }
+  return deriveBedrockRegionPrefixFromRegion(region)
 }
