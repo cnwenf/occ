@@ -13,14 +13,16 @@ import { REPO_ROOT } from './helpers';
 
 /**
  * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-45
- * card system, OCC-50 "Ascendant" comet mark).
+ * card system, OCC-60 "Signal Chevron" braille mark).
  *
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
- * -p`. Verifies the responsive condensed welcome (wide / compact / plain) and
- * the forced full logo. Both paths render the OCC-50 gradient "Ascendant"
- * comet (src/components/LogoV2/OccMark.tsx), labeled context rows, and a
- * session-stable tip; the retired doge mascot must not render.
+ * -p`. Verifies the responsive condensed welcome (wide / compact / plain),
+ * the forced full logo, and the degradation ladder (light theme, TERM=dumb,
+ * NO_COLOR, 16-color FORCE_COLOR=1). Both condensed and full paths render
+ * the OCC-60 Signal Chevron (src/components/LogoV2/OccMark.tsx), labeled
+ * context rows, and a session-stable tip; the retired doge mascot and the
+ * retired OCC-50 block art must not render.
  *
  * Gated out of CI because it requires tmux; no model call is made.
  */
@@ -125,13 +127,14 @@ function startRepl(
   tmux(['resize-window', '-t', SESSION, '-x', String(width), '-y', '50']);
 }
 
-// Signature glyphs from the OCC-50 "Ascendant" comet mark
-// (src/components/LogoV2/OccMark.tsx). Each is the tier's trail row; the
-// consecutive-block run length (4 / 3 / 2) is unique per tier so a wider
-// tier's glyph never appears inside a narrower pane.
-const LARGE_LOGO_GLYPH = '▟████▛';
-const MEDIUM_LOGO_GLYPH = '▟███';
-const SMALL_LOGO_GLYPH = '▟██▛';
+// Signature glyphs from the OCC-60 "Signal Chevron" mark
+// (src/components/LogoV2/OccMark.tsx). Each is the generated tier's first
+// braille row — a run unique to its tier's dot grid, so a wider tier's
+// signature never appears inside a narrower pane (verified by the unit
+// suite's "tier signature rows are unique across tiers").
+const LARGE_LOGO_GLYPH = '⠛⠷⣤⣀';
+const MEDIUM_LOGO_GLYPH = '⠙⠢⢄⡀';
+const SMALL_LOGO_GLYPH = '⠻⢿⣦⣄⡀';
 const OLD_WORDMARK = '___   ___   ___';
 
 // Retired doge art glyphs that must NOT render anywhere anymore.
@@ -171,7 +174,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
     }
   });
 
-  test('light theme renders the complete wide aperture without replacement glyphs', async () => {
+  test('light theme renders the complete wide chevron without replacement glyphs', async () => {
     const home = freshSeededHome(VERSION, 'light');
     startRepl(home, {}, 100);
     try {
@@ -180,7 +183,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
       const pane = capturePane();
 
       expect(pane).toContain(LARGE_LOGO_GLYPH);
-      expect(pane).not.toContain('�');
+      expect(pane).not.toContain('\uFFFD');
       expect(pane).toContain('Open C Code');
     } finally {
       killRepl();
@@ -188,9 +191,65 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
     }
   });
 
-  test('forced full logo renders the bordered welcome box with the aperture mark', async () => {
+  test('TERM=dumb renders the static silhouette without garbled output', async () => {
     const home = freshSeededHome(VERSION);
-    startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' });
+    startRepl(home, { TERM: 'dumb' }, 100);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      // Brand + version survive the dumb terminal…
+      expect(pane.toLowerCase()).toContain('occ');
+      expect(pane).toContain(`v${VERSION}`);
+      // …and the mark degrades to its uncolored braille silhouette.
+      expect(pane).toContain(LARGE_LOGO_GLYPH);
+      expect(pane).not.toContain('\uFFFD');
+      // No raw SGR fragments leak as visible text.
+      expect(pane).not.toContain('[38;');
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('NO_COLOR renders the uncolored silhouette', async () => {
+    const home = freshSeededHome(VERSION);
+    startRepl(home, { NO_COLOR: '1' }, 100);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      expect(pane).toContain(LARGE_LOGO_GLYPH);
+      expect(pane).not.toContain('\uFFFD');
+      expect(pane).toContain('Open C Code');
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('16-color terminal renders the silhouette without quantized noise', async () => {
+    const home = freshSeededHome(VERSION);
+    startRepl(home, { FORCE_COLOR: '1' }, 100);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      expect(pane).toContain(LARGE_LOGO_GLYPH);
+      expect(pane).not.toContain('\uFFFD');
+      expect(pane).toContain('Open C Code');
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('forced full logo renders the bordered welcome box with the chevron mark', async () => {
+    const home = freshSeededHome(VERSION);
+    startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' }, 100);
     try {
       await waitForText('occ', 20_000);
       await new Promise((r) => setTimeout(r, 800));
@@ -199,7 +258,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
       expect(pane).toContain(`v${VERSION}`);
       // The full logo is a rounded border titled "OCC v…".
       expect(pane).toContain('OCC');
-      // The full box renders the compact aperture mark tier…
+      // The full box renders the compact chevron mark tier…
       expect(pane).toContain(MEDIUM_LOGO_GLYPH);
       // …and the retired doge mascot is gone.
       for (const glyph of DOGE_GLYPHS) {
@@ -243,7 +302,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
       expect(pane).toContain(SMALL_LOGO_GLYPH);
       expect(pane).not.toContain(MEDIUM_LOGO_GLYPH);
       expect(pane).not.toContain(OLD_WORDMARK);
-      expect(pane).not.toContain('╭');
+      expect(pane).not.toContain('\uFFFD');
     } finally {
       killRepl();
       rmSync(home, { recursive: true, force: true });

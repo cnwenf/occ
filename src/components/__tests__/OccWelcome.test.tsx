@@ -1,7 +1,8 @@
 import * as React from 'react'
 import { describe, expect, test } from 'bun:test'
+import chalk from 'chalk'
 import { stringWidth } from '../../ink/stringWidth.js'
-import { renderToString } from '../../utils/staticRender.js'
+import { renderToAnsiString, renderToString } from '../../utils/staticRender.js'
 import { getTheme } from '../../utils/theme.js'
 import {
   formatWelcomeLocation,
@@ -10,16 +11,21 @@ import {
   welcomeTip,
 } from '../LogoV2/OccWelcome.js'
 import {
+  CHEVRON_SPECS,
+  CHEVRON_TONES,
+  chevronBeamX,
+  chevronThemeFamily,
+  generateSignalChevron,
+  getMarkColorMode,
   getOccMark,
   getOccMarkWidth,
-  GRADIENT_STOPS,
-  gradientThemeFamily,
-  highlightColor,
+  isChevronDotLit,
   isShimmerCell,
-  markCellT,
   OCC_MARKS,
-  sampleGradient,
+  type OccMarkArt,
+  type Rgb,
 } from '../LogoV2/OccMark.js'
+import { OccMark } from '../LogoV2/OccMark.js'
 
 const BASE_PROPS = {
   version: '2.1.281',
@@ -28,6 +34,29 @@ const BASE_PROPS = {
   cwd: '/work/occ',
   branch: 'feature/welcome',
   reducedMotion: true,
+}
+
+const BRAILLE_BASE_CODE = 0x2800
+const BRAILLE_LEFT_BITS = [0x01, 0x02, 0x04, 0x40] as const
+const BRAILLE_RIGHT_BITS = [0x08, 0x10, 0x20, 0x80] as const
+
+function isBrailleChar(char: string): boolean {
+  const code = char.codePointAt(0) ?? 0
+  return code >= BRAILLE_BASE_CODE && code <= BRAILLE_BASE_CODE + 0xff
+}
+
+/** Reflect one braille cell's dot rows (row r swaps with row 3-r). */
+function mirrorBraille(char: string): string {
+  if (char === ' ') return ' '
+  const bits = (char.codePointAt(0) ?? BRAILLE_BASE_CODE) - BRAILLE_BASE_CODE
+  let mirrored = 0
+  for (let row = 0; row < 4; row++) {
+    if (bits & BRAILLE_LEFT_BITS[row]!) mirrored |= BRAILLE_LEFT_BITS[3 - row]!
+    if (bits & BRAILLE_RIGHT_BITS[row]!) {
+      mirrored |= BRAILLE_RIGHT_BITS[3 - row]!
+    }
+  }
+  return String.fromCodePoint(BRAILLE_BASE_CODE + mirrored)
 }
 
 function relativeLuminance(rgb: string): number {
@@ -54,7 +83,7 @@ function contrastRatio(foreground: string, background: string): number {
   return (lighter + 0.05) / (darker + 0.05)
 }
 
-function rgbString(rgb: readonly number[]): string {
+function rgbString(rgb: Rgb): string {
   return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`
 }
 
@@ -68,13 +97,15 @@ describe('OCC REPL welcome layout', () => {
     expect(getOccWelcomeMode(120, true)).toBe('plain')
   })
 
-  test('provides aligned, distinct mark art for all three tiers', () => {
+  test('provides aligned, braille-only mark art for all three tiers', () => {
     expect(getOccMark('wide')).toBe(OCC_MARKS.wide)
     expect(getOccMark('compact')).toBe(OCC_MARKS.compact)
     expect(getOccMark('plain')).toBe(OCC_MARKS.plain)
-    expect(OCC_MARKS.wide.length).toBeGreaterThanOrEqual(
-      OCC_MARKS.compact.length,
-    )
+
+    // Tier sizes: wide 8 rows, compact ~7, plain ~5 (issue OCC-60).
+    expect(OCC_MARKS.wide.length).toBe(8)
+    expect(OCC_MARKS.compact.length).toBe(7)
+    expect(OCC_MARKS.plain.length).toBe(5)
     expect(getOccMarkWidth(OCC_MARKS.wide)).toBeGreaterThan(
       getOccMarkWidth(OCC_MARKS.compact),
     )
@@ -86,10 +117,31 @@ describe('OCC REPL welcome layout', () => {
       const width = getOccMarkWidth(art)
       expect(art.every(line => stringWidth(line) === width)).toBe(true)
       expect(art.every(line => line.trim().length > 0)).toBe(true)
-      expect(art.every(line => !line.trim().includes(' '))).toBe(true)
+      for (const line of art) {
+        for (const char of line) {
+          if (char !== ' ') expect(isBrailleChar(char)).toBe(true)
+        }
+      }
       expect(art.join('\n')).not.toContain('OCC')
       expect(art.join('\n')).not.toContain('___   ___   ___')
     }
+  })
+
+  test('tier signature rows are unique across tiers', () => {
+    // The e2e suite asserts pane glyphs per tier width; a signature shared
+    // across tiers would make those assertions vacuous.
+    const signatures = {
+      wide: OCC_MARKS.wide[0]!.trim(),
+      compact: OCC_MARKS.compact[0]!.trim(),
+      plain: OCC_MARKS.plain[0]!.trim(),
+    }
+    expect(signatures.wide).not.toBe(signatures.compact)
+    expect(OCC_MARKS.compact.join('\n')).not.toContain(signatures.wide)
+    expect(OCC_MARKS.plain.join('\n')).not.toContain(signatures.wide)
+    expect(OCC_MARKS.wide.join('\n')).not.toContain(signatures.compact)
+    expect(OCC_MARKS.plain.join('\n')).not.toContain(signatures.compact)
+    expect(OCC_MARKS.wide.join('\n')).not.toContain(signatures.plain)
+    expect(OCC_MARKS.compact.join('\n')).not.toContain(signatures.plain)
   })
 
   test('keeps git and CJK cwd context within the requested width', () => {
@@ -110,70 +162,128 @@ describe('OCC REPL welcome layout', () => {
   })
 })
 
-describe('OCC Ascendant gradient engine', () => {
-  test('resolves the gradient family from the theme name', () => {
-    expect(gradientThemeFamily('dark')).toBe('dark')
-    expect(gradientThemeFamily('dark-ansi')).toBe('dark')
-    expect(gradientThemeFamily('dark-daltonized')).toBe('dark')
-    expect(gradientThemeFamily('light')).toBe('light')
-    expect(gradientThemeFamily('light-ansi')).toBe('light')
-    expect(gradientThemeFamily('light-daltonized')).toBe('light')
-  })
-
-  test('sampleGradient hits the stops and stays inside the gamut', () => {
-    const stops = GRADIENT_STOPS.dark
-    expect(sampleGradient(stops, 0)).toEqual(stops[0])
-    expect(sampleGradient(stops, 1)).toEqual(stops[stops.length - 1])
-    expect(sampleGradient(stops, 0.5)).toEqual(stops[1])
-    // Out-of-range inputs clamp instead of extrapolating.
-    expect(sampleGradient(stops, -2)).toEqual(stops[0])
-    expect(sampleGradient(stops, 5)).toEqual(stops[stops.length - 1])
-    for (const t of [0.13, 0.37, 0.62, 0.88]) {
-      const [r, g, b] = sampleGradient(stops, t)
-      expect(r).toBeGreaterThanOrEqual(0)
-      expect(r).toBeLessThanOrEqual(255)
-      expect(g).toBeGreaterThanOrEqual(0)
-      expect(g).toBeLessThanOrEqual(255)
-      expect(b).toBeGreaterThanOrEqual(0)
-      expect(b).toBeLessThanOrEqual(255)
+describe('OCC Signal Chevron generator', () => {
+  test('beam center follows the OCC-60 formula', () => {
+    const spec = CHEVRON_SPECS.wide
+    const centerY = (spec.gridHeight - 1) / 2
+    expect(centerY).toBe(15.5)
+    // Tails touch x=0, apex reaches W-2.
+    expect(chevronBeamX(spec, 0)).toBe(0)
+    expect(chevronBeamX(spec, spec.gridHeight - 1)).toBe(0)
+    expect(chevronBeamX(spec, 15)).toBeCloseTo(27.097, 2)
+    expect(chevronBeamX(spec, 16)).toBeCloseTo(27.097, 2)
+    // Symmetric around the center row.
+    for (let y = 0; y < 16; y++) {
+      expect(chevronBeamX(spec, y)).toBe(
+        chevronBeamX(spec, spec.gridHeight - 1 - y),
+      )
     }
   })
 
-  test('markCellT flows diagonally across the mark', () => {
-    const art = OCC_MARKS.wide
-    const topLeft = markCellT(art, 0, 0)
-    const bottomRight = markCellT(art, art.length - 1, getOccMarkWidth(art) - 1)
-    expect(topLeft).toBeCloseTo(0)
-    expect(bottomRight).toBeCloseTo(1)
-    for (let row = 0; row < art.length; row++) {
-      for (let column = 0; column < getOccMarkWidth(art); column++) {
-        const t = markCellT(art, row, column)
-        expect(t).toBeGreaterThanOrEqual(0)
-        expect(t).toBeLessThanOrEqual(1)
+  test('dot gating respects the beam radius and the grid bounds', () => {
+    const spec = CHEVRON_SPECS.wide
+    // Beam center is always lit.
+    for (let y = 0; y < spec.gridHeight; y++) {
+      const centerX = Math.round(chevronBeamX(spec, y))
+      expect(isChevronDotLit(spec, centerX, y)).toBe(true)
+    }
+    // Far off-beam dots are not lit.
+    expect(isChevronDotLit(spec, 29, 0)).toBe(false)
+    expect(isChevronDotLit(spec, 0, 15)).toBe(false)
+    // Out-of-grid coordinates are never lit.
+    expect(isChevronDotLit(spec, -1, 0)).toBe(false)
+    expect(isChevronDotLit(spec, spec.gridWidth, 0)).toBe(false)
+    expect(isChevronDotLit(spec, 0, -1)).toBe(false)
+    expect(isChevronDotLit(spec, 0, spec.gridHeight)).toBe(false)
+  })
+
+  test('generation is deterministic from the spec', () => {
+    for (const mode of ['wide', 'compact', 'plain'] as const) {
+      expect(generateSignalChevron(CHEVRON_SPECS[mode])).toEqual(
+        OCC_MARKS[mode],
+      )
+    }
+  })
+
+  test('every tier is vertically mirror-symmetric (beam path closed)', () => {
+    for (const art of Object.values(OCC_MARKS)) {
+      const rows = art.length
+      for (let row = 0; row < Math.floor(rows / 2); row++) {
+        const top = art[row]!
+        const bottom = art[rows - 1 - row]!
+        const mirroredTop = [...top].map(mirrorBraille).join('')
+        expect(mirroredTop).toBe(bottom)
       }
     }
   })
 
-  test('every gradient stop keeps 3:1 graphical contrast in its theme', () => {
-    for (const stop of GRADIENT_STOPS.dark) {
+  test('the apex points right at the middle rows', () => {
+    const art = OCC_MARKS.wide
+    const width = getOccMarkWidth(art)
+    // The top/bottom rows start at column 0 (the tails)…
+    expect(art[0]!.charAt(0)).not.toBe(' ')
+    expect(art[art.length - 1]!.charAt(0)).not.toBe(' ')
+    // …and one of the two middle rows occupies the rightmost column.
+    const middleOccupied =
+      art[3]!.charAt(width - 1) !== ' ' || art[4]!.charAt(width - 1) !== ' '
+    expect(middleOccupied).toBe(true)
+  })
+
+  test('plain tier packs a denser silhouette than the wide tier', () => {
+    const density = (art: OccMarkArt): number => {
+      let filled = 0
+      let total = 0
+      for (const line of art) {
+        for (const char of line) {
+          if (char === ' ') continue
+          total++
+          const bits = (char.codePointAt(0) ?? 0) - BRAILLE_BASE_CODE
+          for (let bit = 0; bit < 8; bit++) {
+            if (bits & (1 << bit)) filled++
+          }
+        }
+      }
+      // Each occupied cell carries 8 dots of capacity.
+      return filled / (total * 8)
+    }
+    expect(density(OCC_MARKS.plain)).toBeGreaterThan(density(OCC_MARKS.wide))
+  })
+})
+
+describe('OCC Signal Chevron monochrome engine', () => {
+  test('resolves the tone family from the theme name', () => {
+    expect(chevronThemeFamily('dark')).toBe('dark')
+    expect(chevronThemeFamily('dark-ansi')).toBe('dark')
+    expect(chevronThemeFamily('dark-daltonized')).toBe('dark')
+    expect(chevronThemeFamily('light')).toBe('light')
+    expect(chevronThemeFamily('light-ansi')).toBe('light')
+    expect(chevronThemeFamily('light-daltonized')).toBe('light')
+  })
+
+  test('every tone keeps 3:1 graphical contrast in its theme', () => {
+    for (const tone of [CHEVRON_TONES.dark.base, CHEVRON_TONES.dark.peak]) {
       expect(
-        contrastRatio(rgbString(stop), 'rgb(0,0,0)'),
+        contrastRatio(rgbString(tone), 'rgb(0,0,0)'),
       ).toBeGreaterThanOrEqual(3)
     }
-    for (const stop of GRADIENT_STOPS.light) {
+    for (const tone of [CHEVRON_TONES.light.base, CHEVRON_TONES.light.peak]) {
       expect(
-        contrastRatio(rgbString(stop), 'rgb(255,255,255)'),
+        contrastRatio(rgbString(tone), 'rgb(255,255,255)'),
       ).toBeGreaterThanOrEqual(3)
     }
   })
 
-  test('highlight lifts the base color without leaving the gamut', () => {
-    const base: readonly [number, number, number] = [255, 116, 64]
-    const lifted = highlightColor(base)
-    expect(lifted[0]).toBeGreaterThanOrEqual(base[0])
-    expect(lifted[1]).toBeGreaterThan(base[1])
-    expect(lifted[2]).toBeGreaterThan(base[2])
-    expect(lifted.every(channel => channel <= 255)).toBe(true)
+  test('shimmer peak lifts strictly brighter than the resting base', () => {
+    for (const family of ['dark', 'light'] as const) {
+      const tone = CHEVRON_TONES[family]
+      expect(tone.peak[0]).toBeGreaterThan(tone.base[0])
+      expect(tone.peak[1]).toBeGreaterThan(tone.base[1])
+      expect(tone.peak[2]).toBeGreaterThan(tone.base[2])
+      for (const channel of [...tone.base, ...tone.peak]) {
+        expect(channel).toBeGreaterThanOrEqual(0)
+        expect(channel).toBeLessThanOrEqual(255)
+      }
+    }
   })
 
   test('shimmer band sweeps once and settles without highlights', () => {
@@ -192,6 +302,52 @@ describe('OCC Ascendant gradient engine', () => {
       }
     }
   })
+
+  test('color mode follows the terminal color level', () => {
+    const savedLevel = chalk.level
+    try {
+      chalk.level = 3
+      expect(getMarkColorMode()).toBe('color')
+      chalk.level = 2
+      expect(getMarkColorMode()).toBe('color')
+      chalk.level = 1
+      expect(getMarkColorMode()).toBe('silhouette')
+      chalk.level = 0
+      expect(getMarkColorMode()).toBe('silhouette')
+    } finally {
+      chalk.level = savedLevel
+    }
+  })
+
+  test('silhouette mode renders braille without color escapes', async () => {
+    const savedLevel = chalk.level
+    try {
+      chalk.level = 0
+      const ansi = await renderToAnsiString(
+        <OccMark mode="wide" animate={false} />,
+        80,
+      )
+      expect(ansi).toContain(OCC_MARKS.wide[0]!.trim())
+      expect(ansi).not.toContain('\x1b[38')
+    } finally {
+      chalk.level = savedLevel
+    }
+  })
+
+  test('color mode emits the base tone on occupied cells', async () => {
+    const savedLevel = chalk.level
+    try {
+      chalk.level = 3
+      const ansi = await renderToAnsiString(
+        <OccMark mode="wide" animate={false} />,
+        80,
+      )
+      const [r, g, b] = CHEVRON_TONES.dark.base
+      expect(ansi).toContain(`38;2;${r};${g};${b}`)
+    } finally {
+      chalk.level = savedLevel
+    }
+  })
 })
 
 describe('OCC REPL welcome card render', () => {
@@ -205,9 +361,9 @@ describe('OCC REPL welcome card render', () => {
     expect(output).toContain('OCC')
     expect(output).toContain('v2.1.281')
     expect(output).toContain('Open C Code')
-    // Gradient mark art survives the render (ANSI stripped). Row 2 is the
-    // tier signature (unique consecutive-block run per tier).
-    expect(output).toContain(OCC_MARKS.wide[2]!.trim())
+    // Signal Chevron art survives the render (ANSI stripped). Row 0 is the
+    // tier signature (unique braille run per tier).
+    expect(output).toContain(OCC_MARKS.wide[0]!.trim())
     expect(output).not.toContain('___   ___   ___')
     // Labeled readout rows.
     expect(output).toContain('MODEL')
@@ -226,8 +382,8 @@ describe('OCC REPL welcome card render', () => {
     )
 
     expect(output).toContain(welcomeTip('compact'))
-    expect(output).toContain(OCC_MARKS.compact[2]!.trim())
-    expect(output).not.toContain(OCC_MARKS.wide[2]!.trim())
+    expect(output).toContain(OCC_MARKS.compact[0]!.trim())
+    expect(output).not.toContain(OCC_MARKS.wide[0]!.trim())
     for (const line of output.split('\n')) {
       expect(stringWidth(line)).toBeLessThanOrEqual(columns)
     }
@@ -239,7 +395,7 @@ describe('OCC REPL welcome card render', () => {
       36,
     )
 
-    expect(output).toContain(OCC_MARKS.plain[2]!.trim())
+    expect(output).toContain(OCC_MARKS.plain[0]!.trim())
     expect(output).toContain('OCC v2.1.281 · Open C Code')
     expect(output).not.toContain('╭')
     for (const line of output.split('\n')) {
@@ -257,7 +413,7 @@ describe('OCC REPL welcome card render', () => {
     expect(output).toContain('Claude Sonnet 4.5')
     expect(output).toContain('git:feature/welcome')
     expect(output).toContain(welcomeTip('plain'))
-    expect(output).not.toContain(OCC_MARKS.plain[2]!.trim())
+    expect(output).not.toContain(OCC_MARKS.plain[0]!.trim())
     expect(output).not.toContain('___   ___   ___')
     expect(output).not.toContain('╭')
   })
