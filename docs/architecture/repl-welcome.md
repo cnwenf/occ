@@ -1,9 +1,10 @@
 # REPL Welcome Screen
 
 The OCC REPL opens with a responsive, terminal-native welcome card implemented
-by `src/components/LogoV2/OccWelcome.tsx`, with the gradient mark drawn by
-`src/components/LogoV2/OccMark.tsx`. It keeps the familiar Claude Code startup
-information while giving OCC a distinct, high-tech visual identity.
+by `src/components/LogoV2/OccWelcome.tsx`, with the grayscale "Signal Chevron"
+braille mark drawn by `src/components/LogoV2/OccMark.tsx`. It keeps the
+familiar Claude Code startup information while giving OCC a distinct,
+restrained visual identity.
 
 ## Design research
 
@@ -44,23 +45,36 @@ degradation ladder) was kept; only the silhouette and palette changed. Full
 boards, rationale, and tier drawings are recorded in
 `docs/welcome-logo-occ50.md`.
 
+**OCC-60 replaced the identity again**, per the user's selection from four
+design directions. The user chose **A. "Signal Chevron"** — the REPL prompt
+`❯` abstracted as a braille dot-matrix light beam. The design language aligns
+with the grok-build welcome screen: near-black ground, dark-gray dot matrix,
+a single diagonal shimmer highlight, and — deliberately — **no color
+gradient**. The Ascendant comet mark was replaced. Unlike the hand-tuned
+tiers of OCC-45/50, the chevron glyph is **generated parametrically**: a dot
+beam on a grid (center `cy = (dotHeight - 1) / 2`, per dot row
+`fx = (dotWidth - 2) * (1 - |y - cy| / cy)`, dots with `|x - fx| <= beam`
+lit) converted to braille cells (2×4 dots each; left column bits 0/1/2/6,
+right column bits 3/4/5/7, base U+2800). The three tiers are one shape
+downsampled at decreasing grid sizes. Design record: `docs/welcome-logo-occ60.md`.
+
 ## Information hierarchy
 
 The card deliberately limits the first screen to four levels:
 
 1. **Identity:** `OCC`, version, and `Open C Code` — embedded in the top border
    as a title tab.
-2. **Hero:** the gradient "Ascendant" comet mark with a short readiness
-   line (`Ready when you are.`).
+2. **Hero:** the grayscale "Signal Chevron" braille mark with a short
+   readiness line (`Ready when you are.`).
 3. **Context:** labeled readout rows — `MODEL` (model + billing) and `PROJ`
    (Git branch + cwd, agent-prefixed when present).
 4. **Action:** one deterministic, session-stable hint after a dashed rule.
 
-The mark is a pure abstract trajectory — a 45° trail of stepped momentum
-flaring into a diamond signal head — deliberately decoupled from any
-letterform. Quadrant caps taper the tail and flare the head; the right edge
-cascades one column per row so the silhouette reads as a smooth trajectory.
-It renders at monumental scale on wide terminals.
+The mark is the REPL prompt `❯` abstracted as a dot-matrix beam — two mirrored
+diagonal strokes of lit braille dots meeting at a right-edge apex. It is a
+pure abstract trajectory, deliberately decoupled from any letterform, and is
+generated (never hand-drawn) so the silhouette stays optically consistent at
+every tier. It renders at monumental scale on wide terminals.
 
 ## Responsive tiers
 
@@ -68,9 +82,9 @@ It renders at monumental scale on wide terminals.
 
 | Terminal width | Layout | Behavior |
 |---|---|---|
-| 76+ columns | Wide hero | Seven-row, 14-column mark beside labeled metadata |
-| 44–75 columns | Compact card | Seven-row, 12-column mark stacks above metadata |
-| Under 44 columns | Plain | Five-row, 8-column mark, no border, essential text |
+| 76+ columns | Wide hero | Eight-row, 15-column braille chevron beside labeled metadata |
+| 44–75 columns | Compact card | Seven-row, 12-column downsampled chevron stacks above metadata |
+| Under 44 columns | Plain | Five-row, 8-column thick-stroke chevron, no border, essential text |
 
 The card caps itself at 84 columns so it remains readable in very wide
 terminals. All context strings use display-width-aware truncation, including
@@ -83,19 +97,22 @@ share one identity.
 
 ## Color, motion, and compatibility
 
-- The gradient is theme-aware: the luminous launch ramp (launch gold → ember
-  thrust → signal rose) on dark themes and darker saturated stops (deep amber
-  → vermilion → crimson rose) on light themes, so every stop keeps at least
-  3:1 contrast (the WCAG non-text-graphics threshold) against the reference
-  background.
+- The palette is deliberately restrained — a flat grayscale mark with **no
+  color gradient**: a dark-gray dot matrix (`#5a5a5a`) at rest and a single
+  near-white shimmer highlight (`#e1e1e1`) on dark themes; light themes use
+  darker gray variants (`#3d3d3d` rest, `#707070` highlight) so both states
+  keep at least 3:1 contrast (the WCAG non-text-graphics threshold) against
+  the reference background.
 - **Degradation ladder** is automatic via chalk's color-level detection:
-  truecolor terminals get the smooth ramp; 256-color terminals get the nearest
+  truecolor terminals get the exact grays; 256-color terminals get the nearest
   cube colors; 16-color terminals get the nearest basic colors; `NO_COLOR`
   terminals get plain glyphs — the silhouette always survives. Screen-reader
-  mode and `TERM=dumb` skip the art entirely.
-- The diagonal light sweep runs once for 1.85 seconds at roughly 12 frames per
-  second, then settles into the static gradient and unsubscribes from the
-  shared animation clock. `prefersReducedMotion` disables it.
+  mode and `TERM=dumb` render a text-only condensed variant (no braille) and,
+  in the full-logo path, the mark degrades to a small ASCII silhouette so
+  nothing mojibakes on legacy terminals.
+- The single diagonal light sweep runs once for 1.8 seconds at roughly 12
+  frames per second, then settles into the static gray mark and unsubscribes
+  from the shared animation clock. `prefersReducedMotion` disables it.
 - The existing `welcomeTips.ts` picker supplies one deterministic hint per
   session, so the copy does not jump during a re-render.
 - `useAnimationFrame` pauses the effect when the card leaves the viewport, so
@@ -103,9 +120,10 @@ share one identity.
 
 ## Code map
 
-- `src/components/LogoV2/OccMark.tsx` owns the three mark tiers, the gradient
-  engine (`sampleGradient`, `markCellT`, `isShimmerCell`), and the one-shot
-  shimmer.
+- `src/components/LogoV2/OccMark.tsx` owns the parametric chevron generator
+  (`generateSignalChevron`), the three downsampled tiers, the flat grayscale
+  palette (`MARK_COLORS`), the ASCII dumb-terminal fallback, and the one-shot
+  shimmer (`isShimmerCell`).
 - `src/components/LogoV2/CondensedLogo.tsx` gathers live REPL state, including
   the cached Git branch.
 - `src/components/LogoV2/OccWelcome.tsx` owns responsive presentation: the HUD

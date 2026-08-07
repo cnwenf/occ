@@ -6,32 +6,38 @@ import { getInitialSettings } from '../../utils/settings/settings.js'
 import { useTheme } from '../design-system/ThemeProvider.js'
 
 /**
- * The OCC-50 "Ascendant" comet mark.
+ * The OCC-60 "Signal Chevron" mark.
  *
- * Design exploration ran through the brandkit skill (dark-developer mode):
- * three directions were studied as terminal-native block art — "Lodestar"
- * compass star (guidance), "Core Frame" viewfinder (precision), and
- * "Ascendant" (momentum) — and Ascendant was selected: a signal climbing
- * its own trail. The stepped trail is scaffold momentum, one completed
- * step per row; the flared diamond head is the spark of intent. The mark
- * is a pure abstract trajectory — deliberately decoupled from any "OCC"
- * letterform. Exploration boards and rationale live in
- * `docs/welcome-logo-occ50.md`.
+ * The user selected direction A ("Signal Chevron") from four design
+ * proposals: the REPL prompt `❯` abstracted as a braille dot-matrix light
+ * beam. The design language aligns with the grok-build welcome screen —
+ * near-black ground, dark-gray dot matrix, a single diagonal shimmer
+ * highlight (gray → near-white). Deliberately restrained: NO color
+ * gradient. It replaces the OCC-50 "Ascendant" comet mark.
  *
- * The rendering language is carried over from OCC-45 (the technique was
- * validated; only the identity changed):
+ * The glyph is generated, not hand-drawn. A parametric beam is lit on a
+ * dot grid — center `cy = (dotHeight - 1) / 2`, per dot row
+ * `fx = (dotWidth - 2) * (1 - |y - cy| / cy)`, every dot with
+ * `|x - fx| <= beam` lit — then converted to braille cells (each cell is
+ * 2×4 dots; left column bits 0/1/2/6, right column bits 3/4/5/7, base
+ * U+2800). The two mirrored strokes meet at the right edge: a chevron.
  *
- * - One silhouette at three tiers, solid block + quadrant cells so it
- *   stays crisp in every monospace font.
- * - Diagonal truecolor gradient across every occupied cell (launch gold →
- *   ember thrust → signal rose). chalk down-converts automatically where
- *   truecolor is missing: 256-color terminals get the nearest cube colors,
- *   16-color terminals get the nearest basic colors, NO_COLOR terminals
- *   get plain glyphs — the silhouette always survives.
- * - One-shot diagonal light sweep (~12 fps, 1.85 s) that settles into the
- *   static gradient; reduced motion disables it entirely.
- * - Monumental 14-column tier on wide terminals, 12-column compact, and a
- *   5-row plain tier for narrow borderless startup.
+ * The rendering architecture is carried over from OCC-45/50 (the technique
+ * was validated; only the identity changed):
+ *
+ * - One silhouette at three tiers — wide (8 rows), compact (~7 rows,
+ *   stroke tightened one cell), plain (~5 rows, thick stroke so the
+ *   silhouette survives small sizes).
+ * - Rest state is a flat dark gray (#5a5a5a family); on light themes a
+ *   darker gray variant keeps ≥ 3:1 contrast (WCAG non-text graphics
+ *   threshold) against the reference background.
+ * - One-shot diagonal light sweep (~12 fps, 1.8 s) toward near-white
+ *   (#e1e1e1), then the clock unsubscribes and the mark settles. Reduced
+ *   motion disables it entirely.
+ * - Degradation ladder: chalk down-converts truecolor → 256 → 16 colors
+ *   automatically and NO_COLOR yields plain glyphs — the silhouette always
+ *   survives. `TERM=dumb` renders an ASCII silhouette instead of braille so
+ *   nothing mojibakes on legacy terminals.
  */
 
 export type OccMarkMode = 'wide' | 'compact' | 'plain'
@@ -46,43 +52,93 @@ function normalizeMark(lines: readonly string[]): OccMarkArt {
 }
 
 /**
- * The Ascendant comet at three resolutions. Every tier is the same
- * gesture — a 45° trail of stepped momentum flaring into a signal head at
- * the summit — redrawn optically per tier. Quadrant caps (▟/▛/▙/▄) taper
- * the trail's tail and flare the head; the right edge cascades one column
- * per row so the silhouette reads as a smooth trajectory, never a bar
- * chart. No internal gaps, so the silhouette survives any monospace font.
+ * Braille cell bit layout: each cell is 2 dot columns × 4 dot rows. The
+ * left column carries dots 1/2/3/7 (bits 0, 1, 2, 6) and the right column
+ * dots 4/5/6/8 (bits 3, 4, 5, 7), addressed by the dot-row offset 0–3.
+ */
+const BRAILLE_LEFT_BITS = [0x01, 0x02, 0x04, 0x40] as const
+const BRAILLE_RIGHT_BITS = [0x08, 0x10, 0x20, 0x80] as const
+const BRAILLE_BASE = 0x2800
+
+export type ChevronSpec = {
+  /** Dot-grid width in braille dots (2 dots per character column). */
+  readonly dotWidth: number
+  /** Dot-grid height in braille dots (4 dots per character row). */
+  readonly dotHeight: number
+  /** Half-thickness of the beam in dots (`|x - fx| <= beam` lights a dot). */
+  readonly beam: number
+}
+
+/**
+ * The three tiers are one shape downsampled, per the OCC-60 spec: wide is
+ * the full 30×32 grid; compact shrinks the grid and tightens the stroke by
+ * one cell; plain shrinks further and thickens the stroke so the silhouette
+ * stays alive at narrow widths.
+ */
+export const SIGNAL_CHEVRON_SPECS: Record<OccMarkMode, ChevronSpec> = {
+  wide: { dotWidth: 30, dotHeight: 32, beam: 2.1 },
+  compact: { dotWidth: 24, dotHeight: 28, beam: 1.6 },
+  plain: { dotWidth: 16, dotHeight: 20, beam: 2.4 },
+}
+
+/**
+ * Generate one Signal Chevron tier from the parametric beam formula and
+ * convert it to braille. Rows keep their global column offset (the
+ * staggered chevron gesture); blank cells become ASCII spaces so the
+ * silhouette composes cleanly with the renderer's space-run handling.
+ */
+export function generateSignalChevron(spec: ChevronSpec): OccMarkArt {
+  const { dotWidth, dotHeight, beam } = spec
+  const cy = (dotHeight - 1) / 2
+  const charCols = Math.ceil(dotWidth / 2)
+  const charRows = Math.ceil(dotHeight / 4)
+
+  const cells: number[][] = Array.from({ length: charRows }, () =>
+    Array<number>(charCols).fill(0),
+  )
+  for (let y = 0; y < dotHeight; y++) {
+    const fx = (dotWidth - 2) * (1 - Math.abs(y - cy) / cy)
+    for (let x = 0; x < dotWidth; x++) {
+      if (Math.abs(x - fx) > beam) continue
+      const charCol = Math.floor(x / 2)
+      const charRow = Math.floor(y / 4)
+      const bits = x % 2 === 0 ? BRAILLE_LEFT_BITS : BRAILLE_RIGHT_BITS
+      cells[charRow]![charCol]! |= bits[y % 4]!
+    }
+  }
+
+  // Global bounding box keeps the staggered gesture; unlit cells inside it
+  // become ASCII spaces (the beam is contiguous, so no interior holes).
+  let minCol = charCols
+  let maxCol = -1
+  for (const row of cells) {
+    for (let col = 0; col < charCols; col++) {
+      if (row[col] !== 0) {
+        if (col < minCol) minCol = col
+        if (col > maxCol) maxCol = col
+      }
+    }
+  }
+  if (maxCol < 0) return [' ']
+
+  const lines = cells.map(row =>
+    row
+      .slice(minCol, maxCol + 1)
+      .map(code => (code === 0 ? ' ' : String.fromCharCode(BRAILLE_BASE + code)))
+      .join(''),
+  )
+  return normalizeMark(lines)
+}
+
+/**
+ * The Signal Chevron at three resolutions, generated at module load. Every
+ * tier is the same gesture — the REPL prompt `❯` as a dot-matrix beam —
+ * redrawn at decreasing grid sizes.
  */
 export const OCC_MARKS = {
-  // Monumental tier for wide terminals (7 × 14).
-  wide: normalizeMark([
-    '           ▄▄',
-    '          ▟██▙',
-    '        ▟████▛',
-    '      ▟████▛',
-    '    ▟████▛',
-    '  ▟████▛',
-    '▟████▛',
-  ]),
-  // Standard tier (7 × 12) — compact cards and the full-logo panel. The
-  // trail curves (step 2 then 1) so the launch accelerates at small scale.
-  compact: normalizeMark([
-    '          ▄▄',
-    '        ▟██▙',
-    '      ▟███▙',
-    '    ▟███▛',
-    '   ▟███▛',
-    ' ▟███▛',
-    '▟███▛',
-  ]),
-  // Small tier (5 × 8) — narrow borderless welcome.
-  plain: normalizeMark([
-    '      ▄▄',
-    '    ▟██▙',
-    '  ▟██▛',
-    ' ▟██▛',
-    '▟██▛',
-  ]),
+  wide: generateSignalChevron(SIGNAL_CHEVRON_SPECS.wide),
+  compact: generateSignalChevron(SIGNAL_CHEVRON_SPECS.compact),
+  plain: generateSignalChevron(SIGNAL_CHEVRON_SPECS.plain),
 } satisfies Record<OccMarkMode, OccMarkArt>
 
 export function getOccMark(mode: OccMarkMode): OccMarkArt {
@@ -94,81 +150,35 @@ export function getOccMarkWidth(art: OccMarkArt): number {
 }
 
 /**
- * Gradient stops per theme family. Dark terminals get the luminous launch
- * ramp (gold → ember thrust → signal rose); light terminals get darker
- * saturated tones so every stop keeps ≥ 3:1 contrast (WCAG non-text
- * graphics threshold) against the reference background.
+ * Flat mark palette per theme family — restrained by design: a dark-gray
+ * dot matrix at rest, one near-white shimmer highlight. Light themes use a
+ * darker gray variant so both states keep ≥ 3:1 contrast against the
+ * reference background.
  */
-export const GRADIENT_STOPS: Record<'dark' | 'light', readonly Rgb[]> = {
-  dark: [
-    [252, 211, 77], // launch gold
-    [251, 146, 60], // ember thrust
-    [244, 63, 94], // signal rose
-  ],
-  light: [
-    [180, 83, 9], // deep amber
-    [194, 65, 12], // vermilion
-    [159, 18, 57], // crimson rose
-  ],
+export const MARK_COLORS: Record<
+  'dark' | 'light',
+  { readonly rest: Rgb; readonly highlight: Rgb }
+> = {
+  dark: {
+    rest: [90, 90, 90], // #5a5a5a — resting dot matrix
+    highlight: [225, 225, 225], // #e1e1e1 — shimmer peak
+  },
+  light: {
+    rest: [61, 61, 61], // dark-gray variant, ≥3:1 on white
+    highlight: [112, 112, 112], // shimmer peak, still ≥3:1 on white
+  },
 }
 
-export function gradientThemeFamily(themeName: string): 'dark' | 'light' {
+export function markThemeFamily(themeName: string): 'dark' | 'light' {
   return themeName.startsWith('light') ? 'light' : 'dark'
-}
-
-/**
- * Piecewise-linear interpolation across the stop list. t is clamped to
- * [0, 1]; t = 0 returns the first stop, t = 1 the last.
- */
-export function sampleGradient(
-  stops: readonly Rgb[],
-  t: number,
-): Rgb {
-  if (stops.length === 0) return [0, 0, 0]
-  if (stops.length === 1) return stops[0]!
-  const clamped = Math.min(Math.max(t, 0), 1)
-  const scaled = clamped * (stops.length - 1)
-  const index = Math.min(Math.floor(scaled), stops.length - 2)
-  const local = scaled - index
-  const from = stops[index]!
-  const to = stops[index + 1]!
-  return [
-    Math.round(from[0] + (to[0] - from[0]) * local),
-    Math.round(from[1] + (to[1] - from[1]) * local),
-    Math.round(from[2] + (to[2] - from[2]) * local),
-  ]
-}
-
-/**
- * Diagonal gradient parameter for one cell: mostly horizontal (left→right)
- * with a vertical component (top→bottom) so the color flows down the spine.
- */
-export function markCellT(
-  art: OccMarkArt,
-  row: number,
-  column: number,
-): number {
-  const width = getOccMarkWidth(art)
-  const horizontal = width > 1 ? column / (width - 1) : 0
-  const vertical = art.length > 1 ? row / (art.length - 1) : 0
-  return horizontal * 0.72 + vertical * 0.28
 }
 
 export function rgbColor(rgb: Rgb): string {
   return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`
 }
 
-/** Blend a color toward white for the transient shimmer highlight. */
-export function highlightColor(rgb: Rgb, amount = 0.62): Rgb {
-  return [
-    Math.round(rgb[0] + (255 - rgb[0]) * amount),
-    Math.round(rgb[1] + (255 - rgb[1]) * amount),
-    Math.round(rgb[2] + (255 - rgb[2]) * amount),
-  ]
-}
-
 const SHIMMER_FRAME_MS = 84
-const SHIMMER_DURATION_MS = 1_850
+const SHIMMER_DURATION_MS = 1_800
 const SHIMMER_BAND_WIDTH = 0.24
 
 /**
@@ -191,6 +201,20 @@ export function isShimmerCell(
   return Math.abs(diagonal - bandPosition) < SHIMMER_BAND_WIDTH
 }
 
+/**
+ * Legacy-terminal guard, read lazily so tests can toggle it. `TERM=dumb`
+ * predates Unicode glyph cells; braille would mojibake there, so the mark
+ * degrades to an ASCII silhouette of the same chevron gesture.
+ */
+export function isDumbTerminal(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  return env.TERM?.toLowerCase() === 'dumb'
+}
+
+/** ASCII silhouette of the chevron for dumb terminals — no color, no braille. */
+export const DUMB_FALLBACK: OccMarkArt = normalizeMark(['\\', ' \\', ' /', '/'])
+
 type OccMarkProps = {
   mode?: OccMarkMode
   /**
@@ -202,18 +226,18 @@ type OccMarkProps = {
 
 /**
  * Render one art row as colored cells. Consecutive spaces are emitted as a
- * single uncolored run; every occupied cell carries its own gradient color,
- * which is what produces the smooth diagonal sweep.
+ * single uncolored run; every occupied cell carries the flat mark color,
+ * with the shimmer band lifting cells to the highlight while it passes.
  */
 function MarkRow({
   art,
   row,
-  stops,
+  palette,
   progress,
 }: {
   art: OccMarkArt
   row: number
-  stops: readonly Rgb[]
+  palette: { readonly rest: Rgb; readonly highlight: Rgb }
   progress: number | null
 }): React.ReactNode {
   const line = art[row]!
@@ -235,12 +259,11 @@ function MarkRow({
       continue
     }
     flushSpaces(`${row}-sp-${column}`)
-    const base = sampleGradient(stops, markCellT(art, row, column))
     const shimmering = isShimmerCell(art, row, column, progress)
     nodes.push(
       <Text
         key={`${row}-${column}`}
-        color={rgbColor(shimmering ? highlightColor(base) : base)}
+        color={rgbColor(shimmering ? palette.highlight : palette.rest)}
         bold
       >
         {char}
@@ -251,11 +274,26 @@ function MarkRow({
   return <Text>{nodes}</Text>
 }
 
-export function OccMark(props: OccMarkProps): React.ReactNode {
+/** The uncolored ASCII silhouette rendered on dumb terminals. */
+function DumbMarkFallback(): React.ReactNode {
+  return (
+    <Box flexDirection="column" flexShrink={0}>
+      {DUMB_FALLBACK.map((line, row) => (
+        <Text key={row}>{line}</Text>
+      ))}
+    </Box>
+  )
+}
+
+/**
+ * The animated braille mark. Kept separate from the dumb-terminal fallback
+ * so hook order is never conditional.
+ */
+function SignalChevronMark(props: OccMarkProps): React.ReactNode {
   const mode = props.mode ?? 'compact'
   const art = getOccMark(mode)
   const [themeName] = useTheme()
-  const stops = GRADIENT_STOPS[gradientThemeFamily(themeName)]
+  const palette = MARK_COLORS[markThemeFamily(themeName)]
 
   const animate =
     props.animate ?? !(getInitialSettings().prefersReducedMotion ?? false)
@@ -283,10 +321,19 @@ export function OccMark(props: OccMarkProps): React.ReactNode {
           key={row}
           art={art}
           row={row}
-          stops={stops}
+          palette={palette}
           progress={progress}
         />
       ))}
     </Box>
   )
+}
+
+export function OccMark(props: OccMarkProps): React.ReactNode {
+  // Dumb terminals get the uncolored ASCII silhouette — braille mojibakes
+  // there, and there is no color to animate.
+  if (isDumbTerminal()) {
+    return <DumbMarkFallback />
+  }
+  return <SignalChevronMark {...props} />
 }

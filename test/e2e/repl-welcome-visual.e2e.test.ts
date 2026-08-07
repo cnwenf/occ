@@ -13,14 +13,16 @@ import { REPO_ROOT } from './helpers';
 
 /**
  * Real REPL acceptance (tmux e2e) for the startup welcome page (OCC-45
- * card system, OCC-50 "Ascendant" comet mark).
+ * card system, OCC-60 "Signal Chevron" braille mark).
  *
  * Boots the BUILT dist/cli.js inside a tmux pane with a seeded HOME (onboarding
  * + trust already accepted) and reads the decoded pane via `tmux capture-pane
- * -p`. Verifies the responsive condensed welcome (wide / compact / plain) and
- * the forced full logo. Both paths render the OCC-50 gradient "Ascendant"
- * comet (src/components/LogoV2/OccMark.tsx), labeled context rows, and a
- * session-stable tip; the retired doge mascot must not render.
+ * -p`. Verifies the responsive condensed welcome (wide / compact / plain),
+ * the forced full logo, and the legacy degradation ladder (TERM=dumb ASCII
+ * silhouette, 16-color down-conversion). Both paths render the OCC-60
+ * grayscale "Signal Chevron" (src/components/LogoV2/OccMark.tsx), labeled
+ * context rows, and a session-stable tip; the retired doge mascot must not
+ * render.
  *
  * Gated out of CI because it requires tmux; no model call is made.
  */
@@ -125,19 +127,23 @@ function startRepl(
   tmux(['resize-window', '-t', SESSION, '-x', String(width), '-y', '50']);
 }
 
-// Signature glyphs from the OCC-50 "Ascendant" comet mark
-// (src/components/LogoV2/OccMark.tsx). Each is the tier's trail row; the
-// consecutive-block run length (4 / 3 / 2) is unique per tier so a wider
-// tier's glyph never appears inside a narrower pane.
-const LARGE_LOGO_GLYPH = '▟████▛';
-const MEDIUM_LOGO_GLYPH = '▟███';
-const SMALL_LOGO_GLYPH = '▟██▛';
+// Signature glyphs from the OCC-60 "Signal Chevron" braille mark
+// (src/components/LogoV2/OccMark.tsx). Each is the tier's top stroke
+// (row 0); the parametric formula produces a distinct top stroke per tier,
+// so a wider tier's glyph never appears inside a narrower pane.
+const LARGE_LOGO_GLYPH = '⠛⠷⣤⣀'; // wide tier row 0
+const MEDIUM_LOGO_GLYPH = '⠙⠶⣄⡀'; // compact tier row 0
+const SMALL_LOGO_GLYPH = '⠻⢷⣤⡀'; // plain tier row 0
 const OLD_WORDMARK = '___   ___   ___';
+
+// Braille cells (U+2800..U+28FF) must be absent on a dumb terminal, where
+// the mark degrades to an ASCII silhouette.
+const BRAILLE_REGEX = /[⠀-⣿]/;
 
 // Retired doge art glyphs that must NOT render anywhere anymore.
 const DOGE_GLYPHS = ['/\\___/\\', '=w=', '~~'];
 
-describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => {
+describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45/60)', () => {
   test('wide welcome renders brand, version, context, tip, and large mark', async () => {
     const home = freshSeededHome(VERSION);
     startRepl(home, {}, 100);
@@ -171,7 +177,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
     }
   });
 
-  test('light theme renders the complete wide aperture without replacement glyphs', async () => {
+  test('light theme renders the complete wide chevron without replacement glyphs', async () => {
     const home = freshSeededHome(VERSION, 'light');
     startRepl(home, {}, 100);
     try {
@@ -188,7 +194,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
     }
   });
 
-  test('forced full logo renders the bordered welcome box with the aperture mark', async () => {
+  test('forced full logo renders the bordered welcome box with the chevron mark', async () => {
     const home = freshSeededHome(VERSION);
     startRepl(home, { CLAUDE_CODE_FORCE_FULL_LOGO: '1' });
     try {
@@ -199,7 +205,7 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
       expect(pane).toContain(`v${VERSION}`);
       // The full logo is a rounded border titled "OCC v…".
       expect(pane).toContain('OCC');
-      // The full box renders the compact aperture mark tier…
+      // The full box renders the compact chevron mark tier…
       expect(pane).toContain(MEDIUM_LOGO_GLYPH);
       // …and the retired doge mascot is gone.
       for (const glyph of DOGE_GLYPHS) {
@@ -244,6 +250,47 @@ describe.skipIf(!!process.env.CI)('REPL welcome page (tmux e2e, OCC-45)', () => 
       expect(pane).not.toContain(MEDIUM_LOGO_GLYPH);
       expect(pane).not.toContain(OLD_WORDMARK);
       expect(pane).not.toContain('╭');
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('dumb terminal degrades to text only — no braille, no mojibake', async () => {
+    const home = freshSeededHome(VERSION);
+    startRepl(home, { TERM: 'dumb' }, 100);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      // The essential startup information survives…
+      expect(pane.toLowerCase()).toContain('occ');
+      expect(pane).toContain('Open C Code');
+      // …but the braille mark is absent (ASCII/text-only degradation)…
+      expect(BRAILLE_REGEX.test(pane)).toBe(false);
+      // …and nothing mojibakes.
+      expect(pane).not.toContain('U+FFFD');
+    } finally {
+      killRepl();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  test('16-color terminal keeps the chevron silhouette via chalk down-conversion', async () => {
+    const home = freshSeededHome(VERSION);
+    // FORCE_COLOR=1 pins chalk to color level 1 (16 colors); the tmux clamp
+    // only lowers levels above 2, so level 1 reaches the pane unchanged.
+    startRepl(home, { FORCE_COLOR: '1', TERM: 'xterm' }, 100);
+    try {
+      await waitForText('occ', 20_000);
+      await new Promise((r) => setTimeout(r, 800));
+      const pane = capturePane();
+
+      // The braille silhouette survives basic-color down-conversion.
+      expect(pane).toContain(LARGE_LOGO_GLYPH);
+      expect(pane).toContain('Open C Code');
+      expect(pane).not.toContain('U+FFFD');
     } finally {
       killRepl();
       rmSync(home, { recursive: true, force: true });

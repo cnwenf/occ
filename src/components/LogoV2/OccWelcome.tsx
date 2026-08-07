@@ -158,9 +158,10 @@ function PlainWelcome(props: OccWelcomeProps): React.ReactNode {
 }
 
 /**
- * The OCC-50 welcome card. The version/tabline lives in the border itself
- * (HUD title tab), the gradient Ascendant comet is the hero, and context
- * is rendered as labeled readout rows over a dashed rule + one tip.
+ * The OCC-45 welcome card, carrying the OCC-60 "Signal Chevron" mark. The
+ * version/tabline lives in the border itself (HUD title tab), the braille
+ * dot-matrix chevron is the hero, and context is rendered as labeled
+ * readout rows over a dashed rule + one tip.
  */
 export function OccWelcome(props: OccWelcomeProps): React.ReactNode {
   const mode = getOccWelcomeMode(props.columns, props.plain)
