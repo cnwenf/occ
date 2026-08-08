@@ -55,6 +55,7 @@ Changelog is only *"Bug fixes and reliability improvements"*. Binary surface dif
 With no portable gap to land, this round is a strict self-acceptance pass on the current `main` (`e9a7ed7`, OCC 2.1.297), run like a human user on a real API key:
 
 - **Build green:** `bun run build` → `dist/cli.js` 30,274,133 bytes, injected `MACRO.VERSION=2.1.297`, `BINARY_NAME=occ`.
+- **Unit suite (e2e excluded):** `bun test src test --path-ignore-patterns '**/e2e/**'` → **2092 pass / 0 fail / 4967 expect() across 228 files** (51s). (Note: the earlier `--test-path-ignore-patterns` flag name is wrong and does not filter; `--path-ignore-patterns` is the correct bun flag.)
 - **Version:** `occ --version` → `OCC 2.1.297`.
 - **Headless `-p` (live model):** `echo "…PONG" | occ -p` → `PONG`, exit 0.
 - **REPL (tmux, real model endpoint):** boots with the Signal Chevron logo + `OCC v2.1.297 · Open C Code` header; model round-trip (`REPLPONG`); `/status` renders (Version 2.1.297, model, base URL, `MCP servers: 3 connected`); real Read-tool use (returned `2.1.297` from `package.json`); clean `/exit`.
