@@ -12,8 +12,9 @@ import { useTheme } from '../design-system/ThemeProvider.js'
  * The user selected direction A "Signal Chevron" (a REPL prompt `❯`
  * abstracted into a braille dot-matrix beam) to replace the OCC-50
  * "Ascendant" comet. The design language follows the grok-build welcome
- * screen: near-black canvas, dark-grey dot matrix, ONE diagonal shimmer
- * highlight sweeping grey → near-white — deliberately no color gradient.
+ * screen: near-black canvas, a dot-matrix beam, ONE diagonal shimmer
+ * highlight sweeping a single tech-blue hue — deliberately no multi-hue
+ * color gradient.
  *
  * The silhouette is generated, not hand-drawn. Every tier is the same
  * formula evaluated on its own dot grid: for a grid W dots wide and H dots
@@ -32,9 +33,13 @@ import { useTheme } from '../design-system/ThemeProvider.js'
  *
  * - One silhouette at three tiers; braille cells keep it crisp in every
  *   monospace font and collapse to a clean glyph stream under capture.
- * - Monochrome theme-aware tones: dark grey at rest, a near-white shimmer
- *   peak on dark themes; darker grey variants on light themes so both
- *   tones keep >= 3:1 contrast (WCAG non-text graphics threshold).
+ * - Single-hue "signal blue" theme-aware tones. Every tone — both
+ *   families, base and peak — keeps >= 3:1 contrast (WCAG non-text
+ *   graphics threshold) against BOTH pure black and pure white, so the
+ *   mark never vanishes even when the resolved theme family disagrees
+ *   with the terminal's real background (theme defaults to 'dark' when
+ *   OSC 11 / COLORFGBG detection is unavailable — a white terminal then
+ *   used to render the near-white grey palette invisible).
  * - One-shot diagonal light sweep (~12 fps, 1.8 s) that settles into the
  *   static matrix and unsubscribes from the animation clock.
  * - Degradation ladder: below 256-color support (16-color, NO_COLOR,
@@ -150,10 +155,14 @@ export function getOccMarkWidth(art: OccMarkArt): number {
 }
 
 /**
- * Monochrome tone pair per theme family. Dark terminals rest at #5a5a5a
- * and shimmer toward near-white #e1e1e1; light terminals use darker grey
- * variants so BOTH tones keep >= 3:1 contrast against the reference
- * background (WCAG non-text graphics threshold).
+ * Signal-blue tone pair per theme family. Every tone keeps >= 3:1
+ * contrast against BOTH pure black and pure white (WCAG non-text
+ * graphics threshold), so the mark stays visible whichever family is
+ * resolved — theme detection falls back to 'dark' when OSC 11 /
+ * COLORFGBG are unavailable, and the old grey palette's near-white
+ * shimmer vanished on white terminals under that fallback. The dark
+ * family reads slightly brighter/cooler for dark canvases; the light
+ * family skews deeper for white canvases. Still one hue, no gradient.
  */
 export type ChevronTone = {
   /** Resting dot-matrix color. */
@@ -164,12 +173,12 @@ export type ChevronTone = {
 
 export const CHEVRON_TONES: Record<'dark' | 'light', ChevronTone> = {
   dark: {
-    base: [90, 90, 90], // #5a5a5a — resting matrix
-    peak: [225, 225, 225], // #e1e1e1 — shimmer peak (near-white)
+    base: [79, 107, 184], // #4f6bb8 — resting matrix (4.1:1 black, 5.1:1 white)
+    peak: [120, 140, 217], // #788cd9 — shimmer peak (6.6:1 black, 3.2:1 white)
   },
   light: {
-    base: [64, 64, 64], // #404040 — >= 3:1 against white
-    peak: [117, 117, 117], // #757575 — >= 3:1 against white
+    base: [59, 85, 196], // #3b55c4 — resting matrix (6.4:1 white, 3.3:1 black)
+    peak: [92, 124, 250], // #5c7cfa — shimmer peak (3.7:1 white, 5.7:1 black)
   },
 }
 

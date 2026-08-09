@@ -260,16 +260,19 @@ describe('OCC Signal Chevron monochrome engine', () => {
     expect(chevronThemeFamily('light-daltonized')).toBe('light')
   })
 
-  test('every tone keeps 3:1 graphical contrast in its theme', () => {
-    for (const tone of [CHEVRON_TONES.dark.base, CHEVRON_TONES.dark.peak]) {
-      expect(
-        contrastRatio(rgbString(tone), 'rgb(0,0,0)'),
-      ).toBeGreaterThanOrEqual(3)
-    }
-    for (const tone of [CHEVRON_TONES.light.base, CHEVRON_TONES.light.peak]) {
-      expect(
-        contrastRatio(rgbString(tone), 'rgb(255,255,255)'),
-      ).toBeGreaterThanOrEqual(3)
+  test('every tone keeps 3:1 graphical contrast on BOTH black and white', () => {
+    // Theme detection falls back to 'dark' when OSC 11 / COLORFGBG are
+    // unavailable, so a tone can land on the opposite background from its
+    // family. Every tone must therefore survive both extremes.
+    for (const family of ['dark', 'light'] as const) {
+      for (const tone of [CHEVRON_TONES[family].base, CHEVRON_TONES[family].peak]) {
+        expect(
+          contrastRatio(rgbString(tone), 'rgb(0,0,0)'),
+        ).toBeGreaterThanOrEqual(3)
+        expect(
+          contrastRatio(rgbString(tone), 'rgb(255,255,255)'),
+        ).toBeGreaterThanOrEqual(3)
+      }
     }
   })
 

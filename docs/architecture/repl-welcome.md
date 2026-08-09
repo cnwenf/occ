@@ -95,11 +95,16 @@ share one identity.
 
 ## Color, motion, and compatibility
 
-- The mark is monochrome and theme-aware: dark themes rest at `#5a5a5a`
-  and shimmer toward near-white `#e1e1e1`; light themes use darker grey
-  variants (`#404040` rest, `#757575` peak) so every tone keeps at least
-  3:1 contrast (the WCAG non-text-graphics threshold) against the
-  reference background. There is deliberately no color gradient.
+- The mark is single-hue "signal blue" and theme-aware: dark themes rest
+  at `#4f6bb8` and shimmer toward `#788cd9`; light themes use deeper blue
+  variants (`#3b55c4` rest, `#5c7cfa` peak). Every tone keeps at least
+  3:1 contrast (the WCAG non-text-graphics threshold) against BOTH pure
+  black and pure white, so the mark stays visible even when the resolved
+  theme family disagrees with the terminal's real background (theme
+  detection falls back to `dark` when OSC 11 / `COLORFGBG` are
+  unavailable — the old near-white grey palette vanished on white
+  terminals under that fallback). There is deliberately no multi-hue
+  color gradient.
 - **Degradation ladder** is gated on chalk's color level
   (`getMarkColorMode()`): 256-color/truecolor terminals get the toned
   matrix + shimmer; below 256-color support (16-color, `NO_COLOR`,
