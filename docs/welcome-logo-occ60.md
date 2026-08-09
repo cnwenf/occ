@@ -74,11 +74,16 @@ Every tier is vertically mirror-symmetric by construction
 
 ## Palette & motion
 
-- **Dark themes:** rest `#5a5a5a` (dark grey matrix), shimmer peak
-  `#e1e1e1` (near-white).
-- **Light themes:** darker grey variants — rest `#404040`, peak
-  `#757575` — so both tones keep ≥ 3:1 contrast (WCAG non-text
-  graphics threshold) against the reference background. Unit-verified.
+- **Dark themes:** rest `#4f6bb8` (signal-blue matrix), shimmer peak
+  `#788cd9`.
+- **Light themes:** deeper blue variants — rest `#3b55c4`, peak
+  `#5c7cfa`.
+- **Dual-background guarantee:** every tone keeps ≥ 3:1 contrast (WCAG
+  non-text graphics threshold) against BOTH pure black and pure white.
+  Theme detection falls back to `dark` when OSC 11 / `COLORFGBG` are
+  unavailable, so any tone can land on the opposite background from its
+  family; the previous near-white grey palette vanished on white
+  terminals under that fallback (user-reported). Unit-verified.
 - **Motion:** one diagonal shimmer band sweeps at ~12 fps for 1.8 s,
   then the mark settles at the resting tone and unsubscribes from the
   animation clock (no ongoing repaints). `prefersReducedMotion`
