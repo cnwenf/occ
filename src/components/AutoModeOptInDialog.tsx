@@ -1,14 +1,29 @@
 import { c as _c } from "react/compiler-runtime";
 import React from 'react';
 import { logEvent } from 'src/services/analytics/index.js';
+import { getSubscriptionType } from 'src/utils/auth.js';
 import { Box, Link, Text } from '../ink.js';
 import { hasAutoModeOptInDismissed, updateSettingsForSource } from '../utils/settings/settings.js';
 import { Select } from './CustomSelect/index.js';
 import { Dialog } from './design-system/Dialog.js';
 
 // NOTE: This copy is legally reviewed — do not modify without Legal team approval.
-// Verbatim from the official 2.1.200 `lPc` (the Enable auto mode? opt-in dialog description).
-export const AUTO_MODE_DESCRIPTION = "Auto mode lets Claude handle permission prompts automatically — Claude checks each tool call for risky actions and prompt injection before executing. Actions Claude identifies as safe are executed, while actions Claude identifies as risky are blocked and Claude may try a different approach. Ideal for long-running tasks. Sessions are slightly more expensive. Claude can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to change mode.";
+// Verbatim from the official 2.1.228 binary `_3h` module: the description is
+// split into base/cost/safety sentences; Pro/Max/Team subscribers no longer
+// see the cost sentence (changelog: "Removed the outdated note about auto mode
+// sessions costing slightly more from the first-use notice for Pro, Max, and
+// Team plans").
+const AUTO_MODE_BASE_DESCRIPTION = "Auto mode lets Claude handle permission prompts automatically — Claude checks each tool call for risky actions and prompt injection before executing. Actions Claude identifies as safe are executed, while actions Claude identifies as risky are blocked and Claude may try a different approach. Ideal for long-running tasks.";
+const AUTO_MODE_COST_SENTENCE = "Sessions are slightly more expensive.";
+const AUTO_MODE_SAFETY_SENTENCE = "Claude can make mistakes that allow harmful commands to run, it's recommended to only use in isolated environments. Shift+Tab to change mode.";
+export const AUTO_MODE_DESCRIPTION = `${AUTO_MODE_BASE_DESCRIPTION} ${AUTO_MODE_COST_SENTENCE} ${AUTO_MODE_SAFETY_SENTENCE}`;
+export const AUTO_MODE_DESCRIPTION_WITHOUT_COST_SENTENCE = `${AUTO_MODE_BASE_DESCRIPTION} ${AUTO_MODE_SAFETY_SENTENCE}`;
+// Official 2.1.228 getAutoModeDescription (NmH): the first-use description
+// drops the cost sentence for claude.ai subscriber tiers.
+export function getAutoModeDescription(): string {
+  const subscriptionType = getSubscriptionType();
+  return subscriptionType === "pro" || subscriptionType === "max" || subscriptionType === "team" ? AUTO_MODE_DESCRIPTION_WITHOUT_COST_SENTENCE : AUTO_MODE_DESCRIPTION;
+}
 type Props = {
   onAccept(): void;
   onDecline(reason: "go-back" | "dont-ask"): void;
@@ -33,7 +48,7 @@ export function AutoModeOptInDialog(t0) {
   let t2;
   if ($[1] !== onAccept || $[2] !== onDecline) {
     t2 = function onChange(value) {
-      bb3: switch (value) {
+      switch (value) {
         case "accept":
           {
             logEvent("tengu_auto_mode_opt_in_dialog_accept", {});
@@ -44,7 +59,7 @@ export function AutoModeOptInDialog(t0) {
               autoModeOptInDismissed: hasAutoModeOptInDismissed() ? false : undefined,
             });
             onAccept();
-            break bb3;
+            break;
           }
         case "accept-default":
           {
@@ -57,13 +72,13 @@ export function AutoModeOptInDialog(t0) {
               autoModeOptInDismissed: hasAutoModeOptInDismissed() ? false : undefined,
             });
             onAccept();
-            break bb3;
+            break;
           }
         case "decline":
           {
             logEvent("tengu_auto_mode_opt_in_dialog_decline", {});
             onDecline("go-back");
-            break bb3;
+            break;
           }
         case "decline-dont-ask":
           {
@@ -78,7 +93,7 @@ export function AutoModeOptInDialog(t0) {
               });
             }
             onDecline("dont-ask");
-            break bb3;
+            break;
           }
       }
     };
@@ -91,7 +106,9 @@ export function AutoModeOptInDialog(t0) {
   const onChange = t2;
   let t3;
   if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-    t3 = <Box flexDirection="column" gap={1}><Text>{AUTO_MODE_DESCRIPTION}</Text><Link url="https://code.claude.com/docs/en/security" /></Box>;
+    // Evaluated once at mount (memo-cache sentinel): the subscription tier is
+    // fixed for the session, so the first-render value stays correct.
+    t3 = <Box flexDirection="column" gap={1}><Text>{getAutoModeDescription()}</Text><Link url="https://code.claude.com/docs/en/security" /></Box>;
     $[4] = t3;
   } else {
     t3 = $[4];

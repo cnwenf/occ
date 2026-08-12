@@ -1,7 +1,6 @@
-import { dirname, sep } from 'path'
+import { basename, dirname, isAbsolute, sep } from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
 import { z } from 'zod/v4'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
 import { clearDeliveredDiagnosticsForFile } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { getLspServerManager } from '../../services/lsp/manager.js'
@@ -36,12 +35,28 @@ import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import { perforceReadOnlyError } from '../../utils/perforce.js'
 import {
+  assertWriteFileStateFresh,
+  FileStateError,
+  FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
+  FILE_NOT_READ_MESSAGE,
+  FILE_STATE_CURRENT_NOTE,
+  fileStateMatchesNormalized,
+  getGuardModel,
+  getModelBucket,
+  isCoveredByReadDenyRule,
+  isFullReadOfFileState,
+  isNotebookPathForGuard,
+  isOldModel,
+  normalizeForComparison,
+  READ_DENY_WRITE_MESSAGE,
+  wouldReadBeAutoAllowed,
+} from '../../utils/permissions/fileStateGuard.js'
+import {
   checkWritePermissionForTool,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
-import { FILE_UNEXPECTEDLY_MODIFIED_ERROR } from '../FileEditTool/constants.js'
 import { gitDiffSchema, hunkSchema } from '../FileEditTool/types.js'
 import { FILE_WRITE_TOOL_NAME, getWriteToolDescription } from './prompt.js'
 import {
@@ -85,7 +100,10 @@ const outputSchema = lazySchema(() =>
         'The original file content before the write (null for new files)',
       ),
     gitDiff: gitDiffSchema().optional(),
-    userModified: z.boolean().optional().describe('Whether the user manually edited the file after the write'),
+    userModified: z
+      .boolean()
+      .optional()
+      .describe('Whether the user manually edited the file after the write'),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -93,6 +111,14 @@ type OutputSchema = ReturnType<typeof outputSchema>
 export type Output = z.infer<OutputSchema>
 export type FileWriteToolInput = InputSchema
 
+/**
+ * Aligned to official Claude Code 2.1.228 Write tool (binary `vsb` /
+ * validateInput ported via the aligning-with-official-binary skill; the
+ * compiled ELF is the source of truth). The 2.1.228 change: the
+ * read-before-write gate is skipped for newer models when a hypothetical
+ * Read of the same path would have been auto-allowed — matching the Edit
+ * tool's rules. The retired 2.1.227 `tengu_velvet_mallet` flag gate is gone.
+ */
 export const FileWriteTool = buildTool({
   name: FILE_WRITE_TOOL_NAME,
   searchHint: 'create or overwrite files',
@@ -154,6 +180,24 @@ export const FileWriteTool = buildTool({
   },
   async validateInput({ file_path, content }, toolUseContext: ToolUseContext) {
     const fullFilePath = expandPath(file_path)
+    const toolPermissionContext =
+      toolUseContext.getAppState().toolPermissionContext
+
+    // 2.1.228: subagents return findings as text, not report files.
+    if (
+      toolUseContext.agentId &&
+      /^(REPORT|SUMMARY|FINDINGS|ANALYSIS).*\.md$/i.test(basename(fullFilePath))
+    ) {
+      logEvent('tengu_subagent_md_report_blocked', {
+        contentBytes: Buffer.byteLength(content),
+      })
+      return {
+        result: false,
+        message:
+          'Subagents should return findings as text, not write report files. Include this content in your final response instead.',
+        errorCode: 5,
+      }
+    }
 
     // Reject writes to team memory files that contain secrets
     const secretError = checkTeamMemSecrets(fullFilePath, content)
@@ -162,10 +206,9 @@ export const FileWriteTool = buildTool({
     }
 
     // Check if path should be ignored based on permission settings
-    const appState = toolUseContext.getAppState()
     const denyRule = matchingRuleForInput(
       fullFilePath,
-      appState.toolPermissionContext,
+      toolPermissionContext,
       'edit',
       'deny',
     )
@@ -175,6 +218,17 @@ export const FileWriteTool = buildTool({
         message:
           'File is in a directory that is denied by your permission settings.',
         errorCode: 1,
+      }
+    }
+
+    // 2.1.228 (binary cVt): a Read deny rule covering this path also blocks
+    // writing it — writing would let the model refresh content it was denied
+    // reading.
+    if (isCoveredByReadDenyRule(fullFilePath, toolPermissionContext)) {
+      return {
+        result: false,
+        message: READ_DENY_WRITE_MESSAGE,
+        errorCode: 13,
       }
     }
 
@@ -191,14 +245,15 @@ export const FileWriteTool = buildTool({
       const fileStat = await fs.stat(fullFilePath)
       fileMtimeMs = fileStat.mtimeMs
       // 2.1.98: in Perforce mode, block writes to read-only files with a
-      // `p4 edit` hint instead of silently overwriting them.
+      // `p4 edit` hint instead of silently overwriting them. 2.1.228: no
+      // behavior field here (the official reports a plain validation error,
+      // errorCode 6).
       const perforceError = perforceReadOnlyError(fileStat.mode)
       if (perforceError) {
         return {
           result: false,
-          behavior: 'ask',
           message: perforceError,
-          errorCode: 11,
+          errorCode: 6,
         }
       }
     } catch (e) {
@@ -208,47 +263,87 @@ export const FileWriteTool = buildTool({
       throw e
     }
 
-    const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
-    if (!readTimestamp || readTimestamp.isPartialView) {
-      return {
-        result: false,
-        message:
-          'File has not been read yet. Read it first before writing to it.',
-        errorCode: 2,
+    const lastRead = toolUseContext.readFileState.get(fullFilePath)
+    if (!lastRead || lastRead.isPartialView) {
+      const model = getGuardModel(toolUseContext)
+      // 2.1.228 (binary Ssb-skip shape): newer models may overwrite an
+      // unread file when a Read of it would have been auto-allowed anyway;
+      // notebooks and old models still require the explicit read first.
+      const guardSkipped =
+        !lastRead &&
+        !isNotebookPathForGuard(fullFilePath) &&
+        !isOldModel(model) &&
+        wouldReadBeAutoAllowed(
+          FILE_WRITE_TOOL_NAME,
+          fullFilePath,
+          toolUseContext,
+          toolPermissionContext,
+        )
+      logEvent('tengu_write_tool_not_read_hypothetical', {
+        wouldHaveResult:
+          lastRead && Math.floor(fileMtimeMs) > lastRead.timestamp
+            ? 'errorCode3'
+            : 'success',
+        isPartialView: lastRead?.isPartialView === true,
+        // Deliberately the raw input (not expandPath'd), matching the binary.
+        isFilePathAbsolute: isAbsolute(file_path),
+        guardSkipped,
+        modelBucket: getModelBucket(model),
+      })
+      if (!guardSkipped) {
+        return {
+          result: false,
+          message: FILE_NOT_READ_MESSAGE,
+          errorCode: 2,
+        }
       }
+      return { result: true }
     }
 
-    // Reuse mtime from the stat above — avoids a redundant statSync via
-    // getFileModificationTime. The readTimestamp guard above ensures this
-    // block is always reached when the file exists.
-    const lastWriteTime = Math.floor(fileMtimeMs)
-    if (lastWriteTime > readTimestamp.timestamp) {
-      return {
-        result: false,
-        message:
-          'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
-        errorCode: 3,
+    if (Math.floor(fileMtimeMs) > lastRead.timestamp) {
+      // Timestamp says modified; for full reads compare content as a
+      // fallback (mtime can move without content changes — cloud sync,
+      // antivirus, Windows metadata writes). Binary $ot + i3o shape.
+      let matchesDisk = false
+      if (isFullReadOfFileState(lastRead)) {
+        const diskBytes = await fs.readFileBytes(fullFilePath)
+        matchesDisk = fileStateMatchesNormalized(
+          lastRead,
+          diskBytes.toString('utf8'),
+        )
+      }
+      if (!matchesDisk) {
+        return {
+          result: false,
+          message: FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
+          errorCode: 3,
+        }
       }
     }
 
     return { result: true }
   },
-  async call(
-    { file_path, content },
-    { readFileState, updateFileHistoryState, dynamicSkillDirTriggers },
-    _,
-    parentMessage,
-  ) {
+  async call({ file_path, content }, context, _, parentMessage) {
+    const { readFileState, updateFileHistoryState, dynamicSkillDirTriggers } =
+      context
     const fullFilePath = expandPath(file_path)
     const dir = dirname(fullFilePath)
+    const toolPermissionContext = context.getAppState().toolPermissionContext
+
+    // 2.1.228 (binary cVt): Read-deny-covered paths cannot be written,
+    // re-checked at call time because settings may have changed since
+    // validateInput.
+    if (isCoveredByReadDenyRule(fullFilePath, toolPermissionContext)) {
+      throw new FileStateError(READ_DENY_WRITE_MESSAGE)
+    }
 
     // Discover skills from this file's path (fire-and-forget, non-blocking)
     const cwd = getCwd()
     const newSkillDirs = await discoverSkillDirsForPaths([fullFilePath], cwd)
     if (newSkillDirs.length > 0) {
       // Store discovered dirs for attachment display
-      for (const dir of newSkillDirs) {
-        dynamicSkillDirTriggers?.add(dir)
+      for (const discoveredDir of newSkillDirs) {
+        dynamicSkillDirTriggers?.add(discoveredDir)
       }
       // Don't await - let skill loading happen in the background
       addSkillDirectories(newSkillDirs).catch(() => {})
@@ -259,16 +354,11 @@ export const FileWriteTool = buildTool({
 
     await diagnosticTracker.beforeFileEdited(fullFilePath)
 
-    // Ensure parent directory exists before the atomic read-modify-write section.
-    // Must stay OUTSIDE the critical section below (a yield between the staleness
-    // check and writeTextContent lets concurrent edits interleave), and BEFORE the
-    // write (lazy-mkdir-on-ENOENT would fire a spurious tengu_atomic_write_error
-    // inside writeFileSyncAndFlush_DEPRECATED before ENOENT propagates back).
-    await getFsImplementation().mkdir(dir)
     if (fileHistoryEnabled()) {
       // Backup captures pre-edit content — safe to call before the staleness
       // check (idempotent v1 backup keyed on content hash; if staleness fails
-      // later we just have an unused backup, not corrupt state).
+      // later we just have an unused backup, not corrupt state). Binary runs
+      // fileHistory before the read/guard as well.
       await fileHistoryTrackEdit(
         updateFileHistoryState,
         fullFilePath,
@@ -276,8 +366,7 @@ export const FileWriteTool = buildTool({
       )
     }
 
-    // Load current state and confirm no changes since last read.
-    // Please avoid async operations between here and writing to disk to preserve atomicity.
+    // Load current state (LF-normalized, BOM kept — binary y2t shape).
     let meta: ReturnType<typeof readFileSyncWithMetadata> | null
     try {
       meta = readFileSyncWithMetadata(fullFilePath)
@@ -289,33 +378,36 @@ export const FileWriteTool = buildTool({
       }
     }
 
+    // 2.1.228 call-time guard (binary Ssb): throws FileStateError when the
+    // write must not proceed (unread file on old models / partial views, or
+    // stale content that differs from disk).
     if (meta !== null) {
-      const lastWriteTime = getFileModificationTime(fullFilePath)
-      const lastRead = readFileState.get(fullFilePath)
-      if (!lastRead || lastWriteTime > lastRead.timestamp) {
-        // Timestamp indicates modification, but on Windows timestamps can change
-        // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          lastRead &&
-          lastRead.offset === undefined &&
-          lastRead.limit === undefined
-        // meta.content is CRLF-normalized — matches readFileState's normalized form.
-        if (!isFullRead || meta.content !== lastRead.content) {
-          throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
-        }
-      }
+      assertWriteFileStateFresh({
+        fullFilePath,
+        diskContent: meta.content,
+        lastRead: readFileState.get(fullFilePath),
+        model: getGuardModel(context),
+        readNotAutoAllowed: () =>
+          !wouldReadBeAutoAllowed(
+            FILE_WRITE_TOOL_NAME,
+            fullFilePath,
+            context,
+            toolPermissionContext,
+          ),
+      })
     }
 
-    const enc = meta?.encoding ?? 'utf8'
-    const oldContent = meta?.content ?? null
+    // Ensure parent directory exists right before the write. The binary does
+    // this after the guard; keep the write itself synchronous from here on
+    // (no awaits between writeTextContent and the readFileState update).
+    await getFsImplementation().mkdir(dir)
 
     // Write is a full content replacement — the model sent explicit line endings
     // in `content` and meant them. Do not rewrite them. Previously we preserved
     // the old file's line endings (or sampled the repo via ripgrep for new
     // files), which silently corrupted e.g. bash scripts with \r on Linux when
     // overwriting a CRLF file or when binaries in cwd poisoned the repo sample.
-    writeTextContent(fullFilePath, content, enc, 'LF')
+    writeTextContent(fullFilePath, content, meta?.encoding ?? 'utf8', 'LF')
 
     // Notify LSP servers about file modification (didChange) and save (didSave)
     const lspManager = getLspServerManager()
@@ -338,12 +430,15 @@ export const FileWriteTool = buildTool({
       })
     }
 
+    const oldContent = meta?.content ?? null
+
     // Notify VSCode about the file change for diff view
     notifyVscodeFileUpdated(fullFilePath, oldContent, content)
 
-    // Update read timestamp, to invalidate stale writes
+    // Update read timestamp, to invalidate stale writes. Content stored in
+    // the canonical readFileState form (binary J9: BOM-stripped, LF-only).
     readFileState.set(fullFilePath, {
-      content,
+      content: normalizeForComparison(content),
       timestamp: getFileModificationTime(fullFilePath),
       offset: undefined,
       limit: undefined,
@@ -355,10 +450,9 @@ export const FileWriteTool = buildTool({
     }
 
     let gitDiff: ToolUseDiff | undefined
-    if (
-      isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
-      getFeatureValue_CACHED_MAY_BE_STALE('tengu_quartz_lantern', false)
-    ) {
+    // 2.1.228: the `tengu_quartz_lantern` flag gate is gone — diff is
+    // computed whenever CLAUDE_CODE_REMOTE is set.
+    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) {
       const startTime = Date.now()
       const diff = await fetchSingleFileGitDiff(fullFilePath)
       if (diff) gitDiff = diff
@@ -368,6 +462,8 @@ export const FileWriteTool = buildTool({
         hasDiff: !!diff,
       })
     }
+
+    const userModified = context.userModified ?? false
 
     if (oldContent) {
       const patch = getPatchForDisplay({
@@ -388,6 +484,7 @@ export const FileWriteTool = buildTool({
         content,
         structuredPatch: patch,
         originalFile: oldContent,
+        userModified,
         ...(gitDiff && { gitDiff }),
       }
       // Track lines added and removed for file updates, right before yielding result
@@ -411,6 +508,7 @@ export const FileWriteTool = buildTool({
       content,
       structuredPatch: [],
       originalFile: null,
+      userModified,
       ...(gitDiff && { gitDiff }),
     }
 
@@ -428,19 +526,29 @@ export const FileWriteTool = buildTool({
       data,
     }
   },
-  mapToolResultToToolResultBlockParam({ filePath, type }, toolUseID) {
+  // 2.1.228 (binary shape): user-modified note, and the "file state is
+  // current" note appended whenever the write succeeded without the user
+  // touching the content.
+  mapToolResultToToolResultBlockParam(
+    { filePath, type, userModified },
+    toolUseID,
+  ) {
+    const modifiedNote = userModified
+      ? ' The user modified your proposed content before accepting it.'
+      : ''
+    const stateNote = userModified ? '' : FILE_STATE_CURRENT_NOTE
     switch (type) {
       case 'create':
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `File created successfully at: ${filePath}`,
+          content: `File created successfully at: ${filePath}${modifiedNote}${stateNote}`,
         }
       case 'update':
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: `The file ${filePath} has been updated successfully.`,
+          content: `The file ${filePath} has been updated successfully.${modifiedNote}${stateNote}`,
         }
     }
   },
