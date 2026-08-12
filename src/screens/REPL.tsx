@@ -253,7 +253,7 @@ import { SandboxViolationExpandedView } from 'src/components/SandboxViolationExp
 import { useSettingsErrors } from 'src/hooks/notifs/useSettingsErrors.js';
 import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivityStatus.js';
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js';
-import { AUTO_MODE_DESCRIPTION } from 'src/components/AutoModeOptInDialog.js';
+import { getAutoModeDescription } from 'src/components/AutoModeOptInDialog.js';
 import { useLspInitializationNotification } from 'src/hooks/notifs/useLspInitializationNotification.js';
 import { useLspPluginRecommendation } from 'src/hooks/useLspPluginRecommendation.js';
 import { LspRecommendationMenu } from 'src/components/LspRecommendation/LspRecommendationMenu.js';
@@ -480,7 +480,11 @@ function TranscriptSearchBar({
         </Text> : null}
     </Box>;
 }
-const TITLE_ANIMATION_FRAMES = ['⠂', '⠐'];
+// 2.1.228 ("Updated terminal title busy-spinner glyphs to reduce tab-bar
+// jitter on some terminals"): binary iWi=["◐","◑"] (was the
+// 2.1.227 braille pair ⠂/⠐). Static prefix ✳ and the 960ms
+// interval (P3h) are unchanged.
+const TITLE_ANIMATION_FRAMES = ['◐', '◑'];
 const TITLE_STATIC_PREFIX = '✳';
 const TITLE_ANIMATION_INTERVAL_MS = 960;
 
@@ -1725,7 +1729,11 @@ export function REPL({
             autoPermissionsNotificationCount: prevCount + 1
           };
         });
-        setMessages(prev => [...prev, createSystemMessage(AUTO_MODE_DESCRIPTION, 'warning')]);
+        // 2.1.228: the first-use auto-mode notice uses the subscription-aware
+        // description getter (Pro/Max/Team no longer see the cost sentence).
+        // OCC keeps its 'warning' level + count-based shape (official uses a
+        // one-shot 'notice'; pre-existing OCC divergence, see occ91 ledger).
+        setMessages(prev => [...prev, createSystemMessage(getAutoModeDescription(), 'warning')]);
       }, 800, safeYoloMessageShownRef, setMessages);
       return () => clearTimeout(timer);
     }

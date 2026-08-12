@@ -1,6 +1,5 @@
 import { dirname, isAbsolute, sep } from 'path'
 import { logEvent } from 'src/services/analytics/index.js'
-import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { diagnosticTracker } from '../../services/diagnosticTracking.js'
 import { clearDeliveredDiagnosticsForFile } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { getLspServerManager } from '../../services/lsp/manager.js'
@@ -47,14 +46,29 @@ import {
   checkWritePermissionForTool,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
+import {
+  checkEditFileStateAtCall,
+  editWouldApplyToTelemetry,
+  FileStateError,
+  FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
+  FILE_NOT_READ_MESSAGE,
+  FILE_STATE_CURRENT_NOTE,
+  fileStateMatchesDisk,
+  getGuardModel,
+  getModelBucket,
+  isCoveredByReadDenyRule,
+  isFullReadOfFileState,
+  isOldModel,
+  normalizeForComparison,
+  READ_DENY_EDIT_MESSAGE,
+  stripBom,
+  wouldReadBeAutoAllowed,
+} from '../../utils/permissions/fileStateGuard.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
-import {
-  FILE_EDIT_TOOL_NAME,
-  FILE_UNEXPECTEDLY_MODIFIED_ERROR,
-} from './constants.js'
+import { FILE_EDIT_TOOL_NAME } from './constants.js'
 import { getEditToolDescription } from './prompt.js'
 import {
   type FileEditInput,
@@ -75,9 +89,21 @@ import {
   checkEditWouldApply,
   findActualString,
   getPatchForEdit,
-  isStaleReadRecoverable,
   preserveQuoteStyle,
 } from './utils.js'
+
+/** Fda — old_string contains a literal \uXXXX escape sequence. */
+const UNICODE_ESCAPE_PATTERN = /\\u[0-9a-fA-F]{4}/
+/** Uda — old_string contains a non-ASCII BMP character. */
+const NON_ASCII_PATTERN = /[\u0080-\uffff]/
+
+/**
+ * bvp — when true, the errorCode-8 message adds the escape-swapping note
+ * (2.1.228 binary shape).
+ */
+function hasUnicodeEscapesOrNonAscii(value: string): boolean {
+  return UNICODE_ESCAPE_PATTERN.test(value) || NON_ASCII_PATTERN.test(value)
+}
 
 // V8/Bun string length limit is ~2^30 characters (~1 billion). For typical
 // ASCII/Latin-1 files, 1 byte on disk = 1 character, so 1 GiB in stat bytes
@@ -176,6 +202,20 @@ export const FileEditTool = buildTool({
       }
     }
 
+    // 2.1.228 (binary cVt): a Read deny rule covering this path also blocks
+    // editing it — the edit flow would otherwise refresh content the model
+    // was denied reading.
+    if (
+      isCoveredByReadDenyRule(fullFilePath, appState.toolPermissionContext)
+    ) {
+      return {
+        result: false,
+        behavior: 'ask',
+        message: READ_DENY_EDIT_MESSAGE,
+        errorCode: 13,
+      }
+    }
+
     // SECURITY: Skip filesystem operations for UNC paths to prevent NTLM credential leaks.
     // On Windows, fs.existsSync() on UNC paths triggers SMB authentication which could
     // leak credentials to malicious servers. Let the permission check handle UNC paths.
@@ -226,7 +266,9 @@ export const FileEditTool = buildTool({
         fileBuffer[1] === 0xfe
           ? 'utf16le'
           : 'utf8'
-      fileContent = fileBuffer.toString(encoding).replaceAll('\r\n', '\n')
+      // Binary J9 shape: BOM-stripped + LF-normalized, the canonical form
+      // readFileState stores, so stale-content comparisons line up.
+      fileContent = normalizeForComparison(fileBuffer.toString(encoding))
     } catch (e) {
       if (isENOENT(e)) {
         fileContent = null
@@ -287,56 +329,85 @@ export const FileEditTool = buildTool({
       }
     }
 
-    const readTimestamp = toolUseContext.readFileState.get(fullFilePath)
-    if (!readTimestamp || readTimestamp.isPartialView) {
-      return {
-        result: false,
-        behavior: 'ask',
-        message:
-          'File has not been read yet. Read it first before writing to it.',
-        meta: {
-          isFilePathAbsolute: String(isAbsolute(file_path)),
-        },
-        errorCode: 6,
+    const lastRead = toolUseContext.readFileState.get(fullFilePath)
+    const toolPermissionContext = appState.toolPermissionContext
+    if (!lastRead || lastRead.isPartialView) {
+      const model = getGuardModel(toolUseContext)
+      // 2.1.228 (binary shape): newer models may edit an unread file when a
+      // Read of it would have been auto-allowed anyway. Unlike Write there is
+      // no notebook exemption here (.ipynb already returned errorCode 5) and
+      // the skip also covers partial views.
+      const guardSkipped =
+        !isOldModel(model) &&
+        wouldReadBeAutoAllowed(
+          FILE_EDIT_TOOL_NAME,
+          fullFilePath,
+          toolUseContext,
+          toolPermissionContext,
+        )
+      logEvent('tengu_edit_tool_not_read_hypothetical', {
+        wouldHaveResult: editWouldApplyToTelemetry(
+          checkEditWouldApply(fileContent, old_string, replace_all),
+        ),
+        isPartialView: lastRead?.isPartialView === true,
+        // Deliberately the raw input (not expandPath'd), matching the binary.
+        isFilePathAbsolute: String(isAbsolute(file_path)),
+        guardSkipped,
+        modelBucket: getModelBucket(model),
+      })
+      if (!guardSkipped) {
+        return {
+          result: false,
+          behavior: 'ask',
+          message: FILE_NOT_READ_MESSAGE,
+          meta: {
+            isFilePathAbsolute: String(isAbsolute(file_path)),
+          },
+          errorCode: 6,
+        }
       }
     }
 
     // Check if file exists and get its last modified time
-    if (readTimestamp) {
+    if (lastRead) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
-      if (lastWriteTime > readTimestamp.timestamp) {
+      if (lastWriteTime > lastRead.timestamp) {
         // Timestamp indicates modification, but on Windows timestamps can change
         // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          readTimestamp.offset === undefined &&
-          readTimestamp.limit === undefined
-        if (isFullRead && fileContent === readTimestamp.content) {
-          // Content unchanged, safe to proceed
-        } else {
-          // claude-code 2.1.208 #13: the file changed after Read, but the edit
-          // can still succeed when the target text matches uniquely and the
-          // agent could re-read the file. Recover instead of fail-staling on a
-          // content mismatch. If the target is gone/ambiguous or reads are
-          // denied, fall back to the stale-read error.
+        // compare content as a fallback to avoid false positives (binary
+        // $ot + Exe shape).
+        if (
+          !(
+            isFullReadOfFileState(lastRead) &&
+            fileStateMatchesDisk(lastRead, fileContent)
+          )
+        ) {
+          // claude-code 2.1.208 #13 / 2.1.228: the file changed after Read,
+          // but the edit can still succeed when the target text matches
+          // uniquely and a Read of the file would be auto-allowed (binary
+          // Mwt predicate). Otherwise fall back to the stale-read error.
           const wouldApply = checkEditWouldApply(
             fileContent,
             old_string,
-            replace_all ?? false,
+            replace_all,
           )
           const recovered =
             wouldApply === 'applies' &&
-            isStaleReadRecoverable(fullFilePath, toolUseContext)
+            wouldReadBeAutoAllowed(
+              FILE_EDIT_TOOL_NAME,
+              fullFilePath,
+              toolUseContext,
+              toolPermissionContext,
+            )
           logEvent('tengu_edit_tool_stale_read', {
-            wouldHaveResult: wouldApply,
+            wouldHaveResult: editWouldApplyToTelemetry(wouldApply),
             recovered,
           })
           if (!recovered) {
             return {
               result: false,
               behavior: 'ask',
-              message:
-                'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
+              message: FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
               errorCode: 7,
             }
           }
@@ -351,10 +422,15 @@ export const FileEditTool = buildTool({
     // Use findActualString to handle quote normalization
     const actualOldString = findActualString(file, old_string)
     if (!actualOldString) {
+      // 2.1.228 (binary bvp): when old_string contains \uXXXX escapes or
+      // non-ASCII characters, add the escape-swapping note.
+      const escapeNote = hasUnicodeEscapesOrNonAscii(old_string)
+        ? '\n(note: Edit also tried swapping \\uXXXX escapes and their characters; neither form matched, so the mismatch is likely elsewhere in old_string. Re-read the file and copy the exact surrounding text.)'
+        : ''
       return {
         result: false,
         behavior: 'ask',
-        message: `String to replace not found in file.\nString: ${old_string}`,
+        message: `String to replace not found in file.\nString: ${old_string}${escapeNote}`,
         meta: {
           isFilePathAbsolute: String(isAbsolute(file_path)),
         },
@@ -433,6 +509,15 @@ export const FileEditTool = buildTool({
     // 1. Get current state
     const fs = getFsImplementation()
     const absoluteFilePath = expandPath(file_path)
+    const toolPermissionContext =
+      toolUseContext.getAppState().toolPermissionContext
+
+    // 2.1.228 (binary cVt): Read-deny-covered paths cannot be edited,
+    // re-checked at call time because settings may have changed since
+    // validateInput.
+    if (isCoveredByReadDenyRule(absoluteFilePath, toolPermissionContext)) {
+      throw new FileStateError(READ_DENY_EDIT_MESSAGE)
+    }
 
     // Discover skills from this file's path (fire-and-forget, non-blocking)
     // Skip in simple mode - no skills available
@@ -457,14 +542,11 @@ export const FileEditTool = buildTool({
 
     await diagnosticTracker.beforeFileEdited(absoluteFilePath)
 
-    // Ensure parent directory exists before the atomic read-modify-write section.
-    // These awaits must stay OUTSIDE the critical section below — a yield between
-    // the staleness check and writeTextContent lets concurrent edits interleave.
-    await fs.mkdir(dirname(absoluteFilePath))
     if (fileHistoryEnabled()) {
       // Backup captures pre-edit content — safe to call before the staleness
       // check (idempotent v1 backup keyed on content hash; if staleness fails
-      // later we just have an unused backup, not corrupt state).
+      // later we just have an unused backup, not corrupt state). Binary runs
+      // fileHistory before the read/guard as well.
       await fileHistoryTrackEdit(
         updateFileHistoryState,
         absoluteFilePath,
@@ -481,41 +563,26 @@ export const FileEditTool = buildTool({
       lineEndings: endings,
     } = readFileForEdit(absoluteFilePath)
 
-    if (fileExists) {
-      const lastWriteTime = getFileModificationTime(absoluteFilePath)
-      const lastRead = readFileState.get(absoluteFilePath)
-      if (!lastRead || lastWriteTime > lastRead.timestamp) {
-        // Timestamp indicates modification, but on Windows timestamps can change
-        // without content changes (cloud sync, antivirus, etc.). For full reads,
-        // compare content as a fallback to avoid false positives.
-        const isFullRead =
-          lastRead &&
-          lastRead.offset === undefined &&
-          lastRead.limit === undefined
-        const contentUnchanged =
-          isFullRead && originalFileContents === lastRead.content
-        if (!contentUnchanged) {
-          // claude-code 2.1.208 #13: recover from a stale read when the target
-          // text still matches uniquely and the agent could re-read the file.
-          const wouldApply = checkEditWouldApply(
-            originalFileContents,
-            old_string,
-            replace_all,
-          )
-          const recovered =
-            wouldApply === 'applies' &&
-            isStaleReadRecoverable(absoluteFilePath, toolUseContext)
-          logEvent('tengu_edit_tool_stale_read', {
-            wouldHaveResult: wouldApply,
-            recovered,
-          })
-          if (!recovered) {
-            throw new Error(FILE_UNEXPECTEDLY_MODIFIED_ERROR)
-          }
-          // Recovered: proceed with the edit using the fresh on-disk content.
-        }
-      }
-    }
+    // 2.1.228 call-time guard (binary C8b): throws FileStateError when the
+    // edit must not proceed; returns true when the file changed since the
+    // last read but the edit still applies cleanly (staleRecovered).
+    const staleRecovered =
+      fileExists &&
+      checkEditFileStateAtCall({
+        absoluteFilePath,
+        fileContents: originalFileContents,
+        lastRead: readFileState.get(absoluteFilePath),
+        oldString: old_string,
+        replaceAll: replace_all,
+        model: getGuardModel(toolUseContext),
+        readNotAutoAllowed: () =>
+          !wouldReadBeAutoAllowed(
+            FILE_EDIT_TOOL_NAME,
+            absoluteFilePath,
+            toolUseContext,
+            toolPermissionContext,
+          ),
+      })
 
     // 3. Use findActualString to handle quote normalization
     const actualOldString =
@@ -537,7 +604,10 @@ export const FileEditTool = buildTool({
       replaceAll: replace_all,
     })
 
-    // 5. Write to disk
+    // 5. Ensure parent directory exists, then write to disk (binary order:
+    // patch → mkdir → write; from the guard above the write itself stays
+    // synchronous).
+    await fs.mkdir(dirname(absoluteFilePath))
     writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
 
     // Notify LSP servers about file modification (didChange) and save (didSave)
@@ -566,9 +636,11 @@ export const FileEditTool = buildTool({
     // Notify VSCode about the file change for diff view
     notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, updatedFile)
 
-    // 6. Update read timestamp, to invalidate stale writes
+    // 6. Update read timestamp, to invalidate stale writes. Content stored
+    // BOM-stripped (binary Hxe); line endings are preserved by Edit, so no
+    // CRLF normalization here.
     readFileState.set(absoluteFilePath, {
-      content: updatedFile,
+      content: stripBom(updatedFile),
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
       limit: undefined,
@@ -593,10 +665,9 @@ export const FileEditTool = buildTool({
     })
 
     let gitDiff: ToolUseDiff | undefined
-    if (
-      isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) &&
-      getFeatureValue_CACHED_MAY_BE_STALE('tengu_quartz_lantern', false)
-    ) {
+    // 2.1.228: the `tengu_quartz_lantern` flag gate is gone — diff is
+    // computed whenever CLAUDE_CODE_REMOTE is set.
+    if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) {
       const startTime = Date.now()
       const diff = await fetchSingleFileGitDiff(absoluteFilePath)
       if (diff) gitDiff = diff
@@ -616,6 +687,7 @@ export const FileEditTool = buildTool({
       structuredPatch: patch,
       userModified: userModified ?? false,
       replaceAll: replace_all,
+      ...(staleRecovered && { staleRecovered: true }),
       ...(gitDiff && { gitDiff }),
     }
     return {
@@ -623,23 +695,31 @@ export const FileEditTool = buildTool({
     }
   },
   mapToolResultToToolResultBlockParam(data: FileEditOutput, toolUseID) {
-    const { filePath, userModified, replaceAll } = data
+    const { filePath, userModified, replaceAll, staleRecovered } = data
     const modifiedNote = userModified
       ? '.  The user modified your proposed changes before accepting them. '
       : ''
+    // 2.1.228 (binary shape): stale-recovery disclosure takes precedence;
+    // otherwise the "file state is current" note is appended unless the user
+    // modified the edit.
+    const trailingNote = staleRecovered
+      ? ' (note: the file had been modified on disk since you last read it — the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding context.)'
+      : userModified
+        ? ''
+        : FILE_STATE_CURRENT_NOTE
 
     if (replaceAll) {
       return {
         tool_use_id: toolUseID,
         type: 'tool_result',
-        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.`,
+        content: `The file ${filePath} has been updated${modifiedNote}. All occurrences were successfully replaced.${trailingNote}`,
       }
     }
 
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
-      content: `The file ${filePath} has been updated successfully${modifiedNote}.`,
+      content: `The file ${filePath} has been updated successfully${modifiedNote}.${trailingNote}`,
     }
   },
 } satisfies ToolDef<ReturnType<typeof inputSchema>, FileEditOutput>)

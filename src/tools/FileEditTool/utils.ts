@@ -2,7 +2,6 @@ import { type StructuredPatchHunk, structuredPatch } from 'diff'
 import { logError } from 'src/utils/log.js'
 import { expandPath } from 'src/utils/path.js'
 import { countCharInString } from 'src/utils/stringUtils.js'
-import type { ToolUseContext } from '../../Tool.js'
 import {
   DIFF_TIMEOUT_MS,
   getPatchForDisplay,
@@ -14,8 +13,6 @@ import {
   convertLeadingTabsToSpaces,
   readFileSyncCached,
 } from '../../utils/file.js'
-import { matchingRuleForInput } from '../../utils/permissions/filesystem.js'
-import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import type { EditInput, FileEdit } from './types.js'
 
 // Claude can't output curly quotes, so we define them as constants here for Claude to use
@@ -132,32 +129,6 @@ export function checkEditWouldApply(
     }
   }
   return 'applies'
-}
-
-/**
- * Whether a stale-read (file modified after the model's last Read) may still
- * be edited when the target text still matches uniquely. Ports claude-code
- * 2.1.208 #13's recovery guard U9i: the agent must have the Read tool
- * available (not a restricted edit-only subagent that lacks Read) and a Read
- * of this file must not be denied by an explicit permission rule. When both
- * hold, recovering is safe because the agent could re-read the file if it
- * needed to; the Edit should not fail-stale on a content mismatch when the
- * target is still uniquely present.
- */
-export function isStaleReadRecoverable(
-  filePath: string,
-  toolUseContext: ToolUseContext,
-): boolean {
-  const tools = toolUseContext.options.tools ?? []
-  const hasReadTool = tools.some(tool => tool.name === FILE_READ_TOOL_NAME)
-  const appState = toolUseContext.getAppState()
-  const denyReadRule = matchingRuleForInput(
-    filePath,
-    appState.toolPermissionContext,
-    'read',
-    'deny',
-  )
-  return hasReadTool && denyReadRule === null
 }
 
 /**

@@ -8,9 +8,12 @@ export type FileState = {
   limit: number | undefined
   // True when this entry was populated by auto-injection (e.g. CLAUDE.md) and
   // the injected content did not match disk (stripped HTML comments, stripped
-  // frontmatter, truncated MEMORY.md). The model has only seen a partial view;
-  // Edit/Write must require an explicit Read first. `content` here holds the
-  // RAW disk bytes (for getChangedFiles diffing), not what the model saw.
+  // frontmatter, truncated MEMORY.md). The model has only seen a partial view,
+  // so this entry never counts as a full read (isFullReadOfFileState is false)
+  // and the 2.1.228 staleness content-match path cannot use it; recovery then
+  // requires the edit to still apply plus a read-auto-allowed path (Mwt).
+  // `content` here holds the RAW disk bytes (for getChangedFiles diffing),
+  // not what the model saw.
   isPartialView?: boolean
 }
 

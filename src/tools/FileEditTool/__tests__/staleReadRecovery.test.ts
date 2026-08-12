@@ -2,23 +2,38 @@ import { mkdtemp, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
-import type { ToolUseContext } from 'src/Tool.js'
-import { getEmptyToolPermissionContext } from 'src/Tool.js'
+import type { ToolPermissionContext, ToolUseContext } from 'src/Tool.js'
 import { getDefaultAppState } from 'src/state/AppStateStore.js'
 import { getFileModificationTime } from 'src/utils/file.js'
 import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
+import {
+  editWouldApplyToTelemetry,
+  getModelBucket,
+  isFullReadOfFileState,
+  isNotebookPathForGuard,
+  isOldModel,
+  normalizeForComparison,
+  stripBom,
+} from 'src/utils/permissions/fileStateGuard.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import { FileEditTool } from 'src/tools/FileEditTool/FileEditTool.js'
-import {
-  checkEditWouldApply,
-  isStaleReadRecoverable,
-} from 'src/tools/FileEditTool/utils.js'
+import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
+import { checkEditWouldApply } from 'src/tools/FileEditTool/utils.js'
+
+// The read-permission check reaches getBundledSkillsRoot, which reads
+// MACRO.VERSION (a build-time constant polyfilled in cli.tsx for runtime
+// execution). Mirror that polyfill so the permission path works in tests.
+if (typeof globalThis.MACRO === 'undefined') {
+  ;(globalThis as { MACRO?: unknown }).MACRO = { VERSION: 'test' }
+}
 
 /**
- * claude-code 2.1.208 #13: Edit no longer fail-stales when the file changed
- * after Read but the target text still matches uniquely. Tests cover the
- * wouldHaveResult classifier, the recovery guard, and the end-to-end
- * validateInput stale-read branch.
+ * claude-code 2.1.208 #13 (wouldHaveResult classifier) and its 2.1.228
+ * rework: Edit's read gate and stale-read recovery now key on the official
+ * Mwt predicate ("would a hypothetical Read of this path have been
+ * auto-allowed?") instead of the old "Read tool present + no deny rule"
+ * guard. Tests cover the classifier, the shared fileStateGuard helpers, and
+ * the end-to-end validateInput stale-read branch under each permission mode.
  */
 
 describe('2.1.208 #13 checkEditWouldApply (wouldHaveResult classifier)', () => {
@@ -54,35 +69,88 @@ describe('2.1.208 #13 checkEditWouldApply (wouldHaveResult classifier)', () => {
   })
 })
 
-describe('2.1.208 #13 isStaleReadRecoverable', () => {
-  function makeContext(tools: { name: string }[]): ToolUseContext {
-    const appState = {
-      ...getDefaultAppState(),
-      toolPermissionContext: getEmptyToolPermissionContext(),
-    }
-    return {
-      options: { tools: tools as never },
-      readFileState: createFileStateCacheWithSizeLimit(100),
-      getAppState: () => appState,
-    } as unknown as ToolUseContext
-  }
-
-  test('recoverable when the Read tool is present and no deny rule', () => {
-    // Arrange
-    const ctx = makeContext([{ name: FILE_READ_TOOL_NAME }])
-    // Act
-    const result = isStaleReadRecoverable('/proj/file.txt', ctx)
-    // Assert
-    expect(result).toBe(true)
+describe('2.1.228 fileStateGuard helpers', () => {
+  test('isOldModel flags the zGy table verbatim (incl. [1m] suffix)', () => {
+    expect(isOldModel('claude-opus-4-1')).toBe(true)
+    expect(isOldModel('claude-sonnet-4-5')).toBe(true)
+    expect(isOldModel('claude-3-7-sonnet')).toBe(true)
+    expect(isOldModel('claude-sonnet-4-5[1m]')).toBe(true)
   })
 
-  test('not recoverable when the Read tool is absent', () => {
-    const ctx = makeContext([{ name: 'Edit' }])
-    expect(isStaleReadRecoverable('/proj/file.txt', ctx)).toBe(false)
+  test('isOldModel bridges OCC canonical names to the zGy -0 keys', () => {
+    // OCC getCanonicalName returns bare 'claude-opus-4'/'claude-sonnet-4';
+    // the official table keys them with the '-0' suffix.
+    expect(isOldModel('claude-opus-4')).toBe(true)
+    expect(isOldModel('claude-sonnet-4')).toBe(true)
+  })
+
+  test('isOldModel is false for newer models', () => {
+    expect(isOldModel('claude-opus-5')).toBe(false)
+    expect(isOldModel('claude-opus-4-8')).toBe(false)
+    expect(isOldModel('claude-sonnet-5')).toBe(false)
+  })
+
+  test('getModelBucket strips claude- prefix, dashes to underscores', () => {
+    expect(getModelBucket('claude-opus-5')).toBe('opus_5')
+    expect(getModelBucket('claude-sonnet-4-5[1m]')).toBe('sonnet_4_5')
+  })
+
+  test('getModelBucket reports nonconforming for out-of-pattern names', () => {
+    expect(getModelBucket('Unknown-Model')).toBe('nonconforming')
+    expect(getModelBucket('')).toBe('nonconforming')
+  })
+
+  test('isNotebookPathForGuard strips trailing dots/spaces before the ext check', () => {
+    expect(isNotebookPathForGuard('/a/b.ipynb')).toBe(true)
+    expect(isNotebookPathForGuard('/a/b.ipynb.')).toBe(true)
+    expect(isNotebookPathForGuard('/a/b.ipynb ')).toBe(true)
+    expect(isNotebookPathForGuard('/a/b.txt')).toBe(false)
+  })
+
+  test('normalizeForComparison strips BOM and normalizes CRLF to LF', () => {
+    expect(normalizeForComparison('\uFEFFa\r\nb\r\n')).toBe('a\nb\n')
+    expect(normalizeForComparison('a\nb')).toBe('a\nb')
+    expect(stripBom('\uFEFFx')).toBe('x')
+    expect(stripBom('x')).toBe('x')
+  })
+
+  test('isFullReadOfFileState: offset/partial-view/limit semantics', () => {
+    const base = { content: 'a\nb\nc', timestamp: 1 }
+    // No offset/limit → full read.
+    expect(
+      isFullReadOfFileState({ ...base, offset: undefined, limit: undefined }),
+    ).toBe(true)
+    // Offset read (2nd line onwards) → not full.
+    expect(
+      isFullReadOfFileState({ ...base, offset: 2, limit: undefined }),
+    ).toBe(false)
+    // Partial view → not full.
+    expect(
+      isFullReadOfFileState({
+        ...base,
+        offset: undefined,
+        limit: undefined,
+        isPartialView: true,
+      }),
+    ).toBe(false)
+    // Limit larger than the actual line count → full.
+    expect(
+      isFullReadOfFileState({ ...base, offset: undefined, limit: 100 }),
+    ).toBe(true)
+    // Limit <= line count → the read stopped early → not full.
+    expect(
+      isFullReadOfFileState({ ...base, offset: undefined, limit: 2 }),
+    ).toBe(false)
+  })
+
+  test('editWouldApplyToTelemetry maps the classifier to telemetry codes', () => {
+    expect(editWouldApplyToTelemetry('applies')).toBe('success')
+    expect(editWouldApplyToTelemetry('no_match')).toBe('errorCode8')
+    expect(editWouldApplyToTelemetry('ambiguous')).toBe('errorCode9')
   })
 })
 
-describe('2.1.208 #13 FileEditTool.validateInput stale-read recovery', () => {
+describe('2.1.228 FileEditTool.validateInput stale-read recovery (Mwt semantics)', () => {
   let tmpDir: string
 
   beforeEach(async () => {
@@ -92,40 +160,103 @@ describe('2.1.208 #13 FileEditTool.validateInput stale-read recovery', () => {
     await rm(tmpDir, { recursive: true, force: true })
   })
 
-  function makeContext(tools: { name: string }[]): ToolUseContext {
+  function makePermissionContext(
+    opts: {
+      mode?: ToolPermissionContext['mode']
+      allow?: string[]
+      deny?: string[]
+    } = {},
+  ): ToolPermissionContext {
+    return {
+      mode: opts.mode ?? 'default',
+      additionalWorkingDirectories: new Map(),
+      alwaysAllowRules: opts.allow ? { userSettings: opts.allow } : {},
+      alwaysDenyRules: opts.deny ? { userSettings: opts.deny } : {},
+      alwaysAskRules: {},
+      isBypassPermissionsModeAvailable: opts.mode === 'bypassPermissions',
+    } as ToolPermissionContext
+  }
+
+  function makeContext(permContext: ToolPermissionContext): ToolUseContext {
     const readFileState = createFileStateCacheWithSizeLimit(100)
     const appState = {
       ...getDefaultAppState(),
-      toolPermissionContext: getEmptyToolPermissionContext(),
+      toolPermissionContext: permContext,
     }
     return {
-      options: { tools: tools as never },
+      options: {
+        mainLoopModel: 'claude-opus-5',
+        tools: [{ name: FILE_EDIT_TOOL_NAME }, { name: FILE_READ_TOOL_NAME }],
+      },
       readFileState,
       getAppState: () => appState,
     } as unknown as ToolUseContext
   }
 
-  test('succeeds when file modified after read but target still unique', async () => {
-    // Arrange: a file with a unique target line and a separate region.
-    const filePath = join(tmpDir, 'edit.txt')
+  async function arrangeStaleFile(name: string) {
+    const filePath = join(tmpDir, name)
     const oldContent = 'header line\nTARGET_UNIQUE_TOKEN\nfooter line'
     await writeFile(filePath, oldContent)
     const readAt = getFileModificationTime(filePath)
-    // Simulate a prior full Read of the file.
-    const ctx = makeContext([{ name: FILE_READ_TOOL_NAME }])
+    // Externally modify a DIFFERENT region after the recorded read
+    // (target stays present and unique unless a test overwrites again).
+    await new Promise(r => setTimeout(r, 20))
+    return { filePath, oldContent, readAt }
+  }
+
+  function seedRead(ctx: ToolUseContext, filePath: string, content: string, timestamp: number) {
     ctx.readFileState.set(filePath, {
-      content: oldContent,
-      timestamp: readAt,
+      content,
+      timestamp,
       offset: undefined,
       limit: undefined,
     })
-    // Externally modify a DIFFERENT region (target still present, uniquely).
-    await new Promise(r => setTimeout(r, 20))
-    await writeFile(filePath, 'header line CHANGED\nTARGET_UNIQUE_TOKEN\nfooter line')
+  }
+
+  test('default mode: still fails stale even when target unique (Read not auto-allowed outside cwd)', async () => {
+    // Arrange: tmpdir is outside the working directories, so a hypothetical
+    // Read would be 'ask' — Mwt is false in default mode.
+    const { filePath, oldContent, readAt } = await arrangeStaleFile('a.txt')
+    const ctx = makeContext(makePermissionContext())
+    seedRead(ctx, filePath, oldContent, readAt)
+    await writeFile(
+      filePath,
+      'header line CHANGED\nTARGET_UNIQUE_TOKEN\nfooter line',
+    )
 
     // Act
     const result = await FileEditTool.validateInput(
-      { file_path: filePath, old_string: 'TARGET_UNIQUE_TOKEN', new_string: 'REPLACED' },
+      {
+        file_path: filePath,
+        old_string: 'TARGET_UNIQUE_TOKEN',
+        new_string: 'REPLACED',
+      },
+      ctx,
+    )
+
+    // Assert: not recovered (2.1.228 Mwt: read would not be auto-allowed).
+    expect(result.result).toBe(false)
+    expect(result.errorCode).toBe(7)
+  })
+
+  test('bypassPermissions mode: recovers when file modified after read but target still unique', async () => {
+    // Arrange: in bypassPermissions an 'ask' decision auto-allows (no
+    // explicit ask rule produced it), so Mwt is true.
+    const { filePath, oldContent, readAt } = await arrangeStaleFile('b.txt')
+    const ctx = makeContext(makePermissionContext({ mode: 'bypassPermissions' }))
+    seedRead(ctx, filePath, oldContent, readAt)
+    await writeFile(
+      filePath,
+      'header line CHANGED\nTARGET_UNIQUE_TOKEN\nfooter line',
+    )
+
+    // Act
+    const result = await FileEditTool.validateInput(
+      {
+        file_path: filePath,
+        old_string: 'TARGET_UNIQUE_TOKEN',
+        new_string: 'REPLACED',
+      },
       ctx,
     )
 
@@ -133,26 +264,50 @@ describe('2.1.208 #13 FileEditTool.validateInput stale-read recovery', () => {
     expect(result.result).toBe(true)
   })
 
-  test('fails stale (errorCode 7) when the target was removed after read', async () => {
+  test('Read allow rule covering the path: recovers in default mode', async () => {
+    // Arrange: an explicit Read(/<tmpDir>/**) allow rule (rule content
+    // `//tmp/...` — the `//` prefix anchors the pattern at `/`) makes the
+    // hypothetical read auto-allowed even in default mode. tmpDir already
+    // starts with `/`, so the single extra slash yields the `//` prefix.
+    const { filePath, oldContent, readAt } = await arrangeStaleFile('c.txt')
+    const ctx = makeContext(
+      makePermissionContext({ allow: [`Read(/${tmpDir}/**)`] }),
+    )
+    seedRead(ctx, filePath, oldContent, readAt)
+    await writeFile(
+      filePath,
+      'header line CHANGED\nTARGET_UNIQUE_TOKEN\nfooter line',
+    )
+
+    // Act
+    const result = await FileEditTool.validateInput(
+      {
+        file_path: filePath,
+        old_string: 'TARGET_UNIQUE_TOKEN',
+        new_string: 'REPLACED',
+      },
+      ctx,
+    )
+
+    // Assert
+    expect(result.result).toBe(true)
+  })
+
+  test('bypassPermissions mode: fails stale (errorCode 7) when the target was removed after read', async () => {
     // Arrange
-    const filePath = join(tmpDir, 'edit-gone.txt')
-    const oldContent = 'header\nTARGET_UNIQUE_TOKEN\nfooter'
-    await writeFile(filePath, oldContent)
-    const readAt = getFileModificationTime(filePath)
-    const ctx = makeContext([{ name: FILE_READ_TOOL_NAME }])
-    ctx.readFileState.set(filePath, {
-      content: oldContent,
-      timestamp: readAt,
-      offset: undefined,
-      limit: undefined,
-    })
+    const { filePath, oldContent, readAt } = await arrangeStaleFile('d.txt')
+    const ctx = makeContext(makePermissionContext({ mode: 'bypassPermissions' }))
+    seedRead(ctx, filePath, oldContent, readAt)
     // Externally modify so the target is gone.
-    await new Promise(r => setTimeout(r, 20))
     await writeFile(filePath, 'header\nNO_TARGET_HERE\nfooter')
 
     // Act
     const result = await FileEditTool.validateInput(
-      { file_path: filePath, old_string: 'TARGET_UNIQUE_TOKEN', new_string: 'REPLACED' },
+      {
+        file_path: filePath,
+        old_string: 'TARGET_UNIQUE_TOKEN',
+        new_string: 'REPLACED',
+      },
       ctx,
     )
 
@@ -161,30 +316,24 @@ describe('2.1.208 #13 FileEditTool.validateInput stale-read recovery', () => {
     expect(result.errorCode).toBe(7)
   })
 
-  test('fails stale (errorCode 7) when target unique but Read tool absent', async () => {
+  test('a bare Read deny rule blocks the edit outright (cVt, errorCode 13)', async () => {
     // Arrange
-    const filePath = join(tmpDir, 'edit-noread.txt')
-    const oldContent = 'header\nTARGET_UNIQUE_TOKEN\nfooter'
-    await writeFile(filePath, oldContent)
-    const readAt = getFileModificationTime(filePath)
-    const ctx = makeContext([{ name: 'Edit' }]) // no Read tool
-    ctx.readFileState.set(filePath, {
-      content: oldContent,
-      timestamp: readAt,
-      offset: undefined,
-      limit: undefined,
-    })
-    await new Promise(r => setTimeout(r, 20))
-    await writeFile(filePath, 'header CHANGED\nTARGET_UNIQUE_TOKEN\nfooter')
+    const { filePath, oldContent, readAt } = await arrangeStaleFile('e.txt')
+    const ctx = makeContext(makePermissionContext({ deny: ['Read'] }))
+    seedRead(ctx, filePath, oldContent, readAt)
 
     // Act
     const result = await FileEditTool.validateInput(
-      { file_path: filePath, old_string: 'TARGET_UNIQUE_TOKEN', new_string: 'REPLACED' },
+      {
+        file_path: filePath,
+        old_string: 'TARGET_UNIQUE_TOKEN',
+        new_string: 'REPLACED',
+      },
       ctx,
     )
 
-    // Assert: target still unique, but recovery guard fails (no Read tool).
+    // Assert: Read-deny-covered paths cannot be edited.
     expect(result.result).toBe(false)
-    expect(result.errorCode).toBe(7)
+    expect(result.errorCode).toBe(13)
   })
 })
