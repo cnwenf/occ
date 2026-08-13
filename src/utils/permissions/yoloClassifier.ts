@@ -870,6 +870,9 @@ async function classifyYoloActionXml(
         max_tokens: (mode === 'fast' ? 256 : 64) + thinkingPadding,
         system: systemBlocks,
         skipSystemPromptPrefix: true,
+        // CC 2.1.229 item 10: auto-mode calls are rejected by the API
+        // without the attribution header — force it past the env opt-out.
+        forceAttributionHeader: true,
         temperature: 0,
         thinking: disableThinking,
         messages: [
@@ -958,6 +961,9 @@ async function classifyYoloActionXml(
       max_tokens: 4096 + thinkingPadding,
       system: systemBlocks,
       skipSystemPromptPrefix: true,
+      // CC 2.1.229 item 10: auto-mode calls are rejected by the API
+      // without the attribution header — force it past the env opt-out.
+      forceAttributionHeader: true,
       temperature: 0,
       thinking: disableThinking,
       messages: [
@@ -1243,6 +1249,11 @@ export async function classifyYoloAction(
         },
       ],
       skipSystemPromptPrefix: true,
+      // CC 2.1.229 item 10: same force-attribution as the XML stages above.
+      // The official 2.1.229 binary carries this flag only on the XML
+      // classifier calls because it removed this legacy tool-based path;
+      // OCC keeps the path live, so the same verified intent applies here.
+      forceAttributionHeader: true,
       temperature: 0,
       thinking: disableThinking,
       messages: [

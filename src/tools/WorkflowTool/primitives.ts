@@ -37,8 +37,15 @@ import {
   isWorkflowCapError,
 } from './errors.js'
 import { computeAgentKey, type WorkflowJournal } from './journal.js'
+import {
+  buildWorkflowPrefixKey,
+  getWorkflowPrefixStaggerCapMs,
+  getWorkflowPrefixStaggerGate,
+} from './prefixStagger.js'
 import type { WorkflowMeta } from './scriptLoader.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
+import { getCwd } from '../../utils/cwd.js'
+import { logForDebugging } from '../../utils/debug.js'
 
 /** Lifetime cap on total agent() calls across a workflow. Runaway backstop. */
 export const WORKFLOW_AGENT_LIFETIME_CAP = 1000
@@ -447,14 +454,50 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
 
     // Track tokens for budget.
     let agentTokens = 0
-    const onQueryProgress = (): void => {
-      // Liveness callback — no-op (budget tracked post-completion).
-    }
 
     // Spawn the subagent via runAgent and drain to completion.
     const agentId = createAgentId('wf')
     const agentShortId = agentId.slice(0, 16)
     const agentLabel = opts.label ?? prompt.slice(0, 80)
+    // Wall-clock start is captured before the stagger wait (binary: Ce=Date.now()
+    // precedes the gate), so held time counts toward the agent's elapsed ms.
+    const agentStartTime = Date.now()
+    const agentModel = (opts.model as string | undefined) ?? getMainLoopModel()
+
+    // CC 2.1.229 (changelog #24 / binary `Ze` + `RZp().enter`): stagger
+    // same-prefix siblings so later agents read the cached prompt prefix
+    // instead of all re-paying the uncached prefix simultaneously. The wait
+    // happens before the "started" emit (binary: enter precedes the runner).
+    const prefixKey = buildWorkflowPrefixKey({
+      model: agentModel,
+      effort: opts.effort,
+      agentType: agentDef.agentType,
+      toolNames: ctx.availableTools.map(t => t.name).join(','),
+      schemaJson: opts.schema ? JSON.stringify(opts.schema) : '',
+      cwd: worktreePath ?? getCwd(),
+    })
+    const staggerHandle = await getWorkflowPrefixStaggerGate().enter(
+      prefixKey,
+      {
+        capMs: getWorkflowPrefixStaggerCapMs(),
+        signal: ctx.abortController.signal,
+      },
+    )
+    if (staggerHandle.waitedMs > 0) {
+      logForDebugging(
+        `workflow agent [${agentLabel}] held ${staggerHandle.waitedMs}ms for a same-prefix sibling's first response (prompt-cache warm-up)`,
+      )
+    }
+
+    // Liveness + stagger callback. The official fires responded() at
+    // api_metrics start and the first non-error assistant message; OCC's
+    // runAgent consumes stream events internally and calls onQueryProgress
+    // per query message, which is the earliest per-response signal it
+    // surfaces. responded() is idempotent (markWarm on the gate).
+    const onQueryProgress = (): void => {
+      staggerHandle.responded()
+    }
+
     const gen = runAgent({
       agentDefinition: agentDef,
       promptMessages: promptMessages as unknown as Parameters<typeof runAgent>[0]['promptMessages'],
@@ -480,10 +523,6 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     // Emit workflow_agent_started BEFORE drain so the live tree shows the
     // agent as "running" immediately (binary: narrator line + phase group
     // populate before the agent finishes). Includes id/label/phase/agentType.
-    // Capture the wall-clock start + resolved model for the /workflows agent
-    // list's dedicated time column and short model-name column.
-    const agentStartTime = Date.now()
-    const agentModel = (opts.model as string | undefined) ?? getMainLoopModel()
     // 2.1.202: tag agent-spawn telemetry with the workflow run so its
     // activity can be reconstructed from OTel data (sink is stubbed in OCC).
     logEvent('tengu_workflow_agent_started', {
@@ -536,6 +575,11 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
         elapsedMs: Math.max(0, Date.now() - agentStartTime),
       })
       throw e
+    } finally {
+      // CC 2.1.229 (binary: `try { Ge = await Ue(...) } finally { ht.done() }`):
+      // release the warming entry if this leader never responded, so a failed
+      // leader doesn't strand same-prefix siblings waiting on its cache warm-up.
+      staggerHandle.done()
     }
 
     // Track tokens.
