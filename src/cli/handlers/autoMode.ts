@@ -161,6 +161,9 @@ export async function autoModeCritiqueHandler(options: {
       model,
       system: CRITIQUE_SYSTEM_PROMPT,
       skipSystemPromptPrefix: true,
+      // CC 2.1.229 item 10: auto-mode calls are rejected by the API
+      // without the attribution header — force it past the env opt-out.
+      forceAttributionHeader: true,
       max_tokens: 4096,
       messages: [
         {

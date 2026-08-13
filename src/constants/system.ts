@@ -46,14 +46,22 @@ export function getCLISyspromptPrefix(options?: {
 }
 
 /**
- * Check if attribution header is enabled.
- * Enabled by default, can be disabled via env var or GrowthBook killswitch.
+ * Plain-host first-party base URL check (binary `_4t`/`hke`, 2.1.229).
+ * True when ANTHROPIC_BASE_URL is unset or its host is exactly
+ * `api.anthropic.com` — no staging host, unlike the ASSUME-aware
+ * `isFirstPartyAnthropicBaseUrl` in providers.ts. Used only by the
+ * attribution env-opt-out bypass below.
  */
-function isAttributionHeaderEnabled(): boolean {
-  if (isEnvDefinedFalsy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)) {
+function isPlainAnthropicApiBaseUrl(): boolean {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL
+  if (!baseUrl) {
+    return true
+  }
+  try {
+    return ['api.anthropic.com'].includes(new URL(baseUrl).host)
+  } catch {
     return false
   }
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_attribution_header', true)
 }
 
 /**
@@ -70,8 +78,27 @@ function isAttributionHeaderEnabled(): boolean {
  * We use a placeholder (instead of injecting from Zig) because same-length
  * replacement avoids Content-Length changes and buffer reallocation.
  */
-export function getAttributionHeader(fingerprint: string): string {
-  if (!isAttributionHeaderEnabled()) {
+export function getAttributionHeader(
+  fingerprint: string,
+  opts?: { ignoreEnvOptOut?: boolean },
+): string {
+  // CC 2.1.229 (changelog #10 / binary `LGo`): auto-mode side queries force
+  // the attribution header even when CLAUDE_CODE_ATTRIBUTION_HEADER opts
+  // out, but only on direct first-party connections — provider firstParty,
+  // plain api.anthropic.com base URL, no ANTHROPIC_UNIX_SOCKET. Only the
+  // env opt-out is bypassed; the killswitch below is not.
+  const envOptOutBypassed =
+    opts?.ignoreEnvOptOut === true &&
+    getAPIProvider() === 'firstParty' &&
+    isPlainAnthropicApiBaseUrl() &&
+    !process.env.ANTHROPIC_UNIX_SOCKET
+  if (
+    !envOptOutBypassed &&
+    isEnvDefinedFalsy(process.env.CLAUDE_CODE_ATTRIBUTION_HEADER)
+  ) {
+    return ''
+  }
+  if (!getFeatureValue_CACHED_MAY_BE_STALE('tengu_attribution_header', true)) {
     return ''
   }
 

@@ -14,10 +14,69 @@ import { refreshPolicyLimits } from '../../services/policyLimits/index.js';
 import { refreshRemoteManagedSettings } from '../../services/remoteManagedSettings/index.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { stripSignatureBlocks } from '../../utils/messages.js';
+import { getAPIProvider } from '../../utils/model/providers.js';
 import { checkAndDisableAutoModeIfNeeded, checkAndDisableBypassPermissionsIfNeeded, resetAutoModeGateCheck, resetBypassPermissionsCheck } from '../../utils/permissions/bypassPermissionsKillswitch.js';
 import { resetUserCache } from '../../utils/user.js';
+
+// ---------------------------------------------------------------------------
+// CC 2.1.229 (changelog #27): /login repeats the CLAUDE_CODE_OAUTH_TOKEN
+// override warning after a successful login. All strings below are byte-exact
+// from the 2.1.229 binary (`KWm`/`XWm`/`VWm`/`YWm`/`RRe`).
+// ---------------------------------------------------------------------------
+
+/** Shared warning tail (binary `VWm`, byte-exact). */
+const ENV_TOKEN_OVERRIDE_WARNING_TAIL =
+  'but if that variable is set in your shell profile or a Claude Code settings file, new `claude` sessions will keep using the old token until you remove it there.';
+
+/** Post-login note (binary `YWm`, byte-exact). */
+const ENV_TOKEN_OVERRIDE_DONE_NOTE = `Note: CLAUDE_CODE_OAUTH_TOKEN was set in your environment when /login started. This session will use your new credentials, ${ENV_TOKEN_OVERRIDE_WARNING_TAIL}`;
+
+/**
+ * Remote Control disconnect note appended to "Login successful." when the
+ * bridge dropped during login (binary `RRe`, byte-exact). OCC's Remote
+ * Control bridge is trimmed, so this branch is unreachable — kept for
+ * byte-parity with the official mechanism.
+ */
+const REMOTE_CONTROL_DISCONNECTED_NOTE = 'Remote Control disconnected.';
+
+/**
+ * Warning shown at the start of /login when CLAUDE_CODE_OAUTH_TOKEN is set
+ * in the environment (binary `KWm`).
+ */
+export function getLoginStartingMessage(): string | undefined {
+  return process.env.CLAUDE_CODE_OAUTH_TOKEN
+    ? `Warning: CLAUDE_CODE_OAUTH_TOKEN is set in your environment. This session will switch to your new credentials after logging in, ${ENV_TOKEN_OVERRIDE_WARNING_TAIL}`
+    : undefined;
+}
+
+/**
+ * /login done message (binary `XWm`, byte-exact — including the two-newline
+ * separator before the repeated env-token note).
+ */
+export function buildLoginDoneMessage(
+  success: boolean,
+  opts: {
+    bridgeDisconnected: boolean
+    envTokenWasSet: boolean
+    gatewayActive: boolean
+  },
+): string {
+  if (!success) return 'Login interrupted';
+  const base = opts.bridgeDisconnected
+    ? `Login successful. ${REMOTE_CONTROL_DISCONNECTED_NOTE}`
+    : 'Login successful';
+  return opts.envTokenWasSet && !opts.gatewayActive
+    ? `${base}\n\n${ENV_TOKEN_OVERRIDE_DONE_NOTE}`
+    : base;
+}
+
 export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXCommandContext): Promise<React.ReactNode> {
-  return <Login onDone={async success => {
+  // CC 2.1.229 (changelog #27): capture the env-token state at /login start —
+  // the done message repeats the warning based on this snapshot, not the
+  // post-login environment (binary: `n = r !== void 0` at call entry).
+  const startingMessage = getLoginStartingMessage();
+  const envTokenWasSet = startingMessage !== undefined;
+  return <Login startingMessage={startingMessage} onDone={async success => {
     context.onChangeAPIKey();
     // Signature-bearing blocks (thinking, connector_text) are bound to the API key —
     // strip them so the new key doesn't reject stale signatures.
@@ -54,7 +113,15 @@ export async function call(onDone: LocalJSXCommandOnDone, context: LocalJSXComma
         authVersion: prev.authVersion + 1
       }));
     }
-    onDone(success ? 'Login successful' : 'Login interrupted');
+    onDone(buildLoginDoneMessage(success, {
+      // Binary: `a.bridgeDisconnected` — OCC's Remote Control bridge is
+      // trimmed, so this is always false.
+      bridgeDisconnected: false,
+      envTokenWasSet,
+      // Binary: `Xn()==="gateway"` — OCC's getAPIProvider() never returns
+      // 'gateway', so this is always false here; kept for byte-parity.
+      gatewayActive: getAPIProvider() === 'gateway'
+    }));
   }} />;
 }
 export function Login(props) {

@@ -62,6 +62,13 @@ export type SideQueryOptions = {
   stop_sequences?: string[]
   /** Attributes this call in tengu_api_success for COGS joining against reporting.sampling_calls. */
   querySource: QuerySource
+  /**
+   * CC 2.1.229 (changelog #10): force the attribution header even when
+   * CLAUDE_CODE_ATTRIBUTION_HEADER opts out. Only honored on direct
+   * first-party connections (see getAttributionHeader). Used by the live
+   * auto-mode surfaces, whose API calls are rejected without the header.
+   */
+  forceAttributionHeader?: boolean
 }
 
 /**
@@ -144,7 +151,10 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
 
   // Compute fingerprint for OAuth attribution
   const fingerprint = computeFingerprint(messageText, MACRO.VERSION)
-  const attributionHeader = getAttributionHeader(fingerprint)
+  const attributionHeader = getAttributionHeader(
+    fingerprint,
+    opts.forceAttributionHeader ? { ignoreEnvOptOut: true } : undefined,
+  )
 
   // Build system as array to keep attribution header in its own block
   // (prevents server-side parsing from including system content in cc_entrypoint)
