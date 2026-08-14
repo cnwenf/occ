@@ -21,7 +21,7 @@ import { getClaudeConfigHomeDir, isEnvTruthy } from './envUtils.js'
 import { ConfigParseError, getErrnoCode } from './errors.js'
 import { writeFileSyncAndFlush_DEPRECATED } from './file.js'
 import { getFsImplementation } from './fsOperations.js'
-import { findCanonicalGitRoot } from './git.js'
+import { findCanonicalGitRoot, findGitRootUncached } from './git.js'
 import { safeParseJSON } from './json.js'
 import { stripBOM } from './jsonRead.js'
 import * as lockfile from './lockfile.js'
@@ -705,7 +705,8 @@ export type ProjectConfigKey = (typeof PROJECT_CONFIG_KEYS)[number]
  *
  * This function traverses parent directories to check if a parent directory
  * had approval. Accepting trust for a directory implies trust for child
- * directories.
+ * directories — but only within the enclosing git repository: nested git
+ * repositories each require their own trust confirmation (2.1.232).
  *
  * @returns Whether the trust dialog has been accepted (i.e. "should not be shown")
  */
@@ -748,44 +749,95 @@ function computeTrustDialogAccepted(): boolean {
     return true
   }
 
-  // Now check from current working directory and its parents
-  // Normalize paths for consistent JSON key lookup
-  let currentPath = normalizePathForConfigKey(getCwd())
+  // Now check from current working directory and its ancestors, BOUNDED by
+  // the enclosing git repo root (2.1.232 alignment, port of official bed):
+  // nested git repositories no longer inherit trust from a parent directory —
+  // each repository requires its own trust confirmation. The repo root is
+  // probed uncached so a freshly-created nested .git is seen immediately.
+  const resolvedCwd = resolve(getCwd())
+  const repoRoot = findGitRootUncached(resolvedCwd)
+  const boundary =
+    repoRoot !== null ? normalizePathForConfigKey(resolve(repoRoot)) : null
+  return walkAncestorsForTrust(config, resolvedCwd, boundary)
+}
 
-  // Traverse all parent directories
+/**
+ * Walk `startPath` and its ancestors looking for a persisted trust
+ * acceptance (2.1.232 alignment, port of official ved). The walk is BOUNDED
+ * by `boundary` (the enclosing git repo root; null = no boundary, e.g. no
+ * enclosing repo or an advisory no-fs-probe check): once the walk steps
+ * outside the repo root it returns false, so trust accepted for a parent
+ * directory never leaks into a nested git repository.
+ */
+function walkAncestorsForTrust(
+  config: GlobalConfig,
+  startPath: string,
+  boundary: string | null,
+): boolean {
+  let currentPath = normalizePathForConfigKey(startPath)
   while (true) {
-    const pathConfig = config.projects?.[currentPath]
-    if (pathConfig?.hasTrustDialogAccepted) {
+    // SECURITY: untrusted once the walk leaves the repo root.
+    if (
+      !(
+        boundary === null ||
+        currentPath === boundary ||
+        currentPath.startsWith(
+          boundary.endsWith('/') ? boundary : `${boundary}/`,
+        )
+      )
+    ) {
+      return false
+    }
+    if (config.projects?.[currentPath]?.hasTrustDialogAccepted) {
       return true
     }
-
+    // Stop at the repo root — never continue above it.
+    if (currentPath === boundary) {
+      return false
+    }
     const parentPath = normalizePathForConfigKey(resolve(currentPath, '..'))
-    // Stop if we've reached the root (when parent is same as current)
     if (parentPath === currentPath) {
-      break
+      return false
     }
     currentPath = parentPath
   }
-
-  return false
 }
 
 /**
  * Check trust for an arbitrary directory (not the session cwd).
- * Walks up from `dir`, returning true if any ancestor has trust persisted.
- * Unlike checkHasTrustDialogAccepted, this does NOT consult session trust or
- * the memoized project path — use when the target dir differs from cwd (e.g.
+ * Returns true if the directory's persisted trust key (its canonical git
+ * root) or an ancestor within the enclosing repo has trust persisted
+ * (2.1.232 alignment, port of official v8e). Unlike
+ * checkHasTrustDialogAccepted, this does NOT consult session trust or the
+ * memoized project path — use when the target dir differs from cwd (e.g.
  * /assistant installing into a user-typed path).
+ *
+ * With `advisoryNoFsProbe`, the filesystem is never probed (no git-root
+ * lookup) and the walk is unbounded — used for advisory availability checks
+ * where a fs probe is not acceptable.
  */
-export function isPathTrusted(dir: string): boolean {
+export function isPathTrusted(
+  dir: string,
+  opts: { advisoryNoFsProbe?: boolean } = {},
+): boolean {
   const config = getGlobalConfig()
-  let currentPath = normalizePathForConfigKey(resolve(dir))
-  while (true) {
-    if (config.projects?.[currentPath]?.hasTrustDialogAccepted) return true
-    const parentPath = normalizePathForConfigKey(resolve(currentPath, '..'))
-    if (parentPath === currentPath) return false
-    currentPath = parentPath
+  if (opts.advisoryNoFsProbe) {
+    return walkAncestorsForTrust(config, resolve(dir), null)
   }
+  // Check where trust for this path is persisted (canonical git root),
+  // mirroring official v8e's projects[u9(e)] fast path.
+  const canonicalRoot = findCanonicalGitRoot(dir)
+  const persistKey = normalizePathForConfigKey(
+    canonicalRoot !== null ? resolve(canonicalRoot) : resolve(dir),
+  )
+  if (config.projects?.[persistKey]?.hasTrustDialogAccepted === true) {
+    return true
+  }
+  const resolved = resolve(dir)
+  const repoRoot = findGitRootUncached(resolved)
+  const boundary =
+    repoRoot !== null ? normalizePathForConfigKey(resolve(repoRoot)) : null
+  return walkAncestorsForTrust(config, resolved, boundary)
 }
 
 // We have to put this test code here because Jest doesn't support mocking ES modules :O

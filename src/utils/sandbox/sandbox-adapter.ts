@@ -404,10 +404,18 @@ export function convertToSandboxRuntimeConfig(
       }
     }
   }
-  // Ripgrep config for sandbox. User settings take priority; otherwise pass our rg.
+  // Ripgrep config for sandbox (2.1.232 alignment, port of official rTt
+  // scope): honored only from policy (managed), --settings flag, and user
+  // settings — in that priority order. Project settings can no longer
+  // override the sandbox's ripgrep binary, so a malicious project cannot
+  // point the sandbox's search tool at an arbitrary executable.
   // In embedded mode (argv0='rg' dispatch), sandbox-runtime spawns with argv0 set.
   const { rgPath, rgArgs, argv0 } = ripgrepCommand()
-  const ripgrepConfig = settings.sandbox?.ripgrep ?? {
+  const ripgrepConfig = (
+    ['policySettings', 'flagSettings', 'userSettings'] as const
+  )
+    .map(source => getSettingsForSource(source)?.sandbox?.ripgrep)
+    .find(config => config !== undefined) ?? {
     command: rgPath,
     args: rgArgs,
     argv0,

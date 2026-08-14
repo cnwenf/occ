@@ -1,5 +1,5 @@
 import { createHash } from 'crypto'
-import { readFileSync, realpathSync, statSync } from 'fs'
+import { lstatSync, readFileSync, realpathSync, statSync } from 'fs'
 import { open, readFile, realpath, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { basename, dirname, join, resolve, sep } from 'path'
@@ -106,6 +106,53 @@ function createFindGitRoot(): {
   }
   wrapper.cache = findGitRootImpl.cache
   return wrapper
+}
+
+/**
+ * Uncached git-root probe for trust-boundary computation (2.1.232 alignment,
+ * port of the official YEo/uXc walkers).
+ *
+ * Unlike findGitRoot (LRU-memoized), this ALWAYS re-probes the filesystem:
+ * the trust boundary must reflect newly-created nested repos immediately —
+ * a stale cached root would widen the boundary and let a parent directory's
+ * trust leak into a nested repo (the exact bug official 2.1.232 fixed).
+ *
+ * Symlinked `.git` entries are NOT treated as repo roots here. The official
+ * probe (nXc) validates symlink targets against escape/suspicion guards
+ * before following them; OCC rejects them outright for trust purposes —
+ * stricter, and avoids porting the full pointer-safety machinery. A rejected
+ * symlink only means "no repo boundary at this level"; it can never place a
+ * misplaced boundary.
+ */
+export function findGitRootUncached(startPath: string): string | null {
+  let current = resolve(startPath)
+  const root = current.substring(0, current.indexOf(sep) + 1) || sep
+  while (current !== root) {
+    if (isGitRootForTrust(current)) {
+      return current.normalize('NFC')
+    }
+    const parent = dirname(current)
+    if (parent === current) {
+      break
+    }
+    current = parent
+  }
+  if (isGitRootForTrust(root)) {
+    return root.normalize('NFC')
+  }
+  return null
+}
+
+function isGitRootForTrust(dir: string): boolean {
+  try {
+    const s = lstatSync(join(dir, '.git'))
+    if (s.isSymbolicLink()) {
+      return false
+    }
+    return s.isDirectory() || s.isFile()
+  } catch {
+    return false
+  }
 }
 
 /**

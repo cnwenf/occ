@@ -45,6 +45,11 @@ export type SecretMatch = {
 // join() is not constant-folded by the minifier.
 const ANT_KEY_PFX = ['sk', 'ant', 'api'].join('-')
 
+// Shared GitLab token body (2.1.232 alignment): 20+ word/dash/equals chars,
+// optionally followed by a 9-char lowercase rotation suffix. Ported from the
+// official scrubber's X1e constant: "[\\w=-]{20,}(?:\\.[0-9a-z]{9})?".
+const GITLAB_TOKEN_BODY = '[\\w=-]{20,}(?:\\.[0-9a-z]{9})?'
+
 const SECRET_RULES: SecretRule[] = [
   // — Cloud providers —
   {
@@ -111,13 +116,53 @@ const SECRET_RULES: SecretRule[] = [
     id: 'github-refresh-token',
     source: 'ghr_[0-9a-zA-Z]{36}',
   },
+  // GitLab token families (2.1.232 alignment). All routable GitLab token
+  // types share one body shape: 20+ chars from [\w=-], optionally followed
+  // by a `.xxxxxxxxx` rotation suffix (9 lowercase alnum chars). Matches
+  // the official scrubber's shared X1e pattern verbatim.
   {
     id: 'gitlab-pat',
-    source: 'glpat-[\\w-]{20}',
+    source: `glpat-${GITLAB_TOKEN_BODY}`,
   },
   {
     id: 'gitlab-deploy-token',
-    source: 'gldt-[0-9a-zA-Z_\\-]{20}',
+    source: `gldt-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-runner-authentication-token',
+    source: `glrt-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-oauth-app-secret',
+    source: `gloas-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-pipeline-trigger-token',
+    source: `glptt-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-kubernetes-agent-token',
+    source: `glagent-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-incoming-mail-token',
+    source: `glimt-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-scim-oauth-token',
+    source: `glsoat-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-ci-build-token',
+    source: `glcbt-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-feed-token',
+    source: `glft-${GITLAB_TOKEN_BODY}`,
+  },
+  {
+    id: 'gitlab-feature-flag-client-token',
+    source: `glffct-${GITLAB_TOKEN_BODY}`,
   },
 
   // — Communication —
@@ -260,6 +305,8 @@ function ruleIdToLabel(ruleId: string): string {
     huggingface: 'HuggingFace',
     hashicorp: 'HashiCorp',
     sendgrid: 'SendGrid',
+    ci: 'CI',
+    scim: 'SCIM',
   }
   return ruleId
     .split('-')
