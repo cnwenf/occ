@@ -20,7 +20,7 @@
 | Official latest Claude Code | **`2.1.233`** — npm `latest`/`next` agree; GitHub release `v2.1.233` | `npm view`, `gh api` |
 | Version gap | **REAL GAP: one release since OCC-94 — `2.1.233` (20 changelog entries)** | this doc §2 |
 | Binary markers (fresh downloads) | 2.1.232 + 2.1.233 ELFs diffed via `strings -n 8 \| sort -u \| comm`; port sites recovered verbatim (`sCt`/`vLr`/`Ckn` substitution sentinels, `pkc`/`vPe`/`Qwn` notify hook, `$xi`/`T$S` unrecognized-model signal, `WJ_`/`Mwd` todo-gating) | `/tmp/occ95` research dir |
-| Landed this round | **6 byte-verified ports** (§3): ① argument-substitution sCt security rework, ② permission-prompt Notification hooks, ③ unrecognized-model diagnostics, ④ WebFetch cache-TTL env, ⑤ todo/task model gating, ⑥ Bash `< file` input-redirect revert (2.1.232 Linux half rolled forward) | this doc §3 |
+| Landed this round | **6 byte-verified ports** (§3): ① argument-substitution sCt security rework, ② permission-prompt Notification hooks, ③ unrecognized-model diagnostics, ④ WebFetch cache-TTL env, ⑤ todo/task model gating, ⑥ Bash `< file` input-redirect revert (the 2.1.232 checks reverted upstream on all platforms; OCC removes its OCC-94 port to stay aligned) | this doc §3 |
 
 **Conclusion: official advanced once since OCC-94 (`2.1.233`, 20 changelog
 entries). Full triage in §2: 6 items are portable and byte-verified in the
@@ -58,7 +58,7 @@ verifiable in the linux-x64 ELF, and OCC has the surface.
 | C | **"Added a `[claude-code:unrecognized_model]` diagnostic when a query uses a model the CLI does not recognize"** (binary `$xi`) | Fully byte-visible: tag constant `T$S`, once-store `ZE.claim`, the recognition set (catalog + `claude-3-{opus,sonnet,haiku}` + `claude-mythos-preview`), stderr-in-print / debug-log-otherwise split, `tengu_api_unrecognized_model` event, control-char sanitizer `vot`, swallow-all catch. Ported to `unrecognizedModelSignal.ts` + wired at the two query sites (`claude.ts`, `sideQuery.ts`). |
 | D | **"Added `CLAUDE_CODE_WEBFETCH_CACHE_TTL_MS` to override the WebFetch response-cache TTL"** | Env key + `parseInt` parse + clamp + description-suffix strings are byte-visible. Ported to `WebFetchTool/cacheTtl.ts` with the prompt-description sync. |
 | E | **"TodoWrite and Task tools are now disabled on Opus 4.8, Sonnet 5, Fable 5 and newer models; `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` restores them"** | Official gating (`WJ_` env override + `Mwd` model-set membership, checked per tool via `isEnabled`) recovered from the ELF. Ported to `todoToolsAvailability.ts` + wired into all 5 tools (TodoWrite, TaskCreate, TaskGet, TaskList, TaskUpdate). |
-| F | **"Reverted the Bash `< file` input-redirect permission checks on Windows"** (Linux/macOS half rolled forward) | OCC-94 landed the 2.1.232 input-redirect checks. 2.1.233 reverts ONLY the Windows/Cygwin half; OCC ships the linux/darwin path, so the portable action is confirming OCC's AST path stays as landed and locking it with regression tests (the official Windows revert never reaches OCC's AST). |
+| F | **"Reverted the 2.1.232 Bash permission changes for Cygwin-style symlinks on Windows and for input redirections (`< file`); a narrower version will return in a later release"** | The revert covers input redirections on ALL platforms (the Cygwin-symlink half is Windows-only). Byte-verified: both input-redirect loops are gone from the 2.1.233 ELF (zero `op!=="<"` sites, zero `Input redirection from` strings; 2.1.232 had 1 + 3). OCC removes its OCC-94 port to stay aligned. |
 
 ### N/A — trimmed / dormant / platform-specific surfaces (11 entries)
 
@@ -71,7 +71,7 @@ verifiable in the linux-x64 ELF, and OCC has the surface.
 | Self-hosted runner | runner registration/heartbeat fixes | OCC has no self-hosted-runner surface. |
 | Windows `\??\` NT prefix | path normalization | Windows-only; OCC ships the linux/darwin path. |
 | Windows auto-mode cd | auto-mode working-directory behavior | Windows-only. |
-| Cygwin symlink revert (second half of item F) | writes through Cygwin-style symlinks revert | Windows/Cygwin-only — the same 2.1.233 entry whose Linux half is item F. |
+| Cygwin symlink revert (second half of item F) | writes through Cygwin-style symlinks revert | Windows/Cygwin-only — the Cygwin-symlink half of the same 2.1.233 entry; the input-redirect half (all platforms) is item F. |
 | GitLab MR `--worktree` ingestion | MR-URL support in `--worktree` + the `claude agents` review view | The MR-URL ingestion feeds the official PR/MR-review background-session `agents` view (trimmed surface; OCC's `occ agents` is the daemon supervisor, a different subsystem). OCC's local worktree mode is unaffected. |
 | Bundled-skill alias shadow fix | bundled skills no longer shadow user skills of the same name | OCC ships zero bundled skill aliases that collide (`BUNDLED_SKILLS` trim); there is no emitting surface for the shadow. Hardening sites staged (§4) for when OCC re-introduces bundled aliases. |
 | GitHub App setup tip | tip-suppression for gitlab/bitbucket remotes | The tip lives in the official setup-flow telemetry surface that OCC stubs; OCC has no equivalent tip to gate. |
@@ -169,11 +169,19 @@ models (binary `Mwd` set); `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` force-enables
 
 ### 3.F Input-redirect revert — `src/tools/BashTool/pathValidation.ts`
 
-2.1.233 reverts the 2.1.232 Windows/Cygwin input-redirect behavior only; OCC
-ships the linux/darwin AST path, which stays as OCC-94 landed it. New
-`inputRedirectRevert233.test.ts` (6 tests) locks the boundary; the obsolete
-`inputRedirectPermission232.test.ts` (pinned the pre-revert Windows-side
-expectations) is deleted.
+2.1.233 reverts the 2.1.232 input-redirect permission checks on ALL
+platforms — official changelog: "Reverted the 2.1.232 Bash permission changes
+for Cygwin-style symlinks on Windows and for input redirections (`< file`); a
+narrower version will return in a later release". Byte-verified in the ELFs:
+`Input redirection from` 3×→0× and `op!=="<"` 1×→0× between 2.1.232 and
+2.1.233. OCC therefore removes the OCC-94 `validateInputRedirections` port
+(and its call site in `checkPathConstraints`) to stay byte-aligned: `cat < secret`
+loses its dedicated redirect gate (matching upstream), while the argument
+spelling `cat secret` keeps its read checks. New
+`inputRedirectRevert233.test.ts` (6 tests) pins the revert pass-through; the
+obsolete `inputRedirectPermission232.test.ts` (pinned the pre-revert
+expectations) is deleted. When upstream re-lands the narrower version, port
+it then (recorded as the follow-up).
 
 ## 4. Staged items (with per-site rationale)
 
