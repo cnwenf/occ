@@ -19,6 +19,7 @@ import {
   TaskStatusSchema,
   updateTask,
 } from '../../utils/tasks.js'
+import { areTodoToolsAvailable } from '../../utils/todoToolsAvailability.js'
 import {
   getAgentId,
   getAgentName,
@@ -106,7 +107,8 @@ export const TaskUpdateTool = buildTool({
   },
   shouldDefer: true,
   isEnabled() {
-    return isTodoV2Enabled()
+    // 2.1.233: official Task-tool gate is See() = uG() && cX().
+    return isTodoV2Enabled() && areTodoToolsAvailable()
   },
   isConcurrencySafe() {
     return true

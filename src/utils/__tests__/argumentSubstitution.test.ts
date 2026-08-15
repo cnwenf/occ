@@ -106,15 +106,21 @@ describe("substituteArguments - 2.1.210 unmatched placeholders preserved verbati
 		).toBe("foo $ARGUMENTS[1] $ARGUMENTS[2]");
 	});
 
-	test("$ARGUMENTS[N] unmatched is preserved mid-sentence without extra space", () => {
+	test("$ARGUMENTS[N] unmatched mid-sentence is preserved; all-miss appends args (2.1.233)", () => {
+		// Official 2.1.233 sCt: the placeholder is preserved verbatim AND the
+		// append gate is the substitution flag, so an all-miss template still
+		// gets "\nARGUMENTS: <args>" appended (single \n).
 		expect(substituteArguments("a $ARGUMENTS[1] b", "foo")).toBe(
-			"a $ARGUMENTS[1] b",
+			"a $ARGUMENTS[1] b\nARGUMENTS: foo",
 		);
 	});
 
-	test("all $ARGUMENTS[N] unmatched: preserved, no stray $ARGUMENTS expansion", () => {
+	test("all $ARGUMENTS[N] unmatched: preserved, args appended (2.1.233)", () => {
+		// Official appends on all-miss (binary sCt `if (!c && r && t)`); the
+		// pinned pre-233 expectation ("$ARGUMENTS[1]" alone) was the old
+		// string-equality gate behavior.
 		expect(substituteArguments("$ARGUMENTS[1]", "foo")).toBe(
-			"$ARGUMENTS[1]",
+			"$ARGUMENTS[1]\nARGUMENTS: foo",
 		);
 	});
 
@@ -170,5 +176,110 @@ describe("substituteArguments - named args unchanged by 2.1.210", () => {
 describe("substituteArguments - 2.1.163 \\$ escape (regression guard)", () => {
 	test("\\$0 stays a literal $0 while $0 still substitutes", () => {
 		expect(substituteArguments("\\$0 $0", "foo")).toBe("$0 foo");
+	});
+});
+
+// 2.1.233 (OCC-95): the official sCt security rework — substituted values are
+// sentinel-shielded so later passes cannot re-expand $-markers inside them,
+// sentinel chars in user input are sanitized against forgery, the \$ escape is
+// scoped to marker lookahead, named args are regex-escaped and substituted
+// longest-first, and the append gate is the substitution flag. Every expected
+// value below was verified against a byte-faithful reconstruction of the
+// official 2.1.233 sCt.
+describe("substituteArguments - 2.1.233 sCt security rework", () => {
+	// Sentinel chars built from char codes to keep this file pure ASCII.
+	const SHIELDED_DOLLAR = String.fromCharCode(0xffff);
+	const VALUE_BOUNDARY = String.fromCharCode(0xfffe);
+	const SENTINEL_REPLACEMENT = String.fromCharCode(0xfffd);
+
+	test("a value containing $0 is NOT re-expanded by the $n pass", () => {
+		// named arg msg -> "hi$0bye"; the $0 inside the value stays literal.
+		expect(substituteArguments("Say $msg", "hi$0bye extra", true, ["msg"])).toBe(
+			"Say hi$0bye",
+		);
+	});
+
+	test("a value containing $ARGUMENTS stays literal", () => {
+		expect(
+			substituteArguments("A $msg B", "x$ARGUMENTSx", true, ["msg"]),
+		).toBe("A x$ARGUMENTSx B");
+	});
+
+	test("a value containing a declared $name stays literal", () => {
+		expect(substituteArguments("A $msg B", "x$msgx", true, ["msg"])).toBe(
+			"A x$msgx B",
+		);
+	});
+
+	test("a value with a shell-escaped $0 (\\$0 -> $0) stays literal", () => {
+		// parseArguments unescapes \$ to $ (shell semantics), so sCt receives
+		// the value "a$0b"; the $0 inside must NOT be re-expanded to the arg
+		// itself. Without the 2.1.233 shielding this would recurse into the
+		// value's own content.
+		expect(substituteArguments("A $0 B", "a\\$0b", true)).toBe("A a$0b B");
+	});
+
+	test("named args are regex-escaped (a dot in the name is literal)", () => {
+		// Without escapeRegExp, /$a.b/ with . as wildcard would also match $aXb.
+		expect(substituteArguments("$a.b $aXb", "x", true, ["a.b"])).toBe(
+			"x $aXb",
+		);
+	});
+
+	test("named args substitute longest name first", () => {
+		// names [a, ab]: ab -> index 1, a -> index 0; longest first avoids
+		// $a swallowing the $ab placeholder.
+		expect(substituteArguments("$ab $a", "x y", true, ["a", "ab"])).toBe(
+			"y x",
+		);
+	});
+
+	test("\\$ before a named marker escapes it", () => {
+		expect(substituteArguments("\\$foo $foo", "v", true, ["foo"])).toBe(
+			"$foo v",
+		);
+	});
+
+	test("\\\\$0 (double backslash) keeps the marker live", () => {
+		// Escape-pass lookbehind: the \$ is preceded by a backslash, so it is
+		// NOT shielded and $0 still substitutes; both backslashes survive.
+		expect(substituteArguments("\\\\$0", "foo")).toBe("\\\\foo");
+	});
+
+	test("sentinel chars in the template are sanitized, not honored", () => {
+		// Forged U+FFFF/U+FFFE in user content become U+FFFD and cannot
+		// smuggle a fake shielded $ or fake value boundary through.
+		expect(
+			substituteArguments(`${SHIELDED_DOLLAR} $0 ${VALUE_BOUNDARY}`, "foo"),
+		).toBe(`${SENTINEL_REPLACEMENT} foo ${SENTINEL_REPLACEMENT}`);
+	});
+
+	test("sentinel chars in the args value are sanitized, not honored", () => {
+		expect(
+			substituteArguments("v=$0", `a${SHIELDED_DOLLAR}b${VALUE_BOUNDARY}c`),
+		).toBe(`v=a${SENTINEL_REPLACEMENT}b${SENTINEL_REPLACEMENT}c`);
+	});
+
+	test("all-miss template appends args with a single newline", () => {
+		expect(substituteArguments("no markers", "foo")).toBe(
+			"no markers\nARGUMENTS: foo",
+		);
+	});
+
+	test("all-miss append is suppressed when appendIfNoPlaceholder=false", () => {
+		expect(substituteArguments("a $ARGUMENTS[1] b", "foo", false)).toBe(
+			"a $ARGUMENTS[1] b",
+		);
+	});
+
+	test("empty args never append", () => {
+		expect(substituteArguments("no markers", "")).toBe("no markers");
+	});
+
+	test("appended args are themselves shielded from re-expansion", () => {
+		// The appended value goes through insertValue too: $0 inside stays.
+		expect(substituteArguments("no markers", "x$0y")).toBe(
+			"no markers\nARGUMENTS: x$0y",
+		);
 	});
 });

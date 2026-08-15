@@ -7,6 +7,7 @@ import {
   isTodoV2Enabled,
   TaskStatusSchema,
 } from '../../utils/tasks.js'
+import { areTodoToolsAvailable } from '../../utils/todoToolsAvailability.js'
 import { TASK_GET_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 
@@ -56,7 +57,8 @@ export const TaskGetTool = buildTool({
   },
   shouldDefer: true,
   isEnabled() {
-    return isTodoV2Enabled()
+    // 2.1.233: official Task-tool gate is See() = uG() && cX().
+    return isTodoV2Enabled() && areTodoToolsAvailable()
   },
   isConcurrencySafe() {
     return true
