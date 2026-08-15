@@ -1011,62 +1011,14 @@ export function validateOutputRedirections(
   }
 }
 
-/**
- * Validate input redirections (`< file`) in read mode (2.1.232 alignment,
- * port of the official v232 input-redirect loops). Only plain `<` redirects
- * are file reads; `/dev/null` is always safe. `<<`, `<<<`, and `<&` carry no
- * file read and are ignored.
- *
- * Deny-rule hits return 'deny'; working-directory violations return 'ask'
- * with an add-read-rule suggestion (only when there is no other decision
- * reason, mirroring the official which builds the suggestion solely in the
- * reasonless case).
- */
-function validateInputRedirections(
-  astRedirects: Redirect[],
-  cwd: string,
-  toolPermissionContext: ToolPermissionContext,
-): PermissionResult {
-  for (const r of astRedirects) {
-    if (r.op !== '<' || r.target === '/dev/null') {
-      continue
-    }
-    const { allowed, resolvedPath, decisionReason } = validatePath(
-      r.target,
-      cwd,
-      toolPermissionContext,
-      'read',
-    )
-    if (allowed) {
-      continue
-    }
-    const message =
-      decisionReason?.type === 'other' ||
-      decisionReason?.type === 'safetyCheck'
-        ? decisionReason.reason
-        : decisionReason?.type === 'rule'
-          ? `Input redirection from '${resolvedPath}' was blocked by a deny rule.`
-          : `Input redirection from '${resolvedPath}' was blocked. For security, Claude Code may only read files in the allowed working directories for this session.`
-    if (decisionReason?.type === 'rule') {
-      return { behavior: 'deny', message, decisionReason }
-    }
-    const suggestion =
-      decisionReason === undefined
-        ? createReadRuleSuggestion(getDirectoryForPath(resolvedPath), 'session')
-        : undefined
-    return {
-      behavior: 'ask',
-      message,
-      blockedPath: resolvedPath,
-      decisionReason,
-      ...(suggestion !== undefined && { suggestions: [suggestion] }),
-    }
-  }
-  return {
-    behavior: 'passthrough',
-    message: 'No unsafe input redirections found',
-  }
-}
+// 2.1.233 alignment (OCC-95): the 2.1.232 input-redirection (`< file`)
+// permission checks were REVERTED upstream — "Reverted the 2.1.232 Bash
+// permission changes for Cygwin-style symlinks on Windows and for input
+// redirections (`< file`); a narrower version will return in a later
+// release". Byte-verified in the official 2.1.233 linux-x64 ELF: both
+// input-redirect loops are gone (zero `op!=="<"` sites, zero "Input
+// redirection" strings). The OCC-94 port (validateInputRedirections) was
+// therefore removed to stay aligned.
 
 /**
  * Checks path constraints for commands that access the filesystem (cd, ls, find).
@@ -1135,22 +1087,9 @@ export function checkPathConstraints(
     return redirectionResult
   }
 
-  // SECURITY (2.1.232 alignment, port of official v232 main-seam loop):
-  // input redirections (`< file`) are permission-checked like their argument
-  // spellings — `grep x < secret` needs the same read access as `cat secret`.
-  // AST path only: the official checks input redirects only when AST-derived
-  // redirects are available; the regex fallback extracts output redirects
-  // only. `<<`/`<<<`/`<&` carry no file read and are skipped.
-  if (astRedirects) {
-    const inputRedirectResult = validateInputRedirections(
-      astRedirects,
-      cwd,
-      toolPermissionContext,
-    )
-    if (inputRedirectResult.behavior !== 'passthrough') {
-      return inputRedirectResult
-    }
-  }
+  // NOTE (2.1.233): input redirections (`< file`) are intentionally NOT
+  // permission-checked here — upstream reverted the 2.1.232 input-redirect
+  // checks; see the revert note above validateOutputRedirections' caller.
 
   // SECURITY: When AST-derived commands are available, iterate them with
   // pre-parsed argv instead of re-parsing via splitCommand_DEPRECATED + shell-quote.

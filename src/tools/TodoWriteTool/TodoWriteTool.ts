@@ -5,6 +5,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/gr
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { isTodoV2Enabled } from '../../utils/tasks.js'
+import { areTodoToolsAvailable } from '../../utils/todoToolsAvailability.js'
 import { TodoListSchema } from '../../utils/todo/types.js'
 import { VERIFICATION_AGENT_TYPE } from '../AgentTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from './constants.js'
@@ -50,7 +51,9 @@ export const TodoWriteTool = buildTool({
   },
   shouldDefer: true,
   isEnabled() {
-    return !isTodoV2Enabled()
+    // 2.1.233: official TodoWrite gate is `!uG() && cX()` — legacy TodoWrite
+    // when Task-v2 tools are off, AND todo tools available for the model.
+    return !isTodoV2Enabled() && areTodoToolsAvailable()
   },
   toAutoClassifierInput(input) {
     return `${input.todos.length} items`

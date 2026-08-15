@@ -47,6 +47,10 @@ import { notifyCommandLifecycle } from '../utils/commandLifecycle.js'
 import { normalizeControlMessageKeys } from '../utils/controlMessageCompat.js'
 import { executePermissionRequestHooks } from '../utils/hooks.js'
 import {
+  getToolDisplayName,
+  schedulePermissionPromptNotifyHook,
+} from '../utils/permissionPromptNotify.js'
+import {
   applyPermissionUpdates,
   persistPermissionUpdates,
 } from '../utils/permissions/PermissionUpdate.js'
@@ -614,6 +618,12 @@ export class StructuredIO {
             requestId,
           ),
         )
+        // 2.1.233: notify Notification hooks if this prompt stays unanswered
+        // for 6 seconds (binary pkc(vPe(t.name))). The cancel closure runs
+        // on whichever settle path wins, via sdkPromise.then(k, k) below.
+        const cancelPermissionPromptNotify = schedulePermissionPromptNotifyHook(
+          getToolDisplayName(tool.name),
+        )
         const sdkPromise = this.sendRequest<PermissionToolOutput>(
           {
             subtype: 'can_use_tool',
@@ -631,6 +641,8 @@ export class StructuredIO {
           hookAbortController.signal,
           requestId,
         ).then(result => ({ source: 'sdk' as const, result }))
+        // binary `R.then(k, k)` — cancel the notify timer on either settle
+        sdkPromise.then(cancelPermissionPromptNotify, cancelPermissionPromptNotify)
 
         // Race: hook completion vs SDK prompt response.
         // The hook promise always resolves (never rejects), returning
@@ -761,17 +773,27 @@ export class StructuredIO {
   }) => Promise<boolean> {
     return async (hostPattern): Promise<boolean> => {
       try {
-        const result = await this.sendRequest<PermissionToolOutput>(
-          {
-            subtype: 'can_use_tool',
-            tool_name: SANDBOX_NETWORK_ACCESS_TOOL_NAME,
-            input: { host: hostPattern.host },
-            tool_use_id: randomUUID(),
-            description: `Allow network connection to ${hostPattern.host}?`,
-          },
-          permissionToolOutputSchema(),
+        // 2.1.233: notify Notification hooks if this prompt stays unanswered
+        // for 6 seconds (binary pkc(vPe(wpt)) at the sandbox-ask site),
+        // cancelled in finally exactly like the official `try{...}finally{s()}`.
+        const cancelPermissionPromptNotify = schedulePermissionPromptNotifyHook(
+          getToolDisplayName(SANDBOX_NETWORK_ACCESS_TOOL_NAME),
         )
-        return result.behavior === 'allow'
+        try {
+          const result = await this.sendRequest<PermissionToolOutput>(
+            {
+              subtype: 'can_use_tool',
+              tool_name: SANDBOX_NETWORK_ACCESS_TOOL_NAME,
+              input: { host: hostPattern.host },
+              tool_use_id: randomUUID(),
+              description: `Allow network connection to ${hostPattern.host}?`,
+            },
+            permissionToolOutputSchema(),
+          )
+          return result.behavior === 'allow'
+        } finally {
+          cancelPermissionPromptNotify()
+        }
       } catch {
         // If the request fails (stream closed, abort, etc.), deny the connection
         return false

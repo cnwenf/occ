@@ -7,7 +7,7 @@ import type { ToolPermissionContext } from '../../../Tool.js'
 import type { Redirect } from '../../../utils/bash/ast.js'
 import { checkPathConstraints } from '../pathValidation.js'
 
-// The read-permission check reaches getBundledSkillsRoot, which reads
+// The permission path reaches getBundledSkillsRoot, which reads
 // MACRO.VERSION (a build-time constant polyfilled in cli.tsx for runtime
 // execution). Mirror that polyfill so the permission path works in tests.
 if (typeof globalThis.MACRO === 'undefined') {
@@ -15,14 +15,17 @@ if (typeof globalThis.MACRO === 'undefined') {
 }
 
 /**
- * 2.1.232 alignment — Bash input redirections (`< file`) are now
- * permission-checked like their argument spellings on all platforms
- * (`grep x < secret` needs the same read access as `cat secret`).
+ * 2.1.233 alignment (OCC-95) — upstream REVERTED the 2.1.232 Bash
+ * input-redirection permission checks: "Reverted the 2.1.232 Bash
+ * permission changes for Cygwin-style symlinks on Windows and for input
+ * redirections (`< file`); a narrower version will return in a later
+ * release". Byte-verified in the official 2.1.233 linux-x64 ELF: both
+ * `op!=="<"` check loops and all "Input redirection" strings are gone.
  *
- * Official v232 checks input redirects only when AST-derived redirects are
- * available; these tests drive checkPathConstraints (the production path
- * inside bashToolHasPermission) with AST redirects exactly as
- * checkSemantics produces them.
+ * These tests pin the reverted behavior in OCC: `checkPathConstraints`
+ * (the production seam inside bashToolHasPermission) must NOT
+ * permission-check `< file` input redirections anymore, while output
+ * redirection checks stay intact.
  */
 
 function makeContext(workdir?: string): ToolPermissionContext {
@@ -69,13 +72,13 @@ function checkWithRedirects(
   )
 }
 
-describe('2.1.232 — input redirection permission checks', () => {
+describe('2.1.233 — input redirection checks reverted', () => {
   let workdir: string
   let outsideDir: string
 
   const setup = () => {
-    workdir = mkdtempSync(join(tmpdir(), 'occ-inputredir-wd-'))
-    outsideDir = mkdtempSync(join(tmpdir(), 'occ-inputredir-out-'))
+    workdir = mkdtempSync(join(tmpdir(), 'occ-inputredir233-wd-'))
+    outsideDir = mkdtempSync(join(tmpdir(), 'occ-inputredir233-out-'))
     writeFileSync(join(workdir, 'inside.txt'), 'in')
     writeFileSync(join(outsideDir, 'secret.txt'), 'sekrit')
   }
@@ -99,7 +102,7 @@ describe('2.1.232 — input redirection permission checks', () => {
     }
   })
 
-  test('input redirect to a file OUTSIDE the working dir asks', () => {
+  test('input redirect to a file OUTSIDE the working dir now passes through (reverted)', () => {
     setup()
     try {
       const target = join(outsideDir, 'secret.txt')
@@ -109,37 +112,31 @@ describe('2.1.232 — input redirection permission checks', () => {
         makeContext(workdir),
         [redirect('<', target)],
       )
-      expect(r.behavior).toBe('ask')
-      expect(r.message).toContain('Input redirection from')
-      expect(r.message).toContain('may only read files')
+      // 2.1.232 asked here; upstream reverted the check in 2.1.233.
+      expect(r.behavior).toBe('passthrough')
     } finally {
       teardown()
     }
   })
 
-  test('input redirect blocked by a Read deny rule is denied', () => {
+  test('Read deny rule no longer applies to input redirects (reverted)', () => {
     setup()
     try {
       const target = join(outsideDir, 'secret.txt')
-      // outsideDir already starts with '/', so `Read(/${outsideDir}/**)`
-      // yields the `//tmp/...` form — the `//` prefix anchors the pattern
-      // at filesystem root (patternWithRoot), required for absolute paths
-      // outside the settings root.
       const r = checkWithRedirects(
         `cat < ${target}`,
         workdir,
         makeContextWithDenyRule(workdir, `Read(/${outsideDir}/**)`),
         [redirect('<', target)],
       )
-      expect(r.behavior).toBe('deny')
-      expect(r.message).toContain('Input redirection from')
-      expect(r.message).toContain('was blocked by a deny rule.')
+      // 2.1.232 denied here; upstream reverted the check in 2.1.233.
+      expect(r.behavior).toBe('passthrough')
     } finally {
       teardown()
     }
   })
 
-  test('redirect from /dev/null is always allowed', () => {
+  test('redirect from /dev/null passes through', () => {
     setup()
     try {
       const r = checkWithRedirects('cat < /dev/null', workdir, makeContext(), [
@@ -151,7 +148,7 @@ describe('2.1.232 — input redirection permission checks', () => {
     }
   })
 
-  test('heredoc, herestring and fd-dup carry no file read — passthrough', () => {
+  test('heredoc, herestring and fd-dup still pass through', () => {
     setup()
     try {
       const outside = join(outsideDir, 'secret.txt')
@@ -178,25 +175,6 @@ describe('2.1.232 — input redirection permission checks', () => {
       )
       expect(r.behavior).toBe('ask')
       expect(r.message).toContain('Output redirection to')
-    } finally {
-      teardown()
-    }
-  })
-
-  test('ask result without other reason carries a Read-rule suggestion', () => {
-    setup()
-    try {
-      const target = join(outsideDir, 'secret.txt')
-      const r = checkWithRedirects(
-        `cat < ${target}`,
-        workdir,
-        makeContext(workdir),
-        [redirect('<', target)],
-      )
-      expect(r.behavior).toBe('ask')
-      if (r.behavior === 'ask') {
-        expect(r.suggestions?.[0]?.type).toBe('addRules')
-      }
     } finally {
       teardown()
     }

@@ -14,6 +14,7 @@ import {
 } from '../../utils/mcpOutputStorage.js'
 import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import { asSystemPrompt } from '../../utils/systemPromptType.js'
+import { getWebFetchCacheTtlMs } from './cacheTtl.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
 
@@ -58,14 +59,14 @@ type CacheEntry = {
   persistedSize?: number
 }
 
-// Cache with 15-minute TTL and 50MB size limit
-// LRUCache handles automatic expiration and eviction
-const CACHE_TTL_MS = 15 * 60 * 1000 // 15 minutes
+// Cache with a 15-minute default TTL (configurable via
+// CLAUDE_CODE_WEBFETCH_CACHE_TTL_MS — 2.1.233, see cacheTtl.ts) and 50MB
+// size limit. LRUCache handles automatic expiration and eviction.
 const MAX_CACHE_SIZE_BYTES = 50 * 1024 * 1024 // 50MB
 
 const URL_CACHE = new LRUCache<string, CacheEntry>({
   maxSize: MAX_CACHE_SIZE_BYTES,
-  ttl: CACHE_TTL_MS,
+  ttl: getWebFetchCacheTtlMs(),
 })
 
 // Separate cache for preflight domain checks. URL_CACHE is URL-keyed, so

@@ -18,6 +18,7 @@ import { getAnthropicClient } from '../services/api/client.js'
 import { getModelBetas, modelSupportsStructuredOutputs } from './betas.js'
 import { computeFingerprint } from './fingerprint.js'
 import { normalizeModelStringForAPI } from './model/model.js'
+import { signalUnrecognizedModel } from './model/unrecognizedModelSignal.js'
 
 type MessageParam = Anthropic.MessageParam
 type TextBlockParam = Anthropic.TextBlockParam
@@ -128,6 +129,10 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
     thinking,
     stop_sequences,
   } = opts
+
+  // 2.1.233: one-time diagnostic for models the CLI doesn't recognize
+  // (binary $xi, side-query call site with source 'side_query').
+  signalUnrecognizedModel(model, opts.querySource)
 
   const client = await getAnthropicClient({
     maxRetries,
