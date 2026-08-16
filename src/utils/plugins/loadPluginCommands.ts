@@ -25,6 +25,7 @@ import {
 } from '../markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../model/model.js'
 import {
+  escapeShellExecutionMarkers,
   executeShellCommandsInPrompt,
   isSkillShellExecutionDisabled,
   stripShellExecutionSyntax,
@@ -365,6 +366,10 @@ function createPluginCommand(
           args,
           true,
           argumentNames,
+          // 2.1.233 sCt 5th-param transform (binary plugin-command path
+          // `sCt(G,Y,!0,S,Q9)`): neutralize shell-execution markers inside
+          // substituted argument values before executeShellCommandsInPrompt.
+          escapeShellExecutionMarkers,
         )
 
         // Replace ${CLAUDE_PLUGIN_ROOT} and ${CLAUDE_PLUGIN_DATA} with their paths
@@ -381,6 +386,10 @@ function createPluginCommand(
             finalContent,
             loadPluginOptions(sourceName),
             pluginManifest.userConfig,
+            // 2.1.233 X9o 4th-param transform (binary plugin-command path
+            // `X9o(G,OQ(r),n.userConfig,Q9)`): user-config values are
+            // user-controlled too, so their markers are neutralized as well.
+            escapeShellExecutionMarkers,
           )
         }
 

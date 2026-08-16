@@ -1,6 +1,9 @@
 import type { Command } from '../commands.js'
 import { getAttributionTexts } from '../utils/attribution.js'
-import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
+import {
+  escapeShellExecutionMarkers,
+  executeShellCommandsInPrompt,
+} from '../utils/promptShellExecution.js'
 import { getUndercoverInstructions, isUndercover } from '../utils/undercover.js'
 
 const ALLOWED_TOOLS = [
@@ -10,7 +13,11 @@ const ALLOWED_TOOLS = [
 ]
 
 function getPromptContent(): string {
-  const { commit: commitAttribution } = getAttributionTexts()
+  const { commit: rawCommitAttribution } = getAttributionTexts()
+  // 2.1.233 (binary JGw `n=Q9(commitAttribution)`): attribution text is
+  // embedded into a prompt that runs executeShellCommandsInPrompt, so its
+  // shell-execution markers are neutralized first.
+  const commitAttribution = escapeShellExecutionMarkers(rawCommitAttribution)
 
   let prefix = ''
   if (process.env.USER_TYPE === 'ant' && isUndercover()) {

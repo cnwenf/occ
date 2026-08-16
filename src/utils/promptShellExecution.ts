@@ -65,6 +65,46 @@ const INLINE_PATTERN = /(?<=^|\s)!`([^`]+)`/gm
 const SHELL_EXEC_DISABLED_PLACEHOLDER = '[shell command execution disabled by policy]'
 
 /**
+ * Mirrors claude-code 2.1.233's `Q9` (byte-verified from the linux-x64
+ * binary): neutralizes shell-execution marker syntax inside a string so the
+ * result can never form a LIVE `!`command`` inline marker or a ```` ```! ````
+ * block marker when embedded into a prompt that later passes through
+ * `executeShellCommandsInPrompt`.
+ *
+ * Used by the official as the sCt value-transform callback for substituted
+ * slash-command arguments, and on builtin-command embedded values (username,
+ * attribution text). The three replaces run sequentially (each sees the
+ * previous one's output): `a`!b` → `a` !b` → `a` \!b`.
+ *
+ * Template-owned markers are unaffected — this only escapes values injected
+ * into a template, never the template's own intended markers.
+ */
+export function escapeShellExecutionMarkers(value: string): string {
+  return value
+    .replace(/`!/g, '` !')
+    .replace(/!`/g, '! `')
+    .replace(/(^|\s)!/gm, '$1\\!')
+}
+
+/**
+ * Mirrors claude-code 2.1.233's `Z7t` (byte-verified): HTML-escapes `<`/`>`
+ * (& is NOT escaped). The official applies this on top of `Q9` for
+ * substituted values coming from MCP-loaded (untrusted) skills/commands.
+ */
+export function escapeAngleBrackets(value: string): string {
+  return value.replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+/**
+ * Mirrors claude-code 2.1.233's `EYp` (byte-verified): strips every char
+ * outside [a-zA-Z0-9._-]. The official uses it on SAFEUSER/USER before
+ * embedding them in builtin command prompts (/commit-push-pr).
+ */
+export function sanitizeUsername(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]/g, '')
+}
+
+/**
  * Mirrors claude-code 2.1.91's `Op8()`: true when disableSkillShellExecution is
  * set in policy settings (first source wins) or the merged user settings.
  */

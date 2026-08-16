@@ -381,11 +381,16 @@ export function substituteUserConfigVariables(
  *
  * A ref to a sensitive key produces obvious-looking output so plugin authors
  * notice and move the ref into a hook/MCP env instead.
+ *
+ * 2.1.233 alignment: mirrors the official `X9o` 4th param — an optional
+ * transform applied to each substituted value (the plugin-command path passes
+ * the `Q9` shell-marker escape; the plugin-agent path passes nothing).
  */
 export function substituteUserConfigInContent(
   content: string,
   options: PluginOptionValues,
   schema: PluginOptionSchema,
+  valueTransform?: (value: string) => string,
 ): string {
   return content.replace(/\$\{user_config\.([^}]+)\}/g, (match, key) => {
     if (schema[key]?.sensitive === true) {
@@ -395,6 +400,6 @@ export function substituteUserConfigInContent(
     if (value === undefined) {
       return match
     }
-    return String(value)
+    return valueTransform ? valueTransform(String(value)) : String(value)
   })
 }
