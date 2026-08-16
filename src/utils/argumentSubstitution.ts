@@ -30,8 +30,12 @@
  *   (official behavior; diverged from the pinned 2.1.210 test expectation).
  *
  * The official `sCt` takes an optional 5th transform callback applied to each
- * substituted value; OCC has no call site that uses it, so values are
- * inserted as-is (signature unchanged, zero call-site changes).
+ * substituted value (after sentinel sanitization, before `$` shielding —
+ * binary order: `Ckn + (o ? o(d) : d).replaceAll("$", vLr) + Ckn` where `d`
+ * is the sanitized value). The 2.1.233 binary passes its `Q9`
+ * shell-marker escape there for skill/command/plugin argument substitution
+ * (plus `Z7t(Q9)` for MCP-untrusted sources); see
+ * ../utils/promptShellExecution.ts. OCC wires the same call sites.
  */
 
 import { tryParseShellCommand } from './bash/shellQuote.js'
@@ -131,6 +135,9 @@ export function generateProgressiveArgumentHint(
  * @param args - The raw arguments string (may be undefined/null)
  * @param appendIfNoPlaceholder - If true and no placeholders matched, appends "ARGUMENTS: {args}" to content
  * @param argumentNames - Optional array of named arguments (e.g., ["foo", "bar"]) that map to indexed positions
+ * @param valueTransform - Optional 5th-param transform applied to each
+ *   substituted value (official sCt param `o`). Runs after sentinel
+ *   sanitization and before `$` shielding, on the appended-args path too.
  * @returns The content with placeholders substituted
  */
 export function substituteArguments(
@@ -138,6 +145,7 @@ export function substituteArguments(
   args: string | undefined,
   appendIfNoPlaceholder = true,
   argumentNames: string[] = [],
+  valueTransform?: (value: string) => string,
 ): string {
   // undefined/null means no args provided - return content unchanged
   // empty string is a valid input that should replace placeholders with empty
@@ -150,16 +158,18 @@ export function substituteArguments(
     .replaceAll(SHIELDED_DOLLAR, SENTINEL_REPLACEMENT)
     .replaceAll(VALUE_BOUNDARY, SENTINEL_REPLACEMENT)
 
-  // binary `i` — wrap a substituted value: sanitize, shield every inner `$`
-  // so later substitution passes cannot re-expand it (the 2.1.233 fix), and
-  // surround with boundary chars so inserted values stay isolated.
+  // binary `i` — wrap a substituted value: sanitize, run the optional 5th-param
+  // transform (official order: transform sees the sanitized value), shield every
+  // inner `$` so later substitution passes cannot re-expand it (the 2.1.233 fix),
+  // and surround with boundary chars so inserted values stay isolated.
   const insertValue = (value: string | undefined): string => {
     const sanitized = (value ?? '')
       .replaceAll(SHIELDED_DOLLAR, SENTINEL_REPLACEMENT)
       .replaceAll(VALUE_BOUNDARY, SENTINEL_REPLACEMENT)
+    const transformed = valueTransform ? valueTransform(sanitized) : sanitized
     return (
       VALUE_BOUNDARY +
-      sanitized.replaceAll('$', SHIELDED_DOLLAR) +
+      transformed.replaceAll('$', SHIELDED_DOLLAR) +
       VALUE_BOUNDARY
     )
   }

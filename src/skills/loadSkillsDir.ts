@@ -60,6 +60,8 @@ import {
 } from '../utils/markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../utils/model/model.js'
 import {
+  escapeAngleBrackets,
+  escapeShellExecutionMarkers,
   executeShellCommandsInPrompt,
   isSkillShellExecutionDisabled,
   stripShellExecutionSyntax,
@@ -583,6 +585,16 @@ export function createSkillCommand({
         args,
         true,
         argumentNames,
+        // 2.1.233 sCt 5th-param transform (binary call site
+        // `Xkt({loadedFrom}) ? Z7t(Q9(v)) : Q9`): neutralize shell-execution
+        // markers inside substituted argument values so they can't form live
+        // !`…` / ```! blocks for executeShellCommandsInPrompt below.
+        // MCP-loaded content is additionally angle-bracket escaped. OCC has
+        // no syncedSkills/memoryStore sources, so the untrusted predicate
+        // reduces to loadedFrom === 'mcp'.
+        loadedFrom === 'mcp'
+          ? value => escapeAngleBrackets(escapeShellExecutionMarkers(value))
+          : escapeShellExecutionMarkers,
       )
 
       // Replace ${CLAUDE_SKILL_DIR} with the skill's own directory so bash

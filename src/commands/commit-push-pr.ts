@@ -4,7 +4,11 @@ import {
   getEnhancedPRAttribution,
 } from '../utils/attribution.js'
 import { getDefaultBranch } from '../utils/git.js'
-import { executeShellCommandsInPrompt } from '../utils/promptShellExecution.js'
+import {
+  escapeShellExecutionMarkers,
+  executeShellCommandsInPrompt,
+  sanitizeUsername,
+} from '../utils/promptShellExecution.js'
 import { getUndercoverInstructions, isUndercover } from '../utils/undercover.js'
 
 const ALLOWED_TOOLS = [
@@ -27,12 +31,20 @@ export function getPromptContent(
   defaultBranch: string,
   prAttribution?: string,
 ): string {
-  const { commit: commitAttribution, pr: defaultPrAttribution } =
+  const { commit: rawCommitAttribution, pr: defaultPrAttribution } =
     getAttributionTexts()
+  // 2.1.233 (binary SYp): every user-controlled value embedded into this
+  // prompt is sanitized before executeShellCommandsInPrompt runs — Q9-escape
+  // the attribution texts (`i=Q9(commitAttribution)`, `s=Q9(prAttribution)`)
+  // and strip non-[a-zA-Z0-9._-] chars from the usernames
+  // (`a=EYp(SAFEUSER)`, `l=EYp(USER)`).
+  const commitAttribution = escapeShellExecutionMarkers(rawCommitAttribution)
   // Use provided PR attribution or fall back to default
-  const effectivePrAttribution = prAttribution ?? defaultPrAttribution
-  const safeUser = process.env.SAFEUSER || ''
-  const username = process.env.USER || ''
+  const effectivePrAttribution = escapeShellExecutionMarkers(
+    prAttribution ?? defaultPrAttribution,
+  )
+  const safeUser = sanitizeUsername(process.env.SAFEUSER || '')
+  const username = sanitizeUsername(process.env.USER || '')
 
   let prefix = ''
   let reviewerArg = ' and `--reviewer anthropics/claude-code`'
@@ -125,9 +137,11 @@ const command = {
     let promptContent = getPromptContent(defaultBranch, prAttribution)
 
     // Append user instructions if args provided
+    // 2.1.233 (binary SYp): user args are Q9-escaped before embedding —
+    // they must not be able to inject live shell-execution markers.
     const trimmedArgs = args?.trim()
     if (trimmedArgs) {
-      promptContent += `\n\n## Additional instructions from user\n\n${trimmedArgs}`
+      promptContent += `\n\n## Additional instructions from user\n\n${escapeShellExecutionMarkers(trimmedArgs)}`
     }
 
     const finalContent = await executeShellCommandsInPrompt(
