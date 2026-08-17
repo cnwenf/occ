@@ -115,8 +115,12 @@ describe("2.1.154 K3 ultracode (e2e)", () => {
     const src = read("src/commands/effort/effort.tsx");
     expect(src).toMatch(/normalized === ['"]ultracode['"]/);
     expect(src).toContain("enableUltracodeForSession");
-    // the description string is imported from the ultracode module
-    expect(src).toContain("ULTRACODE_EFFORT_DESCRIPTION");
+    // OCC-97: the /effort help bullet is the official 2.1.233 verbatim line
+    // (binary `cSi`); the ULTRACODE_EFFORT_DESCRIPTION constant belongs to
+    // the status line, not the help text.
+    expect(src).toContain(
+      "- ultracode: xhigh + dynamic workflow orchestration (this session only)",
+    );
     expect(src).toContain("ULTRACODE_ACTIVATION_MESSAGE");
     // help text lists ultracode
     expect(src).toContain("ultracode");

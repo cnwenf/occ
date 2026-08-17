@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test'
 
 /**
  * 2.1.233 alignment (OCC-95): Todo/task-tracking tools are no longer
@@ -10,9 +10,21 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 
 let mockedMainLoopModel = 'claude-opus-4-7'
 
+// OCC-97 (Gap-97b): Bun's mock.module registration leaks into test files that
+// run later in the same worker. A factory returning ONLY getMainLoopModel
+// stripped every other export of model.js for those files. Spread the real
+// module and override just the one function this suite needs; re-register the
+// untouched module after the suite so later files see the real implementation.
+const actualModelModule = await import('../model/model.js')
+
 mock.module('../model/model.js', () => ({
+  ...actualModelModule,
   getMainLoopModel: () => mockedMainLoopModel,
 }))
+
+afterAll(() => {
+  mock.module('../model/model.js', () => ({ ...actualModelModule }))
+})
 
 const { areTodoToolsAvailable } = await import('../todoToolsAvailability.js')
 

@@ -223,6 +223,19 @@ export function getModelMaxOutputTokens(model: string): {
   if (m.includes('opus-4-6')) {
     defaultTokens = 64_000
     upperLimit = 128_000
+  } else if (
+    // OCC-97 (Gap-97d): the official 2.1.233 model registry (byte-verified)
+    // declares max_output_tokens 64000/128000 for the launch models —
+    // opus-4-7/opus-4-8/opus-5/sonnet-5/fable-5 — same as opus-4-6. They
+    // previously fell through to the 32000/64000 default.
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-8') ||
+    m.includes('opus-5') ||
+    m.includes('sonnet-5') ||
+    m.includes('fable-5')
+  ) {
+    defaultTokens = 64_000
+    upperLimit = 128_000
   } else if (m.includes('sonnet-4-6')) {
     defaultTokens = 32_000
     upperLimit = 128_000

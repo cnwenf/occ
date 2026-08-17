@@ -8,7 +8,7 @@ import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFas
 import { Box, Text, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
+import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, modelSupportsXhighEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
@@ -44,7 +44,7 @@ export type Props = {
 };
 const NO_PREFERENCE = '__NO_PREFERENCE__';
 export function ModelPicker(t0) {
-  const $ = _c(82);
+  const $ = _c(84);
   const {
     initial,
     sessionModel,
@@ -153,16 +153,20 @@ export function ModelPicker(t0) {
   }
   const focusedModelName = t7;
   let focusedSupportsEffort;
+  let focusedSupportsXhigh;
   let t8;
   if ($[20] !== focusedValue) {
     const focusedModel = resolveOptionModel(focusedValue);
     focusedSupportsEffort = focusedModel ? modelSupportsEffort(focusedModel) : false;
+    focusedSupportsXhigh = focusedModel ? modelSupportsXhighEffort(focusedModel) : false;
     t8 = focusedModel ? modelSupportsMaxEffort(focusedModel) : false;
     $[20] = focusedValue;
     $[21] = focusedSupportsEffort;
     $[22] = t8;
+    $[82] = focusedSupportsXhigh;
   } else {
     focusedSupportsEffort = $[21];
+    focusedSupportsXhigh = $[82];
     t8 = $[22];
   }
   const focusedSupportsMax = t8;
@@ -175,7 +179,9 @@ export function ModelPicker(t0) {
     t9 = $[24];
   }
   const focusedDefaultEffort = t9;
-  const displayEffort = effort === "max" && !focusedSupportsMax ? "high" : effort;
+  // OCC-97 (Gap-97h): official 2.1.233 clamps BOTH max and xhigh to high when
+  // the focused model lacks the capability (byte-verified `VXm` clamp).
+  const displayEffort = effort === "max" && !focusedSupportsMax || effort === "xhigh" && !focusedSupportsXhigh ? "high" : effort;
   let t10;
   if ($[25] !== effortValue || $[26] !== hasToggledEffort) {
     t10 = value => {
@@ -192,18 +198,19 @@ export function ModelPicker(t0) {
   }
   const handleFocus = t10;
   let t11;
-  if ($[28] !== focusedDefaultEffort || $[29] !== focusedSupportsEffort || $[30] !== focusedSupportsMax) {
+  if ($[28] !== focusedDefaultEffort || $[29] !== focusedSupportsEffort || $[30] !== focusedSupportsMax || $[83] !== focusedSupportsXhigh) {
     t11 = direction => {
       if (!focusedSupportsEffort) {
         return;
       }
-      setEffort(prev => cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsMax));
+      setEffort(prev => cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsMax, focusedSupportsXhigh));
       setHasToggledEffort(true);
     };
     $[28] = focusedDefaultEffort;
     $[29] = focusedSupportsEffort;
     $[30] = focusedSupportsMax;
     $[31] = t11;
+    $[83] = focusedSupportsXhigh;
   } else {
     t11 = $[31];
   }
@@ -452,12 +459,22 @@ function EffortLevelIndicator(t0) {
   }
   return t4;
 }
-function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'right', includeMax: boolean): EffortLevel {
-  const levels: EffortLevel[] = includeMax ? ['low', 'medium', 'high', 'max'] : ['low', 'medium', 'high'];
-  // If the current level isn't in the cycle (e.g. 'max' after switching to a
-  // non-Opus model), clamp to 'high'.
-  const idx = levels.indexOf(current);
-  const currentIndex = idx !== -1 ? idx : levels.indexOf('high');
+export function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'right', includeMax: boolean, includeXhigh: boolean): EffortLevel {
+  // OCC-97 (Gap-97h): official 2.1.233 picker cycle (`VXm`, byte-verified) —
+  // the five-level base list filtered by capability; a configured level the
+  // focused model can't take clamps to 'high'; a level absent from the cycle
+  // resumes from the LAST entry. Official also appends 'ultracode' when
+  // workflows are enabled — staged pending the ultracode appState plumbing
+  // (Gap-97f).
+  const levels = (['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[]).filter(
+    level => (level !== 'max' || includeMax) && (level !== 'xhigh' || includeXhigh),
+  );
+  const clamped =
+    (current === 'max' && !includeMax) || (current === 'xhigh' && !includeXhigh)
+      ? 'high'
+      : current;
+  const idx = levels.indexOf(clamped);
+  const currentIndex = idx !== -1 ? idx : levels.length - 1;
   if (direction === 'right') {
     return levels[(currentIndex + 1) % levels.length]!;
   } else {
