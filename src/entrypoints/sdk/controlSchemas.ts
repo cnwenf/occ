@@ -507,7 +507,9 @@ export const SDKControlGetSettingsResponseSchema = lazySchema(() =>
           model: z.string(),
           // String levels only — numeric effort is ant-only and the
           // Zod→proto generator can't emit enum∪number unions.
-          effort: z.enum(['low', 'medium', 'high', 'max']).nullable(),
+          // OCC-97 (Gap-97g): official 2.1.233 reports all five levels here
+          // (resolveAppliedEffort can now yield xhigh, e.g. opus-4-7 default).
+          effort: z.enum(['low', 'medium', 'high', 'xhigh', 'max']).nullable(),
         })
         .optional()
         .describe(

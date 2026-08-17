@@ -886,12 +886,12 @@ export const SettingsSchema = lazySchema(() =>
           'When false, thinking is disabled. When absent or true, thinking is ' +
             'enabled automatically for supported models.',
         ),
+      // OCC-97 (Gap-97g): official 2.1.233 settings schema accepts exactly
+      // ["low","medium","high","xhigh"] — no USER_TYPE gate, never "max"
+      // (max is not persistable). The old ant-gated enum dropped a persisted
+      // xhigh at parse time, so the chip/welcome fell back to high.
       effortLevel: z
-        .enum(
-          process.env.USER_TYPE === 'ant'
-            ? ['low', 'medium', 'high', 'max']
-            : ['low', 'medium', 'high'],
-        )
+        .enum(['low', 'medium', 'high', 'xhigh'])
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),

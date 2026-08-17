@@ -31,15 +31,18 @@ export function modelSupportsEffort(model: string): boolean {
   if (supported3P !== undefined) {
     return supported3P
   }
-  // Supported by a subset of Claude 4+ models. OCC-37 (1g): opus-5 added —
-  // binary 2.1.220 model registry `capabilities` array for `claude-opus-5`
-  // (recovered via `dd` around offset 177163000) lists "effort" verbatim,
-  // mirroring opus-4-8's "effort" entry. Pre-existing OCC gap: opus-4-7/4-8
-  // also declare "effort" but are not yet ported here (separate item).
+  // Supported by a subset of Claude 4+ models. OCC-37 (1g): opus-5 added;
+  // OCC-97 (Gap-97d): opus-4-7/opus-4-8/sonnet-5/fable-5 added — the official
+  // 2.1.233 model registry (byte-verified, Gap-97d investigation) lists
+  // "effort" in the `capabilities` array of every one of these models.
   if (
     m.includes('opus-4-6') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-8') ||
+    m.includes('opus-5') ||
     m.includes('sonnet-4-6') ||
-    m.includes('opus-5')
+    m.includes('sonnet-5') ||
+    m.includes('fable-5')
   ) {
     return true
   }
@@ -59,18 +62,23 @@ export function modelSupportsEffort(model: string): boolean {
 }
 
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports 'max' effort.
-// Per API docs, 'max' is Opus 4.6 only for public models — other models return an error.
 export function modelSupportsMaxEffort(model: string): boolean {
   const supported3P = get3PModelCapabilityOverride(model, 'max_effort')
   if (supported3P !== undefined) {
     return supported3P
   }
-  // OCC-37 (1g): opus-5 declares "max_effort" in its binary capabilities
-  // array (offset ~177163000), mirroring opus-4-8. Official per API docs
-  // 'max' is Opus 4.6+ for public models; opus-5 carries the capability.
+  // OCC-37 (1g): opus-5; OCC-97 (Gap-97d): the official 2.1.233 model
+  // registry (byte-verified) lists "max_effort" in the `capabilities` array
+  // of opus-4-6/opus-4-7/opus-4-8/opus-5/sonnet-4-6/sonnet-5/fable-5.
+  const m = model.toLowerCase()
   if (
-    model.toLowerCase().includes('opus-4-6') ||
-    model.toLowerCase().includes('opus-5')
+    m.includes('opus-4-6') ||
+    m.includes('opus-4-7') ||
+    m.includes('opus-4-8') ||
+    m.includes('opus-5') ||
+    m.includes('sonnet-4-6') ||
+    m.includes('sonnet-5') ||
+    m.includes('fable-5')
   ) {
     return true
   }
@@ -91,12 +99,15 @@ export function modelSupportsXhighEffort(model: string): boolean {
   }
   const lower = model.toLowerCase()
   // 2.1.111: xhigh for Opus 4.7; 2.1.154: also Opus 4.8; 2.1.219 (OCC-37 1g):
-  // also Opus 5. Binary 2.1.220 `capabilities` array for `claude-opus-5`
-  // (offset ~177163000) lists "xhigh_effort" verbatim, mirroring opus-4-8.
+  // also Opus 5. OCC-97 (Gap-97d): the official 2.1.233 model registry
+  // (byte-verified) additionally lists "xhigh_effort" for sonnet-5 and
+  // fable-5.
   if (
     lower.includes('opus-4-7') ||
     lower.includes('opus-4-8') ||
-    lower.includes('opus-5')
+    lower.includes('opus-5') ||
+    lower.includes('sonnet-5') ||
+    lower.includes('fable-5')
   ) {
     return true
   }
@@ -131,13 +142,20 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
 /**
  * Numeric values are model-default only and not persisted.
  * 'max' is session-scoped for external users (ants can persist it).
+ * 'xhigh' persists for everyone (official 2.1.233 honors it at startup read
+ * and /effort writes it to settings.json — Gap-97c, behaviorally verified).
  * Write sites call this before saving to settings so the Zod schema
  * (which only accepts string levels) never rejects a write.
  */
 export function toPersistableEffort(
   value: EffortValue | undefined,
 ): EffortLevel | undefined {
-  if (value === 'low' || value === 'medium' || value === 'high') {
+  if (
+    value === 'low' ||
+    value === 'medium' ||
+    value === 'high' ||
+    value === 'xhigh'
+  ) {
     return value
   }
   if (value === 'max' && process.env.USER_TYPE === 'ant') {
@@ -213,32 +231,54 @@ export function resolveAppliedEffort(
 }
 
 /**
- * Resolve the effort level to show the user. Wraps resolveAppliedEffort
- * with the 'high' fallback (what the API uses when no effort param is sent).
+ * Resolve the user's configured effort WITHOUT model-capability downgrades:
+ *   env CLAUDE_CODE_EFFORT_LEVEL → appState.effortValue → model default
+ *
+ * Official 2.1.233 displays this value verbatim in the welcome suffix and
+ * the status chip (Gap-97c, behaviorally verified: settings effortLevel=xhigh
+ * renders "with xhigh effort" / the xhigh chip even on a model without
+ * xhigh support). Capability clamps (max→high, xhigh→high) apply only to the
+ * API parameter (resolveAppliedEffort), never to the display.
+ */
+function resolveConfiguredEffort(
+  model: string,
+  appStateEffortValue: EffortValue | undefined,
+): EffortValue | undefined {
+  const envOverride = getEffortEnvOverride()
+  if (envOverride === null) {
+    return undefined
+  }
+  return envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+}
+
+/**
+ * Resolve the effort level to show the user. Shows the configured effort
+ * verbatim (no model-capability downgrade — Gap-97c), with the 'high'
+ * fallback (what the API uses when no effort param is sent).
  * Single source of truth for the status bar and /effort output (CC-1088).
  */
 export function getDisplayedEffortLevel(
   model: string,
   appStateEffort: EffortValue | undefined,
 ): EffortLevel {
-  const resolved = resolveAppliedEffort(model, appStateEffort) ?? 'high'
-  return convertEffortValueToLevel(resolved)
+  const configured = resolveConfiguredEffort(model, appStateEffort) ?? 'high'
+  return convertEffortValueToLevel(configured)
 }
 
 /**
  * Build the ` with {level} effort` suffix shown in Logo/Spinner.
  * Returns empty string if the user hasn't explicitly set an effort value.
- * Delegates to resolveAppliedEffort() so the displayed level matches what
- * the API actually receives (including max→high clamp for non-Opus models).
+ * Shows the configured level verbatim — official does not apply the
+ * model-capability clamp here (Gap-97c).
  */
 export function getEffortSuffix(
   model: string,
   effortValue: EffortValue | undefined,
 ): string {
   if (effortValue === undefined) return ''
-  const resolved = resolveAppliedEffort(model, effortValue)
-  if (resolved === undefined) return ''
-  return ` with ${convertEffortValueToLevel(resolved)} effort`
+  const configured = resolveConfiguredEffort(model, effortValue)
+  if (configured === undefined) return ''
+  return ` with ${convertEffortValueToLevel(configured)} effort`
 }
 
 export function isValidNumericEffort(value: number): boolean {
@@ -275,8 +315,13 @@ export function getEffortLevelDescription(level: EffortLevel): string {
       return 'Balanced approach with standard implementation and testing'
     case 'high':
       return 'Comprehensive implementation with extensive testing and documentation'
+    // OCC-97 (Gap-97c): xhigh case + the max text below are byte-verified
+    // from the official 2.1.233 binary. xhigh previously fell through the
+    // switch and rendered as `undefined` in /effort messages.
+    case 'xhigh':
+      return 'Deeper reasoning than high, just below maximum (Fable 5, Opus 4.7+, Sonnet 5)'
     case 'max':
-      return 'Maximum capability with deepest reasoning (Opus 4.6 only)'
+      return 'Maximum capability with deepest reasoning. May use excessive tokens resulting in long response times or overthinking. Use sparingly for the hardest tasks.'
   }
 }
 
@@ -362,6 +407,14 @@ export function getDefaultEffortForModel(
     ) {
       return 'medium'
     }
+  }
+
+  // OCC-97 (Gap-97d): the official 2.1.233 model registry declares
+  // `default_effort: "xhigh"` for opus-4-7 (byte-verified). opus-4-8,
+  // opus-5 and sonnet-5 declare "high", which matches the undefined→high
+  // API fallback below, so they need no explicit branch.
+  if (model.toLowerCase().includes('opus-4-7')) {
+    return 'xhigh'
   }
 
   // When ultrathink feature is on, default effort to medium (ultrathink bumps to high)

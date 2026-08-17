@@ -5,7 +5,7 @@ import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEve
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
 import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, toPersistableEffort } from '../../utils/effort.js';
-import { disableUltracodeForSession, enableUltracodeForSession, isUltracodeEnabled, ULTRACODE_ACTIVATION_MESSAGE, ULTRACODE_EFFORT_DESCRIPTION } from '../../utils/effort/ultracode.js';
+import { disableUltracodeForSession, enableUltracodeForSession, isUltracodeEnabled, ULTRACODE_ACTIVATION_MESSAGE } from '../../utils/effort/ultracode.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 const COMMON_HELP_ARGS = ['help', '-h', '--help'];
 type EffortCommandResult = {
@@ -52,7 +52,12 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
     };
   }
   const description = getEffortValueDescription(effortValue);
-  const suffix = persistable !== undefined ? '' : ' (this session only)';
+  // OCC-97 (Gap-97c): official 2.1.233 appends the persist note when the
+  // level was written to settings (byte-verified suffix strings).
+  const suffix =
+    persistable !== undefined
+      ? ' (saved as your default for new sessions)'
+      : ' (this session only)';
   return {
     message: `Set effort level to ${effortValue}${suffix}: ${description}`,
     effortUpdate: {
@@ -124,7 +129,11 @@ function enableUltracode(): EffortCommandResult {
 }
 
 export function executeEffort(args: string): EffortCommandResult {
-  const normalized = args.toLowerCase();
+  // Official 2.1.233 argument parsing (byte-verified `R9t`): trim, lowercase,
+  // then the alias table {med: "medium"} before level validation (Gap-97c).
+  const normalizedAlias: Record<string, string> = { med: 'medium' };
+  const normalized =
+    normalizedAlias[args.trim().toLowerCase()] ?? args.trim().toLowerCase();
   if (normalized === 'auto' || normalized === 'unset') {
     // K3: switching to auto turns ultracode off (if it was on), emitting the
     // ultra_effort_exit reminder on the next turn via getUltracodeTurnReminders().
@@ -140,7 +149,9 @@ export function executeEffort(args: string): EffortCommandResult {
   }
   if (!isEffortLevel(normalized)) {
     return {
-      message: `Invalid argument: ${args}. Valid options are: low, medium, high, max, ultracode, auto`
+      // OCC-97 (Gap-97c): xhigh added — official 2.1.233 lists the levels in
+      // ["low","medium","high","xhigh","max"] order, then ultracode and auto.
+      message: `Invalid argument: ${args}. Valid options are: low, medium, high, xhigh, max, ultracode, auto`
     };
   }
   // K3: switching to a concrete non-ultracode effort level turns ultracode off
@@ -205,7 +216,12 @@ function ApplyEffortAndClose(t0) {
 export async function call(onDone: LocalJSXCommandOnDone, _context: unknown, args?: string): Promise<React.ReactNode> {
   args = args?.trim() || '';
   if (COMMON_HELP_ARGS.includes(args)) {
-    onDone('Usage: /effort [low|medium|high|max|ultracode|auto]\n\nEffort levels:\n- low: Quick, straightforward implementation\n- medium: Balanced approach with standard testing\n- high: Comprehensive implementation with extensive testing\n- max: Maximum capability with deepest reasoning (Opus 4.6 only)\n- ultracode: ' + ULTRACODE_EFFORT_DESCRIPTION + '\n- auto: Use the default effort level for your model');
+    // OCC-97 (Gap-97c): byte-verified against the official 2.1.233 help
+    // builder (`cSi`): usage line from the level list, one `- level: desc`
+    // line per level (wQv descriptions), then the ultracode and auto lines.
+    // Model-list suffixes: o2o = "Fable 5, Opus 4.7+, Sonnet 5" (xhigh),
+    // wud = "Fable 5, Opus 4.6+, Sonnet 4.6+" (max).
+    onDone('Usage: /effort [low|medium|high|xhigh|max|ultracode|auto]\n' + '- low: Quick, straightforward implementation\n' + '- medium: Balanced approach with standard testing\n' + '- high: Comprehensive implementation with extensive testing\n' + '- xhigh: Extended reasoning with thorough analysis (Fable 5, Opus 4.7+, Sonnet 5)\n' + '- max: Maximum capability with deepest reasoning (Fable 5, Opus 4.6+, Sonnet 4.6+)\n' + '- ultracode: xhigh + dynamic workflow orchestration (this session only)\n' + '- auto: Use the default effort level for your model');
     return;
   }
   if (!args || args === 'current' || args === 'status') {

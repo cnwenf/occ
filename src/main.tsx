@@ -4832,7 +4832,9 @@ async function run(): Promise<CommanderCommand> {
   }
 
   // Doctor command - check installation health
-  program.command('doctor').description('Check the health of your Claude Code auto-updater. Note: The workspace trust dialog is skipped and stdio servers from .mcp.json are spawned for health checks. Only use this command in directories you trust.').action(async () => {
+  // OCC-97 (Gap-97a): description byte-verified against the official 2.1.233
+  // binary (`claude doctor` registration).
+  program.command('doctor').description('Check the health of your Claude Code installation. Reads settings files in the current directory without a trust prompt. For a full checkup that can also fix issues, run /doctor in a session.').action(async () => {
     const [{
       doctorHandler
     }, {
