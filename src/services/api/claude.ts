@@ -2336,6 +2336,10 @@ async function* queryModel(
                   [contentBlock] as BetaContentBlock[],
                   tools,
                   options.agentId,
+                  {
+                    requestId: streamRequestId ?? undefined,
+                    messageId: partialMessage.id,
+                  },
                 ) as MessageContent,
               },
               requestId: streamRequestId ?? undefined,
@@ -2766,6 +2770,10 @@ async function* queryModel(
             result.content,
             tools,
             options.agentId,
+            {
+              requestId: streamRequestId ?? undefined,
+              messageId: result.id,
+            },
           ) as MessageContent,
         },
         requestId: streamRequestId ?? undefined,
@@ -2863,6 +2871,10 @@ async function* queryModel(
               result.content,
               tools,
               options.agentId,
+              {
+                requestId: streamRequestId ?? undefined,
+                messageId: result.id,
+              },
             ) as MessageContent,
           },
           requestId: streamRequestId ?? undefined,

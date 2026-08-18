@@ -85,6 +85,7 @@ import {
   dirMatchesProjectPath,
   extractJsonStringField,
   extractLastJsonStringField,
+  getProjectDirName,
   LITE_READ_BUF_SIZE,
   MAX_SANITIZED_LENGTH,
   readHeadAndTail,
@@ -584,7 +585,7 @@ export function isCustomTitleEnabled(): boolean {
 // stable for a given input. Worktree switches just change the key — no
 // cache clear needed.
 export const getProjectDir = memoize((projectDir: string): string => {
-  return join(getProjectsDir(), sanitizePath(projectDir))
+  return join(getProjectsDir(), getProjectDirName(projectDir))
 })
 
 let project: Project | null = null

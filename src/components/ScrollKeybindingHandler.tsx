@@ -526,6 +526,19 @@ export function ScrollKeybindingHandler({
     isActive
   });
 
+  // CC 2.1.234 selection:clear (official `p9i`, byte-verified): clears an
+  // active text selection; returns false (not consumed) when there is none so
+  // the keypress can propagate. Registered in the Scroll context like copy.
+  useKeybindings({
+    'selection:clear': () => {
+      if (!selection.hasSelection()) return false;
+      selection.clearSelection();
+    }
+  }, {
+    context: 'Scroll',
+    isActive
+  });
+
   // scroll:halfPage*/fullPage* are bound to ctrl+u/d/b/f in the Scroll context
   // (defaultBindings.ts). In normal fullscreen mode, useTextInput NOOPs those
   // ctrl keys so they fall through to these handlers. In transcript (modal)

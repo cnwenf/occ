@@ -23,6 +23,10 @@
 import { readFileSync } from 'fs'
 import { isAbsolute, resolve, sep } from 'path'
 import vm from 'node:vm'
+import {
+  containsNtNamespacePath,
+  isAutomountPath,
+} from '../../utils/ntNamespacePaths.js'
 
 export interface WorkflowMeta {
   name: string
@@ -51,25 +55,34 @@ export class WorkflowScriptError extends Error {
 }
 
 /**
- * Validate a scriptPath. Rejects UNC paths (Windows \\\\ prefix) and path
- * traversal. Returns the resolved absolute path.
+ * Validate a scriptPath. Rejects network (UNC `\\`/`//` prefix), NT-namespace
+ * (`\??\` / object-manager namespaces), and automount (`/net/<share>`) paths,
+ * plus path traversal. Returns the resolved absolute path.
  *
- * Mirrors the binary: "UNC paths are not allowed for workflow scriptPath".
+ * Mirrors the 2.1.234 binary gate (`sYt`), byte-verified — the gate checks the
+ * raw scriptPath AND the cwd-resolved path for the automount form, and rejects
+ * with the exact official message.
  */
 export function validateScriptPath(scriptPath: string): string {
   if (!scriptPath || typeof scriptPath !== 'string') {
     throw new WorkflowScriptError('workflow scriptPath must be a non-empty string')
   }
-  // Reject UNC paths (\\ prefix on Windows).
-  if (/^\\\\/.test(scriptPath)) {
+  const resolved = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath)
+  // Network UNC prefix (\\ or //), NT-namespace device paths, or automount
+  // paths are not allowed — the resolved path is checked for automount too.
+  if (
+    /^[\\/]{2}/.test(scriptPath) ||
+    containsNtNamespacePath(scriptPath) ||
+    isAutomountPath(scriptPath) ||
+    isAutomountPath(resolved)
+  ) {
     throw new WorkflowScriptError(
-      `UNC paths are not allowed for workflow scriptPath: ${scriptPath}`,
+      `Network (UNC, NT-namespace, or automount) paths are not allowed for workflow scriptPath: ${scriptPath}`,
     )
   }
   // Reject path traversal — resolved path must not escape via .. normalization
   // (path.join normalizes, but an absolute path with .. is still suspicious;
   // we just require it resolves to a real absolute path).
-  const resolved = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath)
   return resolved
 }
 
