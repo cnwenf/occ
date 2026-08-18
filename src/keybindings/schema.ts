@@ -201,6 +201,8 @@ export const KEYBINDING_ACTIONS = [
   'scroll:bottom',
   // Selection copy (terminal text selection)
   'selection:copy',
+  // Selection clear (CC 2.1.234 — clears an active text selection, no-op otherwise)
+  'selection:clear',
 ] as const
 
 /**

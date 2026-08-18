@@ -2828,15 +2828,25 @@ export function mergeUserContentBlocks(
 
 // Sometimes the API returns empty messages (eg. "\n\n"). We need to filter these out,
 // otherwise they will give an API error when we send them to the API next time we call query().
+//
+// CC 2.1.234 content-block healing (binary `zKn`, byte-verified): the API can
+// return text blocks without a string `text` (which used to crash on
+// `.trim()`) and thinking blocks missing `thinking`/`signature`. Non-string
+// text blocks are dropped with `tengu_content_block_healed` telemetry; broken
+// thinking blocks are healed in place (missing fields set to ""). Both events
+// carry request_id/messageID from `messageMeta` when available.
 export function normalizeContentFromAPI(
   contentBlocks: BetaMessage['content'],
   tools: Tools,
   agentId?: AgentId,
+  messageMeta?: { requestId?: string; messageId?: string },
 ): BetaMessage['content'] {
   if (!contentBlocks) {
     return []
   }
-  return contentBlocks.map(contentBlock => {
+  const requestId = messageMeta?.requestId ?? 'unknown'
+  const messageID = messageMeta?.messageId ?? 'unknown'
+  return contentBlocks.flatMap(contentBlock => {
     switch (contentBlock.type) {
       case 'tool_use': {
         if (
@@ -2887,45 +2897,91 @@ export function normalizeContentFromAPI(
                 agentId,
               )
             } catch (error) {
-              logError(new Error('Error normalizing tool input: ' + error))
+              logError(
+                new Error(
+                  `Error normalizing tool input (requestId=${requestId}, messageId=${messageID}): ${error}`,
+                ),
+              )
               // Keep the original input if normalization fails
             }
           }
         }
 
-        return {
-          ...contentBlock,
-          input: normalizedInput,
-        }
+        return [
+          {
+            ...contentBlock,
+            input: normalizedInput,
+          },
+        ]
       }
       case 'text':
+        // CC 2.1.234 crash fix: a text block without a string `text` field
+        // used to crash on `.trim()`. Drop it with healing telemetry instead.
+        if (typeof contentBlock.text !== 'string') {
+          logEvent('tengu_content_block_healed', {
+            blockType: 'text',
+            action: 'dropped',
+            missingText: true,
+            request_id: requestId,
+            messageID: messageID,
+          })
+          return []
+        }
         if (contentBlock.text.trim().length === 0) {
           logEvent('tengu_model_whitespace_response', {
             length: contentBlock.text.length,
+            request_id: requestId,
+            messageID: messageID,
           })
         }
         // Return the block as-is to preserve exact content for prompt caching.
         // Empty text blocks are handled at the display layer and must not be
         // altered here.
-        return contentBlock
+        return [contentBlock]
+      case 'thinking': {
+        // CC 2.1.234: heal thinking blocks missing `thinking`/`signature`
+        // instead of forwarding malformed blocks (binary `zKn` thinking case).
+        const hasThinking = typeof contentBlock.thinking === 'string'
+        const hasSignature = typeof contentBlock.signature === 'string'
+        if (hasThinking && hasSignature) {
+          return [contentBlock]
+        }
+        logEvent('tengu_content_block_healed', {
+          blockType: 'thinking',
+          action: 'healed',
+          missingThinking: !hasThinking,
+          missingSignature: !hasSignature,
+          request_id: requestId,
+          messageID: messageID,
+        })
+        return [
+          {
+            ...contentBlock,
+            thinking: hasThinking ? contentBlock.thinking : '',
+            signature: hasSignature ? contentBlock.signature : '',
+          },
+        ]
+      }
       case 'code_execution_tool_result':
       case 'mcp_tool_use':
       case 'mcp_tool_result':
       case 'container_upload':
         // Beta-specific content blocks - pass through as-is
-        return contentBlock
+        return [contentBlock]
       case 'server_tool_use':
         if (typeof contentBlock.input === 'string') {
-          return {
-            ...contentBlock,
-            input: (safeParseJSON(contentBlock.input) ?? {}) as {
-              [key: string]: unknown
+          return [
+            {
+              ...contentBlock,
+              input: (safeParseJSON(contentBlock.input) ?? {}) as {
+                [key: string]: unknown
+              },
             },
-          }
+          ]
         }
-        return contentBlock
+        return [contentBlock]
       default:
-        return contentBlock
+        return [contentBlock]
     }
   })
 }

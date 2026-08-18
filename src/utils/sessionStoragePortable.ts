@@ -395,6 +395,75 @@ export function sanitizePath(name: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// CLAUDE_CODE_PROJECT_DIR_NAME override (CC 2.1.234 binary-verified)
+// ---------------------------------------------------------------------------
+
+/**
+ * Valid project-dir-name override pattern (CC 2.1.234 `afy`, byte-verified):
+ * 1–64 chars of [A-Za-z0-9_-].
+ */
+const PROJECT_DIR_NAME_PATTERN = /^[A-Za-z0-9_-]{1,64}$/
+
+/**
+ * Windows reserved device names rejected as override names
+ * (CC 2.1.234 `lfy`, byte-verified).
+ */
+const WINDOWS_RESERVED_NAMES = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])$/i
+
+/**
+ * Validates a CLAUDE_CODE_PROJECT_DIR_NAME value (CC 2.1.234 `yws`,
+ * byte-verified): returns the name when non-empty, matching the pattern, and
+ * not a Windows reserved name; otherwise undefined.
+ */
+export function validateProjectDirName(
+  name: string | undefined,
+): string | undefined {
+  if (!name || !PROJECT_DIR_NAME_PATTERN.test(name) || WINDOWS_RESERVED_NAMES.test(name)) {
+    return undefined
+  }
+  return name
+}
+
+/**
+ * Memoized CLAUDE_CODE_PROJECT_DIR_NAME override lookup (CC 2.1.234 `w8c`,
+ * byte-verified semantics). The override only applies when CLAUDE_CONFIG_DIR
+ * is set. The cache key is `${CLAUDE_CONFIG_DIR}\x00${CLAUDE_CODE_PROJECT_DIR_NAME}`
+ * (CC 2.1.234 `cfy`), so env changes mid-process re-evaluate.
+ */
+const projectDirNameOverrideCache = new Map<string, string | undefined>()
+
+export function getProjectDirNameOverride(
+  env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+  if (!env.CLAUDE_CONFIG_DIR) return undefined
+  const cacheKey = `${env.CLAUDE_CONFIG_DIR ?? ''}\x00${env.CLAUDE_CODE_PROJECT_DIR_NAME ?? ''}`
+  if (projectDirNameOverrideCache.has(cacheKey)) {
+    return projectDirNameOverrideCache.get(cacheKey)
+  }
+  const result = validateProjectDirName(env.CLAUDE_CODE_PROJECT_DIR_NAME)
+  projectDirNameOverrideCache.set(cacheKey, result)
+  return result
+}
+
+/** Test-only: clear the override memoization cache. */
+export function clearProjectDirNameOverrideCacheForTesting(): void {
+  projectDirNameOverrideCache.clear()
+}
+
+/**
+ * The project directory NAME for a path (CC 2.1.234 `sN`, byte-verified
+ * semantics): the CLAUDE_CODE_PROJECT_DIR_NAME override when active
+ * (CLAUDE_CONFIG_DIR set + valid override value), else the default
+ * sanitizePath(path) name.
+ */
+export function getProjectDirName(
+  projectDir: string,
+  env?: NodeJS.ProcessEnv,
+): string {
+  return getProjectDirNameOverride(env) ?? sanitizePath(projectDir)
+}
+
+// ---------------------------------------------------------------------------
 // Project directory discovery (shared by listSessions & getSessionMessages)
 // ---------------------------------------------------------------------------
 
@@ -403,7 +472,7 @@ export function getProjectsDir(): string {
 }
 
 export function getProjectDir(projectDir: string): string {
-  return join(getProjectsDir(), sanitizePath(projectDir))
+  return join(getProjectsDir(), getProjectDirName(projectDir))
 }
 
 /**

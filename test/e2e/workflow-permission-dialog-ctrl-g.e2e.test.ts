@@ -131,7 +131,11 @@ export default async ({ agent }) => {
       `
       const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim())
       expect(out.accepted).toBe(path)
-      expect(out.unc).toContain('UNC paths are not allowed')
+      // CC 2.1.234 (binary sYt): the rejection message now covers UNC,
+      // NT-namespace, and automount paths — byte-verified official text.
+      expect(out.unc).toContain(
+        'Network (UNC, NT-namespace, or automount) paths are not allowed',
+      )
       expect(out.empty).toContain('non-empty string')
     } finally {
       cleanup()

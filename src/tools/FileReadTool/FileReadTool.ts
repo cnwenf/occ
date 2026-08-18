@@ -57,6 +57,7 @@ import {
   mapNotebookCellsToToolResult,
   readNotebook,
 } from '../../utils/notebook.js'
+import { isNtNamespacePath } from '../../utils/ntNamespacePaths.js'
 import { expandPath } from '../../utils/path.js'
 import { extractPDFPages, getPDFPageCount, readPDF } from '../../utils/pdf.js'
 import {
@@ -560,6 +561,18 @@ export const FileReadTool = buildTool({
       fullFilePath.startsWith('\\\\') || fullFilePath.startsWith('//')
     if (isUncPath) {
       return { result: true }
+    }
+
+    // SECURITY: NT-namespace device paths (\??\..., \Device\..., etc.) are
+    // rejected before any filesystem access (CC 2.1.234, byte-verified). They
+    // resolve through the Windows kernel object manager rather than normal
+    // path resolution and can bypass string-based path checks.
+    if (isNtNamespacePath(fullFilePath)) {
+      return {
+        result: false,
+        message: 'read_file: NT-namespace path rejected before filesystem access',
+        errorCode: 1,
+      }
     }
 
     // Binary extension check (string check on extension only, no I/O).
