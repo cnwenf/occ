@@ -8,6 +8,7 @@ import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../FileWriteTool/prompt.js'
 import { GLOB_TOOL_NAME } from '../GlobTool/prompt.js'
 import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
+import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js'
 import { AGENT_TOOL_NAME } from './constants.js'
 import { isForkSubagentEnabled } from './forkSubagent.js'
 import type { AgentDefinition } from './loadAgentsDir.js'
@@ -72,6 +73,26 @@ export async function getPrompt(
   const effectiveAgents = allowedAgentTypes
     ? agentDefinitions.filter(a => allowedAgentTypes.includes(a.agentType))
     : agentDefinitions
+
+  // Official 2.1.235 `_bf()` (byte-verified port): whether the
+  // general-purpose default is actually spawnable given the agent list +
+  // allowedAgentTypes. Exact-name match wins; otherwise a single
+  // case/separator-insensitive alias counts. The prompt must not advertise
+  // a default that isn't available (official fix: an omitted subagent_type
+  // then gets a clear error listing the available agents).
+  const normalizeAgentType = (s: string): string =>
+    s.toLowerCase().replace(/[\s_-]+/g, '-')
+  const gpMatches = agentDefinitions.filter(
+    a => normalizeAgentType(a.agentType) === normalizeAgentType(GENERAL_PURPOSE_AGENT.agentType),
+  )
+  const passesAllowlist = (a: AgentDefinition): boolean =>
+    allowedAgentTypes?.includes(a.agentType) ?? true
+  const gpExact = gpMatches.find(
+    a => a.agentType === GENERAL_PURPOSE_AGENT.agentType,
+  )
+  const generalPurposeAvailable = gpExact
+    ? passesAllowlist(gpExact)
+    : gpMatches.length === 1 && passesAllowlist(gpMatches[0])
 
   // Fork subagent feature: when enabled, insert the "When to fork" section
   // (fork semantics, directive-style prompts) and swap in fork-aware examples.
@@ -208,7 +229,14 @@ ${agentListSection}
 ${
   forkEnabled
     ? `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type to use a specialized agent, or omit it to fork yourself — a fork inherits your full conversation context.`
-    : `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type parameter to select which agent type to use. If omitted, the general-purpose agent is used.`
+    : `When using the ${AGENT_TOOL_NAME} tool, specify a subagent_type parameter to select which agent type to use. ${
+        generalPurposeAvailable
+          ? 'If omitted, the general-purpose agent is used.'
+          : // Official 2.1.235 `s` sentence (byte-verified; T9o constant). The
+            // fork-offering variant can never apply in OCC — fork requires the
+            // FORK_SUBAGENT feature flag, which is off in this build.
+            'subagent_type is required: the general-purpose agent is not available in this session, so choose one of the listed agent types.'
+      }`
 }`
 
   // Coordinator mode gets the slim prompt -- the coordinator system prompt
