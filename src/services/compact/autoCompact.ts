@@ -170,6 +170,34 @@ export function isAutoCompactEnabled(): boolean {
   return userConfig.autoCompactEnabled
 }
 
+/**
+ * Port of official 2.1.235 `kRa()`: true only when auto-compact was
+ * *explicitly* turned off by the user — not when an env var disables it
+ * and not when it is merely on by default. Used by the context-limit
+ * error to append the actionable "auto-compact is off" hint (official
+ * `qLl` suffix at the "Context limit reached" render site).
+ *
+ * Official chain: `if(PBp())return!1;let e=Vd("autoCompactEnabled",!0);
+ * if(e.value)return!1;if(e.source==="userSettings")return!0;
+ * if(e.source==="legacyGlobalConfig")return eT().includes("userSettings");
+ * return!1` — OCC reads `autoCompactEnabled` only from the user-scoped
+ * global config (~/.claude.json), which corresponds to the official
+ * userSettings/legacyGlobalConfig sources, so an explicit false is user
+ * intent. Project/local settings cannot carry the key (not in the OCC
+ * settings schema), matching the official "other sources return false".
+ */
+export function isAutoCompactExplicitlyOff(): boolean {
+  // Official PBp(): env-disabled sessions get no hint (the primary
+  // continue-hint already reflects the env state).
+  if (
+    isEnvTruthy(process.env.DISABLE_COMPACT) ||
+    isEnvTruthy(process.env.DISABLE_AUTO_COMPACT)
+  ) {
+    return false
+  }
+  return getGlobalConfig().autoCompactEnabled === false
+}
+
 export async function shouldAutoCompact(
   messages: Message[],
   model: string,

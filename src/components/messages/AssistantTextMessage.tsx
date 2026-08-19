@@ -7,6 +7,8 @@ import { BLACK_CIRCLE } from '../../constants/figures.js';
 import { Box, NoSelect, Text } from '../../ink.js';
 import { API_ERROR_MESSAGE_PREFIX, API_TIMEOUT_ERROR_MESSAGE, CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE, CUSTOM_OFF_SWITCH_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE, INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL, ORG_DISABLED_ERROR_MESSAGE_ENV_KEY, ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH, PROMPT_TOO_LONG_ERROR_MESSAGE, startsWithApiErrorPrefix, TOKEN_REVOKED_ERROR_MESSAGE } from '../../services/api/errors.js';
 import { isEmptyMessageText, NO_RESPONSE_REQUESTED } from '../../utils/messages.js';
+import { isEnvTruthy } from '../../utils/envUtils.js';
+import { isAutoCompactExplicitlyOff } from '../../services/compact/autoCompact.js';
 import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js';
 import { getDefaultSonnetModel, renderModelName } from '../../utils/model/model.js';
 import { isMacOsKeychainLocked } from '../../utils/secureStorage/macOsKeychainStorage.js';
@@ -79,17 +81,23 @@ export function AssistantTextMessage(t0) {
       }
     case PROMPT_TOO_LONG_ERROR_MESSAGE:
       {
-        let t2;
-        if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
-          t2 = getUpgradeMessage("warning");
-          $[3] = t2;
-        } else {
-          t2 = $[3];
-        }
-        const upgradeHint = t2;
+        // Official 2.1.235 render site (byte-verified port):
+        //   WrD = DISABLE_COMPACT ? "/clear to continue" : "/compact or /clear to continue"
+        //   qLl = !qrD && !VrD && kRa() ? " · auto-compact is off · /config to turn it on" : ""
+        // qrD (remoteAutocompactState — cloud sessions) and VrD (transcript-row
+        // provider context) have no OCC surface, so both reduce to false and the
+        // suffix keys off isAutoCompactExplicitlyOff() (official kRa) alone.
+        const autoCompactOffSuffix = isAutoCompactExplicitlyOff()
+          ? " · auto-compact is off · /config to turn it on"
+          : "";
         let t3;
-        if ($[4] === Symbol.for("react.memo_cache_sentinel")) {
-          t3 = <MessageResponse height={1}><Text color="error">Context limit reached · /compact or /clear to continue{upgradeHint ? ` · ${upgradeHint}` : ""}</Text></MessageResponse>;
+        if (
+          $[4] === Symbol.for("react.memo_cache_sentinel") ||
+          $[3] !== autoCompactOffSuffix
+        ) {
+          const upgradeHint = getUpgradeMessage("warning");
+          t3 = <MessageResponse height={1}><Text color="error">{`Context limit reached · ${isEnvTruthy(process.env.DISABLE_COMPACT) ? "/clear to continue" : "/compact or /clear to continue"}${autoCompactOffSuffix}${upgradeHint ? ` · ${upgradeHint}` : ""}`}</Text></MessageResponse>;
+          $[3] = autoCompactOffSuffix;
           $[4] = t3;
         } else {
           t3 = $[4];

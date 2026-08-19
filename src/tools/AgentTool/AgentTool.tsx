@@ -360,6 +360,16 @@ export const AgentTool = buildTool({
           const denyRule = getDenyRuleForAgent(appState.toolPermissionContext, AGENT_TOOL_NAME, effectiveType);
           throw new Error(`Agent type '${effectiveType}' has been denied by permission rule '${AGENT_TOOL_NAME}(${effectiveType})' from ${denyRule?.source ?? 'settings'}.`);
         }
+        if (subagent_type === undefined) {
+          // Official 2.1.235 (byte-verified `Wyt` throw + `MEi` list
+          // formatter): an omitted subagent_type whose general-purpose
+          // default is unavailable gets a dedicated error listing the
+          // available agents, instead of the generic not-found message.
+          // The official list prepends the fork type when fork is
+          // spawnable — fork requires the FORK_SUBAGENT flag (off in this
+          // build), so the plain list is byte-equivalent here.
+          throw new Error(`subagent_type is required: the general-purpose agent is not available in this session. Available agents: ${agents.map(a => a.agentType).join(', ') || 'none'}`);
+        }
         throw new Error(`Agent type '${effectiveType}' not found. Available agents: ${agents.map(a => a.agentType).join(', ')}`);
       }
       selectedAgent = found;
