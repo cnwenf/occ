@@ -302,15 +302,70 @@ export function getRuntimeMainLoopModel(params: {
 }
 
 /**
+ * 2.1.236: ANTHROPIC_DEFAULT_MODEL — sets the default model at session start.
+ *
+ * Mirrors the official binary's resolver (minified jxt, 2.1.236). Guards, in
+ * order: empty → ignored; trimmed-lowercase "default"/"inherit" are sentinels
+ * meaning "use the normal default"; the [1m] suffix is stripped before alias
+ * comparison and the opusplan/haiku aliases are rejected; when
+ * enforceAvailableModels is active the env default yields to allowlist
+ * enforcement (official: jxt returns null so the enforced chain wins); and
+ * the value must pass the availableModels allowlist.
+ *
+ * Priority (highest first), matching the official chain:
+ * /model override > --model flag > ANTHROPIC_MODEL > settings.model >
+ * ANTHROPIC_DEFAULT_MODEL > subscriber-tier default. Because a persisted
+ * settings.model ranks higher, a /model "set as default" selection survives
+ * restarts even when ANTHROPIC_DEFAULT_MODEL is exported (unlike
+ * ANTHROPIC_MODEL, which outranks settings.model).
+ */
+export function resolveAnthropicDefaultModel():
+  | ModelName
+  | ModelAlias
+  | undefined {
+  const raw = process.env.ANTHROPIC_DEFAULT_MODEL
+  if (raw === undefined || raw.trim() === '') {
+    return undefined
+  }
+  const normalized = raw.trim().toLowerCase()
+  if (normalized === 'default' || normalized === 'inherit') {
+    return undefined
+  }
+  // Official al(): strip a trailing [1m] before alias comparison.
+  const aliasForm = normalized.replace(/\[1m\]$/i, '')
+  if (aliasForm === 'opusplan' || aliasForm === 'haiku') {
+    return undefined
+  }
+  // Official: with enforceAvailableModels the env default is inert and the
+  // enforced/allowlist default wins.
+  if (getEnforceAvailableModels()) {
+    return undefined
+  }
+  if (!isModelAllowed(raw)) {
+    return undefined
+  }
+  return raw
+}
+
+/**
  * Get the default main loop model setting.
  *
  * This handles the built-in default:
+ * - ANTHROPIC_DEFAULT_MODEL when set and valid (2.1.236)
  * - Opus for Max and Team Premium users
  * - Sonnet 4.6 for all other users (including Team Standard, Pro, Enterprise)
  *
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
+  // 2.1.236: the env default sits above the subscriber-tier default
+  // (official odt(): org default > env default > enforced > entitlement >
+  // tier). OCC has no org-default subsystem, so env default wins here.
+  const anthropicDefault = resolveAnthropicDefaultModel()
+  if (anthropicDefault !== undefined) {
+    return anthropicDefault
+  }
+
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
   let setting: ModelName | ModelAlias
   if (process.env.USER_TYPE === 'ant') {

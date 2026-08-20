@@ -4067,7 +4067,12 @@ Read the team config to discover your teammates' names. Check the task list peri
       }
       return wrapMessagesInSystemReminder([
         createUserMessage({
-          content: `${outputStyle.name} output style is active. Remember to follow the specific guidelines for this style.`,
+          // 2.1.237: turnReminder rides on the attachment; falls back to the
+          // generic reminder (byte-exact official template).
+          content: `${outputStyle.name} output style is active. ${
+            attachment.turnReminder ??
+            'Remember to follow the specific guidelines for this style.'
+          }`,
           isMeta: true,
         }),
       ])

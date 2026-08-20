@@ -229,6 +229,7 @@ import { isPDFExtension } from './pdfUtils.js'
 import { getLocalISODate } from '../constants/common.js'
 import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
+import { getOutputStyleConfig } from '../constants/outputStyles.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { findRelevantMemories } from '../memdir/findRelevantMemories.js'
 import { memoryAge, memoryFreshnessText } from '../memdir/memoryAge.js'
@@ -582,6 +583,12 @@ export type Attachment =
   | {
       type: 'output_style'
       style: string
+      /**
+       * 2.1.237: per-turn reminder from the resolved built-in style config
+       * (undefined for custom styles — render falls back to the generic
+       * "Remember to follow the specific guidelines..." line).
+       */
+      turnReminder?: string
     }
   | {
       type: 'diagnostics'
@@ -977,9 +984,7 @@ export async function getAttachments(
         maybe('ide_opened_file', async () =>
           getOpenedFileFromIDE(ideSelection, toolUseContext),
         ),
-        maybe('output_style', async () =>
-          Promise.resolve(getOutputStyleAttachment()),
-        ),
+        maybe('output_style', () => getOutputStyleAttachment()),
         maybe('diagnostics', async () =>
           getDiagnosticAttachments(toolUseContext),
         ),
@@ -1620,7 +1625,7 @@ function getCriticalSystemReminderAttachment(
   return [{ type: 'critical_system_reminder', content: reminder }]
 }
 
-function getOutputStyleAttachment(): Attachment[] {
+async function getOutputStyleAttachment(): Promise<Attachment[]> {
   const settings = getSettings_DEPRECATED()
   const outputStyle = settings?.outputStyle || 'default'
 
@@ -1629,10 +1634,16 @@ function getOutputStyleAttachment(): Attachment[] {
     return []
   }
 
+  // 2.1.237: carry the active style's turnReminder (built-in Concise sets
+  // one; custom styles resolve to undefined and the render site falls back
+  // to the generic reminder). Mirrors the official attachment provider.
+  const styleConfig = await getOutputStyleConfig()
+
   return [
     {
       type: 'output_style',
       style: outputStyle,
+      turnReminder: styleConfig?.turnReminder,
     },
   ]
 }
