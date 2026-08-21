@@ -20,6 +20,7 @@ import {
 } from '../utils/Cursor.js'
 import { env } from '../utils/env.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
+import { isReadlineKeybindingFlavor } from '../utils/keybindingFlavor.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { isModifierPressed, prewarmModifiers } from '../utils/modifiers.js'
 import { useDoublePress } from './useDoublePress.js'
@@ -109,6 +110,10 @@ export function useTextInput({
   const setOffset = onOffsetChange
   const cursor = Cursor.fromText(originalValue, columns, offset)
   const { addNotification, removeNotification } = useNotifications()
+  // 2.1.238 keybindingFlavor: "readline" makes Ctrl+W delete back to the
+  // previous whitespace (binary `Y = kKi() === "readline"`), "classic" (default)
+  // deletes the previous word. Computed once per render from merged settings.
+  const isReadline = isReadlineKeybindingFlavor()
 
   const handleCtrlC = useDoublePress(
     show => {
@@ -220,6 +225,16 @@ export function useTextInput({
     return newCursor
   }
 
+  // 2.1.238 keybindingFlavor: readline-flavored Ctrl+W (binary `_e`). Kills back
+  // to the previous whitespace boundary instead of just the previous word. Kill
+  // ring + SR announcement behavior is identical to killWordBefore (binary `ge`).
+  function killWORDBefore(): Cursor {
+    const { cursor: newCursor, killed } = cursor.deleteWORDBefore()
+    pushToKillRing(killed, 'prepend')
+    announceDeletedText(killed)
+    return newCursor
+  }
+
   function yank(): Cursor {
     const text = getLastKill()
     if (text.length > 0) {
@@ -266,7 +281,9 @@ export function useTextInput({
     ['n', () => downOrHistoryDown()],
     ['p', () => upOrHistoryUp()],
     ['u', fullscreen ? NOOP_HANDLER : killToLineStart],
-    ['w', killWordBefore],
+    // 2.1.238 keybindingFlavor: binary `["w", Y ? _e : ge]`. readline → kill the
+    // WORD run back to the previous whitespace; classic → kill the previous word.
+    ['w', isReadline ? killWORDBefore : killWordBefore],
     ['y', yank],
   ])
 

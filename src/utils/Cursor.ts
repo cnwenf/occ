@@ -924,6 +924,23 @@ export class Cursor {
   }
 
   /**
+   * 2.1.238 `keybindingFlavor`: readline-flavored Ctrl+W. Deletes back to the
+   * previous whitespace boundary (the whole WORD run), not just the previous
+   * word. Mirrors the official `deleteWORDBefore` (uses `prevWORD`, whereas
+   * `deleteWordBefore` uses `prevWord`). Selected when the `keybindingFlavor`
+   * setting is `"readline"`; `"classic"` (default) keeps `deleteWordBefore`.
+   */
+  deleteWORDBefore(): { cursor: Cursor; killed: string } {
+    if (this.isAtStart()) {
+      return { cursor: this, killed: '' }
+    }
+    const target = this.snapOutOfImageRef(this.prevWORD().offset, 'start')
+    const prevWORDCursor = new Cursor(this.measuredText, target)
+    const killed = this.text.slice(prevWORDCursor.offset, this.offset)
+    return { cursor: prevWORDCursor.modifyText(this), killed }
+  }
+
+  /**
    * Deletes a token before the cursor if one exists.
    * Supports pasted text refs: [Pasted text #1], [Pasted text #1 +10 lines],
    * [...Truncated text #1 +10 lines...]

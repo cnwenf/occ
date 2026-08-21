@@ -12,6 +12,7 @@ import {
   updateYankLength,
   yankPop,
 } from '../utils/Cursor.js'
+import { isReadlineKeybindingFlavor } from '../utils/keybindingFlavor.js'
 import { useTerminalSize } from './useTerminalSize.js'
 
 type UseSearchInputOptions = {
@@ -95,6 +96,10 @@ export function useSearchInput({
   const effectiveColumns = columns ?? terminalColumns
   const [query, setQueryState] = useState(initialQuery)
   const [cursorOffset, setCursorOffset] = useState(initialQuery.length)
+  // 2.1.238 keybindingFlavor: binary `h = kKi() === "readline"` for the search
+  // input's Ctrl+W. readline kills back to the previous whitespace; classic
+  // (default) kills the previous word.
+  const isReadline = isReadlineKeybindingFlavor()
 
   const setQuery = useCallback((q: string) => {
     setQueryState(q)
@@ -269,7 +274,10 @@ export function useSearchInput({
           return
         }
         case 'w': {
-          const { cursor: newCursor, killed } = cursor.deleteWordBefore()
+          // 2.1.238 keybindingFlavor: binary `h ? deleteWORDBefore : deleteWordBefore`.
+          const { cursor: newCursor, killed } = isReadline
+            ? cursor.deleteWORDBefore()
+            : cursor.deleteWordBefore()
           pushToKillRing(killed, 'prepend')
           setQueryState(newCursor.text)
           setCursorOffset(newCursor.offset)
