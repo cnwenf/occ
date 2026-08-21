@@ -850,6 +850,18 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Default transcript view mode on startup'),
+      // 2.1.238: keybinding flavor for the prompt's editing keys. Selects the
+      // Ctrl+W convention: "readline" deletes back to the previous whitespace
+      // (like Bash/readline programs), "classic" (default) deletes the previous
+      // word. Mirrors the official schema field (enum ["classic","readline"],
+      // .optional().catch(undefined)); read via getKeybindingFlavor().
+      keybindingFlavor: z
+        .enum(['classic', 'readline'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          `Which conventions the prompt's editing keys follow: "readline" matches Bash and other readline programs (Ctrl+W deletes back to the previous whitespace); "classic" (default) keeps Claude Code's long-standing behavior (Ctrl+W deletes the previous word)`,
+        ),
       // 2.1.208: vim INSERT-mode key-sequence remaps (e.g. "jj" → Escape).
       // Mirrors the official schema field + IS_ normalizer: each key is exactly
       // two printable code points (regex /^[^\p{C}\p{Z}]{2}$/u) AND exactly two
