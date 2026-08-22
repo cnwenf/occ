@@ -7,6 +7,27 @@ import {
 } from './intl.js'
 
 /**
+ * 2.1.239 placeholder family (official binary module `vEr`, pattern
+ * byte-verbatim). Matches every prompt placeholder chip: `[Pasted text #N]`,
+ * `[Pasted text #N +N lines]`, `[Image #N]`, `[Audio #N]`,
+ * `[...Truncated text #N +N lines...]`. Cursor movement and kills treat these
+ * chips as atomic units.
+ */
+const PLACEHOLDER_PATTERN = String.raw`\[(?:Pasted text|Image|Audio|\.\.\.Truncated text) #\d+(?: \+\d+ lines)?\.*\]`
+const PLACEHOLDER_ENDING_RE = new RegExp(PLACEHOLDER_PATTERN + '$')
+const PLACEHOLDER_STARTING_RE = new RegExp('^' + PLACEHOLDER_PATTERN)
+const PLACEHOLDER_GLOBAL_RE = new RegExp(PLACEHOLDER_PATTERN, 'g')
+
+/**
+ * 2.1.239 readline word unit (official binary `AME`, byte-verbatim): a letter
+ * or digit followed by letters/digits/combining marks. Used by
+ * `MeasuredText.getReadlineWordBoundaries` to split the text into
+ * readline-style words — punctuation delimits words, so `foo-bar` is two
+ * readline words (`foo`, `bar`).
+ */
+const READLINE_WORD_RE = /[\p{L}\p{N}][\p{L}\p{N}\p{M}]*/gu
+
+/**
  * Kill ring for storing killed (cut) text that can be yanked (pasted) with Ctrl+Y.
  * This is global state that shares one kill ring across all input fields.
  *
@@ -301,7 +322,7 @@ export class Cursor {
   left(): Cursor {
     if (this.offset === 0) return this
 
-    const chip = this.imageRefEndingAt(this.offset)
+    const chip = this.placeholderEndingAt(this.offset)
     if (chip) return new Cursor(this.measuredText, chip.start)
 
     const prevOffset = this.measuredText.prevOffset(this.offset)
@@ -311,7 +332,7 @@ export class Cursor {
   right(): Cursor {
     if (this.offset >= this.text.length) return this
 
-    const chip = this.imageRefStartingAt(this.offset)
+    const chip = this.placeholderStartingAt(this.offset)
     if (chip) return new Cursor(this.measuredText, chip.end)
 
     const nextOffset = this.measuredText.nextOffset(this.offset)
@@ -319,35 +340,46 @@ export class Cursor {
   }
 
   /**
-   * If an [Image #N] chip ends at `offset`, return its bounds. Used by left()
-   * to hop the cursor over the chip instead of stepping into it.
+   * 2.1.239 placeholder family (official binary `placeholderEndingAt`,
+   * byte-verbatim). If a placeholder chip ends at `offset`, return its bounds.
+   * Used by left() to hop the cursor over the chip instead of stepping into it.
    */
-  imageRefEndingAt(offset: number): { start: number; end: number } | null {
-    const m = this.text.slice(0, offset).match(/\[Image #\d+\]$/)
+  placeholderEndingAt(offset: number): { start: number; end: number } | null {
+    if (this.text[offset - 1] !== ']') return null
+    const m = this.text.slice(0, offset).match(PLACEHOLDER_ENDING_RE)
     return m ? { start: offset - m[0].length, end: offset } : null
   }
 
-  imageRefStartingAt(offset: number): { start: number; end: number } | null {
-    const m = this.text.slice(offset).match(/^\[Image #\d+\]/)
+  placeholderStartingAt(offset: number): { start: number; end: number } | null {
+    if (this.text[offset] !== '[') return null
+    const m = this.text.slice(offset).match(PLACEHOLDER_STARTING_RE)
     return m ? { start: offset, end: offset + m[0].length } : null
   }
 
   /**
-   * If offset lands strictly inside an [Image #N] chip, snap it to the given
-   * boundary. Used by word-movement methods so Ctrl+W / Alt+D never leave a
-   * partial chip.
+   * If `offset` lands strictly inside a placeholder chip, return the chip's
+   * bounds (official binary `placeholderContaining`, byte-verbatim).
    */
-  snapOutOfImageRef(offset: number, toward: 'start' | 'end'): number {
-    const re = /\[Image #\d+\]/g
-    let m
-    while ((m = re.exec(this.text)) !== null) {
-      const start = m.index
+  placeholderContaining(offset: number): { start: number; end: number } | null {
+    for (const m of this.text.matchAll(PLACEHOLDER_GLOBAL_RE)) {
+      const start = m.index ?? 0
       const end = start + m[0].length
-      if (offset > start && offset < end) {
-        return toward === 'start' ? start : end
-      }
+      if (offset > start && offset < end) return { start, end }
+      if (start >= offset) break
     }
-    return offset
+    return null
+  }
+
+  /**
+   * If offset lands strictly inside a placeholder chip, snap it to the given
+   * boundary (official binary `snapOutOfPlaceholder`, byte-verbatim). Used by
+   * word-movement and kill methods so Ctrl+W / Alt+D never leave a partial
+   * chip.
+   */
+  snapOutOfPlaceholder(offset: number, toward: 'start' | 'end'): number {
+    const chip = this.placeholderContaining(offset)
+    if (!chip) return offset
+    return toward === 'start' ? chip.start : chip.end
   }
 
   up(): Cursor {
@@ -563,13 +595,23 @@ export class Cursor {
       return this
     }
 
+    // 2.1.239: if the cursor is on or inside a placeholder chip, jump over the
+    // whole chip (official binary `nextWord`, byte-verbatim).
+    const chip =
+      this.placeholderStartingAt(this.offset) ??
+      this.placeholderContaining(this.offset)
+    if (chip) {
+      return new Cursor(this.measuredText, chip.end)
+    }
+
     // Use Intl.Segmenter for proper word boundary detection (including CJK)
     const wordBoundaries = this.measuredText.getWordBoundaries()
 
     // Find the next word start boundary after current position
     for (const boundary of wordBoundaries) {
       if (boundary.isWordLike && boundary.start > this.offset) {
-        return new Cursor(this.measuredText, boundary.start)
+        const target = this.snapOutOfPlaceholder(boundary.start, 'end')
+        return new Cursor(this.measuredText, target)
       }
     }
 
@@ -622,11 +664,23 @@ export class Cursor {
       return this
     }
 
+    // 2.1.239: if a chip ends exactly at the offset, jump over the whole chip
+    // (official binary `prevWord`, byte-verbatim).
+    const chipEnding = this.placeholderEndingAt(this.offset)
+    if (chipEnding) {
+      return new Cursor(this.measuredText, chipEnding.start)
+    }
+
+    // If we're inside a chip, jump to its start.
+    const chipContaining = this.placeholderContaining(this.offset)
+    if (chipContaining) {
+      return new Cursor(this.measuredText, chipContaining.start)
+    }
+
     // Use Intl.Segmenter for proper word boundary detection (including CJK)
     const wordBoundaries = this.measuredText.getWordBoundaries()
 
     // Find the previous word start boundary before current position
-    // We need to iterate in reverse to find the previous word
     let prevWordStart: number | null = null
 
     for (const boundary of wordBoundaries) {
@@ -636,7 +690,8 @@ export class Cursor {
       if (boundary.start < this.offset) {
         // If we're inside this word (not at the start), go to its start
         if (this.offset > boundary.start && this.offset <= boundary.end) {
-          return new Cursor(this.measuredText, boundary.start)
+          const target = this.snapOutOfPlaceholder(boundary.start, 'start')
+          return new Cursor(this.measuredText, target)
         }
         // Otherwise, remember this as a candidate for previous word
         prevWordStart = boundary.start
@@ -644,7 +699,8 @@ export class Cursor {
     }
 
     if (prevWordStart !== null) {
-      return new Cursor(this.measuredText, prevWordStart)
+      const target = this.snapOutOfPlaceholder(prevWordStart, 'start')
+      return new Cursor(this.measuredText, target)
     }
 
     return new Cursor(this.measuredText, 0)
@@ -842,6 +898,98 @@ export class Cursor {
     return cursor
   }
 
+  /**
+   * 2.1.239 readline word movement (official binary `forwardWord`,
+   * byte-verbatim): move forward one readline word — letter/digit units
+   * derived from `getReadlineWordBoundaries()`. Unlike Intl.Segmenter words,
+   * punctuation like `-` IS a readline delimiter (`foo-bar` is two readline
+   * words), matching emacs-readline M-f. Placeholder chips are atomic. Used
+   * by the `keybindingFlavor: "readline"` Alt+F / Alt+D path.
+   */
+  forwardWord(): Cursor {
+    if (this.isAtEnd()) {
+      return this
+    }
+
+    const chip =
+      this.placeholderStartingAt(this.offset) ??
+      this.placeholderContaining(this.offset)
+    if (chip) {
+      return new Cursor(this.measuredText, chip.end)
+    }
+
+    for (const boundary of this.measuredText.getReadlineWordBoundaries()) {
+      if (boundary.end > this.offset) {
+        const target = this.snapOutOfPlaceholder(boundary.end, 'end')
+        return new Cursor(this.measuredText, target)
+      }
+    }
+
+    return new Cursor(this.measuredText, this.text.length)
+  }
+
+  /**
+   * 2.1.239 readline word movement (official binary `backwardWord`,
+   * byte-verbatim): move backward one readline word. Used by the
+   * `keybindingFlavor: "readline"` Alt+B / Ctrl+W / Ctrl+Backspace path.
+   */
+  backwardWord(): Cursor {
+    if (this.isAtStart()) {
+      return this
+    }
+
+    const chip =
+      this.placeholderEndingAt(this.offset) ??
+      this.placeholderContaining(this.offset)
+    if (chip) {
+      return new Cursor(this.measuredText, chip.start)
+    }
+
+    const boundaries = this.measuredText.getReadlineWordBoundaries()
+    for (let i = boundaries.length - 1; i >= 0; i--) {
+      const boundary = boundaries[i]!
+      if (boundary.start < this.offset) {
+        const target = this.snapOutOfPlaceholder(boundary.start, 'start')
+        return new Cursor(this.measuredText, target)
+      }
+    }
+
+    return new Cursor(this.measuredText, 0)
+  }
+
+  /**
+   * 2.1.239 kill helpers (official binary `killWord` / `backwardKillWord` /
+   * `killRange`, byte-verbatim). `killRange` snaps both endpoints out of any
+   * placeholder chip (start toward chip-start, end toward chip-end) so kills
+   * never leave partial chips, and returns the killed text for the kill ring.
+   */
+  killWord(): { cursor: Cursor; killed: string } {
+    const target = this.forwardWord()
+    if (target.offset === this.offset) {
+      return { cursor: this, killed: '' }
+    }
+    return this.killRange(this.offset, target.offset)
+  }
+
+  backwardKillWord(): { cursor: Cursor; killed: string } {
+    const target = this.backwardWord()
+    if (target.offset === this.offset) {
+      return { cursor: this, killed: '' }
+    }
+    return this.killRange(target.offset, this.offset)
+  }
+
+  killRange(start: number, end: number): { cursor: Cursor; killed: string } {
+    const snappedStart = this.snapOutOfPlaceholder(start, 'start')
+    const snappedEnd = this.snapOutOfPlaceholder(end, 'end')
+    const startCursor = new Cursor(this.measuredText, snappedStart)
+    const endCursor = new Cursor(this.measuredText, snappedEnd)
+    return {
+      cursor: startCursor.modifyText(endCursor),
+      killed: this.text.slice(snappedStart, snappedEnd),
+    }
+  }
+
   modifyText(end: Cursor, insertString: string = ''): Cursor {
     const startOffset = this.offset
     const endOffset = end.offset
@@ -887,10 +1035,10 @@ export class Cursor {
 
     // Use startOfLine() so that at column 0 of a wrapped visual line,
     // the cursor moves to the previous visual line's start instead of
-    // getting stuck.
+    // getting stuck. 2.1.239 routes the kill through killRange so a
+    // placeholder chip at the boundary is removed atomically.
     const startCursor = this.startOfLine()
-    const killed = this.text.slice(startCursor.offset, this.offset)
-    return { cursor: startCursor.modifyText(this), killed }
+    return this.killRange(startCursor.offset, this.offset)
   }
 
   deleteToLineEnd(): { cursor: Cursor; killed: string } {
@@ -899,9 +1047,10 @@ export class Cursor {
       return { cursor: this.modifyText(this.right()), killed: '\n' }
     }
 
+    // 2.1.239: kill via killRange (placeholder endpoints snap to chip
+    // boundaries — official binary byte-verbatim).
     const endCursor = this.endOfLine()
-    const killed = this.text.slice(this.offset, endCursor.offset)
-    return { cursor: this.modifyText(endCursor), killed }
+    return this.killRange(this.offset, endCursor.offset)
   }
 
   deleteToLogicalLineEnd(): Cursor {
@@ -910,17 +1059,17 @@ export class Cursor {
       return this.modifyText(this.right())
     }
 
-    return this.modifyText(this.endOfLogicalLine())
+    // 2.1.239: kill via killRange (official binary byte-verbatim).
+    return this.killRange(this.offset, this.endOfLogicalLine().offset).cursor
   }
 
   deleteWordBefore(): { cursor: Cursor; killed: string } {
     if (this.isAtStart()) {
       return { cursor: this, killed: '' }
     }
-    const target = this.snapOutOfImageRef(this.prevWord().offset, 'start')
-    const prevWordCursor = new Cursor(this.measuredText, target)
-    const killed = this.text.slice(prevWordCursor.offset, this.offset)
-    return { cursor: prevWordCursor.modifyText(this), killed }
+    // 2.1.239: kill via killRange so the endpoint snaps out of any
+    // placeholder chip (official binary byte-verbatim).
+    return this.killRange(this.prevWord().offset, this.offset)
   }
 
   /**
@@ -929,15 +1078,13 @@ export class Cursor {
    * word. Mirrors the official `deleteWORDBefore` (uses `prevWORD`, whereas
    * `deleteWordBefore` uses `prevWord`). Selected when the `keybindingFlavor`
    * setting is `"readline"`; `"classic"` (default) keeps `deleteWordBefore`.
+   * 2.1.239 reworks the kill through `killRange` (byte-verbatim).
    */
   deleteWORDBefore(): { cursor: Cursor; killed: string } {
     if (this.isAtStart()) {
       return { cursor: this, killed: '' }
     }
-    const target = this.snapOutOfImageRef(this.prevWORD().offset, 'start')
-    const prevWORDCursor = new Cursor(this.measuredText, target)
-    const killed = this.text.slice(prevWORDCursor.offset, this.offset)
-    return { cursor: prevWORDCursor.modifyText(this), killed }
+    return this.killRange(this.prevWORD().offset, this.offset)
   }
 
   /**
@@ -952,9 +1099,10 @@ export class Cursor {
    * Only triggers when cursor is at end of token (followed by whitespace or EOL).
    */
   deleteTokenBefore(): Cursor | null {
-    // Cursor at chip.start is the "selected" state — backspace deletes the
-    // chip forward, not the char before it.
-    const chipAfter = this.imageRefStartingAt(this.offset)
+    // 2.1.239: cursor at chip.start is the "selected" state — backspace
+    // deletes the chip forward, not the char before it. Now covers the full
+    // placeholder family (Pasted/Image/Audio/Truncated), not just Image.
+    const chipAfter = this.placeholderStartingAt(this.offset)
     if (chipAfter) {
       const end =
         this.text[chipAfter.end] === ' ' ? chipAfter.end + 1 : chipAfter.end
@@ -974,8 +1122,9 @@ export class Cursor {
     const textBefore = this.text.slice(0, this.offset)
 
     // Check for pasted/truncated text refs: [Pasted text #1] or [...Truncated text #1 +50 lines...]
+    // 2.1.239: pattern gained the `Audio #N` alternative (byte-verbatim).
     const pasteMatch = textBefore.match(
-      /(^|\s)\[(Pasted text #\d+(?: \+\d+ lines)?|Image #\d+|\.\.\.Truncated text #\d+ \+\d+ lines\.\.\.)\]$/,
+      /(^|\s)\[(Pasted text #\d+(?: \+\d+ lines)?|Image #\d+|Audio #\d+|\.\.\.Truncated text #\d+ \+\d+ lines\.\.\.)\]$/,
     )
     if (pasteMatch) {
       const matchStart = pasteMatch.index! + pasteMatch[1]!.length
@@ -990,8 +1139,9 @@ export class Cursor {
       return this
     }
 
-    const target = this.snapOutOfImageRef(this.nextWord().offset, 'end')
-    return this.modifyText(new Cursor(this.measuredText, target))
+    // 2.1.239: kill via killRange so the endpoint snaps out of any
+    // placeholder chip (official binary byte-verbatim).
+    return this.killRange(this.offset, this.nextWord().offset).cursor
   }
 
   private graphemeAt(pos: number): string {
@@ -1203,6 +1353,51 @@ export class MeasuredText {
       }
     }
     return this.wordBoundariesCache
+  }
+
+  private readlineWordBoundariesCache?: Array<{ start: number; end: number }>
+
+  /**
+   * 2.1.239 readline word boundaries (official binary
+   * `MeasuredText.getReadlineWordBoundaries`, byte-verbatim; the word regex
+   * is `AME` = READLINE_WORD_RE): re-splits the text into readline-style
+   * words — runs of a letter/digit followed by letters, digits, or combining
+   * marks. Punctuation such as `-` IS a readline delimiter (`foo-bar` yields
+   * two readline words: `foo` and `bar`), matching emacs-readline word
+   * semantics, unlike the whitespace-delimited WORD runs used by
+   * prevWORD/nextWORD. Endpoints are snapped to grapheme boundaries; when
+   * snapping an end moves it, the word is extended to the next grapheme end.
+   * Adjacent matches merge when the (snapped) start overlaps the previous
+   * word's end — or touches it after a snap (`snappedPrev`), which happens
+   * when a combining mark splits a grapheme cluster across two regex matches.
+   */
+  public getReadlineWordBoundaries(): Array<{ start: number; end: number }> {
+    if (!this.readlineWordBoundariesCache) {
+      const boundaries: Array<{ start: number; end: number }> = []
+      let snappedPrev = false
+      for (const word of this.getWordBoundaries()) {
+        const wordText = this.text.slice(word.start, word.end)
+        for (const match of wordText.matchAll(READLINE_WORD_RE)) {
+          const start = this.snapToGraphemeBoundary(word.start + match.index!)
+          const rawEnd = word.start + match.index! + match[0].length
+          const snappedEnd = this.snapToGraphemeBoundary(rawEnd)
+          const end =
+            snappedEnd === rawEnd ? rawEnd : this.nextOffset(snappedEnd)
+          const last = boundaries.at(-1)
+          if (
+            last &&
+            (start < last.end || (start === last.end && snappedPrev))
+          ) {
+            last.end = Math.max(last.end, end)
+          } else {
+            boundaries.push({ start, end })
+          }
+          snappedPrev = end !== rawEnd
+        }
+      }
+      this.readlineWordBoundariesCache = boundaries
+    }
+    return this.readlineWordBoundariesCache
   }
 
   /**

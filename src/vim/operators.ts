@@ -498,10 +498,11 @@ function getOperatorRange(
     to = cursor.measuredText.nextOffset(to)
   }
 
-  // Word motions can land inside an [Image #N] chip; extend the range to
+  // Word motions can land inside a placeholder chip ([Pasted text #N],
+  // [Image #N], [Audio #N], [...Truncated text #N...]); extend the range to
   // cover the whole chip so dw/cw/yw never leave a partial placeholder.
-  from = cursor.snapOutOfImageRef(from, 'start')
-  to = cursor.snapOutOfImageRef(to, 'end')
+  from = cursor.snapOutOfPlaceholder(from, 'start')
+  to = cursor.snapOutOfPlaceholder(to, 'end')
 
   return { from, to, linewise }
 }

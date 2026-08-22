@@ -21,16 +21,34 @@ import {
  * the screen reader speaks the deleted word/line aloud. No-op when the killed
  * text is empty (nothing was deleted).
  *
+ * 2.1.239 hardening (official binary `OME`, byte-verbatim): when the input is
+ * masked (`mask !== ''` — e.g. password fields), the deleted content is never
+ * echoed; the announcement is just `"deleted"`. Whitespace-only kills announce
+ * as `"new line"` / `"tab"` / `"space"` (newline wins); otherwise the text is
+ * flattened (newlines → spaces) and trimmed.
+ *
  * Default sink is the global SR announce queue (binary `cxc`); tests inject a
  * mock sink to assert the emitted string contains the deleted text.
  */
 export function announceDeletedText(
   deletedText: string,
+  mask: string = '',
   sink: (str: string) => void = pushScreenReaderAnnouncement,
 ): void {
-  if (deletedText.length > 0) {
-    sink(deletedText)
+  if (deletedText === '') return
+  if (mask !== '') {
+    sink('deleted')
+    return
   }
+  const announcement =
+    deletedText.trim() === ''
+      ? deletedText.includes('\n')
+        ? 'new line'
+        : deletedText.includes('\t')
+          ? 'tab'
+          : 'space'
+      : deletedText.replaceAll('\n', ' ').trim()
+  sink(announcement)
 }
 
 /**

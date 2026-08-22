@@ -77,7 +77,11 @@ describe("I4 (2.1.111): Ctrl+U clear + Ctrl+Y restore (kill-paste-hint)", () => 
     // killToLineStart is the non-fullscreen fallback.
     expect(src).toMatch(/\['u',.*killToLineStart\]/);
     expect(src).toMatch(/\['y',\s*yank\]/);
-    expect(src).toContain("pushToKillRing(killed, 'prepend')");
+    // 2.1.239: kills route through recordKill — the masked-input gate that
+    // pushToKillRing's only when unmasked (masked prompts reset accumulation
+    // instead). The prepend direction survives the wrapper.
+    expect(src).toMatch(/(pushToKillRing|recordKill)\(killed, 'prepend'\)/);
+    expect(src).toContain("pushToKillRing(killed, direction)");
     expect(src).toContain("getLastKill()");
   });
 });
