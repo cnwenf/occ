@@ -151,8 +151,10 @@ export function useTextInput({
       onClearInput?.()
       if (originalValue) {
         // Track double-escape usage for feature discovery
-        // Save to history before clearing
-        if (originalValue.trim() !== '') {
+        // Save to history before clearing. 2.1.239 gates the history save on
+        // unmasked input (official binary: masked prompt content is never
+        // persisted to history).
+        if (mask === '' && originalValue.trim() !== '') {
           addToHistory(originalValue)
         }
         onChange('')
@@ -187,22 +189,35 @@ export function useTextInput({
     return cursor.del()
   }
 
+  // 2.1.239 kill dispatch (official binary `Se`, byte-verbatim): a kill is
+  // recorded in the kill ring only when the input is NOT masked. Masked
+  // inputs (password fields) dispatch an "interrupt" instead — kill
+  // accumulation resets and nothing becomes yankable — and the SR
+  // announcement never echoes the deleted content (announceDeletedText says
+  // just "deleted" when masked).
+  function recordKill(killed: string, direction: 'prepend' | 'append'): void {
+    if (mask === '') {
+      pushToKillRing(killed, direction)
+    } else {
+      resetKillAccumulation()
+    }
+    announceDeletedText(killed, mask)
+  }
+
   function killToLineEnd(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteToLineEnd()
-    pushToKillRing(killed, 'append')
-    // 2.1.218 #2: announce the deleted text in SR mode (Option+Delete kills
-    // forward to line end). No-op when SR is off (drain only runs in SR render).
-    announceDeletedText(killed)
+    recordKill(killed, 'append')
     return newCursor
   }
 
   function killToLineStart(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteToLineStart()
-    pushToKillRing(killed, 'prepend')
+    recordKill(killed, 'prepend')
     // 2.1.111: after Ctrl+U clears 3+ chars, surface a hint that Ctrl+Y
     // restores the deleted text (mirrors official kill-paste-hint). Only
-    // Ctrl+U triggers this — Ctrl+K/Ctrl+W kills stay silent.
-    if (killed.length >= 3) {
+    // Ctrl+U triggers this — Ctrl+K/Ctrl+W kills stay silent. 2.1.239 gates
+    // the hint on unmasked input (nothing is yankable when masked).
+    if (mask === '' && killed.length >= 3) {
       addNotification({
         key: 'kill-paste-hint',
         text: 'Ctrl+Y to paste deleted text',
@@ -210,18 +225,12 @@ export function useTextInput({
         timeoutMs: 5000,
       })
     }
-    // 2.1.218 #2: announce the deleted text in SR mode (Ctrl+U kills to line
-    // start).
-    announceDeletedText(killed)
     return newCursor
   }
 
   function killWordBefore(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteWordBefore()
-    pushToKillRing(killed, 'prepend')
-    // 2.1.218 #2: announce the deleted text in SR mode (Ctrl+W / Cmd+Backspace
-    // / Meta+Backspace kill the word before the cursor).
-    announceDeletedText(killed)
+    recordKill(killed, 'prepend')
     return newCursor
   }
 
@@ -230,8 +239,29 @@ export function useTextInput({
   // ring + SR announcement behavior is identical to killWordBefore (binary `ge`).
   function killWORDBefore(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteWORDBefore()
-    pushToKillRing(killed, 'prepend')
-    announceDeletedText(killed)
+    recordKill(killed, 'prepend')
+    return newCursor
+  }
+
+  // 2.1.239 (official binary `xe`): modifier-Backspace kill — flavored.
+  // readline kills back over a readline word (`backwardKillWord`); classic
+  // kills the previous Segmenter word (`deleteWordBefore`). Both record the
+  // kill prepend.
+  function killWordBeforeFlavored(): Cursor {
+    const { cursor: newCursor, killed } = isReadline
+      ? cursor.backwardKillWord()
+      : cursor.deleteWordBefore()
+    recordKill(killed, 'prepend')
+    return newCursor
+  }
+
+  // 2.1.239 (official binary `Ie`): readline-flavored Alt+D — kill the word
+  // AFTER the cursor (`killWord`, forwardWord-based) and record it append for
+  // Ctrl+Y. Classic Alt+D stays `deleteWordAfter` (no kill ring — official
+  // behavior).
+  function killWordAfter(): Cursor {
+    const { cursor: newCursor, killed } = cursor.killWord()
+    recordKill(killed, 'append')
     return newCursor
   }
 
@@ -287,10 +317,14 @@ export function useTextInput({
     ['y', yank],
   ])
 
+  // 2.1.239: Alt+B/Alt+F word movement and Alt+D word kill are flavored
+  // (official binary `we`/`fe`/`Ie`): readline → readline word units
+  // (backwardWord/forwardWord/killWord), classic → Segmenter words
+  // (prevWord/nextWord/deleteWordAfter, no kill ring on Alt+D).
   const handleMeta = mapInput([
-    ['b', () => cursor.prevWord()],
-    ['f', () => cursor.nextWord()],
-    ['d', () => cursor.deleteWordAfter()],
+    ['b', () => (isReadline ? cursor.backwardWord() : cursor.prevWord())],
+    ['f', () => (isReadline ? cursor.forwardWord() : cursor.nextWord())],
+    ['d', isReadline ? killWordAfter : () => cursor.deleteWordAfter()],
     ['y', handleYankPop],
   ])
 
@@ -379,16 +413,24 @@ export function useTextInput({
           // Return the current cursor unchanged - handleEscape manages state internally
           return cursor
         }
+      // 2.1.239: modifier-arrow word movement is flavored (official binary
+      // `we`/`fe`): readline → readline word units, classic → Segmenter words.
       case key.leftArrow && (key.ctrl || key.meta || key.fn):
-        return () => cursor.prevWord()
+        return () => (isReadline ? cursor.backwardWord() : cursor.prevWord())
       case key.rightArrow && (key.ctrl || key.meta || key.fn):
-        return () => cursor.nextWord()
+        return () => (isReadline ? cursor.forwardWord() : cursor.nextWord())
       case key.backspace:
-        return key.meta || key.ctrl
-          ? killWordBefore
-          : () => cursor.deleteTokenBefore() ?? cursor.backspace()
+        // 2.1.239 (official binary mt() backspace): Super+Backspace kills to
+        // line start (`he`); Meta/Ctrl+Backspace is the flavored word kill
+        // (`xe`); plain Backspace deletes a token (chip-aware) or one char.
+        return key.super
+          ? killToLineStart
+          : key.meta || key.ctrl
+            ? killWordBeforeFlavored
+            : () => cursor.deleteTokenBefore() ?? cursor.backspace()
       case key.delete:
-        return key.meta ? killToLineEnd : () => cursor.del()
+        // 2.1.239: Super+Delete joins Meta+Delete → kill to line end (`ge`).
+        return key.super || key.meta ? killToLineEnd : () => cursor.del()
       case key.ctrl:
         return handleCtrl
       case key.home:
@@ -474,12 +516,21 @@ export function useTextInput({
     }
   }
 
-  // Check if this is a kill command (Ctrl+K, Ctrl+U, Ctrl+W, or Meta+Backspace/Delete)
+  // Check if this is a kill command. 2.1.239 full set (official binary `ot`,
+  // byte-verbatim): Ctrl+K/U/W; readline-flavored Alt+D (killWordAfter);
+  // modifier Backspace (Meta/Super/Ctrl); modifier Delete (Meta/Super).
+  // Non-kill keys reset kill accumulation.
   function isKillKey(key: Key, input: string): boolean {
     if (key.ctrl && (input === 'k' || input === 'u' || input === 'w')) {
       return true
     }
-    if (key.meta && (key.backspace || key.delete)) {
+    if (isReadline && key.meta && !key.ctrl && input === 'd') {
+      return true
+    }
+    if (key.backspace && (key.meta || key.super || key.ctrl)) {
+      return true
+    }
+    if (key.delete && (key.meta || key.super)) {
       return true
     }
     return false

@@ -25,17 +25,35 @@ function mockSink(): { sink: (s: string) => void; calls: string[] } {
 describe('2.1.218 #2 sr a11y: announceDeletedText', () => {
   test('emits an announcement containing the deleted word', () => {
     const { sink, calls } = mockSink()
-    announceDeletedText('hello', sink)
+    announceDeletedText('hello', '', sink)
     expect(calls).toEqual(['hello'])
   })
   test('emits the deleted line text for Ctrl+U / Ctrl+K line kills', () => {
     const { sink, calls } = mockSink()
-    announceDeletedText('whole line gone', sink)
+    announceDeletedText('whole line gone', '', sink)
     expect(calls[0]).toContain('whole line gone')
+  })
+  test('flattens newlines to spaces in multi-line kills (2.1.239 OME)', () => {
+    const { sink, calls } = mockSink()
+    announceDeletedText('line one\nline two', '', sink)
+    expect(calls).toEqual(['line one line two'])
+  })
+  test('whitespace-only kills announce as space / tab / new line (2.1.239 OME)', () => {
+    const { sink, calls } = mockSink()
+    announceDeletedText(' ', '', sink)
+    announceDeletedText('\t', '', sink)
+    announceDeletedText('\n', '', sink)
+    announceDeletedText('  \n ', '', sink) // newline wins over spaces
+    expect(calls).toEqual(['space', 'tab', 'new line', 'new line'])
+  })
+  test('masked input never echoes the deleted content — announces "deleted" (2.1.239 OME)', () => {
+    const { sink, calls } = mockSink()
+    announceDeletedText('hunter2-secret', '*', sink)
+    expect(calls).toEqual(['deleted'])
   })
   test('no-op when nothing was deleted (empty killed text)', () => {
     const { sink, calls } = mockSink()
-    announceDeletedText('', sink)
+    announceDeletedText('', '', sink)
     expect(calls).toEqual([])
   })
   test('defaults to the global SR announce queue sink', () => {
