@@ -7,10 +7,12 @@ import {
 } from '../auth.js'
 import { getModelStrings } from './modelStrings.js'
 import {
+  COST_TIER_2_10,
   COST_TIER_3_15,
   COST_HAIKU_35,
   COST_HAIKU_45,
   formatModelPricing,
+  getModelPricingString,
   getOpus5CostTier,
 } from '../modelCost.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
@@ -30,9 +32,13 @@ import {
   getUserSpecifiedModelSetting,
   isOpus1mMergeEnabled,
   getOpus46PricingSuffix,
+  parseUserSpecifiedModel,
   renderDefaultModelSetting,
+  resolveAnthropicDefaultModel,
+  type ModelName,
   type ModelSetting,
 } from './model.js'
+import { type ModelAlias } from './aliases.js'
 import { has1mContext } from '../context.js'
 import { getGlobalConfig } from '../config.js'
 import { readGatewayModelOptions } from './gatewayModelDiscovery.js'
@@ -69,12 +75,56 @@ export function getDefaultOptionForUser(fastMode = false): ModelOption {
   }
 
   // PAYG
-  const is3P = getAPIProvider() !== 'firstParty'
+  const defaultSetting = getDefaultMainLoopModelSetting()
   return {
     value: null,
     label: 'Default (recommended)',
-    description: `Use the default model (currently ${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})${is3P ? '' : ` · ${formatModelPricing(COST_TIER_3_15)}`}`,
+    description: `Use the default model (currently ${renderDefaultModelSetting(defaultSetting)})${getDefaultOptionSuffix(defaultSetting)}`,
   }
+}
+
+/**
+ * Suffix for the Default (PAYG) picker row.
+ *
+ * Recovered verbatim from the official 2.1.241 linux-x64 binary — default
+ * option builder `Nci` (2.1.245 `se` is shape-identical):
+ *
+ *   let{setting:t,attribution:r}=wht(),o=e&&Bk(t),
+ *   {pricingSuffix:i}=r==="tier"?mSe(o?t:vs(t),o):rIa;   // rIa={pricingSuffix:""}
+ *   description:`Use the default model (currently ${gNn(t)})${i}${SHv(r)}`
+ *
+ * - `wht()` attribution chain: org > env (ANTHROPIC_DEFAULT_MODEL) > enforced
+ *   > entitlement > tier (built-in fallback). Pricing appears ONLY for the
+ *   "tier" fallback, via `mSe` -> `oNn(fastMode, model)`:
+ *     function oNn(e,t){if(!XOn())return"";let r=D4(t),n=e?ght(knr(r)):QFd(r);
+ *       if(n===void 0)return"";return` ·${e?` (${LIGHTNING_BOLT})`:""} ${n}`}
+ *   XOn() = provider === "firstParty"; QFd = model-catalog tier ->
+ *   formatModelPricing, undefined (-> no suffix) for models without a catalog
+ *   entry.
+ * - `SHv`/`dNn` attribution notes: env -> " · Set by ANTHROPIC_DEFAULT_MODEL",
+ *   org -> " · Org default", enforced/entitlement -> " · Set by your
+ *   organization", tier -> "".
+ * - The fast branch (o = e && Bk(t)) is unreachable where pricing shows: a
+ *   fast-capable default (opus-4-8/opus-5) only arrives via
+ *   ANTHROPIC_DEFAULT_MODEL (env attribution -> no pricing); the built-in
+ *   non-subscriber default is the Sonnet family, which is not fast-capable.
+ *
+ * OCC has no org/enforced/entitlement subsystems (managed-settings backlog,
+ * see OCC-46 staged items), so this mirrors the env-vs-tier split that OCC's
+ * getDefaultMainLoopModelSetting can distinguish. The pre-2.1.243 code
+ * hardcoded `formatModelPricing(COST_TIER_3_15)` here; the official suffix is
+ * the resolved default model's own catalog price (Sonnet 5 -> tier_2_10
+ * "$2/$10 per Mtok" since the 2.1.243 repricing).
+ */
+function getDefaultOptionSuffix(setting: ModelName | ModelAlias): string {
+  // env attribution: official shows the note instead of pricing (dNn "env")
+  if (resolveAnthropicDefaultModel() !== undefined) {
+    return ' · Set by ANTHROPIC_DEFAULT_MODEL'
+  }
+  // XOn() gate: pricing display is firstParty-only
+  if (getAPIProvider() !== 'firstParty') return ''
+  const pricing = getModelPricingString(parseUserSpecifiedModel(setting))
+  return pricing === undefined ? '' : ` · ${pricing}`
 }
 
 // @[MODEL LAUNCH]: Update or add model option functions (getSonnetXXOption, getOpusXXOption, etc.)
@@ -110,7 +160,7 @@ function getSonnet5Option(): ModelOption {
   return {
     value: is3P ? getModelStrings().sonnet5 : 'sonnet',
     label: 'Sonnet',
-    description: `Sonnet 5 · Efficient for routine tasks${is3P ? '' : ` · ${formatModelPricing(COST_TIER_3_15)}`}`,
+    description: `Sonnet 5 · Efficient for routine tasks${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
     descriptionForModel:
       'Sonnet 5 - efficient for routine tasks. Generally recommended for most coding tasks',
   }
@@ -274,7 +324,7 @@ export function getSonnet5_1MOption(): ModelOption {
   return {
     value: is3P ? getModelStrings().sonnet5 + '[1m]' : 'sonnet[1m]',
     label: 'Sonnet (1M context)',
-    description: `Sonnet 5 for long sessions${is3P ? '' : ` · ${formatModelPricing(COST_TIER_3_15)}`}`,
+    description: `Sonnet 5 for long sessions${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
     descriptionForModel:
       'Sonnet 5 with 1M context window - for long sessions with large codebases',
   }
@@ -380,7 +430,7 @@ export function getMaxSonnet5_1MOption(): ModelOption {
   return {
     value: 'sonnet[1m]',
     label: 'Sonnet (1M context)',
-    description: `Sonnet 5 with 1M context${billingInfo}${is3P ? '' : ` · ${formatModelPricing(COST_TIER_3_15)}`}`,
+    description: `Sonnet 5 with 1M context${billingInfo}${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
   }
 }
 
