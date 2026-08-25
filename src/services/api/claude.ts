@@ -125,7 +125,6 @@ import {
   getFastModeHeaderLatched,
   getLastApiCompletionTimestamp,
   getPromptCache1hAllowlist,
-  getPromptCache1hEligible,
   getSessionId,
   getThinkingClearLatched,
   setAfkModeHeaderLatched,
@@ -133,7 +132,6 @@ import {
   setFastModeHeaderLatched,
   setLastMainRequestId,
   setPromptCache1hAllowlist,
-  setPromptCache1hEligible,
   setThinkingClearLatched,
 } from 'src/bootstrap/state.js'
 import {
@@ -165,6 +163,7 @@ import {
   getToolSearchBetaHeader,
   modelSupportsStructuredOutputs,
   shouldIncludeFirstPartyOnlyBetas,
+  shouldSendExtendedCacheTtlBeta,
   shouldUseGlobalCacheScope,
 } from 'src/utils/betas.js'
 import { CLAUDE_IN_CHROME_MCP_SERVER_NAME } from 'src/utils/claudeInChrome/common.js'
@@ -184,6 +183,7 @@ import { headlessProfilerCheckpoint } from 'src/utils/headlessProfiler.js'
 import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js'
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
+import { getInitialSettings } from 'src/utils/settings/settings.js'
 import {
   modelSupportsAdaptiveThinking,
   modelSupportsThinking,
@@ -195,7 +195,10 @@ import {
   isToolSearchEnabled,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
-import { ADVISOR_BETA_HEADER } from '../../constants/betas.js'
+import {
+  ADVISOR_BETA_HEADER,
+  EXTENDED_CACHE_TTL_BETA_HEADER,
+} from '../../constants/betas.js'
 import {
   formatDeferredToolLine,
   isDeferredTool,
@@ -386,74 +389,167 @@ export function getCacheControl({
 }
 
 /**
- * Determines if 1h TTL should be used for prompt caching.
+ * Prompt cache TTL resolution — ported from the official 2.1.245 linux-x64
+ * binary (subsystem introduced in 2.1.243). Verbatim official pieces:
  *
- * Only applied when:
- * 1. User is eligible (ant or subscriber within rate limits)
- * 2. The query source matches a pattern in the GrowthBook allowlist
+ *   kzt = ["repl_main_thread*","sdk","auto_mode","memdir_relevance"]
+ *     (query-source patterns treated as the "main conversation"; also the
+ *      baked default allowlist for the `tengu_prompt_cache_1h_config`
+ *      GrowthBook flag)
+ *   vzt(e,t) — pattern match: trailing '*' = prefix match, else exact
+ *   NMs(e)  — vzt(e, kzt)
+ *   uFr(e)  — explicit override ladder:
+ *     FORCE_PROMPT_CACHING_5M → {ttl:"5m",reason:"force_5m_env"}
+ *     → per-thread env var (CLAUDE_CODE_PROMPT_CACHE_TTL for main-thread
+ *       sources, CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL otherwise; both
+ *       parsed with z.enum(["5m","1h"]).catch(undefined) semantics — an
+ *       invalid value falls through) → {ttl,reason:"env"}
+ *     → per-thread settings key (promptCacheTtl / subagentPromptCacheTtl)
+ *       → {ttl,reason:"setting"}
+ *     → ENABLE_PROMPT_CACHING_1H (or bedrock-only
+ *       ENABLE_PROMPT_CACHING_1H_BEDROCK) → {ttl:"1h",reason:"enable_1h_env"}
+ *   HUr(e) — uFr(e) if defined; else the subscriber gate — not a claude.ai
+ *     subscriber OR over usage limits → {ttl:"5m",reason:"default"}; else
+ *     the GrowthBook allowlist (baked default {allowlist:[...kzt]}) decides
+ *     between {ttl:"1h",reason:"subscriber"} and {ttl:"5m",reason:"default"}
+ *   AR(e) — HUr(e).ttl === "1h"
  *
- * GrowthBook config shape: { allowlist: string[] }
- * Patterns support trailing '*' for prefix matching.
- * Examples:
- * - { allowlist: ["repl_main_thread*", "sdk"] } — main thread + SDK only
- * - { allowlist: ["repl_main_thread*", "sdk", "agent:*"] } — also subagents
- * - { allowlist: ["*"] } — all sources
+ * Wire shape (official main request builder): the resolved ttl is propagated
+ * into cache_control ONLY when it is "1h" — `N = be.ttl==="1h" ? "1h" : void 0`
+ * — 5m stays implicit. getCacheControl above already matches that shape, so
+ * should1hCacheTTL keeps its boolean contract and call sites are unchanged.
  *
- * The allowlist is cached in STATE for session stability — prevents mixed
- * TTLs when GrowthBook's disk cache updates mid-request.
+ * The subscriber gate reads LIVE state (isClaudeAISubscriber() +
+ * currentLimits.isUsingOverage) exactly like the official HUr — no session
+ * latch. The allowlist stays session-latched in bootstrap state (official
+ * caches the GrowthBook value too: `if(n===null)n=Me(...),JFr(n)`) to avoid
+ * mixed TTLs busting the server-side prompt cache mid-session.
  */
-export function should1hCacheTTL(querySource?: QuerySource): boolean {
-  // 2.1.108: FORCE_PROMPT_CACHING_5M forces the 5-minute TTL regardless of
-  // eligibility.
-  if (isEnvTruthy(process.env.FORCE_PROMPT_CACHING_5M)) {
-    return false
-  }
-  // 2.1.108: ENABLE_PROMPT_CACHING_1H opts into 1h TTL on API key, Bedrock,
-  // Vertex, and Foundry. ENABLE_PROMPT_CACHING_1H_BEDROCK is deprecated but
-  // still honored (Bedrock only).
-  if (isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H)) {
-    return true
-  }
-  // 3P Bedrock users get 1h TTL when opted in via env var — they manage their own billing
-  // No GrowthBook gating needed since 3P users don't have GrowthBook configured
-  if (
-    getAPIProvider() === 'bedrock' &&
-    isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK)
-  ) {
-    return true
-  }
+const MAIN_THREAD_QUERY_SOURCES = [
+  'repl_main_thread*',
+  'sdk',
+  'auto_mode',
+  'memdir_relevance',
+] as const
 
-  // Latch eligibility in bootstrap state for session stability — prevents
-  // mid-session overage flips from changing the cache_control TTL, which
-  // would bust the server-side prompt cache (~20K tokens per flip).
-  let userEligible = getPromptCache1hEligible()
-  if (userEligible === null) {
-    userEligible =
-      process.env.USER_TYPE === 'ant' ||
-      (isClaudeAISubscriber() && !currentLimits.isUsingOverage)
-    setPromptCache1hEligible(userEligible)
-  }
-  if (!userEligible) return false
+type PromptCacheTtl = '5m' | '1h'
 
-  // Cache allowlist in bootstrap state for session stability — prevents mixed
-  // TTLs when GrowthBook's disk cache updates mid-request
-  let allowlist = getPromptCache1hAllowlist()
-  if (allowlist === null) {
-    const config = getFeatureValue_CACHED_MAY_BE_STALE<{
-      allowlist?: string[]
-    }>('tengu_prompt_cache_1h_config', {})
-    allowlist = config.allowlist ?? []
-    setPromptCache1hAllowlist(allowlist)
-  }
+type ResolvedPromptCacheTtl = {
+  ttl: PromptCacheTtl
+  reason:
+    | 'force_5m_env'
+    | 'env'
+    | 'setting'
+    | 'enable_1h_env'
+    | 'subscriber'
+    | 'default'
+}
 
+function querySourceMatchesPatterns(
+  querySource: string | undefined,
+  patterns: readonly string[],
+): boolean {
   return (
     querySource !== undefined &&
-    allowlist.some(pattern =>
+    patterns.some(pattern =>
       pattern.endsWith('*')
         ? querySource.startsWith(pattern.slice(0, -1))
         : querySource === pattern,
     )
   )
+}
+
+/** Official NMs: is this query source part of the main conversation? */
+export function isMainThreadQuerySource(
+  querySource?: QuerySource,
+): boolean {
+  return querySourceMatchesPatterns(querySource, MAIN_THREAD_QUERY_SOURCES)
+}
+
+/**
+ * Official env-var parsers: z.enum(["5m","1h"]).optional().catch(void 0) —
+ * anything other than the two literals is silently treated as unset.
+ */
+function parsePromptCacheTtlEnv(
+  value: string | undefined,
+): PromptCacheTtl | undefined {
+  return value === '5m' || value === '1h' ? value : undefined
+}
+
+/** Official uFr: explicit overrides (env kill-switch, per-thread env/settings, 1h opt-ins). */
+export function resolvePromptCacheTtlOverride(
+  querySource?: QuerySource,
+): ResolvedPromptCacheTtl | undefined {
+  if (isEnvTruthy(process.env.FORCE_PROMPT_CACHING_5M)) {
+    return { ttl: '5m', reason: 'force_5m_env' }
+  }
+  const isMainThread = isMainThreadQuerySource(querySource)
+  const envTtl = parsePromptCacheTtlEnv(
+    isMainThread
+      ? process.env.CLAUDE_CODE_PROMPT_CACHE_TTL
+      : process.env.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL,
+  )
+  if (envTtl !== undefined) return { ttl: envTtl, reason: 'env' }
+  const settings = getInitialSettings()
+  const settingTtl = isMainThread
+    ? settings.promptCacheTtl
+    : settings.subagentPromptCacheTtl
+  if (settingTtl !== undefined) return { ttl: settingTtl, reason: 'setting' }
+  // 2.1.108: ENABLE_PROMPT_CACHING_1H opts into 1h TTL on API key, Bedrock,
+  // Vertex, and Foundry. ENABLE_PROMPT_CACHING_1H_BEDROCK is deprecated but
+  // still honored (Bedrock only).
+  if (
+    isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H) ||
+    (getAPIProvider() === 'bedrock' &&
+      isEnvTruthy(process.env.ENABLE_PROMPT_CACHING_1H_BEDROCK))
+  ) {
+    return { ttl: '1h', reason: 'enable_1h_env' }
+  }
+  return undefined
+}
+
+/**
+ * Official HUr: full resolution — explicit overrides first, then the
+ * subscriber gate (claude.ai subscription within usage limits → 1h for
+ * allowlisted sources, everything else → 5m).
+ */
+export function resolvePromptCacheTtl(
+  querySource?: QuerySource,
+): ResolvedPromptCacheTtl {
+  const override = resolvePromptCacheTtlOverride(querySource)
+  if (override !== undefined) return override
+
+  // Live subscriber/overage read — mirrors the official exactly (Bi() gate +
+  // Dpe().isUsingOverage); no session latch. The settings describe text is
+  // authoritative: "Unset = automatic: 1 hour on a Claude subscription
+  // within its usage limits, 5 minutes on an API key, Bedrock, Vertex or
+  // Foundry."
+  if (!isClaudeAISubscriber() || currentLimits.isUsingOverage) {
+    return { ttl: '5m', reason: 'default' }
+  }
+
+  // Latch the allowlist in bootstrap state for session stability — mirrors
+  // the official's cached GrowthBook read (`if(n===null)n=Me(...),JFr(n)`).
+  // The baked default matches the official: {allowlist:[...kzt]}.
+  let allowlist = getPromptCache1hAllowlist()
+  if (allowlist === null) {
+    const config = getFeatureValue_CACHED_MAY_BE_STALE<{
+      allowlist?: string[]
+    }>('tengu_prompt_cache_1h_config', {
+      allowlist: [...MAIN_THREAD_QUERY_SOURCES],
+    })
+    allowlist = config.allowlist ?? []
+    setPromptCache1hAllowlist(allowlist)
+  }
+
+  return querySourceMatchesPatterns(querySource, allowlist)
+    ? { ttl: '1h', reason: 'subscriber' }
+    : { ttl: '5m', reason: 'default' }
+}
+
+/** Official AR: should this request's cache_control carry ttl:"1h"? */
+export function should1hCacheTTL(querySource?: QuerySource): boolean {
+  return resolvePromptCacheTtl(querySource).ttl === '1h'
 }
 
 /**
@@ -1165,6 +1261,18 @@ async function* queryModel(
     options.querySource === 'hook_agent' ||
     options.querySource === 'verification_agent'
   const betas = getMergedBetas(options.model, { isAgenticQuery })
+
+  // Official 2.1.245 main request builder: `if(N==="1h"&&hh()&&!me.includes(G8))
+  // me.push(G8)` — whenever this request resolves a 1h prompt-cache TTL, the
+  // extended-cache-ttl beta header accompanies the cache_control writes.
+  // N here mirrors the official: only an actually-1h resolution triggers it.
+  if (
+    should1hCacheTTL(options.querySource) &&
+    shouldSendExtendedCacheTtlBeta() &&
+    !betas.includes(EXTENDED_CACHE_TTL_BETA_HEADER)
+  ) {
+    betas.push(EXTENDED_CACHE_TTL_BETA_HEADER)
+  }
 
   // Always send the advisor beta header when advisor is enabled, so
   // non-agentic queries (compact, side_question, extract_memories, etc.)

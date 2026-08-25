@@ -818,6 +818,26 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Whether /rename updates the terminal tab title (defaults to true). Set to false to keep auto-generated topic titles.',
         ),
+      // 2.1.243: user-facing prompt cache TTL controls. Recovered verbatim
+      // from the official 2.1.245 linux-x64 binary's settings schema
+      // (positioned immediately after `terminalTitleFromRename`):
+      //   promptCacheTtl: v(["5m","1h"]).optional().catch(void 0).describe(...)
+      //   subagentPromptCacheTtl: v(["5m","1h"]).optional().catch(void 0).describe(...)
+      // The describe texts below are byte-identical to the binary's.
+      promptCacheTtl: z
+        .enum(['5m', '1h'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Prompt cache TTL for the main conversation (interactive, -p and SDK turns, plus the helpers that run inline with it): "5m" or "1h". Unset = automatic: 1 hour on a Claude subscription within its usage limits, 5 minutes on an API key, Bedrock, Vertex or Foundry. 1-hour cache writes are billed at a higher rate; the cache stays warm across longer breaks. The CLAUDE_CODE_PROMPT_CACHE_TTL environment variable takes precedence.',
+        ),
+      subagentPromptCacheTtl: z
+        .enum(['5m', '1h'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Prompt cache TTL for everything outside the main conversation — subagents, workflows, background and helper requests: "5m" or "1h". Unset = automatic (5 minutes unless ENABLE_PROMPT_CACHING_1H=1). The CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL environment variable takes precedence.',
+        ),
       // 2.1.110: disable conversation auto-scroll in fullscreen mode.
       autoScrollEnabled: z
         .boolean()

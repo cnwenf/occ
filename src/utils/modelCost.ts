@@ -16,6 +16,7 @@ import {
   CLAUDE_SONNET_4_5_CONFIG,
   CLAUDE_SONNET_4_6_CONFIG,
   CLAUDE_SONNET_4_CONFIG,
+  CLAUDE_SONNET_5_CONFIG,
 } from './model/configs.js'
 import {
   firstPartyNameToCanonical,
@@ -47,6 +48,26 @@ export type ModelCosts = {
   promptCacheReadTokens: number
   webSearchRequests: number
 }
+
+// Pricing tier for Sonnet 5 (post-promo standard price): $2 input / $10 output
+// per Mtok. Recovered verbatim from the official 2.1.245 linux-x64 binary's
+// model catalog `pricing_tiers` table (byte-identical in 2.1.241 and 2.1.245):
+//   tier_2_10: input 2, output 10, cache_write_5m 2.5, cache_write_1h 4,
+//              cache_read 0.2, web_search 0.01
+// The baked catalog entry for `claude-sonnet-5` carries `pricing:"tier_2_10"`.
+// Cross-verified against https://platform.claude.com/docs/en/about-claude/pricing
+// (Sonnet 5: $2/$10, 5m cache write $2.50, 1h cache write $4, cache read $0.20).
+// 2.1.243 cancelled the introductory promo overlay (2.1.241 showed
+// "$2/$10 per Mtok · promo through <date>" with promoListPrice "$3/$15");
+// $2/$10 is now the plain standard price.
+export const COST_TIER_2_10 = {
+  inputTokens: 2,
+  outputTokens: 10,
+  promptCacheWriteTokens: 2.5,
+  promptCacheWrite1hTokens: 4,
+  promptCacheReadTokens: 0.2,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
 
 // Standard pricing tier for Sonnet models: $3 input / $15 output per Mtok
 // Binary: pricing_tiers.tier_3_15 cache_write_1h = 6
@@ -174,6 +195,12 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_TIER_3_15,
   [firstPartyNameToCanonical(CLAUDE_SONNET_4_6_CONFIG.firstParty)]:
     COST_TIER_3_15,
+  // Sonnet 5 is `tier_2_10` ($2/$10) — binary-verified: the baked model catalog
+  // entry for `claude-sonnet-5` carries `pricing:"tier_2_10"` in both 2.1.241
+  // and 2.1.245. The 2.1.243 repricing cancelled the intro promo; $2/$10 is the
+  // standard price now shown in the /model picker and used for cost tracking.
+  [firstPartyNameToCanonical(CLAUDE_SONNET_5_CONFIG.firstParty)]:
+    COST_TIER_2_10,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.firstParty)]:
     COST_TIER_15_75,

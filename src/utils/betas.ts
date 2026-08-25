@@ -231,6 +231,33 @@ export function shouldUseGlobalCacheScope(): boolean {
   )
 }
 
+/**
+ * Gate for pushing EXTENDED_CACHE_TTL_BETA_HEADER when a request carries a
+ * 1h cache_control. Port of the official 2.1.245 binary's `hh()`
+ * (2.1.241 `hB()`), recovered verbatim:
+ *
+ *   function hB(){return wZo()&&!AGe()}
+ *   function wZo(){let e=lo();return e==="firstParty"||FZ(e)||e==="foundry"}
+ *   function FZ(e){return e==="anthropicAws"||e==="anthropicGoogleCloud"}
+ *   function AGe(){return q.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS||_ma()}
+ *   function _ma(){return GZ("hipaa")}   // classifier "hipaa" taint
+ *
+ * Provider mapping: anthropicAws → 'bedrock', anthropicGoogleCloud →
+ * 'vertex'. The hipaa-taint arm is omitted — OCC has no classifier taint
+ * registry (the official checks yMt.taints, populated only by the
+ * Anthropic-internal policy classifier), so it can never fire here.
+ */
+export function shouldSendExtendedCacheTtlBeta(): boolean {
+  const provider = getAPIProvider()
+  return (
+    (provider === 'firstParty' ||
+      provider === 'bedrock' ||
+      provider === 'vertex' ||
+      provider === 'foundry') &&
+    !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)
+  )
+}
+
 export const getAllModelBetas = memoize((model: string): string[] => {
   const betaHeaders = []
   const isHaiku = getCanonicalName(model).includes('haiku')
