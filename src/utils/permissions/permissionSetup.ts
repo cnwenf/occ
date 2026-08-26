@@ -1028,9 +1028,11 @@ export async function initializeToolPermissionContext({
   // Startup warning for Write(path)/NotebookEdit(path)/Glob(path) rules (2.1.210+).
   // These tool names bypass file-permission checks — only Edit(path)/Read(path)
   // rules are matched. Warn the user to use the canonical tool name.
+  // 2.1.246 also surfaces the Bash wildcard-before-subcommand warning here;
+  // that one is allow-only, so each rule's behavior is passed through.
   for (const rule of rulesFromDisk) {
     const ruleStr = permissionRuleValueToString(rule.ruleValue)
-    const result = validatePermissionRule(ruleStr)
+    const result = validatePermissionRule(ruleStr, rule.ruleBehavior)
     if (result.valid && result.warning) {
       warnings.push(
         `Permission ${rule.ruleBehavior} rule (${formatPermissionSource(rule.source)}): ${result.warning}`,
@@ -1038,7 +1040,7 @@ export async function initializeToolPermissionContext({
     }
   }
   for (const ruleStr of parsedAllowedToolsCli) {
-    const result = validatePermissionRule(ruleStr)
+    const result = validatePermissionRule(ruleStr, 'allow')
     if (result.valid && result.warning) {
       warnings.push(
         `Permission allow rule (--allowed-tools): ${result.warning}`,
@@ -1046,7 +1048,7 @@ export async function initializeToolPermissionContext({
     }
   }
   for (const ruleStr of parsedDisallowedToolsCli) {
-    const result = validatePermissionRule(ruleStr)
+    const result = validatePermissionRule(ruleStr, 'deny')
     if (result.valid && result.warning) {
       warnings.push(
         `Permission deny rule (--disallowed-tools): ${result.warning}`,

@@ -1,5 +1,6 @@
 import { z } from 'zod/v4'
 import { mcpInfoFromString } from '../../services/mcp/mcpStringUtils.js'
+import type { PermissionBehavior } from '../../types/permissions.js'
 import { lazySchema } from '../lazySchema.js'
 import {
   permissionRuleValueFromString,
@@ -56,9 +57,69 @@ function hasUnescapedEmptyParens(str: string): boolean {
 }
 
 /**
+ * 2.1.246: "Added a startup warning for Bash allow rules with a wildcard
+ * before the subcommand (e.g. `Bash(git * main)`), since they also match
+ * options inserted before the subcommand."
+ *
+ * Ported from the official 2.1.246 rule validator (binary function `rs`):
+ * the warning fires for ALLOW rules only; deny/ask rules accept wildcards
+ * anywhere without a warning. The four helpers below mirror the binary's
+ * detector chain byte-for-byte.
+ */
+
+/** Binary `ns` — tokens that are shell operators or fd redirections. */
+const OPERATOR_TOKEN_RE = /^(?:[|&;<>]|\d+[<>])/
+
+/** Binary `os` — true if the token is an operator/redirection token. */
+function isOperatorToken(token: string): boolean {
+  return OPERATOR_TOKEN_RE.test(token)
+}
+
+/** Binary `ln` — true if the string contains any unescaped `*`. */
+function hasUnescapedStar(str: string): boolean {
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === '*' && !isEscaped(str, i)) return true
+  }
+  return false
+}
+
+/**
+ * Binary `ss` — detects a wildcard token appearing before the rest of the
+ * command in a Bash rule. Returns the command name (first token) when an
+ * unescaped wildcard token precedes a later literal (non-option) positional
+ * token; undefined otherwise. Legacy `:*` prefix rules, short rules, and
+ * rules whose first token is itself wildcarded are excluded, matching the
+ * binary. Option tokens (`-x` / `--xyz`) after the wildcard do not trigger
+ * the warning on their own — the binary only flags a wildcard that precedes
+ * an actual positional argument.
+ */
+function wildcardBeforeSubcommand(content: string): string | undefined {
+  if (content.endsWith(':*')) return
+  const tokens = content.trim().split(/\s+/).filter(Boolean)
+  const first = tokens[0]
+  if (tokens.length < 3 || first === undefined || hasUnescapedStar(first)) {
+    return
+  }
+  let sawWildcard = false
+  for (const token of tokens.slice(1)) {
+    if (isOperatorToken(token)) return
+    if (hasUnescapedStar(token)) {
+      sawWildcard = true
+      continue
+    }
+    if (token.startsWith('-')) continue
+    return sawWildcard ? first : undefined
+  }
+  return
+}
+
+/**
  * Validates permission rule format and content
  */
-export function validatePermissionRule(rule: string): {
+export function validatePermissionRule(
+  rule: string,
+  behavior?: PermissionBehavior,
+): {
   valid: boolean
   error?: string
   suggestion?: string
@@ -181,6 +242,27 @@ export function validatePermissionRule(rule: string): {
         error: 'Prefix cannot be empty before :*',
         suggestion: 'Specify a command prefix before :*',
         examples: ['Bash(npm:*)', 'Bash(git:*)'],
+      }
+    }
+
+    // 2.1.246: startup warning for allow rules with a wildcard before the
+    // subcommand (e.g. Bash(git * main)) — such a rule also approves any
+    // options inserted at the wildcard position without a prompt. Allow
+    // rules only (binary gate t === "allow"); deny/ask rules accept
+    // wildcards anywhere without a warning. Warning text is byte-matched to
+    // the official 2.1.246 validator, including the git-specific addenda.
+    if (behavior === 'allow') {
+      const flaggedCommand = wildcardBeforeSubcommand(content)
+      if (flaggedCommand !== undefined) {
+        const isGit = flaggedCommand === 'git'
+        const gitNote = isGit
+          ? ' For git, options such as -c and --exec-path can run arbitrary commands.'
+          : ''
+        const gitExample = isGit ? ' (for example Bash(git status *))' : ''
+        return {
+          valid: true,
+          warning: `${permissionRuleValueToString(parsed)} has a wildcard before the rest of the command, so it also matches any options inserted at that position and approves them without a prompt.${gitNote} Replace that * with the exact value you mean, or only use * after the subcommand${gitExample}.`,
+        }
       }
     }
 

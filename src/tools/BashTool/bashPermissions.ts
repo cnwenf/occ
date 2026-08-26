@@ -2389,6 +2389,55 @@ export function hasQuotedBracketCloserInConditional(command: string): boolean {
   return false
 }
 
+/** 2.1.246 (live-path compensation guard): "Fixed Bash permission checks to
+ * always require approval for malformed commands with a dangling `&&` or
+ * `||` operator." In the official build the fix lives on the AST path
+ * (tree-sitter is live there; a dangling boolean operator is a parse error →
+ * always ask). OCC's tree-sitter path is DORMANT (TREE_SITTER_BASH is not in
+ * the feature allowlist), so the LIVE legacy path must fail closed the same
+ * way: the legacy splitter (splitCommand_DEPRECATED) silently DROPS a
+ * trailing `&&`/`||` token — `ls &&` splits to ['ls'] — so a `Bash(ls:*)` /
+ * `Bash(ls *)` / even exact `Bash(ls)` rule auto-approves a command the
+ * shell cannot execute as written. Detect it with a quote-aware scan (same
+ * lexing rules as hasQuotedBracketCloserInConditional): the command has a
+ * dangling operator iff the LAST unquoted, unescaped `&&`/`||` occurrence is
+ * followed only by whitespace. Quoted/escaped operators are inert, so
+ * `echo "a &&"` / `ls \&\&` are untouched. Over-matching only costs an
+ * extra prompt, never an auto-allow. */
+export function hasDanglingBooleanOperator(command: string): boolean {
+  if (!command.includes('&&') && !command.includes('||')) return false
+  let inSingle = false
+  let inDouble = false
+  let lastBoolOpEnd = -1
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i]
+    // Backslash escapes any following character outside single quotes
+    // (inside DOUBLE quotes only $ ` " \ and newline are escapable, but
+    // operators are inert inside quotes either way, so skipping is safe).
+    if (ch === '\\' && !inSingle) {
+      i++ // consume the escaped char
+      continue
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle
+      continue
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble
+      continue
+    }
+    if (inSingle || inDouble) continue
+    if (
+      (ch === '&' && command[i + 1] === '&') ||
+      (ch === '|' && command[i + 1] === '|')
+    ) {
+      lastBoolOpEnd = i + 2
+      i++ // consume the second operator char
+    }
+  }
+  return lastBoolOpEnd !== -1 && command.slice(lastBoolOpEnd).trim() === ''
+}
+
 export async function bashToolHasPermission(
   input: z.infer<typeof BashTool.inputSchema>,
   context: ToolUseContext,
@@ -2556,6 +2605,26 @@ export async function bashToolHasPermission(
         behavior: 'ask',
         message:
           'Potential `]]` closer hidden in a quoted [[ ]] operand requires confirmation.',
+      }
+    }
+  }
+
+  // 2.1.246: malformed commands ending in a dangling `&&` / `||` always
+  // require approval. The legacy splitter drops the trailing operator, so
+  // without this guard a matching allow rule auto-approves `ls &&` (shell
+  // can't execute it as written; the official AST path asks on the parse
+  // error). Fail closed on the live path the same way. bypassPermissions
+  // respects the explicit opt-out (same as M3/M4/M5).
+  {
+    const mode = appState.toolPermissionContext.mode
+    if (
+      mode !== 'bypassPermissions' &&
+      hasDanglingBooleanOperator(input.command)
+    ) {
+      return {
+        behavior: 'ask',
+        message:
+          'Malformed command with a dangling && or || operator requires confirmation.',
       }
     }
   }
