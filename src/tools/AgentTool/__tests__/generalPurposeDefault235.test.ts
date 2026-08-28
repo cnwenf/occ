@@ -3,6 +3,12 @@ import { GENERAL_PURPOSE_AGENT } from '../built-in/generalPurposeAgent.js'
 import type { AgentDefinition } from '../loadAgentsDir.js'
 import { getPrompt } from '../prompt.js'
 
+// Hermetic for credential-less environments (CI runners): under CI=true /
+// NODE_ENV=test the auth guard (src/utils/auth.ts) demands ANTHROPIC_API_KEY
+// or CLAUDE_CODE_OAUTH_TOKEN before credential resolution. This suite is
+// offline prompt-builder logic; seed a dummy key when none is present.
+process.env.ANTHROPIC_API_KEY ??= 'occ-ci-test-key'
+
 // 2.1.235 item 6: the Agent tool must not advertise a general-purpose
 // default in sessions where that agent is unavailable. Official fix
 // (byte-verified): the prompt builder `fhf` takes `generalPurposeAvailable`

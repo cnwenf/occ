@@ -8,7 +8,13 @@ import { afterEach, describe, expect, mock, test } from 'bun:test'
 
 let mockAutoCompactEnabled: boolean | undefined = true
 
+// Spread the real module so transitive importers keep their exports
+// (saveGlobalConfig, etc.) — a bare mock object replaces the whole module
+// namespace and breaks linking with "Export named ... not found".
+const REAL_CONFIG = await import('../../../utils/config.js')
+
 mock.module('../../../utils/config.js', () => ({
+  ...REAL_CONFIG,
   getGlobalConfig: () => ({ autoCompactEnabled: mockAutoCompactEnabled }),
 }))
 

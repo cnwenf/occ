@@ -31,6 +31,34 @@ export const MAX_TASK_OUTPUT_BYTES = 5 * 1024 * 1024 * 1024
 export const MAX_TASK_OUTPUT_BYTES_DISPLAY = '5GB'
 
 /**
+ * Threshold of queued-but-unwritten characters above which a persistently
+ * failing drain drops the whole queue and replaces it with the omission
+ * marker. Without this, a hook or background task that prints megabytes of
+ * output while the disk cannot be written grows the in-memory write queue
+ * without bound (2.1.247 fix; official binary constant hlo = 16777216).
+ */
+const MAX_UNWRITTEN_CHARS_BEFORE_DROP = 16 * 1024 * 1024
+
+/** Written in place of output that could not be persisted to disk. */
+const OUTPUT_OMITTED_MARKER =
+  '\n[output omitted: it could not be written to disk]\n'
+
+/** Test-only handle to the marker (kept module-private in the official binary). */
+export const OUTPUT_OMITTED_MARKER_FOR_TEST = OUTPUT_OMITTED_MARKER
+
+/**
+ * Errno codes that mean disk/fd exhaustion. Drain and read failures with
+ * these codes get a terse error-level log; anything else is reported as an
+ * unexpected error. Verbatim from the 2.1.247 binary (`nn` / `azd` set).
+ */
+const DISK_EXHAUSTION_ERRNOS = new Set([
+  'ENOSPC',
+  'EDQUOT',
+  'ENFILE',
+  'EMFILE',
+])
+
+/**
  * Get the task output directory for this session.
  * Uses project temp directory so reads are auto-allowed by checkReadableInternalPath.
  *
@@ -100,6 +128,16 @@ export class DiskTaskOutput {
   #queue: string[] = []
   #bytesWritten = 0
   #capped = false
+  /** Characters currently queued but not yet written to disk. */
+  #unwrittenChars = 0
+  /** Incremented on cancel(); lets the drain detect a cancel racing a write. */
+  #cancelCount = 0
+  /** True while the drain loop is failing to write (see #drain). */
+  #failing = false
+  /** Dedup keys (`<kind>:<errno>`) for final-failure logs within one failure episode. */
+  #seenFailureKeys = new Set<string>()
+  /** True once output has been lost (dropped or unwritable) — the file is incomplete. */
+  #lostOutput = false
   #flushPromise: Promise<void> | null = null
   #flushResolve: (() => void) | null = null
 
@@ -116,11 +154,12 @@ export class DiskTaskOutput {
     this.#bytesWritten += content.length
     if (this.#bytesWritten > MAX_TASK_OUTPUT_BYTES) {
       this.#capped = true
-      this.#queue.push(
-        `\n[output truncated: exceeded ${MAX_TASK_OUTPUT_BYTES_DISPLAY} disk cap]\n`,
-      )
+      const marker = `\n[output truncated: exceeded ${MAX_TASK_OUTPUT_BYTES_DISPLAY} disk cap]\n`
+      this.#queue.push(marker)
+      this.#unwrittenChars += marker.length
     } else {
       this.#queue.push(content)
+      this.#unwrittenChars += content.length
     }
     if (!this.#flushPromise) {
       this.#flushPromise = new Promise<void>(resolve => {
@@ -134,8 +173,22 @@ export class DiskTaskOutput {
     return this.#flushPromise ?? Promise.resolve()
   }
 
+  get failing(): boolean {
+    return this.#failing
+  }
+
+  get lostOutput(): boolean {
+    return this.#lostOutput
+  }
+
+  get unwrittenChars(): number {
+    return this.#unwrittenChars
+  }
+
   cancel(): void {
+    this.#cancelCount += 1
     this.#queue.length = 0
+    this.#unwrittenChars = 0
   }
 
   async #drainAllChunks(): Promise<void> {
@@ -154,7 +207,20 @@ export class DiskTaskOutput {
           )
         }
         while (true) {
-          await this.#writeAllChunks()
+          // If cancel() races a write, cancel() already dropped the queued
+          // data — don't resurrect an omission marker for it. Only mark
+          // lostOutput + unshift the marker when no cancel happened mid-write.
+          const cancelCount = this.#cancelCount
+          try {
+            await this.#writeAllChunks()
+          } catch (e) {
+            if (this.#cancelCount === cancelCount) {
+              this.#lostOutput = true
+              this.#queue.unshift(OUTPUT_OMITTED_MARKER)
+              this.#unwrittenChars += OUTPUT_OMITTED_MARKER.length
+            }
+            throw e
+          }
           if (this.#queue.length === 0) {
             break
           }
@@ -189,6 +255,9 @@ export class DiskTaskOutput {
   #queueToBuffers(): Buffer {
     // Use .splice to in-place mutate the array, informing the GC it can free it.
     const queue = this.#queue.splice(0, this.#queue.length)
+    // The queue is now empty — the spliced content is in flight to disk;
+    // #drain's write-level catch accounts for it again if the write fails.
+    this.#unwrittenChars = 0
 
     let totalLength = 0
     for (const str of queue) {
@@ -207,18 +276,26 @@ export class DiskTaskOutput {
   async #drain(): Promise<void> {
     try {
       await this.#drainAllChunks()
+      this.#clearFailureState()
     } catch (e) {
       // Transient fs errors (EMFILE on busy CI, EPERM on Windows pending-
       // delete) previously rode up through `void this.#drain()` as an
       // unhandled rejection while the flush promise resolved anyway — callers
       // saw an empty file with no error. Retry once for the transient case
-      // (queue is intact if open() failed), then log and give up.
-      logError(e)
+      // (queue is intact if open() failed); on a second failure classify the
+      // errno, log once per kind+errno, and — if the unwritten queue has
+      // grown past MAX_UNWRITTEN_CHARS_BEFORE_DROP — discard it in favor of
+      // the omission marker so memory cannot grow unbounded (2.1.247 fix).
+      if (!this.#failing) {
+        this.#failing = true
+        logError(new Error(`Task output drain failed (will retry once): ${e}`))
+      }
       if (this.#queue.length > 0) {
         try {
           await this.#drainAllChunks()
+          this.#clearFailureState()
         } catch (e2) {
-          logError(e2)
+          this.#handleFinalDrainFailure(e2)
         }
       }
     } finally {
@@ -226,6 +303,40 @@ export class DiskTaskOutput {
       this.#flushPromise = null
       this.#flushResolve = null
       resolve()
+    }
+  }
+
+  /** A successful drain ends the failure episode: reset flag + log dedup set. */
+  #clearFailureState(): void {
+    this.#failing = false
+    this.#seenFailureKeys.clear()
+  }
+
+  #handleFinalDrainFailure(e: unknown): void {
+    const code = getErrnoCode(e)
+    const kind =
+      code !== undefined && DISK_EXHAUSTION_ERRNOS.has(code)
+        ? 'exhaustion'
+        : 'unexpected'
+    const failureKey = `${kind}:${code ?? 'no errno'}`
+    if (!this.#seenFailureKeys.has(failureKey)) {
+      this.#seenFailureKeys.add(failureKey)
+      if (kind === 'exhaustion') {
+        logError(new Error(`Task output drain retry failed (${code}): ${e}`))
+      } else {
+        logError(e)
+      }
+    }
+    if (this.#unwrittenChars > MAX_UNWRITTEN_CHARS_BEFORE_DROP) {
+      logError(
+        new Error(
+          `Task output still cannot be written (${code ?? 'no errno'}); dropped ${this.#unwrittenChars} chars of unwritten output`,
+        ),
+      )
+      this.#lostOutput = true
+      this.#queue.length = 0
+      this.#queue.push(OUTPUT_OMITTED_MARKER)
+      this.#unwrittenChars = OUTPUT_OMITTED_MARKER.length
     }
   }
 }
@@ -262,6 +373,20 @@ function getOrCreateOutput(taskId: string): DiskTaskOutput {
 }
 
 /**
+ * Log a read/cleanup-side failure the 2.1.247 way: disk-exhaustion errno codes
+ * get a terse error-level message (expected condition, e.g. a full disk);
+ * anything else is reported as an unexpected error.
+ */
+function logTaskOutputFailure(context: string, e: unknown): void {
+  const code = getErrnoCode(e)
+  if (code && DISK_EXHAUSTION_ERRNOS.has(code)) {
+    logError(new Error(`${context} failed (${code}): ${e}`))
+  } else {
+    logError(e)
+  }
+}
+
+/**
  * Append output to a task's disk file asynchronously.
  * Creates the file if it doesn't exist.
  */
@@ -291,6 +416,13 @@ export function evictTaskOutput(taskId: string): Promise<void> {
       const output = outputs.get(taskId)
       if (output) {
         await output.flush()
+        if (output.failing && output.unwrittenChars > 0) {
+          logError(
+            new Error(
+              `Task output writer evicted while failing; discarded ${output.unwrittenChars} chars of unwritten output`,
+            ),
+          )
+        }
         outputs.delete(taskId)
       }
     })(),
@@ -324,7 +456,7 @@ export async function getTaskOutputDelta(
     if (code === 'ENOENT') {
       return { content: '', newOffset: fromOffset }
     }
-    logError(e)
+    logTaskOutputFailure('getTaskOutputDelta', e)
     return { content: '', newOffset: fromOffset }
   }
 }
@@ -351,7 +483,7 @@ export async function getTaskOutput(
     if (code === 'ENOENT') {
       return ''
     }
-    logError(e)
+    logTaskOutputFailure('getTaskOutput', e)
     return ''
   }
 }
@@ -367,7 +499,7 @@ export async function getTaskOutputSize(taskId: string): Promise<number> {
     if (code === 'ENOENT') {
       return 0
     }
-    logError(e)
+    logTaskOutputFailure('getTaskOutputSize', e)
     return 0
   }
 }
@@ -389,7 +521,7 @@ export async function cleanupTaskOutput(taskId: string): Promise<void> {
     if (code === 'ENOENT') {
       return
     }
-    logError(e)
+    logTaskOutputFailure('cleanupTaskOutput', e)
   }
 }
 

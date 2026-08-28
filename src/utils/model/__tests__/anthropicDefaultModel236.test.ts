@@ -1,5 +1,11 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
+// Hermetic for credential-less environments (CI runners): under CI=true /
+// NODE_ENV=test the auth guard (src/utils/auth.ts) demands ANTHROPIC_API_KEY
+// or CLAUDE_CODE_OAUTH_TOKEN before credential resolution. This suite is
+// offline model-resolution logic; seed a dummy key when none is present.
+process.env.ANTHROPIC_API_KEY ??= 'occ-ci-test-key'
+
 /**
  * 2.1.236 changelog #1: ANTHROPIC_DEFAULT_MODEL sets the model at session
  * start; /model selection still overrides it and persists across restarts
