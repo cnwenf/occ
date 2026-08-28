@@ -373,9 +373,11 @@ export function getPromptCachingEnabled(model: string): boolean {
 export function getCacheControl({
   scope,
   querySource,
+  agentCacheTtlOverride,
 }: {
   scope?: CacheScope
   querySource?: QuerySource
+  agentCacheTtlOverride?: '5m' | '1h'
 } = {}): {
   type: 'ephemeral'
   ttl?: '1h'
@@ -383,7 +385,7 @@ export function getCacheControl({
 } {
   return {
     type: 'ephemeral',
-    ...(should1hCacheTTL(querySource) && { ttl: '1h' }),
+    ...(should1hCacheTTL(querySource, agentCacheTtlOverride) && { ttl: '1h' }),
     ...(scope === 'global' && { scope }),
   }
 }
@@ -440,6 +442,7 @@ type ResolvedPromptCacheTtl = {
     | 'force_5m_env'
     | 'env'
     | 'setting'
+    | 'agent_frontmatter'
     | 'enable_1h_env'
     | 'subscriber'
     | 'default'
@@ -476,9 +479,16 @@ function parsePromptCacheTtlEnv(
   return value === '5m' || value === '1h' ? value : undefined
 }
 
-/** Official uFr: explicit overrides (env kill-switch, per-thread env/settings, 1h opt-ins). */
+/**
+ * Official uFr (2.1.248 `qTt`): explicit overrides (env kill-switch,
+ * per-thread env/settings, agent frontmatter, 1h opt-ins). The 2.1.248
+ * agent-frontmatter layer sits between the settings key and the 1h opt-in
+ * env vars.
+ */
 export function resolvePromptCacheTtlOverride(
   querySource?: QuerySource,
+  agentCacheTtlOverride?: PromptCacheTtl,
+  isUsingOverage = false,
 ): ResolvedPromptCacheTtl | undefined {
   if (isEnvTruthy(process.env.FORCE_PROMPT_CACHING_5M)) {
     return { ttl: '5m', reason: 'force_5m_env' }
@@ -495,6 +505,16 @@ export function resolvePromptCacheTtlOverride(
     ? settings.promptCacheTtl
     : settings.subagentPromptCacheTtl
   if (settingTtl !== undefined) return { ttl: settingTtl, reason: 'setting' }
+  // 2.1.248 (official qTt): agent frontmatter `experimental.cacheTtl`
+  // ("5m" | "1h", parsed by extractAgentCacheTtl). A requested "1h" is
+  // ignored while a Claude subscription is in overage — it falls through
+  // to the remaining gates instead of resolving.
+  if (
+    agentCacheTtlOverride !== undefined &&
+    !(agentCacheTtlOverride === '1h' && isUsingOverage)
+  ) {
+    return { ttl: agentCacheTtlOverride, reason: 'agent_frontmatter' }
+  }
   // 2.1.108: ENABLE_PROMPT_CACHING_1H opts into 1h TTL on API key, Bedrock,
   // Vertex, and Foundry. ENABLE_PROMPT_CACHING_1H_BEDROCK is deprecated but
   // still honored (Bedrock only).
@@ -509,14 +529,34 @@ export function resolvePromptCacheTtlOverride(
 }
 
 /**
- * Official HUr: full resolution — explicit overrides first, then the
- * subscriber gate (claude.ai subscription within usage limits → 1h for
- * allowlisted sources, everything else → 5m).
+ * Official HUr (2.1.248 `Tvt`): full resolution — explicit overrides first,
+ * then the subscriber gate (claude.ai subscription within usage limits → 1h
+ * for allowlisted sources, everything else → 5m).
+ *
+ * `agentCacheTtlOverride` is the agent frontmatter `experimental.cacheTtl`
+ * (Gap-108b); `ignoreOverage` mirrors the official's third `Tvt` param
+ * (no OCC call site sets it today — the overage read stays live).
  */
 export function resolvePromptCacheTtl(
   querySource?: QuerySource,
+  options?: {
+    agentCacheTtlOverride?: PromptCacheTtl
+    ignoreOverage?: boolean
+  },
 ): ResolvedPromptCacheTtl {
-  const override = resolvePromptCacheTtlOverride(querySource)
+  // Official Tvt shape: o = subscriber gate, u = o && !ignoreOverage &&
+  // isUsingOverage, then qTt(querySource, agentTtl, u). The overage read
+  // only happens for subscribers — identical to the short-circuit below.
+  const isSubscriber = isClaudeAISubscriber()
+  const isOverage =
+    isSubscriber &&
+    options?.ignoreOverage !== true &&
+    currentLimits.isUsingOverage === true
+  const override = resolvePromptCacheTtlOverride(
+    querySource,
+    options?.agentCacheTtlOverride,
+    isOverage,
+  )
   if (override !== undefined) return override
 
   // Live subscriber/overage read — mirrors the official exactly (Bi() gate +
@@ -524,7 +564,7 @@ export function resolvePromptCacheTtl(
   // authoritative: "Unset = automatic: 1 hour on a Claude subscription
   // within its usage limits, 5 minutes on an API key, Bedrock, Vertex or
   // Foundry."
-  if (!isClaudeAISubscriber() || currentLimits.isUsingOverage) {
+  if (!isSubscriber || isOverage) {
     return { ttl: '5m', reason: 'default' }
   }
 
@@ -548,8 +588,13 @@ export function resolvePromptCacheTtl(
 }
 
 /** Official AR: should this request's cache_control carry ttl:"1h"? */
-export function should1hCacheTTL(querySource?: QuerySource): boolean {
-  return resolvePromptCacheTtl(querySource).ttl === '1h'
+export function should1hCacheTTL(
+  querySource?: QuerySource,
+  agentCacheTtlOverride?: PromptCacheTtl,
+): boolean {
+  return (
+    resolvePromptCacheTtl(querySource, { agentCacheTtlOverride }).ttl === '1h'
+  )
 }
 
 /**
@@ -709,6 +754,7 @@ export function userMessageToMessageParam(
   addCache = false,
   enablePromptCaching: boolean,
   querySource?: QuerySource,
+  agentCacheTtlOverride?: '5m' | '1h',
 ): MessageParam {
   if (addCache) {
     if (typeof message.message.content === 'string') {
@@ -719,7 +765,10 @@ export function userMessageToMessageParam(
             type: 'text',
             text: message.message.content,
             ...(enablePromptCaching && {
-              cache_control: getCacheControl({ querySource }),
+              cache_control: getCacheControl({
+                querySource,
+                agentCacheTtlOverride,
+              }),
             }),
           },
         ],
@@ -731,7 +780,12 @@ export function userMessageToMessageParam(
           ..._,
           ...(i === message.message.content.length - 1
             ? enablePromptCaching
-              ? { cache_control: getCacheControl({ querySource }) }
+              ? {
+                  cache_control: getCacheControl({
+                    querySource,
+                    agentCacheTtlOverride,
+                  }),
+                }
               : {}
             : {}),
         })),
@@ -754,6 +808,7 @@ export function assistantMessageToMessageParam(
   addCache = false,
   enablePromptCaching: boolean,
   querySource?: QuerySource,
+  agentCacheTtlOverride?: '5m' | '1h',
 ): MessageParam {
   if (addCache) {
     if (typeof message.message.content === 'string') {
@@ -764,7 +819,10 @@ export function assistantMessageToMessageParam(
             type: 'text',
             text: message.message.content,
             ...(enablePromptCaching && {
-              cache_control: getCacheControl({ querySource }),
+              cache_control: getCacheControl({
+                querySource,
+                agentCacheTtlOverride,
+              }),
             }),
           },
         ],
@@ -779,7 +837,12 @@ export function assistantMessageToMessageParam(
           _.type !== 'redacted_thinking' &&
           (feature('CONNECTOR_TEXT') ? !isConnectorTextBlock(_) : true)
             ? enablePromptCaching
-              ? { cache_control: getCacheControl({ querySource }) }
+              ? {
+                  cache_control: getCacheControl({
+                    querySource,
+                    agentCacheTtlOverride,
+                  }),
+                }
               : {}
             : {}),
         })),
@@ -808,6 +871,11 @@ export type Options = {
   fetchOverride?: ClientOptions['fetch']
   enablePromptCaching?: boolean
   skipCacheWrite?: boolean
+  // 2.1.248 (Gap-108b): agent frontmatter `experimental.cacheTtl` — a
+  // per-agent prompt cache TTL override ("5m" | "1h") that enters the
+  // resolver ladder between the settings key and the 1h opt-in env vars.
+  // Only set for subagent threads (runAgent passes agentDefinition.cacheTtl).
+  agentCacheTtlOverride?: '5m' | '1h'
   temperatureOverride?: number
   effortValue?: EffortValue
   mcpTools: Tools
@@ -1267,7 +1335,7 @@ async function* queryModel(
   // extended-cache-ttl beta header accompanies the cache_control writes.
   // N here mirrors the official: only an actually-1h resolution triggers it.
   if (
-    should1hCacheTTL(options.querySource) &&
+    should1hCacheTTL(options.querySource, options.agentCacheTtlOverride) &&
     shouldSendExtendedCacheTtlBeta() &&
     !betas.includes(EXTENDED_CACHE_TTL_BETA_HEADER)
   ) {
@@ -1580,6 +1648,7 @@ async function* queryModel(
   const system = buildSystemPromptBlocks(systemPrompt, enablePromptCaching, {
     skipGlobalCacheForSystemPrompt: needsToolBasedCacheMarker,
     querySource: options.querySource,
+    agentCacheTtlOverride: options.agentCacheTtlOverride,
   })
   const useBetas = betas.length > 0
 
@@ -1910,6 +1979,7 @@ async function* queryModel(
         consumedCacheEdits as any,
         consumedPinnedEdits as any,
         options.skipCacheWrite,
+        options.agentCacheTtlOverride,
       ),
       system,
       tools: allTools,
@@ -3379,6 +3449,7 @@ export function addCacheBreakpoints(
   newCacheEdits?: CachedMCEditsBlock | null,
   pinnedEdits?: CachedMCPinnedEdits[],
   skipCacheWrite = false,
+  agentCacheTtlOverride?: '5m' | '1h',
 ): MessageParam[] {
   logEvent('tengu_api_cache_breakpoints', {
     totalMessageCount: messages.length,
@@ -3406,6 +3477,7 @@ export function addCacheBreakpoints(
         addCache,
         enablePromptCaching,
         querySource,
+        agentCacheTtlOverride,
       )
     }
     return assistantMessageToMessageParam(
@@ -3413,6 +3485,7 @@ export function addCacheBreakpoints(
       addCache,
       enablePromptCaching,
       querySource,
+      agentCacheTtlOverride,
     )
   })
 
@@ -3527,6 +3600,7 @@ export function buildSystemPromptBlocks(
   options?: {
     skipGlobalCacheForSystemPrompt?: boolean
     querySource?: QuerySource
+    agentCacheTtlOverride?: '5m' | '1h'
   },
 ): TextBlockParam[] {
   // IMPORTANT: Do not add any more blocks for caching or you will get a 400
@@ -3541,6 +3615,7 @@ export function buildSystemPromptBlocks(
           cache_control: getCacheControl({
             scope: block.cacheScope,
             querySource: options?.querySource,
+            agentCacheTtlOverride: options?.agentCacheTtlOverride,
           }),
         }),
     }

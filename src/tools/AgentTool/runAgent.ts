@@ -852,6 +852,11 @@ export async function* runAgent({
       systemContext: resolvedSystemContext,
       toolUseContext: agentToolUseContext,
       forkContextMessages: initialMessages,
+      // 2.1.248 (Gap-108b): the agent's frontmatter cache TTL is part of the
+      // cache key (cache_control writes), so forks must carry it too.
+      ...(agentDefinition.cacheTtl !== undefined
+        ? { agentCacheTtlOverride: agentDefinition.cacheTtl }
+        : {}),
     })
   }
 
@@ -902,6 +907,9 @@ export async function* runAgent({
       toolUseContext: agentToolUseContext,
       querySource,
       maxTurns: maxTurns ?? agentDefinition.maxTurns,
+      // 2.1.248 (Gap-108b): per-agent prompt cache TTL from frontmatter
+      // `experimental.cacheTtl`.
+      agentCacheTtlOverride: agentDefinition.cacheTtl,
     })) {
       onQueryProgress?.()
       // Forward subagent API request starts to parent's metrics display

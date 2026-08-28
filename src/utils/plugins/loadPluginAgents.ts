@@ -6,7 +6,10 @@ import {
   type AgentMemoryScope,
   loadAgentMemoryPrompt,
 } from '../../tools/AgentTool/agentMemory.js'
-import type { AgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
+import {
+  type AgentDefinition,
+  extractAgentCacheTtl,
+} from '../../tools/AgentTool/loadAgentsDir.js'
 import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
@@ -140,6 +143,12 @@ async function loadAgentFromFile(
     const isolation =
       isolationRaw === 'worktree' ? ('worktree' as const) : undefined
 
+    // Parse per-agent prompt cache TTL (official 2.1.248 `uBt`; frontmatter
+    // `experimental.cacheTtl`, "5m" or "1h" only). Unlike permissionMode/
+    // hooks/mcpServers below, this is a benign cache setting, so the official
+    // plugin builder honors it.
+    const cacheTtl = extractAgentCacheTtl(frontmatter)
+
     // Parse effort (string level or integer)
     const effortRaw = frontmatter.effort
     const effort =
@@ -219,6 +228,7 @@ async function loadAgentFromFile(
       ...(isolation ? { isolation } : {}),
       ...(effort !== undefined ? { effort } : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(cacheTtl !== undefined ? { cacheTtl } : {}),
     } as AgentDefinition
   } catch (error) {
     logForDebugging(`Failed to load agent from ${filePath}: ${error}`, {

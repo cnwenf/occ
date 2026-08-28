@@ -131,6 +131,11 @@ export type BaseAgentDefinition = {
   initialPrompt?: string // Prepended to the first user turn (slash commands work)
   memory?: AgentMemoryScope // Persistent memory scope
   isolation?: 'worktree' | 'remote' // Run in an isolated git worktree, or remotely in CCR (ant-only)
+  /** Prompt cache TTL for this agent's requests ("5m" or "1h") when no
+   * `subagentPromptCacheTtl` setting or env var is set. "1h" is ignored
+   * while a Claude subscription is in overage. Parsed from frontmatter
+   * `experimental.cacheTtl` (official 2.1.248 `uBt`). */
+  cacheTtl?: '5m' | '1h'
   pendingSnapshotUpdate?: { snapshotTimestamp: string }
   /** Omit CLAUDE.md hierarchy from the agent's userContext. Read-only agents
    * (Explore, Plan) don't need commit/PR/lint guidelines — the main agent has
@@ -678,6 +683,28 @@ export function parseAgentsFromJson(
 }
 
 /**
+ * Extracts the per-agent prompt cache TTL from markdown frontmatter —
+ * ported verbatim from the official 2.1.248 binary (`uBt`). Only the
+ * `experimental.cacheTtl` key is honored (matched case-insensitively,
+ * like all agent frontmatter keys); anything but the exact literals
+ * "5m" / "1h" is silently ignored. JSON-defined agents (agents.json /
+ * managed settings) deliberately do NOT get this field — the official
+ * only parses it for markdown agents.
+ */
+export function extractAgentCacheTtl(
+  frontmatter: Record<string, unknown>,
+): '5m' | '1h' | undefined {
+  const experimental = frontmatter.experimental
+  if (typeof experimental !== 'object' || experimental === null) {
+    return undefined
+  }
+  const raw = Object.entries(experimental as Record<string, unknown>).find(
+    ([key]) => key.toLowerCase() === 'cachettl',
+  )?.[1]
+  return raw === '5m' || raw === '1h' ? raw : undefined
+}
+
+/**
  * Parses agent definition from markdown file data
  */
 export function parseAgentFromMarkdown(
@@ -772,6 +799,10 @@ export function parseAgentFromMarkdown(
         )
       }
     }
+
+    // Parse per-agent prompt cache TTL (official 2.1.248 `uBt`; frontmatter
+    // `experimental.cacheTtl`, "5m" or "1h" only).
+    const cacheTtl = extractAgentCacheTtl(frontmatter)
 
     // Parse effort from frontmatter (supports string levels and integers)
     const effortRaw = frontmatter['effort']
@@ -897,6 +928,7 @@ export function parseAgentFromMarkdown(
       ...(background ? { background } : {}),
       ...(memory ? { memory } : {}),
       ...(isolation ? { isolation } : {}),
+      ...(cacheTtl !== undefined ? { cacheTtl } : {}),
     }
     return agentDef
   } catch (error) {

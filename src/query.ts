@@ -219,6 +219,11 @@ export type QueryParams = {
   maxOutputTokensOverride?: number
   maxTurns?: number
   skipCacheWrite?: boolean
+  // 2.1.248 (Gap-108b): agent frontmatter `experimental.cacheTtl` — the
+  // per-agent prompt cache TTL override. Set by runAgent from
+  // agentDefinition.cacheTtl and forwarded into the API options so the
+  // resolver ladder (claude.ts) can honor it for this thread's requests.
+  agentCacheTtlOverride?: '5m' | '1h'
   // API task_budget (output_config.task_budget, beta task-budgets-2026-03-13).
   // Distinct from the tokenBudget +500k auto-continue feature. `total` is the
   // budget for the whole agentic turn; `remaining` is computed per iteration
@@ -290,6 +295,7 @@ async function* queryLoop(
     querySource,
     maxTurns,
     skipCacheWrite,
+    agentCacheTtlOverride,
   } = params
   const deps = params.deps ?? productionDeps()
 
@@ -767,6 +773,7 @@ async function* queryLoop(
               effortValue: appState.effortValue,
               advisorModel: appState.advisorModel,
               skipCacheWrite,
+              agentCacheTtlOverride,
               agentId: toolUseContext.agentId,
               addNotification: toolUseContext.addNotification,
               ...(params.taskBudget && {
