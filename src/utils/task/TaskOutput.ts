@@ -288,7 +288,12 @@ export class TaskOutput {
       const recent = this.#recentLines.getRecent(5)
       const tail = safeJoinLines(recent, '\n')
       const sizeKB = Math.round(this.#totalBytes / 1024)
-      const notice = `\nOutput truncated (${sizeKB}KB total). Full output saved to: ${this.path}`
+      // 2.1.247: when the disk writer is failing or already lost output, the
+      // file is missing/incomplete — say so instead of pointing at it as saved.
+      const notice =
+        this.#disk.failing || this.#disk.lostOutput
+          ? `\nOutput truncated (${sizeKB}KB total). The full output could not all be saved to ${this.path}; that file may be missing or incomplete.`
+          : `\nOutput truncated (${sizeKB}KB total). Full output saved to: ${this.path}`
       return tail ? tail + notice : notice.trimStart()
     }
     return this.#stdoutBuffer
