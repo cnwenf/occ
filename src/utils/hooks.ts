@@ -158,7 +158,6 @@ import { createAttachmentMessage } from './attachments.js'
 import { all } from './generators.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
 import { execPromptHook } from './hooks/execPromptHook.js'
-import { exit2BlockReason } from './hooks/hookExit2Block.js'
 import type { Message, AssistantMessage } from '../types/message.js'
 import { execAgentHook } from './hooks/execAgentHook.js'
 import { execHttpHook } from './hooks/execHttpHook.js'
@@ -630,8 +629,230 @@ export type AggregatedHookResult = {
 }
 
 /**
+ * Prefix for hook JSON schema-validation errors.
+ * Ported verbatim from the official 2.1.248 binary (`Mve`).
+ */
+const HOOK_JSON_VALIDATION_ERROR_PREFIX = 'Hook JSON output validation failed — '
+
+/**
+ * Hook-JSON keys whose `invalid_value` zod issues are union-discriminator
+ * noise when picking the most relevant issue to report.
+ * Ported verbatim from the official 2.1.248 binary (`v$n`).
+ */
+const HOOK_JSON_DISCRIMINATOR_KEYS = new Set(['async', 'hookEventName', 'behavior'])
+
+/**
+ * Hook events where a hook script exiting 2 with empty stdout and a
+ * "no such file"/"can't open" stderr almost always means the script is
+ * missing (deleted plugin, stale settings) rather than a deliberate block.
+ * Ported from the official 2.1.248 binary (`i$t` event list).
+ */
+const MISSING_SCRIPT_HOOK_EVENTS: ReadonlySet<string> = new Set([
+  'Stop',
+  'SubagentStop',
+  'TaskCompleted',
+  'TeammateIdle',
+])
+
+/** Structural view of a zod v4 issue (only the fields the formatter reads). */
+type ZodIssueLike = {
+  code: string
+  path: PropertyKey[]
+  message: string
+  /** Present on `invalid_union` issues: one issue array per union branch. */
+  errors?: ZodIssueLike[][]
+  /** Present on `invalid_value` issues: the allowed values. */
+  values?: unknown[]
+}
+
+/** True for plain objects (not null, not arrays). Mirrors official `I1`. */
+function isHookJsonPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * An `invalid_value` issue on a union-discriminator key (async /
+ * hookEventName / behavior) is noise when deciding which union-branch issue
+ * to report. Ported verbatim from the official 2.1.248 binary (`kwt`).
+ */
+function isHookJsonDiscriminatorIssue(issue: ZodIssueLike): boolean {
+  const last = issue.path.at(-1)
+  return (
+    issue.code === 'invalid_value' &&
+    typeof last === 'string' &&
+    HOOK_JSON_DISCRIMINATOR_KEYS.has(last)
+  )
+}
+
+/**
+ * Flatten a zod issue into a {path, message} pair, descending into union
+ * branches to find the most relevant issue and rewriting bare
+ * discriminator-value failures into an "expected one of ..." message.
+ * Ported verbatim from the official 2.1.248 binary (`Twt`).
+ */
+function formatHookJsonIssue(
+  issue: ZodIssueLike,
+  parentPath: PropertyKey[],
+): { path: PropertyKey[]; message: string } {
+  const path = [...parentPath, ...issue.path]
+  if (issue.code !== 'invalid_union' || (issue.errors?.length ?? 0) === 0) {
+    return { path, message: issue.message.replace(/^Invalid input: /, '') }
+  }
+  const errors = issue.errors as ZodIssueLike[][]
+  // Prefer the first issue of a branch that has no discriminator noise.
+  const relevant = errors.find(
+    branch => branch.length > 0 && !branch.some(isHookJsonDiscriminatorIssue),
+  )?.[0]
+  if (relevant) {
+    return formatHookJsonIssue(relevant, path)
+  }
+  const discriminatorIssues = errors.flat().filter(isHookJsonDiscriminatorIssue)
+  const first = discriminatorIssues[0]
+  if (first?.code !== 'invalid_value') {
+    return { path, message: issue.message }
+  }
+  const values = [
+    ...new Set(
+      discriminatorIssues.flatMap(discriminator =>
+        discriminator.code === 'invalid_value'
+          ? (discriminator.values ?? []).map(value => jsonStringify(value))
+          : [],
+      ),
+    ),
+  ]
+  const preview = values.slice(0, 6).join(' | ')
+  return {
+    path: [...path, ...first.path],
+    message: `expected one of ${preview}${values.length > 6 ? ' | …' : ''}`,
+  }
+}
+
+/** Join an issue path for display. Mirrors official `wwt`. */
+function formatHookJsonPath(path: PropertyKey[]): string {
+  return path.map(String).join('.') || '(root)'
+}
+
+/**
+ * Build the full schema-validation error text for a parsed-but-invalid hook
+ * JSON output, including the most relevant issue, the remaining issues, and
+ * contextual hints for the most common mistakes (missing hookEventName,
+ * malformed PermissionRequest decision, legacy top-level decision).
+ * Ported verbatim from the official 2.1.248 binary (`vwt`).
+ */
+export function formatHookJsonValidationError(
+  parsed: unknown,
+  issues: ZodIssueLike[],
+): string {
+  const hookSpecificOutput = isHookJsonPlainObject(parsed)
+    ? parsed.hookSpecificOutput
+    : undefined
+  const formatted = issues.map(issue => formatHookJsonIssue(issue, []))
+  const first = formatted[0]
+  let primary = first
+    ? `${formatHookJsonPath(first.path)}: ${first.message}`
+    : 'unknown error'
+  if (
+    isHookJsonPlainObject(hookSpecificOutput) &&
+    !('hookEventName' in hookSpecificOutput)
+  ) {
+    primary = 'hookSpecificOutput is missing required field "hookEventName"'
+  } else if (
+    isHookJsonPlainObject(hookSpecificOutput) &&
+    hookSpecificOutput.hookEventName === 'PermissionRequest' &&
+    !isHookJsonPlainObject(hookSpecificOutput.decision) &&
+    first?.path[0] === 'hookSpecificOutput' &&
+    first.path[1] === 'decision'
+  ) {
+    primary +=
+      ' (PermissionRequest decision must be {"behavior": "allow"} or {"behavior": "deny", "message": "..."})'
+  } else if (
+    isHookJsonPlainObject(parsed) &&
+    first?.path.length === 1 &&
+    first.path[0] === 'decision' &&
+    (parsed.decision === 'allow' ||
+      parsed.decision === 'deny' ||
+      parsed.decision === 'ask')
+  ) {
+    primary +=
+      parsed.decision === 'ask'
+        ? ' (top-level decision is the legacy approve|block field; for "ask" use hookSpecificOutput.permissionDecision in a PreToolUse hook)'
+        : ` (top-level decision is the legacy approve|block field; for "${parsed.decision}" use hookSpecificOutput.permissionDecision in a PreToolUse hook, or hookSpecificOutput.decision: {"behavior": "${parsed.decision}"} in a PermissionRequest hook)`
+  }
+  const rest = formatted
+    .slice(1)
+    .map(entry => `  - ${formatHookJsonPath(entry.path)}: ${entry.message}`)
+    .join('\n')
+  return `${HOOK_JSON_VALIDATION_ERROR_PREFIX}${primary}${rest ? `\n${rest}` : ''}\n\nThe hook's output was: ${jsonStringify(parsed, null, 2)}`
+}
+
+/**
+ * Human-readable schema hint appended to command-hook validation errors.
+ * Ported verbatim from the official 2.1.248 binary (`Ewt`): no top-level
+ * permissionDecision, no sessionTitle, UserPromptSubmit additionalContext
+ * optional, and PermissionRequest / PostToolBatch / Stop sections present.
+ */
+export function hookOutputSchemaHint(): string {
+  return jsonStringify(
+    {
+      continue: 'boolean (optional)',
+      suppressOutput: 'boolean (optional)',
+      stopReason: 'string (optional)',
+      decision: '"approve" | "block" (optional)',
+      reason: 'string (optional)',
+      systemMessage: 'string (optional)',
+      terminalSequence: 'string (optional)',
+      hookSpecificOutput: {
+        'for PreToolUse': {
+          hookEventName: '"PreToolUse"',
+          permissionDecision: '"allow" | "deny" | "ask" | "defer" (optional)',
+          permissionDecisionReason: 'string (optional)',
+          updatedInput: 'object (optional) - Modified tool input to use',
+        },
+        'for PermissionRequest': {
+          hookEventName: '"PermissionRequest"',
+          decision: {
+            'to allow': {
+              behavior: '"allow"',
+              updatedInput: 'object (optional) - Modified tool input to use',
+              updatedPermissions: 'array (optional) - Permission updates',
+            },
+            'to deny': {
+              behavior: '"deny"',
+              message: 'string (optional)',
+              interrupt: 'boolean (optional)',
+            },
+          },
+        },
+        'for UserPromptSubmit': {
+          hookEventName: '"UserPromptSubmit"',
+          additionalContext: 'string (optional)',
+        },
+        'for PostToolUse': {
+          hookEventName: '"PostToolUse"',
+          additionalContext: 'string (optional)',
+        },
+        'for PostToolBatch': {
+          hookEventName: '"PostToolBatch"',
+          additionalContext: 'string (optional)',
+        },
+        'for Stop / SubagentStop': {
+          hookEventName: '"Stop" | "SubagentStop"',
+          additionalContext:
+            'string (optional) - Feedback for the model; the conversation continues so the model can act on it',
+        },
+      },
+    },
+    null,
+    2,
+  )
+}
+
+/**
  * Parse and validate a JSON string against the hook output Zod schema.
  * Returns the validated output or formatted validation errors.
+ * Ported from the official 2.1.248 binary (`Nwt`); the official telemetry
+ * side effect (`PY`) is reduced to a debug log, matching OCC's analytics
+ * stance.
  */
 function validateHookJson(
   jsonString: string,
@@ -642,15 +863,104 @@ function validateHookJson(
     logForDebugging('Successfully parsed and validated hook JSON output')
     return { json: validation.data }
   }
-  const errors = validation.error.issues
-    .map(err => `  - ${err.path.join('.')}: ${err.message}`)
-    .join('\n')
   return {
-    validationError: `Hook JSON output validation failed:\n${errors}\n\nThe hook's output was: ${jsonStringify(parsed, null, 2)}`,
+    validationError: formatHookJsonValidationError(
+      parsed,
+      validation.error.issues,
+    ),
   }
 }
 
-function parseHookOutput(stdout: string): {
+/**
+ * Second-chance async detection for hook stdout that the streaming first-line
+ * path did not background (e.g. forceSyncExecution, or backgrounding
+ * refused). Checks ONLY the first line: the async protocol is
+ * `{"async":true,...}` on line one followed by normal output.
+ * Ported verbatim from the official 2.1.248 binary (`o$t`; `ur` = first
+ * line, equivalent to OCC's `firstLineOf`).
+ */
+export function isAsyncHookAnnouncement(stdout: string): boolean {
+  const firstLine = firstLineOf(stdout).trim()
+  if (!firstLine.startsWith('{')) {
+    return false
+  }
+  try {
+    const parsed = jsonParse(firstLine)
+    return (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'async' in parsed &&
+      (parsed as { async?: unknown }).async === true
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True when the output is several independent JSON documents (one per line)
+ * that each fail schema validation or parse to an empty object — the shape
+ * of `jq` output that was never meant as a single hook payload, treated as
+ * plain text instead of a validation error.
+ * Ported verbatim from the official 2.1.248 binary (`$$n`).
+ */
+export function isMultipleJsonDocuments(output: string): boolean {
+  const lines = output.split('\n').filter(line => line.trim() !== '')
+  if (lines.length < 2) {
+    return false
+  }
+  return lines.every(line => {
+    try {
+      const validation = hookJSONOutputSchema().safeParse(
+        jsonParse(line.trim()),
+      )
+      return !validation.success || Object.keys(validation.data).length === 0
+    } catch {
+      return false
+    }
+  })
+}
+
+/**
+ * Append the hook's exit code and stderr to a validation error when the hook
+ * also exited non-zero — keeps both failure signals in the single message the
+ * user sees. Ported verbatim from the official 2.1.248 binary (`Mct`).
+ */
+export function wrapHookErrorWithStderr(
+  validationError: string,
+  exitCode: number,
+  stderr: string,
+): string {
+  const trimmedStderr = stderr.trim()
+  return exitCode !== 0 && trimmedStderr
+    ? `${validationError}\n\nHook exited ${exitCode} with stderr:\n${trimmedStderr}`
+    : validationError
+}
+
+/**
+ * Heuristic for a hook whose script does not exist: exit 2, empty stdout,
+ * and a shell "no such file"/"can't open" stderr, on events where a missing
+ * script is the overwhelmingly likely cause (or any UserPromptSubmit hook
+ * owned by a plugin). Such hooks are reported as non-blocking errors with
+ * reinstall guidance instead of blocking the model.
+ * Ported verbatim from the official 2.1.248 binary (`i$t`).
+ */
+export function looksLikeMissingHookScript(params: {
+  hookEvent: HookEvent
+  stdout: string
+  stderr: string
+  pluginId?: string
+}): boolean {
+  const { hookEvent, stdout, stderr, pluginId } = params
+  return (
+    (MISSING_SCRIPT_HOOK_EVENTS.has(hookEvent) ||
+      (Boolean(pluginId) && hookEvent === 'UserPromptSubmit')) &&
+    !stdout.trim() &&
+    /no such file|can't open/i.test(stderr)
+  )
+}
+
+export function parseHookOutput(stdout: string): {
   json?: HookJSONOutput
   plainText?: string
   validationError?: string
@@ -660,48 +970,42 @@ function parseHookOutput(stdout: string): {
     logForDebugging('Hook output does not start with {, treating as plain text')
     return { plainText: stdout }
   }
-
+  // 2.1.248 (Gap-108a): a first-line async announcement is honored even when
+  // the streaming path did not background the process; the rest of stdout is
+  // ignored, exactly like the official `o$t` pre-check in `sIe`.
+  if (isAsyncHookAnnouncement(stdout)) {
+    return { json: { async: true } }
+  }
   try {
     const result = validateHookJson(trimmed)
     if ('json' in result) {
       return result
     }
     // For command hooks, include the schema hint in the error message
-    const errorMessage = `${result.validationError}\n\nExpected schema:\n${jsonStringify(
-      {
-        continue: 'boolean (optional)',
-        suppressOutput: 'boolean (optional)',
-        stopReason: 'string (optional)',
-        decision: '"approve" | "block" (optional)',
-        reason: 'string (optional)',
-        systemMessage: 'string (optional)',
-        permissionDecision: '"allow" | "deny" | "ask" (optional)',
-        hookSpecificOutput: {
-          'for PreToolUse': {
-            hookEventName: '"PreToolUse"',
-            permissionDecision: '"allow" | "deny" | "ask" (optional)',
-            permissionDecisionReason: 'string (optional)',
-            updatedInput: 'object (optional) - Modified tool input to use',
-          },
-          'for UserPromptSubmit': {
-            hookEventName: '"UserPromptSubmit"',
-            additionalContext: 'string (required)',
-            sessionTitle: 'string (optional) - Set the session title (same effect as /rename)',
-          },
-          'for PostToolUse': {
-            hookEventName: '"PostToolUse"',
-            additionalContext: 'string (optional)',
-          },
-        },
-      },
-      null,
-      2,
-    )}`
+    const errorMessage = `${result.validationError}\n\nExpected schema:\n${hookOutputSchemaHint()}`
     logForDebugging(errorMessage)
     return { plainText: stdout, validationError: errorMessage }
   } catch (e) {
-    logForDebugging(`Failed to parse hook output as JSON: ${e}`)
-    return { plainText: stdout }
+    // 2.1.248 (Gap-108a): a stdout that looks like a JSON object (starts `{`,
+    // ends `}`) but fails to parse is now reported as a hook error with the
+    // parse message, instead of being silently treated as plain text. Only
+    // non-object shapes and multi-document outputs stay plain text.
+    const parseError = e instanceof Error ? e.message : String(e)
+    if (!trimmed.endsWith('}')) {
+      logForDebugging(
+        `Hook output starts with { but is not a JSON object, treating as plain text: ${parseError}`,
+      )
+      return { plainText: stdout }
+    }
+    if (isMultipleJsonDocuments(trimmed)) {
+      logForDebugging(
+        'Hook output is several JSON documents, treating as plain text',
+      )
+      return { plainText: stdout }
+    }
+    const errorMessage = `Hook output looks like a JSON object but is not valid JSON — ${parseError}. Emit the payload with a JSON encoder (jq, ConvertTo-Json, json.dumps) rather than string concatenation so backslashes and quotes inside strings are escaped.`
+    logForDebugging(errorMessage)
+    return { plainText: stdout, validationError: errorMessage }
   }
 }
 
@@ -2914,13 +3218,17 @@ async function* executeHooks({
           parseHttpHookOutput(httpResult.body)
 
         if (httpValidationError) {
+          // 2.1.248 (Gap-108a): the validation error is self-describing
+          // (starts with "Hook JSON output validation failed —"); the
+          // official no longer wraps it in a "JSON validation failed:"
+          // prefix here.
           emitHookResponse({
             hookId,
             hookName,
             hookEvent,
             output: httpResult.body,
             stdout: httpResult.body,
-            stderr: `JSON validation failed: ${httpValidationError}`,
+            stderr: httpValidationError,
             exitCode: httpResult.statusCode,
             outcome: 'error',
           })
@@ -2930,7 +3238,7 @@ async function* executeHooks({
               hookName,
               toolUseID,
               hookEvent,
-              stderr: `JSON validation failed: ${httpValidationError}`,
+              stderr: httpValidationError,
               stdout: httpResult.body,
               exitCode: httpResult.statusCode ?? 0,
               command: hook.url,
@@ -3093,50 +3401,28 @@ async function* executeHooks({
         result.stdout,
       )
 
-      if (validationError) {
-        // S24 (2.1.214): exit code 2 MUST block even when stdout JSON is
-        // malformed/truncated/schema-failing. Previously this branch returned
-        // non_blocking_error, dropping the exit-2 block (fail-open on a
-        // security-enforcement hook path). When JSON IS valid the structured
-        // path below (processHookJSONOutput + the `if (json)` exit-2 block)
-        // handles it and keeps the hook's reason; here we only synthesize a
-        // block for exit-2-with-malformed-JSON.
-        const exit2Block = exit2BlockReason({
-          status: result.status,
+      if (validationError && result.status !== 2) {
+        // 2.1.248 (Gap-108a): a malformed/schema-failing stdout is reported
+        // as a hook error carrying the REAL exit code and stderr (official
+        // `Mct` wrap), not a hardcoded exit 1 with a "JSON validation
+        // failed:" prefix. Exit-2 outputs deliberately fall through to the
+        // blocking branches below so a blocking hook cannot fail open by
+        // emitting malformed JSON — the S24/2.1.214 guarantee, now provided
+        // by the official fall-through structure instead of the removed
+        // exit2BlockReason synthesis.
+        const stderr = wrapHookErrorWithStderr(
           validationError,
-          hasJson: !!json,
-          stderr: result.stderr,
-          command: hookCommand,
-        })
-        if (exit2Block) {
-          emitHookResponse({
-            hookId,
-            hookName,
-            hookEvent,
-            output: result.output,
-            stdout: result.stdout,
-            stderr: result.stderr,
-            exitCode: result.status,
-            outcome: 'error',
-          })
-          yield {
-            blockingError: {
-              blockingError: exit2Block.blockingError,
-              command: exit2Block.command,
-            },
-            outcome: 'blocking' as const,
-            hook,
-          }
-          return
-        }
+          result.status,
+          result.stderr,
+        )
         emitHookResponse({
           hookId,
           hookName,
           hookEvent,
           output: result.output,
           stdout: result.stdout,
-          stderr: `JSON validation failed: ${validationError}`,
-          exitCode: 1,
+          stderr,
+          exitCode: result.status,
           outcome: 'error',
         })
         yield {
@@ -3145,9 +3431,9 @@ async function* executeHooks({
             hookName,
             toolUseID,
             hookEvent,
-            stderr: `JSON validation failed: ${validationError}`,
+            stderr,
             stdout: result.stdout,
-            exitCode: 1,
+            exitCode: result.status,
             command: hookCommand,
             durationMs,
           }),
@@ -3158,8 +3444,62 @@ async function* executeHooks({
       }
 
       if (json) {
-        // Async responses were already backgrounded during execution
         if (isAsyncHookJSONOutput(json)) {
+          // Async responses were usually backgrounded during execution, but
+          // under forceSyncExecution (or when backgrounding is refused) the
+          // process ran to completion — 2.1.248 (Gap-108a): honor its exit
+          // code instead of unconditionally yielding success ("Fixed
+          // background sessions waiting silently when a PermissionRequest or
+          // PreToolUse hook prints an invalid answer").
+          if (result.status === 2) {
+            emitHookResponse({
+              hookId,
+              hookName,
+              hookEvent,
+              output: result.output,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              exitCode: result.status,
+              outcome: 'error',
+            })
+            yield {
+              blockingError: {
+                blockingError: `[${hook.command}]: ${result.stderr || 'No stderr output'}`,
+                command: hook.command,
+              },
+              outcome: 'blocking' as const,
+              hook,
+            }
+            return
+          }
+          if (result.status !== 0) {
+            emitHookResponse({
+              hookId,
+              hookName,
+              hookEvent,
+              output: result.output,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              exitCode: result.status,
+              outcome: 'error',
+            })
+            yield {
+              message: createAttachmentMessage({
+                type: 'hook_non_blocking_error',
+                hookName,
+                toolUseID,
+                hookEvent,
+                stderr: `Announced async, then failed with status code ${result.status}: ${result.stderr.trim() || 'No stderr output'}`,
+                stdout: result.stdout,
+                exitCode: result.status,
+                command: hookCommand,
+                durationMs,
+              }),
+              outcome: 'non_blocking_error' as const,
+              hook,
+            }
+            return
+          }
           yield {
             outcome: 'success' as const,
             hook,
@@ -3281,6 +3621,52 @@ async function* executeHooks({
             durationMs,
           }),
           outcome: 'success' as const,
+          hook,
+        }
+        return
+      }
+
+      // 2.1.248 (Gap-108d): a hook script that does not exist (deleted
+      // plugin, stale settings) exits 2 with empty stdout and a shell
+      // "no such file"/"can't open" stderr. Blocking on that would freeze
+      // the model on a hook that never ran; report a non-blocking error
+      // with reinstall guidance instead. Official `i$t` heuristic.
+      if (
+        result.status === 2 &&
+        looksLikeMissingHookScript({
+          hookEvent,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          pluginId,
+        })
+      ) {
+        emitHookResponse({
+          hookId,
+          hookName,
+          hookEvent,
+          output: result.output,
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.status,
+          outcome: 'error',
+        })
+        yield {
+          message: createAttachmentMessage({
+            type: 'hook_non_blocking_error',
+            hookName,
+            toolUseID,
+            hookEvent,
+            stderr: `Hook script appears to be missing — "${hookCommand}" exited 2 with: ${result.stderr.trim()}. Treating as non-blocking. ${
+              pluginId
+                ? `Run \`/plugin\` to reinstall '${pluginId}' or remove it from settings.`
+                : 'If this is a plugin hook, check the plugin install (run /plugin).'
+            }`,
+            stdout: result.stdout,
+            exitCode: result.status,
+            command: hookCommand,
+            durationMs,
+          }),
+          outcome: 'non_blocking_error' as const,
           hook,
         }
         return
@@ -4013,30 +4399,21 @@ async function executeHooksOutsideREPL({
 
         // Parse JSON for any messages to print out.
         const { json, validationError } = parseHookOutput(result.stdout)
-        if (validationError) {
-          // S24 (2.1.214): exit code 2 MUST block even when stdout JSON is
-          // malformed/truncated/schema-failing. Previously this branch threw
-          // before the `blocked = result.status === 2 || ...` line, dropping
-          // the block (fail-open on a security-enforcement hook path).
-          const exit2Block = exit2BlockReason({
-            status: result.status,
-            validationError,
-            hasJson: !!json,
-            stderr: result.stderr,
-            command: hook.command,
-          })
-          if (exit2Block) {
-            return {
-              command: hook.command,
-              succeeded: false,
-              output: result.stderr || '',
-              blocked: true,
-              watchPaths: undefined,
-              systemMessage: undefined,
-            }
-          }
-          // Validation error is logged via logForDebugging and returned in output
-          throw new Error(validationError)
+        if (validationError && result.status !== 2) {
+          // 2.1.248 (Gap-108a): wrap the validation error with the real exit
+          // code and stderr (official `Mct`). Exit-2 outputs deliberately do
+          // NOT throw: they fall through to `blocked = result.status === 2`
+          // below so a blocking hook cannot fail open by emitting malformed
+          // JSON — the S24/2.1.214 guarantee, now provided by the official
+          // fall-through structure instead of the removed exit2BlockReason
+          // synthesis.
+          throw new Error(
+            wrapHookErrorWithStderr(
+              validationError,
+              result.status,
+              result.stderr,
+            ),
+          )
         }
         if (json && !isAsyncHookJSONOutput(json)) {
           logForDebugging(

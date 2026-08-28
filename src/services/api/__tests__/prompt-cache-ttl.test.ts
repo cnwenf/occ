@@ -28,13 +28,17 @@ import {
 
 /**
  * Prompt cache TTL resolution — official 2.1.245 hierarchy (subsystem
- * introduced in 2.1.243). Layers, highest priority first (official uFr/HUr):
+ * introduced in 2.1.243; agent-frontmatter layer added in 2.1.248). Layers,
+ * highest priority first (official uFr/qTt + HUr/Tvt):
  *   1. FORCE_PROMPT_CACHING_5M            -> {ttl:"5m",reason:"force_5m_env"}
  *   2. CLAUDE_CODE_PROMPT_CACHE_TTL /     -> {ttl,reason:"env"}
  *      CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL (per-thread, enum 5m|1h,
  *      invalid values silently fall through — zod .catch(undefined))
  *   3. promptCacheTtl / subagentPromptCacheTtl settings (per-thread)
  *                                           -> {ttl,reason:"setting"}
+ *   3.5 agent frontmatter experimental.cacheTtl (2.1.248, Gap-108b)
+ *                                           -> {ttl,reason:"agent_frontmatter"}
+ *       a requested "1h" is ignored while the subscription is in overage
  *   4. ENABLE_PROMPT_CACHING_1H (+ bedrock-only ENABLE_PROMPT_CACHING_1H_BEDROCK)
  *                                           -> {ttl:"1h",reason:"enable_1h_env"}
  *   5. Subscriber gate (claude.ai subscription within usage limits) AND
@@ -339,6 +343,126 @@ describe('2.1.243 subscriber gate (official HUr)', () => {
       ttl: '5m',
       reason: 'env',
     })
+  })
+})
+
+describe('2.1.248 agent frontmatter cacheTtl (Gap-108b, official qTt/Tvt)', () => {
+  test('agentCacheTtlOverride resolves with reason agent_frontmatter', () => {
+    expect(
+      resolvePromptCacheTtlOverride('agent:x' as never, '5m'),
+    ).toEqual({ ttl: '5m', reason: 'agent_frontmatter' })
+    expect(
+      resolvePromptCacheTtlOverride('agent:x' as never, '1h'),
+    ).toEqual({ ttl: '1h', reason: 'agent_frontmatter' })
+  })
+
+  test('requested "1h" is dropped while the subscription is in overage', () => {
+    // Official qTt: `if(t!==void 0&&!(t==="1h"&&r))` — with overage (r) the
+    // 1h request falls through to the remaining gates.
+    expect(
+      resolvePromptCacheTtlOverride('agent:x' as never, '1h', true),
+    ).toBeUndefined()
+    // ...and the fall-through reaches the 1h opt-in env when set.
+    process.env.ENABLE_PROMPT_CACHING_1H = '1'
+    expect(
+      resolvePromptCacheTtlOverride('agent:x' as never, '1h', true),
+    ).toEqual({ ttl: '1h', reason: 'enable_1h_env' })
+    // "5m" is unaffected by the overage guard.
+    expect(
+      resolvePromptCacheTtlOverride('agent:x' as never, '5m', true),
+    ).toEqual({ ttl: '5m', reason: 'agent_frontmatter' })
+  })
+
+  test('frontmatter "1h" applies even without a subscription', () => {
+    // Official Tvt returns the qTt override BEFORE the subscriber gate, so
+    // an agent frontmatter 1h wins on a plain API key too.
+    expect(isClaudeAISubscriber()).toBe(false)
+    expect(
+      resolvePromptCacheTtl('agent:x' as never, {
+        agentCacheTtlOverride: '1h',
+      }),
+    ).toEqual({ ttl: '1h', reason: 'agent_frontmatter' })
+    expect(should1hCacheTTL('agent:x' as never, '1h')).toBe(true)
+  })
+
+  test('frontmatter "5m" beats the subscriber allowlist 1h', () => {
+    setSubscriber(true)
+    clearAllCaches()
+    expect(
+      resolvePromptCacheTtl('repl_main_thread' as never, {
+        agentCacheTtlOverride: '5m',
+      }),
+    ).toEqual({ ttl: '5m', reason: 'agent_frontmatter' })
+    expect(should1hCacheTTL('repl_main_thread' as never, '5m')).toBe(false)
+  })
+
+  test('subscriber in overage: "1h" ignored, gate falls back to 5m default', () => {
+    setSubscriber(true)
+    clearAllCaches()
+    emitStatusChange({
+      status: 'allowed',
+      unifiedRateLimitFallbackAvailable: false,
+      isUsingOverage: true,
+    } as never)
+    expect(
+      resolvePromptCacheTtl('agent:x' as never, {
+        agentCacheTtlOverride: '1h',
+      }),
+    ).toEqual({ ttl: '5m', reason: 'default' })
+    // Same overage, but "5m" still resolves via the frontmatter branch.
+    expect(
+      resolvePromptCacheTtl('agent:x' as never, {
+        agentCacheTtlOverride: '5m',
+      }),
+    ).toEqual({ ttl: '5m', reason: 'agent_frontmatter' })
+  })
+
+  test('ladder order: FORCE_5M > env > setting > frontmatter', () => {
+    // setting beats frontmatter (frontmatter sits AFTER the settings key)
+    writeSettings({ subagentPromptCacheTtl: '5m' })
+    expect(
+      resolvePromptCacheTtl('agent:x' as never, {
+        agentCacheTtlOverride: '1h',
+      }),
+    ).toEqual({ ttl: '5m', reason: 'setting' })
+    // env beats setting + frontmatter (subagent thread env var)
+    process.env.CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL = '1h'
+    expect(
+      resolvePromptCacheTtl('agent:x' as never, {
+        agentCacheTtlOverride: '5m',
+      }),
+    ).toEqual({ ttl: '1h', reason: 'env' })
+    // FORCE_5M beats everything
+    process.env.FORCE_PROMPT_CACHING_5M = '1'
+    expect(
+      resolvePromptCacheTtl('agent:x' as never, {
+        agentCacheTtlOverride: '1h',
+      }),
+    ).toEqual({ ttl: '5m', reason: 'force_5m_env' })
+  })
+
+  test('undefined override leaves resolution unchanged', () => {
+    expect(
+      resolvePromptCacheTtl('agent:x' as never, {
+        agentCacheTtlOverride: undefined,
+      }),
+    ).toEqual({ ttl: '5m', reason: 'default' })
+    expect(should1hCacheTTL('agent:x' as never, undefined)).toBe(false)
+  })
+
+  test('wire shape: frontmatter 1h reaches cache_control, 5m stays implicit', () => {
+    expect(
+      getCacheControl({
+        querySource: 'agent:x' as never,
+        agentCacheTtlOverride: '1h',
+      }),
+    ).toEqual({ type: 'ephemeral', ttl: '1h' })
+    expect(
+      getCacheControl({
+        querySource: 'agent:x' as never,
+        agentCacheTtlOverride: '5m',
+      }),
+    ).toEqual({ type: 'ephemeral' })
   })
 })
 

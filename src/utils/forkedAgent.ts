@@ -66,6 +66,13 @@ export type CacheSafeParams = {
   toolUseContext: ToolUseContext
   /** Parent context messages for prompt cache sharing */
   forkContextMessages: Message[]
+  /**
+   * 2.1.248 (Gap-108b): agent frontmatter `experimental.cacheTtl` override
+   * carried with the fork. The TTL changes cache_control writes, so it is
+   * part of the cache key — forks of an agent thread must reuse it to share
+   * the agent's prompt cache. Undefined on the main thread.
+   */
+  agentCacheTtlOverride?: '5m' | '1h'
 }
 
 // Slot written by handleStopHooks after each turn so post-turn forks
@@ -572,6 +579,7 @@ export async function runForkedAgent({
     systemContext,
     toolUseContext,
     forkContextMessages,
+    agentCacheTtlOverride,
   } = cacheSafeParams
 
   // Create isolated context to prevent mutation of parent state
@@ -616,6 +624,7 @@ export async function runForkedAgent({
       maxOutputTokensOverride: maxOutputTokens,
       maxTurns,
       skipCacheWrite,
+      agentCacheTtlOverride,
     })) {
       // Extract real usage from message_delta stream events (final usage per API call)
       if (message.type === 'stream_event') {
