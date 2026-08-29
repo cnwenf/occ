@@ -1,8 +1,35 @@
-import { describe, expect, test } from 'bun:test'
-import { GrepTool } from '../GrepTool.js'
-import { mkdtempSync, writeFileSync, mkdirSync } from 'fs'
-import { tmpdir } from 'os'
+import { afterAll, describe, expect, test } from 'bun:test'
+import { mkdirSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
+import { getCwd } from '../../../utils/cwd.js'
+import { GrepTool } from '../GrepTool.js'
+
+// CC 2.1.251 (Gap-109b): the binary's PATH-name-only ripgrep guard (S2t
+// v/R()) refuses searches outside the session cwd when rg resolves to a bare
+// PATH name — Read deny rules cannot be anchored in that configuration. In
+// `bun test` ripgrepCommand() falls back to the bare system 'rg' name, so
+// fixtures must live under getCwd() (the guard's allowed zone). In the
+// shipped bundle rg is embedded/absolute and the guard is dormant, matching
+// the official binary where ripgrep is always absolute.
+const fixtureRoots: string[] = []
+
+function makeFixtureDir(prefix: string): string {
+  const dir = join(
+    getCwd(),
+    `.${prefix}-${Date.now()}-${fixtureRoots.length}-${Math.floor(
+      Math.random() * 1_000_000_000,
+    )}`,
+  )
+  mkdirSync(dir, { recursive: true })
+  fixtureRoots.push(dir)
+  return dir
+}
+
+afterAll(() => {
+  for (const dir of fixtureRoots) {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
 
 /**
  * Minimal ToolUseContext mock for GrepTool.call(). The permission context
@@ -222,7 +249,7 @@ describe('2.1.210 #14 — Grep mapper pagination', () => {
 describe('2.1.208 #14c — Grep count totals from full results', () => {
   test('count mode reports full totals even when paginated past end', async () => {
     // Arrange — create a temp dir with 3 files, each matching "foo"
-    const dir = mkdtempSync(join(tmpdir(), 'grep-count-'))
+    const dir = makeFixtureDir('grep-count')
     writeFileSync(join(dir, 'a.ts'), 'foo\nfoo\n') // 2 matches
     writeFileSync(join(dir, 'b.ts'), 'foo\n') // 1 match
     writeFileSync(join(dir, 'c.ts'), 'foo\nfoo\nfoo\n') // 3 matches
@@ -260,7 +287,7 @@ describe('2.1.208 #14c — Grep count totals from full results', () => {
 describe('2.1.208 #14b — Grep invalid regex rejection', () => {
   test('invalid regex pattern throws an error instead of returning empty results', async () => {
     // Arrange
-    const dir = mkdtempSync(join(tmpdir(), 'grep-regex-'))
+    const dir = makeFixtureDir('grep-regex')
     writeFileSync(join(dir, 'a.ts'), 'hello\n')
 
     // Act — an unbalanced paren is an invalid regex

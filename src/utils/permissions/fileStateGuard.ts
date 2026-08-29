@@ -254,8 +254,12 @@ function isReadToolUnavailableForGuard(
  * Bare Read deny/ask rules block first; then the real read-permission check
  * decides. An `ask` decision still counts as auto-allowed in bypassPermissions
  * mode unless an explicit ask rule produced it.
+ *
+ * Exported for reuse by the 2.1.251 Workflow scriptPath gate (Gap-109c):
+ * the official binary's f_r is this exact predicate, run through the same
+ * minimal Read probe (X_ there, READ_PROBE here).
  */
-function isReadAutoAllowedForPath(
+export function isReadAutoAllowedForPath(
   fullFilePath: string,
   toolPermissionContext: ToolPermissionContext,
 ): boolean {

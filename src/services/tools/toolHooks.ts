@@ -463,10 +463,12 @@ export async function resolveHookPermissionDecision(
   // Rule check applies to BOTH hook allow and hook ask (CC 2.1.211).
   // This is the key change: hook 'ask' now goes through rule checks,
   // same as hook 'allow'.
+  // CC 2.1.251 (Gap-109a): toolUseId reaches checkPermissions so the file
+  // tools can stash their check-time symlink resolutions under it.
   const ruleCheck = await checkRuleBasedPermissions(
     tool,
     hookInput,
-    toolUseContext,
+    { ...toolUseContext, toolUseId: toolUseID },
   )
 
   if (ruleCheck?.behavior === 'deny') {

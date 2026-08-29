@@ -18,6 +18,10 @@ import { lazySchema } from '../../utils/lazySchema.js'
 import { parseCellId } from '../../utils/notebook.js'
 import { checkWritePermissionForTool } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import {
+  assertSymlinkResolutionsUnchangedForWrite,
+  stashCheckTimeResolutions,
+} from '../../utils/permissions/symlinkResolutionStash.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
@@ -125,6 +129,9 @@ export const NotebookEditTool = buildTool({
     return input.notebook_path
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.251 (Gap-109a): stash the check-time symlink resolutions of
+    // the target path, write lane (binary NotebookEditTool Q6 stash site).
+    stashCheckTimeResolutions(context, NotebookEditTool.getPath(input), 'write')
     const appState = context.getAppState()
     return checkWritePermissionForTool(
       NotebookEditTool,
@@ -318,13 +325,18 @@ export const NotebookEditTool = buildTool({
       cell_type,
       edit_mode: originalEditMode,
     },
-    { readFileState, updateFileHistoryState },
+    context,
     _,
     parentMessage,
   ) {
+    const { readFileState, updateFileHistoryState } = context
     const fullPath = isAbsolute(notebook_path)
       ? notebook_path
       : resolve(getCwd(), notebook_path)
+
+    // CC 2.1.251 (Gap-109a): TOCTOU gate — refuse if the symlink resolution
+    // changed between checkPermissions and now (binary LC gate s()).
+    assertSymlinkResolutionsUnchangedForWrite(context, fullPath)
 
     if (fileHistoryEnabled()) {
       await fileHistoryTrackEdit(
@@ -395,7 +407,7 @@ export const NotebookEditTool = buildTool({
       }
 
       const language = notebook.metadata.language_info?.name ?? 'python'
-      let new_cell_id = undefined
+      let new_cell_id 
       if (
         notebook.nbformat > 4 ||
         (notebook.nbformat === 4 && notebook.nbformat_minor >= 5)

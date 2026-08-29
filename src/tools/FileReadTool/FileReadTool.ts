@@ -71,6 +71,10 @@ import {
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+import {
+  assertSymlinkResolutionsUnchangedForRead,
+  stashCheckTimeResolutions,
+} from '../../utils/permissions/symlinkResolutionStash.js'
 import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -493,6 +497,9 @@ export const FileReadTool = buildTool({
     return pattern => matchWildcardPattern(pattern, file_path)
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.251 (Gap-109a): stash the check-time symlink resolutions of
+    // the target path, read lane (binary FileReadTool NI/FI stash site).
+    stashCheckTimeResolutions(context, FileReadTool.getPath(input), 'read')
     const appState = context.getAppState()
     return checkReadPermissionForTool(
       FileReadTool,
@@ -628,6 +635,10 @@ export const FileReadTool = buildTool({
     // Use expandPath for consistent path normalization with FileEditTool/FileWriteTool
     // (especially handles whitespace trimming and Windows path separators)
     const fullFilePath = expandPath(file_path)
+
+    // CC 2.1.251 (Gap-109a): TOCTOU gate — the symlink resolution set must
+    // be unchanged since checkPermissions stashed it (binary Uzt first gate).
+    assertSymlinkResolutionsUnchangedForRead(context, fullFilePath)
 
     // Dedup: if we've already read this exact range and the file hasn't
     // changed on disk, return a stub instead of re-sending the full content.

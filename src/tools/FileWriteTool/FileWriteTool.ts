@@ -57,6 +57,10 @@ import {
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+import {
+  assertSymlinkResolutionsUnchangedForWrite,
+  stashCheckTimeResolutions,
+} from '../../utils/permissions/symlinkResolutionStash.js'
 import { gitDiffSchema, hunkSchema } from '../FileEditTool/types.js'
 import { FILE_WRITE_TOOL_NAME, getWriteToolDescription } from './prompt.js'
 import {
@@ -161,6 +165,9 @@ export const FileWriteTool = buildTool({
     return pattern => matchWildcardPattern(pattern, file_path)
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.251 (Gap-109a): stash the check-time symlink resolutions of
+    // the target path, write lane (binary FileWriteTool Ky stash site).
+    stashCheckTimeResolutions(context, FileWriteTool.getPath(input), 'write')
     const appState = context.getAppState()
     return checkWritePermissionForTool(
       FileWriteTool,
@@ -327,6 +334,9 @@ export const FileWriteTool = buildTool({
     const { readFileState, updateFileHistoryState, dynamicSkillDirTriggers } =
       context
     const fullFilePath = expandPath(file_path)
+    // CC 2.1.251 (Gap-109a): TOCTOU gate — refuse if the symlink resolution
+    // changed between checkPermissions and now (binary LC gate s()).
+    assertSymlinkResolutionsUnchangedForWrite(context, fullFilePath)
     const dir = dirname(fullFilePath)
     const toolPermissionContext = context.getAppState().toolPermissionContext
 

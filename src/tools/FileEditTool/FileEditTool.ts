@@ -66,6 +66,10 @@ import {
 } from '../../utils/permissions/fileStateGuard.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+import {
+  assertSymlinkResolutionsUnchangedForWrite,
+  stashCheckTimeResolutions,
+} from '../../utils/permissions/symlinkResolutionStash.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
 import { FILE_EDIT_TOOL_NAME } from './constants.js'
@@ -152,6 +156,9 @@ export const FileEditTool = buildTool({
     return pattern => matchWildcardPattern(pattern, file_path)
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.251 (Gap-109a): stash the check-time symlink resolutions of
+    // the target path, write lane (binary FileEditTool B_ stash site).
+    stashCheckTimeResolutions(context, FileEditTool.getPath(input), 'write')
     const appState = context.getAppState()
     return checkWritePermissionForTool(
       FileEditTool,
@@ -509,6 +516,9 @@ export const FileEditTool = buildTool({
     // 1. Get current state
     const fs = getFsImplementation()
     const absoluteFilePath = expandPath(file_path)
+    // CC 2.1.251 (Gap-109a): TOCTOU gate — refuse if the symlink resolution
+    // changed between checkPermissions and now (binary LC gate s()).
+    assertSymlinkResolutionsUnchangedForWrite(toolUseContext, absoluteFilePath)
     const toolPermissionContext =
       toolUseContext.getAppState().toolPermissionContext
 

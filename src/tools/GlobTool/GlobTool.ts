@@ -1,3 +1,4 @@
+import { isAbsolute } from 'path'
 import { z } from 'zod/v4'
 import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
@@ -8,12 +9,18 @@ import {
   suggestPathUnderCwd,
 } from '../../utils/file.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
-import { glob } from '../../utils/glob.js'
+import { extractGlobBaseDirectory, glob } from '../../utils/glob.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { expandPath, toRelativePath } from '../../utils/path.js'
 import { checkReadPermissionForTool } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import {
+  assertDenyPatternsUnchanged,
+  computeReadDenyPatternSnapshot,
+  prepareVerifiedSearchTarget,
+} from '../../utils/permissions/searchTargetGate.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+import { stashCheckTimeResolutions } from '../../utils/permissions/symlinkResolutionStash.js'
 import { DESCRIPTION, GLOB_TOOL_NAME } from './prompt.js'
 import {
   getToolUseSummary,
@@ -95,7 +102,17 @@ export const GlobTool = buildTool({
   isSearchOrReadCommand() {
     return { isSearch: true, isRead: false }
   },
-  getPath({ path }): string {
+  getPath({ path, pattern }): string {
+    // CC 2.1.251 (Gap-109b): binary NI.getPath — an absolute pattern's
+    // extracted base directory (Jve = extractGlobBaseDirectory) wins over the
+    // path param, so the permission check and the search gate the directory
+    // that ripgrep actually searches.
+    if (pattern && isAbsolute(pattern)) {
+      const { baseDir } = extractGlobBaseDirectory(pattern)
+      if (baseDir) {
+        return expandPath(baseDir)
+      }
+    }
     return path ? expandPath(path) : getCwd()
   },
   async preparePermissionMatcher({ pattern }) {
@@ -155,6 +172,10 @@ export const GlobTool = buildTool({
     return { result: true }
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.251 (Gap-109b): stash the check-time symlink resolutions of the
+    // search directory, read lane (binary GlobTool checkPermissions stash
+    // site; consumed by prepareVerifiedSearchTarget in call()).
+    stashCheckTimeResolutions(context, GlobTool.getPath(input), 'read')
     const appState = context.getAppState()
     return checkReadPermissionForTool(
       GlobTool,
@@ -173,7 +194,8 @@ export const GlobTool = buildTool({
   extractSearchText({ filenames }) {
     return filenames.join('\n')
   },
-  async call(input, { abortController, getAppState, globLimits, setAppState }) {
+  async call(input, context) {
+    const { abortController, getAppState, globLimits, setAppState } = context
     // H14: If --tools is specified, re-add those tools to the subagent's
     // permission allowlist so they can be used in subsequent turns. Follows
     // the createGetAppStateWithAllowedTools pattern (command-source rules).
@@ -199,12 +221,50 @@ export const GlobTool = buildTool({
     const start = Date.now()
     const appState = getAppState()
     const limit = globLimits?.maxResults ?? 100
+
+    // CC 2.1.251 (Gap-109b): search-path TOCTOU gate (binary Qat/S2t).
+    // Consumes the check-time read-lane stash and refuses — with the
+    // binary's exact messages — if the search directory's symlink
+    // resolution changed between the permission check and now.
+    const searchPath = GlobTool.getPath(input)
+    const searchTarget = await prepareVerifiedSearchTarget(
+      context,
+      searchPath,
+    )
+    if (searchTarget === null) {
+      // Binary Qat null branch: the target vanished after the check —
+      // return an empty result instead of an error.
+      return {
+        data: {
+          filenames: [],
+          durationMs: Date.now() - start,
+          numFiles: 0,
+          truncated: false,
+        },
+      }
+    }
+    // Binary H2t: snapshot the Read deny patterns at prep time and refuse
+    // if they shift before the search spawns.
+    const denyPatternBaseline = computeReadDenyPatternSnapshot(
+      appState.toolPermissionContext,
+      searchPath,
+    )
+    searchTarget.recheckBeforeSpawn()
+    assertDenyPatternsUnchanged(
+      searchPath,
+      denyPatternBaseline,
+      computeReadDenyPatternSnapshot(
+        getAppState().toolPermissionContext,
+        searchPath,
+      ),
+    )
+
     const { files, truncated } = await glob(
       input.pattern,
-      GlobTool.getPath(input),
+      searchPath,
       { limit, offset: 0 },
       abortController.signal,
-      appState.toolPermissionContext,
+      getAppState().toolPermissionContext,
     )
     // Relativize paths under cwd to save tokens (same as GrepTool)
     const filenames = files.map(toRelativePath)

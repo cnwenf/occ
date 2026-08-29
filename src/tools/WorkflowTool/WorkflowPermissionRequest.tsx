@@ -56,13 +56,9 @@ export function WorkflowPermissionRequest(
   const { toolUseConfirm, onDone } = props
   const input = toolUseConfirm.input as WorkflowInput
 
-  // Remote (async) launches are pre-approved by the user invoking the tool —
-  // they cannot reach the Ink renderer, so skip the consent dialog.
-  if (input.remote) {
-    props.onAllow(input, [], undefined, undefined)
-    onDone()
-    return null
-  }
+  // 2.1.251 (Gap-109c): the old OCC version auto-allowed `remote` launches
+  // here. The official binary has no such bypass — consent applies to every
+  // launch mode — so remote invocations now go through the same dialog.
 
   const scriptPath = resolveScriptPath(input)
   if (!scriptPath) {

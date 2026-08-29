@@ -493,7 +493,15 @@ export const hasPermissionsToUseTool = async (
   toolUseID: Parameters<CanUseToolFn>[4],
   hookAskFloor?: boolean,
 ): Promise<PermissionDecision> => {
-  const result = await hasPermissionsToUseToolInner(tool, input, context)
+  // CC 2.1.251 (Gap-109a): thread toolUseID into the permission-check
+  // context so file tools can stash check-time symlink resolutions keyed by
+  // it (binary: stash sites read t.toolUseId inside checkPermissions). The
+  // shallow copy shares every mutable field (localDenialTracking,
+  // setAppState, getAppState), so denial-state persistence is unaffected.
+  const result = await hasPermissionsToUseToolInner(tool, input, {
+    ...context,
+    toolUseId: toolUseID,
+  })
 
 
   // Reset consecutive denials on any allowed tool use in auto mode.
