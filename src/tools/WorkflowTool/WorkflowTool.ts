@@ -22,13 +22,27 @@
 import { z } from 'zod/v4'
 import React from 'react'
 import { Box, Text } from '../../ink.js'
-import { buildTool, type ToolDef } from '../../Tool.js'
+import {
+  buildTool,
+  type ToolDef,
+  type ToolUseContext,
+  type ValidationResult,
+} from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import type { PermissionResult } from '../../types/permissions.js'
+import type {
+  PermissionBehavior,
+  PermissionResult,
+} from '../../types/permissions.js'
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { logEvent } from '../../services/analytics/index.js'
 import { WORKFLOW_TOOL_NAME } from './constants.js'
-import { loadScript, loadScriptFromSource, validateScriptPath, type LoadedScript } from './scriptLoader.js'
+import {
+  checkScriptPathReadable,
+  loadScript,
+  loadScriptFromSource,
+  loadScriptGated,
+  type LoadedScript,
+} from './scriptLoader.js'
 import {
   runWorkflow,
   generateWorkflowRunId,
@@ -37,6 +51,7 @@ import {
 import { WorkflowJournal } from './journal.js'
 import { resolveWorkflowScript } from '../../utils/effort/workflowDiscovery.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
+import { getRuleByContentsForToolName } from '../../utils/permissions/permissions.js'
 import { WorkflowProgressTree } from '../../components/WorkflowProgressTree.js'
 import {
   registerWorkflowTask,
@@ -391,24 +406,70 @@ export const WorkflowTool = buildTool({
       viewportRows: options.terminalSize?.rows ?? 10,
     })
   },
+  /**
+   * 2.1.251 (Gap-109c): port of the official binary's WorkflowTool
+   * checkPermissions. Every mode is gated on the Workflow(<name>) permission
+   * rules; scriptPath is re-read through the TOCTOU-hardened readable-set
+   * loader (Ast) and denied without leaking content when outside the readable
+   * set; the consent message is the byte-matched official one. The old OCC
+   * version blanket-allowed `remote` invocations — removed: the binary has no
+   * such bypass (consent applies to every launch mode).
+   *
+   * OCC adaptation (documented): named-mode resolution uses OCC's
+   * .claude/workflows discovery instead of the binary's storageV5 registry —
+   * discovery paths (~/.claude/workflows) are intentionally NOT probed
+   * through the readable-set gate, matching the binary (its named mode never
+   * runs Ast).
+   */
   async checkPermissions(
     input: { scriptPath?: string; script?: string; name?: string; remote?: boolean } & {
       [key: string]: unknown
     },
+    context: ToolUseContext,
   ): Promise<PermissionResult> {
-    // Remote (async) launch is allowed: it runs runWorkflow in a background
-    // promise with a NO-OP setAppState (no Ink renderer reachable), so it
-    // cannot crash the main OCC. The user pre-approves the workflow launch
-    // by invoking the tool.
-    if (input.remote) {
-      return { behavior: 'allow', updatedInput: input }
+    const toolPermissionContext = context.getAppState().toolPermissionContext
+    const isInlineScript = input.script !== undefined
+    // a = e.scriptPath || o ? void 0 : e.name — rule content is the workflow
+    // name only when there is neither scriptPath nor inline script.
+    const ruleContent =
+      input.scriptPath || isInlineScript ? undefined : input.name
+    const ruleFor = (behavior: PermissionBehavior) =>
+      ruleContent === undefined
+        ? undefined
+        : getRuleByContentsForToolName(
+            toolPermissionContext,
+            WORKFLOW_TOOL_NAME,
+            behavior,
+          ).get(ruleContent)
+
+    const denyRule = ruleFor('deny')
+    if (denyRule) {
+      return {
+        behavior: 'deny',
+        message: `Workflow ${ruleContent} blocked by permission rules`,
+        decisionReason: { type: 'rule', rule: denyRule },
+      }
     }
-    // Local launch: resolve the script path, then ask for explicit consent.
-    // Dynamic workflows fan out across multiple subagents, so the standard
-    // permission prompt (which cannot surface phase breakdown or script
-    // source) is insufficient — WorkflowPermissionDialog shows both.
-    let resolvedScriptPath: string | undefined
-    if (input.name) {
+
+    let updatedInput = input
+    if (isInlineScript) {
+      // Inline script: content travels with the tool call; nothing to load.
+    } else if (input.scriptPath) {
+      // scriptPath: re-read through the gated loader (binary Ast). A path
+      // outside the readable set denies without leaking file content.
+      const gated = loadScriptGated(input.scriptPath, context)
+      if ('error' in gated) {
+        return {
+          behavior: 'deny',
+          message: gated.error,
+          decisionReason: {
+            type: 'other',
+            reason: 'workflow scriptPath outside the readable set',
+          },
+        }
+      }
+      updatedInput = { ...input, script: gated.script }
+    } else if (input.name) {
       const found = resolveWorkflowScript(input.name)
       if (!found) {
         return {
@@ -420,34 +481,64 @@ export const WorkflowTool = buildTool({
           },
         }
       }
-      resolvedScriptPath = found
-    } else if (input.scriptPath) {
-      try {
-        resolvedScriptPath = validateScriptPath(input.scriptPath)
-      } catch (err) {
-        return {
-          behavior: 'deny',
-          message: `Invalid workflow script path: ${(err as Error).message}`,
-          decisionReason: { type: 'other', reason: 'invalid script path' },
-        }
-      }
-    } else if (input.script) {
-      // Inline script mode: no file path to validate. The script content is
-      // parsed + validated in call(). Still ask for consent (dynamic fan-out).
+      updatedInput = { ...input, scriptPath: found }
+    }
+
+    const consentMessage = 'Review dynamic workflow before running'
+    const askRule = ruleFor('ask')
+    if (askRule) {
       return {
         behavior: 'ask',
-        message: `Run the inline workflow script?`,
-        updatedInput: input,
+        message: consentMessage,
+        updatedInput,
+        decisionReason: { type: 'rule', rule: askRule },
+      }
+    }
+    const allowRule = ruleFor('allow')
+    if (allowRule) {
+      return {
+        behavior: 'allow',
+        updatedInput,
+        decisionReason: { type: 'rule', rule: allowRule },
       }
     }
     return {
       behavior: 'ask',
-      message: `Run the dynamic workflow "${input.name ?? input.scriptPath ?? ''}"?`,
-      updatedInput: {
-        ...input,
-        scriptPath: resolvedScriptPath ?? input.scriptPath,
-      },
+      message: consentMessage,
+      updatedInput,
+      ...(ruleContent !== undefined && {
+        suggestions: [
+          {
+            type: 'addRules' as const,
+            rules: [{ toolName: WORKFLOW_TOOL_NAME, ruleContent }],
+            behavior: 'allow' as const,
+            destination: 'localSettings' as const,
+          },
+        ],
+      }),
     }
+  },
+  /**
+   * 2.1.251 (Gap-109c): the binary re-runs the scriptPath readable-set gate
+   * (dtn) inside validateInput so it executes even when checkPermissions is
+   * skipped by auto-approve modes — errorCode 15, byte-matched message.
+   * (The binary's remaining validateInput items — disableWorkflows managed
+   * setting, org policy, runId validation, named-only restriction, storageV5
+   * resolution — have no OCC infrastructure and are skipped, documented.)
+   */
+  async validateInput(
+    input: { scriptPath?: string; script?: string; name?: string; remote?: boolean } & {
+      [key: string]: unknown
+    },
+    context: ToolUseContext,
+  ): Promise<ValidationResult> {
+    if (input.scriptPath) {
+      const gateError = checkScriptPathReadable(input.scriptPath, context)
+      if (gateError !== null) {
+        return { result: false, message: gateError, errorCode: 15 }
+      }
+    }
+    return { result: true }
   },
   mapToolResultToToolResultBlockParam(
     data: Output,
@@ -502,7 +593,17 @@ export const WorkflowTool = buildTool({
       }
       loaded = loadScript(found)
     } else if (rawScriptPath) {
-      loaded = loadScript(validateScriptPath(rawScriptPath))
+      // 2.1.251 (Gap-109c): the scriptPath branch goes through the gated
+      // loader (binary Ast) — readable-set re-probe on the canonical path,
+      // TOCTOU-hardened open/fstat/read — instead of a plain readFileSync.
+      // Defense in depth: checkPermissions/validateInput already gate, but
+      // call() must not trust a stale approval (auto-approve modes can skip
+      // checkPermissions entirely).
+      const gated = loadScriptGated(rawScriptPath, context)
+      if ('error' in gated) {
+        throw new Error(gated.error)
+      }
+      loaded = loadScriptFromSource(gated.script, gated.path)
     } else if (script) {
       // Inline mode: the model provides the full script content directly —
       // no file needed. This is the mode models naturally reach for when

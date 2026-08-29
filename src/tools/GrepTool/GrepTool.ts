@@ -16,7 +16,13 @@ import {
   normalizePatternsToPath,
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import {
+  assertDenyPatternsUnchanged,
+  computeReadDenyPatternSnapshot,
+  prepareVerifiedSearchTarget,
+} from '../../utils/permissions/searchTargetGate.js'
 import { matchWildcardPattern } from '../../utils/permissions/shellRuleMatching.js'
+import { stashCheckTimeResolutions } from '../../utils/permissions/symlinkResolutionStash.js'
 import { getGlobExclusionsForPluginCache } from '../../utils/plugins/orphanedPluginFilter.js'
 import { ripGrep } from '../../utils/ripgrep.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
@@ -169,6 +175,48 @@ type OutputSchema = ReturnType<typeof outputSchema>
 
 type Output = z.infer<OutputSchema>
 
+// CC 2.1.251 (Gap-109b): binary GPn — the empty result returned when the
+// search target vanished (ENOENT/ENOTDIR) between the permission check and
+// the search preparing itself.
+function emptyGrepResult(outputMode: string): { data: Output } {
+  switch (outputMode) {
+    case 'content':
+      return {
+        data: {
+          mode: 'content',
+          numFiles: 0,
+          filenames: [],
+          content: '',
+          numLines: 0,
+          totalLines: 0,
+          appliedLimit: undefined,
+          appliedOffset: undefined,
+        },
+      }
+    case 'count':
+      return {
+        data: {
+          mode: 'count',
+          numFiles: 0,
+          filenames: [],
+          content: '',
+          numMatches: 0,
+          appliedLimit: undefined,
+          appliedOffset: undefined,
+        },
+      }
+    default:
+      return {
+        data: {
+          mode: 'files_with_matches',
+          filenames: [],
+          numFiles: 0,
+          totalFiles: 0,
+        },
+      }
+  }
+}
+
 export const GrepTool = buildTool({
   name: GREP_TOOL_NAME,
   searchHint: 'search file contents with regex (ripgrep)',
@@ -205,7 +253,10 @@ export const GrepTool = buildTool({
     return { isSearch: true, isRead: false }
   },
   getPath({ path }): string {
-    return path || getCwd()
+    // CC 2.1.251 (Gap-109b): binary FI.getPath = path ? gt(path) : ee() —
+    // the search target is expanded so the stash/gate and the permission
+    // rules all key off the same absolute path.
+    return path ? expandPath(path) : getCwd()
   },
   async preparePermissionMatcher({ pattern }) {
     return rulePattern => matchWildcardPattern(rulePattern, pattern)
@@ -260,6 +311,9 @@ export const GrepTool = buildTool({
     return { result: true }
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.251 (Gap-109b): stash the check-time symlink resolutions of the
+    // search target, read lane (binary FI.checkPermissions stash site).
+    stashCheckTimeResolutions(context, GrepTool.getPath(input), 'read')
     const appState = context.getAppState()
     return checkReadPermissionForTool(
       GrepTool,
@@ -374,8 +428,9 @@ export const GrepTool = buildTool({
       multiline = false,
       tools: reAddTools,
     },
-    { abortController, getAppState, setAppState },
+    toolUseContext,
   ) {
+    const { abortController, getAppState, setAppState } = toolUseContext
     // H14: If --tools is specified, re-add those tools to the subagent's
     // permission allowlist so they can be used in subsequent turns. Follows
     // the createGetAppStateWithAllowedTools pattern (command-source rules).
@@ -399,6 +454,19 @@ export const GrepTool = buildTool({
     }
 
     const absolutePath = path ? expandPath(path) : getCwd()
+
+    // CC 2.1.251 (Gap-109b): search-path TOCTOU gate (binary zPn/S2t).
+    // Consumes the check-time read-lane stash and refuses if the target's
+    // symlink resolution changed since the permission check. null means the
+    // target vanished between check and now → binary GPn empty result.
+    const searchTarget = await prepareVerifiedSearchTarget(
+      toolUseContext,
+      absolutePath,
+    )
+    if (searchTarget === null) {
+      return emptyGrepResult(output_mode)
+    }
+
     const args = ['--hidden']
 
     // Exclude VCS directories to avoid noise from version control metadata
@@ -525,6 +593,19 @@ export const GrepTool = buildTool({
         `Search failed: ripgrep rejected the pattern "${pattern}"`,
       )
     }
+
+    // CC 2.1.251 (Gap-109b): binary beforeSpawn — re-run the resolution
+    // subset gate and the H2t deny-pattern recheck right before ripgrep
+    // spawns, closing the prep→spawn TOCTOU window.
+    searchTarget.recheckBeforeSpawn()
+    assertDenyPatternsUnchanged(
+      absolutePath,
+      ignorePatterns,
+      computeReadDenyPatternSnapshot(
+        getAppState().toolPermissionContext,
+        getCwd(),
+      ),
+    )
 
     const results = await ripGrep(args, absolutePath, abortController.signal, {
       rejectOnInputError: true,

@@ -881,6 +881,7 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     _args?: unknown,
   ): Promise<unknown> => {
     let scriptPath: string | null
+    let isObjectRef = false
     if (typeof nameOrRef === 'string') {
       scriptPath = ctx.resolveWorkflowScript?.(nameOrRef) ?? null
       if (!scriptPath) {
@@ -888,6 +889,7 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       }
     } else if (nameOrRef && typeof nameOrRef === 'object' && 'scriptPath' in nameOrRef) {
       scriptPath = (nameOrRef as { scriptPath: string }).scriptPath
+      isObjectRef = true
     } else {
       throw new Error(
         'workflow() expects a workflow name (string) or {scriptPath: string}',
@@ -895,8 +897,24 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     }
     // Lazy-load the engine to avoid circular import.
     const { runWorkflow } = await import('./WorkflowEngine.js')
-    const { loadScript } = await import('./scriptLoader.js')
-    const loaded = loadScript(scriptPath)
+    const { loadScript, loadScriptFromSource, loadScriptGated } = await import(
+      './scriptLoader.js'
+    )
+    // 2.1.251 (Gap-109c): the binary's nested-workflow loader (loadScriptPath)
+    // runs the readable-set gated read (Ast) on caller-supplied script paths.
+    // The {scriptPath} object-ref form is a caller-supplied path → gate it.
+    // The named (string) form resolves through OCC's workflow discovery
+    // (~/.claude/workflows is outside the read scope on purpose), matching
+    // the top-level named-mode adaptation — it stays on the plain loader.
+    const loaded = isObjectRef
+      ? (() => {
+          const gated = loadScriptGated(scriptPath as string, ctx.toolUseContext)
+          if ('error' in gated) {
+            throw new Error(gated.error)
+          }
+          return loadScriptFromSource(gated.script, gated.path)
+        })()
+      : loadScript(scriptPath)
     const result = await runWorkflow({
       script: loaded.source,
       scriptPath: loaded.scriptPath,

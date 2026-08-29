@@ -174,6 +174,234 @@ const SPECIAL_VAR_NAMES = new Set([
 ])
 
 /**
+ * CC 2.1.251 security fix: "Bash permission checks auto-approved arithmetic
+ * assignments to integer shell variables (OPTIND=1/0, RANDOM=2+2)".
+ * Variables that carry a shell integer attribute: bash/zsh arithmetically
+ * evaluate the RHS of `NAME=value` assignments to them (and the value of
+ * env-prefix assignments), which executes `$(cmd)` inside subscripts and can
+ * abort/diverge the shell at runtime. Recovered verbatim from the official
+ * 2.1.251 binary (set `or`).
+ */
+const INTEGER_ATTR_SHELL_VARS = new Set([
+  'RANDOM',
+  'SECONDS',
+  'LINENO',
+  'OPTIND',
+  'MAILCHECK',
+  'HISTCMD',
+  'SRANDOM',
+  'EPOCHSECONDS',
+  'EPOCHREALTIME',
+  'COLUMNS',
+  'LINES',
+  'SHLVL',
+  'ERRNO',
+  'TMOUT',
+  'HISTSIZE',
+  'SAVEHIST',
+  'TRY_BLOCK_ERROR',
+  'TRY_BLOCK_INTERRUPT',
+  'KEYTIMEOUT',
+  'LISTMAX',
+  'LOGCHECK',
+  'PERIOD',
+  'FUNCNEST',
+  'UID',
+  'EUID',
+  'GID',
+  'EGID',
+  'ZLE_RPROMPT_INDENT',
+  'MBEGIN',
+  'MEND',
+  'PPID',
+  'ARGC',
+  'ZSH_SUBSHELL',
+  'TTYIDLE',
+  'status',
+])
+
+/**
+ * Variables whose value alters command lookup/execution for subsequent
+ * commands (lowercase-compared): path search, shell/env bootstrap, locale.
+ * Recovered verbatim from the official 2.1.251 binary (set `Va`).
+ */
+const EXEC_INFLUENCING_VARS = new Set([
+  'path',
+  'home',
+  'tmpprefix',
+  'bash_env',
+  'env',
+  'cdpath',
+  'globignore',
+  'shell',
+  'fpath',
+  'bash_loadables_path',
+  'module_path',
+  'manpath',
+  'mailpath',
+  'readnullcmd',
+  'nullcmd',
+  'histfile',
+  'zdotdir',
+  'functions',
+  'commands',
+  'aliases',
+  'galiases',
+  'saliases',
+  'lang',
+  'language',
+  'lc_all',
+  'lc_ctype',
+  'lc_collate',
+  'lc_messages',
+  'lc_numeric',
+  'lc_time',
+  'histchars',
+  'textdomain',
+  'textdomaindir',
+])
+
+/**
+ * Env-var-style shell variables the static model marks unknown when the
+ * shell/host writes them. Recovered verbatim from the official 2.1.251
+ * binary (set `Wn`).
+ */
+const ENV_INFLUENCING_VARS = new Set([
+  'HOME',
+  'PWD',
+  'OLDPWD',
+  'USER',
+  'LOGNAME',
+  'SHELL',
+  'PATH',
+  'HOSTNAME',
+  'UID',
+  'EUID',
+  'PPID',
+  'RANDOM',
+  'SECONDS',
+  'LINENO',
+  'TMPDIR',
+  'BASH_VERSION',
+  'BASHPID',
+  'SHLVL',
+  'HISTFILE',
+  'IFS',
+])
+
+/**
+ * Shell-managed variables whose value is runtime-determined or expanded by
+ * the shell itself (prompts, matches, per-command state). Recovered verbatim
+ * from the official 2.1.251 binary (set `Vo`).
+ */
+const SPECIAL_SHELL_VARS = new Set([
+  '_',
+  'RANDOM',
+  'SECONDS',
+  'LINENO',
+  'BASH_COMMAND',
+  'FUNCNAME',
+  'EPOCHSECONDS',
+  'EPOCHREALTIME',
+  'SRANDOM',
+  'BASHPID',
+  'HISTCMD',
+  'ERRNO',
+  'REPLY',
+  'reply',
+  'PIPESTATUS',
+  'pipestatus',
+  'BASH_SOURCE',
+  'DIRSTACK',
+  'GROUPS',
+  'BASH_ARGV',
+  'BASH_ARGC',
+  'BASH_SUBSHELL',
+  'BASH_LINENO',
+  'BASH_REMATCH',
+  'MATCH',
+  'match',
+  'MBEGIN',
+  'MEND',
+  'mbegin',
+  'mend',
+  'OPTARG',
+  'OPTIND',
+  'argv',
+  'FIGNORE',
+  'fignore',
+  'PSVAR',
+  'psvar',
+  'WATCH',
+  'watch',
+  'HISTCHARS',
+  'histchars',
+  'PS1',
+  'PROMPT',
+  'prompt',
+  'PS2',
+  'PROMPT2',
+  'PS3',
+  'PROMPT3',
+  'PS4',
+  'PROMPT4',
+  'RPS1',
+  'RPROMPT',
+  'RPS2',
+  'RPROMPT2',
+])
+
+/**
+ * True when `name` carries a shell integer attribute and `value` cannot be
+ * statically verified as a plain decimal integer — the shell arithmetically
+ * evaluates such an assignment RHS, which executes `$(cmd)` inside
+ * subscripts and can abort/diverge at runtime. Verbatim port of the official
+ * 2.1.251 binary's `Jo`.
+ */
+function hasIntegerAttrArithEvalRisk(name: string, value: string): boolean {
+  if (!INTEGER_ATTR_SHELL_VARS.has(name)) return false
+  if (
+    value.includes('[') ||
+    value.includes('`') ||
+    /\$\(/.test(value) ||
+    containsAnyPlaceholder(value)
+  ) {
+    return true
+  }
+  if (!/^(0|[1-9][0-9]{0,17})$/.test(value)) return true
+  return false
+}
+
+/**
+ * True when assigning `name` alters command lookup/execution for subsequent
+ * commands. Verbatim port of the official 2.1.251 binary's `Jn`.
+ */
+function isExecInfluencingVar(name: string): boolean {
+  const lower = name.toLowerCase()
+  return (
+    EXEC_INFLUENCING_VARS.has(lower) ||
+    lower.startsWith('ld_') ||
+    lower.startsWith('dyld_') ||
+    lower.startsWith('bash_func_')
+  )
+}
+
+/**
+ * True when the shell variable needs special handling for
+ * assignment/unset/write paths (exec-influencing / integer-attr / IFS /
+ * PS4). Verbatim port of the official 2.1.251 binary's `Vwe`.
+ */
+function isSpecialShellVar(name: string): boolean {
+  return (
+    isExecInfluencingVar(name) ||
+    name === 'IFS' ||
+    name === 'PS4' ||
+    name === 'PROMPT4' ||
+    INTEGER_ATTR_SHELL_VARS.has(name)
+  )
+}
+
+/**
  * Node types that mean "this command cannot be statically analyzed." These
  * either execute arbitrary code (substitutions, subshells, control flow) or
  * expand to values we can't determine statically (parameter/arithmetic
@@ -688,6 +916,27 @@ function collectCommands(
     // where cmd references $VAR. ~35% of too-complex in top-5k ant cmds.
     const ev = walkVariableAssignment(node, commands, varScope)
     if ('kind' in ev) return ev
+    // CC 2.1.251: assigning an exec-influencing variable (PATH-family,
+    // LD_*, ...) changes command lookup/execution for subsequent commands —
+    // the static model cannot verify downstream effects. Verbatim gate and
+    // reason from the official binary.
+    if (isExecInfluencingVar(ev.name)) {
+      return {
+        kind: 'too-complex',
+        reason: `${ev.name} assignment alters command lookup/execution for subsequent commands`,
+        nodeType: 'variable_assignment',
+      }
+    }
+    // CC 2.1.251: integer-attribute shell variables arith-eval the
+    // assignment RHS — `OPTIND=1/0`, `RANDOM=2+2`, `SECONDS=x[$(id)]`
+    // execute/abort at runtime. Must not be auto-approved as inert.
+    if (hasIntegerAttrArithEvalRisk(ev.name, ev.value)) {
+      return {
+        kind: 'too-complex',
+        reason: `${ev.name} has integer attribute — assignment arith-evals RHS, which can execute subscript command substitution or abort/diverge at runtime`,
+        nodeType: 'variable_assignment',
+      }
+    }
     // Populate scope so later `$VAR` references resolve.
     applyVarToScope(varScope, ev)
     return null
@@ -741,7 +990,18 @@ function collectCommands(
     // SECURITY: `for PS4 in '$(id)'; do set -x; :; done` sets PS4 directly
     // via varScope.set below — walkVariableAssignment's PS4/IFS checks never
     // fire. Trace-time RCE (PS4) or word-split bypass (IFS). No legit use.
-    if (loopVar === 'PS4' || loopVar === 'IFS') {
+    // CC 2.1.251: the loop-var guard covers the full special-variable
+    // families (exec-influencing / integer-attr / env-influencing /
+    // shell-managed) — a loop var bypasses assignment validation for all of
+    // them. Verbatim set from the official binary.
+    if (
+      loopVar === 'PS4' ||
+      loopVar === 'IFS' ||
+      isExecInfluencingVar(loopVar) ||
+      INTEGER_ATTR_SHELL_VARS.has(loopVar) ||
+      ENV_INFLUENCING_VARS.has(loopVar) ||
+      SPECIAL_SHELL_VARS.has(loopVar)
+    ) {
       return {
         kind: 'too-complex',
         reason: `${loopVar} as loop variable bypasses assignment validation`,
@@ -950,24 +1210,72 @@ function collectCommands(
     // filesystem I/O. tree-sitter emits a dedicated node type so it
     // previously fell through to tooComplex. Children: `unset` keyword,
     // `variable_name` for each name, `word` for flags like `-f`/`-v`.
+    //
+    // CC 2.1.251 hardening (verbatim structure from the official binary):
+    //  - operands must be bare identifiers (no expansion/glob slipping in),
+    //  - only `-f`/`-v` flags, and never after the first name,
+    //  - `unsetenv` (zsh) and `unset -f` target functions/env, not shell
+    //    state, so they skip the special-variable gate,
+    //  - unsetting a special shell variable (exec-influencing / integer-attr
+    //    / IFS / PS4) is too-complex — removing e.g. PATH or IFS silently
+    //    reconfigures every subsequent command.
     const argv: string[] = []
+    let sawFunctionFlag = false
+    let sawName = false
+    let isUnsetenv = false
     for (const child of node.children) {
       if (!child) continue
       switch (child.type) {
         case 'unset':
           argv.push(child.text)
+          isUnsetenv = child.text === 'unsetenv'
           break
-        case 'variable_name':
+        case 'variable_name': {
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(child.text))
+            return tooComplex(child)
           argv.push(child.text)
+          sawName = true
+          if (sawFunctionFlag || isUnsetenv) {
+            // Function/env unset: the binary checks its tracked-literal model
+            // here; OCC has no tracked-literal model — nothing to verify.
+            break
+          }
+          if (isSpecialShellVar(child.text)) {
+            return {
+              kind: 'too-complex',
+              reason: `'unset' targets shell variable ${child.text} (exec-influencing / integer-attr / IFS / PS4)`,
+              nodeType: 'unset_command',
+            }
+          }
           // SECURITY: unset removes the var from bash's scope. Remove from
           // varScope so subsequent `$VAR` references correctly reject.
           // `VAR=safe && unset VAR && rm $VAR` must NOT resolve $VAR.
           varScope.delete(child.text)
           break
+        }
         case 'word': {
           const arg = walkArgument(child, commands, varScope)
           if (typeof arg !== 'string') return arg
+          if (arg.startsWith('-')) {
+            // Flags only precede names, and only -f/-v are modelled.
+            if (sawName) return tooComplex(child)
+            if (arg !== '-f' && arg !== '-v') return tooComplex(child)
+            if (arg === '-f') sawFunctionFlag = true
+            argv.push(arg)
+            break
+          }
+          if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(arg)) return tooComplex(child)
           argv.push(arg)
+          sawName = true
+          if (sawFunctionFlag || isUnsetenv) break
+          if (isSpecialShellVar(arg)) {
+            return {
+              kind: 'too-complex',
+              reason: `'unset' targets shell variable ${arg} (exec-influencing / integer-attr / IFS / PS4)`,
+              nodeType: 'unset_command',
+            }
+          }
+          varScope.delete(arg)
           break
         }
         default:
@@ -1587,6 +1895,16 @@ function walkCommand(
       case 'variable_assignment': {
         const ev = walkVariableAssignment(child, innerCommands, varScope)
         if ('kind' in ev) return ev
+        // CC 2.1.251: integer-attribute shell variables arith-eval the
+        // env-prefix value too (`RANDOM=2+2 cmd`, `OPTIND=x[$(id)] cmd`).
+        // Verbatim gate and reason from the official binary.
+        if (hasIntegerAttrArithEvalRisk(ev.name, ev.value)) {
+          return {
+            kind: 'too-complex',
+            reason: `${ev.name} has integer attribute — env-prefix arith-evals value, which can execute subscript command substitution or abort/diverge at runtime`,
+            nodeType: 'variable_assignment',
+          }
+        }
         // SECURITY: Env-prefix assignments (`VAR=x cmd`) are command-local in
         // bash — VAR is only visible to `cmd` as an env var, NOT to
         // subsequent commands. Do NOT add to global varScope — that would

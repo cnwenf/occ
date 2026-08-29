@@ -107,6 +107,13 @@ export type PluginError =
       component: PluginComponent
     }
   | {
+      type: 'path-traversal'
+      source: string
+      plugin?: string
+      path: string
+      component: PluginComponent
+    }
+  | {
       type: 'git-auth-failed'
       source: string
       plugin?: string
@@ -298,6 +305,8 @@ export function getPluginErrorMessage(error: PluginError): string {
       return error.error
     case 'path-not-found':
       return `Path not found: ${error.path} (${error.component})`
+    case 'path-traversal':
+      return `Path escapes plugin directory: ${error.path} (${error.component})`
     case 'git-auth-failed':
       return `Git authentication failed (${error.authType}): ${error.gitUrl}`
     case 'git-timeout':

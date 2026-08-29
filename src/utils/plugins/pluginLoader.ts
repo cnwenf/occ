@@ -1242,6 +1242,29 @@ async function loadPluginHooks(
 }
 
 /**
+ * Resolve a plugin-component relative path and verify it stays inside the
+ * plugin directory. Verbatim port of the official 2.1.251 binary's
+ * containment helper (CC 2.1.251 security fix: marketplace entries /
+ * manifests declaring plugin component paths that escape the plugin
+ * directory via ".."). Resolves the plugin root, resolves the candidate
+ * against it, then rejects when the relative form escapes ("..") or is
+ * absolute (relative() yields an absolute path only across Windows drive
+ * roots — the binary keeps this guard).
+ *
+ * @returns The contained absolute path, or null when the path escapes.
+ */
+function resolveContainedPluginPath(
+  pluginPath: string,
+  relPath: string,
+): string | null {
+  const resolvedRoot = resolve(pluginPath)
+  const fullPath = resolve(resolvedRoot, relPath)
+  const rel = relative(resolvedRoot, fullPath)
+  if (rel.startsWith('..') || resolve(rel) === rel) return null
+  return fullPath
+}
+
+/**
  * Validate a list of plugin component relative paths by checking existence in parallel.
  *
  * This helper parallelizes the pathExists checks (the expensive async part) while
@@ -1250,6 +1273,10 @@ async function loadPluginHooks(
  * Introduced to fix a perf regression from the sync→async fs migration: sequential
  * `for { await pathExists }` loops add ~1-5ms of event-loop overhead per iteration.
  * With many plugins × several component types, this compounds to hundreds of ms.
+ *
+ * CC 2.1.251: each relPath also passes the plugin-directory containment check
+ * (resolveContainedPluginPath, official binary's shared path validator); an
+ * escaping path records a `path-traversal` error instead of resolving.
  *
  * @param relPaths - Relative paths from the manifest/marketplace entry to validate
  * @param pluginPath - Plugin root directory to resolve relative paths against
@@ -1275,13 +1302,30 @@ async function validatePluginPaths(
   // Parallelize the async pathExists checks
   const checks = await Promise.all(
     relPaths.map(async relPath => {
-      const fullPath = join(pluginPath, relPath)
+      const fullPath = resolveContainedPluginPath(pluginPath, relPath)
+      if (fullPath === null) {
+        return { relPath, fullPath, exists: false }
+      }
       return { relPath, fullPath, exists: await pathExists(fullPath) }
     }),
   )
   // Process results in original order to keep error/log ordering deterministic
   const validPaths: string[] = []
   for (const { relPath, fullPath, exists } of checks) {
+    if (fullPath === null) {
+      logForDebugging(
+        `${componentLabel} path ${relPath} ${contextLabel} escapes plugin directory for ${pluginName}`,
+        { level: 'error' },
+      )
+      errors.push({
+        type: 'path-traversal',
+        source,
+        plugin: pluginName,
+        path: relPath,
+        component,
+      })
+      continue
+    }
     if (exists) {
       validPaths.push(fullPath)
     } else {
@@ -1414,13 +1458,16 @@ export async function createPluginFromPath(
             return { commandName, metadata, kind: 'skip' as const }
           }
           if (metadata.source) {
-            const fullPath = join(pluginPath, metadata.source)
+            const fullPath = resolveContainedPluginPath(
+              pluginPath,
+              metadata.source,
+            )
             return {
               commandName,
               metadata,
               kind: 'source' as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              exists: fullPath !== null && (await pathExists(fullPath)),
             }
           }
           if (metadata.content) {
@@ -1437,6 +1484,21 @@ export async function createPluginFromPath(
           continue
         }
         // kind === 'source'
+        if (check.fullPath === null) {
+          // CC 2.1.251: command source escapes the plugin directory.
+          logForDebugging(
+            `Command ${check.commandName} source ${check.metadata.source} specified in manifest but escapes plugin directory for ${manifest.name}`,
+            { level: 'error' },
+          )
+          errors.push({
+            type: 'path-traversal',
+            source,
+            plugin: manifest.name,
+            path: check.metadata.source!,
+            component: 'commands',
+          })
+          continue
+        }
         if (check.exists) {
           validPaths.push(check.fullPath)
           commandsMetadata[check.commandName] = check.metadata
@@ -1480,12 +1542,12 @@ export async function createPluginFromPath(
           if (typeof cmdPath !== 'string') {
             return { cmdPath, kind: 'invalid' as const }
           }
-          const fullPath = join(pluginPath, cmdPath)
+          const fullPath = resolveContainedPluginPath(pluginPath, cmdPath)
           return {
             cmdPath,
             kind: 'path' as const,
             fullPath,
-            exists: await pathExists(fullPath),
+            exists: fullPath !== null && (await pathExists(fullPath)),
           }
         }),
       )
@@ -1496,6 +1558,21 @@ export async function createPluginFromPath(
             `Unexpected command format in manifest for ${manifest.name}`,
             { level: 'error' },
           )
+          continue
+        }
+        if (check.fullPath === null) {
+          // CC 2.1.251: command path escapes the plugin directory.
+          logForDebugging(
+            `Command path ${check.cmdPath} specified in manifest but escapes plugin directory for ${manifest.name}`,
+            { level: 'error' },
+          )
+          errors.push({
+            type: 'path-traversal',
+            source,
+            plugin: manifest.name,
+            path: check.cmdPath,
+            component: 'commands',
+          })
           continue
         }
         if (check.exists) {
@@ -1657,7 +1734,23 @@ export async function createPluginFromPath(
     for (const hookSpec of manifestHooksArray) {
       if (typeof hookSpec === 'string') {
         // Path to additional hooks file
-        const hookFilePath = join(pluginPath, hookSpec)
+        // CC 2.1.251: containment check (binary Ibe) — hook file paths that
+        // escape the plugin directory are rejected, not joined blindly.
+        const hookFilePath = resolveContainedPluginPath(pluginPath, hookSpec)
+        if (hookFilePath === null) {
+          logForDebugging(
+            `Hooks file ${hookSpec} specified in manifest but escapes plugin directory for ${manifest.name}`,
+            { level: 'error' },
+          )
+          errors.push({
+            type: 'path-traversal',
+            source,
+            plugin: manifest.name,
+            path: hookSpec,
+            component: 'hooks',
+          })
+          continue
+        }
         if (!(await pathExists(hookFilePath))) {
           logForDebugging(
             `Hooks file ${hookSpec} specified in manifest but not found at ${hookFilePath} for ${manifest.name}`,
@@ -2480,18 +2573,38 @@ async function finishLoadingPluginFromPath(
             if (!metadata || typeof metadata !== 'object' || !metadata.source) {
               return { commandName, metadata, skip: true as const }
             }
-            const fullPath = join(pluginPath, metadata.source)
+            // CC 2.1.251: containment check (binary Ibe) — sources that
+            // escape the plugin directory are rejected, not joined blindly.
+            const fullPath = resolveContainedPluginPath(
+              pluginPath,
+              metadata.source,
+            )
             return {
               commandName,
               metadata,
               skip: false as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              exists: fullPath !== null && (await pathExists(fullPath)),
             }
           }),
         )
         for (const check of checks) {
           if (check.skip) continue
+          if (check.fullPath === null) {
+            // CC 2.1.251: command source escapes the plugin directory.
+            logForDebugging(
+              `Command ${check.commandName} source ${check.metadata.source} from marketplace entry escapes plugin directory for ${entry.name}`,
+              { level: 'error' },
+            )
+            errors.push({
+              type: 'path-traversal',
+              source: pluginId,
+              plugin: entry.name,
+              path: check.metadata.source!,
+              component: 'commands',
+            })
+            continue
+          }
           if (check.exists) {
             validPaths.push(check.fullPath)
             commandsMetadata[check.commandName] = check.metadata
@@ -2531,12 +2644,14 @@ async function finishLoadingPluginFromPath(
             if (typeof cmdPath !== 'string') {
               return { cmdPath, kind: 'invalid' as const }
             }
-            const fullPath = join(pluginPath, cmdPath)
+            // CC 2.1.251: containment check (binary Ibe) — paths that
+            // escape the plugin directory are rejected, not joined blindly.
+            const fullPath = resolveContainedPluginPath(pluginPath, cmdPath)
             return {
               cmdPath,
               kind: 'path' as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              exists: fullPath !== null && (await pathExists(fullPath)),
             }
           }),
         )
@@ -2547,6 +2662,21 @@ async function finishLoadingPluginFromPath(
               `Unexpected command format in marketplace entry for ${entry.name}`,
               { level: 'error' },
             )
+            continue
+          }
+          if (check.fullPath === null) {
+            // CC 2.1.251: command path escapes the plugin directory.
+            logForDebugging(
+              `Command path ${check.cmdPath} from marketplace entry escapes plugin directory for ${entry.name}`,
+              { level: 'error' },
+            )
+            errors.push({
+              type: 'path-traversal',
+              source: pluginId,
+              plugin: entry.name,
+              path: check.cmdPath,
+              component: 'commands',
+            })
             continue
           }
           if (check.exists) {
@@ -2731,18 +2861,38 @@ async function finishLoadingPluginFromPath(
             if (!metadata || typeof metadata !== 'object' || !metadata.source) {
               return { commandName, metadata, skip: true as const }
             }
-            const fullPath = join(pluginPath, metadata.source)
+            // CC 2.1.251: containment check (binary Ibe) — sources that
+            // escape the plugin directory are rejected, not joined blindly.
+            const fullPath = resolveContainedPluginPath(
+              pluginPath,
+              metadata.source,
+            )
             return {
               commandName,
               metadata,
               skip: false as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              exists: fullPath !== null && (await pathExists(fullPath)),
             }
           }),
         )
         for (const check of checks) {
           if (check.skip) continue
+          if (check.fullPath === null) {
+            // CC 2.1.251: command source escapes the plugin directory.
+            logForDebugging(
+              `Command ${check.commandName} source ${check.metadata.source} from marketplace entry escapes plugin directory for ${entry.name}`,
+              { level: 'error' },
+            )
+            errors.push({
+              type: 'path-traversal',
+              source: pluginId,
+              plugin: entry.name,
+              path: check.metadata.source!,
+              component: 'commands',
+            })
+            continue
+          }
           if (check.exists) {
             validPaths.push(check.fullPath)
             commandsMetadata[check.commandName] = check.metadata
@@ -2785,12 +2935,14 @@ async function finishLoadingPluginFromPath(
             if (typeof cmdPath !== 'string') {
               return { cmdPath, kind: 'invalid' as const }
             }
-            const fullPath = join(pluginPath, cmdPath)
+            // CC 2.1.251: containment check (binary Ibe) — paths that
+            // escape the plugin directory are rejected, not joined blindly.
+            const fullPath = resolveContainedPluginPath(pluginPath, cmdPath)
             return {
               cmdPath,
               kind: 'path' as const,
               fullPath,
-              exists: await pathExists(fullPath),
+              exists: fullPath !== null && (await pathExists(fullPath)),
             }
           }),
         )
@@ -2801,6 +2953,21 @@ async function finishLoadingPluginFromPath(
               `Unexpected command format in marketplace entry for ${entry.name}`,
               { level: 'error' },
             )
+            continue
+          }
+          if (check.fullPath === null) {
+            // CC 2.1.251: command path escapes the plugin directory.
+            logForDebugging(
+              `Command path ${check.cmdPath} from marketplace entry escapes plugin directory for ${entry.name}`,
+              { level: 'error' },
+            )
+            errors.push({
+              type: 'path-traversal',
+              source: pluginId,
+              plugin: entry.name,
+              path: check.cmdPath,
+              component: 'commands',
+            })
             continue
           }
           if (check.exists) {

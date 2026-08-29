@@ -19,14 +19,45 @@
  * We validate the body against these so resume is reproducible.
  *
  * scriptPath validation: reject UNC paths (\\\\ prefix) and path traversal.
+ *
+ * 2.1.251 security fix (changelog, Gap-109c): the workflow script could be
+ * read from outside the readable set. Ported byte-semantically from the
+ * official 2.1.251 binary (aligning-with-official-binary skill — nothing
+ * invented). Minified official identifiers kept for traceability:
+ *
+ *   It   -> scriptPathNotReadableMessage
+ *   dtn  -> checkScriptPathReadable (network gate + readable-set probe)
+ *   Wo   -> isScriptPathInReadableSet (tool-list gate + probe)
+ *   nJ   -> !isReadToolUnavailableForGuard && isReadAutoAllowedForPath
+ *   zl   -> isReadToolUnavailableForGuard (fileStateGuard, 2.1.228 port)
+ *   f_r  -> isReadAutoAllowedForPath (fileStateGuard, 2.1.228 port)
+ *   Ast  -> loadScriptGated (TOCTOU-hardened reader)
+ *   cm   -> WORKFLOW_SCRIPT_MAX_BYTES (524288)
  */
-import { readFileSync } from 'fs'
+import {
+  closeSync,
+  constants as fsConstants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  readlinkSync,
+  readSync,
+  realpathSync,
+} from 'fs'
 import { isAbsolute, resolve, sep } from 'path'
 import vm from 'node:vm'
+import type { ToolUseContext } from '../../Tool.js'
+import { toolMatchesName } from '../../Tool.js'
+import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
+import { REPL_TOOL_NAME } from '../REPLTool/constants.js'
+import { isENOENT } from '../../utils/errors.js'
+import { getCwd } from '../../utils/cwd.js'
 import {
   containsNtNamespacePath,
   isAutomountPath,
 } from '../../utils/ntNamespacePaths.js'
+import { isReadAutoAllowedForPath } from '../../utils/permissions/fileStateGuard.js'
+import { WORKFLOW_TOOL_NAME } from './constants.js'
 
 export interface WorkflowMeta {
   name: string
@@ -54,6 +85,42 @@ export class WorkflowScriptError extends Error {
   }
 }
 
+/** cm — binary's workflow script size cap, byte-verbatim. */
+export const WORKFLOW_SCRIPT_MAX_BYTES = 524288
+
+/**
+ * It — the binary's message when a scriptPath falls outside the readable
+ * set (or fails any TOCTOU check). Byte-verbatim; note it names the RAW
+ * scriptPath the caller supplied, never the canonical path.
+ */
+export function scriptPathNotReadableMessage(scriptPath: string): string {
+  return (
+    'scriptPath must be a script path this tool returned, or a file you can ' +
+    `already read (the working directory or a directory you have added): ${scriptPath}`
+  )
+}
+
+/**
+ * Network-path violation check shared by validateScriptPath (throw form) and
+ * checkScriptPathReadable (return form). Mirrors the 2.1.234 binary gate
+ * (Khn) — checks the raw scriptPath AND the cwd-resolved path for the
+ * automount form. Returns the byte-matched official message, or null.
+ */
+function getNetworkPathViolation(
+  scriptPath: string,
+  resolved: string,
+): string | null {
+  if (
+    /^[\\/]{2}/.test(scriptPath) ||
+    containsNtNamespacePath(scriptPath) ||
+    isAutomountPath(scriptPath) ||
+    isAutomountPath(resolved)
+  ) {
+    return `Network (UNC, NT-namespace, or automount) paths are not allowed for workflow scriptPath: ${scriptPath}`
+  }
+  return null
+}
+
 /**
  * Validate a scriptPath. Rejects network (UNC `\\`/`//` prefix), NT-namespace
  * (`\??\` / object-manager namespaces), and automount (`/net/<share>`) paths,
@@ -70,20 +137,193 @@ export function validateScriptPath(scriptPath: string): string {
   const resolved = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath)
   // Network UNC prefix (\\ or //), NT-namespace device paths, or automount
   // paths are not allowed — the resolved path is checked for automount too.
-  if (
-    /^[\\/]{2}/.test(scriptPath) ||
-    containsNtNamespacePath(scriptPath) ||
-    isAutomountPath(scriptPath) ||
-    isAutomountPath(resolved)
-  ) {
-    throw new WorkflowScriptError(
-      `Network (UNC, NT-namespace, or automount) paths are not allowed for workflow scriptPath: ${scriptPath}`,
-    )
+  const violation = getNetworkPathViolation(scriptPath, resolved)
+  if (violation !== null) {
+    throw new WorkflowScriptError(violation)
   }
   // Reject path traversal — resolved path must not escape via .. normalization
   // (path.join normalizes, but an absolute path with .. is still suspicious;
   // we just require it resolves to a real absolute path).
   return resolved
+}
+
+/**
+ * Wo/nJ — would a Read of this path be auto-allowed, given the current tool
+ * list? Byte-semantic port of the binary's readable-set probe:
+ *  - Wo's first gate: a restricted tool list (non-empty) with neither Read
+ *    nor REPL cannot have read anything, so nothing is in the readable set.
+ *  - nJ: the probe is disabled when the named tool (Workflow) is registered
+ *    without Read/REPL (zl), else a hypothetical Read of the path must be
+ *    auto-allowed (f_r = isReadAutoAllowedForPath, fileStateGuard 2.1.228
+ *    port — same minimal Read probe, same Read+REPL pair the binary uses).
+ */
+function isScriptPathInReadableSet(
+  fullFilePath: string,
+  context: ToolUseContext,
+): boolean {
+  const tools = context.options.tools ?? []
+  const hasReadTool = tools.some(tool =>
+    toolMatchesName(tool, FILE_READ_TOOL_NAME),
+  )
+  const hasReplTool = tools.some(tool => toolMatchesName(tool, REPL_TOOL_NAME))
+  if (tools.length > 0 && !hasReadTool && !hasReplTool) {
+    return false
+  }
+  if (
+    tools.some(tool => toolMatchesName(tool, WORKFLOW_TOOL_NAME)) &&
+    !hasReadTool &&
+    !hasReplTool
+  ) {
+    return false
+  }
+  return isReadAutoAllowedForPath(
+    fullFilePath,
+    context.getAppState().toolPermissionContext,
+  )
+}
+
+/**
+ * dtn — the validateInput-time gate. Resolves the scriptPath against the cwd,
+ * runs the network gate (Khn) and the readable-set probe (Wo), and returns
+ * the byte-matched error message or null when the path passes.
+ */
+export function checkScriptPathReadable(
+  scriptPath: string,
+  context: ToolUseContext,
+): string | null {
+  if (!scriptPath || typeof scriptPath !== 'string') {
+    return 'workflow scriptPath must be a non-empty string'
+  }
+  const resolved = resolve(getCwd(), scriptPath)
+  const violation = getNetworkPathViolation(scriptPath, resolved)
+  if (violation !== null) {
+    return violation
+  }
+  return isScriptPathInReadableSet(resolved, context)
+    ? null
+    : scriptPathNotReadableMessage(scriptPath)
+}
+
+/** /proc/self/fd/<fd> readlink — null when unavailable (non-Linux, races). */
+function readFdLinkTarget(fd: number): string | null {
+  try {
+    return readlinkSync(`/proc/self/fd/${fd}`)
+  } catch {
+    return null
+  }
+}
+
+export type GatedScriptLoad = { script: string; path: string } | { error: string }
+
+/**
+ * Ast — the TOCTOU-hardened script reader. Byte-semantic port of the 2.1.251
+ * binary: dtn gate on the raw path, then open(O_RDONLY|O_NONBLOCK), bigint
+ * fstat (ino===0 / nlink>1 reject), canonical path via /proc/self/fd readlink
+ * (realpath fallback with an O_NOFOLLOW re-open + ino/dev/nlink compare +
+ * realpath stability check when readlink is unavailable), RE-PROBE of the
+ * canonical path, isFile check, 512 KiB cap, full read. Every failure returns
+ * the byte-matched official error string — never file content.
+ */
+export function loadScriptGated(
+  scriptPath: string,
+  context: ToolUseContext,
+): GatedScriptLoad {
+  const gateError = checkScriptPathReadable(scriptPath, context)
+  if (gateError !== null) {
+    return { error: gateError }
+  }
+  const resolved = resolve(getCwd(), scriptPath)
+  const isWindows = process.platform === 'win32'
+  const openFlags =
+    fsConstants.O_RDONLY | (isWindows ? 0 : fsConstants.O_NONBLOCK)
+  let fd: number
+  try {
+    fd = openSync(resolved, openFlags)
+  } catch (e) {
+    return {
+      error: isENOENT(e)
+        ? `Workflow script file not found: ${scriptPath}`
+        : `Failed to read workflow script file ${scriptPath}`,
+    }
+  }
+  try {
+    const openStat = fstatSync(fd, { bigint: true })
+    if (openStat.ino === 0n || openStat.nlink > 1n) {
+      return { error: scriptPathNotReadableMessage(scriptPath) }
+    }
+    const fdLinkTarget = readFdLinkTarget(fd)
+    const canonicalPath = fdLinkTarget ?? realpathSync(resolved)
+    if (fdLinkTarget === null) {
+      // No /proc/self/fd readlink: prove the canonical path is the same file
+      // via an O_NOFOLLOW re-open before trusting it.
+      const verifyFd = openSync(
+        canonicalPath,
+        openFlags | (isWindows ? 0 : fsConstants.O_NOFOLLOW),
+      )
+      try {
+        const verifyStat = fstatSync(verifyFd, { bigint: true })
+        if (
+          verifyStat.ino !== openStat.ino ||
+          verifyStat.dev !== openStat.dev ||
+          verifyStat.nlink !== 1n
+        ) {
+          return { error: scriptPathNotReadableMessage(scriptPath) }
+        }
+      } finally {
+        closeSync(verifyFd)
+      }
+      let reResolved: string | null = null
+      try {
+        reResolved = realpathSync(canonicalPath)
+      } catch {
+        // stays null — fails the stability check below
+      }
+      if (reResolved !== canonicalPath) {
+        return { error: scriptPathNotReadableMessage(scriptPath) }
+      }
+      if (fstatSync(fd, { bigint: true }).nlink !== 1n) {
+        return { error: scriptPathNotReadableMessage(scriptPath) }
+      }
+    }
+    // Re-probe the CANONICAL path — the probe above covered the caller's
+    // path only; a symlink could otherwise carry the read out of scope.
+    if (!isScriptPathInReadableSet(canonicalPath, context)) {
+      return { error: scriptPathNotReadableMessage(scriptPath) }
+    }
+    if (!openStat.isFile()) {
+      return {
+        error: `Workflow script file ${scriptPath} is not a regular file`,
+      }
+    }
+    if (openStat.size > BigInt(WORKFLOW_SCRIPT_MAX_BYTES)) {
+      return {
+        error: `Workflow script file ${scriptPath} exceeds ${WORKFLOW_SCRIPT_MAX_BYTES} bytes`,
+      }
+    }
+    const buffer = Buffer.alloc(Number(openStat.size))
+    let offset = 0
+    while (offset < buffer.length) {
+      const bytesRead = readSync(
+        fd,
+        buffer,
+        offset,
+        buffer.length - offset,
+        offset,
+      )
+      if (bytesRead === 0) {
+        break
+      }
+      offset += bytesRead
+    }
+    return {
+      script: buffer.subarray(0, offset).toString('utf-8'),
+      path: canonicalPath,
+    }
+  } catch {
+    return { error: `Failed to read workflow script file ${scriptPath}` }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 /**
