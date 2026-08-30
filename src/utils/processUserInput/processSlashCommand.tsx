@@ -367,22 +367,38 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
       logEvent('tengu_input_slash_invalid', {
         input: commandName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
-      // 2.1.x: non-interactive (-p) sessions say "Unknown command: /<name>"
-      // (with the leading slash); interactive (REPL) sessions say
-      // "Unknown skill: <name>". Verified against the 2.1.200 binary.
-      const isNonInteractive = context.options?.isNonInteractiveSession ?? false
-      // Official: "Did you mean /${suggestion}?" appended when a close match exists (Levenshtein ≤2)
-      const allNames = [...builtInCommandNames()]
-      let suggestion: string | null = null
-      for (const name of allNames) {
-        if (name === commandName) continue
-        const dist = levenshtein(commandName, name)
-        if (dist <= 2 && dist > 0) { suggestion = name; break }
-      }
-      const suffix = suggestion ? `. Did you mean /${suggestion}?` : ''
-      const unknownMessage = isNonInteractive
-        ? `Unknown command: /${commandName}${suffix}`
-        : `Unknown skill: ${commandName}${suffix}`
+      // 2.1.251 (OCC-110): BOTH interactive (REPL) and non-interactive (-p)
+      // sessions say "Unknown command: /<name>" (with the leading slash).
+      // Byte-verified against the official 2.1.251 binary:
+      //   `Unknown command: /${name}. Did you mean /${suggestion}?` when a
+      //   close match exists, else `Unknown command: /${name}` — one code
+      //   path, no interactive/non-interactive split. Live-verified: official
+      //   REPL renders `● Unknown command: /definitely-not-a-cmd`. The
+      //   earlier "Unknown skill: <name>" REPL variant was a misread of the
+      //   2.1.200 binary — "Unknown skill" is the Skill tool's invoke-failure
+      //   message only (skill_invoke_not_found), not the slash-command path.
+      // Official: "Did you mean /${suggestion}?" appended when a close match
+      // exists. 2.1.251 (OCC-110) — byte-verified official `jee()` semantics
+      // (minified `jee`/`zee`, recovered verbatim from the 2.1.251 ELF):
+      //   candidates = visible commands (isHidden filtered out), flattened to
+      //   name + aliases; the BEST match wins (strictly lowest distance,
+      //   first wins ties), NOT the first candidate within the threshold;
+      //   candidates whose length differs from the input by more than
+      //   maxEditDistance (2) are skipped; distance is Damerau-Levenshtein
+      //   (adjacent transposition costs 1). Live-verified: `/hel` → "Did you
+      //   mean /help?" (distance 1 beats the earlier-registered `new` at 2).
+      //   Names in the message are truncated like the official `Tr` sanitizer
+      //   (512 for the command name, 200 for the suggestion, `…` appended) —
+      //   for looksLikeCommand-gated input ([a-zA-Z0-9:_-]) the rest of the
+      //   `Tr`/`Pa` chain (NFKC, quote/bracket scrub) is a byte-identity no-op.
+      const candidates = context.options.commands
+        .filter(cmd => !cmd.isHidden)
+        .flatMap(cmd => [getCommandName(cmd), ...(cmd.aliases ?? [])])
+      const suggestion = findBestCommandSuggestion(commandName, candidates, 2)
+      const suffix = suggestion
+        ? `. Did you mean /${truncateForUnknownMessage(suggestion, 200)}?`
+        : ''
+      const unknownMessage = `Unknown command: /${truncateForUnknownMessage(commandName, 512)}${suffix}`
       return {
         messages: [createSyntheticUserCaveatMessage(), ...attachmentMessages, createUserMessage({
           content: prepareUserContent({
@@ -1050,20 +1066,65 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
   };
 }
 
-// Simple Levenshtein distance for "Did you mean" suggestions (official uses ≤2).
-function levenshtein(a: string, b: string): number {
-  const m = a.length, n = b.length
-  if (m === 0) return n
-  if (n === 0) return m
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0))
-  for (let i = 0; i <= m; i++) dp[i][0] = i
-  for (let j = 0; j <= n; j++) dp[0][j] = j
+/**
+ * Best-match command suggestion — verbatim port of the official 2.1.251
+ * `jee(name, candidates, {maxEditDistance})` (minified, recovered from the
+ * ELF). Semantics: flatten names+aliases, skip candidates whose length
+ * differs by more than maxEditDistance, keep the STRICTLY lowest
+ * Damerau-Levenshtein distance (first candidate wins ties); undefined when
+ * nothing is within the threshold. Distance 0 (exact match) would also win —
+ * callers only invoke this after the name was proven absent, matching the
+ * official call order.
+ */
+export function findBestCommandSuggestion(
+  input: string,
+  candidates: string[],
+  maxEditDistance: number,
+): string | undefined {
+  let best: string | undefined
+  let bestDistance = maxEditDistance + 1
+  for (const candidate of candidates) {
+    if (Math.abs(candidate.length - input.length) > maxEditDistance) continue
+    const distance = damerauLevenshtein(input, candidate)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = candidate
+    }
+  }
+  return best
+}
+
+/**
+ * Damerau-Levenshtein distance — verbatim port of the official 2.1.251
+ * `zee(a, b)` (minified, recovered from the ELF): standard insert/delete/
+ * substitute DP plus adjacent-transposition at cost 1.
+ */
+export function damerauLevenshtein(a: string, b: string): number {
+  if (a === b) return 0
+  const m = a.length
+  const n = b.length
+  const dp: number[][] = Array.from({ length: m + 1 }, (_, i) =>
+    Array.from({ length: n + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  )
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1]
-        ? dp[i - 1][j - 1]
-        : Math.min(dp[i - 1][j], dp[i][j - 1], dp[i - 1][j - 1]) + 1
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost)
+      if (i > 1 && j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) {
+        dp[i][j] = Math.min(dp[i][j], dp[i - 2][j - 2] + 1)
+      }
     }
   }
   return dp[m][n]
+}
+
+/**
+ * Message-length truncation for the unknown-command text — the observable
+ * surface of the official `Tr`/`Pa` sanitizer chain for command-shaped input
+ * (looksLikeCommand restricts to [a-zA-Z0-9:_-], where NFKC normalization and
+ * the quote/bracket/whitespace scrubs are byte-identity no-ops): values over
+ * maxLen are cut to maxLen with a trailing `…` (U+2026).
+ */
+export function truncateForUnknownMessage(value: string, maxLen: number): string {
+  return value.length > maxLen ? `${value.slice(0, maxLen)}…` : value
 }

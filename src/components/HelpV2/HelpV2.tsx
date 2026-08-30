@@ -11,6 +11,10 @@ import { Pane } from '../design-system/Pane.js';
 import { Tab, Tabs } from '../design-system/Tabs.js';
 import { Commands } from './Commands.js';
 import { General } from './General.js';
+// 2.1.251 (OCC-110): byte-verified against the official binary's /help
+// dialog — the /feedback footer line only renders on tall terminals
+// (rows >= 44, binary constant `Co=44` gated by `uo`).
+const HELP_FEEDBACK_MIN_ROWS = 44;
 type Props = {
   onClose: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -18,7 +22,7 @@ type Props = {
   commands: Command[];
 };
 export function HelpV2(t0) {
-  const $ = _c(44);
+  const $ = _c(47);
   const {
     onClose,
     commands
@@ -79,7 +83,7 @@ export function HelpV2(t0) {
   const customCommands = t3;
   let t4;
   if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = <Tab key="general" title="general"><General /></Tab>;
+    t4 = <Tab key="general" title="General"><General /></Tab>;
     $[8] = t4;
   } else {
     t4 = $[8];
@@ -89,7 +93,7 @@ export function HelpV2(t0) {
     tabs = [t4];
     let t5;
     if ($[16] !== builtinCommands || $[17] !== close || $[18] !== columns || $[19] !== maxHeight) {
-      t5 = <Tab key="commands" title="commands"><Commands commands={builtinCommands} maxHeight={maxHeight} columns={columns} title="Browse default commands:" onCancel={close} /></Tab>;
+      t5 = <Tab key="commands" title="Commands"><Commands commands={builtinCommands} maxHeight={maxHeight} columns={columns} title="Browse default commands:" onCancel={close} /></Tab>;
       $[16] = builtinCommands;
       $[17] = close;
       $[18] = columns;
@@ -101,7 +105,7 @@ export function HelpV2(t0) {
     tabs.push(t5);
     let t6;
     if ($[21] !== close || $[22] !== columns || $[23] !== customCommands || $[24] !== maxHeight) {
-      t6 = <Tab key="custom" title="custom-commands"><Commands commands={customCommands} maxHeight={maxHeight} columns={columns} title="Browse custom commands:" emptyMessage="No custom commands found" onCancel={close} /></Tab>;
+      t6 = <Tab key="custom" title="Custom commands"><Commands commands={customCommands} maxHeight={maxHeight} columns={columns} title="Browse custom commands:" emptyMessage="No custom commands found" onCancel={close} /></Tab>;
       $[21] = close;
       $[22] = columns;
       $[23] = customCommands;
@@ -138,7 +142,9 @@ export function HelpV2(t0) {
   const t5 = insideModal ? undefined : maxHeight;
   let t6;
   if ($[31] !== tabs) {
-    t6 = <Tabs title={false ? "/help" : `OCC v${MACRO.VERSION}`} color="professionalBlue" defaultTab="general">{tabs}</Tabs>;
+    // 2.1.251 (OCC-110): official pane title is the literal "Help"
+    // (byte-verified: `title:"Help",color:"professionalBlue"`).
+    t6 = <Tabs title="Help" color="professionalBlue" defaultTab="general">{tabs}</Tabs>;
     $[31] = tabs;
     $[32] = t6;
   } else {
@@ -146,14 +152,24 @@ export function HelpV2(t0) {
   }
   let t7;
   if ($[33] === Symbol.for("react.memo_cache_sentinel")) {
-    t7 = <Box marginTop={1}><Text>For more help:{" "}<Link url="https://code.claude.com/docs/en/overview" /></Text></Box>;
+    t7 = <Box marginTop={1} flexShrink={0}><Text>For more help:{" "}<Link url="https://code.claude.com/docs/en/overview" /></Text></Box>;
     $[33] = t7;
   } else {
     t7 = $[33];
   }
+  // 2.1.251 (OCC-110): the /feedback footer line renders only when
+  // rows >= 44 (binary `uo && e(o,{marginTop:1,flexShrink:0,...})`).
+  let feedbackBox;
+  if ($[44] !== rows) {
+    feedbackBox = rows >= HELP_FEEDBACK_MIN_ROWS ? <Box marginTop={1} flexShrink={0}><Text dimColor>Something else? Use /feedback to report bugs or request features.</Text></Box> : null;
+    $[44] = rows;
+    $[45] = feedbackBox;
+  } else {
+    feedbackBox = $[45];
+  }
   let t8;
   if ($[34] !== dismissShortcut || $[35] !== exitState.keyName || $[36] !== exitState.pending) {
-    t8 = <Box marginTop={1}><Text dimColor={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Text italic={true}>{dismissShortcut} to cancel</Text>}</Text></Box>;
+    t8 = <Box marginTop={1} flexShrink={0}><Text dimColor={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Text italic={true}>{dismissShortcut} to cancel</Text>}</Text></Box>;
     $[34] = dismissShortcut;
     $[35] = exitState.keyName;
     $[36] = exitState.pending;
@@ -162,10 +178,11 @@ export function HelpV2(t0) {
     t8 = $[37];
   }
   let t9;
-  if ($[38] !== t6 || $[39] !== t8) {
-    t9 = <Pane color="professionalBlue">{t6}{t7}{t8}</Pane>;
+  if ($[38] !== t6 || $[39] !== t8 || $[46] !== feedbackBox) {
+    t9 = <Pane color="professionalBlue">{t6}{t7}{feedbackBox}{t8}</Pane>;
     $[38] = t6;
     $[39] = t8;
+    $[46] = feedbackBox;
     $[40] = t9;
   } else {
     t9 = $[40];

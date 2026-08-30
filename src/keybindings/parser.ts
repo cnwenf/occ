@@ -84,7 +84,13 @@ export function parseChord(input: string): Chord {
 }
 
 /**
- * Convert a ParsedKeystroke to its canonical string representation for display.
+ * Convert a ParsedKeystroke to its canonical string representation.
+ *
+ * 2.1.251 (OCC-110): byte-verified against the official binary's canonical
+ * formatter — order ctrl, alt, shift, meta, super→"cmd". This form is for
+ * serialization/comparison; the USER-VISIBLE shortcut text goes through
+ * keystrokeToDisplayString below (the official getDisplayText path, `Sue` →
+ * `QHe` → per-platform display formatter).
  */
 export function keystrokeToString(ks: ParsedKeystroke): string {
   const parts: string[] = []
@@ -107,7 +113,9 @@ function keyToDisplayName(key: string): string {
     case 'escape':
       return 'Esc'
     case ' ':
-      return 'Space'
+      // 2.1.251 (OCC-110): official canonical form is lowercase "space"
+      // (byte-verified switch `case" ":return"space"`).
+      return 'space'
     case 'tab':
       return 'tab'
     case 'enter':

@@ -140,7 +140,10 @@ export function PromptInputHelpMenu(props) {
   const t21 = fixedWidth ? 24 : undefined;
   let t22;
   if ($[23] !== dimColor) {
-    t22 = <Box><Text dimColor={dimColor}>! for bash mode</Text></Box>;
+    // 2.1.251 (OCC-110): official renders "! for shell mode" (byte-verified
+    // in the binary and live in the official REPL help overlay; the older
+    // "bash mode" wording is gone from 2.1.251).
+    t22 = <Box><Text dimColor={dimColor}>! for shell mode</Text></Box>;
     $[23] = dimColor;
     $[24] = t22;
   } else {
@@ -162,14 +165,10 @@ export function PromptInputHelpMenu(props) {
   } else {
     t24 = $[28];
   }
-  let t25;
-  if ($[29] !== dimColor) {
-    t25 = <Box><Text dimColor={dimColor}>{"& for background"}</Text></Box>;
-    $[29] = dimColor;
-    $[30] = t25;
-  } else {
-    t25 = $[30];
-  }
+  // 2.1.251 (OCC-110): the "& for background" row was removed upstream —
+  // the official first column is exactly [! shell mode, / commands,
+  // @ file paths, /btw side question] (byte-verified component `Fme` +
+  // live REPL overlay). The row is dropped, not hidden.
   let t26;
   if ($[31] !== dimColor) {
     t26 = <Box><Text dimColor={dimColor}>/btw for side question</Text></Box>;
@@ -179,13 +178,12 @@ export function PromptInputHelpMenu(props) {
     t26 = $[32];
   }
   let t27;
-  if ($[33] !== t21 || $[34] !== t22 || $[35] !== t23 || $[36] !== t24 || $[37] !== t25 || $[38] !== t26) {
-    t27 = <Box flexDirection="column" width={t21}>{t22}{t23}{t24}{t25}{t26}</Box>;
+  if ($[33] !== t21 || $[34] !== t22 || $[35] !== t23 || $[36] !== t24 || $[38] !== t26) {
+    t27 = <Box flexDirection="column" width={t21}>{t22}{t23}{t24}{t26}</Box>;
     $[33] = t21;
     $[34] = t22;
     $[35] = t23;
     $[36] = t24;
-    $[37] = t25;
     $[38] = t26;
     $[39] = t27;
   } else {
@@ -311,7 +309,8 @@ export function PromptInputHelpMenu(props) {
   }
   let t42;
   if ($[79] !== dimColor || $[80] !== externalEditorShortcut) {
-    t42 = <Box><Text dimColor={dimColor}>{externalEditorShortcut} to edit in $EDITOR</Text></Box>;
+    // 2.1.251 (OCC-110): official wraps this row in flexShrink:0 (byte-verified).
+    t42 = <Box flexShrink={0}><Text dimColor={dimColor}>{externalEditorShortcut} to edit in $EDITOR</Text></Box>;
     $[79] = dimColor;
     $[80] = externalEditorShortcut;
     $[81] = t42;

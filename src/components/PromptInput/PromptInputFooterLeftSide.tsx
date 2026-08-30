@@ -13,7 +13,7 @@ import type { VimMode, PromptInputMode } from '../../types/textInputTypes.js';
 import type { ToolPermissionContext } from '../../Tool.js';
 import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { isDefaultMode, permissionModeSymbol, permissionModeTitle, getModeColor } from '../../utils/permissions/PermissionMode.js';
+import { isDefaultMode, permissionModeIndicator, permissionModeSymbol, getModeColor } from '../../utils/permissions/PermissionMode.js';
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js';
 import { isBackgroundTask } from '../../tasks/types.js';
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
@@ -349,9 +349,14 @@ function ModeIndicator({
   // badge makes the active mode always visible. hasActiveMode is false for
   // default (so it was hidden); now shown with the ⏸ symbol from
   // PERMISSION_MODE_CONFIG.default.symbol.
+  // 2.1.251 (OCC-110): the footer chip renders the mode INDICATOR, not the
+  // lowercased title — byte-verified against the official binary and
+  // live-verified in the 2.1.251 REPL (`⏸ manual mode on`, `⏵⏵ accept edits
+  // on`, ...). For default mode the title is "Manual" (→ "manual on") while
+  // the indicator is "manual mode" (→ "manual mode on").
   const modePart = currentMode && !getIsRemoteMode() ? <Text color={getModeColor(currentMode)} key="mode">
         {permissionModeSymbol(currentMode)}{' '}
-        {permissionModeTitle(currentMode).toLowerCase()} on
+        {permissionModeIndicator(currentMode)} on
         {shouldShowModeHint && <Text dimColor>
             {' '}
             <KeyboardShortcutHint shortcut={modeCycleShortcut} action="cycle" parens />

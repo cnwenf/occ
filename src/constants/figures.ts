@@ -10,11 +10,15 @@ export const LIGHTNING_BOLT = '↯' // \u21af - used for fast mode indicator
 export const EFFORT_LOW = '○' // \u25cb - effort level: low
 export const EFFORT_MEDIUM = '◐' // \u25d0 - effort level: medium
 export const EFFORT_HIGH = '●' // \u25cf - effort level: high
-// ◍ - effort level: xhigh (between high and max, Opus 4.7/4.8). A circle
-// bisected by a vertical bar — visually distinct from EFFORT_HIGH (solid) and
-// EFFORT_MAX (fisheye). Mirrors the binary's `oOs` xhigh symbol.
-export const EFFORT_XHIGH = '◍' // \u25cd - effort level: xhigh
-export const EFFORT_MAX = '◉' // \u25c9 - effort level: max (Opus 4.6 only)
+// 2.1.251 (OCC-110): the effort glyph mapping shifted upstream. Verified byte-
+// exact against the official 2.1.251 binary: figures air="\u25c9" (◉) and
+// lir="\u25c8" (◈), mapper je(): low→○, medium→◐, high→●,
+// xhigh→◉ (fisheye), max→◈ (diamond-in-circle). The earlier \u25cd xhigh
+// claim traced a stale minified name (oOs) from an older release; the current
+// release's mapper is je(). Live-verified: the official REPL status chip
+// renders `◉ xhigh · /effort`.
+export const EFFORT_XHIGH = '◉' // \u25c9 - effort level: xhigh
+export const EFFORT_MAX = '◈' // \u25c8 - effort level: max
 
 // Media/trigger status indicators
 export const PLAY_ICON = '\u25b6' // ▶
