@@ -1,6 +1,7 @@
 import type { Key } from '../ink.js'
+import { getPlatform } from '../utils/platform.js'
 import { getKeyName, matchesBinding } from './match.js'
-import { chordToString } from './parser.js'
+import { chordToDisplayString, chordToString } from './parser.js'
 import type {
   KeybindingContextName,
   ParsedBinding,
@@ -63,6 +64,13 @@ export function resolveKey(
 /**
  * Get display text for an action from bindings (e.g., "ctrl+t" for "app:toggleTodos").
  * Searches in reverse order so user overrides take precedence.
+ *
+ * 2.1.251 (OCC-110): byte-verified against the official `getDisplayText`
+ * path (`Sue`): resolve the LAST binding for the action, then format with
+ * the platform-aware display formatter (`QHe(chord, platform)`), NOT the
+ * canonical string. This is what renders "alt + p" for the `meta+p`
+ * model-picker binding and "ctrl + shift + _" for undo in the official
+ * help overlay (live-verified in the 2.1.251 REPL).
  */
 export function getBindingDisplayText(
   action: string,
@@ -73,7 +81,9 @@ export function getBindingDisplayText(
   const binding = bindings.findLast(
     b => b.action === action && b.context === context,
   )
-  return binding ? chordToString(binding.chord) : undefined
+  return binding
+    ? chordToDisplayString(binding.chord, getPlatform())
+    : undefined
 }
 
 /**
