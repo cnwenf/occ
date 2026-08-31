@@ -45,6 +45,15 @@ export const INTERNAL_PERMISSION_MODES = [
 
 export const PERMISSION_MODES = INTERNAL_PERMISSION_MODES
 
+/**
+ * User-facing choice names for the `--permission-mode` CLI flag (official 2.1.251
+ * surface): the internal `default` mode is exposed as `manual` on the CLI. The
+ * argParser normalizes `manual` → `default` before validation, so this list is
+ * display/validation-wording only — every entry still maps onto a real mode.
+ */
+export const PERMISSION_MODES_CLI_CHOICES: readonly string[] =
+  PERMISSION_MODES.map((mode) => (mode === 'default' ? 'manual' : mode))
+
 // ============================================================================
 // Permission Behaviors
 // ============================================================================
