@@ -6,6 +6,7 @@ import {
   EXTERNAL_PERMISSION_MODES,
   type ExternalPermissionMode,
   PERMISSION_MODES,
+  PERMISSION_MODES_CLI_CHOICES,
   type PermissionMode,
 } from '../../types/permissions.js'
 import { lazySchema } from '../lazySchema.js'
@@ -14,6 +15,7 @@ import { lazySchema } from '../lazySchema.js'
 export {
   EXTERNAL_PERMISSION_MODES,
   PERMISSION_MODES,
+  PERMISSION_MODES_CLI_CHOICES,
   type ExternalPermissionMode,
   type PermissionMode,
 }
