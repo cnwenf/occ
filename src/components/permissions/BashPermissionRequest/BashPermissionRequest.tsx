@@ -422,7 +422,12 @@ function BashPermissionRequestInner({
         {
           logUnaryPermissionEvent('tool_use_single', toolUseConfirm, 'accept');
           // Extract suggestions if present (works for both 'ask' and 'passthrough' behaviors)
-          const permissionUpdates_0 = 'suggestions' in toolUseConfirm.permissionResult ? toolUseConfirm.permissionResult.suggestions || [] : [];
+          const rawSuggestions = 'suggestions' in toolUseConfirm.permissionResult ? toolUseConfirm.permissionResult.suggestions || [] : [];
+          // Official 2.1.252 (OCC-112 Gap-112a): the Bash consent dialog applies
+          // only the DH-filtered bundle (displayedTypes = {addRules,
+          // addDirectories}) — setMode and other suggestion types are never
+          // applied from this dialog.
+          const permissionUpdates_0 = rawSuggestions.filter((update_0) => update_0.type === 'addRules' || update_0.type === 'addDirectories');
           toolUseConfirm.onAllow(toolUseConfirm.input, permissionUpdates_0);
           onDone();
           break;
