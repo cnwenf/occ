@@ -766,8 +766,26 @@ export function createPathChecker(
         }
       }
 
-      // For write operations, also suggest enabling accept-edits mode
-      if (operationType === 'write' || operationType === 'create') {
+      // For write operations, also suggest enabling accept-edits mode.
+      // Official 2.1.252 (OCC-112 Gap-112b): the suggestion is only offered
+      // when the session is in default or plan mode — suggesting a mode the
+      // user is already past (acceptEdits/bypassPermissions) is noise. The
+      // plan-mode case is additionally suppressed when plan was entered from
+      // an already-elevated pre-plan mode (binary gate:
+      // `R=u.mode==="plan"&&(u.prePlanMode==="auto"||...==="bypassPermissions"
+      // ||...==="acceptEdits"||...==="dontAsk"); if(...&&!R)push(setMode)`):
+      // accepting would downgrade the effective permission level.
+      const planFromElevatedPrePlanMode =
+        context.mode === 'plan' &&
+        (context.prePlanMode === 'auto' ||
+          context.prePlanMode === 'bypassPermissions' ||
+          context.prePlanMode === 'acceptEdits' ||
+          context.prePlanMode === 'dontAsk')
+      if (
+        (operationType === 'write' || operationType === 'create') &&
+        (context.mode === 'default' || context.mode === 'plan') &&
+        !planFromElevatedPrePlanMode
+      ) {
         suggestions.push({
           type: 'setMode',
           mode: 'acceptEdits',

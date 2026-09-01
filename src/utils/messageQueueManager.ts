@@ -14,10 +14,15 @@ import type {
   QueuePriority,
 } from '../types/textInputTypes.js'
 import type { PastedContent } from './config.js'
+import { logForDebugging } from './debug.js'
 import { extractTextContent } from './messages.js'
 import { objectGroupBy } from './objectGroupBy.js'
 import { recordQueueOperation } from './sessionStorage.js'
 import { createSignal } from './signal.js'
+import {
+  TASK_NOTIFICATION_CHAR_CAP,
+  truncateMiddleWithMarker,
+} from './truncateMiddle.js'
 
 export type SetAppState = (f: (prev: AppState) => AppState) => void
 
@@ -138,13 +143,35 @@ export function enqueue(command: QueuedCommand): void {
  * Add a task notification to the queue.
  * Convenience wrapper that defaults priority to 'later' so user input
  * is never starved by system messages.
+ *
+ * Official 2.1.252 (changelog item 4 / OCC-112 Gap-112c): task-notification
+ * string values are capped before enqueueing — a background task failure can
+ * produce very large output (e.g. git errors on a full disk) that would push
+ * the conversation past the API request size limit once delivered.
  */
 export function enqueuePendingNotification(command: QueuedCommand): void {
-  commandQueue.push({ ...command, priority: command.priority ?? 'later' })
+  let toQueue = command
+  if (
+    command.mode === 'task-notification' &&
+    typeof command.value === 'string'
+  ) {
+    const cappedValue = truncateMiddleWithMarker(
+      command.value,
+      TASK_NOTIFICATION_CHAR_CAP,
+    )
+    if (cappedValue !== command.value) {
+      logForDebugging(
+        `enqueuePendingNotification: task-notification capped from ${command.value.length} to ${cappedValue.length} chars`,
+        { level: 'warn' },
+      )
+      toQueue = { ...command, value: cappedValue }
+    }
+  }
+  commandQueue.push({ ...toQueue, priority: toQueue.priority ?? 'later' })
   notifySubscribers()
   logOperation(
     'enqueue',
-    typeof command.value === 'string' ? command.value : undefined,
+    typeof toQueue.value === 'string' ? toQueue.value : undefined,
   )
 }
 
