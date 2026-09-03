@@ -155,5 +155,14 @@ function get3PFallbackSuggestion(model: string): string | undefined {
   if (lowerModel.includes('sonnet-4-5') || lowerModel.includes('sonnet_4_5')) {
     return getModelStrings().sonnet40
   }
+  // 2.1.257 (Fable 5.1 launch): catalog `fallback_3p` fields, byte-verified in
+  // the 2.1.258 ELF — fable-5-1 → "claude-fable-5", fable-5 → "claude-opus-5".
+  // The fable-5-1 check MUST precede the fable-5 one (substring containment).
+  if (lowerModel.includes('fable-5-1') || lowerModel.includes('fable_5_1')) {
+    return getModelStrings().fable5
+  }
+  if (lowerModel.includes('fable-5') || lowerModel.includes('fable_5')) {
+    return getModelStrings().opus5
+  }
   return undefined
 }

@@ -429,18 +429,9 @@ export type YoloClassifierResult = {
   stage2MsgId?: string
 }
 
-// ============================================================================
-// Permission Explainer Types
-// ============================================================================
-
-export type RiskLevel = 'LOW' | 'MEDIUM' | 'HIGH'
-
-export type PermissionExplanation = {
-  riskLevel: RiskLevel
-  explanation: string
-  reasoning: string
-  risk: string
-}
+// 2.1.257 (Gap-113c): the Permission Explainer types (RiskLevel /
+// PermissionExplanation) were removed with the Ctrl+E permission explainer
+// subsystem.
 
 // ============================================================================
 // Tool Permission Context

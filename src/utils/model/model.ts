@@ -157,7 +157,11 @@ export function getMainLoopModel(): ModelName {
 }
 
 export function getBestModel(): ModelName {
-  return getDefaultOpusModel()
+  // 2.1.257 (Fable 5.1 launch): the official 2.1.258 alias table maps
+  // `best` → family `fable` (byte-verified: `best:"fable"` in both the
+  // 2.1.252 and 2.1.258 ELFs), so the best alias resolves through the
+  // default Fable model (fable-5-1 on non-gateway, fable-5 on gateway).
+  return getDefaultFableModel()
 }
 
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
@@ -214,16 +218,26 @@ export function getDefaultSonnetModel(): ModelName {
 /**
  * Get the default Fable model. Reads the ANTHROPIC_DEFAULT_FABLE_MODEL env var
  * (official 2.1.200 surfaces this alongside _NAME/_DESCRIPTION/_SUPPORTED_CAPABILITIES);
- * otherwise falls back to the canonical Fable 5 id.
+ * otherwise resolves the per-provider Fable alias table.
+ *
+ * 2.1.257 (Fable 5.1 launch): the official 2.1.258 alias table is
+ * `fable:{default:"claude-fable-5-1",per_provider:{gateway:"claude-fable-5"}}`
+ * (byte-verified) — Fable 5.1 everywhere except gateway, which lags at Fable 5.
  *
  * Fable 5 / Mythos 5 share the same underlying model; mythos-5 canonicalizes to
- * claude-fable-5 (see firstPartyNameToCanonical).
+ * claude-fable-5 (see firstPartyNameToCanonical). Fable 5.1 / Mythos 5.1 share
+ * the same underlying model; mythos-5-1 keeps its own canonical id (the 2.1.258
+ * catalog registers claude-mythos-5-1 as a distinct entry).
  */
 export function getDefaultFableModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_FABLE_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_FABLE_MODEL
   }
-  return getModelStrings().fable5
+  const provider = getAPIProvider()
+  if (provider === 'gateway') {
+    return getModelStrings().fable5
+  }
+  return getModelStrings().fable51
 }
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
@@ -466,6 +480,17 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-haiku-4-5')) {
     return 'claude-haiku-4-5'
   }
+  // Fable 5.1 / Mythos 5.1 share the same underlying model. Mythos 5.1
+  // canonicalizes to claude-fable-5-1 (mythos is the alias/equivalent for
+  // fable). Order matters: `claude-fable-5` is a substring of
+  // `claude-fable-5-1` (and `claude-mythos-5` of `claude-mythos-5-1`), so
+  // the -5-1 branches must precede the broader -5 branches below.
+  if (name.includes('claude-mythos-5-1')) {
+    return 'claude-fable-5-1'
+  }
+  if (name.includes('claude-fable-5-1')) {
+    return 'claude-fable-5-1'
+  }
   // Fable 5 / Mythos 5 share the same underlying model. Mythos canonicalizes
   // to claude-fable-5 (mythos is the alias/equivalent for fable).
   if (name.includes('claude-mythos-5')) {
@@ -625,6 +650,8 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Sonnet 3.7'
     case getModelStrings().sonnet35:
       return 'Sonnet 3.5'
+    case getModelStrings().fable51:
+      return 'Fable 5.1'
     case getModelStrings().fable5:
       return 'Fable 5'
     case getModelStrings().haiku45:
@@ -884,6 +911,13 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   }
   if (canonical.includes('claude-3-5-sonnet')) {
     return 'Claude 3.5 Sonnet'
+  }
+  // Fable 5.1 before Fable 5: canonical `claude-fable-5-1` contains the
+  // substring `claude-fable-5`. The official binary carries no 1M-variant
+  // marketing name for Fable models (byte-verified: no "Fable 5.1 (with 1M
+  // context)" / "Fable 5 (with 1M context)" strings in the 2.1.258 ELF).
+  if (canonical.includes('claude-fable-5-1')) {
+    return 'Fable 5.1'
   }
   if (canonical.includes('claude-fable-5')) {
     return 'Fable 5'

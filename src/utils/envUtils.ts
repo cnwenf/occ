@@ -168,6 +168,14 @@ export function isInProtectedNamespace(): boolean {
  * Model prefix → env var for Vertex region overrides.
  * Order matters: more specific prefixes must come before less specific ones
  * (e.g., 'claude-opus-4-1' before 'claude-opus-4').
+ *
+ * 2.1.257/2.1.258: the official implements this lookup catalog-driven (each
+ * catalog entry carries `vertex_region_env_var`), so at 2.1.258 every catalog
+ * model has a region override. This table now mirrors the full official set —
+ * env var names byte-verified in the 2.1.258 linux-x64 ELF (the
+ * `vertex_region_env_var` catalog fields): fable-5/fable-5-1 are this gap
+ * round's entries; opus-4-5/4-6/4-7/4-8/5 and sonnet-5 are earlier-round
+ * drift fixed here with the same byte-verified names.
  */
 const VERTEX_REGION_OVERRIDES: ReadonlyArray<[string, string]> = [
   ['claude-haiku-4-5', 'VERTEX_REGION_CLAUDE_HAIKU_4_5'],
@@ -175,10 +183,18 @@ const VERTEX_REGION_OVERRIDES: ReadonlyArray<[string, string]> = [
   ['claude-3-5-sonnet', 'VERTEX_REGION_CLAUDE_3_5_SONNET'],
   ['claude-3-7-sonnet', 'VERTEX_REGION_CLAUDE_3_7_SONNET'],
   ['claude-opus-4-1', 'VERTEX_REGION_CLAUDE_4_1_OPUS'],
+  ['claude-opus-4-5', 'VERTEX_REGION_CLAUDE_4_5_OPUS'],
+  ['claude-opus-4-6', 'VERTEX_REGION_CLAUDE_4_6_OPUS'],
+  ['claude-opus-4-7', 'VERTEX_REGION_CLAUDE_4_7_OPUS'],
+  ['claude-opus-4-8', 'VERTEX_REGION_CLAUDE_4_8_OPUS'],
   ['claude-opus-4', 'VERTEX_REGION_CLAUDE_4_0_OPUS'],
+  ['claude-opus-5', 'VERTEX_REGION_CLAUDE_5_OPUS'],
+  ['claude-sonnet-5', 'VERTEX_REGION_CLAUDE_5_SONNET'],
   ['claude-sonnet-4-6', 'VERTEX_REGION_CLAUDE_4_6_SONNET'],
   ['claude-sonnet-4-5', 'VERTEX_REGION_CLAUDE_4_5_SONNET'],
   ['claude-sonnet-4', 'VERTEX_REGION_CLAUDE_4_0_SONNET'],
+  ['claude-fable-5-1', 'VERTEX_REGION_CLAUDE_FABLE_5_1'],
+  ['claude-fable-5', 'VERTEX_REGION_CLAUDE_FABLE_5'],
 ]
 
 /**

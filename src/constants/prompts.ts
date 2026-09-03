@@ -55,6 +55,8 @@ import {
   DANGEROUS_uncachedSystemPromptSection,
   resolveSystemPromptSections,
 } from './systemPromptSections.js'
+// 2.1.257 (Fable 5.1 launch): the fable_identity dynamic section.
+import { getFableIdentitySection } from './fableIdentity.js'
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -130,11 +132,14 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
 // @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
-// 2.1.206 alignment: official CC 2.1.206 advertises the Claude 5 family —
-// Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5 — in the # Environment section.
+// 2.1.257 (Fable 5.1 launch): the official 2.1.258 # Environment section
+// advertises the latest model per family — Fable 5.1, Opus 5, Sonnet 5,
+// Haiku 4.5. The official renders `Model IDs — ${display}: '${id}'` per
+// family from its catalog (haiku keeps the dated first-party id); the values
+// below are the 2.1.258 latest_per_family table, byte-verified.
 const CLAUDE_LATEST_MODEL_IDS = {
-  fable: 'claude-fable-5',
-  opus: 'claude-opus-4-8',
+  fable: 'claude-fable-5-1',
+  opus: 'claude-opus-5',
   sonnet: 'claude-sonnet-5',
   haiku: 'claude-haiku-4-5-20251001',
 }
@@ -448,6 +453,13 @@ ${CYBER_RISK_INSTRUCTION}`,
   }
 
   const dynamicSections = [
+    // 2.1.257 (Fable 5.1 launch): fable_identity — identifies the active
+    // model as Fable 5.1 / Fable 5 (Mythos-class tier). Registered first to
+    // match the official section order (fable_identity precedes
+    // session_guidance in the 2.1.258 prompt builder).
+    systemPromptSection('fable_identity', () =>
+      getFableIdentitySection(model),
+    ),
     systemPromptSection('session_guidance', () =>
       getSessionSpecificGuidanceSection(enabledTools, skillToolCommands),
     ),
@@ -675,13 +687,13 @@ export async function computeSimpleEnvInfo(
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `The most recent Claude models are the Claude 5 family, Opus 4.8, and Haiku 4.5. Model IDs — Fable 5: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 4.8: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
+      : `The most recent Claude models are the Claude 5 family and Haiku 4.5. Model IDs — Fable 5.1: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 5: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `Fast mode for Claude Code uses Claude Opus with faster output (it does not downgrade to a smaller model). It can be toggled with /fast and is available on Opus 4.8/4.7.`,
+      : `Fast mode for Claude Code uses Claude Opus with faster output (it does not downgrade to a smaller model). It can be toggled with /fast and is available on Opus 5/4.8.`,
   ].filter(item => item !== null)
 
   return [
@@ -692,9 +704,24 @@ export async function computeSimpleEnvInfo(
 }
 
 // @[MODEL LAUNCH]: Add a knowledge cutoff date for the new model.
+// 2.1.257/2.1.258: cutoffs byte-verified from the official catalog entries in
+// the 2.1.258 linux-x64 ELF. Specific ids MUST precede broader substring
+// checks below (e.g. 'claude-opus-4-8' contains 'claude-opus-4').
 function getKnowledgeCutoff(modelId: string): string | null {
   const canonical = getCanonicalName(modelId)
-  if (canonical.includes('claude-sonnet-4-6')) {
+  if (canonical.includes('claude-fable-5-1')) {
+    return 'June 2026'
+  } else if (canonical.includes('claude-fable-5')) {
+    return 'January 2026'
+  } else if (canonical.includes('claude-opus-5')) {
+    return 'May 2026'
+  } else if (canonical.includes('claude-sonnet-5')) {
+    return 'January 2026'
+  } else if (canonical.includes('claude-opus-4-8')) {
+    return 'January 2026'
+  } else if (canonical.includes('claude-opus-4-7')) {
+    return 'January 2026'
+  } else if (canonical.includes('claude-sonnet-4-6')) {
     return 'August 2025'
   } else if (canonical.includes('claude-opus-4-6')) {
     return 'May 2025'

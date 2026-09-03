@@ -189,6 +189,22 @@ export const CLAUDE_FABLE_5_CONFIG = {
   gateway: 'claude-fable-5',
 } as const satisfies ModelConfig
 
+// Claude Fable 5.1 (`claude-fable-5-1`) — launched in official Claude Code
+// 2.1.257. Provider IDs byte-verified against the official 2.1.258 linux-x64
+// binary catalog entry: first_party/vertex/foundry/anthropic_aws/
+// anthropic_google_cloud/gateway `claude-fable-5-1`, bedrock
+// `us.anthropic.claude-fable-5-1`, mantle `anthropic.claude-fable-5-1`.
+// Same launch-model shape as fable-5.
+export const CLAUDE_FABLE_5_1_CONFIG = {
+  firstParty: 'claude-fable-5-1',
+  bedrock: 'us.anthropic.claude-fable-5-1',
+  vertex: 'claude-fable-5-1',
+  foundry: 'claude-fable-5-1',
+  anthropic_aws: 'claude-fable-5-1',
+  mantle: 'anthropic.claude-fable-5-1',
+  gateway: 'claude-fable-5-1',
+} as const satisfies ModelConfig
+
 // @[MODEL LAUNCH]: Register the new config here.
 export const ALL_MODEL_CONFIGS = {
   haiku35: CLAUDE_3_5_HAIKU_CONFIG,
@@ -207,6 +223,7 @@ export const ALL_MODEL_CONFIGS = {
   opus48: CLAUDE_OPUS_4_8_CONFIG,
   opus5: CLAUDE_OPUS_5_CONFIG,
   fable5: CLAUDE_FABLE_5_CONFIG,
+  fable51: CLAUDE_FABLE_5_1_CONFIG,
 } as const satisfies Record<string, ModelConfig>
 
 export type ModelKey = keyof typeof ALL_MODEL_CONFIGS

@@ -24,7 +24,6 @@ import { useShimmerAnimation } from '../../Spinner/useShimmerAnimation.js';
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js';
 import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js';
 import { PermissionDialog } from '../PermissionDialog.js';
-import { PermissionExplainerContent, usePermissionExplainerUI } from '../PermissionExplanation.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
 import { SedEditPermissionRequest } from '../SedEditPermissionRequest/SedEditPermissionRequest.js';
@@ -148,12 +147,10 @@ function BashPermissionRequestInner({
 }): React.ReactNode {
   const [theme] = useTheme();
   const toolPermissionContext = useAppState(s => s.toolPermissionContext);
-  const explainerState = usePermissionExplainerUI({
-    toolName: toolUseConfirm.tool.name,
-    toolInput: toolUseConfirm.input,
-    toolDescription: toolUseConfirm.description,
-    messages: toolUseContext.messages
-  });
+  // 2.1.257 (Gap-113c): the Ctrl+E permission explainer was removed upstream
+  // (byte-verified: zero `tengu_permission_explainer` / `confirm:toggleExplanation`
+  // / `permissionExplainerEnabled` / `Explanation unavailable` hits in the
+  // 2.1.258 ELF). The description line renders unconditionally again.
   const {
     yesInputMode,
     noInputMode,
@@ -170,8 +167,7 @@ function BashPermissionRequestInner({
   } = useShellPermissionFeedback({
     toolUseConfirm,
     onDone,
-    onReject,
-    explainerVisible: explainerState.visible
+    onReject
   });
   const [showPermissionDebug, setShowPermissionDebug] = useState(false);
   const [classifierDescription, setClassifierDescription] = useState(description || '');
@@ -344,8 +340,7 @@ function BashPermissionRequestInner({
       };
     }
     logEvent('tengu_permission_request_option_selected', {
-      option_index: optionIndex[value_0],
-      explainer_visible: explainerState.visible
+      option_index: optionIndex[value_0]
     });
     const toolNameForAnalytics = sanitizeToolNameForAnalytics(toolUseConfirm.tool.name) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS;
     if (value_0 === 'yes-prefix-edited') {
@@ -461,7 +456,7 @@ function BashPermissionRequestInner({
       </Text> : toolUseConfirm.classifierCheckInProgress ? <ClassifierCheckingSubtitle /> : classifierWasChecking ? <Text dimColor>Requires manual approval</Text> : undefined : undefined;
   return <PermissionDialog workerBadge={workerBadge} title={sandboxingEnabled_0 && !isSandboxed_0 ? 'Bash command (unsandboxed)' : 'Bash command'} subtitle={classifierSubtitle}>
       <Box flexDirection="column" paddingX={2} paddingY={1}>
-        <Text dimColor={explainerState.visible}>
+        <Text>
           {BashTool.renderToolUseMessage({
           command,
           description
@@ -471,8 +466,7 @@ function BashPermissionRequestInner({
         } // always show the full command
         )}
         </Text>
-        {!explainerState.visible && <Text dimColor>{toolUseConfirm.description}</Text>}
-        <PermissionExplainerContent visible={explainerState.visible} promise={explainerState.promise} />
+        <Text dimColor>{toolUseConfirm.description}</Text>
       </Box>
       {showPermissionDebug ? <>
           <PermissionDecisionDebugInfo permissionResult={toolUseConfirm.permissionResult} toolName="Bash" />
@@ -499,7 +493,6 @@ function BashPermissionRequestInner({
             <Text dimColor>
               Esc to cancel
               {(focusedOption === 'yes' && !yesInputMode || focusedOption === 'no' && !noInputMode) && ' · Tab to amend'}
-              {explainerState.enabled && ` · ctrl+e to ${explainerState.visible ? 'hide' : 'explain'}`}
             </Text>
             {toolUseContext.options.debug && <Text dimColor>Ctrl+d to show debug info</Text>}
           </Box>

@@ -225,6 +225,15 @@ function getCustomFableOption(): ModelOption | undefined {
   }
 }
 
+// 2.1.257 (Fable 5.1 launch): official picker row, binary `WZe` in the
+// 2.1.258 ELF (byte-verified):
+//   let e=!va(),n=`Fable 5.1 \xB7 ${pxe}${zZe()}`;
+//   return{value:e?zl().fable51:"fable",label:"Fable",description:n,
+//     descriptionForModel:"Fable 5.1 - most capable for your hardest and
+//     longest-running tasks"}
+// with pxe="Most capable for your hardest and longest-running tasks".
+// zZe() appends " · Requires usage credits" — staged (usage-credits surface
+// not in OCC; see docs/upstream-version-gap-occ113.md).
 function getFable5Option(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   const customFable = getCustomFableOption()
@@ -232,11 +241,12 @@ function getFable5Option(): ModelOption {
     return customFable
   }
   return {
-    value: is3P ? getModelStrings().fable5 : 'fable',
+    value: is3P ? getModelStrings().fable51 : 'fable',
     label: 'Fable',
-    description: 'Fable 5 - most capable for your hardest and longest-running tasks',
+    description:
+      'Fable 5.1 · Most capable for your hardest and longest-running tasks',
     descriptionForModel:
-      'Fable 5 - most capable for your hardest and longest-running tasks',
+      'Fable 5.1 - most capable for your hardest and longest-running tasks',
   }
 }
 
