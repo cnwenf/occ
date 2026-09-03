@@ -120,9 +120,24 @@ export const inputSchema = lazySchema(() => {
   // by forceAsync) or "schema hides a param that would've worked" (gate
   // flips off mid-session: everything still runs async via memoized
   // forceAsync). No Zod rejection, no crash — unlike required→optional.
-  return isBackgroundTasksDisabled || isForkSubagentEnabled() ? schema.omit({
+  const backgroundGated = isBackgroundTasksDisabled || isForkSubagentEnabled() ? schema.omit({
     run_in_background: true
   }) : schema;
+
+  // 2.1.257 (Gap-113b): when CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set, every
+  // subagent is forced onto the inherited session model, so the `model`
+  // parameter is hidden from the tool schema entirely — port of the official
+  // `bpn` wrapper (byte-verified in the 2.1.258 ELF):
+  // `a.CLAUDE_CODE_SUBAGENT_MODEL_FORCE ? n.omit({model:!0}) : n`.
+  // The official also drops the "the `model` parameter here overrides the
+  // definition for this one call" sentence from the tool description under
+  // FORCE; OCC's override wording lives in the field's .describe(), which
+  // disappears with the omit — same observable surface. Same-env semantics:
+  // getAgentModel() voids tool/agent-definition models, and the workflow
+  // engine ignores per-agent model opts (see WorkflowTool/primitives.ts).
+  return isEnvTruthy(process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+    ? backgroundGated.omit({ model: true })
+    : backgroundGated;
 });
 type InputSchema = ReturnType<typeof inputSchema>;
 

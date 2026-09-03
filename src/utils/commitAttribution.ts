@@ -153,6 +153,14 @@ export function sanitizeSurfaceKey(surfaceKey: string): string {
  */
 export function sanitizeModelName(shortName: string): string {
   // Map internal variants to public equivalents based on model family.
+  // 2.1.257 (Fable 5.1 launch): fable/mythos mappings — the -5-1 variants MUST
+  // precede the -5 ones (substring containment). Unlike
+  // firstPartyNameToCanonical, mythos keeps its own public name here
+  // (byte-verified against the official 2.1.258 sanitize chain).
+  if (shortName.includes('fable-5-1')) return 'claude-fable-5-1'
+  if (shortName.includes('fable-5')) return 'claude-fable-5'
+  if (shortName.includes('mythos-5-1')) return 'claude-mythos-5-1'
+  if (shortName.includes('mythos-5')) return 'claude-mythos-5'
   // Opus 5 before 4-x: 'opus-5' is not matched by the 'opus-4' includes below.
   if (shortName.includes('opus-5')) return 'claude-opus-5'
   if (shortName.includes('opus-4-6')) return 'claude-opus-4-6'

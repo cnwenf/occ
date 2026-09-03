@@ -158,8 +158,9 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       space: 'confirm:toggle',
       // Cycle modes (used in file permission dialogs and teams dialog)
       'shift+tab': 'confirm:cycleMode',
-      // Toggle permission explanation in permission dialogs
-      'ctrl+e': 'confirm:toggleExplanation',
+      // 2.1.257 (Gap-113c): ctrl+e 'confirm:toggleExplanation' removed with
+      // the Ctrl+E permission explainer subsystem (byte-verified absent from
+      // the 2.1.258 ELF).
       // Toggle permission debug info
       'ctrl+d': 'permission:toggleDebug',
     },

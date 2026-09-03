@@ -13,7 +13,6 @@ import { Select } from '../../CustomSelect/select.js';
 import { type UnaryEvent, usePermissionRequestLogging } from '../hooks.js';
 import { PermissionDecisionDebugInfo } from '../PermissionDecisionDebugInfo.js';
 import { PermissionDialog } from '../PermissionDialog.js';
-import { PermissionExplainerContent, usePermissionExplainerUI } from '../PermissionExplanation.js';
 import type { PermissionRequestProps } from '../PermissionRequest.js';
 import { PermissionRuleExplanation } from '../PermissionRuleExplanation.js';
 import { useShellPermissionFeedback } from '../useShellPermissionFeedback.js';
@@ -32,12 +31,9 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
     description
   } = PowerShellTool.inputSchema.parse(toolUseConfirm.input);
   const [theme] = useTheme();
-  const explainerState = usePermissionExplainerUI({
-    toolName: toolUseConfirm.tool.name,
-    toolInput: toolUseConfirm.input,
-    toolDescription: toolUseConfirm.description,
-    messages: toolUseContext.messages
-  });
+  // 2.1.257 (Gap-113c): the Ctrl+E permission explainer was removed upstream
+  // (byte-verified: zero `tengu_permission_explainer` / `confirm:toggleExplanation`
+  // hits in the 2.1.258 ELF). See BashPermissionRequest for the same removal.
   const {
     yesInputMode,
     noInputMode,
@@ -54,8 +50,7 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
   } = useShellPermissionFeedback({
     toolUseConfirm,
     onDone,
-    onReject,
-    explainerVisible: explainerState.visible
+    onReject
   });
   const destructiveWarning = getFeatureValue_CACHED_MAY_BE_STALE('tengu_destructive_command_warning', false) ? getDestructiveCommandWarning(command) : null;
   const [showPermissionDebug, setShowPermissionDebug] = useState(false);
@@ -123,8 +118,7 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
       no: 3
     };
     logEvent('tengu_permission_request_option_selected', {
-      option_index: optionIndex[value],
-      explainer_visible: explainerState.visible
+      option_index: optionIndex[value]
     });
     const toolNameForAnalytics = sanitizeToolNameForAnalytics(toolUseConfirm.tool.name) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS;
     if (value === 'yes-prefix-edited') {
@@ -194,7 +188,7 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
   }
   return <PermissionDialog workerBadge={workerBadge} title="PowerShell command">
       <Box flexDirection="column" paddingX={2} paddingY={1}>
-        <Text dimColor={explainerState.visible}>
+        <Text>
           {PowerShellTool.renderToolUseMessage({
           command,
           description
@@ -204,8 +198,7 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
         } // always show the full command
         )}
         </Text>
-        {!explainerState.visible && <Text dimColor>{toolUseConfirm.description}</Text>}
-        <PermissionExplainerContent visible={explainerState.visible} promise={explainerState.promise} />
+        <Text dimColor>{toolUseConfirm.description}</Text>
       </Box>
       {showPermissionDebug ? <>
           <PermissionDecisionDebugInfo permissionResult={toolUseConfirm.permissionResult} toolName="PowerShell" />
@@ -225,7 +218,6 @@ export function PowerShellPermissionRequest(props: PermissionRequestProps): Reac
             <Text dimColor>
               Esc to cancel
               {(focusedOption === 'yes' && !yesInputMode || focusedOption === 'no' && !noInputMode) && ' · Tab to amend'}
-              {explainerState.enabled && ` · ctrl+e to ${explainerState.visible ? 'hide' : 'explain'}`}
             </Text>
             {toolUseContext.options.debug && <Text dimColor>Ctrl+d to show debug info</Text>}
           </Box>

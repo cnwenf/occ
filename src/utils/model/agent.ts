@@ -1,4 +1,5 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
+import { isEnvTruthy } from '../envUtils.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
 import { applyBedrockRegionPrefix, getBedrockRegionPrefix } from './bedrock.js'
@@ -44,6 +45,26 @@ export function getAgentModel(
     return parseUserSpecifiedModel(process.env.CLAUDE_CODE_SUBAGENT_MODEL)
   }
 
+  // 2.1.257 (Gap-113b): CLAUDE_CODE_SUBAGENT_MODEL_FORCE forces every
+  // subagent onto the inherited session model. Port of the official `Cbn`
+  // (byte-verified in the 2.1.258 ELF; the env is schema-parsed as a bool,
+  // `x.bool()`): the tool-specified model is dropped unless it is 'inherit',
+  // and the agent-definition model is dropped entirely (the official keeps it
+  // only for an object-shaped setting with an inherit default — a shape OCC's
+  // frontmatter `model:` never produces). Both then fall through to the
+  // 'inherit' resolution below. The Agent tool also omits its `model`
+  // parameter from its schema/description when FORCE is set, mirroring the
+  // official `bpn` schema wrapper.
+  const isForcedSubagentModel = isEnvTruthy(
+    process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE,
+  )
+  const effectiveToolModel =
+    isForcedSubagentModel &&
+    (toolSpecifiedModel as string | undefined) !== 'inherit'
+      ? undefined
+      : toolSpecifiedModel
+  const effectiveAgentModel = isForcedSubagentModel ? undefined : agentModel
+
   // Extract Bedrock region prefix from parent model to inherit for subagents.
   // This ensures subagents use the same cross-region inference profile (e.g., "eu.", "us.")
   // as the parent, which is required when IAM permissions only allow specific regions.
@@ -67,15 +88,15 @@ export function getAgentModel(
   }
 
   // Prioritize tool-specified model if provided
-  if (toolSpecifiedModel) {
-    if (aliasMatchesParentTier(toolSpecifiedModel, parentModel)) {
+  if (effectiveToolModel) {
+    if (aliasMatchesParentTier(effectiveToolModel, parentModel)) {
       return parentModel
     }
-    const model = parseUserSpecifiedModel(toolSpecifiedModel)
-    return applyParentRegionPrefix(model, toolSpecifiedModel)
+    const model = parseUserSpecifiedModel(effectiveToolModel)
+    return applyParentRegionPrefix(model, effectiveToolModel)
   }
 
-  const agentModelWithExp = agentModel ?? getDefaultSubagentModel()
+  const agentModelWithExp = effectiveAgentModel ?? getDefaultSubagentModel()
 
   if (agentModelWithExp === 'inherit') {
     // Apply runtime model resolution for inherit to get the effective model

@@ -46,6 +46,7 @@ import type { WorkflowMeta } from './scriptLoader.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 
 /** Lifetime cap on total agent() calls across a workflow. Runaway backstop. */
 export const WORKFLOW_AGENT_LIFETIME_CAP = 1000
@@ -462,7 +463,21 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     // Wall-clock start is captured before the stagger wait (binary: Ce=Date.now()
     // precedes the gate), so held time counts toward the agent's elapsed ms.
     const agentStartTime = Date.now()
-    const agentModel = (opts.model as string | undefined) ?? getMainLoopModel()
+    // 2.1.257 (Gap-113b): CLAUDE_CODE_SUBAGENT_MODEL_FORCE voids the
+    // per-agent model override (byte-verified in the 2.1.258 ELF:
+    // `if(O?.model!==void 0&&a.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+    //   t(`Workflow agent model "${O.model}" ignored: ...`),O.model=void 0`).
+    let workflowAgentModel = opts.model as string | undefined
+    if (
+      workflowAgentModel !== undefined &&
+      isEnvTruthy(process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+    ) {
+      logForDebugging(
+        `Workflow agent model "${workflowAgentModel}" ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set`,
+      )
+      workflowAgentModel = undefined
+    }
+    const agentModel = workflowAgentModel ?? getMainLoopModel()
 
     // CC 2.1.229 (changelog #24 / binary `Ze` + `RZp().enter`): stagger
     // same-prefix siblings so later agents read the cached prompt prefix
@@ -506,7 +521,9 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       isAsync: false,
       canShowPermissionPrompts: false,
       querySource: 'workflow' as never,
-      model: opts.model as never,
+      // workflowAgentModel is the FORCE-voided value (Gap-113b), not the raw
+      // opts.model.
+      model: workflowAgentModel as never,
       subagentDepth: (ctx.toolUseContext.subagentDepth ?? 0) + 1,
       maxTurns: opts.schema ? 30 : undefined,
       availableTools: ctx.availableTools,

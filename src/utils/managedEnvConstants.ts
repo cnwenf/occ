@@ -53,6 +53,9 @@ const PROVIDER_MANAGED_ENV_VARS = new Set([
   'ANTHROPIC_SMALL_FAST_MODEL',
   'ANTHROPIC_SMALL_FAST_MODEL_AWS_REGION',
   'CLAUDE_CODE_SUBAGENT_MODEL',
+  // 2.1.257 (Gap-113b): member of the official provider-managed set `Tg`
+  // (byte-verified in the 2.1.258 ELF).
+  'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
 ])
 
 const PROVIDER_MANAGED_ENV_PREFIXES = [

@@ -114,7 +114,8 @@ export const KEYBINDING_ACTIONS = [
   'confirm:previousField',
   'confirm:cycleMode',
   'confirm:toggle',
-  'confirm:toggleExplanation',
+  // 2.1.257 (Gap-113c): 'confirm:toggleExplanation' removed with the Ctrl+E
+  // permission explainer subsystem.
   // Tabs navigation actions
   'tabs:next',
   'tabs:previous',

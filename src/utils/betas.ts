@@ -140,7 +140,11 @@ export function modelSupportsContextManagement(model: string): boolean {
     // mirroring opus-4-8. Without this branch opus-5 would be denied
     // context management on 3P (its canonical id `claude-opus-5` does not
     // match the `claude-opus-4` prefix).
-    canonical.includes('claude-opus-5')
+    canonical.includes('claude-opus-5') ||
+    // 2.1.257 (Fable 5.1 launch): both `claude-fable-5` and `claude-fable-5-1`
+    // declare "context_management" in their 2.1.258 binary `capabilities`
+    // arrays (byte-verified). The `claude-fable-5` prefix covers 5-1 too.
+    canonical.includes('claude-fable-5')
   )
 }
 

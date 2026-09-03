@@ -7,6 +7,8 @@ import {
   CLAUDE_3_5_HAIKU_CONFIG,
   CLAUDE_3_5_V2_SONNET_CONFIG,
   CLAUDE_3_7_SONNET_CONFIG,
+  CLAUDE_FABLE_5_1_CONFIG,
+  CLAUDE_FABLE_5_CONFIG,
   CLAUDE_HAIKU_4_5_CONFIG,
   CLAUDE_OPUS_4_1_CONFIG,
   CLAUDE_OPUS_4_5_CONFIG,
@@ -127,6 +129,23 @@ export const COST_TIER_10_50 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// 2.1.257 (Fable 5.1 launch): pricing tier for `claude-fable-5-1`.
+// Recovered verbatim from the official 2.1.258 linux-x64 binary's model
+// catalog `pricing_tiers` table:
+//   tier_10_50_cache_read_0_25: input 10, output 50, cache_write_5m 12.5,
+//                               cache_write_1h 20, cache_read 0.25,
+//                               web_search 0.01
+// Same as tier_10_50 except cache_read 0.25 (vs 1). The baked catalog entry
+// for `claude-fable-5-1` carries `pricing:"tier_10_50_cache_read_0_25"`.
+export const COST_TIER_10_50_CACHE_READ_0_25 = {
+  inputTokens: 10,
+  outputTokens: 50,
+  promptCacheWriteTokens: 12.5,
+  promptCacheWrite1hTokens: 20,
+  promptCacheReadTokens: 0.25,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing for Haiku 3.5: $0.80 input / $4 output per Mtok
 // Binary: pricing_tiers.haiku_35 cache_write_1h = 1.6
 export const COST_HAIKU_35 = {
@@ -213,6 +232,18 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   // ($10/$50) is handled separately in getModelCosts via getOpus5CostTier.
   [firstPartyNameToCanonical(CLAUDE_OPUS_5_CONFIG.firstParty)]:
     COST_TIER_5_25,
+  // Fable 5 is `tier_10_50` ($10/$50, cache_read $1) — binary-verified: the
+  // 2.1.258 baked model catalog entry for `claude-fable-5` carries
+  // `pricing:"tier_10_50"`. (Pre-existing OCC omission — MODEL_COSTS never had
+  // a fable5 entry; added in the 2.1.257/258 Fable 5.1 gap round.) No
+  // fast-mode branch: fable models lack the fast_mode capability.
+  [firstPartyNameToCanonical(CLAUDE_FABLE_5_CONFIG.firstParty)]:
+    COST_TIER_10_50,
+  // Fable 5.1 is `tier_10_50_cache_read_0_25` ($10/$50, cache_read $0.25) —
+  // binary-verified: the 2.1.258 baked model catalog entry for
+  // `claude-fable-5-1` carries `pricing:"tier_10_50_cache_read_0_25"`.
+  [firstPartyNameToCanonical(CLAUDE_FABLE_5_1_CONFIG.firstParty)]:
+    COST_TIER_10_50_CACHE_READ_0_25,
 }
 
 /**

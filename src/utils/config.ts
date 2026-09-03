@@ -538,8 +538,9 @@ export type GlobalConfig = {
     disabled?: boolean
   }
 
-  // Permission explainer configuration
-  permissionExplainerEnabled?: boolean // Enable Haiku-generated explanations for permission requests (default: true)
+  // 2.1.257 (Gap-113c): permissionExplainerEnabled removed with the Ctrl+E
+  // permission explainer subsystem (byte-verified absent from the 2.1.258
+  // ELF).
 
   // Teammate spawn mode: 'auto' | 'tmux' | 'iterm2' | 'in-process'
   teammateMode?: 'auto' | 'tmux' | 'iterm2' | 'in-process' // How to spawn teammates (default: 'auto')
@@ -680,7 +681,6 @@ export const GLOBAL_CONFIG_KEYS = [
   'lspRecommendationIgnoredCount',
   'copyFullResponse',
   'copyOnSelect',
-  'permissionExplainerEnabled',
   'prStatusFooterEnabled',
   'remoteControlAtStartup',
   'remoteDialogSeen',
