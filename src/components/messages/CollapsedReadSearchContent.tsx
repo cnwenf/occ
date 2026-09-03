@@ -9,6 +9,7 @@ import { getReplPrimitiveTools } from '../../tools/REPLTool/primitiveTools.js';
 import type { CollapsedReadSearchGroup, NormalizedAssistantMessage } from '../../types/message.js';
 import { uniq } from '../../utils/array.js';
 import { getToolUseIdsFromCollapsedGroup } from '../../utils/collapseReadSearch.js';
+import { PR_BADGE_URL_MAX_LENGTH, isMrUrl, type PrAction } from '../../tools/shared/gitOperationTracking.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatDuration, formatSecondsShort } from '../../utils/format.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
@@ -355,16 +356,29 @@ export function CollapsedReadSearchContent({
     }
   }
   if (isFullscreenEnvEnabled() && message.prs?.length) {
-    const verbs = {
+    // Verb map — binary `Re` (2.1.259), byte-verified (extended from the
+    // pre-2.1.259 six verbs with reopened/draft/auto-merge for the glab
+    // recognition and the refined `gh pr merge --auto` resolutions).
+    const verbs: Record<PrAction, string> = {
       created: 'created',
       edited: 'edited',
       merged: 'merged',
       commented: 'commented on',
       closed: 'closed',
-      ready: 'marked ready'
+      reopened: 'reopened',
+      ready: 'marked ready',
+      draft: 'marked draft',
+      'auto-merge-enabled': 'enabled auto-merge on',
+      'auto-merge-disabled': 'disabled auto-merge on'
     };
     for (const pr of message.prs) {
-      pushPart(`pr-${pr.action}-${pr.number}`, verbs[pr.action], pr.url ? <PrBadge number={pr.number} url={pr.url} bold /> : <Text bold>PR #{pr.number}</Text>);
+      // Binary (2.1.259): badge when the URL is present and badge-eligible
+      // (`Egt` — the URL family is already guaranteed by the parser, so the
+      // check reduces to the `wje` length cap); the `MR !`/`PR #` label
+      // follows `e6(url)` (GitLab `/-/merge_requests/` URLs render as MRs).
+      const isMr = pr.url !== undefined && isMrUrl(pr.url);
+      const badgeEligible = pr.url !== undefined && pr.url.length <= PR_BADGE_URL_MAX_LENGTH;
+      pushPart(`pr-${pr.action}-${pr.number}`, verbs[pr.action], badgeEligible ? <PrBadge number={pr.number} url={pr.url!} bold kind={isMr ? 'mr' : undefined} /> : <Text bold>{isMr ? 'MR !' : 'PR #'}{pr.number}</Text>);
     }
   }
   if (searchCount > 0) {
