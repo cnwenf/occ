@@ -1,11 +1,13 @@
 /**
  * Shell-agnostic git operation tracking for usage metrics.
  *
- * Detects `git commit`, `git push`, `gh pr create`, `glab mr create`, and
- * curl-based PR creation in command strings, then increments OTLP counters
- * and fires analytics events. The regexes operate on raw command text so they
- * work identically for Bash and PowerShell (both invoke git/gh/glab/curl as
- * external binaries with the same argv syntax).
+ * Detects `git commit`, `git push`, `gh pr <verb>` (create/edit/merge/comment/
+ * close/reopen/ready), `glab mr <verb>` (create/update/merge/note/close/
+ * reopen — CC 2.1.259 entry 003), and curl-based PR creation in command
+ * strings, then increments OTLP counters and fires analytics events. The
+ * regexes operate on raw command text so they work identically for Bash and
+ * PowerShell (both invoke git/gh/glab/curl as external binaries with the same
+ * argv syntax).
  */
 
 import { getCommitCounter, getPrCounter } from '../../bootstrap/state.js'
@@ -72,25 +74,104 @@ export type PrAction =
   | 'merged'
   | 'commented'
   | 'closed'
+  | 'reopened'
   | 'ready'
+  | 'draft'
+  | 'auto-merge-enabled'
+  | 'auto-merge-disabled'
 
+/**
+ * gh PR verb table — binary `Tot` (2.1.258) / `FLe` (2.1.259), byte-verified.
+ * The 2.1.259 table is identical to 2.1.258 (reopen included in both).
+ */
 const GH_PR_ACTIONS: readonly { re: RegExp; action: PrAction; op: string }[] = [
   { re: /\bgh\s+pr\s+create\b/, action: 'created', op: 'pr_create' },
   { re: /\bgh\s+pr\s+edit\b/, action: 'edited', op: 'pr_edit' },
   { re: /\bgh\s+pr\s+merge\b/, action: 'merged', op: 'pr_merge' },
   { re: /\bgh\s+pr\s+comment\b/, action: 'commented', op: 'pr_comment' },
   { re: /\bgh\s+pr\s+close\b/, action: 'closed', op: 'pr_close' },
+  { re: /\bgh\s+pr\s+reopen\b/, action: 'reopened', op: 'pr_reopen' },
   { re: /\bgh\s+pr\s+ready\b/, action: 'ready', op: 'pr_ready' },
 ]
 
 /**
- * Parse PR info from a GitHub PR URL.
+ * glab MR verb table — binary `Aat`, added in 2.1.259 (changelog entry 003),
+ * byte-verified. Lets GitLab merge requests surface in the collapsed tool
+ * summary and telemetry the same way gh PRs do.
+ */
+const GLAB_MR_ACTIONS: readonly {
+  re: RegExp
+  action: PrAction
+  op: string
+}[] = [
+  { re: /\bglab\s+mr\s+create\b/, action: 'created', op: 'pr_create' },
+  { re: /\bglab\s+mr\s+update\b/, action: 'edited', op: 'pr_edit' },
+  { re: /\bglab\s+mr\s+merge\b/, action: 'merged', op: 'pr_merge' },
+  { re: /\bglab\s+mr\s+note\b/, action: 'commented', op: 'pr_comment' },
+  { re: /\bglab\s+mr\s+close\b/, action: 'closed', op: 'pr_close' },
+  { re: /\bglab\s+mr\s+reopen\b/, action: 'reopened', op: 'pr_reopen' },
+]
+
+/**
+ * Quoted-argument stripper — binary `Iue` (2.1.259), byte-verified. Flag
+ * checks below run on the command with quoted strings blanked so flag-shaped
+ * text inside quotes (e.g. a commit message containing `--auto`) is ignored.
+ */
+const QUOTED_ARGS_RE = /"(?:[^"\\]|\\.)*"|'[^']*'/g
+
+/**
+ * Resolve the effective PR/MR action of a command — binary `Rat` (2.1.259),
+ * byte-verified. The gh table wins when it matches, with
+ * `gh pr merge --auto/--disable-auto` and `gh pr ready --undo` refinements;
+ * otherwise the glab table applies, with `glab mr update --ready/--draft`
+ * refinements. Returns undefined when no PR/MR verb is present.
+ */
+export function resolvePrAction(command: string): PrAction | undefined {
+  const ghAction = GH_PR_ACTIONS.find(a => a.re.test(command))?.action
+  const unquoted = command.replace(QUOTED_ARGS_RE, ' ')
+  if (ghAction === 'merged') {
+    if (/--disable-auto\b/.test(unquoted)) return 'auto-merge-disabled'
+    if (/--auto\b/.test(unquoted)) return 'auto-merge-enabled'
+  } else if (ghAction === 'ready' && /--undo\b/.test(unquoted)) {
+    return 'draft'
+  }
+  if (ghAction) return ghAction
+  const glabAction = GLAB_MR_ACTIONS.find(a => a.re.test(command))?.action
+  if (glabAction === 'edited') {
+    if (/--ready\b/.test(unquoted)) return 'ready'
+    if (/--draft\b/.test(unquoted)) return 'draft'
+  }
+  return glabAction
+}
+
+/**
+ * PR/MR URL family matcher — binary `wgt` (2.1.259), byte-verified. Covers
+ * GitHub `pull`, Bitbucket `pull-requests`, and GitLab `-/merge_requests`
+ * URLs. (The 2.1.259 Gerrit URL matcher `Dvn` is staged — see
+ * docs/upstream-version-gap-occ114.md.)
+ */
+const PR_URL_RE =
+  /https?:\/\/[^/\s"]+\/([^\s"]+?)\/(?:pull|pull-requests|-\/merge_requests)\/(\d+)/
+
+/**
+ * GitLab MR URL check — binary `e6` (2.1.259), byte-verified. Drives the
+ * `MR !N` label and the `kind: 'mr'` badge form.
+ */
+export function isMrUrl(url: string): boolean {
+  return /\/-\/merge_requests\/\d/.test(url)
+}
+
+/** URL length cap for badge rendering — binary `wje` (2.1.259). */
+export const PR_BADGE_URL_MAX_LENGTH = 2048
+
+/**
+ * Parse PR/MR info from a PR-family URL.
  * Returns { prNumber, prUrl, prRepository } or null if not a valid PR URL.
  */
 function parsePrUrl(
   url: string,
 ): { prNumber: number; prUrl: string; prRepository: string } | null {
-  const match = url.match(/https:\/\/github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/)
+  const match = url.match(PR_URL_RE)
   if (match?.[1] && match?.[2]) {
     return {
       prNumber: parseInt(match[2], 10),
@@ -101,10 +182,17 @@ function parsePrUrl(
   return null
 }
 
-/** Find a GitHub PR URL embedded anywhere in stdout and parse it. */
+/**
+ * Find PR/MR URLs embedded anywhere in stdout and parse the LAST one —
+ * binary `Pat` (2.1.259), byte-verified: tools print the new PR/MR URL at
+ * the end of their output, and earlier URLs in the same output (e.g. from
+ * `gh pr view` noise) must not win.
+ */
 function findPrInStdout(stdout: string): ReturnType<typeof parsePrUrl> {
-  const m = stdout.match(/https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+/)
-  return m ? parsePrUrl(m[0]) : null
+  const matches = stdout.match(new RegExp(PR_URL_RE.source, 'g'))
+  if (!matches) return null
+  const last = matches.at(-1)
+  return last !== undefined ? parsePrUrl(last) : null
 }
 
 // Exported for testing purposes
@@ -204,12 +292,15 @@ export function detectGitOperation(
     const ref = parseRefFromCommand(command, 'rebase')
     if (ref) result.branch = { ref, action: 'rebased' }
   }
-  const prAction = GH_PR_ACTIONS.find(a => a.re.test(command))?.action
+  // Binary `Rat` over the command (2.1.259): gh verbs first, then glab. The
+  // text-number fallback is gh-only — binary: `else if(FLe.some(...))` — glab
+  // output text ("merge request !N") is not parsed for a bare number.
+  const prAction = resolvePrAction(command)
   if (prAction) {
     const pr = findPrInStdout(output)
     if (pr) {
       result.pr = { number: pr.prNumber, url: pr.prUrl, action: prAction }
-    } else {
+    } else if (GH_PR_ACTIONS.some(a => a.re.test(command))) {
       const num = parsePrNumberFromText(output)
       if (num) result.pr = { number: num, action: prAction }
     }
@@ -247,14 +338,21 @@ export function trackGitOperations(
         'push' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
   }
-  const prHit = GH_PR_ACTIONS.find(a => a.re.test(command))
+  // Binary (2.1.259): `let v=FLe.find(...),x=Aat.find(...),F=v??x` — the
+  // first gh hit wins, otherwise the first glab hit; both emit their op.
+  const ghHit = GH_PR_ACTIONS.find(a => a.re.test(command))
+  const glabHit = GLAB_MR_ACTIONS.find(a => a.re.test(command))
+  const prHit = ghHit ?? glabHit
   if (prHit) {
     logEvent('tengu_git_operation', {
       operation:
         prHit.op as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
   }
-  if (prHit?.action === 'created') {
+  // Binary (2.1.259): `if(v?.action==="created"){...} else if(x?.action==="created"){...}`
+  // — both branches bump the PR counter and link the session to the new
+  // PR/MR found in stdout.
+  if (ghHit?.action === 'created' || glabHit?.action === 'created') {
     getPrCounter()?.add(1)
     // Auto-link session to PR if we can extract PR URL from stdout
     if (stdout) {
@@ -278,13 +376,6 @@ export function trackGitOperations(
         )
       }
     }
-  }
-  if (command.match(/\bglab\s+mr\s+create\b/)) {
-    logEvent('tengu_git_operation', {
-      operation:
-        'pr_create' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
-    getPrCounter()?.add(1)
   }
   // Detect PR creation via curl to REST APIs (Bitbucket, GitHub API, GitLab API)
   // Check for POST method and PR endpoint separately to handle any argument order
