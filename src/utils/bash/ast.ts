@@ -180,7 +180,9 @@ const SPECIAL_VAR_NAMES = new Set([
  * evaluate the RHS of `NAME=value` assignments to them (and the value of
  * env-prefix assignments), which executes `$(cmd)` inside subscripts and can
  * abort/diverge the shell at runtime. Recovered verbatim from the official
- * 2.1.251 binary (set `or`).
+ * 2.1.251 binary (set `or`); CC 2.1.260 extended it with the zsh
+ * REPORTTIME/REPORTMEMORY/DIRSTACKSIZE/BAUD integer-attr variables
+ * (set `WYe` in the official 2.1.260 binary).
  */
 const INTEGER_ATTR_SHELL_VARS = new Set([
   'RANDOM',
@@ -210,6 +212,10 @@ const INTEGER_ATTR_SHELL_VARS = new Set([
   'EUID',
   'GID',
   'EGID',
+  'REPORTTIME',
+  'REPORTMEMORY',
+  'DIRSTACKSIZE',
+  'BAUD',
   'ZLE_RPROMPT_INDENT',
   'MBEGIN',
   'MEND',
