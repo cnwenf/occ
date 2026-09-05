@@ -6,13 +6,14 @@ import { join } from "node:path";
 import { REPO_ROOT } from "./helpers";
 
 /**
- * 2.1.239 catch-up REPL e2e (tmux-based). Drives the BUILT dist/cli.js inside
- * a tmux session and exercises the four landed 2.1.239 clusters end to end:
+ * 2.1.239 catch-up REPL e2e (tmux-based), updated for the 2.1.261
+ * keybindingFlavor deprecation. Drives the BUILT dist/cli.js inside a tmux
+ * session and exercises the landed 2.1.239 clusters end to end:
  *
- *  1. Flavored Alt+D — readline kills exactly one READLINE word (punctuation
- *     delimits: "foo-bar" → kills "foo", leaves "-bar baz"); classic kills to
- *     the next Segmenter word START (kills "foo-", leaves "bar baz").
- *     (useTextInput `['d', isReadline ? killWordAfter : deleteWordAfter]`.)
+ *  1. Alt+D word kill — 2.1.261 deleted the classic Segmenter-word variant;
+ *     Alt+D now ALWAYS kills exactly one READLINE word (punctuation delimits:
+ *     "foo-bar" → kills "foo", leaves "-bar baz"), even with an explicit
+ *     `keybindingFlavor: "classic"` setting (useTextInput `['d', killWordAfter]`).
  *  2. Placeholder family — a multi-line bracketed paste collapses to a
  *     `[Pasted text #1 +N lines]` chip and Ctrl+W deletes the WHOLE chip
  *     atomically (killRange placeholder snapping).
@@ -50,7 +51,7 @@ function startRepl(home: string) {
 /**
  * Fresh temp HOME seeded to skip onboarding + suppress the custom-API-key
  * approval dialog. `extraSettings` is merged into .claude/settings.json so a
- * test can opt into `keybindingFlavor: "readline"`.
+ * test can seed a (now-ignored) `keybindingFlavor` value.
  */
 function freshSeededHome(extraSettings: Record<string, unknown> = {}): string {
   const home = mkdtempSync(join(tmpdir(), "occ-kbf239-"));
@@ -113,8 +114,8 @@ async function waitForText(substr: string, timeoutMs = 20_000): Promise<boolean>
 const settle = () => new Promise((r) => setTimeout(r, 600));
 
 describe.skipIf(!!process.env.CI)("2.1.239 keybinding catch-up (tmux REPL e2e)", () => {
-  test("readline: Alt+D kills exactly one readline word (punctuation delimits)", async () => {
-    const home = freshSeededHome({ keybindingFlavor: "readline" });
+  test("Alt+D kills exactly one readline word (punctuation delimits)", async () => {
+    const home = freshSeededHome();
     startRepl(home);
     try {
       expect(await waitForText("shift+tab")).toBe(true);
@@ -131,8 +132,8 @@ describe.skipIf(!!process.env.CI)("2.1.239 keybinding catch-up (tmux REPL e2e)",
     }
   }, 60_000);
 
-  test("classic: Alt+D kills to the next Segmenter word start", async () => {
-    const home = freshSeededHome();
+  test("explicit keybindingFlavor: classic is ignored (2.1.261 deprecation)", async () => {
+    const home = freshSeededHome({ keybindingFlavor: "classic" });
     startRepl(home);
     try {
       expect(await waitForText("shift+tab")).toBe(true);
@@ -140,11 +141,10 @@ describe.skipIf(!!process.env.CI)("2.1.239 keybinding catch-up (tmux REPL e2e)",
       expect(await waitForText("foo-bar baz")).toBe(true);
       pressKey("C-a"); // start of line
       await settle();
-      pressKey("M-d"); // classic deleteWordAfter: kills "foo-" (up to "bar" start)
+      pressKey("M-d"); // still readline killWord: kills "foo" only
       await settle();
       const pane = captureVisible();
-      expect(pane).toContain("bar baz");
-      expect(pane).not.toContain("-bar baz");
+      expect(pane).toContain("-bar baz");
     } finally {
       killRepl();
     }
@@ -162,7 +162,7 @@ describe.skipIf(!!process.env.CI)("2.1.239 keybinding catch-up (tmux REPL e2e)",
       });
       tmux(["paste-buffer", "-p", "-t", SESSION]); // -p = bracketed paste
       expect(await waitForText("[Pasted text #1")).toBe(true);
-      pressKey("C-w"); // classic deleteWordBefore → killRange snaps over the chip
+      pressKey("C-w"); // readline deleteWORDBefore → killRange snaps over the chip
       await settle();
       expect(captureVisible()).not.toContain("[Pasted text");
     } finally {

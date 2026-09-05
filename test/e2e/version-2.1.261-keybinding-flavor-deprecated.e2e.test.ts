@@ -6,22 +6,27 @@ import { join } from "node:path";
 import { REPO_ROOT } from "./helpers";
 
 /**
- * 2.1.238 `keybindingFlavor` REPL e2e (tmux-based). Drives the BUILT
+ * 2.1.261 keybindingFlavor DEPRECATION REPL e2e (tmux-based). Drives the BUILT
  * dist/cli.js inside a tmux session, types a WORD run into the prompt input,
  * presses Ctrl+W, and reads back the surviving input via `tmux capture-pane`.
  *
- * The feature under test (binary `["w", Y ? _e : ge]` in useTextInput +
- * `case "w": h ? deleteWORDBefore : deleteWordBefore` in useSearchInput):
- *   - "classic" (default): Ctrl+W kills the previous word — for "foo-bar" the
- *     Intl.Segmenter boundary at "-" means only "bar" is killed, leaving "foo-".
- *   - "readline": Ctrl+W kills back to the previous whitespace — the whole
- *     "foo-bar" run is killed, leaving the input empty.
+ * The change under test (official 2.1.261 changelog entry 040): the
+ * `keybindingFlavor` setting is deprecated — upstream deleted the classic
+ * Segmenter-word editing methods, so the prompt's word-editing keys ALWAYS
+ * follow Bash (readline) conventions:
+ *   - Ctrl+W kills back to the previous whitespace — the whole "foo-bar" run
+ *     is killed, leaving the input empty (useTextInput `['w', deleteWORDBefore]`).
+ *   - An explicit `keybindingFlavor: "classic"` setting in settings.json is
+ *     parsed (schema retained for compatibility) but has no effect.
+ *
+ * Replaces the 2.1.238 flavor e2e (version-2.1.238-keybinding-flavor), whose
+ * classic-default expectation was invalidated by the deprecation.
  *
  * Gated out of CI (needs tmux + a built dist/cli.js).
  */
 
 const BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;
-const SESSION = "occ-keybinding-flavor-test";
+const SESSION = "occ-kbf-261-test";
 
 function tmux(args: string[]): string {
   try {
@@ -45,17 +50,17 @@ function startRepl(home: string) {
 /**
  * Fresh temp HOME seeded to skip onboarding + suppress the custom-API-key
  * approval dialog. `extraSettings` is merged into .claude/settings.json so a
- * test can opt into `keybindingFlavor: "readline"`.
+ * test can seed a (now-ignored) `keybindingFlavor` value.
  */
 function freshSeededHome(extraSettings: Record<string, unknown> = {}): string {
-  const home = mkdtempSync(join(tmpdir(), "occ-kbf-"));
+  const home = mkdtempSync(join(tmpdir(), "occ-kbf261-"));
   mkdirSync(join(home, ".claude"), { recursive: true });
   const apiKey = process.env.ANTHROPIC_API_KEY;
   const config: Record<string, unknown> = {
     numStartups: 1,
     firstStartTime: "2026-07-06T00:00:00.000Z",
     migrationVersion: 11,
-    userID: "occ-kbf-seed-000000000000000000000000000000000000000000000aa",
+    userID: "occ-kbf261-seed-0000000000000000000000000000000000000aa",
     hasCompletedOnboarding: true,
     lastOnboardingVersion: "2.1.200",
     lastReleaseNotesSeen: "2.1.200",
@@ -100,25 +105,9 @@ async function waitForText(substr: string, timeoutMs = 20_000): Promise<boolean>
 
 const settle = () => new Promise((r) => setTimeout(r, 600));
 
-describe.skipIf(!!process.env.CI)("2.1.238 keybindingFlavor Ctrl+W (tmux REPL e2e)", () => {
-  test("classic (default): Ctrl+W kills only the previous word", async () => {
+describe.skipIf(!!process.env.CI)("2.1.261 keybindingFlavor deprecation Ctrl+W (tmux REPL e2e)", () => {
+  test("default: Ctrl+W kills back to the previous whitespace (always readline)", async () => {
     const home = freshSeededHome();
-    startRepl(home);
-    try {
-      expect(await waitForText("shift+tab")).toBe(true);
-      sendKeys("foo-bar");
-      expect(await waitForText("foo-bar")).toBe(true);
-      sendKeys("C-w");
-      await settle();
-      // Classic word-boundary kill stops at "-": "bar" is killed, "foo-" stays.
-      expect(captureVisible()).toContain("foo-");
-    } finally {
-      killRepl();
-    }
-  }, 60_000);
-
-  test("readline: Ctrl+W kills back to the previous whitespace", async () => {
-    const home = freshSeededHome({ keybindingFlavor: "readline" });
     startRepl(home);
     try {
       expect(await waitForText("shift+tab")).toBe(true);
@@ -128,6 +117,25 @@ describe.skipIf(!!process.env.CI)("2.1.238 keybindingFlavor Ctrl+W (tmux REPL e2
       await settle();
       const pane = captureVisible();
       // Readline whitespace kill removes the whole "foo-bar" run.
+      expect(pane).not.toContain("foo-bar");
+      expect(pane).not.toContain("foo-");
+    } finally {
+      killRepl();
+    }
+  }, 60_000);
+
+  test("explicit keybindingFlavor: classic is ignored — Ctrl+W still kills the whole WORD run", async () => {
+    const home = freshSeededHome({ keybindingFlavor: "classic" });
+    startRepl(home);
+    try {
+      expect(await waitForText("shift+tab")).toBe(true);
+      sendKeys("foo-bar");
+      expect(await waitForText("foo-bar")).toBe(true);
+      sendKeys("C-w");
+      await settle();
+      const pane = captureVisible();
+      // The setting parses (schema retained) but no longer dispatches to the
+      // deleted classic Segmenter-word kill, which would have left "foo-".
       expect(pane).not.toContain("foo-bar");
       expect(pane).not.toContain("foo-");
     } finally {

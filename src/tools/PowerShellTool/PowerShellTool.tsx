@@ -24,6 +24,7 @@ import { getPlatform } from '../../utils/platform.js';
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec } from '../../utils/Shell.js';
 import type { ExecResult } from '../../utils/ShellCommand.js';
+import { getBashOutputMaxChars } from '../../utils/shell/outputLimits.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
@@ -273,10 +274,23 @@ function getCommandTypeForLogging(command: string): AnalyticsMetadata_I_VERIFIED
   }
   return 'other' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS;
 }
+// Official 2.1.261 default for the spec window when `bashOutputMaxChars` is
+// unset (the OBt() fallback MBt = 30000 — PowerShell shares Bash's setting).
+// Load-time value only — buildTool's spread evaluates def getters once while
+// the module graph is still initializing; the live official getter is
+// installed right after the build.
+const POWERSHELL_MAX_RESULT_SIZE_CHARS_DEFAULT = 30_000;
+
 export const PowerShellTool = buildTool({
   name: POWERSHELL_TOOL_NAME,
   searchHint: 'execute Windows PowerShell commands',
-  maxResultSizeChars: 30_000,
+  // 2.1.261: shares Bash's `get maxResultSizeChars(){return OBt()}` — the
+  // `bashOutputMaxChars` setting sizes PowerShell inline output identically.
+  // See POWERSHELL_MAX_RESULT_SIZE_CHARS_DEFAULT for why the def getter is
+  // the default.
+  get maxResultSizeChars() {
+    return POWERSHELL_MAX_RESULT_SIZE_CHARS_DEFAULT;
+  },
   strict: true,
   async description({
     description
@@ -675,6 +689,16 @@ export const PowerShellTool = buildTool({
     return isOutputLineTruncated(output.stdout) || isOutputLineTruncated(output.stderr);
   }
 } satisfies ToolDef<InputSchema, Out>);
+// 2.1.261 live getter (official `get maxResultSizeChars(){return OBt()}` is
+// evaluated per access): replace the load-time spec value captured by
+// buildTool's spread so the `bashOutputMaxChars` setting is read on every
+// access — same pattern as BashTool, and load-time-safe (no cross-module
+// call while the import graph is still initializing).
+Object.defineProperty(PowerShellTool, 'maxResultSizeChars', {
+  get: () => getBashOutputMaxChars(),
+  enumerable: true,
+  configurable: true,
+});
 async function* runPowerShellCommand({
   input,
   abortController,

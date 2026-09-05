@@ -31,6 +31,7 @@ import type { PermissionResult } from '../../utils/permissions/PermissionResult.
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec } from '../../utils/Shell.js';
 import type { ExecResult } from '../../utils/ShellCommand.js';
+import { getBashOutputMaxChars } from '../../utils/shell/outputLimits.js';
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { semanticBoolean } from '../../utils/semanticBoolean.js';
 import { semanticNumber } from '../../utils/semanticNumber.js';
@@ -579,11 +580,22 @@ async function markReadCommandFilesAsRead(
   }
 }
 
+// Official 2.1.261 default for the spec window when `bashOutputMaxChars` is
+// unset (the OBt() fallback MBt = 30000). Load-time value only — buildTool's
+// spread evaluates def getters once while the module graph is still
+// initializing; the live official getter is installed right after the build.
+const BASH_MAX_RESULT_SIZE_CHARS_DEFAULT = 30_000;
+
 export const BashTool = buildTool({
   name: BASH_TOOL_NAME,
   searchHint: 'execute shell commands',
-  // 30K chars - tool result persistence threshold
-  maxResultSizeChars: 30_000,
+  // 2.1.261: tool-result persistence threshold now tracks the
+  // `bashOutputMaxChars` setting (official `get maxResultSizeChars(){return OBt()}`)
+  // — default 30_000, clamped 4000-128000. See
+  // BASH_MAX_RESULT_SIZE_CHARS_DEFAULT for why the def getter is the default.
+  get maxResultSizeChars() {
+    return BASH_MAX_RESULT_SIZE_CHARS_DEFAULT;
+  },
   strict: true,
   async description({
     description
@@ -1028,6 +1040,17 @@ export const BashTool = buildTool({
     return isOutputLineTruncated(output.stdout) || isOutputLineTruncated(output.stderr);
   }
 } satisfies ToolDef<InputSchema, Out, BashProgress>);
+
+// 2.1.261 official: `get maxResultSizeChars(){return OBt()}` is a LIVE getter —
+// re-read on every access so the `bashOutputMaxChars` setting is honored
+// whenever it resolves. buildTool's spread flattened it to the load-time
+// default above; re-install the real getter (evaluated lazily, once the
+// outputLimits module — and the settings it reads — are initialized).
+Object.defineProperty(BashTool, 'maxResultSizeChars', {
+  get: () => getBashOutputMaxChars(),
+  enumerable: true,
+  configurable: true,
+});
 async function* runShellCommand({
   input,
   abortController,

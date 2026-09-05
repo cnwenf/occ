@@ -2,13 +2,13 @@ import { describe, expect, test } from 'bun:test'
 import { Cursor } from '../Cursor.js'
 
 /**
- * 2.1.238 `keybindingFlavor` (binary `deleteWORDBefore`): readline-flavored
- * Ctrl+W kills back to the previous WHITESPACE boundary (the whole WORD run),
- * whereas the classic `deleteWordBefore` kills back to the previous
- * word-boundary (Intl.Segmenter word-like segment). `deleteWORDBefore` is
- * selected when `keybindingFlavor === "readline"`.
+ * `deleteWORDBefore` (binary `deleteWORDBefore`): readline Ctrl+W kills back to
+ * the previous WHITESPACE boundary (the whole WORD run). Since 2.1.261 this is
+ * the ONLY Ctrl+W variant — the classic Segmenter-word `deleteWordBefore` was
+ * deleted upstream when the `keybindingFlavor` setting was deprecated (word
+ * editing always follows Bash/readline conventions).
  */
-describe('Cursor.deleteWORDBefore (2.1.238 keybindingFlavor readline)', () => {
+describe('Cursor.deleteWORDBefore (readline Ctrl+W)', () => {
   test('returns unchanged cursor and empty killed at start of text', () => {
     const c = Cursor.fromText('hello', 80, 0)
     const { cursor, killed } = c.deleteWORDBefore()
@@ -19,21 +19,12 @@ describe('Cursor.deleteWORDBefore (2.1.238 keybindingFlavor readline)', () => {
 
   test('kills the whole WORD run across punctuation (readline)', () => {
     // readline treats only whitespace as a boundary, so the entire "foo-bar"
-    // run is killed in one Ctrl+W (Intl.Segmenter splits "foo-bar" at "-").
+    // run is killed in one Ctrl+W.
     const c = Cursor.fromText('foo-bar', 80, 7)
     const { cursor, killed } = c.deleteWORDBefore()
     expect(killed).toBe('foo-bar')
     expect(cursor.text).toBe('')
     expect(cursor.offset).toBe(0)
-  })
-
-  test('classic deleteWordBefore kills only the last word across punctuation', () => {
-    // Contrast: classic word-boundary kill stops at the "-" boundary, killing
-    // only "bar" where readline kills the whole "foo-bar" run.
-    const c = Cursor.fromText('foo-bar', 80, 7)
-    const { cursor, killed } = c.deleteWordBefore()
-    expect(killed).toBe('bar')
-    expect(cursor.text).toBe('foo-')
   })
 
   test('kills the trailing word back to whitespace for plain words', () => {

@@ -11,9 +11,11 @@ import { Cursor, MeasuredText } from '../Cursor.js'
  *     placeholder snapping at both endpoints.
  *  3. Readline word-boundary system — MeasuredText.getReadlineWordBoundaries
  *     + forwardWord/backwardWord/killWord/backwardKillWord.
- *  4. keybindingFlavor expansion — readline-vs-classic dispatch at the
- *     Cursor layer (hook-level dispatch is covered by the
- *     version-2.1.239-keybinding-flavor e2e).
+ *  4. (Updated by 2.1.261) The keybindingFlavor expansion from this round was
+ *     deprecated upstream — the classic Segmenter-word variants were deleted
+ *     and word editing now always uses the readline units from cluster 3
+ *     (hook-level behavior is covered by the
+ *     version-2.1.261-keybinding-flavor-deprecated e2e).
  */
 
 const CHIP_PASTED = '[Pasted text #1]'
@@ -83,48 +85,46 @@ describe('2.1.239 placeholder family: left()/right() hop every chip type', () =>
   })
 })
 
-describe('2.1.239 placeholder family: chip-aware word movement', () => {
-  test('nextWord() at the start of a chip jumps the whole chip', () => {
-    const text = `hello ${CHIP_IMAGE} world`
-    const chipStart = 6
-    const c = Cursor.fromText(text, 80, chipStart)
-    expect(c.nextWord().offset).toBe(chipStart + CHIP_IMAGE.length)
-  })
-
-  test('nextWord() from inside a chip jumps to the chip end', () => {
-    const text = `hello ${CHIP_IMAGE} world`
-    const c = Cursor.fromText(text, 80, 9)
-    expect(c.nextWord().offset).toBe(6 + CHIP_IMAGE.length)
-  })
-
-  test('prevWord() at the end of a chip jumps back over the chip', () => {
-    const text = `hello ${CHIP_PASTED} world`
-    const chipEnd = 6 + CHIP_PASTED.length
-    const c = Cursor.fromText(text, 80, chipEnd)
-    expect(c.prevWord().offset).toBe(6)
-  })
-
-  test('deleteTokenBefore() removes a full chip when cursor sits at its start', () => {
+describe('2.1.261 entry-009: plain backspace() deletes chips atomically', () => {
+  // 2.1.261: the classic Segmenter-word movement (nextWord/prevWord) and the
+  // `deleteTokenBefore` "selected chip" forward-delete were removed upstream.
+  // Chip deletion now rides on backspace()=left().modifyText(this): left() hops
+  // chip-end → chip-start, so a single backspace removes the WHOLE chip.
+  test('backspace() at the end of a chip removes the whole chip', () => {
     for (const chip of [CHIP_PASTED, CHIP_IMAGE, CHIP_AUDIO, CHIP_TRUNCATED]) {
       const text = `a ${chip} b`
-      const chipStart = 2
-      const c = Cursor.fromText(text, 80, chipStart)
-      const next = c.deleteTokenBefore()
-      expect(next).not.toBeNull()
-      // chip + trailing space removed atomically
-      expect(next!.text).toBe('a b')
+      const chipEnd = 2 + chip.length
+      const c = Cursor.fromText(text, 80, chipEnd)
+      const next = c.backspace()
+      // chip removed atomically; surrounding spaces kept
+      expect(next.text).toBe('a  b')
+      expect(next.offset).toBe(2)
     }
   })
 
-  test('deleteTokenBefore() matches the Audio placeholder variant (2.1.239 pattern)', () => {
-    const text = `x ${CHIP_AUDIO} `
-    // Cursor right after the chip's closing bracket (token end). Backward
-    // token delete removes the chip itself; surrounding spaces are kept
-    // (official `n.index + n[1].length` semantics).
-    const c = Cursor.fromText(text, 80, 2 + CHIP_AUDIO.length)
-    const next = c.deleteTokenBefore()
-    expect(next).not.toBeNull()
-    expect(next!.text).toBe('x  ')
+  test('backspace() at a chip start deletes the char BEFORE the chip (v261 semantics)', () => {
+    // 2.1.261: cursor sitting at chip.start is no longer a "selected" state —
+    // backspace deletes the preceding character, leaving the chip intact.
+    const text = `a ${CHIP_IMAGE} b`
+    const chipStart = 2
+    const c = Cursor.fromText(text, 80, chipStart)
+    const next = c.backspace()
+    expect(next.text).toBe(`a${CHIP_IMAGE} b`)
+    expect(next.offset).toBe(1)
+  })
+
+  test('forwardWord hops a chip atomically from its start', () => {
+    const text = `hello ${CHIP_IMAGE} world`
+    const chipStart = 6
+    const c = Cursor.fromText(text, 80, chipStart)
+    expect(c.forwardWord().offset).toBe(chipStart + CHIP_IMAGE.length)
+  })
+
+  test('backwardWord hops a chip atomically from its end', () => {
+    const text = `hello ${CHIP_PASTED} world`
+    const chipEnd = 6 + CHIP_PASTED.length
+    const c = Cursor.fromText(text, 80, chipEnd)
+    expect(c.backwardWord().offset).toBe(6)
   })
 })
 
@@ -156,21 +156,14 @@ describe('2.1.239 killRange: placeholder snapping at both endpoints', () => {
     expect(cursor.offset).toBe(1)
   })
 
-  test('deleteWordBefore kills the whole chip when cursor is right after it', () => {
+  test('deleteWORDBefore (readline Ctrl+W) kills the whole chip when cursor is right after it', () => {
     const text = `foo ${CHIP_IMAGE}`
     const c = Cursor.fromText(text, 80, text.length)
-    const { cursor, killed } = c.deleteWordBefore()
-    // prevWord lands inside/at the chip; killRange snaps the start to the
+    const { cursor, killed } = c.deleteWORDBefore()
+    // prevWORD lands inside/at the chip; killRange snaps the start to the
     // chip start so the chip dies atomically.
     expect(killed).toBe(CHIP_IMAGE)
     expect(cursor.text).toBe('foo ')
-  })
-
-  test('deleteWordAfter kills the whole chip when cursor is right before it', () => {
-    const text = `${CHIP_IMAGE} bar`
-    const c = Cursor.fromText(text, 80, 0)
-    const next = c.deleteWordAfter()
-    expect(next.text).toBe(' bar')
   })
 
   test('killRange with equal endpoints deletes nothing', () => {
@@ -289,20 +282,14 @@ describe('2.1.239 killWord/backwardKillWord', () => {
   })
 })
 
-// ── 4. flavor contrast at the Cursor layer ──────────────────────────────────
+// ── 4. word editing is always readline (2.1.261) ────────────────────────────
 
-describe('2.1.239 keybindingFlavor contrast: readline vs classic word units', () => {
-  test('readline Alt+D (killWord) kills one readline word; classic Alt+D (deleteWordAfter) kills to the next Segmenter word start', () => {
-    // In "foo-bar", readline killWord kills exactly "foo" (punctuation
-    // delimits readline words); classic deleteWordAfter kills through to the
-    // next Segmenter word START ("bar"), taking the "-" with it.
-    const readline = Cursor.fromText('foo-bar', 80, 0).killWord()
-    const classic = Cursor.fromText('foo-bar', 80, 0).deleteWordAfter()
-    expect(readline.killed).toBe('foo')
-    expect(readline.cursor.text).toBe('-bar')
-    expect(classic.text).toBe('bar')
-  })
-
+describe('2.1.261 keybindingFlavor deprecation: word editing always uses readline units', () => {
+  // The classic Segmenter-word variants (deleteWordBefore/deleteWordAfter/
+  // deleteTokenBefore/nextWord/prevWord) were deleted upstream when
+  // keybindingFlavor was deprecated, so the readline units below are now the
+  // ONLY word-editing surface. These tests pin the punctuation-vs-whitespace
+  // distinction that made the two flavors differ.
   test('readline backwardKillWord stops at punctuation; readline Ctrl+W (deleteWORDBefore) stops at whitespace', () => {
     const readlineWordKill = Cursor.fromText('foo-bar', 80, 7).backwardKillWord()
     const wordKill = Cursor.fromText('foo-bar', 80, 7).deleteWORDBefore()
@@ -310,8 +297,12 @@ describe('2.1.239 keybindingFlavor contrast: readline vs classic word units', ()
     expect(wordKill.killed).toBe('foo-bar') // whitespace delimits
   })
 
-  test('classic Ctrl+W (deleteWordBefore) still kills the Segmenter word', () => {
-    const { killed } = Cursor.fromText('foo-bar', 80, 7).deleteWordBefore()
-    expect(killed).toBe('bar')
+  test('readline killWord (Alt+D) kills exactly one readline word', () => {
+    // In "foo-bar", readline killWord kills exactly "foo" — punctuation
+    // delimits readline words (the deleted classic variant killed through to
+    // the next Segmenter word start, taking the "-" with it).
+    const { cursor, killed } = Cursor.fromText('foo-bar', 80, 0).killWord()
+    expect(killed).toBe('foo')
+    expect(cursor.text).toBe('-bar')
   })
 })

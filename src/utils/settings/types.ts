@@ -568,6 +568,35 @@ export const SettingsSchema = lazySchema(() =>
           'Default shell for input-box ! commands. ' +
             "Defaults to 'bash' on all platforms (no Windows auto-flip).",
         ),
+      // 2.1.261: byte-verified against the official binary (`w()`=z.number()).
+      // Sizes how much of a successful Bash/PowerShell command's output Claude
+      // receives inline; over this the output goes to a file with a short
+      // preview + path. Read settings-only by getBashOutputMaxChars() (official
+      // `OBt`); getMaxOutputLength() (official `pHe`) prefers this over the
+      // BASH_MAX_OUTPUT_LENGTH env var. Clamped to 4000-128000 (Asr/lge).
+      bashOutputMaxChars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .catch(undefined)
+        .describe(
+          "How many characters of a successful Bash or PowerShell command's output Claude receives inline (default 30000; values clamp to 4000-128000). Output past this is saved to a file and Claude receives a short preview plus the path. When set, this also replaces BASH_MAX_OUTPUT_LENGTH, which on its own only sizes the read-back window.",
+        ),
+      // 2.1.261: byte-verified against the official binary. Sizes how much of a
+      // background task's output the TaskOutput tool hands Claude inline; read
+      // settings-only by getTaskOutputMaxChars() (official `Kut`) and
+      // settings-first by getMaxTaskOutputLength() (official `eVo`, prefers
+      // this over the TASK_MAX_OUTPUT_LENGTH env var). Clamped to 4000-128000.
+      taskOutputMaxChars: z
+        .number()
+        .int()
+        .positive()
+        .optional()
+        .catch(undefined)
+        .describe(
+          "How many characters of a background task's output the TaskOutput tool hands Claude inline (default 32000; values clamp to 4000-128000). Longer output is cut to its most recent characters with the path of the full output file, except that a shell command still running returns its first characters up to this size. When set, this also replaces TASK_MAX_OUTPUT_LENGTH, which on its own only sizes that window.",
+        ),
       // 2.1.186: whether Claude responds after an input-box ! bash command.
       respondToBashCommands: z
         .boolean()
@@ -870,17 +899,17 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Default transcript view mode on startup'),
-      // 2.1.238: keybinding flavor for the prompt's editing keys. Selects the
-      // Ctrl+W convention: "readline" deletes back to the previous whitespace
-      // (like Bash/readline programs), "classic" (default) deletes the previous
-      // word. Mirrors the official schema field (enum ["classic","readline"],
-      // .optional().catch(undefined)); read via getKeybindingFlavor().
+      // 2.1.261: keybindingFlavor is DEPRECATED. Upstream removed the classic
+      // word-editing methods entirely — the prompt's word-editing keys now
+      // always follow Bash (readline) conventions. The enum key is retained in
+      // the schema (byte-verified against the 2.1.261 binary) purely for
+      // backward-compat parsing of existing settings files; it has no effect.
       keybindingFlavor: z
         .enum(['classic', 'readline'])
         .optional()
         .catch(undefined)
         .describe(
-          `Which conventions the prompt's editing keys follow: "readline" matches Bash and other readline programs (Ctrl+W deletes back to the previous whitespace); "classic" (default) keeps Claude Code's long-standing behavior (Ctrl+W deletes the previous word)`,
+          `Deprecated: no longer has any effect. The prompt's word-editing keys always follow Bash (readline) conventions.`,
         ),
       // 2.1.208: vim INSERT-mode key-sequence remaps (e.g. "jj" → Escape).
       // Mirrors the official schema field + IS_ normalizer: each key is exactly
