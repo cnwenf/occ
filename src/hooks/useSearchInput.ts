@@ -12,7 +12,6 @@ import {
   updateYankLength,
   yankPop,
 } from '../utils/Cursor.js'
-import { isReadlineKeybindingFlavor } from '../utils/keybindingFlavor.js'
 import { useTerminalSize } from './useTerminalSize.js'
 
 type UseSearchInputOptions = {
@@ -40,17 +39,17 @@ type UseSearchInputReturn = {
   handleKeyDown: (e: KeyboardEvent) => void
 }
 
-// 2.1.239 search-box kill-key set (official binary `phA`, byte-verbatim):
-// Ctrl+K/U/W; Meta/Ctrl+Backspace; readline-flavored Alt+D. Non-kill keys
-// reset kill accumulation.
-function isKillKey(e: KeyboardEvent, isReadline: boolean): boolean {
+// 2.1.261 search-box kill-key set (official binary `phA` region): Ctrl+K/U/W;
+// Meta/Ctrl+Backspace; Alt+D (no flavor gate — always a kill now). Non-kill
+// keys reset kill accumulation.
+function isKillKey(e: KeyboardEvent): boolean {
   if (e.ctrl && (e.key === 'k' || e.key === 'u' || e.key === 'w')) {
     return true
   }
   if ((e.meta || e.ctrl) && e.key === 'backspace') {
     return true
   }
-  if (isReadline && e.meta && !e.ctrl && e.key.toLowerCase() === 'd') {
+  if (e.meta && !e.ctrl && e.key.toLowerCase() === 'd') {
     return true
   }
   return false
@@ -102,10 +101,6 @@ export function useSearchInput({
   const effectiveColumns = columns ?? terminalColumns
   const [query, setQueryState] = useState(initialQuery)
   const [cursorOffset, setCursorOffset] = useState(initialQuery.length)
-  // 2.1.238 keybindingFlavor: binary `h = kKi() === "readline"` for the search
-  // input's Ctrl+W. readline kills back to the previous whitespace; classic
-  // (default) kills the previous word.
-  const isReadline = isReadlineKeybindingFlavor()
 
   const setQuery = useCallback((q: string) => {
     setQueryState(q)
@@ -120,7 +115,7 @@ export function useSearchInput({
     // Reset kill accumulation for non-kill keys. 2.1.239 runs this dispatch
     // BEFORE the passthrough early-return (official binary order) so a
     // passthrough key still breaks kill accumulation.
-    if (!isKillKey(e, isReadline)) {
+    if (!isKillKey(e)) {
       resetKillAccumulation()
     }
 
@@ -164,13 +159,10 @@ export function useSearchInput({
     if (e.key === 'backspace') {
       e.preventDefault()
       if (e.meta || e.ctrl) {
-        // 2.1.239 (official binary): Meta/Ctrl+Backspace kills the word
-        // before the cursor — flavored: readline kills back over a readline
-        // word (backwardKillWord); classic kills the previous Segmenter word
-        // (deleteWordBefore). Both record the kill prepend.
-        const { cursor: newCursor, killed } = isReadline
-          ? cursor.backwardKillWord()
-          : cursor.deleteWordBefore()
+        // 2.1.261 (official binary): Meta/Ctrl+Backspace always kills back
+        // over a readline word (backwardKillWord) and records the kill
+        // prepend. The classic Segmenter-word variant was deleted upstream.
+        const { cursor: newCursor, killed } = cursor.backwardKillWord()
         pushToKillRing(killed, 'prepend')
         setQueryState(newCursor.text)
         setCursorOffset(newCursor.offset)
@@ -196,18 +188,17 @@ export function useSearchInput({
       return
     }
 
-    // Arrow keys with modifiers (word jump). 2.1.239: flavored — readline
-    // jumps readline word units (backwardWord/forwardWord); classic jumps
-    // Segmenter words (prevWord/nextWord).
+    // Arrow keys with modifiers (word jump). 2.1.261: always readline word
+    // units (backwardWord/forwardWord).
     if (e.key === 'left' && (e.ctrl || e.meta || e.fn)) {
       e.preventDefault()
-      const newCursor = isReadline ? cursor.backwardWord() : cursor.prevWord()
+      const newCursor = cursor.backwardWord()
       setCursorOffset(newCursor.offset)
       return
     }
     if (e.key === 'right' && (e.ctrl || e.meta || e.fn)) {
       e.preventDefault()
-      const newCursor = isReadline ? cursor.forwardWord() : cursor.nextWord()
+      const newCursor = cursor.forwardWord()
       setCursorOffset(newCursor.offset)
       return
     }
@@ -289,10 +280,9 @@ export function useSearchInput({
           return
         }
         case 'w': {
-          // 2.1.238 keybindingFlavor: binary `h ? deleteWORDBefore : deleteWordBefore`.
-          const { cursor: newCursor, killed } = isReadline
-            ? cursor.deleteWORDBefore()
-            : cursor.deleteWordBefore()
+          // 2.1.261: always readline Ctrl+W (deleteWORDBefore — kills back to
+          // the previous whitespace). The classic variant was deleted.
+          const { cursor: newCursor, killed } = cursor.deleteWORDBefore()
           pushToKillRing(killed, 'prepend')
           setQueryState(newCursor.text)
           setCursorOffset(newCursor.offset)
@@ -327,29 +317,19 @@ export function useSearchInput({
       e.preventDefault()
       switch (e.key.toLowerCase()) {
         case 'b':
-          // 2.1.239: flavored word-back (readline → backwardWord).
-          setCursorOffset(
-            (isReadline ? cursor.backwardWord() : cursor.prevWord()).offset,
-          )
+          // 2.1.261: always readline word-back (backwardWord).
+          setCursorOffset(cursor.backwardWord().offset)
           return
         case 'f':
-          // 2.1.239: flavored word-forward (readline → forwardWord).
-          setCursorOffset(
-            (isReadline ? cursor.forwardWord() : cursor.nextWord()).offset,
-          )
+          // 2.1.261: always readline word-forward (forwardWord).
+          setCursorOffset(cursor.forwardWord().offset)
           return
         case 'd': {
-          // 2.1.239: readline-flavored Alt+D kills the word after the cursor
-          // (killWord) and records it append for Ctrl+Y; classic keeps
-          // deleteWordAfter (no kill ring — official behavior).
-          if (isReadline) {
-            const { cursor: newCursor, killed } = cursor.killWord()
-            pushToKillRing(killed, 'append')
-            setQueryState(newCursor.text)
-            setCursorOffset(newCursor.offset)
-            return
-          }
-          const newCursor = cursor.deleteWordAfter()
+          // 2.1.261: Alt+D always kills the word after the cursor (killWord)
+          // and records it append for Ctrl+Y. The classic deleteWordAfter
+          // variant was deleted upstream with the flavor setting.
+          const { cursor: newCursor, killed } = cursor.killWord()
+          pushToKillRing(killed, 'append')
           setQueryState(newCursor.text)
           setCursorOffset(newCursor.offset)
           return

@@ -589,35 +589,10 @@ export class Cursor {
   // - WORD (uppercase W/B/E): sequences of non-whitespace characters
   // For example, in "hello-world!", word movements see 3 words: "hello", "world", and nothing
   // But WORD movements see 1 WORD: "hello-world!"
-
-  nextWord(): Cursor {
-    if (this.isAtEnd()) {
-      return this
-    }
-
-    // 2.1.239: if the cursor is on or inside a placeholder chip, jump over the
-    // whole chip (official binary `nextWord`, byte-verbatim).
-    const chip =
-      this.placeholderStartingAt(this.offset) ??
-      this.placeholderContaining(this.offset)
-    if (chip) {
-      return new Cursor(this.measuredText, chip.end)
-    }
-
-    // Use Intl.Segmenter for proper word boundary detection (including CJK)
-    const wordBoundaries = this.measuredText.getWordBoundaries()
-
-    // Find the next word start boundary after current position
-    for (const boundary of wordBoundaries) {
-      if (boundary.isWordLike && boundary.start > this.offset) {
-        const target = this.snapOutOfPlaceholder(boundary.start, 'end')
-        return new Cursor(this.measuredText, target)
-      }
-    }
-
-    // If no next word found, go to end
-    return new Cursor(this.measuredText, this.text.length)
-  }
+  // 2.1.261: the classic Segmenter-word `nextWord`/`prevWord` methods were
+  // deleted upstream along with the `keybindingFlavor` setting's effect —
+  // prompt word movement always uses the readline units (forwardWord /
+  // backwardWord below). Vim keeps its own nextVimWord/prevVimWord methods.
 
   endOfWord(): Cursor {
     if (this.isAtEnd()) {
@@ -657,53 +632,6 @@ export class Cursor {
     }
 
     return this
-  }
-
-  prevWord(): Cursor {
-    if (this.isAtStart()) {
-      return this
-    }
-
-    // 2.1.239: if a chip ends exactly at the offset, jump over the whole chip
-    // (official binary `prevWord`, byte-verbatim).
-    const chipEnding = this.placeholderEndingAt(this.offset)
-    if (chipEnding) {
-      return new Cursor(this.measuredText, chipEnding.start)
-    }
-
-    // If we're inside a chip, jump to its start.
-    const chipContaining = this.placeholderContaining(this.offset)
-    if (chipContaining) {
-      return new Cursor(this.measuredText, chipContaining.start)
-    }
-
-    // Use Intl.Segmenter for proper word boundary detection (including CJK)
-    const wordBoundaries = this.measuredText.getWordBoundaries()
-
-    // Find the previous word start boundary before current position
-    let prevWordStart: number | null = null
-
-    for (const boundary of wordBoundaries) {
-      if (!boundary.isWordLike) continue
-
-      // If we're at or after the start of this word, but this word starts before us
-      if (boundary.start < this.offset) {
-        // If we're inside this word (not at the start), go to its start
-        if (this.offset > boundary.start && this.offset <= boundary.end) {
-          const target = this.snapOutOfPlaceholder(boundary.start, 'start')
-          return new Cursor(this.measuredText, target)
-        }
-        // Otherwise, remember this as a candidate for previous word
-        prevWordStart = boundary.start
-      }
-    }
-
-    if (prevWordStart !== null) {
-      const target = this.snapOutOfPlaceholder(prevWordStart, 'start')
-      return new Cursor(this.measuredText, target)
-    }
-
-    return new Cursor(this.measuredText, 0)
   }
 
   // Vim-specific word methods
@@ -903,8 +831,9 @@ export class Cursor {
    * byte-verbatim): move forward one readline word — letter/digit units
    * derived from `getReadlineWordBoundaries()`. Unlike Intl.Segmenter words,
    * punctuation like `-` IS a readline delimiter (`foo-bar` is two readline
-   * words), matching emacs-readline M-f. Placeholder chips are atomic. Used
-   * by the `keybindingFlavor: "readline"` Alt+F / Alt+D path.
+   * words), matching emacs-readline M-f. Placeholder chips are atomic.
+   * 2.1.261: always the Alt+F / Alt+D word unit — the `keybindingFlavor`
+   * setting is deprecated and word movement always follows readline.
    */
   forwardWord(): Cursor {
     if (this.isAtEnd()) {
@@ -930,8 +859,9 @@ export class Cursor {
 
   /**
    * 2.1.239 readline word movement (official binary `backwardWord`,
-   * byte-verbatim): move backward one readline word. Used by the
-   * `keybindingFlavor: "readline"` Alt+B / Ctrl+W / Ctrl+Backspace path.
+   * byte-verbatim): move backward one readline word. 2.1.261: always the
+   * Alt+B / Ctrl+W / Ctrl+Backspace word unit — `keybindingFlavor` is
+   * deprecated and word editing always follows readline conventions.
    */
   backwardWord(): Cursor {
     if (this.isAtStart()) {
@@ -1063,21 +993,12 @@ export class Cursor {
     return this.killRange(this.offset, this.endOfLogicalLine().offset).cursor
   }
 
-  deleteWordBefore(): { cursor: Cursor; killed: string } {
-    if (this.isAtStart()) {
-      return { cursor: this, killed: '' }
-    }
-    // 2.1.239: kill via killRange so the endpoint snaps out of any
-    // placeholder chip (official binary byte-verbatim).
-    return this.killRange(this.prevWord().offset, this.offset)
-  }
-
   /**
-   * 2.1.238 `keybindingFlavor`: readline-flavored Ctrl+W. Deletes back to the
-   * previous whitespace boundary (the whole WORD run), not just the previous
-   * word. Mirrors the official `deleteWORDBefore` (uses `prevWORD`, whereas
-   * `deleteWordBefore` uses `prevWord`). Selected when the `keybindingFlavor`
-   * setting is `"readline"`; `"classic"` (default) keeps `deleteWordBefore`.
+   * 2.1.261 Ctrl+W (official binary `deleteWORDBefore`): deletes back to the
+   * previous whitespace boundary (the whole WORD run). This is now the ONLY
+   * Ctrl+W variant — the classic Segmenter-word `deleteWordBefore` was
+   * deleted upstream when the `keybindingFlavor` setting was deprecated
+   * (word editing always follows Bash/readline conventions).
    * 2.1.239 reworks the kill through `killRange` (byte-verbatim).
    */
   deleteWORDBefore(): { cursor: Cursor; killed: string } {
@@ -1085,63 +1006,6 @@ export class Cursor {
       return { cursor: this, killed: '' }
     }
     return this.killRange(this.prevWORD().offset, this.offset)
-  }
-
-  /**
-   * Deletes a token before the cursor if one exists.
-   * Supports pasted text refs: [Pasted text #1], [Pasted text #1 +10 lines],
-   * [...Truncated text #1 +10 lines...]
-   *
-   * Note: @mentions are NOT tokenized since users may want to correct typos
-   * in file paths. Use Ctrl/Cmd+backspace for word-deletion on mentions.
-   *
-   * Returns null if no token found at cursor position.
-   * Only triggers when cursor is at end of token (followed by whitespace or EOL).
-   */
-  deleteTokenBefore(): Cursor | null {
-    // 2.1.239: cursor at chip.start is the "selected" state — backspace
-    // deletes the chip forward, not the char before it. Now covers the full
-    // placeholder family (Pasted/Image/Audio/Truncated), not just Image.
-    const chipAfter = this.placeholderStartingAt(this.offset)
-    if (chipAfter) {
-      const end =
-        this.text[chipAfter.end] === ' ' ? chipAfter.end + 1 : chipAfter.end
-      return this.modifyText(new Cursor(this.measuredText, end))
-    }
-
-    if (this.isAtStart()) {
-      return null
-    }
-
-    // Only trigger if cursor is at a word boundary (whitespace or end of string after cursor)
-    const charAfter = this.text[this.offset]
-    if (charAfter !== undefined && !/\s/.test(charAfter)) {
-      return null
-    }
-
-    const textBefore = this.text.slice(0, this.offset)
-
-    // Check for pasted/truncated text refs: [Pasted text #1] or [...Truncated text #1 +50 lines...]
-    // 2.1.239: pattern gained the `Audio #N` alternative (byte-verbatim).
-    const pasteMatch = textBefore.match(
-      /(^|\s)\[(Pasted text #\d+(?: \+\d+ lines)?|Image #\d+|Audio #\d+|\.\.\.Truncated text #\d+ \+\d+ lines\.\.\.)\]$/,
-    )
-    if (pasteMatch) {
-      const matchStart = pasteMatch.index! + pasteMatch[1]!.length
-      return new Cursor(this.measuredText, matchStart).modifyText(this)
-    }
-
-    return null
-  }
-
-  deleteWordAfter(): Cursor {
-    if (this.isAtEnd()) {
-      return this
-    }
-
-    // 2.1.239: kill via killRange so the endpoint snaps out of any
-    // placeholder chip (official binary byte-verbatim).
-    return this.killRange(this.offset, this.nextWord().offset).cursor
   }
 
   private graphemeAt(pos: number): string {

@@ -22,7 +22,11 @@ import { jsonParse } from '../../utils/slowOperations.js';
 import { countCharInString } from '../../utils/stringUtils.js';
 import { getTaskOutput } from '../../utils/task/diskOutput.js';
 import { updateTaskState } from '../../utils/task/framework.js';
-import { formatTaskOutput } from '../../utils/task/outputFormatting.js';
+import {
+  TASK_OUTPUT_INLINE_HEADROOM,
+  formatTaskOutput,
+  getTaskOutputMaxChars,
+} from '../../utils/task/outputFormatting.js';
 import type { ThemeName } from '../../utils/theme.js';
 import { AgentPromptDisplay, AgentResponseDisplay } from '../AgentTool/UI.js';
 import BashToolResultMessage from '../BashTool/BashToolResultMessage.js';
@@ -141,10 +145,25 @@ async function waitForTaskCompletion(taskId: string, getAppState: () => {
   const finalState = getAppState();
   return finalState.tasks?.[taskId] as TaskState ?? null;
 }
+// Official 2.1.261 default for the spec window when `taskOutputMaxChars` is
+// unset: the Kut() fallback (q8e = 32000) plus TWn (18000) inline headroom.
+// Load-time value only — buildTool's spread evaluates def getters once while
+// the module graph is still initializing (outputFormatting.ts sits on the
+// diskOutput↔tools import cycle, so calling into it here can hit its consts
+// in the TDZ). The live official getter is installed right after the build.
+const TASK_OUTPUT_MAX_RESULT_SIZE_CHARS_DEFAULT = 50_000;
+
 export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool({
   name: TASK_OUTPUT_TOOL_NAME,
   searchHint: 'read output/logs from a background task',
-  maxResultSizeChars: 100_000,
+  // 2.1.261: official `get maxResultSizeChars(){return Kut()+TWn}` — the inline
+  // task-output window (getTaskOutputMaxChars, default 32_000, tracks the
+  // `taskOutputMaxChars` setting) plus TWn=eN-q8e=18_000 chars of headroom.
+  // Replaces the static 100_000 that v260 shipped (default now 50_000). See
+  // TASK_OUTPUT_MAX_RESULT_SIZE_CHARS_DEFAULT for why this is the default.
+  get maxResultSizeChars() {
+    return TASK_OUTPUT_MAX_RESULT_SIZE_CHARS_DEFAULT;
+  },
   shouldDefer: true,
   // Backwards-compatible aliases for renamed tools
   aliases: ['AgentOutputTool', 'BashOutputTool'],
@@ -350,6 +369,17 @@ export const TaskOutputTool: Tool<InputSchema, TaskOutputToolOutput> = buildTool
     return <FallbackToolUseErrorMessage result={result} verbose={verbose} />;
   }
 } satisfies ToolDef<InputSchema, TaskOutputToolOutput>);
+
+// 2.1.261 official (CWn): `get maxResultSizeChars(){return Kut()+TWn}` is a
+// LIVE getter — re-read on every access so the `taskOutputMaxChars` setting is
+// honored whenever it resolves. buildTool's spread flattened it to the
+// load-time default above; re-install the real getter (evaluated lazily, once
+// the outputFormatting module — and the settings it reads — are initialized).
+Object.defineProperty(TaskOutputTool, 'maxResultSizeChars', {
+  get: () => getTaskOutputMaxChars() + TASK_OUTPUT_INLINE_HEADROOM,
+  enumerable: true,
+  configurable: true,
+});
 function TaskOutputResultDisplay(t0) {
   const $ = _c(54);
   const {

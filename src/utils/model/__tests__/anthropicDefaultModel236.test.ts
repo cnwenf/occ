@@ -15,21 +15,25 @@ process.env.ANTHROPIC_API_KEY ??= 'occ-ci-test-key'
  *
  * OCC-97 (Gap-97b) lesson: Bun mock.module registrations leak across test
  * files in the same worker — spread the real module and restore it in
- * afterAll.
+ * afterAll. NOTE: mock.module mutates the imported namespace IN PLACE, so
+ * the spread copy must be snapshotted BEFORE the mock is installed —
+ * spreading the (mutated) namespace in afterAll would re-install the mocked
+ * closures for every later file in this worker.
  */
 const actualSettingsModule = await import('../../settings/settings.js')
+const actualSettingsExports = { ...actualSettingsModule }
 
 let mockedSettings: Record<string, unknown> = {}
 
 mock.module('../../settings/settings.js', () => ({
-  ...actualSettingsModule,
+  ...actualSettingsExports,
   getSettings_DEPRECATED: () => mockedSettings,
   getInitialSettings: () => mockedSettings,
 }))
 
 afterAll(() => {
   mock.module('../../settings/settings.js', () => ({
-    ...actualSettingsModule,
+    ...actualSettingsExports,
   }))
 })
 

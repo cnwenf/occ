@@ -20,7 +20,6 @@ import {
 } from '../utils/Cursor.js'
 import { env } from '../utils/env.js'
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js'
-import { isReadlineKeybindingFlavor } from '../utils/keybindingFlavor.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { isModifierPressed, prewarmModifiers } from '../utils/modifiers.js'
 import { useDoublePress } from './useDoublePress.js'
@@ -110,10 +109,6 @@ export function useTextInput({
   const setOffset = onOffsetChange
   const cursor = Cursor.fromText(originalValue, columns, offset)
   const { addNotification, removeNotification } = useNotifications()
-  // 2.1.238 keybindingFlavor: "readline" makes Ctrl+W delete back to the
-  // previous whitespace (binary `Y = kKi() === "readline"`), "classic" (default)
-  // deletes the previous word. Computed once per render from merged settings.
-  const isReadline = isReadlineKeybindingFlavor()
 
   const handleCtrlC = useDoublePress(
     show => {
@@ -228,37 +223,29 @@ export function useTextInput({
     return newCursor
   }
 
-  function killWordBefore(): Cursor {
-    const { cursor: newCursor, killed } = cursor.deleteWordBefore()
-    recordKill(killed, 'prepend')
-    return newCursor
-  }
-
-  // 2.1.238 keybindingFlavor: readline-flavored Ctrl+W (binary `_e`). Kills back
-  // to the previous whitespace boundary instead of just the previous word. Kill
-  // ring + SR announcement behavior is identical to killWordBefore (binary `ge`).
+  // 2.1.261: Ctrl+W (official binary `Dt`) — always readline: kills back to
+  // the previous whitespace boundary (the whole WORD run). The classic
+  // Segmenter-word variant (`killWordBefore`) was deleted along with the
+  // `keybindingFlavor` setting's effect. Kill ring + SR announcement match
+  // the official dispatch.
   function killWORDBefore(): Cursor {
     const { cursor: newCursor, killed } = cursor.deleteWORDBefore()
     recordKill(killed, 'prepend')
     return newCursor
   }
 
-  // 2.1.239 (official binary `xe`): modifier-Backspace kill — flavored.
-  // readline kills back over a readline word (`backwardKillWord`); classic
-  // kills the previous Segmenter word (`deleteWordBefore`). Both record the
-  // kill prepend.
+  // 2.1.261 (official binary `Nt`): modifier-Backspace kill — always
+  // readline: kills back over a readline word (`backwardKillWord`) and
+  // records the kill prepend.
   function killWordBeforeFlavored(): Cursor {
-    const { cursor: newCursor, killed } = isReadline
-      ? cursor.backwardKillWord()
-      : cursor.deleteWordBefore()
+    const { cursor: newCursor, killed } = cursor.backwardKillWord()
     recordKill(killed, 'prepend')
     return newCursor
   }
 
-  // 2.1.239 (official binary `Ie`): readline-flavored Alt+D — kill the word
-  // AFTER the cursor (`killWord`, forwardWord-based) and record it append for
-  // Ctrl+Y. Classic Alt+D stays `deleteWordAfter` (no kill ring — official
-  // behavior).
+  // 2.1.261 (official binary `Wt`): Alt+D — kill the word AFTER the cursor
+  // (`killWord`, forwardWord-based) and record it append for Ctrl+Y. The
+  // classic `deleteWordAfter` variant was removed with the flavor setting.
   function killWordAfter(): Cursor {
     const { cursor: newCursor, killed } = cursor.killWord()
     recordKill(killed, 'append')
@@ -307,24 +294,25 @@ export function useTextInput({
     ['d', fullscreen ? NOOP_HANDLER : handleCtrlD],
     ['e', () => cursor.endOfLine()],
     ['f', fullscreen ? NOOP_HANDLER : () => cursor.right()],
-    ['h', () => cursor.deleteTokenBefore() ?? cursor.backspace()],
+    ['h', () => cursor.backspace()],
     ['n', () => downOrHistoryDown()],
     ['p', () => upOrHistoryUp()],
     ['u', fullscreen ? NOOP_HANDLER : killToLineStart],
-    // 2.1.238 keybindingFlavor: binary `["w", Y ? _e : ge]`. readline → kill the
-    // WORD run back to the previous whitespace; classic → kill the previous word.
-    ['w', isReadline ? killWORDBefore : killWordBefore],
+    // 2.1.261: binary `["w", Dt]` — always readline: kill the WORD run back
+    // to the previous whitespace. The classic variant was removed with the
+    // `keybindingFlavor` setting's effect.
+    ['w', killWORDBefore],
     ['y', yank],
   ])
 
-  // 2.1.239: Alt+B/Alt+F word movement and Alt+D word kill are flavored
-  // (official binary `we`/`fe`/`Ie`): readline → readline word units
-  // (backwardWord/forwardWord/killWord), classic → Segmenter words
-  // (prevWord/nextWord/deleteWordAfter, no kill ring on Alt+D).
+  // 2.1.261: Alt+B/Alt+F word movement and Alt+D word kill always use
+  // readline word units (official binary meta map `[["b",backwardWord],
+  // ["f",forwardWord],["d",Wt],["y",yankPop]]`). The classic Segmenter-word
+  // variants (prevWord/nextWord/deleteWordAfter) were deleted upstream.
   const handleMeta = mapInput([
-    ['b', () => (isReadline ? cursor.backwardWord() : cursor.prevWord())],
-    ['f', () => (isReadline ? cursor.forwardWord() : cursor.nextWord())],
-    ['d', isReadline ? killWordAfter : () => cursor.deleteWordAfter()],
+    ['b', () => cursor.backwardWord()],
+    ['f', () => cursor.forwardWord()],
+    ['d', killWordAfter],
     ['y', handleYankPop],
   ])
 
@@ -413,21 +401,24 @@ export function useTextInput({
           // Return the current cursor unchanged - handleEscape manages state internally
           return cursor
         }
-      // 2.1.239: modifier-arrow word movement is flavored (official binary
-      // `we`/`fe`): readline → readline word units, classic → Segmenter words.
+      // 2.1.261: modifier-arrow word movement always uses readline word
+      // units (official binary: left/right with ctrl||meta||fn →
+      // backwardWord/forwardWord).
       case key.leftArrow && (key.ctrl || key.meta || key.fn):
-        return () => (isReadline ? cursor.backwardWord() : cursor.prevWord())
+        return () => cursor.backwardWord()
       case key.rightArrow && (key.ctrl || key.meta || key.fn):
-        return () => (isReadline ? cursor.forwardWord() : cursor.nextWord())
+        return () => cursor.forwardWord()
       case key.backspace:
-        // 2.1.239 (official binary mt() backspace): Super+Backspace kills to
-        // line start (`he`); Meta/Ctrl+Backspace is the flavored word kill
-        // (`xe`); plain Backspace deletes a token (chip-aware) or one char.
+        // 2.1.261 (official binary mt() backspace): Super+Backspace kills to
+        // line start (`at`); Meta/Ctrl+Backspace is the readline word kill
+        // (`Nt`); plain Backspace is `cursor.backspace()` — chip-aware via
+        // left() (a chip end hops to the chip start, so modifyText removes
+        // the whole chip atomically; upstream deleted `deleteTokenBefore`).
         return key.super
           ? killToLineStart
           : key.meta || key.ctrl
             ? killWordBeforeFlavored
-            : () => cursor.deleteTokenBefore() ?? cursor.backspace()
+            : () => cursor.backspace()
       case key.delete:
         // 2.1.239: Super+Delete joins Meta+Delete → kill to line end (`ge`).
         return key.super || key.meta ? killToLineEnd : () => cursor.del()
@@ -516,15 +507,15 @@ export function useTextInput({
     }
   }
 
-  // Check if this is a kill command. 2.1.239 full set (official binary `ot`,
-  // byte-verbatim): Ctrl+K/U/W; readline-flavored Alt+D (killWordAfter);
-  // modifier Backspace (Meta/Super/Ctrl); modifier Delete (Meta/Super).
-  // Non-kill keys reset kill accumulation.
+  // Check if this is a kill command. 2.1.261 full set (official binary `Ut`,
+  // byte-verbatim): Ctrl+K/U/W; Alt+D (meta && !ctrl, no flavor gate —
+  // always a kill now); modifier Backspace (Meta/Super/Ctrl); modifier
+  // Delete (Meta/Super). Non-kill keys reset kill accumulation.
   function isKillKey(key: Key, input: string): boolean {
     if (key.ctrl && (input === 'k' || input === 'u' || input === 'w')) {
       return true
     }
-    if (isReadline && key.meta && !key.ctrl && input === 'd') {
+    if (key.meta && !key.ctrl && input === 'd') {
       return true
     }
     if (key.backspace && (key.meta || key.super || key.ctrl)) {
@@ -557,12 +548,12 @@ export function useTextInput({
     if (!key.backspace && !key.delete && input.includes('\x7f')) {
       const delCount = (input.match(/\x7f/g) || []).length
 
-      // Apply all DEL characters as backspace operations synchronously
-      // Try to delete tokens first, fall back to character backspace
+      // Apply all DEL characters as backspace operations synchronously.
+      // 2.1.261: plain chip-aware backspace (left() hops over a chip, so a
+      // chip dies atomically — upstream deleted `deleteTokenBefore`).
       let currentCursor = cursor
       for (let i = 0; i < delCount; i++) {
-        currentCursor =
-          currentCursor.deleteTokenBefore() ?? currentCursor.backspace()
+        currentCursor = currentCursor.backspace()
       }
 
       // Update state once with the final result
