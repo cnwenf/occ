@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. **Last fully caught up through
-Claude Code `2.1.261`** (= the landed scope of the OCC-116 round,
+Claude Code `2.1.263`** (the OCC-117 round, 2026-09-07 — official 2.1.263,
+single entry "Bug fixes and reliability improvements"; `2.1.262` was never
+published. Byte-level strings diff of the official 2.1.261 vs 2.1.263
+linux-x64 ELFs verified a **pure no-op for OCC**: the only substantive
+changes are the first-party-gated `CLAUDE_CODE_POLISHED_DEWDROP` /
+`tengu_polished_dewdrop` thinking-prefix experiment (`ju()` =
+firstParty && api.anthropic.com hard gate), the backend-gated effort-medium
+nudge generalization (templated `{from}`/`{to}` copy + per-model
+`tengu_radiant_island`/`tengu_steady_plum` gate configs — OCC never
+implemented the nudge base), and a new `tengu_thinking_binding_rejected_retry`
+recovery handler in the first-party-beta rejection family OCC does not ship;
+slash commands (121), settings schema (`.describe(` 2037), CLI flags, tool
+names, hook events, and error-recovery markers are all identical. Zero
+portable changes; no OCC code change, no release (docs-only per the OCC-88
+precedent). Full triage in `docs/upstream-version-gap-occ117.md`; the prior
+OCC-116 round,
 2026-09-06 — official 2.1.261, 67 entries; landed the portable
 byte-verified subset: **`keybindingFlavor` deprecation** (entry 040 — the
 classic Segmenter word-editing path is deleted upstream; Ctrl+W/Alt+F/Alt+D
