@@ -36,9 +36,15 @@ export type ThemePickerProps = {
   skipExitHandling?: boolean;
   /** Called when the user cancels (presses Escape). If skipExitHandling is true and this is provided, it will be called instead of just saving the preview. */
   onCancel?: () => void;
+  /**
+   * Whether to show the "New custom theme…" creation entry. Official 2.1.263 gates
+   * this entry on the presence of an onCustomTheme handler, which only /theme
+   * passes — onboarding and the Settings→Config→Theme panel show 7 presets only.
+   */
+  allowCustomThemeCreation?: boolean;
 };
 export function ThemePicker(t0) {
-  const $ = _c(63);
+  const $ = _c(64);
   const {
     onThemeSelect,
     showIntroText: t1,
@@ -46,13 +52,15 @@ export function ThemePicker(t0) {
     showHelpTextBelow: t3,
     hideEscToCancel: t4,
     skipExitHandling: t5,
-    onCancel: onCancelProp
+    onCancel: onCancelProp,
+    allowCustomThemeCreation: t6a
   } = t0;
   const showIntroText = t1 === undefined ? false : t1;
   const helpText = t2 === undefined ? "" : t2;
   const showHelpTextBelow = t3 === undefined ? false : t3;
   const hideEscToCancel = t4 === undefined ? false : t4;
   const skipExitHandling = t5 === undefined ? false : t5;
+  const allowCustomThemeCreation = t6a === undefined ? false : t6a;
   const [theme, setThemeSetting] = useTheme();
   const themeSetting = useThemeSetting();
   const reloadCustomThemes = useReloadCustomThemes();
@@ -181,17 +189,22 @@ export function ThemePicker(t0) {
   // Detect whether the saved setting is a custom theme (for the warning below)
   const activeCustomSlug = typeof themeSetting === 'string' && isCustomThemeSetting(themeSetting) ? parseCustomThemeSlug(themeSetting) : null;
   const activeCustomTheme = activeCustomSlug ? customThemes.find(ct => ct.slug === activeCustomSlug) : undefined;
-  // Augment preset options with loaded custom themes + a "New custom theme…" entry
+  // Augment preset options with loaded custom themes. The "New custom theme…"
+  // creation entry is gated on allowCustomThemeCreation — mirroring official
+  // 2.1.263, where the entry only appears when /theme passes an onCustomTheme
+  // handler (onboarding + Settings→Config→Theme show 7 presets only).
   let t10b;
-  if ($[59] !== customThemes) {
+  if ($[59] !== customThemes || $[63] !== allowCustomThemeCreation) {
+    const newCustomEntry = allowCustomThemeCreation ? [{
+      label: NEW_CUSTOM_THEME_LABEL,
+      value: NEW_CUSTOM_THEME_VALUE
+    }] : [];
     t10b = [...themeOptions, ...customThemes.map(ct => ({
       label: ct.name,
       value: buildCustomThemeSlug(ct.slug)
-    }), ), {
-      label: NEW_CUSTOM_THEME_LABEL,
-      value: NEW_CUSTOM_THEME_VALUE
-    }];
+    })), ...newCustomEntry];
     $[59] = customThemes;
+    $[63] = allowCustomThemeCreation;
     $[60] = t10b;
   } else {
     t10b = $[60];

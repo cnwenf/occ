@@ -125,6 +125,29 @@ describe("I10 (2.1.118): custom themes from ~/.claude/themes", () => {
     expect(src).toContain("is a custom theme; selecting a preset here replaces it");
   });
 
+  // OCC-118 gap fix: official 2.1.263 gates the "New custom theme…" picker entry
+  // on the onCustomTheme prop, which only /theme passes. Onboarding and the
+  // Settings→Config→Theme panel must show 7 presets only (no creation entry).
+  test("'New custom theme…' entry is gated to /theme only (official 2.1.263 parity)", () => {
+    const picker = readSrc("src/components/ThemePicker.tsx");
+    // Prop exists, defaults to false, and gates the entry
+    expect(picker).toContain("allowCustomThemeCreation?: boolean");
+    expect(picker).toMatch(/allowCustomThemeCreation = t6a === undefined \? false : t6a/);
+    expect(picker).toMatch(/allowCustomThemeCreation \? \[\{/);
+    expect(picker).toMatch(/\$\[63\] !== allowCustomThemeCreation/);
+    expect(picker).toContain("_c(64)");
+
+    // /theme passes the gate prop → 8 entries (7 presets + creation entry)
+    const theme = readSrc("src/commands/theme/theme.tsx");
+    expect(theme).toContain("allowCustomThemeCreation={true}");
+
+    // Onboarding + Settings→Config must NOT pass it → 7 presets only
+    const onboarding = readSrc("src/components/Onboarding.tsx");
+    expect(onboarding).not.toContain("allowCustomThemeCreation");
+    const config = readSrc("src/components/Settings/Config.tsx");
+    expect(config).not.toContain("allowCustomThemeCreation");
+  });
+
   test("theme.tsx shows 'Using custom theme' on select", () => {
     const src = readSrc("src/commands/theme/theme.tsx");
     expect(src).toContain("parseCustomThemeSlug");

@@ -224,12 +224,15 @@ export function TrustDialog(t0) {
   }
   let t20;
   if ($[24] === Symbol.for("react.memo_cache_sentinel")) {
+    // Official 2.1.263 orders the trust dialog [No, exit] first (the safe
+    // default the cursor lands on) then [Yes, I trust this folder]. OCC-118 gap
+    // fix: previously this was reversed, defaulting Enter to "trust the folder".
     t20 = [{
-      label: "Yes, I trust this folder",
-      value: "enable_all"
-    }, {
       label: "No, exit",
       value: "exit"
+    }, {
+      label: "Yes, I trust this folder",
+      value: "enable_all"
     }];
     $[24] = t20;
   } else {
@@ -237,7 +240,7 @@ export function TrustDialog(t0) {
   }
   let t21;
   if ($[25] !== onChange) {
-    t21 = <Select options={t20} onChange={value_0 => onChange(value_0 as 'enable_all' | 'exit')} onCancel={() => onChange("exit")} />;
+    t21 = <Select options={t20} hideIndexes={true} onChange={value_0 => onChange(value_0 as 'enable_all' | 'exit')} onCancel={() => onChange("exit")} />;
     $[25] = onChange;
     $[26] = t21;
   } else {
