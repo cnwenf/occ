@@ -17,7 +17,7 @@ export function ApproveApiKey(t0) {
   let t1;
   if ($[0] !== customApiKeyTruncated || $[1] !== onDone) {
     t1 = function onChange(value) {
-      bb2: switch (value) {
+      switch (value) {
         case "yes":
           {
             saveGlobalConfig(current_0 => ({
@@ -28,7 +28,7 @@ export function ApproveApiKey(t0) {
               }
             }));
             onDone(true);
-            break bb2;
+            break;
           }
         case "no":
           {
@@ -102,7 +102,7 @@ export function ApproveApiKey(t0) {
   }
   let t8;
   if ($[11] !== onChange) {
-    t8 = <Select defaultValue="no" defaultFocusValue="no" options={t7} onChange={value_0 => onChange(value_0 as 'yes' | 'no')} onCancel={() => onChange("no")} />;
+    t8 = <Select defaultFocusValue="no" hideIndexes={true} options={t7} onChange={value_0 => onChange(value_0 as 'yes' | 'no')} onCancel={() => onChange("no")} />;
     $[11] = onChange;
     $[12] = t8;
   } else {

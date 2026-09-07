@@ -44,7 +44,7 @@ function ThemePickerCommand(t0) {
   }
   let t3;
   if ($[5] !== t1 || $[6] !== t2) {
-    t3 = <Pane color="permission"><ThemePicker onThemeSelect={t1} onCancel={t2} skipExitHandling={true} /></Pane>;
+    t3 = <Pane color="permission"><ThemePicker onThemeSelect={t1} onCancel={t2} skipExitHandling={true} allowCustomThemeCreation={true} /></Pane>;
     $[5] = t1;
     $[6] = t2;
     $[7] = t3;

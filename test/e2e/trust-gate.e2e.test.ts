@@ -102,6 +102,20 @@ async function waitForExit(timeoutMs = 10_000): Promise<boolean> {
   return false;
 }
 
+/**
+ * Dismiss the ApproveApiKey dialog when a custom ANTHROPIC_API_KEY is present in
+ * the environment. Boot order is trust → api-key → bypass → REPL; the dialog's
+ * default focus is "No (recommended)", so a bare Enter declines and proceeds.
+ * The rejection is persisted to config, so it does not reappear on a second boot.
+ * No-op when the dialog is absent (clean env / reboot).
+ */
+async function dismissApiKeyDialogIfPresent(): Promise<void> {
+  if (await waitForText("use this api key", 4_000)) {
+    await new Promise((r) => setTimeout(r, 300));
+    sendKeys("Enter");
+  }
+}
+
 function readSettingsTrust(home: string): { trust?: boolean; bypass?: boolean } {
   const cfgPath = join(home, ".claude.json");
   const settingsPath = join(home, ".claude", "settings.json");
@@ -125,7 +139,7 @@ function readSettingsTrust(home: string): { trust?: boolean; bypass?: boolean } 
 }
 
 describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
-  test("fresh project shows trust dialog; default Enter accepts → prompt", async () => {
+  test("fresh project shows trust dialog; safe 'No, exit' is default, Down+Enter accepts → prompt", async () => {
     const home = freshSeededHome();
     startRepl(home);
     try {
@@ -134,9 +148,19 @@ describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
       expect(pane).toContain("Yes, I trust this folder");
       expect(pane).toContain("No, exit");
 
-      // Default cursor is on "Yes" (first option) → Enter accepts.
+      // Official 2.1.263 parity (OCC-118): the trust dialog is cancel-first —
+      // "No, exit" is the FIRST option and the safe default the cursor lands on
+      // (binary En: cancelFirst:!0, focus:"cancel"). Accepting trust now needs
+      // Down → "Yes, I trust this folder" → Enter.
+      sendKeys("Down");
+      await new Promise((r) => setTimeout(r, 300));
       sendKeys("Enter");
-      expect(await waitForText("for shortcuts", 15_000)).toBe(true);
+      await dismissApiKeyDialogIfPresent();
+      // Ready marker: OCC's manual-mode footer renders "manual mode on
+      // (shift+tab to cycle)". (Official 2.1.263 renders "· ? for shortcuts ·
+      // ← for agents" on the same line — footer-composition divergence tracked
+      // in docs/upstream-version-gap-occ118.md, not a trust-gate concern.)
+      expect(await waitForText("shift+tab", 15_000)).toBe(true);
 
       // Trust persisted to .claude.json
       expect(readSettingsTrust(home).trust).toBe(true);
@@ -151,13 +175,17 @@ describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
     startRepl(home);
     try {
       expect(await waitForText("Quick safety check", 20_000)).toBe(true);
+      sendKeys("Down"); // OCC-118: cancel-first — move to "Yes, I trust this folder"
+      await new Promise((r) => setTimeout(r, 300));
       sendKeys("Enter"); // accept
-      expect(await waitForText("for shortcuts", 15_000)).toBe(true);
+      await dismissApiKeyDialogIfPresent();
+      expect(await waitForText("shift+tab", 15_000)).toBe(true);
       killRepl();
 
-      // Reboot in the same HOME — trust already persisted.
+      // Reboot in the same HOME — trust already persisted, API-key rejection
+      // persisted, so no dialogs: straight to the manual-mode REPL footer.
       startRepl(home);
-      expect(await waitForText("for shortcuts", 15_000)).toBe(true);
+      expect(await waitForText("shift+tab", 15_000)).toBe(true);
       expect(capturePane().toLowerCase()).not.toContain("quick safety check");
     } finally {
       killRepl();
@@ -165,12 +193,14 @@ describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
     }
   }, 60_000);
 
-  test("'No, exit' exits the session", async () => {
+  test("default 'No, exit' (safe default) exits the session without Down", async () => {
     const home = freshSeededHome();
     startRepl(home);
     try {
       expect(await waitForText("Quick safety check", 20_000)).toBe(true);
-      sendKeys("Down"); // move to "No, exit"
+      // Official 2.1.263 parity (OCC-118): "No, exit" is the first/default
+      // option, so a bare Enter declines and exits — no Down needed. This is the
+      // safe-default behavior (binary En: cancelFirst:!0, focus:"cancel").
       sendKeys("Enter");
       expect(await waitForExit(10_000)).toBe(true);
       // Decline must NOT persist trust.
@@ -187,7 +217,10 @@ describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
     try {
       // Trust dialog first (always shown).
       expect(await waitForText("Quick safety check", 20_000)).toBe(true);
+      sendKeys("Down"); // OCC-118: cancel-first — move to "Yes, I trust this folder"
+      await new Promise((r) => setTimeout(r, 300));
       sendKeys("Enter"); // accept trust
+      await dismissApiKeyDialogIfPresent();
       // Bypass dialog next.
       expect(await waitForText("Bypass Permissions mode", 15_000)).toBe(true);
       const pane = capturePane();
@@ -208,9 +241,13 @@ describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
     startRepl(home, ["--dangerously-skip-permissions"]);
     try {
       expect(await waitForText("Quick safety check", 20_000)).toBe(true);
+      sendKeys("Down"); // OCC-118: cancel-first — move to "Yes, I trust this folder"
+      await new Promise((r) => setTimeout(r, 300));
       sendKeys("Enter"); // accept trust
+      await dismissApiKeyDialogIfPresent();
       expect(await waitForText("Bypass Permissions mode", 15_000)).toBe(true);
       sendKeys("Down"); // move to "Yes, I accept"
+      await new Promise((r) => setTimeout(r, 300));
       sendKeys("Enter");
       // Bypass-mode prompt footer contains "shift+tab".
       expect(await waitForText("shift+tab", 15_000)).toBe(true);
