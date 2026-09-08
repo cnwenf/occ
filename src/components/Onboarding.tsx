@@ -71,11 +71,11 @@ export function Onboarding({
          */}
         <OrderedList>
           <OrderedList.Item>
-            <Text>Claude can make mistakes</Text>
+            <Text>Claude can make mistakes.</Text>
             <Text dimColor wrap="wrap">
-              You should always review Claude&apos;s responses, especially when
+              You&apos;re responsible for Claude&apos;s actions and should always
               <Newline />
-              running code.
+              review them, especially when running code.
               <Newline />
             </Text>
           </OrderedList.Item>
@@ -83,9 +83,8 @@ export function Onboarding({
             <Text>
               Due to prompt injection risks, only use it with code you trust
             </Text>
-            <Text dimColor wrap="wrap">
-              For more details see:
-              <Newline />
+            <Text dimColor>
+              Learn more:{' '}
               <Link url="https://code.claude.com/docs/en/security" />
             </Text>
           </OrderedList.Item>
