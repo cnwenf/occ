@@ -1420,7 +1420,8 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   // also has a broader Edit(.claude) rule in userSettings (e.g. from sandbox
   // write-allow conversion), that rule would be found first and its source check
   // below would fail. Scope the search to session-only rules so the dialog's
-  // "allow Claude to edit its own settings for this session" option actually works.
+  // "allow Claude to edit files in this project's .claude folder for this
+  // session" option (and its ~/.claude global variant) actually works.
   const claudeFolderAllowRule = matchingRuleForInput(
     path,
     {

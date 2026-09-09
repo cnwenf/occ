@@ -103,8 +103,13 @@ export function getFilePermissionOptions({
   // not persisted settings. The allowManagedPermissionRulesOnly setting only restricts
   // persisted permission rules.
   if ((inClaudeFolder || inGlobalClaudeFolder) && operationType !== 'read') {
+    // OCC-81 (2.1.266): the option label is branch-specific — global
+    // ~/.claude vs the project's .claude — mirroring official `rBo`:
+    //   ge ? "Yes, and allow Claude to edit files in its ~/.claude folder for this session"
+    //      : "Yes, and allow Claude to edit files in this project's .claude folder for this session"
+    // paired with rule patterns gRt="~/.claude/**" / mRt="/.claude/**".
     options.push({
-      label: 'Yes, and allow Claude to edit its own settings for this session',
+      label: inGlobalClaudeFolder ? 'Yes, and allow Claude to edit files in its ~/.claude folder for this session' : "Yes, and allow Claude to edit files in this project's .claude folder for this session",
       value: 'yes-claude-folder',
       option: {
         type: 'accept-session',
