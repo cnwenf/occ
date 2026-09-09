@@ -16,9 +16,11 @@ import type { InputEvent } from '../ink/events/input-event.js';
 import { type Key, useInput } from '../ink.js';
 import { count } from '../utils/array.js';
 import { logForDebugging } from '../utils/debug.js';
+import { getPlatform } from '../utils/platform.js';
 import { plural } from '../utils/stringUtils.js';
 import { KeybindingProvider } from './KeybindingContext.js';
 import { initializeKeybindingWatcher, type KeybindingsLoadResult, loadKeybindingsSyncWithWarnings, subscribeToKeybindingChanges } from './loadUserBindings.js';
+import { chordToDisplayString } from './parser.js';
 import { resolveKeyWithChordState } from './resolver.js';
 import type { KeybindingContextName, ParsedBinding, ParsedKeystroke } from './types.js';
 import type { KeybindingWarning } from './validate.js';
@@ -26,8 +28,17 @@ import type { KeybindingWarning } from './validate.js';
 /**
  * Timeout for chord sequences in milliseconds.
  * If the user doesn't complete the chord within this time, it's cancelled.
+ *
+ * 2.1.265 (Gap-120b): raised 1000 → 3000 and made the timeout user-visible.
+ * Official changelog: "Fixed two-key keyboard shortcuts cancelling silently
+ * when the second key arrived more than a second later, as happens inside
+ * tmux; they now wait 3 seconds and show a notice when they time out."
+ * Binary-verbatim (2.1.266 linux-x64): `var Nn=3000;` and the timeout
+ * callback emits a feedback notification with text
+ * `${chordToDisplayString(x, getPlatform())} cancelled — no next key within
+ * ${Nn/1000}s`, priority "immediate", timeoutMs 3000.
  */
-const CHORD_TIMEOUT_MS = 1000;
+export const CHORD_TIMEOUT_MS = 3000;
 type Props = {
   children: React.ReactNode;
 };
@@ -135,6 +146,11 @@ export function KeybindingSetup({
   // Display warnings via notifications
   useKeybindingWarnings(warnings, isReload);
 
+  // 2.1.265 (Gap-120b): notification sink for the chord-timeout notice.
+  const {
+    addNotification
+  } = useNotifications();
+
   // Chord state management - use ref for immediate access, state for re-renders
   // The ref is used by resolve() to get the current value without waiting for re-render
   // The state is used to trigger re-renders when needed (e.g., for UI updates)
@@ -172,19 +188,35 @@ export function KeybindingSetup({
   const setPendingChord = useCallback((pending: ParsedKeystroke[] | null) => {
     clearChordTimeout();
     if (pending !== null) {
-      // Set timeout to cancel chord if not completed
-      chordTimeoutRef.current = setTimeout((pendingChordRef_0, setPendingChordState_0) => {
+      // Set timeout to cancel chord if not completed.
+      // 2.1.265 (Gap-120b): the wait is 3 seconds (was 1) and the timeout is
+      // announced with a notification instead of cancelling silently.
+      // Binary-verbatim (2.1.266): `l({key:"chord-timeout",kind:"feedback",
+      // text:`${tK(x,w0())} cancelled — no next key within ${Nn/1000}s`,
+      // priority:"immediate",timeoutMs:3000})`. OCC's TextNotification has no
+      // `kind` field — the "feedback" kind maps to the default notification
+      // styling, so it is omitted here.
+      chordTimeoutRef.current = setTimeout((pendingChordRef_0, setPendingChordState_0, addNotification_0) => {
         logForDebugging('[keybindings] Chord timeout - cancelling');
+        const timedOutChord = pendingChordRef_0.current;
+        if (timedOutChord !== null) {
+          addNotification_0({
+            key: "chord-timeout",
+            text: `${chordToDisplayString(timedOutChord, getPlatform())} cancelled — no next key within ${CHORD_TIMEOUT_MS / 1000}s`,
+            priority: "immediate",
+            timeoutMs: 3000
+          });
+        }
         pendingChordRef_0.current = null;
         setPendingChordState_0(null);
-      }, CHORD_TIMEOUT_MS, pendingChordRef, setPendingChordState);
+      }, CHORD_TIMEOUT_MS, pendingChordRef, setPendingChordState, addNotification);
     }
 
     // Update ref immediately for synchronous access in resolve()
     pendingChordRef.current = pending;
     // Update state to trigger re-renders for UI updates
     setPendingChordState(pending);
-  }, [clearChordTimeout]);
+  }, [clearChordTimeout, addNotification]);
   useEffect(() => {
     // Initialize file watcher (idempotent - only runs once)
     void initializeKeybindingWatcher();
@@ -250,12 +282,12 @@ function ChordInterceptor(t0) {
       const contexts = [...handlerContexts, ...activeContexts, "Global"];
       const wasInChord = pendingChordRef.current !== null;
       const result = resolveKeyWithChordState(input, key, contexts, bindings, pendingChordRef.current);
-      bb23: switch (result.type) {
+      switch (result.type) {
         case "chord_started":
           {
             setPendingChord(result.pending);
             event.stopImmediatePropagation();
-            break bb23;
+            break;
           }
         case "match":
           {
@@ -275,19 +307,19 @@ function ChordInterceptor(t0) {
                 }
               }
             }
-            break bb23;
+            break;
           }
         case "chord_cancelled":
           {
             setPendingChord(null);
             event.stopImmediatePropagation();
-            break bb23;
+            break;
           }
         case "unbound":
           {
             setPendingChord(null);
             event.stopImmediatePropagation();
-            break bb23;
+            break;
           }
         case "none":
       }
