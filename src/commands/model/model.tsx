@@ -6,7 +6,7 @@ import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
-import type { EffortLevel } from '../../utils/effort.js';
+import { type EffortLevel } from '../../utils/effort.js';
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { MODEL_ALIASES } from '../../utils/model/aliases.js';
@@ -14,7 +14,8 @@ import { checkOpus1mAccess, checkSonnet1mAccess } from '../../utils/model/check1
 import { getDefaultMainLoopModelSetting, isOpus1mMergeEnabled, renderDefaultModelSetting } from '../../utils/model/model.js';
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js';
 import { validateModel } from '../../utils/model/validateModel.js';
-import { updateSettingsForSource } from '../../utils/settings/settings.js';
+import { getSettingsFilePathForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
+import { homedir } from 'node:os';
 // E19 (2.1.117): startup pin header. The picker header explains that the
 // selection becomes the default (pinned) for new sessions — i.e. it persists
 // across restarts. Mirrors the 2.1.200 binary ModelPicker header text:
@@ -22,6 +23,52 @@ import { updateSettingsForSource } from '../../utils/settings/settings.js';
 // sessions. For other/previous model names, specify with --model."
 const MODEL_PICKER_PIN_HEADER =
   'Switch between Claude models. Your pick becomes the default for new sessions. For other/previous model names, specify with --model.';
+/**
+ * 2.1.265 (Gap-120a): result of persisting the picked model to user settings.
+ * Mirrors the official 2.1.266 binary `wMe()`: the save is awaited and its
+ * outcome ("saved" / "unconfirmed" / "failed") shapes the confirmation copy.
+ * OCC's updateSettingsForSource is synchronous, so "unconfirmed" (write still
+ * in flight) is unreachable here — kept out of the union; see ledger OCC-120.
+ */
+type ModelDefaultSaveResult = {
+  kind: 'saved';
+} | {
+  kind: 'failed';
+  error: Error;
+};
+function saveModelAsDefault(model: string): ModelDefaultSaveResult {
+  const {
+    error
+  } = updateSettingsForSource("userSettings", {
+    model
+  });
+  return error ? {
+    kind: 'failed',
+    error
+  } : {
+    kind: 'saved'
+  };
+}
+
+/**
+ * 2.1.265 (Gap-120a): failure-suffix copy, byte-verified from the official
+ * 2.1.266 binary `vMe()`:
+ *   ` · couldn't save it as your default: <path> can't be written (<cause>)`
+ *   ` · couldn't save it as your default: <path> isn't valid JSON`
+ * The official path formatter `qc(ao("userSettings") ?? "settings.json")` is
+ * not identifiable from strings (minified name collisions); OCC uses its own
+ * tilde-shortening convention (doctorDiagnostic.ts / nativeInstaller).
+ */
+function renderModelSaveFailureSuffix(result: ModelDefaultSaveResult): string {
+  if (result.kind === 'saved') {
+    return '';
+  }
+  const settingsPath = getSettingsFilePathForSource('userSettings') ?? 'settings.json';
+  const displayPath = settingsPath.replace(homedir(), '~');
+  const reason = result.error.message.startsWith('Invalid JSON syntax') ? "isn't valid JSON" : `can't be written (${result.error.message})`;
+  return ` \xB7 couldn't save it as your default: ${displayPath} ${reason}`;
+}
+export { saveModelAsDefault, renderModelSaveFailureSuffix, type ModelDefaultSaveResult };
 function ModelPickerWrapper({ onDone }: {
   onDone: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -45,6 +92,11 @@ function ModelPickerWrapper({ onDone }: {
   // E18 (2.1.153): enter = "set as default" — persist the selection to
   // user settings so it survives into new sessions. Mirrors the official
   // 2.1.200 binary: `Set model to X and saved as your default for new sessions`.
+  // 2.1.265 (Gap-120a): the save is now confirmed before the copy claims
+  // success — official changelog: "the /model dialog no longer claims your
+  // choice was saved as the default when the write fails". Binary-verbatim
+  // (2.1.266 `DKe`): saved → " and saved as your default for new sessions",
+  // not-saved → " for this session only" + `vMe()` failure suffix.
   function handleSelect(model: string | null, effort?: EffortLevel) {
     logEvent("tengu_model_command_menu", {
       action: model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -60,9 +112,10 @@ function ModelPickerWrapper({ onDone }: {
       onDone("Model reset to default for this session");
       return;
     }
-    // E18: save as default for new sessions.
-    updateSettingsForSource("userSettings", { model });
-    let message = `Set model to ${chalk.bold(renderModelLabel(model))} and saved as your default for new sessions`;
+    // E18: save as default for new sessions; Gap-120a: check the result.
+    const saveResult = saveModelAsDefault(model);
+    const isSaved = saveResult.kind === "saved";
+    let message = `Set model to ${chalk.bold(renderModelLabel(model))}${isSaved ? " and saved as your default for new sessions" : " for this session only"}`;
     if (effort !== undefined) {
       message = message + ` with ${chalk.bold(effort)} effort`;
     }
@@ -82,6 +135,9 @@ function ModelPickerWrapper({ onDone }: {
         }
       }
     }
+    // Gap-120a: official assembly order is base → fast-mode → failure suffix
+    // → billed suffix (binary `DKe`: p+=gX(...); p+=vMe(M); p+=sin/iin).
+    message = message + renderModelSaveFailureSuffix(saveResult);
     if (isBilledAsExtraUsage(model, wasFastModeToggledOn === true, isOpus1mMergeEnabled())) {
       message = message + " \xB7 Billed as extra usage";
     }
@@ -164,14 +220,19 @@ function SetModelAndClose({
       }
 
       // @[MODEL LAUNCH]: Update check for 1M access.
+      // 2.1.266 round (Gap-120d): copy fixed to the current official strings —
+      // "Opus with 1M context is not available for your account." / "Sonnet with
+      // 1M context is not available for your account." (byte-identical in the
+      // official 2.1.263 AND 2.1.266 binaries; OCC's "Opus 4.6/Sonnet 4.6 with…"
+      // was a stale divergence).
       if (model && isOpus1mUnavailable(model)) {
-        onDone(`Opus 4.6 with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m`, {
+        onDone(`Opus with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m`, {
           display: 'system'
         });
         return;
       }
       if (model && isSonnet1mUnavailable(model)) {
-        onDone(`Sonnet 4.6 with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m`, {
+        onDone(`Sonnet with 1M context is not available for your account. Learn more: https://code.claude.com/docs/en/model-config#extended-context-with-1m`, {
           display: 'system'
         });
         return;
@@ -254,7 +315,10 @@ function isSonnet1mUnavailable(model: string): boolean {
   const m = model.toLowerCase();
   // Warn about Sonnet and Sonnet 4.6, but not Sonnet 4.5 since that had
   // a different access criteria.
-  return !checkSonnet1mAccess() && (m.includes('sonnet[1m]') || m.includes('sonnet-4-6[1m]'));
+  // 2.1.265 (Gap-120c): binary-verbatim (2.1.266 `lin`): the set gained
+  // "sonnet-5[1m]" and exact "opusplan[1m]" — opusplan[1m] routes through
+  // the Sonnet gate because it resolves to Sonnet in normal mode.
+  return !checkSonnet1mAccess() && (m.includes('sonnet[1m]') || m.includes('sonnet-4-6[1m]') || m.includes('sonnet-5[1m]') || m.trim() === 'opusplan[1m]');
 }
 function ShowModelAndClose(t0) {
   const {

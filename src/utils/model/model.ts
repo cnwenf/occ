@@ -595,6 +595,12 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
   if (setting === 'opusplan') {
     return 'Opus Plan'
   }
+  // 2.1.265 (Gap-120c): opusplan[1m] renders as its resolved model name, not
+  // capitalize("opusplan[1m]"). Binary-verbatim (2.1.266 `ND`): aliases fall
+  // through to `Gs(Et(e))` (renderModelName(parseUserSpecifiedModel(e))).
+  if (setting === 'opusplan[1m]') {
+    return renderModelName(parseUserSpecifiedModel(setting))
+  }
   if (isModelAlias(setting)) {
     return capitalize(setting)
   }

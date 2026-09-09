@@ -7,6 +7,11 @@ export const MODEL_ALIASES = [
   'sonnet[1m]',
   'opus[1m]',
   'opusplan',
+  // 2.1.265 (Gap-120c): official added the opusplan[1m] alias — binary-verbatim
+  // (2.1.266 `lin`): `t.trim()==="opusplan[1m]"` is an accepted alias form, and
+  // `v9("opusplan[1m]")` → "opus" / `XC("opusplan[1m]")` → true confirm it is
+  // treated as a mode-dependent alias, not a literal model name.
+  'opusplan[1m]',
 ] as const
 export type ModelAlias = (typeof MODEL_ALIASES)[number]
 
