@@ -88,6 +88,20 @@ export function validatePathWithinBase(
   basePath: string,
   relativePath: string,
 ): string {
+  // CC 2.1.267 (#8): a marketplace/plugin entry path containing a backslash
+  // could bypass the lexical containment check on macOS and Linux — POSIX
+  // resolve() treats '\' as a literal filename character, while downstream
+  // consumers (e.g. `git sparse-checkout set --cone` in the subdir install
+  // path) normalize backslashes cross-platform, enabling cache poisoning.
+  // Official fix adds `M()!=="windows"&&n.includes("\\")` to the
+  // suspicious-path predicate (v267 `tue`, v266 `FCe` lacked the clause);
+  // mirrored here at OCC's single containment choke point.
+  if (process.platform !== 'win32' && relativePath.includes('\\')) {
+    throw new Error(
+      `Path traversal detected: "${relativePath}" would escape the base directory`,
+    )
+  }
+
   const resolvedPath = resolve(basePath, relativePath)
   const normalizedBase = resolve(basePath) + sep
 

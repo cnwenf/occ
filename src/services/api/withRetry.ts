@@ -279,6 +279,16 @@ export async function* withRetry<T>(
   //        new s2(b,o); f++ }` ($jy = 2 → throws on the 3rd occurrence).
   let apiKeyHelperAuthRetries = 0
   const API_KEY_HELPER_AUTH_RETRY_CAP = 2
+  // CC 2.1.267 (#9): AWS/GCP credential errors previously suppressed the
+  // throw path entirely (handleAwsCredentialError/handleGcpCredentialError
+  // clear caches and return true), so a permanently broken credential
+  // looped to DEFAULT_MAX_RETRIES (10). Official caps cloud-auth retries at
+  // 2 (binary ZDn/eNn) and then throws CannotRetryError with an
+  // api_request_aws_auth_exhausted / api_request_gcp_auth_exhausted
+  // telemetry event.
+  let awsAuthRetries = 0
+  let gcpAuthRetries = 0
+  const CLOUD_AUTH_RETRY_CAP = 2
   // 2.1.157 (J9): bound on media-block strips per request to guard against a
   // misbehaving stripMediaBlock callback that never returns null.
   let mediaStrips = 0
@@ -580,6 +590,44 @@ export async function* withRetry<T>(
           throw new CannotRetryError(error, retryContext)
         }
         apiKeyHelperAuthRetries++
+      }
+
+      // CC 2.1.267 (#9): cap cloud credential error retries at 2 (official
+      // ZDn/eNn). Mirrors the binary's
+      //   `let kt=eJ(Je);
+      //    if(kt==="AWS"||!iW()&&udt(Je,d.model)){if(O>=ZDn)throw f("api_request",
+      //      "api_request_aws_auth_exhausted"),new Ob(Je,d);O++,Ln=ZDn-O}
+      //    if(kt==="Google Cloud"||!iW()&&JQ(Je)){if(L>=eNn)throw f("api_request",
+      //      "api_request_gcp_auth_exhausted"),new Ob(Je,d);L++,Ln=eNn-L}`
+      // (eJ = classifyCloudCredentialError below; iW = first-party provider;
+      //  udt/JQ = the Bedrock/Vertex auth-error predicates; Ob =
+      //  CannotRetryError. Official also clamps the backoff exponent via
+      //  Ln = cap - retries; OCC's delay computation is unchanged — the cap
+      //  itself is the observable behavior.)
+      const cloudCredentialKind = classifyCloudCredentialError(error)
+      if (
+        cloudCredentialKind === 'AWS' ||
+        (getAPIProvider() !== 'firstParty' && isBedrockAuthError(error))
+      ) {
+        if (awsAuthRetries >= CLOUD_AUTH_RETRY_CAP) {
+          logEvent('api_request', {
+            reason: 'api_request_aws_auth_exhausted',
+          })
+          throw new CannotRetryError(error, retryContext)
+        }
+        awsAuthRetries++
+      }
+      if (
+        cloudCredentialKind === 'Google Cloud' ||
+        (getAPIProvider() !== 'firstParty' && isVertexAuthError(error))
+      ) {
+        if (gcpAuthRetries >= CLOUD_AUTH_RETRY_CAP) {
+          logEvent('api_request', {
+            reason: 'api_request_gcp_auth_exhausted',
+          })
+          throw new CannotRetryError(error, retryContext)
+        }
+        gcpAuthRetries++
       }
 
       // AWS/GCP errors aren't always APIError, but can be retried
@@ -922,6 +970,97 @@ function isOAuthTokenRevokedError(error: unknown): boolean {
   )
 }
 
+/**
+ * CC 2.1.267 (#9): official `lq` — walk the error's .cause chain (starting
+ * at the error itself, up to depth 5) and return the first Error matching
+ * the predicate.
+ */
+function findInErrorCauseChain(
+  error: unknown,
+  predicate: (e: Error) => boolean,
+  maxDepth = 5,
+): Error | undefined {
+  let current: unknown = error
+  for (let depth = 0; depth < maxDepth; depth++) {
+    if (!(current instanceof Error)) return undefined
+    if (predicate(current)) return current
+    current = current.cause
+  }
+  return undefined
+}
+
+/**
+ * CC 2.1.267 (#9): official `JOn` — true when any error in the cause chain
+ * carries a message containing one of the needles.
+ */
+function errorChainMessageIncludes(
+  error: unknown,
+  needles: string[],
+): boolean {
+  return (
+    findInErrorCauseChain(error, e =>
+      needles.some(needle => e.message.includes(needle)),
+    ) !== undefined
+  )
+}
+
+/**
+ * CC 2.1.267 (#9): official `ZOn()` — Google Cloud credential machinery is
+ * in play when either Vertex or the Anthropic-on-Google-Cloud env flag is
+ * set. Byte-faithful to the binary's bare `!!(a.X||a.Y)` truthiness (the
+ * pre-existing isVertexAuthError gate uses isEnvTruthy — documented
+ * divergence, unchanged here).
+ */
+function isGoogleCloudEnv(): boolean {
+  return !!(
+    process.env.CLAUDE_CODE_USE_VERTEX ||
+    process.env.CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD
+  )
+}
+
+/** Official `QOn`: classifier message list for Google Cloud credential errors. */
+const GOOGLE_CREDENTIAL_CLASSIFIER_MESSAGES = [
+  'Could not load the default credentials',
+  'invalid_grant',
+  'invalid_client',
+  'unauthorized_client',
+]
+
+/** Official `$8t` (first entry of `z$o`). */
+const GOOGLE_OAUTH_FAILURE_MESSAGE =
+  'Failed to acquire Google OAuth credentials.'
+
+/** Official second entry of `z$o`. */
+const GOOGLE_TOKEN_REFRESH_FAILURE_MESSAGE = 'Could not refresh access token'
+
+/**
+ * CC 2.1.267 (#9): official `eJ` — classify a non-HTTP error as a cloud
+ * credential failure. An APIError with a status is an HTTP response, not a
+ * credential error (null). A CredentialsProviderError anywhere in the cause
+ * chain (depth ≤5) is AWS (official `zxt`); in a Google Cloud env, the
+ * official QOn message list anywhere in the chain is Google Cloud.
+ */
+function classifyCloudCredentialError(
+  error: unknown,
+): 'AWS' | 'Google Cloud' | null {
+  if (error instanceof APIError && error.status !== undefined) return null
+  if (
+    findInErrorCauseChain(
+      error,
+      e => e.name === 'CredentialsProviderError',
+    ) !== undefined
+  ) {
+    return 'AWS'
+  }
+  if (
+    isGoogleCloudEnv() &&
+    errorChainMessageIncludes(error, GOOGLE_CREDENTIAL_CLASSIFIER_MESSAGES)
+  ) {
+    return 'Google Cloud'
+  }
+  return null
+}
+
 function isBedrockAuthError(error: unknown): boolean {
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)) {
     // AWS libs reject without an API call if .aws holds a past Expiration value
@@ -950,15 +1089,17 @@ function handleAwsCredentialError(error: unknown): boolean {
 }
 
 // google-auth-library throws plain Error (no typed name like AWS's
-// CredentialsProviderError). Match common SDK-level credential-failure messages.
+// CredentialsProviderError). CC 2.1.267 (#9): official `JQ` matches the
+// combined QOn+z$o message list via the cause-chain walker (`JOn`) — the
+// message may live on a wrapped cause, not just the top-level error — and
+// adds invalid_client, unauthorized_client, and the Google OAuth
+// acquisition failure to the previous three messages.
 function isGoogleAuthLibraryCredentialError(error: unknown): boolean {
-  if (!(error instanceof Error)) return false
-  const msg = error.message
-  return (
-    msg.includes('Could not load the default credentials') ||
-    msg.includes('Could not refresh access token') ||
-    msg.includes('invalid_grant')
-  )
+  return errorChainMessageIncludes(error, [
+    ...GOOGLE_CREDENTIAL_CLASSIFIER_MESSAGES,
+    GOOGLE_OAUTH_FAILURE_MESSAGE,
+    GOOGLE_TOKEN_REFRESH_FAILURE_MESSAGE,
+  ])
 }
 
 function isVertexAuthError(error: unknown): boolean {

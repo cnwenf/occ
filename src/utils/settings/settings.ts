@@ -50,6 +50,7 @@ import {
   setCachedSettingsForSource,
   setSessionSettingsCache,
 } from './settingsCache.js'
+import { sanitizeSecurityAllowlists } from './sanitizeAllowlists.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
   filterInvalidPermissionRules,
@@ -260,14 +261,28 @@ function parseSettingsFileUncached(path: string): {
     // rule doesn't cause the entire settings file to be rejected.
     const ruleWarnings = filterInvalidPermissionRules(data, path)
 
+    // CC 2.1.267 (#12, Gap-121a): security allowlists (allowedHttpHookUrls,
+    // httpHookAllowedEnvVars, allowedChannelPlugins) are sanitized per-entry
+    // before schema validation so an invalid entry can no longer reject the
+    // whole file — which for managed policy meant fail-OPEN (allowlist
+    // undefined = unrestricted). Invalid input now fails CLOSED to an empty
+    // (deny-all) allowlist with warnings. See sanitizeAllowlists.ts.
+    const allowlistWarnings = sanitizeSecurityAllowlists(data, path)
+
     const result = SettingsSchema().safeParse(data)
 
     if (!result.success) {
       const errors = formatZodError(result.error, path)
-      return { settings: null, errors: [...ruleWarnings, ...errors] }
+      return {
+        settings: null,
+        errors: [...ruleWarnings, ...allowlistWarnings, ...errors],
+      }
     }
 
-    return { settings: result.data, errors: ruleWarnings }
+    return {
+      settings: result.data,
+      errors: [...ruleWarnings, ...allowlistWarnings],
+    }
   } catch (error) {
     handleFileSystemError(error, path)
     return { settings: null, errors: [] }

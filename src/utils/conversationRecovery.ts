@@ -3,6 +3,12 @@ import type { UUID } from 'crypto'
 import { relative } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { addInvokedSkill } from '../bootstrap/state.js'
+import {
+  COMMAND_NAME_TAG,
+  LOCAL_COMMAND_CAVEAT_TAG,
+  LOCAL_COMMAND_STDERR_TAG,
+  LOCAL_COMMAND_STDOUT_TAG,
+} from '../constants/xml.js'
 import { asSessionId } from '../types/ids.js'
 import type {
   AttributionSnapshotMessage,
@@ -245,7 +251,15 @@ export function deserializeMessagesWithInterruptDetection(
     )
     if (
       lastRelevantIdx !== -1 &&
-      filteredMessages[lastRelevantIdx]!.type === 'user'
+      filteredMessages[lastRelevantIdx]!.type === 'user' &&
+      // CC 2.1.267 (#10, Gap-121c): official v267 adds `!eBe(Ae,Je)` here —
+      // do not splice the NO_RESPONSE_REQUESTED sentinel after a completed
+      // local-command breadcrumb tail. (The official's second new clause
+      // `!(Xe.kind==="none" && RVo(Ae,Je))` guards system-reminder
+      // context-append tails under CLAUDE_CODE_RESUME_TOLERATES_CONTEXT_APPENDS
+      // — that env/subsystem does not exist in OCC, so the clause is not
+      // portable; documented in docs/upstream-version-gap-occ121.md.)
+      !isCompleteLocalCommandTail(filteredMessages, lastRelevantIdx)
     ) {
       filteredMessages.splice(
         lastRelevantIdx + 1,
@@ -316,6 +330,16 @@ function detectTurnInterruption(
   }
 
   if (lastMessage.type === 'user') {
+    // CC 2.1.267 (#10, Gap-121c): official v267 `PWn` calls `eBe(e,r)` FIRST
+    // in the user branch — a transcript ending on a completed local-command
+    // breadcrumb tail (e.g. a /model switch persisted by `-p` mode: caveat +
+    // command-name record + local-command-stdout output, the exact shape of
+    // createModelSwitchBreadcrumbs / official `mnr`) is COMPLETE, not an
+    // interrupted prompt. Without this, `-p --resume` misread the finished
+    // local command as an unfinished user prompt and auto-continued it.
+    if (isCompleteLocalCommandTail(messages, lastMessageIdx)) {
+      return { kind: 'none' }
+    }
     if (lastMessage.isMeta || lastMessage.isCompactSummary) {
       return { kind: 'none' }
     }
@@ -384,6 +408,91 @@ function isTerminalToolResult(
     }
   }
   return false
+}
+
+/**
+ * CC 2.1.267 (#10, Gap-121c): local-command breadcrumb classification.
+ * Port of the official v267 cluster `IK`/`l0n`/`bWn`/`eBe` (binary L1993609
+ * + L1988069, byte-verified). A local slash command persists a breadcrumb
+ * trail — caveat (`b8`, isMeta) + command-name record (`gK`) + stdout/stderr
+ * output — as plain user messages. The old detector read the trailing output
+ * message as an unfinished user prompt, so `-p --resume` injected a spurious
+ * "Continue from where you left off." after an already-finished command.
+ */
+type LocalCommandTailKind = 'record' | 'output' | 'caveat'
+
+// Official `IK` (v267): tag-prefix → role table, in official order. Bash `!`
+// tags (bash-input/bash-stdout) are intentionally absent — the official fix
+// is scoped to slash-command breadcrumbs; `hM`'s wider tag set is a separate
+// predicate not used by the resume detector.
+const LOCAL_COMMAND_TAG_KINDS: ReadonlyArray<
+  readonly [string, LocalCommandTailKind]
+> = [
+  [`<${COMMAND_NAME_TAG}>`, 'record'],
+  [`<${LOCAL_COMMAND_STDOUT_TAG}>`, 'output'],
+  [`<${LOCAL_COMMAND_STDERR_TAG}>`, 'output'],
+  [`<${LOCAL_COMMAND_CAVEAT_TAG}>`, 'caveat'],
+]
+
+// Port of official `l0n` (v267 L1988069): the message's last text block (or
+// string content) is matched by tag prefix against the table above.
+function classifyLocalCommandKind(
+  message: NormalizedMessage,
+): LocalCommandTailKind | undefined {
+  const content = message.message?.content
+  const text = Array.isArray(content)
+    ? (
+        content as Array<{ type?: string; text?: unknown }>
+      ).findLast(block => block?.type === 'text')?.text
+    : typeof content === 'string'
+      ? content
+      : undefined
+  if (typeof text !== 'string') return undefined
+  return LOCAL_COMMAND_TAG_KINDS.find(([prefix]) => text.startsWith(prefix))?.[1]
+}
+
+// Port of official `bWn` (v267 L1993609): user-type messages only; a
+// promptSource (e.g. 'sdk') marks a real prompt, not a breadcrumb; and a
+// caveat must be isMeta (official `b8` sets isMeta:!0 — a non-meta
+// caveat-tagged message is user-typed content, not a synthetic caveat).
+function localCommandBreadcrumbKind(
+  message: NormalizedMessage,
+): LocalCommandTailKind | undefined {
+  if (message.type !== 'user') return undefined
+  if (message.promptSource !== undefined) return undefined
+  const kind = classifyLocalCommandKind(message)
+  if (kind === 'caveat' && message.isMeta !== true) return undefined
+  return kind
+}
+
+// Port of official `eBe` (v267 L1993609): true when messages[idx] ends a
+// COMPLETED local-command tail. Scans backward: reaching the opening caveat →
+// complete; a non-breadcrumb message (or a second breadcrumb after the
+// record) ends the scan, and the tail counts as complete only if every
+// breadcrumb in the chain is an isMeta user message.
+function isCompleteLocalCommandTail(
+  messages: NormalizedMessage[],
+  idx: number,
+): boolean {
+  if (localCommandBreadcrumbKind(messages[idx]!) === undefined) return false
+  let seenRecord = false
+  let allMetaUsers = true
+  for (let i = idx; i >= 0; i--) {
+    const msg = messages[i]!
+    if (
+      msg.type === 'system' ||
+      msg.type === 'progress' ||
+      msg.type === 'attachment'
+    ) {
+      continue
+    }
+    const kind = localCommandBreadcrumbKind(msg)
+    if (kind === 'caveat') return true
+    if (kind === undefined || seenRecord) break
+    seenRecord = kind === 'record'
+    allMetaUsers = allMetaUsers && msg.type === 'user' && msg.isMeta === true
+  }
+  return allMetaUsers
 }
 
 /**
