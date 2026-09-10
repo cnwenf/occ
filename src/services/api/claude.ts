@@ -600,8 +600,12 @@ export function should1hCacheTTL(
 /**
  * Configure effort parameters for API request.
  *
+ * OCC-82 (official 2.1.267 `JCs`): an `effort` already present in
+ * output_config — injected via CLAUDE_CODE_EXTRA_BODY — wins and is NEVER
+ * clamped by the settings cap; the early return below is the official guard.
+ * Exported for the cap e2e/unit test (behavior unchanged).
  */
-function configureEffortParams(
+export function configureEffortParams(
   effortValue: EffortValue | undefined,
   outputConfig: BetaOutputConfig,
   extraBodyParams: Record<string, unknown>,
