@@ -9,6 +9,7 @@ import { Box, Text, useInput } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
 import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, modelSupportsXhighEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
+import { clampEffortToCap, getEffectiveEffortCap, hasEffortLevelsAboveCap } from '../utils/effort/cap.js';
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';
 import { getModelOptions } from '../utils/model/modelOptions.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
@@ -44,7 +45,7 @@ export type Props = {
 };
 const NO_PREFERENCE = '__NO_PREFERENCE__';
 export function ModelPicker(t0) {
-  const $ = _c(84);
+  const $ = _c(86);
   const {
     initial,
     sessionModel,
@@ -170,6 +171,13 @@ export function ModelPicker(t0) {
     t8 = $[22];
   }
   const focusedSupportsMax = t8;
+  // OCC-82 (official 2.1.267 picker `dt(t)`): the effort ladder, the displayed
+  // effort and the persisted choice all respect the settings-side effort cap
+  // for the focused model — official ladder = `Sr(Stt(t) ? Mu.indexOf(cap)+1 :
+  // Mu.length)`, capped note `wr` shown when `vur(t)`.
+  const focusedModelForCap = resolveOptionModel(focusedValue);
+  const focusedCap = focusedModelForCap ? getEffectiveEffortCap(focusedModelForCap) : null;
+  const focusedCapped = focusedModelForCap ? hasEffortLevelsAboveCap(focusedModelForCap) : false;
   let t9;
   if ($[23] !== focusedValue) {
     t9 = getDefaultEffortLevelForOption(focusedValue);
@@ -181,13 +189,20 @@ export function ModelPicker(t0) {
   const focusedDefaultEffort = t9;
   // OCC-97 (Gap-97h): official 2.1.233 clamps BOTH max and xhigh to high when
   // the focused model lacks the capability (byte-verified `VXm` clamp).
-  const displayEffort = effort === "max" && !focusedSupportsMax || effort === "xhigh" && !focusedSupportsXhigh ? "high" : effort;
+  // OCC-82 (official 2.1.267): after the capability clamp, the value is also
+  // clamped down to the settings-side effort cap (`lF`).
+  const t8b = effort === "max" && !focusedSupportsMax || effort === "xhigh" && !focusedSupportsXhigh ? "high" : effort;
+  const displayEffort = t8b !== undefined && focusedModelForCap ? clampEffortToCap(t8b, focusedModelForCap) as typeof t8b : t8b;
   let t10;
   if ($[25] !== effortValue || $[26] !== hasToggledEffort) {
     t10 = value => {
       setFocusedValue(value);
       if (!hasToggledEffort && effortValue === undefined) {
-        setEffort(getDefaultEffortLevelForOption(value));
+        // OCC-82 (official 2.1.267): the default effort shown for a newly
+        // focused model is clamped to that model's settings-side cap.
+        const focusModel = resolveOptionModel(value);
+        const defaultEffort = getDefaultEffortLevelForOption(value);
+        setEffort(focusModel ? clampEffortToCap(defaultEffort, focusModel) as typeof defaultEffort : defaultEffort);
       }
     };
     $[25] = effortValue;
@@ -198,12 +213,12 @@ export function ModelPicker(t0) {
   }
   const handleFocus = t10;
   let t11;
-  if ($[28] !== focusedDefaultEffort || $[29] !== focusedSupportsEffort || $[30] !== focusedSupportsMax || $[83] !== focusedSupportsXhigh) {
+  if ($[28] !== focusedDefaultEffort || $[29] !== focusedSupportsEffort || $[30] !== focusedSupportsMax || $[83] !== focusedSupportsXhigh || $[84] !== focusedCap) {
     t11 = direction => {
       if (!focusedSupportsEffort) {
         return;
       }
-      setEffort(prev => cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsMax, focusedSupportsXhigh));
+      setEffort(prev => cycleEffortLevel(prev ?? focusedDefaultEffort, direction, focusedSupportsMax, focusedSupportsXhigh, focusedCap));
       setHasToggledEffort(true);
     };
     $[28] = focusedDefaultEffort;
@@ -211,6 +226,7 @@ export function ModelPicker(t0) {
     $[30] = focusedSupportsMax;
     $[31] = t11;
     $[83] = focusedSupportsXhigh;
+    $[84] = focusedCap;
   } else {
     t11 = $[31];
   }
@@ -259,7 +275,11 @@ export function ModelPicker(t0) {
         effort: effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       if (!skipSettingsWrite) {
-        const effortLevel = resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0), getSettingsForSource("userSettings")?.effortLevel, hasToggledEffort);
+        // OCC-82 (official 2.1.267): the picker never persists (or applies) an
+        // effort above the settings-side cap — the ladder is capped, and any
+        // stale over-cap value is clamped (`lF`) before the settings write.
+        const persistModel = resolveOptionModel(value_0) ?? getDefaultMainLoopModel();
+        const effortLevel = clampEffortToCap(resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0), getSettingsForSource("userSettings")?.effortLevel, hasToggledEffort), persistModel) as EffortLevel;
         const persistable = toPersistableEffort(effortLevel);
         if (persistable !== undefined) {
           updateSettingsForSource("userSettings", {
@@ -355,13 +375,14 @@ export function ModelPicker(t0) {
     t23 = $[61];
   }
   let t24;
-  if ($[62] !== displayEffort || $[63] !== focusedDefaultEffort || $[64] !== focusedModelName || $[65] !== focusedSupportsEffort) {
-    t24 = <Box marginBottom={1} flexDirection="column">{focusedSupportsEffort ? <Text dimColor={true}><EffortLevelIndicator effort={displayEffort} />{" "}{capitalize(displayEffort)} effort{displayEffort === focusedDefaultEffort ? " (default)" : ""}{" "}<Text color="subtle">← → to adjust</Text></Text> : <Text color="subtle"><EffortLevelIndicator effort={undefined} /> Effort not supported{focusedModelName ? ` for ${focusedModelName}` : ""}</Text>}</Box>;
+  if ($[62] !== displayEffort || $[63] !== focusedDefaultEffort || $[64] !== focusedModelName || $[65] !== focusedSupportsEffort || $[85] !== focusedCapped) {
+    t24 = <Box marginBottom={1} flexDirection="column">{focusedSupportsEffort ? <Text dimColor={true}><EffortLevelIndicator effort={displayEffort} />{" "}{capitalize(displayEffort)} effort{displayEffort === focusedDefaultEffort ? " (default)" : ""}{" "}<Text color="subtle">← → to adjust</Text></Text> : <Text color="subtle"><EffortLevelIndicator effort={undefined} /> Effort not supported{focusedModelName ? ` for ${focusedModelName}` : ""}</Text>}{focusedCapped ? <Text color="subtle">Higher effort levels are capped by your settings or organization.</Text> : null}</Box>;
     $[62] = displayEffort;
     $[63] = focusedDefaultEffort;
     $[64] = focusedModelName;
     $[65] = focusedSupportsEffort;
     $[66] = t24;
+    $[85] = focusedCapped;
   } else {
     t24 = $[66];
   }
@@ -459,15 +480,20 @@ function EffortLevelIndicator(t0) {
   }
   return t4;
 }
-export function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'right', includeMax: boolean, includeXhigh: boolean): EffortLevel {
+export function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'right', includeMax: boolean, includeXhigh: boolean, cap?: EffortLevel | null): EffortLevel {
   // OCC-97 (Gap-97h): official 2.1.233 picker cycle (`VXm`, byte-verified) —
   // the five-level base list filtered by capability; a configured level the
   // focused model can't take clamps to 'high'; a level absent from the cycle
   // resumes from the LAST entry. Official also appends 'ultracode' when
   // workflows are enabled — staged pending the ultracode appState plumbing
   // (Gap-97f).
-  const levels = (['low', 'medium', 'high', 'xhigh', 'max'] as EffortLevel[]).filter(
-    level => (level !== 'max' || includeMax) && (level !== 'xhigh' || includeXhigh),
+  // OCC-82 (official 2.1.267 `dt`): the ladder is additionally SLICED to the
+  // effective settings cap — `Sr(cap ? Mu.indexOf(cap)+1 : Mu.length)` — so
+  // levels above the cap are not selectable in the picker.
+  const capIndex =
+    cap !== undefined && cap !== null ? EFFORT_LEVEL_ORDER.indexOf(cap) : EFFORT_LEVEL_ORDER.length - 1;
+  const levels = EFFORT_LEVEL_ORDER.filter(
+    (level, index) => index <= capIndex && (level !== 'max' || includeMax) && (level !== 'xhigh' || includeXhigh),
   );
   const clamped =
     (current === 'max' && !includeMax) || (current === 'xhigh' && !includeXhigh)
@@ -481,6 +507,7 @@ export function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'righ
     return levels[(currentIndex - 1 + levels.length) % levels.length]!;
   }
 }
+const EFFORT_LEVEL_ORDER: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];
 function getDefaultEffortLevelForOption(value?: string): EffortLevel {
   const resolved = resolveOptionModel(value) ?? getDefaultMainLoopModel();
   const defaultValue = getDefaultEffortForModel(resolved);

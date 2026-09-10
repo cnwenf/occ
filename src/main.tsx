@@ -56,6 +56,7 @@ import { checkHasTrustDialogAccepted, getGlobalConfig, getRemoteControlAtStartup
 import { parseAutoCompactWindowInput, resolveAutoCompactWindowOverride, setSessionAutoCompactWindow } from './utils/autoCompactWindow.js';
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js';
 import { EFFORT_LEVELS, getInitialEffortSetting, parseEffortValue } from './utils/effort.js';
+import { emitStartupEffortCapWarning } from './utils/effort/cap.js';
 import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, resolveFastModeStatusFromCache } from './utils/fastMode.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage } from './utils/messages.js';
@@ -2382,6 +2383,16 @@ async function run(): Promise<CommanderCommand> {
       effectiveMainLoopModel = ensureFableConsentSync(effectiveMainLoopModel);
       setInitialMainLoopModel(effectiveMainLoopModel);
     }
+    // OCC-82 (official 2.1.267, binary @6248479): startup effort-cap warning
+    // (`Eur(Oe,xo)` → `Zf(…,{key:"model-effort-cap"})`) sits immediately
+    // before the advisor block. It never blocks startup — the applied request
+    // level is clamped later by resolveAppliedEffort (kE).
+    emitStartupEffortCapWarning(
+      parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+      resolvedInitialModel,
+      outputFormat,
+    );
+
     let advisorModel: string | undefined;
     if (isAdvisorEnabled()) {
       const advisorOption = canUserConfigureAdvisor() ? (options as {
