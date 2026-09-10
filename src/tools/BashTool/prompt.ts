@@ -271,6 +271,11 @@ function getSimpleSandboxSection(): string {
   const items: Array<string | string[]> = [
     ...sandboxOverrideItems,
     'For temporary files, always use the `$TMPDIR` environment variable. TMPDIR is automatically set to the correct sandbox-writable directory in sandbox mode. Do NOT use `/tmp` directly - use `$TMPDIR` instead.',
+    // CC 2.1.267 (#33): sandbox clipboard-failure guidance — official appends
+    // this item (gated `Re()?[]:[item]`; alias unresolvable from strings —
+    // OCC always ships /copy, so the item is unconditional here). Byte-verified
+    // from the official 2.1.267 linux-x64 ELF.
+    'If a clipboard utility such as `pbcopy`, `xclip`, or `wl-copy` fails inside the sandbox and the user wants the text on their clipboard, put the text in a fenced code block in your response and tell them to run `/copy` (it copies from outside the sandbox; when the picker appears they can select just that block), rather than writing a file for them to copy manually.',
   ]
 
   return [
