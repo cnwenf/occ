@@ -956,6 +956,63 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Persisted effort level for supported models.'),
+      // OCC-82 (official 2.1.267): settings-side effort cap. Enum is the full
+      // official Mu = ["low","medium","high","xhigh","max"] ("max" means no
+      // cap). describe text byte-verified from the 2.1.267 binary.
+      maxEffortLevel: z
+        .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+        .optional()
+        .catch(undefined)
+        .describe(
+          "Maximum effort level. Anything above it (an /effort or /model pick, --effort, CLAUDE_CODE_EFFORT_LEVEL, a model default) is clamped to it, on every provider including Bedrock, Vertex and Foundry. Combines with an organization's per-model effort cap by taking the lower of the two; across settings files the lowest value wins, and modelSettings.<model>.maxEffortLevel replaces it per model. Enforced client-side: an effort supplied through CLAUDE_CODE_EXTRA_BODY is not clamped.",
+        ),
+      // OCC-82 (official 2.1.267): per-model settings. The official wraps the
+      // record in a preprocess that drops keys owned by Object.prototype
+      // (e.g. "constructor", "toString") so a hostile settings file cannot
+      // smuggle prototype names into per-model lookups. describes byte-verified.
+      modelSettings: z
+        .preprocess(
+          value => {
+            if (
+              typeof value !== 'object' ||
+              value === null ||
+              Array.isArray(value)
+            ) {
+              return value
+            }
+            const stripped: Record<string, unknown> = {}
+            for (const [key, entry] of Object.entries(value)) {
+              if (!Object.hasOwn(Object.prototype, key)) {
+                stripped[key] = entry
+              }
+            }
+            return stripped
+          },
+          z.record(
+            z.string(),
+            z
+              .object({
+                effortLevel: z
+                  .enum(['low', 'medium', 'high', 'xhigh'])
+                  .optional()
+                  .catch(undefined)
+                  .describe('Persisted effort level for this model.'),
+                maxEffortLevel: z
+                  .enum(['low', 'medium', 'high', 'xhigh', 'max'])
+                  .optional()
+                  .catch(undefined)
+                  .describe(
+                    'Maximum effort level for this model. Within one settings file it replaces the top-level maxEffortLevel for the model ("max" exempts it); across settings files the lowest applicable value wins. Keyed like effortLevel: the canonical model name also matches its dated, [1m], Bedrock and Vertex spellings.',
+                  ),
+              })
+              .passthrough()
+              .optional()
+              .catch(undefined),
+          ),
+        )
+        .optional()
+        .catch(undefined)
+        .describe('Per-model settings keyed by canonical model name.'),
       // 2.1.202: advisory guideline for dynamic workflow size (agent counts).
       // Not an enforced cap — injected into the workflow-generation prompt as a
       // hint for how many agents Claude should generally spawn.

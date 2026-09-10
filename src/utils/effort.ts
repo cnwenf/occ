@@ -6,6 +6,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/grow
 import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
+import { clampEffortValue, getSettingsEffortCap } from './effort/cap.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
 export type { EffortLevel }
@@ -204,30 +205,49 @@ export function getEffortEnvOverride(): EffortValue | null | undefined {
 /**
  * Resolve the effort value that will actually be sent to the API for a given
  * model, following the full precedence chain:
- *   env CLAUDE_CODE_EFFORT_LEVEL → appState.effortValue → model default
+ *   env CLAUDE_CODE_EFFORT_LEVEL → model default → appState.effortValue →
+ *   model default
  *
  * Returns undefined when no effort parameter should be sent (env set to
- * 'unset', or no default exists for the model).
+ * 'unset'/'auto' with no settings cap, or no value resolvable for the model).
+ *
+ * OCC-82 (official 2.1.267 `kE`): the settings effort cap now participates.
+ * Three byte-verified deltas vs 2.1.266:
+ *   1. `l = N(e) !== null` joins the early-return condition — env 'unset'/'auto'
+ *      no longer skips resolution when a cap exists; the clamped model default
+ *      is materialized and sent explicitly (`s ?? (s===null ? d : undefined)`).
+ *   2. A numeric (ant) effort under an active cap normalizes through official
+ *      `dF` (number → 'high') before clamping.
+ *   3. The result runs through official `P(e,n)`: cap clamp (`lF`) first,
+ *      then the max→high / xhigh→high capability downgrades.
+ * OCC reductions: no launch pin (`uF`/`jN`) and no turnEffort parameter exist
+ * in OCC's pipeline; the `Nh(e)` model-support gate is applied at OCC's call
+ * sites (pre-existing structure, unchanged).
  */
 export function resolveAppliedEffort(
   model: string,
   appStateEffortValue: EffortValue | undefined,
 ): EffortValue | undefined {
   const envOverride = getEffortEnvOverride()
-  if (envOverride === null) {
+  const hasSettingsCap = getSettingsEffortCap(model) !== null
+  if (envOverride === null && !hasSettingsCap) {
     return undefined
   }
-  const resolved =
-    envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
-  // API rejects 'max' on non-Opus-4.6 models — downgrade to 'high'.
-  if (resolved === 'max' && !modelSupportsMaxEffort(model)) {
-    return 'high'
+  const modelDefault = getDefaultEffortForModel(model)
+  let resolved =
+    envOverride ??
+    (envOverride === null ? modelDefault : undefined) ??
+    appStateEffortValue ??
+    modelDefault
+  if (typeof resolved === 'number' && hasSettingsCap) {
+    // Official dF: any numeric effort normalizes to 'high' (no ant branch)
+    // before the cap clamp.
+    resolved = 'high'
   }
-  // 2.1.111: 'xhigh' is Opus-4.7-only — other models fall back to 'high'.
-  if (resolved === 'xhigh' && !modelSupportsXhighEffort(model)) {
-    return 'high'
+  if (resolved === undefined) {
+    return undefined
   }
-  return resolved
+  return clampEffortValue(resolved, model)
 }
 
 /**

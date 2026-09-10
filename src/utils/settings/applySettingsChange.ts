@@ -1,6 +1,8 @@
 import type { AppState } from '../../state/AppState.js'
 import { logForDebugging } from '../debug.js'
+import { clampEffortToCap } from '../effort/cap.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
+import { getMainLoopModel } from '../model/model.js'
 import {
   createDisabledBypassPermissionsContext,
   findOverlyBroadBashPermissions,
@@ -75,6 +77,15 @@ export function applySettingsChange(
     const newEffort = newSettings.effortLevel
     const effortChanged = prevEffort !== newEffort
 
+    // OCC-82 (official 2.1.267 `oRt`): when a settings change syncs an
+    // effortLevel into AppState, it is clamped to the effective cap for the
+    // current model — an out-of-band settings write (managed/policy/IDE) can
+    // never lift effort above the cap.
+    const clampedEffort =
+      newEffort === undefined
+        ? undefined
+        : clampEffortToCap(newEffort, getMainLoopModel())
+
     return {
       ...prev,
       settings: newSettings,
@@ -84,8 +95,8 @@ export function applySettingsChange(
       // prev.settings.effortLevel can be stale (internal writes suppress the
       // watcher that would resync AppState.settings), so effortChanged would
       // be true and we'd wipe a session-scoped value held in effortValue.
-      ...(effortChanged && newEffort !== undefined
-        ? { effortValue: newEffort }
+      ...(effortChanged && clampedEffort !== undefined
+        ? { effortValue: clampedEffort }
         : {}),
     }
   })

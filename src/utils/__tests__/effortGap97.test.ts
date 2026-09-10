@@ -119,10 +119,19 @@ describe("Gap-97c: /effort argument surface", () => {
     // Arrange / Act — invalid args take the side-effect-free path.
     const result = executeEffort("bogus");
 
-    // Assert
-    expect(result.message).toBe(
-      "Invalid argument: bogus. Valid options are: low, medium, high, xhigh, max, ultracode, auto",
-    );
+    // Assert. Since official 2.1.267 the valid-options list is model/cap-aware
+    // (`E(t)` = S9 allowed levels + a conditional ", ultracode" segment when
+    // the resolved default model supports xhigh + ", auto"). The stable,
+    // model-independent facts are: the prefix, the base ladder low→medium→
+    // high→xhigh→max in official order (xhigh sits between high and max — the
+    // Gap-97c point), and the trailing "auto". Whether "ultracode" appears
+    // depends on the environment's default model capability, so it is not
+    // hardcoded here (asserted explicitly in effortCap267.test.ts instead).
+    const prefix = "Invalid argument: bogus. Valid options are: ";
+    expect(result.message.startsWith(prefix)).toBe(true);
+    expect(result.message.endsWith(", auto")).toBe(true);
+    const options = result.message.slice(prefix.length);
+    expect(options).toContain("low, medium, high, xhigh, max");
   });
 });
 
