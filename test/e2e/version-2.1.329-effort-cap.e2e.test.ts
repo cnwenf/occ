@@ -24,14 +24,16 @@ import { REPO_ROOT, runOcc } from './helpers'
  *   ④ headless -p wire: two settings files (user high, project medium) →
  *      the lowest cap wins.
  *   ⑦ headless -p wire: an effort injected via CLAUDE_CODE_EXTRA_BODY
- *      output_config is NEVER clamped (official JCs early return), while the
- *      control run without EXTRA_BODY clamps --effort xhigh to the cap.
+ *      output_config is NEVER clamped for an effort-capable model (official
+ *      JCs second gate `'effort' in n → return`), while the control run
+ *      without EXTRA_BODY clamps --effort xhigh to the cap.
  *
  * The wire tests capture the outgoing request body at a local mock Anthropic
  * endpoint (same pattern as resume-interrupted-turn-221.e2e.test.ts) and
  * assert on `output_config.effort` — the actual API-side enforcement point.
- *
- * Gated out of CI (needs tmux + a built dist/cli.js).
+ * They need only a built dist/cli.js + the local mock (fake key, temp HOME),
+ * so they run in CI too (review P3: CI skip removed). The tmux REPL block (①)
+ * stays gated out of CI (needs tmux).
  */
 
 const REQUEST_MODEL = 'claude-opus-4-7'
@@ -164,7 +166,7 @@ async function captureWireEffort(
   return { code: result.code, effort: undefined }
 }
 
-describe.skipIf(!!process.env.CI)(
+describe(
   'OCC-82 (2.1.267) settings-side effort cap — headless wire e2e (②③④⑦)',
   () => {
     test('⑦ CLAUDE_CODE_EXTRA_BODY effort is NOT clamped; control run clamps --effort to the cap', async () => {

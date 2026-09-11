@@ -1,5 +1,6 @@
 import type { AppState } from '../../state/AppState.js'
 import { logForDebugging } from '../debug.js'
+import { getEffortEnvOverride, modelSupportsEffort } from '../effort.js'
 import { clampEffortToCap } from '../effort/cap.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
 import { getMainLoopModel } from '../model/model.js'
@@ -81,10 +82,23 @@ export function applySettingsChange(
     // effortLevel into AppState, it is clamped to the effective cap for the
     // current model — an out-of-band settings write (managed/policy/IDE) can
     // never lift effort above the cap.
+    //
+    // Review P3 fix — official leading gates `if(!Nh(e)||DP()!==void 0)return`:
+    // when the model does NOT support effort, or a CLAUDE_CODE_EFFORT_LEVEL
+    // override is present, oRt writes NOTHING (the env/resolve path owns the
+    // effective value; writing effortValue here would let AppState/SDK
+    // subscribers read a value that differs from the applied one). The
+    // official's pinning/org-default branches (`uF`/`uxe`→`LP`) are N/A in
+    // OCC (no launch-pin subsystem §5.4, no org registry §5.1 — see
+    // docs/upstream-version-gap-occ82.md).
+    const effortSyncModel = getMainLoopModel()
+    const effortSyncBlocked =
+      !modelSupportsEffort(effortSyncModel) ||
+      getEffortEnvOverride() !== undefined
     const clampedEffort =
-      newEffort === undefined
+      effortSyncBlocked || newEffort === undefined
         ? undefined
-        : clampEffortToCap(newEffort, getMainLoopModel())
+        : clampEffortToCap(newEffort, effortSyncModel)
 
     return {
       ...prev,

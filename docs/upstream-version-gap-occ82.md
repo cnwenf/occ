@@ -85,7 +85,7 @@ VERSION:"2.1.267", BUILD_TIME:"2026-09-09T17:26:03Z", GIT_SHA:"a9e1808c8204fef90
 | 7 | agent frontmatter effort | `runAgent.ts` → kE | ✅ |
 | 8 | settings 热更新（managed/IDE） | `applySettingsChange`（oRt）clamp 后入 AppState | ✅ |
 | 9 | 启动期警告 | `Eur` → `emitStartupEffortCapWarning`（main.tsx，advisor 块前，官方同位） | ✅ |
-| 10 | `CLAUDE_CODE_EXTRA_BODY` 注入 effort | **官方唯一不 clamp 入口**：`configureEffortParams` 早退 `if (!modelSupportsEffort(model) || 'effort' in outputConfig) return` | ✅（对齐官方豁免） |
+| 10 | `CLAUDE_CODE_EXTRA_BODY` 注入 effort | **官方唯一不 clamp 入口**：`configureEffortParams` = 官方 `JCs` delete-first 两门——`if(!Nh(d)){delete n.effort;return}`（不支持 effort 的模型：注入的 effort 被**删除**，请求干净发出）+ `if("effort"in n)return`（支持的模型：注入值原样保留、不 clamp）。review P2-1 修复：此前 OCC 合并为单门 `||`，漏掉 delete 分支 | ✅（review P2-1 修复后逐字对齐） |
 
 ### 2.6 文案（全部 byte-verified）
 
@@ -97,7 +97,7 @@ VERSION:"2.1.267", BUILD_TIME:"2026-09-09T17:26:03Z", GIT_SHA:"a9e1808c8204fef90
 
 ## 3. 测试
 
-- **单元**：`src/utils/__tests__/effortCap267.test.ts` — 59 tests（describe A schema / B 解析器 N(e) / C helpers / kE / D·E `/effort` / F oRt / G picker cycle / H 启动警告），全绿；TDD（先 RED 后实现）。
+- **单元**：`src/utils/__tests__/effortCap267.test.ts` — 63 tests（describe A schema / B 解析器 N(e) / C helpers / kE / D·E `/effort` / F oRt / G picker cycle / H 启动警告；review 修复新增 4：P2-1 delete-first 门 ×2 + P3/oRt 前置门 ×2），全绿；TDD（先 RED 后实现）。
 - **回归**：`effortGap97.test.ts` invalid-argument 断言改为模型无关（267 起列表 cap/model 感知）；xhigh/ai-agent 套件 32/32 绿。
 - **真实 e2e**：`test/e2e/version-2.1.329-effort-cap.e2e.test.ts` —
   - ②③④⑦ wire 级：本地 mock Anthropic 端点捕获请求体，断言 `output_config.effort`（② Bedrock 拼写键 `us.anthropic.claude-opus-4-7-v1:0` 规范化命中；③ per-model `"max"` 豁免 + 去豁免后回落；④ user high + project medium → medium；⑦ EXTRA_BODY 注入 xhigh 不被 clamp + 对照组 `--effort xhigh` 被 clamp 为 high）；
@@ -135,10 +135,25 @@ VERSION:"2.1.267", BUILD_TIME:"2026-09-09T17:26:03Z", GIT_SHA:"a9e1808c8204fef90
 3. **`Zf` 的 stream-json `notification` 系统事件**（`cc({type:"system",subtype:"notification",…})`）：OCC 无该 subtype 发射器；json/stream-json/bg 模式降级为 debug 日志行（官方非 notification 分支同款），非 json 模式 console 黄字警告一致。
 4. **launch pin**（`uF`/`Xk`/`Qie` unpin*LaunchEffort、`/effort` pin 拒绝文案）与 **per-model `te()` 持久化写**（`modelSettings.<model>.effortLevel` 写路径）：OCC 保持顶层 `effortLevel` 持久化（读侧 per-model effortLevel 266 已支持）。均为 266 前既有差异，非本轮回归；待后续轮统一对齐。
 5. **org-default 提示文案**（`uxe`/`LP` 的 ", set by your organization" 后缀）：依赖 org 注册表，同 §5.1 N/A。
-6. **ant 数字档位 `dF` 直通路径**：`anthropic_internal.effort_override` 仅 ant 内部；OCC 结构已对齐（kE 内数字→字符串归一），测试环境不可达，不做 e2e。
+6. **数字档位 `dF` 归一路径**：官方 2.1.267 `JCs` **没有** ant 数字分支（`r`/extraBodyParams 参数不使用，`effort_override` 在 ELF dump 0 命中）——OCC 的 legacy `USER_TYPE=ant` → `anthropic_internal.effort_override` 分支已在 review P2-1 修复中**移除**。数字 effort 由 `kE`（resolveAppliedEffort）内的 `dF` 归一为 `'high'`；该分支在测试环境**可达**（`CLAUDE_CODE_EFFORT_LEVEL=50` → parseEffortValue 返回数字 50，review P2-2 已补真实行为断言，此前"测试环境不可达"的注释为假）。
 7. **picker ultracode chip**（官方 `dt(t)` 在 `zS(t)` 时追加）+ Gap-97f ultracode appState 管路：OCC picker 无 ultracode 会话态，`/effort ultracode`（K3）已有；chip 待 ultracode 状态入 picker 后补。
-8. **Remote Control `apply_flag_settings` effort 通道**：OCC 无 RC bridge；`oRt` 语义已在 `applySettingsChange`（IDE/managed 热更新路径）落地。
+8. **Remote Control `apply_flag_settings` effort 通道**：OCC 无 RC bridge；`oRt` 语义已在 `applySettingsChange`（IDE/managed 热更新路径）落地。review P3 修复后含官方前置门 `if(!Nh(e)||DP()!==void 0)return`——模型不支持 effort 或 `CLAUDE_CODE_EFFORT_LEVEL` 存在时**不写** effortValue；官方的 pinning/org-default 物化分支（`uF`/`uxe`→`LP`）在 OCC 为 N/A（无 launch-pin 子系统 §5.4、无 org 注册表 §5.1）。
 
 ## 6. 发布
 
-- 版本号：`package.json` 2.1.328 → **2.1.329**；CHANGELOG 新条目；合入 main（PR）；tag `v2.1.329` 由发版流程（验收通过后）执行。
+- 版本号：`package.json` 2.1.328 → **2.1.329**；CHANGELOG 新条目；合入 main（PR #349，merge `db2ab1a`）；tag `v2.1.329` 由发版流程（验收通过后）执行——**打在 review 修复后的 commit 上，不是 `db2ab1a`**。
+
+## 7. Code-review 修复记录（2026-09-11，验收员三镜审查 564dcb3c → 程序员修复）
+
+审查基线：`git diff 663f635..db2ab1a`（PR #349）；官方 2.1.267 ELF dump `/tmp/cc267/s267.txt` 逐字节复验。无 P1；2 项 P2 + 4 项 P3 处置如下（TDD：4 个新 RED 用例先行，实现后全绿）：
+
+| 项 | 处置 | 落点 |
+|---|---|---|
+| **P2-1** `JCs` 合并守卫漏 `delete n.effort` | **已修**：按官方拆为 delete-first 两门 `if(!modelSupportsEffort(model)){delete outputConfig.effort;return}` + `if('effort' in outputConfig)return`；**并移除** legacy `USER_TYPE=ant` → `anthropic_internal.effort_override` 数字分支（官方 2.1.267 `JCs` 无数字分支、`r` 参数不使用、`effort_override` dump 0 命中——比 review 处方更进一步的全量对齐，`extraBodyParams` 形参保留以对齐官方 5 参签名）；同步修正 claude.ts 注释、本台账 §2.5 item 10 / §5 item 6、CHANGELOG 措辞。新增 2 个单元测试（不支持模型删除注入 effort；数字 effortValue 对 ant 也不再写 extraBody） | `src/services/api/claude.ts` |
+| **P2-2** `dF` 数字分支"不可到达"注释为假 | **已修**：删除假注释，补真实行为断言——`CLAUDE_CODE_EFFORT_LEVEL=50`（parseEffortValue → 数字 50）+ cap=high → `resolveAppliedEffort` 返回 `'high'`；cap=low → dF 先归一再 clamp 返回 `'low'`；保留 `clampEffortToCap(30)===30` 直通断言 | `src/utils/__tests__/effortCap267.test.ts` |
+| **P3-a** wire e2e 在 CI 永不执行 | **已修**：②③④⑦ 的 `describe.skipIf(!!process.env.CI)` 去掉（仅依赖本地 mock 端点 + fake key + 临时 HOME + 已构建 dist，无 tmux），成为常驻回归门；① tmux REPL 块保持 CI skip | `test/e2e/version-2.1.329-effort-cap.e2e.test.ts` |
+| **P3-b** `oRt` 移植缺官方前置门 | **已修**（选择"按官方补门"而非仅记账）：`if(!Nh(e)||DP()!==void 0)return` → 模型不支持 effort 或 env override 存在时不写 effortValue；pinning/org-default 物化分支（`uF`/`uxe`→`LP`）保持 N/A（§5 items 4/5/8）。新增 2 个单元测试 | `src/utils/settings/applySettingsChange.ts` |
+| **P3-c** 启动警告 model 取非交互 Fable-5 consent 回退**之前** | **已修**：`emitStartupEffortCapWarning` 改用 consent 回退后的 `parseUserSpecifiedModel(effectiveMainLoopModel ?? getDefaultMainLoopModel())`（交互路径行为不变） | `src/main.tsx` |
+| **P3-d** ModelPicker `onSelect` 传未 clamp effort | **已修**：按官方 `ns(Ki)` 的 `Js = xi&&Nn!==void 0&&Nn!=="ultracode" ? lF(Nn,xi) : Nn`——onSelect 与 `tengu_model_command_menu_effort` 事件均改用按所选模型 clamp 后的值（OCC picker 无 ultracode 档位，该三元臂 N/A，见 §5 item 7）；/model 确认文案自此与实际生效值一致 | `src/components/ModelPicker.tsx` |
+| **P3-e** SEC-1 `maxEffortLevel` `.catch(undefined)` fail-open | **不改**：官方同款行为（review 亦标注仅信息提示） | — |
+

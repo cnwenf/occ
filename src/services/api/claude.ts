@@ -600,10 +600,22 @@ export function should1hCacheTTL(
 /**
  * Configure effort parameters for API request.
  *
- * OCC-82 (official 2.1.267 `JCs`): an `effort` already present in
- * output_config — injected via CLAUDE_CODE_EXTRA_BODY — wins and is NEVER
- * clamped by the settings cap; the early return below is the official guard.
- * Exported for the cap e2e/unit test (behavior unchanged).
+ * OCC-82 (official 2.1.267 `JCs`, verbatim two-gate structure):
+ *   `if(!Nh(d)){delete n.effort;return}` — DELETE-first gate: for a model
+ *   that does not support effort, an effort already present in output_config
+ *   (injected via CLAUDE_CODE_EXTRA_BODY) is REMOVED so the request goes out
+ *   clean (sending effort to such a model would 400).
+ *   `if("effort"in n)return` — a surviving effort in output_config wins and
+ *   is NEVER clamped by the settings cap (the official's only unclamped
+ *   entry).
+ *   `if(e===void 0)o.push(lnt);else if(typeof e==="string")n.effort=e,o.push(lnt)`
+ *   — undefined pushes the beta only; a string sets effort + beta.
+ * Official 2.1.267 has NO numeric ant branch (`r`/extraBodyParams is unused
+ * in `JCs`; `effort_override` has 0 hits in the ELF strings dump) — OCC's
+ * legacy USER_TYPE=ant branch was removed in the review P2-1 fix. Numeric
+ * effortValues are normalized upstream by `resolveAppliedEffort` (official
+ * `kE`/`dF`); a numeric value reaching here sends nothing, as in official.
+ * Exported for the cap e2e/unit test.
  */
 export function configureEffortParams(
   effortValue: EffortValue | undefined,
@@ -612,7 +624,11 @@ export function configureEffortParams(
   betas: string[],
   model: string,
 ): void {
-  if (!modelSupportsEffort(model) || 'effort' in outputConfig) {
+  if (!modelSupportsEffort(model)) {
+    delete outputConfig.effort
+    return
+  }
+  if ('effort' in outputConfig) {
     return
   }
 
@@ -622,14 +638,6 @@ export function configureEffortParams(
     // Send string effort level as is
     outputConfig.effort = effortValue as "high" | "medium" | "low" | "max"
     betas.push(EFFORT_BETA_HEADER)
-  } else if (process.env.USER_TYPE === 'ant') {
-    // Numeric effort override - ant-only (uses anthropic_internal)
-    const existingInternal =
-      (extraBodyParams.anthropic_internal as Record<string, unknown>) || {}
-    extraBodyParams.anthropic_internal = {
-      ...existingInternal,
-      effort_override: effortValue,
-    }
   }
 }
 

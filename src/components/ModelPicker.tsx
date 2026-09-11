@@ -271,14 +271,24 @@ export function ModelPicker(t0) {
   let t14;
   if ($[35] !== effort || $[36] !== hasToggledEffort || $[37] !== onSelect || $[38] !== setAppState || $[39] !== skipSettingsWrite) {
     t14 = function handleSelect(value_0) {
+      const selectedModel = resolveOptionModel(value_0);
+      // Review P3 (official 2.1.267 `ns(Ki)`):
+      // `Js = xi&&Nn!==void 0&&Nn!=="ultracode" ? lF(Nn,xi) : Nn` — the
+      // effort handed to onSelect (and to the analytics event, `we(Js)`) is
+      // cap-clamped (`lF`) for the selected model, so the /model confirmation
+      // text matches the value that will actually apply. OCC's picker has no
+      // 'ultracode' effort value (ultracode ladder entry staged/trimmed — see
+      // the cycleEffortLevel note), so that arm of the official ternary is
+      // not applicable here.
+      const clampedSelectEffort = selectedModel && effort !== undefined ? clampEffortToCap(effort, selectedModel) as EffortLevel : effort;
       logEvent("tengu_model_command_menu_effort", {
-        effort: effort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+        effort: clampedSelectEffort as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       if (!skipSettingsWrite) {
         // OCC-82 (official 2.1.267): the picker never persists (or applies) an
         // effort above the settings-side cap — the ladder is capped, and any
         // stale over-cap value is clamped (`lF`) before the settings write.
-        const persistModel = resolveOptionModel(value_0) ?? getDefaultMainLoopModel();
+        const persistModel = selectedModel ?? getDefaultMainLoopModel();
         const effortLevel = clampEffortToCap(resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0), getSettingsForSource("userSettings")?.effortLevel, hasToggledEffort), persistModel) as EffortLevel;
         const persistable = toPersistableEffort(effortLevel);
         if (persistable !== undefined) {
@@ -291,8 +301,7 @@ export function ModelPicker(t0) {
           effortValue: effortLevel
         }));
       }
-      const selectedModel = resolveOptionModel(value_0);
-      const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? effort : undefined;
+      const selectedEffort = hasToggledEffort && selectedModel && modelSupportsEffort(selectedModel) ? clampedSelectEffort : undefined;
       if (value_0 === NO_PREFERENCE) {
         onSelect(null, selectedEffort);
         return;

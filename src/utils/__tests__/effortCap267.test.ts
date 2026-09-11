@@ -520,17 +520,20 @@ describe('resolveAppliedEffort under a settings cap (official kE 2.1.267)', () =
     expect(resolveAppliedEffort('claude-opus-4-7', 'xhigh')).toBeUndefined()
   })
 
-  test('numeric ant effort under a cap goes through official dF then clamps', () => {
-    // The official dF numeric→'high' normalization only fires for a numeric
-    // resolved effort, which in OCC comes exclusively from the ANT-only
-    // path (parseEffortValue numeric / ant model default). Those call the
-    // build-injected globals getAntModelOverrideConfig/resolveAntModel, which
-    // are not importable in raw `bun test` (they are bundle-time globals
-    // declared in global.d.ts). The dF branch in resolveAppliedEffort is
-    // implemented to match the official byte-for-byte; it is exercised here
-    // indirectly via the clampEffortToCap numeric pass-through below and
-    // documented in the gap ledger as ANT-only / test-env-unreachable.
+  test('numeric env effort under a cap normalizes to "high" via the official dF branch (review P2-2)', () => {
+    // Review P2-2 correction: the dF numeric branch IS reachable in this test
+    // env — CLAUDE_CODE_EFFORT_LEVEL parses to a NUMBER via parseEffortValue
+    // (any integer, isValidNumericEffort), so getEffortEnvOverride() returns
+    // numeric 50 and resolveAppliedEffort hits
+    // `typeof resolved === 'number' && hasSettingsCap` → official dF:
+    // `function dF(e){if(typeof e==="string")return CT(e)?e:"high";return"high"}`
+    // — any numeric effort normalizes to 'high'.
+    settingsBySource.userSettings = { maxEffortLevel: 'high' }
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = '50'
+    expect(resolveAppliedEffort('claude-opus-4-7', undefined)).toBe('high')
+    // dF fires BEFORE the cap clamp: cap=low clamps the normalized 'high' → 'low'.
     settingsBySource.userSettings = { maxEffortLevel: 'low' }
+    expect(resolveAppliedEffort('claude-opus-4-7', undefined)).toBe('low')
     // A numeric value passed straight to the clamp helper is untouched by the
     // cap (official lF only clamps known string levels) — the dF normalization
     // that converts it to 'high' lives in resolveAppliedEffort, not in lF.
@@ -716,6 +719,55 @@ describe('configureEffortParams — EXTRA_BODY effort wins unclamped (official J
     configureEffortParams!(applied, outputConfig, {}, betas, 'claude-opus-4-7')
     expect(outputConfig.effort).toBe('xhigh')
   })
+
+  // Review P2-1: the official JCs is a DELETE-FIRST two-gate structure —
+  // `if(!Nh(d)){delete n.effort;return}` THEN `if("effort"in n)return`.
+  test('P2-1: an effort-UNSUPPORTED model DELETES an EXTRA_BODY-injected effort (official JCs delete-first gate)', () => {
+    const configureEffortParams = claudeModule?.configureEffortParams as
+      | ((
+          effortValue: unknown,
+          outputConfig: Record<string, unknown>,
+          extraBodyParams: Record<string, unknown>,
+          betas: string[],
+          model: string,
+        ) => void)
+      | undefined
+    expect(typeof configureEffortParams).toBe('function')
+    // CLAUDE_CODE_EXTRA_BODY injected output_config.effort + a model that
+    // does NOT support effort (haiku): the official deletes the injected
+    // effort so the request goes out clean (an effort param would 400).
+    const outputConfig: Record<string, unknown> = { effort: 'xhigh' }
+    const betas: string[] = []
+    configureEffortParams!('high', outputConfig, {}, betas, 'claude-haiku-4-5')
+    expect('effort' in outputConfig).toBe(false)
+    expect(betas).toEqual([])
+  })
+
+  test('P2-1: official 2.1.267 JCs has NO numeric ant branch — extraBodyParams (r) is unused', () => {
+    // Official JCs(e,n,r,o,d) body has no numeric branch at all:
+    // `if(e===void 0)o.push(lnt);else if(typeof e==="string")n.effort=e,o.push(lnt)`
+    // — `r` (extraBodyParams) is never read and `effort_override` has 0 hits
+    // in the 2.1.267 ELF strings dump. A numeric effortValue sends nothing,
+    // even for USER_TYPE=ant (OCC's legacy branch removed in the P2-1 fix).
+    process.env.USER_TYPE = 'ant'
+    const configureEffortParams = claudeModule?.configureEffortParams as
+      | ((
+          effortValue: unknown,
+          outputConfig: Record<string, unknown>,
+          extraBodyParams: Record<string, unknown>,
+          betas: string[],
+          model: string,
+        ) => void)
+      | undefined
+    expect(typeof configureEffortParams).toBe('function')
+    const outputConfig: Record<string, unknown> = {}
+    const extraBodyParams: Record<string, unknown> = {}
+    const betas: string[] = []
+    configureEffortParams!(50, outputConfig, extraBodyParams, betas, 'claude-opus-4-7')
+    expect(outputConfig).toEqual({})
+    expect(betas).toEqual([])
+    expect(extraBodyParams).toEqual({}) // no anthropic_internal.effort_override
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -779,6 +831,69 @@ describe('applySettingsChange effort clamp (official oRt)', () => {
       },
     )
     expect(captured?.effortValue).toBe('medium')
+  })
+
+  // Review P3 (official oRt leading gates):
+  // `function oRt(e,n){if(!Nh(e)||DP()!==void 0)return;...}` — when the model
+  // does NOT support effort, or a CLAUDE_CODE_EFFORT_LEVEL override is set,
+  // the settings sync must NOT write effortValue at all (the env/resolve
+  // path owns the effective value; a written AppState value could diverge
+  // from it and leak to SDK/AppState subscribers).
+  test('P3/oRt: env override set → settings sync does NOT write effortValue', async () => {
+    settingsBySource.userSettings = {
+      maxEffortLevel: 'high',
+      effortLevel: 'xhigh',
+    }
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'high'
+    const { applySettingsChange } = await import(
+      '../settings/applySettingsChange.js'
+    )
+    let captured: Record<string, unknown> | undefined
+    const prev = {
+      settings: { effortLevel: undefined },
+      toolPermissionContext: {
+        mode: 'default',
+        allowRules: new Set(),
+        denyRules: new Set(),
+        askRules: new Set(),
+        alwaysAllowRules: new Set(),
+      },
+    }
+    applySettingsChange(
+      'userSettings',
+      (f: (p: unknown) => unknown) => {
+        captured = f(prev) as Record<string, unknown>
+        return captured
+      },
+    )
+    expect(captured).not.toHaveProperty('effortValue')
+  })
+
+  test('P3/oRt: effort-unsupported model → settings sync does NOT write effortValue', async () => {
+    currentModel = 'claude-haiku-4-5'
+    settingsBySource.userSettings = { effortLevel: 'high' }
+    const { applySettingsChange } = await import(
+      '../settings/applySettingsChange.js'
+    )
+    let captured: Record<string, unknown> | undefined
+    const prev = {
+      settings: { effortLevel: undefined },
+      toolPermissionContext: {
+        mode: 'default',
+        allowRules: new Set(),
+        denyRules: new Set(),
+        askRules: new Set(),
+        alwaysAllowRules: new Set(),
+      },
+    }
+    applySettingsChange(
+      'userSettings',
+      (f: (p: unknown) => unknown) => {
+        captured = f(prev) as Record<string, unknown>
+        return captured
+      },
+    )
+    expect(captured).not.toHaveProperty('effortValue')
   })
 })
 
