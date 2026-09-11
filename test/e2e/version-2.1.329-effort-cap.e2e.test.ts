@@ -421,16 +421,42 @@ function mockModelEnv(endpoint: MockEndpoint): Record<string, string | undefined
   }
 }
 
-/** Wait until the mock endpoint has captured more than `count` bodies; return the newest. */
+/**
+ * Wait until the mock endpoint has captured a NEW body (index >= `count`)
+ * satisfying `matches`, scanning newest→oldest, and return it. A concurrent
+ * side-channel request can land next to the turn's main request — blindly
+ * taking `bodies[bodies.length - 1]` flakes (~1-in-4 observed). Note: EVERY
+ * request carries an `output_config` object (for effort-unsupported models
+ * the official `JCs` delete-first gate removes only the `effort` key), so
+ * callers must match the actually-asserted field (e.g. `output_config.effort`
+ * present) — filtering on mere `output_config` presence still selects
+ * side-channel probes. Keep polling while no new body matches yet.
+ */
 async function waitForWireBody(
   endpoint: MockEndpoint,
   count: number,
+  matches: (parsed: Record<string, unknown>) => boolean,
   timeoutMs = 20_000,
 ): Promise<string | undefined> {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
     const bodies = endpoint.bodies()
-    if (bodies.length > count) return bodies[bodies.length - 1]
+    for (let i = bodies.length - 1; i >= count; i--) {
+      const body = bodies[i]
+      if (body === undefined) continue
+      try {
+        const parsed: unknown = JSON.parse(body)
+        if (
+          typeof parsed === 'object' &&
+          parsed !== null &&
+          matches(parsed as Record<string, unknown>)
+        ) {
+          return body
+        }
+      } catch {
+        // Partial or non-JSON body — keep scanning older entries.
+      }
+    }
     await new Promise(r => setTimeout(r, 200))
   }
   return undefined
@@ -509,7 +535,14 @@ describe.skipIf(!!process.env.CI || !tmuxAvailable())(
         const before = endpoint.bodies().length
         sendLiteral('hi')
         sendKey('Enter')
-        const raw = await waitForWireBody(endpoint, before)
+        // Select the newest NEW body carrying the actually-asserted field
+        // (output_config.effort) — side-channel probes carry an effort-less
+        // output_config and must not be picked (see waitForWireBody).
+        const raw = await waitForWireBody(
+          endpoint,
+          before,
+          b => (b as { output_config?: { effort?: unknown } }).output_config?.effort !== undefined,
+        )
         expect(raw).toBeDefined()
         const parsed = JSON.parse(raw as string)
         expect(parsed.output_config?.effort).toBe('high')
