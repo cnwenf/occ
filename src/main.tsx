@@ -2387,9 +2387,13 @@ async function run(): Promise<CommanderCommand> {
     // (`Eur(Oe,xo)` → `Zf(…,{key:"model-effort-cap"})`) sits immediately
     // before the advisor block. It never blocks startup — the applied request
     // level is clamped later by resolveAppliedEffort (kE).
+    // Review P3 fix: evaluate the warning against the POST-consent model —
+    // when a non-interactive session fell back from Fable-5 (no consent),
+    // resolvedInitialModel still names the pre-fallback model and the cap
+    // warning could fire (or not fire) for the wrong one.
     emitStartupEffortCapWarning(
       parseEffortValue(options.effort) ?? getInitialEffortSetting(),
-      resolvedInitialModel,
+      parseUserSpecifiedModel(effectiveMainLoopModel ?? getDefaultMainLoopModel()),
       outputFormat,
     );
 

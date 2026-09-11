@@ -53,8 +53,10 @@ type PreviousState = {
   /** Cache-editing beta header presence — should NOT break cache anymore
    *  (sticky-on latched in claude.ts). Tracked to verify the fix. */
   cachedMCEnabled: boolean
-  /** Resolved effort (env → options → model default). Goes into output_config
-   *  or anthropic_internal.effort_override. */
+  /** Resolved effort (env → options → model default). Goes into
+   *  output_config.effort (official 2.1.267 JCs has no numeric
+   *  anthropic_internal.effort_override branch — removed in the review
+   *  P2-1 fix). */
   effortValue: string
   /** Hash of getExtraBodyParams() — catches CLAUDE_CODE_EXTRA_BODY and
    *  anthropic_internal changes. */
