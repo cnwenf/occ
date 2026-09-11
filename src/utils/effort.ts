@@ -6,7 +6,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/grow
 import { getAPIProvider } from './model/providers.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
-import { clampEffortValue, getSettingsEffortCap } from './effort/cap.js'
+import { clampEffortToCap, clampEffortValue, getSettingsEffortCap } from './effort/cap.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 
 export type { EffortLevel }
@@ -259,6 +259,16 @@ export function resolveAppliedEffort(
  * renders "with xhigh effort" / the xhigh chip even on a model without
  * xhigh support). Capability clamps (max→high, xhigh→high) apply only to the
  * API parameter (resolveAppliedEffort), never to the display.
+ *
+ * OCC-82 runtime-3 (official 2.1.267): the SETTINGS cap is a different
+ * clamp — official renders every display surface through kE → P, whose first
+ * step is the cap clamp lF. Empirically verified against the real official
+ * 2.1.267 binary (cap 'high' on claude-sonnet-5, launch `--effort xhigh`):
+ * the logo suffix reads "Sonnet 5 with high effort", the status chip reads
+ * "● high · /effort" and the /effort picker parks at high with the capped
+ * note — never the raw over-cap value. So the settings cap clamps the
+ * display here; the Gap-97c capability-verbatim behavior is preserved (no
+ * applyEffortCapabilityDowngrade on this path).
  */
 function resolveConfiguredEffort(
   model: string,
@@ -268,7 +278,14 @@ function resolveConfiguredEffort(
   if (envOverride === null) {
     return undefined
   }
-  return envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  const resolved =
+    envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  if (resolved === undefined) {
+    return undefined
+  }
+  // Official lF (cap clamp) — strings above the cap become the cap;
+  // numbers and unknown values pass through unchanged.
+  return clampEffortToCap(resolved, model)
 }
 
 /**

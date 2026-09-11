@@ -28,6 +28,19 @@ import { REPO_ROOT, runOcc } from './helpers'
  *      JCs second gate `'effort' in n → return`), while the control run
  *      without EXTRA_BODY clamps --effort xhigh to the cap.
  *
+ * Review round 2 (tag-hold candidates), tmux REPL block:
+ *
+ *   ⑤ runtime-3 display clamp: cap 'high' on claude-sonnet-5 + launch
+ *      `--effort xhigh` — the wire clamps (pre-existing) AND every display
+ *      surface now shows the clamped level (logo suffix "with high effort",
+ *      status chip, `/effort` current-level), matching the official 2.1.267
+ *      binary empirically (suffix rendered via wtt/kE, /effort picker parked
+ *      at the cap).
+ *   ⑥ test-f3 ModelPicker: with a cap on claude-opus-4-7, focusing its row
+ *      renders the "Higher effort levels are capped" note (`focusedCapped`),
+ *      and selecting it with a stale over-cap xhigh persists the CLAMPED
+ *      effortLevel='high' (clampEffortToCap before updateSettingsForSource).
+ *
  * The wire tests capture the outgoing request body at a local mock Anthropic
  * endpoint (same pattern as resume-interrupted-turn-221.e2e.test.ts) and
  * assert on `output_config.effort` — the actual API-side enforcement point.
@@ -302,13 +315,26 @@ function tmux(args: string[]): string {
   }
 }
 
-function startRepl(home: string) {
+interface ReplOptions {
+  /** Extra env for the REPL process; an explicit `undefined` value REMOVES an inherited var. */
+  extraEnv?: Record<string, string | undefined>
+  extraArgs?: string[]
+}
+
+function startRepl(home: string, opts: ReplOptions = {}) {
   execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`)
-  const envStr = Object.entries({ ...process.env, HOME: home })
+  const env: Record<string, string | undefined> = {
+    ...process.env,
+    HOME: home,
+    ...opts.extraEnv,
+  }
+  const envStr = Object.entries(env)
+    .filter(([, v]) => v !== undefined)
     .map(([k, v]) => `${k}='${String(v).replace(/'/g, "'\\''")}'`)
     .join(' ')
+  const args = ['--dangerously-skip-permissions', ...(opts.extraArgs ?? [])].join(' ')
   execSync(
-    `tmux new-session -d -s ${SESSION} -x 200 -y 50 "env ${envStr} bun ${BIN} --dangerously-skip-permissions"`,
+    `tmux new-session -d -s ${SESSION} -x 220 -y 60 "env ${envStr} bun ${BIN} ${args}"`,
     { timeout: 5_000 },
   )
 }
@@ -339,8 +365,8 @@ async function waitForText(substr: string, timeoutMs = 20_000): Promise<boolean>
   return false
 }
 
-/** Same onboarding-skip seed as repl-interactive.e2e.test.ts, plus the cap. */
-function replHome(): string {
+/** Same onboarding-skip seed as repl-interactive.e2e.test.ts, plus custom user settings. */
+function replHomeWith(userSettings: Record<string, unknown>): string {
   const home = mkdtempSync(join(tmpdir(), 'occ-cap-repl-'))
   mkdirSync(join(home, '.claude'), { recursive: true })
   const apiKey = process.env.ANTHROPIC_API_KEY
@@ -363,14 +389,55 @@ function replHome(): string {
     JSON.stringify({
       skipDangerousModePermissionPrompt: true,
       disableAllHooks: true,
-      maxEffortLevel: 'high',
+      ...userSettings,
     }),
   )
   return home
 }
 
+/** Same onboarding-skip seed as repl-interactive.e2e.test.ts, plus the cap. */
+function replHome(): string {
+  return replHomeWith({ maxEffortLevel: 'high' })
+}
+
+/**
+ * Env that points the REPL at the local mock SSE endpoint with an explicit
+ * model roster (same shape as the review-round probes). `undefined` values
+ * REMOVE an inherited var (notably CLAUDE_CODE_EFFORT_LEVEL).
+ */
+function mockModelEnv(endpoint: MockEndpoint): Record<string, string | undefined> {
+  return {
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY || 'occ-effort-cap-key',
+    ANTHROPIC_BASE_URL: `http://127.0.0.1:${endpoint.port}`,
+    ANTHROPIC_MODEL: 'claude-sonnet-5',
+    ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-5',
+    ANTHROPIC_DEFAULT_OPUS_MODEL: 'claude-opus-4-7',
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-6-x',
+    DISABLE_AUTOUPDATER: '1',
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+    DISABLE_TELEMETRY: '1',
+    DISABLE_ERROR_REPORTING: '1',
+    CLAUDE_CODE_EFFORT_LEVEL: undefined,
+  }
+}
+
+/** Wait until the mock endpoint has captured more than `count` bodies; return the newest. */
+async function waitForWireBody(
+  endpoint: MockEndpoint,
+  count: number,
+  timeoutMs = 20_000,
+): Promise<string | undefined> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const bodies = endpoint.bodies()
+    if (bodies.length > count) return bodies[bodies.length - 1]
+    await new Promise(r => setTimeout(r, 200))
+  }
+  return undefined
+}
+
 describe.skipIf(!!process.env.CI || !tmuxAvailable())(
-  'OCC-82 (2.1.267) settings-side effort cap — REPL tmux e2e (①)',
+  'OCC-82 (2.1.267) settings-side effort cap — REPL tmux e2e (①⑤⑥)',
   () => {
     test('① capped argumentHint + clamp message + no settings write', async () => {
       const home = replHome()
@@ -407,5 +474,105 @@ describe.skipIf(!!process.env.CI || !tmuxAvailable())(
         rmSync(home, { recursive: true, force: true })
       }
     }, 120_000)
+
+    test('⑤ runtime-3: display surfaces show the CLAMPED level (banner / chip / /effort) and the wire clamps', async () => {
+      const endpoint = await startMockEndpoint()
+      const home = replHomeWith({
+        modelSettings: { 'claude-sonnet-5': { maxEffortLevel: 'high' } },
+      })
+      startRepl(home, {
+        extraEnv: mockModelEnv(endpoint),
+        extraArgs: ['--effort', 'xhigh'],
+      })
+      try {
+        expect(await waitForText('shift+tab', 30_000)).toBe(true)
+        const startup = capturePane()
+        // The Eur startup warning still names the raw over-cap attempt...
+        expect(startup).toContain("Effort 'xhigh' exceeds the cap")
+        // ...but every DISPLAY surface renders the clamped level. Official
+        // 2.1.267 renders the logo suffix via wtt (kE-clamped) and its /effort
+        // picker parks at the cap — empirically verified against the real
+        // binary (cap 'high' on claude-sonnet-5, launch `--effort xhigh` →
+        // "Sonnet 5 with high effort", chip at high, slider at high).
+        expect(startup).toContain('with high effort')
+        expect(startup).not.toContain('with xhigh effort')
+        expect(startup).not.toContain('xhigh · /effort')
+
+        // /effort current-level output displays the clamped value.
+        sendLiteral('/effort')
+        sendKey('Enter')
+        expect(await waitForText('Current effort level: high', 10_000)).toBe(true)
+        expect(capturePane()).not.toContain('Current effort level: xhigh')
+
+        // The wire request clamps too (kE on the enforcement point), and the
+        // status chip after the turn shows the clamped level.
+        const before = endpoint.bodies().length
+        sendLiteral('hi')
+        sendKey('Enter')
+        const raw = await waitForWireBody(endpoint, before)
+        expect(raw).toBeDefined()
+        const parsed = JSON.parse(raw as string)
+        expect(parsed.output_config?.effort).toBe('high')
+        expect(await waitForText('high · /effort', 15_000)).toBe(true)
+        expect(capturePane()).not.toContain('xhigh · /effort')
+      } finally {
+        killRepl()
+        await endpoint.close()
+        rmSync(home, { recursive: true, force: true })
+      }
+    }, 180_000)
+
+    test('⑥ test-f3: ModelPicker renders the capped note and clamps a stale over-cap effort before the settings write', async () => {
+      const endpoint = await startMockEndpoint()
+      const home = replHomeWith({
+        modelSettings: { 'claude-opus-4-7': { maxEffortLevel: 'high' } },
+      })
+      startRepl(home, { extraEnv: mockModelEnv(endpoint) })
+      try {
+        expect(await waitForText('shift+tab', 30_000)).toBe(true)
+        sendLiteral('/model')
+        sendKey('Enter')
+        expect(await waitForText('Select model', 15_000)).toBe(true)
+        // Flow ported from the reviewer's verified probe: Up 4 → row 1 =
+        // Default (Sonnet 5); Right → toggle xhigh (sonnet-5 is xhigh-capable
+        // and NOT capped here); Down → the capped claude-opus-4-7 row, where
+        // the focusedCapped note must render.
+        for (let i = 0; i < 4; i++) {
+          sendKey('Up')
+          await new Promise(r => setTimeout(r, 150))
+        }
+        sendKey('Right')
+        await new Promise(r => setTimeout(r, 300))
+        sendKey('Down')
+        expect(
+          await waitForText(
+            'Higher effort levels are capped by your settings or organization.',
+            10_000,
+          ),
+        ).toBe(true)
+        sendKey('Enter')
+        // The picker clamps the stale over-cap xhigh to the cap before
+        // persisting (official 2.1.267: ladder/note via dt(t)/wr, persist via
+        // lF — clampEffortToCap before updateSettingsForSource).
+        const settingsPath = join(home, '.claude', 'settings.json')
+        let settings: Record<string, unknown> = {}
+        const deadline = Date.now() + 15_000
+        while (Date.now() < deadline) {
+          settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
+          if (settings.effortLevel !== undefined) break
+          await new Promise(r => setTimeout(r, 200))
+        }
+        expect(settings.effortLevel).toBe('high')
+        expect(['claude-opus-4-7', 'opus']).toContain(settings.model)
+        // The /model confirmation shows the CLAMPED select effort (official
+        // ns(Ki): the value handed to onSelect runs through lF).
+        expect(await waitForText('with high effort', 10_000)).toBe(true)
+        expect(capturePane()).not.toContain('with xhigh effort')
+      } finally {
+        killRepl()
+        await endpoint.close()
+        rmSync(home, { recursive: true, force: true })
+      }
+    }, 180_000)
   },
 )

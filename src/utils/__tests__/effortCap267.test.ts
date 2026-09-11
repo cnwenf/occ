@@ -40,6 +40,7 @@ import {
 const actualSettingsModule = await import('../settings/settings.js')
 const actualConstantsModule = await import('../settings/constants.js')
 const actualModelModule = await import('../model/model.js')
+const actualDebugModule = await import('../debug.js')
 
 let settingsBySource: Record<string, Record<string, unknown> | null> = {}
 let enabledSources: string[] = ['userSettings', 'projectSettings']
@@ -48,6 +49,10 @@ const settingsWrites: Array<{
   source: string
   settings: Record<string, unknown>
 }> = []
+// test-f4: capture the emitter's logForDebugging lines so describe H can
+// assert the bg gate and the `[effort] ` debug-line CONTENT (both were
+// unasserted before — mutation-verified blind spots).
+const debugLines: string[] = []
 
 // Leak guard: bun runs all test files in ONE process, and bun's mock.module
 // LIVE-PATCHES the captured namespace — after mocking, `actualXModule.fn` IS
@@ -64,6 +69,7 @@ const actualUpdateSettingsForSource =
 const actualGetEnabledSettingSources =
   actualConstantsModule.getEnabledSettingSources
 const actualGetMainLoopModel = actualModelModule.getMainLoopModel
+const actualLogForDebugging = actualDebugModule.logForDebugging
 
 let mockActive = true
 
@@ -105,6 +111,18 @@ mock.module('../model/model.js', () => ({
     mockActive ? currentModel : actualGetMainLoopModel(),
 }))
 
+// test-f4: intercept the debug writer so describe H can assert the
+// `[effort] ` line CONTENT. Delegated through the pre-mock reference once
+// mockActive flips false (same leak-guard contract as the other mocks).
+mock.module('../debug.js', () => ({
+  ...actualDebugModule,
+  logForDebugging: (message: string) => {
+    if (!mockActive) return actualLogForDebugging(message)
+    debugLines.push(message)
+    return true
+  },
+}))
+
 afterAll(() => {
   mockActive = false
   // Re-pin the real functions over the live-patched namespace too, for
@@ -123,6 +141,10 @@ afterAll(() => {
     ...actualModelModule,
     getMainLoopModel: actualGetMainLoopModel,
   }))
+  mock.module('../debug.js', () => ({
+    ...actualDebugModule,
+    logForDebugging: actualLogForDebugging,
+  }))
 })
 
 // Modules under test — imported AFTER mocks.
@@ -131,12 +153,17 @@ const { SettingsSchema: settingsSchemaFactory } = await import(
 )
 // lazySchema returns a memoized factory — instantiate once for the tests.
 const SettingsSchema = settingsSchemaFactory()
-const { resolveAppliedEffort, getEffortLevelDescription } = await import(
-  '../effort.js'
-)
-const { executeEffort, call: callEffort } = await import(
-  '../../commands/effort/effort.js'
-)
+const {
+  resolveAppliedEffort,
+  getEffortLevelDescription,
+  getDisplayedEffortLevel,
+  getEffortSuffix,
+} = await import('../effort.js')
+const {
+  executeEffort,
+  call: callEffort,
+  showCurrentEffort,
+} = await import('../../commands/effort/effort.js')
 const effortCommand = (await import('../../commands/effort/index.js')).default
 const { isUltracodeEnabled, resetUltracode } = await import(
   '../effort/ultracode.js'
@@ -173,6 +200,7 @@ const SAVED_ENV_KEYS = [
   'CLAUDE_CODE_EXTRA_BODY',
   'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
   'CLAUDE_CODE_ULTRACODE',
+  'CLAUDE_CODE_SESSION_KIND',
   'USER_TYPE',
 ]
 const savedEnv: Record<string, string | undefined> = {}
@@ -194,6 +222,7 @@ beforeEach(() => {
   enabledSources = ['userSettings', 'projectSettings']
   currentModel = 'claude-opus-4-7'
   settingsWrites.length = 0
+  debugLines.length = 0
   resetUltracode()
 })
 
@@ -986,5 +1015,132 @@ describe('H. startup effort-cap warning emitter (⑥ Eur → Zf)', () => {
     } finally {
       warnSpy.mockRestore()
     }
+  })
+
+  // test-f4 (mutation-killer ports of the reviewer's probe-testf4.test.ts):
+  // the bg gate and the `[effort] ` debug-line CONTENT were unasserted —
+  // inverting the gate or stripping the message from the debug line survived
+  // the original suite.
+
+  test("bg session (CLAUDE_CODE_SESSION_KIND=bg) must NOT console.warn and must debug-line the warning", () => {
+    settingsBySource = { userSettings: { maxEffortLevel: 'high' } }
+    process.env.CLAUDE_CODE_SESSION_KIND = 'bg'
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      capModule?.emitStartupEffortCapWarning?.('xhigh', 'claude-opus-4-7', undefined)
+      expect(warnSpy).not.toHaveBeenCalled()
+      expect(debugLines.length).toBe(1)
+      expect(debugLines[0]).toContain('[effort]')
+      expect(debugLines[0]).toContain(
+        "Effort 'xhigh' exceeds the cap for claude-opus-4-7 set by your settings or organization; using 'high'.",
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test('json output format suppresses console.warn AND the [effort] debug line still carries the warning text', () => {
+    settingsBySource = { userSettings: { maxEffortLevel: 'high' } }
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      capModule?.emitStartupEffortCapWarning?.('xhigh', 'claude-opus-4-7', 'json')
+      expect(warnSpy).not.toHaveBeenCalled()
+      expect(debugLines.length).toBe(1)
+      expect(debugLines[0]).toContain('[effort]')
+      expect(debugLines[0]).toContain(
+        "Effort 'xhigh' exceeds the cap for claude-opus-4-7 set by your settings or organization; using 'high'.",
+      )
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+
+  test('interactive format with no bg env console.warns and does NOT debug-line', () => {
+    settingsBySource = { userSettings: { maxEffortLevel: 'high' } }
+    const warnSpy = spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      capModule?.emitStartupEffortCapWarning?.('xhigh', 'claude-opus-4-7', undefined)
+      expect(warnSpy).toHaveBeenCalledTimes(1)
+      const msg = String(warnSpy.mock.calls[0]?.[0])
+      expect(msg).toContain(
+        "Effort 'xhigh' exceeds the cap for claude-opus-4-7 set by your settings or organization; using 'high'.",
+      )
+      expect(debugLines.length).toBe(0)
+    } finally {
+      warnSpy.mockRestore()
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// I. runtime-3 — display surfaces under a settings cap.
+//
+// Official 2.1.267 renders every display surface through the kE → lF clamp:
+// the spinner/logo suffix `wtt` = ` with ${cF(dF(kE(...)))} effort`, and the
+// status chip / effort picker resolve through the same kE ladder. EMPIRICALLY
+// VERIFIED against the real official binary (/tmp/cc267/x267/package/claude,
+// tmux + mock SSE, cap 'high' on claude-sonnet-5, launch `--effort xhigh`):
+//   - logo suffix:  "Sonnet 5 with high effort"   (clamped, NOT xhigh)
+//   - status chip:  "● high · /effort"            (clamped, NOT xhigh)
+//   - /effort UI:   slider parked at high + the capped note; confirming
+//                   prints "Set effort level to high (…)"
+//   - wire:         output_config.effort "high"   (already aligned)
+// OCC before this fix displayed the raw over-cap value on all three surfaces
+// (banner "with xhigh effort", chip "◉ xhigh", "/effort → Current effort
+// level: xhigh") while the wire correctly clamped.
+//
+// Scope note: this applies the SETTINGS-CAP clamp (official lF) only. The
+// Gap-97c capability-verbatim display behavior (xhigh shown verbatim on a
+// non-xhigh-capable model with NO cap) is preserved — effortGap97 pins it.
+// ---------------------------------------------------------------------------
+
+describe('I. display surfaces under a settings cap (runtime-3 — official kE/lF clamp)', () => {
+  const SONNET5_CAP_HIGH = {
+    userSettings: {
+      modelSettings: { 'claude-sonnet-5': { maxEffortLevel: 'high' } },
+    },
+  }
+
+  test('getDisplayedEffortLevel (chip + /effort source, CC-1088) clamps the over-cap session value', () => {
+    settingsBySource = SONNET5_CAP_HIGH
+    expect(getDisplayedEffortLevel('claude-sonnet-5', 'xhigh')).toBe('high')
+    expect(getDisplayedEffortLevel('claude-sonnet-5', 'max')).toBe('high')
+    expect(getDisplayedEffortLevel('claude-sonnet-5', 'high')).toBe('high')
+    expect(getDisplayedEffortLevel('claude-sonnet-5', 'low')).toBe('low')
+  })
+
+  test('getEffortSuffix (logo/spinner banner, official wtt) clamps the over-cap value', () => {
+    settingsBySource = SONNET5_CAP_HIGH
+    expect(getEffortSuffix('claude-sonnet-5', 'xhigh')).toBe(' with high effort')
+    expect(getEffortSuffix('claude-sonnet-5', 'medium')).toBe(' with medium effort')
+    expect(getEffortSuffix('claude-sonnet-5', undefined)).toBe('')
+  })
+
+  test('the env override is clamped too (official kE: c = DP() ?? … then P)', () => {
+    settingsBySource = SONNET5_CAP_HIGH
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'xhigh'
+    expect(getDisplayedEffortLevel('claude-sonnet-5', undefined)).toBe('high')
+    expect(getEffortSuffix('claude-sonnet-5', 'low')).toBe(' with high effort')
+  })
+
+  test('showCurrentEffort (/effort current level) displays the clamped value', () => {
+    settingsBySource = SONNET5_CAP_HIGH
+    const result = showCurrentEffort('xhigh', 'claude-sonnet-5')
+    expect(result.message).toContain('Current effort level: high')
+    expect(result.message).not.toContain('xhigh')
+  })
+
+  test('a cap on another model does not clamp this model (per-model scoping)', () => {
+    settingsBySource = SONNET5_CAP_HIGH
+    expect(getDisplayedEffortLevel('claude-opus-4-7', 'xhigh')).toBe('xhigh')
+    expect(getEffortSuffix('claude-opus-4-7', 'xhigh')).toBe(' with xhigh effort')
+  })
+
+  test('Gap-97c guard: with NO cap the display stays verbatim (capability clamps remain wire-only)', () => {
+    settingsBySource = {}
+    expect(getDisplayedEffortLevel('claude-sonnet-5', 'xhigh')).toBe('xhigh')
+    expect(getDisplayedEffortLevel('claude-sonnet-4-6', 'xhigh')).toBe('xhigh')
+    expect(getEffortSuffix('claude-sonnet-4-6', 'xhigh')).toBe(' with xhigh effort')
+    expect(getEffortSuffix('claude-sonnet-5', 'max')).toBe(' with max effort')
   })
 })
