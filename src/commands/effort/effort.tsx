@@ -107,9 +107,14 @@ export function showCurrentEffort(appStateEffort: EffortValue | undefined, model
       message: `Effort level: auto (currently ${level})`
     };
   }
-  const description = getEffortValueDescription(effectiveValue);
+  // OCC-82 runtime-3 (official 2.1.267): the current-level display renders
+  // the CLAMPED value — the official /effort picker parks at the cap (verified
+  // empirically against the real binary). Cap clamp only (official lF);
+  // capability-verbatim display is preserved (Gap-97c).
+  const clamped = clampEffortToCap(effectiveValue, model);
+  const description = getEffortValueDescription(clamped);
   return {
-    message: `Current effort level: ${effectiveValue} (${description})`
+    message: `Current effort level: ${clamped} (${description})`
   };
 }
 function unsetEffortLevel(): EffortCommandResult {
