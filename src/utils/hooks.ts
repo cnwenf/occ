@@ -222,18 +222,64 @@ export function hookCallbackTimeoutMessage(
 
 /**
  * SessionEnd hooks run during shutdown/clear and need a much tighter bound
- * than TOOL_HOOK_EXECUTION_TIMEOUT_MS. This value is used by callers as both
- * the per-hook default timeout AND the overall AbortSignal cap (hooks run in
- * parallel, so one value suffices). Overridable via env var for users whose
- * teardown scripts need more time.
+ * than TOOL_HOOK_EXECUTION_TIMEOUT_MS. Official 2.1.268 splits the single
+ * v267 value into two (byte-verified):
+ *
+ *   var zir=1500,xHs=60000;
+ *   function Wir(){return a.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS??zir}  // per-hook default
+ *   function Wge(){let e=a.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS;if(e!==void 0)return e;
+ *     let n=0,...;for(let d of o)for(let p of d.hooks)if(p.timeout&&p.timeout*1000>n)n=p.timeout*1000;
+ *     return Math.max(zir,Math.min(n,xHs))}                                // overall budget
+ *
+ * (v267's `>0` guard on the env value was dropped in v268; invalid env still
+ * falls back via parseEnvInt returning undefined.)
  */
 const SESSION_END_HOOK_TIMEOUT_MS_DEFAULT = 1500
+const SESSION_END_HOOKS_BUDGET_MS_MAX = 60_000
+
+/**
+ * Per-hook default timeout for SessionEnd hooks (official Wir): env override
+ * or 1500ms.
+ */
 export function getSessionEndHookTimeoutMs(): number {
-  const raw = process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS
-  const parsed = raw ? parseEnvInt(raw) : NaN
-  return Number.isFinite(parsed) && parsed > 0
-    ? parsed
-    : SESSION_END_HOOK_TIMEOUT_MS_DEFAULT
+  const parsed = parseEnvInt(
+    process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS,
+  )
+  return parsed ?? SESSION_END_HOOK_TIMEOUT_MS_DEFAULT
+}
+
+/**
+ * Overall budget for SessionEnd hook execution (official Wge). The env
+ * override wins outright; otherwise scan the settings-derived SessionEnd hook
+ * configs for the largest per-hook `timeout` (seconds) and clamp to
+ * [1500, 60000]ms, so a 10s teardown hook is no longer truncated by the 1.5s
+ * default and a runaway config cannot hold shutdown for more than a minute.
+ */
+export function getSessionEndHooksBudgetMs(): number {
+  const fromEnv = parseEnvInt(
+    process.env.CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS,
+  )
+  if (fromEnv !== undefined) {
+    return fromEnv
+  }
+  let maxHookTimeoutMs = 0
+  try {
+    for (const matcher of getHooksConfigFromSnapshot()?.SessionEnd ?? []) {
+      for (const hook of matcher.hooks ?? []) {
+        const timeoutSec = (hook as { timeout?: number }).timeout
+        if (timeoutSec && timeoutSec * 1000 > maxHookTimeoutMs) {
+          maxHookTimeoutMs = timeoutSec * 1000
+        }
+      }
+    }
+  } catch (e) {
+    // Config scan is best-effort — fall back to the default floor
+    logError(e)
+  }
+  return Math.max(
+    SESSION_END_HOOK_TIMEOUT_MS_DEFAULT,
+    Math.min(maxHookTimeoutMs, SESSION_END_HOOKS_BUDGET_MS_MAX),
+  )
 }
 
 function executeInBackground({

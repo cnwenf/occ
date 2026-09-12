@@ -415,10 +415,14 @@ export async function gracefulShutdown(
   // Resolve the SessionEnd hook budget before arming the failsafe so the
   // failsafe can scale with it. Without this, a user-configured 10s hook
   // budget is silently truncated by the 5s failsafe (gh-32712 follow-up).
-  const { executeSessionEndHooks, getSessionEndHookTimeoutMs } = await import(
-    './hooks.js'
-  )
+  // Official 2.1.268 splits per-hook default (Wir) from overall budget (Wge).
+  const {
+    executeSessionEndHooks,
+    getSessionEndHookTimeoutMs,
+    getSessionEndHooksBudgetMs,
+  } = await import('./hooks.js')
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
+  const sessionEndBudgetMs = getSessionEndHooksBudgetMs()
 
   // Failsafe: guarantee process exits even if cleanup hangs (e.g., MCP connections).
   // Runs cleanupTerminalModes first so a hung cleanup doesn't leave the terminal dirty.
@@ -432,7 +436,7 @@ export async function gracefulShutdown(
       await drainStdoutBeforeExit(500)
       forceExit(code)
     },
-    Math.max(5000, sessionEndTimeoutMs + 3500),
+    Math.max(5000, sessionEndBudgetMs + 3500),
     exitCode,
   )
   failsafeTimer.unref()
@@ -478,13 +482,14 @@ export async function gracefulShutdown(
     clearTimeout(cleanupTimeoutId)
   }
 
-  // Execute SessionEnd hooks. Bound both the per-hook default timeout and the
-  // overall execution via a single budget (CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS,
-  // default 1.5s). hook.timeout in settings is respected up to this cap.
+  // Execute SessionEnd hooks. Official 2.1.268: the per-hook default timeout
+  // (CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS, default 1.5s) and the overall
+  // budget (max configured hook timeout clamped to [1.5s, 60s]) are separate;
+  // hook.timeout in settings is respected up to the overall budget.
   try {
     await executeSessionEndHooks(reason, {
       ...options,
-      signal: AbortSignal.timeout(sessionEndTimeoutMs),
+      signal: AbortSignal.timeout(sessionEndBudgetMs),
       timeoutMs: sessionEndTimeoutMs,
     })
   } catch {

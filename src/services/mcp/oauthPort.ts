@@ -74,6 +74,36 @@ export async function findAvailablePort(): Promise<number> {
     })
     return REDIRECT_PORT_FALLBACK
   } catch {
+    // Official 2.1.268: last resort — let the OS assign an ephemeral port
+    // instead of failing outright.
+    const ephemeralPort = await tryAssignEphemeralPort()
+    if (ephemeralPort !== undefined) {
+      return ephemeralPort
+    }
     throw new Error(`No available ports for OAuth redirect`)
+  }
+}
+
+/**
+ * Asks the OS to assign an ephemeral loopback port via listen(0) and returns
+ * the assigned port (official 2.1.268 fallback). Returns undefined if even
+ * that fails.
+ */
+async function tryAssignEphemeralPort(): Promise<number | undefined> {
+  try {
+    return await new Promise<number | undefined>((resolve) => {
+      const testServer = createServer()
+      testServer.once('error', () => resolve(undefined))
+      testServer.listen(0, '127.0.0.1', () => {
+        const address = testServer.address()
+        const port =
+          typeof address === 'object' && address !== null
+            ? address.port
+            : undefined
+        testServer.close(() => resolve(port))
+      })
+    })
+  } catch {
+    return undefined
   }
 }

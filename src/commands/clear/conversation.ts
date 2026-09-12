@@ -29,6 +29,7 @@ import type { FileStateCache } from '../../utils/fileStateCache.js'
 import {
   executeSessionEndHooks,
   getSessionEndHookTimeoutMs,
+  getSessionEndHooksBudgetMs,
 } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import { clearAllPlanSlugs } from '../../utils/plans.js'
@@ -64,13 +65,15 @@ export async function clearConversation({
   setAppState?: (f: (prev: AppState) => AppState) => void
   setConversationId?: (id: UUID) => void
 }): Promise<void> {
-  // Execute SessionEnd hooks before clearing (bounded by
-  // CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS, default 1.5s)
+  // Execute SessionEnd hooks before clearing. Official 2.1.268: per-hook
+  // default (CLAUDE_CODE_SESSIONEND_HOOKS_TIMEOUT_MS, default 1.5s) and the
+  // overall budget (max configured hook timeout clamped to [1.5s, 60s]).
   const sessionEndTimeoutMs = getSessionEndHookTimeoutMs()
+  const sessionEndBudgetMs = getSessionEndHooksBudgetMs()
   await executeSessionEndHooks('clear', {
     getAppState,
     setAppState,
-    signal: AbortSignal.timeout(sessionEndTimeoutMs),
+    signal: AbortSignal.timeout(sessionEndBudgetMs),
     timeoutMs: sessionEndTimeoutMs,
   })
 
