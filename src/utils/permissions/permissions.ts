@@ -405,6 +405,53 @@ export function getRuleByContentsForToolName(
 }
 
 /**
+ * Official 2.1.269 (E14) `Xn` (verified at raw-ELF offset ~184123267:
+ * `function Xn(e,n,r){let s=[];switch(r){case"allow":s=EH(e);break;
+ * case"deny":s=Yp(e);break;case"ask":s=rk(e);break}let d=[];for(let m of s)
+ * if(m.ruleValue.toolName===n&&m.ruleValue.ruleContent!==void 0&&
+ * m.ruleBehavior===r)d.push(m);return d}`):
+ *
+ * Returns the LIST of rules for a tool name and behavior — unlike
+ * getRuleByContentsForToolName, rules with the same content from DIFFERENT
+ * sources are kept as separate entries. E14 needs this so each deny/ask rule
+ * can be compiled into a matcher keyed by its own settings source (`!`
+ * negation must not cross sources); the content-keyed Map collapses those and
+ * loses the per-source distinction. The allow-behavior dedup by ruleContent
+ * that the Map used to provide is applied by the CALLER (official Zr:
+ * `Array.from(new Map(L.map(D=>[D.ruleValue.ruleContent,D])).values())`),
+ * matching official semantics where allow rules share a single matcher.
+ */
+export function getRuleListForToolName(
+  context: ToolPermissionContext,
+  toolName: string,
+  behavior: PermissionBehavior,
+): PermissionRule[] {
+  let rules: PermissionRule[] = []
+  switch (behavior) {
+    case 'allow':
+      rules = getAllowRules(context)
+      break
+    case 'deny':
+      rules = getDenyRules(context)
+      break
+    case 'ask':
+      rules = getAskRules(context)
+      break
+  }
+  const matched: PermissionRule[] = []
+  for (const rule of rules) {
+    if (
+      rule.ruleValue.toolName === toolName &&
+      rule.ruleValue.ruleContent !== undefined &&
+      rule.ruleBehavior === behavior
+    ) {
+      matched.push(rule)
+    }
+  }
+  return matched
+}
+
+/**
  * Runs PermissionRequest hooks for headless/async agents that cannot show
  * permission prompts. This gives hooks an opportunity to allow or deny
  * tool use before the fallback auto-deny kicks in.

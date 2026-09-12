@@ -6,7 +6,9 @@ import { getProjectRoot } from 'src/bootstrap/state.js'
 import {
   builtInCommandNames,
   findCommand,
+  findPluginSkillFullNameMatch,
   getCommands,
+  isSkillNameSafeToDisplay,
   type PromptCommand,
 } from 'src/commands.js'
 import type {
@@ -111,6 +113,47 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
 
 // Re-export Progress from centralized types to break import cycles
 export type { SkillToolProgress as Progress } from '../../types/tools.js'
+
+/**
+ * Official 2.1.269 (E52): "Unknown skill" message with plugin full-name
+ * suggestions. Byte-verified from js269.txt (SkillTool validateInput,
+ * offsets ~4253409 / ~4253800):
+ *   `Unknown skill: ${m}. Did you mean ${A.suggestion.name}? Invoke it by that full name.`
+ *   `Unknown skill: ${m}. Several skills match that name: ${q.map((me)=>me.name).join(", ")} — invoke one by its full name.`
+ * Deviations:
+ * - The official ambiguous branch first filters candidates with `!trt(me,m)`
+ *   (drop exact name/alias matches) — a no-op for this resolver, whose
+ *   candidates all contain ":" and can never exactly equal a bare query.
+ * - The official `re=q.length===1?q[0]:void 0` "Did you mean" fallback inside
+ *   the ambiguous branch is unreachable for the same reason (Oun only returns
+ *   ambiguous when >1 candidates survive), so the ambiguous message is the
+ *   only output for that kind.
+ * - Names are gated through `isSkillNameSafeToDisplay` (official `Pee`)
+ *   before interpolation; unsafe names fall back to the bare message.
+ * - OCC has no directory-scoped skill variants (official `wxt`/`F` branch),
+ *   so that message variant does not exist here.
+ */
+export function buildUnknownSkillMessage(
+  name: string,
+  commands: Command[],
+): string {
+  const match = findPluginSkillFullNameMatch(name, commands)
+  if (
+    match.kind === 'unique' &&
+    isSkillNameSafeToDisplay(match.command.name)
+  ) {
+    return `Unknown skill: ${name}. Did you mean ${match.command.name}? Invoke it by that full name.`
+  }
+  if (
+    match.kind === 'ambiguous' &&
+    match.candidates.every(c => isSkillNameSafeToDisplay(c.name))
+  ) {
+    return `Unknown skill: ${name}. Several skills match that name: ${match.candidates
+      .map(c => c.name)
+      .join(', ')} — invoke one by its full name.`
+  }
+  return `Unknown skill: ${name}`
+}
 
 import type { SkillToolProgress as Progress } from '../../types/tools.js'
 
@@ -430,9 +473,24 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // Check if command exists
     const foundCommand = findCommand(normalizedCommandName, commands)
     if (!foundCommand) {
+      // Official 2.1.269 (E52): telemetry as in the official validateInput —
+      // `i("tengu_skill_tool_suffix_match",{candidate_count:...})` fires for
+      // both the suggestion and ambiguous kinds (before the display-safety
+      // gate). Deviation: the official metric counter
+      // p("skill_invoke","skill_invoke_not_found") has no OCC equivalent.
+      const match = findPluginSkillFullNameMatch(
+        normalizedCommandName,
+        commands,
+      )
+      if (match.kind !== 'none') {
+        logEvent('tengu_skill_tool_suffix_match', {
+          candidate_count:
+            match.kind === 'ambiguous' ? match.candidates.length : 1,
+        })
+      }
       return {
         result: false,
-        message: `Unknown skill: ${normalizedCommandName}`,
+        message: buildUnknownSkillMessage(normalizedCommandName, commands),
         errorCode: 2,
       }
     }

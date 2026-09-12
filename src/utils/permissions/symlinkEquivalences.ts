@@ -142,18 +142,35 @@ export function unescapePatternSegment(segment: string): string {
 }
 
 /**
- * Official Rte(path, {escapeGlobs: true}) — escapes a filesystem path so it
- * can be used as a literal gitignore-style pattern: backslashes, regex-ish
- * chars, glob stars, leading `!`/`#`, and trailing whitespace.
- * (`?` is intentionally NOT escaped by the official — faithful port.)
+ * Official `Wne` (verified at raw-ELF offset ~181040444):
+ * `function Wne(e,n){let t=e.replaceAll("\\","\\\\").replace(/[[\]()|+^$]/g,
+ * (r)=>\`\\${r}\`);if(n?.escapeGlobs)t=t.replaceAll("*","\\*");
+ * if(t.startsWith("!")||t.startsWith("#"))t=\`\\${t}\`;
+ * return t=t.replace(/\s+$/,(r)=>Array.from(r,(s)=>\`\\${s}\`).join("")),t}`
+ *
+ * Escapes a filesystem path so it can be used as a literal gitignore-style
+ * pattern: backslashes, regex-ish chars, optionally glob stars, leading
+ * `!`/`#`, and trailing whitespace. (`?` is intentionally NOT escaped by the
+ * official — faithful port.)
+ *
+ * `escapeGlobs` defaults to TRUE in OCC (the official defaults it off and
+ * every official caller passes it explicitly: zp/ih pass `{escapeGlobs:!0}`,
+ * 2.1.269 Ki passes it off). Defaulting true here keeps OCC's existing
+ * callers/tests (E13 twin resolution always escapes globs) unchanged; the
+ * E14 Ki port (`normalizePermissionRulePattern`) passes `{escapeGlobs:false}`
+ * so globs are PRESERVED there, matching official per-call-site behavior.
  */
-export function escapePatternPath(path: string): string {
+export function escapePatternPath(
+  path: string,
+  opts?: { escapeGlobs?: boolean },
+): string {
+  const escapeGlobs = opts?.escapeGlobs ?? true
   let escaped = path
     .replaceAll('\\', '\\\\')
     .replace(/[[\]()|+^$]/g, char => `\\${char}`)
-  // Official: `if(n?.escapeGlobs)t=t.replaceAll("*","\\*")` — zp always
-  // calls Rte with escapeGlobs: true, so the flag is not parameterized here.
-  escaped = escaped.replaceAll('*', '\\*')
+  if (escapeGlobs) {
+    escaped = escaped.replaceAll('*', '\\*')
+  }
   if (escaped.startsWith('!') || escaped.startsWith('#')) {
     escaped = `\\${escaped}`
   }

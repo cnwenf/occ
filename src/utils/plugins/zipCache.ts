@@ -30,9 +30,11 @@
  */
 
 import { randomBytes } from 'crypto'
+import { constants as fsConstants } from 'fs'
 import {
   chmod,
   lstat,
+  open,
   readdir,
   readFile,
   rename,
@@ -40,6 +42,7 @@ import {
   stat,
   writeFile,
 } from 'fs/promises'
+import type { FileHandle } from 'fs/promises'
 import { tmpdir } from 'os'
 import { basename, dirname, join } from 'path'
 import { logForDebugging } from '../debug.js'
@@ -323,7 +326,156 @@ async function collectFilesForZip(
 }
 
 /**
+ * Official 2.1.269 (E42): plugin-zip extraction hardening.
+ *
+ * The official release hardened plugin-zip extraction so a hostile archive
+ * cannot leave setuid/setgid or group/other-writable files on disk, and so a
+ * re-extraction clears stale files instead of overlaying them. Byte-verified
+ * against js269.txt:
+ *   - `var w$=493` (0o755)                                       @849721
+ *   - `rfe` per-entry chmod `if(P&&P&73)await Uko(A,P&w$)`        @1429098 / @1429374
+ *   - `swo` sweep `if((n&18)===0)…d.isFile()&&d.nlink===1…s.chmod(d.mode&w$)` @1430917…@1431132
+ *   - `nDt` staging names `.staging-`/`.previous-` + `N1s(4).toString("hex")` @5043426 / @5043654 / @5043689
+ *   - `oDt` in-place fallback warning                             @5044761 / @5045508
+ */
+const EXTRACTED_MODE_MASK = 0o755 // Official `w$=493`: keep rwxr-xr-x, strip setuid/setgid/sticky + group/other write.
+const EXEC_MODE_BITS = 0o111 // Official `73`: rfe chmods only entries carrying an exec bit.
+const GROUP_OTHER_WRITE_BITS = 0o22 // Official `18`: swo's group/other-write gate.
+
+// Official `oDt`/`_js` @5044761: the rename-swap can fail when the target (or
+// its staged copy) is held open, or when the swap races a non-empty target.
+// Deviation (documented): the official retries ENOTEMPTY/EEXIST through a
+// per-dir seq registry (`Xot()`) and gates EPERM/EACCES/EBUSY on Windows only;
+// OCC has neither that registry nor a Windows rename path for its ephemeral
+// session cache, so all four errnos fall back straight to in-place extraction.
+const IN_PLACE_FALLBACK_ERRNOS = new Set(['EBUSY', 'EPERM', 'ENOTEMPTY', 'EEXIST'])
+
+function errnoCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? String((error as { code?: unknown }).code)
+    : undefined
+}
+
+function isInPlaceFallbackError(error: unknown): boolean {
+  const code = errnoCode(error)
+  return code !== undefined && IN_PLACE_FALLBACK_ERRNOS.has(code)
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+// Official `Eke` @js269.txt: `try{return(await sD(e)).isDirectory()}catch{return!1}`
+async function isExistingDirectory(path: string): Promise<boolean> {
+  try {
+    return (await stat(path)).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+// Official `Soe` @js269.txt: `await sc(e).catch((n)=>{t(`Failed to remove the
+// extraction tree ${e}: ${l(n)}`,{level:"warn"})})`
+async function removeExtractionTree(path: string): Promise<void> {
+  await rm(path, { recursive: true, force: true }).catch(error => {
+    logForDebugging(
+      `Failed to remove the extraction tree ${path}: ${errorText(error)}`,
+      { level: 'warn' },
+    )
+  })
+}
+
+/**
+ * Official 2.1.269 (E42) `swo` @js269.txt 1430917 — per-file integrity sweep.
+ * Byte-verified logic (file case, `r=false`):
+ *   if((n&18)===0)return!0;                              // no group/other write → skip the open
+ *   let s=await ewo(e,O_RDONLY|O_NOFOLLOW|O_NONBLOCK);   // O_NOFOLLOW: fail on a swapped-in symlink
+ *   let d=await s.stat();
+ *   if(!(d.isFile()&&d.nlink===1))return!1;              // require a single-link regular file
+ *   if((d.mode&18)!==0)await s.chmod(d.mode&w$);         // strip group/other write (+ any high bits)
+ *   await s.close();
+ * `diskMode` is the on-disk mode from lstat (the official passes it from the
+ * walker's `hpn`/lstat). Non-regular entries — a symlink swapped in after
+ * writeFile (O_NOFOLLOW → ELOOP), a directory, or a hardlink (nlink>1) — are
+ * safely skipped rather than followed. This does not duplicate the path-traversal
+ * guard already applied by validateZipFile inside unzipFile.
+ */
+async function hardenExtractedFileMode(
+  filePath: string,
+  diskMode: number,
+): Promise<void> {
+  if ((diskMode & GROUP_OTHER_WRITE_BITS) === 0) return
+  let handle: FileHandle | undefined
+  try {
+    handle = await open(
+      filePath,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    )
+    const fdStat = await handle.stat()
+    if (!fdStat.isFile() || fdStat.nlink !== 1) return
+    if ((fdStat.mode & GROUP_OTHER_WRITE_BITS) !== 0) {
+      await handle.chmod(fdStat.mode & EXTRACTED_MODE_MASK)
+    }
+  } catch {
+    // O_NOFOLLOW throws ELOOP on a swapped-in symlink; swallow so a failed sweep
+    // never aborts extraction (we wrote a regular file moments ago).
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
+/**
+ * Official 2.1.269 (E42) `rfe` @js269.txt 1429098 — pure extraction into `destDir`.
+ * Byte-verified per entry:
+ *   if(_.endsWith("/")){await mkdir(gU(n,_));continue}       // directory entry
+ *   let A=gU(n,_); await mkdir(fpn(A)); await qko(A,E);      // parent mkdir + writeFile
+ *   let P=d[_]; if(P&&P&73)await Uko(A,P&w$).catch(()=>{})   // exec gate, mask 0o755
+ * Deviation (documented): OCC folds the `swo` integrity sweep into this single
+ * pass. The official runs `swo` from the `iwo` walker only after the `unzip`
+ * binary fallback (`S0e`); OCC's fflate path IS `rfe`, so the sweep runs inline
+ * per file to give the same umask-independent group/other-write guarantee.
+ */
+async function extractZipEntriesToDir(
+  files: Record<string, Uint8Array>,
+  modes: Record<string, number>,
+  destDir: string,
+): Promise<void> {
+  await getFsImplementation().mkdir(destDir)
+  for (const [relPath, data] of Object.entries(files)) {
+    // Skip directory entries (trailing slash)
+    if (relPath.endsWith('/')) {
+      await getFsImplementation().mkdir(join(destDir, relPath))
+      continue
+    }
+
+    const fullPath = join(destDir, relPath)
+    await getFsImplementation().mkdir(dirname(fullPath))
+    await writeFile(fullPath, data)
+    const mode = modes[relPath]
+    // Official `rfe`: `if(P&&P&73)await Uko(A,P&w$).catch(()=>{})` — chmod only
+    // when the entry carries an exec bit, masking to 0o755 (strips setuid/setgid/
+    // sticky + group/other write). Swallow EPERM/ENOTSUP (NFS root_squash, some
+    // FUSE mounts): losing +x is better than aborting mid-extraction.
+    if (mode && mode & EXEC_MODE_BITS) {
+      await chmod(fullPath, mode & EXTRACTED_MODE_MASK).catch(() => {})
+    }
+    // Official `swo` sweep: strip any residual group/other write writeFile left
+    // (its 0o666 default is umask-dependent) and reject non-regular swaps.
+    const diskStat = await lstat(fullPath).catch(() => undefined)
+    if (diskStat) await hardenExtractedFileMode(fullPath, diskStat.mode)
+  }
+}
+
+/**
  * Extract a ZIP file to a target directory.
+ *
+ * Official 2.1.269 (E42): extraction runs into a sibling staging dir (`nDt`
+ * @5043426) that is then rename-swapped into place (`oDt` @5044761) so a
+ * re-extraction of the same plugin clears stale files instead of overlaying
+ * them. If the swap fails because the target is held open / non-empty
+ * (EBUSY/EPERM/ENOTEMPTY/EEXIST), it falls back to extracting in place with a
+ * warning (official wording @5045508) — stale files are not cleared on that
+ * degraded path. Extracted modes are hardened per `rfe`/`swo` (helpers above).
  *
  * @param zipPath - Path to the ZIP file
  * @param targetDir - Directory to extract into
@@ -338,23 +490,43 @@ export async function extractZipToDirectory(
   // exec bits survive extraction (hooks/scripts need +x to run via `sh -c`).
   const modes = parseZipModes(zipBuf)
 
-  await getFsImplementation().mkdir(targetDir)
+  // Official `nDt` @5043426: sibling staging + previous names, random suffix.
+  //   let s=N1s(4).toString("hex");
+  //   return{extractDir:n,staging:`${n}.staging-${s}`,previousPrefix:`${n}.previous-${s}`}
+  // OCC omits nDt's containment throw ("Refusing to extract a plugin archive
+  // outside the session plugin cache"): pluginLoader derives targetDir from a
+  // sanitized pluginId (join(sessionDir, pluginId.replace(/[^a-zA-Z0-9@\-_]/g,'-')))
+  // so it cannot escape the session cache, and validateZipFile guards entry paths.
+  const swapHex = randomBytes(4).toString('hex')
+  const stagingDir = `${targetDir}.staging-${swapHex}`
+  const previousDir = `${targetDir}.previous-${swapHex}`
 
-  for (const [relPath, data] of Object.entries(files)) {
-    // Skip directory entries (trailing slash)
-    if (relPath.endsWith('/')) {
-      await getFsImplementation().mkdir(join(targetDir, relPath))
-      continue
+  // Official `rDt`: extract the archive into the staging dir.
+  await extractZipEntriesToDir(files, modes, stagingDir)
+
+  // Official `oDt` @5044761: rename-swap staging into target, moving any existing
+  // target aside first so stale files are cleared atomically.
+  let movedAside = false
+  try {
+    if (await isExistingDirectory(targetDir)) {
+      await rename(targetDir, previousDir)
+      movedAside = true
     }
-
-    const fullPath = join(targetDir, relPath)
-    await getFsImplementation().mkdir(dirname(fullPath))
-    await writeFile(fullPath, data)
-    const mode = modes[relPath]
-    if (mode && mode & 0o111) {
-      // Swallow EPERM/ENOTSUP (NFS root_squash, some FUSE mounts) — losing +x
-      // is the pre-PR behavior and better than aborting mid-extraction.
-      await chmod(fullPath, mode & 0o777).catch(() => {})
+    await rename(stagingDir, targetDir)
+    if (movedAside) await removeExtractionTree(previousDir)
+  } catch (error) {
+    // Restore the moved-aside target so we never leave the plugin dir missing.
+    if (movedAside) await rename(previousDir, targetDir).catch(() => {})
+    await removeExtractionTree(stagingDir)
+    if (isInPlaceFallbackError(error)) {
+      // Official in-place fallback warning @5045508 (byte-matched wording).
+      logForDebugging(
+        `Plugin extraction directory ${targetDir} or its staged copy is held open; extracting the archive in place, so files dropped from it are not cleared this time`,
+        { level: 'warn' },
+      )
+      await extractZipEntriesToDir(files, modes, targetDir)
+    } else {
+      throw error
     }
   }
 

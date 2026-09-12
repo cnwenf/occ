@@ -127,6 +127,7 @@ import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
 import { PromptInputModeIndicator } from './PromptInputModeIndicator.js';
 import { PromptInputQueuedCommands } from './PromptInputQueuedCommands.js';
 import { PromptInputStashNotice } from './PromptInputStashNotice.js';
+import { sanitizeAndClampBannerText } from './sanitizeBannerText.js';
 import { useMaybeTruncateInput } from './useMaybeTruncateInput.js';
 import { usePromptInputPlaceholder } from './usePromptInputPlaceholder.js';
 import { useShowFastIconHint } from './useShowFastIconHint.js';
@@ -2371,6 +2372,12 @@ function PromptInput({
         </Text>
       </Box>;
   }
+  // Official 2.1.269 (E35): banner text is sanitized + width-clamped at the
+  // render site — `Ke(dx(P.text),Math.max(1,Math.min(rSo,ee-1)))` with rSo=24
+  // (x269 @206568999; dx @181158419). 2.1.268 rendered the banner text raw
+  // (x268 @205750433). An empty sanitized result falls through to the plain
+  // border below (mirrors the official `!aSo` fallback).
+  const bannerText = swarmBanner ? sanitizeAndClampBannerText(swarmBanner.text, columns) : '';
   const textInputElement = isVimModeEnabled() ? <VimTextInput {...baseProps} initialMode={vimMode} onModeChange={setVimMode} onHistorySearch={() => setIsSearchingHistory(true)} onToggleHelp={toggleHelp} /> : <TextInput {...baseProps} />;
   return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
@@ -2380,11 +2387,11 @@ function PromptInput({
       <PromptInputStashNotice hasStash={stashedPrompt !== undefined} />
       {swarmBanner ? <>
           <Text color={swarmBanner.bgColor}>
-            {swarmBanner.text ? <>
-                {'─'.repeat(Math.max(0, columns - stringWidth(swarmBanner.text) - 4))}
+            {bannerText ? <>
+                {'─'.repeat(Math.max(0, columns - stringWidth(bannerText) - 4))}
                 <Text backgroundColor={swarmBanner.bgColor} color="inverseText">
                   {' '}
-                  {swarmBanner.text}{' '}
+                  {bannerText}{' '}
                 </Text>
                 {'──'}
               </> : '─'.repeat(columns)}

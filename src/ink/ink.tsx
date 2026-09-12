@@ -37,7 +37,7 @@ import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
 import { SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, SHOW_CURSOR } from './termio/dec.js';
+import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js';
 import { guiEditorModeDisableSeq, guiEditorModeRestoreSeq } from './termio/guiEditorHandoff.js';
 import { CLEAR_ITERM2_PROGRESS, CLEAR_TAB_STATUS, setClipboard, supportsTabStatus, wrapForMultiplexer } from './termio/osc.js';
 import { TerminalWriteProvider } from './useTerminalNotification.js';
@@ -992,6 +992,26 @@ export default class Ink {
   }
   get isAltScreenActive(): boolean {
     return this.altScreenActive;
+  }
+  // Official 2.1.269 (E23): `get nativeCursorSeq(){if(this.accessibilityMode||
+  // this.isScreenReaderEnabled)return"";return this.nativeCursorVisible?qk:Vk}`
+  // (s269.txt @3023727). qk = decset(CURSOR_VISIBLE) = SHOW_CURSOR and
+  // Vk = decreset(CURSOR_VISIBLE) = HIDE_CURSOR (s269.txt @26073764:
+  // `qk=G0($m.CURSOR_VISIBLE)`, `Vk=FV($m.CURSOR_VISIBLE)`, `$m.CURSOR_VISIBLE:25`).
+  // Appended to the alt-screen enter/exit writes by <AlternateScreen> so the
+  // native cursor visibility is re-asserted after the DEC 1049 switch, which
+  // some terminals treat as a cursor-state reset. Empty string in
+  // accessibility / screen-reader mode (official returns "" — never touch the
+  // cursor there).
+  get nativeCursorSeq(): string {
+    if (this.accessibilityMode || this.isScreenReaderEnabled) return '';
+    return this.nativeCursorVisible ? SHOW_CURSOR : HIDE_CURSOR;
+  }
+  // Official 2.1.269 (E23): `get hasUnmounted(){return this.isUnmounted}`
+  // (s269.txt @3023727 region). Read by <AlternateScreen>'s exit cleanup to
+  // skip the cursor re-assert once the instance has detached for shutdown.
+  get hasUnmounted(): boolean {
+    return this.isUnmounted;
   }
 
   /**

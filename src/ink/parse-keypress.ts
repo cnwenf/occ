@@ -6,20 +6,19 @@
  */
 import { Buffer } from 'buffer'
 import { PASTE_END, PASTE_START } from './termio/csi.js'
-import { createTokenizer, type Tokenizer } from './termio/tokenize.js'
+import { createTokenizer, type Token, type Tokenizer } from './termio/tokenize.js'
 
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const META_KEY_CODE_RE = /^(?:\x1b)([a-zA-Z0-9])$/
 
-// eslint-disable-next-line no-control-regex
 const FN_KEY_RE =
-  // eslint-disable-next-line no-control-regex
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
   /^(?:\x1b+)(O|N|\[|\[\[)(?:(\d+)(?:;(\d+))?([~^$])|(?:1;)?(\d+)?([a-zA-Z]))/
 
 // CSI u (kitty keyboard protocol): ESC [ codepoint [; modifier] u
 // Example: ESC[13;2u = Shift+Enter, ESC[27u = Escape (no modifiers)
 // Modifier is optional - when absent, defaults to 1 (no modifiers)
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+))?u/
 
 // xterm modifyOtherKeys: ESC [ 27 ; modifier ; keycode ~
@@ -27,41 +26,41 @@ const CSI_U_RE = /^\x1b\[(\d+)(?:;(\d+))?u/
 // modifyOtherKeys=2 is active or via user keybinds, typically over SSH where
 // TERM sniffing misses Ghostty and we never push Kitty keyboard mode.
 // Note param order is reversed vs CSI u (modifier first, keycode second).
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const MODIFY_OTHER_KEYS_RE = /^\x1b\[27;(\d+);(\d+)~/
 
 // -- Terminal response patterns (inbound sequences from the terminal itself) --
 // DECRPM: CSI ? Ps ; Pm $ y  — response to DECRQM (request mode)
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const DECRPM_RE = /^\x1b\[\?(\d+);(\d+)\$y$/
 // DA1: CSI ? Ps ; ... c  — primary device attributes response
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const DA1_RE = /^\x1b\[\?([\d;]*)c$/
 // DA2: CSI > Ps ; ... c  — secondary device attributes response
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const DA2_RE = /^\x1b\[>([\d;]*)c$/
 // Kitty keyboard flags: CSI ? flags u  — response to CSI ? u query
 // (private ? marker distinguishes from CSI u key events)
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const KITTY_FLAGS_RE = /^\x1b\[\?(\d+)u$/
 // DECXCPR cursor position: CSI ? row ; col R
 // The ? marker disambiguates from modified F3 keys (Shift+F3 = CSI 1;2 R,
 // Ctrl+F3 = CSI 1;5 R, etc.) — plain CSI row;col R is genuinely ambiguous.
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const CURSOR_POSITION_RE = /^\x1b\[\?(\d+);(\d+)R$/
 // OSC response: OSC code ; data (BEL|ST)
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const OSC_RESPONSE_RE = /^\x1b\](\d+);(.*?)(?:\x07|\x1b\\)$/s
 // XTVERSION: DCS > | name ST  — terminal name/version string (answer to CSI > 0 q).
 // xterm.js replies "xterm.js(X.Y.Z)"; Ghostty, kitty, iTerm2, etc. reply with
 // their own name. Unlike TERM_PROGRAM, this survives SSH since the query/reply
 // goes through the pty, not the environment.
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const XTVERSION_RE = /^\x1bP>\|(.*?)(?:\x07|\x1b\\)$/s
 // SGR mouse event: CSI < button ; col ; row M (press) or m (release)
 // Button codes: 64=wheel-up, 65=wheel-down (0x40 | wheel-bit).
 // Button 32=left-drag (0x20 | motion-bit). Plain 0/1/2 = left/mid/right click.
-// eslint-disable-next-line no-control-regex
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (terminal escape sequence)
 const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/
 
 function createPasteKey(content: string): ParsedKey {
@@ -210,6 +209,44 @@ function inputToString(input: Buffer | string): string {
   }
 }
 
+// Official 2.1.269 (E44): partial terminal-response predicate, ported from
+// the binary's `Ha` (x269 @193162377):
+//   Gf=/^\x1b\[<[\d;]*$/, v1=32; function Uf(n){return n.length<=v1&&Gf.test(n)}
+//   var b1=/^\x1b\[(?:[0-9:;]+|[<=>?][0-9:;]*[ -/]*)$/,
+//       g1=/^\x1b(?:\][0-9]|P[0-9>|$+=!]|_G)[^\x07]*$/s, S1=256, E1=64;
+//   function Ha(n){if(Gf.test(n))return Uf(n);if(g1.test(n))return n.length<=S1;
+//                  return n.length<=E1&&b1.test(n)}
+// A flush whose retained buffer still looks like an unfinished terminal
+// response (SGR mouse prefix, OSC/DCS/APC string, or CSI parameter body) is
+// a late-arriving reply to a mode/attributes query — not a keystroke. The
+// 2.1.268 baseline only knew the mouse-prefix shape (`Rr(n){return
+// n.length<=OS&&ly.test(n)}`); 2.1.269 extends the drop to the CSI and
+// OSC/DCS shapes with per-shape length caps so oversized garbage is still
+// flushed (and stays debuggable) instead of being silently swallowed.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (official 2.1.269 E44 Ha predicate)
+const MOUSE_PREFIX_RE = /^\x1b\[<[\d;]*$/
+const MOUSE_PREFIX_MAX = 32
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (official 2.1.269 E44 Ha predicate)
+const OSC_DCS_PARTIAL_RE = /^\x1b(?:\][0-9]|P[0-9>|$+=!]|_G)[^\x07]*$/s
+const OSC_DCS_PARTIAL_MAX = 256
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (official 2.1.269 E44 Ha predicate)
+const CSI_PARTIAL_RE = /^\x1b\[(?:[0-9:;]+|[<=>?][0-9:;]*[ -/]*)$/
+const CSI_PARTIAL_MAX = 64
+
+/**
+ * True when `buffer` is a plausible-but-incomplete terminal response:
+ * an SGR mouse prefix (`CSI <` + params, ≤32 chars), an unterminated
+ * OSC/DCS/APC string (≤256 chars), or a CSI parameter body with no final
+ * byte (≤64 chars). Official 2.1.269 (E44) `Ha`, byte-for-byte.
+ */
+export function isPartialTerminalResponse(buffer: string): boolean {
+  if (MOUSE_PREFIX_RE.test(buffer)) return buffer.length <= MOUSE_PREFIX_MAX
+  if (OSC_DCS_PARTIAL_RE.test(buffer)) {
+    return buffer.length <= OSC_DCS_PARTIAL_MAX
+  }
+  return buffer.length <= CSI_PARTIAL_MAX && CSI_PARTIAL_RE.test(buffer)
+}
+
 export function parseMultipleKeypresses(
   prevState: KeyParseState,
   input: Buffer | string | null = '',
@@ -220,8 +257,32 @@ export function parseMultipleKeypresses(
   // Get or create tokenizer
   const tokenizer = prevState._tokenizer ?? createTokenizer({ x10Mouse: true })
 
-  // Tokenize the input
-  const tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)
+  // Tokenize the input.
+  // Official 2.1.269 (E44) flush path (x269 @193165062):
+  //   if(c&&n.mode!=="IN_PASTE"){let F=h.buffer();
+  //     if(Ha(F))E=[];                             // partial response: drop, KEEP buffer
+  //     else if(Gf.test(F))h.reset(),p=F,E=[];     // oversized mouse prefix: drop + reset
+  //     else{if(F==="\x1B"||F==="\x1B[")b=F;E=h.flush()}}
+  //   else E=c?h.flush():h.feed(f);
+  // The Ha branch deliberately does NOT reset the tokenizer — the retained
+  // partial buffer lets a later feed complete the sequence. OCC has no
+  // droppedMousePrefix (`p`) / flushedEscapePrefix (`b`) state, so those
+  // side-channels are omitted (deviation): the oversized mouse prefix is
+  // still dropped + reset, the lone-ESC prefix marker is not recorded.
+  let tokens: Token[]
+  if (isFlush && prevState.mode !== 'IN_PASTE') {
+    const buffered = tokenizer.buffer()
+    if (isPartialTerminalResponse(buffered)) {
+      tokens = []
+    } else if (MOUSE_PREFIX_RE.test(buffered)) {
+      tokenizer.reset()
+      tokens = []
+    } else {
+      tokens = tokenizer.flush()
+    }
+  } else {
+    tokens = isFlush ? tokenizer.flush() : tokenizer.feed(inputString)
+  }
 
   // Convert tokens to parsed keys, handling paste mode
   const keys: ParsedInput[] = []

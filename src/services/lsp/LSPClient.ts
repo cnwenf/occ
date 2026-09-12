@@ -378,9 +378,33 @@ export function createLSPClient(
 
       try {
         if (connection) {
-          // Try to send shutdown request and exit notification
-          await connection.sendRequest('shutdown', {})
-          await connection.sendNotification('exit', {})
+          // Official 2.1.269 (E25): `exit` is sent even if `shutdown` fails.
+          // Binary evidence (s269 @27390521):
+          //   `let ee;try{await E.sendRequest("shutdown")}catch(se){ee=se}`
+          //   `try{await E.sendNotification("exit")}catch(se){throw ee??se}`
+          //   `if(ee!==void 0)throw ee`
+          // 2.1.268 sent both inside one try — a shutdown rejection skipped
+          // the exit notification entirely, leaving the server process
+          // waiting for an `exit` that never arrives.
+          // Divergences: OCC's MessageConnection type requires the params
+          // argument, so `{}` is kept (official passes none); the official
+          // optional shutdown-timeout wrapper (`Lt(b,m,...)`) is not ported
+          // because OCC's stop() takes no timeout parameter.
+          let shutdownRequestError: Error | undefined
+          try {
+            await connection.sendRequest('shutdown', {})
+          } catch (error) {
+            shutdownRequestError = error as Error
+          }
+          try {
+            await connection.sendNotification('exit', {})
+          } catch (error) {
+            // Official `throw ee??se` — shutdown error wins when both fail.
+            throw shutdownRequestError ?? error
+          }
+          if (shutdownRequestError !== undefined) {
+            throw shutdownRequestError
+          }
         }
       } catch (error) {
         const err = error as Error
