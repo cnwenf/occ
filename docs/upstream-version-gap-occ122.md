@@ -12,6 +12,8 @@
 
 **Verdict summary:** 8 LAND (E5, E9, E22, E23, E37, E42, E50, E59 — all byte-verified against the v268 ELF), 22 STAGED (surface exists in OCC but mechanism is opaque in the strings diff or subsystem-sized), 66 NO-OP (surface absent from OCC by design or mechanism not string-visible).
 
+**Round outcome (concurrent-round note):** while this round was in flight, the concurrent **OCC-83** round (PR #357, release `2.1.330`, `docs/upstream-version-gap-occ83.md`) independently triaged the same `2.1.268` upstream and landed its own 12-item subset — overlapping 5 of this round's 8 LAND items (**E5, E23, E37, E50, E59**; main's implementations were kept, this round's duplicate commits were dropped on rebase). OCC-83 explicitly deferred the other three as follow-ups — E09 as "optional compat item only" (per-hop 60 s timeout ≠ the official's overall-chain deadline + `EDEADLINE` + 303), E22 as "diff oauthPort next round if official added an ephemeral-port fallback" (it did), E42 as "full `Wge` parity is a separate self-contained follow-up". **This round therefore lands exactly those three deferred delta items — E9, E22, E42 — on top of main (`2.1.330`), released as `2.1.331`.** Sections 1–3 below preserve this round's original full triage (both rounds' triage was independently byte-verified against the same v268 ELF, sha256 `9691a2b7bd79…`; verdicts agree on all 96 entries modulo bucket labels).
+
 ---
 
 ## 1. Landed this round (byte-verified official implementations)
@@ -238,4 +240,26 @@ OCC surface: `src/utils/todoToolsAvailability.ts` (v267-shaped denylist + docume
 
 ## 4. Verification
 
-(to be filled after implementation: unit tests, build, lint, REPL e2e, `-p` roundtrip, `--version`)
+Final tree = origin/main (`2.1.330`, incl. the concurrent OCC-83 round) + this round's delta (E9 + E22 + E42 only; the 5 overlapping items E5/E23/E37/E50/E59 keep main's implementations).
+
+**Unit tests (rebased tree):**
+- Touched-area suites — `src/tools/WebFetchTool` + `sessionEndHooksBudget268` + `src/services/mcp` (18 files, incl. main's `dotlessHostname268.test.ts`): **219 pass / 0 fail**.
+- `src/tools` full dir: **600 pass / 0 fail** (49 files).
+- `src/utils` full dir: **1364 pass / 1 skip / 23 fail** (117 files). The 23 fails are pre-existing order-dependent `mock.module` interference in full-dir runs — proven by worktree A/B against clean origin/main (`git worktree add ../occ-baseline origin/main`): baseline shows the **identical 23-test failure set** (diff of fail names = empty; E63/mainThreadHookRegistration/agentHookTrust/sandboxRipgrepScope/autoMode207 families all pass in isolation — e.g. `mcpNeedsAuthNotice.test.ts` alone: 19/19). Zero new failures introduced by this round.
+- Rest of `src` (all dirs except utils/tools — incl. `src/services`, `src/commands`, `src/utils/gracefulShutdown` consumers): **827 pass / 0 fail** (99 files).
+- `test/` non-e2e (`commands`, `engine`, `services`, `tools`, `utils`, `launcher`): **334 pass / 0 fail** (34 files).
+- CI-gate e2e files `occ-versioning` + `commands-alignment`: **6 pass / 0 fail**.
+- Full `test/e2e` dir (live-model/tmux/PTY family): 10 fails observed before the 900s kill — all inside the 10 files OCC-83's ledger (§ verification) documents as environmental/pre-existing via its own git-stash A/B baseline (`repl-interactive`, `commands-behavior`, `workflow-save-dialog-config-dir`, `version-2.1.208-screen-reader`, `version-2.1.221-autocompact`, `version-2.1.210-plan-approval`, `resume-command-name`), with identical timing signatures (plan-approval 145s/147s, screen-reader 22s, resume 20s). No new failure family.
+
+**New tests this round (18):** `webfetchDeadline268.test.ts` (8 — deadline default/env/0-disable/INT32_MAX-cap/invalid-fallback, EDEADLINE labelling, caller-abort NOT re-labelled, 303-as-redirect) + `sessionEndHooksBudget268.test.ts` (10 — per-hook default/env/invalid-fallback; budget floor, env-wins-incl-`0`, invalid-env→config-scan, max-across-matchers, 60s ceiling, 1500ms floor, non-SessionEnd ignored). Both follow the OCC-97 `mock.module` leak discipline (spread real module + restore in `afterAll`).
+
+**Build / lint:** `bun run build` green — `dist/cli.js` 29.02 MB, `injected MACRO.VERSION=2.1.331`. `bun run lint` on the 7 changed files: clean ("Checked 7 files… No fixes applied."). (Repo-wide Biome noise in `src/bridge/bridgeMain.ts` and the ~1341 tsc errors are pre-existing and not CI gates.)
+
+**Live acceptance (built `dist/cli.js`, real API key):**
+- `./dist/cli.js --version` → `OCC 2.1.331`.
+- `echo "say PONG" | ./dist/cli.js -p` → PONG roundtrip, exit 0.
+- tmux interactive REPL: boots (`OCC v2.1.331` banner, What's-new feed renders), prompt roundtrip → `● PONG`, `/clear` exercises the E42 SessionEnd-budget path (no hang, tokens→0), `/exit` → clean session exit.
+
+**Security review (delta diff `origin/main...HEAD`):** no secrets/credentials added; no new network endpoints (only `example.com`/loopback fixtures in tests); no eval/dynamic-import/backdoor patterns; WebFetch keeps `redirectChecker` + `MAX_REDIRECTS` (deadline only adds an abort path; `303` widens the redirect set to the official one, still checker-gated); E22 ephemeral fallback binds `127.0.0.1` only and runs solely on the would-be-throw path; E42 budget capped at 60 s and floor 1500 ms, process failsafe derived `max(5000, budget+3500)`. Verdict: **APPROVE — no backdoor, no secret leak.**
+
+**Release:** version `2.1.331` (`package.json` + `CHANGELOG.md ## 2.1.331 - 2026-09-12 (OCC-122)`), tag `v2.1.331` → publish.yml → npm `@cnwenf/occ` latest + GitHub Release (verified post-push).

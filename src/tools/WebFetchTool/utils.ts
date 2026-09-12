@@ -5,6 +5,8 @@ import {
   logEvent,
 } from '../../services/analytics/index.js'
 import { queryHaiku } from '../../services/api/claude.js'
+import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { parseEnvInt } from '../../utils/envValidation.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
@@ -27,11 +29,30 @@ class DomainBlockedError extends Error {
 }
 
 class DomainCheckFailedError extends Error {
-  constructor(domain: string) {
+  // Official 2.1.268 adds the optional code param (v267 Ygt has none);
+  // 'EDEADLINE_PREFLIGHT' marks a preflight check cancelled by the deadline.
+  code: string | undefined
+
+  constructor(domain: string, code?: string) {
     super(
       `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
     )
     this.name = 'DomainCheckFailedError'
+    this.code = code
+  }
+}
+
+/**
+ * Transport-level WebFetch failure with a machine-readable code (official
+ * Ivt, present in v267+v268; 'EDEADLINE' carries the overall-deadline abort).
+ */
+export class WebFetchTransportError extends Error {
+  code: string | undefined
+
+  constructor(message: string, code?: string) {
+    super(message)
+    this.name = 'WebFetchTransportError'
+    this.code = code
   }
 }
 
@@ -134,6 +155,32 @@ const DOMAIN_CHECK_TIMEOUT_MS = 10_000
 // resets on every hop, hanging the tool until user interrupt. 10 matches
 // common client defaults (axios=5, follow-redirects=21, Chrome=20).
 const MAX_REDIRECTS = 10
+
+// Redirect statuses treated as followable. Official Wis (v267+v268) is
+// new Set([301,302,303,307,308]) — 303 included.
+const REDIRECT_STATUS_CODES: ReadonlySet<number> = new Set([
+  301, 302, 303, 307, 308,
+])
+
+// Overall fetch deadline (official 2.1.268: MYn=300000 default, xh=INT32_MAX
+// cap). Bounds the whole redirect chain, unlike the per-hop FETCH_TIMEOUT_MS.
+const WEBFETCH_DEADLINE_MS_DEFAULT = 300_000
+const MAX_DEADLINE_MS = 2_147_483_647
+
+/**
+ * Overall WebFetch deadline in ms (official $Yn). Env override
+ * `CLAUDE_CODE_WEBFETCH_DEADLINE_MS` wins (0 disables the deadline); values
+ * are capped at INT32_MAX. The official also consults the statsig gate
+ * `tengu_webfetch_deadline_ms` (default 300000) — OCC has no statsig, so the
+ * flag resolves to its default (same trim as prior rounds).
+ */
+export function getWebFetchDeadlineMs(): number {
+  const fromEnv = parseEnvInt(process.env.CLAUDE_CODE_WEBFETCH_DEADLINE_MS)
+  if (fromEnv !== undefined) {
+    return Math.min(fromEnv, MAX_DEADLINE_MS)
+  }
+  return WEBFETCH_DEADLINE_MS_DEFAULT
+}
 
 // Truncate to not spend too many tokens
 export const MAX_MARKDOWN_LENGTH = 100_000
@@ -296,13 +343,60 @@ export async function getWithPermittedRedirects(
   signal: AbortSignal,
   redirectChecker: (originalUrl: string, redirectUrl: string) => boolean,
   depth = 0,
+  deadlineSignal?: AbortSignal,
+): Promise<AxiosResponse<ArrayBuffer> | RedirectInfo> {
+  if (deadlineSignal !== undefined) {
+    return fetchWithRedirectChain(
+      url,
+      signal,
+      redirectChecker,
+      depth,
+      deadlineSignal,
+    )
+  }
+
+  // Official 2.1.268 (Gis): without an explicit deadline signal, wrap the
+  // whole redirect chain in an overall deadline. A deadline of 0 disables it
+  // — use a never-aborting controller, matching the official.
+  const deadlineMs = getWebFetchDeadlineMs()
+  if (deadlineMs === 0) {
+    return fetchWithRedirectChain(
+      url,
+      signal,
+      redirectChecker,
+      depth,
+      new AbortController().signal,
+    )
+  }
+  const deadline = createCombinedAbortSignal(undefined, {
+    timeoutMs: deadlineMs,
+  })
+  try {
+    return await fetchWithRedirectChain(
+      url,
+      signal,
+      redirectChecker,
+      depth,
+      deadline.signal,
+    )
+  } finally {
+    deadline.cleanup()
+  }
+}
+
+async function fetchWithRedirectChain(
+  url: string,
+  signal: AbortSignal,
+  redirectChecker: (originalUrl: string, redirectUrl: string) => boolean,
+  depth: number,
+  deadlineSignal: AbortSignal,
 ): Promise<AxiosResponse<ArrayBuffer> | RedirectInfo> {
   if (depth > MAX_REDIRECTS) {
     throw new Error(`Too many redirects (exceeded ${MAX_REDIRECTS})`)
   }
   try {
     return await axios.get(url, {
-      signal,
+      signal: AbortSignal.any([signal, deadlineSignal]),
       timeout: FETCH_TIMEOUT_MS,
       maxRedirects: 0,
       responseType: 'arraybuffer',
@@ -313,10 +407,20 @@ export async function getWithPermittedRedirects(
       },
     })
   } catch (error) {
+    // Official 2.1.268 (bWe): when the overall-deadline timer (not the
+    // caller's signal) cancelled the request, surface an EDEADLINE
+    // WebFetchTransportError.
+    if (axios.isCancel(error) && deadlineSignal.aborted && !signal.aborted) {
+      throw new WebFetchTransportError(
+        `Fetch did not complete within the ${getWebFetchDeadlineMs() / 1000}s deadline`,
+        'EDEADLINE',
+      )
+    }
+
     if (
       axios.isAxiosError(error) &&
       error.response &&
-      [301, 302, 307, 308].includes(error.response.status)
+      REDIRECT_STATUS_CODES.has(error.response.status)
     ) {
       const redirectLocation = error.response.headers.location
       if (!redirectLocation) {
@@ -328,11 +432,12 @@ export async function getWithPermittedRedirects(
 
       if (redirectChecker(url, redirectUrl)) {
         // Recursively follow the permitted redirect
-        return getWithPermittedRedirects(
+        return fetchWithRedirectChain(
           redirectUrl,
           signal,
           redirectChecker,
           depth + 1,
+          deadlineSignal,
         )
       } else {
         // Return redirect information to the caller
@@ -427,7 +532,10 @@ export async function getURLMarkdownContent(
         case 'blocked':
           throw new DomainBlockedError(hostname)
         case 'check_failed':
-          throw new DomainCheckFailedError(hostname)
+          throw new DomainCheckFailedError(
+            hostname,
+            axios.isCancel(checkResult.error) ? 'EDEADLINE_PREFLIGHT' : undefined,
+          )
       }
     }
 
