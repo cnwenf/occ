@@ -17,6 +17,7 @@ import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/anal
 import type { AnyObject, Tool, ToolPermissionContext } from '../../Tool.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { getCwd } from '../cwd.js'
+import { logForDebugging } from '../debug.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import {
   getFsImplementation,
@@ -46,11 +47,16 @@ import type {
 import type { PermissionRule, PermissionRuleSource } from './PermissionRule.js'
 import { createReadRuleSuggestion } from './PermissionUpdate.js'
 import type { PermissionUpdate } from './PermissionUpdateSchema.js'
-import { getRuleByContentsForToolName } from './permissions.js'
+import { getRuleListForToolName } from './permissions.js'
 import {
+  collapsePatternSlashes,
+  escapePatternPath,
   getOrInitPhysicalTwins,
   makePhysicalTwinsKey,
+  normalizeTrailingGlobstar,
   resolvePhysicalTwinPattern,
+  unescapePatternSegment,
+  unusablePatternReason,
 } from './symlinkEquivalences.js'
 
 declare const MACRO: { VERSION: string }
@@ -853,7 +859,17 @@ export function getFileReadIgnorePatterns(
   )
   const result = new Map<string | null, string[]>()
   for (const [patternRoot, { patternMap }] of matchersByRoot.entries()) {
-    result.set(patternRoot, Array.from(patternMap.keys()))
+    // Official 2.1.269 (E14) `TWe` (added.txt lazy-chunk region ~5,705,000:
+    // `r.set(s,Array.from(d.keys()).filter((m)=>!m.startsWith("!")))`) —
+    // negation patterns are match-scoping devices, not deniable paths
+    // themselves; they must not surface in the read-ignore pattern listing
+    // (consumed by searchTargetGate to hide blocked files).
+    result.set(
+      patternRoot,
+      Array.from(patternMap.keys()).filter(
+        pattern => !pattern.startsWith('!'),
+      ),
+    )
   }
 
   return result
@@ -936,12 +952,35 @@ function patternWithRoot(
 const MATCHER_RECOMPILE_THRESHOLD = 1e4
 const MATCHER_CACHE_MAX_ENTRIES = 16
 
-type CachedMatcherEntry = {
+/**
+ * Official 2.1.269 (E14) per-source matcher (verified in added.txt
+ * lazy-chunk region ~5,703,000–5,712,500, factory `A(D,F)`:
+ * `J={source:F,patternMap:P,getIg:()=>{...ee=pn.default().add(
+ * Array.from(P.keys(),(ce)=>Qn(ce,_)))...}}`).
+ *
+ * Each settings source that writes deny/ask rules gets its OWN matcher with
+ * its OWN ignore() instance, so a `!`-negation rule can only negate patterns
+ * compiled into the same matcher — i.e. patterns from the SAME source.
+ * Allow rules share a single matcher (source: null).
+ */
+type PerSourceMatcher = {
+  source: PermissionRuleSource | null
   patternMap: Map<string, PermissionRule>
   getIg: () => ReturnType<typeof ignore>
 }
 
-type CachedMatcherResult = Map<string | null, CachedMatcherEntry>
+/**
+ * Official 2.1.269 (E14) bucket: `q={patternMap:new Map,matchers:[]}`.
+ * `patternMap` is the bucket-level map (all sources merged) kept for
+ * consumers like the pattern listing in getFileReadIgnorePatterns (official
+ * TWe) and the `/**` deny-everything probe; `matchers` drives matching.
+ */
+type PatternBucket = {
+  patternMap: Map<string, PermissionRule>
+  matchers: PerSourceMatcher[]
+}
+
+type CachedMatcherResult = Map<string | null, PatternBucket>
 
 // WeakMap: rules object → (composite key → compiled matchers).
 // When the context is updated with new rules, a new rules object is created
@@ -959,6 +998,109 @@ function normalizeIgnorePattern(pattern: string): string {
     return /[^/]/.test(withoutSuffix) ? withoutSuffix : '/**'
   }
   return pattern
+}
+
+/** Official 2.1.269 (E14) bare-negation guard regex: `/^!\s*$/` (applied to
+ * the normalizeTrailingGlobstar'd pattern, deny/ask only). */
+const BARE_NEGATION_PATTERN = /^!\s*$/
+
+/**
+ * Official 2.1.269 (E14) `Zo` dedup state (raw-ELF offset ~184004524; class
+ * `cl` with `firstWarning(e,n)` keyed `` `${tag}\x00${pattern}` ``): each
+ * (tag, pattern) pair warns at most once per process.
+ */
+const warnedUnusablePatterns = new Set<string>()
+
+/**
+ * Official 2.1.269 (E14) `Zo` (raw-ELF offset ~184004524, byte-verified:
+ * `function Zo(e,n,r,s="treating it as matching nothing"){
+ *  if(!ul.firstWarning(e,n))return;
+ *  t(\`[${e}] gitignore-style pattern is unusable (${r}); ${s}: ${n}\`,
+ *    {level:"warn"}),
+ *  i("tengu_uncompilable_ignore_pattern",{site:hm[e]})}`).
+ *
+ * Deviation: the `tengu_uncompilable_ignore_pattern` analytics call is
+ * omitted — OCC's analytics are stubbed out (empty implementations).
+ */
+export function warnUnusablePermissionRule(
+  tag: string,
+  pattern: string,
+  reason: string,
+  action: string = 'treating it as matching nothing',
+): void {
+  const dedupKey = `${tag}\x00${pattern}`
+  if (warnedUnusablePatterns.has(dedupKey)) {
+    return
+  }
+  warnedUnusablePatterns.add(dedupKey)
+  logForDebugging(
+    `[${tag}] gitignore-style pattern is unusable (${reason}); ${action}: ${pattern}`,
+    { level: 'warn' },
+  )
+}
+
+/** Clear the unusable-pattern warning dedup set (test-only; official `cl.reset`). */
+export function _clearUnusablePatternWarningsForTesting(): void {
+  warnedUnusablePatterns.clear()
+}
+
+/**
+ * Official 2.1.269 (E14) `Ki` (added.txt lazy-chunk region ~5,705,000,
+ * byte-verified:
+ * `function Ki(e,n){let r=Qn(e,n),s=!n&&/^!\s*$/.test(r)
+ *  ?"a negation of every path":Ko(r);
+ *  if(s===null)return e;
+ *  let d=e.startsWith("!")?"!":"",m=d?!n:n;
+ *  if(Zo("permission_rules",e,s,m?"dropping it"
+ *    :"matching the literal path it spells"),m)return null;
+ *  let _=e.endsWith("/**")?"/**":"",
+ *      L=e.slice(d.length,e.length-_.length);
+ *  return d+Wne(yut(L))+_}`).
+ *
+ * Normalizes a rule pattern for use as an ignore-library key:
+ * - usable patterns are returned UNCHANGED;
+ * - a bare `!` deny/ask rule ("a negation of every path") is dropped;
+ * - a `!`-prefixed deny/ask rule that is otherwise unusable is dropped
+ *   (`m = d ? !n : n` → true);
+ * - an unusable pattern WITHOUT `!` on deny/ask, or WITH `!` on allow, is
+ *   escaped so it matches the literal path it spells (globs preserved:
+ *   official `Wne` called without `escapeGlobs`).
+ *
+ * Returns null when the rule must be dropped.
+ */
+export function normalizePermissionRulePattern(
+  pattern: string,
+  isAllow: boolean,
+): string | null {
+  const normalized = normalizeTrailingGlobstar(pattern, isAllow)
+  const reason =
+    !isAllow && BARE_NEGATION_PATTERN.test(normalized)
+      ? 'a negation of every path'
+      : unusablePatternReason(normalized)
+  if (reason === null) {
+    return pattern
+  }
+  const bangPrefix = pattern.startsWith('!') ? '!' : ''
+  const shouldDrop = bangPrefix ? !isAllow : isAllow
+  warnUnusablePermissionRule(
+    'permission_rules',
+    pattern,
+    reason,
+    shouldDrop ? 'dropping it' : 'matching the literal path it spells',
+  )
+  if (shouldDrop) {
+    return null
+  }
+  const globstarSuffix = pattern.endsWith('/**') ? '/**' : ''
+  const middle = pattern.slice(
+    bangPrefix.length,
+    pattern.length - globstarSuffix.length,
+  )
+  return (
+    bangPrefix +
+    escapePatternPath(unescapePatternSegment(middle), { escapeGlobs: false }) +
+    globstarSuffix
+  )
 }
 
 /**
@@ -1015,51 +1157,15 @@ function getCachedPatternMatchers(
     }
   }
 
-  // Build the patterns map (cache miss or 'allow' behavior)
-  const patternsByRoot = getPatternsByRoot(
+  // Build the buckets (cache miss or 'allow' behavior). Official 2.1.269
+  // (E14) `Zr` builds per-root buckets with per-source matchers (each with
+  // its own lazy ignore() instance) in one pass — mirrored in
+  // buildPatternBuckets below.
+  const result: CachedMatcherResult = buildPatternBuckets(
     toolPermissionContext,
     toolType,
     behavior,
   )
-
-  // Build the cached result with lazy ignore-matcher compilation
-  const result: CachedMatcherResult = new Map()
-  for (const [root, patternMap] of patternsByRoot.entries()) {
-    let ig: ReturnType<typeof ignore> | undefined
-    let useCount = 0
-    result.set(root, {
-      patternMap,
-      getIg: () => {
-        if (ig === undefined || ++useCount > MATCHER_RECOMPILE_THRESHOLD) {
-          useCount = 1
-          // 2.1.214 (M1): single-segment `dir/**` allow rules must anchor to the
-          // rule root, not match a same-named directory at any depth. The `ignore`
-          // library (gitignore semantics) treats a bare name (`dir`) as matching
-          // at ANY depth — so the old `normalizeIgnorePattern` strip turned
-          // `dir/**` into `dir`, silently auto-approving writes to
-          // `<cwd>/a/dir/secret.ts` (fail-open over-permission bypass).
-          //
-          // Fix: for `allow` only, pass the RAW pattern to `ignore`. A raw
-          // `dir/**` is already root-anchored by gitignore `**` semantics (it
-          // matches `<root>/dir/**` and rejects `<root>/nested/dir/**`), and the
-          // matched `rule.pattern` equals the patternMap key, so the lookup-back
-          // in matchingRuleForInput is unaffected.
-          //
-          // `deny`/`ask` KEEP any-depth matching per the official 2.1.214 spec,
-          // so they still go through `normalizeIgnorePattern` (bare-name form).
-          // NOTE: this matcher is also reached by hook `if:` conditions and the
-          // hook exit-2 / S24 path; those are intentionally untouched here
-          // (S24 is a separate Stage2 PR).
-          const patternsToAdd =
-            behavior === 'allow'
-              ? Array.from(patternMap.keys())
-              : Array.from(patternMap.keys(), normalizeIgnorePattern)
-          ig = ignore().add(patternsToAdd)
-        }
-        return ig
-      },
-    })
-  }
 
   // Cache store (deny/ask only)
   if (rulesObject !== null) {
@@ -1096,11 +1202,43 @@ export function _getMatcherCacheSizeForTesting(
 /** @internal — exported for cache-reuse testing. */
 export { getCachedPatternMatchers as _getCachedPatternMatchersForTesting }
 
-function getPatternsByRoot(
+/**
+ * Official 2.1.269 (E14) `Zr` core (added.txt lazy-chunk region
+ * ~5,706,000–5,709,000, byte-verified). Builds per-root buckets, each
+ * holding a bucket-level patternMap plus one matcher PER SETTINGS SOURCE
+ * (allow rules share a single source:null matcher):
+ *
+ * `A=(D,F)=>{let q=R.get(D);if(q===void 0)q={patternMap:new Map,matchers:[]},
+ *  R.set(D,q);
+ *  let J=q.matchers.find((P)=>P.source===F);
+ *  if(J===void 0){let P=new Map,ee,ae=0;
+ *    J={source:F,patternMap:P,getIg:()=>{
+ *      if(ee===void 0||++ae>rh)ae=1,
+ *        ee=pn.default().add(Array.from(P.keys(),(ce)=>Qn(ce,_)))};
+ *    return ee},q.matchers.push(J)}
+ *  return{bucket:q,matcher:J}}`
+ *
+ * Rule loop (byte-verified):
+ * `let ee=_?null:D.source,{bucket:ae,matcher:ce}=A(J,ee);
+ *  if(!_)ce.patternMap.delete(P);
+ *  if(ce.patternMap.set(P,D),ae.patternMap.set(P,D),_||J===null)continue;`
+ * — deny/ask keys are the Ki-normalized pattern `P=Ki(hn(q),_)`; dropped
+ * rules (`P===null`) are skipped; allow rules dedup by ruleContent up front
+ * (`x=_?Array.from(new Map(L.map((D)=>[D.ruleValue.ruleContent,D])).values()):L`).
+ *
+ * Deviation (documented, pre-existing): the per-matcher `getIg` keeps OCC's
+ * 2.1.214 M1 add-logic — allow adds RAW keys (root-anchored `dir/**`
+ * semantics), deny/ask go through normalizeIgnorePattern (= official
+ * `Qn(pattern, false)`) — instead of the official uniform `Qn(ce,_)`. The M1
+ * form is self-consistent with OCC's lookup-back in matchingRuleForInput and
+ * fixes a fail-open any-depth allow bypass; E14 only changes the matcher
+ * GRANULARITY (per-source), not the per-matcher compile semantics.
+ */
+function buildPatternBuckets(
   toolPermissionContext: ToolPermissionContext,
   toolType: 'edit' | 'read',
   behavior: 'allow' | 'deny' | 'ask',
-): Map<string | null, Map<string, PermissionRule>> {
+): CachedMatcherResult {
   const toolName = (() => {
     switch (toolType) {
       case 'edit':
@@ -1112,22 +1250,95 @@ function getPatternsByRoot(
     }
   })()
 
-  const rules = getRuleByContentsForToolName(
+  const isAllow = behavior === 'allow'
+  // Official 2.1.269 (E14) `Xn` → rule LIST (same content from different
+  // sources stays separate); allow dedups by ruleContent, deny/ask do not.
+  const rulesList = getRuleListForToolName(
     toolPermissionContext,
     toolName,
     behavior,
   )
-  // Resolve rules relative to path based on source
-  const patternsByRoot = new Map<string | null, Map<string, PermissionRule>>()
-  for (const [pattern, rule] of rules.entries()) {
-    const { relativePattern, root } = patternWithRoot(pattern, rule.source)
-    let patternsForRoot = patternsByRoot.get(root)
-    if (patternsForRoot === undefined) {
-      patternsForRoot = new Map<string, PermissionRule>()
-      patternsByRoot.set(root, patternsForRoot)
+  const rules = isAllow
+    ? Array.from(
+        new Map(
+          rulesList.map(rule => [rule.ruleValue.ruleContent, rule]),
+        ).values(),
+      )
+    : rulesList
+
+  const bucketsByRoot = new Map<string | null, PatternBucket>()
+
+  // Official `A(D,F)` factory: get-or-create the bucket for a root and the
+  // matcher for (bucket, source).
+  const getMatcher = (
+    root: string | null,
+    source: PermissionRuleSource | null,
+  ): { bucket: PatternBucket; matcher: PerSourceMatcher } => {
+    let bucket = bucketsByRoot.get(root)
+    if (bucket === undefined) {
+      bucket = { patternMap: new Map(), matchers: [] }
+      bucketsByRoot.set(root, bucket)
     }
-    // Store the rule keyed by the root
-    patternsForRoot.set(relativePattern, rule)
+    let matcher = bucket.matchers.find(candidate => candidate.source === source)
+    if (matcher === undefined) {
+      const patternMap = new Map<string, PermissionRule>()
+      let ig: ReturnType<typeof ignore> | undefined
+      let useCount = 0
+      matcher = {
+        source,
+        patternMap,
+        getIg: () => {
+          if (ig === undefined || ++useCount > MATCHER_RECOMPILE_THRESHOLD) {
+            useCount = 1
+            // 2.1.214 (M1): single-segment `dir/**` allow rules must anchor to
+            // the rule root, not match a same-named directory at any depth —
+            // allow adds RAW keys; deny/ask keep any-depth matching via
+            // normalizeIgnorePattern (bare-name form). See the deviation note
+            // on buildPatternBuckets above.
+            const patternsToAdd = isAllow
+              ? Array.from(patternMap.keys())
+              : Array.from(patternMap.keys(), normalizeIgnorePattern)
+            ig = ignore().add(patternsToAdd)
+          }
+          return ig
+        },
+      }
+      bucket.matchers.push(matcher)
+    }
+    return { bucket, matcher }
+  }
+
+  // Resolve rules relative to path based on source
+  for (const rule of rules) {
+    const ruleContent = rule.ruleValue.ruleContent
+    if (ruleContent === undefined) {
+      continue
+    }
+    const { relativePattern, root } = patternWithRoot(ruleContent, rule.source)
+    // Official 2.1.269 (E14): `P=Ki(hn(q),_)` — slash-collapse, then the
+    // bare-`!` guard + literal-`!` normalization pipeline.
+    const pattern = normalizePermissionRulePattern(
+      collapsePatternSlashes(relativePattern),
+      isAllow,
+    )
+    if (pattern === null) {
+      continue
+    }
+    // Official: `ee=_?null:D.source` — allow rules share one matcher;
+    // deny/ask matchers are keyed to their OWN settings source so `!`
+    // negation cannot cross sources.
+    const matcherSource = isAllow ? null : rule.source
+    const { bucket, matcher } = getMatcher(root, matcherSource)
+    // Official: `if(!_)ce.patternMap.delete(P)` — within one matcher a later
+    // deny/ask rule wins over an earlier same-pattern rule.
+    if (!isAllow) {
+      matcher.patternMap.delete(pattern)
+    }
+    matcher.patternMap.set(pattern, rule)
+    bucket.patternMap.set(pattern, rule)
+    if (isAllow || root === null) {
+      continue
+    }
 
     // 2.1.268 (E13): physical-twin registration for deny/ask rules on
     // symlinked directories. Official Yr: `if(L||q===null)continue` (L is
@@ -1136,29 +1347,28 @@ function getPatternsByRoot(
     // state on Bl) so it persists across matcher recompiles and accumulates.
     // Twins register under root "/" (official Ie) ADDITIVELY — they never
     // replace or overwrite an existing literal pattern entry
-    // (`if(!oe.has(ue))oe.set(ue,D)`).
-    if (behavior === 'allow' || root === null) {
-      continue
-    }
-    const twins = getOrInitPhysicalTwins(
-      makePhysicalTwinsKey(root, relativePattern),
-    )
-    const twin = resolvePhysicalTwinPattern(root, relativePattern)
+    // (`if(!oe.has(ue))oe.set(ue,D)`). Official 2.1.269 (E14): twins go into
+    // the SAME-SOURCE matcher (`let ue=A(Ie,ee)`), preserving per-source
+    // negation scoping for twin patterns too.
+    const twins = getOrInitPhysicalTwins(makePhysicalTwinsKey(root, pattern))
+    const twin = resolvePhysicalTwinPattern(root, pattern)
     if (twin !== null) {
       twins.add(twin)
     }
     for (const twinPattern of twins) {
-      let rootSlashPatterns = patternsByRoot.get(DIR_SEP)
-      if (rootSlashPatterns === undefined) {
-        rootSlashPatterns = new Map<string, PermissionRule>()
-        patternsByRoot.set(DIR_SEP, rootSlashPatterns)
+      const { bucket: twinBucket, matcher: twinMatcher } = getMatcher(
+        DIR_SEP,
+        matcherSource,
+      )
+      if (!twinMatcher.patternMap.has(twinPattern)) {
+        twinMatcher.patternMap.set(twinPattern, rule)
       }
-      if (!rootSlashPatterns.has(twinPattern)) {
-        rootSlashPatterns.set(twinPattern, rule)
+      if (!twinBucket.patternMap.has(twinPattern)) {
+        twinBucket.patternMap.set(twinPattern, rule)
       }
     }
   }
-  return patternsByRoot
+  return bucketsByRoot
 }
 
 export function matchingRuleForInput(
@@ -1180,10 +1390,24 @@ export function matchingRuleForInput(
     behavior,
   )
 
-  // Check each root for a matching pattern
-  for (const [root, { patternMap, getIg }] of matchersByRoot.entries()) {
-    const ig = getIg()
-
+  // Check each root for a matching pattern.
+  // Official 2.1.269 (E14) `zi` (added.txt lazy-chunk region ~5,711,000,
+  // byte-verified):
+  // `for(let[R,{matchers:A}]of _.entries()){...
+  //   for(let q=A.length-1;q>=0;q--){let J=A[q];if(J===void 0)continue;
+  //     let{patternMap:P,getIg:ee}=J,ae=ee().test(F);
+  //     if(!ae.ignored||!ae.rule)continue;
+  //     let ce=ae.rule.pattern,re=ce+"/**";
+  //     if(P.has(re)&&(ce.includes("/")||s!=="allow"))return P.get(re)??null;
+  //     if(ce.startsWith("/")){let _e=ce.slice(1)+"/**";
+  //       if(P.has(_e))return P.get(_e)??null}
+  //     let ye=P.get(ce);
+  //     if(ye!==void 0||s==="allow")return ye??null}}return null`
+  // — each root's per-source matchers are walked LAST-FIRST (later sources
+  // win), and a deny/ask lookup miss continues to the next matcher instead of
+  // returning null, so a `!` rule in one source can only un-match patterns
+  // compiled into the SAME source's matcher.
+  for (const [root, { matchers }] of matchersByRoot.entries()) {
     // Use cross-platform relative path helper for POSIX-style patterns
     const relativePathStr = relativePath(
       root ?? getCwd(),
@@ -1200,19 +1424,45 @@ export function matchingRuleForInput(
       continue
     }
 
-    const igResult = ig.test(relativePathStr)
+    for (let i = matchers.length - 1; i >= 0; i--) {
+      const matcher = matchers[i]
+      if (matcher === undefined) {
+        continue
+      }
+      const { patternMap, getIg } = matcher
+      const igResult = getIg().test(relativePathStr)
 
-    if (igResult.ignored && igResult.rule) {
+      if (!igResult.ignored || !igResult.rule) {
+        continue
+      }
+
       // Map the matched pattern back to the original rule
       const originalPattern = igResult.rule.pattern
 
       // Check if this was a /** pattern we simplified
       const withWildcard = originalPattern + '/**'
-      if (patternMap.has(withWildcard)) {
+      if (
+        patternMap.has(withWildcard) &&
+        (originalPattern.includes('/') || behavior !== 'allow')
+      ) {
         return patternMap.get(withWildcard) ?? null
       }
 
-      return patternMap.get(originalPattern) ?? null
+      // Official: root-anchored matched patterns map back to the
+      // leading-slash-stripped `/**` key (allow's M1 raw-key form can
+      // produce `/dir` style matches).
+      if (originalPattern.startsWith('/')) {
+        const withoutLeadingSlash = originalPattern.slice(1) + '/**'
+        if (patternMap.has(withoutLeadingSlash)) {
+          return patternMap.get(withoutLeadingSlash) ?? null
+        }
+      }
+
+      const rule = patternMap.get(originalPattern)
+      if (rule !== undefined || behavior === 'allow') {
+        return rule ?? null
+      }
+      // Official E14: deny/ask lookup miss → continue to the next matcher.
     }
   }
 

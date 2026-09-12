@@ -404,6 +404,64 @@ export function getBuiltInCommandByName(name: string): Command | undefined {
   return COMMANDS().find(_ => _.name === name || _.aliases?.includes(name))
 }
 
+/**
+ * Official 2.1.269 (E52): name-safety gate applied before interpolating a
+ * skill name into a user-facing message. Byte-verified from the official ELF
+ * (offset 185026272):
+ *   zIt=/[\x00-\x1f\x7f-\x9f\u2028\u2029<>]/;
+ *   function Pee(e){return e.length>0&&e.length<=256&&!zIt.test(e)}
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (official 2.1.269 Pee name-safety gate)
+const UNSAFE_SKILL_NAME_CHARS_RE = /[\x00-\x1f\x7f-\x9f\u2028\u2029<>]/
+const MAX_SAFE_SKILL_NAME_LENGTH = 256
+
+export function isSkillNameSafeToDisplay(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name.length <= MAX_SAFE_SKILL_NAME_LENGTH &&
+    !UNSAFE_SKILL_NAME_CHARS_RE.test(name)
+  )
+}
+
+/**
+ * Official 2.1.269 (E52): result of resolving a bare skill name against
+ * plugin-qualified (`plugin:skill`) command names.
+ */
+export type PluginSkillFullNameMatch =
+  | { kind: 'none' }
+  | { kind: 'unique'; command: Command }
+  | { kind: 'ambiguous'; candidates: Command[] }
+
+/**
+ * Official 2.1.269 (E52): resolve a bare skill name to plugin skills whose
+ * full name ends with `:<query>`. Byte-verified from js269.txt (offset
+ * 1277648):
+ *   function Oun(e,n){if(e===""||e.includes(":"))return{kind:"none"};
+ *     let r=`:${e}`,s=n.filter((m)=>m.type==="prompt"&&
+ *       m.loadedFrom!=="syncedSkills"&&m.name.endsWith(r));
+ *     if(s.length>1)return{kind:"ambiguous",candidates:s};
+ *     let d=s[0];if(d===void 0||d.source!=="plugin")return{kind:"none"};
+ *     return{kind:"unique",command:d}}
+ * Deviation: the official `loadedFrom!=="syncedSkills"` guard is omitted —
+ * OCC's `loadedFrom` union (types/command.ts) has no 'syncedSkills' source,
+ * so the condition would always be true.
+ */
+export function findPluginSkillFullNameMatch(
+  query: string,
+  commands: Command[],
+): PluginSkillFullNameMatch {
+  if (query === '' || query.includes(':')) return { kind: 'none' }
+  const suffix = `:${query}`
+  const matches = commands.filter(
+    cmd => cmd.type === 'prompt' && cmd.name.endsWith(suffix),
+  )
+  if (matches.length > 1) return { kind: 'ambiguous', candidates: matches }
+  const unique = matches[0]
+  if (unique === undefined || unique.source !== 'plugin')
+    return { kind: 'none' }
+  return { kind: 'unique', command: unique }
+}
+
 async function getSkills(cwd: string): Promise<{
   skillDirCommands: Command[]
   pluginSkills: Command[]

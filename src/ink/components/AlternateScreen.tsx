@@ -47,12 +47,25 @@ export function AlternateScreen(t0) {
       if (!writeRaw) {
         return;
       }
-      writeRaw(ENTER_ALT_SCREEN + "\x1B[2J\x1B[H" + (mouseTracking ? ENABLE_MOUSE_TRACKING : ""));
+      // Official 2.1.269 (E23): enter write is
+      // `r(t.set("altScreen")+t.set("mouse",m)+(n?.nativeCursorSeq??""))`
+      // (s269.txt @19106858) — the native-cursor re-assert is appended after
+      // alt-screen + mouse so the cursor visibility survives the DEC 1049
+      // switch. 2.1.268's enter (s268.txt @25038396) had no cursor seq.
+      writeRaw(ENTER_ALT_SCREEN + "\x1B[2J\x1B[H" + (mouseTracking ? ENABLE_MOUSE_TRACKING : "") + (ink?.nativeCursorSeq ?? ""));
       ink?.setAltScreenActive(true, mouseTracking);
       return () => {
         ink?.setAltScreenActive(false);
         ink?.clearTextSelection();
-        writeRaw((mouseTracking ? DISABLE_MOUSE_TRACKING : "") + EXIT_ALT_SCREEN);
+        // Official 2.1.269 (E23): exit cleanup is
+        // `F=t.reset("mouse"); x=t.reset("altScreen");
+        //  q=x!==""&&!n?.hasUnmounted; G=q?t.reassert("extendedKeys"):"";
+        //  H=q?n?.nativeCursorSeq??"":"; r(F+x+G+H)` (s269.txt @19106858).
+        // OCC maps: EXIT_ALT_SCREEN is a non-empty constant, so `q` reduces to
+        // `!ink?.hasUnmounted`. G (extendedKeys re-assert) pre-existed in
+        // 2.1.268's exit and stays in Ink.reassertTerminalModes here.
+        const cursorSeq = !ink?.hasUnmounted ? ink?.nativeCursorSeq ?? "" : "";
+        writeRaw((mouseTracking ? DISABLE_MOUSE_TRACKING : "") + EXIT_ALT_SCREEN + cursorSeq);
       };
     };
     t3 = [writeRaw, mouseTracking];

@@ -342,7 +342,8 @@ export async function generateSuggestion(
     const contentArr = Array.isArray(msg.message.content) ? msg.message.content as Array<{ type: string; text?: string }> : []
     const textBlock = contentArr.find(b => b.type === 'text')
     if (textBlock?.type === 'text' && typeof textBlock.text === 'string') {
-      const suggestion = textBlock.text.trim()
+      // Official 2.1.269 (E51): strip meta wrappers/labels before use.
+      const suggestion = stripSuggestionMeta(textBlock.text)
       if (suggestion) {
         return { suggestion, generationRequestId }
       }
@@ -350,6 +351,86 @@ export async function generateSuggestion(
   }
 
   return { suggestion: null as (string | null), generationRequestId }
+}
+
+// Official 2.1.269 (E51): meta-label strip chain, byte-verified from the
+// official bundle (js269 `ums`): unwrap <suggestion>…</suggestion>-style tags
+// (unless the inner text itself contains a closing tag), then strip a leading
+// "Suggestion:"-style label. 2.1.269 adds CJK/Korean labels
+// (提案|回答|返信|応答|出力|結果|建议|回复|答案|输出|结果|제안|답변|응답|출력|결과)
+// and accepts the fullwidth colon (：) in addition to ASCII ':'.
+export function stripSuggestionMeta(text: string): string {
+  return text
+    .trim()
+    .replace(
+      /^<(suggestion|response|output|answer|result)>([\s\S]*)<\/\1>$/i,
+      (match, tag: string, inner: string) =>
+        inner.includes(`</${tag.toLowerCase()}>`) ||
+        inner.includes(`</${tag.toUpperCase()}>`)
+          ? match
+          : inner,
+    )
+    .replace(
+      /^\s*(suggested\s+(response|reply|input|prompt)|suggestion|response|reply|answer|output|result|提案|回答|返信|応答|出力|結果|建议|回复|答案|输出|结果|제안|답변|응답|출력|결과)\s*[:：]\s*/i,
+      '',
+    )
+    .trim()
+}
+
+// Official 2.1.269 (E27): CJK/Thai-aware script classification for word
+// counting. Byte-verified from the official bundle (js269 offset ~3565483):
+//   var nms=/\p{Script=Han}/u,
+//       rms=/[\p{Script=Hiragana}\p{Script=Katakana}ーｰ\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u,
+//       oms=/\p{Script=Hangul}/u, sms=/[\p{L}\p{N}]/u;
+const HAN_SCRIPT_RE = /\p{Script=Han}/u
+const PHONETIC_SCRIPT_RE =
+  /[\p{Script=Hiragana}\p{Script=Katakana}ーｰ\p{Script=Thai}\p{Script=Lao}\p{Script=Khmer}\p{Script=Myanmar}]/u
+const HANGUL_SCRIPT_RE = /\p{Script=Hangul}/u
+const LETTER_NUMBER_RE = /[\p{L}\p{N}]/u
+
+interface ScriptCounts {
+  han: number
+  phonetic: number
+  hangul: number
+  other: number
+}
+
+// Official 2.1.269 (E27): YQn — per-character script classification.
+function classifyScripts(text: string): ScriptCounts {
+  let han = 0
+  let phonetic = 0
+  let hangul = 0
+  let other = 0
+  for (const char of text) {
+    if (HAN_SCRIPT_RE.test(char)) han++
+    else if (PHONETIC_SCRIPT_RE.test(char)) phonetic++
+    else if (HANGUL_SCRIPT_RE.test(char)) hangul++
+    else if (LETTER_NUMBER_RE.test(char)) other++
+  }
+  return { han, phonetic, hangul, other }
+}
+
+// Official 2.1.269 (E27): VQn — total CJK character count.
+function countCjkCharacters(text: string): number {
+  const { han, phonetic, hangul } = classifyScripts(text)
+  return han + phonetic + hangul
+}
+
+// Official 2.1.269 (E27): KQn — word count where han count double-weighted
+// (2 chars ≈ 1 word) and kana quadruple-weighted (4 chars ≈ 1 word); mixed
+// script tokens add 1 for the non-CJK remainder.
+function countSuggestionWords(text: string): number {
+  const trimmed = text.trim()
+  if (trimmed === '') return 0
+  let total = 0
+  for (const token of trimmed.split(/\s+/)) {
+    const { han, phonetic, hangul, other } = classifyScripts(token)
+    total +=
+      han === 0 && phonetic === 0
+        ? 1
+        : (other + hangul > 0 ? 1 : 0) + han / 2 + phonetic / 4
+  }
+  return Math.ceil(total)
 }
 
 export function shouldFilterSuggestion(
@@ -363,10 +444,21 @@ export function shouldFilterSuggestion(
   }
 
   const lower = suggestion.toLowerCase()
-  const wordCount = suggestion.trim().split(/\s+/).length
+  // Official 2.1.269 (E27): CJK/Thai-aware word count (was whitespace split).
+  const wordCount = countSuggestionWords(suggestion)
 
   const filters: Array<[string, () => boolean]> = [
-    ['done', () => lower === 'done'],
+    // Official 2.1.269 (E27): 'done' also matches CJK completions —
+    // /^\P{L}*(完了(しました)?|完成了?|완료됨?)\P{L}*$/u (official bytes use
+    // \u escapes: 完了(しました)?|完成了?|완료됨?)
+    [
+      'done',
+      () =>
+        lower === 'done' ||
+        /^\P{L}*(完了(しました)?|完成了?|완료됨?)\P{L}*$/u.test(
+          suggestion,
+        ),
+    ],
     [
       'meta_text',
       () =>
@@ -377,12 +469,21 @@ export function shouldFilterSuggestion(
         // Model spells out the prompt's "stay silent" instruction
         /\bsilence is\b|\bstay(s|ing)? silent\b/.test(lower) ||
         // Model outputs bare "silence" wrapped in punctuation/whitespace
-        /^\W*silence\W*$/.test(lower),
+        /^\W*silence\W*$/.test(lower) ||
+        // Official 2.1.269 (E27): CJK/Korean "silence"/"no suggestion" spellings
+        // (沈黙|沉默|静默|침묵|提案(なし|はありません)|特に(なし|ありません)|[无没沒]有?建[议議]|(제안|해당) 없음)
+        /^\P{L}*(沈黙|沉默|静默|침묵|提案(なし|はありません)|特に(なし|ありません)|[无没沒]有?建[议議]|(제안|해당)\s*없음)\P{L}*$/u.test(
+          suggestion,
+        ),
     ],
     [
       'meta_wrapped',
       // Model wraps meta-reasoning in parens/brackets: (silence — ...), [no suggestion]
-      () => /^\(.*\)$|^\[.*\]$/.test(suggestion),
+      // Official 2.1.269 (E27): also fullwidth/CJK brackets （） ［］ 【】 〔〕
+      () =>
+        /^(\(.*\)|\[.*\]|（.*）|［.*］|【.*】|〔.*〕)$/.test(
+          suggestion,
+        ),
     ],
     [
       'error_message',
@@ -400,7 +501,12 @@ export function shouldFilterSuggestion(
         if (wordCount >= 2) return false
         // Allow slash commands — these are valid user commands
         if (suggestion.startsWith('/')) return false
+        // Official 2.1.269 (E27): CJK characters count individually — a single
+        // han/kana/hangul char is too few, two or more are enough.
+        const cjkCount = countCjkCharacters(suggestion)
+        if (cjkCount > 0) return cjkCount < 2
         // Allow common single-word inputs that are valid user commands
+        // (whitelist byte-identical to official 2.1.269)
         const ALLOWED_SINGLE_WORDS = new Set([
           // Affirmatives
           'yes',
@@ -428,19 +534,36 @@ export function shouldFilterSuggestion(
     ],
     ['too_many_words', () => wordCount > 12],
     ['too_long', () => suggestion.length >= 100],
-    ['multiple_sentences', () => /[.!?]\s+[A-Z]/.test(suggestion)],
+    // Official 2.1.269 (E27): also CJK sentence terminators 。！？
+    [
+      'multiple_sentences',
+      () =>
+        /[.!?]\s+[A-Z]|[。！？]\s*[\p{L}\p{N}]/u.test(suggestion),
+    ],
     ['has_formatting', () => /[\n*]|\*\*/.test(suggestion)],
     [
       'evaluative',
       () =>
         /thanks|thank you|looks good|sounds good|that works|that worked|that's all|nice|great|perfect|makes sense|awesome|excellent/.test(
           lower,
+        ) ||
+        // Official 2.1.269 (E27): CJK/Korean thanks
+        // (ありがとう(ございます|ございました)?|助かりました|[谢謝][谢謝][你您]?|感谢[你您]?|感謝します|감사합니다|고마워요?)
+        /^\P{L}*(ありがとう(ございます|ございました)?|助かりました|[谢謝][谢謝][你您]?|感谢[你您]?|感謝します|감사합니다|고마워요?)(\P{L}|的|$)/u.test(
+          suggestion,
+        ) ||
+        // Official 2.1.269 (E27): CJK/Japanese praise
+        // ((良さそう|よさそう|いいですね|看起来不错|太好了|完璧|完美|좋네요)(です|ですね|だね)?)
+        /(良さそう|よさそう|いいですね|看起来不错|太好了|完璧|完美|좋네요)(です|ですね|だね)?\P{L}*$/u.test(
+          suggestion,
         ),
     ],
     [
       'claude_voice',
       () =>
-        /^(let me|i'll|i've|i'm|i can|i would|i think|i notice|here's|here is|here are|that's|this is|this will|you can|you should|you could|sure,|of course|certainly)/i.test(
+        // Official 2.1.269 (E27): also Chinese Claude-voice openers
+        // 让我(?!们)|我来|我会|我将
+        /^(let me|i'll|i've|i'm|i can|i would|i think|i notice|here's|here is|here are|that's|this is|this will|you can|you should|you could|sure,|of course|certainly|让我(?!们)|我来|我会|我将)/i.test(
           suggestion,
         ),
     ],
