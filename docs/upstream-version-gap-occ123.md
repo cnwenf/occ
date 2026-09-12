@@ -306,5 +306,11 @@ Keyboard-protocol fixes (kitty/rxvt-unicode/WezTerm/st/GNOME/Konsole), DA-reply 
 
 **Live smoke (real API key, `ANTHROPIC_BASE_URL=https://dashscope.aliyuncs.com/apps/anthropic`):** `echo "say PONG" | bun dist/cli.js -p` → `PONG`, exit 0; tmux REPL boot + model round-trip green; `bun run build` green (`dist/cli.js` 29.03 MB); `bun dist/cli.js --version` → `OCC 2.1.331` (pre-bump); Biome lint clean for every file edited this round (37 pre-existing errors elsewhere untouched).
 
-**Release 2.1.332:** merge to `main` → CHANGELOG + `package.json` bump → tag `v2.1.332` → `publish.yml` (build → npm publish → GitHub Release). Verification results (npm dist-tag, releases/tags parity) recorded in the OCC-123 issue comment and appended below after publish.
+**Release 2.1.332:** merge to `main` → CHANGELOG + `package.json` bump → tag `v2.1.332` → `publish.yml` (build → npm publish → GitHub Release). Verification (npm dist-tag, releases/tags parity, branch cleanup):
+
+- Merged: PR #361 → `main` merge commit `7a7b22d` (2026-09-13); remote agent branch deleted — `gh api repos/cnwenf/occ/branches` shows only `main`.
+- Tag `v2.1.332` on `7a7b22d`; `publish.yml` run 34717002623 completed **success** (verify shebang → set version from tag → strip workspace deps → publish → create GitHub Release).
+- npm: `@cnwenf/occ` version = `2.1.332`, `dist-tags.latest` = `2.1.332`.
+- GitHub Release: https://github.com/cnwenf/occ/releases/tag/v2.1.332
+- Releases/tags parity: 132 releases = 132 tags; `comm -23 tags releases` gap = 0.
 
