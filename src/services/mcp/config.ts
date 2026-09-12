@@ -43,6 +43,7 @@ import {
 } from '../analytics/index.js'
 import { fetchClaudeAIMcpConfigsIfEligible } from './claudeai.js'
 import { expandEnvVarsInString } from './envExpansion.js'
+import { registerAuthoredUnexpandedConfig } from './redaction.js'
 import {
   type ConfigScope,
   type McpHTTPServerConfig,
@@ -921,10 +922,15 @@ export function getProjectMcpConfigsFromCwd(): {
 /**
  * Get all MCP configurations from a specific scope
  * @param scope The configuration scope
+ * @param options.expandVars Expand `${VAR}` env placeholders in server configs
+ *   (default true). CC 2.1.268 E16: display paths re-parse with
+ *   `expandVars: false` (the binary's `fu(scope, {expandVars:!1})`) so the
+ *   AUTHORED templates — not the resolved secrets — are shown.
  * @returns Servers with scope information and any validation errors
  */
 export function getMcpConfigsByScope(
   scope: 'project' | 'user' | 'local' | 'enterprise',
+  options?: { expandVars?: boolean },
 ): {
   servers: Record<string, ScopedMcpServerConfig>
   errors: ValidationError[]
@@ -963,7 +969,7 @@ export function getMcpConfigsByScope(
 
         const { config, errors } = parseMcpConfigFromFilePath({
           filePath: mcpJsonPath,
-          expandVars: true,
+          expandVars: options?.expandVars ?? true,
           scope: 'project',
         })
 
@@ -1005,7 +1011,7 @@ export function getMcpConfigsByScope(
 
       const { config, errors } = parseMcpConfig({
         configObject: { mcpServers },
-        expandVars: true,
+        expandVars: options?.expandVars ?? true,
         scope: 'user',
       })
 
@@ -1022,7 +1028,7 @@ export function getMcpConfigsByScope(
 
       const { config, errors } = parseMcpConfig({
         configObject: { mcpServers },
-        expandVars: true,
+        expandVars: options?.expandVars ?? true,
         scope: 'local',
       })
 
@@ -1036,7 +1042,7 @@ export function getMcpConfigsByScope(
 
       const { config, errors } = parseMcpConfigFromFilePath({
         filePath: enterpriseMcpPath,
-        expandVars: true,
+        expandVars: options?.expandVars ?? true,
         scope: 'enterprise',
       })
 
@@ -1762,6 +1768,15 @@ export function parseDynamicMcpConfig(params: {
     }
     let serverConfig: McpServerConfig = validated
     if (expandVars) {
+      // CC 2.1.268 E16: keep the AUTHORED (unexpanded) copy so display paths
+      // can show `${VAR}` templates instead of resolved secrets. Dynamic
+      // servers have no re-parseable on-disk form (the binary re-parses via
+      // `fu(scope, {expandVars:!1})`), so they are registered here at parse
+      // time and looked up through `getAuthoredUnexpandedRegistry()`.
+      registerAuthoredUnexpandedConfig(name, {
+        ...validated,
+        scope,
+      } as ScopedMcpServerConfig)
       const { expanded, missingVars, urlExpandedToEmpty } =
         expandEnvVars(validated)
       if (missingVars.length > 0) {

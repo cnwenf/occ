@@ -13,7 +13,8 @@ import { AuthenticationCancelledError, captureServerTokenData, performMCPOAuthFl
 import { reauthenticateWithSafeOrdering } from '../../services/mcp/reauthOrdering.js';
 import { clearServerCache } from '../../services/mcp/client.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
-import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer } from '../../services/mcp/utils.js';
+import { getDisplayConfig, redactMcpErrorDetail } from '../../services/mcp/redaction.js';
+import { describeMcpConfigFilePath, excludeCommandsByServer, excludeResourcesByServer, excludeToolsByServer, filterMcpPromptsByServer, resolveUnexpandedMcpServers } from '../../services/mcp/utils.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import { getOauthAccountInfo } from '../../utils/auth.js';
 import { openBrowser } from '../../utils/browser.js';
@@ -54,6 +55,17 @@ export function MCPRemoteServerMenu({
   } = useTerminalSize();
   const [isAuthenticating, setIsAuthenticating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  // CC 2.1.268 E16: render the URL from the DISPLAY copy (binary `Be` path) —
+  // the authored `${VAR}` template, or the sanitized fallback — never the
+  // expanded config's resolved secrets. Scope is pinned from the prop (same
+  // `{...server.config, scope: server.scope}` shape clearServerCache uses) so
+  // the unexpanded re-parse can find the server.
+  const scopedConfig = React.useMemo(() => ({
+    ...server.config,
+    scope: server.scope ?? server.config.scope
+  }), [server.config, server.scope]);
+  const displayConfig = React.useMemo(() => getDisplayConfig(server.name, scopedConfig, resolveUnexpandedMcpServers), [server.name, scopedConfig]);
+  const displayUrl = 'url' in displayConfig ? displayConfig.url : '';
   const mcp = useAppState(s => s.mcp);
   const setAppState = useSetAppState();
   const [authorizationUrl, setAuthorizationUrl] = React.useState<string | null>(null);
@@ -302,7 +314,9 @@ export function MCPRemoteServerMenu({
     } catch (err_1) {
       // Don't show error if it was a cancellation
       if (err_1 instanceof Error && !(err_1 instanceof AuthenticationCancelledError)) {
-        setError(err_1.message);
+        // CC 2.1.268 E16 (changelog: "MCP login errors"): redact secrets
+        // resolved from `${VAR}` placeholders before the message is rendered.
+        setError(redactMcpErrorDetail(server.name, scopedConfig, err_1.message, resolveUnexpandedMcpServers));
       }
     } finally {
       setIsAuthenticating(false);
@@ -574,7 +588,7 @@ export function MCPRemoteServerMenu({
 
           <Box>
             <Text bold>URL: </Text>
-            <Text dimColor>{server.config.url}</Text>
+            <Text dimColor>{displayUrl}</Text>
           </Box>
 
           <Box>

@@ -148,16 +148,28 @@ export function isPathAllowed(
   const permissionType = operationType === 'read' ? 'read' : 'edit'
 
   // 1. Check deny rules first (they take precedence)
-  const denyRule = matchingRuleForInput(
-    resolvedPath,
-    context,
-    permissionType,
-    'deny',
-  )
-  if (denyRule !== null) {
-    return {
-      allowed: false,
-      decisionReason: { type: 'rule', rule: denyRule },
+  // 2.1.268 (E13): deny rules apply on EVERY symlink spelling of the path —
+  // the input loop below mirrors the official multi-spelling deny iteration
+  // (gc/uc) and checkReadPermissionForTool steps 3-4. Combined with the
+  // physical-twin registration in filesystem.ts getPatternsByRoot, a deny
+  // rule written on either the symlinked spelling (/etc/**) or the real
+  // location (/private/etc/**) catches a path given by the other.
+  // precomputedPathsToCheck is only passed when resolvedPath is already
+  // canonical (single spelling), so the loop degenerates safely there.
+  const pathsToCheck =
+    precomputedPathsToCheck ?? getPathsForPermissionCheck(resolvedPath)
+  for (const pathToCheck of pathsToCheck) {
+    const denyRule = matchingRuleForInput(
+      pathToCheck,
+      context,
+      permissionType,
+      'deny',
+    )
+    if (denyRule !== null) {
+      return {
+        allowed: false,
+        decisionReason: { type: 'rule', rule: denyRule },
+      }
     }
   }
 

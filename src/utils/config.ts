@@ -211,6 +211,12 @@ export type GlobalConfig = {
   // but an org-configured connector that's been needs-auth since day one is
   // something the user has demonstrably ignored and shouldn't nag about.
   claudeAiMcpEverConnected?: string[]
+  // CC 2.1.268 E63: MCP servers already announced by the "N MCP servers need
+  // authentication" startup notice (official `mcpNeedsAuthNoticed`). Each
+  // server is announced once; entries are pruned when the server connects and
+  // the list is capped to the last 128 names (official `Z5t`). See
+  // utils/mcpNeedsAuthNotice.ts.
+  mcpNeedsAuthNoticed?: string[]
   preferredNotifChannel: NotificationChannel
   /**
    * @deprecated. Use the Notification hook instead (docs/hooks.md).

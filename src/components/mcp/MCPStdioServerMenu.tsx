@@ -5,7 +5,8 @@ import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithK
 import { Box, color, Text, useTheme } from '../../ink.js';
 import { getMcpConfigByName } from '../../services/mcp/config.js';
 import { useMcpReconnect, useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js';
-import { describeMcpConfigFilePath, filterMcpPromptsByServer } from '../../services/mcp/utils.js';
+import { getDisplayConfig } from '../../services/mcp/redaction.js';
+import { describeMcpConfigFilePath, filterMcpPromptsByServer, resolveUnexpandedMcpServers } from '../../services/mcp/utils.js';
 import { useAppState } from '../../state/AppState.js';
 import { errorMessage } from '../../utils/errors.js';
 import { capitalize } from '../../utils/stringUtils.js';
@@ -41,6 +42,15 @@ export function MCPStdioServerMenu({
   const reconnectMcpServer = useMcpReconnect();
   const toggleMcpServer = useMcpToggleEnabled();
   const [isReconnecting, setIsReconnecting] = useState(false);
+  // CC 2.1.268 E16: render Command/Args from the DISPLAY copy (binary `Be`
+  // path) — authored `${VAR}` templates, or the sanitized fallback — never
+  // the expanded config's resolved secrets.
+  const displayConfig = React.useMemo(() => getDisplayConfig(server.name, {
+    ...server.config,
+    scope: server.config.scope ?? 'dynamic'
+  }, resolveUnexpandedMcpServers), [server.name, server.config]);
+  const displayCommand = 'command' in displayConfig ? displayConfig.command : '';
+  const displayArgs = 'command' in displayConfig && Array.isArray(displayConfig.args) ? displayConfig.args : [];
   const handleToggleEnabled = React.useCallback(async () => {
     const wasEnabled = server.client.type !== 'disabled';
     try {
@@ -114,12 +124,12 @@ export function MCPStdioServerMenu({
 
           <Box>
             <Text bold>Command: </Text>
-            <Text dimColor>{server.config.command}</Text>
+            <Text dimColor>{displayCommand}</Text>
           </Box>
 
-          {server.config.args && server.config.args.length > 0 && <Box>
+          {displayArgs.length > 0 && <Box>
               <Text bold>Args: </Text>
-              <Text dimColor>{server.config.args.join(' ')}</Text>
+              <Text dimColor>{displayArgs.join(' ')}</Text>
             </Box>}
 
           <Box>

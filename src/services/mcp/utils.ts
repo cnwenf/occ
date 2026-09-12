@@ -13,8 +13,18 @@ import {
   hasSkipDangerousModePermissionPrompt,
 } from '../../utils/settings/settings.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
-import { getEnterpriseMcpFilePath, getMcpConfigByName } from './config.js'
+import {
+  getEnterpriseMcpFilePath,
+  getMcpConfigByName,
+  getMcpConfigsByScope,
+} from './config.js'
 import { mcpInfoFromString } from './mcpStringUtils.js'
+import {
+  getAuthoredUnexpandedRegistry,
+  getMcpErrorEndpoint,
+  redactMcpErrorDetail,
+  type UnexpandedScopeResolver,
+} from './redaction.js'
 import { normalizeNameForMCP } from './normalization.js'
 import {
   type ConfigScope,
@@ -487,45 +497,86 @@ export function isUnconfiguredMcpServer(
 }
 
 /**
- * CC 2.1.218 #5: Extract the human-readable failure message from a failed MCP
- * server connection result. Mirrors the binary's `TQo(e)` exactly:
- *   - named codes (INVALID_CONFIG, UNCONFIGURED, …) → `error ?? errorCode`
- *   - numeric HTTP status (100–599) → `HTTP <status>` (+ ` at <url>`)
- *   - `"23"` → `request timed out` (+ ` at <url>`)
- *   - otherwise → `error ?? ""`
+ * CC 2.1.268 E16: resolver for AUTHORED (unexpanded) server configs per scope —
+ * the OCC equivalent of the binary's `fu(scope, {expandVars:!1}).servers`
+ * (`S`/`Be` @23569500/@32803400). File-backed scopes re-parse their configs
+ * with `expandVars: false`; dynamic-scope servers (`--mcp-config`, plugin
+ * servers) have no re-parseable form, so their authored copies come from the
+ * parse-time registry in `redaction.ts`. claudeai/managed/unknown scopes
+ * resolve to undefined (callers fall back to the sanitized display path).
+ */
+export const resolveUnexpandedMcpServers: UnexpandedScopeResolver = scope => {
+  if (scope === 'dynamic') {
+    const registry = getAuthoredUnexpandedRegistry()
+    return registry.size === 0 ? undefined : Object.fromEntries(registry)
+  }
+  if (
+    scope !== 'local' &&
+    scope !== 'user' &&
+    scope !== 'project' &&
+    scope !== 'enterprise'
+  )
+    return undefined
+  return getMcpConfigsByScope(scope, { expandVars: false }).servers
+}
+
+/**
+ * Binary `d(e)` inside `kUt` @25249900: human-readable error-code label —
+ *   function d(e){let o=Number(e);return e==="23"?"request timed out"
+ *     :Number.isInteger(o)&&o>=100&&o<=599?`HTTP ${e}`:e}
+ */
+function formatErrorCode(errorCode: string): string {
+  const numeric = Number(errorCode)
+  return errorCode === '23'
+    ? 'request timed out'
+    : Number.isInteger(numeric) && numeric >= 100 && numeric <= 599
+      ? `HTTP ${errorCode}`
+      : errorCode
+}
+
+/**
+ * CC 2.1.268 E16: Extract the human-readable failure message from a failed
+ * MCP server connection result. Mirrors the binary's `kUt(e)` @25249900
+ * (the 268 replacement of 218's `TQo`):
+ *   function kUt(e){let o=bV(e.name,e.config,{detail:"origin"}),n=e.errorCode,
+ *     s=(r)=>wp(e.name,e.config,r);
+ *     if(n!==void 0&&a.has(n))return e.error!==void 0?s(e.error):n;
+ *     if(n){let r=d(n);return o?`${r} at ${o}`:r}
+ *     return e.error!==void 0?s(e.error):""}
  *
- * Binary evidence (s21218.txt):
- *   TQo(e){let t="url"in e.config?e.config.url:null,r=e.errorCode;
- *     if(r==="INVALID_CONFIG"||r==="UNCONFIGURED"||r==="AUTH_HEADER_REJECTED"
- *        ||r==="CLI_OWNED_BEARER_REJECTED"||r==="FIRST_PARTY_AUTH_REJECTED"
- *        ||r==="ENDPOINT_NOT_FOUND")return e.error??r;
- *     if(r){let n=Number(r),o=r==="23"?"request timed out"
- *        :Number.isInteger(n)&&n>=100&&n<=599?`HTTP ${r}`:r;
- *        return t?`${o} at ${t}`:o}
- *     return e.error??""}
+ * vs the 218 `TQo` this replaces two leaks:
+ *   - the ` at <url>` suffix used the RAW EXPANDED config url; 268 uses
+ *     `bV(…, {detail:"origin"})` — origin-only, authored-template-aware, and
+ *     undefined (suffix dropped) when the scope is known but no authored
+ *     unexpanded copy matches;
+ *   - the free-text `error` is passed through `wp` (redactMcpErrorDetail),
+ *     replacing secrets resolved from `${VAR}` placeholders with `[redacted]`.
  */
 export function getMcpServerFailureMessage(
   result: FailedMCPServer,
 ): string {
+  const endpoint = getMcpErrorEndpoint(
+    result.name,
+    result.config,
+    { detail: 'origin' },
+    resolveUnexpandedMcpServers,
+  )
   const errorCode = result.errorCode
-  if (errorCode && NAMED_FAILURE_ERROR_CODES.has(errorCode)) {
-    return result.error ?? errorCode
+  const redact = (errorText: string): string =>
+    redactMcpErrorDetail(
+      result.name,
+      result.config,
+      errorText,
+      resolveUnexpandedMcpServers,
+    )
+  if (errorCode !== undefined && NAMED_FAILURE_ERROR_CODES.has(errorCode)) {
+    return result.error !== undefined ? redact(result.error) : errorCode
   }
   if (errorCode) {
-    const numeric = Number(errorCode)
-    const message =
-      errorCode === '23'
-        ? 'request timed out'
-        : Number.isInteger(numeric) && numeric >= 100 && numeric <= 599
-          ? `HTTP ${errorCode}`
-          : errorCode
-    const url =
-      'url' in result.config && typeof result.config.url === 'string'
-        ? result.config.url
-        : null
-    return url ? `${message} at ${url}` : message
+    const message = formatErrorCode(errorCode)
+    return endpoint ? `${message} at ${endpoint}` : message
   }
-  return result.error ?? ''
+  return result.error !== undefined ? redact(result.error) : ''
 }
 
 /**

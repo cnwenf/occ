@@ -26,9 +26,13 @@ function truncationMarker(chars: number): string {
 
 /**
  * First `length` chars, never ending on a dangling high surrogate
- * (official `ce`).
+ * (official `ce`; named `re` in the 2.1.268 binary — same body. The official
+ * wraps the result in a utf16le Buffer round-trip (`Re`), which is an identity
+ * for all code units, so it is omitted here).
+ *
+ * Exported for reuse by the memdir entrypoint truncator (2.1.268 E52).
  */
-function sliceHead(value: string, length: number): string {
+export function sliceHead(value: string, length: number): string {
   if (length <= 0) return ''
   if (value.length <= length) return value
   const head = value.slice(0, length)

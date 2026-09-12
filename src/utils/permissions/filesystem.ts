@@ -47,6 +47,11 @@ import type { PermissionRule, PermissionRuleSource } from './PermissionRule.js'
 import { createReadRuleSuggestion } from './PermissionUpdate.js'
 import type { PermissionUpdate } from './PermissionUpdateSchema.js'
 import { getRuleByContentsForToolName } from './permissions.js'
+import {
+  getOrInitPhysicalTwins,
+  makePhysicalTwinsKey,
+  resolvePhysicalTwinPattern,
+} from './symlinkEquivalences.js'
 
 declare const MACRO: { VERSION: string }
 
@@ -1123,6 +1128,35 @@ function getPatternsByRoot(
     }
     // Store the rule keyed by the root
     patternsForRoot.set(relativePattern, rule)
+
+    // 2.1.268 (E13): physical-twin registration for deny/ask rules on
+    // symlinked directories. Official Yr: `if(L||q===null)continue` (L is
+    // isAllow) — allow rules and null-root rules get NO twins. The twin set
+    // is memoized per `${root}\x00${pattern}` (official physicalTwinsByPattern
+    // state on Bl) so it persists across matcher recompiles and accumulates.
+    // Twins register under root "/" (official Ie) ADDITIVELY — they never
+    // replace or overwrite an existing literal pattern entry
+    // (`if(!oe.has(ue))oe.set(ue,D)`).
+    if (behavior === 'allow' || root === null) {
+      continue
+    }
+    const twins = getOrInitPhysicalTwins(
+      makePhysicalTwinsKey(root, relativePattern),
+    )
+    const twin = resolvePhysicalTwinPattern(root, relativePattern)
+    if (twin !== null) {
+      twins.add(twin)
+    }
+    for (const twinPattern of twins) {
+      let rootSlashPatterns = patternsByRoot.get(DIR_SEP)
+      if (rootSlashPatterns === undefined) {
+        rootSlashPatterns = new Map<string, PermissionRule>()
+        patternsByRoot.set(DIR_SEP, rootSlashPatterns)
+      }
+      if (!rootSlashPatterns.has(twinPattern)) {
+        rootSlashPatterns.set(twinPattern, rule)
+      }
+    }
   }
   return patternsByRoot
 }

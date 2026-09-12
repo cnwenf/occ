@@ -10,7 +10,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growt
 import { isEnvTruthy } from '../utils/envUtils.js';
 import { count } from '../utils/array.js';
 import sample from 'lodash-es/sample.js';
-import { formatDuration, formatNumber, formatSecondsShort } from '../utils/format.js';
+import { formatDuration, formatNumber, formatSecondsShort, truncateToWidthNoEllipsis } from '../utils/format.js';
 import type { Theme } from 'src/utils/theme.js';
 import { activityManager } from '../utils/activityManager.js';
 import { getSpinnerVerbs } from '../constants/spinnerVerbs.js';
@@ -22,6 +22,7 @@ import { useAppState } from '../state/AppState.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { getDefaultCharacters, type SpinnerMode } from './Spinner/index.js';
+import { collapseWhitespace, computeSpinnerVerbWidth, computeTodoLabel } from './Spinner/utils.js';
 import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
@@ -177,7 +178,11 @@ function SpinnerWithVerbInner({
   const [randomVerb] = useState(() => sample(getSpinnerVerbs()));
 
   // Leader's own verb (always the leader's, regardless of who is foregrounded)
-  const leaderVerb = overrideMessage ?? currentTodo?.activeForm ?? currentTodo?.subject ?? randomVerb;
+  // CC 2.1.268 E32: a long todo label stays within one terminal row —
+  // official: ft=mt?[mt.activeForm,mt.subject].map(W=>W?.replace(/\s+/g," ").trim()).find(Boolean):void 0,
+  // jt=(g??(ft===void 0?void 0:xA(ft,Math.max(40,ot-8)))??(k||wt))+"…"
+  const leaderTodoLabel = currentTodo ? computeTodoLabel(currentTodo) : undefined;
+  const leaderVerb = overrideMessage ?? (leaderTodoLabel === undefined ? undefined : truncateToWidthNoEllipsis(leaderTodoLabel, computeSpinnerVerbWidth(columns))) ?? randomVerb;
   const effectiveVerb = foregroundedTeammate && !foregroundedTeammate.isIdle ? foregroundedTeammate.spinnerVerb ?? randomVerb : leaderVerb;
   const message = effectiveVerb + '…';
 
@@ -304,8 +309,12 @@ function SpinnerWithVerbInner({
               <Text dimColor>{budgetText}</Text>
             </MessageResponse>}
           {(nextTask || effectiveTip) && <MessageResponse>
-              <Text dimColor>
-                {nextTask ? `Next: ${nextTask.subject}` : `Tip: ${effectiveTip}`}
+              {/* CC 2.1.268 E32: official renders the Next: line with
+                  wrap:"truncate-end" (subject whitespace-collapsed) so it
+                  never wraps to a second row; the Tip line keeps wrap:"wrap"
+                  (`wrap:it?"truncate-end":"wrap"`, it=nextTask). */}
+              <Text dimColor wrap={nextTask ? 'truncate-end' : 'wrap'}>
+                {nextTask ? `Next: ${collapseWhitespace(nextTask.subject)}` : `Tip: ${effectiveTip}`}
               </Text>
             </MessageResponse>}
         </Box> : null}

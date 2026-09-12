@@ -7,6 +7,7 @@ import { getHistory } from '../history.js';
 import { Text } from '../ink.js';
 import type { PromptInputMode } from '../types/textInputTypes.js';
 import type { HistoryEntry, PastedContent } from '../utils/config.js';
+import { computeHistoryEdited } from './historyEdited.js';
 export type HistoryMode = PromptInputMode;
 
 // Load history entries in chunks to reduce disk reads on rapid keypresses
@@ -16,7 +17,7 @@ const HISTORY_CHUNK_SIZE = 10;
 // Mode filter is included to ensure we don't mix filtered and unfiltered caches
 let pendingLoad: Promise<HistoryEntry[]> | null = null;
 let pendingLoadTarget = 0;
-let pendingLoadModeFilter: HistoryMode | undefined = undefined;
+let pendingLoadModeFilter: HistoryMode | undefined ;
 async function loadHistoryEntries(minCount: number, modeFilter?: HistoryMode): Promise<HistoryEntry[]> {
   // Round up to next chunk to avoid repeated small reads
   const target = Math.ceil(minCount / HISTORY_CHUNK_SIZE) * HISTORY_CHUNK_SIZE;
@@ -62,6 +63,7 @@ async function loadHistoryEntries(minCount: number, modeFilter?: HistoryMode): P
 }
 export function useArrowKeyHistory(onSetInput: (value: string, mode: HistoryMode, pastedContents: Record<number, PastedContent>) => void, currentInput: string, pastedContents: Record<number, PastedContent>, setCursorOffset?: (offset: number) => void, currentMode?: HistoryMode): {
   historyIndex: number;
+  historyEdited: boolean;
   setHistoryIndex: (index: number) => void;
   onHistoryUp: () => void;
   onHistoryDown: () => boolean;
@@ -87,6 +89,12 @@ export function useArrowKeyHistory(onSetInput: (value: string, mode: HistoryMode
   // React state updates are async, so rapid keypresses can see stale values
   const historyIndexRef = useRef(0);
 
+  // CC 2.1.268 E26: official `no=A(null)` — the last value set by history
+  // navigation (written in the official input setter `ao`:
+  // `no.current=Cn,P(Cn,No,nn,…)`; cleared in resetHistory `no.current=null`).
+  // Compared against the current input to derive `historyEdited`.
+  const recalledValueRef = useRef<string | null>(null);
+
   // Track the mode filter that was active when history navigation started
   // This is set on the first arrow press and stays fixed until reset
   const initialModeFilterRef = useRef<HistoryMode | undefined>(undefined);
@@ -102,6 +110,9 @@ export function useArrowKeyHistory(onSetInput: (value: string, mode: HistoryMode
   pastedContentsRef.current = pastedContents;
   currentModeRef.current = currentMode;
   const setInputWithCursor = useCallback((value: string, mode: HistoryMode, contents: Record<number, PastedContent>, cursorToStart = false): void => {
+    // CC 2.1.268 E26: official `ao` records every history-set value
+    // (`no.current=Cn`) before forwarding it to the input.
+    recalledValueRef.current = value;
     onSetInput(value, mode, contents);
     setCursorOffset?.(cursorToStart ? 0 : value.length);
   }, [onSetInput, setCursorOffset]);
@@ -210,6 +221,9 @@ export function useArrowKeyHistory(onSetInput: (value: string, mode: HistoryMode
     setHistoryIndex(0);
     historyIndexRef.current = 0;
     initialModeFilterRef.current = undefined;
+    // CC 2.1.268 E26: official resetHistory clears the recalled value
+    // (`no.current=null`).
+    recalledValueRef.current = null;
     removeNotification('search-history-hint');
     historyCache.current = [];
     historyCacheModeFilter.current = undefined;
@@ -219,6 +233,10 @@ export function useArrowKeyHistory(onSetInput: (value: string, mode: HistoryMode
   }, [removeNotification]);
   return {
     historyIndex,
+    // CC 2.1.268 E26: official `historyEdited:xe>0&&we!==no.current` —
+    // historyIndex state > 0 and the current input differs from the value
+    // last set by history navigation (i.e. the recalled prompt was edited).
+    historyEdited: computeHistoryEdited(historyIndex, currentInput, recalledValueRef.current),
     setHistoryIndex,
     onHistoryUp,
     onHistoryDown,

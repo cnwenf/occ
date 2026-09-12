@@ -32,7 +32,10 @@ import {
 } from '../../utils/auth.js'
 import { saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { isRunningOnHomespace } from '../../utils/envUtils.js'
+import {
+  getClaudeConfigHomeDir,
+  isRunningOnHomespace,
+} from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { createSignInHyperlink } from '../../utils/hyperlink.js'
 import { logError } from '../../utils/log.js'
@@ -318,6 +321,11 @@ export async function authStatus(opts: {
       loggedIn,
       authMethod,
       apiProvider,
+      // CC 2.1.268 (E05): `claude auth status --json` gained configDirectory.
+      // The official 268 builder orders it after apiProvider (with
+      // analyticsDisabled/projectsDirectory in between — fields OCC doesn't
+      // expose, so configDirectory follows apiProvider directly).
+      configDirectory: getClaudeConfigHomeDir(),
     }
     if (resolvedApiKeySource) {
       output.apiKeySource = resolvedApiKeySource
