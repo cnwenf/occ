@@ -100,3 +100,42 @@ export function parseRGB(colorStr: string): RGBColorType | null {
   RGB_CACHE.set(colorStr, result)
   return result
 }
+
+/**
+ * CC 2.1.268 E32: the spinner verb label must stay within one terminal row.
+ * Official 2.1.268 spinner component (byte-verified from the binary):
+ *
+ *   ft=mt?[mt.activeForm,mt.subject]
+ *         .map((W)=>W?.replace(/\s+/g," ").trim()).find(Boolean):void 0,
+ *   jt=(g??(ft===void 0?void 0:xA(ft,Math.max(40,ot-8)))??(k||wt))+"…"
+ *
+ * where `mt` is the current todo, `g` the override message, `ot` the terminal
+ * columns, `xA` the grapheme-aware width truncator (OCC:
+ * `truncateToWidthNoEllipsis`, shape-identical), and the `Next:` line renders
+ * `` `Next: ${it.subject.replace(/\s+/g," ").trim()}` `` inside a
+ * `wrap:"truncate-end"` Text (vs `wrap:"wrap"` for the Tip line).
+ */
+
+/** Official `.replace(/\s+/g," ").trim()` — collapse whitespace runs to one space. */
+export function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Official `ft` — first non-empty of [activeForm, subject] after whitespace
+ * collapse; `undefined` when there is no current todo (or both fields are
+ * empty). The `?.` in the official map short-circuits missing values.
+ */
+export function computeTodoLabel(todo: {
+  activeForm?: string
+  subject: string
+}): string | undefined {
+  return [todo.activeForm, todo.subject]
+    .map(value => (value === undefined ? undefined : collapseWhitespace(value)))
+    .find(Boolean)
+}
+
+/** Official `Math.max(40,ot-8)` — spinner verb label width budget. */
+export function computeSpinnerVerbWidth(columns: number): number {
+  return Math.max(40, columns - 8)
+}

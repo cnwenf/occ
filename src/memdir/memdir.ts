@@ -30,6 +30,8 @@ import { isEnvTruthy } from '../utils/envUtils.js'
 import { formatFileSize } from '../utils/format.js'
 import { getProjectDir } from '../utils/sessionStorage.js'
 import { getInitialSettings } from '../utils/settings/settings.js'
+import { countCharInString } from '../utils/stringUtils.js'
+import { sliceHead } from '../utils/truncateMiddle.js'
 import {
   MEMORY_FRONTMATTER_EXAMPLE,
   TRUSTING_RECALL_SECTION,
@@ -114,14 +116,58 @@ export type EntrypointTruncation = {
 }
 
 /**
+ * Which kind of memory content is being truncated (official 2.1.267+ `ynt`
+ * second parameter, `n="index"`): the MEMORY.md index or an individual memory
+ * file. Selects the warning wording ("index entries are too long" /
+ * "its lines are too long") and the closing advice sentence.
+ */
+export type MemoryTruncationKind = 'index' | 'memory'
+
+/** Max chars of the first cut line quoted in the truncation warning (official `Kte(A,80)`). */
+const CUT_LINE_PREVIEW_MAX = 80
+
+/**
+ * Word-boundary truncation with an ellipsis — official 2.1.268 `Kte`:
+ *   function Kte(e,n){if(e.length<=n)return e;let r=re(e,n-1),
+ *     i=r.search(/\s\S*$/),o=i===-1?"":r.slice(0,i).trimEnd();
+ *     return`${o.length>n/2?o:r.trimEnd()}…`}
+ * `re` is OCC's `sliceHead` (surrogate-safe head slice). Cuts at the start of
+ * the trailing partial word when that keeps more than half of `max` chars;
+ * otherwise falls back to the raw head. Always appends `…`.
+ */
+export function truncatePreviewAtWordBoundary(
+  value: string,
+  max: number,
+): string {
+  if (value.length <= max) return value
+  const head = sliceHead(value, max - 1)
+  const lastWordStart = head.search(/\s\S*$/)
+  const beforeLastWord =
+    lastWordStart === -1 ? '' : head.slice(0, lastWordStart).trimEnd()
+  return `${beforeLastWord.length > max / 2 ? beforeLastWord : head.trimEnd()}…`
+}
+
+/**
  * Truncate MEMORY.md content to the line AND byte caps, appending a warning
- * that names which cap fired. Line-truncates first (natural boundary), then
+ * that names which cap fired AND (2.1.268 E52) how many lines were cut and
+ * where the cut starts. Line-truncates first (natural boundary), then
  * byte-truncates at the last newline before the cap so we don't cut mid-line.
  *
  * Shared by buildMemoryPrompt and claudemd getMemoryFiles (previously
  * duplicated the line-only logic).
+ *
+ * Mirrors the official 2.1.268 binary `ynt(e,n="index")` verbatim:
+ *   let x=r[L.length]===`\n`?rn(L,`\n`)+1:0,v=L.length+1,R=r.indexOf(`\n`,v),
+ *       A=r.slice(v,R<0?void 0:R).trim(),
+ *       D=x===0?`everything after the first ${L.length} characters of line 1 was cut off`
+ *              :`${o-x} of ${o} lines were cut off, starting at line ${x+1}${A?` ("${Kte(A,80)}")`:""}`
+ * (r=trimmed raw, L=truncated content, o=lineCount, x=full lines kept,
+ *  A=first cut line, D=cut detail folded into "Only part of it was loaded: D.")
  */
-export function truncateEntrypointContent(raw: string): EntrypointTruncation {
+export function truncateEntrypointContent(
+  raw: string,
+  kind: MemoryTruncationKind = 'index',
+): EntrypointTruncation {
   const trimmed = raw.trim()
   const contentLines = trimmed.split('\n')
   const lineCount = contentLines.length
@@ -151,17 +197,39 @@ export function truncateEntrypointContent(raw: string): EntrypointTruncation {
     truncated = truncated.slice(0, cutAt > 0 ? cutAt : MAX_ENTRYPOINT_BYTES)
   }
 
+  // 2.1.268 E52 — cut-position detail (official x/v/R/A/D block). When the
+  // cut landed exactly on a newline boundary, fullLinesKept counts the whole
+  // lines kept and the first cut line is quoted (word-boundary-truncated to
+  // 80 chars). A mid-line cut only happens on a single giant line 1, so the
+  // detail reports the kept character count instead.
+  const fullLinesKept =
+    trimmed[truncated.length] === '\n'
+      ? countCharInString(truncated, '\n') + 1
+      : 0
+  const previewStart = truncated.length + 1
+  const previewEnd = trimmed.indexOf('\n', previewStart)
+  const firstCutLine = trimmed
+    .slice(previewStart, previewEnd < 0 ? undefined : previewEnd)
+    .trim()
+  const cutDetail =
+    fullLinesKept === 0
+      ? `everything after the first ${truncated.length} characters of line 1 was cut off`
+      : `${lineCount - fullLinesKept} of ${lineCount} lines were cut off, starting at line ${fullLinesKept + 1}${firstCutLine ? ` ("${truncatePreviewAtWordBoundary(firstCutLine, CUT_LINE_PREVIEW_MAX)}")` : ''}`
+
   const reason =
     wasByteTruncated && !wasLineTruncated
-      ? `${formatFileSize(byteCount)} (limit: ${formatFileSize(MAX_ENTRYPOINT_BYTES)}) — index entries are too long`
+      ? `${formatFileSize(byteCount)} (limit: ${formatFileSize(MAX_ENTRYPOINT_BYTES)}) — ${kind === 'index' ? 'index entries are too long' : 'its lines are too long'}`
       : wasLineTruncated && !wasByteTruncated
         ? `${lineCount} lines (limit: ${MAX_ENTRYPOINT_LINES})`
         : `${lineCount} lines and ${formatFileSize(byteCount)}`
 
+  const warning =
+    kind === 'index'
+      ? `${ENTRYPOINT_NAME} is ${reason}. Only part of it was loaded: ${cutDetail}. Keep index entries to one line under ~200 chars; move detail into topic files.`
+      : `this memory file is ${reason}. Only part of it was loaded: ${cutDetail}. Keep each memory file focused on one topic.`
+
   return {
-    content:
-      truncated +
-      `\n\n> WARNING: ${ENTRYPOINT_NAME} is ${reason}. Only part of it was loaded. Keep index entries to one line under ~200 chars; move detail into topic files.`,
+    content: truncated + `\n\n> WARNING: ${warning}`,
     lineCount,
     byteCount,
     wasLineTruncated,

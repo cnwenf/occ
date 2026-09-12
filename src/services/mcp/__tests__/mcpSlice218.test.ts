@@ -30,7 +30,15 @@ import type { MCPToolResult } from '../../../../utils/mcpValidation'
  * the failed connection result, and renders it via the `TQo` extractor and
  * `kbo` warning formatter.
  *
- * Binary evidence (s21218.txt):
+ * CC 2.1.268 E16 UPDATE: the 218 `TQo` extractor was replaced by 268's
+ * `kUt` (@25249900) — the ` at <url>` suffix now comes from
+ * `bV(name, config, {detail:"origin"})` (origin-only, authored-template
+ * aware; DROPPED entirely when the scope is known but no authored unexpanded
+ * copy matches — the fixture's `srv` has none) and free-text errors pass
+ * through the `wp` redactor. The two ` at https://srv.test/mcp` expectations
+ * below were updated accordingly; the `kbo`/`wee`/`whp` behavior is unchanged.
+ *
+ * Binary evidence (s21218.txt, superseded TQo kept for provenance):
  *   TQo(e){let t="url"in e.config?e.config.url:null,r=e.errorCode;
  *     if(r==="INVALID_CONFIG"||r==="UNCONFIGURED"||r==="AUTH_HEADER_REJECTED"
  *        ||r==="CLI_OWNED_BEARER_REJECTED"||r==="FIRST_PARTY_AUTH_REJECTED"
@@ -56,9 +64,9 @@ describe('2.1.218 #5 — failed MCP server status + error text', () => {
     } as FailedMCPServer
   }
 
-  test('numeric HTTP errorCode surfaces as "HTTP <status> at <url>"', () => {
+  test('numeric HTTP errorCode surfaces as "HTTP <status>" (268 kUt: no raw expanded url suffix without an authored match)', () => {
     const r = failed({ name: 'srv', errorCode: '401', error: 'Unauthorized' })
-    expect(getMcpServerFailureMessage(r)).toBe('HTTP 401 at https://srv.test/mcp')
+    expect(getMcpServerFailureMessage(r)).toBe('HTTP 401')
   })
 
   test('numeric HTTP errorCode surfaces as "HTTP <status>" when no url', () => {
@@ -72,9 +80,9 @@ describe('2.1.218 #5 — failed MCP server status + error text', () => {
     expect(getMcpServerFailureMessage(r)).toBe('HTTP 503')
   })
 
-  test('errorCode "23" surfaces as "request timed out"', () => {
+  test('errorCode "23" surfaces as "request timed out" (268 kUt: no raw expanded url suffix)', () => {
     const r = failed({ name: 'srv', errorCode: '23', error: 'ETIMEDOUT' })
-    expect(getMcpServerFailureMessage(r)).toBe('request timed out at https://srv.test/mcp')
+    expect(getMcpServerFailureMessage(r)).toBe('request timed out')
   })
 
   test('named INVALID_CONFIG falls back to error when present', () => {

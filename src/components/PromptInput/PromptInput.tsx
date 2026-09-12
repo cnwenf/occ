@@ -22,6 +22,7 @@ import { useIsModalOverlayActive } from '../../context/overlayContext.js';
 import { useSetPromptOverlayDialog } from '../../context/promptOverlayContext.js';
 import { formatImageRef, formatPastedTextRef, getPastedTextRefNumLines, parseReferences } from '../../history.js';
 import type { VerificationStatus } from '../../hooks/useApiKeyVerification.js';
+import { computeSuppressSuggestions } from '../../hooks/historyEdited.js';
 import { type HistoryMode, useArrowKeyHistory } from '../../hooks/useArrowKeyHistory.js';
 import { useDoublePress } from '../../hooks/useDoublePress.js';
 import { useHistorySearch } from '../../hooks/useHistorySearch.js';
@@ -964,7 +965,8 @@ function PromptInput({
     onHistoryUp,
     onHistoryDown,
     dismissSearchHint,
-    historyIndex
+    historyIndex,
+    historyEdited
   } = useArrowKeyHistory((value: string, historyMode: HistoryMode, pastedContents: Record<number, PastedContent>) => {
     onChange(value);
     onModeChange(historyMode);
@@ -1183,7 +1185,11 @@ function PromptInput({
     agents,
     setSuggestionsState,
     suggestionsState,
-    suppressSuggestions: isSearchingHistory || historyIndex > 0,
+    // CC 2.1.268 E26: official gate changed from `Xm||rLe>0` (2.1.267) to
+    // `ip||$Le>0&&!WLe` (2.1.268) — suggestions stay suppressed only while
+    // the recalled prompt is UNEDITED; editing it makes @ file and / command
+    // suggestions reappear.
+    suppressSuggestions: computeSuppressSuggestions(isSearchingHistory, historyIndex, historyEdited),
     markAccepted,
     onModeChange
   });

@@ -224,15 +224,46 @@ export const PLAN_REJECTION_PREFIX =
   'The agent proposed a plan that was rejected by the user. The user chose to stay in plan mode rather than proceed with implementation.\n\nRejected plan:\n'
 
 /**
- * Shared guidance for permission denials, instructing the model on appropriate workarounds.
+ * Shared guidance for permission denials, instructing the model on appropriate
+ * workarounds. 2.1.268 alignment: the official splits this text into a shared
+ * base plus per-surface stop suffixes (byte-verified from the linux-x64 ELF):
+ *
+ *   ANt = "IMPORTANT: ... intent behind this denial. "   (shared base)
+ *   LOr = ANt + "If you believe ... request, STOP and explain ..."
+ *   Tjs = ANt + "If you believe ... request, first try a safer method.
+ *                Get as much of the rest of the task done as you can,
+ *                then STOP and explain ..."
+ *   Ejs = consent-flow variant — NOT ported: OCC has no autoModeConsentFlow
+ *         surface (official `H5t` only selects `Ejs` when that option is set).
+ *
+ * Official LDn/MQ (AUTO_REJECT_MESSAGE / DONT_ASK_REJECT_MESSAGE here) use
+ * LOr; official H5t (buildYoloRejectionMessage here) uses Tjs.
  */
-export const DENIAL_WORKAROUND_GUIDANCE =
+const DENIAL_WORKAROUND_GUIDANCE_BASE =
   `IMPORTANT: You *may* attempt to accomplish this action using other tools that might naturally be used to accomplish this goal, ` +
   `e.g. using head instead of cat. But you *should not* attempt to work around this denial in malicious ways, ` +
   `e.g. do not use your ability to run tests to execute non-test actions. ` +
-  `You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. ` +
+  `You should only try to work around this restriction in reasonable ways that do not attempt to bypass the intent behind this denial. `
+
+// Official `LOr` tail (minus the shared base): legacy stop-and-explain suffix
+// used by the plain / don't-ask denial messages.
+const LEGACY_STOP_SUFFIX =
   `If you believe this capability is essential to complete the user's request, STOP and explain to the user ` +
   `what you were trying to do and why you need this permission. Let the user decide how to proceed.`
+
+// Official `Tjs` tail (minus the shared base): auto-mode classifier denials
+// first ask the model to try a safer method and get as much of the rest of
+// the task done before stopping.
+const AUTO_MODE_STOP_SUFFIX =
+  `If you believe this capability is essential to complete the user's request, first try a safer method. ` +
+  `Get as much of the rest of the task done as you can, then STOP and explain to the user ` +
+  `what you were trying to do and why you need this permission. Let the user decide how to proceed.`
+
+/**
+ * Legacy guidance (base + legacy stop suffix) — renders byte-identically to
+ * the pre-2.1.268 fused constant. Kept exported for existing consumers.
+ */
+export const DENIAL_WORKAROUND_GUIDANCE = `${DENIAL_WORKAROUND_GUIDANCE_BASE}${LEGACY_STOP_SUFFIX}`
 
 export function AUTO_REJECT_MESSAGE(toolName: string): string {
   return `Permission to use ${toolName} has been denied. ${DENIAL_WORKAROUND_GUIDANCE}`
@@ -281,6 +312,12 @@ export function isClassifierDenial(content: string): boolean {
  * Build a rejection message for auto mode classifier denials.
  * Encourages continuing with other tasks and suggests permission rules.
  *
+ * 2.1.268: official `H5t` now composes the shared base with the auto-mode
+ * stop suffix (`Tjs` — "first try a safer method ... get as much of the rest
+ * of the task done ... then STOP") instead of the legacy suffix (`LOr`).
+ * The BASH_CLASSIFIER-conditional ruleHint below is OCC's existing frame and
+ * is intentionally kept (official gates its short rule hint via Zvr()/EM()).
+ *
  * @param reason - The classifier's reason for denying the action
  */
 export function buildYoloRejectionMessage(reason: string): string {
@@ -295,7 +332,7 @@ export function buildYoloRejectionMessage(reason: string): string {
   return (
     `${prefix}${reason}. ` +
     `If you have other tasks that don't depend on this action, continue working on those. ` +
-    `${DENIAL_WORKAROUND_GUIDANCE} ` +
+    `${DENIAL_WORKAROUND_GUIDANCE_BASE}${AUTO_MODE_STOP_SUFFIX} ` +
     ruleHint
   )
 }

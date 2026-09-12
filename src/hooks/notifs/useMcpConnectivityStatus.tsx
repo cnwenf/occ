@@ -4,12 +4,29 @@ import { useEffect } from 'react';
 import { useNotifications } from 'src/context/notifications.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
 import { Text } from '../../ink.js';
-import { hasClaudeAiMcpEverConnected, getMcpNeedsAuthCount } from '../../services/mcp/claudeai.js';
+import { hasClaudeAiMcpEverConnected, isClaudeAiMcpCurrentlyConnected } from '../../services/mcp/claudeai.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
+import {
+  countNeedsAuthToAnnounce,
+  countNoticedServersNowConnected,
+  markNeedsAuthNoticed,
+  type NeedsAuthNoticeDeps,
+  pruneNoticedServersNowConnected,
+} from '../../utils/mcpNeedsAuthNotice.js';
 type Props = {
   mcpClients?: MCPServerConnection[];
 };
 const EMPTY_MCP_CLIENTS: MCPServerConnection[] = [];
+/**
+ * CC 2.1.268 E63: the official `DH` deps object —
+ * `DH={hasEverConnected:Ykt,connectedThisSession:Vkt}`, where `Ykt` reads the
+ * persisted `claudeAiMcpEverConnected` list and `Vkt` reads the session
+ * currently-connected set. OCC exports both predicates from claudeai.ts.
+ */
+const MCP_NEEDS_AUTH_NOTICE_DEPS: NeedsAuthNoticeDeps = {
+  hasEverConnected: hasClaudeAiMcpEverConnected,
+  connectedThisSession: isClaudeAiMcpCurrentlyConnected,
+};
 export function useMcpConnectivityStatus(t0) {
   const $ = _c(4);
   const {
@@ -28,14 +45,20 @@ export function useMcpConnectivityStatus(t0) {
       }
       const failedLocalClients = mcpClients.filter(_temp);
       const failedClaudeAiClients = mcpClients.filter(_temp2);
-      // CC 2.1.218 #20: the needs-auth count is derived from the shared
-      // `getMcpNeedsAuthCount` helper instead of two inline predicates, so
-      // disconnected claude.ai connectors (eligible===false && not currently
-      // connected) and IDE internals are excluded exactly as the binary's
-      // Zka/H7o filter does. The previous inline _temp4 only checked
-      // hasClaudeAiMcpEverConnected, over-counting connectors that were ever
-      // connected but are now disconnected + ineligible.
-      const needsAuthCount = getMcpNeedsAuthCount(mcpClients);
+      // CC 2.1.268 E63: prune persisted "already announced" entries whose
+      // server is now connected before counting (official Tee effect:
+      // `if(...Zbe===0)return;Yye(clients,$H)` gated by `Qye`>0), so a later
+      // auth expiry for that server announces again.
+      if (countNoticedServersNowConnected(mcpClients) > 0) {
+        pruneNoticedServersNowConnected(mcpClients);
+      }
+      // CC 2.1.218 #20 + CC 2.1.268 E63: the needs-auth count keeps the #20
+      // eligibility filter (official `TEt`, unchanged: disconnected claude.ai
+      // connectors with eligible===false and IDE internals are excluded,
+      // claude.ai connectors count iff ever connected) but is now gated by
+      // the once-per-server dedup (official `Kye`/`net` vs 2.1.267's raw
+      // count): servers announced in a previous session are skipped.
+      const needsAuthCount = countNeedsAuthToAnnounce(mcpClients, MCP_NEEDS_AUTH_NOTICE_DEPS);
       if (failedLocalClients.length === 0 && failedClaudeAiClients.length === 0 && needsAuthCount === 0) {
         return;
       }
@@ -59,6 +82,10 @@ export function useMcpConnectivityStatus(t0) {
           jsx: <><Text color="warning">{needsAuthCount} MCP{" "}{needsAuthCount === 1 ? "server needs" : "servers need"}{" "}auth</Text><Text dimColor={true}> · /mcp</Text></>,
           priority: "medium"
         });
+        // CC 2.1.268 E63: mark the announced servers as noticed once the
+        // notice fires (official `kee` render effect → `zye(clients,DH,…)`):
+        // session Set + persisted `mcpNeedsAuthNoticed` capped at 128.
+        markNeedsAuthNoticed(mcpClients, MCP_NEEDS_AUTH_NOTICE_DEPS);
       }
     };
     t3 = [addNotification, mcpClients];

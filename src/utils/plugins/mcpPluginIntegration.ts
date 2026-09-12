@@ -1,5 +1,6 @@
 import { join } from 'path'
 import { expandEnvVarsInString } from '../../services/mcp/envExpansion.js'
+import { registerAuthoredUnexpandedConfig } from '../../services/mcp/redaction.js'
 import {
   type McpServerConfig,
   McpServerConfigSchema,
@@ -393,6 +394,15 @@ export async function extractMcpServersFromPlugins(
             plugin.name,
             name,
           )
+          // CC 2.1.268 E16: keep the AUTHORED (unexpanded) copy so `mcp list`
+          // / `/mcp` / error messages show `${VAR}` templates instead of
+          // resolved secrets (the binary re-parses unexpanded at display
+          // time; plugin servers have no re-parseable form, so they are
+          // registered here under their scoped name).
+          registerAuthoredUnexpandedConfig(
+            `plugin:${plugin.name}:${name}`,
+            buildAuthoredPluginConfig(config, plugin),
+          )
         } catch (err) {
           errors?.push({
             type: 'generic-error',
@@ -455,6 +465,35 @@ function buildMcpUserConfig(
 
   if (!topLevel && !channelSpecific) return undefined
   return { ...topLevel, ...channelSpecific }
+}
+
+/**
+ * CC 2.1.268 E16: build the AUTHORED (unexpanded) copy of a plugin MCP server
+ * config for the display-time redaction registry. Mirrors
+ * `resolvePluginMcpEnvironment`'s structural additions WITHOUT resolving any
+ * `${...}` value: stdio servers always get `env.CLAUDE_PLUGIN_ROOT` /
+ * `env.CLAUDE_PLUGIN_DATA` injected (plain filesystem paths, not secrets), so
+ * the authored copy carries the same keys with the same non-secret values —
+ * otherwise the binary's `Uun` env-record equivalence check (equal key count)
+ * would fail for every plugin stdio server and its display would degrade to
+ * the `[REDACTED]` fallback. All user-authored values stay as templates.
+ */
+function buildAuthoredPluginConfig(
+  config: McpServerConfig,
+  plugin: { path: string; source: string },
+): ScopedMcpServerConfig {
+  if (config.type === undefined || config.type === 'stdio') {
+    return {
+      ...config,
+      env: {
+        CLAUDE_PLUGIN_ROOT: plugin.path,
+        CLAUDE_PLUGIN_DATA: getPluginDataDir(plugin.source),
+        ...(config.env || {}),
+      },
+      scope: 'dynamic',
+    }
+  }
+  return { ...config, scope: 'dynamic' }
 }
 
 /**
@@ -618,6 +657,12 @@ export async function getPluginMcpServers(
         errors,
         plugin.name,
         name,
+      )
+      // CC 2.1.268 E16: same authored-copy registration as
+      // extractMcpServersFromPlugins above.
+      registerAuthoredUnexpandedConfig(
+        `plugin:${plugin.name}:${name}`,
+        buildAuthoredPluginConfig(config, plugin),
       )
     } catch (err) {
       errors?.push({

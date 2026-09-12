@@ -30,6 +30,7 @@ import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { clearRepositoryCaches } from '../../utils/detectRepository.js'
 import { clearResolveGitDirCache } from '../../utils/git/gitFilesystem.js'
 import { clearStoredImagePaths } from '../../utils/imageStore.js'
+import { clearNeedsAuthNoticedThisSession } from '../../utils/mcpNeedsAuthNotice.js'
 import { clearSessionEnvVars } from '../../utils/sessionEnvVars.js'
 
 /**
@@ -88,6 +89,12 @@ export function clearSessionCaches(
 
   // Clear all session ingress caches (lastUuidMap, sequentialAppendBySession)
   clearAllSessions()
+  // CC 2.1.268 E63: official conversation_reset clears the session set of
+  // already-announced needs-auth MCP servers
+  // (`Nt().needsAuthNoticedThisSession.clear()`), so the startup notice can
+  // re-fire in the fresh conversation for servers not yet persisted as
+  // noticed. The persisted `mcpNeedsAuthNoticed` list is untouched.
+  clearNeedsAuthNoticedThisSession()
   // Clear swarm permission pending callbacks
   if (!hasPreserved) clearAllPendingCallbacks()
 

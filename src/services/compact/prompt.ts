@@ -320,15 +320,17 @@ export function formatCompactSummary(summary: string): string {
     '',
   )
 
-  // Extract and format summary section
-  const summaryMatch = formattedSummary.match(/<summary>([\s\S]*?)<\/summary>/)
-  if (summaryMatch) {
-    const content = summaryMatch[1] || ''
-    formattedSummary = formattedSummary.replace(
-      /<summary>[\s\S]*?<\/summary>/,
-      `Summary:\n${content.trim()}`,
-    )
-  }
+  // Extract and format summary section. The replacer is a FUNCTION, not a
+  // replacement string: model-written summaries routinely contain `$`
+  // patterns ($&, $', $`, $1, $$, $99) which String.prototype.replace would
+  // otherwise expand against the match, corrupting the summary. Official
+  // 2.1.268 `wws` fix (byte-verified from the linux-x64 ELF):
+  //   n.replace(/<summary>([\s\S]*?)<\/summary>/,(r,o)=>`Summary:\n${o.trim()}`)
+  // A replacer function's return value is used verbatim — no $-interpretation.
+  formattedSummary = formattedSummary.replace(
+    /<summary>([\s\S]*?)<\/summary>/,
+    (_m, g) => `Summary:\n${(g ?? '').trim()}`,
+  )
 
   // Clean up extra whitespace between sections
   formattedSummary = formattedSummary.replace(/\n\n+/g, '\n\n')

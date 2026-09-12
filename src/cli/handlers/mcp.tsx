@@ -16,7 +16,8 @@ import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientCo
 import { connectToServer, getMcpServerConnectionBatchSize } from '../../services/mcp/client.js';
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
-import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, mcpServerHealthStatusLabel, getMcpServerFailureMessage } from '../../services/mcp/utils.js';
+import { getDisplayConfig, getDisplayServers, redactMcpErrorDetail } from '../../services/mcp/redaction.js';
+import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, mcpServerHealthStatusLabel, getMcpServerFailureMessage, resolveUnexpandedMcpServers } from '../../services/mcp/utils.js';
 import { partitionMcpServersByName } from '../../services/mcp/normalization.js';
 import { AppStateProvider } from '../../state/AppState.js';
 import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
@@ -175,11 +176,17 @@ export async function mcpListHandler(): Promise<void> {
     }), {
       concurrency: getMcpServerConnectionBatchSize()
     });
+    // CC 2.1.268 E16: print the DISPLAY copies (binary `Be` → `Ne`), which
+    // carry the AUTHORED `${VAR}` templates — or a sanitized type-label /
+    // [REDACTED] fallback — instead of the expanded configs used for the
+    // health checks above. Never print secrets resolved from `${VAR}`.
+    const displayConfigs = getDisplayServers(configs, resolveUnexpandedMcpServers);
     for (const {
       name,
-      server,
       status
     } of results) {
+      const server = displayConfigs[name];
+      if (!server) continue;
       // Intentionally excluding sse-ide servers here since they're internal
       if (server.type === 'sse') {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -222,16 +229,22 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // biome-ignore lint/suspicious/noConsole:: intentional console output
   console.log(`  Status: ${status}`);
 
+  // CC 2.1.268 E16: print config fields from the DISPLAY copy (binary `Wr`'s
+  // `h = Be({[s]:i})[s] ?? Pe(i)`) — authored `${VAR}` templates when the
+  // scope re-parses unexpanded and matches, otherwise the sanitized fallback.
+  // The expanded `server` is still used for Scope/Status/OAuth logic only.
+  const display = getDisplayConfig(name, server, resolveUnexpandedMcpServers);
+
   // Intentionally excluding sse-ide servers here since they're internal
-  if (server.type === 'sse') {
+  if (display.type === 'sse') {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`  Type: sse`);
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  URL: ${server.url}`);
-    if (server.headers) {
+    console.log(`  URL: ${display.url}`);
+    if (display.headers) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('  Headers:');
-      for (const [key, value] of Object.entries(server.headers)) {
+      for (const [key, value] of Object.entries(display.headers)) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(`    ${key}: ${value}`);
       }
@@ -247,15 +260,15 @@ export async function mcpGetHandler(name: string): Promise<void> {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  OAuth: ${parts.join(', ')}`);
     }
-  } else if (server.type === 'http') {
+  } else if (display.type === 'http') {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`  Type: http`);
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  URL: ${server.url}`);
-    if (server.headers) {
+    console.log(`  URL: ${display.url}`);
+    if (display.headers) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('  Headers:');
-      for (const [key, value] of Object.entries(server.headers)) {
+      for (const [key, value] of Object.entries(display.headers)) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(`    ${key}: ${value}`);
       }
@@ -271,18 +284,18 @@ export async function mcpGetHandler(name: string): Promise<void> {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  OAuth: ${parts.join(', ')}`);
     }
-  } else if (server.type === 'stdio') {
+  } else if (display.type === 'stdio') {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`  Type: stdio`);
     // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Command: ${server.command}`);
-    const args = Array.isArray(server.args) ? server.args : [];
+    console.log(`  Command: ${display.command}`);
+    const args = Array.isArray(display.args) ? display.args : [];
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`  Args: ${args.join(' ')}`);
-    if (server.env) {
+    if (display.env) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('  Environment:');
-      for (const [key, value] of Object.entries(server.env)) {
+      for (const [key, value] of Object.entries(display.env)) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(`    ${key}=${value}`);
       }
@@ -435,7 +448,10 @@ export async function mcpLoginHandler(name: string, options: {
     });
     cliOk(`Successfully authenticated with MCP server "${name}".`);
   } catch (error) {
-    cliError(`Failed to authenticate with MCP server "${name}": ${(error as Error).message}`);
+    // CC 2.1.268 E16 (changelog: "MCP login errors"): run the failure detail
+    // through the binary's `wp` redactor so secrets resolved from `${VAR}`
+    // placeholders in this server's config never reach the terminal.
+    cliError(`Failed to authenticate with MCP server "${name}": ${redactMcpErrorDetail(name, server, (error as Error).message, resolveUnexpandedMcpServers)}`);
   }
 }
 

@@ -83,6 +83,17 @@ function formatZodErrors(zodError: z.ZodError): ValidationError[] {
 /**
  * Check for parent-directory segments ('..') in a path string.
  *
+ * CC 2.1.268 (E35): the check is segment-wise — a path traverses only when a
+ * '/'- or '\'-separated segment is EXACTLY '..'. Names that merely begin with
+ * two dots ('..myplugin', 'a/..b/c') are legitimate path segments; the old
+ * substring `includes('..')` check wrongly refused them (official 268
+ * changelog: "Fixed plugin directories whose names begin with two dots being
+ * wrongly refused as outside the plugin root"). The official binary's
+ * traversal predicates are all separator-aware (`d === ".." ||
+ * d.startsWith(".." + sep)`) or segment-wise (`split("/").some(s => s ===
+ * "..")`), never a raw substring match; both separators are split here so
+ * Windows-style backslash paths keep the coverage the substring check had.
+ *
  * For plugin.json component paths this is a security concern (escaping the plugin dir).
  * For marketplace.json source paths it's almost always a resolution-base misunderstanding:
  * paths resolve from the marketplace repo root, not from marketplace.json itself, so the
@@ -95,7 +106,7 @@ function checkPathTraversal(
   errors: ValidationError[],
   hint?: string,
 ): void {
-  if (p.includes('..')) {
+  if (p.split(/[\\/]/).some(segment => segment === '..')) {
     errors.push({
       path: field,
       message: hint

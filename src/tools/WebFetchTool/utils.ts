@@ -179,6 +179,27 @@ export function validateURL(url: string): boolean {
   return true
 }
 
+/**
+ * CC 2.1.268 (E37): dedicated error message for dotless hostnames. When
+ * validateURL() fails, the official binary (fn jvn) re-parses the URL with
+ * URL.parse() and — if it yielded a hostname containing no dot (localhost,
+ * intranet hosts) — throws an actionable message instead of the generic
+ * 'Invalid URL' (official error code: web-fetch-dotless-host). Pure helper so
+ * the branch is unit-testable without network calls.
+ */
+export function invalidUrlErrorMessage(url: string): string {
+  let hostname: string | undefined
+  try {
+    hostname = new URL(url).hostname
+  } catch {
+    hostname = undefined
+  }
+  if (hostname && !hostname.includes('.')) {
+    return 'WebFetch cannot fetch localhost or other hostnames without a dot. To reach a local server, use Bash with curl instead.'
+  }
+  return 'Invalid URL'
+}
+
 type DomainCheckResult =
   | { status: 'allowed' }
   | { status: 'blocked' }
@@ -360,7 +381,9 @@ export async function getURLMarkdownContent(
   abortController: AbortController,
 ): Promise<FetchedContent | RedirectInfo> {
   if (!validateURL(url)) {
-    throw new Error('Invalid URL')
+    // CC 2.1.268 (E37): dotless hostnames get the dedicated actionable
+    // message; everything else keeps the generic 'Invalid URL'.
+    throw new Error(invalidUrlErrorMessage(url))
   }
 
   // Check cache (LRUCache handles TTL automatically)
