@@ -8,6 +8,10 @@ import {
   getSettingsForSource,
 } from 'src/utils/settings/settings.js'
 import { shouldOfferTerminalSetup } from '../../commands/terminalSetup/terminalSetup.js'
+import {
+  isFocusViewEnabled,
+  isFullscreenActive,
+} from '../../commands/focus/focus.js'
 import { getDesktopUpsellConfig } from '../../components/DesktopUpsell/DesktopUpsellStartup.js'
 import { color } from '../../components/design-system/color.js'
 import { shouldShowOverageCreditUpsell } from '../../components/LogoV2/OverageCreditUpsell.js'
@@ -639,6 +643,26 @@ const externalTips: Tip[] = [
       const config = getGlobalConfig()
       return config.numStartups > 5
     },
+  },
+  {
+    // Official 2.1.269 (E6): `{id:"focus-view",content:async()=>"Use /focus
+    // to see just your prompt, a one-line summary of the work, and the
+    // response",cooldownSessions:15,isRelevant:async()=>Xa()&&
+    // Ge().viewMode===void 0&&!Qee()}`. Mapping: `Xa()` (fullscreen renderer
+    // active) → OCC's isFullscreenActive() — the same predicate /focus itself
+    // gates on, so the tip appears exactly when /focus will work; `Ge()
+    // .viewMode===undefined` → the persisted startup view mode isn't set;
+    // `!Qee()` (focus view off) → !isFocusViewEnabled(). providerAgnostic /
+    // advertisedCommand are dropped — OCC's Tip shape is
+    // {id,content,cooldownSessions,isRelevant} with no consumer for either.
+    id: 'focus-view',
+    content: async () =>
+      'Use /focus to see just your prompt, a one-line summary of the work, and the response',
+    cooldownSessions: 15,
+    isRelevant: async () =>
+      isFullscreenActive() &&
+      getSettings_DEPRECATED().viewMode === undefined &&
+      !isFocusViewEnabled(),
   },
 ]
 const internalOnlyTips: Tip[] =

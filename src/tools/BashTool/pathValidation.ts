@@ -61,6 +61,56 @@ export type PathCommand =
   | 'sha256sum'
   | 'sha1sum'
   | 'md5sum'
+  | 'tee'
+
+/**
+ * Device paths that are output sinks, not file writes (official v269, E43):
+ * `var vHo=new Set(["/dev/null","/dev/stdout","/dev/stderr","/dev/tty"])`.
+ */
+const TEE_DEVICE_PATHS = new Set([
+  '/dev/null',
+  '/dev/stdout',
+  '/dev/stderr',
+  '/dev/tty',
+])
+
+/**
+ * Official v269 `EHo(e){return e.filter((n)=>!vHo.has(n))}` — tee's path
+ * extractor drops device sinks; every remaining destination is a real write.
+ */
+function filterTeeDevicePaths(paths: string[]): string[] {
+  return paths.filter(p => !TEE_DEVICE_PATHS.has(p))
+}
+
+/**
+ * Official v269 (E43) command-name canonicalization before the path-command
+ * lookup:
+ *
+ * ```js
+ * var LHo=new Set(["rm","rmdir","tee"]);
+ * function jU(e){if(!e)return e;let n=e.replace(/^.*[\\/]/,"");
+ *   if(LHo.has(n))return n;
+ *   return n.toLowerCase().replace(/\.exe$/,"")==="tee"?"tee":e}
+ * ```
+ *
+ * `/usr/bin/tee` (and `/bin/rm`, `rmdir` with a path prefix) canonicalize to
+ * their basename; `tee.exe`/`TEE.EXE` canonicalize to `tee`. Everything else
+ * is returned unchanged.
+ */
+const CANONICAL_PATH_COMMAND_BASENAMES = new Set(['rm', 'rmdir', 'tee'])
+
+export function canonicalizePathCommandName(
+  cmd: string | undefined,
+): string | undefined {
+  if (!cmd) {
+    return cmd
+  }
+  const base = cmd.replace(/^.*[\\/]/, '')
+  if (CANONICAL_PATH_COMMAND_BASENAMES.has(base)) {
+    return base
+  }
+  return base.toLowerCase().replace(/\.exe$/, '') === 'tee' ? 'tee' : cmd
+}
 
 /**
  * Checks if an rm/rmdir command targets dangerous paths that should always
@@ -296,6 +346,13 @@ export const PATH_EXTRACTORS: Record<
   sha256sum: filterOutFlags,
   sha1sum: filterOutFlags,
   md5sum: filterOutFlags,
+
+  // tee (official v269, E43): `tee:(e)=>EHo(py(e))` — flag-filtered args
+  // minus device sinks. Empty result → passthrough (binary OHo:
+  // `if(e==="tee"&&A.length===0)return{behavior:"passthrough",message:"Path
+  // validation passed for tee command"}` — the generic empty-paths
+  // passthrough below produces the identical message).
+  tee: args => filterTeeDevicePaths(filterOutFlags(args)),
 
   // tr: special case - skip character sets
   tr: args => {
@@ -547,6 +604,7 @@ const ACTION_VERBS: Record<PathCommand, string> = {
   sha256sum: 'compute SHA-256 checksums for files in',
   sha1sum: 'compute SHA-1 checksums for files in',
   md5sum: 'compute MD5 checksums for files in',
+  tee: 'write to files in',
 }
 
 export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
@@ -586,6 +644,7 @@ export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
   sha256sum: 'read',
   sha1sum: 'read',
   md5sum: 'read',
+  tee: 'write',
 }
 
 /**
@@ -872,7 +931,10 @@ function validateSinglePathCommand(
   }
 
   // Check if this is a path command we need to validate
-  const [baseCmd, ...args] = extractedArgs
+  // Official v269 (E43): canonicalize the command token first (`jU`) —
+  // `/usr/bin/tee`, `/bin/rm`, `tee.exe` resolve to their path-command names.
+  const [rawBaseCmd, ...args] = extractedArgs
+  const baseCmd = canonicalizePathCommandName(rawBaseCmd)
   if (!baseCmd || !SUPPORTED_PATH_COMMANDS.includes(baseCmd as PathCommand)) {
     return {
       behavior: 'passthrough',
@@ -916,7 +978,9 @@ function validateSinglePathCommandArgv(
       message: 'Empty command - no paths to validate',
     }
   }
-  const [baseCmd, ...args] = argv
+  // Official v269 (E43): canonicalize the command token first (`jU`).
+  const [rawBaseCmd, ...args] = argv
+  const baseCmd = canonicalizePathCommandName(rawBaseCmd)
   if (!baseCmd || !SUPPORTED_PATH_COMMANDS.includes(baseCmd as PathCommand)) {
     return {
       behavior: 'passthrough',

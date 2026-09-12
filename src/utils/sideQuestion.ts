@@ -15,6 +15,49 @@ import { createUserMessage, extractTextContent } from './messages.js'
 // Pattern to detect "/btw" at start of input (case-insensitive, word boundary)
 const BTW_PATTERN = /^\/btw\b/gi
 
+// ── Official 2.1.269 (E39): fake-tool-call detection ──────────────────────
+// Models sometimes answer a side question by *writing* tool-call XML as text
+// (`<function_calls>`, `<invoke name=...>`, with or without the `antml:`
+// prefix). Nothing in a side question is executed, so the official binary
+// detects those answers and annotates them.
+//
+// Binary v269 (chunk-h19j7w1q exports):
+//   var ywt="antml:",
+//       $hs=new RegExp(`<(?:${ywt})?(?:function_calls>|invoke name=)|</(?:${ywt})?(?:function_calls|invoke)>`);
+//   function xTn(e){return $hs.test(e)}
+const BTW_TOOL_CALL_PREFIX = 'antml:'
+const BTW_FAKE_TOOLCALL_DETECTOR = new RegExp(
+  `<(?:${BTW_TOOL_CALL_PREFIX})?(?:function_calls>|invoke name=)|</(?:${BTW_TOOL_CALL_PREFIX})?(?:function_calls|invoke)>`,
+)
+
+/**
+ * Whether a side-question answer wrote tool calls as text (binary `xTn`).
+ */
+export function containsFakeToolCalls(text: string): boolean {
+  return BTW_FAKE_TOOLCALL_DETECTOR.test(text)
+}
+
+/**
+ * Disclaimer appended to a live answer that contains fake tool calls
+ * (binary v269 `w`, appended in `k(l)` as `${e}\n\n${w}`).
+ */
+const BTW_TOOLCALL_DISCLAIMER =
+  "_/btw can't run tools: any tool calls or tool output shown above were not executed and may not reflect your actual files or data. Ask in the main conversation to check._"
+
+/**
+ * Omission note substituted for a fake-tool-call answer when past exchanges
+ * are replayed into conversation history (binary v269 `T`, used in the
+ * `g` history builder: `xTn(o.response)?T:o.response`).
+ *
+ * OCC divergence: the official replays `session.btwHistory.exchanges` as
+ * user/assistant message pairs ahead of the new side question; OCC's
+ * runSideQuestion sends only the wrapped question (no session-level btw
+ * history store), so this substitution currently has no replay surface.
+ * Kept exported for the display path and any future history folding.
+ */
+export const BTW_HISTORY_OMISSION =
+  '(That answer wrote tool calls as text. Nothing was executed, so it is omitted here.)'
+
 /**
  * Find positions of "/btw" keyword at the start of text for highlighting.
  * Similar to findThinkingTriggerPositions in thinking.ts.
@@ -68,6 +111,7 @@ IMPORTANT CONTEXT:
 
 CRITICAL CONSTRAINTS:
 - You have NO tools available - you cannot read files, run commands, search, or take any actions
+- Do NOT write tool calls or tool output as text (for example invoke or function_calls XML blocks) - nothing you write here is executed; if answering would need reading files, running commands, or searching, say that can't be checked from a side question and suggest asking in the main conversation
 - This is a one-off response - there will be no follow-up turns
 - You can ONLY provide information based on what you already know from the conversation context
 - NEVER say things like "Let me try...", "I'll now...", "Let me check...", or promise to take any action
@@ -131,7 +175,13 @@ function extractSideQuestionResponse(messages: Message[]): string | null {
   if (assistantBlocks.length > 0) {
     // Concatenate all text blocks (there's normally at most one, but be safe).
     const text = extractTextContent(assistantBlocks, '\n\n').trim()
-    if (text) return text
+    // Official v269 `k(l)` (E39): `xTn(e)?`${e}\n\n${w}`:e` — annotate
+    // answers that wrote tool calls as text; nothing was executed.
+    if (text) {
+      return containsFakeToolCalls(text)
+        ? `${text}\n\n${BTW_TOOLCALL_DISCLAIMER}`
+        : text
+    }
 
     // No text — check if the model tried to call a tool despite instructions.
     const toolUse = assistantBlocks.find(b => b.type === 'tool_use')

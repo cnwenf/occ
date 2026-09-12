@@ -30,6 +30,7 @@ import {
   type FileHistorySnapshot,
 } from './fileHistory.js'
 import { logError } from './log.js'
+import { logForDebugging } from './debug.js'
 import {
   createAssistantMessage,
   createUserMessage,
@@ -219,7 +220,20 @@ export function deserializeMessagesWithInterruptDetection(
       filteredThinking,
     ) as NormalizedMessage[]
 
-    const internalState = detectTurnInterruption(filteredMessages)
+    // Official 2.1.269 (E40): staleness gates run inside the official's
+    // deserializeMessages (`iHn`) and downgrade a stale interruption to
+    // {kind:"none"} before any resume consumer sees it. The official walks
+    // the pre-filter set when trailing unresolved tool uses were dropped
+    // (`F.size>0||Pe?me:qUn(xe)`); OCC's filter doesn't report dropped ids,
+    // so the length delta is the proxy.
+    const droppedUnresolvedToolUses =
+      filteredToolUses.length !== migratedMessages.length
+    const internalState = applyResumeStalenessGates(
+      detectTurnInterruption(filteredMessages),
+      droppedUnresolvedToolUses
+        ? (migratedMessages as NormalizedMessage[])
+        : filteredMessages,
+    )
 
     // Transform mid-turn interruptions into interrupted_prompt by appending
     // a synthetic continuation message. This unifies both interruption kinds
@@ -366,6 +380,183 @@ function detectTurnInterruption(
   }
 
   return { kind: 'none' }
+}
+
+/**
+ * Official 2.1.269 (E40): resume staleness gates — port of the binary's
+ * resume-module cluster `sHn`/`qUn`/`W6o`/`G6o`/`z6o` and the two
+ * suppression branches in `iHn` (deserializeMessages):
+ *
+ *   function sHn(){let e=a.CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS;
+ *     if(!e)return;let n=Number(e);if(n===0)return 0;
+ *     return Number.isFinite(n)&&n>0?n:3600000}
+ *   function qUn(e){let n=sHn();if(!n)return!1;
+ *     for(let r=e.length-1;r>=0;r--){let s=e[r];
+ *       if(s.type==="system"||s.type==="progress"||WZ(s))continue;
+ *       let d=Date.parse(s.timestamp??"");
+ *       if(Number.isFinite(d))return Date.now()-d>=n}
+ *     return!0}
+ *   function G6o(e,n){let r=Date.parse(e.timestamp??"");
+ *     return!Number.isFinite(r)||Math.abs(Date.now()-r)>=n}
+ *   var B6o=21600000; // W6o default (statsig source trimmed below)
+ *
+ * In `iHn`: `De=...qUn(...)` (env-gated tail staleness) and
+ * `et=!Ze&&!De&&Oe.kind!=="none"&&We!==void 0&&G6o(We,Je.maxAgeMs)` (age of
+ * the skipped api-error tail row vs the `W6o` bound), then
+ * `if(Ze||De||et)mt={kind:"none"}` — a stale interruption is downgraded to
+ * no-interruption so auto-resume never fires on it. The official logs
+ * `tengu_resume_stale_turn_suppressed` (OCC analytics are stubbed →
+ * logForDebugging).
+ *
+ * OCC divergences (documented, not invented):
+ *  - `WZ` skip is gated on CLAUDE_CODE_RESUME_TOLERATES_CONTEXT_APPENDS,
+ *    which does not exist in OCC (see the Gap-121c note above) → always
+ *    false → the skip is a no-op and omitted.
+ *  - `W6o`'s middle statsig source (`tengu_shimmering_cherny`, clamped to
+ *    [60000, 2592000000]) is trimmed per OCC's statsig-gate convention →
+ *    env ?? 21600000 (6h) default.
+ *  - `Ze` (resume-target uuid already-consumed guard) has no input in OCC's
+ *    deserialize path → treated as false (the official's Ze=false branch).
+ *  - `We` = official `agt`/`J6o`'s `skippedApiErrorRow` (r[0] — the newest
+ *    api-error assistant row skipped by the backwards tail walk). OCC's
+ *    detectTurnInterruption skips the same rows via its findLastIndex
+ *    predicate; the newest such row after the last turn-relevant message is
+ *    the equivalent.
+ *  - The official's `Pe`/`Q6o` re-detection path (rebuild interruption state
+ *    from trailing unresolved tool uses when env-stale) stays STAGED — it
+ *    needs the `nye` dropSiblingBlocks machinery OCC doesn't replicate.
+ */
+const RESUME_MAX_AGE_ENV = 'CLAUDE_CODE_RESUME_INTERRUPTED_TURN_MAX_AGE_MS'
+
+/** Official `B6o` — default max-age bound when the env var is unset. */
+const RESUME_DEFAULT_MAX_AGE_MS = 21_600_000
+
+/** Official `sHn` fallback for a non-numeric env value: 1h. */
+const RESUME_INVALID_ENV_MAX_AGE_MS = 3_600_000
+
+/** Official `sHn` — byte-faithful env parse (undefined / 0 / value / 1h). */
+function getResumeMaxAgeEnvMs(): number | undefined {
+  const raw = process.env[RESUME_MAX_AGE_ENV]
+  if (!raw) return undefined
+  const n = Number(raw)
+  if (n === 0) return 0
+  return Number.isFinite(n) && n > 0 ? n : RESUME_INVALID_ENV_MAX_AGE_MS
+}
+
+/** Official `W6o` with the statsig source trimmed (see divergences). */
+function getResumeMaxAge(): {
+  maxAgeMs: number
+  source: 'env' | 'default'
+} {
+  const fromEnv = getResumeMaxAgeEnvMs()
+  if (fromEnv) return { maxAgeMs: fromEnv, source: 'env' }
+  return { maxAgeMs: RESUME_DEFAULT_MAX_AGE_MS, source: 'default' }
+}
+
+/** Official `Date.parse(e.timestamp??"")` — OCC timestamps are unknown-typed. */
+function messageTimestampMs(m: NormalizedMessage): number {
+  return Date.parse(typeof m.timestamp === 'string' ? m.timestamp : '')
+}
+
+/** Official `qUn` — env-gated tail staleness (false when env unset/0). */
+function isResumeTailStaleByEnv(messages: NormalizedMessage[]): boolean {
+  const maxAge = getResumeMaxAgeEnvMs()
+  if (!maxAge) return false
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!
+    if (m.type === 'system' || m.type === 'progress') continue
+    const t = messageTimestampMs(m)
+    if (Number.isFinite(t)) return Date.now() - t >= maxAge
+  }
+  return true
+}
+
+/** Official `G6o` — row is stale when unparseable or at/over the bound. */
+function isResumeRowStale(m: NormalizedMessage, maxAgeMs: number): boolean {
+  const t = messageTimestampMs(m)
+  return !Number.isFinite(t) || Math.abs(Date.now() - t) >= maxAgeMs
+}
+
+/** Official `z6o` — newer of two candidate rows by timestamp. */
+function newerResumeRow(
+  a: NormalizedMessage | undefined,
+  b: NormalizedMessage | undefined,
+): NormalizedMessage | undefined {
+  if (a === undefined || b === undefined) return a ?? b
+  const ra = messageTimestampMs(a)
+  const rb = messageTimestampMs(b)
+  if (!Number.isFinite(ra)) return a
+  if (!Number.isFinite(rb)) return b
+  return rb > ra ? b : a
+}
+
+/**
+ * OCC equivalent of the official `skippedApiErrorRow` (`We`): the newest
+ * `isApiErrorMessage` assistant row after the last turn-relevant message —
+ * the rows detectTurnInterruption's findLastIndex skips over.
+ */
+function findSkippedTailApiErrorRow(
+  messages: NormalizedMessage[],
+): NormalizedMessage | undefined {
+  const lastRelevantIdx = messages.findLastIndex(
+    m =>
+      m.type !== 'system' &&
+      m.type !== 'progress' &&
+      !(m.type === 'assistant' && m.isApiErrorMessage),
+  )
+  let newest: NormalizedMessage | undefined
+  for (let i = lastRelevantIdx + 1; i < messages.length; i++) {
+    const m = messages[i]!
+    if (m.type === 'assistant' && m.isApiErrorMessage) {
+      newest = newerResumeRow(newest, m)
+    }
+  }
+  return newest
+}
+
+/**
+ * Apply the official `De`/`et` suppression gates (`if(Ze||De||et)mt=
+ * {kind:"none"}`). `walkMessages` is the official's `qUn` input set:
+ * pre-filter when trailing unresolved tool uses were dropped, else the
+ * filtered set.
+ */
+function applyResumeStalenessGates(
+  state: InternalInterruptionState,
+  walkMessages: NormalizedMessage[],
+): InternalInterruptionState {
+  if (state.kind === 'none') return state
+
+  // Official `De` — env-gated tail staleness.
+  if (isResumeTailStaleByEnv(walkMessages)) {
+    if (process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN) {
+      logForDebugging(
+        `[conversationRecovery] tengu_resume_stale_turn_suppressed (kind: ${state.kind})`,
+      )
+    }
+    return { kind: 'none' }
+  }
+
+  // Official `et` — skipped api-error tail row vs the W6o bound.
+  const apiErrorRow = findSkippedTailApiErrorRow(walkMessages)
+  if (apiErrorRow !== undefined) {
+    const bound = getResumeMaxAge()
+    if (isResumeRowStale(apiErrorRow, bound.maxAgeMs)) {
+      if (process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN) {
+        const t = messageTimestampMs(apiErrorRow)
+        const ageMin = Number.isFinite(t)
+          ? Math.floor((Date.now() - t) / 60000)
+          : undefined
+        logForDebugging(
+          `[conversationRecovery] tengu_resume_stale_turn_suppressed (kind: ${state.kind}, tail: api_error` +
+            (ageMin !== undefined ? `, age_min: ${ageMin}` : '') +
+            `, bound_source: ${bound.source}, bound_min: ${Math.floor(bound.maxAgeMs / 60000)})`,
+        )
+      }
+      return { kind: 'none' }
+    }
+  }
+
+  return state
 }
 
 /**

@@ -11,6 +11,12 @@
  *     `{ value: id, label: display_name ?? id, description: "From gateway" }`.
  *   - fetch: `${base}/v1/models?limit=1000` with `x-api-key`/`Bearer` +
  *     `anthropic-version: 2023-06-01`, filter `^(claude|anthropic)` ids.
+ *
+ * Official 2.1.269 (E5): the discovery fetch timeout is
+ * `CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS ?? 3000`
+ * (binary: `let n=a.CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS??Lie` with
+ * `var Lie=3000`, passed straight to `AbortSignal.timeout(n)` — raw `??`
+ * fallback, no clamping).
  */
 import { existsSync, readFileSync } from 'fs'
 import { mkdir, writeFile } from 'fs/promises'
@@ -40,6 +46,12 @@ const GatewayCacheSchema = z.object({
 })
 
 type GatewayCache = z.infer<typeof GatewayCacheSchema>
+
+/** Official default discovery timeout (binary v269 `var Lie=3000`). */
+const DEFAULT_DISCOVERY_TIMEOUT_MS = 3000
+
+/** Env override for the discovery timeout (official 2.1.269, E5). */
+const DISCOVERY_TIMEOUT_ENV = 'CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS'
 
 function getCacheDir(): string {
   return join(getClaudeConfigHomeDir(), 'cache')
@@ -130,12 +142,16 @@ export async function fetchAndCacheGatewayModels(): Promise<void> {
   }
   const baseUrl = process.env.ANTHROPIC_BASE_URL!.replace(/\/+$/, '')
   const url = `${baseUrl}/v1/models?limit=1000`
+  // Official v269: `a.CLAUDE_CODE_GATEWAY_MODEL_DISCOVERY_TIMEOUT_MS ?? 3000`
+  const timeoutMs = Number(
+    process.env[DISCOVERY_TIMEOUT_ENV] ?? DEFAULT_DISCOVERY_TIMEOUT_MS,
+  )
   try {
     const response = await fetch(url, {
       method: 'GET',
       headers: buildHeaders(),
       redirect: 'error',
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(timeoutMs),
     })
     if (!response.ok) {
       logForDebugging(

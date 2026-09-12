@@ -23,7 +23,7 @@ export function setFocusViewEnabled(value: boolean): void {
  * resolution: the persisted `tui` setting wins, then the env-based fullscreen
  * check (CLAUDE_CODE_NO_FLICKER / USER_TYPE).
  */
-function isFullscreenActive(): boolean {
+export function isFullscreenActive(): boolean {
   const setting = getSettings_DEPRECATED().tui
   if (setting === 'fullscreen') return true
   if (setting === 'default') return false
