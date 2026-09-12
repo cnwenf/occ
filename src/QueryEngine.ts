@@ -587,6 +587,18 @@ export class QueryEngine {
       updateFileHistoryState: processUserInputContext.updateFileHistoryState,
       updateAttributionState: processUserInputContext.updateAttributionState,
       setSDKStatus,
+      // Official 2.1.269 (E29): validateInput permission-rule denials
+      // (FileRead/FileWrite/FileEdit `deniedByPermissionRule: true`) are
+      // recorded into the SDK result's permission_denials through this
+      // callback — same shape as the wrappedCanUseTool recorder above.
+      onPermissionDenial: (tool, toolUseId, input) => {
+        this.permissionDenials.push({
+          type: 'permission_denial',
+          tool_name: sdkCompatToolName(tool.name),
+          tool_use_id: toolUseId,
+          tool_input: input,
+        })
+      },
       // CC 2.1.212: headless/SDK contexts use the no-op TaskRegistry stub.
       taskRegistry: getHeadlessTaskRegistry(),
     }

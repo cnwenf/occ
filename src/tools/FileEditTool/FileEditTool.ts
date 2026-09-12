@@ -200,12 +200,16 @@ export const FileEditTool = buildTool({
       'deny',
     )
     if (denyRule !== null) {
+      // Official 2.1.269 (E29): binary v269 FileEditTool
+      // `{result:!1,behavior:"ask",message:Iit,errorCode:2,
+      // deniedByPermissionRule:!0}`.
       return {
         result: false,
         behavior: 'ask',
         message:
           'File is in a directory that is denied by your permission settings.',
         errorCode: 2,
+        deniedByPermissionRule: true,
       }
     }
 
@@ -215,11 +219,14 @@ export const FileEditTool = buildTool({
     if (
       isCoveredByReadDenyRule(fullFilePath, appState.toolPermissionContext)
     ) {
+      // Official 2.1.269 (E29): `{result:!1,behavior:"ask",message:PFn,
+      // errorCode:13,deniedByPermissionRule:!0}`.
       return {
         result: false,
         behavior: 'ask',
         message: READ_DENY_EDIT_MESSAGE,
         errorCode: 13,
+        deniedByPermissionRule: true,
       }
     }
 

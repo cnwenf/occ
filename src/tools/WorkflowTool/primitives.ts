@@ -4,7 +4,9 @@
  *
  * Mirrors the 2.1.200 binary's primitive set:
  *   - agent(prompt, opts?) — spawns a subagent via runAgent().
- *   - parallel(items) — Promise.allSettled with ~10 concurrency cap, 4096 max.
+ *   - parallel(items) — Promise.allSettled with the official concurrency gate
+ *     (env `CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS` 1–256, default
+ *     min(16, max(2, availableParallelism()-2))), 4096 max items.
  *   - pipeline(items, ...stages) — stream items through stage chain.
  *   - phase(title) — group subsequent agent() calls.
  *   - log(...args) — append to workflow-scoped logs.
@@ -19,6 +21,7 @@
  *   - SYNTHETIC_OUTPUT_TOOL_NAME ('StructuredOutput') for schema opts.
  *   - getTokenCountFromUsage for budget tracking.
  */
+import { availableParallelism } from 'os'
 import type { Message } from '../../types/message.js'
 import type { AgentId } from '../../types/ids.js'
 import type { ToolUseContext, CanUseToolFn, Tools } from '../../Tool.js'
@@ -54,8 +57,66 @@ export const WORKFLOW_AGENT_LIFETIME_CAP = 1000
 /** Max items in a single parallel()/pipeline() call. */
 export const WORKFLOW_PARALLEL_MAX_ITEMS = 4096
 
-/** Default concurrency for parallel()/pipeline(). */
-export const WORKFLOW_DEFAULT_CONCURRENCY = 10
+/**
+ * Env var raising the per-run concurrent agent gate (official 2.1.269, E7).
+ * Parsed digits-only with min 1 / max 256 — binary schema
+ * `rn=P.int({min:1,max:256,digitsOnly:!0})`:
+ *
+ * ```js
+ * if(n?.digitsOnly&&!/^[+-]?\d+$/.test(e.trim()))return;
+ * let i=_l(e);if(!Number.isFinite(i))return;
+ * if(n?.min!==void 0&&i<n.min)return;
+ * if(n?.max!==void 0&&i>n.max)return;
+ * return i
+ * ```
+ */
+const WORKFLOW_CONCURRENCY_ENV = 'CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS'
+
+/** Official digits-only env int parse; `undefined` when unset or invalid. */
+function parseConcurrencyEnv(raw: string | undefined): number | undefined {
+  if (raw === undefined) {
+    return undefined
+  }
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    return undefined
+  }
+  const n = Number(raw.trim())
+  if (!Number.isFinite(n)) {
+    return undefined
+  }
+  if (n < 1) {
+    return undefined
+  }
+  if (n > 256) {
+    return undefined
+  }
+  return n
+}
+
+/**
+ * Official default gate (v269): `ur=lr(ir())` with
+ * `lr(e)=Math.min(16,Math.max(2,e-2))` and `ir=os.availableParallelism`.
+ */
+export function getDefaultWorkflowConcurrency(): number {
+  return Math.min(16, Math.max(2, availableParallelism() - 2))
+}
+
+/**
+ * Resolve the per-run concurrent agent gate (official v269):
+ * `Kt=a.CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS??ur`, with the debug log
+ * `workflow: concurrent agent gate = ${Kt} (CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS)`
+ * emitted iff the env value parsed (getter !== undefined).
+ */
+export function resolveWorkflowConcurrency(): number {
+  const fromEnv = parseConcurrencyEnv(process.env[WORKFLOW_CONCURRENCY_ENV])
+  const gate = fromEnv ?? getDefaultWorkflowConcurrency()
+  if (fromEnv !== undefined) {
+    logForDebugging(
+      `workflow: concurrent agent gate = ${gate} (CLAUDE_CODE_WORKFLOW_MAX_CONCURRENT_AGENTS)`,
+    )
+  }
+  return gate
+}
 
 /**
  * 2.1.202: Build the OpenTelemetry attributes that tag workflow-spawned agent
@@ -354,10 +415,10 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
   workflow: (nameOrRef: string | { scriptPath: string }, args?: unknown) => Promise<unknown>
   resolveWorkflow: (name: string) => string | null
 } {
-  const concurrency =
-    ctx.tokenBudget && ctx.tokenBudget > 0
-      ? Math.max(1, Math.floor(ctx.tokenBudget / 100_000))
-      : WORKFLOW_DEFAULT_CONCURRENCY
+  // Official v269 gate: `Kt=env??ur` → `Ls(Kt,bo)`; budget does not scale
+  // engine concurrency (budget-aware fan-out is script-driven per the
+  // workflow scripting guidance).
+  const concurrency = resolveWorkflowConcurrency()
 
   /**
    * agent(prompt, opts?) — spawn a subagent, drain to completion, return

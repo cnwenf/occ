@@ -27,6 +27,7 @@ import { bashCommandIsSafe_DEPRECATED } from './bashSecurity.js'
 import {
   COMMAND_OPERATION_TYPE,
   PATH_EXTRACTORS,
+  canonicalizePathCommandName,
   type PathCommand,
 } from './pathValidation.js'
 import { sedCommandIsAllowedByAllowlist } from './sedValidation.js'
@@ -1803,7 +1804,14 @@ function extractWritePathsFromSubcommand(subcommand: string): string[] {
   )
   if (tokens.length === 0) return []
 
-  const baseCmd = tokens[0]
+  // Official v269 (E43): `let r=jU(n[0]?.replace(/[\\'"]/g,""))` — strip
+  // quotes/backslashes, then canonicalize (`/usr/bin/tee` → `tee`) before
+  // the operation-type lookup. tee is op "write" and NOT in the
+  // NON_CREATING set (official `vPn=new Set(["rm","rmdir","sed"])`), so its
+  // file destinations count as creating writes here.
+  const baseCmd = canonicalizePathCommandName(
+    tokens[0]?.replace(/[\\'"]/g, ''),
+  )
   if (!baseCmd) return []
 
   // Only consider commands that can create files at target paths

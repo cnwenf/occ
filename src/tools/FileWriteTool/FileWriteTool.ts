@@ -220,11 +220,14 @@ export const FileWriteTool = buildTool({
       'deny',
     )
     if (denyRule !== null) {
+      // Official 2.1.269 (E29): binary v269 FileWriteTool
+      // `{result:!1,message:Iit,errorCode:1,deniedByPermissionRule:!0}`.
       return {
         result: false,
         message:
           'File is in a directory that is denied by your permission settings.',
         errorCode: 1,
+        deniedByPermissionRule: true,
       }
     }
 
@@ -232,10 +235,13 @@ export const FileWriteTool = buildTool({
     // writing it — writing would let the model refresh content it was denied
     // reading.
     if (isCoveredByReadDenyRule(fullFilePath, toolPermissionContext)) {
+      // Official 2.1.269 (E29): `{result:!1,message:HFn,errorCode:13,
+      // deniedByPermissionRule:!0}`.
       return {
         result: false,
         message: READ_DENY_WRITE_MESSAGE,
         errorCode: 13,
+        deniedByPermissionRule: true,
       }
     }
 

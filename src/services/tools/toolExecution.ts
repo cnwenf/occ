@@ -664,6 +664,17 @@ async function checkPermissionsAndCallTool(
       }),
       ...mcpToolDetailsForAnalytics(tool.name, mcpServerType, mcpServerBaseUrl),
     })
+    // Official 2.1.269 (E29): a validateInput failure flagged as a
+    // permission-rule deny is reported through onPermissionDenial so it also
+    // lands in the SDK result's permission_denials (previously only the
+    // canUseTool/hook deny paths were recorded). Binary:
+    // `we.deniedByPermissionRule){let $n={..._e.data};
+    //  e.backfillObservableInput?.($n),s.onPermissionDenial?.(e,n,$n)}`
+    if (isValidCall.deniedByPermissionRule) {
+      const observableInput: Record<string, unknown> = { ...parsedInput.data }
+      tool.backfillObservableInput?.(observableInput)
+      toolUseContext.onPermissionDenial?.(tool, toolUseID, observableInput)
+    }
     return [
       {
         message: createUserMessage({

@@ -98,6 +98,16 @@ export type ValidationResult =
       result: false
       message: string
       errorCode: number
+      /**
+       * Official 2.1.269 (E29): set when validateInput rejected the call
+       * because a permission rule denies it (not a malformed-input error).
+       * The tool-execution failure branch reports these through
+       * `ToolUseContext.onPermissionDenial` so they also land in the SDK
+       * result's `permission_denials`, matching the canUseTool/hook deny
+       * paths. Binary v269 FileRead/FileWrite/FileEdit deny returns all
+       * carry `deniedByPermissionRule:!0`.
+       */
+      deniedByPermissionRule?: true
     }
 
 export type SetToolJSXFn = (
@@ -260,6 +270,19 @@ export type ToolUseContext = {
   /** When true, canUseTool must always be called even when hooks auto-approve.
    *  Used by speculation for overlay file path rewriting. */
   requireCanUseTool?: boolean
+  /**
+   * Official 2.1.269 (E29): report a permission-rule deny detected inside
+   * `validateInput` (result carries `deniedByPermissionRule: true`). The
+   * tool-execution failure branch calls this with the tool, its tool_use id,
+   * and the observable (backfilled) input so the SDK/query layer records it
+   * in `permission_denials` — the same channel the canUseTool and hook deny
+   * paths already use. Binary v269: `s.onPermissionDenial?.(e,n,$n)`.
+   */
+  onPermissionDenial?: (
+    tool: Tool,
+    toolUseId: string,
+    input: Record<string, unknown>,
+  ) => void
   messages: Message[]
   fileReadingLimits?: {
     maxTokens?: number

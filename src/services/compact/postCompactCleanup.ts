@@ -1,7 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
-import { getUserContext } from '../../context.js'
+import { getGitStatus, getSystemContext, getUserContext } from '../../context.js'
 import { clearSpeculativeChecks } from '../../tools/BashTool/bashPermissions.js'
 import { clearClassifierApprovals } from '../../utils/classifierApprovals.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
@@ -58,6 +58,20 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
     // clear so all compaction paths behave consistently.
     getUserContext.cache.clear?.()
     resetGetMemoryFilesCache('compact')
+    // Official 2.1.269 (E15): the v269 refresh builder (binary `GXn`) drops
+    // the previously announced gitStatus and re-computes a fresh snapshot on
+    // every main-thread context refresh (compact): binary
+    // `let{gitStatus:d,...m}=n.announced; ... E=await(_??ADe())??void 0;
+    // return{...n,announced:{...m,gitStatus:E}}`. OCC's equivalents are the
+    // memoized getSystemContext (outer) and getGitStatus (inner) layers —
+    // clearing only the outer would still replay the stale inner snapshot,
+    // so both are cleared. The official's take-once latency prefetch
+    // (`gitStatusPrefetch`/`Tyn`) is not ported — it only shaves await
+    // latency off the same recomputation, no behavioral delta. The
+    // CLAUDE_CODE_REMOTE / git-instructions gates live inside
+    // getSystemContext, so the rebuild re-evaluates them unchanged.
+    getSystemContext.cache.clear?.()
+    getGitStatus.cache.clear?.()
   }
   clearSystemPromptSections()
   clearClassifierApprovals()
