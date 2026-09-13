@@ -102,4 +102,4 @@ Pass (2) (property-preserving mask, catches bare-identifier call swaps): 16 modu
 4. **E27/E51 CJK rendering:** typed `解释一下git仓库的` into the prompt box → rendered intact, no mojibake/cursor corruption. ✅
 5. REPL boot: OCC-branded banner, `MODEL qwen3.8-max`, `PROJ git:main`, auth-conflict advisory (TOKEN+API_KEY both set) displayed correctly; `/exit` clean teardown. ✅
 
-**Release 2.1.334:** *(appended after publish)*
+**Release 2.1.334:** merged via PR #367 (merge commit `f328f52`); CHANGELOG `## 2.1.334 - 2026-09-14 (OCC-124)` + header caught-up pointer → `2.1.270`; `package.json` 2.1.333 → 2.1.334; tag `v2.1.334` on the merge commit triggered `publish.yml` run 34774553094 → **success**. Verified: npm `@cnwenf/occ` version = `2.1.334`, dist-tag `latest` = `2.1.334`; `gh api` releases count == tags count (134 == 134); GitHub Release https://github.com/cnwenf/occ/releases/tag/v2.1.334 ; remote branches = `main` only (agent branch deleted).
