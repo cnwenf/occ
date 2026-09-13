@@ -133,3 +133,131 @@ None of these is an OCC-vs-official product regression discovered this round; 1�
 - Security review: diff is this ledger only — no secrets, no new runtime surface, no backdoor vector.
 
 **Summary: official `latest` unchanged (2.1.226) → OCC gap-free vs latest; official `next` advanced to 2.1.227 → triaged (3 portable-candidate items staged with recovered anatomy, hosted stack N/A, no P0 against existing OCC surface); C1 closed N/A-by-design; C2 staged with full mechanism + confirmed OCC affordance; self-acceptance: build/`-p` parity/interactive REPL/`bun test src` (1848/0) green, e2e 160 files green with 11 pre-existing interactive/live-model files failing — each clean-retried, root-caused, and recorded as gap candidates or environment (§4).**
+
+---
+---
+
+# Round 2 — OCC-85 (2.1.269 → 2.1.270 alignment, regression-fix triage)
+
+**Round:** OCC-85 round 2, 2026-09-14 (same long-running issue; round 1 above covered 2.1.227-on-`next` triage on 2026-08-11)
+**OCC entering state:** `2.1.333` (npm `@cnwenf/occ`; fully aligned through official **2.1.269** per the OCC-123 + OCC-84 rounds, `docs/upstream-version-gap-occ123.md` / `docs/upstream-version-gap-occ84.md`; main HEAD `e8e81c2`).
+**Official target this round:** `2.1.270` (official latest at trigger time; single changelog entry — a regression fix against 2.1.269).
+
+## R2.1 Official latest — three-way verification
+
+| Source | Result |
+|---|---|
+| npm registry | `@anthropic-ai/claude-code@2.1.270` published; linux-x64 platform package packed fresh |
+| GitHub | `v2.1.270` release present (`gh api repos/anthropics/claude-code/releases`, published 2026-09-12T19:45:44Z); changelog = **1 entry**: "Fixed read-only git commands in Bash unexpectedly asking for permission after a session had been running for a while (regression in 2.1.269)" |
+| Fresh ELFs | official linux-x64 2.1.269 → `vprev/package/claude` (219,651,568 B, sha256 `25e44883f54419569a3d739f38cbbdaebe83b09895da0f343e1b003710a4775b`), 2.1.270 → `vver/package/claude` (223,981,040 B, sha256 `3a624a5a7cd79bbad4d32bd7db36f1197ecf458bc5bf1e2aed81834a01ad3ef0`). Working dir `/tmp/cc-diff-270` (removed after the round per upstream-tracking Resource Safety) |
+
+Verification method (carried from prior rounds): every claim below was byte-verified via python slicing / sha256 on the raw ELFs and `strings` corpora — never plain grep of megabyte lines (catastrophic-backtracking hazard), never guessed, never taken from a subagent summary.
+
+## R2.2 Binary diff 2.1.269 → 2.1.270 — full forensic result
+
+Corpus stats: `strings -n 8` file-order dumps `raw_prev.txt` 419,507 lines / 46,087,450 B vs `raw_ver.txt` 419,509 lines / 46,087,898 B — the readable corpus grew only **+448 B** despite the ELF growing +4.3 MB (Bun rebuild padding/alignment; verified non-semantic).
+
+| Check | Method | Result |
+|---|---|---|
+| zstd-compressed assets | 140 frames extracted per side, per-frame body sha256 | **140/140 byte-identical** (the only `cmp` deltas were frame-offset headers shifting with ELF growth) |
+| `GIT_READ_ONLY_COMMANDS` safeFlags table | `grep -boF` + `dd bs=1` byte context at raw offset ~184,083,324 | **byte-identical** between versions |
+| Git/permission regions | normalized multiset diff of every raw strings line containing 21 anchors (`permissions_template`, `safeFlags`, `read-only`, `permissionLayers`, `softDeny`/`hardDeny`, `checkPermissions`, `bare repository`, `tengu_compact`, …) | 395 lines each side, **0 differences** (identifier-folded) |
+| Cwd/git-status/cache regions | same method, 25 anchors (`originalCwd`, `getGitStatus`, `gitRoot`, `isBareRepository`, `worktreePath`, `outside the original working directory`, …) | 343 lines each side, **0 differences** |
+| Compaction/classifier/TTL regions | same method, 29 anchors (`gitStatus`, `announced`, `speculat*`, `classif*`, `approval`, `ttl`, `maxAge`, `expire`, `autoCompact`, `microcompact`, `prefetch`, `elapsed`, …) | 2,485 lines each side, **1 differing pair** = the refusal-fallback change R2-B inside the 105 KB API-client chunk |
+| E14 matcher / injection / tree-sitter regions | same method, 19 anchors (`patternMap`, `getIg`, `permission_rules`, `uncompilable_ignore_pattern`, `gitignore-style`, `negation of every path`, `command_injection`, `splitCommand`, `tree-sitter`, …) | 212 lines each side, **0 differences** |
+| Digit-level changes (boolean flips, constant edits) | positional digit-PRESERVING normalized diff over the union of all 2,988 anchor lines above | **exactly 1 line differs** — the same refusal-fallback chunk; no constant/boolean change hides anywhere in the git-permission regions |
+| Large-chunk pair scan | greedy length-pairing of 635 ≥3 KB unmatched digit-folded fragments (630 paired) + O(n) common-prefix/suffix core extraction | only 2 semantic changes total (R2.3); all other pairs are minifier-rename noise (import-path reorder, chunk-hash digits) |
+
+**Verdict:** the official 2.1.270 "read-only git commands ask for permission" fix has **no observable code delta in the shipped binary**. Every region that could implement that fix (read-only validation, git gates, permission-rule matcher/compiler, compaction cleanup, classifier caches, TTL/staleness logic) is textually identical between 2.1.269 and 2.1.270 after identifier normalization — including at digit level. The fix is therefore server-side / feature-flag-level (a gate default flipped remotely), or a rebuild-only change absorbed by minification. **There is no portable, byte-verifiable code change to port this round.** This matches the upstream-tracking skill's "no-op versions" guidance: when the binary carries no portable delta, the round is a triage + self-acceptance round.
+
+## R2.3 The only two semantic changes in 2.1.270 (both refusal-fallback, NOT portable)
+
+| ID | Region | Official before (x269) → after (x270) | Verdict |
+|---|---|---|---|
+| R2-A | API-client request builder (`bpt`) | `function bpt(e){if(dG(e))return;…}` → `function bpt(e,{skip:!1}={}){if(!skip&&dG(e))return;…}`; call sites pass `{skip:…}` under the `convolute_arcades` flag; adds `x-is-refusal-fallback` request headers | **NOT PORTED** — Anthropic-backend-dependent (refusal-fallback lane signalling); OCC stubs backend flags by design |
+| R2-B | Streaming stop-details handler (105 KB chunk, normalized offset ~18,382) | `let Xb=_h==="refusal"&&hm===void 0?m.refusalFallbackSilentRearm?.():void 0,pv=fg??Xb;` → `let Jb=up?.matched==="none"&&ll.delta.stop_details?.category==="bio"&&!iz(),mv=_h==="refusal"&&(hm===void 0||Jb)?m.refusalFallbackSilentRearm?.(Jb):void 0,Uh=cg??mv;` | **NOT PORTED** — consumes server `stop_details.category` stream signals (`"bio"`); no OCC surface |
+
+Neither change touches Bash permissions, git handling, or compaction.
+
+## R2.4 Does the 2.1.269 regression affect OCC? (audit of OCC's ported surfaces)
+
+The regression's trigger phrase "after a session had been running for a while" points at auto-compaction; official 2.1.269 shipped the compaction-adjacent git-status fix (E15) and the `!`-negation rule-scoping change (E14), both ported to OCC (releases 2.1.332/2.1.333). Full audit of every stateful surface that could make read-only git classification time-dependent:
+
+| Surface | File | Finding |
+|---|---|---|
+| Read-only git classification | `src/tools/BashTool/readOnlyValidation.ts` (`checkReadOnlyConstraints`) | **Pure function** — no memoize/cache/TTL/Date.now anywhere in the file. Same input ⇒ same verdict regardless of session age |
+| Bare-repo gate | `src/utils/git.ts` `isCurrentDirectoryBareGitRepo()` | Fresh `statSync` per call, **no caching** — cannot go stale |
+| Sandbox/cwd gate | `getCwd() !== getOriginalCwd()` under `SandboxManager.isSandboxingEnabled()` | Reads bootstrap state, untouched by compaction; only fires when sandbox enabled (OCC default off) |
+| Read-only short-circuit position | `src/tools/BashTool/bashPermissions.ts` step 7 (`BashTool.isReadOnly(input)` → allow, "Read-only command is allowed") | Runs **before** any classifier involvement — classifier-cache clears cannot reach it |
+| Classifier approvals (cleared on compact) | `src/utils/classifierApprovals.ts` | Keyed by **toolUseID**, display-only (`UserToolSuccessMessage.tsx`) — not a permission-decision cache for future commands |
+| Speculative checks (cleared on compact) | `bashPermissions.ts:2022` `speculativeChecks` | In-flight classifier promise dedupe map only — clearing forces a fresh classifier run for NON-read-only commands; read-only never consults it |
+| E15 post-compact cache clears | `src/services/compact/postCompactCleanup.ts` | Clears `getSystemContext.cache` + `getGitStatus.cache` — these feed the **context prompt** only (`src/context.ts`); the permission chain never reads them. `getGitStatus` recomputation runs git via child_process directly, not through BashTool ⇒ no permission prompt possible |
+| E14 per-source matcher cache | `src/utils/permissions/filesystem.ts` (`getCachedPatternMatchers`, `MATCHER_RECOMPILE_THRESHOLD=1e4`, `MATCHER_CACHE_MAX_ENTRIES=16`) | WeakMap keyed by rules-object identity + composite key (platform/homedir/cwd/originalCwd/additionalDirs); LRU-16; `getIg` recompile after 1e4 uses rebuilds **deterministically from the same patternMap** — refresh semantics, no rule loss, no time degradation |
+| E43 tee write-path | op map (`tee:"write"`) | Write-path classification only — orthogonal to the git read-only allow path |
+
+**Conclusion: OCC is NOT affected.** OCC's read-only git permission verdict is computed statelessly at every call; none of the caches cleared by compaction (E15 port) or aged by use (E14 port) sit on the read-only allow path. There is consequently nothing to fix and nothing to port — this round ships the triage ledger + the 2.1.270 catch-up declaration only.
+
+## R2.5 Self-acceptance (per issue 「版本追齐后的自验收」 clause — no portable gap this round)
+
+- **Unit/integration:** `bun test` suites green (results recorded in R2.6).
+- **Regression-scenario REPL e2e** (repl-tmux-e2e-testing skill; directly replays the official regression trigger): real REPL session → read-only git commands (`git status`, `git log --oneline -5`, `git diff --stat`) auto-allowed with no prompt → force `/compact` (the "session ran for a while" event; fires the E15 cache clears) → same read-only git commands **still auto-allowed, still no prompt**. Results in R2.6.
+- **Official alignment:** the observable contract (read-only git auto-allow, no prompt after long sessions) is identical in official 2.1.269/2.1.270 binaries per R2.2 (region text byte-identical); OCC's same-region text was byte-verified against x269 in the OCC-84/OCC-123 rounds ⇒ OCC behavior aligns with `uvx claude-code@2.1.270` on this surface by construction.
+
+## R2.6 Test results
+
+**This round ships zero `src/` changes** (working tree = pristine `main` @ e8e81c2 + this ledger), so every failure observed below is pre-existing by construction. All runs use the sanitized-env pattern (`env -i PATH=… HOME=/root TERM=x-256color ANTHROPIC_API_KEY=sk-test-dummy bun test <dir>`) because host `CLAUDE_CODE_*`/`ANTHROPIC_*` env pollution pegs the CPU and hangs combined runs (documented in round 1 §4.6).
+
+**Build:** `bun install` (1323 pkgs) + `bun run build` green → `dist/cli.js` 29.05 MB (30,456,583 B), `MACRO.VERSION` = pkg version.
+
+**Unit/integration (per-directory sanitized sweep):**
+
+| Directory | Result |
+|---|---|
+| src/components | 166 pass / 0 fail |
+| src/constants | 26 / 0 |
+| src/daemon | 8 / 0 |
+| src/entrypoints | 4 / 0 |
+| src/hooks | 17 / 0 |
+| src/ink | 29 / 0 |
+| src/keybindings | 12 / 0 |
+| src/memdir | 47 / 0 |
+| src/query | 9 / 0 |
+| src/screens | 6 / 0 |
+| src/skills | 22 / 0 |
+| src/state | 9 / 0 |
+| src/tasks | 14 / 0 |
+| src/vim | 19 / 0 |
+| src/__tests__ | 22 / 0 |
+| src/cli | 37 / 0 (with dummy `ANTHROPIC_API_KEY`; the 2 `authStatusConfigDirectory268` fails under bare `env -i` are env-caused — that suite asserts the "API key required" boot error) |
+| src/tools (incl. BashTool 400/0) | 588 / 0 in 1.1 s |
+| src/services | all green except `remoteManagedSettings` 1 timeout ("returns valid:true when not eligible (no backend configured)" >5000 ms) — env-dependent, pre-existing |
+| src/utils/__tests__ | 810 pass / 12 fail — all 12 in `mcpNeedsAuthNotice.test.ts` (E63 announce family). **Standalone re-run of that file: 19 pass / 0 fail.** Order-dependent contamination from sibling files' `mock.module` registry leaks in combined runs — pre-existing test-suite flake, not a code regression |
+| src/commands | 1 fail + 1 error: `lineage.compact.test.ts` → "Export named 'extractForkLineage' not found" despite the export existing at `src/commands/fork/pointer.ts:177` (bun module-resolution quirk under sanitized env) — pre-existing on pristine main |
+
+**Regression-scenario REPL e2e (repl-tmux-e2e-testing skill, Architecture A — the R2.5 replay of the official 2.1.270 regression trigger): PASS.**
+
+- Harness: detached tmux session 200×50 driving the **built** `dist/cli.js` (OCC v2.1.333 + this round's tree) under a real model (`qwen3.8-max` via `ANTHROPIC_BASE_URL`), fresh `HOME=/root/occ85-e2e/home`, git fixture repo `/root/occ85-e2e/repo` **outside** the Multica workspace (§4.6 contamination hazard), `ANTHROPIC_API_KEY` unset (custom-key dialog hazard), **default permission mode — no `--dangerously-skip-permissions`** (that would bypass the very path under test). 200 ms poll-until-text; session killed in all exit paths.
+- Driver correctness note: the first run reported an instant PASS that was a **false positive** — the completion matcher hit the prompt's own `❯` echo line before the model ran. Fixed (matcher now strips `❯` echo + instruction lines) and re-ran; both runs' pane captures were then manually verified.
+- **Phase 1 (before compaction):** prompt "Use the Bash tool to run exactly: `git status --short && git log --oneline -1`" → capture shows `● Bash(git status --short && git log --oneline -1)` with output `8f0ef38 init` and assistant reply `● DONE1` — **zero permission prompts** (~6 s round-trip).
+- **Phase 2 (aging event):** `/compact` → genuine compaction ("✻ Conversation compacted", ~31 s; fires the E15 post-compact cache clears incl. `getGitStatus.cache`/`getSystemContext.cache`/classifier approvals).
+- **Phase 3 (after compaction — the regression window):** identical command → `● Bash(...)` output `8f0ef38 init`, reply `● DONE3` — **still auto-allowed, still zero prompts** (~7 s).
+- Verdict: the official 2.1.269 regression ("read-only git commands unexpectedly asking for permission after a session had been running for a while") **does not reproduce on OCC** — matching the R2.4 static audit (stateless per-call read-only verdict).
+
+**Self-acceptance vs `uvx claude-code@2.1.270`:** observable contract on this surface (read-only git auto-allow with no prompt, including post-compaction) is identical — official 2.1.269 and 2.1.270 region text is byte-identical (R2.2), OCC's same-region text was byte-verified against x269 in OCC-84/OCC-123, and the live REPL replay above confirms the behavior end-to-end.
+
+## R2.7 Release
+
+**Superseded by the concurrent OCC-124 round — this round ships docs-only, no release.**
+
+- Plan of record at round start: version **v2.1.334** (package.json 2.1.333 → 2.1.334), CHANGELOG header "Last fully caught up through Claude Code **2.1.270**", tag pushed only after 安全审核员 + 验收员 approval.
+- **Collision (discovered 2026-09-14 at merge time):** while this round's forensics/e2e were running, the concurrent **OCC-124** round landed the same `2.1.269 → 2.1.270` catch-up on `main` (commits a6b96f6 → f328f52/PR #367 → ee0565c): it consumed **v2.1.334** (package.json bumped, tag `v2.1.334` pushed at f328f52, publish.yml release + verification appended in its own ledger `docs/upstream-version-gap-occ124.md`), and main's CHANGELOG header already declares "Last fully caught up through Claude Code `2.1.270`".
+- **Independent convergence (mutual corroboration):** OCC-124 concluded "0 LAND, 1 STAGED bytecode-only, 4 NO-OP — OCC exposure audited negative: no TTL/staleness mechanism exists in OCC's permission path". This round, via a disjoint method (140/140 zstd-frame identity, four normalized anchor sweeps, digit-preserving positional diff, 9-surface stateless audit, live regression-scenario REPL e2e), reached the identical verdict: **no observable client-side code delta for the git-permission fix; nothing portable; OCC not affected** (R2.2–R2.4, R2.6). Two independent rounds agreeing materially strengthens the no-gap conclusion.
+- **No redundant release cut.** A v2.1.335 bump carrying zero src changes after main already declares the 2.1.270 catch-up would be a no-op release polluting `/releases` (OCC-40 precedent: no-op bumps violate the no-invented/partial discipline). This round's deliverable is therefore this ledger (Round 2 sections R2.1–R2.8) merged to `main` as a docs commit.
+
+## R2.8 Round-2 outcome summary
+
+- Official `2.1.270` verified published (npm + GitHub + fresh ELF, three-way) — single changelog entry: the read-only-git permission regression fix.
+- Full binary forensics: the fix has **no observable code delta** in the linux-x64 ELF; the only two semantic changes in 2.1.270 are refusal-fallback/backend-dependent and NOT ported (R2.3).
+- OCC regression audit across 9 surfaces: **NOT affected** — read-only verdict is stateless per call; every cache the 2.1.269 items added/cleared sits off the allow path (R2.4).
+- Self-acceptance: sanitized-env per-directory test sweep + **live regression-scenario REPL e2e PASS** (read-only git auto-allowed with zero prompts before AND after a real `/compact`, default permission mode, built artifact, real model) (R2.6).
+- Catch-up declaration + release already on main via OCC-124 (v2.1.334); this round lands the corroborating ledger only (R2.7).
