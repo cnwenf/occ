@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@cnwenf/occ.svg)](https://www.npmjs.com/package/@cnwenf/occ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-%23000000.svg)](https://bun.sh/)
-[![Tracks: Claude Code 2.1.267](https://img.shields.io/badge/Tracks-Claude%20Code%202.1.267-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
+[![Tracks: Claude Code 2.1.270](https://img.shields.io/badge/Tracks-Claude%20Code%202.1.270-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
 [简体中文](./README.zh-CN.md) · **English**
 
@@ -13,7 +13,7 @@
 
 ## What is OCC
 
-**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.267` — 2.1.266 fully aligned; 2.1.267 partial: settings-side effort cap + E8/E9/E10/E12/E32/E33 landed, E8-runtime-realpath / E11 / E19 / E20 / E34 / prompt-cache-snapshot staged, per OCC-121 + OCC-82 gap reports). The code is fully open, auditable, backdoor-free, and your data stays under your control.
+**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.270` — fully aligned through official 2.1.270: the 2.1.268/2.1.269 portable subsets landed in OCC-122/OCC-123/OCC-84, and the sole 2.1.270 change — the read-only git Bash permission regression fix — carries no portable client-side delta, verified independently by two forensic rounds OCC-124 + OCC-85, per those gap reports). The code is fully open, auditable, backdoor-free, and your data stays under your control.
 
 If you worry that a closed-source CLI might hide backdoors, or that your code and credentials are uploaded to unauditable services, OCC is for you: all source is open and unobfuscated, the build is reproducible from source, and API credentials are sent only to endpoints you configure.
 
@@ -62,7 +62,7 @@ Requires a valid Anthropic API Key (or AWS Bedrock / Google Vertex / Azure Found
 | **Auditability** | Line-by-line reviewable | No |
 | **Telemetry** | Minimal (analytics stubbed) | Standard |
 | **Data sovereignty** | Credentials stay on your machine; requests only to endpoints you configure | Anthropic endpoints |
-| **Capability parity** | Tracks CC `2.1.267` (partial) | Reference implementation |
+| **Capability parity** | Tracks CC `2.1.270` (fully aligned) | Reference implementation |
 | **Providers** | Anthropic Direct, Bedrock, Vertex, Azure | Anthropic, Bedrock, Vertex |
 | **Cost** | Free & open-source (MIT) | Subscription |
 | **Build** | Reproducible from source | N/A |
@@ -157,7 +157,7 @@ For architecture, entry/bootstrap, tool system, UI layer, and module-status deta
 
 ## Status
 
-- Tracks Claude Code **`2.1.267` (partial)** (2.1.266 fully aligned; 2.1.267 partial: settings-side effort cap + E8/E9/E10/E12/E32/E33 landed, E8-runtime-realpath / E11 / E19 / E20 / E34 / prompt-cache-snapshot staged — see `docs/upstream-version-gap-occ121.md` and `docs/upstream-version-gap-occ82.md`).
+- Tracks Claude Code **`2.1.270`** (fully aligned through official 2.1.270 — portable subsets through 2.1.269 landed in OCC-122/OCC-123/OCC-84; the sole 2.1.270 change is the read-only-git Bash permission regression fix, which carries no portable client-side delta so nothing was ported, verified independently by OCC-124 + OCC-85 — see `docs/upstream-version-gap-occ124.md` and `docs/upstream-version-gap-occ85.md`).
 - Published to npm as [`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ).
 - Many modules are intentionally stubbed or feature-flagged off — see "Disabled / stubbed" above.
 
