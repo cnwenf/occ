@@ -19,8 +19,18 @@ import { MarkdownTable } from './MarkdownTable.js';
 // case (Fk @197018715) — and drops the checkbox child (official single-sink
 // policy; the official's older marked never emitted one). This dedicated
 // renderer predates that fix and is kept because the version-2.1.149-ui e2e
-// pins it; both sinks produce identical "- [ ] foo" / "- [x] foo" output,
-// locked by the cross-sink parity test in test/utils/markdown-formatToken.test.ts.
+// pins it. For TIGHT task lists (no blank lines between items) both sinks
+// produce identical "- [ ] foo" / "- [x] foo" output — locked by the cross-sink
+// parity test in test/utils/markdown-formatToken.test.ts. KNOWN DIVERGENCE
+// (pre-existing, not introduced by the single-sink policy; staged for a future
+// round): for LOOSE task lists (blank-line-separated items) marked v17 wraps
+// each item's content in a `paragraph` token, and formatToken's paragraph case
+// does not carry the list_item parent context — so the applyMarkdown/formatToken
+// path loses bullet + task marker ("task one\ntask two") while formatTaskList
+// preserves them ("- [ ] task one\n\n- [x] task two"). The same paragraph-case
+// gap also flattens loose non-task lists. Pinned by the loose characterization
+// test in test/utils/markdown-formatToken.test.ts; the suggested future fix is
+// passing the list_item parent through the paragraph case.
 const TASK_EOL = '\n';
 function listHasTaskItems(token: Tokens.List): boolean {
   return (token.items ?? []).some(item => !!(item as Token & { task?: boolean }).task);

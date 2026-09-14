@@ -96,10 +96,10 @@ The acceptance review passed functionality (E2E 20/20, headless 5/5, E17 8/8) an
 
 ### 8.1 [P1 BLOCKER] formatToken html/default changes had zero automated tests — FIXED
 
-New `test/utils/markdown-formatToken.test.ts` (12 tests) pins the Gap-125b contract:
+New `test/utils/markdown-formatToken.test.ts` (14 tests) pins the Gap-125b contract:
 - **html token → `token.text` verbatim**: `applyMarkdown('Usage: /output-style <style>')` preserves `<style>` (the exact live-discovered gap); a raw≠text html token distinguishes `.text` from `.raw`; block-level html renders verbatim. Mutation `case 'html': return ''` → 3 tests fail.
 - **Unhandled token → `token.raw` fallback** (official `Fk` switch default, @197023577): synthetic unknown token types return `raw`, never `text`; `def` stays `''` (official `case"def":return""` pinned alongside so a blanket default-raw mutation of the def arm is caught). Mutation `default: return ''` → 2 tests fail.
-- **GFM task-list output** (P2-2 policy, §8.3): exact `applyMarkdown('- [ ] task one\n- [x] task two')` output, no `[ ] -` bullet leak, bare checkbox token → `''`, mixed task/plain items, nested-indent pin (kills the "remove the checkbox filter but keep the `''` arm" mutation — invisible at depth 0, caught at depth 1 where an unfiltered checkbox child adds a spurious `'  '.repeat(listDepth)` slot), and **cross-sink parity** with `Markdown.tsx` `formatTaskList`.
+- **GFM task-list output** (P2-2 policy, §8.3): exact `applyMarkdown('- [ ] task one\n- [x] task two')` output, no `[ ] -` bullet leak, bare checkbox token → `''`, mixed task/plain items, nested-indent pin (kills the "remove the checkbox filter but keep the `''` arm" mutation — invisible at depth 0, caught at depth 1 where an unfiltered checkbox child adds a spurious `'  '.repeat(listDepth)` slot), and **cross-sink parity for TIGHT lists** with `Markdown.tsx` `formatTaskList` (loose lists diverge — known staged gap, §8.3, pinned by 2 characterization tests).
 
 Mutation ledger: `html→''` 3 fail · `default→''` 2 fail · `taskMarker→''` 3 fail · no-checkbox-filter 1 fail (nested test) — all four killed.
 
@@ -128,7 +128,11 @@ Pre-fix `applyMarkdown('- [ ] task one\n- [x] task two')` produced `[ ] - task o
 - the **text case renders the task marker** from the parent list_item's `task`/`checked` flags (first content child only), reproducing the official marker position;
 - `case 'checkbox': return ''` kept as a defensive arm (a stray checkbox token can never re-leak raw).
 
-`src/components/Markdown.tsx`'s stale comment (lines 15-23) rewritten to state this policy and reference the cross-sink parity lock; `formatTaskList` body untouched (pinned by version-2.1.149-ui e2e). Parity test: `formatTaskList(list)` output === `applyMarkdown` output (modulo trailing newline).
+`src/components/Markdown.tsx`'s stale header comment rewritten to state this policy and reference the cross-sink parity lock (F1 round: further amended to scope the parity claim to tight lists and document the loose gap inline); `formatTaskList` body untouched (pinned by version-2.1.149-ui e2e). Parity test: `formatTaskList(list)` output === `applyMarkdown` output (modulo trailing newline) — **scoped to TIGHT lists**, see the parity-range note below.
+
+**Parity range + known loose-list gap (review F1, 2026-09-15 second review round).** The dual-sink "identical output" claim holds for **tight** task lists only. For **loose** lists (blank-line-separated items) marked v17 wraps each item's content in a `paragraph` token, and `formatToken`'s paragraph case does not carry the list_item parent context — the `applyMarkdown`/`formatToken` path loses bullet + task marker (`task one\ntask two`) while `formatTaskList` preserves them (`- [ ] task one\n\n- [x] task two\n\n`). This is **pre-existing**, not a regression of the P2-2 policy: reviewer base-swap at b6010ea showed loose lists leaked `[ ] task one\n[x] task two` (raw checkbox, no bullet) before this round too. The same root cause also flattens loose **non-task** lists through `formatToken` (production callers `PreviewBox.tsx:103` / `AskUserQuestionPermissionRequest.tsx:117` could hit model-authored blank-line lists). Disposition this round: **narrow the declared parity scope to tight lists** (test title + comments, `Markdown.tsx` comment, this section) and pin the divergence with 2 clearly-labeled characterization tests in `markdown-formatToken.test.ts`; the functional loose fix is **staged for a later round** (suggested approach: pass the list_item parent through the paragraph case).
+
+**Related layer note (review F3, 备查):** the official `Fk` hangs the bullet prefix at the **list_item layer** (including the continuation-indent `p`), while OCC renders it in the **text case** — for loose/multi-line items the continuation indent is therefore unequal to the official. Pre-existing and undeclared until this note; staged together with the loose-list fix above.
 
 ### 8.4 [P2-3] flagSettings/policySettings override → write succeeds but silently ineffective — DECIDED: official parity, documented + behavior-locked
 
@@ -170,7 +174,18 @@ L16 ("What is OCC") and L160 ("Status") no longer claim "the sole 2.1.270 change
 ### 8.10 Review-round gates
 
 - `biome lint` on all 7 changed files: clean (0 errors / 0 warnings).
-- `bun run build`: green (`dist/cli.js` 29.05 MB, `MACRO.VERSION=2.1.334`); built artifact used for the §8.2 live headless verification.
-- Per-file: `output-style.test.ts` **51/51** (was 21) · `markdown-formatToken.test.ts` **12/12** (new) · `output-style-integration.test.ts` **4/4** (new) · `version-2.1.144-commands-rename.e2e.test.ts` **9/9** (was 8).
+- `bun run build`: green (`dist/cli.js` 29.05 MiB — the unit Bun's build output prints as "MB"; same artifact as §1's 30.46 MB decimal figure: 30,462,621 B = 29.05 MiB ≈ 30.46 MB — `MACRO.VERSION=2.1.334`); built artifact used for the §8.2 live headless verification.
+- Per-file: `output-style.test.ts` **51/51** (was 21) · `markdown-formatToken.test.ts` **12/12** (new; 14/14 after the F1 characterization additions below) · `output-style-integration.test.ts` **4/4** (new) · `version-2.1.144-commands-rename.e2e.test.ts` **9/9** (was 8).
 - **Full CI gate `CI=1 bash scripts/ci-test.sh`** (462 files, per-file process isolation): **3985 pass / 1 fail / 114 skip** — the single fail is the pre-existing environmental `feedback-ai.e2e.test.ts` (live-model synthesis; identical signature A/B-verified clean-tree in OCC-108 and recurring in the OCC-83/107/109/110/119 ledgers; this round's diff is tests + docs + README only and cannot reach it).
 - Mutation ledger (all killed): `html→''` · `default→''` · `taskMarker→''` · no-checkbox-filter · sanitizer→identity · save-error-sanitized · guard-swap.
+
+### 8.11 Second review round (F1+F2, 2026-09-15) — parity-scope narrowing + comment corrections
+
+The reviewer's independent re-audit of PR #372 confirmed all 9 fix claims and raised F1 (MEDIUM) + F2 (LOW) + F3/F4 (备查). Dispositions:
+
+- **F1 (fixed, scope-narrowing option):** all "dual sinks produce identical output" claims narrowed to **tight** task lists — `markdown-formatToken.test.ts` parity test renamed `cross-sink parity (TIGHT list): …` with scope comment, `Markdown.tsx` header comment amended, §8.1/§8.3 annotated. The loose-list divergence (marked v17 `paragraph` wrapping loses bullet+marker through `formatToken`; `formatTaskList` preserves) is documented as **pre-existing** (reviewer base-swap at b6010ea) and **staged for a later round** (suggested fix: pass the list_item parent through the paragraph case). Pinned by 2 new clearly-labeled characterization tests (loose task list + loose plain list) so the future fix is detected — file now 14/14.
+- **F2 (fixed):** `output-style.ts` `truncateUtf16Safe` comment corrected — Bun's utf16le round-trip **preserves** residual lone surrogates as-is (verified Bun 1.3.14: `"\ud800abc"` round-trips unchanged), matching official `Re`; it does NOT produce U+FFFD. Harmless because `stripInvisibleToFixedPoint` (official `A$n`/`z`) already removed lone surrogates upstream; round-trip kept for byte-faithful structural parity. No functional change.
+- **F3 (acknowledged, staged):** official `Fk` hangs the bullet prefix at the list_item layer (incl. continuation indent) vs OCC's text-case layer — continuation-indent inequality for loose/multi-line items noted in §8.3; staged together with the F1 loose fix. No code action this round.
+- **F4 (fixed):** §8.10 build-size unit clarified — Bun prints MiB labeled "MB": 30,462,621 B = 29.05 MiB ≈ 30.46 MB (decimal), the same artifact §1/§6 record.
+
+Gates this round: `biome lint` clean on the 3 changed source/test files · per-file `markdown-formatToken.test.ts` **14/14**, `output-style.test.ts` **51/51**, `output-style-integration.test.ts` **4/4** · `bun run build` green (`dist/cli.js` 29.05 MiB = 30,462,621 B, `MACRO.VERSION=2.1.334`) · full CI gate **3987 pass / 1 fail / 114 skip** (sole fail = pre-existing environmental `feedback-ai.e2e.test.ts`; +2 pass vs §8.10 from the new characterization tests). Changes are comments/docs/tests only — zero functional src delta.

@@ -146,11 +146,13 @@ describe('formatToken — GFM task-list checkbox policy (review P2-2, official s
     expect(out).toBe('- outer\n  - [ ] inner task')
   })
 
-  test('cross-sink parity: formatToken path === formatTaskList path', () => {
+  test('cross-sink parity (TIGHT list): formatToken path === formatTaskList path', () => {
     // Markdown.tsx routes task lists through formatTaskList (pinned by
     // version-2.1.149-ui.e2e); applyMarkdown routes them through formatToken.
-    // Both sinks must produce identical output — the reviewer's dual-sink
-    // inconsistency finding.
+    // For TIGHT lists (no blank lines between items) both sinks must produce
+    // identical output — the reviewer's dual-sink inconsistency finding.
+    // Scope note: parity holds for tight lists ONLY; loose lists diverge —
+    // see the characterization test below (pre-existing gap, staged).
     configureMarked()
     const tokens = marked.lexer('- [ ] task one\n- [x] task two')
     const list = tokens.find(t => t.type === 'list') as Tokens.List
@@ -158,5 +160,35 @@ describe('formatToken — GFM task-list checkbox policy (review P2-2, official s
     const viaFormatToken = applyMarkdown('- [ ] task one\n- [x] task two', THEME)
     // formatTaskList keeps a trailing newline per item; applyMarkdown trims.
     expect(viaTaskList.replace(/\n$/, '')).toBe(viaFormatToken)
+  })
+
+  // KNOWN STAGED GAP (review F1) — characterization, NOT a desired behavior.
+  // For LOOSE task lists (blank-line-separated items) marked v17 wraps each
+  // item's content in a `paragraph` token; formatToken's paragraph case does
+  // not carry the list_item parent context, so the applyMarkdown path loses
+  // the bullet + task marker while formatTaskList preserves both. Pre-existing
+  // (reviewer base-swap at b6010ea: loose leaked "[ ] task one\n[x] task two"
+  // raw even before the Gap-125b policy) — not a regression of this round.
+  // Suggested future fix: pass the list_item parent through the paragraph case.
+  // These pins MUST be updated (not deleted) when that fix lands.
+  test('LOOSE task list: sinks diverge (staged gap pin — formatToken drops bullet+marker)', () => {
+    configureMarked()
+    const loose = '- [ ] task one\n\n- [x] task two'
+    const tokens = marked.lexer(loose)
+    const list = tokens.find(t => t.type === 'list') as Tokens.List
+    const viaTaskList = formatTaskList(list, THEME, null)
+    const viaFormatToken = applyMarkdown(loose, THEME)
+    // formatTaskList preserves the markers:
+    expect(viaTaskList).toBe('- [ ] task one\n\n- [x] task two\n\n')
+    // formatToken path currently loses bullet + task marker entirely:
+    expect(viaFormatToken).toBe('task one\ntask two')
+    expect(viaFormatToken).not.toBe(viaTaskList.replace(/\n+$/, ''))
+  })
+
+  test('LOOSE plain (non-task) list also loses bullets via formatToken (same root cause)', () => {
+    // The paragraph-case gap is not task-specific: any loose list rendered
+    // through applyMarkdown/formatToken flattens. Same staged fix covers it.
+    const out = applyMarkdown('- alpha\n\n- beta', THEME)
+    expect(out).toBe('alpha\nbeta')
   })
 })
