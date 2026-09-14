@@ -272,13 +272,23 @@ export function formatToken(
     case 'escape':
       // Markdown escape: \) → ), \\ → \, etc.
       return token.text
+    case 'html':
+      // Official 2.1.270 serializer (binary offset 197023577, minified Fk):
+      // `case"html":return e.text` — raw HTML text is rendered verbatim (e.g.
+      // `<style>` in "Usage: /output-style <style>"). OCC previously dropped
+      // html tokens, silently swallowing angle-bracket text.
+      return token.text
     case 'def':
     case 'del':
-    case 'html':
-      // These token types are not rendered
+      // Link definitions are not rendered (official: `case"def":return""`).
+      // del tokens never reach here in OCC — configureMarked disables the
+      // strikethrough tokenizer (documented divergence; the official uses a
+      // strict `~~...~~` regex tokenizer + strikethrough render instead).
       return ''
   }
-  return ''
+  // Official default: `return e.raw` — unhandled token types fall back to the
+  // raw markdown source rather than being dropped.
+  return token.raw
 }
 
 // Matches owner/repo#NNN style GitHub issue/PR references. The qualified form

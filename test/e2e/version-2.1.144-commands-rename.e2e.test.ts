@@ -10,7 +10,9 @@ import { REPO_ROOT } from "./helpers";
  *   E12 — /usage-credits is the real command; /extra-usage is a "Renamed to
  *          /usage-credits" stub that delegates to it.
  *   E16 — /agents slash command is a "(removed)" stub (wizard removed in 2.1.198).
- *   E17 — /output-style command is removed entirely (no command registered).
+ *   E17 — /output-style was removed entirely at 2.1.200, but the official
+ *          2.1.269 RE-ADDED it as a local command; it is registered with the
+ *          official 2.1.270 definition (docs/upstream-version-gap-occ125.md).
  *   E13 — /cost + /stats merged into /usage as aliases (single /usage command).
  *
  * Per aligning-with-official-binary: expected shapes are verified against the
@@ -90,25 +92,33 @@ console.log(JSON.stringify({
     expect(out.wizardGone).toBe(true);
   });
 
-  test("E17 /output-style command is NOT registered (import + command absent)", async () => {
+  test("E17 /output-style is registered with the official 2.1.270 definition (re-added upstream in 2.1.269)", async () => {
+    // At 2.1.200 this command was removed entirely; the official 2.1.269
+    // binary re-adds it (def @195160405, module @202167402). This round's
+    // port (docs/upstream-version-gap-occ125.md §2) restores it, so the
+    // stale "absent" contract is replaced with the current official shape:
+    //   {type:"local",name:"output-style",supportsNonInteractive:!0,
+    //    description:"List output styles or switch to one",argumentHint:"[style]"}
     const script = `
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
-const commandsSrc = await Bun.file("${REPO_ROOT}/src/commands.ts").text();
-const dirExists = await Bun.file("${REPO_ROOT}/src/commands/output-style/index.ts").exists();
 const { getBuiltInCommandByName } = await import("${REPO_ROOT}/src/commands.ts");
 const cmd = getBuiltInCommandByName("output-style");
 console.log(JSON.stringify({
-  importAbsent: !commandsSrc.includes("commands/output-style/index.js"),
-  arrayEntryAbsent: !commandsSrc.includes("outputStyle"),
-  dirGone: !dirExists,
-  notRegistered: !cmd,
+  found: !!cmd,
+  name: cmd?.name,
+  type: cmd?.type,
+  description: cmd?.description,
+  argumentHint: cmd?.argumentHint,
+  supportsNonInteractive: cmd?.supportsNonInteractive,
 }));
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
-    expect(out.importAbsent).toBe(true);
-    expect(out.arrayEntryAbsent).toBe(true);
-    expect(out.dirGone).toBe(true);
-    expect(out.notRegistered).toBe(true);
+    expect(out.found).toBe(true);
+    expect(out.name).toBe("output-style");
+    expect(out.type).toBe("local");
+    expect(out.description).toBe("List output styles or switch to one");
+    expect(out.argumentHint).toBe("[style]");
+    expect(out.supportsNonInteractive).toBe(true);
   });
 
   test("E13 /usage is registered with aliases [cost, stats] and official description", async () => {
