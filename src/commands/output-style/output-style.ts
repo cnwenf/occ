@@ -82,8 +82,13 @@ function stripInvisibleToFixedPoint(value: string): string {
 }
 
 // Official `ne`: truncate to `max` UTF-16 code units, dropping a trailing
-// high surrogate, then round-trip through Buffer utf16le (official `Re`) so
-// any residual lone surrogate becomes U+FFFD rather than leaking raw.
+// high surrogate, then round-trip through Buffer utf16le (official `Re`).
+// Note: on Bun the utf16le round-trip PRESERVES any residual lone surrogate
+// as-is (verified on Bun 1.3.14: "\ud800abc" round-trips unchanged) — it does
+// NOT convert it to U+FFFD, and neither does the official `Re`. This is
+// behaviorally harmless here: lone surrogates are already removed upstream by
+// `stripInvisibleToFixedPoint` (official `A$n`/`z`) before truncation. The
+// round-trip is kept for byte-faithful structural parity with the official.
 function truncateUtf16Safe(value: string, max: number): string {
   if (max <= 0) return ''
   if (value.length <= max) return value
