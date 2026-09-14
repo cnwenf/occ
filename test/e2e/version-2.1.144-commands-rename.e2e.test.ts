@@ -121,6 +121,42 @@ console.log(JSON.stringify({
     expect(out.supportsNonInteractive).toBe(true);
   });
 
+  test("E17 /output-style load() resolves a working call() (behavioral pin, review P3-5)", async () => {
+    // The registration test above only pins the static definition; this one
+    // exercises the lazy `load: () => import('./output-style.js')` and drives
+    // the real `call()` through two official output branches (listing +
+    // unknown style) in a hermetic temp CLAUDE_CONFIG_DIR.
+    const script = `
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";
+const os = await import("os");
+const fs = await import("fs");
+const path = await import("path");
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "e17-os-"));
+process.env.CLAUDE_CONFIG_DIR = path.join(tmp, "cfg");
+const { getBuiltInCommandByName } = await import("${REPO_ROOT}/src/commands.ts");
+const cmd = getBuiltInCommandByName("output-style");
+const mod = await cmd.load();
+const listing = await mod.call("", {});
+const unknown = await mod.call("nope", {});
+fs.rmSync(tmp, { recursive: true, force: true });
+console.log(JSON.stringify({
+  hasCall: typeof mod.call === "function",
+  listingType: listing.type,
+  listingHasCurrent: listing.value.startsWith("Output style: "),
+  listingHasUsage: listing.value.includes("Usage: /output-style <style>"),
+  unknownType: unknown.type,
+  unknownMessage: unknown.value.startsWith('Unknown output style "nope". Available styles: '),
+}));
+`;
+    const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
+    expect(out.hasCall).toBe(true);
+    expect(out.listingType).toBe("text");
+    expect(out.listingHasCurrent).toBe(true);
+    expect(out.listingHasUsage).toBe(true);
+    expect(out.unknownType).toBe("text");
+    expect(out.unknownMessage).toBe(true);
+  });
+
   test("E13 /usage is registered with aliases [cost, stats] and official description", async () => {
     const script = `
 process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "dummy";

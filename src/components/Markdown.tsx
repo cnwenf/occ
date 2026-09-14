@@ -14,10 +14,13 @@ import { MarkdownTable } from './MarkdownTable.js';
 
 // GFM task-list rendering. marked tokenizes "- [ ] foo" / "- [x] foo" as a
 // list_item with `task: true` + `checked`, plus a separate `checkbox` child
-// token. OCC's formatToken drops the checkbox child and only emits the bullet,
-// so task lists lose their [ ]/[x] marker. Render them here as
-// "- [ ] foo" / "- [x] foo" (bullet + checkbox + content), matching the
-// official listitem output ("${bullet} [${checked?'x':' '}] ${content}").
+// token. formatToken now renders the "[ ]"/"[x]" marker itself — inline from
+// the list_item's task/checked flags, matching the official serializer's text
+// case (Fk @197018715) — and drops the checkbox child (official single-sink
+// policy; the official's older marked never emitted one). This dedicated
+// renderer predates that fix and is kept because the version-2.1.149-ui e2e
+// pins it; both sinks produce identical "- [ ] foo" / "- [x] foo" output,
+// locked by the cross-sink parity test in test/utils/markdown-formatToken.test.ts.
 const TASK_EOL = '\n';
 function listHasTaskItems(token: Tokens.List): boolean {
   return (token.items ?? []).some(item => !!(item as Token & { task?: boolean }).task);

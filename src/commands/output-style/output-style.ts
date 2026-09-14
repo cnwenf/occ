@@ -32,10 +32,74 @@ import {
 //   i(event, meta)      → logEvent(event, meta)
 //   jht(t)              → telemetryStyleName(t)
 //   y(s)                → telemetry string interning (identity for our purposes)
-//   _n(s)               → display sanitizer — identity in OCC (the REPL input
-//                         layer strips control characters before command args,
-//                         verified empirically; same mapping as
-//                         config-noninteractive's `Expected key=value` port)
+//   _n(s)               → displaySanitizer(s) — ported verbatim (see below);
+//                         the official applies it at every user-facing echo of
+//                         a style name/description/argument, including the
+//                         headless `-p` path (the interactive REPL additionally
+//                         strips control chars at the input layer, but `-p`
+//                         args reach `call()` raw)
+
+// Official `_n` (chunk-q3eg9j9b, binary offset ~188806900) is a display
+// sanitizer, NOT an identity — ported byte-faithfully:
+//   var W=/[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDBFF]|[\uDC00-\uDFFF]/g
+//   function z(e){return e.replace(W,(r)=>r.length===2?r:"")}
+//   var C=/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]|(?!\u0020)\p{Zs}/gu
+//   function A$n(e){...fixed-point loop ≤64 rounds, non-convergence → ""...}
+//   function _n(e){if(typeof e!=="string")return"";
+//                  return ne(A$n(e.length>4096?e.slice(0,4096):e),1024)}
+// and `ne` (chunk-0y8dccaw @~185157100): surrogate-safe truncate to n UTF-16
+// units + `Re` Buffer utf16le round-trip. The official applies `_n` at all six
+// message sites: unknown-style echo, available-names join, listing name +
+// description, current label, already-active, and set-to messages. The save
+// error message is NOT sanitized upstream (`${d.error.message}` verbatim).
+
+// Official `W`: surrogate-pair regex — well-formed pairs match at length 2.
+const SURROGATE_RE =
+  /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDBFF]|[\uDC00-\uDFFF]/g
+
+// Official `z`: keep well-formed surrogate pairs, drop lone surrogates.
+function stripLoneSurrogates(value: string): string {
+  return value.replace(SURROGATE_RE, match => (match.length === 2 ? match : ''))
+}
+
+// Official `C`: control/format characters (includes ESC — so CSI sequences
+// lose their escape byte), line/paragraph separators, default-ignorables,
+// braille blank, and non-space separators.
+const INVISIBLE_RE =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}\u2800]|(?!\u0020)\p{Zs}/gu
+
+// Official `A$n`: iterate z+C-stripping to a fixed point (≤64 rounds —
+// stripping can expose new lone surrogates or invisible joins); a value that
+// never converges fails closed to ''.
+function stripInvisibleToFixedPoint(value: string): string {
+  let current = value
+  for (let round = 0; round < 64; round++) {
+    const next = stripLoneSurrogates(current).replace(INVISIBLE_RE, '')
+    if (next === current) return next
+    current = next
+  }
+  return ''
+}
+
+// Official `ne`: truncate to `max` UTF-16 code units, dropping a trailing
+// high surrogate, then round-trip through Buffer utf16le (official `Re`) so
+// any residual lone surrogate becomes U+FFFD rather than leaking raw.
+function truncateUtf16Safe(value: string, max: number): string {
+  if (max <= 0) return ''
+  if (value.length <= max) return value
+  const sliced = value.slice(0, max)
+  const lastUnit = sliced.charCodeAt(max - 1)
+  const trimmed =
+    lastUnit >= 0xd800 && lastUnit <= 0xdbff ? sliced.slice(0, -1) : sliced
+  return Buffer.from(trimmed, 'utf16le').toString('utf16le')
+}
+
+// Official `_n`: non-string → '', pre-slice at 4096, sanitize, truncate 1024.
+function displaySanitizer(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const pre = value.length > 4096 ? value.slice(0, 4096) : value
+  return truncateUtf16Safe(stripInvisibleToFixedPoint(pre), 1024)
+}
 
 // Official export `g as CUSTOM_CURRENT_STYLE_PLACEHOLDER` — verbatim.
 export const CUSTOM_CURRENT_STYLE_PLACEHOLDER = 'a custom style'
@@ -128,22 +192,27 @@ const call: LocalCommandCall = async (args, context) => {
 
   if (target === undefined) {
     if (trimmed && !LIST_ARGS.includes(lowered) && !HELP_ARGS.includes(lowered)) {
+      // Official: `Unknown output style "${_n(r)}". Available styles: ${l.map(_n).join(", ")}${p}`
       return {
         type: 'text',
-        value: `Unknown output style "${trimmed}". Available styles: ${selectable.join(', ')}${offBoxNote}`,
+        value: `Unknown output style "${displaySanitizer(trimmed)}". Available styles: ${selectable.map(name => displaySanitizer(name)).join(', ')}${offBoxNote}`,
       }
     }
+    // Official: `let e=l.map(c=>{let S=n[c]?.description,f=_n(c),O=c===s?" (current)":"";
+    //            return S?`- ${f}${O}: ${_n(S)}`:`- ${f}${O}`})`
     const lines = selectable.map(name => {
       const description = allStyles[name]?.description
       const currentMark = name === current ? ' (current)' : ''
+      const displayName = displaySanitizer(name)
       return description
-        ? `- ${name}${currentMark}: ${description}`
-        : `- ${name}${currentMark}`
+        ? `- ${displayName}${currentMark}: ${displaySanitizer(description)}`
+        : `- ${displayName}${currentMark}`
     })
+    // Official: `Output style: ${u&&!jJe(n[s])?g:_n(s)}` (g = placeholder verbatim)
     const currentLabel =
       relayed && !isBuiltinStyle(allStyles[current])
         ? CUSTOM_CURRENT_STYLE_PLACEHOLDER
-        : current
+        : displaySanitizer(current)
     return {
       type: 'text',
       value: `Output style: ${currentLabel}\n\nAvailable styles:\n${lines.join('\n')}\n\nUsage: /output-style <style>${offBoxNote}`,
@@ -151,7 +220,11 @@ const call: LocalCommandCall = async (args, context) => {
   }
 
   if (target === current) {
-    return { type: 'text', value: `Output style is already ${target}` }
+    // Official: `Output style is already ${_n(t)}`
+    return {
+      type: 'text',
+      value: `Output style is already ${displaySanitizer(target)}`,
+    }
   }
 
   if (!isSettingSourceEnabled('localSettings')) {
@@ -179,7 +252,8 @@ const call: LocalCommandCall = async (args, context) => {
     settings_source: 'localSettings' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
 
-  return { type: 'text', value: `Output style set to ${target}` }
+  // Official: `Output style set to ${_n(t)}`
+  return { type: 'text', value: `Output style set to ${displaySanitizer(target)}` }
 }
 
 export { call }
