@@ -13,7 +13,7 @@
 
 ## What is OCC
 
-**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.270` — fully aligned through official 2.1.270: the 2.1.268/2.1.269 portable subsets landed in OCC-122/OCC-123/OCC-84, and the sole 2.1.270 change — the read-only git Bash permission regression fix — carries no portable client-side delta, verified independently by two forensic rounds OCC-124 + OCC-85, per those gap reports). The code is fully open, auditable, backdoor-free, and your data stays under your control.
+**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.270` — fully aligned through official 2.1.270: the 2.1.268/2.1.269 portable subsets landed in OCC-122/OCC-123/OCC-84, and the 2.1.270 changelog change — the read-only git Bash permission regression fix — carries no portable client-side delta, verified independently by two forensic rounds OCC-124 + OCC-85; the OCC-125 strict self-acceptance round against the official 2.1.270 binary then landed two live-discovered gaps — the full `/output-style` port (Gap-125a) and markdown-serializer html/default-token parity (Gap-125b) — per `docs/upstream-version-gap-occ125.md`). The code is fully open, auditable, backdoor-free, and your data stays under your control.
 
 If you worry that a closed-source CLI might hide backdoors, or that your code and credentials are uploaded to unauditable services, OCC is for you: all source is open and unobfuscated, the build is reproducible from source, and API credentials are sent only to endpoints you configure.
 
@@ -157,7 +157,7 @@ For architecture, entry/bootstrap, tool system, UI layer, and module-status deta
 
 ## Status
 
-- Tracks Claude Code **`2.1.270`** (fully aligned through official 2.1.270 — portable subsets through 2.1.269 landed in OCC-122/OCC-123/OCC-84; the sole 2.1.270 change is the read-only-git Bash permission regression fix, which carries no portable client-side delta so nothing was ported, verified independently by OCC-124 + OCC-85 — see `docs/upstream-version-gap-occ124.md` and `docs/upstream-version-gap-occ85.md`).
+- Tracks Claude Code **`2.1.270`** (fully aligned through official 2.1.270 — portable subsets through 2.1.269 landed in OCC-122/OCC-123/OCC-84; the 2.1.270 changelog change is the read-only-git Bash permission regression fix, which carries no portable client-side delta, verified independently by OCC-124 + OCC-85 — see `docs/upstream-version-gap-occ124.md` and `docs/upstream-version-gap-occ85.md`. The OCC-125 strict self-acceptance round against the official 2.1.270 binary landed two live-discovered gaps: Gap-125a `/output-style` full port + Gap-125b markdown-serializer html/default-token parity — see `docs/upstream-version-gap-occ125.md`).
 - Published to npm as [`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ).
 - Many modules are intentionally stubbed or feature-flagged off — see "Disabled / stubbed" above.
 

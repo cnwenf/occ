@@ -176,7 +176,14 @@ export function formatToken(
         .join('')
     }
     case 'list_item':
+      // Drop marked v17's `checkbox` child token — the "[ ] "/"[x] " marker is
+      // rendered from the list_item's task/checked flags in the text case below
+      // (official single-sink behavior: the official's older marked stripped
+      // the checkbox during tokenization, so its serializer never saw one).
+      // Letting it through would leak its raw ("[ ] ") before the bullet, and
+      // its rendered '' would still pick up a spurious indent at depth > 0.
       return (token.tokens ?? [])
+        .filter(_ => _.type !== 'checkbox')
         .map(
           _ =>
             `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, token, highlight)}`,
@@ -201,7 +208,27 @@ export function formatToken(
         return token.text
       }
       if (parent?.type === 'list_item') {
-        return `${orderedListNumber === null ? '-' : getListNumber(listDepth, orderedListNumber) + '.'} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(token.text)}${EOL}`
+        const bullet =
+          orderedListNumber === null
+            ? '-'
+            : getListNumber(listDepth, orderedListNumber) + '.'
+        // Official Fk serializer text case (binary @197018715):
+        //   `${l.task&&f?`[${l.checked?"x":" "}] `:""}${p}${E}`
+        // with f = this token is tokens[0] of the list_item — the task marker
+        // renders inline from the list_item's task/checked flags. The
+        // official's older marked stripped the GFM checkbox into those flags
+        // and emitted no checkbox child; marked v17 emits one (filtered in the
+        // list_item case above), so "first child" here means the first
+        // non-checkbox sibling.
+        const taskParent = parent as Tokens.ListItem
+        const firstContent = (taskParent.tokens ?? []).find(
+          _ => _.type !== 'checkbox',
+        )
+        const taskMarker =
+          taskParent.task && firstContent === token
+            ? ` [${taskParent.checked ? 'x' : ' '}]`
+            : ''
+        return `${bullet}${taskMarker} ${token.tokens ? token.tokens.map(_ => formatToken(_, theme, listDepth, orderedListNumber, token, highlight)).join('') : linkifyIssueReferences(token.text)}${EOL}`
       }
       return linkifyIssueReferences(token.text)
     case 'table': {
@@ -284,6 +311,16 @@ export function formatToken(
       // del tokens never reach here in OCC — configureMarked disables the
       // strikethrough tokenizer (documented divergence; the official uses a
       // strict `~~...~~` regex tokenizer + strikethrough render instead).
+      return ''
+    case 'checkbox':
+      // marked v17 emits a standalone `checkbox` child token for GFM task
+      // items; the official's older marked folded the marker into
+      // list_item.task/checked instead (binary @190612249). Checkbox policy:
+      // the marker is rendered once, from the parent list_item's flags (text
+      // case above); the child token itself renders nothing. The list_item
+      // case filters these out already — this arm keeps the policy explicit
+      // for any other path and prevents the official `default: return raw`
+      // fallback from leaking "[ ] " into the output.
       return ''
   }
   // Official default: `return e.raw` — unhandled token types fall back to the
