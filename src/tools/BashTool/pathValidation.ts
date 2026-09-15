@@ -717,6 +717,55 @@ const COMMAND_VALIDATOR: Partial<
   cp: (args: string[]) => !args.some(arg => arg?.startsWith('-')),
 }
 
+/**
+ * Official 2.1.271 fix B — "Fixed Bash permission checks skipping files a
+ * wildcard expands to when the wildcard sits in a command's pattern or
+ * option value."
+ *
+ * Byte-exact port of the official 2.1.272 linux-x64 ELF helpers (forensics
+ * in /tmp/cc-diff-126):
+ *   - `pC(arg)`  → globCharIndex: index of the first shell-glob char
+ *     (`*`, `?`, or `[` with a later closing `]`), else -1.
+ *   - `q4o(args, extracted)` → collectUnextractedGlobArgs: every arg whose
+ *     globCharIndex !== -1 that the extractor did NOT already return, deduped.
+ *   - `V4o` head computes `fe = F==="read" ? [...U, ...H] : U` where U = the
+ *     extractor output and H = the glob-arg collector; the main validation
+ *     loop iterates `fe`. On the legacy shell-quote path (`K4o → SAn` with
+ *     M=undefined) `bAn` reduces to exactly `q4o(args, U)` — the git preamble
+ *     is gated on `n!==void 0` and the quote filter on `n===void 0` returning
+ *     early. OCC's LIVE path IS that legacy shell-quote path (TREE_SITTER_BASH
+ *     is not in the feature allowlist), so q4o is the faithful reduction; the
+ *     dormant AST path matches official's argvUnquotedGlob-absent fallback
+ *     (`if(h===void 0||…)return d`), so both callers get q4o semantics.
+ *
+ * Write/create commands are NOT augmented (official `fe` appends H only when
+ * F==="read"; for writes H feeds the Oe/Ge read-deny-rule channel OCC does
+ * not model — appending there would invent stricter-than-official asks).
+ */
+function globCharIndex(arg: string): number {
+  for (let i = 0; i < arg.length; i++) {
+    const c = arg[i]
+    if (c === '*' || c === '?') return i
+    if (c === '[' && arg.indexOf(']', i + 1) !== -1) return i
+  }
+  return -1
+}
+
+function collectUnextractedGlobArgs(
+  args: string[],
+  extractedPaths: string[],
+): string[] {
+  const seen = new Set(extractedPaths)
+  const out: string[] = []
+  for (const arg of args) {
+    if (globCharIndex(arg) !== -1 && !seen.has(arg)) {
+      seen.add(arg)
+      out.push(arg)
+    }
+  }
+  return out
+}
+
 function validateCommandPaths(
   command: PathCommand,
   args: string[],
@@ -726,8 +775,14 @@ function validateCommandPaths(
   operationTypeOverride?: FileOperationType,
 ): PermissionResult {
   const extractor = PATH_EXTRACTORS[command]
-  const paths = extractor(args)
+  const extractedPaths = extractor(args)
   const operationType = operationTypeOverride ?? COMMAND_OPERATION_TYPE[command]
+  // Official 2.1.271 fix B: augment the read-validation list with any
+  // glob-containing arg the extractor dropped (e.g. grep's pattern position).
+  const paths =
+    operationType === 'read'
+      ? [...extractedPaths, ...collectUnextractedGlobArgs(args, extractedPaths)]
+      : extractedPaths
 
   // SECURITY: Check command-specific validators (e.g., to block flags that could bypass path validation)
   // Some commands like mv/cp have flags (--target-directory=PATH) that can bypass path extraction,

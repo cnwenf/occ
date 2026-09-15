@@ -226,7 +226,13 @@ function _temp(s) {
 }
 async function handleFastModeShortcut(enable: boolean, getAppState: () => AppState, setAppState: (f: (prev: AppState) => AppState) => void): Promise<string> {
   const unavailableReason = getFastModeUnavailableReason();
-  if (unavailableReason) {
+  // CC 2.1.272 (fast mode fixes): the refusal applies only when turning fast
+  // mode ON. `/fast off` must succeed even when the org has disabled fast
+  // mode — the official 2.1.272 toggle gates the refusal on the enable
+  // argument: `let d=Sz(...); if(d&&e) return {kind:"refused", refusal:\`Fast
+  // mode unavailable: ${d}\`}` (2.1.270 lacked the `&&e` gate, so `/fast off`
+  // answered "Fast mode unavailable" instead of turning off).
+  if (enable && unavailableReason) {
     return `Fast mode unavailable: ${unavailableReason}`;
   }
   // E33 (2.1.176): refuse to toggle fast mode ON when the fast model is

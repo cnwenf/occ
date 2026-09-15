@@ -371,6 +371,28 @@ export async function* withRetry<T>(
       // mode still active, so its `continue` never reaches the attempt clamp
       // and the for-loop terminates. Persistent sessions want the chunked
       // keep-alive path instead of fast-mode cache-preservation anyway.
+      //
+      // CC 2.1.272 (fast mode fixes): port of the official retry-watchdog
+      // interaction. 2.1.270 gated the whole fast block on `!VM()`
+      // (CLAUDE_CODE_RETRY_WATCHDOG off), so under the watchdog a
+      // usage-credits/overage 429 fell through to shouldRetry →
+      // CannotRetryError (turn failed instead of falling back to standard
+      // speed) and overload retried forever at fast speed. 2.1.272 drops
+      // that gate, captures `let Yn=sM()` (watchdog enabled) before the
+      // block, and then:
+      //   - the silent short-retry sleep runs only when NOT under the
+      //     watchdog (`if(Jn&&!Yn){await Q(ar,...);continue}`); under the
+      //     watchdog a short retry-after falls through to the normal visible
+      //     retry path instead of looping at fast speed in the background;
+      //   - cooldown (fallback to standard speed) is entered only for
+      //     non-short retries (`if(!Jn){...}`);
+      //   - every fast-path `continue` clamps the attempt counter
+      //     (`if(Yn&&pt>=s)pt=s`) so a fallback at/near budget exhaustion
+      //     still gets its standard-speed retry instead of ending the loop.
+      // OCC keeps its pre-existing `!isPersistentRetryEnabled()` gate (dead
+      // in production — the UNATTENDED_RETRY flag is not enabled — but it
+      // preserves the documented persistent-mode behavior above).
+      const watchdogRetryEnabled = isRetryWatchdogEnabled()
       if (
         wasFastModeActive &&
         !isPersistentRetryEnabled() &&
@@ -385,30 +407,45 @@ export async function* withRetry<T>(
         if (overageReason !== null && overageReason !== undefined) {
           handleFastModeOverageRejection(overageReason)
           retryContext.fastMode = false
+          // Official `if(Yn&&pt>=s)pt=s` — keep the for-loop alive so the
+          // standard-speed retry still runs at budget exhaustion.
+          if (watchdogRetryEnabled && attempt >= maxRetries) attempt = maxRetries
           continue
         }
 
         const retryAfterMs = getRetryAfterMs(error)
-        if (retryAfterMs !== null && retryAfterMs < SHORT_RETRY_THRESHOLD_MS) {
+        const isShortRetry =
+          retryAfterMs !== null && retryAfterMs < SHORT_RETRY_THRESHOLD_MS
+        // Official `if(Jn&&!Yn)`: the silent wait-and-retry at fast speed is
+        // for non-watchdog sessions only. Under the watchdog, fall through
+        // to the normal (visible) retry path below — fast mode stays active,
+        // but the user sees the retry message instead of a hidden fast-speed
+        // loop.
+        if (isShortRetry && !watchdogRetryEnabled) {
           // Short retry-after: wait and retry with fast mode still active
           // to preserve prompt cache (same model name on retry).
           await sleep(retryAfterMs, options.signal, { abortError })
           continue
         }
-        // Long or unknown retry-after: enter cooldown (switches to standard
-        // speed model), with a minimum floor to avoid flip-flopping.
-        const cooldownMs = Math.max(
-          retryAfterMs ?? DEFAULT_FAST_MODE_FALLBACK_HOLD_MS,
-          MIN_COOLDOWN_MS,
-        )
-        const cooldownReason: CooldownReason = is529Error(error)
-          ? 'overloaded'
-          : 'rate_limit'
-        triggerFastModeCooldown(Date.now() + cooldownMs, cooldownReason)
-        if (isFastModeEnabled()) {
-          retryContext.fastMode = false
+        // Official `if(!Jn){...}`: cooldown (switch to standard speed) only
+        // for long/unknown retry-after. A short retry-after under the
+        // watchdog must NOT trigger cooldown — it falls through instead.
+        if (!isShortRetry) {
+          const cooldownMs = Math.max(
+            retryAfterMs ?? DEFAULT_FAST_MODE_FALLBACK_HOLD_MS,
+            MIN_COOLDOWN_MS,
+          )
+          const cooldownReason: CooldownReason = is529Error(error)
+            ? 'overloaded'
+            : 'rate_limit'
+          triggerFastModeCooldown(Date.now() + cooldownMs, cooldownReason)
+          if (isFastModeEnabled()) {
+            retryContext.fastMode = false
+          }
+          // Official `if(Yn&&pt>=s)pt=s`.
+          if (watchdogRetryEnabled && attempt >= maxRetries) attempt = maxRetries
+          continue
         }
-        continue
       }
 
       // Fast mode fallback: if the API rejects the fast mode parameter
@@ -417,6 +454,8 @@ export async function* withRetry<T>(
       if (wasFastModeActive && isFastModeNotEnabledError(error)) {
         handleFastModeRejectedByAPI()
         retryContext.fastMode = false
+        // Official `if(Yn&&pt>=s)pt=s` in the 400-not-enabled path.
+        if (watchdogRetryEnabled && attempt >= maxRetries) attempt = maxRetries
         continue
       }
 

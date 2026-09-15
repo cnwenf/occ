@@ -1,7 +1,10 @@
 import { randomUUID } from 'crypto'
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
+import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
+import { formatDuration } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { pluralize } from '../../utils/oauthLoginExpiry.js'
 
 export const MONITOR_TOOL_NAME = 'Monitor'
 
@@ -9,11 +12,90 @@ export const MONITOR_TOOL_NAME = 'Monitor'
 const DEFAULT_TIMEOUT_MS = 300_000
 /** Max monitor deadline (ms). Mirrors the binary's TUo=3600000. */
 const MAX_TIMEOUT_MS = 3_600_000
+/**
+ * Hard deadline cap (ms) applied when arming a monitor — 30 minutes. Mirrors
+ * the binary's o=1800000 (2.1.271 flipped gate tengu_breezy_crescent ON, so
+ * every watch dies at this cap and `persistent` is a compat-only field).
+ */
+const MONITOR_DEADLINE_CAP_MS = 1_800_000
+/**
+ * Deadline cap in single-shot print (-p) sessions — 10 minutes. Mirrors the
+ * binary's r=600000.
+ */
+const MONITOR_DEADLINE_CAP_PRINT_MS = 600_000
+
+/**
+ * Effective deadline cap: the print cap in single-shot print (-p) sessions,
+ * else the 30-minute cap. Mirrors the binary's VSe() (BAe() =
+ * launchOptions.singleShotPrintSession(), which maps to OCC's
+ * getIsNonInteractiveSession()).
+ */
+function monitorDeadlineCap(): number {
+  return getIsNonInteractiveSession()
+    ? MONITOR_DEADLINE_CAP_PRINT_MS
+    : MONITOR_DEADLINE_CAP_MS
+}
+
+/** Formats ms as whole minutes ("5 minutes"). Mirrors the binary's PMt. */
+function formatMonitorMinutes(ms: number): string {
+  return `${Math.round(ms / 60000)} minutes`
+}
+
+/** Normalized arming params. Mirrors the binary's _kr gate-ON return shape. */
+export interface NormalizedMonitorInput {
+  readonly timeoutMs: number
+  readonly persistent: false
+}
+
+/**
+ * 2.1.271+ gate-ON normalization (binary _kr): `persistent` is forced false
+ * and the deadline is capped at monitorDeadlineCap() (VSe). The schema keeps
+ * both fields for compat; this is where the cap actually lands.
+ */
+export function normalizeMonitorInput(input: {
+  timeout_ms?: number
+  persistent?: boolean
+}): NormalizedMonitorInput {
+  return {
+    timeoutMs: Math.min(
+      input.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+      monitorDeadlineCap(),
+    ),
+    persistent: false,
+  }
+}
+
+/**
+ * Expiry notice emitted through the event side-channel when the deadline
+ * fires. Mirrors the binary's Crn (Lt = formatDuration with hideTrailingZeros,
+ * x = pluralize). `eventCount` is the number of events actually delivered.
+ */
+export function monitorExpiredNotice(
+  timeoutMs: number,
+  eventCount: number,
+): string {
+  const duration = formatDuration(timeoutMs, { hideTrailingZeros: true })
+  if (eventCount === 0) {
+    return `[Monitor expired after ${duration} with no events delivered. Re-arm it if you still need the watch — and widen the filter if silence was unexpected.]`
+  }
+  return `[Monitor expired after ${duration} with ${eventCount} ${pluralize(eventCount, 'event')} delivered. Re-arm it if you still need the watch.]`
+}
 
 const COMMAND_DESC =
   'Shell command or script. Each stdout line is an event; exit ends the watch.'
 
-const DESCRIPTION = `Start a background monitor that streams events from a long-running script. Each stdout line is an event — you keep working and notifications arrive in the chat. Events arrive on their own schedule and are not replies from the user, even if one lands while you're waiting for the user to answer a question.
+/**
+ * Gate-ON deadline section of the description (2.1.271+). Built dynamically so
+ * "at most …" reflects the session-mode cap: 30 minutes interactive, 10
+ * minutes in print sessions. Mirrors the binary's PMt(Aqe)/PMt(VSe())
+ * composition.
+ */
+function deadlineSection(): string {
+  return `Every monitor expires after \`timeout_ms\` (default ${formatMonitorMinutes(DEFAULT_TIMEOUT_MS)}, at most ${formatMonitorMinutes(monitorDeadlineCap())}): it is killed and you get one notice with the event count. Re-arm it if you still need the watch; for a long watch (PR monitoring, log tails) set \`timeout_ms\` to the maximum and re-arm on each expiry, and widen the filter if an expiry with no events was unexpected.`
+}
+
+function buildDescription(): string {
+  return `Start a background monitor that streams events from a long-running script. Each stdout line is an event — you keep working and notifications arrive in the chat. Events arrive on their own schedule and are not replies from the user, even if one lands while you're waiting for the user to answer a question.
 
 Pick by how many notifications you need:
 - **One** ("tell me when the server is ready / the build finishes") → use **Bash with \`run_in_background\`** and a command that exits when the condition is true, e.g. \`until grep -q "Ready in" dev.log; do sleep 0.5; done\`. You get a single completion notification when it exits.
@@ -73,7 +155,7 @@ For poll loops checking job state, emit on every terminal status (\`succeeded|fa
 
 Stdout lines within 200ms are batched into a single notification, so multiline output from a single event groups naturally.
 
-The script runs in the same shell environment as Bash. Exit ends the watch (exit code is reported). Timeout → killed. Set \`persistent: true\` for session-length watches (PR monitoring, log tails) — the monitor runs until you call TaskStop or the session ends. Use TaskStop to cancel early.
+The script runs in the same shell environment as Bash. Exit ends the watch (exit code is reported). ${deadlineSection()} Use TaskStop to cancel early.
 **ws source** — open a WebSocket and stream each incoming text frame as an event. No shell, no polling: the server pushes, you get notified.
   Monitor({
     ws: {url: 'wss://events.example.com/stream', protocols: ['v1']},
@@ -81,6 +163,7 @@ The script runs in the same shell environment as Bash. Exit ends the watch (exit
   })
 Each text frame becomes one notification (multiline frames stay as one event). Binary frames are reported as \`[binary frame, N bytes]\` rather than passed through. Socket close ends the watch with the close code surfaced; errors are surfaced before close. Same rate limiting as bash — a firehose will be suppressed and eventually stopped, so subscribe to a filtered feed where one exists.
 Prefer this over \`command: 'websocat wss://…'\` — it avoids the extra process and line-buffering pitfalls. Use bash when you need to transform or filter frames with shell tools before they become events.`
+}
 
 const inputSchema = lazySchema(() =>
   z
@@ -268,10 +351,10 @@ export const MonitorTool = buildTool({
   maxResultSizeChars: 100_000,
   shouldDefer: true,
   async description() {
-    return DESCRIPTION
+    return buildDescription()
   },
   async prompt() {
-    return DESCRIPTION
+    return buildDescription()
   },
   get inputSchema(): InputSchema {
     return inputSchema()
@@ -293,8 +376,10 @@ export const MonitorTool = buildTool({
   },
   async call(input, _context) {
     const taskId = `monitor-${randomUUID()}`
-    const persistent = input.persistent ?? false
-    const timeoutMs = persistent ? 0 : (input.timeout_ms ?? DEFAULT_TIMEOUT_MS)
+    // 2.1.271+ (gate tengu_breezy_crescent ON): normalization forces
+    // persistent:false and caps the deadline (binary _kr/VSe). The schema
+    // field stays for compat.
+    const { timeoutMs, persistent } = normalizeMonitorInput(input)
 
     // Events are surfaced via the notification surface; the binary dispatches
     // each stdout line / WS frame as a chat notification. We collect them
@@ -310,18 +395,19 @@ export const MonitorTool = buildTool({
       void streamWs(input.ws.url, input.ws.protocols, taskId, emit).catch(() => {})
     }
 
-    // Enforce the timeout deadline (ignored when persistent).
-    if (timeoutMs > 0) {
-      const timer = setTimeout(() => {
-        const h = activeMonitors.get(taskId)
-        if (h) {
-          h.kill()
-          activeMonitors.delete(taskId)
-        }
-      }, timeoutMs)
-      if (typeof timer === 'object' && timer && 'unref' in timer) {
-        ;(timer as NodeJS.Timeout).unref()
+    // The kill timer is ALWAYS armed (no persistent bypass). On expiry the Crn
+    // notice goes out through the same side-channel (with the delivered-event
+    // count) before the kill.
+    const timer = setTimeout(() => {
+      emit(monitorExpiredNotice(timeoutMs, events.length))
+      const h = activeMonitors.get(taskId)
+      if (h) {
+        h.kill()
+        activeMonitors.delete(taskId)
       }
+    }, timeoutMs)
+    if (typeof timer === 'object' && timer && 'unref' in timer) {
+      ;(timer as NodeJS.Timeout).unref()
     }
 
     return {

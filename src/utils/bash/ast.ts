@@ -843,29 +843,40 @@ function collectCommands(
           // walkArgument validates each (expansions still reject).
           const arg = walkArgument(child, commands, varScope)
           if (typeof arg !== 'string') return arg
-          // SECURITY: declare/typeset/local flags that change assignment
-          // semantics break our static model. -n (nameref): `declare -n X=Y`
-          // then `$X` dereferences to $Y's VALUE — varScope stores 'Y'
-          // (target NAME), argv[0] shows 'Y' while bash runs whatever $Y
-          // holds. -i (integer): `declare -i X='a[$(cmd)]'` arithmetically
-          // evaluates the RHS at assignment time, running $(cmd) even from
-          // a single-quoted raw_string (same primitive walkArithmetic
-          // guards in $((…))). -a/-A (array): subscript arithmetic on
-          // assignment. -r/-x/-g/-p/-f/-F are inert. Check the resolved
-          // arg (not child.text) so `\-n` and quoted `-n` are caught.
-          // Scope to declare/typeset/local only: `export -n` means "remove
-          // export attribute" (not nameref), and export/readonly don't
-          // accept -i; readonly -a/-A rejects subscripted args as invalid
-          // identifiers so subscript-arith doesn't fire.
+          // SECURITY (official 2.1.271 fix C): declaration flags that change
+          // assignment semantics break our static model — a tracked
+          // `NAME=value` literal would misrepresent what a later `$var`
+          // expansion yields. Charsets + reason strings are byte-exact from
+          // the official 2.1.272 linux-x64 ELF declaration_command handler:
+          //   declare/typeset/local: /^[+-].*[nialuAEFLRZ]/
+          //   export/readonly:       /^[+-].*[iluEFLRZ]/
+          // The 2.1.270→2.1.272 widening adds l/u/L/R/Z — the flags that
+          // MUTATE the assigned value (case conversion, width
+          // truncation/zero padding), so the stored literal no longer equals
+          // the expanded value. -n (nameref) dereferences to the target's
+          // VALUE; -i/-E/-F arithmetically evaluate the RHS (running $(cmd)
+          // even from a single-quoted raw_string). Check the resolved arg
+          // (not child.text) so `\-n` and quoted `-n` are caught; `[+-]`
+          // covers both `-flag` and `+flag` forms.
           if (
             (argv[0] === 'declare' ||
               argv[0] === 'typeset' ||
               argv[0] === 'local') &&
-            /^-[a-zA-Z]*[niaA]/.test(arg)
+            /^[+-].*[nialuAEFLRZ]/.test(arg)
           ) {
             return {
               kind: 'too-complex',
-              reason: `declare flag ${arg} changes assignment semantics (nameref/integer/array)`,
+              reason: `declare flag ${arg} changes assignment semantics (nameref/integer/float/array/width-truncation/case-conversion)`,
+              nodeType: 'declaration_command',
+            }
+          }
+          if (
+            (argv[0] === 'export' || argv[0] === 'readonly') &&
+            /^[+-].*[iluEFLRZ]/.test(arg)
+          ) {
+            return {
+              kind: 'too-complex',
+              reason: `${argv[0]} flag ${arg} — zsh bin_typeset mathevals (-i/-E/-F), width-truncates (-L/-R/-Z), or case-converts (-l/-u) the assigned value`,
               nodeType: 'declaration_command',
             }
           }

@@ -8,7 +8,7 @@
 
 ## 这是什么
 
-**Open C Code（OCC）** 是一个开源的编码智能体。能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.270`：已完全对齐至官方 2.1.270——2.1.268/2.1.269 的可移植子集已在 OCC-122/OCC-123/OCC-84 落地，2.1.270 唯一变更（Bash 只读 git 权限回归修复）无可移植客户端代码差异，经 OCC-124 与 OCC-85 两轮独立取证核实，详见相应台账）。代码全开放、可审计、无暗门，数据由你掌控。
+**Open C Code（OCC）** 是一个开源的编码智能体。能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.272`：已完全对齐至官方 2.1.272——OCC-126 追齐轮落地了 2.1.272 Monitor 超时门翻转、自定义/插件智能体的 `omitClaudeMd`、2.1.271 Bash 权限修复（通配符 glob 参数读校验 + 声明标志字符集对齐）与 2.1.272 fast mode 修复，台账见 `docs/upstream-version-gap-occ126.md`；此前对齐至 2.1.270 经 OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125 落地，另有两项大可移植项——`/config` 鼠标支持与 sandbox 按命令 `allowed_domains`——已定界为后续候选）。代码全开放、可审计、无暗门，数据由你掌控。
 
 如果你担心闭源 CLI 可能植入后门、担心代码与凭据被上传到不可审计的服务，OCC 就是为你准备的：全部源码开放、无混淆，构建产物可由源码复现，API 凭据只发往你自己配置的端点。
 
@@ -21,7 +21,7 @@
 
 ## 现状
 
-- 跟踪 Claude Code **`2.1.270`**（已完全对齐至官方 2.1.270——2.1.268/2.1.269 的可移植子集已在 OCC-122/OCC-123/OCC-84 落地；2.1.270 唯一变更（Bash 只读 git 权限回归修复）无可移植客户端差异，经 OCC-124 与 OCC-85 两轮独立取证核实 OCC 不受影响）。
+- 跟踪 Claude Code **`2.1.272`**（已完全对齐至官方 2.1.272——OCC-126 追齐轮落地 Monitor 超时门翻转、`omitClaudeMd`、2.1.271 Bash 权限修复与 2.1.272 fast mode 修复，台账见 `docs/upstream-version-gap-occ126.md`；此前对齐至 2.1.270 经 OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125 落地）。
 - 代码库有约 1300 个不阻塞的 `tsc` 类型错误（大量松散的 `unknown`/`never`/`{}` 类型），**不影响 Bun 运行时执行**。门槛是 Biome lint，不是 `tsc`。
 - 所有内部 feature flag（`feature(...)`）已被 polyfill 为 `false` —— 内部功能（COORDINATOR_MODE、KAIROS、PROACTIVE 等）全部关闭。
 - 已发布到 npm：[`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ)。
@@ -80,7 +80,7 @@ Glob、Grep（默认启用）；TaskCreate/Get/Update/List（Todo v2）、EnterW
 
 ```bash
 bun install
-bun run dev          # 从源码运行；版本号显示 2.1.270（dev polyfill；build 用 pkg.version 覆盖）即正常
+bun run dev          # 从源码运行；版本号显示 2.1.272（dev polyfill；build 用 pkg.version 覆盖）即正常
 bun run build        # 产物：dist/cli.js（~26MB，5300+ 模块，单文件 bundle）
 bun test             # 测试套件
 bun run lint         # Biome lint（禁用格式化以避免大 diff）
