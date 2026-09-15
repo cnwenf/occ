@@ -375,8 +375,58 @@ recovery) first. Recorded as staged with this root cause.
 
 ## 7. Gates
 
-[FILLED AT END — bun test totals, CI=1 bash scripts/ci-test.sh, bun run build size, live -p
-smoke, tmux REPL e2e vs official uvx claude-code@2.1.272 consistency checks.]
+All gates run this round on branch `agent/occ/db9aaf96` (post merge `078019d` of origin/main
+f0f45d0/PR #375), commits `809bc1b` + `27f4105` + `56047be` + `2a38a10` + docs commit.
+
+| Gate | Result |
+|---|---|
+| New-test RED-first verification | Monitor 20 (RED-first per §1), omitClaudeMd 11, Bash-perm 35 (16 RED pre-fix), fast-mode 8 (4 RED pre-fix) — all GREEN post-fix |
+| Area suites (coordinator re-run) | 5 new 271/272 test files: **43 pass / 0 fail** |
+| BashTool + bash utils (Agent B) | **451 pass / 0 fail** (28 files) |
+| Permissions (Agent B) | **163 pass / 1 skip / 0 fail** (13 files) |
+| e2e bashperm-safety (Agent B) | **10 pass / 0 fail** |
+| fast-mode area suite (Agent C) | **82 pass**, biome clean |
+| Full CI sweep `CI=1 bash scripts/ci-test.sh` (per-file isolation) | **4073 pass / 1 fail / 114 skip** (472 files) |
+| `bun run build` | green — `dist/cli.js` 29.06 MB, injected MACRO.VERSION=2.1.336 (pkg release version, by design; dev-mode polyfill prints tracked 2.1.272) |
+| `test/e2e/occ-versioning.e2e.test.ts` | **1 pass / 0 fail** |
+| Live `-p` smoke (dashscope gateway, qwen3.8-max) | `bun dist/cli.js --version` → `OCC 2.1.336`; `-p "Reply with exactly one word: OK"` → `OK` |
+| Dual tmux REPL e2e vs **official 2.1.272** | see below — all parity checks pass |
+
+The single CI failure is `test/e2e/feedback-ai.e2e.test.ts` ("live agent files an issue via
+fake gh"): a **known environmental live-model failure** — this exact file is in the
+clean-tree-A/B-verified environmental set documented in `docs/upstream-version-gap-occ107.md`
+§4a (re-confirmed in occ108/occ110/occ119 ledgers) and is `skipIf(CI||!TOKEN||!BASE_URL)` in
+real CI. This round's failure mode is live-model decision drift (the model reasoned the `gh`
+shim's fake URL meant "cannot really create issue" and posted a fallback link / left the
+captured body empty, across two attempts with different signatures). Zero intersection with
+this round's changed modules (`/feedback` flow untouched; pathValidation augmentation applies
+only to read-op PATH_EXTRACTORS commands, `gh` not among them).
+
+**Dual tmux REPL e2e method** (correcting the placeholder wording: the official reference is
+NOT uvx — `uvx claude-code` is unusable here and the global npm install is stale 2.1.218; the
+reference is the **extracted official 2.1.272 linux-x64 ELF** `/tmp/cc-diff-126/vver/package/claude`
+from `npm pack @anthropic-ai/claude-code-linux-x64@2.1.272`). Two tmux sessions, same cwd
+`/tmp/accept-repo-126`, separate HOMEs (`/tmp/home-occ` vs `/tmp/home-official`), same
+dashscope gateway env (`ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL=qwen3.8-max`):
+
+1. **Trust dialog**: byte-identical layout/copy on both ("Quick safety check…", `❯ No, exit` /
+   `Yes, I trust this folder`, `Enter to confirm · Esc to cancel`). ✔
+2. **Main screen**: auth-conflict warning (both ANTHROPIC_AUTH_TOKEN + ANTHROPIC_API_KEY set)
+   rendered equivalently; model line `qwen3.8-max · API Usage Billing`; cwd line; `● high ·
+   /effort` indicator; `⏸ manual mode on` footer — all present on both (OCC footer adds
+   `(shift+tab to cycle)`, pre-existing accepted delta; official adds `? for shortcuts · ←
+   for agents` hints, an official-side tips surface). ✔
+3. **Live round-trip**: identical prompt `reply with exactly: PONG` → both rendered
+   `● PONG` (official additionally shows its `Thought for 2s` / `Churned for 3s · done`
+   spinner telemetry lines — official-side cosmetic). ✔
+4. **`/status`**: same field structure (Version / cwd / Model); OCC shows `2.1.336` (its own
+   release version — the documented dual-versioning scheme: pkg release vs tracked upstream
+   MACRO `2.1.272`, which `bun run dev` prints), official shows `2.1.272`. Expected-by-design,
+   not a gap. ✔
+
+Monitor deadline behavior (§1) not exercised live in the REPL (would need a ≥1 min real
+watch); pinned instead by the 20-test suite incl. a real 1000 ms-timer `call()` test proving
+the deadline kills even with `persistent:true`.
 
 ## 8. Release
 
