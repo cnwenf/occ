@@ -77,12 +77,23 @@ lifetime of the session (no timeout)…") are **unchanged** between 2.1.270 and 
 (verified in both strings files) — the schema stays as-is; only normalization + expiry notice
 + description prose change.
 
-**OCC port** (src/tools/MonitorTool/MonitorTool.ts): [FILLED AFTER SUBAGENT — constants
-MONITOR_DEADLINE_CAP_MS=1_800_000 / MONITOR_DEADLINE_CAP_PRINT_MS=600_000, `monitorDeadlineCap()`
-via `getIsNonInteractiveSession()` (= official `BAe()`), normalization forcing `persistent:false`
-+ `timeoutMs=min(input ?? 300000, cap)`, always-armed kill timer, `Crn` expiry notice through
-the side-channel emitter using src/utils/format.ts `hideTrailingZeros` formatter, dynamic
-DESCRIPTION sentence.]
+**OCC port** (`src/tools/MonitorTool/MonitorTool.ts`, +103/−17, subagent-implemented from the
+forensics above): constants `MONITOR_DEADLINE_CAP_MS = 1_800_000` (`o`) /
+`MONITOR_DEADLINE_CAP_PRINT_MS = 600_000` (`r`); `monitorDeadlineCap()` (`VSe`) keyed off
+`getIsNonInteractiveSession()` (`BAe`); exported pure helpers `normalizeMonitorInput` (`_kr`
+gate-ON path: forces `persistent:false`, caps `timeoutMs` at the deadline cap) and
+`monitorExpiredNotice` (`Crn`, using `formatDuration(ms, {hideTrailingZeros:true})` as `Lt` +
+existing `pluralize` as `x`). `call()` always arms the kill timer (no `persistent` bypass); on
+expiry the `Crn` notice (with delivered-event count) goes out through the side-channel emitter
+before the kill. `DESCRIPTION` const → `buildDescription()` with the dynamic deadline sentence
+(`PMt` = `${Math.round(ms/60000)} minutes`; byte-level diff verified: only that one sentence
+changed, prefix/suffix exact; print mode renders "at most 10 minutes"). Schema `describe`s
+untouched, test-pinned. Justified deviations: `monitorExpiredNotice` drops `Crn`'s unused third
+param; expiry-notice wiring is closure-private so the notice is unit-tested via the pure helper
+plus a real 1000 ms-timer `call()` test proving the deadline kills even with `persistent:true`.
+Tests: `__tests__/monitorDeadline272.test.ts` (new, 20 pass); pre-existing Monitor suites
+untouched (8 + 16 pass); blast-radius regression `bun test src/tools src/tasks` 675 pass / 0 fail;
+biome lint clean on both files.
 
 ## 2. Gap-126b — `omitClaudeMd` for custom/plugin agents (LAND)
 
