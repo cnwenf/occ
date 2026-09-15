@@ -2074,6 +2074,16 @@ export function REPL({
   // This allows Claude to edit files that were read in previous sessions
   const restoreReadFileState = useCallback((messages: MessageType[], cwd: string) => {
     const extracted = extractReadFilesFromMessages(messages, cwd, READ_FILE_STATE_CACHE_SIZE);
+    // SECURITY (OCC-126): clear before merging. On the in-session `/resume` path
+    // this runs against a `readFileState` that still tracks the PREVIOUS
+    // conversation's reads; merging without clearing leaks that stale state into
+    // the resumed session, so the read-before-edit guard would accept an edit to
+    // a file only read in the abandoned conversation. Clear-then-merge makes the
+    // cache reflect exactly the resumed transcript — matching the /clear
+    // (commands/clear/conversation.ts) and compact (services/compact/compact.ts)
+    // idiom. On the mount path (fresh process) the cache is empty, so this is a
+    // no-op. The LRU instance is intentionally NOT reallocated (~170ms ctor).
+    readFileState.current.clear();
     readFileState.current = mergeFileStateCaches(readFileState.current, extracted);
     for (const tool of extractBashToolsFromMessages(messages)) {
       bashTools.current.add(tool);

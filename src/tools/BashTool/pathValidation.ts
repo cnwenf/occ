@@ -62,6 +62,17 @@ export type PathCommand =
   | 'sha1sum'
   | 'md5sum'
   | 'tee'
+  // OCC-126 (security): read-only text utilities — see PATH_EXTRACTORS note.
+  | 'tac'
+  | 'rev'
+  | 'fold'
+  | 'expand'
+  | 'unexpand'
+  | 'fmt'
+  | 'comm'
+  | 'cmp'
+  | 'pr'
+  | 'tsort'
 
 /**
  * Device paths that are output sinks, not file writes (official v269, E43):
@@ -347,6 +358,31 @@ export const PATH_EXTRACTORS: Record<
   sha1sum: filterOutFlags,
   md5sum: filterOutFlags,
 
+  // OCC-126 (security): read-only text utilities that were classified in
+  // READONLY_COMMANDS (readOnlyValidation.ts) but missing from PATH_EXTRACTORS.
+  // Without an extractor, `fmt /etc/passwd` skipped path validation (step 3 in
+  // bashToolCheckPermission returns passthrough for non-path-commands) and was
+  // then auto-allowed by the read-only branch (step 7) — an unprompted
+  // outside-working-dir read, i.e. an exfiltration bypass vs the path-validated
+  // `cat`/`head`/`tail`. Each of these reads file contents and takes file args,
+  // so it validates as a 'read' op (mirrors cat/head/tail). Flag values that
+  // filterOutFlags keeps as positionals (e.g. `fold -w 80 f` → ['80','f']) resolve
+  // relative to cwd and pass, matching the existing head/tail behavior.
+  // Excluded on purpose: `numfmt` formats numeric args/stdin and never opens a
+  // file (not an exfil vector); `readlink`/`realpath`/`basename`/`dirname` are
+  // path-metadata/string ops whose common benign use (`readlink -f /usr/bin/python`)
+  // would false-prompt if path-validated.
+  tac: filterOutFlags,
+  rev: filterOutFlags,
+  fold: filterOutFlags,
+  expand: filterOutFlags,
+  unexpand: filterOutFlags,
+  fmt: filterOutFlags,
+  comm: filterOutFlags,
+  cmp: filterOutFlags,
+  pr: filterOutFlags,
+  tsort: filterOutFlags,
+
   // tee (official v269, E43): `tee:(e)=>EHo(py(e))` — flag-filtered args
   // minus device sinks. Empty result → passthrough (binary OHo:
   // `if(e==="tee"&&A.length===0)return{behavior:"passthrough",message:"Path
@@ -605,6 +641,17 @@ const ACTION_VERBS: Record<PathCommand, string> = {
   sha1sum: 'compute SHA-1 checksums for files in',
   md5sum: 'compute MD5 checksums for files in',
   tee: 'write to files in',
+  // OCC-126 (security): read-only text utilities (see PATH_EXTRACTORS note).
+  tac: 'display files in reverse from',
+  rev: 'reverse lines of files from',
+  fold: 'wrap lines of files from',
+  expand: 'expand tabs in files from',
+  unexpand: 'convert spaces to tabs in files from',
+  fmt: 'format text from files in',
+  comm: 'compare sorted lines from files in',
+  cmp: 'compare bytes of files from',
+  pr: 'paginate files from',
+  tsort: 'topologically sort lines from files in',
 }
 
 export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
@@ -645,6 +692,17 @@ export const COMMAND_OPERATION_TYPE: Record<PathCommand, FileOperationType> = {
   sha1sum: 'read',
   md5sum: 'read',
   tee: 'write',
+  // OCC-126 (security): read-only text utilities (see PATH_EXTRACTORS note).
+  tac: 'read',
+  rev: 'read',
+  fold: 'read',
+  expand: 'read',
+  unexpand: 'read',
+  fmt: 'read',
+  comm: 'read',
+  cmp: 'read',
+  pr: 'read',
+  tsort: 'read',
 }
 
 /**
