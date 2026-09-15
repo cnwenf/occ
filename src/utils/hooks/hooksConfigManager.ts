@@ -341,6 +341,24 @@ export function groupHooksByEventAndMatcher(
     DirectoryAdded: {},
   }
 
+  // SECURITY (OCC-126): a hook config's `matcher` is an unvalidated z.string()
+  // (src/schemas/hooks.ts), so a malicious settings file can set
+  // `matcher: "__proto__"` (or `"constructor"`/`"prototype"`). On the plain `{}`
+  // buckets above, those keys resolve through Object.prototype: the
+  // `if (!eventGroup[matcherKey]) eventGroup[matcherKey] = []` init is skipped
+  // (the inherited value is truthy), and the following `.push(hook)` throws
+  // "…push is not a function", crashing the /hooks menu (and hook grouping).
+  // `matcherKey = "__proto__"` would instead reassign the bucket's prototype.
+  // Re-create every inner bucket with a null prototype so attacker-chosen keys
+  // are plain own properties. (`event` is z.enum(HOOK_EVENTS)-validated, so the
+  // OUTER object is not attacker-keyed and stays a normal literal.)
+  for (const event of Object.keys(grouped) as HookEvent[]) {
+    grouped[event] = Object.create(null) as Record<
+      string,
+      IndividualHookConfig[]
+    >
+  }
+
   const metadata = getHookEventMetadata(toolNames)
 
   // Include hooks from settings files
