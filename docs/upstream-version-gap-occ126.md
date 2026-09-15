@@ -431,7 +431,12 @@ the deadline kills even with `persistent:true`.
 ## 8. Release
 
 VERSION (MACRO) → 2.1.272 this round; README "Tracks" badge 2.1.270 → 2.1.272 (byte-verified
-catch-up complete, unlike the appendix round which correctly left the badge at 2.1.270).
+catch-up complete, unlike the appendix round which correctly left the badge at 2.1.270),
+annotated per §0 as **2.1.270 fully aligned; 2.1.271/2.1.272 partial** — in-delta items
+#8 `/config` fullscreen mouse (PORTABLE-LARGE) and #13 spinner status ladder (STAGED) are
+not landed (occ127 candidates), plus the pre-existing (≤2.1.270) #9 sandbox per-command
+`allowed_domains` gap — so the README badge/body/table/footer all carry that (partial)
+annotation, and the spinner disclosure is present.
 Package version: PR #375 (appendix) already took `2.1.336` on main, so this round's release
 tag is **v2.1.337** — bump + CHANGELOG.md entry + tag happen only after 验收员 approval per
 the issue's release flow (not in this commit).
