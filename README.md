@@ -13,7 +13,7 @@
 
 ## What is OCC
 
-**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.272` — fully aligned through official 2.1.272: the OCC-126 catch-up round landed the 2.1.272 Monitor-deadline behavior (`tengu_breezy_crescent` gate flip), `omitClaudeMd` for custom/plugin agents, the 2.1.271 Bash permission fixes (wildcard glob-arg read validation + declaration-flag charset parity), and the 2.1.272 fast-mode fixes, per `docs/upstream-version-gap-occ126.md`; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125, and two PORTABLE-LARGE items — `/config` mouse support and sandbox per-command `allowed_domains` — are scoped as follow-up candidates). The code is fully open, auditable, backdoor-free, and your data stays under your control.
+**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.272` — 2.1.270 fully aligned; 2.1.271/2.1.272 partial: the OCC-126 catch-up round landed the 2.1.272 Monitor-deadline behavior (`tengu_breezy_crescent` gate flip), `omitClaudeMd` for custom/plugin agents, the 2.1.271 Bash permission fixes (wildcard glob-arg read validation + declaration-flag charset parity), and the 2.1.272 fast-mode fixes, per `docs/upstream-version-gap-occ126.md`; still not landed from the 2.1.270→2.1.272 delta: `/config` panel fullscreen mouse support (PORTABLE-LARGE scope) and the spinner status ladder "deep in thought"/"picking the thought back up" (STAGED) — occ127 candidates, plus the pre-existing sandbox per-command `allowed_domains` gap; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125). The code is fully open, auditable, backdoor-free, and your data stays under your control.
 
 If you worry that a closed-source CLI might hide backdoors, or that your code and credentials are uploaded to unauditable services, OCC is for you: all source is open and unobfuscated, the build is reproducible from source, and API credentials are sent only to endpoints you configure.
 
@@ -62,7 +62,7 @@ Requires a valid Anthropic API Key (or AWS Bedrock / Google Vertex / Azure Found
 | **Auditability** | Line-by-line reviewable | No |
 | **Telemetry** | Minimal (analytics stubbed) | Standard |
 | **Data sovereignty** | Credentials stay on your machine; requests only to endpoints you configure | Anthropic endpoints |
-| **Capability parity** | Tracks CC `2.1.272` (fully aligned) | Reference implementation |
+| **Capability parity** | Tracks CC `2.1.272` (2.1.270 fully aligned; 2.1.271/2.1.272 partial) | Reference implementation |
 | **Providers** | Anthropic Direct, Bedrock, Vertex, Azure | Anthropic, Bedrock, Vertex |
 | **Cost** | Free & open-source (MIT) | Subscription |
 | **Build** | Reproducible from source | N/A |
@@ -157,7 +157,7 @@ For architecture, entry/bootstrap, tool system, UI layer, and module-status deta
 
 ## Status
 
-- Tracks Claude Code **`2.1.272`** (fully aligned through official 2.1.272 — the OCC-126 catch-up round landed the Monitor-deadline gate flip, `omitClaudeMd` for custom/plugin agents, the 2.1.271 Bash permission fixes, and the 2.1.272 fast-mode fixes — see `docs/upstream-version-gap-occ126.md`; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84, OCC-124 + OCC-85 — see `docs/upstream-version-gap-occ124.md` and `docs/upstream-version-gap-occ85.md` — and OCC-125 — see `docs/upstream-version-gap-occ125.md`).
+- Tracks Claude Code **`2.1.272`** (2.1.270 fully aligned; 2.1.271/2.1.272 partial — the OCC-126 catch-up round landed the Monitor-deadline gate flip, `omitClaudeMd` for custom/plugin agents, the 2.1.271 Bash permission fixes, and the 2.1.272 fast-mode fixes — see `docs/upstream-version-gap-occ126.md`; still not landed from the 2.1.270→2.1.272 delta: `/config` fullscreen mouse support (PORTABLE-LARGE) and the spinner status ladder (STAGED), plus the pre-existing sandbox per-command `allowed_domains` gap; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84, OCC-124 + OCC-85 — see `docs/upstream-version-gap-occ124.md` and `docs/upstream-version-gap-occ85.md` — and OCC-125 — see `docs/upstream-version-gap-occ125.md`).
 - Published to npm as [`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ).
 - Many modules are intentionally stubbed or feature-flagged off — see "Disabled / stubbed" above.
 
