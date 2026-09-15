@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@cnwenf/occ.svg)](https://www.npmjs.com/package/@cnwenf/occ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-%23000000.svg)](https://bun.sh/)
-[![Tracks: Claude Code 2.1.270](https://img.shields.io/badge/Tracks-Claude%20Code%202.1.270-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
+[![Tracks: Claude Code 2.1.272](https://img.shields.io/badge/Tracks-Claude%20Code%202.1.272-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
 [简体中文](./README.zh-CN.md) · **English**
 
@@ -13,7 +13,7 @@
 
 ## What is OCC
 
-**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.270` — fully aligned through official 2.1.270: the 2.1.268/2.1.269 portable subsets landed in OCC-122/OCC-123/OCC-84, and the 2.1.270 changelog change — the read-only git Bash permission regression fix — carries no portable client-side delta, verified independently by two forensic rounds OCC-124 + OCC-85; the OCC-125 strict self-acceptance round against the official 2.1.270 binary then landed two live-discovered gaps — the full `/output-style` port (Gap-125a) and markdown-serializer html/default-token parity (Gap-125b) — per `docs/upstream-version-gap-occ125.md`). The code is fully open, auditable, backdoor-free, and your data stays under your control.
+**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.272` — fully aligned through official 2.1.272: the OCC-126 catch-up round landed the 2.1.272 Monitor-deadline behavior (`tengu_breezy_crescent` gate flip), `omitClaudeMd` for custom/plugin agents, the 2.1.271 Bash permission fixes (wildcard glob-arg read validation + declaration-flag charset parity), and the 2.1.272 fast-mode fixes, per `docs/upstream-version-gap-occ126.md`; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125, and two PORTABLE-LARGE items — `/config` mouse support and sandbox per-command `allowed_domains` — are scoped as follow-up candidates). The code is fully open, auditable, backdoor-free, and your data stays under your control.
 
 If you worry that a closed-source CLI might hide backdoors, or that your code and credentials are uploaded to unauditable services, OCC is for you: all source is open and unobfuscated, the build is reproducible from source, and API credentials are sent only to endpoints you configure.
 
@@ -62,7 +62,7 @@ Requires a valid Anthropic API Key (or AWS Bedrock / Google Vertex / Azure Found
 | **Auditability** | Line-by-line reviewable | No |
 | **Telemetry** | Minimal (analytics stubbed) | Standard |
 | **Data sovereignty** | Credentials stay on your machine; requests only to endpoints you configure | Anthropic endpoints |
-| **Capability parity** | Tracks CC `2.1.270` (fully aligned) | Reference implementation |
+| **Capability parity** | Tracks CC `2.1.272` (fully aligned) | Reference implementation |
 | **Providers** | Anthropic Direct, Bedrock, Vertex, Azure | Anthropic, Bedrock, Vertex |
 | **Cost** | Free & open-source (MIT) | Subscription |
 | **Build** | Reproducible from source | N/A |
@@ -143,7 +143,7 @@ Requires [Bun](https://bun.sh/) >= 1.3.11 (use `bun upgrade` — older Bun cause
 
 ```bash
 bun install
-bun run dev          # run from source; version prints 2.1.270 (dev polyfill; build overrides with pkg.version) when working
+bun run dev          # run from source; version prints 2.1.272 (dev polyfill; build overrides with pkg.version) when working
 bun run build        # output: dist/cli.js (~26 MB, single-file bundle)
 bun test             # test suite (Bun test runner)
 bun run lint         # Biome lint (formatter disabled to avoid large diffs)
@@ -157,7 +157,7 @@ For architecture, entry/bootstrap, tool system, UI layer, and module-status deta
 
 ## Status
 
-- Tracks Claude Code **`2.1.270`** (fully aligned through official 2.1.270 — portable subsets through 2.1.269 landed in OCC-122/OCC-123/OCC-84; the 2.1.270 changelog change is the read-only-git Bash permission regression fix, which carries no portable client-side delta, verified independently by OCC-124 + OCC-85 — see `docs/upstream-version-gap-occ124.md` and `docs/upstream-version-gap-occ85.md`. The OCC-125 strict self-acceptance round against the official 2.1.270 binary landed two live-discovered gaps: Gap-125a `/output-style` full port + Gap-125b markdown-serializer html/default-token parity — see `docs/upstream-version-gap-occ125.md`).
+- Tracks Claude Code **`2.1.272`** (fully aligned through official 2.1.272 — the OCC-126 catch-up round landed the Monitor-deadline gate flip, `omitClaudeMd` for custom/plugin agents, the 2.1.271 Bash permission fixes, and the 2.1.272 fast-mode fixes — see `docs/upstream-version-gap-occ126.md`; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84, OCC-124 + OCC-85 — see `docs/upstream-version-gap-occ124.md` and `docs/upstream-version-gap-occ85.md` — and OCC-125 — see `docs/upstream-version-gap-occ125.md`).
 - Published to npm as [`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ).
 - Many modules are intentionally stubbed or feature-flagged off — see "Disabled / stubbed" above.
 

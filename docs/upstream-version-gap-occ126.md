@@ -36,13 +36,13 @@ Monitor deadline behavior (Gap-126a) is what OCC must implement.
 |---|---|---|---|
 | 1 | Monitor deadline: every monitor expires ≤30 min (10 min in `-p`), expiry notice with event count (2.1.272 gate flip) | **LAND** | §1 Gap-126a |
 | 2 | `omitClaudeMd` in agent frontmatter + `--agents` JSON for custom/plugin agents | **LAND** | §2 Gap-126b |
-| 3 | Bash permission: file after unrecognized option (`fmt`/`column`) | see §3 | §3 Gap-126c |
-| 4 | Bash permission: wildcard in pattern/option value (`grep -v dir/* file`) | see §3 | §3 Gap-126c |
-| 5 | Bash permission: variable-declaration flags misrepresenting the command | see §3 | §3 Gap-126c |
+| 3 | Bash permission: file after unrecognized option (`fmt`/`column`) | **COVERED-BY-#375** (probe-verified; OCC structurally immune to the `lM` bug class) | §3.A |
+| 4 | Bash permission: wildcard in pattern/option value (`grep -v dir/* file`) | **LAND** (`pC`/`q4o` read-only augmentation port) | §3.B |
+| 5 | Bash permission: variable-declaration flags misrepresenting the command | **LAND** (live parity pinned; dormant-AST charsets byte-exact 2.1.272) | §3.C |
 | 6 | Bash `cd`-chain/subshell/`cd`+`git` under `blockReadsOutsideWorkingDirectories` | **N/A** | §5.1 |
-| 7 | `/fast off` org-disabled, SKIP_FAST_MODE_ORG_CHECK re-send, RETRY_WATCHDOG fallback, fast-in-Remote | see §4 | §4 |
-| 8 | `/config` panel fullscreen mouse support | see §4 | §4 |
-| 9 | sandbox per-command `allowed_domains` (Bash/PowerShell/Monitor auto mode) | see §4 | §4 |
+| 7 | `/fast off` org-disabled, SKIP_FAST_MODE_ORG_CHECK re-send, RETRY_WATCHDOG fallback, fast-in-Remote | **LAND** (2/4 fixed; SKIP env + Remote/CCR = N/A no substrate) | §4.1 |
+| 8 | `/config` panel fullscreen mouse support | **SCOPED-NOT-LANDED** (PORTABLE-LARGE; needs Ink onWheel prop + mouse test harness; occ127 candidate) | §4.2 |
+| 9 | sandbox per-command `allowed_domains` (Bash/PowerShell/Monitor auto mode) | **SCOPED-NOT-LANDED** (standing OCC gap since ≤2.1.270, not a 270→272 delta; PORTABLE-LARGE, occ127 candidate) | §4.3 |
 | 10 | `claude plugin install/update --accept-command <sha256>` | **N/A** | §5.2 |
 | 11 | `modelPricing`/gateway `multiplier` up to 10 | **N/A** | §5.3 |
 | 12 | `self-hosted-runner --drain-marker-file` / `--host-config-snapshot` | **N/A** | §5.4 |
@@ -136,12 +136,131 @@ VERSION bumped: `src/entrypoints/cli.tsx` MACRO `2.1.270`→`2.1.272` (+ CLAUDE.
 
 ## 3. Gap-126c — Bash permission-check fixes (§3 items 3–5)
 
-[FILLED AFTER SUBAGENT B — verdicts for A (fmt/column unrecognized-option file), B (wildcard
-expansion in pattern/option value), C (variable-declaration flags), with probe evidence.]
+All verdicts byte-verified against official 2.1.270 (`s1s.txt`) and 2.1.272 (`s2s.txt`)
+linux-x64 strings + extracted `declaration_command` handler from the 2.1.272 ELF.
+Commit: `56047be` (fix(bash): official 2.1.271 permission fixes).
+
+### 3.A fmt/column unrecognized-option file reads — ALREADY-COVERED-BY-#375 (no code change)
+Official 2.1.270 bug lived in extractor `lM`: a *known valued* flag consumed the following
+file token even after an *unknown* flag had appeared (`lM` kept trusting flag values);
+2.1.272 replaced it with the per-char `$I` classifier that sets distrust `b=!1` after any
+unknown option. OCC's `filterOutFlags` **never consumes flag values** (drops every
+`-`-prefixed token pre-`--`, keeps the rest), so the `lM` bug class is structurally
+impossible: files after unknown flags are always extracted → validated → ask. #375 (ITEM 17,
+appendix §2) wired tac/rev/fold/expand/unexpand/**fmt**/comm/cmp/pr/tsort into
+`PATH_EXTRACTORS`; column/cut/paste were wired pre-#375. 9 probe tests pin the behavior
+(`fmt --unknown-opt <outside>`, `fmt --weird-flag --width <outside>` — the true `lM`-miss
+shape — `column -t -s, --mystery <outside>`, `cut -d, --mystery-flag`, `tac --unknown`,
+`fold -w40 --nope` → ask; LIVE `Bash(fmt *)`/`Bash(column *)` → ask), all GREEN pre- and
+post-edit — pure verification, no #375 file touched. Boundary (not a gap): official `QL`
+includes `numfmt`, #375 excludes it — verified on coreutils 9.4 that
+`numfmt --invalid=ignore /etc/passwd` echoes the operand and exits 0 **without opening it**
+(numfmt takes NUMBERs, not files), so the exclusion is empirically justified.
+Tests: `src/tools/BashTool/__tests__/textutilUnknownOptionRead271.test.ts`.
+
+### 3.B wildcard expansion in pattern/option position — REAL GAP → FIXED (live path)
+Official mechanism (2.1.272): `V4o` head computes `U=QL[e](n)` (extractor output),
+`H=bAn(e,M,n,U)` (unextracted-glob-arg collector), `fe=F==="read"?[...U,...H]:U` — the
+validation loop iterates `fe`. Legacy entry `K4o` calls with **no** SimpleCommand
+(`M=undefined`), so `bAn` reduces to plain `q4o(args,U)` (git preamble gated on
+`n!==void 0`; quote filter returns early on `n===void 0`). `q4o(e,n)`: push each arg whose
+`pC(arg)!==-1` not already in the extracted set (deduped). `pC(t)`: index of first `*`/`?`,
+or `[` with a later `]`; else `-1`.
+OCC gap: `grep -v /OUT/pass* notes.txt` — the wildcard sits in grep's **pattern position**,
+consumed/dropped by `parsePatternCommand`, so path validation saw only `notes.txt`; LIVE
+with a `Bash(grep *)` allow rule → **auto-allow** while the shell expanded `/OUT/pass*` and
+grep read those files. Official 2.1.272 asks. (Changelog: "Fixed Bash permission checks
+skipping files a wildcard expands to when the wildcard sits in a command's pattern or
+option value.")
+Port (byte-faithful): `globCharIndex` = `pC`, `collectUnextractedGlobArgs` = `q4o`, and in
+`validateCommandPaths` `paths = operationType==='read' ? [...extractedPaths,
+...collectUnextractedGlobArgs(args, extractedPaths)] : extractedPaths` — mirrors official
+`fe` exactly. **Read-only augmentation**: write/create commands are NOT augmented (official
+routes write-globs through the `Oe`/`Ge` read-deny-rule channel OCC does not model —
+augmenting there would invent stricter-than-official asks like `tee out*`). OCC's LIVE path
+IS the legacy shell-quote path (TREE_SITTER_BASH not in the feature allowlist), so `q4o` is
+the faithful reduction; the dormant AST path shares `validateCommandPaths` and matches
+official's `argvUnquotedGlob`-absent fallback (`if(h===void 0||…)return d`) — both callers
+get `q4o` semantics. Augmentation runs in step-3 `checkPathConstraints`, before step-5
+prefix-allow, so it overrides allow rules — same ordering as official.
+Tests: `src/tools/BashTool/__tests__/wildcardGlobArgRead271.test.ts` (6; RED-first verified —
+2 live+path-layer grep-glob failures pre-fix).
+
+### 3.C variable-declaration flags — live NO-GAP (official parity) + dormant-AST GAP → FIXED
+Live path never parses declarations (legacy shell-quote): `export X=$(cat /etc/passwd)` →
+command-substitution ask; `declare -x FOO=1 cat /etc/passwd` / `local -x y=2 head
+/etc/shadow` → no bash-level allow in default mode (passthrough → outer flow asks). Full
+extracted 2.1.272 `declaration_command` handler confirms: non-assignment operands (`cat`,
+`/etc/passwd`) are merely `x.push(D)`'d onto argv with no path check; `declare` is not
+path-restricted (`K4o` passthrough); bash never executes `cat` (invalid identifier → declare
+errors, no read). OCC allowing under `Bash(declare *)` = **official parity** (pinned by tests).
+Dormant AST gap: OCC charset `/^-[a-zA-Z]*[niaA]/` was narrower than official 2.1.270
+(`[niaAEF]`) **and** 2.1.272 (`[nialuAEFLRZ]`), lacked the export/readonly branch
+(`[iluEFLRZ]`), and had a stale reason string (`(nameref/integer/array)` — 2.1.270 already
+said `float`). Fixed to byte-exact 2.1.272: declare/typeset/local `/^[+-].*[nialuAEFLRZ]/`
+with reason `declare flag ${arg} changes assignment semantics
+(nameref/integer/float/array/width-truncation/case-conversion)`; new export/readonly branch
+`/^[+-].*[iluEFLRZ]/` with reason `${argv[0]} flag ${arg} — zsh bin_typeset mathevals
+(-i/-E/-F), width-truncates (-L/-R/-Z), or case-converts (-l/-u) the assigned value`
+(em-dash = `—`, verbatim). Added l/u/L/R/Z = flags that **mutate the assigned value**,
+so a tracked `NAME=value` literal would misrepresent later `$var` expansion (changelog:
+"cannot misrepresent the command being run"). `[+-]` covers plus-form. Out of scope
+(documented, unchanged): `-m` pattern-assign, `-f`+`-u` autoload, `-T` tied-pair, export
+subscript checks — all present in official **2.1.270** strings, i.e. pre-existing OCC
+narrowing predating 2.1.271, not part of this round's delta.
+Tests: `src/tools/BashTool/__tests__/declarationFlagCharset271.test.ts` (16; 12 RED→GREEN).
+
+### 3.D cd-chain / `blockReadsOutsideWorkingDirectories` — N/A-ARCHITECTURE (confirmed)
+See §5.1: the official double-cd/subshell fix is gated on
+`permissions.blockReadsOutsideWorkingDirectories===!0`; **0 occurrences** in OCC `src/` and
+`test/` (grep re-confirmed this round). Nothing to port.
+
+Gates: biome clean on all 5 touched files; `src/tools/BashTool/__tests__/` + `src/utils/bash/`
+**451/0** (28 files); `src/utils/permissions/__tests__/` **163 pass/1 skip/0**;
+e2e `version-2.1.98-160-bashperm-safety-gaps` **10/0**; 35 new tests green.
 
 ## 4. fast mode / `/config` mouse / sandbox per-command `allowed_domains`
 
-[FILLED AFTER SUBAGENT C.]
+Commit (area 1): `2a38a10` (fix(fast): official 2.1.272 fast-mode fixes).
+
+### 4.1 fast mode fixes — PORTABLE-SMALL → LANDED (2 of 4 sub-items; 2 N/A)
+- **`/fast off` under org disable — FIXED.** Official 2.1.272 gates the refusal on the enable
+  argument: `let d=Sz(...); if(d&&e) return {kind:"refused", refusal:\`Fast mode
+  unavailable: ${d}\`}` (2.1.270 had ungated `if(M)`, so `/fast off` answered "Fast mode
+  unavailable" instead of turning off). OCC `fast.tsx` `handleFastModeShortcut` now
+  `if (enable && unavailableReason)`.
+- **Retry-watchdog interaction — FIXED.** 2.1.270 gated the whole fast retry block on `!VM()`
+  (CLAUDE_CODE_RETRY_WATCHDOG off), so under the watchdog a usage-credits/overage 429 fell
+  through to `shouldRetry` → CannotRetryError (turn failed instead of falling back to
+  standard speed) and overload retried forever at fast speed. 2.1.272 drops the gate,
+  captures `let Yn=sM()` before the block, and: silent short-retry sleep only when NOT under
+  watchdog (`if(Jn&&!Yn){await Q(ar,...);continue}`); cooldown (standard-speed fallback)
+  only for non-short retries (`if(!Jn){...}`); every fast-path `continue` clamps the attempt
+  counter (`if(Yn&&pt>=s)pt=s`). Ported to `withRetry.ts` as `watchdogRetryEnabled =
+  isRetryWatchdogEnabled()` + `isShortRetry && !watchdogRetryEnabled` gate + `!isShortRetry`
+  cooldown wrap + three attempt clamps. OCC keeps its pre-existing
+  `!isPersistentRetryEnabled()` gate (dead in production — UNATTENDED_RETRY not enabled —
+  preserves documented persistent-mode behavior).
+- **N/A: `CLAUDE_CODE_SKIP_FAST_MODE_ORG_CHECK`** — env var has zero substrate in OCC.
+- **N/A: Remote/CCR fast mode** — no `user:ccr_inference` path in OCC.
+Tests: `fastOff271.test.ts` + `fastModeWatchdogRetry271.test.ts` (8 new; RED-first verified —
+4 fail without the fix); area suite 82 green; biome clean.
+
+### 4.2 `/config` mouse support — PORTABLE-LARGE → SCOPED, NOT LANDED (occ127 candidate)
+Genuine 2.1.271 addition (official `onWheel:yg`/`hg`, row `onClick:Sg`, value `onClick:bg`,
+hover `to`/`oi` — byte-evidenced in s2s only). OCC's Ink fork has click/hover infra and
+already wheels via keybindings, but a faithful port needs: an `onWheel`/`deltaY` Box prop
+OCC's Ink lacks; a `toggleSetting` index refactor with two click semantics + guards; hover
+state; and — the gate blocker — a component-level mouse-dispatch test harness OCC doesn't
+have. Per round scope (no large subsystem builds), scoped and documented instead.
+
+### 4.3 sandbox per-command `allowed_domains` — PORTABLE-LARGE → SCOPED, NOT LANDED (occ127 candidate)
+Official feature **already existed in 2.1.270** (identical strings/logic across s1s/s2s) —
+this is a standing OCC-vs-official gap, not a 2.1.270→2.1.272 delta. Official symbols
+documented (`j2e`/`Uj`/`z2e`/`W2e`/`UXt`). OCC has only the session-level allowlist; missing:
+per-command input schema, the live `customConfig` path (`Shell.ts:264` passes `undefined`),
+the permission-review surface, the `W2e` guards, and Monitor sandboxing (raw `Bun.spawn`
+today — a prerequisite project). Scoped and documented instead.
 
 ## 5. N/A items with root cause
 
