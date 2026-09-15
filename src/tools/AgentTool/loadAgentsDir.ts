@@ -98,6 +98,7 @@ const AgentJsonSchema = lazySchema(() =>
     initialPrompt: z.string().optional(),
     memory: z.enum(['user', 'project', 'local']).optional(),
     background: z.boolean().optional(),
+    omitClaudeMd: z.boolean().optional(),
     isolation: (process.env.USER_TYPE === 'ant'
       ? z.enum(['worktree', 'remote'])
       : z.enum(['worktree'])
@@ -140,7 +141,9 @@ export type BaseAgentDefinition = {
   /** Omit CLAUDE.md hierarchy from the agent's userContext. Read-only agents
    * (Explore, Plan) don't need commit/PR/lint guidelines — the main agent has
    * full CLAUDE.md and interprets their output. Saves ~5-15 Gtok/week across
-   * 34M+ Explore spawns. Kill-switch: tengu_slim_subagent_claudemd. */
+   * 34M+ Explore spawns. Since official 2.1.271 also settable on custom/plugin
+   * agents via markdown frontmatter and `--agents` JSON. Kill-switch:
+   * tengu_slim_subagent_claudemd. */
   omitClaudeMd?: boolean
 }
 
@@ -649,6 +652,7 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.initialPrompt ? { initialPrompt: parsed.initialPrompt } : {}),
       ...(parsed.background ? { background: parsed.background } : {}),
+      ...(parsed.omitClaudeMd ? { omitClaudeMd: parsed.omitClaudeMd } : {}),
       ...(parsed.memory ? { memory: parsed.memory } : {}),
       ...(parsed.isolation ? { isolation: parsed.isolation } : {}),
     }
@@ -769,6 +773,13 @@ export function parseAgentFromMarkdown(
 
     const background =
       backgroundRaw === 'true' || backgroundRaw === true ? true : undefined
+
+    // Parse omitClaudeMd flag (official 2.1.271: `Se=pe==="true"||pe===!0?!0:void 0`).
+    // Unlike background, the official emits no invalid-value warning for this
+    // key — anything other than 'true'/true silently means omitted.
+    const omitClaudeMdRaw = frontmatter['omitClaudeMd']
+    const omitClaudeMd =
+      omitClaudeMdRaw === 'true' || omitClaudeMdRaw === true ? true : undefined
 
     // Parse memory scope
     const VALID_MEMORY_SCOPES: AgentMemoryScope[] = ['user', 'project', 'local']
@@ -926,6 +937,7 @@ export function parseAgentFromMarkdown(
         : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
       ...(background ? { background } : {}),
+      ...(omitClaudeMd ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),
       ...(isolation ? { isolation } : {}),
       ...(cacheTtl !== undefined ? { cacheTtl } : {}),

@@ -52,7 +52,7 @@ Official `--safe-mode` disables a broad set: CLAUDE.md, skills, plugins, hooks, 
 # Install dependencies
 bun install
 
-# Dev mode (direct execution via Bun). Version prints as 2.1.270 (dev polyfill;
+# Dev mode (direct execution via Bun). Version prints as 2.1.272 (dev polyfill;
 # build overrides with pkg.version) when the cli.tsx MACRO polyfill is active;
 # prints 888 if the polyfill is bypassed.
 bun run dev
