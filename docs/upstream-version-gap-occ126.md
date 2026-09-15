@@ -34,7 +34,7 @@ Monitor deadline behavior (Gap-126a) is what OCC must implement.
 
 | # | Official item (2.1.271 unless noted) | Verdict | Where |
 |---|---|---|---|
-| 1 | Monitor deadline: every monitor expires ≤30 min (10 min in `-p`), expiry notice with event count (2.1.272 gate flip) | **LAND** | §1 Gap-126a |
+| 1 | Monitor deadline: every monitor expires ≤30 min (10 min in `-p`), expiry notice with event count (2.1.272 gate flip) | **LAND** (post-acceptance E2E-1 fix: notice gated on liveness + description divergence banner — §1.1) | §1 Gap-126a |
 | 2 | `omitClaudeMd` in agent frontmatter + `--agents` JSON for custom/plugin agents | **LAND** | §2 Gap-126b |
 | 3 | Bash permission: file after unrecognized option (`fmt`/`column`) | **COVERED-BY-#375** (probe-verified; OCC structurally immune to the `lM` bug class) | §3.A |
 | 4 | Bash permission: wildcard in pattern/option value (`grep -v dir/* file`) | **LAND** (`pC`/`q4o` read-only augmentation port) | §3.B |
@@ -94,6 +94,69 @@ plus a real 1000 ms-timer `call()` test proving the deadline kills even with `pe
 Tests: `__tests__/monitorDeadline272.test.ts` (new, 20 pass); pre-existing Monitor suites
 untouched (8 + 16 pass); blast-radius regression `bun test src/tools src/tasks` 675 pass / 0 fail;
 biome lint clean on both files.
+
+### 1.1 E2E-1 fix addendum (post-acceptance, PR follow-up to #376)
+
+OCC-126 acceptance E2E (验收员, verdict WARN) confirmed **P2 E2E-1** on merged `26b89d5`:
+
+1. **Unconditional expiry notice.** The kill-timer callback emitted
+   `monitorExpiredNotice(timeoutMs, events.length)` *before* the registry check
+   `if (h)` — a naturally-exited or manually-stopped watch would produce a
+   false "expired" notice once a delivery consumer exists (base `f0f45d0` had
+   no emit at all; the emit was diff-introduced).
+2. **Contract-text-truth violation.** The `events`/`emit` side-channel is
+   closure-local in `call()` with **zero runtime consumers** in the shipped
+   build (rg-verified: only MonitorTool + its tests reference
+   `monitorExpiredNotice`), so the description's promises ("notifications
+   arrive in the chat" / "you get one notice with the event count") never
+   reach the model.
+
+**Fix (acceptance option 2, chosen):**
+
+- **Liveness-gated notice — this is official ALIGNMENT, not a deviation.**
+  Re-read of the official 2.1.272 command-monitor call site (ELF offset
+  200594132, byte-verbatim):
+
+  ```js
+  let W=w?void 0:setTimeout((u,O,D,C,E,x)=>{if(u.isKilled())return;if(x.bounded){if(u.flush(),u.isKilled())return}D1(O,Crn(x.timeoutMs,u.eventCount(),x.bounded),D,{isHousekeeping:!0,agentId:C}),l2(D,E)},y,I,h,M.taskId,i,S,{timeoutMs:y,bounded:r});return _.result.then(()=>{if(W)clearTimeout(W);I.finish(),ZA(i,`monitor:${M.taskId}`,S)})
+  ```
+
+  Official checks liveness FIRST (`if(u.isKilled())return`) and only then
+  dispatches `Crn` through `D1`; the natural-exit path clears the timer
+  entirely (`_.result.then(()=>{if(W)clearTimeout(W);…})`). (This also
+  resolves §1's open question on `Crn`'s third param: it is `bounded`.) The
+  OCC kill path is extracted into exported `fireMonitorDeadline(deps)` —
+  registry lookup first, return `false` without emitting when the handle is
+  gone, else emit notice → `kill()` → deregister → `true`. OCC's stream
+  helpers self-deregister from `activeMonitors` on natural exit and
+  `stopMonitor` does so on manual stop, so the registry check carries the
+  official liveness gate; no `clearTimeout` plumbing needed.
+- **Description truth.** `buildDescription()` prepends an **"OCC build note
+  (event delivery not yet wired)"** banner: events + expiry notice are
+  recorded internally but NOT delivered to the chat in this build (wiring =
+  tracked follow-up, §4.4); the deadline kill IS enforced; use Bash
+  `run_in_background` for a delivered completion notification. Official text
+  kept verbatim below the banner, so every pre-existing `toContain` pin
+  (monitorDeadline272 suite + `version-2.1.200-tools-stream.e2e`) passes
+  unchanged. Precedent: the `--safe-mode` help-text accuracy banner and the
+  documented-divergence pattern.
+- **README** Monitor bullet gains the same accuracy parenthetical.
+
+**Why not option 1 (wire a real consumer) this round:** OCC's notification
+plumbing (`enqueueShellNotification` in LocalShellTask.tsx) is module-private
+and requires `LocalShellTaskState` in AppState + `setAppState`; MonitorTool is
+self-contained and never registers a LocalShellTask. A faithful `D1`-equivalent
+channel (queued-command drain in query.ts, 200 ms batching, flood protection,
+agentId scoping) is a PORTABLE-LARGE build — scoped as occ127 (§4.4) per the
+round's no-large-subsystem-builds discipline.
+
+**Tests:** new `__tests__/monitorDeadlineGate.test.ts` (8 tests): fake-registry
+emit gate (live → true + exact notice + kill + deregister; absent → false + no
+emit), real `call()` natural-exit path (echo, deregistered before deadline →
+no-op), real manual-stop path (`stopMonitor` then expiry → no-op), live-expiry
+path (notice with event count, killed, idempotent second fire), banner pins in
+both session modes + `prompt()` mirror. MonitorTool suites: **28 pass / 0
+fail**. Gates: §7.1.
 
 ## 2. Gap-126b — `omitClaudeMd` for custom/plugin agents (LAND)
 
@@ -262,6 +325,22 @@ per-command input schema, the live `customConfig` path (`Shell.ts:264` passes `u
 the permission-review surface, the `W2e` guards, and Monitor sandboxing (raw `Bun.spawn`
 today — a prerequisite project). Scoped and documented instead.
 
+### 4.4 Monitor event-delivery consumer (chat notifications) — PORTABLE-LARGE → SCOPED, NOT LANDED (occ127 candidate)
+
+Raised by acceptance E2E-1 (§1.1): MonitorTool records stdout lines / WS frames
+and the deadline-expiry notice through a closure-local emitter, but the shipped
+build has **no consumer** that delivers them to the model's chat. Official
+2.1.272 dispatches through `D1(…)` (notification dispatch) plus `l2` and drains
+via the queued-command surface; OCC's nearest plumbing
+(`enqueueShellNotification`, LocalShellTask.tsx) is module-private, AppState-bound
+(`LocalShellTaskState` + `setAppState`), and MonitorTool never registers a
+LocalShellTask. A faithful port needs the dispatch channel + query.ts drain
+integration + 200 ms batching + flood protection + agentId scoping — a
+PORTABLE-LARGE subsystem build, out of scope for a catch-up round. Until it
+lands, the tool description carries an explicit divergence banner (§1.1) and
+`fireMonitorDeadline`'s liveness gate keeps the future consumer free of false
+"expired" notices.
+
 ## 5. N/A items with root cause
 
 ### 5.1 Bash `cd`-chain fix — N/A (setting absent)
@@ -427,6 +506,16 @@ dashscope gateway env (`ANTHROPIC_BASE_URL` + `ANTHROPIC_MODEL=qwen3.8-max`):
 Monitor deadline behavior (§1) not exercised live in the REPL (would need a ≥1 min real
 watch); pinned instead by the 20-test suite incl. a real 1000 ms-timer `call()` test proving
 the deadline kills even with `persistent:true`.
+
+### 7.1 E2E-1 fix gates (post-acceptance round, branch `agent/occ/db9aaf96-e2e1` off `205bc87`)
+
+| Gate | Result |
+|---|---|
+| `bun test src/tools/MonitorTool/__tests__/` (20 pinned + 8 new `monitorDeadlineGate`) | **28 pass / 0 fail** |
+| `bun test src/tasks/LocalShellTask test/e2e/version-2.1.200-tools-stream.e2e.test.ts test/e2e/occ-versioning.e2e.test.ts` | **17 pass / 0 fail** (4 files) |
+| Blast radius `bun test src/tools src/tasks` | **718 pass / 0 fail** (61 files) |
+| `bunx biome lint` on both changed TS files | clean |
+| `bun run build` | green — `dist/cli.js` 29.06 MB, MACRO.VERSION=2.1.336 |
 
 ## 8. Release
 

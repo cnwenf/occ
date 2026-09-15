@@ -40,7 +40,7 @@ Requires a valid Anthropic API Key (or AWS Bedrock / Google Vertex / Azure Found
 - 🔧 **Full tool suite** — Bash, Read, Edit, Write, NotebookEdit, Grep, Glob, Agent, WebFetch, WebSearch, WebBrowser (real Chrome via CDP), Todo, Skills, and more.
 - 🤖 **Sub-agents** — spawn fork / async / background / remote agents; team swarms (`TeamCreate`/`TeamDelete`) and worktree isolation.
 - 🔀 **Workflow engine** — vm-sandboxed multi-agent workflow scripts; `/workflows` browse + async launch (`remote: true`) + progress tracking. _(live via `WORKFLOW_SCRIPTS`)_
-- 📊 **Monitor tool** — self-contained monitoring. _(live via `MONITOR_TOOL`)_
+- 📊 **Monitor tool** — self-contained monitoring. _(live via `MONITOR_TOOL`; events and the deadline-expiry notice are recorded internally — chat delivery wiring is an occ127 follow-up, and the deadline kill itself is enforced)_
 - 🌐 **WebBrowser** — navigate, read page text, screenshot, and batch actions through a real Chrome instance (CDP).
 - 🛡️ **Permission model** — `default` / `acceptEdits` / `plan` / `bypassPermissions` modes, auto-approval, destructive-command blocking, path validation, rule matching.
 - 🪝 **Hooks** — `PreToolUse`, `PostToolUse`, `PermissionDenied`, `Stop`, and more, configurable via `settings.json`.
