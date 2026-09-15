@@ -95,7 +95,9 @@ function deadlineSection(): string {
 }
 
 function buildDescription(): string {
-  return `Start a background monitor that streams events from a long-running script. Each stdout line is an event — you keep working and notifications arrive in the chat. Events arrive on their own schedule and are not replies from the user, even if one lands while you're waiting for the user to answer a question.
+  return `**OCC build note (event delivery not yet wired):** in this build, Monitor events and the expiry notice are recorded internally but are NOT delivered to the chat — the notification consumer is a tracked follow-up (occ127). The deadline itself IS enforced: every monitor is killed and deregistered at \`timeout_ms\`. Until delivery lands, use Bash \`run_in_background\` when you need a delivered completion notification, and read the delivery-dependent statements below ("notifications arrive in the chat", the expiry notice) as describing not-yet-available behavior.
+
+Start a background monitor that streams events from a long-running script. Each stdout line is an event — you keep working and notifications arrive in the chat. Events arrive on their own schedule and are not replies from the user, even if one lands while you're waiting for the user to answer a question.
 
 Pick by how many notifications you need:
 - **One** ("tell me when the server is ready / the build finishes") → use **Bash with \`run_in_background\`** and a command that exits when the condition is true, e.g. \`until grep -q "Ready in" dev.log; do sleep 0.5; done\`. You get a single completion notification when it exits.
@@ -227,6 +229,42 @@ interface MonitorHandle {
 
 /** In-process registry of live monitors so TaskStop can kill them. */
 const activeMonitors = new Map<string, MonitorHandle>()
+
+/** Injectable deps for fireMonitorDeadline (registry override is for tests). */
+export interface MonitorDeadlineDeps {
+  readonly taskId: string
+  readonly timeoutMs: number
+  readonly eventCount: number
+  readonly emit: (line: string) => void
+  readonly registry?: ReadonlyMap<string, MonitorHandle> &
+    Pick<Map<string, MonitorHandle>, 'delete'>
+}
+
+/**
+ * Fire the deadline kill for a monitor, gated on it still being live.
+ *
+ * Official 2.1.272 (binary call site, verbatim):
+ *   let W = setTimeout((u,O,D,C,E,x)=>{ if(u.isKilled())return; if(x.bounded){…}
+ *     D1(O,Crn(x.timeoutMs,u.eventCount(),x.bounded),D,{isHousekeeping:!0,agentId:C}),
+ *     l2(D,E) }, …)
+ *   _.result.then(()=>{ if(W)clearTimeout(W); … })
+ *
+ * The liveness check comes FIRST: a monitor that exited naturally or was
+ * stopped never produces an "expired" notice (official also clears the timer
+ * on natural exit; OCC's stream helpers self-deregister from the registry, so
+ * the registry lookup carries the same gate). Returns true when the monitor
+ * was still live (notice emitted, then killed + deregistered), false when it
+ * had already ended (no notice). Exported for testing.
+ */
+export function fireMonitorDeadline(deps: MonitorDeadlineDeps): boolean {
+  const registry = deps.registry ?? activeMonitors
+  const h = registry.get(deps.taskId)
+  if (!h) return false
+  deps.emit(monitorExpiredNotice(deps.timeoutMs, deps.eventCount))
+  h.kill()
+  registry.delete(deps.taskId)
+  return true
+}
 
 function shellPath(): string {
   return process.env.SHELL || '/bin/sh'
@@ -381,9 +419,11 @@ export const MonitorTool = buildTool({
     // field stays for compat.
     const { timeoutMs, persistent } = normalizeMonitorInput(input)
 
-    // Events are surfaced via the notification surface; the binary dispatches
-    // each stdout line / WS frame as a chat notification. We collect them
-    // through a side-channel emitter so callers (and tests) can observe them.
+    // OCC divergence (banner in the description): the binary dispatches each
+    // stdout line / WS frame as a chat notification (D1). This build has no
+    // delivery consumer wired yet, so events are recorded through a
+    // closure-local side-channel emitter (observable by tests); the wiring is
+    // a tracked follow-up (occ127).
     const events: string[] = []
     const emit = (line: string): void => {
       events.push(line)
@@ -396,15 +436,17 @@ export const MonitorTool = buildTool({
     }
 
     // The kill timer is ALWAYS armed (no persistent bypass). On expiry the Crn
-    // notice goes out through the same side-channel (with the delivered-event
-    // count) before the kill.
+    // notice goes out ONLY if the monitor is still live in the registry — the
+    // official call site gates on liveness first (`if(u.isKilled())return`),
+    // so natural exits / manual stops produce no false "expired" notice.
+    // See fireMonitorDeadline for the verbatim binary evidence.
     const timer = setTimeout(() => {
-      emit(monitorExpiredNotice(timeoutMs, events.length))
-      const h = activeMonitors.get(taskId)
-      if (h) {
-        h.kill()
-        activeMonitors.delete(taskId)
-      }
+      fireMonitorDeadline({
+        taskId,
+        timeoutMs,
+        eventCount: events.length,
+        emit,
+      })
     }, timeoutMs)
     if (typeof timer === 'object' && timer && 'unref' in timer) {
       ;(timer as NodeJS.Timeout).unref()
