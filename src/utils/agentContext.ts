@@ -51,6 +51,14 @@ export type SubagentContext = {
    *  Reset to false on each spawn/resume; flipped true by
    *  consumeInvokingRequestId() on the first terminal API event. */
   invocationEmitted?: boolean
+  /** Official 2.1.273 gateway hints (MLr): when this subagent runs inside a
+   *  workflow run, the workflow run's ID. A defined value reclassifies the
+   *  x-claude-code-request-class header from 'subagent' to 'workflow'.
+   *  Undefined for non-workflow subagents. */
+  workflowRunId?: string
+  /** Official 2.1.273 gateway hints: the workflow's name (analytics only —
+   *  never sent on the wire). Undefined for non-workflow subagents. */
+  workflowName?: string
 }
 
 /**

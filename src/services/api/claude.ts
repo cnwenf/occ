@@ -240,6 +240,15 @@ import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
 import {
+  type CompactionRequestKind,
+  type ToolDurationEntry,
+  applyContextCompactedHeaders,
+  applyPrevToolDurationsHeader,
+  buildPrevToolDurationsHeader,
+  classifyQuerySource,
+  consumePendingContextCompacted,
+} from './gatewayHints.js'
+import {
   API_ERROR_MESSAGE_PREFIX,
   CUSTOM_OFF_SWITCH_MESSAGE,
   getAssistantMessageFromError,
@@ -903,6 +912,13 @@ export type Options = {
   // so the model can pace itself. `remaining` is computed by the caller
   // (query.ts decrements across the agentic loop).
   taskBudget?: { total: number; remaining?: number }
+  // Official 2.1.273 gateway hint headers (byte-verified port): the previous
+  // turn's per-tool durations (serialized into
+  // `x-claude-code-prev-tool-durations` when the gate is on) and the
+  // compaction kind for THIS request when it is a compaction request itself
+  // (serialized into `x-claude-code-compaction` / `x-cc-compaction-request`).
+  prevToolDurations?: readonly ToolDurationEntry[]
+  compactionRequestKind?: CompactionRequestKind
 }
 
 export async function queryModelWithoutStreaming({
@@ -1055,6 +1071,19 @@ export async function* executeNonStreamingRequest(
    * from. Emitted in tengu_nonstreaming_fallback_error for funnel correlation.
    */
   originatingRequestId?: string | null,
+  /**
+   * Official 2.1.273 `tar` (non-streaming) gateway-hint wire values — the
+   * non-streaming request builder applies
+   * `dar(Ie,e.contextCompactedKindForWire,e.compactionRequestKindForWire)` and
+   * `far(Ie,e.prevToolDurationsForWire)` to its headers object. Computed once
+   * by queryModel (same as the streaming path) so a streaming→non-streaming
+   * fallback does not double-consume the pending context-compacted kind.
+   */
+  gatewayHintWireValues?: {
+    contextCompactedKindForWire?: CompactionRequestKind
+    compactionRequestKindForWire?: CompactionRequestKind
+    prevToolDurationsForWire?: string
+  },
 ): AsyncGenerator<SystemAPIErrorMessage, BetaMessage> {
   const fallbackTimeoutMs = getNonstreamingFallbackTimeoutMs()
   const generator = withRetry(
@@ -1077,6 +1106,18 @@ export async function* executeNonStreamingRequest(
       )
 
       try {
+        // Official 2.1.273 `tar`: `dar(Ie,...),far(Ie,...)` mutates the
+        // request's headers object in place, per attempt.
+        const hintHeaders: Record<string, string> = {}
+        applyContextCompactedHeaders(
+          hintHeaders,
+          gatewayHintWireValues?.contextCompactedKindForWire,
+          gatewayHintWireValues?.compactionRequestKindForWire,
+        )
+        applyPrevToolDurationsHeader(
+          hintHeaders,
+          gatewayHintWireValues?.prevToolDurationsForWire,
+        )
         // biome-ignore lint/plugin: non-streaming API call
         return await anthropic.beta.messages.create(
           {
@@ -1086,6 +1127,9 @@ export async function* executeNonStreamingRequest(
           {
             signal: retryOptions.signal,
             timeout: fallbackTimeoutMs,
+            ...(Object.keys(hintHeaders).length > 0
+              ? { headers: hintHeaders }
+              : {}),
           },
         )
       } catch (err) {
@@ -2059,6 +2103,26 @@ async function* queryModel(
   let isFastModeRequest = isFastMode // Keep separate state as it may change if falling back
   let isAdvisorInProgress = false
 
+  // Official 2.1.273 gateway hints (byte-verified): the wire values are
+  // computed ONCE before the retry loop, then re-applied to every attempt's
+  // headers (`dar(Sl,M6e,O6e),far(Sl,D6e)` inside the per-attempt builder):
+  //   M6e = ii(querySource)==="main" && YF(querySource,agentContext,agentId)
+  //         ? kZn() : undefined  — consume the pending context-compacted kind
+  //   O6e = compactionRequestKind (this request IS a compaction request)
+  //   D6e = prevToolDurations!==undefined ? Hsr(prevToolDurations) : undefined
+  // `ii(...)==="main"` requires a classified main source (undefined does not
+  // qualify — ii(undefined) is undefined), matching the binary guard order.
+  const contextCompactedKindForWire =
+    classifyQuerySource(options.querySource) === 'main' &&
+    options.agentId === undefined
+      ? consumePendingContextCompacted()
+      : undefined
+  const compactionRequestKindForWire = options.compactionRequestKind
+  const prevToolDurationsForWire =
+    options.prevToolDurations !== undefined
+      ? buildPrevToolDurationsHeader(options.prevToolDurations)
+      : undefined
+
   try {
     queryCheckpoint('query_client_creation_start')
     const generator = withRetry(
@@ -2114,6 +2178,29 @@ async function* queryModel(
         // tracestate) to the API when distributed trace linking is enabled.
         const incomingTrace =
           shouldPropagateTraceparent() ? getIncomingTraceContext() : undefined
+        // Official 2.1.273 per-attempt header block (`Sl`): base headers then
+        // `dar(Sl,M6e,O6e),far(Sl,D6e)` — hint application mutates the same
+        // object every attempt (values were computed once before the loop).
+        const attemptHeaders: Record<string, string> = {
+          ...(clientRequestId && {
+            [CLIENT_REQUEST_ID_HEADER]: clientRequestId,
+          }),
+          ...(incomingTrace?.traceparent && {
+            traceparent: incomingTrace.traceparent,
+          }),
+          ...(incomingTrace?.tracestate && {
+            tracestate: incomingTrace.tracestate,
+          }),
+        }
+        applyContextCompactedHeaders(
+          attemptHeaders,
+          contextCompactedKindForWire,
+          compactionRequestKindForWire,
+        )
+        applyPrevToolDurationsHeader(
+          attemptHeaders,
+          prevToolDurationsForWire,
+        )
         const result = await anthropic.beta.messages
           .create(
             { ...params, stream: true },
@@ -2125,17 +2212,7 @@ async function* queryModel(
               ...(getApiForceIdleTimeout() !== undefined
                 ? { timeout: false as const }
                 : {}),
-              headers: {
-                ...(clientRequestId && {
-                  [CLIENT_REQUEST_ID_HEADER]: clientRequestId,
-                }),
-                ...(incomingTrace?.traceparent && {
-                  traceparent: incomingTrace.traceparent,
-                }),
-                ...(incomingTrace?.tracestate && {
-                  tracestate: incomingTrace.tracestate,
-                }),
-              },
+              headers: attemptHeaders,
             },
           )
           .withResponse()
@@ -2951,6 +3028,11 @@ async function* queryModel(
         },
         params => captureAPIRequest(params, options.querySource),
         streamRequestId,
+        {
+          contextCompactedKindForWire,
+          compactionRequestKindForWire,
+          prevToolDurationsForWire,
+        },
       )
 
       const m: AssistantMessage = {
@@ -3052,6 +3134,11 @@ async function* queryModel(
           },
           params => captureAPIRequest(params, options.querySource),
           failedRequestId,
+          {
+            contextCompactedKindForWire,
+            compactionRequestKindForWire,
+            prevToolDurationsForWire,
+          },
         )
 
         const m: AssistantMessage = {

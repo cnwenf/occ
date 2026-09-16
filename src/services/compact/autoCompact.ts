@@ -359,6 +359,13 @@ export async function autoCompactIfNeeded(
       undefined, // No custom instructions for autocompact
       true, // isAutoCompact
       recompactionInfo,
+      // Official 2.1.273: threshold-triggered auto-compaction passes a DEFINED
+      // thresholdSource into `gkt(trigger, thresholdSource)` → classifies the
+      // compaction request as 'auto' (only definedness reaches the wire; the
+      // string value itself is never sent). This path is reached only after
+      // shouldAutoCompact() confirmed a token-threshold breach, so the marker
+      // is always defined here — matching the official `r?.thresholdSource`.
+      'auto-compact-threshold',
     )
 
     // Reset lastSummarizedMessageId since legacy compaction replaces all messages

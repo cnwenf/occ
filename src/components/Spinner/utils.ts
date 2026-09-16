@@ -139,3 +139,16 @@ export function computeTodoLabel(todo: {
 export function computeSpinnerVerbWidth(columns: number): number {
   return Math.max(40, columns - 8)
 }
+
+/**
+ * Official 2.1.273 `Mn` (byte-verified): `/(…|\.\.\.)$/` — matches a verb
+ * that already ends with an ellipsis (… or ...) so the spinner doesn't double
+ * it. v2.1.272 appended "…" unconditionally (`jt=...+"…"`), which rendered
+ * override messages like 'Running PreCompact hooks…' as "……".
+ */
+export const SPINNER_ELLIPSIS_RE = /(…|\.\.\.)$/
+
+/** Official 2.1.273: `ue=Mn.test(vt)?vt:vt+"…"`. */
+export function appendSpinnerEllipsis(verb: string): string {
+  return SPINNER_ELLIPSIS_RE.test(verb) ? verb : verb + '…'
+}

@@ -931,15 +931,19 @@ function PromptInput({
     // Check if this is a single character insertion at the start
     const isSingleCharInsertion = value.length === input.length + 1;
     const insertedAtStart = cursorOffset === 0;
-    const mode = getModeFromInput(value);
-    if (insertedAtStart && mode !== 'prompt') {
+    // 2.1.273: a leading mode char only switches modes when the detected mode
+    // differs from the current one — already in shell mode, a typed `!` is
+    // content (negated commands like `! grep …`) and falls through to the
+    // normal commit below. official dispatch guard: `pe()!==hg(A)`.
+    const detectedMode = getModeFromInput(value);
+    if (insertedAtStart && detectedMode !== 'prompt' && detectedMode !== mode) {
       if (isSingleCharInsertion) {
-        onModeChange(mode);
+        onModeChange(detectedMode);
         return;
       }
       // Multi-char insertion into empty input (e.g. tab-accepting "! gcloud auth login")
       if (input.length === 0) {
-        onModeChange(mode);
+        onModeChange(detectedMode);
         const valueWithoutMode = getValueFromInput(value).replaceAll('\t', '    ');
         pushToBuffer(input, cursorOffset, pastedContents);
         trackAndSetInput(valueWithoutMode);
@@ -960,7 +964,7 @@ function PromptInput({
       footerSelection: null
     });
     trackAndSetInput(processedValue);
-  }, [trackAndSetInput, onModeChange, input, cursorOffset, pushToBuffer, pastedContents, dismissStashHint, setAppState]);
+  }, [trackAndSetInput, onModeChange, input, cursorOffset, mode, pushToBuffer, pastedContents, dismissStashHint, setAppState]);
   const {
     resetHistory,
     onHistoryUp,
@@ -2341,7 +2345,10 @@ function PromptInput({
     } : undefined,
     highlights: combinedHighlights,
     inlineGhostText,
-    inputFilter: lazySpaceInputFilter
+    inputFilter: lazySpaceInputFilter,
+    // 2.1.273: a mode char typed at the start switches modes only when the
+    // current mode differs — in shell mode `!` inserts as content.
+    getInputMode: () => mode
   };
   const getBorderColor = (): keyof Theme => {
     const modeColors: Record<string, keyof Theme> = {

@@ -8,7 +8,16 @@ const sessionTranscriptModule = feature('KAIROS')
   : null
 
 import { APIUserAbortError } from '@anthropic-ai/sdk'
-import { markPostCompaction } from 'src/bootstrap/state.js'
+import {
+  getLastMainRequestId,
+  markPostCompaction,
+} from 'src/bootstrap/state.js'
+import {
+  type CompactionRequestKind,
+  armPendingContextCompacted,
+  getCompactionKind,
+  shouldSendContextCompactedHeader,
+} from '../api/gatewayHints.js'
 import { getInvokedSkillsForAgent } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
@@ -410,7 +419,20 @@ export async function compactConversation(
   customInstructions?: string,
   isAutoCompact: boolean = false,
   recompactionInfo?: RecompactionInfo,
+  // Official 2.1.273: the threshold-based auto-compaction orchestration
+  // passes a defined `thresholdSource` into the compaction request's
+  // `compactionRequestKind:gkt(y,r?.thresholdSource)` — only its DEFINEDNESS
+  // reaches the wire (defined → 'auto', undefined → 'reactive'; manual is
+  // always 'manual'). Callers that trigger on a token threshold pass any
+  // defined marker string.
+  thresholdSource?: string,
 ): Promise<CompactionResult> {
+  // Wire kind for the compaction request itself ($sr / x-cc-compaction-request
+  // headers on the summary API call).
+  const compactionRequestKind = getCompactionKind(
+    isAutoCompact ? 'auto' : 'manual',
+    thresholdSource,
+  )
   try {
     if (messages.length === 0) {
       throw new Error(ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
@@ -482,6 +504,7 @@ export async function compactConversation(
         context,
         preCompactTokenCount,
         cacheSafeParams: retryCacheSafeParams,
+        compactionRequestKind,
       })
       summary = getAssistantMessageText(summaryResponse)
       if (!summary?.startsWith(PROMPT_TOO_LONG_ERROR_MESSAGE)) break
@@ -761,6 +784,29 @@ export async function compactConversation(
     ]
       .filter(Boolean)
       .join('\n')
+
+    // Official 2.1.273 context-compacted arm (byte-verified net of the two
+    // live arm sites): the core result builder arms after post_compact hooks
+    // (`if(YF(S?.querySource,n.agentContext,n.agentId))I_t(y?"auto":"manual")`)
+    // and the auto/reactive orchestration re-arms on success with
+    // `I_t(gkt(trigger,UL()))` where UL() is lastMainRequestId — an auto
+    // compaction before any main-thread API response is 'reactive', after is
+    // 'auto'. Manual is 'manual' at both sites, so the single net arm is
+    // gkt(trigger, lastMainRequestId). partialCompact/sessionMemory paths have
+    // no official arm site and stay unarmed.
+    if (
+      shouldSendContextCompactedHeader(
+        recompactionInfo?.querySource ?? context.options.querySource,
+        context.agentId,
+      )
+    ) {
+      armPendingContextCompacted(
+        getCompactionKind(
+          isAutoCompact ? 'auto' : 'manual',
+          getLastMainRequestId(),
+        ),
+      )
+    }
 
     return {
       boundaryMarker,
@@ -1173,6 +1219,7 @@ async function streamCompactSummary({
   context,
   preCompactTokenCount,
   cacheSafeParams,
+  compactionRequestKind,
 }: {
   messages: Message[]
   summaryRequest: UserMessage
@@ -1180,6 +1227,9 @@ async function streamCompactSummary({
   context: ToolUseContext
   preCompactTokenCount: number
   cacheSafeParams: CacheSafeParams
+  // Official 2.1.273: rides on the compaction request itself via
+  // `compactionRequestKind` → dar() ($sr/x-cc-compaction-request headers).
+  compactionRequestKind?: CompactionRequestKind
 }): Promise<AssistantMessage> {
   // When prompt cache sharing is enabled, use forked agent to reuse the
   // main conversation's cached prefix (system prompt, tools, context messages).
@@ -1230,6 +1280,7 @@ async function streamCompactSummary({
           // fork — same signal the streaming fallback uses at
           // `signal: context.abortController.signal` below.
           overrides: { abortController: context.abortController },
+          ...(compactionRequestKind !== undefined && { compactionRequestKind }),
         })
         const assistantMsg = getLastAssistantMessage(result.messages)
         const assistantText = assistantMsg
@@ -1352,6 +1403,7 @@ async function streamCompactSummary({
             getMaxOutputTokensForModel(context.options.mainLoopModel),
           ),
           querySource: 'compact',
+          ...(compactionRequestKind !== undefined && { compactionRequestKind }),
           agents: context.options.agentDefinitions.activeAgents,
           mcpTools: [],
           effortValue: appState.effortValue,

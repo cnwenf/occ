@@ -19,6 +19,7 @@ import {
   logEvent,
 } from '../services/analytics/index.js'
 import { accumulateUsage, updateUsage } from '../services/api/claude.js'
+import type { CompactionRequestKind } from '../services/api/gatewayHints.js'
 import { EMPTY_USAGE, type NonNullableUsage } from '../services/api/logging.js'
 import type { ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
@@ -118,6 +119,14 @@ export type ForkedAgentParams = {
   /** Skip writing new prompt cache entries on the last message. For
    *  fire-and-forget forks where no future request will read from this prefix. */
   skipCacheWrite?: boolean
+  /**
+   * Official 2.1.273 gateway hints: compaction-request classification
+   * ('manual' | 'auto' | 'reactive'). Forwarded verbatim into query() →
+   * callModel so the compaction request itself carries the
+   * x-claude-code-compaction-request / x-cc-compaction-request headers.
+   * Only set by the compact path; undefined elsewhere.
+   */
+  compactionRequestKind?: CompactionRequestKind
 }
 
 export type ForkedAgentResult = {
@@ -568,6 +577,7 @@ export async function runForkedAgent({
   onMessage,
   skipTranscript,
   skipCacheWrite,
+  compactionRequestKind,
 }: ForkedAgentParams): Promise<ForkedAgentResult> {
   const startTime = Date.now()
   const outputMessages: Message[] = []
@@ -625,6 +635,7 @@ export async function runForkedAgent({
       maxTurns,
       skipCacheWrite,
       agentCacheTtlOverride,
+      compactionRequestKind,
     })) {
       // Extract real usage from message_delta stream events (final usage per API call)
       if (message.type === 'stream_event') {

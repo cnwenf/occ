@@ -32,6 +32,7 @@ import {
   sdkPermissionDecisionLabel,
 } from '../../hooks/toolPermission/sdkPermissionTelemetry.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
+import type { ToolDurationEntry } from '../api/gatewayHints.js'
 import {
   findToolByName,
   type Tool,
@@ -192,6 +193,11 @@ export type MessageUpdateLazy<M extends Message = Message> = {
     toolUseID: string
     modifyContext: (context: ToolUseContext) => ToolUseContext
   }
+  // Official 2.1.273: `{toolName, durationMs}` produced at exactly two sites —
+  // the success result push and the catch-path error result (first element
+  // only; hook messages get none). Early InputValidation/validateInput
+  // returns produce no duration, matching the binary.
+  toolDuration?: ToolDurationEntry
 }
 
 export type McpServerType =
@@ -1462,6 +1468,9 @@ async function checkPermissionsAndCallTool(
               modifyContext: toolContextModifier,
             }
           : undefined,
+        // Official 2.1.273 success production site (byte-verified):
+        // `Le.push({message:cd,...,toolDuration:{toolName:e.name,durationMs:Cr}})`
+        toolDuration: { toolName: tool.name, durationMs },
       })
     }
 
@@ -1726,6 +1735,11 @@ async function checkPermissionsAndCallTool(
               : undefined,
           sourceToolAssistantUUID: assistantMessage.uuid,
         }),
+        // Official 2.1.273 error/denial production site (byte-verified):
+        // `toolDuration:{toolName:e.name,durationMs:dr??pr}` on the FIRST
+        // element only — `pr=Date.now()-Pn` computed in the catch; the
+        // trailing hookMessages ($o) get no toolDuration.
+        toolDuration: { toolName: tool.name, durationMs },
       },
       ...hookMessages,
     ]

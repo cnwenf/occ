@@ -9,11 +9,16 @@ import { findToolByName, type Tools, type ToolUseContext } from '../../Tool.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
+import type { ToolDurationEntry } from '../api/gatewayHints.js'
 import { runToolUse } from './toolExecution.js'
 
 type MessageUpdate = {
   message?: Message
   newContext?: ToolUseContext
+  // Official 2.1.273: the executor re-yields each tool's duration alongside
+  // its results (`yield{message:B,newContext:...,toolDuration:O},O=void 0` —
+  // attached to the FIRST result message only).
+  toolDuration?: ToolDurationEntry
 }
 
 type ToolStatus = 'queued' | 'executing' | 'completed' | 'yielded'
@@ -26,6 +31,9 @@ type TrackedTool = {
   isConcurrencySafe: boolean
   promise?: Promise<void>
   results?: Message[]
+  // Official 2.1.273 (`h.toolDuration`): captured from the tool's result
+  // stream, re-emitted once with the first buffered result message.
+  toolDuration?: ToolDurationEntry
   // Progress messages are stored separately and yielded immediately
   pendingProgress: Message[]
   contextModifiers?: Array<(context: ToolUseContext) => ToolUseContext>
@@ -379,6 +387,9 @@ export class StreamingToolExecutor {
         if (update.contextModifier) {
           contextModifiers.push(update.contextModifier.modifyContext)
         }
+        if (update.toolDuration) {
+          tool.toolDuration = update.toolDuration
+        }
       }
       tool.results = messages
       tool.contextModifiers = contextModifiers
@@ -428,8 +439,14 @@ export class StreamingToolExecutor {
       if (tool.status === 'completed' && tool.results) {
         tool.status = 'yielded'
 
+        // Official 2.1.273 executor yield (byte-verified):
+        // `let O=h.toolDuration;for(let B of h.results)
+        //    yield{message:B,newContext:this.toolUseContext,toolDuration:O},
+        //    O=void 0` — duration rides on the FIRST result message only.
+        let toolDuration = tool.toolDuration
         for (const message of tool.results) {
-          yield { message, newContext: this.toolUseContext }
+          yield { message, newContext: this.toolUseContext, toolDuration }
+          toolDuration = undefined
         }
 
         markToolUseAsComplete(this.toolUseContext, tool.id)
