@@ -5,6 +5,10 @@ import type {
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { CanUseToolFn } from './hooks/useCanUseTool.js'
 import { FallbackTriggeredError } from './services/api/withRetry.js'
+import type {
+  CompactionRequestKind,
+  ToolDurationEntry,
+} from './services/api/gatewayHints.js'
 import {
   calculateTokenWarningState,
   isAutoCompactEnabled,
@@ -229,6 +233,11 @@ export type QueryParams = {
   // budget for the whole agentic turn; `remaining` is computed per iteration
   // from cumulative API usage. See configureTaskBudgetParams in claude.ts.
   taskBudget?: { total: number }
+  // Official 2.1.273 gateway hint: when this query IS a compaction request,
+  // its kind ('manual'|'auto'|'reactive') rides on the request via the
+  // x-claude-code-compaction / x-cc-compaction-request headers. Threaded
+  // straight into the callModel options.
+  compactionRequestKind?: CompactionRequestKind
   deps?: QueryDeps
 }
 
@@ -296,6 +305,7 @@ async function* queryLoop(
     maxTurns,
     skipCacheWrite,
     agentCacheTtlOverride,
+    compactionRequestKind,
   } = params
   const deps = params.deps ?? productionDeps()
 
@@ -326,7 +336,14 @@ async function* queryLoop(
   // multiple compacts: each subtracts the final context at that compact's
   // trigger point. Loop-local (not on State) to avoid touching the 7 continue
   // sites.
-  let taskBudgetRemaining: number | undefined 
+  let taskBudgetRemaining: number | undefined
+
+  // Official 2.1.273 gateway hint (`prevToolDurations`): per-tool durations
+  // collected during the PREVIOUS loop iteration, sent on the next request's
+  // x-claude-code-prev-tool-durations header. Undefined until the first
+  // turn with tools completes; loop-local like taskBudgetRemaining (the
+  // official carries it on the turn state `mo`, rebuilt each iteration).
+  let prevToolDurations: ToolDurationEntry[] | undefined
 
   // Snapshot immutable env/statsig/session state once at entry. See QueryConfig
   // for what's included and why feature() gates are intentionally excluded.
@@ -597,6 +614,10 @@ async function* queryLoop(
     // loop-exit signal. If false after streaming, we're done (modulo stop-hook retry).
     const toolUseBlocks: ToolUseBlock[] = []
     let needsFollowUp = false
+    // Official 2.1.273: per-turn tool-duration collection (`mo.toolDurations`,
+    // fresh [] each iteration; `if(je.toolDuration)mo.toolDurations.push(...)`
+    // at both stream-executor consumption points).
+    const toolDurations: ToolDurationEntry[] = []
 
     queryCheckpoint('query_setup_start')
     const useStreamingToolExecution = config.gates.streamingToolExecution
@@ -776,6 +797,12 @@ async function* queryLoop(
               agentCacheTtlOverride,
               agentId: toolUseContext.agentId,
               addNotification: toolUseContext.addNotification,
+              // Official 2.1.273 gateway hint headers — queryModel serializes
+              // these once per request (Hsr) and applies dar/far per attempt.
+              ...(prevToolDurations !== undefined && { prevToolDurations }),
+              ...(compactionRequestKind !== undefined && {
+                compactionRequestKind,
+              }),
               ...(params.taskBudget && {
                 taskBudget: {
                   total: params.taskBudget.total,
@@ -932,6 +959,9 @@ async function* queryLoop(
               !toolUseContext.abortController.signal.aborted
             ) {
               for (const result of streamingToolExecutor.getCompletedResults()) {
+                if (result.toolDuration) {
+                  toolDurations.push(result.toolDuration)
+                }
                 if (result.message) {
                   yield result.message
                   toolResults.push(
@@ -1553,6 +1583,9 @@ async function* queryLoop(
       : runTools(toolUseBlocks, assistantMessages, canUseTool, toolUseContext)
 
     for await (const update of toolUpdates) {
+      if (update.toolDuration) {
+        toolDurations.push(update.toolDuration)
+      }
       if (update.message) {
         yield update.message
 
@@ -1578,6 +1611,10 @@ async function* queryLoop(
       }
     }
     queryCheckpoint('query_tool_execution_end')
+    // Official 2.1.273 turn carry:
+    // `prevToolDurations:mo.toolDurations.length>0?[...mo.toolDurations]:void 0`
+    prevToolDurations =
+      toolDurations.length > 0 ? [...toolDurations] : undefined
 
     // Generate tool use summary after tool batch completes — passed to next recursive call
     let nextPendingToolUseSummary:

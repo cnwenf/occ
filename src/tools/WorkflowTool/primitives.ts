@@ -27,6 +27,12 @@ import type { AgentId } from '../../types/ids.js'
 import type { ToolUseContext, CanUseToolFn, Tools } from '../../Tool.js'
 import { runAgent } from '../AgentTool/runAgent.js'
 import { GENERAL_PURPOSE_AGENT } from '../AgentTool/built-in/generalPurposeAgent.js'
+import { isBuiltInAgent } from '../AgentTool/loadAgentsDir.js'
+import {
+  type SubagentContext,
+  runWithAgentContext,
+} from '../../utils/agentContext.js'
+import { getParentSessionId } from '../../utils/teammate.js'
 import { createAgentWorktree } from '../../utils/worktree.js'
 import { extractTextContent, getLastAssistantMessage, createUserMessage } from '../../utils/messages.js'
 import { getTokenCountFromUsage } from '../../utils/tokens.js'
@@ -619,9 +625,34 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       startTime: agentStartTime,
     })
 
+    // Official 2.1.273 gateway hints (byte-verified in the linux-x64 ELF,
+    // workflow-agent runner `Ho` at offset ~205449548): the official wraps
+    // the whole workflow-agent run in `ok(ae, async () => {...})` — i.e.
+    // runWithAgentContext — with a SubagentContext carrying
+    // workflowRunId/workflowName. Without this wrap, workflow agents would
+    // inherit the ambient/parent ALS context (attribution leak). OCC keeps
+    // its pre-existing `querySource: 'workflow'` (the official passes
+    // v6(agentType, isBuiltIn) = `agent:builtin:*`); classifyQuerySource
+    // maps 'workflow' to 'auxiliary', so MLr's 'workflow' request-class
+    // branch stays dormant in OCC — documented in
+    // docs/upstream-version-gap-occ127.md.
+    const workflowAgentContext: SubagentContext = {
+      agentId,
+      parentSessionId: getParentSessionId(),
+      agentType: 'subagent',
+      subagentName: agentDef.agentType,
+      isBuiltIn: isBuiltInAgent(agentDef),
+      workflowRunId: ctx.runId,
+      workflowName: ctx.workflowName,
+      invocationKind: 'spawn',
+      invocationEmitted: false,
+    }
+
     let messages: Message[]
     try {
-      messages = await drainGenerator(gen)
+      messages = await runWithAgentContext(workflowAgentContext, () =>
+        drainGenerator(gen),
+      )
     } catch (e) {
       // Record failure but rethrow — the workflow script decides how to handle.
       const msg = `Agent "${opts.label ?? prompt.slice(0, 40)}" failed: ${(e as Error).message}`

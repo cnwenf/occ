@@ -30,7 +30,16 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
+import { getAgentContext } from 'src/utils/agentContext.js'
 import { assertBedrockStreamingContentType } from './bedrockContentTypeGuard.js'
+import {
+  AGENT_TYPE_HEADER,
+  REQUEST_CLASS_HEADER,
+  getAgentTypeHeader,
+  getRequestClassHeader,
+  isGatewayHintHeadersEnabled,
+  sanitizeHeaderValue,
+} from './gatewayHints.js'
 
 /**
  * Environment variables for different client types:
@@ -156,6 +165,24 @@ export async function getAnthropicClient({
       : {}),
     // SDK consumers can identify their app/library for backend analytics
     ...(clientApp ? { 'x-client-app': clientApp } : {}),
+  }
+
+  // Official 2.1.273 gateway hint headers (A2 client block, byte-verified):
+  // `fe=Tle(), ge=fe?MLr(d,h):void 0, ve=fe?DLr(d,h):void 0`, then
+  // `...ge&&{[spn]:ge}, ...ve&&{[ipn]:afn(ve)}`. The agent-type value is
+  // sanitized via `afn`; request-class values are closed-set literals.
+  // The client is constructed fresh per call, so the ALS agentContext read
+  // here matches the official per-request `h=agentContext` param.
+  if (isGatewayHintHeadersEnabled()) {
+    const agentContext = getAgentContext()
+    const requestClass = getRequestClassHeader(source, agentContext)
+    if (requestClass) {
+      defaultHeaders[REQUEST_CLASS_HEADER] = requestClass
+    }
+    const agentType = getAgentTypeHeader(source, agentContext)
+    if (agentType) {
+      defaultHeaders[AGENT_TYPE_HEADER] = sanitizeHeaderValue(agentType)
+    }
   }
 
   // Log API client configuration for HFI debugging

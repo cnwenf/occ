@@ -1,4 +1,4 @@
-import { isInputModeCharacter } from 'src/components/PromptInput/inputModes.js'
+import { shouldTriggerModeSwitch } from 'src/components/PromptInput/inputModes.js'
 import { useNotifications } from 'src/context/notifications.js'
 import stripAnsi from 'strip-ansi'
 import { markBackslashReturnUsed } from '../commands/terminalSetup/terminalSetup.js'
@@ -6,6 +6,7 @@ import { addToHistory } from '../history.js'
 import type { Key } from '../ink.js'
 import type {
   InlineGhostText,
+  PromptInputMode,
   TextInputState,
 } from '../types/textInputTypes.js'
 import {
@@ -73,6 +74,14 @@ export type UseTextInputProps = {
   inputFilter?: (input: string, key: Key) => string
   inlineGhostText?: InlineGhostText
   dim?: (text: string) => string
+  /**
+   * Getter for the current prompt input mode. When provided, an input-mode
+   * character (e.g. `!`) typed at the start of the input switches modes only
+   * if the current mode differs from the mode the character maps to — so
+   * already in shell mode, a typed `!` is inserted as content.
+   * Official 2.1.273 (byte-verified): dispatch gained `&& pe()!==hg(A)`.
+   */
+  getInputMode?: () => PromptInputMode
 }
 
 export function useTextInput({
@@ -99,6 +108,7 @@ export function useTextInput({
   inputFilter,
   inlineGhostText,
   dim,
+  getInputMode,
 }: UseTextInputProps): TextInputState {
   // Pre-warm the modifiers module for Apple Terminal (has internal guard, safe to call multiple times)
   if (env.terminal === 'Apple_Terminal') {
@@ -496,7 +506,20 @@ export function useTextInput({
                 const echo = srEchoTypedChar(text)
                 if (echo !== null) pushScreenReaderAnnouncement(echo)
               }
-              if (cursor.isAtStart() && isInputModeCharacter(input)) {
+              // 2.1.273: an input-mode character typed at the start only
+              // triggers the mode-switch path (insert + cursor-left keeps the
+              // offset at 0 while the prefix is consumed) when the current
+              // mode differs from the mode the char maps to. Already in shell
+              // mode, `!` is content — so `! grep …` can be typed.
+              // official: pe!==void 0&&y.offset===D.length&&lBe(A)&&pe()!==hg(A)
+              // (extracted as shouldTriggerModeSwitch for unit testing)
+              if (
+                shouldTriggerModeSwitch(
+                  input,
+                  cursor.isAtStart(),
+                  getInputMode?.(),
+                )
+              ) {
                 return cursor.insert(text).left()
               }
               return cursor.insert(text)

@@ -4,6 +4,7 @@ import { findToolByName, type ToolUseContext } from '../../Tool.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { all } from '../../utils/generators.js'
 import { parseEnvInt } from '../../utils/envValidation.js'
+import type { ToolDurationEntry } from '../api/gatewayHints.js'
 import { type MessageUpdateLazy, runToolUse } from './toolExecution.js'
 
 function getMaxToolUseConcurrency(): number {
@@ -13,6 +14,9 @@ function getMaxToolUseConcurrency(): number {
 export type MessageUpdate = {
   message?: Message
   newContext: ToolUseContext
+  // Official 2.1.273: per-tool duration passthrough (runToolUse →
+  // orchestration → query loop collection).
+  toolDuration?: ToolDurationEntry
 }
 
 export async function* runTools(
@@ -48,6 +52,7 @@ export async function* runTools(
         yield {
           message: update.message,
           newContext: currentContext,
+          ...(update.toolDuration && { toolDuration: update.toolDuration }),
         }
       }
       for (const block of blocks) {
@@ -74,6 +79,7 @@ export async function* runTools(
         yield {
           message: update.message,
           newContext: currentContext,
+          ...(update.toolDuration && { toolDuration: update.toolDuration }),
         }
       }
     }
@@ -142,6 +148,7 @@ async function* runToolsSerially(
       yield {
         message: update.message,
         newContext: currentContext,
+        ...(update.toolDuration && { toolDuration: update.toolDuration }),
       }
     }
     markToolUseAsComplete(toolUseContext, toolUse.id)

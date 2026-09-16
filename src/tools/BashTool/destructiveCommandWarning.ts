@@ -500,6 +500,24 @@ export type CatastrophicSubstitutionBlock = {
  * `rm -rf ~` / `rm -rf /` inside a substitution is caught too — the plain form
  * already blocks these and #41 requires the substitution form to match.
  *
+ * 2.1.273 port — per-segment analysis (byte-verified): the official walker
+ * (`_5o`→`rxn`) splits EVERY body on shell operators via tree-sitter
+ * (`Hg`/`Fp`: skip-set `&&`,`||`,`|`,`;`,`&`,`|&`,newline; recurse-set
+ * `program`,`list`,`pipeline`), strips one layer of `{…;}`/`(…)` per segment,
+ * and analyzes each segment. 2.1.272 analyzed only the unsplit body and ran
+ * the walker only on the too-complex classification path, so a simple compound
+ * like `echo hi && (rm -rf /)` produced a plain shell-operators ask — NOT
+ * `bypassImmune` — and bypass mode auto-allowed it (the 2.1.273 changelog
+ * "subshell hiding a dangerous rm in bypass mode" bug). The official fix
+ * re-runs the walker from `Mzo`'s shell-operators branch
+ * (`if(d&&d!==kz){let Pn=await rxn(d,te(),s);if(Pn!==null)return Pn}`), whose
+ * verdict carries `circuitBreaker:"dangerousRemoval"` (bypassImmune). OCC
+ * mirrors that by ALSO checking each splitCommandForRm segment of every body —
+ * the quote-aware splitter surfaces `(rm -rf /)` as a bare `rm -rf /` segment
+ * (`echo "a && rm -rf /"` stays a single segment — no false positives). The
+ * guard's call site runs in ALL modes and returns deny, so this is OCC's
+ * bypass-immune equivalent of the official bypassImmune ask.
+ *
  * Returns the block info or null.
  */
 export function findCatastrophicSubstitutionBlock(
@@ -515,8 +533,8 @@ export function findCatastrophicSubstitutionBlock(
     }
     return null
   }
-  for (const body of [command, ...subs]) {
-    let c = body.trim()
+  const analyzeText = (text: string): CatastrophicSubstitutionBlock | null => {
+    let c = text.trim()
     // Strip a single layer of grouping braces/parens so `{ rm -rf $x/*; }`
     // and `( rm -rf $x/* )` are analyzed as their inner command.
     if (
@@ -540,6 +558,22 @@ export function findCatastrophicSubstitutionBlock(
         category: 'rm_substitution_root_home',
         reason:
           'rm -rf targeting the root or home directory detected inside command substitution',
+      }
+    }
+    return null
+  }
+  for (const body of [command, ...subs]) {
+    // Check the body itself first (preserves the pre-273 whole-body
+    // detection), then each operator-split segment (2.1.273 parity — catches
+    // a dangerous rm hidden in a bare subshell/group segment like
+    // `echo hi && (rm -rf /)` → segments `["echo hi","(","rm -rf /",")"]`).
+    for (const text of [body, ...splitCommandForRm(body)]) {
+      if (text.trim() === '') {
+        continue
+      }
+      const block = analyzeText(text)
+      if (block !== null) {
+        return block
       }
     }
   }

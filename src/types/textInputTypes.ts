@@ -107,6 +107,18 @@ export type BaseTextInputProps = {
   readonly onClearInput?: () => void
 
   /**
+   * Getter for the current prompt input mode. When provided, useTextInput
+   * treats an input-mode character (e.g. `!`) typed at the start of the input
+   * as a mode-switch trigger only if the current mode differs from the mode
+   * the character maps to — so already in shell mode, a typed `!` is inserted
+   * as content (negated commands like `! grep …`).
+   * Official 2.1.273 (byte-verified): the keypress dispatch gained
+   * `&& pe()!==hg(A)` (current-mode getter vs getModeFromInput of the typed
+   * char); v2.1.272 was `ye!==void 0&&b.offset===N.length&&wje(C)`.
+   */
+  readonly getInputMode?: () => PromptInputMode
+
+  /**
    * Number of columns to wrap text at
    */
   readonly columns: number

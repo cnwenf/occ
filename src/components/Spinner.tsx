@@ -22,7 +22,7 @@ import { useAppState } from '../state/AppState.js';
 import { useTerminalSize } from '../hooks/useTerminalSize.js';
 import { stringWidth } from '../ink/stringWidth.js';
 import { getDefaultCharacters, type SpinnerMode } from './Spinner/index.js';
-import { collapseWhitespace, computeSpinnerVerbWidth, computeTodoLabel } from './Spinner/utils.js';
+import { appendSpinnerEllipsis, collapseWhitespace, computeSpinnerVerbWidth, computeTodoLabel } from './Spinner/utils.js';
 import { SpinnerAnimationRow } from './Spinner/SpinnerAnimationRow.js';
 import { useSettings } from '../hooks/useSettings.js';
 import { isInProcessTeammateTask } from '../tasks/InProcessTeammateTask/types.js';
@@ -184,7 +184,10 @@ function SpinnerWithVerbInner({
   const leaderTodoLabel = currentTodo ? computeTodoLabel(currentTodo) : undefined;
   const leaderVerb = overrideMessage ?? (leaderTodoLabel === undefined ? undefined : truncateToWidthNoEllipsis(leaderTodoLabel, computeSpinnerVerbWidth(columns))) ?? randomVerb;
   const effectiveVerb = foregroundedTeammate && !foregroundedTeammate.isIdle ? foregroundedTeammate.spinnerVerb ?? randomVerb : leaderVerb;
-  const message = effectiveVerb + '…';
+  // CC 2.1.273: don't double the ellipsis when the verb already ends with one
+  // (e.g. overrideMessage 'Running PreCompact hooks…' rendered "……").
+  // official: Mn=/(…|\.\.\.)$/, ue=Mn.test(vt)?vt:vt+"…"
+  const message = appendSpinnerEllipsis(effectiveVerb);
 
   // Track CLI activity when spinner is active
   useEffect(() => {

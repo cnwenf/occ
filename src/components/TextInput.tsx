@@ -115,6 +115,7 @@ export default function TextInput(props: Props): React.ReactNode {
     onOffsetChange: props.onChangeCursorOffset,
     inputFilter: props.inputFilter,
     inlineGhostText: props.inlineGhostText,
+    getInputMode: props.getInputMode,
     dim: chalk.dim
   });
   return <Box ref={animRef}>
