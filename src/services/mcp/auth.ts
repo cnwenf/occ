@@ -369,6 +369,33 @@ export function getActiveOAuthPromise(
 }
 
 /**
+ * OCC hardening (docs/upstream-version-gap-occ128.md review P3-1): the
+ * submitter registry is single-slot per server (official-isomorphic — the
+ * official `yr()` identity-epoch guard is absent there too, see the gap
+ * doc's divergence #1), so a second concurrent flow for the same server
+ * overwrites the first flow's submitter and permanently shadows its paste
+ * channel: an old-state paste reaches the NEW submitter, fails its state
+ * check, is dropped, and the old flow dies on the 5-minute timeout with no
+ * diagnosis. Each registration now carries a monotonic epoch and a cancel
+ * hook; registering over a live flow cancels the predecessor immediately
+ * with AuthenticationCancelledError ("a newer attempt may have superseded
+ * it") instead of letting it linger unidentified.
+ */
+export interface OAuthFlowRecord {
+  readonly epoch: number
+  readonly submitter: OAuthCallbackSubmitter
+  readonly cancel: () => void
+}
+
+const oauthFlowRecords = new Map<string, OAuthFlowRecord>()
+let oauthFlowEpochCounter = 0
+
+/** The current flow epoch for this server, if a flow is registered. */
+export function getOAuthFlowEpoch(serverName: string): number | undefined {
+  return oauthFlowRecords.get(serverName)?.epoch
+}
+
+/**
  * Official submitter `F` (live-binary chunk region @220054636): validates a
  * manually pasted callback URL against the flow's PKCE state.
  *
@@ -1215,6 +1242,13 @@ export async function performMCPOAuthFlow(
       ) {
         oauthCallbackSubmitters.delete(serverName)
       }
+      // Same identity check for the epoch/cancel record (review P3-1).
+      if (
+        manualSubmitter &&
+        oauthFlowRecords.get(serverName)?.submitter === manualSubmitter
+      ) {
+        oauthFlowRecords.delete(serverName)
+      }
       manualSubmitter = null
       logMCPDebug(serverName, `MCP OAuth server cleaned up`)
     }
@@ -1260,8 +1294,50 @@ export async function performMCPOAuthFlow(
         resolveCode: resolveOnce,
         rejectFlow: rejectOnce,
       })
+
+      // Review P3-1: supersede-cancel. The submitter registry is single-slot
+      // per server (official-isomorphic), so registering over a live flow
+      // used to silently shadow the predecessor's paste channel and leave it
+      // to die on the 5-minute timeout. Cancel the predecessor NOW — while
+      // its submitter still owns the slot, so its identity-checked cleanup
+      // deregisters cleanly — then take over the slot with a fresh epoch.
+      const supersededFlow = oauthFlowRecords.get(serverName)
+      if (supersededFlow) {
+        logMCPDebug(
+          serverName,
+          `Cancelling superseded OAuth flow (epoch ${supersededFlow.epoch}) — a newer flow is taking over`,
+        )
+        supersededFlow.cancel()
+      }
+      const flowRecord: OAuthFlowRecord = {
+        epoch: ++oauthFlowEpochCounter,
+        submitter: manualSubmitter,
+        cancel: () => {
+          cleanup()
+          rejectOnce(new AuthenticationCancelledError())
+        },
+      }
+      oauthFlowRecords.set(serverName, flowRecord)
       oauthCallbackSubmitters.set(serverName, manualSubmitter)
-      options?.onWaitingForCallback?.(manualSubmitter, redirectUri, oauthState)
+
+      // Review P3-2: registration happens before the executor's terminal
+      // handlers (server/timeout/abort) are wired, and cleanup() is only
+      // reachable from those handlers. A synchronous throw from the host's
+      // onWaitingForCallback therefore used to leak the module-level
+      // registrations until process exit. Deregister identity-checked, then
+      // rethrow so the executor rejects and the outer catch reports it.
+      try {
+        options?.onWaitingForCallback?.(manualSubmitter, redirectUri, oauthState)
+      } catch (callbackError) {
+        if (oauthCallbackSubmitters.get(serverName) === manualSubmitter) {
+          oauthCallbackSubmitters.delete(serverName)
+        }
+        if (oauthFlowRecords.get(serverName) === flowRecord) {
+          oauthFlowRecords.delete(serverName)
+        }
+        manualSubmitter = null
+        throw callbackError
+      }
 
       server = createServer((req, res) => {
         const parsedUrl = parse(req.url || '', true)

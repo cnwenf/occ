@@ -816,9 +816,16 @@ export function REPL({
   // store is authoritative for that server's tools — otherwise the OAuth
   // continuation's prefix swap could never remove the startup stubs from the
   // per-turn tool list (official: only the real tools remain after auth).
+  // P3-3: for failed/disabled servers with an empty live tool set the frozen
+  // auth stubs are preserved (recovery entry) while stale real tools drop.
   const effectiveInitialTools = useMemo(
-    () => deferInitialMcpToolsToLiveState(combinedInitialTools, mcp.clients),
-    [combinedInitialTools, mcp.clients],
+    () =>
+      deferInitialMcpToolsToLiveState(
+        combinedInitialTools,
+        mcp.clients,
+        mcp.tools,
+      ),
+    [combinedInitialTools, mcp.clients, mcp.tools],
   );
 
   // Initialize plugin management
@@ -2563,9 +2570,14 @@ export function REPL({
       const assembled = assembleToolPool(state.toolPermissionContext, state.mcp.tools);
       // Gap-128b: defer frozen startup MCP tools to live state for servers
       // the connection manager tracks (fresh from the store, not the render
-      // closure — same freshness rule as `assembled` above).
+      // closure — same freshness rule as `assembled` above). P3-3: live
+      // tools passed so failed/disabled servers keep their frozen auth stubs.
       const merged = mergeAndFilterTools(
-        deferInitialMcpToolsToLiveState(combinedInitialTools, state.mcp.clients),
+        deferInitialMcpToolsToLiveState(
+          combinedInitialTools,
+          state.mcp.clients,
+          state.mcp.tools,
+        ),
         assembled,
         state.toolPermissionContext.mode,
       );

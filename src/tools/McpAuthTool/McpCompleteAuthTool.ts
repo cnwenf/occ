@@ -147,12 +147,30 @@ export function createMcpCompleteAuthTool(
         }
       }
 
-      const activeFlow = getActiveOAuthPromise(serverName)
       if (!submitter(callbackUrl)) {
         return {
           data: {
             status: 'error' as const,
             message: `That callback URL belongs to a different sign-in attempt for ${displayName} (its state does not match the flow in progress), or carries no authorization code. The current flow is still waiting: ask the user for the URL from the page this sign-in opened, then retry.`,
+          },
+        }
+      }
+
+      // OCC hardening (docs/upstream-version-gap-occ128.md review P2-1):
+      // re-read the active promise AFTER a successful submit. The two
+      // registries have disjoint writers — every performMCPOAuthFlow
+      // registers a submitter, but only the tool path registers a promise
+      // (McpAuthTool's setActiveOAuthPromise). A CLI/headless-initiated flow
+      // accepts the paste yet exposes no token exchange here: the pre-fix
+      // `await undefined` resolved instantly and falsely reported success
+      // while the real exchange was still in flight (or about to reject).
+      // Never report success without a tracked promise.
+      const activeFlow = getActiveOAuthPromise(serverName)
+      if (!activeFlow) {
+        return {
+          data: {
+            status: 'error' as const,
+            message: `The callback URL was accepted by the in-progress OAuth flow for ${displayName}, but that flow was started outside this session's tool path (e.g. \`occ mcp login\` or a headless control channel), so its token exchange cannot be tracked here. The surface that started the flow will report completion — do not retry this tool.`,
           },
         }
       }

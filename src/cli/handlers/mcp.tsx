@@ -27,6 +27,7 @@ import { safeParseJSON } from '../../utils/json.js';
 import { getPlatform } from '../../utils/platform.js';
 import { writeToStderr } from '../../utils/process.js';
 import { cliError, cliOk } from '../exit.js';
+import { promptForCallbackUrlWithRetry } from '../mcpOAuthPrompt.js';
 async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig): Promise<string> {
   try {
     const result = await connectToServer(name, server);
@@ -432,14 +433,27 @@ export async function mcpLoginHandler(name: string, options: {
   // --no-browser: print the auth URL, then prompt the user to paste the
   // redirect URL back (SSH/headless). The browser flow otherwise resolves
   // the callback via the local loopback listener.
+  //
+  // 274 submitter semantics (review P2-2): a wrong-state paste returns
+  // false and the flow KEEPS WAITING — so a rejected paste must re-prompt.
+  // The pre-fix single-shot question discarded the boolean and closed the
+  // readline, silently hanging until the 5-minute flow timeout (a
+  // regression vs pre-274, where a wrong-state paste aborted immediately).
   const onWaitingForCallback = noBrowser ? (submit: (callbackUrl: string) => boolean) => {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('\nAfter authorizing, paste the full redirect URL here and press Enter:');
     const rl = readline.createInterface({ input: process.stdin });
-    rl.question('> ', (answer: string) => {
-      rl.close();
-      submit(answer.trim());
-    });
+    promptForCallbackUrlWithRetry(
+      {
+        question: (prompt, onAnswer) => { rl.question(prompt, onAnswer); },
+        close: () => { rl.close(); },
+        notify: (message) => {
+          // biome-ignore lint/suspicious/noConsole:: intentional console output
+          console.log(message);
+        },
+      },
+      submit,
+    );
   } : undefined;
   try {
     await performMCPOAuthFlow(name, server, onAuthorizationUrl, undefined, {
