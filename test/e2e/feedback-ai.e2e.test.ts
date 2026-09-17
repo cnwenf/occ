@@ -117,12 +117,20 @@ describe('/feedback: disk tail source', () => {
   })
 })
 
-// Live-agent e2e — opt-in via ANTHROPIC_API_KEY. Drives /feedback through the
-// real agent loop (needs dist/cli.js built: `bun run build`). A fake `gh` on a
-// temp PATH captures the synthesized title/body and prints a fake issue URL,
-// so no real GitHub issue is ever created.
-const hasApiKey = !!process.env.ANTHROPIC_API_KEY
-const live = hasApiKey ? describe : describe.skip
+// Live-agent e2e — drives /feedback through the real agent loop (needs
+// dist/cli.js built: `bun run build`). A fake `gh` on a temp PATH captures the
+// synthesized title/body and prints a fake issue URL, so no real GitHub issue
+// is ever created.
+//
+// This block needs a REAL model credential + network, so it is opt-in via a
+// genuine ANTHROPIC_API_KEY on a dev machine and must never run in CI. CI
+// supplies a DUMMY key only to satisfy src/utils/auth.ts's credential-presence
+// guard (see scripts/ci-test.sh, OCC-129) — that dummy cannot drive the model,
+// so running the live agent here would just burn the per-test timeout and fail.
+// Excluding CI mirrors the describe.skipIf(!!process.env.CI) gate the other
+// live-model e2e files already use (repl-image-paste, version-hooks-2.1.248).
+const hasLiveKey = !!process.env.ANTHROPIC_API_KEY && !process.env.CI
+const live = hasLiveKey ? describe : describe.skip
 
 live('/feedback: live agent files an issue via fake gh', () => {
   test('agent runs gh issue create with a title+body reflecting the report', async () => {
