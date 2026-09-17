@@ -151,7 +151,7 @@ import { query } from '../query.js';
 import { mergeClients, useMergedClients } from '../hooks/useMergedClients.js';
 import { getQuerySourceForREPL } from '../utils/promptCategory.js';
 import { useMergedTools } from '../hooks/useMergedTools.js';
-import { mergeAndFilterTools } from '../utils/toolPool.js';
+import { mergeAndFilterTools, deferInitialMcpToolsToLiveState } from '../utils/toolPool.js';
 import { useMergedCommands } from '../hooks/useMergedCommands.js';
 import { useSkillsChange } from '../hooks/useSkillsChange.js';
 import { useManagePlugins } from '../hooks/useManagePlugins.js';
@@ -810,6 +810,17 @@ export function REPL({
     return [...localTools, ...initialTools];
   }, [localTools, initialTools]);
 
+  // CC 2.1.274 Gap-128b: the frozen startup initialTools prop (captured in
+  // main.tsx) includes MCP auth stubs for needs-auth servers. Once the
+  // connection manager tracks a server in appState.mcp.clients, the live
+  // store is authoritative for that server's tools — otherwise the OAuth
+  // continuation's prefix swap could never remove the startup stubs from the
+  // per-turn tool list (official: only the real tools remain after auth).
+  const effectiveInitialTools = useMemo(
+    () => deferInitialMcpToolsToLiveState(combinedInitialTools, mcp.clients),
+    [combinedInitialTools, mcp.clients],
+  );
+
   // Initialize plugin management
   useManagePlugins({
     enabled: !isRemoteSession
@@ -859,7 +870,7 @@ export function REPL({
   useSwarmInitialization(setAppState, initialMessages, {
     enabled: !isRemoteSession
   });
-  const mergedTools = useMergedTools(combinedInitialTools, mcp.tools, toolPermissionContext);
+  const mergedTools = useMergedTools(effectiveInitialTools, mcp.tools, toolPermissionContext);
 
   // Apply agent tool restrictions if mainThreadAgentDefinition is set
   const {
@@ -2550,7 +2561,14 @@ export function REPL({
     const computeTools = () => {
       const state = store.getState();
       const assembled = assembleToolPool(state.toolPermissionContext, state.mcp.tools);
-      const merged = mergeAndFilterTools(combinedInitialTools, assembled, state.toolPermissionContext.mode);
+      // Gap-128b: defer frozen startup MCP tools to live state for servers
+      // the connection manager tracks (fresh from the store, not the render
+      // closure — same freshness rule as `assembled` above).
+      const merged = mergeAndFilterTools(
+        deferInitialMcpToolsToLiveState(combinedInitialTools, state.mcp.clients),
+        assembled,
+        state.toolPermissionContext.mode,
+      );
       if (!mainThreadAgentDefinition) return merged;
       return resolveAgentTools(mainThreadAgentDefinition, merged, false, true).resolvedTools;
     };

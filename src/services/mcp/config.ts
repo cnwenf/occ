@@ -419,7 +419,7 @@ function isMcpServerDenied(
  * @param config Optional server config for command/URL-based matching
  * @returns true if allowed, false if blocked by policy
  */
-function isMcpServerAllowedByPolicy(
+export function isMcpServerAllowedByPolicy(
   serverName: string,
   config?: McpServerConfig,
 ): boolean {

@@ -2,6 +2,7 @@ import { feature } from 'src/utils/featureFlags.js'
 import partition from 'lodash-es/partition.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { COORDINATOR_MODE_ALLOWED_TOOLS } from '../constants/tools.js'
+import { getMcpPrefix } from '../services/mcp/mcpStringUtils.js'
 import { isMcpTool } from '../services/mcp/utils.js'
 import type { Tool, ToolPermissionContext, Tools } from '../Tool.js'
 
@@ -76,4 +77,44 @@ export function mergeAndFilterTools(
   }
 
   return tools
+}
+
+/**
+ * CC 2.1.274 Gap-128b: make the frozen startup `initialTools` prop defer to
+ * live MCP state once the connection manager owns a server.
+ *
+ * main.tsx captures the startup MCP tools (including the needs-auth stubs
+ * `mcp__<server>__authenticate` / `mcp__<server>__complete_authentication`)
+ * into the REPL's session-constant `initialTools` prop, and
+ * mergeAndFilterTools gives initialTools dedup precedence. Without this
+ * filter, a mid-session state transition that REPLACES a server's tools in
+ * appState.mcp.tools (e.g. the OAuth continuation's prefix swap after a
+ * successful authentication) can never remove the frozen startup entries —
+ * the official 2.1.274 REPL's next-turn tool list contains ONLY the real
+ * tools after auth (behaviorally verified; the stubs are gone).
+ *
+ * The connection manager seeds `appState.mcp.clients` and
+ * `appState.mcp.tools` atomically (useManageMCPConnections updateServer →
+ * flushPendingUpdates), so a client entry's presence means the live store is
+ * authoritative for that server's tools — including the empty set after a
+ * disconnect/disable (no ghost tools from the frozen prop).
+ *
+ * Pure + React-free: shared by the REPL (useMergedTools/computeTools) and the
+ * headless path (print.ts buildAllTools).
+ *
+ * @param initialTools - Frozen startup tools (built-in + startup MCP).
+ * @param liveClients - Servers currently tracked in appState.mcp.clients.
+ * @returns initialTools with MCP entries of live-tracked servers removed.
+ */
+export function deferInitialMcpToolsToLiveState(
+  initialTools: Tools,
+  liveClients: readonly { name: string }[],
+): Tools {
+  if (liveClients.length === 0) {
+    return initialTools
+  }
+  const livePrefixes = liveClients.map(c => getMcpPrefix(c.name))
+  return initialTools.filter(
+    t => !livePrefixes.some(prefix => t.name?.startsWith(prefix)),
+  )
 }

@@ -432,7 +432,7 @@ export async function mcpLoginHandler(name: string, options: {
   // --no-browser: print the auth URL, then prompt the user to paste the
   // redirect URL back (SSH/headless). The browser flow otherwise resolves
   // the callback via the local loopback listener.
-  const onWaitingForCallback = noBrowser ? (submit: (callbackUrl: string) => void) => {
+  const onWaitingForCallback = noBrowser ? (submit: (callbackUrl: string) => boolean) => {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('\nAfter authorizing, paste the full redirect URL here and press Enter:');
     const rl = readline.createInterface({ input: process.stdin });
