@@ -152,6 +152,33 @@ async function appendAsync(
 
 function noop(): void {}
 
+// 2.1.274 (OCC-89): CLAUDE_CODE_DEBUG_LOGS_DIR is a DIRECTORY in the official
+// client — its debug-log manager recovers a failed append with
+// `resolveDirToFile(dir)` = join(dir, `${sessionId}.txt`) (byte-verified in
+// the 2.1.274 ELF). OCC used to pass the raw env value straight to
+// appendFileSync, so pointing the env var at a directory killed the whole
+// process with an unhandled EISDIR on the first logForDebugging call.
+let dirFallbackLogPath: string | null = null
+
+// Exported for testing purposes (same convention as getDebugFilter above).
+export function appendFileSyncWithDirFallback(path: string, content: string): void {
+  try {
+    getFsImplementation().appendFileSync(path, content)
+  } catch (e) {
+    if ((e as { code?: string } | null)?.code !== 'EISDIR') throw e
+    // Mirror the official resolveDirToFile recovery: <dir>/<sessionId>.txt.
+    const fallback = join(path, `${getSessionId()}.txt`)
+    dirFallbackLogPath = fallback
+    getFsImplementation().appendFileSync(fallback, content)
+  }
+}
+
+// Exported for testing purposes: clears the EISDIR-recovery memo so tests
+// don't leak module state into each other in bun's shared test process.
+export function resetDirFallbackLogPathForTesting(): void {
+  dirFallbackLogPath = null
+}
+
 function getDebugWriter(): BufferedWriter {
   if (!debugWriter) {
     let ensuredDir: string | null = null
@@ -172,7 +199,7 @@ function getDebugWriter(): BufferedWriter {
               // Directory already exists
             }
           }
-          getFsImplementation().appendFileSync(path, content)
+          appendFileSyncWithDirFallback(path, content)
           void updateLatestDebugLogSymlink()
           return
         }
@@ -229,6 +256,10 @@ export function logForDebugging(
 
 export function getDebugLogPath(): string {
   return (
+    // Set once an EISDIR append recovered a directory-valued path to
+    // <dir>/<sessionId>.txt (official resolveDirToFile semantics) — keeps
+    // every subsequent write (and the `latest` symlink) on the real file.
+    dirFallbackLogPath ??
     getDebugFilePath() ??
     process.env.CLAUDE_CODE_DEBUG_LOGS_DIR ??
     join(getClaudeConfigHomeDir(), 'debug', `${getSessionId()}.txt`)

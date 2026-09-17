@@ -666,8 +666,12 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
             void command.load().then(mod => mod.call(onDone, {
               ...context,
               canUseTool
-            }, args)).then(jsx => {
-              if (jsx == null) return;
+            }, args)).then(commandJsx => {
+              // Param renamed off `jsx`: a binding named exactly `jsx` in a
+              // .tsx file can merge with the automatic JSX runtime import in
+              // Bun bundle output (see processBashCommand.tsx note +
+              // jsxRuntimeShadowing test).
+              if (commandJsx == null) return;
               if (context.options.isNonInteractiveSession) {
                 void resolve({
                   messages: [],
@@ -685,7 +689,7 @@ async function getMessagesForSlashCommand(commandName: string, args: string, set
               // blocking useQueueProcessor and TextInput focus.
               if (doneWasCalled) return;
               setToolJSX({
-                jsx,
+                jsx: commandJsx,
                 shouldHidePromptInput: true,
                 showSpinner: false,
                 isLocalJSXCommand: true,

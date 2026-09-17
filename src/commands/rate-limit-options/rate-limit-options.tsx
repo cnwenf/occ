@@ -153,9 +153,12 @@ function RateLimitOptionsMenu(t0) {
     t5 = function handleSelect(value) {
       if (value === "upgrade") {
         logEvent("tengu_rate_limit_options_menu_select_upgrade", {});
-        upgradeCall(onDone, context).then(jsx => {
-          if (jsx) {
-            setSubCommandJSX(jsx);
+        // Param renamed off `jsx`: a binding named exactly `jsx` in a .tsx
+        // file can merge with the automatic JSX runtime import in Bun bundle
+        // output (see processBashCommand.tsx note + jsxRuntimeShadowing test).
+        upgradeCall(onDone, context).then(upgradeJsx => {
+          if (upgradeJsx) {
+            setSubCommandJSX(upgradeJsx);
           }
         });
       } else {
