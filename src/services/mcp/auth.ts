@@ -318,6 +318,128 @@ export class AuthenticationCancelledError extends Error {
 }
 
 /**
+ * CC 2.1.274 — OAuth pending-flow registry (official: host-scoped `Wt()`
+ * state with `oauthCallbackSubmitters` / `activeOAuthFlows` maps,
+ * chunk-da71yq24; accessors `FJr`/`UJr`/`BJr`). The MCP auth-stub tools
+ * consult it: `mcp__<server>__complete_authentication` submits a pasted
+ * callback URL through getOAuthCallbackSubmitter() and awaits the token
+ * exchange through getActiveOAuthPromise().
+ *
+ * Divergences (docs/upstream-version-gap-occ128.md): the official keeps
+ * these on the per-host global state object and also maintains an
+ * `oauthCallbackListeners` map for IDE listeners — OCC keeps two
+ * module-level maps (single host, no listener consumers).
+ */
+export type OAuthCallbackSubmitter = (callbackUrl: string) => boolean
+
+const oauthCallbackSubmitters = new Map<string, OAuthCallbackSubmitter>()
+const activeOAuthFlows = new Map<string, Promise<void>>()
+
+/** Official `FJr(e)`: the submitter for this server's flow awaiting a callback. */
+export function getOAuthCallbackSubmitter(
+  serverName: string,
+): OAuthCallbackSubmitter | undefined {
+  return oauthCallbackSubmitters.get(serverName)
+}
+
+/**
+ * Official `UJr(e,t)`: track a tool-triggered flow's promise so
+ * complete_authentication can await token exchange. Auto-deletes when the
+ * promise settles (identity-checked so a superseding flow is not dropped).
+ */
+export function setActiveOAuthPromise(
+  serverName: string,
+  promise: Promise<void>,
+): void {
+  activeOAuthFlows.set(serverName, promise)
+  promise
+    .finally(() => {
+      if (activeOAuthFlows.get(serverName) === promise) {
+        activeOAuthFlows.delete(serverName)
+      }
+    })
+    .catch(() => {})
+}
+
+/** Official `BJr(e)`. */
+export function getActiveOAuthPromise(
+  serverName: string,
+): Promise<void> | undefined {
+  return activeOAuthFlows.get(serverName)
+}
+
+/**
+ * Official submitter `F` (live-binary chunk region @220054636): validates a
+ * manually pasted callback URL against the flow's PKCE state.
+ *
+ * Returns TRUE when the URL was consumed by this flow (code accepted, or an
+ * OAuth `error` response rejected the flow). Returns FALSE — and the flow
+ * KEEPS WAITING — when the URL is not a callback URL at all, or when its
+ * state belongs to a different flow: the official logs "Ignoring manual
+ * callback URL whose state belongs to a different flow" and does NOT abort
+ * (pre-274 OCC rejected with a CSRF error here; a stale paste from an
+ * earlier attempt used to kill the live flow).
+ *
+ * Ordering is official-verbatim: not-a-callback → state check → error branch
+ * → code branch; any parse failure returns false without touching the flow.
+ *
+ * Divergence: the official iss-resolving variant also extracts the RFC 9207
+ * `iss` parameter and passes it into the code exchange; OCC's sdkAuth
+ * exchange is code-only (docs/upstream-version-gap-occ128.md).
+ */
+export function createManualCallbackSubmitter(
+  serverName: string,
+  oauthState: string,
+  hooks: {
+    cleanup: () => void
+    resolveCode: (code: string) => void
+    rejectFlow: (error: Error) => void
+  },
+): OAuthCallbackSubmitter {
+  return (callbackUrl: string): boolean => {
+    try {
+      const parsed = new URL(callbackUrl)
+      const code = parsed.searchParams.get('code')
+      const state = parsed.searchParams.get('state')
+      const error = parsed.searchParams.get('error')
+
+      if (!code && !error) {
+        return false
+      }
+
+      if (state !== oauthState) {
+        logMCPDebug(
+          serverName,
+          'Ignoring manual callback URL whose state belongs to a different flow',
+        )
+        return false
+      }
+
+      if (error) {
+        const errorDescription =
+          parsed.searchParams.get('error_description') || ''
+        hooks.cleanup()
+        hooks.rejectFlow(
+          new Error(`OAuth error: ${error} - ${errorDescription}`),
+        )
+        return true
+      }
+
+      if (!code) {
+        return false
+      }
+
+      logMCPDebug(serverName, 'Received auth code via manual callback URL')
+      hooks.cleanup()
+      hooks.resolveCode(code)
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+/**
  * Generates a unique key for server credentials based on both name and config hash
  * This prevents credentials from being reused across different servers
  * with the same name or different configurations
@@ -903,7 +1025,17 @@ export async function performMCPOAuthFlow(
   abortSignal?: AbortSignal,
   options?: {
     skipBrowserOpen?: boolean
-    onWaitingForCallback?: (submit: (callbackUrl: string) => void) => void
+    /**
+     * CC 2.1.274: submit now returns boolean (true = this flow consumed the
+     * URL; false = flow still waiting — wrong state or not a callback URL).
+     * The redirectUri + state are passed through so paste UIs can show the
+     * expected callback shape (official `d?.onWaitingForCallback?.(F,R,ie)`).
+     */
+    onWaitingForCallback?: (
+      submit: OAuthCallbackSubmitter,
+      redirectUri: string,
+      state: string,
+    ) => void
   },
 ): Promise<void> {
   // XAA (SEP-990): if configured, bypass the per-server consent dance.
@@ -1057,6 +1189,7 @@ export async function performMCPOAuthFlow(
     let server: Server | null = null
     let timeoutId: NodeJS.Timeout | null = null
     let abortHandler: (() => void) | null = null
+    let manualSubmitter: OAuthCallbackSubmitter | null = null
 
     const cleanup = () => {
       if (server) {
@@ -1074,6 +1207,15 @@ export async function performMCPOAuthFlow(
         abortSignal.removeEventListener('abort', abortHandler)
         abortHandler = null
       }
+      // Official `q()`: identity-checked unregister — a newer flow's submitter
+      // for the same server must not be dropped by an older flow's cleanup.
+      if (
+        manualSubmitter &&
+        oauthCallbackSubmitters.get(serverName) === manualSubmitter
+      ) {
+        oauthCallbackSubmitters.delete(serverName)
+      }
+      manualSubmitter = null
       logMCPDebug(serverName, `MCP OAuth server cleaned up`)
     }
 
@@ -1103,50 +1245,23 @@ export async function performMCPOAuthFlow(
         abortSignal.addEventListener('abort', abortHandler)
       }
 
-      // Allow manual callback URL paste for remote/browser-based environments
-      // where localhost is not reachable from the user's browser.
-      if (options?.onWaitingForCallback) {
-        options.onWaitingForCallback((callbackUrl: string) => {
-          try {
-            const parsed = new URL(callbackUrl)
-            const code = parsed.searchParams.get('code')
-            const state = parsed.searchParams.get('state')
-            const error = parsed.searchParams.get('error')
-
-            if (error) {
-              const errorDescription =
-                parsed.searchParams.get('error_description') || ''
-              cleanup()
-              rejectOnce(
-                new Error(`OAuth error: ${error} - ${errorDescription}`),
-              )
-              return
-            }
-
-            if (!code) {
-              // Not a valid callback URL, ignore so the user can try again
-              return
-            }
-
-            if (state !== oauthState) {
-              cleanup()
-              rejectOnce(
-                new Error('OAuth state mismatch - possible CSRF attack'),
-              )
-              return
-            }
-
-            logMCPDebug(
-              serverName,
-              `Received auth code via manual callback URL`,
-            )
-            cleanup()
-            resolveOnce(code)
-          } catch {
-            // Invalid URL, ignore so the user can try again
-          }
-        })
-      }
+      // CC 2.1.274: the manual callback submitter is registered
+      // UNCONDITIONALLY (official: `y.oauthCallbackSubmitters.set(e,F)` — not
+      // gated on options.onWaitingForCallback). This is what lets the
+      // `mcp__<server>__complete_authentication` auth-stub tool finish a
+      // tool-triggered flow that has no paste UI of its own. Callers WITH a
+      // paste UI additionally receive the submitter via onWaitingForCallback.
+      //
+      // Semantics change vs pre-274 OCC: a pasted URL whose state belongs to
+      // a different flow no longer aborts this flow with a CSRF error — the
+      // submitter logs and returns false, and the flow keeps waiting.
+      manualSubmitter = createManualCallbackSubmitter(serverName, oauthState, {
+        cleanup,
+        resolveCode: resolveOnce,
+        rejectFlow: rejectOnce,
+      })
+      oauthCallbackSubmitters.set(serverName, manualSubmitter)
+      options?.onWaitingForCallback?.(manualSubmitter, redirectUri, oauthState)
 
       server = createServer((req, res) => {
         const parsedUrl = parse(req.url || '', true)

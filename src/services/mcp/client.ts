@@ -61,7 +61,7 @@ import {
 } from '../../Tool.js'
 import { ListMcpResourcesTool } from '../../tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
 import { type MCPProgress, MCPTool } from '../../tools/MCPTool/MCPTool.js'
-import { createMcpAuthTool } from '../../tools/McpAuthTool/McpAuthTool.js'
+import { createMcpAuthStubTools } from '../../tools/McpAuthTool/McpAuthTool.js'
 import { ReadMcpResourceTool } from '../../tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { ReadMcpResourceDirTool } from '../../tools/ReadMcpResourceDirTool/ReadMcpResourceDirTool.js'
 import { createAbortController } from '../../utils/abortController.js'
@@ -2655,7 +2655,7 @@ export async function getMcpToolsCommandsAndResources(
         logMCPDebug(name, `Skipping connection (cached needs-auth)`)
         onConnectionAttempt({
           client: { name, type: 'needs-auth' as const, config },
-          tools: [createMcpAuthTool(name, config)],
+          tools: createMcpAuthStubTools(name, config),
           commands: [],
         })
         return
@@ -2668,7 +2668,7 @@ export async function getMcpToolsCommandsAndResources(
           client,
           tools:
             client.type === 'needs-auth'
-              ? [createMcpAuthTool(name, config)]
+              ? createMcpAuthStubTools(name, config)
               : [],
           commands: [],
         })
