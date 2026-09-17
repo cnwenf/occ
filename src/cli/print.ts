@@ -25,7 +25,7 @@ import type { ThinkingConfig } from 'src/utils/thinking.js'
 import { assembleToolPool, filterToolsByDenyRules } from 'src/tools.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { uniq } from 'src/utils/array.js'
-import { mergeAndFilterTools } from 'src/utils/toolPool.js'
+import { mergeAndFilterTools, deferInitialMcpToolsToLiveState } from 'src/utils/toolPool.js'
 import {
   logEvent,
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1547,7 +1547,13 @@ function runHeadlessStreaming(
     )
     let allTools = uniqBy(
       mergeAndFilterTools(
-        [...tools, ...sdkTools, ...dynamicMcpState.tools],
+        // Gap-128b: frozen startup MCP tools (dynamicMcpState) defer to live
+        // appState.mcp state for servers the connection manager tracks —
+        // same authority rule as the REPL path (deferInitialMcpToolsToLiveState).
+        deferInitialMcpToolsToLiveState(
+          [...tools, ...sdkTools, ...dynamicMcpState.tools],
+          appState.mcp.clients,
+        ),
         assembledTools,
         appState.toolPermissionContext.mode,
       ),
@@ -2855,7 +2861,7 @@ function runHeadlessStreaming(
   // Used when localhost is not reachable (e.g., browser-based IDEs).
   const oauthCallbackSubmitters = new Map<
     string,
-    (callbackUrl: string) => void
+    (callbackUrl: string) => boolean
   >()
   // Track servers where the manual callback was actually invoked (so the
   // automatic reconnect path knows to skip — the extension will reconnect).
