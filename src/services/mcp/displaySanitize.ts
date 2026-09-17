@@ -55,9 +55,12 @@ export function stripInvisibleForDisplay(input: unknown): string {
 
 /**
  * Binary `It` @187105850 — chunked utf16 round-trip used when `Buffer` is
- * unavailable (non-Node hosts). Best-effort identity in that environment;
- * the Buffer path below is what actually replaces lone surrogates with
- * U+FFFD via the utf16le decode.
+ * unavailable (non-Node hosts). Best-effort identity in that environment.
+ * Note (security review 2026-09-17): measured on bun/Node, the utf16le
+ * round-trip PRESERVES lone surrogates rather than replacing them with
+ * U+FFFD — it is a belt-and-braces no-op here, not the control. The actual
+ * lone-surrogate neutralization is `stripInvisibleForDisplay` (jo pattern →
+ * space), which runs earlier in every sanitize pipeline.
  */
 function sanitizeLoneSurrogatesFallback(value: string): string {
   const chunks: string[] = []
@@ -70,7 +73,7 @@ function sanitizeLoneSurrogatesFallback(value: string): string {
   return chunks.join('')
 }
 
-/** Binary `_e` @187105xxx: utf16le round-trip drops lone surrogates. */
+/** Binary `_e` @187105xxx: utf16le round-trip (identity in practice — see `It` note). */
 function sanitizeLoneSurrogates(value: string): string {
   if (typeof Buffer < 'u')
     return Buffer.from(value, 'utf16le').toString('utf16le')

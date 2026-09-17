@@ -554,3 +554,17 @@ All NO-OP for OCC unless noted. Groups:
   (8), `specialVarLoops274.test.ts` (16), `worktreeNestedExpansion274.test.ts`
   (10) — **64 pass / 0 fail / 127 expect()**.
 - Directory gates + build + REPL smoke: see round ledger comment on the issue.
+16. **Env-prefix exec-influencing gate (beyond-upstream hardening candidate)**
+    — security review of this round flagged that `LD_PRELOAD=/evil.so cat f`
+    is `simple` in BOTH the official 274 `Zp` (no `_2t` gate on command-local
+    env prefixes — byte-verified) and OCC, so a user allow-rule for the inner
+    command also waves through the env-prefix hijack. Upstream parity is this
+    round's contract (documented in `specialVarLoops274.test.ts`), but OCC may
+    choose to harden BEYOND upstream: gate env-prefix assignments whose var is
+    exec-influencing (`_2t`) the same way bare assignments are. Tracked here
+    so the "official parity" framing doesn't permanently close the question.
+17. **McpAuthTool `call()`/`renderToolUseMessage` raw serverName** — the
+    tool's result messages still interpolate the raw config-key server name
+    (pre-existing; the 274 fix targeted the description only, names come from
+    the user's own config). Route through `sanitizeServerNameForDisplay` for
+    consistency in a follow-up (security review LOW note, 2026-09-17).
