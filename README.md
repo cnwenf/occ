@@ -5,7 +5,7 @@
 [![npm version](https://img.shields.io/npm/v/@cnwenf/occ.svg)](https://www.npmjs.com/package/@cnwenf/occ)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
 [![Runtime: Bun](https://img.shields.io/badge/Runtime-Bun-%23000000.svg)](https://bun.sh/)
-[![Tracks: Claude Code 2.1.273](https://img.shields.io/badge/Tracks-Claude%20Code%202.1.273-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
+[![Tracks: Claude Code 2.1.274](https://img.shields.io/badge/Tracks-Claude%20Code%202.1.274-blueviolet.svg)](https://docs.anthropic.com/en/docs/claude-code)
 
 [简体中文](./README.zh-CN.md) · **English**
 
@@ -13,7 +13,7 @@
 
 ## What is OCC
 
-**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.273` — 2.1.270 fully aligned; 2.1.271–2.1.273 partial: the OCC-127 catch-up round landed the 2.1.273 gateway-hint request headers (default on for the first-party api.anthropic.com endpoint, off for third-party/custom endpoints; tri-bool `CLAUDE_CODE_GATEWAY_HINT_HEADERS` override), the spinner doubled-ellipsis guard, the shell-mode `!` insert fix, and — the round's security centerpiece — the subshell-hidden dangerous-`rm` bypass fix (per-segment analysis in the always-on catastrophic-rm deny guard), per `docs/upstream-version-gap-occ127.md`; remaining 2.1.273 entries are triaged there as NO-OP (surfaces OCC trims) or STAGED (per-site forensics needed); still not landed from the 2.1.270→2.1.272 delta: `/config` panel fullscreen mouse support (PORTABLE-LARGE scope) and the spinner status ladder "deep in thought"/"picking the thought back up" (STAGED), plus the pre-existing sandbox per-command `allowed_domains` gap; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125/OCC-126). The code is fully open, auditable, backdoor-free, and your data stays under your control.
+**Open C Code (OCC)** is an open-source coding agent. Its capabilities are aligned with [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (currently tracking `2.1.274` — 2.1.270 fully aligned; 2.1.271–2.1.274 partial: the latest OCC-127 round landed the 2.1.274 MCP auth-stub description secret-leak fix — the byte-verified display-sanitizer family (NFKC + invisible-character stripping, quote/angle-bracket neutralization, bearer/token-family redaction, code-point-safe truncation) with the origin-only unexpanded endpoint — and confirmed NO-OP with behavioral tests for the 2.1.274 bash special-variable assignment/loop and worktree nested-expansion hardening (OCC's existing guards already ask/refuse every risky vector, byte-verified parity with the official); prior rounds landed the 2.1.273 gateway-hint request headers (default on for the first-party api.anthropic.com endpoint, off for third-party/custom endpoints; tri-bool `CLAUDE_CODE_GATEWAY_HINT_HEADERS` override), the spinner doubled-ellipsis guard, the shell-mode `!` insert fix, and the subshell-hidden dangerous-`rm` bypass fix (per-segment analysis in the always-on catastrophic-rm deny guard), per `docs/upstream-version-gap-occ127.md`; remaining 2.1.273/2.1.274 entries are triaged there as NO-OP (surfaces OCC trims) or STAGED (per-site forensics needed); still not landed from the 2.1.270→2.1.272 delta: `/config` panel fullscreen mouse support (PORTABLE-LARGE scope) and the spinner status ladder "deep in thought"/"picking the thought back up" (STAGED), plus the pre-existing sandbox per-command `allowed_domains` gap; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125/OCC-126). The code is fully open, auditable, backdoor-free, and your data stays under your control.
 
 If you worry that a closed-source CLI might hide backdoors, or that your code and credentials are uploaded to unauditable services, OCC is for you: all source is open and unobfuscated, the build is reproducible from source, and API credentials are sent only to endpoints you configure.
 
@@ -62,7 +62,7 @@ Requires a valid Anthropic API Key (or AWS Bedrock / Google Vertex / Azure Found
 | **Auditability** | Line-by-line reviewable | No |
 | **Telemetry** | Minimal (analytics stubbed) | Standard |
 | **Data sovereignty** | Credentials stay on your machine; requests only to endpoints you configure | Anthropic endpoints |
-| **Capability parity** | Tracks CC `2.1.273` (2.1.270 fully aligned; 2.1.271–2.1.273 partial) | Reference implementation |
+| **Capability parity** | Tracks CC `2.1.274` (2.1.270 fully aligned; 2.1.271–2.1.274 partial) | Reference implementation |
 | **Providers** | Anthropic Direct, Bedrock, Vertex, Azure | Anthropic, Bedrock, Vertex |
 | **Cost** | Free & open-source (MIT) | Subscription |
 | **Build** | Reproducible from source | N/A |
@@ -143,7 +143,7 @@ Requires [Bun](https://bun.sh/) >= 1.3.11 (use `bun upgrade` — older Bun cause
 
 ```bash
 bun install
-bun run dev          # run from source; version prints 2.1.273 (dev polyfill; build overrides with pkg.version) when working
+bun run dev          # run from source; version prints 2.1.274 (dev polyfill; build overrides with pkg.version) when working
 bun run build        # output: dist/cli.js (~26 MB, single-file bundle)
 bun test             # test suite (Bun test runner)
 bun run lint         # Biome lint (formatter disabled to avoid large diffs)
@@ -157,7 +157,7 @@ For architecture, entry/bootstrap, tool system, UI layer, and module-status deta
 
 ## Status
 
-- Tracks Claude Code **`2.1.273`** (2.1.270 fully aligned; 2.1.271–2.1.273 partial — the OCC-127 catch-up round landed the gateway-hint request headers, the spinner doubled-ellipsis guard, the shell-mode `!` insert fix, and the subshell-hidden dangerous-`rm` bypass fix — see `docs/upstream-version-gap-occ127.md`; remaining 2.1.273 entries are triaged there as NO-OP or STAGED; still not landed from the 2.1.270→2.1.272 delta: `/config` fullscreen mouse support (PORTABLE-LARGE) and the spinner status ladder (STAGED), plus the pre-existing sandbox per-command `allowed_domains` gap; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84, OCC-124 + OCC-85, OCC-125, and OCC-126 — see `docs/upstream-version-gap-occ124.md`, `docs/upstream-version-gap-occ125.md`, and `docs/upstream-version-gap-occ126.md`).
+- Tracks Claude Code **`2.1.274`** (2.1.270 fully aligned; 2.1.271–2.1.274 partial — the latest OCC-127 round landed the 2.1.274 MCP auth-stub description secret-leak fix (byte-verified display-sanitizer family port) and verified the 2.1.274 bash special-variable and worktree nested-expansion hardening as NO-OP with behavioral tests; prior rounds landed the 2.1.273 gateway-hint request headers, the spinner doubled-ellipsis guard, the shell-mode `!` insert fix, and the subshell-hidden dangerous-`rm` bypass fix — see `docs/upstream-version-gap-occ127.md`; remaining 2.1.273/2.1.274 entries are triaged there as NO-OP or STAGED; still not landed from the 2.1.270→2.1.272 delta: `/config` fullscreen mouse support (PORTABLE-LARGE) and the spinner status ladder (STAGED), plus the pre-existing sandbox per-command `allowed_domains` gap; prior alignment through 2.1.270 landed via OCC-122/OCC-123/OCC-84, OCC-124 + OCC-85, OCC-125, and OCC-126 — see `docs/upstream-version-gap-occ124.md`, `docs/upstream-version-gap-occ125.md`, and `docs/upstream-version-gap-occ126.md`).
 - Published to npm as [`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ).
 - Many modules are intentionally stubbed or feature-flagged off — see "Disabled / stubbed" above.
 

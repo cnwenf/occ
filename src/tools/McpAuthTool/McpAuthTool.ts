@@ -6,14 +6,23 @@ import {
   reconnectMcpServerImpl,
 } from '../../services/mcp/client.js'
 import {
+  sanitizeDisplayUrl,
+  sanitizeServerNameForDisplay,
+} from '../../services/mcp/displaySanitize.js'
+import {
   buildMcpToolName,
   getMcpPrefix,
 } from '../../services/mcp/mcpStringUtils.js'
+import {
+  getMcpErrorEndpoint,
+  type UnexpandedScopeResolver,
+} from '../../services/mcp/redaction.js'
 import type {
   McpHTTPServerConfig,
   McpSSEServerConfig,
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
+import { resolveUnexpandedMcpServers } from '../../services/mcp/utils.js'
 import type { Tool } from '../../Tool.js'
 import { errorMessage } from '../../utils/errors.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -29,9 +38,43 @@ export type McpAuthOutput = {
   authUrl?: string
 }
 
-function getConfigUrl(config: ScopedMcpServerConfig): string | undefined {
-  if ('url' in config) return config.url
-  return undefined
+/**
+ * Binary `D(e,r,n)` @211336157 region (2.1.274): the auth-stub tool
+ * description. CC 2.1.274 security fix — previously OCC embedded the raw
+ * env-EXPANDED `config.url` here (`${transport} at ${url}`), leaking
+ * post-expansion secrets (e.g. `https://user:token@host` from an authored
+ * `https://user:${TOKEN}@host`) into model-visible tool descriptions. The
+ * official fix derives the location from `getMcpErrorEndpoint(detail:
+ * 'origin')` (the AUTHORED unexpanded string, never the expanded one) and
+ * runs it through the `nPr(…,256)` display sanitizer; the server name goes
+ * through `xr()` (NFKC + quote neutralization + 64-char cap).
+ *
+ * Divergence: the official also stamps `mcpInfo.serverType/source/isAuthStub`
+ * — OCC's `Tool.mcpInfo` type only carries `{serverName, toolName}` and
+ * nothing consumes the extra fields (documented in
+ * docs/upstream-version-gap-occ127.md Part II).
+ */
+export function buildMcpAuthToolDescription(
+  serverName: string,
+  config: ScopedMcpServerConfig,
+  resolveUnexpanded: UnexpandedScopeResolver = resolveUnexpandedMcpServers,
+): string {
+  const transport = config.type ?? 'stdio'
+  const displayOrigin = getMcpErrorEndpoint(
+    serverName,
+    config,
+    { detail: 'origin' },
+    resolveUnexpanded,
+  )
+  const location =
+    displayOrigin && displayOrigin !== transport
+      ? `${transport} at ${sanitizeDisplayUrl(displayOrigin, 256)}`
+      : transport
+  return (
+    `The "${sanitizeServerNameForDisplay(serverName)}" MCP server (${location}) is installed but requires authentication. ` +
+    `Call this tool to start the OAuth flow — you'll receive an authorization URL to share with the user. ` +
+    `Once the user completes authorization in their browser, the server's real tools will become available automatically.`
+  )
 }
 
 /**
@@ -49,15 +92,14 @@ function getConfigUrl(config: ScopedMcpServerConfig): string | undefined {
 export function createMcpAuthTool(
   serverName: string,
   config: ScopedMcpServerConfig,
+  resolveUnexpanded: UnexpandedScopeResolver = resolveUnexpandedMcpServers,
 ): Tool<InputSchema, McpAuthOutput> {
-  const url = getConfigUrl(config)
   const transport = config.type ?? 'stdio'
-  const location = url ? `${transport} at ${url}` : transport
-
-  const description =
-    `The \`${serverName}\` MCP server (${location}) is installed but requires authentication. ` +
-    `Call this tool to start the OAuth flow — you'll receive an authorization URL to share with the user. ` +
-    `Once the user completes authorization in their browser, the server's real tools will become available automatically.`
+  const description = buildMcpAuthToolDescription(
+    serverName,
+    config,
+    resolveUnexpanded,
+  )
 
   return {
     name: buildMcpToolName(serverName, 'authenticate'),
