@@ -315,7 +315,11 @@ function ModeIndicator({
   // In-process mode uses Shift+Down/Up navigation, not footer teams menu
   const hasTeams = isAgentSwarmsEnabled() && !isInProcessEnabled() && teamContext !== undefined && count(Object.values(teamContext.teammates), t_0 => t_0.name !== 'team-lead') > 0;
   if (mode === 'bash') {
-    return <Text color="bashBorder">! for bash mode</Text>;
+    // 2.1.274 (OCC-89): official renders "! for shell mode" here (byte-verified
+    // in the 2.1.274 ELF: e(n,{color:"bashBorder",children:"! for shell mode"})
+    // for the mode==="bash" branch; zero "! for bash mode" hits). OCC-110
+    // aligned PromptInputHelpMenu but missed this footer site.
+    return <Text color="bashBorder">! for shell mode</Text>;
   }
   const currentMode = toolPermissionContext?.mode;
   const hasActiveMode = !isDefaultMode(currentMode);

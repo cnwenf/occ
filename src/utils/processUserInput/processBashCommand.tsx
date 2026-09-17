@@ -41,7 +41,14 @@ export async function processBashCommand(inputString: string, precedingInputBloc
   });
 
   // ctrl+b to background indicator
-  let jsx: React.ReactNode;
+  // NOTE: never name this binding `jsx` — in a .tsx file the automatic JSX
+  // runtime calls transpile to bare `jsx(...)` identifiers, and Bun's bundler
+  // resolves them to the innermost same-named binding. A local `let jsx`
+  // silently merges with the runtime import in the bundle output
+  // (`let jsx434; ... jsx434(BashModeProgress, ...)` → TypeError at runtime),
+  // which killed every `!cmd` bash-mode submit (OCC-89). The
+  // jsxRuntimeShadowing source-guard test enforces this.
+  let backgroundJsx: React.ReactNode;
 
   // Just show initial UI
   setToolJSX({
@@ -53,7 +60,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       ...context,
       // TODO: Clean up this hack
       setToolJSX: _ => {
-        jsx = _?.jsx;
+        backgroundJsx = _?.jsx;
       }
     };
 
@@ -64,7 +71,7 @@ export async function processBashCommand(inputString: string, precedingInputBloc
       setToolJSX({
         jsx: <>
             <BashModeProgress input={inputString!} progress={progress.data} verbose={context.options.verbose} />
-            {jsx}
+            {backgroundJsx}
           </>,
         shouldHidePromptInput: false,
         showSpinner: false

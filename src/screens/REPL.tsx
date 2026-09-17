@@ -3420,15 +3420,18 @@ export function REPL({
           // pinning stale REPL render scopes in downstream closures.
           const context = getToolUseContext(messagesRef.current, [], createAbortController(), mainLoopModel);
           const mod = await matchingCommand.load();
-          const jsx = await mod.call(onDone, context, commandArgs);
+          // Renamed off `jsx`: a local binding named exactly `jsx` in a .tsx
+          // file can merge with the automatic JSX runtime import in Bun bundle
+          // output (see processBashCommand.tsx note + jsxRuntimeShadowing test).
+          const commandJsx = await mod.call(onDone, context, commandArgs);
 
           // Skip if onDone already fired — prevents stuck isLocalJSXCommand
           // (see processSlashCommand.tsx local-jsx case for full mechanism).
-          if (jsx && !doneWasCalled) {
+          if (commandJsx && !doneWasCalled) {
             // shouldHidePromptInput: false keeps Notifications mounted
             // so the onDone result isn't lost
             setToolJSX({
-              jsx,
+              jsx: commandJsx,
               shouldHidePromptInput: false,
               isLocalJSXCommand: true
             });
