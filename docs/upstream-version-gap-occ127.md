@@ -318,3 +318,253 @@ web-setup, server-side auto-mode classifier, VSCode/web/Tag/Code-Review-cloud)
   2.1.338 at release).
 - e2e: `bash test/e2e/run.sh` (Docker) + tmux REPL acceptance — see round
   ledger comment on the issue.
+
+---
+
+# Part II — Official 2.1.273 → 2.1.274 (OCC-127 round, 2026-09-17)
+
+Method (per `upstream-tracking` + `aligning-with-official-binary`):
+`npm pack @anthropic-ai/claude-code-linux-x64@{2.1.272,2.1.273,2.1.274}` →
+`strings -n 8 | sort -u` → `comm -13` deltas; byte-offset forensics with
+`LC_ALL=C grep -aboF` + bounded-window python scanners (regex `.{0,N}` context
+greps hang on MB-long minified lines). Official latest confirmed 2.1.274
+(changelog `/tmp/cc-CHANGELOG-latest.md`; ~110 entries, of which 3 are the
+security fixes at lines 47–49).
+
+## 0. Verdict summary (273 → 274)
+
+| # | Official 2.1.274 entry | Verdict | Where |
+|---|------------------------|---------|-------|
+| S1 | Bash permission checks for loops/assignments over special shell variables now ask | **NO-OP** (official parity; test evidence) | §2 |
+| S2 | Worktree-isolated sessions refuse nested shell expansions | **NO-OP** (existing 2.1.216 #8 guard; test evidence) | §3 |
+| S3a | MCP login tool description leaked `${VAR}`-resolved secrets | **LAND** — display-sanitizer family port + `buildMcpAuthToolDescription` | §1 |
+| S3b | MCP connection errors leaked `${VAR}`-resolved secrets | **NO-OP** — 2.1.268 E16 port (`getMcpErrorEndpoint`) already covers | §1.5 |
+| — | All other ~106 entries | NO-OP (trimmed/absent surfaces) or STAGED | §4–§5 |
+
+Landed code: `src/services/mcp/displaySanitize.ts` (new),
+`src/tools/McpAuthTool/McpAuthTool.ts` (description builder), 4 test files
+(64 tests, all pass). Version macro `cli.tsx` → 2.1.274; README badge/prose/
+table/status → 2.1.274; repo `CLAUDE.md` dev-note → 2.1.274.
+
+## 1. S3a — MCP auth-stub description secret leak (LAND)
+
+Official changelog (line 46): "Fixed MCP connection errors and the MCP login
+tool's description showing secrets resolved from `${VAR}` placeholders in MCP
+configs."
+
+### 1.1 Official 2.1.274 fix (byte-verified, linux-x64 ELF)
+
+Description template @94296686 (274) / @93306997 (273) — string-pool
+extraction shows the template is `The "` + name + `" MCP server (` + location
++ `) is installed but requires authentication. …` with **double quotes in BOTH
+273 and 274** (OCC's backticks were a pre-existing divergence, corrected this
+round). The 274 delta is how `location` is built: binary `Qx` now calls
+`_R(name, config, {detail:'origin'})` (getMcpErrorEndpoint, the same redaction
+entry point used for connection-error strings since the 2.1.268 E16 port),
+sanitizes it with `nPr(url, 256)` and the server name with `xr()`.
+
+The sanitizer family, all byte-extracted from the 274 ELF:
+
+| Binary fn | Offset | Behavior (verbatim semantics) |
+|-----------|--------|-------------------------------|
+| `Xi` sanitizeForDisplay | @194523909 | NFKC normalize → `gnr` invisible strip → replaceAll angle/quote class → collapse whitespace → trim; scanMax = `Math.max(2000, max+512)`; overflow → truncate + redact; final `oe(y,max)+'…'` when overflow or > max |
+| `Kin` redactSecretsForDisplay | @194524420 | bearer/basic + token-family label regexes (`api_key`, `apikey`, `access_token`, …); replacer guard `/[0-9._~+/=%-]/.test(secret)`; mode `'none'` passthrough |
+| `gnr` stripInvisibleForDisplay | @187512864 | cap 4096; lone surrogates → space keeping well-formed pairs (`jo` pattern @187512407); invisibles (`sn` pattern @187512539: `\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}⠀` + non-space `\p{Zs}`) → space |
+| `oe` truncateToDisplayLength | @187105334 | surrogate-safe head truncation (fallback `It` chunked Uint16Array @187105850) |
+| `nPr` sanitizeDisplayUrl | — | `Xi` with max=1024 default |
+| `xr` sanitizeServerNameForDisplay | — | NFKC + `/['`]/g` → space, max 64, redaction mode `'none'` |
+| `oBo` DEFAULT_DISPLAY_MAX | — | 200; `hIe` REDACT_SCAN_MAX 2000; `mvn` slack 512 |
+
+### 1.2 OCC port
+
+- **New** `src/services/mcp/displaySanitize.ts` — full family, byte-verified,
+  with binary-offset doc comments on every exported function and constant
+  (`stripInvisibleForDisplay`, `truncateToDisplayLength`,
+  `redactSecretsForDisplay`, `sanitizeForDisplay`, `sanitizeDisplayUrl`,
+  `sanitizeServerNameForDisplay`).
+- **Edited** `src/tools/McpAuthTool/McpAuthTool.ts` — new exported
+  `buildMcpAuthToolDescription(serverName, config, resolveUnexpanded?)` uses
+  `getMcpErrorEndpoint(name, config, {detail:'origin'}, resolveUnexpanded)`
+  for the location (authored-unexpanded origin when available; origin-only
+  expanded fallback otherwise — userinfo dropped) and sanitizes with
+  `sanitizeDisplayUrl(…, 256)` + `sanitizeServerNameForDisplay`. The old
+  `getConfigUrl` (raw `config.url` interpolation — the leak) is gone.
+  `createMcpAuthTool` gained an injectable `UnexpandedScopeResolver` default
+  param (2-arg callers unaffected).
+- Documented divergence: OCC `mcpInfo` stays `{serverName, toolName}`;
+  official adds `serverType`/`source`/`isAuthStub` fields — STAGED (§5), no
+  consumer in OCC reads them.
+
+### 1.3 Tests
+
+- `src/services/mcp/__tests__/displaySanitize.test.ts` — per-function unit
+  coverage incl. lone surrogates, NFKC, 64/200/256/1024 caps, redaction
+  charset guard (`api_key=abcdefghij` letters-only → unchanged, matching the
+  official `[0-9._~+/=%-]` replacer test).
+- `src/tools/McpAuthTool/__tests__/mcpAuthToolDescription274.test.ts` —
+  authored env-ref shows the template (never expanded host/secret), unknown
+  scope → origin-only (userinfo secret dropped), stdio transport-only, name
+  sanitization, official template verbatim match, `createMcpAuthTool` wiring.
+  Fixtures mirror `mcpSecretRedaction268.test.ts`.
+
+### 1.5 S3b — connection-error half of the same changelog line: NO-OP
+
+The "MCP connection errors" leak was fixed officially in the 2.1.268 E16
+round; OCC ported `getMcpErrorEndpoint` then (`src/services/mcp/redaction.ts`,
+`getMcpErrorEndpoint` @ line 748, `getEndpointForDisplay` @ ~524). Verified:
+connection-error call sites already route through it; nothing to add.
+
+## 2. S1 — special shell variable loops/assignments (NO-OP, official parity)
+
+Official changelog (line 47): "Fixed Bash permission checks for commands that
+loop over or assign certain special shell variables; these commands now ask
+for permission."
+
+Decisive evidence (decompiled from the 274 ELF): official `Zp` (walkCommand)
+env-prefix `variable_assignment` case calls only `Ei` (walkVariableAssignment)
++ `vc` (integer-attr arith-eval risk) — **no `_2t` (exec-influencing) gate**;
+the bare-assignment path in `qe` checks `_2t` then `vc`. Both are structurally
+identical to OCC's `src/utils/bash/ast.ts` (env-prefix walkCommand lines
+1912–1930 check `vc` only; bare-assignment gates lines 926–960 check `_2t`
+then `vc`). OCC's 2.1.251-era ports already carry: `Vo` SPECIAL_SHELL_VARS
+(lines 303–358, verbatim), `_2t` isExecInfluencingVar (`ld_`/`dyld_`/
+`bash_func_` prefixes + EXEC_INFLUENCING_VARS, lines 385–393), `vc`
+integer-attr gate, the PS4 value allowlist (reject `+=`, reject
+cmdsub/variable-derived values, charset `/^[A-Za-z0-9 _+:./=[\]-]*$/` after
+stripping `${VAR}` refs, tilde gate), the IFS gate, and the for-statement
+loop-var gate (~1015–1024).
+
+Behavioral evidence: `src/tools/BashTool/__tests__/specialVarLoops274.test.ts`
+— loops over IFS/PS4/RANDOM/PATH → too-complex (ask); `"$@"`/`$*` iteration →
+too-complex; `IFS=`, PS4 cmdsub/backtick/variable-derived, `RANDOM=2+2`
+(integer attr), `OPTIND=x[$(id)]` (cmdsub caught at walk level), bare
+`PATH=/evil/bin` → too-complex; official-parity simples documented in-test
+(`PS4=x` allowlist-inert; `RPS1=$(id) echo hi` simple BUT the cmdsub inner
+`id` is extracted into the command list and permission-checked on its own;
+`LD_PRELOAD=x cmd` env-prefix parity with official `Zp`).
+
+Not a 274 delta but noted: official `Kp` tracked-literal write-target
+analysis (`read`/`printf -v`/`getopts`/`set -A`/`wait -p`/`cd` + `Fi`
+tracked-literal checks) exists in BOTH 273 and 274 and remains unported by
+OCC — pre-existing STAGED gap (§5), unchanged this round.
+
+## 3. S2 — worktree nested shell expansions (NO-OP)
+
+Official changelog (line 48): "Fixed worktree-isolated sessions accepting
+Bash commands with certain nested shell expansions; these are now refused."
+
+OCC's 2.1.216 #8 guard (`src/tools/BashTool/worktreeGitRedirectGuard.ts`)
+already fails closed: `isDynamicTarget` rejects `$`, backtick, `$(`, `~`, and
+the guard blocks eval/source/`bash -c`/stdin-fed wrappers. Every 274-delta
+vector probed against the official binary is refused.
+
+Behavioral evidence: `src/tools/BashTool/__tests__/worktreeNestedExpansion274.test.ts`
+— `git -C $(echo <shared>)`, quoted `"$(pwd)/../main"`, **nested**
+`$(echo $(pwd))` (the 274 vector), `--git-dir=$(pwd)/../.git`, backtick form,
+eval wrapper, `bash -c` wrapper, direct shared-checkout redirect → all block;
+plain `git status` and in-worktree `git -C <worktree>/sub` → allowed (no
+false positives).
+
+## 4. Changelog-level triage of the remaining ~106 entries
+
+All NO-OP for OCC unless noted. Groups:
+
+- **Claude apps gateway** (7: `store.connect_timeout_seconds`, `enduser.sub`,
+  256-request warning, Postgres promise-rejection, SIGTERM drain
+  `CLAUDE_GATEWAY_DRAIN_TIMEOUT_MS`, boot retry, spend-check round trip,
+  sign-in rate limit) — gateway server product; absent surface.
+- **VSCode extension** (18) — absent surface.
+- **Claude Code on the web / cloud sessions** (8) — absent surface.
+- **Claude Tag (Slack)** (10) — absent surface.
+- **Code Review cloud** (4) — absent surface (OCC `/code-review` is separate).
+- **Cowork / Claude Desktop** (3: Desktop error hints, Desktop transcript
+  message, Cowork artifact network) — absent surface.
+- **Artifact tool** (3: stale-version refusal, cloud network reads, publish
+  conflict) — absent surface.
+- **OTel telemetry** (4: `effort` span attr, `managed_settings_resolved`,
+  `OTEL_LOG_RAW_API_BODIES` index.jsonl, gateway telemetry) — OCC analytics/
+  OTel are stubbed empty implementations.
+- **Plugins/marketplace** (5: enclosing-git version, `installed_plugins.json`
+  rewrite, `$schema` in hooks.json, stale `.zip` extraction, Git LFS
+  pointers) — plugin subsystem removed/trimmed by design.
+- **MCP behavioral fixes** (6: http+SSE 422 fallback, Streamable HTTP 5-min
+  timeout override, listChanged refresh, 403 insufficient_scope message,
+  `--strict-mcp-config` empty-config MCP_TIMEOUT hold, `"type":"sdk"` skip +
+  v2-client default negotiation) — STAGED (§5); each needs per-site
+  forensics in `src/services/mcp/` client code; none is security-tagged.
+- **Session/agent lifecycle** (10: tool_use_id 400 self-heal, `/goal` hook
+  overflow + resume-loss, `claude agents` flag loss after relaunch, LSP
+  diagnostics slowdown, Bedrock/Vertex/Foundry `model:"opus"` family, runner
+  401 retry, `-p --resume` background tasks, cloud-session first-turn SDK-MCP
+  tools, background-agent notification, headless per-task model calls) —
+  mostly absent/trimmed surfaces or STAGED per-site items (§5).
+- **UI/TUI** (5: critical-memory warning, click-to-expand fullscreen,
+  Wayland editor windows, transcript list renumbering, AskUserQuestion
+  preview ×2) — STAGED (§5) except AskUserQuestion preview (OCC surface
+  exists; low-risk cosmetic, needs per-site forensics).
+- **Misc** (6: Stop-hook 500-char repeat label, `/status` apiKeyHelper,
+  `/fast on` managed policy, `/schedule` role, clickable `file://` links,
+  background-command 30-min idle stop) — STAGED (§5) or absent.
+
+## 5. STAGED items (274 round — priority order)
+
+1. **MCP client behavioral cluster** (S3b-adjacent, highest user impact):
+   http+SSE 422 fallback, Streamable HTTP per-server `timeout` > 5 min,
+   listChanged-without-declaration refresh, 403 insufficient_scope message.
+   All in `src/services/mcp/client.ts` + transport layer; needs dedicated
+   per-site decompilation (the v2 client default-negotiation change may
+   restructure the same code).
+2. **`CLAUDE_CODE_MCP_STARTUP_WAIT_MS`** — bounds first non-interactive turn's
+   MCP wait (`0` = don't wait); interacts with the stream-json first-turn fix.
+3. **`Kp` tracked-literal write-target resolvability module** (pre-existing,
+   both 273/274): `read`/`printf -v`/`getopts`/`set -A`/`wait -p`/`cd`
+   write-target analysis + `Fi` tracked-literal checks feeding the bash
+   permission AST. Security-positive; large module; needs its own round.
+4. **McpAuth callback tool** — official ships a companion `v(e,r)` callback
+   tool next to the auth stub; OCC's OAuth flow differs (simplified MCP
+   OAuth per CLAUDE.md); port only if the flow is revisited.
+5. **`mcpInfo` field divergence** — official adds `serverType`/`source`/
+   `isAuthStub` to the auth-stub tool's `mcpInfo`; no OCC consumer today.
+6. **Monitor single-notification merge** — final output + exit arrive as one
+   notification (saves a model turn). OCC Monitor chat-delivery wiring is
+   itself an occ127 follow-up (Part I §5).
+7. **Critical-memory warning + background-command idle-stop policy** —
+   visible warning with free/restart steps; 30-min idle stop now only under
+   critical pressure (debug log says why).
+8. **Edit permission prompt multi-byte preview location** — preview sometimes
+   showed a different location than the approved edit in multi-byte files;
+   OCC EditTool preview needs offset-vs-codepoint forensics.
+9. **Transcript ordered-list renumbering** — "3. 2. 1." rendered as
+   "3. 4. 5."; numbers/`N)` markers must show as typed (markdown renderer).
+10. **Stop-hook repeat-block 500-char label** — repeat blocks name the
+    condition instead of re-sending the whole prompt.
+11. **AskUserQuestion preview-note attach/submit fixes** (2 entries).
+12. **`/status` apiKeyHelper failure row**, **`/fast on` managed-policy
+    message**, **clickable local-file `file://` links**.
+13. **tool_use_id 400 self-heal + `/rewind` hint** — corrupted-transcript
+    recovery; needs QueryEngine forensics.
+14. **`/goal` compact-resume persistence + post-compaction overflow** — OCC
+    has the goal Stop-hook path; both fixes need session-state forensics.
+15. **Subagent progress-summary runaway cap**, **resumed background agent
+    half-batch drop**, **submodule-checkout worktree removal safety**.
+
+## 6. Test & build status (274 round)
+
+- New tests: `displaySanitize.test.ts` (30), `mcpAuthToolDescription274.test.ts`
+  (8), `specialVarLoops274.test.ts` (16), `worktreeNestedExpansion274.test.ts`
+  (10) — **64 pass / 0 fail / 127 expect()**.
+- Directory gates + build + REPL smoke: see round ledger comment on the issue.
+16. **Env-prefix exec-influencing gate (beyond-upstream hardening candidate)**
+    — security review of this round flagged that `LD_PRELOAD=/evil.so cat f`
+    is `simple` in BOTH the official 274 `Zp` (no `_2t` gate on command-local
+    env prefixes — byte-verified) and OCC, so a user allow-rule for the inner
+    command also waves through the env-prefix hijack. Upstream parity is this
+    round's contract (documented in `specialVarLoops274.test.ts`), but OCC may
+    choose to harden BEYOND upstream: gate env-prefix assignments whose var is
+    exec-influencing (`_2t`) the same way bare assignments are. Tracked here
+    so the "official parity" framing doesn't permanently close the question.
+17. **McpAuthTool `call()`/`renderToolUseMessage` raw serverName** — the
+    tool's result messages still interpolate the raw config-key server name
+    (pre-existing; the 274 fix targeted the description only, names come from
+    the user's own config). Route through `sanitizeServerNameForDisplay` for
+    consistency in a follow-up (security review LOW note, 2026-09-17).
