@@ -15,7 +15,12 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pinned so the green-CI acceptance baseline is reproducible (OCC-129):
+          # `latest` made the bun version a moving target — a new bun release could
+          # flip CI red with zero repo changes. 1.4.2 is the version this fix was
+          # verified on (full suite green locally + in CI). Upgrade deliberately:
+          # bump this pin, run ci-test.sh locally, merge if green.
+          bun-version: 1.4.2
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -36,6 +41,13 @@ jobs:
 
       - name: Test
         run: bash scripts/ci-test.sh
+        # scripts/ci-test.sh exports a DUMMY ANTHROPIC_API_KEY when none is set.
+        # GitHub Actions sets CI=true, which arms src/utils/auth.ts's
+        # credential-presence guard; without a key it throws and 8 logic/e2e
+        # files that transitively hit the guard fail. The dummy restores parity
+        # with dev machines (which always have a real key) — see OCC-129 and the
+        # comment block in scripts/ci-test.sh. Live-model e2e stays gated off CI.
+        #
         # Per-file isolation: runs each test file in its own bun process.
         #
         # Root cause: bun's mock.module() is PERMANENT per-process (no restore
