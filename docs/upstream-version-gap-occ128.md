@@ -62,7 +62,7 @@ Qx(e,r){ if(Te()) return []; let n=_R(e,r,{detail:"origin"}); return [D(e,r,n), 
 | `src/cli/handlers/mcp.tsx` / `src/cli/print.ts` | `onWaitingForCallback` 注解同步为 boolean submitter（`mcp login --no-browser` 与 `-p` 的 `mcp_oauth_callback_url` 控制协议路径自有校验，不变） |
 | `src/components/mcp/MCPRemoteServerMenu.tsx` | 无需改动 — `((url:string)=>boolean)` 可赋给 `((url:string)=>void)` 槽位（TS void-assignability），运行时兼容 |
 
-### 新增测试（37 pass / 0 fail，4 文件）
+### 新增测试（39 pass / 0 fail，4 文件）
 
 - `src/services/mcp/__tests__/manualCallbackSubmitter274.test.ts`（7 tests）：submitter 全分支 — 非回调 URL、不可解析、错误 state 的 code（**flow 继续等待，不再 CSRF 中止**）、错误 state 的 error（state 检查先于 error 分支）、匹配 code、匹配 error（官方消息形状）、无 description 的空尾。
 - `src/tools/McpAuthTool/__tests__/mcpCompleteAuthTool274.test.ts`（10 tests）：工具身份、描述逐字节、schema describe 文本、call() 六分支、mapper。
@@ -155,7 +155,7 @@ OCC（修复前）：双 stub 与真实工具共存，残留在后续每一轮�
 
 ### P2-3（已修复）: submitter 注册契约缺真实产线接线测试
 
-此前 3 个测试文件全部绕过 `performMCPOAuthFlow` 真实入口（手拉 hook / mock 注册表读端 / mock 整个 flow），把注册 `set` 门控在 `if (options?.onWaitingForCallback)` 后的变异可让 37 个测试全绿。新增 `src/services/mcp/__tests__/mcpOAuthFlowWiring274.test.ts`（4 tests）：本地最小 mock OAuth AS（RFC 8414 discovery + RFC 7591 DCR + token 端点，**全部 fixture 假 token**）+ `CLAUDE_CONFIG_DIR` 临时目录隔离明文凭据存储，跑完整 `performMCPOAuthFlow`：
+此前 3 个测试文件全部绕过 `performMCPOAuthFlow` 真实入口（手拉 hook / mock 注册表读端 / mock 整个 flow），把注册 `set` 门控在 `if (options?.onWaitingForCallback)` 后的变异可让这 3 个文件当时的全部 31 个测试（7+10+14）依旧全绿。新增 `src/services/mcp/__tests__/mcpOAuthFlowWiring274.test.ts`（4 tests）：本地最小 mock OAuth AS（RFC 8414 discovery + RFC 7591 DCR + token 端点，**全部 fixture 假 token**）+ `CLAUDE_CONFIG_DIR` 临时目录隔离明文凭据存储，跑完整 `performMCPOAuthFlow`：
 
 1. 无 `onWaitingForCallback` 也**无条件注册** submitter（变异门）；
 2. wrong-state 粘贴 → false 且仍注册；匹配 state 粘贴 → true → 真实 token exchange（mock AS 计数 +1）→ settle 后**双注册表身份校验清空**；
@@ -179,7 +179,7 @@ OCC（修复前）：双 stub 与真实工具共存，残留在后续每一轮�
 
 ### P3-4（已修复）: 本文档数字勘误
 
-L4 `2.1.339`→`2.1.340`（package.json 与 origin/main dce6504 实测）；"新增测试 39"→**37**（14+10+7+6 逐文件实测）；`mcpAuthStubTools274`"12 tests"→**14 tests**。L133 的 `2.1.339 发布 commit` 为历史 CI 基线事实，保留不动。
+L4 `2.1.339`→`2.1.340`（package.json 与 origin/main dce6504 实测）；"新增测试"总数维持 **39**（14+10+7+8 逐文件实测，`mcpAuthToolDescription274`=8；修复轮曾误计为 37——把 Description 数成 6——验收复核纠正）；`mcpAuthStubTools274`"12 tests"→**14 tests**。L133 的 `2.1.339 发布 commit` 为历史 CI 基线事实，保留不动。
 
 ### P3-5（已修复）: 1024 码点上限与 `isAnthropicHostedMcpUrl` catch→false 无边界测试
 
