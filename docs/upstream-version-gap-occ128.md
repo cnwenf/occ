@@ -62,10 +62,10 @@ Qx(e,r){ if(Te()) return []; let n=_R(e,r,{detail:"origin"}); return [D(e,r,n), 
 | `src/cli/handlers/mcp.tsx` / `src/cli/print.ts` | `onWaitingForCallback` 注解同步为 boolean submitter（`mcp login --no-browser` 与 `-p` 的 `mcp_oauth_callback_url` 控制协议路径自有校验，不变） |
 | `src/components/mcp/MCPRemoteServerMenu.tsx` | 无需改动 — `((url:string)=>boolean)` 可赋给 `((url:string)=>void)` 槽位（TS void-assignability），运行时兼容 |
 
-### 新增测试（39 pass / 0 fail，4 文件）
+### 新增测试（40 pass / 0 fail，4 文件）
 
 - `src/services/mcp/__tests__/manualCallbackSubmitter274.test.ts`（7 tests）：submitter 全分支 — 非回调 URL、不可解析、错误 state 的 code（**flow 继续等待，不再 CSRF 中止**）、错误 state 的 error（state 检查先于 error 分支）、匹配 code、匹配 error（官方消息形状）、无 description 的空尾。
-- `src/tools/McpAuthTool/__tests__/mcpCompleteAuthTool274.test.ts`（10 tests）：工具身份、描述逐字节、schema describe 文本、call() 六分支、mapper。
+- `src/tools/McpAuthTool/__tests__/mcpCompleteAuthTool274.test.ts`（11 tests）：工具身份、描述逐字节、schema describe 文本、call() 七分支（含修复轮新增的 P2-1 假成功门：submitter true + 无 active promise → 专属 error）、mapper。
 - `src/tools/McpAuthTool/__tests__/mcpAuthStubTools274.test.ts`（14 tests）：工厂双工具/非交互空数组、gating 顺序（managed-policy 压过 disabled 压过 project-approval）、claudeai-proxy/stdio/anthropic-hosted（含 hostname 归一化 + shell-unsafe 名不渲染 remove 命令 + Xi 引号中和后的逐字节消息）、auth_url local/remote 变体逐字节、silent 完成 + 前缀替换 setAppState、后台续跑 disabled 复查、启动失败消息。
 - `src/tools/McpAuthTool/__tests__/mcpAuthToolDescription274.test.ts`（既有，OCC-127）：继续通过。
 
@@ -179,7 +179,7 @@ OCC（修复前）：双 stub 与真实工具共存，残留在后续每一轮�
 
 ### P3-4（已修复）: 本文档数字勘误
 
-L4 `2.1.339`→`2.1.340`（package.json 与 origin/main dce6504 实测）；"新增测试"总数维持 **39**（14+10+7+8 逐文件实测，`mcpAuthToolDescription274`=8；修复轮曾误计为 37——把 Description 数成 6——验收复核纠正）；`mcpAuthStubTools274`"12 tests"→**14 tests**。L133 的 `2.1.339 发布 commit` 为历史 CI 基线事实，保留不动。
+L4 `2.1.339`→`2.1.340`（package.json 与 origin/main dce6504 实测）；"新增测试"总数修正为 **40**（14+11+7+8 逐文件实测于 main `df1b42e`，`mcpAuthToolDescription274`=8、`mcpCompleteAuthTool274`=11）。勘误历史：修复轮（695933a）曾把总数误计为 37，错有两处——a) `mcpAuthToolDescription274` 数成 6，应为 8；b) `mcpCompleteAuthTool274` 漏算修复轮自身新增的 P2-1 gate 测试，应为现值 11 而非基线 10；两处合计 37→40（第一轮勘误只修 a) 得 39，第二轮补 b) 得 40）；`mcpAuthStubTools274`"12 tests"→**14 tests**。L133 的 `2.1.339 发布 commit` 为历史 CI 基线事实，保留不动。
 
 ### P3-5（已修复）: 1024 码点上限与 `isAnthropicHostedMcpUrl` catch→false 无边界测试
 
