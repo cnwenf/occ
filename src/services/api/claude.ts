@@ -154,6 +154,7 @@ import {
   ADVISOR_TOOL_INSTRUCTIONS,
   getExperimentAdvisorModels,
   isAdvisorEnabled,
+  isAdvisorEntryRefused,
   isValidAdvisorModel,
   modelSupportsAdvisor,
 } from 'src/utils/advisor.js'
@@ -272,6 +273,7 @@ import {
   checkResponseForCacheBreak,
   recordPromptState,
 } from './promptCacheBreakDetection.js'
+import { createAdvisorEntryRefusedRetryHandler } from './advisorRetry.js'
 import {
   CannotRetryError,
   FallbackTriggeredError,
@@ -1062,6 +1064,13 @@ export async function* executeNonStreamingRequest(
     signal: AbortSignal
     initialConsecutive529Errors?: number
     querySource?: QuerySource
+    /**
+     * 2.1.276 advisor hotfix: the shared one-shot advisor-entry-refused
+     * handler (official `zHe`) — the official wires it into the sync
+     * onApiError fatal-400 chain too, so the non-streaming fallback gets the
+     * same handler instance as the streaming loop.
+     */
+    retryAdvisorEntryRefused?: (error: APIError) => boolean
   },
   paramsFromContext: (context: RetryContext) => BetaMessageStreamParams,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
@@ -1163,6 +1172,7 @@ export async function* executeNonStreamingRequest(
       signal: retryOptions.signal,
       initialConsecutive529Errors: retryOptions.initialConsecutive529Errors,
       querySource: retryOptions.querySource,
+      retryAdvisorEntryRefused: retryOptions.retryAdvisorEntryRefused,
     },
   )
 
@@ -1384,7 +1394,10 @@ async function* queryModel(
     options.querySource === 'sdk' ||
     options.querySource === 'hook_agent' ||
     options.querySource === 'verification_agent'
-  const betas = getMergedBetas(options.model, { isAgenticQuery })
+  // `let` (not const): the 2.1.276 advisor-entry-refused retry (official
+  // `Hvt`) reassigns this array to drop ADVISOR_BETA_HEADER on the retried
+  // attempt — paramsFromContext picks it up via live binding.
+  let betas = getMergedBetas(options.model, { isAgenticQuery })
 
   // Official 2.1.245 main request builder: `if(N==="1h"&&hh()&&!me.includes(G8))
   // me.push(G8)` — whenever this request resolves a 1h prompt-cache TTL, the
@@ -1406,7 +1419,12 @@ async function* queryModel(
   }
 
   let advisorModel: string | undefined
-  if (isAgenticQuery && isAdvisorEnabled()) {
+  // Official 2.1.276 `Qqt` resolution gate: once the advisor entry has been
+  // refused this session (official `advisorHeld.refused` latch) or the
+  // org-wide kill-switch is armed (official `yct`'s `Vqt` check, inside
+  // isAdvisorEnabled), advisorModel resolution returns undefined — the
+  // advisor schema and instructions are never re-added.
+  if (isAgenticQuery && isAdvisorEnabled() && !isAdvisorEntryRefused()) {
     let advisorOption = options.advisorModel
 
     const advisorExperiment = getExperimentAdvisorModels()
@@ -1722,7 +1740,10 @@ async function* queryModel(
       model: advisorModel,
     } as unknown as BetaToolUnion)
   }
-  const allTools = [...toolSchemas, ...extraToolSchemas]
+  // `let` (not const): the 2.1.276 advisor-entry-refused retry (official
+  // `zHe`) reassigns this array to drop the advisor schema on the retried
+  // attempt — paramsFromContext picks it up via live binding.
+  let allTools = [...toolSchemas, ...extraToolSchemas]
 
   const isFastMode =
     isFastModeEnabled() &&
@@ -2123,6 +2144,34 @@ async function* queryModel(
       ? buildPrevToolDurationsHeader(options.prevToolDurations)
       : undefined
 
+  // 2.1.276 advisor hotfix (official `zHe` + `Wvt` one-shot latch): when a
+  // proxy/gateway rejects the advisor tool entry with a 400 (the 2.1.275
+  // regression — "Input tag 'advisor_20260301' … does not match any tag"),
+  // strip the advisor schema from allTools, the ADVISOR_BETA_HEADER from
+  // betas (official `Hvt` — only when advisor is fully disabled), and the
+  // advisor blocks from messagesForAPI (official `Cz` = stripAdvisorBlocks),
+  // latch the refusal for the session, and retry once. Created once per
+  // request and shared by the streaming and non-streaming retry loops —
+  // matching the official, whose single `zHe` closure serves both the
+  // stream onError and sync onApiError fatal-400 chains.
+  const retryAdvisorEntryRefused = createAdvisorEntryRefusedRetryHandler(
+    {
+      getTools: () => allTools,
+      setTools: next => {
+        allTools = next
+      },
+      getMessages: () => messagesForAPI,
+      setMessages: next => {
+        messagesForAPI = next
+      },
+      getBetas: () => betas,
+      setBetas: next => {
+        betas = next
+      },
+    },
+    options.querySource,
+  )
+
   try {
     queryCheckpoint('query_client_creation_start')
     const generator = withRetry(
@@ -2244,6 +2293,8 @@ async function* queryModel(
           }
           return null
         },
+        // 2.1.276 advisor hotfix: official `zHe` (see handler creation above).
+        retryAdvisorEntryRefused,
       },
     )
 
@@ -3020,6 +3071,7 @@ async function* queryModel(
           signal,
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
+          retryAdvisorEntryRefused,
         },
         paramsFromContext,
         (attempt, _startTime, tokens) => {
@@ -3126,6 +3178,7 @@ async function* queryModel(
             thinkingConfig,
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
+            retryAdvisorEntryRefused,
           },
           paramsFromContext,
           (attempt, _startTime, tokens) => {
