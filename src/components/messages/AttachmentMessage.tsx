@@ -1,5 +1,5 @@
-import { c as _c } from "react/compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { c as _c } from "react/compiler-runtime";
 import React, { useMemo } from 'react';
 import { Ansi, Box, Text } from '../../ink.js';
 import type { Attachment } from 'src/utils/attachments.js';
@@ -33,17 +33,19 @@ type Props = {
   attachment: Attachment;
   verbose: boolean;
   isTranscriptMode?: boolean;
+  /** CC 2.1.275 ITEM O: uuid of the attachment message (official Qf messageId prop @215380183). */
+  messageId?: string;
 };
 export function AttachmentMessage({
   attachment,
   addMargin,
   verbose,
-  isTranscriptMode
+  isTranscriptMode,
+  messageId
 }: Props): React.ReactNode {
   const bg = useSelectedMessageBg();
   // Hoisted to mount-time — per-message component, re-renders on every scroll.
   const isDemoEnv = feature('EXPERIMENTAL_SKILL_SEARCH') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useMemo(() => isEnvTruthy(process.env.IS_DEMO), []) : false;
   // Handle teammate_mailbox BEFORE switch
   if (isAgentSwarmsEnabled() && attachment.type === 'teammate_mailbox') {
@@ -238,7 +240,7 @@ export function AttachmentMessage({
           <UserTextMessage addMargin={addMargin} param={{
             text,
             type: 'text'
-          }} verbose={verbose} isTranscriptMode={isTranscriptMode} />
+          }} verbose={verbose} isTranscriptMode={isTranscriptMode} messageId={messageId} />
           {hasImages && attachment.imagePasteIds?.map(id => <UserImageMessage key={id} imageId={id} />)}
         </Box>;
       }

@@ -39,6 +39,7 @@ import { clearTerminal } from '../../ink/clearTerminal.js';
 import instances from '../../ink/instances.js';
 import { useOptionalKeybindingContext } from '../../keybindings/KeybindingContext.js';
 import { getShortcutDisplay } from '../../keybindings/shortcutFormat.js';
+import { loadKeybindingsSync } from '../../keybindings/loadUserBindings.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
 import { abortPromptSuggestion, logSuggestionSuppressed } from '../../services/PromptSuggestion/promptSuggestion.js';
@@ -86,6 +87,7 @@ import { editPromptInEditor } from '../../utils/promptEditor.js';
 import { hasAutoModeOptIn, hasAutoModeOptInDismissed, getSettings_DEPRECATED } from '../../utils/settings/settings.js';
 import { getLastAssistantMessage } from '../../utils/messages.js';
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js';
+import { getSendNowChordDisplay, hasExtendedKeyboardSupport, resolveSendNowKeyAction, SEND_NOW_HINT_ACTION, SEND_NOW_HINT_PADDING_LEFT, shouldAttemptEmptyEnterFlush, shouldFlushAfterSendNowSubmit, shouldPreferEnterChord, shouldShowSendNowHint } from '../../utils/sendNow.js';
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js';
 import { findSlackChannelPositions, getKnownChannelsVersion, hasSlackMcpServer, subscribeKnownChannels } from '../../utils/suggestions/slackChannelSuggestions.js';
 import { isInProcessEnabled } from '../../utils/swarm/backends/registry.js';
@@ -105,6 +107,7 @@ import { useTheme } from 'src/components/design-system/ThemeProvider';
 import { AutoModeOptInDialog } from '../AutoModeOptInDialog.js';
 import { BridgeDialog } from '../BridgeDialog.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
+import { KeyboardShortcutHint } from '../design-system/KeyboardShortcutHint.js';
 import { getVisibleAgentTasks, useCoordinatorTaskCount } from '../CoordinatorAgentStatus.js';
 import { getEffortNotificationText } from '../EffortIndicator.js';
 import { getFastIconString } from '../FastIcon.js';
@@ -206,6 +209,18 @@ type Props = {
     start: number;
     end: number;
   } | null;
+  /** CC 2.1.275 (ITEM O): chat:sendNow flush gesture (official composer
+   *  sendQueuedNow → O$t). Returns true when a live turn was cancelled. */
+  onSendQueuedNow?: () => boolean;
+  /** CC 2.1.274 (ITEM O): empty-Enter flush gesture (official submitEmpty →
+   *  L$t, gated by tengu_jiggly_mochi). */
+  onSendQueuedNowOnEmptyEnter?: () => boolean;
+  /** Live-turn controller (official composer-store abortController) — drives
+   *  the send-now footer hint visibility. */
+  abortController?: AbortController | null;
+  /** Live read of the current controller (official ud.getSnapshot().abortController)
+   *  — used for the post-submit identity check in handleSendNow. */
+  getAbortController?: () => AbortController | null;
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
@@ -254,9 +269,18 @@ function PromptInput({
   hasSuppressedDialogs,
   isLocalJSXCommandActive = false,
   insertTextRef,
-  voiceInterimRange
+  voiceInterimRange,
+  onSendQueuedNow,
+  onSendQueuedNowOnEmptyEnter,
+  abortController,
+  getAbortController
 }: Props): React.ReactNode {
   const mainLoopModel = useMainLoopModel();
+  // CC 2.1.275 (ITEM O): render-synced copy of the abortController prop —
+  // fallback for the handleSendNow post-submit identity check when no
+  // getAbortController accessor is provided.
+  const abortControllerPropRef = useRef<AbortController | null>(abortController ?? null);
+  abortControllerPropRef.current = abortController ?? null;
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
   // screen dialog on top of PromptInput via the immediate-command path with
   // shouldHidePromptInput: false. Those dialogs don't register in the overlay
@@ -341,7 +365,6 @@ function PromptInput({
   // REPL.tsx) — teammate view falls back to SpinnerWithVerbInner which has
   // its own marginTop, so the gap stays even without ours.
   const briefOwnsGap = feature('KAIROS') || feature('KAIROS_BRIEF') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useAppState(s => s.isBriefOnly) && !viewingAgentTaskId : false;
   const mainLoopModel_ = useAppState(s => s.mainLoopModel);
   const mainLoopModelForSession = useAppState(s => s.mainLoopModelForSession);
@@ -1134,6 +1157,18 @@ function PromptInput({
 
     // Allow submission if there are images attached, even without text
     if (inputParam.trim() === '' && !hasImages) {
+      // CC 2.1.274 (ITEM O backfill): official mRo empty path (@216688100) —
+      // a leader prompt with an exactly-empty draft runs the submitEmpty
+      // gesture (L$t @217111250), which flushes messages queued while a turn
+      // runs when tengu_jiggly_mochi is on. The gate + guard checks live in
+      // sendQueuedNowOnEmptyEnter (wired from REPL); only the leader/prompt
+      // caller condition (`hRo`) is evaluated here. Non-leader prompts stay
+      // silent (official prompt_submit_empty log has no OCC equivalent).
+      const emptyEnterAgent = getActiveAgentForInput(store.getState());
+      const isLeaderEmptyEnter = mode === 'prompt' && emptyEnterAgent.type === 'leader';
+      if (shouldAttemptEmptyEnterFlush({ isLeaderSubmit: isLeaderEmptyEnter }) && onSendQueuedNowOnEmptyEnter) {
+        onSendQueuedNowOnEmptyEnter();
+      }
       return;
     }
 
@@ -1171,7 +1206,7 @@ function PromptInput({
       clearBuffer,
       resetHistory
     });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, mode, onSendQueuedNowOnEmptyEnter]);
   const {
     suggestions,
     selectedSuggestion,
@@ -1794,6 +1829,59 @@ function PromptInput({
   // onHistoryUp/onHistoryDown props to TextInput, so that useTextInput's
   // upOrHistoryUp/downOrHistoryDown can try cursor movement first and only
   // fall through to history when the cursor can't move further.
+
+  // CC 2.1.275 (ITEM O): chat:queueSubmit — official Jxt (@216696700):
+  // rm(value,!0,void 0,!0) submits through the queue path with the
+  // suggestions guard skipped; the 4th arg (wait/quota-resume flag) has no
+  // OCC counterpart and is dropped. A fully empty draft stays a no-op —
+  // official passes wait=true which suppresses the empty-Enter flush, and its
+  // prompt_submit_empty log has no OCC equivalent.
+  const handleQueueSubmit = useCallback(() => {
+    const value = input;
+    const hasImages = Object.values(pastedContents).some(c => c.type === 'image');
+    if (value.trim() === '' && !hasImages) {
+      return;
+    }
+    // Official LC(value): mark the value as internally set before submitting.
+    trackAndSetInput(value);
+    void onSubmit(value, true);
+  }, [input, pastedContents, trackAndSetInput, onSubmit]);
+
+  // CC 2.1.275 (ITEM O): chat:sendNow — official Zxt (@216697952): a draft
+  // with content is queued into the running turn and the flush fires once the
+  // queue-submit resolves, but only while the SAME non-null abort controller
+  // is still live (ZRo identity check); an empty draft flushes directly for
+  // leader prompts. OCC has no queueEditIndex state, so that official clause
+  // drops out (documented deviation).
+  const handleSendNow = useCallback(() => {
+    const value = input;
+    const hasContent = value.trim() !== '' || Object.values(pastedContents).some(c => c.type === 'image');
+    const isLeaderSubmit = mode === 'prompt' && getActiveAgentForInput(store.getState()).type === 'leader';
+    const action = resolveSendNowKeyAction({ hasContent, isLeaderSubmit });
+    if (action === 'noop') {
+      return;
+    }
+    if (action === 'flush') {
+      onSendQueuedNow?.();
+      return;
+    }
+    const readController = () => (getAbortController ? getAbortController() : abortControllerPropRef.current);
+    const controllerBeforeSubmit = readController();
+    void (async () => {
+      trackAndSetInput(value);
+      await onSubmit(value, true);
+      if (shouldFlushAfterSendNowSubmit({
+        isLeaderSubmit,
+        controllerBeforeSubmit,
+        controllerAfterSubmit: readController()
+      })) {
+        onSendQueuedNow?.();
+      }
+    })().catch((error: unknown) => {
+      logError(error);
+    });
+  }, [input, pastedContents, mode, store, trackAndSetInput, onSubmit, onSendQueuedNow, getAbortController]);
+
   const chatHandlers = useMemo(() => ({
     'chat:undo': handleUndo,
     'chat:newline': handleNewline,
@@ -1804,8 +1892,10 @@ function PromptInput({
     'chat:modelPicker': handleModelPicker,
     'chat:thinkingToggle': handleThinkingToggle,
     'chat:cycleMode': handleCycleMode,
-    'chat:imagePaste': handleImagePaste
-  }), [handleUndo, handleNewline, handleClearInput, handleClearScreen, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste]);
+    'chat:imagePaste': handleImagePaste,
+    'chat:queueSubmit': handleQueueSubmit,
+    'chat:sendNow': handleSendNow
+  }), [handleUndo, handleNewline, handleClearInput, handleClearScreen, handleExternalEditor, handleStash, handleModelPicker, handleThinkingToggle, handleCycleMode, handleImagePaste, handleQueueSubmit, handleSendNow]);
   useKeybindings(chatHandlers, {
     context: 'Chat',
     isActive: !isModalOverlayActive
@@ -2121,7 +2211,6 @@ function PromptInput({
     : briefOwnsGap ? undefined : getEffortNotificationText(effortValue, mainLoopModel);
   useBuddyNotification();
   const companionSpeaking = feature('BUDDY') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useAppState(s => s.companionReaction !== undefined) : false;
   const {
     columns,
@@ -2391,6 +2480,10 @@ function PromptInput({
   const textInputElement = isVimModeEnabled() ? <VimTextInput {...baseProps} initialMode={vimMode} onModeChange={setVimMode} onHistorySearch={() => setIsSearchingHistory(true)} onToggleHelp={toggleHelp} /> : <TextInput {...baseProps} />;
   return <Box flexDirection="column" marginTop={briefOwnsGap ? 0 : 1}>
       {!isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
+      {/* CC 2.1.275 (ITEM O): official stacks the hint right under the queued
+          list (r(s,{flexDirection:"column",children:[Y$,aP]}) @216607300).
+          Fullscreen renders both from the REPL instead. */}
+      {!isFullscreenEnvEnabled() && <SendNowHint abortController={abortController} />}
       {hasSuppressedDialogs && <Box marginTop={1} marginLeft={2}>
           <Text dimColor>Waiting for permission…</Text>
         </Box>}
@@ -2523,4 +2616,37 @@ function buildBorderText(showFastIcon: boolean, showFastIconHint: boolean, fastM
     offset: 0
   };
 }
+/**
+ * CC 2.1.275 (ITEM O): dimmed "send now" footer hint — official XOe
+ * (@216607150): `<Box paddingLeft={2}><Text dimColor><ShortcutLabel
+ * chord={...} action="send now" format={{keyCase:"lower"}}/></Text></Box>`,
+ * shown while a turn is live and send-now-eligible messages are queued (zvt
+ * @216606400). Chord selection mirrors WOe (@216602629): prefer ctrl+enter
+ * only when the terminal reports extended keys AND we are not inside
+ * tmux/screen; otherwise show the always-typeable ctrl+x ctrl+s chord.
+ */
+export function SendNowHint({ abortController }: {
+  abortController?: AbortController | null;
+}): React.ReactNode {
+  const queuedCommands = useCommandQueue();
+  const keybindingContext = useOptionalKeybindingContext();
+  // Official WOe: context bindings, falling back to the loaded defaults.
+  const bindings = keybindingContext?.bindings ?? loadKeybindingsSync();
+  const isHintVisible = shouldShowSendNowHint(queuedCommands, abortController);
+  const preferEnterChord = shouldPreferEnterChord({
+    extendedKeyboardSupport: hasExtendedKeyboardSupport(),
+    inTmux: Boolean(process.env.TMUX),
+    inScreen: Boolean(process.env.STY)
+  });
+  const chord = preferEnterChord || isHintVisible ? getSendNowChordDisplay(bindings, preferEnterChord) : '';
+  if (!isHintVisible || chord === '') {
+    return null;
+  }
+  return <Box paddingLeft={SEND_NOW_HINT_PADDING_LEFT}>
+      <Text dimColor>
+        <KeyboardShortcutHint shortcut={chord} action={SEND_NOW_HINT_ACTION} />
+      </Text>
+    </Box>;
+}
+
 export default React.memo(PromptInput);

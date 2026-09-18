@@ -1,4 +1,5 @@
 import React, { useCallback, useState } from 'react'
+import { shouldSwitchModeFromValue } from 'src/components/PromptInput/inputModes.js'
 import type { Key } from '../ink.js'
 import type { VimInputState, VimMode } from '../types/textInputTypes.js'
 import { Cursor } from '../utils/Cursor.js'
@@ -94,6 +95,15 @@ function keyNameFromKey(key: Key): string {
   return ''
 }
 
+/**
+ * Length of the input-mode prefix character (`!`) the host consumes when a
+ * value flips the prompt into shell mode: the character becomes the mode
+ * indicator instead of buffer content, so a cursor offset computed from the
+ * pre-switch value is this many columns too far right. Official v276 inlines
+ * the literal (`me.offset-(Ce?1:0)` / `Fe.offset-(ot?1:0)`).
+ */
+const MODE_PREFIX_LENGTH = 1
+
 export function useVimInput(props: UseVimInputProps): VimInputState {
   const vimStateRef = React.useRef<VimState>(createInitialVimState())
   const [mode, setMode] = useState<VimMode>('INSERT')
@@ -113,6 +123,31 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
   // pill) stays armed across an Escape → NORMAL → INSERT round-trip.
   const textInput = useTextInput({ ...props, inputFilter: undefined })
   const { onModeChange, inputFilter, onHistorySearch, onToggleHelp } = props
+
+  /**
+   * CC 2.1.276 (ITEM P): does a freshly produced value flip the prompt's input
+   * mode? Official v276 closure (@206279647):
+   *   `function Q(I,q){return z!==void 0&&Twr({nextValue:I,value:h,cursorOffset:q.offset,mode:z()})}`
+   * — `z` is the host's mode getter, `h` the PRE-INSERT value and `q.offset`
+   * the PRE-INSERT cursor offset (both read before the insert lands). The vim
+   * engine sets the buffer and the cursor itself, so it must compensate for the
+   * mode-prefix character the host consumes; without this a dot-repeated `!`
+   * left the cursor one column past the start of the shell prompt. Returns
+   * false when the host has no input-mode support (`z===void 0`).
+   */
+  function shouldSwitchInputMode(
+    nextValue: string,
+    cursorOffset: number,
+  ): boolean {
+    const { getInputMode } = props
+    if (getInputMode === undefined) return false
+    return shouldSwitchModeFromValue({
+      nextValue,
+      value: props.value,
+      cursorOffset,
+      mode: getInputMode(),
+    })
+  }
 
   const switchToInsertMode = useCallback(
     (offset?: number): void => {
@@ -230,8 +265,23 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
       case 'insert':
         if (change.text) {
           const newCursor = cursor.insert(change.text)
+          // CC 2.1.276 (ITEM P) — official @206279846:
+          //   `let me=q.insert(I.text),Ce=Q(me.text,L);
+          //    j.setText(me.text),j.setOffset(me.offset-(Ce?1:0))}break;`
+          // v274 (@205118989) was `j.setOffset(J.offset)`: replaying an insert
+          // that turned the buffer into a shell command (`!`) left the cursor
+          // one column right of the start, because the host eats the `!` as its
+          // mode indicator. `textInput.offset` here is the PRE-INSERT offset
+          // (`L.offset` — official `ve(I)` passes the operator context as the
+          // 4th arg of `ke`, whose `.offset` predates the insert).
+          const modeSwitch = shouldSwitchInputMode(
+            newCursor.text,
+            textInput.offset,
+          )
           props.onChange(newCursor.text)
-          textInput.setOffset(newCursor.offset)
+          textInput.setOffset(
+            newCursor.offset - (modeSwitch ? MODE_PREFIX_LENGTH : 0),
+          )
         }
         break
 
@@ -458,6 +508,15 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
           insertedText: state.insertedText + input,
         }
       }
+      // CC 2.1.276 (ITEM P): NO mode-switch offset compensation here, by design.
+      // The official LIVE keypress handler (`je` @206282295) is byte-identical
+      // between v274 and v276 — its INSERT branch ends with `q.handleKeyDown(I)`,
+      // delegating the insert to the base text input, whose own 2.1.273 guard
+      // (`shouldTriggerModeSwitch` → `cursor.insert(text).left()`) consumes the
+      // mode-prefix character. Subtracting here as well would double-count. The
+      // v276 `-(ot?1:0)` compensation lives only in the two paths that set the
+      // buffer themselves: dot-repeat (`ke`) and the multi-char replay (`Re`).
+      // `insertedText` keeps recording the RAW input (official `…insertedText+Ie`).
       textInput.onInput(input, key)
       return
     }

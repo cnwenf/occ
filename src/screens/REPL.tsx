@@ -1,5 +1,5 @@
-import { c as _c } from "react/compiler-runtime";
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
+import { c as _c } from "react/compiler-runtime";
 import { feature } from 'src/utils/featureFlags.js';
 import { spawnSync } from 'child_process';
 import { snapshotOutputTokensForTurn, getCurrentTurnTokenBudget, getTurnOutputTokens, getBudgetContinuationCount, getTotalInputTokens } from '../bootstrap/state.js';
@@ -58,7 +58,7 @@ import { PermissionRequest, type ToolUseConfirm } from '../components/permission
 import { ElicitationDialog } from '../components/mcp/ElicitationDialog.js';
 import { PromptDialog } from '../components/hooks/PromptDialog.js';
 import type { PromptRequest, PromptResponse } from '../types/hooks.js';
-import PromptInput from '../components/PromptInput/PromptInput.js';
+import PromptInput, { SendNowHint } from '../components/PromptInput/PromptInput.js';
 import { PromptInputQueuedCommands } from '../components/PromptInput/PromptInputQueuedCommands.js';
 import { useRemoteSession } from '../hooks/useRemoteSession.js';
 import { useDirectConnect } from '../hooks/useDirectConnect.js';
@@ -157,6 +157,8 @@ import { useSkillsChange } from '../hooks/useSkillsChange.js';
 import { useManagePlugins } from '../hooks/useManagePlugins.js';
 import { Messages } from '../components/Messages.js';
 import { streamingTextStore } from '../components/streamingTextStore.js';
+import { AwaitingModelContext } from '../context/AwaitingModelContext.js';
+import { awaitModelForMessages, markModelReceived, promptsAwaitingModelStore } from '../state/promptsAwaitingModel.js';
 import { TaskListV2 } from '../components/TaskListV2.js';
 import { TeammateViewHeader } from '../components/TeammateViewHeader.js';
 import { SlackChannelHeader } from '../components/SlackChannelHeader.js';
@@ -215,6 +217,7 @@ import exit from '../commands/exit/index.js';
 import { ExitFlow } from '../components/ExitFlow.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../utils/messageQueueManager.js';
+import { type SendNowFlushDeps, sendQueuedNow, sendQueuedNowOnEmptyEnter, SEND_NOW_ABORT_REASON, SEND_NOW_EMPTY_ENTER_GATE, QUEUED_SEND_NOW_SOURCE } from '../utils/sendNow.js';
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
@@ -255,6 +258,7 @@ import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivitySta
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js';
 import { getAutoModeDescription } from 'src/components/AutoModeOptInDialog.js';
 import { useLspInitializationNotification } from 'src/hooks/notifs/useLspInitializationNotification.js';
+import { useOtelHeadersFailureNotification } from 'src/hooks/notifs/useOtelHeadersFailureNotification.js';
 import { useLspPluginRecommendation } from 'src/hooks/useLspPluginRecommendation.js';
 import { LspRecommendationMenu } from 'src/components/LspRecommendation/LspRecommendationMenu.js';
 import { useClaudeCodeHintRecommendation } from 'src/hooks/useClaudeCodeHintRecommendation.js';
@@ -624,7 +628,6 @@ export function REPL({
   const moreRightEnabled = useMemo(() => ("external" as string) === 'ant' && isEnvTruthy(process.env.CLAUDE_MORERIGHT), []);
   const disableVirtualScroll = useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_VIRTUAL_SCROLL), []);
   const disableMessageActions = feature('MESSAGE_ACTIONS') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_MESSAGE_ACTIONS), []) : false;
 
   // Log REPL mount/unmount lifecycle
@@ -795,6 +798,7 @@ export function REPL({
   useChromeExtensionNotification();
   useOfficialMarketplaceNotification();
   useLspInitializationNotification();
+  useOtelHeadersFailureNotification();
   useTeammateLifecycleNotification();
   const {
     recommendation: lspRecommendation,
@@ -1321,7 +1325,6 @@ export function REPL({
     shiftDivider
   } = useUnseenDivider(messages.length);
   if (feature('AWAY_SUMMARY')) {
-    // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
     useAwaySummary(messages, setMessages, isLoading);
   }
   const [cursor, setCursor] = useState<MessageActionsState | null>(null);
@@ -1358,7 +1361,6 @@ export function REPL({
   const {
     maybeLoadOlder
   } = feature('KAIROS') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useAssistantHistory({
     config: remoteSessionConfig,
     setMessages,
@@ -1655,6 +1657,9 @@ export function REPL({
     // External loading (remote/backgrounding) is reset separately by those hooks.
     setIsExternalLoading(false);
     setUserInputOnProcessing(undefined);
+    // official stream.reset @217177965 pairs the placeholder clear with
+    // markModelReceived() — no prompt may stay gray once the turn is over.
+    markModelReceived();
     responseLengthRef.current = 0;
     // I16d: clear the stall clock at turn end so a subsequent chained turn
     // (same isQueryActive window) doesn't inherit a stale lastTokenTime.
@@ -2766,6 +2771,19 @@ export function REPL({
   // invokes the latest handler without re-rendering the context object.
   handleBackgroundSessionRef.current = handleBackgroundSession;
   const onQueryEvent = useCallback((event: Parameters<typeof handleMessageFromStream>[0]) => {
+    // CC 2.1.275 ITEM O — official applyEvent @217198853: register attachment
+    // events (queued_command) as awaiting; clear the dim on the first
+    // message_start stream event or assistant message.
+    if (event.type === 'attachment') {
+      awaitModelForMessages([event as MessageType]);
+    }
+    if (event.type === 'stream_event') {
+      if ((event as { event?: { type?: string } }).event?.type === 'message_start') {
+        markModelReceived();
+      }
+    } else if (event.type === 'assistant') {
+      markModelReceived();
+    }
     handleMessageFromStream(event, newMessage => {
       if (isCompactBoundaryMessage(newMessage)) {
         // Fullscreen: keep pre-compact messages for scrollback. query.ts
@@ -3072,6 +3090,10 @@ export function REPL({
       // isLoading is derived from queryGuard — tryStart() above already
       // transitioned dispatching→running, so no setter call needed here.
       resetTimingRefs();
+      // CC 2.1.275 ITEM O — official turn-append @217203761 registers the
+      // sent messages as awaiting the model BEFORE appending them to the
+      // transcript, so they render gray from the first frame.
+      awaitModelForMessages(newMessages);
       setMessages(oldMessages => [...oldMessages, ...newMessages]);
       responseLengthRef.current = 0;
       if (feature('TOKEN_BUDGET')) {
@@ -4093,6 +4115,45 @@ export function REPL({
     queryGuard
   });
 
+  // CC 2.1.275 (ITEM O): send-now flush wiring. Interrupting the live turn
+  // with 'user-cancel' ends it; queryGuard then goes idle and useQueueProcessor
+  // drains the queued messages automatically — the official control flow
+  // (flush core F$t/O$t/L$t @217111100, interruptForSubmit @217190800).
+  const buildSendNowFlushDeps = useCallback((): SendNowFlushDeps => ({
+    mode: inputMode,
+    isQueryActive: queryGuard.isActive,
+    queue: getCommandQueue(),
+    interruptRunningTurn: () => {
+      const controller = abortControllerRef.current;
+      if (!controller || controller.signal.aborted) {
+        return false;
+      }
+      controller.abort(SEND_NOW_ABORT_REASON);
+      return true;
+    },
+    onCancelTelemetry: () => logEvent('tengu_cancel', {
+      source: QUEUED_SEND_NOW_SOURCE as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      streamMode: streamModeRef.current as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    }),
+    logFlushEvent: (event, reason) => logEvent(event, reason !== undefined
+      ? { reason: reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS }
+      : {})
+  }), [inputMode, queryGuard]);
+  const handleSendQueuedNow = useCallback(
+    () => sendQueuedNow(buildSendNowFlushDeps()),
+    [buildSendNowFlushDeps]
+  );
+  // Empty-Enter gesture: gated by tengu_jiggly_mochi (official Oae @216671717),
+  // read at call time from the cached GrowthBook store.
+  const handleSendQueuedNowOnEmptyEnter = useCallback(
+    () => sendQueuedNowOnEmptyEnter(
+      buildSendNowFlushDeps(),
+      getFeatureValue_CACHED_MAY_BE_STALE(SEND_NOW_EMPTY_ENTER_GATE, false)
+    ),
+    [buildSendNowFlushDeps]
+  );
+  const getAbortController = useCallback(() => abortControllerRef.current, []);
+
   // We'll use the global lastInteractionTime from state.ts
 
   // Update last interaction time when input changes.
@@ -4221,7 +4282,6 @@ export function REPL({
 
   // Voice input integration (VOICE_MODE builds only)
   const voice = feature('VOICE_MODE') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useVoiceIntegration({
     setInputValueRaw,
     inputValueRef,
@@ -4252,7 +4312,6 @@ export function REPL({
     // useScheduledTasks's effect (not here) since wrapping a hook call in a dynamic
     // condition would break rules-of-hooks.
     const assistantMode = store.getState().kairosEnabled;
-    // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
     useScheduledTasks!({
       isLoading,
       assistantMode,
@@ -4267,7 +4326,6 @@ export function REPL({
   if (("external" as string) === 'ant') {
     // Tasks mode: watch for tasks and auto-process them
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    // biome-ignore lint/correctness/useHookAtTopLevel: conditional for dead code elimination in external builds
     useTaskListWatcher({
       taskListId,
       isLoading,
@@ -4276,7 +4334,6 @@ export function REPL({
 
     // Loop mode: auto-tick when enabled (via /job command)
     // eslint-disable-next-line react-hooks/rules-of-hooks
-    // biome-ignore lint/correctness/useHookAtTopLevel: conditional for dead code elimination in external builds
     useProactive?.({
       // Suppress ticks while an initial message is pending — the initial
       // message will be processed asynchronously and a premature tick would
@@ -4600,7 +4657,11 @@ export function REPL({
     // and transcript-mode are mutually exclusive (this early return), so
     // only one ScrollBox is ever mounted at a time.
     const transcriptScrollRef = isFullscreenEnvEnabled() && !disableVirtualScroll && !dumpMode ? scrollRef : undefined;
-    const transcriptMessagesElement = <Messages messages={transcriptMessages} tools={tools} commands={commands} verbose={true} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={inProgressToolUseIDs} isMessageSelectorVisible={false} conversationId={conversationId} screen={screen} agentDefinitions={agentDefinitions} streamingToolUses={transcriptStreamingToolUses} showAllInTranscript={showAllInTranscript} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hidePastThinking={true} streamingThinking={streamingThinking} scrollRef={transcriptScrollRef} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} disableRenderCap={dumpMode} />;
+    // CC 2.1.275 ITEM O — official @216028109 wraps the transcript area in
+    // the stream store provider so sent-but-unreceived prompts render gray.
+    const transcriptMessagesElement = <AwaitingModelContext.Provider value={promptsAwaitingModelStore}>
+      <Messages messages={transcriptMessages} tools={tools} commands={commands} verbose={true} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={inProgressToolUseIDs} isMessageSelectorVisible={false} conversationId={conversationId} screen={screen} agentDefinitions={agentDefinitions} streamingToolUses={transcriptStreamingToolUses} showAllInTranscript={showAllInTranscript} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hidePastThinking={true} streamingThinking={streamingThinking} scrollRef={transcriptScrollRef} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} disableRenderCap={dumpMode} />
+    </AwaitingModelContext.Provider>;
     const transcriptToolJSX = toolJSX && <Box flexDirection="column" width="100%">
         {toolJSX.jsx}
       </Box>;
@@ -4769,17 +4830,26 @@ export function REPL({
       }} scrollable={<>
               <TeammateViewHeader />
               <SlackChannelHeader channel={remoteControlChannel} />
+              {/* CC 2.1.275 ITEM O — official @216028109 wraps the main
+                  transcript area in the awaiting-model store provider. */}
+              <AwaitingModelContext.Provider value={promptsAwaitingModelStore}>
               <Messages messages={displayedMessages} tools={tools} commands={commands} verbose={verbose} toolJSX={toolJSX} toolUseConfirmQueue={toolUseConfirmQueue} inProgressToolUseIDs={viewedTeammateTask ? viewedTeammateTask.inProgressToolUseIDs ?? new Set() : inProgressToolUseIDs} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={conversationId} screen={screen} streamingToolUses={streamingToolUses} showAllInTranscript={showAllInTranscript} agentDefinitions={agentDefinitions} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hasStreamingText={isLoading && !viewedAgentTask && hasStreamingText} showStreamingText={showStreamingText} isBriefOnly={viewedAgentTask ? false : isBriefOnly} unseenDivider={viewedAgentTask ? undefined : unseenDivider} scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined} trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined} cursor={cursor} setCursor={setCursor} cursorNavRef={cursorNavRef} />
+              </AwaitingModelContext.Provider>
               <AwsAuthStatusBox />
               {/* Hide the processing placeholder while a modal is showing —
                   it would sit at the last visible transcript row right above
                   the ▔ divider, showing "❯ /config" as redundant clutter
                   (the modal IS the /config UI). Outside modals it stays so
                   the user sees their input echoed while Claude processes. */}
-              {!disabled && placeholderText && !centeredModal && <UserTextMessage param={{
+              {/* CC 2.1.275 ITEM O — official @216027683 wraps the processing
+                  placeholder echo in value:"every": gray until it becomes a
+                  real (registered) transcript message. */}
+              {!disabled && placeholderText && !centeredModal && <AwaitingModelContext.Provider value="every">
+        <UserTextMessage param={{
           text: placeholderText,
           type: 'text'
-        }} addMargin={true} verbose={verbose} />}
+        }} addMargin={true} verbose={verbose} />
+      </AwaitingModelContext.Provider>}
               {toolJSX && !(toolJSX.isLocalJSXCommand && toolJSX.isImmediate) && !toolJsxCentered && <Box flexDirection="column" width="100%">
                     {toolJSX.jsx}
                   </Box>}
@@ -4790,6 +4860,9 @@ export function REPL({
               {showSpinner && isStreamStalled && <Box marginTop={0}><Text dimColor>Streaming stalled…</Text></Box>}
               {!showSpinner && !isLoading && !userInputOnProcessing && !hasRunningTeammates && isBriefOnly && !viewedAgentTask && <BriefIdleStatus />}
               {isFullscreenEnvEnabled() && <PromptInputQueuedCommands />}
+              {/* CC 2.1.275 (ITEM O): fullscreen keeps the queued list + send-now hint
+                  here (non-fullscreen renders both inside PromptInput). */}
+              {isFullscreenEnvEnabled() && <SendNowHint abortController={abortController} />}
             </>} bottom={<Box flexDirection={feature('BUDDY') && companionNarrow ? 'column' : 'row'} width="100%" alignItems={feature('BUDDY') && companionNarrow ? undefined : 'flex-end'}>
               {feature('BUDDY') && companionNarrow && isFullscreenEnvEnabled() && companionVisible ? <CompanionSprite /> : null}
               <Box flexDirection="column" flexGrow={1}>
@@ -5111,7 +5184,7 @@ export function REPL({
                           match the existing tasks-dialog gating; disabled while a
                           modal/local-jsx dialog is open so it never steals keys. */}
                       {isFullscreenEnvEnabled() && <FleetViewScreen inputValue={inputValue} disabled={!!focusedInputDialog || isShowingLocalJSXCommand || !!showBashesDialog} onDispatch={(prompt: string) => { setInputValue(prompt); setSubmitCount(c => c + 1); }} />}
-                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} isQueryActive={isQueryActive} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
+                      <PromptInput debug={debug} ideSelection={ideSelection} hasSuppressedDialogs={!!hasSuppressedDialogs} isLocalJSXCommandActive={isShowingLocalJSXCommand} getToolUseContext={getToolUseContext} toolPermissionContext={toolPermissionContext} setToolPermissionContext={setToolPermissionContext} apiKeyStatus={apiKeyStatus} commands={commands} agents={agentDefinitions.activeAgents} isLoading={isLoading} isQueryActive={isQueryActive} onExit={handleExit} verbose={verbose} messages={messages} onAutoUpdaterResult={setAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} input={inputValue} onInputChange={setInputValue} mode={inputMode} onModeChange={setInputMode} onSendQueuedNow={handleSendQueuedNow} onSendQueuedNowOnEmptyEnter={handleSendQueuedNowOnEmptyEnter} abortController={abortController} getAbortController={getAbortController} stashedPrompt={stashedPrompt} setStashedPrompt={setStashedPrompt} submitCount={submitCount} onShowMessageSelector={handleShowMessageSelector} onMessageActionsEnter={
             // Works during isLoading — edit cancels first; uuid selection survives appends.
             feature('MESSAGE_ACTIONS') && isFullscreenEnvEnabled() && !disableMessageActions ? enterMessageActions : undefined} mcpClients={mcpClients} pastedContents={pastedContents} setPastedContents={setPastedContents} vimMode={vimMode} setVimMode={setVimMode} showBashesDialog={showBashesDialog} setShowBashesDialog={setShowBashesDialog} onSubmit={onSubmit} onAgentSubmit={onAgentSubmit} isSearchingHistory={isSearchingHistory} setIsSearchingHistory={setIsSearchingHistory} helpOpen={isHelpOpen} setHelpOpen={setIsHelpOpen} insertTextRef={feature('VOICE_MODE') ? insertTextRef : undefined} voiceInterimRange={voice.interimRange} />
                       <SessionBackgroundHint onBackgroundSession={handleBackgroundSession} isLoading={isLoading} />

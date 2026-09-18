@@ -59,3 +59,45 @@ export function shouldTriggerModeSwitch(
     currentMode !== getModeFromInput(keystroke)
   )
 }
+
+/**
+ * Official 2.1.276 VALUE-shaped mode-switch predicate (byte-verified from the
+ * v276 inputModes module @202985169, exported there as `Twr`):
+ *   `function Twr({nextValue:t,value:r,cursorOffset:n,mode:o}){
+ *      let e=gg(t);
+ *      if(n!==0||e==="prompt"||e===o)return!1;
+ *      return t.length===r.length+1||r.length===0}`
+ * (`gg` = getModeFromInput.) v274's module had no such predicate — only the
+ * keystroke-shaped `aGe`/`tze` char test — so the vim engine could not tell
+ * that a just-produced value flips the input mode.
+ *
+ * The switch fires when ALL hold:
+ *   - the cursor was at offset 0 when the value was produced,
+ *   - the NEXT value maps to a non-prompt mode (i.e. it starts with `!`),
+ *   - that mode DIFFERS from the current one (already in shell mode, a leading
+ *     `!` is content — `! grep -v x` stays typable), AND
+ *   - the value grew by exactly one character, or it was empty before (the
+ *     multi-char-into-empty case, e.g. tab-accepting `! gcloud auth login`).
+ *
+ * Callers that set the cursor offset themselves (the vim engine) use this to
+ * compensate for the mode-prefix character the host consumes: the `!` becomes
+ * the mode indicator instead of buffer content, so the offset lands one column
+ * too far right without the `-1`.
+ */
+export function shouldSwitchModeFromValue({
+  nextValue,
+  value,
+  cursorOffset,
+  mode,
+}: {
+  nextValue: string
+  value: string
+  cursorOffset: number
+  mode: PromptInputMode
+}): boolean {
+  const nextMode = getModeFromInput(nextValue)
+  if (cursorOffset !== 0 || nextMode === 'prompt' || nextMode === mode) {
+    return false
+  }
+  return nextValue.length === value.length + 1 || value.length === 0
+}

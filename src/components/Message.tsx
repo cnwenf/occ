@@ -56,7 +56,7 @@ export type Props = {
   latestBashOutputUUID?: string | null;
 };
 function MessageImpl(t0) {
-  const $ = _c(94);
+  const $ = _c(95);
   const {
     message,
     lookups,
@@ -83,12 +83,13 @@ function MessageImpl(t0) {
     case "attachment":
       {
         let t2;
-        if ($[0] !== addMargin || $[1] !== isTranscriptMode || $[2] !== message.attachment || $[3] !== verbose) {
-          t2 = <AttachmentMessage addMargin={addMargin} attachment={message.attachment} verbose={verbose} isTranscriptMode={isTranscriptMode} />;
+        if ($[0] !== addMargin || $[1] !== isTranscriptMode || $[2] !== message.attachment || $[3] !== verbose || $[94] !== message.uuid) {
+          t2 = <AttachmentMessage addMargin={addMargin} attachment={message.attachment} verbose={verbose} isTranscriptMode={isTranscriptMode} messageId={message.uuid} />;
           $[0] = addMargin;
           $[1] = isTranscriptMode;
           $[2] = message.attachment;
           $[3] = verbose;
+          $[94] = message.uuid;
           $[4] = t2;
         } else {
           t2 = $[4];
@@ -354,7 +355,7 @@ function MessageImpl(t0) {
   }
 }
 function UserMessage(t0) {
-  const $ = _c(20);
+  const $ = _c(21);
   const {
     message,
     addMargin,
@@ -375,14 +376,15 @@ function UserMessage(t0) {
     case "text":
       {
         let t1;
-        if ($[0] !== addMargin || $[1] !== isTranscriptMode || $[2] !== message.planContent || $[3] !== message.timestamp || $[4] !== param || $[5] !== verbose) {
-          t1 = <UserTextMessage addMargin={addMargin} param={param} verbose={verbose} planContent={message.planContent} isTranscriptMode={isTranscriptMode} timestamp={message.timestamp} />;
+        if ($[0] !== addMargin || $[1] !== isTranscriptMode || $[2] !== message.planContent || $[3] !== message.timestamp || $[4] !== param || $[5] !== verbose || $[20] !== message.uuid) {
+          t1 = <UserTextMessage addMargin={addMargin} param={param} verbose={verbose} planContent={message.planContent} isTranscriptMode={isTranscriptMode} timestamp={message.timestamp} messageId={message.uuid} />;
           $[0] = addMargin;
           $[1] = isTranscriptMode;
           $[2] = message.planContent;
           $[3] = message.timestamp;
           $[4] = param;
           $[5] = verbose;
+          $[20] = message.uuid;
           $[6] = t1;
         } else {
           t1 = $[6];

@@ -70,6 +70,18 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       'meta+o': 'chat:fastMode',
       'meta+t': 'chat:thinkingToggle',
       enter: 'chat:submit',
+      // 2.1.275 (ITEM O): official send-now key set, in official order —
+      // byte-verified against the 2.1.276 binary @195276038:
+      //   enter:"chat:submit","ctrl+x enter":"chat:queueSubmit",
+      //   "ctrl+x ctrl+s":"chat:sendNow","ctrl+enter":"chat:sendNow",
+      //   "ctrl+j":"chat:newline".
+      // Order matters: display resolution picks the LAST sendNow binding, so
+      // with extended-key support ctrl+enter renders as the hint; terminals
+      // that cannot report ctrl+enter fall back to the ctrl+x ctrl+s chord
+      // (see selectSendNowChord in src/utils/sendNow.ts).
+      'ctrl+x enter': 'chat:queueSubmit',
+      'ctrl+x ctrl+s': 'chat:sendNow',
+      'ctrl+enter': 'chat:sendNow',
       // Ctrl+L clears the whole input buffer (official 2.1.200 clearInput).
       // Overrides Global ctrl+l=app:redraw while the prompt is focused.
       'ctrl+l': 'chat:clearInput',

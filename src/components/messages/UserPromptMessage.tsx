@@ -2,6 +2,7 @@ import { feature } from 'src/utils/featureFlags.js';
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React, { useContext, useMemo } from 'react';
 import { getKairosActive, getUserMsgOptIn } from '../../bootstrap/state.js';
+import { useAwaitingModel } from '../../context/AwaitingModelContext.js';
 import { Box } from '../../ink.js';
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
 import { useAppState } from '../../state/AppState.js';
@@ -15,6 +16,8 @@ type Props = {
   param: TextBlockParam;
   isTranscriptMode?: boolean;
   timestamp?: string;
+  /** CC 2.1.275 ITEM O: uuid of the rendered message (official nd=Pb(messageId) @215283595). */
+  messageId?: string;
 };
 
 // Hard cap on displayed prompt text. Piping large files via stdin
@@ -34,7 +37,8 @@ export function UserPromptMessage({
     text
   },
   isTranscriptMode,
-  timestamp
+  timestamp,
+  messageId
 }: Props): React.ReactNode {
   // REPL.tsx passes isBriefOnly={viewedTeammateTask ? false : isBriefOnly}
   // but that prop isn't threaded this deep — replicate the override by
@@ -49,14 +53,11 @@ export function UserPromptMessage({
   // to avoid pulling BriefTool.ts → prompt.ts tool-name strings into
   // external builds.
   const isBriefOnly = feature('KAIROS') || feature('KAIROS_BRIEF') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useAppState(s => s.isBriefOnly) : false;
   const viewingAgentTaskId = feature('KAIROS') || feature('KAIROS_BRIEF') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useAppState(s_0 => s_0.viewingAgentTaskId) : null;
   // Hoisted to mount-time — per-message component, re-renders on every scroll.
   const briefEnvEnabled = feature('KAIROS') || feature('KAIROS_BRIEF') ?
-  // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useMemo(() => isEnvTruthy(process.env.CLAUDE_CODE_BRIEF), []) : false;
   const useBriefLayout = feature('KAIROS') || feature('KAIROS_BRIEF') ? (getKairosActive() || getUserMsgOptIn() && (briefEnvEnabled || getFeatureValue_CACHED_MAY_BE_STALE('tengu_kairos_brief', false))) && isBriefOnly && !isTranscriptMode && !viewingAgentTaskId : false;
 
@@ -69,11 +70,13 @@ export function UserPromptMessage({
     return `${head}\n… +${hiddenLines} lines …\n${tail}`;
   }, [text]);
   const isSelected = useContext(MessageActionsSelectedContext);
+  // official @215283595: nd=Pb(messageId) — gray until the model receives it.
+  const awaitingModel = useAwaitingModel(messageId);
   if (!text) {
     logError(new Error('No content found in user prompt message'));
     return null;
   }
   return <Box flexDirection="column" marginTop={addMargin ? 1 : 0} backgroundColor={isSelected ? 'messageActionsBackground' : useBriefLayout ? undefined : 'userMessageBackground'} paddingRight={useBriefLayout ? 0 : 1}>
-      <HighlightedThinkingText text={displayText} useBriefLayout={useBriefLayout} timestamp={useBriefLayout ? timestamp : undefined} />
+      <HighlightedThinkingText text={displayText} useBriefLayout={useBriefLayout} timestamp={useBriefLayout ? timestamp : undefined} awaitingModel={awaitingModel} />
     </Box>;
 }

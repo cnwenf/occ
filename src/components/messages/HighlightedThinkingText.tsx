@@ -11,17 +11,26 @@ type Props = {
   text: string;
   useBriefLayout?: boolean;
   timestamp?: string;
+  /** CC 2.1.275 ITEM O: gray until the model receives the message (official rtt awaitingModel prop @215137852). */
+  awaitingModel?: boolean;
 };
 export function HighlightedThinkingText(t0) {
-  const $ = _c(31);
+  const $ = _c(33);
   const {
     text,
     useBriefLayout,
-    timestamp
+    timestamp,
+    awaitingModel
   } = t0;
   const isQueued = useQueuedMessage()?.isQueued ?? false;
+  // official rtt @215137943: co=awaitingModel===undefined?false:awaitingModel; g=isQueued||co
+  const isAwaitingModel = awaitingModel === undefined ? false : awaitingModel;
+  const dimmed = isQueued || isAwaitingModel;
   const isSelected = useContext(MessageActionsSelectedContext);
   const pointerColor = isSelected ? "suggestion" : "subtle";
+  // official non-brief body color (rtt @215137852): M=selectionHighlight?"suggestion":g?"inactive":"text"
+  // (OCC keeps isSelected only for the pointer; body dims via g per official rtt).
+  const bodyColor = dimmed ? "inactive" : "text";
   if (useBriefLayout) {
     let t1;
     if ($[0] !== timestamp) {
@@ -32,7 +41,8 @@ export function HighlightedThinkingText(t0) {
       t1 = $[1];
     }
     const ts = t1;
-    const t2 = isQueued ? "subtle" : "briefLabelYou";
+    // official brief You-label (rtt @215137852): color:g?"subtle":"briefLabelYou"
+    const t2 = dimmed ? "subtle" : "briefLabelYou";
     let t3;
     if ($[2] !== t2) {
       t3 = <Text color={t2}>You</Text>;
@@ -58,7 +68,8 @@ export function HighlightedThinkingText(t0) {
     } else {
       t5 = $[8];
     }
-    const t6 = isQueued ? "subtle" : "text";
+    // official brief body (rtt @215137852): S=g?"subtle":"text"
+    const t6 = dimmed ? "subtle" : "text";
     let t7;
     if ($[9] !== t6 || $[10] !== text) {
       t7 = <Text color={t6}>{text}</Text>;
@@ -81,7 +92,7 @@ export function HighlightedThinkingText(t0) {
   }
   let parts;
   let t1;
-  if ($[15] !== pointerColor || $[16] !== text) {
+  if ($[15] !== pointerColor || $[16] !== text || $[31] !== bodyColor) {
     t1 = Symbol.for("react.early_return_sentinel");
     bb0: {
       const triggers = isUltrathinkEnabled() ? findThinkingTriggerPositions(text) : [];
@@ -95,9 +106,10 @@ export function HighlightedThinkingText(t0) {
           t2 = $[20];
         }
         let t3;
-        if ($[21] !== text) {
-          t3 = <Text color="text">{text}</Text>;
+        if ($[21] !== text || $[32] !== bodyColor) {
+          t3 = <Text color={bodyColor}>{text}</Text>;
           $[21] = text;
+          $[32] = bodyColor;
           $[22] = t3;
         } else {
           t3 = $[22];
@@ -118,7 +130,7 @@ export function HighlightedThinkingText(t0) {
       let cursor = 0;
       for (const t of triggers) {
         if (t.start > cursor) {
-          parts.push(<Text key={`plain-${cursor}`} color="text">{text.slice(cursor, t.start)}</Text>);
+          parts.push(<Text key={`plain-${cursor}`} color={bodyColor}>{text.slice(cursor, t.start)}</Text>);
         }
         for (let i = t.start; i < t.end; i++) {
           parts.push(<Text key={`rb-${i}`} color={getRainbowColor(i - t.start)}>{text[i]}</Text>);
@@ -126,11 +138,12 @@ export function HighlightedThinkingText(t0) {
         cursor = t.end;
       }
       if (cursor < text.length) {
-        parts.push(<Text key={`plain-${cursor}`} color="text">{text.slice(cursor)}</Text>);
+        parts.push(<Text key={`plain-${cursor}`} color={bodyColor}>{text.slice(cursor)}</Text>);
       }
     }
     $[15] = pointerColor;
     $[16] = text;
+    $[31] = bodyColor;
     $[17] = parts;
     $[18] = t1;
   } else {
