@@ -1406,7 +1406,25 @@ async function* queryModel(
   }
 
   let advisorModel: string | undefined
-  if (isAgenticQuery && isAdvisorEnabled()) {
+  // Official 2.1.276 advisor-proxy fix, byte-verified (module #489 resolver):
+  //   v275: function O(e,n){if(!Bb()||!lL(e))return;...}
+  //   v276: function N(e,n){if(!Ia()||!Bb()||!lL(e))return;...}
+  //   Ia(){return He()==="firstParty"&&es()}   (es = base-url allowlist)
+  // 2.1.275 regression: He() stays "firstParty" behind a proxy (gateway
+  // detection is credential-slot based), so with the experiment enabled the
+  // advisor tool schema {type:"advisor_20260301"} was sent to proxies /
+  // gateways that reject the unknown tool discriminator — "every request
+  // failing with 400 … Input tag 'advisor_20260301'". 2.1.276 gates the
+  // model RESOLUTION on the base-url allowlist. isAdvisorEnabled() already
+  // enforces He()==="firstParty" (official yct()), so the extra arm here
+  // reproduces Ia() exactly. The beta-header push above intentionally stays
+  // ungated by base-url — the official header gate
+  // `if(yct()&&(Bb()||h.advisorModel!==void 0))we.push(Ewn)` has no es() arm.
+  if (
+    isAgenticQuery &&
+    isAdvisorEnabled() &&
+    isFirstPartyAnthropicBaseUrl()
+  ) {
     let advisorOption = options.advisorModel
 
     const advisorExperiment = getExperimentAdvisorModels()
