@@ -20,7 +20,15 @@ import {
   SandboxRuntimeConfigSchema,
   SandboxViolationStore,
 } from '@anthropic-ai/sandbox-runtime'
-import { lstatSync, readdirSync, realpathSync, rmSync, statSync } from 'fs'
+import {
+  lstatSync,
+  readdirSync,
+  readlinkSync,
+  realpathSync,
+  rmSync,
+  rmdirSync,
+  statSync,
+} from 'fs'
 import { readFile } from 'fs/promises'
 import { memoize } from 'lodash-es'
 import { join, resolve, sep } from 'path'
@@ -53,7 +61,7 @@ import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
-import { errorMessage } from '../errors.js'
+import { errorMessage, getErrnoCode } from '../errors.js'
 import { getClaudeTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
@@ -321,20 +329,17 @@ export function convertToSandboxRuntimeConfig(
   // So: if a file exists, denyWrite (ro-bind in place, no stub). If not, scrub
   // it post-command in scrubBareGitRepoFiles() — planted files are gone before
   // unsandboxed git runs; inside the command, git is itself sandboxed.
+  //
+  // 2.1.276 parity: `hooks`/`config` are denied ONLY on positive bare-repo
+  // evidence (a HEAD marker, a real `config` file, or a nested `.git`) —
+  // ordinary project directories named hooks/ or config/ must stay writable
+  // (official 2.1.276 changelog fix). See computeBareGitRepoDenyPaths().
   bareGitRepoScrubPaths.length = 0
-  const bareGitRepoFiles = ['HEAD', 'objects', 'refs', 'hooks', 'config']
-  for (const dir of cwd === originalCwd ? [originalCwd] : [originalCwd, cwd]) {
-    for (const gitFile of bareGitRepoFiles) {
-      const p = resolve(dir, gitFile)
-      try {
-        // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
-        statSync(p)
-        denyWrite.push(p)
-      } catch {
-        bareGitRepoScrubPaths.push(p)
-      }
-    }
-  }
+  const bareGitRepo = computeBareGitRepoDenyPaths(
+    cwd === originalCwd ? [originalCwd] : [originalCwd, cwd],
+  )
+  denyWrite.push(...bareGitRepo.denyWrite)
+  bareGitRepoScrubPaths.push(...bareGitRepo.scrubPaths)
 
   // If we detected a git worktree during initialize(), the main repo path is
   // cached in worktreeMainRepoPath. Git operations in a worktree need write
@@ -518,19 +523,255 @@ export function reconcileClaudeSymlinks(dirs: string[]): string[] {
   return out
 }
 
+// ============================================================================
+// Bare-git-repo deny computation (2.1.276 alignment)
+// ============================================================================
+
+// Markers that prove a directory is (or masquerades as) a bare git repo.
+// Official v276 constant `Fn`.
+const BARE_GIT_REPO_MARKER_NAMES = ['HEAD', 'objects', 'refs'] as const
+
+// Names that are ALSO common ordinary project directories, so they are only
+// denied on positive bare-repo evidence. Official v276 constant `kn`.
+const BARE_GIT_REPO_GATED_NAMES = ['hooks', 'config'] as const
+
+const GIT_DIR_NAME = '.git'
+
+// A HEAD symlink whose target lives under refs/ is a bare-repo marker even
+// when the target is broken (official v276 `oo` helper).
+const HEAD_SYMLINK_REFS_PATTERN = /^refs[\\/]/
+
+// errno codes that positively mean "path is absent" (official v276 checks
+// the same pair when probing <hooks|config>/.git).
+const ABSENT_PATH_ERRNO_CODES: ReadonlySet<string> = new Set([
+  'ENOENT',
+  'ENOTDIR',
+])
+
+export interface BareGitRepoDenyResult {
+  readonly denyWrite: readonly string[]
+  readonly scrubPaths: readonly string[]
+}
+
+type GatedEntryVerdict = 'deny-entry' | 'deny-inner-git' | 'skip'
+
+/**
+ * True when `p` is a symlink whose readlink target starts with `refs/` or
+ * `refs\` — a broken HEAD symlink in a real bare repo still marks the
+ * directory as a bare repo (official v276 `oo`).
+ */
+function isHeadSymlinkIntoRefs(p: string): boolean {
+  try {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+    return HEAD_SYMLINK_REFS_PATTERN.test(readlinkSync(p))
+  } catch {
+    return false
+  }
+}
+
+/**
+ * True when `p` should be treated as not present: absent (any lstat throw —
+ * ENOENT/ENOTDIR, or unreadable). Mirrors official v276 `mr`, whose
+ * "absent"/"unreadable" results both take the not-present path.
+ */
+function isPathAbsent(p: string): boolean {
+  try {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+    lstatSync(p)
+    return false
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Scan one directory for the HEAD/objects/refs bare-repo markers.
+ * Present markers are denied; absent ones are queued for post-command
+ * scrubbing (see the SECURITY block in convertToSandboxRuntimeConfig).
+ * A present HEAD (or a HEAD symlink into refs/) sets hasHead, which gates
+ * the hooks/config pass.
+ */
+function scanBareGitRepoMarkers(dir: string): {
+  denyWrite: string[]
+  scrubPaths: string[]
+  hasHead: boolean
+} {
+  const denyWrite: string[] = []
+  const scrubPaths: string[] = []
+  let hasHead = false
+  for (const name of BARE_GIT_REPO_MARKER_NAMES) {
+    const p = resolve(dir, name)
+    try {
+      // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+      statSync(p)
+      denyWrite.push(p)
+      if (name === 'HEAD') {
+        hasHead = true
+      }
+    } catch {
+      if (name === 'HEAD' && isHeadSymlinkIntoRefs(p)) {
+        hasHead = true
+      }
+      scrubPaths.push(p)
+    }
+  }
+  return { denyWrite, scrubPaths, hasHead }
+}
+
+/**
+ * Decide whether an existing `hooks`/`config` entry without other bare-repo
+ * evidence must be denied (official v276 inner gate):
+ * - not a directory → skip;
+ * - directory containing a `.git` file/dir → deny only `<entry>/.git`;
+ * - `.git` probe fails with ENOENT/ENOTDIR → ordinary project dir → skip
+ *   (this is the 2.1.276 changelog fix);
+ * - any other probe error → fail closed: deny the entry itself.
+ */
+function inspectGatedEntry(p: string): GatedEntryVerdict {
+  try {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+    if (!lstatSync(p).isDirectory()) {
+      return 'skip'
+    }
+  } catch {
+    return 'skip'
+  }
+  const innerGitPath = join(p, GIT_DIR_NAME)
+  try {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+    const inner = lstatSync(innerGitPath)
+    if (inner.isFile() || inner.isDirectory()) {
+      // A nested checkout inside hooks/config: deny only its .git so the
+      // directory itself stays writable.
+      return 'deny-inner-git'
+    }
+    // Exotic inner .git (symlink, socket, …) → deny the entry (v276 parity:
+    // the file/dir test fails and control falls through to the entry deny).
+    return 'deny-entry'
+  } catch (err) {
+    const code = getErrnoCode(err)
+    if (code !== undefined && ABSENT_PATH_ERRNO_CODES.has(code)) {
+      return 'skip'
+    }
+    return 'deny-entry'
+  }
+}
+
+/**
+ * Compute the deny paths for one gated `hooks`/`config` name in `dir`.
+ * Absent entries yield NOTHING — no deny and no scrub path (official v276
+ * empty catch). Pre-fix OCC queued absent hooks/config for rmSync-recursive
+ * scrubbing, which could delete a hooks/ dir the command legitimately
+ * created after config time.
+ */
+function gatedBareGitRepoDenyPaths(
+  dir: string,
+  name: string,
+  hasHead: boolean,
+): string[] {
+  const p = resolve(dir, name)
+  let isConfigFile = false
+  try {
+    // eslint-disable-next-line custom-rules/no-sync-fs -- refreshConfig() must be sync
+    isConfigFile = name === 'config' && statSync(p).isFile()
+  } catch {
+    return []
+  }
+  if (!hasHead && !isConfigFile) {
+    const verdict = inspectGatedEntry(p)
+    if (verdict === 'skip') {
+      return []
+    }
+    if (verdict === 'deny-inner-git') {
+      return [join(p, GIT_DIR_NAME)]
+    }
+  }
+  // A real git `config` file is denied together with its lock file so a
+  // sandboxed command cannot race an unsandboxed git process through
+  // config.lock (official v276 denies config.lock in the same branch).
+  return isConfigFile ? [p, resolve(dir, 'config.lock')] : [p]
+}
+
+/**
+ * Compute bare-git-repo deny-write paths and post-command scrub paths for
+ * the given directories. Exported as the test seam for the deny computation
+ * (convertToSandboxRuntimeConfig wires the result into the live config).
+ *
+ * 2.1.276 parity (official `Fn`/`kn` loop):
+ * - HEAD/objects/refs: present → deny; absent → scrub-if-planted-later.
+ * - hooks/config: denied only on positive bare-repo evidence (HEAD marker,
+ *   real `config` FILE, or nested `.git` → then only `<entry>/.git`).
+ * - `.git`: absent → scrub-if-planted-later (official pushes `.git` to
+ *   bareGitRepoScrubPaths when `mr(...) !== "present"`). Present `.git`
+ *   handling is unchanged in OCC — the official descends into present
+ *   `.git` dirs (`ur`), which stays out of scope for this fix.
+ */
+export function computeBareGitRepoDenyPaths(
+  dirs: readonly string[],
+): BareGitRepoDenyResult {
+  const denyWrite: string[] = []
+  const scrubPaths: string[] = []
+  for (const dir of dirs) {
+    const markers = scanBareGitRepoMarkers(dir)
+    denyWrite.push(...markers.denyWrite)
+    scrubPaths.push(...markers.scrubPaths)
+    for (const name of BARE_GIT_REPO_GATED_NAMES) {
+      denyWrite.push(...gatedBareGitRepoDenyPaths(dir, name, markers.hasHead))
+    }
+    const gitPath = resolve(dir, GIT_DIR_NAME)
+    if (isPathAbsent(gitPath)) {
+      scrubPaths.push(gitPath)
+    }
+  }
+  return { denyWrite, scrubPaths }
+}
+
 /**
  * Delete bare-repo files planted at cwd during a sandboxed command, before
  * Claude's unsandboxed git calls can see them. See the SECURITY block above
- * bareGitRepoFiles. anthropics/claude-code#29316.
+ * bareGitRepoScrubPaths. anthropics/claude-code#29316.
  */
 function scrubBareGitRepoFiles(): void {
-  for (const p of bareGitRepoScrubPaths) {
+  scrubPlantedBareGitRepoPaths(bareGitRepoScrubPaths)
+}
+
+/**
+ * Scrub the given planted-path candidates (exported test seam; the live
+ * path passes bareGitRepoScrubPaths).
+ *
+ * 2.1.276 `kWt` parity, hardened: every path here was ABSENT at config
+ * time, so anything now present appeared during the sandboxed command.
+ * Removal is strictly NON-recursive — plain files/symlinks are rm'd, and
+ * directories are rmdir'd ONLY when empty (official v276 catch:
+ * `[Sandbox] removed planted empty .git dir`). A non-empty directory may
+ * hold work the command legitimately created and is left in place.
+ * (The official binary rmSync-recursive's planted objects/refs dirs; OCC
+ * deliberately never recursive-deletes on scrub — documented deviation.)
+ */
+export function scrubPlantedBareGitRepoPaths(
+  paths: readonly string[],
+): void {
+  for (const p of paths) {
+    const name = p.slice(p.lastIndexOf(sep) + 1)
     try {
       // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
-      rmSync(p, { recursive: true })
+      rmSync(p)
       logForDebugging(`[Sandbox] scrubbed planted bare-repo file: ${p}`)
     } catch {
-      // ENOENT is the expected common case — nothing was planted
+      // Directories (EISDIR) and already-missing paths (ENOENT — the common
+      // case, nothing was planted) land here. Remove directories only when
+      // EMPTY; never recursive-delete.
+      try {
+        // eslint-disable-next-line custom-rules/no-sync-fs -- cleanupAfterCommand must be sync (Shell.ts:367)
+        rmdirSync(p)
+        logForDebugging(
+          name === GIT_DIR_NAME
+            ? `[Sandbox] removed planted empty .git dir: ${p}`
+            : `[Sandbox] removed planted empty bare-repo dir: ${p}`,
+        )
+      } catch {
+        // ENOENT (nothing planted), non-empty, or unreadable — leave alone.
+      }
     }
   }
 }
