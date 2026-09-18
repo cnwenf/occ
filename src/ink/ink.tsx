@@ -8,6 +8,7 @@ import { ConcurrentRoot } from 'react-reconciler/constants.js';
 import { onExit } from 'signal-exit';
 import { flushInteractionTime } from 'src/bootstrap/state.js';
 import { getYogaCounters } from 'src/native-ts/yoga-layout/index.js';
+import { logEvent } from 'src/services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { logError } from 'src/utils/log.js';
@@ -35,7 +36,9 @@ import createRenderer, { type Renderer } from './renderer.js';
 import { CellWidth, CharPool, cellAt, createScreen, HyperlinkPool, isEmptyCellAt, migrateScreenPools, StylePool } from './screen.js';
 import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
+import { FRAME_HOLD_RETRY_MS, StdoutBackpressureMonitor, TELEMETRY_MIN_DURATION_MS, shouldEnableStdoutBackpressure, type BackpressureEpisodeEnd } from './stdout-backpressure.js';
 import { SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
+import type { TerminalQuerier } from './terminal-querier.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js';
 import { guiEditorModeDisableSeq, guiEditorModeRestoreSeq } from './termio/guiEditorHandoff.js';
@@ -200,6 +203,26 @@ export default class Ink {
     x: number;
     y: number;
   } | null = null;
+  // ── CC 2.1.275 #15: stdout backpressure (behavioral port) ──────────────
+  // Official v276 installs a non-blocking stdout writer here
+  // (`this.nonBlockingStdout = dEr(this.handleStdoutBackpressure)`
+  // @202863820). OCC's monitor observes the stream-level contract
+  // (write() → false, 'drain') instead — see stdout-backpressure.ts.
+  private readonly nonBlockingStdout: StdoutBackpressureMonitor | null;
+  // Official `frameHeldForBacklog` field (@202872507 queuePacedFrame):
+  // true while paced frames are held because the stdout backlog exceeds
+  // the hold threshold. Cleared when the backlog subsides or on drain.
+  private frameHeldForBacklog = false;
+  // Held-frame retry timer (official `frameTimer`, rechecked every
+  // FRAME_HOLD_RETRY_MS = NDn = 250ms).
+  private frameHoldTimer: ReturnType<typeof setTimeout> | null = null;
+  // Total frames held/coalesced over this instance's lifetime — the
+  // count the official binary tracks implicitly via frameHeldForBacklog
+  // transitions; exposed for tests and debugging.
+  private framesHeldForBacklogCount = 0;
+  // Querier registered by App.tsx at mount (official reaches it via
+  // `this.appRef.current?.querier`).
+  private attachedQuerier: TerminalQuerier | null = null;
   constructor(private readonly options: Options) {
     autoBind(this);
     if (this.options.patchConsole) {
@@ -212,6 +235,16 @@ export default class Ink {
     };
     this.terminalColumns = options.stdout.columns || 80;
     this.terminalRows = options.stdout.rows || 24;
+    // CC 2.1.275 #15 — official constructor gate @202863820:
+    //   if(n.stdout===process.stdout&&(SPt()||pEr({envOverride:
+    //     CLAUDE_CODE_NONBLOCKING_STDOUT,isAnt:!1,
+    //     remoteFlag:tengu_event_loop_stall})))
+    //     this.nonBlockingStdout=dEr(this.handleStdoutBackpressure)
+    // OCC observes the stream's write()/drain contract instead of
+    // hijacking process.stdout.write, so the `stdout===process.stdout`
+    // identity check doesn't apply; gating is env override + TTY default
+    // (shouldEnableStdoutBackpressure).
+    this.nonBlockingStdout = shouldEnableStdoutBackpressure(options.stdout) ? new StdoutBackpressureMonitor(options.stdout, this.handleStdoutBackpressure) : null;
     // 2.1.208: SR field init (binary: `this.isScreenReaderEnabled =
     // e.isScreenReaderEnabled ?? (!!e.stdout.isTTY &&
     // ut(process.env.INK_SCREEN_READER))`). `accessibilityMode` (binary
@@ -247,7 +280,38 @@ export default class Ink {
     // a one-keystroke lag. Same event-loop tick, so throughput is unchanged.
     // Test env uses onImmediateRender (direct onRender, no throttle) so
     // existing synchronous lastFrame() tests are unaffected.
-    const deferredRender = (): void => queueMicrotask(this.onRender);
+    const deferredRender = (): void => {
+      // CC 2.1.275 #15 — frame coalescing while stdout is backpressured.
+      // Official queuePacedFrame() hold branch @202872507:
+      //   if(this.cancelScheduledFrame(),this.nonBlockingStdout!==null&&
+      //      this.nonBlockingStdout.queuedBytes()>Svr){
+      //        this.frameHeldForBacklog=!0,
+      //        this.frameTimerDueAt=this.pacerNow()+NDn,
+      //        this.frameTimer=setTimeout(()=>{this.frameTimer=null,
+      //          this.queuePacedFrame()},NDn);
+      //        return}
+      //   this.frameHeldForBacklog=!1,...queueMicrotask(()=>{...onRender()})
+      // Holding is lossless-by-design: onRender diffs the CURRENT tree
+      // state against frontFrame, so N renders coalesced into one hold
+      // window produce a single write with only the latest content —
+      // stale intermediate frames are overwritten, never painted.
+      if (this.nonBlockingStdout !== null && this.nonBlockingStdout.shouldHoldFrames()) {
+        this.frameHeldForBacklog = true;
+        this.framesHeldForBacklogCount += 1;
+        if (this.frameHoldTimer === null) {
+          this.frameHoldTimer = setTimeout(() => {
+            this.frameHoldTimer = null;
+            // Recheck via the paced scheduler: if the backlog subsided the
+            // frame proceeds; otherwise deferredRender re-holds and sets a
+            // fresh FRAME_HOLD_RETRY_MS timer (official retries every NDn).
+            this.scheduleRender();
+          }, FRAME_HOLD_RETRY_MS);
+        }
+        return;
+      }
+      this.frameHeldForBacklog = false;
+      queueMicrotask(this.onRender);
+    };
     this.scheduleRender = throttle(deferredRender, FRAME_INTERVAL_MS, {
       leading: true,
       trailing: true
@@ -850,7 +914,11 @@ export default class Ink {
       }
     }
     const tWrite = performance.now();
-    writeDiffToTerminal(this.terminal, optimized, this.altScreenActive && !SYNC_OUTPUT_SUPPORTED);
+    // CC 2.1.275 #15 — the frame write passes through the backpressure
+    // gate: write() returning false starts an episode; frames refused past
+    // the 4 MiB backlog cap are dropped (counted in droppedBytes) and
+    // repainted on drain. Null monitor → byte-identical legacy path.
+    writeDiffToTerminal(this.terminal, optimized, this.altScreenActive && !SYNC_OUTPUT_SUPPORTED, this.nonBlockingStdout);
     const writeMs = performance.now() - tWrite;
 
     // Update blit safety for the NEXT frame. The frame just rendered
@@ -957,6 +1025,102 @@ export default class Ink {
     // `this.resetScreenReaderDiffState()`).
     this.resetScreenReaderDiffState();
     this.onRender();
+  }
+
+  /**
+   * Register (or clear, with null) the mounted App's TerminalQuerier.
+   * Official reaches the querier via `this.appRef.current?.querier`;
+   * OCC's App attaches itself here on componentDidMount and clears on
+   * componentWillUnmount (see components/App.tsx).
+   */
+  attachQuerier(querier: TerminalQuerier | null): void {
+    this.attachedQuerier = querier;
+  }
+
+  /**
+   * Episode-end handler for the stdout backpressure monitor — behavioral
+   * port of official `handleStdoutBackpressure` @202889122:
+   *
+   *   handleStdoutBackpressure=(n)=>{
+   *     if(n.droppedBytes>0){
+   *       let s=n.endedBy==="drain";
+   *       if(this.appRef.current?.querier?.resync({probe:s}),s)
+   *         this.reassertTerminalModes(),this.forceRedraw();
+   *       else this.repaint()}
+   *     if(this.frameHeldForBacklog&&n.endedBy==="drain")
+   *       this.frameHeldForBacklog=!1,this.scheduleFrame();
+   *     if(n.droppedBytes>0||n.durationMs>=1000)
+   *       i("tengu_stdout_backpressure",{duration_ms:n.durationMs,
+   *         peak_queued_bytes:n.peakQueuedBytes,
+   *         dropped_bytes:n.droppedBytes})};
+   */
+  private handleStdoutBackpressure = (episode: BackpressureEpisodeEnd): void => {
+    if (episode.droppedBytes > 0) {
+      const drained = episode.endedBy === 'drain';
+      // Stale terminal responses may predate the stall — resolve all
+      // pending queries; on drain, probe with a fresh DA1 round-trip.
+      this.attachedQuerier?.resync({
+        probe: drained
+      });
+      if (drained) {
+        // Terminal resumed: restore input modes and repaint everything —
+        // dropped frames mean the physical screen is out of sync.
+        this.reassertTerminalModes();
+        this.forceRedraw();
+      } else {
+        // Exit-path flush with drops: reset frame buffers only. A redraw
+        // here would race process.exit / shutdown sequencing.
+        this.repaint();
+      }
+    }
+    if (this.frameHeldForBacklog && episode.endedBy === 'drain') {
+      this.frameHeldForBacklog = false;
+      // Official scheduleFrame() → OCC's paced scheduler. A pending hold
+      // timer is superseded by this immediate render.
+      if (this.frameHoldTimer !== null) {
+        clearTimeout(this.frameHoldTimer);
+        this.frameHoldTimer = null;
+      }
+      this.scheduleRender();
+    }
+    if (episode.droppedBytes > 0 || episode.durationMs >= TELEMETRY_MIN_DURATION_MS) {
+      this.emitBackpressureTelemetry({
+        duration_ms: episode.durationMs,
+        peak_queued_bytes: episode.peakQueuedBytes,
+        dropped_bytes: episode.droppedBytes
+      });
+    }
+  };
+
+  /**
+   * Telemetry seam for `tengu_stdout_backpressure` (official inline
+   * `i("tengu_stdout_backpressure",...)` @202889462 region). Class-field
+   * arrow so tests can capture emissions per-instance without touching
+   * the global analytics sink.
+   */
+  emitBackpressureTelemetry = (metadata: {
+    duration_ms: number;
+    peak_queued_bytes: number;
+    dropped_bytes: number;
+  }): void => {
+    logEvent('tengu_stdout_backpressure', metadata);
+  };
+
+  /** True while a paced frame is held due to stdout backlog (official
+   *  `frameHeldForBacklog`). Exposed for tests/debugging. */
+  get isFrameHeldForBacklog(): boolean {
+    return this.frameHeldForBacklog;
+  }
+
+  /** Total frames held/coalesced by backpressure over this instance's
+   *  lifetime. Exposed for tests/debugging. */
+  get heldFramesCount(): number {
+    return this.framesHeldForBacklogCount;
+  }
+
+  /** The stdout backpressure monitor (null when disabled). Tests/debug. */
+  get stdoutBackpressure(): StdoutBackpressureMonitor | null {
+    return this.nonBlockingStdout;
   }
 
   /**
@@ -1072,6 +1236,17 @@ export default class Ink {
    * as restoring the saved cursor position — clobbering the resume hint.
    */
   detachForShutdown(): void {
+    // CC 2.1.275 #15 — official detachForShutdown leads with
+    // `if(this.nonBlockingStdout?.flush(),...`: end any in-flight
+    // backpressure episode (episode bookkeeping + telemetry still fire at
+    // exit) and stop monitoring so late 'drain' events can't touch the
+    // dead renderer.
+    this.nonBlockingStdout?.flush();
+    this.nonBlockingStdout?.detach();
+    if (this.frameHoldTimer !== null) {
+      clearTimeout(this.frameHoldTimer);
+      this.frameHoldTimer = null;
+    }
     this.isUnmounted = true;
     // Cancel any pending throttled render so it doesn't fire between
     // cleanupTerminalModes() and process.exit() and write to main screen.
@@ -1093,6 +1268,16 @@ export default class Ink {
 
   /** @see drainStdin */
   drainStdin(): void {
+    // CC 2.1.275 #15 — official drainStdin resolves in-flight terminal
+    // queries before exit so awaiting callers can't hang shutdown:
+    // `let n=this.appRef.current?.querier,...;if(n&&n.owed()>0)
+    //  n.resync({probe:!1})`.
+    const querier = this.attachedQuerier;
+    if (querier !== null && querier.owed() > 0) {
+      querier.resync({
+        probe: false
+      });
+    }
     drainStdin(this.options.stdin);
   }
 
@@ -1511,6 +1696,14 @@ export default class Ink {
       return;
     }
 
+    // CC 2.1.275 #15 — a resync probe writes a DA1 sentinel and relies on
+    // the stdin parser to route its reply back; while stdin is suspended
+    // nobody would ever shift the barrier, so mark input detached
+    // (official `isInputAttached` guard on the resync probe).
+    if (this.attachedQuerier !== null) {
+      this.attachedQuerier.isInputAttached = false;
+    }
+
     // Store and remove all 'readable' event listeners temporarily
     // This prevents Ink from consuming stdin while the editor is active
     const readableListeners = stdin.listeners('readable');
@@ -1539,6 +1732,12 @@ export default class Ink {
     const stdin = this.options.stdin;
     if (!stdin.isTTY) {
       return;
+    }
+
+    // CC 2.1.275 #15 — input parser is live again; resync probes may
+    // write their DA1 sentinel (pairs with suspendStdin above).
+    if (this.attachedQuerier !== null) {
+      this.attachedQuerier.isInputAttached = true;
     }
 
     // Re-attach all the stored listeners
@@ -1609,7 +1808,16 @@ export default class Ink {
     // Non-TTY environments don't handle erasing ansi escapes well, so it's better to
     // only render last frame of non-static output
     const diff = this.log.renderPreviousOutput_DEPRECATED(this.frontFrame);
+    // Final frame write is deliberately UNGATED: the last frame must reach
+    // the screen even mid-episode (the official exit path likewise flushes
+    // through the original blocking write).
     writeDiffToTerminal(this.terminal, optimize(diff));
+
+    // CC 2.1.275 #15 — end any in-flight backpressure episode (official
+    // detachForShutdown: `this.nonBlockingStdout?.flush()`). Placed AFTER
+    // the final frame write so an episode ending with drops can't
+    // repaint() (reset) the frame buffers we just flushed to the screen.
+    this.nonBlockingStdout?.flush();
 
     // Clean up terminal modes synchronously before process exit.
     // React's componentWillUnmount won't run in time when process.exit() is called,
@@ -1655,6 +1863,14 @@ export default class Ink {
       clearTimeout(this.drainTimer);
       this.drainTimer = null;
     }
+    // CC 2.1.275 #15 — stop backpressure monitoring: clear any held-frame
+    // retry timer and remove drain/error listeners so a late 'drain' can't
+    // touch the dead renderer.
+    if (this.frameHoldTimer !== null) {
+      clearTimeout(this.frameHoldTimer);
+      this.frameHoldTimer = null;
+    }
+    this.nonBlockingStdout?.detach();
 
     reconciler.updateContainerSync(null, this.container, null, noop);
     reconciler.flushSyncWork();
@@ -1709,7 +1925,6 @@ export default class Ink {
     this.backFrame.screen.hyperlinkPool = this.hyperlinkPool;
   }
   patchConsole(): () => void {
-    // biome-ignore lint/suspicious/noConsole: intentionally patching global console
     const con = console;
     const originals: Partial<Record<keyof Console, Console[keyof Console]>> = {};
     const toDebug = (...args: unknown[]) => logForDebugging(`console.log: ${format(...args)}`);

@@ -4,6 +4,7 @@ import { env } from '../utils/env.js'
 import { gte } from '../utils/semver.js'
 import { getClearTerminalSequence } from './clearTerminal.js'
 import type { Diff } from './frame.js'
+import type { WriteBackpressureGate } from './stdout-backpressure.js'
 import { cursorMove, cursorTo, eraseLines } from './termio/csi.js'
 import { BSU, ESU, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js'
 import { link } from './termio/osc.js'
@@ -191,14 +192,29 @@ export type Terminal = {
   stderr: Writable
 }
 
+/**
+ * Writes a rendered diff to the terminal as a single buffer.
+ *
+ * When `backpressure` is provided (CC 2.1.275 changelog #15 — stdout
+ * backpressure port), the buffer passes through the monitor's admission
+ * gate first: frames refused while the stream backlog exceeds the cap
+ * are dropped (bytes counted in the episode's `droppedBytes`), and the
+ * boolean result of the actual `stdout.write()` is observed so a `false`
+ * return starts a backpressure episode. Without a gate the behavior is
+ * byte-identical to the previous implementation.
+ *
+ * @returns true when the buffer was written to the stream, false when it
+ *          was dropped by the backpressure gate or the diff was empty.
+ */
 export function writeDiffToTerminal(
   terminal: Terminal,
   diff: Diff,
   skipSyncMarkers = false,
-): void {
+  backpressure?: WriteBackpressureGate | null,
+): boolean {
   // No output if there are no patches
   if (diff.length === 0) {
-    return
+    return false
   }
 
   // BSU/ESU wrapping is opt-out to keep main-screen behavior unchanged.
@@ -248,5 +264,13 @@ export function writeDiffToTerminal(
 
   // Add synchronized update end and flush buffer
   if (useSync) buffer += ESU
-  terminal.stdout.write(buffer)
+
+  if (backpressure && !backpressure.admitWrite(buffer.length)) {
+    // Frame refused by the drop gate — bytes already counted by the
+    // monitor; the next full repaint (forceRedraw) restores the screen.
+    return false
+  }
+  const ok = terminal.stdout.write(buffer)
+  backpressure?.observeWriteResult(ok)
+  return ok
 }

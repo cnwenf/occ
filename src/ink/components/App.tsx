@@ -8,6 +8,7 @@ import { logError } from '../../utils/log.js';
 import { EventEmitter } from '../events/emitter.js';
 import { InputEvent } from '../events/input-event.js';
 import { TerminalFocusEvent } from '../events/terminal-focus-event.js';
+import instances from '../instances.js';
 import { INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses } from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
@@ -179,12 +180,21 @@ export default class App extends PureComponent<Props, State> {
       </TerminalSizeContext.Provider>;
   }
   override componentDidMount() {
+    // CC 2.1.275 #15 — register the querier with the Ink instance so the
+    // renderer's stdout-backpressure resync (`handleStdoutBackpressure` →
+    // `querier.resync({probe})`, official `this.appRef.current?.querier`)
+    // can resolve stale pending queries after a stall. The Ink instance
+    // registers itself in `instances` before render(), so this lookup is
+    // reliable at mount.
+    instances.get(this.props.stdout)?.attachQuerier(this.querier);
     // In accessibility mode, keep the native cursor visible for screen magnifiers and other tools
     if (this.props.stdout.isTTY && !isEnvTruthy(process.env.CLAUDE_CODE_ACCESSIBILITY)) {
       this.props.stdout.write(HIDE_CURSOR);
     }
   }
   override componentWillUnmount() {
+    // CC 2.1.275 #15 — pairs with the componentDidMount registration.
+    instances.get(this.props.stdout)?.attachQuerier(null);
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR);
     }

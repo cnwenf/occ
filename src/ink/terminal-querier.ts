@@ -142,6 +142,18 @@ type Pending =
       resolve: (r: TerminalResponse | undefined) => void
     }
   | { kind: 'sentinel'; resolve: () => void }
+  /**
+   * Resync barrier (CC 2.1.275 #15). After a stdout backpressure episode
+   * the terminal's response stream may contain stale bytes written before
+   * the stall. `resync({probe:true})` pushes a barrier and writes a DA1
+   * sentinel; every response arriving while the barrier is at the front of
+   * the queue is swallowed until that DA1 comes back — everything after it
+   * is post-resync and trustworthy. Official v276:
+   * `resync({probe:e}){...if(e&&this.isInputAttached)this.queue.push(
+   * {kind:"barrier"}),this.stdout.write(k)}` @202543231 + onResponse guard
+   * `if(this.queue[0]?.kind==="barrier"){if(e.type==="da1")this.queue.shift();return}`.
+   */
+  | { kind: 'barrier' }
 
 export class TerminalQuerier {
   /**
@@ -151,7 +163,49 @@ export class TerminalQuerier {
    */
   private queue: Pending[] = []
 
+  /**
+   * Whether the stdin parser is currently routing responses here. The
+   * renderer clears this while stdin is suspended (official
+   * `isInputAttached` guard on the resync probe — probing while input is
+   * detached would leave a barrier nobody can shift).
+   */
+  isInputAttached = true
+
   constructor(private stdout: NodeJS.WriteStream) {}
+
+  /**
+   * Number of callers still owed a resolution (queries + sentinels).
+   * Official `owed()` used by `drainStdin()`: when a shutdown races
+   * in-flight queries, resync (without probe) resolves them all so
+   * `await querier.send(...)` callers can't hang the exit path.
+   */
+  owed(): number {
+    return this.queue.reduce(
+      (n, p) => (p.kind === 'query' || p.kind === 'sentinel' ? n + 1 : n),
+      0,
+    )
+  }
+
+  /**
+   * Resolve every pending query/sentinel immediately — callers get
+   * `undefined` (query) / plain resolution (sentinel) — optionally
+   * installing a resync barrier so subsequent stale responses are
+   * swallowed until a fresh DA1 round-trip completes.
+   *
+   * Called by the renderer when a stdout backpressure episode ends
+   * (`handleStdoutBackpressure` → `querier.resync({probe: endedBy==='drain'})`,
+   * official @202889122) and by `drainStdin()` with `{probe:false}`.
+   */
+  resync({ probe }: { probe: boolean }): void {
+    for (const pending of this.queue.splice(0)) {
+      if (pending.kind === 'query') pending.resolve(undefined)
+      else if (pending.kind === 'sentinel') pending.resolve()
+    }
+    if (probe && this.isInputAttached) {
+      this.queue.push({ kind: 'barrier' })
+      this.stdout.write(SENTINEL)
+    }
+  }
 
   /**
    * Send a query and wait for its response.
@@ -211,6 +265,14 @@ export class TerminalQuerier {
    * - Unsolicited responses (no match, no sentinel) are silently dropped.
    */
   onResponse(r: TerminalResponse): void {
+    // While a resync barrier is at the front, swallow every response —
+    // they may be stale bytes from before the backpressure episode. The
+    // barrier's own DA1 reply clears it; everything after is post-resync.
+    if (this.queue[0]?.kind === 'barrier') {
+      if (r.type === 'da1') this.queue.shift()
+      return
+    }
+
     const idx = this.queue.findIndex(p => p.kind === 'query' && p.match(r))
     if (idx !== -1) {
       const [q] = this.queue.splice(idx, 1)
@@ -223,7 +285,9 @@ export class TerminalQuerier {
       if (s === -1) return
       for (const p of this.queue.splice(0, s + 1)) {
         if (p.kind === 'query') p.resolve(undefined)
-        else p.resolve()
+        else if (p.kind === 'sentinel') p.resolve()
+        // A 'barrier' swept up here is simply discarded — its DA1 was
+        // consumed elsewhere; there is nothing to resolve.
       }
     }
   }
