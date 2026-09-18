@@ -27,6 +27,19 @@ import {
   substitutePluginVariables,
   substituteUserConfigVariables,
 } from './pluginOptionsStorage.js'
+import { redactCredentialsInText, redactUrlCredentials } from '../redactUrl.js'
+
+/**
+ * Security (2.1.275 upstream port): MCPB sources may be remote URLs with
+ * embedded credentials (`https://user:token@host/x.mcpb`). Scrub before the
+ * value reaches any rendered or logged string. Local filesystem paths pass
+ * through unchanged.
+ */
+function redactMcpbPathForDisplay(mcpbPath: string): string {
+  return mcpbPath.startsWith('http')
+    ? redactUrlCredentials(mcpbPath)
+    : mcpbPath
+}
 
 /**
  * Load MCP servers from an MCPB file
@@ -38,7 +51,7 @@ async function loadMcpServersFromMcpb(
   errors: PluginError[],
 ): Promise<Record<string, McpServerConfig> | null> {
   try {
-    logForDebugging(`Loading MCP servers from MCPB: ${mcpbPath}`)
+    logForDebugging(`Loading MCP servers from MCPB: ${redactMcpbPathForDisplay(mcpbPath)}`)
 
     // Use plugin.repository directly - it's already in "plugin@marketplace" format
     const pluginId = plugin.repository
@@ -57,7 +70,7 @@ async function loadMcpServersFromMcpb(
       // User config needed - this is normal for unconfigured plugins
       // Don't load the MCP server yet - user can configure via /plugin menu
       logForDebugging(
-        `MCPB ${mcpbPath} requires user configuration. ` +
+        `MCPB ${redactMcpbPathForDisplay(mcpbPath)} requires user configuration. ` +
           `User can configure via: /plugin → Manage plugins → ${plugin.name} → Configure`,
       )
       // Return null to skip this server for now (not an error)
@@ -79,7 +92,7 @@ async function loadMcpServersFromMcpb(
     return { [serverName]: successResult.mcpConfig }
   } catch (error) {
     const errorMsg = errorMessage(error)
-    logForDebugging(`Failed to load MCPB ${mcpbPath}: ${errorMsg}`, {
+    logForDebugging(`Failed to load MCPB ${redactMcpbPathForDisplay(mcpbPath)}: ${redactCredentialsInText(errorMsg)}`, {
       level: 'error',
     })
 
@@ -96,8 +109,8 @@ async function loadMcpServersFromMcpb(
         type: 'mcpb-download-failed',
         source,
         plugin: plugin.name,
-        url: mcpbPath,
-        reason: errorMsg,
+        url: redactMcpbPathForDisplay(mcpbPath),
+        reason: redactCredentialsInText(errorMsg),
       })
     } else if (
       errorMsg.includes('manifest') ||
@@ -107,16 +120,16 @@ async function loadMcpServersFromMcpb(
         type: 'mcpb-invalid-manifest',
         source,
         plugin: plugin.name,
-        mcpbPath,
-        validationError: errorMsg,
+        mcpbPath: redactMcpbPathForDisplay(mcpbPath),
+        validationError: redactCredentialsInText(errorMsg),
       })
     } else {
       errors.push({
         type: 'mcpb-extract-failed',
         source,
         plugin: plugin.name,
-        mcpbPath,
-        reason: errorMsg,
+        mcpbPath: redactMcpbPathForDisplay(mcpbPath),
+        reason: redactCredentialsInText(errorMsg),
       })
     }
 
@@ -191,7 +204,7 @@ export async function loadPluginMcpServers(
             // Defensive: if one spec throws, don't lose results from the
             // others. The previous serial loop implicitly tolerated this.
             logForDebugging(
-              `Failed to load MCP servers from spec for plugin ${plugin.name}: ${e}`,
+              `Failed to load MCP servers from spec for plugin ${plugin.name}: ${redactCredentialsInText(String(e))}`,
               { level: 'error' },
             )
             return null

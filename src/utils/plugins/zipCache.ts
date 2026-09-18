@@ -29,7 +29,7 @@
  *               └── 2.1.3.zip
  */
 
-import { randomBytes } from 'crypto'
+import { createHash, randomBytes } from 'crypto'
 import { constants as fsConstants } from 'fs'
 import {
   chmod,
@@ -477,13 +477,26 @@ async function extractZipEntriesToDir(
  * warning (official wording @5045508) — stale files are not cleared on that
  * degraded path. Extracted modes are hardened per `rfe`/`swo` (helpers above).
  *
+ * Official 2.1.276 (ITEM 5): `options.preview` routes to
+ * `extractZipToPreviewDirectory` (official `Urr` @200401744 / switch `Grr`
+ * @200406306 `if(B)Pe=await Urr(Pe,Me,De);else Ue=await Skt(Pe,Le),Pe=De`) so
+ * a reload preview never replaces a running session's extracted plugin files.
+ * Returns the directory the archive was actually extracted into (the preview
+ * dir when `preview: true`, `targetDir` otherwise); existing callers that
+ * ignore the return value keep their behavior.
+ *
  * @param zipPath - Path to the ZIP file
  * @param targetDir - Directory to extract into
+ * @param options - `preview: true` extracts to an isolated content-hashed dir
  */
 export async function extractZipToDirectory(
   zipPath: string,
   targetDir: string,
-): Promise<void> {
+  options: { preview?: boolean } = {},
+): Promise<string> {
+  if (options.preview) {
+    return extractZipToPreviewDirectory(zipPath, targetDir)
+  }
   const zipBuf = await getFsImplementation().readFileBytes(zipPath)
   const files = await unzipFile(zipBuf)
   // fflate doesn't surface external_attr — parse the central directory so
@@ -533,6 +546,104 @@ export async function extractZipToDirectory(
   logForDebugging(
     `Extracted ZIP to ${targetDir}: ${Object.keys(files).length} entries`,
   )
+
+  return targetDir
+}
+
+/** Official `h.slice(0,32)` (Urr @200401744) — sha256 hex prefix length. */
+const PREVIEW_HASH_LENGTH = 32
+
+// Official `Hrr` (@200402182 region): `M()==="windows"&&(EPERM||EACCES||EBUSY)`
+// — Windows rename-over-locked-dir errnos, tolerated only when the target is
+// already a directory (`jrr`). Note this is the PREVIEW-rename tolerance
+// (official `Wrr`), distinct from the live-swap in-place fallback above whose
+// platform-agnostic errno set is a documented pre-existing OCC deviation.
+const WINDOWS_TOLERATED_RENAME_ERRNOS = new Set(['EPERM', 'EACCES', 'EBUSY'])
+
+/**
+ * Official `Wrr(error, target)` @200402182:
+ * `let r=E(e);if(r==="ENOTEMPTY"||r==="EEXIST")return!0;return jrr(e,n)` —
+ * a concurrent preview of the same archive may win the rename; that race is
+ * tolerated (the winner's tree is identical by content hash).
+ */
+async function isToleratedPreviewRenameError(
+  error: unknown,
+  targetDir: string,
+): Promise<boolean> {
+  const code = errnoCode(error)
+  if (code === 'ENOTEMPTY' || code === 'EEXIST') {
+    return true
+  }
+  return (
+    process.platform === 'win32' &&
+    code !== undefined &&
+    WINDOWS_TOLERATED_RENAME_ERRNOS.has(code) &&
+    (await isExistingDirectory(targetDir))
+  )
+}
+
+/**
+ * Official 2.1.276 (ITEM 5) `Urr` @200401744, byte-verified:
+ * ```js
+ * async function Urr(e,n,r){let s=xSe(),g=await le().readFileBytes(e),
+ *   h=pkt("sha256").update(g).digest("hex");
+ *   if(s.byDir.get(r)?.archiveHash===h&&await Jue(r))return r;
+ *   let y=`${r}.preview-${h.slice(0,32)}`,{staging:w}=WUe(n,y);
+ *   if(await Jue(y))return y;
+ *   try{await d6(g,w)}catch(O){throw await mH(w),O}
+ *   try{await ts(w,y)}catch(O){let L=await Wrr(O,y);if(await mH(w),!L)throw O}
+ *   return y}
+ * ```
+ * Extracts to `<targetDir>.preview-<first 32 hex of sha256(zip bytes)>` so a
+ * reload preview never touches the live cache dir. Deviations (documented):
+ * - the registry reuse check (`xSe().byDir…archiveHash`) is omitted — OCC has
+ *   no per-dir seq/archiveHash registry (pre-existing deviation in this
+ *   module); the directory-exists reuse below gives the same end state for
+ *   identical archive content;
+ * - `WUe`'s containment throw is omitted for the same reason as in
+ *   `extractZipToDirectory` (callers derive targetDir from a sanitized id).
+ *
+ * @returns the preview directory the archive was extracted into
+ */
+export async function extractZipToPreviewDirectory(
+  zipPath: string,
+  targetDir: string,
+): Promise<string> {
+  const zipBuf = await getFsImplementation().readFileBytes(zipPath)
+  const archiveHash = createHash('sha256').update(zipBuf).digest('hex')
+  const previewDir = `${targetDir}.preview-${archiveHash.slice(0, PREVIEW_HASH_LENGTH)}`
+
+  // Official `if(await Jue(y))return y` — same content already previewed.
+  if (await isExistingDirectory(previewDir)) {
+    return previewDir
+  }
+
+  // Official `WUe(n,y).staging` (@200400666): `${y}.staging-${randomBytes(4).hex}`.
+  const stagingDir = `${previewDir}.staging-${randomBytes(4).toString('hex')}`
+  const files = await unzipFile(zipBuf)
+  const modes = parseZipModes(zipBuf)
+
+  // Official `try{await d6(g,w)}catch(O){throw await mH(w),O}` — extraction
+  // failure removes the staging tree and rethrows; the live dir is never touched.
+  try {
+    await extractZipEntriesToDir(files, modes, stagingDir)
+  } catch (error) {
+    await removeExtractionTree(stagingDir)
+    throw error
+  }
+
+  // Official `try{await ts(w,y)}catch(O){let L=await Wrr(O,y);if(await mH(w),!L)throw O}`
+  try {
+    await rename(stagingDir, previewDir)
+  } catch (error) {
+    const tolerated = await isToleratedPreviewRenameError(error, previewDir)
+    await removeExtractionTree(stagingDir)
+    if (!tolerated) {
+      throw error
+    }
+  }
+
+  return previewDir
 }
 
 /**

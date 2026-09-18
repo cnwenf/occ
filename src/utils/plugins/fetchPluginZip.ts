@@ -23,6 +23,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { redactUrlCredentials } from '../redactUrl.js'
 
 export const MAX_PLUGIN_ZIP_BYTES = 100 * 1024 * 1024 // 100 MiB
 // OCC-21 Gap-2 hardening: bound the fetch so a slow/stalled server cannot hang
@@ -44,7 +45,7 @@ export function validatePluginZipUrl(raw: string): URL {
     parsed = new URL(raw)
   } catch {
     throw new Error(
-      `--plugin-url: invalid URL "${raw}". Expected an https:// URL to a plugin .zip.`,
+      `--plugin-url: invalid URL "${redactUrlCredentials(raw)}". Expected an https:// URL to a plugin .zip.`,
     )
   }
   if (parsed.protocol !== 'https:') {
@@ -100,11 +101,11 @@ export async function fetchPluginZipFromUrl(
     })
     if (!response.ok) {
       throw new Error(
-        `--plugin-url: fetch "${rawUrl}" failed: HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
+        `--plugin-url: fetch "${redactUrlCredentials(rawUrl)}" failed: HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`,
       )
     }
     if (response.body === null) {
-      throw new Error(`--plugin-url: response from "${rawUrl}" has no body`)
+      throw new Error(`--plugin-url: response from "${redactUrlCredentials(rawUrl)}" has no body`)
     }
 
     sessionTmp = join(tmpdir(), `occ-plugin-url-${randomUUID()}`)
@@ -123,7 +124,7 @@ export async function fetchPluginZipFromUrl(
         received += value.byteLength
         if (received > maxBytes) {
           throw new Error(
-            `--plugin-url: zip from "${rawUrl}" exceeds the ${maxBytes}-byte limit (received >= ${received} bytes).`,
+            `--plugin-url: zip from "${redactUrlCredentials(rawUrl)}" exceeds the ${maxBytes}-byte limit (received >= ${received} bytes).`,
           )
         }
         await writer.write(value)
@@ -133,9 +134,13 @@ export async function fetchPluginZipFromUrl(
     }
 
     if (received === 0) {
-      throw new Error(`--plugin-url: response from "${rawUrl}" was empty`)
+      throw new Error(`--plugin-url: response from "${redactUrlCredentials(rawUrl)}" was empty`)
     }
 
+    // Security (2.1.275 upstream port): the returned `url` is the raw source
+    // (data for config/fetch, never rendered directly). Every error message
+    // above interpolates `redactUrlCredentials(rawUrl)` instead, so a token
+    // embedded in `--plugin-url` cannot leak into user-facing strings.
     return { path: zipPath, url: rawUrl }
   } catch (error) {
     // OCC-21 hardening: clean the session temp dir on any failure branch
@@ -146,7 +151,7 @@ export async function fetchPluginZipFromUrl(
     }
     if (controller.signal.aborted) {
       throw new Error(
-        `--plugin-url: fetch "${rawUrl}" timed out after ${timeoutMs}ms.`,
+        `--plugin-url: fetch "${redactUrlCredentials(rawUrl)}" timed out after ${timeoutMs}ms.`,
       )
     }
     throw error

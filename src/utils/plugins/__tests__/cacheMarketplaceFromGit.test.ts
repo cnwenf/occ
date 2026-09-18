@@ -22,7 +22,15 @@ function makeBareRemote(repoDir: string): string {
   // A normal repo we commit into, then a bare clone acts as the "remote".
   git(repoDir, "init", "--initial-branch=main");
   writeFileSync(join(repoDir, "README.md"), "v1\n");
-  git(repoDir, "add", "README.md");
+  // 2.1.276 ITEM 2: CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE now only
+  // keeps an existing clone that is a valid marketplace (manifest present) —
+  // official CM@200211580 gates the keep on Der@200207353.
+  mkdirSync(join(repoDir, ".claude-plugin"), { recursive: true });
+  writeFileSync(
+    join(repoDir, ".claude-plugin", "marketplace.json"),
+    JSON.stringify({ name: "test-mp", owner: { name: "t" }, plugins: [] }),
+  );
+  git(repoDir, "add", "README.md", ".claude-plugin/marketplace.json");
   git(repoDir, "commit", "-m", "v1");
   const barePath = `${repoDir}.git`;
   execSync(`git clone --bare "${repoDir}" "${barePath}"`, {

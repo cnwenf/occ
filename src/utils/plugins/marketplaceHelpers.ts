@@ -241,17 +241,22 @@ export function extractHostFromSource(
       return 'github.com'
 
     case 'git': {
+      // Port of official v276 I(): URL-form addresses are parsed via URL
+      // (after rejecting backslash smuggling in the authority); scp-like
+      // addresses use the user@HOST:path form.
+      if (source.url.includes('://')) {
+        if (hasBackslashSmuggling(source.url)) {
+          return null
+        }
+        try {
+          return new URL(source.url).hostname || null
+        } catch {
+          return null
+        }
+      }
       // SSH format: user@HOST:path (e.g., git@github.com:owner/repo.git)
       const sshMatch = source.url.match(/^[^@]+@([^:]+):/)
-      if (sshMatch?.[1]) {
-        return sshMatch[1]
-      }
-      // HTTPS format: extract hostname from URL
-      try {
-        return new URL(source.url).hostname
-      } catch {
-        return null
-      }
+      return sshMatch?.[1] ?? null
     }
 
     case 'url':
@@ -336,31 +341,251 @@ export function getHostPatternsFromAllowlist(): string[] {
     .map(entry => entry.hostPattern)
 }
 
+// ---------------------------------------------------------------------------
+// Git URL / hostname parsing.
+// Faithful port of official Claude Code 2.1.276:
+//   - host-normalization module (chunk-7bfrtxgd.js @190787400-190789400:
+//     tIe/YEt/$Tn/bo/i/E_e/nIe)
+//   - git-address parser yAn@191030323 with A7e@191027175, yd/Sd/As@~191031088
+// ---------------------------------------------------------------------------
+
+const GITHUB_HOST = 'github.com'
+const GITHUB_SSH_HOST = 'ssh.github.com'
+const INVALID_HOST_CHARS = /[:/\\?#@\s]/
+const URL_LIKE_PROTOCOLS = new Set(['http', 'https', 'ws', 'wss', 'ftp'])
+const GITHUB_GIT_PROTOCOLS = new Set([
+  'https:',
+  'http:',
+  'git:',
+  'git+https:',
+  'git+http:',
+  'git+ssh:',
+  'ssh:',
+])
+const SSH_LIKE_PROTOCOLS = new Set(['ssh:', 'git+ssh:'])
+const OWNER_REPO_PATTERN =
+  /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9._-]+$/
+const HOST_NORMALIZE_CACHE_LIMIT = 50
+
+const hostNormalizeCache = new Map<string, string>()
+
+/** Port of official `c`: strip trailing dots. */
+function stripTrailingDots(host: string): string {
+  let end = host.length
+  while (end > 0 && host[end - 1] === '.') end--
+  return host.slice(0, end)
+}
+
 /**
- * Extract GitHub owner/repo from a git URL if it's a GitHub URL.
- * Returns null if not a GitHub URL.
- *
- * Handles:
- * - git@github.com:owner/repo.git
- * - https://github.com/owner/repo.git
- * - https://github.com/owner/repo
+ * Port of official `tIe`: conservative hostname normalization.
+ * Strips \t\n\r, lowercases, strips trailing dots, rejects hosts containing
+ * URL-structural characters, and validates via an https:// URL round-trip.
  */
-function extractGitHubRepoFromGitUrl(url: string): string | null {
-  // SSH format: git@github.com:owner/repo.git
-  const sshMatch = url.match(/^git@github\.com:([^/]+\/[^/]+?)(?:\.git)?$/)
-  if (sshMatch && sshMatch[1]) {
-    return sshMatch[1]
+function normalizeHostname(raw: string): string {
+  const host = stripTrailingDots(raw.replace(/[\t\n\r]/g, '').toLowerCase())
+  if (host === '' || INVALID_HOST_CHARS.test(host)) return host
+  try {
+    const parsed = new URL(`https://${host}`)
+    if (
+      parsed.username !== '' ||
+      parsed.password !== '' ||
+      parsed.port !== '' ||
+      parsed.pathname !== '/' ||
+      parsed.search !== '' ||
+      parsed.hash !== ''
+    )
+      return host
+    return stripTrailingDots(parsed.hostname)
+  } catch {
+    return host
   }
+}
 
-  // HTTPS format: https://github.com/owner/repo.git or https://github.com/owner/repo
-  const httpsMatch = url.match(
-    /^https?:\/\/github\.com\/([^/]+\/[^/]+?)(?:\.git)?$/,
+/**
+ * Port of official `YEt`: normalizeHostname + strip leading `www.`,
+ * memoized with a capacity of 50 (official `ER` helper).
+ */
+function normalizeHostForComparison(raw: string): string {
+  const cached = hostNormalizeCache.get(raw)
+  if (cached !== undefined) return cached
+  let host = normalizeHostname(raw)
+  while (host.startsWith('www.')) host = host.slice(4)
+  if (hostNormalizeCache.size >= HOST_NORMALIZE_CACHE_LIMIT) {
+    hostNormalizeCache.clear()
+  }
+  hostNormalizeCache.set(raw, host)
+  return host
+}
+
+/** Port of official `$Tn`. */
+function hostMatches(raw: string, expected: string): boolean {
+  return normalizeHostForComparison(raw) === expected
+}
+
+/** Port of official `bo`. */
+function isGitHubHost(raw: string): boolean {
+  return hostMatches(raw, GITHUB_HOST)
+}
+
+/** Port of official `As`: github.com or ssh.github.com. */
+function isGitHubOrSshGitHubHost(raw: string): boolean {
+  return isGitHubHost(raw) || hostMatches(raw, GITHUB_SSH_HOST)
+}
+
+/**
+ * Port of official `i`: characters that must never appear in a hostname
+ * (percent-encoding, C0/C1 control chars, DEL, astral plane).
+ */
+function hasSuspiciousHostChars(value: string): boolean {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `i` — the C0/C1/DEL/astral class IS the check
+  return /[%\x00-\x1f\x7f-\u{10FFFF}]/u.test(value)
+}
+
+/**
+ * Port of official `E_e`: detect backslash smuggling in a URL's authority
+ * (e.g. `https://github.com\@evil.com/...`), which browsers and git can
+ * interpret differently.
+ */
+function hasBackslashSmuggling(raw: string): boolean {
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `E_e` — strips leading C0/space before authority parsing
+  const url = raw.replace(/^[\x00-\x20]+/, '')
+  const schemeEnd = url.indexOf('://')
+  if (schemeEnd === -1) return false
+  let rest = url.slice(schemeEnd + 3)
+  const scheme = url.slice(0, schemeEnd).toLowerCase()
+  if (URL_LIKE_PROTOCOLS.has(scheme)) {
+    const slashes = rest.match(/^[/\\]+/)?.[0] ?? ''
+    if (slashes.includes('\\')) return true
+    rest = rest.slice(slashes.length)
+  }
+  const pathStart = rest.search(/[/?#]/)
+  return (pathStart === -1 ? rest : rest.slice(0, pathStart)).includes('\\')
+}
+
+/** Port of official `nIe`: entry guard for suspicious git addresses. */
+function isSuspiciousGitUrl(url: string): boolean {
+  if (url.includes('://')) {
+    if (hasBackslashSmuggling(url)) return true
+    try {
+      const parsed = new URL(url)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:')
+        return false
+      return hasSuspiciousHostChars(parsed.hostname)
+    } catch {
+      return true
+    }
+  }
+  const colonIndex = url.indexOf(':')
+  const atIndex = url.indexOf('@')
+  if (colonIndex >= 0 && atIndex > colonIndex) return true
+  const host = url.match(/^(?:[^@]+@)?([^:]+):/)?.[1]
+  return host ? hasSuspiciousHostChars(host) : false
+}
+
+/**
+ * Extract GitHub owner/repo from any recognized git address form.
+ * Port of official Claude Code 2.1.276 `yAn`@191030323.
+ * Returns null if the address is not a GitHub repository address.
+ *
+ * Handles (host must normalize to github.com or ssh.github.com):
+ * - scp-like: git@github.com:owner/repo.git
+ * - ssh://git@github.com/owner/repo.git and ssh://git@ssh.github.com/owner/repo.git
+ * - git+ssh://github.com/owner/repo.git
+ * - git://github.com/owner/repo.git
+ * - https://github.com/owner/repo.git and http://github.com/owner/repo
+ *
+ * Rejects `..`/`.` path segments, addresses with suspicious hosts
+ * (control chars, percent-encoding, backslash smuggling), non-allowlisted
+ * protocols, and non-GitHub hosts. Returns lowercased `owner/repo`.
+ */
+export function extractGitHubRepoFromGitUrl(url: string): string | null {
+  if (isSuspiciousGitUrl(url)) return null
+  let path = url
+  const schemeEnd = url.indexOf('://')
+  if (schemeEnd !== -1) {
+    let parsed: URL | null
+    try {
+      parsed = new URL(url)
+    } catch {
+      parsed = null
+    }
+    const pathStart =
+      url.slice(schemeEnd + 3).search(/[/?#]/) + schemeEnd + 3
+    if (
+      parsed === null ||
+      !GITHUB_GIT_PROTOCOLS.has(parsed.protocol) ||
+      !(SSH_LIKE_PROTOCOLS.has(parsed.protocol)
+        ? isGitHubOrSshGitHubHost(parsed.hostname)
+        : isGitHubHost(parsed.hostname)) ||
+      url[pathStart] !== '/'
+    )
+      return null
+    path = url.slice(pathStart + 1).split(/[?#]/)[0] ?? ''
+  } else if (url.includes(':')) {
+    const colonIndex = url.indexOf(':')
+    if (
+      url.slice(0, colonIndex).includes('/') ||
+      !isGitHubOrSshGitHubHost(url.slice(url.indexOf('@') + 1, colonIndex))
+    )
+      return null
+    path = url.slice(colonIndex + 1).replace(/^\//, '')
+  }
+  const repo = path.replace(/\/$/, '').replace(/\.git$/i, '')
+  if (!OWNER_REPO_PATTERN.test(repo) || /\/\.\.?$/.test(repo)) return null
+  return repo.toLowerCase()
+}
+
+/**
+ * Port of official `Uer`@200224732: normalize a marketplace source for
+ * comparison/display. Git sources that address a GitHub repository are
+ * rewritten to the equivalent github source so that e.g.
+ * `ssh://git@ssh.github.com/owner/repo.git` and `{github, owner/repo}`
+ * are recognized as the same marketplace.
+ */
+export function normalizeSourceForComparison(
+  source: MarketplaceSource,
+): MarketplaceSource {
+  if (source.source === 'github') {
+    const repo = extractGitHubRepoFromGitUrl(source.repo)
+    return repo === null ? source : { ...source, repo }
+  }
+  if (source.source === 'git') {
+    const repo = extractGitHubRepoFromGitUrl(source.url)
+    if (repo !== null) {
+      const { url: _url, ...rest } = source
+      return { ...rest, source: 'github', repo }
+    }
+  }
+  return source
+}
+
+/**
+ * Port of official `Etr`@200224689: two sources are equivalent when their
+ * normalized forms are deeply equal.
+ */
+export function areSourcesEquivalent(
+  a: MarketplaceSource,
+  b: MarketplaceSource,
+): boolean {
+  return isEqual(
+    normalizeSourceForComparison(a),
+    normalizeSourceForComparison(b),
   )
-  if (httpsMatch && httpsMatch[1]) {
-    return httpsMatch[1]
-  }
+}
 
-  return null
+/**
+ * Port of official `M1r`@200224603: find the name of a registered
+ * marketplace whose source is equivalent to the given source.
+ * Returns undefined when no registered marketplace matches.
+ */
+export function findMarketplaceNameForSource(
+  config: Record<string, KnownMarketplace>,
+  source: MarketplaceSource,
+): string | undefined {
+  for (const [name, marketplace] of Object.entries(config)) {
+    if (areSourcesEquivalent(marketplace.source, source)) return name
+  }
+  return undefined
 }
 
 /**
@@ -478,6 +703,13 @@ export function isSourceInBlocklist(source: MarketplaceSource): boolean {
  * 2. strictKnownMarketplaces (allowlist) - if set, source must be in the list
  */
 export function isSourceAllowedByPolicy(source: MarketplaceSource): boolean {
+  // Port of official v276 sd(): git sources whose URL smuggles a backslash
+  // into the authority (e.g. https://github.com\@evil.com/...) are rejected
+  // outright — different parsers would disagree on the effective host.
+  if (source.source === 'git' && hasBackslashSmuggling(source.url)) {
+    return false
+  }
+
   // Check blocklist first (takes precedence)
   if (isSourceInBlocklist(source)) {
     return false

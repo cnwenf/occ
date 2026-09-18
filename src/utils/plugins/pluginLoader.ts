@@ -101,6 +101,7 @@ import {
   getPluginByIdCacheOnly,
   loadKnownMarketplacesConfigSafe,
 } from './marketplaceManager.js'
+import { installNpmPluginPackage } from './npmPluginFetch.js'
 import { getPluginSeedDirs, getPluginsDirectory } from './pluginDirectories.js'
 import { parsePluginIdentifier } from './pluginIdentifier.js'
 import { validatePathWithinBase } from './pluginInstallationHelpers.js'
@@ -487,40 +488,51 @@ function validateGitUrl(url: string): string {
 }
 
 /**
- * Install a plugin from npm using a global cache (exported for testing)
+ * Install a plugin from npm (exported for testing)
+ *
+ * v2.1.275 security alignment (official `L6n`/`Wnr`/`RPs`/`znr` subsystem):
+ * the former plain `npm install` executed npm lifecycle scripts of untrusted
+ * packages (RCE vector). The package is now resolved via `npm view --json`,
+ * fetched with `npm pack --ignore-scripts` (env `npm_config_ignore_scripts`
+ * = "true"), verified against the registry SRI `dist.integrity`, and unpacked
+ * with a script-free tar reader (256 MiB cap, path-traversal guarded). See
+ * `npmPluginFetch.ts`.
  */
 export async function installFromNpm(
   packageName: string,
   targetPath: string,
   options: { registry?: string; version?: string } = {},
 ): Promise<void> {
-  const npmCachePath = join(getPluginsDirectory(), 'npm-cache')
+  const workRoot = join(getPluginsDirectory(), 'npm-cache')
+  await getFsImplementation().mkdir(workRoot)
 
-  await getFsImplementation().mkdir(npmCachePath)
-
-  const packageSpec = options.version
-    ? `${packageName}@${options.version}`
-    : packageName
-  const packagePath = join(npmCachePath, 'node_modules', packageName)
-  const needsInstall = !(await pathExists(packagePath))
-
-  if (needsInstall) {
-    logForDebugging(`Installing npm package ${packageSpec} to cache`)
-    const args = ['install', packageSpec, '--prefix', npmCachePath]
-    if (options.registry) {
-      args.push('--registry', options.registry)
-    }
-    const result = await execFileNoThrow('npm', args, { useCwd: false })
-
-    if (result.code !== 0) {
-      throw new Error(`Failed to install npm package: ${result.stderr}`)
-    }
-  }
-
-  await copyDir(packagePath, targetPath)
-  logForDebugging(
-    `Copied npm package ${packageName} from cache to ${targetPath}`,
+  const workDir = join(
+    workRoot,
+    `fetch_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`,
   )
+  await getFsImplementation().mkdir(workDir)
+
+  try {
+    const resolution = await installNpmPluginPackage(
+      {
+        packageName,
+        versionSpec: options.version,
+        registry: options.registry,
+        workDir,
+      },
+      targetPath,
+    )
+    logForDebugging(
+      `Installed npm package ${resolution.name}@${resolution.version} to ${targetPath} (ignore-scripts + integrity verified)`,
+    )
+  } finally {
+    await rm(workDir, { recursive: true, force: true }).catch(cleanupError => {
+      logForDebugging(
+        `Failed to clean up npm fetch work dir ${workDir}: ${cleanupError}`,
+        { level: 'error' },
+      )
+    })
+  }
 }
 
 /**
@@ -2240,8 +2252,14 @@ async function loadPluginFromMarketplaceEntryCacheOnly(
       pluginId.replace(/[^a-zA-Z0-9@\-_]/g, '-'),
     )
     try {
-      await extractZipToDirectory(pluginPath, extractDir)
-      pluginPath = extractDir
+      // Official 2.1.276 ITEM 5: cache-only discovery loads extract through
+      // the isolated preview path (official KBt = {cacheOnly, preview} →
+      // Urr @200401744) so a discovery/reload never replaces a running
+      // session's extracted plugin files. Consume the returned dir — with
+      // preview:true it is the `.preview-<hash>` sibling, not extractDir.
+      pluginPath = await extractZipToDirectory(pluginPath, extractDir, {
+        preview: true,
+      })
     } catch (error) {
       logForDebugging(`Failed to extract plugin ZIP ${pluginPath}: ${error}`, {
         level: 'error',
@@ -2480,9 +2498,12 @@ async function loadPluginFromMarketplaceEntry(
       pluginId.replace(/[^a-zA-Z0-9@\-_]/g, '-'),
     )
     try {
-      await extractZipToDirectory(pluginPath, extractDir)
-      logForDebugging(`Extracted plugin ZIP to session dir: ${extractDir}`)
-      pluginPath = extractDir
+      // Official 2.1.276: the full (non-cache-only) load extracts in place
+      // (official Skt branch — preview isolation is discovery-only). The
+      // non-preview call returns extractDir; consume it for the explicit
+      // return-dir contract.
+      pluginPath = await extractZipToDirectory(pluginPath, extractDir)
+      logForDebugging(`Extracted plugin ZIP to session dir: ${pluginPath}`)
     } catch (error) {
       // Corrupt ZIP: delete it so next install attempt re-creates it
       logForDebugging(

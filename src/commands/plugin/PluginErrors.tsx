@@ -1,16 +1,24 @@
 import { getPluginErrorMessage, type PluginError } from '../../types/plugin.js';
+import { redactCredentialsInText, redactUrlCredentials } from '../../utils/redactUrl.js';
+// Security (2.1.275 upstream port): URL-typed fields are scrubbed with
+// redactUrlCredentials and every assembled message is swept with
+// redactCredentialsInText so credentials in plugin/marketplace URLs can never
+// reach the UI through an error message.
 export function formatErrorMessage(error: PluginError): string {
+  return redactCredentialsInText(buildErrorMessage(error));
+}
+function buildErrorMessage(error: PluginError): string {
   switch (error.type) {
     case 'path-not-found':
       return `${error.component} path not found: ${error.path}`;
     case 'path-traversal':
       return `${error.component} path escapes plugin directory: ${error.path}`;
     case 'git-auth-failed':
-      return `Git ${error.authType.toUpperCase()} authentication failed for ${error.gitUrl}`;
+      return `Git ${error.authType.toUpperCase()} authentication failed for ${redactUrlCredentials(error.gitUrl)}`;
     case 'git-timeout':
-      return `Git ${error.operation} timed out for ${error.gitUrl}`;
+      return `Git ${error.operation} timed out for ${redactUrlCredentials(error.gitUrl)}`;
     case 'network-error':
-      return `Network error accessing ${error.url}${error.details ? `: ${error.details}` : ''}`;
+      return `Network error accessing ${redactUrlCredentials(error.url)}${error.details ? `: ${error.details}` : ''}`;
     case 'manifest-parse-error':
       return `Failed to parse manifest at ${error.manifestPath}: ${error.parseError}`;
     case 'manifest-validation-error':
@@ -33,7 +41,7 @@ export function formatErrorMessage(error: PluginError): string {
     case 'component-load-failed':
       return `Failed to load ${error.component} from ${error.path}: ${error.reason}`;
     case 'mcpb-download-failed':
-      return `Failed to download MCPB from ${error.url}: ${error.reason}`;
+      return `Failed to download MCPB from ${redactUrlCredentials(error.url)}: ${error.reason}`;
     case 'mcpb-extract-failed':
       return `Failed to extract MCPB ${error.mcpbPath}: ${error.reason}`;
     case 'mcpb-invalid-manifest':
@@ -60,7 +68,14 @@ export function formatErrorMessage(error: PluginError): string {
   const _exhaustive: never = error;
   return getPluginErrorMessage(_exhaustive);
 }
+// Security (2.1.275 upstream port): guidance strings embed marketplace names
+// and formatted source strings (which may be git/url sources carrying
+// credentials) — sweep the assembled guidance so userinfo never renders.
 export function getErrorGuidance(error: PluginError): string | null {
+  const guidance = buildErrorGuidance(error);
+  return guidance === null ? null : redactCredentialsInText(guidance);
+}
+function buildErrorGuidance(error: PluginError): string | null {
   switch (error.type) {
     case 'path-not-found':
       return 'Check that the path in your manifest or marketplace config is correct';
