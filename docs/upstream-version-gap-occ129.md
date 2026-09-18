@@ -112,7 +112,7 @@ by-design 保留分歧（代码注释已标注）：
 
 ### 顺带清理
 
-- 删除 `src/services/api/src/` 死桩树（41 个 "Auto-generated type stub —
+- 删除 `src/services/api/src/` 死桩树（47 个 "Auto-generated type stub —
   replace with real implementation" 文件，`export type X = any`；全仓 grep
   零引用、tsconfig/biome/package.json 零提及）。这是历史上误提交的重复目录
   影子（真实现在 `src/utils/`、`src/services/`），属于 stub-伪装-完成 的
