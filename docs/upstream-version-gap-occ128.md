@@ -1,7 +1,7 @@
 # OCC-128 — 版本追齐自验收轮（2026-09-18）
 
 **官方最新**: `2.1.274`（三方复核：npm dist-tags、GitHub releases、live ELF md5 `7137e84f2a7189e6190cf5af3de1dcc4`，230,580,536 bytes，npx 缓存精确解析到 `@anthropic-ai/claude-code-linux-x64@2.1.274`）
-**OCC 版本**: `2.1.340`（已对齐 2.1.274，无版本 gap）
+**OCC 版本**: `2.1.341`（已对齐 2.1.274，无版本 gap。发版说明：本轮原定以 2.1.340 发布，但 tag `v2.1.340`（`8846a6c`，仅含 OCC-89）已先行公开发布且 npm `latest` 已指向它、不含本轮内容；按 npm 版本不可变惯例不 unpublish/重打，本轮发布号顺延为 2.1.341）
 **轮次性质**: 严格自验收轮 — 像人类一样使用 OCC REPL，优先验收 OCC-127 移植的功能（displaySanitize 家族、bash 特殊变量守卫、worktree 嵌套 shell 展开守卫），再核心主干。**最高判据：与官方 Claude Code 交互一致性**。
 
 ---
