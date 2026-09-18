@@ -84,7 +84,7 @@ function normalizeHostnameForMatch(hostname: string): string {
 }
 
 /** Binary `c(e)`: does this server URL point at an Anthropic-hosted MCP host? */
-function isAnthropicHostedMcpUrl(url: string | undefined): boolean {
+export function isAnthropicHostedMcpUrl(url: string | undefined): boolean {
   if (!url) {
     return false
   }
@@ -115,7 +115,7 @@ function renderMcpRemoveCommand(serverName: string): string | null {
 }
 
 /** Binary `a(e, {scope})`: anthropic-hosted unsupported message. */
-function buildAnthropicHostedMessage(
+export function buildAnthropicHostedMessage(
   serverName: string,
   scope: string | undefined,
 ): string {

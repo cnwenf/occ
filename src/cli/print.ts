@@ -9,6 +9,7 @@ import {
 import { waitForRemoteManagedSettingsToLoad } from 'src/services/remoteManagedSettings/index.js'
 import { StructuredIO } from 'src/cli/structuredIO.js'
 import { RemoteIO } from 'src/cli/remoteIO.js'
+import { handleOAuthCallbackUrlControl } from 'src/cli/mcpOAuthCallbackControl.js'
 import {
   enableUltracodeForSession,
   shouldTriggerUltracodeFromPrompt,
@@ -1550,9 +1551,12 @@ function runHeadlessStreaming(
         // Gap-128b: frozen startup MCP tools (dynamicMcpState) defer to live
         // appState.mcp state for servers the connection manager tracks —
         // same authority rule as the REPL path (deferInitialMcpToolsToLiveState).
+        // P3-3: live tools passed so failed/disabled servers keep their
+        // frozen auth stubs (recovery entry) while stale real tools drop.
         deferInitialMcpToolsToLiveState(
           [...tools, ...sdkTools, ...dynamicMcpState.tools],
           appState.mcp.clients,
+          appState.mcp.tools,
         ),
         assembledTools,
         appState.toolPermissionContext.mode,
@@ -3539,55 +3543,20 @@ function runHeadlessStreaming(
           }
         } else if (message.request.subtype === 'mcp_oauth_callback_url') {
           const { serverName, callbackUrl } = message.request
-          const submit = oauthCallbackSubmitters.get(serverName)
-          if (submit) {
-            // Validate the callback URL before submitting. The submit
-            // callback in auth.ts silently ignores URLs missing a code
-            // param, which would leave the auth promise unresolved and
-            // block the control message loop until timeout.
-            let hasCodeOrError = false
-            try {
-              const parsed = new URL(callbackUrl)
-              hasCodeOrError =
-                parsed.searchParams.has('code') ||
-                parsed.searchParams.has('error')
-            } catch {
-              // Invalid URL
-            }
-            if (!hasCodeOrError) {
-              sendControlResponseError(
-                message,
-                'Invalid callback URL: missing authorization code. Please paste the full redirect URL including the code parameter.',
-              )
-            } else {
-              oauthManualCallbackUsed.add(serverName)
-              submit(callbackUrl)
-              // Wait for auth (token exchange) to complete before responding.
-              // Reconnect is handled by the extension via handleAuthDone →
-              // mcp_reconnect (which updates dynamicMcpState for tools).
-              const authPromise = oauthAuthPromises.get(serverName)
-              if (authPromise) {
-                try {
-                  await authPromise
-                  sendControlResponseSuccess(message)
-                } catch (error) {
-                  sendControlResponseError(
-                    message,
-                    error instanceof Error
-                      ? error.message
-                      : 'OAuth authentication failed',
-                  )
-                }
-              } else {
-                sendControlResponseSuccess(message)
-              }
-            }
-          } else {
-            sendControlResponseError(
-              message,
-              `No active OAuth flow for server: ${serverName}`,
-            )
-          }
+          // 274 submitter semantics (review P2-2): a wrong-state URL returns
+          // false and the flow KEEPS WAITING. Only an accepted submit may
+          // await the auth promise — the gating logic lives in
+          // mcpOAuthCallbackControl.ts (unit-tested there).
+          await handleOAuthCallbackUrlControl(serverName, callbackUrl, {
+            getSubmitter: name => oauthCallbackSubmitters.get(name),
+            getAuthPromise: name => oauthAuthPromises.get(name),
+            markManualCallbackUsed: name => {
+              oauthManualCallbackUsed.add(name)
+            },
+            respondError: errorMessageText =>
+              sendControlResponseError(message, errorMessageText),
+            respondSuccess: () => sendControlResponseSuccess(message),
+          })
         } else if (message.request.subtype === 'claude_authenticate') {
           // Anthropic OAuth over the control channel. The SDK client owns
           // the user's browser (we're headless in -p mode); we hand back

@@ -120,6 +120,23 @@ describe('2.1.274 complete_authentication: call() gating', () => {
     )
   })
 
+  test('submitter true + no active promise (CLI/headless-initiated flow) → distinct error, never success (review P2-1)', async () => {
+    // Pre-fix, `getActiveOAuthPromise` returned undefined here and the tool
+    // awaited it — `await undefined` resolved instantly and reported
+    // "Authentication complete" while the real exchange (owned by the CLI /
+    // headless surface that started the flow) was still in flight.
+    mockedSubmitter = () => true
+    mockedActiveFlow = undefined
+    const { data } = await makeTool().call(
+      { callback_url: 'http://localhost:1/cb?code=a&state=S' },
+      stubContext,
+    )
+    expect(data.status).toBe('error')
+    expect(data.message).toBe(
+      "The callback URL was accepted by the in-progress OAuth flow for srv, but that flow was started outside this session's tool path (e.g. `occ mcp login` or a headless control channel), so its token exchange cannot be tracked here. The surface that started the flow will report completion — do not retry this tool.",
+    )
+  })
+
   test('submitter true + flow resolves → official success message', async () => {
     mockedSubmitter = () => true
     mockedActiveFlow = Promise.resolve()

@@ -3,7 +3,12 @@ import partition from 'lodash-es/partition.js'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { COORDINATOR_MODE_ALLOWED_TOOLS } from '../constants/tools.js'
 import { getMcpPrefix } from '../services/mcp/mcpStringUtils.js'
+import type { MCPServerConnection } from '../services/mcp/types.js'
 import { isMcpTool } from '../services/mcp/utils.js'
+import {
+  MCP_AUTH_TOOL_SUFFIX,
+  MCP_COMPLETE_AUTH_TOOL_SUFFIX,
+} from '../tools/McpAuthTool/mcpAuthStubShared.js'
 import type { Tool, ToolPermissionContext, Tools } from '../Tool.js'
 
 // MCP tool name suffixes for PR activity subscription. These are lightweight
@@ -80,6 +85,39 @@ export function mergeAndFilterTools(
 }
 
 /**
+ * Connection states in which a tracked-but-unreachable server keeps its
+ * frozen auth stubs (P3-3): the server is NOT connected (so its frozen real
+ * tools are stale and must go), but the user must still be able to call
+ * `mcp__<server>__authenticate` / `mcp__<server>__complete_authentication`
+ * to recover. In every other state the live store fully owns the prefix.
+ */
+const AUTH_STUB_PRESERVING_STATES: ReadonlySet<MCPServerConnection['type']> =
+  new Set<MCPServerConnection['type']>(['failed', 'disabled'])
+
+/**
+ * Minimal client shape accepted from the live stores:
+ * `appState.mcp.clients` (MCPServerConnection[]) and the headless
+ * SerializedClient[] both carry `name` + connection `type`.
+ */
+export interface McpLiveClientState {
+  readonly name: string
+  readonly type?: MCPServerConnection['type']
+}
+
+/** Minimal tool shape accepted from the live tool lists (Tool / SerializedTool). */
+export interface McpLiveToolRef {
+  readonly name?: string
+}
+
+/** True when a tool name is one of the two MCP OAuth recovery stubs. */
+function isMcpAuthStubName(name: string): boolean {
+  return (
+    name.endsWith(`__${MCP_AUTH_TOOL_SUFFIX}`) ||
+    name.endsWith(`__${MCP_COMPLETE_AUTH_TOOL_SUFFIX}`)
+  )
+}
+
+/**
  * CC 2.1.274 Gap-128b: make the frozen startup `initialTools` prop defer to
  * live MCP state once the connection manager owns a server.
  *
@@ -99,22 +137,66 @@ export function mergeAndFilterTools(
  * authoritative for that server's tools — including the empty set after a
  * disconnect/disable (no ghost tools from the frozen prop).
  *
+ * P3-3 refinement — per server prefix, exactly one of:
+ * 1. Live tool set NON-empty → drop ALL frozen tools with that prefix
+ *    (live state wins; this is the post-auth stub-removal case).
+ * 2. Live tool set EMPTY and client `type` is 'failed' or 'disabled' →
+ *    KEEP the frozen auth stubs (the user must retain the recovery entry
+ *    `mcp__<server>__authenticate` after a failed reconnect flushed the
+ *    live tools to []) but DROP the frozen real tools (stale — the server
+ *    is not actually connected).
+ * 3. Otherwise (live empty, any other state) → drop all frozen tools with
+ *    that prefix.
+ *
  * Pure + React-free: shared by the REPL (useMergedTools/computeTools) and the
- * headless path (print.ts buildAllTools).
+ * headless path (print.ts buildAllTools). Never mutates its inputs.
  *
  * @param initialTools - Frozen startup tools (built-in + startup MCP).
- * @param liveClients - Servers currently tracked in appState.mcp.clients.
- * @returns initialTools with MCP entries of live-tracked servers removed.
+ * @param liveClients - Servers currently tracked in appState.mcp.clients
+ *   (name + connection `type`).
+ * @param liveTools - Live tool list for those servers (appState.mcp.tools).
+ * @returns initialTools filtered by the per-prefix authority rule above.
  */
 export function deferInitialMcpToolsToLiveState(
   initialTools: Tools,
-  liveClients: readonly { name: string }[],
+  liveClients: readonly McpLiveClientState[],
+  liveTools: readonly McpLiveToolRef[] = [],
 ): Tools {
   if (liveClients.length === 0) {
     return initialTools
   }
-  const livePrefixes = liveClients.map(c => getMcpPrefix(c.name))
-  return initialTools.filter(
-    t => !livePrefixes.some(prefix => t.name?.startsWith(prefix)),
+  const clientsWithPrefix = liveClients.map(client => ({
+    prefix: getMcpPrefix(client.name),
+    type: client.type,
+  }))
+  const allPrefixes = clientsWithPrefix.map(entry => entry.prefix)
+  const prefixesWithLiveTools = new Set(
+    clientsWithPrefix
+      .filter(({ prefix }) => liveTools.some(t => t.name?.startsWith(prefix)))
+      .map(({ prefix }) => prefix),
   )
+  // Rule 2: failed/disabled with an empty live tool set — frozen auth stubs
+  // survive for these prefixes; everything else under the prefix is dropped.
+  const stubPreservingPrefixes = new Set(
+    clientsWithPrefix
+      .filter(
+        ({ prefix, type }) =>
+          type !== undefined &&
+          AUTH_STUB_PRESERVING_STATES.has(type) &&
+          !prefixesWithLiveTools.has(prefix),
+      )
+      .map(({ prefix }) => prefix),
+  )
+  return initialTools.filter(tool => {
+    const name = tool.name
+    if (name === undefined) {
+      return true
+    }
+    for (const prefix of stubPreservingPrefixes) {
+      if (name.startsWith(prefix) && isMcpAuthStubName(name)) {
+        return true
+      }
+    }
+    return !allPrefixes.some(prefix => name.startsWith(prefix))
+  })
 }
