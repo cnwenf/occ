@@ -1,7 +1,7 @@
 import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
-import { shouldIncludeFirstPartyOnlyBetas } from './betas.js'
 import { isEnvTruthy } from './envUtils.js'
+import { getAPIProvider } from './model/providers.js'
 import { getInitialSettings } from './settings/settings.js'
 
 // The SDK does not yet have types for advisor blocks.
@@ -51,19 +51,45 @@ type AdvisorConfig = {
 }
 
 function getAdvisorConfig(): AdvisorConfig {
+  // GrowthBook key byte-verified against the official linux-x64 binaries at
+  // 2.1.274, 2.1.275 AND 2.1.276 (2 occurrences of `tengu_sage_compass2` each;
+  // zero occurrences of the bare `tengu_sage_compass` OCC previously used):
+  //   return I("tengu_sage_compass2",{}).enabled??!1
   return getFeatureValue_CACHED_MAY_BE_STALE<AdvisorConfig>(
-    'tengu_sage_compass',
+    'tengu_sage_compass2',
     {},
   )
 }
 
 export function isAdvisorEnabled(): boolean {
+  // Official 2.1.276 gate, byte-verified (v276 main bundle):
+  //   yct(): if(a.CLAUDE_CODE_DISABLE_ADVISOR_TOOL||Vqt)return!1;
+  //          return He()==="firstParty"&&Ky()
+  //   Ky():  return da()&&!p9()
+  //   da():  e==="firstParty"||qM(e)||e==="foundry"   (subsumed by He()==="firstParty")
+  //   p9():  a.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS||TM()   (TM = hipaa taint)
+  //   Bb():  if(!yct())return!1;
+  //          if(a.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL)return!0;
+  //          return I("tengu_sage_compass2",{}).enabled??!1
+  // The hipaa-taint arm (TM) and the org-refused kill-switch (Vqt) are
+  // omitted by design — OCC has no classifier taint registry and no
+  // advisor-entry-refused telemetry loop (same omission as betas.ts).
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL)) {
     return false
   }
-  // The advisor beta header is first-party only (Bedrock/Vertex 400 on it).
-  if (!shouldIncludeFirstPartyOnlyBetas()) {
+  // Strict firstParty: the official yct() requires He()==="firstParty" —
+  // foundry is EXCLUDED here even though shouldIncludeFirstPartyOnlyBetas()
+  // admits it for other betas (Bedrock/Vertex/foundry 400 on the advisor
+  // beta header / tool schema).
+  if (getAPIProvider() !== 'firstParty') {
     return false
+  }
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+    return false
+  }
+  // Bb(): env override wins, then the GrowthBook experiment.
+  if (isEnvTruthy(process.env.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL)) {
+    return true
   }
   return getAdvisorConfig().enabled ?? false
 }
