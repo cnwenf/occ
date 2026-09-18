@@ -1,6 +1,6 @@
-import { createHash, type UUID } from 'crypto'
+import { createHash, randomBytes, type UUID } from 'crypto'
 import { diffLines } from 'diff'
-import type { Stats } from 'fs'
+import { constants as fsConstants, type Stats } from 'fs'
 import {
   chmod,
   copyFile,
@@ -9,6 +9,7 @@ import {
   mkdir,
   readFile,
   realpath,
+  rename,
   stat,
   unlink,
 } from 'fs/promises'
@@ -29,6 +30,7 @@ import { getErrnoCode, isENOENT } from './errors.js'
 import { pathExists } from './file.js'
 import { logError } from './log.js'
 import { recordFileHistorySnapshot } from './sessionStorage.js'
+import { sleep } from './sleep.js'
 
 type BackupFileName = string | null // The null value means the file does not exist in this version
 
@@ -667,92 +669,133 @@ export async function checkRewindDestinationSafety(
  * Applies the given file snapshot state to the tracked files (writes/deletes
  * on disk), returning the changed file paths and the count of skipped link /
  * non-regular paths. Async IO only.
+ *
+ * claude-code 2.1.275 #11: restores run through Promise.allSettled (mirroring
+ * the official v276 `lFt` batch discipline) so one file's failure — including
+ * an exhausted incomplete-copy retry schedule — cannot abort the restore of
+ * the others. Per-file errors are caught inside each task (logError +
+ * tengu_file_history_rewind_restore_file_failed), exactly like the previous
+ * sequential loop; the rejected branch below is a defensive net. Results are
+ * aggregated in trackedFiles iteration order, keeping filesChanged
+ * deterministic. Public return shape is unchanged.
  */
 async function applySnapshot(
   state: FileHistoryState,
   targetSnapshot: FileHistorySnapshot,
 ): Promise<{ filesChanged: string[]; skippedLinks: number }> {
+  const results = await Promise.allSettled(
+    Array.from(state.trackedFiles, trackingPath =>
+      applySnapshotFile(state, targetSnapshot, trackingPath),
+    ),
+  )
+
   const filesChanged: string[] = []
   let skippedLinks = 0
-  for (const trackingPath of state.trackedFiles) {
-    try {
-      const filePath = maybeExpandFilePath(trackingPath)
-      const targetBackup = targetSnapshot.trackedFileBackups[trackingPath]
-
-      const backupFileName: BackupFileName | undefined = targetBackup
-        ? targetBackup.backupFileName
-        : getBackupFileNameFirstVersion(trackingPath, state)
-
-      if (backupFileName === undefined) {
-        // Error resolving the backup, so don't touch the file
-        logError(
-          new Error('FileHistory: Error finding the backup file to apply'),
-        )
-        logEvent('tengu_file_history_rewind_restore_file_failed', {
-          dryRun: false,
-        })
-        continue
-      }
-
-      // 2.1.216 #36: refuse to restore/delete through a symlink or hardlink at
-      // a tracked path. The official binary runs this check (z4g) before any
-      // unlink/copyFile; we match that ordering so the path is never touched.
-      const safety = await checkRewindDestinationSafety(filePath)
-      if (safety.verdict === 'refused') {
+  for (const result of results) {
+    if (result.status === 'fulfilled') {
+      if (result.value.kind === 'changed') {
+        filesChanged.push(result.value.filePath)
+      } else if (result.value.kind === 'skipped') {
         skippedLinks++
-        logEvent('tengu_file_history_rewind_restore_file_failed', {
-          dryRun: false,
-        })
-        logForDebugging(
-          `FileHistory: [Rewind] Refusing to touch ${filePath}: ${safety.detail}`,
-          { level: 'error' },
-        )
-        continue
       }
-
-      if (backupFileName === null) {
-        // File did not exist at the target version; delete it if present.
-        try {
-          await unlink(filePath)
-          logForDebugging(`FileHistory: [Rewind] Deleted ${filePath}`)
-          filesChanged.push(filePath)
-        } catch (e: unknown) {
-          const code = getErrnoCode(e)
-          if (
-            code === 'ENOTDIR' ||
-            code === 'ELOOP' ||
-            code === 'EISDIR'
-          ) {
-            // Path resolves to something we can't unlink safely — count as
-            // skipped, matching the official applySnapshot catch block.
-            skippedLinks++
-            logEvent('tengu_file_history_rewind_restore_file_failed', {
-              dryRun: false,
-            })
-            continue
-          }
-          if (!isENOENT(e)) throw e
-          // Already absent; nothing to do.
-        }
-        continue
-      }
-
-      // File should exist at a specific version. Restore only if it differs.
-      if (await checkOriginFileChanged(filePath, backupFileName)) {
-        await restoreBackup(filePath, backupFileName)
-        logForDebugging(
-          `FileHistory: [Rewind] Restored ${filePath} from ${backupFileName}`,
-        )
-        filesChanged.push(filePath)
-      }
-    } catch (error) {
-      logError(error)
+    } else {
+      logError(result.reason)
       logEvent('tengu_file_history_rewind_restore_file_failed', {
         dryRun: false,
       })
     }
   }
   return { filesChanged, skippedLinks }
+}
+
+/** Per-file outcome of a snapshot application: restored/deleted, skipped for link safety, or unchanged/failed. */
+type ApplySnapshotFileOutcome =
+  | { kind: 'changed'; filePath: string }
+  | { kind: 'skipped' }
+  | { kind: 'unchanged' }
+
+/**
+ * Applies the target snapshot to a single tracked file. Body is identical to
+ * the pre-2.1.275 sequential applySnapshot loop, expressed as return values
+ * instead of continue/push so Promise.allSettled can drive it.
+ */
+async function applySnapshotFile(
+  state: FileHistoryState,
+  targetSnapshot: FileHistorySnapshot,
+  trackingPath: string,
+): Promise<ApplySnapshotFileOutcome> {
+  try {
+    const filePath = maybeExpandFilePath(trackingPath)
+    const targetBackup = targetSnapshot.trackedFileBackups[trackingPath]
+
+    const backupFileName: BackupFileName | undefined = targetBackup
+      ? targetBackup.backupFileName
+      : getBackupFileNameFirstVersion(trackingPath, state)
+
+    if (backupFileName === undefined) {
+      // Error resolving the backup, so don't touch the file
+      logError(
+        new Error('FileHistory: Error finding the backup file to apply'),
+      )
+      logEvent('tengu_file_history_rewind_restore_file_failed', {
+        dryRun: false,
+      })
+      return { kind: 'unchanged' }
+    }
+
+    // 2.1.216 #36: refuse to restore/delete through a symlink or hardlink at
+    // a tracked path. The official binary runs this check (z4g) before any
+    // unlink/copyFile; we match that ordering so the path is never touched.
+    const safety = await checkRewindDestinationSafety(filePath)
+    if (safety.verdict === 'refused') {
+      logEvent('tengu_file_history_rewind_restore_file_failed', {
+        dryRun: false,
+      })
+      logForDebugging(
+        `FileHistory: [Rewind] Refusing to touch ${filePath}: ${safety.detail}`,
+        { level: 'error' },
+      )
+      return { kind: 'skipped' }
+    }
+
+    if (backupFileName === null) {
+      // File did not exist at the target version; delete it if present.
+      try {
+        await unlink(filePath)
+        logForDebugging(`FileHistory: [Rewind] Deleted ${filePath}`)
+        return { kind: 'changed', filePath }
+      } catch (e: unknown) {
+        const code = getErrnoCode(e)
+        if (code === 'ENOTDIR' || code === 'ELOOP' || code === 'EISDIR') {
+          // Path resolves to something we can't unlink safely — count as
+          // skipped, matching the official applySnapshot catch block.
+          logEvent('tengu_file_history_rewind_restore_file_failed', {
+            dryRun: false,
+          })
+          return { kind: 'skipped' }
+        }
+        if (!isENOENT(e)) throw e
+        // Already absent; nothing to do.
+        return { kind: 'unchanged' }
+      }
+    }
+
+    // File should exist at a specific version. Restore only if it differs.
+    if (await checkOriginFileChanged(filePath, backupFileName)) {
+      await restoreBackup(filePath, backupFileName)
+      logForDebugging(
+        `FileHistory: [Rewind] Restored ${filePath} from ${backupFileName}`,
+      )
+      return { kind: 'changed', filePath }
+    }
+    return { kind: 'unchanged' }
+  } catch (error) {
+    logError(error)
+    logEvent('tengu_file_history_rewind_restore_file_failed', {
+      dryRun: false,
+    })
+    return { kind: 'unchanged' }
+  }
 }
 
 /**
@@ -1007,12 +1050,22 @@ async function createBackup(
   // heap (which the previous readFileSync+writeFileSync pipeline did, OOMing
   // on large tracked files). Lazy mkdir: 99% of calls hit the fast path
   // (directory already exists); on ENOENT, mkdir then retry.
+  //
+  // claude-code 2.1.275 #11: mirrors the official v276 backup-creation shape
+  // (`arn`): unlink any stale backup at the deterministic {hash}@v{version}
+  // path first, then create the copy with COPYFILE_EXCL so an existing backup
+  // file is never silently overwritten — if a concurrent creator re-lands the
+  // path between the unlink and the copy, we fail loudly with EEXIST (which
+  // surfaces as a per-file backup failure) instead of interleaving content.
+  await unlink(backupPath).catch((e: unknown) => {
+    if (!isENOENT(e)) throw e
+  })
   try {
-    await copyFile(filePath, backupPath)
+    await copyFile(filePath, backupPath, fsConstants.COPYFILE_EXCL)
   } catch (e: unknown) {
     if (!isENOENT(e)) throw e
     await mkdir(dirname(backupPath), { recursive: true })
-    await copyFile(filePath, backupPath)
+    await copyFile(filePath, backupPath, fsConstants.COPYFILE_EXCL)
   }
 
   // Preserve file permissions on the backup.
@@ -1031,8 +1084,144 @@ async function createBackup(
 }
 
 /**
- * Restores a file from its backup path with proper directory creation and permissions.
- * Lazy mkdir: tries copyFile first, creates the directory on ENOENT.
+ * claude-code 2.1.275 #11 — byte-exact error thrown when a restore copy lands
+ * fewer bytes than the backup source had (official v276 binary:
+ * `Error("FileHistory: backup copy is incomplete")` @197429010; v274 has no
+ * post-copy verification at all — 0 binary hits — which is why /rewind could
+ * silently restore a truncated / zero-filled file).
+ */
+const BACKUP_COPY_INCOMPLETE_MESSAGE = 'FileHistory: backup copy is incomplete'
+
+/**
+ * claude-code 2.1.275 #11 — official v276 retry backoff schedule
+ * (`var ivo=[100,200,400,800]` @197428145). One initial attempt plus four
+ * retries; the 1.5 s total matches the official "after about 1.5 s of
+ * retries" log text. Injectable via `copyFileVerifiedAtomic`'s `delays`
+ * parameter (mirrors official `urn(e,n,r=ivo)`). Exported for testing.
+ */
+export const COPY_RETRY_BACKOFF_MS: readonly number[] = [100, 200, 400, 800]
+
+/**
+ * Official v276 retryable rename errno codes
+ * (`bX=new Set(["EPERM","EBUSY","EACCES"])` @191305720).
+ */
+const RETRYABLE_RENAME_ERRNO_CODES: ReadonlySet<string> = new Set([
+  'EPERM',
+  'EBUSY',
+  'EACCES',
+])
+
+/**
+ * Official v276 temp-copy naming (`jT(e)` @191305759:
+ * `` `${e}.tmp.${randomBytes(4).toString("hex")}` ``): the temp file lives in
+ * the destination directory (same filesystem, so rename stays atomic) with a
+ * random 4-byte suffix.
+ */
+function makeTempCopyPath(destPath: string): string {
+  return `${destPath}.tmp.${randomBytes(4).toString('hex')}`
+}
+
+function isRetryableRestoreCopyError(error: unknown): boolean {
+  if (
+    error instanceof Error &&
+    error.message === BACKUP_COPY_INCOMPLETE_MESSAGE
+  ) {
+    return true
+  }
+  const code = getErrnoCode(error)
+  if (code === undefined) {
+    return false
+  }
+  // EEXIST here can only come from a COPYFILE_EXCL temp-name collision (a
+  // rename EEXIST is treated as success inside the loop) — retry with a fresh
+  // random temp name.
+  return code === 'EEXIST' || RETRYABLE_RENAME_ERRNO_CODES.has(code)
+}
+
+/**
+ * claude-code 2.1.275 #11: verified atomic copy used by every restore path
+ * (the /rewind copyFile path and the cross-session hardlink-fallback copy
+ * path). Ports the official v276 `avo` copy-fallback shape:
+ *
+ *   1. `copyFile(src → temp-in-dest-dir, COPYFILE_EXCL)` — never clobbers an
+ *      existing file at any point;
+ *   2. post-copy size verification against the source size — a
+ *      truncated/zero-filled copy throws the byte-exact
+ *      `FileHistory: backup copy is incomplete` (the actual 2.1.275 fix;
+ *      v274 restored silently);
+ *   3. `rename(temp → dest)` — atomic replacement, so the target is never
+ *      observed half-written.
+ *
+ * The whole cycle retries on the official backoff schedule
+ * [100,200,400,800] ms for an incomplete copy, a retryable errno
+ * (EPERM/EBUSY/EACCES — e.g. another process holding the destination), or a
+ * temp-name EEXIST collision. A rename EEXIST means a concurrent migrator
+ * already landed the destination — the official code treats that as success.
+ * Once the schedule is exhausted the last error is rethrown so callers surface
+ * a per-file failure instead of silently succeeding with truncated data.
+ * Temp files are unlinked best-effort after every attempt (official `finally`
+ * clause).
+ *
+ * Deviation note: official v276 retries only the rename step (`urn`); the
+ * incomplete-copy error propagates immediately. Per the 2.1.275 port task
+ * spec, OCC retries the whole copy+verify cycle on the same schedule —
+ * strictly safer against a transient truncated copy.
+ *
+ * Exported for testing.
+ */
+export async function copyFileVerifiedAtomic(
+  srcPath: string,
+  destPath: string,
+  expectedSize: number,
+  delays: readonly number[] = COPY_RETRY_BACKOFF_MS,
+): Promise<void> {
+  let remainingDelays = delays
+  let lastError: unknown
+  for (;;) {
+    const tempPath = makeTempCopyPath(destPath)
+    try {
+      await copyFile(srcPath, tempPath, fsConstants.COPYFILE_EXCL)
+      const tempStats = await lstat(tempPath)
+      if (tempStats.size !== expectedSize) {
+        throw new Error(BACKUP_COPY_INCOMPLETE_MESSAGE)
+      }
+      try {
+        await rename(tempPath, destPath)
+      } catch (renameError: unknown) {
+        if (getErrnoCode(renameError) === 'EEXIST') {
+          // A concurrent migrator already landed the destination.
+          return
+        }
+        throw renameError
+      }
+      return
+    } catch (error: unknown) {
+      lastError = error
+      const [delay, ...rest] = remainingDelays
+      if (!isRetryableRestoreCopyError(error) || delay === undefined) {
+        break
+      }
+      remainingDelays = rest
+      await sleep(delay)
+    } finally {
+      await unlink(tempPath).catch(() => {})
+    }
+  }
+  throw lastError
+}
+
+/**
+ * Restores a file from its backup path with proper directory creation and
+ * permissions.
+ *
+ * claude-code 2.1.275 #11: the restore is now verified and atomic — copy to a
+ * temp file in the destination directory (COPYFILE_EXCL), verify the copied
+ * size against the backup, then rename over the target. Incomplete copies and
+ * retryable errnos are retried on the official [100,200,400,800] ms schedule;
+ * exhausted retries throw the byte-exact
+ * `FileHistory: backup copy is incomplete` so callers surface a per-file
+ * failure (v274 restored truncated/zero-filled backups silently).
+ * Lazy mkdir: tries the copy first, creates the directory on ENOENT.
  */
 async function restoreBackup(
   filePath: string,
@@ -1058,11 +1247,11 @@ async function restoreBackup(
 
   // Lazy mkdir: 99% of calls hit the fast path (destination dir exists).
   try {
-    await copyFile(backupPath, filePath)
+    await copyFileVerifiedAtomic(backupPath, filePath, backupStats.size)
   } catch (e: unknown) {
     if (!isENOENT(e)) throw e
     await mkdir(dirname(filePath), { recursive: true })
-    await copyFile(backupPath, filePath)
+    await copyFileVerifiedAtomic(backupPath, filePath, backupStats.size)
   }
 
   // Restore the file permissions
@@ -1191,7 +1380,11 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
     await mkdir(newBackupDir, { recursive: true })
 
     // Migrate all backup files from the previous session to current session.
-    // Process all snapshots in parallel; within each snapshot, links also run in parallel.
+    // claude-code 2.1.275 #11: mirrors the official v276 `lFt` batching —
+    // snapshots and their backup entries migrate via Promise.allSettled (one
+    // failing file never aborts the rest), and a shared in-flight Map ensures a
+    // backupFileName referenced by several snapshots is copied exactly once.
+    const inFlightCopies = new Map<string, Promise<void>>()
     let failedSnapshots = 0
     await Promise.allSettled(
       fileHistorySnapshots.map(async snapshot => {
@@ -1201,50 +1394,18 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
         )
 
         const results = await Promise.allSettled(
-          backupEntries.map(async ({ backupFileName }) => {
-            const oldBackupPath = resolveBackupPath(
-              backupFileName,
-              previousSessionId,
-            )
-            const newBackupPath = join(newBackupDir, backupFileName)
-
-            try {
-              await link(oldBackupPath, newBackupPath)
-            } catch (e: unknown) {
-              const code = getErrnoCode(e)
-              if (code === 'EEXIST') {
-                // Already migrated, skip
-                return
-              }
-              if (code === 'ENOENT') {
-                logError(
-                  new Error(
-                    `FileHistory: Failed to copy backup ${backupFileName} on restore (backup file does not exist in ${previousSessionId})`,
-                  ),
-                )
-                throw e
-              }
-              logError(
-                new Error(
-                  `FileHistory: Error hard linking backup file from previous session`,
-                ),
+          backupEntries.map(({ backupFileName }) => {
+            let pending = inFlightCopies.get(backupFileName)
+            if (!pending) {
+              pending = copyBackupFromPreviousSession(
+                backupFileName,
+                previousSessionId,
+                newBackupDir,
+                sessionId,
               )
-              // Fallback to copy if hard link fails
-              try {
-                await copyFile(oldBackupPath, newBackupPath)
-              } catch (copyErr) {
-                logError(
-                  new Error(
-                    `FileHistory: Error copying over backup from previous session`,
-                  ),
-                )
-                throw copyErr
-              }
+              inFlightCopies.set(backupFileName, pending)
             }
-
-            logForDebugging(
-              `FileHistory: Copied backup ${backupFileName} from session ${previousSessionId} to ${sessionId}`,
-            )
+            return pending
           }),
         )
 
@@ -1276,6 +1437,94 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
   } catch (error) {
     logError(error)
   }
+}
+
+/**
+ * Migrates a single backup file from the previous session's backup directory
+ * into the current session's directory.
+ *
+ * claude-code 2.1.275 #11: ports the official v276 `avo`: lstat+isFile source
+ * verification up front, hardlink-first migration, and — when the hardlink
+ * fails (e.g. EXDEV across devices) — a copy fallback that is atomic
+ * (temp+rename), exclusive (COPYFILE_EXCL), size-verified (byte-exact
+ * `FileHistory: backup copy is incomplete`), and retried on the official
+ * [100,200,400,800] ms backoff schedule for EPERM/EBUSY/EACCES. Per-file
+ * failures rethrow so the allSettled caller marks only that snapshot failed
+ * without aborting the rest. v274 copied straight onto the destination with
+ * no verification — the truncated/zero-filled backup source of the 2.1.275
+ * data-loss bug.
+ */
+async function copyBackupFromPreviousSession(
+  backupFileName: string,
+  previousSessionId: string,
+  newBackupDir: string,
+  sessionId: string,
+): Promise<void> {
+  const oldBackupPath = resolveBackupPath(backupFileName, previousSessionId)
+  const newBackupPath = join(newBackupDir, backupFileName)
+
+  // Official `avo`: stat the source first; a missing source gets the
+  // byte-exact log and fails this file only.
+  let srcStats: Stats
+  try {
+    srcStats = await lstat(oldBackupPath)
+  } catch (e: unknown) {
+    if (isENOENT(e)) {
+      logForDebugging(
+        `FileHistory: Failed to copy backup ${backupFileName} on restore (backup file does not exist in ${previousSessionId})`,
+        { level: 'error' },
+      )
+    }
+    throw e
+  }
+  if (!srcStats.isFile()) {
+    throw new Error('FileHistory: backup source is not a regular file')
+  }
+
+  try {
+    await link(oldBackupPath, newBackupPath)
+  } catch (e: unknown) {
+    const code = getErrnoCode(e)
+    if (code === 'EEXIST') {
+      // Already migrated — never overwrite an existing backup.
+      return
+    }
+    if (code === 'ENOENT') {
+      logForDebugging(
+        `FileHistory: Failed to copy backup ${backupFileName} on restore (backup file does not exist in ${previousSessionId})`,
+        { level: 'error' },
+      )
+      throw e
+    }
+    logForDebugging(
+      `FileHistory: hard link failed (${code}), falling back to copy: ${oldBackupPath} -> ${newBackupPath}`,
+      { level: 'error' },
+    )
+    try {
+      await copyFileVerifiedAtomic(oldBackupPath, newBackupPath, srcStats.size)
+    } catch (copyError: unknown) {
+      const copyCode = getErrnoCode(copyError)
+      if (
+        copyCode !== undefined &&
+        RETRYABLE_RENAME_ERRNO_CODES.has(copyCode)
+      ) {
+        logForDebugging(
+          `FileHistory: could not move the copied backup ${backupFileName} into place — rename still refused (${copyCode}) after about 1.5 s of retries, likely held by another process; backup not migrated, a rewind to this checkpoint will report it missing`,
+          { level: 'error' },
+        )
+      }
+      logError(
+        new Error(
+          `FileHistory: Error copying over backup from previous session`,
+        ),
+      )
+      throw copyError
+    }
+  }
+
+  logForDebugging(
+    `FileHistory: Copied backup ${backupFileName} from session ${previousSessionId} to ${sessionId}`,
+  )
 }
 
 /**
@@ -1342,7 +1591,6 @@ async function readFileAsyncOrNull(path: string): Promise<string | null> {
 const ENABLE_DUMP_STATE = false
 function maybeDumpStateForDebug(state: FileHistoryState): void {
   if (ENABLE_DUMP_STATE) {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.error(inspect(state, false, 5))
   }
 }
