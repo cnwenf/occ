@@ -15,6 +15,11 @@
 //   the range are counted (for totalLines) but discarded, so reading line
 //   1 of a 100 GB file won't balloon RSS.
 //
+//   2.1.275: the stream emits raw Buffers and decoding happens in an explicit
+//   StringDecoder held on the state, so a multi-byte character split across a
+//   chunk boundary decodes intact and a decode/alloc throw is ours to catch
+//   (Node's internal `encoding: 'utf8'` decoding threw inside the stream).
+//
 //   All event handlers (streamOnOpen/Data/End) are module-level named
 //   functions with zero closures.  State lives in a StreamState object;
 //   handlers access it via `this`, bound at registration time.
@@ -22,6 +27,11 @@
 //   Lifecycle: `open`, `end`, and `error` use .once() (auto-remove).
 //   `data` fires until the stream ends or is destroyed — either way the
 //   stream and state become unreachable together and are GC'd.
+//
+//   `data`/`end` handlers are registered through wrapStreamHandler (2.1.275):
+//   a synchronous throw inside a stream handler escapes the EventEmitter and
+//   would leave the promise pending forever, so the wrapper converts it into
+//   stream.destroy(err).
 //
 //   On error (including maxBytes exceeded), stream.destroy(err) emits
 //   'error' → reject (passed directly to .once('error')).
@@ -39,6 +49,7 @@
 
 import { createReadStream, fstat } from 'fs'
 import { stat as fsStat, readFile } from 'fs/promises'
+import { StringDecoder } from 'string_decoder'
 import { formatFileSize } from './format.js'
 
 const FAST_PATH_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -228,8 +239,10 @@ function readFileInRangeFast(
 // Streaming path — createReadStream + event handlers
 // ---------------------------------------------------------------------------
 
-type StreamState = {
+export type StreamState = {
   stream: ReturnType<typeof createReadStream>
+  /** 2.1.275: explicit UTF-8 decoder — the stream hands us raw Buffers. */
+  decoder: StringDecoder
   offset: number
   endLine: number
   maxBytes: number | undefined
@@ -254,7 +267,23 @@ function streamOnOpen(this: StreamState, fd: number): void {
   })
 }
 
-function streamOnData(this: StreamState, chunk: string): void {
+/**
+ * 2.1.275 (binary `Mko`): decode the raw chunk first and skip empty decodes.
+ *
+ * A chunk that ends mid-character decodes to '' — running the body anyway
+ * would consume `isFirstChunk` on an empty string, so a BOM that arrives in
+ * the *next* decode would never be stripped.
+ */
+export function streamOnData(this: StreamState, chunk: Buffer): void {
+  const decoded = this.decoder.write(chunk)
+  if (!decoded.length) {
+    return
+  }
+  processChunk.call(this, decoded)
+}
+
+/** 2.1.275 (binary `_tn`): the line scanner, fed already-decoded text. */
+function processChunk(this: StreamState, chunk: string): void {
   if (this.isFirstChunk) {
     this.isFirstChunk = false
     if (chunk.charCodeAt(0) === 0xfeff) {
@@ -377,7 +406,19 @@ function streamOnData(this: StreamState, chunk: string): void {
   }
 }
 
-function streamOnEnd(this: StreamState): void {
+export function streamOnEnd(this: StreamState): void {
+  // 2.1.275 (binary `Oko`): flush any trailing bytes held by the decoder
+  // through the same scanner before the carried-over partial line is handled.
+  const flushed = this.decoder.end()
+  if (flushed.length > 0) {
+    processChunk.call(this, flushed)
+    // The flush can trip a byte cap and destroy the stream — 'error' settles
+    // the promise, so the resolve below must not run.
+    if (this.stream.destroyed) {
+      return
+    }
+  }
+
   let line = this.partial
   if (line.endsWith('\r')) {
     line = line.slice(0, -1)
@@ -431,6 +472,32 @@ function streamOnEnd(this: StreamState): void {
   })
 }
 
+type StreamHandlerArgs = [Buffer] | []
+
+/**
+ * 2.1.275 (binary `btn`): guard a stream handler.
+ *
+ * A synchronous throw inside an EventEmitter handler propagates out of the
+ * emit call, not into our promise — neither resolve nor reject would ever run
+ * and `await readFileInRange(...)` would hang forever. Converting the throw
+ * into `stream.destroy(err)` routes it to the `'error'` listener → reject.
+ */
+export function wrapStreamHandler<A extends StreamHandlerArgs>(
+  handler: (this: StreamState, ...args: A) => void,
+): (this: StreamState, ...args: A) => void {
+  return function wrapped(this: StreamState, ...args: A): void {
+    try {
+      handler.apply(this, args)
+    } catch (err) {
+      this.stream.destroy(err instanceof Error ? err : new Error(String(err)))
+    }
+  }
+}
+
+// Registered once at module scope (binary `Nko = btn(Mko)`, `Lko = btn(Oko)`).
+const wrappedStreamOnData = wrapStreamHandler<[Buffer]>(streamOnData)
+const wrappedStreamOnEnd = wrapStreamHandler<[]>(streamOnEnd)
+
 function readFileInRangeStreaming(
   filePath: string,
   offset: number,
@@ -442,11 +509,13 @@ function readFileInRangeStreaming(
 ): Promise<ReadFileRangeResult> {
   return new Promise((resolve, reject) => {
     const state: StreamState = {
+      // 2.1.275: no `encoding` — chunks stay Buffers and are decoded by
+      // state.decoder, so decode failures surface inside our wrapped handler.
       stream: createReadStream(filePath, {
-        encoding: 'utf8',
         highWaterMark: 512 * 1024,
         ...(signal ? { signal } : undefined),
       }),
+      decoder: new StringDecoder('utf8'),
       offset,
       endLine: maxLines !== undefined ? offset + maxLines : Infinity,
       maxBytes,
@@ -469,8 +538,8 @@ function readFileInRangeStreaming(
     })
 
     state.stream.once('open', streamOnOpen.bind(state))
-    state.stream.on('data', streamOnData.bind(state))
-    state.stream.once('end', streamOnEnd.bind(state))
+    state.stream.on('data', wrappedStreamOnData.bind(state))
+    state.stream.once('end', wrappedStreamOnEnd.bind(state))
     state.stream.once('error', reject)
   })
 }

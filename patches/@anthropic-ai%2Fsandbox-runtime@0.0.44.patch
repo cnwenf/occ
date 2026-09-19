@@ -1,0 +1,13 @@
+diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
+index 6248f4a0ee5bc4289407ea8869562df2cfa069aa..971113fe126caf5e6faf7738110b1cdbf3f6fd36 100644
+--- a/dist/sandbox/linux-sandbox-utils.js
++++ b/dist/sandbox/linux-sandbox-utils.js
+@@ -434,7 +434,7 @@ function buildSandboxCommand(httpSocketPath, socksSocketPath, userCommand, secco
+     const socatCommands = [
+         `socat TCP-LISTEN:3128,fork,reuseaddr UNIX-CONNECT:${httpSocketPath} >/dev/null 2>&1 &`,
+         `socat TCP-LISTEN:1080,fork,reuseaddr UNIX-CONNECT:${socksSocketPath} >/dev/null 2>&1 &`,
+-        'trap "kill %1 %2 2>/dev/null; exit" EXIT',
++        'trap \'rc=$?; kill %1 %2 2>/dev/null; exit $rc\' EXIT',
+     ];
+     // If seccomp filter is provided, use apply-seccomp to apply it
+     if (seccompFilterPath) {

@@ -55,6 +55,10 @@ import {
   validateManifest,
   validatePluginContents,
 } from '../../utils/plugins/validatePlugin.js'
+import {
+  redactCredentialsInText,
+  redactUrlCredentials,
+} from '../../utils/redactUrl.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { plural } from '../../utils/stringUtils.js'
 import { cliError, cliOk } from '../exit.js'
@@ -67,32 +71,30 @@ export { VALID_INSTALLABLE_SCOPES, VALID_UPDATE_SCOPES }
  */
 export function handleMarketplaceError(error: unknown, action: string): never {
   logError(error)
-  cliError(`${figures.cross} Failed to ${action}: ${errorMessage(error)}`)
+  // Security (2.1.275 upstream port): the underlying error text may embed a
+  // marketplace/plugin URL with credentials — scrub userinfo before rendering.
+  cliError(
+    `${figures.cross} Failed to ${action}: ${redactCredentialsInText(errorMessage(error))}`,
+  )
 }
 
 function printValidationResult(result: ValidationResult): void {
   if (result.errors.length > 0) {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(
       `${figures.cross} Found ${result.errors.length} ${plural(result.errors.length, 'error')}:\n`,
     )
     result.errors.forEach(error => {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${error.path}: ${error.message}`)
     })
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('')
   }
   if (result.warnings.length > 0) {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(
       `${figures.warning} Found ${result.warnings.length} ${plural(result.warnings.length, 'warning')}:\n`,
     )
     result.warnings.forEach(warning => {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${warning.path}: ${warning.message}`)
     })
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('')
   }
 }
@@ -106,7 +108,6 @@ export async function pluginValidateHandler(
   try {
     const result = await validateManifest(manifestPath)
 
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log(`Validating ${result.fileType} manifest: ${result.filePath}\n`)
     printValidationResult(result)
 
@@ -120,7 +121,6 @@ export async function pluginValidateHandler(
       if (basename(manifestDir) === '.claude-plugin') {
         contentResults = await validatePluginContents(dirname(manifestDir))
         for (const r of contentResults) {
-          // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`Validating ${r.fileType}: ${r.filePath}\n`)
           printValidationResult(r)
         }
@@ -139,13 +139,11 @@ export async function pluginValidateHandler(
           : `${figures.tick} Validation passed`,
       )
     } else {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`${figures.cross} Validation failed`)
       process.exit(1)
     }
   } catch (error) {
     logError(error)
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.error(
       `${figures.cross} Unexpected error during validation: ${errorMessage(error)}`,
     )
@@ -358,7 +356,6 @@ export async function pluginListHandler(options: {
   }
 
   if (pluginIds.length > 0) {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('Installed plugins:\n')
   }
 
@@ -383,25 +380,18 @@ export async function pluginListHandler(options: {
       const version = installation.version || 'unknown'
       const scope = installation.scope
 
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${pluginId}`)
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Version: ${version}`)
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Scope: ${scope}`)
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Status: ${status}`)
       for (const error of pluginErrors) {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(`    Error: ${getPluginErrorMessage(error)}`)
       }
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('')
     }
   }
 
   if (inlinePlugins.length > 0 || inlineLoadErrors.length > 0) {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('Session-only plugins (--plugin-dir):\n')
     for (const p of inlinePlugins) {
       // Same dirName≠manifestName fallback as the JSON path above — error
@@ -413,19 +403,13 @@ export async function pluginListHandler(options: {
         pErrors.length > 0
           ? `${figures.cross} loaded with errors`
           : `${figures.tick} loaded`
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${p.source}`)
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Version: ${p.manifest.version ?? 'unknown'}`)
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Path: ${p.path}`)
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`    Status: ${status}`)
       for (const e of pErrors) {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(`    Error: ${getPluginErrorMessage(e)}`)
       }
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('')
     }
     // Path-level failures: no LoadedPlugin object exists. Show them so
@@ -433,7 +417,6 @@ export async function pluginListHandler(options: {
     for (const e of inlineLoadErrors.filter(e =>
       e.source.startsWith('inline['),
     )) {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(
         `  ${figures.pointer} ${e.source}: ${figures.cross} ${getPluginErrorMessage(e)}\n`,
       )
@@ -489,12 +472,10 @@ export async function marketplaceAddHandler(
       }
     }
 
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('Adding marketplace...')
 
     const { name, alreadyMaterialized, resolvedSource } =
       await addMarketplaceSource(marketplaceSource, message => {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(message)
       })
 
@@ -541,6 +522,9 @@ export async function marketplaceListHandler(options: {
           name,
           source: source?.source,
           ...(source?.source === 'github' && { repo: source.repo }),
+          // --json keeps the raw source url (official v276 `la` handler is
+          // byte-identical here: `{url:I.url}` unscrubbed) — machine-readable
+          // config data must round-trip; the human list output below scrubs.
           ...(source?.source === 'git' && { url: source.url }),
           ...(source?.source === 'url' && { url: source.url }),
           ...(source?.source === 'directory' && { path: source.path }),
@@ -555,33 +539,25 @@ export async function marketplaceListHandler(options: {
       cliOk('No marketplaces configured')
     }
 
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('Configured marketplaces:\n')
     names.forEach(name => {
       const marketplace = config[name]
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`  ${figures.pointer} ${name}`)
 
       if (marketplace?.source) {
         const src = marketplace.source
         if (src.source === 'github') {
-          // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`    Source: GitHub (${src.repo})`)
         } else if (src.source === 'git') {
-          // biome-ignore lint/suspicious/noConsole:: intentional console output
-          console.log(`    Source: Git (${src.url})`)
+          console.log(`    Source: Git (${redactUrlCredentials(src.url)})`)
         } else if (src.source === 'url') {
-          // biome-ignore lint/suspicious/noConsole:: intentional console output
-          console.log(`    Source: URL (${src.url})`)
+          console.log(`    Source: URL (${redactUrlCredentials(src.url)})`)
         } else if (src.source === 'directory') {
-          // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`    Source: Directory (${src.path})`)
         } else if (src.source === 'file') {
-          // biome-ignore lint/suspicious/noConsole:: intentional console output
           console.log(`    Source: File (${src.path})`)
         }
       }
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log('')
     })
 
@@ -620,11 +596,9 @@ export async function marketplaceUpdateHandler(
   if (options.cowork) setUseCoworkPlugins(true)
   try {
     if (name) {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`Updating marketplace: ${name}...`)
 
       await refreshMarketplace(name, message => {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.log(message)
       })
 
@@ -644,7 +618,6 @@ export async function marketplaceUpdateHandler(
         cliOk('No marketplaces configured')
       }
 
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.log(`Updating ${marketplaceNames.length} marketplace(s)...`)
 
       await refreshAllMarketplaces()

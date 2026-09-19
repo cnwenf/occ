@@ -624,6 +624,25 @@ function createFileSuggestionItem(
  * Find matching files and folders for a given query using the TS file index
  */
 const MAX_SUGGESTIONS = 15
+
+/**
+ * CC 2.1.276 (ITEM T): "Fixed @-mention file suggestions being buried below
+ * MCP resources." Official v276 `k` (byte-extracted @208749909):
+ *   `function k(e){let r=e.slice(0,_);return r.map((o,n)=>S(o,n/Math.max(r.length,1)))}`
+ * v274 mapped the raw array index as the score (`.slice(0,S).map(I)`), so
+ * suggestions #2..#15 carried scores 1..14. The unified suggestion list sorts
+ * ASCENDING (lower = better) and MCP resources score ~0.5 — every index-scored
+ * file suggestion except the first sank below them. Normalizing to
+ * `n / capped.length ∈ [0,1)` restores interleaving. Truncate FIRST, then
+ * normalize by the post-truncation length (official order).
+ */
+function mapWithNormalizedScores(paths: string[]): SuggestionItem[] {
+  const capped = paths.slice(0, MAX_SUGGESTIONS)
+  return capped.map((filePath, index) =>
+    createFileSuggestionItem(filePath, index / Math.max(capped.length, 1)),
+  )
+}
+
 function findMatchingFiles(
   fileIndex: FileIndex,
   partialPath: string,
@@ -738,14 +757,14 @@ export async function generateFileSuggestions(
       query: partialPath,
     }
     const results = await executeFileSuggestionCommand(input)
-    return results.slice(0, MAX_SUGGESTIONS).map(createFileSuggestionItem)
+    return mapWithNormalizedScores(results)
   }
 
   // If the partial path is empty or just a dot, return current directory suggestions
   if (partialPath === '' || partialPath === '.' || partialPath === './') {
     const topLevelPaths = await getTopLevelPaths()
     startBackgroundCacheRefresh()
-    return topLevelPaths.slice(0, MAX_SUGGESTIONS).map(createFileSuggestionItem)
+    return mapWithNormalizedScores(topLevelPaths)
   }
 
   const startTime = Date.now()

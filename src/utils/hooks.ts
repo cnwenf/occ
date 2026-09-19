@@ -2506,7 +2506,13 @@ export async function getMatchingHooks(
     // 2.1.191/2.1.195: matcher events admit comma-separated tool lists and
     // hyphenated identifiers as exact-match literals.
     const commaHyphenSupport = MATCHER_COMMA_HYPHEN_EVENTS.has(hookEvent)
-    const filteredMatchers = matchQuery
+    // 2.1.276: gate on `undefined`, not truthiness (binary `uBn`:
+    // `w!==void 0?y.filter(...):y`). With truthiness, SubagentStop's
+    // `agent_type: agentType ?? ''` skipped matcher filtering for every
+    // subagent without a resolved agent type, firing ALL SubagentStop hooks
+    // regardless of matcher. `''` is a real match value: it fails a specific
+    // matcher (e.g. 'code-reviewer') and only passes absent/'*' matchers.
+    const filteredMatchers = matchQuery !== undefined
       ? hookMatchers.filter(
           matcher =>
             !matcher.matcher ||

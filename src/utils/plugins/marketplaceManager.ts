@@ -19,6 +19,7 @@
  */
 
 import axios from 'axios'
+import { randomBytes } from 'crypto'
 import { writeFile } from 'fs/promises'
 import isEqual from 'lodash-es/isEqual.js'
 import memoize from 'lodash-es/memoize.js'
@@ -37,6 +38,7 @@ import { execFileNoThrow, execFileNoThrowWithCwd } from '../execFileNoThrow.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { logError } from '../log.js'
+import { redactUrlCredentials } from '../redactUrl.js'
 import {
   getInitialSettings,
   getSettingsForSource,
@@ -56,6 +58,7 @@ import { markPluginVersionOrphaned } from './cacheUtils.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { removeAllPluginsForMarketplace } from './installedPluginsManager.js'
 import {
+  areSourcesEquivalent,
   extractHostFromSource,
   formatSourceForDisplay,
   getHostPatternsFromAllowlist,
@@ -1061,11 +1064,99 @@ export async function reconcileSparseCheckout(
 }
 
 /**
+ * 2.1.276 ITEM 2 (official CM@200211580): swap-based re-clone support.
+ *
+ * The official staging suffix is `..clone` (ORs@200206978) with a deterministic
+ * staging path; we append a random component so two concurrent refreshes of the
+ * same marketplace never share a staging directory. Leftover `..clone*` siblings
+ * from crashed runs are swept before each clone.
+ */
+const MARKETPLACE_STAGING_PREFIX = '..clone'
+const MARKETPLACE_BACKUP_SUFFIX = '.bak'
+
+/**
+ * Port of official Der@200207353: true when `dir` contains a marketplace
+ * manifest at the canonical `.claude-plugin/marketplace.json` location.
+ */
+async function hasMarketplaceManifest(dir: string): Promise<boolean> {
+  const fs = getFsImplementation()
+  try {
+    await fs.stat(join(dir, '.claude-plugin', 'marketplace.json'))
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Lightweight port of the official ownership resolvers (eUe@200192227 /
+ * uRs@200193018): find the registered marketplace whose `installLocation`
+ * resolves to `targetPath`, if any. `isSelf` mirrors official `her` — the
+ * entry representing the same marketplace we are fetching is not a collision.
+ *
+ * Returns the first NON-self owner (collision, matching official precedence),
+ * else the self owner, else undefined.
+ */
+async function findRegisteredOwnerOfPath(
+  targetPath: string,
+  isSelf: (entry: KnownMarketplace, name: string) => boolean,
+): Promise<{ ownerName: string; isSelf: boolean } | undefined> {
+  const config = await loadKnownMarketplacesConfigSafe()
+  const resolvedTarget = resolve(targetPath)
+  let selfOwner: string | undefined
+  for (const [name, entry] of Object.entries(config)) {
+    if (typeof entry.installLocation !== 'string') continue
+    if (resolve(entry.installLocation) !== resolvedTarget) continue
+    if (isSelf(entry, name)) {
+      selfOwner ??= name
+    } else {
+      return { ownerName: name, isSelf: false }
+    }
+  }
+  return selfOwner !== undefined
+    ? { ownerName: selfOwner, isSelf: true }
+    : undefined
+}
+
+/**
+ * Remove leftover staging directories (`<basename>..clone*`) from previous
+ * crashed runs. Official CM rm's its single deterministic staging path and
+ * throws `Failed to clean up a leftover marketplace staging directory…` when
+ * that fails; we sweep all matching siblings since our staging names carry a
+ * random suffix.
+ */
+async function sweepLeftoverStagingDirs(
+  dir: string,
+  prefix: string,
+): Promise<void> {
+  const fs = getFsImplementation()
+  let entries: Awaited<ReturnType<typeof fs.readdir>>
+  try {
+    entries = await fs.readdir(dir)
+  } catch {
+    return // parent dir doesn't exist (yet) — nothing to sweep
+  }
+  for (const entry of entries) {
+    if (!entry.name.startsWith(prefix)) continue
+    const leftoverPath = join(dir, entry.name)
+    try {
+      await fs.rm(leftoverPath, { recursive: true, force: true })
+    } catch (err) {
+      throw new Error(
+        `Failed to clean up a leftover marketplace staging directory. Please manually delete the directory at ${leftoverPath} and try again.\n\nTechnical details: ${errorMessage(err)}`,
+      )
+    }
+  }
+}
+
+/**
  * Cache a marketplace from a git repository
  *
  * Clones or updates a git repository containing marketplace data.
  * If the repository already exists at cachePath, pulls the latest changes.
- * If pulling fails, removes the directory and re-clones.
+ * If pulling fails, re-clones into a staging directory and atomically swaps it
+ * into place (2.1.276 ITEM 2) — the live copy is never removed before the
+ * replacement is verified, so a failed fetch leaves the existing cache intact.
  *
  * Example repository structure:
  * ```
@@ -1122,9 +1213,15 @@ export async function cacheMarketplaceFromGit(
     // the existing marketplace clone instead of removing + re-cloning. Useful in
     // offline/air-gapped environments where re-clone would also fail — the stale
     // cache is better than no cache. (Ported from claude-code 2.1.90.)
-    if (isEnvTruthy(process.env.CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE)) {
+    // 2.1.276 ITEM 2 (official CM@200211580 "unreachable" case): only keep the
+    // clone when it is a valid existing marketplace (manifest present); an
+    // invalid directory still falls through to the swap-based re-clone.
+    if (
+      isEnvTruthy(process.env.CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE) &&
+      (await hasMarketplaceManifest(cachePath))
+    ) {
       logForDebugging(
-        `git pull failed, keeping existing clone (CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE): ${pullResult.stderr}`,
+        `Marketplace remote unreachable, keeping existing clone (CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE): ${pullResult.stderr}`,
         { level: 'warn' },
       )
       return
@@ -1138,35 +1235,81 @@ export async function cacheMarketplaceFromGit(
     )
   }
 
-  try {
-    await fs.rm(cachePath, { recursive: true })
-    // rm succeeded — a stale or partially-cloned directory existed; log for diagnostics
-    logForDebugging(
-      `Found stale marketplace directory at ${cachePath}, cleaning up to allow re-clone`,
-      { level: 'warn' },
+  // 2.1.276 ITEM 2 (official CM@200211580): swap-based re-clone. The previous
+  // order (rm cachePath → clone into cachePath) destroyed the live marketplace
+  // copy whenever the clone failed — offline users lost their cache entirely.
+  // Official order, ported faithfully: reconcile any leftover backup → clone
+  // into a uniquely-named staging sibling → rename live aside to backup →
+  // rename staging into place → delete the backup only after the swap
+  // succeeded. On any failure the backup is restored, so a failed fetch always
+  // leaves the live copy intact.
+  const backupPath = `${cachePath}${MARKETPLACE_BACKUP_SUFFIX}`
+
+  // Official CM step 2 (eUe@200192227): refuse to use a backup path that is
+  // another registered marketplace's directory — the swap would rename over it.
+  const backupOwner = await findRegisteredOwnerOfPath(
+    backupPath,
+    (entry, name) =>
+      name === basename(cachePath) ||
+      (typeof entry.installLocation === 'string' &&
+        resolve(entry.installLocation) === resolve(cachePath)),
+  )
+  if (backupOwner !== undefined && !backupOwner.isSelf) {
+    throw new Error(
+      `Cannot fetch marketplace ${JSON.stringify(basename(cachePath))}: the directory it would use as its backup (${backupPath}) is the registered marketplace ${JSON.stringify(backupOwner.ownerName)}'s directory. Remove or rename that marketplace first (claude plugin marketplace remove).`,
     )
-    safeCallProgress(
-      onProgress,
-      'Found stale directory, cleaning up and re-cloning…',
-    )
-  } catch (rmError) {
-    if (!isENOENT(rmError)) {
-      const rmErrorMsg = errorMessage(rmError)
-      throw new Error(
-        `Failed to clean up existing marketplace directory. Please manually delete the directory at ${cachePath} and try again.\n\nTechnical details: ${rmErrorMsg}`,
-      )
-    }
-    // ENOENT — cachePath didn't exist, this is a fresh install, nothing to clean up
   }
 
-  // Clone the repository (one attempt — no internal retry loop)
+  // Official CM step 3: reconcile a leftover backup from a previously
+  // interrupted swap. If the live path is missing or not a valid marketplace
+  // clone, restore the backup over it; then always clear the backup path so
+  // this run's swap has somewhere to move the live directory aside to.
+  // (Official also calls Tje@191482740 here to evict git-repo-detection caches
+  // for the replaced path; OCC has no such cache, so there is nothing to evict.)
+  try {
+    await fs.rename(backupPath, cachePath)
+  } catch (restoreError) {
+    if (!isENOENT(restoreError)) {
+      // Leftover backup exists but couldn't be moved back over the live path
+      // (e.g. live path exists and is non-empty). If the live path isn't a
+      // usable marketplace clone, drop it and retry the restore.
+      if (!(await hasMarketplaceManifest(cachePath))) {
+        await fs.rm(cachePath, { recursive: true, force: true }).catch(() => {})
+        await fs.rename(backupPath, cachePath)
+      }
+    }
+    // ENOENT: no leftover backup — the normal case.
+  }
+  try {
+    await fs.rm(backupPath, { recursive: true, force: true })
+  } catch (cleanupError) {
+    throw new Error(
+      `Failed to clean up stale marketplace backup directory. Please manually delete the directory at ${backupPath} and try again.\n\nTechnical details: ${errorMessage(cleanupError)}`,
+    )
+  }
+
+  // Official CM step 4: staging directory as a sibling of the target (same
+  // filesystem, so the swap renames are atomic), with a random suffix so
+  // concurrent runs never collide. Sweep leftovers from crashed runs first.
+  const stagingPath = join(
+    dirname(cachePath),
+    `${basename(cachePath)}${MARKETPLACE_STAGING_PREFIX}-${randomBytes(6).toString('hex')}`,
+  )
+  await sweepLeftoverStagingDirs(
+    dirname(cachePath),
+    `${basename(cachePath)}${MARKETPLACE_STAGING_PREFIX}`,
+  )
+
+  // Official CM step 5: clone into staging (one attempt — no internal retry
+  // loop). A failed clone only removes the staging dir; the live copy is
+  // untouched.
   const refMessage = ref ? ` (ref: ${ref})` : ''
   safeCallProgress(
     onProgress,
     `Cloning repository (timeout: ${timeoutSec}s): ${redactUrlCredentials(gitUrl)}${refMessage}`,
   )
   const cloneStarted = performance.now()
-  const result = await gitClone(gitUrl, cachePath, ref, sparsePaths)
+  const result = await gitClone(gitUrl, stagingPath, ref, sparsePaths)
   logPluginFetch(
     'marketplace_clone',
     gitUrl,
@@ -1175,15 +1318,48 @@ export async function cacheMarketplaceFromGit(
     result.code === 0 ? undefined : classifyFetchError(result.stderr),
   )
   if (result.code !== 0) {
-    // Clean up any partial directory created by the failed clone so the next
-    // attempt starts fresh. Best-effort: if this fails, the stale dir will be
-    // auto-detected and removed at the top of the next call.
-    try {
-      await fs.rm(cachePath, { recursive: true, force: true })
-    } catch {
-      // ignore
-    }
+    await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {})
     throw new Error(`Failed to clone marketplace repository: ${result.stderr}`)
+  }
+
+  // Official CM step 7: move the live directory aside to the backup path.
+  // ENOENT means there was no live copy (fresh install) — swap straight in.
+  let movedAside = false
+  try {
+    await fs.rename(cachePath, backupPath)
+    movedAside = true
+    safeCallProgress(onProgress, 'Replacing the existing marketplace clone…')
+  } catch (asideError) {
+    const code = getErrnoCode(asideError)
+    if (code !== 'ENOENT') {
+      await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {})
+      throw new Error(
+        code === 'EBUSY' || code === 'EPERM' || code === 'EACCES'
+          ? `Could not replace the marketplace directory at ${cachePath} because it is in use; the existing copy was kept and the next refresh will try again.\n\nTechnical details: ${errorMessage(asideError)}`
+          : `Failed to move the existing marketplace directory aside. Please manually delete the directory at ${cachePath} and try again.\n\nTechnical details: ${errorMessage(asideError)}`,
+      )
+    }
+  }
+
+  // Official CM step 8: move the verified clone into place. If this fails after
+  // the live copy was moved aside, restore the backup — never leave the
+  // marketplace missing when we still have the old copy.
+  try {
+    await fs.rename(stagingPath, cachePath)
+  } catch (placeError) {
+    if (movedAside) {
+      await fs.rename(backupPath, cachePath).catch(() => {})
+    }
+    await fs.rm(stagingPath, { recursive: true, force: true }).catch(() => {})
+    throw new Error(
+      `Failed to move the new marketplace clone into place at ${cachePath}. Please try again.\n\nTechnical details: ${errorMessage(placeError)}`,
+    )
+  }
+
+  // Official CM step 9: the backup is deleted only after the replacement is
+  // verified in place.
+  if (movedAside) {
+    await fs.rm(backupPath, { recursive: true, force: true }).catch(() => {})
   }
   safeCallProgress(onProgress, 'Clone complete, validating marketplace…')
 }
@@ -1200,40 +1376,6 @@ function redactHeaders(
   return Object.fromEntries(
     Object.entries(headers).map(([key]) => [key, '***REDACTED***']),
   )
-}
-
-/**
- * Redact userinfo (username:password) in a URL to avoid logging credentials.
- *
- * Marketplace URLs may embed credentials (e.g. GitHub PATs in
- * `https://user:token@github.com/org/repo`). Debug logs and progress output
- * are written to disk and may be included in bug reports, so credentials must
- * be redacted before logging.
- *
- * Redacts all credentials from http(s) URLs:
- *   https://user:token@github.com/repo → https://***:***@github.com/repo
- *   https://:token@github.com/repo     → https://:***@github.com/repo
- *   https://token@github.com/repo      → https://***@github.com/repo
- *
- * Both username and password are redacted unconditionally on http(s) because
- * it is impossible to distinguish `placeholder:secret` (e.g. x-access-token:ghp_...)
- * from `secret:placeholder` (e.g. ghp_...:x-oauth-basic) by parsing alone.
- * Non-http(s) schemes (ssh://git@...) and non-URL inputs (`owner/repo` shorthand)
- * pass through unchanged.
- */
-function redactUrlCredentials(urlString: string): string {
-  try {
-    const parsed = new URL(urlString)
-    const isHttp = parsed.protocol === 'http:' || parsed.protocol === 'https:'
-    if (isHttp && (parsed.username || parsed.password)) {
-      if (parsed.username) parsed.username = '***'
-      if (parsed.password) parsed.password = '***'
-      return parsed.toString()
-    }
-  } catch {
-    // Not a valid URL — safe as-is
-  }
-  return urlString
 }
 
 /**
@@ -1480,7 +1622,25 @@ async function loadAndCacheMarketplace(
         const sshUrl = `git@github.com:${source.repo}.git`
         const httpsUrl = `https://github.com/${source.repo}.git`
         temporaryCachePath = join(cacheDir, tempName)
-        cleanupNeeded = true
+        // 2.1.276 ITEM 2 (official lSt@200218717 `he=!Ie` via uRs@200193018):
+        // ownership is computed AFTER reading known_marketplaces.json. The
+        // github temp name is deterministic (`owner-repo`), so it can BE the
+        // live installLocation of the registered marketplace we're refreshing.
+        // Only directories this invocation created may be cleaned up on
+        // failure; a pre-existing registered clone must never be rm'd, and a
+        // directory owned by a DIFFERENT marketplace must never be cloned into.
+        const cloneDirOwner = await findRegisteredOwnerOfPath(
+          temporaryCachePath,
+          entry =>
+            entry.source.source === 'github' &&
+            entry.source.repo.toLowerCase() === source.repo.toLowerCase(),
+        )
+        if (cloneDirOwner !== undefined && !cloneDirOwner.isSelf) {
+          throw new Error(
+            `Cannot fetch this marketplace: its clone directory name ${JSON.stringify(tempName)} is the registered marketplace ${JSON.stringify(cloneDirOwner.ownerName)}'s directory. Remove or rename that marketplace first (claude plugin marketplace remove).`,
+          )
+        }
+        cleanupNeeded = cloneDirOwner?.isSelf !== true
 
         let lastError: Error | null = null
 
@@ -1518,8 +1678,12 @@ async function loadAndCacheMarketplace(
               { level: 'info' },
             )
 
-            // Clean up failed SSH attempt if it created anything
-            await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            // Clean up failed SSH attempt if it created anything — only when we
+            // own the directory (2.1.276 ITEM 2: official `if(he) Ya(B)`; a
+            // pre-existing registered clone is never rm'd between attempts).
+            if (cleanupNeeded) {
+              await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            }
 
             // Try HTTPS
             try {
@@ -1577,8 +1741,11 @@ async function loadAndCacheMarketplace(
               { level: 'info' },
             )
 
-            // Clean up failed HTTPS attempt if it created anything
-            await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            // Clean up failed HTTPS attempt if it created anything — only when
+            // we own the directory (2.1.276 ITEM 2: official `if(he) Ya(B)`).
+            if (cleanupNeeded) {
+              await fs.rm(temporaryCachePath, { recursive: true, force: true })
+            }
 
             // Try SSH
             try {
@@ -1604,6 +1771,12 @@ async function loadAndCacheMarketplace(
         if (lastError) {
           throw lastError
         }
+
+        // 2.1.276 ITEM 2 (official lSt@200218717 `he=!0` after a successful
+        // fetch): the directory contents were produced by this invocation, so
+        // later failures (e.g. manifest parse) may clean it up even when the
+        // directory itself pre-existed as a registered clone.
+        cleanupNeeded = true
 
         marketplacePath = join(
           temporaryCachePath,
@@ -1737,26 +1910,64 @@ async function loadAndCacheMarketplace(
       temporaryCachePath !== finalCachePath &&
       !isLocalMarketplaceSource(source)
     ) {
+      // 2.1.276 ITEM 2 (official lSt@200218717, Qbt@200191618 guard): never rm
+      // a final cache path that is another registered marketplace's live
+      // installLocation. "Self" = the entry registered from an equivalent
+      // source (areSourcesEquivalent is the port of official Etr@200224689) —
+      // refreshing that marketplace is the legitimate case.
+      const finalPathOwner = await findRegisteredOwnerOfPath(
+        finalCachePath,
+        entry => areSourcesEquivalent(entry.source, source),
+      )
+      if (finalPathOwner !== undefined && !finalPathOwner.isSelf) {
+        throw new Error(
+          `Cannot fetch this marketplace: its clone directory name ${JSON.stringify(marketplace.name)} is the registered marketplace ${JSON.stringify(finalPathOwner.ownerName)}'s directory. Remove or rename that marketplace first (claude plugin marketplace remove).`,
+        )
+      }
+
+      // 2.1.276 ITEM 2 (official lSt@200218717): when the temp path and the
+      // final path are already the same directory on disk (dev+ino match),
+      // adopt it without rm/rename — the old code would rm the very directory
+      // it is about to serve.
+      let sameDirectory = false
       try {
-        // Remove the destination if it already exists, then rename
+        const [tempStat, finalStat] = await Promise.all([
+          fs.stat(temporaryCachePath),
+          fs.stat(finalCachePath),
+        ])
+        sameDirectory =
+          tempStat.dev === finalStat.dev &&
+          tempStat.ino === finalStat.ino &&
+          tempStat.ino !== 0
+      } catch {
+        // One of the paths doesn't exist (or can't be stat'd) — not the same
+        // directory; proceed with the rm+rename below.
+      }
+      if (sameDirectory) {
+        temporaryCachePath = finalCachePath
+        cleanupNeeded = false // Adopted in place — nothing to clean up
+      } else {
         try {
-          onProgress?.('Cleaning up old marketplace cache…')
-        } catch (callbackError) {
-          logForDebugging(
-            `Progress callback error: ${errorMessage(callbackError)}`,
-            { level: 'warn' },
+          // Remove the destination if it already exists, then rename
+          try {
+            onProgress?.('Cleaning up old marketplace cache…')
+          } catch (callbackError) {
+            logForDebugging(
+              `Progress callback error: ${errorMessage(callbackError)}`,
+              { level: 'warn' },
+            )
+          }
+          await fs.rm(finalCachePath, { recursive: true, force: true })
+          // Rename temp cache to final name
+          await fs.rename(temporaryCachePath, finalCachePath)
+          temporaryCachePath = finalCachePath
+          cleanupNeeded = false // Successfully renamed, no cleanup needed
+        } catch (error) {
+          const errorMsg = errorMessage(error)
+          throw new Error(
+            `Failed to finalize marketplace cache. Please manually delete the directory at ${finalCachePath} if it exists and try again.\n\nTechnical details: ${errorMsg}`,
           )
         }
-        await fs.rm(finalCachePath, { recursive: true, force: true })
-        // Rename temp cache to final name
-        await fs.rename(temporaryCachePath, finalCachePath)
-        temporaryCachePath = finalCachePath
-        cleanupNeeded = false // Successfully renamed, no cleanup needed
-      } catch (error) {
-        const errorMsg = errorMessage(error)
-        throw new Error(
-          `Failed to finalize marketplace cache. Please manually delete the directory at ${finalCachePath} if it exists and try again.\n\nTechnical details: ${errorMsg}`,
-        )
       }
     }
 
@@ -2650,8 +2861,4 @@ export async function setMarketplaceAutoUpdate(
   }
 
   logForDebugging(`Set autoUpdate=${autoUpdate} for marketplace: ${name}`)
-}
-
-export const _test = {
-  redactUrlCredentials,
 }

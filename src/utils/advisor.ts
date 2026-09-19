@@ -61,6 +61,61 @@ function getAdvisorConfig(): AdvisorConfig {
   )
 }
 
+// ---------------------------------------------------------------------------
+// Official 2.1.276 advisor hotfix — refusal latches.
+//
+// When ANTHROPIC_BASE_URL points at a proxy or gateway that does not know the
+// advisor server tool, the API rejects the request with a 400 (the 2.1.275
+// regression message is "tools.N.model: Input tag 'advisor_20260301' found
+// using 'type' does not match any tag …"). The retry handler in
+// services/api/advisorRetry.ts (official `zHe`) strips the advisor tool from
+// the request and latches the refusal here:
+//
+//   - Official `Vqt` / `Yqt()`: process-wide kill-switch, set when the 400
+//     message says the ORGANIZATION lacks advisor access ("not available for
+//     this organization" — official `vtt`). Once killed, the infra gate
+//     (official `yct`, whose `if(a.CLAUDE_CODE_DISABLE_ADVISOR_TOOL||Vqt)
+//     return!1` branch this mirrors) reports advisor disabled everywhere —
+//     beta header, model resolution, and tool schema.
+//   - Official `advisorHeld.refused`: session latch — once the advisor entry
+//     has been refused, advisorModel resolution returns undefined (official
+//     `Qqt` analog gate in claude.ts) so the advisor schema is not re-added
+//     for the rest of the session, even when the org-wide kill did not fire.
+// ---------------------------------------------------------------------------
+let advisorOrgDisabled = false
+let advisorEntryRefused = false
+
+/**
+ * Latch the advisor-entry refusal for the session (official
+ * `Ue.advisorHeld={…,refused:!0}` plus `if(vtt(hr))Yqt()`).
+ *
+ * @param organizationWide - true when the 400 message matched the official
+ *   `vtt` org-wide shape ("not available for this organization") — arms the
+ *   process-wide kill-switch (official `Yqt()`).
+ */
+export function markAdvisorEntryRefused(organizationWide: boolean): void {
+  advisorEntryRefused = true
+  if (organizationWide) {
+    advisorOrgDisabled = true
+  }
+}
+
+/** Whether the advisor entry was refused this session (official `advisorHeld.refused`). */
+export function isAdvisorEntryRefused(): boolean {
+  return advisorEntryRefused
+}
+
+/** Whether the org-wide kill-switch is armed (official `Vqt`). */
+export function isAdvisorOrgDisabled(): boolean {
+  return advisorOrgDisabled
+}
+
+/** @internal Test-only reset for the module-scope refusal latches. */
+export function _resetAdvisorRefusalStateForTesting(): void {
+  advisorEntryRefused = false
+  advisorOrgDisabled = false
+}
+
 export function isAdvisorEnabled(): boolean {
   // Official 2.1.276 gate, byte-verified (v276 main bundle):
   //   yct(): if(a.CLAUDE_CODE_DISABLE_ADVISOR_TOOL||Vqt)return!1;
@@ -71,10 +126,16 @@ export function isAdvisorEnabled(): boolean {
   //   Bb():  if(!yct())return!1;
   //          if(a.CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL)return!0;
   //          return I("tengu_sage_compass2",{}).enabled??!1
-  // The hipaa-taint arm (TM) and the org-refused kill-switch (Vqt) are
-  // omitted by design — OCC has no classifier taint registry and no
-  // advisor-entry-refused telemetry loop (same omission as betas.ts).
+  // The hipaa-taint arm (TM) is omitted by design — OCC has no classifier
+  // taint registry (same omission as betas.ts). The org-refused kill-switch
+  // (Vqt) IS implemented below via the advisor-entry-refused retry loop
+  // (services/api/advisorRetry.ts).
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ADVISOR_TOOL)) {
+    return false
+  }
+  // Official 2.1.276 `yct`: the org-wide kill-switch (`Vqt`) disables the
+  // advisor everywhere, same as the CLAUDE_CODE_DISABLE_ADVISOR_TOOL env var.
+  if (advisorOrgDisabled) {
     return false
   }
   // Strict firstParty: the official yct() requires He()==="firstParty" —

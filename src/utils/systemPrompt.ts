@@ -7,6 +7,7 @@ import type { ToolUseContext } from '../Tool.js'
 import type { AgentDefinition } from '../tools/AgentTool/loadAgentsDir.js'
 import { isBuiltInAgent } from '../tools/AgentTool/loadAgentsDir.js'
 import { isEnvTruthy } from './envUtils.js'
+import { splitCustomSystemPromptAtBoundary } from './systemPromptBoundary.js'
 import { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
 
 export { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
@@ -112,11 +113,15 @@ export function buildEffectiveSystemPrompt({
     ])
   }
 
+  // CC 2.1.276 (ITEM S): official v276 applies the boundary split (`sfe`
+  // @198043890) at EVERY custom-system-prompt embedding site (@198045791
+  // analysis, @211625532 analysisOnly, @211903676 main), so this second OCC
+  // embedding site splits too — see src/utils/systemPromptBoundary.ts.
   return asSystemPrompt([
     ...(agentSystemPrompt
       ? [agentSystemPrompt]
       : customSystemPrompt
-        ? [customSystemPrompt]
+        ? splitCustomSystemPromptAtBoundary(customSystemPrompt)
         : defaultSystemPrompt),
     ...(appendSystemPrompt ? [appendSystemPrompt] : []),
   ])

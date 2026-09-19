@@ -25,16 +25,19 @@ type Props = {
   planContent?: string;
   isTranscriptMode?: boolean;
   timestamp?: string;
+  /** CC 2.1.275 ITEM O: uuid of the rendered message, threaded to UserPromptMessage. */
+  messageId?: string;
 };
 export function UserTextMessage(t0) {
-  const $ = _c(49);
+  const $ = _c(50);
   const {
     addMargin,
     param,
     verbose,
     planContent,
     isTranscriptMode,
-    timestamp
+    timestamp,
+    messageId
   } = t0;
   if (param.text.trim() === NO_CONTENT_MESSAGE) {
     return null;
@@ -260,12 +263,13 @@ export function UserTextMessage(t0) {
     }
   }
   let t1;
-  if ($[44] !== addMargin || $[45] !== isTranscriptMode || $[46] !== param || $[47] !== timestamp) {
-    t1 = <UserPromptMessage addMargin={addMargin} param={param} isTranscriptMode={isTranscriptMode} timestamp={timestamp} />;
+  if ($[44] !== addMargin || $[45] !== isTranscriptMode || $[46] !== param || $[47] !== timestamp || $[49] !== messageId) {
+    t1 = <UserPromptMessage addMargin={addMargin} param={param} isTranscriptMode={isTranscriptMode} timestamp={timestamp} messageId={messageId} />;
     $[44] = addMargin;
     $[45] = isTranscriptMode;
     $[46] = param;
     $[47] = timestamp;
+    $[49] = messageId;
     $[48] = t1;
   } else {
     t1 = $[48];

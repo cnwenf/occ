@@ -161,6 +161,14 @@ export function monotonicDurationMs(start: number, end: number): number {
   return end >= start ? end - start : 0
 }
 
+// CC 2.1.276 (ITEM S): implementation moved to the import-cycle-neutral
+// src/utils/systemPromptBoundary.ts so buildEffectiveSystemPrompt
+// (src/utils/systemPrompt.ts) can share it — official v276 applies `sfe` at
+// EVERY custom-system-prompt embedding site. Re-exported here for existing
+// importers/tests.
+export { splitCustomSystemPromptAtBoundary } from './utils/systemPromptBoundary.js'
+import { splitCustomSystemPromptAtBoundary } from './utils/systemPromptBoundary.js'
+
 export type QueryEngineConfig = {
   cwd: string
   tools: Tools
@@ -375,7 +383,12 @@ export class QueryEngine {
         : null
 
     const systemPrompt = asSystemPrompt([
-      ...(customPrompt !== undefined ? [customPrompt] : defaultSystemPrompt),
+      // CC 2.1.276 (ITEM S): a custom prompt is split at the dynamic-boundary
+      // marker so the static half can take the 'global' cache scope — mirrors
+      // the official `typeof s==="string"?sfe(s):Array.isArray(s)?s:L`.
+      ...(customPrompt !== undefined
+        ? splitCustomSystemPromptAtBoundary(customPrompt)
+        : defaultSystemPrompt),
       ...(memoryMechanicsPrompt ? [memoryMechanicsPrompt] : []),
       ...(appendSystemPrompt ? [appendSystemPrompt] : []),
     ])

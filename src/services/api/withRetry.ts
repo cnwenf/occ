@@ -50,6 +50,7 @@ import {
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import {
   extractConnectionErrorDetails,
+  isAdvisorEntryRefusedError,
   isImageUnprocessableError,
 } from './errorUtils.js'
 
@@ -213,6 +214,17 @@ interface RetryOptions {
     messageIdx: number
     contentIdx: number
   } | null
+  /**
+   * 2.1.276 advisor hotfix: when the API/gateway rejects the advisor tool
+   * entry with a 400 (official `TPe` classifier — e.g. a proxy that does not
+   * recognize the `advisor_20260301` tool tag), the retry loop calls this to
+   * strip the advisor schema/header/message-blocks from the request and
+   * retry once, immediately. Returns true when the request was stripped and
+   * must be retried; the handler is one-shot per request (official `Wvt`).
+   * Mirrors the official `zHe`, which is wired FIRST in both fatal-400
+   * chains: `return zHe(Ri)??GHe(Ri,"stream")??Pd(Ri)??zy(Ri)??sl(Ri)`.
+   */
+  retryAdvisorEntryRefused?: (error: APIError) => boolean
 }
 
 export class CannotRetryError extends Error {
@@ -588,6 +600,24 @@ export async function* withRetry<T>(
           attempt--
           continue
         }
+      }
+
+      // 2.1.276 advisor hotfix: advisor-entry-refused 400 (official `TPe`
+      // classifier) — strip the advisor tool from the request and retry once
+      // (official `zHe`). The official wires zHe FIRST in its fatal-400
+      // chains (`zHe(Ri)??GHe(Ri,"stream")??…`), i.e. exactly when the error
+      // is about to become non-retryable — a 400 fails `shouldRetry` below,
+      // so this hook sits immediately before that gate. Like the media strip
+      // above, the retry does not count against the retry budget; the
+      // handler's one-shot latch (official `Wvt`) bounds it to a single
+      // extra attempt.
+      if (
+        error instanceof APIError &&
+        isAdvisorEntryRefusedError(error) &&
+        options.retryAdvisorEntryRefused?.(error)
+      ) {
+        attempt--
+        continue
       }
 
       // Only retry if the error indicates we should

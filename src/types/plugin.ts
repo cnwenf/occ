@@ -6,6 +6,10 @@ import type {
   PluginAuthor,
   PluginManifest,
 } from '../utils/plugins/schemas.js'
+import {
+  redactCredentialsInText,
+  redactUrlCredentials,
+} from '../utils/redactUrl.js'
 import type { HooksSettings } from '../utils/settings/types.js'
 
 export type { PluginAuthor, PluginManifest, CommandMetadata }
@@ -298,8 +302,18 @@ export type PluginLoadResult = {
 /**
  * Helper function to get a display message from any PluginError
  * Useful for logging and simple error displays
+ *
+ * Security (2.1.275 upstream port): every URL-typed field is scrubbed with
+ * `redactUrlCredentials` and the assembled message is swept with
+ * `redactCredentialsInText`, so credentials embedded in plugin/marketplace
+ * URLs can never reach a renderer or log via an error message. Downstream
+ * consumers are safe by default.
  */
 export function getPluginErrorMessage(error: PluginError): string {
+  return redactCredentialsInText(buildPluginErrorMessage(error))
+}
+
+function buildPluginErrorMessage(error: PluginError): string {
   switch (error.type) {
     case 'generic-error':
       return error.error
@@ -308,11 +322,11 @@ export function getPluginErrorMessage(error: PluginError): string {
     case 'path-traversal':
       return `Path escapes plugin directory: ${error.path} (${error.component})`
     case 'git-auth-failed':
-      return `Git authentication failed (${error.authType}): ${error.gitUrl}`
+      return `Git authentication failed (${error.authType}): ${redactUrlCredentials(error.gitUrl)}`
     case 'git-timeout':
-      return `Git ${error.operation} timeout: ${error.gitUrl}`
+      return `Git ${error.operation} timeout: ${redactUrlCredentials(error.gitUrl)}`
     case 'network-error':
-      return `Network error: ${error.url}${error.details ? ` - ${error.details}` : ''}`
+      return `Network error: ${redactUrlCredentials(error.url)}${error.details ? ` - ${error.details}` : ''}`
     case 'manifest-parse-error':
       return `Manifest parse error: ${error.parseError}`
     case 'manifest-validation-error':
@@ -336,7 +350,7 @@ export function getPluginErrorMessage(error: PluginError): string {
     case 'component-load-failed':
       return `${error.component} load failed from ${error.path}: ${error.reason}`
     case 'mcpb-download-failed':
-      return `Failed to download MCPB from ${error.url}: ${error.reason}`
+      return `Failed to download MCPB from ${redactUrlCredentials(error.url)}: ${error.reason}`
     case 'mcpb-extract-failed':
       return `Failed to extract MCPB ${error.mcpbPath}: ${error.reason}`
     case 'mcpb-invalid-manifest':

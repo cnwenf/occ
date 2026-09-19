@@ -2,6 +2,7 @@ import { execa } from 'execa'
 import { readFile, realpath } from 'fs/promises'
 import { homedir } from 'os'
 import { delimiter, join, posix, win32 } from 'path'
+import { getOtelHeadersLastFailure } from './auth.js'
 import { checkGlobalInstallPermissions } from './autoUpdater.js'
 import { isInBundledMode } from './bundledMode.js'
 import {
@@ -43,6 +44,7 @@ import {
   getShellConfigPaths,
 } from './shellConfig.js'
 import { jsonParse } from './slowOperations.js'
+import { sliceHead } from './truncateMiddle.js'
 import { which } from './which.js'
 
 export type InstallationType =
@@ -316,6 +318,25 @@ async function detectMultipleInstallations(): Promise<
   return installations
 }
 
+/** Official `l8t=500` (v2.1.276 @190581354) — doctor message truncation cap. */
+const OTEL_HEADERS_FAILURE_DOCTOR_MESSAGE_MAX_LENGTH = 500
+
+/**
+ * The /status warning for a failed otelHeadersHelper (issue/fix strings
+ * byte-exact from the v2.1.276 binary @96426392/@96426464; the official
+ * truncates the failure message via `j2(r,l8t)` = surrogate-safe head slice
+ * to 500 chars, @190581258).
+ */
+export function buildOtelHeadersFailureWarning(lastFailure: string): {
+  issue: string
+  fix: string
+} {
+  return {
+    issue: `otelHeadersHelper is configured but its last invocation failed: ${sliceHead(lastFailure, OTEL_HEADERS_FAILURE_DOCTOR_MESSAGE_MAX_LENGTH)}`,
+    fix: 'Run the configured helper manually and confirm it prints a JSON object of string header values. If the value is a file path, confirm the file exists and is executable.',
+  }
+}
+
 async function detectConfigurationIssues(
   type: InstallationType,
 ): Promise<Array<{ issue: string; fix: string }>> {
@@ -363,6 +384,17 @@ async function detectConfigurationIssues(
   } catch {
     // ENOENT (no managed settings) / parse error — not this check's concern.
     // Parse errors are surfaced by the settings loader itself.
+  }
+
+  // 2.1.274/2.1.275: the /status entry the otel-headers-helper-failed startup
+  // notification points at (official v2.1.276 binary @201240063 — pushed
+  // immediately after the strictPluginOnlyCustomization warnings, before the
+  // development-mode early return). getOtelHeadersLastFailure() is null
+  // unless a helper is configured AND its last invocation failed (official
+  // `PSt()` gating).
+  const otelHeadersLastFailure = getOtelHeadersLastFailure()
+  if (otelHeadersLastFailure !== null) {
+    warnings.push(buildOtelHeadersFailureWarning(otelHeadersLastFailure))
   }
 
   const config = getGlobalConfig()

@@ -64,6 +64,10 @@ import type {
 } from '../types/message.js'
 import type { QueueOperationMessage } from '../types/messageQueueTypes.js'
 import { uniq } from './array.js'
+import {
+  isValidAttachmentPayload,
+  logDroppedTranscriptAttachments,
+} from './attachments.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { updateSessionName } from './concurrentSessions.js'
 import { getCwd } from './cwd.js'
@@ -95,6 +99,10 @@ import {
 import { getSettings_DEPRECATED } from './settings/settings.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 import type { ContentReplacementRecord } from './toolResultStorage.js'
+import {
+  createTranscriptAdmissionValidator,
+  isPlainObjectValue,
+} from './transcriptAdmission.js'
 import { validateUuid } from './uuid.js'
 
 // Cache MACRO.VERSION at module level to work around bun --define bug in async contexts
@@ -3697,6 +3705,15 @@ export async function loadTranscriptFile(
   // Last-wins — later entries supersede.
   let contextCollapseSnapshot: ContextCollapseSnapshotEntry | undefined
 
+  // CC 2.1.275 (M2/M3): load-time admission validator (official v276 `Vlr`
+  // port) — gates malformed user/assistant rows before they reach the
+  // messages map and re-chains survivors around dropped rows after the loop.
+  const admission = createTranscriptAdmissionValidator()
+  // CC 2.1.275 (M1): attachment rows dropped by the official v276 payload
+  // validator (`Lms`/`xW` port). The byte-exact error log fires once after
+  // the loop when > 0.
+  let droppedAttachmentCount = 0
+
   try {
     // For large transcripts, avoid materializing megabytes of stale content.
     // Single forward chunked read: attribution-snapshot lines are skipped at
@@ -3767,6 +3784,12 @@ export async function loadTranscriptFile(
         Buffer.from(metadataLines.join('\n')),
       )
       for (const entry of metaEntries) {
+        // CC 2.1.275 (M3): a bare `null` JSONL line (interrupted/partial
+        // write) parses to null — accessing entry.type would throw and abort
+        // the whole load via the outer catch. This is the best-effort
+        // pre-boundary metadata recovery path, so the skip is silent; drop
+        // accounting lives in the main loop's admission validator.
+        if (!isPlainObjectValue(entry)) continue
         if (entry.type === 'summary' && entry.leafUuid) {
           summaries.set(entry.leafUuid, entry.summary)
         } else if (entry.type === 'custom-title' && entry.sessionId) {
@@ -3803,6 +3826,16 @@ export async function loadTranscriptFile(
     const progressBridge = new Map<UUID, UUID | null>()
 
     for (const entry of entries) {
+      // CC 2.1.275 (M3): a bare `null` JSONL line (interrupted/partial write)
+      // parses to null. Before this gate it threw inside isTranscriptMessage
+      // (entry.type access), the outer catch swallowed it, and the WHOLE
+      // transcript loaded empty. Official `Qcr(e){return te(e)}` (@200794446)
+      // skips non-object rows silently; OCC also counts them as dropped rows
+      // via the admission validator so the official warn log reports them.
+      if (!isPlainObjectValue(entry)) {
+        admission.noteUnreadableRow()
+        continue
+      }
       // Legacy progress check runs before the Entry-typed else-if chain —
       // progress is not in the Entry union, so checking it after TypeScript
       // has narrowed `entry` intersects to `never`.
@@ -3822,6 +3855,28 @@ export async function loadTranscriptFile(
       if (isTranscriptMessage(entry)) {
         if (entry.parentUuid && progressBridge.has(entry.parentUuid)) {
           entry.parentUuid = progressBridge.get(entry.parentUuid) ?? null
+        }
+        // CC 2.1.275 (M1): attachment payload validation at the single load
+        // choke point (official v276 `xW` — every resume/preview/fork path
+        // funnels through loadTranscriptFile). Invalid attachment rows are
+        // dropped and counted; the byte-exact error log fires once after the
+        // loop. Disjoint from the admission gate below (which judges only
+        // user/assistant rows), so gate order is observationally identical.
+        if (
+          entry.type === 'attachment' &&
+          !isValidAttachmentPayload((entry as { attachment?: unknown }).attachment)
+        ) {
+          droppedAttachmentCount += 1
+          continue
+        }
+        // CC 2.1.275 (M2/M3): admission gate (official v276 `Vlr.admit`) —
+        // drops unreadable user/assistant rows (message:null, non-array
+        // content, all-junk content blocks) and strips malformed content
+        // blocks in place BEFORE the row can reach render/API prep. Runs
+        // after the progressBridge parentUuid rewrite (official ordering:
+        // admission follows the rewrite) and before messages.set.
+        if (!admission.admit(entry, messages)) {
+          continue
         }
         messages.set(entry.uuid, entry)
         // Compact boundary: prior marble-origami-commit entries reference
@@ -3880,6 +3935,15 @@ export async function loadTranscriptFile(
   } catch {
     // File doesn't exist or can't be read
   }
+
+  // CC 2.1.275 (M1): byte-exact official `xW` error log when attachment rows
+  // were dropped, then (M2/M3) official `Vlr.finish` — re-chains survivors
+  // whose parentUuid pointed at a dropped row (nearest surviving ancestor,
+  // cycle-safe) and emits the official warn log. Both MUST run before
+  // applyPreservedSegmentRelinks and leaf computation so those see the
+  // repaired chain.
+  logDroppedTranscriptAttachments(droppedAttachmentCount)
+  admission.finish(messages)
 
   applyPreservedSegmentRelinks(messages)
   applySnipRemovals(messages)

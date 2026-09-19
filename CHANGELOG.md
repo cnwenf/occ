@@ -7,21 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. **Now tracking Claude Code
-`2.1.276`** — 2.1.276 fully aligned; 2.1.271–2.1.275 partial (the latest
-OCC-90 round, 2026-09-19: the byte-verified 2.1.276 advisor proxy-400 fix —
-advisor resolution now gated on a first-party `ANTHROPIC_BASE_URL` (official
-`Ia()`), the growthbook key corrected to `tengu_sage_compass2`, strict
-firstParty advisor enablement with the
-`CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL` env override, and the
-`_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` arm — plus removal of the dead
-`src/services/api/src/` stub tree and a full 96-entry triage of 2.1.275; see
-`docs/upstream-version-gap-occ129.md`; the prior OCC-127 round, 2026-09-17:
-the MCP auth-stub description secret-leak fix — byte-verified
-display-sanitizer family port — plus NO-OP behavioral verification of the
-2.1.274 bash special-variable and worktree nested-expansion hardening;
-earlier rounds landed the 2.1.273 gateway-hint request headers, the spinner
-doubled-ellipsis guard, the shell-mode `!` insert fix, and the
-subshell-hidden dangerous-`rm` bypass fix; see
+`2.1.276`** — 2.1.276 fully aligned; 2.1.271–2.1.275 partial (the OCC-130
+round, 2026-09-19: byte-verified portable subset of 2.1.275 — ~95 changelog
+entries triaged — plus the 2.1.276 advisor entry-refused hotfix; three
+security fixes landed: npm-source plugin installs hardened with
+`npm pack --ignore-scripts` + SRI integrity verification, plugin/marketplace
+URL credential scrubbing, and a git-address parser hardening closing a
+blocklist bypass; full triage and forensics ledger in
+`docs/upstream-version-gap-occ130.md`; the parallel OCC-90 round,
+2026-09-19: the byte-verified 2.1.276 advisor proxy-400 fix — advisor
+resolution gated on a first-party `ANTHROPIC_BASE_URL` (official `Ia()`),
+the growthbook key corrected to `tengu_sage_compass2`, strict firstParty
+advisor enablement with the `CLAUDE_CODE_ENABLE_EXPERIMENTAL_ADVISOR_TOOL`
+env override, and the `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL` arm — plus
+removal of the dead `src/services/api/src/` stub tree and a full 96-entry
+triage of 2.1.275, see `docs/upstream-version-gap-occ129.md`; the prior
+OCC-127 round, 2026-09-17: the MCP auth-stub description secret-leak fix —
+byte-verified display-sanitizer family port — plus NO-OP behavioral
+verification of the 2.1.274 bash special-variable and worktree
+nested-expansion hardening; earlier rounds landed the 2.1.273 gateway-hint
+request headers, the spinner doubled-ellipsis guard, the shell-mode `!`
+insert fix, and the subshell-hidden dangerous-`rm` bypass fix; see
 `docs/upstream-version-gap-occ127.md`). **Last fully caught up through
 Claude Code `2.1.270`** (the OCC-124 round, 2026-09-14 — official advanced
 `2.1.269` → `2.1.270` (1 entry: the read-only git Bash permission regression

@@ -92,6 +92,10 @@ export const KEYBINDING_ACTIONS = [
   'chat:fastMode',
   'chat:thinkingToggle',
   'chat:submit',
+  // 2.1.275 (ITEM O): official allowlist Lme @195284784 in binary order —
+  // ..."chat:submit","chat:queueSubmit","chat:sendNow","chat:newline"...
+  'chat:queueSubmit',
+  'chat:sendNow',
   'chat:newline',
   'chat:clearInput',
   'chat:clearScreen',

@@ -3,6 +3,7 @@ import { execFile, spawn } from 'child_process'
 import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import * as path from 'path'
+import { StringDecoder } from 'string_decoder'
 import { logEvent } from 'src/services/analytics/index.js'
 import { fileURLToPath } from 'url'
 import { isInBundledMode } from './bundledMode.js'
@@ -95,6 +96,134 @@ export function ripgrepCommand(): {
 
 const MAX_BUFFER_SIZE = 20_000_000 // 20MB; large monorepos can have 200k+ files
 
+// 2.1.275 (binary Ljt): capped output is decoded in 1MB slices. Accumulating
+// into one growing string is O(n²) in copy work — a 20MB flood stalled the
+// event loop (and could OOM) before ripgrep was ever reaped.
+const DECODE_CHUNK_SIZE = 1_048_576
+
+// Node/Bun's own code for an execFile maxBuffer overflow. The embedded-rg
+// spawn path reports overflow with the same code so `handleResult` has a
+// single discriminator for both paths.
+const MAXBUFFER_ERROR_CODE = 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+
+// SIGTERM may be ignored while ripgrep is blocked in uninterruptible I/O;
+// escalate to SIGKILL after this delay.
+const KILL_ESCALATION_DELAY_MS = 5_000
+
+/**
+ * Byte-capped, incrementally-decoded output accumulator.
+ *
+ * Mirrors the official 2.1.275 `CappedOutputBuffer` (binary `eqe`): bytes are
+ * appended to a bounded budget, decoded through a `StringDecoder` in
+ * `DECODE_CHUNK_SIZE` slices, and stored as `pieces[]` so peak memory stays
+ * proportional to the cap instead of to the concat churn of one big string.
+ * A `StringDecoder` (not `TextDecoder`) is used so a multi-byte character
+ * split across a slice or chunk boundary decodes intact.
+ */
+export class CappedOutputBuffer {
+  readonly maxBytes: number
+  truncated = false
+  private readonly decoder = new StringDecoder('utf8')
+  private pieces: string[] = []
+  private byteLength = 0
+
+  constructor(maxBytes: number) {
+    this.maxBytes = maxBytes
+  }
+
+  /**
+   * Store `chunk`, clipping it to the remaining budget.
+   *
+   * @returns true exactly once — on the chunk that crossed the cap. Later
+   *   chunks are dropped and return false (the caller kills the child on the
+   *   first true, so nothing more should arrive).
+   */
+  append(chunk: Buffer): boolean {
+    if (this.truncated) {
+      return false
+    }
+    const remaining = this.maxBytes - this.byteLength
+    const fits = chunk.length <= remaining
+    const accepted = fits ? chunk : chunk.subarray(0, remaining)
+    this.byteLength += accepted.length
+    for (let offset = 0; offset < accepted.length; offset += DECODE_CHUNK_SIZE) {
+      this.pieces.push(
+        this.decoder.write(
+          accepted.subarray(offset, offset + DECODE_CHUNK_SIZE),
+        ),
+      )
+    }
+    if (!fits) {
+      this.truncated = true
+    }
+    return !fits
+  }
+
+  /** Drain the accumulated text, flushing any incomplete trailing sequence. */
+  takeText(): string {
+    const pieces = this.pieces
+    this.pieces = []
+    pieces.push(this.decoder.end())
+    return pieces.join('')
+  }
+
+  /** Drop the buffered text without decoding a flush (error path). */
+  release(): void {
+    this.pieces = []
+  }
+}
+
+/**
+ * The `<stream> maxBuffer length exceeded` error Node/Bun's execFile raises on
+ * overflow. The embedded-rg spawn path synthesizes the same shape so
+ * `handleResult` treats both paths identically.
+ */
+function maxBufferError(stream: 'stdout' | 'stderr'): ExecFileException {
+  const error: ExecFileException = new Error(
+    `${stream} maxBuffer length exceeded`,
+  )
+  error.code = MAXBUFFER_ERROR_CODE
+  return error
+}
+
+/**
+ * 2.1.275 (binary `oqe`): collecting ripgrep output itself failed — a handler
+ * threw mid-stream. Distinct from "no matches" and from "output over cap".
+ */
+export class RipgrepOutputError extends Error {
+  name = 'RipgrepOutputError'
+}
+
+/**
+ * Byte-exact 2.1.275 message (binary `Xjt`). `cause` is normalized to an
+ * Error first (binary `ue`) so `.message` always exists.
+ */
+function ripgrepOutputCollectionError(cause: unknown): RipgrepOutputError {
+  const error = cause instanceof Error ? cause : new Error(String(cause))
+  return new RipgrepOutputError(
+    `Failed to collect ripgrep output: ${error.message}. If the search matches a very large amount of text, try a more specific path or pattern.`,
+    { cause: error },
+  )
+}
+
+/**
+ * 2.1.275 (binary `Zjt`): ripgrep blew the output cap before a single
+ * complete line was read. Without this the caller saw `[]` and rendered
+ * "No matches found" / "No files found" for a search that never really ran —
+ * the misreport fixed upstream (a >20MB stderr flood of e.g. per-file
+ * permission warnings, or one extremely long matching line on stdout).
+ */
+export class RipgrepOutputTooLargeError extends Error {
+  constructor(stream: 'stdout' | 'stderr') {
+    super(
+      stream === 'stdout'
+        ? `Ripgrep output passed the ${MAX_BUFFER_SIZE / 1e6}MB limit before a single complete line was read, so there are no usable results: at least one matching line is extremely long. Try a more specific pattern or path, or exclude very large files.`
+        : `Ripgrep produced more than ${MAX_BUFFER_SIZE / 1e6}MB of error output (for example per-file permission warnings) before any result line, so the search is incomplete. Try a more specific path.`,
+    )
+    this.name = 'RipgrepOutputTooLargeError'
+  }
+}
+
 /**
  * Check if an error is EAGAIN (resource temporarily unavailable).
  * This happens in resource-constrained environments (Docker, CI) when
@@ -175,6 +304,211 @@ function checkRipgrepNullByte(
   return null
 }
 
+// ---------------------------------------------------------------------------
+// Embedded-rg (argv0) output collection — 2.1.275 `Wjt` collect side
+// ---------------------------------------------------------------------------
+// Module-level named handlers over a state object (the same shape
+// readFileInRange's streaming path uses) so each stays small and testable.
+
+export type RipgrepCollectCallback = (
+  error: ExecFileException | null,
+  stdout: string,
+  stderr: string,
+) => void
+
+export type RipgrepCollectorOptions = {
+  callback: RipgrepCollectCallback
+  /** Kill escalation deadline for the whole run (ms). */
+  timeoutMs: number
+  /** Per-stream byte cap. Defaults to MAX_BUFFER_SIZE; tests may lower it. */
+  maxBytes?: number
+}
+
+type CollectorState = {
+  child: ChildProcess
+  stdoutBuffer: CappedOutputBuffer
+  stderrBuffer: CappedOutputBuffer
+  callback: RipgrepCollectCallback
+  settled: boolean
+  timeoutId: ReturnType<typeof setTimeout> | undefined
+  killTimeoutId: ReturnType<typeof setTimeout> | undefined
+}
+
+/** Settle exactly once — on Windows both 'close' and 'error' can fire. */
+function settleCollector(
+  state: CollectorState,
+  error: ExecFileException | null,
+  stdout: string,
+  stderr: string,
+): void {
+  if (state.settled) {
+    return
+  }
+  state.settled = true
+  clearTimeout(state.timeoutId)
+  clearTimeout(state.killTimeoutId)
+  state.callback(error, stdout, stderr)
+}
+
+/** SIGKILL cannot be caught or ignored; swallow ESRCH on an already-dead child. */
+function killCollectorChild(state: CollectorState): void {
+  try {
+    state.child.kill('SIGKILL')
+  } catch {
+    // Child already reaped — nothing to kill.
+  }
+}
+
+/**
+ * A collector handler threw (binary `ft`): drop the buffered text, settle with
+ * a RipgrepOutputError so the promise always resolves or rejects, then kill.
+ */
+function failCollector(state: CollectorState, cause: unknown): void {
+  if (state.settled) {
+    return
+  }
+  state.stdoutBuffer.release()
+  state.stderrBuffer.release()
+  settleCollector(state, ripgrepOutputCollectionError(cause), '', '')
+  killCollectorChild(state)
+}
+
+/**
+ * The overflow error for this run, or undefined when neither stream truncated.
+ * stdout wins — it is the stream that carries results, and the official
+ * collector kills the child the instant stdout crosses the cap.
+ */
+function collectorOverflowError(
+  state: CollectorState,
+): ExecFileException | undefined {
+  if (state.stdoutBuffer.truncated) {
+    return maxBufferError('stdout')
+  }
+  if (state.stderrBuffer.truncated) {
+    return maxBufferError('stderr')
+  }
+  return undefined
+}
+
+function collectorOnStdout(state: CollectorState, chunk: Buffer): void {
+  try {
+    // Cap exceeded → kill immediately instead of draining a flood we will
+    // never return (binary: `if(!settled && stdoutBuf.append(chunk)) kill()`).
+    if (!state.settled && state.stdoutBuffer.append(chunk)) {
+      killCollectorChild(state)
+    }
+  } catch (cause) {
+    failCollector(state, cause)
+  }
+}
+
+function collectorOnStderr(state: CollectorState, chunk: Buffer): void {
+  try {
+    // stderr is diagnostics only — cap it, but never kill a search that is
+    // still producing results.
+    if (!state.settled) {
+      state.stderrBuffer.append(chunk)
+    }
+  } catch (cause) {
+    failCollector(state, cause)
+  }
+}
+
+function collectorOnClose(
+  state: CollectorState,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+): void {
+  try {
+    if (state.settled) {
+      return
+    }
+    const stdout = state.stdoutBuffer.takeText()
+    const stderr = state.stderrBuffer.takeText()
+    const overflow = collectorOverflowError(state)
+    // 0 = matches found, 1 = no matches (both are success) — but a truncated
+    // stream is never a silent success.
+    if (code === 0 || code === 1) {
+      settleCollector(state, overflow ?? null, stdout, stderr)
+      return
+    }
+    const error: ExecFileException = new Error(
+      `ripgrep exited with code ${code}`,
+    )
+    error.code = code ?? undefined
+    error.signal = signal ?? undefined
+    settleCollector(state, overflow ?? error, stdout, stderr)
+  } catch (cause) {
+    failCollector(state, cause)
+  }
+}
+
+function collectorOnError(state: CollectorState, err: NodeJS.ErrnoException): void {
+  try {
+    if (state.settled) {
+      return
+    }
+    settleCollector(
+      state,
+      collectorOverflowError(state) ?? err,
+      state.stdoutBuffer.takeText(),
+      state.stderrBuffer.takeText(),
+    )
+  } catch (cause) {
+    failCollector(state, cause)
+  }
+}
+
+/**
+ * Attach capped stdout/stderr collectors, the timeout kill escalation, and the
+ * settle-once close/error handlers to an already-spawned ripgrep child.
+ *
+ * Exported for tests: the embedded (argv0) branch is unreachable under
+ * `bun test` because the runtime is not a compiled binary.
+ */
+export function startRipgrepCollector(
+  child: ChildProcess,
+  options: RipgrepCollectorOptions,
+): ChildProcess {
+  const maxBytes = options.maxBytes ?? MAX_BUFFER_SIZE
+  const state: CollectorState = {
+    child,
+    stdoutBuffer: new CappedOutputBuffer(maxBytes),
+    stderrBuffer: new CappedOutputBuffer(maxBytes),
+    callback: options.callback,
+    settled: false,
+    timeoutId: undefined,
+    killTimeoutId: undefined,
+  }
+
+  // Set up timeout with SIGKILL escalation.
+  // SIGTERM alone may not kill ripgrep if it's blocked in uninterruptible I/O
+  // (e.g., deep filesystem traversal). If SIGTERM doesn't work within 5 seconds,
+  // escalate to SIGKILL which cannot be caught or ignored.
+  // On Windows, child.kill('SIGTERM') throws; use default signal.
+  state.timeoutId = setTimeout(() => {
+    if (process.platform === 'win32') {
+      child.kill()
+    } else {
+      child.kill('SIGTERM')
+      state.killTimeoutId = setTimeout(
+        c => c.kill('SIGKILL'),
+        KILL_ESCALATION_DELAY_MS,
+        child,
+      )
+    }
+  }, options.timeoutMs)
+
+  child.stdout?.on('data', (chunk: Buffer) => collectorOnStdout(state, chunk))
+  child.stderr?.on('data', (chunk: Buffer) => collectorOnStderr(state, chunk))
+  child.on('close', (code, signal) => collectorOnClose(state, code, signal))
+  child.on('error', (err: NodeJS.ErrnoException) =>
+    collectorOnError(state, err),
+  )
+
+  return child
+}
+
 function ripGrepRaw(
   args: string[],
   target: string,
@@ -211,77 +545,9 @@ function ripGrepRaw(
       windowsHide: true,
     })
 
-    let stdout = ''
-    let stderr = ''
-    let stdoutTruncated = false
-    let stderrTruncated = false
-
-    child.stdout?.on('data', (data: Buffer) => {
-      if (!stdoutTruncated) {
-        stdout += data.toString()
-        if (stdout.length > MAX_BUFFER_SIZE) {
-          stdout = stdout.slice(0, MAX_BUFFER_SIZE)
-          stdoutTruncated = true
-        }
-      }
-    })
-
-    child.stderr?.on('data', (data: Buffer) => {
-      if (!stderrTruncated) {
-        stderr += data.toString()
-        if (stderr.length > MAX_BUFFER_SIZE) {
-          stderr = stderr.slice(0, MAX_BUFFER_SIZE)
-          stderrTruncated = true
-        }
-      }
-    })
-
-    // Set up timeout with SIGKILL escalation.
-    // SIGTERM alone may not kill ripgrep if it's blocked in uninterruptible I/O
-    // (e.g., deep filesystem traversal). If SIGTERM doesn't work within 5 seconds,
-    // escalate to SIGKILL which cannot be caught or ignored.
-    // On Windows, child.kill('SIGTERM') throws; use default signal.
-    let killTimeoutId: ReturnType<typeof setTimeout> | undefined
-    const timeoutId = setTimeout(() => {
-      if (process.platform === 'win32') {
-        child.kill()
-      } else {
-        child.kill('SIGTERM')
-        killTimeoutId = setTimeout(c => c.kill('SIGKILL'), 5_000, child)
-      }
-    }, timeout)
-
-    // On Windows, both 'close' and 'error' can fire for the same process
-    // (e.g. when AbortSignal kills the child). Guard against double-callback.
-    let settled = false
-    child.on('close', (code, signal) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeoutId)
-      clearTimeout(killTimeoutId)
-      if (code === 0 || code === 1) {
-        // 0 = matches found, 1 = no matches (both are success)
-        callback(null, stdout, stderr)
-      } else {
-        const error: ExecFileException = new Error(
-          `ripgrep exited with code ${code}`,
-        )
-        error.code = code ?? undefined
-        error.signal = signal ?? undefined
-        callback(error, stdout, stderr)
-      }
-    })
-
-    child.on('error', (err: NodeJS.ErrnoException) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeoutId)
-      clearTimeout(killTimeoutId)
-      const error: ExecFileException = err
-      callback(error, stdout, stderr)
-    })
-
-    return child
+    // 2.1.275: capped, incrementally-decoded collection with kill-on-overflow
+    // and settle-once handlers — never a silent success on truncated output.
+    return startRipgrepCollector(child, { callback, timeoutMs: timeout })
   }
 
   // For non-embedded ripgrep, use execFile
@@ -459,6 +725,13 @@ export async function ripGrep(
         return
       }
 
+      // 2.1.275 (binary `o8`): output collection itself failed — surface it
+      // instead of falling through to a "no matches" style result.
+      if (error instanceof RipgrepOutputError) {
+        reject(error)
+        return
+      }
+
       // Critical errors that indicate ripgrep is broken, not "no matches"
       // These should be surfaced to the user rather than silently returning empty results
       const CRITICAL_ERROR_CODES = ['ENOENT', 'EACCES', 'EPERM']
@@ -467,11 +740,16 @@ export async function ripGrep(
         return
       }
 
+      const isBufferOverflow = error.code === MAXBUFFER_ERROR_CODE
+
       // If we hit EAGAIN and haven't retried yet, retry with single-threaded mode
       // Note: We only use -j 1 for this specific retry, not for future calls.
       // Persisting single-threaded mode globally caused timeouts on large repos
       // where EAGAIN was just a transient startup error.
-      if (!isRetry && isEagainError(stderr)) {
+      // 2.1.275: an output-cap overflow whose truncated stderr happens to
+      // mention EAGAIN must NOT retry — the retry would flood the same way
+      // (binary: `!isRetry && !isBufferOverflow && isEagainError(stderr)`).
+      if (!isRetry && !isBufferOverflow && isEagainError(stderr)) {
         logForDebugging(
           `rg EAGAIN error detected, retrying with single-threaded mode (-j 1)`,
         )
@@ -481,7 +759,7 @@ export async function ripGrep(
           target,
           abortSignal,
           (retryError, retryStdout, retryStderr) => {
-            handleResult(retryError, retryStdout, retryStderr, true)
+            safeHandleResult(retryError, retryStdout, retryStderr, true)
           },
           true, // Force single-threaded mode for this retry only
         )
@@ -494,8 +772,6 @@ export async function ripGrep(
         error.signal === 'SIGTERM' ||
         error.signal === 'SIGKILL' ||
         error.code === 'ABORT_ERR'
-      const isBufferOverflow =
-        error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
 
       let lines: string[] = []
       if (hasOutput) {
@@ -519,6 +795,20 @@ export async function ripGrep(
       // callers may abort on every keystroke-after-debounce).
       if (error.code !== 2 && error.code !== 'ABORT_ERR') {
         logError(error)
+      }
+
+      // 2.1.275 (binary `o8`): the cap was hit before a single complete line
+      // was read, so `[]` would misreport the search as "no matches". The
+      // `startsWith('stderr')` discriminator matches Node/Bun's own execFile
+      // overflow message ("stderr maxBuffer length exceeded") — the system-rg
+      // warning-flood case.
+      if (isBufferOverflow && lines.length === 0 && options?.rejectOnInputError) {
+        reject(
+          new RipgrepOutputTooLargeError(
+            error.message.startsWith('stderr') ? 'stderr' : 'stdout',
+          ),
+        )
+        return
       }
 
       // If we timed out with no results, throw an error so Claude knows the search
@@ -550,8 +840,29 @@ export async function ripGrep(
       resolve(lines)
     }
 
+    // 2.1.275 (binary `o8`'s `w` wrapper): handleResult runs inside a
+    // child_process callback — a throw there escapes to the event loop and the
+    // promise never settles (the reported hang). Route every result, retry
+    // included, through this guard so the promise always settles.
+    const safeHandleResult = (
+      error: ExecFileException | null,
+      stdout: string,
+      stderr: string,
+      isRetry: boolean,
+    ): void => {
+      try {
+        handleResult(error, stdout, stderr, isRetry)
+      } catch (cause) {
+        if (cause instanceof RangeError) {
+          reject(ripgrepOutputCollectionError(cause))
+          return
+        }
+        reject(cause instanceof Error ? cause : new Error(String(cause)))
+      }
+    }
+
     ripGrepRaw(args, target, abortSignal, (error, stdout, stderr) => {
-      handleResult(error, stdout, stderr, false)
+      safeHandleResult(error, stdout, stderr, false)
     })
   })
 }

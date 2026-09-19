@@ -434,12 +434,12 @@ function ErrorsTabContent(t0) {
     const {
       action
     } = row;
-    bb77: switch (action.kind) {
+    switch (action.kind) {
       case "navigate":
         {
           setActiveTab(action.tab);
           setViewState(action.viewState);
-          break bb77;
+          break;
         }
       case "remove-extra-marketplace":
         {
@@ -459,7 +459,7 @@ function ErrorsTabContent(t0) {
           }));
           setActionMessage(`${figures.tick} Removed "${action.name}" from ${scopes} settings`);
           markPluginsChanged();
-          break bb77;
+          break;
         }
       case "remove-installed-marketplace":
         {
@@ -476,11 +476,11 @@ function ErrorsTabContent(t0) {
               setActionMessage(`Failed to remove "${action.name}": ${err instanceof Error ? err.message : String(err)}`);
             }
           })();
-          break bb77;
+          break;
         }
       case "managed-only":
         {
-          break bb77;
+          break;
         }
       case "none":
     }
@@ -633,11 +633,29 @@ function _temp3(s_0) {
 function _temp2(s) {
   return s.plugins.errors;
 }
-function getInitialViewState(parsedCommand: ParsedCommand): ViewState {
+// Exported for tests: port of the official `jy`@224148318 parsed-command →
+// initial-view router.
+export function getInitialViewState(parsedCommand: ParsedCommand): ViewState {
   switch (parsedCommand.type) {
     case 'help':
       return {
         type: 'help'
+      };
+    // Official jy@224148318: usage errors land on the menu; the message is
+    // surfaced via the initial `result` state (see PluginSettings below).
+    case 'usage-error':
+      return {
+        type: 'menu'
+      };
+    // Official jy@224148318: --marketplace offer-to-add flow.
+    case 'install-from-source':
+      return {
+        type: 'add-marketplace',
+        initialValue: parsedCommand.marketplaceSource,
+        confirmAdd: {
+          plugin: parsedCommand.plugin,
+          linkOrigin: false
+        }
       };
     case 'validate':
       return {
@@ -690,9 +708,17 @@ function getInitialViewState(parsedCommand: ParsedCommand): ViewState {
         };
       }
       if (parsedCommand.action === 'add') {
+        // Official jy@224148318: `marketplace add <target>` in CLI mode routes
+        // through the confirmation offer (confirmAdd.linkOrigin); bare
+        // `marketplace add` opens the plain input form.
         return {
           type: 'add-marketplace',
-          initialValue: parsedCommand.target
+          initialValue: parsedCommand.target,
+          ...(parsedCommand.target ? {
+            confirmAdd: {
+              linkOrigin: true
+            }
+          } : {})
         };
       }
       if (parsedCommand.action === 'remove') {
@@ -726,7 +752,7 @@ function getInitialTab(viewState: ViewState): TabId {
   return 'discover';
 }
 export function PluginSettings(t0) {
-  const $ = _c(75);
+  const $ = _c(76);
   const {
     onComplete,
     args,
@@ -758,7 +784,9 @@ export function PluginSettings(t0) {
   const [inputValue, setInputValue] = useState(viewState.type === "add-marketplace" ? viewState.initialValue || "" : "");
   const [cursorOffset, setCursorOffset] = useState(0);
   const [error, setError] = useState(null);
-  const [result, setResult] = useState(null);
+  // Official cp@224148318 region: usage errors seed `result` with the message
+  // so it is surfaced on completion.
+  const [result, setResult] = useState(parsedCommand.type === "usage-error" ? parsedCommand.message : null);
   const [childSearchActive, setChildSearchActive] = useState(false);
   const setAppState = useSetAppState();
   const pluginErrorCount = useAppState(_temp0);
@@ -782,27 +810,27 @@ export function PluginSettings(t0) {
       const tab = tabId as TabId;
       setActiveTab(tab);
       setError(null);
-      bb37: switch (tab) {
+      switch (tab) {
         case "discover":
           {
             setViewState({
               type: "discover-plugins"
             });
-            break bb37;
+            break;
           }
         case "installed":
           {
             setViewState({
               type: "manage-plugins"
             });
-            break bb37;
+            break;
           }
         case "marketplaces":
           {
             setViewState({
               type: "manage-marketplaces"
             });
-            break bb37;
+            break;
           }
         case "errors":
       }
@@ -864,7 +892,11 @@ export function PluginSettings(t0) {
     t9 = $[17];
   }
   const handleAddMarketplaceEscape = t9;
-  const t10 = viewState.type === "add-marketplace";
+  // In the confirmAdd offer flow (official ws@223945393), AddMarketplace owns
+  // confirm:no (cancel → menu); this panel-level escape only applies to the
+  // plain add-marketplace input form.
+  const t10 = viewState.type === "add-marketplace" && !viewState.confirmAdd;
+  const confirmAdd = viewState.type === "add-marketplace" ? viewState.confirmAdd : undefined;
   let t11;
   if ($[18] !== t10) {
     t11 = {
@@ -916,7 +948,7 @@ export function PluginSettings(t0) {
   if (viewState.type === "help") {
     let t16;
     if ($[28] === Symbol.for("react.memo_cache_sentinel")) {
-      t16 = <Box flexDirection="column"><Text bold={true}>Plugin Command Usage:</Text><Text> </Text><Text dimColor={true}>Installation:</Text><Text> /plugin install - Browse and install plugins</Text><Text>{" "}{"/plugin install <marketplace> - Install from specific marketplace"}</Text><Text>{" /plugin install <plugin> - Install specific plugin"}</Text><Text>{" "}{"/plugin install <plugin>@<market> - Install plugin from marketplace"}</Text><Text> </Text><Text dimColor={true}>Management:</Text><Text> /plugin manage - Manage installed plugins</Text><Text>{" /plugin enable <plugin> - Enable a plugin"}</Text><Text>{" /plugin disable <plugin> - Disable a plugin"}</Text><Text>{" /plugin uninstall <plugin> - Uninstall a plugin"}</Text><Text> </Text><Text dimColor={true}>Marketplaces:</Text><Text> /plugin marketplace - Marketplace management menu</Text><Text> /plugin marketplace add - Add a marketplace</Text><Text>{" "}{"/plugin marketplace add <path/url> - Add marketplace directly"}</Text><Text> /plugin marketplace update - Update marketplaces</Text><Text>{" "}{"/plugin marketplace update <name> - Update specific marketplace"}</Text><Text> /plugin marketplace remove - Remove a marketplace</Text><Text>{" "}{"/plugin marketplace remove <name> - Remove specific marketplace"}</Text><Text> /plugin marketplace list - List all marketplaces</Text><Text> </Text><Text dimColor={true}>Validation:</Text><Text>{" "}{"/plugin validate <path> - Validate a manifest file or directory"}</Text><Text> </Text><Text dimColor={true}>Other:</Text><Text> /plugin - Main plugin menu</Text><Text> /plugin help - Show this help</Text><Text> /plugins - Alias for /plugin</Text></Box>;
+      t16 = <Box flexDirection="column"><Text bold={true}>Plugin Command Usage:</Text><Text> </Text><Text dimColor={true}>Installation:</Text><Text> /plugin install - Browse and install plugins</Text><Text>{" "}{"/plugin install <marketplace> - Install from specific marketplace"}</Text><Text>{" /plugin install <plugin> - Install specific plugin"}</Text><Text>{" "}{"/plugin install <plugin>@<market> - Install plugin from marketplace"}</Text><Text>{" "}{"/plugin install <plugin> --marketplace <source> - Install plugin from a marketplace source, adding it first"}</Text><Text> </Text><Text dimColor={true}>Management:</Text><Text> /plugin manage - Manage installed plugins</Text><Text>{" /plugin enable <plugin> - Enable a plugin"}</Text><Text>{" /plugin disable <plugin> - Disable a plugin"}</Text><Text>{" /plugin uninstall <plugin> - Uninstall a plugin"}</Text><Text> </Text><Text dimColor={true}>Marketplaces:</Text><Text> /plugin marketplace - Marketplace management menu</Text><Text> /plugin marketplace add - Add a marketplace</Text><Text>{" "}{"/plugin marketplace add <path/url> - Add marketplace directly"}</Text><Text> /plugin marketplace update - Update marketplaces</Text><Text>{" "}{"/plugin marketplace update <name> - Update specific marketplace"}</Text><Text> /plugin marketplace remove - Remove a marketplace</Text><Text>{" "}{"/plugin marketplace remove <name> - Remove specific marketplace"}</Text><Text> /plugin marketplace list - List all marketplaces</Text><Text> </Text><Text dimColor={true}>Validation:</Text><Text>{" "}{"/plugin validate <path> - Validate a manifest file or directory"}</Text><Text> </Text><Text dimColor={true}>Other:</Text><Text> /plugin - Main plugin menu</Text><Text> /plugin help - Show this help</Text><Text> /plugins - Alias for /plugin</Text></Box>;
       $[28] = t16;
     } else {
       t16 = $[28];
@@ -954,100 +986,101 @@ export function PluginSettings(t0) {
   }
   if (viewState.type === "add-marketplace") {
     let t16;
-    if ($[34] !== cliMode || $[35] !== cursorOffset || $[36] !== error || $[37] !== inputValue || $[38] !== markPluginsChanged || $[39] !== result) {
-      t16 = <AddMarketplace inputValue={inputValue} setInputValue={setInputValue} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} error={error} setError={setError} result={result} setResult={setResult} setViewState={setViewState} onAddComplete={markPluginsChanged} cliMode={cliMode} />;
+    if ($[34] !== cliMode || $[35] !== cursorOffset || $[36] !== error || $[37] !== inputValue || $[38] !== markPluginsChanged || $[39] !== result || $[40] !== confirmAdd) {
+      t16 = <AddMarketplace inputValue={inputValue} setInputValue={setInputValue} cursorOffset={cursorOffset} setCursorOffset={setCursorOffset} error={error} setError={setError} result={result} setResult={setResult} setViewState={setViewState} onAddComplete={markPluginsChanged} cliMode={cliMode} confirmAdd={confirmAdd} />;
       $[34] = cliMode;
       $[35] = cursorOffset;
       $[36] = error;
       $[37] = inputValue;
       $[38] = markPluginsChanged;
       $[39] = result;
-      $[40] = t16;
+      $[40] = confirmAdd;
+      $[41] = t16;
     } else {
-      t16 = $[40];
+      t16 = $[41];
     }
     return t16;
   }
   let t16;
-  if ($[41] !== activeTab || $[42] !== showMcpRedirectMessage) {
+  if ($[42] !== activeTab || $[43] !== showMcpRedirectMessage) {
     t16 = showMcpRedirectMessage && activeTab === "installed" ? <McpRedirectBanner /> : undefined;
-    $[41] = activeTab;
-    $[42] = showMcpRedirectMessage;
-    $[43] = t16;
+    $[42] = activeTab;
+    $[43] = showMcpRedirectMessage;
+    $[44] = t16;
   } else {
-    t16 = $[43];
+    t16 = $[44];
   }
   let t17;
-  if ($[44] !== error || $[45] !== markPluginsChanged || $[46] !== result || $[47] !== viewState.targetMarketplace || $[48] !== viewState.targetPlugin || $[49] !== viewState.type) {
+  if ($[45] !== error || $[46] !== markPluginsChanged || $[47] !== result || $[48] !== viewState.targetMarketplace || $[49] !== viewState.targetPlugin || $[50] !== viewState.type) {
     t17 = <Tab id="discover" title="Discover">{viewState.type === "browse-marketplace" ? <BrowseMarketplace error={error} setError={setError} result={result} setResult={setResult} setViewState={setViewState} onInstallComplete={markPluginsChanged} targetMarketplace={viewState.targetMarketplace} targetPlugin={viewState.targetPlugin} /> : <DiscoverPlugins error={error} setError={setError} result={result} setResult={setResult} setViewState={setViewState} onInstallComplete={markPluginsChanged} onSearchModeChange={setChildSearchActive} targetPlugin={viewState.type === "discover-plugins" ? viewState.targetPlugin : undefined} />}</Tab>;
-    $[44] = error;
-    $[45] = markPluginsChanged;
-    $[46] = result;
-    $[47] = viewState.targetMarketplace;
-    $[48] = viewState.targetPlugin;
-    $[49] = viewState.type;
-    $[50] = t17;
+    $[45] = error;
+    $[46] = markPluginsChanged;
+    $[47] = result;
+    $[48] = viewState.targetMarketplace;
+    $[49] = viewState.targetPlugin;
+    $[50] = viewState.type;
+    $[51] = t17;
   } else {
-    t17 = $[50];
+    t17 = $[51];
   }
   const t18 = viewState.type === "manage-plugins" ? viewState.targetPlugin : undefined;
   const t19 = viewState.type === "manage-plugins" ? viewState.targetMarketplace : undefined;
   const t20 = viewState.type === "manage-plugins" ? viewState.action : undefined;
   let t21;
-  if ($[51] !== markPluginsChanged || $[52] !== t18 || $[53] !== t19 || $[54] !== t20) {
+  if ($[52] !== markPluginsChanged || $[53] !== t18 || $[54] !== t19 || $[55] !== t20) {
     t21 = <Tab id="installed" title="Installed"><ManagePlugins setViewState={setViewState} setResult={setResult} onManageComplete={markPluginsChanged} onSearchModeChange={setChildSearchActive} targetPlugin={t18} targetMarketplace={t19} action={t20} /></Tab>;
-    $[51] = markPluginsChanged;
-    $[52] = t18;
-    $[53] = t19;
-    $[54] = t20;
-    $[55] = t21;
+    $[52] = markPluginsChanged;
+    $[53] = t18;
+    $[54] = t19;
+    $[55] = t20;
+    $[56] = t21;
   } else {
-    t21 = $[55];
+    t21 = $[56];
   }
   const t22 = viewState.type === "manage-marketplaces" ? viewState.targetMarketplace : undefined;
   const t23 = viewState.type === "manage-marketplaces" ? viewState.action : undefined;
   let t24;
-  if ($[56] !== error || $[57] !== exitState || $[58] !== markPluginsChanged || $[59] !== t22 || $[60] !== t23) {
+  if ($[57] !== error || $[58] !== exitState || $[59] !== markPluginsChanged || $[60] !== t22 || $[61] !== t23) {
     t24 = <Tab id="marketplaces" title="Marketplaces"><ManageMarketplaces setViewState={setViewState} error={error} setError={setError} setResult={setResult} exitState={exitState} onManageComplete={markPluginsChanged} targetMarketplace={t22} action={t23} /></Tab>;
-    $[56] = error;
-    $[57] = exitState;
-    $[58] = markPluginsChanged;
-    $[59] = t22;
-    $[60] = t23;
-    $[61] = t24;
+    $[57] = error;
+    $[58] = exitState;
+    $[59] = markPluginsChanged;
+    $[60] = t22;
+    $[61] = t23;
+    $[62] = t24;
   } else {
-    t24 = $[61];
+    t24 = $[62];
   }
   let t25;
-  if ($[62] !== markPluginsChanged) {
+  if ($[63] !== markPluginsChanged) {
     t25 = <ErrorsTabContent setViewState={setViewState} setActiveTab={setActiveTab} markPluginsChanged={markPluginsChanged} />;
-    $[62] = markPluginsChanged;
-    $[63] = t25;
+    $[63] = markPluginsChanged;
+    $[64] = t25;
   } else {
-    t25 = $[63];
+    t25 = $[64];
   }
   let t26;
-  if ($[64] !== errorsTabTitle || $[65] !== t25) {
+  if ($[65] !== errorsTabTitle || $[66] !== t25) {
     t26 = <Tab id="errors" title={errorsTabTitle}>{t25}</Tab>;
-    $[64] = errorsTabTitle;
-    $[65] = t25;
-    $[66] = t26;
+    $[65] = errorsTabTitle;
+    $[66] = t25;
+    $[67] = t26;
   } else {
-    t26 = $[66];
+    t26 = $[67];
   }
   let t27;
-  if ($[67] !== activeTab || $[68] !== childSearchActive || $[69] !== t16 || $[70] !== t17 || $[71] !== t21 || $[72] !== t24 || $[73] !== t26) {
+  if ($[68] !== activeTab || $[69] !== childSearchActive || $[70] !== t16 || $[71] !== t17 || $[72] !== t21 || $[73] !== t24 || $[74] !== t26) {
     t27 = <Pane color="suggestion"><Tabs title="Plugins" selectedTab={activeTab} onTabChange={handleTabChange} color="suggestion" disableNavigation={childSearchActive} banner={t16}>{t17}{t21}{t24}{t26}</Tabs></Pane>;
-    $[67] = activeTab;
-    $[68] = childSearchActive;
-    $[69] = t16;
-    $[70] = t17;
-    $[71] = t21;
-    $[72] = t24;
-    $[73] = t26;
-    $[74] = t27;
+    $[68] = activeTab;
+    $[69] = childSearchActive;
+    $[70] = t16;
+    $[71] = t17;
+    $[72] = t21;
+    $[73] = t24;
+    $[74] = t26;
+    $[75] = t27;
   } else {
-    t27 = $[74];
+    t27 = $[75];
   }
   return t27;
 }

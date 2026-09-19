@@ -1,6 +1,6 @@
 import chalk from 'chalk'
 import { exec } from 'child_process'
-import { execa } from 'execa'
+import { execa, execaSync } from 'execa'
 import { mkdir, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { join } from 'path'
@@ -47,6 +47,7 @@ import {
   getGlobalConfig,
   saveGlobalConfig,
 } from './config.js'
+import { getCwd } from './cwd.js'
 import { logAntError, logForDebugging } from './debug.js'
 import {
   getClaudeConfigHomeDir,
@@ -74,7 +75,7 @@ import {
   getSettingsForSource,
 } from './settings/settings.js'
 import { sleep } from './sleep.js'
-import { jsonParse } from './slowOperations.js'
+import { jsonParse, slowLogging } from './slowOperations.js'
 import { clearToolSchemaCache } from './toolSchemaCache.js'
 
 /** Default TTL for API key helper cache in milliseconds (5 minutes) */
@@ -1976,7 +1977,197 @@ export function isOtelHeadersHelperFromProjectOrLocalSettings(): boolean {
 // Cache for debouncing otelHeadersHelper calls
 let cachedOtelHeaders: Record<string, string> | null = null
 let cachedOtelHeadersTimestamp = 0
-const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS = 29 * 60 * 1000 // 29 minutes
+const DEFAULT_OTEL_HEADERS_DEBOUNCE_MS = 29 * 60 * 1000 // 29 minutes (official `hge=1740000`, v2.1.276 @193206862)
+const OTEL_HEADERS_HELPER_TIMEOUT_MS = 30_000 // 30 seconds - allows for auth service latency
+
+/**
+ * Failure kinds for otelHeadersHelper invocations, byte-exact from the
+ * official v2.1.276 binary (`Qn` error class @193206747, classification in
+ * `CEn()` @193207726). 'unknown' mirrors the official fallback for errors
+ * that are not typed helper failures (`s instanceof Qn ? s.kind : "unknown"`
+ * @193209180).
+ */
+export type OtelHeadersFailureKind =
+  | 'timeout'
+  | 'exit_code'
+  | 'killed'
+  | 'spawn_failed'
+  | 'empty_output'
+  | 'invalid_json'
+  | 'not_an_object'
+  | 'non_string_value'
+  | 'unknown'
+
+/** Typed otelHeadersHelper failure (official `Qn`, v2.1.276 @193206747). */
+export class OtelHeadersHelperError extends Error {
+  readonly kind: OtelHeadersFailureKind
+  readonly exitCode: number | undefined
+
+  constructor(
+    message: string,
+    kind: OtelHeadersFailureKind,
+    exitCode?: number,
+  ) {
+    super(message)
+    this.kind = kind
+    this.exitCode = exitCode
+  }
+}
+
+type OtelHeadersFailureRecord = {
+  readonly message: string
+  readonly kind: OtelHeadersFailureKind
+  readonly exitCode?: number
+}
+
+// Last otelHeadersHelper failure (official `lastFailure` state field in the
+// `U4t` store @193206862; set on failure, reset to null on success).
+let lastOtelHeadersFailure: OtelHeadersFailureRecord | null = null
+const otelHeadersFailureListeners = new Set<(message: string) => void>()
+
+/**
+ * Last failure message, or null when no helper is configured or the last
+ * invocation succeeded (official `PSt()` @193206966 — the configured check is
+ * part of the getter, so `/status` and the startup notification never fire
+ * for sessions without a helper).
+ */
+export function getOtelHeadersLastFailure(): string | null {
+  if (!getConfiguredOtelHeadersHelper()) {
+    return null
+  }
+  return lastOtelHeadersFailure?.message ?? null
+}
+
+/** Full failure record (message + kind + exit code). Same gating as above. */
+export function getOtelHeadersLastFailureDetail(): OtelHeadersFailureRecord | null {
+  if (!getConfiguredOtelHeadersHelper()) {
+    return null
+  }
+  return lastOtelHeadersFailure
+}
+
+/**
+ * Reset the helper cache and failure state (official `vio()` @193207038 minus
+ * the inflight/prefetched fields OCC does not have). For tests.
+ */
+export function clearOtelHeadersHelperState(): void {
+  cachedOtelHeaders = null
+  cachedOtelHeadersTimestamp = 0
+  lastOtelHeadersFailure = null
+}
+
+/**
+ * Subscribe to otelHeadersHelper failure messages (official `prr()`
+ * @193207139). Returns an unsubscribe function.
+ */
+export function subscribeOtelHeadersFailure(
+  listener: (message: string) => void,
+): () => void {
+  otelHeadersFailureListeners.add(listener)
+  return () => {
+    otelHeadersFailureListeners.delete(listener)
+  }
+}
+
+function emitOtelHeadersFailure(message: string): void {
+  for (const listener of [...otelHeadersFailureListeners]) {
+    try {
+      listener(message)
+    } catch (error) {
+      // Byte-exact official log @99761856/193209291.
+      logError(
+        new Error(
+          `otelHeadersHelper failure listener threw: ${errorMessage(error)}`,
+        ),
+      )
+    }
+  }
+}
+
+/** Minimal shape of a failed execa result needed for classification. */
+type OtelHeadersExecFailureInput = {
+  readonly failed: boolean
+  readonly timedOut: boolean
+  readonly exitCode?: number
+  readonly signal?: string
+  readonly stderr?: string
+}
+
+/**
+ * Classify a failed helper exec into the official failure kinds (v2.1.276
+ * `CEn()` @193207726: timedOut → timeout, numeric exitCode → exit_code,
+ * signal → killed, else spawn_failed; trimmed stderr appended after ': ').
+ * Returns null when the exec itself succeeded.
+ */
+export function classifyOtelHeadersExecFailure(
+  result: OtelHeadersExecFailureInput,
+): OtelHeadersHelperError | null {
+  if (!result.failed) {
+    return null
+  }
+  let description: string
+  let kind: OtelHeadersFailureKind
+  let exitCode: number | undefined
+  if (result.timedOut) {
+    description = 'timed out'
+    kind = 'timeout'
+  } else if (typeof result.exitCode === 'number') {
+    description = `exited ${result.exitCode}`
+    kind = 'exit_code'
+    exitCode = result.exitCode
+  } else if (result.signal) {
+    description = `was killed by ${result.signal}`
+    kind = 'killed'
+  } else {
+    description = 'could not be started'
+    kind = 'spawn_failed'
+  }
+  const stderr = result.stderr?.trim()
+  return new OtelHeadersHelperError(
+    stderr ? `${description}: ${stderr}` : description,
+    kind,
+    exitCode,
+  )
+}
+
+/**
+ * Record the failure, then (first failure only, official `h=r.lastFailure===null`
+ * latch @193208960) warn on stderr in non-interactive sessions (v274 behavior,
+ * byte-exact @99761776), notify listeners, and log the official telemetry event
+ * `tengu_otel_headers_helper_failed` (@99761908).
+ */
+function recordOtelHeadersFailure(error: unknown): void {
+  const message = errorMessage(error)
+  const isFirstFailure = lastOtelHeadersFailure === null
+  const kind =
+    error instanceof OtelHeadersHelperError ? error.kind : 'unknown'
+  const exitCode =
+    error instanceof OtelHeadersHelperError ? error.exitCode : undefined
+  lastOtelHeadersFailure = {
+    message,
+    kind,
+    ...(exitCode !== undefined ? { exitCode } : {}),
+  }
+  logError(
+    new Error(
+      `Error getting OpenTelemetry headers from otelHeadersHelper (in settings): ${message}`,
+    ),
+  )
+  if (!isFirstFailure) {
+    return
+  }
+  if (getIsNonInteractiveSession()) {
+    process.stderr.write(
+      `${chalk.red(`otelHeadersHelper failed (OpenTelemetry export headers unavailable): ${message}`)}\n`,
+    )
+  }
+  emitOtelHeadersFailure(message)
+  logEvent('tengu_otel_headers_helper_failed', {
+    failure_kind:
+      kind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    exit_code: exitCode,
+  })
+}
 
 export function getOtelHeadersFromHelper(): Record<string, string> {
   const otelHeadersHelper = getConfiguredOtelHeadersHelper()
@@ -2006,48 +2197,85 @@ export function getOtelHeadersFromHelper(): Record<string, string> {
   }
 
   try {
-    const result = execSyncWithDefaults_DEPRECATED(otelHeadersHelper, {
-      timeout: 30000, // 30 seconds - allows for auth service latency
-    })
-      ?.toString()
-      .trim()
-    if (!result) {
-      throw new Error('otelHeadersHelper did not return a valid value')
-    }
-
-    const headers = jsonParse(result)
-    if (
-      typeof headers !== 'object' ||
-      headers === null ||
-      Array.isArray(headers)
-    ) {
-      throw new Error(
-        'otelHeadersHelper must return a JSON object with string key-value pairs',
-      )
-    }
-
-    // Validate all values are strings
-    for (const [key, value] of Object.entries(headers)) {
-      if (typeof value !== 'string') {
-        throw new Error(
-          `otelHeadersHelper returned non-string value for key "${key}": ${typeof value}`,
-        )
-      }
-    }
-
-    // Cache the result
-    cachedOtelHeaders = headers as Record<string, string>
+    const headers = runOtelHeadersHelper(otelHeadersHelper)
+    cachedOtelHeaders = headers
     cachedOtelHeadersTimestamp = Date.now()
-
+    // Official resets lastFailure on success (@193208800).
+    lastOtelHeadersFailure = null
     return cachedOtelHeaders
   } catch (error) {
-    logError(
-      new Error(
-        `Error getting OpenTelemetry headers from otelHeadersHelper (in settings): ${errorMessage(error)}`,
-      ),
-    )
+    recordOtelHeadersFailure(error)
     throw error
   }
+}
+
+/**
+ * Run the helper and validate its output. Direct `execaSync` (reject:false)
+ * instead of `execSyncWithDefaults_DEPRECATED`: the wrapper collapses every
+ * failure to null, losing the exit-code/timeout/signal detail the official
+ * failure kinds classify. Options mirror the wrapper's defaults.
+ */
+function runOtelHeadersHelper(otelHeadersHelper: string): Record<string, string> {
+  slowLogging`exec: ${otelHeadersHelper.slice(0, 200)}`
+  const result = execaSync(otelHeadersHelper, {
+    env: process.env,
+    maxBuffer: 1_000_000,
+    timeout: OTEL_HEADERS_HELPER_TIMEOUT_MS,
+    cwd: getCwd(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    shell: true, // execSync typically runs shell commands
+    reject: false, // classify failures instead of throwing
+  })
+  const execFailure = classifyOtelHeadersExecFailure({
+    failed: result.failed,
+    timedOut: result.timedOut,
+    exitCode: result.exitCode,
+    signal: result.signal ?? undefined,
+    stderr: result.stderr?.toString(),
+  })
+  if (execFailure) {
+    throw execFailure
+  }
+
+  const output = result.stdout?.toString().trim()
+  if (!output) {
+    throw new OtelHeadersHelperError(
+      'otelHeadersHelper did not return a valid value',
+      'empty_output',
+    )
+  }
+
+  let headers: unknown
+  try {
+    headers = jsonParse(output)
+  } catch {
+    throw new OtelHeadersHelperError(
+      'otelHeadersHelper did not return valid JSON',
+      'invalid_json',
+    )
+  }
+  if (
+    typeof headers !== 'object' ||
+    headers === null ||
+    Array.isArray(headers)
+  ) {
+    throw new OtelHeadersHelperError(
+      'otelHeadersHelper must return a JSON object with string key-value pairs',
+      'not_an_object',
+    )
+  }
+
+  // Validate all values are strings
+  for (const [key, value] of Object.entries(headers)) {
+    if (typeof value !== 'string') {
+      throw new OtelHeadersHelperError(
+        `otelHeadersHelper returned non-string value for key "${key}": ${typeof value}`,
+        'non_string_value',
+      )
+    }
+  }
+
+  return headers as Record<string, string>
 }
 
 function isConsumerPlan(plan: SubscriptionType): plan is 'max' | 'pro' {

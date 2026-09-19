@@ -49,6 +49,7 @@ import { getCwd } from 'src/utils/cwd.js'
 import { getViewedTeammateTask } from '../state/selectors.js'
 import { logError } from './log.js'
 import { logAntError } from './debug.js'
+import { isPlainObjectValue } from './transcriptAdmission.js'
 import { isENOENT, toError } from './errors.js'
 import { logOTelEvent } from './telemetry/events.js'
 import type { DiagnosticFile } from '../services/diagnosticTracking.js'
@@ -3278,6 +3279,123 @@ export function isMalformedAttachment(entry: unknown): boolean {
   }
   const type = (entry as { type?: unknown }).type
   return typeof type !== 'string' || type === ''
+}
+
+/**
+ * Official v276 cap on the number of names in a `skill_listing` attachment
+ * (binary constant `Fms` @~199662436 region; value verified byte-exact).
+ */
+const SKILL_LISTING_MAX_NAMES = 4096
+
+/**
+ * Official v276 cap on a single skill name's length in a `skill_listing`
+ * attachment (binary constant `$ms`; value verified byte-exact).
+ */
+const SKILL_LISTING_MAX_NAME_LENGTH = 512
+
+/**
+ * Official pluralization helper `P(e,n,r=n+"s"){return e===1?n:r}`
+ * (@190575877). Used for the byte-exact attachment-drop error log.
+ */
+function pluralize(
+  count: number,
+  singular: string,
+  plural: string = `${singular}s`,
+): string {
+  return count === 1 ? singular : plural
+}
+
+/**
+ * CC 2.1.275 changelog (M1): full per-type attachment payload validator —
+ * port of the official v276 `Lms` (binary @~199662436). v274's `Mhs` only
+ * covered invoked_skills/hook_success/skill_listing/hook_additional_context;
+ * v276 ADDS task_reminder/todo_reminder (content must be an array of plain
+ * objects) and file/already_read_file (content must be a plain object), and
+ * the whole check moved to transcript load time (choke point) instead of
+ * render time.
+ *
+ * Returns true when `attachment` is structurally valid for its declared
+ * type. Unknown types are KEPT (official `default:return!0`) — forward
+ * compatibility with newer writers. Mirrors the official byte-for-byte,
+ * including its quirks: a non-object non-null attachment with no string
+ * `type` is invalid, `invoked_skills` entries only need to be non-null
+ * objects (arrays pass), and `skill_listing` is valid when `names` is
+ * absent/undefined (OCC's skill_listing shape has no `names` field — it
+ * carries `content`/`skillCount`/`isInitial` — so OCC rows pass via that
+ * branch, matching the official).
+ *
+ * Distinct from `isMalformedAttachment` above (the 2.1.217 shallow guard,
+ * kept unchanged for its existing external callers in messages.ts and
+ * conversationRecovery.ts).
+ */
+export function isValidAttachmentPayload(attachment: unknown): boolean {
+  if (
+    typeof attachment !== 'object' ||
+    attachment === null ||
+    !('type' in attachment) ||
+    typeof (attachment as { type: unknown }).type !== 'string'
+  ) {
+    return false
+  }
+  const entry = attachment as Record<string, unknown>
+  switch (entry.type) {
+    case 'invoked_skills':
+      return (
+        'skills' in entry &&
+        Array.isArray(entry.skills) &&
+        entry.skills.every(
+          (skill) => typeof skill === 'object' && skill !== null,
+        )
+      )
+    case 'hook_success':
+      return 'content' in entry && typeof entry.content === 'string'
+    case 'skill_listing':
+      return (
+        !('names' in entry) ||
+        entry.names === undefined ||
+        (Array.isArray(entry.names) &&
+          entry.names.length <= SKILL_LISTING_MAX_NAMES &&
+          entry.names.every(
+            (name) =>
+              typeof name === 'string' &&
+              name.length <= SKILL_LISTING_MAX_NAME_LENGTH,
+          ))
+      )
+    case 'hook_additional_context':
+      return (
+        'content' in entry &&
+        Array.isArray(entry.content) &&
+        entry.content.every((item) => typeof item === 'string')
+      )
+    // NEW in v276 (vs v274 `Mhs`): reminder + file payload validation.
+    case 'task_reminder':
+    case 'todo_reminder':
+      return (
+        'content' in entry &&
+        Array.isArray(entry.content) &&
+        entry.content.every(isPlainObjectValue)
+      )
+    case 'file':
+    case 'already_read_file':
+      return 'content' in entry && isPlainObjectValue(entry.content)
+    default:
+      return true
+  }
+}
+
+/**
+ * Official v276 `xW` drop-log (@199663065) — emitted at transcript load
+ * time when attachment rows with missing/malformed payloads were dropped.
+ * Byte-exact template; the `—` escape renders as an em-dash at runtime
+ * (literal escape in the official source). No-op when nothing was dropped
+ * (official `if(n===0)return e` short-circuit).
+ */
+export function logDroppedTranscriptAttachments(droppedCount: number): void {
+  if (droppedCount === 0) return
+  logForDebugging(
+    `transcript load: dropped ${droppedCount} attachment ${pluralize(droppedCount, 'entry', 'entries')} with a missing or malformed payload — the session transcript appears partially corrupt`,
+    { level: 'error' },
+  )
 }
 
 /**

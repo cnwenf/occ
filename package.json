@@ -152,5 +152,8 @@
     },
     "overrides": {
         "uuid": "^11.0.0"
+    },
+    "patchedDependencies": {
+        "@anthropic-ai/sandbox-runtime@0.0.44": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.44.patch"
     }
 }

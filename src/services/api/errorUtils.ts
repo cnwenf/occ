@@ -357,3 +357,54 @@ export function stripLastImageBlock(
   }
   return null
 }
+
+// ---------------------------------------------------------------------------
+// Official 2.1.276 advisor hotfix — advisor-entry-refused 400 classifiers.
+// Byte-exact port of the v276 binary (JS-source region, offset ~198013377):
+//
+//   function TPe(e){return e instanceof Pt&&e.status===400&&(
+//     e.message.includes("the advisor tool is not available")||
+//     e.message.includes("cannot be used as an advisor")||
+//     /tools\.\d+\.model: /.test(e.message))}
+//   function vtt(e){return TPe(e)&&
+//     e.message.includes("not available for this organization")}
+//
+// The 2.1.275 proxy/gateway regression message — "tools.0.model: Input tag
+// 'advisor_20260301' found using 'type' does not match any tag." — has NO
+// dedicated matcher in v276 (verified: zero hits for "Input tag 'advisor" and
+// "does not match any tag" outside the pre-existing v274
+// `Input tag 'tool_(addition|removal)'` regex in `Dtt`). It is caught solely
+// by the `tools\.\d+\.model: ` branch of TPe.
+// ---------------------------------------------------------------------------
+const ADVISOR_NOT_AVAILABLE_MESSAGE = 'the advisor tool is not available'
+const ADVISOR_MODEL_REJECTED_MESSAGE = 'cannot be used as an advisor'
+const ADVISOR_ORG_UNAVAILABLE_MESSAGE = 'not available for this organization'
+const ADVISOR_TOOL_MODEL_FIELD_PATTERN = /tools\.\d+\.model: /
+
+/**
+ * Official `TPe`: a 400 whose message indicates the advisor tool entry was
+ * refused (proxy/gateway that does not recognize the `advisor_20260301` tool
+ * tag, org without advisor access, or advisor-model rejection).
+ */
+export function isAdvisorEntryRefusedError(error: unknown): error is APIError {
+  if (!(error instanceof APIError) || error.status !== 400) {
+    return false
+  }
+  const message = error.message ?? ''
+  return (
+    message.includes(ADVISOR_NOT_AVAILABLE_MESSAGE) ||
+    message.includes(ADVISOR_MODEL_REJECTED_MESSAGE) ||
+    ADVISOR_TOOL_MODEL_FIELD_PATTERN.test(message)
+  )
+}
+
+/**
+ * Official `vtt`: the advisor-entry refusal says the ORGANIZATION lacks
+ * advisor access — arms the process-wide kill-switch (official `Yqt()`).
+ */
+export function isAdvisorOrgWideEntryRefusedError(error: unknown): boolean {
+  return (
+    isAdvisorEntryRefusedError(error) &&
+    error.message.includes(ADVISOR_ORG_UNAVAILABLE_MESSAGE)
+  )
+}
