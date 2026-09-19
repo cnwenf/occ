@@ -27,6 +27,7 @@ import { useAppStateStore } from '../../state/AppState.js';
 import { isBackgroundTask, type TaskState } from '../../tasks/types.js';
 import { getPillLabel } from '../../tasks/pillLabel.js';
 import { useSelectedMessageBg } from '../messageActions.js';
+import { sanitizeStopHookSummary } from '../../utils/stopHookSummarySanitizer.js';
 type Props = {
   message: SystemMessage;
   addMargin: boolean;
@@ -257,27 +258,38 @@ function StopHookSummaryMessage(t0) {
     isTranscriptMode
   } = t0;
   const bg = useSelectedMessageBg();
+  // Official 2.1.277 `fS` (D12 fix): every field is read from the Zod
+  // sanitizer (`s$e(message)`), never from the raw transcript row — a
+  // resumed stop-hook summary with a malformed/missing hookInfos or
+  // hookErrors can no longer crash `hookErrors.length` / `hookInfos.reduce`.
+  const sanitized = sanitizeStopHookSummary(message);
   const {
     hookCount,
     hookInfos,
     hookErrors,
     preventedContinuation,
-    stopReason
-  } = message;
+    stopReason,
+    hookLabel
+  } = sanitized;
+  // Official `fO=Mq===void 0?[]:Mq` — the additional-context list renders as
+  // empty when the sanitized field is absent.
+  const hookAdditionalContext = sanitized.hookAdditionalContext === undefined ? [] : sanitized.hookAdditionalContext;
   const {
     columns
   } = useTerminalSize();
   let t1;
-  if ($[0] !== hookInfos || $[1] !== message.totalDurationMs) {
-    t1 = message.totalDurationMs ?? hookInfos.reduce(_temp, 0);
+  if ($[0] !== hookInfos || $[1] !== sanitized.totalDurationMs) {
+    t1 = sanitized.totalDurationMs ?? hookInfos.reduce(_temp, 0);
     $[0] = hookInfos;
-    $[1] = message.totalDurationMs;
+    $[1] = sanitized.totalDurationMs;
     $[2] = t1;
   } else {
     t1 = $[2];
   }
   const totalDurationMs = t1;
-  if (hookErrors.length === 0 && !preventedContinuation && !message.hookLabel) {
+  // Official: `pO.length===0&&fO.length===0&&!bq&&!oT` — null-return now also
+  // requires an empty hookAdditionalContext list.
+  if (hookErrors.length === 0 && hookAdditionalContext.length === 0 && !preventedContinuation && !hookLabel) {
     if (true || totalDurationMs < HOOK_TIMING_DISPLAY_THRESHOLD_MS) {
       return null;
     }
@@ -291,13 +303,13 @@ function StopHookSummaryMessage(t0) {
     t2 = $[4];
   }
   const totalStr = t2;
-  if (message.hookLabel) {
+  if (hookLabel) {
     const t3 = hookCount === 1 ? "hook" : "hooks";
     let t4;
-    if ($[5] !== hookCount || $[6] !== message.hookLabel || $[7] !== t3 || $[8] !== totalStr) {
-      t4 = <Text dimColor={true}>{"  \u23BF  "}Ran {hookCount} {message.hookLabel}{" "}{t3}{totalStr}</Text>;
+    if ($[5] !== hookCount || $[6] !== hookLabel || $[7] !== t3 || $[8] !== totalStr) {
+      t4 = <Text dimColor={true}>{"  \u23BF  "}Ran {hookCount} {hookLabel}{" "}{t3}{totalStr}</Text>;
       $[5] = hookCount;
-      $[6] = message.hookLabel;
+      $[6] = hookLabel;
       $[7] = t3;
       $[8] = totalStr;
       $[9] = t4;
@@ -341,7 +353,7 @@ function StopHookSummaryMessage(t0) {
   } else {
     t6 = $[18];
   }
-  const t7 = message.hookLabel ?? "stop";
+  const t7 = hookLabel ?? "stop";
   const t8 = hookCount === 1 ? "hook" : "hooks";
   let t9;
   if ($[19] !== hookInfos || $[20] !== verbose) {
@@ -383,10 +395,10 @@ function StopHookSummaryMessage(t0) {
     t12 = $[33];
   }
   let t13;
-  if ($[34] !== hookErrors || $[35] !== message.hookLabel) {
-    t13 = hookErrors.length > 0 && hookErrors.map((err, idx_1) => <Text key={idx_1}><Text dimColor={true}>⎿  </Text>{message.hookLabel ?? "Stop"} hook error: {err}</Text>);
+  if ($[34] !== hookErrors || $[35] !== hookLabel) {
+    t13 = hookErrors.length > 0 && hookErrors.map((err, idx_1) => <Text key={idx_1}><Text dimColor={true}>⎿  </Text>{hookLabel ?? "Stop"} hook error: {err}</Text>);
     $[34] = hookErrors;
-    $[35] = message.hookLabel;
+    $[35] = hookLabel;
     $[36] = t13;
   } else {
     t13 = $[36];

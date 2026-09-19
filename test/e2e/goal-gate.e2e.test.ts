@@ -27,12 +27,17 @@ function tmux(args: string[]): string {
 }
 function startRepl(home: string) {
   execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`);
+  // Forward model creds, but NOT ANTHROPIC_API_KEY: a real key from the parent
+  // shell or the ci-test.sh dummy triggers the official "Detected a custom API
+  // key" approval dialog under a fresh seeded HOME and blocks the REPL.
+  // `-u` is required — the tmux SERVER env also carries the key, and plain
+  // `env VAR=...` only adds to (never removes from) the inherited env.
   const envStr = Object.entries(process.env)
-    .filter(([k]) => k.startsWith("ANTHROPIC"))
+    .filter(([k]) => k.startsWith("ANTHROPIC") && k !== "ANTHROPIC_API_KEY")
     .map(([k, v]) => `${k}='${v}'`)
     .join(" ");
   execSync(
-    `tmux new-session -d -s ${SESSION} -x 200 -y 50 "env HOME='${home}' ${envStr} ${BIN}"`,
+    `tmux new-session -d -s ${SESSION} -x 200 -y 50 "env -u ANTHROPIC_API_KEY HOME='${home}' ${envStr} ${BIN}"`,
     { timeout: 5_000 },
   );
 }
@@ -58,12 +63,17 @@ async function waitForText(substr: string, timeoutMs = 20_000): Promise<boolean>
   return false;
 }
 
-/** onboarding-complete seed; trustForOcc controls whether /occ is pre-trusted. */
+/** onboarding-complete seed; trustForOcc controls whether the repo folder is
+ * pre-trusted. The trust entry MUST key on REPO_ROOT: tmux launches the REPL
+ * with the test process cwd (= REPO_ROOT), and the trust dialog keys on that
+ * folder — a hardcoded path (e.g. "/occ") only matches on a checkout at that
+ * exact location and otherwise leaves the folder-trust dialog blocking the
+ * prompt. */
 function freshSeededHome(opts: { trustForOcc?: boolean; disableAllHooks?: boolean } = {}): string {
   const home = mkdtempSync(join(tmpdir(), "occ-goalgate-"));
   mkdirSync(join(home, ".claude"), { recursive: true });
   const projects = opts.trustForOcc
-    ? { "/occ": { hasTrustDialogAccepted: true } }
+    ? { [REPO_ROOT]: { hasTrustDialogAccepted: true } }
     : {};
   writeFileSync(
     join(home, ".claude.json"),
@@ -97,7 +107,12 @@ describe.skipIf(!!process.env.CI)("/goal trusted/hooks gate (tmux e2e)", () => {
     const home = freshSeededHome({ trustForOcc: true, disableAllHooks: true });
     startRepl(home);
     try {
-      expect(await waitForText("for shortcuts", 20_000)).toBe(true);
+      // Ready-gate: the idle footer. "? for shortcuts" was the old target, but
+      // since the 2.1.251 mode-indicator parity the default-mode chip
+      // ("⏸ manual mode on (shift+tab to cycle)") always renders and
+      // suppresses the shortcuts hint — wait on the stable chip hint instead
+      // (same target the sibling REPL e2es use).
+      expect(await waitForText("shift+tab", 20_000)).toBe(true);
       sendLine("/goal make all tests pass");
       // Official verbatim hooks-gate message.
       expect(await waitForText("hooks are restricted", 8_000)).toBe(true);
@@ -114,7 +129,9 @@ describe.skipIf(!!process.env.CI)("/goal trusted/hooks gate (tmux e2e)", () => {
     const home = freshSeededHome({ trustForOcc: true });
     startRepl(home);
     try {
-      expect(await waitForText("for shortcuts", 20_000)).toBe(true);
+      // Ready-gate: see the first test — the mode chip suppresses the
+      // "? for shortcuts" hint, so wait on the stable chip hint.
+      expect(await waitForText("shift+tab", 20_000)).toBe(true);
       sendLine("/goal make all tests pass");
       // The gate messages must NOT appear; "Goal set:" acks the set.
       // (This triggers a model query — the ack renders before the model replies.)

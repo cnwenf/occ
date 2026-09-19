@@ -23,6 +23,7 @@ import type {
   StopHookInfo,
   SystemStopHookSummaryMessage,
 } from '../types/message.js'
+import { sanitizeStopHookSummary } from './stopHookSummarySanitizer.js'
 
 /**
  * Safely get the first content item from a MessageContent value.
@@ -921,12 +922,18 @@ export function collapseReadSearchGroups(
         scanBashResultForGitOps(msg, currentGroup)
       }
     } else if (currentGroup.messages.length > 0 && isPreToolHookSummary(msg)) {
-      // Absorb PreToolUse hook summaries into the group instead of deferring
-      currentGroup.hookCount += msg.hookCount
+      // Absorb PreToolUse hook summaries into the group instead of deferring.
+      // Official 2.1.277 fold (D12 fix): all three fields are read from the
+      // Zod sanitizer (`s$e(Ee)`) — a malformed hookInfos/hookCount in a
+      // resumed row can no longer poison the accumulated group or throw on
+      // `.reduce` / spread.
+      const { hookCount, hookInfos, totalDurationMs } =
+        sanitizeStopHookSummary(msg)
+      currentGroup.hookCount += hookCount
       currentGroup.hookTotalMs +=
-        msg.totalDurationMs ??
-        msg.hookInfos.reduce((sum, h) => sum + (h.durationMs ?? 0), 0)
-      currentGroup.hookInfos.push(...msg.hookInfos)
+        totalDurationMs ??
+        hookInfos.reduce((sum, h) => sum + (h.durationMs ?? 0), 0)
+      currentGroup.hookInfos.push(...hookInfos)
     } else if (
       currentGroup.messages.length > 0 &&
       msg.type === 'attachment' &&

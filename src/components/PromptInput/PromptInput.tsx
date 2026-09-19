@@ -95,6 +95,7 @@ import { syncTeammateMode } from '../../utils/swarm/teamHelpers.js';
 import type { TeamSummary } from '../../utils/teamDiscovery.js';
 import { getTeammateColor } from '../../utils/teammate.js';
 import { isInProcessTeammate } from '../../utils/teammateContext.js';
+import { formatInvisibleStripNotice, logInvisibleStripEvent, stripInvisibleForSubmit } from '../../utils/invisibleUnicode.js';
 import { writeToMailbox } from '../../utils/teammateMailbox.js';
 import type { TextHighlight } from '../../utils/textHighlighting.js';
 import type { Theme } from '../../utils/theme.js';
@@ -124,6 +125,7 @@ import VimTextInput from '../VimTextInput.js';
 import { getModeFromInput, getValueFromInput } from './inputModes.js';
 import { shouldOpenRewindOnEscEsc } from './escEscGate.js';
 import { decodePastedNewlines } from './pasteNewlineDecoder.js';
+import { sanitizeIntakeText } from './sanitizeIntakeText.js';
 import { FOOTER_TEMPORARY_STATUS_TIMEOUT, Notifications } from './Notifications.js';
 import PromptInputFooter from './PromptInputFooter.js';
 import type { SuggestionItem } from './PromptInputFooterSuggestions.js';
@@ -996,7 +998,11 @@ function PromptInput({
     historyIndex,
     historyEdited
   } = useArrowKeyHistory((value: string, historyMode: HistoryMode, pastedContents: Record<number, PastedContent>) => {
-    onChange(value);
+    // CC 2.1.278 (D3): history recall is an untrusted intake path — entries can
+    // carry raw ANSI/control sequences (e.g. colorized logs saved by older
+    // versions) that crash the layout/cursor math. Sanitize with the existing
+    // paste-intake composition before the value enters the editor state.
+    onChange(sanitizeIntakeText(value));
     onModeChange(historyMode);
     setPastedContents(pastedContents);
   }, input, pastedContents, setCursorOffset, mode);
@@ -1074,6 +1080,33 @@ function PromptInput({
     setSuggestionsStateRaw(prev => typeof updater === 'function' ? updater(prev) : updater);
   }, []);
   const onSubmit = useCallback(async (inputParam: string, isSubmittingSlashCommand = false) => {
+    // CC 2.1.278 (D2 SECURITY): invisible-Unicode strip on submit — official
+    // submit-path contract (aIo @218498875): `Bnt(input, pastedContents)` runs
+    // BEFORE trimEnd; when anything was removed the CLEANED text replaces the
+    // input (review state, cursor to end, cleaned pastedContents applied),
+    // telemetry `tengu_prompt_invisible_strip` is emitted with surface
+    // "prompt", an "immediate" notification (key `prompt-invisible-removed`,
+    // timeout 5000ms) tells the user what happened, and the submit is ABORTED
+    // — the user reviews the cleaned prompt and presses Enter again to send.
+    const invisibleStrip = stripInvisibleForSubmit(inputParam, pastedContents);
+    if (invisibleStrip.removed.removedTotal > 0) {
+      logInvisibleStripEvent(invisibleStrip.removed, 'prompt');
+      const isEmptyAfterStrip = invisibleStrip.input.trim() === '';
+      // Official kFn/nA (tracked input set) + OC (cursor to end of cleaned text).
+      trackAndSetInput(invisibleStrip.input);
+      setCursorOffset(invisibleStrip.input.length);
+      if (invisibleStrip.pastedContents !== pastedContents) {
+        setPastedContents(invisibleStrip.pastedContents);
+      }
+      addNotification({
+        key: 'prompt-invisible-removed',
+        // Official `kind:"feedback"` has no OCC notification-field equivalent.
+        text: formatInvisibleStripNotice(invisibleStrip.removed.removedTotal, isEmptyAfterStrip ? 'empty' : 'review'),
+        priority: 'immediate',
+        timeoutMs: FOOTER_TEMPORARY_STATUS_TIMEOUT
+      });
+      return;
+    }
     inputParam = inputParam.trimEnd();
 
     // Don't submit if a footer indicator is being opened. Read fresh from
@@ -1206,7 +1239,7 @@ function PromptInput({
       clearBuffer,
       resetHistory
     });
-  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, mode, onSendQueuedNowOnEmptyEnter]);
+  }, [promptSuggestionState, speculation, speculationSessionTimeSavedMs, teamContext, store, footerItems, suggestionsState.suggestions, onSubmitProp, onAgentSubmit, clearBuffer, resetHistory, logOutcomeAtSubmission, setAppState, markAccepted, pastedContents, removeNotification, mode, onSendQueuedNowOnEmptyEnter, trackAndSetInput, setCursorOffset, setPastedContents, addNotification]);
   const {
     suggestions,
     selectedSuggestion,
@@ -1478,10 +1511,14 @@ function PromptInput({
         });
       }
       if (result.content !== null && result.content !== input) {
+        // CC 2.1.278 (D3): external-editor read-back is an untrusted intake
+        // path — sanitize ANSI/control sequences (same existing composition as
+        // paste intake) before the content enters the editor state.
+        const sanitizedContent = sanitizeIntakeText(result.content);
         // Push current state to buffer before making changes
         pushToBuffer(input, cursorOffset, pastedContents);
-        trackAndSetInput(result.content);
-        setCursorOffset(result.content.length);
+        trackAndSetInput(sanitizedContent);
+        setCursorOffset(sanitizedContent.length);
       }
     } catch (err) {
       if (err instanceof Error) {

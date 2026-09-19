@@ -11,7 +11,7 @@
  * updated by the watcher once the OSC 11 response arrives.
  */
 
-import type { ThemeName, ThemeSetting } from './theme.js'
+import { normalizeThemeSetting, type ThemeName, type ThemeSetting } from './theme.js'
 
 export type SystemTheme = 'dark' | 'light'
 
@@ -40,10 +40,17 @@ export function setCachedSystemTheme(theme: SystemTheme): void {
  * Resolve a ThemeSetting (which may be 'auto') to a concrete ThemeName.
  */
 export function resolveThemeSetting(setting: ThemeSetting): ThemeName {
-  if (setting === 'auto') {
+  // CC 2.1.277 C8: guard the shared config-read boundary (official `AEn`
+  // legacySettingValue safeParse-at-read with fallback to the default). A
+  // malformed persisted theme (number, object, unknown string) resolves to
+  // the default 'dark' instead of flowing raw into getTheme()/color()
+  // lookups and `.startsWith` consumers at launch. 'custom:<slug>' strings
+  // pass through unchanged, as before.
+  const normalized = normalizeThemeSetting(setting)
+  if (normalized === 'auto') {
     return getSystemThemeName()
   }
-  return setting
+  return normalized as ThemeName
 }
 
 /**

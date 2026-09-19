@@ -5,6 +5,7 @@ import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
 import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
+import { getPlatform } from '../../utils/platform.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -182,6 +183,28 @@ function dedup<T>(arr: T[] | undefined): T[] | undefined {
   return [...new Set(arr)]
 }
 
+/**
+ * Official first-party sandbox boundary paragraph (binary `_Uo`, byte-verbatim
+ * v276 @200,078,225 ≡ v277 @201,672,743 ≡ v278 @201,707,278). Shipped to all
+ * platforms since 2.1.277 flipped the `tengu_elegant_ocean` default to true
+ * ("Changed the Bash sandbox instructions on Bedrock, Vertex and Foundry to
+ * the first-party wording"). OCC has no GrowthBook → flag-on unconditionally.
+ */
+const SANDBOX_BOUNDARY_PARAGRAPH =
+  "The sandbox marks out what this session was given: the directories listed below, the network destinations the task involves, and the credentials the user supplied for it. Treat that as the boundary even where a limit below is not enforced. Commands can reach more than that — credentials and keys elsewhere on this machine, the user's other projects and configuration, sockets that control this machine or other workloads, cloud metadata endpoints — but being reachable does not make them provided; those are the user's, not the task's, unless the user's request calls for them. If the task cannot be finished with what you were given, do what you can and tell the user plainly what is missing instead of finding another way to it; that report is a complete answer."
+
+/** Official `kUo` (v278, byte-verified): OS-level sandbox tech name suffix. */
+function getSandboxPlatformSuffix(): string {
+  const platform = getPlatform()
+  if (platform === 'macos') {
+    return ' (macOS Seatbelt)'
+  }
+  if (platform === 'linux' || platform === 'wsl') {
+    return ' (Linux bubblewrap)'
+  }
+  return ''
+}
+
 function getSimpleSandboxSection(): string {
   if (!SandboxManager.isSandboxingEnabled()) {
     return ''
@@ -255,17 +278,23 @@ function getSimpleSandboxSection(): string {
           ],
           'When you see evidence of sandbox-caused failure:',
           [
-            "Immediately retry with `dangerouslyDisableSandbox: true` (don't ask, just do it)",
+            // A12 (2.1.277): flag-ON (`tengu_elegant_ocean` default true)
+            // retry pair, byte-verified v278 HTn @201,710,382. OCC has no
+            // registerCommandNetworkLists, so ve=false → the else-variant
+            // bullet (no `allowed_domains` re-run guidance).
+            'Retry with `dangerouslyDisableSandbox: true` directly rather than asking in prose first — the retry itself goes through the permission gate (a user prompt, or the auto-mode classifier when auto mode is active)',
             'Briefly explain what sandbox restriction likely caused the failure. Be sure to mention that the user can use the `/sandbox` command to manage restrictions.',
-            'This will prompt the user for permission',
           ],
+          'A sandbox denial on a credential, a file or a host that the task does not involve is the boundary above at work: tell the user rather than retrying with `dangerouslyDisableSandbox: true`.',
           'Treat each command you execute with `dangerouslyDisableSandbox: true` individually. Even if you have recently run a command with this setting, you should default to running future commands within the sandbox.',
           'Do not suggest adding sensitive paths like ~/.bashrc, ~/.zshrc, ~/.ssh/*, or credential files to the sandbox allowlist.',
         ]
       : [
-          'All commands MUST run in sandbox mode - the `dangerouslyDisableSandbox` parameter is disabled by policy.',
-          'Commands cannot run outside the sandbox under any circumstances.',
-          'If a command fails due to sandbox restrictions, work with the user to adjust sandbox settings instead.',
+          // A12 (2.1.277): policy-disabled branch — official text, byte-identical
+          // v276 ≡ v278 @201,710,900 (replaces the older 2.1.248-era 3-bullet
+          // drift OCC shipped).
+          "The `dangerouslyDisableSandbox` parameter is disabled in this session's configuration; setting it does not take a command out of the sandbox.",
+          'If a command the task needs fails on a sandbox restriction, tell the user which restriction it hit; changing the sandbox settings is their decision, not yours.',
         ]
 
   const items: Array<string | string[]> = [
@@ -278,12 +307,21 @@ function getSimpleSandboxSection(): string {
     'If a clipboard utility such as `pbcopy`, `xclip`, or `wl-copy` fails inside the sandbox and the user wants the text on their clipboard, put the text in a fenced code block in your response and tell them to run `/copy` (it copies from outside the sandbox; when the picker appears they can select just that block), rather than writing a file for them to copy manually.',
   ]
 
+  // A12 (2.1.277): flag-ON first-party wording. Official HTn return (y=true
+  // branch, byte-verified v278 @201,712,000):
+  //   [`## ${Ue} command sandbox`, intro-with-kUo()-suffix, "", _Uo boundary
+  //    paragraph, "", "How the sandbox is configured in this session:",
+  //    Ee.join("\n"), "", ...Hp(Ne)].join("\n")
+  // The leading '' is OCC's section-separator convention (kept). OCC has no
+  // relaxed sandbox mode, so the flag-ON branch applies unconditionally.
   return [
     '',
-    '## Command sandbox',
-    'By default, your command will be run in a sandbox. This sandbox controls which directories and network hosts commands may access or modify without an explicit override.',
+    `## ${BASH_TOOL_NAME} command sandbox`,
+    `By default, ${BASH_TOOL_NAME} commands run inside an OS-level sandbox${getSandboxPlatformSuffix()} applied to each command separately, not to the session as a whole; how it is configured in this session is described below.`,
     '',
-    'The sandbox has the following restrictions:',
+    SANDBOX_BOUNDARY_PARAGRAPH,
+    '',
+    'How the sandbox is configured in this session:',
     restrictionsLines.join('\n'),
     '',
     ...prependBullets(items),

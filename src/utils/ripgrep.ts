@@ -272,6 +272,61 @@ export class RipgrepNullByteError extends Error {
   name = 'RipgrepNullByteError'
 }
 
+// 2.1.277 (binary `XQ` map + `zQ` fallback + `Mu` class, errno set `c2`):
+// ripgrep failed to START because the OS refused to create the process
+// (process/thread limit, OOM, or fd exhaustion). Previously the caller saw
+// `[]` and Grep/Glob reported "no matches" for a search that never ran. The
+// reason/advice text below is byte-copied from the binary.
+const RIPGREP_SPAWN_RESOURCE_INFO = new Map<string, { reason: string; advice: string }>([
+  ['EAGAIN', { reason: 'a limit on processes or threads was reached', advice: 'this machine has reached a limit on processes; closing other programs can help' }],
+  ['ENOMEM', { reason: 'there is not enough memory', advice: 'this machine is short of memory; closing other programs can help' }],
+  ['EMFILE', { reason: 'this Claude Code process has too many files open', advice: 'Claude Code needs a restart' }],
+  ['ENFILE', { reason: 'the system has too many files open', advice: 'this machine has too many files open; closing other programs can help' }],
+])
+const RIPGREP_SPAWN_RESOURCE_FALLBACK = {
+  reason: 'the system ran out of a resource',
+  advice: 'this machine is short of a resource needed to start programs',
+}
+// binary `c2 = new Set(["EAGAIN","ENOMEM","EMFILE","ENFILE"])`
+const RIPGREP_SPAWN_RESOURCE_ERRNOS = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE'])
+
+// binary `E(e)`: pull the errno string off an error object, if present.
+function extractErrnoCode(error: unknown): string | undefined {
+  if (error && typeof error === 'object' && 'code' in error && typeof (error as { code?: unknown }).code === 'string') {
+    return (error as { code: string }).code
+  }
+  return undefined
+}
+
+export class RipgrepSpawnResourceError extends Error {
+  constructor(errno: string) {
+    const { reason, advice } = RIPGREP_SPAWN_RESOURCE_INFO.get(errno) ?? RIPGREP_SPAWN_RESOURCE_FALLBACK
+    super(`ripgrep could not start, so nothing was searched and matches may still exist: the operating system could not start it because ${reason} (${errno}). Retry in a moment. If it keeps failing, tell the user that ${advice}.`)
+    this.name = 'RipgrepSpawnResourceError'
+  }
+
+  /**
+   * binary `Mu.from(error, rejectOnInputError, "emitted")`. Fires only when the
+   * caller opted into `rejectOnInputError`, the errno is one of the four
+   * spawn-resource codes, and the error came from a `spawn` syscall. OCC
+   * detects this solely on the execFile callback path — the binary's "emitted"
+   * mode, where the resource predicate `g` is unconditionally true. The
+   * binary's "thrown" mode additionally consults the `ud()`/`_f()` errno sets,
+   * which OCC's callback-based spawn never reaches (no synchronous spawn-throw
+   * site), so they are intentionally not ported.
+   */
+  static from(error: unknown, rejectOnInputError: boolean | undefined): RipgrepSpawnResourceError | undefined {
+    if (!rejectOnInputError) return undefined
+    const errno = extractErrnoCode(error)
+    const isSpawnSyscall =
+      error instanceof Error &&
+      'syscall' in error &&
+      typeof (error as { syscall?: unknown }).syscall === 'string' &&
+      (error as { syscall: string }).syscall.startsWith('spawn')
+    return errno !== undefined && RIPGREP_SPAWN_RESOURCE_ERRNOS.has(errno) && isSpawnSyscall ? new RipgrepSpawnResourceError(errno) : undefined
+  }
+}
+
 // Options for ripGrep.  rejectOnInputError (binary n?.rejectOnInputError)
 // converts invalid-pattern exit-code-2 into a rejected promise instead of
 // silently returning [].
@@ -835,6 +890,20 @@ export async function ripGrep(
       ) {
         reject(new SearchPatternError(stderr))
         return
+      }
+
+      // 2.1.277 (binary `Mu.from(T, rejectOnInputError, "emitted")`, gated on
+      // `z.length===0`): the OS could not start ripgrep (EAGAIN/ENOMEM/EMFILE/
+      // ENFILE on the spawn syscall) and no lines were produced, so `[]` would
+      // misreport the search as "no matches". Reject with a retryable, user-
+      // actionable error instead. Gated on rejectOnInputError, so Glob/@-file
+      // callers (which intentionally pass none) keep their `[]` semantics.
+      if (lines.length === 0) {
+        const spawnResourceError = RipgrepSpawnResourceError.from(error, options?.rejectOnInputError)
+        if (spawnResourceError) {
+          reject(spawnResourceError)
+          return
+        }
       }
 
       resolve(lines)

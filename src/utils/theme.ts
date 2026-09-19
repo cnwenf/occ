@@ -110,6 +110,48 @@ export const THEME_SETTINGS = ['auto', ...THEME_NAMES] as const
 export type ThemeSetting = (typeof THEME_SETTINGS)[number]
 
 /**
+ * CC 2.1.277 C8: "Fixed a crash at launch when the persisted `theme` value in
+ * ~/.claude.json is malformed." A hand-edited/corrupted value (a number, `{}`,
+ * `null`, an unknown string) previously flowed into theme resolution and
+ * `.startsWith` consumers (e.g. chevronThemeFamily) and threw a TypeError at
+ * launch.
+ *
+ * Official v277 mechanism (byte-verified @0xbad14e4 in the v277 ELF): the
+ * config-read boundary (`Po` resolveSetting) gained a schema-guard call —
+ *
+ *   function AEn(t,s){let e=Kb().shape[t].safeParse(s);
+ *     return e.success?e.data??void 0:void 0}
+ *   ... if(o!==void 0&&o!==UU[n]){let i=AEn(n,o);
+ *     if(i!==void 0)return{value:i,source:"legacyGlobalConfig"}}
+ *   return{value:s,source:"default"}
+ *
+ * i.e. safeParse the persisted value against the field schema; on failure
+ * fall through to the DEFAULT value. The theme schema (identical in v276 and
+ * v277) is:
+ *
+ *   theme:Fe([q(F2e),o().startsWith("custom:").transform((i)=>i)])
+ *     .optional().catch(void 0)
+ *   F2e=["auto","dark","light","light-daltonized","dark-daltonized",
+ *        "light-ansi","dark-ansi"]
+ *
+ * so a valid persisted theme is exactly: a string that is a THEME_SETTINGS
+ * member OR starts with "custom:" (custom-theme slug, see
+ * commands/theme/customThemes.ts CUSTOM_THEME_PREFIX — the literal is
+ * inlined here because customThemes.ts imports this module). Anything else
+ * (non-strings, unknown strings) falls back to the config default 'dark'.
+ */
+export function normalizeThemeSetting(value: unknown): ThemeSetting {
+  if (
+    typeof value === 'string' &&
+    ((THEME_SETTINGS as readonly string[]).includes(value) ||
+      value.startsWith('custom:'))
+  ) {
+    return value as ThemeSetting
+  }
+  return 'dark'
+}
+
+/**
  * Light theme using explicit RGB values to avoid inconsistencies
  * from users' custom terminal ANSI color definitions
  */

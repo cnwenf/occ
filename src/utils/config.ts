@@ -14,6 +14,7 @@ import type {
 } from '../services/oauth/types.js'
 import { getCwd } from '../utils/cwd.js'
 import { registerCleanup } from './cleanupRegistry.js'
+import { customApiKeyStatusOf } from './customApiKeyResponses.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { getGlobalClaudeFile } from './env.js'
@@ -1189,14 +1190,10 @@ export function getRemoteControlAtStartup(): boolean {
 export function getCustomApiKeyStatus(
   truncatedApiKey: string,
 ): 'approved' | 'rejected' | 'new' {
-  const config = getGlobalConfig()
-  if (config.customApiKeyResponses?.approved?.includes(truncatedApiKey)) {
-    return 'approved'
-  }
-  if (config.customApiKeyResponses?.rejected?.includes(truncatedApiKey)) {
-    return 'rejected'
-  }
-  return 'new'
+  // CC 2.1.277 C2: delegate to the official `kio` (customApiKeyStatusOf),
+  // which computes over the `HR`-normalized lists so a malformed persisted
+  // customApiKeyResponses (null/{}/number/mixed arrays) cannot throw.
+  return customApiKeyStatusOf(getGlobalConfig(), truncatedApiKey)
 }
 
 function saveConfig<A extends object>(

@@ -10,6 +10,7 @@ import { clearRemoteManagedSettingsCache } from '../../services/remoteManagedSet
 import { getClaudeAIOAuthTokens, removeApiKey } from '../../utils/auth.js';
 import { clearBetasCaches } from '../../utils/betas.js';
 import { saveGlobalConfig } from '../../utils/config.js';
+import { customApiKeyResponsesOf } from '../../utils/customApiKeyResponses.js';
 import { gracefulShutdownSync } from '../../utils/gracefulShutdown.js';
 import { getSecureStorage } from '../../utils/secureStorage/index.js';
 import { clearToolSchemaCache } from '../../utils/toolSchemaCache.js';
@@ -36,10 +37,15 @@ export async function performLogout({
       updated.hasCompletedOnboarding = false;
       updated.subscriptionNoticeCount = 0;
       updated.hasAvailableSubscription = false;
-      if (updated.customApiKeyResponses?.approved) {
+      // CC 2.1.277 C2: official v277 logout write path (`if(i.
+      // customApiKeyResponses!==void 0)i.customApiKeyResponses={approved:[],
+      // rejected:HR(i).rejected}`) — gated on the container being present,
+      // rejected normalized via `HR` so a malformed value cannot throw and
+      // self-heals on this write.
+      if (updated.customApiKeyResponses !== undefined) {
         updated.customApiKeyResponses = {
-          ...updated.customApiKeyResponses,
-          approved: []
+          approved: [],
+          rejected: customApiKeyResponsesOf(updated).rejected
         };
       }
     }

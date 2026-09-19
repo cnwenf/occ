@@ -5,6 +5,7 @@ import useStdin from '../../ink/hooks/use-stdin.js';
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js';
 import { getSystemThemeName, type SystemTheme } from '../../utils/systemTheme.js';
 import type { ThemeName, ThemeSetting } from '../../utils/theme.js';
+import { normalizeThemeSetting } from '../../utils/theme.js';
 import {
   findCustomTheme,
   isCustomThemeSetting,
@@ -42,7 +43,11 @@ type Props = {
   onThemeSave?: (setting: ThemeSetting) => void;
 };
 function defaultInitialTheme(): ThemeSetting {
-  return getGlobalConfig().theme;
+  // CC 2.1.277 C8: guard the config-read boundary (official `AEn`
+  // legacySettingValue safeParse) — a malformed persisted `theme` (number,
+  // object, unknown string) falls back to the default instead of crashing
+  // theme resolution / `.startsWith` consumers at launch.
+  return normalizeThemeSetting(getGlobalConfig().theme);
 }
 function defaultSaveTheme(setting: ThemeSetting): void {
   saveGlobalConfig(current => ({

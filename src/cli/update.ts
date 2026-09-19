@@ -142,7 +142,15 @@ export async function update() {
         getLatestVersionFromGcs(channel),
       ])
       const latest = caskVersion ?? gcsVersion
-      if (latest && !gte(MACRO.VERSION, latest)) {
+      // 2.1.277 (C4): a FAILED lookup (null) must not report "up to date" —
+      // distinguish it and print the official manual-update fallback.
+      if (latest === null) {
+        writeToStdout(
+          'Could not check for updates (network check skipped or unavailable).\n',
+        )
+        writeToStdout('To update manually, run:\n')
+        writeToStdout(chalk.bold(`  brew upgrade ${caskName}`) + '\n')
+      } else if (!gte(MACRO.VERSION, latest)) {
         writeToStdout(`Update available: ${MACRO.VERSION} → ${latest}\n`)
         writeToStdout('\n')
         writeToStdout('To update, run:\n')
@@ -157,7 +165,16 @@ export async function update() {
     } else if (packageManager === 'winget') {
       writeToStdout('Claude is managed by winget.\n')
       const latest = await getLatestVersion(channel)
-      if (latest && !gte(MACRO.VERSION, latest)) {
+      // 2.1.277 (C4): official v277 winget null-branch @0xcd0b197.
+      if (latest === null) {
+        writeToStdout(
+          'Could not check for updates (npm lookup failed or returned an invalid response).\n',
+        )
+        writeToStdout('To update manually, run:\n')
+        writeToStdout(
+          chalk.bold('  winget upgrade Anthropic.ClaudeCode') + '\n',
+        )
+      } else if (!gte(MACRO.VERSION, latest)) {
         writeToStdout(`Update available: ${MACRO.VERSION} → ${latest}\n`)
         writeToStdout('\n')
         writeToStdout('To update, run:\n')
@@ -170,7 +187,14 @@ export async function update() {
     } else if (packageManager === 'apk') {
       writeToStdout('Claude is managed by apk.\n')
       const latest = await getLatestVersion(channel)
-      if (latest && !gte(MACRO.VERSION, latest)) {
+      // 2.1.277 (C4): official v277 apk null-branch @0xcd0b694.
+      if (latest === null) {
+        writeToStdout(
+          'Could not check for updates (npm lookup failed or returned an invalid response).\n',
+        )
+        writeToStdout('To update manually, run:\n')
+        writeToStdout(chalk.bold('  apk upgrade claude-code') + '\n')
+      } else if (!gte(MACRO.VERSION, latest)) {
         writeToStdout(`Update available: ${MACRO.VERSION} → ${latest}\n`)
         writeToStdout('\n')
         writeToStdout('To update, run:\n')

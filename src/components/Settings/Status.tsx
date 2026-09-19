@@ -34,6 +34,21 @@ function buildPrimarySection(): Property[] {
     value: getCwd()
   }, ...buildAccountProperties(), ...buildAPIProviderProperties()];
 }
+// OCC ships no server-side auto-mode classifier, so the official `jUr(i)`
+// gate is always false here and the row reports the constant "Disabled".
+// Label + values are byte-copied from the 2.1.278 binary
+// (`jvr`: {label:"Auto mode server", value: jUr(i) ? "Enabled" : "Disabled"}),
+// and it is appended last in the secondary section, matching the official
+// `...Bvr(),...jvr(R)` ordering.
+function isAutoModeServerEnabled(): boolean {
+  return false;
+}
+export function buildAutoModeServerProperties(): Property[] {
+  return [{
+    label: 'Auto mode server',
+    value: isAutoModeServerEnabled() ? 'Enabled' : 'Disabled'
+  }];
+}
 function buildSecondarySection({
   mainLoopModel,
   mcp,
@@ -49,7 +64,7 @@ function buildSecondarySection({
   return [{
     label: 'Model',
     value: modelLabel
-  }, ...buildIDEProperties(mcp.clients, context.options.ideInstallationStatus, theme), ...buildMcpProperties(mcp.clients, theme), ...buildSandboxProperties(), ...buildSettingSourcesProperties()];
+  }, ...buildIDEProperties(mcp.clients, context.options.ideInstallationStatus, theme), ...buildMcpProperties(mcp.clients, theme), ...buildSandboxProperties(), ...buildSettingSourcesProperties(), ...buildAutoModeServerProperties()];
 }
 export async function buildDiagnostics(): Promise<Diagnostic[]> {
   return [...(await buildInstallationDiagnostics()), ...(await buildInstallationHealthDiagnostics()), ...(await buildMemoryDiagnostics())];

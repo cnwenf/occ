@@ -2,6 +2,10 @@ import type {
   RenderableMessage,
   SystemStopHookSummaryMessage,
 } from '../types/message.js'
+import {
+  sanitizeHookLabel,
+  sanitizeStopHookSummary,
+} from './stopHookSummarySanitizer.js'
 
 function isLabeledHookSummary(
   msg: RenderableMessage,
@@ -9,7 +13,10 @@ function isLabeledHookSummary(
   return (
     msg.type === 'system' &&
     msg.subtype === 'stop_hook_summary' &&
-    msg.hookLabel !== undefined
+    // Official 2.1.277 `Xot`: the label check goes through the sanitizer
+    // (`T5e(h)!==void 0`) — a missing/non-string/empty-string hookLabel row
+    // is treated as unlabeled instead of trusting the raw field.
+    sanitizeHookLabel(msg) !== undefined
   )
 }
 
@@ -27,26 +34,38 @@ export function collapseHookSummaries(
   while (i < messages.length) {
     const msg = messages[i]!
     if (isLabeledHookSummary(msg)) {
-      const label = msg.hookLabel
+      const label = sanitizeHookLabel(msg)
       const group: SystemStopHookSummaryMessage[] = []
       while (i < messages.length) {
         const next = messages[i]!
-        if (!isLabeledHookSummary(next) || next.hookLabel !== label) break
+        if (!isLabeledHookSummary(next) || sanitizeHookLabel(next) !== label)
+          break
         group.push(next)
         i++
       }
       if (group.length === 1) {
         result.push(msg)
       } else {
+        // Official 2.1.277 `lwe` merge: every folded field is read from the
+        // SANITIZED rows (`we=Se.map(s$e)`) — a malformed hookInfos/hookCount
+        // in any group member can no longer poison the merged summary or
+        // throw. `hasOutput` stays read from the ORIGINAL rows (official
+        // `Se.some((Ce)=>Ce.hasOutput)`).
+        const sanitized = group.map(sanitizeStopHookSummary)
         result.push({
           ...msg,
-          hookCount: group.reduce((sum, m) => sum + m.hookCount, 0),
-          hookInfos: group.flatMap(m => m.hookInfos),
-          hookErrors: group.flatMap(m => m.hookErrors),
-          preventedContinuation: group.some(m => m.preventedContinuation),
+          hookCount: sanitized.reduce((sum, m) => sum + m.hookCount, 0),
+          hookInfos: sanitized.flatMap(m => m.hookInfos),
+          hookErrors: sanitized.flatMap(m => m.hookErrors),
+          hookAdditionalContext: sanitized.flatMap(
+            m => m.hookAdditionalContext ?? [],
+          ),
+          preventedContinuation: sanitized.some(m => m.preventedContinuation),
           hasOutput: group.some(m => m.hasOutput),
           // Parallel tool calls' hooks overlap; max is closest to wall-clock.
-          totalDurationMs: Math.max(...group.map(m => m.totalDurationMs ?? 0)),
+          totalDurationMs: Math.max(
+            ...sanitized.map(m => m.totalDurationMs ?? 0),
+          ),
         })
       }
     } else {

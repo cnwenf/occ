@@ -283,6 +283,10 @@ import {
   EFFORT_LEVELS,
   resolveAppliedEffort,
 } from 'src/utils/effort.js'
+import {
+  restoreCostStateForSession,
+  saveCurrentSessionCosts,
+} from 'src/cost-tracker.js'
 import { modelSupportsAdaptiveThinking } from 'src/utils/thinking.js'
 import { modelSupportsAutoMode } from 'src/utils/betas.js'
 import { ensureModelStringsInitialized } from 'src/utils/model/modelStrings.js'
@@ -509,6 +513,13 @@ export async function runHeadless(
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   }
+
+  // 2.1.277 (A10): persist headless session cost/usage totals at exit. The
+  // official registers the print-lane cost-state recorder at startup (gated
+  // on session persistence), so `occ -p` totals can be restored on a later
+  // resume. OCC's equivalent mechanism is the project-config save the
+  // interactive REPL performs via useCostSummary's exit hook (costHook.ts).
+  registerHeadlessCostSaveOnExit()
 
   // K3 (ultracode): the headless / pipe (-p) / SDK path bypasses
   // processTextPrompt (the interactive-REPL keyword trigger), so detect the
@@ -4969,13 +4980,31 @@ export function removeInterruptedMessage(
   }
 }
 
+/**
+ * 2.1.277 (A10): registers the process-exit hook that persists the current
+ * session's cost totals from the headless (-p) lane, so a later
+ * `--resume`/`--continue` restores them instead of starting at $0. No-op when
+ * session persistence is disabled (mirrors the official's gate).
+ *
+ * @internal Exported for testing
+ */
+export function registerHeadlessCostSaveOnExit(): void {
+  if (isSessionPersistenceDisabled()) {
+    return
+  }
+  process.on('exit', () => {
+    saveCurrentSessionCosts()
+  })
+}
+
 type LoadInitialMessagesResult = {
   messages: Message[]
   turnInterruptionState?: TurnInterruptionState
   agentSetting?: string
 }
 
-async function loadInitialMessages(
+/** @internal Exported for testing */
+export async function loadInitialMessages(
   setAppState: (f: (prev: AppState) => AppState) => void,
   options: {
     continue: boolean | undefined
@@ -5037,6 +5066,9 @@ async function loadInitialMessages(
             if (persistSession) {
               await resetSessionFilePointer()
             }
+            // 2.1.277 (A10): restore the resumed session's cost totals
+            // (mirrors the interactive resume path in sessionRestore.ts).
+            restoreCostStateForSession(result.sessionId)
           }
         }
         restoreSessionStateFromLog(result, setAppState)
@@ -5238,6 +5270,9 @@ async function loadInitialMessages(
         if (persistSession) {
           await resetSessionFilePointer()
         }
+        // 2.1.277 (A10): restore the resumed session's cost totals
+        // (mirrors the interactive resume path in sessionRestore.ts).
+        restoreCostStateForSession(result.sessionId)
       }
       restoreSessionStateFromLog(result, setAppState)
 

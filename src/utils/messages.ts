@@ -2518,11 +2518,19 @@ export function normalizeMessagesForAPI(
     ? relocateToolReferenceSiblings(result)
     : result
 
+  // Official 2.1.277 (B9): strip individual empty text blocks (text === '')
+  // sitting BESIDE other content in assistant messages — the API otherwise
+  // rejects EVERY subsequent request with "text content blocks must be
+  // non-empty". Runs FIRST in the filter chain (official call site:
+  // `Pn=u6o(mn,s?.preserveTrailingThinking),ar=JDn(Pn,...)`).
+  const withStrippedEmptyText = stripEmptyTextBlocksBesideContent(relocated)
+
   // Filter orphaned thinking-only assistant messages (likely introduced by
   // compaction slicing away intervening messages between a failed streaming
   // response and its retry). Without this, consecutive assistant messages with
   // mismatched thinking block signatures cause API 400 errors.
-  const withFilteredOrphans = filterOrphanedThinkingOnlyMessages(relocated)
+  const withFilteredOrphans =
+    filterOrphanedThinkingOnlyMessages(withStrippedEmptyText)
 
   // Order matters: strip trailing thinking first, THEN filter whitespace-only
   // messages. The reverse order has a bug: a message like [text("\n\n"), thinking("...")]
@@ -5168,6 +5176,224 @@ function filterTrailingThinkingFromLastAssistant(
     },
   }
   return result
+}
+
+/**
+ * Official `snt="[Empty text removed]"` (2.1.277 binary @202380694) —
+ * placeholder text used when an empty text block sitting BETWEEN two thinking
+ * blocks must survive as non-empty content: dropping it would fuse the
+ * thinking blocks, and the API rejects `text: ""`.
+ */
+const EMPTY_TEXT_REMOVED_PLACEHOLDER = '[Empty text removed]'
+
+/**
+ * Official `uve(e){return e.type==="text"&&e.text===""}` (@202382339) — ONLY
+ * an exact empty string counts. Whitespace-only text (`" "`, `"\n\n"`) is NOT
+ * stripped here; that whole-message case is handled by
+ * filterWhitespaceOnlyAssistantMessages (official `QDn`).
+ */
+function isEmptyTextBlock(
+  block: ContentBlockParam | ContentBlock | BetaContentBlock,
+): boolean {
+  return block.type === 'text' && block.text === ''
+}
+
+/**
+ * Official `yve(e)` (@202380721) — true when a content array is entirely
+ * "empty-ish" text: after skipping LEADING thinking blocks, every block is a
+ * text block whose trimmed text is empty, `(no content)` (xf) or the
+ * `[Empty text removed]` placeholder (snt), and at least one text block was
+ * seen. Such messages are left untouched by stripEmptyTextBlocksBesideContent
+ * (the whitespace-only pass owns them).
+ */
+function isEmptyishTextOnlyContent(
+  content: Array<{ type: string; text?: string }>,
+): boolean {
+  let sawText = false
+  for (const block of content) {
+    if (
+      !sawText &&
+      (block.type === 'thinking' || block.type === 'redacted_thinking')
+    ) {
+      continue
+    }
+    if (block.type !== 'text') return false
+    const trimmed = block.text?.trim()
+    if (
+      trimmed !== undefined &&
+      trimmed !== '' &&
+      trimmed !== NO_CONTENT_MESSAGE &&
+      trimmed !== EMPTY_TEXT_REMOVED_PLACEHOLDER
+    ) {
+      return false
+    }
+    sawText = true
+  }
+  return sawText
+}
+
+/**
+ * Strip individual empty text blocks (`text === ''`) that sit BESIDE other
+ * content in assistant messages — port of the official 2.1.277 `u6o(e,n=!1)`
+ * (@202382391).
+ *
+ * CC 2.1.278 changelog (B9): conversations failed EVERY request with the API
+ * error "text content blocks must be non-empty" when an earlier assistant
+ * turn held an empty text block beside other content (including after
+ * --resume). OCC already dropped whole whitespace-only messages
+ * (filterWhitespaceOnlyAssistantMessages ≡ QDn) and empty content arrays
+ * (ensureNonEmptyAssistantContent ≡ f6o), but nothing stripped an INDIVIDUAL
+ * `text: ""` block from a message that also holds real content — the API
+ * rejects the whole request.
+ *
+ * Official semantics (byte-verified):
+ * - Identity fast path when no assistant row holds an empty text block.
+ * - A message whose content is entirely "empty-ish" text (yve) AND whose
+ *   message.id appears exactly once (or is undefined) is left untouched.
+ * - The message "retains real content" (official `U`) when THIS row has a
+ *   non-thinking non-empty-text block, OR another row sharing the same
+ *   message.id has one, OR (keepTrailingEmptyTextBlock && this is the last
+ *   row) — official `n` = `s?.preserveTrailingThinking` at the call site;
+ *   OCC's normalizeMessagesForAPI has no such option, so the default false
+ *   is what the chain uses.
+ * - Each empty text block: replaced by `{type:'text',text:'[Empty text
+ *   removed]',citations:[]}` ONLY when it sits between two thinking blocks
+ *   (previous block AND next non-empty block both thinking) and the message
+ *   retains real content; otherwise removed.
+ * - A message whose content becomes empty is DROPPED entirely.
+ * - When rows were dropped, adjacent user messages are merged (official
+ *   `return w.length===e.length?w:mve(w)` — mve itself short-circuits to the
+ *   identity when no adjacent user pair exists).
+ *
+ * The official also rebuilds `apiBlockIndices` when every block had one; OCC
+ * rows carry no `apiBlockIndices` field (grep-verified absent), so that
+ * destructure/re-add is omitted.
+ *
+ * Chain position (official call site @202302374): `Pn=u6o(mn,...)` runs
+ * FIRST, before `JDn` (filterOrphanedThinkingOnlyMessages), `YDn`
+ * (filterTrailingThinkingFromLastAssistant), `QDn`
+ * (filterWhitespaceOnlyAssistantMessages) and `f6o`
+ * (ensureNonEmptyAssistantContent).
+ */
+export function stripEmptyTextBlocksBesideContent(
+  messages: (UserMessage | AssistantMessage)[],
+  keepTrailingEmptyTextBlock?: boolean,
+): (UserMessage | AssistantMessage)[]
+export function stripEmptyTextBlocksBesideContent(
+  messages: Message[],
+  keepTrailingEmptyTextBlock?: boolean,
+): Message[]
+export function stripEmptyTextBlocksBesideContent(
+  messages: Message[],
+  keepTrailingEmptyTextBlock = false,
+): Message[] {
+  // Official `r` — the rows this pass touches.
+  const hasEmptyTextBlock = (message: Message): boolean =>
+    message.type === 'assistant' &&
+    Array.isArray(message.message.content) &&
+    message.message.content.some(isEmptyTextBlock)
+
+  if (!messages.some(hasEmptyTextBlock)) {
+    return messages
+  }
+
+  // Official `s=Map.groupBy(<assistant message ids>, id => id)` — only
+  // `.length === 1` is ever read, so a per-id row COUNT map is the
+  // observable-equivalent port (avoids the ES2024 Map.groupBy dependency).
+  const rowsPerMessageId = new Map<string, number>()
+  for (const message of messages) {
+    if (message.type !== 'assistant') continue
+    const id = message.message.id
+    if (id === undefined) continue
+    rowsPerMessageId.set(id, (rowsPerMessageId.get(id) ?? 0) + 1)
+  }
+
+  // Official `g=(O)=>!BY(O)&&!uve(O)` — a "real content" block.
+  const isRealContentBlock = (
+    block: ContentBlockParam | ContentBlock | BetaContentBlock,
+  ): boolean => !isThinkingBlock(block) && !isEmptyTextBlock(block)
+
+  // Official `h` — message.ids where SOME assistant row with that id holds
+  // real content (streamed rows sharing one id are merged later).
+  const idsWithRealContent = new Set<string>()
+  for (const message of messages) {
+    if (message.type !== 'assistant') continue
+    const id = message.message.id
+    if (id === undefined || !Array.isArray(message.message.content)) continue
+    if (message.message.content.some(isRealContentBlock)) {
+      idsWithRealContent.add(id)
+    }
+  }
+
+  const lastIndex = messages.length - 1
+  const result = messages.flatMap((message, index): Message[] => {
+    if (!hasEmptyTextBlock(message)) return [message]
+    const content = message.message.content as Array<
+      ContentBlockParam | ContentBlock | BetaContentBlock
+    >
+
+    // Official: an all-empty-ish text message whose id is unique (or absent)
+    // is left untouched — the whitespace-only pass handles it.
+    const id = message.message.id
+    if (
+      isEmptyishTextOnlyContent(content) &&
+      (id === undefined || rowsPerMessageId.get(id) === 1)
+    ) {
+      return [message]
+    }
+
+    // Official `U`.
+    const retainsRealContent =
+      content.some(isRealContentBlock) ||
+      (id !== undefined && idsWithRealContent.has(id)) ||
+      (keepTrailingEmptyTextBlock && index === lastIndex)
+
+    // Official `he` — per-block map, then `flat()`.
+    const mapped = content.map((block, blockIndex) => {
+      if (!isEmptyTextBlock(block)) return [block]
+      const prev = content[blockIndex - 1]
+      const next = content.find(
+        (later, laterIndex) => laterIndex > blockIndex && !isEmptyTextBlock(later),
+      )
+      return retainsRealContent &&
+        prev !== undefined &&
+        next !== undefined &&
+        isThinkingBlock(prev) &&
+        isThinkingBlock(next)
+        ? [
+            {
+              type: 'text' as const,
+              text: EMPTY_TEXT_REMOVED_PLACEHOLDER,
+              citations: [],
+            },
+          ]
+        : []
+    })
+    const stripped = mapped.flat()
+
+    // Official `if(_e.length===0)return[]` — the row is dropped entirely.
+    if (stripped.length === 0) return []
+
+    return [
+      {
+        ...message,
+        message: { ...message.message, content: stripped },
+      },
+    ]
+  })
+
+  // Official `return w.length===e.length?w:mve(w)`. mve's identity
+  // short-circuit (scan for an adjacent user pair first) is replicated here
+  // because OCC's mergeAdjacentUserMessages always rebuilds the array.
+  if (result.length === messages.length) return result
+  let hasAdjacentUsers = false
+  for (let i = 1; i < result.length; i++) {
+    if (result[i]?.type === 'user' && result[i - 1]?.type === 'user') {
+      hasAdjacentUsers = true
+      break
+    }
+  }
+  return hasAdjacentUsers ? mergeAdjacentUserMessages(result) : result
 }
 
 /**

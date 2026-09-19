@@ -47,7 +47,7 @@ import { execFileNoThrowWithCwd } from '../execFileNoThrow.js'
 import { getShellType } from '../localInstaller.js'
 import * as lockfile from '../lockfile.js'
 import { logError } from '../log.js'
-import { gt, gte } from '../semver.js'
+import { gt, gte, parseVersion } from '../semver.js'
 import {
   filterClaudeAliases,
   getShellConfigPaths,
@@ -442,8 +442,10 @@ async function installVersion(
 /**
  * Performs the core update operation: download (if needed), install, and update symlink.
  * Returns whether a new install was performed (vs just updating symlink).
+ *
+ * @internal Exported for testing
  */
-async function performVersionUpdate(
+export async function performVersionUpdate(
   version: string,
   forceReinstall: boolean,
 ): Promise<boolean> {
@@ -464,8 +466,22 @@ async function performVersionUpdate(
         ? `Force reinstalling native installer version ${version}`
         : `Downloading native installer version ${version}`,
     )
-    const downloadType = await downloadVersion(version, stagingPath)
-    await installVersion(stagingPath, installPath, downloadType)
+    // 2.1.277 (C5): a failed download/install previously left the full staged
+    // download behind in ~/.cache/claude/staging. Official adds a
+    // finally-block cleanup for the staged directory (on top of the 1-hour
+    // startup sweep). The success paths inside installVersion* already remove
+    // it; rm with force:true is a no-op then.
+    try {
+      const downloadType = await downloadVersion(version, stagingPath)
+      await installVersion(stagingPath, installPath, downloadType)
+    } finally {
+      await rm(stagingPath, { recursive: true, force: true }).catch(error => {
+        logForDebugging(
+          `Could not remove the update staging directory (a later update removes it after one hour): ${errorMessage(error)}`,
+          { level: 'warn' },
+        )
+      })
+    }
   } else {
     logForDebugging(`Version ${version} already installed, updating symlink`)
   }
@@ -497,6 +513,18 @@ async function versionIsAvailable(version: string): Promise<boolean> {
   return isPossibleClaudeBinary(installPath)
 }
 
+// 2.1.277 (C3): official `k6` quick well-formed-version regex + `kTn`
+// combined check (regex AND semver-parse must both accept).
+const WELL_FORMED_VERSION_RE = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/
+
+function isWellFormedVersion(version: string): boolean {
+  return (
+    typeof version === 'string' &&
+    WELL_FORMED_VERSION_RE.test(version) &&
+    parseVersion(version) !== null
+  )
+}
+
 async function updateLatest(
   channelOrVersion: string,
   forceReinstall: boolean = false,
@@ -510,12 +538,31 @@ async function updateLatest(
   let version = await getLatestVersion(channelOrVersion)
   const { executable: executablePath } = getBaseDirectories()
 
+  // 2.1.277 (C3): port of the official `kTn` well-formed-version gate on the
+  // native update target. A proxy/GCS returning garbage must produce a clean
+  // error here, not a throw from a downstream semver comparator (which
+  // surfaced as a hung `claude update`).
+  const isVersionPointer = !/^v?\d+\.\d+\.\d+(-\S+)?$/.test(channelOrVersion)
+  if (!isWellFormedVersion(version)) {
+    throw new Error(
+      `Invalid version string from ${isVersionPointer ? 'version pointer' : 'argument'}: not a well-formed version (${version.length} characters)`,
+    )
+  }
+
   logForDebugging(`Checking for native installer update to version ${version}`)
 
   // Check if max version is set (server-side kill switch for auto-updates)
   if (!forceReinstall) {
     const maxVersion = await getMaxVersion()
-    if (maxVersion && gt(version, maxVersion)) {
+    // 2.1.277 (C3, OCC-side hardening — official compares the kill-switch
+    // value raw): a malformed maxVersion would throw from gt()/gte() below,
+    // so log+ignore it using the existing settings.ts idiom.
+    if (maxVersion && !parseVersion(maxVersion)) {
+      logForDebugging(
+        `maxVersion '${maxVersion}' is not a valid semver version — ignoring`,
+        { level: 'error' },
+      )
+    } else if (maxVersion && gt(version, maxVersion)) {
       logForDebugging(
         `Native installer: maxVersion ${maxVersion} is set, capping update from ${version} to ${maxVersion}`,
       )

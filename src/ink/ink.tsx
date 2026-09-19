@@ -72,6 +72,42 @@ function makeAltScreenParkPatch(terminalRows: number) {
     content: cursorPosition(terminalRows, 1)
   });
 }
+
+// Per-session cap on how many layout-listener faults get a debug line
+// (binary `lb`). Past this the warn log is suppressed but containment keeps
+// working — a throwing listener can never take the render loop down with it.
+const LAYOUT_LISTENER_FAULT_DEBUG_LINE_LIMIT = 5;
+// Cap on how many distinct fault messages get reported to error tracking
+// (binary `JC`). Dedup is by message so a repeatedly-throwing listener does
+// not flood the reporter.
+const REPORTED_LAYOUT_FAULT_MESSAGE_LIMIT = 16;
+
+/**
+ * Coerce a thrown value into an Error carrying a usable name + message, so a
+ * faulting layout listener can be described without re-throwing. Mirrors the
+ * binary's `Pwe.describeLayoutFault`: an Error-shaped value is passed through,
+ * anything else falls back to a generic descriptor (never invents a message
+ * from an opaque throw).
+ */
+function describeLayoutFault(thrown: unknown): Error {
+  try {
+    if (thrown instanceof Error && typeof thrown.message === 'string' && typeof thrown.name === 'string') {
+      return thrown;
+    }
+    if (typeof thrown === 'object' && thrown !== null) {
+      const candidate = thrown as { name?: unknown; message?: unknown };
+      if (typeof candidate.message === 'string' && typeof candidate.name === 'string') {
+        const described = new Error(candidate.message);
+        described.name = candidate.name;
+        return described;
+      }
+    }
+  } catch {
+    // Fall through to the generic descriptor below.
+  }
+  return new Error('ink layout pass threw a value that cannot be described');
+}
+
 export type Options = {
   stdout: NodeJS.WriteStream;
   stdin: NodeJS.ReadStream;
@@ -154,6 +190,15 @@ export default class Ink {
   // Fired alongside the terminal repaint whenever the selection mutates
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>();
+  // Layout-listener fault containment (ported from the binary's ink
+  // notifyLayoutListeners). When a listener throws during a render/notify
+  // flush we pause further notifications until the flush unwinds (a
+  // microtask), report the fault once to error tracking, and emit a capped
+  // warn line — so a single throwing subscriber can never wedge the screen.
+  private selectionListenersPaused = false;
+  private reportedSelectionListenerFault = false;
+  private selectionListenerFaultDebugLines = 0;
+  private readonly reportedSelectionFaultMessages = new Set<string>();
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
@@ -684,8 +729,9 @@ export default class Ink {
         // so useHasSelection re-renders and the footer copy/escape hint
         // disappears. notifySelectionChange() would recurse into onRender;
         // fire the listeners directly — they schedule a React update for
-        // LATER, they don't re-enter this frame.
-        if (cleared) for (const cb of this.selectionListeners) cb();
+        // LATER, they don't re-enter this frame. Each listener is contained
+        // (try/catch + pause) so a throwing subscriber can't wedge onRender.
+        if (cleared) this.notifySelectionListeners();
       }
     }
 
@@ -1576,7 +1622,89 @@ export default class Ink {
   }
   private notifySelectionChange(): void {
     this.onRender();
-    for (const cb of this.selectionListeners) cb();
+    this.notifySelectionListeners();
+  }
+
+  /**
+   * Contained layout-listener notify (binary `notifyLayoutListeners`). Skips
+   * while paused; wraps each listener so a throw pauses the set until this
+   * flush unwinds, reports the fault once, logs a capped warn line, and stops
+   * notifying the remaining listeners for this flush.
+   */
+  private notifySelectionListeners(): void {
+    if (this.selectionListenersPaused) return;
+    for (const cb of this.selectionListeners) {
+      try {
+        cb();
+      } catch (thrown) {
+        this.pauseSelectionListeners();
+        this.reportSelectionListenerFault(describeLayoutFault(thrown));
+        return;
+      }
+    }
+  }
+
+  /**
+   * Pause layout listeners for the remainder of the current synchronous flush
+   * (binary `pauseLayoutListeners`). A microtask releases the pause, so the
+   * next user/render event resumes normal notification.
+   */
+  private pauseSelectionListeners(): void {
+    this.selectionListenersPaused = true;
+    queueMicrotask(() => {
+      this.selectionListenersPaused = false;
+    });
+  }
+
+  /**
+   * Report a contained layout-listener fault (binary
+   * `reportLayoutListenerFault`). Never throws — reporting is best-effort and
+   * must not itself take down the flush.
+   */
+  private reportSelectionListenerFault(fault: Error): void {
+    try {
+      this.reportSelectionFaultErrorOnce(fault);
+      if (!this.reportedSelectionListenerFault) {
+        this.reportedSelectionListenerFault = true;
+        this.reportSelectionListenersPaused();
+      }
+      this.logSelectionListenerFaultForDebugging(fault);
+    } catch {
+      // Fault reporting must never propagate.
+    }
+  }
+
+  /** Binary `reportLayoutListenersPaused`: one error-tracking report per session. */
+  private reportSelectionListenersPaused(): void {
+    logError(new Error('ink layout listener threw; layout listeners paused until this flush unwinds'));
+  }
+
+  /**
+   * Capped warn line per fault (binary `logLayoutListenerFaultForDebugging`).
+   * After the per-session limit the message notes that further faults are not
+   * logged; the em-dash separator is byte-copied from the binary.
+   */
+  private logSelectionListenerFaultForDebugging(fault: Error): void {
+    try {
+      if (this.selectionListenerFaultDebugLines >= LAYOUT_LISTENER_FAULT_DEBUG_LINE_LIMIT) return;
+      this.selectionListenerFaultDebugLines++;
+      const suffix =
+        this.selectionListenerFaultDebugLines >= LAYOUT_LISTENER_FAULT_DEBUG_LINE_LIMIT ? ' \u2014 further layout listener faults in this session are not logged' : '';
+      logForDebugging(`ink layout listener threw (contained; layout listeners paused until this flush unwinds): ${fault.name}: ${fault.message}${suffix}`, { level: 'warn' });
+    } catch {
+      // Debug logging must never propagate.
+    }
+  }
+
+  /**
+   * Report each distinct fault message once (binary
+   * `reportLayoutFaultErrorOnce`), bounded by the per-session message cap.
+   */
+  private reportSelectionFaultErrorOnce(fault: Error): void {
+    const messages = this.reportedSelectionFaultMessages;
+    if (messages.has(fault.message) || messages.size >= REPORTED_LAYOUT_FAULT_MESSAGE_LIMIT) return;
+    messages.add(fault.message);
+    logError(fault);
   }
 
   /**
