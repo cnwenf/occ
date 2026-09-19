@@ -181,6 +181,23 @@ const remoteSkillModules = feature('EXPERIMENTAL_SKILL_SEARCH')
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 /**
+ * CC 2.1.276 (ITEM R): nested subagent progress predicate — official v276
+ * `w7` (byte-extracted @203722538, v274 twin `qDn` @202575125):
+ *   `function w7(e){return e.type==="progress"&&
+ *      (e.data.type==="agent_progress"||e.data.type==="skill_progress")}`
+ *
+ * These are progress messages emitted by agents the forked skill itself
+ * spawned (a subagent, or a deeper `context: fork` skill). They are part of
+ * the fork's message stream but are NOT assistant/user turns, so the
+ * forwarding block below never sees them.
+ */
+function isNestedSubagentProgress(message: Message): boolean {
+  if (message.type !== 'progress') return false
+  const dataType = (message.data as { type?: string } | undefined)?.type
+  return dataType === 'agent_progress' || dataType === 'skill_progress'
+}
+
+/**
  * Executes a skill in a forked sub-agent context.
  * This runs the skill prompt in an isolated agent with its own token budget.
  */
@@ -306,6 +323,27 @@ async function executeForkedSkill(
       override: { agentId },
     })) {
       agentMessages.push(message)
+
+      // CC 2.1.276 (ITEM R): "--forward-subagent-text" dropped the messages of
+      // subagents spawned by `context: fork` skills. Official v276 fix site
+      // (byte-extracted @203999664; v274 baseline @202941888 was
+      // `if(K.push(L),L.type!=="assistant"&&L.type!=="user")continue;`):
+      //   `if(G.push(j),w7(j)){if(ae)f?.(hMt(j));continue}`
+      // where `ae` = `options.forwardSubagentText` and `f` = parent onProgress.
+      // `hMt` (@203722646) rewraps `{type:"progress",toolUseID,parentToolUseID,
+      // data}` — OCC's onProgress takes the 2-field ToolProgress shape and
+      // toolExecution.ts re-adds `type:'progress'` + `parentToolUseID` (the
+      // skill's own tool_use id), so the nested toolUseID/data pass through
+      // verbatim (same shape as the AgentTool bash_progress forward).
+      if (isNestedSubagentProgress(message)) {
+        if (context.options.forwardSubagentText && onProgress) {
+          onProgress({
+            toolUseID: message.toolUseID as string,
+            data: message.data,
+          })
+        }
+        continue
+      }
 
       // Report progress for tool uses (like AgentTool does)
       if (

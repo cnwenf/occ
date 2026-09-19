@@ -4,15 +4,22 @@
  * previous session is not re-announced on the next startup; it re-enters the
  * notice only after it successfully connects (prune) or the session store is
  * reset (/clear). Within the announcing session the notice stays visible (the
- * session set keeps the count stable), matching the official gate:
+ * session set keeps the count stable), matching the official 2.1.276 gate:
  *
- *   function net(w,{hasEverConnected:P,connectedThisSession:ee}){
- *     if(w.type!=="needs-auth"||!TEt(w,P,ee))return!1;
- *     return Nt().needsAuthNoticedThisSession.has(w.name)||
- *            !(ne().mcpNeedsAuthNoticed??[]).includes(w.name)}
+ *   function cet(h,{hasEverConnected:v,connectedThisSession:O}){
+ *     if(h.type!=="needs-auth"||!o1t(h,v,O))return!1;
+ *     return Ut().needsAuthNoticedThisSession.has(h.name)||
+ *            !pee(ie()).includes(h.name)}
  *
- * Official 2.1.268 shape (byte-verified from the binary):
- *   - `Z5t=128` — persisted `mcpNeedsAuthNoticed` list capped via slice(-128)
+ * Official 2.1.268 shape (byte-verified from the binary), as updated by
+ * 2.1.276 — every raw `mcpNeedsAuthNoticed` read now goes through the `pee`
+ * accessor + `nl` normalizer (byte-verified from the v276 binary; fixes a
+ * launch crash when a hand-edited/corrupted ~/.claude.json persists a
+ * non-array or mixed-type value):
+ *   - `I6t=128` (2.1.268: `Z5t=128`) — persisted list capped via slice(-128)
+ *   - `nl(n)`  — normalizer: `if(!Array.isArray(n))return[];return n.every(
+ *                 (e)=>typeof e==="string")?n:n.filter((e)=>typeof e==="string")`
+ *   - `pee(h)` — accessor: `return nl(h.mcpNeedsAuthNoticed)`
  *   - `dE(e)  = e.type==="failed"&&e.errorCode==="UNCONFIGURED"` (excluded)
  *   - `TEt`   — eligibility filter (claude.ai: excluded when eligible===false
  *               && !connectedThisSession; counted iff hasEverConnected;
@@ -22,6 +29,12 @@
  *   - `zye`   — mark announced: session Set + persisted config (markNeedsAuthNoticed)
  *   - `Qye`   — count of persisted-noticed servers now connected (prunable)
  *   - `Yye`   — prune persisted list of now-connected servers
+ *   - 2.1.276 renames the four consumers: `cet` (shouldAnnounce, reads
+ *     `!pee(ie()).includes(h.name)`), `qbe` (mark, `let ve=pee(Se)` — the
+ *     write path normalizes BEFORE merging/slicing, so a malformed value
+ *     self-heals on the next persist), `Vbe` (count, `let v=pee(ie());
+ *     if(v.length===0)return 0`), `Gbe` (prune, `let Q=pee(O);
+ *     if(Q.length===0)return O`).
  *   - `DH={hasEverConnected:Ykt,connectedThisSession:Vkt}` where
  *     `Ykt(e)=(ne().claudeAiMcpEverConnected??[]).includes(e)` and
  *     `Vkt(e)=Nt().claudeAiConnectedThisSession.has(e)` — OCC equivalents are
@@ -37,8 +50,23 @@
 import type { MCPServerConnection } from '../services/mcp/types.js'
 import { getGlobalConfig, saveGlobalConfig } from './config.js'
 
-/** Official `Z5t` — cap on the persisted announced-server list. */
+/** Official `Z5t` (2.1.276: `I6t`) — cap on the persisted announced-server list. */
 export const MCP_NEEDS_AUTH_NOTICED_CAP = 128
+
+/**
+ * Official 2.1.276 `nl` (byte-verified): tolerate a malformed persisted
+ * `mcpNeedsAuthNoticed` value (hand-edited/corrupted ~/.claude.json). A
+ * non-array normalizes to []; an array keeps only its string entries (the
+ * `every` fast path returns the original array unchanged). Without this, a
+ * value like `{}` or `123` reaches `.includes`/`.filter` and throws a
+ * TypeError inside the useMcpConnectivityStatus React effect at launch.
+ */
+export function normalizeMcpNeedsAuthNoticed(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.every(entry => typeof entry === 'string')
+    ? value
+    : value.filter((entry): entry is string => typeof entry === 'string')
+}
 
 /**
  * Official `Nt().needsAuthNoticedThisSession` — servers announced during this
@@ -95,9 +123,10 @@ function isEligibleForNeedsAuthNotice(
 }
 
 /**
- * Official `net` — should this client be announced right now? Needs-auth and
- * eligible, and either already announced this session (keeps the count stable
- * within the session) or never persisted as announced before.
+ * Official `net` (2.1.276: `cet`) — should this client be announced right
+ * now? Needs-auth and eligible, and either already announced this session
+ * (keeps the count stable within the session) or never persisted as announced
+ * before. 2.1.276 reads the persisted list via `pee` (normalized).
  */
 export function shouldAnnounceNeedsAuth(
   client: MCPServerConnection,
@@ -108,11 +137,13 @@ export function shouldAnnounceNeedsAuth(
   }
   return (
     needsAuthNoticedThisSession.has(client.name) ||
-    !(getGlobalConfig().mcpNeedsAuthNoticed ?? []).includes(client.name)
+    !normalizeMcpNeedsAuthNoticed(getGlobalConfig().mcpNeedsAuthNoticed).includes(
+      client.name,
+    )
   )
 }
 
-/** Official `Kye(w,P)=j(w,(ee)=>net(ee,P))` with `j` the counting helper. */
+/** Official `Kye(w,P)=j(w,(ee)=>net(ee,P))` (2.1.276: `Wbe`/`cet`) with `j` the counting helper. */
 export function countNeedsAuthToAnnounce(
   clients: readonly MCPServerConnection[],
   deps: NeedsAuthNoticeDeps,
@@ -125,9 +156,11 @@ export function countNeedsAuthToAnnounce(
 }
 
 /**
- * Official `zye(w,P,ee)` — record announcement: add every not-yet-marked
- * announceable server to the session Set, then persist the new names into
- * `mcpNeedsAuthNoticed`, capped to the last `Z5t` (128) entries.
+ * Official `zye(w,P,ee)` (2.1.276: `qbe`) — record announcement: add every
+ * not-yet-marked announceable server to the session Set, then persist the new
+ * names into `mcpNeedsAuthNoticed`, capped to the last `Z5t`/`I6t` (128)
+ * entries. 2.1.276 normalizes the persisted list BEFORE merging/slicing, so a
+ * malformed value self-heals into a clean string[] on this write.
  */
 export function markNeedsAuthNoticed(
   clients: readonly MCPServerConnection[],
@@ -145,7 +178,7 @@ export function markNeedsAuthNoticed(
   }
   if (newlyNoticed.length === 0) return
   saveGlobalConfig(current => {
-    const noticed = current.mcpNeedsAuthNoticed ?? []
+    const noticed = normalizeMcpNeedsAuthNoticed(current.mcpNeedsAuthNoticed)
     const fresh = newlyNoticed.filter(name => !noticed.includes(name))
     if (fresh.length === 0) return current
     const merged = [...noticed, ...fresh]
@@ -157,14 +190,17 @@ export function markNeedsAuthNoticed(
 }
 
 /**
- * Official `Qye(w)` — how many persisted-noticed servers are connected right
- * now (i.e. prunable). Zero means the prune below can be skipped entirely.
+ * Official `Qye(w)` (2.1.276: `Vbe`) — how many persisted-noticed servers are
+ * connected right now (i.e. prunable). Zero means the prune below can be
+ * skipped entirely. 2.1.276: `let v=pee(ie());if(v.length===0)return 0`.
  */
 export function countNoticedServersNowConnected(
   clients: readonly MCPServerConnection[],
 ): number {
-  const noticed = getGlobalConfig().mcpNeedsAuthNoticed
-  if (noticed === undefined || noticed.length === 0) return 0
+  const noticed = normalizeMcpNeedsAuthNoticed(
+    getGlobalConfig().mcpNeedsAuthNoticed,
+  )
+  if (noticed.length === 0) return 0
   let count = 0
   for (const client of clients) {
     count += +!!(client.type === 'connected' && noticed.includes(client.name))
@@ -173,15 +209,16 @@ export function countNoticedServersNowConnected(
 }
 
 /**
- * Official `Yye(w,P)` — drop persisted entries whose server is now connected,
- * so a future auth expiry re-announces it. No-op write when nothing changes.
+ * Official `Yye(w,P)` (2.1.276: `Gbe`) — drop persisted entries whose server
+ * is now connected, so a future auth expiry re-announces it. No-op write when
+ * nothing changes. 2.1.276: `let Q=pee(O);if(Q.length===0)return O`.
  */
 export function pruneNoticedServersNowConnected(
   clients: readonly MCPServerConnection[],
 ): void {
   saveGlobalConfig(current => {
-    const noticed = current.mcpNeedsAuthNoticed
-    if (noticed === undefined || noticed.length === 0) return current
+    const noticed = normalizeMcpNeedsAuthNoticed(current.mcpNeedsAuthNoticed)
+    if (noticed.length === 0) return current
     const remaining = noticed.filter(
       name => !clients.some(client => client.name === name && client.type === 'connected'),
     )

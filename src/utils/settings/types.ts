@@ -341,6 +341,25 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'Number of days to retain chat transcripts before automatic cleanup (default: 30). Minimum 1. Use a large value for long retention; use --no-session-persistence to disable transcript writes entirely.',
         ),
+      // claude-code 2.1.274+ (schema shipped dark; feature announced in
+      // 2.1.275). Accepted here for settings-file compatibility only, so the
+      // strict Edit-tool validation (settings/validation.ts) does not reject
+      // these keys when users follow the official docs — OCC implements no
+      // claude.ai skills/plugins sync, so the values are otherwise ignored.
+      // Position (directly after cleanupPeriodDays) and .describe() texts are
+      // byte-exact from the official v276 binary.
+      syncClaudeAiSkills: z
+        .boolean()
+        .optional()
+        .describe(
+          'Set to false to turn off syncing of the skills you have enabled on claude.ai. In your user settings (or managed settings): nothing more is downloaded, previously synced skills (~/.claude/skills/synced) can no longer be run, are hidden from every session started afterwards, and are moved to ~/.claude/skills/.trash at the next launch (deleted after cleanupPeriodDays; re-downloaded, not restored, if you re-enable). In .claude/settings.local.json or --settings: downloads stop and synced skills are blocked and hidden for sessions in that workspace or invocation only (nothing is moved). Not read from project settings (.claude/settings.json). Only false is honored — the feature is enabled server-side for your account, so setting true does not turn it on early. While it is on, synced skills are available in every session, re-synced every 10 minutes, and removed when you disable them on claude.ai. Only applies when signed in with your Claude account.',
+        ),
+      syncClaudeAiPlugins: z
+        .boolean()
+        .optional()
+        .describe(
+          'Set to false to turn off syncing of the plugins you have enabled on claude.ai. In your user settings (or managed settings): nothing more is downloaded, previously synced plugins (~/.claude/plugins/synced) are hidden from every session started afterwards and moved to ~/.claude/plugins/.trash at the next launch (deleted after cleanupPeriodDays; re-downloaded, not restored, if you re-enable). In .claude/settings.local.json or --settings: downloads stop and synced plugins are hidden for sessions in that workspace or invocation only (nothing is moved). Not read from project settings (.claude/settings.json). Only false is honored — the feature is enabled server-side for your account, so setting true does not turn it on early. While it is on, synced plugins load in every session like plugins you installed yourself (a plugin you installed with the same name takes precedence), are re-synced at each launch, and are removed when you disable them on claude.ai. Only applies when signed in with your Claude account.',
+        ),
       // claude-code 2.1.221 (silent addition — no changelog entry; OCC-58):
       // session auto-compact window in tokens. Set via this settings key
       // (persisted) or per-run via the --autocompact flag. Schema is
