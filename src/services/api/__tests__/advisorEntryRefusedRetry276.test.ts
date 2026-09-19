@@ -30,7 +30,7 @@ import type { AssistantMessage, UserMessage } from '../../../types/message.js'
 
 // ---------------------------------------------------------------------------
 // GrowthBook mock (OCC-97 discipline: spread the real module, restore after).
-// advisor.ts reads `tengu_sage_compass` through
+// advisor.ts reads `tengu_sage_compass2` through
 // getFeatureValue_CACHED_MAY_BE_STALE; the mock returns `{enabled: true}` so
 // isAdvisorEnabled() is true in the firstParty test environment.
 // ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ const realGrowthbook = await import(GROWTHBOOK_MODULE_PATH)
 mock.module(GROWTHBOOK_MODULE_PATH, () => ({
   ...realGrowthbook,
   getFeatureValue_CACHED_MAY_BE_STALE: <T,>(key: string, defaultValue: T): T =>
-    key === 'tengu_sage_compass'
+    key === 'tengu_sage_compass2'
       ? ({ enabled: true } as unknown as T)
       : defaultValue,
 }))

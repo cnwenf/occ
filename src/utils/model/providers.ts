@@ -135,8 +135,20 @@ export function getAPIProviderForStatsig(): AnalyticsMetadata_I_VERIFIED_THIS_IS
  * Check if ANTHROPIC_BASE_URL is a first-party Anthropic API URL.
  * Returns true if not set (default API) or points to api.anthropic.com
  * (or api-staging.anthropic.com for ant users).
+ *
+ * Port of the official base-url allowlist predicate, byte-verified in the
+ * 2.1.274 binary (named `Xo` there; `es` in 2.1.275/276):
+ *   function Xo(){if(a._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL)return!0;return dw()}
+ *   function dw(){let e=process.env.ANTHROPIC_BASE_URL;if(!e)return!0;return av(e)}
+ *   function av(e){try{let t=new URL(e).host;return["api.anthropic.com"].includes(t)}catch{return!1}}
+ * The api-staging arm for USER_TYPE=ant is an OCC superset (the official
+ * ships api-staging.anthropic.com in sibling allowlists, e.g. the
+ * `new Set(["api.anthropic.com","api-staging.anthropic.com",...])` set).
  */
 export function isFirstPartyAnthropicBaseUrl(): boolean {
+  if (isEnvTruthy(process.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL)) {
+    return true
+  }
   const baseUrl = process.env.ANTHROPIC_BASE_URL
   if (!baseUrl) {
     return true
