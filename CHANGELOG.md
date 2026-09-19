@@ -7,9 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. **Now tracking Claude Code
-`2.1.274`** — 2.1.270 fully aligned; 2.1.271–2.1.274 partial (the latest
-OCC-127 round, 2026-09-17: the MCP auth-stub description secret-leak fix —
-byte-verified display-sanitizer family port — plus NO-OP behavioral
+`2.1.276`** (the OCC-130 round, 2026-09-19: byte-verified portable subset of
+2.1.275 — ~95 changelog entries triaged — plus the 2.1.276 advisor
+entry-refused hotfix; three security fixes landed: npm-source plugin installs
+hardened with `npm pack --ignore-scripts` + SRI integrity verification,
+plugin/marketplace URL credential scrubbing, and a git-address parser
+hardening closing a blocklist bypass; full triage and forensics ledger in
+`docs/upstream-version-gap-occ130.md`). Prior tracking: `2.1.274` partial
+(the OCC-127 round, 2026-09-17: the MCP auth-stub description secret-leak
+fix — byte-verified display-sanitizer family port — plus NO-OP behavioral
 verification of the 2.1.274 bash special-variable and worktree
 nested-expansion hardening; prior rounds landed the 2.1.273 gateway-hint
 request headers, the spinner doubled-ellipsis guard, the shell-mode `!`
