@@ -232,3 +232,180 @@ export function createTranscriptAdmissionValidator(): TranscriptAdmissionValidat
 
   return { admit, noteUnreadableRow, finish }
 }
+
+/* -------------------------------------------------------------------------
+ * Resume-path row sanitizer — port of the official Claude Code 2.1.277
+ * `Gln` / `jln` / `Hln` / `Wln` / `zln` cluster (D4 fix).
+ *
+ * CC 2.1.278 changelog: "Fixed a crash when resuming a session whose saved
+ * history contains an assistant message stored as a plain string". The
+ * official resume pipeline (`ocn`) runs `Gln` over the WHOLE loaded message
+ * array BEFORE attachment-drop (`iG`) and interrupted-turn handling:
+ * `y=Dmt(e)` → `w=iMo(iG(Gln(y)),s)`.
+ *
+ * Unlike the load-time admission above (`iFs`-derived, which mutates
+ * `message.content` in place), `jln`/`Gln` are PURE — a changed row is
+ * rebuilt as `{...row, message:{...message, content}}`.
+ * ---------------------------------------------------------------------- */
+
+/**
+ * Official `I(e,n,r=n+"s")` (@191972157) — minimal pluralize helper used by
+ * the resume warn message (`I(r,"block")`, `I(s,"row")`). Same shape as the
+ * module-local `pluralize` in attachments.ts (official `P`).
+ */
+function pluralizeForResumeWarn(
+  count: number,
+  singular: string,
+  plural = `${singular}s`,
+): string {
+  return count === 1 ? singular : plural
+}
+
+/**
+ * Official `Wln(e){return e==="user"||e==="assistant"}` — the resume
+ * sanitizer only gates user/assistant rows.
+ */
+function isUserOrAssistantRole(role: unknown): role is 'user' | 'assistant' {
+  return role === 'user' || role === 'assistant'
+}
+
+/** Verdict of `classifyResumedRowPayload` (official `jln` return shapes). */
+export type ResumedRowPayloadVerdict =
+  | 'keep'
+  | 'drop'
+  | {
+      message: Record<string, unknown>
+      content: unknown[]
+      droppedBlocks: number
+      wrapped: boolean
+    }
+
+/**
+ * Official `jln(e,n)` — per-row payload classification on the resume path.
+ * The D4 delta vs the load-time `classifyMessagePayload` above: a STRING
+ * content on an ASSISTANT row is no longer kept raw — a non-blank string is
+ * wrapped into `[{type:'text',text:<string>}]` (the official wrap block has
+ * NO `citations` field), a blank/whitespace-only string drops the row.
+ * Block validation reuses `isValidContentBlock` — official `Hln` is
+ * byte-identical in semantics to `Glr` (`ee(e)&&typeof e.type==="string"`).
+ */
+export function classifyResumedRowPayload(
+  role: 'user' | 'assistant',
+  message: unknown,
+): ResumedRowPayloadVerdict {
+  if (!isPlainObjectValue(message)) return 'drop'
+  const content = message.content
+  if (typeof content === 'string') {
+    if (role !== 'assistant') return 'keep'
+    if (content.trim() === '') return 'drop'
+    return {
+      message,
+      content: [{ type: 'text', text: content }],
+      droppedBlocks: 0,
+      wrapped: true,
+    }
+  }
+  if (!Array.isArray(content)) return 'drop'
+  if (content.every(isValidContentBlock)) return 'keep'
+  const kept = content.filter(isValidContentBlock)
+  if (kept.length === 0) return 'drop'
+  return {
+    message,
+    content: kept,
+    droppedBlocks: content.length - kept.length,
+    wrapped: false,
+  }
+}
+
+/** Official `Gln` counters object (destructured by `zln`). */
+export interface ResumeSanitizeCounts {
+  droppedBlocks: number
+  cleanedRows: number
+  wrappedRows: number
+  droppedRows: number
+}
+
+/**
+ * Official `zln(e,n)` — builds the resume sanitize warn message. Byte-exact
+ * template; each clause is emitted only when its gating counter is non-zero.
+ * Fidelity note: the first clause is gated on `cleanedRows > 0` but prints
+ * the TOTAL `droppedBlocks` — exactly as in the official.
+ */
+export function formatResumeSanitizeWarn(
+  prefix: string,
+  counts: ResumeSanitizeCounts,
+): string {
+  const { droppedBlocks, cleanedRows, wrappedRows, droppedRows } = counts
+  const parts = [
+    cleanedRows > 0
+      ? `removed ${droppedBlocks} malformed content ${pluralizeForResumeWarn(droppedBlocks, 'block')} from ${cleanedRows} ${pluralizeForResumeWarn(cleanedRows, 'row')}`
+      : undefined,
+    wrappedRows > 0
+      ? `wrapped the string content of ${wrappedRows} assistant ${pluralizeForResumeWarn(wrappedRows, 'row')} in a text block`
+      : undefined,
+    droppedRows > 0
+      ? `dropped ${droppedRows} unreadable ${pluralizeForResumeWarn(droppedRows, 'row')}`
+      : undefined,
+  ].filter((part): part is string => part !== undefined)
+  return `${prefix}: ${parts.join(', ')}`
+}
+
+/**
+ * Official `Gln(e)` — sanitize pass over the whole loaded message array on
+ * resume. Non-user/assistant rows pass through untouched; a per-row throw
+ * KEEPS the original row (official `catch{return[y]}`). When nothing changed
+ * the input array reference is returned (identity fast path) and NO warn is
+ * logged; otherwise `zln("resume", counts)` is emitted at warn level inside
+ * its own try/catch (official `try{t(...)}catch{}`).
+ */
+export function sanitizeResumedRows<
+  T extends { type: string; message?: unknown },
+>(rows: T[]): T[] {
+  const counts: ResumeSanitizeCounts = {
+    droppedBlocks: 0,
+    cleanedRows: 0,
+    wrappedRows: 0,
+    droppedRows: 0,
+  }
+  const result = rows.flatMap((row): T[] => {
+    try {
+      const role = row.type
+      if (!isUserOrAssistantRole(role)) return [row]
+      const verdict = classifyResumedRowPayload(role, row.message)
+      if (verdict === 'keep') return [row]
+      if (verdict === 'drop') {
+        counts.droppedRows += 1
+        return []
+      }
+      counts.droppedBlocks += verdict.droppedBlocks
+      if (verdict.wrapped) {
+        counts.wrappedRows += 1
+      } else {
+        counts.cleanedRows += 1
+      }
+      return [
+        {
+          ...row,
+          message: { ...verdict.message, content: verdict.content },
+        },
+      ]
+    } catch {
+      // Official `catch{return[y]}` — an unexpected per-row failure must
+      // never drop the row or abort the resume.
+      return [row]
+    }
+  })
+  const { cleanedRows, wrappedRows, droppedRows } = counts
+  if (cleanedRows === 0 && wrappedRows === 0 && droppedRows === 0) {
+    return rows
+  }
+  try {
+    logForDebugging(formatResumeSanitizeWarn('resume', counts), {
+      level: 'warn',
+    })
+  } catch {
+    // Official wraps the warn log in try/catch — logging failure must never
+    // abort the resume.
+  }
+  return result
+}

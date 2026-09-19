@@ -48,6 +48,7 @@ import {
   getLastAssistantMessage,
 } from '../../utils/messages.js'
 import { sanitizeSubagentOutput, sanitizeLastAssistantOutput, sanitizeLastAssistantOutputWithFindings, reportFlaggedSubagentOutput } from './subagentOutputSanitizer.js'
+import { frameHandbackIfEnabled } from './subagentHandback.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import { permissionRuleValueFromString } from '../../utils/permissions/permissionRuleParser.js'
 import {
@@ -635,6 +636,13 @@ export async function runAsyncAgentLifecycle({
         surface: 'async_final_message',
       })
     }
+
+    // 2.1.277 (B12): wrap the sanitized report in the harness-attribution
+    // provenance frame BEFORE the handoff warning is prepended, so the
+    // classifier note stays above the frame (official `aBt` places notes
+    // above; header: "Notes above this frame may quote model-derived text").
+    // Additive to the sanitizer — frame(gate: fie/lfn, default-on).
+    finalMessage = frameHandbackIfEnabled(finalMessage)
 
     if (feature('TRANSCRIPT_CLASSIFIER')) {
       const handoffWarning = await classifyHandoffIfNeeded({

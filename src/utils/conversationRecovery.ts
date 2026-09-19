@@ -43,6 +43,7 @@ import {
 } from './messages.js'
 import { copyPlanForResume } from './plans.js'
 import { processSessionStartHooks } from './sessionStart.js'
+import { sanitizeResumedRows } from './transcriptAdmission.js'
 import {
   buildConversationChain,
   checkResumeConsistency,
@@ -189,10 +190,19 @@ export function deserializeMessagesWithInterruptDetection(
       migrateLegacyAttachmentTypes,
     )
 
+    // Official 2.1.277 (D4): the resume pipeline sanitizes the WHOLE loaded
+    // array before attachment-drop and interrupted-turn handling (`Gln` in
+    // `ocn`: `y=Dmt(e)` → `w=iMo(iG(Gln(y)),s)`). Wraps plain-string
+    // assistant content into a text block, filters non-object content
+    // blocks, drops unreadable/blank rows, and emits the "resume: ..." warn
+    // when anything changed. Prevents the resume crash on sessions whose
+    // saved history holds an assistant message stored as a plain string.
+    const sanitizedMessages = sanitizeResumedRows(migratedMessages)
+
     // Strip invalid permissionMode values from deserialized user messages.
     // The field is unvalidated JSON from disk and may contain modes from a different build.
     const validModes = new Set<string>(PERMISSION_MODES)
-    for (const msg of migratedMessages) {
+    for (const msg of sanitizedMessages) {
       if (
         msg.type === 'user' &&
         msg.permissionMode !== undefined &&
@@ -204,7 +214,7 @@ export function deserializeMessagesWithInterruptDetection(
 
     // Filter out unresolved tool uses and any synthetic messages that follow them
     const filteredToolUses = filterUnresolvedToolUses(
-      migratedMessages,
+      sanitizedMessages,
     ) as NormalizedMessage[]
 
     // Filter out orphaned thinking-only assistant messages that can cause API errors
@@ -227,11 +237,11 @@ export function deserializeMessagesWithInterruptDetection(
     // (`F.size>0||Pe?me:qUn(xe)`); OCC's filter doesn't report dropped ids,
     // so the length delta is the proxy.
     const droppedUnresolvedToolUses =
-      filteredToolUses.length !== migratedMessages.length
+      filteredToolUses.length !== sanitizedMessages.length
     const internalState = applyResumeStalenessGates(
       detectTurnInterruption(filteredMessages),
       droppedUnresolvedToolUses
-        ? (migratedMessages as NormalizedMessage[])
+        ? (sanitizedMessages as NormalizedMessage[])
         : filteredMessages,
     )
 

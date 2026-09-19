@@ -17,8 +17,8 @@ import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { logError } from './log.js'
-import { gte, lt } from './semver.js'
-import { getInitialSettings } from './settings/settings.js'
+import { gte, lt, lte, parseVersion } from './semver.js'
+import { getInitialSettings, getSettingsForSource } from './settings/settings.js'
 import {
   filterClaudeAliases,
   getShellConfigPaths,
@@ -139,24 +139,94 @@ async function getMaxVersionConfig(): Promise<MaxVersionConfig> {
 }
 
 /**
- * Checks if a target version should be skipped due to user's minimumVersion setting.
- * This is used when switching to stable channel - the user can choose to stay on their
- * current version until stable catches up, preventing downgrades.
+ * 2.1.277 (C3): port of the official `t5` debug-log sanitizer — escapes
+ * non-ASCII code points as \uXXXX so version/response snippets embedded in
+ * debug log lines stay single-line ASCII. (The official regex constant was
+ * not byte-recoverable from the ELF; this is the behaviorally equivalent
+ * non-ASCII escaper.)
+ */
+function escapeNonAsciiForLog(s: string): string {
+  return s.replace(
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: intentional — the range starts at NUL so every non-ASCII/control code point is escaped, keeping debug log lines single-line ASCII (port of the official t5 sanitizer)
+    /[^\x00-\x7F]/g,
+    ch =>
+      `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+  )
+}
+
+/**
+ * 2.1.277 (C3): port of the official update skip-check `Xcn(targetVersion)`
+ * (with wrapper `YEe`). All inputs — the update target, the settings
+ * minimumVersion, and the policy requiredMaximumVersion — are semver-validated
+ * BEFORE any comparison. Previously a malformed constraint flowed straight
+ * into `gte()`, which throws "Invalid SemVer" — surfacing as update checks
+ * erroring every 30 minutes (and `claude update` hanging when the resolved
+ * target itself was garbage). Now: malformed target → constraints don't
+ * apply (null reason, logged); malformed constraint → logged and ignored.
+ *
+ * Returns the skip reason string, or null if the version should not be
+ * skipped.
+ */
+export function getVersionSkipReason(
+  targetVersion: string,
+): string | null {
+  if (!parseVersion(targetVersion)) {
+    logForDebugging(
+      'update target is not a valid semver version — skip checks constrain nothing',
+      { level: 'error' },
+    )
+    logForDebugging(
+      `update target (first 300 chars, JSON-encoded): ${escapeNonAsciiForLog(
+        JSON.stringify(targetVersion.slice(0, 300)),
+      )}`,
+    )
+    return null
+  }
+  const minimumVersion = getInitialSettings()?.minimumVersion
+  if (minimumVersion) {
+    const min = parseVersion(minimumVersion)
+    if (!min) {
+      logForDebugging(
+        `minimumVersion is not a valid semver version — ignoring. Value (first 300 chars, JSON-encoded): ${escapeNonAsciiForLog(
+          JSON.stringify(minimumVersion.slice(0, 300)),
+        )}`,
+        { level: 'error' },
+      )
+    } else if (!gte(targetVersion, min)) {
+      return `below your minimumVersion setting (${minimumVersion})`
+    }
+  }
+  const requiredMaximumVersion =
+    getSettingsForSource('policySettings')?.requiredMaximumVersion
+  if (requiredMaximumVersion) {
+    const max = parseVersion(requiredMaximumVersion)
+    if (!max) {
+      logForDebugging(
+        `requiredMaximumVersion is not a valid semver version — ignoring. Value (first 300 chars, JSON-encoded): ${escapeNonAsciiForLog(
+          JSON.stringify(requiredMaximumVersion.slice(0, 300)),
+        )}`,
+        { level: 'error' },
+      )
+    } else if (!lte(targetVersion, max)) {
+      return `above your organization's requiredMaximumVersion (${requiredMaximumVersion})`
+    }
+  }
+  return null
+}
+
+/**
+ * Checks if a target version should be skipped due to the user's
+ * minimumVersion setting or the policy requiredMaximumVersion.
+ * This is used when switching to stable channel - the user can choose to stay
+ * on their current version until stable catches up, preventing downgrades.
  */
 export function shouldSkipVersion(targetVersion: string): boolean {
-  const settings = getInitialSettings()
-  const minimumVersion = settings?.minimumVersion
-  if (!minimumVersion) {
-    return false
+  const reason = getVersionSkipReason(targetVersion)
+  if (reason) {
+    logForDebugging(`Skipping update to ${targetVersion}: ${reason}`)
+    return true
   }
-  // Skip if target version is less than minimum
-  const shouldSkip = !gte(targetVersion, minimumVersion)
-  if (shouldSkip) {
-    logForDebugging(
-      `Skipping update to ${targetVersion} - below minimumVersion ${minimumVersion}`,
-    )
-  }
-  return shouldSkip
+  return false
 }
 
 // Lock file for auto-updater to prevent concurrent updates
@@ -329,7 +399,21 @@ export async function getLatestVersion(
     ['view', `${MACRO.PACKAGE_URL}@${npmTag}`, 'version', '--prefer-online'],
     { abortSignal: AbortSignal.timeout(5000), cwd: homedir() },
   )
+  // 2.1.277 (C3): port of the official `pLe` npm lookup hardening.
   if (result.code !== 0) {
+    // npm occasionally exits non-zero (registry/proxy warnings on stderr)
+    // while still printing a valid version on stdout — treat stderr as a
+    // warning in that case instead of failing the lookup.
+    const stdoutVersion = result.stdout.trim()
+    if (stdoutVersion && parseVersion(stdoutVersion)) {
+      logForDebugging(
+        `npm view exited ${result.code} but printed a valid version (${stdoutVersion}) — treating stderr as a warning`,
+      )
+      if (result.stderr) {
+        logForDebugging(`npm stderr: ${result.stderr.trim()}`)
+      }
+      return stdoutVersion
+    }
     logForDebugging(`npm view failed with code ${result.code}`)
     if (result.stderr) {
       logForDebugging(`npm stderr: ${result.stderr.trim()}`)
@@ -337,11 +421,30 @@ export async function getLatestVersion(
       logForDebugging('npm stderr: (empty)')
     }
     if (result.stdout) {
-      logForDebugging(`npm stdout: ${result.stdout.trim()}`)
+      logForDebugging(
+        `npm stdout (first 300 chars, JSON-encoded): ${escapeNonAsciiForLog(
+          JSON.stringify(result.stdout.trim().slice(0, 300)),
+        )}`,
+      )
     }
     return null
   }
-  return result.stdout.trim()
+  // A proxy/registry returning garbage on a zero exit must not flow into the
+  // semver comparators — validate and treat as no result (null), which the
+  // update paths distinguish from "up to date" (C4).
+  const version = result.stdout.trim()
+  if (version && !parseVersion(version)) {
+    logForDebugging(
+      'npm view exited 0 but stdout is not a valid semver version — treating as no result',
+    )
+    logForDebugging(
+      `npm stdout (first 300 chars, JSON-encoded): ${escapeNonAsciiForLog(
+        JSON.stringify(version.slice(0, 300)),
+      )}`,
+    )
+    return null
+  }
+  return version || null
 }
 
 export type NpmDistTags = {
@@ -390,7 +493,22 @@ export async function getLatestVersionFromGcs(
       timeout: 5000,
       responseType: 'text',
     })
-    return response.data.trim()
+    // 2.1.277 (C3): port of the official `Jcn` — validate the GCS response
+    // body as semver; garbage (e.g. an HTML error page from a proxy) is
+    // treated as no result instead of flowing into the comparators.
+    const version = response.data.trim()
+    if (!parseVersion(version)) {
+      logForDebugging(
+        `GCS ${channel} version response is not a valid semver version — treating as no result`,
+      )
+      logForDebugging(
+        `GCS response body (first 300 chars, JSON-encoded): ${escapeNonAsciiForLog(
+          JSON.stringify(version.slice(0, 300)),
+        )}`,
+      )
+      return null
+    }
+    return version
   } catch (error) {
     logForDebugging(`Failed to fetch ${channel} from GCS: ${error}`)
     return null
@@ -418,8 +536,26 @@ export async function getLatestVersionFromHomebrewCask(
       `https://formulae.brew.sh/api/cask/${caskName}.json`,
       { timeout: 5000, responseType: 'json' },
     )
-    const version = (response.data as { version?: unknown } | null)?.version
-    return typeof version === 'string' ? version : null
+    // 2.1.277 (C3): port of the official `tt` — validate `data.version` as
+    // semver; a non-string or malformed version is treated as no result.
+    const rawVersion = (response.data as { version?: unknown } | null)?.version
+    const version = typeof rawVersion === 'string' ? rawVersion.trim() : null
+    if (!version || !parseVersion(version)) {
+      logForDebugging(
+        `formulae.brew.sh ${caskName} version is not a valid semver version — treating as no result`,
+      )
+      const body =
+        typeof response.data === 'string'
+          ? response.data
+          : String(JSON.stringify(response.data))
+      logForDebugging(
+        `brew response (first 300 chars, JSON-encoded): ${escapeNonAsciiForLog(
+          JSON.stringify(body.slice(0, 300)),
+        )}`,
+      )
+      return null
+    }
+    return version
   } catch (error) {
     logForDebugging(
       `Failed to fetch ${caskName} from formulae.brew.sh: ${error}`,

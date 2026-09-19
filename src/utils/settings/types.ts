@@ -1480,6 +1480,36 @@ export const SettingsSchema = lazySchema(() =>
             '"override" makes parent settings replace child settings. ' +
             '"block" prevents parent settings from propagating to child contexts.',
         ),
+      // CC 2.1.277 (agents-md plugin USER_CONFIG `re.instructionFiles`):
+      // which project-instruction files the engine loads. Mode strings,
+      // default and description are byte-copied from the official 2.1.277
+      // binary (see src/utils/agentsMd.ts).
+      instructionFiles: z
+        .enum([
+          'claude-md',
+          'claude-md-or-agents-md',
+          'claude-md-and-agents-md',
+          'managed-only',
+        ])
+        .optional()
+        .describe(
+          '"claude-md": CLAUDE.md only, loaded by the engine as today. ' +
+            '"claude-md-or-agents-md" (default): a project with no CLAUDE.md of its own gets its AGENTS.md files instead, loaded exactly where and how CLAUDE.md would be. ' +
+            '"claude-md-and-agents-md": AGENTS.md files are loaded beside CLAUDE.md (a file CLAUDE.md already imports or links to is not loaded twice). ' +
+            '"managed-only": the project\'s and your own instruction files are dropped; the organization\'s managed CLAUDE.md and memory stay.',
+        ),
+      // CC 2.1.277: deprecated legacy spelling of `instructionFiles`
+      // (v276 agents-md plugin option). Honoured only while
+      // `instructionFiles` is unset; mapping byte-copied from the binary
+      // (`be={none:"managed-only",claude:"claude-md","agents-fallback":"claude-md-or-agents-md",both:"claude-md-and-agents-md"}`).
+      projectInstructions: z
+        .enum(['claude', 'agents-fallback', 'both', 'none'])
+        .optional()
+        .describe(
+          'Deprecated: use instructionFiles instead. Legacy agents-md plugin option, ' +
+            'read as instructionFiles when that is not set ' +
+            '(claude="claude-md", agents-fallback="claude-md-or-agents-md", both="claude-md-and-agents-md", none="managed-only").',
+        ),
     })
     .passthrough(),
 )

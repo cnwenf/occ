@@ -22,7 +22,7 @@ import { useMcpToggleEnabled } from '../../services/mcp/MCPConnectionManager.js'
 import type { MCPServerConnection, McpClaudeAIProxyServerConfig, McpHTTPServerConfig, McpSSEServerConfig, McpStdioServerConfig } from '../../services/mcp/types.js';
 import { filterToolsByServer } from '../../services/mcp/utils.js';
 import { disablePluginOp, enablePluginOp, getPluginInstallationFromV2, isInstallableScope, isPluginEnabledAtProjectScope, uninstallPluginOp, updatePluginOp } from '../../services/plugins/pluginOperations.js';
-import { useAppState } from '../../state/AppState.js';
+import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { Tool } from '../../Tool.js';
 import type { LoadedPlugin, PluginError } from '../../types/plugin.js';
 import { count } from '../../utils/array.js';
@@ -35,6 +35,7 @@ import { loadInstalledPluginsV2 } from '../../utils/plugins/installedPluginsMana
 import { getMarketplace } from '../../utils/plugins/marketplaceManager.js';
 import { isMcpbSource, loadMcpbFile, type McpbNeedsConfigResult, type UserConfigValues } from '../../utils/plugins/mcpbHandler.js';
 import { getPluginDataDirSize, pluginDataDirPath } from '../../utils/plugins/pluginDirectories.js';
+import { withoutUninstalledPluginErrors } from '../../utils/plugins/pluginErrorState.js';
 import { getFlaggedPlugins, markFlaggedPluginsSeen, removeFlaggedPlugin } from '../../utils/plugins/pluginFlagging.js';
 import { type PersistablePluginScope, parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js';
 import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js';
@@ -407,7 +408,22 @@ export function ManagePlugins({
   const mcpClients = useAppState(s => s.mcp.clients);
   const mcpTools = useAppState(s_0 => s_0.mcp.tools);
   const pluginErrors = useAppState(s_1 => s_1.plugins.errors);
+  const setAppState = useSetAppState();
   const flaggedPlugins = getFlaggedPlugins();
+
+  // CC 2.1.277 (report_C C13): after a successful uninstall, drop the
+  // plugin's stale appState errors so orphanErrorsBySource below can't
+  // resurrect it as a "failed to load" (failed-plugin) row. Mirrors the
+  // marketplace-removal error clearing in PluginSettings.tsx.
+  const clearPluginErrorsAfterUninstall = (pluginId: string) => {
+    setAppState(prev => ({
+      ...prev,
+      plugins: {
+        ...prev.plugins,
+        errors: withoutUninstalledPluginErrors(prev.plugins.errors, pluginId)
+      }
+    }));
+  };
 
   // Search state
   const [isSearchMode, setIsSearchModeRaw] = useState(false);
@@ -1074,6 +1090,7 @@ export function ManagePlugins({
             if (!result_0.success) {
               throw new Error(result_0.message);
             }
+            clearPluginErrorsAfterUninstall(pluginId_3);
             reverseDependents = result_0.reverseDependents;
             break;
           }
@@ -1481,6 +1498,10 @@ export function ManagePlugins({
             clearAllCaches();
           }
           if (success) {
+            // C13: clear the failed plugin's errors so its row disappears
+            // (this is the "Remove doesn't clear such a row" fix path — it
+            // also covers the settings-only fallback above).
+            clearPluginErrorsAfterUninstall(pluginId_7);
             if (onManageComplete) {
               await onManageComplete();
             }
@@ -1560,6 +1581,7 @@ export function ManagePlugins({
         const result_3 = await uninstallPluginOp(pluginId_9, pluginScope_2, deleteDataDir);
         if (!result_3.success) throw new Error(result_3.message);
         clearAllCaches();
+        clearPluginErrorsAfterUninstall(pluginId_9);
         const suffix = deleteDataDir ? '' : ' · data preserved';
         setResult(`${figures.tick} ${result_3.message}${suffix}`);
         if (onManageComplete) void onManageComplete();

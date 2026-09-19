@@ -46,6 +46,7 @@ import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, resolveAgentTools, runAsyncAgentLifecycle } from './agentToolUtils.js';
+import { frameHandbackContentIfEnabled, frameHandbackIfEnabled } from './subagentHandback.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
 import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
@@ -1027,6 +1028,10 @@ export const AgentTool = buildTool({
 
                     // Extract text from agent result content for the notification
                     let finalMessage = extractTextContent(agentResult.content, '\n');
+                    // 2.1.277 (B12): provenance-frame the report before the
+                    // handoff warning so the classifier note stays above the
+                    // frame (official `aBt` notes-above-frame placement).
+                    finalMessage = frameHandbackIfEnabled(finalMessage);
                     if (feature('TRANSCRIPT_CLASSIFIER')) {
                       const backgroundedAppState = toolUseContext.getAppState();
                       const handoffWarning = await classifyHandoffIfNeeded({
@@ -1306,6 +1311,12 @@ export const AgentTool = buildTool({
           logForDebugging(`Sync agent recovering from error with ${agentMessages.length} messages`);
         }
         const agentResult = finalizeAgentTool(agentMessages, syncAgentId, metadata);
+        // 2.1.277 (B12): the sync tool result is the primary model-visible
+        // hand-back surface — frame it exactly as the official frames the
+        // tool_result content (`y=fie()?aBt(g,...):g`): join the text blocks,
+        // empty -> "(no text output)", single framed block. Framed BEFORE the
+        // classifier warning so the warning block stays above the frame.
+        agentResult.content = frameHandbackContentIfEnabled(agentResult.content);
         if (feature('TRANSCRIPT_CLASSIFIER')) {
           const currentAppState = toolUseContext.getAppState();
           const handoffWarning = await classifyHandoffIfNeeded({

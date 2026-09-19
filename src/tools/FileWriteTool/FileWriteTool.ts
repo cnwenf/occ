@@ -257,6 +257,26 @@ export const FileWriteTool = buildTool({
     try {
       const fileStat = await fs.stat(fullFilePath)
       fileMtimeMs = fileStat.mtimeMs
+      // 2.1.277: a Write whose target is an existing directory (or any other
+      // non-regular file) previously fell through to the permission prompt and
+      // silently ended the turn as DECLINED PERMISSION. Surface a clear
+      // validation error instead. Messages + errorCodes are byte-copied from
+      // the binary; the interpolated path is the raw input (not expandPath'd),
+      // matching the official `${g}`.
+      if (fileStat.isDirectory()) {
+        return {
+          result: false,
+          message: `${file_path} is a directory, not a file. To create a file inside it, include the file name in file_path.`,
+          errorCode: 17,
+        }
+      }
+      if (!fileStat.isFile()) {
+        return {
+          result: false,
+          message: `${file_path} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
+          errorCode: 18,
+        }
+      }
       // 2.1.98: in Perforce mode, block writes to read-only files with a
       // `p4 edit` hint instead of silently overwriting them. 2.1.228: no
       // behavior field here (the official reports a plain validation error,

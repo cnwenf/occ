@@ -1,11 +1,33 @@
+import stripAnsi from 'strip-ansi';
 import { getPluginErrorMessage, type PluginError } from '../../types/plugin.js';
 import { redactCredentialsInText, redactUrlCredentials } from '../../utils/redactUrl.js';
+// CC 2.1.277 (changelog): "Fixed /plugin not stripping terminal control
+// characters from messages on the Installed tab, such as the error of a
+// failed plugin update."
+//
+// Derivation (official render-site pinpoint is weak — changelog-driven): the
+// official v277 general-purpose message sanitizer `ag()` applies
+// strip-ANSI → `.replace(/[\x00-\x1f\x7f-\x9f]/g, "").trim()` — the REMOVAL
+// form (all C0 controls incl. \n, DEL, and C1), not the space-substitute form
+// (`sg()`, used for log lines). Plugin error messages render inline in single
+// Ink rows, so the removal form is the faithful choice: an embedded newline
+// in a marketplace-supplied `reason` would break the row layout exactly like
+// an ESC sequence would. Verified: all 7 control-char regex literals in the
+// v277 binary are non-plugin sites; no plugin-specific strip string exists to
+// byte-copy, so this follows `ag()` byte-for-byte.
+// biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of the official v277 `ag()` strip class — the C0/DEL/C1 range IS the check
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f]/g;
+export function stripControlChars(text: string): string {
+  return stripAnsi(text).replace(CONTROL_CHARS_RE, '').trim();
+}
 // Security (2.1.275 upstream port): URL-typed fields are scrubbed with
 // redactUrlCredentials and every assembled message is swept with
 // redactCredentialsInText so credentials in plugin/marketplace URLs can never
 // reach the UI through an error message.
+// Control chars are stripped BEFORE redaction so an attacker cannot split a
+// credential with an embedded NUL/ESC to evade the redaction sweep.
 export function formatErrorMessage(error: PluginError): string {
-  return redactCredentialsInText(buildErrorMessage(error));
+  return redactCredentialsInText(stripControlChars(buildErrorMessage(error)));
 }
 function buildErrorMessage(error: PluginError): string {
   switch (error.type) {

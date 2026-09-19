@@ -554,6 +554,71 @@ export async function copyWorktreeIncludeFiles(
 }
 
 /**
+ * Copy UNTRACKED (but not gitignored) project skills from the base repo into a
+ * freshly created worktree.
+ *
+ * `git worktree add` only materializes TRACKED files, and `.worktreeinclude`
+ * (copyWorktreeIncludeFiles) only copies GITIGNORED files. A `.claude/skills/`
+ * directory that exists in the working tree but was never `git add`ed therefore
+ * falls through both paths, and project skills silently fail to load in
+ * `--worktree` sessions. This bridges that gap for skills only.
+ *
+ * NOTE (D15): the official 2.1.278 binary's worktree setup (`Uje`) runs
+ * settings-copy → hooks-config → symlink → `.worktreeinclude` and has NO
+ * dedicated skills copy — its skills resolve at runtime from `originalCwd`.
+ * This untracked-skills copy is an INFERRED fix for OCC's worktree-scoped skill
+ * resolution, not a byte-copied official mechanism; there are no official
+ * strings to match. Uses `git ls-files --others --exclude-standard` (untracked,
+ * NOT ignored) scoped to `.claude/skills`, mirroring the untracked-detection
+ * idiom the binary uses elsewhere (FileIndex/diff), then copies each entry into
+ * the worktree preserving its relative path.
+ */
+export async function copyUntrackedProjectSkills(
+  repoRoot: string,
+  worktreePath: string,
+): Promise<string[]> {
+  // Git pathspecs always use forward slashes, regardless of host OS.
+  const skillsPathspec = '.claude/skills'
+  const listed = await execFileNoThrowWithCwd(
+    gitExe(),
+    ['ls-files', '--others', '--exclude-standard', '--', skillsPathspec],
+    { cwd: repoRoot },
+  )
+  if (listed.code !== 0 || !listed.stdout.trim()) {
+    return []
+  }
+
+  const copied: string[] = []
+  for (const relativePath of listed.stdout.trim().split('\n').filter(Boolean)) {
+    // ls-files is scoped to .claude/skills, but never copy anything that would
+    // escape the worktree root.
+    if (containsPathTraversal(relativePath)) {
+      continue
+    }
+    const srcPath = join(repoRoot, relativePath)
+    const destPath = join(worktreePath, relativePath)
+    try {
+      await mkdirRecursive(dirname(destPath))
+      await copyFile(srcPath, destPath)
+      copied.push(relativePath)
+    } catch (e: unknown) {
+      logForDebugging(
+        `Failed to copy untracked skill ${relativePath} to worktree: ${errorMessage(e)}`,
+        { level: 'warn' },
+      )
+    }
+  }
+
+  if (copied.length > 0) {
+    logForDebugging(
+      `Copied ${copied.length} untracked project skill file(s) into worktree: ${copied.join(', ')}`,
+    )
+  }
+
+  return copied
+}
+
+/**
  * Post-creation setup for a newly created worktree.
  * Propagates settings.local.json, configures git hooks, and symlinks directories.
  */
@@ -636,6 +701,10 @@ async function performPostCreationSetup(
 
   // Copy gitignored files specified in .worktreeinclude (best-effort)
   await copyWorktreeIncludeFiles(repoRoot, worktreePath)
+
+  // Copy untracked (non-ignored) project skills so `--worktree` sessions load
+  // them (best-effort). See copyUntrackedProjectSkills for the D15 caveat.
+  await copyUntrackedProjectSkills(repoRoot, worktreePath)
 
   // The core.hooksPath config-set above is fragile: husky's prepare script
   // (`git config core.hooksPath .husky`) runs on every `bun install` and

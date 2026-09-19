@@ -50,6 +50,7 @@ import {
   setCachedSettingsForSource,
   setSessionSettingsCache,
 } from './settingsCache.js'
+import { sanitizeMarketplacePolicy } from './marketplacePolicySanitizer.js'
 import { sanitizeSecurityAllowlists } from './sanitizeAllowlists.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
@@ -269,19 +270,38 @@ function parseSettingsFileUncached(path: string): {
     // (deny-all) allowlist with warnings. See sanitizeAllowlists.ts.
     const allowlistWarnings = sanitizeSecurityAllowlists(data, path)
 
+    // CC 2.1.277 (report_C C9): marketplace policy arrays
+    // (strictKnownMarketplaces / blockedMarketplaces) are sanitized per-entry
+    // before schema validation. Previously one malformed entry failed the
+    // whole policy file → the file was dropped → enterprise marketplace
+    // restrictions silently became UNSET (fail-OPEN). Invalid entries are now
+    // dropped with warnings while the valid ones keep enforcing; a
+    // present-but-invalid strictKnownMarketplaces fails CLOSED to an empty
+    // allowlist. See marketplacePolicySanitizer.ts.
+    const marketplacePolicyWarnings = sanitizeMarketplacePolicy(data, path)
+
     const result = SettingsSchema().safeParse(data)
 
     if (!result.success) {
       const errors = formatZodError(result.error, path)
       return {
         settings: null,
-        errors: [...ruleWarnings, ...allowlistWarnings, ...errors],
+        errors: [
+          ...ruleWarnings,
+          ...allowlistWarnings,
+          ...marketplacePolicyWarnings,
+          ...errors,
+        ],
       }
     }
 
     return {
       settings: result.data,
-      errors: [...ruleWarnings, ...allowlistWarnings],
+      errors: [
+        ...ruleWarnings,
+        ...allowlistWarnings,
+        ...marketplacePolicyWarnings,
+      ],
     }
   } catch (error) {
     handleFileSystemError(error, path)

@@ -14,8 +14,10 @@ import {
 } from '../bash/shellQuoting.js'
 import { logForDebugging } from '../debug.js'
 import { getPlatform } from '../platform.js'
+import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import { getSessionEnvironmentScript } from '../sessionEnvironment.js'
 import { getSessionEnvVars } from '../sessionEnvVars.js'
+import { getTmpDirBackstop } from '../tmpDirBackstop.js'
 import {
   ensureSocketInitialized,
   getClaudeTmuxEnv,
@@ -164,6 +166,28 @@ export async function createBashShellProvider(
             ? windowsPathToPosixPath(snapshotFilePath)
             : snapshotFilePath
         commandParts.push(`source ${quote([finalPath])} 2>/dev/null || true`)
+      }
+
+      // B6 (2.1.277): "$TMPDIR expanding empty in Bash commands that run
+      // outside the sandbox while sandboxing is enabled." Official fix
+      // (byte-verified v277 caller @199,335,252 + prelude @199,324,797 ≡
+      // v278): when this command gets no sandbox tmp dir, sandboxing is
+      // globally enabled, and the command text references TMPDIR, prepend a
+      // NON-destructive guard that exports the backstop dir only when TMPDIR
+      // is unset/empty (a user-set TMPDIR is preserved). Placed before the
+      // session-env script so /env TMPDIR overrides still win.
+      if (
+        opts.sandboxTmpDir === undefined &&
+        SandboxManager.isSandboxingEnabled() &&
+        /\bTMPDIR\b/.test(command)
+      ) {
+        const backstop = getTmpDirBackstop()
+        const posixBackstop = isWindows
+          ? windowsPathToPosixPath(backstop)
+          : backstop
+        commandParts.push(
+          `{ [ -n "\${TMPDIR:-}" ] || export TMPDIR=${quote([posixBackstop])}; }`,
+        )
       }
 
       // Source session environment variables captured from session start hooks

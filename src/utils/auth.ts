@@ -47,6 +47,7 @@ import {
   getGlobalConfig,
   saveGlobalConfig,
 } from './config.js'
+import { customApiKeyResponsesOf } from './customApiKeyResponses.js'
 import { getCwd } from './cwd.js'
 import { logAntError, logForDebugging } from './debug.js'
 import {
@@ -297,9 +298,11 @@ export function getAnthropicApiKeyWithSource(
     }
   }
   // Check for ANTHROPIC_API_KEY before checking the apiKeyHelper or /login-managed key
+  // CC 2.1.277 C2: read via the official `HR` normalizer so a malformed
+  // persisted customApiKeyResponses cannot throw here.
   if (
     apiKeyEnv &&
-    getGlobalConfig().customApiKeyResponses?.approved?.includes(
+    customApiKeyResponsesOf(getGlobalConfig()).approved.includes(
       normalizeApiKeyForConfig(apiKeyEnv),
     )
   ) {
@@ -1344,18 +1347,20 @@ export async function saveApiKey(apiKey: string): Promise<void> {
   const normalizedKey = normalizeApiKeyForConfig(apiKey)
 
   // Save config with all updates
+  // CC 2.1.277 C2: official v277 write path normalizes BEFORE merging
+  // (`let{approved:y,rejected:T}=HR(h);...approved:y.includes(g)?y:[...y,g]`),
+  // so a malformed persisted value self-heals into a clean string[] pair.
   saveGlobalConfig(current => {
-    const approved = current.customApiKeyResponses?.approved ?? []
+    const { approved, rejected } = customApiKeyResponsesOf(current)
     return {
       ...current,
       // Only save to config if keychain save failed or not on darwin
       primaryApiKey: savedToKeychain ? current.primaryApiKey : apiKey,
       customApiKeyResponses: {
-        ...current.customApiKeyResponses,
         approved: approved.includes(normalizedKey)
           ? approved
           : [...approved, normalizedKey],
-        rejected: current.customApiKeyResponses?.rejected ?? [],
+        rejected,
       },
     }
   })
@@ -1368,9 +1373,9 @@ export async function saveApiKey(apiKey: string): Promise<void> {
 export function isCustomApiKeyApproved(apiKey: string): boolean {
   const config = getGlobalConfig()
   const normalizedKey = normalizeApiKeyForConfig(apiKey)
-  return (
-    config.customApiKeyResponses?.approved?.includes(normalizedKey) ?? false
-  )
+  // CC 2.1.277 C2: normalized read (official `HR`) — malformed persisted
+  // values yield [] instead of throwing on `.includes`.
+  return customApiKeyResponsesOf(config).approved.includes(normalizedKey)
 }
 
 export async function removeApiKey(): Promise<void> {

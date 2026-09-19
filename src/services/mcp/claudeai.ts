@@ -6,6 +6,7 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { getClaudeAIOAuthTokens } from 'src/utils/auth.js'
+import { claudeAiMcpEverConnectedOf } from 'src/utils/claudeAiMcpEverConnected.js'
 import { getGlobalConfig, saveGlobalConfig } from 'src/utils/config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy } from 'src/utils/envUtils.js'
@@ -160,15 +161,22 @@ export function clearClaudeAIMcpConfigsCache(): void {
  * it showed up is one the user has demonstrably ignored.
  */
 export function markClaudeAiMcpConnected(name: string): void {
+  // CC 2.1.277 C7: official `Z5e` mark normalizes via `LMe` BEFORE merging
+  // (`let s=LMe(r);if(s.includes(e))return r;return{...r,
+  // claudeAiMcpEverConnected:[...s,e]}`), so a malformed persisted value
+  // cannot throw and self-heals on this write.
   saveGlobalConfig(current => {
-    const seen = current.claudeAiMcpEverConnected ?? []
+    const seen = claudeAiMcpEverConnectedOf(current)
     if (seen.includes(name)) return current
     return { ...current, claudeAiMcpEverConnected: [...seen, name] }
   })
 }
 
 export function hasClaudeAiMcpEverConnected(name: string): boolean {
-  return (getGlobalConfig().claudeAiMcpEverConnected ?? []).includes(name)
+  // CC 2.1.277 C7: official `k2t(e){return LMe(ae()).includes(e)}` — the
+  // normalized read; a malformed persisted value (object/number/string/mixed
+  // array) yields [] instead of throwing a TypeError in /mcp.
+  return claudeAiMcpEverConnectedOf(getGlobalConfig()).includes(name)
 }
 
 /**
@@ -198,8 +206,10 @@ const currentlyConnectedClaudeAiMcps = new Set<string>()
  */
 export function markClaudeAiMcpConnected(name: string): void {
   currentlyConnectedClaudeAiMcps.add(name)
+  // CC 2.1.277 C7: normalized merge (official `Z5e` via `LMe`) — see the
+  // first copy above; a malformed persisted value self-heals on this write.
   saveGlobalConfig(current => {
-    const seen = current.claudeAiMcpEverConnected ?? []
+    const seen = claudeAiMcpEverConnectedOf(current)
     if (seen.includes(name)) return current
     return { ...current, claudeAiMcpEverConnected: [...seen, name] }
   })

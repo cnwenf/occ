@@ -78,6 +78,22 @@ import { expandPath } from './path.js'
 import { pathInWorkingPath } from './permissions/filesystem.js'
 import { isSettingSourceEnabled } from './settings/constants.js'
 import { getInitialSettings } from './settings/settings.js'
+import {
+  AGENTS_LOADED_NOTICE_PREFIX,
+  AGENTS_NAMES,
+  LOAD_EVENT,
+  MODE_EVENT,
+  MODES,
+  isAgentsMdFeatureAvailable,
+  isKeptWithoutInstructionType,
+  loadCountsOf,
+  resolveInstructionMode,
+  unseenFiles,
+  withProjectFiles,
+  isLoadedClaudeFile,
+  projectInstructionsHonouredNotice,
+  projectInstructionsIgnoredNotice,
+} from './agentsMd.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const teamMemPaths = feature('TEAMMEM')
@@ -86,6 +102,31 @@ const teamMemPaths = feature('TEAMMEM')
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 let hasLoggedInitialLoad = false
+
+// CC 2.1.277 agents-md: one-shot telemetry/notice state (official `le`/`ae`
+// flags in qe()). Reset by resetGetMemoryFilesCache() so a reload re-fires.
+let hasLoggedAgentsMdMode = false
+let hasLoggedAgentsMdLoad = false
+let agentsMdNoticeRoot: string | undefined
+let lastAgentsMdNotice: string | undefined
+let lastAgentsMdDeprecation: string | undefined
+
+/**
+ * The last "no CLAUDE.md found; AGENTS.md loaded: …" notice produced by
+ * getMemoryFiles(), for display by the REPL startup path and for tests.
+ * Byte-copied prefix from the official 2.1.277 agents-md plugin.
+ */
+export function getLastAgentsMdNotice(): string | undefined {
+  return lastAgentsMdNotice
+}
+
+/**
+ * The last `projectInstructions` deprecation notice (byte-copied fragments),
+ * produced when the legacy setting is present. For the /config surface + tests.
+ */
+export function getLastAgentsMdDeprecation(): string | undefined {
+  return lastAgentsMdDeprecation
+}
 
 const MEMORY_INSTRUCTION_PROMPT =
   'Codebase and user instructions are shown below. Be sure to adhere to these instructions. IMPORTANT: These instructions OVERRIDE any default behavior and you MUST follow them exactly as written.'
@@ -805,7 +846,7 @@ export const getMemoryFiles = memoize(
     const startTime = Date.now()
     logForDiagnosticsNoPII('info', 'memory_files_started')
 
-    const result: MemoryFileInfo[] = []
+    let result: MemoryFileInfo[] = []
     const processedPaths = new Set<string>()
     const config = getCurrentProjectConfig()
     const includeExternal =
@@ -1019,6 +1060,22 @@ export const getMemoryFiles = memoize(
       }
     }
 
+    // CC 2.1.277 agents-md plugin: apply the `instructionFiles` mode to the
+    // loaded instruction set (AGENTS.md discovery / managed-only drop).
+    // Skipped entirely when the feature is unavailable (Bedrock/Vertex/Foundry
+    // per the official changelog) — engine behaves as `claude-md`.
+    if (isAgentsMdFeatureAvailable()) {
+      result = await applyAgentsMdInstructionMode({
+        result,
+        dirs,
+        isNestedWorktree,
+        canonicalRoot,
+        gitRoot,
+        processedPaths,
+        includeExternal,
+      })
+    }
+
     const totalContentLength = result.reduce(
       (sum, f) => sum + f.content.length,
       0,
@@ -1087,6 +1144,139 @@ export const getMemoryFiles = memoize(
   },
 )
 
+type AgentsMdApplyParams = {
+  result: MemoryFileInfo[]
+  /** Ancestor dirs in root→cwd order (the CLAUDE.md walk order). */
+  dirs: string[]
+  isNestedWorktree: boolean
+  canonicalRoot: string | null
+  gitRoot: string | null
+  processedPaths: Set<string>
+  includeExternal: boolean
+}
+
+/**
+ * CC 2.1.277 `agents-md` plugin `prompt.context` post-processing, ported into
+ * OCC's `getMemoryFiles()`. Applies the effective `instructionFiles` mode to
+ * the loaded instruction set:
+ *  - `claude-md`: no-op (engine default).
+ *  - `managed-only`: drop project/local/user files (official `ye` filter).
+ *  - `claude-md-or-agents-md`: walk AGENTS.md ancestors ONLY when the project
+ *    has no CLAUDE.md of its own (official `h`/`I` short-circuit), then merge.
+ *  - `claude-md-and-agents-md`: always walk AGENTS.md ancestors and merge
+ *    beside CLAUDE.md (dedup via `unseenFiles`).
+ * Merge position comes from `withProjectFiles`/`insertionIndex`. Telemetry +
+ * the one-shot "no CLAUDE.md found" notice mirror the official `Ae`/`ui.log`.
+ */
+async function applyAgentsMdInstructionMode(
+  params: AgentsMdApplyParams,
+): Promise<MemoryFileInfo[]> {
+  const {
+    result,
+    dirs,
+    isNestedWorktree,
+    canonicalRoot,
+    gitRoot,
+    processedPaths,
+    includeExternal,
+  } = params
+
+  const settings = getInitialSettings()
+  const resolved = resolveInstructionMode({
+    instructionFiles: settings.instructionFiles,
+    projectInstructions: settings.projectInstructions,
+  })
+  const mode = resolved.mode
+  const modeIndex = MODES.indexOf(mode)
+  const isInteractive = Boolean(process.stdout.isTTY)
+
+  // session.start analogue: mode telemetry (once) + deprecation notice.
+  if (!hasLoggedAgentsMdMode) {
+    hasLoggedAgentsMdMode = true
+    logEvent(MODE_EVENT, { mode_index: modeIndex, is_interactive: isInteractive })
+  }
+  if (!resolved.legacyUnset) {
+    const notice = resolved.legacyHonoured
+      ? projectInstructionsHonouredNotice(mode)
+      : projectInstructionsIgnoredNotice(mode)
+    lastAgentsMdDeprecation = notice
+    logForDebugging(`[agents-md] ${notice}`)
+  }
+
+  if (mode === 'claude-md') return result
+
+  if (mode === 'managed-only') {
+    return result.filter(f => isKeptWithoutInstructionType(f.type))
+  }
+
+  const isOr = mode === 'claude-md-or-agents-md'
+  const hasClaude = result.some(isLoadedClaudeFile)
+
+  // OR mode yields to CLAUDE.md when the project has its own (official `R=I?U:walk`).
+  const candidates: MemoryFileInfo[] = []
+  let walkFailed = false
+  const shouldWalk = !(isOr && hasClaude)
+  if (shouldWalk && isSettingSourceEnabled('projectSettings')) {
+    for (const dir of dirs) {
+      const skipProject =
+        isNestedWorktree &&
+        canonicalRoot !== null &&
+        gitRoot !== null &&
+        pathInWorkingPath(dir, canonicalRoot) &&
+        !pathInWorkingPath(dir, gitRoot)
+      if (skipProject) continue
+      for (const name of AGENTS_NAMES) {
+        const filePath = join(dir, ...name.split('/'))
+        try {
+          candidates.push(
+            ...(await processMemoryFile(
+              filePath,
+              'Project',
+              processedPaths,
+              includeExternal,
+            )),
+          )
+        } catch {
+          walkFailed = true
+        }
+      }
+    }
+  }
+
+  const unseen = unseenFiles(candidates, result)
+
+  if (!hasLoggedAgentsMdLoad) {
+    hasLoggedAgentsMdLoad = true
+    const counts = loadCountsOf(unseen, isOr && hasClaude, walkFailed)
+    logEvent(LOAD_EVENT, {
+      mode_index: modeIndex,
+      file_count: counts.fileCount,
+      import_count: counts.importCount,
+      total_content_length: counts.totalContentLength,
+      yielded: counts.isYielded,
+      walk_failed: counts.isWalkFailed,
+    })
+  }
+
+  const cwd = getOriginalCwd()
+  if (
+    isOr &&
+    !hasClaude &&
+    unseen.length > 0 &&
+    agentsMdNoticeRoot !== cwd
+  ) {
+    agentsMdNoticeRoot = cwd
+    const paths = unseen
+      .filter(f => f.parent === undefined)
+      .map(f => f.path)
+      .join(', ')
+    lastAgentsMdNotice = `${AGENTS_LOADED_NOTICE_PREFIX}${paths}`
+    logForDebugging(`[agents-md] ${lastAgentsMdNotice}`)
+  }
+
+  return withProjectFiles(result, unseen)
+}
+
 function isInstructionsMemoryType(
   type: MemoryType,
 ): type is InstructionsMemoryType {
@@ -1139,6 +1329,10 @@ export function resetGetMemoryFilesCache(
 ): void {
   nextEagerLoadReason = reason
   shouldFireHook = true
+  // CC 2.1.277 agents-md: re-arm one-shot telemetry/notice on reload.
+  hasLoggedAgentsMdMode = false
+  hasLoggedAgentsMdLoad = false
+  agentsMdNoticeRoot = undefined
   clearMemoryFileCaches()
 }
 

@@ -2,6 +2,7 @@ import { c as _c } from "react/compiler-runtime";
 import React from 'react';
 import { Text } from '../ink.js';
 import { saveGlobalConfig } from '../utils/config.js';
+import { customApiKeyResponsesOf } from '../utils/customApiKeyResponses.js';
 import { Select } from './CustomSelect/index.js';
 import { Dialog } from './design-system/Dialog.js';
 type Props = {
@@ -17,28 +18,45 @@ export function ApproveApiKey(t0) {
   let t1;
   if ($[0] !== customApiKeyTruncated || $[1] !== onDone) {
     t1 = function onChange(value) {
+      // CC 2.1.277 C2: official `MJt` write paths route through the `HR`
+      // normalizer BEFORE merging (`let{approved:Y,rejected:L}=HR(I);return
+      // {...I,customApiKeyResponses:{approved:[...Y,a],rejected:L}}` for yes;
+      // `{approved:O,rejected:[...V,a]}` for no), so a malformed persisted
+      // customApiKeyResponses cannot throw here and self-heals on this write.
       switch (value) {
         case "yes":
           {
-            saveGlobalConfig(current_0 => ({
-              ...current_0,
-              customApiKeyResponses: {
-                ...current_0.customApiKeyResponses,
-                approved: [...(current_0.customApiKeyResponses?.approved ?? []), customApiKeyTruncated]
-              }
-            }));
+            saveGlobalConfig(current_0 => {
+              const {
+                approved,
+                rejected
+              } = customApiKeyResponsesOf(current_0);
+              return {
+                ...current_0,
+                customApiKeyResponses: {
+                  approved: [...approved, customApiKeyTruncated],
+                  rejected
+                }
+              };
+            });
             onDone(true);
             break;
           }
         case "no":
           {
-            saveGlobalConfig(current => ({
-              ...current,
-              customApiKeyResponses: {
-                ...current.customApiKeyResponses,
-                rejected: [...(current.customApiKeyResponses?.rejected ?? []), customApiKeyTruncated]
-              }
-            }));
+            saveGlobalConfig(current => {
+              const {
+                approved,
+                rejected
+              } = customApiKeyResponsesOf(current);
+              return {
+                ...current,
+                customApiKeyResponses: {
+                  approved,
+                  rejected: [...rejected, customApiKeyTruncated]
+                }
+              };
+            });
             onDone(false);
           }
       }

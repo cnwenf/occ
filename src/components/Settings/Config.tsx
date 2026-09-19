@@ -9,6 +9,7 @@ import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.j
 import figures from 'figures';
 import { type GlobalConfig, saveGlobalConfig, getCurrentProjectConfig, type OutputStyle } from '../../utils/config.js';
 import { normalizeApiKeyForConfig } from '../../utils/authPortable.js';
+import { customApiKeyResponsesOf } from '../../utils/customApiKeyResponses.js';
 import { getGlobalConfig, getAutoUpdaterDisabledReason, formatAutoUpdaterDisabledReason, getRemoteControlAtStartup } from '../../utils/config.js';
 import chalk from 'chalk';
 import { permissionModeTitle, permissionModeFromString, toExternalPermissionMode, isExternalPermissionMode, EXTERNAL_PERMISSION_MODES, PERMISSION_MODES, type ExternalPermissionMode, type PermissionMode } from '../../utils/permissions/PermissionMode.js';
@@ -36,6 +37,7 @@ import { useIsInsideModal } from '../../context/modalContext.js';
 import { SearchBox } from '../SearchBox.js';
 import { isSupportedTerminal, hasAccessToIDEExtensionDiffFeature } from '../../utils/ide.js';
 import { getInitialSettings, getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
+import { DEFAULT_MODE, INSTRUCTION_FILES_TITLE, MODES, isAgentsMdFeatureAvailable, type InstructionFilesMode } from '../../utils/agentsMd.js';
 import { getUserMsgOptIn, setUserMsgOptIn } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from 'src/constants/outputStyles.js';
 import { isEnvTruthy, isRunningOnHomespace } from 'src/utils/envUtils.js';
@@ -800,7 +802,34 @@ export function Config({
         value: selected as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       });
     },
-  }, {
+  }, ...(isAgentsMdFeatureAvailable() ? [{
+    // CC 2.1.277 agents-md plugin: "Project instructions" row. Label + mode
+    // strings byte-copied from the official binary (USER_CONFIG `re`). Hidden
+    // on Bedrock/Vertex/Foundry per the official provider gate.
+    id: 'instructionFiles',
+    label: INSTRUCTION_FILES_TITLE,
+    value: settingsData?.instructionFiles ?? DEFAULT_MODE,
+    options: [...MODES],
+    type: 'enum' as const,
+    onChange(selected: string) {
+      const mode = selected as InstructionFilesMode;
+      updateSettingsForSource('userSettings', {
+        instructionFiles: mode,
+      });
+      setSettingsData(prev => ({
+        ...prev,
+        instructionFiles: mode,
+      }));
+      setChanges(prev => ({
+        ...prev,
+        [INSTRUCTION_FILES_TITLE]: selected,
+      }));
+      logEvent('tengu_config_changed', {
+        setting: 'instructionFiles' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILE_PATHS,
+        value: selected as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      });
+    },
+  }] : []), {
     id: 'language',
     label: 'Language',
     value: currentLanguage ?? 'Default (English)',
@@ -1038,48 +1067,36 @@ export function Config({
                 </Text>
               </Text>,
     searchText: 'Use custom API key',
-    value: Boolean(process.env.ANTHROPIC_API_KEY && globalConfig.customApiKeyResponses?.approved?.includes(normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY))),
+    value: Boolean(process.env.ANTHROPIC_API_KEY && customApiKeyResponsesOf(globalConfig).approved.includes(normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY))),
     type: 'boolean' as const,
     onChange(useCustomKey: boolean) {
+      // CC 2.1.277 C2: official v277 toggle write path routes through the
+      // `HR` normalizer BEFORE merging (`let{approved:d,rejected:m}=HR(o),
+      // y=xX(key),E=d.filter(k=>k!==y),A=m.filter(k=>k!==y);return{...o,
+      // customApiKeyResponses:e?{approved:[...E,y],rejected:A}:{approved:E,
+      // rejected:[...A,y]}}`), so a malformed persisted value cannot throw
+      // and self-heals on this write.
       saveGlobalConfig(current_22 => {
-        const updated = {
-          ...current_22
-        };
-        if (!updated.customApiKeyResponses) {
-          updated.customApiKeyResponses = {
-            approved: [],
-            rejected: []
-          };
+        if (!process.env.ANTHROPIC_API_KEY) {
+          return current_22;
         }
-        if (!updated.customApiKeyResponses.approved) {
-          updated.customApiKeyResponses = {
-            ...updated.customApiKeyResponses,
-            approved: []
-          };
-        }
-        if (!updated.customApiKeyResponses.rejected) {
-          updated.customApiKeyResponses = {
-            ...updated.customApiKeyResponses,
-            rejected: []
-          };
-        }
-        if (process.env.ANTHROPIC_API_KEY) {
-          const truncatedKey = normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY);
-          if (useCustomKey) {
-            updated.customApiKeyResponses = {
-              ...updated.customApiKeyResponses,
-              approved: [...(updated.customApiKeyResponses.approved ?? []).filter(k => k !== truncatedKey), truncatedKey],
-              rejected: (updated.customApiKeyResponses.rejected ?? []).filter(k_0 => k_0 !== truncatedKey)
-            };
-          } else {
-            updated.customApiKeyResponses = {
-              ...updated.customApiKeyResponses,
-              approved: (updated.customApiKeyResponses.approved ?? []).filter(k_1 => k_1 !== truncatedKey),
-              rejected: [...(updated.customApiKeyResponses.rejected ?? []).filter(k_2 => k_2 !== truncatedKey), truncatedKey]
-            };
+        const {
+          approved,
+          rejected
+        } = customApiKeyResponsesOf(current_22);
+        const truncatedKey = normalizeApiKeyForConfig(process.env.ANTHROPIC_API_KEY);
+        const approvedWithout = approved.filter(k => k !== truncatedKey);
+        const rejectedWithout = rejected.filter(k => k !== truncatedKey);
+        return {
+          ...current_22,
+          customApiKeyResponses: useCustomKey ? {
+            approved: [...approvedWithout, truncatedKey],
+            rejected: rejectedWithout
+          } : {
+            approved: approvedWithout,
+            rejected: [...rejectedWithout, truncatedKey]
           }
-        }
-        return updated;
+        };
       });
       setGlobalConfig(getGlobalConfig());
     }
@@ -1148,8 +1165,8 @@ export function Config({
     // On homespace, ANTHROPIC_API_KEY is preserved in process.env for child
     // processes but ignored by Claude Code itself (see auth.ts).
     const effectiveApiKey = isRunningOnHomespace() ? undefined : process.env.ANTHROPIC_API_KEY;
-    const initialUsingCustomKey = Boolean(effectiveApiKey && initialConfig.current.customApiKeyResponses?.approved?.includes(normalizeApiKeyForConfig(effectiveApiKey)));
-    const currentUsingCustomKey = Boolean(effectiveApiKey && globalConfig.customApiKeyResponses?.approved?.includes(normalizeApiKeyForConfig(effectiveApiKey)));
+    const initialUsingCustomKey = Boolean(effectiveApiKey && customApiKeyResponsesOf(initialConfig.current).approved.includes(normalizeApiKeyForConfig(effectiveApiKey)));
+    const currentUsingCustomKey = Boolean(effectiveApiKey && customApiKeyResponsesOf(globalConfig).approved.includes(normalizeApiKeyForConfig(effectiveApiKey)));
     if (initialUsingCustomKey !== currentUsingCustomKey) {
       formattedChanges.push(`${currentUsingCustomKey ? 'Enabled' : 'Disabled'} custom API key`);
       logEvent('tengu_config_changed', {

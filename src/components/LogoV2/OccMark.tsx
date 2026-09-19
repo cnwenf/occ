@@ -183,7 +183,12 @@ export const CHEVRON_TONES: Record<'dark' | 'light', ChevronTone> = {
 }
 
 export function chevronThemeFamily(themeName: string): 'dark' | 'light' {
-  return themeName.startsWith('light') ? 'light' : 'dark'
+  // CC 2.1.277 C8 defense-in-depth: a malformed persisted theme that slips
+  // past the read-boundary guard (non-string) must not crash the mark render
+  // at launch — typeof-guard the `.startsWith` and fall back to 'dark'.
+  return typeof themeName === 'string' && themeName.startsWith('light')
+    ? 'light'
+    : 'dark'
 }
 
 export function rgbColor(rgb: Rgb): string {
