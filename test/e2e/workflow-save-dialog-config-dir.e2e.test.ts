@@ -148,6 +148,9 @@ function writeWrapper(
     `export CLAUDE_CODE_UNATTENDED_RETRY='0'`,
     // NOTE: do NOT set ANTHROPIC_API_KEY — it triggers the "Detected a custom
     // API key" confirmation dialog. The auth token via settings/env suffices.
+    // The tmux session may still INHERIT one from the server/parent env (e.g.
+    // the dummy exported by scripts/ci-test.sh) — unset it explicitly.
+    `unset ANTHROPIC_API_KEY`,
     `exec '${BIN}' --dangerously-skip-permissions`,
   ]
   writeFileSync(wrapper, lines.join('\n') + '\n', { mode: 0o755 })

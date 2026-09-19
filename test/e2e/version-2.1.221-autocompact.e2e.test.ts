@@ -56,7 +56,9 @@ describe.skipIf(!!process.env.CI)("2.1.221 --autocompact flag (e2e)", () => {
     );
     expect(res.code).toBe(0);
     expect(res.stdout).toContain("OK");
-  });
+    // Live-model session — test timeout must cover the runOcc budget above
+    // (bun's default per-test timeout is far shorter).
+  }, 150_000);
 
   test("--autocompact auto is accepted", async () => {
     const res = await runOcc(
@@ -66,7 +68,7 @@ describe.skipIf(!!process.env.CI)("2.1.221 --autocompact flag (e2e)", () => {
     );
     expect(res.code).toBe(0);
     expect(res.stdout).toContain("YES");
-  });
+  }, 150_000);
 });
 
 describe.skipIf(!!process.env.CI)("2.1.221 /autocompact non-interactive (e2e)", () => {
@@ -126,7 +128,8 @@ describe.skipIf(!!process.env.CI)("2.1.221 /autocompact non-interactive (e2e)", 
     } finally {
       cleanup();
     }
-  });
+    // 3 sequential runOcc calls (60s budget each).
+  }, 240_000);
 
   test("bare shorthand 200 means 200k tokens", async () => {
     const { dir, cleanup } = tempDir();

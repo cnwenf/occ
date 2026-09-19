@@ -19,6 +19,17 @@ const VERSION = (
   }
 ).version
 
+/** An inherited ANTHROPIC_API_KEY (a real one from the parent shell, or the
+ * dummy exported by scripts/ci-test.sh) triggers the official "Detected a
+ * custom API key" approval dialog under a fresh HOME (no
+ * customApiKeyResponses seeded), so the REPL never reaches the prompt and the
+ * run hangs until SIGKILL (exit -1). This test authenticates with the dummy
+ * ANTHROPIC_AUTH_TOKEN below — drop the key from the child env. */
+function envWithoutApiKey(): Record<string, string | undefined> {
+  const { ANTHROPIC_API_KEY: _dropped, ...rest } = process.env
+  return rest
+}
+
 function freshHome(root: string): string {
   const home = join(root, 'home')
   mkdirSync(join(home, '.claude'), { recursive: true })
@@ -54,7 +65,7 @@ function runInteractiveOcc(
     const child = spawn('script', ['-qfec', command, '/dev/null'], {
       cwd: REPO_ROOT,
       env: {
-        ...process.env,
+        ...envWithoutApiKey(),
         HOME: home,
         PATH: `${binDir}:${process.env.PATH ?? ''}`,
         TERM: 'xterm-256color',
