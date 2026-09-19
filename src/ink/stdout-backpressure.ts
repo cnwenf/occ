@@ -285,15 +285,28 @@ export class StdoutBackpressureMonitor implements WriteBackpressureGate {
 }
 
 /**
- * Enablement gate — official `pEr({envOverride:CLAUDE_CODE_NONBLOCKING_STDOUT,
- * isAnt:false, remoteFlag:tengu_event_loop_stall})` @202863820 region:
- * `return e ?? (n || o())`. OCC has no remote-flag infrastructure, so the
- * default is TTY-only (official `D()` refuses non-TTY with
- * `{reason:"not_a_tty"}`) and the official env var overrides both ways.
+ * Enablement gate — official constructor gate @202863820 region:
+ * `if(n.stdout===process.stdout&&(SPt()||pEr({envOverride:
+ * CLAUDE_CODE_NONBLOCKING_STDOUT,isAnt:false,remoteFlag:
+ * tengu_event_loop_stall})))`. The official checks the IDENTITY of the
+ * stream FIRST: only the real process stdout ever gets the non-blocking
+ * machinery — embedded/wrapped streams (test stubs, console patchers,
+ * pty wrappers) are refused even with `isTTY:true` or the env override, so
+ * they can never be attached to a frame-dropping monitor.
+ *
+ * Behind the identity gate, `pEr({envOverride,...})`: OCC has no
+ * remote-flag infrastructure, so the default is TTY-only (official `D()`
+ * refuses non-TTY with `{reason:"not_a_tty"}`) and the official env var
+ * overrides both ways.
  */
 export function shouldEnableStdoutBackpressure(stdout: {
   isTTY?: boolean | undefined
 }): boolean {
+  // Official identity gate: `n.stdout===process.stdout` — checked before
+  // the env override / TTY default, exactly like the official constructor.
+  if (stdout !== process.stdout) {
+    return false
+  }
   const override = process.env.CLAUDE_CODE_NONBLOCKING_STDOUT
   if (override !== undefined && override !== '') {
     return ['1', 'true', 'yes', 'on'].includes(override.toLowerCase().trim())

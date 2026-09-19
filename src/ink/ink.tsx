@@ -241,9 +241,11 @@ export default class Ink {
     //     remoteFlag:tengu_event_loop_stall})))
     //     this.nonBlockingStdout=dEr(this.handleStdoutBackpressure)
     // OCC observes the stream's write()/drain contract instead of
-    // hijacking process.stdout.write, so the `stdout===process.stdout`
-    // identity check doesn't apply; gating is env override + TTY default
-    // (shouldEnableStdoutBackpressure).
+    // hijacking process.stdout.write, but the official `stdout===
+    // process.stdout` IDENTITY gate is enforced inside
+    // shouldEnableStdoutBackpressure (checked first, before the env
+    // override / TTY default) — embedded/wrapped streams never get a
+    // frame-dropping monitor attached.
     this.nonBlockingStdout = shouldEnableStdoutBackpressure(options.stdout) ? new StdoutBackpressureMonitor(options.stdout, this.handleStdoutBackpressure) : null;
     // 2.1.208: SR field init (binary: `this.isScreenReaderEnabled =
     // e.isScreenReaderEnabled ?? (!!e.stdout.isTTY &&
