@@ -74,6 +74,28 @@ async function waitForText(substr: string, timeoutMs = 20_000): Promise<boolean>
   return false
 }
 
+/** Deterministic workflow-completion gate (model-wording independent):
+ * (1) the tool-use line renderToolUseMessage produces ('Workflow(e2esave)')
+ * appears once the model actually calls the Workflow tool, then (2) the turn
+ * ends — the '(esc to interrupt' spinner row disappears and stays gone for
+ * ~1s of polling. The old gate waited for a literal '● done' pane line, but
+ * that matched the MODEL's free-text reply (assistant text renders with a ●
+ * bullet): a verbose paraphrase ("Workflow e2esave completed in 1ms with 0
+ * agents…") failed the gate even though the workflow itself ran fine. That
+ * made the test flaky on BOTH baseline and current builds with a
+ * chatty model. */
+async function waitForWorkflowCompleted(timeoutMs: number): Promise<boolean> {
+  if (!(await waitForText('Workflow(e2esave)', timeoutMs))) return false
+  const deadline = Date.now() + timeoutMs
+  let idlePolls = 0
+  while (Date.now() < deadline) {
+    if (capturePane().includes('esc to interrupt')) idlePolls = 0
+    else if (++idlePolls >= 4) return true
+    await new Promise(r => setTimeout(r, 250))
+  }
+  return false
+}
+
 function killRepl(): void {
   execSync(`tmux kill-session -t ${SESSION} 2>/dev/null; true`)
 }
@@ -177,9 +199,9 @@ describe.skipIf(
         await typeText(promptText)
         await new Promise(r => setTimeout(r, 300))
         sendKey('Enter')
-        // The tool renders "● done" on success. Generous timeout for the model
-        // turn + engine run.
-        done = await waitForText('● done', 30_000)
+        // Deterministic completion gate: tool-use line rendered + turn ended
+        // (spinner gone). Generous timeout for the model turn + engine run.
+        done = await waitForWorkflowCompleted(30_000)
       }
       if (!done) {
         console.error('PANE at workflow-done failure:\n' + capturePane())
