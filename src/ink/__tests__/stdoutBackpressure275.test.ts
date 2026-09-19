@@ -99,7 +99,9 @@ type TelemetryEvent = {
   dropped_bytes: number
 }
 
-function makeInk(opts: { isTTY?: boolean } = {}): {
+function makeInk(
+  opts: { isTTY?: boolean; attachMonitor?: boolean } = {},
+): {
   ink: Ink
   stdout: MockStdout
   telemetry: TelemetryEvent[]
@@ -113,6 +115,23 @@ function makeInk(opts: { isTTY?: boolean } = {}): {
     patchConsole: false,
     isScreenReaderEnabled: false,
   })
+  // Official 2.1.276 identity gate (`n.stdout===process.stdout`, enforced
+  // inside shouldEnableStdoutBackpressure): a mock stdout never passes, so
+  // the constructor no longer attaches a monitor even with the env override
+  // set or isTTY:true. These integration suites exercise the renderer ↔
+  // monitor cooperation, so inject the exact monitor instance the
+  // constructor would create in production (test seam). The constructor
+  // gate itself is asserted in the `gate:` test below.
+  if (opts.attachMonitor !== false) {
+    const seam = ink as unknown as {
+      nonBlockingStdout: StdoutBackpressureMonitor | null
+      handleStdoutBackpressure: (episode: BackpressureEpisodeEnd) => void
+    }
+    seam.nonBlockingStdout = new StdoutBackpressureMonitor(
+      stdout,
+      seam.handleStdoutBackpressure,
+    )
+  }
   const telemetry: TelemetryEvent[] = []
   // Per-instance telemetry capture — avoids polluting the global analytics
   // sink queue (src/services/analytics) across test files.
@@ -142,10 +161,11 @@ let envKeyWasSet = false
 beforeEach(() => {
   envKeyWasSet = ENV_KEY in process.env
   savedEnvKey = process.env[ENV_KEY]
-  // Default for integration suites: force-enable the monitor even with
-  // hermetic (isTTY=false) mock streams — mirrors the official env
-  // override CLAUDE_CODE_NONBLOCKING_STDOUT.
-  process.env[ENV_KEY] = '1'
+  // 2.1.276: the env override can no longer force-enable the monitor on a
+  // mock stream (identity gate refuses non-process.stdout; makeInk injects
+  // the monitor directly instead). Keep the env clean so the gate/unit
+  // tests below flip it deterministically.
+  delete process.env[ENV_KEY]
 })
 
 afterEach(() => {
@@ -299,15 +319,32 @@ describe('StdoutBackpressureMonitor (official nonBlockingStdout episode machine)
     expect(episodes.length).toBe(1)
   })
 
-  test('shouldEnableStdoutBackpressure: env override wins, else TTY default', () => {
+  test('shouldEnableStdoutBackpressure: on process.stdout, env override wins, else TTY default', () => {
+    // Identity holds (process.stdout) → the official pEr({envOverride,...})
+    // semantics apply: env override wins, otherwise the TTY default.
     process.env[ENV_KEY] = '1'
-    expect(shouldEnableStdoutBackpressure({ isTTY: false })).toBe(true)
+    expect(shouldEnableStdoutBackpressure(process.stdout)).toBe(true)
     process.env[ENV_KEY] = 'TRUE'
-    expect(shouldEnableStdoutBackpressure({ isTTY: false })).toBe(true)
+    expect(shouldEnableStdoutBackpressure(process.stdout)).toBe(true)
     process.env[ENV_KEY] = '0'
-    expect(shouldEnableStdoutBackpressure({ isTTY: true })).toBe(false)
+    expect(shouldEnableStdoutBackpressure(process.stdout)).toBe(false)
     delete process.env[ENV_KEY]
-    expect(shouldEnableStdoutBackpressure({ isTTY: true })).toBe(true)
+    expect(shouldEnableStdoutBackpressure(process.stdout)).toBe(
+      !!process.stdout.isTTY,
+    )
+  })
+
+  test('shouldEnableStdoutBackpressure: non-process.stdout refused even with isTTY:true + env override (2.1.276 identity gate)', () => {
+    // df-04 probe: official constructor gate checks `n.stdout===process.stdout`
+    // FIRST — embedded/test-stub streams must never be attached to a
+    // frame-dropping monitor, whatever the env override or isTTY claim.
+    process.env[ENV_KEY] = '1'
+    expect(shouldEnableStdoutBackpressure({ isTTY: true })).toBe(false)
+    expect(shouldEnableStdoutBackpressure(makeMockStdout({ isTTY: true }))).toBe(
+      false,
+    )
+    delete process.env[ENV_KEY]
+    expect(shouldEnableStdoutBackpressure({ isTTY: true })).toBe(false)
     expect(shouldEnableStdoutBackpressure({ isTTY: false })).toBe(false)
     expect(shouldEnableStdoutBackpressure({})).toBe(false)
   })
@@ -478,7 +515,9 @@ describe('TerminalQuerier resync (official @202543231)', () => {
 describe('Ink stdout backpressure integration (2.1.275 #15)', () => {
   const liveInks: Ink[] = []
 
-  function tracked(opts: { isTTY?: boolean } = {}): {
+  function tracked(
+    opts: { isTTY?: boolean; attachMonitor?: boolean } = {},
+  ): {
     ink: Ink
     stdout: MockStdout
     telemetry: TelemetryEvent[]
@@ -499,14 +538,28 @@ describe('Ink stdout backpressure integration (2.1.275 #15)', () => {
     }
   })
 
-  test('gate: monitor is created per CLAUDE_CODE_NONBLOCKING_STDOUT / TTY', () => {
+  test('gate: identity — a non-process.stdout stream never gets a constructor-attached monitor', () => {
+    // Official 2.1.276 constructor gate @202863820:
+    // `n.stdout===process.stdout&&(SPt()||pEr({envOverride:
+    // CLAUDE_CODE_NONBLOCKING_STDOUT,...}))` — identity is checked FIRST,
+    // so a mock stream is refused with the env override on, with isTTY:true,
+    // and with both. (The env/TTY semantics for the real process.stdout are
+    // covered by the shouldEnableStdoutBackpressure unit tests above; the
+    // renderer↔monitor cooperation is covered here via makeInk's injected
+    // monitor seam.)
     process.env[ENV_KEY] = '1'
-    expect(tracked().ink.stdoutBackpressure).not.toBeNull()
+    expect(tracked({ attachMonitor: false }).ink.stdoutBackpressure).toBeNull()
+    expect(
+      tracked({ isTTY: true, attachMonitor: false }).ink.stdoutBackpressure,
+    ).toBeNull()
     process.env[ENV_KEY] = '0'
-    expect(tracked({ isTTY: true }).ink.stdoutBackpressure).toBeNull()
+    expect(
+      tracked({ isTTY: true, attachMonitor: false }).ink.stdoutBackpressure,
+    ).toBeNull()
     delete process.env[ENV_KEY]
-    expect(tracked().ink.stdoutBackpressure).toBeNull()
-    expect(tracked({ isTTY: true }).ink.stdoutBackpressure).not.toBeNull()
+    expect(
+      tracked({ isTTY: true, attachMonitor: false }).ink.stdoutBackpressure,
+    ).toBeNull()
   })
 
   test('normal writes: zero behavior change — frame written, no episode, no telemetry', async () => {

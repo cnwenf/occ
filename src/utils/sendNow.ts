@@ -29,6 +29,7 @@
 
 import type { QueuedCommand } from '../types/textInputTypes.js'
 import { chordToDisplayString } from '../keybindings/parser.js'
+import { supportsExtendedKeys } from '../ink/terminal.js'
 import { getPlatform } from './platform.js'
 import { isQueuedCommandEditable } from './messageQueueManager.js'
 
@@ -312,14 +313,15 @@ export function getSendNowChordDisplay(
 
 /**
  * xHe() @202522884 reads the terminal's live "extendedKeys" capability
- * (s5().now(...)). OCC has no synchronous terminal-capability store
- * (terminal-querier.ts only issues async kitty-keyboard queries), so this
- * conservatively reports false: the hint shows the always-typeable
- * ctrl+x ctrl+s chord instead of ctrl+enter. The KEY itself still works in
- * terminals that report extended keys — only the displayed hint differs.
+ * (s5().now(...)). OCC's synchronous equivalent is `supportsExtendedKeys()`
+ * (src/ink/terminal.ts) — the same allowlist gate (iTerm.app/kitty/WezTerm/
+ * ghostty/tmux/windows-terminal) that ink.tsx uses to enable the kitty
+ * keyboard protocol — so the footer hint always reflects the capability the
+ * input layer actually negotiated: ctrl+enter where extended keys work,
+ * ctrl+x ctrl+s elsewhere.
  */
 export function hasExtendedKeyboardSupport(): boolean {
-  return false
+  return supportsExtendedKeys()
 }
 
 /**

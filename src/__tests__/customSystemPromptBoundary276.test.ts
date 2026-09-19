@@ -174,6 +174,124 @@ describe('2.1.276 ITEM S — split output feeds the global cache split', () => {
   })
 })
 
+describe('2.1.276 CT-01 — default (3P / betas-disabled) branch strips the boundary marker', () => {
+  // The two global-cache branches of splitSysPromptPrefix always filtered
+  // SYSTEM_PROMPT_DYNAMIC_BOUNDARY; the DEFAULT branch (reached when
+  // shouldUseGlobalCacheScope() is false — Bedrock/Vertex/proxy providers or
+  // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS) did not, leaking the literal
+  // marker plus an extra double-newline (rest.join) into the model-visible
+  // prompt bytes. getAPIProvider()/isEnvTruthy read env at call time, so the
+  // branch is forced deterministically with env flips (saved/restored here).
+
+  const SAVED_ENV: Record<string, string | undefined> = {}
+  const ENV_KEYS = [
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+  ]
+
+  function saveEnv(): void {
+    for (const key of ENV_KEYS) {
+      SAVED_ENV[key] = process.env[key]
+      delete process.env[key]
+    }
+  }
+
+  function restoreEnv(): void {
+    for (const key of ENV_KEYS) {
+      const saved = SAVED_ENV[key]
+      if (saved === undefined) delete process.env[key]
+      else process.env[key] = saved
+    }
+  }
+
+  /** The single 'org' content block the default branch produces. */
+  function defaultBranchRest(blocks: ReturnType<typeof splitSysPromptPrefix>): string {
+    const orgBlocks = blocks.filter(b => b.cacheScope === 'org')
+    expect(orgBlocks).toHaveLength(1)
+    return orgBlocks[0]!.text
+  }
+
+  test('CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS: marker never reaches the model-visible text', () => {
+    // Arrange
+    saveEnv()
+    try {
+      process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '1'
+      const parts = splitCustomSystemPromptAtBoundary(customPromptWithBoundary())
+
+      // Act
+      const blocks = splitSysPromptPrefix(asSystemPrompt(parts))
+
+      // Assert — no block IS the marker, no block CONTAINS it, and the joined
+      // text carries exactly one double-newline seam (no marker-sized hole).
+      expect(blocks.some(b => b.text === BOUNDARY)).toBe(false)
+      expect(blocks.some(b => b.text.includes(BOUNDARY))).toBe(false)
+      expect(defaultBranchRest(blocks)).toBe(
+        'You are a concise assistant.\nAlways answer in one sentence.\n' +
+          '\n\n' +
+          '\nToday the user is in /tmp/project.',
+      )
+    } finally {
+      restoreEnv()
+    }
+  })
+
+  test('Bedrock provider (3P): marker stripped from the default branch', () => {
+    // Arrange
+    saveEnv()
+    try {
+      process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+      const parts = splitCustomSystemPromptAtBoundary(customPromptWithBoundary())
+
+      // Act
+      const blocks = splitSysPromptPrefix(asSystemPrompt(parts))
+
+      // Assert
+      expect(blocks.some(b => b.text.includes(BOUNDARY))).toBe(false)
+      expect(blocks.filter(b => b.cacheScope === 'global')).toHaveLength(0)
+      expect(defaultBranchRest(blocks)).toContain('Always answer in one sentence.')
+      expect(defaultBranchRest(blocks)).toContain('Today the user is in /tmp/project.')
+    } finally {
+      restoreEnv()
+    }
+  })
+
+  test('Vertex provider (3P): marker stripped from the default branch', () => {
+    // Arrange
+    saveEnv()
+    try {
+      process.env.CLAUDE_CODE_USE_VERTEX = '1'
+      const parts = splitCustomSystemPromptAtBoundary(customPromptWithBoundary())
+
+      // Act
+      const blocks = splitSysPromptPrefix(asSystemPrompt(parts))
+
+      // Assert
+      expect(blocks.some(b => b.text.includes(BOUNDARY))).toBe(false)
+      expect(blocks.filter(b => b.cacheScope === 'global')).toHaveLength(0)
+    } finally {
+      restoreEnv()
+    }
+  })
+
+  test('default branch WITHOUT the marker is unchanged (regression guard)', () => {
+    // Arrange
+    saveEnv()
+    try {
+      process.env.CLAUDE_CODE_USE_BEDROCK = '1'
+      const parts = ['section one', 'section two']
+
+      // Act
+      const blocks = splitSysPromptPrefix(asSystemPrompt(parts))
+
+      // Assert
+      expect(defaultBranchRest(blocks)).toBe('section one\n\nsection two')
+    } finally {
+      restoreEnv()
+    }
+  })
+})
+
 describe('2.1.276 ITEM S — second embedding site (buildEffectiveSystemPrompt)', () => {
   // Official v276 applies `sfe` at EVERY custom-system-prompt embedding site
   // (@198045791 analysis, @211625532 analysisOnly, @211903676 main). OCC's

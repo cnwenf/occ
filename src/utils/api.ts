@@ -414,6 +414,14 @@ export function splitSysPromptPrefix(
 
   for (const block of systemPrompt) {
     if (!block) continue
+    // 2.1.276: strip the dynamic-boundary marker here too — the two
+    // global-cache branches above already filter it (:338/:374), but this
+    // default branch serves 3P providers (Bedrock/Vertex/proxy) and
+    // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS users, where
+    // shouldUseGlobalCacheScope() is false. Without this filter the literal
+    // marker (plus an extra double-newline from rest.join) leaks into the
+    // model-visible prompt bytes.
+    if (block === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue // Skip boundary
 
     if (block.startsWith('x-anthropic-billing-header')) {
       attributionHeader = block

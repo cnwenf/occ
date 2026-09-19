@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import { DEFAULT_BINDINGS } from '../../keybindings/defaultBindings.js'
 import { parseBindings, parseChord } from '../../keybindings/parser.js'
+import { supportsExtendedKeys } from '../../ink/terminal.js'
 import type { QueuedCommand } from '../../types/textInputTypes.js'
 import {
   flushQueuedMessagesCore,
@@ -465,10 +466,16 @@ describe('getSendNowChordDisplay (WOe body, keyCase:"lower")', () => {
 })
 
 describe('hasExtendedKeyboardSupport (xHe @202522884)', () => {
-  test('OCC has no sync terminal-capability store → always false', () => {
-    // Documented deviation: official reads s5().now("extendedKeys"); OCC's
-    // terminal-querier only issues async kitty-keyboard queries.
-    expect(hasExtendedKeyboardSupport()).toBe(false)
+  test('delegates to the sync terminal capability gate (supportsExtendedKeys)', () => {
+    // 2.1.276 df-03: official reads the terminal's live "extendedKeys"
+    // capability (s5().now(...)); OCC's synchronous equivalent is
+    // supportsExtendedKeys() — the same allowlist gate (iTerm.app/kitty/
+    // WezTerm/ghostty/tmux/windows-terminal) ink.tsx uses to enable the
+    // kitty keyboard protocol — so the footer hint always reflects the
+    // capability the input layer actually negotiated. Both-branch coverage
+    // lives in sendNowExtendedKeys276.test.ts (env.terminal is frozen at
+    // module load, so the capability module must be mocked there).
+    expect(hasExtendedKeyboardSupport()).toBe(supportsExtendedKeys())
   })
 })
 
