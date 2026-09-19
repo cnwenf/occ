@@ -8,7 +8,7 @@
 
 ## 这是什么
 
-**Open C Code（OCC）** 是一个开源的编码智能体。能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.272`：2.1.270 已完全对齐、2.1.271/2.1.272 部分对齐——OCC-126 追齐轮落地了 2.1.272 Monitor 超时门翻转、自定义/插件智能体的 `omitClaudeMd`、2.1.271 Bash 权限修复（通配符 glob 参数读校验 + 声明标志字符集对齐）与 2.1.272 fast mode 修复，台账见 `docs/upstream-version-gap-occ126.md`；2.1.270→2.1.272 增量中仍未落地：`/config` 全屏鼠标支持（PORTABLE-LARGE 范围）与 spinner 状态文案阶梯 "deep in thought"/"picking the thought back up"（STAGED）——occ127 候选，另有先于 2.1.270 已存在的 sandbox 按命令 `allowed_domains` 缺口；此前对齐至 2.1.270 经 OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125 落地）。代码全开放、可审计、无暗门，数据由你掌控。
+**Open C Code（OCC）** 是一个开源的编码智能体。能力与 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 对齐（当前跟踪 `2.1.278`：OCC-131 追齐轮（2026-09-20）落地了 2.1.277/2.1.278 的可移植子集（89 条 changelog 逐条 triage，26 个字节级验证的移植——重点：AGENTS.md `instructionFiles` 支持、`/status` "Auto mode server" 行、以及四项安全修复：sandbox `excludedCommands` 逐部分匹配、子代理交接来源标注、市场策略逐条 fail-closed 校验、不可见 Unicode 提示词剥离），完整收台账在 `docs/upstream-version-gap-occ131.md`；2.1.276 已完全对齐（经 OCC-90 的 advisor proxy-400 热修复 + OCC-130 的 2.1.275 可移植子集，含三项安全修复，见 `docs/upstream-version-gap-occ129.md`/`-occ130.md`）；2.1.271–2.1.275 部分对齐（OCC-130/OCC-129/OCC-127 等轮落地，各轮台账见对应 `docs/upstream-version-gap-occ*.md`）；2.1.270→2.1.272 增量中仍未落地：`/config` 全屏鼠标支持（PORTABLE-LARGE）与 spinner 状态文案阶梯 "deep in thought"/"picking the thought back up"（STAGED），另有先于 2.1.270 已存在的 sandbox 按命令 `allowed_domains` 缺口；此前对齐至 2.1.270 经 OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125 落地）。代码全开放、可审计、无暗门，数据由你掌控。
 
 如果你担心闭源 CLI 可能植入后门、担心代码与凭据被上传到不可审计的服务，OCC 就是为你准备的：全部源码开放、无混淆，构建产物可由源码复现，API 凭据只发往你自己配置的端点。
 
@@ -21,7 +21,7 @@
 
 ## 现状
 
-- 跟踪 Claude Code **`2.1.272`**（2.1.270 已完全对齐、2.1.271/2.1.272 部分对齐——OCC-126 追齐轮落地 Monitor 超时门翻转、`omitClaudeMd`、2.1.271 Bash 权限修复与 2.1.272 fast mode 修复，台账见 `docs/upstream-version-gap-occ126.md`；2.1.270→2.1.272 增量中仍未落地：`/config` 全屏鼠标支持（PORTABLE-LARGE）与 spinner 状态文案阶梯（STAGED），另有先于 2.1.270 已存在的 sandbox 按命令 `allowed_domains` 缺口；此前对齐至 2.1.270 经 OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125 落地）。
+- 跟踪 Claude Code **`2.1.278`**（2.1.277/2.1.278 部分对齐——OCC-131 追齐轮落地 26 个字节级验证的移植，含 AGENTS.md `instructionFiles` 支持、`/status` "Auto mode server" 行与四项安全修复，台账见 `docs/upstream-version-gap-occ131.md`；2.1.276 完全对齐（经 OCC-90 + OCC-130，见 `-occ129.md`/`-occ130.md`）；2.1.271–2.1.275 部分对齐（OCC-127/OCC-129/OCC-130 等轮，见对应台账）；2.1.270→2.1.272 增量中仍未落地：`/config` 全屏鼠标支持（PORTABLE-LARGE）与 spinner 状态文案阶梯（STAGED），另有先于 2.1.270 已存在的 sandbox 按命令 `allowed_domains` 缺口；此前对齐至 2.1.270 经 OCC-122/OCC-123/OCC-84/OCC-124/OCC-85/OCC-125 落地）。
 - 代码库有约 1300 个不阻塞的 `tsc` 类型错误（大量松散的 `unknown`/`never`/`{}` 类型），**不影响 Bun 运行时执行**。门槛是 Biome lint，不是 `tsc`。
 - 所有内部 feature flag（`feature(...)`）已被 polyfill 为 `false` —— 内部功能（COORDINATOR_MODE、KAIROS、PROACTIVE 等）全部关闭。
 - 已发布到 npm：[`@cnwenf/occ`](https://www.npmjs.com/package/@cnwenf/occ)。
@@ -80,7 +80,7 @@ Glob、Grep（默认启用）；TaskCreate/Get/Update/List（Todo v2）、EnterW
 
 ```bash
 bun install
-bun run dev          # 从源码运行；版本号显示 2.1.272（dev polyfill；build 用 pkg.version 覆盖）即正常
+bun run dev          # 从源码运行；版本号显示 2.1.278（dev polyfill；build 用 pkg.version 覆盖）即正常
 bun run build        # 产物：dist/cli.js（~26MB，5300+ 模块，单文件 bundle）
 bun test             # 测试套件
 bun run lint         # Biome lint（禁用格式化以避免大 diff）
