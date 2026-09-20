@@ -24,17 +24,15 @@ import { logForDiagnosticsNoPII } from '../../diagLogs.js'
 import { readFileSync } from '../../fileRead.js'
 import { getFsImplementation } from '../../fsOperations.js'
 import { safeParseJSON } from '../../json.js'
+import { clone } from '../../slowOperations.js'
 import { profileCheckpoint } from '../../startupProfiler.js'
 import {
   getManagedFilePath,
   getManagedSettingsDropInDir,
 } from '../managedPath.js'
+import { sanitizePolicySourceData } from '../policySourceSanitizer.js'
 import { type SettingsJson, SettingsSchema } from '../types.js'
-import {
-  filterInvalidPermissionRules,
-  formatZodError,
-  type ValidationError,
-} from '../validation.js'
+import { formatZodError, type ValidationError } from '../validation.js'
 import {
   WINDOWS_REGISTRY_KEY_PATH_HKCU,
   WINDOWS_REGISTRY_KEY_PATH_HKLM,
@@ -177,25 +175,36 @@ export async function refreshMdmSettings(): Promise<{
 
 /**
  * Parse JSON command output (plutil stdout or registry JSON value) into SettingsJson.
- * Filters invalid permission rules before schema validation so one bad rule
+ * Sanitizes every policy field before schema validation so one bad entry
  * doesn't cause the entire MDM settings to be rejected.
+ *
+ * OCC-132 P3-6 (CC 2.1.278): the official parses every policy source
+ * (remote / MDM / file / HKCU) through the same fail-closed sanitized schema
+ * (`If` → `Qn(...).safeParse`); previously OCC sanitized only the file path,
+ * so a malformed marketplace/allowlist entry in MDM or HKCU rejected the
+ * whole source → policySettings undefined → restrictions failed OPEN.
  */
 export function parseCommandOutputAsSettings(
   stdout: string,
   sourcePath: string,
 ): { settings: SettingsJson; errors: ValidationError[] } {
-  const data = safeParseJSON(stdout, false)
-  if (!data || typeof data !== 'object') {
+  const parsed = safeParseJSON(stdout, false)
+  if (!parsed || typeof parsed !== 'object') {
     return { settings: {}, errors: [] }
   }
+  // safeParseJSON memoizes parse results (LRU keyed by the raw string) and
+  // returns the SHARED cached object on a hit; the sanitizers mutate in
+  // place, so clone first (same rationale as parseSettingsFileUncached —
+  // the official `Qn` sanitized schema is non-mutating).
+  const data = clone(parsed)
 
-  const ruleWarnings = filterInvalidPermissionRules(data, sourcePath)
+  const sanitizeWarnings = sanitizePolicySourceData(data, sourcePath)
   const parseResult = SettingsSchema().safeParse(data)
   if (!parseResult.success) {
     const errors = formatZodError(parseResult.error, sourcePath)
-    return { settings: {}, errors: [...ruleWarnings, ...errors] }
+    return { settings: {}, errors: [...sanitizeWarnings, ...errors] }
   }
-  return { settings: parseResult.data, errors: ruleWarnings }
+  return { settings: parseResult.data, errors: sanitizeWarnings }
 }
 
 /**

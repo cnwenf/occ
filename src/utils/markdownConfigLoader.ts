@@ -289,6 +289,65 @@ export function getProjectDirsUpToHome(
 }
 
 /**
+ * Worktree fallback for project `.claude/<subdir>` discovery — port of the
+ * official `IMe(dirs, subdir, cwd)` (CC 2.1.278, byte-verified):
+ *
+ *   if(fo()!==null)return;let s=jn(r),g=Wr(r);if(!s||!g||g===s)return;
+ *   let h=Ap(tv(s,".claude",n));if(e.some(O=>Ap(O)===h))return;
+ *   let w=tv(g,".claude",n);if(!e.includes(w))e.push(w)
+ *
+ * For git worktrees where the worktree does NOT have `.claude/<subdir>`
+ * checked out (e.g. sparse-checkout, or untracked content that `git worktree
+ * add` never materialized), fall back to the main repository's copy.
+ * getProjectDirsUpToHome stops at the worktree root (where the `.git` file
+ * is), so it never sees the main repo on its own.
+ *
+ * Only adds the main repo's copy when the worktree root's `.claude/<subdir>`
+ * is absent from the discovered dirs. A standard `git worktree add` checks out
+ * the full tree, so the worktree already has identical `.claude/<subdir>`
+ * content — loading the main repo's copy too would duplicate every
+ * command/agent/skill (anthropics/claude-code#29599, #28182, #26992).
+ *
+ * Shared by the markdown loaders (commands/agents —
+ * loadMarkdownFilesForSubdir) and the skills loader (getSkillDirCommands):
+ * the official calls the same `IMe` from both `V2n` (markdown files) and
+ * `URo` (skills — `g=await eZ("skills",e);IMe(g,"skills",e)`).
+ *
+ * `projectDirs` already reflects existence (getProjectDirsUpToHome checked
+ * each dir), so we compare against that instead of stat'ing again. The main
+ * repo's dir is appended WITHOUT an existence check, matching the official
+ * (downstream loaders tolerate a missing dir).
+ *
+ * @returns a new array — the fallback dir appended when applicable, or the
+ * input array unchanged.
+ */
+export function addWorktreeMainRepoFallback(
+  projectDirs: string[],
+  subdir: ClaudeConfigDirectory,
+  cwd: string,
+): string[] {
+  const gitRoot = findGitRoot(cwd)
+  const canonicalRoot = findCanonicalGitRoot(cwd)
+  if (!gitRoot || !canonicalRoot || canonicalRoot === gitRoot) {
+    return projectDirs
+  }
+  const worktreeSubdir = normalizePathForComparison(
+    join(gitRoot, '.claude', subdir),
+  )
+  const worktreeHasSubdir = projectDirs.some(
+    dir => normalizePathForComparison(dir) === worktreeSubdir,
+  )
+  if (worktreeHasSubdir) {
+    return projectDirs
+  }
+  const mainClaudeSubdir = join(canonicalRoot, '.claude', subdir)
+  if (projectDirs.includes(mainClaudeSubdir)) {
+    return projectDirs
+  }
+  return [...projectDirs, mainClaudeSubdir]
+}
+
+/**
  * Loads markdown files from managed, user, and project directories
  * @param subdir Subdirectory (eg. "agents" or "commands")
  * @param cwd Current working directory for project directory traversal
@@ -302,37 +361,12 @@ export const loadMarkdownFilesForSubdir = memoize(
     const searchStartTime = Date.now()
     const userDir = join(getClaudeConfigHomeDir(), subdir)
     const managedDir = join(getManagedFilePath(), '.claude', subdir)
-    const projectDirs = getProjectDirsUpToHome(subdir, cwd)
-
-    // For git worktrees where the worktree does NOT have .claude/<subdir> checked
-    // out (e.g. sparse-checkout), fall back to the main repository's copy.
-    // getProjectDirsUpToHome stops at the worktree root (where the .git file is),
-    // so it never sees the main repo on its own.
-    //
-    // Only add the main repo's copy when the worktree root's .claude/<subdir>
-    // is absent. A standard `git worktree add` checks out the full tree, so the
-    // worktree already has identical .claude/<subdir> content — loading the main
-    // repo's copy too would duplicate every command/agent/skill
-    // (anthropics/claude-code#29599, #28182, #26992).
-    //
-    // projectDirs already reflects existence (getProjectDirsUpToHome checked
-    // each dir), so we compare against that instead of stat'ing again.
-    const gitRoot = findGitRoot(cwd)
-    const canonicalRoot = findCanonicalGitRoot(cwd)
-    if (gitRoot && canonicalRoot && canonicalRoot !== gitRoot) {
-      const worktreeSubdir = normalizePathForComparison(
-        join(gitRoot, '.claude', subdir),
-      )
-      const worktreeHasSubdir = projectDirs.some(
-        dir => normalizePathForComparison(dir) === worktreeSubdir,
-      )
-      if (!worktreeHasSubdir) {
-        const mainClaudeSubdir = join(canonicalRoot, '.claude', subdir)
-        if (!projectDirs.includes(mainClaudeSubdir)) {
-          projectDirs.push(mainClaudeSubdir)
-        }
-      }
-    }
+    // Worktree fallback (official `IMe`) — see addWorktreeMainRepoFallback.
+    const projectDirs = addWorktreeMainRepoFallback(
+      getProjectDirsUpToHome(subdir, cwd),
+      subdir,
+      cwd,
+    )
 
     const [managedFiles, userFiles, projectFilesNested] = await Promise.all([
       // Always load managed (policy settings)

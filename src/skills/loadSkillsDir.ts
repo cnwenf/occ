@@ -52,6 +52,7 @@ import { filterValidIgnorePatterns } from '../utils/globPatternValidation.js'
 import { isPathGitignored } from '../utils/git/gitignore.js'
 import { logError } from '../utils/log.js'
 import {
+  addWorktreeMainRepoFallback,
   extractDescriptionFromMarkdown,
   getProjectDirsUpToHome,
   loadMarkdownFilesForSubdir,
@@ -929,7 +930,16 @@ export const getSkillDirCommands = memoize(
   async (cwd: string): Promise<Command[]> => {
     const userSkillsDir = join(getClaudeConfigHomeDir(), 'skills')
     const managedSkillsDir = join(getManagedFilePath(), '.claude', 'skills')
-    const projectSkillsDirs = getProjectDirsUpToHome('skills', cwd)
+    // Official skills loader `URo` (CC 2.1.278, byte-verified):
+    //   g=await eZ("skills",e); IMe(g,"skills",e)
+    // — the project-dir walk PLUS the worktree main-repo fallback, so a
+    // worktree session without its own .claude/skills resolves the main
+    // repo's skills live at load time (no creation-time snapshot).
+    const projectSkillsDirs = addWorktreeMainRepoFallback(
+      getProjectDirsUpToHome('skills', cwd),
+      'skills',
+      cwd,
+    )
 
     logForDebugging(
       `Loading skills from: managed=${managedSkillsDir}, user=${userSkillsDir}, project=[${projectSkillsDirs.join(', ')}]`,

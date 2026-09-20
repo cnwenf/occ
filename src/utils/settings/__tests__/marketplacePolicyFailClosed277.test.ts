@@ -1,4 +1,4 @@
-import { describe, expect, mock, test } from 'bun:test'
+import { afterAll, describe, expect, mock, test } from 'bun:test'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -257,4 +257,12 @@ describe('2.1.277: enforcement after sanitization (C9)', () => {
 
     policySettingsOverride = null
   })
+})
+
+// E-9/P2: restore the module-level mock.module() so the shared-process
+// `npm test` run does not leak this settings fake into later test files. Bun's
+// mock.restore() does NOT undo mock.module — re-mock with the load-time real
+// snapshot (same pattern as diskOutputDrainGuard247.test.ts).
+afterAll(() => {
+  mock.module(realSettingsPath, () => ({ ...realSettingsSnapshot }))
 })

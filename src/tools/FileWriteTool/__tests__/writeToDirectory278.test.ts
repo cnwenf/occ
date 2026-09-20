@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process'
+import { rmSync } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -13,6 +14,21 @@ import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
 if (typeof globalThis.MACRO === 'undefined') {
   ;(globalThis as { MACRO?: unknown }).MACRO = { VERSION: 'test' }
 }
+
+// OCC-132 P3-8: detect mkfifo ONCE at module load so the FIFO test can use
+// test.skipIf — a visible, reported skip — instead of the previous silent
+// `catch { return }`, which passed with 0 assertions on hosts without mkfifo
+// (false-green). Inside the test itself mkfifo failures now fail loudly.
+const HAS_MKFIFO = (() => {
+  try {
+    const probe = join(tmpdir(), `occ-mkfifo-probe-${process.pid}`)
+    execFileSync('mkfifo', [probe], { stdio: 'pipe' })
+    rmSync(probe, { force: true })
+    return true
+  } catch {
+    return false
+  }
+})()
 
 // Mirror the FileEditTool staleReadRecovery.test.ts context shape: a default
 // permission mode with no deny rules, so validateInput reaches the fs.stat
@@ -97,28 +113,30 @@ describe('2.1.278 B2 — Write to a directory / non-regular file', () => {
     )
   })
 
-  test('non-regular file (FIFO) → errorCode 18 with the byte-exact message', async () => {
-    // Arrange
-    const fifo = join(tmpDir, 'pipe.fifo')
-    try {
+  // OCC-132 P3-8: explicit visible skip (skipIf) when mkfifo is unavailable —
+  // replaces the silent `catch { return }` false-green. When mkfifo IS
+  // available (HAS_MKFIFO true), any failure below fails the test loudly.
+  test.skipIf(!HAS_MKFIFO)(
+    'non-regular file (FIFO) → errorCode 18 with the byte-exact message',
+    async () => {
+      // Arrange
+      const fifo = join(tmpDir, 'pipe.fifo')
       execFileSync('mkfifo', [fifo])
-    } catch {
-      return // mkfifo unavailable on this platform — skip
-    }
 
-    // Act
-    const result = await FileWriteTool.validateInput(
-      { file_path: fifo, content: 'x' },
-      makeContext(),
-    )
+      // Act
+      const result = await FileWriteTool.validateInput(
+        { file_path: fifo, content: 'x' },
+        makeContext(),
+      )
 
-    // Assert
-    expect(result.result).toBe(false)
-    expect(result.errorCode).toBe(18)
-    expect(result.message).toBe(
-      `${fifo} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
-    )
-  })
+      // Assert
+      expect(result.result).toBe(false)
+      expect(result.errorCode).toBe(18)
+      expect(result.message).toBe(
+        `${fifo} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
+      )
+    },
+  )
 
   test('non-existent path still validates (ENOENT → result true, unchanged)', async () => {
     // Act

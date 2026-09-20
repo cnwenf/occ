@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { mkdtempSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -36,8 +36,11 @@ process.env.CLAUDE_CONFIG_DIR = TMP_CONFIG_DIR
 }
 
 // -- Mock leaf collaborators (spread-real keeps every other export intact) --
+// E-9/P2: snapshot real export values into plain objects BEFORE mocking —
+// `await import()` namespaces are live bindings that become the fake once
+// mock.module() installs (pattern: diskOutputDrainGuard247.test.ts).
 
-const realSettings = await import('../settings/settings.js')
+const realSettings = { ...(await import('../settings/settings.js')) }
 let currentSettings: { minimumVersion?: string } | null = null
 let currentPolicy: { requiredMaximumVersion?: string } | null = null
 mock.module('../settings/settings.js', () => ({
@@ -47,7 +50,7 @@ mock.module('../settings/settings.js', () => ({
     source === 'policySettings' ? currentPolicy : null,
 }))
 
-const realDebug = await import('../debug.js')
+const realDebug = { ...(await import('../debug.js')) }
 const debugLogs: string[] = []
 mock.module('../debug.js', () => ({
   ...realDebug,
@@ -56,7 +59,7 @@ mock.module('../debug.js', () => ({
   },
 }))
 
-const realExec = await import('../execFileNoThrow.js')
+const realExec = { ...(await import('../execFileNoThrow.js')) }
 let npmResult: { code: number; stdout: string; stderr: string } = {
   code: 0,
   stdout: '',
@@ -67,14 +70,15 @@ mock.module('../execFileNoThrow.js', () => ({
   execFileNoThrowWithCwd: async () => npmResult,
 }))
 
-const realAxios = await import('axios')
+const realAxios = { ...(await import('axios')) }
+const realAxiosDefault = { ...realAxios.default }
 let axiosResponder: (url: string) => { data: unknown } = () => {
   throw new Error('unexpected axios call')
 }
 mock.module('axios', () => ({
   ...realAxios,
   default: {
-    ...realAxios.default,
+    ...realAxiosDefault,
     get: async (url: string) => axiosResponder(url),
   },
 }))
@@ -252,4 +256,15 @@ describe('C3: GCS + homebrew lookup validation (Jcn/tt ports)', () => {
       '2.1.277',
     )
   })
+})
+
+// E-9/P2: restore every module-level mock.module() so the shared-process
+// `npm test` run does not leak these fakes into later test files. Bun's
+// mock.restore() does NOT undo mock.module — re-mock with the load-time real
+// snapshots (same pattern as diskOutputDrainGuard247.test.ts).
+afterAll(() => {
+  mock.module('../settings/settings.js', () => ({ ...realSettings }))
+  mock.module('../debug.js', () => ({ ...realDebug }))
+  mock.module('../execFileNoThrow.js', () => ({ ...realExec }))
+  mock.module('axios', () => ({ ...realAxios, default: realAxiosDefault }))
 })

@@ -1333,6 +1333,11 @@ export function resetGetMemoryFilesCache(
   hasLoggedAgentsMdMode = false
   hasLoggedAgentsMdLoad = false
   agentsMdNoticeRoot = undefined
+  // Also clear the last-notice/deprecation test-seam values so a reset does not
+  // leave a stale notice readable via getLastAgentsMdNotice()/…Deprecation()
+  // when the reload no longer satisfies the notice condition (OCC-132 P3-4).
+  lastAgentsMdNotice = undefined
+  lastAgentsMdDeprecation = undefined
   clearMemoryFileCaches()
 }
 

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 /**
  * CC 2.1.277 (A10): headless resume (`occ -p --resume <id>`) started cost
@@ -25,8 +25,11 @@ delete process.env.CLAUDE_CODE_USE_CCR_V2
 const SESSION_ID = '550e8400-e29b-41d4-a716-446655440000'
 
 // -- Mock leaf collaborators (spread-real keeps every other export intact) --
+// E-9/P2: snapshot real export values into plain objects BEFORE mocking —
+// `await import()` namespaces are live bindings that become the fake once
+// mock.module() installs (pattern: diskOutputDrainGuard247.test.ts).
 
-const realRecovery = await import('../../utils/conversationRecovery.js')
+const realRecovery = { ...(await import('../../utils/conversationRecovery.js')) }
 let resumeResult: {
   sessionId: string
   messages: unknown[]
@@ -37,14 +40,14 @@ mock.module('../../utils/conversationRecovery.js', () => ({
   loadConversationForResume: async () => resumeResult,
 }))
 
-const realSessionStorage = await import('../../utils/sessionStorage.js')
+const realSessionStorage = { ...(await import('../../utils/sessionStorage.js')) }
 mock.module('../../utils/sessionStorage.js', () => ({
   ...realSessionStorage,
   resetSessionFilePointer: async () => {},
   restoreSessionMetadata: () => {},
 }))
 
-const realSessionRestore = await import('../../utils/sessionRestore.js')
+const realSessionRestore = { ...(await import('../../utils/sessionRestore.js')) }
 mock.module('../../utils/sessionRestore.js', () => ({
   ...realSessionRestore,
   restoreSessionStateFromLog: () => {},
@@ -181,4 +184,18 @@ describe('A10: headless exit saves cost totals', () => {
     expect(restoreCostStateForSession(savedSessionId as string)).toBe(true)
     expect(getTotalCostUSD()).toBe(1.25)
   })
+})
+
+// E-9/P2: restore every module-level mock.module() so the shared-process
+// `npm test` run does not leak these fakes into later test files. Bun's
+// mock.restore() does NOT undo mock.module — re-mock with the load-time real
+// snapshots (same pattern as diskOutputDrainGuard247.test.ts).
+afterAll(() => {
+  mock.module('../../utils/conversationRecovery.js', () => ({
+    ...realRecovery,
+  }))
+  mock.module('../../utils/sessionStorage.js', () => ({
+    ...realSessionStorage,
+  }))
+  mock.module('../../utils/sessionRestore.js', () => ({ ...realSessionRestore }))
 })
