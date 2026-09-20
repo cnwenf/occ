@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
 /**
  * CC 2.1.277 (C4): `claude update` on winget/apk reported "Claude is up to
@@ -24,8 +24,12 @@ process.env.NODE_ENV = 'test'
 }
 
 // -- Mock leaf collaborators (spread-real keeps every other export intact) --
+// E-9/P2: `await import()` namespaces are LIVE bindings — once mock.module()
+// installs a fake, `realX.foo` IS the fake. Snapshot the real export values
+// into plain objects BEFORE mocking so both the factory and the afterAll
+// restore spread genuine real values (pattern: diskOutputDrainGuard247.test.ts).
 
-const realDiagnostic = await import('../../utils/doctorDiagnostic.js')
+const realDiagnostic = { ...(await import('../../utils/doctorDiagnostic.js')) }
 mock.module('../../utils/doctorDiagnostic.js', () => ({
   ...realDiagnostic,
   getDoctorDiagnostic: async () => ({
@@ -36,7 +40,9 @@ mock.module('../../utils/doctorDiagnostic.js', () => ({
   }),
 }))
 
-const realPm = await import('../../utils/nativeInstaller/packageManagers.js')
+const realPm = {
+  ...(await import('../../utils/nativeInstaller/packageManagers.js')),
+}
 let currentPm: string = 'winget'
 mock.module('../../utils/nativeInstaller/packageManagers.js', () => ({
   ...realPm,
@@ -44,7 +50,7 @@ mock.module('../../utils/nativeInstaller/packageManagers.js', () => ({
   getHomebrewCaskName: () => 'claude-code',
 }))
 
-const realUpdater = await import('../../utils/autoUpdater.js')
+const realUpdater = { ...(await import('../../utils/autoUpdater.js')) }
 let npmLookup: string | null = null
 let gcsLookup: string | null = null
 let caskLookup: string | null = null
@@ -55,7 +61,7 @@ mock.module('../../utils/autoUpdater.js', () => ({
   getLatestVersionFromHomebrewCask: async () => caskLookup,
 }))
 
-const realShutdown = await import('../../utils/gracefulShutdown.js')
+const realShutdown = { ...(await import('../../utils/gracefulShutdown.js')) }
 const SHUTDOWN_SENTINEL = Symbol('shutdown')
 mock.module('../../utils/gracefulShutdown.js', () => ({
   ...realShutdown,
@@ -64,7 +70,7 @@ mock.module('../../utils/gracefulShutdown.js', () => ({
   },
 }))
 
-const realProcessUtils = await import('../../utils/process.js')
+const realProcessUtils = { ...(await import('../../utils/process.js')) }
 let stdoutChunks: string[] = []
 mock.module('../../utils/process.js', () => ({
   ...realProcessUtils,
@@ -73,13 +79,15 @@ mock.module('../../utils/process.js', () => ({
   },
 }))
 
-const realSettings = await import('../../utils/settings/settings.js')
+const realSettings = {
+  ...(await import('../../utils/settings/settings.js')),
+}
 mock.module('../../utils/settings/settings.js', () => ({
   ...realSettings,
   getInitialSettings: () => ({ autoUpdatesChannel: 'latest' }),
 }))
 
-const realDebug = await import('../../utils/debug.js')
+const realDebug = { ...(await import('../../utils/debug.js')) }
 mock.module('../../utils/debug.js', () => ({
   ...realDebug,
   logForDebugging: () => {},
@@ -187,4 +195,20 @@ describe('C4: homebrew update path distinguishes null lookup from up-to-date', (
     expect(out).toContain('Update available: 2.1.276 → 99.0.0')
     expect(out).not.toContain('Could not check for updates')
   })
+})
+
+// E-9/P2: restore every module-level mock.module() so the shared-process
+// `npm test` run does not leak these fakes into later test files. Bun's
+// mock.restore() does NOT undo mock.module — re-mock with the load-time real
+// snapshots (same pattern as diskOutputDrainGuard247.test.ts).
+afterAll(() => {
+  mock.module('../../utils/doctorDiagnostic.js', () => ({ ...realDiagnostic }))
+  mock.module('../../utils/nativeInstaller/packageManagers.js', () => ({
+    ...realPm,
+  }))
+  mock.module('../../utils/autoUpdater.js', () => ({ ...realUpdater }))
+  mock.module('../../utils/gracefulShutdown.js', () => ({ ...realShutdown }))
+  mock.module('../../utils/process.js', () => ({ ...realProcessUtils }))
+  mock.module('../../utils/settings/settings.js', () => ({ ...realSettings }))
+  mock.module('../../utils/debug.js', () => ({ ...realDebug }))
 })

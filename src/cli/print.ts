@@ -503,6 +503,25 @@ export async function runHeadless(
     setSDKStatus?: (status: SDKStatus) => void
   },
 ): Promise<void> {
+  // 2.1.277 (A10): persist headless session cost/usage totals at exit. The
+  // official registers the print-lane cost-state recorder at startup (gated
+  // on session persistence), so `occ -p` totals can be restored on a later
+  // resume. OCC's equivalent mechanism is the project-config save the
+  // interactive REPL performs via useCostSummary's exit hook (costHook.ts).
+  //
+  // OCC-132 P3-5: registered FIRST, before any early-exit path below. The
+  // official headless lane never hard-exits before this recorder is installed
+  // (byte-verified 2.1.245–2.1.278: CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER is
+  // read only in the interactive setup/prefetch/fullscreen gates, never in
+  // runHeadless). `process.exit()` runs 'exit' listeners synchronously, so
+  // installing the recorder up front guarantees the cost-save invariant holds
+  // no matter which exit path the headless lane later takes.
+  registerHeadlessCostSaveOnExit()
+
+  // Vestigial startup-benchmark affordance (USER_TYPE==='ant'): the official
+  // headless lane no longer hard-exits here — kept for parity with OCC's
+  // interactive useAfterFirstRender hook. Safe now that the cost-save 'exit'
+  // recorder above is already installed (see OCC-132 P3-5).
   if (
     process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER)
@@ -513,13 +532,6 @@ export async function runHeadless(
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   }
-
-  // 2.1.277 (A10): persist headless session cost/usage totals at exit. The
-  // official registers the print-lane cost-state recorder at startup (gated
-  // on session persistence), so `occ -p` totals can be restored on a later
-  // resume. OCC's equivalent mechanism is the project-config save the
-  // interactive REPL performs via useCostSummary's exit hook (costHook.ts).
-  registerHeadlessCostSaveOnExit()
 
   // K3 (ultracode): the headless / pipe (-p) / SDK path bypasses
   // processTextPrompt (the interactive-REPL keyword trigger), so detect the

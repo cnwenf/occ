@@ -50,11 +50,9 @@ import {
   setCachedSettingsForSource,
   setSessionSettingsCache,
 } from './settingsCache.js'
-import { sanitizeMarketplacePolicy } from './marketplacePolicySanitizer.js'
-import { sanitizeSecurityAllowlists } from './sanitizeAllowlists.js'
+import { sanitizePolicySourceData } from './policySourceSanitizer.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
-  filterInvalidPermissionRules,
   formatZodError,
   type SettingsWithErrors,
   type ValidationError,
@@ -256,29 +254,26 @@ function parseSettingsFileUncached(path: string): {
       return { settings: {}, errors: [] }
     }
 
-    const data = safeParseJSON(content, false)
+    const parsed = safeParseJSON(content, false)
+    // safeParseJSON memoizes parse results (LRU keyed by the raw string) and
+    // returns the SHARED cached object on a hit. The sanitizers below mutate
+    // in place, so clone first: otherwise a re-parse of identical content
+    // would find the cache entry already sanitized (warnings silently lost)
+    // and other safeParseJSON consumers would observe the mutation. The
+    // official sanitized schema (`Qn(...).safeParse`) is non-mutating and
+    // re-derives warnings on every parse — cloning reproduces that contract.
+    const data =
+      parsed && typeof parsed === 'object' ? clone(parsed) : parsed
 
-    // Filter invalid permission rules before schema validation so one bad
-    // rule doesn't cause the entire settings file to be rejected.
-    const ruleWarnings = filterInvalidPermissionRules(data, path)
-
-    // CC 2.1.267 (#12, Gap-121a): security allowlists (allowedHttpHookUrls,
-    // httpHookAllowedEnvVars, allowedChannelPlugins) are sanitized per-entry
-    // before schema validation so an invalid entry can no longer reject the
-    // whole file — which for managed policy meant fail-OPEN (allowlist
-    // undefined = unrestricted). Invalid input now fails CLOSED to an empty
-    // (deny-all) allowlist with warnings. See sanitizeAllowlists.ts.
-    const allowlistWarnings = sanitizeSecurityAllowlists(data, path)
-
-    // CC 2.1.277 (report_C C9): marketplace policy arrays
-    // (strictKnownMarketplaces / blockedMarketplaces) are sanitized per-entry
-    // before schema validation. Previously one malformed entry failed the
-    // whole policy file → the file was dropped → enterprise marketplace
-    // restrictions silently became UNSET (fail-OPEN). Invalid entries are now
-    // dropped with warnings while the valid ones keep enforcing; a
-    // present-but-invalid strictKnownMarketplaces fails CLOSED to an empty
-    // allowlist. See marketplacePolicySanitizer.ts.
-    const marketplacePolicyWarnings = sanitizeMarketplacePolicy(data, path)
+    // Sanitize invalid permission rules, security allowlists (CC 2.1.267
+    // #12 / Gap-121a), and marketplace policy arrays (CC 2.1.277 report_C
+    // C9) per-entry before schema validation, so one bad entry can no
+    // longer reject the whole file — which for a managed policy file meant
+    // fail-OPEN (restrictions undefined = unrestricted). Invalid input now
+    // fails CLOSED with warnings while valid entries keep enforcing.
+    // Shared with the remote/MDM/HKCU policy paths via the same helper
+    // (OCC-132 P3-6); see policySourceSanitizer.ts.
+    const sanitizeWarnings = sanitizePolicySourceData(data, path)
 
     const result = SettingsSchema().safeParse(data)
 
@@ -286,22 +281,13 @@ function parseSettingsFileUncached(path: string): {
       const errors = formatZodError(result.error, path)
       return {
         settings: null,
-        errors: [
-          ...ruleWarnings,
-          ...allowlistWarnings,
-          ...marketplacePolicyWarnings,
-          ...errors,
-        ],
+        errors: [...sanitizeWarnings, ...errors],
       }
     }
 
     return {
       settings: result.data,
-      errors: [
-        ...ruleWarnings,
-        ...allowlistWarnings,
-        ...marketplacePolicyWarnings,
-      ],
+      errors: sanitizeWarnings,
     }
   } catch (error) {
     handleFileSystemError(error, path)
@@ -408,8 +394,16 @@ function getSettingsForSourceUncached(
 ): SettingsJson | null {
   // For policySettings: first source wins (remote > HKLM/plist > file > HKCU)
   if (source === 'policySettings') {
-    const remoteSettings = getRemoteManagedSettingsSyncFromCache()
-    if (remoteSettings && Object.keys(remoteSettings).length > 0) {
+    const cachedRemote = getRemoteManagedSettingsSyncFromCache()
+    if (cachedRemote && Object.keys(cachedRemote).length > 0) {
+      // OCC-132 P3-6: return the same sanitized view as loadSettingsFromDisk
+      // — the official per-source accessor (`ge("policySettings")`) reads the
+      // PARSED policy store (`If` → `Qn(...).safeParse`), never raw source
+      // JSON, so a malformed marketplace/allowlist entry can never reach
+      // enforcement readers (getStrictKnownMarketplaces etc.). Clone first:
+      // the sanitizers mutate in place and the cache object is shared.
+      const remoteSettings = clone(cachedRemote)
+      sanitizePolicySourceData(remoteSettings, 'remote managed settings')
       return remoteSettings
     }
 
@@ -767,14 +761,26 @@ function loadSettingsFromDisk(): SettingsWithErrors {
         const policyErrors: ValidationError[] = []
 
         // 1. Remote (highest priority)
-        const remoteSettings = getRemoteManagedSettingsSyncFromCache()
-        if (remoteSettings && Object.keys(remoteSettings).length > 0) {
+        const cachedRemote = getRemoteManagedSettingsSyncFromCache()
+        if (cachedRemote && Object.keys(cachedRemote).length > 0) {
+          // OCC-132 P3-6 (CC 2.1.278): the official sanitizes EVERY policy
+          // source (remote included) through the fail-closed `Qn` schema —
+          // one malformed marketplace/allowlist entry must not reject the
+          // whole remote policy (which failed the restrictions OPEN). Clone
+          // first: the sanitizers mutate in place and the cache is shared.
+          const remoteSettings = clone(cachedRemote)
+          const remoteWarnings = sanitizePolicySourceData(
+            remoteSettings,
+            'remote managed settings',
+          )
           const result = SettingsSchema().safeParse(remoteSettings)
           if (result.success) {
             policySettings = result.data
+            policyErrors.push(...remoteWarnings)
           } else {
             // Remote exists but is invalid — surface errors even as we fall through
             policyErrors.push(
+              ...remoteWarnings,
               ...formatZodError(result.error, 'remote managed settings'),
             )
           }
