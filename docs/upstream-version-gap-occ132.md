@@ -70,3 +70,22 @@ Production code changed this round (policy fail-closed hardening #6, worktree fa
 
 Production: `src/cli/print.ts`, `src/services/mcp/claudeai.ts`, `src/utils/worktree.ts`, `src/utils/claudemd.ts`, `src/utils/markdownConfigLoader.ts`, `src/skills/loadSkillsDir.ts`, `src/utils/settings/settings.ts`, `src/utils/settings/mdm/settings.ts`, **new** `src/utils/settings/policySourceSanitizer.ts`.
 Tests: `headlessCostRestore277`, `updateNullLookup277`, `updateSemverGuards277`, `marketplacePolicyFailClosed277`, `subagentHandback`, `writeToDirectory278` (all modified); **new** `skillsWorktreeFallback278`, `policySourceSanitize278`; **deleted** `worktreeUntrackedSkills278` (snapshot mechanism removed per #3).
+
+## 7. Next-round carryover — OCC-132 acceptance review non-blocking findings (验收员 2026-09-21, APPROVED_WITH_RISK; 0 P0/P1)
+
+Recorded per the release instruction (step 7: 记入下轮台账). All items are non-blocking; none affects the shipped behavior's correctness against the official binary.
+
+**P2:**
+
+1. **`src/utils/settings/policySourceSanitizer.ts:23` doc overclaims coverage.** The doc comment implies full-source sanitization, but only 3 field families are sanitized per-entry (permission rules, `allowedHttpHookUrls`, marketplace strict/blocked arrays). Uncovered `SettingsJson` fields (e.g. `extraKnownMarketplaces`) still reject the WHOLE source at `settings.ts:278/781` and `mdm/settings.ts:202` — a divergence from the official per-field `.catch()` breadth. Also: the real remote-raw attack vector is the `syncCacheState` disk-cache fallback path, not the sanitized remote-cache read. Fix next round: truthful doc rewrite (cheap) or extend per-field `.catch()`-equivalent handling to the remaining `SettingsJson` fields (full official `Qn` breadth).
+2. **`src/cli/print.ts:519` cost-save ordering lacks a live-path test.** The reorder is guarded by static/unit tests only; no test drives the real `runHeadless` ant + `CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER` hard-exit path to prove the exit listener fires and cost totals are saved. Fix next round: an e2e/unit that sets `USER_TYPE=ant` + the env flag and asserts the cost-save file write on `process.exit(0)`.
+
+**P3 (×7):**
+
+1. `settings.ts:406` — the forced-read path drops sanitize warnings silently (warnings collected but not surfaced on this branch).
+2. `policySourceSanitize278.test.ts:166` — the `?unmocked` query-string cache-bust couples the test to the sibling mock registry's module resolution; brittle if bun's mock internals change.
+3. `loadSkillsDir.ts:936` — the worktree-fallback result is module-level memoized; can go stale across in-session worktree switches / resume (official resolves per-load).
+4. `print.ts` — the ant fast-exit path (`process.exit(0)` after first render) overwrites accumulated cost totals with first-render-only values in the saved state (ordering fixed this round; the totals-accuracy half remains).
+5. `policySourceSanitizer.ts:40` — policy strings are not CRLF-stripped before interpolation into warning messages → log-injection vector (CWE-117) for crafted policy values.
+6. `claudemd.ts:1339` — the agents-MD seam reset lines (`lastAgentsMdNotice`/`lastAgentsMdDeprecation` clearing) have no assertion; mutation-deletable without any test failing.
+7. `settings.ts:266` — the file-path clone-before-sanitize has no re-parse test proving the shared `safeParseJSON` cache object stays unmutated and warnings re-emit on second parse (remote path has one).
