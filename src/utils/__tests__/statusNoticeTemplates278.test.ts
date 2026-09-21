@@ -73,6 +73,10 @@
 
 import { afterAll, expect, test } from 'bun:test'
 import type * as React from 'react'
+import { getMemoryCharThreshold, type MemoryFileInfo } from '../claudemd.js'
+import { getContextWindowForModel } from '../context.js'
+import { formatNumber } from '../format.js'
+import { getMainLoopModel } from '../model/model.js'
 import { statusNoticeDefinitions } from '../statusNoticeDefinitions.js'
 
 const PREV_ENV: Record<string, string | undefined> = {
@@ -271,4 +275,101 @@ test('large-agent-descriptions uses the official template: Agent descriptions ar
   expect(text).toContain(' tokens)')
   expect(text).toContain(' · ask Claude to trim agent descriptions in .claude/agents/')
   expect(text).not.toContain('/agents to manage')
+})
+
+// ---------------------------------------------------------------------------
+// large-memory-files (official n9t, threshold = getMemoryCharThreshold(
+// getContextWindowForModel(getMainLoopModel())))
+// ---------------------------------------------------------------------------
+
+const N9T_PATH = '/outside-cwd-gap133n9t/CLAUDE.md'
+
+/**
+ * Renders the large-memory-files notice with one seeded file whose content
+ * length sits `delta` chars over the LIVE threshold (same computation the
+ * notice itself performs). The path is outside getCwd() so displayPath stays
+ * the absolute path (n9t: `file.path.startsWith(getCwd()) ? relative(…) :
+ * file.path` — no relativization branch here, deterministic across machines).
+ */
+function renderLargeMemoryNotice(delta = 5): {
+  tree: React.ReactNode
+  threshold: number
+  file: MemoryFileInfo
+} {
+  const threshold = getMemoryCharThreshold(
+    getContextWindowForModel(getMainLoopModel()),
+  )
+  const file: MemoryFileInfo = {
+    path: N9T_PATH,
+    type: 'Project',
+    content: 'x'.repeat(threshold + delta),
+  }
+  const notice = statusNoticeDefinitions.find(
+    n => n.id === 'large-memory-files',
+  )
+  expect(notice).toBeDefined()
+  const ctx = { config: {} as never, memoryFiles: [file] }
+  expect(notice!.isActive(ctx)).toBe(true)
+  return { tree: notice!.render(ctx as never), threshold, file }
+}
+
+test('large-memory-files renders the official 2.1.278 n9t template byte-for-byte: <path> is over the <T>-char limit (<N> chars) · /memory to free up context', () => {
+  const { tree, threshold, file } = renderLargeMemoryNotice()
+  // Exact whole-line equality (not toContain): collectText walks the NoticeLine
+  // children only — the icon lives inside NoticeLine's own render, so the
+  // concatenated text is precisely the official template
+  //   {displayPath} is over the {ws(threshold)}-char limit ({ws(len)} chars)
+  //   · /memory to free up context
+  // with the JSX-collapsed single spaces shown here.
+  expect(collectText(tree)).toBe(
+    `${file.path} is over the ${formatNumber(threshold)}-char limit (${formatNumber(file.content.length)} chars) · /memory to free up context`,
+  )
+})
+
+test('large-memory-files uses the official Jm NoticeLine structure (width=2 flexShrink=0 icon cell + flexGrow text cell + warning status) with bold path and dimColor tail', () => {
+  const { tree } = renderLargeMemoryNotice()
+  expect(hasElementWithProps(tree, { width: 2, flexShrink: 0 })).toBe(true)
+  expect(hasElementWithProps(tree, { flexGrow: 1, flexShrink: 1 })).toBe(true)
+  expect(hasElementWithProps(tree, { status: 'warning' })).toBe(true)
+  // n9t: <Text bold>{displayPath}</Text>
+  const pathLeaves = leafTextElements(tree, N9T_PATH)
+  expect(pathLeaves.length).toBeGreaterThanOrEqual(1)
+  expect(pathLeaves.some(el => el.props?.bold === true)).toBe(true)
+  // n9t: <Text dimColor> · /memory to free up context</Text>
+  // Dedupe by identity: collectElements walks NoticeLine's children twice —
+  // once on the element itself and once through the expanded render output —
+  // so the same Text element instance is visited from both paths.
+  const tails = [...new Set(leafTextElements(tree, '/memory to free up context'))]
+  expect(tails.length).toBe(1)
+  expect(tails[0]!.props?.dimColor).toBe(true)
+})
+
+test('large-memory-files stale pre-2.1.278 framing is gone ("Large … will impact performance (N chars > T) · /memory to edit" — zero official-binary hits)', () => {
+  const text = collectText(renderLargeMemoryNotice().tree)
+  expect(text).not.toContain('will impact performance')
+  expect(text).not.toContain('Large ')
+  expect(text).not.toContain('chars >')
+  expect(text).not.toContain('/memory to edit')
+})
+
+test('large-memory-files stays silent at exactly the threshold (getLargeMemoryFiles filters content.length > threshold, strict)', () => {
+  const threshold = getMemoryCharThreshold(
+    getContextWindowForModel(getMainLoopModel()),
+  )
+  const notice = statusNoticeDefinitions.find(
+    n => n.id === 'large-memory-files',
+  )
+  expect(notice).toBeDefined()
+  const ctx = {
+    config: {} as never,
+    memoryFiles: [
+      {
+        path: N9T_PATH,
+        type: 'Project' as const,
+        content: 'x'.repeat(threshold),
+      },
+    ],
+  }
+  expect(notice!.isActive(ctx as never)).toBe(false)
+  expect(collectText(notice!.render(ctx as never))).toBe('')
 })

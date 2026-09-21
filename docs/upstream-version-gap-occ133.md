@@ -143,7 +143,9 @@ A parallel OCC-93 run landed the occ132 §7 carryover cleanup and released **v2.
 - `src/components/design-system/StatusIcon.tsx` — exported `getStatusColor` (the `yIt[status].color` lookup `Jm` uses).
 - `jetbrainsPluginNotice` NOT changed — its official counterpart was not dumped/verified this round (staged §12).
 
-**Tests**: `src/utils/__tests__/statusNoticeTemplates278.test.ts` (new, replaces the deleted `bothAuthMethodsNotice278.test.ts` whose scope it fully subsumes): 9 tests / 39 expects — official template text for all 5 notices, stale-framing-absent assertions, `paddingLeft=2` bullet box, dimColor bullets, `Jm` structure (width:2 flexShrink:0 + flexGrow:1 flexShrink:1). RED 6-fail → GREEN 9-pass verified.
+**Tests**: `src/utils/__tests__/statusNoticeTemplates278.test.ts` (new): 13 tests / 60 runtime `expect()` calls — official template text for all 5 notices (incl. the byte-level large-memory-files `n9t` template `{path} is over the {T}-char limit ({N} chars) · /memory to free up context` with bold path + dimColor tail + strict-threshold silence), stale-framing-absent assertions, `paddingLeft=2` bullet box, dimColor bullets, `Jm` structure (width:2 flexShrink:0 + flexGrow:1 flexShrink:1). Counts are `bun test` runtime `expect()` calls — shared helpers re-execute per invocation, so static grep of `expect(` is lower. RED 6-fail → GREEN verified. Plus `src/components/__tests__/statusNoticesContainer278.test.tsx` (new): 1 test / 4 expects — render-level regression for the official `t4=0` container (bare `<Box flexDirection="column">`, no paddingLeft) through the real Ink reconciler; mutation-verified RED at `paddingLeft=1`.
+
+> **Correction (acceptance review, this issue)**: an earlier revision of this section claimed the suite "replaces the deleted `bothAuthMethodsNotice278.test.ts`". That claim was false — `bothAuthMethodsNotice278.test.ts` never existed in any commit of this repository (verified: zero hits across full git history). It was an uncommitted working-tree draft from an earlier session, superseded by `statusNoticeTemplates278.test.ts` during development; no deletion ever occurred and the false wording propagated into the round's security review report. The claim is removed here and in CHANGELOG.md; this note is the ledger correction so downstream readers of that report see it.
 
 **Live side-by-side evidence** (tmux, same project dir `/tmp/accept133/proj-big` with a 93,637-char CLAUDE.md, both `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_API_KEY` set, official 2.1.278 ELF vs OCC dist, same live gateway): post-fix renders are **pixel-identical** —
 
@@ -170,7 +172,7 @@ A parallel OCC-93 run landed the occ132 §7 carryover cleanup and released **v2.
 | `USER_TYPE=ant` startup | **GAP FOUND → FIXED** (Gap-133a, §9) |
 | e2e A/B suite | 6 failures — **all pre-existing on v2.1.345** (git-stash A/B proven); identical to the §3 known environment-drift baseline |
 
-Batch-mode note: `bun test src/utils` (shared process) shows 48 failures **identically with and without this round's diff** (git-stash A/B: 2046 tests clean vs 2055 with diff — same 48, all in unrelated files: bedrock strings, registerMainThreadAgentHooks, cacheMarketplaceFromGit, MCP needsAuth, stripInvisibleText). This is the documented P3-2 mock.module contamination (§2/§7.5); per-file `scripts/ci-test.sh` isolation remains the authoritative gate. Changed-file trio green in isolation: `statusNoticeTemplates278` (9) + `antModelGlobalsPolyfill278` (1) + `antFastExitCostSave277` (1) = 11 pass / 53 expect. Biome lint clean on all touched files.
+Batch-mode note: `bun test src/utils` (shared process) shows 48 failures **identically with and without this round's diff** (git-stash A/B: 2046 tests clean vs 2055 with diff — same 48, all in unrelated files: bedrock strings, registerMainThreadAgentHooks, cacheMarketplaceFromGit, MCP needsAuth, stripInvisibleText). This is the documented P3-2 mock.module contamination (§2/§7.5); per-file `scripts/ci-test.sh` isolation remains the authoritative gate. Changed-file set green in isolation (post-review re-count, runtime `expect()` calls): `statusNoticeTemplates278` (13) + `statusNoticesContainer278` (1) + `antModelGlobalsPolyfill278` (1) + `antFastExitCostSave277` (1) = 16 pass / 79 expect. Biome lint clean on all touched files.
 
 ## §12 Staged / ledger additions (OCC-133)
 
@@ -184,18 +186,20 @@ Batch-mode note: `bun test src/utils` (shared process) shows 48 failures **ident
 ## §13 Files touched (OCC-133 delta, on top of `9662d3f`)
 
 ```
-M src/entrypoints/cli.tsx                        (Gap-133a ant-globals install)
+M src/entrypoints/cli.tsx                        (Gap-133a ant-globals install; comment corrected post-review — the antModels module is in the single-file bundle regardless via yoloClassifier.ts's static import; the USER_TYPE-gated dynamic import defers module EVALUATION, not inclusion)
 M src/types/global.d.ts                          (Gap-133a truthful header)
 M src/utils/statusNoticeDefinitions.tsx          (Gap-133b: NoticeLine + Sne + 5 templates)
 M src/components/StatusNotices.tsx               (Gap-133b: container paddingLeft 1→0)
 M src/components/design-system/StatusIcon.tsx    (Gap-133b: getStatusColor export)
-A src/utils/__tests__/statusNoticeTemplates278.test.ts   (9 tests, replaces bothAuthMethodsNotice278)
-D src/utils/__tests__/bothAuthMethodsNotice278.test.ts   (subsumed)
-A src/cli/__tests__/antModelGlobalsPolyfill278.test.ts   (Gap-133a live-path regression)
+A src/utils/__tests__/statusNoticeTemplates278.test.ts   (13 tests / 60 runtime expects, incl. byte-level n9t)
+A src/components/__tests__/statusNoticesContainer278.test.tsx (render-level t4=0 container regression, 1 test / 4 expects)
+A src/cli/__tests__/antModelGlobalsPolyfill278.test.ts   (Gap-133a live-path regression, 1 test / 7 expects; spawn('bun') 'error' listener added post-review)
 M CHANGELOG.md                                   (2.1.347 entry)
 M package.json                                   (2.1.346 → 2.1.347)
-M docs/upstream-version-gap-occ133.md            (this extension)
+M docs/upstream-version-gap-occ133.md            (this extension + post-review corrections)
 ```
+
+> **Correction (acceptance review)**: an earlier revision of this list carried a line `D src/utils/__tests__/bothAuthMethodsNotice278.test.ts (subsumed)`. No such deletion exists — that file never existed in any commit of this repository (zero hits across full git history); it was an uncommitted working-tree draft superseded during development. The false "replaces the deleted file" wording also appeared in §10 and in the round's security review report; the §10 correction note above is the ledger record.
 
 Security review (diff-level): all changes are UI-template alignment, a startup-global install gated on `USER_TYPE=ant`, and tests. No network egress, no eval, no secrets, no permission-surface changes. The ant-models module was already in-tree and already reachable via the driver path; the fix changes *when* its globals are installed, not *what* it does.
 
