@@ -1,4 +1,7 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { SettingsJson } from '../types.js'
 
 /**
@@ -196,6 +199,46 @@ describe('2.1.278: remote policy cache is sanitized on read (P3-6)', () => {
     // Assert — clone-before-sanitize: the cached object is untouched, so
     // other consumers (and the next cache generation) see pristine data.
     expect(rawRemote.blockedMarketplaces).toEqual(['garbage', OTHER_GITHUB])
+  })
+})
+
+describe('2.1.278: file path clones before sanitize (OCC-132 §7 P3-7)', () => {
+  test('re-parsing identical file content re-emits identical warnings and leaves the shared safeParseJSON cache object unmutated', async () => {
+    const { parseSettingsFile } = await import('../settings.js?unmocked')
+    const { safeParseJSON } = await import('../../json.js')
+    // Arrange — a real policy file with one malformed marketplace entry.
+    const dir = mkdtempSync(join(tmpdir(), 'occ-policy-file-clone'))
+    const file = join(dir, 'managed-settings.json')
+    const content = JSON.stringify({
+      blockedMarketplaces: ['garbage-entry', OTHER_GITHUB],
+    })
+    writeFileSync(file, content)
+    try {
+      // Act — parse twice. resetSettingsCache() between the calls drops the
+      // path-keyed parse cache, so the second call re-enters
+      // parseSettingsFileUncached and hits the SHARED safeParseJSON LRU
+      // entry (same raw content string) — exactly the cache-hit path the
+      // clone at settings.ts (~line 266) protects.
+      const first = parseSettingsFile(file)
+      resetSettingsCache()
+      const second = parseSettingsFile(file)
+
+      // Assert — identical warnings re-emit on the second parse (without
+      // clone-before-sanitize the shared cached object would already be
+      // sanitized and the second parse would silently report zero).
+      expect(first.errors).toHaveLength(1)
+      expect(second.errors).toEqual(first.errors)
+      expect(second.settings?.blockedMarketplaces).toEqual([OTHER_GITHUB])
+      // ...and the shared cached parse object itself is NOT left mutated.
+      const shared = safeParseJSON(content, false) as Record<string, unknown>
+      expect(shared.blockedMarketplaces).toEqual([
+        'garbage-entry',
+        OTHER_GITHUB,
+      ])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+      resetSettingsCache()
+    }
   })
 })
 

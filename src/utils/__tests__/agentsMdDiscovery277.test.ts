@@ -207,3 +207,40 @@ describe('CC 2.1.277 agents-md — discovery via getMemoryFiles()', () => {
     expect(projectOwnPaths(files)).not.toContain(join(tmpDir, 'AGENTS.md'))
   })
 })
+
+/**
+ * OCC-132 P3-6 (docs/upstream-version-gap-occ132.md §7): resetGetMemoryFilesCache()
+ * clears the agents-md test-seam values (claudemd.ts:1339-1340), but no test
+ * asserted it — the two clearing lines were mutation-deletable. These seed a
+ * real notice / deprecation through getMemoryFiles(), reset, and assert both
+ * seams read back undefined. Deleting either clearing line fails the matching
+ * test below.
+ */
+describe('OCC-132 P3-6: resetGetMemoryFilesCache clears the agents-md seams', () => {
+  test('reset clears the last AGENTS.md notice seam', async () => {
+    // Seed: AGENTS.md-only fixture → getMemoryFiles() sets lastAgentsMdNotice.
+    await writeFile(join(tmpDir, 'AGENTS.md'), '# Agents instructions\n')
+    await getMemoryFiles()
+    expect(getLastAgentsMdNotice()).toBe(
+      `no CLAUDE.md found; AGENTS.md loaded: ${join(tmpDir, 'AGENTS.md')}`,
+    )
+
+    resetGetMemoryFilesCache()
+
+    expect(getLastAgentsMdNotice()).toBeUndefined()
+  })
+
+  test('reset clears the projectInstructions deprecation seam', async () => {
+    // Seed: legacy projectInstructions 'both' → getMemoryFiles() sets
+    // lastAgentsMdDeprecation.
+    mockProjectInstructions = 'both'
+    await writeFile(join(tmpDir, 'CLAUDE.md'), '# Claude instructions\n')
+    await writeFile(join(tmpDir, 'AGENTS.md'), '# Agents instructions\n')
+    await getMemoryFiles()
+    expect(getLastAgentsMdDeprecation()).toBeDefined()
+
+    resetGetMemoryFilesCache()
+
+    expect(getLastAgentsMdDeprecation()).toBeUndefined()
+  })
+})

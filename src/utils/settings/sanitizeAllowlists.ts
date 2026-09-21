@@ -1,4 +1,5 @@
 import { z } from 'zod/v4'
+import { sanitizeForWarningText } from './sanitizeWarningText.js'
 import type { ValidationError } from './validation.js'
 
 /**
@@ -82,10 +83,12 @@ function validateAllowlistEntry(
       const plugin = entry.slice(0, at)
       const marketplace = entry.slice(at + 1)
       if (at > 0 && marketplace.length > 0) {
+        // sanitizeForWarningText: CWE-117 — the notice interpolates the raw
+        // policy-controlled entry string (OCC-132 §7 P3-5).
         return {
           ok: true,
           value: { marketplace, plugin },
-          notice: `"allowedChannelPlugins" entry "${entry}" was accepted; prefer the documented object form {"plugin": "${plugin}", "marketplace": "${marketplace}"}.`,
+          notice: `"allowedChannelPlugins" entry "${sanitizeForWarningText(entry)}" was accepted; prefer the documented object form {"plugin": "${sanitizeForWarningText(plugin)}", "marketplace": "${sanitizeForWarningText(marketplace)}"}.`,
         }
       }
       // Not the legacy form — fall through: a bare string fails the object
@@ -149,7 +152,9 @@ export function sanitizeSecurityAllowlists(
         warnings.push({
           file: filePath,
           path: `${key}[${index}]`,
-          message: `Invalid entry was ignored: ${result.detail}`,
+          // sanitizeForWarningText: CWE-117 — the zod detail can carry
+          // policy-controlled text (OCC-132 §7 P3-5).
+          message: `Invalid entry was ignored: ${sanitizeForWarningText(result.detail)}`,
           invalidValue: entry,
         })
       }

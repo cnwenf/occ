@@ -403,7 +403,20 @@ function getSettingsForSourceUncached(
       // enforcement readers (getStrictKnownMarketplaces etc.). Clone first:
       // the sanitizers mutate in place and the cache object is shared.
       const remoteSettings = clone(cachedRemote)
-      sanitizePolicySourceData(remoteSettings, 'remote managed settings')
+      const remoteWarnings = sanitizePolicySourceData(
+        remoteSettings,
+        'remote managed settings',
+      )
+      // OCC-132 §7 P3-1: this branch previously dropped the sanitizer
+      // warnings silently. Surface them on the debug channel (the same one
+      // claudemd notices use) — one line per warning — so fail-closed
+      // sanitization is observable under debugging. Return contract
+      // (SettingsJson | null) is unchanged.
+      for (const warning of remoteWarnings) {
+        logForDebugging(
+          `[settings] ${warning.file}: ${warning.path}: ${warning.message}`,
+        )
+      }
       return remoteSettings
     }
 
