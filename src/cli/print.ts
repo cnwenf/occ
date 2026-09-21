@@ -522,6 +522,17 @@ export async function runHeadless(
   // headless lane no longer hard-exits here — kept for parity with OCC's
   // interactive useAfterFirstRender hook. Safe now that the cost-save 'exit'
   // recorder above is already installed (see OCC-132 P3-5).
+  //
+  // OCC-132 P3-4 (totals accuracy): this exit runs before any turn, so the
+  // recorder above persists near-zero totals for this probe session,
+  // overwriting the project's last-session totals (last-session-wins). That is
+  // by design and identical to the interactive path — useCostSummary
+  // (costHook.ts) also calls saveCurrentSessionCosts() unconditionally on
+  // 'exit' (the hasConsoleBillingAccess() gate there guards only the stdout
+  // summary, not the save), and the interactive useAfterFirstRender hook also
+  // process.exit(0)s right after first render. The ant probe is therefore
+  // consistent with every other exit, not a special corruption; no ant-only
+  // guard is warranted. See docs/upstream-version-gap-occ132.md §7 (P3-4).
   if (
     process.env.USER_TYPE === 'ant' &&
     isEnvTruthy(process.env.CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER)

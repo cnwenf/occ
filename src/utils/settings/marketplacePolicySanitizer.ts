@@ -1,6 +1,7 @@
 import type { z } from 'zod/v4'
 import { checkMarketplaceEntryEnforceability } from '../plugins/marketplacePolicyValidation.js'
 import { MarketplaceSourceSchema } from '../plugins/schemas.js'
+import { sanitizeForWarningText } from './sanitizeWarningText.js'
 import type { ValidationError } from './validation.js'
 
 /**
@@ -133,7 +134,11 @@ export function sanitizeMarketplacePolicy(
         warnings.push({
           file: filePath,
           path: `${key}[${index}]`,
-          message: `Invalid entry was ignored: ${firstIssueDetail(parsed.error.issues) ?? 'failed validation'}`,
+          // sanitizeForWarningText: CWE-117 — the issue detail can carry
+          // policy-controlled text (OCC-132 §7 P3-5).
+          message: `Invalid entry was ignored: ${sanitizeForWarningText(
+            firstIssueDetail(parsed.error.issues) ?? 'failed validation',
+          )}`,
           invalidValue: entry,
         })
         continue
@@ -150,14 +155,14 @@ export function sanitizeMarketplacePolicy(
         warnings.push({
           file: filePath,
           path: `${key}[${index}]`,
-          message: `Unenforceable entry was kept: ${problem}; it can never match a marketplace source, but marketplace restrictions stay active`,
+          message: `Unenforceable entry was kept: ${sanitizeForWarningText(problem)}; it can never match a marketplace source, but marketplace restrictions stay active`,
           invalidValue: entry,
         })
       } else {
         warnings.push({
           file: filePath,
           path: `${key}[${index}]`,
-          message: `Invalid entry was ignored: ${problem}`,
+          message: `Invalid entry was ignored: ${sanitizeForWarningText(problem)}`,
           invalidValue: entry,
         })
       }

@@ -3,6 +3,7 @@ import type { ZodError, ZodIssue } from 'zod/v4'
 import { jsonParse } from '../slowOperations.js'
 import { plural } from '../stringUtils.js'
 import { validatePermissionRule } from './permissionValidation.js'
+import { sanitizeForWarningText } from './sanitizeWarningText.js'
 import { generateSettingsJSONSchema } from './schemaOutput.js'
 import type { SettingsJson } from './types.js'
 import { SettingsSchema } from './types.js'
@@ -257,9 +258,13 @@ export function filterInvalidPermissionRules(
       }
       const result = validatePermissionRule(rule)
       if (!result.valid) {
-        let message = `Invalid permission rule "${rule}" was skipped`
-        if (result.error) message += `: ${result.error}`
-        if (result.suggestion) message += `. ${result.suggestion}`
+        // sanitizeForWarningText: CWE-117 — the rule (and the error/
+        // suggestion text derived from it) is policy-controlled and must not
+        // be able to forge log lines (OCC-132 §7 P3-5).
+        let message = `Invalid permission rule "${sanitizeForWarningText(rule)}" was skipped`
+        if (result.error) message += `: ${sanitizeForWarningText(result.error)}`
+        if (result.suggestion)
+          message += `. ${sanitizeForWarningText(result.suggestion)}`
         warnings.push({
           file: filePath,
           path: `permissions.${key}`,
