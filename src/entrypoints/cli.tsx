@@ -27,6 +27,28 @@ if (typeof globalThis.MACRO === "undefined") {
 (globalThis as any).BUILD_ENV = "production";
 (globalThis as any).INTERFACE_TYPE = "stdio";
 
+// Gap-133a (OCC-133): global.d.ts declares resolveAntModel/getAntModels/
+// getAntModelOverrideConfig as ambient "dead-code-eliminated in open-source"
+// identifiers, but every bare call site is behind a RUNTIME
+// `process.env.USER_TYPE === 'ant'` guard the bundler cannot eliminate —
+// without a provider, ant runs die with `ReferenceError: resolveAntModel is
+// not defined` (via parseUserSpecifiedModel ← isAutoModeGateEnabled ←
+// initializeToolPermissionContext) → unhandled rejection → silent exit 0.
+// Official 2.1.278 serves the ant path fine (live-verified: PONG +
+// [claude-code:unrecognized_model] line + exit 0 under USER_TYPE=ant).
+// antModels.ts implementations self-gate on USER_TYPE, and the gated dynamic
+// import keeps the --version fast path zero-import for normal runs.
+if (
+    process.env.USER_TYPE === "ant" &&
+    typeof (globalThis as any).resolveAntModel === "undefined"
+) {
+    const antModels = await import("../utils/model/antModels.js");
+    (globalThis as any).resolveAntModel = antModels.resolveAntModel;
+    (globalThis as any).getAntModels = antModels.getAntModels;
+    (globalThis as any).getAntModelOverrideConfig =
+        antModels.getAntModelOverrideConfig;
+}
+
 // Bugfix for corepack auto-pinning, which adds yarnpkg to peoples' package.jsons
 // eslint-disable-next-line custom-rules/no-top-level-side-effects
 process.env.COREPACK_ENABLE_AUTO_PIN = "0";

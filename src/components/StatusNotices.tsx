@@ -39,7 +39,14 @@ export function StatusNotices(t0) {
   }
   const T0 = Box;
   const t3 = "column";
-  const t4 = 1;
+  // Gap-133b (OCC-133): official 2.1.278 renders the warnings list in a bare
+  // <Box flexDirection="column"> with NO horizontal padding (decompiled
+  // container @217750300+; paddingLeft:1/2 appear only in the
+  // announcement-slot and ant-notices branches, which OCC does not ship).
+  // The old t4=1 shifted every notice 1 column right of the official render
+  // (live-verified side-by-side). The icon spacing now comes from the
+  // NoticeLine width-2 icon cell, as in the official `Jm` component.
+  const t4 = 0;
   const t5 = activeNotices.map(notice => <React.Fragment key={notice.id}>{notice.render(context)}</React.Fragment>);
   let t6;
   if ($[1] !== T0 || $[2] !== t5) {

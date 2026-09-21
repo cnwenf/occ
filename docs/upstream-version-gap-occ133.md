@@ -100,3 +100,105 @@ Security review (diff-level, this round): all changes are hardening / documentat
 3. **(P3, STAGED)** P3-3 stale-worktree fallback in memoized `getSkillDirCommands` (rationale in §2; unreachable in live anchored-skills config).
 4. **(baseline)** Live-e2e environment-drift failures (6): `/feedback` gh pair, repl-interactive auto-mode dialog, screen-reader, plan-approval ×2 — long-standing environment artifacts, re-verify only when the surfaces change.
 5. **(accepted)** P3-2 shared-process mock interference — documented bun limitation, per-file CI isolation is the gate.
+
+---
+
+# OCC-133 round extension — self-acceptance (release v2.1.347)
+
+Multica issue: **OCC-133**「2026-09-22 自验收轮」(OCC Leader trigger, same day as the OCC-93 round above)
+Round type: **no upstream movement (2.1.278 unchanged, 3rd day) → strict self-acceptance + gap-fix round**
+
+## §8 Reconciliation with the OCC-93 round (this same file, §1–§7)
+
+A parallel OCC-93 run landed the occ132 §7 carryover cleanup and released **v2.1.346** (tag + npm + GitHub Release all verified live) while the OCC-133 self-acceptance battery was mid-flight. Consequences, handled:
+
+- OCC-133's own base was rebased onto `origin/main` (merge commit `9662d3f`); the duplicate P3-x work OCC-133 had prepared was **dropped** — §2 above is authoritative for that debt.
+- §4's "all PASS, zero new gaps found" verdict was scoped to that battery's surfaces. The OCC-133 battery (§9–§11 below) found **two real gaps** on surfaces §4 did not probe (ant-globals startup path; notice-render templates) — both fixed this round. This is not a contradiction: different probe sets, and §10 overturns an earlier occ132 "not reconstructable" verdict with new binary evidence.
+- OCC-133's unique deliverables (Gap-133a, Gap-133b, acceptance findings) land on top as release **v2.1.347**.
+
+## §9 Gap-133a — `USER_TYPE=ant` startup ReferenceError (silent exit 0) — FIXED
+
+**Discovery**: live-path probe — `USER_TYPE=ant bun dist/cli.js` (no wrapper) referenced `globalThis.resolveAntModel` before any module installed it → uncaught `ReferenceError` swallowed by the ant fast-exit path → **silent exit code 0 with no render**. The official binary serves the ant path fine. `src/cli/antFastExitDriver.ts` (main) already documented the bug as worked-around at driver level, confirming the live path was broken.
+
+**Fix** (`src/entrypoints/cli.tsx`): after the BUILD_TARGET/BUILD_ENV/INTERFACE_TYPE polyfills, install the ant-model global trio (`resolveAntModel`, `getAntModels`, `getAntModelOverrideConfig`) from `src/utils/model/antModels.js` when `USER_TYPE === "ant"` and the globals are absent — mirroring what the official build-time injection provides. `src/types/global.d.ts` header updated to truthfully document the trio as runtime-gated, cli.tsx-installed.
+
+**Test**: `src/cli/__tests__/antModelGlobalsPolyfill278.test.ts` — spawns `dist/cli.js` directly (NOT the driver) with `USER_TYPE=ant` + `CLAUDE_CODE_EXIT_AFTER_FIRST_RENDER=1`, isolated HOME/CLAUDE_CONFIG_DIR; asserts no ReferenceError, exit 0, `Startup time:` on stderr, `lastSessionId` persisted. 1 pass / 6 expect. RED (pre-fix: exit-0-no-render signature) → GREEN verified.
+
+## §10 Gap-133b — status-notice render templates diverged from official 2.1.278 — FIXED (all 5 shipped notices)
+
+**Prior verdict overturned**: occ132 had staged the sibling notice templates as "not reconstructable from the binary". A deeper forensics pass on the official linux-x64 ELF (234,119,480 bytes, `@anthropic-ai/claude-code-linux-x64@2.1.278`) recovered the **complete decompiled renders**:
+
+| Site | ELF offset | Content |
+|---|---|---|
+| `Jm` shared notice-line component | @217714393 | `<Box flexDirection="row"><Box width={2} flexShrink={0}><_t status/></Box><Box flexGrow={1} flexShrink={1}><Text color={yIt[status].color} dimColor={!color}>{children}</Text></Box></Box>` |
+| Notice definitions chunk | @217735634 | `n9t` large-memory-files, `r9t` claude-ai-external-token, `i9t` api-key-conflict, `s9t` both-auth-methods, `a9t` large-agent-descriptions — full render bodies |
+| `Sne` token-source→action switch | @194659982 | claude.ai → `<CLI> /logout to sign out of claude.ai.`; apiKeyHelper → `Unset the apiKeyHelper setting.`; CCR_OAUTH_TOKEN_FILE → `This token is injected by the CCR host; check the host session.`; none → `""`; default → `Unset the ${e} environment variable.` (`profile` arm omitted — OCC's source union has no 'profile' member; documented, not invented) |
+| `yIt` status map + `_t` icon | @206523300 (chunk-5t00n66n.js) | identical to OCC's existing `StatusIcon.tsx` STATUS_CONFIG (minus `ariaLabel` — staged §12) |
+| Notice container | @217750300+ | warnings branch = **bare** `<Box flexDirection="column">`, NO paddingLeft (paddingLeft:1/2 exist only in the announcement-slot `aZt?1:2` and ant-notices branches — neither shipped in OCC) |
+
+**Changes**:
+
+- `src/utils/statusNoticeDefinitions.tsx` — new `NoticeLine` (`Jm` port) + `tokenSourceActionText` (`Sne` port); all 5 render bodies rewritten to the official templates. Old OCC framing (`Auth conflict: …`, `· Trying to use X? …`, `Large {path} will impact performance …`, `… · /agents to manage`, `This may lead to unexpected behavior`) has **zero hits** in the official binary — it was invented wording, now removed.
+- `src/components/StatusNotices.tsx` — container `paddingLeft` 1 → 0 (official warnings branch is bare; the old value shifted every notice 1 column right of official — this was the 1-column offset seen in live A/B).
+- `src/components/design-system/StatusIcon.tsx` — exported `getStatusColor` (the `yIt[status].color` lookup `Jm` uses).
+- `jetbrainsPluginNotice` NOT changed — its official counterpart was not dumped/verified this round (staged §12).
+
+**Tests**: `src/utils/__tests__/statusNoticeTemplates278.test.ts` (new, replaces the deleted `bothAuthMethodsNotice278.test.ts` whose scope it fully subsumes): 9 tests / 39 expects — official template text for all 5 notices, stale-framing-absent assertions, `paddingLeft=2` bullet box, dimColor bullets, `Jm` structure (width:2 flexShrink:0 + flexGrow:1 flexShrink:1). RED 6-fail → GREEN 9-pass verified.
+
+**Live side-by-side evidence** (tmux, same project dir `/tmp/accept133/proj-big` with a 93,637-char CLAUDE.md, both `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_API_KEY` set, official 2.1.278 ELF vs OCC dist, same live gateway): post-fix renders are **pixel-identical** —
+
+```
+⚠ CLAUDE.md is over the 40.0k-char limit (93.6k chars) · /memory to free up context
+⚠ Both ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set · auth may not work as expected
+  · to use ANTHROPIC_AUTH_TOKEN: Unset the ANTHROPIC_API_KEY environment variable, or {occ|claude} /logout then say "No" to the API key approval before login.
+  · to use ANTHROPIC_API_KEY: Unset the ANTHROPIC_AUTH_TOKEN environment variable.
+```
+
+⚠ at col 0, bullets at col 2; only intended difference is `occ` vs `claude` (CLI_BINARY_NAME convention). Pre-fix OCC showed `⚠Auth conflict: …` at col 1 — both the wording and the column were divergences.
+
+## §11 OCC-133 self-acceptance battery results (live REPL + headless, real gateway)
+
+| Check | Result |
+|---|---|
+| Shift+Tab 5-mode ring (bypass → auto → manual → accept-edits → plan) | **PASS** — synced with official |
+| Footer parity | **PASS** except official's ` · ← for agents` — OCC ships no `←` agents binding; correct-by-design absence, not a gap |
+| Bad-flag error (`--nonexistent-flag`) | **PASS** — byte-identical |
+| Headless `-p` round-trip | **PASS** |
+| CLAUDE.md discovery ("say BANANA" via memory file instruction) | **PASS** |
+| `/status` | **GAPS STAGED** (§12): official shows 5 tabs vs OCC 3; missing rows Session kind / Peer address / Managed settings (remote); column-alignment drift |
+| Notice renders (large-memory-files, both-auth) | **GAP FOUND → FIXED** (Gap-133b, §10) |
+| `USER_TYPE=ant` startup | **GAP FOUND → FIXED** (Gap-133a, §9) |
+| e2e A/B suite | 6 failures — **all pre-existing on v2.1.345** (git-stash A/B proven); identical to the §3 known environment-drift baseline |
+
+Batch-mode note: `bun test src/utils` (shared process) shows 48 failures **identically with and without this round's diff** (git-stash A/B: 2046 tests clean vs 2055 with diff — same 48, all in unrelated files: bedrock strings, registerMainThreadAgentHooks, cacheMarketplaceFromGit, MCP needsAuth, stripInvisibleText). This is the documented P3-2 mock.module contamination (§2/§7.5); per-file `scripts/ci-test.sh` isolation remains the authoritative gate. Changed-file trio green in isolation: `statusNoticeTemplates278` (9) + `antModelGlobalsPolyfill278` (1) + `antFastExitCostSave277` (1) = 11 pass / 53 expect. Biome lint clean on all touched files.
+
+## §12 Staged / ledger additions (OCC-133)
+
+1. **(P3, STAGED)** Official notice registry `L9t` (@217745400+) has **31 entries + tier/announcement-slot governance** (`oQ`/`Fke`/`Oot`, `getActiveNotices` = `Lke`) vs OCC's 6. The 25 unshipped entries are backend/ant/environment-dependent (model-source, mcp-needs-auth, cross-session-messaging-off, model-deprecation, model-restricted, unusable-managed-mcp, hipaa-compliance, remote-managed-settings-failed, monitoring-notice, debug-mode, tmux-session, subscription-switch promo, …). Trimmed surface — port only when the backing features arrive.
+2. **(P4, STAGED)** Official `_t` StatusIcon carries `ariaLabel` per status (`done:`/`failed:`/`warning:`/`note:`); OCC's StatusIcon lacks it (screen-reader surface only).
+3. **(P3, STAGED)** `/status` gaps from §11: 5 tabs vs 3, Session kind row, Peer address row, Managed settings (remote) row, column alignment.
+4. **(by-design)** Footer ` · ← for agents` absence — OCC has no agents-pane binding; documented divergence.
+5. **(P4, NOTE)** `src/utils/status.tsx:126` diagnostics still contains the old "Large … will impact performance" wording — separate `/status` surface from the notices; no official evidence gathered for that site this round, left untouched rather than guessed.
+6. **(P4, NOTE)** `jetbrainsPluginNotice` render not re-verified against the official counterpart this round.
+
+## §13 Files touched (OCC-133 delta, on top of `9662d3f`)
+
+```
+M src/entrypoints/cli.tsx                        (Gap-133a ant-globals install)
+M src/types/global.d.ts                          (Gap-133a truthful header)
+M src/utils/statusNoticeDefinitions.tsx          (Gap-133b: NoticeLine + Sne + 5 templates)
+M src/components/StatusNotices.tsx               (Gap-133b: container paddingLeft 1→0)
+M src/components/design-system/StatusIcon.tsx    (Gap-133b: getStatusColor export)
+A src/utils/__tests__/statusNoticeTemplates278.test.ts   (9 tests, replaces bothAuthMethodsNotice278)
+D src/utils/__tests__/bothAuthMethodsNotice278.test.ts   (subsumed)
+A src/cli/__tests__/antModelGlobalsPolyfill278.test.ts   (Gap-133a live-path regression)
+M CHANGELOG.md                                   (2.1.347 entry)
+M package.json                                   (2.1.346 → 2.1.347)
+M docs/upstream-version-gap-occ133.md            (this extension)
+```
+
+Security review (diff-level): all changes are UI-template alignment, a startup-global install gated on `USER_TYPE=ant`, and tests. No network egress, no eval, no secrets, no permission-surface changes. The ant-models module was already in-tree and already reachable via the driver path; the fix changes *when* its globals are installed, not *what* it does.
+
+## §14 Release disposition (OCC-133)
+
+Production code changed (Gap-133a startup fix + Gap-133b render alignment) → meets the release bar. Release **v2.1.347**: merge to main → tag `v2.1.347` on the merge commit → npm publish → GitHub Release → verify `/releases` ≡ `/tags` → report count + link.

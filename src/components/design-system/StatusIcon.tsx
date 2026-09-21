@@ -52,6 +52,15 @@ const STATUS_CONFIG: Record<Status, {
 };
 
 /**
+ * Gap-133b (OCC-133): color lookup for the shared notice-line component
+ * (official 2.1.278 `Jm` reads `yIt[status].color`; the icon chunk
+ * chunk-5t00n66n.js @206523300 defines the same map this file already ports).
+ */
+export function getStatusColor(status: Status): 'success' | 'error' | 'warning' | 'suggestion' | undefined {
+  return STATUS_CONFIG[status].color;
+}
+
+/**
  * Renders a status indicator icon with appropriate color.
  *
  * @example
