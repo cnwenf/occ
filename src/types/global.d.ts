@@ -20,10 +20,14 @@ declare namespace MACRO {
 declare function MACRO<T>(fn: () => T): T
 
 // ============================================================================
-// Internal Anthropic-only identifiers (dead-code eliminated in open-source)
-// These are referenced inside `MACRO(() => ...)` or `false && ...` blocks.
+// Internal Anthropic-only identifiers.
+// Some are truly dead-code eliminated (`MACRO(() => ...)` / `false && ...` /
+// `feature('BUDDY')` blocks — e.g. fireCompanionObserver below). Others —
+// the ant-model trio — sit behind RUNTIME `process.env.USER_TYPE === 'ant'`
+// guards the bundler cannot eliminate; those are provided at startup by the
+// gated dynamic-import install in src/entrypoints/cli.tsx (Gap-133a/OCC-133).
 
-// Model resolution (internal)
+// Model resolution (internal) — runtime-gated, provided by cli.tsx polyfill
 declare function resolveAntModel(model: string): import('../utils/model/antModels.js').AntModel | undefined
 declare function getAntModels(): import('../utils/model/antModels.js').AntModel[]
 declare function getAntModelOverrideConfig(): {

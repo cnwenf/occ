@@ -15,6 +15,55 @@ import type { AgentDefinitionsResult } from '../tools/AgentTool/loadAgentsDir.js
 import { getAgentDescriptionsTotalTokens, AGENT_DESCRIPTIONS_THRESHOLD } from './statusNoticeHelpers.js';
 import { isSupportedJetBrainsTerminal, toIDEDisplayName, getTerminalIdeType } from './ide.js';
 import { isJetBrainsPluginInstalledCachedSync } from './jetbrains.js';
+import { StatusIcon, getStatusColor } from '../components/design-system/StatusIcon.js';
+
+// Gap-133b (OCC-133): the official 2.1.278 shared notice-line component `Jm`
+// (decompiled ELF @217714393): a row with a width-2 icon cell and a
+// growable text cell.
+//   <Box flexDirection="row">
+//     <Box width={2} flexShrink={0}><StatusIcon status={status}/></Box>
+//     <Box flexGrow={1} flexShrink={1}>
+//       <Text color={STATUS[status].color} dimColor={!color}>{children}</Text>
+//     </Box>
+//   </Box>
+// The width-2 icon cell is what spaces the ⚠ glyph off the text in the
+// official render (col 0 icon, col 2 text).
+function NoticeLine(props: {
+  status: StatusNoticeType;
+  children: React.ReactNode;
+}) {
+  const color = getStatusColor(props.status);
+  return <Box flexDirection="row">
+      <Box width={2} flexShrink={0}>
+        <StatusIcon status={props.status} />
+      </Box>
+      <Box flexGrow={1} flexShrink={1}>
+        <Text color={color} dimColor={!color}>
+          {props.children}
+        </Text>
+      </Box>
+    </Box>;
+}
+
+// Gap-133b (OCC-133): official token-source → action switch `Sne`
+// (decompiled ELF @194659982), used by the both-auth-methods second bullet.
+// Ported verbatim minus the `profile` case: OCC's getAuthTokenSource union
+// has no 'profile' member (ant-internal `ant auth logout` surface), so that
+// arm is unreachable here.
+function tokenSourceActionText(source: string): string {
+  switch (source) {
+    case 'claude.ai':
+      return `${CLI_BINARY_NAME} /logout to sign out of claude.ai.`;
+    case 'apiKeyHelper':
+      return 'Unset the apiKeyHelper setting.';
+    case 'CCR_OAUTH_TOKEN_FILE':
+      return 'This token is injected by the CCR host; check the host session.';
+    case 'none':
+      return '';
+    default:
+      return `Unset the ${source} environment variable.`;
+  }
+}
 
 // Types
 export type StatusNoticeType = 'warning' | 'info';
@@ -44,18 +93,19 @@ const largeMemoryFilesNotice: StatusNoticeDefinition = {
       getContextWindowForModel(getMainLoopModel()),
     );
     const largeMemoryFiles = getLargeMemoryFiles(ctx.memoryFiles, threshold);
+    // Gap-133b (OCC-133): official 2.1.278 template (decompiled `n9t`):
+    //   <Jm status="warning"><Text bold>{path}</Text> is over the
+    //   {formatNumber(threshold)}-char limit ({formatNumber(len)} chars)
+    //   <Text dimColor> · /memory to free up context</Text></Jm>
     return <>
         {largeMemoryFiles.map(file => {
         const displayPath = file.path.startsWith(getCwd()) ? relative(getCwd(), file.path) : file.path;
-        return <Box key={file.path} flexDirection="row">
-              <Text color="warning">{figures.warning}</Text>
-              <Text color="warning">
-                Large <Text bold>{displayPath}</Text> will impact performance (
-                {formatNumber(file.content.length)} chars &gt;{' '}
-                {formatNumber(threshold)})
-                <Text dimColor> · /memory to edit</Text>
-              </Text>
-            </Box>;
+        return <NoticeLine key={file.path} status="warning">
+              <Text bold>{displayPath}</Text> is over the{' '}
+              {formatNumber(threshold)}-char limit (
+              {formatNumber(file.content.length)} chars)
+              <Text dimColor> · /memory to free up context</Text>
+            </NoticeLine>;
       })}
       </>;
   }
@@ -69,13 +119,15 @@ const claudeAiSubscriberExternalTokenNotice: StatusNoticeDefinition = {
   },
   render: () => {
     const authTokenInfo = getAuthTokenSource();
-    return <Box flexDirection="row" marginTop={1}>
-        <Text color="warning">{figures.warning}</Text>
-        <Text color="warning">
-          Auth conflict: Using {authTokenInfo.source} instead of Claude account
-          subscription token. Either unset {authTokenInfo.source}, or run
-          {`\`${CLI_BINARY_NAME} /logout\`.`}
-        </Text>
+    // Gap-133b (OCC-133): official 2.1.278 template (decompiled `r9t`):
+    //   <Box marginTop={1}><Jm status="warning">{source} overriding Claude
+    //   subscription login<Text dimColor> · unset it or /logout to sign it
+    //   out</Text></Jm></Box>
+    return <Box marginTop={1}>
+        <NoticeLine status="warning">
+          {authTokenInfo.source} overriding Claude subscription login
+          <Text dimColor> · unset it or /logout to sign it out</Text>
+        </NoticeLine>
       </Box>;
   }
 };
@@ -96,12 +148,15 @@ const apiKeyConflictNotice: StatusNoticeDefinition = {
     } = getAnthropicApiKeyWithSource({
       skipRetrievingKeyFromApiKeyHelper: true
     });
-    return <Box flexDirection="row" marginTop={1}>
-        <Text color="warning">{figures.warning}</Text>
-        <Text color="warning">
-          Auth conflict: Using {apiKeySource} instead of Anthropic Console key.
-          Either unset {apiKeySource}, or run {`\`${CLI_BINARY_NAME} /logout\`.`}.
-        </Text>
+    // Gap-133b (OCC-133): official 2.1.278 template (decompiled `i9t`):
+    //   <Box marginTop={1}><Jm status="warning">{source} overriding saved
+    //   Console key<Text dimColor> · unset it or /logout to clear the saved
+    //   key</Text></Jm></Box>
+    return <Box marginTop={1}>
+        <NoticeLine status="warning">
+          {apiKeySource} overriding saved Console key
+          <Text dimColor> · unset it or /logout to clear the saved key</Text>
+        </NoticeLine>
       </Box>;
   }
 };
@@ -124,24 +179,35 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
       skipRetrievingKeyFromApiKeyHelper: true
     });
     const authTokenInfo = getAuthTokenSource();
+    const tokenName = authTokenInfo.source === 'claude.ai' ? 'claude.ai' : authTokenInfo.source;
+    // Gap-133b (OCC-133): official 2.1.278 structure (decompiled `s9t`,
+    // live side-by-side verified):
+    //   <Box flexDirection="column" marginTop={1}>
+    //     <Jm status="warning">Both {tokenSource} and {keySource} set · auth
+    //       may not work as expected</Jm>
+    //     <Box flexDirection="column" paddingLeft={2}>
+    //       <Text dimColor>· to use {tokenName}: {keyAction}</Text>
+    //       <Text dimColor>· to use {keySource}: {Sne(tokenSource)}</Text>
+    //     </Box>
+    //   </Box>
+    // The main line interpolates the RAW token source (s9t: `v.source`),
+    // while bullet 1 uses the claude.ai-mapped name. The three key-action
+    // tails are byte-identical to the official binary strings. The pre-fix
+    // OCC wording (`Auth conflict: Both a token (…) …` / `· Trying to use
+    // X? …`) has ZERO hits in the official binary.
+    // Test: src/utils/__tests__/statusNoticeTemplates278.test.ts.
     return <Box flexDirection="column" marginTop={1}>
-        <Box flexDirection="row">
-          <Text color="warning">{figures.warning}</Text>
-          <Text color="warning">
-            Auth conflict: Both a token ({authTokenInfo.source}) and an API key
-            ({apiKeySource}) are set. This may lead to unexpected behavior.
-          </Text>
-        </Box>
-        <Box flexDirection="column" marginLeft={3}>
-          <Text color="warning">
-            · Trying to use{' '}
-            {authTokenInfo.source === 'claude.ai' ? 'claude.ai' : authTokenInfo.source}
-            ?{' '}
+        <NoticeLine status="warning">
+          Both {authTokenInfo.source} and {apiKeySource} set · auth may not
+          work as expected
+        </NoticeLine>
+        <Box flexDirection="column" paddingLeft={2}>
+          <Text dimColor>
+            · to use {tokenName}:{' '}
             {apiKeySource === 'ANTHROPIC_API_KEY' ? `Unset the ANTHROPIC_API_KEY environment variable, or ${CLI_BINARY_NAME} /logout then say "No" to the API key approval before login.` : apiKeySource === 'apiKeyHelper' ? 'Unset the apiKeyHelper setting.' : `${CLI_BINARY_NAME} /logout`}
           </Text>
-          <Text color="warning">
-            · Trying to use {apiKeySource}?{' '}
-            {authTokenInfo.source === 'claude.ai' ? `${CLI_BINARY_NAME} /logout to sign out of claude.ai.` : `Unset the ${authTokenInfo.source} environment variable.`}
+          <Text dimColor>
+            · to use {apiKeySource}: {tokenSourceActionText(authTokenInfo.source)}
           </Text>
         </Box>
       </Box>;
@@ -156,15 +222,20 @@ const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
   },
   render: context => {
     const totalTokens = getAgentDescriptionsTotalTokens(context.agentDefinitions);
-    return <Box flexDirection="row">
-        <Text color="warning">{figures.warning}</Text>
-        <Text color="warning">
-          Large cumulative agent descriptions will impact performance (~
-          {formatNumber(totalTokens)} tokens &gt;{' '}
-          {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)})
-          <Text dimColor> · /agents to manage</Text>
+    // Gap-133b (OCC-133): official 2.1.278 template (decompiled `a9t`,
+    // threshold `bSe` = 15000 — OCC's AGENT_DESCRIPTIONS_THRESHOLD matches):
+    //   <Jm status="warning">Agent descriptions are over the {ws(15000)}
+    //   -token limit (~{ws(total)} tokens)<Text dimColor> · ask Claude to
+    //   trim agent descriptions in .claude/agents/</Text></Jm>
+    return <NoticeLine status="warning">
+        Agent descriptions are over the{' '}
+        {formatNumber(AGENT_DESCRIPTIONS_THRESHOLD)}-token limit (~
+        {formatNumber(totalTokens)} tokens)
+        <Text dimColor>
+          {' '}
+          · ask Claude to trim agent descriptions in .claude/agents/
         </Text>
-      </Box>;
+      </NoticeLine>;
   }
 };
 const jetbrainsPluginNotice: StatusNoticeDefinition = {
