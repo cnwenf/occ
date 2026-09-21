@@ -36,8 +36,11 @@ if (typeof globalThis.MACRO === "undefined") {
 // initializeToolPermissionContext) → unhandled rejection → silent exit 0.
 // Official 2.1.278 serves the ant path fine (live-verified: PONG +
 // [claude-code:unrecognized_model] line + exit 0 under USER_TYPE=ant).
-// antModels.ts implementations self-gate on USER_TYPE, and the gated dynamic
-// import keeps the --version fast path zero-import for normal runs.
+// antModels.ts implementations self-gate on USER_TYPE. Note the module is in
+// the single-file bundle regardless (src/utils/permissions/yoloClassifier.ts
+// statically imports resolveAntModel) — the USER_TYPE-gated dynamic import
+// defers module EVALUATION and the global install to ant runs only; normal
+// runs short-circuit on the env check and never evaluate it at this point.
 if (
     process.env.USER_TYPE === "ant" &&
     typeof (globalThis as any).resolveAntModel === "undefined"

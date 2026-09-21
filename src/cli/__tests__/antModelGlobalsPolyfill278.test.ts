@@ -156,6 +156,15 @@ function runAntFastExitDirect(seeded: SeededEnv): Promise<FastExitRun> {
       }
     }
     const timer = setTimeout(killGroup, 45_000)
+    // Without an 'error' listener a missing/unspawnable `bun` surfaces as an
+    // uncaught ENOENT that crashes the whole test runner instead of failing
+    // this test legibly. Resolve with a harness-tagged marker so the guard
+    // assertion below reports the spawn failure explicitly.
+    child.on('error', err => {
+      clearTimeout(timer)
+      stderr += `\n[test-harness] spawn('bun') failed: ${err.message}`
+      resolve({ code: -1, stdout, stderr })
+    })
     child.on('close', code => {
       clearTimeout(timer)
       resolve({ code: code ?? -1, stdout, stderr })
@@ -177,6 +186,7 @@ describe.skipIf(!HAS_DIST)(
           // ReferenceError unhandled rejection drained the loop before
           // runHeadless. Post-fix: the ant fast-exit banner prints and the
           // cost-save exit listener persists this run's session id.
+          expect(run.stderr).not.toContain("[test-harness] spawn('bun') failed")
           expect(run.stderr).not.toContain('resolveAntModel is not defined')
           expect(run.code).toBe(0)
           expect(run.stderr).toContain('Startup time:')
