@@ -224,9 +224,14 @@ describe('useMainLoopModel wiring — 2.1.280 #078 default-model promotion throu
     expect(model).toBe('claude-opus-5-5[1m]')
   })
 
-  test('null stored model on PAYG → Sonnet default (no promotion)', async () => {
+  test('null stored model on PAYG (firstParty) → merged Opus default (2.1.280 cv)', async () => {
+    // OCC-135 Gap C: official `cv` (@193434108) resolves PAYG sessions on
+    // Anthropic-owned providers via `jk() ? WF(X_()) : X_()` — the Opus 1M
+    // merge is enabled for non-Pro firstParty PAYG, so the null/default path
+    // lands on claude-opus-5-5[1m], NOT the pre-2.1.280 Sonnet default.
+    // A/B-verified against the official v280 binary (Default row shows the
+    // merged Opus env default under the same gateway env).
     const model = await runHook({ mainLoopModel: null })
-    expect(model).toContain('claude-sonnet')
-    expect(model).not.toContain('opus')
+    expect(model).toBe('claude-opus-5-5[1m]')
   })
 })

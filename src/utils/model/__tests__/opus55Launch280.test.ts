@@ -489,10 +489,14 @@ describe('2.1.280 #078: getDefaultMainLoopModelSetting per tier', () => {
     expect(getDefaultMainLoopModelSetting()).toBe('claude-opus-5-5[1m]')
   })
 
-  test('PAYG non-subscriber unchanged → Sonnet default', () => {
+  test('PAYG non-subscriber on firstParty → merged Opus default (2.1.280 cv)', () => {
+    // Official 2.1.280 `cv`: `Xn() ? Qd() : al()` — non-subscriber sessions on
+    // an Anthropic-owned provider (firstParty here) take the Opus-default arm
+    // with the jk() 1M merge, NOT Sonnet (2.1.279-era behavior). A/B-verified
+    // against the official binary capture: the Default row reads
+    // "currently <opus-default>[1m]" under a custom-base-url PAYG env.
     const setting = getDefaultMainLoopModelSetting()
-    expect(setting).toContain('claude-sonnet')
-    expect(setting).not.toContain('opus')
+    expect(setting).toBe('claude-opus-5-5[1m]')
   })
 
   test('tv-pinned Pro falls back to the Sonnet default', () => {

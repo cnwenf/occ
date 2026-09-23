@@ -28,7 +28,11 @@ import {
   getSettings_DEPRECATED,
 } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { getAPIProvider } from './providers.js'
+import {
+  getAPIProvider,
+  isAnthropicOwnedProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './providers.js'
 import { checkOpus1mAccess } from './check1mAccess.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
@@ -367,7 +371,9 @@ export function resolveAnthropicDefaultModel():
  * This handles the built-in default:
  * - ANTHROPIC_DEFAULT_MODEL when set and valid (2.1.236)
  * - Opus for Max, Team Premium, Team Standard, and Pro users (2.1.280 #078)
- * - Sonnet 4.6 for all other users (PAYG 1P/3P, Enterprise)
+ * - Opus for non-subscriber sessions on Anthropic-owned providers (2.1.280 cv)
+ * - Sonnet 4.6 for all other users (Enterprise, foundry); per-provider
+ *   defaults for mantle / bedrock / vertex
  *
  * @returns The default model setting to use
  */
@@ -386,20 +392,37 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
     setting =
       (getAntModelOverrideConfig()?.defaultModel as string) ??
       getDefaultOpusModel() + '[1m]'
-  } else if (isOpusDefaultTier()) {
-    // 2.1.280 #078: Max, Team Premium, Team Standard, and Pro all get Opus as
-    // default (changelog: "Changed the default model on Pro and Team Standard
-    // plans from Sonnet to Opus, matching Max, Team Premium, and Enterprise").
-    // Official resolver `cv` uses ONE expression for every Opus tier:
-    //   nd() + (jk() ? "[1m]" : "")
-    // Pro NEVER gets the [1m] merge because jk() excludes Pro
-    // (`if(GO()||Nde()||Oe()!=="firstParty")return!1` — Nde=isProSubscriber);
-    // OCC's isOpus1mMergeEnabled() mirrors that exclusion byte-for-byte.
-    setting = getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
+  } else if (
+    isClaudeAISubscriber() ? isOpusDefaultTier() : isAnthropicOwnedProvider()
+  ) {
+    // Official 2.1.280 `cv` (@193434108, byte-verified):
+    //   Xn() ? Qd() : al()   ->   jk() ? WF(X_()) : X_()
+    // Subscribers on an Opus tier AND non-subscriber sessions on an
+    // Anthropic-owned provider (firstParty — including custom
+    // ANTHROPIC_BASE_URL PAYG keys —, anthropicAws, gateway) resolve to the
+    // Opus default. The 1M merge (jk = isOpus1mMergeEnabled, which excludes
+    // Pro byte-for-byte) decides between dedup1mSuffix(getDefaultOpusModel())
+    // (WF collapses an env value that already carries [1m]) and the bare
+    // Opus default. A/B effect under the gateway/custom-base-url env: the
+    // Default row reads "currently <opus-default>[1m]" exactly like the
+    // official capture.
+    setting = isOpus1mMergeEnabled()
+      ? dedup1mSuffix(getDefaultOpusModel())
+      : getDefaultOpusModel()
   } else {
-    // PAYG (1P and 3P) and Enterprise get Sonnet as default.
-    // Note that PAYG (3P) may default to an older Sonnet model.
-    setting = getDefaultSonnetModel()
+    // Remaining providers get the official cv per-provider else-arm:
+    //   mantle -> opus55; bedrock/vertex -> sonnet when the 3P sonnet
+    //   default is active, else opus; everything else -> sonnet.
+    const provider = getAPIProvider()
+    if (provider === 'mantle') {
+      setting = getModelStrings().opus55
+    } else if (provider === 'bedrock' || provider === 'vertex') {
+      setting = is3PSonnetDefaultActive()
+        ? getDefaultSonnetModel()
+        : getDefaultOpusModel()
+    } else {
+      setting = getDefaultSonnetModel()
+    }
   }
   return enforceDefaultModelAllowlist(setting)
 }
@@ -844,17 +867,42 @@ export function parseUserSpecifiedModel(
     : normalizedModel
 
   if (isModelAlias(modelString)) {
+    // Official 2.1.280 `kt` alias arms (byte-verified @193434460 region):
+    // every family alias resolves as `has1mTag ? WF(X()) : X()` — i.e.
+    // dedup1mSuffix, NOT string-concat, so an env default that already
+    // carries [1m] collapses instead of doubling the suffix.
     switch (modelString) {
       case 'opusplan':
-        return getDefaultSonnetModel() + (has1mTag ? '[1m]' : '') // Sonnet is default, Opus in plan mode
+        // Sonnet is default, Opus in plan mode
+        return has1mTag
+          ? dedup1mSuffix(getDefaultSonnetModel())
+          : getDefaultSonnetModel()
       case 'sonnet':
-        return getDefaultSonnetModel() + (has1mTag ? '[1m]' : '')
+        return has1mTag
+          ? dedup1mSuffix(getDefaultSonnetModel())
+          : getDefaultSonnetModel()
       case 'haiku':
-        return getDefaultHaikuModel() + (has1mTag ? '[1m]' : '')
+        return has1mTag
+          ? dedup1mSuffix(getDefaultHaikuModel())
+          : getDefaultHaikuModel()
       case 'opus':
-        return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
-      case 'fable':
-        return getDefaultFableModel() + (has1mTag ? '[1m]' : '')
+        return has1mTag
+          ? dedup1mSuffix(getDefaultOpusModel())
+          : getDefaultOpusModel()
+      case 'fable': {
+        // Official kt fable arm: stock first-party (firstParty provider on
+        // the stock api.anthropic.com base url) does NOT keep [1m] on fable;
+        // custom-base-url / 3P sessions keep the tag unless the env default
+        // already carries 1M context. (The official 1P strip path is dead
+        // under OCC's modelSupports1M — claude-fable-* returns false — so
+        // only the tag-append gate is ported; documented, not invented.)
+        const fableDefault = getDefaultFableModel()
+        const isStockFirstParty =
+          getAPIProvider() === 'firstParty' && isFirstPartyAnthropicBaseUrl()
+        const append1m =
+          has1mTag && !isStockFirstParty && !has1mContext(fableDefault)
+        return fableDefault + (append1m ? '[1m]' : '')
+      }
       case 'best':
         return getBestModel()
       default:
@@ -865,13 +913,19 @@ export function parseUserSpecifiedModel(
   // Claude.ai) — silently remap to the current Opus default. The 'opus'
   // alias already resolves to 4.6, so the only users on these explicit
   // strings pinned them in settings/env/--model/SDK before 4.5 launched.
-  // 3P providers may not yet have 4.6 capacity, so pass through unchanged.
+  // Official 2.1.280 kt remap arm (byte-verified): the gate is `al()` —
+  // Anthropic-OWNED providers (firstParty incl. custom base url,
+  // anthropicAws, gateway) — and the remap result is `has1mTag ? WF(X_())
+  // : X_()`. Non-owned 3P providers (bedrock/vertex/foundry/mantle) may not
+  // yet have capacity for the new Opus, so those pass through unchanged.
   if (
-    getAPIProvider() === 'firstParty' &&
+    isAnthropicOwnedProvider() &&
     isLegacyOpusFirstParty(modelString) &&
     isLegacyModelRemapEnabled()
   ) {
-    return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
+    return has1mTag
+      ? dedup1mSuffix(getDefaultOpusModel())
+      : getDefaultOpusModel()
   }
 
   if (process.env.USER_TYPE === 'ant') {

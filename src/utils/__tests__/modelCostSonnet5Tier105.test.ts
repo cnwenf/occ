@@ -131,12 +131,16 @@ describe('MODEL_COSTS: sonnet-5 → tier_2_10', () => {
 
 describe('/model picker Default row (official Nci alignment)', () => {
   test('PAYG default shows the resolved default model tier pricing', () => {
-    // firstParty PAYG (no subscriber, no ant, no env override): default
-    // resolves to claude-sonnet-5 → tier_2_10 pricing suffix.
+    // OCC-135 Gap C: official 2.1.280 `cv` (@193434108) resolves firstParty
+    // PAYG (no subscriber, no ant, no env override) to the MERGED Opus
+    // default — claude-opus-5-5[1m], rendered as the marketing name — not
+    // claude-sonnet-5. Pricing suffix follows the resolved model's tier
+    // (COST_TIER_4_20_CACHE_READ_0_20 = $4/$20).
     const option = getDefaultOptionForUser()
     expect(option.value).toBeNull()
     expect(option.description).toContain('Use the default model (currently ')
-    expect(option.description.endsWith(' · $2/$10 per Mtok')).toBe(true)
+    expect(option.description).toContain('Opus 5.5 (1M context)')
+    expect(option.description.endsWith(' · $4/$20 per Mtok')).toBe(true)
   })
 
   test('ANTHROPIC_DEFAULT_MODEL override shows attribution, not pricing', () => {

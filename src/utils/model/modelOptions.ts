@@ -1,7 +1,7 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { getInitialMainLoopModel } from '../../bootstrap/state.js'
 import { isClaudeAISubscriber } from '../auth.js'
-import { getModelStrings } from './modelStrings.js'
+import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import {
   COST_TIER_2_10,
   COST_TIER_3_15,
@@ -14,7 +14,11 @@ import {
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import { checkOpus1mAccess, checkSonnet1mAccess } from './check1mAccess.js'
-import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
+import {
+  getAPIProvider,
+  isAnthropicOwnedProvider,
+  isFirstPartyAnthropicBaseUrl,
+} from './providers.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import {
   getCanonicalName,
@@ -36,10 +40,11 @@ import {
   type ModelName,
   type ModelSetting,
 } from './model.js'
-import { type ModelAlias } from './aliases.js'
-import { has1mContext } from '../context.js'
+import { type ModelAlias, isModelFamilyAlias } from './aliases.js'
+import { has1mContext, modelSupports1M } from '../context.js'
 import { getGlobalConfig } from '../config.js'
 import { readGatewayModelOptions } from './gatewayModelDiscovery.js'
+import { ALL_MODEL_CONFIGS, type ModelKey } from './configs.js'
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -196,13 +201,10 @@ function getSonnet46Option(): ModelOption {
  */
 function shouldUseCustomModelOptions(): boolean {
   const provider = getAPIProvider()
-  const isAnthropicOwned =
-    provider === 'firstParty' ||
-    provider === 'anthropic_aws' ||
-    provider === 'gateway'
-  const isAwsOrGoogleCloud = provider === 'anthropic_aws'
   return (
-    !isAnthropicOwned || isAwsOrGoogleCloud || !isFirstPartyAnthropicBaseUrl()
+    !isAnthropicOwnedProvider() ||
+    provider === 'anthropic_aws' ||
+    !isFirstPartyAnthropicBaseUrl()
   )
 }
 
@@ -544,12 +546,16 @@ export function getMaxOpus46_1MOption(fastMode = false): ModelOption {
 //   carry the literal newest name in their description. Legacy rows
 //   ("Opus 4.8", "Opus 4.6", ...) do not match and are not highlighted.
 //   2.1.280 (#001): the newest name is now "Opus 5.5" — this data layer
-//   carries "Opus 5.5" on exactly the opus-5-5 rows. STAGED UI NOTE: the
-//   picker-UI replaceAll target lives in ModelPicker.tsx (outside this
-//   task's allowlist) and still targets "Opus 5"; since "Opus 5" is a
-//   substring of "Opus 5.5", the stale target would highlight only the
-//   "Opus 5" prefix of the newest rows — the UI file needs its target
-//   updated to "Opus 5.5" in a follow-up.
+//   carries "Opus 5.5" on exactly the opus-5-5 rows. STAGED UI NOTE
+//   (corrected this round against the 2.1.280 binary): the official
+//   render-layer highlight lives in the picker component's description memo
+//   (`Sfe` `tn` @217541095 region) as
+//     .replaceAll("Opus 5.5", Et("claude",uo)("Opus 5.5"))
+//     .replace(/\$[\d.]+\/\$[\d.]+ per Mtok/, …promo strikethrough…)
+//   plus a `c7` override note appended as `${description} · ${qs}`. OCC's
+//   ModelPicker.tsx has NO live replaceAll at all (verified by grep), so the
+//   render-layer highlight stays staged; the earlier note claiming the UI
+//   "still targets Opus 5" was wrong — there is no UI target to update.
 function getMergedOpus1MOption(fastMode = false): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
@@ -577,13 +583,12 @@ const MaxHaiku45Option: ModelOption = {
   description: 'Haiku 4.5 · Fastest for quick answers',
 }
 
-function getOpusPlanOption(): ModelOption {
-  return {
-    value: 'opusplan',
-    label: 'Opus Plan Mode',
-    description: 'Use Opus in plan mode, Sonnet otherwise',
-  }
-}
+// NOTE: the pre-2.1.280 OCC tail appended an "Opus Plan Mode" row when the
+// user's setting was 'opusplan'. The official 2.1.280 `wj` tail (byte-verified
+// @196278861-196281300) has NO opusplan branch: opusplan falls through to the
+// zr-probe else branch, where `kt("opusplan")` (parsed to the default Sonnet)
+// makes it match the Sonnet row, so no extra row appears. The row builder was
+// removed with the tail rewrite.
 
 // @[MODEL LAUNCH]: Update the model picker lists below to include/reorder options for the new model.
 // Each user tier (ant, Max/Team Premium, Pro/Team Standard/Enterprise, PAYG 1P, PAYG 3P) has its own list.
@@ -663,11 +668,14 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     const customOpus = getCustomOpusOption()
     const customSonnet = getCustomSonnetOption()
     const customHaiku = getCustomHaikuOption()
-    // Binary: `let c=NBc();if(c!==void 0)$Qt(s,c);else if(iW()&&
-    // M_e("fable5"))$Qt(s,HWi())` — the stock Fable 5 row only appears for
-    // anthropicAws/anthropicGoogleCloud (iW), which never enter this
-    // firstParty branch; a firstParty picker gets Fable only via
-    // ANTHROPIC_DEFAULT_FABLE_MODEL (live-verified: no Fable row otherwise).
+    // 2.1.280 correction (was a pre-2.1.280 note claiming the stock Fable row
+    // only appears for anthropicAws/anthropicGoogleCloud): the official `wj`
+    // Fable post-step (`if(r===null&&y==="firstParty"&&NSe()&&!s.some(fi))
+    // ui(s,VG(OHe(),e))`, byte-verified @196280400 region) adds the STOCK
+    // Fable row on firstParty too — after this base list is built — whenever
+    // no fable-family row is present. The base list itself still carries
+    // Fable only via ANTHROPIC_DEFAULT_FABLE_MODEL (customFable); the
+    // post-step in getModelOptions covers the stock case.
     const customFable = getCustomFableOption()
     if (customOpus || customSonnet || customHaiku || customFable) {
       const customOptions = [getDefaultOptionForUser(fastMode)]
@@ -843,6 +851,451 @@ function getKnownModelOption(model: string): ModelOption | null {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 2.1.280 picker row machinery (byte-verified against the official linux-x64
+// ELF; minified names in comments). These helpers implement the official
+// family-aware row identity (`zr`), Fable-row key (`Rv`), family classifier
+// (`Pc`), 1M-variant resolution (`F7t`/`r7`/`Pv`), sorted insertion (`ui`),
+// gateway-row decoration (`pj`), Fable availability (`NSe`), and the Fable
+// row builders (`vv`/`VG`/`YG`/`F5t`). Documented simplifications:
+// - `sessionTail:!0` (telemetry-only marker) is never set — OCC has no
+//   session-tail telemetry consumer (bn() @206369033 not ported).
+// - Official `ui`'s `fF()` (managed-settings rows) and `soe()?.picker.options`
+//   (managed picker) candidate sources are omitted — OCC has no managed
+//   picker surface (staged, docs/upstream-version-gap-occ113.md).
+// - Official `Ov()` also checks `iF().size===0` (managed-models set) —
+//   omitted for the same reason.
+// - Official `F7t` additionally excludes `yde(s)`/`AS(s)` (internal
+//   deprecated/coming-soon predicates) — OCC's ALL_MODEL_CONFIGS has no
+//   such flags; every registered config is live.
+// ---------------------------------------------------------------------------
+
+/** Official `qt` (@191976200 region): strip ONE trailing `[1m]` tag. */
+export function stripTrailing1mTag(value: string): string {
+  return value.replace(/\[1m]$/i, '')
+}
+
+/**
+ * Official `Xn` (@193417215 region): strip ALL context-window tags. The
+ * official regex covers `[1m]` and `[2m]`; OCC has no `[2m]` surface, so only
+ * `[1m]` is stripped (documented simplification).
+ */
+export function stripAll1mTags(value: string): string {
+  return value.replace(/\[1m\]/gi, '')
+}
+
+/** Official `Ag` (@193423934 region): the Fable wildcard row key. */
+const FABLE_WILDCARD = 'fable:*'
+
+/**
+ * Official `Pc` (@196285950, byte-verified): classify a picker row value into
+ * its model family by substring, or null when it is a custom (non-Claude)
+ * value.
+ *   let n=e.toLowerCase();if(n.includes("fable"))return"fable";
+ *   if(n.includes("opus"))return"opus";if(n.includes("sonnet"))return"sonnet";
+ *   if(n.includes("haiku"))return"haiku";return null
+ */
+export function pickerFamily(
+  value: string,
+): 'fable' | 'opus' | 'sonnet' | 'haiku' | null {
+  const n = value.toLowerCase()
+  if (n.includes('fable')) return 'fable'
+  if (n.includes('opus')) return 'opus'
+  if (n.includes('sonnet')) return 'sonnet'
+  if (n.includes('haiku')) return 'haiku'
+  return null
+}
+
+/**
+ * Official `fi` (@196281300 region): `e==="fable"||e==="fable[1m]"||noe(e)`
+ * with `noe(e)=e.includes("claude-fable-")`.
+ */
+export function isFableModelValue(value: string): boolean {
+  return (
+    value === 'fable' || value === 'fable[1m]' || value.includes('claude-fable-')
+  )
+}
+
+/**
+ * Official `Rv` (@196284300, byte-verified): the Fable identity key used by
+ * `zr`. Alias values (`fable`/`fable[1m]`) key on the resolved default Fable
+ * model (or the `fable:*` wildcard when the default does not resolve to a
+ * fable-family config); concrete values key on the firstParty ID captured by
+ * the fable-ID regex. Returns undefined for non-fable values.
+ *
+ * The official family check is `pc(s)?.family==="fable"` (canonical config
+ * lookup); OCC uses the `claude-fable-` substring — exactly the official
+ * `noe` predicate, equivalent because only fable configs carry that prefix.
+ */
+export function fableRowKey(value: string): string | undefined {
+  if (value === 'fable' || value === 'fable[1m]') {
+    const resolved = stripTrailing1mTag(
+      resolveOverriddenModel(getDefaultFableModel()),
+    )
+    return resolved.includes('claude-fable-') ? resolved : FABLE_WILDCARD
+  }
+  const fableIds = (Object.keys(ALL_MODEL_CONFIGS) as ModelKey[])
+    .map(key => ALL_MODEL_CONFIGS[key].firstParty)
+    .filter(id => id.includes('fable'))
+    .sort((a, b) => b.length - a.length)
+  return new RegExp(
+    `(?:^|[./])(${fableIds.join('|')})(?:[-@]\\d{8})?(?:-v\\d+(?::\\d+)?)?(?:\\[[12]m\\])?$`,
+    'i',
+  ).exec(value)?.[1]
+    ?.toLowerCase()
+}
+
+/**
+ * Official `zr` (@196283926, byte-verified): family-aware row identity.
+ *   if(e.value===n.value)return!0;
+ *   if(typeof e.value!=="string"||typeof n.value!=="string")return!1;
+ *   let r=Rv(e.value),s=Rv(n.value);
+ *   if(r!==void 0&&s!==void 0&&(r===s||r===Ag||s===Ag))return!0;
+ *   let g=kt(e.value);
+ *   if(Xn(g)!==Xn(kt(n.value)))return!1;
+ *   return su(e.value)===su(n.value)||Bh(g)
+ * kt = parseUserSpecifiedModel, Xn = stripAll1mTags, su = has1mContext,
+ * Bh = modelSupports1M.
+ */
+export function modelRowsValueEqual(
+  a: ModelOption,
+  b: ModelOption,
+): boolean {
+  if (a.value === b.value) return true
+  if (typeof a.value !== 'string' || typeof b.value !== 'string') return false
+  const keyA = fableRowKey(a.value)
+  const keyB = fableRowKey(b.value)
+  if (
+    keyA !== undefined &&
+    keyB !== undefined &&
+    (keyA === keyB || keyA === FABLE_WILDCARD || keyB === FABLE_WILDCARD)
+  ) {
+    return true
+  }
+  const parsedA = parseUserSpecifiedModel(a.value)
+  if (stripAll1mTags(parsedA) !== stripAll1mTags(parseUserSpecifiedModel(b.value))) {
+    return false
+  }
+  return has1mContext(a.value) === has1mContext(b.value) || modelSupports1M(parsedA)
+}
+
+/**
+ * Official `F5t` (@196282164 region, byte-verified): find the value of the
+ * row a setting actually lands on — strict match first, then the `zr`
+ * family-aware probe. Returns undefined when no row matches.
+ *   if(e.some((g)=>g.value===n))return n;
+ *   let r={value:n,label:"",description:""},s=e.find((g)=>zr(g,r));
+ *   return typeof s?.value==="string"?s.value:void 0
+ */
+export function findMatchingOptionValue(
+  options: ModelOption[],
+  value: string,
+): string | undefined {
+  if (options.some(opt => opt.value === value)) return value
+  const probe: ModelOption = { value, label: '', description: '' }
+  const match = options.find(opt => modelRowsValueEqual(opt, probe))
+  return typeof match?.value === 'string' ? match.value : undefined
+}
+
+/**
+ * Official `Ov()`: the availableModels allowlist is inactive (no
+ * `availableModels` key in settings). The official also requires the
+ * managed-models set to be empty (`iF().size===0`) — omitted, OCC has no
+ * managed-models surface.
+ */
+function isModelAllowlistInactive(): boolean {
+  return !(getSettings_DEPRECATED() || {}).availableModels
+}
+
+/** Official `Oo`: word-boundary (non-alphanumeric delimited) substring test. */
+function matchesFamilyWordBoundary(modelId: string, family: string): boolean {
+  return new RegExp(`(^|[^a-z0-9])${family}([^a-z0-9]|$)`, 'i').test(modelId)
+}
+
+/**
+ * Official `F7t` (@193414468, byte-verified): resolve a family alias to the
+ * NEWEST allowed concrete firstParty ID by reverse-scanning the model config
+ * table (insertion order = launch order, so the last match is the newest —
+ * `opus` → claude-opus-5-5, `fable` → claude-fable-5-1). `Ge` is the
+ * modelOverrides identity resolver; `qr` is isModelAllowed.
+ */
+function resolveFamilyConcreteModel(familyAlias: string): string | null {
+  const keys = Object.keys(ALL_MODEL_CONFIGS) as ModelKey[]
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const canonical = resolveOverriddenModel(
+      ALL_MODEL_CONFIGS[keys[i]]!.firstParty,
+    )
+    if (
+      matchesFamilyWordBoundary(canonical, familyAlias) &&
+      isModelAllowed(canonical)
+    ) {
+      return canonical
+    }
+  }
+  return null
+}
+
+/**
+ * Official `r7` (@193438310, byte-verified, `q7t` pre-check omitted — it
+ * probes Anthropic-internal beta headers OCC does not send):
+ *   let r=uS(Tx(e).trim());if(!r.startsWith("claude-"))return!0;
+ *   return r.includes("opus")&&al()?jk():!0
+ * i.e. non-Claude (custom gateway) IDs always merge; Claude Opus IDs on an
+ * Anthropic-owned provider merge only when the 1M-merge flag `jk()` is on.
+ */
+function shouldMerge1mVariant(concreteModel: string): boolean {
+  const normalized = concreteModel.trim().toLowerCase()
+  if (!normalized.startsWith('claude-')) return true
+  if (normalized.includes('opus') && isAnthropicOwnedProvider()) {
+    return isOpus1mMergeEnabled()
+  }
+  return true
+}
+
+/**
+ * Official `Pv` (@196282900 region, byte-verified): given a picker row whose
+ * value is a family alias (`opus`, `sonnet`, …), compute the concrete model
+ * ID that alias resolves to for the current user — including the merged
+ * `[1m]` variant when the alias row carries a 1M tag, the user has 1M access,
+ * and `r7` allows the merge. Returns null when the row is not an alias on an
+ * Anthropic-owned provider, the family has no concrete ID, another row
+ * already materializes the same variant, or the result has no known picker
+ * option (`sl` = getKnownModelOption).
+ */
+function resolve1mVariantForRow(
+  options: ModelOption[],
+  row: ModelOption,
+): string | null {
+  if (typeof row.value !== 'string') return null
+  const stripped = stripTrailing1mTag(row.value)
+  if (!isModelFamilyAlias(stripped) || !isAnthropicOwnedProvider()) return null
+  const concrete = resolveFamilyConcreteModel(stripped)
+  if (concrete === null) return null
+  const hadTag = row.value !== stripped
+  const hasAccess =
+    stripped === 'opus'
+      ? checkOpus1mAccess()
+      : stripped === 'sonnet'
+        ? checkSonnet1mAccess()
+        : true
+  const merged =
+    hadTag && hasAccess && shouldMerge1mVariant(concrete)
+      ? `${concrete}[1m]`
+      : concrete
+  const canonicalConcrete = resolveOverriddenModel(concrete)
+  const mergedHasTag = merged !== concrete
+  // Official dedup: another row already spells out this exact variant.
+  const alreadyPresent = options.some(
+    other =>
+      other !== row &&
+      typeof other.value === 'string' &&
+      stripTrailing1mTag(other.value) !== other.value === mergedHasTag &&
+      resolveOverriddenModel(stripTrailing1mTag(other.value)) ===
+        canonicalConcrete &&
+      isModelAllowed(other.value),
+  )
+  if (alreadyPresent) return null
+  if (getKnownModelOption(merged) === null) return null
+  return merged
+}
+
+/**
+ * Official `ui` (@196284994, byte-verified): insert a picker row in family
+ * order. Non-Fable rows append at the end. Fable rows insert after the
+ * Default row and after any rows belonging to the default family / the
+ * resolved family of the row that follows Default (so the Fable row lands
+ * between the Opus and Sonnet rows for an Opus-default user, matching the
+ * official 2.1.280 capture order Default → Opus → Fable → Sonnet → Haiku).
+ */
+function insertModelOptionSorted(
+  options: ModelOption[],
+  row: ModelOption,
+): void {
+  if (!(typeof row.value === 'string' && isFableModelValue(row.value))) {
+    options.push(row)
+    return
+  }
+  const defaultIdx = options.findIndex(opt => opt.value === null)
+  if (defaultIdx === -1) {
+    options.splice(0, 0, row)
+    return
+  }
+  // Official `s = Pc(Ll())` — family of the parsed default-model setting.
+  const defaultFamily = pickerFamily(
+    parseUserSpecifiedModel(getDefaultMainLoopModelSetting()),
+  )
+  const nextValue = options[defaultIdx + 1]?.value
+  const nextRow = options[defaultIdx + 1]
+  // Official `y`: the concrete resolution of the row after Default.
+  const resolvedNext =
+    typeof nextValue === 'string' && nextRow !== undefined
+      ? resolve1mVariantForRow(options, nextRow)
+      : null
+  // Official `w`: candidate matches `y` by override-resolved identity AND
+  // 1M-tag state AND is allowlisted.
+  const matchesResolvedNext = (candidate: string): boolean =>
+    resolvedNext !== null &&
+    resolveOverriddenModel(stripTrailing1mTag(candidate)) ===
+      resolveOverriddenModel(stripTrailing1mTag(resolvedNext)) &&
+    stripTrailing1mTag(candidate) !== candidate ===
+      (stripTrailing1mTag(resolvedNext) !== resolvedNext) &&
+    isModelAllowed(candidate)
+  // Official `E = Ng() ?? _0() ?? null` and `T` (any tail/allowlist/gateway
+  // candidate matching `y`; managed-settings terms omitted — see header).
+  const tailSetting =
+    getUserSpecifiedModelSetting() ?? getInitialMainLoopModel() ?? null
+  const hasTailCandidateMatch =
+    (typeof tailSetting === 'string' && matchesResolvedNext(tailSetting)) ||
+    ((getSettings_DEPRECATED()?.availableModels ?? []) as string[]).some(m =>
+      matchesResolvedNext(m.trim()),
+    ) ||
+    readGatewayModelOptions().some(
+      opt => typeof opt.value === 'string' && matchesResolvedNext(opt.value),
+    )
+  // Official `A`: the row after Default is a concrete (or merged) model row.
+  const nextConcreteOrMerged =
+    typeof nextValue === 'string' &&
+    (isModelAllowlistInactive() ||
+      isModelAllowed(nextValue) ||
+      (resolvedNext !== null && !hasTailCandidateMatch))
+  // Official `M`: family of the row after Default when its value is an alias.
+  const nextFamily =
+    typeof nextValue === 'string' &&
+    isModelFamilyAlias(stripTrailing1mTag(nextValue))
+      ? pickerFamily(nextValue)
+      : null
+  const skipFamilies = new Set<string>()
+  if (nextFamily !== null) {
+    skipFamilies.add(nextFamily)
+    if (!nextConcreteOrMerged && defaultFamily !== null) {
+      skipFamilies.add(defaultFamily)
+    }
+  } else if (defaultFamily !== null) {
+    skipFamilies.add(defaultFamily)
+  }
+  let insertIdx = defaultIdx + 1
+  while (insertIdx < options.length) {
+    const value = options[insertIdx]?.value
+    if (typeof value !== 'string') break
+    const family = pickerFamily(value)
+    if ((family !== null && skipFamilies.has(family)) || isFableModelValue(value)) {
+      insertIdx++
+    } else {
+      break
+    }
+  }
+  options.splice(insertIdx, 0, row)
+}
+
+/**
+ * Official `pj` (@196278861 region, byte-verified): decorate a gateway-
+ * discovered row — when its label is still the raw model ID (`nMn`:
+ * `typeof e.value==="string"&&e.label===eA(e.value)`, i.e. undecorated),
+ * relabel with the marketing name (`Ztt`) and fold the old label into the
+ * description.
+ */
+function decorateGatewayOption(option: ModelOption): ModelOption {
+  if (typeof option.value !== 'string' || option.label !== option.value) {
+    return option
+  }
+  const marketingName = getMarketingNameForModel(option.value)
+  if (!marketingName) return option
+  return {
+    ...option,
+    label: marketingName,
+    description: `${option.description} (${option.label})`,
+  }
+}
+
+/**
+ * Official `NSe` (@193423400 region, byte-verified): whether the picker can
+ * offer Fable at all. `Ml()`/`XS()` (internal gates) are always false in
+ * OCC's build; `ZN(noe)` is the gateway-model scan.
+ *   if(a.ANTHROPIC_DEFAULT_FABLE_MODEL)return!0;
+ *   switch(Oe()){case"firstParty":return!0;
+ *     case"gateway":return ZN(noe);default:return!1}
+ */
+function isFableAvailableForPicker(): boolean {
+  if (process.env.ANTHROPIC_DEFAULT_FABLE_MODEL) return true
+  switch (getAPIProvider()) {
+    case 'firstParty':
+      return true
+    case 'gateway':
+      return readGatewayModelOptions().some(
+        opt => typeof opt.value === 'string' && opt.value.includes('claude-fable-'),
+      )
+    default:
+      return false
+  }
+}
+
+/**
+ * Official `vv` (@196266015 region): the Fable marketing name for a model
+ * value, restricted to the fable family (`pc(qt(Ge(e,{identity:!0})))?.family
+ * ==="fable"?display_name:void 0`).
+ */
+function getFableMarketingName(model: string): string | undefined {
+  const resolved = stripTrailing1mTag(resolveOverriddenModel(model))
+  const canonical = getCanonicalName(resolved)
+  if (!canonical.includes('claude-fable-')) return undefined
+  return getMarketingNameForModel(resolved) ?? undefined
+}
+
+/**
+ * Official `In`/`hCt` (@193447571 region): the firstParty-gated pricing
+ * suffix ` ·${fastMode ? ` (↯)` : ''} ${pricing}` — same shape as
+ * getOpus55PricingSuffix, but priced off the given model's cost table
+ * (`Hh` base tier; the official fast arm `hde(Tze(r))` reads the fast tier —
+ * OCC's MODEL_COSTS has no per-model fast tier for fable, so both arms use
+ * the base table, matching the official capture "· $10/$50 per Mtok").
+ */
+function getFablePricingSuffix(model: string, fastMode: boolean): string {
+  if (getAPIProvider() !== 'firstParty') return ''
+  const pricing = getModelPricingString(model)
+  if (pricing === undefined) return ''
+  const fastModeIndicator = fastMode ? ` (${LIGHTNING_BOLT})` : ''
+  return ` ·${fastModeIndicator} ${pricing}`
+}
+
+/**
+ * Official `VG` (@196267100 region, byte-verified): the stock Fable row for
+ * the picker's post-step. `cl` is the blurb; `Bc()` (usage-credits suffix)
+ * is staged-empty (docs/upstream-version-gap-occ113.md); subscribers get no
+ * pricing suffix (`ft()?"":In(e,n)`).
+ */
+function getFablePickerRow(model: string, fastMode = false): ModelOption {
+  const name = getFableMarketingName(model) ?? 'Fable 5.1'
+  const blurb = 'Most capable for your hardest and longest-running tasks'
+  const pricingSuffix = isClaudeAISubscriber()
+    ? ''
+    : getFablePricingSuffix(model, fastMode)
+  return {
+    value: model,
+    label: 'Fable',
+    description: `${name} · ${blurb}${pricingSuffix}`,
+    descriptionForModel: `${name} - most capable for your hardest and longest-running tasks`,
+  }
+}
+
+/**
+ * Official `YG` (@196266500 region, byte-verified): the Fable row for a
+ * tail-inserted user value — marketing-name label when the value resolves
+ * into the fable family, otherwise the stock Fable row re-valued.
+ */
+function getFableRowForValue(value: string): ModelOption {
+  const name = getFableMarketingName(value)
+  if (name === undefined) {
+    return { ...getFable5Option(), value }
+  }
+  const blurb = 'Most capable for your hardest and longest-running tasks'
+  return {
+    value,
+    label: name,
+    description: `${name} · ${blurb}`,
+    descriptionForModel: `${name} - most capable for your hardest and longest-running tasks`,
+  }
+}
+
 export function getModelOptions(fastMode = false): ModelOption[] {
   const options = getModelOptionsBase(fastMode)
 
@@ -868,52 +1321,129 @@ export function getModelOptions(fastMode = false): ModelOption[] {
     }
   }
 
-  // Append models discovered from a gateway's /v1/models endpoint (binary `oIn()`).
-  for (const opt of readGatewayModelOptions()) {
-    if (!options.some(existing => existing.value === opt.value)) {
-      options.push(opt)
+  // Official `wj` head/tail machinery (2.1.280, byte-verified @196278861
+  // region). `r` is the availableModels setting — gateway rows and the Fable
+  // post-step only run when the allowlist is INACTIVE (`r===null`).
+  const allowlistInactive = isModelAllowlistInactive()
+
+  // Gateway-discovered models (binary `oIn()` rows). Official:
+  //   let h=r===null?IHe():[];
+  //   for(let M of h)if(!s.some(L=>zr(L,M)))ui(s,pj(M))
+  // — family-aware `zr` dedup (not strict value equality), sorted `ui`
+  // insertion, and `pj` marketing-name decoration.
+  if (allowlistInactive) {
+    for (const opt of readGatewayModelOptions()) {
+      if (!options.some(existing => modelRowsValueEqual(existing, opt))) {
+        insertModelOptionSorted(options, decorateGatewayOption(opt))
+      }
     }
   }
 
-  // Add custom model from either the current model value or the initial one
-  // if it is not already in the options.
-  let customModel: ModelSetting = null
-  const currentMainLoopModel = getUserSpecifiedModelSetting()
-  const initialMainLoopModel = getInitialMainLoopModel()
-  if (currentMainLoopModel !== undefined && currentMainLoopModel !== null) {
-    customModel = currentMainLoopModel
-  } else if (initialMainLoopModel !== null) {
-    customModel = initialMainLoopModel
+  // Official Fable post-step (@196280400 region):
+  //   if(r===null&&y==="firstParty"&&NSe()&&
+  //      !s.some(M=>typeof M.value==="string"&&fi(M.value)))
+  //     ui(s,VG(OHe(),e))
+  // — the stock Fable row is offered on firstParty whenever no fable-family
+  // row is present yet (this supersedes the pre-2.1.280 note that claimed
+  // firstParty pickers only get Fable via ANTHROPIC_DEFAULT_FABLE_MODEL).
+  if (
+    allowlistInactive &&
+    getAPIProvider() === 'firstParty' &&
+    isFableAvailableForPicker() &&
+    !options.some(
+      opt => typeof opt.value === 'string' && isFableModelValue(opt.value),
+    )
+  ) {
+    insertModelOptionSorted(
+      options,
+      getFablePickerRow(getDefaultFableModel(), fastMode),
+    )
   }
+
+  // Tail: make sure the user's current/initial model has a row. Official:
+  //   E = Ng() ?? _0() ?? null
+  // (getUserSpecifiedModelSetting() ?? getInitialMainLoopModel() ?? null);
+  // when E is null or strictly present → bo(s,n) (allowlist filter).
+  // `sessionTail:!0` markers are telemetry-only and omitted in OCC.
+  const customModel: ModelSetting =
+    getUserSpecifiedModelSetting() ?? getInitialMainLoopModel() ?? null
   if (customModel === null || options.some(opt => opt.value === customModel)) {
     return filterModelOptionsByAllowlist(options)
-  } else if (customModel === 'opusplan') {
-    return filterModelOptionsByAllowlist([...options, getOpusPlanOption()])
-  } else if (customModel === 'opus' && getAPIProvider() === 'firstParty') {
-    return filterModelOptionsByAllowlist([
-      ...options,
-      getMaxOpusOption(fastMode),
-    ])
-  } else if (customModel === 'opus[1m]' && getAPIProvider() === 'firstParty') {
-    return filterModelOptionsByAllowlist([
-      ...options,
-      getMergedOpus1MOption(fastMode),
-    ])
-  } else {
-    // Try to show a human-readable label for known Anthropic models, with an
-    // upgrade hint if the alias now resolves to a newer version.
-    const knownOption = getKnownModelOption(customModel)
-    if (knownOption) {
-      options.push(knownOption)
+  }
+  const probe: ModelOption = { value: customModel, label: '', description: '' }
+
+  if (isFableModelValue(customModel)) {
+    // Official fi(E) branch: rewrite the family-matched row's value in place
+    // (keeping its label/description), else sorted-insert the YG(E) row.
+    const matchIdx = options.findIndex(opt => modelRowsValueEqual(opt, probe))
+    if (matchIdx !== -1) {
+      options[matchIdx] = { ...options[matchIdx]!, value: customModel }
     } else {
-      options.push({
-        value: customModel,
-        label: customModel,
-        description: 'Custom model',
-      })
+      insertModelOptionSorted(options, getFableRowForValue(customModel))
     }
     return filterModelOptionsByAllowlist(options)
   }
+
+  if (customModel === 'opus') {
+    if (!isAnthropicOwnedProvider()) {
+      // Official !al() branch: rewrite rows pinned to the default Opus ID
+      // back to the 'opus' alias so the user's setting matches a row.
+      const defaultOpus = getDefaultOpusModel()
+      return filterModelOptionsByAllowlist(
+        options.map(opt =>
+          opt.value === defaultOpus ? { ...opt, value: 'opus' } : opt,
+        ),
+      )
+    }
+    // Official al() branch: append the Og row unless a tagless row already
+    // matches it under zr.
+    const maxOpus = getMaxOpusOption(fastMode)
+    const alreadyListed = options.some(
+      opt =>
+        typeof opt.value === 'string' &&
+        stripTrailing1mTag(opt.value) === opt.value &&
+        modelRowsValueEqual(opt, maxOpus),
+    )
+    if (!alreadyListed) {
+      options.push(maxOpus)
+    }
+    return filterModelOptionsByAllowlist(options)
+  }
+
+  if (customModel === 'opus[1m]' && isAnthropicOwnedProvider()) {
+    // Official: append the Pg row unless a tagged row already matches under zr.
+    const merged = getMergedOpus1MOption(fastMode)
+    const alreadyListed = options.some(
+      opt =>
+        typeof opt.value === 'string' &&
+        stripTrailing1mTag(opt.value) !== opt.value &&
+        modelRowsValueEqual(opt, merged),
+    )
+    if (!alreadyListed) {
+      options.push(merged)
+    }
+    return filterModelOptionsByAllowlist(options)
+  }
+
+  // Official else branch: `let M={value:E,label:"",description:""};
+  // if(s.some((L)=>zr(L,M)))return bo(s,n);
+  // return s.push({...sl(E)??{value:E,label:E,description:"Custom model"},
+  //   sessionTail:!0}),bo(s,n)`
+  // NOTE: there is NO 'opusplan' branch in the official 2.1.280 tail —
+  // opusplan falls through to here, where zr usually matches the Sonnet row
+  // (kt("opusplan")→Sonnet default); only when no row matches does a plain
+  // {value,label,description:'Custom model'} row get pushed.
+  if (options.some(opt => modelRowsValueEqual(opt, probe))) {
+    return filterModelOptionsByAllowlist(options)
+  }
+  options.push(
+    getKnownModelOption(customModel) ?? {
+      value: customModel,
+      label: customModel,
+      description: 'Custom model',
+    },
+  )
+  return filterModelOptionsByAllowlist(options)
 }
 
 /**
