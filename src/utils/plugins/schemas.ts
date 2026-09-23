@@ -2,6 +2,10 @@ import { z } from 'zod/v4'
 import { HooksSchema } from '../../schemas/hooks.js'
 import { McpServerConfigSchema } from '../../services/mcp/types.js'
 import { lazySchema } from '../lazySchema.js'
+import {
+  isOfficialAnthropicsGitAddress,
+  isOfficialAnthropicsGitUrl,
+} from './marketplaceHelpers.js'
 
 /**
  * First-layer defense against official marketplace impersonation.
@@ -316,6 +320,15 @@ export const OFFICIAL_GITHUB_ORG = 'anthropics'
  * Reserved names (in RESERVED_MARKETPLACE_NAMES — official v280 `W7`) can only
  * be used by marketplaces from the official Anthropic GitHub organization.
  *
+ * Byte-faithful port of official v280 `EVe`@191098926. Security follow-up
+ * (OCC-134 review M3): the previous git-URL branch used substring matching
+ * (`url.includes('github.com/anthropics/')`), which an attacker-controlled URL
+ * like `https://evil.example/github.com/anthropics/x.git` satisfied. The
+ * official check routes through `Ctn`/`Sd` — full host parsing via the
+ * `UNn` normalizer (extractGitHubRepoFromGitUrl) — so only addresses whose
+ * host genuinely normalizes to github.com/ssh.github.com under the official
+ * org pass.
+ *
  * @param name - The marketplace name
  * @param source - The marketplace source configuration
  * @returns An error message if validation fails, or null if valid
@@ -326,30 +339,25 @@ export function validateOfficialNameSource(
 ): string | null {
   const normalizedName = name.toLowerCase()
 
-  // Only validate reserved names
+  // Only validate reserved names — official `if(!W7.has(s))return null`
   if (!RESERVED_MARKETPLACE_NAMES.has(normalizedName)) {
     return null // Not a reserved name, no source validation needed
   }
 
-  // Check for GitHub source type
+  // Check for GitHub source type — official:
+  // `let r=n.repo??""; if(r.includes(":")||!Ctn(r))return <refusal>`
   if (source.source === 'github') {
-    // Verify the repo is from the official org
-    const repo = source.repo || ''
-    if (!repo.toLowerCase().startsWith(`${OFFICIAL_GITHUB_ORG}/`)) {
+    const repo = source.repo ?? ''
+    if (repo.includes(':') || !isOfficialAnthropicsGitAddress(repo)) {
       return `The name '${name}' is reserved for official Anthropic marketplaces. Only repositories from 'github.com/${OFFICIAL_GITHUB_ORG}/' can use this name.`
     }
     return null // Valid: reserved name from official GitHub source
   }
 
-  // Check for git URL source type
+  // Check for git URL source type — official `Sd`: trimmed URL must contain
+  // ':' and normalize to the official org via full host parsing.
   if (source.source === 'git' && source.url) {
-    const url = source.url.toLowerCase()
-    // Check for HTTPS URL format: https://github.com/anthropics/...
-    // or SSH format: git@github.com:anthropics/...
-    const isHttpsAnthropics = url.includes('github.com/anthropics/')
-    const isSshAnthropics = url.includes('git@github.com:anthropics/')
-
-    if (isHttpsAnthropics || isSshAnthropics) {
+    if (isOfficialAnthropicsGitUrl(source.url)) {
       return null // Valid: reserved name from official git URL
     }
 

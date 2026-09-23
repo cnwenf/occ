@@ -5,7 +5,11 @@ import { getSettingsForSource } from '../settings/settings.js'
 import { plural } from '../stringUtils.js'
 import { checkGitAvailable } from './gitAvailability.js'
 import { getMarketplace } from './marketplaceManager.js'
-import type { KnownMarketplace, MarketplaceSource } from './schemas.js'
+import {
+  OFFICIAL_GITHUB_ORG,
+  type KnownMarketplace,
+  type MarketplaceSource,
+} from './schemas.js'
 
 /**
  * Format plugin failure details for user display
@@ -533,6 +537,37 @@ export function extractGitHubRepoFromGitUrl(url: string): string | null {
   const repo = path.replace(/\/$/, '').replace(/\.git$/i, '')
   if (!OWNER_REPO_PATTERN.test(repo) || /\/\.\.?$/.test(repo)) return null
   return repo.toLowerCase()
+}
+
+/**
+ * Port of official v280 `Ctn`@191095040:
+ * `function Ctn(e){return UNn(e)?.startsWith(`${mt}/`)===!0}` (mt="anthropics").
+ *
+ * True only when the git address normalizes — via full host parsing in
+ * extractGitHubRepoFromGitUrl (official `UNn`) — to a github.com (or
+ * ssh.github.com) repository under the official Anthropic org. Substring
+ * smuggling like `https://evil.example/github.com/anthropics/x.git` or
+ * `evil.example/github.com:anthropics/x.git` is rejected: URL forms must
+ * parse with an exact GitHub hostname and allowlisted protocol, and the
+ * scp-like form forbids `/` in the segment before the first `:`.
+ */
+export function isOfficialAnthropicsGitAddress(address: string): boolean {
+  return (
+    extractGitHubRepoFromGitUrl(address)?.startsWith(
+      `${OFFICIAL_GITHUB_ORG}/`,
+    ) === true
+  )
+}
+
+/**
+ * Port of official v280 `Sd`@191098726:
+ * `function Sd(e){let n=e.trim();return n.includes(":")&&Ctn(n)}`.
+ * Git-URL variant of the official-org check used by `EVe`
+ * (validateOfficialNameSource) for `source: 'git'` entries.
+ */
+export function isOfficialAnthropicsGitUrl(url: string): boolean {
+  const trimmed = url.trim()
+  return trimmed.includes(':') && isOfficialAnthropicsGitAddress(trimmed)
 }
 
 /**

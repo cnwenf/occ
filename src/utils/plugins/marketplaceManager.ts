@@ -2375,22 +2375,34 @@ async function readCachedMarketplace(
  * Get a specific marketplace by name from cache only (no network).
  * Returns null if cache is missing or corrupted.
  * Use this for startup paths that should never block on network.
+ *
+ * Security follow-up (OCC-134 review M1): reads go through
+ * loadKnownMarketplacesConfigSafe (schema validation + imitation-name
+ * filtering, official `Hse`/`Wjt` admission) and the reserved-name refusal
+ * check (official `qte`) — the same gates getMarketplace/refreshMarketplace
+ * apply — instead of a bare jsonParse of known_marketplaces.json. Refusals
+ * degrade to null (cache-only contract) with a warn-level debug log.
  */
 export async function getMarketplaceCacheOnly(
   name: string,
 ): Promise<PluginMarketplace | null> {
-  const fs = getFsImplementation()
-  const configFile = getKnownMarketplacesFile()
+  const config = await loadKnownMarketplacesConfigSafe()
+  const entry = config[name]
+
+  if (!entry) {
+    return null
+  }
+
+  const refusal = reservedNameRegistryRefusal(name, entry)
+  if (refusal !== null) {
+    logForDebugging(
+      `Refusing cached marketplace '${name}': ${refusal}`,
+      { level: 'warn' },
+    )
+    return null
+  }
 
   try {
-    const content = await fs.readFile(configFile, { encoding: 'utf-8' })
-    const config = jsonParse(content) as KnownMarketplacesConfig
-    const entry = config[name]
-
-    if (!entry) {
-      return null
-    }
-
     return await readCachedMarketplace(entry.installLocation)
   } catch (error) {
     if (isENOENT(error)) {
@@ -2497,15 +2509,28 @@ export async function getPluginByIdCacheOnly(pluginId: string): Promise<{
     return null
   }
 
-  const fs = getFsImplementation()
-  const configFile = getKnownMarketplacesFile()
-
   try {
-    const content = await fs.readFile(configFile, { encoding: 'utf-8' })
-    const config = jsonParse(content) as KnownMarketplacesConfig
+    // Security follow-up (OCC-134 review M1): same admission gates as
+    // getMarketplaceCacheOnly — safe loader (schema + imitation filter)
+    // instead of a bare jsonParse, plus the reserved-name refusal check,
+    // so pluginLoader's no-enterprise-policy fallback cannot resolve a
+    // plugin through an imitation or untrusted reserved-name entry.
+    const config = await loadKnownMarketplacesConfigSafe()
     const marketplaceConfig = config[marketplaceName]
 
     if (!marketplaceConfig) {
+      return null
+    }
+
+    const refusal = reservedNameRegistryRefusal(
+      marketplaceName,
+      marketplaceConfig,
+    )
+    if (refusal !== null) {
+      logForDebugging(
+        `Refusing cached plugin '${pluginId}': marketplace '${marketplaceName}' failed the trusted-entry check: ${refusal}`,
+        { level: 'warn' },
+      )
       return null
     }
 
