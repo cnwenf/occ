@@ -112,7 +112,8 @@ resolver BEFORE editing — all asserted the pre-2.1.280 "PAYG → Sonnet defaul
 
 2.1.281 is published on `next` only (no GitHub release; `latest`/`stable` unchanged), so per
 the issue's tracking rule (stable/latest channel) it is NOT this round's target. Pre-triage
-facts archived for the next round's full triage:
+facts archived for the next round's full triage (detailed item-level triage S1–S6 from the
+concurrent run preserved in §5b below):
 
 - String-level diff v280→v281: **19,520 new / 15,537 removed** unique strings
   (`cc-diff-281/new_281.txt` / `removed_281.txt`; identifier churn included).
@@ -125,6 +126,66 @@ facts archived for the next round's full triage:
   `CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT`, `CLAUDE_CODE_SUBAGENT_CACHE_EVICT`,
   `CLAUDE_CODE_MAX_TOOL_USE_CONCURRENCY`, `CLAUDE_CODE_TOTAL_TOKENS_REMINDER_BUDGET`,
   `CLAUDE_CODE_ARTIFACT_*` (3), `CLAUDE_CODE_*_FOR_TESTING` (2).
+
+## §5b Appendix — concurrent docs-only run (PR #423) detail, preserved verbatim-in-part
+
+A concurrent occ-leader run (branch `agent/occ-leader/ae0bc3bc`, merged to main as PR #423
+while this branch was in flight) ran the same round as **docs-only** and wrote its own
+occ135 ledger. The add/add conflict is resolved in favor of THIS ledger (it carries the
+Gap A–E fixes + release); the other run's unique facts are preserved here so nothing is
+lost. Its disposition was "no release" — superseded by this branch, which found and fixed
+the /model picker gaps its battery did not cover (its self-acceptance did not A/B the
+picker against the official binary; this round's §2 harness did → Gaps A–E).
+
+**Detailed 2.1.281 triage (deeper than §5 above; all items STAGE until 2.1.281 promotes
+to `latest` with a changelog — designated first port: S1):**
+
+- **S1 — dangerous-rm command-substitution-target guard (SECURITY; top priority on
+  promotion).** New deny path when the rm target IS the output of `$(…)`/backticks
+  (complementary to OCC's existing `findCatastrophicSubstitutionBlock`, which guards rm
+  INSIDE substitution bodies — `src/tools/BashTool/destructiveCommandWarning.ts:523`,
+  ported at 2.1.208). Byte evidence (v280→v281 counts): deny text 0→1 ("Dangerous rm
+  operation detected: the target is the output of a command substitution…"); verdict kinds
+  `wholeSubstitution`/`literalTarget`/`emptyExpansion`/`emptyVariable`; `__CMDSUB__`
+  placeholder; `tooManySubstitutions` 0→2 (>64-substitution variant); env gates
+  `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT` 0→5, `CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT`
+  0→5; GrowthBook `tengu_iridescent_boot` 0→2 default-true; telemetry
+  `tengu_bash_dangerous_rm_too_complex`/`tengu_bash_dangerous_rm_shape`.
+- **S2 — auto-mode safety-dialog auto-deny/cap.** `autoDenyWindow` 0→20; `maxDialogTimeouts`
+  cap → `tengu_safety_check_dialog_capped`; timeout auto-deny → `…auto_denied` (2→4);
+  `denialLimitFallback` 23→25. OCC surface: 0 hits for `maxDialogTimeouts|autoDenyWindow`.
+- **S3 — MCP Apps host.** `CLAUDE_CODE_MCP_APPS_HOST===!0` gate 0→10;
+  `offer:io.modelcontextprotocol/ui`; `text/html;profile=mcp-app`. No OCC surface.
+- **S4 — 14 genuinely-new env vars** (0→N): `CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT`(5),
+  `CLAUDE_CODE_MCP_APPS_HOST`(10), `CLAUDE_BG_WORKSPACE_TRUSTED`(12),
+  `CLAUDE_CODE_HOST_GATEWAY_LINEAGE`(14), `CLAUDE_RELAUNCH_SESSION_ADD_DIRS`(8),
+  `CLAUDE_CODE_DISABLE_STARTUP_WORK_GATE`(3), `CLAUDE_CODE_COMMIT_BETWEEN_KEYS`(4),
+  `CLAUDE_CODE_MCP_QUESTION_GRACE_MS`(2), `CLAUDE_CODE_CCR_EARLY_REMOTE_CONNECT`(5),
+  `CLAUDE_CODE_ARTIFACT_INHERITED_TYPE_GRANT`(2), `CLAUDE_CODE_ARTIFACT_TEXT_VARIANT`(3),
+  `CLAUDE_AGENT_SDK_DISABLE_MCP_MANIFESTS`(3), `CLAUDE_CODE_COORDINATOR_SKILL_GUIDANCE`(3),
+  `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT`(5).
+- **S5 — telemetry/experiments churn.** ~60 new events (`tengu_advisor_strip_replayed`,
+  `tengu_resume_split_response_regrouped`, `tengu_web_fetch_dedup_shadow`,
+  `tengu_mcp_url_elicitation`, 7× `tengu_dir_sync_git_*`, …); ~20 codename experiments
+  (`bright_lake` = dangerous-rm gate, `iridescent_boot`, `velvet_panda`, …).
+- **S6 — stable markers (no drift).** `bashCommandClamp` 40→40, `tengu_goal_proposed` 2→2,
+  `CLAUDE_CODE_ENABLE_NARRATION` 3→3, `AUTO_BACKGROUND_TASKS` 8→8; registries byte-identical
+  (100→100 slash commands). String churn method note: first-pass "removal" candidates were
+  minifier char-mangling; exact-name re-count showed all still present (only genuine
+  reduction: `CLAUDE_CODE_REPL\b` 4→1).
+- 2.1.281 was published **2026-09-23T17:01:17Z** (~2 min before this issue's 01:00
+  Asia/Shanghai autopilot trigger); `cc-281.tgz` sha1 `7415b40ab4c360eda62336810665920d8cb4ef9c`
+  matches registry metadata. occ134's 22 staged items remain staged (nothing promoted).
+
+**Its self-acceptance battery (10 checks, live gateway, isolated HOME):** headless `-p` PONG,
+banner, onboarding order, REPL round-trip, AGENTS.md sentinel honored, `/status`, invisible-char
+strip (U+200B/U+200E byte-verified), Shift+Tab 4-mode ring (bypass correctly gated off),
+`/exit` goodbye + resume hint, second-launch no-re-prompt — all PASS. Verdict at the time:
+"no inconsistencies found". Superseded in part: the picker A/B in this ledger's §2 harness
+covers a surface that battery did not, and found Gaps A–E (now fixed, §3/§4b).
+
+**Its parity snapshot at merge time (PR #423):** releases 150 = tags 150, `comm -23` empty,
+remote branches main-only, npm latest 2.1.350.
 
 ## §6 Disposition
 
