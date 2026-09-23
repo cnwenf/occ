@@ -5,7 +5,8 @@ import { lazySchema } from '../lazySchema.js'
 import {
   isOfficialAnthropicsGitAddress,
   isOfficialAnthropicsGitUrl,
-} from './marketplaceHelpers.js'
+  OFFICIAL_GITHUB_ORG,
+} from './gitUrlNormalization.js'
 
 /**
  * First-layer defense against official marketplace impersonation.
@@ -311,8 +312,11 @@ export function assertMarketplaceNameNotReservedImitation(
 /**
  * The official GitHub organization for Anthropic marketplaces.
  * Reserved names must come from this org.
+ *
+ * Defined in the leaf module gitUrlNormalization.ts (official `mt`) and
+ * re-exported here for existing consumers of this module's API.
  */
-export const OFFICIAL_GITHUB_ORG = 'anthropics'
+export { OFFICIAL_GITHUB_ORG }
 
 /**
  * Validate that a marketplace with a reserved name comes from the official source.
