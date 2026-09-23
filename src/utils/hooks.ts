@@ -4235,6 +4235,13 @@ async function* executeHooks({
       additional_context_chars: String(outputChars.additionalContextChars),
       system_message_chars: String(outputChars.systemMessageChars),
       initial_user_message_chars: String(outputChars.initialUserMessageChars),
+      // Honesty note: the four sibling *_chars counters above have live OCC
+      // producers (the outputChars tally in the results loop), but this
+      // field's producer — the official oversized-output spill/persist
+      // helper (`ene`, gate `hookOutputWasPersisted`) — is NOT ported to
+      // OCC. Nothing rewrites hook outputs into <persisted-output> wrappers,
+      // so the attribute is structurally always '0'. Read that '0' as
+      // "spill feature not ported", NOT "no oversized outputs occurred".
       num_outputs_persisted: String(numOutputsPersisted),
       managed_only: String(shouldAllowManagedHooksOnly()),
       hook_definitions: jsonStringify(hookDefinitionsComplete),

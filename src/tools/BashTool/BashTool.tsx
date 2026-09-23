@@ -1148,7 +1148,11 @@ async function* runShellCommand({
       description: description || command,
       shellCommand,
       toolUseId,
-      agentId
+      agentId,
+      // 2.1.280 #042 wiring: BashTool always runs commands through bash —
+      // persist it so classifyShellTaskResult dispatches per-shell benign-exit
+      // semantics (official Jhe stores `shell` at spawn).
+      shell: 'bash'
     }, {
       abortController,
       getAppState: () => {
@@ -1360,7 +1364,10 @@ async function* runShellCommand({
             command,
             description: description || command,
             shellCommand,
-            agentId
+            agentId,
+            // 2.1.280 #042 wiring: persist the shell so a later Ctrl+B
+            // background keeps per-shell benign-exit classification.
+            shell: 'bash'
           }, setAppState, toolUseId);
         }
         setToolJSX({

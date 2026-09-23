@@ -2148,7 +2148,23 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
         candidateRule !== null &&
         isClaudeFolderScopedRuleContent(candidateRule.ruleValue.ruleContent)
       )
-    })
+    }) &&
+    // OCC hardening beyond official 2.1.280 (acceptance review SEC-1): even when
+    // EVERY spelling matches a .claude-scoped session rule, do NOT take the
+    // step-1.6 early-return allow when the write is CARRIED OUT — i.e. the
+    // physical landing point resolves OUTSIDE the allowed working directories
+    // (computeWriteCarriedOut().carriedOut). The all-spellings check above
+    // judges rule SCOPE only; a broad global `~/.claude/**` grant can make an
+    // out-of-worktree landing (e.g. <wd>/.claude/notes -> ~/.claude/real, a
+    // symlinked intermediate DIRECTORY) match a scoped rule while still
+    // escaping the worktree, so step-1.6 would allow a write the carry-out
+    // merge (steps 1.7 safety / 5 final ask) would have denied/asked. Official
+    // 2.1.280 returns the allow here (byte-faithful); OCC hangs the bypass
+    // under `!carriedOut` so the carry-out check wins — mirroring the M2
+    // landing-check hardening above and the --plugin-url HTTPS-only precedent.
+    // `carriedOut` is already computed once at the top of this function
+    // (CC 2.1.280 r2e @194287970), so this gate adds no extra syscalls.
+    !carriedOut?.carriedOut
   ) {
     return {
       behavior: 'allow',

@@ -334,7 +334,9 @@ const MCP_DESCRIPTION_TRUNCATION_SUFFIX = '… [truncated]'
  *
  * NOTE: the official slices with the surrogate-aware `re(e,n)` (@190617057),
  * which is NOT a 2.1.280 delta (identical in 2.1.278) and whose inner `Ie()`
- * normalizer is not byte-verified — so OCC keeps its plain `slice`. Staged.
+ * normalizer is not byte-verified. OCC matches its observable contract: a cut
+ * landing mid-surrogate-pair drops the trailing lone high surrogate instead of
+ * emitting it into the prompt.
  *
  * Exported for direct unit testing (the official uses the same truncator from
  * the connect path, the tool factory and the `/mcp` tool-detail UI).
@@ -354,7 +356,22 @@ export function truncateMcpDescription(
       `${label} truncated from ${text.length} to ${limit} chars`,
     )
   }
-  return text.slice(0, limit) + MCP_DESCRIPTION_TRUNCATION_SUFFIX
+  return sliceSurrogateAware(text, limit) + MCP_DESCRIPTION_TRUNCATION_SUFFIX
+}
+
+/**
+ * Surrogate-aware cut of an already-oversized string (the observable contract
+ * of the official `re(e,n)` slicer): if the fixed-length cut landed between a
+ * surrogate pair, the slice ends with a lone high surrogate (0xD800–0xDBFF) —
+ * drop it so a broken UTF-16 code unit never reaches a prompt. BMP cuts (and
+ * cuts that keep an astral char whole) pass through byte-identical.
+ */
+function sliceSurrogateAware(text: string, limit: number): string {
+  const sliced = text.slice(0, limit)
+  const lastCharCode = sliced.charCodeAt(sliced.length - 1)
+  return lastCharCode >= 0xd800 && lastCharCode <= 0xdbff
+    ? sliced.slice(0, -1)
+    : sliced
 }
 
 /**
@@ -445,14 +462,24 @@ async function isMcpAuthCached(serverId: string): Promise<boolean> {
 // read-modify-write races when multiple servers return 401 in the same batch
 let writeChain = Promise.resolve()
 
+// Shared writer for BOTH cache mutators (set + remove) so the pair stays
+// symmetric: mkdir-recursive before writeFile, matching setMcpAuthCacheEntry's
+// long-standing behavior. Robustness only on the remove path — its write is
+// gated on a successful read (so the dir normally exists), but a memoized read
+// can outlive a config dir removed mid-session, and a bare writeFile would
+// then ENOENT into the best-effort .catch and silently skip the rewrite.
+async function writeMcpAuthCacheFile(cache: McpAuthCacheData): Promise<void> {
+  const cachePath = getMcpAuthCachePath()
+  await mkdir(dirname(cachePath), { recursive: true })
+  await writeFile(cachePath, jsonStringify(cache))
+}
+
 function setMcpAuthCacheEntry(serverId: string): void {
   writeChain = writeChain
     .then(async () => {
       const cache = await getMcpAuthCache()
       cache[serverId] = { timestamp: Date.now() }
-      const cachePath = getMcpAuthCachePath()
-      await mkdir(dirname(cachePath), { recursive: true })
-      await writeFile(cachePath, jsonStringify(cache))
+      await writeMcpAuthCacheFile(cache)
       // Invalidate the read cache so subsequent reads see the new entry.
       // Safe because writeChain serializes writes: the next write's
       // getMcpAuthCache() call will re-read the file with this entry present.
@@ -503,7 +530,7 @@ export function removeMcpAuthCacheEntry(serverId: string): Promise<void> {
         return
       }
       delete cache[serverId]
-      await writeFile(getMcpAuthCachePath(), jsonStringify(cache))
+      await writeMcpAuthCacheFile(cache)
       // Invalidate the memoized read so the next isMcpAuthCached() re-reads the
       // file and no longer sees the removed entry.
       authCachePromise = null
