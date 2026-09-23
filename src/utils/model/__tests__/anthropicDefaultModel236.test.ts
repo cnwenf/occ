@@ -38,8 +38,10 @@ afterAll(() => {
 })
 
 const {
+  dedup1mSuffix,
   getDefaultMainLoopModel,
   getDefaultMainLoopModelSetting,
+  getDefaultOpusModel,
   getDefaultSonnetModel,
   getUserSpecifiedModelSetting,
   resolveAnthropicDefaultModel,
@@ -145,8 +147,15 @@ describe('2.1.236: default-chain wiring (official N6/odt position)', () => {
     })
   })
 
-  test('without the env var the tier default is unchanged', () => {
-    expect(getDefaultMainLoopModelSetting()).toBe(getDefaultSonnetModel())
+  test('without the env var the tier default follows the 2.1.280 cv resolver', () => {
+    // 2.1.280 Gap C fix: official `cv` (@193434108) resolves non-subscriber
+    // sessions on Anthropic-owned providers (firstParty here) to the merged
+    // Opus default — NOT Sonnet. `Xn() ? Qd() : al()` → `jk() ? WF(X_()) : X_()`.
+    expect(getDefaultMainLoopModelSetting()).toBe(
+      dedup1mSuffix(getDefaultOpusModel()),
+    )
+    // Guard the legacy expectation is really gone (Sonnet would be 2.1.279-era).
+    expect(getDefaultMainLoopModelSetting()).not.toBe(getDefaultSonnetModel())
   })
 
   test('getDefaultMainLoopModel resolves the env default end to end', () => {

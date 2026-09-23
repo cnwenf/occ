@@ -164,3 +164,25 @@ export function isFirstPartyAnthropicBaseUrl(): boolean {
     return false
   }
 }
+
+/**
+ * Whether the current provider is Anthropic-operated ("first-party owned").
+ *
+ * Port of the official 2.1.280 `al()` predicate (byte-verified @193045941):
+ *   function al(){let e=ms();return e==="firstParty"||e==="anthropicAws"||e==="gateway"}
+ * `ms()` is the official provider resolver including its gateway arm; OCC's
+ * getAPIProvider() never returns 'gateway' (no managed-gateway build surface)
+ * and OCC folds the official anthropicGoogleCloud arm into firstParty, so the
+ * port checks the same three official provider names against
+ * getAPIProvider(). Used by the 2.1.280 default-model resolver (`cv`),
+ * parseUserSpecifiedModel's legacy-Opus remap gate (`kt`), and the picker
+ * option builders (`wj`/`Pv`/`r7`).
+ */
+export function isAnthropicOwnedProvider(): boolean {
+  const provider = getAPIProvider()
+  return (
+    provider === 'firstParty' ||
+    provider === 'anthropic_aws' ||
+    provider === 'gateway'
+  )
+}

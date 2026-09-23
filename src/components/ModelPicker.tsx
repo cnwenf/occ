@@ -11,7 +11,8 @@ import { useAppState, useSetAppState } from '../state/AppState.js';
 import { convertEffortValueToLevel, type EffortLevel, getDefaultEffortForModel, modelSupportsEffort, modelSupportsMaxEffort, modelSupportsXhighEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../utils/effort.js';
 import { clampEffortToCap, getEffectiveEffortCap, hasEffortLevelsAboveCap } from '../utils/effort/cap.js';
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../utils/model/model.js';
-import { getModelOptions } from '../utils/model/modelOptions.js';
+import { isModelAllowed } from '../utils/model/modelAllowlist.js';
+import { findMatchingOptionValue, getModelOptions } from '../utils/model/modelOptions.js';
 import { getSettingsForSource, updateSettingsForSource } from '../utils/settings/settings.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
 import { Select } from './CustomSelect/index.js';
@@ -45,7 +46,7 @@ export type Props = {
 };
 const NO_PREFERENCE = '__NO_PREFERENCE__';
 export function ModelPicker(t0) {
-  const $ = _c(86);
+  const $ = _c(87);
   const {
     initial,
     sessionModel,
@@ -59,8 +60,6 @@ export function ModelPicker(t0) {
   } = t0;
   const setAppState = useSetAppState();
   const exitState = useExitOnCtrlCDWithKeybindings();
-  const initialValue = initial === null ? NO_PREFERENCE : initial;
-  const [focusedValue, setFocusedValue] = useState(initialValue);
   const isFastMode = useAppState(_temp);
   const [hasToggledEffort, setHasToggledEffort] = useState(false);
   const effortValue = useAppState(_temp2);
@@ -83,9 +82,26 @@ export function ModelPicker(t0) {
     t3 = $[3];
   }
   const modelOptions = t3;
+  // Official 2.1.280 Sfe `eo`/`jt` (byte-verified @217541095 region):
+  //   jt = Ht === null ? ih : F5t(ut, Ht) ?? Ht
+  // The picker's checked/focused/default value is the initial setting RESOLVED
+  // to the row it matches (F5t = findMatchingOptionValue — family-aware zr
+  // probe), so a custom ANTHROPIC_MODEL that equals an alias row's concrete
+  // model (e.g. "qwen3.8-max" == the "opus" row under custom env defaults)
+  // gets its ✔ and focus on that row instead of spawning a duplicate tail row.
+  // NOTE: official Ht = Pt ?? h also folds in the session model override via
+  // the Vhe resolver; OCC keeps `initial`-only semantics (Vhe not extracted —
+  // no A/B-visible effect in this build; documented as staged in
+  // docs/upstream-version-gap-occ135.md).
+  const initialValue = initial === null ? NO_PREFERENCE : findMatchingOptionValue(modelOptions, initial) ?? initial;
+  const [focusedValue, setFocusedValue] = useState(initialValue);
   let t4;
   bb0: {
-    if (initial !== null && !modelOptions.some(opt => opt.value === initial)) {
+    // Official 2.1.280 Nn memo row 1: append a "Current model" row only when
+    // the RESOLVED value is not strictly present (`!ut.some(_r=>_r.value===qs)`,
+    // qs = jt above) AND the raw initial value passes the allowlist (`qr(Or)`).
+    // Row 2 ("Base model", session-override-derived) stays staged — see note above.
+    if (initial !== null && !modelOptions.some(opt => opt.value === initialValue) && isModelAllowed(initial)) {
       let t5;
       if ($[4] !== initial) {
         t5 = modelDisplayString(initial);
@@ -385,7 +401,7 @@ export function ModelPicker(t0) {
   }
   let t24;
   if ($[62] !== displayEffort || $[63] !== focusedDefaultEffort || $[64] !== focusedModelName || $[65] !== focusedSupportsEffort || $[85] !== focusedCapped) {
-    t24 = <Box marginBottom={1} flexDirection="column">{focusedSupportsEffort ? <Text dimColor={true}><EffortLevelIndicator effort={displayEffort} />{" "}{capitalize(displayEffort)} effort{displayEffort === focusedDefaultEffort ? " (default)" : ""}{" "}<Text color="subtle">← → to adjust</Text></Text> : <Text color="subtle"><EffortLevelIndicator effort={undefined} /> Effort not supported{focusedModelName ? ` for ${focusedModelName}` : ""}</Text>}{focusedCapped ? <Text color="subtle">Higher effort levels are capped by your settings or organization.</Text> : null}</Box>;
+    t24 = <Box marginBottom={1} flexDirection="column">{focusedSupportsEffort ? <Text dimColor={true}><EffortLevelIndicator effort={displayEffort} />{" "}{displayEffort === "xhigh" ? "xHigh" : displayEffort ? capitalize(displayEffort) : ""} effort{displayEffort === focusedDefaultEffort ? " (default)" : ""}{" "}<Text color="subtle"><KeyboardShortcutHint shortcut="←/→" action="adjust" /></Text></Text> : <Text color="subtle"><EffortLevelIndicator effort={undefined} /> Effort not supported{focusedModelName ? ` for ${focusedModelName}` : ""}</Text>}{focusedCapped ? <Text color="subtle">Higher effort levels are capped by your settings or organization.</Text> : null}</Box>;
     $[62] = displayEffort;
     $[63] = focusedDefaultEffort;
     $[64] = focusedModelName;
@@ -415,11 +431,21 @@ export function ModelPicker(t0) {
     t26 = $[73];
   }
   let t27;
-  if ($[74] !== exitState || $[75] !== (isStandaloneCommand && onSessionOnlySelect !== undefined)) {
-    t27 = isStandaloneCommand && <Text dimColor={true} italic={true}>{exitState.pending ? <>Press {exitState.keyName} again to exit</> : <Byline>{onSessionOnlySelect ? <><KeyboardShortcutHint shortcut="Enter" action="set as default" /><KeyboardShortcutHint shortcut="s" action="use this session only" /></> : <KeyboardShortcutHint shortcut="Enter" action="confirm" />}<ConfigurableShortcutHint action="select:cancel" context="Select" fallback="Esc" description="exit" /></Byline>}</Text>;
+  if ($[74] !== exitState || $[75] !== (isStandaloneCommand && onSessionOnlySelect !== undefined) || $[86] !== onCancel) {
+    // Official 2.1.280 t31 footer (byte-verified @217547161 region):
+    //   pending:  `Press ${ri.keyName} again to ${Z ? "cancel" : "exit"}`   (Z = onCancel)
+    //   byline:   [<L chord="enter" action={Q?"set as default":"confirm"}/>,
+    //              Q && <L chord="s" action="use this session only"/>, !1,
+    //              <Xe action="select:cancel" context="Select" fallback="Esc" description="cancel"/>]
+    // Children are SEPARATE Byline entries (a nested fragment counts as one
+    // child and swallows the " · " separators — Gap D root cause). The literal
+    // `!1` placeholder renders nothing and is omitted. Esc description is
+    // "cancel", not "exit".
+    t27 = isStandaloneCommand && <Text dimColor={true} italic={true}>{exitState.pending ? <>Press {exitState.keyName} again to {onCancel ? "cancel" : "exit"}</> : <Byline><KeyboardShortcutHint shortcut="Enter" action={onSessionOnlySelect ? "set as default" : "confirm"} />{onSessionOnlySelect ? <KeyboardShortcutHint shortcut="s" action="use this session only" /> : false}<ConfigurableShortcutHint action="select:cancel" context="Select" fallback="Esc" description="cancel" /></Byline>}</Text>;
     $[74] = exitState;
     $[75] = isStandaloneCommand && onSessionOnlySelect !== undefined;
     $[76] = t27;
+    $[86] = onCancel;
   } else {
     t27 = $[76];
   }

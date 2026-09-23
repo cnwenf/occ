@@ -165,12 +165,20 @@ afterEach(() => {
 })
 
 describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOptionsBase premium branch)', () => {
-  test('Pro gets the Opus-default premium list: Default(Opus 5.5, no 1M wording) + Sonnet + Haiku', () => {
+  test('Pro gets the Opus-default premium list: Default(Opus 5.5, no 1M wording) + Sonnet + Fable + Haiku', () => {
     subState.pro = true
     subState.claudeAi = true
     subState.type = 'pro'
     const options = getModelOptions()
-    expect(options.map(o => o.value)).toEqual([null, 'sonnet', 'haiku'])
+    // 2.1.280 wj Fable post-step: firstParty pickers always carry the Fable
+    // row (NSe availability = true on firstParty); its position comes from
+    // the verbatim ui sorted-insert port.
+    expect(options.map(o => o.value)).toEqual([
+      null,
+      'sonnet',
+      'claude-fable-5-1',
+      'haiku',
+    ])
     expect(options[0]).toEqual({
       value: null,
       label: 'Default (recommended)',
@@ -188,7 +196,12 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     subState.claudeAi = true
     subState.type = 'team'
     const options = getModelOptions()
-    expect(options.map(o => o.value)).toEqual([null, 'sonnet', 'haiku'])
+    expect(options.map(o => o.value)).toEqual([
+      null,
+      'sonnet',
+      'claude-fable-5-1',
+      'haiku',
+    ])
     expect(options[0]?.description).toBe(
       'Opus 5.5 with 1M context · Best for everyday, complex tasks',
     )
@@ -199,7 +212,12 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     subState.claudeAi = true
     subState.type = 'max'
     const options = getModelOptions()
-    expect(options.map(o => o.value)).toEqual([null, 'sonnet', 'haiku'])
+    expect(options.map(o => o.value)).toEqual([
+      null,
+      'sonnet',
+      'claude-fable-5-1',
+      'haiku',
+    ])
     expect(options[0]?.description).toBe(
       'Opus 5.5 with 1M context · Best for everyday, complex tasks',
     )
@@ -210,7 +228,12 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     subState.claudeAi = true
     subState.type = 'team_premium'
     const options = getModelOptions()
-    expect(options.map(o => o.value)).toEqual([null, 'sonnet', 'haiku'])
+    expect(options.map(o => o.value)).toEqual([
+      null,
+      'sonnet',
+      'claude-fable-5-1',
+      'haiku',
+    ])
     expect(options[0]?.description).toBe(
       'Opus 5.5 with 1M context · Best for everyday, complex tasks',
     )
@@ -221,7 +244,12 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     subState.claudeAi = true
     subState.type = 'enterprise'
     const options = getModelOptions()
-    expect(options.map(o => o.value)).toEqual([null, 'opus[1m]', 'haiku'])
+    expect(options.map(o => o.value)).toEqual([
+      null,
+      'opus[1m]',
+      'claude-fable-5-1',
+      'haiku',
+    ])
     expect(options[0]?.description).toBe('Sonnet 5 · Efficient for routine tasks')
     expect(options[1]).toEqual({
       value: 'opus[1m]',
@@ -249,6 +277,7 @@ describe('getModelOptions wiring — extra-usage 1M rows per tier (kv / getMaxSo
     expect(options.map(o => o.value)).toEqual([
       null,
       'opus[1m]',
+      'claude-fable-5-1',
       'sonnet',
       'sonnet[1m]',
       'haiku',
@@ -258,7 +287,7 @@ describe('getModelOptions wiring — extra-usage 1M rows per tier (kv / getMaxSo
       label: 'Opus (1M context)',
       description: `Opus 5.5 with 1M context · Billed as extra usage · ${OPUS55_BASE_PRICE}`,
     })
-    expect(options[3]).toEqual({
+    expect(options[4]).toEqual({
       value: 'sonnet[1m]',
       label: 'Sonnet (1M context)',
       description: `Sonnet 5 with 1M context · Billed as extra usage · ${SONNET5_PRICE}`,
@@ -274,6 +303,7 @@ describe('getModelOptions wiring — extra-usage 1M rows per tier (kv / getMaxSo
       null,
       'sonnet',
       'sonnet[1m]',
+      'claude-fable-5-1',
       'haiku',
     ])
     expect(options.some(o => o.value === 'opus[1m]')).toBe(false)
@@ -288,7 +318,12 @@ describe('getModelOptions wiring — 3P-sonnet-probe demotion (tv) flips Pro off
     withEnv({ ANTHROPIC_DEFAULT_SONNET_MODEL: 'claude-sonnet-4-5' }, () => {
       const options = getModelOptions()
       // Standard branch, Pro → merge disabled → getMaxOpusOption row.
-      expect(options.map(o => o.value)).toEqual([null, 'opus', 'haiku'])
+      expect(options.map(o => o.value)).toEqual([
+        null,
+        'opus',
+        'claude-fable-5-1',
+        'haiku',
+      ])
       expect(options[0]?.description).toBe(
         // The probe env IS the 3P sonnet default → getDefaultSonnetModel()
         // resolves 'claude-sonnet-4-5' → Sonnet 4.5 wording.
