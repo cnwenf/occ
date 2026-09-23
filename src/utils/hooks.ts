@@ -155,6 +155,10 @@ import {
   startHookProgressInterval,
 } from './hooks/hookEvents.js'
 import { createAttachmentMessage } from './attachments.js'
+import {
+  PERSISTED_OUTPUT_TAG,
+  PERSISTED_OUTPUT_CLOSING_TAG,
+} from './toolResultStorage.js'
 import { all } from './generators.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
 import { execPromptHook } from './hooks/execPromptHook.js'
@@ -2804,6 +2808,38 @@ export function getUserPromptSubmitHookBlockingMessage(
  * @param messages Optional conversation history for prompt/function hooks
  * @returns Async generator that yields progress messages and hook results
  */
+/**
+ * 2.1.280 (#004): detect a hook output that was replaced by a
+ * persisted-output wrapper after an oversized spill-to-disk. Byte-verified
+ * port of the official `jKt` (v280 ELF @197236240):
+ *
+ *   function jKt(e,r){return r.startsWith(hX)&&r.endsWith(Fkn)&&r!==e}
+ *
+ * where hX = "<persisted-output>" and Fkn = "</persisted-output>"
+ * (v280 ELF @197225624) — byte-identical to OCC's PERSISTED_OUTPUT_TAG /
+ * PERSISTED_OUTPUT_CLOSING_TAG. The `processed !== original` guard stops a
+ * hook whose raw output merely looks like a wrapper from counting as a
+ * spill.
+ *
+ * Note: OCC has not ported the official producer side — the `ene`
+ * persist-if-oversized helper (threshold `fpo=1e4`, analytics event
+ * `tengu_hook_output_persisted`; present already in v278, i.e. a
+ * pre-2.1.280 upstream gap). Until that lands, nothing rewrites hook
+ * outputs into wrappers and `num_outputs_persisted` honestly stays 0; the
+ * detection is wired structurally identical to the official so the counter
+ * becomes live the moment the spill producer is ported.
+ */
+export function hookOutputWasPersisted(
+  original: string,
+  processed: string,
+): boolean {
+  return (
+    processed.startsWith(PERSISTED_OUTPUT_TAG) &&
+    processed.endsWith(PERSISTED_OUTPUT_CLOSING_TAG) &&
+    processed !== original
+  )
+}
+
 async function* executeHooks({
   hookInput,
   toolUseID,
@@ -3151,6 +3187,22 @@ async function* executeHooks({
       }
 
       if (hook.type === 'agent') {
+        // 2.1.280 (#085): an agent hook answers ok/not-ok and can never
+        // return the allow/deny decision a PermissionRequest needs, so it
+        // must not run for that event. Binary @199810478: the agent branch
+        // opens with
+        //   if(Le==="PermissionRequest")throw Error("agent-type hooks are
+        //   not supported for PermissionRequest events ...")
+        // ahead of the no-conversation-context guard; the throw lands in
+        // the per-hook catch below and surfaces as a hook_non_blocking_error
+        // ("Failed to run: ..."), the same result shape the existing
+        // prompt/agent context errors use. Message byte-exact from the
+        // v280 ELF string table @98607664 (note: no trailing period).
+        if (hookEvent === 'PermissionRequest') {
+          throw new Error(
+            'agent-type hooks are not supported for PermissionRequest events (an agent hook answers ok or not ok, and cannot return the allow / deny decision a permission request needs). Use a command- or http-type hook instead.',
+          )
+        }
         if (!toolUseContext) {
           // 2.1.142: agent-type hooks need conversation context, which
           // SessionStart/Setup/SubagentStart lack. Match the official wording
@@ -3818,6 +3870,25 @@ async function* executeHooks({
     cancelled: 0,
   }
 
+  // 2.1.280 (#004): per-surface output-size accumulators + oversized-spill
+  // counter feeding the hook_execution_complete OTel event. Mirrors the
+  // official `bn`/`jn` (v280 ELF @199822932):
+  //   bn={additionalContextChars:0,classifierContextChars:0,
+  //       systemMessageChars:0,initialUserMessageChars:0,
+  //       hookSuccessStdoutChars:0}, jn=0
+  // classifierContextChars is intentionally absent: OCC has no
+  // classifierContext hook surface, and the official only spreads it into
+  // tengu_repl_hook_finished / tengu_hook_plugin_injected — not into the
+  // five OTel attrs ported here. The official's per-plugin `mr` accounting
+  // (tengu_hook_plugin_injected) is likewise not ported (no OCC surface).
+  const outputChars = {
+    additionalContextChars: 0,
+    systemMessageChars: 0,
+    initialUserMessageChars: 0,
+    hookSuccessStdoutChars: 0,
+  }
+  let numOutputsPersisted = 0
+
   // 2.1.89: 'defer' (print-mode pause) is a hook-only behavior outside the
   // PermissionResult['behavior'] union, so widen the aggregated type.
   let permissionBehavior: (PermissionResult['behavior'] | 'defer') | undefined
@@ -3825,6 +3896,25 @@ async function* executeHooks({
   // Run all hooks in parallel and wait for all to complete
   for await (const result of all(hookPromises)) {
     outcomes[result.outcome]++
+
+    // 2.1.280 (#004): count successful-hook stdout chars and detect
+    // outputs whose attachment content was replaced by a persisted-output
+    // wrapper. Binary @199822212, immediately after the outcome tally:
+    //   if(hr.message?.type==="attachment"&&
+    //      hr.message.attachment.type==="hook_success"){
+    //     let{content:dr,stdout:Br}=hr.message.attachment,Vr=Br?.length??0;
+    //     if(bn.hookSuccessStdoutChars+=Vr,...,
+    //        Br!==void 0&&jKt(Br.trim(),dr))jn++}
+    if (
+      result.message?.type === 'attachment' &&
+      result.message.attachment.type === 'hook_success'
+    ) {
+      const { content, stdout } = result.message.attachment
+      outputChars.hookSuccessStdoutChars += stdout?.length ?? 0
+      if (stdout !== undefined && hookOutputWasPersisted(stdout.trim(), content)) {
+        numOutputsPersisted++
+      }
+    }
 
     // Check for preventContinuation early
     if (result.preventContinuation) {
@@ -3850,10 +3940,22 @@ async function* executeHooks({
 
     // Yield system message separately if present
     if (result.systemMessage) {
+      // 2.1.280 (#004): binary @199825220 —
+      //   bn.systemMessageChars+=hr.systemMessage.length;
+      //   dr=await ene(hr.systemMessage,...); if(jKt(hr.systemMessage,dr))jn++;
+      //   yield {...content:dr...}
+      // OCC has no `ene` spill producer (staged), so the injected value is
+      // the original; the persisted check is kept structural so the counter
+      // becomes live when the spill lands.
+      outputChars.systemMessageChars += result.systemMessage.length
+      const injectedSystemMessage = result.systemMessage
+      if (hookOutputWasPersisted(result.systemMessage, injectedSystemMessage)) {
+        numOutputsPersisted++
+      }
       yield {
         message: createAttachmentMessage({
           type: 'hook_system_message',
-          content: result.systemMessage,
+          content: injectedSystemMessage,
           hookName,
           toolUseID,
           hookEvent,
@@ -3863,20 +3965,48 @@ async function* executeHooks({
 
     // Collect additional context from hooks
     if (result.additionalContext) {
+      // 2.1.280 (#004): binary @199825220 —
+      //   bn.additionalContextChars+=hr.additionalContext.length;
+      //   dr=await ene(...); if(jKt(hr.additionalContext,dr))jn++;
+      //   yield{additionalContexts:[dr]}
+      outputChars.additionalContextChars += result.additionalContext.length
+      const injectedAdditionalContext = result.additionalContext
+      if (
+        hookOutputWasPersisted(
+          result.additionalContext,
+          injectedAdditionalContext,
+        )
+      ) {
+        numOutputsPersisted++
+      }
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) provided additionalContext (${result.additionalContext.length} chars)`,
       )
       yield {
-        additionalContexts: [result.additionalContext],
+        additionalContexts: [injectedAdditionalContext],
       }
     }
 
     if (result.initialUserMessage) {
+      // 2.1.280 (#004): binary @199825220 —
+      //   bn.initialUserMessageChars+=hr.initialUserMessage.length;
+      //   dr=await ene(...); if(jKt(hr.initialUserMessage,dr))jn++;
+      //   yield{initialUserMessage:dr}
+      outputChars.initialUserMessageChars += result.initialUserMessage.length
+      const injectedInitialUserMessage = result.initialUserMessage
+      if (
+        hookOutputWasPersisted(
+          result.initialUserMessage,
+          injectedInitialUserMessage,
+        )
+      ) {
+        numOutputsPersisted++
+      }
       logForDebugging(
         `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) provided initialUserMessage (${result.initialUserMessage.length} chars)`,
       )
       yield {
-        initialUserMessage: result.initialUserMessage,
+        initialUserMessage: injectedInitialUserMessage,
       }
     }
 
@@ -4091,6 +4221,21 @@ async function* executeHooks({
       num_blocking: String(outcomes.blocking),
       num_non_blocking_error: String(outcomes.non_blocking_error),
       num_cancelled: String(outcomes.cancelled),
+      // 2.1.280 (#004): "Added hook output sizes and the number of
+      // oversized outputs saved to a file to the hook_execution_complete
+      // OpenTelemetry event". Binary @199828703 places the five attrs
+      // after total_duration_ms (an attr OCC lacks — pre-existing v278
+      // gap, out of this port's scope) and before managed_only:
+      //   stdout_chars:String(bn.hookSuccessStdoutChars),
+      //   additional_context_chars:String(bn.additionalContextChars),
+      //   system_message_chars:String(bn.systemMessageChars),
+      //   initial_user_message_chars:String(bn.initialUserMessageChars),
+      //   num_outputs_persisted:String(jn)
+      stdout_chars: String(outputChars.hookSuccessStdoutChars),
+      additional_context_chars: String(outputChars.additionalContextChars),
+      system_message_chars: String(outputChars.systemMessageChars),
+      initial_user_message_chars: String(outputChars.initialUserMessageChars),
+      num_outputs_persisted: String(numOutputsPersisted),
       managed_only: String(shouldAllowManagedHooksOnly()),
       hook_definitions: jsonStringify(hookDefinitionsComplete),
       hook_source: shouldAllowManagedHooksOnly() ? 'policySettings' : 'merged',

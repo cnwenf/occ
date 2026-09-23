@@ -7,10 +7,11 @@ import {
   useState,
 } from 'react'
 import { isDeepStrictEqual } from 'util'
+import { useKeybindings } from '../../keybindings/useKeybinding.js'
 import OptionMap from './option-map.js'
 import type { OptionWithDescription } from './select.js'
 
-type State<T> = {
+export type State<T> = {
   /**
    * Map where key is option's value and value is option's index.
    */
@@ -71,7 +72,7 @@ type ResetAction<T> = {
   state: State<T>
 }
 
-const reducer = <T>(state: State<T>, action: Action<T>): State<T> => {
+export const reducer = <T>(state: State<T>, action: Action<T>): State<T> => {
   switch (action.type) {
     case 'focus-next-option': {
       if (state.focusedValue === undefined) {
@@ -419,9 +420,19 @@ export type SelectNavigation<T> = {
    * Focus a specific option by value.
    */
   focusOption: (value: T | undefined) => void
+
+  /**
+   * Focus the first option and scroll the list to the top (select:first).
+   */
+  focusFirstOption: () => void
+
+  /**
+   * Focus the last option and scroll the list to the bottom (select:last).
+   */
+  focusLastOption: () => void
 }
 
-const createDefaultState = <T>({
+export const createDefaultState = <T>({
   visibleOptionCount: customVisibleOptionCount,
   options,
   initialFocusValue,
@@ -576,6 +587,25 @@ export function useSelectNavigation<T>({
     }
   }, [])
 
+  // 2.1.280 (#028): Home/End jump to the first/last option. Official v280
+  // wires select:first/select:last inside the useSelectInput handler map —
+  // byte-verified @205570426:
+  //   h["select:first"]=()=>{i.focusOption(a[0]?.value)},
+  //   h["select:last"]=()=>{i.focusOption(a.at(-1)?.value)}
+  // (absent from the v278 map @206578871). Semantics: focusOption with the
+  // first/last value of the FULL option list (not the visible window). The
+  // official composition places these inside the `if(!isInInput)` block, so
+  // the registration below mirrors that gate; the official's additional
+  // !isDisabled gate lives on useSelectInput props, which this hook cannot
+  // see (documented divergence — see upstream-version-gap notes).
+  const focusFirstOption = useCallback(() => {
+    focusOption(options[0]?.value)
+  }, [focusOption, options])
+
+  const focusLastOption = useCallback(() => {
+    focusOption(options.at(-1)?.value)
+  }, [focusOption, options])
+
   const visibleOptions = useMemo(() => {
     return options
       .map((option, index) => ({
@@ -607,6 +637,22 @@ export function useSelectNavigation<T>({
     )
     return focusedOption?.type === 'input'
   }, [validatedFocusedValue, options])
+
+  // Register the Home/End (select:first/select:last) handlers for every
+  // Select/SelectMulti mounted via this hook. Gated on !isInInput to mirror
+  // the official v280 handler-map composition (see focusFirstOption above).
+  const edgeNavigationHandlers = useMemo(
+    () => ({
+      'select:first': focusFirstOption,
+      'select:last': focusLastOption,
+    }),
+    [focusFirstOption, focusLastOption],
+  )
+
+  useKeybindings(edgeNavigationHandlers, {
+    context: 'Select',
+    isActive: options.length > 0 && !isInInput,
+  })
 
   // Call onFocus with the validated value (what's actually displayed),
   // not the internal state value which may be stale if options changed.
@@ -648,6 +694,8 @@ export function useSelectNavigation<T>({
     focusNextPage,
     focusPreviousPage,
     focusOption,
+    focusFirstOption,
+    focusLastOption,
     options,
   }
 }

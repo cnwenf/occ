@@ -245,11 +245,22 @@ export function takeApprovedPathsForRead(
  * and stash it under (toolUseId, path) before the rule checks run. OCC's
  * `getPathsForPermissionCheck` is the `ao` analogue (original path + every
  * symlink-chain target + canonical path).
+ *
+ * CC 2.1.280 (changelog #005): the official v280 write tools stash the
+ * descriptor spellings instead — `e.session.writePermissionStash.stash(
+ * r.toolUseId,s,g.spellings)` with `s=et(file_path)`, `g=da(s)` (wiring sites
+ * @198310186 / @201063176 / @201076162). Write callers pass those spellings
+ * via `precomputedResolutions`; they are a superset of
+ * getPathsForPermissionCheck(path) (see resolveWritePathDescriptor), so the
+ * 2.1.251 IO gates below (fresh getPaths ⊆ stashed) keep their exact
+ * semantics. Callers without a descriptor (read lane) keep the ao/getPaths
+ * flow.
  */
 export function stashCheckTimeResolutions(
   context: Pick<ToolUseContext, 'toolUseId'>,
   rawPath: string | undefined,
   mode: ResolutionMode,
+  precomputedResolutions?: readonly string[],
 ): void {
   if (typeof rawPath !== 'string' || rawPath.trim() === '') return
   let path: string
@@ -262,7 +273,9 @@ export function stashCheckTimeResolutions(
   getSessionWritePermissionStash().stash(
     context.toolUseId,
     path,
-    getPathsForPermissionCheck(path),
+    precomputedResolutions !== undefined
+      ? [...precomputedResolutions]
+      : getPathsForPermissionCheck(path),
     mode,
   )
 }

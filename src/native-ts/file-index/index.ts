@@ -12,12 +12,22 @@
  *
  * Score semantics: lower = better. Score is position-in-results / result-count,
  * so the best match is 0.0. Paths containing "test" get a 1.05× penalty (capped
- * at 1.0) so non-test files rank slightly higher.
+ * at 1.0) so non-test files rank slightly higher. Each result also carries the
+ * highlight `positions` (needle-char offsets within the path).
+ *
+ * CC 2.1.280 (#074) name anchoring: when the greedy full-path match starts
+ * before the basename AND incurred a gap penalty, the query is re-matched
+ * inside the basename; the better of the two scores wins and `scanFrom`
+ * records which anchoring won so highlight extraction starts at the right
+ * offset. A file whose NAME contains the query therefore ranks above one that
+ * only matches across its folder names.
  */
 
 export type SearchResult = {
   path: string
   score: number
+  /** Highlight offsets of the needle chars within `path` (UTF-16 indices). */
+  positions: number[]
 }
 
 // nucleo-style scoring constants (approximating fzf-v2 / nucleo bonuses)
@@ -39,12 +49,23 @@ const CHUNK_MS = 4
 
 // Reusable buffer: records where each needle char matched during the indexOf scan
 const posBuf = new Int32Array(MAX_QUERY_LEN)
+// Reusable buffer: match positions from the basename-anchored re-match (v280
+// `nameMatchPositions`). Kept module-level like posBuf — both are per-call
+// scratch, and search() never re-enters itself.
+const namePosBuf = new Int32Array(MAX_QUERY_LEN)
 
 export class FileIndex {
   private paths: string[] = []
   private lowerPaths: string[] = []
   private charBits: Int32Array = new Int32Array(0)
   private pathLens: Uint16Array = new Uint16Array(0)
+  // Byte offset of each path's basename (just past the last `/` or `\`), and
+  // the a–z bitmap of that basename only. v280 #074: the bitmap is an O(1)
+  // precheck before attempting a basename-anchored re-match, and the offset
+  // both gates it (only re-anchor when the full-path match started in the
+  // directory portion) and seeds highlight extraction.
+  private nameStarts: Uint16Array = new Uint16Array(0)
+  private nameCharBits: Int32Array = new Int32Array(0)
   private topLevelCache: SearchResult[] | null = null
   // During async build, tracks how many paths have bitmap/lowerPath filled.
   // search() uses this to search the ready prefix while build continues.
@@ -146,24 +167,43 @@ export class FileIndex {
     this.lowerPaths = new Array(n)
     this.charBits = new Int32Array(n)
     this.pathLens = new Uint16Array(n)
+    this.nameStarts = new Uint16Array(n)
+    this.nameCharBits = new Int32Array(n)
     this.readyCount = 0
     this.topLevelCache = computeTopLevelEntries(paths, TOP_LEVEL_CACHE_LIMIT)
   }
 
-  // Precompute: lowercase, a–z bitmap, length. Bitmap gives O(1) rejection
-  // of paths missing any needle letter (89% survival for broad queries like
-  // "test" → still a 10%+ free win; 90%+ rejection for rare chars).
+  // Precompute: lowercase, a–z bitmap, length, basename offset + basename
+  // bitmap. Bitmap gives O(1) rejection of paths missing any needle letter
+  // (89% survival for broad queries like "test" → still a 10%+ free win;
+  // 90%+ rejection for rare chars). Official v280 indexPath:
+  //   if(g>=97&&g<=122)r|=1<<g-97,c|=1<<g-97;
+  //   else if((g===47||g===92)&&d<s-1)i=d+1,c=0
   private indexPath(i: number): void {
     const lp = this.paths[i]!.toLowerCase()
     this.lowerPaths[i] = lp
     const len = lp.length
     this.pathLens[i] = len
     let bits = 0
+    let nameStart = 0
+    let nameBits = 0
     for (let j = 0; j < len; j++) {
       const c = lp.charCodeAt(j)
-      if (c >= 97 && c <= 122) bits |= 1 << (c - 97)
+      if (c >= 97 && c <= 122) {
+        bits |= 1 << (c - 97)
+        nameBits |= 1 << (c - 97)
+      } else if ((c === 47 || c === 92) && j < len - 1) {
+        // Non-trailing separator: the next segment becomes the basename
+        nameStart = j + 1
+        nameBits = 0
+      }
     }
     this.charBits[i] = bits
+    // toLowerCase() can change string length (e.g. 'İ' → 2 chars); when it
+    // did, lowercased offsets no longer align with the original path, so name
+    // anchoring is disabled (official: `s===this.paths[e].length?i:0`).
+    this.nameStarts[i] = len === this.paths[i]!.length ? nameStart : 0
+    this.nameCharBits[i] = nameBits
   }
 
   /**
@@ -174,7 +214,9 @@ export class FileIndex {
     if (limit <= 0) return []
     if (query.length === 0) {
       if (this.topLevelCache) {
-        return this.topLevelCache.slice(0, limit)
+        return this.topLevelCache
+          .slice(0, limit)
+          .map(({ path, score }) => ({ path, score, positions: [] }))
       }
       return []
     }
@@ -200,10 +242,25 @@ export class FileIndex {
 
     // Top-k: maintain a sorted-ascending array of the best `limit` matches.
     // Avoids O(n log n) sort of all matches when we only need `limit` of them.
-    const topK: { path: string; fuzzScore: number }[] = []
+    // pathIndex (not the path string) is stored so the results pass can
+    // re-derive both the original-case path and its lowercase form, and
+    // scanFrom carries which anchoring won for highlight extraction.
+    const topK: {
+      pathIndex: number
+      fuzzScore: number
+      scanFrom: number
+    }[] = []
     let threshold = -Infinity
 
-    const { paths, lowerPaths, charBits, pathLens, readyCount } = this
+    const {
+      paths,
+      lowerPaths,
+      charBits,
+      pathLens,
+      readyCount,
+      nameStarts,
+      nameCharBits,
+    } = this
 
     outer: for (let i = 0; i < readyCount; i++) {
       // O(1) bitmap reject: path must contain every letter in the needle
@@ -231,27 +288,49 @@ export class FileIndex {
         prev = pos
       }
 
+      // v280 #074 name anchoring: when the full-path match incurred a gap
+      // penalty AND started before the basename AND the basename alone holds
+      // every needle letter (bitmap precheck), greedily re-match the query
+      // inside the basename. nameNet is its consecutive-minus-gap net, or
+      // -Infinity when the basename can't hold the whole needle in order.
+      const nameStart = nameStarts[i]!
+      const nameNet =
+        gapPenalty > 0 &&
+        posBuf[0]! < nameStart &&
+        (nameCharBits[i]! & needleBitmap) === needleBitmap
+          ? matchNameAnchored(haystack, needleChars, nameStart, namePosBuf)
+          : -Infinity
+
       // Gap-bound reject: if the best-case score (all boundary bonuses) minus
-      // known gap penalties can't beat threshold, skip the boundary pass.
+      // known gap penalties can't beat threshold, skip the boundary pass. The
+      // v280 max() lets a name-anchored candidate survive on its stronger net.
       if (
         topK.length === limit &&
-        scoreCeiling + consecBonus - gapPenalty <= threshold
+        scoreCeiling + Math.max(consecBonus - gapPenalty, nameNet) <= threshold
       ) {
         continue
       }
 
-      // Boundary/camelCase scoring: check the char before each match position.
+      // Boundary/camelCase scoring on the full-path positions.
       const path = paths[i]!
       const hLen = pathLens[i]!
-      let score = nLen * SCORE_MATCH + consecBonus - gapPenalty
-      score += scoreBonusAt(path, posBuf[0]!, true)
-      for (let j = 1; j < nLen; j++) {
-        score += scoreBonusAt(path, posBuf[j]!, false)
+      let score = consecBonus - gapPenalty + scoreBonusSum(path, posBuf, nLen)
+      let scanFrom = 0
+
+      // Name-anchored alternative: its own net plus its own boundary bonuses.
+      // On a tie the name anchor wins (`>=`), matching the official scorer.
+      if (nameNet !== -Infinity) {
+        const nameScore = nameNet + scoreBonusSum(path, namePosBuf, nLen)
+        if (nameScore >= score) {
+          score = nameScore
+          scanFrom = nameStart
+        }
       }
-      score += Math.max(0, 32 - (hLen >> 2))
+
+      score += nLen * SCORE_MATCH + Math.max(0, 32 - (hLen >> 2))
 
       if (topK.length < limit) {
-        topK.push({ path, fuzzScore: score })
+        topK.push({ pathIndex: i, fuzzScore: score, scanFrom })
         if (topK.length === limit) {
           topK.sort((a, b) => a.fuzzScore - b.fuzzScore)
           threshold = topK[0]!.fuzzScore
@@ -264,7 +343,7 @@ export class FileIndex {
           if (topK[mid]!.fuzzScore < score) lo = mid + 1
           else hi = mid
         }
-        topK.splice(lo, 0, { path, fuzzScore: score })
+        topK.splice(lo, 0, { pathIndex: i, fuzzScore: score, scanFrom })
         topK.shift()
         threshold = topK[0]!.fuzzScore
       }
@@ -278,12 +357,33 @@ export class FileIndex {
     const results: SearchResult[] = new Array(matchCount)
 
     for (let i = 0; i < matchCount; i++) {
-      const path = topK[i]!.path
+      const pathIndex = topK[i]!.pathIndex
+      const path = paths[pathIndex]!
+      const lowerPath = lowerPaths[pathIndex]!
+      const haystack = caseSensitive ? path : lowerPath
+
+      // Highlight extraction re-walks the needle from the winning anchor's
+      // offset (scanFrom): 0 for a full-path win, nameStart for a name-anchored
+      // win. Starting at nameStart is what lands the highlights on the
+      // basename instead of the scattered full-path match.
+      const positions: number[] = new Array(nLen)
+      let from = topK[i]!.scanFrom
+      for (let j = 0; j < nLen; j++) {
+        const at = haystack.indexOf(needleChars[j]!, from)
+        positions[j] = at
+        from = at + 1
+      }
+      // Lowercasing can shift offsets for non-ASCII (e.g. 'İ'); remap to the
+      // original path's coordinates when the two lengths diverged.
+      if (!caseSensitive && lowerPath.length !== path.length) {
+        remapUnicodePositions(path, positions)
+      }
+
       const positionScore = i / denom
       const finalScore = path.includes('test')
         ? Math.min(positionScore * 1.05, 1.0)
         : positionScore
-      results[i] = { path, score: finalScore }
+      results[i] = { path, score: finalScore, positions }
     }
 
     return results
@@ -300,6 +400,84 @@ function scoreBonusAt(path: string, pos: number, first: boolean): number {
   if (isBoundary(prevCh)) return BONUS_BOUNDARY
   if (isLower(prevCh) && isUpper(path.charCodeAt(pos))) return BONUS_CAMEL
   return 0
+}
+
+/**
+ * Sum of boundary/camelCase bonuses for a matched needle run. Official v280
+ * `js(path, positions, nLen)` = `Ks(path,pos[0],true) + Σ Ks(path,pos[i],false)`.
+ * `positions` is either the full-path match buffer (posBuf) or the basename
+ * re-match buffer (namePosBuf) — the same scoring applies to both anchoring
+ * modes, which is what makes their net scores directly comparable.
+ */
+function scoreBonusSum(
+  path: string,
+  positions: Int32Array,
+  nLen: number,
+): number {
+  let sum = scoreBonusAt(path, positions[0]!, true)
+  for (let j = 1; j < nLen; j++) {
+    sum += scoreBonusAt(path, positions[j]!, false)
+  }
+  return sum
+}
+
+/**
+ * Greedy re-match of the needle inside the basename only, starting at
+ * `nameStart`. Official v280 `Zc(haystack, needleChars, nameStart, out)`:
+ * walks each needle char in order via indexOf from `nameStart`, recording hit
+ * offsets into `out`, and returns the consecutive-bonus-minus-gap-penalty net.
+ * Returns -Infinity the moment a char is missing (needle doesn't fit in order
+ * within the basename) so the caller keeps the full-path score.
+ */
+function matchNameAnchored(
+  haystack: string,
+  needleChars: string[],
+  nameStart: number,
+  outPositions: Int32Array,
+): number {
+  let net = 0
+  let prev = nameStart - 1
+  for (let j = 0; j < needleChars.length; j++) {
+    const at = haystack.indexOf(needleChars[j]!, prev + 1)
+    if (at === -1) return -Infinity
+    outPositions[j] = at
+    const gap = at - prev - 1
+    if (j > 0) {
+      net +=
+        gap === 0
+          ? BONUS_CONSECUTIVE
+          : -(PENALTY_GAP_START + gap * PENALTY_GAP_EXTENSION)
+    }
+    prev = at
+  }
+  return net
+}
+
+/**
+ * Remap highlight positions computed against the lowercased path back onto the
+ * original path's UTF-16 offsets. Official v280 `od(path, positions)` (v278
+ * `Wc`): only needed when toLowerCase() changed the string length (e.g. 'İ' →
+ * 2 chars), which would otherwise shift every downstream offset. Mutates
+ * `positions` in place.
+ */
+function remapUnicodePositions(path: string, positions: number[]): void {
+  let srcIdx = 0
+  let lowerIdx = 0
+  let posIdx = 0
+  while (posIdx < positions.length && srcIdx < path.length) {
+    const cp = path.codePointAt(srcIdx)!
+    const cpUnits = cp > 65535 ? 2 : 1
+    const lowerLen = String.fromCodePoint(cp).toLowerCase().length
+    while (
+      posIdx < positions.length &&
+      positions[posIdx]! < lowerIdx + lowerLen
+    ) {
+      positions[posIdx] = srcIdx
+      posIdx++
+    }
+    srcIdx += cpUnits
+    lowerIdx += lowerLen
+  }
 }
 
 function isBoundary(code: number): boolean {
@@ -363,7 +541,9 @@ function computeTopLevelEntries(
     return a < b ? -1 : a > b ? 1 : 0
   })
 
-  return sorted.slice(0, limit).map(path => ({ path, score: 0.0 }))
+  return sorted
+    .slice(0, limit)
+    .map(path => ({ path, score: 0.0, positions: [] as number[] }))
 }
 
 export default FileIndex

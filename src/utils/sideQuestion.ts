@@ -96,9 +96,22 @@ export type SideQuestionResult = {
 export async function runSideQuestion({
   question,
   cacheSafeParams,
+  inProgressToolResultMessage,
 }: {
   question: string
   cacheSafeParams: CacheSafeParams
+  /**
+   * CC 2.1.280 changelog #072: synthesized isMeta tool_result message for
+   * tool calls still in progress in the main conversation (built by
+   * btw.tsx's buildInProgressToolResultMessage — port of official `x`).
+   * Prepended to the prompt messages ahead of the question, mirroring the
+   * official m4e @212514171:
+   *   h=e?x(n.forkContextMessages):void 0;
+   *   promptMessages:[...h?[h]:[],...w,Ae({content:...system-reminder...})]
+   * (`w` is the btw-history replay OCC doesn't have — see the
+   * BTW_HISTORY_OMISSION divergence note above.)
+   */
+  inProgressToolResultMessage?: Message
 }): Promise<SideQuestionResult> {
   // Wrap the question with instructions to answer without tools
   const wrappedQuestion = `<system-reminder>This is a side question from the user. You must answer this question directly in a single response.
@@ -122,7 +135,13 @@ Simply answer the question with the information you have.</system-reminder>
 ${question}`
 
   const agentResult = await runForkedAgent({
-    promptMessages: [createUserMessage({ content: wrappedQuestion })],
+    // Official order (m4e): [...h?[h]:[],...w,question] — the synthesized
+    // in-progress tool_result message comes FIRST so the forked context's
+    // dangling tool_use blocks are paired before the question arrives.
+    promptMessages: [
+      ...(inProgressToolResultMessage ? [inProgressToolResultMessage] : []),
+      createUserMessage({ content: wrappedQuestion }),
+    ],
     // Do NOT override thinkingConfig — thinking is part of the API cache key,
     // and diverging from the main thread's config busts the prompt cache.
     // Adaptive thinking on a quick Q&A has negligible overhead.

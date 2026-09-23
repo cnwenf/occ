@@ -22,9 +22,13 @@ import {
   loadKnownMarketplacesConfig,
 } from './marketplaceManager.js'
 import {
+  findImitatedReservedName,
   isLocalMarketplaceSource,
+  isPluginDirectoryNameImitation,
   type KnownMarketplacesFile,
   type MarketplaceSource,
+  reservedMarketplaceNameMessage,
+  reservedNameRefusalMessage,
 } from './schemas.js'
 
 export type MarketplaceDiff = {
@@ -154,8 +158,24 @@ export async function reconcileMarketplaces(
   ]
 
   const skipped: string[] = []
+  const failed: ReconcileResult['failed'] = []
   const toProcess: WorkItem[] = []
   for (const item of work) {
+    // v2.1.280 #084 (official reconciler): a declared marketplace whose name
+    // is another spelling of a reserved marketplace name is refused before any
+    // skip/install processing, and reported as failed.
+    const imitated = findImitatedReservedName(item.name)
+    if (isPluginDirectoryNameImitation(item.name) || imitated !== undefined) {
+      const error = `${
+        imitated === undefined
+          ? reservedMarketplaceNameMessage(item.name)
+          : reservedNameRefusalMessage(item.name, imitated)
+      } This marketplace was not added. Remove it from extraKnownMarketplaces in settings.`
+      logForDebugging(`[reconcile] '${item.name}' ${error}`, { level: 'warn' })
+      failed.push({ name: item.name, error })
+      opts?.onProgress?.({ type: 'failed', name: item.name, error })
+      continue
+    }
     if (opts?.skip?.(item.name, item.source)) {
       skipped.push(item.name)
       continue
@@ -184,7 +204,7 @@ export async function reconcileMarketplaces(
     return {
       installed: [],
       updated: [],
-      failed: [],
+      failed,
       upToDate: diff.upToDate,
       skipped,
     }
@@ -196,7 +216,6 @@ export async function reconcileMarketplaces(
 
   const installed: string[] = []
   const updated: string[] = []
-  const failed: ReconcileResult['failed'] = []
 
   for (let i = 0; i < toProcess.length; i++) {
     const { name, source, action } = toProcess[i]!

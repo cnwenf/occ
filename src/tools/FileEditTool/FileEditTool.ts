@@ -34,7 +34,10 @@ import {
   readFileSyncWithMetadata,
 } from '../../utils/fileRead.js'
 import { formatFileSize } from '../../utils/format.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+import {
+  getFsImplementation,
+  resolveWritePathDescriptor,
+} from '../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
   type ToolUseDiff,
@@ -43,7 +46,9 @@ import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
 import { perforceReadOnlyError } from '../../utils/perforce.js'
 import {
+  checkLeafSymlinkWriteDeny,
   checkWritePermissionForTool,
+  expandPathForWriteDescriptor,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
 import {
@@ -156,15 +161,38 @@ export const FileEditTool = buildTool({
     return pattern => matchWildcardPattern(pattern, file_path)
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.280 (changelog #005): official Edit-tool wiring @201063176:
+    // `let s=et(n.file_path),g=da(s);
+    //  e.session.writePermissionStash.stash(r.toolUseId,s,g.spellings);
+    //  let h=D_(jw,n,e.permissions(),g);
+    //  return h.behavior==="deny"?h:XZe(s,g)??h`
+    // A rule DENY from the main write check wins; otherwise the leaf-symlink
+    // deny (XZe) overrides even an allow result.
+    const expandedPath = expandPathForWriteDescriptor(
+      FileEditTool.getPath(input),
+    )
+    const descriptor = resolveWritePathDescriptor(expandedPath)
     // CC 2.1.251 (Gap-109a): stash the check-time symlink resolutions of
-    // the target path, write lane (binary FileEditTool B_ stash site).
-    stashCheckTimeResolutions(context, FileEditTool.getPath(input), 'write')
+    // the target path, write lane (binary FileEditTool B_ stash site);
+    // since 2.1.280 the stashed set is the descriptor's spellings.
+    stashCheckTimeResolutions(
+      context,
+      FileEditTool.getPath(input),
+      'write',
+      descriptor.spellings,
+    )
     const appState = context.getAppState()
-    return checkWritePermissionForTool(
+    const result = checkWritePermissionForTool(
       FileEditTool,
       input,
       appState.toolPermissionContext,
+      undefined,
+      descriptor,
     )
+    if (result.behavior === 'deny') {
+      return result
+    }
+    return checkLeafSymlinkWriteDeny(expandedPath, descriptor) ?? result
   },
   renderToolUseMessage,
   renderToolResultMessage,

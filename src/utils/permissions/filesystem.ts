@@ -22,6 +22,9 @@ import { getClaudeConfigHomeDir } from '../envUtils.js'
 import {
   getFsImplementation,
   getPathsForPermissionCheck,
+  resolveWritePathDescriptor,
+  stripTrailingSlashesAndGit,
+  type WritePathDescriptor,
 } from '../fsOperations.js'
 import {
   containsPathTraversal,
@@ -42,6 +45,7 @@ import { getToolResultsDir } from '../toolResultStorage.js'
 import { windowsPathToPosixPath } from '../windowsPaths.js'
 import type {
   PermissionDecision,
+  PermissionDenyDecision,
   PermissionResult,
 } from './PermissionResult.js'
 import type { PermissionRule, PermissionRuleSource } from './PermissionRule.js'
@@ -55,6 +59,7 @@ import {
   makePhysicalTwinsKey,
   normalizeTrailingGlobstar,
   resolvePhysicalTwinPattern,
+  toTrustedSymlinkSpelling,
   unescapePatternSegment,
   unusablePatternReason,
 } from './symlinkEquivalences.js'
@@ -1471,6 +1476,353 @@ export function matchingRuleForInput(
 }
 
 /**
+ * Official v280 `Fkt` @194277899 (byte-verified; IDENTICAL to the v278 `Ibt`
+ * @195625759 — the all-spellings requirement predates 2.1.280):
+ *
+ * `function Fkt(e,n,r){let s=null;for(let u of e){let m=wa(u,n,r,"allow");
+ *   if(!m){let g=$kt(u);if(g!==u)m=wa(g,n,r,"allow")}
+ *   if(!m)return null;s??=m}return s}`
+ *
+ * Symbol map: `wa`=matchingRuleForInput, `$kt`=toTrustedSymlinkSpelling
+ * (official jxt/$kt/JKt — maps a physical spelling back to its trusted
+ * symlink spelling, identity when no known equivalence applies),
+ * `e`=spellings (requested + symlink-resolved variants), `r`=toolType.
+ *
+ * Semantics: an allow rule matches ONLY when EVERY spelling of the path is
+ * allowed — fail-CLOSED. This is the changelog 2.1.280 fix "a write to a
+ * symlinked path is judged by the spelling inside the tree; allow rules,
+ * acceptEdits, and auto mode no longer approve a write whose landing point is
+ * outside" at the allow-rule site: an allow rule written on the requested
+ * spelling alone must NOT pass when a resolved spelling (e.g. a symlink target
+ * outside the allowed area) isn't covered. Returns the FIRST spelling's match
+ * (official `s??=m`) for the decisionReason.
+ *
+ * CC 2.1.280 (changelog #005): the FULL official descriptor walker `da()`
+ * @190660855 is now LANDED — see resolveWritePathDescriptor in
+ * fsOperations.ts and the v280 write-permission helpers below
+ * (checkLeafSymlinkWriteDeny / computeWriteCarriedOut /
+ * unresolvedWriteDenyDecision).
+ */
+function matchingAllowRuleForAllSpellings(
+  spellings: readonly string[],
+  toolPermissionContext: ToolPermissionContext,
+  toolType: 'edit' | 'read',
+): PermissionRule | null {
+  let firstMatch: PermissionRule | null = null
+  for (const spelling of spellings) {
+    let rule = matchingRuleForInput(
+      spelling,
+      toolPermissionContext,
+      toolType,
+      'allow',
+    )
+    if (!rule) {
+      const trustedSpelling = toTrustedSymlinkSpelling(spelling)
+      if (trustedSpelling !== spelling) {
+        rule = matchingRuleForInput(
+          trustedSpelling,
+          toolPermissionContext,
+          toolType,
+          'allow',
+        )
+      }
+    }
+    if (!rule) {
+      return null
+    }
+    firstMatch ??= rule
+  }
+  return firstMatch
+}
+
+// ---------------------------------------------------------------------------
+// CC 2.1.280 (changelog #005, security 🔒): symlink "landing" write-check
+// helpers. Every string below is byte-exact from the official v2.1.280
+// linux-x64 ELF; every branch cites its binary offset.
+// ---------------------------------------------------------------------------
+
+/** Binary `He=160` @193836066 — max path chars in permission messages. */
+const PERMISSION_MESSAGE_PATH_MAX_CHARS = 160
+
+/** Binary `zp` @190823811 — fixpoint cap on the `E` strip loop:
+ * `for(let r=0;r<10;r++){let t=E(n);if(t===n)return n;n=t}`. */
+const PERMISSION_MESSAGE_STRIP_MAX_PASSES = 10
+
+/** Binary `bt` @190823013 (exact): `function bt(e){return Bun.stripANSI(e)}`.
+ * OCC runs on Bun and `@types/bun` is wired, so the native API is used
+ * directly (same guard convention as src/main.tsx:1721); the CSI/OSC regex
+ * is a fallback for runtimes without `Bun.stripANSI` only. */
+const ANSI_SEQUENCE_PATTERN =
+  // biome-ignore lint: control-character escapes are the point of this pattern
+  /\x1B\[[0-?]*[ -/]*[@-~]|\x1B\][^\x07\x1B]*(?:\x07|\x1B\\)/g
+
+function stripAnsiForPermissionMessage(input: string): string {
+  if (typeof Bun !== 'undefined' && typeof Bun.stripANSI === 'function') {
+    return Bun.stripANSI(input)
+  }
+  return input.replace(ANSI_SEQUENCE_PATTERN, '')
+}
+
+/** Binary `Pn` @193836066 (exact):
+ * `var Pn=/[\x00-\x1f\x7f-\x9f\u061c\u2028\u2029\u202a-\u202e\u2066-\u2069\p{Co}\p{Cn}]/gu`
+ * — each matched codepoint (per character, NOT per run) becomes one U+FFFD.
+ * This is deliberately NOT the Qoe-derived class with the ZWJ/VS15/VS16
+ * lookahead (`p`/`c` regexes @190823013) — that family belongs to the UI
+ * invisible-character detectors, not to the permission-message sanitizer. */
+const PERMISSION_MESSAGE_INVISIBLE_CHAR =
+  // biome-ignore lint: control-character escapes are byte-exact from binary Pn
+  /[\x00-\x1f\x7f-\x9f\u061c\u2028\u2029\u202a-\u202e\u2066-\u2069\p{Co}\p{Cn}]/gu
+
+/** Binary `E` @190823811 (exact) — DELETES (does not replace) Cf/Co/Cn,
+ * U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+FEFF, and the Private
+ * Use Area U+E000–U+F8FF. */
+function stripInvisibleForPermissionMessage(input: string): string {
+  let result = input.replace(/[\p{Cf}\p{Co}\p{Cn}]/gu, '')
+  result = result
+    .replace(/[\u200B-\u200F]/g, '')
+    .replace(/[\u202A-\u202E]/g, '')
+    .replace(/[\u2066-\u2069]/g, '')
+    .replace(/[\uFEFF]/g, '')
+    .replace(/[\uE000-\uF8FF]/g, '')
+  return result
+}
+
+/** Binary `He` regex (string-utils chunk, @190618289 region):
+ * `/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g`
+ * — matches lone (unpaired) surrogates. */
+const LONE_SURROGATE_PATTERN =
+  /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+
+/** Binary `j8` @190618289 (exact): `if(U&&U(e))return e;return e.replace(He,"")`
+ * where `U` is bound `String.prototype.isWellFormed` — well-formed strings
+ * pass through untouched; otherwise lone surrogates are deleted. */
+function scrubLoneSurrogates(input: string): string {
+  const wellFormed = (input as { isWellFormed?: () => boolean }).isWellFormed
+  if (typeof wellFormed === 'function' && wellFormed.call(input)) {
+    return input
+  }
+  return input.replace(LONE_SURROGATE_PATTERN, '')
+}
+
+/** Binary `zp` @190823811 (exact): `let n=j8(e);for(let r=0;r<10;r++){
+ * let t=E(n);if(t===n)return n;n=t}return n` — lone-surrogate scrub first,
+ * then iterate `E` to a fixpoint (max PERMISSION_MESSAGE_STRIP_MAX_PASSES). */
+function stripToFixpointForPermissionMessage(input: string): string {
+  let current = scrubLoneSurrogates(input)
+  for (let pass = 0; pass < PERMISSION_MESSAGE_STRIP_MAX_PASSES; pass++) {
+    const next = stripInvisibleForPermissionMessage(current)
+    if (next === current) return current
+    current = next
+  }
+  return current
+}
+
+/** Binary `Tn` @193836066 (exact): `function Tn(e){let r=bt(e),
+ * n=r===e?r:r+"\uFFFD";return zp(n.replace(Pn,"\uFFFD"))}` — strip ANSI
+ * first; if stripping changed the string, append ONE U+FFFD marker at the
+ * end; replace each Pn-matched codepoint with U+FFFD; run the zp fixpoint. */
+function sanitizePathForPermissionMessage(path: string): string {
+  const ansiStripped = stripAnsiForPermissionMessage(path)
+  const marked =
+    ansiStripped === path ? ansiStripped : `${ansiStripped}\uFFFD`
+  return stripToFixpointForPermissionMessage(
+    marked.replace(PERMISSION_MESSAGE_INVISIBLE_CHAR, '\uFFFD'),
+  )
+}
+
+/** Binary `re` @190617057: slice to n chars, dropping a split high surrogate,
+ * then `Ie` @190617472 (`Buffer.from(e,"utf16le").toString("utf16le")`) to
+ * drop lone surrogates. */
+function sliceForPermissionMessage(path: string, maxChars: number): string {
+  if (maxChars <= 0) return ''
+  if (path.length <= maxChars) return path
+  const sliced = path.slice(0, maxChars)
+  const lastCode = sliced.charCodeAt(maxChars - 1)
+  const withoutSplitSurrogate =
+    lastCode >= 0xd800 && lastCode <= 0xdbff ? sliced.slice(0, -1) : sliced
+  return Buffer.from(withoutSplitSurrogate, 'utf16le').toString('utf16le')
+}
+
+/** Binary `k6` @193836066: `function k6(e){return pu(Tn(e),He)}` with
+ * `pu` @190620617: `if(e.length<=n)return e;let r=re(e,n);
+ * return`${r}… [+${e.length-r.length} chars]``. Every user-facing path
+ * interpolation in the v280 write messages goes through this. */
+export function formatPathForPermissionMessage(path: string): string {
+  const sanitized = sanitizePathForPermissionMessage(path)
+  if (sanitized.length <= PERMISSION_MESSAGE_PATH_MAX_CHARS) return sanitized
+  const sliced = sliceForPermissionMessage(
+    sanitized,
+    PERMISSION_MESSAGE_PATH_MAX_CHARS,
+  )
+  return `${sliced}… [+${sanitized.length - sliced.length} chars]`
+}
+
+/** Binary `Or` @194289151:
+ * `${k6(e)} resolves through a symlink to ${k6(n)}` */
+function resolvesThroughSymlinkSentence(
+  requested: string,
+  landing: string,
+): string {
+  return `${formatPathForPermissionMessage(requested)} resolves through a symlink to ${formatPathForPermissionMessage(landing)}`
+}
+
+/** Binary `F9t` @194288316 region:
+ * `${Or(e,n.landing)}${n.landingOutside?", which is outside the allowed working directories":""}` */
+function carriedOutSentence(
+  requested: string,
+  carriedOut: WriteCarriedOut,
+): string {
+  return `${resolvesThroughSymlinkSentence(requested, carriedOut.landing)}${
+    carriedOut.landingOutside
+      ? ', which is outside the allowed working directories'
+      : ''
+  }`
+}
+
+/** Binary r2e @194287970 return shape:
+ * `{landing:s,landingOutside:m,spellingInside:g,carriedOut:g&&m}` */
+export type WriteCarriedOut = {
+  landing: string
+  landingOutside: boolean
+  spellingInside: boolean
+  carriedOut: boolean
+}
+
+/** Binary `pr` @194288100: `$kt(Nn(yr(e)))` — yr @191121789 (strip trailing
+ * slashes + trailing ".git"), Nn @190305828 (IDENTITY on the verified linux
+ * build — no extra normalization, byte-faithful), $kt =
+ * toTrustedSymlinkSpelling. */
+function comparisonSpellingForLanding(path: string): string {
+  return toTrustedSymlinkSpelling(stripTrailingSlashesAndGit(path))
+}
+
+/** Binary `JZe` @194287970 region: `if(e.unresolved)return null;
+ * return pr(e.landing)===pr(e.requested)?null:e.landing` — null when the link
+ * did not MOVE the path (modulo trailing-slash/.git spelling). */
+function symlinkLandingIfMoved(descriptor: WritePathDescriptor): string | null {
+  if (descriptor.unresolved) return null
+  return comparisonSpellingForLanding(descriptor.landing) ===
+    comparisonSpellingForLanding(descriptor.requested)
+    ? null
+    : descriptor.landing
+}
+
+/**
+ * Binary `r2e` @194287970:
+ * `let s=JZe(e);if(s===null)return null;
+ *  let u=(h)=>Nh(h,n,[h],r),m=!u(s),g=u(e.requested);
+ *  return{landing:s,landingOutside:m,spellingInside:g,carriedOut:g&&m}`
+ *
+ * `carriedOut` = the requested spelling is inside the allowed working dirs
+ * but the physical landing is OUTSIDE — the changelog #005 attack shape
+ * (symlink inside the tree carrying a write out). Nh with a single-spelling
+ * list maps to pathInAllowedWorkingPath(p, ctx, [p]).
+ */
+export function computeWriteCarriedOut(
+  descriptor: WritePathDescriptor,
+  toolPermissionContext: ToolPermissionContext,
+): WriteCarriedOut | null {
+  const landing = symlinkLandingIfMoved(descriptor)
+  if (landing === null) return null
+  const inside = (p: string): boolean =>
+    pathInAllowedWorkingPath(p, toolPermissionContext, [p])
+  const landingOutside = !inside(landing)
+  const spellingInside = inside(descriptor.requested)
+  return {
+    landing,
+    landingOutside,
+    spellingInside,
+    carriedOut: spellingInside && landingOutside,
+  }
+}
+
+/** Deny decision carrying the v280 `blockedPath` field. Binary XZe returns
+ * `...!n.unresolved&&{blockedPath:n.landing}` on a DENY; OCC's
+ * PermissionDenyDecision (src/types/permissions.ts:248-253 — outside this
+ * port's file allowlist, staged) lacks the field, so it is widened locally.
+ * Structurally assignable to PermissionDecision. */
+export type WriteDenyDecision = PermissionDenyDecision & {
+  blockedPath?: string
+}
+
+/**
+ * Binary `XZe` @194287497 — leaf-symlink write DENY:
+ * `function XZe(e,n){if(!n.leafIsSymlink)return null;
+ *  let r=n.unresolved?"a target that could not be determined":k6(n.landing);
+ *  return{behavior:"deny",
+ *   message:`Refusing to write ${k6(e)}: it is a symbolic link. Write to the link's target path instead: ${r}.`,
+ *   decisionReason:{type:"other",reason:"Write target is a symbolic link"},
+ *   ...!n.unresolved&&{blockedPath:n.landing}}}`
+ *
+ * Wiring (identical at all three official tool sites — Write @198310186,
+ * Edit @201063176, NotebookEdit @201076162):
+ * `return h.behavior==="deny"?h:XZe(s,g)??h` — a rule DENY from the main
+ * write check wins; otherwise the leaf deny OVERRIDES even an allow result.
+ */
+export function checkLeafSymlinkWriteDeny(
+  path: string,
+  descriptor: WritePathDescriptor,
+): WriteDenyDecision | null {
+  if (!descriptor.leafIsSymlink) return null
+  const targetText = descriptor.unresolved
+    ? 'a target that could not be determined'
+    : formatPathForPermissionMessage(descriptor.landing)
+  const decision: WriteDenyDecision = {
+    behavior: 'deny',
+    message: `Refusing to write ${formatPathForPermissionMessage(path)}: it is a symbolic link. Write to the link's target path instead: ${targetText}.`,
+    decisionReason: {
+      type: 'other',
+      reason: 'Write target is a symbolic link',
+    },
+    ...(!descriptor.unresolved && { blockedPath: descriptor.landing }),
+  }
+  return decision
+}
+
+/** Binary `U9t` @194289227:
+ * `Where ${k6(e)} leads on disk could not be determined (a link or directory on the way could not be examined, or the links do not resolve)` */
+export function wherePathLeadsUndeterminedReason(path: string): string {
+  return `Where ${formatPathForPermissionMessage(path)} leads on disk could not be determined (a link or directory on the way could not be examined, or the links do not resolve)`
+}
+
+/**
+ * Binary `$r("write to",u)` @194288763 region — sole write call site inside
+ * D_ @194285675 (after the special/internal-path branches, before the
+ * session-allow rules):
+ * `{behavior:"deny",message:`Refusing to write ${k6(n)}: where it leads on
+ * disk could not be determined (a link on the way could not be examined, or
+ * the links do not resolve).`,decisionReason:{type:"other",reason:U9t(n)}}`
+ * NOTE the byte-level difference between message ("a link on the way") and
+ * reason ("a link or directory on the way") — both verbatim from the binary.
+ */
+export function unresolvedWriteDenyDecision(path: string): WriteDenyDecision {
+  return {
+    behavior: 'deny',
+    message: `Refusing to write ${formatPathForPermissionMessage(path)}: where it leads on disk could not be determined (a link on the way could not be examined, or the links do not resolve).`,
+    decisionReason: {
+      type: 'other',
+      reason: wherePathLeadsUndeterminedReason(path),
+    },
+  }
+}
+
+/**
+ * CC 2.1.280 tool-wiring helper — the binary `et(file_path)` step that feeds
+ * `da()` at every official write-tool site (`let s=et(n.file_path),g=da(s)`
+ * @198310186). expandPath throws on null bytes; those inputs are rejected by
+ * validateInput downstream (official et() callers run after input backfill so
+ * the throw is unreachable there), so fall back to the raw path and let the
+ * descriptor walk + deny branches see the literal input.
+ */
+export function expandPathForWriteDescriptor(rawPath: string): string {
+  try {
+    return expandPath(rawPath)
+  } catch {
+    return rawPath
+  }
+}
+
+/**
  * Permission result for read permission for the specified tool & tool input
  */
 export function checkReadPermissionForTool(
@@ -1647,12 +1999,17 @@ export function checkReadPermissionForTool(
  *   from the same `tool` and `input` in the same synchronous frame — `path` is
  *   re-derived internally for error messages and internal-path checks, so a
  *   stale value would silently check deny rules for the wrong path.
+ * @param precomputedDescriptor - Optional CC 2.1.280 write-path descriptor
+ *   (binary D_ @194286200: `m=s??da(u)`). The official write tools compute
+ *   `da(et(file_path))` once in checkPermissions and thread it through; when
+ *   omitted, the descriptor is recomputed here from `tool.getPath(input)`.
  */
 export function checkWritePermissionForTool<Input extends AnyObject>(
   tool: Tool<Input>,
   input: z.infer<Input>,
   toolPermissionContext: ToolPermissionContext,
   precomputedPathsToCheck?: readonly string[],
+  precomputedDescriptor?: WritePathDescriptor,
 ): PermissionDecision {
   if (typeof tool.getPath !== 'function') {
     return {
@@ -1662,9 +2019,20 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   }
   const path = tool.getPath(input)
 
+  // CC 2.1.280 (changelog #005): official D_ @194286200 computes
+  // `u=e.getPath(n), m=s??da(u), g=m.spellings` and threads `g` through every
+  // rule loop below. descriptor.spellings is a superset of
+  // getPathsForPermissionCheck(path) (see resolveWritePathDescriptor), so
+  // pre-280 deny/allow/safety coverage is preserved exactly.
+  const descriptor =
+    precomputedDescriptor ?? resolveWritePathDescriptor(path)
+
   // 1. Check for deny rules - check both the original path and resolved symlink path
-  const pathsToCheck =
-    precomputedPathsToCheck ?? getPathsForPermissionCheck(path)
+  const pathsToCheck = precomputedPathsToCheck ?? descriptor.spellings
+
+  // CC 2.1.280: r2e @194287970 — the carriedOut computation, consumed by the
+  // safety-branch merge (lPn @194288316) and the final ask (Dr @194288763).
+  const carriedOut = computeWriteCarriedOut(descriptor, toolPermissionContext)
   for (const pathToCheck of pathsToCheck) {
     const denyRule = matchingRuleForInput(
       pathToCheck,
@@ -1693,6 +2061,16 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   )
   if (internalEditResult.behavior !== 'passthrough') {
     return internalEditResult
+  }
+
+  // 1.55. CC 2.1.280 (changelog #005): unresolved write target → DENY.
+  // Official D_ ordering @194285675: after the special/internal-path
+  // branches, BEFORE the session-allow rules and every ask/allow rule —
+  // `if(m.unresolved)return $r("write to",u)`. A path whose link chain could
+  // not be examined (unreadable ancestor, ELOOP, unexpected fs error) must
+  // never reach an allow or ask branch.
+  if (descriptor.unresolved) {
+    return unresolvedWriteDenyDecision(path)
   }
 
   // 1.6. Check for .claude/** allow rules BEFORE safety checks
@@ -1773,14 +2151,36 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
         ]
       : generateSuggestions(path, 'write', toolPermissionContext, pathsToCheck)
     const failedCheck = safetyCheck as { safe: false; message: string; classifierApprovable: boolean }
+    // CC 2.1.280 (changelog #005) lPn @194288316: when the descriptor's
+    // landing moved (r2e ≠ null), the unsafe-ask gains the landing sentence —
+    // binary D_: `F=lPn(u,m,r); J=F===null?R.message:`${R.message} ${F.sentence}.`;
+    // return{behavior:"ask",message:J,suggestions:j,
+    //   ...F!==null&&{blockedPath:F.landing},
+    //   decisionReason:{type:"safetyCheck",reason:J,...js(R,r.restricted),
+    //     ...F?.personOnly&&{classifierApprovable:!1}}}`.
+    // lPn's personOnly = `ure(n.requested,[n.requested],…).safe||s.carriedOut`
+    // — the requested spelling alone passes the safety check (so the danger
+    // lives in a resolved spelling), or the write is carried out: either way
+    // only a human may approve (classifierApprovable:false).
+    let message = failedCheck.message
+    let classifierApprovable = failedCheck.classifierApprovable
+    if (carriedOut !== null) {
+      const sentence = carriedOutSentence(path, carriedOut)
+      message = `${failedCheck.message} ${sentence}.`
+      const requestedOnlySafe = checkPathSafetyForAutoEdit(path, [path]).safe
+      if (requestedOnlySafe || carriedOut.carriedOut) {
+        classifierApprovable = false
+      }
+    }
     return {
       behavior: 'ask',
-      message: failedCheck.message,
+      message,
       suggestions: safetySuggestions,
+      ...(carriedOut !== null && { blockedPath: carriedOut.landing }),
       decisionReason: {
         type: 'safetyCheck',
-        reason: failedCheck.message,
-        classifierApprovable: failedCheck.classifierApprovable,
+        reason: message,
+        classifierApprovable,
       },
     }
   }
@@ -1806,6 +2206,11 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   }
 
   // 3. If in acceptEdits or sandboxBashMode mode, allow all writes in original cwd
+  // CC 2.1.280 (changelog #005): official D_ judges acceptEdits on EVERY
+  // spelling — `let P=Nh(u,r,g); if(r.mode==="acceptEdits"&&P)` (Nh @194266377
+  // requires every spelling inside an allowed working dir, physical twins
+  // included). pathsToCheck = descriptor.spellings contains the LANDING, so a
+  // write whose landing point is outside no longer auto-allows in acceptEdits.
   const isInWorkingDir = pathInAllowedWorkingPath(
     path,
     toolPermissionContext,
@@ -1822,12 +2227,15 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     }
   }
 
-  // 4. Check for allow rules
-  const allowRule = matchingRuleForInput(
-    path,
+  // 4. Check for allow rules.
+  // Official v280: `let M=Fkt(g,r,"edit")` — the allow-rule match requires ALL
+  // path spellings (requested + symlink-resolved) to be allowed, fail-closed
+  // (see matchingAllowRuleForAllSpellings). A rule on the requested spelling
+  // alone must not pass when a resolved spelling lands outside the rule.
+  const allowRule = matchingAllowRuleForAllSpellings(
+    pathsToCheck,
     toolPermissionContext,
     'edit',
-    'allow',
   )
   if (allowRule) {
     return {
@@ -1840,16 +2248,44 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     }
   }
 
-  // 5. Default to asking for permission
+  // 5. Default to asking for permission.
+  // CC 2.1.280 (changelog #005) Dr @194288763: the official final ask is
+  // `{...o2e-suggestions,...Dr("write to",u,m,r)}` where Dr merges:
+  //   `u=`Claude requested permissions to ${e} ${n}, but you haven't granted it yet.`;
+  //    m=r2e(r,s);
+  //    if(m===null||!m.carriedOut) return{message:u,decisionReason:{type:"workingDir",reason:qvr}};
+  //    g=F9t(n,m);
+  //    return{message:`${u} ${g}.`,blockedPath:m.landing,
+  //      decisionReason:e==="write to"?{type:"safetyCheck",reason:g,classifierApprovable:!1}:{type:"workingDir",reason:g}}`
+  // (qvr @190987345 = "Path is outside allowed working directories"). D_ only
+  // reaches Dr when P (every-spelling inside) is false — mirrored by the
+  // !isInWorkingDir guard; when P is true the ask carries NO decisionReason
+  // (binary `if(P)` plain-ask branch @194287165 region).
+  const baseAskMessage = `Claude requested permissions to write to ${path}, but you haven't granted it yet.`
+  const askSuggestions = generateSuggestions(
+    path,
+    'write',
+    toolPermissionContext,
+    pathsToCheck,
+  )
+  if (!isInWorkingDir && carriedOut?.carriedOut) {
+    const sentence = carriedOutSentence(path, carriedOut)
+    return {
+      behavior: 'ask',
+      message: `${baseAskMessage} ${sentence}.`,
+      suggestions: askSuggestions,
+      blockedPath: carriedOut.landing,
+      decisionReason: {
+        type: 'safetyCheck',
+        reason: sentence,
+        classifierApprovable: false,
+      },
+    }
+  }
   return {
     behavior: 'ask',
-    message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.`,
-    suggestions: generateSuggestions(
-      path,
-      'write',
-      toolPermissionContext,
-      pathsToCheck,
-    ),
+    message: baseAskMessage,
+    suggestions: askSuggestions,
     decisionReason: !isInWorkingDir
       ? {
           type: 'workingDir',

@@ -142,6 +142,14 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
       j: 'select:next',
       'ctrl+p': 'select:previous',
       'ctrl+n': 'select:next',
+      // 2.1.280 (#028): Home/End jump to the first/last setting — byte-verified
+      // against the v280 binary @197322645:
+      //   ...,"ctrl+n":"select:next",home:"select:first",end:"select:last",
+      //   space:"select:accept",...
+      // (v278 @197715466 has the identical Settings table WITHOUT home/end:
+      //   ...,"ctrl+n":"select:next",space:"select:accept",enter:"select:accept",...)
+      home: 'select:first',
+      end: 'select:last',
       // Toggle/activate the selected setting (space only — enter saves & closes)
       space: 'select:accept',
       // Save and close the config panel
@@ -159,8 +167,14 @@ export const DEFAULT_BINDINGS: KeybindingBlock[] = [
   {
     context: 'Confirmation',
     bindings: {
-      y: 'confirm:yes',
-      n: 'confirm:no',
+      // 2.1.280 (#011): default y/n removed from the Confirmation context —
+      // byte-verified: v278 @197715675 has {y:"confirm:yes",n:"confirm:no",
+      // enter:"confirm:yes",escape:"confirm:no",...}; the identical v280 table
+      // @197322944 starts at enter (string count `y:"confirm:yes"` 1→0).
+      // Users can restore y/n via keybindings.json (the custom-keybindings
+      // override path is unchanged; confirm:yes/confirm:no remain valid
+      // actions in the schema — still present in the v280 action list
+      // @197330841).
       enter: 'confirm:yes',
       escape: 'confirm:no',
       // Navigation for dialogs with lists

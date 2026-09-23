@@ -79,14 +79,19 @@ import {
 import { parsePluginIdentifier } from './pluginIdentifier.js'
 import { deletePluginOptions } from './pluginOptionsStorage.js'
 import {
+  assertMarketplaceNameNotReservedImitation,
+  findImitatedReservedName,
   isLocalMarketplaceSource,
+  isPluginDirectoryNameImitation,
   type KnownMarketplace,
   type KnownMarketplacesFile,
   KnownMarketplacesFileSchema,
+  knownMarketplacesImitationMessage,
   type MarketplaceSource,
   type PluginMarketplace,
   type PluginMarketplaceEntry,
   PluginMarketplaceSchema,
+  RESERVED_MARKETPLACE_NAMES,
   validateOfficialNameSource,
 } from './schemas.js'
 
@@ -282,7 +287,20 @@ export async function loadKnownMarketplacesConfig(): Promise<KnownMarketplacesCo
       })
       throw new ConfigParseError(errorMsg, configFile, data)
     }
-    return parsed.data
+    // v2.1.280 #084 (official `Hse`/`Wjt` admission): an entry whose name is
+    // another spelling of a reserved marketplace name is ignored — fail-closed,
+    // so an imitation that was already added stops loading. Exact reserved
+    // names are NOT filtered here; they are validated at use time
+    // (assertTrustedKnownMarketplaceEntry).
+    let filtered = parsed.data
+    for (const name of Object.keys(parsed.data)) {
+      const ignoredMessage = knownMarketplacesImitationMessage(name)
+      if (ignoredMessage === undefined) continue
+      logForDebugging(ignoredMessage, { level: 'warn' })
+      if (filtered === parsed.data) filtered = { ...parsed.data }
+      delete filtered[name]
+    }
+    return filtered
   } catch (error) {
     if (isENOENT(error)) {
       return {}
@@ -317,6 +335,65 @@ export async function loadKnownMarketplacesConfigSafe(): Promise<KnownMarketplac
     // corrupted user config isn't a Claude Code bug, shouldn't hit the error file.
     return {}
   }
+}
+
+/**
+ * Official v280 `qte`: refusal message for a known_marketplaces.json registry
+ * entry whose reserved name (exactly or by spelling imitation) is not backed by
+ * a trusted registration. Returns null when the entry is acceptable.
+ */
+function reservedNameRegistryRefusal(
+  name: string,
+  entry: KnownMarketplace,
+): string | null {
+  const imitationMessage = knownMarketplacesImitationMessage(name)
+  if (imitationMessage !== undefined) {
+    return imitationMessage
+  }
+  if (!RESERVED_MARKETPLACE_NAMES.has(name.toLowerCase())) {
+    return null
+  }
+  // Seed-managed entries are admin-controlled and therefore trusted
+  // (official `Yy` installLocation check).
+  if (
+    typeof entry.installLocation === 'string' &&
+    seedDirFor(entry.installLocation)
+  ) {
+    return null
+  }
+  const source: unknown = entry.source
+  if (typeof source !== 'object' || source === null) {
+    return `The name '${name}' is reserved for official Anthropic marketplaces and its registered source is malformed.`
+  }
+  return validateOfficialNameSource(name, entry.source)
+}
+
+/**
+ * Official v280 `Jjt`: refuse reserved-name registry entries at use time
+ * (called by getMarketplace and refreshMarketplace, matching the official
+ * call sites). Imitation entries throw the refusal message itself (official
+ * reason: "Reserved marketplace name held by a registry entry"); exact
+ * reserved names registered from untrusted sources throw fix-it guidance
+ * (official reason: "Reserved marketplace name registered from untrusted
+ * source").
+ */
+function assertTrustedKnownMarketplaceEntry(
+  name: string,
+  entry: KnownMarketplace,
+): void {
+  const refusal = reservedNameRegistryRefusal(name, entry)
+  if (refusal === null) {
+    return
+  }
+  if (
+    isPluginDirectoryNameImitation(name) ||
+    findImitatedReservedName(name) !== undefined
+  ) {
+    throw new Error(refusal)
+  }
+  throw new Error(
+    `Marketplace "${name}" is registered from an untrusted source: ${refusal} To fix it, remove the marketplace and re-add it from the official source.`,
+  )
 }
 
 /**
@@ -531,18 +608,15 @@ function getPluginGitTimeoutMs(): number {
 export async function gitPull(
   cwd: string,
   ref?: string,
-  options?: { disableCredentialHelper?: boolean; sparsePaths?: string[] },
+  options?: { sparsePaths?: string[] },
 ): Promise<{ code: number; stderr: string }> {
   logForDebugging(`git pull: cwd=${cwd} ref=${ref ?? 'default'}`)
   const env = { ...process.env, ...GIT_NO_PROMPT_ENV }
-  const credentialArgs = options?.disableCredentialHelper
-    ? ['-c', 'credential.helper=']
-    : []
 
   if (ref) {
     const fetchResult = await execFileNoThrowWithCwd(
       gitExe(),
-      [...credentialArgs, 'fetch', 'origin', ref],
+      ['fetch', 'origin', ref],
       { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
     )
 
@@ -552,7 +626,7 @@ export async function gitPull(
 
     const checkoutResult = await execFileNoThrowWithCwd(
       gitExe(),
-      [...credentialArgs, 'checkout', ref],
+      ['checkout', ref],
       { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
     )
 
@@ -562,25 +636,25 @@ export async function gitPull(
 
     const pullResult = await execFileNoThrowWithCwd(
       gitExe(),
-      [...credentialArgs, 'pull', 'origin', ref],
+      ['pull', 'origin', ref],
       { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
     )
     if (pullResult.code !== 0) {
       return enhanceGitPullErrorMessages(pullResult)
     }
-    await gitSubmoduleUpdate(cwd, credentialArgs, env, options?.sparsePaths)
+    await gitSubmoduleUpdate(cwd, env, options?.sparsePaths)
     return pullResult
   }
 
   const result = await execFileNoThrowWithCwd(
     gitExe(),
-    [...credentialArgs, 'pull', 'origin', 'HEAD'],
+    ['pull', 'origin', 'HEAD'],
     { cwd, timeout: getPluginGitTimeoutMs(), stdin: 'ignore', env },
   )
   if (result.code !== 0) {
     return enhanceGitPullErrorMessages(result)
   }
-  await gitSubmoduleUpdate(cwd, credentialArgs, env, options?.sparsePaths)
+  await gitSubmoduleUpdate(cwd, env, options?.sparsePaths)
   return result
 }
 
@@ -611,7 +685,6 @@ export async function gitPull(
  */
 async function gitSubmoduleUpdate(
   cwd: string,
-  credentialArgs: string[],
   env: NodeJS.ProcessEnv,
   sparsePaths: string[] | undefined,
 ): Promise<void> {
@@ -628,7 +701,6 @@ async function gitSubmoduleUpdate(
     [
       '-c',
       'core.sshCommand=ssh -o BatchMode=yes -o StrictHostKeyChecking=yes',
-      ...credentialArgs,
       'submodule',
       'update',
       '--init',
@@ -1178,7 +1250,6 @@ export async function cacheMarketplaceFromGit(
   ref?: string,
   sparsePaths?: string[],
   onProgress?: MarketplaceProgressCallback,
-  options?: { disableCredentialHelper?: boolean },
 ): Promise<void> {
   const fs = getFsImplementation()
 
@@ -1197,10 +1268,7 @@ export async function cacheMarketplaceFromGit(
   const reconcileResult = await reconcileSparseCheckout(cachePath, sparsePaths)
   if (reconcileResult.code === 0) {
     const pullStarted = performance.now()
-    const pullResult = await gitPull(cachePath, ref, {
-      disableCredentialHelper: options?.disableCredentialHelper,
-      sparsePaths,
-    })
+    const pullResult = await gitPull(cachePath, ref, { sparsePaths })
     logPluginFetch(
       'marketplace_pull',
       gitUrl,
@@ -2072,6 +2140,11 @@ export async function addMarketplaceSource(
     onProgress,
   )
 
+  // v2.1.280 #084 (official `wNe`): refuse names that are another spelling of
+  // a reserved marketplace name. Runs before source validation, matching the
+  // official order (wNe before EVe).
+  assertMarketplaceNameNotReservedImitation(marketplace.name)
+
   // Validate that reserved names come from official sources
   const sourceValidationError = validateOfficialNameSource(
     marketplace.name,
@@ -2355,6 +2428,10 @@ export const getMarketplace = memoize(
       )
     }
 
+    // v2.1.280 #084 (official `Jjt` in getMarketplace): refuse reserved-name
+    // entries registered from untrusted sources before serving them.
+    assertTrustedKnownMarketplaceEntry(name, entry)
+
     // Legacy entries (pre-#19708) may have relative paths in global config.
     // These are meaningless outside the project that wrote them — resolving
     // against process.cwd() produces the wrong path. Give actionable guidance
@@ -2590,7 +2667,6 @@ export async function refreshAllMarketplaces(): Promise<void> {
 export async function refreshMarketplace(
   name: string,
   onProgress?: MarketplaceProgressCallback,
-  options?: { disableCredentialHelper?: boolean },
 ): Promise<void> {
   const config = await loadKnownMarketplacesConfig()
   const entry = config[name]
@@ -2600,6 +2676,11 @@ export async function refreshMarketplace(
       `Marketplace '${name}' not found. Available marketplaces: ${Object.keys(config).join(', ')}`,
     )
   }
+
+  // v2.1.280 #084 (official `Jjt` in refreshMarketplace/lBr): refuse
+  // reserved-name entries registered from untrusted sources before refreshing.
+  // Outside the try below so the refusal message is not re-wrapped.
+  assertTrustedKnownMarketplaceEntry(name, entry)
 
   // Clear the memoization cache for this specific marketplace
   getMarketplace.cache?.delete?.(name)
@@ -2706,7 +2787,6 @@ export async function refreshMarketplace(
             source.ref,
             source.sparsePaths,
             onProgress,
-            options,
           )
         } else {
           const sshConfigured = await isGitHubSshLikelyConfigured()
@@ -2720,7 +2800,6 @@ export async function refreshMarketplace(
               source.ref,
               source.sparsePaths,
               onProgress,
-              options,
             )
           } catch {
             logForDebugging(
@@ -2733,7 +2812,6 @@ export async function refreshMarketplace(
               source.ref,
               source.sparsePaths,
               onProgress,
-              options,
             )
           }
         }
@@ -2745,7 +2823,6 @@ export async function refreshMarketplace(
           source.ref,
           source.sparsePaths,
           onProgress,
-          options,
         )
       }
       // Validate that marketplace.json still exists after update

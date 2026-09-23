@@ -1,5 +1,8 @@
 import { c as _c } from "react/compiler-runtime";
 import React, { useCallback, useState } from 'react';
+import { ConfigurableShortcutHint } from '../../components/ConfigurableShortcutHint.js';
+import { Byline } from '../../components/design-system/Byline.js';
+import { KeyboardShortcutHint } from '../../components/design-system/KeyboardShortcutHint.js';
 import TextInput from '../../components/TextInput.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../ink.js';
@@ -187,11 +190,16 @@ export function ChooseRepoStep(t0) {
   } else {
     t18 = $[42];
   }
-  const t19 = currentRepo ? "\u2191/\u2193 to select \xB7 " : "";
+  // CC 2.1.280 (#066): the repo-select footer gains a third, keybinding-
+  // configurable "Esc to cancel" hint. Official v280 @226723066:
+  // `we=e(Xe,{action:"confirm:no",context:"Settings",fallback:"Esc",
+  // description:"cancel"})` inside `r(_e,{children:[ge,Ge,we]})` (ge =
+  // up/down-select, conditional on currentRepo; Ge = enter-continue); v278
+  // @226933375 had only `[Ro,xi]`. Byline is OCC's " \u00b7 " footer joiner.
   let t20;
-  if ($[43] !== t19) {
-    t20 = <Box marginLeft={3}><Text dimColor={true}>{t19}Enter to continue</Text></Box>;
-    $[43] = t19;
+  if ($[43] !== currentRepo) {
+    t20 = <Box marginLeft={3}><Text dimColor={true}><Byline>{currentRepo ? <KeyboardShortcutHint shortcut={"\u2191/\u2193"} action="select" /> : null}<KeyboardShortcutHint shortcut="Enter" action="continue" /><ConfigurableShortcutHint action="confirm:no" context="Settings" fallback="Esc" description="cancel" /></Byline></Text></Box>;
+    $[43] = currentRepo;
     $[44] = t20;
   } else {
     t20 = $[44];

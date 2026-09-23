@@ -256,8 +256,121 @@ export function resolveMcpMaxResultSizeChars(
  * Cap on MCP tool descriptions and server instructions sent to the model.
  * OpenAPI-generated MCP servers have been observed dumping 15-60KB of endpoint
  * docs into tool.description; this caps the p95 tail without losing the intent.
+ *
+ * claude-code 2.1.280 (#003): the cap became configurable per session via
+ * `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` ("Added
+ * CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH to change the 2,048-character cap on
+ * MCP tool descriptions and server instructions for every MCP server in the
+ * session"). Byte-verified in the 2.1.280 linux-x64 ELF:
+ *
+ *   t4e=2048                                                              // @197916615
+ *   function lV(){return a.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH??t4e}    // @199142387
+ *
+ * The env-schema binding for this name is `ES=M.int({min:1,digitsOnly:!0})`
+ * (namespace map @190802428 → factory call @190811950), and `M.int` parses as:
+ *
+ *   if(n?.digitsOnly && !/^[+-]?\d+$/.test(e.trim())) return;   // rejects 1e6 / 64_000 / 1,000
+ *   let i=ac(e);                                                // parseInt(trimmed, 10)
+ *   if(!Number.isFinite(i)) return;
+ *   if(n?.min!==void 0 && i<n.min) return;                      // 0 / negatives rejected
+ *   return i                                                    // no `max` → no upper clamp
+ *
+ * So: digits-only integers >= 1 are honored verbatim with NO upper clamp;
+ * anything else (unset, empty, non-digit, sci-notation, separators, 0,
+ * negative, NaN) falls back to 2048 through the `??`.
  */
-const MAX_MCP_DESCRIPTION_LENGTH = 2048
+const DEFAULT_MAX_MCP_DESCRIPTION_LENGTH = 2048
+
+/**
+ * Effective MCP description/instruction cap (binary `lV`).
+ *
+ * Re-reads `process.env` on every call rather than memoizing: the official
+ * getter is a lazy property over `process.env` that re-parses whenever the raw
+ * string changes, so a mid-session env change takes effect on the next read.
+ */
+export function getMaxMcpDescriptionLength(): number {
+  const raw = process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
+  if (raw === undefined) {
+    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+  }
+  // digitsOnly: reject anything that is not an integer literal. Unlike the
+  // generic `M.int()` vars (which accept `1e6` / `64_000` via parseEnvInt's
+  // notation branch), THIS var is bound with `digitsOnly:!0`.
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+  }
+  const parsed = parseEnvInt(raw)
+  if (parsed === undefined || !Number.isFinite(parsed)) {
+    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+  }
+  if (parsed < 1) {
+    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH // min: 1
+  }
+  return parsed
+}
+
+/**
+ * Suffix appended to a truncated MCP description/instruction (binary `Qo`'s
+ * `+"… [truncated]"` — U+2026 HORIZONTAL ELLIPSIS, one space, `[truncated]`).
+ */
+const MCP_DESCRIPTION_TRUNCATION_SUFFIX = '… [truncated]'
+
+/**
+ * Truncate one MCP description-like string to the effective cap.
+ *
+ * Byte-verified port of the 2.1.280 shared truncator (@223009548 `Qo`,
+ * duplicate chunk copy @223182124 `Pr`):
+ *
+ *   function Qo(e,n,r){let s=lV();
+ *     if(e.length<=s)return e;
+ *     if(r!==void 0)te(r,`${n} truncated from ${e.length} to ${s} chars`);
+ *     return re(e,s)+"… [truncated]"}
+ *
+ * `label` is the official message subject — `"Server instructions"` or
+ * `` `Tool "${toolName}" description` `` (factory `xi`, @223078250:
+ * `Ae=Qo(Le,`Tool "${q.name}" description`,e)`). When `serverName` is given the
+ * official logs `${label} truncated from ${len} to ${cap} chars` at MCP debug
+ * level before returning the truncated text.
+ *
+ * NOTE: the official slices with the surrogate-aware `re(e,n)` (@190617057),
+ * which is NOT a 2.1.280 delta (identical in 2.1.278) and whose inner `Ie()`
+ * normalizer is not byte-verified — so OCC keeps its plain `slice`. Staged.
+ *
+ * Exported for direct unit testing (the official uses the same truncator from
+ * the connect path, the tool factory and the `/mcp` tool-detail UI).
+ */
+export function truncateMcpDescription(
+  text: string,
+  label: string,
+  serverName?: string,
+): string {
+  const limit = getMaxMcpDescriptionLength()
+  if (text.length <= limit) {
+    return text
+  }
+  if (serverName !== undefined) {
+    logMCPDebug(
+      serverName,
+      `${label} truncated from ${text.length} to ${limit} chars`,
+    )
+  }
+  return text.slice(0, limit) + MCP_DESCRIPTION_TRUNCATION_SUFFIX
+}
+
+/**
+ * Server-instructions truncation (binary `Zo`, @223009523):
+ *   function Zo(e,n){if(!e)return e;return Qo(e,"Server instructions",n)}
+ * Falsy/absent instructions pass through untouched (no log, no suffix).
+ */
+export function truncateMcpServerInstructions(
+  instructions: string | undefined,
+  serverName: string,
+): string | undefined {
+  if (!instructions) {
+    return instructions
+  }
+  return truncateMcpDescription(instructions, 'Server instructions', serverName)
+}
 
 /**
  * Gets the timeout for MCP tool calls in milliseconds.
@@ -350,11 +463,81 @@ function setMcpAuthCacheEntry(serverId: string): void {
     })
 }
 
+/**
+ * claude-code 2.1.280 (#048): drop ONE server's `needs-auth` cache entry.
+ *
+ * "Fixed an MCP server re-added under the same name after `claude mcp remove`
+ * still showing as needing authentication instead of reconnecting." The 15-min
+ * TTL cache in `mcp-needs-auth-cache.json` is consulted by the connect path
+ * (`isMcpAuthCached`) to skip servers that recently 401'd; without a per-key
+ * removal, a server deleted and re-added inside the TTL inherits the stale
+ * flag and is reported as `needs-auth` without ever reconnecting.
+ *
+ * Byte-verified in the 2.1.280 linux-x64 ELF (@223017165 `ln`; duplicate chunk
+ * copy @223184732 `Ct`):
+ *
+ *   function ln(e,n){let r=jt(),s=r.authCacheWriteChain.then(async()=>{
+ *     let d=await WAe(n);                       // memoized read; missing/corrupt file → {}
+ *     if(!(e in d))return;                      // absent key → NO write at all
+ *     if(delete d[e],N()&&n!==void 0){if(!await or(n,d))return}
+ *     else await Kt().write(jAe(),S(d));        // rewrite mcp-needs-auth-cache.json
+ *     i6e()                                     // invalidate the memoized read
+ *   }).catch(()=>{});                           // never throws / never rejects
+ *   return r.authCacheWriteChain=s,s}
+ *
+ * The function already existed in 2.1.278 (used by `mcp login`); the 2.1.280
+ * delta is the NEW unconditional call from the `mcp remove` handler
+ * (@219311718) — see `mcpRemoveHandler`. OCC has no config-publisher
+ * (`N()&&n!==void 0`) branch, so this is the plain file-write path.
+ *
+ * Fail-safe by construction: chained on `writeChain` (no read-modify-write
+ * race), no-ops without touching disk when the key is absent, tolerates a
+ * missing/corrupt cache file (`getMcpAuthCache` already `.catch(() => ({}))`),
+ * and swallows its own errors so `mcp remove` can never fail on cache cleanup.
+ */
+export function removeMcpAuthCacheEntry(serverId: string): Promise<void> {
+  const next = writeChain
+    .then(async () => {
+      const cache = await getMcpAuthCache()
+      if (!(serverId in cache)) {
+        return
+      }
+      delete cache[serverId]
+      await writeFile(getMcpAuthCachePath(), jsonStringify(cache))
+      // Invalidate the memoized read so the next isMcpAuthCached() re-reads the
+      // file and no longer sees the removed entry.
+      authCachePromise = null
+    })
+    .catch(() => {
+      // Best-effort cache removal (binary `.catch(()=>{})`)
+    })
+  writeChain = next
+  return next
+}
+
 export function clearMcpAuthCache(): void {
   authCachePromise = null
   void unlink(getMcpAuthCachePath()).catch(() => {
     // Cache file may not exist
   })
+}
+
+/**
+ * @internal Test-only: drop the memoized needs-auth cache read WITHOUT unlinking
+ * the file. Tests that point `CLAUDE_CONFIG_DIR` at a fresh temp dir per case
+ * need the memo gone so the next read hits their own directory, but must not
+ * delete a fixture they seeded on disk (which is what `clearMcpAuthCache` does).
+ *
+ * Deliberately named apart from `clearMcpAuthCache`: Bun's `mock.module` leaks
+ * across test files in one worker (OCC-97), and
+ * src/tools/McpAuthTool/__tests__/mcpAuthStubTools274.test.ts replaces the
+ * `clearMcpAuthCache` export with a call counter, which silently defeats any
+ * other file's memo reset. Precedent: `_resetErrorLogForTesting` in
+ * src/utils/log.ts, `resetWebFetchCacheTtlForTesting` in
+ * src/tools/WebFetchTool/cacheTtl.ts.
+ */
+export function _resetMcpAuthCacheForTesting(): void {
+  authCachePromise = null
 }
 
 /**
@@ -1326,18 +1509,9 @@ export const connectToServer = memoize(
       const capabilities = client.getServerCapabilities()
       const serverVersion = client.getServerVersion()
       const rawInstructions = client.getInstructions()
-      let instructions = rawInstructions
-      if (
-        rawInstructions &&
-        rawInstructions.length > MAX_MCP_DESCRIPTION_LENGTH
-      ) {
-        instructions =
-          rawInstructions.slice(0, MAX_MCP_DESCRIPTION_LENGTH) + '… [truncated]'
-        logMCPDebug(
-          name,
-          `Server instructions truncated from ${rawInstructions.length} to ${MAX_MCP_DESCRIPTION_LENGTH} chars`,
-        )
-      }
+      // claude-code 2.1.280 (#003): the cap is env-configurable, so truncation
+      // now runs through the shared `Zo`/`Qo` port instead of an inline slice.
+      const instructions = truncateMcpServerInstructions(rawInstructions, name)
 
       // Log successful connection details
       logMCPDebug(
@@ -1988,6 +2162,18 @@ export const fetchToolsForClient = memoizeWithLRU(
           const maxResultSizeOverride = tool._meta?.[
             'anthropic/maxResultSizeChars'
           ]
+          // claude-code 2.1.280 (#003) — binary factory `xi` (@223078250):
+          //   Le=y?.tools?.[q.name]??q.description??""            // raw
+          //   Ae=Qo(Le,`Tool "${q.name}" description`,e)          // truncated, eagerly
+          // `description()` returns the RAW text and `prompt()` the truncated
+          // one, both computed once at list time (so the truncation notice is
+          // logged once per tool, not once per prompt() call).
+          const rawDescription = tool.description ?? ''
+          const truncatedDescription = truncateMcpDescription(
+            rawDescription,
+            `Tool "${tool.name}" description`,
+            client.name,
+          )
           return {
             ...MCPTool,
             // In skip-prefix mode, use the original name for model invocation so MCP tools
@@ -2010,13 +2196,10 @@ export const fetchToolsForClient = memoizeWithLRU(
                 : undefined,
             alwaysLoad: tool._meta?.['anthropic/alwaysLoad'] === true,
             async description() {
-              return tool.description ?? ''
+              return rawDescription
             },
             async prompt() {
-              const desc = tool.description ?? ''
-              return desc.length > MAX_MCP_DESCRIPTION_LENGTH
-                ? desc.slice(0, MAX_MCP_DESCRIPTION_LENGTH) + '… [truncated]'
-                : desc
+              return truncatedDescription
             },
             isConcurrencySafe() {
               return tool.annotations?.readOnlyHint ?? false

@@ -108,6 +108,9 @@ const {
   isAdvisorEntryRefused,
   isAdvisorOrgDisabled,
 } = require('../../../utils/advisor.js') as typeof import('../../../utils/advisor.js')
+const {
+  _resetAdvisorHostDisableForTesting,
+} = require('../advisorRetry.js') as typeof import('../advisorRetry.js')
 const { ADVISOR_BETA_HEADER } = require('../../../constants/betas.js') as typeof import(
   '../../../constants/betas.js'
 )
@@ -377,6 +380,7 @@ beforeEach(() => {
   resetSettingsCache()
 
   _resetAdvisorRefusalStateForTesting()
+  _resetAdvisorHostDisableForTesting()
   resetAnalyticsForTesting()
   savedFetch = globalThis.fetch
   installFetchMock()
@@ -394,6 +398,7 @@ afterEach(() => {
   resetSettingsCache()
   rmSync(tmpConfigDir, { recursive: true, force: true })
   _resetAdvisorRefusalStateForTesting()
+  _resetAdvisorHostDisableForTesting()
   resetAnalyticsForTesting()
 })
 
@@ -405,7 +410,7 @@ afterAll(() => {
 // 1. Streaming path — the :2318 wiring
 // ---------------------------------------------------------------------------
 describe('2.1.276 advisor retry wiring — streaming path (claude.ts:2178/:2318)', () => {
-  test('INPUT_TAG 400 → attempt 2 has the advisor schema stripped, beta header kept, latch set, PONG delivered', async () => {
+  test('INPUT_TAG 400 → attempt 2 has the advisor schema stripped, beta header stripped, latch set, PONG delivered', async () => {
     // Arrange
     const events: Array<{ eventName: string; metadata: Record<string, unknown> }> =
       []
@@ -431,9 +436,13 @@ describe('2.1.276 advisor retry wiring — streaming path (claude.ts:2178/:2318)
     // Attempt 2: the live-binding setTools closure (:2181-2183) dropped it —
     // this is the assertion that FAILS if the :2318 wiring is deleted.
     expect(hasAdvisorTool(requests[1]!)).toBe(false)
-    // Non-org refusal: official `Hvt` KEEPS the beta header (`Bb()` still true).
-    expect(betaHeader(requests[1]!)).toContain(ADVISOR_BETA_HEADER)
-    // Session latch set; org kill-switch NOT armed.
+    // v276→v280 behavior delta: the Input-tag refusal is now HOST-scoped
+    // (`kat`), so official v280 `XHe` STRIPS the advisor beta header —
+    // `if(!qb())Ee=Ee.filter((er)=>er!==tLn)` where qb() is false via the
+    // `$H` host arm after `RJr` disabled this host. (In v276 `Hvt` kept the
+    // beta because only org-wide refusals armed the kill-switch.)
+    expect(betaHeader(requests[1]!)).not.toContain(ADVISOR_BETA_HEADER)
+    // Session latch set; org kill-switch NOT armed (host-scoped refusal).
     expect(isAdvisorEntryRefused()).toBe(true)
     expect(isAdvisorOrgDisabled()).toBe(false)
     // The retried stream flows through to the caller.

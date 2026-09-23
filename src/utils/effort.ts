@@ -36,6 +36,9 @@ export function modelSupportsEffort(model: string): boolean {
   // OCC-97 (Gap-97d): opus-4-7/opus-4-8/sonnet-5/fable-5 added — the official
   // 2.1.233 model registry (byte-verified, Gap-97d investigation) lists
   // "effort" in the `capabilities` array of every one of these models.
+  // 2.1.280: claude-opus-5-5 auto-matches via the 'opus-5' substring — the
+  // official 2.1.280 catalog entry (@191988119, byte-verified) lists
+  // effort/max_effort/xhigh_effort/per_turn_effort in its `capabilities`.
   if (
     m.includes('opus-4-6') ||
     m.includes('opus-4-7') ||
@@ -452,6 +455,13 @@ export function getDefaultEffortForModel(
   // API fallback below, so they need no explicit branch.
   if (model.toLowerCase().includes('opus-4-7')) {
     return 'xhigh'
+  }
+
+  // 2.1.280: the official catalog entry for claude-opus-5-5 (@191988119,
+  // byte-verified) declares `default_effort: "medium"` — unconditional (no
+  // Pro/Max gating, unlike the opus-4-6 branch above).
+  if (model.toLowerCase().includes('opus-5-5')) {
+    return 'medium'
   }
 
   // When ultrathink feature is on, default effort to medium (ultrathink bumps to high)

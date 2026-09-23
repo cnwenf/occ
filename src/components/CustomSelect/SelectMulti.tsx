@@ -156,7 +156,15 @@ export function SelectMulti(t0) {
             onCancel();
           }} layout="compact" onOpenEditor={onOpenEditor} onImagePaste={onImagePaste} pastedContents={pastedContents} onRemoveImage={onRemoveImage}><Text color={isSelected ? "success" : undefined}>[{isSelected ? figures.tick : " "}]{" "}</Text></SelectInputOption></Box>;
       }
-      return <Box key={String(option.value)} gap={1} onClick={onClick}><SelectOption isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption} description={option.description}>{!hideIndexes && <Text dimColor={true}>{`${i}.`.padEnd(maxIndexWidth)}</Text>}<Text color={isSelected ? "success" : undefined}>[{isSelected ? figures.tick : " "}]</Text><Text color={isOptionFocused ? "suggestion" : undefined}>{option.label}</Text></SelectOption></Box>;
+      // CC 2.1.280 (#025): description indents under the LABEL, not under the
+      // option number. Official v280 @205601363 restructured the compact
+      // multi-select row: number and checkbox each in their own flexShrink:0
+      // box, then a flexDirection:"column" box holding label + (when present)
+      // description in color "inactive"; the row wrapper (E4) no longer
+      // receives a description prop (v278 @206609472 passed
+      // `description:v.description`, which ListItem rendered at paddingLeft:2
+      // — under the number).
+      return <Box key={String(option.value)} gap={1} onClick={onClick}><SelectOption isFocused={isOptionFocused} isSelected={false} shouldShowDownArrow={areMoreOptionsBelow && isLastVisibleOption} shouldShowUpArrow={areMoreOptionsAbove && isFirstVisibleOption}>{!hideIndexes && <Box flexShrink={0}><Text dimColor={true}>{`${i}.`.padEnd(maxIndexWidth)}</Text></Box>}<Box flexShrink={0}><Text color={isSelected ? "success" : undefined}>[{isSelected ? figures.tick : " "}]</Text></Box><Box flexDirection="column"><Text color={isOptionFocused ? "suggestion" : undefined}>{option.label}</Text>{option.description && <Text color="inactive">{option.description}</Text>}</Box></SelectOption></Box>;
     });
     $[17] = hideIndexes;
     $[18] = isDisabled;

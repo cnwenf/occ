@@ -359,8 +359,10 @@ export function stripLastImageBlock(
 }
 
 // ---------------------------------------------------------------------------
-// Official 2.1.276 advisor hotfix — advisor-entry-refused 400 classifiers.
-// Byte-exact port of the v276 binary (JS-source region, offset ~198013377):
+// Official 2.1.276 advisor hotfix classifiers, extended by 2.1.280 (#032 —
+// advisor Input-tag retry behind proxy/gateway).
+//
+// v276 baseline (`TPe`/`vtt`, 400-only):
 //
 //   function TPe(e){return e instanceof Pt&&e.status===400&&(
 //     e.message.includes("the advisor tool is not available")||
@@ -369,38 +371,104 @@ export function stripLastImageBlock(
 //   function vtt(e){return TPe(e)&&
 //     e.message.includes("not available for this organization")}
 //
-// The 2.1.275 proxy/gateway regression message — "tools.0.model: Input tag
-// 'advisor_20260301' found using 'type' does not match any tag." — has NO
-// dedicated matcher in v276 (verified: zero hits for "Input tag 'advisor" and
-// "does not match any tag" outside the pre-existing v274
-// `Input tag 'tool_(addition|removal)'` regex in `Dtt`). It is caught solely
-// by the `tools\.\d+\.model: ` branch of TPe.
+// v280 replaced TPe with `ake`, adding a dedicated Input-tag matcher (`ske`)
+// and a 422 branch, plus the `kat` scope classifier (v280 binary, JS-source
+// region @198649190/@198649483/@198625095):
+//
+//   var Oit="advisor_20260301",Dit="advisor_20260301".replace(/\d+$/,"");
+//   var mNn=new RegExp(`Input tag '${Dit}\\d+'`);
+//   function ske(e){return mNn.test(e)}
+//   function ake(e){if(!(e instanceof Ct))return!1;
+//     if(e.status===400)return e.message.includes("the advisor tool is not available")||
+//       e.message.includes("cannot be used as an advisor")||
+//       /tools\.\d+\.model: /.test(e.message)||ske(e.message);
+//     return e.status===422&&ske(e.message)}
+//   function kat(e){if(e.message.includes("not available for this organization"))
+//     return"process";return ske(e.message)?"host":"conversation"}
+//
+// (v278 verified to still carry the 400-only `Eue` baseline — zero hits for
+// the `Input tag '${` template and for `host_wide`.)
+//
+// Why: proxies/gateways that do not know the `advisor_20260301` server-tool
+// tag reject it in more than the one 2.1.275 shape TPe covered — some return
+// 422 instead of 400, and some omit the `tools.N.model: ` field prefix, so
+// v276's classifier missed them and every request hard-failed behind such a
+// gateway. `ske`'s regex is built from the tool-type constant with the
+// trailing version digits stripped (`Dit` = "advisor_"), so it also matches
+// future `advisor_YYYYMMDD` tags. `kat` classifies the refusal scope for the
+// retry handler's disable path: process-wide kill (org lacks access),
+// host-wide disable (gateway Input-tag rejection), or conversation-only.
 // ---------------------------------------------------------------------------
 const ADVISOR_NOT_AVAILABLE_MESSAGE = 'the advisor tool is not available'
 const ADVISOR_MODEL_REJECTED_MESSAGE = 'cannot be used as an advisor'
 const ADVISOR_ORG_UNAVAILABLE_MESSAGE = 'not available for this organization'
 const ADVISOR_TOOL_MODEL_FIELD_PATTERN = /tools\.\d+\.model: /
 
+/** Official `Oit` — the advisor server-tool type tag (claude.ts schema push). */
+const ADVISOR_TOOL_TYPE_TAG = 'advisor_20260301'
+/** Official `Dit` — `"advisor_20260301".replace(/\d+$/,"")` → `advisor_`. */
+const ADVISOR_TAG_PREFIX = ADVISOR_TOOL_TYPE_TAG.replace(/\d+$/, '')
+/** Official `mNn` — /Input tag 'advisor_\d+'/ (version-agnostic by design). */
+const ADVISOR_INPUT_TAG_PATTERN = new RegExp(
+  `Input tag '${ADVISOR_TAG_PREFIX}\\d+'`,
+)
+
 /**
- * Official `TPe`: a 400 whose message indicates the advisor tool entry was
- * refused (proxy/gateway that does not recognize the `advisor_20260301` tool
- * tag, org without advisor access, or advisor-model rejection).
+ * Official v280 `ske`: the message carries the proxy/gateway Input-tag
+ * rejection ("Input tag 'advisor_20260301' found using 'type' does not match
+ * any tag.").
  */
-export function isAdvisorEntryRefusedError(error: unknown): error is APIError {
-  if (!(error instanceof APIError) || error.status !== 400) {
-    return false
-  }
-  const message = error.message ?? ''
-  return (
-    message.includes(ADVISOR_NOT_AVAILABLE_MESSAGE) ||
-    message.includes(ADVISOR_MODEL_REJECTED_MESSAGE) ||
-    ADVISOR_TOOL_MODEL_FIELD_PATTERN.test(message)
-  )
+export function isAdvisorInputTagError(message: string): boolean {
+  return ADVISOR_INPUT_TAG_PATTERN.test(message)
 }
 
 /**
- * Official `vtt`: the advisor-entry refusal says the ORGANIZATION lacks
- * advisor access — arms the process-wide kill-switch (official `Yqt()`).
+ * Official v280 `ake` (v276 `TPe` + Input-tag matcher + 422 branch): an
+ * APIError whose message indicates the advisor tool entry was refused —
+ * a 400 (not-available / model-rejected / tools.N.model field / Input tag)
+ * or a 422 carrying the Input tag.
+ */
+export function isAdvisorEntryRefusedError(error: unknown): error is APIError {
+  if (!(error instanceof APIError)) {
+    return false
+  }
+  const message = error.message ?? ''
+  if (error.status === 400) {
+    return (
+      message.includes(ADVISOR_NOT_AVAILABLE_MESSAGE) ||
+      message.includes(ADVISOR_MODEL_REJECTED_MESSAGE) ||
+      ADVISOR_TOOL_MODEL_FIELD_PATTERN.test(message) ||
+      isAdvisorInputTagError(message)
+    )
+  }
+  return error.status === 422 && isAdvisorInputTagError(message)
+}
+
+/** Official `kat` result — advisor-refusal disable scope. */
+export type AdvisorRefusalScope = 'process' | 'host' | 'conversation'
+
+/**
+ * Official v280 `kat`: classify an advisor-entry refusal (already matched by
+ * `ake`) into the disable scope the retry handler applies:
+ *   - 'process'      — org lacks advisor access → process-wide kill (`TJr`)
+ *   - 'host'         — proxy/gateway Input-tag rejection → disable advisor
+ *                      for the current base-URL host only (`RJr`)
+ *   - 'conversation' — anything else (account/model-level) → session latch only
+ */
+export function classifyAdvisorRefusalScope(
+  error: APIError,
+): AdvisorRefusalScope {
+  const message = error.message ?? ''
+  if (message.includes(ADVISOR_ORG_UNAVAILABLE_MESSAGE)) {
+    return 'process'
+  }
+  return isAdvisorInputTagError(message) ? 'host' : 'conversation'
+}
+
+/**
+ * Official v276 `vtt` — kept for the existing call sites/tests; its v280
+ * semantics are preserved exactly via `kat` (organization_wide ≡
+ * scope === 'process' for an `ake`-matched error).
  */
 export function isAdvisorOrgWideEntryRefusedError(error: unknown): boolean {
   return (

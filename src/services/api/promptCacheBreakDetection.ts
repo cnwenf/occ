@@ -10,6 +10,7 @@ import { djb2Hash } from 'src/utils/hash.js'
 import { logError } from 'src/utils/log.js'
 import { getClaudeTempDir } from 'src/utils/permissions/filesystem.js'
 import { jsonStringify } from 'src/utils/slowOperations.js'
+import type { ThinkingConfig } from 'src/utils/thinking.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -58,6 +59,12 @@ type PreviousState = {
    *  anthropic_internal.effort_override branch — removed in the review
    *  P2-1 fix). */
   effortValue: string
+  /** Derived thinking mode — official v280 `Sn` (@199384065):
+   *  '' (untracked) | 'off' (disabled) | 'on' (adaptive/enabled). */
+  thinkingMode: string
+  /** Derived thinking display — official v280 `Fn`: '' when untracked or
+   *  thinking is disabled, else the config's display string. */
+  thinkingDisplay: string
   /** Hash of getExtraBodyParams() — catches CLAUDE_CODE_EXTRA_BODY and
    *  anthropic_internal changes. */
   extraBodyHash: number
@@ -82,6 +89,8 @@ type PendingChanges = {
   overageChanged: boolean
   cachedMCChanged: boolean
   effortChanged: boolean
+  thinkingModeChanged: boolean
+  thinkingDisplayChanged: boolean
   extraBodyChanged: boolean
   addedToolCount: number
   removedToolCount: number
@@ -97,6 +106,10 @@ type PendingChanges = {
   removedBetas: string[]
   prevEffortValue: string
   newEffortValue: string
+  prevThinkingMode: string
+  newThinkingMode: string
+  prevThinkingDisplay: string
+  newThinkingDisplay: string
   buildPrevDiffableContent: () => string
 }
 
@@ -239,6 +252,10 @@ export type PromptStateSnapshot = {
   isUsingOverage?: boolean
   cachedMCEnabled?: boolean
   effortValue?: string | number
+  /** Official v280 snapshot field `thinkingConfig:xe` (#064) — the thinking
+   *  config sent with the request. Optional like every extended field:
+   *  undefined compares as stable (derived mode '' never reports a change). */
+  thinkingConfig?: ThinkingConfig
   extraBodyParams?: unknown
 }
 
@@ -261,6 +278,7 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
       isUsingOverage = false,
       cachedMCEnabled = false,
       effortValue,
+      thinkingConfig,
       extraBodyParams,
     } = snapshot
     const key = getTrackingKey(querySource, agentId)
@@ -292,6 +310,23 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
     const isFastMode = fastMode ?? false
     const sortedBetas = [...betas].sort()
     const effortStr = effortValue === undefined ? '' : String(effortValue)
+    // Official v280 derivation (#064, @199384065):
+    //   Sn=xe===void 0?"":xe.type==="disabled"?"off":"on"
+    //   Fn=xe===void 0||xe.type==="disabled"?"":xe.display??""
+    const thinkingMode =
+      thinkingConfig === undefined
+        ? ''
+        : thinkingConfig.type === 'disabled'
+          ? 'off'
+          : 'on'
+    // OCC's ThinkingConfig union has no `display` property yet (official
+    // v280's does); read it defensively so the port is byte-equivalent the
+    // moment the field lands. Adding it to src/utils/thinking.ts is outside
+    // this change's file scope (staged).
+    const thinkingDisplay =
+      thinkingConfig === undefined || thinkingConfig.type === 'disabled'
+        ? ''
+        : ((thinkingConfig as { display?: string }).display ?? '')
     const extraBodyHash =
       extraBodyParams === undefined ? 0 : computeHash(extraBodyParams)
 
@@ -318,6 +353,8 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
         isUsingOverage,
         cachedMCEnabled,
         effortValue: effortStr,
+        thinkingMode,
+        thinkingDisplay,
         extraBodyHash,
         callCount: 1,
         pendingChanges: null,
@@ -345,6 +382,20 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
     const overageChanged = isUsingOverage !== prev.isUsingOverage
     const cachedMCChanged = cachedMCEnabled !== prev.cachedMCEnabled
     const effortChanged = effortStr !== prev.effortValue
+    // Official v280 `dEt` (#064, @199382474; e=prev, n=new):
+    //   thinkingModeChanged:e.thinkingMode!==""&&n.thinkingMode!==""&&n.thinkingMode!==e.thinkingMode
+    //   thinkingDisplayChanged:e.thinkingMode!==""&&n.thinkingMode===e.thinkingMode&&n.thinkingDisplay!==e.thinkingDisplay
+    // The '' (untracked) guards mean the first snapshot that starts carrying
+    // thinkingConfig never reports a spurious mode change, and a display
+    // change only counts while the mode itself is unchanged.
+    const thinkingModeChanged =
+      prev.thinkingMode !== '' &&
+      thinkingMode !== '' &&
+      thinkingMode !== prev.thinkingMode
+    const thinkingDisplayChanged =
+      prev.thinkingMode !== '' &&
+      thinkingMode === prev.thinkingMode &&
+      thinkingDisplay !== prev.thinkingDisplay
     const extraBodyChanged = extraBodyHash !== prev.extraBodyHash
 
     if (
@@ -359,6 +410,8 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
       overageChanged ||
       cachedMCChanged ||
       effortChanged ||
+      thinkingModeChanged ||
+      thinkingDisplayChanged ||
       extraBodyChanged
     ) {
       const prevToolSet = new Set(prev.toolNames)
@@ -390,6 +443,8 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
         overageChanged,
         cachedMCChanged,
         effortChanged,
+        thinkingModeChanged,
+        thinkingDisplayChanged,
         extraBodyChanged,
         addedToolCount: addedTools.length,
         removedToolCount: removedTools.length,
@@ -405,6 +460,12 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
         removedBetas: prev.betas.filter(b => !newBetaSet.has(b)),
         prevEffortValue: prev.effortValue,
         newEffortValue: effortStr,
+        // Official v280: `prevThinkingMode:qn.thinkingMode,newThinkingMode:Sn,
+        // prevThinkingDisplay:qn.thinkingDisplay,newThinkingDisplay:Fn`
+        prevThinkingMode: prev.thinkingMode,
+        newThinkingMode: thinkingMode,
+        prevThinkingDisplay: prev.thinkingDisplay,
+        newThinkingDisplay: thinkingDisplay,
         buildPrevDiffableContent: prev.buildDiffableContent,
       }
     } else {
@@ -424,6 +485,8 @@ export function recordPromptState(snapshot: PromptStateSnapshot): void {
     prev.isUsingOverage = isUsingOverage
     prev.cachedMCEnabled = cachedMCEnabled
     prev.effortValue = effortStr
+    prev.thinkingMode = thinkingMode
+    prev.thinkingDisplay = thinkingDisplay
     prev.extraBodyHash = extraBodyHash
     prev.buildDiffableContent = lazyDiffableContent
   } catch (e: unknown) {
@@ -559,6 +622,21 @@ export async function checkResponseForCacheBreak(
           `effort changed (${changes.prevEffortValue || 'default'} → ${changes.newEffortValue || 'default'})`,
         )
       }
+      // Official v280 diagnostics (#064, @199392699) — byte-exact, between
+      // the effort and extra-body parts:
+      //   if(e.thinkingModeChanged)r.push(`thinking mode changed (${e.prevThinkingMode} → ${e.newThinkingMode})`)
+      //   if(e.thinkingDisplayChanged)r.push(`thinking display changed (${e.prevThinkingDisplay||"none"} → ${e.newThinkingDisplay||"none"})`)
+      // (mode strings carry NO ||fallback in the official; display does.)
+      if (changes.thinkingModeChanged) {
+        parts.push(
+          `thinking mode changed (${changes.prevThinkingMode} → ${changes.newThinkingMode})`,
+        )
+      }
+      if (changes.thinkingDisplayChanged) {
+        parts.push(
+          `thinking display changed (${changes.prevThinkingDisplay || 'none'} → ${changes.newThinkingDisplay || 'none'})`,
+        )
+      }
       if (changes.extraBodyChanged) {
         parts.push('extra body params changed')
       }
@@ -601,6 +679,10 @@ export async function checkResponseForCacheBreak(
       overageChanged: changes?.overageChanged ?? false,
       cachedMCChanged: changes?.cachedMCChanged ?? false,
       effortChanged: changes?.effortChanged ?? false,
+      // Official v280 payload (#064): thinkingModeChanged/thinkingDisplayChanged
+      // sit between effortChanged and extraBodyChanged.
+      thinkingModeChanged: changes?.thinkingModeChanged ?? false,
+      thinkingDisplayChanged: changes?.thinkingDisplayChanged ?? false,
       extraBodyChanged: changes?.extraBodyChanged ?? false,
       addedToolCount: changes?.addedToolCount ?? 0,
       removedToolCount: changes?.removedToolCount ?? 0,

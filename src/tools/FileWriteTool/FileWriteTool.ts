@@ -25,7 +25,10 @@ import {
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
 import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+import {
+  getFsImplementation,
+  resolveWritePathDescriptor,
+} from '../../utils/fsOperations.js'
 import {
   fetchSingleFileGitDiff,
   type ToolUseDiff,
@@ -52,7 +55,9 @@ import {
   wouldReadBeAutoAllowed,
 } from '../../utils/permissions/fileStateGuard.js'
 import {
+  checkLeafSymlinkWriteDeny,
   checkWritePermissionForTool,
+  expandPathForWriteDescriptor,
   matchingRuleForInput,
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
@@ -116,6 +121,78 @@ export type Output = z.infer<OutputSchema>
 export type FileWriteToolInput = InputSchema
 
 /**
+ * Official Claude Code v2.1.280 (byte-verified @198306051 `fxn`/`bZe` in the
+ * v280 linux-x64 ELF): misnamed-parameter repair for the Write tool. The model
+ * sometimes calls Write with `file_text`/`file_content` instead of `content`,
+ * `path` instead of `file_path`, or an extra `description` param. Each repair
+ * is recorded as a shapeClass tag (comma-joined, binary `r.join(",")`) and a
+ * note sentence; the sentences (space-joined, binary `s.join(" ")`) fill the
+ * resultNote template (binary, byte-exact):
+ *
+ *   `Note: ${En}'s parameters are named \`file_path\` and \`content\`. ${s.join(" ")}`
+ *
+ * with `En="Write"` (@192662800). Coercion rules, byte-verified from `bZe`:
+ * - `path` → `file_path`: only when `file_path` is NOT an own key and
+ *   `typeof path === "string"`. Sentence: "`path` was read as `file_path`."
+ * - `file_text`/`file_content` → `content`: only when EXACTLY ONE of the two
+ *   is an own key (`g.length===1`), `content` is NOT an own key, and the value
+ *   is a string. Precedence: an own `content` key always wins (no coercion —
+ *   the misnamed key stays and strictObject rejects it); both misnamed keys
+ *   present → no coercion. Sentence: "`<key>` was read as `content`."
+ * - `description`: dropped whenever present (own key). Sentence:
+ *   "`description` was ignored." shapeClass tag: `drop_description`.
+ * Returns null when nothing changed (binary: `return r.length?...:null`).
+ * Operates on a shallow copy — the original API-bound input is never mutated.
+ */
+const MISNAMED_CONTENT_KEYS = ['file_text', 'file_content']
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function coerceWriteInput(raw: unknown): {
+  input: Record<string, unknown>
+  shapeClass: string
+  resultNote: string
+} | null {
+  if (!isRecord(raw)) return null
+  const n: Record<string, unknown> = { ...raw }
+  const shapeClasses: string[] = []
+  const sentences: string[] = []
+  if (!Object.hasOwn(n, 'file_path') && typeof n.path === 'string') {
+    n.file_path = n.path
+    delete n.path
+    shapeClasses.push('path')
+    sentences.push('`path` was read as `file_path`.')
+  }
+  const present = MISNAMED_CONTENT_KEYS.filter(key => Object.hasOwn(n, key))
+  const [first] = present
+  if (
+    first !== undefined &&
+    present.length === 1 &&
+    !Object.hasOwn(n, 'content') &&
+    typeof n[first] === 'string'
+  ) {
+    n.content = n[first]
+    delete n[first]
+    shapeClasses.push(first)
+    sentences.push(`\`${first}\` was read as \`content\`.`)
+  }
+  if (Object.hasOwn(n, 'description')) {
+    delete n.description
+    shapeClasses.push('drop_description')
+    sentences.push('`description` was ignored.')
+  }
+  return shapeClasses.length
+    ? {
+        input: n,
+        shapeClass: shapeClasses.join(','),
+        resultNote: `Note: ${FILE_WRITE_TOOL_NAME}'s parameters are named \`file_path\` and \`content\`. ${sentences.join(' ')}`,
+      }
+    : null
+}
+
+/**
  * Aligned to official Claude Code 2.1.228 Write tool (binary `vsb` /
  * validateInput ported via the aligning-with-official-binary skill; the
  * compiled ELF is the source of truth). The 2.1.228 change: the
@@ -148,6 +225,22 @@ export const FileWriteTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
+  // Official v2.1.280 Write-tool def (byte-verified @198309000):
+  // `coerceInputBeforePluginHooks:!0,coerceInput(e){let n=bZe(e);return
+  // n!==null&&yxn()&&vZe().safeParse(n.input).success?n:null}` — the repair is
+  // only returned when the COERCED input passes the full input schema, so a
+  // partial repair (e.g. `path`→`file_path` but still no `content`) yields
+  // null and validation proceeds on the original input (no note either).
+  // `yxn()` is the statsig gate `x("tengu_noble_mountain",!0)` (@198308036) —
+  // DEFAULT-TRUE; per the port decision a default-true gate ≡ always on, so
+  // OCC omits the gate call (documented in the gap notes).
+  coerceInputBeforePluginHooks: true,
+  coerceInput(input) {
+    const repair = coerceWriteInput(input)
+    return repair !== null && inputSchema().safeParse(repair.input).success
+      ? repair
+      : null
+  },
   toAutoClassifierInput(input) {
     return `${input.file_path}: ${input.content}`
   },
@@ -165,15 +258,38 @@ export const FileWriteTool = buildTool({
     return pattern => matchWildcardPattern(pattern, file_path)
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.280 (changelog #005): official Write-tool wiring @198310186:
+    // `let s=et(n.file_path),g=da(s);
+    //  e.session.writePermissionStash.stash(r.toolUseId,s,g.spellings);
+    //  let h=D_(LS,n,e.permissions(),g);
+    //  return h.behavior==="deny"?h:XZe(s,g)??h`
+    // A rule DENY from the main write check wins; otherwise the leaf-symlink
+    // deny (XZe) overrides even an allow result.
+    const expandedPath = expandPathForWriteDescriptor(
+      FileWriteTool.getPath(input),
+    )
+    const descriptor = resolveWritePathDescriptor(expandedPath)
     // CC 2.1.251 (Gap-109a): stash the check-time symlink resolutions of
-    // the target path, write lane (binary FileWriteTool Ky stash site).
-    stashCheckTimeResolutions(context, FileWriteTool.getPath(input), 'write')
+    // the target path, write lane (binary FileWriteTool Ky stash site);
+    // since 2.1.280 the stashed set is the descriptor's spellings.
+    stashCheckTimeResolutions(
+      context,
+      FileWriteTool.getPath(input),
+      'write',
+      descriptor.spellings,
+    )
     const appState = context.getAppState()
-    return checkWritePermissionForTool(
+    const result = checkWritePermissionForTool(
       FileWriteTool,
       input,
       appState.toolPermissionContext,
+      undefined,
+      descriptor,
     )
+    if (result.behavior === 'deny') {
+      return result
+    }
+    return checkLeafSymlinkWriteDeny(expandedPath, descriptor) ?? result
   },
   renderToolUseRejectedMessage,
   renderToolUseErrorMessage,

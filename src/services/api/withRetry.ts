@@ -215,14 +215,16 @@ interface RetryOptions {
     contentIdx: number
   } | null
   /**
-   * 2.1.276 advisor hotfix: when the API/gateway rejects the advisor tool
-   * entry with a 400 (official `TPe` classifier — e.g. a proxy that does not
-   * recognize the `advisor_20260301` tool tag), the retry loop calls this to
-   * strip the advisor schema/header/message-blocks from the request and
-   * retry once, immediately. Returns true when the request was stripped and
-   * must be retried; the handler is one-shot per request (official `Wvt`).
-   * Mirrors the official `zHe`, which is wired FIRST in both fatal-400
-   * chains: `return zHe(Ri)??GHe(Ri,"stream")??Pd(Ri)??zy(Ri)??sl(Ri)`.
+   * 2.1.276 advisor hotfix, extended by 2.1.280 (#032): when the API/gateway
+   * rejects the advisor tool entry — a 400, or a 422 carrying the
+   * `Input tag 'advisor_\d+'` rejection (official v280 `ake` classifier;
+   * e.g. a proxy that does not recognize the `advisor_20260301` tool tag) —
+   * the retry loop calls this to strip the advisor schema/header/message-
+   * blocks from the request and retry once, immediately. Returns true when
+   * the request was stripped and must be retried; the handler is one-shot per
+   * request (official `QHe`, v276 `Wvt`). Mirrors the official v280 `Ece`,
+   * wired FIRST in both fatal chains:
+   * `return Ece(hs)??Tce(hs,"stream")??mK(hs)??gK(hs)??Tae(hs)`.
    */
   retryAdvisorEntryRefused?: (error: APIError) => boolean
 }
@@ -602,15 +604,17 @@ export async function* withRetry<T>(
         }
       }
 
-      // 2.1.276 advisor hotfix: advisor-entry-refused 400 (official `TPe`
-      // classifier) — strip the advisor tool from the request and retry once
-      // (official `zHe`). The official wires zHe FIRST in its fatal-400
-      // chains (`zHe(Ri)??GHe(Ri,"stream")??…`), i.e. exactly when the error
-      // is about to become non-retryable — a 400 fails `shouldRetry` below,
-      // so this hook sits immediately before that gate. Like the media strip
-      // above, the retry does not count against the retry budget; the
-      // handler's one-shot latch (official `Wvt`) bounds it to a single
-      // extra attempt.
+      // 2.1.276 advisor hotfix + 2.1.280 #032: advisor-entry-refused error
+      // (official v280 `ake` classifier — 400 shapes plus the 422 Input-tag
+      // shape) — strip the advisor tool from the request and retry once
+      // (official v280 `Ece`). The official wires Ece FIRST in its fatal
+      // chains (`Ece(hs)??Tce(hs,"stream")??…`), i.e. exactly when the error
+      // is about to become non-retryable — both 400 and 422 fail
+      // `shouldRetry` below, so this hook sits immediately before that gate
+      // and the v280 422 arm flows through it without further changes. Like
+      // the media strip above, the retry does not count against the retry
+      // budget; the handler's one-shot latch (official `QHe`, v276 `Wvt`)
+      // bounds it to a single extra attempt.
       if (
         error instanceof APIError &&
         isAdvisorEntryRefusedError(error) &&

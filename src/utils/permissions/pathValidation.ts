@@ -6,6 +6,7 @@ import { getPlatform } from '../../utils/platform.js'
 import {
   getFsImplementation,
   getPathsForPermissionCheck,
+  resolveWritePathDescriptor,
   safeResolvePath,
 } from '../fsOperations.js'
 import { containsPathTraversal } from '../path.js'
@@ -15,6 +16,7 @@ import {
   checkEditableInternalPath,
   checkPathSafetyForAutoEdit,
   checkReadableInternalPath,
+  computeWriteCarriedOut,
   matchingRuleForInput,
   pathInAllowedWorkingPath,
   pathInWorkingPath,
@@ -479,6 +481,37 @@ export function validatePath(
   const absolutePath = isAbsolute(cleanPath)
     ? cleanPath
     : resolve(cwd, cleanPath)
+
+  // CC 2.1.280 (changelog #005): validatePath write tail — binary `Rxn`
+  // @195392838: `if(n!=="read"){let b=da(e),T=b.unresolved?e:b.landing,
+  //  w=rE(T,r,n,b),R=w.allowed?null:r2e(b,r);
+  //  return{...w,resolvedPath:R?.carriedOut?R.landing:e}}`
+  // Write/create: judge the permission on the descriptor LANDING (the
+  // symlink-resolved destination) instead of the realpath'd requested path;
+  // when the check fails and the write is carried out through a symlink to
+  // outside the allowed directories, resolvedPath becomes the landing (used
+  // as blockedPath downstream) — otherwise it stays the requested
+  // absolutePath. Unresolved descriptors are judged on the raw path (the
+  // dedicated unresolved deny lives in checkWritePermissionForTool).
+  if (operationType !== 'read') {
+    const descriptor = resolveWritePathDescriptor(absolutePath)
+    const checkPath = descriptor.unresolved ? absolutePath : descriptor.landing
+    const result = isPathAllowed(
+      checkPath,
+      toolPermissionContext,
+      operationType,
+      descriptor.spellings,
+    )
+    const carried = result.allowed
+      ? null
+      : computeWriteCarriedOut(descriptor, toolPermissionContext)
+    return {
+      allowed: result.allowed,
+      resolvedPath: carried?.carriedOut ? carried.landing : absolutePath,
+      decisionReason: result.decisionReason,
+    }
+  }
+
   const { resolvedPath, isCanonical } = safeResolvePath(
     getFsImplementation(),
     absolutePath,

@@ -72,6 +72,25 @@ export function formatToken(
         .join(EOL)
     }
     case 'code': {
+      // CC 2.1.280 changelog #071: fenced code blocks that don't name a
+      // language are colored like inline code. Official v280 @202965215
+      // (formatToken case"code"; 0 hits in v278) prepends:
+      //   let s=e.lang??"";if(!s&&e.codeBlockStyle!=="indented")
+      //     return e.text.replace(/\S(?:.*\S)?/g,Et("permission",t))+T;
+      // The regex paints each line's span from its first to its last
+      // non-space char (`.` crosses spaces but not newlines) with the same
+      // 'permission' theme color the codespan case uses below, preserving
+      // leading/trailing whitespace (including newlines) around each span.
+      // Indented blocks (marked sets codeBlockStyle:'indented' only for
+      // those; fenced blocks have it undefined) fall through to the normal
+      // path. Sits BEFORE the no-highlight early return, matching official
+      // order.
+      const lang = token.lang ?? ''
+      if (!lang && token.codeBlockStyle !== 'indented') {
+        return (
+          token.text.replace(/\S(?:.*\S)?/g, color('permission', theme)) + EOL
+        )
+      }
       if (!highlight) {
         return token.text + EOL
       }

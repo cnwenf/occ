@@ -1427,11 +1427,18 @@ export function Config({
       return;
     }
   }, [autoUpdaterDisabledReason, filteredSettingsItems, selectedIndex, settingsData?.autoUpdatesChannel, setTabsHidden]);
-  const moveSelection = (delta: -1 | 1): void => {
+  // Absolute-index jump — port of the official v280 `Rs` (@225582305:
+  // Po(!1) clears the thinking warning, clamps, Me(Z) sets the selection,
+  // Ge(...) keeps it visible). moveSelection delegates to it, mirroring the
+  // official `gn=(h)=>Rs(De()+h)`.
+  const jumpToIndex = (index: number): void => {
     setShowThinkingWarning(false);
-    const newIndex_1 = Math.max(0, Math.min(filteredSettingsItems.length - 1, selectedIndex + delta));
+    const newIndex_1 = clampSettingsIndex(index, filteredSettingsItems.length);
     setSelectedIndex(newIndex_1);
     adjustScrollOffset(newIndex_1);
+  };
+  const moveSelection = (delta: -1 | 1): void => {
+    jumpToIndex(selectedIndex + delta);
   };
   useKeybindings({
     'select:previous': () => {
@@ -1447,6 +1454,11 @@ export function Config({
       }
     },
     'select:next': () => moveSelection(1),
+    // 2.1.280 (#028): Home/End jump to the first/last setting — official
+    // v280 @225582280: "select:first":()=>Rs(0),"select:last":()=>Rs(Be.length-1)
+    // (absent from the v278 Settings map @225641712).
+    'select:first': () => jumpToIndex(0),
+    'select:last': () => jumpToIndex(filteredSettingsItems.length - 1),
     // Wheel. ScrollKeybindingHandler's scroll:line* returns false (not
     // consumed) when the ScrollBox content fits — which it always does
     // here because the list is paginated (slice). The event falls through
@@ -1488,12 +1500,21 @@ export function Config({
       }
       return;
     }
-    // List mode: left/right/tab cycle the selected option's value. These
-    // keys used to switch tabs; now they only do so when the tab row is
+    // List mode: left/right cycle the selected option's value. These keys
+    // used to switch tabs; now they only do so when the tab row is
     // explicitly focused (see headerFocused in Settings.tsx).
-    if (e.key === 'left' || e.key === 'right' || e.key === 'tab') {
+    // 2.1.280 (#030): tab no longer cycles the value — it is only swallowed
+    // (preventDefault). Official v280 @225583608 splits tab out of the
+    // left/right branch: `if(h.key==="tab"){h.preventDefault();return}`
+    // (v278 @225642857 folded tab in and cycled via yn()).
+    const listKeyAction = getSettingsListKeyAction(e.key);
+    if (listKeyAction === 'toggleValue') {
       e.preventDefault();
       toggleSetting();
+      return;
+    }
+    if (listKeyAction === 'preventDefaultOnly') {
+      e.preventDefault();
       return;
     }
     // Fallback: printable characters (other than those bound to actions)
@@ -1803,6 +1824,33 @@ function teammateModelDisplayString(value: string | null | undefined): string {
   }
   if (value === null) return "Default (leader's model)";
   return modelDisplayString(value);
+}
+
+/**
+ * 2.1.280 (#030): Tab must not change setting values in /config.
+ * Official v280 handleKeyDown, byte-verified @225583608:
+ *   if(h.key==="left"||h.key==="right"){h.preventDefault(),ho();return}
+ *   if(h.key==="tab"){h.preventDefault();return}
+ * v278 @225642857 folded tab into the left/right branch and cycled the value
+ * (`f.key==="left"||f.key==="right"||f.key==="tab"` → yn()). Extracted as a
+ * pure classifier for unit tests (OCC has no Ink render harness); the
+ * observable key contract matches the v280 branches exactly.
+ */
+export function getSettingsListKeyAction(key: string): 'toggleValue' | 'preventDefaultOnly' | 'none' {
+  if (key === 'left' || key === 'right') return 'toggleValue';
+  if (key === 'tab') return 'preventDefaultOnly';
+  return 'none';
+}
+
+/**
+ * 2.1.280 (#028): Home/End jump to the first/last setting. Official v280
+ * Settings keybinding map, byte-verified @225582280:
+ *   "select:first":()=>Rs(0),"select:last":()=>Rs(Be.length-1)
+ * where Rs clamps via `Z=Math.max(0,Math.min(Be.length-1,h))` (Be = the
+ * filtered settings list). Extracted as a pure helper for unit tests.
+ */
+export function clampSettingsIndex(index: number, itemCount: number): number {
+  return Math.max(0, Math.min(itemCount - 1, index));
 }
 const THEME_LABELS: Record<string, string> = {
   auto: 'Auto (match terminal)',

@@ -1,7 +1,10 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { extname, isAbsolute, resolve } from 'path'
 import { perforceReadOnlyError } from '../../utils/perforce.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
+import {
+  getFsImplementation,
+  resolveWritePathDescriptor,
+} from '../../utils/fsOperations.js'
 import {
   fileHistoryEnabled,
   fileHistoryTrackEdit,
@@ -16,7 +19,11 @@ import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { parseCellId } from '../../utils/notebook.js'
-import { checkWritePermissionForTool } from '../../utils/permissions/filesystem.js'
+import {
+  checkLeafSymlinkWriteDeny,
+  checkWritePermissionForTool,
+  expandPathForWriteDescriptor,
+} from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import {
   assertSymlinkResolutionsUnchangedForWrite,
@@ -129,15 +136,38 @@ export const NotebookEditTool = buildTool({
     return input.notebook_path
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
+    // CC 2.1.280 (changelog #005): official NotebookEdit-tool wiring
+    // @201076162: `let s=et(n.notebook_path),g=da(s);
+    //  e.session.writePermissionStash.stash(r.toolUseId,s,g.spellings);
+    //  let h=D_(lte,n,e.permissions(),g);
+    //  return h.behavior==="deny"?h:XZe(s,g)??h`
+    // A rule DENY from the main write check wins; otherwise the leaf-symlink
+    // deny (XZe) overrides even an allow result.
+    const expandedPath = expandPathForWriteDescriptor(
+      NotebookEditTool.getPath(input),
+    )
+    const descriptor = resolveWritePathDescriptor(expandedPath)
     // CC 2.1.251 (Gap-109a): stash the check-time symlink resolutions of
-    // the target path, write lane (binary NotebookEditTool Q6 stash site).
-    stashCheckTimeResolutions(context, NotebookEditTool.getPath(input), 'write')
+    // the target path, write lane (binary NotebookEditTool Q6 stash site);
+    // since 2.1.280 the stashed set is the descriptor's spellings.
+    stashCheckTimeResolutions(
+      context,
+      NotebookEditTool.getPath(input),
+      'write',
+      descriptor.spellings,
+    )
     const appState = context.getAppState()
-    return checkWritePermissionForTool(
+    const result = checkWritePermissionForTool(
       NotebookEditTool,
       input,
       appState.toolPermissionContext,
+      undefined,
+      descriptor,
     )
+    if (result.behavior === 'deny') {
+      return result
+    }
+    return checkLeafSymlinkWriteDeny(expandedPath, descriptor) ?? result
   },
   mapToolResultToToolResultBlockParam(
     { cell_id, edit_mode, new_source, error },
