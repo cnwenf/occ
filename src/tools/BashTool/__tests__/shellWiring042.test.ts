@@ -180,11 +180,23 @@ describe('2.1.280 #042 wiring: BashTool registerForeground passes shell:"bash"',
     expect(backgrounded).toBe(true)
 
     const out = await callPromise
-    // The generator observed the backgrounded shell (#handleExit set
-    // backgroundTaskId) and returned the race fixed-result path: id stripped,
-    // benign interpretation surfaced to the model.
-    expect(out.data.backgroundTaskId).toBeUndefined()
-    expect(out.data.returnCodeInterpretation).toBe('No matches found')
+    // The generator's race between background() and process exit has TWO
+    // legitimate outcomes (both exist in official 2.1.280):
+    //   1. The command completed before the next ~1s poller tick → the race
+    //      fixed-result path: backgroundTaskId stripped, benign
+    //      interpretation surfaced to the model.
+    //   2. A progress tick landed between background() and exit → the normal
+    //      user-backgrounded result: id + backgroundedByUser (the model gets
+    //      a completion notification later).
+    // Which one wins depends on CI tick timing, so accept either arm; the
+    // #042 mutation coverage lives in the persisted-state assertions below
+    // (they classify identically in both cases).
+    if (out.data.backgroundTaskId === undefined) {
+      expect(out.data.returnCodeInterpretation).toBe('No matches found')
+    } else {
+      expect(out.data.backgroundTaskId).toBe(registered.id)
+      expect(out.data.backgroundedByUser).toBe(true)
+    }
 
     // Wait for backgroundExistingForegroundTask's result handler.
     const taskId = registered.id as string
