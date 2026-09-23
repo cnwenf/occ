@@ -307,7 +307,9 @@ describe('Gap-113b: CLAUDE_CODE_SUBAGENT_MODEL_FORCE semantics', () => {
   test('without FORCE the agent-definition model wins', () => {
     delete process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE
     const resolved = getAgentModel('opus', PARENT)
-    expect(resolved).toBe('claude-opus-5')
+    // 2.1.280 #001: the 'opus' alias now resolves to claude-opus-5-5
+    // (alias table @191992378: aliases.opus.default = "claude-opus-5-5").
+    expect(resolved).toBe('claude-opus-5-5')
   })
 
   test('CLAUDE_CODE_SUBAGENT_MODEL still outranks FORCE (env wins first)', () => {

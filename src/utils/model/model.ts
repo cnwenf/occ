@@ -12,6 +12,7 @@ import {
   isMaxSubscriber,
   isProSubscriber,
   isTeamPremiumSubscriber,
+  isTeamSubscriber,
 } from '../auth.js'
 import {
   has1mContext,
@@ -21,7 +22,7 @@ import {
 import { logForDebugging } from '../debug.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
-import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
+import { formatModelPricing, getOpus46CostTier, getOpus55CostTier } from '../modelCost.js'
 import {
   getEnforceAvailableModels,
   getSettings_DEPRECATED,
@@ -169,25 +170,24 @@ export function getDefaultOpusModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
   }
-  // 2.1.219 # OCC-36/37 (1g): Claude Opus 5 is the default Opus model. The
-  // official 2.1.220 linux-x64 ELF ships a verbatim per_provider alias table
-  // (recovered via `grep -aboF "per_provider"` → offset 247207842, then `dd`
-  // around 247196400–247209200):
-  //   aliases:{opus:{default:"claude-opus-5",
-  //     per_provider:{bedrock:"claude-opus-5",vertex:"claude-opus-5",
-  //       foundry:"claude-opus-4-6",   ← foundry lags one generation at Opus 4.6
-  //       mantle:"claude-opus-5",anthropic_aws:"claude-opus-5",
+  // 2.1.280 (Opus 5.5 launch): Claude Opus 5.5 is the default Opus model.
+  // The official 2.1.280 linux-x64 ELF ships a verbatim per_provider alias
+  // table (@191992378):
+  //   aliases:{opus:{default:"claude-opus-5-5",
+  //     per_provider:{bedrock:"claude-opus-5-5",vertex:"claude-opus-5-5",
+  //       foundry:"claude-opus-4-6",   ← foundry still lags at Opus 4.6
+  //       mantle:"claude-opus-5-5",anthropic_aws:"claude-opus-5-5",
   //       gateway:"claude-opus-4-7"}}}
+  // plus `latest_per_family:{...opus:"claude-opus-5-5"...}` and the
+  // name-fallback `zt(e){return da("opus",e)??e.opus55}`.
   // `firstParty` and `anthropic_google_cloud` have no per_provider entry, so
-  // they fall through to `default` → `claude-opus-5`. Foundry is the only
-  // non-gateway provider that lags (binary resolves foundry opus to
-  // `claude-opus-4-6`, NOT `claude-opus-5`) — Gap-1, now closed.
+  // they fall through to `default` → `claude-opus-5-5`. Foundry and gateway
+  // keep their lagging defaults (foundry `claude-opus-4-6`, gateway
+  // `claude-opus-4-7` — byte-identical to the 2.1.220 table).
   // History: 2.1.206 → Opus 4.7; 2.1.207 #19 → Opus 4.8 for non-gateway
-  // (gateway stayed 4.7); 2.1.219 → Opus 5 for non-gateway (gateway stays 4.7,
-  // foundry lags at 4.6).
-  // (Note: `ANTHROPIC_DEFAULT_OPUS_MODEL ?? Km().opus5` lives in a SEPARATE
-  // name-fallback function keyed on `.includes("fable_5")`, not here — the
-  // env override above is OCC's faithful equivalent of that fallback.)
+  // (gateway stayed 4.7); 2.1.219 → Opus 5 for non-gateway (gateway stays
+  // 4.7, foundry lags at 4.6); 2.1.280 → Opus 5.5 for non-gateway (gateway
+  // stays 4.7, foundry stays 4.6).
   const provider = getAPIProvider()
   if (provider === 'foundry') {
     return getModelStrings().opus46
@@ -196,9 +196,9 @@ export function getDefaultOpusModel(): ModelName {
     return getModelStrings().opus47
   }
   // firstParty / bedrock / vertex / anthropic_aws / mantle → default
-  // "claude-opus-5" (anthropic_google_cloud also falls to default; OCC's
+  // "claude-opus-5-5" (anthropic_google_cloud also falls to default; OCC's
   // APIProvider type folds it into firstParty).
-  return getModelStrings().opus5
+  return getModelStrings().opus55
 }
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
@@ -366,8 +366,8 @@ export function resolveAnthropicDefaultModel():
  *
  * This handles the built-in default:
  * - ANTHROPIC_DEFAULT_MODEL when set and valid (2.1.236)
- * - Opus for Max and Team Premium users
- * - Sonnet 4.6 for all other users (including Team Standard, Pro, Enterprise)
+ * - Opus for Max, Team Premium, Team Standard, and Pro users (2.1.280 #078)
+ * - Sonnet 4.6 for all other users (PAYG 1P/3P, Enterprise)
  *
  * @returns The default model setting to use
  */
@@ -386,15 +386,19 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
     setting =
       (getAntModelOverrideConfig()?.defaultModel as string) ??
       getDefaultOpusModel() + '[1m]'
-  } else if (isMaxSubscriber()) {
-    // Max users get Opus as default
-    setting = getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
-  } else if (isTeamPremiumSubscriber()) {
-    // Team Premium gets Opus (same as Max)
+  } else if (isOpusDefaultTier()) {
+    // 2.1.280 #078: Max, Team Premium, Team Standard, and Pro all get Opus as
+    // default (changelog: "Changed the default model on Pro and Team Standard
+    // plans from Sonnet to Opus, matching Max, Team Premium, and Enterprise").
+    // Official resolver `cv` uses ONE expression for every Opus tier:
+    //   nd() + (jk() ? "[1m]" : "")
+    // Pro NEVER gets the [1m] merge because jk() excludes Pro
+    // (`if(GO()||Nde()||Oe()!=="firstParty")return!1` — Nde=isProSubscriber);
+    // OCC's isOpus1mMergeEnabled() mirrors that exclusion byte-for-byte.
     setting = getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
   } else {
-    // PAYG (1P and 3P), Enterprise, Team Standard, and Pro get Sonnet as default
-    // Note that PAYG (3P) may default to an older Sonnet model
+    // PAYG (1P and 3P) and Enterprise get Sonnet as default.
+    // Note that PAYG (3P) may default to an older Sonnet model.
     setting = getDefaultSonnetModel()
   }
   return enforceDefaultModelAllowlist(setting)
@@ -440,8 +444,11 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   name = name.toLowerCase()
   // Special cases for Claude 4+ models to differentiate versions
   // Order matters: check more specific versions first (4-8/4-7 before 4-6 before 4)
-  // Opus 5 before 4-x: "claude-opus-5" is not a substring of "claude-opus-4-8"
-  // but check it first so it isn't caught by the broader claude-opus-4 patterns.
+  // Opus 5.5 before Opus 5 before 4-x: "claude-opus-5" IS a substring of
+  // "claude-opus-5-5", so the 5-5 branch must come first (2.1.280).
+  if (name.includes('claude-opus-5-5')) {
+    return 'claude-opus-5-5'
+  }
   if (name.includes('claude-opus-5')) {
     return 'claude-opus-5'
   }
@@ -540,19 +547,35 @@ export function getCanonicalName(fullModelName: ModelName): ModelShortName {
 }
 
 // @[MODEL LAUNCH]: Update the default model description strings shown to users.
-// Wording verified against the official 2.1.200 binary (claude.strings):
-//   Max/TeamPremium: `${Opus} · Best for everyday, complex tasks` (+ 1M variant)
-//   Pro/Standard:    `${Sonnet} · Efficient for routine tasks`
+// Wording ported from the official 2.1.280 binary (`_Mn` @193446878,
+// byte-verified):
+//   if(K7t()){let g=nd(),h=_p(Xn(g))??"Opus",y=e&&Qm(g);
+//     if(jk())return`${h} with 1M context · Best for everyday, complex tasks${y?hCt(!0,g):""}`;
+//     return`${h} · Best for everyday, complex tasks${y?hCt(!0,g):""}`}
+//   return`${_p(Xn(Tf()))??"Sonnet"} · Efficient for routine tasks`
+// K7t = isOpusDefaultTier (Max/TeamPremium/EnterpriseUB/Team/Pro), nd =
+// getDefaultOpusModel, _p = getMarketingNameForModel, jk = isOpus1mMergeEnabled,
+// hCt = the pricing suffix (see getOpus55PricingSuffix).
+// OCC simplification (pre-existing shape): the official gates the pricing
+// suffix on `Qm(g)` (fast-capability lookup); OCC keeps its simpler
+// `fastMode` flag and reads the default-Opus tiers via getOpus55PricingSuffix.
 export function getClaudeAiUserDefaultModelDescription(
   fastMode = false,
 ): string {
-  if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
+  if (isOpusDefaultTier()) {
+    const opusModel = getDefaultOpusModel()
+    const name =
+      getMarketingNameForModel(normalizeModelStringForAPI(opusModel)) ?? 'Opus'
     if (isOpus1mMergeEnabled()) {
-      return `Opus 4.8 with 1M context · Best for everyday, complex tasks${fastMode ? getOpus46PricingSuffix(true) : ''}`
+      return `${name} with 1M context · Best for everyday, complex tasks${fastMode ? getOpus55PricingSuffix(true) : ''}`
     }
-    return `Opus 4.8 · Best for everyday, complex tasks${fastMode ? getOpus46PricingSuffix(true) : ''}`
+    return `${name} · Best for everyday, complex tasks${fastMode ? getOpus55PricingSuffix(true) : ''}`
   }
-  return 'Sonnet 5 · Efficient for routine tasks'
+  const sonnetName =
+    getMarketingNameForModel(
+      normalizeModelStringForAPI(getDefaultSonnetModel()),
+    ) ?? 'Sonnet'
+  return `${sonnetName} · Efficient for routine tasks`
 }
 
 export function renderDefaultModelSetting(
@@ -567,6 +590,21 @@ export function renderDefaultModelSetting(
 export function getOpus46PricingSuffix(fastMode: boolean): string {
   if (getAPIProvider() !== 'firstParty') return ''
   const pricing = formatModelPricing(getOpus46CostTier(fastMode))
+  const fastModeIndicator = fastMode ? ` (${LIGHTNING_BOLT})` : ''
+  return ` ·${fastModeIndicator} ${pricing}`
+}
+
+// 2.1.280 (`hCt` pricing suffix, byte-verified):
+//   function hCt(e,n){if(!ien())return"";let r=uS(n),s=e?hde(Tze(r)):Hh(r);
+//     if(s===void 0)return"";return` ·${e?` (${F7})`:""} ${s}`}
+// ien() = firstParty gate, Tze = fast-tier dispatch (opus-5-5 → Uh
+// {8,40,10,16,0.4,0.01}), Hh = base-tier lookup (tier_4_20_cache_read_0_20),
+// F7 = LIGHTNING_BOLT. OCC simplification (pre-existing shape, same as
+// getOpus46PricingSuffix): reads the opus-5-5 tiers directly instead of
+// going through the general per-model tier maps.
+export function getOpus55PricingSuffix(fastMode: boolean): string {
+  if (getAPIProvider() !== 'firstParty') return ''
+  const pricing = formatModelPricing(getOpus55CostTier(fastMode))
   const fastModeIndicator = fastMode ? ` (${LIGHTNING_BOLT})` : ''
   return ` ·${fastModeIndicator} ${pricing}`
 }
@@ -589,6 +627,56 @@ export function isOpus1mMergeEnabled(): boolean {
     return false
   }
   return true
+}
+
+/**
+ * 2.1.280 #078 (`tv`, byte-verified @193420894):
+ *   function tv(){let e=aa(),n=Po().state!=="inactive"||
+ *     Pn()?.enforceAvailableModels===!0;return e.sonnet&&!e.opus&&!n}
+ * `aa()` reads the 3P-probe marker env vars AS VALUES (OCC's
+ * yoloClassifier.ts:1510 does the same):
+ *   sonnet: ANTHROPIC_DEFAULT_SONNET_MODEL !== undefined &&
+ *     !== CLAUDE_CODE_3P_PROBE_WROTE_SONNET_DEFAULT
+ *   opus:   ANTHROPIC_DEFAULT_OPUS_MODEL !== undefined &&
+ *     !== CLAUDE_CODE_3P_PROBE_WROTE_OPUS_DEFAULT
+ * `Po().state!=="inactive"` (feature cascade) has no OCC equivalent — OCC
+ * uses the enforceAvailableModels term only (documented divergence).
+ */
+function is3PSonnetDefaultActive(): boolean {
+  const sonnetProbe =
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL !== undefined &&
+    process.env.ANTHROPIC_DEFAULT_SONNET_MODEL !==
+      process.env.CLAUDE_CODE_3P_PROBE_WROTE_SONNET_DEFAULT
+  const opusProbe =
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL !== undefined &&
+    process.env.ANTHROPIC_DEFAULT_OPUS_MODEL !==
+      process.env.CLAUDE_CODE_3P_PROBE_WROTE_OPUS_DEFAULT
+  // Official `n` term: `Po().state!=="inactive" || Pn()?.enforceAvailableModels===!0`.
+  // OCC stands in for the missing feature-cascade term (`Po()`) with only the
+  // enforceAvailableModels term (documented divergence).
+  const enforced = getEnforceAvailableModels()
+  return sonnetProbe && !opusProbe && !enforced
+}
+
+/**
+ * 2.1.280 #078 (`K7t` Opus-default-tier gate, byte-verified):
+ *   function K7t(){if(Xze()||YQt()||sRt())return!0;
+ *     return(Soe()||KQt()||Nde())&&!tv()}
+ * Xze=isMaxSubscriber, YQt=isTeamPremiumSubscriber, sRt=enterprise usage-based,
+ * Soe=isEnterpriseSubscriber, KQt=isTeamSubscriber, Nde=isProSubscriber,
+ * tv=is3PSonnetDefaultActive.
+ * v278's `I6t` (@194783166) lacked the Team/Pro rows — that's the #078 delta.
+ * OCC scope note: the Enterprise (Soe) and enterprise-usage-based (sRt) rows
+ * are NOT ported — OCC has no isEnterpriseSubscriber predicate and Enterprise
+ * → Sonnet is a pre-existing OCC divergence that predates 2.1.280 (the
+ * changelog's "matching … Enterprise" refers to the official's own prior
+ * state). Staged for a future round with the full K7t evidence above.
+ */
+export function isOpusDefaultTier(): boolean {
+  if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
+    return true
+  }
+  return (isTeamSubscriber() || isProSubscriber()) && !is3PSonnetDefaultActive()
 }
 
 export function renderModelSetting(setting: ModelName | ModelAlias): string {
@@ -614,6 +702,10 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
   switch (model) {
+    case getModelStrings().opus55:
+      return 'Opus 5.5'
+    case getModelStrings().opus55 + '[1m]':
+      return 'Opus 5.5 (1M context)'
     case getModelStrings().opus5:
       return 'Opus 5'
     case getModelStrings().opus5 + '[1m]':
@@ -877,7 +969,15 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   const canonical = getCanonicalName(modelId)
 
   // Order matters: more specific versions (4-8/4-7) before 4-6 before bare 4.
-  // Opus 5 is checked first so it isn't caught by a broader claude-opus pattern.
+  // Opus 5.5 before Opus 5 (canonical `claude-opus-5-5` CONTAINS the substring
+  // `claude-opus-5`) before the broader claude-opus patterns. 2.1.280 binary
+  // format for the new model is `Opus 5.5 (1M context)` (byte-verified: `pv`
+  // display = display_name + " (1M context)"; "(with 1M context)" has 0 hits
+  // in both the v278 and v280 binaries — OCC's older "(with 1M context)"
+  // strings are a pre-existing divergence kept as-is).
+  if (canonical.includes('claude-opus-5-5')) {
+    return has1m ? 'Opus 5.5 (1M context)' : 'Opus 5.5'
+  }
   if (canonical.includes('claude-opus-5')) {
     return has1m ? 'Opus 5 (with 1M context)' : 'Opus 5'
   }

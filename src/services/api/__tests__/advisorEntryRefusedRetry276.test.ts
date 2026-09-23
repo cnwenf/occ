@@ -58,6 +58,7 @@ const {
 } = require('../../../utils/advisor.js') as typeof import('../../../utils/advisor.js')
 
 const {
+  _resetAdvisorHostDisableForTesting,
   createAdvisorEntryRefusedRetryHandler,
 } = require('../advisorRetry.js') as typeof import('../advisorRetry.js')
 
@@ -110,6 +111,7 @@ beforeEach(() => {
     delete process.env[key]
   }
   _resetAdvisorRefusalStateForTesting()
+  _resetAdvisorHostDisableForTesting()
   resetAnalyticsForTesting()
 })
 
@@ -122,6 +124,7 @@ afterEach(() => {
     }
   }
   _resetAdvisorRefusalStateForTesting()
+  _resetAdvisorHostDisableForTesting()
   resetAnalyticsForTesting()
 })
 
@@ -353,11 +356,14 @@ function attachCapturingSink(): Array<{
 
 describe('2.1.276 advisor hotfix — zHe retry handler (createAdvisorEntryRefusedRetryHandler)', () => {
   test('strips the advisor schema, latches the refusal, and fires telemetry on a plain refusal', () => {
-    // Arrange
+    // Arrange — v280 note: this "beta kept" scenario uses the CONVERSATION-
+    // scoped fixture (not-available message). The old Input-tag fixture was
+    // reclassified to HOST scope in v280 (`kat`), which strips the beta —
+    // that behavior is covered in advisorInputTagRetry280.test.ts.
     const events = attachCapturingSink()
     const { state, calls, tools, betas } = makeState()
     const handler = createAdvisorEntryRefusedRetryHandler(state, 'repl' as never)
-    const error = makeApiError(400, INPUT_TAG_400)
+    const error = makeApiError(400, ADVISOR_NOT_AVAILABLE_400)
 
     // Act
     const shouldRetry = handler(error)
@@ -371,20 +377,22 @@ describe('2.1.276 advisor hotfix — zHe retry handler (createAdvisorEntryRefuse
     // Official `bi=ga(kOe(Cz(bi)),"error_recovery")` — messages re-normalized
     // through stripAdvisorBlocks (the `Cz` step).
     expect(calls.setMessages).toBe(1)
-    // Session latch set, org kill-switch NOT armed (Input-tag is not org-scoped).
+    // Session latch set; neither kill-switch armed (conversation-scoped).
     expect(isAdvisorEntryRefused()).toBe(true)
     expect(isAdvisorOrgDisabled()).toBe(false)
-    // Official `Hvt`: `if(!Bb())we=we.filter(…)` — config still enabled after
-    // a non-org refusal, so the beta header is KEPT.
+    // Official v280 `XHe`: `if(!qb())Ee=Ee.filter((er)=>er!==tLn)` — neither
+    // the process (`Ck`) nor host (`$H`) arm is set for a conversation-scoped
+    // refusal, so the beta header is KEPT.
     expect(calls.setBetas).toBe(0)
     expect(betas()).toContain(ADVISOR_BETA_HEADER)
-    // Telemetry: `i("tengu_advisor_entry_refused_retry",{query_source,organization_wide})`.
+    // Telemetry: `i("tengu_advisor_entry_refused_retry",{query_source,organization_wide,host_wide})`.
     const event = events.find(
       e => e.eventName === 'tengu_advisor_entry_refused_retry',
     )
     expect(event).toBeDefined()
     expect(event?.metadata.query_source).toBe('repl')
     expect(event?.metadata.organization_wide).toBe(false)
+    expect(event?.metadata.host_wide).toBe(false)
   })
 
   test('org-wide refusal arms the kill-switch so Hvt strips the beta header', () => {

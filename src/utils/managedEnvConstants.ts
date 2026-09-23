@@ -148,6 +148,12 @@ export const SAFE_ENV_VARS = new Set([
   'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS',
   'CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL',
   'CLAUDE_CODE_MAX_CONTEXT_TOKENS',
+  // 2.1.280 (#003): member of the official safe-env allowlist `Wl`
+  // (byte-verified in the 2.1.280 ELF @191031530, listed between
+  // CLAUDE_CODE_IDE_SKIP_AUTO_INSTALL and CLAUDE_CODE_MAX_OUTPUT_TOKENS).
+  // Caps MCP tool descriptions / server instructions; numeric, no routing or
+  // trust impact — safe to apply before the trust dialog.
+  'CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH',
   'CLAUDE_CODE_MAX_OUTPUT_TOKENS',
   'CLAUDE_CODE_PACKAGE_MANAGER_AUTO_UPDATE',
   'CLAUDE_CODE_PROPAGATE_TRACEPARENT',

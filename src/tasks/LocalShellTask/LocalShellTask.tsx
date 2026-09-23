@@ -19,6 +19,7 @@ import { backgroundAgentTask, isLocalAgentTask } from '../LocalAgentTask/LocalAg
 import { isMainSessionTask } from '../LocalMainSessionTask.js';
 import { type BashTaskKind, isLocalShellTask, type LocalShellTaskState } from './guards.js';
 import { killTask } from './killShellTasks.js';
+import { classifyShellTaskResult } from './shellTaskResult.js';
 
 /** Prefix that identifies a LocalShellTask summary to the UI collapse transform. */
 export const BACKGROUND_BASH_SUMMARY_PREFIX = 'Background command ';
@@ -136,7 +137,37 @@ export function readMonitorOutputBytes(outputPath: string): number | undefined {
     return (e as NodeJS.ErrnoException).code === 'ENOENT' ? 0 : undefined;
   }
 }
-function enqueueShellNotification(taskId: string, description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, setAppState: SetAppState, toolUseId?: string, kind: BashTaskKind = 'bash', agentId?: AgentId): void {
+/**
+ * 2.1.280 #042: background-command terminal summary — port of the official
+ * h$e non-monitor switch (v280 @201151000):
+ * ```js
+ * switch(r){case"completed":return`${fqe}"${n}" completed${s!==void 0?
+ *   ` (exit code ${s}${h?`: ${h}`:""})`:""}`;
+ *   case"failed":return`${fqe}"${n}" failed${s!==void 0?` with exit code ${s}`:""}`;
+ *   case"killed":return`${fqe}"${n}" was ${y?RV[y]:"stopped"}`}
+ * ```
+ * `exitNote` (h) is the benign-exit interpretation from the classifier, e.g.
+ * a grep with no matches now reads:
+ *   `Background command "grep foo" completed (exit code 1: No matches found)`
+ * instead of `... failed with exit code 1`.
+ *
+ * The official killed branch renders `RV[stopCause]` when a stopCause exists
+ * (`RV={memory_pressure:"stopped because the system is running low on
+ * memory"}`, produced by the pressure-reap subsystem). OCC has no stopCause
+ * producer, so only the undefined-stopCause arm (`"stopped"`) is ported;
+ * the RV table stays staged with its producer.
+ */
+export function backgroundCommandSummary(description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, exitNote?: string): string {
+  switch (status) {
+    case 'completed':
+      return `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" completed${exitCode !== undefined ? ` (exit code ${exitCode}${exitNote ? `: ${exitNote}` : ''})` : ''}`;
+    case 'failed':
+      return `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" failed${exitCode !== undefined ? ` with exit code ${exitCode}` : ''}`;
+    case 'killed':
+      return `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was stopped`;
+  }
+}
+function enqueueShellNotification(taskId: string, description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, setAppState: SetAppState, toolUseId?: string, kind: BashTaskKind = 'bash', agentId?: AgentId, exitNote?: string): void {
   // Atomically check and set notified flag to prevent duplicate notifications.
   // If the task was already marked as notified (e.g., by TaskStopTool), skip
   // enqueueing to avoid sending redundant messages to the model.
@@ -193,17 +224,9 @@ function enqueueShellNotification(taskId: string, description: string, status: '
         break;
     }
   } else {
-    switch (status) {
-      case 'completed':
-        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" completed${exitCode !== undefined ? ` (exit code ${exitCode})` : ''}`;
-        break;
-      case 'failed':
-        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" failed${exitCode !== undefined ? ` with exit code ${exitCode}` : ''}`;
-        break;
-      case 'killed':
-        summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was stopped`;
-        break;
-    }
+    // 2.1.280 #042: official h$e non-monitor switch — the completed branch
+    // renders the classifier's benign-exit note (`exitNote`) after the code.
+    summary = backgroundCommandSummary(description, status, exitCode, exitNote);
   }
   const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
   const message = `<${TASK_NOTIFICATION_TAG}>
@@ -235,7 +258,8 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
     shellCommand,
     toolUseId,
     agentId,
-    kind
+    kind,
+    shell
   } = input;
   const {
     setAppState
@@ -263,7 +287,15 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
     kind,
     // CC 2.1.217 #12: store PID as fallback kill path for when shellCommand
     // becomes null (after backgrounding or session reload).
-    pid: shellCommand.pid
+    pid: shellCommand.pid,
+    // 2.1.280 #042: official spawn (Jhe) persists `shell` on the task state so
+    // the terminal-exit classifier (Oie) can dispatch bash/powershell
+    // semantics when the result arrives. guards.ts's LocalShellTaskState has
+    // no `shell` field (read-only for this change) — persisted via conditional
+    // spread, read back structurally by classifyShellTaskResult.
+    ...(shell !== undefined ? {
+      shell
+    } : {})
   };
   registerTask(taskState, setAppState);
 
@@ -275,14 +307,20 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
     cancelStallWatchdog();
     await flushAndCleanup(shellCommand);
     let wasKilled = false;
+    // 2.1.280 #042 (official x4t): classify through Oie — interrupted →
+    // killed, noExitStatus → failed, else per-shell benign-exit semantics.
+    // Initial pass mirrors official `he=Oie(L,void 0)` (strict); the updater
+    // re-runs it against the persisted state (`he=Oie(L,$e)`).
+    let classified = classifyShellTaskResult(result);
     updateTaskState<LocalShellTaskState>(taskId, setAppState, task => {
       if (task.status === 'killed') {
         wasKilled = true;
         return task;
       }
+      classified = classifyShellTaskResult(result, task);
       return {
         ...task,
-        status: result.code === 0 ? 'completed' : 'failed',
+        status: classified.status,
         result: {
           code: result.code,
           interrupted: result.interrupted
@@ -292,7 +330,7 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
         endTime: Date.now()
       };
     });
-    enqueueShellNotification(taskId, description, wasKilled ? 'killed' : result.code === 0 ? 'completed' : 'failed', result.code, setAppState, toolUseId, kind, agentId);
+    enqueueShellNotification(taskId, description, wasKilled ? 'killed' : classified.status, result.code, setAppState, toolUseId, kind, agentId, classified.exitNote);
     void evictTaskOutput(taskId);
   });
   return {
@@ -315,7 +353,8 @@ export function registerForeground(input: LocalShellSpawnInput & {
     command,
     description,
     shellCommand,
-    agentId
+    agentId,
+    shell
   } = input;
   const taskId = shellCommand.taskOutput.taskId;
   const unregisterCleanup = registerCleanup(async () => {
@@ -334,7 +373,13 @@ export function registerForeground(input: LocalShellSpawnInput & {
     // Not yet backgrounded - running in foreground
     agentId,
     // CC 2.1.217 #12: store PID as fallback kill path
-    pid: shellCommand.pid
+    pid: shellCommand.pid,
+    // 2.1.280 #042: persist the shell for the exit classifier — read back
+    // when this foreground task is later backgrounded (backgroundTask /
+    // backgroundExistingForegroundTask classify from the state).
+    ...(shell !== undefined ? {
+      shell
+    } : {})
   };
   registerTask(taskState, setAppState);
   return taskId;
@@ -387,6 +432,9 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
     await flushAndCleanup(shellCommand);
     let wasKilled = false;
     let cleanupFn: (() => void) | undefined;
+    // 2.1.280 #042 (official x4t): pre-state strict pass (`Oie(L,void 0)`),
+    // re-classified against the persisted state inside the updater.
+    let classified = classifyShellTaskResult(result);
     updateTaskState<LocalShellTaskState>(taskId, setAppState, t => {
       if (t.status === 'killed') {
         wasKilled = true;
@@ -395,9 +443,10 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
 
       // Capture cleanup function to call outside of updater
       cleanupFn = t.unregisterCleanup;
+      classified = classifyShellTaskResult(result, t);
       return {
         ...t,
-        status: result.code === 0 ? 'completed' : 'failed',
+        status: classified.status,
         result: {
           code: result.code,
           interrupted: result.interrupted
@@ -413,8 +462,7 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
     if (wasKilled) {
       enqueueShellNotification(taskId, description, 'killed', result.code, setAppState, toolUseId, kind, agentId);
     } else {
-      const finalStatus = result.code === 0 ? 'completed' : 'failed';
-      enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, kind, agentId);
+      enqueueShellNotification(taskId, description, classified.status, result.code, setAppState, toolUseId, kind, agentId, classified.exitNote);
     }
     void evictTaskOutput(taskId);
   });
@@ -501,15 +549,19 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
     await flushAndCleanup(shellCommand);
     let wasKilled = false;
     let cleanupFn: (() => void) | undefined;
+    // 2.1.280 #042 (official x4t): pre-state strict pass (`Oie(L,void 0)`),
+    // re-classified against the persisted state inside the updater.
+    let classified = classifyShellTaskResult(result);
     updateTaskState<LocalShellTaskState>(taskId, setAppState, t => {
       if (t.status === 'killed') {
         wasKilled = true;
         return t;
       }
       cleanupFn = t.unregisterCleanup;
+      classified = classifyShellTaskResult(result, t);
       return {
         ...t,
-        status: result.code === 0 ? 'completed' : 'failed',
+        status: classified.status,
         result: {
           code: result.code,
           interrupted: result.interrupted
@@ -520,8 +572,8 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
       };
     });
     cleanupFn?.();
-    const finalStatus = wasKilled ? 'killed' : result.code === 0 ? 'completed' : 'failed';
-    enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, undefined, agentId);
+    const finalStatus = wasKilled ? 'killed' : classified.status;
+    enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, undefined, agentId, classified.exitNote);
     void evictTaskOutput(taskId);
   });
   return true;

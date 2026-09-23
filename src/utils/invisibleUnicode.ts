@@ -47,6 +47,28 @@
 //   BL  @198116888  countNewlines (OCC: getPastedTextRefNumLines, byte-identical)
 //   a4  @198116945  format pasted ref (OCC: formatPastedTextRef, byte-identical)
 //
+// CC 2.1.280 additions (v280 ELF offsets; byte-verified against v278, which
+// has NONE of these — its 8204/8205 block @196083420 ends at `break}` right
+// after the emoji-ZWJ branch):
+//   Gc  @196840682  WHITESPACE_RE            /^\p{White_Space}$/u
+//   Xc  @196841593  ZWJ_NEXT_SCRIPTS         Ur("Arabic Syriac Mongolian Nko")
+//   Sn  @196846079  nextVisibleInScript      ≡ v278 `hi`, semantics unchanged:
+//                   `Sn(e,n){return e!==void 0&&!En(e)&&Vr(n.base,e)}`, with
+//                   `Vr(e,n){return Ce(Wn,n)&&Ce(e,n)}` @196844901 ≡ letter-in-
+//                   script check and `Ce`=testCodePoint.
+//   new 8204/8205 clause @196843700:
+//     `if(!j&&D!==void 0&&!O)j=N===8204?Sn(L,Xs)&&!Ce(Gc,D)&&!Ce(Pt,D)
+//       :Sn(L,Xc)&&!Ce(Wn,D)&&!Ce(Br,D)&&!Ce(Pt,D)`
+//   (j=keep, D=prevCode, O=lastWasHidden, N=code, L=nextCode, Xs=
+//   ZWNJ_CONTEXT_SCRIPTS, Gc=WHITESPACE_RE, Wn=LETTER_RE, Br=DIGIT_RE,
+//   Pt=MARK_RE.) ZWNJ is kept when the NEXT visible char is a letter of the
+//   ZWNJ context scripts and prev is not White_Space/Mark; ZWJ is kept when
+//   the NEXT visible char is an Arabic/Syriac/Mongolian/Nko letter and prev is
+//   not Letter/Nd-digit/Mark. Matches changelog 2.1.280 line: "Fixed the
+//   invisible-character cleanup removing the zero-width non-joiner that
+//   Persian and Arabic text uses to attach a suffix to a Latin word or
+//   number, such as the plural of 'PDF'".
+//
 // Official submit-path contract (aIo @218498875): when removedTotal > 0 the
 // cleaned text replaces the input (review state), a feedback notification
 // `prompt-invisible-removed` shows `fde(removedTotal, empty?"empty":"review")`
@@ -67,6 +89,8 @@ const PRINTABLE_ASCII_GAP_RE = /[^\t\n\x20-\x7e]/
 
 const LETTER_RE = /^\p{L}$/u
 const MARK_RE = /^\p{M}$/u
+/** Official v280 `Gc` @196840682 — new in 2.1.280 (absent from v278). */
+const WHITESPACE_RE = /^\p{White_Space}$/u
 const EMOJI_RE = /^[\p{Emoji}\p{Extended_Pictographic}]$/u
 const EXTENDED_PICTOGRAPHIC_RE = /^\p{Extended_Pictographic}$/u
 const MATH_SYMBOL_RE = /^\p{Sm}$/u
@@ -114,6 +138,13 @@ const ZWNJ_CONTEXT_SCRIPTS = makeScriptPair(
 const ZWJ_CONTEXT_SCRIPTS = makeScriptPair(
   'Devanagari Bengali Gurmukhi Gujarati Oriya Tamil Telugu Kannada Malayalam Sinhala Myanmar Khmer Tibetan Arabic Syriac Tifinagh',
 )
+
+/**
+ * Official v280 `Xc` @196841593 — `Ur("Arabic Syriac Mongolian Nko")`, new in
+ * 2.1.280 (absent from v278). Scripts whose letter AFTER a ZWJ (8205) keeps
+ * the joiner when the preceding char is not a letter/digit/mark.
+ */
+const ZWJ_NEXT_SCRIPTS = makeScriptPair('Arabic Syriac Mongolian Nko')
 
 const SEA_SCRIPTS = asScriptPair(SEA_SCRIPT_RE)
 const MONGOLIAN = asScriptPair(/^\p{Script=Mongolian}$/u)
@@ -568,6 +599,30 @@ export function stripInvisibleUnicode(input: string): StripResult {
             prevCode !== 8205 &&
             testCodePoint(EXTENDED_PICTOGRAPHIC_RE, base) &&
             nextVisibleMatches(nextCode, EXTENDED_PICTOGRAPHIC_RE)
+        }
+        // Official v280 addition (byte-verified @196843700; the v278 block
+        // @196083420 ends at the emoji-ZWJ branch with NO such clause):
+        //   `if(!j&&D!==void 0&&!O)j=N===8204
+        //      ?Sn(L,Xs)&&!Ce(Gc,D)&&!Ce(Pt,D)
+        //      :Sn(L,Xc)&&!Ce(Wn,D)&&!Ce(Br,D)&&!Ce(Pt,D)`
+        // Symbol map: j=keep, D=prevCode, O=lastWasHidden, N=code, L=nextCode,
+        // Sn=nextVisibleInScript (v280 `Sn(e,n){return e!==void 0&&!En(e)&&
+        // Vr(n.base,e)}` @196846079 ≡ v278 `hi`), Xs=ZWNJ_CONTEXT_SCRIPTS,
+        // Xc=ZWJ_NEXT_SCRIPTS, Gc=WHITESPACE_RE, Ce=testCodePoint, Wn=LETTER_RE,
+        // Br=DIGIT_RE, Pt=MARK_RE. Changelog 2.1.280: "Fixed the
+        // invisible-character cleanup removing the zero-width non-joiner that
+        // Persian and Arabic text uses to attach a suffix to a Latin word or
+        // number, such as the plural of 'PDF'".
+        if (!keep && prevCode !== undefined && !lastWasHidden) {
+          keep =
+            code === 8204
+              ? nextVisibleInScript(nextCode, ZWNJ_CONTEXT_SCRIPTS) &&
+                !testCodePoint(WHITESPACE_RE, prevCode) &&
+                !testCodePoint(MARK_RE, prevCode)
+              : nextVisibleInScript(nextCode, ZWJ_NEXT_SCRIPTS) &&
+                !testCodePoint(LETTER_RE, prevCode) &&
+                !testCodePoint(DIGIT_RE, prevCode) &&
+                !testCodePoint(MARK_RE, prevCode)
         }
         break
       }

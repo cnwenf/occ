@@ -546,12 +546,23 @@ async function checkPermissionsAndCallTool(
   // 2.1.169 parity: let the tool auto-repair a malformed input (TodoWrite-style
   // `tasks`/`todos` wrapper, Agent `prompt`/`subagent_type`, legacy `title`/
   // `name`/`content` aliases, backfilled subject/description) before parsing.
+  // 2.1.280 parity: coercion runs BEFORE the PreToolUse hooks below (official
+  // `CYn`: `ve=e.coerceInputBeforePluginHooks&&!ROe(r)?{repair:e.coerceInput?.(r)
+  // ??null}:void 0` feeds the coerced `xe` into the hook input `COn(e.name,n,xe)`)
+  // — OCC's single parse site is already upstream of runPreToolUseHooks, so the
+  // hooks/permissions observe the coerced input for every coerceInput tool. The
+  // repair's `resultNote` (official `Le=$e.coerced?.resultNote`, set only after
+  // a successful parse) is carried to addToolResult, which appends it to
+  // non-error string tool-result content.
   let parseInput: { [key: string]: boolean | string | number } = input
   const coerced = tool.coerceInput?.(input)
   if (coerced) {
     parseInput = coerced.input as { [key: string]: boolean | string | number }
   }
   const parsedInput = tool.inputSchema.safeParse(parseInput)
+  const coercedResultNote = parsedInput.success
+    ? coerced?.resultNote
+    : undefined
   if (coerced) {
     logEvent('tengu_tool_input_coerced', {
       toolName: sanitizeToolNameForAnalytics(tool.name),
@@ -1404,13 +1415,32 @@ async function checkPermissionsAndCallTool(
     ) {
       // Use the pre-mapped block when available (non-MCP tools where hooks
       // don't modify the output), otherwise map from scratch.
-      const toolResultBlock = preMappedBlock
+      const mappedBlock = preMappedBlock
         ? await processPreMappedToolResultBlock(
             preMappedBlock,
             tool.name,
             tool.maxResultSizeChars,
           )
         : await processToolResultBlock(tool, toolUseResult, toolUseID)
+
+      // Official v2.1.280 (byte-verified @199218517, `Wr` result assembler):
+      // when input coercion produced a resultNote, append it to NON-ERROR
+      // STRING tool-result content with a `\n\n` separator —
+      //   `Hl=[Le!==void 0&&!gi.is_error&&typeof gi.content==="string"
+      //        ?{...gi,content:`${gi.content}\n\n${Le}`}:gi]`
+      // (the port brief said "two-space separator"; the binary bytes are two
+      // newlines — the binary is the source of truth). Error results and
+      // non-string content pass through unchanged. The block is replaced, not
+      // mutated (official spread `{...gi,...}`).
+      const toolResultBlock =
+        coercedResultNote !== undefined &&
+        !mappedBlock.is_error &&
+        typeof mappedBlock.content === 'string'
+          ? {
+              ...mappedBlock,
+              content: `${mappedBlock.content}\n\n${coercedResultNote}`,
+            }
+          : mappedBlock
 
       // Build content blocks - tool result first, then optional feedback
       const contentBlocks: ContentBlockParam[] = [toolResultBlock]

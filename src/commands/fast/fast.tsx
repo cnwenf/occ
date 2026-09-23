@@ -173,7 +173,14 @@ export function FastModePicker(t0) {
   const title = t8;
   let t9;
   if ($[20] !== isUnavailable) {
-    t9 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : isUnavailable ? <Text>Esc to cancel</Text> : <Text>Tab to toggle · Enter to confirm · Esc to cancel</Text>;
+    // CC 2.1.280 (#082): the /fast footer names Space as the toggle key —
+    // official v280 @217049014 `chord:"space",action:"toggle"` vs v278
+    // @217624583 `chord:"tab",action:"toggle"` (rest of the guide identical;
+    // the unavailable-state escape-only branch is unchanged and already
+    // mirrored by the isUnavailable ternary below). Binding side already
+    // correct: this file registers "confirm:toggle" and defaultBindings.ts
+    // maps space → 'confirm:toggle' (Confirmation context).
+    t9 = exitState => exitState.pending ? <Text>Press {exitState.keyName} again to exit</Text> : isUnavailable ? <Text>Esc to cancel</Text> : <Text>Space to toggle · Enter to confirm · Esc to cancel</Text>;
     $[20] = isUnavailable;
     $[21] = t9;
   } else {

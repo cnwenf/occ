@@ -15,6 +15,10 @@ import { lazySchema } from '../lazySchema.js'
 /**
  * Official marketplace names that are reserved for Anthropic/Claude official use.
  * These names are allowed ONLY for official marketplaces and blocked for third parties.
+ *
+ * Official v2.1.280 binary @191097494 (`dOe`): 14 names. Membership is
+ * byte-verified identical in v2.1.278 (`NPe`) — the v280 change was the
+ * spelling-imitation layer below, not the list.
  */
 export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES = new Set([
   'claude-code-marketplace',
@@ -23,16 +27,64 @@ export const ALLOWED_OFFICIAL_MARKETPLACE_NAMES = new Set([
   'anthropic-marketplace',
   'anthropic-plugins',
   'agent-skills',
+  'anthropic-agent-skills',
   'life-sciences',
   'knowledge-work-plugins',
+  'claude-for-legal',
+  'claude-for-financial-services',
+  'financial-services-plugins',
+  'first-party-plugins',
+  'claude-tag-plugins',
+])
+
+/**
+ * Community marketplace names reserved by Anthropic (official v280 `CIt`).
+ * Reserved (part of RESERVED_MARKETPLACE_NAMES) but NOT official for
+ * auto-update purposes (isMarketplaceAutoUpdate only defaults true for
+ * ALLOWED_OFFICIAL_MARKETPLACE_NAMES).
+ */
+export const COMMUNITY_RESERVED_MARKETPLACE_NAMES = new Set([
+  'claude-community',
+  'claude-plugins-community',
+  'healthcare',
+])
+
+/**
+ * The primary reserved plugin-directory name (official v280 `Kwe`/`CPn`).
+ * Imitations of this name get the plain "reserved marketplace name" refusal
+ * (official `$be`/`irr` special-case it and its sibling below).
+ */
+export const PRIMARY_PLUGIN_DIRECTORY_NAME = 'anthropic-plugin-directory'
+
+/**
+ * Plugin-directory names reserved by Anthropic (official v280 `xtn`).
+ */
+export const PLUGIN_DIRECTORY_RESERVED_NAMES = new Set([
+  PRIMARY_PLUGIN_DIRECTORY_NAME,
+  'claude-plugin-directory',
+])
+
+/**
+ * Every reserved marketplace name (official v280 `W7` = dOe ∪ CIt ∪ xtn).
+ * Insertion order matches the official set literal so first-match iteration
+ * in findImitatedReservedName is deterministic in the same order.
+ */
+export const RESERVED_MARKETPLACE_NAMES = new Set([
+  ...ALLOWED_OFFICIAL_MARKETPLACE_NAMES,
+  ...COMMUNITY_RESERVED_MARKETPLACE_NAMES,
+  ...PLUGIN_DIRECTORY_RESERVED_NAMES,
 ])
 
 /**
  * Official marketplaces that should NOT auto-update by default.
  * These are still reserved/allowed names, but opt out of the auto-update
  * default that other official marketplaces receive.
+ * Official v280 binary `fd`: knowledge-work-plugins + first-party-plugins.
  */
-const NO_AUTO_UPDATE_OFFICIAL_MARKETPLACES = new Set(['knowledge-work-plugins'])
+const NO_AUTO_UPDATE_OFFICIAL_MARKETPLACES = new Set([
+  'knowledge-work-plugins',
+  'first-party-plugins',
+])
 
 /**
  * Check if auto-update is enabled for a marketplace.
@@ -85,8 +137,9 @@ const NON_ASCII_PATTERN = /[^\u0020-\u007E]/
  * @returns true if the name is blocked (impersonates official), false if allowed
  */
 export function isBlockedOfficialName(name: string): boolean {
-  // If it's in the allowed list, it's not blocked
-  if (ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(name.toLowerCase())) {
+  // Official v280 `gEr`: exact reserved names (W7) are not "blocked" — they go
+  // through source validation (validateOfficialNameSource) instead.
+  if (RESERVED_MARKETPLACE_NAMES.has(name.toLowerCase())) {
     return false
   }
 
@@ -101,6 +154,157 @@ export function isBlockedOfficialName(name: string): boolean {
 }
 
 /**
+ * Spelling-imitation defense (official v2.1.280 binary @193906057-193907100).
+ *
+ * v280 refuses marketplace names that are "another spelling" of a reserved
+ * name: names whose slugified or Unicode-normalized form collides with a
+ * reserved name (e.g. "agent.skills", fullwidth ｃｌａｕｄｅ variants, ZWNJ
+ * insertions, trailing dots/spaces, case variants). Exact reserved names are
+ * NOT handled here — they go through validateOfficialNameSource.
+ */
+
+/** Official v280 `f1`: name is safe to embed in a suggested shell command. */
+export function isSafeMarketplaceCommandArg(name: string): boolean {
+  return /^\w[\w.@-]*$/.test(name)
+}
+
+/** Official v280 `o`: slugify — everything outside [a-zA-Z0-9-_] becomes '-'. */
+export function slugifyMarketplaceName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9\-_]/g, '-').toLowerCase()
+}
+
+/**
+ * Official v280 `_fr`: is `name` another spelling of the reserved `reservedName`?
+ * Compares: raw slug, NFKC slug, and slug of the NFKC form with invisible
+ * characters stripped, case-folded (toUpperCase().toLowerCase()), and trailing
+ * dots/spaces removed.
+ */
+export function isAnotherSpellingOfReservedName(
+  name: string,
+  reservedName: string,
+): boolean {
+  const nfkc = name.normalize('NFKC')
+  return (
+    slugifyMarketplaceName(name) === reservedName ||
+    slugifyMarketplaceName(nfkc) === reservedName ||
+    slugifyMarketplaceName(
+      nfkc
+        .replace(/[\u200c-\u200f\u202a-\u202e\u206a-\u206f\ufeff]/g, '')
+        .toUpperCase()
+        .toLowerCase()
+        .replace(/[. ]+$/, ''),
+    ) === reservedName
+  )
+}
+
+/** Official v280 `$be`: imitation of the primary plugin-directory name. */
+export function isPluginDirectoryNameImitation(name: string): boolean {
+  return isAnotherSpellingOfReservedName(name, PRIMARY_PLUGIN_DIRECTORY_NAME)
+}
+
+/**
+ * Official v280 `VBe`: the first reserved name (iterating
+ * RESERVED_MARKETPLACE_NAMES in official set order) that `name` is another
+ * spelling of. Skips the primary plugin-directory name (covered by
+ * isPluginDirectoryNameImitation) and exact case-insensitive matches (covered
+ * by the exact-reserved-name path). Returns undefined when nothing matches.
+ */
+export function findImitatedReservedName(name: string): string | undefined {
+  for (const reserved of RESERVED_MARKETPLACE_NAMES) {
+    if (
+      reserved !== PRIMARY_PLUGIN_DIRECTORY_NAME &&
+      name.toLowerCase() !== reserved &&
+      isAnotherSpellingOfReservedName(name, reserved)
+    ) {
+      return reserved
+    }
+  }
+  return undefined
+}
+
+/** Official v280 `det`. */
+export function reservedMarketplaceNameMessage(name: string): string {
+  return `"${name}" is a reserved marketplace name.`
+}
+
+/** Official v280 `Voo`. */
+export function anotherSpellingRefusalMessage(
+  name: string,
+  reservedName: string,
+): string {
+  return isSafeMarketplaceCommandArg(name)
+    ? `"${name}" is another spelling of "${reservedName}", a reserved marketplace name.`
+    : `This marketplace's name is another spelling of "${reservedName}", a reserved marketplace name. It is not exactly the reserved name it appears to be.`
+}
+
+/** Official v280 `irr`: plugin-directory targets get the plain refusal. */
+export function reservedNameRefusalMessage(
+  name: string,
+  reservedName: string,
+): string {
+  return PLUGIN_DIRECTORY_RESERVED_NAMES.has(reservedName)
+    ? reservedMarketplaceNameMessage(name)
+    : anotherSpellingRefusalMessage(name, reservedName)
+}
+
+/**
+ * Official v280 `g`+`sl`: the remove command suggested for a name, or null
+ * when the name ends with '.' or is not safe to embed in a command.
+ * OCC brands the CLI as `occ` (matching existing messages in
+ * marketplaceManager.ts) where the official builds `claude ...`.
+ */
+function marketplaceRemoveCommand(name: string): string | null {
+  if (name.endsWith('.')) {
+    return null
+  }
+  if (!isSafeMarketplaceCommandArg(name)) {
+    return null
+  }
+  return `occ plugin marketplace remove ${name}`
+}
+
+/**
+ * Official v280 `Hse` (built on `bfr`): the message for a known_marketplaces.json
+ * entry that must be ignored because its name imitates a reserved name.
+ * Returns undefined when the name is not an imitation.
+ */
+export function knownMarketplacesImitationMessage(
+  name: string,
+): string | undefined {
+  if (isPluginDirectoryNameImitation(name)) {
+    return reservedMarketplaceNameMessage(name)
+  }
+  const target = findImitatedReservedName(name)
+  if (target === undefined) {
+    return undefined
+  }
+  if (PLUGIN_DIRECTORY_RESERVED_NAMES.has(target)) {
+    return reservedMarketplaceNameMessage(name)
+  }
+  const removeCommand = marketplaceRemoveCommand(name)
+  return removeCommand === null
+    ? `known_marketplaces.json has an entry under another spelling of "${target}", a reserved marketplace name, so it is ignored. Remove that entry from known_marketplaces.json; its name is not exactly the reserved name it appears to be.`
+    : `known_marketplaces.json has an entry named "${name}", another spelling of the reserved marketplace name "${target}", so it is ignored. Remove it with: ${removeCommand}`
+}
+
+/**
+ * Official v280 `wNe` (minus the claude.ai-prefix branch — OCC has no
+ * claude.ai-hosted marketplaces): refuse marketplace add when the name is
+ * another spelling of a reserved name.
+ */
+export function assertMarketplaceNameNotReservedImitation(
+  name: string,
+): void {
+  if (isPluginDirectoryNameImitation(name)) {
+    throw new Error(reservedMarketplaceNameMessage(name))
+  }
+  const imitated = findImitatedReservedName(name)
+  if (imitated !== undefined) {
+    throw new Error(reservedNameRefusalMessage(name, imitated))
+  }
+}
+
+/**
  * The official GitHub organization for Anthropic marketplaces.
  * Reserved names must come from this org.
  */
@@ -109,8 +313,8 @@ export const OFFICIAL_GITHUB_ORG = 'anthropics'
 /**
  * Validate that a marketplace with a reserved name comes from the official source.
  *
- * Reserved names (in ALLOWED_OFFICIAL_MARKETPLACE_NAMES) can only be used by
- * marketplaces from the official Anthropic GitHub organization.
+ * Reserved names (in RESERVED_MARKETPLACE_NAMES — official v280 `W7`) can only
+ * be used by marketplaces from the official Anthropic GitHub organization.
  *
  * @param name - The marketplace name
  * @param source - The marketplace source configuration
@@ -123,7 +327,7 @@ export function validateOfficialNameSource(
   const normalizedName = name.toLowerCase()
 
   // Only validate reserved names
-  if (!ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(normalizedName)) {
+  if (!RESERVED_MARKETPLACE_NAMES.has(normalizedName)) {
     return null // Not a reserved name, no source validation needed
   }
 
@@ -1014,7 +1218,7 @@ export const MarketplaceSourceSchema = lazySchema(() =>
         source: z.literal('settings'),
         name: MarketplaceNameSchema()
           .refine(
-            name => !ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(name.toLowerCase()),
+            name => !RESERVED_MARKETPLACE_NAMES.has(name.toLowerCase()),
             {
               message:
                 'Reserved official marketplace names cannot be used with settings sources. ' +

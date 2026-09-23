@@ -440,3 +440,115 @@ describe('stripInvisibleForSubmit (official Bnt)', () => {
     expect(result.removed.textLength).toBe(input.length + entryContent.length)
   })
 })
+
+describe('stripInvisibleUnicode — CC 2.1.280 script-aware ZWNJ/ZWJ clause', () => {
+  // Official v280 addition @196843700 (absent from v278 @196083420):
+  //   `if(!j&&D!==void 0&&!O)j=N===8204?Sn(L,Xs)&&!Ce(Gc,D)&&!Ce(Pt,D)
+  //     :Sn(L,Xc)&&!Ce(Wn,D)&&!Ce(Br,D)&&!Ce(Pt,D)`
+  // ZWNJ (8204) is kept when the NEXT visible char is a letter of the ZWNJ
+  // context scripts (Xs) and prev is not White_Space/Mark; ZWJ (8205) is kept
+  // when the NEXT visible char is an Arabic/Syriac/Mongolian/Nko letter (Xc)
+  // and prev is not Letter/Nd-digit/Mark; both gated on prevCode defined and
+  // !lastWasHidden. Changelog: "Fixed the invisible-character cleanup removing
+  // the zero-width non-joiner that Persian and Arabic text uses to attach a
+  // suffix to a Latin word or number, such as the plural of 'PDF'".
+  //
+  // DISCIPLINE: every non-ASCII code point below is an explicit \u escape —
+  // zero raw invisible characters in this source.
+  const HEH = 'ه' // ARABIC LETTER HEH
+  const ALEF = 'ا' // ARABIC LETTER ALEF
+  const ZWNJ = '\u200c'
+  const ZWJ = '\u200d'
+  const COMBINING_ACUTE = '\u0301'
+  const GRINNING_FACE = '\u{1f600}'
+
+  test("keeps ZWNJ attaching an Arabic-script suffix to a Latin word (changelog 'PDF' plural)", () => {
+    const input = `PDF${ZWNJ}${HEH}${ALEF}`
+    const result = stripInvisibleUnicode(input)
+    expect(result.text).toBe(input)
+    expect(result.removedTotal).toBe(0)
+    expect(result.keptConditional).toBe(1)
+  })
+
+  test('keeps ZWNJ attaching an Arabic-script suffix to a digit', () => {
+    const input = `5${ZWNJ}${HEH}`
+    const result = stripInvisibleUnicode(input)
+    expect(result.text).toBe(input)
+    expect(result.removedTotal).toBe(0)
+    expect(result.keptConditional).toBe(1)
+  })
+
+  test('ZWNJ is removed when the previous char is whitespace (Gc guard)', () => {
+    const result = stripInvisibleUnicode(`abc ${ZWNJ}${HEH}`)
+    expect(result.text).toBe(`abc ${HEH}`)
+    expect(result.removedTotal).toBe(1)
+    expect(result.removedByClass.zeroWidth).toBe(1)
+    expect(result.keptConditional).toBe(0)
+  })
+
+  test('ZWNJ is removed when the previous char is a combining mark (Pt guard)', () => {
+    const result = stripInvisibleUnicode(`a${COMBINING_ACUTE}${ZWNJ}${HEH}`)
+    expect(result.text).toBe(`a${COMBINING_ACUTE}${HEH}`)
+    expect(result.removedTotal).toBe(1)
+    expect(result.removedByClass.zeroWidth).toBe(1)
+    expect(result.keptConditional).toBe(0)
+  })
+
+  test('keeps ZWJ between an emoji and an Arabic-script letter (Xc next-scripts)', () => {
+    // Emoji ZWJ branch fails (next is not Extended_Pictographic) but the v280
+    // ZWJ clause keeps it — prev is not Letter/Nd/Mark and next is an Arabic
+    // letter.
+    const input = `${GRINNING_FACE}${ZWJ}${HEH}`
+    const result = stripInvisibleUnicode(input)
+    expect(result.text).toBe(input)
+    expect(result.removedTotal).toBe(0)
+    expect(result.keptConditional).toBe(1)
+  })
+
+  test('ZWJ before an Arabic letter is removed when prev is a letter (Wn guard)', () => {
+    const result = stripInvisibleUnicode(`A${ZWJ}${HEH}`)
+    expect(result.text).toBe(`A${HEH}`)
+    expect(result.removedTotal).toBe(1)
+    expect(result.removedByClass.zeroWidth).toBe(1)
+  })
+
+  test('ZWJ before an Arabic letter is removed when prev is a digit (Br guard)', () => {
+    const result = stripInvisibleUnicode(`1${ZWJ}${HEH}`)
+    expect(result.text).toBe(`1${HEH}`)
+    expect(result.removedTotal).toBe(1)
+    expect(result.removedByClass.zeroWidth).toBe(1)
+  })
+
+  test('ZWJ is removed when the next char is outside Arabic/Syriac/Mongolian/Nko', () => {
+    const result = stripInvisibleUnicode(`${GRINNING_FACE}${ZWJ}b`)
+    expect(result.text).toBe(`${GRINNING_FACE}b`)
+    expect(result.removedTotal).toBe(1)
+    expect(result.removedByClass.zeroWidth).toBe(1)
+  })
+
+  test('ZWNJ between two Arabic-script letters is still kept by the context check (regression)', () => {
+    const input = `${HEH}${ZWNJ}${ALEF}`
+    const result = stripInvisibleUnicode(input)
+    expect(result.text).toBe(input)
+    expect(result.removedTotal).toBe(0)
+    expect(result.keptConditional).toBe(1)
+  })
+
+  test('ZWNJ between Latin letters is still removed (regression)', () => {
+    const result = stripInvisibleUnicode(`ab${ZWNJ}cd`)
+    expect(result.text).toBe('abcd')
+    expect(result.removedTotal).toBe(1)
+    expect(result.removedByClass.zeroWidth).toBe(1)
+  })
+
+  test('consecutive ZWNJs: the second is removed via the lastWasHidden guard', () => {
+    // First ZWNJ is kept (prev/next both Arabic-script letters); at the second
+    // ZWNJ lastWasHidden is true, so the context check, the emoji branch, and
+    // the v280 clause all fail.
+    const result = stripInvisibleUnicode(`${HEH}${ZWNJ}${ZWNJ}${ALEF}`)
+    expect(result.text).toBe(`${HEH}${ZWNJ}${ALEF}`)
+    expect(result.removedTotal).toBe(1)
+    expect(result.removedByClass.zeroWidth).toBe(1)
+    expect(result.keptConditional).toBe(1)
+  })
+})

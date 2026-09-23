@@ -169,6 +169,24 @@ export const CLAUDE_OPUS_5_CONFIG = {
   gateway: 'claude-opus-5',
 } as const satisfies ModelConfig
 
+// Claude Opus 5.5 (`claude-opus-5-5`) — launched in official Claude Code
+// 2.1.280 (changelog: "Added Claude Opus 5.5 (`claude-opus-5-5`), now the
+// default Opus model — 1M context, $4/$20 per Mtok with $0.20/Mtok cache
+// reads"). Provider IDs byte-verified against the official 2.1.280 linux-x64
+// binary catalog entry (@191988119): first_party/vertex/foundry/
+// anthropic_aws/gateway `claude-opus-5-5`, bedrock
+// `us.anthropic.claude-opus-5-5`, mantle `anthropic.claude-opus-5-5`.
+// Same launch-model shape as opus-5.
+export const CLAUDE_OPUS_5_5_CONFIG = {
+  firstParty: 'claude-opus-5-5',
+  bedrock: 'us.anthropic.claude-opus-5-5',
+  vertex: 'claude-opus-5-5',
+  foundry: 'claude-opus-5-5',
+  anthropic_aws: 'claude-opus-5-5',
+  mantle: 'anthropic.claude-opus-5-5',
+  gateway: 'claude-opus-5-5',
+} as const satisfies ModelConfig
+
 export const CLAUDE_SONNET_5_CONFIG = {
   firstParty: 'claude-sonnet-5',
   bedrock: 'us.anthropic.claude-sonnet-5',
@@ -222,6 +240,7 @@ export const ALL_MODEL_CONFIGS = {
   opus47: CLAUDE_OPUS_4_7_CONFIG,
   opus48: CLAUDE_OPUS_4_8_CONFIG,
   opus5: CLAUDE_OPUS_5_CONFIG,
+  opus55: CLAUDE_OPUS_5_5_CONFIG,
   fable5: CLAUDE_FABLE_5_CONFIG,
   fable51: CLAUDE_FABLE_5_1_CONFIG,
 } as const satisfies Record<string, ModelConfig>

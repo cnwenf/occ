@@ -244,9 +244,10 @@ export function autoUpdateMarketplacesAndPluginsInBackground(): void {
       const refreshResults = await Promise.allSettled(
         Array.from(autoUpdateEnabledMarketplaces).map(async name => {
           try {
-            await refreshMarketplace(name, undefined, {
-              disableCredentialHelper: true,
-            })
+            // v2.1.280: refreshMarketplace no longer takes a
+            // disableCredentialHelper option — credential-helper machinery
+            // was removed upstream (see marketplaceManager.ts).
+            await refreshMarketplace(name)
           } catch (error) {
             logForDebugging(
               `Plugin autoupdate: failed to refresh marketplace ${name}: ${errorMessage(error)}`,

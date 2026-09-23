@@ -14,6 +14,7 @@ import {
   CLAUDE_OPUS_4_5_CONFIG,
   CLAUDE_OPUS_4_6_CONFIG,
   CLAUDE_OPUS_4_CONFIG,
+  CLAUDE_OPUS_5_5_CONFIG,
   CLAUDE_OPUS_5_CONFIG,
   CLAUDE_SONNET_4_5_CONFIG,
   CLAUDE_SONNET_4_6_CONFIG,
@@ -146,6 +147,42 @@ export const COST_TIER_10_50_CACHE_READ_0_25 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// 2.1.280 (Opus 5.5 launch): base pricing tier for `claude-opus-5-5`.
+// Recovered verbatim from the official 2.1.280 linux-x64 binary's model
+// catalog `pricing_tiers` table (@191977421):
+//   tier_4_20_cache_read_0_20: input 4, output 20, cache_write_5m 5,
+//                              cache_write_1h 8, cache_read 0.2,
+//                              web_search 0.01
+// The baked catalog entry for `claude-opus-5-5` carries
+// `pricing:"tier_4_20_cache_read_0_20"`. Matches the 2.1.280 changelog:
+// "$4/$20 per Mtok with $0.20/Mtok cache reads".
+export const COST_TIER_4_20_CACHE_READ_0_20 = {
+  inputTokens: 4,
+  outputTokens: 20,
+  promptCacheWriteTokens: 5,
+  promptCacheWrite1hTokens: 8,
+  promptCacheReadTokens: 0.2,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
+// 2.1.280 (Opus 5.5 launch): fast-mode pricing for `claude-opus-5-5`
+// ($8 input / $40 output per Mtok). Recovered verbatim from the official
+// 2.1.280 linux-x64 binary's baked fast-tier constant `Uh` (@193258260):
+//   Uh={inputTokens:8,outputTokens:40,promptCacheWriteTokens:10,
+//       promptCacheWrite1hTokens:16,promptCacheReadTokens:0.4,
+//       webSearchRequests:0.01}
+// Baked-only (like tier_30_150 for fast Opus 4.6) — not in the catalog
+// pricing_tiers table. The fast-cost dispatch (`Tze`) returns `Uh` for
+// `claude-opus-5-5` BEFORE the opus-4-8/opus-5 → tier_10_50 branch.
+export const COST_TIER_8_40 = {
+  inputTokens: 8,
+  outputTokens: 40,
+  promptCacheWriteTokens: 10,
+  promptCacheWrite1hTokens: 16,
+  promptCacheReadTokens: 0.4,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Pricing for Haiku 3.5: $0.80 input / $4 output per Mtok
 // Binary: pricing_tiers.haiku_35 cache_write_1h = 1.6
 export const COST_HAIKU_35 = {
@@ -196,6 +233,24 @@ export function getOpus5CostTier(fastMode: boolean): ModelCosts {
   return COST_TIER_5_25
 }
 
+/**
+ * Get the cost tier for Opus 5.5 based on fast mode.
+ *
+ * 2.1.280 (Opus 5.5 launch). Mirrors the official 2.1.280 binary's fast-cost
+ * dispatch `Tze` (@193258260):
+ *   `if(e==="claude-opus-5-5")return Uh;` — checked BEFORE the
+ *   `opus-4-8||opus-5 → xs (tier_10_50)` branch.
+ * Base tier is `tier_4_20_cache_read_0_20` ($4/$20, from the baked catalog's
+ * `pricing:"tier_4_20_cache_read_0_20"` entry for `claude-opus-5-5`); fast
+ * tier is the baked constant `Uh` ($8/$40, the `COST_TIER_8_40` constant).
+ */
+export function getOpus55CostTier(fastMode: boolean): ModelCosts {
+  if (isFastModeEnabled() && fastMode) {
+    return COST_TIER_8_40
+  }
+  return COST_TIER_4_20_CACHE_READ_0_20
+}
+
 // @[MODEL LAUNCH]: Add a pricing entry for the new model below.
 // Costs from https://platform.claude.com/docs/en/about-claude/pricing
 // Web search cost: $10 per 1000 requests = $0.01 per request
@@ -232,6 +287,13 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   // ($10/$50) is handled separately in getModelCosts via getOpus5CostTier.
   [firstPartyNameToCanonical(CLAUDE_OPUS_5_CONFIG.firstParty)]:
     COST_TIER_5_25,
+  // Opus 5.5 base tier is `tier_4_20_cache_read_0_20` ($4/$20, cache_read
+  // $0.20) — binary-verified: the baked 2.1.280 model catalog entry for
+  // `claude-opus-5-5` carries `pricing:"tier_4_20_cache_read_0_20"`. Fast
+  // mode ($8/$40) is handled separately in getModelCosts via
+  // getOpus55CostTier.
+  [firstPartyNameToCanonical(CLAUDE_OPUS_5_5_CONFIG.firstParty)]:
+    COST_TIER_4_20_CACHE_READ_0_20,
   // Fable 5 is `tier_10_50` ($10/$50, cache_read $1) — binary-verified: the
   // 2.1.258 baked model catalog entry for `claude-fable-5` carries
   // `pricing:"tier_10_50"`. (Pre-existing OCC omission — MODEL_COSTS never had
@@ -271,6 +333,16 @@ export function getModelCosts(model: string, usage: Usage): ModelCosts {
   ) {
     const isFastMode = usage.speed === 'fast'
     return getOpus46CostTier(isFastMode)
+  }
+
+  // Check if this is an Opus 5.5 model with fast mode active.
+  // Mirrors the official 2.1.280 binary's `Tze` fast-cost dispatch order:
+  // `if(e==="claude-opus-5-5")return Uh;` BEFORE the opus-4-8/opus-5 branch.
+  if (
+    shortName === firstPartyNameToCanonical(CLAUDE_OPUS_5_5_CONFIG.firstParty)
+  ) {
+    const isFastMode = usage.speed === 'fast'
+    return getOpus55CostTier(isFastMode)
   }
 
   // Check if this is an Opus 5 model with fast mode active.

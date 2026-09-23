@@ -1,10 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { getInitialMainLoopModel } from '../../bootstrap/state.js'
-import {
-  isClaudeAISubscriber,
-  isMaxSubscriber,
-  isTeamPremiumSubscriber,
-} from '../auth.js'
+import { isClaudeAISubscriber } from '../auth.js'
 import { getModelStrings } from './modelStrings.js'
 import {
   COST_TIER_2_10,
@@ -31,7 +27,9 @@ import {
   getMarketingNameForModel,
   getUserSpecifiedModelSetting,
   isOpus1mMergeEnabled,
+  isOpusDefaultTier,
   getOpus46PricingSuffix,
+  getOpus55PricingSuffix,
   parseUserSpecifiedModel,
   renderDefaultModelSetting,
   resolveAnthropicDefaultModel,
@@ -329,6 +327,24 @@ function getOpus5Option(fastMode = false): ModelOption {
   }
 }
 
+// 2.1.280 (#001 Opus 5.5 launch): Opus 5.5 is the newest/current Opus.
+// Binary `Tv` (byte-verified):
+//   value: !al() ? kc().opus55 : "opus"; label: "Opus";
+//   description: `Opus 5.5 · Best for everyday, complex tasks${In("claude-opus-5-5",e)}`
+//   descriptionForModel: "Opus 5.5 - best for everyday, complex tasks"
+// with bs="Best for everyday, complex tasks" and In = the pricing suffix
+// (hCt: base $4/$20, fast (↯) $8/$40 per Mtok). The literal "Opus 5.5" is
+// the 1i highlight target (see getMergedOpus1MOption comment).
+export function getOpus55Option(fastMode = false): ModelOption {
+  const is3P = getAPIProvider() !== 'firstParty'
+  return {
+    value: is3P ? getModelStrings().opus55 : 'opus',
+    label: 'Opus',
+    description: `Opus 5.5 · Best for everyday, complex tasks${getOpus55PricingSuffix(fastMode)}`,
+    descriptionForModel: 'Opus 5.5 - best for everyday, complex tasks',
+  }
+}
+
 export function getSonnet5_1MOption(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
@@ -362,6 +378,22 @@ export function getOpus5_1MOption(fastMode = false): ModelOption {
     description: `Opus 5 for long sessions${getOpus5PricingSuffix(fastMode)}`,
     descriptionForModel:
       'Opus 5 with 1M context window - for long sessions with large codebases',
+  }
+}
+
+// 2.1.280 (#001 Opus 5.5 launch): Opus 5.5 1M row. Binary `_v` (byte-verified):
+//   value: !al() ? kc().opus55+"[1m]" : "opus[1m]"; label: "Opus (1M context)";
+//   description: `Opus 5.5 for long sessions${In("claude-opus-5-5",e)}`
+//   descriptionForModel: "Opus 5.5 with 1M context window - for long sessions
+//     with large codebases"
+export function getOpus55_1MOption(fastMode = false): ModelOption {
+  const is3P = getAPIProvider() !== 'firstParty'
+  return {
+    value: is3P ? getModelStrings().opus55 + '[1m]' : 'opus[1m]',
+    label: 'Opus (1M context)',
+    description: `Opus 5.5 for long sessions${getOpus55PricingSuffix(fastMode)}`,
+    descriptionForModel:
+      'Opus 5.5 with 1M context window - for long sessions with large codebases',
   }
 }
 
@@ -422,15 +454,15 @@ function getHaikuOption(): ModelOption {
     : getHaiku35Option()
 }
 
-// 2.1.219 (1b/1i): Max/Standard current Opus row. Binary `DWi`:
+// 2.1.280 (#001): Max/Standard current Opus row. Binary `Og` (byte-verified):
 //   value: "opus"; label: "Opus";
-//   description: `Opus 5 · Best for everyday, complex tasks${LWi()}${pricingSuffix}`
-//   (LWi = "~2x usage vs Sonnet" pro-gate; OCC omits it — preserved as-is).
+//   description: `Opus 5.5 · Best for everyday, complex tasks${Cg()}${e?In("claude-opus-5-5",!1):""}`
+//   (Cg = "~2× usage vs Sonnet" pro-gate; OCC omits it — preserved as-is).
 function getMaxOpusOption(fastMode = false): ModelOption {
   return {
     value: 'opus',
     label: 'Opus',
-    description: `Opus 5 · Best for everyday, complex tasks${fastMode ? getOpus5PricingSuffix(true) : ''}`,
+    description: `Opus 5.5 · Best for everyday, complex tasks${fastMode ? getOpus55PricingSuffix(true) : ''}`,
   }
 }
 
@@ -469,6 +501,21 @@ export function getMaxOpus5_1MOption(fastMode = false): ModelOption {
   }
 }
 
+// 2.1.280 (#001): Max/Standard Opus 5.5 1M row. Binary `kv` (byte-verified):
+//   value: "opus[1m]"; label: "Opus (1M context)";
+//   description: `Opus 5.5 with 1M context${Cg()}${drawsFromCredits}${pricingSuffix}`.
+//   OCC preserves its "Billed as extra usage" billing line (binary uses
+//   "Draws from usage credits"); the model-version + pricing suffix are
+//   updated to opus-5-5 ($4/$20 base, (↯) $8/$40 fast).
+export function getMaxOpus55_1MOption(fastMode = false): ModelOption {
+  const billingInfo = isClaudeAISubscriber() ? ' · Billed as extra usage' : ''
+  return {
+    value: 'opus[1m]',
+    label: 'Opus (1M context)',
+    description: `Opus 5.5 with 1M context${billingInfo}${getOpus55PricingSuffix(fastMode)}`,
+  }
+}
+
 export function getMaxOpus46_1MOption(fastMode = false): ModelOption {
   const billingInfo = isClaudeAISubscriber() ? ' · Billed as extra usage' : ''
   return {
@@ -489,28 +536,32 @@ export function getMaxOpus46_1MOption(fastMode = false): ModelOption {
 // 1i — official changelog: "Changed the /model picker to highlight only the
 //   newest model's name". The binary does NOT flag newest via a boolean
 //   field on ModelOption. Instead the picker UI (`ModelPicker.tsx`
-//   equivalent, offset 262593244) does a literal string replace on each
-//   option's description:
+//   equivalent, offset 262593244 in 2.1.220) does a literal string replace
+//   on each option's description:
 //     .replaceAll("Opus 5", to("claude", MYo)("Opus 5"))
-//   i.e. the newest model's NAME ("Opus 5") is highlighted wherever it
-//   appears. So "only the newest is highlighted" reduces to: only the
-//   opus-5 rows carry the literal "Opus 5" in their description. Legacy
-//   rows ("Opus 4.8", "Opus 4.6", ...) do not match "Opus 5" and are not
-//   highlighted. This row carries "Opus 5" → it is the highlighted one.
-//   (The picker-UI replace itself lives in ModelPicker.tsx, outside this
-//   file's edit scope; this data layer ensures the target string is present
-//   on exactly the opus-5 rows and absent elsewhere.)
+//   i.e. the newest model's NAME is highlighted wherever it appears. So
+//   "only the newest is highlighted" reduces to: only the newest opus rows
+//   carry the literal newest name in their description. Legacy rows
+//   ("Opus 4.8", "Opus 4.6", ...) do not match and are not highlighted.
+//   2.1.280 (#001): the newest name is now "Opus 5.5" — this data layer
+//   carries "Opus 5.5" on exactly the opus-5-5 rows. STAGED UI NOTE: the
+//   picker-UI replaceAll target lives in ModelPicker.tsx (outside this
+//   task's allowlist) and still targets "Opus 5"; since "Opus 5" is a
+//   substring of "Opus 5.5", the stale target would highlight only the
+//   "Opus 5" prefix of the newest rows — the UI file needs its target
+//   updated to "Opus 5.5" in a follow-up.
 function getMergedOpus1MOption(fastMode = false): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
-    value: is3P ? getModelStrings().opus5 + '[1m]' : 'opus[1m]',
+    value: is3P ? getModelStrings().opus55 + '[1m]' : 'opus[1m]',
     label: 'Opus (1M context)',
-    // Binary `PWi` form: `${Opus 5} with 1M context · Best for everyday,
-    // complex tasks${pricingSuffix}` (opus-5 cost). "Opus 5" present → 1i
-    // highlight target (see header comment).
-    description: `Opus 5 with 1M context · Best for everyday, complex tasks${!is3P && fastMode ? getOpus5PricingSuffix(fastMode) : ''}`,
+    // Binary `Pg` form (2.1.280, byte-verified): `${g} with 1M context ·
+    // Best for everyday, complex tasks${Cg()}${h}` with g="Opus 5.5" and h =
+    // opus-5-5 pricing suffix. "Opus 5.5" present → 1i highlight target
+    // (see header comment).
+    description: `Opus 5.5 with 1M context · Best for everyday, complex tasks${!is3P && fastMode ? getOpus55PricingSuffix(fastMode) : ''}`,
     descriptionForModel:
-      'Opus 5 with 1M context - best for everyday, complex tasks',
+      'Opus 5.5 with 1M context - best for everyday, complex tasks',
   }
 }
 
@@ -557,11 +608,17 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   }
 
   if (isClaudeAISubscriber()) {
-    if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
-      // Max and Team Premium users: Opus is default, show Sonnet as alternative
+    // 2.1.280 #078: binary `fj` (byte-verified) gates the premium picker on
+    // `if(ft()){if(K7t()){...opus rows...}else{...sonnet rows...}}` — ft =
+    // isClaudeAISubscriber, K7t = isOpusDefaultTier. With #078 the K7t tier
+    // set now includes Team Standard and Pro, so they get the Opus-default
+    // (premium) picker list too.
+    if (isOpusDefaultTier()) {
+      // Opus-default tiers (Max, Team Premium, Team Standard, Pro): Opus is
+      // default, show Sonnet as alternative
       const premiumOptions = [getDefaultOptionForUser(fastMode)]
       if (!isOpus1mMergeEnabled() && checkOpus1mAccess()) {
-        premiumOptions.push(getMaxOpus5_1MOption(fastMode))
+        premiumOptions.push(getMaxOpus55_1MOption(fastMode))
       }
 
       premiumOptions.push(MaxSonnet5Option)
@@ -573,7 +630,8 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       return premiumOptions
     }
 
-    // Pro/Team Standard/Enterprise users: Sonnet is default, show Opus as alternative
+    // Remaining subscribers (Enterprise; Team/Pro under the active 3P sonnet
+    // probe `tv`): Sonnet is default, show Opus as alternative
     const standardOptions = [getDefaultOptionForUser(fastMode)]
     if (checkSonnet1mAccess()) {
       standardOptions.push(getMaxSonnet5_1MOption())
@@ -584,7 +642,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     } else {
       standardOptions.push(getMaxOpusOption(fastMode))
       if (checkOpus1mAccess()) {
-        standardOptions.push(getMaxOpus5_1MOption(fastMode))
+        standardOptions.push(getMaxOpus55_1MOption(fastMode))
       }
     }
 
@@ -618,9 +676,9 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       } else if (isOpus1mMergeEnabled()) {
         customOptions.push(getMergedOpus1MOption(fastMode))
       } else {
-        customOptions.push(getOpus5Option(fastMode))
+        customOptions.push(getOpus55Option(fastMode))
         if (checkOpus1mAccess()) {
-          customOptions.push(getOpus5_1MOption(fastMode))
+          customOptions.push(getOpus55_1MOption(fastMode))
         }
       }
       if (customFable !== undefined) {
@@ -643,9 +701,9 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     if (isOpus1mMergeEnabled()) {
       payg1POptions.push(getMergedOpus1MOption(fastMode))
     } else {
-      payg1POptions.push(getOpus5Option(fastMode))
+      payg1POptions.push(getOpus55Option(fastMode))
       if (checkOpus1mAccess()) {
-        payg1POptions.push(getOpus5_1MOption(fastMode))
+        payg1POptions.push(getOpus55_1MOption(fastMode))
       }
     }
     payg1POptions.push(getHaiku45Option())
@@ -715,8 +773,13 @@ function getModelFamilyInfo(
     }
   }
 
-  // Opus family
-  if (canonical.includes('claude-opus-4')) {
+  // Opus family — 2.1.280: 'claude-opus-5' also covers 'claude-opus-5-5'
+  // (substring), so pinned Opus 5 / Opus 5.5 users get the "newer version
+  // available" hint against getDefaultOpusModel() (now claude-opus-5-5).
+  if (
+    canonical.includes('claude-opus-4') ||
+    canonical.includes('claude-opus-5')
+  ) {
     const currentName = getMarketingNameForModel(getDefaultOpusModel())
     if (currentName) {
       return { alias: 'Opus', currentVersionName: currentName }

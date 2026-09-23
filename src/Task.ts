@@ -66,6 +66,15 @@ export type LocalShellSpawnInput = {
   agentId?: AgentId
   /** UI display variant: description-as-label, dialog title, status bar pill. */
   kind?: 'bash' | 'monitor'
+  /**
+   * 2.1.280 #042: shell the command runs in — persisted on the task state by
+   * spawn (official `Jhe` stores `shell` so the terminal-exit classifier can
+   * dispatch per-shell semantics when the result arrives). Drives the
+   * `classifyShellTaskResult` dispatch (official `Rzr={bash,powershell}`);
+   * undefined preserves the legacy strict `code === 0` classification
+   * (official `Oie`'s `n?.shell===void 0` branch).
+   */
+  shell?: 'bash' | 'powershell'
 }
 
 // What getTaskByType dispatches for: kill. spawn/render were never

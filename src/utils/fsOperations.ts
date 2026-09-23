@@ -381,6 +381,339 @@ export function getPathsForPermissionCheck(inputPath: string): string[] {
   return Array.from(pathSet)
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.280 (changelog #005, security 🔒): the write-path "landing"
+// descriptor. Byte-verified port of the official v2.1.280 linux-x64 ELF
+// resolver `da()` @190660855 (window 190659955–190662700).
+//
+// Official shapes (builder `i(h,D=!1)` for resolved, `y()` for unresolved):
+//   resolved:   {unresolved:false, requested:n, spellings:Array.from(r),
+//                landing:h, leafIsSymlink:D}
+//   unresolved: {unresolved:true,  requested:n, spellings:Array.from(r),
+//                stoppedAt:l, leafIsSymlink:u}
+//
+// `landing` is where a write ACTUALLY lands after the OS follows every
+// symlink component (including for not-yet-existent tails: the physical
+// prefix + the absent tail rejoined). `leafIsSymlink` is true when the final
+// component of the walked path is itself a symlink (binary `u`, set by
+// `onHop({composed:h,leaf:D})=>{if(D)r.add(h),u=!0}`). `spellings` is every
+// path spelling collected during the walk (requested, leaf-hop composed
+// targets, landing, realpath twin). `stoppedAt` (binary `l`, set by the
+// fsCallback on error: `l=h.path`) records where the walk gave up.
+// ---------------------------------------------------------------------------
+
+/** Resolved descriptor — binary `i(h,D)` shape @190660855. */
+export type ResolvedWritePathDescriptor = {
+  unresolved: false
+  requested: string
+  spellings: string[]
+  landing: string
+  leafIsSymlink: boolean
+}
+
+/** Unresolved descriptor — binary `y()` !g branch shape @190660855:
+ * `if(!g)return{unresolved:!0,requested:n,spellings:Array.from(r),stoppedAt:l,leafIsSymlink:u}`. */
+export type UnresolvedWritePathDescriptor = {
+  unresolved: true
+  requested: string
+  spellings: string[]
+  stoppedAt: string
+  leafIsSymlink: boolean
+}
+
+export type WritePathDescriptor =
+  | ResolvedWritePathDescriptor
+  | UnresolvedWritePathDescriptor
+
+/** Canonical identity descriptor — binary `wqe(e)`:
+ * `return{unresolved:!1,requested:e,spellings:[e],landing:e,leafIsSymlink:!1}`. */
+export function identityWritePathDescriptor(path: string): ResolvedWritePathDescriptor {
+  return {
+    unresolved: false,
+    requested: path,
+    spellings: [path],
+    landing: path,
+    leafIsSymlink: false,
+  }
+}
+
+/** Hop budget for the component walker. Matches getPathsForPermissionCheck's
+ * maxDepth (typical SYMLOOP_MAX); the binary's ve/Et walker enforces its own
+ * loop sentinel (`m===eR||m===JPt → y()` @190660855) — exhausting the budget
+ * takes the same unresolved path (sawReadlink ⇒ degraded-accept `g` false). */
+const MAX_DESCRIPTOR_SYMLINK_HOPS = 40
+
+/** Binary `yr` @191121789: strip trailing '/' chars and a trailing ".git"
+ * component, looping until stable:
+ * `let n=e.length;for(;;){let s=n;while(s>0&&e.charCodeAt(s-1)===47)s--;
+ *  if(s>=4&&e.startsWith(".git",s-4))s-=4;if(s===n)return n===e.length?e:e.slice(0,n);n=s}` */
+export function stripTrailingSlashesAndGit(path: string): string {
+  let n = path.length
+  for (;;) {
+    let s = n
+    while (s > 0 && path.charCodeAt(s - 1) === 47) s--
+    if (s >= 4 && path.startsWith('.git', s - 4)) s -= 4
+    if (s === n) return n === path.length ? path : path.slice(0, n)
+    n = s
+  }
+}
+
+/** Binary `uN` = `ron` @190306431: dot-segment test
+ * (`/(^|\/)\.{1,2}(\/|$)/` posix variant) — applied per remaining segment. */
+function isDotSegment(segment: string): boolean {
+  return segment === '.' || segment === '..'
+}
+
+/** Split a root-relative path tail into walk segments, PRESERVING '.'/'..'
+ * (the binary walker pops '..' PHYSICALLY after link resolution — lexical
+ * pre-normalization would break that). */
+function splitWalkSegments(tail: string): string[] {
+  return tail.split(/[\\/]+/).filter(s => s !== '')
+}
+
+/** Root + remaining segments of an absolute path ('C:\\' style roots on
+ * Windows; '/' on posix). */
+function splitRoot(absolutePath: string): { root: string; segments: string[] } {
+  const root = nodePath.parse(absolutePath).root
+  return { root, segments: splitWalkSegments(absolutePath.slice(root.length)) }
+}
+
+/**
+ * Binary `da(inputPath)` @190660855 — resolve where a WRITE to `inputPath`
+ * physically lands, collecting every spelling seen along the way.
+ *
+ * Branch map (all offsets in the v2.1.280 linux-x64 ELF):
+ * - tilde expansion `if(n==="~")n=ft().normalize("NFC");else if(n.startsWith("~/"))n=join(ft().normalize("NFC"),n.slice(2))`
+ * - UNC / special-path early return `if(On(n)&&!wl(n)||Gr(n)||fA(n))return i(n)`
+ *   (`On` @190305852 `/^[\\/]{2}/`, `wl` @190311761 WSL-UNC, `Gr`/`Ei`
+ *   special-device table, `fA` @190310341 = `!1`). OCC collapses this to the
+ *   UNC early return — the same precedent getPathsForPermissionCheck sets —
+ *   because the device table is Windows-only and `fA` is constant-false; on
+ *   linux a device path walks to the identical landing anyway.
+ * - component walk with per-hop callbacks (`Et(ve(...))`): leaf hops record
+ *   `u=true` and add the composed target to spellings; fs errors record
+ *   `l` (stoppedAt) and the errno (`p`); `c` = any readlink performed.
+ * - degraded accept `g=!c&&(p==="ENAMETOOLONG"||(p==="EACCES"||p==="EPERM"))`
+ *   → landing = `Nn(n)` (normalize of requested), resolved.
+ * - absent tail (ENOENT): `a.kind==="absent"&&c&&a.remaining.some(uN)` →
+ *   unresolved; else `k=a.at, b=a.remaining.join(sep), E=Nn(join(k,b))`,
+ *   `if(c||k!==parse(k).root)r.add(E)`, realpath twin `x=zn(o,k,b)` added
+ *   when defined and ≠ E (`zn`: `realpathSync(n)` twin rejoined with the
+ *   tail; catch → undefined; `i===n` → undefined).
+ * - otherwise (walk error / hop budget) → `y()`: unresolved with stoppedAt.
+ *
+ * OCC backwards-compatibility union: the returned spellings are a SUPERSET —
+ * unioned with getPathsForPermissionCheck(requested) — so every pre-2.1.280
+ * consumer (deny-rule coverage, the 2.1.251 stash IO gate which re-derives
+ * getPathsForPermissionCheck, and the 2.1.280 allow-rule all-spellings
+ * matcher) keeps seeing at least the spellings it saw before. A superset can
+ * only turn allows into asks/denies (fail-closed), never the reverse.
+ */
+export function resolveWritePathDescriptor(
+  inputPath: string,
+): WritePathDescriptor {
+  // Binary da() tilde expansion (identical to getPathsForPermissionCheck's).
+  let requested = inputPath
+  if (requested === '~') {
+    requested = homedir().normalize('NFC')
+  } else if (requested.startsWith('~/')) {
+    requested = nodePath.join(homedir().normalize('NFC'), requested.slice(2))
+  }
+
+  const spellingSet = new Set<string>([requested])
+
+  const finalize = (
+    descriptor: WritePathDescriptor,
+  ): WritePathDescriptor => {
+    // OCC union (see doc comment): spellings ⊇ getPathsForPermissionCheck.
+    // requested is already tilde-expanded; getPathsForPermissionCheck's own
+    // expansion is idempotent. Insertion order keeps `requested` first.
+    for (const p of getPathsForPermissionCheck(requested)) {
+      spellingSet.add(p)
+    }
+    return { ...descriptor, spellings: Array.from(spellingSet) }
+  }
+  const resolved = (
+    landing: string,
+    leafIsSymlink: boolean,
+  ): ResolvedWritePathDescriptor =>
+    finalize({
+      unresolved: false,
+      requested,
+      spellings: [],
+      landing,
+      leafIsSymlink,
+    }) as ResolvedWritePathDescriptor
+  const unresolved = (
+    stoppedAt: string,
+    leafIsSymlink: boolean,
+  ): UnresolvedWritePathDescriptor =>
+    finalize({
+      unresolved: true,
+      requested,
+      spellings: [],
+      stoppedAt,
+      leafIsSymlink,
+    }) as UnresolvedWritePathDescriptor
+
+  // UNC early return — binary `On(n)&&!wl(n)||Gr(n)||fA(n) → i(n)`.
+  if (requested.startsWith('//') || requested.startsWith('\\\\')) {
+    return finalize(identityWritePathDescriptor(requested))
+  }
+
+  const fsImpl = getFsImplementation()
+
+  // The binary's callers pass an already-absolute path (`et()` before `da()`
+  // at every wiring site, e.g. @198310186). Defensively absolutize relative
+  // input against the fs cwd; the absolute spelling joins the set so rule
+  // matching sees both forms (fail-closed superset).
+  const absStart = nodePath.isAbsolute(requested)
+    ? requested
+    : nodePath.resolve(fsImpl.cwd(), requested)
+  if (absStart !== requested) {
+    spellingSet.add(absStart)
+  }
+
+  let leafIsSymlink = false // binary `u`
+  let sawReadlink = false // binary `c`
+  let stoppedAt = absStart // binary `l` (last path an fs call touched)
+  let errorCode: string | undefined // binary `p`
+  let walkFailed = false
+
+  const { root, segments } = splitRoot(absStart)
+  let physical = root
+  let queue = segments
+  let hops = 0
+
+  while (queue.length > 0) {
+    const seg = queue[0]!
+    if (seg === '.') {
+      queue.shift()
+      continue
+    }
+    if (seg === '..') {
+      // PHYSICAL pop — after any symlink hop this is the OS semantics the
+      // official walker relies on (dirname at root is root, matching the OS).
+      physical = nodePath.dirname(physical)
+      queue.shift()
+      continue
+    }
+    const candidate = nodePath.join(physical, seg)
+    stoppedAt = candidate
+    let st: fs.Stats
+    try {
+      st = fsImpl.lstatSync(candidate)
+    } catch (e) {
+      errorCode = getErrnoCode(e)
+      walkFailed = true
+      break
+    }
+    if (!st.isSymbolicLink()) {
+      physical = candidate
+      queue.shift()
+      continue
+    }
+    // Symlink hop. Binary onHop: `({composed:h,leaf:D})=>{if(D)r.add(h),u=!0}`
+    // — leaf = final component of the path currently being walked.
+    const isLeaf = queue.length === 1
+    if (isLeaf) {
+      leafIsSymlink = true
+    }
+    let target: string
+    try {
+      target = fsImpl.readlinkSync(candidate)
+    } catch (e) {
+      errorCode = getErrnoCode(e)
+      walkFailed = true
+      break
+    }
+    sawReadlink = true
+    if (++hops > MAX_DESCRIPTOR_SYMLINK_HOPS) {
+      // Binary loop sentinel (`m===JPt → y()`); sawReadlink ⇒ unresolved.
+      errorCode = 'ELOOP'
+      walkFailed = true
+      break
+    }
+    if (isLeaf) {
+      // onHop leaf spelling: the composed target of the leaf link.
+      const composed = nodePath.isAbsolute(target)
+        ? target
+        : nodePath.join(nodePath.dirname(candidate), target)
+      spellingSet.add(composed)
+      stoppedAt = composed
+    }
+    // Re-seed the walk at the link target WITHOUT lexically collapsing '..'
+    // (targets keep their segments; '..' pops `physical` above).
+    if (nodePath.isAbsolute(target)) {
+      const targetSplit = splitRoot(target)
+      physical = targetSplit.root
+      queue = [...targetSplit.segments, ...queue.slice(1)]
+    } else {
+      physical = nodePath.dirname(candidate)
+      queue = [...splitWalkSegments(target), ...queue.slice(1)]
+    }
+  }
+
+  if (!walkFailed) {
+    // Walk consumed every segment — binary `m!==void 0` branch:
+    // `r.delete(m),r.add(m); return i(m,u)` (plus collapsedLanding `s`, which
+    // the OCC component walker never produces — documented divergence).
+    spellingSet.add(physical)
+    return resolved(physical, leafIsSymlink)
+  }
+
+  if (errorCode === 'ENOENT') {
+    // Absent tail — binary outcome `a.kind==="absent"`:
+    // `if(a.kind==="absent"&&c&&a.remaining.some(uN))return y()` — a dot
+    // segment in the tail AFTER a link hop is physically undecidable.
+    const remaining = queue
+    if (sawReadlink && remaining.some(isDotSegment)) {
+      return unresolved(stoppedAt, leafIsSymlink)
+    }
+    // `k=a.at` (deepest existing = physical), `b=a.remaining.join(sep)`,
+    // `E=Nn(b===""?k:join(k,b))`; Nn @190305828 is identity on linux — OCC
+    // uses nodePath.join/normalize semantics (join already normalizes).
+    const tail = remaining.join(nodePath.sep)
+    const landing = tail === '' ? physical : nodePath.join(physical, tail)
+    // `if(c||k!==parse(k).root)r.add(E)`
+    if (sawReadlink || physical !== nodePath.parse(physical).root) {
+      spellingSet.add(landing)
+    }
+    // Realpath twin — binary `zn(o,k,b)`:
+    // `try{i=e.realpathSync(n)}catch{return}; if(i===n)return;
+    //  return r===""?i:d.join(i,r)` then `if(x!==void 0&&x!==E)r.delete(x),r.add(x)`.
+    let twin: string | undefined
+    try {
+      const realPrefix = fsImpl.realpathSync(physical)
+      if (realPrefix !== physical) {
+        twin = tail === '' ? realPrefix : nodePath.join(realPrefix, tail)
+      }
+    } catch {
+      // zn: realpath failure → no twin.
+    }
+    if (twin !== undefined && twin !== landing) {
+      spellingSet.add(twin)
+    }
+    return resolved(landing, leafIsSymlink)
+  }
+
+  // Degraded accept — binary `g=!c&&(p==="ENAMETOOLONG"||(p==="EACCES"||p==="EPERM"))`;
+  // y() g-branch: `let h=Nn(n);return r.add(h),i(h)` — lexical landing.
+  const degradedAccept =
+    !sawReadlink &&
+    (errorCode === 'ENAMETOOLONG' ||
+      errorCode === 'EACCES' ||
+      errorCode === 'EPERM')
+  if (degradedAccept) {
+    const landing = nodePath.normalize(requested)
+    spellingSet.add(landing)
+    return resolved(landing, leafIsSymlink)
+  }
+
+  // Everything else → y() !g-branch: unresolved.
+  return unresolved(stoppedAt, leafIsSymlink)
+}
+
 export const NodeFsOperations: FsOperations = {
   cwd() {
     return process.cwd()

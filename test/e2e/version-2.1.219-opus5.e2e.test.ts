@@ -170,7 +170,7 @@ console.log(JSON.stringify({
  *         'sonnet') or a model's full name (e.g. 'claude-fable-5')."
  */
 describe("2.1.219 Opus 5 OCC-36 downstream ports (e2e)", () => {
-  test("1a: getDefaultOpusModel firstParty → claude-opus-5", async () => {
+  test("1a: getDefaultOpusModel firstParty → claude-opus-5-5 (2.1.280 #001 superseded the 2.1.219 claude-opus-5 pin)", async () => {
     const script = `
 import { getDefaultOpusModel } from "${REPO_ROOT}/src/utils/model/model.ts";
 delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
@@ -182,7 +182,8 @@ delete process.env.CLAUDE_CODE_USE_MANTLE;
 console.log(JSON.stringify({ model: getDefaultOpusModel() }));
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
-    expect(out.model).toBe("claude-opus-5");
+    // 2.1.280 alias table (@191992378): aliases.opus.default = "claude-opus-5-5"
+    expect(out.model).toBe("claude-opus-5-5");
   });
 
   test("1e: modelSupports1M covers claude-opus-5 (no opus-4-8 regression)", async () => {
@@ -557,7 +558,7 @@ console.log(JSON.stringify({ model: getDefaultOpusModel() }));
     expect(out.model).toBe("claude-opus-4-6");
   });
 
-  test("1g: getDefaultOpusModel firstParty → claude-opus-5; gateway → claude-opus-4-7", async () => {
+  test("1g: getDefaultOpusModel firstParty → claude-opus-5-5 (2.1.280); gateway → claude-opus-4-7", async () => {
     const fpScript = `
 import { getDefaultOpusModel } from "${REPO_ROOT}/src/utils/model/model.ts";
 delete process.env.ANTHROPIC_DEFAULT_OPUS_MODEL;
@@ -582,7 +583,9 @@ const wasGateway = (process.env.CLAUDE_CODE_USE_GATEWAY === "1") || (process.env
 console.log(JSON.stringify({ model: getDefaultOpusModel(), wasGateway }));
 `;
     const fp = JSON.parse((await $`bun -e ${fpScript}`.quiet()).stdout.toString().trim());
-    expect(fp.model).toBe("claude-opus-5");
+    // 2.1.280 #001 superseded the 2.1.219 claude-opus-5 pin: default opus is
+    // now claude-opus-5-5 (alias table @191992378); gateway stays claude-opus-4-7.
+    expect(fp.model).toBe("claude-opus-5-5");
     // Gateway is exercised separately when the gateway env is available; the
     // firstParty assertion is the stable contract here.
   });

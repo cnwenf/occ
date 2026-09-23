@@ -534,10 +534,34 @@ export type Tool<
    * `inputSchema.safeParse` succeeds without a round-trip. Returns the repaired
    * input plus a `shapeClass` repair-log tag (for analytics), or null to let
    * validation proceed on the original input. Mirrors claude-code 2.1.169.
+   *
+   * 2.1.280: the repair record may also carry `resultNote` — an informational
+   * note appended (with a `\n\n` separator) to non-error string tool-result
+   * content so the model learns the canonical parameter names. Binary v280
+   * `bZe` (Write coercion) returns `{input,shapeClass,resultNote}`; the note
+   * reaches the result via the `hgt` parse site (`$e.coerced?.resultNote` →
+   * `${gi.content}\n\n${Le}` @199218517).
    */
-  coerceInput?(
-    input: unknown,
-  ): { input: unknown; shapeClass: string } | null
+  coerceInput?(input: unknown): {
+    input: unknown
+    shapeClass: string
+    resultNote?: string
+  } | null
+
+  /**
+   * Official v2.1.280 (byte-verified @198309000 on the Write tool def:
+   * `coerceInputBeforePluginHooks:!0`). When true, `coerceInput` runs BEFORE
+   * plugin hooks fire (binary `CYn`: `ve=e.coerceInputBeforePluginHooks&&!ROe(r)
+   * ?{repair:e.coerceInput?.(r)??null}:void 0`), so PreToolUse hooks and the
+   * permission system observe the COERCED input, and the repair record
+   * (`shapeClass`/`resultNote`) is carried into the parse phase instead of
+   * re-running coercion there (`hgt`: `s=r===void 0?e.coerceInput?.(n)??null
+   * :r.repair`). OCC's pipeline parses+coerces at the top of
+   * checkPermissionsAndCallTool — already upstream of runPreToolUseHooks — so
+   * the flag's ordering contract holds structurally for every coerceInput tool;
+   * the flag records the official contract and guards against future reorders.
+   */
+  coerceInputBeforePluginHooks?: boolean
 
   /**
    * Returns a tool-specific steering message appended to the InputValidationError

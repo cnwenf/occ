@@ -13,7 +13,7 @@ import { render } from '../../ink.js';
 import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientConfig, performMCPOAuthFlow, readClientSecret, revokeServerTokens, saveMcpClientSecret } from '../../services/mcp/auth.js';
-import { connectToServer, getMcpServerConnectionBatchSize } from '../../services/mcp/client.js';
+import { connectToServer, getMcpServerConnectionBatchSize, removeMcpAuthCacheEntry } from '../../services/mcp/client.js';
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { getDisplayConfig, getDisplayServers, redactMcpErrorDetail } from '../../services/mcp/redaction.js';
@@ -21,7 +21,8 @@ import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, mcpServerH
 import { partitionMcpServersByName } from '../../services/mcp/normalization.js';
 import { AppStateProvider } from '../../state/AppState.js';
 import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
-import { isFsInaccessible } from '../../utils/errors.js';
+import { logForDebugging } from '../../utils/debug.js';
+import { errorMessage, isFsInaccessible } from '../../utils/errors.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
 import { safeParseJSON } from '../../utils/json.js';
 import { getPlatform } from '../../utils/platform.js';
@@ -91,10 +92,32 @@ export async function mcpRemoveHandler(name: string, options: {
 }): Promise<void> {
   // Look up config before removing so we can clean up secure storage
   const serverBeforeRemoval = getMcpConfigByName(name);
-  const cleanupSecureStorage = () => {
+  // claude-code 2.1.280 (#048): "Fixed an MCP server re-added under the same
+  // name after `claude mcp remove` still showing as needing authentication
+  // instead of reconnecting." The needs-auth cache entry is dropped
+  // UNCONDITIONALLY and BEFORE the sse/http gate — a stdio server never wrote
+  // one, but the removal must not be conditioned on the config we are deleting
+  // being remote (and a stale entry under a reused name must not survive).
+  // Byte-verified official handler (2.1.280 ELF @219311718):
+  //   m=async()=>{if(await me().removeMcpAuthCacheEntry(o,p),
+  //       a&&(a.type==="sse"||a.type==="http"))
+  //     try{await V().clearServerTokensFromLocalStorage(o,a),
+  //         await V().clearMcpClientConfig(o,a)}
+  //     catch(j){t(`mcp remove: secure-storage cleanup for "${o}" failed: ${l(j)}`,
+  //                {level:"warn"})}}
+  // awaited as `await m()` after each successful `removeMcpConfig`. The
+  // warn-log catch is byte-identical in 2.1.278 (@220132743) — OCC lacked it,
+  // so a secure-storage throw used to abort `mcp remove` after the config was
+  // already gone; it now only warns.
+  const cleanupSecureStorage = async () => {
+    await removeMcpAuthCacheEntry(name);
     if (serverBeforeRemoval && (serverBeforeRemoval.type === 'sse' || serverBeforeRemoval.type === 'http')) {
-      clearServerTokensFromLocalStorage(name, serverBeforeRemoval);
-      clearMcpClientConfig(name, serverBeforeRemoval);
+      try {
+        clearServerTokensFromLocalStorage(name, serverBeforeRemoval);
+        clearMcpClientConfig(name, serverBeforeRemoval);
+      } catch (error) {
+        logForDebugging(`mcp remove: secure-storage cleanup for "${name}" failed: ${errorMessage(error)}`, { level: 'warn' });
+      }
     }
   };
   try {
@@ -105,7 +128,7 @@ export async function mcpRemoveHandler(name: string, options: {
         scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       await removeMcpConfig(name, scope);
-      cleanupSecureStorage();
+      await cleanupSecureStorage();
       process.stdout.write(`Removed MCP server ${name} from ${scope} config\n`);
       cliOk(`File modified: ${describeMcpConfigFilePath(scope)}`);
     }
@@ -135,7 +158,7 @@ export async function mcpRemoveHandler(name: string, options: {
         scope: scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
       });
       await removeMcpConfig(name, scope);
-      cleanupSecureStorage();
+      await cleanupSecureStorage();
       process.stdout.write(`Removed MCP server "${name}" from ${scope} config\n`);
       cliOk(`File modified: ${describeMcpConfigFilePath(scope)}`);
     } else {
