@@ -2004,6 +2004,28 @@ export function checkReadPermissionForTool(
  *   `da(et(file_path))` once in checkPermissions and thread it through; when
  *   omitted, the descriptor is recomputed here from `tool.getPath(input)`.
  */
+/**
+ * True when a permission rule's content is a .claude-scoped wildcard grant —
+ * the broad patterns ('/.claude/**', '~/.claude/**') or narrowed ones like
+ * '/.claude/skills/my-skill/**'. Rejects '..' so a rule like '/.claude/../**'
+ * cannot leak the step-1.6 session bypass outside .claude/. Extracted from the
+ * inline check in step 1.6 so the same scope test can be applied to every
+ * spelling of the write path (security follow-up OCC-134 review M2).
+ */
+function isClaudeFolderScopedRuleContent(
+  ruleContent: string | undefined,
+): boolean {
+  return (
+    !!ruleContent &&
+    (ruleContent.startsWith(CLAUDE_FOLDER_PERMISSION_PATTERN.slice(0, -2)) ||
+      ruleContent.startsWith(
+        GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN.slice(0, -2),
+      )) &&
+    !ruleContent.includes('..') &&
+    ruleContent.endsWith('/**')
+  )
+}
+
 export function checkWritePermissionForTool<Input extends AnyObject>(
   tool: Tool<Input>,
   input: z.infer<Input>,
@@ -2075,7 +2097,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
 
   // 1.6. Check for .claude/** allow rules BEFORE safety checks
   // This allows session-level permissions to bypass the safety blocks for .claude/
-  // We only allow this for session-level rules to prevent users from accidentally
+  // We only allow this for session-only rules to prevent users from accidentally
   // permanently granting broad access to their .claude/ folder.
   //
   // matchingRuleForInput returns the first match across all sources. If the user
@@ -2084,43 +2106,57 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   // below would fail. Scope the search to session-only rules so the dialog's
   // "allow Claude to edit files in this project's .claude folder for this
   // session" option (and its ~/.claude global variant) actually works.
+  const sessionOnlyPermissionContext = {
+    ...toolPermissionContext,
+    alwaysAllowRules: {
+      session: toolPermissionContext.alwaysAllowRules.session ?? [],
+    },
+  }
   const claudeFolderAllowRule = matchingRuleForInput(
     path,
-    {
-      ...toolPermissionContext,
-      alwaysAllowRules: {
-        session: toolPermissionContext.alwaysAllowRules.session ?? [],
-      },
-    },
+    sessionOnlyPermissionContext,
     'edit',
     'allow',
   )
-  if (claudeFolderAllowRule) {
+  if (
+    claudeFolderAllowRule &&
     // Check if this rule is scoped under .claude/ (project or global).
     // Accepts both the broad patterns ('/.claude/**', '~/.claude/**') and
     // narrowed ones like '/.claude/skills/my-skill/**' so users can grant
     // session access to a single skill without also exposing settings.json
     // or hooks/. The rule already matched the path via matchingRuleForInput;
-    // this is an additional scope check. Reject '..' to prevent a rule like
-    // '/.claude/../**' from leaking this bypass outside .claude/.
-    const ruleContent = claudeFolderAllowRule.ruleValue.ruleContent
-    if (
-      ruleContent &&
-      (ruleContent.startsWith(CLAUDE_FOLDER_PERMISSION_PATTERN.slice(0, -2)) ||
-        ruleContent.startsWith(
-          GLOBAL_CLAUDE_FOLDER_PERMISSION_PATTERN.slice(0, -2),
-        )) &&
-      !ruleContent.includes('..') &&
-      ruleContent.endsWith('/**')
-    ) {
-      return {
-        behavior: 'allow',
-        updatedInput: input,
-        decisionReason: {
-          type: 'rule',
-          rule: claudeFolderAllowRule,
-        },
-      }
+    // this is an additional scope check.
+    isClaudeFolderScopedRuleContent(
+      claudeFolderAllowRule.ruleValue.ruleContent,
+    ) &&
+    // Security follow-up (OCC-134 review M2): the bypass only fires when EVERY
+    // spelling of the write path — the requested path plus all resolved
+    // symlink spellings/landings in descriptor.spellings — itself matches a
+    // .claude-scoped session allow rule. A symlink inside .claude/ whose
+    // landing point is outside (e.g. ~/.claude/notes.md -> ~/.ssh/authorized_keys)
+    // falls through to the 1.7 safety checks instead of being allowed here,
+    // mirroring the all-spellings requirement of step 4
+    // (matchingAllowRuleForAllSpellings) and the acceptEdits check in step 3.
+    [path, ...pathsToCheck].every(candidate => {
+      const candidateRule = matchingRuleForInput(
+        candidate,
+        sessionOnlyPermissionContext,
+        'edit',
+        'allow',
+      )
+      return (
+        candidateRule !== null &&
+        isClaudeFolderScopedRuleContent(candidateRule.ruleValue.ruleContent)
+      )
+    })
+  ) {
+    return {
+      behavior: 'allow',
+      updatedInput: input,
+      decisionReason: {
+        type: 'rule',
+        rule: claudeFolderAllowRule,
+      },
     }
   }
 

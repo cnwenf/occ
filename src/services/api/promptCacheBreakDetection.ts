@@ -1,11 +1,11 @@
 import type { BetaToolUnion } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { TextBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import { createPatch } from 'diff'
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, readdir, stat, unlink, writeFile } from 'fs/promises'
 import { join } from 'path'
 import type { AgentId } from 'src/types/ids.js'
 import type { Message } from 'src/types/message.js'
-import { logForDebugging } from 'src/utils/debug.js'
+import { isDebugMode, logForDebugging } from 'src/utils/debug.js'
 import { djb2Hash } from 'src/utils/hash.js'
 import { logError } from 'src/utils/log.js'
 import { getClaudeTempDir } from 'src/utils/permissions/filesystem.js'
@@ -789,23 +789,85 @@ export function resetPromptCacheBreakDetection(): void {
   previousStateBySource.clear()
 }
 
+/**
+ * Security follow-up (OCC-134 review M4): the diff embeds the full system
+ * prompt and tool schemas in plaintext (300KB+ per break). Gate the write on
+ * debug mode, restrict the file to owner-only (0o600), cap the size (official
+ * module constant `Qar`=4000000 @199376912), and rotate old files so repeated
+ * breaks cannot accumulate unbounded sensitive plaintext on disk.
+ */
+const MAX_CACHE_BREAK_DIFF_BYTES = 4_000_000
+const MAX_CACHE_BREAK_DIFF_FILES = 5
+
+async function pruneCacheBreakDiffs(dir: string): Promise<void> {
+  try {
+    const entries = await readdir(dir)
+    const diffFiles = entries.filter(
+      name => name.startsWith('cache-break-') && name.endsWith('.diff'),
+    )
+    if (diffFiles.length <= MAX_CACHE_BREAK_DIFF_FILES) {
+      return
+    }
+    const withTimes = await Promise.all(
+      diffFiles.map(async name => {
+        const fullPath = join(dir, name)
+        try {
+          const stats = await stat(fullPath)
+          return { fullPath, mtimeMs: stats.mtimeMs }
+        } catch {
+          // Unreadable entry — treat as oldest so it is pruned first.
+          return { fullPath, mtimeMs: 0 }
+        }
+      }),
+    )
+    const sorted = [...withTimes].sort((a, b) => b.mtimeMs - a.mtimeMs)
+    const stale = sorted.slice(MAX_CACHE_BREAK_DIFF_FILES)
+    await Promise.all(
+      stale.map(entry => unlink(entry.fullPath).catch(() => undefined)),
+    )
+  } catch {
+    // Rotation is best-effort; never fail the write path because of it.
+  }
+}
+
 async function writeCacheBreakDiff(
   prevContent: string,
   newContent: string,
 ): Promise<string | undefined> {
+  // Debug-only: without --debug the plaintext prompt dump stays off disk
+  // entirely (the summary log above still flows to debug logs/analytics).
+  if (!isDebugMode()) {
+    return undefined
+  }
   try {
     const diffPath = getCacheBreakDiffPath()
-    await mkdir(getClaudeTempDir(), { recursive: true })
-    const patch = createPatch(
+    const tempDir = getClaudeTempDir()
+    await mkdir(tempDir, { recursive: true, mode: 0o700 })
+    let patch = createPatch(
       'prompt-state',
       prevContent,
       newContent,
       'before',
       'after',
     )
-    await writeFile(diffPath, patch)
+    if (patch.length > MAX_CACHE_BREAK_DIFF_BYTES) {
+      patch = `${patch.slice(0, MAX_CACHE_BREAK_DIFF_BYTES)}\n[truncated: diff exceeded ${MAX_CACHE_BREAK_DIFF_BYTES} bytes]\n`
+    }
+    await writeFile(diffPath, patch, { mode: 0o600 })
+    await pruneCacheBreakDiffs(tempDir)
     return diffPath
   } catch {
     return undefined
   }
+}
+
+/**
+ * Test hook (OCC-134 review M4): exercises the gated diff writer directly
+ * without driving a full cache-break detection cycle.
+ */
+export function writeCacheBreakDiffForTesting(
+  prevContent: string,
+  newContent: string,
+): Promise<string | undefined> {
+  return writeCacheBreakDiff(prevContent, newContent)
 }
