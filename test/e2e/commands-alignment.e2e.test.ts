@@ -19,11 +19,16 @@ import { REPO_ROOT } from "./helpers";
  */
 
 // Core slash commands that must remain registered in OCC (non-ant, always-on
-// or lightly-gated). Feature/entitlement-gated commands (extra-usage, fast,
+// or lightly-gated). Feature/entitlement-gated commands (extra-usage,
 // install-github-app, install-slack-app, keybindings, remote-control,
 // remote-env, session, upgrade, voice, web-setup, privacy-settings,
 // rate-limit-options) are excluded — they're not registered in the external
 // build. Verified against the official 2.1.200 binary + OCC's getCommands().
+// NOTE (OCC-134 acceptance): `fast` is no longer availability-gated — it
+// registers in every environment now (official 2.1.280 shows the picker panel
+// with an unavailable reason instead of hiding the command). Its registration
+// is pinned by src/commands/fast/__tests__/fastAvailabilityCustomEnv280.test.ts;
+// it stays out of EXPECTED here to keep this map at the official 2.1.200 set.
 //
 // 2.1.118 (E13): /cost and /stats were merged into /usage as aliases — they are
 // no longer standalone command names (the official 2.1.200 registers a single

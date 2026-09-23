@@ -91,14 +91,19 @@ const ADVISOR_TOOL_NAME = 'advisor'
 // same lookup apiPreconnect.ts uses; prod default "https://api.anthropic.com",
 // so the tail fallback only matters for the throw path) → the literal default.
 //
-// STAGED (outside this file's scope): the official `$H` is consulted inside
-// the infra gate `YJe`→`qb` (OCC analog: isAdvisorEnabled in utils/advisor.ts)
-// and by the advisor-schema resolution gate in claude.ts, so a host-disabled
-// advisor is never re-added on later requests to the same host. OCC's
-// isAdvisorEnabled() only has the process arm; until advisor.ts/claude.ts are
-// wired to isAdvisorEnabledForCurrentHost() below, the host kill is enforced
-// within the request/retry path (beta strip + session refused latch) but not
-// yet at schema-assembly time.
+// WIRED (#032 acceptance fix): the official `$H` is consulted inside the
+// infra gate `YJe`→`qb` and by the advisor-schema resolution gate in
+// claude.ts, so a host-disabled advisor is never re-added on later requests
+// to the same host. OCC cannot put the host arm inside utils/advisor.ts's
+// isAdvisorEnabled() itself — advisorRetry.ts already imports advisor.ts, so
+// the reverse edge would be a module cycle (TDZ-crash risk). Instead the
+// `qb` analog lives here as isAdvisorEnabledForCurrentHost() and BOTH
+// per-request claude.ts gates (the advisor beta-header push and the
+// advisorModel/schema resolution) call it in place of bare
+// isAdvisorEnabled(). The remaining isAdvisorEnabled() call sites
+// (main.tsx CLI resolution, getInitialAdvisorSetting) are startup-only —
+// the session host store is necessarily empty at that point — and the
+// in-flight retry path below keeps stripping via the same host arm.
 // ---------------------------------------------------------------------------
 
 /** Official `mm` — session-level set of disabled base-URL host keys. */
@@ -147,7 +152,7 @@ export function isAdvisorHostDisabled(): boolean {
  * host arm wired in: `isAdvisorEnabled()` (utils/advisor.ts — env vars, org
  * kill-switch `Ck`, firstParty, growthbook) minus a host-scoped disable for
  * the current base URL. This is what the official `XHe()` beta strip and the
- * staged advisor.ts/claude.ts gates consult.
+ * claude.ts beta-header / advisor-schema assembly gates consult (#032).
  */
 export function isAdvisorEnabledForCurrentHost(): boolean {
   return isAdvisorEnabled() && !isAdvisorHostDisabled()

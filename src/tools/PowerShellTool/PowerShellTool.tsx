@@ -810,7 +810,11 @@ async function* runPowerShellCommand({
       description: description || command,
       shellCommand,
       toolUseId,
-      agentId
+      agentId,
+      // 2.1.280 #042 wiring: PowerShellTool runs commands through powershell —
+      // persist it so classifyShellTaskResult dispatches per-shell benign-exit
+      // semantics (official Jhe stores `shell` at spawn).
+      shell: 'powershell'
     }, {
       abortController,
       getAppState: () => {
@@ -1004,7 +1008,10 @@ async function* runPowerShellCommand({
             command,
             description: description || command,
             shellCommand,
-            agentId
+            agentId,
+            // 2.1.280 #042 wiring: persist the shell so a later Ctrl+B
+            // background keeps per-shell benign-exit classification.
+            shell: 'powershell'
           }, setAppState, toolUseId);
         }
         setToolJSX({

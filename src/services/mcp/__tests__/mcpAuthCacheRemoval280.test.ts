@@ -174,6 +174,24 @@ describe('2.1.280 #048 — removeMcpAuthCacheEntry', () => {
 
     expect(readCache()).toEqual({})
   })
+
+  test('the remove-path write is mkdir-recursive like the set path (dir deleted after the memoized read)', async () => {
+    const now = Date.now()
+    writeCache({ srv: { timestamp: now }, kept: { timestamp: now } })
+    // Prime the memoized read while the dir still exists: a no-op removal
+    // populates getMcpAuthCache()'s memo without invalidating it.
+    await removeMcpAuthCacheEntry('never-there')
+    // The config dir disappears between the memoized read and the real write.
+    rmSync(configDir, { recursive: true, force: true })
+
+    await removeMcpAuthCacheEntry('srv')
+
+    // A bare writeFile would ENOENT here (swallowed by the best-effort
+    // .catch, removal silently lost); the mkdir-recursive wrapper — the same
+    // one setMcpAuthCacheEntry uses — recreates the dir and lands the write.
+    expect(existsSync(cachePath())).toBe(true)
+    expect(readCache()).toEqual({ kept: { timestamp: now } })
+  })
 })
 
 describe('2.1.280 #048 — connect-path needs-auth gate', () => {

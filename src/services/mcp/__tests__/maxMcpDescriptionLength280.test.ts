@@ -208,6 +208,69 @@ describe('2.1.280 #003 — truncateMcpDescription (binary Qo)', () => {
   })
 })
 
+describe('2.1.280 #003 — surrogate-aware cut (official re(e,n) contract)', () => {
+  /** Lone high surrogate: not followed by a low surrogate. */
+  const LONE_HIGH_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])/
+  /** Lone low surrogate: not preceded by a high surrogate. */
+  const LONE_LOW_SURROGATE = /(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+
+  test('an astral char straddling the cap is dropped whole, no lone surrogate leaks', () => {
+    process.env[ENV_KEY] = '5'
+    // '🙂' = U+1F642 — a surrogate pair occupying UTF-16 indices 4–5, so a
+    // plain slice(0, 5) cuts the pair and strands the high surrogate.
+    const text = 'abcd🙂efgh'
+    const result = truncateMcpDescription(text, 'Server instructions')
+    expect(result).not.toMatch(LONE_HIGH_SURROGATE)
+    expect(result).not.toMatch(LONE_LOW_SURROGATE)
+    // Dropped whole: the body is exactly the BMP prefix before the pair.
+    expect(result).toBe(`abcd${SUFFIX}`)
+  })
+
+  test('a straddling mathematical-script char (𝒳) behaves identically', () => {
+    process.env[ENV_KEY] = '9'
+    // '𝒳' = U+1D4B3 — a surrogate pair sitting at UTF-16 indices 8–9 here.
+    const text = '01234567𝒳9abc'
+    const result = truncateMcpDescription(text, 'Server instructions')
+    expect(result).not.toMatch(LONE_HIGH_SURROGATE)
+    expect(result).not.toMatch(LONE_LOW_SURROGATE)
+    expect(result).toBe(`01234567${SUFFIX}`)
+  })
+
+  test('an astral char fully inside the cap is kept whole', () => {
+    process.env[ENV_KEY] = '6'
+    const text = 'abcd🙂efgh'
+    const result = truncateMcpDescription(text, 'Server instructions')
+    expect(result).not.toMatch(LONE_HIGH_SURROGATE)
+    expect(result).not.toMatch(LONE_LOW_SURROGATE)
+    // Kept whole: the complete pair survives at the cut surface.
+    expect(result).toBe(`abcd🙂${SUFFIX}`)
+    expect(result.includes('🙂')).toBe(true)
+  })
+
+  test('BMP text at the boundary is unchanged (no behavior change for non-astral)', () => {
+    process.env[ENV_KEY] = '8'
+    // The cut lands after 'h' (BMP) — byte-identical to the plain slice.
+    expect(truncateMcpDescription('abcdefghijkl', 'Server instructions')).toBe(
+      `abcdefgh${SUFFIX}`,
+    )
+    // Exactly at the cap: returned untouched, no suffix.
+    expect(truncateMcpDescription('abcdefgh', 'Server instructions')).toBe(
+      'abcdefgh',
+    )
+  })
+
+  test('the debug log still reports the pre-cut lengths (message unchanged)', () => {
+    process.env[ENV_KEY] = '5'
+    truncateMcpDescription('abcd🙂efgh', 'Server instructions', 'srv')
+    expect(mcpDebugLog).toEqual([
+      {
+        serverName: 'srv',
+        message: 'Server instructions truncated from 10 to 5 chars',
+      },
+    ])
+  })
+})
+
 describe('2.1.280 #003 — truncateMcpServerInstructions (binary Zo)', () => {
   test('undefined and empty instructions pass through untouched', () => {
     expect(truncateMcpServerInstructions(undefined, 'srv')).toBeUndefined()

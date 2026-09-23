@@ -153,7 +153,6 @@ import type { AgentId } from 'src/types/ids.js'
 import {
   ADVISOR_TOOL_INSTRUCTIONS,
   getExperimentAdvisorModels,
-  isAdvisorEnabled,
   isAdvisorEntryRefused,
   isValidAdvisorModel,
   modelSupportsAdvisor,
@@ -273,7 +272,10 @@ import {
   checkResponseForCacheBreak,
   recordPromptState,
 } from './promptCacheBreakDetection.js'
-import { createAdvisorEntryRefusedRetryHandler } from './advisorRetry.js'
+import {
+  createAdvisorEntryRefusedRetryHandler,
+  isAdvisorEnabledForCurrentHost,
+} from './advisorRetry.js'
 import {
   CannotRetryError,
   FallbackTriggeredError,
@@ -1414,7 +1416,11 @@ async function* queryModel(
   // Always send the advisor beta header when advisor is enabled, so
   // non-agentic queries (compact, side_question, extract_memories, etc.)
   // can parse advisor server_tool_use blocks already in the conversation history.
-  if (isAdvisorEnabled()) {
+  // #032: the gate is isAdvisorEnabledForCurrentHost() — the official v280
+  // `qb()` (isAdvisorEnabled minus the `$H` host arm) — so a host that
+  // refused the advisor entry this session never gets the beta re-attached
+  // on a later request (host disable persists for the session).
+  if (isAdvisorEnabledForCurrentHost()) {
     betas.push(ADVISOR_BETA_HEADER)
   }
 
@@ -1442,7 +1448,10 @@ async function* queryModel(
   // never re-added.
   if (
     isAgenticQuery &&
-    isAdvisorEnabled() &&
+    // #032: official v280 `qb()` — isAdvisorEnabled() minus the `$H`
+    // host-disable arm, so a host-scoped refusal blocks advisorModel /
+    // schema re-resolution on every later request to the same host.
+    isAdvisorEnabledForCurrentHost() &&
     !isAdvisorEntryRefused() &&
     isFirstPartyAnthropicBaseUrl()
   ) {
