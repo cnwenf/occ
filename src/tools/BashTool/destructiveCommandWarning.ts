@@ -362,6 +362,7 @@ const CATASTROPHIC_RM_COMMAND_RE =
 // Constructed via new RegExp to avoid the slash-escaping ambiguity of a
 // regex literal (the pattern contains a literal `/` that must not close the
 // literal prematurely).
+// biome-ignore lint/complexity/useRegexLiterals: the autofix mangles the `\\/` escapes — regex-literal form changes the pattern's meaning (a literal `/` would close the literal early).
 const CATASTROPHIC_VAR_PATH_TARGET_RE = new RegExp(
   '^"?\\$(?:\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*)"?\\/(?:\\*|\\$|\\/|["\']|$)',
 )
