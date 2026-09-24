@@ -423,3 +423,97 @@ describe('2.1.281 bashToolHasPermission integration (deny in ALL modes)', () => 
     expect(result.behavior).toBe('deny')
   })
 })
+
+// ─────────────────────────────────────────────────────────────────────────
+// OCC-136 acceptance regressions (F-1 brace groups, F-2 quote-split verbs).
+//
+// Two P1 bypasses found by end-to-end `hasPermissionsToUseTool` probing:
+//   F-1 — `{ rm -rf "$(pwd)"; }`: the string splitter glued `{` into token 0
+//         and the old keyword set lacked `{`, so verb resolution skipped and
+//         BOTH guards returned null → default asked, bypassPermissions
+//         auto-allowed (executed without a prompt). The official AST nests
+//         brace groups structurally; OCC now strips standalone structural
+//         tokens (`{`/`(`/`}`/`)`) plus control keywords before AND after
+//         wrapper resolution.
+//   F-2 — `r'm' -rf "$(pwd)"`: the `/\brm\b/` word gate ran on raw text, and
+//         bash quote-concatenation (`r'm'`/`r"m"`/`r\m` → `rm`) hid the verb
+//         from it → null in all modes → bypass auto-allowed. The gate now
+//         also tests a quote/backslash-stripped projection; the quote-aware
+//         tokenizer resolves the real verb.
+// Every form below MUST deny in default AND bypassPermissions (bypass-immune).
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('OCC-136 F-1/F-2 — brace groups & quote-split verbs (wholeSubstitution)', () => {
+  const positives: Array<[string, string]> = [
+    // F-1: brace-group compound — the reviewer's primary bypass.
+    ['{ rm -rf $(pwd); }', 'F-1 brace group, unquoted, semicolon-closed'],
+    ['{ rm -rf "$(pwd)"; }', 'F-1 brace group, quoted target'],
+    ['{ rm -rf $(pwd) }', 'F-1 brace group, no trailing semicolon'],
+    // F-1: brace group nested in control flow.
+    ['if { rm -rf $(pwd); }; then echo done', 'F-1 brace group as if-condition'],
+    ['if true; then { rm -rf $(pwd); }; fi', 'F-1 brace group in then-branch'],
+    ['while true; do { rm -rf $(pwd); }; done', 'F-1 brace group in while-do'],
+    ['for x in 1; do { rm -rf $(pwd); }; done', 'F-1 brace group in for-do'],
+    ['else { rm -rf $(pwd); }', 'F-1 brace group after else'],
+    ['case x in a) { rm -rf $(pwd); };; esac', 'F-1 brace group in case arm'],
+    // F-1: wrapper around / inside the brace group.
+    ['sudo { rm -rf $(pwd); }', 'F-1 privilege wrapper before brace group'],
+    ['{ sudo rm -rf $(pwd); }', 'F-1 privilege wrapper inside brace group'],
+    ['{ env FOO=1 rm -rf $(pwd); }', 'F-1 env wrapper inside brace group'],
+    ['{ /usr/bin/rm -rf $(pwd); }', 'F-1 path-prefixed verb inside brace group'],
+    ['( { rm -rf $(pwd); } )', 'F-1 brace group nested in a subshell'],
+    // F-2: quote-split / escaped verb — bash concatenates these to `rm`.
+    ["r'm' -rf \"$(pwd)\"", 'F-2 single-quote-split verb'],
+    ['r"m" -rf $(pwd)', 'F-2 double-quote-split verb'],
+    ['r\\m -rf $(pwd)', 'F-2 backslash-escaped verb'],
+    ["'rm' -rf $(pwd)", 'F-2 fully single-quoted verb'],
+    ['"rm" -rf $(pwd)', 'F-2 fully double-quoted verb'],
+    ['{ r"m" -rf $(pwd); }', 'F-2 quote-split verb inside brace group'],
+  ]
+  for (const [cmd, label] of positives) {
+    test(`blocks: ${label}`, () => {
+      const block = findCatastrophicSubstitutionBlock(cmd)
+      expect(block).not.toBeNull()
+      expect(block!.kind).toBe('wholeSubstitution')
+      expect(block!.category).toBe('rm_substitution_whole_target')
+      expect(block!.message).toBe(OFFICIAL_WHOLE_SUB_MESSAGE)
+      expect(block!.reason).toBe(OFFICIAL_WHOLE_SUB_REASON)
+      // The direct per-command analyzer agrees (verb resolves after the fix).
+      expect(findSubstitutionTargetBlock(cmd)?.kind).toBe('wholeSubstitution')
+    })
+  }
+
+  const negatives: Array<[string, string]> = [
+    ['echo { rm -rf $(pwd); }', 'brace group is echo args, not a command'],
+    ['{ echo $(pwd); }', 'brace group with a non-rm verb'],
+    ['{ ls -la $(pwd); }', 'brace group, non-rm verb'],
+    ['{ cat $(pwd); }', 'brace group, non-rm verb 2'],
+    ["echo r'm' $(pwd)", 'quote-split token is an echo arg, not the verb'],
+  ]
+  for (const [cmd, label] of negatives) {
+    test(`allows: ${label}`, () => {
+      expect(findSubstitutionTargetBlock(cmd)).toBeNull()
+    })
+  }
+})
+
+describe('OCC-136 F-1/F-2 integration — deny in default AND bypassPermissions', () => {
+  const attacks: Array<[string, string]> = [
+    ['{ rm -rf $(pwd); }', 'F-1 brace group'],
+    ['{ rm -rf "$(pwd)"; }', 'F-1 brace group (quoted)'],
+    ["r'm' -rf \"$(pwd)\"", 'F-2 quote-split verb'],
+    ['if { rm -rf $(pwd); }; then echo done', 'F-1 nested brace group'],
+  ]
+  for (const mode of ['default', 'bypassPermissions']) {
+    for (const [cmd, label] of attacks) {
+      test(`${label} is denied under ${mode} (bypass-immune)`, async () => {
+        const result = await bashToolHasPermission(
+          { command: cmd, description: '' } as never,
+          makeContext(mode),
+        )
+        expect(result.behavior).toBe('deny')
+        expect(result.message).toBe(OFFICIAL_WHOLE_SUB_MESSAGE)
+      })
+    }
+  }
+})

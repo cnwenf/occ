@@ -520,10 +520,25 @@ export function extractCommandSubstitutions(command: string): string[] {
 //   3. The official gate is `!(value===!1&&source==="payload")`; OCC's
 //      GrowthBook stub exposes no `source`, so an explicit `false` value
 //      disables the guard (default true keeps it on).
-//   4. Leading shell keywords (`then`/`do`/`else`/`elif`/`!`) are skipped
-//      before verb resolution — the official AST handles control-flow
-//      structurally; OCC's string-level split surfaces them as token 0
-//      (same compensation pattern as the 2.1.273 per-segment port).
+//   4. Leading shell keywords (`then`/`do`/`else`/`elif`/`!`/`if`/`while`/
+//      `until`/`for`/`select`/`case`) AND standalone structural group tokens
+//      (`{`/`(`/`}`/`)`) are skipped before verb resolution — before AND
+//      after wrapper stripping. The official AST nests brace groups,
+//      subshells, and control flow structurally and visits the inner
+//      `simple` command; OCC's string-level split surfaces the opener as
+//      token 0 (`{ rm -rf $(pwd); }` → segment `{ rm -rf __CMDSUB__`). Glued
+//      openers (`{rm`) are NOT stripped — bash requires whitespace after the
+//      `{` reserved word, and the official AST agrees it is a plain command
+//      name (same compensation pattern as the 2.1.273 per-segment port).
+//   5. OCC's cheap `/\brm(?:dir)?\b/` raw-text word gates additionally test
+//      a quote/backslash-stripped projection (passesRmVerbGate) so
+//      quote-concatenated verbs (`r'm'`, `r"m"`, `r\m` — all executed by bash
+//      as `rm`) reach the tokenizer, which resolves them to the real verb.
+//      The official has no raw-text prefilter (tree-sitter parses every
+//      command), so this restores official behavior; strictly stronger than
+//      the raw-text form (same direction as divergence 2). The per-segment
+//      resolved-verb check remains the source of truth — the projection
+//      cannot create false denies.
 // ─────────────────────────────────────────────────────────────────────────
 
 const CMDSUB_PLACEHOLDER = '__CMDSUB__'
@@ -563,8 +578,77 @@ const WHOLE_SUBSTITUTION_REASON =
   'Dangerous rm operation on statically-unresolvable target: command substitution output'
 
 // Shell keywords a string-level splitter can leave glued in front of the
-// real command (the official AST nests them structurally instead).
-const LEADING_SHELL_KEYWORDS = new Set(['then', 'do', 'else', 'elif', '!'])
+// real command (the official AST nests them structurally instead). Control
+// keywords (`if`/`while`/`until`/`for`/`select`/`case`) are reserved words —
+// they can never be a command verb themselves, so skipping them in token-0
+// position is safe (`if rm -rf $(pwd); then …` runs the rm as the condition).
+const LEADING_SHELL_KEYWORDS = new Set([
+  'then',
+  'do',
+  'else',
+  'elif',
+  '!',
+  'if',
+  'while',
+  'until',
+  'for',
+  'select',
+  'case',
+])
+
+// Standalone brace-group / subshell tokens left in token-0 position by the
+// string-level splitter (`{ rm -rf $(pwd); }` → segment `{ rm -rf __CMDSUB__`).
+// bash requires whitespace after the `{` reserved word, so a genuine brace
+// group ALWAYS tokenizes `{` as a standalone word; a glued `{rm` stays one
+// token and is NOT stripped — bash (and the official AST) treat it as a plain
+// (nonexistent) command name, not a group. `(`/`)` normally arrive as their
+// own segments from splitCommandForRm; they are listed for direct calls and
+// degenerate splits. Closing tokens appear alone in their own segments.
+const LEADING_STRUCTURAL_TOKENS = new Set(['{', '(', '}', ')'])
+
+/**
+ * OCC divergence 4 (extended): drop leading control-flow keywords and
+ * structural group tokens until a real command word surfaces. The official
+ * tree-sitter AST nests brace groups, subshells, and control flow
+ * structurally and analyzes the inner `simple` command directly; OCC's
+ * string-level split surfaces the opener as token 0 of the inner segment.
+ * Fixpoint loop so stacked forms (`then {`, `if {`, `! {`) all resolve.
+ * Immutable: returns a new array, never mutates the input.
+ */
+function stripLeadingShellSyntax(argv: readonly string[]): string[] {
+  let out = argv.slice()
+  while (
+    out.length > 0 &&
+    (LEADING_SHELL_KEYWORDS.has(out[0]!) ||
+      LEADING_STRUCTURAL_TOKENS.has(out[0]!))
+  ) {
+    out = out.slice(1)
+  }
+  return out
+}
+
+// Raw-text rm word gate shared by the substitution guards.
+const RM_VERB_GATE_RE = /\brm(?:dir)?\b/
+
+/**
+ * OCC divergence 5: sound quote-aware word gate. The official binary has no
+ * raw-text prefilter (tree-sitter parses every command and resolves the verb
+ * from word nodes, so quote-concatenated verbs like `r'm'`/`r"m"`/`r\m` —
+ * which bash executes as `rm` — are caught). OCC's cheap raw-text gate
+ * false-negatives on exactly those forms, so ALSO test a projection with
+ * quote/backslash characters removed. Removal is monotonic: it can only fuse
+ * characters into new `rm` matches, never destroy an existing one, so the
+ * gate never false-negatives relative to the raw form. The projection is an
+ * over-approximation — the per-segment resolved-verb check below stays the
+ * source of truth, so a spurious gate pass costs at most a tokenize and can
+ * never produce a false deny.
+ */
+function passesRmVerbGate(text: string): boolean {
+  return (
+    RM_VERB_GATE_RE.test(text) ||
+    RM_VERB_GATE_RE.test(text.replace(/['"\\]/g, ''))
+  )
+}
 
 /**
  * Official v281 `gFt` normalization (byte-exact regexes): backticks in one
@@ -996,21 +1080,27 @@ export function findSubstitutionTargetBlock(
   // Official `xe`: both new verdicts require that normalization changed the
   // text (i.e. a substitution is actually present in this scope).
   if (normalized === rawText) return null
-  // Cheap word gate (the official parses every command but skips non-rm
-  // verbs; behaviorally identical, avoids tokenizing rm-less commands).
-  if (!/\brm(?:dir)?\b/.test(normalized)) return null
+  // Cheap word gate, made sound against bash quote-concatenated verbs
+  // (`r'm'` → `rm`) — see passesRmVerbGate. The per-segment resolved-verb
+  // check below remains the source of truth.
+  if (!passesRmVerbGate(normalized)) return null
   for (const seg of splitCommandForRm(normalized)) {
     const tokens = tokenizeNormalizedSegment(seg)
     if (tokens.length === 0) continue
     // v281 NEW: basename argv[0] before wrapper resolution.
     let argv = [tokens[0]!.replace(ARGV_BASENAME_RE, ''), ...tokens.slice(1)]
-    // OCC divergence 4: skip leading control-flow keywords the string-level
-    // splitter leaves in token 0 (`if x; then rm -rf $(pwd); fi`).
-    while (argv.length > 0 && LEADING_SHELL_KEYWORDS.has(argv[0]!))
-      argv = argv.slice(1)
+    // OCC divergence 4: skip leading control-flow keywords and structural
+    // group tokens the string-level splitter leaves in token 0
+    // (`if x; then rm -rf $(pwd); fi`, `{ rm -rf $(pwd); }`).
+    argv = stripLeadingShellSyntax(argv)
     if (argv.length === 0) continue
-    // Official: `$e=aFt(Rp(De))`.
-    const stripped = stripPrivilegeWrapperArgv(stripSafeWrapperArgv(argv))
+    // Official: `$e=aFt(Rp(De))`. The second structural pass handles a
+    // wrapper preceding a group opener (`sudo { rm -rf $(pwd); }` → stripping
+    // `sudo` surfaces `{`).
+    const stripped = stripLeadingShellSyntax(
+      stripPrivilegeWrapperArgv(stripSafeWrapperArgv(argv)),
+    )
+    if (stripped.length === 0) continue
     const verb = resolveDestructiveVerb(stripped[0])
     if (verb !== 'rm' && verb !== 'rmdir') continue
     const args = stripped.slice(1)
@@ -1140,7 +1230,9 @@ export function findCatastrophicSubstitutionBlock(
 ): CatastrophicSubstitutionBlock | null {
   const subs = extractCommandSubstitutions(command)
   if (subs.length > 64) {
-    if (/\brm(?:dir)?\b/.test(command)) {
+    // Sound quote-aware gate (divergence 5): this path EARLY-RETURNS, so a
+    // raw-text miss on `r'm'` would skip the whole substitution analysis.
+    if (passesRmVerbGate(command)) {
       return {
         category: 'rm_substitution_too_many',
         kind: 'tooManySubstitutions',
