@@ -123,30 +123,47 @@ run with `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1`."*
 2. **String-level tokenizer instead of tree-sitter WASM.** OCC's runtime has no
    tree-sitter WASM available (`parseCommandRaw` → null; the same constraint
    documented in occ46 §A). The quote-aware tokenizer compensates and fails closed
-   on unbalanced quotes.
-3. **LEADING_SHELL_KEYWORDS skip** (`then`/`do`/`else`/`elif`/`!`) — control-flow
-   compensation for the missing AST (`if true; then rm -rf $(pwd); fi` must still
-   hit the guard).
-4. **No GrowthBook `source` discrimination.** OCC's cached feature-value API exposes
+   on unbalanced quotes. **Honest scope of "fails closed" (per acceptance finding
+   F-3):** that phrase covers the unbalanced-quote case ONLY — as originally
+   ported, the AST-less compensation had two fail-OPEN blind spots (brace-group
+   compounds and quote-concatenated verbs) that the doc did not disclose. Both
+   were found by acceptance e2e probing, are fixed, and are fully documented in
+   §3.6.
+3. **Leading shell-syntax skip** — control-flow keywords (`then`/`do`/`else`/`elif`/
+   `!`/`if`/`while`/`until`/`for`/`select`/`case`) AND standalone structural group
+   tokens (`{`/`(`/`}`/`)`) are stripped from token 0 both before AND after wrapper
+   resolution — the AST-less compensation for brace groups, subshells, and control
+   flow (`{ rm -rf $(pwd); }`, `if { rm …; }; then …` must all still hit the guard).
+   Glued openers (`{rm`) are NOT stripped: bash requires whitespace after the `{`
+   reserved word, and the official AST likewise treats `{rm` as a plain command name.
+   See §3.6 for the acceptance-round fix that added the structural-token half.
+4. **Quote-aware verb word gate** (`passesRmVerbGate`) — the `/\brm(?:dir)?\b/`
+   prefilter tests both the raw text and a quote/backslash-stripped projection, so
+   bash quote-concatenated verbs (`r'm'`/`r"m"`/`r\m` → `rm`) reach the tokenizer
+   instead of false-negativing on the raw text. The official has no raw-text prefilter
+   (tree-sitter parses every command), so this restores official reach; it is strictly
+   stronger than a raw-text gate and cannot create false denies (the per-segment
+   resolved-verb check stays authoritative). See §3.6.
+5. **No GrowthBook `source` discrimination.** OCC's cached feature-value API exposes
    no `source` field, so an explicit `false` from ANY override layer disables the
    wholeSub verdict (official: only `source==="payload"`). Fail-open only under an
    explicit operator opt-out — same escape-hatch semantics as the env gate.
-5. **Backslash-escaped `\$(pwd)` blocks (fail-closed false positive).** Bash would
+6. **Backslash-escaped `\$(pwd)` blocks (fail-closed false positive).** Bash would
    treat `\$(pwd)` as literal text; OCC's normalization produces `\__CMDSUB__` and
    the tokenizer's escape consumption leaves a `__CMDSUB__` token → wholeSubstitution
    deny. Accepted: deny-posture over precision, covered by an explicit test.
-6. **`tengu_bash_dangerous_rm_shape` emits only `var_root_child`** from OCC's
+7. **`tengu_bash_dangerous_rm_shape` emits only `var_root_child`** from OCC's
    pre-existing regex detector (`CATASTROPHIC_VAR_PATH_TARGET_RE`); the official
    shape vocabulary from the full variable-dataflow classifier is not ported (see
    §3.5).
 
 ### §3.4 Tests + coverage
 
-- New: `substitutionTargetGuard281.test.ts` (425 lines) + `substitutionTargetGuard281.gateoff.test.ts`.
-- 123 tests across the S1 surface (incl. the pre-existing `subshellRm273` suite):
+- New: `substitutionTargetGuard281.test.ts` (519 lines) + `substitutionTargetGuard281.gateoff.test.ts`.
+- 154 tests across the S1 surface (incl. the pre-existing `subshellRm273` suite):
   normalization (5), wholeSubstitution 33 positives (incl. the taskbook attack
-  `rm -rf "$(pwd)"`, wrapper chains, quotes, keyword prefixes, compound commands) +
-  13 negatives, wrapper-strip/tokenizer branches (27 positives incl. `timeout -- 5`,
+  `rm -rf "$(pwd)"`, wrapper chains, quotes, keyword prefixes, and `;`/`&&`
+  concatenation) + 13 negatives, wrapper-strip/tokenizer branches (27 positives incl. `timeout -- 5`,
   `nice -5`, `builtin --`, `noglob`, `doas`, `pkexec`, `setsid`, `taskset -c 0`,
   `chrt -f 10`, `ionice -c3`, `strace -o`, `watch -n 1`, `unshare`, `nsenter -t 1`,
   `exec -a name`, `command -p`, `flock -- /tmp/l`, `sudo nice -n 5`, `sudo nohup --`,
@@ -155,10 +172,24 @@ run with `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1`."*
   bail, `env -Srm $(pwd)`), emptyExpansion (6), env gate (3), kind taxonomy (3),
   `bashToolHasPermission` integration (5: byte-exact deny message in default mode,
   deny under bypassPermissions, emptyExpansion deny in bypass, old verdicts keep the
-  envelope, `Bash(rm:*)` allow-rule cannot auto-allow), gate-off (2).
-- Coverage (lcov, `DA:` line counting): **S1 region 98.2%** (392/399),
-  **whole file 95.9%** (701/731) — both ≥ the 95% bar.
-- Full BashTool+bash+permissions batch at commit time: 863 pass / 0 fail / 1 skip (52 files).
+  envelope, `Bash(rm:*)` allow-rule cannot auto-allow), gate-off (2), **plus the
+  acceptance-round F-1/F-2 regression suite (§3.6): 25 unit positives/negatives +
+  8 integration (4 attack forms × default/bypassPermissions)**.
+- **Honest correction (acceptance round, per F-4):** the ORIGINAL §3.4 wording
+  claimed the "33 positives" covered "compound commands." That was overstated. The
+  33 wholeSubstitution positives exercised `;`/`&&` concatenation and keyword
+  prefixes only — they had **ZERO** brace-group (`{ rm …; }`), **ZERO** brace-in-
+  control-flow (`if { rm …; }; then`), and **ZERO** quote-split-verb (`r'm'`) cases.
+  Those two shapes were genuine open bypasses (F-1/F-2), not covered until §3.6.
+- **Coverage caveat (honest, per F-4):** the previously-quoted **98.2% S1 line
+  coverage did NOT protect against F-1/F-2.** Line coverage counts a line as hit if
+  ANY input reaches it; the verb-resolution loop body was fully "covered" by the
+  flat `rm -rf $(pwd)` positives while the brace-group and quote-split inputs took
+  the same lines and silently returned null. Adversarial path coverage (does a
+  hostile shape actually DENY?) is orthogonal to line coverage and is what §3.6 adds.
+  A green 98.2% was necessary but not sufficient — the acceptance e2e probe, not the
+  coverage number, is what caught the bypasses.
+- Full BashTool suite at acceptance-fix time: **666 pass / 0 fail (35 files)**; build passes.
 - Test-isolation note (cost a debug cycle, recorded for future rounds): **bun test
   runs all files in ONE process** — the gateoff file's `USER_TYPE=ant` +
   `CLAUDE_INTERNAL_FC_OVERRIDES` env pair must be set in `beforeAll` (never module
@@ -177,6 +208,72 @@ run with `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1`."*
   **`tengu_iridescent_boot`** (default true). `bright_lake` remains an unlinked
   codename-experiment marker (S5 churn) — corrected here per the taskbook's
   "re-verify precisely" instruction.
+- **Quoted-verb forms of the OLD (#41) variable-path guard remain literal-text
+  based.** `findCatastrophicRmInCommand` (the `$UNSET/*` var-path shape) keeps its
+  raw-text `/\brm(?:dir)?\b/` gate and its `CATASTROPHIC_RM_COMMAND_RE` verb anchor,
+  so `r'm' -rf "$UNSET/*"` (quote-split verb + variable-path target, NO command
+  substitution) still passes that specific detector. This matches the official
+  raw-text detector's own limitation (byte-exact port fidelity), and the S1
+  substitution pipeline — the attack surface probed in acceptance — is closed for
+  quoted verbs (§3.6). Closing the var-path×quoted-verb combination would require
+  reworking the byte-exact #41 port around the tokenizer; deliberately NOT done
+  this round to avoid regressing its single-quoted-literal-target semantics
+  (`'$UNSET/*'` must stay skipped as a literal). Disclosed, staged.
+
+### §3.6 Acceptance-round security fix — F-1 brace groups, F-2 quote-split verbs
+
+E2E acceptance (OCC 验收员, `hasPermissionsToUseTool` probe on the built dist)
+found **two P1 bypasses of the S1 guard as originally ported** — both fail-OPEN
+(default mode → ask, `bypassPermissions` → auto-allow, i.e. unattended execution),
+contradicting §3.3 item 1's "denies in ALL modes … bypass-immune" promise. Both are
+fixed on this branch; the original port shipped them silently, and the original
+§3.3/§3.4 did not disclose them (corrected above per F-3/F-4).
+
+- **F-1 — brace-group compound `{ rm -rf "$(pwd)"; }`.** Root cause: the
+  shell-quote-based splitter emits `(` as its own segment (so `(rm …)` worked) but
+  glues `{` into the inner segment's head (`["{ rm -rf __CMDSUB__", "}"]`); the
+  verb-resolution skip set contained only `then/do/else/elif/!`, so token 0 stayed
+  `{`, the resolved verb was `{`, and both guards returned null. The official
+  tree-sitter AST nests brace groups structurally and analyzes the inner `simple`
+  command — a real parity gap, not a documentation difference. **Fix:**
+  `stripLeadingShellSyntax` drops standalone structural tokens (`{`/`(`/`}`/`)`)
+  and the full control-keyword set (`if`/`while`/`until`/`for`/`select`/`case`
+  added) in a fixpoint loop, applied BOTH before and after wrapper stripping (so
+  `sudo { rm …; }` and `{ sudo rm …; }` both resolve). Glued `{rm` is deliberately
+  NOT stripped — bash requires whitespace after the `{` reserved word, and the
+  official AST agrees `{rm` is a plain (nonexistent) command name, so stripping it
+  would invent a false positive.
+- **F-2 — quote-split verb `r'm' -rf "$(pwd)"`.** Root cause: the
+  `/\brm(?:dir)?\b/` word gate ran on untokenized raw text; bash concatenates
+  `r'm'`/`r"m"`/`r\m` to `rm` at execution (verified: `r'm' --version` → GNU rm),
+  but the regex sees no literal `rm` → early null in every mode. **Fix:**
+  `passesRmVerbGate` additionally tests a quote/backslash-stripped projection of
+  the text. The projection is monotonic (removal can only fuse characters into
+  new matches, never destroy one) so the gate can no longer false-negative;
+  over-approximation is harmless because the quote-aware tokenizer's
+  resolved-verb check remains the source of truth. Applied at BOTH raw-text gates
+  on the substitution path: `findSubstitutionTargetBlock`'s entry gate and the
+  `tooManySubstitutions` early-return gate (>64 substitutions), which would
+  otherwise skip the whole analysis for a quoted verb. The old #41 detector's gate
+  is intentionally unchanged (see §3.5 residual).
+- **Regression tests (reviewer-specified forms + extensions):** unit level — all
+  20 positives assert `wholeSubstitution` via both `findCatastrophicSubstitutionBlock`
+  and `findSubstitutionTargetBlock` (`{ rm -rf $(pwd); }`, `{ rm -rf "$(pwd)"; }`,
+  `{ rm -rf $(pwd) }`, `if { rm …; }; then …`, `if true; then { rm …; }; fi`,
+  `while … do { rm …; }; done`, `for … do { rm …; }; done`, `else { rm …; }`,
+  `case … { rm …; } … esac`, `sudo { rm …; }`, `{ sudo rm …; }`,
+  `{ env FOO=1 rm …; }`, `{ /usr/bin/rm …; }`, `( { rm …; } )`, `r'm' -rf "$(pwd)"`,
+  `r"m" -rf $(pwd)`, `r\m -rf $(pwd)`, `'rm' -rf $(pwd)`, `"rm" -rf $(pwd)`,
+  `{ r"m" -rf $(pwd); }`); 5 false-positive negatives (`echo { rm -rf $(pwd); }`
+  — brace not in command position —, `{ echo $(pwd); }`, `{ ls -la $(pwd); }`,
+  `{ cat $(pwd); }`, `echo r'm' $(pwd)`). Integration level — the reviewer's 4
+  required forms × {`default`, `bypassPermissions`} assert `behavior: 'deny'` +
+  the byte-exact official message (bypass-immune, per the reviewer's demand that
+  BOTH modes deny).
+- **Verification:** `bun test src/tools/BashTool/__tests__` → 666 pass / 0 fail
+  (35 files); `bun run build` → passes; pre-fix RED evidence reproduced at unit
+  level first (both forms returned null through both guards), post-fix GREEN
+  across all 20 attack forms with 0/10 false positives on the safe-form control set.
 
 ## §4 P2 — NUL-byte permission rule guard: **PORTED** (commit `16a19c4`)
 
