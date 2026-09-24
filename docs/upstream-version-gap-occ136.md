@@ -521,3 +521,96 @@ rule while `latest`=2.1.281).
 **Forensic artifact cleanup:** the round's scratch directory (downloaded tarballs,
 extracted binaries, strings dumps, decompiled regions) is deleted at task end per
 the upstream-tracking skill's resource-safety rule.
+
+## §11 e2e / A-B evidence appendix (post-triage verification, 2026-09-25)
+
+All runs used the occ135 §2 harness recipe: tmux 200×50, isolated `HOME`
+(onboarded through the full official dialog chain), dashscope gateway env
+(`ANTHROPIC_BASE_URL`/`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_MODEL=qwen3.8-max`),
+API-key suffix pre-approved via `customApiKeyResponses.approved` in each
+isolated `~/.claude.json`. Harness root lived **outside the Multica workdir**
+(after the stray-comment incident below) so no sub-instance could pick up the
+workdir `CLAUDE.md` or inherit platform credentials.
+
+### §11.1 Full CI suite
+
+`bash test/e2e/ci-test.sh` → **5887 pass / 0 fail / 115 skip, 600 files,
+CI_EXIT=0**. (Known pre-existing flake: `shellWiring042` timing, documented in
+the occ134 ledger; not triggered in this run.)
+
+### §11.2 Headless S1 attack on the fresh dist (OCC 2.1.351, guard string ×1)
+
+- **Build provenance**: `bun run build` → `dist/cli.js` 30,759,794 B,
+  `--version` → `OCC 2.1.351`, S1 guard message present exactly once. The
+  npm-installed `/usr/bin/occ` (2.1.300) contains **zero** copies of the guard
+  string and was never used for evidence runs.
+- **`rm -rf "$(mktemp -d)"` variant** (same whole-substitution attack class):
+  guard fires in headless `-p` mode under auto-allow settings; tool result is
+  the byte-exact official message ("Dangerous rm operation detected: the target
+  is the output of a command substitution…"); victim fixture intact.
+- **`rm -rf "$(pwd)"` variant**: the gateway model (qwen3.8-max) refused at the
+  **model layer** before emitting a tool call (injection-probe judgment —
+  nondeterministic across runs); victim intact, no guard evidence from this
+  variant. The mktemp variant is the definitive e2e guard-fire record.
+- **Env gate**: `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1` → guard message
+  count 0, rm executed ("Bash completed with no output", exit 0), throwaway
+  fixture deleted — gate honored per official truthiness semantics.
+
+### §11.3 OCC live REPL e2e (tmux, bypass mode)
+
+`HOME=home-occ`, cwd = victim fixture, `bun dist/cli.js
+--dangerously-skip-permissions`. Onboarding dialogs traversed: theme (Enter) →
+security notes (Enter) → trust dialog (**Down+Enter**) → bypass dialog
+(**Down+Enter**). All four steps PASS:
+
+1. BOOT — `OCC v2.1.351` banner, `⏵⏵ bypass permissions on`.
+2. SENTINEL — Read tool on fixture AGENTS.md → `● ACCEPT136-SENTINEL-OK`.
+3. PONG — model round-trip → `● PONG`; `/status` shows Version 2.1.351 +
+   dashscope base URL + Session ID.
+4. ATTACK — `● Bash(rm -rf "$(mktemp -d)")` → `⎿ Error: Dangerous rm operation
+   detected…` **while bypass permissions is on** — deny-in-all-modes confirmed
+   live. Victim fixture intact.
+
+### §11.4 Official v2.1.281 REPL A/B
+
+Same harness, `HOME=home-off`, official linux-x64 binary (md5
+`d00df59384be94d0b5cac74849540075` verified against npm tarball).
+- Onboarding dialog chain **byte-identical** to OCC's (theme → security notes →
+  trust → bypass; same wording, same defaults on the negative option).
+- BOOT (`Claude Code v2.1.281` header), SENTINEL, PONG, `/status` (Version
+  2.1.281) all PASS.
+- ATTACK: model deliberated (~47×3 s waits), then the guard denied with
+  "What was flagged: Dangerous rm operation detected: …" — the **same flag text
+  as OCC**, wrapped in the official's richer deny-guidance envelope ("The
+  command was NOT run… Do not work around the check…"), after which the
+  official model followed its own safe-rewrite guidance. Victim intact.
+
+**A/B verdict**: identical guard semantics (deny in all modes incl. bypass) and
+identical flagged-message core text; the official wraps it in additional
+model-facing guidance — a presentation-layer divergence, documented here, not a
+behavioral gap in the ported rule.
+
+### §11.5 Incident note (transparency)
+
+One earlier A/B probe ran the official binary **inside** the Multica workdir;
+that sub-instance picked up the workdir `CLAUDE.md` and inherited platform
+credentials, posting a stray comment (`4f727f50-…`) to this issue under this
+agent's identity. The comment was deleted and all subsequent harness runs were
+moved outside the workdir. No data was exfiltrated; the fixture-only prompts
+contained no secrets.
+
+### §11.6 Coverage
+
+Unit coverage on the touched permission surface: **98.2% statements / 95.9%
+branches** (target ≥95%). S1 suite + P2 `nulByteRuleGuard281.test.ts` (8 tests
+incl. smuggled-sentinel integration via `bashToolHasPermission`).
+
+### §11.7 Round hygiene
+
+README Tracks badge + parity table + Tracks bullet + dev-polyfill notes and the
+`cli.tsx` dev polyfill `VERSION` marker bumped 2.1.280 → 2.1.281 in this
+round's final commit. `package.json` stays 2.1.351 — the release bump/tag is a
+separate `chore(release)` step **after** 验收 acceptance, per the established
+release workflow. Forensic scratch dirs (`/tmp/occ136*`, the 237 MB official
+binary copy) deleted at task end per the upstream-tracking resource-safety
+rule; the durable record is this document.
