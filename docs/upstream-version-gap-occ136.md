@@ -86,7 +86,7 @@ run with `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1`."*
 
 ### §3.2 OCC implementation
 
-- `src/tools/BashTool/destructiveCommandWarning.ts` (+627): `normalizeCommandSubstitutions`,
+- `src/tools/BashTool/destructiveCommandWarning.ts` (+721/−1): `normalizeCommandSubstitutions`,
   `findSubstitutionTargetBlock` (the `gFt` walker: quote-aware tokenizer with
   backslash escapes and unbalanced-quote fail-closed consumption; `skipTimeoutArgs`/
   `skipStdbufArgsLocal`/`skipEnvArgsLocal` = `FMe`/`nTo`/`oTo`; `stripSafeWrapperArgv`
@@ -103,7 +103,7 @@ run with `CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT=1`."*
     remove the literal paths it prints."
   - `WHOLE_SUBSTITUTION_REASON` = "Dangerous rm operation on statically-unresolvable
     target: command substitution output"
-- `src/tools/BashTool/bashPermissions.ts` (+16/−2): guard call after
+- `src/tools/BashTool/bashPermissions.ts` (+14/−2): guard call after
   `analyzeText`; telemetry `tengu_bash_dangerous_rm_too_complex` +
   `tengu_bash_dangerous_rm_shape`; deny with the official message (no
   `Destructive command blocked:` envelope for the new verdicts; pre-existing verdicts
@@ -591,7 +591,8 @@ Release-note triage (~90 bullets; groups):
 
 **Landed this round (2 commits, pushed):**
 1. `d9eb7ac` — S1 dangerous-rm substitution-target guard (flagship security port;
-   byte-exact messages; 123 tests; coverage 98.2% region / 95.9% file).
+   byte-exact messages; 154 tests across the S1 surface (incl. the acceptance-round
+   F-1/F-2 suite); coverage 98.2% S1-region line / 95.9% whole-file line).
 2. `16a19c4` — P2 NUL-byte permission rule guard (official contract "matches
    nothing"; shared-matcher choke point; 8 tests) + biome-ignore protecting the
    `new RegExp` form from the regex-literal autofix.
@@ -698,8 +699,10 @@ contained no secrets.
 
 ### §11.6 Coverage
 
-Unit coverage on the touched permission surface: **98.2% statements / 95.9%
-branches** (target ≥95%). S1 suite + P2 `nulByteRuleGuard281.test.ts` (8 tests
+Unit coverage on the touched permission surface (lcov DA line counting, same
+framing as §3.4): **98.2% S1-region line / 95.9% whole-file line** (target ≥95%;
+line coverage is not adversarial-shape coverage — see §3.4's F-4 caveat). S1
+suite + P2 `nulByteRuleGuard281.test.ts` (8 tests
 incl. smuggled-sentinel integration via `bashToolHasPermission`).
 
 ### §11.7 Round hygiene
