@@ -95,6 +95,16 @@ export function matchWildcardPattern(
   // Trim leading/trailing whitespace from pattern
   const trimmedPattern = pattern.trim()
 
+  // 2.1.281: "Fixed a permission rule containing a NUL byte being expanded
+  // into a wildcard match; such a rule now matches nothing." The escape
+  // machinery below uses NUL-delimited sentinels (\x00ESCAPED_STAR\x00), so a
+  // rule that smuggles a raw NUL byte could otherwise be reinterpreted during
+  // placeholder restoration. Fail closed per the official contract: any rule
+  // containing a NUL byte matches nothing.
+  if (trimmedPattern.includes('\x00')) {
+    return false
+  }
+
   // Process the pattern to handle escape sequences: \* and \\
   let processed = ''
   let i = 0
