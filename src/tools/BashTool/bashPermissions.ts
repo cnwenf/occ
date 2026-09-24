@@ -2461,17 +2461,29 @@ export async function bashToolHasPermission(
     const subBlock = findCatastrophicSubstitutionBlock(input.command)
     if (subBlock !== null) {
       const mode = appState.toolPermissionContext.mode
+      // Official 2.1.281 telemetry: `tengu_bash_dangerous_rm_too_complex`
+      // carries the gFt verdict `kind`; the rm_shape event fires when the
+      // detection maps to an official `$z(shape)` call site.
       logEvent('tengu_bash_dangerous_rm_too_complex', {
         category: subBlock.category,
+        kind: subBlock.kind,
         mode,
       })
+      if (subBlock.shape !== undefined) {
+        logEvent('tengu_bash_dangerous_rm_shape', { shape: subBlock.shape })
+      }
+      // When the official `jy` ask builder produced rich wording (v281
+      // wholeSubstitution verdict), surface it verbatim; otherwise keep the
+      // established "Destructive command blocked: …" envelope.
+      const denyMessage =
+        subBlock.message ?? `Destructive command blocked: ${subBlock.reason}`
       const decisionReason: PermissionDecisionReason = {
         type: 'other' as const,
-        reason: `Destructive command blocked: ${subBlock.reason}`,
+        reason: denyMessage,
       }
       return {
         behavior: 'deny',
-        message: `Destructive command blocked: ${subBlock.reason}`,
+        message: denyMessage,
         decisionReason,
       }
     }

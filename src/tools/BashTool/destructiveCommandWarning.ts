@@ -343,7 +343,10 @@ export function isDestructiveCommand(command: string): boolean {
 // the substitution form must "match the plain form".
 // ─────────────────────────────────────────────────────────────────────────
 
+import { homedir } from 'node:os'
 import { splitCommand_DEPRECATED as splitCommandForRm } from '../../utils/bash/commands.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { isDangerousRemovalPath } from '../../utils/permissions/pathValidation.js'
 
 // Binary `tIg`: matches a command segment that is an `rm`/`rmdir` invocation,
 // allowing an env-var-assignment prefix (VAR=value) and a path-prefixed binary
@@ -478,9 +481,620 @@ export function extractCommandSubstitutions(command: string): string[] {
   return out
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Official 2.1.281 `gFt` substitution-target pipeline (OCC-136 S1 port)
+//
+// v2.1.281 hardened the dangerous-rm guard against the attack shape where
+// the rm TARGET ITSELF is command-substitution output (`rm -rf "$(pwd)"`):
+// substitutions are normalized to `__CMDSUB__` placeholders, the normalized
+// text is re-parsed per command, argv[0] is basenamed (NEW in 281), safe +
+// privilege wrappers are stripped (`Rp`→`aFt`), and the resolved rm/rmdir
+// args are checked for two new verdict kinds:
+//
+//   • emptyExpansion   — a target whose `__CMDSUB__` tail could expand to
+//                        nothing, leaving a catastrophic residual path
+//                        (`rm -rf /$(pwd)` → `/`).
+//   • wholeSubstitution — a recursive rm whose target is PURELY substitution
+//                        output (`rm -rf $(…)`), gated by env
+//                        CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT and
+//                        GrowthBook `tengu_iridescent_boot` (default true).
+//
+// Byte-exact ports below (verified against the v2.1.281 linux-x64 ELF,
+// md5 d00df59384be94d0b5cac74849540075): normalizeCommandSubstitutions
+// (gFt's three replace loops), skipTimeoutArgs (FMe), skipStdbufArgsLocal
+// (nTo), skipEnvArgsLocal (oTo), stripSafeWrapperArgv (Rp),
+// stripTimeFamilyArgv (uEo), stripPrivilegeWrapperArgv (aFt + fEo/pEo/mEo
+// maps), resolveDestructiveVerb (Zw + Zvo set).
+//
+// OCC divergences (deliberate, documented in docs/upstream-version-gap-occ136.md):
+//   1. The official parses the normalized text with tree-sitter
+//      (`Ise(Ee)`, kind==="simple"); OCC has no WASM parser at runtime, so a
+//      quote-aware tokenizer + splitCommandForRm reproduce the observable
+//      contract (quotes consumed and concatenated within a word, splits on
+//      unquoted whitespace/operators).
+//   2. The official returns an ASK verdict with
+//      `classifierApprovable:!1, circuitBreaker:"dangerousRemoval"`; OCC's
+//      call site denies in ALL modes (established #41 divergence — strictly
+//      stronger, bypass-immune).
+//   3. The official gate is `!(value===!1&&source==="payload")`; OCC's
+//      GrowthBook stub exposes no `source`, so an explicit `false` value
+//      disables the guard (default true keeps it on).
+//   4. Leading shell keywords (`then`/`do`/`else`/`elif`/`!`) are skipped
+//      before verb resolution — the official AST handles control-flow
+//      structurally; OCC's string-level split surfaces them as token 0
+//      (same compensation pattern as the 2.1.273 per-segment port).
+// ─────────────────────────────────────────────────────────────────────────
+
+const CMDSUB_PLACEHOLDER = '__CMDSUB__'
+const MAX_CMDSUB_NORMALIZE_ITERATIONS = 16
+
+// Official `XNt`: simple argv token shape (timeout `-k`/`-s` flag values).
+const SIMPLE_ARGV_TOKEN_RE = /^[A-Za-z0-9_.+-]+$/
+// Official `JNt`: env-var assignment token (`FOO=…`, `FOO+=…`).
+const ENV_ASSIGNMENT_ARGV_RE = /^[A-Za-z_][A-Za-z0-9_]*\+?=/
+// Official duration shape accepted after timeout flags.
+const TIMEOUT_DURATION_RE = /^\d+(?:\.\d+)?[smhd]?$/
+// Official v281 wholeSubstitution target shape: the arg consists solely of
+// `__CMDSUB__` runs, optionally joined/trailed by `/`, `*`, `.` characters.
+const WHOLE_SUBSTITUTION_TARGET_RE = /^(?:__CMDSUB__[/*.]*)+$/
+// Official v281 emptyExpansion tail detect/strip regexes (byte-exact).
+const SUBSTITUTION_TAIL_RE =
+  /.(?:__CMDSUB__(?:(?!\.\.)[/*.])*)+(?:\/\.\.)*\/*$/
+// Official strip regex `/(.)(?:__CMDSUB__(?:(?!\.\.)[/*.])*)+((?:\/\.\.)*)\/*$/`
+// replaced with `"$1$2"`. OCC keeps the run as an explicit capture group so
+// the leftover can be reported; the `$1$3` replacement below drops it exactly
+// like the official `$1$2` (group 1 = preceding char, group 3 = `/..` tail).
+const SUBSTITUTION_TAIL_STRIP_RE =
+  /(.)((?:__CMDSUB__(?:(?!\.\.)[/*.])*)+)((?:\/\.\.)*)\/*$/
+const SUBSTITUTION_TAIL_STRIP_REPLACEMENT = '$1$3'
+// Official v281 recursive-flag shapes checked BEFORE the first `--`.
+const LONG_RECURSIVE_FLAG_RE = /^--r/
+const SHORT_RECURSIVE_FLAG_RE = /^-[a-zA-Z]*[rR]/
+// argv[0] basename step (NEW in v281: `De[0]=De[0].replace(/^.*[\\/]/,"")`).
+const ARGV_BASENAME_RE = /^.*[\\/]/
+
+// Official `jy` ask-builder message for the wholeSubstitution verdict
+// (byte-exact v2.1.281 wording).
+const WHOLE_SUBSTITUTION_MESSAGE =
+  'Dangerous rm operation detected: the target is the output of a command substitution (`$(...)` or backticks) and cannot be checked before the command runs. This requires explicit approval and cannot be auto-allowed by permission rules.\n\nRun the substitution on its own first, then remove the literal paths it prints.'
+// Official `jy` reason suffix (the builder prepends `Dangerous ${verb} operation `).
+const WHOLE_SUBSTITUTION_REASON =
+  'Dangerous rm operation on statically-unresolvable target: command substitution output'
+
+// Shell keywords a string-level splitter can leave glued in front of the
+// real command (the official AST nests them structurally instead).
+const LEADING_SHELL_KEYWORDS = new Set(['then', 'do', 'else', 'elif', '!'])
+
+/**
+ * Official v281 `gFt` normalization (byte-exact regexes): backticks in one
+ * pass, then `$(…)` to a fixpoint (≤16 iterations, handles nesting), then
+ * `${VAR:-…}`-style defaults whose value is purely substitution output
+ * collapse to that output (so `rm -rf "${X:-$(cmd)}"` normalizes like the
+ * bare substitution).
+ */
+export function normalizeCommandSubstitutions(text: string): string {
+  let out = text.replace(/`[^`]*`/g, CMDSUB_PLACEHOLDER)
+  for (
+    let prev = '', i = 0;
+    prev !== out && i < MAX_CMDSUB_NORMALIZE_ITERATIONS;
+    i++
+  ) {
+    prev = out
+    out = out.replace(/\$\([^()]*\)/g, CMDSUB_PLACEHOLDER)
+  }
+  for (
+    let prev = '', i = 0;
+    prev !== out && i < MAX_CMDSUB_NORMALIZE_ITERATIONS;
+    i++
+  ) {
+    prev = out
+    out = out.replace(
+      /\$\{(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?!$-]):?[-=+?]"?((?:__CMDSUB__[/*.]*)+)"?\}/g,
+      '$1',
+    )
+  }
+  return out
+}
+
+/**
+ * Quote-aware argv tokenizer for the normalized text. Reproduces the
+ * observable contract of the official AST word nodes: quote characters are
+ * consumed (not kept), adjacent quoted/unquoted runs concatenate into ONE
+ * word (`"__CMDSUB__"/*` → `__CMDSUB__/*`), splits happen on unquoted
+ * whitespace, and backslash escapes the next character.
+ */
+function tokenizeNormalizedSegment(segment: string): string[] {
+  const tokens: string[] = []
+  let current = ''
+  let hasToken = false
+  for (let i = 0; i < segment.length; i++) {
+    const ch = segment[i]!
+    if (ch === '\\' && i + 1 < segment.length) {
+      current += segment[i + 1]!
+      hasToken = true
+      i++
+      continue
+    }
+    if (ch === "'" || ch === '"') {
+      const close = segment.indexOf(ch, i + 1)
+      if (close === -1) {
+        // Unbalanced quote: consume the remainder as word content.
+        current += segment.slice(i + 1)
+        hasToken = true
+        break
+      }
+      current += segment.slice(i + 1, close)
+      hasToken = true
+      i = close
+      continue
+    }
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+      if (hasToken) {
+        tokens.push(current)
+        current = ''
+        hasToken = false
+      }
+      continue
+    }
+    current += ch
+    hasToken = true
+  }
+  if (hasToken) {
+    tokens.push(current)
+  }
+  return tokens
+}
+
+/** Official `FMe` (byte-exact): argv count consumed by timeout's flags. */
+function skipTimeoutArgs(a: readonly string[]): number {
+  let n = 1
+  while (n < a.length) {
+    const r = a[n]!
+    const s = a[n + 1]
+    if (r === '--foreground' || r === '--preserve-status' || r === '--verbose')
+      n++
+    else if (/^--(?:kill-after|signal)=[A-Za-z0-9_.+-]+$/.test(r)) n++
+    else if (
+      (r === '--kill-after' || r === '--signal') &&
+      s !== undefined &&
+      SIMPLE_ARGV_TOKEN_RE.test(s)
+    )
+      n += 2
+    else if (r === '--') {
+      n++
+      break
+    } else if (r.startsWith('--')) return -1
+    else if (r === '-v') n++
+    else if (
+      (r === '-k' || r === '-s') &&
+      s !== undefined &&
+      SIMPLE_ARGV_TOKEN_RE.test(s)
+    )
+      n += 2
+    else if (/^-[ks][A-Za-z0-9_.+-]+$/.test(r)) n++
+    else if (r.startsWith('-')) return -1
+    else break
+  }
+  return n
+}
+
+/** Official `nTo` (byte-exact): argv count consumed by stdbuf's flags. */
+function skipStdbufArgsLocal(a: readonly string[]): number {
+  let n = 1
+  while (n < a.length) {
+    const r = a[n]!
+    if (/^-[ioe]$/.test(r) && a[n + 1]) n += 2
+    else if (/^-[ioe]./.test(r)) n++
+    else if (/^--(input|output|error)=/.test(r)) n++
+    else if (r.startsWith('-')) return -1
+    else break
+  }
+  return n > 1 && n < a.length ? n : -1
+}
+
+/** Official `oTo` (byte-exact): argv count consumed by env's flags/vars. */
+function skipEnvArgsLocal(a: readonly string[]): number {
+  let n = 1
+  while (n < a.length) {
+    const r = a[n]!
+    if (r.includes('=') && !r.startsWith('-')) n++
+    else if (r === '-i' || r === '-0' || r === '-v') n++
+    else if (r === '-u' && a[n + 1]) n += 2
+    else if (r.startsWith('-')) return -1
+    else break
+  }
+  return n < a.length ? n : -1
+}
+
+/**
+ * Official `Rp` (byte-exact): strips the safe wrapper family
+ * (time/nohup/timeout/nice/stdbuf/env/command/builtin/noglob) from argv.
+ * argv[0] is basenamed for wrapper-name matching only (slices keep the
+ * original token). Unparseable wrapper flags fail CLOSED (return unchanged).
+ */
+function stripSafeWrapperArgv(input: readonly string[]): string[] {
+  let n = input.slice()
+  for (;;) {
+    const base = n[0]?.replace(ARGV_BASENAME_RE, '')
+    const s =
+      base === 'time' ||
+      base === 'nohup' ||
+      base === 'timeout' ||
+      base === 'nice' ||
+      base === 'stdbuf' ||
+      base === 'env' ||
+      base === 'command'
+        ? base
+        : n[0]
+    if (s === 'time' || s === 'nohup') n = n.slice(n[1] === '--' ? 2 : 1)
+    else if (s === 'timeout') {
+      const g = skipTimeoutArgs(n)
+      if (g < 0 || n[g] === undefined || !TIMEOUT_DURATION_RE.test(n[g]!))
+        return n
+      n = n.slice(g + 1)
+    } else if (s === 'nice') {
+      if (n[1] === '-n' && n[2] && /^-?\d+$/.test(n[2]))
+        n = n.slice(n[3] === '--' ? 4 : 3)
+      else if (n[1] && /^-\d+$/.test(n[1])) n = n.slice(n[2] === '--' ? 3 : 2)
+      else n = n.slice(n[1] === '--' ? 2 : 1)
+    } else if (s === 'stdbuf') {
+      const g = skipStdbufArgsLocal(n)
+      if (g < 0) return n
+      n = n.slice(g)
+    } else if (s === 'env') {
+      const g = skipEnvArgsLocal(n)
+      if (g < 0) return n
+      n = n.slice(g)
+    } else if (s === 'command') {
+      let g = 1
+      while (n[g] !== undefined && /^-p+$/.test(n[g]!)) g++
+      if (n[g] === '--') g++
+      if (g >= n.length || n[g]!.startsWith('-')) return n
+      n = n.slice(g)
+    } else if (n[0] === 'builtin') {
+      const g = n[1] === '--' ? 2 : 1
+      if (g >= n.length) return n
+      n = n.slice(g)
+    } else if (n[0] === 'noglob') {
+      if (n.length <= 1) return n
+      n = n.slice(1)
+    } else return n
+  }
+}
+
+/**
+ * Official `uEo` (byte-exact): the narrower time-family strip applied inside
+ * `aFt`'s loop (time/nohup/timeout/nice `-n N` only — no bare `nice cmd`,
+ * matching the binary).
+ */
+function stripTimeFamilyArgv(input: readonly string[]): string[] {
+  let n = input.slice()
+  for (;;) {
+    if (n[0] === 'time' || n[0] === 'nohup')
+      n = n.slice(n[1] === '--' ? 2 : 1)
+    else if (n[0] === 'timeout') {
+      const r = skipTimeoutArgs(n)
+      if (r < 0 || n[r] === undefined || !TIMEOUT_DURATION_RE.test(n[r]!))
+        return n
+      n = n.slice(r + 1)
+    } else if (
+      n[0] === 'nice' &&
+      n[1] === '-n' &&
+      n[2] &&
+      /^-?\d+$/.test(n[2])
+    )
+      n = n.slice(n[3] === '--' ? 4 : 3)
+    else return n
+  }
+}
+
+// Official `fEo`: per-wrapper flags that consume a separate VALUE argument.
+const PRIVILEGE_WRAPPER_VALUE_FLAGS: Record<string, ReadonlySet<string>> = {
+  env: new Set(['-u', '-C', '--unset', '--chdir']),
+  sudo: new Set([
+    '-u', '-g', '-U', '-C', '-D', '-h', '-p', '-r', '-R', '-t', '-T',
+    '--user', '--group', '--other-user', '--close-from', '--chdir', '--host',
+    '--prompt', '--role', '--chroot', '--type', '--command-timeout', '-a',
+    '--auth-type',
+  ]),
+  doas: new Set(['-a', '-u', '-C']),
+  pkexec: new Set(['--user']),
+  watch: new Set(['-n', '--interval', '--equexit']),
+  ionice: new Set([
+    '-c', '-n', '-p', '-P', '-u', '--class', '--classdata', '--pid', '--pgid',
+    '--uid',
+  ]),
+  setsid: new Set([]),
+  taskset: new Set(['-c', '--cpu-list']),
+  chrt: new Set([
+    '-p', '--pid', '-T', '-P', '-D', '--sched-runtime', '--sched-period',
+    '--sched-deadline',
+  ]),
+  strace: new Set([
+    '-e', '-o', '-p', '-s', '-E', '-P', '-S', '-a', '-b', '-I', '-u', '-X',
+    '-O', '-U', '--output', '--trace', '--expr', '--attach', '--string-limit',
+    '--env', '--trace-path', '--columns', '--user', '--interruptible',
+    '--detach-on', '--const-print-style', '--summary-sort-by',
+    '--summary-syscall-overhead', '--summary-columns',
+  ]),
+  ltrace: new Set([
+    '-a', '-A', '-e', '-l', '-n', '-o', '-p', '-s', '-u', '-x', '-D', '-F',
+    '--align', '--config', '--debug', '--indent', '--library', '--output',
+    '--string-max', '-w', '--where',
+  ]),
+  flock: new Set(['-w', '-E', '--timeout', '--wait', '--conflict-exit-code']),
+  script: new Set([
+    '-E', '-T', '-m', '-o', '-O', '-B', '-I', '--echo', '--log-timing',
+    '--logging-format', '--output-limit', '--log-out', '--log-io', '--log-in',
+  ]),
+  unshare: new Set([
+    '-R', '-w', '-S', '-G', '--setuid', '--setgid', '--root', '--wd',
+    '--propagation', '--setgroups', '--monotonic', '--boottime',
+  ]),
+  nsenter: new Set(['-t', '-S', '-G', '--target', '--setuid', '--setgid']),
+  exec: new Set(['-a']),
+  command: new Set([]),
+  builtin: new Set([]),
+  noglob: new Set([]),
+  nocorrect: new Set([]),
+}
+
+// Official `pEo`: flags whose value is a COMMAND STRING (`env -S`, `flock -c`,
+// `script -c`) — the string is re-tokenized and the strip loop recurses.
+const PRIVILEGE_WRAPPER_COMMAND_FLAGS: Record<string, ReadonlySet<string>> = {
+  env: new Set(['-S', '--split-string']),
+  flock: new Set(['-c', '--command']),
+  script: new Set(['-c', '--command']),
+}
+
+// Official `mEo`: wrappers taking a bare positional before the command.
+const PRIVILEGE_WRAPPER_POSITIONAL_CHECKS: Record<
+  string,
+  (value: string) => boolean
+> = {
+  chrt: (v) => /^\d+$/.test(v),
+  taskset: (v) => /^(0x[\da-f]+|\d+)$/i.test(v),
+  flock: () => true,
+  script: () => true,
+}
+
+/**
+ * Official `aFt` (byte-exact): strips env-var assignments and the privilege /
+ * tracer wrapper family (sudo/doas/pkexec/watch/ionice/setsid/taskset/chrt/
+ * strace/ltrace/flock/script/unshare/nsenter/exec/command/builtin/noglob/
+ * nocorrect/env) from argv, recursing through `-c`-style command strings.
+ */
+function stripPrivilegeWrapperArgv(input: readonly string[]): string[] {
+  let n = input.slice()
+  for (;;) {
+    while (n[0] !== undefined && ENV_ASSIGNMENT_ARGV_RE.test(n[0]))
+      n = n.slice(1)
+    n = stripTimeFamilyArgv(n)
+    const r = n[0]
+    if (r === undefined) return n
+    const s = PRIVILEGE_WRAPPER_VALUE_FLAGS[r]
+    if (s === undefined) return n
+    const g = PRIVILEGE_WRAPPER_COMMAND_FLAGS[r]
+    const h = PRIVILEGE_WRAPPER_POSITIONAL_CHECKS[r]
+    let i = 1
+    let cmdString: string | undefined
+    let positionalTaken = false
+    while (i < n.length) {
+      const N = n[i]!
+      if (N === '--') {
+        i++
+        if (
+          !positionalTaken &&
+          h !== undefined &&
+          i + 1 < n.length &&
+          h(n[i]!)
+        ) {
+          positionalTaken = true
+          i++
+          continue
+        }
+        break
+      }
+      if (g !== undefined) {
+        if (g.has(N) && n[i + 1] !== undefined) {
+          const G = n[i + 1]!.trim()
+          if (G !== '') {
+            cmdString = G
+            break
+          }
+          i += 2
+          continue
+        }
+        const U = N.indexOf('=')
+        if (U > 0 && g.has(N.slice(0, U))) {
+          const G = N.slice(U + 1).trim()
+          if (G !== '') {
+            cmdString = G
+            break
+          }
+          i++
+          continue
+        }
+        if (N.length > 2 && N[1] !== '-' && g.has(N.slice(0, 2))) {
+          const G = N.slice(2).trim()
+          if (G !== '') {
+            cmdString = G
+            break
+          }
+          i++
+          continue
+        }
+      }
+      if (N.startsWith('-') && (N !== '-' || h === undefined)) {
+        if (r === 'command' && /^-[pvV]+$/.test(N) && /[vV]/.test(N)) return n
+        i += s.has(N) && i + 1 < n.length ? 2 : 1
+        continue
+      }
+      if (r === 'env' && ENV_ASSIGNMENT_ARGV_RE.test(N)) {
+        i++
+        continue
+      }
+      if (!positionalTaken && h?.(N) && i + 1 < n.length) {
+        positionalTaken = true
+        i++
+        continue
+      }
+      break
+    }
+    if (cmdString !== undefined) {
+      n = cmdString.trim().split(/\s+/)
+      if (n.length === 0 || n[0] === '') return input.slice()
+      continue
+    }
+    if (i >= n.length) return n
+    n = n.slice(i)
+  }
+}
+
+// Official `Zvo` set + `Zw` verb resolution (byte-exact): basename first;
+// rm/rmdir/tee match case-sensitively; otherwise only a case-insensitive
+// `tee[.exe]` maps to `tee` and everything else is returned unchanged.
+const DESTRUCTIVE_VERB_SET = new Set(['rm', 'rmdir', 'tee'])
+
+function resolveDestructiveVerb(argv0: string | undefined): string | undefined {
+  if (!argv0) return argv0
+  const base = argv0.replace(ARGV_BASENAME_RE, '')
+  if (DESTRUCTIVE_VERB_SET.has(base)) return base
+  return base.toLowerCase().replace(/\.exe$/, '') === 'tee' ? 'tee' : argv0
+}
+
+/**
+ * Residual-target check for the emptyExpansion verdict: after stripping the
+ * `__CMDSUB__` tail, would the leftover path be a catastrophic removal
+ * target? Tilde forms expand against the real home dir first (the official
+ * `x$` classifier resolves `~` via `Pd` before its critical-path checks).
+ */
+function isDangerousResidualRemovalTarget(residual: string): boolean {
+  if (residual === '') return false
+  let expanded = residual
+  if (expanded === '~') expanded = homedir()
+  else if (expanded.startsWith('~/') || expanded.startsWith('~\\'))
+    expanded = homedir() + expanded.slice(1)
+  return isDangerousRemovalPath(expanded)
+}
+
+/**
+ * Port of the official 2.1.281 `gFt` per-command substitution-target
+ * analysis. Given a raw command text, normalizes substitutions to
+ * `__CMDSUB__`, walks each operator-split segment, resolves the real command
+ * verb through basename + wrapper stripping, and returns the first
+ * emptyExpansion / wholeSubstitution verdict (official check order), or null.
+ *
+ * Exported for unit tests; production callers go through
+ * findCatastrophicSubstitutionBlock.
+ */
+export function findSubstitutionTargetBlock(
+  rawText: string,
+): CatastrophicSubstitutionBlock | null {
+  const normalized = normalizeCommandSubstitutions(rawText)
+  // Official `xe`: both new verdicts require that normalization changed the
+  // text (i.e. a substitution is actually present in this scope).
+  if (normalized === rawText) return null
+  // Cheap word gate (the official parses every command but skips non-rm
+  // verbs; behaviorally identical, avoids tokenizing rm-less commands).
+  if (!/\brm(?:dir)?\b/.test(normalized)) return null
+  for (const seg of splitCommandForRm(normalized)) {
+    const tokens = tokenizeNormalizedSegment(seg)
+    if (tokens.length === 0) continue
+    // v281 NEW: basename argv[0] before wrapper resolution.
+    let argv = [tokens[0]!.replace(ARGV_BASENAME_RE, ''), ...tokens.slice(1)]
+    // OCC divergence 4: skip leading control-flow keywords the string-level
+    // splitter leaves in token 0 (`if x; then rm -rf $(pwd); fi`).
+    while (argv.length > 0 && LEADING_SHELL_KEYWORDS.has(argv[0]!))
+      argv = argv.slice(1)
+    if (argv.length === 0) continue
+    // Official: `$e=aFt(Rp(De))`.
+    const stripped = stripPrivilegeWrapperArgv(stripSafeWrapperArgv(argv))
+    const verb = resolveDestructiveVerb(stripped[0])
+    if (verb !== 'rm' && verb !== 'rmdir') continue
+    const args = stripped.slice(1)
+    // Official order: literalTarget (approximated by analyzeText's
+    // RM_ROOT_HOME check, which runs BEFORE this function at the call site),
+    // then emptyExpansion, then wholeSubstitution.
+    if (args.some((t) => SUBSTITUTION_TAIL_RE.test(t))) {
+      const residuals = args.map((t) =>
+        t.replace(SUBSTITUTION_TAIL_STRIP_RE, SUBSTITUTION_TAIL_STRIP_REPLACEMENT),
+      )
+      const dangerous = residuals.find((t) =>
+        isDangerousResidualRemovalTarget(t),
+      )
+      if (dangerous !== undefined) {
+        return {
+          category: 'rm_substitution_empty_expansion',
+          kind: 'emptyExpansion',
+          reason: `Dangerous ${verb} operation detected: a command substitution in the target may expand to nothing, leaving '${dangerous}'`,
+        }
+      }
+    }
+    const flagsBeforeSeparator = args.includes('--')
+      ? args.slice(0, args.indexOf('--'))
+      : args
+    if (
+      verb === 'rm' &&
+      flagsBeforeSeparator.some(
+        (t) => LONG_RECURSIVE_FLAG_RE.test(t) || SHORT_RECURSIVE_FLAG_RE.test(t),
+      ) &&
+      args.some((t) => WHOLE_SUBSTITUTION_TARGET_RE.test(t))
+    ) {
+      const envDisabled = Boolean(
+        process.env.CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT,
+      )
+      const gate = getFeatureValue_CACHED_MAY_BE_STALE<boolean>(
+        'tengu_iridescent_boot',
+        true,
+      )
+      if (!envDisabled && gate !== false) {
+        return {
+          category: 'rm_substitution_whole_target',
+          kind: 'wholeSubstitution',
+          reason: WHOLE_SUBSTITUTION_REASON,
+          message: WHOLE_SUBSTITUTION_MESSAGE,
+        }
+      }
+      // Official logs `tengu_bash_dangerous_rm_too_complex {kind:"wholeSubstitution"}`
+      // even on the gated-off path; OCC's stub analytics make that a no-op —
+      // the gate decision itself is observable via the env/feature values.
+    }
+  }
+  return null
+}
+
+export type CatastrophicSubstitutionKind =
+  | 'wholeSubstitution'
+  | 'literalTarget'
+  | 'emptyExpansion'
+  | 'emptyVariable'
+  | 'tooManySubstitutions'
+
 export type CatastrophicSubstitutionBlock = {
   category: string
   reason: string
+  /**
+   * Official 2.1.281 verdict kind — `gFt` returns `{result, kind}` and the
+   * kind feeds the `tengu_bash_dangerous_rm_too_complex` telemetry payload
+   * (byte-verified: kinds are wholeSubstitution / literalTarget /
+   * emptyExpansion / emptyVariable / tooManySubstitutions).
+   */
+  kind: CatastrophicSubstitutionKind
+  /**
+   * Rich user-facing message from the official `jy` ask builder. When set,
+   * the call site surfaces this text verbatim (byte-exact official wording)
+   * instead of the generic "Destructive command blocked: …" wrapper.
+   */
+  message?: string
+  /**
+   * Official `tengu_bash_dangerous_rm_shape` telemetry shape, when the
+   * detection corresponds to a `$z(…)` call site in the binary. OCC's
+   * regex-level variable-path detector only distinguishes the root-child
+   * shape (`$z("var_root_child")`); `derived_var`/`eval_trap_string` need the
+   * official's full `Joe`/`MMe` variable-tracking analyzer (not ported).
+   */
+  shape?: 'var_root_child' | 'derived_var' | 'eval_trap_string'
 }
 
 /**
@@ -528,6 +1142,7 @@ export function findCatastrophicSubstitutionBlock(
     if (/\brm(?:dir)?\b/.test(command)) {
       return {
         category: 'rm_substitution_too_many',
+        kind: 'tooManySubstitutions',
         reason: `This command contains ${subs.length} command substitutions — too many to analyze for catastrophic removals. This requires explicit approval.`,
       }
     }
@@ -547,6 +1162,10 @@ export function findCatastrophicSubstitutionBlock(
     if (varMatch !== null) {
       return {
         category: 'rm_substitution_var_path',
+        // Closest official verdict: the variable may expand to nothing,
+        // leaving a root-level glob (`$UNSET/*` → `/*`).
+        kind: 'emptyVariable',
+        shape: 'var_root_child',
         reason: `Dangerous ${varMatch.command} operation detected inside command substitution: '${varMatch.target}'`,
       }
     }
@@ -556,6 +1175,7 @@ export function findCatastrophicSubstitutionBlock(
     if (RM_ROOT_HOME_PATTERN.test(c)) {
       return {
         category: 'rm_substitution_root_home',
+        kind: 'literalTarget',
         reason:
           'rm -rf targeting the root or home directory detected inside command substitution',
       }
@@ -574,6 +1194,13 @@ export function findCatastrophicSubstitutionBlock(
       const block = analyzeText(text)
       if (block !== null) {
         return block
+      }
+      // Official 2.1.281 `gFt` per-command order: literalTarget (approximated
+      // by the RM_ROOT_HOME check in analyzeText above), then emptyExpansion,
+      // then wholeSubstitution — both new v281 verdicts live here.
+      const substBlock = findSubstitutionTargetBlock(text)
+      if (substBlock !== null) {
+        return substBlock
       }
     }
   }
