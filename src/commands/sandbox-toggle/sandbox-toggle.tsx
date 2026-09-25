@@ -60,12 +60,20 @@ export async function call(onDone: (result?: string) => void, _context: unknown,
       // Remove quotes if present
       const cleanPattern = commandPattern.replace(/^["']|["']$/g, '');
 
-      // Add to excludedCommands
-      addToExcludedCommands(cleanPattern);
+      // Add to excludedCommands. CC 2.1.282: the write path is scoped — when
+      // managed settings open the trusted-tier gate the entry lands in
+      // userSettings (or is refused outright when userSettings is disabled),
+      // so the confirmation message must reflect the actual outcome.
+      const result = addToExcludedCommands(cleanPattern);
+      if (result.outcome === 'refused') {
+        const message = color('error', themeName)(`Error: "${cleanPattern}" was not added to excluded commands — managed settings restrict sandbox.excludedCommands and user settings are disabled.`);
+        onDone(message);
+        return null;
+      }
 
-      // Get the local settings path and make it relative to cwd
-      const localSettingsPath = getSettingsFilePathForSource('localSettings');
-      const relativePath = localSettingsPath ? relative(getCwdState(), localSettingsPath) : '.claude/settings.local.json';
+      // Get the settings path actually written to and make it relative to cwd
+      const writtenSettingsPath = getSettingsFilePathForSource(result.settingsSource);
+      const relativePath = writtenSettingsPath ? relative(getCwdState(), writtenSettingsPath) : '.claude/settings.local.json';
       const message = color('success', themeName)(`Added "${cleanPattern}" to excluded commands in ${relativePath}`);
       onDone(message);
       return null;

@@ -70,6 +70,16 @@ type Props = {
   children: string;
   /** When true, render all text content as dim */
   dimColor?: boolean;
+  /**
+   * When true, cap prose (paragraphs, headings, lists, blockquotes) at
+   * settings.maxProseWidth if the user set one. Mirrors the official 2.1.282
+   * `Ei` wrapper @216869295: `const m=o.capProseWidth?i.maxProseWidth:void 0`
+   * — the setting is read ONLY when the caller opts in via capProseWidth:!0.
+   * Tables and code blocks keep the full terminal width (official `Lr`
+   * pushes them with `maxWidth:G==="prose"?k:void 0` / no maxWidth for
+   * kind==="code"|"block").
+   */
+  capProseWidth?: boolean;
 };
 
 // Module-level token cache — marked.lexer is the hot cost on virtual-scroll
@@ -134,26 +144,32 @@ function cachedLexer(content: string): Token[] {
  * - Other content is rendered as ANSI strings via formatToken
  */
 export function Markdown(props) {
-  const $ = _c(4);
+  const $ = _c(6);
   const settings = useSettings();
+  // Official Ei @216869295: `const m=o.capProseWidth?i.maxProseWidth:void 0`
+  // — the setting is consulted only when the caller opts in; unset/invalid
+  // (schema `.catch(undefined)`) or opted-out → undefined → full width.
+  const maxProseWidth = props.capProseWidth ? settings.maxProseWidth : undefined;
   if (settings.syntaxHighlightingDisabled) {
     let t0;
-    if ($[0] !== props) {
-      t0 = <MarkdownBody {...props} highlight={null} />;
+    if ($[0] !== props || $[1] !== maxProseWidth) {
+      t0 = <MarkdownBody {...props} maxProseWidth={maxProseWidth} highlight={null} />;
       $[0] = props;
-      $[1] = t0;
+      $[1] = maxProseWidth;
+      $[2] = t0;
     } else {
-      t0 = $[1];
+      t0 = $[2];
     }
     return t0;
   }
   let t0;
-  if ($[2] !== props) {
-    t0 = <Suspense fallback={<MarkdownBody {...props} highlight={null} />}><MarkdownWithHighlight {...props} /></Suspense>;
-    $[2] = props;
-    $[3] = t0;
+  if ($[3] !== props || $[4] !== maxProseWidth) {
+    t0 = <Suspense fallback={<MarkdownBody {...props} maxProseWidth={maxProseWidth} highlight={null} />}><MarkdownWithHighlight {...props} maxProseWidth={maxProseWidth} /></Suspense>;
+    $[3] = props;
+    $[4] = maxProseWidth;
+    $[5] = t0;
   } else {
-    t0 = $[3];
+    t0 = $[5];
   }
   return t0;
 }
@@ -179,22 +195,32 @@ function MarkdownWithHighlight(props) {
   return t1;
 }
 function MarkdownBody(t0) {
-  const $ = _c(7);
+  const $ = _c(9);
   const {
     children,
     dimColor,
-    highlight
+    highlight,
+    maxProseWidth
   } = t0;
   const [theme] = useTheme();
   configureMarked();
   let elements: React.ReactNode[];
-  if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme) {
+  if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme || $[4] !== maxProseWidth) {
     const tokens = cachedLexer(stripPromptXMLTags(children));
     elements = [];
     let nonTableContent = "";
+    // Official 2.1.282 Lr @216869295+: prose blocks are pushed with
+    // `maxWidth:G==="prose"?k:void 0`; fenced code is special-cased
+    // (`if(k!==void 0&&K.type==="code")` → no maxWidth) and tables render as
+    // kind "block" (no maxWidth). When maxProseWidth is undefined (unset or
+    // caller didn't opt in) the rendering below is byte-identical to the
+    // pre-282 behavior: prose+code stay in one ANSI batch, no wrapper Box.
+    const wrapProse = function wrapProse(node: React.ReactNode): React.ReactNode {
+      return maxProseWidth === undefined ? node : <Box key={elements.length} maxWidth={maxProseWidth}>{node}</Box>;
+    };
     const flushNonTableContent = function flushNonTableContent() {
       if (nonTableContent) {
-        elements.push(<Ansi key={elements.length} dimColor={dimColor}>{nonTableContent.trim()}</Ansi>);
+        elements.push(wrapProse(<Ansi key={elements.length} dimColor={dimColor}>{nonTableContent.trim()}</Ansi>));
         nonTableContent = "";
       }
     };
@@ -203,9 +229,17 @@ function MarkdownBody(t0) {
         flushNonTableContent();
         elements.push(<MarkdownTable key={elements.length} token={token as Tokens.Table} highlight={highlight} />);
       } else if (token.type === "list" && listHasTaskItems(token as Tokens.List)) {
-        // GFM task list — render checkboxes ([ ]/[x]) instead of dropping them
+        // GFM task list — render checkboxes ([ ]/[x]) instead of dropping them.
+        // Lists are prose in the official clamp matrix (zo applies
+        // `maxWidth:R` to list items), so task lists get the cap too.
         flushNonTableContent();
-        elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatTaskList(token as Tokens.List, theme, highlight)}</Ansi>);
+        elements.push(wrapProse(<Ansi key={elements.length} dimColor={dimColor}>{formatTaskList(token as Tokens.List, theme, highlight)}</Ansi>));
+      } else if (maxProseWidth !== undefined && token.type === "code") {
+        // Fenced code keeps FULL width when the cap is active (official code
+        // special-case). Flush the pending prose batch first so the code
+        // block lands outside the capped wrapper, then render it uncapped.
+        flushNonTableContent();
+        elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatToken(token, theme, 0, null, null, highlight).trim()}</Ansi>);
       } else {
         nonTableContent = nonTableContent + formatToken(token, theme, 0, null, null, highlight);
         nonTableContent;
@@ -216,18 +250,19 @@ function MarkdownBody(t0) {
     $[1] = dimColor;
     $[2] = highlight;
     $[3] = theme;
-    $[4] = elements;
+    $[4] = maxProseWidth;
+    $[5] = elements;
   } else {
-    elements = $[4] as React.ReactNode[];
+    elements = $[5] as React.ReactNode[];
   }
   const elements_0 = elements;
   let t1;
-  if ($[5] !== elements_0) {
+  if ($[6] !== elements_0) {
     t1 = <Box flexDirection="column" gap={1}>{elements_0}</Box>;
-    $[5] = elements_0;
-    $[6] = t1;
+    $[6] = elements_0;
+    $[7] = t1;
   } else {
-    t1 = $[6];
+    t1 = $[7];
   }
   return t1;
 }
@@ -289,10 +324,13 @@ export function StreamingMarkdown({
   const unstableSuffix = stripped.substring(stablePrefix.length);
 
   // stablePrefix is memoized inside <Markdown> via useMemo([children, ...])
-  // so it never re-parses as the unstable suffix grows
+  // so it never re-parses as the unstable suffix grows.
+  // capProseWidth: official streaming chunk renderers (Ge/nXn @216874918+)
+  // always pass `skipTokenCache:!0,capProseWidth:!0` → streaming prose is
+  // capped exactly like the final assistant message.
   return <Box flexDirection="column" gap={1}>
-      {stablePrefix && <Markdown>{stablePrefix}</Markdown>}
-      {unstableSuffix && <Markdown>{unstableSuffix}</Markdown>}
+      {stablePrefix && <Markdown capProseWidth={true}>{stablePrefix}</Markdown>}
+      {unstableSuffix && <Markdown capProseWidth={true}>{unstableSuffix}</Markdown>}
     </Box>;
 }
 

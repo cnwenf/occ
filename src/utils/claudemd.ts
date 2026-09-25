@@ -73,6 +73,10 @@ import {
   type InstructionsLoadReason,
   type InstructionsMemoryType,
 } from './hooks.js'
+import {
+  isDeniedMemoryPath,
+  shouldRefuseMemorySymlink,
+} from './macosKernelPaths.js'
 import type { MemoryType } from './memory/types.js'
 import { expandPath } from './path.js'
 import { pathInWorkingPath } from './permissions/filesystem.js'
@@ -469,6 +473,22 @@ function handleMemoryFileReadError(error: unknown, filePath: string): void {
   }
 }
 
+// CC 2.1.282 (security): startup memory containment (nE/ZO port — see
+// macosKernelPaths.ts). The official skips denied paths SILENTLY: no
+// user-visible message anywhere. OCC mirrors that; refusals only reach the
+// local debug log. The official additionally emits a once-per-process
+// diagnostics breadcrumb p("context_claude_md_load","rules_walk_failed") when
+// a rules walk throws; the OCC equivalent is logForDiagnosticsNoPII below
+// (level 'warn' inferred — the official's logger level is not recoverable
+// from the linux binary).
+let hasLoggedRulesWalkFailure = false
+
+function logMemoryPathRefusal(surface: string, path: string): void {
+  logForDebugging(
+    `[claudemd] 2.1.282 memory containment: skipped "${path}" (${surface})`,
+  )
+}
+
 /**
  * Used by processMemoryFile → getMemoryFiles so the event loop stays
  * responsive during the directory walk (many readFile attempts, most
@@ -480,6 +500,13 @@ async function safelyReadMemoryFileAsync(
   type: MemoryType,
   includeBasePath?: string,
 ): Promise<{ info: MemoryFileInfo | null; includePaths: string[] }> {
+  // CC 2.1.282 (security): read-site chokepoint. Every memory read funnels
+  // through here (project/user probes via processMemoryFile, plus the direct
+  // AutoMem/TeamMem callers), so this is the last-line nE/ZO gate. Silent.
+  if (isDeniedMemoryPath(filePath) || shouldRefuseMemorySymlink(filePath)) {
+    logMemoryPathRefusal('read', filePath)
+    return { info: null, includePaths: [] }
+  }
   try {
     const fs = getFsImplementation()
     const rawContent = await fs.readFile(filePath, { encoding: 'utf-8' })
@@ -652,6 +679,14 @@ function resolveExcludePatterns(patterns: string[]): string[] {
     try {
       // sync IO: called from sync context (isClaudeMdExcluded -> processMemoryFile -> getMemoryFiles)
       const resolvedDir = fs.realpathSync(dirToResolve).replaceAll('\\', '/')
+      // CC 2.1.282 (security): vbn-equivalent — never expand exclude
+      // patterns through a denied memory surface or an unverifiable symlink.
+      if (
+        isDeniedMemoryPath(resolvedDir) ||
+        shouldRefuseMemorySymlink(dirToResolve)
+      ) {
+        continue
+      }
       if (resolvedDir !== dirToResolve) {
         const resolvedPattern =
           resolvedDir + normalized.slice(dirToResolve.length)
@@ -690,11 +725,28 @@ export async function processMemoryFile(
     return []
   }
 
+  // CC 2.1.282 (security): K7e-equivalent literal deny-surface check —
+  // official order is processed/depth → excluded → nE(literal). Silent skip.
+  if (isDeniedMemoryPath(filePath)) {
+    logMemoryPathRefusal('memory-file', filePath)
+    return []
+  }
+
   // Resolve symlink path early for @import resolution
   const { resolvedPath, isSymlink } = safeResolvePath(
     getFsImplementation(),
     filePath,
   )
+
+  // CC 2.1.282 (security): W6-equivalent resolved arm —
+  // `if(nE(G)||ZO(e,B))return[]`, gated BEFORE processedPaths.add (the
+  // official only records paths that passed the gates). shouldRefuseMemory-
+  // Symlink is the ZO port: unverifiable ancestry (dangling/ELOOP/EACCES)
+  // fails closed. Silent skip.
+  if (isDeniedMemoryPath(resolvedPath) || shouldRefuseMemorySymlink(filePath)) {
+    logMemoryPathRefusal('memory-file-resolved', filePath)
+    return []
+  }
 
   processedPaths.add(normalizedPath)
   if (isSymlink) {
@@ -718,6 +770,16 @@ export async function processMemoryFile(
   result.push(memoryFile)
 
   for (const resolvedIncludePath of resolvedIncludePaths) {
+    // CC 2.1.282 (security): gate resolved @include targets before recursion
+    // (task surface iv; the recursive processMemoryFile re-gates, so this is
+    // explicit defense-in-depth — denied includes never enter the walk).
+    if (
+      isDeniedMemoryPath(resolvedIncludePath) ||
+      shouldRefuseMemorySymlink(resolvedIncludePath)
+    ) {
+      logMemoryPathRefusal('include', resolvedIncludePath)
+      continue
+    }
     const isExternal = !pathInOriginalCwd(resolvedIncludePath)
     if (isExternal && !includeExternal) {
       continue
@@ -775,6 +837,17 @@ export async function processMdRules({
       rulesDir,
     )
 
+    // CC 2.1.282 (security): cHe dir gate — `if(nE(ge)||ZO(e,G))return[]`.
+    // A denied or unverifiable rules dir skips its whole subtree silently,
+    // before visitedDirs bookkeeping (official adds only after the gate).
+    if (
+      isDeniedMemoryPath(resolvedRulesDir) ||
+      shouldRefuseMemorySymlink(rulesDir)
+    ) {
+      logMemoryPathRefusal('rules-dir', rulesDir)
+      return []
+    }
+
     visitedDirs.add(rulesDir)
     if (isSymlink) {
       visitedDirs.add(resolvedRulesDir)
@@ -798,6 +871,18 @@ export async function processMdRules({
         fs,
         entryPath,
       )
+
+      // CC 2.1.282 (security): cHe per-entry gate —
+      // `if(nE(je)||ZO(We,Xe))continue`. Symlinked rules files/dirs pointing
+      // at denied surfaces (or with unverifiable ancestry) are skipped
+      // individually; benign siblings still load. Silent.
+      if (
+        isDeniedMemoryPath(resolvedEntryPath) ||
+        shouldRefuseMemorySymlink(entryPath)
+      ) {
+        logMemoryPathRefusal('rules-entry', entryPath)
+        continue
+      }
 
       // Use Dirent methods for non-symlinks to avoid extra stat calls.
       // For symlinks, we need stat to determine what the target is.
@@ -836,6 +921,13 @@ export async function processMdRules({
         is_access_error: 1,
         has_home_dir: rulesDir.includes(getClaudeConfigHomeDir()) ? 1 : 0,
       })
+    }
+    // CC 2.1.282 (security): once-per-process rules_walk_failed breadcrumb
+    // (official: p("context_claude_md_load","rules_walk_failed") behind a
+    // session-once flag). No PII — event name only.
+    if (!hasLoggedRulesWalkFailure) {
+      hasLoggedRulesWalkFailure = true
+      logForDiagnosticsNoPII('warn', 'rules_walk_failed')
     }
     return []
   }
@@ -1227,6 +1319,9 @@ async function applyAgentsMdInstructionMode(
       if (skipProject) continue
       for (const name of AGENTS_NAMES) {
         const filePath = join(dir, ...name.split('/'))
+        // CC 2.1.282 (security): AGENTS.md discovery is not a separate
+        // surface in OCC (official `Cbn`) — the walk funnels through
+        // processMemoryFile, so the nE/ZO containment gates apply here.
         try {
           candidates.push(
             ...(await processMemoryFile(

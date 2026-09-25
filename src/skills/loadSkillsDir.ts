@@ -60,6 +60,11 @@ import {
   parseSlashCommandToolsFromFrontmatter,
 } from '../utils/markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../utils/model/model.js'
+import { gateAllowedToolsAtLoad } from '../utils/permissions/frontmatterGrants.js'
+import {
+  filterRefusedReservedNames,
+  logReservedNamesRefusedTelemetry,
+} from '../utils/skills/reservedNames.js'
 import {
   escapeAngleBrackets,
   escapeShellExecutionMarkers,
@@ -536,12 +541,22 @@ export function createSkillCommand({
   background: boolean | undefined
   contentHash: string | undefined
 }): Command {
+  // CC 2.1.282 (official loader closure Xn/mo): under the managed lock
+  // (allowManagedPermissionRulesOnly), frontmatter allowed-tools from
+  // untrusted sources are scrubbed at load time — byte-identical warn, once
+  // per name per session. Trusted sources (plugin/policySettings/built-in/
+  // builtin/bundled) keep their tools untouched.
+  const gatedAllowedTools = gateAllowedToolsAtLoad({
+    name: skillName,
+    source,
+    allowedTools,
+  })
   return {
     type: 'prompt',
     name: skillName,
     description,
     hasUserSpecifiedDescription,
-    allowedTools,
+    allowedTools: gatedAllowedTools,
     disallowedTools,
     argumentHint,
     argNames: argumentNames.length > 0 ? argumentNames : undefined,
@@ -642,7 +657,7 @@ export function createSkillCommand({
                     ...appState.toolPermissionContext,
                     alwaysAllowRules: {
                       ...appState.toolPermissionContext.alwaysAllowRules,
-                      command: allowedTools,
+                      command: gatedAllowedTools,
                     },
                   },
                 }
@@ -971,7 +986,13 @@ export const getSkillDirCommands = memoize(
         ),
       )
       // No dedup needed — explicit dirs, user controls uniqueness.
-      return additionalSkillsNested.flat().map(s => s.skill)
+      // CC 2.1.282 reserved-namespace hardening (official kOe): drop
+      // anthropic-skills / claude-ai squatters before returning.
+      const bareAllowed = filterRefusedReservedNames(
+        additionalSkillsNested.flat(),
+      )
+      logReservedNamesRefusedTelemetry()
+      return bareAllowed.map(s => s.skill)
     }
 
     // Load from /skills/ directories, additional dirs, and legacy /commands/ in parallel
@@ -1013,14 +1034,18 @@ export const getSkillDirCommands = memoize(
       skillsLocked ? Promise.resolve([]) : loadSkillsFromCommandsDir(cwd),
     ])
 
-    // Flatten and combine all skills
-    const allSkillsWithPaths = [
+    // Flatten and combine all skills. CC 2.1.282 reserved-namespace
+    // hardening (official kOe): drop anthropic-skills / claude-ai squatters
+    // from the combined list (once-per-name+path warn, then the once-per-
+    // session names_refused telemetry).
+    const allSkillsWithPaths = filterRefusedReservedNames<Command>([
       ...managedSkills,
       ...userSkills,
       ...projectSkillsNested.flat(),
       ...additionalSkillsNested.flat(),
       ...legacyCommands,
-    ]
+    ])
+    logReservedNamesRefusedTelemetry()
 
     // Deduplicate by resolved path (handles symlinks and duplicate parent directories)
     // Pre-compute file identities in parallel (realpath calls are independent),

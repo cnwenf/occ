@@ -26,6 +26,7 @@ import { validateBoundedIntEnvVar } from '../utils/envValidation.js';
 import { pathExists } from '../utils/file.js';
 import { cleanupStaleLocks, getAllLockInfo, isPidBasedLockingEnabled, type LockInfo } from '../utils/nativeInstaller/pidLock.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
+import { getProjectTelemetryEnvStatusMessages } from '../utils/settings/telemetryEnvStatus.js';
 import { BASH_MAX_OUTPUT_DEFAULT, BASH_MAX_OUTPUT_UPPER_LIMIT } from '../utils/shell/outputLimits.js';
 import { TASK_MAX_OUTPUT_DEFAULT, TASK_MAX_OUTPUT_UPPER_LIMIT } from '../utils/task/outputFormatting.js';
 import { getXDGStateHome } from '../utils/xdg.js';
@@ -98,7 +99,7 @@ function DistTagsDisplay(t0: { promise: Promise<NpmDistTags> }) {
   return t3;
 }
 export function Doctor(t0) {
-  const $ = _c(84);
+  const $ = _c(87);
   const {
     onDone
   } = t0;
@@ -139,6 +140,21 @@ export function Doctor(t0) {
     t3 = $[4];
   }
   const errorsExcludingMcp = t3;
+
+  // CC 2.1.282: project-scope telemetry env-var notices (official `etr()`
+  // statusOnly entries, rendered by the doctor CLI as bare `- message` lines
+  // right after the "Invalid settings" block @217202498). Derivable — no
+  // collector state; keyed memo below keeps the compiled cache effective.
+  const telemetryEnvMessages = getProjectTelemetryEnvStatusMessages();
+  const telemetryEnvMessagesKey = telemetryEnvMessages.join("\n");
+  let t22b;
+  if ($[84] !== telemetryEnvMessagesKey) {
+    t22b = telemetryEnvMessages.length > 0 && <Box flexDirection="column" marginTop={1} marginBottom={1}>{telemetryEnvMessages.map(_tempTelemetry)}</Box>;
+    $[84] = telemetryEnvMessagesKey;
+    $[85] = t22b;
+  } else {
+    t22b = $[85];
+  }
   let t4;
   if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
     const envVars = [{
@@ -355,8 +371,8 @@ export function Doctor(t0) {
     t22 = $[39];
   }
   let t23;
-  if ($[40] !== t11 || $[41] !== t12 || $[42] !== t13 || $[43] !== t14 || $[44] !== t15 || $[45] !== t18 || $[46] !== t19 || $[47] !== t20 || $[48] !== t21 || $[49] !== t22) {
-    t23 = <Box flexDirection="column">{t10}{t11}{t12}{t13}{t14}{t15}{t18}{t19}{t20}{t21}{t22}</Box>;
+  if ($[40] !== t11 || $[41] !== t12 || $[42] !== t13 || $[43] !== t14 || $[44] !== t15 || $[45] !== t18 || $[46] !== t19 || $[47] !== t20 || $[48] !== t21 || $[49] !== t22 || $[86] !== telemetryEnvMessagesKey) {
+    t23 = <Box flexDirection="column">{t10}{t11}{t12}{t13}{t14}{t15}{t18}{t19}{t20}{t21}{t22}{t22b}</Box>;
     $[40] = t11;
     $[41] = t12;
     $[42] = t13;
@@ -367,6 +383,7 @@ export function Doctor(t0) {
     $[47] = t20;
     $[48] = t21;
     $[49] = t22;
+    $[86] = telemetryEnvMessagesKey;
     $[50] = t23;
   } else {
     t23 = $[50];
@@ -499,6 +516,9 @@ export function Doctor(t0) {
     t41 = $[83];
   }
   return t41;
+}
+function _tempTelemetry(message, i_9) {
+  return <Box key={i_9} flexDirection="row" gap={1}><Text color="warning">{figures.warning}</Text><Text wrap="wrap">{message}</Text></Box>;
 }
 function _temp18(detail_2, i_8) {
   return <Text key={i_8} dimColor={true}>{"    "}└ {detail_2}</Text>;

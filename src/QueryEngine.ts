@@ -593,6 +593,13 @@ export class QueryEngine {
     const messagesToAck = replayUserMessages ? replayableMessages : []
 
     // Update the ToolPermissionContext based on user input processing (as necessary)
+    // CC 2.1.282 frontmatter allowed-tools gate: `allowedTools` flows from
+    // processUserInput → processSlashCommand, which reads command.allowedTools
+    // raw. Under allowManagedPermissionRulesOnly the load-time scrub
+    // (gateAllowedToolsAtLoad in createSkillCommand / createPluginCommand) has
+    // already emptied untrusted commands' allowedTools, so no untrusted grant
+    // can reach this merge. Trusted sources (plugin/policySettings/built-in/
+    // builtin/bundled) pass through untouched.
     setAppState(prev => ({
       ...prev,
       toolPermissionContext: {

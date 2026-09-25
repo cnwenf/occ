@@ -93,6 +93,36 @@ export type ValidationError = {
   suggestion?: string
   /** Link to relevant documentation */
   docLink?: string
+  /**
+   * Severity assigned by the strict policy-source parser (official `pd` sink,
+   * claude-code 2.1.282). Policy-source records are always `severity:
+   * "warning"` — the document still loads (fail-closed per field), unlike
+   * whole-file rejections.
+   */
+  severity?: 'error' | 'warning'
+  /**
+   * True when the record describes a value the parser substituted or coerced
+   * and startup names the key (official `statusOnly`): the setting is applied
+   * in its restrictive/coerced reading, so the message is informational and
+   * does not block startup on its own.
+   */
+  statusOnly?: boolean
+  /**
+   * True when the record blocks startup from an OS-admin policy source until
+   * fixed (official `startupFatal`, e.g. a managed settings document that is
+   * not a JSON object).
+   */
+  startupFatal?: boolean
+  /** True when an invalid value was replaced by its restrictive value. */
+  substituted?: boolean
+  /**
+   * True when the key holds nothing applicable as written and its fail-closed
+   * reading is this source's ONLY policy content (official `onlySubstitutes`
+   * tail record).
+   */
+  onlySubstitutes?: boolean
+  /** True for records from user-writable sources (official HKCU variant). */
+  userWritable?: boolean
   /** MCP-specific metadata - only present for MCP configuration errors */
   mcpErrorMetadata?: {
     /** Which configuration scope this error came from */

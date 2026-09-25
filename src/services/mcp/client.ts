@@ -105,6 +105,10 @@ import {
   getWebSocketProxyUrl,
 } from '../../utils/proxy.js'
 import { recursivelySanitizeUnicode } from '../../utils/sanitization.js'
+import {
+  reservedMcpPromptMessage,
+  shouldRefuseReservedName,
+} from '../../utils/skills/reservedNames.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
 import { subprocessEnv } from '../../utils/subprocessEnv.js'
 import {
@@ -2601,10 +2605,16 @@ export const fetchCommandsForClient = memoizeWithLRU(
       // Sanitize prompt data from MCP server
       const promptsToProcess = recursivelySanitizeUnicode(allPrompts)
 
-      // Convert MCP prompts to our Command format
-      return promptsToProcess.map(prompt => {
+      // Convert MCP prompts to our Command format. CC 2.1.282 reserved-
+      // namespace hardening (official rZe): prompts whose command is a
+      // reserved-namespace squatter are dropped — a server named
+      // anthropic-skills / claude-ai makes every prompt displayName
+      // ("<server>:<prompt> (MCP)") reserved. Each drop logs the byte-exact
+      // per-prompt message via the MCP debug log. Tools are unaffected.
+      const commands: Command[] = []
+      for (const prompt of promptsToProcess) {
         const argNames = Object.values(prompt.arguments ?? {}).map(k => k.name)
-        return {
+        const command: Command = {
           type: 'prompt' as const,
           name: 'mcp__' + normalizeNameForMCP(client.name) + '__' + prompt.name,
           description: prompt.description ?? '',
@@ -2644,7 +2654,13 @@ export const fetchCommandsForClient = memoizeWithLRU(
             }
           },
         }
-      })
+        if (shouldRefuseReservedName(command)) {
+          logMCPDebug(client.name, reservedMcpPromptMessage(command.name))
+          continue
+        }
+        commands.push(command)
+      }
+      return commands
     } catch (error) {
       logMCPError(
         client.name,

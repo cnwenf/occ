@@ -24,6 +24,7 @@ import {
   parseSlashCommandToolsFromFrontmatter,
 } from '../markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../model/model.js'
+import { gateAllowedToolsAtLoad } from '../permissions/frontmatterGrants.js'
 import {
   escapeShellExecutionMarkers,
   executeShellCommandsInPrompt,
@@ -283,9 +284,21 @@ function createPluginCommand(
                 : tool,
             )
           : rawAllowedTools
-    const allowedTools = parseSlashCommandToolsFromFrontmatter(
+    const parsedAllowedTools = parseSlashCommandToolsFromFrontmatter(
       substitutedAllowedTools,
     )
+    // CC 2.1.282 (official loader closure mo/jn): under the managed lock
+    // (allowManagedPermissionRulesOnly), frontmatter allowed-tools from
+    // untrusted sources are withheld at load time — byte-identical warn, once
+    // per name per session. Plugins are trusted unless their id sits in the
+    // skills-dir namespace (which OCC never generates), so this is normally a
+    // passthrough.
+    const allowedTools = gateAllowedToolsAtLoad({
+      name: commandName,
+      source: 'plugin',
+      allowedTools: parsedAllowedTools,
+      pluginInfo: { repository: sourceName },
+    })
 
     const argumentHint = frontmatter['argument-hint'] as string | undefined
     const argumentNames = parseArgumentNames(

@@ -41,7 +41,12 @@ import { logForDebugging } from '../debug.js'
 import { expandPath } from '../path.js'
 import { getPlatform, type Platform } from '../platform.js'
 import { settingsChangeDetector } from '../settings/changeDetector.js'
-import { SETTING_SOURCES, type SettingSource } from '../settings/constants.js'
+import {
+  type EditableSettingSource,
+  isSettingSourceEnabled,
+  SETTING_SOURCES,
+  type SettingSource,
+} from '../settings/constants.js'
 import { getManagedSettingsDropInDir } from '../settings/managedPath.js'
 import {
   getInitialSettings,
@@ -61,6 +66,10 @@ import { BASH_TOOL_NAME } from 'src/tools/BashTool/toolName.js'
 import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import { WEB_FETCH_TOOL_NAME } from 'src/tools/WebFetchTool/prompt.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from '../../services/analytics/index.js'
 import { errorMessage, getErrnoCode } from '../errors.js'
 import { getClaudeTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
@@ -1054,11 +1063,91 @@ async function setSandboxSettings(options: {
 }
 
 /**
- * Get excluded commands (commands that should not be sandboxed)
+ * CC 2.1.282 (P1) binary `vO()` @~199146800 — gate for restricting
+ * sandbox.excludedCommands to trusted settings tiers:
+ * `if(_O()||m4())return!0;return(VE()?.sandbox?.allowUnsandboxedCommands??ye("flagSettings")?.sandbox?.allowUnsandboxedCommands)===!1`
+ *
+ * - `_O()` (GrowthBook `forbidUnsandboxedCommands`): OCC has no GrowthBook
+ *   gate wiring for this flag — stubbed to false (constant), documented.
+ * - `m4()` = any managed tier sets `sandbox.network.allowManagedDomainsOnly:
+ *   true` (binary `Xu()` = policy allTiers; OCC composes all managed tiers
+ *   into the single `policySettings` source, so the existing
+ *   shouldAllowManagedSandboxDomainsOnly() helper is the exact equivalent).
+ * - Third leg: policy (`VE()`, gated on policy composition — OCC's
+ *   getSettingsForSource('policySettings') returns null when no policy is
+ *   composed, matching) then --settings (flagSettings) sets
+ *   `sandbox.allowUnsandboxedCommands: false`.
+ */
+export function shouldRestrictExcludedCommands(): boolean {
+  if (shouldAllowManagedSandboxDomainsOnly()) return true
+  const allowUnsandboxedCommands =
+    getSettingsForSource('policySettings')?.sandbox
+      ?.allowUnsandboxedCommands ??
+    getSettingsForSource('flagSettings')?.sandbox?.allowUnsandboxedCommands
+  return allowUnsandboxedCommands === false
+}
+
+/**
+ * CC 2.1.282 binary `q$n()` = `uQ((e)=>e.excludedCommands)` — excludedCommands
+ * from trusted tiers only: policy (`VE()`), --settings (`flagSettings`), and
+ * user settings when the userSettings source is enabled (`FE()`), merged in
+ * that order and deduped (`L` = uniq).
+ */
+function getTrustedExcludedCommands(): string[] {
+  const trustedSources = [
+    getSettingsForSource('policySettings'),
+    getSettingsForSource('flagSettings'),
+    isSettingSourceEnabled('userSettings')
+      ? getSettingsForSource('userSettings')
+      : null,
+  ]
+  const merged = trustedSources.flatMap(
+    (settings) => settings?.sandbox?.excludedCommands ?? [],
+  )
+  return [...new Set(merged)]
+}
+
+/**
+ * One-time warning latch for restricted excludedCommands (binary `Mt()`
+ * sandbox module state field `droppedRepoExcludedCommandsLogged`).
+ */
+let droppedRepoExcludedCommandsLogged = false
+
+/** Test-only reset of the one-time excludedCommands restriction warning. */
+export function _resetExcludedCommandsWarningForTesting(): void {
+  droppedRepoExcludedCommandsLogged = false
+}
+
+/**
+ * Get excluded commands (commands that should not be sandboxed).
+ *
+ * CC 2.1.282 binary `IJ()`: when the trusted-tier restriction gate is open,
+ * project/local settings values are ignored — only managed, --settings, and
+ * user settings contribute — and dropped repo-scoped entries are reported
+ * once (byte-exact warning against the 2.1.282 ELF; absent from 2.1.281).
+ * With the gate closed the merged list is returned unchanged (2.1.281
+ * behavior).
  */
 function getExcludedCommands(): string[] {
   const settings = getSettings_DEPRECATED()
-  return settings?.sandbox?.excludedCommands ?? []
+  const mergedExcludedCommands = settings?.sandbox?.excludedCommands ?? []
+  if (!shouldRestrictExcludedCommands()) return mergedExcludedCommands
+  const trustedExcludedCommands = getTrustedExcludedCommands()
+  if (!droppedRepoExcludedCommandsLogged) {
+    droppedRepoExcludedCommandsLogged = true
+    const trustedSet = new Set(trustedExcludedCommands)
+    const droppedCount = mergedExcludedCommands.filter(
+      (commandPattern) => !trustedSet.has(commandPattern),
+    ).length
+    if (droppedCount > 0) {
+      logForDebugging(
+        `[sandbox] excludedCommands restricted to trusted settings tiers: ignoring ${droppedCount} sandbox.excludedCommands entr${
+          droppedCount === 1 ? 'y' : 'ies'
+        } not set by managed, --settings, or user settings`,
+      )
+    }
+  }
+  return trustedExcludedCommands
 }
 
 /**
@@ -1196,8 +1285,32 @@ async function reset(): Promise<void> {
 }
 
 /**
- * Add a command to the excluded commands list (commands that should not be sandboxed)
- * This is a Claude CLI-specific function that updates local settings.
+ * CC 2.1.282 binary `OIt()` result shape — 2.1.281 returned a bare
+ * `commandPattern: string` with no outcome field, no gate, and no refuse
+ * path.
+ */
+export type AddToExcludedCommandsResult =
+  | { outcome: 'refused'; commandPattern: string }
+  | {
+      outcome: 'added'
+      commandPattern: string
+      settingsSource: EditableSettingSource
+    }
+
+/**
+ * Add a command to the excluded commands list (commands that should not be sandboxed).
+ *
+ * CC 2.1.282 binary `OIt()` @199158943: when the trusted-tier restriction
+ * gate is open, the write is REDIRECTED to user settings (~/.claude/settings.json)
+ * so a repo-scoped file can never widen the sandbox exclusion list; when the
+ * userSettings source is disabled entirely, the write is REFUSED (telemetry
+ * reason `user_settings_disabled`). With the gate closed, behavior is the
+ * 2.1.281 write to local settings.
+ *
+ * Deviation: the official target expression also has a
+ * `H()==="windows" && Ve.isStrictSandboxModeConfigured()` leg — Windows
+ * strict-sandbox mode is not ported to OCC (no isStrictSandboxModeConfigured),
+ * so the expression simplifies to `restricted && userSettingsEnabled`.
  */
 export function addToExcludedCommands(
   command: string,
@@ -1205,11 +1318,7 @@ export function addToExcludedCommands(
     type: string
     rules: Array<{ toolName: string; ruleContent?: string }>
   }>,
-): string {
-  const existingSettings = getSettingsForSource('localSettings')
-  const existingExcludedCommands =
-    existingSettings?.sandbox?.excludedCommands || []
-
+): AddToExcludedCommandsResult {
   // Determine the command pattern to add
   // If there are suggestions with Bash rules, extract the pattern (e.g., "npm run test" from "npm run test:*")
   // Otherwise use the exact command
@@ -1234,9 +1343,28 @@ export function addToExcludedCommands(
     }
   }
 
+  const restricted = shouldRestrictExcludedCommands()
+  const userSettingsEnabled = isSettingSourceEnabled('userSettings')
+  if (restricted && !userSettingsEnabled) {
+    // Official: `m("sandbox_exclude_command","user_settings_disabled")` —
+    // OCC has no local-event-counter registry; logEvent is the telemetry
+    // primitive, with the official event name and reason kept byte-exact.
+    logEvent('sandbox_exclude_command', {
+      reason:
+        'user_settings_disabled' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+    return { outcome: 'refused', commandPattern }
+  }
+  const settingsSource: EditableSettingSource =
+    restricted && userSettingsEnabled ? 'userSettings' : 'localSettings'
+
+  const existingSettings = getSettingsForSource(settingsSource)
+  const existingExcludedCommands =
+    existingSettings?.sandbox?.excludedCommands || []
+
   // Add to excludedCommands if not already present
   if (!existingExcludedCommands.includes(commandPattern)) {
-    updateSettingsForSource('localSettings', {
+    updateSettingsForSource(settingsSource, {
       sandbox: {
         ...existingSettings?.sandbox,
         excludedCommands: [...existingExcludedCommands, commandPattern],
@@ -1244,7 +1372,9 @@ export function addToExcludedCommands(
     })
   }
 
-  return commandPattern
+  // Official: `y("sandbox_exclude_command")` on every non-refused call.
+  logEvent('sandbox_exclude_command', {})
+  return { outcome: 'added', commandPattern, settingsSource }
 }
 
 // ============================================================================

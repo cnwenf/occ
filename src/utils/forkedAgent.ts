@@ -10,7 +10,7 @@
 
 import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
-import type { PromptCommand } from '../commands.js'
+import type { CommandBase, PromptCommand } from '../commands.js'
 import type { QuerySource } from '../constants/querySource.js'
 import type { CanUseToolFn } from '../hooks/useCanUseTool.js'
 import { query } from '../query.js'
@@ -35,6 +35,7 @@ import {
   getLastAssistantMessage,
 } from './messages.js'
 import { createDenialTrackingState } from './permissions/denialTracking.js'
+import { getAllowedToolsGated } from './permissions/frontmatterGrants.js'
 import { parseToolListFromCLI } from './permissions/permissionSetup.js'
 import { getInitialSettings } from './settings/settings.js'
 import { recordSidechainTranscript } from './sessionStorage.js'
@@ -232,7 +233,10 @@ export function shouldForkedSkillRunAsync(command: {
  * This handles the common setup that both SkillTool and slash commands need.
  */
 export async function prepareForkedCommandContext(
-  command: PromptCommand,
+  // Callers pass full Command objects (CommandBase & PromptCommand); `name`
+  // is needed by the 2.1.282 allowed-tools gate warning. Partial keeps
+  // bare-PromptCommand test callers compiling.
+  command: PromptCommand & Partial<CommandBase>,
   args: string,
   context: ToolUseContext,
 ): Promise<PreparedForkedContext> {
@@ -242,8 +246,19 @@ export async function prepareForkedCommandContext(
     .map(block => (block.type === 'text' ? block.text : ''))
     .join('\n')
 
-  // Parse and prepare allowed tools
-  const allowedTools = parseToolListFromCLI(command.allowedTools ?? [])
+  // Parse and prepare allowed tools. CC 2.1.282 (official ZMe apply-time
+  // gate): under allowManagedPermissionRulesOnly, frontmatter allowed-tools
+  // from untrusted sources are withheld (trusted: plugin / policySettings /
+  // built-in / builtin / bundled). This covers both SkillTool forks and the
+  // processSlashCommand fork path.
+  const allowedTools = parseToolListFromCLI(
+    await getAllowedToolsGated({
+      name: command.name ?? '',
+      source: command.source,
+      allowedTools: command.allowedTools ?? [],
+      pluginInfo: command.pluginInfo,
+    }),
+  )
 
   // Create modified context with allowed tools
   const modifiedGetAppState = createGetAppStateWithAllowedTools(

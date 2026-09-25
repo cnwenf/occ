@@ -240,6 +240,14 @@ export type PermissionAskDecision<
    * message in the tool result. Used when users paste images as feedback.
    */
   contentBlocks?: ContentBlockParam[]
+  /**
+   * CC 2.1.282: if true, the permission prompt must NOT offer (or persist) an
+   * "always allow" rule for this ask — used by the Skill tool when a reserved
+   * anthropic-skills / claude-ai namespace name matches a held-back allow rule
+   * (official `suppressAlwaysAllowRule:!0` on the squatter ask decision). No
+   * rule for that name can pre-approve it; it needs approval each time.
+   */
+  suppressAlwaysAllowRule?: boolean
 }
 
 /**

@@ -2,7 +2,7 @@ import { isRemoteManagedSettingsEligible } from '../services/remoteManagedSettin
 import { clearCACertsCache } from './caCerts.js'
 import { getGlobalConfig } from './config.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
-import { isEnvTruthy } from './envUtils.js'
+import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import {
   isProviderManagedEnvVar,
   SAFE_ENV_VARS,
@@ -162,6 +162,66 @@ function withoutCcdSpawnEnvKeys(
  * User (~/.claude/settings.json), CLI-flag, and managed settings may still
  * set them. Recovered verbatim from the official 2.1.251 binary.
  */
+/**
+ * CC 2.1.282 (P0) binary `Gcn` @~194559000 — the 48 telemetry env names that
+ * project-scoped settings may no longer set, byte-exact and in binary order:
+ * 35 OTLP exporter keys (7 suffixes × 5 signal families incl. PROFILES),
+ * 2 Prometheus exporter keys, the telemetry enable/exporter selection vars,
+ * the enhanced-telemetry beta flags, and the OTEL_LOG_* content knobs.
+ * (OTEL_LOG_RAW_API_BODIES / ENABLE_BETA_TRACING_DETAILED / BETA_TRACING_ENDPOINT
+ * are blocked separately — they were already on the 2.1.251 list above.)
+ */
+export const TELEMETRY_PROJECT_SCOPE_BLOCKED_ENV_KEYS = [
+  'OTEL_EXPORTER_OTLP_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_HEADERS',
+  'OTEL_EXPORTER_OTLP_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_CLIENT_KEY',
+  'OTEL_EXPORTER_OTLP_INSECURE',
+  'OTEL_EXPORTER_OTLP_TRACES_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_TRACES_HEADERS',
+  'OTEL_EXPORTER_OTLP_TRACES_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY',
+  'OTEL_EXPORTER_OTLP_TRACES_INSECURE',
+  'OTEL_EXPORTER_OTLP_METRICS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_METRICS_HEADERS',
+  'OTEL_EXPORTER_OTLP_METRICS_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_METRICS_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY',
+  'OTEL_EXPORTER_OTLP_METRICS_INSECURE',
+  'OTEL_EXPORTER_OTLP_LOGS_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_LOGS_HEADERS',
+  'OTEL_EXPORTER_OTLP_LOGS_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_LOGS_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_LOGS_CLIENT_KEY',
+  'OTEL_EXPORTER_OTLP_LOGS_INSECURE',
+  'OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT',
+  'OTEL_EXPORTER_OTLP_PROFILES_HEADERS',
+  'OTEL_EXPORTER_OTLP_PROFILES_PROTOCOL',
+  'OTEL_EXPORTER_OTLP_PROFILES_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_PROFILES_CLIENT_CERTIFICATE',
+  'OTEL_EXPORTER_OTLP_PROFILES_CLIENT_KEY',
+  'OTEL_EXPORTER_OTLP_PROFILES_INSECURE',
+  'OTEL_EXPORTER_PROMETHEUS_HOST',
+  'OTEL_EXPORTER_PROMETHEUS_PORT',
+  'CLAUDE_CODE_ENABLE_TELEMETRY',
+  'OTEL_LOGS_EXPORTER',
+  'OTEL_METRICS_EXPORTER',
+  'OTEL_TRACES_EXPORTER',
+  'CLAUDE_CODE_ENHANCED_TELEMETRY_BETA',
+  'ENABLE_ENHANCED_TELEMETRY_BETA',
+  'OTEL_LOG_USER_PROMPTS',
+  'OTEL_LOG_ASSISTANT_RESPONSES',
+  'OTEL_LOG_TOOL_CONTENT',
+  'OTEL_LOG_TOOL_DETAILS',
+  'OTEL_LOG_MANAGED_SETTINGS',
+] as const
+
 const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   'CLAUDE_CODE_PROCESS_WRAPPER',
   'CLAUDE_CODE_CUSTOM_OAUTH_URL',
@@ -212,6 +272,13 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   'ENABLE_BETA_TRACING_DETAILED',
   'BETA_TRACING_ENDPOINT',
   'OTEL_LOG_RAW_API_BODIES',
+  // CC 2.1.282 (P0): project/local settings may no longer enable telemetry —
+  // the official binary spreads `...Gcn` (48 telemetry env names, byte-exact
+  // from the 2.1.282 ELF @~194559000) into the project-scope blocklist at this
+  // position (right after OTEL_LOG_RAW_API_BODIES). An off-only exception
+  // (isTelemetryOffOnlyException below, binary `Vcn`) keeps values that turn
+  // telemetry OFF.
+  ...TELEMETRY_PROJECT_SCOPE_BLOCKED_ENV_KEYS,
   'CLAUDE_PTY_RECORD',
   'CLAUDE_CODE_DEBUG_LOGS_DIR',
   'CLAUDE_CODE_DIAGNOSTICS_FILE',
@@ -231,7 +298,7 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   'CLAUDE_JOB_DIR',
 ])
 
-const PROJECT_SCOPED_SOURCES = new Set<SettingSource>([
+const PROJECT_SCOPED_SOURCES = new Set<SettingSource | 'globalConfig'>([
   'projectSettings',
   'localSettings',
 ])
@@ -240,8 +307,165 @@ const PROJECT_SCOPED_SOURCES = new Set<SettingSource>([
 const projectScopeDropWarned = new Set<string>()
 
 /**
- * Drop env keys that project-scoped settings may not set (binary `N`).
- * Non-project scopes pass through unchanged. Each dropped key warns once:
+ * CC 2.1.282 binary `Wd` — blocked telemetry keys kept from project/local
+ * scope when their value turns the feature OFF (falsy per `ko`).
+ */
+const TELEMETRY_OFF_ONLY_FALSY_KEYS = new Set([
+  'OTEL_LOG_USER_PROMPTS',
+  'OTEL_LOG_TOOL_CONTENT',
+  'OTEL_LOG_TOOL_DETAILS',
+])
+
+/**
+ * CC 2.1.282 binary `Gd` — exporter-selection keys kept from project/local
+ * scope only when the value is exactly "none" (disables the exporter).
+ */
+const TELEMETRY_EXPORTER_NONE_KEYS = new Set([
+  'OTEL_LOGS_EXPORTER',
+  'OTEL_METRICS_EXPORTER',
+  'OTEL_TRACES_EXPORTER',
+])
+
+/**
+ * CC 2.1.282 binary `Vcn` — the off-only exception to the project-scope
+ * telemetry blocklist. A blocked key set by project/local settings is KEPT
+ * when (a) the key is exact-uppercase, (b) the value is a string/number/
+ * boolean, (c) the value turns telemetry off — `ko`-falsy for the
+ * OTEL_LOG_* content knobs, or the literal "none" for the exporter-selection
+ * vars — and (d) no same-name variable exists in the env above project
+ * settings (spawn env, --settings, or managed settings), so a project file
+ * can never downgrade a higher tier's telemetry configuration.
+ */
+export function isTelemetryOffOnlyException(
+  key: string,
+  value: unknown,
+  getEnvAbove: () => Record<string, string | undefined>,
+): boolean {
+  if (key !== key.toUpperCase()) return false
+  if (
+    typeof value !== 'string' &&
+    typeof value !== 'number' &&
+    typeof value !== 'boolean'
+  ) {
+    return false
+  }
+  const isOffValue = TELEMETRY_OFF_ONLY_FALSY_KEYS.has(key)
+    ? // Binary calls ko(boolean ? v : String(v)) — isEnvDefinedFalsy is OCC's
+      // byte-equivalent `ko` parser ("0"/"false"/"no"/"off", boolean negated).
+      isEnvDefinedFalsy(typeof value === 'boolean' ? value : String(value))
+    : TELEMETRY_EXPORTER_NONE_KEYS.has(key) && String(value).trim() === 'none'
+  if (!isOffValue) return false
+  return !Object.keys(getEnvAbove()).some((k) => k.toUpperCase() === key)
+}
+
+// ---------------------------------------------------------------------------
+// CC 2.1.282 pre-settings env snapshot (binary class `B` members
+// getPreSettingsEnvSnapshot / latchPreSettingsEnvSnapshot /
+// envAboveProjectSettings / peekPreSettingsEnvSnapshot /
+// dropPreSettingsEnvSnapshot, @~198156000-198160500).
+//
+// The official binary keeps this state on the env-store class inside the
+// managed-env module. OCC keeps it as module-level state here — same module
+// boundary, same semantics: a lazily-captured frozen copy of process.env from
+// BEFORE any settings.env is applied, used to decide what counts as "above
+// project settings" for the Vcn off-only exception. Both apply functions
+// (applySafeConfigEnvironmentVariables / applyConfigEnvironmentVariables)
+// capture it as their first statement, exactly like the official.
+// ---------------------------------------------------------------------------
+
+/** Frozen `{...process.env}` captured before any settings.env is applied. */
+let preSettingsEnvSnapshot:
+  | Readonly<Record<string, string | undefined>>
+  | undefined
+
+/** Uppercase env names present at launch (set when the snapshot is dropped). */
+let launchNamesBeforeClaim: Set<string> | undefined
+
+/** Snapshot keys (uppercase) that came from user-tier settings.env. */
+let userTierNamesInSnapshot: Set<string> = new Set()
+
+/**
+ * Uppercase env keys contributed by globalConfig/userSettings env (binary
+ * `userTierNames`, populated at the end of filterSettingsEnv). Excluded from
+ * envAboveProjectSettings so a user-tier key that merely shadowed a launch
+ * env var doesn't count as "above project settings" on a later re-latch.
+ */
+const userTierNames = new Set<string>()
+
+/** Binary `latchPreSettingsEnvSnapshot` — freeze + compute the user-tier overlap. */
+function latchPreSettingsEnvSnapshot(
+  snapshot: Record<string, string | undefined>,
+): Readonly<Record<string, string | undefined>> {
+  const launchNames = launchNamesBeforeClaim
+  userTierNamesInSnapshot = new Set(
+    launchNames === undefined
+      ? []
+      : Object.keys(snapshot)
+          .map((key) => key.toUpperCase())
+          .filter((key) => userTierNames.has(key) && !launchNames.has(key)),
+  )
+  return Object.freeze(snapshot)
+}
+
+/** Binary `getPreSettingsEnvSnapshot` — lazy one-shot capture. */
+export function getPreSettingsEnvSnapshot(): Readonly<
+  Record<string, string | undefined>
+> {
+  preSettingsEnvSnapshot ??= latchPreSettingsEnvSnapshot({ ...process.env })
+  return preSettingsEnvSnapshot
+}
+
+/** Binary `peekPreSettingsEnvSnapshot` — read without capturing. */
+export function peekPreSettingsEnvSnapshot():
+  | Readonly<Record<string, string | undefined>>
+  | undefined {
+  return preSettingsEnvSnapshot
+}
+
+/** Binary `dropPreSettingsEnvSnapshot` — release the snapshot (e.g. after claim). */
+export function dropPreSettingsEnvSnapshot(
+  extraLaunchNames?: readonly string[],
+): void {
+  if (extraLaunchNames !== undefined && preSettingsEnvSnapshot) {
+    launchNamesBeforeClaim = new Set(
+      [...Object.keys(preSettingsEnvSnapshot), ...extraLaunchNames].map((key) =>
+        key.toUpperCase(),
+      ),
+    )
+  }
+  preSettingsEnvSnapshot = undefined
+}
+
+/**
+ * Binary `envAboveProjectSettings` — everything that outranks project/local
+ * settings for the Vcn shadow check: the pre-settings spawn env (minus keys
+ * that only exist because user-tier settings put them there), then
+ * --settings (flagSettings) env, then managed (policySettings) env.
+ */
+export function envAboveProjectSettings(): Record<
+  string,
+  string | undefined
+> {
+  const snapshot = getPreSettingsEnvSnapshot()
+  const spawnOnly: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(snapshot)) {
+    if (!userTierNamesInSnapshot.has(key.toUpperCase())) {
+      spawnOnly[key] = value
+    }
+  }
+  return {
+    ...spawnOnly,
+    ...getSettingsForSource('flagSettings')?.env,
+    ...getSettingsForSource('policySettings')?.env,
+  }
+}
+
+/**
+ * Drop env keys that project-scoped settings may not set (binary `U`, 2.1.282
+ * 4-param form `U(e, n, o, r)`). Non-project scopes pass through unchanged.
+ * Since 2.1.282 a blocked telemetry key is KEPT when it only turns telemetry
+ * off and nothing above project settings sets the same name (binary `Vcn`).
+ * Each dropped key warns once:
  * "<KEY> in .claude/settings.json is ignored — project-scoped settings
  * can't set this key. Set it in ~/.claude/settings.json or managed
  * settings instead."
@@ -249,15 +473,23 @@ const projectScopeDropWarned = new Set<string>()
 function filterProjectScopeBlockedKeys(
   env: Record<string, string> | undefined,
   source: SettingSource | 'globalConfig',
+  warned: Set<string>,
+  getEnvAbove: () => Record<string, string | undefined>,
 ): Record<string, string> {
   if (!env || !PROJECT_SCOPED_SOURCES.has(source)) return env || {}
   let filtered: Record<string, string> | undefined
   for (const key of Object.keys(env)) {
-    if (!PROJECT_SCOPE_BLOCKED_ENV_KEYS.has(key.toUpperCase())) continue
+    // Official keep-condition: `if(!j(E)||Vcn(E,e[E],r))continue`
+    if (
+      !PROJECT_SCOPE_BLOCKED_ENV_KEYS.has(key.toUpperCase()) ||
+      isTelemetryOffOnlyException(key, env[key], getEnvAbove)
+    ) {
+      continue
+    }
     filtered ??= { ...env }
     delete filtered[key]
-    if (!projectScopeDropWarned.has(key)) {
-      projectScopeDropWarned.add(key)
+    if (!warned.has(key)) {
+      warned.add(key)
       logForDiagnosticsNoPII(
         'warn',
         `${key} in ${
@@ -282,12 +514,28 @@ function filterSettingsEnv(
   env: Record<string, string> | undefined,
   source: SettingSource | 'globalConfig',
 ): Record<string, string> {
-  return withoutCcdSpawnEnvKeys(
+  const filtered = withoutCcdSpawnEnvKeys(
     withoutHostManagedProviderVars(
-      withoutSSHTunnelVars(filterProjectScopeBlockedKeys(env, source)),
+      withoutSSHTunnelVars(
+        filterProjectScopeBlockedKeys(
+          env,
+          source,
+          projectScopeDropWarned,
+          envAboveProjectSettings,
+        ),
+      ),
     ),
     source,
   )
+  // CC 2.1.282 binary tail of filterSettingsEnv: record user-tier env key
+  // names so a later snapshot re-latch can tell spawn-env keys from keys the
+  // user's own settings put into the environment.
+  if (source === 'globalConfig' || source === 'userSettings') {
+    for (const key of Object.keys(filtered)) {
+      userTierNames.add(key.toUpperCase())
+    }
+  }
+  return filtered
 }
 
 /**
@@ -553,6 +801,11 @@ const TRUSTED_SETTING_SOURCES = [
  * applyConfigEnvironmentVariables().
  */
 export function applySafeConfigEnvironmentVariables(): void {
+  // CC 2.1.282: official `applySafeConfigEnvironmentVariables(){this.getPreSettingsEnvSnapshot(),...}`
+  // — capture the pre-settings env snapshot first, before anything mutates
+  // process.env, so the Vcn off-only exception can see the launch env.
+  getPreSettingsEnvSnapshot()
+
   // Capture CCD spawn-env keys before any settings.env is applied (once).
   // Uppercase-normalized for case-insensitive comparison.
   if (ccdSpawnEnvKeys === undefined) {
@@ -627,6 +880,10 @@ export function applySafeConfigEnvironmentVariables(): void {
  * dangerous environment variables such as LD_PRELOAD, PATH, etc.
  */
 export function applyConfigEnvironmentVariables(): void {
+  // CC 2.1.282: official `applyConfigEnvironmentVariables(){this.getPreSettingsEnvSnapshot(),...}`
+  // — same first-statement snapshot capture as the safe path.
+  getPreSettingsEnvSnapshot()
+
   Object.assign(
     process.env,
     filterSettingsEnv(getGlobalConfig().env, 'globalConfig'),
@@ -659,6 +916,10 @@ export function _resetManagedEnvForTesting(): void {
   hostSpawnEnvDropWarned.clear()
   otelDominanceDropWarned = new Set<string>()
   ccdSpawnEnvKeys = undefined
+  preSettingsEnvSnapshot = undefined
+  launchNamesBeforeClaim = undefined
+  userTierNamesInSnapshot = new Set()
+  userTierNames.clear()
 }
 
 /** Test-only accessor for the project-scope blocklist. */

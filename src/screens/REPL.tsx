@@ -254,6 +254,7 @@ import { useFileHistorySnapshotInit } from 'src/hooks/useFileHistorySnapshotInit
 import { SandboxPermissionRequest } from 'src/components/permissions/SandboxPermissionRequest.js';
 import { SandboxViolationExpandedView } from 'src/components/SandboxViolationExpandedView.js';
 import { useSettingsErrors } from 'src/hooks/notifs/useSettingsErrors.js';
+import { useProjectTelemetryEnvNotice } from 'src/hooks/notifs/useProjectTelemetryEnvNotice.js';
 import { useMcpConnectivityStatus } from 'src/hooks/notifs/useMcpConnectivityStatus.js';
 import { useAutoModeUnavailableNotification } from 'src/hooks/notifs/useAutoModeUnavailableNotification.js';
 import { getAutoModeDescription } from 'src/components/AutoModeOptInDialog.js';
@@ -789,6 +790,7 @@ export function REPL({
   usePluginInstallationStatus();
   usePluginAutoupdateNotification();
   useSettingsErrors();
+  useProjectTelemetryEnvNotice();
   useRateLimitWarningNotification(mainLoopModel);
   useFastModeNotification();
   useDeprecationWarningNotification(mainLoopModel);

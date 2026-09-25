@@ -16,10 +16,15 @@ import { REPO_ROOT } from "./helpers";
  * Verified against /tmp/occ-audit/claude.strings:
  *   deny Agent(model:opus) or ask Bash(run_in_background:true)
  *   "MCP rules do not support patterns in parentheses"
- *   "The :* pattern must be at the end"
+ *
+ * 2.1.282 update: the "The :* pattern must be at the end" rejection was
+ * REMOVED from the official binary (string occurs 0x in 2.1.282). Mid-pattern
+ * :* rules are now valid from every source and carry a startup warning
+ * ("has a :* that is not at the end, ...") from validatePermissionRule.
  */
 describe("2.1.178 Tool(param:value) permission-rule syntax (e2e)", () => {
   const parserPath = `${REPO_ROOT}/src/utils/permissions/permissionRuleParser.ts`;
+  const validationPath = `${REPO_ROOT}/src/utils/settings/permissionValidation.ts`;
   const src = readFileSync(parserPath, "utf8");
 
   test("source-grep: param:value parser + matcher present", () => {
@@ -27,7 +32,8 @@ describe("2.1.178 Tool(param:value) permission-rule syntax (e2e)", () => {
     expect(src).toContain("matchesToolInputParam");
     // Binary-exact validation error messages.
     expect(src).toContain("MCP rules do not support patterns in parentheses");
-    expect(src).toContain("The :* pattern must be at the end");
+    // 2.1.282: the mid-pattern :* rejection is gone from the official binary.
+    expect(src).not.toContain("The :* pattern must be at the end");
   });
 
   test("runtime: parse + match Agent(model:opus)", async () => {
@@ -52,9 +58,10 @@ console.log(JSON.stringify({
   test("runtime: :* placement + MCP validation", async () => {
     const script = `
 import { validatePermissionRuleValue } from "${parserPath}";
+import { validatePermissionRule } from "${validationPath}";
 console.log(JSON.stringify({
   mcp: validatePermissionRuleValue({ toolName: "mcp__serv__tool", ruleContent: "foo" }),
-  starMid: validatePermissionRuleValue({ toolName: "Bash", ruleContent: "npm:*:install" }),
+  starMid: validatePermissionRule("Bash(npm:*:install)"),
   starEnd: validatePermissionRuleValue({ toolName: "Bash", ruleContent: "npm:*" }),
   ok: validatePermissionRuleValue({ toolName: "Bash", ruleContent: "npm install" }),
 }));
@@ -62,8 +69,11 @@ console.log(JSON.stringify({
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
     expect(out.mcp.valid).toBe(false);
     expect(out.mcp.error).toBe("MCP rules do not support patterns in parentheses");
-    expect(out.starMid.valid).toBe(false);
-    expect(out.starMid.error).toBe("The :* pattern must be at the end");
+    // 2.1.282: mid-pattern :* is now valid with a startup warning instead of
+    // the removed "The :* pattern must be at the end" rejection.
+    expect(out.starMid.valid).toBe(true);
+    expect(out.starMid.error).toBeUndefined();
+    expect(out.starMid.warning).toMatch(/has a :\* that is not at the end/);
     expect(out.starEnd.valid).toBe(true);
     expect(out.ok.valid).toBe(true);
   });

@@ -23,21 +23,27 @@ const settingsBySource: Record<string, { env?: Record<string, string>; otelHeade
 
 // OCC-97 mock-leak discipline: spread the real module, override only what
 // this suite needs, and restore the untouched module after the suite.
+// NOTE: bun's mock.module mutates the captured namespace object in place when
+// the mock registers — spreading the live namespace in afterAll would
+// "restore" the mock itself. Snapshot the exports into plain objects BEFORE
+// any mock.module call and restore from those snapshots (277-suite pattern).
 const actualSettingsModule = await import('../settings/settings.js')
 const actualConfigModule = await import('../config.js')
+const actualSettingsExports = { ...actualSettingsModule }
+const actualConfigExports = { ...actualConfigModule }
 
 mock.module('../settings/settings.js', () => ({
-  ...actualSettingsModule,
+  ...actualSettingsExports,
   getSettingsForSource: (source: string) => settingsBySource[source] ?? null,
 }))
 mock.module('../config.js', () => ({
-  ...actualConfigModule,
+  ...actualConfigExports,
   getGlobalConfig: () => ({ env: {} }),
 }))
 
 afterAll(() => {
-  mock.module('../settings/settings.js', () => ({ ...actualSettingsModule }))
-  mock.module('../config.js', () => ({ ...actualConfigModule }))
+  mock.module('../settings/settings.js', () => ({ ...actualSettingsExports }))
+  mock.module('../config.js', () => ({ ...actualConfigExports }))
 })
 
 const {
@@ -96,8 +102,9 @@ describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
     // 65 official 2.1.251 keys + CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT
     // (2.1.281 #034 dangerous-rm kill-switch; official v281 binary Set grows
     // to include it, and project scope must not be able to set a security
-    // kill-switch).
-    expect(blocklist.size).toBe(66)
+    // kill-switch) + 48 telemetry keys from the 2.1.282 `Gcn` spread (P0:
+    // project/local settings may no longer enable telemetry) = 114.
+    expect(blocklist.size).toBe(114)
     expect(blocklist.has('CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT')).toBe(
       true,
     )

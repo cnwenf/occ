@@ -246,7 +246,9 @@ export function AssistantTextMessage(t0) {
         }
         let t5;
         if ($[25] !== text) {
-          t5 = <Box flexDirection="column"><Markdown>{text}</Markdown></Box>;
+          // capProseWidth: official za @220213403 renders the assistant text
+          // body as `e(Ei,{capProseWidth:!0,children:_})` (2.1.282).
+          t5 = <Box flexDirection="column"><Markdown capProseWidth={true}>{text}</Markdown></Box>;
           $[25] = text;
           $[26] = t5;
         } else {

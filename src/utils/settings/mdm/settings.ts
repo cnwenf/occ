@@ -31,7 +31,13 @@ import {
   getManagedSettingsDropInDir,
 } from '../managedPath.js'
 import { sanitizePolicySourceData } from '../policySourceSanitizer.js'
-import { type SettingsJson, SettingsSchema } from '../types.js'
+import { isPlainObject } from '../policyLocks.js'
+import {
+  buildStrictPolicySchema,
+  createPolicyIssueSink,
+  managedDocNotObjectRecord,
+} from '../policyStrictSchema.js'
+import { type SettingsJson } from '../types.js'
 import { formatZodError, type ValidationError } from '../validation.js'
 import {
   WINDOWS_REGISTRY_KEY_PATH_HKCU,
@@ -183,28 +189,60 @@ export async function refreshMdmSettings(): Promise<{
  * (`If` → `Qn(...).safeParse`); previously OCC sanitized only the file path,
  * so a malformed marketplace/allowlist entry in MDM or HKCU rejected the
  * whole source → policySettings undefined → restrictions failed OPEN.
+ *
+ * CC 2.1.282: upgraded from the whole-file sanitized parse to the official
+ * strict per-field parse (`je`/`qr` → `CAe` → `Ko`): a document that is not
+ * a JSON object at all gets the `jdn` record (startup-fatal for OS-admin
+ * sources; status-only for the user-writable HKCU source, flagged via
+ * `options.userWritable`), and one invalid nested value no longer discards
+ * the document — invalid fields fail closed individually while valid fields
+ * keep enforcing.
  */
 export function parseCommandOutputAsSettings(
   stdout: string,
   sourcePath: string,
+  options?: { userWritable?: boolean },
 ): { settings: SettingsJson; errors: ValidationError[] } {
-  const parsed = safeParseJSON(stdout, false)
-  if (!parsed || typeof parsed !== 'object') {
+  // An empty payload means the OS source is simply not configured — no record
+  // (matches the official `qr` empty-content check; avoids a `jdn` flood on
+  // machines without any MDM policy).
+  if (stdout.trim() === '') {
     return { settings: {}, errors: [] }
   }
+  const parsed = safeParseJSON(stdout, false)
   // safeParseJSON memoizes parse results (LRU keyed by the raw string) and
   // returns the SHARED cached object on a hit; the sanitizers mutate in
   // place, so clone first (same rationale as parseSettingsFileUncached —
-  // the official `Qn` sanitized schema is non-mutating).
-  const data = clone(parsed)
+  // the official sanitized schema is non-mutating).
+  const data = parsed && typeof parsed === 'object' ? clone(parsed) : parsed
+
+  if (!isPlainObject(data)) {
+    return {
+      settings: {},
+      errors: [
+        managedDocNotObjectRecord(sourcePath, {
+          userWritable: options?.userWritable,
+        }),
+      ],
+    }
+  }
 
   const sanitizeWarnings = sanitizePolicySourceData(data, sourcePath)
-  const parseResult = SettingsSchema().safeParse(data)
+  const policyErrors: ValidationError[] = []
+  const parseResult = buildStrictPolicySchema(
+    createPolicyIssueSink(sourcePath, policyErrors),
+  ).safeParse(data)
   if (!parseResult.success) {
+    // Practically unreachable (every wrapped field carries a catch); mirrors
+    // the official, which reports the raw zod error when the whole strict
+    // parse still fails.
     const errors = formatZodError(parseResult.error, sourcePath)
     return { settings: {}, errors: [...sanitizeWarnings, ...errors] }
   }
-  return { settings: parseResult.data, errors: sanitizeWarnings }
+  return {
+    settings: parseResult.data as SettingsJson,
+    errors: [...sanitizeWarnings, ...policyErrors],
+  }
 }
 
 /**
@@ -273,6 +311,7 @@ function consumeRawReadResult(raw: RawReadResult): {
       const result = parseCommandOutputAsSettings(
         jsonString,
         `Registry: ${WINDOWS_REGISTRY_KEY_PATH_HKCU}\\${WINDOWS_REGISTRY_VALUE_NAME}`,
+        { userWritable: true },
       )
       return { mdm: EMPTY_RESULT, hkcu: result }
     }

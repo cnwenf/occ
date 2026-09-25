@@ -56,6 +56,18 @@ import {
   prepareForkedCommandContext,
   shouldForkedSkillRunAsync,
 } from '../../utils/forkedAgent.js'
+import { getAllowedToolsGated } from '../../utils/permissions/frontmatterGrants.js'
+import {
+  buildHeldBackRuleMessage,
+  buildSquatterAskMessage,
+  type HeldBackRuleKind,
+  isPlaidHarborEnabled,
+  isReservedName,
+  isSyncedSkillHolder,
+  logHeldBackRuleTelemetry,
+  matchSkillRuleForPermission,
+  skillDenyRuleMatches,
+} from '../../utils/skills/reservedNames.js'
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { createUserMessage, normalizeMessages } from '../../utils/messages.js'
@@ -586,34 +598,15 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const commands = await getAllCommands(context)
     const commandObj = findCommand(commandName, commands)
 
-    // Helper function to check if a rule matches the skill
-    // Normalizes both inputs by stripping leading slashes for consistent matching
-    const ruleMatches = (ruleContent: string): boolean => {
-      // Normalize rule content by stripping leading slash
-      const normalizedRule = ruleContent.startsWith('/')
-        ? ruleContent.substring(1)
-        : ruleContent
-
-      // Check exact match (using normalized commandName)
-      if (normalizedRule === commandName) {
-        return true
-      }
-      // Check prefix match (e.g., "review:*" matches "review-pr 123")
-      if (normalizedRule.endsWith(':*')) {
-        const prefix = normalizedRule.slice(0, -2) // Remove ':*'
-        return commandName.startsWith(prefix)
-      }
-      return false
-    }
-
-    // Check for deny rules
+    // Check for deny rules (official de: matches invoked name, registered
+    // name, display name, and aliases)
     const denyRules = getRuleByContentsForTool(
       permissionContext,
       SkillTool as Tool,
       'deny',
     )
     for (const [ruleContent, rule] of denyRules.entries()) {
-      if (ruleMatches(ruleContent)) {
+      if (skillDenyRuleMatches(ruleContent, commandName, commandObj)) {
         return {
           behavior: 'deny',
           message: `Skill execution blocked by permission rules`,
@@ -643,14 +636,24 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // Check for allow rules
+    // Check for allow rules (official ke — CC 2.1.282 namespace-aware
+    // matching). A rule that plain-matches a reserved anthropic-skills /
+    // claude-ai name but cannot legitimately pre-approve it is "held back":
+    // the invocation still asks and the held-back rule explains why. Official
+    // tracking: a nonholder match OVERWRITES, a boundary match is first-wins.
     const allowRules = getRuleByContentsForTool(
       permissionContext,
       SkillTool as Tool,
       'allow',
     )
+    let heldBack: { rule: string; kind: HeldBackRuleKind } | undefined
     for (const [ruleContent, rule] of allowRules.entries()) {
-      if (ruleMatches(ruleContent)) {
+      const outcome = matchSkillRuleForPermission(
+        ruleContent,
+        commandName,
+        commandObj,
+      )
+      if (outcome === 'allow') {
         return {
           behavior: 'allow',
           updatedInput: { skill, args },
@@ -659,6 +662,11 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
             rule,
           },
         }
+      }
+      if (outcome === 'held-back-nonholder') {
+        heldBack = { rule: ruleContent, kind: 'nonholder' }
+      } else if (outcome === 'held-back-boundary') {
+        heldBack ??= { rule: ruleContent, kind: 'boundary' }
       }
     }
 
@@ -674,6 +682,52 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
         behavior: 'allow',
         updatedInput: { skill, args },
         decisionReason: undefined,
+      }
+    }
+
+    // CC 2.1.282 reserved-namespace hardening (official h / N / D / _e / P / b):
+    // a skill invoked under the reserved anthropic-skills / claude-ai namespace
+    // that is NOT a synced claude.ai skill is a squatter — ask every time with
+    // suppressAlwaysAllowRule so no rule can be persisted for that name.
+    const pluginName =
+      commandObj?.type === 'prompt' && commandObj.source === 'plugin'
+        ? commandObj.pluginInfo?.pluginManifest.name
+        : undefined
+    const isSquatterSkill =
+      isPlaidHarborEnabled() &&
+      isReservedName(commandName) &&
+      !(commandObj !== undefined && isSyncedSkillHolder(commandObj))
+    const heldKind: HeldBackRuleKind | undefined =
+      heldBack === undefined ? undefined : isSquatterSkill ? 'nonholder' : heldBack.kind
+    if (
+      heldKind !== undefined &&
+      permissionContext.mode !== 'bypassPermissions'
+    ) {
+      logHeldBackRuleTelemetry(heldKind)
+    }
+    const heldMessage =
+      heldBack === undefined || heldKind === undefined
+        ? undefined
+        : buildHeldBackRuleMessage(
+            heldBack.rule,
+            commandObj?.name ?? commandName,
+            heldKind === 'nonholder'
+              ? { kind: 'nonholder', pluginName }
+              : { kind: 'boundary' },
+          )
+    const heldReason =
+      heldMessage === undefined
+        ? undefined
+        : ({ type: 'other', reason: heldMessage } as const)
+
+    if (isSquatterSkill) {
+      return {
+        behavior: 'ask',
+        message: buildSquatterAskMessage(commandName, heldMessage),
+        decisionReason: heldReason,
+        suppressAlwaysAllowRule: true,
+        updatedInput: { skill, args },
+        metadata: commandObj ? { command: commandObj } : undefined,
       }
     }
 
@@ -706,11 +760,12 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       },
     ]
 
-    // Default behavior: ask user for permission
+    // Default behavior: ask user for permission (official B: the held-back
+    // rule message, when any, is appended after an em dash)
     return {
       behavior: 'ask',
-      message: `Execute skill: ${commandName}`,
-      decisionReason: undefined,
+      message: buildSquatterAskMessage(commandName, heldMessage),
+      decisionReason: heldReason,
       suggestions,
       updatedInput: { skill, args },
       metadata: commandObj ? { command: commandObj } : undefined,
@@ -794,8 +849,16 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       throw new Error('Command processing failed')
     }
 
-    // Extract metadata from the command
-    const allowedTools = processedCommand.allowedTools || []
+    // Extract metadata from the command. CC 2.1.282 (official ZMe): under
+    // allowManagedPermissionRulesOnly, frontmatter allowed-tools from
+    // untrusted sources are withheld at apply time (trusted: plugin /
+    // policySettings / built-in / builtin / bundled).
+    const allowedTools = await getAllowedToolsGated({
+      name: commandName,
+      source: command?.type === 'prompt' ? command.source : undefined,
+      allowedTools: processedCommand.allowedTools || [],
+      pluginInfo: command?.type === 'prompt' ? command.pluginInfo : undefined,
+    })
     const model = processedCommand.model
     const effort = command?.type === 'prompt' ? command.effort : undefined
 

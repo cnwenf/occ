@@ -71,7 +71,9 @@ export function AssistantThinkingMessage(t0) {
       <Box flexDirection="column" gap={1} marginTop={addMargin ? 1 : 0} width="100%">
         <InlineThinkingSpinner />
         <Box paddingLeft={2}>
-          <Markdown dimColor={true}>{thinking}</Markdown>
+          {/* capProseWidth: official xs @220216483 renders thinking prose via
+              `e(Ei,{dimColor:!0,capProseWidth:!0,...})` (2.1.282). */}
+          <Markdown dimColor={true} capProseWidth={true}>{thinking}</Markdown>
         </Box>
       </Box>
     );
@@ -86,7 +88,9 @@ export function AssistantThinkingMessage(t0) {
   }
   let t6;
   if ($[4] !== thinking) {
-    t6 = <Box paddingLeft={2}><Markdown dimColor={true}>{thinking}</Markdown></Box>;
+    // capProseWidth: official xs @220216483 — the transcript/verbose branch
+    // (`te=isTranscriptMode||verbose`) renders via Ei with capProseWidth:!0.
+    t6 = <Box paddingLeft={2}><Markdown dimColor={true} capProseWidth={true}>{thinking}</Markdown></Box>;
     $[4] = thinking;
     $[5] = t6;
   } else {

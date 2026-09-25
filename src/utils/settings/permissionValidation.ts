@@ -75,12 +75,37 @@ function isOperatorToken(token: string): boolean {
   return OPERATOR_TOKEN_RE.test(token)
 }
 
-/** Binary `ln` — true if the string contains any unescaped `*`. */
+/** Binary `ln` (`wo` in the 2.1.282 binary) — true if the string contains any unescaped `*`. */
 function hasUnescapedStar(str: string): boolean {
   for (let i = 0; i < str.length; i++) {
     if (str[i] === '*' && !isEscaped(str, i)) return true
   }
   return false
+}
+
+/**
+ * Binary `Nge` (2.1.282) — captures the prefix of a trailing `:*` rule,
+ * i.e. the `npm run` in `npm run:*`. Returns null when the content does not
+ * end with the legacy `:*` prefix syntax.
+ */
+function extractTrailingStarPrefix(content: string): string | null {
+  return content.match(/^(.+):\*$/)?.[1] ?? null
+}
+
+/**
+ * Binary `eVn` (2.1.282) — true when the (right-trimmed) string ends with an
+ * unescaped `*` (an even number of backslashes immediately before it).
+ */
+function endsWithUnescapedStar(str: string): boolean {
+  const trimmed = str.trimEnd()
+  if (!trimmed.endsWith('*')) return false
+  let backslashCount = 0
+  let j = trimmed.length - 2
+  while (j >= 0 && trimmed[j] === '\\') {
+    backslashCount++
+    j--
+  }
+  return backslashCount % 2 === 0
 }
 
 /**
@@ -221,27 +246,16 @@ export function validatePermissionRule(
   if (isBashPrefixTool(parsed.toolName) && parsed.ruleContent !== undefined) {
     const content = parsed.ruleContent
 
-    // Check for common :* mistakes - :* must be at the end (legacy prefix syntax)
-    if (content.includes(':*') && !content.endsWith(':*')) {
-      return {
-        valid: false,
-        error: 'The :* pattern must be at the end',
-        suggestion:
-          'Move :* to the end for prefix matching, or use * for wildcard matching',
-        examples: [
-          'Bash(npm run:*) - prefix matching (legacy)',
-          'Bash(npm run *) - wildcard matching',
-        ],
-      }
-    }
-
-    // Check for :* without a prefix
+    // Check for :* without a prefix. Official 2.1.282 order: this is the
+    // FIRST Bash check (before the wildcard-before-subcommand warning and
+    // the mixes/mid-pattern warnings); the examples steer toward the `npm *`
+    // wildcard syntax (space-star), byte-matched to the binary.
     if (content === ':*') {
       return {
         valid: false,
         error: 'Prefix cannot be empty before :*',
         suggestion: 'Specify a command prefix before :*',
-        examples: ['Bash(npm:*)', 'Bash(git:*)'],
+        examples: ['Bash(npm *)', 'Bash(git *)'],
       }
     }
 
@@ -263,6 +277,45 @@ export function validatePermissionRule(
           valid: true,
           warning: `${permissionRuleValueToString(parsed)} has a wildcard before the rest of the command, so it also matches any options inserted at that position and approves them without a prompt.${gitNote} Replace that * with the exact value you mean, or only use * after the subcommand${gitExample}.`,
         }
+      }
+    }
+
+    // 2.1.282: "Fixed Bash permission rules with a mid-pattern `:*` being
+    // skipped in settings files while `--allowedTools` honored them; they
+    // now work from every source, with a startup warning on how they match."
+    // The old 2.1.281 mid-pattern `:*` rejection (the ":*-must-be-at-the-end"
+    // error) is gone from the official binary — mid-pattern :* rules are VALID
+    // (they match as * wildcards at runtime) and only warn. Official check
+    // order (binary `$ge`): trailing-`:*` rules whose prefix itself contains
+    // an unescaped `*` take the "mixes" branch (fires for ALL behaviors — only
+    // the advice text differs); otherwise a mid-pattern `:*` warns.
+    const prefix = extractTrailingStarPrefix(content)?.trimEnd()
+    if (prefix !== undefined) {
+      if (hasUnescapedStar(prefix)) {
+        const endsStar = endsWithUnescapedStar(prefix)
+        const fate = endsStar
+          ? 'matches only commands containing a literal * at that position'
+          : 'will likely never match'
+        const suggested = endsStar ? prefix : `${prefix}*`
+        const advice =
+          behavior === 'allow'
+            ? ' Replace that * with the exact value you mean.'
+            : suggested.endsWith(':*')
+              ? ''
+              : ` Use ${permissionRuleValueToString({ toolName: parsed.toolName, ruleContent: suggested })} for wildcard matching.`
+        return {
+          valid: true,
+          warning: `${permissionRuleValueToString(parsed)} mixes * with the trailing :* prefix syntax, so it is matched as a literal prefix (the * is not expanded) and ${fate}.${advice}`,
+        }
+      }
+    } else if (content.includes(':*') && !content.endsWith(':*')) {
+      const advice =
+        behavior === 'allow'
+          ? 'Replace that :* with the exact value you mean.'
+          : 'It already matches as a * wildcard; moving :* to the end would make it a literal prefix and change which commands match.'
+      return {
+        valid: true,
+        warning: `${permissionRuleValueToString(parsed)} has a :* that is not at the end, so it is matched as a * wildcard (the : is literal), not as the trailing :* prefix syntax. ${advice}`,
       }
     }
 

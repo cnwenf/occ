@@ -51,6 +51,12 @@ import {
   setSessionSettingsCache,
 } from './settingsCache.js'
 import { sanitizePolicySourceData } from './policySourceSanitizer.js'
+import { isPlainObject } from './policyLocks.js'
+import {
+  buildStrictPolicySchema,
+  createPolicyIssueSink,
+  managedDocNotObjectRecord,
+} from './policyStrictSchema.js'
 import { type SettingsJson, SettingsSchema } from './types.js'
 import {
   formatZodError,
@@ -87,6 +93,7 @@ export function loadManagedFileSettings(): {
 
   const { settings, errors: baseErrors } = parseSettingsFile(
     getManagedSettingsFilePath(),
+    { policySource: true },
   )
   errors.push(...baseErrors)
   if (settings && Object.keys(settings).length > 0) {
@@ -109,6 +116,7 @@ export function loadManagedFileSettings(): {
     for (const name of entries) {
       const { settings, errors: fileErrors } = parseSettingsFile(
         join(dropInDir, name),
+        { policySource: true },
       )
       errors.push(...fileErrors)
       if (settings && Object.keys(settings).length > 0) {
@@ -134,7 +142,9 @@ export function getManagedFileSettingsPresence(): {
   hasBase: boolean
   hasDropIns: boolean
 } {
-  const { settings: base } = parseSettingsFile(getManagedSettingsFilePath())
+  const { settings: base } = parseSettingsFile(getManagedSettingsFilePath(), {
+    policySource: true,
+  })
   const hasBase = !!base && Object.keys(base).length > 0
 
   let hasDropIns = false
@@ -178,14 +188,23 @@ function handleFileSystemError(error: unknown, path: string): void {
 /**
  * Parses a settings file into a structured format
  * @param path The path to the permissions file
- * @param source The source of the settings (optional, for error reporting)
+ * @param options Pass `policySource: true` for administrator-controlled
+ *   policy sources (managed-settings.json + drop-ins). Policy sources get the
+ *   claude-code 2.1.282 strict per-field parse (fail-closed substitutions and
+ *   per-block salvage) instead of the whole-file all-or-nothing parse.
  * @returns Parsed settings data and validation errors
  */
-export function parseSettingsFile(path: string): {
+export function parseSettingsFile(
+  path: string,
+  options?: { policySource?: boolean },
+): {
   settings: SettingsJson | null
   errors: ValidationError[]
 } {
-  const cached = getCachedParsedFile(path)
+  // Policy and non-policy parses of the same file can coexist in one session
+  // (e.g. a user file symlinked into managed-settings.d) — keep them distinct.
+  const cacheKey = options?.policySource === true ? `${path}\u0000policy` : path
+  const cached = getCachedParsedFile(cacheKey)
   if (cached) {
     // Clone so callers (e.g. mergeWith in getSettingsForSourceUncached,
     // updateSettingsForSource) can't mutate the cached entry.
@@ -194,8 +213,11 @@ export function parseSettingsFile(path: string): {
       errors: cached.errors,
     }
   }
-  const result = parseSettingsFileUncached(path)
-  setCachedParsedFile(path, result)
+  const result = parseSettingsFileUncached(
+    path,
+    options?.policySource === true,
+  )
+  setCachedParsedFile(cacheKey, result)
   // Clone the first return too — the caller may mutate before
   // another caller reads the same cache entry.
   return {
@@ -214,7 +236,10 @@ export function parseSettingsFile(path: string): {
  */
 const MAX_SETTINGS_FILE_BYTES = 2 * 1024 * 1024 // 2 MiB
 
-function parseSettingsFileUncached(path: string): {
+function parseSettingsFileUncached(
+  path: string,
+  policySource = false,
+): {
   settings: SettingsJson | null
   errors: ValidationError[]
 } {
@@ -265,6 +290,17 @@ function parseSettingsFileUncached(path: string): {
     const data =
       parsed && typeof parsed === 'object' ? clone(parsed) : parsed
 
+    // CC 2.1.282 (official `Wge`): a policy document that is not a JSON
+    // object at all (array, string, number — JSON.parse succeeded but there
+    // is nothing to merge) blocks startup with the `jdn` record instead of
+    // being silently ignored.
+    if (policySource && !isPlainObject(data)) {
+      return {
+        settings: null,
+        errors: [managedDocNotObjectRecord(path)],
+      }
+    }
+
     // Sanitize invalid permission rules, security allowlists (CC 2.1.267
     // #12 / Gap-121a), and marketplace policy arrays (CC 2.1.277 report_C
     // C9) per-entry before schema validation, so one bad entry can no
@@ -274,6 +310,33 @@ function parseSettingsFileUncached(path: string): {
     // Shared with the remote/MDM/HKCU policy paths via the same helper
     // (OCC-132 P3-6); see policySourceSanitizer.ts.
     const sanitizeWarnings = sanitizePolicySourceData(data, path)
+
+    if (policySource) {
+      // CC 2.1.282 strict per-field parse (official `Ko`): one invalid value
+      // no longer discards the whole policy document — invalid fields fail
+      // closed individually (restrictive substitution / per-block salvage),
+      // valid fields keep enforcing, and every record names its key.
+      const policyErrors: ValidationError[] = []
+      const strictResult = buildStrictPolicySchema(
+        createPolicyIssueSink(path, policyErrors),
+      ).safeParse(data)
+      if (!strictResult.success) {
+        // Practically unreachable (every wrapped field carries a catch);
+        // mirrors the official, which drops the per-field records when the
+        // whole parse still fails and reports the raw zod error instead.
+        return {
+          settings: null,
+          errors: [
+            ...sanitizeWarnings,
+            ...formatZodError(strictResult.error, path),
+          ],
+        }
+      }
+      return {
+        settings: strictResult.data as SettingsJson,
+        errors: [...sanitizeWarnings, ...policyErrors],
+      }
+    }
 
     const result = SettingsSchema().safeParse(data)
 
@@ -786,12 +849,20 @@ function loadSettingsFromDisk(): SettingsWithErrors {
             remoteSettings,
             'remote managed settings',
           )
-          const result = SettingsSchema().safeParse(remoteSettings)
+          // CC 2.1.282: the remote source gets the same strict per-field parse
+          // as the file policy sources (official Ko runs on every policy
+          // source), so one malformed lock/block no longer discards the whole
+          // remote policy.
+          const remoteErrors: ValidationError[] = []
+          const result = buildStrictPolicySchema(
+            createPolicyIssueSink('remote managed settings', remoteErrors),
+          ).safeParse(remoteSettings)
           if (result.success) {
-            policySettings = result.data
-            policyErrors.push(...remoteWarnings)
+            policySettings = result.data as SettingsJson
+            policyErrors.push(...remoteWarnings, ...remoteErrors)
           } else {
-            // Remote exists but is invalid — surface errors even as we fall through
+            // Remote exists but is invalid — surface errors even as we fall
+            // through (official drops the per-field records in this branch).
             policyErrors.push(
               ...remoteWarnings,
               ...formatZodError(result.error, 'remote managed settings'),

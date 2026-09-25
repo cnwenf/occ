@@ -178,7 +178,16 @@ export const SandboxSettingsSchema = lazySchema(() =>
           'macOS only: Allow sandboxed commands to send Apple Events to other ' +
             'applications via the Apple Event service. Default: false',
         ),
-      excludedCommands: z.array(z.string()).optional(),
+      excludedCommands: z
+        .array(z.string())
+        .optional()
+        // CC 2.1.282 binary describe (@194547946): base sentence + `Md`
+        // (@194525877), byte-exact against the 2.1.282 ELF. Neither sentence
+        // exists in 2.1.281 (OCC previously had no describe here).
+        .describe(
+          'Command patterns (Bash permission-rule syntax) that always run outside the sandbox. A convenience, not a security boundary: excluded commands still go through the permission flow. Merged across settings sources. ' +
+            'When managed settings or a --settings file set allowUnsandboxedCommands: false, or managed settings set network.allowManagedDomainsOnly: true, values from project settings (.claude/settings.json and .claude/settings.local.json) are ignored.',
+        ),
       // 2.1.187: block sandboxed commands from reading credential files
       // and secret environment variables.
       credentials: z

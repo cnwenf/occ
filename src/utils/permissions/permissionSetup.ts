@@ -50,6 +50,7 @@ import {
 } from '../../services/analytics/index.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
 import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
@@ -67,6 +68,7 @@ import {
   DANGEROUS_BASH_PATTERNS,
 } from './dangerousPatterns.js'
 import type {
+  PermissionBehavior,
   PermissionRule,
   PermissionRuleSource,
   PermissionRuleValue,
@@ -254,6 +256,102 @@ function formatPermissionSource(source: PermissionRuleSource): string {
     }
   }
   return source
+}
+
+/**
+ * Official 2.1.282 startup-warning skip heuristic (byte-identical in the
+ * 2.1.281 and 2.1.282 binaries): a rule whose content starts with
+ * `identifier:` is a param rule (e.g. `run_in_background:true`,
+ * `domain:example.com`, `git:*push`). Such rules stay enforced but produce
+ * no startup warning. A Windows drive letter (`C:/...`, `C:\...`) looks
+ * like `identifier:` but is a path — it must NOT be skipped.
+ */
+const STARTUP_IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const STARTUP_WINDOWS_DRIVE_RE = /^[A-Za-z]:[\\/]/
+
+/**
+ * True when a rule must not produce a startup warning, mirroring the
+ * official 2.1.282 loop's skips: session/toolsNarrowing rules, cliArg allow
+ * rules for the Read tool, and identifier-colon param rules.
+ */
+export function shouldSkipPermissionRuleStartupWarning(
+  rule: PermissionRule,
+): boolean {
+  // The official loop iterates the permission context, whose source union
+  // also includes 'toolsNarrowing' (OCC's PermissionRuleSource lacks it —
+  // compare as string for byte-faithful semantics).
+  const source = rule.source as string
+  if (source === 'session' || source === 'toolsNarrowing') return true
+  if (
+    rule.source === 'cliArg' &&
+    rule.ruleBehavior === 'allow' &&
+    rule.ruleValue.toolName === FILE_READ_TOOL_NAME
+  ) {
+    return true
+  }
+  const ruleContent = rule.ruleValue.ruleContent
+  if (ruleContent !== undefined) {
+    const colonIndex = ruleContent.indexOf(':')
+    if (
+      colonIndex > 0 &&
+      STARTUP_IDENTIFIER_RE.test(ruleContent.slice(0, colonIndex).trim()) &&
+      !STARTUP_WINDOWS_DRIVE_RE.test(ruleContent.trim())
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
+ * Official 2.1.282 startup-warning source label (byte-exact chain from the
+ * binary's permission-setup loop): cliArg rules are labeled by the flag that
+ * set them; flagSettings without a settings-file path shows as `--settings`;
+ * policySettings as `managed policy settings`; every other settings source
+ * falls back to the (relative) settings file path or the raw source name.
+ */
+export function formatPermissionRuleWarningLabel(
+  source: PermissionRuleSource,
+  behavior: PermissionBehavior,
+): string {
+  if (source === 'cliArg') {
+    return behavior === 'allow' ? '--allowed-tools' : '--disallowed-tools'
+  }
+  if (
+    source === 'flagSettings' &&
+    !getSettingsFilePathForSource('flagSettings')
+  ) {
+    return '--settings'
+  }
+  if (source === 'policySettings') {
+    return 'managed policy settings'
+  }
+  return formatPermissionSource(source)
+}
+
+/**
+ * Collects `Permission <behavior> rule (<source>): <warning>` startup lines,
+ * mirroring the official 2.1.282 loop: the validator is called with the
+ * rule's behavior so advice text is behavior-correct, and only valid rules
+ * carrying a warning contribute a line.
+ */
+export function collectPermissionRuleStartupWarnings(
+  rules: PermissionRule[],
+): string[] {
+  const warnings: string[] = []
+  for (const rule of rules) {
+    if (shouldSkipPermissionRuleStartupWarning(rule)) continue
+    const result = validatePermissionRule(
+      permissionRuleValueToString(rule.ruleValue),
+      rule.ruleBehavior,
+    )
+    if (result.valid && result.warning) {
+      warnings.push(
+        `Permission ${rule.ruleBehavior} rule (${formatPermissionRuleWarningLabel(rule.source, rule.ruleBehavior)}): ${result.warning}`,
+      )
+    }
+  }
+  return warnings
 }
 
 export type DangerousPermissionInfo = {
@@ -1025,36 +1123,36 @@ export async function initializeToolPermissionContext({
     }
   }
 
-  // Startup warning for Write(path)/NotebookEdit(path)/Glob(path) rules (2.1.210+).
-  // These tool names bypass file-permission checks — only Edit(path)/Read(path)
-  // rules are matched. Warn the user to use the canonical tool name.
-  // 2.1.246 also surfaces the Bash wildcard-before-subcommand warning here;
-  // that one is allow-only, so each rule's behavior is passed through.
-  for (const rule of rulesFromDisk) {
-    const ruleStr = permissionRuleValueToString(rule.ruleValue)
-    const result = validatePermissionRule(ruleStr, rule.ruleBehavior)
-    if (result.valid && result.warning) {
-      warnings.push(
-        `Permission ${rule.ruleBehavior} rule (${formatPermissionSource(rule.source)}): ${result.warning}`,
-      )
-    }
-  }
-  for (const ruleStr of parsedAllowedToolsCli) {
-    const result = validatePermissionRule(ruleStr, 'allow')
-    if (result.valid && result.warning) {
-      warnings.push(
-        `Permission allow rule (--allowed-tools): ${result.warning}`,
-      )
-    }
-  }
-  for (const ruleStr of parsedDisallowedToolsCli) {
-    const result = validatePermissionRule(ruleStr, 'deny')
-    if (result.valid && result.warning) {
-      warnings.push(
-        `Permission deny rule (--disallowed-tools): ${result.warning}`,
-      )
-    }
-  }
+  // Startup warnings for permission rules — mirrors the official 2.1.282
+  // loop over cliArg + settings-sourced rules:
+  // - Write(path)/NotebookEdit(path)/Glob(path) canonical-name warnings
+  //   (2.1.210+) — these tool names bypass file-permission checks; only
+  //   Edit(path)/Read(path) rules are matched.
+  // - The Bash wildcard-before-subcommand warning (2.1.246, allow-only).
+  // - The Bash mid-pattern `:*` / mixes warnings (2.1.282).
+  // Skips (session/toolsNarrowing sources, cliArg allow Read, identifier:
+  // param rules) and the source label chain live in
+  // collectPermissionRuleStartupWarnings; each rule is validated WITH its
+  // behavior so advice text is behavior-correct.
+  warnings.push(...collectPermissionRuleStartupWarnings(rulesFromDisk))
+  warnings.push(
+    ...collectPermissionRuleStartupWarnings(
+      parsedAllowedToolsCli.map(ruleStr => ({
+        source: 'cliArg' as const,
+        ruleBehavior: 'allow' as const,
+        ruleValue: permissionRuleValueFromString(ruleStr),
+      })),
+    ),
+  )
+  warnings.push(
+    ...collectPermissionRuleStartupWarnings(
+      parsedDisallowedToolsCli.map(ruleStr => ({
+        source: 'cliArg' as const,
+        ruleBehavior: 'deny' as const,
+        ruleValue: permissionRuleValueFromString(ruleStr),
+      })),
+    ),
+  )
 
   return {
     toolPermissionContext,

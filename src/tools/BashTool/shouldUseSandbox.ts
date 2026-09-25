@@ -1,7 +1,6 @@
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { splitCommand_DEPRECATED } from '../../utils/bash/commands.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
-import { getSettings_DEPRECATED } from '../../utils/settings/settings.js'
 import {
   BINARY_HIJACK_VARS,
   bashPermissionRule,
@@ -271,9 +270,14 @@ function containsExcludedCommand(command: string): boolean {
     }
   }
 
-  // Check user-configured excluded commands from settings
-  const settings = getSettings_DEPRECATED()
-  const userExcludedCommands = settings.sandbox?.excludedCommands ?? []
+  // Check user-configured excluded commands.
+  // CC 2.1.282 (P1): read through SandboxManager.getExcludedCommands() —
+  // the trusted-tier filtered getter (binary `IJ`). Reading the raw merged
+  // settings here would bypass the restriction gate: a repo-committed
+  // .claude/settings.json excludedCommands entry could exempt commands from
+  // the sandbox even when managed/--settings configuration forbids
+  // unsandboxed commands.
+  const userExcludedCommands = SandboxManager.getExcludedCommands()
 
   if (userExcludedCommands.length === 0) {
     return false

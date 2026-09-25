@@ -20,6 +20,7 @@ import { SandboxManager } from './sandbox/sandbox-adapter.js';
 import { getSettingsWithAllErrors } from './settings/allErrors.js';
 import { getEnabledSettingSources, getSettingSourceDisplayNameCapitalized } from './settings/constants.js';
 import { getManagedFileSettingsPresence, getPolicySettingsOrigin, getSettingsForSource } from './settings/settings.js';
+import { getProjectTelemetryEnvStatusMessages } from './settings/telemetryEnvStatus.js';
 import type { ThemeName } from './theme.js';
 export type Property = {
   label?: string;
@@ -190,6 +191,14 @@ export async function buildInstallationHealthDiagnostics(): Promise<Diagnostic[]
     const invalidFiles = Array.from(new Set(validationErrors.map(error => error.file)));
     const fileList = invalidFiles.join(', ');
     items.push(`Found invalid settings files: ${fileList}. They will be ignored.`);
+  }
+
+  // CC 2.1.282: statusOnly notices for project-scope telemetry env vars.
+  // Official `qqr` (@217299046) splits `Une().errors` via `oBe` and pushes
+  // each statusNotice message after the invalid-entries line and before the
+  // auto-update warnings — same position as here.
+  for (const message of getProjectTelemetryEnvStatusMessages()) {
+    items.push(message);
   }
 
   // Add warnings from doctor diagnostic (includes leftover installations, config mismatches, etc.)

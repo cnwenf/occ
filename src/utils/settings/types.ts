@@ -922,6 +922,24 @@ export const SettingsSchema = lazySchema(() =>
         .boolean()
         .optional()
         .describe('Whether to disable syntax highlighting in diffs'),
+      // 2.1.282: maxProseWidth. Recovered byte-for-byte from the official
+      // 2.1.282 linux-x64 binary's settings schema @194756308 (positioned
+      // immediately after `syntaxHighlightingDisabled`, before `spellcheck`):
+      //   maxProseWidth:k().int().min(40).optional().catch(void 0).describe(...)
+      // where k() = z.number() (cf. `bashOutputMaxChars:k().int().positive()`
+      // @194738138). int, min 40, NO max, optional; invalid values are
+      // silently caught to undefined (full terminal width = default). The
+      // describe text below is byte-identical to the binary's (od -c
+      // verified). Absent from the v2.1.281 binary → new in 282.
+      maxProseWidth: z
+        .number()
+        .int()
+        .min(40)
+        .optional()
+        .catch(undefined)
+        .describe(
+          "Maximum width, in terminal columns, of the prose in Claude's responses (paragraphs, headings, lists, blockquotes). In a wider terminal the prose wraps at this width while tables and code blocks keep the full width; only the display wraps, the response text itself gains no line breaks. Minimum 40. Unset (the default) uses the full terminal width.",
+        ),
       terminalTitleFromRename: z
         .boolean()
         .optional()

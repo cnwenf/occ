@@ -256,11 +256,15 @@ export type PermissionRuleValidation = {
  * Validate a parsed permission rule value for the `Tool(param:value)` /
  * `Tool(prefix:*)` syntax (2.1.178+).
  *
- * Checks (matching the official 2.1.200 validator):
+ * Checks (matching the official 2.1.282 validator):
  *   - MCP rules (rules for `mcp__*` tools) do not support patterns in
  *     parentheses — only the bare tool name is allowed.
- *   - The legacy `:*` wildcard prefix syntax must be at the END of the rule
- *     content (e.g. `npm:*` is fine; `npm:*:install` is not).
+ *
+ * 2.1.282 removed the old mid-pattern `:*` rejection (the ":*-must-be-at-the-end"
+ * error no longer occurs in the official binary): mid-pattern `:*`
+ * rules are valid from every source now — they match as `*` wildcards at
+ * runtime — and the string-level validator (`validatePermissionRule`) emits
+ * a startup warning describing how they match instead of rejecting them.
  *
  * `isMcp` may be passed explicitly for callers that already know the tool kind;
  * otherwise an `mcp__`-prefixed toolName is treated as an MCP rule.
@@ -274,14 +278,6 @@ export function validatePermissionRuleValue(
     return {
       valid: false,
       error: 'MCP rules do not support patterns in parentheses',
-    }
-  }
-  const content = ruleValue.ruleContent
-  if (content !== undefined && content.includes(':*') && !content.endsWith(':*')) {
-    return {
-      valid: false,
-      error: 'The :* pattern must be at the end',
-      suggestion: 'Move :* to the end of the rule',
     }
   }
   return { valid: true }
