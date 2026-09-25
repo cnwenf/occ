@@ -40,18 +40,39 @@ const actualGrowthbook = {
 
 let loggedEvents: Array<{ name: string; metadata: Record<string, unknown> }> =
   []
+// Passthrough flag (same template as sandboxLocalBinding281.test.ts): bun's
+// mock.module is process-global and mock.restore() does NOT heal bindings
+// that already resolved to the mock namespace. With the flag off (afterAll)
+// both seams delegate to the REAL implementations, so the leaked closures
+// stay behavior-neutral for later files in the shared test process —
+// notably substitutionTargetGuard281.gateoff.test.ts, which needs the real
+// growthbook getter to parse CLAUDE_INTERNAL_FC_OVERRIDES.
+let autoDenyMocksActive = true
+const actualLogEvent = actualAnalytics.logEvent as (
+  name: string,
+  metadata: Record<string, unknown>,
+) => void
+const actualGetFeatureValue = actualGrowthbook
+  .getFeatureValue_CACHED_MAY_BE_STALE as <T>(key: string, def: T) => T
+
 mock.module('../../../services/analytics/index.js', () => ({
   ...actualAnalytics,
   logEvent: (name: string, metadata: Record<string, unknown>) => {
-    loggedEvents.push({ name, metadata })
+    if (autoDenyMocksActive) {
+      loggedEvents.push({ name, metadata })
+    } else {
+      actualLogEvent(name, metadata)
+    }
   },
 }))
 
 let gbFeatures: Record<string, unknown> = {}
 mock.module('../../../services/analytics/growthbook.js', () => ({
   ...actualGrowthbook,
-  getFeatureValue_CACHED_MAY_BE_STALE: (key: string, def: unknown) =>
-    key in gbFeatures ? gbFeatures[key] : def,
+  getFeatureValue_CACHED_MAY_BE_STALE: <T,>(key: string, def: T): T =>
+    autoDenyMocksActive
+      ? ((key in gbFeatures ? gbFeatures[key] : def) as T)
+      : actualGetFeatureValue(key, def),
 }))
 
 type DangerousRmModule = typeof import('../dangerousRmAutoDeny.js')
@@ -99,9 +120,14 @@ beforeEach(() => {
 
 afterEach(() => {
   jest.useRealTimers()
+  // Kill-switch env must not outlive the file: bun runs every file in one
+  // process, and a leaked CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT=1 flips
+  // later bashPermissions integration tests to the legacy deny path.
+  delete process.env[KILL_SWITCH_ENV_VAR]
 })
 
 afterAll(() => {
+  autoDenyMocksActive = false
   mock.restore()
 })
 

@@ -16,9 +16,14 @@ import { findCatastrophicSubstitutionBlock } from '../destructiveCommandWarning.
 
 const KILL_SWITCH_ENV = 'CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT'
 
-const WHOLE_SUB_REASON =
+// Canonical field placement (OCC-136 gFt port, byte-verified against the
+// official 2.1.281 binary): `message` carries the long official ask text
+// (`jy`), `reason` carries the short decision-reason line. The OCC-96
+// duplicate arms (long text in `reason`, short in `decisionReason`) were
+// removed in the merge — see destructiveCommandWarning.ts merge NOTE.
+const WHOLE_SUB_MESSAGE =
   'Dangerous rm operation detected: the target is the output of a command substitution (`$(...)` or backticks) and cannot be checked before the command runs. This requires explicit approval and cannot be auto-allowed by permission rules.\n\nRun the substitution on its own first, then remove the literal paths it prints.'
-const WHOLE_SUB_DECISION_REASON =
+const WHOLE_SUB_REASON =
   'Dangerous rm operation on statically-unresolvable target: command substitution output'
 
 afterEach(() => {
@@ -30,14 +35,15 @@ describe('2.1.281 #034 wholeSubstitution arm', () => {
     const block = findCatastrophicSubstitutionBlock('rm -rf "$(pwd)"')
     expect(block).not.toBeNull()
     expect(block?.category).toBe('rm_substitution_whole_target')
+    expect(block?.kind).toBe('wholeSubstitution')
+    expect(block?.message).toBe(WHOLE_SUB_MESSAGE)
     expect(block?.reason).toBe(WHOLE_SUB_REASON)
-    expect(block?.decisionReason).toBe(WHOLE_SUB_DECISION_REASON)
   })
 
   test('unquoted substitution with short recursive flag blocks', () => {
     const block = findCatastrophicSubstitutionBlock('rm -r $(echo /tmp/x)')
     expect(block?.category).toBe('rm_substitution_whole_target')
-    expect(block?.reason).toBe(WHOLE_SUB_REASON)
+    expect(block?.message).toBe(WHOLE_SUB_MESSAGE)
   })
 
   test('backtick substitution blocks', () => {
@@ -102,28 +108,38 @@ describe('2.1.281 #034 wholeSubstitution arm', () => {
   })
 })
 
-describe('2.1.281 #034 emptyExpansion arm', () => {
-  test('literal root prefix + substitution blocks as critical path', () => {
+describe('2.1.281 #034 emptyExpansion arm (canonical gFt wording)', () => {
+  test('literal root prefix + substitution blocks with the residual-expansion reason', () => {
     const block = findCatastrophicSubstitutionBlock('rm -rf /$(pwd)')
     expect(block?.category).toBe('rm_substitution_empty_expansion')
+    expect(block?.kind).toBe('emptyExpansion')
     expect(block?.reason).toBe(
-      "Dangerous rm operation detected: '/'\n\nThis command would remove a critical system directory. This requires explicit approval and cannot be auto-allowed by permission rules.",
+      "Dangerous rm operation detected: a command substitution in the target may expand to nothing, leaving '/'",
     )
-    expect(block?.decisionReason).toBe(
-      'Dangerous rm operation on critical path: /',
+    expect(block?.decisionReason).toBeUndefined()
+  })
+
+  test('literal home prefix + substitution blocks with the residual-expansion reason', () => {
+    const block = findCatastrophicSubstitutionBlock('rm -rf ~$(pwd)')
+    expect(block?.category).toBe('rm_substitution_empty_expansion')
+    expect(block?.reason).toBe(
+      "Dangerous rm operation detected: a command substitution in the target may expand to nothing, leaving '~'",
     )
   })
 
-  test('literal home prefix + substitution blocks as critical path', () => {
-    const block = findCatastrophicSubstitutionBlock('rm -rf ~$(pwd)')
+  test('direct-child-of-root prefix blocks (official isDangerousRemovalPath scope)', () => {
+    // The canonical gFt residual check reuses the byte-ported official
+    // isDangerousRemovalPath, which treats EVERY direct child of root
+    // (/tmp, /usr, /etc, …) as dangerous — broader than the OCC-96 draft
+    // arm's root/home-only regex. Official parity wins.
+    const block = findCatastrophicSubstitutionBlock('rm -rf /tmp/$(pwd)')
     expect(block?.category).toBe('rm_substitution_empty_expansion')
-    expect(block?.decisionReason).toBe(
-      'Dangerous rm operation on critical path: ~',
-    )
+    expect(block?.reason).toContain("leaving '/tmp/'")
   })
 
   test('non-critical literal prefix does not block', () => {
-    expect(findCatastrophicSubstitutionBlock('rm -rf /tmp/$(pwd)')).toBeNull()
+    expect(findCatastrophicSubstitutionBlock('rm -rf /tmp/work/$(pwd)')).toBeNull()
+    expect(findCatastrophicSubstitutionBlock('rm -rf build/$(pwd)')).toBeNull()
   })
 })
 

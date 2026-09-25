@@ -2465,13 +2465,25 @@ export async function bashToolHasPermission(
     const subBlock = findCatastrophicSubstitutionBlock(input.command)
     if (subBlock !== null) {
       const mode = appState.toolPermissionContext.mode
+      // Official 2.1.281 telemetry: `tengu_bash_dangerous_rm_too_complex`
+      // carries the gFt verdict `kind`; the rm_shape event fires when the
+      // detection maps to an official `$z(shape)` call site.
       logEvent('tengu_bash_dangerous_rm_too_complex', {
         category: subBlock.category,
+        kind: subBlock.kind,
         mode,
       })
+      if (subBlock.shape !== undefined) {
+        logEvent('tengu_bash_dangerous_rm_shape', { shape: subBlock.shape })
+      }
+      // When the official `jy` ask builder produced rich wording (v281
+      // wholeSubstitution verdict), surface it verbatim; otherwise keep the
+      // established "Destructive command blocked: …" envelope.
+      const denyMessage =
+        subBlock.message ?? `Destructive command blocked: ${subBlock.reason}`
       const decisionReason: PermissionDecisionReason = {
         type: 'other' as const,
-        reason: `Destructive command blocked: ${subBlock.reason}`,
+        reason: denyMessage,
       }
       // CC 2.1.281 #137: dangerous-rm auto-deny window. The deny is routed
       // through the official safety-check resolver (binary `b0t` @203102345)
@@ -2484,15 +2496,18 @@ export async function bashToolHasPermission(
       // covers this case ("…the permission prompt timed out, or this session
       // cannot prompt"). When the tengu_splendid_horizon remote config or the
       // CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT kill-switch disables the
-      // feature, the legacy pre-2.1.281 deny is returned unchanged.
-      const flaggedText = `Destructive command blocked: ${subBlock.reason}`
+      // feature, the legacy deny is returned unchanged — carrying the
+      // OCC-136 rich `subBlock.message` wording when present. `flaggedText`
+      // (the "What was flagged:" clause of `$0t`) is likewise the resolved
+      // denyMessage, so the wholeSubstitution rich wording survives into the
+      // auto-deny message.
       const legacyDeny = {
         behavior: 'deny' as const,
-        message: flaggedText,
+        message: denyMessage,
         decisionReason,
       }
       const resolution = resolveDangerousRmSafetyCheck({
-        flaggedText,
+        flaggedText: denyMessage,
         canShowDialog: false,
         config: getDangerousRmAutoDenyConfig(),
         legacyDeny,
