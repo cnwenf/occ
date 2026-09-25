@@ -82,7 +82,10 @@ const AgentJsonSchema = lazySchema(() =>
     description: z.string().min(1, 'Description cannot be empty'),
     tools: z.array(z.string()).optional(),
     disallowedTools: z.array(z.string()).optional(),
-    prompt: z.string().min(1, 'Prompt cannot be empty'),
+    // 2.1.281 PORT #112: the official agent schema (v281 JW @201693551)
+    // keeps `description`/`model` min(1) but uses a BARE `prompt: o()` —
+    // an empty prompt string is accepted (systemPrompt just ends up empty).
+    prompt: z.string(),
     model: z
       .string()
       .trim()
@@ -106,7 +109,10 @@ const AgentJsonSchema = lazySchema(() =>
   }),
 )
 
-const AgentsJsonSchema = lazySchema(() =>
+// 2.1.281 PORT #112: exported so the --agents CLI validator
+// (src/utils/agentsCliArg.ts) validates against the same record schema the
+// official Tvt validator uses (pyt = z.record(string, JW)).
+export const AgentsJsonSchema = lazySchema(() =>
   z.record(z.string(), AgentJsonSchema()),
 )
 

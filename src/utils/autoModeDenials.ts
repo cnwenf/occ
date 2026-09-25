@@ -17,6 +17,7 @@
  *     forced a dialog in auto mode.
  */
 
+import { buildDangerousRmAutoDenyMessage } from 'src/tools/BashTool/dangerousRmAutoDeny.js'
 import { feature } from 'src/utils/featureFlags.js'
 
 export type AutoModeDenial = {
@@ -91,6 +92,13 @@ export function isBackgroundAmpPattern(command: string): boolean {
 export type AutoModeAutoDenyResult = {
   deny: boolean
   reason: string
+  /**
+   * CC 2.1.281 #137: optional model-facing deny message. When absent, the
+   * auto-mode flow falls back to `${reason} auto-denied in auto mode`.
+   * Dangerous-rm denials route through the official `$0t` deny-message
+   * builder (binary @204142297) so the model receives the safe-rewrite hint.
+   */
+  denyMessage?: string
 }
 
 /**
@@ -114,7 +122,17 @@ export function shouldAutoDenyInAutoMode(
       timestamp: Date.now(),
     }
     recordAutoModeDenial(denial)
-    return { deny: true, reason: 'dangerous rm pattern' }
+    // CC 2.1.281 #137: keep the immediate auto-deny, but route the
+    // model-facing message through the official dangerous-rm deny-message
+    // builder ($0t @204142297) so the model gets the safe-rewrite hint and
+    // the do-not-work-around guidance.
+    return {
+      deny: true,
+      reason: 'dangerous rm pattern',
+      denyMessage: buildDangerousRmAutoDenyMessage(
+        'dangerous rm pattern auto-denied in auto mode',
+      ),
+    }
   }
 
   if (isBackgroundAmpPattern(command)) {

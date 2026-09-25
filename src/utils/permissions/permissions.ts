@@ -677,7 +677,12 @@ export const hasPermissionsToUseTool = async (
               classifier: 'auto-mode',
               reason: autoDeny.reason,
             },
-            message: `${autoDeny.reason} auto-denied in auto mode`,
+            // CC 2.1.281 #137: dangerous-rm auto-denies carry the official
+            // $0t deny message (safe-rewrite hint); other patterns keep the
+            // legacy `${reason} auto-denied in auto mode` text.
+            message:
+              autoDeny.denyMessage ??
+              `${autoDeny.reason} auto-denied in auto mode`,
           }
         }
       }

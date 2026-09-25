@@ -77,7 +77,7 @@ export type VimState =
 export type CommandState =
   | { type: 'idle' }
   | { type: 'count'; digits: string }
-  | { type: 'operator'; op: Operator; count: number }
+  | { type: 'operator'; op: Operator; count: number; countTyped: boolean }
   | { type: 'operatorCount'; op: Operator; count: number; digits: string }
   | { type: 'operatorFind'; op: Operator; count: number; find: FindType }
   | {

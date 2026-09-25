@@ -134,18 +134,40 @@ const live = hasLiveKey ? describe : describe.skip
 
 live('/feedback: live agent files an issue via fake gh', () => {
   test('agent runs gh issue create with a title+body reflecting the report', async () => {
-    // Fake gh shim: captures --title/--body, prints a fake issue URL.
+    // Fake gh shim: captures the title/body from the `gh issue create`
+    // invocation and prints a fake issue URL. Robustness notes (live-model
+    // non-determinism, observed 2026-09-25):
+    // - the model may inline `--body` OR write a file and pass `--body-file`
+    // - the model may follow up with other gh calls (`issue view` …) — only
+    //   `issue create` writes capture.json so a later call can't clobber it
+    // - every invocation is append-logged to a stable path outside binDir for
+    //   post-mortem when an assertion fails
     const binDir = mkdtempSync(join(tmpdir(), 'occ-gh-shim-'))
     const capturePath = join(binDir, 'capture.json')
+    const invocationLog = join(tmpdir(), 'occ-feedback-gh-invocations.jsonl')
+    writeFileSync(invocationLog, '')
     const shim = `#!/usr/bin/env node
 const fs = require('fs');
 const args = process.argv.slice(2);
-let title = '', body = '';
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === '--title' && i + 1 < args.length) { title = args[++i]; }
-  else if (args[i] === '--body' && i + 1 < args.length) { body = args[++i]; }
+try { fs.appendFileSync('${invocationLog}', JSON.stringify(args) + '\\n'); } catch {}
+function valueOf(longFlag, shortFlag) {
+  for (let i = 0; i < args.length; i++) {
+    if ((args[i] === longFlag || args[i] === shortFlag) && i + 1 < args.length) {
+      return args[++i];
+    }
+    if (args[i].startsWith(longFlag + '=')) { return args[i].slice(longFlag.length + 1); }
+  }
+  return '';
 }
-fs.writeFileSync('${capturePath}', JSON.stringify({ title, body, args }));
+if (args.includes('issue') && args.includes('create')) {
+  const title = valueOf('--title', '-t');
+  let body = valueOf('--body', '-b');
+  const bodyFile = valueOf('--body-file', '-F');
+  // The live model may write the body to a file and pass --body-file instead
+  // of inlining --body. Relative paths resolve against gh's cwd (= REPO_ROOT).
+  if (!body && bodyFile) { try { body = fs.readFileSync(bodyFile, 'utf8'); } catch {} }
+  fs.writeFileSync('${capturePath}', JSON.stringify({ title, body, bodyFile, args }));
+}
 // Print a fake issue URL — the agent reports this back.
 console.log('https://github.com/cnwenf/occ/issues/99999');
 `
@@ -182,6 +204,17 @@ console.log('https://github.com/cnwenf/occ/issues/99999');
       expect(captured.body).toMatch(/用户反馈|User Report/)
       expect(captured.body).toMatch(/环境信息|Environment/)
     } finally {
+      // Remove any --body-file artifact the agent left in its cwd (REPO_ROOT)
+      // before deleting the shim dir (capture.json lives inside it).
+      try {
+        const cap = JSON.parse(readFileSync(capturePath, 'utf8'))
+        if (cap.bodyFile) {
+          const bodyPath = cap.bodyFile.startsWith('/')
+            ? cap.bodyFile
+            : join(REPO_ROOT, cap.bodyFile)
+          rmSync(bodyPath, { force: true })
+        }
+      } catch {}
       rmSync(binDir, { recursive: true, force: true })
     }
   }, 200_000)

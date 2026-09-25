@@ -2,6 +2,7 @@ import Fuse from 'fuse.js'
 import { basename } from 'path'
 import type { SuggestionItem } from 'src/components/PromptInput/PromptInputFooterSuggestions.js'
 import { generateFileSuggestions } from 'src/hooks/fileSuggestions.js'
+import { filterMcpAppUiResources } from 'src/services/mcp/mcpAppUiResources.js'
 import type { ServerResource } from 'src/services/mcp/types.js'
 import { getAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
@@ -134,8 +135,13 @@ export async function generateUnifiedSuggestions(
     }),
   )
 
-  const mcpSources: McpResourceSuggestionSource[] = Object.values(mcpResources)
-    .flat()
+  // 2.1.281 #147: MCP Apps UI resources (ui:// or text/html with
+  // profile=mcp-app) are left out of @-mention suggestions; they can still
+  // be read by URI.
+  const mcpSources: McpResourceSuggestionSource[] = Object.entries(mcpResources)
+    .flatMap(([server, resources]) =>
+      filterMcpAppUiResources(resources, server),
+    )
     .map(resource => ({
       type: 'mcp_resource' as const,
       displayText: `${resource.server}:${resource.uri}`,

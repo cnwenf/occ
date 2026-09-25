@@ -82,6 +82,15 @@ type State = {
   questionPreviewFormat: 'markdown' | 'html' | undefined
   flagSettingsPath: string | undefined
   flagSettingsInline: Record<string, unknown> | null
+  /**
+   * 2.1.281 PORT #039: the raw `--setting-sources` flag value as given on the
+   * command line (e.g. `"user,project"`), stored at eager-parse time so
+   * teammate spawns can propagate it verbatim. Distinct from
+   * `allowedSettingSources` because `getAllowedSettingSources()` returns
+   * default-all and cannot distinguish "explicitly set" from "not set" —
+   * mirroring how `flagSettingsPath` gates `--settings` propagation.
+   */
+  flagSettingSourcesRaw: string | undefined
   allowedSettingSources: SettingSource[]
   sessionIngressToken: string | null | undefined
   oauthTokenFromFd: string | null | undefined
@@ -312,6 +321,7 @@ function getInitialState(): State {
     apiKeyFromFd: undefined,
     flagSettingsPath: undefined,
     flagSettingsInline: null,
+    flagSettingSourcesRaw: undefined,
     allowedSettingSources: [
       'userSettings',
       'projectSettings',
@@ -1152,6 +1162,17 @@ export function setFlagSettingsInline(
   settings: Record<string, unknown> | null,
 ): void {
   STATE.flagSettingsInline = settings
+}
+
+// 2.1.281 PORT #039: raw `--setting-sources` flag value for teammate
+// propagation (see the STATE field doc). Mirrors get/setFlagSettingsPath
+// gating semantics: undefined = flag not explicitly set on the parent.
+export function getFlagSettingSourcesRaw(): string | undefined {
+  return STATE.flagSettingSourcesRaw
+}
+
+export function setFlagSettingSourcesRaw(raw: string | undefined): void {
+  STATE.flagSettingSourcesRaw = raw
 }
 
 export function getSessionIngressToken(): string | null | undefined {

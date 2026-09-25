@@ -12,9 +12,12 @@ import {
 import {
   executeIndent,
   executeJoin,
+  executeLineOp,
   executeOpenLine,
   executePaste,
   executeOperatorFind,
+  executeOperatorG,
+  executeOperatorGg,
   executeOperatorMotion,
   executeOperatorTextObj,
   executeReplace,
@@ -314,7 +317,20 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
         break
 
       case 'operator':
-        executeOperatorMotion(change.op, change.motion, change.count, ctx)
+        // v281 `Fe` dot-repeat dispatch (#081): line-ops (motion === op[0],
+        // e.g. dd/cc/yy/S) replay via the count-linewise op; G/gg replay via
+        // their own operators (which carry the count conventions — routing
+        // them through executeOperatorMotion would lose the count or no-op);
+        // everything else replays through the generic op+motion path.
+        if (change.motion === change.op[0]) {
+          executeLineOp(change.op, change.count, ctx)
+        } else if (change.motion === 'gg') {
+          executeOperatorGg(change.op, change.count, ctx)
+        } else if (change.motion === 'G') {
+          executeOperatorG(change.op, change.count, ctx)
+        } else {
+          executeOperatorMotion(change.op, change.motion, change.count, ctx)
+        }
         break
 
       case 'operatorFind':

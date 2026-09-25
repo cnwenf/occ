@@ -109,7 +109,13 @@ export function execFileNoThrowWithCwd(
     // Use execa for cross-platform .bat/.cmd compatibility on Windows
     execa(file, args, {
       maxBuffer,
-      signal: abortSignal,
+      // execa v9 renamed the AbortSignal option `signal` → `cancelSignal`
+      // (passing `signal` throws a TypeError synchronously, which rejected
+      // this "never throws" wrapper for every caller passing an abortSignal).
+      // cancelSignal SIGTERMs the child as soon as the signal aborts — the
+      // kill-on-abort path used by PDF renders (2.1.281 #032), update checks,
+      // and the file-index git scans.
+      cancelSignal: abortSignal,
       timeout: finalTimeout,
       cwd: finalCwd,
       env: finalEnv,

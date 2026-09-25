@@ -43,11 +43,24 @@ process.env.CLAUDE_CONFIG_DIR = TMP_CONFIG_DIR
 const realSettings = { ...(await import('../settings/settings.js')) }
 let currentSettings: { minimumVersion?: string } | null = null
 let currentPolicy: { requiredMaximumVersion?: string } | null = null
+// Passthrough flag (OCC-96 leak hunt): with it off (afterAll) every leaked
+// closure below delegates to the real implementation instead of serving this
+// file's frozen seams (currentSettings=null gated #103 refreshes off, the
+// frozen npmResult {code:0} faked marketplaceKeptStale281's git clones, the
+// frozen axiosResponder threw on every late axios.get).
+let semverMocksActive = true
 mock.module('../settings/settings.js', () => ({
   ...realSettings,
-  getInitialSettings: () => currentSettings,
+  getInitialSettings: () =>
+    semverMocksActive
+      ? currentSettings
+      : (realSettings.getInitialSettings as () => unknown)(),
   getSettingsForSource: (source: string) =>
-    source === 'policySettings' ? currentPolicy : null,
+    semverMocksActive
+      ? source === 'policySettings'
+        ? currentPolicy
+        : null
+      : (realSettings.getSettingsForSource as (s: string) => unknown)(source),
 }))
 
 const realDebug = { ...(await import('../debug.js')) }
@@ -55,6 +68,9 @@ const debugLogs: string[] = []
 mock.module('../debug.js', () => ({
   ...realDebug,
   logForDebugging: (message: string) => {
+    if (!semverMocksActive) {
+      return (realDebug.logForDebugging as (m: string) => void)(message)
+    }
     debugLogs.push(message)
   },
 }))
@@ -67,7 +83,20 @@ let npmResult: { code: number; stdout: string; stderr: string } = {
 }
 mock.module('../execFileNoThrow.js', () => ({
   ...realExec,
-  execFileNoThrowWithCwd: async () => npmResult,
+  execFileNoThrowWithCwd: async (
+    file: string,
+    args: string[],
+    opts: unknown,
+  ) =>
+    semverMocksActive
+      ? npmResult
+      : (
+          realExec.execFileNoThrowWithCwd as (
+            f: string,
+            a: string[],
+            o: unknown,
+          ) => Promise<unknown>
+        )(file, args, opts),
 }))
 
 const realAxios = { ...(await import('axios')) }
@@ -79,7 +108,10 @@ mock.module('axios', () => ({
   ...realAxios,
   default: {
     ...realAxiosDefault,
-    get: async (url: string) => axiosResponder(url),
+    get: async (url: string) =>
+      semverMocksActive
+        ? axiosResponder(url)
+        : (realAxiosDefault.get as (u: string) => Promise<unknown>)(url),
   },
 }))
 
@@ -263,6 +295,7 @@ describe('C3: GCS + homebrew lookup validation (Jcn/tt ports)', () => {
 // mock.restore() does NOT undo mock.module — re-mock with the load-time real
 // snapshots (same pattern as diskOutputDrainGuard247.test.ts).
 afterAll(() => {
+  semverMocksActive = false
   mock.module('../settings/settings.js', () => ({ ...realSettings }))
   mock.module('../debug.js', () => ({ ...realDebug }))
   mock.module('../execFileNoThrow.js', () => ({ ...realExec }))

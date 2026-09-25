@@ -3,6 +3,7 @@ import {
   ensureConnectedClient,
   fetchResourcesForClient,
 } from '../../services/mcp/client.js'
+import { filterMcpAppUiResources } from '../../services/mcp/mcpAppUiResources.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { errorMessage } from '../../utils/errors.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -86,7 +87,11 @@ export const ListMcpResourcesTool = buildTool({
         if (client.type !== 'connected') return []
         try {
           const fresh = await ensureConnectedClient(client)
-          return await fetchResourcesForClient(fresh)
+          const resources = await fetchResourcesForClient(fresh)
+          // 2.1.281: MCP Apps UI resources (ui:// or text/html with
+          // profile=mcp-app) are left out of the model's list; they can
+          // still be read by URI via ReadMcpResourceTool.
+          return filterMcpAppUiResources(resources, client.name)
         } catch (error) {
           // One server's reconnect failure shouldn't sink the whole result.
           logMCPError(client.name, errorMessage(error))

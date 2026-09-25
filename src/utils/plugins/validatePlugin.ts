@@ -29,6 +29,37 @@ const MARKETPLACE_ONLY_MANIFEST_FIELDS = new Set([
   'id',
 ])
 
+/**
+ * Listing-metadata fields that are valid in plugin.json but are not modelled by
+ * the typed `PluginManifestSchema` (it covers the load-bearing manifest shape —
+ * name/version/commands/agents/… — not the store-listing decoration). Before CC
+ * 2.1.281 `claude plugin validate` ran the manifest through zod `.strict()` and
+ * reported these as unknown fields, which was wrong: they are recognized
+ * listing metadata, not author typos.
+ *
+ * CC 2.1.281 (#059): the official unknown-field checker keeps a known-keys set
+ * (binary `Me` @228859849, used as `if(n.has(c)||i?.has(c))continue` @228864006)
+ * and skips any key in it instead of reporting it. These keys are suppressed
+ * from the `.strict()` unrecognized_keys errors below — they are NOT added as
+ * typed schema fields (the official keeps them as an allowlist, so this mirrors
+ * it exactly). Order/spelling match the official set verbatim.
+ */
+const LISTING_METADATA_MANIFEST_FIELDS = new Set([
+  'icon',
+  'screenshots',
+  'classification',
+  'privacyPolicyUrl',
+  'privacy_policy',
+  'privacyPolicy',
+  'supportUrl',
+  'support',
+  'bugs',
+  'termsOfServiceUrl',
+  'terms_of_service',
+  'documentationUrl',
+  'docs',
+])
+
 export type ValidationResult = {
   success: boolean
   errors: ValidationError[]
@@ -246,6 +277,26 @@ export async function validatePluginManifest(
             `not plugin.json. It's harmless here but unused — Claude Code ` +
             `ignores it at load time.`,
         })
+      }
+      toValidate = stripped
+    }
+  }
+
+  // CC 2.1.281 (#059): strip recognized listing-metadata keys before the
+  // .strict() pass so they aren't reported as unknown fields. Unlike the
+  // marketplace-only fields above these are NOT a mistake — they're valid
+  // plugin.json listing metadata the typed schema simply doesn't model — so
+  // they're dropped silently (no warning, no error), matching the official
+  // checker which `continue`s past any key in its known-keys set.
+  if (typeof toValidate === 'object' && toValidate !== null) {
+    const obj = toValidate as Record<string, unknown>
+    const listingKeys = Object.keys(obj).filter(k =>
+      LISTING_METADATA_MANIFEST_FIELDS.has(k),
+    )
+    if (listingKeys.length > 0) {
+      const stripped = { ...obj }
+      for (const key of listingKeys) {
+        delete stripped[key]
       }
       toValidate = stripped
     }

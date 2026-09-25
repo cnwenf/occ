@@ -9,6 +9,13 @@
 // preserving the historical 40k cap as the minimum "too long" trigger.
 export const MIN_MEMORY_CHARACTER_COUNT = 40000
 
+// CC 2.1.281 #119: floor for the AGGREGATE ("all instruction files together")
+// character threshold. Official v281 `Jbn` @201041784:
+//   `function Jbn(e){return Math.max(120000,Uje(e))}` where `Uje` is the
+// per-file limit (≡ getMemoryCharThreshold). The aggregate limit is at least
+// 120k chars, or the per-file limit if that is larger (0 hits in v280).
+export const MIN_MEMORY_TOTAL_CHARACTER_COUNT = 120000
+
 // 2.1.169: the threshold scales with the active model's context window —
 // 5% of the context window expressed in characters
 // (tokens * ratio * chars-per-token), floored at MIN_MEMORY_CHARACTER_COUNT.
@@ -39,4 +46,14 @@ export function getMemoryCharThreshold(
         CLAUDE_MD_CHARS_PER_TOKEN,
     ),
   )
+}
+
+/**
+ * CC 2.1.281 #119: the AGGREGATE "too long" threshold across all instruction
+ * files together (official v281 `Jbn` @201041784:
+ * `Math.max(120000, Uje(e))`). At least MIN_MEMORY_TOTAL_CHARACTER_COUNT, or
+ * the per-file threshold when a large context window pushes that higher.
+ */
+export function getMemoryTotalCharThreshold(perFileThreshold: number): number {
+  return Math.max(MIN_MEMORY_TOTAL_CHARACTER_COUNT, perFileThreshold)
 }

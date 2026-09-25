@@ -48,6 +48,7 @@ import type { ToolInputJSONSchema } from './Tool.js';
 import { createSyntheticOutputTool, isSyntheticOutputToolEnabled } from './tools/SyntheticOutputTool/SyntheticOutputTool.js';
 import { getTools } from './tools.js';
 import { canUserConfigureAdvisor, getInitialAdvisorSetting, isAdvisorEnabled, isValidAdvisorModel, modelSupportsAdvisor } from './utils/advisor.js';
+import { AGENTS_FILE_PATH_REQUIRES_PRINT_ERROR, isInlineAgentsJson, readAgentsFile, validateAgentsJson } from './utils/agentsCliArg.js';
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js';
 import { count, uniq } from './utils/array.js';
 import { installAsciicastRecorder } from './utils/asciicast.js';
@@ -177,7 +178,7 @@ import { setCwd } from 'src/utils/Shell.js';
 import { type ProcessedResume, processResumedConversation } from 'src/utils/sessionRestore.js';
 import { parseSettingSourcesFlag } from 'src/utils/settings/constants.js';
 import { plural } from 'src/utils/stringUtils.js';
-import { type ChannelEntry, getInitialMainLoopModel, getIsNonInteractiveSession, getSdkBetas, getSessionId, getUserMsgOptIn, setAllowedChannels, setAllowedSettingSources, setChromeFlagOverride, setClientType, setCwdState, setDirectConnectServerUrl, setFlagSettingsPath, setInitialMainLoopModel, setInlinePlugins, setIsInteractive, setKairosActive, setOriginalCwd, setQuestionPreviewFormat, setSdkBetas, setSessionBypassPermissionsMode, setSessionPersistenceDisabled, setSessionSource, setUserMsgOptIn, switchSession } from './bootstrap/state.js';
+import { type ChannelEntry, getInitialMainLoopModel, getIsNonInteractiveSession, getSdkBetas, getSessionId, getUserMsgOptIn, setAllowedChannels, setAllowedSettingSources, setChromeFlagOverride, setClientType, setCwdState, setDirectConnectServerUrl, setFlagSettingSourcesRaw, setFlagSettingsPath, setInitialMainLoopModel, setInlinePlugins, setIsInteractive, setKairosActive, setOriginalCwd, setQuestionPreviewFormat, setSdkBetas, setSessionBypassPermissionsMode, setSessionPersistenceDisabled, setSessionSource, setUserMsgOptIn, switchSession } from './bootstrap/state.js';
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER') ? require('./utils/permissions/autoModeState.js') as typeof import('./utils/permissions/autoModeState.js') : null;
@@ -533,6 +534,11 @@ function eagerLoadSettings(): void {
   // Parse --setting-sources flag early to control which sources are loaded
   const settingSourcesArg = eagerParseCliFlag('--setting-sources');
   if (settingSourcesArg !== undefined) {
+    // 2.1.281 PORT #039: remember the RAW flag value so teammate spawns can
+    // propagate `--setting-sources` verbatim (getAllowedSettingSources()
+    // returns default-all, so it cannot tell "explicitly set" from "unset" —
+    // same gating rationale as flagSettingsPath for --settings).
+    setFlagSettingSourcesRaw(settingSourcesArg);
     loadSettingSourcesFromFlag(settingSourcesArg);
   }
   profileCheckpoint('eagerLoadSettings_end');
@@ -1090,7 +1096,7 @@ async function run(): Promise<CommanderCommand> {
       throw new InvalidArgumentError(`It must be one of: ${EFFORT_LEVELS.join(', ')}`);
     }
     return value;
-  })).option('--agent <agent>', `Agent for the current session. Overrides the 'agent' setting.`).option('--betas <betas...>', 'Beta headers to include in API requests (API key users only)').option('--fallback-model <model>', 'Enable automatic fallback to specified model(s) when the default model is overloaded or not available. Accepts a comma-separated list to try each in order. Re-tries the primary at the start of each user turn. (only works with --print)').addOption(new Option('--workload <tag>', 'Workload tag for billing-header attribution (cc_workload). Process-scoped; set by SDK daemon callers that spawn subprocesses for cron work. (only works with --print)').hideHelp()).option('--settings <file-or-json>', 'Path to a settings JSON file or a JSON string to load additional settings from').option('--add-dir <directories...>', 'Additional directories to allow tool access to').option('--ide', 'Automatically connect to IDE on startup if exactly one valid IDE is available', () => true).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config, ignoring all other MCP configurations', () => true).option('--session-id <uuid>', 'Use a specific session ID for the conversation (must be a valid UUID)').option('-n, --name <name>', 'Set a display name for this session (shown in the prompt box, /resume picker, and terminal title)').option('--agents <json>', 'JSON object defining custom agents (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).')
+  })).option('--agent <agent>', `Agent for the current session. Overrides the 'agent' setting.`).option('--betas <betas...>', 'Beta headers to include in API requests (API key users only)').option('--fallback-model <model>', 'Enable automatic fallback to specified model(s) when the default model is overloaded or not available. Accepts a comma-separated list to try each in order. Re-tries the primary at the start of each user turn. (only works with --print)').addOption(new Option('--workload <tag>', 'Workload tag for billing-header attribution (cc_workload). Process-scoped; set by SDK daemon callers that spawn subprocesses for cron work. (only works with --print)').hideHelp()).option('--settings <file-or-json>', 'Path to a settings JSON file or a JSON string to load additional settings from').option('--add-dir <directories...>', 'Additional directories to allow tool access to').option('--ide', 'Automatically connect to IDE on startup if exactly one valid IDE is available', () => true).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config, ignoring all other MCP configurations', () => true).option('--session-id <uuid>', 'Use a specific session ID for the conversation (must be a valid UUID)').option('-n, --name <name>', 'Set a display name for this session (shown in the prompt box, /resume picker, and terminal title)').option('--agents <json-or-file>', 'JSON object defining custom agents, or with --print the path to a file that holds one (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).')
   // OCC-21 Gap-2a: three 2.1.218 --help flags OCC previously rejected as
   // "unknown option". Descriptions/specs binary-verified against the official
   // 2.1.218 ELF (see docs/upstream-version-gap-occ19.md + aligning-with-
@@ -1287,7 +1293,43 @@ async function run(): Promise<CommanderCommand> {
 
     // Promise for file downloads - started early, awaited before REPL renders
     let fileDownloadPromise: Promise<DownloadResult[]> | undefined;
-    const agentsJson = options.agents;
+    // 2.1.281 PORT #112: `--agents <json-or-file>` resolution + validation,
+    // mirroring the official parse-site flow @209004300. OCC's SettingsSchema
+    // has no `agents` key, so a non-empty string here is always the explicit
+    // CLI flag (no official explicitlyRequested-settings gate equivalent is
+    // needed). Shape-sniff (official oBt): inline JSON is used as-is; any
+    // other value is a file path, allowed only with --print or in a
+    // non-interactive/SDK session (official VWr gate error otherwise).
+    // Validation (official Tvt) runs when not resuming/continuing, or always
+    // for file-sourced values (official `mo || $t !== void 0`).
+    let agentsJson = options.agents;
+    let agentsFilePath: string | undefined;
+    if (typeof agentsJson === 'string' && agentsJson !== '') {
+      if (!isInlineAgentsJson(agentsJson)) {
+        if (!options.print && !getIsNonInteractiveSession()) {
+          const { exitWithError } = await import('./utils/process.js');
+          exitWithError(AGENTS_FILE_PATH_REQUIRES_PRINT_ERROR);
+        }
+        const agentsFile = await readAgentsFile(agentsJson);
+        if (!agentsFile.ok) {
+          const { exitWithError } = await import('./utils/process.js');
+          exitWithError(agentsFile.error);
+        }
+        agentsJson = agentsFile.json;
+        agentsFilePath = agentsFile.filePath;
+      }
+      if ((!options.resume && !options.continue) || agentsFilePath !== undefined) {
+        const agentsDetails = validateAgentsJson(agentsJson);
+        if (agentsDetails) {
+          const { exitWithError } = await import('./utils/process.js');
+          exitWithError(
+            `Error: Invalid --agents configuration:\n${agentsDetails}${
+              agentsFilePath ? `\n(read from ${agentsFilePath})` : ''
+            }`,
+          );
+        }
+      }
+    }
     const agentCli = options.agent;
     if (feature('BG_SESSIONS') && agentCli) {
       process.env.CLAUDE_CODE_AGENT = agentCli;

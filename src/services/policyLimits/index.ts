@@ -30,7 +30,10 @@ import {
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
-import { classifyAxiosError } from '../../utils/errors.js'
+import {
+  classifyAxiosError,
+  isNonRetryableClientError,
+} from '../../utils/errors.js'
 import { safeParseJSON } from '../../utils/json.js'
 import {
   getAPIProvider,
@@ -367,7 +370,7 @@ async function fetchPolicyLimits(
     }
   } catch (error) {
     // 404 is handled above via validateStatus, so it won't reach here
-    const { kind, message } = classifyAxiosError(error)
+    const { kind, status, message } = classifyAxiosError(error)
     switch (kind) {
       case 'auth':
         return {
@@ -380,7 +383,14 @@ async function fetchPolicyLimits(
       case 'network':
         return { success: false, error: 'Cannot connect to server' }
       default:
-        return { success: false, error: message }
+        // 2.1.281 (#103) @206240887: `skipRetry:c$e(I)` — a never-succeeding
+        // 4xx (anything but 408/409/429) stops the backoff loop immediately
+        // instead of burning all DEFAULT_MAX_RETRIES attempts.
+        return {
+          success: false,
+          error: message,
+          skipRetry: isNonRetryableClientError(status),
+        }
     }
   }
 }

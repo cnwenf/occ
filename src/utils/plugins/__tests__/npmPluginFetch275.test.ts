@@ -106,6 +106,14 @@ async function makeTempDir(prefix = 'occ-npm275-'): Promise<string> {
 }
 
 afterAll(async () => {
+  // Heal the seams first: mock.restore() does NOT undo mock.module, and no
+  // beforeEach runs after this file — with the handlers left at the last
+  // test's values, leaked closures would keep serving them to every later
+  // file in the shared process. Null handlers make the leaked closures
+  // delegate to the real implementations (OCC-96).
+  execHandler = null
+  readFileBytesHandler = null
+  execCalls.length = 0
   mock.restore()
   await Promise.allSettled(
     tempRoots.map(root => rm(root, { recursive: true, force: true })),

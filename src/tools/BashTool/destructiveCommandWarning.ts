@@ -361,8 +361,12 @@ const CATASTROPHIC_RM_COMMAND_RE =
 //
 // Constructed via new RegExp to avoid the slash-escaping ambiguity of a
 // regex literal (the pattern contains a literal `/` that must not close the
-// literal prematurely).
-// biome-ignore lint/complexity/useRegexLiterals: the autofix mangles the `\\/` escapes — regex-literal form changes the pattern's meaning (a literal `/` would close the literal early).
+// literal prematurely). The biome-ignore is load-bearing: the
+// useRegexLiterals autofix mangles the `\\/` escapes — a literal whose bare
+// `/` closes the regex early is a PARSE ERROR that takes down every BashTool
+// test, and has re-broken this line repeatedly when `biome lint --fix src/`
+// runs.
+// biome-ignore lint/complexity/useRegexLiterals: autofix output is a syntax error (bare / closes the literal)
 const CATASTROPHIC_VAR_PATH_TARGET_RE = new RegExp(
   '^"?\\$(?:\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*)"?\\/(?:\\*|\\$|\\/|["\']|$)',
 )
@@ -376,7 +380,21 @@ const REDIRECT_OP_RE = /^(?:[0-9]+|&)?(?:>>?[|&]?|<<?<?|<>)$/
 // to detect redirect operators among rm args. Mirrors `/^[\d&]*[<>]/`.
 const REDIRECT_TOKEN_START_RE = /^[\d&]*[<>]/
 
-export type CatastrophicRmMatch = { command: string; target: string }
+export type CatastrophicRmMatch = {
+  command: string
+  target: string
+  /**
+   * 2.1.281 #110 (binary `avo` env Set): the matched variable is a tracked
+   * home/cwd-derived path variable, so the match belongs to the v281
+   * "possibly-empty variable path" family (binary `tIe`→`Voe` arm) and gets
+   * the v281 message instead of the OCC 2.1.210-era substitution message.
+   */
+  arm?: 'possiblyEmptyVar'
+  /** Shell variable name (without `$`) for the possiblyEmptyVar arm. */
+  varName?: string
+  /** The rm/rmdir segment text, for the v281 message's invocation display. */
+  invocation?: string
+}
 
 /**
  * Port of the official 2.1.210 `hXi(e)`. Detects a `rm`/`rmdir` invocation
@@ -436,7 +454,45 @@ export function findCatastrophicRmInCommand(
           continue
         }
         if (CATASTROPHIC_VAR_PATH_TARGET_RE.test(c)) {
-          return { command: cmd, target: c }
+          const varName = extractShellVarName(c)
+          if (varName !== null && TRACKED_PATH_ENV_VARS.has(varName)) {
+            // 2.1.281 #110 (binary `avo`): tracked home/cwd-derived variable
+            // path (e.g. `"$HOME/"`) → the v281 "possibly-empty variable
+            // path" family (binary `tIe`→`Voe`), not the 2.1.210-era text.
+            return {
+              command: cmd,
+              target: c,
+              arm: 'possiblyEmptyVar',
+              varName,
+              invocation: o,
+            }
+          }
+          return { command: cmd, target: c, invocation: o }
+        }
+        // 2.1.281 #110 (binary `avo` arm): the target is a BARE tracked
+        // variable expansion (`$TMPDIR`, `${TMPDIR}`, `${TMPDIR:-…}`, quoted
+        // or with a trailing slash). These vars are home/cwd-derived and
+        // their runtime value cannot be read statically, so v281 asks. The
+        // exact literal `$HOME` is excluded: OCC's RM_ROOT_HOME_PATTERN block
+        // owns that form and existing consumers/tests rely on its
+        // 'rm_substitution_root_home' category (braced/quoted HOME still
+        // prompts here — fail-safe direction).
+        const bareToken = unquoteToken(args[l]!)
+        if (bareToken !== '$HOME') {
+          const bareMatch = BARE_TRACKED_VAR_TARGET_RE.exec(bareToken)
+          const bareVarName = bareMatch?.[1] ?? bareMatch?.[2]
+          if (
+            bareVarName !== undefined &&
+            TRACKED_PATH_ENV_VARS.has(bareVarName)
+          ) {
+            return {
+              command: cmd,
+              target: bareToken,
+              arm: 'possiblyEmptyVar',
+              varName: bareVarName,
+              invocation: o,
+            }
+          }
         }
       }
     }
@@ -1166,6 +1222,13 @@ export type CatastrophicSubstitutionBlock = {
   category: string
   reason: string
   /**
+   * Official 2.1.281 decisionReason text (binary `jy` builds
+   * `Dangerous ${cmd} operation ${reasonFragment}`). Informational for
+   * telemetry/analytics parity — the permission consumer only reads
+   * category + reason, so this field is additive and optional.
+   */
+  decisionReason?: string
+  /**
    * Official 2.1.281 verdict kind — `gFt` returns `{result, kind}` and the
    * kind feeds the `tengu_bash_dangerous_rm_too_complex` telemetry payload
    * (byte-verified: kinds are wholeSubstitution / literalTarget /
@@ -1253,6 +1316,15 @@ export function findCatastrophicSubstitutionBlock(
     }
     const varMatch = findCatastrophicRmInCommand(c)
     if (varMatch !== null) {
+      if (varMatch.arm === 'possiblyEmptyVar' && varMatch.varName !== undefined) {
+        // 2.1.281 #110: tracked-variable arm → binary `Voe` message family.
+        return buildPossiblyEmptyVarBlock(
+          varMatch.command,
+          varMatch.target,
+          varMatch.varName,
+          varMatch.invocation ?? c,
+        )
+      }
       return {
         category: 'rm_substitution_var_path',
         // Closest official verdict: the variable may expand to nothing,
@@ -1273,7 +1345,10 @@ export function findCatastrophicSubstitutionBlock(
           'rm -rf targeting the root or home directory detected inside command substitution',
       }
     }
-    return null
+    // 2.1.281 #034 + #110: the v281 dangerous-rm analyzer arms that OCC's
+    // 2.1.210-era checks don't cover (whole-substitution targets, empty
+    // expansion, backslash-only drive root, tracked-var + top-level dir).
+    return findDangerousRmV281Block(c)
   }
   for (const body of [command, ...subs]) {
     // Check the body itself first (preserves the pre-273 whole-body
@@ -1294,6 +1369,352 @@ export function findCatastrophicSubstitutionBlock(
       const substBlock = findSubstitutionTargetBlock(text)
       if (substBlock !== null) {
         return substBlock
+      }
+    }
+  }
+  return null
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// 2.1.281 #034 + #110 (🔒 security): dangerous-rm static analyzer upgrades.
+//
+// Official 2.1.281 rewrote the rm/rmdir static analyzer (binary `x$()` +
+// its substitution-context caller `pMe` + the `Voe` message builder). Before
+// this port, a recursive `rm` whose target is ONLY command-substitution
+// output — e.g. `rm -rf "$(pwd)"` — ran UNPROMPTED in auto mode and under
+// --dangerously-skip-permissions, because OCC's 2.1.210-era checks only fire
+// on literal root/home targets or `$VAR/`-style variable paths.
+//
+// Arms ported here (message strings recovered byte-exact from the official
+// 2.1.281 linux-x64 ELF):
+//  1. wholeSubstitution (#034, ELF @202903176): recursive `rm` whose target
+//     tokenizes to only `__CMDSUB__` runs (`/^(?:__CMDSUB__[/*.]*)+$/`) →
+//     ask, unless the CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT kill-switch
+//     env var is set. Official gate `Hl("tengu_iridescent_boot",!0)` is
+//     default-on (off only via a remote "payload" override) — always-on in
+//     OCC per the tengu_* porting convention (GrowthBook is stubbed and
+//     returns the default).
+//  2. emptyExpansion (#034, ELF @202902929): a target with a literal prefix
+//     followed by a `__CMDSUB__` run — if the substitution expands to empty
+//     the target reduces to the prefix; when the reduced target is the root
+//     or home (`/`, `/*`, `~`…), ask with the binary's critical-path
+//     message. `${VAR:-$(…)}` targets are folded to their cmdsub default
+//     first (binary tokenizer rule), so they flow into arms 1/2.
+//  3. backslash-only (#110, ELF @202783355): a `/^\\+$/` target is the drive
+//     root in Git Bash on Windows → ask.
+//  4. var+top-level (#110, ELF @202783019, binary regex `pvo`): a target of
+//     tracked-var placeholder(s) + `/` + a top-level directory name (binary
+//     `mNt` list) → ask; if the expansion is empty this removes '/<dir>'.
+//     Telemetry kind `placeholder_root_child` (binary `lNt`). Official gate
+//     `Qoe()`=`Hl("tengu_bright_lake",!0)` — default-on, always-on in OCC.
+//  5. cwd-derived vars (#110, binary env Set `avo` @202782129): a bare
+//     `$VAR`/`${VAR}` target (optionally quoted / trailing slash / default
+//     expansion) where VAR is a tracked home/cwd-derived path variable
+//     (HOME, PWD, OLDPWD, TMPDIR, TMP, TEMP, …) → ask with the binary `Voe`
+//     "possibly-empty variable path" message. Implemented inside
+//     findCatastrophicRmInCommand above (it is the v281 successor of the
+//     same `tIe`/`eIg` target walk), with the message built by
+//     buildPossiblyEmptyVarBlock below.
+//
+// All arms flow through findCatastrophicSubstitutionBlock's existing
+// {category, reason} return shape, so bashPermissions.ts (which turns any
+// non-null block into an all-modes deny — OCC's bypass-immune equivalent of
+// the official ask) needs no change. Fail-safe direction: when a target
+// cannot be statically resolved, prompt — never auto-allow.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Binary `pMe` tokenizer placeholder for a command substitution. */
+const CMDSUB_TOKEN = '__CMDSUB__'
+/** Binary placeholder for a tracked (avo) shell-variable expansion. */
+const TRACKED_VAR_TOKEN = '__TRACKED_VAR__'
+/** Binary `Dot` display rendering of the placeholders. */
+const CMDSUB_TOKEN_DISPLAY = '$(…)'
+// biome-ignore lint/suspicious/noTemplateCurlyInString: literal `${…}` is the binary's Dot display string, not a template
+const TRACKED_VAR_TOKEN_DISPLAY = '${…}'
+/** Binary tokenizer iteration ceiling for nested `$(…)`. */
+const MAX_CMDSUB_TOKENIZE_PASSES = 16
+
+/**
+ * Binary `mNt` — directory names that sit at the top level of a filesystem
+ * root. A variable expansion followed by one of these means an empty
+ * expansion removes '/<name>'.
+ */
+const TOP_LEVEL_DIR_NAMES =
+  'bin|boot|dev|etc|home|lib|lib32|lib64|libx32|media|mnt|opt|proc|root|run|sbin|srv|sys|tmp|usr|var|snap|nix|lost\\+found|private|cores|Applications|Library|System|Users|Volumes|Windows|ProgramData|cygdrive'
+
+/** Binary `pvo` — tracked-var prefix ending in a top-level directory name. */
+const VAR_TOP_LEVEL_TARGET_RE = new RegExp(
+  String.raw`^(?:${TRACKED_VAR_TOKEN})+[\\/]+(${TOP_LEVEL_DIR_NAMES})(?:[\\/]+\*+)*[\\/]*$`,
+  'i',
+)
+
+// wholeSubstitution arm target test (ELF @202903176) — shares the OCC-136
+// WHOLE_SUBSTITUTION_TARGET_RE constant above (identical pattern
+// `/^(?:__CMDSUB__[/*.]*)+$/`; CMDSUB_TOKEN === CMDSUB_PLACEHOLDER). The
+// OCC-96 duplicate emptyExpansion regexes (ELF @202902929 + strip variant)
+// were removed with the duplicate arms: the canonical gFt port's
+// SUBSTITUTION_TAIL_RE + isDangerousResidualRemovalTarget owns that verdict.
+
+/**
+ * Binary `${VAR:-<cmdsub>}` fold (ELF @202902104): a parameter expansion
+ * whose default value is only command-substitution output collapses to that
+ * output, so `${X:-$(pwd)}` is analyzed as a whole-substitution target.
+ */
+const PARAM_EXPANSION_CMDSUB_FOLD_RE = new RegExp(
+  String.raw`\$\{(?:[A-Za-z_][A-Za-z0-9_]*|[0-9]+|[@*#?!$-]):?[-=+?]"?((?:${CMDSUB_TOKEN}[/*.]*)+)"?\}`,
+  'g',
+)
+
+/** Binary #110 backslash-only drive-root arm (ELF @202783355). */
+const BACKSLASH_ONLY_TARGET_RE = /^\\+$/
+
+/**
+ * Binary `avo` (ELF @202782129) — home/cwd-derived environment variables
+ * whose runtime value this check cannot read. v281 extends the tracked set
+ * with the cwd-derived PWD/OLDPWD/TMPDIR/TMP/TEMP.
+ */
+const TRACKED_PATH_ENV_VARS: ReadonlySet<string> = new Set([
+  'HOME',
+  'USERPROFILE',
+  'HOMEPATH',
+  'HOMEDRIVE',
+  'XDG_CONFIG_HOME',
+  'XDG_DATA_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_STATE_HOME',
+  'APPDATA',
+  'LOCALAPPDATA',
+  'SYSTEMDRIVE',
+  'SYSTEMROOT',
+  'WINDIR',
+  'PROGRAMFILES',
+  'PROGRAMW6432',
+  'PROGRAMDATA',
+  'ALLUSERSPROFILE',
+  'PUBLIC',
+  'HOMESHARE',
+  'XDG_RUNTIME_DIR',
+  'PWD',
+  'OLDPWD',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+])
+
+/**
+ * A target that is ONLY a tracked-variable expansion: `$VAR`, `${VAR}`,
+ * `${VAR:-default}`/`${VAR:?}`-style, optional trailing slash. Group 1 is
+ * the braced name, group 2 the bare name.
+ */
+const BARE_TRACKED_VAR_TARGET_RE =
+  /^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?:[?]?:?[-=?+][^}]*)?\}|([A-Za-z_][A-Za-z0-9_]*))\/?$/
+
+/** First shell-variable name in a target (`${VAR}` or `$VAR` form). */
+const SHELL_VAR_NAME_RE =
+  /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/
+
+/**
+ * Variable occurrences replaced when building the binary `Voe` guarded
+ * rewrite (`M`): each `$VAR`/`${VAR}` becomes `"${VAR:?}"` so the shell
+ * stops with an error instead of running the rm on an empty expansion.
+ */
+const VAR_OCCURRENCE_RE =
+  /\$(?:\{[A-Za-z_][A-Za-z0-9_]*\}|[A-Za-z_][A-Za-z0-9_]*)/g
+
+/**
+ * Binary argv unquote helper (ELF @196790259): strip matching surrounding
+ * quotes so `"$(pwd)"` analyzes as the placeholder token.
+ */
+function unquoteToken(token: string): string {
+  const first = token[0]
+  const last = token[token.length - 1]
+  return token.length >= 2 && (first === '"' || first === "'") && first === last
+    ? token.slice(1, -1)
+    : token
+}
+
+/** Name of the first shell variable in a target, or null. */
+function extractShellVarName(target: string): string | null {
+  const m = SHELL_VAR_NAME_RE.exec(target)
+  if (m === null) {
+    return null
+  }
+  return m[1] ?? m[2] ?? null
+}
+
+/**
+ * Binary `pMe` text tokenizer (ELF @202902104): backtick bodies and
+ * `$(…)` runs (nested, ≤16 passes) become `__CMDSUB__`; `${VAR:-<cmdsub>}`
+ * folds to the cmdsub run; tracked (avo) variable expansions become
+ * `__TRACKED_VAR__` so `pvo` can see a var+top-level shape.
+ */
+function tokenizeForDangerousRm281(text: string): string {
+  let out = text.replace(/`[^`]*`/g, CMDSUB_TOKEN)
+  for (let pass = 0; pass < MAX_CMDSUB_TOKENIZE_PASSES; pass++) {
+    const prev = out
+    out = out.replace(/\$\([^()]*\)/g, CMDSUB_TOKEN)
+    if (out === prev) {
+      break
+    }
+  }
+  out = out.replace(PARAM_EXPANSION_CMDSUB_FOLD_RE, '$1')
+  return out.replace(
+    /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+    (match: string, braced?: string, bare?: string) => {
+      const name = braced ?? bare
+      return name !== undefined && TRACKED_PATH_ENV_VARS.has(name)
+        ? TRACKED_VAR_TOKEN
+        : match
+    },
+  )
+}
+
+/** Binary `Dot` — render placeholders back to display form for messages. */
+function displayTokenizedTarget(token: string): string {
+  return token
+    .replaceAll(TRACKED_VAR_TOKEN, TRACKED_VAR_TOKEN_DISPLAY)
+    .replaceAll(CMDSUB_TOKEN, CMDSUB_TOKEN_DISPLAY)
+}
+
+/**
+ * Binary `Voe` (ELF @202781621), rootChild===undefined branch, non-reparsed:
+ * the "possibly-empty variable path" ask for tracked (avo) variable targets.
+ * Byte-exact except: (a) the binary's " (inside a command substitution)"
+ * suffix (`ge`) is omitted — OCC analyzes plain text and substitution bodies
+ * through one entry and the binary only sets it from its substitution-only
+ * walker; (b) the `qoe` quoted-match probe is approximated by whole-target
+ * quote detection when building the guarded rewrite `M`.
+ */
+function buildPossiblyEmptyVarBlock(
+  cmd: string,
+  target: string,
+  varName: string,
+  invocation: string,
+): CatastrophicSubstitutionBlock {
+  const varDisplay = `$${varName}`
+  const guarded = `\${${varName}:?}`
+  const isQuotedTarget = unquoteToken(target) !== target
+  const rewrittenTarget = target.replace(
+    VAR_OCCURRENCE_RE,
+    isQuotedTarget ? guarded : `"${guarded}"`,
+  )
+  const message =
+    `Dangerous ${cmd} operation detected in \`${invocation}\`. The target '${target}' is a shell variable expansion: when ${varDisplay} is unset or empty it becomes \`/\`, \`/*\` or a top-level path. This requires explicit approval and cannot be auto-allowed by permission rules.\n\n` +
+    `This check does not fire on a target that cannot expand to the filesystem root: rewrite it as \`${rewrittenTarget}\`, which makes the shell stop with an error instead of running ${cmd} when ${varDisplay} is unset or empty, or use a literal absolute path.`
+  return {
+    category: 'rm_possibly_empty_var_path',
+    // Closest official gFt verdict kind (OCC-136 telemetry field): the
+    // variable may expand to nothing — the possibly-empty variable family.
+    kind: 'emptyVariable',
+    reason: message,
+    decisionReason: `Dangerous ${cmd} operation on possibly-empty variable path: ${target} in \`${invocation}\` (rewrite it as ${rewrittenTarget} or use a literal path)`,
+  }
+}
+
+/**
+ * Per-rm-segment v281 #110 arms (binary `x$` new-v281 checks: tracked-var
+ * top-level paths and the backslash-only drive root). `args` are the
+ * tokenized argv after the program name. The `pMe` emptyExpansion /
+ * wholeSubstitution arms are NOT here — the canonical gFt port
+ * `findSubstitutionTargetBlock` (OCC-136) owns those verdicts (see the NOTE
+ * at the end of the loop below).
+ */
+function analyzeRmArgsV281(
+  cmd: string,
+  args: ReadonlyArray<string>,
+): CatastrophicSubstitutionBlock | null {
+  for (let i = 0; i < args.length; i++) {
+    const raw = args[i]!
+    if (raw.startsWith('-')) {
+      continue
+    }
+    if (REDIRECT_TOKEN_START_RE.test(raw)) {
+      if (REDIRECT_OP_RE.test(raw)) {
+        i++ // consume the redirect operator, skip its filename operand
+      }
+      continue
+    }
+    const token = unquoteToken(raw.replace(/[)\]}]+$/, ''))
+    // #110 var+top-level (binary `pvo`, gate tengu_bright_lake always-on).
+    const topLevelDir = VAR_TOP_LEVEL_TARGET_RE.exec(token)?.[1]
+    if (topLevelDir !== undefined) {
+      const display = displayTokenizedTarget(token)
+      return {
+        category: 'rm_placeholder_root_child',
+        kind: 'emptyVariable',
+        reason: `Dangerous ${cmd} operation detected: '${display}'\n\nThe target starts with a shell expansion this check cannot read and ends in a top-level directory name: if the expansion is empty, this removes '/${topLevelDir}'. This requires explicit approval and cannot be auto-allowed by permission rules.\n\nUse a literal absolute path instead.`,
+        decisionReason: `Dangerous ${cmd} operation on possibly-empty variable path: ${display} (use a literal path: when the expansion is empty this removes /${topLevelDir})`,
+      }
+    }
+    // #110 backslash-only target = drive root in Git Bash on Windows.
+    if (BACKSLASH_ONLY_TARGET_RE.test(token)) {
+      return {
+        category: 'rm_backslash_only_drive_root',
+        kind: 'literalTarget',
+        reason: `Dangerous ${cmd} operation detected: '${token}'\n\nA backslash-only target is the drive root in Git Bash on Windows. This requires explicit approval and cannot be auto-allowed by permission rules.\n\nWrite the directory you mean as a path, for example /c/work/build or C:/work/build.`,
+        decisionReason: `Dangerous ${cmd} operation on drive root: ${token}`,
+      }
+    }
+    // NOTE (OCC-96 ↔ OCC-136 merge): the #034 emptyExpansion and
+    // wholeSubstitution arms that this function originally carried were
+    // REMOVED as duplicates of the canonical, acceptance-hardened gFt port
+    // `findSubstitutionTargetBlock` (OCC-136, S1 + the brace-group /
+    // quote-split-verb evasion fixes). findCatastrophicSubstitutionBlock
+    // calls that function immediately after analyzeText, so both verdicts
+    // are still produced — by exactly one implementation, with the official
+    // `jy` message field the bashPermissions call site surfaces. This
+    // function now only carries the #110 arms the gFt port does not cover
+    // (tracked-var top-level paths and the backslash-only drive root — both
+    // substitution-free, so gFt's `normalized === rawText` gate skips them).
+  }
+  return null
+}
+
+/**
+ * Port of the official 2.1.281 `x$()`/`pMe` dangerous-rm arms (see the
+ * section header for the per-arm ELF offsets). Walks the tokenized text
+ * with the same segment logic as findCatastrophicRmInCommand, but WITHOUT
+ * collapsing `$(…)` away — the substitutions are the signal here.
+ */
+function findDangerousRmV281Block(
+  text: string,
+): CatastrophicSubstitutionBlock | null {
+  if (!/\brm(?:dir)?\b/.test(text)) {
+    return null
+  }
+  const tokenized = tokenizeForDangerousRm281(text)
+  // splitCommandForRm unescapes backslashes per shell semantics — and eats
+  // an unpaired trailing `\` entirely — so ALSO walk naive operator splits
+  // of the tokenized text. Without the fallback a backslash-only target
+  // (the #110 Git Bash drive-root arm) never reaches the analyzer.
+  // Fail-safe direction: analyze more views, never fewer; the v281 arms are
+  // narrow enough (exact target shapes) that the extra views add no false
+  // positives on quoted text.
+  const naiveSegments = tokenized.split(/[;|\n\r]|&&/)
+  for (const sub of [...splitCommandForRm(tokenized), ...naiveSegments]) {
+    let r = sub.replace(/\\\r?\n/g, ' ').trimStart()
+    while (r.startsWith('(') || r.startsWith('{')) {
+      r = r.slice(1).trimStart()
+    }
+    for (let prev = ''; prev !== r; ) {
+      prev = r
+      r = r.replace(/(?<!\$)\([^()]*\)/g, ' ')
+    }
+    r = r.replace(/(?<![<>&])&(?![<>&])/g, ';')
+    for (const seg of r.split(/[;|\n\r]|&&/)) {
+      const o = seg.trimStart()
+      const m = o.match(CATASTROPHIC_RM_COMMAND_RE)
+      if (m === null) {
+        continue
+      }
+      const cmd = m[1] === 'rmdir' ? 'rmdir' : 'rm'
+      const args = o
+        .slice(m[0].length)
+        .split(/\s+/)
+        .filter((a) => a !== '')
+      const block = analyzeRmArgsV281(cmd, args)
+      if (block !== null) {
+        return block
       }
     }
   }

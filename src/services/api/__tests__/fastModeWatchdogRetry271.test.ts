@@ -213,21 +213,27 @@ describe('2.1.271/272: fast mode under CLAUDE_CODE_RETRY_WATCHDOG', () => {
   )
 
   test(
-    'short retry-after WITHOUT the watchdog keeps the silent fast-speed retry (no regression)',
+    'short retry-after WITHOUT the watchdog is visible and backoff-floored (2.1.281 #023)',
     async () => {
-      // Arrange — watchdog OFF: the pre-existing behavior must be unchanged
-      // (silent sleep, no yielded message, fast mode preserved).
+      // Arrange — watchdog OFF. 2.1.281 changed this path: v272's silent raw
+      // header sleep (`await ee(jn,...)`) became a budget-gated, floored,
+      // VISIBLE retry — official `if(gt<=s){let Do=Math.min(uU(gt,xRe(It),vRe),
+      // vRe),...;yield r$(kr,Do,gt,s,"request_retry");await qPt(Do,r)}`.
+      // retry-after '1' → max(1000ms, attempt-1 backoff ≤625ms) = 1000ms,
+      // fast mode preserved. See retryWatchdogRetryAfter281.test.ts for the
+      // Retry-After:0 floor / 20s cap / budget-gate coverage.
       // Act
       const result = await run(() => overloadedError({ 'retry-after': '1' }), {
         maxRetries: 5,
         failuresBeforeSuccess: 1,
       })
 
-      // Assert
+      // Assert — v281: the retry surfaces as a yielded SystemAPIErrorMessage
+      // (v272 behavior was 0 yields; red against the raw-silent sleep).
       expect(result.threw).toBeNull()
       expect(result.ok).toBe(true)
       expect(result.opCalls).toBe(2)
-      expect(result.yields.length).toBe(0)
+      expect(result.yields.length).toBe(1)
       expect(result.fastModeByAttempt).toEqual([true, true])
       expect(isFastModeCooldown()).toBe(false)
     },

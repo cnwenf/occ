@@ -236,3 +236,29 @@ export function classifyAxiosError(e: unknown): {
   }
   return { kind: 'http', status, message }
 }
+
+/**
+ * True when an HTTP status is a client error that will never succeed on
+ * retry: any 4xx EXCEPT the transient ones — 408 (Request Timeout),
+ * 409 (Conflict), and 429 (Too Many Requests).
+ *
+ * Upstream Claude Code v2.1.281 @193033439 (new in 281; binary-verbatim):
+ *   `function c$e(n){return n!==void 0&&n>=400&&n<500&&n!==408&&n!==409&&n!==429}`
+ * exported as `isNonRetryableClientError`. Wired as `skipRetry` in the
+ * settings/policy fetch error default branches (@206240887/@208819123) so
+ * never-succeeding requests stop retrying immediately; the upstream
+ * retryability check @196373229 treats `httpStatus>=400&&!c$e(httpStatus)`
+ * as retryable (i.e. exactly the 408/409/429 trio).
+ */
+export function isNonRetryableClientError(
+  status: number | undefined,
+): boolean {
+  return (
+    status !== undefined &&
+    status >= 400 &&
+    status < 500 &&
+    status !== 408 &&
+    status !== 409 &&
+    status !== 429
+  )
+}

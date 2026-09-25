@@ -51,7 +51,11 @@ import {
   type OverageDisabledReason,
 } from '../claudeAiLimits.js'
 import { shouldProcessRateLimits } from '../rateLimitMocking.js' // Used for /mock-limits command
-import { extractConnectionErrorDetails, formatAPIError } from './errorUtils.js'
+import {
+  extractConnectionErrorDetails,
+  formatAPIError,
+  sanitizeAPIError,
+} from './errorUtils.js'
 
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 
@@ -557,9 +561,22 @@ export function getAssistantMessageFromError(
     // when there's no top-level .message — extract the inner error.message.
     const stripped = error.message.replace(/^429\s+/, '')
     const innerMessage = stripped.match(/"message"\s*:\s*"([^"]*)"/)?.[1]
-    const detail = innerMessage || stripped
+    // 2.1.281 (#068 🔒): when the body isn't JSON (no inner "message"), it may be
+    // an HTML error page from a proxy/CDN. Sanitize so raw markup never reaches the
+    // user — binary `wOr(e)` (≡ sanitizeAPIError), used only when the sanitized
+    // string differs from the raw message, then strip a leading "429" the SDK
+    // prepended (binary `^429(\s+|$)`). v280's catch was empty — the leak this fixes.
+    let sanitizedDetail: string | undefined
+    if (innerMessage === undefined) {
+      const sanitized = sanitizeAPIError(error)
+      if (sanitized !== error.message) {
+        sanitizedDetail = sanitized.replace(/^429(\s+|$)/, '')
+      }
+    }
+    // trimEnd so trailing-newline server text can't break the status onto a 2nd line.
+    const detail = (sanitizedDetail ?? (innerMessage || stripped)).trimEnd()
     return createAssistantAPIErrorMessage({
-      content: `${API_ERROR_MESSAGE_PREFIX}: Request rejected (429) · ${detail || 'this may be a temporary capacity issue — check status.anthropic.com'}`,
+      content: `${API_ERROR_MESSAGE_PREFIX}: Request rejected (429)${detail ? ` · ${detail}` : ''}`,
       error: 'rate_limit',
     })
   }

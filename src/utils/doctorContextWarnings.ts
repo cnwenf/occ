@@ -8,6 +8,8 @@ import {
   getMemoryFiles,
 } from './claudemd.js'
 import { getContextWindowForModel } from './context.js'
+import { formatNumber } from './format.js'
+import { getMemoryTotalCharThreshold } from './memoryThreshold.js'
 import { getMainLoopModel } from './model/model.js'
 import { permissionRuleValueToString } from './permissions/permissionRuleParser.js'
 import { detectUnreachableRules } from './permissions/shadowedRuleDetection.js'
@@ -115,6 +117,82 @@ export function findDerivableClaudeMdSections(
   return sections
 }
 
+/**
+ * CC 2.1.281 changelog #119: the large-CLAUDE.md startup/doctor notice now
+ * also counts all instruction files TOGETHER. Official v281 `t2r` @217358179
+ * (v280 `qOr` @215479719 had per-file lines only; the string "Instruction
+ * files will impact performance" has 0 hits in v280, 2 in v281) computes an
+ * aggregate via `Rwt`/`bwn`/`ret` @201061030 region and pushes ONE summary
+ * line before the per-file lines:
+ *
+ *   `Instruction files will impact performance: ${fileCount} files,
+ *     ${ns(totalChars)} chars in total > ${ns(totalLimitChars)}`
+ *
+ * Binary-faithful semantics (official `Rwt`):
+ * - the GATE sums only files NOT already over the per-file limit (those get
+ *   their own per-file warning) and fires when that sum EXCEEDS the total
+ *   limit (`Math.max(120000, perFileLimit)` — official `Jbn` @201041784);
+ * - the DISPLAYED fileCount/totalChars span ALL instruction files (official
+ *   `ret` @201060858 region).
+ *
+ * Exported for testing (same pattern as findDerivableClaudeMdSections).
+ */
+export type InstructionFilesAggregate = {
+  fileCount: number
+  totalChars: number
+  totalLimitChars: number
+}
+
+export function computeInstructionFilesAggregate(
+  files: ReadonlyArray<{ content: string }>,
+  perFileThreshold: number,
+): InstructionFilesAggregate | null {
+  const totalLimitChars = getMemoryTotalCharThreshold(perFileThreshold)
+  const charsBelowPerFileLimit = files.reduce(
+    (sum, file) =>
+      file.content.length > perFileThreshold ? sum : sum + file.content.length,
+    0,
+  )
+  if (charsBelowPerFileLimit <= totalLimitChars) {
+    return null
+  }
+  const totalChars = files.reduce((sum, file) => sum + file.content.length, 0)
+  return { fileCount: files.length, totalChars, totalLimitChars }
+}
+
+/**
+ * Builds the claudemd_files warning message. The aggregate instruction-files
+ * line (when present) comes FIRST, before the per-file/derivable lines whose
+ * wording is unchanged (official `t2r` push order). Exported for testing.
+ */
+export function buildClaudeMdWarningMessage(
+  largeFiles: ReadonlyArray<{ content: string }>,
+  derivableCount: number,
+  aggregate: InstructionFilesAggregate | null,
+  threshold: number,
+): string {
+  const parts: string[] = []
+  if (aggregate) {
+    // formatNumber ≡ official `ns` @193879912 (compact, lowercased).
+    parts.push(
+      `Instruction files will impact performance: ${aggregate.fileCount} files, ${formatNumber(aggregate.totalChars)} chars in total > ${formatNumber(aggregate.totalLimitChars)}`,
+    )
+  }
+  if (largeFiles.length > 0) {
+    parts.push(
+      largeFiles.length === 1
+        ? `Large CLAUDE.md file detected (${largeFiles[0]!.content.length.toLocaleString()} chars > ${threshold.toLocaleString()})`
+        : `${largeFiles.length} large CLAUDE.md files detected (each > ${threshold.toLocaleString()} chars)`,
+    )
+  }
+  if (derivableCount > 0) {
+    parts.push(
+      `${derivableCount} CLAUDE.md section${derivableCount === 1 ? '' : 's'} with content Claude could derive — consider trimming`,
+    )
+  }
+  return parts.join('; ')
+}
+
 async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
   const threshold = getMemoryCharThreshold(
     getContextWindowForModel(getMainLoopModel()),
@@ -125,9 +203,13 @@ async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
   // commands, dependencies) and propose trimming — even when the file
   // isn't large by the size threshold.
   const derivable = findDerivableClaudeMdSections(allFiles)
+  // CC 2.1.281 #119: aggregate over ALL instruction files (CLAUDE.md +
+  // @-imports, as enumerated by getMemoryFiles) — fires independently of the
+  // per-file warnings.
+  const aggregate = computeInstructionFilesAggregate(allFiles, threshold)
 
   // This already filters for files exceeding the (context-scaled) threshold each
-  if (largeFiles.length === 0 && derivable.length === 0) {
+  if (largeFiles.length === 0 && derivable.length === 0 && !aggregate) {
     return null
   }
 
@@ -143,20 +225,12 @@ async function checkClaudeMdFiles(): Promise<ContextWarning | null> {
     )
   }
 
-  const parts: string[] = []
-  if (largeFiles.length > 0) {
-    parts.push(
-      largeFiles.length === 1
-        ? `Large CLAUDE.md file detected (${largeFiles[0]!.content.length.toLocaleString()} chars > ${threshold.toLocaleString()})`
-        : `${largeFiles.length} large CLAUDE.md files detected (each > ${threshold.toLocaleString()} chars)`,
-    )
-  }
-  if (derivable.length > 0) {
-    parts.push(
-      `${derivable.length} CLAUDE.md section${derivable.length === 1 ? '' : 's'} with content Claude could derive — consider trimming`,
-    )
-  }
-  const message = parts.join('; ')
+  const message = buildClaudeMdWarningMessage(
+    largeFiles,
+    derivable.length,
+    aggregate,
+    threshold,
+  )
 
   return {
     type: 'claudemd_files',

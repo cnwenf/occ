@@ -183,7 +183,12 @@ export function applyTextStyles(text: string, styles: TextStyles): string {
   // So we apply: text modifiers first, then foreground, then background last.
 
   if (styles.inverse) {
-    result = chalk.inverse(result)
+    // Official renderer parity (v281 ELF `F4`, v280 `Bde`): inverse is emitted
+    // as raw SGR-7 (`"\x1B[7m"+text+"\x1B[27m"`), NOT via chalk — chalk.inverse
+    // is a no-op at color level 0 (NO_COLOR), which would make inverse-only
+    // highlights (e.g. the v281 Tabs NO_COLOR cursor) invisible. Byte-identical
+    // to chalk.inverse output at level > 0.
+    result = `\x1B[7m${result}\x1B[27m`
   }
 
   if (styles.strikethrough) {

@@ -15,6 +15,7 @@ import {
   type SettingSource,
 } from './settings/constants.js'
 import { getSettingsForSource } from './settings/settings.js'
+import { jsonStringify } from './slowOperations.js'
 
 /**
  * `claude ssh` remote: ANTHROPIC_UNIX_SOCKET routes auth through a -R forwarded
@@ -71,13 +72,82 @@ function withoutHostManagedProviderVars(
  */
 let ccdSpawnEnvKeys: Set<string> | null | undefined
 
+/**
+ * CC 2.1.281 (#120) binary `g()` @197075905 — renders an env key for a debug
+ * log line: JSON-string-escaped with the surrounding quotes dropped, then any
+ * remaining non-printable-ASCII code point escaped as `\uXXXX`. Keeps the
+ * warning single-line regardless of what a settings file put in the key name.
+ * The range is intentional: printable ASCII starts at \x20, so every control
+ * and non-ASCII code point gets escaped.
+ */
+const NON_PRINTABLE_ASCII = /[^\x20-\x7e]/g
+
+function formatEnvKeyName(key: string): string {
+  return jsonStringify(key)
+    .slice(1, -1)
+    .replace(
+      NON_PRINTABLE_ASCII,
+      (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`,
+    )
+}
+
+/**
+ * One-time-per-(source, key) warning state for host-spawn-env drops (binary
+ * `hostSpawnEnvDropWarned`). `filterSettingsEnv` runs several times per session
+ * (pre-trust safe apply, then the full apply), so the Set keeps a single
+ * ignored key from warning on every pass.
+ */
+const hostSpawnEnvDropWarned = new Set<string>()
+
+/**
+ * CC 2.1.281 (#120) binary `J()` @197082825 — report settings `env` keys that
+ * were dropped because the launch environment already sets them. Message is
+ * byte-exact against the official 2.1.281 ELF, including the `it`/`them`
+ * plural switch, which keys off the number of NEWLY-reported keys (not the
+ * number passed in).
+ */
+function warnHostSpawnEnvKeysIgnored(
+  keys: ReadonlyArray<string>,
+  source: string,
+): void {
+  const newKeys = keys.filter((key) => {
+    const dedupeKey = `${source}:${key}`
+    if (hostSpawnEnvDropWarned.has(dedupeKey)) return false
+    hostSpawnEnvDropWarned.add(dedupeKey)
+    return true
+  })
+  if (newKeys.length === 0) return
+  const rendered = newKeys.map(formatEnvKeyName).join(', ')
+  logForDiagnosticsNoPII(
+    'warn',
+    `Ignoring ${rendered} from ${source}: the environment this session was launched with already sets ${
+      newKeys.length === 1 ? 'it' : 'them'
+    }, and when the desktop app or a runner starts the session, the launch environment takes precedence over settings.`,
+  )
+}
+
+/**
+ * Drop settings `env` keys the host already set in the spawn environment
+ * (binary `v()`). Since 2.1.281 (#120) each dropped key whose launch-env value
+ * actually DIFFERS from the settings value is also reported once per
+ * (source, key) — an identical value loses nothing, so it stays silent.
+ */
 function withoutCcdSpawnEnvKeys(
   env: Record<string, string> | undefined,
+  source: SettingSource | 'globalConfig',
 ): Record<string, string> {
   if (!env || !ccdSpawnEnvKeys) return env || {}
   const out: Record<string, string> = {}
+  const overriddenKeys: string[] = []
   for (const [key, value] of Object.entries(env)) {
-    if (!ccdSpawnEnvKeys.has(key.toUpperCase())) out[key] = value
+    if (!ccdSpawnEnvKeys.has(key.toUpperCase())) {
+      out[key] = value
+      continue
+    }
+    if (process.env[key] !== value) overriddenKeys.push(key)
+  }
+  if (overriddenKeys.length > 0) {
+    warnHostSpawnEnvKeysIgnored(overriddenKeys, source)
   }
   return out
 }
@@ -128,6 +198,7 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   'CLAUDE_CODE_MESSAGING_SOCKET',
   'CLAUDE_CODE_MESSAGING_TOKEN',
   'CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION',
+  'CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT',
   'CLAUDE_CODE_MANAGED_SETTINGS_PATH',
   'CLAUDE_CODE_TOASTY_THIMBLE',
   'CLAUDE_CODE_GENTLE_PARASOL',
@@ -204,6 +275,8 @@ function filterProjectScopeBlockedKeys(
  * Compose the strip filters applied to every settings-sourced env object.
  * Order mirrors the official binary pipeline: project-scope blocklist →
  * SSH-tunnel strip → host-managed-provider strip → host spawn-env strip.
+ * The source name is threaded down to the last filter so the 2.1.281 "already
+ * sets it" warning can name the settings file the key came from.
  */
 function filterSettingsEnv(
   env: Record<string, string> | undefined,
@@ -213,6 +286,7 @@ function filterSettingsEnv(
     withoutHostManagedProviderVars(
       withoutSSHTunnelVars(filterProjectScopeBlockedKeys(env, source)),
     ),
+    source,
   )
 }
 
@@ -582,6 +656,7 @@ export function applyConfigEnvironmentVariables(): void {
 /** Test-only reset of the module-level warning sets and spawn-env snapshot. */
 export function _resetManagedEnvForTesting(): void {
   projectScopeDropWarned.clear()
+  hostSpawnEnvDropWarned.clear()
   otelDominanceDropWarned = new Set<string>()
   ccdSpawnEnvKeys = undefined
 }

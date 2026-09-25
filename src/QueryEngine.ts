@@ -39,6 +39,11 @@ import { query } from './query.js'
 import { categorizeRetryableAPIError } from './services/api/errors.js'
 import type { MCPServerConnection } from './services/mcp/types.js'
 import { getSkippedMcpServerErrors } from './services/mcp/skippedMcpServerErrors.js'
+import {
+  getMcpHookClientContextGetter,
+  type McpClientContextGetter,
+  setMcpHookClientContext,
+} from './utils/hooks/execMcpToolHook.js'
 import type { AppState } from './state/AppState.js'
 import { type Tools, type ToolUseContext, toolMatchesName } from './Tool.js'
 import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
@@ -65,7 +70,11 @@ import {
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
-import { countToolCalls, SYNTHETIC_MESSAGES } from './utils/messages.js'
+import { countToolCalls, createSystemMessage, SYNTHETIC_MESSAGES } from './utils/messages.js'
+import {
+  recoverCwdDeletedAtTurnStart,
+  toCwdDeletedError,
+} from './utils/cwdTurnRecovery.js'
 import {
   getMainLoopModel,
   parseUserSpecifiedModel,
@@ -245,6 +254,13 @@ export class QueryEngine {
   // guard in the queued-message handler — a teardown race that enqueues a
   // turn after close must not start/abandon a phantom turn.
   private isClosed = false
+  // CC 2.1.281 #052: this engine's live MCP-client accessor registered with
+  // the mcp_tool hook layer (binary `bk()`/liveClients @96655146 — the
+  // connect-wait polls the LIVE registry every tick). Kept so close() can
+  // restore the previous registration instead of clobbering a parent
+  // engine's accessor when a subagent/headless engine closes first.
+  private mcpHookClientContextGetter: McpClientContextGetter | undefined
+  private previousMcpHookClientContextGetter: McpClientContextGetter | undefined
 
   constructor(config: QueryEngineConfig) {
     this.config = config
@@ -253,6 +269,18 @@ export class QueryEngine {
     this.permissionDenials = []
     this.readFileState = config.readFileCache
     this.totalUsage = EMPTY_USAGE
+    // CC 2.1.281 #052: register the live accessor so mcp_tool hook
+    // connect-waits re-read current connection state (servers connect
+    // asynchronously after engine construction) rather than the
+    // construction-time `config.mcpClients` snapshot. Closed-guarded: if a
+    // stack restore re-registers this getter after close(), it must yield no
+    // context rather than serve a dead engine's state.
+    this.previousMcpHookClientContextGetter = getMcpHookClientContextGetter()
+    this.mcpHookClientContextGetter = () =>
+      this.isClosed
+        ? undefined
+        : { mcpClients: config.getAppState().mcp.clients }
+    setMcpHookClientContext(this.mcpHookClientContextGetter)
   }
 
   async *submitMessage(
@@ -297,7 +325,23 @@ export class QueryEngine {
     } = this.config
 
     this.discoveredSkillNames.clear()
-    setCwd(cwd)
+    // CC 2.1.281 #028 (official kh/vh → bh @215940349): a headless turn must
+    // survive its working directory being deleted between turns (temp-dir
+    // cleanup, worktree removal). setCwd's realpathSync throws ENOENT → the
+    // recovery re-pins the (missing) cwd via the state setter, warns at
+    // `warn` level, and — once per session — fires
+    // tengu_shell_set_cwd {success:false,missing_at_turn:true} and injects a
+    // user-visible warning. The turn then proceeds instead of dying.
+    try {
+      setCwd(cwd)
+    } catch (error) {
+      const cwdDeleted = toCwdDeletedError(error, cwd)
+      if (cwdDeleted === null) throw error
+      const warning = recoverCwdDeletedAtTurnStart(cwdDeleted)
+      if (warning !== null) {
+        this.mutableMessages.push(createSystemMessage(warning, 'warning'))
+      }
+    }
     const persistSession = !isSessionPersistenceDisabled()
     const startTime = monotonicNow()
 
@@ -1314,6 +1358,16 @@ export class QueryEngine {
       return
     }
     this.isClosed = true
+    // CC 2.1.281 #052: unwind our live MCP-client accessor registration, but
+    // only if we still own it — a newer engine (e.g. a spawned subagent) may
+    // have re-registered, and clobbering it would leave the connect-wait
+    // polling a closed engine's state.
+    if (
+      this.mcpHookClientContextGetter !== undefined &&
+      getMcpHookClientContextGetter() === this.mcpHookClientContextGetter
+    ) {
+      setMcpHookClientContext(this.previousMcpHookClientContextGetter)
+    }
     this.abortController.abort()
   }
 

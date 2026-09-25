@@ -28,8 +28,10 @@ import {
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
+import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
-import { getErrnoCode, isENOENT } from '../../utils/errors.js'
+import { getErrnoCode, isAbortError, isENOENT } from '../../utils/errors.js'
 import {
   addLineNumbers,
   FILE_NOT_FOUND_CWD_NOTE,
@@ -57,7 +59,12 @@ import {
   mapNotebookCellsToToolResult,
   readNotebook,
 } from '../../utils/notebook.js'
+import {
+  macosNetworkMountDenyMessage,
+  shouldDenyMacosNetworkMountPath,
+} from '../../utils/macosKernelPaths.js'
 import { isNtNamespacePath } from '../../utils/ntNamespacePaths.js'
+import { validateNullByteFreeFields } from '../../utils/nullByteValidation.js'
 import { expandPath } from '../../utils/path.js'
 import { extractPDFPages, getPDFPageCount, readPDF } from '../../utils/pdf.js'
 import {
@@ -520,6 +527,16 @@ export const FileReadTool = buildTool({
   },
   renderToolUseErrorMessage,
   async validateInput({ file_path, pages }, toolUseContext: ToolUseContext) {
+    // CC 2.1.281 #040 (official fy(lt,[["file_path",g]]) @201304178): the
+    // null-byte check runs FIRST (before the pages validation), returning a
+    // per-call validation error (errorCode 2) — the expandPath throw would
+    // otherwise end the whole turn.
+    const nullByteCheck = validateNullByteFreeFields(FILE_READ_TOOL_NAME, [
+      ['file_path', file_path],
+    ])
+    if (nullByteCheck !== null) {
+      return nullByteCheck
+    }
     // Validate pages parameter (pure string parsing, no I/O)
     if (pages !== undefined) {
       const parsed = parsePDFPageRange(pages)
@@ -562,6 +579,19 @@ export const FileReadTool = buildTool({
           'File is in a directory that is denied by your permission settings.',
         errorCode: 1,
         deniedByPermissionRule: true,
+      }
+    }
+
+    // CC 2.1.281 #033 (security): on macOS, deny automount (/net, /Network)
+    // and kernel-resolved (/.vol, /.file, /.nofollow, /.resolve) prefixes
+    // before any filesystem operation — stat/lstat on these can trigger a
+    // directory-service lookup and mount to a remote host. Darwin-gated no-op
+    // elsewhere. Official deny sentence @97322030.
+    if (shouldDenyMacosNetworkMountPath(fullFilePath)) {
+      return {
+        result: false,
+        message: macosNetworkMountDenyMessage(file_path),
+        errorCode: 1,
       }
     }
 
@@ -939,6 +969,48 @@ function createImageResponse(
 }
 
 /**
+ * 2.1.281 #031: kill-switch gating the whole-document pdftoppm pre-render for
+ * large/unsupported-model PDFs. Upstream: `jn=(!lRt()||yn.size>OTo)&&
+ * !x("tengu_deep_starlight",!0)` (v281 @201315570) — the flag defaults ON,
+ * so the whole-doc render (up to a 2-minute stall before the first token) is
+ * SKIPPED by default; only explicit page-range reads render. Flipping the
+ * gate OFF (remote eval / CLAUDE_INTERNAL_FC_OVERRIDES) restores the v280
+ * unconditional pre-render.
+ */
+const TENGU_DEEP_STARLIGHT_GATE = 'tengu_deep_starlight'
+const DEEP_STARLIGHT_GATE_DEFAULT = true
+
+/**
+ * 2.1.281 #031/#032: PDF-read outcome telemetry. Mirrors upstream
+ * `YR(start,{request,render,outcome,fileBytes,documentPages,pagesRendered})`
+ * → `q("info","cli_pdf_read",{...})` (v281 @201310256). OCC routes it through
+ * the diagnostics logger — the fields are enums/counts/byte sizes, never
+ * paths or content, so the NoPII contract holds.
+ */
+const PDF_READ_OUTCOME_LOG_EVENT = 'cli_pdf_read'
+
+type PdfReadOutcome = {
+  request: 'whole_file' | 'page_range'
+  render: string
+  outcome: string
+  fileBytes: number | null
+  documentPages: number | null
+  pagesRendered: number | null
+}
+
+function logPdfReadOutcome(startedAt: number, o: PdfReadOutcome): void {
+  logForDiagnosticsNoPII('info', PDF_READ_OUTCOME_LOG_EVENT, {
+    request: o.request,
+    render: o.render,
+    outcome: o.outcome,
+    file_bytes: o.fileBytes,
+    document_pages: o.documentPages,
+    pages_rendered: o.pagesRendered,
+    duration_ms: Date.now() - startedAt,
+  })
+}
+
+/**
  * Inner implementation of call, separated to allow ENOENT handling in the outer call.
  */
 async function callInner(
@@ -1032,20 +1104,70 @@ async function callInner(
 
   // --- PDF ---
   if (isPDFExtension(ext)) {
+    // 2.1.281 #031: outcome-telemetry clock (upstream `So=Date.now()`
+    // @201312908) — every cli_pdf_read entry carries duration_ms from here.
+    const pdfReadStartedAt = Date.now()
     if (pages) {
       const parsedRange = parsePDFPageRange(pages)
-      const extractResult = await extractPDFPages(
-        resolvedFilePath,
-        parsedRange ?? undefined,
-      )
+      // 2.1.281 #032: per-PDF-read abort child derived from the tool-call
+      // abort signal (upstream: `pdfAbortParent` → deriveChild →
+      // `pdfRenderSignal`, renders use `pdfRenderSignal ?? signal`, v281
+      // @203617282). On tool interrupt the pdftoppm child is killed
+      // immediately instead of running up to its 120s timeout ceiling.
+      const { signal: pdfRenderSignal, cleanup: cleanupPdfRenderSignal } =
+        createCombinedAbortSignal(context.abortController.signal)
+      let extractResult: Awaited<ReturnType<typeof extractPDFPages>>
+      try {
+        extractResult = await extractPDFPages(resolvedFilePath, {
+          ...(parsedRange ?? {}),
+          signal: pdfRenderSignal,
+        })
+      } catch (error) {
+        // v281 @201312794: catch → outcome log (aborted vs threw) → rethrow.
+        const render = isAbortError(error) ? 'aborted' : 'threw'
+        logPdfReadOutcome(pdfReadStartedAt, {
+          request: 'page_range',
+          render,
+          outcome: render,
+          fileBytes: null,
+          documentPages: null,
+          pagesRendered: null,
+        })
+        throw error
+      } finally {
+        cleanupPdfRenderSignal()
+      }
       if (!extractResult.success) {
-        throw new Error((extractResult as any).error.message)
+        // strictNullChecks is off in this repo, so the false-branch of the
+        // PDFResult union doesn't narrow — pin the failure variant explicitly.
+        const failure = extractResult as Extract<
+          typeof extractResult,
+          { success: false }
+        >
+        const reason = failure.error.reason
+        logPdfReadOutcome(pdfReadStartedAt, {
+          request: 'page_range',
+          render: reason === 'aborted' ? 'aborted' : `failed_${reason}`,
+          outcome: reason,
+          fileBytes: null,
+          documentPages: null,
+          pagesRendered: null,
+        })
+        throw new Error(failure.error.message)
       }
       logEvent('tengu_pdf_page_extraction', {
         success: true,
-        pageCount: (extractResult as any).data.file.count,
+        pageCount: extractResult.data.file.count,
         fileSize: extractResult.data.file.originalSize,
         hasPageRange: true,
+      })
+      logPdfReadOutcome(pdfReadStartedAt, {
+        request: 'page_range',
+        render: 'ok',
+        outcome: 'ok',
+        fileBytes: extractResult.data.file.originalSize,
+        documentPages: null,
+        pagesRendered: extractResult.data.file.count,
       })
       logFileOperation({
         operation: 'read',
@@ -1053,11 +1175,14 @@ async function callInner(
         filePath: fullFilePath,
         content: `PDF pages ${pages}`,
       })
-      const entries = await readdir(extractResult.data.file.outputDir)
+      // const binding: keeps the success-variant narrowing valid inside the
+      // image-mapping closure below (`let extractResult` would lose it).
+      const extractedPages = extractResult.data
+      const entries = await readdir(extractedPages.file.outputDir)
       const imageFiles = entries.filter(f => f.endsWith('.jpg')).sort()
       const imageBlocks = await Promise.all(
         imageFiles.map(async f => {
-          const imgPath = path.join(extractResult.data.file.outputDir, f)
+          const imgPath = path.join(extractedPages.file.outputDir, f)
           const imgBuffer = await readFileAsync(imgPath)
           const resized = await maybeResizeAndDownsampleImageBuffer(
             imgBuffer,
@@ -1076,7 +1201,7 @@ async function callInner(
         }),
       )
       return {
-        data: extractResult.data,
+        data: extractedPages,
         ...(imageBlocks.length > 0 && {
           newMessages: [
             createUserMessage({ content: imageBlocks, isMeta: true }),
@@ -1096,27 +1221,97 @@ async function callInner(
 
     const fs = getFsImplementation()
     const stats = await fs.stat(resolvedFilePath)
+    // 2.1.281 #031 (v281 @201315570): the whole-document pre-render is gated
+    // behind the tengu_deep_starlight kill-switch — upstream
+    // `jn=(!lRt()||yn.size>OTo)&&!x("tengu_deep_starlight",!0)`. The flag
+    // defaults ON ⇒ whole-doc render SKIPPED by default (v280 @198493712
+    // rendered unconditionally — up to a 2-minute stall before responding on
+    // >3MB PDFs). render/pagesRendered track the `Nn`/`fn` telemetry state.
+    let wholeDocRender = 'none'
+    let wholeDocPagesRendered: number | null = null
     const shouldExtractPages =
-      !isPDFSupported() || stats.size > PDF_EXTRACT_SIZE_THRESHOLD
+      (!isPDFSupported() || stats.size > PDF_EXTRACT_SIZE_THRESHOLD) &&
+      !getFeatureValue_CACHED_MAY_BE_STALE(
+        TENGU_DEEP_STARLIGHT_GATE,
+        DEEP_STARLIGHT_GATE_DEFAULT,
+      )
 
     if (shouldExtractPages) {
-      const extractResult = await extractPDFPages(resolvedFilePath)
-      if (extractResult.success) {
-        logEvent('tengu_pdf_page_extraction', {
-          success: true,
-          pageCount: extractResult.data.file.count,
-          fileSize: extractResult.data.file.originalSize,
+      // #032: same per-read abort child as the page-range path — render uses
+      // `pdfRenderSignal ?? signal` upstream (v281 @201315789).
+      const { signal: pdfRenderSignal, cleanup: cleanupPdfRenderSignal } =
+        createCombinedAbortSignal(context.abortController.signal)
+      try {
+        const extractResult = await extractPDFPages(resolvedFilePath, {
+          signal: pdfRenderSignal,
         })
-      } else {
-        logEvent('tengu_pdf_page_extraction', {
-          success: false,
-          available: (extractResult as any).error.reason !== 'unavailable',
-          fileSize: stats.size,
+        if (extractResult.success) {
+          wholeDocRender = 'ok'
+          wholeDocPagesRendered = extractResult.data.file.count
+          logEvent('tengu_pdf_page_extraction', {
+            success: true,
+            pageCount: extractResult.data.file.count,
+            fileSize: extractResult.data.file.originalSize,
+          })
+        } else {
+          // strictNullChecks off: false-branch doesn't narrow — pin it.
+          const failure = extractResult as Extract<
+            typeof extractResult,
+            { success: false }
+          >
+          const reason = failure.error.reason
+          wholeDocRender =
+            reason === 'aborted' ? 'aborted' : `failed_${reason}`
+          logEvent('tengu_pdf_page_extraction', {
+            success: false,
+            available: reason !== 'unavailable',
+            fileSize: stats.size,
+          })
+          if (reason === 'aborted') {
+            // Abort-family: log the outcome and re-run the fallback path
+            // (whole-doc readPDF below) instead of failing the read.
+            logPdfReadOutcome(pdfReadStartedAt, {
+              request: 'whole_file',
+              render: 'aborted',
+              outcome: 'aborted',
+              fileBytes: stats.size,
+              documentPages: pageCount,
+              pagesRendered: null,
+            })
+          }
+        }
+      } catch (error) {
+        // v281 @201315570 catch: classify abort-family vs threw + outcome log.
+        // Upstream rethrows; OCC re-runs the fallback for abort-family errors
+        // (the outer at-mention handler upstream does the same re-run) and
+        // rethrows anything else.
+        wholeDocRender = isAbortError(error) ? 'aborted' : 'threw'
+        logPdfReadOutcome(pdfReadStartedAt, {
+          request: 'whole_file',
+          render: wholeDocRender,
+          outcome: wholeDocRender,
+          fileBytes: stats.size,
+          documentPages: pageCount,
+          pagesRendered: null,
         })
+        if (wholeDocRender !== 'aborted') {
+          throw error
+        }
+      } finally {
+        cleanupPdfRenderSignal()
       }
     }
 
     if (!isPDFSupported()) {
+      // v281 @201315789: outcome log before the unsupported-model throw.
+      logPdfReadOutcome(pdfReadStartedAt, {
+        request: 'whole_file',
+        render: wholeDocRender,
+        outcome: 'unsupported_model',
+        fileBytes: stats.size,
+        documentPages: pageCount,
+        pagesRendered: wholeDocPagesRendered,
+      })
       throw new Error(
         'Reading full PDFs is not supported with this model. Use a newer model (Sonnet 3.5 v2 or later), ' +
           `or use the pages parameter to read specific page ranges (e.g., pages: "1-5", maximum ${PDF_MAX_PAGES_PER_READ} pages per request). ` +
@@ -1124,9 +1319,37 @@ async function callInner(
       )
     }
 
-    const readResult = await readPDF(resolvedFilePath)
+    let readResult: Awaited<ReturnType<typeof readPDF>>
+    try {
+      readResult = await readPDF(resolvedFilePath)
+    } catch (error) {
+      // v281 @201316222: whole-file read failure outcome log, then rethrow.
+      logPdfReadOutcome(pdfReadStartedAt, {
+        request: 'whole_file',
+        render: wholeDocRender,
+        outcome: 'threw',
+        fileBytes: stats.size,
+        documentPages: pageCount,
+        pagesRendered: wholeDocPagesRendered,
+      })
+      throw error
+    }
+    // v281 @201316807: final outcome log (ok | error reason).
+    // strictNullChecks off: false-branch doesn't narrow — pin it.
+    const readFailure = readResult as Extract<
+      typeof readResult,
+      { success: false }
+    >
+    logPdfReadOutcome(pdfReadStartedAt, {
+      request: 'whole_file',
+      render: wholeDocRender,
+      outcome: readResult.success ? 'ok' : readFailure.error.reason,
+      fileBytes: stats.size,
+      documentPages: pageCount,
+      pagesRendered: wholeDocPagesRendered,
+    })
     if (!readResult.success) {
-      throw new Error((readResult as any).error.message)
+      throw new Error(readFailure.error.message)
     }
     const pdfData = readResult.data
     logFileOperation({

@@ -6,6 +6,7 @@
 import React from 'react'
 import {
   getChromeFlagOverride,
+  getFlagSettingSourcesRaw,
   getFlagSettingsPath,
   getInlinePlugins,
   getMainLoopModelOverride,
@@ -204,8 +205,9 @@ function getTeammateCommand(): string {
  *
  * @param options.planModeRequired - If true, don't inherit bypass permissions (plan mode takes precedence)
  * @param options.permissionMode - Permission mode to propagate
+ * @internal Exported for testing
  */
-function buildInheritedCliFlags(options?: {
+export function buildInheritedCliFlags(options?: {
   planModeRequired?: boolean
   permissionMode?: PermissionMode
 }): string {
@@ -240,6 +242,18 @@ function buildInheritedCliFlags(options?: {
   const settingsPath = getFlagSettingsPath()
   if (settingsPath) {
     flags.push(`--settings ${quote([settingsPath])}`)
+  }
+
+  // 2.1.281 PORT #039: propagate --setting-sources when it was explicitly
+  // set on the parent CLI (mirrors the official teammate flag builder
+  // @224179700 pushing `--setting-sources=${...}` only when the parent's
+  // allowed sources were restricted). The raw flag string was stored at
+  // eager-parse time; undefined means the parent never set it, so teammates
+  // keep the default-all behavior. The teammate's own eagerParseCliFlag
+  // handles the `--flag=value` form.
+  const settingSourcesRaw = getFlagSettingSourcesRaw()
+  if (settingSourcesRaw !== undefined) {
+    flags.push(quote([`--setting-sources=${settingSourcesRaw}`]))
   }
 
   // Propagate --plugin-dir for each inline plugin

@@ -10,6 +10,7 @@ import {
   safeResolvePath,
 } from '../fsOperations.js'
 import { containsPathTraversal } from '../path.js'
+import { shouldDenyMacosNetworkMountPath } from '../macosKernelPaths.js'
 import { SandboxManager } from '../sandbox/sandbox-adapter.js'
 import { containsVulnerableUncPath } from '../shell/readOnlyCommandValidation.js'
 import {
@@ -402,6 +403,22 @@ export function validatePath(
       decisionReason: {
         type: 'other',
         reason: 'UNC network paths require manual approval',
+      },
+    }
+  }
+
+  // CC 2.1.281 #033 (security): on macOS, deny automount (/net, /Network) and
+  // kernel-resolved (/.vol, /.file, /.nofollow, /.resolve) prefixes — a stat
+  // on these can trigger a directory-service lookup and mount to a remote
+  // host. Darwin-gated no-op elsewhere (official UH/iS/WW @192900730).
+  if (shouldDenyMacosNetworkMountPath(cleanPath)) {
+    return {
+      allowed: false,
+      resolvedPath: cleanPath,
+      decisionReason: {
+        type: 'other',
+        reason:
+          'macOS automount/kernel-resolved paths could trigger a network mount',
       },
     }
   }

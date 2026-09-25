@@ -333,8 +333,12 @@ export async function getEnhancedPRAttribution(
 
   const settings = getInitialSettings()
 
-  // If user has custom PR attribution, use that
-  if (settings.attribution?.pr) {
+  // If user has custom PR attribution, use that. 2.1.281 PORT #005: the
+  // official guard is `!== undefined`, NOT truthiness (binary v281 `fLn`:
+  // `if(h.attribution?.pr!==void 0)return h.attribution.pr`) — the parse-time
+  // normalization maps `attribution: false` to `{ pr: "" }`, and the empty
+  // string must hide the attribution rather than fall through to defaults.
+  if (settings.attribution?.pr !== undefined) {
     return settings.attribution.pr
   }
 

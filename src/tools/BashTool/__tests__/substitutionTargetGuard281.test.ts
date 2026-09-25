@@ -368,13 +368,22 @@ describe('2.1.281 kind taxonomy on the pre-existing verdicts', () => {
 })
 
 describe('2.1.281 bashToolHasPermission integration (deny in ALL modes)', () => {
+  // CC 2.1.281 #137 (OCC-96): dangerous-rm denies now surface the official
+  // `$0t` auto-deny envelope ("Permission for this command was denied by a
+  // built-in Claude Code safety check…"), with the byte-exact verdict text
+  // embedded as the "What was flagged:" tail. Assertions below check the
+  // envelope prefix AND that the official message survives verbatim inside.
+  const AUTO_DENY_ENVELOPE_PREFIX =
+    /^Permission for this command was denied by a built-in Claude Code safety check/
+
   test('rm -rf "$(pwd)" is denied with the byte-exact official message (default mode)', async () => {
     const result = await bashToolHasPermission(
       { command: 'rm -rf "$(pwd)"', description: '' } as never,
       makeContext('default'),
     )
     expect(result.behavior).toBe('deny')
-    expect(result.message).toBe(OFFICIAL_WHOLE_SUB_MESSAGE)
+    expect(result.message).toMatch(AUTO_DENY_ENVELOPE_PREFIX)
+    expect(result.message).toContain(OFFICIAL_WHOLE_SUB_MESSAGE)
   })
 
   test('rm -rf $(pwd) is denied even under bypassPermissions (bypass-immune)', async () => {
@@ -383,7 +392,8 @@ describe('2.1.281 bashToolHasPermission integration (deny in ALL modes)', () => 
       makeContext('bypassPermissions'),
     )
     expect(result.behavior).toBe('deny')
-    expect(result.message).toBe(OFFICIAL_WHOLE_SUB_MESSAGE)
+    expect(result.message).toMatch(AUTO_DENY_ENVELOPE_PREFIX)
+    expect(result.message).toContain(OFFICIAL_WHOLE_SUB_MESSAGE)
   })
 
   test('rm -rf /$(pwd) (emptyExpansion) is denied in bypass mode too', async () => {
@@ -395,13 +405,14 @@ describe('2.1.281 bashToolHasPermission integration (deny in ALL modes)', () => 
     expect(result.message).toContain('expand to nothing')
   })
 
-  test('pre-existing verdicts keep the Destructive-command-blocked envelope', async () => {
+  test('pre-existing verdicts ride the #137 envelope with their legacy text flagged', async () => {
     const result = await bashToolHasPermission(
       { command: 'echo hi && (rm -rf /)', description: '' } as never,
       makeContext('default'),
     )
     expect(result.behavior).toBe('deny')
-    expect(result.message).toMatch(/^Destructive command blocked: /)
+    expect(result.message).toMatch(AUTO_DENY_ENVELOPE_PREFIX)
+    expect(result.message).toContain('Destructive command blocked: ')
   })
 
   test('a permissive Bash allow-rule cannot auto-allow rm -rf "$(pwd)"', async () => {
@@ -512,7 +523,8 @@ describe('OCC-136 F-1/F-2 integration — deny in default AND bypassPermissions'
           makeContext(mode),
         )
         expect(result.behavior).toBe('deny')
-        expect(result.message).toBe(OFFICIAL_WHOLE_SUB_MESSAGE)
+        // #137 auto-deny envelope wraps the byte-exact official message.
+        expect(result.message).toContain(OFFICIAL_WHOLE_SUB_MESSAGE)
       })
     }
   }

@@ -19,6 +19,9 @@ export type PDFError = {
     | 'corrupted'
     | 'unknown'
     | 'unavailable'
+    // 2.1.281 #032: the caller's AbortSignal fired (tool interrupt / per-read
+    // abort parent) — the pdftoppm child was killed before finishing.
+    | 'aborted'
   message: string
 }
 
@@ -147,6 +150,22 @@ export type PDFExtractPagesResult = {
 let pdftoppmAvailable: boolean | undefined
 
 /**
+ * Ceiling for a single pdftoppm render. Since 2.1.281 #032 the AbortSignal
+ * (per-read abort parent) is the primary cancel path — the timeout only
+ * bounds a runaway render that nobody aborted.
+ */
+const PDF_RENDER_TIMEOUT_MS = 120_000
+
+const PDF_RENDER_ABORTED_MESSAGE = 'PDF page rendering was aborted.'
+
+function pdfRenderAbortedResult(): PDFResult<PDFExtractPagesResult> {
+  return {
+    success: false,
+    error: { reason: 'aborted', message: PDF_RENDER_ABORTED_MESSAGE },
+  }
+}
+
+/**
  * Reset the pdftoppm availability cache. Used by tests only.
  */
 export function resetPdftoppmCache(): void {
@@ -174,13 +193,22 @@ export async function isPdftoppmAvailable(): Promise<boolean> {
  * This enables reading large PDFs and works with all API providers.
  *
  * @param filePath Path to the PDF file
- * @param options Optional page range (1-indexed, inclusive)
+ * @param options Optional page range (1-indexed, inclusive) and abort
+ *   signal. 2.1.281 #032: when `signal` aborts, the pdftoppm child is
+ *   killed immediately (via execFileNoThrow's cancelSignal wiring) instead
+ *   of running up to its 120s timeout ceiling; the result is an `aborted`
+ *   error so callers can distinguish interruption from render failure.
  */
 export async function extractPDFPages(
   filePath: string,
-  options?: { firstPage?: number; lastPage?: number },
+  options?: { firstPage?: number; lastPage?: number; signal?: AbortSignal },
 ): Promise<PDFResult<PDFExtractPagesResult>> {
+  const signal = options?.signal
   try {
+    // Already-interrupted read: never spawn the render child at all.
+    if (signal?.aborted) {
+      return pdfRenderAbortedResult()
+    }
     const fs = getFsImplementation()
     const stats = await fs.stat(filePath)
     const originalSize = stats.size
@@ -229,9 +257,17 @@ export async function extractPDFPages(
     }
     args.push(filePath, prefix)
     const { code, stderr } = await execFileNoThrow('pdftoppm', args, {
-      timeout: 120_000,
+      timeout: PDF_RENDER_TIMEOUT_MS,
+      // #032: kill the pdftoppm child the moment the read is interrupted.
+      abortSignal: signal,
       useCwd: false,
     })
+
+    // The exec above resolves (never throws) when the cancelSignal fires —
+    // classify the kill as an abort, not a pdftoppm failure.
+    if (signal?.aborted) {
+      return pdfRenderAbortedResult()
+    }
 
     if (code !== 0) {
       if (/password/i.test(stderr)) {

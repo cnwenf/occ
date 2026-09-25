@@ -10,16 +10,36 @@ import {
   AuthenticationError,
 } from '@anthropic-ai/sdk'
 import { getModelStrings } from './modelStrings.js'
+import { formatAPIError } from '../../services/api/errorUtils.js'
 
 // Cache valid models to avoid repeated API calls
 const validModelCache = new Map<string, boolean>()
+
+/**
+ * Result of a model validation probe.
+ *
+ * 2.1.281 (#067): the binary's mapper (`A` @208670286) returns classification
+ * flags alongside `valid`/`error` so the `/model` switch flow can tell a retryable
+ * transient from an auth re-prompt or an absent model. Callers that read only
+ * `{ valid, error }` are unaffected (structural typing — extra optional fields).
+ * The binary also carries a `permissionDenied` flag (helper `lDt`); OCC has no
+ * equivalent entitlement helper, so that branch stays staged and the flag is
+ * intentionally omitted here.
+ */
+export type ModelValidationResult = {
+  valid: boolean
+  error?: string
+  notFound?: boolean
+  authFailed?: boolean
+  retryable?: boolean
+}
 
 /**
  * Validates a model by attempting an actual API call.
  */
 export async function validateModel(
   model: string,
-): Promise<{ valid: boolean; error?: string }> {
+): Promise<ModelValidationResult> {
   const normalizedModel = model.trim()
 
   // Empty model is invalid
@@ -84,7 +104,7 @@ export async function validateModel(
 function handleValidationError(
   error: unknown,
   modelName: string,
-): { valid: boolean; error: string } {
+): ModelValidationResult {
   // NotFoundError (404) means the model doesn't exist
   if (error instanceof NotFoundError) {
     const fallback = get3PFallbackSuggestion(modelName)
@@ -92,15 +112,21 @@ function handleValidationError(
     return {
       valid: false,
       error: `Model '${modelName}' not found${suggestion}`,
+      notFound: true,
     }
   }
 
   // For other API errors, provide context-specific messages
   if (error instanceof APIError) {
+    // 2.1.281 (#067): auth failure sets `authFailed` only — binary mapper `A`
+    // (@208670286) does NOT mark it retryable (re-auth is a user action, not a
+    // transient). The triage prose listed "authFailed+retryable" for the branch
+    // set; the byte-verified binary shows the auth branch carries authFailed alone.
     if (error instanceof AuthenticationError) {
       return {
         valid: false,
         error: 'Authentication failed. Please check your API credentials.',
+        authFailed: true,
       }
     }
 
@@ -108,6 +134,7 @@ function handleValidationError(
       return {
         valid: false,
         error: 'Network error. Please check your internet connection.',
+        retryable: true,
       }
     }
 
@@ -122,11 +149,27 @@ function handleValidationError(
       typeof errorBody.message === 'string' &&
       errorBody.message.includes('model:')
     ) {
-      return { valid: false, error: `Model '${modelName}' not found` }
+      return {
+        valid: false,
+        error: `Model '${modelName}' not found`,
+        notFound: true,
+      }
     }
 
-    // Generic API error
-    return { valid: false, error: `API error: ${error.message}` }
+    // NOTE (#067, staged): the binary mapper has a `permissionDenied` branch here
+    // (`lDt(e)` → "Model '<r>' isn't available for your account"). OCC has no
+    // equivalent entitlement helper, so it is not ported (see ModelValidationResult).
+
+    // Generic API error — 2.1.281 (#067): humanize the server message via
+    // formatAPIError (binary `QZ`), strip trailing punctuation, and append the
+    // " · model not changed" suffix so a failed /model switch never looks applied.
+    // `retryable` mirrors binary `C(status)`; the conditional spread keeps the
+    // field absent (not `false`) for non-retryable statuses, exactly as the binary.
+    return {
+      valid: false,
+      error: `API error: ${formatAPIError(error).replace(/[.!?…]+$/, '')} · model not changed`,
+      ...(isRetryableStatus(error.status) ? { retryable: true } : {}),
+    }
   }
 
   // For unknown errors, be safe and reject
@@ -134,7 +177,19 @@ function handleValidationError(
   return {
     valid: false,
     error: `Unable to validate model: ${errorMessage}`,
+    retryable: true,
   }
+}
+
+/**
+ * 2.1.281 (#067) binary `C(status)` (@208671019): a model probe is worth retrying
+ * when the status is absent (connection-level failure) or a transient/timeout/5xx
+ * code — `status === undefined || 408 || 429 || >= 500`.
+ */
+function isRetryableStatus(status: number | undefined): boolean {
+  return (
+    status === undefined || status === 408 || status === 429 || status >= 500
+  )
 }
 
 // @[MODEL LAUNCH]: Add a fallback suggestion chain for the new model → previous version

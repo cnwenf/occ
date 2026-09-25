@@ -1288,6 +1288,91 @@ export function stripExcessMediaItems(
 }
 
 /**
+ * #019 (2.1.281): the blockState carried by StreamMalformedEventError.
+ * "unstarted" = the event referenced an index that was never started;
+ * "closed" = the event referenced a block that was already closed.
+ */
+export type StreamBlockState = 'closed' | 'unstarted'
+
+/**
+ * #019 (2.1.281): thrown when a content_block_start/delta/stop event
+ * references a content block index that was never started or was already
+ * closed (e.g. a proxy replayed or dropped events mid-response). Replaces
+ * the v280 `RangeError('Content block not found')` so the catch block can
+ * classify the failure and KEEP + surface the partial content instead of
+ * discarding it. Byte-verified against v281 @195427201 (class `Klt`):
+ * default message "Content block not found", overridden to "Content block
+ * already closed" when blockState === "closed".
+ */
+export class StreamMalformedEventError extends Error {
+  readonly blockState: StreamBlockState
+
+  constructor(blockState: StreamBlockState) {
+    super(
+      blockState === 'closed'
+        ? 'Content block already closed'
+        : 'Content block not found',
+    )
+    this.name = 'StreamMalformedEventError'
+    this.blockState = blockState
+  }
+}
+
+/**
+ * #018 (2.1.281): thrown when the stream ends cleanly while the message
+ * envelope is still open and no terminal stop_reason was received — a proxy
+ * or dropped connection closed the response mid-stream. Instead of silently
+ * completing, the response is surfaced as a dropped connection.
+ * Byte-verified against v281 @195427201+~250 (class `a2n`).
+ */
+export class StreamTruncatedError extends Error {
+  readonly code = 'StreamTruncated'
+
+  constructor() {
+    super('Stream ended before the response was complete')
+    this.name = 'StreamTruncatedError'
+  }
+}
+
+/**
+ * #019 (2.1.281): the official duplicate-start guard (v281 `sgo`,
+ * byte-verified @202553165): a content_block_start is a duplicate when the
+ * previous block at that index was already CLOSED and carries the same
+ * block id as the newly started block (proxy replayed events).
+ */
+function isDuplicatedContentBlockStart(
+  previous: BetaContentBlock | ConnectorTextBlock | undefined,
+  closedContentBlocks: Set<BetaContentBlock | ConnectorTextBlock>,
+  started: unknown,
+): boolean {
+  return (
+    previous !== undefined &&
+    closedContentBlocks.has(previous) &&
+    'id' in previous &&
+    typeof started === 'object' &&
+    started !== null &&
+    'id' in started &&
+    (previous as { id: unknown }).id === (started as { id: unknown }).id
+  )
+}
+
+/**
+ * #020 (2.1.281): extract the connection-level error code (ECONNRESET etc.)
+ * from a stream failure for the close-after-complete diagnostics. Mirrors
+ * the official `tl?.code ?? "unknown"` in the catch-block log line.
+ */
+function getStreamErrorCode(error: unknown): string | null {
+  if (
+    error instanceof Error &&
+    'code' in error &&
+    typeof (error as { code?: unknown }).code === 'string'
+  ) {
+    return (error as { code: string }).code
+  }
+  return null
+}
+
+/**
  * J1 (2.1.199): classify a mid-stream error that should finalize the partial
  * response (keep it + append an incomplete-response notice) rather than
  * discard+retry. Returns null for errors that should keep the existing
@@ -1296,11 +1381,22 @@ export function stripExcessMediaItems(
  * Mirrors the official `finalizing partial response` branch, which fires for
  * three causes: watchdog idle-timeout (Zp), mid-stream server error /
  * overloaded (Rd), and stream connection close (ln).
+ *
+ * #019 (2.1.281) adds the malformed-stream kinds: a StreamMalformedEventError
+ * also finalizes the partial (the official catch counts `sl = error instanceof
+ * StreamMalformedEventError` toward the finalize gate), split by blockState
+ * so the user-facing notice matches the official wording.
  */
 function getMidStreamFinalizeCause(
   streamingError: unknown,
   streamIdleAborted: boolean,
-): 'watchdog' | 'server_error' | 'stale_connection' | null {
+):
+  | 'watchdog'
+  | 'server_error'
+  | 'stale_connection'
+  | 'malformed_closed'
+  | 'malformed_unstarted'
+  | null {
   if (streamIdleAborted) {
     return 'watchdog'
   }
@@ -1313,6 +1409,15 @@ function getMidStreamFinalizeCause(
   if (streamingError instanceof APIError && (streamingError.status ?? 0) >= 500) {
     return 'server_error'
   }
+  // #019 (2.1.281): malformed stream event (unknown / already-closed content
+  // block index). Ordered after watchdog/server_error and before
+  // stale_connection, matching the official notice precedence
+  // (Qd → Zi → sl → connection-lost).
+  if (streamingError instanceof StreamMalformedEventError) {
+    return streamingError.blockState === 'closed'
+      ? 'malformed_closed'
+      : 'malformed_unstarted'
+  }
   // Stream connection closed mid-response (ECONNRESET, EPIPE, etc.).
   if (streamingError instanceof APIConnectionError) {
     return 'stale_connection'
@@ -1323,19 +1428,67 @@ function getMidStreamFinalizeCause(
 /**
  * J1 (2.1.199): the incomplete-response notice appended after finalizing a
  * partial. Matches the official wording (prefix "API Error" is added by the
- * caller via API_ERROR_MESSAGE_PREFIX).
+ * caller via API_ERROR_MESSAGE_PREFIX). The two malformed-stream notices are
+ * byte-verified from the v281 string table (@98612768 / @98612853).
  */
 function getMidStreamPartialNotice(
-  cause: 'watchdog' | 'server_error' | 'stale_connection',
+  cause:
+    | 'watchdog'
+    | 'server_error'
+    | 'stale_connection'
+    | 'malformed_closed'
+    | 'malformed_unstarted',
 ): string {
   switch (cause) {
     case 'watchdog':
       return 'Response stalled mid-stream. The response above may be incomplete.'
     case 'server_error':
       return 'Server error mid-response. The response above may be incomplete.'
+    case 'malformed_closed':
+      return 'The response stream was malformed. The response above may be incomplete.'
+    case 'malformed_unstarted':
+      return 'Part of the response never arrived. The response above may be incomplete.'
     case 'stale_connection':
       return 'Connection closed mid-response. The response above may be incomplete.'
   }
+}
+
+/**
+ * #019 (2.1.281): the finalize debug-log detail. For malformed-stream
+ * causes the official logs `Stream ${_l} after N block(s) yielded —
+ * finalizing partial response` where _l is the failure-kind phrase
+ * (byte-verified @202526412); other causes keep the J1 phrasing.
+ */
+function getMidStreamFinalizeLogDetail(
+  cause: 'malformed_closed' | 'malformed_unstarted' | string,
+): string {
+  switch (cause) {
+    case 'malformed_closed':
+      return 'Stream event referenced an already-closed content block'
+    case 'malformed_unstarted':
+      return 'Stream event referenced an unstarted content block'
+    default:
+      return `Mid-stream ${cause}`
+  }
+}
+
+/**
+ * #019 (2.1.281): analytics cause for tengu_streaming_partial_finalized /
+ * tengu_streaming_close_after_complete. The official failure-kind classifier
+ * (`mTo`/`TB`) reports a single "malformed_stream" kind for both blockStates
+ * (byte-verified @195427560 / @202528087).
+ */
+function getMidStreamAnalyticsCause(
+  cause:
+    | 'watchdog'
+    | 'server_error'
+    | 'stale_connection'
+    | 'malformed_closed'
+    | 'malformed_unstarted',
+): string {
+  return cause === 'malformed_closed' || cause === 'malformed_unstarted'
+    ? 'malformed_stream'
+    : cause
 }
 
 async function* queryModel(
@@ -2146,6 +2299,20 @@ async function* queryModel(
   let usage: NonNullableUsage = EMPTY_USAGE
   let costUSD = 0
   let stopReason: BetaStopReason | null = null
+  // #018/#019/#020 (2.1.281) stream-integrity state (v281 minified names in
+  // parentheses; byte-verified against the v281 stream loop):
+  // - messageEnvelopeOpen (ml): message_start seen, message_stop not yet seen.
+  // - streamReachedTerminal (Ob): the stream is in its terminal state — reset
+  //   to false when a content block starts or an in-flight block is touched,
+  //   set true only when a message_delta carries a real stop_reason.
+  // - openBlockIndex (Ii): index of the content block currently open
+  //   (started but not stopped), null when no block is open.
+  // - closedContentBlocks (pl): the set of already-closed content blocks, used
+  //   to detect duplicate/replayed events for closed indexes.
+  let messageEnvelopeOpen = false
+  let streamReachedTerminal = false
+  let openBlockIndex: number | null = null
+  const closedContentBlocks = new Set<BetaContentBlock | ConnectorTextBlock>()
   let didFallBackToNonStreaming = false
   let fallbackMessage: AssistantMessage | undefined
   let maxOutputTokens = 0
@@ -2346,6 +2513,10 @@ async function* queryModel(
     contentBlocks.length = 0
     usage = EMPTY_USAGE
     stopReason = null
+    messageEnvelopeOpen = false
+    streamReachedTerminal = false
+    openBlockIndex = null
+    closedContentBlocks.clear()
     isAdvisorInProgress = false
 
     // Streaming idle timeout watchdog: abort the stream if no chunks arrive
@@ -2466,6 +2637,8 @@ async function* queryModel(
 
         switch (part.type) {
           case 'message_start': {
+            // #018 (2.1.281): the message envelope opens (v281 `ml=!0`).
+            messageEnvelopeOpen = true
             partialMessage = part.message
             ttftMs = Date.now() - start
             usage = updateUsage(usage, part.message?.usage)
@@ -2480,7 +2653,31 @@ async function* queryModel(
             }
             break
           }
-          case 'content_block_start':
+          case 'content_block_start': {
+            // #019 (2.1.281): a start event replaying an already-closed block
+            // with the same id is a duplicated event (v281 `sgo` guard,
+            // error_type "content_block_closed_start") — throw the malformed
+            // event error so the partial is kept instead of silently
+            // re-accumulating the block.
+            if (
+              isDuplicatedContentBlockStart(
+                contentBlocks[part.index],
+                closedContentBlocks,
+                part.content_block,
+              )
+            ) {
+              logEvent('tengu_streaming_error', {
+                error_type:
+                  'content_block_closed_start' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                part_type:
+                  part.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                part_index: part.index,
+              })
+              throw new StreamMalformedEventError('closed')
+            }
+            // #018 (2.1.281): a new block opening leaves the terminal state
+            // (v281 `Ob=!1` at the start of the case).
+            streamReachedTerminal = false
             switch (part.content_block.type) {
               case 'tool_use':
                 contentBlocks[part.index] = {
@@ -2537,19 +2734,36 @@ async function* queryModel(
                 }
                 break
             }
+            // #019 (2.1.281): track the currently open block index (v281
+            // `Ii=Ys.index` after the block is constructed).
+            openBlockIndex = part.index
             break
+          }
           case 'content_block_delta': {
             const contentBlock = contentBlocks[part.index]
             const delta = part.delta as typeof part.delta | ConnectorTextDelta
-            if (!contentBlock) {
+            // #019 (2.1.281): touching an open (or missing) block leaves the
+            // terminal state; a delta for a closed block keeps it (v281
+            // `if(!si||!pl.has(si))Ob=!1` immediately before the guard).
+            if (!contentBlock || !closedContentBlocks.has(contentBlock)) {
+              streamReachedTerminal = false
+            }
+            // #019 (2.1.281): unknown or already-closed index throws the
+            // malformed-event error (v281 `Klt`) with the failure kind,
+            // instead of the v280 RangeError. The already-yielded partial
+            // content is kept and surfaced by the catch block.
+            if (!contentBlock || closedContentBlocks.has(contentBlock)) {
               logEvent('tengu_streaming_error', {
-                error_type:
-                  'content_block_not_found_delta' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                error_type: (contentBlock
+                  ? 'content_block_closed_delta'
+                  : 'content_block_not_found_delta') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                 part_type:
                   part.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                 part_index: part.index,
               })
-              throw new RangeError('Content block not found')
+              throw new StreamMalformedEventError(
+                contentBlock ? 'closed' : 'unstarted',
+              )
             }
             if (
               feature('CONNECTOR_TEXT') &&
@@ -2658,16 +2872,28 @@ async function* queryModel(
           }
           case 'content_block_stop': {
             const contentBlock = contentBlocks[part.index]
-            if (!contentBlock) {
+            // #019 (2.1.281): same terminal-state update + malformed-event
+            // guard as content_block_delta (v281 `content_block_closed_stop`
+            // / `content_block_not_found_stop` + `Klt`).
+            if (!contentBlock || !closedContentBlocks.has(contentBlock)) {
+              streamReachedTerminal = false
+            }
+            if (!contentBlock || closedContentBlocks.has(contentBlock)) {
               logEvent('tengu_streaming_error', {
-                error_type:
-                  'content_block_not_found_stop' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                error_type: (contentBlock
+                  ? 'content_block_closed_stop'
+                  : 'content_block_not_found_stop') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                 part_type:
                   part.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
                 part_index: part.index,
               })
-              throw new RangeError('Content block not found')
+              throw new StreamMalformedEventError(
+                contentBlock ? 'closed' : 'unstarted',
+              )
             }
+            // #019 (2.1.281): no block is open anymore (v281 `Ii=null`,
+            // before the partial-message check).
+            openBlockIndex = null
             if (!partialMessage) {
               logEvent('tengu_streaming_error', {
                 error_type:
@@ -2699,6 +2925,10 @@ async function* queryModel(
               ...(advisorModel && { advisorModel }),
             }
             newMessages.push(m)
+            // #019 (2.1.281): mark the block closed (v281 `pl.add(si)` right
+            // after the message is pushed) so duplicate stop/delta events for
+            // this index are detected as "closed" from now on.
+            closedContentBlocks.add(contentBlock)
             yield m
             break
           }
@@ -2731,7 +2961,20 @@ async function* queryModel(
             // replacement ({ ...lastMsg.message, usage }) would disconnect
             // the queued reference; direct mutation ensures the transcript
             // captures the final values.
-            stopReason = part.delta.stop_reason
+            // #021 (2.1.281): only overwrite stopReason when the delta frame
+            // actually carries a string stop_reason — a trailing usage-only
+            // message_delta with stop_reason:null must not wipe the earlier
+            // terminal value. A real stop_reason also marks the stream
+            // terminal (v281 `gl=typeof ...==="string"?...:null;
+            // if(gl!==null)pc=gl,Ob=!0`).
+            const deltaStopReason =
+              typeof part.delta.stop_reason === 'string'
+                ? part.delta.stop_reason
+                : null
+            if (deltaStopReason !== null) {
+              stopReason = deltaStopReason
+              streamReachedTerminal = true
+            }
 
             const lastMsg = newMessages.at(-1)
             if (lastMsg) {
@@ -2748,7 +2991,7 @@ async function* queryModel(
             )
 
             const refusalMessage = getErrorMessageIfRefusal(
-              part.delta.stop_reason,
+              deltaStopReason,
               options.model,
             )
             if (refusalMessage) {
@@ -2785,6 +3028,8 @@ async function* queryModel(
             break
           }
           case 'message_stop':
+            // #018 (2.1.281): the message envelope closed (v281 `ml=!1`).
+            messageEnvelopeOpen = false
             break
         }
 
@@ -2853,6 +3098,21 @@ async function* queryModel(
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
         throw new Error('Stream ended without receiving any events')
+      }
+
+      // #018 (2.1.281): the stream ended cleanly but the message envelope
+      // never closed (no message_stop) and we don't have a terminal
+      // stop_reason — a proxy/dropped connection closed the response
+      // mid-stream (possibly with a content block still open). Surface it as
+      // StreamTruncatedError instead of silently completing (v281
+      // `if(ml&&!(pc!==null&&Ob))throw log("Stream ended cleanly
+      // mid-response ..."),new a2n` @202523094).
+      if (messageEnvelopeOpen && !(stopReason !== null && streamReachedTerminal)) {
+        logForDebugging(
+          `Stream ended cleanly mid-response (stop_reason=${stopReason}, terminal=${streamReachedTerminal}) — treating as a dropped connection`,
+          { level: 'error' },
+        )
+        throw new StreamTruncatedError()
       }
 
       // Log summary if any stalls occurred during streaming
@@ -2974,6 +3234,53 @@ async function* queryModel(
         streamingError,
         streamIdleAborted,
       )
+
+      // #020 (2.1.281): the connection dropped AFTER the response was already
+      // complete — a terminal stop_reason was received and no content block
+      // is left open. Treat as COMPLETE: no rethrow, no retry, no
+      // non-streaming fallback (retrying re-requests an already-finished
+      // response; the v280 behavior duplicated e.g. empty completed
+      // responses). v281 `if(XV&&Ob&&Ii===null){log "Stream {stalled|
+      // connection closed (code)} after message_delta (stop_reason=...) —
+      // response already complete, no truncation"; tengu_streaming_close_
+      // after_complete; break}` @202528341, gated by the same failure-kind
+      // set as the partial finalize (watchdog/drop/server/malformed) and,
+      // like the official outer gate, requiring real partial output unless
+      // this was a watchdog stall or connection drop.
+      const responseAlreadyComplete =
+        stopReason !== null && streamReachedTerminal && openBlockIndex === null
+      const watchdogOrConnectionDrop =
+        midStreamCause === 'watchdog' || midStreamCause === 'stale_connection'
+      if (
+        responseAlreadyComplete &&
+        midStreamCause !== null &&
+        (hasPartialOutput || watchdogOrConnectionDrop)
+      ) {
+        const connectionErrorCode = getStreamErrorCode(streamingError)
+        logForDebugging(
+          `Stream ${
+            streamIdleAborted
+              ? 'stalled'
+              : `connection closed (${connectionErrorCode ?? 'unknown'})`
+          } after message_delta (stop_reason=${stopReason}) — response already complete, no truncation`,
+          { level: 'info' },
+        )
+        logEvent('tengu_streaming_close_after_complete', {
+          model:
+            options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          blocks_yielded: newMessages.length,
+          cause:
+            getMidStreamAnalyticsCause(
+              midStreamCause,
+            ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          error_code: (connectionErrorCode ??
+            'none') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          request_id: (streamRequestId ??
+            'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        })
+        return
+      }
+
       if (hasPartialOutput && midStreamCause !== null) {
         const lastYielded = newMessages.at(-1)
         if (lastYielded && !lastYielded.message.stop_reason) {
@@ -2985,7 +3292,7 @@ async function* queryModel(
             : ('end_turn' as BetaStopReason)
         }
         logForDebugging(
-          `Mid-stream ${midStreamCause} after ${newMessages.length} block(s) yielded — finalizing partial response`,
+          `${getMidStreamFinalizeLogDetail(midStreamCause)} after ${newMessages.length} block(s) yielded — finalizing partial response`,
           { level: 'warn' },
         )
         logEvent('tengu_streaming_partial_finalized', {
@@ -2993,7 +3300,9 @@ async function* queryModel(
             options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           blocks_yielded: newMessages.length,
           cause:
-            midStreamCause as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            getMidStreamAnalyticsCause(
+              midStreamCause,
+            ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           request_id: (streamRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })

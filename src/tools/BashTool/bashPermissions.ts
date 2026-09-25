@@ -78,6 +78,10 @@ import {
   stripSafeHeredocSubstitutions,
 } from './bashSecurity.js'
 import {
+  getDangerousRmAutoDenyConfig,
+  resolveDangerousRmSafetyCheck,
+} from './dangerousRmAutoDeny.js'
+import {
   findDestructiveCommandBlock,
   findCatastrophicSubstitutionBlock,
 } from './destructiveCommandWarning.js'
@@ -2481,11 +2485,41 @@ export async function bashToolHasPermission(
         type: 'other' as const,
         reason: denyMessage,
       }
-      return {
-        behavior: 'deny',
+      // CC 2.1.281 #137: dangerous-rm auto-deny window. The deny is routed
+      // through the official safety-check resolver (binary `b0t` @203102345)
+      // so the model-facing message becomes the official `$0t` text
+      // ("Permission for this command was denied by a built-in Claude Code
+      // safety check…") with the capped/unanswered-count semantics driven by
+      // the session counters in denialTracking.ts. OCC's dialog layer does
+      // not yet consume auto-deny windows, so canShowDialog is false and the
+      // official cannot-prompt deny branch applies — the `$0t` text already
+      // covers this case ("…the permission prompt timed out, or this session
+      // cannot prompt"). When the tengu_splendid_horizon remote config or the
+      // CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT kill-switch disables the
+      // feature, the legacy deny is returned unchanged — carrying the
+      // OCC-136 rich `subBlock.message` wording when present. `flaggedText`
+      // (the "What was flagged:" clause of `$0t`) is likewise the resolved
+      // denyMessage, so the wholeSubstitution rich wording survives into the
+      // auto-deny message.
+      const legacyDeny = {
+        behavior: 'deny' as const,
         message: denyMessage,
         decisionReason,
       }
+      const resolution = resolveDangerousRmSafetyCheck({
+        flaggedText: denyMessage,
+        canShowDialog: false,
+        config: getDangerousRmAutoDenyConfig(),
+        legacyDeny,
+        permissionMode: mode,
+      })
+      if (resolution.kind === 'prompt-with-auto-deny-window') {
+        // Unreachable while canShowDialog is false — defensive fallback that
+        // keeps the pre-281 deny if a future caller flips canShowDialog on
+        // before the dialog layer honors the window.
+        return legacyDeny
+      }
+      return resolution.decision
     }
   }
 

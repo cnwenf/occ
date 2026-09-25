@@ -1,3 +1,4 @@
+import { isTransientReadFailure, type StrictReadOptions } from './transientRead.js'
 import type { SecureStorage, SecureStorageData } from './types.js'
 
 /**
@@ -14,6 +15,28 @@ export function createFallbackStorage(
       const result = primary.read()
       if (result !== null && result !== undefined) {
         return result
+      }
+      return secondary.read() || {}
+    },
+    /**
+     * Strict read (claude-code 2.1.281 #049). Delegates to the primary's strict
+     * read so a TRANSIENT inaccessibility (locked macOS keychain) surfaces as the
+     * {@link TRANSIENT_READ_FAILURE} sentinel instead of an empty result. The
+     * sentinel is propagated WITHOUT touching the secondary: a locked primary
+     * still holds a real entry, so falling back to plaintext (and later writing
+     * there) would fork the credential — exactly what #049 prevents. For
+     * primaries without strict support, degrades to the plain read.
+     */
+    readStrict(options?: StrictReadOptions): SecureStorageData {
+      const primaryResult =
+        typeof primary.readStrict === 'function'
+          ? primary.readStrict(options)
+          : primary.read()
+      if (isTransientReadFailure(primaryResult)) {
+        return primaryResult
+      }
+      if (primaryResult !== null && primaryResult !== undefined) {
+        return primaryResult
       }
       return secondary.read() || {}
     },

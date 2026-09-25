@@ -1,4 +1,5 @@
 import { c as _c } from "react/compiler-runtime";
+import chalk from 'chalk';
 import React, { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useIsInsideModal, useModalScrollRef } from '../../context/modalContext.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
@@ -63,6 +64,20 @@ const TabsContext = createContext<TabsContextValue>({
   blurHeader: () => {},
   registerOptIn: () => () => {}
 });
+/**
+ * Mirror of the official 2.1.281 `Ple` cursor-style resolver (ELF
+ * @209319791: `function Ple(o="tint"){return ue.level===0?"inverse":o}` —
+ * v280 has zero `.level===0?"inverse"` hits). When the terminal has no color
+ * support (NO_COLOR / color level 0) the background-color cursor highlight
+ * gets stripped and the selected tab becomes invisible, so the official
+ * resolves the cursor style to "inverse" instead. The official Tabs
+ * consumption site (v281 ELF @216535588 region: `Ae=ue.level===0,
+ * P=c&&d&&h&&!Ae`) disables the color cursor at level 0 and falls through to
+ * the inverse highlight.
+ */
+export function resolveTabCursorStyle(colorLevel: number = chalk.level): 'color' | 'inverse' {
+  return colorLevel === 0 ? 'inverse' : 'color';
+}
 export function Tabs(t0) {
   const $ = _c(25);
   const {
@@ -199,10 +214,14 @@ export function Tabs(t0) {
   const t12 = 0;
   const t13 = true;
   const t14 = modalScrollRef ? 0 : undefined;
+  // Official v281 Tabs: `Ae=ue.level===0,P=c&&d&&h&&!Ae` — at color level 0
+  // (NO_COLOR) the color cursor is disabled and the current tab falls through
+  // to the inverse highlight below (matches resolveTabCursorStyle → "inverse").
+  const cursorStyle = resolveTabCursorStyle();
   const t15 = !hidden && <Box flexDirection="row" gap={1} flexShrink={modalScrollRef ? 0 : undefined}>{title !== undefined && <Text bold={true} color={color}>{title}</Text>}{tabs.map((t16, i) => {
       const [id, title_0] = t16;
       const isCurrent = selectedTabIndex === i;
-      const hasColorCursor = color && isCurrent && headerFocused;
+      const hasColorCursor = color && isCurrent && headerFocused && cursorStyle !== "inverse";
       return <Text key={id} backgroundColor={hasColorCursor ? color : undefined} color={hasColorCursor ? "inverseText" : undefined} inverse={isCurrent && !hasColorCursor} bold={isCurrent}>{" "}{title_0}{" "}</Text>;
     })}{spacerWidth > 0 && <Text>{" ".repeat(spacerWidth)}</Text>}</Box>;
   let t17;
