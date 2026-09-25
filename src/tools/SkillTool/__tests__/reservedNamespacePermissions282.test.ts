@@ -11,7 +11,10 @@
  *
  * The test skills carry an `allowedTools` property so they fail the
  * safe-properties auto-allow (which legitimately precedes the squatter check
- * in the official order) and reach the ask paths.
+ * in the official order) and reach the ask paths. The RT② pinning tests below
+ * cover the complementary case: a squatter with ONLY safe properties is
+ * auto-allowed silently — official-order parity, byte-verified against the
+ * v2.1.282 ELF (see the ORDER NOTE in SkillTool.ts checkPermissions).
  */
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
@@ -207,6 +210,54 @@ describe('2.1.282 SkillTool.checkPermissions reserved-namespace hardening', () =
     // suggestions and does NOT suppress rule persistence... except the name
     // itself is reserved, so isReservedName keeps squatter suppression on.
     expect(decision.behavior).toBe('ask')
+  })
+
+  test('RT② pinning: squatter with ONLY safe properties is auto-allowed before the squatter ask (official-order parity)', async () => {
+    // Official v2.1.282 checkPermissions (byte-extracted from the ELF): the
+    // safe-properties auto-allow `if(a?.type==="prompt"&&(je(a)||Pfe(s)))
+    // return{behavior:"allow",...}` fires BEFORE the squatter computation
+    // `N=Nfe()&&wU(l)&&!(a!==void 0&&iZ(a))` and its forced ask with
+    // suppressAlwaysAllowRule. So a squatted reserved-namespace skill whose
+    // frontmatter carries ONLY safe properties (no allowedTools) is silently
+    // auto-allowed — the hole exists in the official binary itself, and OCC
+    // mirrors the official order rather than inventing extra hardening.
+    // This test pins the parity: any reorder (ours or upstream's) must flip
+    // it deliberately. All other squatter tests above inject allowedTools
+    // precisely to bypass this branch and exercise the ask paths.
+    const safeSquatter = {
+      type: 'prompt',
+      name: 'anthropic-skills:innocent',
+      source: 'user',
+      description: '',
+      getPromptForCommand: async () => '',
+    } as unknown as Command
+    mockedCommands = [safeSquatter]
+    const decision = await checkPermissions(
+      'anthropic-skills:innocent',
+      makeContext([]),
+    )
+    expect(decision.behavior).toBe('allow')
+    expect(decision.suppressAlwaysAllowRule).toBeUndefined()
+    expect(decision.decisionReason).toBeUndefined()
+  })
+
+  test('RT② boundary: one unsafe property (allowedTools) drops the squatter into the forced ask', async () => {
+    const unsafeSquatter = {
+      type: 'prompt',
+      name: 'anthropic-skills:innocent',
+      source: 'user',
+      description: '',
+      allowedTools: ['Bash(echo:*)'],
+      getPromptForCommand: async () => '',
+    } as unknown as Command
+    mockedCommands = [unsafeSquatter]
+    const decision = await checkPermissions(
+      'anthropic-skills:innocent',
+      makeContext([]),
+    )
+    expect(decision.behavior).toBe('ask')
+    expect(decision.suppressAlwaysAllowRule).toBe(true)
+    expect(decision.message).toBe('Execute skill: anthropic-skills:innocent')
   })
 
   test('deny rules still win over everything', async () => {

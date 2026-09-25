@@ -689,6 +689,18 @@ export type LockField = {
  * Skips, exactly like the official: multi-segment paths (handled per-block),
  * strictPluginOnlyCustomization (bespoke wrapper), disableAllHooks, non-scalar
  * restrictive values, keys absent from the schema, and lazy fields.
+ *
+ * DISCLOSED CONSEQUENCE of the disableAllHooks skip (official-parity,
+ * acceptance RT③c — pinned by policyStrictParse282.test.ts, do NOT "fix"
+ * silently): a mistyped `disableAllHooks` in a policy source (e.g. the string
+ * "true") never reaches the lock wrapper, so it gets NO string-boolean
+ * coercion (nx) and NO restrictive substitution — it falls to the generic
+ * per-field catch in policyStrictSchema.ts, which records one
+ * "This field was ignored." warning and DROPS the key. Net effect: hooks
+ * STAY ENABLED (fail-open), while the identical mistype on any other lock key
+ * coerces fail-closed. The official binary skips disableAllHooks in its Ni
+ * loop the same way; diverging here would be invented hardening, not
+ * alignment. See docs/upstream-version-gap-occ97-2026-09.md §5 B.
  */
 export function collectLockFields(
   shape: Record<string, z.ZodType>,

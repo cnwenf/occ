@@ -68,13 +68,51 @@ PORT 候选**（逐条仍需 byte-level 复核，STAGE→PORT 不豁免取证）
 | 簇 | 官方机制 | OCC 落点 | 状态 |
 |----|---------|---------|------|
 | A. mid-pattern `:*` Bash 规则 | 282 validator 顺序：empty-prefix invalid → allow-only wildcard-before-subcommand → mixes 分支（`Nge`/`eVn`/`wo`）→ mid-pattern valid+warning；281 的 `'The :* pattern must be at the end'` 拒绝在 282 中已移除（0×）；startup warning loop 含 identifier-colon skip 启发式 | `permissionValidation.ts` / `permissionRuleParser.ts` / `permissionSetup.ts`；warning 行 `Permission ${behavior} rule (${sourceLabel}): ${warning}`，sourceLabel 渲染相对 settings 路径（官方无 "project settings" 字样） | ✅ LANDED + `midPatternStarRules282.test.ts` / `startupRuleWarnings282.test.ts` |
-| B. policy-source strict parse | 官方 `Wge`/`Ko`/`pd`：never whole-reject；误拼 lock 值→restrictive 替换（fail-closed）；string-boolean coercion（`nx`）；statusOnly vs startup；partial-block salvage（`Ki`/`tg` 4 策略/`zo` grant-withholding/`zi` skeleton）；null=删键（`Oi`）；restrictive 表 `Xe` 数据驱动 | `policyStrictSchema.ts` + `policyLocks.ts`（26 个 OCC 已有键入表；7 个 OCC schema 缺失的 lock 键跳过——机制数据驱动，键补入即自动生效） | ✅ LANDED + `policyStrictParse282.test.ts` |
+| B. policy-source strict parse | 官方 `Wge`/`Ko`/`pd`：never whole-reject；误拼 lock 值→restrictive 替换（fail-closed）；string-boolean coercion（`nx`）；statusOnly vs startup；partial-block salvage（`Ki`/`tg` 4 策略/`zo` grant-withholding/`zi` skeleton）；null=删键（`Oi`）；restrictive 表 `Xe` 数据驱动 | `policyStrictSchema.ts` + `policyLocks.ts`（26 个 OCC 已有键入表；7 个 OCC schema 缺失的 lock 键跳过——机制数据驱动，键补入即自动生效） | ✅ LANDED + `policyStrictParse282.test.ts`；已知 fail-open/静默路径见下方 §5.1 披露（验收 RT③，钉桩测试已补，勿改行为） |
 | C. telemetry env + sandbox.excludedCommands | 48-name blocklist（`Gcn`：35 OTLP + 2 Prometheus + enable/exporter + 2 beta + 5 OTEL_LOG_*）；`Vcn` off-only 例外（`ko` falsy 或 exporter="none" 且 project 层无 shadow）；excludedCommands gate `vO`（managed allowManagedDomainsOnly=true ∥ (policy??flag).allowUnsandboxedCommands=false，GrowthBook stubbed false）；read-time filter + 一次性 warning + write redirect（`OIt`） | `managedEnv.ts`（PROJECT_SCOPED_SOURCES 过滤）+ `sandbox-adapter.ts` + `shouldUseSandbox.ts` + `sandboxTypes.ts` schema describe（官方 `Md` 双句 byte-exact）；`/sandbox exclude` caller 改用 outcome-aware 消息（refused → error；added → 实际写入 source 的相对路径） | ✅ LANDED + `projectScopeEnvBlocklist251.test.ts`（扩展）+ `excludedCommandsScoping282.test.ts` |
 | D. frontmatter grants + reserved namespaces | `zw()`=allowManagedPermissionRulesOnly；trusted set `FU` {plugin,policySettings,built-in,builtin,bundled}；`ZMe` apply-time gate + once-per-session warn + `tengu_frontmatter_grant_withheld`；reserved ['anthropic-skills','claude-ai']（case-insensitive，gate `tengu_plaid_harbor` default true）：squatter→forced ask + suppressAlwaysAllowRule，loader drop+warn，MCP prompts/skills gated（tools 不动） | `frontmatterGrants.ts` + `reservedNames.ts`；wiring：`SkillTool` / `loadSkillsDir` / `mcpSkills` / `loadPluginCommands` / `forkedAgent` | ✅ LANDED + `frontmatterGrants282.test.ts` / `reservedNamespacePermissions282.test.ts` |
+
+**C 簇措辞更正（验收 RT④，2026-09-26）**：表中"一次性 warning"仅写
+**debug 日志**，不是终端可见提示——官方与 OCC 同款。官方 ELF 复核（md5
+`54435b7ed06ae1ef9417edda38256c15` ✓）：`IJ()` @199153334 以单参调用
+`t(\`[sandbox] excludedCommands restricted…\`)`，而 `t` 即官方 debug wrapper
+`function t(e,n={level:"debug"}){R().log(e,n)}` @194169886 → DebugLogger 类
+`ft.log`，默认 level "debug"，落盘 `~/.claude/debug/<sessionId>.txt`
+（`defaultLogPath()`=`join(configHomeDir,"debug",…)`），仅
+`--debug-to-stderr`/`-d2e` 时改写 stderr——常规终端 UI 永远看不到该行。
+OCC 落点 `sandbox-adapter.ts` 用 `logForDebugging`（默认 level 'debug'，
+同一落盘路径）为 official-parity，非降级。
+
+**D 簇措辞更正（验收 RT④，2026-09-26）**：表中"MCP prompts/skills gated"
+需拆开诚实表述——**prompts 侧 gate 是活的**（`fetchCommandsForClient`，
+官方 `rZe` port：reserved-namespace server 的每条 prompt 被 drop 并写
+byte-exact per-prompt 消息到 MCP debug log）；**skills 侧 gate 目前是
+vacuous**：OCC 的 `src/skills/mcpSkills.ts` 是 auto-generated stub，
+`fetchMcpSkillsForClient` 对任何 server 都恒返回 `[]`（OCC 本就不加载
+MCP skills），reserved-name 检查在 stub 内保留了边界行为（含
+`reservedMcpServerSkillsMessage` debug 日志），待 stub 被真实实现替换时
+自动生效，但当下无实际拦截面。Tools 侧不受影响（官方同款）。
 | E. macOS kernel/automounter denylist + symlink gate | `nE` = UNC-minus-WSL，/net folded，automounter-map `H$`（/net 全平台、/home darwin、≤3 段、无 `..`），`\??\`、`S_` /.vol\|.file\|.nofollow\|.resolve regex、`mL` folded-network；symlink gate `ZO` 祖先不可验证时 fail-closed；4 个 claudemd surface SILENT wiring | `macosKernelPaths.ts`（nE parity）+ `shouldRefuseMemorySymlink`（ZO parity）+ `claudemd.ts` 四触点 | ✅ LANDED + `memorySymlinkRefusal282.test.ts`；Linux 上 plain out-of-repo symlink（如 /etc/passwd）不拒绝 = 官方 parity（denylist 是 macOS 内核路径专属） |
 
 已知推断项（非 byte-exact，已在代码注释标注）：E 簇 `H$` darwin 分支由
 linux stub 反推 + message@211555751；`rules_walk_failed` log level 'warn'。
+
+### §5.1 B 簇 fail-open/静默路径披露（验收 RT③，2026-09-26）
+
+验收复核（main `9b36b4d`）发现 B 簇 strict parse 存在三条**静默或 fail-open**
+路径。三条均为官方 v2.1.282 二进制同款行为（official-parity），按验收结论
+**只披露 + 钉桩，不改行为**（改了就偏离官方 = invented hardening）。钉桩测试
+位于 `policyStrictParse282.test.ts` 的 `RT③ fail-open disclosure pinning`
+describe 块（3 条），任何后续改动（我方或上游 re-port）都会先翻红这些测试：
+
+| # | 路径 | 行为（实测钉桩） | 根因 | fail-open 后果 |
+|---|------|----------------|------|---------------|
+| RT③a | `maxEffortLevel` 误拼（如 `"bogus"`/`42`） | `data {}`，**零诊断记录**（连 "This field was ignored." 都没有） | `types.ts` 中该键自带内联 `.catch(undefined)`，在 policy schema 的 generic per-field catch（`policyStrictSchema.ts` step 1）之前就吞掉了 issue | effort cap 静默不生效，管理员无任何提示 |
+| RT③b | 顶层 lock 键写 `null`（如 `{disableAgentView:null}`） | 键静默消失，**零记录** —— 与 block 路径 `null`（如 `permissions:null`，有 `Oi` "read as key removal" 记录）**不对称** | lock wrapper 为 `z.union([z.null().transform(()=>undefined), coerced])`，null 分支直接 transform 成 undefined，不经过 onIssue | 管理员以为写了 lock，实际该 source 未设此键且无提示 |
+| RT③c | `disableAllHooks` 误拼（含字符串 `"true"`） | 落入 generic catch：一条 "Invalid input: expected boolean, received string. This field was ignored." warning，键被丢弃；**无** string-boolean coercion、**无** restrictive 替换 | `collectLockFields`（官方 `Ni` @194777350 port）显式跳过 `disableAllHooks`（官方同款跳过），故该键不进 lock wrapper | **hooks 保持启用（fail-open）**：管理员写 `"true"` 期望禁 hooks，实际 hooks 照跑；同误拼在任何其他 lock 键上都会 fail-closed 强转 |
+
+`collectLockFields` 的 docstring（`policyLocks.ts`）已补 DISCLOSED
+CONSEQUENCE 段落说明 RT③c 后果与"官方同款、不得静默修"的口径。
 
 ## §6 会话/传输可靠性 ★子集 — 逐条判定
 

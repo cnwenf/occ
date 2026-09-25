@@ -394,6 +394,102 @@ describe('2.1.282 generic per-field catch', () => {
 })
 
 // ---------------------------------------------------------------------------
+// RT③ fail-open disclosure pinning (acceptance review of main 9b36b4d).
+//
+// These tests pin three SILENT / fail-open paths that the Cluster B port
+// carries — official-parity quirks the review asked us to disclose, NOT to
+// fix (勿改行为). Each pins the current behavior so any future change (ours
+// or a re-port) flips a test deliberately instead of silently shifting the
+// fail-open surface. Full disclosure: docs/upstream-version-gap-occ97-2026-09.md §5 B.
+// ---------------------------------------------------------------------------
+
+describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "fix" silently)', () => {
+  test('RT③a: maxEffortLevel mistype is swallowed with ZERO diagnostics (inline .catch(undefined) short-circuits the generic catch)', () => {
+    // Root cause: src/utils/settings/types.ts — maxEffortLevel carries its own
+    // `.catch(undefined)` in the base schema, so an invalid value never
+    // produces a Zod issue for the policy schema's generic per-field catch to
+    // record. Result: the effort cap silently does not apply (fail-open) and
+    // `policyDiagnostics` shows nothing — unlike every other mistyped field,
+    // which at least gets a "This field was ignored." record.
+    const stringMistype = parseStrict({ maxEffortLevel: 'bogus' })
+    expect(stringMistype.success).toBe(true)
+    expect(stringMistype.data).toEqual({})
+    expect(stringMistype.errors).toHaveLength(0)
+
+    const numberMistype = parseStrict({ maxEffortLevel: 42 })
+    expect(numberMistype.success).toBe(true)
+    expect(numberMistype.data).toEqual({})
+    expect(numberMistype.errors).toHaveLength(0)
+
+    // Control: a valid value passes through, so the silence above is the
+    // catch swallowing the mistype, not the key being unknown.
+    const valid = parseStrict({ maxEffortLevel: 'high' })
+    expect(valid.data).toEqual({ maxEffortLevel: 'high' })
+    expect(valid.errors).toHaveLength(0)
+  })
+
+  test('RT③b: top-level lock key null is silently dropped — asymmetric with block-path null (which records Oi)', () => {
+    // The lock-field wrapper (policyStrictSchema.ts step 6) is
+    // `z.union([z.null().transform(() => undefined), coerced])` — the null
+    // branch resolves to undefined with NO onIssue call, so the key vanishes
+    // without a "read as key removal" record. A BLOCK-path null (e.g.
+    // `permissions: null`) goes through Oi and DOES record. Pinning both
+    // sides of the asymmetry.
+    const lockNull = parseStrict({ disableAgentView: null })
+    expect(lockNull.success).toBe(true)
+    expect('disableAgentView' in lockNull.data).toBe(false)
+    expect(lockNull.errors).toHaveLength(0)
+
+    // Contrast (existing Oi behavior — see the block-salvage suite above):
+    const blockNull = parseStrict({ permissions: null })
+    expect('permissions' in blockNull.data).toBe(false)
+    expect(blockNull.errors).toHaveLength(1)
+    expect(blockNull.errors[0]?.message).toBe(
+      '"permissions" was null, which is read as key removal; this source does not set it.',
+    )
+    expect(blockNull.errors[0]?.statusOnly).toBe(true)
+  })
+
+  test('RT③c: disableAllHooks mistype falls to the generic catch — no coercion, no restrictive substitution, hooks stay enabled (fail-open)', () => {
+    // collectLockFields (policyLocks.ts, official Ni port) SKIPS
+    // disableAllHooks, so it never gets the lock wrapper's string-boolean
+    // coercion (nx) or restrictive substitution. A mistyped value lands in
+    // the generic per-field catch: one "This field was ignored." record, key
+    // dropped — meaning an admin who wrote `disableAllHooks: "true"` gets
+    // hooks STAYING ENABLED (fail-open), while the same mistype on any other
+    // lock key coerces fail-closed. Pinning the asymmetry both ways.
+    const stringTrue = parseStrict({ disableAllHooks: 'true' })
+    expect(stringTrue.success).toBe(true)
+    expect('disableAllHooks' in stringTrue.data).toBe(false)
+    expect(stringTrue.errors).toHaveLength(1)
+    expect(stringTrue.errors[0]?.path).toBe('disableAllHooks')
+    expect(stringTrue.errors[0]?.message).toBe(
+      'Invalid input: expected boolean, received string. This field was ignored.',
+    )
+    // NOT the coercion record other locks get:
+    expect(stringTrue.errors[0]?.statusOnly).toBeUndefined()
+    expect(stringTrue.errors[0]?.substituted).toBeUndefined()
+
+    const otherString = parseStrict({ disableAllHooks: 'yes' })
+    expect('disableAllHooks' in otherString.data).toBe(false)
+    expect(otherString.errors[0]?.message).toBe(
+      'Invalid input: expected boolean, received string. This field was ignored.',
+    )
+
+    // Contrast: disableAgentView (IN collectLockFields) coerces the identical
+    // mistype fail-closed.
+    const coerced = parseStrict({ disableAgentView: 'true' })
+    expect(coerced.data.disableAgentView).toBe(true)
+    expect(coerced.errors[0]?.statusOnly).toBe(true)
+
+    // Control: a valid boolean still applies.
+    const valid = parseStrict({ disableAllHooks: true })
+    expect(valid.data).toEqual({ disableAllHooks: true })
+    expect(valid.errors).toHaveLength(0)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // (c) wiring: parseSettingsFile / MDM parse
 // ---------------------------------------------------------------------------
 

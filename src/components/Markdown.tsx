@@ -238,8 +238,11 @@ function MarkdownBody(t0) {
         // Fenced code keeps FULL width when the cap is active (official code
         // special-case). Flush the pending prose batch first so the code
         // block lands outside the capped wrapper, then render it uncapped.
+        // trimEnd() only: the code token's first line may carry meaningful
+        // leading indentation (Python/YAML); a full .trim() would strip it
+        // (acceptance RT① regression) while later lines keep theirs.
         flushNonTableContent();
-        elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatToken(token, theme, 0, null, null, highlight).trim()}</Ansi>);
+        elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatToken(token, theme, 0, null, null, highlight).trimEnd()}</Ansi>);
       } else {
         nonTableContent = nonTableContent + formatToken(token, theme, 0, null, null, highlight);
         nonTableContent;

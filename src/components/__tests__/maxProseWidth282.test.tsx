@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
 import * as React from 'react'
+// Strip ANSI SGR sequences so leading-whitespace assertions are reliable
+// (repo convention — same import as tabsNoColorCursor281.test.tsx).
+import stripAnsi from 'strip-ansi'
 import { type AppState, AppStateProvider, getDefaultAppState } from '../../state/AppState.js'
 import { renderToStringIsolated } from '../CustomSelect/__tests__/renderIsolated280.js'
 import { Markdown, StreamingMarkdown } from '../Markdown.js'
@@ -37,6 +40,12 @@ const PROSE_RUN = 'proseword '.repeat(6).trimEnd()
 // 66 visible chars of code — fits in 100 columns (never wraps), exceeds the
 // 50-column cap (would wrap if code were wrongly capped).
 const CODE_LINE = 'const sentinelCodeLine = "CODEFULLWIDTH_0123456789_0123456789";'
+// Acceptance RT① fixture: a fenced code block whose FIRST line carries
+// meaningful leading indentation (Python). The old capped-code branch used
+// `.trim()`, stripping the first line's indentation ("  def foo():" →
+// "def foo():") while later lines kept theirs — CODE_LINE above starts at
+// column 0 so it could never catch that. Pinned by the RT① test below.
+const INDENTED_CODE = ['```python', '  def foo():', '    return 1', '```'].join('\n')
 const CONTENT = [
   PROSE,
   '',
@@ -99,6 +108,24 @@ describe('2.1.282 maxProseWidth render clamp', () => {
     // Official Lr special-cases code tokens → no maxWidth. The 66-char line
     // must survive intact (would be wrapped mid-line if capped at 50).
     expect(out).toContain(CODE_LINE)
+  })
+
+  test('capped: code first line keeps leading indentation (acceptance RT① trim regression)', async () => {
+    const out = stripAnsi(
+      await renderMarkdown(
+        <Markdown capProseWidth={true}>{INDENTED_CODE}</Markdown>,
+        CAP,
+      ),
+    )
+    // The old capped-code branch used .trim(), which stripped the FIRST
+    // line's leading indentation while later lines kept theirs — exactly the
+    // asymmetric regression the acceptance review flagged (RT①).
+    const defLine = out.split('\n').find(line => line.includes('def foo():'))
+    expect(defLine).toBeDefined()
+    expect(defLine!.startsWith('  def foo():')).toBe(true)
+    const retLine = out.split('\n').find(line => line.includes('return 1'))
+    expect(retLine).toBeDefined()
+    expect(retLine!.startsWith('    return 1')).toBe(true)
   })
 
   test('capped: tables keep the full terminal width', async () => {

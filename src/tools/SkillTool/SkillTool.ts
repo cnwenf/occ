@@ -674,6 +674,19 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // This is an allowlist: if a skill has any property NOT in this set with a
     // meaningful value, it requires permission. This ensures new properties added
     // in the future default to requiring permission.
+    //
+    // ORDER NOTE (acceptance RT②, byte-verified against the official v2.1.282
+    // ELF @208604xxx): the official checkPermissions runs this auto-allow
+    // (`if(a?.type==="prompt"&&(je(a)||Pfe(s)))return{behavior:"allow",...}`)
+    // BEFORE the squatter computation (`N=Nfe()&&wU(l)&&!(a!==void 0&&iZ(a))`)
+    // and its forced ask (`if(N)return{behavior:"ask",...,suppressAlwaysAllowRule:!0}`).
+    // Consequence (official-parity, NOT an OCC invention): a squatted
+    // reserved-namespace skill whose frontmatter carries ONLY safe properties
+    // (no allowedTools) is silently auto-allowed with no ask. The official's
+    // second disjunct `Pfe(s)` is the CLAUDE_CODE_COORDINATOR_MODE auto-allow
+    // (`xi()&&e.agentId===void 0`) — dead in OCC builds (flag off). Pinned by
+    // the RT② test in reservedNamespacePermissions282.test.ts; any reorder
+    // (ours or upstream's) must flip that test deliberately.
     if (
       commandObj?.type === 'prompt' &&
       skillHasOnlySafeProperties(commandObj)
