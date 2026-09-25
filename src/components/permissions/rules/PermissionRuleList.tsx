@@ -72,7 +72,8 @@ function getRuleBehaviorLabel(ruleBehavior: PermissionBehavior): string {
 }
 
 // Component for showing tool details and managing the interactive deletion workflow
-function RuleDetails(t0) {
+// (exported for the v281 confirm-safety tests — confirmSafety281.test.tsx)
+export function RuleDetails(t0) {
   const $ = _c(42);
   const {
     rule,
@@ -224,7 +225,11 @@ function RuleDetails(t0) {
   }
   let t13;
   if ($[32] !== onCancel || $[33] !== t11) {
-    t13 = <Select onChange={t11} onCancel={onCancel} options={t12} />;
+    // Official v281 safety hardening (ELF @229491088: `focus:"cancel",hideIndexes:!0`
+    // — v280 counterpart @226221265 has neither): the delete-rule confirm hides
+    // the numeric indexes (so holding "1" can't answer Yes) and opens with No
+    // focused (OCC's defaultFocusValue mirrors the official focus:"cancel").
+    t13 = <Select onChange={t11} onCancel={onCancel} options={t12} hideIndexes={true} defaultFocusValue="no" />;
     $[32] = onCancel;
     $[33] = t11;
     $[34] = t13;

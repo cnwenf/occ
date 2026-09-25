@@ -5,6 +5,7 @@ import {
   DENIAL_WORKAROUND_GUIDANCE,
   DONT_ASK_REJECT_MESSAGE,
 } from '../messages.js'
+import { AUTO_MODE_OUTCOME_SCOPE_GUIDANCE } from '../permissions/autoModeOutcomeGuidance.js'
 
 /**
  * 2.1.268 alignment: the fused DENIAL_WORKAROUND_GUIDANCE constant was split
@@ -65,10 +66,14 @@ describe('2.1.268 — denial guidance suffix split', () => {
   })
 
   test('buildYoloRejectionMessage uses base + auto-mode suffix (official H5t/Tjs)', () => {
+    // CC 2.1.281 #109: official `hxn` @204144495 now embeds the outcome-scope
+    // guidance (`lKe`) unconditionally between the stop suffix and the
+    // permission-rule hint — expectation updated from the 2.1.268 structure.
     expect(buildYoloRejectionMessage('test reason')).toBe(
       `Permission for this action was denied by the Claude Code auto mode classifier. Reason: test reason. ` +
         `If you have other tasks that don't depend on this action, continue working on those. ` +
         `${BASE}${AUTO_MODE_TAIL} ` +
+        `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE} ` +
         LONG_RULE_HINT,
     )
   })

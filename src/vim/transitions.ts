@@ -126,14 +126,21 @@ export function transition(
 /**
  * Handle input that's valid in both idle and count states.
  * Returns null if input is not recognized.
+ *
+ * `countTyped` distinguishes an explicitly typed count (fromCount) from the
+ * default count of 1 (fromIdle) — v281 binary `vo(input,count,countTyped,ctx)`.
+ * It drives the `G`/`<op>G` count conventions (#081: `1G` must go to line 1).
  */
 function handleNormalInput(
   input: string,
   count: number,
+  countTyped: boolean,
   ctx: TransitionContext,
 ): TransitionResult | null {
   if (isOperatorKey(input)) {
-    return { next: { type: 'operator', op: OPERATORS[input], count } }
+    return {
+      next: { type: 'operator', op: OPERATORS[input], count, countTyped },
+    }
   }
 
   if (SIMPLE_MOTIONS.has(input)) {
@@ -190,13 +197,13 @@ function handleNormalInput(
   if (input === 'G') {
     return {
       execute: () => {
-        // count=1 means no count given, go to last line
-        // otherwise go to line N
-        if (count === 1) {
-          ctx.setOffset(ctx.cursor.startOfLastLine().offset)
-        } else {
-          ctx.setOffset(ctx.cursor.goToLine(count).offset)
-        }
+        // v281 `vo`: a typed count goes to line N (`1G` = line 1 — #081 fix);
+        // no typed count goes to the start of the last line.
+        ctx.setOffset(
+          countTyped
+            ? ctx.cursor.goToLine(count).offset
+            : ctx.text.lastIndexOf('\n') + 1,
+        )
       },
     }
   }
@@ -246,10 +253,15 @@ function handleNormalInput(
 /**
  * Handle operator input (motion, find, text object scope).
  * Returns null if input is not recognized.
+ *
+ * `countTyped` mirrors v281 binary `ho(op,count,countTyped,input,ctx)`:
+ * `<op>G` passes `countTyped ? count : 0` — 0 is the "no count typed"
+ * convention of the v281 G operator (#081).
  */
 function handleOperatorInput(
   op: Operator,
   count: number,
+  countTyped: boolean,
   input: string,
   ctx: TransitionContext,
 ): TransitionResult | null {
@@ -275,7 +287,8 @@ function handleOperatorInput(
   }
 
   if (input === 'G') {
-    return { execute: () => executeOperatorG(op, count, ctx) }
+    // v281 `ho`: `let S = countTyped ? count : 0` → G op (`un`, #081).
+    return { execute: () => executeOperatorG(op, countTyped ? count : 0, ctx) }
   }
 
   if (input === 'g') {
@@ -305,7 +318,7 @@ function fromIdle(input: string, ctx: TransitionContext): TransitionResult {
     return { execute: () => ctx.onHistorySearch?.() }
   }
 
-  const result = handleNormalInput(input, 1, ctx)
+  const result = handleNormalInput(input, 1, false, ctx)
   if (result) return result
 
   return {}
@@ -323,14 +336,14 @@ function fromCount(
   }
 
   const count = parseInt(state.digits, 10)
-  const result = handleNormalInput(input, count, ctx)
+  const result = handleNormalInput(input, count, true, ctx)
   if (result) return result
 
   return { next: { type: 'idle' } }
 }
 
 function fromOperator(
-  state: { type: 'operator'; op: Operator; count: number },
+  state: { type: 'operator'; op: Operator; count: number; countTyped: boolean },
   input: string,
   ctx: TransitionContext,
 ): TransitionResult {
@@ -350,7 +363,13 @@ function fromOperator(
     }
   }
 
-  const result = handleOperatorInput(state.op, state.count, input, ctx)
+  const result = handleOperatorInput(
+    state.op,
+    state.count,
+    state.countTyped,
+    input,
+    ctx,
+  )
   if (result) return result
 
   return { next: { type: 'idle' } }
@@ -374,7 +393,14 @@ function fromOperatorCount(
 
   const motionCount = parseInt(state.digits, 10)
   const effectiveCount = state.count * motionCount
-  const result = handleOperatorInput(state.op, effectiveCount, input, ctx)
+  // v281 `Us`: a motion count typed after the operator always counts as typed.
+  const result = handleOperatorInput(
+    state.op,
+    effectiveCount,
+    true,
+    input,
+    ctx,
+  )
   if (result) return result
 
   return { next: { type: 'idle' } }

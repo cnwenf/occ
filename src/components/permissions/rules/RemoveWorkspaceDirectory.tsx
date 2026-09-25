@@ -88,7 +88,11 @@ export function RemoveWorkspaceDirectory(t0) {
   }
   let t6;
   if ($[12] !== handleSelect || $[13] !== onCancel) {
-    t6 = <Select onChange={handleSelect} onCancel={onCancel} options={t5} />;
+    // Official v281 safety hardening (ELF @229454872: `focus:"cancel",hideIndexes:!0`
+    // — v280 counterpart @226184497 has neither): destructive confirm hides the
+    // numeric indexes (so holding "1" can't answer Yes) and opens with No
+    // focused (OCC's defaultFocusValue mirrors the official focus:"cancel").
+    t6 = <Select onChange={handleSelect} onCancel={onCancel} options={t5} hideIndexes={true} defaultFocusValue="no" />;
     $[12] = handleSelect;
     $[13] = onCancel;
     $[14] = t6;

@@ -43,6 +43,38 @@ function isTooSmallIssue(issue: ZodIssue): issue is ZodIssue & {
   return issue.code === 'too_small'
 }
 
+/**
+ * 2.1.281 PORT #005: mirror of the official zod-error flattener @193763767.
+ * `attribution` is now `z.union([z.boolean(), z.object({...})])`, so a bad
+ * value surfaces as a single `invalid_union` issue at path "attribution".
+ * When any branch produced concrete sub-issues (e.g. `{ "commit": 5 }` fails
+ * the object branch at path `["commit"]`), expand them into per-field issues
+ * prefixed with the union path so validation errors name the actual field
+ * (`attribution.commit: ...`) instead of the opaque union issue. When no
+ * sub-issues carry a path, keep the union issue — its message comes from the
+ * schema's union error callback and is already readable.
+ */
+function flattenAttributionUnionIssues(issues: ZodIssue[]): ZodIssue[] {
+  return issues.flatMap(issue => {
+    if (
+      issue.code !== 'invalid_union' ||
+      issue.path.join('.') !== 'attribution'
+    ) {
+      return [issue]
+    }
+    const subIssues = issue.errors
+      .flat()
+      .filter(subIssue => subIssue.path.length > 0)
+    if (subIssues.length === 0) {
+      return [issue]
+    }
+    return subIssues.map(subIssue => ({
+      ...subIssue,
+      path: [...issue.path, ...subIssue.path],
+    }))
+  })
+}
+
 /** Field path in dot notation (e.g., "permissions.defaultMode", "env.DEBUG") */
 export type FieldPath = string
 
@@ -109,7 +141,8 @@ export function formatZodError(
   error: ZodError,
   filePath: string,
 ): ValidationError[] {
-  return error.issues.map((issue): ValidationError => {
+  return flattenAttributionUnionIssues(error.issues).map(
+    (issue): ValidationError => {
     const path = issue.path.map(String).join('.')
     let message = issue.message
     let expected: string | undefined

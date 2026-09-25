@@ -6,6 +6,21 @@ import { getPlatform } from './platform.js'
 import { posixPathToWindowsPath } from './windowsPaths.js'
 
 /**
+ * The exact message `expandPath` throws when a path (or base dir) contains a
+ * null byte. CC 2.1.281 #040: the official backfill guard (`cl()` @208557126)
+ * recognizes this failure and skips the backfill instead of killing the turn,
+ * so callers that wrap `expandPath` need a stable predicate for it.
+ */
+export const NULL_BYTE_PATH_ERROR_MESSAGE = 'Path contains null bytes'
+
+/** True when `error` is the null-byte throw from `expandPath`. */
+export function isNullBytePathError(error: unknown): boolean {
+  return (
+    error instanceof Error && error.message === NULL_BYTE_PATH_ERROR_MESSAGE
+  )
+}
+
+/**
  * Expands a path that may contain tilde notation (~) to an absolute path.
  *
  * On Windows, POSIX-style paths (e.g., `/c/Users/...`) are automatically converted
@@ -46,7 +61,7 @@ export function expandPath(path: string, baseDir?: string): string {
 
   // Security: Check for null bytes
   if (path.includes('\0') || actualBaseDir.includes('\0')) {
-    throw new Error('Path contains null bytes')
+    throw new Error(NULL_BYTE_PATH_ERROR_MESSAGE)
   }
 
   // Handle empty or whitespace-only paths

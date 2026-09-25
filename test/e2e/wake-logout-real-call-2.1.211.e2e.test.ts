@@ -1,4 +1,4 @@
-import { describe, expect, test, mock, beforeEach, afterEach } from 'bun:test'
+import { describe, expect, test, mock, beforeEach, afterEach, afterAll } from 'bun:test'
 import { REPO_ROOT } from './helpers'
 
 /**
@@ -33,6 +33,12 @@ function resetMockState(): void {
 // These must match the resolved paths that logout.tsx imports.
 const R = REPO_ROOT
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_gracefulShutdown = { ...(await import(`${R}/src/utils/gracefulShutdown.ts`)) }
 mock.module(`${R}/src/utils/gracefulShutdown.ts`, () => ({
   gracefulShutdownSync: () => {
     mockState.gracefulShutdownCalled = true
@@ -89,6 +95,12 @@ const authExports = [
   'getApiKeyFromConfigOrMacOSKeychain',
 ]
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_auth = { ...(await import(`${R}/src/utils/auth.ts`)) }
 mock.module(`${R}/src/utils/auth.ts`, () =>
   stubModule(authExports, {
     removeApiKey: async () => {
@@ -116,6 +128,12 @@ mock.module(`${R}/src/utils/auth.ts`, () =>
   }),
 )
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_secureStorage = { ...(await import(`${R}/src/utils/secureStorage/index.ts`)) }
 mock.module(`${R}/src/utils/secureStorage/index.ts`, () => ({
   getSecureStorage: () => ({
     name: 'mock',
@@ -128,6 +146,12 @@ mock.module(`${R}/src/utils/secureStorage/index.ts`, () => ({
   }),
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_config = { ...(await import(`${R}/src/utils/config.ts`)) }
 mock.module(`${R}/src/utils/config.ts`, () => ({
   getGlobalConfig: () => ({}),
   saveGlobalConfig: (fn: (c: Record<string, unknown>) => Record<string, unknown>) => {
@@ -137,10 +161,22 @@ mock.module(`${R}/src/utils/config.ts`, () => ({
   },
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_trustedDevice = { ...(await import(`${R}/src/bridge/trustedDevice.ts`)) }
 mock.module(`${R}/src/bridge/trustedDevice.ts`, () => ({
   clearTrustedDeviceTokenCache: () => {},
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_growthbook = { ...(await import(`${R}/src/services/analytics/growthbook.ts`)) }
 mock.module(`${R}/src/services/analytics/growthbook.ts`, () => ({
   refreshGrowthBookAfterAuthChange: () => {},
   getFeatureValue_CACHED_MAY_BE_STALE: <T>(_key: string, def: T): T => def,
@@ -165,19 +201,43 @@ mock.module(`${R}/src/services/analytics/growthbook.ts`, () => ({
   stopPeriodicGrowthBookRefresh: () => {},
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_grove = { ...(await import(`${R}/src/services/api/grove.ts`)) }
 mock.module(`${R}/src/services/api/grove.ts`, () => ({
   getGroveNoticeConfig: { cache: { clear: () => {} } },
   getGroveSettings: { cache: { clear: () => {} } },
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_policyLimitsIndex = { ...(await import(`${R}/src/services/policyLimits/index.ts`)) }
 mock.module(`${R}/src/services/policyLimits/index.ts`, () => ({
   clearPolicyLimitsCache: async () => {},
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_remoteManagedSettingsIndex = { ...(await import(`${R}/src/services/remoteManagedSettings/index.ts`)) }
 mock.module(`${R}/src/services/remoteManagedSettings/index.ts`, () => ({
   clearRemoteManagedSettingsCache: async () => {},
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_betas = { ...(await import(`${R}/src/utils/betas.ts`)) }
 mock.module(`${R}/src/utils/betas.ts`, () => ({
   clearBetasCaches: () => {},
   getModelBetas: (() => {
@@ -208,25 +268,70 @@ mock.module(`${R}/src/utils/betas.ts`, () => ({
 
 // Mock telemetry/instrumentation to prevent flushTelemetry from pulling
 // in the entire OpenTelemetry + betas chain via lazy import
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_instrumentation = { ...(await import(`${R}/src/utils/telemetry/instrumentation.ts`)) }
 mock.module(`${R}/src/utils/telemetry/instrumentation.ts`, () => ({
   flushTelemetry: async () => {},
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_toolSchemaCache = { ...(await import(`${R}/src/utils/toolSchemaCache.ts`)) }
 mock.module(`${R}/src/utils/toolSchemaCache.ts`, () => ({
   clearToolSchemaCache: () => {},
 }))
 
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_user = { ...(await import(`${R}/src/utils/user.ts`)) }
 mock.module(`${R}/src/utils/user.ts`, () => ({
   resetUserCache: () => {},
 }))
 
 // Mock ink.ts to avoid pulling in the full React/ink render tree
+// Real-module snapshot BEFORE mocking — bun's mock.module live-patches
+// resolved bindings process-wide and this file shares ONE process with
+// every later test file; the afterAll below re-mocks each module back so
+// these 15 stubs (growthbook gates=false, auth no-ops, ink render stub…)
+// don't hollow out later files (OCC-96 full-suite leak hunt).
+const real_ink = { ...(await import(`${R}/src/ink.ts`)) }
 mock.module(`${R}/src/ink.ts`, () => {
   const { createElement } = require('react')
   return {
     Text: ({ children }: { children: unknown }) =>
       createElement('text', null, children),
   }
+})
+
+
+// OCC-96: restore every mocked module for later files in the shared process.
+// Bun's mock.restore() does NOT undo mock.module — re-mock with the load-time
+// real snapshots (pattern: updateSemverGuards277.test.ts).
+afterAll(() => {
+  mock.module(`${R}/src/utils/gracefulShutdown.ts`, () => real_gracefulShutdown)
+  mock.module(`${R}/src/utils/auth.ts`, () => real_auth)
+  mock.module(`${R}/src/utils/secureStorage/index.ts`, () => real_secureStorage)
+  mock.module(`${R}/src/utils/config.ts`, () => real_config)
+  mock.module(`${R}/src/bridge/trustedDevice.ts`, () => real_trustedDevice)
+  mock.module(`${R}/src/services/analytics/growthbook.ts`, () => real_growthbook)
+  mock.module(`${R}/src/services/api/grove.ts`, () => real_grove)
+  mock.module(`${R}/src/services/policyLimits/index.ts`, () => real_policyLimitsIndex)
+  mock.module(`${R}/src/services/remoteManagedSettings/index.ts`, () => real_remoteManagedSettingsIndex)
+  mock.module(`${R}/src/utils/betas.ts`, () => real_betas)
+  mock.module(`${R}/src/utils/telemetry/instrumentation.ts`, () => real_instrumentation)
+  mock.module(`${R}/src/utils/toolSchemaCache.ts`, () => real_toolSchemaCache)
+  mock.module(`${R}/src/utils/user.ts`, () => real_user)
+  mock.module(`${R}/src/ink.ts`, () => real_ink)
 })
 
 describe('CC 2.1.211 real call() — background session guard (Stage 3, path 1)', () => {

@@ -42,6 +42,7 @@ import type {
   TombstoneMessage,
 } from './types/message.js'
 import { logError } from './utils/log.js'
+import { backfillObservableInputSafely } from './utils/backfillObservableInput.js'
 import {
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   isPromptTooLongMessage,
@@ -869,18 +870,20 @@ async function* queryLoop(
                   )
                   if (tool?.backfillObservableInput) {
                     const originalInput = block.input as Record<string, unknown>
-                    const inputCopy = { ...originalInput }
-                    tool.backfillObservableInput(inputCopy)
-                    // Only yield a clone when backfill ADDED fields; skip if
-                    // it only OVERWROTE existing ones (e.g. file tools
-                    // expanding file_path). Overwrites change the serialized
-                    // transcript and break VCR fixture hashes on resume,
-                    // while adding nothing the SDK stream needs — hooks get
-                    // the expanded path via toolExecution.ts separately.
-                    const addedFields = Object.keys(inputCopy).some(
-                      k => !(k in originalInput),
+                    // CC 2.1.281 #040 (official cl() @208557126): the backfill
+                    // runs inside a try/catch — a path expandPath refuses
+                    // (null byte) logs "backfillObservableInput met a path"
+                    // and skips the backfill instead of killing the turn; any
+                    // other throw is logged and swallowed. Returns the copy
+                    // only when fields were ADDED (overwrites change the
+                    // serialized transcript and break VCR fixture hashes on
+                    // resume, while adding nothing the SDK stream needs —
+                    // hooks get the expanded path via toolExecution.ts).
+                    const inputCopy = backfillObservableInputSafely(
+                      tool,
+                      originalInput,
                     )
-                    if (addedFields) {
+                    if (inputCopy !== null) {
                       clonedContent ??= [...contentArr]
                       clonedContent[i] = { ...block, input: inputCopy }
                     }

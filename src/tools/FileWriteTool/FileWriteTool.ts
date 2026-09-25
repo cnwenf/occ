@@ -35,6 +35,11 @@ import {
 } from '../../utils/gitDiff.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
+import {
+  macosNetworkMountDenyMessage,
+  shouldDenyMacosNetworkMountPath,
+} from '../../utils/macosKernelPaths.js'
+import { validateNullByteFreeFields } from '../../utils/nullByteValidation.js'
 import { expandPath } from '../../utils/path.js'
 import { perforceReadOnlyError } from '../../utils/perforce.js'
 import {
@@ -146,6 +151,27 @@ export type FileWriteToolInput = InputSchema
  */
 const MISNAMED_CONTENT_KEYS = ['file_text', 'file_content']
 
+/**
+ * CC 2.1.281 changelog #041 — full alias table for the duplicate-alias dedup
+ * pass. Byte-verified against the v281 ELF @201115780 (`ett()` + `Rvn`/`Zet`):
+ *
+ *   Zet=["file_text","file_content"],
+ *   Rvn={file_path:["path","file"],
+ *        content:[...Zet,"new_text","body","text","contents"]}
+ *
+ * The v281 COERCION stage is unchanged from v280 (still Zet-only for
+ * content); the NEW dedup loop walks the full Rvn table: an alias whose value
+ * EQUALS the canonical value is a harmless model repeat — it is deleted
+ * (shapeClass `repeated_<alias>`, note "`<alias>` repeated `<canonical>` and
+ * was ignored.") so the call SUCCEEDS. Aliases with CONFLICTING values are
+ * left in place → strictObject rejects the call.
+ */
+const WRITE_PARAM_ALIASES: Record<string, readonly string[]> = {
+  file_path: ['path', 'file'],
+  content: [...MISNAMED_CONTENT_KEYS, 'new_text', 'body', 'text', 'contents'],
+}
+const WRITE_CANONICAL_PARAMS = ['file_path', 'content'] as const
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
@@ -182,6 +208,24 @@ export function coerceWriteInput(raw: unknown): {
     delete n.description
     shapeClasses.push('drop_description')
     sentences.push('`description` was ignored.')
+  }
+  // CC 2.1.281 #041 (official ett() dedup loop @201115780, byte-faithful):
+  //   for(let _ of["file_path","content"])
+  //     for(let w of Rvn[_])
+  //       if(typeof n[_]==="string"&&n[w]===n[_])
+  //         delete n[w],r.push(`repeated_${w}`),
+  //         s.push(`\`${w}\` repeated \`${_}\` and was ignored.`)
+  // An alias carrying the SAME value as its canonical param is a harmless
+  // model repeat — drop it so the call succeeds. A conflicting value stays
+  // and the strictObject schema rejects the call.
+  for (const canonical of WRITE_CANONICAL_PARAMS) {
+    for (const alias of WRITE_PARAM_ALIASES[canonical] ?? []) {
+      if (typeof n[canonical] === 'string' && n[alias] === n[canonical]) {
+        delete n[alias]
+        shapeClasses.push(`repeated_${alias}`)
+        sentences.push(`\`${alias}\` repeated \`${canonical}\` and was ignored.`)
+      }
+    }
   }
   return shapeClasses.length
     ? {
@@ -302,6 +346,15 @@ export const FileWriteTool = buildTool({
     return ''
   },
   async validateInput({ file_path, content }, toolUseContext: ToolUseContext) {
+    // CC 2.1.281 #040 (official fy(vn,[["file_path",g]]) @201120196): a null
+    // byte in file_path is a per-call validation error (errorCode 2) BEFORE
+    // expandPath — the expandPath throw would otherwise end the whole turn.
+    const nullByteCheck = validateNullByteFreeFields(FILE_WRITE_TOOL_NAME, [
+      ['file_path', file_path],
+    ])
+    if (nullByteCheck !== null) {
+      return nullByteCheck
+    }
     const fullFilePath = expandPath(file_path)
     const toolPermissionContext =
       toolUseContext.getAppState().toolPermissionContext
@@ -358,6 +411,19 @@ export const FileWriteTool = buildTool({
         message: READ_DENY_WRITE_MESSAGE,
         errorCode: 13,
         deniedByPermissionRule: true,
+      }
+    }
+
+    // CC 2.1.281 #033 (security): on macOS, deny automount (/net, /Network)
+    // and kernel-resolved (/.vol, /.file, /.nofollow, /.resolve) prefixes
+    // before any filesystem operation — stat/lstat on these can trigger a
+    // directory-service lookup and mount to a remote host. Darwin-gated no-op
+    // elsewhere. Official deny sentence @97322030.
+    if (shouldDenyMacosNetworkMountPath(fullFilePath)) {
+      return {
+        result: false,
+        message: macosNetworkMountDenyMessage(file_path),
+        errorCode: 1,
       }
     }
 

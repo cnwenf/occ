@@ -20,6 +20,7 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
+import { AUTO_MODE_OUTCOME_SCOPE_GUIDANCE } from './permissions/autoModeOutcomeGuidance.js'
 import type { AgentId } from 'src/types/ids.js'
 import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
@@ -224,6 +225,36 @@ export const PLAN_REJECTION_PREFIX =
   'The agent proposed a plan that was rejected by the user. The user chose to stay in plan mode rather than proceed with implementation.\n\nRejected plan:\n'
 
 /**
+ * Resume placeholder family — official 2.1.281 #015 (byte-verified from the
+ * linux-x64 ELF: `kH`/`TH` defined @194405958, detection list
+ * `ee=[Ud,ok,kH,TH]` @194430158, RESUME_TOLERATES_CONTEXT_APPENDS kH/TH
+ * exemption @203294880). Verbatim official texts:
+ *
+ *   kH = "[Tool call interrupted: the session ended before this call's result
+ *         was recorded, so its outcome is unknown. ...]"
+ *   TH = "[Tool call result not in this copy: this session was copied from
+ *         another session before that session recorded this call's result. ...]"
+ *
+ * Both pair a dangling `tool_use` whose result was never recorded, so the API
+ * sees call+outcome as a *visible* placeholder Claude can reason about
+ * ("outcome is unknown — check before relying on it or re-running") instead of
+ * a hidden continue-style filler.
+ *
+ * - SESSION_ENDED_MESSAGE (kH) is emitted by `ensureToolResultPairing` when the
+ *   transcript ENDS on an unmatched `tool_use` — the session closed before the
+ *   result landed (the resume-after-session-end case).
+ * - COPIED_SESSION_MESSAGE (TH) is the copied/forked-session variant. OCC has no
+ *   session-copy/fork emitter yet, so TH is defined now and carried in the
+ *   tolerance lists (SYNTHETIC_MESSAGES) for parity with the official `ee`
+ *   detection set; its emitter activates when session-copy lands. Until then it
+ *   is never written into a transcript — only recognized if one appears.
+ */
+export const SESSION_ENDED_MESSAGE =
+  "[Tool call interrupted: the session ended before this call's result was recorded, so its outcome is unknown. Check whether it took effect before relying on it or running it again.]"
+export const COPIED_SESSION_MESSAGE =
+  "[Tool call result not in this copy: this session was copied from another session before that session recorded this call's result. The call may have finished there, may still be running there, or may never have run. Check whether it took effect before relying on it or running it again.]"
+
+/**
  * Shared guidance for permission denials, instructing the model on appropriate
  * workarounds. 2.1.268 alignment: the official splits this text into a shared
  * base plus per-surface stop suffixes (byte-verified from the linux-x64 ELF):
@@ -333,6 +364,10 @@ export function buildYoloRejectionMessage(reason: string): string {
     `${prefix}${reason}. ` +
     `If you have other tasks that don't depend on this action, continue working on those. ` +
     `${DENIAL_WORKAROUND_GUIDANCE_BASE}${AUTO_MODE_STOP_SUFFIX} ` +
+    // CC 2.1.281 #109: official `hxn` @204144495 embeds the outcome-scope
+    // guidance (`lKe` @200520908) unconditionally between the stop suffix and
+    // the permission-rule hint — every auto-mode denial carries it.
+    `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE} ` +
     ruleHint
   )
 }
@@ -423,6 +458,16 @@ export const SYNTHETIC_MESSAGES = new Set([
   CANCEL_MESSAGE,
   REJECT_MESSAGE,
   NO_RESPONSE_REQUESTED,
+  // Official 2.1.281 #015 resume placeholder family (kH/TH). OCC has no
+  // CLAUDE_CODE_RESUME_TOLERATES_CONTEXT_APPENDS subsystem (see
+  // conversationRecovery.ts:284 — "that env/subsystem does not exist in OCC"),
+  // so SYNTHETIC_MESSAGES is the placeholder-tolerance list these land in: the
+  // official `ee=[Ud,ok,kH,TH]` detection set + the RESUME_TOLERATES kH/TH
+  // context-append exemption both collapse onto this set in OCC. Membership
+  // keeps a kH/TH-bearing message recognized as synthetic (tolerated, never
+  // mistaken for real user content) across the resume/rewind consumers.
+  SESSION_ENDED_MESSAGE,
+  COPIED_SESSION_MESSAGE,
 ])
 
 export function isSyntheticMessage(message: Message): boolean {
@@ -5888,11 +5933,29 @@ export function ensureToolResultPairing(
 
     repaired = true
 
+    // Official 2.1.281 #015: pick the synthetic tool_result content by WHERE
+    // the dangling tool_use sits. When the transcript ENDS on this assistant
+    // (no following message at all), the session closed before the call's
+    // result was ever recorded — pair it with the *visible* SESSION_ENDED
+    // (kH) placeholder ("outcome is unknown — check before relying on it or
+    // re-running") so resume normalization hands the API call+outcome instead
+    // of a hidden continue-style filler. A dangling tool_use MID-transcript (a
+    // following message exists) is an internal-error/compaction gap and keeps
+    // the generic SYNTHETIC_TOOL_RESULT_PLACEHOLDER.
+    //
+    // COPIED_SESSION_MESSAGE (TH) is the copied/forked-session variant; OCC has
+    // no session-copy emitter yet, so it is not selected here — it activates
+    // when session-copy lands (see the constant's doc comment).
+    const isSessionEndedTail = i === messages.length - 1
+    const syntheticContent = isSessionEndedTail
+      ? SESSION_ENDED_MESSAGE
+      : SYNTHETIC_TOOL_RESULT_PLACEHOLDER
+
     // Build synthetic error tool_result blocks for missing IDs
     const syntheticBlocks: ToolResultBlockParam[] = missingIds.map(id => ({
       type: 'tool_result' as const,
       tool_use_id: id,
-      content: SYNTHETIC_TOOL_RESULT_PLACEHOLDER,
+      content: syntheticContent,
       is_error: true,
     }))
 

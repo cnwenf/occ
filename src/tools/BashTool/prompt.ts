@@ -1,4 +1,5 @@
 import { feature } from 'src/utils/featureFlags.js'
+import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { prependBullets } from '../../constants/prompts.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
@@ -205,6 +206,41 @@ function getSandboxPlatformSuffix(): string {
   return ''
 }
 
+// 2.1.281 PORT #111: macOS local-port-binding (EPERM) guidance, byte-verified
+// from the official 2.1.281 linux-x64 ELF (gate @203529833:
+// `sandboxOn && platform === "macos" && !getAllowLocalBinding()`; sandboxOn is
+// implied here by getSimpleSandboxSection's isSandboxingEnabled early return).
+// Two variants, selected by areUnsandboxedCommands():
+//   - allowed   → "Treat it as the sandbox-caused failure described above…"
+//     (the official "variant 1" — this IS the sandbox-failure explanation path)
+//   - disabled  → "Tell the user they can allow it…" + a session-shape suffix
+const LOCAL_BINDING_EPERM_PREFIX =
+  'If a command fails to bind or listen on a local port with "Operation not permitted" (EPERM), local port binding is off in this sandbox. '
+const LOCAL_BINDING_TREAT_AS_SANDBOX_FAILURE_ITEM = `${LOCAL_BINDING_EPERM_PREFIX}Treat it as the sandbox-caused failure described above, and tell the user that \`sandbox.network.allowLocalBinding: true\` in their settings (it applies without a restart) allows it without leaving the sandbox.`
+const LOCAL_BINDING_TELL_USER_ITEM_PREFIX = `${LOCAL_BINDING_EPERM_PREFIX}Tell the user they can allow it with \`sandbox.network.allowLocalBinding: true\` in their settings (it applies without a restart)`
+const LOCAL_BINDING_TELL_USER_ITEM_SUFFIX =
+  '; changing sandbox settings is their decision, not yours.'
+const LOCAL_BINDING_EXCLUDE_OR_BANG_SUFFIX =
+  ', exclude the command with `/sandbox exclude <pattern>`, or run it themselves with the `!` prefix'
+const LOCAL_BINDING_EXCLUDE_ONLY_SUFFIX =
+  ', or exclude the command with `/sandbox exclude <pattern>`'
+
+/**
+ * Official `Te()` suffix for the "Tell the user…" local-binding variant:
+ * empty in non-interactive sessions; interactive sessions without a
+ * CLAUDE_CODE_SESSION_KIND also offer the `!` prefix escape hatch; other
+ * session kinds only offer `/sandbox exclude`.
+ */
+function getLocalBindingEscapeSuffix(): string {
+  if (getIsNonInteractiveSession()) {
+    return ''
+  }
+  if (process.env.CLAUDE_CODE_SESSION_KIND === undefined) {
+    return LOCAL_BINDING_EXCLUDE_OR_BANG_SUFFIX
+  }
+  return LOCAL_BINDING_EXCLUDE_ONLY_SUFFIX
+}
+
 function getSimpleSandboxSection(): string {
   if (!SandboxManager.isSandboxingEnabled()) {
     return ''
@@ -297,8 +333,23 @@ function getSimpleSandboxSection(): string {
           'If a command the task needs fails on a sandbox restriction, tell the user which restriction it hit; changing the sandbox settings is their decision, not yours.',
         ]
 
+  // 2.1.281 PORT #111: macOS EPERM local-port-binding arm (see constants
+  // above). Merged after the sandbox-override items, before the TMPDIR item —
+  // the official build order.
+  const localBindingItems: string[] =
+    getPlatform() === 'macos' && !SandboxManager.getAllowLocalBinding()
+      ? [
+          allowUnsandboxedCommands
+            ? LOCAL_BINDING_TREAT_AS_SANDBOX_FAILURE_ITEM
+            : LOCAL_BINDING_TELL_USER_ITEM_PREFIX +
+              getLocalBindingEscapeSuffix() +
+              LOCAL_BINDING_TELL_USER_ITEM_SUFFIX,
+        ]
+      : []
+
   const items: Array<string | string[]> = [
     ...sandboxOverrideItems,
+    ...localBindingItems,
     'For temporary files, always use the `$TMPDIR` environment variable. TMPDIR is automatically set to the correct sandbox-writable directory in sandbox mode. Do NOT use `/tmp` directly - use `$TMPDIR` instead.',
     // CC 2.1.267 (#33): sandbox clipboard-failure guidance — official appends
     // this item (gated `Re()?[]:[item]`; alias unresolvable from strings —

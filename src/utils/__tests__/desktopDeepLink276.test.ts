@@ -67,9 +67,19 @@ let execaHandler: ExecaHandler = async () => ({
 })
 const execaCalls: Array<{ file: string; args: string[] }> = []
 
+// Direct function refs captured pre-mock — delegating through the live
+// namespace would recurse into the patched binding (OCC-96).
+const actualExeca = actualExecaModule.execa
 mock.module('execa', () => ({
   ...actualExecaModule,
   execa: (file: string, args: string[], opts: unknown) => {
+    if (!mockActive) {
+      return (actualExeca as unknown as typeof import('execa').execa)(
+        file,
+        args,
+        opts as never,
+      )
+    }
     execaCalls.push({ file, args })
     return execaHandler(file, args, opts)
   },
@@ -88,10 +98,19 @@ let execFileHandler: ExecFileHandler = async () => ({
   code: 1,
 })
 
+const actualExecFileNoThrow = actualExecFileNoThrowModule.execFileNoThrow
 mock.module('../execFileNoThrow.js', () => ({
   ...actualExecFileNoThrowModule,
   execFileNoThrow: (file: string, args: string[], opts: unknown) =>
-    execFileHandler(file, args, opts),
+    mockActive
+      ? execFileHandler(file, args, opts)
+      : (
+          actualExecFileNoThrow as (
+            f: string,
+            a: string[],
+            o: unknown,
+          ) => Promise<unknown>
+        )(file, args, opts),
 }))
 
 const {

@@ -11,6 +11,10 @@ import {
   KEYCHAIN_CACHE_TTL_MS,
   keychainCacheState,
 } from './macOsKeychainHelpers.js'
+import {
+  TRANSIENT_READ_FAILURE,
+  type StrictReadOptions,
+} from './transientRead.js'
 import type { SecureStorage, SecureStorageData } from './types.js'
 
 // `security -i` reads stdin with a 4096-byte fgets() buffer (BUFSIZ on darwin).
@@ -93,6 +97,28 @@ export const macOsKeychainStorage = {
     })
     keychainCacheState.readInFlight = promise
     return promise
+  },
+  /**
+   * Strict read (claude-code 2.1.281 #049). Distinguishes a TRANSIENT
+   * inaccessibility — the macOS login keychain is locked, so the entry cannot be
+   * read right now but still exists — from a genuine EMPTY result. When the
+   * caller opts in via `{inaccessibleAs: 'failureIfTransient'}` and the keychain
+   * is locked, returns the {@link TRANSIENT_READ_FAILURE} sentinel instead of
+   * falling through to `read()` (which would report `null`/empty and let a
+   * credential write clobber the shared blob). Otherwise delegates to `read()`.
+   *
+   * The locked check runs BEFORE the cache: a cached value may be stale relative
+   * to what another process wrote while we were locked out, so merging-and-
+   * writing it is exactly the clobber #049 prevents.
+   */
+  readStrict(options?: StrictReadOptions): SecureStorageData | null {
+    if (
+      options?.inaccessibleAs === 'failureIfTransient' &&
+      isMacOsKeychainLocked()
+    ) {
+      return TRANSIENT_READ_FAILURE
+    }
+    return macOsKeychainStorage.read()
   },
   update(data: SecureStorageData): { success: boolean; warning?: string } {
     // Invalidate cache before update
@@ -228,4 +254,13 @@ export function isMacOsKeychainLocked(): boolean {
     keychainLockedCache = false
   }
   return keychainLockedCache
+}
+
+/**
+ * Test hook: clear the memoized keychain-lock state so a test can re-probe
+ * `isMacOsKeychainLocked()` after changing the platform/`security` behaviour.
+ * Mirrors the `resetDirFallbackLogPathForTesting` convention in utils/debug.ts.
+ */
+export function _resetKeychainLockedCacheForTesting(): void {
+  keychainLockedCache = undefined
 }

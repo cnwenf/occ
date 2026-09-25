@@ -91,9 +91,16 @@ function clearOtelEnv(): void {
 // ---------- project-scope blocklist ----------
 
 describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
-  test('blocklist covers the official 65 keys incl. tracing/tmp/config knobs', () => {
+  test('blocklist covers the official 66 keys incl. tracing/tmp/config knobs', () => {
     const blocklist = _getProjectScopeBlockedEnvKeysForTesting()
-    expect(blocklist.size).toBe(65)
+    // 65 official 2.1.251 keys + CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT
+    // (2.1.281 #034 dangerous-rm kill-switch; official v281 binary Set grows
+    // to include it, and project scope must not be able to set a security
+    // kill-switch).
+    expect(blocklist.size).toBe(66)
+    expect(blocklist.has('CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT')).toBe(
+      true,
+    )
     for (const key of [
       'TMPDIR',
       'TMP',

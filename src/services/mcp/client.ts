@@ -120,6 +120,7 @@ import {
   runElicitationHooks,
   runElicitationResultHooks,
 } from './elicitationHandler.js'
+import { filterMcpAppUiResources } from './mcpAppUiResources.js'
 import { buildMcpToolName } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import { getMcpRoots } from './roots.js'
@@ -2547,11 +2548,17 @@ export const fetchResourcesForClient = memoizeWithLRU(
 
       if (!resources.length) return []
 
-      // Add server name to each resource
-      return resources.map(resource => ({
-        ...resource,
-        server: client.name,
-      }))
+      // Add server name to each resource, then drop MCP Apps UI resources
+      // (2.1.281 #147): a ui:// URI, or text/html with profile=mcp-app, is
+      // for host-side rendering and is left out of the model's list.
+      // Read-by-URI (resources/read) is unaffected.
+      return filterMcpAppUiResources(
+        resources.map(resource => ({
+          ...resource,
+          server: client.name,
+        })),
+        client.name,
+      )
     } catch (error) {
       logMCPError(
         client.name,

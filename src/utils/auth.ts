@@ -61,6 +61,7 @@ import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrow.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
 import { memoizeWithTTLAsync } from './memoize.js'
+import { ProcessTreeWatchdog } from './processTreeKill.js'
 import { getSecureStorage } from './secureStorage/index.js'
 import {
   clearLegacyApiKeyPrefetch,
@@ -71,6 +72,7 @@ import {
   getMacOsKeychainStorageServiceName,
   getUsername,
 } from './secureStorage/macOsKeychainHelpers.js'
+import { isTransientReadFailure } from './secureStorage/transientRead.js'
 import {
   getSettings_DEPRECATED,
   getSettingsForSource,
@@ -708,15 +710,25 @@ async function runAwsAuthRefresh(): Promise<boolean> {
 // Long enough for browser-based SSO flows, short enough to prevent indefinite hangs.
 const AWS_AUTH_REFRESH_TIMEOUT_MS = 3 * 60 * 1000
 
-export function refreshAwsAuth(awsAuthRefresh: string): Promise<boolean> {
+export function refreshAwsAuth(
+  awsAuthRefresh: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   logForDebugging('Running AWS auth refresh command')
   // Start tracking authentication status
   const authStatusManager = AwsAuthStatusManager.getInstance()
   authStatusManager.startAuthentication()
 
   return new Promise(resolve => {
-    const refreshProc = exec(awsAuthRefresh, {
-      timeout: AWS_AUTH_REFRESH_TIMEOUT_MS,
+    // The watchdog (not exec's own `timeout` option) owns the 3-minute kill so it
+    // can take down the whole process TREE — a detached `aws sso` grandchild would
+    // otherwise survive and keep holding the localhost OAuth callback port, wedging
+    // the next refresh (claude-code 2.1.281 #050; v280 killed only the direct
+    // child). v281: `new ta(child, {timeoutMs: 180000, signal})`.
+    const refreshProc = exec(awsAuthRefresh)
+    const watchdog = new ProcessTreeWatchdog(refreshProc, {
+      timeoutMs: AWS_AUTH_REFRESH_TIMEOUT_MS,
+      signal,
     })
     refreshProc.stdout!.on('data', data => {
       const output = data.toString().trim()
@@ -736,25 +748,37 @@ export function refreshAwsAuth(awsAuthRefresh: string): Promise<boolean> {
       }
     })
 
-    refreshProc.on('close', (code, signal) => {
+    refreshProc.on('close', code => {
+      // Release the timeout/shutdown/abort triggers on normal completion, then
+      // read WHY the watchdog killed (if it did). v281: an abort/shutdown kill is
+      // silent; a timeout shows the red 3-minute message; any other non-zero exit
+      // shows the generic error. killReason — not the signal — is authoritative
+      // now, so an external SIGTERM no longer masquerades as a timeout.
+      watchdog.settle()
       if (code === 0) {
         logForDebugging('AWS auth refresh completed successfully')
         authStatusManager.endAuthentication(true)
         void resolve(true)
-      } else {
-        const timedOut = signal === 'SIGTERM'
-        const message = timedOut
+        return
+      }
+      const isSilent =
+        watchdog.killReason === 'abort' || watchdog.killReason === 'shutdown'
+      const isTimeout = watchdog.killReason === 'timeout'
+      const message = isSilent
+        ? null
+        : isTimeout
           ? chalk.red(
               'AWS auth refresh timed out after 3 minutes. Run your auth command manually in a separate terminal.',
             )
           : chalk.red(
               'Error running awsAuthRefresh (in settings or ~/.claude.json):',
             )
+      if (message !== null) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.error(message)
-        authStatusManager.endAuthentication(false)
-        void resolve(false)
       }
+      authStatusManager.endAuthentication(false)
+      void resolve(false)
     })
   })
 }
@@ -1131,8 +1155,12 @@ export function refreshGcpAuth(gcpAuthRefresh: string): Promise<boolean> {
   authStatusManager.startAuthentication()
 
   return new Promise(resolve => {
-    const refreshProc = exec(gcpAuthRefresh, {
-      timeout: GCP_AUTH_REFRESH_TIMEOUT_MS,
+    // Watchdog owns the 3-minute tree-kill (see refreshAwsAuth / #050). v281
+    // builds the GCP watchdog with `signal: undefined` -- GCP refresh has no
+    // external abort path -- so OCC keeps the single-argument signature here.
+    const refreshProc = exec(gcpAuthRefresh)
+    const watchdog = new ProcessTreeWatchdog(refreshProc, {
+      timeoutMs: GCP_AUTH_REFRESH_TIMEOUT_MS,
     })
     refreshProc.stdout!.on('data', data => {
       const output = data.toString().trim()
@@ -1152,25 +1180,31 @@ export function refreshGcpAuth(gcpAuthRefresh: string): Promise<boolean> {
       }
     })
 
-    refreshProc.on('close', (code, signal) => {
+    refreshProc.on('close', code => {
+      // v281 GCP asymmetry: only a SHUTDOWN kill is silent. A timeout shows the
+      // red 3-minute message; an abort (unreachable here -- no signal) or any
+      // other non-zero exit shows the generic error. settle() first, then branch.
+      watchdog.settle()
       if (code === 0) {
         logForDebugging('GCP auth refresh completed successfully')
         authStatusManager.endAuthentication(true)
         void resolve(true)
-      } else {
-        const timedOut = signal === 'SIGTERM'
-        const message = timedOut
+        return
+      }
+      const message =
+        watchdog.killReason === 'timeout'
           ? chalk.red(
               'GCP auth refresh timed out after 3 minutes. Run your auth command manually in a separate terminal.',
             )
           : chalk.red(
               'Error running gcpAuthRefresh (in settings or ~/.claude.json):',
             )
+      if (watchdog.killReason !== 'shutdown') {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
         console.error(message)
-        authStatusManager.endAuthentication(false)
-        void resolve(false)
       }
+      authStatusManager.endAuthentication(false)
+      void resolve(false)
     })
   })
 }
@@ -1405,6 +1439,7 @@ async function maybeRemoveApiKeyFromMacOSKeychain(): Promise<void> {
 export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
   success: boolean
   warning?: string
+  transient?: boolean
 } {
   if (!shouldUseClaudeAIAuth(tokens.scopes)) {
     logEvent('tengu_oauth_tokens_not_claude_ai', {})
@@ -1422,10 +1457,34 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
     secureStorage.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
 
   try {
-    const storageData = secureStorage.read() || {}
-    const existingOauth = storageData.claudeAiOauth
+    // 2.1.281 #049: a strict read classifies a locked keychain as a TRANSIENT
+    // failure (sentinel) rather than empty. On transient we SKIP the write
+    // entirely -- the keychain entry is a shared blob holding both claudeAiOauth
+    // and mcpOAuth, so writing from an empty base would drop every mcpOAuth
+    // token (and the fallback storage's recovery branch would delete the
+    // keychain entry). Mirrors v281 Et(): strict read -> sentinel ->
+    // logEvent("secure_storage_credentials_write","read_failed_skip_write") ->
+    // {success:false, transient:true}, no write. The `?? read()` fallback covers
+    // backends without strict support (e.g. plainTextStorage on Linux, which has
+    // no locked-keychain transient state).
+    const existingData =
+      secureStorage.readStrict?.({ inaccessibleAs: 'failureIfTransient' }) ??
+      secureStorage.read()
+    if (isTransientReadFailure(existingData)) {
+      logEvent('secure_storage_credentials_write', {
+        reason:
+          'read_failed_skip_write' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        storageBackend,
+      })
+      return { success: false, transient: true }
+    }
+    const mergedData = existingData ?? {}
+    const existingOauth = mergedData.claudeAiOauth
 
-    storageData.claudeAiOauth = {
+    // Immutable merge: build the new claudeAiOauth here, then spread it over the
+    // existing blob below (preserves mcpOAuth + every other key) instead of
+    // mutating the read result -- on macOS that is the live keychain cache.
+    const nextClaudeAiOauth = {
       accessToken: tokens.accessToken,
       refreshToken: tokens.refreshToken,
       expiresAt: tokens.expiresAt,
@@ -1443,6 +1502,7 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
         tokens.rateLimitTier ?? existingOauth?.rateLimitTier ?? null,
     }
 
+    const storageData = { ...mergedData, claudeAiOauth: nextClaudeAiOauth }
     const updateStatus = secureStorage.update(storageData)
 
     if (updateStatus.success) {

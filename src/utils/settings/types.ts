@@ -263,6 +263,42 @@ export const CUSTOMIZATION_SURFACES = [
   'mcp',
 ] as const
 
+/**
+ * Attribution object schema — 2.1.281 PORT #005. The official binary reuses
+ * ONE object schema (`i`) as both the union's object branch AND the
+ * `.pipe()` target of the boolean-normalizing transform:
+ *   `Fe([O(),i],{error:...}).transform((c)=>{if(typeof c!=="boolean")return c;
+ *     return c?{}:{commit:"",pr:"",sessionUrl:!1}}).pipe(i).optional()`
+ * Hoisted here so both sites share the same definition.
+ */
+export const AttributionObjectSchema = lazySchema(() =>
+  z.object({
+    commit: z
+      .string()
+      .optional()
+      .describe(
+        'Attribution text for git commits, including any trailers. ' +
+          'Empty string hides attribution.',
+      ),
+    pr: z
+      .string()
+      .optional()
+      .describe(
+        'Attribution text for pull request descriptions. ' +
+          'Empty string hides attribution.',
+      ),
+    // 2.1.183: omit the claude.ai session link appended to commits.
+    // Default true (link appended). Set false to suppress the link.
+    sessionUrl: z
+      .boolean()
+      .optional()
+      .describe(
+        'Whether to append the claude.ai session link to commits and PRs. ' +
+          'Default: true. Set to false to omit the session link.',
+      ),
+  }),
+)
+
 export const SettingsSchema = lazySchema(() =>
   z
     .object({
@@ -376,36 +412,62 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .describe('Environment variables to set for Claude Code sessions'),
       // Attribution for commits and PRs
+      // 2.1.281 PORT #005: the official widened the INPUT to `boolean | object`
+      // and normalizes booleans AT PARSE TIME (byte-verified v281 chain:
+      // `Fe([O(),i],{error:...}).transform((c)=>{if(typeof c!=="boolean")
+      //   return c;return c?{}:{commit:"",pr:"",sessionUrl:!1}}).pipe(i)
+      //   .optional().describe(...)`) — `false` parses to the hide-all object
+      // `{commit:"",pr:"",sessionUrl:false}`, `true` parses to `{}`. Consumers
+      // therefore never observe a boolean and keep the pre-281 object guards
+      // (`attribution?.sessionUrl === false`, `attribution?.pr !== undefined`
+      // — the v281 `fLn` PR getter checks `!==void 0`, NOT truthiness, so the
+      // normalized `pr:""` hides the attribution). The union error callback is
+      // byte-verified v281 @193639659: it collapses the failure into ONE
+      // readable issue at path "attribution" (branch issues with a path are
+      // joined as `${path}: ${message}`; otherwise a received-type fallback
+      // message).
       attribution: z
-        .object({
-          commit: z
-            .string()
-            .optional()
-            .describe(
-              'Attribution text for git commits, including any trailers. ' +
-                'Empty string hides attribution.',
-            ),
-          pr: z
-            .string()
-            .optional()
-            .describe(
-              'Attribution text for pull request descriptions. ' +
-                'Empty string hides attribution.',
-            ),
-          // 2.1.183: omit the claude.ai session link appended to commits.
-          // Default true (link appended). Set false to suppress the link.
-          sessionUrl: z
-            .boolean()
-            .optional()
-            .describe(
-              'Whether to append the claude.ai session link to commits and PRs. ' +
-                'Default: true. Set to false to omit the session link.',
-            ),
+        .union([z.boolean(), AttributionObjectSchema()], {
+          error: ctx => {
+            const branchIssues = (ctx.errors ?? [])
+              .flat()
+              .filter(issue => issue.path.length > 0)
+            if (branchIssues.length > 0) {
+              return branchIssues
+                .map(
+                  issue =>
+                    `${issue.path.join('.')}: ${issue.message.replace(/^Invalid input: /, '')}`,
+                )
+                .join('; ')
+            }
+            const input = ctx.input
+            return (
+              `Expected false, true, or an object such as { "commit": "", "pr": "" }, but received ${
+                Array.isArray(input)
+                  ? 'array'
+                  : input === null
+                    ? 'null'
+                    : typeof input
+              }`
+            )
+          },
         })
+        .transform(value => {
+          // Official normalization (v281 binary, verbatim): booleans become
+          // object form; everything else passes through to the pipe target.
+          if (typeof value !== 'boolean') return value
+          return value ? {} : { commit: '', pr: '', sessionUrl: false }
+        })
+        .pipe(AttributionObjectSchema())
         .optional()
         .describe(
           'Customize attribution text for commits and PRs. ' +
-            'Each field defaults to the standard Claude Code attribution if not set.',
+            'Each field defaults to the standard Claude Code attribution if not set. ' +
+            'Set to false to hide all attribution, the same as ' +
+            '{ "commit": "", "pr": "", "sessionUrl": false }. ' +
+            'Setting it to true is the same as leaving it out. ' +
+            'Older Claude Code versions reject true or false here, so use the ' +
+            'object form in settings files shared across versions.',
         ),
       includeCoAuthoredBy: z
         .boolean()

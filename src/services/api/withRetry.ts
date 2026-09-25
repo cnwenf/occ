@@ -160,6 +160,19 @@ const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
 const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 30_000
 
+// 2.1.281 (#022): binary constants block @202407030 —
+// `Ipo=1,Opo=60000,Dpo=300000,TRe=21600000,Nlr=30000` (Dpo/TRe/Nlr are the
+// PERSISTENT_MAX_BACKOFF_MS/PERSISTENT_RESET_CAP_MS/HEARTBEAT_INTERVAL_MS
+// above). Opo: a NON-watchdog retry delay above this THROWS
+// (tengu_api_retry_after_too_long) instead of sleeping silently past a
+// minute — `else if(Kn>Opo)throw ...` @202416849. Byte-verified Opo=60000
+// (v280 `ufr=60000` @199569644 is unchanged); the finalized §P4 triage note
+// claiming 600000 contradicts the ELF — the bytes win.
+const RETRY_AFTER_TOO_LONG_THRESHOLD_MS = 60_000
+// Binary long-wait telemetry literal @202417418-region:
+// `if(yn&&Kn>60000)i("tengu_api_persistent_retry_wait",...)`.
+const PERSISTENT_RETRY_WAIT_LOG_THRESHOLD_MS = 60_000
+
 function isPersistentRetryEnabled(): boolean {
   return feature('UNATTENDED_RETRY')
     ? isEnvTruthy(process.env.CLAUDE_CODE_UNATTENDED_RETRY)
@@ -400,9 +413,11 @@ export async function* withRetry<T>(
       //     retry path instead of looping at fast speed in the background;
       //   - cooldown (fallback to standard speed) is entered only for
       //     non-short retries (`if(!Jn){...}`);
-      //   - every fast-path `continue` clamps the attempt counter
-      //     (`if(Yn&&pt>=s)pt=s`) so a fallback at/near budget exhaustion
-      //     still gets its standard-speed retry instead of ending the loop.
+      //   - every fast-path `continue` gives the attempt back (2.1.281
+      //     `if(Sn)gt--`; 2.1.272 had clamped `if(Yn&&pt>=s)pt=s`) so a
+      //     fallback at/near budget exhaustion still gets its standard-speed
+      //     retry instead of ending the loop — the for-loop's `attempt++`
+      //     cancels the decrement, freezing the counter for that fallback.
       // OCC keeps its pre-existing `!isPersistentRetryEnabled()` gate (dead
       // in production — the UNATTENDED_RETRY flag is not enabled — but it
       // preserves the documented persistent-mode behavior above).
@@ -421,9 +436,9 @@ export async function* withRetry<T>(
         if (overageReason !== null && overageReason !== undefined) {
           handleFastModeOverageRejection(overageReason)
           retryContext.fastMode = false
-          // Official `if(Yn&&pt>=s)pt=s` — keep the for-loop alive so the
+          // Official 2.1.281 `if(Sn)gt--` — give the attempt back so the
           // standard-speed retry still runs at budget exhaustion.
-          if (watchdogRetryEnabled && attempt >= maxRetries) attempt = maxRetries
+          if (watchdogRetryEnabled) attempt--
           continue
         }
 
@@ -436,9 +451,33 @@ export async function* withRetry<T>(
         // but the user sees the retry message instead of a hidden fast-speed
         // loop.
         if (isShortRetry && !watchdogRetryEnabled) {
-          // Short retry-after: wait and retry with fast mode still active
-          // to preserve prompt cache (same model name on retry).
-          await sleep(retryAfterMs, options.signal, { abortError })
+          // 2.1.281 (#023): official
+          // `if(gt<=s){let Do=Math.min(uU(gt,xRe(It),vRe),vRe),kr=wRe(It,g.model);
+          //   if(kr)...yield r$(kr,Do,gt,s,"request_retry");await qPt(Do,r)}continue`
+          // v280 slept the RAW header ms — `Retry-After: 0` meant an instant
+          // back-to-back re-request. The delay is now FLOORED through the
+          // exponential backoff (uU), CAPPED at the 20s short-retry threshold,
+          // budget-gated (`gt<=s` — no sleep once the budget is spent), and
+          // VISIBLE via a yielded retry message.
+          if (attempt <= maxRetries) {
+            const shortRetryDelayMs = Math.min(
+              getRetryDelay(
+                attempt,
+                getRetryAfter(error),
+                SHORT_RETRY_THRESHOLD_MS,
+              ),
+              SHORT_RETRY_THRESHOLD_MS,
+            )
+            yield createSystemAPIErrorMessage(
+              error,
+              shortRetryDelayMs,
+              attempt,
+              maxRetries,
+            )
+            // Short retry-after: wait and retry with fast mode still active
+            // to preserve prompt cache (same model name on retry).
+            await sleep(shortRetryDelayMs, options.signal, { abortError })
+          }
           continue
         }
         // Official `if(!Jn){...}`: cooldown (switch to standard speed) only
@@ -456,8 +495,8 @@ export async function* withRetry<T>(
           if (isFastModeEnabled()) {
             retryContext.fastMode = false
           }
-          // Official `if(Yn&&pt>=s)pt=s`.
-          if (watchdogRetryEnabled && attempt >= maxRetries) attempt = maxRetries
+          // Official 2.1.281 `if(Sn)gt--`.
+          if (watchdogRetryEnabled) attempt--
           continue
         }
       }
@@ -468,8 +507,8 @@ export async function* withRetry<T>(
       if (wasFastModeActive && isFastModeNotEnabledError(error)) {
         handleFastModeRejectedByAPI()
         retryContext.fastMode = false
-        // Official `if(Yn&&pt>=s)pt=s` in the 400-not-enabled path.
-        if (watchdogRetryEnabled && attempt >= maxRetries) attempt = maxRetries
+        // Official 2.1.281 `if(Sn)gt--` in the 400-not-enabled path.
+        if (watchdogRetryEnabled) attempt--
         continue
       }
 
@@ -775,6 +814,10 @@ export async function* withRetry<T>(
       // Get retry-after header if available
       const retryAfter = getRetryAfter(error)
       let delayMs: number
+      // Official `yn` — heartbeat long-wait mode. In the binary it is
+      // initialized to Kt (persistent); OCC's `persistent` covers that role,
+      // so this flag tracks the OTHER way yn gets set: a watchdog-capped wait.
+      let watchdogLongWait = false
       if (persistent && error instanceof APIError && error.status === 429) {
         persistentAttempt++
         // Window-based limits (e.g. 5hr Max/Pro) include a reset timestamp.
@@ -804,7 +847,30 @@ export async function* withRetry<T>(
           PERSISTENT_RESET_CAP_MS,
         )
       } else {
-        delayMs = getRetryDelay(attempt, retryAfter)
+        // 2.1.281 (#022): official
+        // `else if(Kn=uU(gt+M,zn),S6())Kn=Math.min(Kn,TRe),yn=!0;
+        //  else if(Kn>Opo)throw i("tengu_api_retry_after_too_long",{...}),
+        //    m("api_request","api_request_retry_after_too_long"),new Fc(It,g)`.
+        // (a) gt+M: accumulated persistent waits feed the exponent, so a 5xx
+        //     after long 429/529 waits does not restart backoff at attempt 1.
+        delayMs = getRetryDelay(attempt + persistentAttempt, retryAfter)
+        if (watchdogRetryEnabled) {
+          // (b) S6(): cap at TRe=6h and enter heartbeat long-wait mode (yn).
+          delayMs = Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
+          watchdogLongWait = true
+        } else if (delayMs > RETRY_AFTER_TOO_LONG_THRESHOLD_MS) {
+          // (c) Kn>Opo: fail loudly instead of sleeping uncapped past a minute.
+          logEvent('tengu_api_retry_after_too_long', {
+            delayMs,
+            status: (error as APIError).status,
+            provider: getAPIProviderForStatsig(),
+          })
+          logEvent('api_request', {
+            reason:
+              'api_request_retry_after_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          })
+          throw new CannotRetryError(error, retryContext)
+        }
       }
 
       // In persistent mode the for-loop `attempt` is clamped at maxRetries+1;
@@ -819,15 +885,21 @@ export async function* withRetry<T>(
         provider: getAPIProviderForStatsig(),
       })
 
-      if (persistent) {
-        if (delayMs > 60_000) {
-          logEvent('tengu_api_persistent_retry_wait', {
-            status: (error as APIError).status,
-            delayMs,
-            attempt: reportedAttempt,
-            provider: getAPIProviderForStatsig(),
-          })
-        }
+      // Official `yn` — long waits (persistent or watchdog-capped) log
+      // persistent_retry_wait above a minute and sleep in 30s heartbeat
+      // chunks (2.1.281 #022 extends the v280 persistent-only condition
+      // `Qt&&on>60000` to `yn&&Kn>60000`).
+      const heartbeatWait = persistent || watchdogLongWait
+      if (heartbeatWait && delayMs > PERSISTENT_RETRY_WAIT_LOG_THRESHOLD_MS) {
+        logEvent('tengu_api_persistent_retry_wait', {
+          status: (error as APIError).status,
+          delayMs,
+          attempt: reportedAttempt,
+          provider: getAPIProviderForStatsig(),
+        })
+      }
+
+      if (heartbeatWait) {
         // Chunk long sleeps so the host sees periodic stdout activity and
         // does not mark the session idle. Each yield surfaces as
         // {type:'system', subtype:'api_retry'} on stdout via QueryEngine.
@@ -846,9 +918,16 @@ export async function* withRetry<T>(
           await sleep(chunk, options.signal, { abortError })
           remaining -= chunk
         }
-        // Clamp so the for-loop never terminates. Backoff uses the separate
-        // persistentAttempt counter which keeps growing to the 5-min cap.
-        if (attempt >= maxRetries) attempt = maxRetries
+        // 2.1.281 (#022): official tail `if(Kt)gt--` replaces the v280 clamp
+        // `if(_t>=s)_t=s` — persistent waits no longer consume retry budget.
+        // The clamp left attempt pinned at maxRetries+1, so the first
+        // non-transient error (5xx) after long 429/529 waits tripped the
+        // retry-exhausted gate. The for-loop's attempt++ cancels this
+        // decrement, freezing the counter across persistent waits; backoff
+        // still uses the separate persistentAttempt counter which keeps
+        // growing to the 5-min cap (and feeds gt+M for later non-persistent
+        // backoff, see the delay computation above).
+        if (persistent) attempt--
       } else {
         if (error instanceof APIError) {
           yield createSystemAPIErrorMessage(error, delayMs, attempt, maxRetries)
@@ -872,24 +951,35 @@ function getRetryAfter(error: unknown): string | null {
   )
 }
 
+// 2.1.281 (#023): aligned byte-for-byte with the official uU (@200159276,
+// identical in v280 as k1 @197288416):
+//   `function uU(o,t,s=32000){let n=Math.min(500*Math.pow(2,o-1),s),
+//     e=Math.round(n+Math.random()*0.25*n);
+//     if(t){let i=parseInt(t,10);if(!isNaN(i))return Math.max(i*1000,e)}
+//     return e}`
+// The retry-after header no longer bypasses the backoff — it FLOORS it
+// (Math.max), so `Retry-After: 0` waits the exponential-backoff amount
+// instead of re-requesting instantly, and the result is rounded to an
+// integer like the binary.
 export function getRetryDelay(
   attempt: number,
   retryAfterHeader?: string | null,
   maxDelayMs = 32000,
 ): number {
-  if (retryAfterHeader) {
-    const seconds = parseInt(retryAfterHeader, 10)
-    if (!isNaN(seconds)) {
-      return seconds * 1000
-    }
-  }
-
   const baseDelay = Math.min(
     BASE_DELAY_MS * Math.pow(2, attempt - 1),
     maxDelayMs,
   )
-  const jitter = Math.random() * 0.25 * baseDelay
-  return baseDelay + jitter
+  const backoffMs = Math.round(baseDelay + Math.random() * 0.25 * baseDelay)
+
+  if (retryAfterHeader) {
+    const seconds = parseInt(retryAfterHeader, 10)
+    if (!isNaN(seconds)) {
+      return Math.max(seconds * 1000, backoffMs)
+    }
+  }
+
+  return backoffMs
 }
 
 export function parseMaxTokensContextOverflowError(error: APIError):

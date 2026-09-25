@@ -39,6 +39,15 @@ export type OperatorContext = {
 
 /**
  * Execute an operator with a simple motion.
+ *
+ * CC 2.1.281 #081/#082 (binary `ht` @209867921):
+ * - linewise motions (j/k/G/gg) now operate on WHOLE lines (fixes dj/dk
+ *   deleting only the part of each line around the cursor).
+ * - zero-width targets no longer silently no-op for `0`/`^` and for
+ *   `cw`/`cW` at end of buffer: yank clears the register charwise, change
+ *   enters INSERT at the cursor (fixes d0/c0/y0 and #082's cw-at-EOF bug).
+ * - a zero-width operator range clears the register (change/yank) and, for
+ *   change, enters INSERT.
  */
 export function executeOperatorMotion(
   op: Operator,
@@ -47,11 +56,51 @@ export function executeOperatorMotion(
   ctx: OperatorContext,
 ): void {
   const target = resolveMotion(motion, ctx.cursor, count)
-  if (target.equals(ctx.cursor)) return
+
+  // v281 `ht`: linewise-motion branch — whole lines from cursor to target.
+  if (isLinewiseMotion(motion)) {
+    const fromLine = getLineIndex(ctx.text, ctx.cursor.offset)
+    const toLine = getLineIndex(ctx.text, target.offset)
+    if (toLine !== fromLine) {
+      const yankOffset = Math.min(ctx.cursor.offset, target.offset)
+      applyLinewiseOperator(op, fromLine, toLine, ctx, yankOffset)
+      recordUnlessYank(ctx, { type: 'operator', op, motion, count })
+    }
+    return
+  }
+
+  // v281 `ht`: zero-width branch — replaces the bare `target.equals` return.
+  if (target.equals(ctx.cursor) && !isInclusiveMotion(motion)) {
+    const isCwEnd =
+      op === 'change' &&
+      (motion === 'w' || motion === 'W') &&
+      count > 0 &&
+      ctx.cursor.isAtEnd()
+    if (motion === '0' || motion === '^' || isCwEnd) {
+      if (op === 'yank') {
+        ctx.setRegister('', false)
+      } else if (op === 'change') {
+        ctx.enterInsert(ctx.cursor.offset)
+      }
+      recordUnlessYank(ctx, { type: 'operator', op, motion, count })
+    }
+    return
+  }
 
   const range = getOperatorRange(ctx.cursor, target, motion, op, count)
+  if (range.from === range.to) {
+    if (op === 'change' || op === 'yank') {
+      ctx.setRegister('', false)
+    }
+    if (op === 'change') {
+      ctx.enterInsert(range.from)
+      recordUnlessYank(ctx, { type: 'operator', op, motion, count })
+    }
+    return
+  }
+
   applyOperator(op, range.from, range.to, ctx, range.linewise)
-  ctx.recordChange({ type: 'operator', op, motion, count })
+  recordUnlessYank(ctx, { type: 'operator', op, motion, count })
 }
 
 /**
@@ -98,72 +147,23 @@ export function executeOperatorTextObj(
 }
 
 /**
- * Execute a line operation (dd, cc, yy).
+ * Execute a line operation (dd, cc, yy, S, Y).
+ *
+ * CC 2.1.281 #081 piece 3 (binary `bt`): count-linewise — from the cursor's
+ * line through `count - 1` lines below it, whole lines, via the shared
+ * linewise operator. Replaces the v280-era char-offset line walk (which
+ * mis-deleted when `count` exceeded the remaining lines or when the cursor
+ * sat mid-line).
  */
 export function executeLineOp(
   op: Operator,
   count: number,
   ctx: OperatorContext,
 ): void {
-  const text = ctx.text
-  const lines = text.split('\n')
-  // Calculate logical line by counting newlines before cursor offset
-  // (cursor.getPosition() returns wrapped line which is wrong for this)
-  const currentLine = countCharInString(text.slice(0, ctx.cursor.offset), '\n')
-  const linesToAffect = Math.min(count, lines.length - currentLine)
-  const lineStart = ctx.cursor.startOfLogicalLine().offset
-  let lineEnd = lineStart
-  for (let i = 0; i < linesToAffect; i++) {
-    const nextNewline = text.indexOf('\n', lineEnd)
-    lineEnd = nextNewline === -1 ? text.length : nextNewline + 1
-  }
-
-  let content = text.slice(lineStart, lineEnd)
-  // Ensure linewise content ends with newline for paste detection
-  if (!content.endsWith('\n')) {
-    content = content + '\n'
-  }
-  ctx.setRegister(content, true)
-
-  if (op === 'yank') {
-    ctx.setOffset(lineStart)
-  } else if (op === 'delete') {
-    let deleteStart = lineStart
-    const deleteEnd = lineEnd
-
-    // If deleting to end of file and there's a preceding newline, include it
-    // This ensures deleting the last line doesn't leave a trailing newline
-    if (
-      deleteEnd === text.length &&
-      deleteStart > 0 &&
-      text[deleteStart - 1] === '\n'
-    ) {
-      deleteStart -= 1
-    }
-
-    const newText = text.slice(0, deleteStart) + text.slice(deleteEnd)
-    ctx.setText(newText || '')
-    const maxOff = Math.max(
-      0,
-      newText.length - (lastGrapheme(newText).length || 1),
-    )
-    ctx.setOffset(Math.min(deleteStart, maxOff))
-  } else if (op === 'change') {
-    // For single line, just clear it
-    if (lines.length === 1) {
-      ctx.setText('')
-      ctx.enterInsert(0)
-    } else {
-      // Delete all affected lines, replace with single empty line, enter insert
-      const beforeLines = lines.slice(0, currentLine)
-      const afterLines = lines.slice(currentLine + linesToAffect)
-      const newText = [...beforeLines, '', ...afterLines].join('\n')
-      ctx.setText(newText)
-      ctx.enterInsert(lineStart)
-    }
-  }
-
-  ctx.recordChange({ type: 'operator', op, motion: op[0]!, count })
+  if (count < 1) return
+  const fromLine = getLineIndex(ctx.text, ctx.cursor.offset)
+  applyLinewiseOperator(op, fromLine, fromLine + count - 1, ctx)
+  recordUnlessYank(ctx, { type: 'operator', op, motion: op[0]!, count })
 }
 
 /**
@@ -458,6 +458,116 @@ function getLineStartOffset(lines: string[], lineIndex: number): number {
   return lines.slice(0, lineIndex).join('\n').length + (lineIndex > 0 ? 1 : 0)
 }
 
+/**
+ * 0-based index of the logical line containing `offset`.
+ * v281 binary `gt(text, offset)` — count of '\n' before the offset.
+ */
+function getLineIndex(text: string, offset: number): number {
+  return countCharInString(text.slice(0, offset), '\n')
+}
+
+/**
+ * Clamp a post-mutation offset the way v281 binary `Vee(text, offset)` does:
+ * back off a trailing grapheme when the offset lands on a newline (mid-text)
+ * or past the last grapheme at end-of-text.
+ */
+function clampOffset(text: string, offset: number): number {
+  if (text[offset] === '\n' && offset > 0 && text[offset - 1] !== '\n') {
+    return offset - (lastGrapheme(text.slice(0, offset)).length || 1)
+  }
+  if (offset >= text.length && !text.endsWith('\n')) {
+    return Math.max(0, text.length - (lastGrapheme(text).length || 1))
+  }
+  return offset
+}
+
+/**
+ * Offset of the first non-blank (not space/tab) char on `cursor`'s logical
+ * line; for blank lines, the line end (or start when empty).
+ * v281 binary `lo(cursor)`.
+ */
+function firstNonBlankOffsetInLine(cursor: Cursor): number {
+  const start = cursor.startOfLogicalLine().offset
+  const end = cursor.endOfLogicalLine().offset
+  const idx = cursor.text.slice(start, end).search(/[^ \t]/)
+  return cursor.measuredText.snapToGraphemeBoundary(
+    idx === -1 ? Math.max(start, end - 1) : start + idx,
+  )
+}
+
+/**
+ * Record a change for dot-repeat unless it is a yank.
+ * v281 binary `et(ctx, change)` — yanks are not replayable changes.
+ */
+function recordUnlessYank(ctx: OperatorContext, change: RecordedChange): void {
+  if ('op' in change && change.op === 'yank') return
+  ctx.recordChange(change)
+}
+
+/** v281 binary `VFe(ch)` — `/\s/.test(ch)`. */
+function isWhitespaceChar(ch: string): boolean {
+  return /\s/.test(ch)
+}
+
+/**
+ * Apply an operator to WHOLE logical lines `[fromLine, toLine]` (either
+ * order). Register always gets the affected lines each suffixed with '\n'
+ * (linewise). yank keeps the text and restores the cursor near `yankOffset`
+ * (default: start of the first affected line); delete removes the lines and
+ * places the cursor at the first surviving line (or clamped end of text);
+ * change replaces the lines with one empty line and enters INSERT there.
+ *
+ * v281 binary `dn(op, fromLine, toLine, ctx, yankOffset?)` — shared by the
+ * linewise-motion branch (`ht`), the G/gg operators (`un`/`fn`), and
+ * count-linewise ops (`bt`).
+ */
+function applyLinewiseOperator(
+  op: Operator,
+  fromLine: number,
+  toLine: number,
+  ctx: OperatorContext,
+  yankOffset?: number,
+): void {
+  const lines = ctx.text.split('\n')
+  const first = Math.min(fromLine, toLine)
+  const endExclusive = Math.min(Math.max(fromLine, toLine) + 1, lines.length)
+  const before = lines.slice(0, first)
+  const after = lines.slice(endExclusive)
+  const firstLineStart = getLineStartOffset(lines, first)
+  const registerContent = lines
+    .slice(first, endExclusive)
+    .map((line) => line + '\n')
+    .join('')
+  ctx.setRegister(registerContent, true)
+
+  if (op === 'yank') {
+    const offset = clampOffset(ctx.text, yankOffset ?? firstLineStart)
+    ctx.setOffset(ctx.cursor.snapOutOfPlaceholder(offset, 'start'))
+  } else if (op === 'delete') {
+    const newText = [...before, ...after].join('\n')
+    ctx.setText(newText)
+    ctx.setOffset(
+      after.length > 0 ? firstLineStart : clampOffset(newText, newText.length),
+    )
+  } else if (op === 'change') {
+    ctx.setText([...before, '', ...after].join('\n'))
+    ctx.enterInsert(firstLineStart)
+  }
+}
+
+/**
+ * Compute the operator range for cursor→target.
+ *
+ * CC 2.1.281 #082 (binary `ks` @209871429 — rewritten vs v280 `Dn`):
+ * - the linewise-motion branch moved to `executeOperatorMotion` (ht), so
+ *   this function is charwise-only now (plus the cw linewise promotion).
+ * - cw/cW starting on whitespace runs to end-of-line, capped at the next
+ *   word, and promotes to linewise when only blanks precede the cursor.
+ * - cw/cW with the cursor on a word's LAST letter before whitespace/EOL
+ *   changes only that letter (the `wordEnd = wordCursor` correction — the
+ *   #082 "cw eats the next word at end of line" fix).
+ * - inclusive motions no longer extend past a newline at the range end.
+ */
 function getOperatorRange(
   cursor: Cursor,
   target: Cursor,
@@ -469,32 +579,62 @@ function getOperatorRange(
   let to = Math.max(cursor.offset, target.offset)
   let linewise = false
 
-  // Special case: cw/cW changes to end of word, not start of next word
-  if (op === 'change' && (motion === 'w' || motion === 'W')) {
-    // For cw with count, move forward (count-1) words, then find end of that word
+  const isCw = op === 'change' && (motion === 'w' || motion === 'W')
+  const charAtCursor = cursor.text[cursor.offset]
+  // v281 `ks` F-gate: cursor sits on a space/tab/newline (outside a chip).
+  const startsOnBlank =
+    (charAtCursor === ' ' ||
+      charAtCursor === '\t' ||
+      charAtCursor === '\n') &&
+    cursor.snapOutOfPlaceholder(cursor.offset, 'start') === cursor.offset
+
+  if (isCw && startsOnBlank) {
+    // v281: cw-on-blank behaves like c$ bounded by the count-th word's line.
+    let wordCursor = cursor
+    for (let i = 0; i < count - 1; i++) {
+      const next =
+        motion === 'w' ? wordCursor.nextVimWord() : wordCursor.nextWORD()
+      if (next.offset === wordCursor.offset) break
+      wordCursor = next
+    }
+    to = Math.min(to, wordCursor.endOfLogicalLine().offset)
+    if (to > from && cursor.text[to - 1] === '\n') {
+      to -= 1
+      const lineStart = cursor.startOfLogicalLine().offset
+      if (/^[ \t]*$/.test(cursor.text.slice(lineStart, from))) {
+        from = lineStart
+        linewise = true
+      }
+    }
+  } else if (isCw) {
+    // For cw with count, move forward (count-1) words, then find that end.
     let wordCursor = cursor
     for (let i = 0; i < count - 1; i++) {
       wordCursor =
         motion === 'w' ? wordCursor.nextVimWord() : wordCursor.nextWORD()
     }
-    const wordEnd =
+    let wordEnd =
       motion === 'w' ? wordCursor.endOfVimWord() : wordCursor.endOfWORD()
-    to = cursor.measuredText.nextOffset(wordEnd.offset)
-  } else if (isLinewiseMotion(motion)) {
-    // Linewise motions extend to include entire lines
-    linewise = true
-    const text = cursor.text
-    const nextNewline = text.indexOf('\n', to)
-    if (nextNewline === -1) {
-      // Deleting to end of file - include the preceding newline if exists
-      to = text.length
-      if (from > 0 && text[from - 1] === '\n') {
-        from -= 1
-      }
-    } else {
-      to = nextNewline + 1
+    const afterWordCursor = cursor.measuredText.nextOffset(wordCursor.offset)
+    const nextWord =
+      motion === 'w' ? wordCursor.nextVimWord() : wordCursor.nextWORD()
+    // v281 #082 Y=W correction: cursor on the last letter of a word that is
+    // followed by whitespace/EOL/next-word-start → change just that letter.
+    if (
+      (afterWordCursor >= cursor.text.length ||
+        isWhitespaceChar(cursor.text[afterWordCursor] ?? '') ||
+        nextWord.offset === afterWordCursor) &&
+      !isWhitespaceChar(cursor.text[cursor.offset] ?? '') &&
+      !isWhitespaceChar(cursor.text[wordCursor.offset] ?? '')
+    ) {
+      wordEnd = wordCursor
     }
-  } else if (isInclusiveMotion(motion) && cursor.offset <= target.offset) {
+    to = cursor.measuredText.nextOffset(wordEnd.offset)
+  } else if (
+    isInclusiveMotion(motion) &&
+    cursor.offset <= target.offset &&
+    cursor.text[to] !== '\n'
+  ) {
     to = cursor.measuredText.nextOffset(to)
   }
 
@@ -554,38 +694,56 @@ function applyOperator(
   }
 }
 
+/**
+ * Execute `<op>G` (operator + G motion).
+ *
+ * CC 2.1.281 #081 piece 1 (binary `un` @209877832):
+ * - `count === 0` is now the "no count typed" convention (call sites pass
+ *   `countTyped ? count : 0`), fixing `1G` jumping to the last line.
+ * - no `target.equals(cursor)` early return — `dG` on the last line still
+ *   deletes that line.
+ * - the span is LINEWISE (whole lines, cursor line → target line), fixing
+ *   `dG` only deleting the part of the first/last line.
+ */
 export function executeOperatorG(
   op: Operator,
   count: number,
   ctx: OperatorContext,
 ): void {
-  // count=1 means no count given, target = end of file
-  // otherwise target = line N
   const target =
-    count === 1 ? ctx.cursor.startOfLastLine() : ctx.cursor.goToLine(count)
-
-  if (target.equals(ctx.cursor)) return
-
-  const range = getOperatorRange(ctx.cursor, target, 'G', op, count)
-  applyOperator(op, range.from, range.to, ctx, range.linewise)
-  ctx.recordChange({ type: 'operator', op, motion: 'G', count })
+    count === 0 ? ctx.cursor.startOfLastLine() : ctx.cursor.goToLine(count)
+  applyLinewiseOperator(
+    op,
+    getLineIndex(ctx.text, ctx.cursor.offset),
+    getLineIndex(ctx.text, target.offset),
+    ctx,
+    Math.min(ctx.cursor.offset, firstNonBlankOffsetInLine(target)),
+  )
+  recordUnlessYank(ctx, { type: 'operator', op, motion: 'G', count })
 }
 
+/**
+ * Execute `<op>gg` (operator + gg motion).
+ *
+ * CC 2.1.281 #081 piece 1 (binary `fn`): same linewise span as `un`, but
+ * keeps the `count === 1` "no count typed" convention (gg defaults to the
+ * first line).
+ */
 export function executeOperatorGg(
   op: Operator,
   count: number,
   ctx: OperatorContext,
 ): void {
-  // count=1 means no count given, target = first line
-  // otherwise target = line N
   const target =
     count === 1 ? ctx.cursor.startOfFirstLine() : ctx.cursor.goToLine(count)
-
-  if (target.equals(ctx.cursor)) return
-
-  const range = getOperatorRange(ctx.cursor, target, 'gg', op, count)
-  applyOperator(op, range.from, range.to, ctx, range.linewise)
-  ctx.recordChange({ type: 'operator', op, motion: 'gg', count })
+  applyLinewiseOperator(
+    op,
+    getLineIndex(ctx.text, ctx.cursor.offset),
+    getLineIndex(ctx.text, target.offset),
+    ctx,
+    Math.min(ctx.cursor.offset, firstNonBlankOffsetInLine(target)),
+  )
+  recordUnlessYank(ctx, { type: 'operator', op, motion: 'gg', count })
 }
 
 // ============================================================================
@@ -813,6 +971,10 @@ export function replayVisualOp(
 /**
  * Replay a visual change for dot-repeat: re-select the same span, delete it,
  * and insert the previously-typed text.
+ *
+ * TODO(#081/#082 piece 4 — STAGED per triage-D.md): v281 wraps the replay
+ * context in `ae()` (@209889188, dispatched @209890886) which additionally
+ * guards `!`-filter/shell-mode dot-repeat. Deliberately NOT ported this round.
  */
 export function replayVisualChange(
   span: number,
@@ -841,6 +1003,10 @@ export function replayVisualChange(
  * Re-resolves the motion to get the range, yanks the old content into the
  * register, deletes the range, and inserts the previously-typed text —
  * without entering INSERT mode (unlike the original `applyOperator` call).
+ *
+ * CC 2.1.281: linewise motions (j/k/G/gg) now replay through the whole-line
+ * path — mirroring v281's `ht` linewise branch → `dn(change)` with the `ae()`
+ * enterInsert wrapper (which splices the recorded text at the insert offset).
  */
 export function replayOperatorChange(
   motion: string,
@@ -848,7 +1014,17 @@ export function replayOperatorChange(
   text: string,
   ctx: OperatorContext,
 ): void {
-  const target = resolveMotion(motion, ctx.cursor, count)
+  const target = resolveReplayTarget(motion, count, ctx.cursor)
+
+  if (isLinewiseMotion(motion)) {
+    const fromLine = getLineIndex(ctx.text, ctx.cursor.offset)
+    const toLine = getLineIndex(ctx.text, target.offset)
+    if (fromLine === toLine && !text) return
+    const insertCtx = wrapEnterInsertWithText(ctx, text)
+    applyLinewiseOperator('change', fromLine, toLine, insertCtx)
+    return
+  }
+
   if (target.equals(ctx.cursor) && !text) return
   const range = getOperatorRange(ctx.cursor, target, motion, 'change', count)
   const content = ctx.text.slice(range.from, range.to)
@@ -859,6 +1035,57 @@ export function replayOperatorChange(
   ctx.setOffset(
     Math.max(range.from, range.from + text.length - (lastGr.length || 1)),
   )
+}
+
+/**
+ * Resolve a motion target for dot-repeat. `G`/`gg` use the operator count
+ * conventions (v281 `un`: `count === 0` means "no count typed"; `fn`:
+ * `count === 1`) — `resolveMotion('G')` would ignore the count and always
+ * jump to the last line.
+ */
+function resolveReplayTarget(
+  motion: string,
+  count: number,
+  cursor: Cursor,
+): Cursor {
+  if (motion === 'G') {
+    return count === 0 ? cursor.startOfLastLine() : cursor.goToLine(count)
+  }
+  if (motion === 'gg') {
+    return count === 1 ? cursor.startOfFirstLine() : cursor.goToLine(count)
+  }
+  return resolveMotion(motion, cursor, count)
+}
+
+/**
+ * Return a copy of `ctx` whose `enterInsert(offset)` splices `text` in at
+ * `offset` instead of switching modes — the OCC adaptation of v281's `ae()`
+ * dot-replay context wrapper. `setText` is intercepted so the splice sees
+ * the post-delete text even when the underlying context snapshots it.
+ */
+function wrapEnterInsertWithText(
+  ctx: OperatorContext,
+  text: string,
+): OperatorContext {
+  let currentText = ctx.text
+  return {
+    ...ctx,
+    setText: (next: string) => {
+      currentText = next
+      ctx.setText(next)
+    },
+    enterInsert: (offset: number) => {
+      const newText =
+        currentText.slice(0, offset) + text + currentText.slice(offset)
+      ctx.setText(newText)
+      const lastGr = lastGrapheme(text)
+      ctx.setOffset(
+        text
+          ? Math.max(offset, offset + text.length - (lastGr.length || 1))
+          : offset,
+      )
+    },
+  }
 }
 
 /**

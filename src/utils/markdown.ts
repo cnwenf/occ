@@ -46,6 +46,18 @@ export function applyMarkdown(
     .trim()
 }
 
+/**
+ * Domain bounds of an ordered list, mirrored from the official v281 `a6n`
+ * @205766744 region (`{first: e.start === "" ? 1 : e.start,
+ * last: first + e.items.length - 1}`) — the letter/roman conversions in
+ * getListNumber are only valid inside these bounds (official `ce` guards:
+ * letters need first >= 1; romans need first >= 1 AND last <= 3999).
+ */
+export type OrderedListMeta = {
+  first: number
+  last: number
+}
+
 export function formatToken(
   token: Token,
   theme: ThemeName,
@@ -53,6 +65,7 @@ export function formatToken(
   orderedListNumber: number | null = null,
   parent: Token | null = null,
   highlight: CliHighlight | null = null,
+  orderedListMeta: OrderedListMeta | null = null,
 ): string {
   switch (token.type) {
     case 'blockquote': {
@@ -181,33 +194,60 @@ export function formatToken(
       return createHyperlink(token.href)
     }
     case 'list': {
+      // Official v281 `a6n` @205766744: `{first: start === "" ? 1 : start,
+      // last: first + items.length - 1}`. Threaded down so getListNumber can
+      // apply the official `ce` domain guards for letter/roman conversion.
+      const start = token.start === '' ? 1 : token.start
+      const listMeta: OrderedListMeta | null = token.ordered
+        ? { first: start, last: start + token.items.length - 1 }
+        : null
       return token.items
         .map((_: Token, index: number) =>
           formatToken(
             _,
             theme,
             listDepth,
-            token.ordered ? token.start + index : null,
+            token.ordered ? start + index : null,
             token,
             highlight,
+            listMeta,
           ),
         )
         .join('')
     }
-    case 'list_item':
+    case 'list_item': {
       // Drop marked v17's `checkbox` child token — the "[ ] "/"[x] " marker is
       // rendered from the list_item's task/checked flags in the text case below
       // (official single-sink behavior: the official's older marked stripped
       // the checkbox during tokenization, so its serializer never saw one).
       // Letting it through would leak its raw ("[ ] ") before the bullet, and
       // its rendered '' would still pick up a spurious indent at depth > 0.
-      return (token.tokens ?? [])
+      // CC 2.1.281 #085 (official v281 `Jmn` @205766829): normalize a
+      // bare-number list item (`- 316.`) so its numeric text is not fed to
+      // getListNumber's letter/roman conversion.
+      const item = token.tokens
+        ? normalizeNumericListItem(token as Tokens.ListItem)
+        : token
+      // CC 2.1.281 #084 (official v281 @205762134 region): v280 stripped
+      // leading newlines only inside the `bullet + EOL + content` branch
+      // (`L.replace(/^\n+/,"")`); v281 strips the joined inner content BEFORE
+      // the branch decision (`R = join().replace(/^\n+/,""); return L||b ?
+      // prefix+marker+EOL+R : R`), so the plain return path also loses the
+      // extra blank line produced by items whose text starts on the next
+      // line (marked emits a leading `space` token). OCC's older-generation
+      // serializer has a single return path and prefixes every child with
+      // the depth indent — so a leading blank child line can be "\n" or
+      // "  \n"; the adapted strip removes all leading whitespace-only lines.
+      const inner = (item.tokens ?? [])
         .filter(_ => _.type !== 'checkbox')
         .map(
           _ =>
-            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, token, highlight)}`,
+            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, item, highlight, orderedListMeta)}`,
         )
         .join('')
+        .replace(/^(?:[ \t]*\n)+/, '')
+      return inner
+    }
     case 'paragraph':
       return (
         (token.tokens ?? [])
@@ -230,7 +270,7 @@ export function formatToken(
         const bullet =
           orderedListNumber === null
             ? '-'
-            : getListNumber(listDepth, orderedListNumber) + '.'
+            : getListNumber(listDepth, orderedListNumber, orderedListMeta) + '.'
         // Official Fk serializer text case (binary @197018715):
         //   `${l.task&&f?`[${l.checked?"x":" "}] `:""}${p}${E}`
         // with f = this token is tokens[0] of the list_item — the task marker
@@ -412,18 +452,82 @@ function numberToRoman(n: number): string {
   return result
 }
 
-function getListNumber(listDepth: number, orderedListNumber: number): string {
+function getListNumber(
+  listDepth: number,
+  orderedListNumber: number,
+  listMeta: OrderedListMeta | null,
+): string {
+  // CC 2.1.281 #085 side-fix — official `ce` (v280 @202972475 ≡ v281
+  // @205767145 region, byte-identical): the letter/roman conversions are
+  // domain-guarded by the list's first/last item numbers:
+  //   case 2: first >= 1 ? numberToLetter(n) : n.toString()
+  //   case 3: first >= 1 && last <= 3999 ? numberToRoman(n) : n.toString()
+  // (numberToLetter(0) is "" and roman numerals cannot represent > 3999;
+  // out-of-domain lists fall back to plain numbers). OCC previously had no
+  // guards. Missing meta also falls back to plain numbers.
   switch (listDepth) {
     case 0:
     case 1:
       return orderedListNumber.toString()
     case 2:
-      return numberToLetter(orderedListNumber)
+      return listMeta !== null && listMeta.first >= 1
+        ? numberToLetter(orderedListNumber)
+        : orderedListNumber.toString()
     case 3:
-      return numberToRoman(orderedListNumber)
+      return listMeta !== null &&
+        listMeta.first >= 1 &&
+        listMeta.last <= 3999
+        ? numberToRoman(orderedListNumber)
+        : orderedListNumber.toString()
     default:
       return orderedListNumber.toString()
   }
+}
+
+/**
+ * CC 2.1.281 changelog #085: bulleted lists of plain numbers (`- 316.`) were
+ * re-parsed by marked as a nested ordered list with a single content-less
+ * item, so the number was dropped (or, at deeper nesting, converted to
+ * letter/roman garbage). Official v281 `Jmn` @205766829 (absent from v280;
+ * called at the list_item case entry `h=e.tokens?Jmn(e):e` @205762134):
+ *
+ *   function Jmn(e){let t=e.tokens.map((n)=>{
+ *     if(n.type!=="list"||!n.ordered)return n;
+ *     let r=[];for(let l of n.items){
+ *       let s=/^ *(\d{1,9}[.)])/.exec(l.raw)?.[1];
+ *       if(l.tokens.length>0||s===void 0)return n;r.push(s)}
+ *     let o=r.join("\n");return{type:"text",raw:o,text:o}});
+ *     return t.every((n,r)=>n===e.tokens[r])?e:{...e,tokens:t}}
+ *
+ * For every child of the list_item that is an ordered list whose items are
+ * ALL bare number markers with no content tokens, replace that misparsed list
+ * with a single text token holding the markers joined by newlines. The
+ * immutability guard (official, required): when no child changed, return the
+ * ORIGINAL object — callers must be able to rely on referential equality.
+ *
+ * Exported for testing.
+ */
+export function normalizeNumericListItem(
+  item: Tokens.ListItem,
+): Tokens.ListItem {
+  const tokens = item.tokens.map(child => {
+    if (child.type !== 'list' || !child.ordered) {
+      return child
+    }
+    const markers: string[] = []
+    for (const nestedItem of child.items) {
+      const marker = /^ *(\d{1,9}[.)])/.exec(nestedItem.raw)?.[1]
+      if (nestedItem.tokens.length > 0 || marker === undefined) {
+        return child
+      }
+      markers.push(marker)
+    }
+    const text = markers.join('\n')
+    return { type: 'text', raw: text, text } as Token
+  })
+  return tokens.every((t, i) => t === item.tokens[i])
+    ? item
+    : { ...item, tokens }
 }
 
 /**

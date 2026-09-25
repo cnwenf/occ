@@ -23,7 +23,11 @@ import {
 } from '../../utils/auth.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { classifyAxiosError, getErrnoCode } from '../../utils/errors.js'
+import {
+  classifyAxiosError,
+  getErrnoCode,
+  isNonRetryableClientError,
+} from '../../utils/errors.js'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js'
 import {
   type SettingsJson,
@@ -355,7 +359,15 @@ async function fetchRemoteManagedSettings(
       case 'network':
         return { success: false, error: 'Cannot connect to server' }
       default:
-        return { success: false, error: message }
+        // 2.1.281 (#103) @208819123: `...c$e(C)&&{skipRetry:!0}` — a
+        // never-succeeding 4xx (anything but 408/409/429) stops the backoff
+        // loop immediately instead of burning all DEFAULT_MAX_RETRIES
+        // attempts (~30s of deadlocked startup polling).
+        return {
+          success: false,
+          error: message,
+          ...(isNonRetryableClientError(status) ? { skipRetry: true } : {}),
+        }
     }
   }
 }

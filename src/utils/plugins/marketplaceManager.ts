@@ -101,7 +101,28 @@ import {
 type LoadedPluginMarketplace = {
   marketplace: PluginMarketplace
   cachePath: string
+  /**
+   * CC 2.1.281 (#060): true when a git refresh could not reach the remote and
+   * CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE kept the existing (stale)
+   * clone instead of re-cloning. Callers must NOT stamp `lastUpdated` in that
+   * case — nothing was actually fetched. Mirrors the official
+   * `keptStaleClone:Ee?.kind==="kept-stale"` (@203686720).
+   */
+  keptStaleClone: boolean
 }
+
+/**
+ * Result of a marketplace git cache operation (`cacheMarketplaceFromGit`).
+ *
+ * CC 2.1.281 (#060): a discriminated marker so the KEEP-on-failure branch can
+ * tell callers it kept a stale clone rather than fetching fresh. Mirrors the
+ * official git-refresh helper's `{kind:"current"}` / `{kind:"kept-stale"}`
+ * return (@203674638). `'refreshed'` covers both the up-to-date pull and a
+ * successful swap re-clone; only `'kept-stale'` suppresses the timestamp.
+ */
+export type MarketplaceCacheResult =
+  | { kind: 'refreshed' }
+  | { kind: 'kept-stale' }
 
 /**
  * Get the path to the known marketplaces configuration file
@@ -1250,7 +1271,7 @@ export async function cacheMarketplaceFromGit(
   ref?: string,
   sparsePaths?: string[],
   onProgress?: MarketplaceProgressCallback,
-): Promise<void> {
+): Promise<MarketplaceCacheResult> {
   const fs = getFsImplementation()
 
   // Attempt incremental update; fall back to re-clone if the repo is absent,
@@ -1276,7 +1297,7 @@ export async function cacheMarketplaceFromGit(
       performance.now() - pullStarted,
       pullResult.code === 0 ? undefined : classifyFetchError(pullResult.stderr),
     )
-    if (pullResult.code === 0) return
+    if (pullResult.code === 0) return { kind: 'refreshed' }
     // CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE: when git pull fails, keep
     // the existing marketplace clone instead of removing + re-cloning. Useful in
     // offline/air-gapped environments where re-clone would also fail — the stale
@@ -1292,7 +1313,10 @@ export async function cacheMarketplaceFromGit(
         `Marketplace remote unreachable, keeping existing clone (CLAUDE_CODE_PLUGIN_KEEP_MARKETPLACE_ON_FAILURE): ${pullResult.stderr}`,
         { level: 'warn' },
       )
-      return
+      // CC 2.1.281 (#060): signal callers that we kept a stale clone (the remote
+      // was unreachable) so they skip stamping `lastUpdated`. Official returns
+      // `{kind:"kept-stale"}` here (@203674638).
+      return { kind: 'kept-stale' }
     }
     logForDebugging(`git pull failed, will re-clone: ${pullResult.stderr}`, {
       level: 'warn',
@@ -1430,6 +1454,8 @@ export async function cacheMarketplaceFromGit(
     await fs.rm(backupPath, { recursive: true, force: true }).catch(() => {})
   }
   safeCallProgress(onProgress, 'Clone complete, validating marketplace…')
+  // Swap re-clone succeeded — a genuine fresh fetch, so callers may stamp.
+  return { kind: 'refreshed' }
 }
 
 /**
@@ -1664,6 +1690,11 @@ async function loadAndCacheMarketplace(
   let temporaryCachePath: string
   let marketplacePath: string
   let cleanupNeeded = false
+  // CC 2.1.281 (#060): track whether the git refresh kept a stale clone (remote
+  // unreachable). Only github/git sources set this; url/file/directory/settings
+  // never call cacheMarketplaceFromGit so it stays undefined → keptStaleClone
+  // false. Surfaced to callers so refreshAllMarketplaces can skip the stamp.
+  let gitCacheResult: MarketplaceCacheResult | undefined
 
   // Generate a temp name for the cache path
   const tempName = getCachePathForSource(source)
@@ -1722,7 +1753,7 @@ async function loadAndCacheMarketplace(
           // SSH looks good, try it first
           safeCallProgress(onProgress, `Cloning via SSH: ${sshUrl}`)
           try {
-            await cacheMarketplaceFromGit(
+            gitCacheResult = await cacheMarketplaceFromGit(
               sshUrl,
               temporaryCachePath,
               source.ref,
@@ -1755,7 +1786,7 @@ async function loadAndCacheMarketplace(
 
             // Try HTTPS
             try {
-              await cacheMarketplaceFromGit(
+              gitCacheResult = await cacheMarketplaceFromGit(
                 httpsUrl,
                 temporaryCachePath,
                 source.ref,
@@ -1784,7 +1815,7 @@ async function loadAndCacheMarketplace(
           )
 
           try {
-            await cacheMarketplaceFromGit(
+            gitCacheResult = await cacheMarketplaceFromGit(
               httpsUrl,
               temporaryCachePath,
               source.ref,
@@ -1817,7 +1848,7 @@ async function loadAndCacheMarketplace(
 
             // Try SSH
             try {
-              await cacheMarketplaceFromGit(
+              gitCacheResult = await cacheMarketplaceFromGit(
                 sshUrl,
                 temporaryCachePath,
                 source.ref,
@@ -1856,7 +1887,7 @@ async function loadAndCacheMarketplace(
       case 'git': {
         temporaryCachePath = join(cacheDir, tempName)
         cleanupNeeded = true
-        await cacheMarketplaceFromGit(
+        gitCacheResult = await cacheMarketplaceFromGit(
           source.url,
           temporaryCachePath,
           source.ref,
@@ -2039,7 +2070,11 @@ async function loadAndCacheMarketplace(
       }
     }
 
-    return { marketplace, cachePath: temporaryCachePath }
+    return {
+      marketplace,
+      cachePath: temporaryCachePath,
+      keptStaleClone: gitCacheResult?.kind === 'kept-stale',
+    }
   } catch (error) {
     // Clean up any temporary files/directories on error
     if (
@@ -2475,17 +2510,30 @@ export const getMarketplace = memoize(
 
     // Cache doesn't exist or is invalid, fetch from source
     let marketplace: PluginMarketplace
+    let keptStaleClone: boolean
     try {
-      ;({ marketplace } = await loadAndCacheMarketplace(entry.source))
+      ;({ marketplace, keptStaleClone } = await loadAndCacheMarketplace(
+        entry.source,
+      ))
     } catch (error) {
       throw new Error(
         `Failed to load marketplace "${name}" from source (${entry.source.source}): ${errorMessage(error)}`,
       )
     }
 
-    // Update lastUpdated only when we actually fetch
-    config[name]!.lastUpdated = new Date().toISOString()
-    await saveKnownMarketplacesConfig(config)
+    // Update lastUpdated only when we actually fetch. A git refresh that kept a
+    // stale clone (remote unreachable + KEEP_MARKETPLACE_ON_FAILURE) fetched
+    // nothing, so it must not claim a fresh timestamp — the served marketplace is
+    // still the old one.
+    //
+    // CC 2.1.281 (#060): mirrors the official read-through guard
+    // `({marketplace:M,keptStaleClone:N}=await Z$e(...))…if(!N)await q$e(e,n);return M`
+    // (@203699740), where `Z$e` is loadAndCacheMarketplace and `q$e` stamps
+    // lastUpdated + saves known_marketplaces.json (@203668163).
+    if (!keptStaleClone) {
+      config[name]!.lastUpdated = new Date().toISOString()
+      await saveKnownMarketplacesConfig(config)
+    }
 
     return marketplace
   },
@@ -2661,9 +2709,20 @@ export async function refreshAllMarketplaces(): Promise<void> {
       // fall through to git
     }
     try {
-      const { cachePath } = await loadAndCacheMarketplace(entry.source)
-      config[name]!.lastUpdated = new Date().toISOString()
-      config[name]!.installLocation = cachePath
+      const { cachePath, keptStaleClone } = await loadAndCacheMarketplace(
+        entry.source,
+      )
+      // CC 2.1.281 (#060): when the remote was unreachable and we kept a stale
+      // clone, do NOT claim a fresh `lastUpdated` (nothing was fetched). Mirror
+      // the official bulk path (@203703245): stamp only when not kept-stale;
+      // when kept-stale, still record a changed installLocation but leave the
+      // timestamp untouched.
+      if (!keptStaleClone) {
+        config[name]!.lastUpdated = new Date().toISOString()
+        config[name]!.installLocation = cachePath
+      } else if (cachePath !== entry.installLocation) {
+        config[name]!.installLocation = cachePath
+      }
     } catch (error) {
       logForDebugging(
         `Failed to refresh marketplace ${name}: ${errorMessage(error)}`,
@@ -2795,7 +2854,12 @@ export async function refreshMarketplace(
     }
 
     // Update based on source type
+    // CC 2.1.281 (#060): a git refresh that kept a stale clone (remote
+    // unreachable) must not stamp `lastUpdated`. Track the git result across the
+    // github/git source-type branches below; url/local sources never set it.
+    let keptStale = false
     if (source.source === 'github' || source.source === 'git') {
+      let gitResult: MarketplaceCacheResult | undefined
       // Git sources: do in-place git pull
       if (source.source === 'github') {
         // Same SSH/HTTPS fallback as loadAndCacheMarketplace: if the pull
@@ -2806,7 +2870,7 @@ export async function refreshMarketplace(
 
         if (isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) {
           // CCR: always HTTPS (no SSH keys available)
-          await cacheMarketplaceFromGit(
+          gitResult = await cacheMarketplaceFromGit(
             httpsUrl,
             installLocation,
             source.ref,
@@ -2819,7 +2883,7 @@ export async function refreshMarketplace(
           const fallbackUrl = sshConfigured ? httpsUrl : sshUrl
 
           try {
-            await cacheMarketplaceFromGit(
+            gitResult = await cacheMarketplaceFromGit(
               primaryUrl,
               installLocation,
               source.ref,
@@ -2831,7 +2895,7 @@ export async function refreshMarketplace(
               `Marketplace refresh failed with ${sshConfigured ? 'SSH' : 'HTTPS'} for ${source.repo}, falling back to ${sshConfigured ? 'HTTPS' : 'SSH'}`,
               { level: 'info' },
             )
-            await cacheMarketplaceFromGit(
+            gitResult = await cacheMarketplaceFromGit(
               fallbackUrl,
               installLocation,
               source.ref,
@@ -2842,7 +2906,7 @@ export async function refreshMarketplace(
         }
       } else {
         // Explicit git URL: use as-is (no fallback available)
-        await cacheMarketplaceFromGit(
+        gitResult = await cacheMarketplaceFromGit(
           source.url,
           installLocation,
           source.ref,
@@ -2850,6 +2914,7 @@ export async function refreshMarketplace(
           onProgress,
         )
       }
+      keptStale = gitResult?.kind === 'kept-stale'
       // Validate that marketplace.json still exists after update
       // The repo may have been restructured or deprecated
       try {
@@ -2887,9 +2952,18 @@ export async function refreshMarketplace(
       throw new Error(`Unsupported marketplace source type for refresh`)
     }
 
-    // Update lastUpdated timestamp
-    config[name]!.lastUpdated = new Date().toISOString()
-    await saveKnownMarketplacesConfig(config)
+    // Update lastUpdated timestamp — but NOT when we kept a stale clone because
+    // the remote was unreachable (CC 2.1.281 #060). The official guard
+    // `if(M?.kind!=="kept-stale")await q$e(e,n)` (@203707943) skips only the
+    // timestamp write (q$e stamps lastUpdated AND saves known_marketplaces.json,
+    // @203668163); the "Successfully refreshed marketplace" log below sits
+    // OUTSIDE that guard in the official binary and still fires — the kept clone
+    // is usable and the "keeping existing clone" warning already explained what
+    // happened, so we faithfully keep the log unconditional here.
+    if (!keptStale) {
+      config[name]!.lastUpdated = new Date().toISOString()
+      await saveKnownMarketplacesConfig(config)
+    }
 
     logForDebugging(`Successfully refreshed marketplace: ${name}`)
   } catch (error) {

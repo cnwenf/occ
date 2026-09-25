@@ -43,6 +43,11 @@ import {
   type ToolUseDiff,
 } from '../../utils/gitDiff.js'
 import { logError } from '../../utils/log.js'
+import {
+  macosNetworkMountDenyMessage,
+  shouldDenyMacosNetworkMountPath,
+} from '../../utils/macosKernelPaths.js'
+import { validateNullByteFreeFields } from '../../utils/nullByteValidation.js'
 import { expandPath } from '../../utils/path.js'
 import { perforceReadOnlyError } from '../../utils/perforce.js'
 import {
@@ -200,6 +205,15 @@ export const FileEditTool = buildTool({
   renderToolUseErrorMessage,
   async validateInput(input: FileEditInput, toolUseContext: ToolUseContext) {
     const { file_path, old_string, new_string, replace_all = false } = input
+    // CC 2.1.281 #040 (official fy(Pt,[["file_path",g]]) @203959556): a null
+    // byte in file_path is a per-call validation error (errorCode 2) BEFORE
+    // expandPath — the expandPath throw would otherwise end the whole turn.
+    const nullByteCheck = validateNullByteFreeFields(FILE_EDIT_TOOL_NAME, [
+      ['file_path', file_path],
+    ])
+    if (nullByteCheck !== null) {
+      return nullByteCheck
+    }
     // Use expandPath for consistent path normalization (especially on Windows
     // where "/" vs "\" can cause readFileState lookup mismatches)
     const fullFilePath = expandPath(file_path)
@@ -255,6 +269,19 @@ export const FileEditTool = buildTool({
         message: READ_DENY_EDIT_MESSAGE,
         errorCode: 13,
         deniedByPermissionRule: true,
+      }
+    }
+
+    // CC 2.1.281 #033 (security): on macOS, deny automount (/net, /Network)
+    // and kernel-resolved (/.vol, /.file, /.nofollow, /.resolve) prefixes
+    // before any filesystem operation — stat/lstat on these can trigger a
+    // directory-service lookup and mount to a remote host. Darwin-gated no-op
+    // elsewhere. Official deny sentence @97322030.
+    if (shouldDenyMacosNetworkMountPath(fullFilePath)) {
+      return {
+        result: false,
+        message: macosNetworkMountDenyMessage(file_path),
+        errorCode: 1,
       }
     }
 

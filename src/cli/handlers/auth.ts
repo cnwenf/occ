@@ -30,6 +30,7 @@ import {
   saveOAuthTokensIfNeeded,
   validateForceLoginOrg,
 } from '../../utils/auth.js'
+import { getOAuthTokenFromFileDescriptor } from '../../utils/authFileDescriptor.js'
 import { saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -40,12 +41,52 @@ import { errorMessage } from '../../utils/errors.js'
 import { createSignInHyperlink } from '../../utils/hyperlink.js'
 import { logError } from '../../utils/log.js'
 import { getAPIProvider } from '../../utils/model/providers.js'
+import { getPlatform, type Platform } from '../../utils/platform.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import {
   buildAccountProperties,
   buildAPIProviderProperties,
 } from '../../utils/status.js'
+
+/**
+ * Login-save failure messages (claude-code 2.1.281 #049, 🔒). Both strings are
+ * NEW in v281 (byte-verified: 2 hits in the v281 ELF, 0 in v280). When a
+ * credential save fails TRANSIENTLY (locked keychain) the login flow now throws
+ * a platform-specific message instead of silently continuing with an unsaved
+ * login. v281 `QAe`: `throw new Pr(H()==="macos" ? T : O)`.
+ */
+export const TRANSIENT_LOGIN_SAVE_MESSAGE_MACOS =
+  "Couldn't save your login. If your Mac's keychain is locked, unlock it and log in again."
+export const TRANSIENT_LOGIN_SAVE_MESSAGE_OTHER =
+  "Couldn't save your login. Try logging in again."
+
+/**
+ * Pure resolver for the transient login-save throw. Mirrors the v281 gate
+ * `"transient" in r && r.transient===!0 && !env.CLAUDE_CODE_OAUTH_TOKEN && !k5()`
+ * followed by `H()==="macos" ? T : O`:
+ *   - no throw when the save was not a transient failure;
+ *   - no throw when an env OAuth token override is present (the keychain save is
+ *     moot — the session authenticates from the env token);
+ *   - no throw when a file-descriptor OAuth token is present (same rationale);
+ *   - otherwise the macOS-specific message on darwin, the generic one elsewhere.
+ * Exported + parameterised (platform passed in) so it is unit-testable without
+ * mocking the memoized {@link getPlatform}.
+ */
+export function resolveTransientLoginSaveMessage(args: {
+  transient: boolean
+  hasEnvOAuthToken: boolean
+  hasFdOAuthToken: boolean
+  platform: Platform
+}): string | null {
+  const { transient, hasEnvOAuthToken, hasFdOAuthToken, platform } = args
+  if (!transient || hasEnvOAuthToken || hasFdOAuthToken) {
+    return null
+  }
+  return platform === 'macos'
+    ? TRANSIENT_LOGIN_SAVE_MESSAGE_MACOS
+    : TRANSIENT_LOGIN_SAVE_MESSAGE_OTHER
+}
 
 /**
  * Shared post-token-acquisition logic. Saves tokens, fetches profile/roles,
@@ -82,6 +123,22 @@ export async function installOAuthTokens(tokens: OAuthTokens): Promise<void> {
 
   const storageResult = saveOAuthTokensIfNeeded(tokens)
   clearOAuthTokenCache()
+
+  // 2.1.281 #049 (🔒): a transient (locked-keychain) save failure means the
+  // login was NOT persisted. Throw the platform-specific message so the user
+  // re-authenticates rather than silently continuing on an unsaved login.
+  // Skipped when an env/fd OAuth token override is present (the session
+  // authenticates from that instead, so the keychain save is moot). v281 QAe
+  // throws here, before the warning telemetry below.
+  const transientMessage = resolveTransientLoginSaveMessage({
+    transient: storageResult.transient === true,
+    hasEnvOAuthToken: Boolean(process.env.CLAUDE_CODE_OAUTH_TOKEN),
+    hasFdOAuthToken: getOAuthTokenFromFileDescriptor() !== null,
+    platform: getPlatform(),
+  })
+  if (transientMessage !== null) {
+    throw new Error(transientMessage)
+  }
 
   if (storageResult.warning) {
     logEvent('tengu_oauth_storage_warning', {

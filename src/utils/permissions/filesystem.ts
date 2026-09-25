@@ -32,6 +32,7 @@ import {
   getDirectoryForPath,
   sanitizePath,
 } from '../path.js'
+import { shouldDenyMacosNetworkMountPath } from '../macosKernelPaths.js'
 import { getPlanSlug, getPlansDirectory } from '../plans.js'
 import { getPlatform } from '../platform.js'
 import { getProjectDir } from '../sessionStorage.js'
@@ -615,6 +616,14 @@ function hasSuspiciousWindowsPathPattern(path: string): boolean {
   // Examples: \\server\share, \\foo.com\file, //server/share, \\192.168.1.1\share
   // UNC paths can access remote resources, leak credentials, and bypass working directory restrictions
   if (containsVulnerableUncPath(path)) {
+    return true
+  }
+
+  // CC 2.1.281 #033 (security, defense-in-depth): macOS automount (/net,
+  // /Network) and kernel-resolved (/.vol, /.file, /.nofollow, /.resolve)
+  // prefixes can trigger a directory-service lookup and mount to a remote
+  // host. Darwin-gated — a no-op on every other platform.
+  if (shouldDenyMacosNetworkMountPath(path)) {
     return true
   }
 

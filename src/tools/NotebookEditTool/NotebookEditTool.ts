@@ -18,7 +18,12 @@ import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
 import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import {
+  macosNetworkMountDenyMessage,
+  shouldDenyMacosNetworkMountPath,
+} from '../../utils/macosKernelPaths.js'
 import { parseCellId } from '../../utils/notebook.js'
+import { validateNullByteFreeFields } from '../../utils/nullByteValidation.js'
 import {
   checkLeafSymlinkWriteDeny,
   checkWritePermissionForTool,
@@ -216,9 +221,32 @@ export const NotebookEditTool = buildTool({
     { notebook_path, cell_type, cell_id, edit_mode = 'replace' },
     toolUseContext: ToolUseContext,
   ) {
+    // CC 2.1.281 #040 (official fy(lc,[["notebook_path",n]]) @203972885):
+    // null-byte check runs FIRST (before path resolution), returning a
+    // per-call validation error (errorCode 2) — the expandPath/resolve chain
+    // would otherwise throw and end the whole turn.
+    const nullByteCheck = validateNullByteFreeFields(NOTEBOOK_EDIT_TOOL_NAME, [
+      ['notebook_path', notebook_path],
+    ])
+    if (nullByteCheck !== null) {
+      return nullByteCheck
+    }
     const fullPath = isAbsolute(notebook_path)
       ? notebook_path
       : resolve(getCwd(), notebook_path)
+
+    // CC 2.1.281 #033 (security): on macOS, deny automount (/net, /Network)
+    // and kernel-resolved (/.vol, /.file, /.nofollow, /.resolve) prefixes
+    // before any filesystem operation — stat/lstat on these can trigger a
+    // directory-service lookup and mount to a remote host. Darwin-gated no-op
+    // elsewhere. Official deny sentence @97322030.
+    if (shouldDenyMacosNetworkMountPath(fullPath)) {
+      return {
+        result: false,
+        message: macosNetworkMountDenyMessage(notebook_path),
+        errorCode: 1,
+      }
+    }
 
     // SECURITY: Skip filesystem operations for UNC paths to prevent NTLM credential leaks.
     if (fullPath.startsWith('\\\\') || fullPath.startsWith('//')) {

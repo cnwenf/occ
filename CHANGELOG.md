@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
 versions above that are OCC-specific releases. **Now tracking Claude Code
-`2.1.280`** — 2.1.280 portable subset landed (the OCC-134 round,
+`2.1.281`** — 2.1.281 portable subset landed (the OCC-96 round,
+2026-09-24: 176 changelog entries triaged plus a full v280↔v281 linux-x64
+ELF binary diff, 39 byte-verified ports — headlined by nine security fixes:
+`rm -rf "$(…)"` no longer runs unprompted in auto mode, dangerous-rm
+prompts auto-deny after 2 minutes with the rewrite hint, NUL bytes in
+file-tool paths fail the tool call instead of ending the turn, macOS
+`/.vol`/`/.nofollow`/`/.resolve` kernel-resolved paths are rejected before
+approval, a locked keychain no longer clobbers the shared credential blob
+(MCP OAuth tokens survive), auto-mode denial guidance scopes to the outcome,
+destructive `/permissions` confirms drop number-key answers and open on No,
+and the 429 HTML error page is sanitized instead of dumping raw markup;
+plus the API stream error taxonomy (truncated/malformed-event), retry
+watchdog caps, mcp_tool connect-wait on blocking hook events, vim `G`/`d`
+count fixes, numeric list rendering, and NO_COLOR tab highlight; full
+triage and forensics ledger in `docs/upstream-version-gap-occ96.md`);
+2.1.280 portable subset landed (the OCC-134 round,
 2026-09-23: 2.1.279 never published; 114 changelog entries triaged plus a
 full v278↔v280 linux-x64 ELF binary diff, 26 byte-verified ports —
 headlined by the Opus 5.5 launch registration, the Pro/Team default-Opus
