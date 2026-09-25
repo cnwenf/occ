@@ -20,7 +20,10 @@ attack-surface e2e A/B-verified against the official v2.1.281 binary;
 176 changelog entries triaged plus a full v280↔v281 linux-x64 ELF binary
 diff, 39 byte-verified ports — headlined by the remaining security fixes:
 `rm -rf "$(…)"` no longer runs unprompted in auto mode, dangerous-rm
-prompts auto-deny after 2 minutes with the rewrite hint, NUL bytes in
+prompts auto-deny immediately with the rewrite hint (the official 2-minute
+auto-deny window — #137 — is ported as dormant infra: the shipped build
+cannot show the permission dialog, so the immediate-deny branch is what's
+live), NUL bytes in
 file-tool paths fail the tool call instead of ending the turn, macOS
 `/.vol`/`/.nofollow`/`/.resolve` kernel-resolved paths are rejected before
 approval, a locked keychain no longer clobbers the shared credential blob

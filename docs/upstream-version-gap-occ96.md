@@ -250,6 +250,24 @@ All byte-verified against the v2.1.281 linux-x64 ELF (offsets in §4).
   (read_failed_skip_write parity; never clobbers the shared blob / drops
   mcpOAuth), platform-specific "Couldn't save your login…" throw
   (binary-exact macOS vs other wording).
+  **Acceptance round RT-2 expansion** (`src/services/mcp/auth.ts`): the
+  first pass guarded only `saveOAuthTokensIfNeeded` (1 of 9 write paths
+  into the shared blob). Every mcpOAuth merge-and-write flow now routes
+  through one guarded `mergeWriteSecureStorage(serverName, merge)` helper
+  (strict read → sentinel → skip write + `read_failed_skip_write`
+  telemetry; `?? read()` fallback for backends without strict support;
+  `merge → null` preserves the entry-gated no-write flows):
+  revokeServerTokens step-up preservation, both XAA token writes,
+  invalid_client client-credential clear, saveClientInformation,
+  saveTokens, the redirectToAuthorization step-up scope persist,
+  saveDiscoveryState, and saveMcpClientSecret (the last one an extra
+  clobber site found beyond the review's list of 8). The already-safe
+  early-return-on-null delete flows (clearServerTokensFromLocalStorage,
+  invalidateCredentials, clearMcpClientConfig, revokeServerTokens main
+  body) are unchanged. Pinned by
+  `src/services/mcp/__tests__/mcpOAuthTransientSkip281.test.ts` (8 tests:
+  transient skip ×4 previously-unguarded paths, identity-matched sentinel,
+  immutable sibling-preserving merge, no-readStrict backend fallback).
 - **#050** `src/utils/processTreeKill.ts` (NEW) + `src/utils/auth.ts` —
   aws/gcp auth-refresh children wrapped in a `ta`-parity watchdog:
   descendants-first process-TREE kill on timeout (3 min) / abort /

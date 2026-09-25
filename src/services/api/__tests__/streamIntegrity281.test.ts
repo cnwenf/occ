@@ -255,6 +255,25 @@ function sseResponse(events: string[]): () => Response {
     })
 }
 
+/** A minimal successful NON-streaming message — the fallback re-send reply
+ *  (same shape as advisorRetryWiring276's nonStreamingMessageResponse). */
+function nonStreamingMessageResponse(text = 'FALLBACK COMPLETE'): () => Response {
+  return () =>
+    new Response(
+      JSON.stringify({
+        id: 'msg_02TEST',
+        type: 'message',
+        role: 'assistant',
+        model: MODEL,
+        content: [{ type: 'text', text }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+}
+
 /** An SSE body that delivers `events` and then stalls (never closes) — the
  *  idle watchdog aborts it after CLAUDE_STREAM_IDLE_TIMEOUT_MS. The request
  *  signal is wired like a real fetch: aborting it errors the body so the
@@ -497,6 +516,57 @@ describe('2.1.281 #018 StreamTruncatedError', () => {
     )
     // The completed block was still yielded before the truncation surfaced.
     expect(assistantTexts(yielded)).toEqual(['PARTIAL'])
+  })
+
+  test('DEFAULT env (no disable flag): truncation routes through the non-streaming fallback re-send (fetchCount=2)', async () => {
+    // beforeEach deletes CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK — this is
+    // the shipped default environment. Official parity: StreamTruncatedError
+    // is EXCLUDED from getMidStreamFinalizeCause (claude.ts), so the default
+    // build re-sends the whole query non-streaming instead of finalizing the
+    // partial. This pins the double-execution tradeoff (inc-4258) as
+    // intentional/official-matching — a clean-close truncation must NEVER be
+    // silently finalized as complete in the default env.
+    responders.push(
+      sseResponse([
+        messageStart(),
+        blockStart(0),
+        textDelta(0, 'PARTIAL'),
+        blockStop(0),
+        blockStart(1),
+        textDelta(1, 'cut off mid-block'),
+      ]),
+      nonStreamingMessageResponse(),
+    )
+
+    const { yielded, error } = await runQuery()
+
+    expect(error).toBeNull()
+    // The re-send happened: fetch #1 = truncated stream, fetch #2 = fallback.
+    expect(fetchCount).toBe(2)
+    const texts = assistantTexts(yielded)
+    expect(texts).toContain('FALLBACK COMPLETE')
+    // Known tradeoff: the streaming partial already yielded to the consumer
+    // is NOT retracted, so the fallback content arrives alongside it (the
+    // duplicate-content cost the disable flag exists to opt out of).
+    expect(texts).toContain('PARTIAL')
+    // The fallback REPLACED the error path — no truncation notice surfaces.
+    expect(apiErrorNotices(yielded).join('\n')).not.toContain(
+      'Stream ended before the response was complete',
+    )
+    expect(lastAssistantMessage(yielded)?.stop_reason).toBe('end_turn')
+    // Telemetry: the fallback fired (and NOT the disabled variant).
+    const fallback = analyticsEvents.find(
+      e => e.eventName === 'tengu_streaming_fallback_to_non_streaming',
+    )
+    expect(fallback).toBeDefined()
+    expect(
+      (fallback?.metadata as { fallback_disabled?: boolean }).fallback_disabled,
+    ).toBe(false)
+    expect(
+      analyticsEvents.some(
+        e => e.eventName === 'tengu_nonstreaming_fallback_started',
+      ),
+    ).toBe(true)
   })
 
   test('clean close after terminal message_delta (message_stop missing) completes without truncation', async () => {

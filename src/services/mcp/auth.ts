@@ -40,6 +40,7 @@ import { logMCPDebug } from '../../utils/log.js'
 import { getPlatform } from '../../utils/platform.js'
 import { getSecureStorage } from '../../utils/secureStorage/index.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
+import { isTransientReadFailure } from '../../utils/secureStorage/transientRead.js'
 import type { SecureStorageData } from '../../utils/secureStorage/types.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
@@ -490,6 +491,57 @@ export function getServerKey(
 }
 
 /**
+ * Guarded read-merge-write for the SHARED secure-storage blob
+ * (2.1.281 #049, acceptance round RT-2).
+ *
+ * Every mcpOAuth credential write merges a new entry into the same keychain
+ * blob that also holds `claudeAiOauth` and every other server's tokens. These
+ * flows previously did `storage.read() || {}` — with the macOS login keychain
+ * LOCKED, `read()` transparently returns null, so the merge started from `{}`
+ * and `update()` clobbered every pre-existing entry (exactly the data loss
+ * #049 fixed for `saveOAuthTokensIfNeeded` in `src/utils/auth.ts`).
+ *
+ * Mirrors the official v281 `Et()` credential-write merge (@195273515): a
+ * strict read classifies the locked store as TRANSIENT, and the write is
+ * SKIPPED entirely with `secure_storage_credentials_write` /
+ * `read_failed_skip_write` telemetry. `merge` receives the verified current
+ * blob (never null, never the sentinel) and returns either the full blob to
+ * persist or `null` when there is nothing to write (the pre-existing
+ * entry-gated flows must not touch the keychain when their entry is absent).
+ * The `?? storage.read()` fallback covers backends without strict support
+ * (e.g. plainTextStorage on Linux, which has no locked-keychain state).
+ *
+ * @returns true when `update()` ran, false when the write was skipped
+ * (transient read failure, or `merge` returned null).
+ */
+function mergeWriteSecureStorage(
+  serverName: string,
+  merge: (existingData: SecureStorageData) => SecureStorageData | null,
+): boolean {
+  const storage = getSecureStorage()
+  const existingData =
+    storage.readStrict?.({ inaccessibleAs: 'failureIfTransient' }) ??
+    storage.read()
+  if (isTransientReadFailure(existingData)) {
+    logEvent('secure_storage_credentials_write', {
+      reason:
+        'read_failed_skip_write' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      storageBackend:
+        storage.name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
+    logMCPDebug(
+      serverName,
+      'Secure storage transiently inaccessible (locked keychain) — skipped credential write to avoid clobbering the shared blob',
+    )
+    return false
+  }
+  const merged = merge(existingData ?? {})
+  if (merged === null) return false
+  storage.update(merged)
+  return true
+}
+
+/**
  * True when we have probed this server before (OAuth discovery state is
  * stored) but hold no credentials to try. A connection attempt in this
  * state is guaranteed to 401 — the only way out is the user running
@@ -766,8 +818,9 @@ export async function revokeServerTokens(
     tokenData &&
     (tokenData.stepUpScope || tokenData.discoveryState)
   ) {
-    const freshData = storage.read() || {}
-    const updatedData: SecureStorageData = {
+    // #049 RT-2: guarded merge-write — a locked keychain skips the write
+    // instead of clobbering the shared blob from an empty base.
+    const preserved = mergeWriteSecureStorage(serverName, (freshData) => ({
       ...freshData,
       mcpOAuth: {
         ...freshData.mcpOAuth,
@@ -794,9 +847,10 @@ export async function revokeServerTokens(
             : {}),
         },
       },
+    }))
+    if (preserved) {
+      logMCPDebug(serverName, 'Preserved step-up auth state across revocation')
     }
-    storage.update(updatedData)
-    logMCPDebug(serverName, 'Preserved step-up auth state across revocation')
   }
 }
 
@@ -994,36 +1048,38 @@ async function performMCPXaaAuth(
     // Save tokens via the same storage path as normal OAuth. We write directly
     // (instead of ClaudeAuthProvider.saveTokens) to avoid instantiating the
     // whole provider just to write the same keys.
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
+    // #049 RT-2: guarded merge-write — a locked keychain skips persistence
+    // instead of clobbering the shared blob from an empty base.
     const serverKey = getServerKey(serverName, serverConfig)
-    const prev = existingData.mcpOAuth?.[serverKey]
-    storage.update({
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...prev,
-          serverName,
-          serverUrl: serverConfig.url,
-          accessToken: tokens.access_token,
-          // AS may omit refresh_token on jwt-bearer — preserve any existing one
-          refreshToken: tokens.refresh_token ?? prev?.refreshToken,
-          expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-          scope: tokens.scope,
-          clientId,
-          clientSecret,
-          // Persist the AS URL so _doRefresh and revokeServerTokens can locate
-          // the token/revocation endpoints when MCP URL ≠ AS URL (the common
-          // XAA topology).
-          discoveryState: {
-            authorizationServerUrl: tokens.authorizationServerUrl,
+    const saved = mergeWriteSecureStorage(serverName, (existingData) => {
+      const prev = existingData.mcpOAuth?.[serverKey]
+      return {
+        ...existingData,
+        mcpOAuth: {
+          ...existingData.mcpOAuth,
+          [serverKey]: {
+            ...prev,
+            serverName,
+            serverUrl: serverConfig.url,
+            accessToken: tokens.access_token,
+            // AS may omit refresh_token on jwt-bearer — preserve any existing one
+            refreshToken: tokens.refresh_token ?? prev?.refreshToken,
+            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+            scope: tokens.scope,
+            clientId,
+            clientSecret,
+            // Persist the AS URL so _doRefresh and revokeServerTokens can locate
+            // the token/revocation endpoints when MCP URL ≠ AS URL (the common
+            // XAA topology).
+            discoveryState: {
+              authorizationServerUrl: tokens.authorizationServerUrl,
+            },
           },
         },
-      },
+      }
     })
 
-    logMCPDebug(serverName, 'XAA: tokens saved')
+    logMCPDebug(serverName, saved ? 'XAA: tokens saved' : 'XAA: tokens obtained but NOT persisted (locked keychain)')
     logEvent('tengu_mcp_oauth_flow_success', {
       authMethod:
         'xaa' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -1550,14 +1606,25 @@ export async function performMCPOAuthFlow(
         error.errorCode === 'invalid_client' &&
         error.message.includes('Client not found')
       ) {
-        const storage = getSecureStorage()
-        const existingData = storage.read() || {}
+        // #049 RT-2: guarded merge-write; `null` from merge keeps the
+        // pre-existing "no entry → no write" gate (and skips a locked store).
         const serverKey = getServerKey(serverName, serverConfig)
-        if (existingData.mcpOAuth?.[serverKey]) {
-          delete existingData.mcpOAuth[serverKey].clientId
-          delete existingData.mcpOAuth[serverKey].clientSecret
-          storage.update(existingData)
-        }
+        mergeWriteSecureStorage(serverName, (existingData) => {
+          const entry = existingData.mcpOAuth?.[serverKey]
+          if (!entry) return null
+          const {
+            clientId: _clearedClientId,
+            clientSecret: _clearedClientSecret,
+            ...entryWithoutClient
+          } = entry
+          return {
+            ...existingData,
+            mcpOAuth: {
+              ...existingData.mcpOAuth,
+              [serverKey]: entryWithoutClient,
+            },
+          }
+        })
       }
     }
 
@@ -1756,11 +1823,10 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   async saveClientInformation(
     clientInformation: OAuthClientInformationFull,
   ): Promise<void> {
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
+    // #049 RT-2: guarded merge-write — a locked keychain skips the write
+    // instead of clobbering the shared blob from an empty base.
     const serverKey = getServerKey(this.serverName, this.serverConfig)
-
-    const updatedData: SecureStorageData = {
+    mergeWriteSecureStorage(this.serverName, (existingData) => ({
       ...existingData,
       mcpOAuth: {
         ...existingData.mcpOAuth,
@@ -1775,9 +1841,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
         },
       },
-    }
-
-    storage.update(updatedData)
+    }))
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
@@ -1946,15 +2010,15 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     this._pendingStepUpScope = undefined
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     logMCPDebug(this.serverName, `Saving tokens`)
     logMCPDebug(this.serverName, `Token expires in: ${tokens.expires_in}`)
     logMCPDebug(this.serverName, `Has refresh token: ${!!tokens.refresh_token}`)
 
-    const updatedData: SecureStorageData = {
+    // #049 RT-2: guarded merge-write — a locked keychain skips persistence
+    // instead of clobbering the shared blob from an empty base.
+    mergeWriteSecureStorage(this.serverName, (existingData) => ({
       ...existingData,
       mcpOAuth: {
         ...existingData.mcpOAuth,
@@ -1968,9 +2032,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           scope: tokens.scope,
         },
       },
-    }
-
-    storage.update(updatedData)
+    }))
   }
 
   /**
@@ -2049,29 +2111,31 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
       // only spreads existing data; if no prior performMCPXaaAuth ran,
       // revokeServerTokens would later read tokenData.clientId as undefined
       // and send a client_id-less RFC 7009 request that strict ASes reject.
-      const storage = getSecureStorage()
-      const existingData = storage.read() || {}
+      // #049 RT-2: guarded merge-write — a locked keychain skips persistence
+      // instead of clobbering the shared blob from an empty base.
       const serverKey = getServerKey(this.serverName, this.serverConfig)
-      const prev = existingData.mcpOAuth?.[serverKey]
-      storage.update({
-        ...existingData,
-        mcpOAuth: {
-          ...existingData.mcpOAuth,
-          [serverKey]: {
-            ...prev,
-            serverName: this.serverName,
-            serverUrl: this.serverConfig.url,
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token ?? prev?.refreshToken,
-            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-            scope: tokens.scope,
-            clientId,
-            clientSecret: clientConfig.clientSecret,
-            discoveryState: {
-              authorizationServerUrl: tokens.authorizationServerUrl,
+      mergeWriteSecureStorage(this.serverName, (existingData) => {
+        const prev = existingData.mcpOAuth?.[serverKey]
+        return {
+          ...existingData,
+          mcpOAuth: {
+            ...existingData.mcpOAuth,
+            [serverKey]: {
+              ...prev,
+              serverName: this.serverName,
+              serverUrl: this.serverConfig.url,
+              accessToken: tokens.access_token,
+              refreshToken: tokens.refresh_token ?? prev?.refreshToken,
+              expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+              scope: tokens.scope,
+              clientId,
+              clientSecret: clientConfig.clientSecret,
+              discoveryState: {
+                authorizationServerUrl: tokens.authorizationServerUrl,
+              },
             },
           },
-        },
+        }
       })
       return {
         access_token: tokens.access_token,
@@ -2131,14 +2195,26 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     // Guard with !handleRedirection to avoid persisting during normal auth flows
     // (where the scope may come from metadata scopes_supported rather than a 401).
     if (this._scopes && !this.handleRedirection) {
-      const storage = getSecureStorage()
-      const existingData = storage.read() || {}
+      // #049 RT-2: guarded merge-write; `null` from merge keeps the
+      // pre-existing "no entry → no write" gate (and skips a locked store).
       const serverKey = getServerKey(this.serverName, this.serverConfig)
-      const existing = existingData.mcpOAuth?.[serverKey]
-      if (existing) {
-        existing.stepUpScope = this._scopes
-        storage.update(existingData)
-        logMCPDebug(this.serverName, `Persisted step-up scope: ${this._scopes}`)
+      const stepUpScopes = this._scopes
+      const persisted = mergeWriteSecureStorage(
+        this.serverName,
+        (existingData) => {
+          const existing = existingData.mcpOAuth?.[serverKey]
+          if (!existing) return null
+          return {
+            ...existingData,
+            mcpOAuth: {
+              ...existingData.mcpOAuth,
+              [serverKey]: { ...existing, stepUpScope: stepUpScopes },
+            },
+          }
+        },
+      )
+      if (persisted) {
+        logMCPDebug(this.serverName, `Persisted step-up scope: ${stepUpScopes}`)
       }
     }
 
@@ -2238,8 +2314,6 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
   }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     logMCPDebug(
@@ -2256,7 +2330,9 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     // the credential store (#30337). The SDK re-fetches missing metadata
     // with one HTTP GET on the next auth — see node_modules/.../auth.js
     // `cachedState.authorizationServerMetadata ?? await discover...`.
-    const updatedData: SecureStorageData = {
+    // #049 RT-2: guarded merge-write — a locked keychain skips the write
+    // instead of clobbering the shared blob from an empty base.
+    mergeWriteSecureStorage(this.serverName, (existingData) => ({
       ...existingData,
       mcpOAuth: {
         ...existingData.mcpOAuth,
@@ -2272,9 +2348,7 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           },
         },
       },
-    }
-
-    storage.update(updatedData)
+    }))
   }
 
   async discoveryState(): Promise<OAuthDiscoveryState | undefined> {
@@ -2644,16 +2718,16 @@ export function saveMcpClientSecret(
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
   clientSecret: string,
 ): void {
-  const storage = getSecureStorage()
-  const existingData = storage.read() || {}
   const serverKey = getServerKey(serverName, serverConfig)
-  storage.update({
+  // #049 RT-2: guarded merge-write — a locked keychain skips the write
+  // instead of clobbering the shared blob from an empty base.
+  mergeWriteSecureStorage(serverName, (existingData) => ({
     ...existingData,
     mcpOAuthClientConfig: {
       ...existingData.mcpOAuthClientConfig,
       [serverKey]: { clientSecret },
     },
-  })
+  }))
 }
 
 export function clearMcpClientConfig(
