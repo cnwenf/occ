@@ -125,6 +125,7 @@ import {
   getFastModeHeaderLatched,
   getLastApiCompletionTimestamp,
   getPromptCache1hAllowlist,
+  getPromptId,
   getSessionId,
   getThinkingClearLatched,
   setAfkModeHeaderLatched,
@@ -1104,6 +1105,10 @@ export async function* executeNonStreamingRequest(
         model: clientOptions.model,
         fetchOverride: clientOptions.fetchOverride,
         source: clientOptions.source,
+        // Official 2.1.283 (OCC-138 / C1): both yOt streaming-fallback client
+        // creations pass `promptId:e.promptId` (@ELF 205395827/205399719).
+        // Resolved from bootstrap state — see the client.ts deviation note.
+        promptId: getPromptId() ?? undefined,
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
@@ -2378,6 +2383,12 @@ async function* queryModel(
           model: options.model,
           fetchOverride: options.fetchOverride,
           source: options.querySource,
+          // Official 2.1.283 (OCC-138 / C1): the query-engine main client
+          // creation passes `promptId:W` right after
+          // queryCheckpoint('query_client_creation_start') (@ELF 205359056);
+          // W is the per-query resolved prompt UUID. Resolved from bootstrap
+          // state here — see the client.ts deviation note.
+          promptId: getPromptId() ?? undefined,
         }),
       async (anthropic, attempt, context) => {
         attemptNumber = attempt

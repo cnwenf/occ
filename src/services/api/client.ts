@@ -34,11 +34,13 @@ import { getAgentContext } from 'src/utils/agentContext.js'
 import { assertBedrockStreamingContentType } from './bedrockContentTypeGuard.js'
 import {
   AGENT_TYPE_HEADER,
+  PROMPT_ID_HEADER,
   REQUEST_CLASS_HEADER,
   getAgentTypeHeader,
   getRequestClassHeader,
   isGatewayHintHeadersEnabled,
   sanitizeHeaderValue,
+  validatePromptIdHeader,
 } from './gatewayHints.js'
 
 /**
@@ -138,12 +140,20 @@ export async function getAnthropicClient({
   model,
   fetchOverride,
   source,
+  promptId,
 }: {
   apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
+  /**
+   * Official 2.1.283 `EV` promptId param (OCC-138 / C1). Per-prompt UUID for
+   * first-party request attribution; only the query-engine client creations
+   * pass it (verifyApiKey / side queries leave it undefined, exactly like the
+   * official call sites). Invalid/undefined values drop the header silently.
+   */
+  promptId?: string
 }): Promise<Anthropic> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
@@ -182,6 +192,24 @@ export async function getAnthropicClient({
     const agentType = getAgentTypeHeader(source, agentContext)
     if (agentType) {
       defaultHeaders[AGENT_TYPE_HEADER] = sanitizeHeaderValue(agentType)
+    }
+    // Official 2.1.283 (OCC-138 / C1, byte-verified @ELF 202059092):
+    // `...W&&S!==void 0&&en(S)!==null&&{[bqn]:S}` — gate enabled AND promptId
+    // defined AND canonical-UUID-valid, else the header is dropped (never
+    // throws, never sends an invalid value). The official resolves S from the
+    // last user message's promptId (Wve/EIe/SZt scan) with an
+    // agentContext.parentPromptId fallback for non-main sessions; OCC's
+    // messages don't carry promptId, so query callers pass bootstrap
+    // getPromptId() — the same per-prompt UUID (set by processTextPrompt /
+    // processSlashCommand). In-process subagent queries share that STATE, so
+    // they send the parent's current prompt id, matching the official
+    // parentPromptId fallback. Documented deviation: no per-message scan —
+    // omission degrades attribution, it never misattributes.
+    if (promptId !== undefined) {
+      const validatedPromptId = validatePromptIdHeader(promptId)
+      if (validatedPromptId !== null) {
+        defaultHeaders[PROMPT_ID_HEADER] = validatedPromptId
+      }
     }
   }
 

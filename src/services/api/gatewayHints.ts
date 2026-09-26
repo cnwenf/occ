@@ -16,6 +16,8 @@
  *   Usr → PREV_TOOL_DURATIONS_HEADER         ("x-claude-code-prev-tool-durations")
  *   spn → REQUEST_CLASS_HEADER               ("x-claude-code-request-class")
  *   ipn → AGENT_TYPE_HEADER                  ("x-claude-code-agent-type")
+ *   bqn → PROMPT_ID_HEADER                   ("x-claude-code-prompt-id", 2.1.283)
+ *   en  → validatePromptIdHeader             (canonical-UUID validator, 2.1.283)
  *   eCs → MAX_TOOL_DURATION_ENTRIES (32), tCs → MAX_TOOL_DURATION_HEADER_BYTES (4096)
  *   WG  → BUILTIN_AGENT_QUERY_SOURCE_PREFIX ("agent:builtin:")
  *   Tle → isGatewayHintHeadersEnabled, fl → isFirstPartyAnthropicGateway
@@ -63,6 +65,15 @@ export const PREV_TOOL_DURATIONS_HEADER = 'x-claude-code-prev-tool-durations'
 export const REQUEST_CLASS_HEADER = 'x-claude-code-request-class'
 /** Official `ipn` — agent type / builtin agent name / 'custom' / 'teammate'. */
 export const AGENT_TYPE_HEADER = 'x-claude-code-agent-type'
+/**
+ * Official `bqn` (2.1.283, OCC-138 / C1) — per-prompt UUID for first-party
+ * request attribution. NEW in 2.1.283 (0 occurrences in the 2.1.282 ELF);
+ * also added to the official protected-header set `TC` (invalid-value error
+ * messages select the `Invalid ${header} header value` variant for it — OCC
+ * never constructs header values from user input here, so no TC counterpart
+ * is needed). Byte-verified @ELF 198746663: `var bqn="x-claude-code-prompt-id"`.
+ */
+export const PROMPT_ID_HEADER = 'x-claude-code-prompt-id'
 
 /** Official `eCs` — max tool-duration entries in the header. */
 export const MAX_TOOL_DURATION_ENTRIES = 32
@@ -183,6 +194,25 @@ export function sanitizeToolNameForHeader(toolName: string): string {
  */
 export function sanitizeHeaderValue(value: string): string {
   return value.replace(/%|[^\x20-\x7e]/gu, encodeURIComponent)
+}
+
+/**
+ * Official 2.1.283 `en(t)` (OCC-138 / C1, chunk-s1pmhfks @ELF 195845579,
+ * byte-verified): the prompt-id header validator used in the client factory
+ * spread `...W&&S!==void 0&&en(S)!==null&&{[bqn]:S}`. Non-strings and
+ * non-canonical-UUID strings are rejected → the header is DROPPED (never
+ * throws, never sends an invalid value):
+ *   var d=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+ *   function en(t){if(typeof t!=="string")return null;return d.test(t)?t:null}
+ */
+const PROMPT_ID_UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+export function validatePromptIdHeader(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null
+  }
+  return PROMPT_ID_UUID_RE.test(value) ? value : null
 }
 
 // ---------------------------------------------------------------------------
