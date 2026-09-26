@@ -339,6 +339,22 @@ keybindings 批（35/36/69）各自成轮内并行簇。
   P1-5 OTEL tool.output 17 pass / 31 expects；P1-6a policySandbox283 14/14 +
   settings 套件 253/0。
 
+### 9.1 追记（合并树重跑，§10 承诺项）
+
+- **合并提交 `039a0af`（本轮 `26e7999` × origin/main `180db95`）之后的权威
+  门禁重跑**：`CI=true bash scripts/ci-test.sh` → **6857 pass / 0 fail /
+  115 skip，666 文件，exit 0**（较合并前 6832/665 的增量 = OCC-138 带入的
+  misspelledModifier283 等测试文件 + 本轮被其取代的 282 命名恢复测试）。
+- **构建重跑**：`bun run build` → `dist/cli.js` **30,947,156 bytes**，注入
+  MACRO.VERSION=2.1.354。
+- **合并后 live 冒烟（隔离 `CLAUDE_CONFIG_DIR`，重建 dist）**：
+  `echo "reply with exactly: PONG-MERGED" | bun dist/cli.js -p` → **EXIT=0，
+  stdout `PONG-MERGED`**；stderr 仅预期的 `[claude-code:unrecognized_model]`
+  诊断行（qwen3.8-max，2.1.233 对齐行为）。
+- **仲裁测试合并后单跑复核**：policySandbox283 14/14、managedOnlyKeys283
+  14/14、policyStrictParse282 41/41、reservedNamespaces282 0 fail、
+  reservedNamespacePermissions282 0 fail、promptIdHeader283 0 fail。
+
 ### 9.2 构建
 
 - `bun run build` → `dist/cli.js` **30,942,878 bytes**；构建后 0 个 src 文件
