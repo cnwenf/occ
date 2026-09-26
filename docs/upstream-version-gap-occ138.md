@@ -481,7 +481,72 @@ P4 UI/UX 批次（I 簇 + F7 + H5 等）：全部维持 STAGE，§2 逐条裁决
 
 ## 8. 测试与收尾记录
 
-（CI 全量 gate、REPL tmux e2e、README/polyfill 版本同步、scratch 清理后填写。）
+### 8.1 CI 全量 gate（`CI=true bash scripts/ci-test.sh`）
+
+- **首跑**：6679 pass / **8 fail** / 116 skip（659 文件，5 个失败文件）。逐条核对
+  失败原因：**全部**是 `dist/cli.js` 不存在（本 runtime workdir 从未 build 过；
+  e2e 子进程 `runOcc` 走 BUILT bundle）——与本轮代码改动无关：
+  - `test/e2e/occ-versioning.e2e.test.ts` — `Module not found ".../dist/cli.js"`；
+  - `test/e2e/version-2.1.329-effort-cap.e2e.test.ts` — ②③④⑦ headless wire
+    测试 `BIN = dist/cli.js`；
+  - `test/e2e/version-hooks-2.1.248.e2e.test.ts` — 同上（`BIN = dist/cli.js`）；
+  - `test/e2e/workflow-permission-dialog-ctrl-g.e2e.test.ts` — binary parse
+    smoke 两条直接断言 `dist/cli.js`；
+  - `test/launcher.test.ts` — 文件级加载失败（0 test 跑起）。
+- **修复**：`bun run build` → `dist/cli.js` 29.48 MB，注入
+  `MACRO.VERSION=2.1.354`、`MACRO.BINARY_NAME=occ`。
+- **复跑**（5 个失败文件，`CI=true` 同 gate 语义）：**41 pass / 5 skip / 0 fail**。
+  全量 gate 达成：**6687 pass / 0 fail / 116 skip**（659 文件）。
+- 本轮新增测试全绿：C1 `promptIdHeader283.test.ts` 10/10、C2
+  `mcpToolOutputOtel283.test.ts` 17/17、G2 `misspelledModifier283.test.ts`、
+  P1a/P1b 簇内改写测试（D-cluster expected-red 已按 283 官方行为改写，
+  **无静默删测试**）。
+
+### 8.2 既有红灯（非本轮引入，诚实记录，未删未改）
+
+`version-2.1.329-effort-cap.e2e.test.ts` 的 **⑥ test-f3（tmux REPL
+ModelPicker）** 在**非 CI**（有 tmux）环境下失败：`settings.effortLevel='high'`
+断言通过，但 `settings.model` 为 `undefined`。**A/B 取证**：`git worktree`
+检出本轮基线 `9e0c050` 并 build，同一测试指向基线 dist 复跑 → **失败完全
+一致**（同断言、同 undefined），证明是既有红灯，非本轮 5 个 commit 引入。
+该测试块本身 `describe.skipIf(!!process.env.CI || !tmuxAvailable())`，设计上
+不进 CI gate（OCC-82 轮遗留 tmux-only 面）。归属 OCC-82/ModelPicker 面，
+建议下轮或验收环节跟进；本轮不顺手改（避免混入未取证的 UI 行为变更）。
+
+### 8.3 REPL tmux e2e（live model，BUILT dist/cli.js）
+
+- `./dist/cli.js --version` → `OCC 2.1.354`；headless live：
+  `echo "say PONG-OCC138..." | ./dist/cli.js -p` → `PONG-OCC138`，exit 0
+  （伴生 `[claude-code:unrecognized_model] {"model":"glm-5.2"}` gateway hint，
+  为环境网关模型名的良性提示，非错误）。
+- tmux REPL（220×60，`--dangerously-skip-permissions`，fresh 目录）：
+  trust dialog 正常渲染 → Down+Enter 接受；启动横幅 `OCC v2.1.354`、
+  `glm-5.2 with xhigh effort · API Usage Billing`、bypass permissions 指示正常。
+- **live-model 往返**：发送 `Reply with exactly: REPL-PONG-138` →
+  `● REPL-PONG-138`（1m19s，54093 tokens），流式渲染与 token 计数正常。
+- `/status`：Version `2.1.354`、Session ID、Auth token `ANTHROPIC_AUTH_TOKEN`、
+  base URL（环境网关）、Model `glm-5.2`、`MCP servers: 3 connected`、
+  `Setting sources: User settings`、`Auto mode server: Disabled` 行齐全。
+- `/exit` 正常退出，tmux session 清理；临时目录删除。
+
+### 8.4 版本标记同步（hygiene）
+
+- README Tracks **4 处** `2.1.282` → `2.1.283`（badge / What-is-OCC 正文段 /
+  Capability-parity 表行 / Status 页脚），OCC-97 历史叙述保留；
+  `bun run dev` 注释同步。
+- `src/entrypoints/cli.tsx` dev polyfill `VERSION: "2.1.282"` → `"2.1.283"`；
+  smoke：`bun run src/entrypoints/cli.tsx --version` → `OCC 2.1.283` ✓。
+- 仓库 `CLAUDE.md` dev-note 同步（"Version prints as 2.1.283"）。
+- `package.json` version 保持 `2.1.354`（OCC 自有发布号，release 由验收流程决定）。
+
+### 8.5 收尾
+
+- 分支纪律：本轮全部按段直推 `main`（`git push origin HEAD:main`，
+  worktree lock 禁 checkout main）：`1c32d65`(P1a) → `bba07e7`(P1b) →
+  `c99a83f`(gap doc) → `9bb67b2`(G2) → `180db95`(P2 §5) → `1f31a46`(C1) →
+  `fc9dbb6`(C2 + §6) → 本 hygiene commit。无残留 feature 分支。
+- 官方二进制全程未执行（strings/dd/grep/od only，occ136 §11.5 纪律）。
+- `scratch-occ138/` 取证目录已删除（§9 口径：用完即删）。
 
 ## 9. 取证材料留存
 
