@@ -37,15 +37,15 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 
 | # | 条目 | 裁决 | 说明 |
 |---|------|------|------|
-| B1★ | `availableModelsMatch` managed setting（"exact"） | **PORT 计划（P3）** | 282:0 → 283:9 处；settings 信任链表面，与 OCC-97 Cluster B 同族。 |
-| B2★ | `deniedModels` managed setting | **PORT 计划（P3）** | 282:0 → 283:23 处。 |
+| B1★ | `availableModelsMatch` managed setting（"exact"） | **STAGE（见 §6.3）** | 282:0 → 283:9 处；settings 信任链表面，与 OCC-97 Cluster B 同族。 |
+| B2★ | `deniedModels` managed setting | **STAGE（见 §6.3）** | 282:0 → 283:23 处。 |
 
 ### C. gateway / 遥测（P3）
 
 | # | 条目 | 裁决 | 说明 |
 |---|------|------|------|
-| C1★ | `x-claude-code-prompt-id` gateway hint header | **PORT 计划（P3）** | OCC 已有 `GATEWAY_HINT_HEADERS` 基座（2.1.273 轮），增量 port；282:0 → 283:2 处。 |
-| C2★ | OTEL `tool.output` 加入 MCP tool / WebFetch / WebSearch 输出 | **PORT 计划（P3）** | OCC 已有 `OTEL_LOG_TOOL_CONTENT` 6 处命中，增量 port。 |
+| C1★ | `x-claude-code-prompt-id` gateway hint header | **✅ 已落地（`1f31a46`，见 §6.1）** | OCC 已有 `GATEWAY_HINT_HEADERS` 基座（2.1.273 轮），增量 port；282:0 → 283:2 处。 |
+| C2★ | OTEL `tool.output` 加入 MCP tool / WebFetch / WebSearch 输出 | **✅ 已落地（见 §6.2）** | OCC 已有 `OTEL_LOG_TOOL_CONTENT` 6 处命中，增量 port。 |
 | C3 | `load_test_mode` gateway 配置块 | **STAGE** | Claude apps gateway **服务端**表面，OCC 无 gateway 服务端（沿 Leader D 簇初判；load_test_mode 282 已有 10 处命中为客户端侧探测串，归属服务端功能）。 |
 | C4 | `mantle` upstream provider（Bedrock Mantle endpoint） | **STAGE** | 同上，gateway 服务端 provider 表。 |
 
@@ -75,11 +75,11 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 
 | # | 条目 | 裁决 | 说明 |
 |---|------|------|------|
-| F1 | 后台长任务的 progress 通知不再丢弃 | **PORT 计划（P3）** | OCC MCP client 有后台任务表面。 |
-| F2 | 会话结束时 stdio server 残留 | **PORT 计划（P3）** | OCC stdio 生命周期。 |
-| F3 | stateless remote server 短暂 404 后整会话不可用 | **PORT 计划（P3）** | OCC HTTP transport 错误恢复。 |
+| F1 | 后台长任务的 progress 通知不再丢弃 | **STAGE（见 §6.3）** | OCC MCP client 有后台任务表面。 |
+| F2 | 会话结束时 stdio server 残留 | **STAGE（见 §6.3）** | OCC stdio 生命周期。 |
+| F3 | stateless remote server 短暂 404 后整会话不可用 | **STAGE（见 §6.3）** | OCC HTTP transport 错误恢复。 |
 | F4 | sign-in 无有效 URL 的 opaque error；/mcp 不再提供 Authenticate | **STAGE** | OCC MCP OAuth 为简化版（CLAUDE.md 记录），表面不同。 |
-| F5 | `mcp add/add-json/remove` 配置写失败仍报 success | **PORT 计划（P3）** | 安全相关（静默失败）；OCC mcp CLI 表面存在。 |
+| F5 | `mcp add/add-json/remove` 配置写失败仍报 success | **STAGE（安全相关，下轮优先，见 §6.3）** | 安全相关（静默失败）；OCC mcp CLI 表面存在。 |
 | F6 | MCP tool 返回图片同时落盘 | **STAGE（P4 候选）** | 新行为面，需取证图片落盘路径约定。 |
 | F7 | `/mcp` 工具列表 UI（翻页/鼠标/组织 blocked 图标） | **STAGE（P4）** | UI 批次。 |
 | F8 | MCP sign-in 后的浏览器页（居中/暗色/新美术） | **NO-OP** | 官方托管的静态页面资产，不在 CLI 二进制行为面内。 |
@@ -128,7 +128,7 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 
 | # | 条目 | 裁决 | 说明 |
 |---|------|------|------|
-| J1 | vim `.` 丢 Shift+Enter 换行 / 重音字母内光标 / `3J`、Visual `J` 后重复旧更改 | **STAGE→P3 视预算** | OCC 有完整 vim 表面（`src/vim/`），occ44 起 vim 修复按 per-site 取证纪律推进；本轮预算内能证则 port，否则诚实 STAGE。 |
+| J1 | vim `.` 丢 Shift+Enter 换行 / 重音字母内光标 / `3J`、Visual `J` 后重复旧更改 | **STAGE（见 §6.3）** | OCC 有完整 vim 表面（`src/vim/`），occ44 起 vim 修复按 per-site 取证纪律推进；本轮预算内能证则 port，否则诚实 STAGE。 |
 | J2 | vim 光标越界（>10,000 字符 recall）/ `V`+`p` 落点 | 同上 | |
 | J3 | vim `J` join 间距与 Vim 差异 | 同上 | |
 
@@ -144,11 +144,11 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 | K6 | 启动懒加载（`-p` 不载交互 UI；auto-mode 分类器规则 + Artifact tool 首次用时加载） | **STAGE（P3 候选）** | OCC 启动路径需 profile 后定。 |
 | K7 | claude.ai 账号 Artifact 特性未知时 prompt 不等 1.5s | **NO-OP** | 官方账号服务耦合。 |
 | K8 | 三方 provider / telemetry off 时默认 auto mode 启动 | **STAGE** | 权限模式默认值变更，涉及 OCC auto-mode 面（classifier flags live），需专项验证不误开。 |
-| K9 | `--system-prompt`/`--append-system-prompt` 文本与 `-file` 双形式并用 | **PORT 计划（P3 候选）** | OCC CLI 表面存在；小改动。 |
+| K9 | `--system-prompt`/`--append-system-prompt` 文本与 `-file` 双形式并用 | **STAGE（见 §6.3）** | OCC CLI 表面存在；小改动。 |
 | K10 | artifact DB 有序查询满页提示 | **NO-OP** | OCC 无 artifact DB 表面。 |
 | K11 | artifact watch 3.5h 自动解除 | **NO-OP** | 同上。 |
 | K12 | Remote Control 在 telemetry off 时付费计划不可用 | **NO-OP** | OCC Remote Control 表面不同。 |
-| K13 | `plugin_errors` 加 `path` 字段（`--plugin-dir` 加载失败条目） | **PORT 计划（P3 候选）** | OCC stream-json init 事件已有 plugin_errors 基座（待核字段）。 |
+| K13 | `plugin_errors` 加 `path` 字段（`--plugin-dir` 加载失败条目） | **STAGE（见 §6.3）** | OCC stream-json init 事件已有 plugin_errors 基座（待核字段）。 |
 
 ### L. 自托管 runner / VSCode / Cloud sessions / Claude Tag / Code Review
 
@@ -164,9 +164,9 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 
 | 裁决 | 数量（含计划） |
 |------|------|
-| ✅ PORT 已落地 | A1、A2、G6（P1a+P1b） |
-| PORT 计划（P2） | G1–G5 |
-| PORT 计划（P3，视预算，不足则转 STAGE 并记录） | B1、B2、C1、C2、F1、F2、F3、F5、K9、K13、J1–J3 |
+| ✅ PORT 已落地 | A1、A2、G6（P1a+P1b）、G2（P2）、C1、C2（P3） |
+| PORT 计划（P2） | G1–G5（裁决完成：1 PORT + 3 NO-OP + 1 STAGE，见 §5） |
+| STAGE（原 P3 计划，预算耗尽诚实转 STAGE，逐项理由见 §6.3） | B1、B2、F1、F2、F3、F5、K9、K13、J1–J3 |
 | STAGE | D1、D2、C3、C4、E1–E11、F4、F6、F7、H1–H5、I1–I6、I8、I9、I11–I14、K1、K3、K4、K5、K6、K8 |
 | NO-OP | F8、I7、I10、K2、K7、K10、K11、K12、L1–L21 |
 
@@ -361,7 +361,112 @@ SR-label 机制，或 OCC SR 用户实际反馈该痛点。
 
 ## 6. P3 / P4（视预算）
 
-（B/C/F/K9/K13/J 簇落地或诚实 STAGE 后记录。）
+预算内落地 C1、C2 两项（§6.1、§6.2）；其余 P3 计划项全部诚实转 STAGE
+（§6.3）；P4 UI/UX 批次维持 STAGE（§2 I 簇逐条裁决即记录）。
+
+### 6.1 C1 — `x-claude-code-prompt-id` gateway hint header（✅ `1f31a46`）
+
+官方 283 机制（byte 级取证，v2.1.283 linux-x64 ELF）：
+
+- 常量 `var bqn="x-claude-code-prompt-id"` @198746663，**283 新增**（282 ELF
+  0 命中）；同时加入官方 protected-header 集合 `TC`（仅影响错误消息选型
+  `Invalid ${header} header value`，OCC 无对应构造点，无需 port）。
+- 客户端工厂 `EV` 的 header spread @202059092：
+  `...W&&S!==void 0&&en(S)!==null&&{[bqn]:S}` —— gate（`qnn()`，即 OCC 已
+  port 的 `isGatewayHintHeadersEnabled`）开启 AND promptId 已定义 AND 通过
+  校验器 `en`，否则**静默丢弃**（不抛错、不发非法值）。
+- 校验器 `en`（chunk-s1pmhfks @195845579）：
+  `/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`，
+  非 string → null。
+- 调用点：仅 query-engine 的 client 创建传 promptId —— 主 query
+  （`query_client_creation_start` 后 @205359056）+ 两处 yOt 非流式 fallback
+  （@205395827/@205399719）；`verifyApiKey` **不传**（282 行为保持）。
+
+OCC 落地（3 文件 + 1 测试文件，10/10 pass）：
+
+- `src/services/api/gatewayHints.ts`：`PROMPT_ID_HEADER` 常量 +
+  `validatePromptIdHeader()`（官方 `en` 逐字节等价）。
+- `src/services/api/client.ts`：`getAnthropicClient` 新增可选 `promptId`
+  参数；gated header 块内按官方 spread 语义注入（校验失败静默丢弃）。
+- `src/services/api/claude.ts`：主 query + `executeNonStreamingRequest` 两处
+  client 创建传 `getPromptId() ?? undefined`；`verifyApiKey` 不传（官方
+  parity）。
+- `src/services/api/__tests__/promptIdHeader283.test.ts`：校验器全分支
+  （大小写 UUID 通过、11 种非法串拒绝、含 CRLF 头注入、非 string 输入）+
+  client 级 header 发射 5 例（gate on/off、非法值丢弃、undefined 缺席时
+  2.1.273 hint headers 不受影响）。
+
+**记录在案的偏差**：官方 promptId 从消息流解析（`Wve`/`EIe`/`SZt` 扫描最后
+一条 user message 的 promptId，非主会话 fallback `agentContext.parentPromptId`）；
+OCC 消息不携带 promptId，改为传 bootstrap `getPromptId()` —— 同一个 per-prompt
+UUID（processTextPrompt/processSlashCommand 设置，OTel `prompt.id` 同源），
+进程内 subagent 共享 STATE 故发送父会话当前 prompt id，语义等价于官方
+parentPromptId fallback。降级方向安全：缺失只降低归因精度，**永不误归因**。
+
+### 6.2 C2 — OTEL `tool.output` 扩展至 MCP / WebFetch / WebSearch（✅ 本 commit）
+
+官方 283 delta（byte 级取证）：283 ELF `tool.output` 3 处 vs 282 的 2 处；
+新增块位于 query-engine tool-dispatch @~204862679，处在 tool_result 映射
+（`ls=...mapToolResultToToolResultBlockParam...`）之后、endToolSpan 对应物
+（`iPt`）之前（283 同时把 `Hr`/`iPt` 重排到新块之后）：
+
+```js
+if((e.mcpInfo!==void 0||HQn.has(e.name))&&!oo.detached&&rTr(Wt)){
+  let Sr=wbo(ls.content);
+  oTr(Wt,"tool.output",{output:e.mcpInfo?.accountMemory===!0?KEe(Sr):Sr})}
+```
+
+- `HQn=new Set([Mr,uv])` @204827266，`Mr="WebFetch"` @200200794、
+  `uv="WebSearch"` @202646603（builtin Read/Edit/Write/Bash 集合 `UQn` 282
+  已有，对应 OCC 既有 contentAttributes 块，不动）。
+- 门 `rTr(n){return ND()&&Iut()&&!Rk()&&n.isRecording()}` @201186406。
+- 展平器 `wbo` @201186465：string 原样；非数组 → `""`；块数组 → text 块取
+  `String(e.text)`，其余 `[${type??"unknown"}]` 占位，`\n` join（join 分隔符
+  od 逐字节核实为模板串内真实换行）。
+- 发射器 `oTr` @201186638 = OCC 既有 `addToolContentEvent`（截断 +
+  `${key}_truncated`/`${key}_original_length` 已对齐）。
+- accountMemory 遮蔽 `KEe(n)` @201178413 = `` `<${n.length} chars; not recorded>` ``。
+
+OCC 落地（2 文件 + 1 测试文件，17/17 pass）：
+
+- `src/utils/telemetry/sessionTracing.ts`：新增 `shouldRecordToolContentEvent()`
+  （官方 `rTr` 调用点门）+ `flattenToolOutputContent()`（官方 `wbo` 逐分支
+  等价）。
+- `src/services/tools/toolExecution.ts`：新增 `WEB_OUTPUT_TOOL_NAMES`
+  （官方 `HQn`）；**顺序对齐**：把缓存映射块（`mappedToolResultBlock`/
+  `mappedContent`/`toolResultSizeBytes`）上提到 `endToolSpan` 之前（官方 283
+  顺序：映射 → 新 tool.output → `iPt`；`endToolSpan` 会清 ALS store，发射
+  必须在前），随后插入官方新块（mcpInfo 或 WebFetch/WebSearch → 展平映射
+  content → `addToolContentEvent('tool.output', {output})`）。
+- `src/services/tools/__tests__/mcpToolOutputOtel283.test.ts`：wbo 全分支
+  7 例、rTr 门 env 真值表 4 例、runToolUse 集成 6 例（MCP 工具发射 + 展平、
+  发射先于 endToolSpan 的顺序钉死、WebFetch/WebSearch 无 mcpInfo 也发射、
+  无 mcpInfo 的 builtin 不走 283 路径、gate off 零发射、string content 原样）。
+
+**记录在案的 NO-OP 偏差**：① `!oo.detached` —— OCC 工具结果无 detached
+变体（官方 detached 旁路在 OCC 结构上不存在），条件恒真故省略；② `KEe`
+accountMemory 遮蔽 —— OCC `mcpInfo` 仅 `{serverName,toolName}`，无
+accountMemory 标志（MCP account memory 特性未 port，src 0 命中），三元
+分支永不触发故省略；③ `!Rk()` —— 官方 CCR/cloud-remote 会话模式闩，OCC
+无 CCR 表面，恒真；④ `n.isRecording()` —— 折叠进 OCC 既有
+addToolContentEvent 的 store/span 存在性检查（既有门形状，非本轮引入）。
+
+### 6.3 原 P3 计划余项 → STAGE（预算耗尽，逐项理由）
+
+| 项 | STAGE 理由 |
+|----|-----------|
+| B1/B2 `availableModelsMatch`/`deniedModels` | 283 全新 managed-settings 表面（9/23 处命中），需恢复完整 settings 信任链机制（schema + 模型选择器全部消费点 + managed-only 强制），逐项 per-site 取证规模超出本轮剩余预算。下轮优先（settings 治理族，与 OCC-97 Cluster B 同基座）。 |
+| F1 MCP 后台任务 progress 通知 | 官方 MCP client 后台任务生命周期多 site 差分，需专项取证 notification 缓冲/转发机制。 |
+| F2 stdio server 会话结束残留 | 进程生命周期/清理路径与 OCC daemon 模型交叉，盲改风险高，需专项取证。 |
+| F3 stateless remote 404 恢复 | HTTP transport 错误分类/重试语义 per-site 取证未完成。 |
+| F5 `mcp add/remove` 静默失败 | **安全相关（静默失败），下轮优先**；OCC mcp CLI 写路径需先核对是否同构再 port。 |
+| K9 `--system-prompt` 双形式 | CLI arg-parse site 取证未完成（官方 `-file` 后缀解析细节）。 |
+| K13 `plugin_errors.path` | OCC stream-json init `plugin_errors` 基座字段需先核对（283 新字段的加载失败条目来源）。 |
+| J1–J3 vim 批次 | 按 occ44 起的 per-site 取证纪律：每个行为需二进制行级差分定位 + OCC `src/vim/` 行为验证（OCC vim 引擎为独立实现，官方修复点位不必然同构），合并规模超出剩余预算；维持合并取证计划。 |
+| I13 `select:*` 键位动作 | 已随 §2 I13 取证记录 STAGE（P4）：官方 unknown-action 校验 `!A(h)`→`!M(h)&&!q(h)`、白名单 163→157；OCC `validateBlock` 缺 unknown-action 检查为**既有缺口非本轮回归**，随 P4 批次一并落。 |
+
+P4 UI/UX 批次（I 簇 + F7 + H5 等）：全部维持 STAGE，§2 逐条裁决即记录。
+
 
 ## 7. 上轮 STAGE 复核（occ136 §6）
 

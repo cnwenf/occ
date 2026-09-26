@@ -791,6 +791,47 @@ export function addToolContentEvent(
   currentSpanCtx.span.addEvent(eventName, processedAttributes)
 }
 
+/**
+ * Official 2.1.283 `rTr` (OCC-138 / C2, byte-verified @ELF 201186406):
+ *   function rTr(n){return ND()&&Iut()&&!Rk()&&n.isRecording()}
+ * Call-site gate checked BEFORE flattening tool output for a content event.
+ * ND → isAnyTracingEnabled, Iut → isToolContentLoggingEnabled
+ * (OTEL_LOG_TOOL_CONTENT). Documented deviations: `!Rk()` is the official
+ * CCR/cloud-remote-session-mode latch — OCC has no CCR, so it is always
+ * true here; `n.isRecording()` folds into addToolContentEvent's
+ * store/span presence checks (pre-existing OCC gate shape).
+ */
+export function shouldRecordToolContentEvent(): boolean {
+  return isAnyTracingEnabled() && isToolContentLoggingEnabled()
+}
+
+/**
+ * Official 2.1.283 `wbo` (OCC-138 / C2, byte-verified @ELF 201186465):
+ * flattens mapped tool_result content into a single string for the OTEL
+ * `tool.output` event — strings pass through, non-arrays become "", and
+ * block arrays map text blocks to their text and everything else to a
+ * `[type]` placeholder (`[unknown]` when the type is missing), joined with
+ * newlines:
+ *   function wbo(n){if(typeof n==="string")return n;if(!Array.isArray(n))return"";
+ *     return n.map(e=>e?.type==="text"?String(e.text):`[${String(e?.type??"unknown")}]`).join(`\n`)}
+ */
+export function flattenToolOutputContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+  if (!Array.isArray(content)) {
+    return ''
+  }
+  return content
+    .map((block: unknown) => {
+      const b = block as { type?: unknown; text?: unknown } | null | undefined
+      return b?.type === 'text'
+        ? String(b.text)
+        : `[${String(b?.type ?? 'unknown')}]`
+    })
+    .join('\n')
+}
+
 export function getCurrentSpan(): Span | null {
   if (!isAnyTracingEnabled()) {
     return null
