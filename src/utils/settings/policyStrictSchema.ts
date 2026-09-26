@@ -1,26 +1,32 @@
 /**
- * claude-code 2.1.282 strict policy-source settings schema.
+ * claude-code 2.1.283 strict policy-source settings schema.
  *
- * Byte-exact port of the official 2.1.282 `Ko(onIssue, sourceLabel)` builder
- * plus the `pd` issue sink and the `jdn` "document is not a JSON object"
- * records. Used for POLICY sources only (remote managed settings, MDM
+ * Byte-exact port of the official 2.1.283 `Ko(onIssue, sourceLabel)` builder
+ * plus the `Od` issue sink (282 `pd`) and the `jdn` "document is not a JSON
+ * object" records. Used for POLICY sources only (remote managed settings, MDM
  * plist/registry, managed-settings.json + drop-ins, HKCU). Non-policy sources
  * keep the whole-file all-or-nothing `SettingsSchema().safeParse` behavior —
  * the official does the same (SDK inline `--settings` uses the plain schema,
  * binary `X3e`/`ay`).
  *
- * Official build order (all message strings extracted verbatim from
- * /tmp/occ97b/package/claude v2.1.282, Ko @194785637 window):
+ * Official build order (all message strings extracted verbatim from the
+ * official v2.1.283 linux-x64 binary — OCC-138 forensics; sandbox rebuild
+ * call @196694745):
  *   1. generic per-field catch ("This field was ignored.")
  *   2. prepend/appendPlugins guarded variant ("read as unset.")
  *   3. wslInheritsWindowsSettings bespoke wrapper (guarded — key absent in OCC)
  *   4. strictKnownMarketplaces / blockedMarketplaces (`bi`)
  *   5. allowedMcpServers / deniedMcpServers (`Ei`)
- *   6. lock-field wrappers (`Ni` loop) + strictPluginOnlyCustomization bespoke (`Mi`)
+ *   6. lock-field wrappers (`Zo` loop, shared `Ho` coercion — 283: the
+ *      top-level wrapper now reuses policyLocks' leafCoercionPreWrap and its
+ *      disable-false/null records carry removal:true) +
+ *      strictPluginOnlyCustomization bespoke (`Mi`)
  *   7. enabledPlugins / availableModels / allowedHttpHookUrls /
  *      httpHookAllowedEnvVars / allowedChannelPlugins (`vo`) /
  *      gatewayInternalNetworks / forceLoginOrgUUID overrides
- *   8. per-block salvage rebuild (`Ki` via policyLocks.ts)
+ *   8. per-block salvage rebuild (`jo` via policyLocks.ts) — 283: the generic
+ *      loop SKIPS `sandbox`, which gets its own `jo` call with
+ *      skeletonExclude(sandbox.enabled) + neverSubstitute(sandbox.failIfUnavailable)
  *   9. passthrough + onlySubstitutes tail transform
  *
  * Every override is guarded by `key in shape` so the machinery is data-driven:
@@ -28,22 +34,32 @@
  * once both the schema and RESTRICTIVE_ENTRIES grow them.
  *
  * STAGED (in official Ko, deliberately not ported — see gap report):
- * - managedMcpServers coherence checks (`Ft`) — key absent in OCC;
+ * - managedMcpServers coherence checks (`Ft`/`Zt`) — key absent in OCC;
  * - policyHelper/policyHelpers static-payload machinery — keys absent in OCC;
- * - sandbox.credentials fail-closed skeleton — OCC sandbox fields keep the
- *   generic per-field catch (step 1);
+ * - the bespoke `sandbox.credentials` override (`te`, passed via `jo`'s
+ *   `override` option in the official sandbox call): per-entry credential
+ *   salvage, sigv4 per-shape deny degradation, allowPlaintextInject
+ *   degradation, awsPairs suppression, FNV-1a synthetic variable names and
+ *   frozen deny sentinels (~4.4 KB). STAGED because OCC's sandbox.credentials
+ *   schema is only `{enabled?: boolean}` and OCC does not implement
+ *   credential blocking — there is nothing for `te` to guard. With `te`
+ *   absent, OCC's sandbox.credentials takes the plain `fg` leaf path: an
+ *   invalid value is recorded and the WHOLE credentials field is dropped
+ *   (no per-entry salvage). The 283 `Sn` sandbox.credentials exclusion IS
+ *   ported (policyLocks.ts) so the sub-block never enters the generic
+ *   rebuild loop;
  * - `bi`'s per-entry marketplace ENFORCEABILITY warnings (`un`: regex compile,
  *   github/git wildcard checks) — OCC's policySourceSanitizer already
  *   pre-filters unenforceable marketplace entries (CC 2.1.277 report_C C9);
  * - enabledPlugins PER-ENTRY salvage (needs the official plugin-id schema
- *   `Rk` for the `enabledPlugins.<invalid id>` path label) — OCC keeps the
- *   whole-map fail-closed catch below;
+ *   `Rk`/`VC` for the `enabledPlugins.<invalid id>` path label) — OCC keeps
+ *   the whole-map fail-closed catch below;
  * - allowedChannelPlugins string-entry coercion acceptance note (official
  *   `Up` coerces "plugin@marketplace" strings; the OCC entry schema is
  *   object-only, so string entries fail with the standard per-entry message);
  * - remote-consumer warning sanitization (`r$e`/Th: whitespace collapse,
  *   non-printable replacement, 512-char cap) and the `RAe` managedMcpServers
- *   sink filter — the official `pd` sink itself does neither.
+ *   sink filter — the official `Od` sink itself does neither.
  */
 import { z } from 'zod/v4'
 import { MarketplaceSourceSchema } from '../plugins/schemas.js'
@@ -57,6 +73,7 @@ import {
   isPlainObject,
   isRebuiltBlock,
   isSynthesizedObject,
+  leafCoercionPreWrap,
   type PolicyIssueCallback,
   type PolicyZodIssue,
   rebuildBlockSchema,
@@ -340,34 +357,16 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
     }) as z.ZodType
   }
 
-  // 6. Lock fields (`Ni` loop): string-boolean coercion, disable-false →
-  //    absent, invalid → restrictive substitution (2.1.282 bullet a).
+  // 6. Lock fields (`Zo` loop): string-boolean coercion, disable-false →
+  //    absent (283: + removal:true record), invalid → restrictive
+  //    substitution (2.1.282 bullet a). 283: the coercion is the shared `Ho`
+  //    helper (leafCoercionPreWrap) — the official top-level wrapper is
+  //    `Fe([df().transform(()=>{}), Ho(_,w,T,e)]).optional().catch(...)`.
   const substitutedKeys = new Set<string>()
   for (const { key, restrictive, field } of collectLockFields(shape)) {
     const fallbackText =
       typeof restrictive === 'string' ? `"${restrictive}"` : String(restrictive)
-    const coerced = z.preprocess(value => {
-      if (typeof restrictive === 'boolean') {
-        const result = coerceStringBoolean(value)
-        if (result !== value) {
-          onIssue({
-            path: key,
-            message: `"${key}" holds the string "${String(result)}" where a boolean belongs; reading it as ${String(result)}. Write it without quotes.`,
-            statusOnly: true,
-          })
-        }
-        return result
-      }
-      if (restrictive === 'disable' && (value === false || value === 'false')) {
-        onIssue({
-          path: key,
-          message: `"${key}" was set to false; reading it as absent (the key's only value is "disable"). Remove the key instead.`,
-          statusOnly: true,
-        })
-        return undefined
-      }
-      return value
-    }, field)
+    const coerced = leafCoercionPreWrap(key, restrictive, field, onIssue)
     wrapped[key] = z
       .union([z.null().transform(() => undefined), coerced])
       .optional()
@@ -514,17 +513,47 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
     ) as z.ZodType
   }
 
-  // 8. Per-block salvage rebuild (`Ki`): permissions / autoMode / worktree /
+  // 8. Per-block salvage rebuild (`jo`): permissions / autoMode / worktree /
   //    attribution — one invalid nested value no longer discards the block
-  //    (2.1.282 bullet b).
+  //    (2.1.282 bullet b). 283: `sandbox` is SKIPPED here (official
+  //    `if(_==="sandbox"||!Sn(_))continue`) and rebuilt by its own `jo` call
+  //    below — one invalid sandbox leaf no longer discards the whole sandbox
+  //    block (OCC-138 P1a; closes the RT③d whole-block-discard gap).
   const synthesized = new WeakSet<object>()
   for (const [key, field] of Object.entries(shape)) {
-    if (!isRebuiltBlock(key)) continue
+    if (key === 'sandbox' || !isRebuiltBlock(key)) continue
     const inner = unwrapToObjectSchema(field)
     if (inner !== undefined) {
       wrapped[key] = rebuildBlockSchema(key, inner, onIssue, {
         synthesized,
         strictField: field,
+      })
+    }
+  }
+
+  // 8b. sandbox bespoke rebuild (official 283 @196694745, verbatim options):
+  //     `r.sandbox=jo("sandbox",pmn(),e,{override:{"sandbox.credentials":te},
+  //     skeletonExclude:new Set(["sandbox.enabled"]),
+  //     neverSubstitute:new Set(["sandbox.failIfUnavailable"]),synthesized:y})`
+  //     - skeletonExclude: a non-object sandbox value synthesizes the
+  //       restrictive skeleton WITHOUT `enabled` (the block must not auto-arm
+  //       the sandbox itself);
+  //     - neverSubstitute: an invalid `failIfUnavailable` is recorded and
+  //       dropped — never auto-substituted `true` (which would hard-fail
+  //       startup when the sandbox cannot start);
+  //     - override (STAGED): the bespoke `te` sandbox.credentials handler is
+  //       not ported — see the file header. Without it, sandbox.credentials
+  //       takes the plain `fg` leaf path (invalid → whole field dropped);
+  //     - NO strictField: unlike the generic loop, the official sandbox call
+  //       passes none (a non-object sandbox value goes straight to the
+  //       skeleton branch).
+  if ('sandbox' in shape) {
+    const sandboxInner = unwrapToObjectSchema(shape.sandbox)
+    if (sandboxInner !== undefined) {
+      wrapped.sandbox = rebuildBlockSchema('sandbox', sandboxInner, onIssue, {
+        synthesized,
+        skeletonExclude: new Set(['sandbox.enabled']),
+        neverSubstitute: new Set(['sandbox.failIfUnavailable']),
       })
     }
   }
@@ -564,11 +593,13 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
 }
 
 /**
- * Official `pd`: issue sink — appends a warning-severity ValidationError per
- * issue and echoes statusOnly/startupFatal records to the debug log. The
- * official `RAe` filter (managedMcpServers paths) is skipped: the key is
- * absent from the OCC schema. The official logs with level warn/error; OCC's
- * logForDebugging has no level parameter.
+ * Official 283 `Od` (282 `pd`): issue sink — appends a warning-severity
+ * ValidationError per issue and echoes statusOnly/startupFatal records to the
+ * debug log. 283 passes the new `removal` flag through to the record verbatim
+ * (`...s.removal&&{removal:s.removal}`). The official `RAe` filter
+ * (managedMcpServers paths) is skipped: the key is absent from the OCC
+ * schema. The official logs with level warn/error; OCC's logForDebugging has
+ * no level parameter.
  */
 export function createPolicyIssueSink(
   file: string,
@@ -583,6 +614,7 @@ export function createPolicyIssueSink(
       ...(issue.statusOnly && { statusOnly: issue.statusOnly }),
       ...(issue.startupFatal && { startupFatal: issue.startupFatal }),
       ...(issue.substituted && { substituted: issue.substituted }),
+      ...(issue.removal && { removal: issue.removal }),
       ...(issue.onlySubstitutes && { onlySubstitutes: issue.onlySubstitutes }),
     })
     if (issue.statusOnly || issue.startupFatal) {

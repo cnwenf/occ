@@ -97,7 +97,7 @@ MCP skills），reserved-name 检查在 stub 内保留了边界行为（含
 已知推断项（非 byte-exact，已在代码注释标注）：E 簇 `H$` darwin 分支由
 linux stub 反推 + message@211555751；`rules_walk_failed` log level 'warn'。
 
-### §5.1 B 簇 fail-open/静默路径披露（验收 RT③，2026-09-26；RT③d 增补采集 2026-09-26 安全审核 M1）
+### §5.1 B 簇 fail-open/静默路径披露（验收 RT③，2026-09-26；RT③d 增补采集 2026-09-26 安全审核 M1；**RT③d 已于 2026-09-27 由 OCC-138 CLOSE——官方 283 上游修复 + port，见本节末更新注**）
 
 验收复核（main `9b36b4d`）发现 B 簇 strict parse 存在四条**静默或 fail-open**
 路径。四条均为官方 v2.1.282 二进制同款行为（official-parity），均未发现
@@ -120,6 +120,46 @@ describe 块（4 条），任何后续改动（我方或上游 re-port）都会�
 
 `collectLockFields` 的 docstring（`policyLocks.ts`）已补 DISCLOSED
 CONSEQUENCE 段落说明 RT③c 后果与"官方同款、不得静默修"的口径。
+
+**§5.1 更新注（OCC-138，2026-09-27）——RT③d CLOSED（官方 2.1.283 上游修复 + port）**：
+
+官方 2.1.283 修复了 RT③d 的整块丢弃 fail-open：`mn`→`Sn`（isRebuiltBlock）
+不再排除整个 sandbox（仅排除 `sandbox.credentials` / `sandbox.credentials.*`），
+且官方 `Ko` step-8 通用循环显式跳过 `sandbox`（`if(_==="sandbox"||!Sn(_))continue`），
+改走专属 `jo` 调用（@196694745）：`skeletonExclude: {sandbox.enabled}`（非对象
+sandbox 值合成的 restrictive skeleton **不自动武装** sandbox）+
+`neverSubstitute: {sandbox.failIfUnavailable}`（无效值**不**替换为 true——替换
+会在 sandbox 无法启动时硬失败 startup）+ `override: {"sandbox.credentials": te}`。
+配套符号翻新：`Xe` restrictive 表新增 13 条 sandbox 条目（enabled/failIfUnavailable
+restrictive:true；autoAllowBashIfSandboxed/allowUnsandboxedCommands/
+enableWeakerNestedSandbox/enableWeakerNetworkIsolation/allowAppleEvents/
+network.allowAllUnixSockets/network.allowLocalBinding/filesystem.disabled
+restrictive:false；network.allowManagedDomainsOnly/network.strictAllowlist/
+filesystem.allowManagedReadPathsOnly restrictive:true）。
+
+OCC-138 P1a 已按官方 283 语义 port（`policyLocks.ts` + `policyStrictSchema.ts`，
+byte-level 取证官方 v2.1.283 linux-x64 ELF，sha256 `1859583c…` ✓）：
+
+- sandbox 进入 per-field salvage rebuild：无效条目逐个丢弃+记录，**合法限制保留**
+  （RT③d 旧钉桩断言整块丢弃——预期翻红，已按任务书改写为 "RT③d RE-PINNED"）；
+- BLOCK_GRANTS 的 sandbox.network/sandbox.filesystem 条目由此**激活**：限制列表
+  整体不可读时配对 grant 按 `Qo` 被 withhold（如 denyWrite 全无效 → allowWrite
+  被扣发）；trimmed（部分条目 salvage）不触发 sandbox 块 withhold——
+  withholdOnEntryDrop 是 autoMode 专属（官方 `Qo` 同款）；
+- 283 通用行为变化（同样已 port + 钉桩）：① "read as key removal" 记录
+  （RT③b 的 block null、disable-false——顶层与嵌套）新增 `removal:true` 旗标
+  （官方 `Od` sink 透传，`ValidationError.removal`）；② 嵌套
+  `permissions.disableBypassPermissionsMode:false` 从 282 的"替换 disable"改读
+  **ABSENT+removal 记录**（283 共享 `Ho` coercion——leafCoercionPreWrap——在
+  enum parse 前拦截 false；§5 B 簇表中该偏差描述自 283 起作废，对应测试已改写）。
+- **仍 STAGE**：官方 bespoke `te` sandbox.credentials override（~4.4KB：per-entry
+  credential salvage、sigv4 per-shape deny 降级、allowPlaintextInject 降级、
+  awsPairs 抑制、FNV-1a 合成变量名、frozen deny 哨兵）。STAGE 理由：OCC 的
+  sandbox.credentials schema 仅 `{enabled?: boolean}`，未实现 credentials
+  blocking，无守卫面。STAGED 后果（已钉桩）：无效 credentials 值走普通 `fg`
+  leaf 路径 → 一条记录 + **整个 credentials 字段丢弃**（无 per-entry salvage）。
+
+RT③a / RT③c 在 283 官方行为不变，披露与钉桩维持原样。
 
 ## §6 会话/传输可靠性 ★子集 — 逐条判定
 

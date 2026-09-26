@@ -116,6 +116,12 @@ export type ValidationError = {
   /** True when an invalid value was replaced by its restrictive value. */
   substituted?: boolean
   /**
+   * True when the value was READ AS KEY REMOVAL (explicit null, or false on a
+   * "disable"-only key) instead of substituted (official 2.1.283 `removal`
+   * flag, passed through by the `Od` sink — new in 283).
+   */
+  removal?: boolean
+  /**
    * True when the key holds nothing applicable as written and its fail-closed
    * reading is this source's ONLY policy content (official `onlySubstitutes`
    * tail record).

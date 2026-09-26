@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 /**
- * CC 2.1.282 managed-settings fail-closed validation (settings-trust cluster).
+ * CC 2.1.282/283 managed-settings fail-closed validation (settings-trust cluster).
  *
  * Bullet (a): mistyped boolean/"disable" lock values in a policy source apply
  * the lock fail-closed (string coercion, restrictive substitution) and the
@@ -12,13 +12,22 @@ import { join } from 'node:path'
  * attribution blocks are salvaged per-field — one invalid nested value no
  * longer discards the whole block (or the whole document).
  *
- * All message strings are byte-exact ports from the official 2.1.282 binary
- * (`Ko`/`Ni`/`Ki`/`tg`/`zo`/`zi`/`Oi`/`Mi`/`pd`/`jdn` — see policyLocks.ts /
- * policyStrictSchema.ts headers for offsets). Documented deviation from the
- * task bullet: the "set to false → absent" reading only exists in the
- * top-level lock loop (`Ni`); a nested `permissions.disableBypassPermissionsMode:
- * false` goes through the per-field salvage (`tg`) and substitutes the
- * restrictive value `"disable"` — binary behavior is asserted here.
+ * 2.1.283 deltas pinned here (OCC-138 P1a):
+ * - "set to false → absent" records now carry `removal: true` (official `Od`
+ *   sink passthrough of the new `Ni` flag) — top-level AND nested via the
+ *   shared `Ho` coercion (leafCoercionPreWrap);
+ * - a nested `permissions.disableBypassPermissionsMode: false` reads as
+ *   ABSENT with a removal record (282 substituted "disable" via the `tg`
+ *   catch — the 283 `Ho` pre-wrap intercepts false BEFORE the enum parse);
+ * - `sandbox` joined the per-block salvage rebuild (`Sn` no longer excludes
+ *   it; the official Ko step-8 loop skips it in favor of a bespoke `jo` call
+ *   with skeletonExclude/neverSubstitute) — RT③d's whole-block fail-open
+ *   discard is CLOSED and re-pinned to the per-field salvage behavior.
+ *
+ * All message strings are byte-exact ports from the official v2.1.283 binary
+ * (`Ko`/`Zo`/`jo`/`fg`/`Ho`/`Qo`/`ea`/`Ni`/`Mi`/`Od`/`jdn` — see
+ * policyLocks.ts / policyStrictSchema.ts headers for offsets and the full
+ * 282→283 symbol map).
  */
 
 const {
@@ -39,6 +48,7 @@ type PolicyRecord = {
   statusOnly?: boolean
   startupFatal?: boolean
   substituted?: boolean
+  removal?: boolean
   onlySubstitutes?: boolean
   userWritable?: boolean
 }
@@ -111,6 +121,8 @@ describe('2.1.282 policy locks: string coercion + statusOnly', () => {
       '"disableAutoMode" was set to false; reading it as absent (the key\'s only value is "disable"). Remove the key instead.',
     )
     expect(errors[0]?.statusOnly).toBe(true)
+    // 283: the removal flag rides through the `Od` sink onto the record.
+    expect(errors[0]?.removal).toBe(true)
   })
 
   test('string "false" on a "disable"-only lock also reads as absent', () => {
@@ -121,6 +133,7 @@ describe('2.1.282 policy locks: string coercion + statusOnly', () => {
       '"disableAutoMode" was set to false; reading it as absent (the key\'s only value is "disable"). Remove the key instead.',
     )
     expect(errors[0]?.statusOnly).toBe(true)
+    expect(errors[0]?.removal).toBe(true)
   })
 })
 
@@ -153,24 +166,28 @@ describe('2.1.282 policy locks: restrictive substitution', () => {
     expect(errors[0]?.substituted).toBe(true)
   })
 
-  test('nested disableBypassPermissionsMode:false substitutes "disable" (binary behavior)', () => {
-    // Deviation note: the task bullet suggested absent+statusOnly here, but
-    // the official defines the nested key plainly (wi()) and the "set to
-    // false" reading exists only in the top-level Ni loop — the nested field
-    // goes through tg strategy 1 (restrictive substitution).
+  test('nested disableBypassPermissionsMode:false reads as absent with a removal record (283 `Ho` shared coercion)', () => {
+    // 283 CHANGE (was a documented 282 deviation): the "set to false →
+    // absent" reading now lives in the shared `Ho` coercion
+    // (leafCoercionPreWrap), which `fg` applies to EVERY rebuilt-block leaf —
+    // so the nested key behaves like the top-level lock loop: false is
+    // intercepted BEFORE the enum parse (no catch, no substitution), the
+    // field reads as absent, and the record carries removal:true. With the
+    // only field removed, the `jo` empty-tail check (base has a defined
+    // schema key) reads the whole permissions block as absent.
     const { data, errors } = parseStrict({
       permissions: { disableBypassPermissionsMode: false },
     })
 
-    const permissions = data.permissions as Record<string, unknown>
-    expect(permissions.disableBypassPermissionsMode).toBe('disable')
-    const record = errors.find(
-      e => e.path === 'permissions.disableBypassPermissionsMode',
+    expect('permissions' in data).toBe(false)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.path).toBe('permissions.disableBypassPermissionsMode')
+    expect(errors[0]?.message).toBe(
+      '"disableBypassPermissionsMode" was set to false; reading it as absent (the key\'s only value is "disable"). Remove the key instead.',
     )
-    expect(record?.message).toBe(
-      '"disableBypassPermissionsMode" was present but invalid (expected "disable"); treating it as "disable", its restrictive value, until it is fixed.',
-    )
-    expect(record?.substituted).toBe(true)
+    expect(errors[0]?.statusOnly).toBe(true)
+    expect(errors[0]?.removal).toBe(true)
+    expect(errors[0]?.substituted).toBeUndefined()
   })
 
   test('invalid strictPluginOnlyCustomization locks everything (true)', () => {
@@ -428,19 +445,20 @@ describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "f
     expect(valid.errors).toHaveLength(0)
   })
 
-  test('RT③b: top-level lock key null is silently dropped — asymmetric with block-path null (which records Oi)', () => {
+  test('RT③b: top-level lock key null is silently dropped — asymmetric with block-path null (which records Ni)', () => {
     // The lock-field wrapper (policyStrictSchema.ts step 6) is
     // `z.union([z.null().transform(() => undefined), coerced])` — the null
     // branch resolves to undefined with NO onIssue call, so the key vanishes
     // without a "read as key removal" record. A BLOCK-path null (e.g.
-    // `permissions: null`) goes through Oi and DOES record. Pinning both
-    // sides of the asymmetry.
+    // `permissions: null`) goes through `Ni` (282 `Oi`, nullRemovalIssue) and
+    // DOES record — with removal:true since 283. Pinning both sides of the
+    // asymmetry.
     const lockNull = parseStrict({ disableAgentView: null })
     expect(lockNull.success).toBe(true)
     expect('disableAgentView' in lockNull.data).toBe(false)
     expect(lockNull.errors).toHaveLength(0)
 
-    // Contrast (existing Oi behavior — see the block-salvage suite above):
+    // Contrast (existing Ni behavior — see the block-salvage suite above):
     const blockNull = parseStrict({ permissions: null })
     expect('permissions' in blockNull.data).toBe(false)
     expect(blockNull.errors).toHaveLength(1)
@@ -448,6 +466,8 @@ describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "f
       '"permissions" was null, which is read as key removal; this source does not set it.',
     )
     expect(blockNull.errors[0]?.statusOnly).toBe(true)
+    // 283: null-removal records carry the removal flag through the sink.
+    expect(blockNull.errors[0]?.removal).toBe(true)
   })
 
   test('RT③c: disableAllHooks mistype falls to the generic catch — no coercion, no restrictive substitution, hooks stay enabled (fail-open)', () => {
@@ -488,35 +508,39 @@ describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "f
     expect(valid.errors).toHaveLength(0)
   })
 
-  test('RT③d (security-review M1): one invalid nested sandbox value silently discards the ENTIRE sandbox block (fail-open)', () => {
-    // `isRebuiltBlock` (official `mn`) excludes sandbox/sandbox.* — the block
-    // never gets the per-block salvage rebuild (`Ki`), only the generic
-    // per-field catch (step 1). So ANY invalid nested value (here: a number
-    // inside `sandbox.network.deniedDomains`) drops the whole sandbox field
-    // with a single "This field was ignored." record — denyWrite / denyRead /
-    // deniedDomains restrictions all silently stop applying (fail-open).
+  test('RT③d RE-PINNED (283 closes the 282 fail-open): one invalid nested sandbox value no longer discards the sandbox block — per-field salvage applies', () => {
+    // 283 CHANGE: official `Sn` (282 `mn`, isRebuiltBlock) no longer excludes
+    // sandbox — the Ko step-8 loop skips it (`_==="sandbox"||!Sn(_)`) only to
+    // route it into a bespoke `jo` call with skeletonExclude(enabled) +
+    // neverSubstitute(failIfUnavailable). The sandbox block now gets the same
+    // per-field salvage as permissions: the invalid entry is dropped with a
+    // record, and every valid restriction SURVIVES (fail-closed).
     //
-    // Official-parity framing: the official binary's `mn` also excludes
-    // sandbox (policyLocks.ts STAGED note), so OCC keeps the same whole-block
-    // catch rather than inventing a bespoke per-field sieve — the official's
-    // bespoke fail-closed skeleton is scoped to `sandbox.credentials` (STAGE).
-    // Pinning the current behavior so any future change flips this test.
+    // The 282 pin here asserted whole-block discard (fail-open) — that gap
+    // (security-review M1 / occ97 §5.1 RT③d) is CLOSED by this round; the
+    // old assertion is re-pinned to the official 283 behavior, per the
+    // OCC-138 task book ("旧钉桩断言整块丢弃——预期翻红，按官方 283 语义改写").
     const badNested = parseStrict({
       sandbox: {
         network: { deniedDomains: ['ok.com', 42] },
         filesystem: { denyWrite: ['/root/secrets'], denyRead: ['*.secret'] },
       },
     })
-    // runtime-verified: whole block dropped
-    expect('sandbox' in badNested.data).toBe(false)
-    // exactly one generic per-field-catch record naming the top-level key
+    // the block SURVIVES; the valid entries keep enforcing
+    expect(badNested.data.sandbox).toEqual({
+      network: { deniedDomains: ['ok.com'] },
+      filesystem: { denyWrite: ['/root/secrets'], denyRead: ['*.secret'] },
+    })
+    // exactly one per-entry salvage record naming the dropped index
     expect(badNested.errors).toHaveLength(1)
-    expect(badNested.errors[0]?.path).toBe('sandbox')
+    expect(badNested.errors[0]?.path).toBe('sandbox.network.deniedDomains[1]')
     expect(badNested.errors[0]?.message).toBe(
-      'Invalid input: expected string, received number. This field was ignored.',
+      'Invalid entry was ignored (expected string); it cannot take effect until it is fixed.',
     )
-    // denyWrite/denyRead/deniedDomains were silently discarded along with the block
-    expect(badNested.errors[0]?.statusOnly).toBeUndefined()
+    // the trimmed deniedDomains does NOT withhold sibling grants: the
+    // withholdOnEntryDrop escalation is autoMode-only (`Qo` parity) —
+    // sandbox.network has no GRANT_FLOORS entry and allowedDomains is absent
+    // here, so no withholding record fires.
 
     // Control: an entirely valid sandbox block passes through intact.
     const valid = parseStrict({
@@ -531,15 +555,158 @@ describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "f
     })
     expect(valid.errors).toHaveLength(0)
 
-    // Contrast: permissions (a REBUILT block) is NOT dropped whole — the invalid
-    // entry is salvaged and the valid restriction survives.
-    const contrast = parseStrict({
-      permissions: { deny: ['Bash(git *)', 42], defaultMode: 'default' },
+    // Unreadable restriction withholds the paired grant (`Qo` over the
+    // now-LIVE BLOCK_GRANTS sandbox entries): every denyWrite entry invalid →
+    // the field is ignored (no salvage possible) → allowWrite in the same
+    // block is withheld. The empty-tail then reads filesystem (and with it
+    // sandbox) as absent — the source's sandbox overrides do not apply, but
+    // the records name both the unreadable restriction and the withheld grant.
+    const withheld = parseStrict({
+      sandbox: { filesystem: { allowWrite: ['/tmp'], denyWrite: [42] } },
     })
-    expect(contrast.data.permissions).toEqual({
-      deny: ['Bash(git *)'],
-      defaultMode: 'default',
+    expect('sandbox' in withheld.data).toBe(false)
+    expect(
+      withheld.errors.some(
+        e =>
+          e.path === 'sandbox.filesystem.allowWrite' &&
+          e.message.includes('was withheld because "denyWrite"'),
+      ),
+    ).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 2.1.283 sandbox per-field fail-closed (OCC-138 P1a) — the bespoke `jo` call
+// ---------------------------------------------------------------------------
+
+describe('2.1.283 sandbox per-field fail-closed (bespoke jo rebuild)', () => {
+  test('non-object sandbox synthesizes the restrictive skeleton WITHOUT enabled/failIfUnavailable', () => {
+    const { data, errors } = parseStrict({ sandbox: 'yes' })
+    // skeletonExclude(enabled) + neverSubstitute(failIfUnavailable) merge into
+    // the skeleton exclusion set — the block must not auto-ARM the sandbox,
+    // and failIfUnavailable must not auto-substitute true (hard startup
+    // failure when the sandbox cannot start).
+    expect(data.sandbox).toEqual({
+      autoAllowBashIfSandboxed: false,
+      allowUnsandboxedCommands: false,
+      network: {
+        allowManagedDomainsOnly: true,
+        strictAllowlist: true,
+        allowAllUnixSockets: false,
+        allowLocalBinding: false,
+      },
+      filesystem: {
+        disabled: false,
+        allowManagedReadPathsOnly: true,
+      },
+      enableWeakerNestedSandbox: false,
+      enableWeakerNetworkIsolation: false,
+      allowAppleEvents: false,
     })
+    const sandbox = data.sandbox as Record<string, unknown>
+    expect('enabled' in sandbox).toBe(false)
+    expect('failIfUnavailable' in sandbox).toBe(false)
+    expect(errors[0]?.message).toBe(
+      '"sandbox" was present but not an object; treating its locks as their restrictive values (autoAllowBashIfSandboxed, allowUnsandboxedCommands, network, filesystem, enableWeakerNestedSandbox, enableWeakerNetworkIsolation, allowAppleEvents) until it is fixed.',
+    )
+    expect(errors[0]?.substituted).toBe(true)
+    // onlySubstitutes tail: the skeleton is this source's only policy content.
+    expect(errors[1]?.onlySubstitutes).toBe(true)
+    expect(errors[1]?.statusOnly).toBe(true)
+  })
+
+  test('invalid sandbox.enabled substitutes true (restrictive) and flags the tail record', () => {
+    const { data, errors } = parseStrict({ sandbox: { enabled: 'yes' } })
+    expect((data.sandbox as Record<string, unknown>).enabled).toBe(true)
+    expect(errors[0]?.path).toBe('sandbox.enabled')
+    expect(errors[0]?.message).toBe(
+      '"enabled" was present but invalid (expected boolean); treating it as true, its restrictive value, until it is fixed.',
+    )
+    expect(errors[0]?.substituted).toBe(true)
+    expect(errors[1]?.onlySubstitutes).toBe(true)
+  })
+
+  test('invalid sandbox.failIfUnavailable is ignored, NOT substituted true (neverSubstitute)', () => {
+    const { data, errors } = parseStrict({ sandbox: { failIfUnavailable: 'yes' } })
+    // the field is dropped; with nothing defined left the block reads absent
+    expect('sandbox' in data).toBe(false)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.path).toBe('sandbox.failIfUnavailable')
+    // 283's new `fg` final-record variant: the restrictive value EXISTS but
+    // was suppressed, so the record names what it was not treated as.
+    expect(errors[0]?.message).toBe(
+      '"failIfUnavailable" was present but invalid (expected boolean) and was ignored, not treated as true; it cannot take effect until it is fixed.',
+    )
+    expect(errors[0]?.substituted).toBeUndefined()
+  })
+
+  test('string "true" on sandbox.enabled coerces with the shared Ho record', () => {
+    const { data, errors } = parseStrict({ sandbox: { enabled: 'true' } })
+    expect((data.sandbox as Record<string, unknown>).enabled).toBe(true)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.message).toBe(
+      '"enabled" holds the string "true" where a boolean belongs; reading it as true. Write it without quotes.',
+    )
+    expect(errors[0]?.statusOnly).toBe(true)
+    expect(errors[0]?.substituted).toBeUndefined()
+  })
+
+  test('invalid sandbox.credentials drops the whole field (official `te` override STAGED)', () => {
+    // The official 283 routes sandbox.credentials through the bespoke `te`
+    // override (per-entry credential salvage + sigv4 deny degradation, ~4.4KB).
+    // STAGED in OCC — see the policyStrictSchema.ts header: OCC's credentials
+    // schema is only {enabled?: boolean}, so the plain `fg` leaf path applies:
+    // invalid value → one record, WHOLE credentials field dropped.
+    const { data, errors } = parseStrict({
+      sandbox: { credentials: { enabled: 'yes' } },
+    })
+    expect('sandbox' in data).toBe(false)
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.path).toBe('sandbox.credentials')
+    expect(errors[0]?.message).toBe(
+      '"credentials" was present but invalid (nested value: expected boolean) and was ignored; it cannot take effect until it is fixed.',
+    )
+  })
+
+  test('all-invalid deniedDomains is unreadable → paired allowedDomains grant is withheld (LIVE BLOCK_GRANTS)', () => {
+    // 283: the BLOCK_GRANTS sandbox.network entry is now consulted by `Qo`
+    // (the sandbox block is rebuilt). A wholly invalid restriction list
+    // cannot be salvaged → 'unreadable' → the paired grant is withheld
+    // (deleted — GRANT_FLOORS has no sandbox floor). Empty-tail then reads
+    // network, and with it sandbox, as absent.
+    const { data, errors } = parseStrict({
+      sandbox: { network: { allowedDomains: ['a.com'], deniedDomains: [42] } },
+    })
+    expect('sandbox' in data).toBe(false)
+    expect(errors).toHaveLength(2)
+    expect(errors[0]?.path).toBe('sandbox.network.deniedDomains')
+    expect(errors[1]?.path).toBe('sandbox.network.allowedDomains')
+    expect(errors[1]?.message).toBe(
+      '"allowedDomains" was withheld because "deniedDomains" in the same block could not be read; it takes effect again once that is fixed.',
+    )
+  })
+
+  test('non-restrictive sandbox leaves keep per-field salvage; passthrough keys survive the rebuild', () => {
+    // excludedCommands has no restrictive entry → plain leaf; an invalid
+    // sibling (httpProxyPort) is ignored individually while the rest of the
+    // block survives. Unknown keys ride through the schema's passthrough
+    // (`.extend()` preserves it — zod v4 runtime-verified).
+    const { data, errors } = parseStrict({
+      sandbox: {
+        excludedCommands: ['git'],
+        futureKey: 1,
+        network: { httpProxyPort: 'bogus' },
+      },
+    })
+    expect(data.sandbox).toEqual({
+      excludedCommands: ['git'],
+      futureKey: 1,
+    })
+    expect(errors).toHaveLength(1)
+    expect(errors[0]?.path).toBe('sandbox.network.httpProxyPort')
+    expect(errors[0]?.message).toBe(
+      '"httpProxyPort" was present but invalid (expected number) and was ignored; it cannot take effect until it is fixed.',
+    )
   })
 })
 
