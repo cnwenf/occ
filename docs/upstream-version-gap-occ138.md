@@ -88,11 +88,11 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 
 | # | 条目 | 裁决 | 说明 |
 |---|------|------|------|
-| G1★ | Windows PowerShell `cmd /c rd/rmdir/del/erase` 删除驱动器根/家目录拦截 | **PORT 计划（P2）** | OCC PowerShell 拦截面存在（Windows 条目按 OCC 表面裁决）；官方正则 `^(rd|rmdir|del|erase)(?=$|[.:\[/+[\]",;=])` 待 byte 核实。 |
-| G2★ | `keybindings.json` 误拼 modifier（如 `ctl+k`）debug-log 警告 + 建议 | **PORT 计划（P2）** | OCC keybindings 表面存在。 |
-| G3★ | auto-memory 子目录 sensitive-file 误拦（git repo 子目录启动时） | **PORT 计划（P2）** | OCC auto-memory 表面存在。 |
-| G4★ | screen-reader 模式权限对话框把引号内命令/路径读成对话框自身文本 | **PORT 计划（P2）** | OCC 权限对话框 a11y 面待核。 |
-| G5★ | sandboxed git 让 credential helper 存 sandbox proxy 登录 → "failed to store" | **PORT 计划（P2）** | OCC sandbox git 表面存在。 |
+| G1★ | Windows PowerShell `cmd /c rd/rmdir/del/erase` 删除驱动器根/家目录拦截 | **NO-OP（见 §5.1）** | 官方 283 实为 smart-quote 归一化 + PowerShell credential-theft 检测子系统（`tengu_curious_lake`），非 OCC 表面；OCC PowerShell 工具 AST 路径对驱动器根删除 fail-closed。 |
+| G2★ | `keybindings.json` 误拼 modifier（如 `ctl+k`）debug-log 警告 + 建议 | **✅ PORT（`9bb67b2`，见 §5.2）** | 官方 `Me(e,r)` 校验器 + Damerau-Levenshtein 建议 + 指南文案全量落地，15 项测试。 |
+| G3★ | auto-memory 子目录 sensitive-file 误拦（git repo 子目录启动时） | **NO-OP（见 §5.3）** | 官方双 resolver 不一致 bug 在 OCC 单 resolver `getAutoMemPath()` 结构上不可复现。 |
+| G4★ | screen-reader 模式权限对话框把引号内命令/路径读成对话框自身文本 | **STAGE（取证穷尽，见 §5.4）** | 官方修复机制在 283 二进制行级差分中不可定位（全部 SR/对话框候选逐一排除）；OCC SR 为 flat-render 忠实 port，盲改即发明 → 按 Never-invent 纪律 STAGE。 |
+| G5★ | sandboxed git 让 credential helper 存 sandbox proxy 登录 → "failed to store" | **NO-OP（见 §5.5）** | 官方 GCP `credential.<proxy>.helper=` 覆盖链在 OCC sandbox git 结构上不存在（5 条免疫证据）。 |
 | G6 | managed `sandbox` 设置单嵌套值非法时整块被忽略 → fail-closed + 余下仍生效 | **✅ PORT（P1a `1c32d65`）** | 见 §3。 |
 
 ### H. model / usage（P3/P4）
@@ -112,7 +112,7 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 | I1 | fullscreen 其他会话截断消息 click-to-expand | **STAGE（P4）** |
 | I2 | `/context` MCP instructions 独立行并计入 total | **STAGE（P4 候选，行为+UI）** |
 | I3 | Warp 终端 markdown 链接可点击 | **STAGE（P4）** |
-| I4 | keybindings 指南 1s→3s、`cmd`≠`meta` 别名文案 | **STAGE（P4，小文案）** |
+| I4 | keybindings 指南 1s→3s、`cmd`≠`meta` 别名文案 | **✅ 随 G2 落地（`9bb67b2`）** |
 | I5 | footer hints `footer:openSelected` 重绑后仍说 "Enter to view" | **STAGE（P4）** |
 | I6 | type-ahead / 键重复 / ssh-tmux 突发键 stale state | **STAGE** | OCC 输入栈不同（自研 Ink fork），需专项。 |
 | I7 | `/remote-control` QR 窄终端断词 | **NO-OP** | OCC Remote Control 表面不同（daemon supervisor）。 |
@@ -121,7 +121,7 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 | I10 | `/ultrareview` 上传未提交更改文案 | **NO-OP** | OCC 无 /ultrareview 表面。 |
 | I11 | `/model` picker Opus 行去 "(1M context)" 文案 | **STAGE（P4 候选）** | OCC-36 轮落的 picker 行文案需对照 283。 |
 | I12 | prompt suggestions 连续 20 次未用后降频 | **STAGE（P4）** |
-| I13 | `/rewind` `/diff` 列表改用 `select:*` 键位动作 | **STAGE（P4）** |
+| I13 | `/rewind` `/diff` 列表改用 `select:*` 键位动作 | **STAGE（P4）** — 取证：官方 283 unknown-action 校验从 `!A(h)` 变为 `!M(h)&&!q(h)`（动作名同时查主表 + 别名表），动作白名单 `YEe` 163→157 项；OCC `validateBlock` 缺该 unknown-action 检查（**既有缺口，非本轮回归**），随 P4 批次一并落。 |
 | I14 | `/workflows` 运行列表尺寸（半终端 + 标题保留） | **STAGE（P4）** |
 
 ### J. vim 批次（P3 候选）
@@ -244,9 +244,120 @@ boundary/renamed→`prefix_at_namespace_boundary`。
 - 非测试源无 claude-ai 保留残留（`commands.ts`/`types/command.ts` 的
   `availability: 'claude-ai'` 为账号可见性特性，无关，不动）。
 
-## 5. P2 — 安全簇（进行中）
+## 5. P2 — 安全簇（G1–G5 裁决完成：1 PORT + 3 NO-OP + 1 STAGE）
 
-（G1–G5 落地后逐条记录取证偏移量与测试。）
+### 5.1 G1 — PowerShell 驱动器根删除拦截 → **NO-OP**
+
+官方 283 二进制取证（strings-only，未执行）：
+
+- changelog 所述拦截实为官方 283 新增的 **PowerShell credential-theft /
+  危险命令检测子系统**（遥测名 `tengu_curious_lake`）：+9KB 增长区
+  282:135398 ↔ 283:136389（`knownSwitches`/`knownValueParams` 表、引号配对器
+  `Ye(e,n)`、tokenizer `Dt(e)`、验证器 `Cs(e)`/`Ls(e)`）。
+- **smart-quote 归一化器 `Ae`**（283:138511）：`[‘-‛]`→`'`、
+  `[“-„]`→`"`、`[–-―]`→`-`，再经 `B(e)` NFKC +
+  dotless-ı/ſ 折叠——防全角/弯引号绕过检测。
+- credential 检测 `Ce(e)`（283:276385/277887-9）：匹配
+  CredentialManager / SecretManagement / Get-StoredCredential /
+  Get-CredManCredential / PasswordVault / runas，配合 `Un` 正则与
+  deny-rule 合成器 `Pe(e,n)`。
+- OCC 裁决依据：OCC 的 PowerShell 工具走 AST 权限路径，对 `rd/rmdir/del/erase`
+  驱动器根/家目录删除本就 fail-closed（拒绝不可解析/不可证明安全的形态）；
+  官方新增的检测子系统属其正则/启发式管线的补强 + 遥测，OCC 无对应
+  启发式管线可被绕过，亦无 `tengu_curious_lake` 表面。无可 port 的行为差。
+
+### 5.2 G2 — keybindings 误拼 modifier 警告 → **✅ PORT（`9bb67b2`）**
+
+- 官方 283 校验器 `Me(e,r)`（替换 282 仅查空 key part 的 `Se(e)`），
+  byte 级取证：fuzzy 匹配 `CJ(e,n,{maxEditDistance=1})` + Damerau-Levenshtein
+  `_6` @ELF 196737282；去重 `D(n)=[...new Set(n)]` @196094383；modifier
+  元数据 `ce`/`Ie` 数组（cmd 别名 command/super/win，meta 独立）。
+- 消息语法逐字对齐：`"X" is not a modifier, so "Y" in <Ctx> applies to "Z"
+  instead` + Did-you-mean（全部 token 可 fuzzy 匹配时）/ 通用
+  `Use ctrl, alt, shift, meta, or cmd before "+"...` 回退。
+- 指南（bundled keybindings skill）同步官方 283 delta：meta/cmd 别名拆分
+  说明、chord 超时 1s→3s（二进制 `var at=3000` 佐证，282 指南文案本就是
+  bug）、doctor 表新增 "X is not a modifier" 行（官方 `Ys` 表
+  s283s:300025，282 无此行）。
+- OCC 发明的 `Could not parse keystroke` 消息移除——官方 282/283 均无此串。
+- 测试：`src/keybindings/__tests__/misspelledModifier283.test.ts` 15 项
+  （typo/换位/别名/大小写/多 token/去重/chord 重解析/无效 context/回归面）。
+
+### 5.3 G3 — auto-memory 子目录 sensitive-file 误拦 → **NO-OP**
+
+- 官方 bug 根因：双 resolver（memory 路径解析与 sensitive-file 检查各自
+  resolve）在 git repo 子目录启动时给出不一致路径 → 自家 memory 文件被
+  sensitive-file 规则误拦。
+- OCC 结构免疫：auto-memory 路径单点出自 `getAutoMemPath()`
+  （`src/memdir/paths.ts`），检查与写入共用同一 resolved 路径，双 resolver
+  分歧不可能出现。
+- 顺带观察（不落地，记录给后续轮）：官方 283 将 write-allow 收窄为
+  `g.endsWith(".md")`；OCC 的 carve-out 无此后缀限定。OCC 当前语义更宽但
+  作用面仅自家 memory 目录，非安全问题；如后续对齐 sensitive-file 簇再议。
+
+### 5.4 G4 — screen-reader 权限对话框引号文本 → **STAGE（取证穷尽）**
+
+对 282/283 二进制做了完整的行级/骨架级差分排查，官方修复点**不可定位**，
+排除清单（全部 byte 级核实）：
+
+1. 权限对话框行内 `waitingFor` 传播 delta = **纯遥测重构**：app-state store
+   `userPrompt.pending:boolean`(282, `TVt`/`XYr`) → `userPrompt.waitingFor:
+   value|undefined`(283, `w3t`/`Nar`/`wto`/`vto` @136927)，消费链
+   `Oye()`→`Jco`→`utn` 发 `tengu_cache_heartbeat_shadow`，门控
+   `snt()`=`tengu_dapper_dawn`（GrowthBook 默认 OFF）；另一消费点
+   `isHeldByDialog`（282:157052↔283:158325）语义等价。
+2. markdown 渲染器 `dI`（`screenReader:c=!1` 参数，282:220360↔283:222464，
+   8197B）：骨架 + 字符串序列 0 差异。
+3. prose 组件（282:298212↔283:300462，2360B）：0 差异。
+4. AskUserQuestion `isScreenReader` 线索（282:248225↔283:150817）：两侧各
+   4 site，`$ze/RY`≡`nYe/BY` 纯改名，`!h.isScreenReader&&Vze(Pe)` 门与
+   t6t deny-feedback 片段（434B）逐字节相同。
+5. SR 机制标识符计数两侧相等：prevScreenReaderPark 15/15、
+   computeScreenReaderPark 3/3、srPreParked 10/10、axScreenReader 4/4；
+   prevScreenReaderLines 渲染行仅改名。两版均无 screenReaderText/srText/
+   spokenText 类文本变换 helper（0 命中）。
+6. `aria-hidden` +1 = 283:240115 SVG pixelgram 渲染器（web 资产，非终端）。
+7. "User denied permission" 所在 4 行配对：282:{4206,4802,281303} ↔
+   283:{1700,5384,283996} 逐对骨架 diff **全同**（6424/6426、24636/24636、
+   22/22B）；query-engine 282:135763↔283:130256（55066→44412B，−10.6KB）
+   = **chunk 重切**：permission_bash / permission_ask_user_question /
+   permission_coordinator_check 模式、hookUpdatedInput 决策逻辑、sandbox
+   问答文案全部移入 283:138510/136696 等新 chunk（`permission_bash` 两侧
+   各 2 处命中，内容未删）。
+8. `accessibility:`/`role:"` 字面量两侧均 0（压缩后属性名，无差分信号）。
+9. 283 新增字符串全集（comm -13，18616 行）无 SR/引号/对话框相关新文案。
+
+OCC 侧判断：OCC 的 SR 输出走 `src/ink/screen-reader-render.ts`（官方 2.1.206
+`mPr`/`iHh` flat-render 的忠实 port），整屏扁平序列化——与官方 282 行为
+同构，同样存在"引号内命令/路径混入对话框文本流"的现象；但官方 283 的修复
+机制（推测为对话框内引号内容节点的 a11y label/role 标注）在二进制差分中
+不可见，任何 port 都只能靠发明，违反 `aligning-with-official-binary`
+Never-invent 纪律 → **STAGE**。复审触发器：官方后续版本出现可定位的
+SR-label 机制，或 OCC SR 用户实际反馈该痛点。
+
+### 5.5 G5 — sandboxed git credential helper → **NO-OP**
+
+- 官方 283 修复链（byte 级）：`Jxn()` 生成
+  `credential.http://localhost:${n}.helper` 空值覆盖项，经 `Pot()` 进入
+  `extraGitConfig:F?Pot():[]`（282 对应 `Cnt()`）；GCP 导出白名单
+  `DAn` 中 `OAn=/^credential\.[a-z]+:\/\/.+\.helper$/` 放宽放行——即官方
+  sandbox 内 git 通过 GIT_CONFIG_PARAMETERS 注入空 credential helper，
+  阻止 helper 把 sandbox proxy 的 localhost 凭据存进用户钥匙串。
+- OCC 免疫证据（5 条，src 全量 grep）：
+  1. `refusing to export a git config entry` / `GIT_CONFIG_PARAMETERS` /
+     `proxyAuthMethod` / `SANDBOX_RUNTIME` 全部 0 命中——OCC 无 GCP 导出
+     管线，官方 bug 的载体不存在。
+  2. `bashProvider.ts` `buildExecCommand(command, {id, sandboxTmpDir,
+     useSandbox})` 无 extraGitConfig 参数面。
+  3. OCC sandbox 代理 env 不含 userinfo 凭据（无 `user:pass@` 形态）。
+  4. 代理认证仅 host 侧 `proxyAuthHeader`（进不了沙箱内 git 配置）。
+  5. bwrap `--unshare-net` + socat 转发结构下，沙箱内 git 不会经由可被
+     credential helper 缓存的 localhost 代理端点认证。
+
+### 5.6 其他 283 delta（记录）
+
+- `tengu_pewter_lintel` GrowthBook flag 门控 CLAUDE_CODE_COMMIT_BETWEEN_KEYS
+  默认值（283 新串）；flag 默认 OFF，OCC 无该 env 表面，NO-OP。
 
 ## 6. P3 / P4（视预算）
 
