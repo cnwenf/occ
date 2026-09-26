@@ -86,9 +86,106 @@ function isValidContext(value: string): value is KeybindingContextName {
 }
 
 /**
- * Validate a single keystroke string and return any parse errors.
+ * 2.1.283 (OCC-138 / G2): modifier metadata for the misspelled-modifier
+ * validator. Byte-verified against the official v2.1.283 ELF keybindings
+ * chunk (`ce` / `Ie` @210292592-region companion definitions):
+ *   ce = [{name:"ctrl",aliases:["control"]},{name:"alt",aliases:["opt","option"]},
+ *         {name:"shift"},{name:"meta"},{name:"cmd",aliases:["command","super","win"]}]
+ *   Ie = ["ctrl","alt","shift","meta","super"]
  */
-function validateKeystroke(keystroke: string): KeybindingWarning | null {
+type ModifierDefinition = { name: string; aliases?: string[] }
+
+const MODIFIER_DEFINITIONS: ModifierDefinition[] = [
+  { name: 'ctrl', aliases: ['control'] },
+  { name: 'alt', aliases: ['opt', 'option'] },
+  { name: 'shift' },
+  { name: 'meta' },
+  { name: 'cmd', aliases: ['command', 'super', 'win'] },
+]
+
+/** ParsedKeystroke boolean flags checked for an already-set modifier. */
+const MODIFIER_FLAGS = ['ctrl', 'alt', 'shift', 'meta', 'super'] as const
+
+/**
+ * Damerau-Levenshtein distance (transposition-aware). Official 283 `_6`,
+ * byte-for-byte logic from the ELF @196737282 region.
+ */
+function damerauLevenshtein(a: string, b: string): number {
+  if (a === b) return 0
+  const aLen = a.length
+  const bLen = b.length
+  const d: number[][] = Array.from({ length: aLen + 1 }, (_, i) =>
+    Array.from({ length: bLen + 1 }, (_, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  )
+  for (let i = 1; i <= aLen; i++) {
+    for (let j = 1; j <= bLen; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      d[i][j] = Math.min(
+        d[i - 1][j] + 1,
+        d[i][j - 1] + 1,
+        d[i - 1][j - 1] + cost,
+      )
+      if (
+        i > 1 &&
+        j > 1 &&
+        a[i - 1] === b[j - 2] &&
+        a[i - 2] === b[j - 1]
+      ) {
+        d[i][j] = Math.min(d[i][j], d[i - 2][j - 2] + 1)
+      }
+    }
+  }
+  return d[aLen][bLen]
+}
+
+/**
+ * Closest modifier name/alias within maxEditDistance, or undefined.
+ * Official 283 `CJ` (flattens names+aliases, length-diff prefilter, strict
+ * `<` best-distance comparison so the FIRST closest candidate wins).
+ */
+function closestModifierMatch(
+  input: string,
+  maxEditDistance = 1,
+): string | undefined {
+  const candidates = MODIFIER_DEFINITIONS.flatMap(m => [
+    m.name,
+    ...(m.aliases ?? []),
+  ])
+  let best: string | undefined
+  let bestDistance = maxEditDistance + 1
+  for (const candidate of candidates) {
+    if (Math.abs(candidate.length - input.length) > maxEditDistance) continue
+    const distance = damerauLevenshtein(input, candidate)
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = candidate
+    }
+  }
+  return best
+}
+
+/**
+ * Validate a single key (chord) string and return any parse errors.
+ *
+ * 2.1.283 (OCC-138 / G2): faithful port of the official `Me(e,r)` validator
+ * (byte-extracted from the v2.1.283 ELF keybindings chunk). Replaces the
+ * 2.1.282 `Se(e)` empty-part-only check (which OCC had extended with an
+ * unreachable "Could not parse keystroke" branch — the official has no such
+ * message and parseKeystroke's default branch makes the condition dead code).
+ *
+ * Behavior: after the unchanged empty-part check, each whitespace-separated
+ * keystroke is scanned for tokens BEFORE the real key that parse as a key
+ * (i.e. are not modifiers) — a misspelled modifier like `ctl+k` or two keys
+ * joined with `+` instead of a space like `k+s`. Misplaced tokens are
+ * fuzzy-matched (Damerau-Levenshtein, distance ≤1) against the modifier
+ * names/aliases; when every one matches, the suggestion is the rebuilt
+ * binding (`Did you mean "ctrl+k"?`), otherwise the generic space-vs-plus
+ * guidance. `context` (official `r`) is woven into the message as ` in X`.
+ */
+function validateKeystroke(
+  keystroke: string,
+  context?: string,
+): KeybindingWarning | null {
   const parts = keystroke.toLowerCase().split('+')
 
   for (const part of parts) {
@@ -104,24 +201,59 @@ function validateKeystroke(keystroke: string): KeybindingWarning | null {
     }
   }
 
-  // Try to parse and see if it fails
-  const parsed = parseKeystroke(keystroke)
-  if (
-    !parsed.key &&
-    !parsed.ctrl &&
-    !parsed.alt &&
-    !parsed.shift &&
-    !parsed.meta
-  ) {
-    return {
-      type: 'parse_error',
-      severity: 'error',
-      message: `Could not parse keystroke "${keystroke}"`,
-      key: keystroke,
+  const misplaced: string[] = []
+  const rebuiltGroups: string[] = []
+  let allFuzzyMatched = true
+
+  for (const keystrokePart of keystroke.trim().split(/\s+/)) {
+    const tokens = keystrokePart.split('+')
+    const realKeyIndex = tokens.findLastIndex(
+      token => parseKeystroke(token).key !== '',
+    )
+    const group: string[] = []
+    for (const [index, token] of tokens.entries()) {
+      if (index === realKeyIndex || parseKeystroke(token).key === '') {
+        group.push(token)
+        continue
+      }
+      misplaced.push(token)
+      const match = closestModifierMatch(token.toLowerCase())
+      const combined = parseKeystroke([keystrokePart, ...group].join('+'))
+      if (match === undefined) {
+        allFuzzyMatched = false
+      } else if (
+        !MODIFIER_FLAGS.some(
+          flag => combined[flag] && parseKeystroke(match)[flag],
+        )
+      ) {
+        group.push(match)
+      }
     }
+    rebuiltGroups.push(group.join('+'))
   }
 
-  return null
+  if (misplaced.length === 0) return null
+
+  const uniqueMisplaced = [...new Set(misplaced)]
+  const badList = new Intl.ListFormat('en', { type: 'conjunction' }).format(
+    uniqueMisplaced.map(token => `"${token}"`),
+  )
+  const modifierNames = new Intl.ListFormat('en', {
+    type: 'disjunction',
+  }).format(MODIFIER_DEFINITIONS.map(m => m.name))
+  const copula =
+    uniqueMisplaced.length === 1 ? 'is not a modifier' : 'are not modifiers'
+  const contextSuffix = context ? ` in ${context}` : ''
+
+  return {
+    type: 'parse_error',
+    severity: 'error',
+    message: `${badList} ${copula}, so "${keystroke}"${contextSuffix} applies to "${chordToString(parseChord(keystroke))}" instead`,
+    key: keystroke,
+    suggestion: allFuzzyMatched
+      ? `Did you mean "${rebuiltGroups.join(' ')}"?`
+      : `Use ${modifierNames} before "+"; for keys pressed one after another, put a space between them, as in "ctrl+x ctrl+s"`,
+  }
 }
 
 /**
@@ -177,8 +309,8 @@ function validateBlock(
 
   const bindings = b.bindings as Record<string, unknown>
   for (const [key, action] of Object.entries(bindings)) {
-    // Validate key syntax
-    const keyError = validateKeystroke(key)
+    // Validate key syntax (official 283 Oe: `Me(k, d)` then `w.context = d`)
+    const keyError = validateKeystroke(key, contextName)
     if (keyError) {
       keyError.context = contextName
       warnings.push(keyError)

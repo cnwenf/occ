@@ -2606,9 +2606,10 @@ export const fetchCommandsForClient = memoizeWithLRU(
       const promptsToProcess = recursivelySanitizeUnicode(allPrompts)
 
       // Convert MCP prompts to our Command format. CC 2.1.283 reserved-
-      // namespace hardening (official rZe): prompts whose command is a
-      // reserved-namespace squatter are dropped — a server named
-      // anthropic-skills makes every prompt displayName
+      // namespace hardening (official rZe, zAe=["anthropic-skills"] only —
+      // 2.1.282's second element "claude-ai" was reverted upstream): prompts
+      // whose command is a reserved-namespace squatter are dropped — a server
+      // named anthropic-skills makes every prompt displayName
       // ("<server>:<prompt> (MCP)") reserved. Each drop logs the byte-exact
       // per-prompt message via the MCP debug log. Tools are unaffected.
       const commands: Command[] = []

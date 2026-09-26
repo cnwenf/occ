@@ -1,29 +1,31 @@
 /**
- * CC 2.1.283 — anthropic-skills reserved-namespace hardening after the
- * claude-ai revert, plus the 283 deny-matcher expansion.
+ * CC 2.1.282 bullets (b)(c)(d) + CC 2.1.283 revert — anthropic-skills
+ * reserved-namespace hardening.
  *
- * 2.1.283 REVERTED 282's "claude-ai" reservation (official zAe is back to
- * the single element ["anthropic-skills"] @197323070; the pge alias
- * transform and the 'renamed' held-back kind are gone). claude-ai:* names
- * load again and Skill(claude-ai:*) is an ordinary prefix rule.
+ * 2.1.283 changes pinned here (byte-extracted from the v2.1.283 linux-x64 ELF):
+ *   - zAe   RESERVED_NAMESPACES = ["anthropic-skills"] — 282's second element
+ *           "claude-ai" was REVERTED upstream (@197323150; the only
+ *           `claude-ai:` string left in the ELF is embedded changelog text).
+ *           claude-ai names load again and Skill(claude-ai:*) is an ordinary
+ *           prefix rule.
+ *   - _Mt   fallback reason is single-name: `uses "anthropic-skills", the
+ *           names reserved ...` (no " or " join survives).
+ *   - qe    held-back telemetry action map is BINARY — `renamed_allow_rule`
+ *           removed (282: 2 hits → 283: 0); non-nonholder kinds emit
+ *           `prefix_at_namespace_boundary`.
+ *   - NEW packaging-name machinery (vdt/z$/d/JVn/dOo/uOo/le/w6/Be/fMe +
+ *     rewritten ue deny matcher / ye allow classifier): Skill(anthropic-
+ *     skills:<name>) deny rules also block plugin-delivered / synced skills
+ *     under their packaging names; literal `skill:<name>` deny rules
+ *     glob-match ordinary names and (without "*") packaging names.
+ *   - checkPermissions order re-verified against v2.1.283 @210644300 region:
+ *     deny(ue) → allow(ye, held-back tracking) → safe-props(en||Pge) →
+ *     squatter(U=Bge&&jB&&!Bee) forced ask.
  *
- * 283 also EXPANDED the deny matcher (official ue @210624361):
- *   - Be @210624663  `skill:<pattern>` rule form (/^\s*skill\s*:(.*)$/s)
- *   - w6 @196261877  glob wildcard matcher (escaped segments joined by .*)
- *   - Le @210624686  candidate split {ordinary, packaging}
- *   - dOo/uOo/le     plugin + synced packaging-alias expansion
- *   - yu / De        Desktop-host gate + untrusted-plugin filter — both
- *                    structurally false in OCC (forward-compat seams)
- *
- * Official cluster (v2.1.283 linux-x64 ELF, byte-extracted):
- *   - zAe   RESERVED_NAMESPACES = ["anthropic-skills"]
- *   - Bge   plaid-harbor gate: x("tengu_plaid_harbor", true) !== false
- *   - jB    isReservedName (via zat reservedNamespaceOf)
- *   - isSquatter; shouldRefuseReservedName (plugin prompts exempt)
- *   - kOe/nse/v$o/BGo loader drop + warn + telemetry
- *   - ae/te/ke/ye rule parse/match/permission classification
- *   - Se    held-back rule message; squatter ask `Execute skill: X — reason`
- *   - MCP server-name skills funnel + per-prompt filter messages
+ * 282 cluster symbols kept (renamed in 283): Bge plaid-harbor gate (282 Nfe),
+ * jB isReservedName (282 wU), RWn isSquatter (282 dFn), Bee isSyncedSkillHolder
+ * (282 iZ), kOe/nse/v$o/BGo loader drop + warn + telemetry, Se held-back rule
+ * message (282 ue).
  */
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
@@ -83,6 +85,7 @@ afterAll(() => {
 const {
   RESERVED_NAMESPACES,
   RESERVED_NAMES_REASON_FALLBACK,
+  ANTHROPIC_SKILLS_NAMESPACE,
   isPlaidHarborEnabled,
   hasReservedNamespacePrefix,
   reservedNamespaceOf,
@@ -101,8 +104,16 @@ const {
   parseSkillRule,
   skillRuleMatchesPlain,
   skillRuleMatchesNamespaceAware,
-  skillRuleMatchesWildcard,
-  denyMatchCandidates,
+  qualifyAnthropicSkillsName,
+  unqualifyAnthropicSkillsName,
+  selfQualifiedSkillName,
+  packagingAliasOf,
+  pluginPackagingNames,
+  syncedPackagingNames,
+  packagingNamesFor,
+  globPatternMatches,
+  renamedCandidate,
+  denyMatchOrdinaryNames,
   skillDenyRuleMatches,
   matchSkillRuleForPermission,
   buildHeldBackRuleMessage,
@@ -121,12 +132,27 @@ beforeEach(() => {
 
 const REASON_ANTHROPIC =
   'uses "anthropic-skills", a name reserved for the skills synced from your claude.ai account'
+// Official _Mt @201087507 with the single-element zAe: `uses ${zAe.map(e=>
+// `"${e}"`).join(" or ")}, the names reserved ...` — the " or " join has no
+// second element to bind to, but the plural "the names" phrasing survives.
 const REASON_FALLBACK =
   'uses "anthropic-skills", the names reserved for the skills synced from your claude.ai account'
 
 describe('2.1.283 reserved namespaces: detection', () => {
-  test('RESERVED_NAMESPACES matches official zAe (single element — claude-ai reverted)', () => {
+  test('RESERVED_NAMESPACES matches official zAe (single element)', () => {
     expect([...RESERVED_NAMESPACES]).toEqual(['anthropic-skills'])
+    expect(ANTHROPIC_SKILLS_NAMESPACE).toBe('anthropic-skills')
+  })
+
+  test('2.1.283 revert pin: claude-ai is NOT a reserved namespace', () => {
+    // Official 283: `["anthropic-skills","claude-ai"]` has 0 hits;
+    // `startsWith("claude-ai:")` has 0 hits. claude-ai names are ordinary.
+    expect(RESERVED_NAMESPACES).not.toContain('claude-ai')
+    expect(isReservedName('claude-ai')).toBe(false)
+    expect(isReservedName('claude-ai:y')).toBe(false)
+    expect(isReservedName('CLAUDE-AI:Y')).toBe(false)
+    expect(reservedNamespaceOf('claude-ai:y')).toBeUndefined()
+    expect(hasReservedNamespacePrefix('claude-ai:')).toBe(false)
   })
 
   test('plaid harbor gate defaults on, honors explicit false', () => {
@@ -148,18 +174,10 @@ describe('2.1.283 reserved namespaces: detection', () => {
     )
   })
 
-  test('283 revert: claude-ai names are NOT reserved anymore', () => {
-    expect(isReservedName('claude-ai')).toBe(false)
-    expect(isReservedName('claude-ai:y')).toBe(false)
-    expect(isReservedName('CLAUDE-AI:Y')).toBe(false)
-    expect(reservedNamespaceOf('claude-ai:y')).toBeUndefined()
-  })
-
   test('lookalikes outside the namespace are NOT reserved', () => {
     expect(isReservedName('anthropic-skillsx')).toBe(false)
     expect(isReservedName('anthropic-skillsX:foo')).toBe(false)
-    expect(isReservedName('my-claude-ai:x')).toBe(false)
-    expect(isReservedName('claude-aix')).toBe(false)
+    expect(isReservedName('my-anthropic-skills:x')).toBe(false)
     expect(isReservedName('deploy')).toBe(false)
     expect(isReservedName('')).toBe(false)
     expect(reservedNamespaceOf('plain:skill')).toBeUndefined()
@@ -169,18 +187,16 @@ describe('2.1.283 reserved namespaces: detection', () => {
     expect(hasReservedNamespacePrefix('anthropic-skills:')).toBe(true)
     expect(hasReservedNamespacePrefix('anthropic-skills')).toBe(false)
     expect(hasReservedNamespacePrefix('anthropic-skills:x')).toBe(true)
-    // 283 revert: claude-ai: is no longer a reserved prefix.
-    expect(hasReservedNamespacePrefix('claude-ai:')).toBe(false)
   })
 
-  test('reservedNameReason: singular for a resolvable name, plural fallback otherwise', () => {
-    expect(reservedNameReason('anthropic-skills')).toBe(REASON_ANTHROPIC)
+  test('reservedNameReason: singular for a resolvable name, single-name fallback otherwise', () => {
     expect(reservedNameReason('anthropic-skills:y')).toBe(REASON_ANTHROPIC)
-    // claude-ai no longer resolves → plural fallback (283 revert).
+    expect(reservedNameReason('anthropic-skills')).toBe(REASON_ANTHROPIC)
+    // claude-ai no longer resolves → falls through to the fallback.
     expect(reservedNameReason('claude-ai:y')).toBe(REASON_FALLBACK)
     expect(reservedNameReason('innocent')).toBe(REASON_FALLBACK)
     expect(RESERVED_NAMES_REASON_FALLBACK).toBe(REASON_FALLBACK)
-    // First resolvable name wins (official scans in order).
+    // First resolvable name wins (official ULe scans in order).
     expect(reservedNameReason('innocent', 'anthropic-skills:a')).toBe(
       REASON_ANTHROPIC,
     )
@@ -207,11 +223,7 @@ describe('2.1.283 reserved namespaces: squatter / refusal predicates', () => {
 
   test('squatter detection covers name and display name', () => {
     expect(
-      isSquatter({
-        type: 'prompt',
-        name: 'anthropic-skills:x',
-        source: 'user',
-      }),
+      isSquatter({ type: 'prompt', name: 'anthropic-skills:x', source: 'user' }),
     ).toBe(true)
     expect(
       isSquatter({
@@ -221,20 +233,20 @@ describe('2.1.283 reserved namespaces: squatter / refusal predicates', () => {
         userFacingName: () => 'anthropic-skills:y',
       }),
     ).toBe(true)
+    expect(isSquatter({ type: 'prompt', name: 'deploy', source: 'user' })).toBe(
+      false,
+    )
+  })
+
+  test('2.1.283 revert pin: claude-ai skills are not squatters and load again', () => {
+    expect(isSquatter({ type: 'prompt', name: 'claude-ai:y', source: 'user' })).toBe(
+      false,
+    )
     expect(
-      isSquatter({ type: 'prompt', name: 'deploy', source: 'user' }),
+      shouldRefuseReservedName({ type: 'prompt', name: 'claude-ai:y', source: 'user' }),
     ).toBe(false)
-    // 283 revert: claude-ai names (incl. display names) are not squatters.
     expect(
-      isSquatter({ type: 'prompt', name: 'claude-ai:y', source: 'user' }),
-    ).toBe(false)
-    expect(
-      isSquatter({
-        type: 'prompt',
-        name: 'innocent',
-        source: 'user',
-        userFacingName: () => 'claude-ai:y',
-      }),
+      shouldRefuseReservedName({ type: 'prompt', name: 'CLAUDE-AI:Y', source: 'user' }),
     ).toBe(false)
   })
 
@@ -247,42 +259,22 @@ describe('2.1.283 reserved namespaces: squatter / refusal predicates', () => {
     expect(shouldRefuseReservedName(pluginPrompt)).toBe(false)
     // Same reserved name from a non-plugin source IS refused.
     expect(
-      shouldRefuseReservedName({
-        type: 'prompt',
-        name: 'anthropic-skills:y',
-        source: 'user',
-      }),
+      shouldRefuseReservedName({ type: 'prompt', name: 'anthropic-skills:y', source: 'user' }),
     ).toBe(true)
     expect(shouldRefuseReservedName({ name: 'anthropic-skills:y' })).toBe(true)
     // Non-reserved names are never refused.
-    expect(
-      shouldRefuseReservedName({
-        type: 'prompt',
-        name: 'deploy',
-        source: 'user',
-      }),
-    ).toBe(false)
-    // 283 revert: claude-ai names are never refused, from any source.
-    expect(
-      shouldRefuseReservedName({
-        type: 'prompt',
-        name: 'claude-ai:y',
-        source: 'user',
-      }),
-    ).toBe(false)
+    expect(shouldRefuseReservedName({ type: 'prompt', name: 'deploy', source: 'user' })).toBe(
+      false,
+    )
     // Gate off → nothing refused.
     plaidHarbor = false
     expect(
-      shouldRefuseReservedName({
-        type: 'prompt',
-        name: 'anthropic-skills:y',
-        source: 'user',
-      }),
+      shouldRefuseReservedName({ type: 'prompt', name: 'anthropic-skills:y', source: 'user' }),
     ).toBe(false)
   })
 })
 
-describe('2.1.283 reserved namespaces: skill-rule matching (official ae/te/ke/ye)', () => {
+describe('2.1.283 reserved namespaces: skill-rule matching (official ae/te/ye)', () => {
   test('parseSkillRule strips leading slash and decodes :* / " *" prefixes', () => {
     expect(parseSkillRule('deploy')).toEqual({ name: 'deploy' })
     expect(parseSkillRule('/deploy')).toEqual({ name: 'deploy' })
@@ -291,8 +283,8 @@ describe('2.1.283 reserved namespaces: skill-rule matching (official ae/te/ke/ye
       prefix: 'anthropic-skills',
     })
     expect(parseSkillRule('foo *')).toEqual({ name: 'foo *', prefix: 'foo' })
-    // Parsing itself is namespace-agnostic — claude-ai:* is an ordinary
-    // prefix rule now (283 revert).
+    // Parsing is namespace-agnostic — claude-ai:* is now simply an ordinary
+    // prefix rule (283 revert).
     expect(parseSkillRule('/claude-ai:*')).toEqual({
       name: 'claude-ai:*',
       prefix: 'claude-ai',
@@ -302,46 +294,41 @@ describe('2.1.283 reserved namespaces: skill-rule matching (official ae/te/ke/ye
   test('plain matching (official te) is prefix-blind to namespaces', () => {
     expect(skillRuleMatchesPlain('deploy', 'deploy')).toBe(true)
     expect(skillRuleMatchesPlain('deploy', 'deploy-x')).toBe(false)
-    expect(
-      skillRuleMatchesPlain('anthropic-skills:*', 'anthropic-skills:foo'),
-    ).toBe(true)
+    expect(skillRuleMatchesPlain('anthropic-skills:*', 'anthropic-skills:foo')).toBe(
+      true,
+    )
     // The boundary case: the prefix also string-matches lookalikes.
     expect(
       skillRuleMatchesPlain('anthropic-skills:*', 'anthropic-skillsX:foo'),
     ).toBe(true)
   })
 
-  test('namespace-aware matching (official ke) narrows reserved prefixes', () => {
+  test('namespace-aware matching narrows reserved prefixes only', () => {
     // Non-reserved prefix: plain match AND the skill must not sit in a
     // reserved namespace.
     expect(skillRuleMatchesNamespaceAware('my:*', 'my:foo')).toBe(true)
     expect(skillRuleMatchesNamespaceAware('my:*', 'anthropic-skills:foo')).toBe(
       false,
     )
-    // 283 revert: claude-ai:* names are ordinary — a non-reserved prefix
-    // biting into them matches again (282: false, reserved-namespace veto).
-    expect(skillRuleMatchesNamespaceAware('claude:*', 'claude-ai:foo')).toBe(
+    // 2.1.283 revert: claude-ai is an ordinary namespace — an ordinary prefix
+    // rule covers it again.
+    expect(skillRuleMatchesNamespaceAware('my:*', 'claude-ai:foo')).toBe(false) // prefix differs
+    expect(skillRuleMatchesNamespaceAware('claude-ai:*', 'claude-ai:foo')).toBe(
       true,
     )
+    expect(
+      skillRuleMatchesNamespaceAware('claude-ai:*', 'claude-aiX:foo'),
+    ).toBe(true) // ordinary prefix rules string-match lookalikes
     // Bare reserved namespace prefix: only "ns:..." names match — the
     // lookalike "anthropic-skillsX:foo" no longer does.
     expect(
-      skillRuleMatchesNamespaceAware(
-        'anthropic-skills:*',
-        'anthropic-skills:foo',
-      ),
+      skillRuleMatchesNamespaceAware('anthropic-skills:*', 'anthropic-skills:foo'),
     ).toBe(true)
     expect(
-      skillRuleMatchesNamespaceAware(
-        'anthropic-skills:*',
-        'anthropic-skillsX:foo',
-      ),
+      skillRuleMatchesNamespaceAware('anthropic-skills:*', 'anthropic-skillsX:foo'),
     ).toBe(false)
     expect(
-      skillRuleMatchesNamespaceAware(
-        'anthropic-skills:*',
-        'anthropic-skills',
-      ),
+      skillRuleMatchesNamespaceAware('anthropic-skills:*', 'anthropic-skills'),
     ).toBe(false)
     // Prefix INSIDE a reserved namespace: exact prefix or "prefix:...".
     expect(
@@ -399,58 +386,230 @@ describe('2.1.283 reserved namespaces: skill-rule matching (official ae/te/ke/ye
     expect(matchSkillRuleForPermission('deploy', 'deploy')).toBe('allow')
     // No relationship → no-match.
     expect(matchSkillRuleForPermission('deploy', 'build')).toBe('no-match')
-    // A non-reserved prefix biting into the reserved namespace plain-matches
-    // but fails ns-aware matching → boundary hold-back (never an allow).
-    expect(
-      matchSkillRuleForPermission('anthropic:*', 'anthropic-skills:y'),
-    ).toBe('held-back-boundary')
     // Command-name candidate participates (official candidates list).
     expect(
       matchSkillRuleForPermission('my:*', 'invoked', { name: 'my:foo' }),
     ).toBe('allow')
   })
 
-  test('283 revert: Skill(claude-ai:*) is an ordinary prefix rule again', () => {
-    // 282 held both of these back; 283 allows them.
-    expect(matchSkillRuleForPermission('claude-ai:*', 'claude-ai:y')).toBe(
-      'allow',
-    )
+  test('2.1.283 revert pin: claude-ai rules are ordinary prefix rules', () => {
+    // Exact rule for a claude-ai name: plain allow again (282 held it back).
     expect(matchSkillRuleForPermission('claude-ai:y', 'claude-ai:y')).toBe(
       'allow',
     )
+    expect(matchSkillRuleForPermission('claude-ai:*', 'claude-ai:y')).toBe(
+      'allow',
+    )
+    // The 282 "non-reserved prefix biting into the reserved namespace"
+    // boundary case is gone — claude-ai is an ordinary namespace.
     expect(matchSkillRuleForPermission('claude:*', 'claude-ai:y')).toBe(
       'allow',
     )
-    // claude-ai names also no longer poison ordinary rules that cover them.
-    expect(matchSkillRuleForPermission('my:*', 'my:claude-ai')).toBe('allow')
+  })
+
+  test('renamed candidate (official fMe): synced prompt alias participates in allow matching', () => {
+    const renamed = {
+      type: 'prompt',
+      name: 'anthropic-skills:new',
+      loadedFrom: 'syncedSkills',
+      aliases: ['old'],
+      unqualifiedName: 'old',
+    }
+    expect(renamedCandidate(renamed)).toBe('old')
+    expect(renamedCandidate(undefined)).toBeUndefined()
+    // Not syncedSkills → no renamed candidate.
+    expect(
+      renamedCandidate({ ...renamed, loadedFrom: 'plugin' }),
+    ).toBeUndefined()
+    // unqualifiedName not in aliases → no candidate.
+    expect(
+      renamedCandidate({ ...renamed, aliases: ['other'] }),
+    ).toBeUndefined()
+    // The renamed candidate lets the holder's old-name rule allow (holder ⇒
+    // reserved name is legitimately covered).
+    expect(matchSkillRuleForPermission('old', 'new', renamed)).toBe('allow')
   })
 })
 
-describe('2.1.283 deny-matcher expansion (official ue/Be/w6/Le/le/dOo/uOo)', () => {
-  test('wildcard matcher (official w6): anchored, escaped, multi-*', () => {
-    expect(skillRuleMatchesWildcard('deploy', 'deploy')).toBe(true)
-    expect(skillRuleMatchesWildcard('deploy', 'deploy-x')).toBe(false)
-    expect(skillRuleMatchesWildcard('deploy*', 'deploy-x')).toBe(true)
-    expect(skillRuleMatchesWildcard('*deploy', 'xdeploy')).toBe(true)
-    expect(skillRuleMatchesWildcard('a*b*c', 'axxbyyc')).toBe(true)
-    expect(skillRuleMatchesWildcard('*', 'anything')).toBe(true)
-    // Regex metacharacters are literal, not wildcards.
-    expect(skillRuleMatchesWildcard('a.b', 'a.b')).toBe(true)
-    expect(skillRuleMatchesWildcard('a.b', 'axb')).toBe(false)
-    expect(skillRuleMatchesWildcard('a+b?', 'a+b?')).toBe(true)
-    expect(skillRuleMatchesWildcard('a+b?', 'aabx')).toBe(false)
+describe('2.1.283 packaging-name machinery (official vdt/z$/d/JVn/dOo/uOo/le/w6)', () => {
+  test('qualify / unqualify (official vdt / z$)', () => {
+    expect(qualifyAnthropicSkillsName('foo')).toBe('anthropic-skills:foo')
+    expect(qualifyAnthropicSkillsName('anthropic-skills:foo')).toBe(
+      'anthropic-skills:foo',
+    )
+    expect(unqualifyAnthropicSkillsName('anthropic-skills:foo')).toBe('foo')
+    expect(unqualifyAnthropicSkillsName('foo')).toBe('foo')
+    expect(unqualifyAnthropicSkillsName('anthropic-skills:')).toBe('')
   })
 
-  test('skill: rule form (official Be): whitespace-tolerant, case-sensitive, /s', () => {
-    expect(skillDenyRuleMatches('skill:evil*', 'evil-x')).toBe(true)
-    expect(skillDenyRuleMatches('skill:evil*', 'good')).toBe(false)
-    expect(skillDenyRuleMatches(' skill : evil ', 'evil')).toBe(true)
-    // Uppercase "Skill:" does NOT match the Be form; it falls through to
-    // plain matching, where the literal name "Skill:evil" matches nothing.
-    expect(skillDenyRuleMatches('Skill:evil', 'evil')).toBe(false)
+  test('selfQualifiedSkillName (official d): only the non-reserved "X:X" form', () => {
+    expect(selfQualifiedSkillName('foo:foo')).toBe('foo')
+    expect(selfQualifiedSkillName('foo:bar')).toBeUndefined()
+    expect(selfQualifiedSkillName('foo')).toBeUndefined()
+    expect(selfQualifiedSkillName(':foo')).toBeUndefined()
+    // The reserved namespace itself never self-qualifies (zAe.includes).
+    expect(
+      selfQualifiedSkillName('anthropic-skills:anthropic-skills'),
+    ).toBeUndefined()
+    // 283 revert interaction: "claude-ai:claude-ai" IS self-qualified now
+    // (claude-ai left zAe).
+    expect(selfQualifiedSkillName('claude-ai:claude-ai')).toBe('claude-ai')
   })
 
-  test('ordinary deny candidates: invoked name, registered name, display name, aliases, unqualifiedName', () => {
+  test('packagingAliasOf (official JVn): "X:X" ↔ "anthropic-skills:X"', () => {
+    expect(packagingAliasOf('foo:foo')).toBe('anthropic-skills:foo')
+    expect(packagingAliasOf('anthropic-skills:foo')).toBe('foo:foo')
+    // Reserved-qualified with a compound tail → no alias.
+    expect(packagingAliasOf('anthropic-skills:foo:bar')).toBeUndefined()
+    expect(packagingAliasOf('anthropic-skills:')).toBeUndefined()
+    expect(packagingAliasOf('foo:bar')).toBeUndefined()
+    expect(packagingAliasOf('deploy')).toBeUndefined()
+  })
+
+  test('pluginPackagingNames (official dOo)', () => {
+    // Non-plugin delivery → no packaging names.
+    expect(
+      pluginPackagingNames({ name: 'foo:foo', loadedFrom: 'syncedSkills' }),
+    ).toEqual([])
+    expect(pluginPackagingNames({ name: 'foo:foo', source: 'user' })).toEqual([])
+    // Self-qualified plugin skill "foo:foo".
+    expect(
+      pluginPackagingNames({ name: 'foo:foo', loadedFrom: 'plugin' }),
+    ).toEqual(['anthropic-skills:foo', 'foo'])
+    // Aliases ≠ extracted name are qualified and appended.
+    expect(
+      pluginPackagingNames({
+        name: 'foo:foo',
+        loadedFrom: 'plugin',
+        aliases: ['foo', 'bar'],
+      }),
+    ).toEqual(['anthropic-skills:foo', 'foo', 'anthropic-skills:bar'])
+    // Self-qualification via the DISPLAY name; tail === extracted → no tail
+    // variants.
+    expect(
+      pluginPackagingNames({
+        name: 'plug:deploy',
+        loadedFrom: 'plugin',
+        userFacingName: () => 'deploy:deploy',
+      }),
+    ).toEqual(['anthropic-skills:deploy', 'deploy'])
+    // Display-name extraction with a DIFFERENT registered tail → qualified +
+    // bare tail variants appended.
+    expect(
+      pluginPackagingNames({
+        name: 'plug:run',
+        loadedFrom: 'plugin',
+        userFacingName: () => 'deploy:deploy',
+      }),
+    ).toEqual([
+      'anthropic-skills:deploy',
+      'deploy',
+      'anthropic-skills:run',
+      'run',
+    ])
+    // No self-qualified form anywhere → empty.
+    expect(
+      pluginPackagingNames({ name: 'plug:run', loadedFrom: 'plugin' }),
+    ).toEqual([])
+  })
+
+  test('syncedPackagingNames (official uOo)', () => {
+    // Wrong delivery or non-reserved name → empty.
+    expect(syncedPackagingNames({ name: 'anthropic-skills:foo' })).toEqual([])
+    expect(
+      syncedPackagingNames({ name: 'foo', loadedFrom: 'syncedSkills' }),
+    ).toEqual([])
+    // Simple reserved tail → the self-qualified alias.
+    expect(
+      syncedPackagingNames({
+        name: 'anthropic-skills:foo',
+        loadedFrom: 'syncedSkills',
+      }),
+    ).toEqual(['foo:foo'])
+    // Plugin delivery of a reserved-qualified name counts too.
+    expect(
+      syncedPackagingNames({ name: 'anthropic-skills:foo', loadedFrom: 'plugin' }),
+    ).toEqual(['foo:foo'])
+    // Compound tail → empty.
+    expect(
+      syncedPackagingNames({
+        name: 'anthropic-skills:foo:bar',
+        loadedFrom: 'syncedSkills',
+      }),
+    ).toEqual([])
+    // A DIFFERENT reserved-qualified display name adds R:R / R:N / bare R.
+    expect(
+      syncedPackagingNames({
+        name: 'anthropic-skills:foo',
+        loadedFrom: 'syncedSkills',
+        userFacingName: () => 'anthropic-skills:bar',
+      }),
+    ).toEqual(['foo:foo', 'bar:bar', 'bar:foo', 'bar'])
+    // Same display tail as the name → no extra variants.
+    expect(
+      syncedPackagingNames({
+        name: 'anthropic-skills:foo',
+        loadedFrom: 'syncedSkills',
+        userFacingName: () => 'anthropic-skills:foo',
+      }),
+    ).toEqual(['foo:foo'])
+  })
+
+  test('packagingNamesFor (official le, De exemption STAGED) concatenates both halves', () => {
+    // dOo half empty for a reserved-qualified name; uOo half contributes.
+    expect(
+      packagingNamesFor({
+        name: 'anthropic-skills:foo',
+        loadedFrom: 'plugin',
+      }),
+    ).toEqual(['foo:foo'])
+    // dOo half contributes for the self-qualified plugin form.
+    expect(
+      packagingNamesFor({ name: 'foo:foo', loadedFrom: 'plugin' }),
+    ).toEqual(['anthropic-skills:foo', 'foo'])
+    // Ordinary user skill → no packaging names.
+    expect(packagingNamesFor({ name: 'deploy', source: 'user' })).toEqual([])
+  })
+
+  test('globPatternMatches (official w6): * → .*, metacharacters escaped, /s', () => {
+    expect(globPatternMatches('foo*', 'foobar')).toBe(true)
+    expect(globPatternMatches('foo', 'foobar')).toBe(false)
+    expect(globPatternMatches('*', 'anything')).toBe(true)
+    expect(globPatternMatches('*', '')).toBe(true)
+    // Regex metacharacters are literal.
+    expect(globPatternMatches('a.b', 'a.b')).toBe(true)
+    expect(globPatternMatches('a.b', 'axb')).toBe(false)
+    expect(globPatternMatches('a+b', 'a+b')).toBe(true)
+    // /s flag: .* crosses newlines.
+    expect(globPatternMatches('a*b', 'a\nb')).toBe(true)
+    // Anchored: no substring matches.
+    expect(globPatternMatches('bar', 'foobar')).toBe(false)
+  })
+})
+
+describe('2.1.283 deny matcher (official ue) — ordinary + packaging names', () => {
+  test('ordinary names (official Le): invoked, registered, display, aliases, unqualifiedName', () => {
+    expect(denyMatchOrdinaryNames('invoked')).toEqual(['invoked'])
+    expect(
+      denyMatchOrdinaryNames('invoked', {
+        type: 'prompt',
+        name: 'reg',
+        userFacingName: () => 'disp',
+        aliases: ['a1'],
+        unqualifiedName: 'uq',
+      }),
+    ).toEqual(['invoked', 'reg', 'disp', 'a1', 'uq'])
+    // unqualifiedName is prompt-only.
+    expect(
+      denyMatchOrdinaryNames('invoked', {
+        type: 'local-jsx',
+        name: 'reg',
+        unqualifiedName: 'uq',
+      }),
+    ).toEqual(['invoked', 'reg', 'reg'])
+  })
+
+  test('ordinary matching is unchanged from the 282 de subset', () => {
     expect(skillDenyRuleMatches('deploy', 'deploy')).toBe(true)
     expect(skillDenyRuleMatches('deploy:*', 'deploy:x')).toBe(true)
     expect(skillDenyRuleMatches('evil', 'invoked', { name: 'evil' })).toBe(true)
@@ -466,160 +625,102 @@ describe('2.1.283 deny-matcher expansion (official ue/Be/w6/Le/le/dOo/uOo)', () 
         aliases: ['evil'],
       }),
     ).toBe(true)
-    // New in 283 (official Le): a prompt's unqualifiedName is a candidate.
-    expect(
-      skillDenyRuleMatches('evil', 'invoked', {
-        type: 'prompt',
-        name: 'other',
-        unqualifiedName: 'evil',
-      }),
-    ).toBe(true)
-    // ...but only for prompts.
-    expect(
-      skillDenyRuleMatches('evil', 'invoked', {
-        type: 'local',
-        name: 'other',
-        unqualifiedName: 'evil',
-      }),
-    ).toBe(false)
     expect(skillDenyRuleMatches('good', 'bad', { name: 'other' })).toBe(false)
   })
 
-  test('denyMatchCandidates (official Le) splits ordinary and packaging', () => {
-    expect(denyMatchCandidates('invoked')).toEqual({
-      ordinary: ['invoked'],
-      packaging: [],
-    })
-    const { ordinary, packaging } = denyMatchCandidates('invoked', {
-      type: 'prompt',
-      name: 'reg',
-      aliases: ['a1'],
-      unqualifiedName: 'uq',
-      userFacingName: () => 'disp',
-    })
-    expect(ordinary).toEqual(['invoked', 'reg', 'disp', 'a1', 'uq'])
-    expect(packaging).toEqual([])
-  })
-
-  test('plugin packaging aliases (official dOo): self-namespaced plugin skills', () => {
-    const command = {
+  test('283 bullet: Skill(anthropic-skills:<name>) deny also blocks the plugin-delivered skill', () => {
+    // A plugin delivering the self-qualified "foo:foo" skill carries the
+    // packaging name "anthropic-skills:foo" — the deny rule blocks it.
+    const pluginSkill = {
       type: 'prompt',
       name: 'foo:foo',
       loadedFrom: 'plugin',
-      aliases: ['foo', 'x'],
+      source: 'plugin',
     }
-    // The reserved form and the bare short name both deny.
-    expect(skillDenyRuleMatches('anthropic-skills:foo', 'foo:foo', command)).toBe(
+    expect(
+      skillDenyRuleMatches('anthropic-skills:foo', 'foo:foo', pluginSkill),
+    ).toBe(true)
+    // A wildcard-prefix deny does NOT reach packaging names unless the prefix
+    // IS the packaging name (official: prefix===name||yu(); yu() ≡ false in
+    // OCC — documented deviation, fail-closed).
+    expect(
+      skillDenyRuleMatches('anthropic-skills:*', 'foo:foo', pluginSkill),
+    ).toBe(false)
+    // Prefix rule whose prefix IS the packaging name matches.
+    expect(
+      skillDenyRuleMatches('anthropic-skills:foo:*', 'foo:foo', pluginSkill),
+    ).toBe(true)
+    // Without the plugin delivery there are no packaging names → no deny.
+    expect(
+      skillDenyRuleMatches('anthropic-skills:foo', 'foo:foo', {
+        type: 'prompt',
+        name: 'foo:foo',
+        source: 'user',
+      }),
+    ).toBe(false)
+  })
+
+  test('283 bullet: literal skill:<name> deny rules glob ordinary and packaging names', () => {
+    const pluginSkill = {
+      type: 'prompt',
+      name: 'foo:foo',
+      loadedFrom: 'plugin',
+      source: 'plugin',
+    }
+    // Literal rule, no wildcard → packaging names are glob-matched too.
+    expect(
+      skillDenyRuleMatches('skill:anthropic-skills:foo', 'foo:foo', pluginSkill),
+    ).toBe(true)
+    // Literal rule WITH a wildcard → packaging glob is skipped (official
+    // widens only via yu(), ≡ false), and the ordinary glob doesn't reach it.
+    expect(
+      skillDenyRuleMatches('skill:anthropic-skills:*', 'foo:foo', pluginSkill),
+    ).toBe(false)
+    // Ordinary-name globbing via the literal form.
+    expect(skillDenyRuleMatches('skill:foo*', 'foobar')).toBe(true)
+    expect(skillDenyRuleMatches('skill:foo:foo', 'foo:foo', pluginSkill)).toBe(
       true,
     )
-    expect(skillDenyRuleMatches('foo', 'foo:foo', command)).toBe(true)
-    // Aliases map into the reserved namespace (alias === short is skipped).
-    expect(
-      skillDenyRuleMatches('anthropic-skills:x', 'foo:foo', command),
-    ).toBe(true)
-    // The candidates split shows the full expansion.
-    expect(denyMatchCandidates('foo:foo', command).packaging).toEqual([
-      'anthropic-skills:foo',
-      'foo',
-      'anthropic-skills:x',
-    ])
+    // Whitespace around the literal prefix is tolerated (Be = /^\s*skill\s*:(.*)$/s).
+    expect(skillDenyRuleMatches(' skill : deploy ', 'deploy')).toBe(true)
   })
 
-  test('plugin packaging aliases: tail form when the display name unpacks differently', () => {
-    const command = {
-      type: 'prompt',
-      name: 'foo:bar',
-      loadedFrom: 'plugin',
-      userFacingName: () => 'baz:baz',
-    }
-    // short = 'baz' (from the display name); tail = 'bar' ≠ short → both
-    // tail forms join the packaging candidates.
-    expect(denyMatchCandidates('foo:bar', command).packaging).toEqual([
-      'anthropic-skills:baz',
-      'baz',
-      'anthropic-skills:bar',
-      'bar',
-    ])
-    expect(skillDenyRuleMatches('bar', 'foo:bar', command)).toBe(true)
-  })
-
-  test('synced packaging aliases (official uOo): reserved-namespace skills', () => {
+  test('synced skills: deny reaches the self-qualified alias and display-name variants', () => {
     const synced = {
       type: 'prompt',
       name: 'anthropic-skills:foo',
       loadedFrom: 'syncedSkills',
     }
-    expect(denyMatchCandidates('invoked', synced).packaging).toEqual([
-      'foo:foo',
-    ])
-    expect(
-      skillDenyRuleMatches('foo:foo', 'invoked', synced),
-    ).toBe(true)
-    // A different display name inside the namespace adds its forms.
+    expect(skillDenyRuleMatches('foo:foo', 'anthropic-skills:foo', synced)).toBe(
+      true,
+    )
     const renamedDisplay = {
       ...synced,
       userFacingName: () => 'anthropic-skills:bar',
     }
     expect(
-      denyMatchCandidates('invoked', renamedDisplay).packaging,
-    ).toEqual(['foo:foo', 'bar:bar', 'bar:foo', 'bar'])
-    expect(
-      skillDenyRuleMatches('bar:foo', 'invoked', renamedDisplay),
+      skillDenyRuleMatches('bar:foo', 'anthropic-skills:foo', renamedDisplay),
     ).toBe(true)
-    // Nested reserved names (short contains ':') produce no packaging forms.
     expect(
-      denyMatchCandidates('invoked', {
-        name: 'anthropic-skills:a:b',
-        loadedFrom: 'syncedSkills',
-      }).packaging,
-    ).toEqual([])
-  })
-
-  test('packaging candidates: prefix rules only match when the prefix equals the candidate', () => {
-    const command = {
-      type: 'prompt',
-      name: 'foo:foo',
-      loadedFrom: 'plugin',
-    }
-    // Exact (prefix-free) rule → packaging match allowed.
-    expect(
-      skillDenyRuleMatches('anthropic-skills:foo', 'foo:foo', command),
+      skillDenyRuleMatches('bar', 'anthropic-skills:foo', renamedDisplay),
     ).toBe(true)
-    // Prefix rule 'anthropic-skills:*' plain-matches the packaging candidate
-    // but prefix ≠ candidate → NO packaging match (official te-branch guard;
-    // Desktop hosts would be exempt — isDesktopHostSession() ≡ false in OCC).
     expect(
-      skillDenyRuleMatches('anthropic-skills:*', 'foo:foo', command),
-    ).toBe(false)
-  })
-
-  test('skill: form wildcard patterns never reach packaging candidates (non-Desktop)', () => {
-    const command = {
-      type: 'prompt',
-      name: 'foo:foo',
-      loadedFrom: 'plugin',
-    }
-    // Wildcard-free skill: pattern matches the packaging alias...
-    expect(
-      skillDenyRuleMatches('skill:anthropic-skills:foo', 'foo:foo', command),
+      skillDenyRuleMatches('bar:bar', 'anthropic-skills:foo', renamedDisplay),
     ).toBe(true)
-    // ...but a wildcard pattern does not (official: packaging only when the
-    // pattern has no '*' or the session is a Desktop host — yu ≡ false).
-    expect(
-      skillDenyRuleMatches('skill:anthropic-skills:*', 'foo:foo', command),
-    ).toBe(false)
-    // Wildcard patterns still match ordinary candidates.
-    expect(skillDenyRuleMatches('skill:foo:*', 'foo:foo', command)).toBe(true)
-  })
-
-  test('Desktop-host and untrusted-plugin seams are structurally false in OCC', async () => {
-    const { isDesktopHostSession, isUntrustedPluginDelivery } = await import(
-      '../reservedNames.js'
+    // Unrelated deny → no match.
+    expect(skillDenyRuleMatches('other', 'anthropic-skills:foo', synced)).toBe(
+      false,
     )
-    expect(isDesktopHostSession()).toBe(false)
+  })
+
+  test('unqualifiedName participates in ordinary deny matching (283 Le)', () => {
     expect(
-      isUntrustedPluginDelivery({ name: 'foo:foo', loadedFrom: 'plugin' }),
-    ).toBe(false)
+      skillDenyRuleMatches('old', 'invoked', {
+        type: 'prompt',
+        name: 'other',
+        unqualifiedName: 'old',
+      }),
+    ).toBe(true)
   })
 })
 
@@ -669,9 +770,7 @@ describe('2.1.283 reserved namespaces: messages (official Se + squatter ask)', (
 
   test('boundary message — non-reserved rule against a reserved name', () => {
     expect(
-      buildHeldBackRuleMessage('deploy', 'anthropic-skills:y', {
-        kind: 'boundary',
-      }),
+      buildHeldBackRuleMessage('deploy', 'anthropic-skills:y', { kind: 'boundary' }),
     ).toBe(
       'Skill(deploy) does not cover "anthropic-skills:" names, which are reserved for skills synced from your claude.ai account. Add Skill(anthropic-skills:y) to allow anthropic-skills:y without asking.',
     )
@@ -685,7 +784,9 @@ describe('2.1.283 reserved namespaces: messages (official Se + squatter ask)', (
       { kind: 'nonholder' },
     )
     const message = buildSquatterAskMessage('anthropic-skills:foo', reason)
-    expect(message).toBe(`Execute skill: anthropic-skills:foo — ${reason}`)
+    expect(message).toBe(
+      `Execute skill: anthropic-skills:foo — ${reason}`,
+    )
     // The separator is U+2014 EM DASH (official bytes 342 200 224).
     expect(message.includes('—')).toBe(true)
   })
@@ -718,10 +819,7 @@ describe('2.1.283 reserved namespaces: loader refusal (official kOe/nse/v$o/BGo)
         skill: { type: 'prompt', name: 'anthropic-skills:x', source: 'user' },
         filePath: '/proj/.claude/skills/anthropic-skills/x/SKILL.md',
       },
-      {
-        skill: { type: 'prompt', name: 'deploy', source: 'user' },
-        filePath: '/proj/.claude/skills/deploy/SKILL.md',
-      },
+      { skill: { type: 'prompt', name: 'deploy', source: 'user' }, filePath: '/proj/.claude/skills/deploy/SKILL.md' },
     ]
     const kept = filterRefusedReservedNames(
       entries as Parameters<typeof filterRefusedReservedNames>[0],
@@ -742,27 +840,6 @@ describe('2.1.283 reserved namespaces: loader refusal (official kOe/nse/v$o/BGo)
     ])
   })
 
-  test('283 revert: claude-ai:* skills load again, silently', () => {
-    const kept = filterRefusedReservedNames([
-      {
-        skill: { type: 'prompt', name: 'claude-ai:y', source: 'user' },
-        filePath: '/proj/.claude/skills/claude-ai/y/SKILL.md',
-      },
-      {
-        skill: {
-          type: 'prompt',
-          name: 'innocent',
-          source: 'user',
-          userFacingName: () => 'claude-ai:z',
-        },
-        filePath: '/proj/.claude/commands/innocent.md',
-      },
-    ] as Parameters<typeof filterRefusedReservedNames>[0])
-    expect(kept).toHaveLength(2)
-    expect(debugLogs).toHaveLength(0)
-    expect(getRefusedReservedNames()).toEqual([])
-  })
-
   test('command anthropic-skills:y via display name is dropped with the frontmatter-name warn', () => {
     const kept = filterRefusedReservedNames([
       {
@@ -779,6 +856,27 @@ describe('2.1.283 reserved namespaces: loader refusal (official kOe/nse/v$o/BGo)
     expect(debugLogs[0].message).toBe(
       `[skills] not loading "anthropic-skills:y" (/proj/.claude/commands/innocent.md): that name ${REASON_ANTHROPIC}; change its name: line`,
     )
+  })
+
+  test('2.1.283 revert pin: claude-ai skills and commands load again', () => {
+    const kept = filterRefusedReservedNames([
+      {
+        skill: { type: 'prompt', name: 'claude-ai:y', source: 'user' },
+        filePath: '/proj/.claude/skills/claude-ai/y/SKILL.md',
+      },
+      {
+        skill: {
+          type: 'prompt',
+          name: 'innocent',
+          source: 'user',
+          userFacingName: () => 'claude-ai:display',
+        },
+        filePath: '/proj/.claude/commands/innocent.md',
+      },
+    ] as Parameters<typeof filterRefusedReservedNames>[0])
+    expect(kept).toHaveLength(2)
+    expect(debugLogs).toHaveLength(0)
+    expect(getRefusedReservedNames()).toEqual([])
   })
 
   test('plugin-sourced prompt with a reserved name still loads', () => {
@@ -833,13 +931,8 @@ describe('2.1.283 reserved namespaces: loader refusal (official kOe/nse/v$o/BGo)
         filePath: '/proj/.claude/skills/anthropic-skills/x/SKILL.md',
       },
       {
-        skill: {
-          type: 'prompt',
-          name: 'innocent',
-          source: 'project',
-          userFacingName: () => 'anthropic-skills:y',
-        },
-        filePath: '/proj/.claude/commands/innocent.md',
+        skill: { type: 'prompt', name: 'anthropic-skills:y', source: 'project' },
+        filePath: '/proj/.claude/skills/anthropic-skills/y/SKILL.md',
       },
     ] as Parameters<typeof filterRefusedReservedNames>[0])
     logReservedNamesRefusedTelemetry()
@@ -850,23 +943,30 @@ describe('2.1.283 reserved namespaces: loader refusal (official kOe/nse/v$o/BGo)
       action: 'names_refused',
       refused: 2,
       ns_anthropic_skills: 2,
-      kind_path: 1,
-      kind_frontmatter_name: 1,
+      kind_path: 2,
     })
-    // 283 revert: no claude-ai namespace counter is emitted anymore.
+    // 283 revert: no claude-ai refusals can occur, so no ns_claude_ai counter.
     expect(events[0].metadata.ns_claude_ai).toBeUndefined()
   })
 
-  test('held-back telemetry: once per kind with official action names (no renamed kind in 283)', () => {
+  test('held-back telemetry: once per kind; 283 action map is binary', () => {
     logHeldBackRuleTelemetry('nonholder')
     logHeldBackRuleTelemetry('nonholder')
     logHeldBackRuleTelemetry('boundary')
-    expect(events).toHaveLength(2)
+    logHeldBackRuleTelemetry('renamed')
+    expect(events).toHaveLength(3)
     expect(events[0].metadata).toMatchObject({
       action: 'nonholder_allow_rule',
       host_prompt: false,
     })
     expect(events[1].metadata).toMatchObject({
+      action: 'prefix_at_namespace_boundary',
+      host_prompt: false,
+    })
+    // 283 qe: `e==="nonholder"?"nonholder_allow_rule":
+    // "prefix_at_namespace_boundary"` — 282's `renamed_allow_rule` action was
+    // removed; the renamed kind reuses the boundary action (own claim key).
+    expect(events[2].metadata).toMatchObject({
       action: 'prefix_at_namespace_boundary',
       host_prompt: false,
     })
@@ -879,10 +979,10 @@ describe('2.1.283 reserved namespaces: MCP server-name gates', () => {
     expect(isReservedMcpServerName('anthropic-skills')).toBe(true)
     expect(isReservedMcpServerName('ANTHROPIC-SKILLS')).toBe(true)
     expect(isReservedMcpServerName('anthropic-skills-tools')).toBe(false)
-    // 283 revert: a server named claude-ai is ordinary again.
+    expect(isReservedMcpServerName('my-server')).toBe(false)
+    // 2.1.283 revert pins.
     expect(isReservedMcpServerName('claude-ai')).toBe(false)
     expect(isReservedMcpServerName('CLAUDE-AI')).toBe(false)
-    expect(isReservedMcpServerName('my-server')).toBe(false)
     plaidHarbor = false
     expect(isReservedMcpServerName('anthropic-skills')).toBe(false)
   })
@@ -893,13 +993,13 @@ describe('2.1.283 reserved namespaces: MCP server-name gates', () => {
     )
   })
 
-  test('per-prompt message is byte-exact (plural fallback reason)', () => {
-    expect(reservedMcpPromptMessage('anthropic-skills:summarize')).toBe(
-      `Prompt 'anthropic-skills:summarize' not listed: the server name ${REASON_FALLBACK}. Rename the server in your MCP configuration to list its prompts.`,
+  test('per-prompt message is byte-exact (single-name fallback reason)', () => {
+    expect(reservedMcpPromptMessage('mcp__anthropic-skills__summarize')).toBe(
+      `Prompt 'mcp__anthropic-skills__summarize' not listed: the server name ${REASON_FALLBACK}. Rename the server in your MCP configuration to list its prompts.`,
     )
   })
 
-  test('fetchMcpSkillsForClient stub logs the funnel message for reserved server names', async () => {
+  test('fetchMcpSkillsForClient stub logs the funnel message for reserved server names only', async () => {
     const mcpLogs: Array<{ server: string; message: string }> = []
     const actualLog = { ...(await import('../../../utils/log.js')) }
     mock.module('../../../utils/log.js', () => ({
@@ -912,25 +1012,27 @@ describe('2.1.283 reserved namespaces: MCP server-name gates', () => {
       const { fetchMcpSkillsForClient } = await import(
         '../../../skills/mcpSkills.js'
       )
-      const reserved = await fetchMcpSkillsForClient({
-        name: 'anthropic-skills',
-      })
+      const reserved = await fetchMcpSkillsForClient({ name: 'anthropic-skills' })
       expect(reserved).toEqual([])
       expect(mcpLogs).toHaveLength(1)
       expect(mcpLogs[0].server).toBe('anthropic-skills')
       expect(mcpLogs[0].message).toBe(
         reservedMcpServerSkillsMessage('anthropic-skills'),
       )
-      // 283 revert: a claude-ai server does not trigger the funnel log.
-      const claudeAi = await fetchMcpSkillsForClient({ name: 'claude-ai' })
-      expect(claudeAi).toEqual([])
+      // 283 revert: a claude-ai server no longer triggers the funnel log.
+      const reverted = await fetchMcpSkillsForClient({ name: 'claude-ai' })
+      expect(reverted).toEqual([])
+      expect(mcpLogs).toHaveLength(1)
+      // A renamed (non-reserved) server does not trigger the funnel log.
+      const renamed = await fetchMcpSkillsForClient({ name: 'my-anthropic-skills' })
+      expect(renamed).toEqual([])
       expect(mcpLogs).toHaveLength(1)
     } finally {
       mock.module('../../../utils/log.js', () => ({ ...actualLog }))
     }
   })
 
-  test('client prompt gate: reserved server drops prompts, tools untouched, claude-ai server lists prompts', () => {
+  test('client prompt gate: reserved server drops prompts, tools untouched, claude-ai server lists prompts again', () => {
     // Mirrors the fetchCommandsForClient gate in src/services/mcp/client.ts:
     // each prompt becomes a Command whose display name is
     // `${client.name}:${prompt.name} (MCP)` and source is 'mcp'; the gate is
@@ -964,12 +1066,14 @@ describe('2.1.283 reserved namespaces: MCP server-name gates', () => {
     expect(debugLogs[0].message).toBe(
       reservedMcpPromptMessage('mcp__anthropic-skills__summarize'),
     )
-    // 283 revert: claude-ai servers list their prompts again.
-    expect(gate('claude-ai', ['summarize'])).toEqual([
+    // 283 revert: claude-ai server prompts are listed again.
+    expect(gate('claude-ai', ['summarize', 'review'])).toEqual([
       'mcp__claude-ai__summarize',
+      'mcp__claude-ai__review',
     ])
-    expect(gate('my-claude-ai', ['summarize'])).toEqual([
-      'mcp__my-claude-ai__summarize',
+    expect(debugLogs).toHaveLength(2)
+    expect(gate('my-anthropic-skills', ['summarize'])).toEqual([
+      'mcp__my-anthropic-skills__summarize',
     ])
     expect(gate('github', ['list_prs'])).toEqual(['mcp__github__list_prs'])
 

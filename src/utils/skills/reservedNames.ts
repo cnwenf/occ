@@ -1,40 +1,37 @@
 /**
  * CC 2.1.283 anthropic-skills reserved-namespace hardening.
  *
- * 2.1.283 REVERTED the 2.1.282 reservation of "claude-ai": the official
- * namespace array is back to a single element (zAe=["anthropic-skills"]
- * @197323070), the claude-ai:↔anthropic-skills: alias transform (282's pge)
- * is gone, and the 'renamed' held-back kind (syncedSkills formerDisplayName)
- * was removed with it. Skills/commands/workflows/MCP prompts named
- * "claude-ai:*" load again and Skill(claude-ai:*) rules are ordinary prefix
- * rules.
+ * 2.1.283 REVERTED the 2.1.282 reservation of the `claude-ai` name (official
+ * changelog: skills, commands, workflows and MCP servers' skills and prompts
+ * so named load again, and `Skill(claude-ai:*)` rules are ordinary prefix
+ * rules). Byte-verified against the official v2.1.283 linux-x64 ELF: the
+ * RESERVED_NAMESPACES array is the single-element `zAe=["anthropic-skills"]`
+ * (@197323150 region), `startsWith("claude-ai:")` has 0 code hits, and the
+ * only `claude-ai:` string in the binary is the embedded changelog text.
  *
- * Byte-exact port of the official minified clusters (v2.1.283 linux-x64 ELF,
- * md5 b5afa8208e39db13e13e89449b1825f2):
- *   - zAe @197323070   RESERVED_NAMESPACES (single element)
- *   - kdn @197323120   hasReservedNamespacePrefix
- *   - zat @201087884+  reservedNamespaceOf
- *   - jB               isReservedName
- *   - _Mt @201087884   reservedNameReason fallback (plural) + singular
- *   - Bee              isSyncedSkillHolder
- *   - dFn→(283 equiv)  isSquatter
- *   - Xot→(283 equiv)  shouldRefuseReservedName (plugin-prompt exemption)
- *   - R="tengu_plaid_harbor" @201087884 region — gate kept (Bge)
- *   - Ao @201086878    commandDisplayName (`e.userFacingName?.()??e.name`)
- *   - ae/te/ke @210623435+  rule parse / plain match / namespace-aware match
- *   - ue @210624361    deny-rule matcher (283 expansion: skill:<pattern>
- *                      rule form + w6 wildcard + ordinary/packaging split)
- *   - Be @210624663    /^\s*skill\s*:(.*)$/s rule form
- *   - w6 @196261877    wildcard matcher
- *   - Le @210624686    deny candidate split {ordinary, packaging}
- *   - dOo/uOo/le/d/JVn @197323070+/210623435+  packaging alias expansion
- *   - De @210623435    untrusted-plugin delivery filter (≡ false in OCC)
- *   - yu               Desktop-host gate (≡ false in OCC)
- *   - ye @210624900    matchSkillRuleForPermission (fMe third candidate)
- *   - Se @210625200    buildHeldBackRuleMessage (nonholder + boundary only)
- *   - kOe/nse/v$o      loader filter + once-per-key warn + offending-path walk
- *   - BGo              names_refused telemetry (once-per-session claim)
- *   - _e               held-back-rule telemetry (once-per-kind claim)
+ * Byte-exact port of the official minified cluster (v2.1.283 linux-x64 ELF):
+ *   - zAe @197323150   RESERVED_NAMESPACES (single-element in 283)
+ *   - wdt              "anthropic-skills" namespace constant
+ *   - vdt              qualifyAnthropicSkillsName
+ *   - z$               unqualifyAnthropicSkillsName
+ *   - d                selfQualifiedSkillName ("X:X" extraction)
+ *   - JVn              packagingAliasOf
+ *   - dOo              pluginPackagingNames
+ *   - uOo              syncedPackagingNames
+ *   - le               packagingNamesFor (dOo + uOo)
+ *   - De               plugin-delivery exemption gate — STAGED, see deviations
+ *   - w6               globPatternMatches ("*" wildcard, /s)
+ *   - Be               SKILL_LITERAL_RULE_RE  /^\s*skill\s*:(.*)$/s
+ *   - Le               ordinary/packaging name lists for the deny matcher
+ *   - ue               deny-rule matcher
+ *   - fMe              renamedCandidate (syncedSkills-only)
+ *   - ye               allow-rule classifier (matchSkillRuleForPermission)
+ *   - _Mt/zat/ULe      reason fallback / reservedNamespaceOf / reservedNameReason
+ *   - Bee/RWn          isSyncedSkillHolder / isSquatter
+ *   - Bge              isPlaidHarborEnabled (tengu_plaid_harbor, default true)
+ *   - kOe/nse/v$o @203984300  loader filter + once-per-key warn + offending-path walk
+ *   - BGo @204366800   names_refused telemetry (once-per-session claim)
+ *   - _e @208588047    held-back-rule telemetry (once-per-kind claim)
  *
  * Reserved namespaces belong to the skills synced from a claude.ai account.
  * OCC has no synced-skills infrastructure, so every reserved name in OCC is a
@@ -43,18 +40,26 @@
  *
  * OCC deviations (documented, see gap report):
  *   - reservedNamespaceOf uses NFKC + lowercase instead of the official
- *     homoglyph-skeleton normalizer (xH/ty). Case and fullwidth-colon evasion
- *     are caught; Cyrillic-lookalike homoglyphs are not.
+ *     homoglyph-skeleton normalizer (282 xH/ty, 283 _H/ez). Case and
+ *     fullwidth-colon evasion are caught; Cyrillic-lookalike homoglyphs are
+ *     not.
  *   - isSyncedSkillHolder is forward-compat only: OCC has no 'syncedSkills'
  *     loadedFrom and no account-wrapper plugin, so it always returns false.
- *   - isDesktopHostSession (official yu: entrypoint ∈ {claude-desktop,
- *     claude-desktop-3p, local-agent} && !childSession) is structurally false
- *     in OCC — no Desktop entrypoint surface (official nN() → undefined).
- *   - isUntrustedPluginDelivery (official De) is structurally false in OCC:
- *     its final gate requires nN() (entrypoint) to be defined, which OCC
- *     never has, so the whole predicate short-circuits to false officially.
- *   - matchSkillRuleForPermission omits the third candidate fMe(command)
- *     (syncedSkills-only unqualifiedName lookup → never defined in OCC).
+ *   - The deny matcher (ue) ports the packaging list WITHOUT the De
+ *     exemption gate. De's dependency chain (org-skeleton pP/lct/kJ/Jq sets,
+ *     plugin-cache-kind L()===I, entrypoint set Ne) spans unrecovered
+ *     subsystems; omitting it makes OCC include dOo packaging names for ALL
+ *     plugin skills where official CLI exempts third-party-org plugins — a
+ *     fail-closed over-block of deny matching in the narrow
+ *     self-qualified-name ("X:X") plugin case. yu() (desktop-app gate) is
+ *     ≡ false in OCC, likewise fail-closed (wildcard "skill:" rules never
+ *     glob-match packaging names; prefix-constrained te matches only). The
+ *     ordinary list honors the prompt unqualifiedName candidate when the
+ *     field is present (OCC prompts don't populate it today).
+ *   - renamedCandidate (fMe) is syncedSkills-only → always undefined in OCC;
+ *     kept for parity. The 'renamed' held-back kind stays unreachable and is
+ *     not wired into checkPermissions; the telemetry action mapping keeps the
+ *     branch for parity.
  *   - Telemetry: official p("skill_reserved_namespace", action, props) wire
  *     mapping is unresolved in the binary; OCC logs event name
  *     'skill_reserved_namespace' with {action, ...props} (analytics stubbed).
@@ -68,13 +73,18 @@ import {
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { logForDebugging } from '../debug.js'
 
-/** Official zAe @197323070: `["anthropic-skills"]` (2.1.283 reverted "claude-ai") */
+/**
+ * Official zAe @197323150 (2.1.283): `["anthropic-skills"]` — the 2.1.282
+ * second element "claude-ai" was REVERTED upstream (byte-verified: 0 code
+ * hits for `claude-ai:` in the 283 ELF; the alias interconversion from 282 is
+ * gone, replaced by the one-way vdt/z$ qualify/unqualify pair below).
+ */
 export const RESERVED_NAMESPACES: readonly string[] = ['anthropic-skills']
 
 /**
- * Official Bge (283): `x("tengu_plaid_harbor", true) !== false` — cached
- * feature value, default true (same gate pattern as
- * destructiveCommandWarning.ts's tengu_iridescent_boot).
+ * Official Bge (282 Nfe): `x("tengu_plaid_harbor", true) !== false` — cached feature
+ * value, default true (same gate pattern as destructiveCommandWarning.ts's
+ * tengu_iridescent_boot).
  */
 export function isPlaidHarborEnabled(): boolean {
   const gate = getFeatureValue_CACHED_MAY_BE_STALE<boolean>(
@@ -84,17 +94,16 @@ export function isPlaidHarborEnabled(): boolean {
   return gate !== false
 }
 
-/** Official kdn @197323120: `zAe.some(n => e.startsWith(`${n}:`))` */
+/** Official kdn (282 Fae): `zAe.some(t => e.startsWith(`${t}:`))` */
 export function hasReservedNamespacePrefix(value: string): boolean {
   return RESERVED_NAMESPACES.some(ns => value.startsWith(`${ns}:`))
 }
 
 /**
- * Official zat (283, same body shape as 282's Yot but looping the
- * single-element zAe; simplified — see header deviations): returns the
+ * Official zat (282 Yot) (simplified — see header deviations): returns the
  * reserved namespace a name belongs to, or undefined. Case-insensitive;
- * catches both the bare namespace ("anthropic-skills") and names inside it
- * ("anthropic-skills:foo").
+ * catches both the bare namespace ("anthropic-skills") and names
+ * inside it ("anthropic-skills:foo").
  */
 export function reservedNamespaceOf(name: string): string | undefined {
   const normalized = name.normalize('NFKC').trim().toLowerCase()
@@ -106,23 +115,24 @@ export function reservedNamespaceOf(name: string): string | undefined {
   return undefined
 }
 
-/** Official jB (283): `zat(e) !== void 0` */
+/** Official jB (282 wU): `Yot(e) !== void 0` */
 export function isReservedName(name: string): boolean {
   return reservedNamespaceOf(name) !== undefined
 }
 
 /**
- * Official _Mt (283, byte-exact expansion):
+ * Official _Mt (282 WIt) (byte-exact expansion):
  * `uses ${zAe.map(e=>`"${e}"`).join(" or ")}, the names reserved for the
- *  skills synced from your claude.ai account`
+ *  skills synced from your claude.ai account` — single element in 283, so the
+ * " or " join no longer survives into the string.
  */
 export const RESERVED_NAMES_REASON_FALLBACK = `uses ${RESERVED_NAMESPACES.map(
   ns => `"${ns}"`,
 ).join(' or ')}, the names reserved for the skills synced from your claude.ai account`
 
 /**
- * Official singular reason (283): first name that resolves to a reserved
- * namespace gets the singular reason; otherwise the plural fallback (_Mt).
+ * Official ULe (282 AMe): first name that resolves to a reserved namespace
+ * gets the singular reason; otherwise the fallback (_Mt).
  */
 export function reservedNameReason(...names: string[]): string {
   for (const name of names) {
@@ -141,8 +151,12 @@ export type ReservedNameCommandLike = {
   source?: string
   loadedFrom?: string
   aliases?: string[]
-  /** Official Le/fMe (283): prompt commands may carry an unqualified name. */
-  unqualifiedName?: string | null
+  /**
+   * Official prompt-only unqualified name (283 Le ordinary-list candidate +
+   * fMe renamed candidate). OCC prompts don't populate it today; the field
+   * is honored when present (forward-compat parity).
+   */
+  unqualifiedName?: string
   pluginInfo?: {
     pluginManifest?: { name?: string }
     repository?: string
@@ -151,18 +165,17 @@ export type ReservedNameCommandLike = {
   userFacingName?: () => string
 }
 
-/** Official Ao @201086878: `e.userFacingName?.()??e.name` */
+/** Official Ao (282 Yo) display-name resolution. */
 export function commandDisplayName(command: ReservedNameCommandLike): string {
   return command.userFacingName?.() ?? command.name
 }
 
 /**
- * Official Bee (283): a command legitimately holds a reserved name when it
- * was synced from the user's claude.ai account (loadedFrom ===
- * 'syncedSkills') or comes from the account-skills wrapper plugin
- * (repository 'anthropic-skills@inline' — built at runtime as
- * `${wdt}@${zd}`, with accountSkillsWrapper: true). OCC has neither —
- * always false in practice; kept forward-compatible.
+ * Official Bee (282 iZ): a command legitimately holds a reserved name when it was
+ * synced from the user's claude.ai account (loadedFrom === 'syncedSkills') or
+ * comes from the account-skills wrapper plugin (repository
+ * 'anthropic-skills@inline' with accountSkillsWrapper: true). OCC has
+ * neither — always false in practice; kept forward-compatible.
  */
 export function isSyncedSkillHolder(command: ReservedNameCommandLike): boolean {
   if (command.loadedFrom === 'syncedSkills') {
@@ -177,7 +190,7 @@ export function isSyncedSkillHolder(command: ReservedNameCommandLike): boolean {
   )
 }
 
-/** Official dFn: `!iZ(e) && (wU(e.name) || wU(displayName))` */
+/** Official RWn (282 dFn): `!Bee(e) && (jB(e.name) || jB(Ao(e)))` */
 export function isSquatter(command: ReservedNameCommandLike): boolean {
   return (
     !isSyncedSkillHolder(command) &&
@@ -186,7 +199,7 @@ export function isSquatter(command: ReservedNameCommandLike): boolean {
 }
 
 /**
- * Official Xot: refuse (drop at load / hold back at permission time) unless
+ * Official Xot-equivalent (283 gate inline): refuse (drop at load / hold back at permission time) unless
  * the command is a plugin-sourced prompt — plugin prompts are exempt (a
  * plugin legitimately named e.g. "anthropic-skills" still loads).
  */
@@ -255,7 +268,7 @@ export function reservedOffendingPath(filePath: string, name: string): string {
 }
 
 /**
- * Official nse (message string byte-verified @205992129 in v2.1.283):
+ * Official nse @203984600 (byte-exact message):
  * `[skills] not loading ${b}${w}: that name ${reason}; ${change ===
  * "frontmatter-name" ? "change its name: line" : "rename it"}`
  * where b = `workflow "${name}"` for workflow-name, else `"${name}"`, and
@@ -305,9 +318,9 @@ export function filterRefusedReservedNames<T extends ReservedNameCommandLike>(
 }
 
 /**
- * Official BGo: once per session (claim
+ * Official BGo @204366800: once per session (claim
  * "skill_reserved_namespace_refused"), emit names_refused with per-namespace
- * (ns_anthropic_skills) and per-change-kind (kind_path /
+ * (ns_anthropic_skills / ns_claude_ai) and per-change-kind (kind_path /
  * kind_frontmatter_name / kind_workflow_name) counters plus the total.
  */
 export function logReservedNamesRefusedTelemetry(): void {
@@ -336,18 +349,18 @@ export function logReservedNamesRefusedTelemetry(): void {
   })
 }
 
-/**
- * Official held-back-rule telemetry kinds (283). The 282-era 'renamed' kind
- * (syncedSkills formerDisplayName lookup) was removed in 283 along with the
- * claude-ai revert.
- */
-export type HeldBackRuleKind = 'nonholder' | 'boundary'
+/** Official _e @208588047 held-back-rule telemetry kinds. */
+export type HeldBackRuleKind = 'nonholder' | 'boundary' | 'renamed'
 
 /**
- * Official _e: once per session per kind (claim
+ * Official qe (283; 282 _e): once per session per kind (claim
  * `skill_reserved_namespace_rule_held_back_${kind}`), emit the held-back
- * allow-rule telemetry. host_prompt is false in OCC (no host-prompt
- * injection surface; official `iO() !== void 0`).
+ * allow-rule telemetry. The 283 action map is BINARY —
+ * `e==="nonholder"?"nonholder_allow_rule":"prefix_at_namespace_boundary"`
+ * (byte-verified @210630306); 282's third action `renamed_allow_rule` was
+ * REMOVED (282: 2 string hits → 283: 0), so any non-nonholder kind emits
+ * `prefix_at_namespace_boundary`. host_prompt is false in OCC (no host-prompt
+ * injection surface; official `eM() !== void 0`).
  */
 export function logHeldBackRuleTelemetry(kind: HeldBackRuleKind): void {
   const claimKey = `skill_reserved_namespace_rule_held_back_${kind}`
@@ -368,13 +381,13 @@ export function logHeldBackRuleTelemetry(kind: HeldBackRuleKind): void {
 }
 
 // ---------------------------------------------------------------------------
-// Permission-rule matching (official ae / te / ke / ue / ye @210623435+)
+// Permission-rule matching (official ae / te / ke / ue / ye + packaging le)
 // ---------------------------------------------------------------------------
 
 export type ParsedSkillRule = { name: string; prefix?: string }
 
 /**
- * Official ae: strip a leading "/", then treat a trailing ":*" or " *" as a
+ * Official ae (282 le): strip a leading "/", then treat a trailing ":*" or " *" as a
  * prefix wildcard → {name, prefix} (prefix = rule minus the last 2 chars).
  */
 export function parseSkillRule(ruleContent: string): ParsedSkillRule {
@@ -386,7 +399,7 @@ export function parseSkillRule(ruleContent: string): ParsedSkillRule {
     : { name: stripped }
 }
 
-/** Official te: exact name match, or skillName starts with the rule prefix. */
+/** Official te (282 W): exact name match, or skillName starts with the rule prefix. */
 export function skillRuleMatchesPlain(
   ruleContent: string,
   skillName: string,
@@ -396,7 +409,7 @@ export function skillRuleMatchesPlain(
 }
 
 /**
- * Official ke: namespace-aware match. For ordinary prefixes, the skill name
+ * Official ke (282 ae): namespace-aware match. For ordinary prefixes, the skill name
  * must plain-match AND not sit in a reserved namespace. For a reserved
  * namespace prefix ("anthropic-skills"), only "ns:..." names match; for a
  * prefix inside a reserved namespace ("anthropic-skills:foo"), the exact
@@ -425,236 +438,233 @@ export function skillRuleMatchesNamespaceAware(
   )
 }
 
-/**
- * Official Be @210624663: `skill:<pattern>` rule form (whitespace tolerated
- * around "skill"), matched case-sensitively with the /s flag.
- */
-const SKILL_RULE_FORM = /^\s*skill\s*:(.*)$/s
+// ---------------------------------------------------------------------------
+// 2.1.283 packaging-name machinery (official vdt / z$ / d / JVn / dOo / uOo /
+// le / w6 / Be / Le / ue). "Packaging names" are the extra identities a skill
+// carries when it is delivered as a plugin or synced from a claude.ai account:
+// `Skill(anthropic-skills:<name>)` deny rules now also block a plugin-delivered
+// skill under those names, and `Skill(skill:<name>)` deny rules match via glob.
+// ---------------------------------------------------------------------------
 
-/**
- * Official w6 @196261877: glob-style wildcard match — the pattern is split on
- * "*", each literal segment regex-escaped, joined with ".*", anchored, /s.
- */
-export function skillRuleMatchesWildcard(
-  pattern: string,
-  name: string,
-): boolean {
-  const source = `^${pattern
-    .split('*')
-    .map(segment => segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('.*')}$`
-  return new RegExp(source, 's').test(name)
+/** The reserved namespace constant (official wdt). */
+export const ANTHROPIC_SKILLS_NAMESPACE = 'anthropic-skills'
+
+/** Official vdt: qualify a bare skill name into the reserved namespace. */
+export function qualifyAnthropicSkillsName(name: string): string {
+  return name.startsWith(`${ANTHROPIC_SKILLS_NAMESPACE}:`)
+    ? name
+    : `${ANTHROPIC_SKILLS_NAMESPACE}:${name}`
+}
+
+/** Official z$: strip the reserved-namespace qualifier (slice(17)). */
+export function unqualifyAnthropicSkillsName(name: string): string {
+  return name.startsWith(`${ANTHROPIC_SKILLS_NAMESPACE}:`)
+    ? name.slice(ANTHROPIC_SKILLS_NAMESPACE.length + 1)
+    : name
 }
 
 /**
- * Official yu: `E() && !childSession`, where E() tests entrypoint ∈
- * {"claude-desktop","claude-desktop-3p","local-agent"}. OCC has no
- * entrypoint surface (official nN() → undefined → E() false), so this is
- * structurally always false; kept as the forward-compat seam (same pattern
- * as isSyncedSkillHolder).
+ * Official d: extract the skill name from the self-qualified "X:X" form.
+ * `n=e.indexOf(":"); if(n<=0)return; t=e.slice(0,n); r=e.slice(n+1);
+ * return r===t && !zAe.includes(t) ? r : void 0`
  */
-export function isDesktopHostSession(): boolean {
-  return false
-}
-
-/**
- * Official De @210623435: true when a plugin-delivered skill comes from an
- * untrusted repository AND the session runs inside a Desktop host (final
- * gate `nN() !== void 0 && Ne.has(nN())`). OCC has no entrypoint surface, so
- * the official predicate short-circuits to false here; kept as the
- * forward-compat seam.
- */
-export function isUntrustedPluginDelivery(
-  _command: ReservedNameCommandLike,
-): boolean {
-  return false
-}
-
-/**
- * Official d @197323070 region: unpack a self-namespaced name ("foo:foo" →
- * "foo") unless the namespace is reserved. Any other shape → undefined.
- */
-function unpackSelfNamespace(name: string): string | undefined {
+export function selfQualifiedSkillName(name: string): string | undefined {
   const idx = name.indexOf(':')
   if (idx <= 0) {
     return undefined
   }
   const head = name.slice(0, idx)
-  const rest = name.slice(idx + 1)
-  return rest === head && !RESERVED_NAMESPACES.includes(head)
-    ? rest
+  const tail = name.slice(idx + 1)
+  return tail === head && !RESERVED_NAMESPACES.includes(head)
+    ? tail
     : undefined
 }
 
 /**
- * Official JVn: map a packaging alias to its reserved-namespace forms.
- * "foo:foo" → "anthropic-skills:foo"; "anthropic-skills:foo" → "foo:foo";
- * anything else → undefined.
+ * Official JVn: the "X:X" ↔ "anthropic-skills:X" packaging alias.
+ * `d(e)!==void 0` → qualify it; else a reserved-qualified name with a simple
+ * tail ("anthropic-skills:X", no further colon) → the self-qualified "X:X".
  */
-function toPackagingAlias(name: string): string | undefined {
-  const unpacked = unpackSelfNamespace(name)
-  if (unpacked !== undefined) {
-    return `anthropic-skills:${unpacked}`
+export function packagingAliasOf(name: string): string | undefined {
+  const self = selfQualifiedSkillName(name)
+  if (self !== undefined) {
+    return qualifyAnthropicSkillsName(self)
   }
-  if (!name.startsWith('anthropic-skills:')) {
+  if (!name.startsWith(`${ANTHROPIC_SKILLS_NAMESPACE}:`)) {
     return undefined
   }
-  const short = name.slice('anthropic-skills:'.length)
-  return short && !short.includes(':') ? `${short}:${short}` : undefined
+  const tail = unqualifyAnthropicSkillsName(name)
+  return tail && !tail.includes(':') ? `${tail}:${tail}` : undefined
 }
 
 /**
- * Official dOo: for a plugin-delivered skill whose name (or display name) is
- * self-namespaced ("foo:foo"), the packaging aliases a Desktop plugin
- * delivery could be denied under: the reserved form, the bare short name,
- * every alias in reserved form, and (when the registered tail differs) the
- * tail in both forms.
+ * Official dOo: packaging names for a PLUGIN-delivered skill. Empty unless
+ * loadedFrom === "plugin" AND either the registered name or the display name
+ * is self-qualified ("X:X"). Returns the qualified alias, the bare name, the
+ * qualified aliases, and (for "P:X" plugin names whose tail is the extracted
+ * name) the qualified/bare tail.
  */
-function pluginPackagingAliases(command: ReservedNameCommandLike): string[] {
+export function pluginPackagingNames(
+  command: ReservedNameCommandLike,
+): string[] {
   if (command.loadedFrom !== 'plugin') {
     return []
   }
-  const short =
-    unpackSelfNamespace(command.name) ??
-    unpackSelfNamespace(commandDisplayName(command))
-  if (short === undefined) {
+  const extracted =
+    selfQualifiedSkillName(command.name) ??
+    selfQualifiedSkillName(commandDisplayName(command))
+  if (extracted === undefined) {
     return []
   }
   const tail = command.name.slice(command.name.indexOf(':') + 1)
   return [
-    // Official first entry is JVn(`${short}:${short}`) — provably
-    // `anthropic-skills:${short}` (short is never a reserved namespace).
-    `anthropic-skills:${short}`,
-    short,
+    packagingAliasOf(`${extracted}:${extracted}`) as string,
+    extracted,
     ...(command.aliases ?? [])
-      .filter(alias => alias !== short)
-      .map(alias => `anthropic-skills:${alias}`),
-    ...(tail !== short && !tail.includes(':')
-      ? [`anthropic-skills:${tail}`, tail]
+      .filter(alias => alias !== extracted)
+      .map(alias => qualifyAnthropicSkillsName(alias)),
+    ...(tail !== extracted && !tail.includes(':')
+      ? [qualifyAnthropicSkillsName(tail), tail]
       : []),
   ]
 }
 
 /**
- * Official uOo: for a synced/plugin skill already inside the reserved
- * namespace, the self-namespaced form ("foo:foo") plus — when the display
- * name is a different reserved-namespace name — its packaging forms.
+ * Official uOo: packaging names for a synced/plugin skill already carrying a
+ * reserved-qualified name — adds the self-qualified alias and, when the
+ * display name is a DIFFERENT reserved-qualified name, its "R:R"/"R:N"/bare
+ * variants.
  */
-function syncedPackagingAliases(command: ReservedNameCommandLike): string[] {
+export function syncedPackagingNames(
+  command: ReservedNameCommandLike,
+): string[] {
   if (
     (command.loadedFrom !== 'syncedSkills' &&
       command.loadedFrom !== 'plugin') ||
-    !command.name.startsWith('anthropic-skills:')
+    !command.name.startsWith(`${ANTHROPIC_SKILLS_NAMESPACE}:`)
   ) {
     return []
   }
-  const short = command.name.slice('anthropic-skills:'.length)
+  const name = unqualifyAnthropicSkillsName(command.name)
   const display = commandDisplayName(command)
-  const displayShort = display.startsWith('anthropic-skills:')
-    ? display.slice('anthropic-skills:'.length)
+  const displayTail = display.startsWith(`${ANTHROPIC_SKILLS_NAMESPACE}:`)
+    ? unqualifyAnthropicSkillsName(display)
     : undefined
-  if (!short || short.includes(':')) {
+  if (!name || name.includes(':')) {
     return []
   }
-  // Official first entry is JVn(name) — provably `${short}:${short}` here.
+  const alias = packagingAliasOf(command.name)
   return [
-    `${short}:${short}`,
-    ...(displayShort !== undefined &&
-    displayShort !== short &&
-    !displayShort.includes(':')
-      ? [
-          `${displayShort}:${displayShort}`,
-          `${displayShort}:${short}`,
-          displayShort,
-        ]
+    ...(alias !== undefined ? [alias] : []),
+    ...(displayTail !== undefined &&
+    displayTail !== name &&
+    !displayTail.includes(':')
+      ? [`${displayTail}:${displayTail}`, `${displayTail}:${name}`, displayTail]
       : []),
   ]
 }
 
 /**
- * Official le: packaging alias candidates. The dOo half is suppressed for
- * untrusted-plugin deliveries (De) — a filter that is structurally false in
- * OCC (see isUntrustedPluginDelivery).
+ * Official le: `[...dOo-names, ...uOo-names]`. The official gates the dOo
+ * half behind De (CLI + third-party-org plugin exemption); De is STAGED in
+ * OCC — see the header deviations (omitting it over-blocks deny matching,
+ * fail-closed).
  */
-function packagingAliases(command: ReservedNameCommandLike): string[] {
-  const pluginAliases = pluginPackagingAliases(command)
+export function packagingNamesFor(command: ReservedNameCommandLike): string[] {
+  return [...pluginPackagingNames(command), ...syncedPackagingNames(command)]
+}
+
+/**
+ * Official w6: glob match — escape regex metacharacters, turn "*" into ".*",
+ * anchor, /s flag.
+ */
+export function globPatternMatches(pattern: string, value: string): boolean {
+  return new RegExp(
+    `^${pattern
+      .split('*')
+      .map(part => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*')}$`,
+    's',
+  ).test(value)
+}
+
+/** Official Be: rule content that literally starts with "skill:". */
+const SKILL_LITERAL_RULE_RE = /^\s*skill\s*:(.*)$/s
+
+/**
+ * Official fMe: the renamed candidate for the allow-rule classifier —
+ * syncedSkills-only (prompt + loadedFrom syncedSkills + unqualifiedName in
+ * aliases) → always undefined in OCC; kept for parity.
+ */
+export function renamedCandidate(
+  command: ReservedNameCommandLike | undefined,
+): string | undefined {
+  return command !== undefined &&
+    command.type === 'prompt' &&
+    command.loadedFrom === 'syncedSkills' &&
+    command.unqualifiedName != null &&
+    (command.aliases?.includes(command.unqualifiedName) ?? false)
+    ? command.unqualifiedName
+    : undefined
+}
+
+/**
+ * Official Le: the ordinary-name list for the deny matcher — invoked name,
+ * registered name, display name, aliases, and (prompt-only) unqualifiedName.
+ */
+export function denyMatchOrdinaryNames(
+  invokedName: string,
+  command?: ReservedNameCommandLike,
+): string[] {
+  if (command === undefined) {
+    return [invokedName]
+  }
   return [
-    ...(pluginAliases.length > 0 && isUntrustedPluginDelivery(command)
-      ? []
-      : pluginAliases),
-    ...syncedPackagingAliases(command),
+    invokedName,
+    command.name,
+    commandDisplayName(command),
+    ...(command.aliases ?? []),
+    ...(command.type === 'prompt' && command.unqualifiedName != null
+      ? [command.unqualifiedName]
+      : []),
   ]
 }
 
 /**
- * Official Le @210624686: split deny-match candidates into ordinary names
- * (invoked name, registered name, display name, aliases, and a prompt's
- * unqualifiedName) and packaging aliases (le).
- */
-export function denyMatchCandidates(
-  skillName: string,
-  command?: ReservedNameCommandLike,
-): { ordinary: string[]; packaging: string[] } {
-  if (command === undefined) {
-    return { ordinary: [skillName], packaging: [] }
-  }
-  return {
-    ordinary: [
-      skillName,
-      command.name,
-      commandDisplayName(command),
-      ...(command.aliases ?? []),
-      ...(command.type === 'prompt' && command.unqualifiedName != null
-        ? [command.unqualifiedName]
-        : []),
-    ],
-    packaging: packagingAliases(command),
-  }
-}
-
-/**
- * Official ue @210624361 (283 expansion): deny rules match against the
- * ordinary/packaging candidate split. A `skill:<pattern>` rule form matches
- * candidates via the w6 wildcard matcher (packaging candidates only for
- * wildcard-free patterns, unless on a Desktop host). Otherwise, plain rules
- * match ordinary candidates directly; packaging candidates additionally
- * require the rule to be prefix-free or its prefix to equal the candidate
- * (Desktop hosts exempt).
+ * Official ue (2.1.283; 282 de subset superseded): deny-rule matcher.
+ * A literal `skill:X` rule glob-matches (w6) any ordinary name, and — when X
+ * has no "*" (official widens with yu(), the desktop-app gate ≡ false in OCC)
+ * — any packaging name. Any other rule plain-matches (te) the ordinary names,
+ * or a packaging name when the rule is exact or its prefix IS that packaging
+ * name (yu() ≡ false).
  */
 export function skillDenyRuleMatches(
   ruleContent: string,
   skillName: string,
   command?: ReservedNameCommandLike,
 ): boolean {
-  const { ordinary, packaging } = denyMatchCandidates(skillName, command)
-  const skillForm = SKILL_RULE_FORM.exec(ruleContent)
-  if (skillForm !== null) {
-    const pattern = skillForm[1].trim()
+  const ordinary = denyMatchOrdinaryNames(skillName, command)
+  const packaging =
+    command !== undefined ? packagingNamesFor(command) : []
+  const literal = SKILL_LITERAL_RULE_RE.exec(ruleContent)
+  if (literal !== null) {
+    const target = literal[1].trim()
     if (
-      ordinary.some(candidate =>
-        skillRuleMatchesWildcard(pattern, candidate),
-      ) ||
-      ((!pattern.includes('*') || isDesktopHostSession()) &&
-        packaging.some(candidate =>
-          skillRuleMatchesWildcard(pattern, candidate),
-        ))
+      ordinary.some(name => globPatternMatches(target, name)) ||
+      (!target.includes('*') &&
+        packaging.some(name => globPatternMatches(target, name)))
     ) {
       return true
     }
   }
+  const { prefix } = parseSkillRule(ruleContent)
   return (
-    ordinary.some(candidate =>
-      skillRuleMatchesPlain(ruleContent, candidate),
-    ) ||
-    packaging.some(candidate => {
-      if (!skillRuleMatchesPlain(ruleContent, candidate)) {
-        return false
-      }
-      const { prefix } = parseSkillRule(ruleContent)
-      return (
-        prefix === undefined || prefix === candidate || isDesktopHostSession()
-      )
-    })
+    ordinary.some(name => skillRuleMatchesPlain(ruleContent, name)) ||
+    packaging.some(
+      name =>
+        skillRuleMatchesPlain(ruleContent, name) &&
+        (prefix === undefined || prefix === name),
+    )
   )
 }
 
@@ -665,23 +675,25 @@ export type SkillRuleMatchOutcome =
   | 'held-back-boundary'
 
 /**
- * Official ye @210624900: classify an allow rule against a skill invocation.
- * Candidates are the invoked name plus the command's registered name (the
- * official third candidate, fMe(command) @203646278, is syncedSkills-only →
- * never defined in OCC). With the gate off, plain matching decides. With it
- * on, a rule only allows when it namespace-aware-matches a candidate that is
- * either held by a synced skill or not reserved; a plain-matching rule
- * against a reserved name is held back (nonholder when it also
- * namespace-aware-matches, boundary otherwise).
+ * Official ye (282 ke): classify an allow rule against a skill invocation.
+ * Candidates are the invoked name, the command's registered name, and the
+ * official third candidate fMe(command) — the syncedSkills-only renamed
+ * lookup, always undefined in OCC (parity kept). With the gate off, plain
+ * matching decides. With it on, a rule only allows when it
+ * namespace-aware-matches a candidate that is either held by a synced skill
+ * or not reserved; a plain-matching rule against a reserved name is held
+ * back (nonholder when it also namespace-aware-matches, boundary otherwise).
  */
 export function matchSkillRuleForPermission(
   ruleContent: string,
   skillName: string,
   command?: ReservedNameCommandLike,
 ): SkillRuleMatchOutcome {
+  const renamed = renamedCandidate(command)
   const candidates = [
     skillName,
     ...(command !== undefined ? [command.name] : []),
+    ...(renamed !== undefined ? [renamed] : []),
   ]
   const plain = candidates.some(candidate =>
     skillRuleMatchesPlain(ruleContent, candidate),
@@ -709,7 +721,7 @@ export function matchSkillRuleForPermission(
 }
 
 // ---------------------------------------------------------------------------
-// Messages (official Se @210625200 region + squatter ask @210646440)
+// Messages (official ue @208584171 + squatter ask)
 // ---------------------------------------------------------------------------
 
 export type HeldBackMessageOptions =
@@ -717,8 +729,8 @@ export type HeldBackMessageOptions =
   | { kind: 'boundary' }
 
 /**
- * Official Se (byte-exact, nonholder + boundary kinds; 283 removed the
- * 282-era 'renamed' kind together with the claude-ai revert).
+ * Official Se (282 ue) (byte-exact, nonholder + boundary kinds; the 'renamed' kind is
+ * syncedSkills-only and unreachable in OCC).
  */
 export function buildHeldBackRuleMessage(
   ruleContent: string,
@@ -755,7 +767,7 @@ export function buildHeldBackRuleMessage(
 
 /**
  * Official squatter ask message: `Execute skill: ${name}${reason ? ` — ${reason}` : ""}`
- * (em dash U+2014, byte-verified @210646440 in v2.1.283).
+ * (em dash U+2014, byte-verified @208604766).
  */
 export function buildSquatterAskMessage(
   skillName: string,
@@ -765,8 +777,7 @@ export function buildSquatterAskMessage(
 }
 
 // ---------------------------------------------------------------------------
-// MCP server-name gates (official skills funnel + prompts filter @229358728
-// region in v2.1.283)
+// MCP server-name gates (official skills funnel @228602466 + prompts filter)
 // ---------------------------------------------------------------------------
 
 /** Official skills-funnel gate: `Bge() && jB(`${vn(serverName)}:`)`. */
@@ -778,7 +789,7 @@ export function isReservedMcpServerName(normalizedServerName: string): boolean {
 
 /**
  * Official skills-funnel message (byte-exact):
- * `Skills not loaded: the server name ${reason(`${vn(name)}:`)}. Rename the
+ * `Skills not loaded: the server name ${AMe(`${vn(name)}:`)}. Rename the
  *  server in your MCP configuration to load its skills and prompts; its tools
  *  are unaffected.`
  */
@@ -791,8 +802,7 @@ export function reservedMcpServerSkillsMessage(
 }
 
 /**
- * Official per-prompt message (byte-exact @229358728 region; always the
- * plural fallback _Mt):
+ * Official per-prompt message (byte-exact; always the fallback _Mt):
  * `Prompt '${commandName}' not listed: the server name ${_Mt}. Rename the
  *  server in your MCP configuration to list its prompts.`
  */

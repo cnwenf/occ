@@ -375,3 +375,22 @@ keybindings 批（35/36/69）各自成轮内并行簇。
   + 分支清理；**验收通过前不发版**（不打 tag、不 bump 版本）。本轮版本号
   维持 2.1.354，发布（CHANGELOG + bump + tag → publish.yml → npm + GitHub
   Release → parity check）由验收后的下一环执行。
+
+## 10. 与 OCC-138 并行轮的合并决议（本轮收尾时发生）
+
+本轮分支基于 `9e0c050`；推送前 `origin/main` 已被并行的 OCC-138 轮推进
+（`1c32d65` P1a sandbox 机制、`bba07e7` P1b claude-ai 回退+deny matcher、
+`9bb67b2` G2 keybindings 误拼 modifier 校验、两份 gap 文档），与本轮三个
+集群重叠。合并决议（以我方 byte-pin 测试为仲裁，全部对官方 v283 ELF
+md5 b5afa8208e39db13e13e89449b1825f2 重新取证核实）：
+
+| 集群 | 决议 | 依据 |
+|---|---|---|
+| 保留名空间（我 P1-1/P1-6b ↔ 其 P1b） | **取 OCC-138 版**（reservedNames.ts / SkillTool.ts / 其 282 名测试文件；弃我方 283 重命名版） | 其移植为超集（含 kOe/nse/v$o 加载过滤、BGo names_refused、_e held-back 遥测）；其两套测试 0 fail；我方消费文件（loadSkillsDir/mcpSkills/client.ts）所需符号在其导出表中逐一核对存在 |
+| sandbox 策略机制（我 P1-6a ↔ 其 P1a） | **取 OCC-138 版 + 3 处 byte-verified 补丁** | 我方 policySandbox283 14 项 pin 跑出 2 项真实缺口：① BLOCK_GRANTS sandbox 两行缺 `withholdOnEntryDrop:!0`（官方 eg @196666922 dd 复读确认，其表保留的是 282 mn 时代的死行形态）；② os 尾 transform 缺 `!Lt(_[M])` 递归空值过滤（官方 @196695417 `w=Object.keys(_).filter((M)=>!lt.some((V)=>V===M)&&!Lt(_[M]))` dd 复读确认）。补入后 policySandbox283 14/14、其 policyStrictParse282 41/41 双绿 |
+| 模型治理 schema 布线（我 P1-2，其未做） | **重放到其文件结构**：deniedModels `Ko` wrapper（@196677430 strings 复读确认全文）+ availableModelsMatch `Qe` 表项 `restrictive:"exact"`（官方表序 feedbackDrafts→availableModelsMatch→askUserQuestionTimeout strings 复读确认；其 P1a 注释曾把它当 OCC-schema-absent 略过，实际 types.ts:1211 存在该键） | 补入后 managedOnlyKeys283 14/14 |
+| keybindings（我 N69 ↔ 其 G2） | 指南文案两侧代码相同（meta/cmd 行 + 3s 文案），**注释取 OCC-138 版**；其 validate.ts 误拼 modifier 校验 + misspelledModifier283（210 行）无冲突并入——**§8 中 bullet 35 由 STAGE 转 LANDED（经 OCC-138）** | 冲突仅注释；其测试 0 fail |
+| mcp/client.ts | 双侧改动正交（我 P1-3 prompt-id 线程化 ↔ 其 P1b reserved prompt 过滤），单处注释冲突取其版（更详） | promptIdHeader283 43 项 0 fail |
+
+validation.ts 自动合并产生的 `removal?: boolean` 重复字段已手工去重（保留
+双侧注释中的 byte 事实）。合并后权威门禁重跑记录见 §9.1 追记。

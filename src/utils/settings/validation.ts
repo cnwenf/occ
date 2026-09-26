@@ -116,18 +116,19 @@ export type ValidationError = {
   /** True when an invalid value was replaced by its restrictive value. */
   substituted?: boolean
   /**
+   * True when the value was READ AS KEY REMOVAL (explicit null, or false on a
+   * "disable"-only key) instead of substituted (official 2.1.283 `removal`
+   * flag, passed through by the `Od` sink — new in 283; the official `Ni`
+   * null-removal record @196668878 and the `Ho` disable-false branch
+   * @196669911 both set `removal:!0`, v282=0 → v283=2 occurrences).
+   */
+  removal?: boolean
+  /**
    * True when the key holds nothing applicable as written and its fail-closed
    * reading is this source's ONLY policy content (official `onlySubstitutes`
    * tail record).
    */
   onlySubstitutes?: boolean
-  /**
-   * True when the value was read as KEY REMOVAL rather than a setting (CC
-   * 2.1.283: the official `Ni` null-removal record @196668878 and the `Ho`
-   * disable-false branch @196669911 both set `removal:!0`; the field does not
-   * exist in 2.1.282 records — `removal:!0` count: v282=0 → v283=2).
-   */
-  removal?: boolean
   /** True for records from user-writable sources (official HKCU variant). */
   userWritable?: boolean
   /** MCP-specific metadata - only present for MCP configuration errors */
