@@ -53,6 +53,8 @@ import {
   isDeferredTool,
   TOOL_SEARCH_TOOL_NAME,
 } from '../../tools/ToolSearchTool/prompt.js'
+import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
+import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
 import { getAllBaseTools } from '../../tools.js'
 import type { HookProgress } from '../../types/hooks.js'
 import type {
@@ -94,11 +96,12 @@ import { Stream } from '../../utils/stream.js'
 import { logOTelEvent } from '../../utils/telemetry/events.js'
 import {
   addToolContentEvent,
-  addToolResultOutputEvent,
   endToolBlockedOnUserSpan,
   endToolExecutionSpan,
   endToolSpan,
+  flattenToolOutputContent,
   isBetaTracingEnabled,
+  shouldRecordToolContentEvent,
   startToolBlockedOnUserSpan,
   startToolExecutionSpan,
   startToolSpan,
@@ -153,6 +156,16 @@ const SLOW_PHASE_LOG_THRESHOLD_MS = 2000
  * - Known error types: use their unminified name
  * - Fallback: "Error" (better than a mangled 3-char identifier)
  */
+/**
+ * Official 2.1.283 `HQn` (OCC-138 / C2, byte-verified @ELF 204827266):
+ * `var HQn=new Set([Mr,uv])` where Mr="WebFetch" (@200200794) and
+ * uv="WebSearch" (@202646603) — the non-MCP tools whose output the 283
+ * query engine additionally emits as an OTEL `tool.output` span event.
+ * (The builtin Read/Edit/Write/Bash set `UQn` is handled by OCC's existing
+ * 2.1.282-era contentAttributes block in runToolUse below.)
+ */
+const WEB_OUTPUT_TOOL_NAMES = new Set([WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME])
+
 export function classifyToolError(error: unknown): string {
   if (
     error instanceof TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
@@ -1290,15 +1303,14 @@ async function checkPermissionsAndCallTool(
     }
 
     endToolExecutionSpan({ success: true })
-    // Pass tool result for new_context logging
-    const toolResultStr =
-      result.data && typeof result.data === 'object'
-        ? jsonStringify(result.data)
-        : String(result.data ?? '')
-    endToolSpan(toolResultStr)
 
     // Map the tool result to API format once and cache it. This block is reused
     // by addToolResult (skipping the remap) and measured here for analytics.
+    // Hoisted above endToolSpan to match the official 2.1.283 ordering
+    // (OCC-138 / C2): the mapping (`ls`) is computed BEFORE the MCP/web-tool
+    // `tool.output` emission, which itself lands BEFORE the endToolSpan
+    // counterpart `iPt` — endToolSpan clears the ALS store addToolContentEvent
+    // reads, so the emission must happen first.
     const mappedToolResultBlock = tool.mapToolResultToToolResultBlockParam(
       result.data,
       toolUseID,
@@ -1310,15 +1322,34 @@ async function checkPermissionsAndCallTool(
         ? mappedContent.length
         : jsonStringify(mappedContent).length
 
-    // Port of official v2.1.283: MCP tools + WebFetch/WebSearch now also add
-    // their output to the `tool.output` span event (when OTEL_LOG_TOOL_CONTENT=1),
-    // serializing the mapped tool_result content. Complements the non-MCP
-    // Read/Edit/Write/Bash emitter above (which mirrors the official `UQn` set);
-    // this mirrors the official `HQn` set + `e.mcpInfo !== void 0` gate. The
-    // accountMemory redaction branch is forward-compat (OCC's mcpInfo carries no
-    // accountMemory field yet) and OCC has no detached tool-result path here, so
-    // the official `!oo.detached` guard is structurally always true.
-    addToolResultOutputEvent(tool, mappedContent)
+    // Official 2.1.283 (OCC-138 / C2, byte-verified @ELF ~204862679): the
+    // query engine additionally emits the flattened tool output as an OTEL
+    // `tool.output` span event for MCP tools and WebFetch/WebSearch:
+    //   if((e.mcpInfo!==void 0||HQn.has(e.name))&&!oo.detached&&rTr(Wt)){
+    //     let Sr=wbo(ls.content);
+    //     oTr(Wt,"tool.output",{output:e.mcpInfo?.accountMemory===!0?KEe(Sr):Sr})}
+    // rTr → shouldRecordToolContentEvent, wbo → flattenToolOutputContent,
+    // oTr → addToolContentEvent, HQn → WEB_OUTPUT_TOOL_NAMES.
+    // Documented NO-OP deviations: `!oo.detached` — OCC tool results carry no
+    // detached variant (the official detached-result bypass never applies);
+    // `KEe` accountMemory redaction (`<N chars; not recorded>`) — OCC's
+    // mcpInfo has no accountMemory flag (MCP account memory is not ported),
+    // so the ternary can never take the redaction branch and is omitted.
+    if (
+      (tool.mcpInfo !== undefined || WEB_OUTPUT_TOOL_NAMES.has(tool.name)) &&
+      shouldRecordToolContentEvent()
+    ) {
+      addToolContentEvent('tool.output', {
+        output: flattenToolOutputContent(mappedContent),
+      })
+    }
+
+    // Pass tool result for new_context logging
+    const toolResultStr =
+      result.data && typeof result.data === 'object'
+        ? jsonStringify(result.data)
+        : String(result.data ?? '')
+    endToolSpan(toolResultStr)
 
     // Extract file extension for file-related tools
     let fileExtension: ReturnType<typeof getFileExtensionForAnalytics>
