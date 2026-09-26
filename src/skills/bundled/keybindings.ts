@@ -176,11 +176,18 @@ const SECTION_KEYSTROKE_SYNTAX = [
   '- `ctrl` (alias: `control`)',
   '- `alt` (aliases: `opt`, `option`) — note: `alt` and `meta` are identical in terminals',
   '- `shift`',
-  '- `meta` (aliases: `cmd`, `command`)',
+  // 2.1.283 (OCC-138 / G2): official guide fix — the `meta` line drops the
+  // cmd/command aliases and the NEW `cmd` bullet documents the Super-key
+  // behavior (byte-verified against the v2.1.283 ELF `Gs` array).
+  '- `meta` — same key as `alt` in terminals (Option key on macOS)',
+  '- `cmd` (aliases: `command`, `super`, `win`) — Command key on macOS, Windows key on Windows, Super key on Linux; not the same as `meta`. Most terminals never send it (only ones that report the Super modifier, such as through the Kitty keyboard protocol or xterm `modifyOtherKeys`), so prefer `ctrl` for bindings that should work everywhere',
   '',
   '**Special keys**: `escape`/`esc`, `enter`/`return`, `tab`, `space`, `backspace`, `delete`, `up`, `down`, `left`, `right`',
   '',
-  '**Chords**: Space-separated keystrokes, e.g. `ctrl+k ctrl+s` (1-second timeout between keystrokes)',
+  // 2.1.283 (OCC-138 / G2): official guide fix — the runtime chord timeout
+  // is 3s (282 AND 283 binaries: `var at=3000` / `Ye=3000`; OCC's
+  // CHORD_TIMEOUT_MS is already 3000). The 282 guide wrongly said 1-second.
+  '**Chords**: Space-separated keystrokes, e.g. `ctrl+k ctrl+s` (3-second timeout between keystrokes)',
   '',
   '**Examples**: `ctrl+shift+p`, `alt+enter`, `ctrl+k ctrl+n`',
 ].join('\n')
@@ -253,6 +260,16 @@ const SECTION_DOCTOR = [
         'Typo or invalid context name',
         'Use exact context names from the Available Contexts table',
       ],
+      // 2.1.283 (OCC-138 / G2): NEW official row for the misspelled-modifier
+      // error (byte-verified against the v2.1.283 ELF `Ys` array; the 282
+      // table has no such row). The OCC-only `Could not parse keystroke` row
+      // is dropped in the same commit — that message never existed in the
+      // official binary (282 or 283) and the 283 validator port removes it.
+      [
+        '`"X" is not a modifier, so "Y" ... applies to "Z" instead`',
+        'Error: `X` comes before the key in `Y` but is not a modifier (a typo such as `ctl` for `ctrl`, or two keys joined with `+` instead of a space), so it is dropped and the binding applies to `Z`',
+        'Correct the modifier using the Keystroke Syntax list (the message suggests the corrected keystroke when it can), or put a space between the keystrokes of a chord',
+      ],
       [
         '`Duplicate key "X" in Y bindings`',
         'Same key defined twice in one context',
@@ -262,11 +279,6 @@ const SECTION_DOCTOR = [
         '`"X" may not work: ...`',
         'Key conflicts with terminal/OS reserved shortcut',
         'Choose a different key (see Reserved Shortcuts section)',
-      ],
-      [
-        '`Could not parse keystroke "X"`',
-        'Invalid key syntax',
-        'Check syntax: use `+` between modifiers, valid key names',
       ],
       [
         '`Invalid action for "X"`',
