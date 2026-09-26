@@ -1,20 +1,27 @@
 /**
- * CC 2.1.282 bullets (b)(c)(d) — SkillTool.checkPermissions integration for
- * the reserved anthropic-skills / claude-ai namespace hardening.
+ * CC 2.1.282 bullets (b)(c)(d) + CC 2.1.283 revert — SkillTool
+ * .checkPermissions integration for the reserved anthropic-skills namespace.
  *
- * Official order (byte-extracted from the v2.1.282 ELF): deny(de) → allow(ke,
- * held-back tracking) → safe-props → squatter ask (suppressAlwaysAllowRule +
- * `Execute skill: X — reason`) → default ask. A squatter is a reserved-name
- * skill that is NOT synced from the user's claude.ai account; it can never be
- * pre-approved by a Skill(...) rule and asks every time with
- * suppressAlwaysAllowRule:true so the UI cannot persist an allow rule.
+ * Official order (re-verified byte-exact against the v2.1.283 ELF
+ * @210644300 region — same order as v2.1.282): deny(ue, 282 de) → allow(ye,
+ * 282 ke, held-back tracking) → safe-props(en||Pge) → squatter ask
+ * (U=Bge&&jB&&!Bee; suppressAlwaysAllowRule + `Execute skill: X — reason`) →
+ * default ask. A squatter is a reserved-name skill that is NOT synced from
+ * the user's claude.ai account; it can never be pre-approved by a Skill(...)
+ * rule and asks every time with suppressAlwaysAllowRule:true so the UI cannot
+ * persist an allow rule.
+ *
+ * 2.1.283 revert pins: `claude-ai` left RESERVED_NAMESPACES (official zAe =
+ * ["anthropic-skills"] single element) — claude-ai skills are ordinary again:
+ * Skill(claude-ai:*) rules allow like any prefix rule and no squatter ask
+ * fires for claude-ai names.
  *
  * The test skills carry an `allowedTools` property so they fail the
  * safe-properties auto-allow (which legitimately precedes the squatter check
  * in the official order) and reach the ask paths. The RT② pinning tests below
  * cover the complementary case: a squatter with ONLY safe properties is
  * auto-allowed silently — official-order parity, byte-verified against the
- * v2.1.282 ELF (see the ORDER NOTE in SkillTool.ts checkPermissions).
+ * v2.1.283 ELF (see the ORDER NOTE in SkillTool.ts checkPermissions).
  */
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 
@@ -110,7 +117,7 @@ beforeEach(() => {
   plaidHarbor = undefined
 })
 
-describe('2.1.282 SkillTool.checkPermissions reserved-namespace hardening', () => {
+describe('2.1.283 SkillTool.checkPermissions reserved-namespace hardening', () => {
   test('squatter + Skill(anthropic-skills:*) rule → ask, suppressAlwaysAllowRule, exact message', async () => {
     mockedCommands = [skillCommand('anthropic-skills:foo')]
     const decision = await checkPermissions(
@@ -132,19 +139,43 @@ describe('2.1.282 SkillTool.checkPermissions reserved-namespace hardening', () =
   })
 
   test('squatter without any rule → ask, suppressAlwaysAllowRule, bare message', async () => {
-    mockedCommands = [skillCommand('claude-ai:y')]
-    const decision = await checkPermissions('claude-ai:y', makeContext([]))
+    mockedCommands = [skillCommand('anthropic-skills:y')]
+    const decision = await checkPermissions('anthropic-skills:y', makeContext([]))
     expect(decision.behavior).toBe('ask')
     expect(decision.suppressAlwaysAllowRule).toBe(true)
-    expect(decision.message).toBe('Execute skill: claude-ai:y')
+    expect(decision.message).toBe('Execute skill: anthropic-skills:y')
     expect(decision.decisionReason).toBeUndefined()
   })
 
   test('squatter detection is case-insensitive', async () => {
-    mockedCommands = [skillCommand('CLAUDE-AI:y')]
-    const decision = await checkPermissions('CLAUDE-AI:y', makeContext([]))
+    mockedCommands = [skillCommand('ANTHROPIC-SKILLS:y')]
+    const decision = await checkPermissions('ANTHROPIC-SKILLS:y', makeContext([]))
     expect(decision.behavior).toBe('ask')
     expect(decision.suppressAlwaysAllowRule).toBe(true)
+  })
+
+  test('2.1.283 revert pin: claude-ai skill + Skill(claude-ai:*) rule → ordinary allow', async () => {
+    // claude-ai left RESERVED_NAMESPACES: the rule is an ordinary prefix rule
+    // (ye → ns-aware narrowing does not apply) and no squatter ask fires.
+    mockedCommands = [skillCommand('claude-ai:y')]
+    const decision = await checkPermissions(
+      'claude-ai:y',
+      makeContext(['Skill(claude-ai:*)']),
+    )
+    expect(decision.behavior).toBe('allow')
+    expect(decision.decisionReason).toMatchObject({ type: 'rule' })
+    expect(decision.suppressAlwaysAllowRule).toBeUndefined()
+  })
+
+  test('2.1.283 revert pin: claude-ai skill without a rule → default ask WITH suggestions', async () => {
+    // Not a squatter → the default ask path: no suppression, rule suggestions
+    // are offered and persistable.
+    mockedCommands = [skillCommand('claude-ai:y')]
+    const decision = await checkPermissions('claude-ai:y', makeContext([]))
+    expect(decision.behavior).toBe('ask')
+    expect(decision.message).toBe('Execute skill: claude-ai:y')
+    expect(decision.suppressAlwaysAllowRule).toBeUndefined()
+    expect(Array.isArray(decision.suggestions)).toBe(true)
   })
 
   test('gate off → reserved rule allows like plain matching (no squatter ask)', async () => {
@@ -200,23 +231,24 @@ describe('2.1.282 SkillTool.checkPermissions reserved-namespace hardening', () =
   test('plugin-sourced prompt with a reserved name is exempt (not a squatter)', async () => {
     // Official Xot: plugin prompts legitimately hold reserved names — the
     // loader keeps them and a matching rule can allow them.
-    mockedCommands = [skillCommand('claude-ai:helper', 'plugin')]
+    mockedCommands = [skillCommand('anthropic-skills:helper', 'plugin')]
     const decision = await checkPermissions(
-      'claude-ai:helper',
-      makeContext(['Skill(claude-ai:*)']),
+      'anthropic-skills:helper',
+      makeContext(['Skill(anthropic-skills:*)']),
     )
     // Reserved name + non-holder still can't be pre-approved by a rule
-    // (ke holds it back), but with no squatter status the default ask keeps
+    // (ye holds it back), but with no squatter status the default ask keeps
     // suggestions and does NOT suppress rule persistence... except the name
     // itself is reserved, so isReservedName keeps squatter suppression on.
     expect(decision.behavior).toBe('ask')
   })
 
   test('RT② pinning: squatter with ONLY safe properties is auto-allowed before the squatter ask (official-order parity)', async () => {
-    // Official v2.1.282 checkPermissions (byte-extracted from the ELF): the
-    // safe-properties auto-allow `if(a?.type==="prompt"&&(je(a)||Pfe(s)))
-    // return{behavior:"allow",...}` fires BEFORE the squatter computation
-    // `N=Nfe()&&wU(l)&&!(a!==void 0&&iZ(a))` and its forced ask with
+    // Official v2.1.283 checkPermissions (byte-extracted from the ELF
+    // @210644300 region): the safe-properties auto-allow
+    // `if(l?.type==="prompt"&&(en(l)||Pge(n)))return{behavior:"allow",...}`
+    // fires BEFORE the squatter computation
+    // `U=Bge()&&jB(a)&&!(l!==void 0&&Bee(l))` and its forced ask with
     // suppressAlwaysAllowRule. So a squatted reserved-namespace skill whose
     // frontmatter carries ONLY safe properties (no allowedTools) is silently
     // auto-allowed — the hole exists in the official binary itself, and OCC

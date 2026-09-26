@@ -598,8 +598,9 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     const commands = await getAllCommands(context)
     const commandObj = findCommand(commandName, commands)
 
-    // Check for deny rules (official de: matches invoked name, registered
-    // name, display name, and aliases)
+    // Check for deny rules (official ue, 282 de — 2.1.283: matches invoked
+    // name, registered name, display name, aliases, unqualifiedName, and the
+    // packaging names of plugin/synced delivery)
     const denyRules = getRuleByContentsForTool(
       permissionContext,
       SkillTool as Tool,
@@ -636,9 +637,10 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // Check for allow rules (official ke — CC 2.1.282 namespace-aware
-    // matching). A rule that plain-matches a reserved anthropic-skills /
-    // claude-ai name but cannot legitimately pre-approve it is "held back":
+    // Check for allow rules (official ye, 282 ke — CC 2.1.283 namespace-aware
+    // matching). A rule that plain-matches a reserved anthropic-skills name
+    // (282's second reserved namespace "claude-ai" was reverted upstream) but
+    // cannot legitimately pre-approve it is "held back":
     // the invocation still asks and the held-back rule explains why. Official
     // tracking: a nonholder match OVERWRITES, a boundary match is first-wins.
     const allowRules = getRuleByContentsForTool(
@@ -675,15 +677,16 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // meaningful value, it requires permission. This ensures new properties added
     // in the future default to requiring permission.
     //
-    // ORDER NOTE (acceptance RT②, byte-verified against the official v2.1.282
-    // ELF @208604xxx): the official checkPermissions runs this auto-allow
-    // (`if(a?.type==="prompt"&&(je(a)||Pfe(s)))return{behavior:"allow",...}`)
-    // BEFORE the squatter computation (`N=Nfe()&&wU(l)&&!(a!==void 0&&iZ(a))`)
-    // and its forced ask (`if(N)return{behavior:"ask",...,suppressAlwaysAllowRule:!0}`).
+    // ORDER NOTE (acceptance RT②, byte-verified against the official v2.1.283
+    // ELF @210644300 region; same order as v2.1.282): the official
+    // checkPermissions runs this auto-allow
+    // (`if(l?.type==="prompt"&&(en(l)||Pge(n)))return{behavior:"allow",...}`)
+    // BEFORE the squatter computation (`U=Bge()&&jB(a)&&!(l!==void 0&&Bee(l))`)
+    // and its forced ask (`if(U)return{behavior:"ask",...,suppressAlwaysAllowRule:!0}`).
     // Consequence (official-parity, NOT an OCC invention): a squatted
     // reserved-namespace skill whose frontmatter carries ONLY safe properties
     // (no allowedTools) is silently auto-allowed with no ask. The official's
-    // second disjunct `Pfe(s)` is the CLAUDE_CODE_COORDINATOR_MODE auto-allow
+    // second disjunct `Pge(n)` is the CLAUDE_CODE_COORDINATOR_MODE auto-allow
     // (`xi()&&e.agentId===void 0`) — dead in OCC builds (flag off). Pinned by
     // the RT② test in reservedNamespacePermissions282.test.ts; any reorder
     // (ours or upstream's) must flip that test deliberately.
@@ -698,8 +701,9 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // CC 2.1.282 reserved-namespace hardening (official h / N / D / _e / P / b):
-    // a skill invoked under the reserved anthropic-skills / claude-ai namespace
+    // CC 2.1.283 reserved-namespace hardening (official h / U / D / qe / P / b;
+    // zAe = ["anthropic-skills"] only — 282's "claude-ai" element was reverted):
+    // a skill invoked under the reserved anthropic-skills namespace
     // that is NOT a synced claude.ai skill is a squatter — ask every time with
     // suppressAlwaysAllowRule so no rule can be persisted for that name.
     const pluginName =
