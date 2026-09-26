@@ -355,6 +355,25 @@ keybindings 批（35/36/69）各自成轮内并行簇。
   14/14、policyStrictParse282 41/41、reservedNamespaces282 0 fail、
   reservedNamespacePermissions282 0 fail、promptIdHeader283 0 fail。
 
+### 9.1 追记（二）（C1 合并树重跑，§10.1 承诺项）
+
+- **合并提交 `859c8dd`（`d80491b` × origin/main `1f31a46`，OCC-138 C1
+  prompt-id 集群，决议见 §10.1）之后的权威门禁重跑**：
+  `CI=true bash scripts/ci-test.sh` → **6867 pass / 0 fail / 115 skip，
+  667 文件，exit 0**（较上次 6857/666 的增量 = C1 带入的
+  promptIdHeader283 客户端发射套件 10 项）。
+- **构建重跑**：`bun run build` → `dist/cli.js` **30,947,156 bytes**，
+  MACRO.VERSION=2.1.354。
+- **C1 合并后 live 冒烟（隔离 `CLAUDE_CONFIG_DIR`，重建 dist）**：
+  `echo "reply with exactly: PONG-C1" | bun dist/cli.js -p` → **EXIT=0，
+  stdout 以 `PONG-C1` 开头**（live 往返成功；stdout 尾部附带网关模型
+  qwen3.8-max 自行幻觉的一句元文本，属模型侧输出内容而非 OCC 缺陷——
+  冒烟契约为 exit 0 + 真实往返，均满足）。
+- **prompt-id 集群仲裁**：promptIdResolver283（我方 508 行套件）43 pass /
+  0 fail / 76 expects；promptIdHeader283（C1 218 行套件，跑在我方
+  `applyClientGatewayHintHeaders` 路径上）10 pass / 0 fail / 33 expects；
+  gatewayHints273 59 pass / 0 fail / 126 expects（再导出无回归）。
+
 ### 9.2 构建
 
 - `bun run build` → `dist/cli.js` **30,942,878 bytes**；构建后 0 个 src 文件
@@ -410,3 +429,20 @@ md5 b5afa8208e39db13e13e89449b1825f2 重新取证核实）：
 
 validation.ts 自动合并产生的 `removal?: boolean` 重复字段已手工去重（保留
 双侧注释中的 byte 事实）。合并后权威门禁重跑记录见 §9.1 追记。
+
+## 10.1 第二次并行碰撞：OCC-138 C1（prompt-id 头）合并决议
+
+§10 合并完成后、推送前再次 fetch，`origin/main` 又推进了 `1f31a46`
+（OCC-138 C1：`x-claude-code-prompt-id` 网关头移植）——与本轮 P1-3 完全
+重叠（同一官方特性，双方各自 byte-verified）。合并提交 `859c8dd`，决议：
+
+| 触点 | 决议 | 依据 |
+|---|---|---|
+| claude.ts 两处客户端创建的 promptId 解析 | **取我方（P1-3）**：`resolveQueryPromptId(messages, agentContext)`（官方 `Wve/EIe/SZt` 逐查询消息扫描 + `parentPromptId` 回退全移植）；非流式回退走 `clientOptions.promptId` 线程化（官方 `e.promptId` @205291335 形态） | 其 C1 提交信息自证偏差："OCC messages don't carry promptId, so callers pass bootstrap getPromptId()… Documented deviation: no per-message scan"。我方 P1-3 已让消息携带 promptId（`Ae` 工厂 spread @207040852 移植 + query.ts/AgentTool/resumeAgent/WorkflowTool 线程化 + compaction 回填 + 归因头 `cc_prompt_id` @199419765），**消除了该偏差**——观测契约同名同校验同门控，解析路径更贴官方 |
+| client.ts 头施加 | **取我方** `applyClientGatewayHintHeaders(defaultHeaders, source, promptId)`（2.1.273 内联块的重构提取，行为与其内联版逐语句等价：同 gate、同 `en` 校验、同 EV spread 语义 @202059092） | 其 C1 客户端级发射测试（10 项）在我方路径下 0 fail——行为等价的直接证据 |
+| gatewayHints.ts 自动合并撞车（我方 import × 其内联定义 → `PROMPT_ID_HEADER` 重复声明） | **手工修复**：删除其内联 `PROMPT_ID_HEADER`/`PROMPT_ID_UUID_RE`/`validatePromptIdHeader`，改为从 ./promptId.ts **再导出**（`export { PROMPT_ID_HEADER }` + `export const validatePromptIdHeader = validatePromptId` 别名）——C1 已发布的导入面（从 gatewayHints 取这两个名字）原样保留，单一事实源在 promptId.ts | 两侧校验器同为官方 `en` @195845579 的 byte-verified 移植，正则/typeof 守卫逐字符一致 |
+| 测试文件 add/add 同名冲突（promptIdHeader283.test.ts） | **两套都保留**：其 218 行版留在原名（测 gatewayHints/client 发射面）；我方 508 行 byte-pin 解析器套件更名 `promptIdResolver283.test.ts`（测 promptId.ts 全导出面） | 仲裁复跑：promptIdResolver283 43/0、promptIdHeader283 10/0、gatewayHints273 59/0（再导出无回归） |
+| claude.ts `getPromptId` import | 移除（其 C1 布线专用，取我方布线后无引用） | biome pre-commit 通过 |
+
+合并后权威门禁第二次重跑记录见 §9.1 追记（二）。
+
