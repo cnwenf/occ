@@ -107,6 +107,7 @@ import { executePostSamplingHooks } from './utils/hooks/postSamplingHooks.js'
 import { executeStopFailureHooks } from './utils/hooks.js'
 import type { QuerySource } from './constants/querySource.js'
 import { createDumpPromptsFetch } from './services/api/dumpPrompts.js'
+import { backfillMessagePromptId } from './services/api/promptId.js'
 import { StreamingToolExecutor } from './services/tools/StreamingToolExecutor.js'
 import { queryCheckpoint } from './utils/queryProfiler.js'
 import { runTools } from './services/tools/toolOrchestration.js'
@@ -584,6 +585,15 @@ async function* queryLoop(
         consecutiveFailures: 0,
       }
 
+      // Official 2.1.283 autocompact backfill (@211120458):
+      // `g.summaryMessages=iwr(g.summaryMessages,A)` — stamp the current
+      // turn's prompt id (derived from the pre-compact array) onto summary
+      // messages that lack one, so post-compaction requests keep sending
+      // x-claude-code-prompt-id.
+      compactionResult.summaryMessages = backfillMessagePromptId(
+        compactionResult.summaryMessages,
+        messagesForQuery,
+      )
       const postCompactMessages = buildPostCompactMessages(compactionResult)
 
       for (const message of postCompactMessages) {
@@ -1278,6 +1288,13 @@ async function* queryLoop(
             )
           }
 
+          // Official 2.1.283 reactive-compact backfill (@211163030): same
+          // `iwr` stamping as the proactive autocompact path above;
+          // messagesForQuery still holds the pre-compact array here.
+          compacted.summaryMessages = backfillMessagePromptId(
+            compacted.summaryMessages,
+            messagesForQuery,
+          )
           const postCompactMessages = buildPostCompactMessages(compacted)
           for (const msg of postCompactMessages) {
             yield msg

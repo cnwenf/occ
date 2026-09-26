@@ -59,6 +59,13 @@ beforeEach(() => {
 })
 
 afterAll(() => {
+  // Bun 1.3's mock.restore() does NOT undo mock.module registrations, and the
+  // runner may load sibling test files after this one (OCC-97 leak class):
+  // the `isModelAllowed: () => true` stub below otherwise leaks into any
+  // later-loaded file that imports ../modelAllowlist.js (e.g.
+  // modelGovernance283.test.ts). Re-register the real exports explicitly.
+  mock.module(SIDE_QUERY_PATH, () => ({ ...realSideQuery }))
+  mock.module(ALLOWLIST_PATH, () => ({ ...realAllowlist }))
   mock.restore()
 })
 

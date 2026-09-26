@@ -1,45 +1,88 @@
 /**
- * claude-code 2.1.282 managed-settings fail-closed policy machinery.
+ * claude-code 2.1.283 managed-settings fail-closed policy machinery.
  *
- * Byte-exact port of the official 2.1.282 binary's policy-parse helpers
- * (minified names in comments). Every user-facing message string below was
- * extracted verbatim from /tmp/occ97b/package/claude (v2.1.282):
+ * Byte-exact port of the official policy-parse helpers (minified names in
+ * comments — 2.1.283 names first, 2.1.282 names in parentheses where they
+ * differ; the minifier renamed most of this cluster in 283). Every
+ * user-facing message string below was extracted verbatim from the official
+ * linux-x64 ELF (v2.1.283 @196663983–196695417 window; v2.1.282
+ * @194777027–194788298):
  *
- * - `nx`  → coerceStringBoolean        (string "true"/"false" → boolean)
- * - `rn`  → quoteRestrictive
- * - `tn`  → formatPolicyIssueDetail
- * - `Li`  → formatPolicyIssueList      (@194777083)
- * - `Xe`  → RESTRICTIVE_ENTRIES        (OCC-present keys only; the Ni/pn
- *                                       filters are data-driven, so absent
- *                                       official keys stay inert and land
- *                                       automatically if the schema grows)
- * - `pn`  → restrictiveByPath
- * - `eg`  → BLOCK_GRANTS
- * - `gn`  → GRANT_FLOORS
- * - `sn`  → hasNestedRestriction
- * - `mn`  → isRebuiltBlock
- * - `jo`  → unwrapToObjectSchema
- * - `ki`  → REMOTE_LIKE_BLOCKS
- * - `Ui`  → isSynthesizedObject
- * - `zi`  → synthesizeLockSkeleton
- * - `Oi`  → nullRemovalIssue
- * - `zo`  → withholdBlockGrants        (@194778000 window)
- * - `tg`  → wrapLeafField
- * - `Ki`  → rebuildBlockSchema
- * - `Ni`  → collectLockFields          (@194777350)
- * - `Ea`  → isPlainObject
- * - `oa`  → omitMatching
+ * - `Bx` (`nx`) → coerceStringBoolean   (string "true"/"false" → boolean)
+ * - `ta`        → isDisableRemovalValue (NEW in 283 @196669384: e===!1||e==="false")
+ * - `Ho`        → applyLeafCoercion     (NEW in 283 @196669558: shared leaf
+ *                                        coercion pre-wrapper; the
+ *                                        disable-removal message has exactly
+ *                                        ONE code copy in the 283 settings
+ *                                        chunk — inside Ho @196669911 — so
+ *                                        both the os top-level lock loop and
+ *                                        fg route through it)
+ * - `It` (`rn`) → quoteRestrictive
+ * - `Mt` (`tn`) → formatPolicyIssueDetail
+ * - 282 `Li`    → formatPolicyIssueList (@194777083; 283 name not re-derived)
+ * - `Qe` (`Xe`) → RESTRICTIVE_ENTRIES   (OCC-present keys only; the
+ *                                        ft/collectLockFields filters are
+ *                                        data-driven, so absent official keys
+ *                                        stay inert and land automatically if
+ *                                        the schema grows)
+ * - `ft` (`pn`) → restrictiveByPath
+ * - `eg` (`eg`) → BLOCK_GRANTS          (283 @196666922: the sandbox rows
+ *                                        gain withholdOnEntryDrop:!0 and are
+ *                                        LIVE now that Sn routes sandbox
+ *                                        through the rebuild)
+ * - `_n` (`gn`) → GRANT_FLOORS
+ * - `gn` (`sn`) → hasNestedRestriction
+ * - `Sn` (`mn`) → isRebuiltBlock        (@196668238 — 283 excludes ONLY
+ *                                        sandbox.credentials*; 282 excluded
+ *                                        all sandbox paths)
+ * - `es` (`jo`) → unwrapToObjectSchema  (283 `jo` is rebuildBlockSchema —
+ *                                        minified-name collision across
+ *                                        versions, do not cross-read)
+ * - `Li` (`ki`) → REMOTE_LIKE_BLOCKS    (282 `Li` was formatPolicyIssueList —
+ *                                        collision, same warning)
+ * - `Qi` (`Ui`) → isSynthesizedObject
+ * - `ea` (`zi`) → synthesizeLockSkeleton (@196668542; already took the
+ *                                        exclude-set param in 282)
+ * - `Ni` (`Oi`) → nullRemovalIssue      (@196668878 — 283 gains removal:!0;
+ *                                        282 `Ni` was collectLockFields —
+ *                                        collision, same warning)
+ * - `Qo` (`zo`) → withholdBlockGrants
+ * - `fg` (`tg`) → wrapLeafField         (@196670068 — 283 gains the Ho
+ *                                        pre-wrap, the neverSubstitute param
+ *                                        and the "not treated as" ignore
+ *                                        variant)
+ * - 282 `Ni`    → collectLockFields     (@194777350; 283 name not re-derived)
+ * - `jo` (`Ki`) → rebuildBlockSchema    (@196671300 — 283 gains the merged
+ *                                        skeleton excludes, neverSubstitute
+ *                                        pass-through, shape-aware empty
+ *                                        check and the Lt adopt branch)
+ * - `z`  (`Ea`) → isPlainObject
+ * - `Lt`        → isRecursiveEmptyPlainObject (NEW in 283 @196663983)
+ * - `pa` (`oa`) → omitMatching
  *
- * STAGED (deliberately NOT ported here — see the 2.1.282 gap report):
- * - all `sandbox.*` hand-written restrictive paths (`mn` excludes sandbox
- *   exactly like the official, and the official's bespoke sandbox.credentials
- *   machinery is out of scope);
- * - the 7 official lock keys absent from the OCC schema
- *   (disableClaudeAiConnectors, disableCommandPluginSources,
+ * STAGED (deliberately NOT ported here — see the 2.1.283 gap report):
+ * - the official's `te` sandbox.credentials fail-closed override (awsPairs
+ *   salvage + all-deny sigv4 skeleton + allowPlaintextInject:!1, os tail
+ *   @196692500–196694700) — OCC's sandbox.credentials block is `{enabled}`
+ *   only; without `te` the field falls to the fg leaf catch (generic
+ *   per-field ignore). The 283 sandbox rebuild itself IS ported (Sn/jo);
+ *   only credentials keeps the OCC-97 STAGE posture;
+ * - `ts` @196669404 (a ta/Ho-adjacent helper whose caller was not located in
+ *   the 283 byte-trace; no ported path needs it — recorded per the honest-
+ *   triage discipline rather than silently skipped);
+ * - the official lock keys absent from the OCC schema — the 7 known from
+ *   282 (disableClaudeAiConnectors, disableCommandPluginSources,
  *   disableSideloadFlags, disableRemoteControl, disableWorkflows,
- *   disableArtifact, isolatePeerMachines) — RESTRICTIVE_ENTRIES only lists
- *   OCC-present keys, but every consumer filters against the live schema
- *   shape, so adding a key to both schema and table is all it takes;
+ *   disableArtifact, isolatePeerMachines) plus the 283-table rows verified
+ *   absent from OCC's settings types (askUserQuestionTimeout, dialogExpiry,
+ *   feedbackDrafts, permissions.blockReadsOutsideWorkingDirectories,
+ *   enableArtifact, enableWorkflows, skipWorkflowUsageWarning,
+ *   autoUploadSessions, remoteControlAtStartup, autoContinueAtUsageLimit,
+ *   modelProposedGoals, crossSessionInbound,
+ *   remoteTools.allowUnattendedServing, remoteControl.shareHostProfile) —
+ *   RESTRICTIVE_ENTRIES only lists OCC-present keys, but every consumer
+ *   filters against the live schema shape, so adding a key to both schema
+ *   and table is all it takes;
  * - `managedMcpServers` coherence checks (`Ft`), policyHelper(s), the
  *   managed-settings.d merge-floor messages (Ql/ad/ld/removed/
  *   documentHasPolicyContent/Qxo/Kge) and `bi`'s per-entry marketplace
@@ -65,6 +108,13 @@ export type PolicyIssue = {
   substituted?: boolean
   /** This source's only policy content is fail-closed substitutions */
   onlySubstitutes?: boolean
+  /**
+   * CC 2.1.283: the value was read as KEY REMOVAL, not as a setting — the
+   * official `Ni` null-removal record (@196668878) and the `Ho`/`ta`
+   * disable-false branch (@196669911) both set `removal:!0`. The field does
+   * not exist in 2.1.282 records (`removal:!0` count: v282=0 → v283=2).
+   */
+  removal?: boolean
 }
 
 export type PolicyIssueCallback = (issue: PolicyIssue) => void
@@ -109,11 +159,36 @@ export const RESTRICTIVE_ENTRIES: readonly RestrictiveEntry[] = [
     path: ['maxEffortLevel'],
     restrictive: ['low', 'medium', 'high', 'xhigh', 'max'],
   },
+  // CC 2.1.283: official `Qe` lock table @196433200–196436000 lists
+  // {path:["availableModelsMatch"],restrictive:"exact"} right after
+  // maxEffortLevel. collectLockFields (`Ni`) accepts string restrictive
+  // values: an invalid/absent policy value locks to "exact" with the
+  // standard substitution message.
+  { path: ['availableModelsMatch'], restrictive: 'exact' },
   { path: ['permissions', 'disableBypassPermissionsMode'], restrictive: 'disable' },
   { path: ['permissions', 'disableAutoMode'], restrictive: 'disable' },
   { path: ['autoMode', 'classifyAllShell'], restrictive: true },
   { path: ['worktree', 'bgIsolation'], restrictive: 'worktree' },
   { path: ['attribution', 'sessionUrl'], restrictive: false },
+  // CC 2.1.283 P1-6a: the official `Qe` table @196433200 grew 13 sandbox
+  // rows (byte-dumped; !0 → true, !1 → false). Official position: after
+  // askUserQuestionTimeout/dialogExpiry (both absent from OCC) and before the
+  // sandbox.credentials rows (STAGED with `te`) — i.e. after every OCC-present
+  // row, matching this placement. These rows are what makes
+  // hasNestedRestriction('sandbox') true, routing sandbox through Sn/jo.
+  { path: ['sandbox', 'enabled'], restrictive: true },
+  { path: ['sandbox', 'failIfUnavailable'], restrictive: true },
+  { path: ['sandbox', 'autoAllowBashIfSandboxed'], restrictive: false },
+  { path: ['sandbox', 'allowUnsandboxedCommands'], restrictive: false },
+  { path: ['sandbox', 'enableWeakerNestedSandbox'], restrictive: false },
+  { path: ['sandbox', 'enableWeakerNetworkIsolation'], restrictive: false },
+  { path: ['sandbox', 'allowAppleEvents'], restrictive: false },
+  { path: ['sandbox', 'network', 'allowManagedDomainsOnly'], restrictive: true },
+  { path: ['sandbox', 'network', 'strictAllowlist'], restrictive: true },
+  { path: ['sandbox', 'network', 'allowAllUnixSockets'], restrictive: false },
+  { path: ['sandbox', 'network', 'allowLocalBinding'], restrictive: false },
+  { path: ['sandbox', 'filesystem', 'allowManagedReadPathsOnly'], restrictive: true },
+  { path: ['sandbox', 'filesystem', 'disabled'], restrictive: false },
 ]
 
 /** Official `ct` — top-level keys excluded from the onlySubstitutes tail check. */
@@ -143,6 +218,15 @@ export function coerceStringBoolean(value: unknown): unknown {
   return value === 'true' ? true : value === 'false' ? false : value
 }
 
+/**
+ * Official `ta` @196669384 (NEW in 2.1.283): `e===!1||e==="false"` — the
+ * disable-restrictive "was set to false → read as key removal" predicate used
+ * by `Ho`.
+ */
+export function isDisableRemovalValue(value: unknown): boolean {
+  return value === false || value === 'false'
+}
+
 /** Official `rn`: quote strings, stringify everything else. */
 export function quoteRestrictive(value: unknown): string {
   return typeof value === 'string' ? `"${value}"` : String(value)
@@ -153,6 +237,19 @@ export function isPlainObject(value: unknown): value is Record<string, unknown> 
   if (typeof value !== 'object' || value === null) return false
   const proto = Object.getPrototypeOf(value)
   return proto === Object.prototype || proto === null
+}
+
+/**
+ * Official `Lt` @196663983 (NEW in 2.1.283): `z(e)&&Object.values(e).
+ * every(Lt)` — a plain object that is empty at EVERY nesting level ({} ,
+ * {a:{}}, ...). Drives `jo`'s synthesized-adopt branch and the `os` tail's
+ * onlySubstitutes applicability filter.
+ */
+export function isRecursiveEmptyPlainObject(value: unknown): boolean {
+  return (
+    isPlainObject(value) &&
+    Object.values(value).every(isRecursiveEmptyPlainObject)
+  )
 }
 
 /** Official `oa`: copy of `obj` without keys whose value matches `predicate`. */
@@ -254,7 +351,12 @@ type BlockGrantSpec = {
   withholdOnEntryDrop?: boolean
 }
 
-/** Official `eg`. sandbox.* entries kept for table fidelity (mn never routes sandbox here). */
+/**
+ * Official `eg` @196666922. CC 2.1.283: both sandbox rows gain
+ * `withholdOnEntryDrop:!0` (282 @194780770 lacked it) and are LIVE now —
+ * `Sn` routes sandbox through the rebuild machinery, so a merely TRIMMED
+ * deniedDomains/denyWrite/denyRead entry also withholds the block's grants.
+ */
 export const BLOCK_GRANTS: ReadonlyMap<string, BlockGrantSpec> = new Map([
   [
     'permissions',
@@ -273,11 +375,19 @@ export const BLOCK_GRANTS: ReadonlyMap<string, BlockGrantSpec> = new Map([
   ],
   [
     'sandbox.network',
-    { restrictions: ['deniedDomains'], grants: ['allowedDomains'] },
+    {
+      restrictions: ['deniedDomains'],
+      grants: ['allowedDomains'],
+      withholdOnEntryDrop: true,
+    },
   ],
   [
     'sandbox.filesystem',
-    { restrictions: ['denyWrite', 'denyRead'], grants: ['allowWrite', 'allowRead'] },
+    {
+      restrictions: ['denyWrite', 'denyRead'],
+      grants: ['allowWrite', 'allowRead'],
+      withholdOnEntryDrop: true,
+    },
   ],
 ])
 
@@ -324,9 +434,21 @@ export function hasNestedRestriction(prefix: string): boolean {
   return false
 }
 
-/** Official `mn`: top-level key rebuilt through the per-block salvage machinery. */
+/**
+ * Official `Sn` @196668238 (282 `mn`): top-level key rebuilt through the
+ * per-block salvage machinery. CC 2.1.283 narrows the sandbox carve-out from
+ * "all sandbox paths" (282) to "sandbox.credentials only" — byte-verbatim
+ * `e!=="sandbox.credentials"&&!e.startsWith("sandbox.credentials.")&&gn(e)`
+ * — so sandbox itself joins the rebuild (changelog: "Fixed an issue where
+ * managed sandbox settings with a partially invalid block were discarded
+ * wholesale").
+ */
 export function isRebuiltBlock(key: string): boolean {
-  return key !== 'sandbox' && !key.startsWith('sandbox.') && hasNestedRestriction(key)
+  return (
+    key !== 'sandbox.credentials' &&
+    !key.startsWith('sandbox.credentials.') &&
+    hasNestedRestriction(key)
+  )
 }
 
 /**
@@ -391,12 +513,16 @@ export function synthesizeLockSkeleton(
   return skeleton
 }
 
-/** Official `Oi`: an explicit null is key removal, not a value. */
+/**
+ * Official `Ni` @196668878 (282 `Oi`): an explicit null is key removal, not
+ * a value. CC 2.1.283: the record gains `removal:!0`.
+ */
 export function nullRemovalIssue(path: string, key: string): PolicyIssue {
   return {
     path,
     message: `"${key}" was null, which is read as key removal; this source does not set it.`,
     statusOnly: true,
+    removal: true,
   }
 }
 
@@ -464,35 +590,92 @@ export type LeafWrapState = {
 }
 
 /**
- * Official `tg`: wrap one leaf field with fail-closed catch behavior.
+ * Official `Ho` @196669558 (NEW in 2.1.283): the shared leaf-coercion
+ * z.preprocess wrapper (official `Bi` = z.preprocess). Boolean-restrictive
+ * leaves coerce string "true"/"false" (`Bx`) with a statusOnly record;
+ * "disable"-restrictive leaves read false/"false" (`ta`) as KEY REMOVAL —
+ * statusOnly + removal:!0. Anything else passes the field through untouched.
+ * Both the `os` top-level lock loop and `fg` call Ho: the disable-removal
+ * message exists exactly once in the 283 settings chunk (@196669911, inside
+ * Ho), where 282 had it inline in the Ko lock loop (@194788298). The boolean
+ * message has a second live copy at @196673466 — the wslInheritsWindowsSettings
+ * inline (os step 3), which OCC keeps inline exactly like the official.
+ */
+export function applyLeafCoercion(
+  path: string,
+  restrictive: unknown,
+  field: z.ZodType,
+  onIssue: PolicyIssueCallback,
+): z.ZodType {
+  const key = path.slice(path.lastIndexOf('.') + 1)
+  if (typeof restrictive === 'boolean') {
+    return z.preprocess(value => {
+      const coerced = coerceStringBoolean(value)
+      if (coerced !== value) {
+        onIssue({
+          path,
+          message: `"${key}" holds the string "${String(coerced)}" where a boolean belongs; reading it as ${String(coerced)}. Write it without quotes.`,
+          statusOnly: true,
+        })
+      }
+      return coerced
+    }, field) as z.ZodType
+  }
+  if (restrictive === 'disable') {
+    return z.preprocess(value => {
+      if (isDisableRemovalValue(value)) {
+        onIssue({
+          path,
+          message: `"${key}" was set to false; reading it as absent (the key's only value is "disable"). Remove the key instead.`,
+          statusOnly: true,
+          removal: true,
+        })
+        return undefined
+      }
+      return value
+    }, field) as z.ZodType
+  }
+  return field
+}
+
+/**
+ * Official `fg` @196670068 (282 `tg`): wrap one leaf field with fail-closed
+ * catch behavior. CC 2.1.283 additions: the field is pre-wrapped with the
+ * shared `Ho` coercion using the REAL restrictive value (coercion applies even
+ * under neverSubstitute), the 5th param `neverSubstitute` (official `c`)
+ * suppresses restrictive SUBSTITUTION only (`h=c?void 0:g`), and the ignore
+ * message gains the "not treated as X" variant naming the real restrictive.
  * Strategies, in official order:
- * 1. nested restrictive value known (pn) → substitute it;
- * 2. grant floor known (gn) → substitute the floor;
+ * 1. effective restrictive value known (h) → substitute it;
+ * 2. grant floor known (_n) → substitute the floor;
  * 3. array field → salvage valid entries, drop invalid ones (trimmed);
  * 4. otherwise → ignore the field entirely.
  * The official unwraps two wrapper classes before attaching `.catch`; OCC's
- * leaf fields are concrete, so the catch attaches to the field directly
- * (behaviorally identical for every OCC field shape).
+ * leaf fields are concrete, so the catch attaches to the Ho-wrapped field
+ * directly (behaviorally identical for every OCC field shape).
  */
 export function wrapLeafField(
   path: string,
   field: z.ZodType,
   onIssue: PolicyIssueCallback,
   state: LeafWrapState,
+  neverSubstitute = false,
 ): z.ZodType {
   const key = path.slice(path.lastIndexOf('.') + 1)
+  // Official fg: g = real restrictive from ft; h = c ? undefined : g.
   const restrictive = restrictiveByPath().get(path)
+  const effectiveRestrictive = neverSubstitute ? undefined : restrictive
   const floor = GRANT_FLOORS.get(path)
-  return (field as z.ZodType<unknown>).catch(ctx => {
+  return (applyLeafCoercion(path, restrictive, field, onIssue) as z.ZodType<unknown>).catch(ctx => {
     const issues = (ctx.issues ?? ctx.error?.issues ?? []) as PolicyZodIssue[]
-    if (restrictive !== undefined) {
+    if (effectiveRestrictive !== undefined) {
       onIssue({
         path,
-        message: `"${key}" was present but invalid (${formatPolicyIssueDetail(issues[0])}); treating it as ${quoteRestrictive(restrictive)}, its restrictive value, until it is fixed.`,
+        message: `"${key}" was present but invalid (${formatPolicyIssueDetail(issues[0])}); treating it as ${quoteRestrictive(effectiveRestrictive)}, its restrictive value, until it is fixed.`,
         substituted: true,
       })
       state.substituted.add(key)
-      return restrictive
+      return effectiveRestrictive
     }
     if (floor !== undefined) {
       onIssue({
@@ -532,9 +715,14 @@ export function wrapLeafField(
         }
       }
     }
+    // CC 2.1.283: the ignore record names the REAL restrictive when one exists
+    // (reachable only under neverSubstitute — sandbox.failIfUnavailable).
     onIssue({
       path,
-      message: `"${key}" was present but invalid (${formatPolicyIssueDetail(issues[0])}) and was ignored; it cannot take effect until it is fixed.`,
+      message:
+        restrictive === undefined
+          ? `"${key}" was present but invalid (${formatPolicyIssueDetail(issues[0])}) and was ignored; it cannot take effect until it is fixed.`
+          : `"${key}" was present but invalid (${formatPolicyIssueDetail(issues[0])}) and was ignored, not treated as ${quoteRestrictive(restrictive)}; it cannot take effect until it is fixed.`,
     })
     state.ignored.add(key)
     return undefined
@@ -546,18 +734,39 @@ export type RebuildBlockOptions = {
   synthesized?: WeakSet<object>
   /** The original (pre-wrap) field schema; used to normalize non-object inputs */
   strictField?: z.ZodType
-  /** Dead in 2.1.282 (no caller passes it) — kept for port fidelity */
+  /**
+   * Field paths excluded from the restrictive skeleton — merged with
+   * neverSubstitute into synthesizeLockSkeleton's exclude set (official `jo`).
+   * LIVE in 2.1.283: os passes `new Set(["sandbox.enabled"])` for sandbox.
+   */
   skeletonExclude?: ReadonlySet<string>
-  /** Dead in 2.1.282 (no caller passes it) — kept for port fidelity */
+  /**
+   * Per-field schema overrides, consulted before the leaf/nested dispatch
+   * (official `jo`). STAGED in OCC: the only official caller passes
+   * `{"sandbox.credentials": te}` — the sandbox-credentials override machinery
+   * (awsPairs salvage / sigv4 all-deny skeleton / allowPlaintextInject, dumped
+   * @196692500) targets OCC-absent `sandbox.credentials.*` ft rows; OCC's
+   * credentials surface is `{enabled}` only and falls to the generic leaf
+   * catch. Recorded as staged work, not silently dropped.
+   */
   override?: ReadonlyMap<string, z.ZodType>
+  /**
+   * Field paths whose restrictive value must NOT be substituted on invalid
+   * input (official `fg`'s 5th param `c`, threaded via `jo` options): `Ho`
+   * coercion still applies, substitution is suppressed (`h=c?void 0:g`), and
+   * the ignore record gains the "not treated as X" variant. LIVE in 2.1.283:
+   * os passes `new Set(["sandbox.failIfUnavailable"])` for sandbox.
+   */
+  neverSubstitute?: ReadonlySet<string>
 }
 
 /**
- * Official `Ki` (@194778000 window): rebuild one policy block (permissions,
- * autoMode, worktree, attribution, ...) so a single invalid nested value no
- * longer discards the whole block. Leaves are wrapped with `tg`; the block
- * transform applies null-removal records, grant withholding (`zo`), and —
- * when the block is not an object at all — the restrictive skeleton (`zi`).
+ * Official `jo` @196671300 (282 `Ki`, @194778000 window): rebuild one policy
+ * block (permissions, autoMode, worktree, attribution, and — new in 2.1.283 —
+ * sandbox itself) so a single invalid nested value no longer discards the
+ * whole block. Leaves are wrapped with `fg`; the block transform applies
+ * null-removal records, grant withholding (`zo`), and — when the block is not
+ * an object at all — the restrictive skeleton (`zi`).
  */
 export function rebuildBlockSchema(
   prefix: string,
@@ -584,7 +793,14 @@ export function rebuildBlockSchema(
             ...options,
             strictField: field,
           })
-        : wrapLeafField(fieldPath, field, onIssue, state))
+        : wrapLeafField(
+            fieldPath,
+            field,
+            onIssue,
+            state,
+            // CC 2.1.283 (jo): `c: r.neverSubstitute?.has(F)===!0`.
+            options.neverSubstitute?.has(fieldPath) === true,
+          ))
   }
   const rebuilt = objectSchema.extend(
     wrappedShape as Record<string, z.ZodTypeAny>,
@@ -615,10 +831,16 @@ export function rebuildBlockSchema(
           )
         : undefined
       if (!isPlainObject(base) || parsed?.success !== true) {
+        // CC 2.1.283 (jo): the skeleton exclude set is skeletonExclude merged
+        // with neverSubstitute — never-substituted locks must not reappear as
+        // synthesized restrictive values either.
         const skeleton = synthesizeLockSkeleton(
           prefix,
           objectSchema,
-          options.skeletonExclude,
+          new Set([
+            ...(options.skeletonExclude ?? []),
+            ...(options.neverSubstitute ?? []),
+          ]),
         )
         const skeletonKeys = Object.keys(skeleton)
         onIssue({
@@ -658,7 +880,17 @@ export function rebuildBlockSchema(
       }
       const defined = omitMatching(data, v => v === undefined)
       if (Object.keys(defined).length === 0) {
-        return Object.values(base).some(v => v !== undefined) ? undefined : defined
+        // CC 2.1.283 (jo): shape-aware emptiness check — the 282 version
+        // treated ANY defined base value as "something was written" (including
+        // passthrough keys the schema does not know); the official now only
+        // counts keys present in the object schema's shape.
+        return Object.entries(base).some(
+          ([fieldKey, fieldValue]) =>
+            fieldValue !== undefined &&
+            Object.hasOwn(objectSchema.shape, fieldKey),
+        )
+          ? undefined
+          : defined
       }
       const synthesized = options.synthesized
       if (
@@ -667,7 +899,10 @@ export function rebuildBlockSchema(
         Object.entries(defined).every(
           ([key, fieldValue]) =>
             state.substituted.has(key) ||
-            isSynthesizedObject(synthesized, fieldValue),
+            isSynthesizedObject(synthesized, fieldValue) ||
+            // CC 2.1.283 (jo): recursively-empty plain objects also adopt —
+            // `{}`-only blocks are pure fail-closed content.
+            isRecursiveEmptyPlainObject(fieldValue),
         )
       ) {
         synthesized.add(defined)

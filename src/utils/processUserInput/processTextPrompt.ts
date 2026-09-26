@@ -111,6 +111,9 @@ export function processTextPrompt(
       imagePasteIds: imagePasteIds.length > 0 ? imagePasteIds : undefined,
       permissionMode,
       isMeta: isMeta || undefined,
+      // Official 2.1.283 REPL submit (@211216853): `Ae({...,promptId:V,...})`
+      // — the fresh journal id is carried on the user message itself.
+      promptId,
     })
 
     return {
@@ -124,6 +127,8 @@ export function processTextPrompt(
     uuid,
     permissionMode,
     isMeta: isMeta || undefined,
+    // Official 2.1.283 REPL submit (@211216853): `Ae({...,promptId:V,...})`.
+    promptId,
   })
 
   return {

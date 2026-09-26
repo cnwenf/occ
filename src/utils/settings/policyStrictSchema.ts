@@ -1,37 +1,46 @@
 /**
- * claude-code 2.1.282 strict policy-source settings schema.
+ * claude-code 2.1.283 strict policy-source settings schema.
  *
- * Byte-exact port of the official 2.1.282 `Ko(onIssue, sourceLabel)` builder
- * plus the `pd` issue sink and the `jdn` "document is not a JSON object"
- * records. Used for POLICY sources only (remote managed settings, MDM
- * plist/registry, managed-settings.json + drop-ins, HKCU). Non-policy sources
- * keep the whole-file all-or-nothing `SettingsSchema().safeParse` behavior —
- * the official does the same (SDK inline `--settings` uses the plain schema,
+ * Byte-exact port of the official 2.1.283 `os(onIssue, sourceLabel)` builder
+ * (282 name: `Ko` @194785637; 283 step regions byte-verified individually —
+ * see the policyLocks.ts header for the 283 name map and offsets) plus the
+ * `pd` issue sink and the `jdn` "document is not a JSON object" records. Used
+ * for POLICY sources only (remote managed settings, MDM plist/registry,
+ * managed-settings.json + drop-ins, HKCU). Non-policy sources keep the
+ * whole-file all-or-nothing `SettingsSchema().safeParse` behavior — the
+ * official does the same (SDK inline `--settings` uses the plain schema,
  * binary `X3e`/`ay`).
  *
- * Official build order (all message strings extracted verbatim from
- * /tmp/occ97b/package/claude v2.1.282, Ko @194785637 window):
+ * Official build order (all message strings extracted verbatim from the
+ * official 2.1.283 linux-x64 ELF):
  *   1. generic per-field catch ("This field was ignored.")
  *   2. prepend/appendPlugins guarded variant ("read as unset.")
- *   3. wslInheritsWindowsSettings bespoke wrapper (guarded — key absent in OCC)
+ *   3. wslInheritsWindowsSettings bespoke wrapper (guarded — key absent in
+ *      OCC; the official keeps its OWN inline boolean-coercion copy at
+ *      @196673466 rather than calling Ho, so OCC keeps this step inline too)
  *   4. strictKnownMarketplaces / blockedMarketplaces (`bi`)
  *   5. allowedMcpServers / deniedMcpServers (`Ei`)
- *   6. lock-field wrappers (`Ni` loop) + strictPluginOnlyCustomization bespoke (`Mi`)
+ *   6. lock-field wrappers (`Ni` loop) via the SHARED `Ho` coercion
+ *      (applyLeafCoercion) + strictPluginOnlyCustomization bespoke (`Mi`)
  *   7. enabledPlugins / availableModels / allowedHttpHookUrls /
  *      httpHookAllowedEnvVars / allowedChannelPlugins (`vo`) /
  *      gatewayInternalNetworks / forceLoginOrgUUID overrides
- *   8. per-block salvage rebuild (`Ki` via policyLocks.ts)
- *   9. passthrough + onlySubstitutes tail transform
+ *   8. per-block salvage rebuild (`jo` via policyLocks.ts) — 283: sandbox
+ *      included, via dedicated wiring mirroring the official os tail
+ *   9. passthrough + onlySubstitutes tail transform (283: recursively-empty
+ *      plain objects — `Lt` — are not applicable policy content)
  *
  * Every override is guarded by `key in shape` so the machinery is data-driven:
  * official keys absent from the OCC schema stay inert, and land automatically
  * once both the schema and RESTRICTIVE_ENTRIES grow them.
  *
- * STAGED (in official Ko, deliberately not ported — see gap report):
+ * STAGED (in official os, deliberately not ported — see gap report):
  * - managedMcpServers coherence checks (`Ft`) — key absent in OCC;
  * - policyHelper/policyHelpers static-payload machinery — keys absent in OCC;
- * - sandbox.credentials fail-closed skeleton — OCC sandbox fields keep the
- *   generic per-field catch (step 1);
+ * - sandbox.credentials `te` override (awsPairs salvage / sigv4 all-deny
+ *   skeleton / allowPlaintextInject, dumped @196692500) — OCC has no
+ *   `sandbox.credentials.*` ft rows; the credentials surface is `{enabled}`
+ *   only and falls to the generic per-field catch (step 1);
  * - `bi`'s per-entry marketplace ENFORCEABILITY warnings (`un`: regex compile,
  *   github/git wildcard checks) — OCC's policySourceSanitizer already
  *   pre-filters unenforceable marketplace entries (CC 2.1.277 report_C C9);
@@ -50,12 +59,14 @@ import { MarketplaceSourceSchema } from '../plugins/schemas.js'
 import { logForDebugging } from '../debug.js'
 import { plural } from '../stringUtils.js'
 import {
+  applyLeafCoercion,
   collectLockFields,
   coerceStringBoolean,
   formatPolicyIssueList,
   hasNestedRestriction,
   isPlainObject,
   isRebuiltBlock,
+  isRecursiveEmptyPlainObject,
   isSynthesizedObject,
   type PolicyIssueCallback,
   type PolicyZodIssue,
@@ -341,33 +352,18 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
   }
 
   // 6. Lock fields (`Ni` loop): string-boolean coercion, disable-false →
-  //    absent, invalid → restrictive substitution (2.1.282 bullet a).
+  //    key removal (283: `removal:!0`), invalid → restrictive substitution.
+  //    CC 2.1.283: the coercion preprocess is the SHARED `Ho`
+  //    (applyLeafCoercion) — byte-proven: the disable-removal message exists
+  //    exactly once in the 283 settings chunk (@196669911, inside Ho) and zero
+  //    times in the os step-6 region, where 282 had it inline (@194788298).
+  //    The top-level catch message stays the 282 one (no parenthesized issue
+  //    detail) — unchanged in 283.
   const substitutedKeys = new Set<string>()
   for (const { key, restrictive, field } of collectLockFields(shape)) {
     const fallbackText =
       typeof restrictive === 'string' ? `"${restrictive}"` : String(restrictive)
-    const coerced = z.preprocess(value => {
-      if (typeof restrictive === 'boolean') {
-        const result = coerceStringBoolean(value)
-        if (result !== value) {
-          onIssue({
-            path: key,
-            message: `"${key}" holds the string "${String(result)}" where a boolean belongs; reading it as ${String(result)}. Write it without quotes.`,
-            statusOnly: true,
-          })
-        }
-        return result
-      }
-      if (restrictive === 'disable' && (value === false || value === 'false')) {
-        onIssue({
-          path: key,
-          message: `"${key}" was set to false; reading it as absent (the key's only value is "disable"). Remove the key instead.`,
-          statusOnly: true,
-        })
-        return undefined
-      }
-      return value
-    }, field)
+    const coerced = applyLeafCoercion(key, restrictive, field, onIssue)
     wrapped[key] = z
       .union([z.null().transform(() => undefined), coerced])
       .optional()
@@ -461,6 +457,40 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
       }) as z.ZodType
   }
 
+  // CC 2.1.283 deniedModels: official `Ko` (@196677430) — non-string entries
+  // dropped individually (message uses the entry's TYPE, not JSON.stringify,
+  // unlike availableModels); a wholly invalid value is IGNORED ("blocks no
+  // models until it is fixed" → catch returns undefined). This field-level
+  // fail-open is official-faithful: a malformed deny list must not silently
+  // become a broader allow rule, and the strict parse still surfaces the
+  // warning so the admin sees the misconfiguration.
+  if ('deniedModels' in shape) {
+    wrapped.deniedModels = z
+      .array(z.any())
+      .transform((entries: unknown[]) => {
+        const kept: string[] = []
+        for (const entry of entries) {
+          if (typeof entry === 'string') kept.push(entry)
+          else {
+            onIssue({
+              path: 'deniedModels',
+              message: `"deniedModels" contained a non-string entry (${entry === null ? 'null' : typeof entry}); the entry was ignored.`,
+            })
+          }
+        }
+        return kept
+      })
+      .optional()
+      .catch(() => {
+        onIssue({
+          path: 'deniedModels',
+          message:
+            '"deniedModels" was present but is not a list of model names, so it was ignored and blocks no models until it is fixed.',
+        })
+        return undefined
+      }) as z.ZodType
+  }
+
   // vo-backed fail-closed allowlists.
   if ('allowedHttpHookUrls' in shape) {
     wrapped.allowedHttpHookUrls = failClosedAllowlistSchema(
@@ -514,17 +544,34 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
     ) as z.ZodType
   }
 
-  // 8. Per-block salvage rebuild (`Ki`): permissions / autoMode / worktree /
-  //    attribution — one invalid nested value no longer discards the block
-  //    (2.1.282 bullet b).
+  // 8. Per-block salvage rebuild (`jo`, 282 `Ki`): permissions / autoMode /
+  //    worktree / attribution — one invalid nested value no longer discards
+  //    the block (2.1.282 bullet b). CC 2.1.283: sandbox JOINS (changelog:
+  //    "Fixed an issue where managed sandbox settings with a partially invalid
+  //    block were discarded wholesale") via dedicated wiring mirroring the
+  //    official os tail verbatim: `jo("sandbox",pmn(),e,{override:{
+  //    "sandbox.credentials":te},skeletonExclude:new Set(["sandbox.enabled"]),
+  //    neverSubstitute:new Set(["sandbox.failIfUnavailable"]),synthesized:y})`
+  //    — no strictField, and the `te` credentials override stays STAGED (see
+  //    RebuildBlockOptions.override in policyLocks.ts).
   const synthesized = new WeakSet<object>()
   for (const [key, field] of Object.entries(shape)) {
-    if (!isRebuiltBlock(key)) continue
+    if (key === 'sandbox' || !isRebuiltBlock(key)) continue
     const inner = unwrapToObjectSchema(field)
     if (inner !== undefined) {
       wrapped[key] = rebuildBlockSchema(key, inner, onIssue, {
         synthesized,
         strictField: field,
+      })
+    }
+  }
+  if ('sandbox' in shape) {
+    const inner = unwrapToObjectSchema(shape.sandbox!)
+    if (inner !== undefined) {
+      wrapped.sandbox = rebuildBlockSchema('sandbox', inner, onIssue, {
+        synthesized,
+        skeletonExclude: new Set(['sandbox.enabled']),
+        neverSubstitute: new Set(['sandbox.failIfUnavailable']),
       })
     }
   }
@@ -539,7 +586,11 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
         Object.entries(value).filter(([, v]) => v !== undefined),
       )
       const applicable = Object.keys(defined).filter(
-        key => !TAIL_EXCLUDED_KEYS.some(excluded => excluded === key),
+        key =>
+          !TAIL_EXCLUDED_KEYS.some(excluded => excluded === key) &&
+          // CC 2.1.283 (os tail): `!Lt(_[M])` — recursively-empty plain
+          // objects are not applicable policy content.
+          !isRecursiveEmptyPlainObject(defined[key]),
       )
       const onlySubstitutes =
         applicable.length > 0 &&
@@ -584,6 +635,7 @@ export function createPolicyIssueSink(
       ...(issue.startupFatal && { startupFatal: issue.startupFatal }),
       ...(issue.substituted && { substituted: issue.substituted }),
       ...(issue.onlySubstitutes && { onlySubstitutes: issue.onlySubstitutes }),
+      ...(issue.removal && { removal: issue.removal }),
     })
     if (issue.statusOnly || issue.startupFatal) {
       logForDebugging(`${file}: ${issue.path}: ${issue.message}`)

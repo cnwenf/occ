@@ -121,6 +121,13 @@ export type ValidationError = {
    * tail record).
    */
   onlySubstitutes?: boolean
+  /**
+   * True when the value was read as KEY REMOVAL rather than a setting (CC
+   * 2.1.283: the official `Ni` null-removal record @196668878 and the `Ho`
+   * disable-false branch @196669911 both set `removal:!0`; the field does not
+   * exist in 2.1.282 records — `removal:!0` count: v282=0 → v283=2).
+   */
+  removal?: boolean
   /** True for records from user-writable sources (official HKCU variant). */
   userWritable?: boolean
   /** MCP-specific metadata - only present for MCP configuration errors */

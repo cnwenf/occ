@@ -176,11 +176,16 @@ const SECTION_KEYSTROKE_SYNTAX = [
   '- `ctrl` (alias: `control`)',
   '- `alt` (aliases: `opt`, `option`) — note: `alt` and `meta` are identical in terminals',
   '- `shift`',
-  '- `meta` (aliases: `cmd`, `command`)',
+  // CC 2.1.283 @212008575: `meta` no longer aliases `cmd`; `cmd` gets its own
+  // row (terminals rarely send Super). Byte-verbatim from the official guide.
+  '- `meta` — same key as `alt` in terminals (Option key on macOS)',
+  '- `cmd` (aliases: `command`, `super`, `win`) — Command key on macOS, Windows key on Windows, Super key on Linux; not the same as `meta`. Most terminals never send it (only ones that report the Super modifier, such as through the Kitty keyboard protocol or xterm `modifyOtherKeys`), so prefer `ctrl` for bindings that should work everywhere',
   '',
   '**Special keys**: `escape`/`esc`, `enter`/`return`, `tab`, `space`, `backspace`, `delete`, `up`, `down`, `left`, `right`',
   '',
-  '**Chords**: Space-separated keystrokes, e.g. `ctrl+k ctrl+s` (1-second timeout between keystrokes)',
+  // CC 2.1.283: the guide said 1 second but the implementation (official and
+  // OCC's CHORD_TIMEOUT_MS alike) has always been 3s — the text now matches.
+  '**Chords**: Space-separated keystrokes, e.g. `ctrl+k ctrl+s` (3-second timeout between keystrokes)',
   '',
   '**Examples**: `ctrl+shift+p`, `alt+enter`, `ctrl+k ctrl+n`',
 ].join('\n')

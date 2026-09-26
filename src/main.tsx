@@ -68,6 +68,7 @@ import { settingsChangeDetector } from './utils/settings/changeDetector.js';
 import { skillChangeDetector } from './utils/skills/skillChangeDetector.js';
 import { jsonParse, writeFileSync_DEPRECATED } from './utils/slowOperations.js';
 import { computeInitialTeamContext } from './utils/swarm/reconnection.js';
+import { decodeAppendSystemPromptFile, isRemoteControlCarrierSession, mergePromptTexts } from './utils/systemPromptMerge.js';
 import { initializeWarningHandler } from './utils/warningHandler.js';
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js';
 
@@ -1588,16 +1589,14 @@ async function run(): Promise<CommanderCommand> {
       process.exit(1);
     }
 
-    // Handle system prompt options
+    // Handle system prompt options — CC 2.1.283: the text and -file forms are
+    // accepted together and merged (official `or()` @212162145); the 282-era
+    // mutual-exclusion error is gone from the official binary.
     let systemPrompt = options.systemPrompt;
     if (options.systemPromptFile) {
-      if (options.systemPrompt) {
-        process.stderr.write(chalk.red('Error: Cannot use both --system-prompt and --system-prompt-file. Please use only one.\n'));
-        process.exit(1);
-      }
       try {
         const filePath = resolve(options.systemPromptFile);
-        systemPrompt = readFileSync(filePath, 'utf8');
+        systemPrompt = mergePromptTexts(readFileSync(filePath, 'utf8'), options.systemPrompt);
       } catch (error) {
         const code = getErrnoCode(error);
         if (code === 'ENOENT') {
@@ -1609,16 +1608,18 @@ async function run(): Promise<CommanderCommand> {
       }
     }
 
-    // Handle append system prompt options
+    // Handle append system prompt options — CC 2.1.283: merged like above, plus
+    // the Remote Control carrier-session gate + sha256 file validation
+    // (official `C$n()`/`qvr()` @203745647/@203745738).
     let appendSystemPrompt = options.appendSystemPrompt;
     if (options.appendSystemPromptFile) {
-      if (options.appendSystemPrompt) {
-        process.stderr.write(chalk.red('Error: Cannot use both --append-system-prompt and --append-system-prompt-file. Please use only one.\n'));
+      if (options.appendSystemPrompt && isRemoteControlCarrierSession()) {
+        process.stderr.write(chalk.red('Error: --append-system-prompt cannot be given with --append-system-prompt-file in a Remote Control session. Remove --append-system-prompt.\n'));
         process.exit(1);
       }
       try {
         const filePath = resolve(options.appendSystemPromptFile);
-        appendSystemPrompt = readFileSync(filePath, 'utf8');
+        appendSystemPrompt = mergePromptTexts(decodeAppendSystemPromptFile(readFileSync(filePath)), options.appendSystemPrompt);
       } catch (error) {
         const code = getErrnoCode(error);
         if (code === 'ENOENT') {
@@ -2844,7 +2845,9 @@ async function run(): Promise<CommanderCommand> {
       modeIsBypass: permissionMode === 'bypassPermissions',
       allowDangerouslySkipPermissionsPassed: allowDangerouslySkipPermissions,
       systemPromptFlag: systemPrompt ? options.systemPromptFile ? 'file' : 'flag' : undefined,
-      appendSystemPromptFlag: appendSystemPrompt ? options.appendSystemPromptFile ? 'file' : 'flag' : undefined,
+      // CC 2.1.283 @212243350: append logs 'flag' whenever the flag was given
+      // (raw CLI option, flag-first precedence — no longer merged-value dependent).
+      appendSystemPromptFlag: options.appendSystemPrompt ? 'flag' : options.appendSystemPromptFile ? 'file' : undefined,
       thinkingConfig,
       assistantActivationPath: feature('KAIROS') && kairosEnabled ? assistantModule?.getAssistantActivationPath() : undefined
     });

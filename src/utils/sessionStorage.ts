@@ -1226,8 +1226,8 @@ class Project {
           ...message,
           // Session-stamp fields MUST come after the spread. On --fork-session
           // and --resume, messages arrive as SerializedMessage (carries source
-          // sessionId/cwd/etc. because removeExtraFields only strips parentUuid
-          // and isSidechain). If sessionId isn't re-stamped, FRESH.jsonl ends up
+          // sessionId/cwd/etc. because removeExtraFields only strips parentUuid,
+          // isSidechain and promptId). If sessionId isn't re-stamped, FRESH.jsonl ends up
           // with messages stamped sessionId=A but content-replacement entries
           // stamped sessionId=FRESH (from insertContentReplacement), and
           // loadFullLog's sessionId-keyed contentReplacements lookup misses →
@@ -2003,7 +2003,12 @@ export function removeExtraFields(
   transcript: TranscriptMessage[],
 ): SerializedMessage[] {
   return transcript.map(m => {
-    const { isSidechain, parentUuid, ...serializedMessage } = m
+    // Official 2.1.283 QLn (@207272833) also strips `promptId` here:
+    //   let{isSidechain:r,parentUuid:s,promptId:g,...h}=n;return h
+    // The per-turn id is journal/message state, not serialized history —
+    // the official resume path deletes it from user entries too (@206164983),
+    // so resumed conversations re-derive it from the next real submit.
+    const { isSidechain, parentUuid, promptId, ...serializedMessage } = m
     return serializedMessage
   })
 }

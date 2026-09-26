@@ -37,6 +37,15 @@ export type Message = {
   isCompactSummary?: boolean
   toolUseResult?: unknown
   isVisibleInTranscriptOnly?: boolean
+  /**
+   * Official 2.1.283 per-user-prompt correlation id (binary `Ae` factory
+   * spread `...tt!==void 0&&{promptId:tt}` @207040852). Stamped on user
+   * messages at submit time, persisted on transcript user entries, stripped
+   * when history is served back (removeExtraFields/QLn), and derived
+   * per-request via findLastRealUserTurnIndex (SZt). Never sent to the API
+   * as a message field — it travels as the `x-claude-code-prompt-id` header.
+   */
+  promptId?: string
   attachment?: { type: string; toolUseID?: string; [key: string]: unknown }
   message?: {
     role?: string

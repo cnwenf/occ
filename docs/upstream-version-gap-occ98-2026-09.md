@@ -143,3 +143,235 @@ MCP tool / WebFetch / WebSearch 输出加入 `tool.output` span event
 程序员如需官方二进制，自行按 SHASUMS256.txt 校验后下载
 （`gh release download v2.1.283 --repo anthropics/claude-code`），勿信任何
 未校验副本。
+
+---
+
+## 7. P1 执行结果（程序员，2026-09-27）
+
+基线 main `c732ab0`；工作分支 `agent/occ/31d2f391`。所有 PORT 均对官方
+v2.1.283 ELF（md5 `b5afa8208e39db13e13e89449b1825f2`）做 byte-level 取证
+（strings/dd，二进制全程未执行），实现由本人逐条复核（行为验证，不以
+source-grep 为完成门槛）。
+
+| 项 | changelog 条目 | 结果 | 验证 |
+|----|---------------|------|------|
+| P1-1 | 2.1.283 第 75 条（claude-ai 保留名回退） | **LANDED** | 部分回退按官方 v283 字节还原；回归 pin 绿 |
+| P1-6b | 第 68 条（Skill deny 扩展） | **LANDED** | `Skill(anthropic-skills:*)` Desktop-plugin 投递 + alias/display-name 匹配，deny 语义测试绿 |
+| P1-2 | 第 2/3 条（availableModelsMatch/deniedModels） | **LANDED** | 8 处 byte-offset 抽查属实；99 pass/0 fail/234 expects 本人复跑；45/0 回归 pin。偏差记录：该项 subagent 违反"每 run 一条评论"自行发过一条进度评论（`a294bff4`），无法撤回，以本轮总结评论为准 |
+| P1-3 | 第 1 条（x-claude-code-prompt-id） | **LANDED** | 43/0/76 expects 本人复跑；`getAttributionHeader` cc_prompt_id 头对（UUID 正则 + firstParty + isFirstPartyAnthropicBaseUrl 门控，位于 workload 头对之后，对齐官方 r0r @199419765）；claude.ts/gatewayHints.ts/client.ts 全 threading 点位逐一核读 |
+| P1-4 | 第 5/56 条（/doctor prompt-audit） | **STAGE** | 理由见下 |
+| P1-5 | 第 4 条（OTEL tool.output） | **LANDED** | 17 pass/31 expects；`OTEL_LOG_TOOL_CONTENT` 基座上的增量 |
+| P1-6a | 第 40 条（managed sandbox 部分无效 fail-closed） | **LANDED** | policySandbox283 14/14（71 expects）；settings 全套 253/0（753 expects，22 文件）；runtime trace 逐字节核对消息文本（含 W 序 skeleton 消息） |
+| N36 | 第 67 条（--system-prompt 双形式） | **LANDED** | systemPromptMerge.ts（or @212162145 / C$n @203745647 / qvr @203745738）+ 10 单测 + 4 wire e2e（mock SSE，需 dist 构建） |
+| N69 | 第 34 条（keybindings 指南 3s/cmd 文案） | **LANDED** | src/skills/bundled/keybindings.ts meta/cmd 行 + 3s chord 文案，源码级 smoke 绿 |
+
+> 注：表中"第 N 条"= 官方 CHANGELOG 2.1.283 小节内 bullet 序号（1 起）。
+
+**P1-4 STAGE 理由（4 条，按 §5.6 记录）：**
+1. 官方实现是 `/doctor` 对 bundled `claude-api` skill 的薄委托，审计正文来自
+   zst 压缩的 `shared/prompt-audit.md`；
+2. OCC 的 bundled skill `.md` 文件是 OCC-44 起的有意 1-byte stub（该 STAGE
+   注记对 credentials/prompt-audit 类正文持续成立），无正文可委托；
+3. OCC 的 `/doctor` 是 local-jsx UI，与官方委托结构不同构，硬移植=发明；
+4. 282→283 的增量（stale path/command 前置、contradicting instruction
+   files、保留已文档化 thinking 关键词，第 56 条）扩展的是本就已 STAGE
+   的表面——增量随主体一起解锁，不单独立项。
+
+**P1-6a 实现要点**（byte-exact，名称映射已写入 policyLocks.ts 头注）：
+`Lt`=isRecursiveEmptyPlainObject @196663983、`Sn`=isRebuiltBlock @196668238
+（sandbox 仅排除 credentials）、`Ni`=null-removal @196668878（+removal:!0）、
+`ta`=isDisableRemovalValue @196669384、`Ho`=applyLeafCoercion @196669558
+（boolean 字符串强转 + disable-false 读作 key removal；wslInherits 的第 3 份
+内联拷贝按官方原样保持内联）、`fg`=wrapLeafField @196670068（第 5 参
+neverSubstitute，`h=c?void 0:g`，"not treated as X" ignore 变体）、
+`jo`=rebuildBlockSchema @196671300（skeleton 排除合并、shape-aware 空检
+`Object.hasOwn(n.shape,F)`、adopt 增 `||Lt(W)`）、`eg`=BLOCK_GRANTS
+@196666922（sandbox.network/filesystem 行 +withholdOnEntryDrop:!0）、
+os tail @196694745 专用 sandbox 接线（skeletonExclude=["sandbox.enabled"]、
+neverSubstitute=["sandbox.failIfUnavailable"]）+ tail applicable 过滤
+`&&!Lt(_[M])` @196695417。两条 2-record tail 语义（leaf/skeleton 替换记录 +
+tail onlySubstitutes 记录）经 runtime trace 确认，与 282 remoteTools:"garbage"
+pin 同构；policyStrictParse282 两条 282 pin 按 283 语义翻转并注明。
+**STAGED**：官方 `te` credentials 覆盖（@196692500，awsPairs/sigv4/
+allowPlaintextInject fail-closed 骨架）——OCC sandbox.credentials 仅
+`{enabled}`，覆盖面不同构，OCC-97 的 credentials STAGE 注记继续成立。
+
+## 8. 94 条逐行台账（§5.6 诚实分诊，全部 94 条无静默跳过）
+
+行号 = 官方 CHANGELOG 2.1.283 小节 bullet 序号（1 起；临时文件
+`cl283-triage.md` 的行号 = bullet 序号 + 2，该文件已按纪律删除，本台账
+自带条目摘要，可独立核对）。
+
+**判定计数：✅ LANDED 9 · 🔜 PORT-NEXT 38 · ⚪ NO-OP 13 · ⏸ STAGE 34
+（合计 94；第 48 条 /mcp 列表为 PORT-NEXT+STAGE 混合，计入 PORT-NEXT）。**
+
+### 8.1 ✅ LANDED（本轮已落地，详见 §7）
+
+| # | 条目摘要 | 承载项 |
+|---|---------|--------|
+| 1 | x-claude-code-prompt-id gateway hint 头 | P1-3 |
+| 2 | managed availableModelsMatch 模型治理 | P1-2 |
+| 3 | managed deniedModels | P1-2 |
+| 4 | OTEL tool.output 内容导出 | P1-5 |
+| 34 | keybindings 指南 3s/cmd 文案 | N69 |
+| 40 | managed sandbox 部分无效 fail-closed | P1-6a |
+| 67 | --system-prompt/-append 双形式合并 | N36 |
+| 68 | Skill(anthropic-skills:*) deny 扩展 | P1-6b |
+| 75 | claude-ai 保留名回退 | P1-1 |
+
+### 8.2 ⚪ NO-OP（13 条，逐条理由）
+
+| # | 条目摘要 | 理由 |
+|---|---------|------|
+| 6 | fullscreen 截断消息 click-to-expand | OCC 无 click-to-expand 表面（`clickToExpand` grep 0）；特性整体缺席，无 bug 可修；若未来引入该特性须按官方 v283 形态整体落地 |
+| 22 | `plugin details` MCP 计数为 0 | OCC plugin CLI（main.tsx ~4656-4770）无 `details` 子命令；官方修复在其 handler 内部。若未来为 parity 增加 `details`，须从第一天就统计 `plugin.json` 声明的 mcpServers |
+| 24 | `plugin uninstall` 大小写碰撞误删 | 结构性免疫（binary-proven）：官方 bug 需要大小写不敏感回退 `U=cC(Object.keys(T),C)??C`（v282 @210948800+，v283 @212674800 修复为 `Zp` 碰撞集检查）；OCC 卸载路径全部精确匹配（pluginOperations.ts:194-198/452-457、installedPluginsManager.ts:924），三文件零 `toLowerCase`，bug 类不可能发生 |
+| 38 | worktree checkout GIT_CONFIG_COUNT CA 校验失败 | OCC 全仓 `GIT_CONFIG_COUNT` 0 命中——OCC 不以 env 对形式向 git 注入 CA 证书，官方 bug 的触发路径（CA env 对在 worktree checkout 时丢失）在 OCC 不存在 |
+| 39 | sandboxed git 让 credential helper 存 sandbox proxy 登录 | OCC sandbox 路径无 credential-helper 注入（sandbox/BashTool 零 credential 接线；全仓唯一 credential-helper 使用在 marketplaceManager git 操作，属 #049 官方忠实行为），"failed to store" 打印路径不存在 |
+| 41 | auto-memory 笔记在 git 子目录启动时被误拦为 sensitive 写 | OCC 的 sensitive-写守卫直接以 auto-mem 路径为准放行：filesystem.ts:2517/2661 `isAutoMemPath(normalizedPath)` → `behavior:'allow'`（"auto memory files are allowed for writing"），不依赖 cwd 与 git root 的相对关系，官方的子目录解析 bug 在 OCC 无对应触发点 |
+| 43 | /remote-control QR 提示窄终端断词 | 与第 42 条（Remote Control 付费计划门控，STAGE）同属 /remote-control 菜单表面；文案换行修饰随第 42 条一并处理，不单独立项（superseded） |
+| 58 | artifact DB 有序查询整页提示 | OCC 无 artifact database 读表面（artifact watch/DB grep 0），无可修对象 |
+| 60 | 首请求延迟：复用 preconnected 连接 | OCC 已有且设计即复用：`apiPreconnect.ts` 头注明 "Bun's fetch shares a keep-alive connection pool globally, so the real API request reuses the warmed connection"，init.ts:153-159 在证书/代理配置落定后触发——官方本条改进 OCC 结构性已具备 |
+| 61 | 启动：`-p` 不载交互 UI + classifier/Artifact 懒加载 | OCC print 路径在 main.tsx:4284 `isPrintMode` 早分支，不挂载 REPL/Ink（4560 注释同旨）；auto-mode classifier 在 feature-flag 门后按需；Artifact tool 表面缺席（0 命中）。三个子项在 OCC 均已是目标形态 |
+| 62 | claude.ai 账户 Artifact 特性未知时启动等 1.5s | OCC 无 artifact-feature 探测等待（grep 0），无可修对象 |
+| 71 | `plugin eval` 要求 git ≥ 2.31 | OCC 无 `plugin eval` 命令（表面已裁剪）；官方修复属实（v283-only "eval: git version probe timed out" 等 3 串 @102186080+，v282 零命中），OCC 无可修对象 |
+| 72 | artifact watch 3.5h 无活动自动解除 | 同第 58 条：OCC 无 artifact watch 表面，无可修对象 |
+
+### 8.3 ⏸ STAGE（34 条，逐条理由）
+
+| # | 条目摘要 | 理由 |
+|---|---------|------|
+| 5+56 | /doctor prompt-audit（新命令 + 283 报告增强） | P1-4，4 条理由见 §7 |
+| 7 | stream-json init `plugin_errors` 增 `path` | systemInit.ts 只有 `plugins[]`，`plugin_errors` 字段整体缺席（grep 0）——官方 schema @197928420 含 path.optional()+describe；须随 stream-json init parity 整体落地（含 path），非独立 bugfix |
+| 8 | gateway `load_test_mode` 块 | Claude apps gateway 为 Anthropic 服务端配置表面，OCC 无 gateway 服务端（`load_test_mode` grep 0） |
+| 9 | gateway `mantle` upstream | 同上（gateway 服务端表面缺席）；OCC 客户端侧 mantle provider 已存在（providers.ts，2.1.94 A15），本条客户端无可动 |
+| 15 | /usage 周 Fable 限额（遥测关时） | OCC /usage 无服务端周限额 schema（weeklyLimit grep 0）；限额数据来自 Anthropic 账户服务，无法从 ELF 推断 OCC 侧数据源——不发明 |
+| 29 | screen-reader 权限对话框引号内容朗读 | OCC 有 screen-reader 模式（25 文件），但本条为辅助技术运行时行为（引号文本被读作对话框自身文本），本环境无 AT 运行时可验证；需真人/AT 环境逐站点核对后再移植 |
+| 33 | cloud session 首词迟滞 | Anthropic cloud-session 流式基础设施，OCC 无 cloud session 传输层 |
+| 37 | type-ahead/连击键对 stale state 处理 | 输入管线时序修复，需交互负载复现 + 官方逐站点反编译定位（typeahead grep 0，OCC 无对应机制命名）；盲改风险大于收益 |
+| 42 | Remote Control 付费计划 + DISABLE_TELEMETRY/DO_NOT_TRACK 可用性 | 计划门控数据在服务端；OCC remoteControlServer 表面与官方 Remote Control 不同构，需专项取证后再对齐（第 43 条文案随本条） |
+| 48-icon | /mcp 列表组织封锁工具警告图标 | 子项 STAGE：OCC 零 per-tool org policy 数据（`org_max_permission`/`permission_policy` grep 0 文件）；列表翻页/滚轮/鼠标部分见 PORT-NEXT |
+| 59 | 首回复延迟：pattern-compile 前移 | 性能重排修复，需先定位官方 pattern-compile 步骤归属（正则预编译点位）再评估 OCC 对应热点；不猜测点位 |
+| 64 | /ultrareview 启动对话框"上传未提交更改"文案 | 该文案描述官方本地分支审查上传未提交更改到云的行为；OCC /ultrareview 为本地执行、无此上传路径——照抄文案会失实（aligning-with-official-binary：不发明不存在的行为描述）；若未来引入上传路径则同步 |
+| 70 | /workflows 运行列表尺寸对齐 | OCC workflow UI 为自建（WORKFLOW_SCRIPTS 存活但列表布局自定），半高内联 + 标题保持需 UI 反编译对照，随 UI 批次专项处理 |
+| 73+74 | self-hosted runner git lifecycle / GIT_SSL_CAINFO | OCC 无 self-hosted runner 产品表面（`configure-git` grep 0）；runner 侧 git 行为无落点 |
+| 76-82 | [VSCode] 7 条 | VSCode 扩展为独立客户端仓库表面，本仓（CLI）无对应代码；CLI ELF 中无可移植的客户端修复 |
+| 83-85 | [Cloud sessions] 3 条 | Anthropic cloud-session 服务端行为（私仓只读挂载、重启后重复步骤、routine 默认错峰），OCC 无该表面 |
+| 86-92 | [Claude Tag] 7 条 | Slack 集成产品（频道搜索管理设置、Back to Slack、attach rule、GitHub App 仓库搜索、重复回复、routine 频道 ID、Channel only 会话终止）均为服务端行为，OCC 无 Claude Tag 表面 |
+| 93+94 | [Code Review] 2 条 | GitHub App "@claude review" 服务端重试/计费行为，OCC 无该表面 |
+
+### 8.4 🔜 PORT-NEXT（38 条：本轮完成分诊+取证锚点，落地排入后续轮次）
+
+F/G 簇 16 条已完成三重验证（changelog 原文 + OCC 表面 grep + v283/v282
+二进制 byte-offset 差分），锚点如下；其余 22 条为表面核实后的结构性排队。
+
+**F 簇（plugin CLI）：**
+
+| # | 条目摘要 | 锚点/移植形态 |
+|---|---------|--------------|
+| 20 | validate 接受不可安装名 | v283 @231738823-231739300：`xRe(p.name)` 不可安装名 → `code:'error'` path:"name"（v282 仅 warning）；OCC validatePlugin.ts:171 复用 findReservedNameMatch + 字符集规则改 error |
+| 21 | validate 放行越界 outputStyles/themes/monitors/lspServers | v283 @231723400-231724600 全新声明式 spec 表（`recordPathProperty`/`bareStringIndexed` v282 0 命中）；OCC 以 spec 表替换逐 kind 手写 path 检查（覆盖 OCC 已有 kind；themes/monitors 待 schema 引入） |
+| 23 | marketplace remove 不列被卸载插件 | v283 @231809643-231810000 handler 输出行（"Also uninstalled…"等 3 新串）；OCC `removedPluginIds` 已在 removeAllPluginsForMarketplace 返回——纯管道工程，**最便宜的先手项** |
+| 25 | 无版本插件按源最新 commit 恢复 | v283 @206783700-206786700：recordedGitCommitSha 复现安装版本时 pin sha fetch + 2 条回退警告；OCC pluginLoader.ts ~2390-2470 同 bug |
+| 26 | home/config 目录迁移后 cache-miss | v283 新函数 `B6` @203630329（路径 marker 段回扫重定基）+ 两装载点 wrapper @206587523/@206534219；OCC pluginLoader.ts ~2203 同 bug |
+| 27+28+57 | installed_plugins.json 三修复（无效 id 记录/重写丢记录/整体不可读恢复） | 单工作流 bundle：per-record 解析容错 @206583341、id 错误文案 @206587900、不可读记录只读策略 @206590016、无效 id 搁置+dated sidecar @206590443/@206596947、loader 穿线 @206771700（`installedListHeldNote` 11-vs-0） |
+| 30 | /context 不计 MCP server instructions | v283 @204772591："MCP server instructions" 行插在 "MCP tools" 与 deferred 行之间、计入 reduce 总和；OCC analyzeContext.ts:1010-1055 加行（注入机制已存在：client.ts:261-385） |
+| 32 | mcp add/add-json/remove 写失败仍报成功 | v283 @203712200-203713300：写后读回验证 + 两错误构造器（"protected by a sandbox" 等 6 新串）；OCC cli/handlers/mcp.tsx:336-365 + utils/config.ts:884-952 同 bug |
+
+**G 簇（MCP）：**
+
+| # | 条目摘要 | 锚点/移植形态 |
+|---|---------|--------------|
+| 11 | 后台化后 MCP 进度通知被丢弃 | v283 `mcpCallProgress` 4-vs-0；auto-background 点位 @~235308781：全局 progress-sink map（abort signal 为键）+ 1000ms 节流 statusMessage；OCC autoBackground.ts/McpBackgroundTask.ts 现丢弃（grep 0） |
+| 12 | 会话结束时启动中的 stdio server 残留 | v283 @229241500-229242400：spawn 前 shutting-down 守卫（"Claude Code is shutting down…" 2-vs-0）+ exit hook 未建连即杀进程树（SIGINT 100/SIGTERM 400/SIGKILL 100，与 OCC 既有 disconnect 梯一致）；复用 processTreeKill.ts |
+| 13 | stateless 远端瞬时 404 致服务器整会话不可用 | v283 @229386809 单条件：http transport 且无 sessionId 的 404 不再判 session-expiry；OCC client.ts:207-225 + ~3905-3935 同 bug |
+| 14 | 无有效 URL 的 server sign-in 报 opaque SDK 错 | v283 @229199182：auth-start URL 守卫，/mcp 不再对此类 server 提供 Authenticate；OCC MCPRemoteServerMenu.tsx ~505-545 |
+| 48 | /mcp 列表翻页/滚轮/鼠标 | MCPToolListView.tsx + CustomSelect 批次（警告图标子项 STAGE，见 §8.3） |
+| 49 | MCP 工具图片落盘 | v283 Tr @229370112 + q9 @203281261；OCC client.ts ~3127-3147（image）/ ~3160-3190（resource-blob）复用 mcpOutputStorage.ts:148/188 |
+
+**其余排队项（表面已核实存在，待专项反编译）：**
+
+| # | 条目摘要 | 排队理由/形态 |
+|---|---------|--------------|
+| 10 | SDK 会话丢失 deferred tool call / result.usage | src/entrypoints/sdk 表面存活；三个子缺陷需逐站点反编译（turn 早结束、worker 重启后 held prompt、非流式回退 usage） |
+| 16 | /model 接受带日期/-v1:0 后缀 id 的 `[1m]` | 模型治理批（与 17/18/19 同轮）：id 后缀解析规则需 byte 提取 |
+| 17 | /model picker Haiku 版本/价格硬编码（ANTHROPIC_DEFAULT_HAIKU_MODEL pin 时） | 同批：picker 行数据源改为解析 pin 的模型 |
+| 18 | model fallback 期间启动的 dynamic workflows 全跑 fallback 模型 | 同批：workflow agent 模型重试语义 |
+| 19 | DISABLE_PROMPT_CACHING_HAIKU 对主模型 Haiku 无效 | 同批：cache 门控读取点位 |
+| 31 | Warp 终端 markdown 链接渲染为纯文本 | OCC 有 Warp 检测引用（4 文件）；终端特定渲染修复需取证 |
+| 35 | keybindings.json 误拼 modifier 静默接受 | keybindings 表面本轮存活（N69 已落地）；debug log 警告 + 建议修复文案需 byte 提取；与 36 同批 |
+| 36 | footer "Enter to view" 在 footer:openSelected 重绑后不更新 | 同批：footer hint 与实际绑定联动 |
+| 44+45+46 | vim 三修复（`.` 丢 Shift+Enter/重音字母/3J 光标；万字符 recall 光标越界 + `V p` 落点；`J` join 间距 + 3J 末行光标） | OCC 有真 vim 引擎（src/vim/），修复适用于 OCC 表面；按 OCC-44 §3d 纪律需逐站点反编译 + OCC-vim 行为验证后移植，不盲改 |
+| 47 | Windows PowerShell `cmd /c rd` 等删驱动器根/家目录 | OCC 有 PowerShellTool（gitSafety/readOnlyValidation）；移植 Remove-Item 拒删等级的 guard |
+| 50 | /tasks 列表状态图标/翻页/滚轮/点击 | UI 列表批次（与 51/52 同轮） |
+| 51 | /help /hooks /copy 等 11 个 picker 翻页/鼠标 | 同批 |
+| 52 | 搜索框旁列表 pointer 变暗（/skills /artifacts） | 同批（OCC /skills 存活；/artifacts 缺席则仅 /skills 侧） |
+| 53 | compaction spinner 计时/token 计数替代百分比 | UI 批次：spinner 数据源改造 |
+| 54 | MCP OAuth 登录后浏览器页（居中/暗色/新图） | OCC OAuth 简化版有回调页；HTML 资产需 byte 提取 |
+| 55 | Skill 回复：所属 plugin 加载失败时说"加载失败"而非"未安装" | 随 F 簇 plugin bundle：OCC Skill tool + plugin 加载失败路径均存活；官方回复文案需 byte 提取 |
+| 63 | 三方 provider/遥测关时会话默认 auto mode 启动 | OCC auto-mode 存活；defaultMode 决策链改动需取证（permissions.defaultMode 覆盖语义保持） |
+| 65 | /model picker Opus 行/默认模型名去 "(1M context)" | OCC picker 自 OCC-36 1b 起有 "(1M context)" 行——本条为真实文案变更，窗口不变 |
+| 66 | prompt suggestions 连续 20 次未用后降频 | --prompt-suggestions 表面存活；计数/降频逻辑需 byte 提取 |
+| 69 | /rewind /diff 列表并入 select:* 动作（messageSelector:*/diff:* 重绑仍有效） | keybindings 动作映射批次（与 35/36 同轮） |
+
+**跨项注记**：F8/F9/F10（27+28+57）为单 bundle；G1/G2/G3（11/12/13）同触
+`src/services/mcp/client.ts`，落地时串行或协调；模型治理批（16-19）与
+keybindings 批（35/36/69）各自成轮内并行簇。
+
+## 9. 测试 / 构建 / 发布日志（本轮）
+
+### 9.1 测试
+
+- **权威门禁（逐文件进程隔离）**：`CI=true bash scripts/ci-test.sh` →
+  **6832 pass / 0 fail / 115 skip，665 文件，exit 0**。本轮全部 11 个新
+  283 测试文件单独确认绿：promptIdHeader283 43、reservedNamespacePermissions283 16、
+  availableModelsMatch283 25、deniedModels283 28、modelGovernance283 32、
+  managedOnlyKeys283 14、policySandbox283 14、reservedNamespaces283 46、
+  toolOutputContent283 17、systemPromptMerge283 10、
+  version-2.1.283-system-prompt-merge.e2e 4。
+- **共享进程全量 `bun test`（非门禁，仅记录）**：6761 pass / 187 fail / 12
+  skip（6960 tests）。187 失败全部属已归档的 `mock.module()` 跨文件泄漏类
+  （OCC-129；ci-test.sh 头部注释即为此设立）——同一批文件在隔离门禁下全绿，
+  泄漏证据：downloadStream.test.ts 期望 /Checksum mismatch/ 实得 401（前序
+  文件状态泄漏），隔离后通过。
+- **P1 分项自验计数（本人复跑，非子代理汇报）**：P1-2 availableModelsMatch +
+  deniedModels 99 pass / 0 fail / 234 expects；P1-3 prompt-id 43/0/76；
+  P1-5 OTEL tool.output 17 pass / 31 expects；P1-6a policySandbox283 14/14 +
+  settings 套件 253/0。
+
+### 9.2 构建
+
+- `bun run build` → `dist/cli.js` **30,942,878 bytes**；构建后 0 个 src 文件
+  比 dist 新（新鲜度确认）；注入 MACRO.VERSION=2.1.354。
+
+### 9.3 真实 e2e（live API，非 mock）
+
+- **`-p` 冒烟（隔离 `CLAUDE_CONFIG_DIR=/tmp/occ-smoke-cfg`）**：
+  `echo "say PONG" | bun dist/cli.js -p` → **EXIT=0，stdout 含 PONG**
+  （ANTHROPIC_MODEL=qwen3.8-max）；显式 `ANTHROPIC_MODEL=glm-5.2` 复跑 →
+  **EXIT=0，stdout 含 PONG**。stderr 均打出
+  `[claude-code:unrecognized_model] {"model":...,"query_source":"sdk"}`
+  ——2.1.233 对齐的诊断行在 print 模式走 stderr，行为正确。
+- **首轮冒烟 EXIT=124（90s 超时）定性：环境性，非本轮回归**。A/B 证据链：
+  ① 隔离配置目录下同一 dist 两个模型均秒级 PONG + exit 0；② 挂死仅发生在
+  加载完整宿主配置时——`~/.claude/settings.json` env 块
+  `ANTHROPIC_MODEL=glm-5.2`（settings env 经 `applyConfigEnvironmentVariables`
+  Object.assign 覆盖进程 env，官方语义）+ `~/.claude.json`（970KB）注册
+  `xapi`/`WebSearch` 两个 MCP server，启动期连接即挂起；③ curl 直连代理
+  glm-5.2 与 qwen3.8-max 均 HTTP 200（0.9s/1.6s），排除上游死链；④ 同一
+  dist 全量隔离 CI（含 e2e）0 失败。结论：挂起来自宿主运行环境的 MCP 启动
+  连接 + settings env 覆盖，与本轮代码变更无关（观察记录：宿主 MCP server
+  在 OCC 启动期的连接挂起值得后续单独立项排查，非本轮范围）。
+- **REPL tmux 交互冒烟（隔离配置目录）**：启动 → 主题选择（Enter）→ API key
+  确认（选 Yes）→ 安全提示（Enter）→ 信任目录（选 Yes）→ 主界面就绪；
+  发送 `reply with exactly: PONG-REPL` → **模型真实回复 `● PONG-REPL`**
+  （live 往返）；`/status` → **Version: 2.1.354**、cwd 正确、
+  Model: deepseek-v4-flash-0731（网关模型发现结果，显示项，非本轮触点）；
+  `/exit` 退出 + kill-session，无残留进程（pgrep 确认）。
+
+### 9.4 发布
+
+- 按链条纪律：合入 main 后交 @安全审核员 后门审查 → @验收员 真人 REPL 验收
+  + 分支清理；**验收通过前不发版**（不打 tag、不 bump 版本）。本轮版本号
+  维持 2.1.354，发布（CHANGELOG + bump + tag → publish.yml → npm + GitHub
+  Release → parity check）由验收后的下一环执行。

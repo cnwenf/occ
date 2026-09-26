@@ -1,5 +1,8 @@
 /**
- * Gateway hint headers — official Claude Code 2.1.273 (byte-verified port).
+ * Gateway hint headers — official Claude Code 2.1.273 (byte-verified port),
+ * extended with the 2.1.283 `x-claude-code-prompt-id` header (see
+ * ./promptId.ts for the 283 forensics; bqn lives in the same binary chunk as
+ * the 273 header-name constants @198746664).
  *
  * The official binary gained a "gateway hints" subsystem: a small set of
  * request headers that tell the first-party gateway (and, behind the
@@ -42,8 +45,10 @@
  */
 
 import type { AgentContext } from 'src/utils/agentContext.js'
+import { getAgentContext } from 'src/utils/agentContext.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from 'src/utils/envUtils.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from 'src/utils/model/providers.js'
+import { PROMPT_ID_HEADER, validatePromptId } from './promptId.js'
 
 // ---------------------------------------------------------------------------
 // Header names + limits (official constants, verbatim values)
@@ -415,5 +420,46 @@ export function applyPrevToolDurationsHeader(
 ): void {
   if (prevToolDurationsHeader !== undefined && isGatewayHintHeadersEnabled()) {
     headers[PREV_TOOL_DURATIONS_HEADER] = prevToolDurationsHeader
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Client-factory default headers (official EV @202058441)
+// ---------------------------------------------------------------------------
+
+/**
+ * Applies the gate-controlled hint headers to the client factory's
+ * defaultHeaders object (mutates it, matching the official factory which
+ * builds them into the header literal). Mirrors the official EV spread:
+ *   let W=qnn(), X={"x-app":...,
+ *     ...W&&<request-class>&&{[spn]:...},
+ *     ...W&&<agent-type>&&{[ipn]:...},
+ *     ...W&&S!==void 0&&en(S)!==null&&{[bqn]:S}}
+ * where S is the per-request promptId param (2.1.283 addition) and W is the
+ * isGatewayHintHeadersEnabled gate evaluated once. Extracted from client.ts's
+ * inline block so the emission logic is unit-testable without importing the
+ * SDK client machinery.
+ */
+export function applyClientGatewayHintHeaders(
+  defaultHeaders: Record<string, string>,
+  source: string | undefined,
+  promptId: string | undefined,
+): void {
+  if (!isGatewayHintHeadersEnabled()) {
+    return
+  }
+  const agentContext = getAgentContext()
+  const requestClass = getRequestClassHeader(source, agentContext)
+  if (requestClass) {
+    defaultHeaders[REQUEST_CLASS_HEADER] = requestClass
+  }
+  const agentType = getAgentTypeHeader(source, agentContext)
+  if (agentType) {
+    defaultHeaders[AGENT_TYPE_HEADER] = sanitizeHeaderValue(agentType)
+  }
+  // Official: `...W&&S!==void 0&&en(S)!==null&&{[bqn]:S}` — the value is
+  // emitted verbatim (it passed the UUID-format validator).
+  if (promptId !== undefined && validatePromptId(promptId) !== null) {
+    defaultHeaders[PROMPT_ID_HEADER] = promptId
   }
 }

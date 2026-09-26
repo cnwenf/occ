@@ -2605,10 +2605,10 @@ export const fetchCommandsForClient = memoizeWithLRU(
       // Sanitize prompt data from MCP server
       const promptsToProcess = recursivelySanitizeUnicode(allPrompts)
 
-      // Convert MCP prompts to our Command format. CC 2.1.282 reserved-
+      // Convert MCP prompts to our Command format. CC 2.1.283 reserved-
       // namespace hardening (official rZe): prompts whose command is a
       // reserved-namespace squatter are dropped — a server named
-      // anthropic-skills / claude-ai makes every prompt displayName
+      // anthropic-skills makes every prompt displayName
       // ("<server>:<prompt> (MCP)") reserved. Each drop logs the byte-exact
       // per-prompt message via the MCP debug log. Tools are unaffected.
       const commands: Command[] = []

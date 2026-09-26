@@ -636,9 +636,9 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // Check for allow rules (official ke — CC 2.1.282 namespace-aware
-    // matching). A rule that plain-matches a reserved anthropic-skills /
-    // claude-ai name but cannot legitimately pre-approve it is "held back":
+    // Check for allow rules (official ye — CC 2.1.283 namespace-aware
+    // matching). A rule that plain-matches a reserved anthropic-skills name
+    // but cannot legitimately pre-approve it is "held back":
     // the invocation still asks and the held-back rule explains why. Official
     // tracking: a nonholder match OVERWRITES, a boundary match is first-wins.
     const allowRules = getRuleByContentsForTool(
@@ -676,7 +676,8 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // in the future default to requiring permission.
     //
     // ORDER NOTE (acceptance RT②, byte-verified against the official v2.1.282
-    // ELF @208604xxx): the official checkPermissions runs this auto-allow
+    // ELF @208604xxx and re-verified unchanged in v2.1.283 @210645xxx): the
+    // official checkPermissions runs this auto-allow
     // (`if(a?.type==="prompt"&&(je(a)||Pfe(s)))return{behavior:"allow",...}`)
     // BEFORE the squatter computation (`N=Nfe()&&wU(l)&&!(a!==void 0&&iZ(a))`)
     // and its forced ask (`if(N)return{behavior:"ask",...,suppressAlwaysAllowRule:!0}`).
@@ -685,7 +686,7 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
     // (no allowedTools) is silently auto-allowed with no ask. The official's
     // second disjunct `Pfe(s)` is the CLAUDE_CODE_COORDINATOR_MODE auto-allow
     // (`xi()&&e.agentId===void 0`) — dead in OCC builds (flag off). Pinned by
-    // the RT② test in reservedNamespacePermissions282.test.ts; any reorder
+    // the RT② test in reservedNamespacePermissions283.test.ts; any reorder
     // (ours or upstream's) must flip that test deliberately.
     if (
       commandObj?.type === 'prompt' &&
@@ -698,8 +699,8 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
       }
     }
 
-    // CC 2.1.282 reserved-namespace hardening (official h / N / D / _e / P / b):
-    // a skill invoked under the reserved anthropic-skills / claude-ai namespace
+    // CC 2.1.283 reserved-namespace hardening (official h / N / D / _e / P / b):
+    // a skill invoked under the reserved anthropic-skills namespace
     // that is NOT a synced claude.ai skill is a squatter — ask every time with
     // suppressAlwaysAllowRule so no rule can be persisted for that name.
     const pluginName =

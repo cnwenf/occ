@@ -428,7 +428,11 @@ export async function processSlashCommand(inputString: string, precedingInputBlo
           inputString,
           precedingInputBlocks
         }),
-        uuid: uuid
+        uuid: uuid,
+        // Official 2.1.283 slash-command submit path (@223344884):
+        // `let w=ae();qmt(w),...` — journal stamped and the same id carried
+        // on the user message.
+        promptId
       }), ...attachmentMessages],
       shouldQuery: true
     };

@@ -11,11 +11,12 @@ import { startAgentSummarization } from '../../services/AgentSummary/agentSummar
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { clearDumpState } from '../../services/api/dumpPrompts.js';
+import { resolveQueryPromptId } from '../../services/api/promptId.js';
 import { completeAgentTask as completeAsyncAgent, createActivityDescriptionResolver, createProgressTracker, enqueueAgentNotification, failAgentTask as failAsyncAgent, getProgressUpdate, getTokenCountFromTracker, isLocalAgentTask, killAsyncAgent, registerAgentForeground, registerAsyncAgent, unregisterAgentForeground, updateAgentProgress as updateAsyncAgentProgress, updateProgressFromMessage } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
 import { checkRemoteAgentEligibility, formatPreconditionError, getRemoteTaskSessionUrl, registerRemoteAgentTask } from '../../tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { assembleToolPool } from '../../tools.js';
 import { asAgentId } from '../../types/ids.js';
-import { type SubagentContext, runWithAgentContext } from '../../utils/agentContext.js';
+import { type SubagentContext, getAgentContext, runWithAgentContext } from '../../utils/agentContext.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { getCwd, runWithCwdOverride } from '../../utils/cwd.js';
 import { logForDebugging } from '../../utils/debug.js';
@@ -753,6 +754,13 @@ export const AgentTool = buildTool({
         worktreeBranch
       };
     };
+    // Official 2.1.283 prompt-id inheritance (@210571017):
+    // `Ht=Wve(e.messages,e.agentContext)` — the parent turn's prompt id is
+    // derived once here and stamped onto both the async (@210575482) and sync
+    // (@210576534) subagent context literals as `parentPromptId:Ht`, so the
+    // subagent's requests keep the correlation id even before its own
+    // messages carry one.
+    const parentPromptId = resolveQueryPromptId(toolUseContext.messages, getAgentContext());
     if (shouldRunAsync) {
       const asyncAgentId = earlyAgentId;
       const agentBackgroundTask = registerAsyncAgent({
@@ -792,7 +800,9 @@ export const AgentTool = buildTool({
         isBuiltIn: isBuiltInAgent(selectedAgent),
         invokingRequestId: assistantMessage?.requestId as string | undefined,
         invocationKind: 'spawn' as const,
-        invocationEmitted: false
+        invocationEmitted: false,
+        // Official 2.1.283 @210575482: `parentPromptId:Ht`.
+        parentPromptId
       };
 
       // Workload propagation: handlePromptSubmit wraps the entire turn in
@@ -847,7 +857,9 @@ export const AgentTool = buildTool({
         isBuiltIn: isBuiltInAgent(selectedAgent),
         invokingRequestId: assistantMessage?.requestId as string | undefined,
         invocationKind: 'spawn' as const,
-        invocationEmitted: false
+        invocationEmitted: false,
+        // Official 2.1.283 @210576534: `parentPromptId:Ht`.
+        parentPromptId
       };
 
       // Wrap entire sync agent execution in context for analytics attribution

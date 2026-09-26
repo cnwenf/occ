@@ -239,6 +239,7 @@ import { getInitializationStatus } from '../lsp/manager.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
+import { resolveQueryPromptId } from './promptId.js'
 import {
   type CompactionRequestKind,
   type ToolDurationEntry,
@@ -1057,6 +1058,12 @@ export async function* executeNonStreamingRequest(
     model: string
     fetchOverride?: Options['fetchOverride']
     source: string
+    /**
+     * Official 2.1.283 yOt client options carry `promptId` (@205291335:
+     * `EV({...promptId:e.promptId...})`) — both fallback call sites pass the
+     * query-loop-derived `W` (@205395827 / @205399719).
+     */
+    promptId?: string
   },
   retryOptions: {
     model: string
@@ -1104,6 +1111,7 @@ export async function* executeNonStreamingRequest(
         model: clientOptions.model,
         fetchOverride: clientOptions.fetchOverride,
         source: clientOptions.source,
+        promptId: clientOptions.promptId,
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
@@ -1531,6 +1539,14 @@ async function* queryModel(
   // Also naturally handles rollback/undo since removed messages won't be in the array.
   const previousRequestId = getPreviousRequestIdFromMessages(messages)
 
+  // Official 2.1.283 query-loop derivation (@205302055):
+  // `let F=zEo(e),W=Wve(e,h.agentContext),V=KEo(e)` — W (promptId) comes
+  // right after the previous-request-id equivalent. It is the per-turn id
+  // derived from the last real user message (subagent fallback: the ALS
+  // agentContext's parentPromptId), threaded into the EV client factory,
+  // the yOt non-streaming fallbacks, and the r0r attribution builder.
+  const promptId = resolveQueryPromptId(messages, getAgentContext())
+
   const resolvedModel =
     getAPIProvider() === 'bedrock' &&
     options.model.includes('application-inference-profile')
@@ -1886,7 +1902,10 @@ async function* queryModel(
   // filter(Boolean) works by converting each element to a boolean - empty strings become false and are filtered out.
   systemPrompt = asSystemPrompt(
     [
-      getAttributionHeader(fingerprint),
+      // Official 2.1.283 Uqe call (@205315912) threads the derived W into
+      // the attribution builder: r0r(..., promptId) emits ` cc_prompt_id=`
+      // when the UUID/firstParty/base-URL gates pass.
+      getAttributionHeader(fingerprint, { promptId }),
       getCLISyspromptPrefix({
         isNonInteractive: options.isNonInteractiveSession,
         hasAppendSystemPrompt: options.hasAppendSystemPrompt,
@@ -2378,6 +2397,8 @@ async function* queryModel(
           model: options.model,
           fetchOverride: options.fetchOverride,
           source: options.querySource,
+          // Official 2.1.283 streaming EV thread (@205359211): `promptId:W`.
+          promptId,
         }),
       async (anthropic, attempt, context) => {
         attemptNumber = attempt
@@ -3401,7 +3422,7 @@ async function* queryModel(
           : 'other') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource },
+        { model: options.model, source: options.querySource, promptId },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
@@ -3510,7 +3531,7 @@ async function* queryModel(
       try {
         // Fall back to non-streaming mode
         const result = yield* executeNonStreamingRequest(
-          { model: options.model, source: options.querySource },
+          { model: options.model, source: options.querySource, promptId },
           {
             model: options.model,
             fallbackModel: options.fallbackModel,

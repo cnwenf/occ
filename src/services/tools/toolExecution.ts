@@ -94,6 +94,7 @@ import { Stream } from '../../utils/stream.js'
 import { logOTelEvent } from '../../utils/telemetry/events.js'
 import {
   addToolContentEvent,
+  addToolResultOutputEvent,
   endToolBlockedOnUserSpan,
   endToolExecutionSpan,
   endToolSpan,
@@ -1308,6 +1309,16 @@ async function checkPermissionsAndCallTool(
       : typeof mappedContent === 'string'
         ? mappedContent.length
         : jsonStringify(mappedContent).length
+
+    // Port of official v2.1.283: MCP tools + WebFetch/WebSearch now also add
+    // their output to the `tool.output` span event (when OTEL_LOG_TOOL_CONTENT=1),
+    // serializing the mapped tool_result content. Complements the non-MCP
+    // Read/Edit/Write/Bash emitter above (which mirrors the official `UQn` set);
+    // this mirrors the official `HQn` set + `e.mcpInfo !== void 0` gate. The
+    // accountMemory redaction branch is forward-compat (OCC's mcpInfo carries no
+    // accountMemory field yet) and OCC has no detached tool-result path here, so
+    // the official `!oo.detached` guard is structurally always true.
+    addToolResultOutputEvent(tool, mappedContent)
 
     // Extract file extension for file-related tools
     let fileExtension: ReturnType<typeof getFileExtensionForAnalytics>

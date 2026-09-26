@@ -23,6 +23,8 @@ import type { AssistantMessage, UserMessage } from '../../types/message.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from '../envUtils.js'
 import { getTelemetryAttributes } from '../telemetryAttributes.js'
 import { getIsNonInteractiveSession } from 'src/bootstrap/state.js'
+import { WEB_FETCH_TOOL_NAME } from '../../tools/WebFetchTool/prompt.js'
+import { WEB_SEARCH_TOOL_NAME } from '../../tools/WebSearchTool/prompt.js'
 import {
   addBetaInteractionAttributes,
   addBetaLLMRequestAttributes,
@@ -773,7 +775,22 @@ export function addToolContentEvent(
     return
   }
 
-  // Truncate string attributes that might be large
+  const processedAttributes = buildToolContentAttributes(attributes)
+
+  currentSpanCtx.span.addEvent(eventName, processedAttributes)
+}
+
+/**
+ * Process tool-content span-event attributes: large string values are truncated
+ * and annotated with `${key}_truncated` + `${key}_original_length` markers;
+ * non-string values pass through unchanged.
+ *
+ * Byte-faithful port of the official v2.1.283 `oTr` attribute loop (the
+ * observable attribute names must match the official binary exactly).
+ */
+export function buildToolContentAttributes(
+  attributes: Record<string, string | number | boolean>,
+): Record<string, string | number | boolean> {
   const processedAttributes: Record<string, string | number | boolean> = {}
   for (const [key, value] of Object.entries(attributes)) {
     if (typeof value === 'string') {
@@ -787,8 +804,103 @@ export function addToolContentEvent(
       processedAttributes[key] = value
     }
   }
+  return processedAttributes
+}
 
-  currentSpanCtx.span.addEvent(eventName, processedAttributes)
+/**
+ * Serialize a tool_result block's content to a string for the `tool.output`
+ * span event. Byte-faithful port of the official v2.1.283 `wbo`:
+ * - string content is returned as-is;
+ * - array content maps text parts to their text and every other part to
+ *   `[<type>]` (or `[unknown]`), joined with newlines;
+ * - anything else serializes to the empty string.
+ */
+export function serializeToolResultContent(content: unknown): string {
+  if (typeof content === 'string') {
+    return content
+  }
+  if (!Array.isArray(content)) {
+    return ''
+  }
+  return content
+    .map(part =>
+      (part as { type?: unknown } | null | undefined)?.type === 'text'
+        ? String((part as { text?: unknown }).text)
+        : `[${String(
+            (part as { type?: unknown } | null | undefined)?.type ?? 'unknown',
+          )}]`,
+    )
+    .join('\n')
+}
+
+/**
+ * Redaction marker emitted in place of tool output for MCP tools flagged with
+ * `accountMemory`. Byte-faithful port of the official v2.1.283 `KEe`:
+ * `<${n.length} chars; not recorded>`.
+ */
+export function redactToolContentNotRecorded(serialized: string): string {
+  return `<${serialized.length} chars; not recorded>`
+}
+
+/**
+ * Tools whose output is added to the `tool.output` span event by the official
+ * v2.1.283 expansion (in addition to all MCP tools). Port of the official
+ * `HQn = new Set([Mr, uv])` where `Mr === 'WebFetch'` and `uv === 'WebSearch'`.
+ */
+const TOOL_OUTPUT_CONTENT_WEB_TOOLS = new Set<string>([
+  WEB_FETCH_TOOL_NAME,
+  WEB_SEARCH_TOOL_NAME,
+])
+
+/**
+ * Gate for the official v2.1.283 `tool.output` expansion: emit for any MCP tool
+ * (`mcpInfo !== undefined`) or for WebFetch/WebSearch. Port of the official
+ * `(e.mcpInfo !== void 0 || HQn.has(e.name))` condition. The OTEL-enabled /
+ * content-logging / span-recording gates (`rTr`) and the `!detached` check are
+ * applied by `addToolContentEvent` (the `oTr` equivalent) — OCC has no detached
+ * tool-result path in the query loop, so `!detached` is structurally always true.
+ */
+export function shouldEmitToolOutputContent(tool: {
+  name: string
+  mcpInfo?: unknown
+}): boolean {
+  return tool.mcpInfo !== undefined || TOOL_OUTPUT_CONTENT_WEB_TOOLS.has(tool.name)
+}
+
+/**
+ * Emit the `tool.output` span event for MCP tools + WebFetch/WebSearch, porting
+ * the official v2.1.283 block:
+ *   if ((e.mcpInfo !== void 0 || HQn.has(e.name)) && !oo.detached && rTr(Wt)) {
+ *     let Sr = wbo(ls.content)
+ *     oTr(Wt, "tool.output", { output: e.mcpInfo?.accountMemory === true ? KEe(Sr) : Sr })
+ *   }
+ *
+ * `content` is the mapped tool_result block content (`ls.content` in the
+ * official). The `accountMemory` redaction branch is forward-compat: OCC's
+ * `mcpInfo` carries no `accountMemory` field yet, so the branch is structurally
+ * unreachable today but faithful to the official shape (mirrors the
+ * forward-compat pattern used elsewhere in the codebase).
+ */
+export function addToolResultOutputEvent(
+  tool: {
+    name: string
+    mcpInfo?: {
+      serverName?: string
+      toolName?: string
+      accountMemory?: boolean
+    }
+  },
+  content: unknown,
+): void {
+  if (!shouldEmitToolOutputContent(tool)) {
+    return
+  }
+  const serialized = serializeToolResultContent(content)
+  const output =
+    tool.mcpInfo?.accountMemory === true
+      ? redactToolContentNotRecorded(serialized)
+      : serialized
+  addToolContentEvent('tool.output', { output })
 }
 
 export function getCurrentSpan(): Span | null {

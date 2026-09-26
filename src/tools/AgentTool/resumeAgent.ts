@@ -7,7 +7,8 @@ import type { ToolUseContext } from '../../Tool.js'
 import { registerAsyncAgent } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { assembleToolPool } from '../../tools.js'
 import { asAgentId } from '../../types/ids.js'
-import { runWithAgentContext } from '../../utils/agentContext.js'
+import { runWithAgentContext, getAgentContext } from '../../utils/agentContext.js'
+import { resolveQueryPromptId } from '../../services/api/promptId.js'
 import { runWithCwdOverride } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -268,6 +269,14 @@ export async function resumeAgentBackground({
     invokingRequestId,
     invocationKind: 'resume' as const,
     invocationEmitted: false,
+    // Official 2.1.283 resume contexts stamp the parent turn's prompt id
+    // (@221139412 `invocationKind:"resume",...,parentPromptId:x`;
+    // SendMessage/teammate-resume @226835475/@226838095 use
+    // `parentPromptId:Wve(r.messages(),r.agentContext)`).
+    parentPromptId: resolveQueryPromptId(
+      toolUseContext.messages,
+      getAgentContext(),
+    ),
   }
 
   const wrapWithCwd = <T>(fn: () => T): T =>

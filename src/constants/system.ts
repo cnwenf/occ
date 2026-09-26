@@ -4,7 +4,7 @@ import { feature } from 'src/utils/featureFlags.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { logForDebugging } from '../utils/debug.js'
 import { isEnvDefinedFalsy } from '../utils/envUtils.js'
-import { getAPIProvider } from '../utils/model/providers.js'
+import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from '../utils/model/providers.js'
 import { getWorkload } from '../utils/workloadContext.js'
 
 const DEFAULT_PREFIX = `You are Claude Code, Anthropic's official CLI for Claude.`
@@ -80,7 +80,7 @@ function isPlainAnthropicApiBaseUrl(): boolean {
  */
 export function getAttributionHeader(
   fingerprint: string,
-  opts?: { ignoreEnvOptOut?: boolean },
+  opts?: { ignoreEnvOptOut?: boolean; promptId?: string },
 ): string {
   // CC 2.1.229 (changelog #10 / binary `LGo`): auto-mode side queries force
   // the attribution header even when CLAUDE_CODE_ATTRIBUTION_HEADER opts
@@ -115,7 +115,23 @@ export function getAttributionHeader(
   // fields so old API deploys silently ignore this.
   const workload = getWorkload()
   const workloadPair = workload ? ` cc_workload=${workload};` : ''
-  const header = `x-anthropic-billing-header: cc_version=${version}; cc_entrypoint=${entrypoint};${cch}${workloadPair}`
+  // CC 2.1.283 (binary r0r @199419765): ` cc_prompt_id=` pair, gated on
+  // UUID-format + provider firstParty + the ASSUME-aware base-URL check
+  // (official Os = providers.ts isFirstPartyAnthropicBaseUrl). Placed after
+  // workloadPair, matching the official template field order
+  // `...${y}${C}${S}${O}${Xe}${Ze}` (cch, workload, is_subagent, prev_req,
+  // prompt_id, turn_origin — OCC has no is_subagent/prev_req/turn_origin
+  // pairs). UUID regex inlined verbatim (official also inlines it here).
+  const promptIdPair =
+    opts?.promptId !== undefined &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+      opts.promptId,
+    ) &&
+    getAPIProvider() === 'firstParty' &&
+    isFirstPartyAnthropicBaseUrl()
+      ? ` cc_prompt_id=${opts.promptId};`
+      : ''
+  const header = `x-anthropic-billing-header: cc_version=${version}; cc_entrypoint=${entrypoint};${cch}${workloadPair}${promptIdPair}`
 
   logForDebugging(`attribution header ${header}`)
   return header

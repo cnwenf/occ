@@ -986,8 +986,8 @@ export const getSkillDirCommands = memoize(
         ),
       )
       // No dedup needed — explicit dirs, user controls uniqueness.
-      // CC 2.1.282 reserved-namespace hardening (official kOe): drop
-      // anthropic-skills / claude-ai squatters before returning.
+      // CC 2.1.283 reserved-namespace hardening (official kOe): drop
+      // anthropic-skills squatters before returning.
       const bareAllowed = filterRefusedReservedNames(
         additionalSkillsNested.flat(),
       )
@@ -1034,8 +1034,8 @@ export const getSkillDirCommands = memoize(
       skillsLocked ? Promise.resolve([]) : loadSkillsFromCommandsDir(cwd),
     ])
 
-    // Flatten and combine all skills. CC 2.1.282 reserved-namespace
-    // hardening (official kOe): drop anthropic-skills / claude-ai squatters
+    // Flatten and combine all skills. CC 2.1.283 reserved-namespace
+    // hardening (official kOe): drop anthropic-skills squatters
     // from the combined list (once-per-name+path warn, then the once-per-
     // session names_refused telemetry).
     const allSkillsWithPaths = filterRefusedReservedNames<Command>([

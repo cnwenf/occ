@@ -1,7 +1,20 @@
-import { getSettings_DEPRECATED } from '../settings/settings.js'
+import { getSettings_DEPRECATED, getSettingsForSource } from '../settings/settings.js'
+import type { SettingsJson } from '../settings/types.js'
 import { isModelAlias, isModelFamilyAlias } from './aliases.js'
+import {
+  classifyAvailableModelsEntry,
+  prefixEntryAllowsModelExact,
+} from './availableModelsMatch.js'
 import { parseUserSpecifiedModel } from './model.js'
 import { resolveOverriddenModel } from './modelStrings.js'
+import { strip1mSuffix } from './modelDescriptors.js'
+import {
+  isExactAvailableModelsMatch,
+  isModelDeniedByPolicy,
+  resolveModelAliasEnvFreeStub,
+  resolveWithOverrideMap,
+  stepAliasForExactMatch,
+} from './modelGovernance.js'
 
 /**
  * Check if a model belongs to a given family by checking if its name
@@ -87,8 +100,48 @@ function familyHasSpecificEntries(
 }
 
 /**
+ * CC 2.1.283: official `Vr` options subset. `allowlist` overrides the merged
+ * settings' availableModels (the official `__` exact-block check calls
+ * `Vr(e,{allowlist:[...]})` with the POLICY allowlist). The official also has
+ * `skipEntitlementDenyOverlay`/`envFreeAliasResolution`/`overridesMap`/
+ * `ignoreModelOverrides` — OCC has no entitlement-deny overlay (`X$`/`J$`) or
+ * env-free alias resolution (`ALr`, stubbed in modelGovernance.ts), so those
+ * options are not surfaced.
+ */
+export type ModelAllowlistOptions = {
+  readonly allowlist?: readonly string[]
+}
+
+/**
+ * Official `Vr`'s override-resolution branch (`E`): when the policy has an
+ * availableModels list, the model spelling is resolved back through the policy
+ * `modelOverrides` (falling back to the merged map); otherwise through the
+ * merged overrides. Null = the policy read failed (official catch → block).
+ */
+function resolveModelForAllowlist(model: string): string | null {
+  try {
+    const policy = getSettingsForSource('policySettings') as SettingsJson | null
+    if (policy?.availableModels !== undefined) {
+      const overridesMap =
+        policy.modelOverrides ?? getSettings_DEPRECATED()?.modelOverrides ?? {}
+      return resolveWithOverrideMap(model, overridesMap)
+    }
+  } catch {
+    return null
+  }
+  return resolveOverriddenModel(model)
+}
+
+/**
  * Check if a model is allowed by the availableModels allowlist in settings.
  * If availableModels is not set, all models are allowed.
+ *
+ * CC 2.1.283 (official `Vr` @198792435): a `deniedModels` policy gate runs
+ * FIRST (fail-closed — a governance read error blocks), and under
+ * `availableModelsMatch:"exact"` "ignored" entries drop out of the effective
+ * allowlist (empty-after-filter blocks everything), non-alias inputs whose
+ * display resolution differs must have the resolved target allowed too, and
+ * version-prefix matches additionally require exact-descriptor agreement.
  *
  * Matching tiers:
  * 1. Family aliases ("opus", "sonnet", "haiku") — wildcard for the entire family,
@@ -97,9 +150,22 @@ function familyHasSpecificEntries(
  * 2. Version prefixes ("opus-4-5", "claude-opus-4-5") — any build of that version
  * 3. Full model IDs ("claude-opus-4-5-20251101") — exact match only
  */
-export function isModelAllowed(model: string): boolean {
+export function isModelAllowed(
+  model: string,
+  options?: ModelAllowlistOptions,
+): boolean {
+  // Official `Vr` prologue: deniedModels beats every allow tier; a governance
+  // read failure blocks (catch → false).
+  try {
+    if (isModelDeniedByPolicy(model)) {
+      return false
+    }
+  } catch {
+    return false
+  }
+
   const settings = getSettings_DEPRECATED() || {}
-  const { availableModels } = settings
+  const availableModels = options?.allowlist ?? settings.availableModels
   if (!availableModels) {
     return true // No restrictions
   }
@@ -107,9 +173,58 @@ export function isModelAllowed(model: string): boolean {
     return false // Empty allowlist blocks all user-specified models
   }
 
-  const resolvedModel = resolveOverriddenModel(model)
-  const normalizedModel = resolvedModel.trim().toLowerCase()
-  const normalizedAllowlist = availableModels.map(m => m.trim().toLowerCase())
+  // Official `g=xO()` with catch → block: an unreadable governance flag is
+  // treated as "not allowed" rather than silently falling back to prefix mode.
+  let exactMatch: boolean
+  try {
+    exactMatch = isExactAvailableModelsMatch()
+  } catch {
+    return false
+  }
+
+  // Official `h`: under exact matching, ignored entries (empty, release-
+  // dependent aliases) drop out; an empty effective list blocks everything.
+  const effectiveEntries = exactMatch
+    ? availableModels.filter(
+        entry => classifyAvailableModelsEntry(entry).kind !== 'ignored',
+      )
+    : availableModels
+  const normalizedAllowlist = effectiveEntries.map(m =>
+    strip1mSuffix(m.trim().toLowerCase()),
+  )
+  if (normalizedAllowlist.length === 0) {
+    return false
+  }
+
+  // Official raw-spelling direct tier (`h.includes(S)&&!O_(S)`): the input as
+  // written is listed, so it is allowed regardless of override resolution.
+  const rawNormalized = strip1mSuffix(model.trim().toLowerCase())
+  if (
+    normalizedAllowlist.includes(rawNormalized) &&
+    !isModelFamilyAlias(rawNormalized)
+  ) {
+    return true
+  }
+
+  // Official exact-mode alias/override step gate (`p_`): a non-alias input
+  // whose display resolution differs (legacy remap, override spelling) must
+  // have the RESOLVED target allowed too — recursively.
+  if (exactMatch) {
+    const stepped = stepAliasForExactMatch(rawNormalized)
+    if (
+      stepped !== null &&
+      (stepAliasForExactMatch(stepped) !== null ||
+        !isModelAllowed(stepped, options))
+    ) {
+      return false
+    }
+  }
+
+  const resolvedModel = resolveModelForAllowlist(model)
+  if (resolvedModel === null) {
+    return false // Policy read failed — official catch → block.
+  }
+  const normalizedModel = strip1mSuffix(resolvedModel.trim().toLowerCase())
 
   // Direct match (alias-to-alias or full-name-to-full-name)
   // Skip family aliases that have been narrowed by specific entries —
@@ -141,7 +256,7 @@ export function isModelAllowed(model: string): boolean {
   // If model is an alias, resolve it and check if the resolved name is in the list
   if (isModelAlias(normalizedModel)) {
     const resolved = parseUserSpecifiedModel(normalizedModel).toLowerCase()
-    if (normalizedAllowlist.includes(resolved)) {
+    if (normalizedAllowlist.includes(strip1mSuffix(resolved))) {
       return true
     }
   }
@@ -150,17 +265,29 @@ export function isModelAllowed(model: string): boolean {
   for (const entry of normalizedAllowlist) {
     if (!isModelFamilyAlias(entry) && isModelAlias(entry)) {
       const resolved = parseUserSpecifiedModel(entry).toLowerCase()
-      if (resolved === normalizedModel) {
+      if (strip1mSuffix(resolved) === normalizedModel) {
         return true
       }
     }
   }
 
   // Version-prefix matching: "opus-4-5" or "claude-opus-4-5" matches
-  // "claude-opus-4-5-20251101" at a segment boundary
+  // "claude-opus-4-5-20251101" at a segment boundary. Under exact matching the
+  // official adds the `PO` gate: the prefix hit only counts when the entry and
+  // the model are the SAME version with a compatible trailer (a `-latest`
+  // model needs a `-latest` entry; family entries always pass).
   for (const entry of normalizedAllowlist) {
     if (!isModelFamilyAlias(entry) && !isModelAlias(entry)) {
-      if (modelMatchesVersionPrefix(normalizedModel, entry)) {
+      if (
+        modelMatchesVersionPrefix(normalizedModel, entry) &&
+        (!exactMatch ||
+          prefixEntryAllowsModelExact(
+            normalizedModel,
+            entry,
+            parseUserSpecifiedModel,
+            resolveModelAliasEnvFreeStub,
+          ))
+      ) {
         return true
       }
     }

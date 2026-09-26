@@ -1,8 +1,8 @@
 // Auto-generated stub — replace with real implementation
 //
-// CC 2.1.282 reserved-namespace hardening (official j.fetchForClient boundary
+// CC 2.1.283 reserved-namespace hardening (official j.fetchForClient boundary
 // gate, byte-exact): when the plaid-harbor gate is on and the MCP server name
-// (normalized) sits in the reserved anthropic-skills / claude-ai namespace, no
+// (normalized) sits in the reserved anthropic-skills namespace, no
 // skills load from that server — the exact skills-funnel message goes to the
 // MCP debug log and the result is []. Tools are unaffected. Keeping the gate
 // on the stub preserves the boundary behavior for when the stub is replaced.

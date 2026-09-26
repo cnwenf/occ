@@ -59,6 +59,19 @@ export type SubagentContext = {
   /** Official 2.1.273 gateway hints: the workflow's name (analytics only —
    *  never sent on the wire). Undefined for non-workflow subagents. */
   workflowName?: string
+  /** Official 2.1.283 x-claude-code-prompt-id inheritance (Wve fallback):
+   *  the prompt id of the parent turn that spawned/resumed this subagent,
+   *  computed at the launch site via resolveQueryPromptId(parentMessages,
+   *  parentAgentContext) — official @210571017 spawn / @221139412 resume /
+   *  @227166616 workflow launch. Used as the request prompt id when the
+   *  subagent's own messages carry none. */
+  parentPromptId?: string
+  /** Official 2.1.283 Wve gate term `!n.isMainSession`: true only for the
+   *  background-main-session subagent context (official
+   *  LocalMainSessionTask analog), which must NOT inherit a parentPromptId.
+   *  Forward-compat seam — no OCC creation site sets it today (see
+   *  services/api/promptId.ts deviation notes). */
+  isMainSession?: boolean
 }
 
 /**

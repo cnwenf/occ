@@ -635,6 +635,7 @@ export function createUserMessage({
   sourceToolAssistantUUID,
   permissionMode,
   origin,
+  promptId,
 }: {
   content: string | ContentBlockParam[]
   isMeta?: true
@@ -661,6 +662,12 @@ export function createUserMessage({
   }
   // Provenance of this message. undefined = human (keyboard).
   origin?: MessageOrigin
+  /**
+   * Official 2.1.283 `Ae` factory promptId param (@207040852 spread
+   * `...tt!==void 0&&{promptId:tt}`). Per-user-prompt correlation id; only
+   * stamped when defined so the key never appears on other messages.
+   */
+  promptId?: string
 }): UserMessage {
   const m: UserMessage = {
     type: 'user',
@@ -681,6 +688,9 @@ export function createUserMessage({
     sourceToolAssistantUUID,
     permissionMode,
     origin,
+    // Official 2.1.283: `...tt!==void 0&&{promptId:tt}` — conditional spread
+    // keeps the key absent (not `undefined`) when there is no id.
+    ...(promptId !== undefined && { promptId }),
   }
   return m
 }

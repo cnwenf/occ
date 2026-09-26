@@ -51,6 +51,8 @@ import {
   setSessionSettingsCache,
 } from './settingsCache.js'
 import { sanitizePolicySourceData } from './policySourceSanitizer.js'
+import { stripManagedOnlyKeys } from './managedOnlyKeys.js'
+import { collectManagedModelGovernanceWarnings } from '../model/modelGovernanceWarnings.js'
 import { isPlainObject } from './policyLocks.js'
 import {
   buildStrictPolicySchema,
@@ -338,19 +340,26 @@ function parseSettingsFileUncached(
       }
     }
 
-    const result = SettingsSchema().safeParse(data)
+    // CC 2.1.283 (official `Ad` via `Gye` non-policy branch): the managed-only
+    // model-governance keys are stripped from every non-policy source, each
+    // with a "<key>" is only honored from managed settings warning. The policy
+    // branch above does NOT strip.
+    const { data: nonPolicyData, warnings: managedOnlyWarnings } =
+      stripManagedOnlyKeys(data as Record<string, unknown>, path)
+
+    const result = SettingsSchema().safeParse(nonPolicyData)
 
     if (!result.success) {
       const errors = formatZodError(result.error, path)
       return {
         settings: null,
-        errors: [...sanitizeWarnings, ...errors],
+        errors: [...sanitizeWarnings, ...managedOnlyWarnings, ...errors],
       }
     }
 
     return {
       settings: result.data,
-      errors: sanitizeWarnings,
+      errors: [...sanitizeWarnings, ...managedOnlyWarnings],
     }
   } catch (error) {
     handleFileSystemError(error, path)
@@ -510,7 +519,21 @@ function getSettingsForSourceUncached(
   if (source === 'flagSettings') {
     const inlineSettings = getFlagSettingsInline()
     if (inlineSettings) {
-      const parsed = SettingsSchema().safeParse(inlineSettings)
+      // CC 2.1.283 (official `Dy` @~196776900): SDK inline settings are a
+      // non-policy source — the managed-only model-governance keys are
+      // stripped before parsing, with warnings on the debug channel (the same
+      // one the remote-policy branch above uses).
+      const { data: strippedInline, warnings: managedOnlyWarnings } =
+        stripManagedOnlyKeys(
+          inlineSettings as Record<string, unknown>,
+          'SDK inline settings',
+        )
+      for (const warning of managedOnlyWarnings) {
+        logForDebugging(
+          `[settings] ${warning.file}: ${warning.path}: ${warning.message}`,
+        )
+      }
+      const parsed = SettingsSchema().safeParse(strippedInline)
       if (parsed.success) {
         return mergeWith(
           fileSettings || {},
@@ -897,6 +920,19 @@ function loadSettingsFromDisk(): SettingsWithErrors {
           policyErrors.push(...hkcu.errors)
         }
 
+        // CC 2.1.283 (official `Xi` @197184017): admin-facing notices for the
+        // winning policy source — per-entry deniedModels parse warnings plus
+        // exact-match availableModels entry warnings. The official surfaces
+        // these through a separate "Managed settings notices" channel
+        // (`wBr`); OCC routes them through the existing policyErrors
+        // (ValidationError) channel — documented deviation, identical record
+        // shape {file:"managed settings", path, message, severity, statusOnly}.
+        if (policySettings) {
+          policyErrors.push(
+            ...collectManagedModelGovernanceWarnings(policySettings),
+          )
+        }
+
         // Merge the winning policy source into the settings chain
         if (policySettings) {
           mergedSettings = mergeWith(
@@ -949,7 +985,22 @@ function loadSettingsFromDisk(): SettingsWithErrors {
       if (source === 'flagSettings') {
         const inlineSettings = getFlagSettingsInline()
         if (inlineSettings) {
-          const parsed = SettingsSchema().safeParse(inlineSettings)
+          // CC 2.1.283 (official `Dy`): strip the managed-only model
+          // governance keys from SDK inline settings; the warnings join the
+          // same deduplicated error channel as every other source.
+          const { data: strippedInline, warnings: managedOnlyWarnings } =
+            stripManagedOnlyKeys(
+              inlineSettings as Record<string, unknown>,
+              'SDK inline settings',
+            )
+          for (const warning of managedOnlyWarnings) {
+            const errorKey = `${warning.file}:${warning.path}:${warning.message}`
+            if (!seenErrors.has(errorKey)) {
+              seenErrors.add(errorKey)
+              allErrors.push(warning)
+            }
+          }
+          const parsed = SettingsSchema().safeParse(strippedInline)
           if (parsed.success) {
             mergedSettings = mergeWith(
               mergedSettings,

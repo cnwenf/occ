@@ -30,8 +30,10 @@ import { GENERAL_PURPOSE_AGENT } from '../AgentTool/built-in/generalPurposeAgent
 import { isBuiltInAgent } from '../AgentTool/loadAgentsDir.js'
 import {
   type SubagentContext,
+  getAgentContext,
   runWithAgentContext,
 } from '../../utils/agentContext.js'
+import { resolveQueryPromptId } from '../../services/api/promptId.js'
 import { getParentSessionId } from '../../utils/teammate.js'
 import { createAgentWorktree } from '../../utils/worktree.js'
 import { extractTextContent, getLastAssistantMessage, createUserMessage } from '../../utils/messages.js'
@@ -646,6 +648,13 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       workflowName: ctx.workflowName,
       invocationKind: 'spawn',
       invocationEmitted: false,
+      // Official 2.1.283 WorkflowTool invoke (@227166616):
+      // `parentPromptId:Wve(s.messages,s.agentContext)` — s is the tool-use
+      // context; OCC reads the ambient ALS context (same value at this site).
+      parentPromptId: resolveQueryPromptId(
+        ctx.toolUseContext.messages,
+        getAgentContext(),
+      ),
     }
 
     let messages: Message[]

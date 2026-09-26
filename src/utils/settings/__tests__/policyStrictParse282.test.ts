@@ -153,24 +153,26 @@ describe('2.1.282 policy locks: restrictive substitution', () => {
     expect(errors[0]?.substituted).toBe(true)
   })
 
-  test('nested disableBypassPermissionsMode:false substitutes "disable" (binary behavior)', () => {
-    // Deviation note: the task bullet suggested absent+statusOnly here, but
-    // the official defines the nested key plainly (wi()) and the "set to
-    // false" reading exists only in the top-level Ni loop — the nested field
-    // goes through tg strategy 1 (restrictive substitution).
+  test('nested disableBypassPermissionsMode:false reads as key removal with removal:true (283 flip of this 282 pin)', () => {
+    // 282 behavior (pinned here until 2.1.283): false hit the tg catch and
+    // substituted "disable". CC 2.1.283: fg pre-wraps leaves with the SHARED
+    // Ho coercion (@196669558) — ta(false) → absent + statusOnly + removal:!0,
+    // so the permissions block empties out and is dropped (shape-aware empty
+    // check). Detailed pin: policySandbox283.test.ts.
     const { data, errors } = parseStrict({
       permissions: { disableBypassPermissionsMode: false },
     })
 
-    const permissions = data.permissions as Record<string, unknown>
-    expect(permissions.disableBypassPermissionsMode).toBe('disable')
+    expect('permissions' in data).toBe(false)
+    expect(errors).toHaveLength(1)
     const record = errors.find(
       e => e.path === 'permissions.disableBypassPermissionsMode',
     )
     expect(record?.message).toBe(
-      '"disableBypassPermissionsMode" was present but invalid (expected "disable"); treating it as "disable", its restrictive value, until it is fixed.',
+      '"disableBypassPermissionsMode" was set to false; reading it as absent (the key\'s only value is "disable"). Remove the key instead.',
     )
-    expect(record?.substituted).toBe(true)
+    expect(record?.statusOnly).toBe(true)
+    expect(record?.removal).toBe(true)
   })
 
   test('invalid strictPluginOnlyCustomization locks everything (true)', () => {
@@ -488,35 +490,38 @@ describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "f
     expect(valid.errors).toHaveLength(0)
   })
 
-  test('RT③d (security-review M1): one invalid nested sandbox value silently discards the ENTIRE sandbox block (fail-open)', () => {
-    // `isRebuiltBlock` (official `mn`) excludes sandbox/sandbox.* — the block
-    // never gets the per-block salvage rebuild (`Ki`), only the generic
-    // per-field catch (step 1). So ANY invalid nested value (here: a number
-    // inside `sandbox.network.deniedDomains`) drops the whole sandbox field
-    // with a single "This field was ignored." record — denyWrite / denyRead /
-    // deniedDomains restrictions all silently stop applying (fail-open).
-    //
-    // Official-parity framing: the official binary's `mn` also excludes
-    // sandbox (policyLocks.ts STAGED note), so OCC keeps the same whole-block
-    // catch rather than inventing a bespoke per-field sieve — the official's
-    // bespoke fail-closed skeleton is scoped to `sandbox.credentials` (STAGE).
-    // Pinning the current behavior so any future change flips this test.
+  test('RT③d (283 flip): an invalid nested sandbox entry is salvaged per-field — the block is NO LONGER discarded wholesale', () => {
+    // 282 behavior (pinned here until 2.1.283): `mn` excluded sandbox/sandbox.*
+    // from the per-block salvage rebuild (`Ki`), so ANY invalid nested value
+    // dropped the whole sandbox field with one "This field was ignored."
+    // record — denyWrite/denyRead/deniedDomains all silently stopped applying
+    // (fail-open disclosure RT③d, security-review M1).
+    // CC 2.1.283 fixes exactly this (changelog: "Fixed an issue where managed
+    // sandbox settings with a partially invalid block were discarded
+    // wholesale"): `Sn` narrows the carve-out to sandbox.credentials only, and
+    // the os tail wires sandbox through `jo` with skeletonExclude
+    // ["sandbox.enabled"] + neverSubstitute ["sandbox.failIfUnavailable"].
+    // Detailed pin: policySandbox283.test.ts.
     const badNested = parseStrict({
       sandbox: {
         network: { deniedDomains: ['ok.com', 42] },
         filesystem: { denyWrite: ['/root/secrets'], denyRead: ['*.secret'] },
       },
     })
-    // runtime-verified: whole block dropped
-    expect('sandbox' in badNested.data).toBe(false)
-    // exactly one generic per-field-catch record naming the top-level key
-    expect(badNested.errors).toHaveLength(1)
-    expect(badNested.errors[0]?.path).toBe('sandbox')
-    expect(badNested.errors[0]?.message).toBe(
-      'Invalid input: expected string, received number. This field was ignored.',
+    // runtime-verified: the invalid ENTRY is trimmed; the rest of the block
+    // (including the denyWrite/denyRead restrictions) survives.
+    expect(badNested.data.sandbox).toEqual({
+      network: { deniedDomains: ['ok.com'] },
+      filesystem: { denyWrite: ['/root/secrets'], denyRead: ['*.secret'] },
+    })
+    const trimmed = badNested.errors.find(
+      e => e.path === 'sandbox.network.deniedDomains[1]',
     )
-    // denyWrite/denyRead/deniedDomains were silently discarded along with the block
-    expect(badNested.errors[0]?.statusOnly).toBeUndefined()
+    expect(trimmed?.message).toBe(
+      'Invalid entry was ignored (expected string); it cannot take effect until it is fixed.',
+    )
+    // No whole-block record anymore.
+    expect(badNested.errors.some(e => e.path === 'sandbox')).toBe(false)
 
     // Control: an entirely valid sandbox block passes through intact.
     const valid = parseStrict({
@@ -531,8 +536,9 @@ describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "f
     })
     expect(valid.errors).toHaveLength(0)
 
-    // Contrast: permissions (a REBUILT block) is NOT dropped whole — the invalid
-    // entry is salvaged and the valid restriction survives.
+    // Contrast: permissions (a REBUILT block in both versions) behaves the
+    // same way — the invalid entry is salvaged and the valid restriction
+    // survives.
     const contrast = parseStrict({
       permissions: { deny: ['Bash(git *)', 42], defaultMode: 'default' },
     })

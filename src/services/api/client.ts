@@ -30,16 +30,8 @@ import {
   getVertexRegionForModel,
   isEnvTruthy,
 } from '../../utils/envUtils.js'
-import { getAgentContext } from 'src/utils/agentContext.js'
 import { assertBedrockStreamingContentType } from './bedrockContentTypeGuard.js'
-import {
-  AGENT_TYPE_HEADER,
-  REQUEST_CLASS_HEADER,
-  getAgentTypeHeader,
-  getRequestClassHeader,
-  isGatewayHintHeadersEnabled,
-  sanitizeHeaderValue,
-} from './gatewayHints.js'
+import { applyClientGatewayHintHeaders } from './gatewayHints.js'
 
 /**
  * Environment variables for different client types:
@@ -138,12 +130,19 @@ export async function getAnthropicClient({
   model,
   fetchOverride,
   source,
+  promptId,
 }: {
   apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
+  /**
+   * Official 2.1.283 EV `promptId:S` param (@202058441) — per-user-prompt
+   * correlation id emitted as the `x-claude-code-prompt-id` default header
+   * behind the gateway-hints gate + UUID validator (see ./promptId.ts).
+   */
+  promptId?: string
 }): Promise<Anthropic> {
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
@@ -167,23 +166,14 @@ export async function getAnthropicClient({
     ...(clientApp ? { 'x-client-app': clientApp } : {}),
   }
 
-  // Official 2.1.273 gateway hint headers (A2 client block, byte-verified):
-  // `fe=Tle(), ge=fe?MLr(d,h):void 0, ve=fe?DLr(d,h):void 0`, then
-  // `...ge&&{[spn]:ge}, ...ve&&{[ipn]:afn(ve)}`. The agent-type value is
-  // sanitized via `afn`; request-class values are closed-set literals.
-  // The client is constructed fresh per call, so the ALS agentContext read
-  // here matches the official per-request `h=agentContext` param.
-  if (isGatewayHintHeadersEnabled()) {
-    const agentContext = getAgentContext()
-    const requestClass = getRequestClassHeader(source, agentContext)
-    if (requestClass) {
-      defaultHeaders[REQUEST_CLASS_HEADER] = requestClass
-    }
-    const agentType = getAgentTypeHeader(source, agentContext)
-    if (agentType) {
-      defaultHeaders[AGENT_TYPE_HEADER] = sanitizeHeaderValue(agentType)
-    }
-  }
+  // Official 2.1.273/2.1.283 gateway hint headers (EV factory block,
+  // byte-verified): `W=qnn()` gate, then request-class (MLr/spn),
+  // agent-type (DLr/ipn via afn sanitizer), and — 2.1.283 — the prompt-id
+  // header `...W&&S!==void 0&&en(S)!==null&&{[bqn]:S}`. The client is
+  // constructed fresh per call, so the ALS agentContext read inside
+  // applyClientGatewayHintHeaders matches the official per-request
+  // `h=agentContext` param.
+  applyClientGatewayHintHeaders(defaultHeaders, source, promptId)
 
   // Log API client configuration for HFI debugging
   logForDebugging(

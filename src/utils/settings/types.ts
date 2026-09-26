@@ -1202,6 +1202,24 @@ export const SettingsSchema = lazySchema(() =>
         .describe(
           'When true and availableModels is a non-empty array, the Default model selection is also constrained: if the default model for the user tier is not in availableModels, Default resolves to the first allowed availableModels entry instead. Has no effect when availableModels is unset or an empty array. Typically set in managed settings by enterprise administrators.',
         ),
+      // CC 2.1.283: managed model governance. Describe texts verified
+      // byte-exact against the official v2.1.283 linux-x64 ELF base schema
+      // (@196611500–196613800; official order: availableModels →
+      // enforceAvailableModels → availableModelsMatch → deniedModels →
+      // modelOverrides). Managed-only: stripped from every non-policy source
+      // by stripManagedOnlyKeys (official `Ad`).
+      availableModelsMatch: z
+        .enum(['prefix', 'exact'])
+        .optional()
+        .describe(
+          'How availableModels entries match model IDs. "prefix" (the default) lets an entry also allow any model ID that extends it, so "claude-opus-5" allows "claude-opus-5-5". "exact" keeps that matching but stops a model ID entry from allowing other versions: "claude-opus-5" allows Opus 5 and its dated and -fast IDs, but not Opus 5.5 or a later release until it is listed, and a -latest ID needs a -latest entry. Family aliases ("opus") still allow the whole family; aliases whose model depends on the release or settings (best, opusplan, default) are ignored. With "exact" and a list that names at least one model, the Default option also uses only a listed model; if none can be used, Claude Code will not start. Haiku background models, and hooks and other helper requests that pick their own model, are not restricted (deniedModels covers them; allowManagedHooksOnly limits hooks). Read from managed settings only.',
+        ),
+      deniedModels: z
+        .array(z.string())
+        .optional()
+        .describe(
+          'Models users cannot select, even when availableModels allows them. A family alias ("opus") blocks that family. A model ID blocks that version in every spelling: dates, -fast and provider prefixes are ignored, so "claude-opus-5-5" blocks every Opus 5.5 ID but not Opus 5. An ID with no minor version ("claude-opus-5") also blocks later minor versions, as it allows them in availableModels. Aliases whose model depends on the release or settings (best, opusplan, default) are ignored. The Default option steps down past a blocked model; if the Default has no allowed model to step down to, Claude Code will not start. Read from managed settings only.',
+        ),
       agent: z
         .string()
         .optional()
