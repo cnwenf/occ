@@ -374,6 +374,22 @@ keybindings 批（35/36/69）各自成轮内并行簇。
   `applyClientGatewayHintHeaders` 路径上）10 pass / 0 fail / 33 expects；
   gatewayHints273 59 pass / 0 fail / 126 expects（再导出无回归）。
 
+### 9.1 追记（三）（C2 合并树重跑，§10.2 承诺项）
+
+- **合并提交 `eada11a`（`62bee66` × origin/main `fc9dbb6`，OCC-138 C2
+  OTEL tool.output 集群，决议见 §10.2）之后的权威门禁重跑**：
+  `CI=true bash scripts/ci-test.sh` → **6870 pass / 0 fail / 115 skip，
+  668 文件，exit 0**（较上次 6867/667 的增量 = C2 带入的
+  mcpToolOutputOtel283 套件 17 项，减去我方 toolOutputContent283 修剪掉
+  的 14 项重复 pin）。
+- **构建重跑**：`bun run build` → `dist/cli.js` **30,946,875 bytes**，
+  MACRO.VERSION=2.1.354。
+- **C2 合并后 live 冒烟（隔离 `CLAUDE_CONFIG_DIR`，重建 dist）**：
+  `echo "reply with exactly: PONG-C2" | bun dist/cli.js -p` → **EXIT=0，
+  stdout 恰为 `PONG-C2`**。
+- **C2 集群仲裁**：toolOutputContent283（修剪后）3 pass + mcpToolOutputOtel283
+  17 pass，合计 20/20，0 fail / 40 expects。
+
 ### 9.2 构建
 
 - `bun run build` → `dist/cli.js` **30,942,878 bytes**；构建后 0 个 src 文件
@@ -445,4 +461,21 @@ validation.ts 自动合并产生的 `removal?: boolean` 重复字段已手工去
 | claude.ts `getPromptId` import | 移除（其 C1 布线专用，取我方布线后无引用） | biome pre-commit 通过 |
 
 合并后权威门禁第二次重跑记录见 §9.1 追记（二）。
+
+## 10.2 第三次并行碰撞：OCC-138 C2（OTEL tool.output）合并决议
+
+§10.1 收尾后、推送前再次 fetch，`origin/main` 又推进了 `fc9dbb6`
+（OCC-138 C2：MCP/WebFetch/WebSearch 的 OTEL `tool.output` 发射）——与本轮
+P1-5 完全重叠（同一官方 283 块 @204862589，双方各自 byte-verified）。
+合并提交 `eada11a`，决议：
+
+| 触点 | 决议 | 依据 |
+|---|---|---|
+| toolExecution.ts 发射块（唯一冲突） | **取 OCC-138 版（C2）**：内联发射 + `mappedToolResultBlock` 提升到 `endToolSpan` 之前 + `endToolSpan(toolResultStr)` 尾随 | **C2 修正了本轮 P1-5 的一个真实 live-path 缺陷**：我方原布线把 `addToolResultOutputEvent` 放在 `endToolSpan` 之后，而 `endToolSpan` 会清空 ALS toolContext store（`toolContext.enterWith(undefined)`，合并树 sessionTracing.ts 实读确认），`addToolContentEvent` 读不到 store 即静默丢弃事件——我方 17 项单测直接测 helper（自带 span/store），照不出该排序缺陷（behavior-driven-done 教训又一例：单测绿 ≠ live 路径对）。官方 283 排序即"映射→发射→iPt"，C2 与之一致 |
+| sessionTracing.ts 双侧 helper 并存（自动合并） | **保留 C2 的 `shouldRecordToolContentEvent`（rTr）+ `flattenToolOutputContent`（wbo）**；删除我方被取代的 `serializeToolResultContent`/`redactToolContentNotRecorded`/`TOOL_OUTPUT_CONTENT_WEB_TOOLS`/`shouldEmitToolOutputContent`/`addToolResultOutputEvent` 及随之无用的 WEB_*_TOOL_NAME import | 双方 wbo 移植逐分支比对行为一致（string 原样 / array→text+[type] 拼 \n / 其余→""）；KEe accountMemory 分支双方同为结构不可达（C2 记 NO-OP deviation，我方记 forward-compat），删我方版无观测损失 |
+| 我方 `buildToolContentAttributes`（oTr 截断环） | **保留**——它已接线在 `addToolContentEvent` 内部（双侧共用的发射汇聚点），非死代码 | 其 C2 测试文件头注明确认截断属 pre-existing 面 |
+| 测试 toolOutputContent283.test.ts（我 17 项 ↔ 其 mcpToolOutputOtel283 368 行） | **修剪我方文件至 3 项**（仅 oTr 截断 pin，文件头记录取代原委）；发射/wbo/rTr pin 由其 mcpToolOutputOtel283 承担 | 修剪后 toolOutputContent283 3/3 + mcpToolOutputOtel283 17/17，双绿（合计 20 pass / 0 fail / 40 expects） |
+
+合并后权威门禁第三次重跑记录见 §9.1 追记（三）。
+
 
