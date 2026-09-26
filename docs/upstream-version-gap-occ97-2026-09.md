@@ -97,19 +97,26 @@ MCP skills），reserved-name 检查在 stub 内保留了边界行为（含
 已知推断项（非 byte-exact，已在代码注释标注）：E 簇 `H$` darwin 分支由
 linux stub 反推 + message@211555751；`rules_walk_failed` log level 'warn'。
 
-### §5.1 B 簇 fail-open/静默路径披露（验收 RT③，2026-09-26）
+### §5.1 B 簇 fail-open/静默路径披露（验收 RT③，2026-09-26；RT③d 增补采集 2026-09-26 安全审核 M1）
 
-验收复核（main `9b36b4d`）发现 B 簇 strict parse 存在三条**静默或 fail-open**
-路径。三条均为官方 v2.1.282 二进制同款行为（official-parity），按验收结论
+验收复核（main `9b36b4d`）发现 B 簇 strict parse 存在四条**静默或 fail-open**
+路径。四条均为官方 v2.1.282 二进制同款行为（official-parity），均未发现
+后门/泄密，按验收结论
 **只披露 + 钉桩，不改行为**（改了就偏离官方 = invented hardening）。钉桩测试
 位于 `policyStrictParse282.test.ts` 的 `RT③ fail-open disclosure pinning`
-describe 块（3 条），任何后续改动（我方或上游 re-port）都会先翻红这些测试：
+describe 块（4 条），任何后续改动（我方或上游 re-port）都会先翻红这些测试：
 
 | # | 路径 | 行为（实测钉桩） | 根因 | fail-open 后果 |
 |---|------|----------------|------|---------------|
 | RT③a | `maxEffortLevel` 误拼（如 `"bogus"`/`42`） | `data {}`，**零诊断记录**（连 "This field was ignored." 都没有） | `types.ts` 中该键自带内联 `.catch(undefined)`，在 policy schema 的 generic per-field catch（`policyStrictSchema.ts` step 1）之前就吞掉了 issue | effort cap 静默不生效，管理员无任何提示 |
 | RT③b | 顶层 lock 键写 `null`（如 `{disableAgentView:null}`） | 键静默消失，**零记录** —— 与 block 路径 `null`（如 `permissions:null`，有 `Oi` "read as key removal" 记录）**不对称** | lock wrapper 为 `z.union([z.null().transform(()=>undefined), coerced])`，null 分支直接 transform 成 undefined，不经过 onIssue | 管理员以为写了 lock，实际该 source 未设此键且无提示 |
 | RT③c | `disableAllHooks` 误拼（含字符串 `"true"`） | 落入 generic catch：一条 "Invalid input: expected boolean, received string. This field was ignored." warning，键被丢弃；**无** string-boolean coercion、**无** restrictive 替换 | `collectLockFields`（官方 `Ni` @194777350 port）显式跳过 `disableAllHooks`（官方同款跳过），故该键不进 lock wrapper | **hooks 保持启用（fail-open）**：管理员写 `"true"` 期望禁 hooks，实际 hooks 照跑；同误拼在任何其他 lock 键上都会 fail-closed 强转 |
+| RT③d | `sandbox` 块内任一嵌套值误拼（如 `sandbox.network.deniedDomains` 混入数字） | **整个 `sandbox` 块静默丢弃**（实测 `sandbox` 键消失），仅一条 generic per-field-catch warning（`sandbox` 顶层路径，"This field was ignored."）；`denyWrite`/`denyRead`/`deniedDomains` 等限制**随块一起消失** | `isRebuiltBlock`（官方 `mn` port）显式排除 `sandbox`/`sandbox.*`（官方同款排除），故 sandbox 不进 per-block salvage rebuild（`Ki`），只走 step 1 的整字段 catch；官方 bespoke 的 `sandbox.credentials` fail-closed 机制未 port（STAGE） | **sandbox 允许/拒绝策略静默失效（fail-open）**：管理员写的 denyWrite/denyRead/deniedDomains 全部不生效且只有一条泛泛 warning；对比 `permissions`（走 `Ki` rebuild）错误条目被 salvage、合法限制保留 |
+
+> 对照（同入 RT③d 钉桩）：`permissions.deny` 混入 `42` 时 `Ki` rebuild salvage 掉
+> 非法条目并保留合法 deny —— sandbox 的整块丢弃是 `mn` 排除项的官方同款行为，
+> 非实现疏漏。钉桩测试 `policyStrictParse282.test.ts::RT③d` 连同有效对照、错误
+> 对照、`permissions` salvage 对照一并钉死，改动即翻红。
 
 `collectLockFields` 的 docstring（`policyLocks.ts`）已补 DISCLOSED
 CONSEQUENCE 段落说明 RT③c 后果与"官方同款、不得静默修"的口径。

@@ -487,6 +487,60 @@ describe('2.1.282 RT③ fail-open disclosure pinning (official-parity, do not "f
     expect(valid.data).toEqual({ disableAllHooks: true })
     expect(valid.errors).toHaveLength(0)
   })
+
+  test('RT③d (security-review M1): one invalid nested sandbox value silently discards the ENTIRE sandbox block (fail-open)', () => {
+    // `isRebuiltBlock` (official `mn`) excludes sandbox/sandbox.* — the block
+    // never gets the per-block salvage rebuild (`Ki`), only the generic
+    // per-field catch (step 1). So ANY invalid nested value (here: a number
+    // inside `sandbox.network.deniedDomains`) drops the whole sandbox field
+    // with a single "This field was ignored." record — denyWrite / denyRead /
+    // deniedDomains restrictions all silently stop applying (fail-open).
+    //
+    // Official-parity framing: the official binary's `mn` also excludes
+    // sandbox (policyLocks.ts STAGED note), so OCC keeps the same whole-block
+    // catch rather than inventing a bespoke per-field sieve — the official's
+    // bespoke fail-closed skeleton is scoped to `sandbox.credentials` (STAGE).
+    // Pinning the current behavior so any future change flips this test.
+    const badNested = parseStrict({
+      sandbox: {
+        network: { deniedDomains: ['ok.com', 42] },
+        filesystem: { denyWrite: ['/root/secrets'], denyRead: ['*.secret'] },
+      },
+    })
+    // runtime-verified: whole block dropped
+    expect('sandbox' in badNested.data).toBe(false)
+    // exactly one generic per-field-catch record naming the top-level key
+    expect(badNested.errors).toHaveLength(1)
+    expect(badNested.errors[0]?.path).toBe('sandbox')
+    expect(badNested.errors[0]?.message).toBe(
+      'Invalid input: expected string, received number. This field was ignored.',
+    )
+    // denyWrite/denyRead/deniedDomains were silently discarded along with the block
+    expect(badNested.errors[0]?.statusOnly).toBeUndefined()
+
+    // Control: an entirely valid sandbox block passes through intact.
+    const valid = parseStrict({
+      sandbox: {
+        network: { deniedDomains: ['evil.com'] },
+        filesystem: { denyWrite: ['/root/secrets'], denyRead: ['*.secret'] },
+      },
+    })
+    expect(valid.data.sandbox).toEqual({
+      network: { deniedDomains: ['evil.com'] },
+      filesystem: { denyWrite: ['/root/secrets'], denyRead: ['*.secret'] },
+    })
+    expect(valid.errors).toHaveLength(0)
+
+    // Contrast: permissions (a REBUILT block) is NOT dropped whole — the invalid
+    // entry is salvaged and the valid restriction survives.
+    const contrast = parseStrict({
+      permissions: { deny: ['Bash(git *)', 42], defaultMode: 'default' },
+    })
+    expect(contrast.data.permissions).toEqual({
+      deny: ['Bash(git *)'],
+      defaultMode: 'default',
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------
