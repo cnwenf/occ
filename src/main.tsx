@@ -1192,8 +1192,12 @@ async function run(): Promise<CommanderCommand> {
 
     // Official 2.1.283 `xzn` (Gap-139a, byte-verified):
     //   xzn(e) = Je().ultracode===!0 || NNe(e)==="ultracode"
-    // `--effort ultracode` enables ultracode session mode at startup (the
-    // settings-key half is already covered by isUltracodeEnabled()). The
+    // `--effort ultracode` enables ultracode session mode at startup. The
+    // settings-key half (`Je().ultracode===!0`) is NOT ported: OCC's
+    // isUltracodeEnabled() covers only the in-memory flag + env
+    // CLAUDE_CODE_ULTRACODE; `--settings '{"ultracode":true}'` has no
+    // consumer path today (silently no-ops, fail-closed) — staged, see
+    // docs/upstream-version-gap-occ139.md §3.7b. The
     // session-effort plumbing below separately maps the keyword to 'xhigh'
     // via parseEffortSessionInit (official kzn = oL ?? yct).
     if (normalizeEffortKeyword((options as {

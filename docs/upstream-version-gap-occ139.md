@@ -164,6 +164,11 @@ warnings attributed to `main.tsx` sit in pre-existing regions.
    enable ultracode (cost impact only, no privilege escalation); (b) the ultracode module
    comment claims the settings-key half is covered but `ULTRACODE_SETTING_KEY` has no
    consumer (fail-closed fidelity note). Neither introduced by this round; both staged.
+   **(b) comment fixed at acceptance (2.1.357):** the `src/main.tsx` startup-gate comment
+   now states the truth — `isUltracodeEnabled()` covers the in-memory flag + env
+   `CLAUDE_CODE_ULTRACODE` only; the settings-key half
+   (`--settings '{"ultracode":true}'`) has no consumer path (silently no-ops,
+   fail-closed) and stays staged here. Behavior unchanged (comment-only edit).
 
 ---
 
