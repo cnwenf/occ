@@ -123,6 +123,39 @@
 ## 5. 发布
 
 - 版本：**2.1.358**（rebase 到 origin/main v2.1.357 之上）
-- 提交：`fac0bba` fix（三修复 + 测试）→ 本文档 + `chore(release): 2.1.358`
+- 提交：`fac0bba` fix（三修复 + 测试）→ 本文档 + `chore(release): 2.1.358`（`322244d`）
 - 发布链路：merge main → tag `v2.1.358` → CI（publish.yml）npm publish + GitHub Release
   （/releases ≡ /tags 校验）
+- 发布核验（发版回报，2026-09-28）：npm `@cnwenf/occ` latest = **2.1.358**（registry packument
+  直查）；GitHub Release `v2.1.358`（2026-09-27T19:14:41Z，/releases 总条目 30）；
+  `origin/main` = `322244d` = tag `v2.1.358`；CI run head SHA `322244d` success。
+- 审核/验收链：安全审核 ✅（`CLEARED_WITH_RISK`，0C/0H/0M）→ E2E 验收 PASS →
+  最终验收 **APPROVED_WITH_RISK**（14 候选 → 3 官方 ELF 反证否决 → 11 confirmed → 6 条评论，
+  无 must-fix P1，不阻断 v2.1.358）。
+
+## 6. 验收结转（下一轮处理，全部机器可判定、成本极低）
+
+最终验收（APPROVED_WITH_RISK）残留项，验收员判定不阻断本轮，结转到下一轮：
+
+1. **P2 — nudge 状态机 query-loop 接线补回归测试**（`src/query.ts:1465`）：
+   `thinkingOnlyNudged` 六处 transition 携带 + `next_turn@2044` 唯一复位 + 四类排除守卫，
+   当前 mutation（删复位 / 删 `stop_sequence` 臂 / 删四守卫任一）后现有测试仍全绿 —— 运行时
+   行为已由验收员 wire 探针证实正确，属**测试钉钉缺口**。验收员已就绪 4 个探针文件
+   （probe-a-nextturn / probe-b-stopseq / probe-c-terminal / probe-d-structuredoutput，
+   位于其验收运行时 `/tmp/candidate-validation/`，为临时路径——下一轮按本条描述重建为
+   checked-in wire e2e 即可）：钉死 one-shot 复位仅在 next_turn、`stop_sequence` 臂可达、
+   terminal-MCP walk-back、StructuredOutput 排除。
+2. **P3 — 注册表测试补 4 个未断言 id**（`src/utils/__tests__/maxTokensRegistry283.test.ts`）：
+   registry 20 个 id 只断言 16 个，缺 `sonnet-4-0`/`sonnet-4-5`/`opus-4-5`/`fable-5`；
+   其中 **`claude-opus-4-5` 是真实静默回归通道**（mutation 验证：删其分支 → 32000/32000，
+   官方 32000/64000，测试仍全绿）。同时修正 `src/utils/context.ts:241` mythos-5 分支注释
+   （canonical 化使 `claude-mythos-5`→`claude-fable-5`，该分支对 canonical 名不可达，
+   现值正确但依赖 fable-5 分支兜底——注释与测试标题不得夸大覆盖）。
+3. **P3 — nudge wire e2e 断言改全等**（`test/e2e/version-2.1.283-thinking-only-nudge.e2e.test.ts:269`）：
+   "byte-exact" 注释 vs `toContain` 子串断言不一致；nudge 常量字节精确已由 unit `toBe` 钉住，
+   补 wire 层包裹方向（last message content 全等断言）使注释与断言相符。
+
+非行动项（验收结论存档）：nudge 重试用 user-isMeta 而非官方 mid-conversation system 消息
+（§4 STAGED，静态无害、A/B 等价）；`unrecognizedModelSignal` 子串 canonicalization 对嵌名
+自定义模型不告警（既有设计，诊断性非安全边界）。
+
