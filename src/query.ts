@@ -126,6 +126,13 @@ import { recordContentReplacement } from './utils/sessionStorage.js'
 import { handleStopHooks } from './query/stopHooks.js'
 import { buildQueryConfig } from './query/config.js'
 import { buildHarnessReminderMessage } from './query/harnessReminder.js'
+import {
+  hasVisibleText,
+  isStructuredOutputTurn,
+  isTerminalMcpToolTurn,
+  isTextlessQuerySource,
+  THINKING_ONLY_NUDGE_TEXT,
+} from './query/thinkingOnlyNudge.js'
 import { productionDeps, type QueryDeps } from './query/deps.js'
 import type { Terminal, Continue } from './query/transitions.js'
 import { feature } from 'src/utils/featureFlags.js'
@@ -267,6 +274,11 @@ type State = {
   stopHookActive: boolean | undefined
   // 2.1.143: Track consecutive stop-hook blocks to cap infinite loops.
   consecutiveStopHookBlocks: number
+  // OCC-99 (official 2.1.283 `guards.thinkingOnlyNudged`, one-shot): set when
+  // the thinking-only nudge fired this segment. Reset ONLY on next_turn
+  // (official `Kr` reset set @211098289); carried across all other
+  // transitions (official spreads `...Me`).
+  thinkingOnlyNudged?: boolean
   turnCount: number
   // Why the previous iteration continued. Undefined on first iteration.
   // Lets tests assert recovery paths fired without inspecting message contents.
@@ -331,6 +343,7 @@ async function* queryLoop(
     autoCompactTracking: undefined,
     stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
+    thinkingOnlyNudged: false,
     maxOutputTokensRecoveryCount: 0,
     hasAttemptedReactiveCompact: false,
     turnCount: 1,
@@ -388,6 +401,7 @@ async function* queryLoop(
       pendingToolUseSummary,
       stopHookActive,
       turnCount,
+      thinkingOnlyNudged,
     } = state
 
     // Skill discovery prefetch — per-iteration (uses findWritePivot guard
@@ -1258,6 +1272,7 @@ async function* queryLoop(
               pendingToolUseSummary: undefined,
               stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
+              thinkingOnlyNudged,
               turnCount,
               transition: {
                 reason: 'collapse_drain_retry',
@@ -1325,6 +1340,7 @@ async function* queryLoop(
             stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
             turnCount,
+            thinkingOnlyNudged,
             transition: { reason: 'reactive_compact_retry' },
           }
           state = next
@@ -1381,6 +1397,7 @@ async function* queryLoop(
             stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
             turnCount,
+            thinkingOnlyNudged,
             transition: { reason: 'max_output_tokens_escalate' },
           }
           state = next
@@ -1410,6 +1427,7 @@ async function* queryLoop(
             stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
             turnCount,
+            thinkingOnlyNudged,
             transition: {
               reason: 'max_output_tokens_recovery',
               attempt: maxOutputTokensRecoveryCount + 1,
@@ -1421,6 +1439,62 @@ async function* queryLoop(
 
         // Recovery exhausted — surface the withheld error now.
         yield lastMessage
+      }
+
+      // OCC-99: thinking-only response nudge — byte-verified port of the
+      // official 2.1.283 query loop (ELF @211166255-211166700; upstream
+      // changelog 2.1.183 "Fixed turns silently completing with no visible
+      // output"). When the model ends the turn (end_turn/stop_sequence) with
+      // no visible text and no tool calls, send a one-shot meta nudge and
+      // retry. Faithful details:
+      //   - the thinking-only assistant messages are DROPPED from the retry
+      //     context (official `messages:[...A,W]` — A excludes this turn's L,
+      //     proven by the adjacent truncated-recovery `[...A,...L,W]`);
+      //   - one-shot guard `thinkingOnlyNudged` (official `ns`), logged as
+      //     nudged / nudge_exhausted (official scopes);
+      //   - skipped for compact/textless query sources, terminal-MCP-tool
+      //     turns, and StructuredOutput turns (official nVe/Ggo/ie guards);
+      //   - official marks the nudge `turnCompanion:!0` — a transcript/UI
+      //     companion flag with no OCC consumer; isMeta covers OCC's
+      //     walk-back semantics.
+      const lastStopReason =
+        lastMessage?.type === 'assistant'
+          ? ((lastMessage.message?.stop_reason as string | undefined) ?? null)
+          : null
+      if (
+        (lastStopReason === 'end_turn' || lastStopReason === 'stop_sequence') &&
+        !lastMessage?.isApiErrorMessage &&
+        querySource !== 'compact' &&
+        !isTextlessQuerySource(querySource) &&
+        !isTerminalMcpToolTurn(messagesForQuery) &&
+        !hasVisibleText(assistantMessages) &&
+        !isStructuredOutputTurn(messagesForQuery)
+      ) {
+        if (!thinkingOnlyNudged) {
+          logForDebugging('query_thinking_only_response: nudged')
+          const nudgeMessage = createUserMessage({
+            content: THINKING_ONLY_NUDGE_TEXT,
+            isMeta: true,
+          })
+          yield nudgeMessage
+          const next: State = {
+            messages: [...messagesForQuery, nudgeMessage],
+            toolUseContext,
+            autoCompactTracking: tracking,
+            maxOutputTokensRecoveryCount,
+            hasAttemptedReactiveCompact,
+            maxOutputTokensOverride: undefined,
+            pendingToolUseSummary: undefined,
+            stopHookActive: undefined,
+            consecutiveStopHookBlocks: 0,
+            thinkingOnlyNudged: true,
+            turnCount,
+            transition: { reason: 'thinking_only_retry' },
+          }
+          state = next
+          continue
+        }
+        logForDebugging('query_thinking_only_response: nudge_exhausted')
       }
 
       // Skip stop hooks when the last message is an API error (rate limit,
@@ -1534,6 +1608,7 @@ async function* queryLoop(
           stopHookActive: true,
           consecutiveStopHookBlocks: nextBlockCount,
           turnCount,
+          thinkingOnlyNudged,
           transition: { reason: 'stop_hook_blocking' },
         }
         state = next
@@ -1571,6 +1646,7 @@ async function* queryLoop(
             stopHookActive: undefined,
     consecutiveStopHookBlocks: 0,
             turnCount,
+            thinkingOnlyNudged,
             transition: { reason: 'token_budget_continuation' },
           }
           continue
@@ -1963,6 +2039,9 @@ async function* queryLoop(
       pendingToolUseSummary: nextPendingToolUseSummary,
       maxOutputTokensOverride: undefined,
       stopHookActive,
+      // OCC-99: official next_turn resets the nudge guard (spread of the
+      // `Kr` reset set @211098289 — `{...Me,...Kr,turnCount}`).
+      thinkingOnlyNudged: false,
       transition: { reason: 'next_turn' },
     }
     state = next

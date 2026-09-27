@@ -224,6 +224,25 @@ export function getModelMaxOutputTokens(model: string): {
     defaultTokens = 64_000
     upperLimit = 128_000
   } else if (
+    // OCC-99: the official 2.1.283 model registry (byte-extracted from the
+    // ELF, U5(e)/Kl(canonical) max_output_tokens table @197060200) declares
+    // claude-opus-5-5 default=128000 upper=128000 — the ONLY model whose
+    // default equals its upper limit. Must be checked BEFORE the generic
+    // opus-5 branch below, which would give it 64000/128000 and silently
+    // halve the default output budget for the default model.
+    m.includes('opus-5-5')
+  ) {
+    defaultTokens = 128_000
+    upperLimit = 128_000
+  } else if (
+    // OCC-99: official 2.1.283 registry adds claude-mythos-5 and
+    // claude-mythos-5-1 at default=64000 upper=128000 (same tier as the
+    // launch models).
+    m.includes('mythos-5')
+  ) {
+    defaultTokens = 64_000
+    upperLimit = 128_000
+  } else if (
     // OCC-97 (Gap-97d): the official 2.1.233 model registry (byte-verified)
     // declares max_output_tokens 64000/128000 for the launch models —
     // opus-4-7/opus-4-8/opus-5/sonnet-5/fable-5 — same as opus-4-6. They

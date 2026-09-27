@@ -60,7 +60,14 @@ const claimedSignals = new Set<string>()
  * `TCo`, approximated via firstPartyNameToCanonical's return values).
  */
 const KNOWN_CANONICAL_MODELS: ReadonlySet<string> = new Set([
+  // OCC-99: the official 2.1.283 `oA` catalog registers claude-opus-5-5
+  // (43 ELF string hits — it is the official DEFAULT model) and
+  // claude-fable-5-1 (24 hits; claude-mythos-5-1 canonicalizes to it).
+  // Without these, OCC fires [claude-code:unrecognized_model] for its own
+  // default model while the official stays silent (A/B-observed gap).
+  'claude-opus-5-5',
   'claude-opus-5',
+  'claude-fable-5-1',
   'claude-opus-4-8',
   'claude-opus-4-7',
   'claude-opus-4-6',

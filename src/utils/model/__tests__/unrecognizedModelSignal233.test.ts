@@ -80,6 +80,14 @@ describe('2.1.233 — isModelRecognized', () => {
       'claude-3-5-haiku-20241022',
       'claude-mythos-preview',
       'us.anthropic.claude-opus-4-6-v1:0',
+      // OCC-99: the official 2.1.283 `oA` catalog knows the new default
+      // model + the mythos-5-1 canonical target; OCC previously fired
+      // [claude-code:unrecognized_model] for these while official stayed
+      // silent (A/B-observed on claude-opus-5-5[1m]).
+      'claude-opus-5-5',
+      'claude-opus-5-5[1m]',
+      'claude-fable-5-1',
+      'claude-mythos-5-1',
     ]) {
       expect(isModelRecognized(model)).toBe(true)
     }
