@@ -60,9 +60,11 @@ const freshModelAllowlist = (await import(
 mock.module('../modelAllowlist.js', () => ({ ...freshModelAllowlist }))
 
 const {
+  getPolicyDeniedGovernance,
   hasDeniedModelsPolicy,
   isExactAvailableModelsMatch,
   isModelDeniedByPolicy,
+  resetDeniedEntriesMemoForTest,
 } = await import('../modelGovernance.js')
 const {
   getManagedModelGovernanceBlockMessage,
@@ -81,6 +83,35 @@ beforeEach(() => {
   mockedPolicy = null
   mockedMerged = {}
   settingsThrow = false
+  resetDeniedEntriesMemoForTest()
+})
+
+describe('2.1.283 getPolicyDeniedGovernance session-level parse cache (official TO "cached")', () => {
+  test('same deniedModels array identity reuses the parsed entries (no re-parse)', () => {
+    const denied = ['claude-opus-5-5', 'opus']
+    mockedPolicy = { deniedModels: denied }
+    const first = getPolicyDeniedGovernance()
+    const second = getPolicyDeniedGovernance()
+    // Memoized: the entries array is the identical object, not a fresh parse.
+    expect(second.entries).toBe(first.entries)
+    expect(first.entries.length).toBe(2)
+  })
+
+  test('a settings reload (new array identity) re-parses', () => {
+    mockedPolicy = { deniedModels: ['claude-opus-5-5'] }
+    const first = getPolicyDeniedGovernance()
+    mockedPolicy = { deniedModels: ['claude-opus-5-5', 'claude-sonnet-5'] }
+    const second = getPolicyDeniedGovernance()
+    expect(second.entries).not.toBe(first.entries)
+    expect(second.entries.length).toBe(2)
+  })
+
+  test('cached and uncached paths agree on the deny oracle', () => {
+    mockedPolicy = { deniedModels: ['claude-opus-5-5'] }
+    expect(isModelDeniedByPolicy('claude-opus-5-5')).toBe(true)
+    expect(isModelDeniedByPolicy('claude-opus-5-5')).toBe(true)
+    expect(isModelDeniedByPolicy('claude-sonnet-5')).toBe(false)
+  })
 })
 
 describe('2.1.283 isModelDeniedByPolicy (official qhe)', () => {
@@ -264,12 +295,17 @@ describe('2.1.283 getManagedModelGovernanceBlockMessage (official TH)', () => {
   })
 
   test('denied default: byte-exact start and switch messages', () => {
+    // Pins re-extracted byte-exact from the official 2.1.283 ELF
+    // (md5 b5afa8208e39db13e13e89449b1825f2, TH @198791411) for the OCC-98
+    // acceptance fix: BOTH branches share the `, and none of the models…`
+    // tail; the switch branch has NO stray `}` after `"deniedModels"` (the
+    // earlier pin copied the minified nested-template close as literal text).
     mockedPolicy = { deniedModels: ['claude-opus-5-5'] }
     expect(getManagedModelGovernanceBlockMessage('claude-opus-5-5', 'start')).toBe(
-      `Claude Code can't start: your organization's managed settings block the default model (claude-opus-5-5) in "deniedModels"`,
+      `Claude Code can't start: your organization's managed settings block the default model (claude-opus-5-5) in "deniedModels", and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".`,
     )
     expect(getManagedModelGovernanceBlockMessage('claude-opus-5-5', 'switch')).toBe(
-      `Can't switch to the default model: your organization's managed settings block it (claude-opus-5-5) in "deniedModels"}, and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".`,
+      `Can't switch to the default model: your organization's managed settings block it (claude-opus-5-5) in "deniedModels", and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".`,
     )
   })
 
@@ -295,7 +331,7 @@ describe('2.1.283 getManagedModelGovernanceBlockMessage (official TH)', () => {
     mockedPolicy = { deniedModels: ['my model'] }
     // Literal deny entry matches the raw name; ub strips the space.
     expect(getManagedModelGovernanceBlockMessage('my model', 'start')).toBe(
-      `Claude Code can't start: your organization's managed settings block the default model (mymodel) in "deniedModels"`,
+      `Claude Code can't start: your organization's managed settings block the default model (mymodel) in "deniedModels", and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".`,
     )
   })
 })

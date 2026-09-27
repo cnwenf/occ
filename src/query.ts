@@ -16,6 +16,16 @@ import {
 } from './services/compact/autoCompact.js'
 import { buildPostCompactMessages } from './services/compact/compact.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
+// DORMANT in the shipped build (OCC-98 acceptance finding #6 / dataflow d113):
+// `REACTIVE_COMPACT` is NOT in src/utils/featureFlags.ts FEATURE_ALLOWLIST →
+// `feature()` returns false → `reactiveCompact` is always null here, and the
+// stub module's isReactiveCompactEnabled()/tryReactiveCompact() return
+// false/null anyway. The guarded branch (~line 1262, incl. the official
+// 2.1.283 reactive-compact promptId backfill @211163030) is therefore
+// unreachable at runtime — kept as an official-parity structural port
+// (documented-dormant pattern, cf. OCC-44 Monitor `qZs`), NOT live behavior.
+// The reachable promptId-on-compacted-summary invariant is guaranteed by the
+// proactive autocompact backfill (~line 588), which is unit- + e2e-covered.
 const reactiveCompact = feature('REACTIVE_COMPACT')
   ? (require('./services/compact/reactiveCompact.js') as typeof import('./services/compact/reactiveCompact.js'))
   : null
@@ -1259,6 +1269,11 @@ async function* queryLoop(
           }
         }
       }
+      // DORMANT branch — `reactiveCompact` is always null in the shipped
+      // build (REACTIVE_COMPACT ∉ FEATURE_ALLOWLIST; see the documented
+      // require-guard at the top of this file). Official-parity structure
+      // only; the backfill below mirrors official 2.1.283 @211163030 for
+      // when/if the gate is ever enabled.
       if ((isWithheld413 || isWithheldMedia) && reactiveCompact) {
         const compacted = await reactiveCompact.tryReactiveCompact({
           hasAttempted: hasAttemptedReactiveCompact,

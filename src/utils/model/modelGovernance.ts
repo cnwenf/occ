@@ -70,11 +70,41 @@ export function parseDeniedModelEntries(
   })
 }
 
+// Session-level memo for the entry parse, matching the official `TO`
+// "(cached)" contract (@198789550 region) — `getPolicyDeniedGovernance()` sits
+// on the `isModelAllowed()` hot path (allowlist checks, family-alias candidate
+// loops, ModelPicker per-row renders), so re-parsing every call was O(entries)
+// per render/judgment. Keyed on the RAW array identity: a settings reload
+// produces a fresh policySettings object (new array reference) → automatic
+// miss → re-parse; same array ⇒ same parse result, so the memo can never go
+// stale within a session. (OCC-98 acceptance finding #5 / dataflow d111.)
+let deniedEntriesMemo: {
+  readonly source: readonly string[]
+  readonly entries: readonly DeniedModelsEntry[]
+} | null = null
+
+function parseDeniedModelEntriesCached(
+  deniedModels: readonly string[],
+): readonly DeniedModelsEntry[] {
+  if (deniedEntriesMemo !== null && deniedEntriesMemo.source === deniedModels) {
+    return deniedEntriesMemo.entries
+  }
+  const entries = parseDeniedModelEntries(deniedModels)
+  deniedEntriesMemo = { source: deniedModels, entries }
+  return entries
+}
+
+/** Test/reset hook for the parse memo (identity-keyed; see above). */
+export function resetDeniedEntriesMemoForTest(): void {
+  deniedEntriesMemo = null
+}
+
 /**
  * Official `m_`: the governance view of the winning policy source — parsed
  * deny entries plus the override maps used to resolve provider spellings
  * (policy `modelOverrides`, then the merged-settings map ≡ official `une()`/
  * `ys()`; the official third map `nBr()` is stubbed absent — see header).
+ * Entry parse is session-cached (official `TO` "cached"; see memo above).
  */
 export function getPolicyDeniedGovernance(): PolicyDeniedGovernance {
   const policy = getSettingsForSource('policySettings') as SettingsJson | null
@@ -87,7 +117,7 @@ export function getPolicyDeniedGovernance(): PolicyDeniedGovernance {
     ...(policy?.modelOverrides !== undefined ? [policy.modelOverrides] : []),
     ...(mergedOverrides !== undefined ? [mergedOverrides] : []),
   ]
-  return { entries: parseDeniedModelEntries(deniedModels), overrideMaps }
+  return { entries: parseDeniedModelEntriesCached(deniedModels), overrideMaps }
 }
 
 function getMergedModelOverrides(): ModelOverrideMap | undefined {

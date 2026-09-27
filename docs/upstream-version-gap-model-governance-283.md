@@ -53,7 +53,7 @@ Tests (4 new files, 99 tests): `deniedModels283`, `availableModelsMatch283`, `mo
 ## 4. Verification
 
 - My 4 suites isolated: 99 pass / 0 fail (234 expects).
-- `bun test src/utils/model` → 236 pass / 0 fail. `src/utils/model` + `src/utils/settings` → 477 pass / 12 fail — all 12 in `policySandbox283.test.ts` (separate in-flight workstream; fails in isolation without this round's changes; untouched).
+- `bun test src/utils/model` → 236 pass / 0 fail. `src/utils/model` + `src/utils/settings` → 477 pass / 12 fail — all 12 in `policySandbox283.test.ts`. **Mid-round snapshot — reconciled at acceptance (OCC-98)**: those 12 fails were recorded while the parallel OCC-138 P1a sandbox workstream was still in flight; `policySandbox283.test.ts` (+343 lines) IS part of the merged PR diff, not an untouched bystander. On the shipped HEAD the suite passes 14/14 (exit 0) under the same per-file isolation gate, and the authoritative post-merge rerun is fully green — see `upstream-version-gap-occ98-2026-09.md` §9.1 (6870 pass / 0 fail / 115 skip across 668 files).
 - Pinned `policyStrictParse282.test.ts` regression: 34 pass / 0 fail (read-only).
 - `bunx tsc --noEmit`: zero errors from this round's files (codebase-wide pre-existing errors unchanged). Biome lint clean on all touched files.
 

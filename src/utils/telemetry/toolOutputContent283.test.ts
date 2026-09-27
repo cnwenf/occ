@@ -37,6 +37,31 @@ describe('buildToolContentAttributes (official oTr truncation)', () => {
     expect((out.output as string).length).toBeLessThan(big.length)
   })
 
+  // Exact-boundary pins (OCC-98 acceptance finding #8): production truncates
+  // on STRICT `>` (truncateContent: `content.length <= maxSize` passes
+  // through), so the exact-60KB case must NOT be truncated and the MAX+1 case
+  // must produce the byte-exact marker suffix. Without these, mutations
+  // `<=`→`<` or `slice(0, maxSize-1)` stay green.
+  test('exactly MAX_CONTENT_SIZE (60KB) passes through untruncated', () => {
+    const exact = 'x'.repeat(MAX_CONTENT_SIZE)
+    const out = buildToolContentAttributes({ output: exact })
+    expect(out.output).toBe(exact)
+    expect('output_truncated' in out).toBe(false)
+    expect('output_original_length' in out).toBe(false)
+  })
+
+  test('MAX_CONTENT_SIZE+1 truncates to the byte-exact marker suffix', () => {
+    const over = 'x'.repeat(MAX_CONTENT_SIZE + 1)
+    const out = buildToolContentAttributes({ output: over })
+    expect(out.output).toBe(
+      'x'.repeat(MAX_CONTENT_SIZE) +
+        '\n\n[TRUNCATED - Content exceeds 60KB limit]',
+    )
+    expect((out.output as string).length).toBe(61482)
+    expect(out.output_truncated).toBe(true)
+    expect(out.output_original_length).toBe(MAX_CONTENT_SIZE + 1)
+  })
+
   test('non-string values pass through untouched', () => {
     const out = buildToolContentAttributes({ count: 7, flag: true })
     expect(out).toEqual({ count: 7, flag: true })

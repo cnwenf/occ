@@ -390,6 +390,22 @@ keybindings 批（35/36/69）各自成轮内并行簇。
 - **C2 集群仲裁**：toolOutputContent283（修剪后）3 pass + mcpToolOutputOtel283
   17 pass，合计 20/20，0 fail / 40 expects。
 
+### 9.1 追记（四）（验收修复树重跑，§11 承诺项）
+
+- **§11 验收修复（9 findings）之后的权威门禁全量重跑**：
+  `CI=true bash scripts/ci-test.sh` → **6875 pass / 0 fail / 115 skip，
+  668 文件，exit 0**（较上次 6870 的增量 = 本轮新增 5 项：
+  modelGovernance283 缓存 3 项 + toolOutputContent283 精确边界 2 项）。
+- **构建**：`bun run build` → `dist/cli.js` **30,947,219 bytes**，
+  MACRO.VERSION=**2.1.355**（随 release commit `cca3cbf` 的版本 bump）。
+- **修复树 live 冒烟（隔离 `CLAUDE_CONFIG_DIR`）**：
+  `echo "Output only this word and nothing else: PONGFIX" | bun dist/cli.js -p`
+  → **EXIT=0，stdout 恰为 `PONGFIX`**。
+- **spm wire e2e（#7/#9 修复后）**：4 pass / 0 fail / 12 expects（8.7s），
+  跑后 `/tmp/occ-sp283-*` 残留 = 0（mkdtemp 泄漏已闭）。
+- **mutation 复核（#8）**：`<=`→`<` 变异在新增精确边界 pin 下被捕获，
+  恢复后绿（修复前该变异不红）。
+
 ### 9.2 构建
 
 - `bun run build` → `dist/cli.js` **30,942,878 bytes**；构建后 0 个 src 文件
@@ -479,3 +495,21 @@ P1-5 完全重叠（同一官方 283 块 @204862589，双方各自 byte-verified
 合并后权威门禁第三次重跑记录见 §9.1 追记（三）。
 
 
+
+## 11. 验收修复轮（NEEDS_CHANGES → 修复，2026-09-27）
+
+验收员对 `9e0c050..6a14385` 的完整验收裁决为 **NEEDS_CHANGES**（1×P2 + 8×P3，无 P0/P1；E2E PASS、Security CLEARED_WITH_RISK、硬检查 #6 通过）。全部 9 项在本轮修复，逐项记录：
+
+| # | 级别 | 修复内容 | 验证 |
+|---|------|----------|------|
+| 1 | **P2** | `docs/upstream-version-gap-occ138.md` 裁决汇总行（:169）+ §6.3 B1/B2 行（:458）/K9 行（:463）：STAGE 判定划线作废，追记"已被 OCC-98 P1-2（模型治理）/ N36（--system-prompt 双形式）落地并随 merge `6a14385` 发货"，交叉引用本文档 §8.1 与 model-governance-283 台账。两账本不再互证矛盾 | 人工核对两 ledger 一致 |
+| 2 | P3 | `README.md` 三处 2.1.283 叙述（What-is :16 / Capability-parity :65 / Status footer :160）补列 OCC-98 落地项：managed 模型治理（deniedModels/availableModelsMatch:"exact"）、完整 prompt-id 逐消息解析器（Wve/EIe/SZt）、N36 双形式合并、N69 keybindings 指南；STAGE 引用改为双账本。badge（:8）仅版本串，硬检查 #6 已核对 == 2.1.283 不动 | grep 四处版本串不变 |
+| 3 | P3 | `modelGovernanceMessages.ts` TH 拒绝消息**重新对官方 ELF 字节取证后修复**：重下 v2.1.283 linux-x64（ELF md5 `b5afa8208e39db13e13e89449b1825f2` 与既有取证基线逐字节一致），dd 提取 TH @198791411 原文——官方两分支**共享尾句** `, and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".`，switch 分支**无**多余 `}`（原 port 把 minified 嵌套模板的收尾 `` `} `` 误当字面文本）。已按官方重写 denied 分支 + 同步 modelGovernance283.test.ts 两处 byte-exact pin（注明重取证来源） | modelGovernance283 35/35；exact-allowlist/catch 分支消息经比对与官方一致未动 |
+| 4 | P3 | `docs/upstream-version-gap-model-governance-283.md` §4：12-fail 记录标注为 **mid-round 快照**（OCC-138 P1a 在飞时的时点数据），注明 policySandbox283.test.ts 属合并 PR diff（+343 行）、发货树 14/14 exit 0，指向本文档 §9.1 权威重跑（6870/0/115） | 人工核对 |
+| 5 | P3 | `modelGovernance.ts`：`parseDeniedModelEntries` 加会话级 memo（`parseDeniedModelEntriesCached`，**以 policySettings 原始数组 identity 为键**——settings 重载必然产生新引用→自动 miss→重解析，同数组同解析结果，不会陈旧；对齐官方 `TO` "(cached)" 注释语义），另导出 `resetDeniedEntriesMemoForTest`。热路径（isModelAllowed→ModelPicker 逐行渲染）不再 O(entries) 重解析 | 新增 3 项缓存测试（identity 复用 / 重载重解析 / 缓存前后 deny-oracle 一致），套内 beforeEach 重置 memo；35/35 + model 目录 239/239 |
+| 6 | P3 | `query.ts` reactive-compact backfill 死分支：**选择"注释标注死因"方案**（验收员 runtime-dataflow 帖 d113 给出的两个方向之一；删除会丢官方 @211163030 结构对齐，启用 gate 无意义——stub 恒 false/null）。在 require 守卫（:19）与分支头（:1262）加 DORMANT 注释：REACTIVE_COMPACT ∉ FEATURE_ALLOWLIST → 恒 null，official-parity 结构保留（先例：OCC-44 Monitor `qZs`）；可达的 compacted-summary promptId 不变量由 :588 proactive backfill 保证（有覆盖） | tsc/lint 无新错；行为零变化（纯注释） |
+| 7 | P3 | `version-2.1.283-system-prompt-merge.e2e.test.ts:141` 字面 NUL 字节 → `'\x00'` 转义（TS 求值同为 NUL 字符，join 分隔语义不变）；`file` 判回 "JavaScript source, UTF-8 text"，git 恢复文本 diff/可 patch | spm e2e 4/4 pass（8.7s，wire 断言不变） |
+| 8 | P3 | `toolOutputContent283.test.ts` 补两个精确边界 pin：exact-61440 原样透传（无 `_truncated`/`_original_length`）+ exact-61441 → 输出 == `'x'.repeat(61440)+'\n\n[TRUNCATED - Content exceeds 60KB limit]'`（恰 61482，含 original_length=61441）。**mutation 复核**：`<=`→`<` 变异现被捕获（修复前不捕获），恢复后绿 | 5/5 pass；mutation CAUGHT→restored GREEN |
+| 9 | P3 | 同文件 4 个 mkdtemp 根在 finally 中与 `endpoint.close()` 并列加 `rmSync(root,{recursive:true,force:true})`（兄弟文件 effort-cap 先例） | e2e 跑完 `/tmp/occ-sp283-*` 残留 = 0 |
+
+取证材料（重下的 v283 tarball/ELF）用完即删，不留仓内。修复树验证：构建 `dist/cli.js` 30,947,219 B（MACRO.VERSION=2.1.355，随 `cca3cbf` release commit）；权威门禁全量重跑记录见 §9.1 追记（四）。

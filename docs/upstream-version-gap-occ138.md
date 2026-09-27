@@ -166,7 +166,7 @@ diff），**用完即删**（收尾时 `rm -rf`）。
 |------|------|
 | ✅ PORT 已落地 | A1、A2、G6（P1a+P1b）、G2（P2）、C1、C2（P3） |
 | PORT 计划（P2） | G1–G5（裁决完成：1 PORT + 3 NO-OP + 1 STAGE，见 §5） |
-| STAGE（原 P3 计划，预算耗尽诚实转 STAGE，逐项理由见 §6.3） | B1、B2、F1、F2、F3、F5、K9、K13、J1–J3 |
+| STAGE（原 P3 计划，预算耗尽诚实转 STAGE，逐项理由见 §6.3） | F1、F2、F3、F5、K13、J1–J3（**B1、B2、K9 已不再是 STAGE**：三项均被并行的 OCC-98 轮落地并随 merge `6a14385` 进入发货树——B1/B2 = OCC-98 P1-2 managed 模型治理，K9 = OCC-98 N36 `--system-prompt` 双形式；账本见 `upstream-version-gap-occ98-2026-09.md` §8.1，详见 §6.3 追记） |
 | STAGE | D1、D2、C3、C4、E1–E11、F4、F6、F7、H1–H5、I1–I6、I8、I9、I11–I14、K1、K3、K4、K5、K6、K8 |
 | NO-OP | F8、I7、I10、K2、K7、K10、K11、K12、L1–L21 |
 
@@ -455,12 +455,12 @@ addToolContentEvent 的 store/span 存在性检查（既有门形状，非本轮
 
 | 项 | STAGE 理由 |
 |----|-----------|
-| B1/B2 `availableModelsMatch`/`deniedModels` | 283 全新 managed-settings 表面（9/23 处命中），需恢复完整 settings 信任链机制（schema + 模型选择器全部消费点 + managed-only 强制），逐项 per-site 取证规模超出本轮剩余预算。下轮优先（settings 治理族，与 OCC-97 Cluster B 同基座）。 |
+| B1/B2 `availableModelsMatch`/`deniedModels` | ~~283 全新 managed-settings 表面（9/23 处命中），需恢复完整 settings 信任链机制（schema + 模型选择器全部消费点 + managed-only 强制），逐项 per-site 取证规模超出本轮剩余预算。下轮优先（settings 治理族，与 OCC-97 Cluster B 同基座）。~~ **追记（OCC-98 验收修复轮）：已被 OCC-98 P1-2 落地并随 merge `6a14385` 发货** —— `src/utils/model/availableModelsMatch.ts`（+229）、`src/utils/model/deniedModels.ts`（+207）、`src/utils/model/modelGovernance.ts` 等全信任链表面（schema describes、policyLocks `Qe`、policyStrictSchema `Ko`、managed-only strip `Ad`、`Vr` allow-oracle 全 tier）均已 byte-level port；台账与验证见 `upstream-version-gap-occ98-2026-09.md` §8.1 / `upstream-version-gap-model-governance-283.md`。本行 STAGE 判定作废。 |
 | F1 MCP 后台任务 progress 通知 | 官方 MCP client 后台任务生命周期多 site 差分，需专项取证 notification 缓冲/转发机制。 |
 | F2 stdio server 会话结束残留 | 进程生命周期/清理路径与 OCC daemon 模型交叉，盲改风险高，需专项取证。 |
 | F3 stateless remote 404 恢复 | HTTP transport 错误分类/重试语义 per-site 取证未完成。 |
 | F5 `mcp add/remove` 静默失败 | **安全相关（静默失败），下轮优先**；OCC mcp CLI 写路径需先核对是否同构再 port。 |
-| K9 `--system-prompt` 双形式 | CLI arg-parse site 取证未完成（官方 `-file` 后缀解析细节）。 |
+| K9 `--system-prompt` 双形式 | ~~CLI arg-parse site 取证未完成（官方 `-file` 后缀解析细节）。~~ **追记（OCC-98 验收修复轮）：已被 OCC-98 N36 落地并随 merge `6a14385` 发货** —— `src/utils/systemPromptMerge.ts`（+59）双形态合并已接线于 `src/main.tsx:1599/1622`；台账见 `upstream-version-gap-occ98-2026-09.md` §8.1（N36）。本行 STAGE 判定作废。 |
 | K13 `plugin_errors.path` | OCC stream-json init `plugin_errors` 基座字段需先核对（283 新字段的加载失败条目来源）。 |
 | J1–J3 vim 批次 | 按 occ44 起的 per-site 取证纪律：每个行为需二进制行级差分定位 + OCC `src/vim/` 行为验证（OCC vim 引擎为独立实现，官方修复点位不必然同构），合并规模超出剩余预算；维持合并取证计划。 |
 | I13 `select:*` 键位动作 | 已随 §2 I13 取证记录 STAGE（P4）：官方 unknown-action 校验 `!A(h)`→`!M(h)&&!q(h)`、白名单 163→157；OCC `validateBlock` 缺 unknown-action 检查为**既有缺口非本轮回归**，随 P4 批次一并落。 |

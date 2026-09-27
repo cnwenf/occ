@@ -70,7 +70,16 @@ export function getManagedModelGovernanceBlockMessage(
     return `${when === 'start' ? "Claude Code can't start" : "Can't switch to the default model"}: your organization allows only the models listed in "availableModels", and none of them can be used as the default model (${displayName} isn't listed). Ask your administrator to update "availableModels".`
   }
   if (!isDenied) return null
-  return when === 'start'
-    ? `Claude Code can't start: your organization's managed settings block the default model (${displayName}) in "deniedModels"`
-    : `Can't switch to the default model: your organization's managed settings block it (${displayName}) in "deniedModels"}, and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".`
+  // Official `TH` tail (re-extracted byte-exact @198791411 for the OCC-98
+  // acceptance fix): BOTH branches share the trailing sentence — the minified
+  // source is `${n==="start"?`…block the default model (…) in "deniedModels"`
+  // :`…block it (…) in "deniedModels"`}, and none of the models they allow…`.
+  // The earlier port mistook the nested template's closing backtick+brace for
+  // literal text (stray `}` in the switch branch) and dropped the shared tail
+  // from the start branch.
+  return `${
+    when === 'start'
+      ? `Claude Code can't start: your organization's managed settings block the default model (${displayName}) in "deniedModels"`
+      : `Can't switch to the default model: your organization's managed settings block it (${displayName}) in "deniedModels"`
+  }, and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".`
 }
