@@ -28,6 +28,21 @@
  *     default-model getters are env-aware; the env-free resolver returns null
  *     (official `??e` fallback then applies). Only used on the Default-model
  *     step-down paths.
+ *
+ * OCC-98 acceptance #10 — default-path wiring trade-off (recorded per the
+ * acceptance ruling): the official binary does NOT consult the deny oracle
+ * inside its default-model allowlist enforcer; it gates the RESOLVED initial
+ * model once, at startup (`Bn=TH(je)` @212235442 → red stderr print + exit(1)
+ * via hx/$i). OCC mirrors that structure: `enforceManagedModelGovernanceStartupGate`
+ * (modelGovernanceMessages.ts) is called from src/main.tsx right after
+ * `resolvedInitialModel`, covering both REPL and `-p`. We deliberately did NOT
+ * add a deny check inside `enforceDefaultModelAllowlist` (model.ts) or
+ * `getDefaultMainLoopModel()` — those are also runtime-resolver calls (e.g.
+ * QueryEngine) where a process.exit would deviate from the official shape and
+ * kill non-startup callers. The fail-open window this leaves for programmatic
+ * mid-session default resolution is accepted residual risk, tracked in
+ * docs/risk-registry.md (RR-001). The official `Az({reason:"managed_settings_invalid"})`
+ * exit-reason telemetry stays PORT-NEXT (no OCC surface; gap doc §8.4).
  */
 
 import { getSettingsForSource, getSettings_DEPRECATED } from '../settings/settings.js'

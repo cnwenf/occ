@@ -31,12 +31,16 @@ The schema is at `https://json.schemastore.org/claude-code-settings.json`. Key f
 | `model` | string | Default model (alias or full ID) |
 | `availableModels` | string[] | Enterprise allowlist (accepts family aliases, version prefixes, full IDs) |
 | `enforceAvailableModels` | boolean | Constrain default model to `availableModels` |
+| `deniedModels` | string[] | Enterprise deny list (managed settings only). A bare family alias (`opus`) blocks the whole family; a model ID blocks that version in every spelling; release-dependent aliases (`best`/`opusplan`/`default`) are ignored with a warning |
+| `availableModelsMatch` | `exact` | Enterprise (managed settings only): `availableModels` must name the model exactly — family aliases/prefixes no longer satisfy the allowlist |
 | `modelOverrides` | Record<string,string> | Anthropic model ID → provider-specific ID (e.g. Bedrock ARN) |
 | `fallbackModel` | string \| string[] | Tried in order when primary is overloaded (max 3) |
 | `effortLevel` | `low` \| `medium` \| `high` \| `max` | Reasoning effort |
 | `alwaysThinkingEnabled` | boolean | `false` disables thinking |
 | `showThinkingSummaries` | boolean | Show thinking summaries (default false) |
 | `fastMode` | boolean | Enable fast mode |
+
+> **Enterprise note (`deniedModels` / `availableModels`).** Configure `availableModels` (+ `enforceAvailableModels` / `availableModelsMatch`) and `deniedModels` **as a pair**; do not rely on `deniedModels` alone. A deny-only policy is enforced by a startup gate: if the resolved default model is denied and no allowed model can serve as the default, OCC prints `Claude Code can't start: your organization's managed settings block the default model …` in red on stderr and exits 1 (official 2.1.283 `TH(je)` semantics). Pairing the two keys lets OCC fall back to an allowed model instead of refusing to start. See `docs/risk-registry.md` (RR-001) for residual limits.
 
 ### Permissions
 

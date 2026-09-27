@@ -45,7 +45,7 @@ Tests (4 new files, 99 tests): `deniedModels283`, `availableModelsMatch283`, `mo
 1. **Field-level fail-open for malformed `deniedModels`** (official `Ko`: catch→undefined, "blocks no models until it is fixed") vs **fail-closed enforcement** on unreadable settings (`Iqn` catch→true, `Vr`/`xO`/`f_` catches→block). Both are official behaviors, ported as-is.
 2. Warnings routed through OCC's `policyErrors` ValidationError channel — OCC has no separate "Managed settings notices" surface (`Xi` output merged at load).
 3. `Ad` strip is an OCC 2-key subset (`deniedModels`, `availableModelsMatch`); OCC schema has no `managedMcpServers`/`isolation`. Immutable return (official deletes in-place on a clone); `preserveOnWrite` omitted (no consuming rewrite path).
-4. `TH` startup-exit gate (@212235445, `Az({reason:"managed_settings_invalid"})` + exit) **staged**: OCC has no exit-reason telemetry surface and OTEL files were off-limits this round. Message builder itself is byte-verbatim and wired for `start`/`switch`.
+4. `TH` startup-exit gate — **minimally wired at OCC-98 acceptance #10** (call site re-extracted @212235442: `Bn=TH(je);if(Bn!==null)return hx(Bn),await Az({…reason:"managed_settings_invalid"}),$i();`). `enforceManagedModelGovernanceStartupGate` (modelGovernanceMessages.ts) is called from src/main.tsx on the resolved initial model: red message on stderr + exit(1), matching the official observable contract (`hx`/`$i`→`nn`). The `Az({reason:"managed_settings_invalid"})` exit-reason telemetry leg stays **staged** — OCC has no exit-reason telemetry surface (risk-registry RR-002). Message builder itself is byte-verbatim and wired for `start`/`switch`.
 5. `xye()`/`X$`/`J$` entitlement overlay not ported (only reachable in the `allowlist===undefined` branch; no OCC entitlement surface).
 6. `is(S,n)` picker-known check stubbed permissive (matches pre-existing OCC raw-alias allow behavior); `nBr()` third override map stubbed absent; `ss`/`ALr` env-free alias resolution stubbed →null. All stubs cite official minified name + offset per the `isSyncedSkillHolder` pattern.
 7. **Bun mock-leak fix (OCC-97 class)**: `validateModel281.test.ts`'s top-level `isModelAllowed:()=>true` mock leaks into later-loaded files (runner may load sibling top-levels in any order; `mock.restore()` does not undo `mock.module`). Fixed at the source (explicit real-export re-registration in its `afterAll`) AND defensively in `modelGovernance283.test.ts` (query-specifier fresh import + re-register before importing modules under test).
@@ -59,7 +59,8 @@ Tests (4 new files, 99 tests): `deniedModels283`, `availableModelsMatch283`, `mo
 
 ## 5. Staged follow-ups (next rounds)
 
-- `TH` startup gate wiring + `managed_settings_invalid` exit-reason telemetry.
+- `managed_settings_invalid` exit-reason telemetry (`Az`) — the gate's print+exit(1) leg is wired (OCC-98 #10); only the telemetry leg remains (RR-002).
+- `TH('switch')` picker wiring for the `/model`-switch flow (message contract already byte-ported).
 - Entitlement deny overlay (`xye`/`X$`/`J$`) if/when OCC gains an entitlement surface.
 - `nBr()` managed-settings-env override map (third map in `m_`), `ss`/`ALr` env-free alias resolution when picker-alias infra lands.
 - Official `xy` full set (`managedMcpServers`, `isolation` + `MRe` inert-notice suppression) when those keys exist in OCC's schema.

@@ -406,6 +406,17 @@ keybindings 批（35/36/69）各自成轮内并行簇。
 - **mutation 复核（#8）**：`<=`→`<` 变异在新增精确边界 pin 下被捕获，
   恢复后绿（修复前该变异不红）。
 
+### 9.1 追记（五）（#10 修复树重跑，§11 第 10 行承诺项）
+
+#10（模型治理 HIGH 默认路径闭环）落地后的权威门禁全量重跑（`CI=true bash scripts/ci-test.sh`，2026-09-27）：
+
+- **全量：6881 pass / 0 fail / 115 skip，669 文件 0 failed（exit 0）** —— 相对追记（四）基线（6875/0/115/668）恰为 +4 unit（modelGovernance283 "#10 reproducer" describe：35→39）+2 e2e（新文件 version-2.1.283-model-governance-startup-gate）+1 文件，无其它增量、无回归。
+- 构建：`bun run build` → `dist/cli.js` 29.52 MB（MACRO.VERSION=2.1.355）。
+- 新增 e2e mutation 复核：注释掉 main.tsx 门调用重建 → 拦截用例 FAIL（1 pass/1 fail），恢复重建 → 2/2 GREEN。
+- 真实 live smoke（非 mock，`-p` 全链路）：`echo "…PONGFIX10…" | bun dist/cli.js -p` → 精确 `PONGFIX10`，exit 0（门在零 policy 环境不误伤）。
+- Biome lint：本轮全部触碰文件 0 error（main.tsx 12 条 suppressions/unused warning 与 HEAD 基线逐条一致，非本轮引入）。
+- 取证 ELF（../forensics283b，md5 `b5afa8208e39db13e13e89449b1825f2`）取证完毕已删除，不留盘。
+
 ### 9.2 构建
 
 - `bun run build` → `dist/cli.js` **30,942,878 bytes**；构建后 0 个 src 文件
@@ -498,7 +509,7 @@ P1-5 完全重叠（同一官方 283 块 @204862589，双方各自 byte-verified
 
 ## 11. 验收修复轮（NEEDS_CHANGES → 修复，2026-09-27）
 
-验收员对 `9e0c050..6a14385` 的完整验收裁决为 **NEEDS_CHANGES**（1×P2 + 8×P3，无 P0/P1；E2E PASS、Security CLEARED_WITH_RISK、硬检查 #6 通过）。全部 9 项在本轮修复，逐项记录：
+验收员对 `9e0c050..6a14385` 的完整验收裁决为 **NEEDS_CHANGES**（1×P2 + 8×P3，无 P0/P1；E2E PASS、Security CLEARED_WITH_RISK、硬检查 #6 通过）。9 项于 `341b57a` 修复并全部复验 PASS；随后验收员人工确认模型治理 HIGH 复现场景成立，追加 must-fix **#10（P2）**，同轮闭环。全部 10 项逐项记录：
 
 | # | 级别 | 修复内容 | 验证 |
 |---|------|----------|------|
@@ -512,4 +523,8 @@ P1-5 完全重叠（同一官方 283 块 @204862589，双方各自 byte-verified
 | 8 | P3 | `toolOutputContent283.test.ts` 补两个精确边界 pin：exact-61440 原样透传（无 `_truncated`/`_original_length`）+ exact-61441 → 输出 == `'x'.repeat(61440)+'\n\n[TRUNCATED - Content exceeds 60KB limit]'`（恰 61482，含 original_length=61441）。**mutation 复核**：`<=`→`<` 变异现被捕获（修复前不捕获），恢复后绿 | 5/5 pass；mutation CAUGHT→restored GREEN |
 | 9 | P3 | 同文件 4 个 mkdtemp 根在 finally 中与 `endpoint.close()` 并列加 `rmSync(root,{recursive:true,force:true})`（兄弟文件 effort-cap 先例） | e2e 跑完 `/tmp/occ-sp283-*` 残留 = 0 |
 
-取证材料（重下的 v283 tarball/ELF）用完即删，不留仓内。修复树验证：构建 `dist/cli.js` 30,947,219 B（MACRO.VERSION=2.1.355，随 `cca3cbf` release commit）；权威门禁全量重跑记录见 §9.1 追记（四）。
+| 10 | **P2** | **模型治理 HIGH 人工确认成立（验收员追加 must-fix）——默认路径 deny 闭环**：官方启动门逐字节取证（call site @212235442 `Bn=TH(je);if(Bn!==null)return hx(Bn),await Az({…reason:"managed_settings_invalid"}),$i();`；helper 模块 @207982718：`hx`=`console.error(pe.red(msg))` 红色 stderr，`$i`=flush analytics 后 `nn`→`process.exit(1)`）。OCC 落地：`enforceManagedModelGovernanceStartupGate`（modelGovernanceMessages.ts，print+exit(1)，`Az` 遥测腿 PORT-NEXT）接线 main.tsx `resolvedInitialModel` 之后（官方门位置的 OCC 对应点，REPL 与 `-p` 双路径覆盖）。**接线取舍**（按验收裁决记录于 modelGovernance.ts 头注释 + risk-registry RR-001）：不在 `enforceDefaultModelAllowlist`/`getDefaultMainLoopModel` 内加 deny 检查——它们同时被 runtime 路径（QueryEngine 等）调用，process.exit 会偏离官方结构并误杀非启动调用方；官方就是在启动点对"已解析模型"关门，而非改解析器。审计建议①风险登记薄 `docs/risk-registry.md`（RR-001 闭环+4 项残留、RR-002 遥测 PORT-NEXT）；建议③企业文档注记 `docs/en/settings.md` Model 表补 `deniedModels`/`availableModelsMatch` 行 + "成对配置勿单用 deny" 企业注记；governance 台账 §3.4/§5 同步（门已接线、遥测/switch-picker 仍 staged） | 回归 reproducer 双份：unit（modelGovernance283 "OCC-98 #10 reproducer" describe，4 项：deny-only+零配置默认必被拒且门 exit(1)+官方消息逐字节、opus-only、非匹配 deny 负对照放行、无 policy no-op）+ 真实 e2e（version-2.1.283-model-governance-startup-gate：CLAUDE_CODE_MANAGED_SETTINGS_PATH 真实 managed-settings 注入 + 零 ANTHROPIC_MODEL → exit 1 + 官方 stderr 消息 + `/v1/messages` 零流量；负对照 exit 0 且到达 wire）。**mutation 复核**：注释掉 main.tsx 门调用重建后 e2e 拦截用例转 FAIL，恢复后 2/2 GREEN。全量门禁见 §9.1 追记（五） |
+
+取证材料（重下的 v283 tarball/ELF）用完即删，不留仓内。修复树验证：构建 `dist/cli.js` 30,947,219 B（MACRO.VERSION=2.1.355，随 `cca3cbf` release commit）；权威门禁全量重跑记录见 §9.1 追记（四）；#10 修复树重跑见 §9.1 追记（五）。
+
+**#1–#9 验收复核**：验收员 `3c5297e8` 已全部复验 ✅ PASS；#10 于同轮追加（人工确认 HIGH 成立），本表第 10 行为其闭环记录，随本次 commit 交付、不另开 issue。

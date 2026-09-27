@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test'
 
 // Hermetic for credential-less environments (CI runners) — same seed as
 // anthropicDefaultModel236.test.ts.
@@ -67,12 +67,13 @@ const {
   resetDeniedEntriesMemoForTest,
 } = await import('../modelGovernance.js')
 const {
+  enforceManagedModelGovernanceStartupGate,
   getManagedModelGovernanceBlockMessage,
   isBlockedByExactAvailableModels,
   isModelBlockedByGovernance,
 } = await import('../modelGovernanceMessages.js')
 const { isModelAllowed } = await import('../modelAllowlist.js')
-const { getEnforcedDefaultModel } = await import('../model.js')
+const { getEnforcedDefaultModel, getDefaultMainLoopModel } = await import('../model.js')
 const {
   availableModelsExactEntryWarnings,
   collectManagedModelGovernanceWarnings,
@@ -429,5 +430,139 @@ describe('2.1.283 governance warning collectors (official z5n / V5n / Xi)', () =
   test('null/undefined policy yields no warnings', () => {
     expect(collectManagedModelGovernanceWarnings(null)).toEqual([])
     expect(collectManagedModelGovernanceWarnings(undefined)).toEqual([])
+  })
+})
+
+/**
+ * OCC-98 acceptance #10 (P2) reproducer — the confirmed HIGH fail-open:
+ * a deny-only policy (`deniedModels`, no `availableModels` /
+ * `enforceAvailableModels`) plus ZERO user model config resolved the tier
+ * default through `enforceDefaultModelAllowlist`'s
+ * `if (!getEnforceAvailableModels()) return setting` first line without ever
+ * consulting the deny oracle. The fix wires the official 2.1.283 startup gate
+ * (`Bn=TH(je)` @212235442 → hx red-stderr print + $i exit(1)) as
+ * `enforceManagedModelGovernanceStartupGate`, called from src/main.tsx on the
+ * resolved initial model. These tests assert the gate closes the default
+ * path: deny-only + zero config MUST exit(1) with the official start message
+ * (not silently pass), and a non-matching deny policy MUST NOT.
+ */
+describe('2.1.283 startup gate — deny-only default-path closure (OCC-98 #10 reproducer)', () => {
+  // Hermetic against the RUNNER's own env: this repo's CI hosts and dev
+  // machines export model overrides (e.g. ANTHROPIC_DEFAULT_OPUS_MODEL) and
+  // provider switches that would rewrite the tier default away from the
+  // canonical Claude model the deny entries name.
+  const ENV_KEYS = [
+    'ANTHROPIC_DEFAULT_MODEL',
+    'ANTHROPIC_DEFAULT_OPUS_MODEL',
+    'ANTHROPIC_DEFAULT_SONNET_MODEL',
+    'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'ANTHROPIC_MODEL',
+    'USER_TYPE',
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    'CLAUDE_CODE_USE_MANTLE',
+    'CLAUDE_CODE_USE_VERTEX',
+  ] as const
+  let savedEnv: Record<string, string | undefined> = {}
+  let exitSpy: ReturnType<typeof spyOn>
+  let errorSpy: ReturnType<typeof spyOn>
+  let exitCode: number | undefined
+
+  // Constructed RegExp, not a literal — keeps biome's
+  // noControlCharactersInRegex off an intentional ANSI-color strip.
+  const ansiRe = new RegExp(`${String.fromCharCode(0x1b)}\\[[0-9;]*m`, 'g')
+  const stripAnsi = (value: unknown): string => String(value).replace(ansiRe, '')
+
+  beforeEach(() => {
+    savedEnv = {}
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+    exitCode = undefined
+    // Official $i → nn: process.exit(1). The spy throws so the gate's
+    // "exit" is observable as a control-flow interruption in-process.
+    exitSpy = spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      exitCode = code
+      throw new Error(`process.exit(${code})`)
+    }) as never)
+    errorSpy = spyOn(console, 'error').mockImplementation((() => {}) as never)
+  })
+
+  afterEach(() => {
+    mock.restore()
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = savedEnv[key]
+    }
+  })
+
+  test('deny-only policy + zero config: the resolved default IS denied and the gate exits(1) with the official start message', () => {
+    // The confirmed fail-open shape: ONLY deniedModels in policySettings,
+    // zero user model config anywhere.
+    mockedPolicy = { deniedModels: ['opus', 'sonnet', 'haiku', 'fable'] }
+    mockedMerged = {}
+
+    // Pre-fix fact: default resolution itself never consults the deny
+    // oracle — whatever the tier default is, it comes back denied.
+    const resolvedDefault = getDefaultMainLoopModel()
+    expect(isModelDeniedByPolicy(resolvedDefault)).toBe(true)
+
+    // Post-fix contract: the startup gate refuses to let it through.
+    expect(() => enforceManagedModelGovernanceStartupGate(resolvedDefault)).toThrow(
+      'process.exit(1)',
+    )
+    expect(exitCode).toBe(1)
+    expect(exitSpy).toHaveBeenCalledTimes(1)
+
+    // Official hx: red message on stderr via console.error; message is TH's
+    // 'start' branch, byte-verbatim including the shared tail.
+    expect(errorSpy).toHaveBeenCalledTimes(1)
+    const printed = stripAnsi(errorSpy.mock.calls[0]![0])
+    expect(printed).toContain(
+      "Claude Code can't start: your organization's managed settings block the default model",
+    )
+    expect(printed).toContain('in "deniedModels"')
+    expect(printed).toContain(
+      ', and none of the models they allow can be used as the default instead. Ask your administrator to update "deniedModels" or "availableModels".',
+    )
+    // And it equals exactly what TH('start') returns for this model.
+    expect(printed).toBe(
+      stripAnsi(getManagedModelGovernanceBlockMessage(resolvedDefault, 'start') ?? ''),
+    )
+  })
+
+  test('deny-only policy naming only the default family (opus): gate exits(1)', () => {
+    mockedPolicy = { deniedModels: ['opus'] }
+    mockedMerged = {}
+    const resolvedDefault = getDefaultMainLoopModel()
+    // Zero-config on the CI seed (firstParty PAYG key) resolves an Opus
+    // default; guard so the assertion stays meaningful if tiers change.
+    expect(isModelDeniedByPolicy(resolvedDefault)).toBe(true)
+    expect(() => enforceManagedModelGovernanceStartupGate(resolvedDefault)).toThrow(
+      'process.exit(1)',
+    )
+    expect(exitCode).toBe(1)
+  })
+
+  test('negative control: a deny policy that does NOT match the default starts clean (no exit, no stderr)', () => {
+    mockedPolicy = { deniedModels: ['my-custom-model'] } // literal entry only
+    mockedMerged = {}
+    const resolvedDefault = getDefaultMainLoopModel()
+    expect(isModelDeniedByPolicy(resolvedDefault)).toBe(false)
+    expect(() => enforceManagedModelGovernanceStartupGate(resolvedDefault)).not.toThrow()
+    expect(exitSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
+  })
+
+  test('no policy at all: gate is a no-op (zero-config unaffected)', () => {
+    mockedPolicy = null
+    mockedMerged = {}
+    expect(() =>
+      enforceManagedModelGovernanceStartupGate(getDefaultMainLoopModel()),
+    ).not.toThrow()
+    expect(exitSpy).not.toHaveBeenCalled()
+    expect(errorSpy).not.toHaveBeenCalled()
   })
 })

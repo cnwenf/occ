@@ -124,6 +124,7 @@ import { safeParseJSON } from './utils/json.js';
 import { logError } from './utils/log.js';
 import { getModelDeprecationWarning } from './utils/model/deprecation.js';
 import { getDefaultMainLoopModel, getUserSpecifiedModelSetting, normalizeModelStringForAPI, parseUserSpecifiedModel } from './utils/model/model.js';
+import { enforceManagedModelGovernanceStartupGate } from './utils/model/modelGovernanceMessages.js';
 import { ensureFableConsent, ensureFableConsentSync } from './components/Fable5ConsentDialog.js';
 import { normalizeFallbackModels } from './utils/model/fallbackModel.js';
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js';
@@ -2418,6 +2419,18 @@ async function run(): Promise<CommanderCommand> {
     setInitialMainLoopModel(getUserSpecifiedModelSetting() || null);
     const initialMainLoopModel = getInitialMainLoopModel();
     const resolvedInitialModel = parseUserSpecifiedModel(initialMainLoopModel ?? getDefaultMainLoopModel());
+    // CC 2.1.283 managed model governance startup gate — official call site
+    // @212235442: `Bn=TH(je);if(Bn!==null)return hx(Bn),await Az({...reason:
+    // "managed_settings_invalid"}),$i();` — the block message is computed on
+    // the RESOLVED initial model right after the startup resolver, before the
+    // effort-cap/advisor blocks. Observable contract: red message on stderr
+    // (hx) then exit(1) ($i → nn); the Az exit-reason telemetry has no OCC
+    // surface (PORT-NEXT). Closes OCC-98 acceptance #10: a deny-only policy
+    // (deniedModels without availableModels/enforceAvailableModels) plus zero
+    // user model config previously resolved the tier default without ever
+    // consulting the deny oracle. Covers REPL and `-p` (runHeadless forks
+    // later at the print branch below).
+    enforceManagedModelGovernanceStartupGate(resolvedInitialModel);
     // Fable 5 research-preview consent. Non-interactive (pipe) sessions can't
     // show a dialog, so they require prior consent and otherwise fall back to
     // the default model. Interactive sessions prompt after setup screens below.
