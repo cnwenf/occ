@@ -9,14 +9,18 @@
  *     call site @212235442 (`Bn=TH(je)` → print + exit reason
  *     `managed_settings_invalid`). The message contract is ported byte-exact;
  *     the startup gate is wired as
- *     `enforceManagedModelGovernanceStartupGate` (print + exit(1), OCC-98
- *     acceptance #10) — only the `Az` exit-reason telemetry stays PORT-NEXT
- *     (no OCC surface).
+ *     `enforceManagedModelGovernanceStartupGate` (print + capped analytics
+ *     flush + exit(1), OCC-98 acceptance #10 + P3 round) — only the `Az`
+ *     exit-reason EVENT stays PORT-NEXT (official event shape not yet
+ *     byte-extracted; docs/risk-registry.md RR-002).
  *   - `ub` (sanitizeModelNameForMessage)     @198783953
  */
 
 import chalk from 'chalk'
 
+import { shutdownDatadog } from '../../services/analytics/datadog.js'
+import { shutdown1PEventLogging } from '../../services/analytics/firstPartyEventLogger.js'
+import { sleep } from '../sleep.js'
 import { getSettingsForSource } from '../settings/settings.js'
 import type { SettingsJson } from '../settings/types.js'
 import { classifyAvailableModelsEntry } from './availableModelsMatch.js'
@@ -89,6 +93,13 @@ export function getManagedModelGovernanceBlockMessage(
 }
 
 /**
+ * Upper bound for the gate's analytics flush before `process.exit(1)`.
+ * Mirrors the gracefulShutdown 500ms budget: lost analytics on slow networks
+ * are acceptable; a hanging exit is not.
+ */
+const GATE_ANALYTICS_FLUSH_BUDGET_MS = 500
+
+/**
  * Official 2.1.283 startup gate — call site @212235442 (byte-extracted):
  *
  *   `Bn=TH(je);if(Bn!==null)return hx(Bn),await Az({sessionId:Y(),
@@ -98,9 +109,14 @@ export function getManagedModelGovernanceBlockMessage(
  * (covers the user-specified model AND the zero-config tier default),
  * `hx` (@207982718 module) = `console.error(pe.red(msg))` — red on stderr,
  * and `$i` = flush analytics sinks then `nn` → `process.exit(1)` (exit reason
- * "cli_error"). The `Az` exit-reason telemetry (`managed_settings_invalid`)
- * has no OCC surface and stays PORT-NEXT (gap doc §8.4); print + exit(1) is
- * the observable startup contract.
+ * "cli_error"). Both observable legs are ported: `hx` as the red stderr print
+ * and `$i`'s flush half-leg as a capped `shutdown1PEventLogging()` +
+ * `shutdownDatadog()` race (mirrors the gracefulShutdown 500ms budget —
+ * Bun skips beforeExit flush handlers on `process.exit`, so events queued
+ * before the gate would otherwise be dropped). Only the `Az` exit-reason
+ * EVENT (`managed_settings_invalid`) stays PORT-NEXT: its official event
+ * name/shape was never byte-extracted and must not be invented
+ * (docs/risk-registry.md RR-002).
  *
  * OCC-98 acceptance finding #10 (P2) minimal closure: without this gate a
  * deny-only policy (`deniedModels` set, no `availableModels`/
@@ -111,10 +127,23 @@ export function getManagedModelGovernanceBlockMessage(
  * the effort-cap/advisor blocks; covers both REPL and `-p` paths, which
  * branch later).
  */
-export function enforceManagedModelGovernanceStartupGate(model: string): void {
+export async function enforceManagedModelGovernanceStartupGate(
+  model: string,
+): Promise<void> {
   const message = getManagedModelGovernanceBlockMessage(model, 'start')
   if (message === null) return
-  // Official `hx`: red on stderr via console.error; then exit(1) ($i → nn).
+  // Official `hx`: red on stderr via console.error.
   console.error(chalk.red(message))
+  // Official `$i` flush half-leg: deliver events queued before the gate
+  // (e.g. tengu_startup_telemetry) — a bare process.exit(1) would drop them.
+  try {
+    await Promise.race([
+      Promise.all([shutdown1PEventLogging(), shutdownDatadog()]),
+      sleep(GATE_ANALYTICS_FLUSH_BUDGET_MS),
+    ])
+  } catch {
+    // Ignore analytics shutdown errors (gracefulShutdown policy: lost
+    // analytics on slow networks are acceptable; a hanging exit is not).
+  }
   process.exit(1)
 }

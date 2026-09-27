@@ -2424,13 +2424,15 @@ async function run(): Promise<CommanderCommand> {
     // "managed_settings_invalid"}),$i();` — the block message is computed on
     // the RESOLVED initial model right after the startup resolver, before the
     // effort-cap/advisor blocks. Observable contract: red message on stderr
-    // (hx) then exit(1) ($i → nn); the Az exit-reason telemetry has no OCC
-    // surface (PORT-NEXT). Closes OCC-98 acceptance #10: a deny-only policy
-    // (deniedModels without availableModels/enforceAvailableModels) plus zero
-    // user model config previously resolved the tier default without ever
-    // consulting the deny oracle. Covers REPL and `-p` (runHeadless forks
-    // later at the print branch below).
-    enforceManagedModelGovernanceStartupGate(resolvedInitialModel);
+    // (hx), then $i's capped analytics flush, then exit(1); only the Az
+    // exit-reason EVENT stays PORT-NEXT (official event shape never
+    // byte-extracted — docs/risk-registry.md RR-002). Closes OCC-98 acceptance
+    // #10: a deny-only policy (deniedModels without
+    // availableModels/enforceAvailableModels) plus zero user model config
+    // previously resolved the tier default without ever consulting the deny
+    // oracle. Covers REPL and `-p` (runHeadless forks later at the print
+    // branch below).
+    await enforceManagedModelGovernanceStartupGate(resolvedInitialModel);
     // Fable 5 research-preview consent. Non-interactive (pipe) sessions can't
     // show a dialog, so they require prior consent and otherwise fall back to
     // the default model. Interactive sessions prompt after setup screens below.

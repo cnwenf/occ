@@ -42,7 +42,9 @@
  * kill non-startup callers. The fail-open window this leaves for programmatic
  * mid-session default resolution is accepted residual risk, tracked in
  * docs/risk-registry.md (RR-001). The official `Az({reason:"managed_settings_invalid"})`
- * exit-reason telemetry stays PORT-NEXT (no OCC surface; gap doc §8.4).
+ * exit-reason EVENT stays PORT-NEXT — its official event name/shape was never
+ * byte-extracted and must not be invented; $i's analytics-flush half-leg IS
+ * ported (docs/risk-registry.md RR-002).
  */
 
 import { getSettingsForSource, getSettings_DEPRECATED } from '../settings/settings.js'

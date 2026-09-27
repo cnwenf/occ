@@ -20,6 +20,12 @@ Accepted and residual risks, tracked per audit/acceptance recommendation so futu
 3. **`getSmallFastModel()` has no deny check (LOW, official-parity).** The official binary applies the same structure at that site — the haiku-class background model is not governance-checked there either. Documented for parity, not invented divergence.
 4. **Exit-reason telemetry missing → see RR-002.**
 
-## RR-002 — `managed_settings_invalid` exit-reason telemetry (PORT-NEXT)
+## RR-002 — `managed_settings_invalid` exit-reason EVENT (PORT-NEXT)
 
-The official gate reports `Az({sessionId, message, reason:"managed_settings_invalid"})` before flushing analytics sinks and exiting. OCC's analytics surface is an empty implementation (stubbed per CLAUDE.md), so the exit-reason leg has nowhere to land; the observable contract (red stderr message + exit 1) is fully wired. Port `Az` when the telemetry surface exists. Ruled PORT-NEXT by the OCC-98 acceptance (not a release blocker).
+The official gate runs three legs before exiting: `hx(Bn)` (red stderr message), `await Az({sessionId, message, reason:"managed_settings_invalid"})` (exit-reason analytics EVENT), and `$i()` (flush analytics sinks, then exit). 
+
+**What IS ported (OCC-98 #10 + P3 round).** The `hx` print, and `$i`'s flush half-leg: the gate is async and awaits a capped (500ms, mirroring the gracefulShutdown budget) `Promise.race([Promise.all([shutdown1PEventLogging(), shutdownDatadog()]), sleep(500)])` between the print and `process.exit(1)`, so events queued before the gate (e.g. `tengu_startup_telemetry`) are delivered — Bun does not run beforeExit flush handlers on `process.exit`.
+
+**Correcting the earlier premise.** OCC's analytics surface is NOT an empty stub: `src/services/analytics/` is a real wired implementation (`sink.ts` `initializeAnalyticsSink()` attaches sinks routing to Datadog `trackDatadogEvent` + first-party `logEventTo1P`; `initSinks()` runs in main.tsx preAction — before the gate). (The CLAUDE.md "Analytics = empty implementations" table row is stale.)
+
+**What stays PORT-NEXT and why.** Only the `Az` exit-reason EVENT itself. The blocker is forensic, not structural: the official event's name/payload shape was never byte-extracted from the binary, and the `aligning-with-official-binary` discipline forbids inventing it. When the shape is pinned by byte-forensics, port it as a `logEvent(...)` call inside the gate before the flush race. Ruled PORT-NEXT by the OCC-98 acceptance (not a release blocker).

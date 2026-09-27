@@ -440,11 +440,12 @@ describe('2.1.283 governance warning collectors (official z5n / V5n / Xi)', () =
  * default through `enforceDefaultModelAllowlist`'s
  * `if (!getEnforceAvailableModels()) return setting` first line without ever
  * consulting the deny oracle. The fix wires the official 2.1.283 startup gate
- * (`Bn=TH(je)` @212235442 → hx red-stderr print + $i exit(1)) as
- * `enforceManagedModelGovernanceStartupGate`, called from src/main.tsx on the
- * resolved initial model. These tests assert the gate closes the default
- * path: deny-only + zero config MUST exit(1) with the official start message
- * (not silently pass), and a non-matching deny policy MUST NOT.
+ * (`Bn=TH(je)` @212235442 → hx red-stderr print + $i capped analytics flush +
+ * exit(1)) as `enforceManagedModelGovernanceStartupGate` (async), called from
+ * src/main.tsx on the resolved initial model. These tests assert the gate
+ * closes the default path: deny-only + zero config MUST exit(1) with the
+ * official start message (not silently pass), and a non-matching deny policy
+ * MUST NOT.
  */
 describe('2.1.283 startup gate — deny-only default-path closure (OCC-98 #10 reproducer)', () => {
   // Hermetic against the RUNNER's own env: this repo's CI hosts and dev
@@ -498,7 +499,7 @@ describe('2.1.283 startup gate — deny-only default-path closure (OCC-98 #10 re
     }
   })
 
-  test('deny-only policy + zero config: the resolved default IS denied and the gate exits(1) with the official start message', () => {
+  test('deny-only policy + zero config: the resolved default IS denied and the gate exits(1) with the official start message', async () => {
     // The confirmed fail-open shape: ONLY deniedModels in policySettings,
     // zero user model config anywhere.
     mockedPolicy = { deniedModels: ['opus', 'sonnet', 'haiku', 'fable'] }
@@ -509,8 +510,10 @@ describe('2.1.283 startup gate — deny-only default-path closure (OCC-98 #10 re
     const resolvedDefault = getDefaultMainLoopModel()
     expect(isModelDeniedByPolicy(resolvedDefault)).toBe(true)
 
-    // Post-fix contract: the startup gate refuses to let it through.
-    expect(() => enforceManagedModelGovernanceStartupGate(resolvedDefault)).toThrow(
+    // Post-fix contract: the startup gate refuses to let it through. The gate
+    // is async ($i capped analytics flush before exit), so the exitSpy throw
+    // surfaces as a rejection.
+    await expect(enforceManagedModelGovernanceStartupGate(resolvedDefault)).rejects.toThrow(
       'process.exit(1)',
     )
     expect(exitCode).toBe(1)
@@ -533,35 +536,35 @@ describe('2.1.283 startup gate — deny-only default-path closure (OCC-98 #10 re
     )
   })
 
-  test('deny-only policy naming only the default family (opus): gate exits(1)', () => {
+  test('deny-only policy naming only the default family (opus): gate exits(1)', async () => {
     mockedPolicy = { deniedModels: ['opus'] }
     mockedMerged = {}
     const resolvedDefault = getDefaultMainLoopModel()
     // Zero-config on the CI seed (firstParty PAYG key) resolves an Opus
     // default; guard so the assertion stays meaningful if tiers change.
     expect(isModelDeniedByPolicy(resolvedDefault)).toBe(true)
-    expect(() => enforceManagedModelGovernanceStartupGate(resolvedDefault)).toThrow(
+    await expect(enforceManagedModelGovernanceStartupGate(resolvedDefault)).rejects.toThrow(
       'process.exit(1)',
     )
     expect(exitCode).toBe(1)
   })
 
-  test('negative control: a deny policy that does NOT match the default starts clean (no exit, no stderr)', () => {
+  test('negative control: a deny policy that does NOT match the default starts clean (no exit, no stderr)', async () => {
     mockedPolicy = { deniedModels: ['my-custom-model'] } // literal entry only
     mockedMerged = {}
     const resolvedDefault = getDefaultMainLoopModel()
     expect(isModelDeniedByPolicy(resolvedDefault)).toBe(false)
-    expect(() => enforceManagedModelGovernanceStartupGate(resolvedDefault)).not.toThrow()
+    await expect(enforceManagedModelGovernanceStartupGate(resolvedDefault)).resolves.toBeUndefined()
     expect(exitSpy).not.toHaveBeenCalled()
     expect(errorSpy).not.toHaveBeenCalled()
   })
 
-  test('no policy at all: gate is a no-op (zero-config unaffected)', () => {
+  test('no policy at all: gate is a no-op (zero-config unaffected)', async () => {
     mockedPolicy = null
     mockedMerged = {}
-    expect(() =>
+    await expect(
       enforceManagedModelGovernanceStartupGate(getDefaultMainLoopModel()),
-    ).not.toThrow()
+    ).resolves.toBeUndefined()
     expect(exitSpy).not.toHaveBeenCalled()
     expect(errorSpy).not.toHaveBeenCalled()
   })
