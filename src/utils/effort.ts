@@ -143,6 +143,136 @@ export function parseEffortValue(value: unknown): EffortValue | undefined {
   return undefined
 }
 
+// ── Official 2.1.283 CLI/env effort parser family (Gap-139a) ─────────────
+// Byte-verified from the official 2.1.283 linux-x64 binary. The official
+// silently replaced the strict 2.1.218-era `--effort` Commander validation
+// (InvalidArgumentError → exit 1) with a lenient warn-and-continue parser
+// family; there is NO upstream CHANGELOG entry for this change (silent
+// upstream change — Gap-58 precedent). Official symbol → OCC name:
+//   G   {med:"medium"}                        → EFFORT_LEVEL_ALIASES
+//   J   {ultracode:"xhigh"}                   → EFFORT_KEYWORD_LEVELS
+//   NNe trim+lowercase, known keyword or void → normalizeEffortKeyword
+//   yct keyword → level                       → parseEffortKeywordLevel
+//   fhe trim+lowercase + G alias → level      → parseEffortCliLevel
+//   _5e CLI argParser → {level, warning}      → parseEffortCliFlag
+//   oL  env/loose parser (int, G alias,
+//       level, parseInt; NO trim)             → parseEffortEnvValue
+//   kzn oL(e) ?? yct(e) session init          → parseEffortSessionInit
+// parseEffortValue above is intentionally left unchanged: agent/skill
+// frontmatter callers (loadAgentsDir.ts, loadSkillsDir.ts) keep their
+// existing strict semantics.
+
+/** Official G — level alias map honored by the CLI flag and env parsers. */
+export const EFFORT_LEVEL_ALIASES: Readonly<Record<string, EffortLevel>> =
+  Object.freeze({ med: 'medium' })
+
+/**
+ * Official J — keyword→level map. The 'ultracode' keyword additionally
+ * toggles ultracode session mode (official `xzn`: settings ultracode===true
+ * OR the CLI effort value normalizes to the keyword); see
+ * src/utils/effort/ultracode.ts.
+ */
+export const EFFORT_KEYWORD_LEVELS: Readonly<Record<string, EffortLevel>> =
+  Object.freeze({ ultracode: 'xhigh' })
+
+/** The `--effort` keyword that enables ultracode session mode. */
+export const EFFORT_ULTRACODE_KEYWORD = 'ultracode'
+
+/** What the official `--effort` argParser stores for the ultracode keyword. */
+export type EffortCliLevel = EffortLevel | typeof EFFORT_ULTRACODE_KEYWORD
+
+/** Official NNe — trim + lowercase; returns the value only if it is a known keyword. */
+export function normalizeEffortKeyword(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined
+  }
+  const normalized = value.trim().toLowerCase()
+  return Object.hasOwn(EFFORT_KEYWORD_LEVELS, normalized)
+    ? normalized
+    : undefined
+}
+
+/** Official yct — keyword → effort level ('ultracode' → 'xhigh'). */
+export function parseEffortKeywordLevel(
+  value: unknown,
+): EffortLevel | undefined {
+  const keyword = normalizeEffortKeyword(value)
+  return keyword === undefined ? undefined : EFFORT_KEYWORD_LEVELS[keyword]
+}
+
+/** Official fhe — trim + lowercase + alias map → valid level (else undefined). */
+export function parseEffortCliLevel(value: string): EffortLevel | undefined {
+  const normalized = value.trim().toLowerCase()
+  const candidate = EFFORT_LEVEL_ALIASES[normalized] ?? normalized
+  return isEffortLevel(candidate) ? candidate : undefined
+}
+
+export interface EffortCliFlagResult {
+  /**
+   * Official `_5e` returns the keyword itself ('ultracode') as the level for
+   * the keyword form; the session init (kzn) later maps it to 'xhigh'.
+   */
+  level: EffortCliLevel | undefined
+  /** Byte-exact official warning text (without the `Warning: ` prefix). */
+  warning: string | undefined
+}
+
+/**
+ * Official `_5e` — the `--effort` CLI argParser. Unknown values warn (the
+ * caller writes `Warning: ${warning}\n` to stderr, byte-identical to the
+ * official registration site) and fall back to the default effort instead of
+ * failing argument parsing.
+ */
+export function parseEffortCliFlag(value: string): EffortCliFlagResult {
+  const level = parseEffortCliLevel(value)
+  if (level !== undefined) {
+    return { level, warning: undefined }
+  }
+  const keyword = normalizeEffortKeyword(value)
+  if (keyword !== undefined) {
+    return { level: keyword, warning: undefined }
+  }
+  return {
+    level: undefined,
+    warning: `Unknown --effort value '${value}' — ignoring it and using the default effort. Valid values: ${EFFORT_LEVELS.join(', ')}.`,
+  }
+}
+
+/**
+ * Official `oL` — the loose env/settings parser: integers pass through, the
+ * 'med' alias applies, levels match case-insensitively, then a parseInt
+ * fallback. Unlike the CLI parser (fhe) there is NO trim.
+ */
+export function parseEffortEnvValue(value: unknown): EffortValue | undefined {
+  if (value === undefined || value === null || value === '') {
+    return undefined
+  }
+  if (typeof value === 'number' && isValidNumericEffort(value)) {
+    return value
+  }
+  const str = String(value).toLowerCase()
+  const candidate = EFFORT_LEVEL_ALIASES[str] ?? str
+  if (isEffortLevel(candidate)) {
+    return candidate
+  }
+  const numericValue = parseInt(str, 10)
+  if (!isNaN(numericValue) && isValidNumericEffort(numericValue)) {
+    return numericValue
+  }
+  return undefined
+}
+
+/**
+ * Official `kzn` — session-effort init: loose value parse first, then the
+ * keyword→level map (so `--effort ultracode` initializes the session at
+ * 'xhigh'). Used by the headless/REPL effortValue plumbing in main.tsx.
+ */
+export function parseEffortSessionInit(
+  value: unknown,
+): EffortValue | undefined {
+  return parseEffortEnvValue(value) ?? parseEffortKeywordLevel(value)
+}
+
 /**
  * Numeric values are model-default only and not persisted.
  * 'max' is session-scoped for external users (ants can persist it).
@@ -199,10 +329,12 @@ export function resolvePickerEffortPersistence(
 
 export function getEffortEnvOverride(): EffortValue | null | undefined {
   const envOverride = process.env.CLAUDE_CODE_EFFORT_LEVEL
+  // Official 2.1.283 `N$`: 'unset'/'auto' → null; everything else goes
+  // through the loose parser `oL` (which honors the 'med' alias — Gap-139a).
   return envOverride?.toLowerCase() === 'unset' ||
     envOverride?.toLowerCase() === 'auto'
     ? null
-    : parseEffortValue(envOverride)
+    : parseEffortEnvValue(envOverride)
 }
 
 /**

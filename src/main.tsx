@@ -56,8 +56,9 @@ import { getSubscriptionType, isClaudeAISubscriber, prefetchAwsCredentialsAndBed
 import { checkHasTrustDialogAccepted, getGlobalConfig, getRemoteControlAtStartup, isAutoUpdaterDisabled, saveGlobalConfig } from './utils/config.js';
 import { parseAutoCompactWindowInput, resolveAutoCompactWindowOverride, setSessionAutoCompactWindow } from './utils/autoCompactWindow.js';
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js';
-import { EFFORT_LEVELS, getInitialEffortSetting, parseEffortValue } from './utils/effort.js';
+import { EFFORT_LEVELS, getInitialEffortSetting, normalizeEffortKeyword, parseEffortCliFlag, parseEffortSessionInit } from './utils/effort.js';
 import { emitStartupEffortCapWarning } from './utils/effort/cap.js';
+import { enableUltracodeForSession } from './utils/effort/ultracode.js';
 import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, resolveFastModeStatusFromCache } from './utils/fastMode.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage } from './utils/messages.js';
@@ -1058,7 +1059,7 @@ async function run(): Promise<CommanderCommand> {
     // If not provided but flag is present, value will be true
     // The actual filtering is handled in debug.ts by parsing process.argv
     return true;
-  }).addOption(new Option('--debug-to-stderr', 'Enable debug mode (to stderr)').argParser(Boolean).hideHelp()).option('--debug-file <path>', 'Write debug logs to a specific file path (implicitly enables debug mode)', () => true).option('--verbose', 'Override verbose mode setting from config', () => true).option('-p, --print', 'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run in non-interactive mode (via -p, or when stdout is not a TTY, e.g. piped or redirected output). Only use this in directories you trust. Settings files that fail validation are silently ignored in this mode (no error dialog is shown).', () => true).option('--bare', 'Minimal mode: skip hooks, LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.', () => true).option('--safe-mode', 'Start in safe mode: disable all plugins, bundled skills, and hooks. Used for troubleshooting ("is a plugin/hook causing my problem?").', () => true).option('--ax-screen-reader', 'Render screen-reader friendly output (flat text, no decorative borders or animations).', () => true).addOption(new Option('--init', 'Run Setup hooks with init trigger, then continue').hideHelp()).addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp()).addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp()).addOption(new Option('--output-format <format>', 'Output format (only works with --print): "text" (default), "json" (single result), or "stream-json" (realtime streaming)').choices(['text', 'json', 'stream-json'])).addOption(new Option('--json-schema <schema>', 'JSON Schema for structured output validation. ' + 'Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}').argParser(String)).option('--include-hook-events', 'Include all hook lifecycle events in the output stream (only works with --output-format=stream-json)', () => true).option('--include-partial-messages', 'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)', () => true).option('--forward-subagent-text', 'Forward subagent text and thinking blocks as assistant/user messages with parent_tool_use_id set (only works with --print and --output-format=stream-json)', () => true).addOption(new Option('--input-format <format>', 'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)').choices(['text', 'stream-json'])).option('--dangerously-skip-permissions', 'Bypass all permission checks. Recommended only for sandboxes with no internet access.', () => true).option('--allow-dangerously-skip-permissions', 'Enable bypassing all permission checks as an option, without it being enabled by default. Recommended only for sandboxes with no internet access.', () => true).option('--dangerously-skip-protected-paths', 'Skip permission prompts for writes to protected paths (.claude/, .git/, .vscode/, shell configs). These paths are protected because editing them can execute code or alter tool behavior. Use with caution.', () => true).addOption(new Option('--thinking <mode>', 'Thinking mode: enabled (equivalent to adaptive), disabled').choices(['enabled', 'adaptive', 'disabled']).hideHelp()).addOption(new Option('--max-thinking-tokens <tokens>', '[DEPRECATED. Use --thinking instead for newer models] Maximum number of thinking tokens (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-turns <turns>', 'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-budget-usd <amount>', 'Maximum dollar amount to spend on API calls (only works with --print)').argParser(value => {
+  }).addOption(new Option('--debug-to-stderr', 'Enable debug mode (to stderr)').argParser(Boolean).hideHelp()).option('--debug-file <path>', 'Write debug logs to a specific file path (implicitly enables debug mode)', () => true).option('--verbose', 'Override verbose mode setting from config', () => true).option('-p, --print', 'Print response and exit (useful for pipes). Note: The workspace trust dialog is skipped when Claude is run in non-interactive mode (via -p, or when stdout is not a TTY, e.g. piped or redirected output). Only use this in directories you trust. Settings files that fail validation are silently ignored in this mode (no error dialog is shown).', () => true).option('--bare', 'Minimal mode: skip hooks (those defined in settings and by installed plugins; features built into Claude Code are unaffected), LSP, plugin sync, attribution, auto-memory, background prefetches, keychain reads, and CLAUDE.md auto-discovery. Sets CLAUDE_CODE_SIMPLE=1. Anthropic auth is strictly ANTHROPIC_API_KEY or apiKeyHelper via --settings (OAuth and keychain are never read). 3P providers (Bedrock/Vertex/Foundry) use their own credentials. Skills still resolve via /skill-name. Explicitly provide context via: --system-prompt[-file], --append-system-prompt[-file], --add-dir (CLAUDE.md dirs), --mcp-config, --settings, --agents, --plugin-dir.', () => true).option('--safe-mode', 'Start in safe mode: disable all plugins, bundled skills, and hooks. Used for troubleshooting ("is a plugin/hook causing my problem?").', () => true).option('--ax-screen-reader', 'Render screen-reader friendly output (flat text, no decorative borders or animations).', () => true).addOption(new Option('--init', 'Run Setup hooks with init trigger, then continue').hideHelp()).addOption(new Option('--init-only', 'Run Setup and SessionStart:startup hooks, then exit').hideHelp()).addOption(new Option('--maintenance', 'Run Setup hooks with maintenance trigger, then continue').hideHelp()).addOption(new Option('--output-format <format>', 'Output format (only works with --print): "text" (default), "json" (single result), or "stream-json" (realtime streaming)').choices(['text', 'json', 'stream-json'])).addOption(new Option('--json-schema <schema>', 'JSON Schema for structured output validation. ' + 'Example: {"type":"object","properties":{"name":{"type":"string"}},"required":["name"]}').argParser(String)).option('--include-hook-events', 'Include all hook lifecycle events in the output stream (only works with --output-format=stream-json)', () => true).option('--include-partial-messages', 'Include partial message chunks as they arrive (only works with --print and --output-format=stream-json)', () => true).option('--forward-subagent-text', 'Forward subagent text and thinking blocks as assistant/user messages with parent_tool_use_id set (only works with --print and --output-format=stream-json)', () => true).addOption(new Option('--input-format <format>', 'Input format (only works with --print): "text" (default), or "stream-json" (realtime streaming input)').choices(['text', 'stream-json'])).option('--dangerously-skip-permissions', 'Bypass all permission checks. Recommended only for sandboxes with no internet access.', () => true).option('--allow-dangerously-skip-permissions', 'Enable bypassing all permission checks as an option, without it being enabled by default. Recommended only for sandboxes with no internet access.', () => true).option('--dangerously-skip-protected-paths', 'Skip permission prompts for writes to protected paths (.claude/, .git/, .vscode/, shell configs). These paths are protected because editing them can execute code or alter tool behavior. Use with caution.', () => true).addOption(new Option('--thinking <mode>', 'Thinking mode: enabled (equivalent to adaptive), disabled').choices(['enabled', 'adaptive', 'disabled']).hideHelp()).addOption(new Option('--max-thinking-tokens <tokens>', '[DEPRECATED. Use --thinking instead for newer models] Maximum number of thinking tokens (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-turns <turns>', 'Maximum number of agentic turns in non-interactive mode. This will early exit the conversation after the specified number of turns. (only works with --print)').argParser(Number).hideHelp()).addOption(new Option('--max-budget-usd <amount>', 'Maximum dollar amount to spend on API calls (only works with --print)').argParser(value => {
     const amount = Number(value);
     if (isNaN(amount) || amount <= 0) {
       throw new Error('--max-budget-usd must be a positive number greater than 0');
@@ -1091,13 +1092,19 @@ async function run(): Promise<CommanderCommand> {
   //   "Provide an alias for the latest model (e.g. 'fable', 'opus', or
   //    'sonnet') or a model's full name (e.g. 'claude-fable-5')."
   .option('--model <model>', `Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name (e.g. 'claude-fable-5').`).addOption(new Option('--effort <level>', `Effort level for the current session (${EFFORT_LEVELS.join(', ')})`).argParser((rawValue: string) => {
-    const value = rawValue.toLowerCase();
-    // 2.1.111: 'xhigh' sits between 'high' and 'max' (Opus 4.7); other models
-    // fall back to 'high'. Mirrors the official 2.1.218 `--effort` choices.
-    if (!EFFORT_LEVELS.includes(value as never)) {
-      throw new InvalidArgumentError(`It must be one of: ${EFFORT_LEVELS.join(', ')}`);
+    // Official 2.1.283 `_5e` registration (Gap-139a, byte-verified):
+    //   .argParser((S)=>{let{level:C,warning:G}=_5e(S);
+    //     if(G!==void 0)process.stderr.write(`Warning: ${G}\n`);return C})
+    // Unknown values no longer hard-fail with InvalidArgumentError (the stale
+    // 2.1.218 behavior); they warn on stderr and fall back to the default
+    // effort. 'med' aliases 'medium'; 'ultracode' returns the keyword itself
+    // as the level (session init kzn maps it to 'xhigh', and the startup
+    // enableUltracodeForSession gate below turns on ultracode mode).
+    const { level, warning } = parseEffortCliFlag(rawValue);
+    if (warning !== undefined) {
+      process.stderr.write(`Warning: ${warning}\n`);
     }
-    return value;
+    return level;
   })).option('--agent <agent>', `Agent for the current session. Overrides the 'agent' setting.`).option('--betas <betas...>', 'Beta headers to include in API requests (API key users only)').option('--fallback-model <model>', 'Enable automatic fallback to specified model(s) when the default model is overloaded or not available. Accepts a comma-separated list to try each in order. Re-tries the primary at the start of each user turn. (only works with --print)').addOption(new Option('--workload <tag>', 'Workload tag for billing-header attribution (cc_workload). Process-scoped; set by SDK daemon callers that spawn subprocesses for cron work. (only works with --print)').hideHelp()).option('--settings <file-or-json>', 'Path to a settings JSON file or a JSON string to load additional settings from').option('--add-dir <directories...>', 'Additional directories to allow tool access to').option('--ide', 'Automatically connect to IDE on startup if exactly one valid IDE is available', () => true).option('--strict-mcp-config', 'Only use MCP servers from --mcp-config, ignoring all other MCP configurations', () => true).option('--session-id <uuid>', 'Use a specific session ID for the conversation (must be a valid UUID)').option('-n, --name <name>', 'Set a display name for this session (shown in the prompt box, /resume picker, and terminal title)').option('--agents <json-or-file>', 'JSON object defining custom agents, or with --print the path to a file that holds one (e.g. \'{"reviewer": {"description": "Reviews code", "prompt": "You are a code reviewer"}}\')').option('--setting-sources <sources>', 'Comma-separated list of setting sources to load (user, project, local).')
   // OCC-21 Gap-2a: three 2.1.218 --help flags OCC previously rejected as
   // "unknown option". Descriptions/specs binary-verified against the official
@@ -1181,6 +1188,18 @@ async function run(): Promise<CommanderCommand> {
     if (isSafeMode()) {
       // biome-ignore lint/suspicious/noConsole:: intentional user-facing guidance
       console.warn(chalk.yellow('Safe mode enabled — plugins, bundled skills, and hooks are disabled. Restart without --safe-mode to restore full functionality.'));
+    }
+
+    // Official 2.1.283 `xzn` (Gap-139a, byte-verified):
+    //   xzn(e) = Je().ultracode===!0 || NNe(e)==="ultracode"
+    // `--effort ultracode` enables ultracode session mode at startup (the
+    // settings-key half is already covered by isUltracodeEnabled()). The
+    // session-effort plumbing below separately maps the keyword to 'xhigh'
+    // via parseEffortSessionInit (official kzn = oL ?? yct).
+    if (normalizeEffortKeyword((options as {
+      effort?: string;
+    }).effort) === 'ultracode') {
+      enableUltracodeForSession();
     }
 
     // Ignore "code" as a prompt - treat it the same as no prompt
@@ -2450,7 +2469,7 @@ async function run(): Promise<CommanderCommand> {
     // resolvedInitialModel still names the pre-fallback model and the cap
     // warning could fire (or not fire) for the wrong one.
     emitStartupEffortCapWarning(
-      parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+      parseEffortSessionInit(options.effort) ?? getInitialEffortSetting(),
       parseUserSpecifiedModel(effectiveMainLoopModel ?? getDefaultMainLoopModel()),
       outputFormat,
     );
@@ -2980,7 +2999,7 @@ async function run(): Promise<CommanderCommand> {
           tools: mcpTools
         },
         toolPermissionContext,
-        effortValue: parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+        effortValue: parseEffortSessionInit(options.effort) ?? getInitialEffortSetting(),
         ...(isFastModeEnabled() && {
           fastMode: getInitialFastModeSetting(effectiveModel ?? null)
         }),
@@ -3401,7 +3420,7 @@ async function run(): Promise<CommanderCommand> {
           content: String(inputPrompt)
         })
       } : null,
-      effortValue: parseEffortValue(options.effort) ?? getInitialEffortSetting(),
+      effortValue: parseEffortSessionInit(options.effort) ?? getInitialEffortSetting(),
       activeOverlays: new Set<string>(),
       fastMode: getInitialFastModeSetting(resolvedInitialModel),
       ...(isAdvisorEnabled() && advisorModel && {
