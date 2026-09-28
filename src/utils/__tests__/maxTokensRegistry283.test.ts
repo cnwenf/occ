@@ -68,7 +68,13 @@ describe("OCC-99: official 2.1.283 max_output_tokens registry parity", () => {
     });
   });
 
-  test("claude-mythos-5 / claude-mythos-5-1 → 64000/128000 (new branch)", () => {
+  test("claude-mythos-5 / claude-mythos-5-1 → 64000/128000 (via canonical fable-5 mapping — NOT the mythos-5 branch)", () => {
+    // OCC-100 accuracy note: getCanonicalName maps claude-mythos-5 →
+    // claude-fable-5 and claude-mythos-5-1 → claude-fable-5-1, so these
+    // values are served by the fable-5 substring branch; the dedicated
+    // mythos-5 branch in context.ts is unreachable for canonical names
+    // (kept only for canonicalization-bypassing custom ids). This test
+    // pins the OBSERVABLE official values, whichever branch serves them.
     expect(getModelMaxOutputTokens("claude-mythos-5")).toEqual({
       default: 64_000,
       upperLimit: 128_000,
@@ -83,6 +89,43 @@ describe("OCC-99: official 2.1.283 max_output_tokens registry parity", () => {
     expect(getModelMaxOutputTokens("claude-fable-5-1")).toEqual({
       default: 64_000,
       upperLimit: 128_000,
+    });
+  });
+
+  // OCC-100 carry-over (docs/upstream-version-gap-occ99-2026-09.md §6.2):
+  // the registry has 20 canonical ids but only 16 were asserted; these four
+  // close the gap so every mutation of the branch table is observable.
+
+  test("claude-fable-5 → 64000/128000 (launch group; also serves canonicalized claude-mythos-5)", () => {
+    expect(getModelMaxOutputTokens("claude-fable-5")).toEqual({
+      default: 64_000,
+      upperLimit: 128_000,
+    });
+  });
+
+  test("claude-sonnet-4-0 → 32000/64000 (sonnet-4 group)", () => {
+    expect(getModelMaxOutputTokens("claude-sonnet-4-0")).toEqual({
+      default: 32_000,
+      upperLimit: 64_000,
+    });
+  });
+
+  test("claude-sonnet-4-5 → 32000/64000 (sonnet-4 group; must NOT fall to sonnet-5 tier)", () => {
+    expect(getModelMaxOutputTokens("claude-sonnet-4-5")).toEqual({
+      default: 32_000,
+      upperLimit: 64_000,
+    });
+  });
+
+  test("claude-opus-4-5 → 32000/64000 (silent-regression channel — see note)", () => {
+    // OCC-99 mutation finding: `m.includes('opus-4-5')` is the ONLY thing
+    // keeping claude-opus-4-5 out of the `opus-4-1 || opus-4` branch
+    // (32000/32000). Deleting that substring silently halves the upper
+    // limit vs the official 32000/64000 — and before this assertion the
+    // suite stayed green. This test is the regression nail.
+    expect(getModelMaxOutputTokens("claude-opus-4-5")).toEqual({
+      default: 32_000,
+      upperLimit: 64_000,
     });
   });
 
