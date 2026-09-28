@@ -100,6 +100,16 @@ describe("OCC-99: official 2.1.283 max_output_tokens registry parity", () => {
     });
   });
 
+  // OCC-100 acceptance-P3 precision note (applies to the four registry-id
+  // tests below): coverage ≠ universal observability — within the 32000/64000
+  // group (`opus-4-5 || sonnet-4 || haiku-4`), deleting `m.includes('sonnet-4')`
+  // is MASKED for sonnet-4-0/4-5 because the default fall-through is the
+  // identical 32000/64000 (MAX_OUTPUT_TOKENS_DEFAULT/UPPER_LIMIT), so
+  // `claude-opus-4-5` below is that group's deletion nail; the sonnet pins
+  // instead bite over-broad substring mutations (e.g. a `sonnet-5` tier
+  // check widened to `sonnet`), and the fable-5 pin bites directly
+  // (deletion drops it to the 32000/64000 default).
+
   test("OCC-140: claude-fable-5 (bare, canonical) → 64000/128000", () => {
     // Previously unasserted registry id. claude-mythos-5 canonicalizes HERE
     // (claude-fable-5), so this branch is the real source of the mythos-5 tier.

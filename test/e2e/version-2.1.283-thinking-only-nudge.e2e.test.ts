@@ -425,10 +425,14 @@ describe('2.1.283 thinking-only response nudge (query-loop parity)', () => {
   // state machine, rebuilt from the acceptance reviewer's four /tmp probes
   // (probe-a-nextturn / probe-b-stopseq / probe-c-terminal /
   // probe-d-structuredoutput). Each probe fails under the matching mutation
-  // of src/query.ts (delete the next_turn reset @2044 / delete the
-  // `stop_sequence` arm / delete the isTerminalMcpToolTurn guard / delete
-  // the isStructuredOutputTurn guard) while the pre-OCC-100 suite stayed
-  // green.
+  // of src/query.ts (flip the next_turn reset @2044 to sticky-true / delete
+  // the `stop_sequence` arm / delete the isTerminalMcpToolTurn guard /
+  // delete the isStructuredOutputTurn guard) while the pre-OCC-100 suite
+  // stayed green. Precision note (OCC-100 acceptance P3): LITERALLY deleting
+  // the `thinkingOnlyNudged: false` line is behavior-neutral — the field is
+  // optional, so it reads `undefined`, still falsy under `!thinkingOnlyNudged`
+  // — the regression probe-a kills is the sticky-true flip (both mutants
+  // re-verified empirically in the 2.1.359 release round).
   // ─────────────────────────────────────────────────────────────────────
 
   test('probe-a (next_turn reset): a completed tool turn re-arms the one-shot nudge', async () => {
@@ -442,7 +446,9 @@ describe('2.1.283 thinking-only response nudge (query-loop parity)', () => {
       // Sequence: thinking-only → nudge #1 → tool_use(Read, succeeds) →
       // next_turn transition RESETS thinkingOnlyNudged (query.ts @2044 —
       // the only reset site) → thinking-only again → nudge #2 MUST fire →
-      // answer. Mutation (delete the reset): only 3 requests, no nudge #2.
+      // answer. Killing mutation (reset flipped sticky-true): only 3
+      // requests, no nudge #2. A literal deletion of the reset line is
+      // behavior-neutral (optional field → `undefined` → still falsy).
       endpoint.replaceResponses([
         THINKING_ONLY_SSE,
         toolUseSse({

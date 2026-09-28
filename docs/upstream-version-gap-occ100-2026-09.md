@@ -36,7 +36,7 @@
 
 | 文件 | 变更 |
 |------|------|
-| `test/e2e/version-2.1.283-thinking-only-nudge.e2e.test.ts` | 306 → 660 行：四探针 checked-in wire e2e + byte-exact 全等升级（结转 P2 + P3-②） |
+| `test/e2e/version-2.1.283-thinking-only-nudge.e2e.test.ts` | 306 → 656 行：四探针 checked-in wire e2e + byte-exact 全等升级（结转 P2 + P3-②） |
 | `src/utils/__tests__/maxTokensRegistry283.test.ts` | +4 断言（fable-5 / sonnet-4-0 / sonnet-4-5 / opus-4-5）+ mythos-5 测试改题（结转 P3-①） |
 | `src/utils/context.ts` | 仅注释：mythos-5 死分支的诚实性修正（canonical 映射说明，结转 P3-①） |
 
@@ -58,17 +58,27 @@
 - **probe-d（StructuredOutput 排除）**：`-p --json-schema`（SyntheticOutputTool 注册，main.tsx @2204）
   → StructuredOutput 工具轮成功 → thinking-only → **无 nudge**（`isStructuredOutputTurn` guard）。
 
-**变异验证（mutation testing，闭合 OCC-99 §6.1 "测试钉钉缺口"）**——每条 guard 单独删除、全量重建
-dist 后跑探针，4/4 全部被对应探针击杀：
+**变异验证（mutation testing，闭合 OCC-99 §6.1 "测试钉钉缺口"）**——每条 guard 单独变异（删除条件项
+或翻转复位值）、全量重建 dist 后跑探针，4/4 全部被对应探针击杀：
 
 | 变异 | 击杀者 |
 |------|--------|
-| 删除 next_turn 复位（query.ts @2044） | probe-a FAIL ✓ |
+| next_turn 复位变 sticky-true（query.ts @2044 `false`→`true`） | probe-a FAIL ✓ |
 | 删除 `stop_reason === 'stop_sequence'` 臂 | probe-b FAIL ✓ |
 | 删除 `!isTerminalMcpToolTurn(...)` | probe-c FAIL ✓ |
 | 删除 `!isStructuredOutputTurn(...)` | probe-d FAIL ✓ |
 
 变异后源码经 `git checkout` 完整还原并重建 clean dist（本轮末次重建 md5 校验 `src/query.ts` OK）。
+
+> **验收 P3-① 勘误（2.1.359 发版轮，实证复验）**：本表首行原先写作"删除 next_turn 复位"，机制描述
+> 失准——**字面删除** `thinkingOnlyNudged: false` 行是**行为中性**的：该字段为可选
+> （`thinkingOnlyNudged?: boolean`，query.ts @281），缺省读出 `undefined`，在 `!thinkingOnlyNudged`
+> （@1473）下与 `false` 同为 falsy，nudge 照常再武装，probe-a **PASS**（变异存活）。probe-a 真正击杀
+> 的回归是 **sticky-true**（@2044 复位值翻转为 `true`，标志跨 next_turn 粘滞）：nudge #2 被抑制、
+> stdout 无答案文本，probe-a **FAIL** ✓。两种变异已于发版轮逐一全量重建 dist 实证复验（字面删除 →
+> 1 pass / sticky-true → 1 fail），事后 `src/query.ts` md5 与变异前基线一致，clean dist 重建后
+> nudge e2e + registry 全套 24 pass / 0 fail。probe-b/c/d 的变异是删除布尔条件项——删除即改变行为，
+> 不存在中性歧义（probe-b 删除变异已由验收轮独立复验 → FAIL）。
 
 ### 2.2 P3-① — max-tokens 注册表补钉 + mythos-5 死分支注释修正
 
