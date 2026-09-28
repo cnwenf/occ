@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { THINKING_ONLY_NUDGE_TEXT } from '../../src/query/thinkingOnlyNudge.js'
 import { runOcc } from './helpers'
 
 /**
@@ -35,6 +36,14 @@ import { runOcc } from './helpers'
  *     is never reset inside a turn — official `Kr` resets it only on
  *     next_turn).
  *
+ * OCC-100 (§6.1/§6.3 of docs/upstream-version-gap-occ99-2026-09.md) adds
+ * the four checked-in wiring probes — next_turn-only reset re-arm
+ * (probe-a), the `stop_sequence` arm (probe-b), the terminal-MCP walk-back
+ * (probe-c, with negative control), and the StructuredOutput exclusion
+ * (probe-d) — and upgrades the "byte-exact" nudge claim from `toContain` to
+ * FULL wire equality (`lastMessageLastTextBlock(...) ===
+ * THINKING_ONLY_NUDGE_TEXT`).
+ *
  * Wire-level mock endpoint pattern from
  * version-2.1.283-model-governance-startup-gate.e2e.test.ts.
  */
@@ -66,43 +75,138 @@ function messageStart(id: string): object {
   }
 }
 
-const THINKING_ONLY_SSE = sse([
-  { event: 'message_start', data: messageStart('msg_thinking_only') },
-  {
-    event: 'content_block_start',
-    data: {
-      type: 'content_block_start',
-      index: 0,
-      content_block: { type: 'thinking', thinking: '', signature: '' },
+const THINKING_ONLY_SSE = thinkingOnlySse({
+  messageId: 'msg_thinking_only',
+  stopReason: 'end_turn',
+})
+
+/** Parameterized thinking-only response — probe-b varies the stop reason. */
+function thinkingOnlySse(opts: {
+  messageId: string
+  stopReason: string
+  stopSequence?: string | null
+}): string {
+  return sse([
+    { event: 'message_start', data: messageStart(opts.messageId) },
+    {
+      event: 'content_block_start',
+      data: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'thinking', thinking: '', signature: '' },
+      },
     },
-  },
-  {
-    event: 'content_block_delta',
-    data: {
-      type: 'content_block_delta',
-      index: 0,
-      delta: { type: 'thinking_delta', thinking: THINKING_MARKER },
+    {
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'thinking_delta', thinking: THINKING_MARKER },
+      },
     },
-  },
-  {
-    event: 'content_block_delta',
-    data: {
-      type: 'content_block_delta',
-      index: 0,
-      delta: { type: 'signature_delta', signature: 'sig_mock' },
+    {
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'signature_delta', signature: 'sig_mock' },
+      },
     },
-  },
-  { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
-  {
-    event: 'message_delta',
-    data: {
-      type: 'message_delta',
-      delta: { stop_reason: 'end_turn', stop_sequence: null },
-      usage: { output_tokens: 5 },
+    { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+    {
+      event: 'message_delta',
+      data: {
+        type: 'message_delta',
+        delta: {
+          stop_reason: opts.stopReason,
+          stop_sequence: opts.stopSequence ?? null,
+        },
+        usage: { output_tokens: 5 },
+      },
     },
-  },
-  { event: 'message_stop', data: { type: 'message_stop' } },
-])
+    { event: 'message_stop', data: { type: 'message_stop' } },
+  ])
+}
+
+/**
+ * Single tool_use response (real-API shape: empty `input` at block start,
+ * full JSON via one `input_json_delta`, message ends on `tool_use`).
+ */
+function toolUseSse(opts: {
+  messageId: string
+  toolUseId: string
+  toolName: string
+  inputJson: string
+}): string {
+  return sse([
+    { event: 'message_start', data: messageStart(opts.messageId) },
+    {
+      event: 'content_block_start',
+      data: {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'tool_use',
+          id: opts.toolUseId,
+          name: opts.toolName,
+          input: {},
+        },
+      },
+    },
+    {
+      event: 'content_block_delta',
+      data: {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: opts.inputJson },
+      },
+    },
+    { event: 'content_block_stop', data: { type: 'content_block_stop', index: 0 } },
+    {
+      event: 'message_delta',
+      data: {
+        type: 'message_delta',
+        delta: { stop_reason: 'tool_use', stop_sequence: null },
+        usage: { output_tokens: 9 },
+      },
+    },
+    { event: 'message_stop', data: { type: 'message_stop' } },
+  ])
+}
+
+/**
+ * Wire-layer LAST text block of the last message in a request body
+ * (OCC-100 §6.3: the "byte-exact" claim must be an equality assertion, not
+ * a substring `toContain`).
+ *
+ * Empirical wire shape (dumped against the built CLI): normalizeMessagesForAPI
+ * MERGES the consecutive user messages ([original prompt, nudge] → one user
+ * message), so the nudge arrives as the FINAL text block of the merged
+ * message — that block is compared with full equality against the ported
+ * THINKING_ONLY_NUDGE_TEXT constant. Role mismatch / missing text blocks
+ * yield a diagnostic string so the equality assertion fails loudly.
+ */
+function lastMessageLastTextBlock(body: string): string {
+  const parsed = JSON.parse(body) as {
+    messages: Array<{ role: string; content: unknown }>
+  }
+  const last = parsed.messages.at(-1)
+  if (!last) return '<no messages>'
+  if (last.role !== 'user') return `<last role: ${last.role}>`
+  const content = last.content
+  if (typeof content === 'string') return content
+  if (Array.isArray(content)) {
+    const textBlocks = content.filter(
+      (b): b is { type: 'text'; text: string } =>
+        (b as { type?: unknown }).type === 'text' &&
+        typeof (b as { text?: unknown }).text === 'string',
+    )
+    const lastBlock = textBlocks.at(-1)
+    if (!lastBlock) return `<no text blocks: ${JSON.stringify(content)}>`
+    return lastBlock.text
+  }
+  return `<unexpected content: ${JSON.stringify(content)}>`
+}
 
 const TEXT_ANSWER_SSE = sse([
   { event: 'message_start', data: messageStart('msg_answer') },
@@ -138,6 +242,12 @@ interface MockEndpoint {
   port: number
   /** Request bodies of POST /v1/messages calls, in order. */
   bodies: () => string[]
+  /**
+   * Swap the scripted responses after startup (OCC-100 probes build SSE
+   * fixtures that embed temp-dir file paths, which only exist once the
+   * per-test project dir has been created).
+   */
+  replaceResponses: (next: string[]) => void
   close: () => Promise<void>
 }
 
@@ -146,8 +256,9 @@ interface MockEndpoint {
  * once exhausted, repeats the last entry (a test that expects exactly N
  * calls asserts the body count separately).
  */
-function startMockEndpoint(responses: string[]): Promise<MockEndpoint> {
+function startMockEndpoint(responses: string[] = []): Promise<MockEndpoint> {
   const bodies: string[] = []
+  let current = responses
   let messageCalls = 0
   const server: Server = createServer((req, res) => {
     let body = ''
@@ -157,7 +268,7 @@ function startMockEndpoint(responses: string[]): Promise<MockEndpoint> {
       if (req.method === 'POST' && req.url?.includes('/v1/messages')) {
         bodies.push(body)
         payload =
-          responses[Math.min(messageCalls, responses.length - 1)] ??
+          current[Math.min(messageCalls, current.length - 1)] ??
           THINKING_ONLY_SSE
         messageCalls++
       }
@@ -175,6 +286,9 @@ function startMockEndpoint(responses: string[]): Promise<MockEndpoint> {
       resolve({
         port,
         bodies: () => [...bodies],
+        replaceResponses: (next: string[]) => {
+          current = next
+        },
         close: () =>
           new Promise<void>(res => {
             server.close(() => res())
@@ -263,25 +377,13 @@ describe('2.1.283 thinking-only response nudge (query-loop parity)', () => {
       }
       const retryMessages = retry.messages
       // (2) the retry request ends with the byte-exact official nudge I$t
-      // as a user message.
+      // as a user message. OCC-100 (§6.3): FULL wire equality against the
+      // ported constant — the previous `toContain` substring check did not
+      // match the "byte-exact" claim (extra blocks/text would have slipped
+      // through).
       const last = retryMessages.at(-1)
       expect(last?.role).toBe('user')
-      // (2) the retry request ends with the byte-exact official nudge I$t.
-      // OCC-140 exactness fix: this was a `.toContain` substring check on the
-      // serialized content, which would also pass if extra text were appended
-      // after the nudge — contradicting the "byte-exact" comment above. Assert
-      // FULL EQUALITY on the wire-layer nudge block instead. The nudge is the
-      // FINAL content block of the last user message (text + ephemeral cache
-      // breakpoint marker). We pin the last block, not the whole content array,
-      // because the array also carries dynamic system-reminder blocks (skills
-      // list, currentDate) that are intentionally NOT frozen into this test.
-      const content = last?.content as Array<Record<string, unknown>>
-      expect(Array.isArray(content)).toBe(true)
-      expect(content.at(-1)).toEqual({
-        type: 'text',
-        text: '[Your previous response had no visible output. Please continue and produce a user-visible response.]',
-        cache_control: { type: 'ephemeral' },
-      })
+      expect(lastMessageLastTextBlock(bodies[1]!)).toBe(THINKING_ONLY_NUDGE_TEXT)
       // (3) the thinking-only assistant turn is DROPPED from the retry
       // context (official messages:[...A,W] — A excludes this turn's L).
       expect(bodies[1]).not.toContain(THINKING_MARKER)
@@ -311,6 +413,241 @@ describe('2.1.283 thinking-only response nudge (query-loop parity)', () => {
       // Turn completes (no visible text) — the CLI must not loop forever.
       expect(result.code).toBe(0)
       expect(endpoint.bodies()).toHaveLength(2)
+    } finally {
+      await endpoint.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 90_000)
+
+  // ─────────────────────────────────────────────────────────────────────
+  // OCC-100 carry-over P2 (docs/upstream-version-gap-occ99-2026-09.md §6.1):
+  // checked-in wire regressions for the query-loop WIRING of the nudge
+  // state machine, rebuilt from the acceptance reviewer's four /tmp probes
+  // (probe-a-nextturn / probe-b-stopseq / probe-c-terminal /
+  // probe-d-structuredoutput). Each probe fails under the matching mutation
+  // of src/query.ts (delete the next_turn reset @2044 / delete the
+  // `stop_sequence` arm / delete the isTerminalMcpToolTurn guard / delete
+  // the isStructuredOutputTurn guard) while the pre-OCC-100 suite stayed
+  // green.
+  // ─────────────────────────────────────────────────────────────────────
+
+  test('probe-a (next_turn reset): a completed tool turn re-arms the one-shot nudge', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'occ-nudge283-pa-'))
+    const endpoint = await startMockEndpoint([])
+    try {
+      const projectDir = join(root, 'project')
+      mkdirSync(projectDir, { recursive: true })
+      const probeFile = join(projectDir, 'probe-a.txt')
+      writeFileSync(probeFile, 'PROBE_A_FILE_OK')
+      // Sequence: thinking-only → nudge #1 → tool_use(Read, succeeds) →
+      // next_turn transition RESETS thinkingOnlyNudged (query.ts @2044 —
+      // the only reset site) → thinking-only again → nudge #2 MUST fire →
+      // answer. Mutation (delete the reset): only 3 requests, no nudge #2.
+      endpoint.replaceResponses([
+        THINKING_ONLY_SSE,
+        toolUseSse({
+          messageId: 'msg_tool_read',
+          toolUseId: 'toolu_probe_a',
+          toolName: 'Read',
+          inputJson: JSON.stringify({ file_path: probeFile }),
+        }),
+        thinkingOnlySse({ messageId: 'msg_thinking_only_2', stopReason: 'end_turn' }),
+        TEXT_ANSWER_SSE,
+      ])
+      const home = freshHome(root, projectDir)
+      const result = await runOcc(
+        ['-p', 'say something visible'],
+        baseEnv(endpoint, home, projectDir),
+        60_000,
+      )
+      expect(result.code).toBe(0)
+      expect(result.stdout).toContain(ANSWER_MARKER)
+
+      const bodies = endpoint.bodies()
+      // request1 + nudge retry + post-tool next_turn + nudge retry #2
+      expect(bodies).toHaveLength(4)
+      // The tool turn really succeeded (Read result carried in request 3).
+      expect(bodies[2]).toContain('tool_result')
+      expect(bodies[2]).toContain('PROBE_A_FILE_OK')
+      // BOTH retries end with the byte-exact nudge (full wire equality).
+      expect(lastMessageLastTextBlock(bodies[1]!)).toBe(THINKING_ONLY_NUDGE_TEXT)
+      expect(lastMessageLastTextBlock(bodies[3]!)).toBe(THINKING_ONLY_NUDGE_TEXT)
+      // Neither thinking-only turn leaks into the retry context.
+      expect(bodies[3]).not.toContain(THINKING_MARKER)
+    } finally {
+      await endpoint.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 90_000)
+
+  test('probe-b (stop_sequence arm): thinking-only ending on stop_sequence also nudges', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'occ-nudge283-pb-'))
+    const endpoint = await startMockEndpoint([])
+    try {
+      const projectDir = join(root, 'project')
+      mkdirSync(projectDir, { recursive: true })
+      // The official condition is `(V==="end_turn"||V==="stop_sequence")`.
+      // Mutation (delete the stop_sequence arm): 1 request, silent
+      // completion — exactly the 2.1.183 bug the nudge fixes.
+      endpoint.replaceResponses([
+        thinkingOnlySse({
+          messageId: 'msg_thinking_stopseq',
+          stopReason: 'stop_sequence',
+          stopSequence: '\n\n',
+        }),
+        TEXT_ANSWER_SSE,
+      ])
+      const home = freshHome(root, projectDir)
+      const result = await runOcc(
+        ['-p', 'say something visible'],
+        baseEnv(endpoint, home, projectDir),
+        60_000,
+      )
+      expect(result.code).toBe(0)
+      expect(result.stdout).toContain(ANSWER_MARKER)
+
+      const bodies = endpoint.bodies()
+      expect(bodies).toHaveLength(2)
+      expect(lastMessageLastTextBlock(bodies[1]!)).toBe(THINKING_ONLY_NUDGE_TEXT)
+      expect(bodies[1]).not.toContain(THINKING_MARKER)
+    } finally {
+      await endpoint.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+  }, 90_000)
+
+  test('probe-c (terminal-MCP walk-back): successful result for a CLAUDE_CODE_TERMINAL_MCP_TOOLS name suppresses the nudge', async () => {
+    // Official `Ggo` walk-back: when the history ends with a SUCCESSFUL
+    // tool_result for a tool_use whose name is in the env-parsed terminal
+    // set (`r$e`), no visible text is expected after it → no nudge. The
+    // guard is purely name-based, so the probe drives it with a real
+    // successful Read turn and `CLAUDE_CODE_TERMINAL_MCP_TOOLS=Read`;
+    // OCC has no other consumer of the env var (grep: only the nudge
+    // guard), so this exercises exactly the ported walk-back.
+    // Mutation (delete `!isTerminalMcpToolTurn(...)`): a third request
+    // carrying the nudge appears.
+    const root = mkdtempSync(join(tmpdir(), 'occ-nudge283-pc-'))
+    const endpoint = await startMockEndpoint([])
+    try {
+      const projectDir = join(root, 'project')
+      mkdirSync(projectDir, { recursive: true })
+      const probeFile = join(projectDir, 'probe-c.txt')
+      writeFileSync(probeFile, 'PROBE_C_FILE_OK')
+      endpoint.replaceResponses([
+        toolUseSse({
+          messageId: 'msg_tool_read_c',
+          toolUseId: 'toolu_probe_c',
+          toolName: 'Read',
+          inputJson: JSON.stringify({ file_path: probeFile }),
+        }),
+        thinkingOnlySse({ messageId: 'msg_thinking_after_terminal', stopReason: 'end_turn' }),
+      ])
+      const home = freshHome(root, projectDir)
+      const result = await runOcc(
+        ['-p', 'say something visible'],
+        {
+          ...baseEnv(endpoint, home, projectDir),
+          CLAUDE_CODE_TERMINAL_MCP_TOOLS: 'Read',
+        },
+        60_000,
+      )
+      expect(result.code).toBe(0)
+
+      const bodies = endpoint.bodies()
+      // initial + post-tool continuation ONLY — the nudge must not fire.
+      expect(bodies).toHaveLength(2)
+      expect(bodies[1]).toContain('tool_result')
+      expect(bodies[1]).toContain('PROBE_C_FILE_OK')
+      for (const body of bodies) {
+        expect(body).not.toContain(THINKING_ONLY_NUDGE_TEXT)
+      }
+    } finally {
+      await endpoint.close()
+      rmSync(root, { recursive: true, force: true })
+    }
+
+    // Negative control: the SAME transcript with the env var cleared must
+    // nudge (proves suppression is env-driven, not a generic "tool turn
+    // disables nudge" side effect).
+    const root2 = mkdtempSync(join(tmpdir(), 'occ-nudge283-pc0-'))
+    const endpoint2 = await startMockEndpoint([])
+    try {
+      const projectDir = join(root2, 'project')
+      mkdirSync(projectDir, { recursive: true })
+      const probeFile = join(projectDir, 'probe-c.txt')
+      writeFileSync(probeFile, 'PROBE_C_FILE_OK')
+      endpoint2.replaceResponses([
+        toolUseSse({
+          messageId: 'msg_tool_read_c2',
+          toolUseId: 'toolu_probe_c2',
+          toolName: 'Read',
+          inputJson: JSON.stringify({ file_path: probeFile }),
+        }),
+        thinkingOnlySse({ messageId: 'msg_thinking_no_terminal', stopReason: 'end_turn' }),
+        TEXT_ANSWER_SSE,
+      ])
+      const home = freshHome(root2, projectDir)
+      const result = await runOcc(
+        ['-p', 'say something visible'],
+        baseEnv(endpoint2, home, projectDir), // CLAUDE_CODE_TERMINAL_MCP_TOOLS: ''
+        60_000,
+      )
+      expect(result.code).toBe(0)
+      const bodies = endpoint2.bodies()
+      expect(bodies).toHaveLength(3)
+      expect(lastMessageLastTextBlock(bodies[2]!)).toBe(THINKING_ONLY_NUDGE_TEXT)
+    } finally {
+      await endpoint2.close()
+      rmSync(root2, { recursive: true, force: true })
+    }
+  }, 180_000)
+
+  test('probe-d (StructuredOutput exclusion): a turn that already called StructuredOutput never nudges', async () => {
+    // Official `ie` walk-back: structured-output turns end without visible
+    // text BY DESIGN (the answer rides in the tool input), so after a
+    // successful StructuredOutput call in the current turn the nudge must
+    // stay silent. Driven through the real --json-schema wiring (main.tsx
+    // registers the SyntheticOutputTool for non-interactive sessions).
+    // Mutation (delete `!isStructuredOutputTurn(...)`): a third request
+    // carrying the nudge appears.
+    const root = mkdtempSync(join(tmpdir(), 'occ-nudge283-pd-'))
+    const endpoint = await startMockEndpoint([])
+    try {
+      const projectDir = join(root, 'project')
+      mkdirSync(projectDir, { recursive: true })
+      endpoint.replaceResponses([
+        toolUseSse({
+          messageId: 'msg_structured_out',
+          toolUseId: 'toolu_probe_d',
+          toolName: 'StructuredOutput',
+          inputJson: JSON.stringify({ answer: '42' }),
+        }),
+        thinkingOnlySse({ messageId: 'msg_thinking_after_structured', stopReason: 'end_turn' }),
+      ])
+      const home = freshHome(root, projectDir)
+      const result = await runOcc(
+        [
+          '-p',
+          'say something visible',
+          '--json-schema',
+          JSON.stringify({
+            type: 'object',
+            properties: { answer: { type: 'string' } },
+            required: ['answer'],
+          }),
+        ],
+        baseEnv(endpoint, home, projectDir),
+        60_000,
+      )
+      expect(result.code).toBe(0)
+
+      const bodies = endpoint.bodies()
+      // initial + post-StructuredOutput continuation ONLY.
+      expect(bodies).toHaveLength(2)
+      expect(bodies[1]).toContain('tool_result')
+      for (const body of bodies) {
+        expect(body).not.toContain(THINKING_ONLY_NUDGE_TEXT)
+      }
     } finally {
       await endpoint.close()
       rmSync(root, { recursive: true, force: true })

@@ -133,3 +133,15 @@ Gap-139a 移植稳固。dead endpoint + 每 run 全新 HOME，`cmp` 级比对 st
 - 本轮产出（4 个测试相关文件 + 本 ledger）合入 main；发布 `v2.1.359` 在验收通过后切（链：安全审查员 → 验收 → tag → publish.yml 自动 npm + GitHub Release → 核验 /releases ≡ /tags）。
 - **方法论事故（已遏制，记录在案）**：REPL A/B 第一遍的 projectDir 误设在 multica workdir 内，OCC 模型自动发现 workspace CLAUDE.md 并在 auto mode 下真实执行了一次 `multica issue comment add`——issue 上落了一条游离 `PONG140` 评论，**已删除并复核不存在**；随后两侧均以隔离 projectDir（`/root/ab140-isolated/`）重跑，结果干净。教训固化：A/B 的 projectDir 绝不可落在 agent workdir/任何含 CLAUDE.md 的目录树内。
 - scratch 工件（`scratch-ab/`、`official-cc/`）保持未跟踪、不入版本库；关键数据已全部誊录本 ledger。
+
+## §10 合并调和（origin/main 轮中前移 `474a274`，OCC-100 并行清偿同批结转项）
+
+本轮收口时发现 origin/main 已前移：`474a274`（"test: OCC-100 carry-over — nudge 4-probe wire e2e + max-tokens registry nails + byte-exact wire equality"，ledger `docs/upstream-version-gap-occ100-2026-09.md`）对 occ99 §6 的 **同一批 3 项结转** 做了并行清偿。merge base `023ccc1`，三个文件冲突，调和原则 = 不丢任何断言、不回退 main 已合入工作：
+
+| 冲突文件 | 决议 | 理由 |
+|---|---|---|
+| `src/utils/__tests__/maxTokensRegistry283.test.ts` | **取 OCC-140 版** | 双方新增的是**同 4 个 id、同期望值**（fable-5 / opus-4-5 / sonnet-4-5 / sonnet-4-0）；OCC-140 版另含完整 20-id ground-truth 头表，为文档超集。零断言丢失。 |
+| `src/utils/context.ts` | **取 OCC-140 版** | 双方 mythos-5 注释语义等价（canonical 名不可达该臂）；OCC-140 版额外说明"仅裸 `mythos-5` 串可触发（防御性 parity）"。纯注释，无行为差。 |
+| `test/e2e/version-2.1.283-thinking-only-nudge.e2e.test.ts` | **取 main（OCC-100）版** | OCC-100 版已含 §6.3 同款 toContain→全等修复（**涵盖并超出**本轮 +19 行改动），且在同一文件内追加了 probe-a~d 四探针 + negative control。取 theirs 即完整保留双方意图。 |
+
+非冲突产出全部保留：本轮新文件 `version-2.1.283-nudge-statemachine-wiring.e2e.test.ts`（4 探针 + §2 五组变异矩阵实证 + §3 惰性语义）与 main 的 `docs/upstream-version-gap-occ100-2026-09.md` 并存。**已知冗余**：probe-a~d 现存在于两个 e2e 文件（OCC-100 内嵌版 + OCC-140 独立 wiring 版，各自独立变异验证过）——功能重复但断言侧重不同（wiring 版绑定 §2/§3 变异语义，内嵌版含 negative control），合并去重列为下一轮 P3 结转，本轮不动 main 已验收内容。合并后复测：registry 17 tests、nudge e2e 6 tests、wiring e2e 4 tests、occ-versioning+commands-alignment 6 tests 全绿。
