@@ -235,9 +235,15 @@ export function getModelMaxOutputTokens(model: string): {
     defaultTokens = 128_000
     upperLimit = 128_000
   } else if (
-    // OCC-99: official 2.1.283 registry adds claude-mythos-5 and
-    // claude-mythos-5-1 at default=64000 upper=128000 (same tier as the
-    // launch models).
+    // OCC-99 / OCC-140 honesty note: the official 2.1.283 registry lists
+    // claude-mythos-5 / claude-mythos-5-1 at default=64000 upper=128000 (the
+    // launch-model tier). BUT getCanonicalName maps every `claude-mythos-5*`
+    // name to `claude-fable-5*` (mythos is the alias for fable), so this arm
+    // is UNREACHABLE for canonical names — those are served by the `fable-5`
+    // launch-model branch below, which returns the identical 64000/128000.
+    // This arm only fires for a bare, non-`claude-`-prefixed `mythos-5` string
+    // that survives canonicalization unchanged (defensive parity; not the
+    // live path). Keeping it does not change any canonical-name result.
     m.includes('mythos-5')
   ) {
     defaultTokens = 64_000

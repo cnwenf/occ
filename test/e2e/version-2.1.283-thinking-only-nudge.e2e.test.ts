@@ -266,9 +266,22 @@ describe('2.1.283 thinking-only response nudge (query-loop parity)', () => {
       // as a user message.
       const last = retryMessages.at(-1)
       expect(last?.role).toBe('user')
-      expect(JSON.stringify(last?.content)).toContain(
-        '[Your previous response had no visible output. Please continue and produce a user-visible response.]',
-      )
+      // (2) the retry request ends with the byte-exact official nudge I$t.
+      // OCC-140 exactness fix: this was a `.toContain` substring check on the
+      // serialized content, which would also pass if extra text were appended
+      // after the nudge — contradicting the "byte-exact" comment above. Assert
+      // FULL EQUALITY on the wire-layer nudge block instead. The nudge is the
+      // FINAL content block of the last user message (text + ephemeral cache
+      // breakpoint marker). We pin the last block, not the whole content array,
+      // because the array also carries dynamic system-reminder blocks (skills
+      // list, currentDate) that are intentionally NOT frozen into this test.
+      const content = last?.content as Array<Record<string, unknown>>
+      expect(Array.isArray(content)).toBe(true)
+      expect(content.at(-1)).toEqual({
+        type: 'text',
+        text: '[Your previous response had no visible output. Please continue and produce a user-visible response.]',
+        cache_control: { type: 'ephemeral' },
+      })
       // (3) the thinking-only assistant turn is DROPPED from the retry
       // context (official messages:[...A,W] — A excludes this turn's L).
       expect(bodies[1]).not.toContain(THINKING_MARKER)

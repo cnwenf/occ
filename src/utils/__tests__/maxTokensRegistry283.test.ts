@@ -14,17 +14,24 @@ import { getMaxOutputTokensForModel } from "../../services/api/claude";
  *                                                            whose default
  *                                                            equals upper
  *   claude-opus-5          default=64000   upper=128000
- *   claude-mythos-5        default=64000   upper=128000
- *   claude-mythos-5-1      default=64000   upper=128000
+ *   claude-mythos-5        default=64000   upper=128000   (canonical → fable-5)
+ *   claude-mythos-5-1      default=64000   upper=128000   (canonical → fable-5-1)
+ *   claude-fable-5         default=64000   upper=128000
  *   claude-fable-5-1       default=64000   upper=128000
  *   claude-sonnet-5        default=64000   upper=128000
  *   claude-sonnet-4-6      default=32000   upper=128000
  *   claude-opus-4-6/7/8    default=64000   upper=128000
+ *   claude-opus-4-5        default=32000   upper=64000
+ *   claude-sonnet-4-5      default=32000   upper=64000
+ *   claude-sonnet-4-0      default=32000   upper=64000
  *   claude-haiku-4-5       default=32000   upper=64000
  *   claude-3-7-sonnet      default=32000   upper=64000
  *   claude-opus-4-0/4-1    default=32000   upper=32000
  *   claude-3-5-sonnet      default=8192    upper=8192
  *   claude-3-5-haiku       default=8192    upper=8192
+ *
+ * That is the full 20-id official registry; every id above is now asserted
+ * below (OCC-140 closed the last 4: fable-5, opus-4-5, sonnet-4-5, sonnet-4-0).
  *
  * Gap fixed here: OCC's branch table caught `claude-opus-5-5` with the
  * generic `m.includes('opus-5')` launch-model branch → 64000/128000, halving
@@ -68,7 +75,14 @@ describe("OCC-99: official 2.1.283 max_output_tokens registry parity", () => {
     });
   });
 
-  test("claude-mythos-5 / claude-mythos-5-1 → 64000/128000 (new branch)", () => {
+  test("claude-mythos-5 / claude-mythos-5-1 → 64000/128000 (via fable-5 canonicalization, NOT the mythos-5 branch)", () => {
+    // OCC-140 honesty fix: getCanonicalName maps claude-mythos-5 → claude-fable-5
+    // and claude-mythos-5-1 → claude-fable-5-1 (mythos is the alias for fable),
+    // so these assertions are satisfied by the `fable-5` launch-model branch in
+    // getModelMaxOutputTokens — NOT by the `m.includes('mythos-5')` branch, which
+    // is unreachable for any `claude-`-prefixed (canonical) name. The value is
+    // correct; the coverage comes from the fable-5 fallback. Do not read this
+    // test as exercising the mythos-5 branch.
     expect(getModelMaxOutputTokens("claude-mythos-5")).toEqual({
       default: 64_000,
       upperLimit: 128_000,
@@ -83,6 +97,42 @@ describe("OCC-99: official 2.1.283 max_output_tokens registry parity", () => {
     expect(getModelMaxOutputTokens("claude-fable-5-1")).toEqual({
       default: 64_000,
       upperLimit: 128_000,
+    });
+  });
+
+  test("OCC-140: claude-fable-5 (bare, canonical) → 64000/128000", () => {
+    // Previously unasserted registry id. claude-mythos-5 canonicalizes HERE
+    // (claude-fable-5), so this branch is the real source of the mythos-5 tier.
+    expect(getModelMaxOutputTokens("claude-fable-5")).toEqual({
+      default: 64_000,
+      upperLimit: 128_000,
+    });
+  });
+
+  test("OCC-140: claude-opus-4-5 → 32000/64000 (silent-regression channel — mutation-pinned)", () => {
+    // Previously unasserted. This is the proven silent-regression channel from
+    // the v2.1.358 acceptance: the official 2.1.283 registry declares
+    // claude-opus-4-5 default=32000 upper=64000. Deleting the `opus-4-5` arm
+    // from the branch table makes the canonical name fall through to the
+    // generic `opus-4` branch → 32000/32000 (upper halved), yet every prior
+    // test stayed green. This assertion is the mutation kill-switch.
+    expect(getModelMaxOutputTokens("claude-opus-4-5")).toEqual({
+      default: 32_000,
+      upperLimit: 64_000,
+    });
+  });
+
+  test("OCC-140: claude-sonnet-4-5 / claude-sonnet-4-0 → 32000/64000 (sonnet-4 tier)", () => {
+    // Previously unasserted registry ids. claude-sonnet-4-5 canonicalizes to
+    // itself; claude-sonnet-4-0 canonicalizes to claude-sonnet-4. Both land on
+    // the `sonnet-4` branch (NOT the sonnet-4-6 branch, which is 32000/128000).
+    expect(getModelMaxOutputTokens("claude-sonnet-4-5")).toEqual({
+      default: 32_000,
+      upperLimit: 64_000,
+    });
+    expect(getModelMaxOutputTokens("claude-sonnet-4-0")).toEqual({
+      default: 32_000,
+      upperLimit: 64_000,
     });
   });
 
