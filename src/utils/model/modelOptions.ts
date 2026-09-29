@@ -158,23 +158,54 @@ function getOpus5PricingSuffix(fastMode: boolean): string {
   return ` ·${fastModeIndicator} ${pricing}`
 }
 
-function getSonnet5Option(): ModelOption {
+// @[MODEL LAUNCH] 2.1.284 (OCC-101, Sonnet 5.5 launch): this row is the
+// official generic family builder `yi("sonnet")` (v284 ELF @203843935,
+// byte-verified): `{value: Jl()&&xa(e) ? alias : yg()[key], label: "Sonnet",
+// description: `${displayName} · ${kd}${Fr(id,!1)}`, descriptionForModel:
+// `${displayName} - efficient for routine tasks. Generally recommended for
+// most coding tasks`}` with catalog displayName "Sonnet 5.5", slogan
+// `kd="Efficient for routine tasks"` (@200502588 region) and Fr = the
+// firstParty-only pricing suffix. OCC keeps its established hardcoded-literal
+// rendering (same pattern as getOpus55Option, 2.1.280 round).
+export function getSonnet55Option(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
-    value: is3P ? getModelStrings().sonnet5 : 'sonnet',
+    value: is3P ? getModelStrings().sonnet55 : 'sonnet',
     label: 'Sonnet',
-    description: `Sonnet 5 · Efficient for routine tasks${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
+    description: `Sonnet 5.5 · Efficient for routine tasks${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
     descriptionForModel:
-      'Sonnet 5 - efficient for routine tasks. Generally recommended for most coding tasks',
+      'Sonnet 5.5 - efficient for routine tasks. Generally recommended for most coding tasks',
   }
 }
 
-function getSonnet46Option(): ModelOption {
+// 2.1.284 (OCC-101): NEW official row `ST()` (v284 ELF @203844509,
+// byte-verified; 0 hits in v283 — this builder is new in 2.1.284):
+//   function ST(){return{value:!Jl()?yg().sonnet5:"claude-sonnet-5",
+//     label:"Sonnet 5",description:"Sonnet 5 · Previous Sonnet version",
+//     descriptionForModel:"Sonnet 5 - previous Sonnet version"}}
+// Sonnet 5 is demoted to the "previous" row when the catalog-latest sonnet
+// (5.5) is available. NO pricing suffix in the official (static strings).
+export function getSonnet5PreviousOption(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
+  return {
+    value: is3P ? getModelStrings().sonnet5 : 'claude-sonnet-5',
+    label: 'Sonnet 5',
+    description: 'Sonnet 5 · Previous Sonnet version',
+    descriptionForModel: 'Sonnet 5 - previous Sonnet version',
+  }
+}
+
+// 2.1.284 (OCC-101): official `wT()` (v284 ELF @203844326, byte-verified)
+// renamed the Sonnet 4.6 row description "Previous Sonnet version" → "Legacy"
+// (v283's builder was `bA()`); descriptionForModel is unchanged. The official
+// wT() carries NO pricing suffix (fully static description) — OCC's
+// firstParty pricing suffix here was a pre-existing divergence and is dropped
+// to match v284 exactly.
+function getSonnet46Option(): ModelOption {
   return {
     value: getModelStrings().sonnet46,
     label: 'Sonnet 4.6',
-    description: `Sonnet 4.6 · Previous Sonnet version${is3P ? '' : ` · ${formatModelPricing(COST_TIER_3_15)}`}`,
+    description: 'Sonnet 4.6 · Legacy',
     descriptionForModel: 'Sonnet 4.6 - previous Sonnet version',
   }
 }
@@ -347,14 +378,20 @@ export function getOpus55Option(fastMode = false): ModelOption {
   }
 }
 
+// 2.1.284 (OCC-101, Sonnet 5.5 launch): official `fy()` (v284 ELF @203847312,
+// byte-verified): label `${displayName} (1M context)` and desc
+// `${displayName} for long sessions${ut() ? '' : Fr(id,!1)}` with catalog
+// displayName "Sonnet 5.5". The value stays OCC's is3P-branched form — the
+// official is unconditional "sonnet[1m]", but OCC's 3P alias resolution needs
+// the explicit provider string (established divergence, ledger §3).
 export function getSonnet5_1MOption(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
-    value: is3P ? getModelStrings().sonnet5 + '[1m]' : 'sonnet[1m]',
-    label: 'Sonnet (1M context)',
-    description: `Sonnet 5 for long sessions${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
+    value: is3P ? getModelStrings().sonnet55 + '[1m]' : 'sonnet[1m]',
+    label: 'Sonnet 5.5 (1M context)',
+    description: `Sonnet 5.5 for long sessions${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
     descriptionForModel:
-      'Sonnet 5 with 1M context window - for long sessions with large codebases',
+      'Sonnet 5.5 with 1M context window - for long sessions with large codebases',
   }
 }
 
@@ -468,13 +505,19 @@ function getMaxOpusOption(fastMode = false): ModelOption {
   }
 }
 
+// 2.1.284 (OCC-101): subscriber (Max/Standard) Sonnet 1M row — official `fy()`
+// `ut()` branch (v284 ELF @203847312, byte-verified): the subscriber branch
+// returns `{...r, description: `${n} for long sessions`}` — NO "Billed as extra
+// usage" line and NO pricing suffix (OCC's billingInfo/pricing here were
+// pre-existing divergence; dropped to match v284). r carries the shared
+// dfm `${n} with 1M context window - for long sessions with large codebases`.
 export function getMaxSonnet5_1MOption(): ModelOption {
-  const is3P = getAPIProvider() !== 'firstParty'
-  const billingInfo = isClaudeAISubscriber() ? ' · Billed as extra usage' : ''
   return {
     value: 'sonnet[1m]',
-    label: 'Sonnet (1M context)',
-    description: `Sonnet 5 with 1M context${billingInfo}${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
+    label: 'Sonnet 5.5 (1M context)',
+    description: 'Sonnet 5.5 for long sessions',
+    descriptionForModel:
+      'Sonnet 5.5 with 1M context window - for long sessions with large codebases',
   }
 }
 
@@ -571,10 +614,13 @@ function getMergedOpus1MOption(fastMode = false): ModelOption {
   }
 }
 
+// 2.1.284 (OCC-101): Max/Standard subscriber default-Sonnet row. Official
+// `MT()` (v284 ELF @203850393, byte-verified) renders the catalog-latest
+// sonnet displayName dynamically: `Sonnet 5.5 · Efficient for routine tasks`.
 const MaxSonnet5Option: ModelOption = {
   value: 'sonnet',
   label: 'Sonnet',
-  description: 'Sonnet 5 · Efficient for routine tasks',
+  description: 'Sonnet 5.5 · Efficient for routine tasks',
 }
 
 const MaxHaiku45Option: ModelOption = {
@@ -606,7 +652,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       ...antModelOptions,
       getMergedOpus1MOption(fastMode),
       getFable5Option(),
-      getSonnet5Option(),
+      getSonnet55Option(),
       getSonnet5_1MOption(),
       getHaiku45Option(),
     ]
@@ -727,6 +773,17 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   if (customSonnet !== undefined) {
     payg3pOptions.push(customSonnet)
   } else {
+    // 2.1.284 (OCC-101): official v284 3P assembly (byte-verified, picker
+    // chunk ~203.85M region) is `if(Pr(qr("sonnet").key))n.push(yi("sonnet"));
+    // if(Pr("sonnet5"))n.push(ST()); if(Pr("sonnet46")){n.push(wT());
+    // if(Ez())n.push(RT())}` — v283 had no `Pr("sonnet5")→ST()` line (ST is
+    // new in v284). OCC mirrors the ST() insertion gated on the sonnet5
+    // provider string (getModelStrings() truthiness = official Pr()). The
+    // yi("sonnet") latest-family row and the surrounding layout stay on OCC's
+    // pinned 2.1.220-era shape (pre-existing divergence, ledger §3).
+    if (getModelStrings().sonnet5) {
+      payg3pOptions.push(getSonnet5PreviousOption())
+    }
     // Add Sonnet 4.6 since Sonnet 4.5 is the default
     payg3pOptions.push(getSonnet46Option())
     if (checkSonnet1mAccess()) {

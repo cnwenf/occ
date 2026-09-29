@@ -19,6 +19,7 @@ import {
   CLAUDE_SONNET_4_5_CONFIG,
   CLAUDE_SONNET_4_6_CONFIG,
   CLAUDE_SONNET_4_CONFIG,
+  CLAUDE_SONNET_5_5_CONFIG,
   CLAUDE_SONNET_5_CONFIG,
 } from './model/configs.js'
 import {
@@ -274,6 +275,13 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   // and 2.1.245. The 2.1.243 repricing cancelled the intro promo; $2/$10 is the
   // standard price now shown in the /model picker and used for cost tracking.
   [firstPartyNameToCanonical(CLAUDE_SONNET_5_CONFIG.firstParty)]:
+    COST_TIER_2_10,
+  // Sonnet 5.5 is `tier_2_10` ($2/$10, cache_read $0.20) — binary-verified:
+  // the baked 2.1.284 model catalog entry for `claude-sonnet-5-5` (@198712738
+  // region, OCC-101) carries `pricing:"tier_2_10"` — the SAME tier as
+  // claude-sonnet-5, so no new tier constant is needed. No fast-mode branch:
+  // the sonnet-5-5 capabilities list (byte-verified) has no fast_mode.
+  [firstPartyNameToCanonical(CLAUDE_SONNET_5_5_CONFIG.firstParty)]:
     COST_TIER_2_10,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.firstParty)]:

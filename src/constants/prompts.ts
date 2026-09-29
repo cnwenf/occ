@@ -132,15 +132,18 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
 // @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
-// 2.1.257 (Fable 5.1 launch): the official 2.1.258 # Environment section
-// advertises the latest model per family — Fable 5.1, Opus 5, Sonnet 5,
-// Haiku 4.5. The official renders `Model IDs — ${display}: '${id}'` per
-// family from its catalog (haiku keeps the dated first-party id); the values
-// below are the 2.1.258 latest_per_family table, byte-verified.
+// 2.1.284 (OCC-101, Sonnet 5.5 launch): the values below are the v284
+// latest_per_family table byte-verified from the official 2.1.284 linux-x64
+// ELF: `{fable:"claude-fable-5-1",opus:"claude-opus-5-5",
+// sonnet:"claude-sonnet-5-5",haiku:"claude-haiku-4-5"}`. The official (`J8n`)
+// renders `Model IDs — ${display_name}: '${id}'` per family from this table
+// (haiku keeps the dated first-party id); the prose lead-in ("The most recent
+// Claude models are the Claude 5 family and Haiku 4.5.") is UNCHANGED in v284.
+// Drift fixed here: opus was stale at claude-opus-5 since the 2.1.280 launch.
 const CLAUDE_LATEST_MODEL_IDS = {
   fable: 'claude-fable-5-1',
-  opus: 'claude-opus-5',
-  sonnet: 'claude-sonnet-5',
+  opus: 'claude-opus-5-5',
+  sonnet: 'claude-sonnet-5-5',
   haiku: 'claude-haiku-4-5-20251001',
 }
 
@@ -687,13 +690,22 @@ export async function computeSimpleEnvInfo(
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `The most recent Claude models are the Claude 5 family and Haiku 4.5. Model IDs — Fable 5.1: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 5: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
+      : `The most recent Claude models are the Claude 5 family and Haiku 4.5. Model IDs — Fable 5.1: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 5.5: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5.5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `Fast mode for Claude Code uses Claude Opus with faster output (it does not downgrade to a smaller model). It can be toggled with /fast and is available on Opus 5/4.8.`,
+      // 2.1.284 (OCC-101): the availability tail ("and is available on Opus
+      // 5/4.8") is REMOVED — byte-verified against both the 2.1.283 and
+      // 2.1.284 linux-x64 ELFs, where the Environment-sentence array entry is
+      // the static string "Fast mode for Claude Code uses Claude Opus with
+      // faster output (it does not downgrade to a smaller model). It can be
+      // toggled with /fast." (v284 @206557862, v283 @204691709; no
+      // "available on Opus" fragment exists anywhere in either binary). The
+      // tail was 2.1.206-era official prose (commit d6f22c9) that upstream
+      // later dropped — OCC drift, not an OCC invention.
+      : `Fast mode for Claude Code uses Claude Opus with faster output (it does not downgrade to a smaller model). It can be toggled with /fast.`,
   ].filter(item => item !== null)
 
   return [
@@ -707,14 +719,22 @@ export async function computeSimpleEnvInfo(
 // 2.1.257/2.1.258: cutoffs byte-verified from the official catalog entries in
 // the 2.1.258 linux-x64 ELF. Specific ids MUST precede broader substring
 // checks below (e.g. 'claude-opus-4-8' contains 'claude-opus-4').
+// 2.1.284 (OCC-101): full cutoff table re-verified against the v284 ELF
+// (`display_name:"...",knowledge_cutoff:"..."` pairs) — Sonnet 5.5 AND
+// Opus 5.5 are "June 2026"; the new opus-5-5 branch fixes a 2.1.280-round
+// drift (the 'claude-opus-5' substring gave Opus 5.5 "May 2026").
 function getKnowledgeCutoff(modelId: string): string | null {
   const canonical = getCanonicalName(modelId)
   if (canonical.includes('claude-fable-5-1')) {
     return 'June 2026'
   } else if (canonical.includes('claude-fable-5')) {
     return 'January 2026'
+  } else if (canonical.includes('claude-opus-5-5')) {
+    return 'June 2026'
   } else if (canonical.includes('claude-opus-5')) {
     return 'May 2026'
+  } else if (canonical.includes('claude-sonnet-5-5')) {
+    return 'June 2026'
   } else if (canonical.includes('claude-sonnet-5')) {
     return 'January 2026'
   } else if (canonical.includes('claude-opus-4-8')) {

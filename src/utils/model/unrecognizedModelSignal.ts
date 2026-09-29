@@ -74,6 +74,13 @@ const KNOWN_CANONICAL_MODELS: ReadonlySet<string> = new Set([
   'claude-opus-4-5',
   'claude-opus-4-1',
   'claude-opus-4',
+  // OCC-101: the official 2.1.284 catalog registers claude-sonnet-5-5
+  // (CATALOG_ID_TO_KEY `S` @198735403 gains "claude-sonnet-5-5":"sonnet55";
+  // the first-party id list `ere` now ends …"claude-sonnet-5",
+  // "claude-sonnet-5-5"). Without it, OCC would fire
+  // [claude-code:unrecognized_model] for the new default Sonnet while the
+  // official stays silent — the same A/B gap OCC-99 closed for opus-5-5.
+  'claude-sonnet-5-5',
   'claude-sonnet-5',
   'claude-sonnet-4-6',
   'claude-sonnet-4-5',

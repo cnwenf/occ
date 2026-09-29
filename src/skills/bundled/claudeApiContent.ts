@@ -35,27 +35,45 @@ import typescriptClaudeApiToolUse from './claude-api/typescript/claude-api/tool-
 //   - claude-api/shared/models.md (full model catalog with legacy versions and alias mappings)
 //
 // 2.1.219 Opus 5 migration (OCC-37, item 1h): official Claude Code 2.1.219 made
-// `claude-opus-5` the default Opus model. The 2.1.220 linux-x64 binary's bundled
-// claude-api skill model-var table (recovered via `grep -aboF` + `dd` around the
-// OPUS_ID string-table region, offset ~243150700–243157400) carries:
-//   OPUS_ID=claude-opus-5  OPUS_NAME=Claude Opus 5
-//   PREV_OPUS_ID=claude-opus-4-8  PREV_OPUS_NAME=Claude Opus 4.8
-//   (also FABLE/MYTHOS/SONNET/HAIKU/PREV_SONNET vars — out of scope for item 1h).
-// We migrate the default Opus vars to match and add PREV_OPUS_* mirroring the
-// official "migration from 4.8" structure. Sonnet/Fable/Mythos vars are not
-// touched here (separate items).
+// `claude-opus-5` the default Opus model.
+//
+// 2.1.284 Sonnet 5.5 launch (OCC-101): the official 2.1.284 linux-x64 binary's
+// bundled claude-api skill model-var table (`oc` block, byte-verified @230214723
+// region) was migrated wholesale — Sonnet 5.5 AND Opus 5.5 are now the skill
+// defaults, the v283 `OPUS_NEXT_*`/`SONNET_NEXT_*` teaser vars were dropped,
+// and `PREV_SONNET_NAME` was added:
+//   v283 `tc`: OPUS_ID=claude-opus-5, OPUS_NEXT_ID=claude-opus-5-5,
+//     PREV_OPUS_ID=claude-opus-4-8, SONNET_ID=claude-sonnet-5,
+//     SONNET_NEXT_ID=claude-sonnet-5, PREV_SONNET_ID=claude-sonnet-4-6
+//   v284 `oc`: OPUS_ID=claude-opus-5-5, PREV_OPUS_ID=claude-opus-5,
+//     SONNET_ID=claude-sonnet-5-5, PREV_SONNET_ID=claude-sonnet-5,
+//     PREV_SONNET_NAME=Claude Sonnet 5 (no NEXT vars)
+// The table below is byte-identical to the v284 `oc` block (same key order).
+// Fable/Mythos/Haiku vars were already at their v284 values in v283 and are
+// now registered here too (OCC previously omitted them; substitution is
+// generic `{{KEY}}` so unused keys are inert). The two files the header
+// comment names for manual updates (claude-api/SKILL.md pricing table,
+// shared/models.md catalog) are intentional 1-byte stubs in OCC (OCC-44) —
+// nothing to update there.
 export const SKILL_MODEL_VARS = {
-  OPUS_ID: 'claude-opus-5',
-  OPUS_NAME: 'Claude Opus 5',
-  // Previous Opus ID — official 2.1.220 skill keeps the 4.8 predecessor as PREV_OPUS.
-  PREV_OPUS_ID: 'claude-opus-4-8',
-  PREV_OPUS_NAME: 'Claude Opus 4.8',
-  SONNET_ID: 'claude-sonnet-4-6',
-  SONNET_NAME: 'Claude Sonnet 4.6',
+  FABLE_ID: 'claude-fable-5-1',
+  FABLE_NAME: 'Claude Fable 5.1',
+  MYTHOS_ID: 'claude-mythos-5-1',
+  MYTHOS_NAME: 'Claude Mythos 5.1',
+  PREV_FABLE_ID: 'claude-fable-5',
+  PREV_FABLE_NAME: 'Claude Fable 5',
+  PREV_MYTHOS_ID: 'claude-mythos-5',
+  PREV_MYTHOS_NAME: 'Claude Mythos 5',
+  OPUS_ID: 'claude-opus-5-5',
+  OPUS_NAME: 'Claude Opus 5.5',
+  PREV_OPUS_ID: 'claude-opus-5',
+  PREV_OPUS_NAME: 'Claude Opus 5',
+  SONNET_ID: 'claude-sonnet-5-5',
+  SONNET_NAME: 'Claude Sonnet 5.5',
   HAIKU_ID: 'claude-haiku-4-5',
   HAIKU_NAME: 'Claude Haiku 4.5',
-  // Previous Sonnet ID — used in "do not append date suffixes" example in SKILL.md.
-  PREV_SONNET_ID: 'claude-sonnet-4-5',
+  PREV_SONNET_ID: 'claude-sonnet-5',
+  PREV_SONNET_NAME: 'Claude Sonnet 5',
 } satisfies Record<string, string>
 
 export const SKILL_PROMPT: string = skillPrompt

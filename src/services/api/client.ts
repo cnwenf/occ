@@ -109,6 +109,14 @@ export function resolveBedrockAuthArgs({
   return { authHeader, skipAuth, apiKey }
 }
 
+// 2.1.284 (OCC-101): official Foundry resource-name validator `Ixr`,
+// byte-verified in the v284 linux-x64 ELF @203883609:
+//   var Ixr=/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])$/i;
+// 2-64 chars, letters/digits/hyphens, no leading/trailing hyphen (the
+// second group is NOT optional, so the minimum length is exactly the 2 the
+// official error message claims).
+const FOUNDRY_RESOURCE_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])$/i
+
 function createStderrLogger(): ClientOptions['logger'] {
   return {
     error: (msg, ...args) =>
@@ -284,6 +292,30 @@ export async function getAnthropicClient({
     return new AnthropicBedrock(bedrockArgs) as unknown as Anthropic
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)) {
+    // 2.1.284 security port (OCC-101): validate ANTHROPIC_FOUNDRY_RESOURCE
+    // before it reaches the Foundry client factory. Official v284 linux-x64
+    // ELF, byte-verified @203891512 (factory) and @203883609 (validator):
+    //   var Ixr=/^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])$/i;
+    //   function lf(e){return e!==void 0&&Ixr.test(e)?e:void 0}
+    //   let Ne=a.ANTHROPIC_FOUNDRY_RESOURCE;
+    //   if(Ne!==void 0&&a.ANTHROPIC_FOUNDRY_BASE_URL===void 0&&lf(Ne)===void 0)
+    //     throw Error("ANTHROPIC_FOUNDRY_RESOURCE must be a Foundry resource
+    //       name (2-64 letters, digits and hyphens, …)");
+    // v283 (@202054583 `jh()`) interpolated the raw env value straight into
+    // `https://${RESOURCE}.services.ai.azure.com` — a URL/host name smuggled
+    // through the resource var redirected inference. OCC resolves the base URL
+    // inside @anthropic-ai/foundry-sdk, so the guard is applied here at the
+    // equivalent boundary (client construction), with the official message.
+    const foundryResource = process.env.ANTHROPIC_FOUNDRY_RESOURCE
+    if (
+      foundryResource !== undefined &&
+      process.env.ANTHROPIC_FOUNDRY_BASE_URL === undefined &&
+      !FOUNDRY_RESOURCE_NAME_RE.test(foundryResource)
+    ) {
+      throw new Error(
+        'ANTHROPIC_FOUNDRY_RESOURCE must be a Foundry resource name (2-64 letters, digits and hyphens, not starting or ending with a hyphen, such as my-resource), not a URL or host name. To use a full URL, set ANTHROPIC_FOUNDRY_BASE_URL instead.',
+      )
+    }
     const { AnthropicFoundry } = await import('@anthropic-ai/foundry-sdk')
     // Determine Azure AD token provider based on configuration
     // SDK reads ANTHROPIC_FOUNDRY_API_KEY by default

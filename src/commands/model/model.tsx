@@ -318,7 +318,16 @@ function isSonnet1mUnavailable(model: string): boolean {
   // 2.1.265 (Gap-120c): binary-verbatim (2.1.266 `lin`): the set gained
   // "sonnet-5[1m]" and exact "opusplan[1m]" — opusplan[1m] routes through
   // the Sonnet gate because it resolves to Sonnet in normal mode.
-  return !checkSonnet1mAccess() && (m.includes('sonnet[1m]') || m.includes('sonnet-4-6[1m]') || m.includes('sonnet-5[1m]') || m.trim() === 'opusplan[1m]');
+  // 2.1.284 (OCC-101, Sonnet 5.5 launch): added "sonnet-5-5[1m]". The
+  // official v283/v284 predicate (`pdr`/`Dfr`, byte-verified identical
+  // across the two binaries) is generic — `includes("sonnet") &&
+  // includes("[1m]")` minus a legacy exclusion set {4-5, 4-0, 3-7, 3-5} —
+  // so it covers claude-sonnet-5-5[1m] automatically; OCC's disjunct-list
+  // approximation does NOT ('sonnet-5[1m]' is not a substring of
+  // 'sonnet-5-5[1m]'), so the new default Sonnet's 1M literal needs its own
+  // disjunct. (The generic-shape refactor is a pre-existing divergence —
+  // ledger §3.)
+  return !checkSonnet1mAccess() && (m.includes('sonnet[1m]') || m.includes('sonnet-4-6[1m]') || m.includes('sonnet-5[1m]') || m.includes('sonnet-5-5[1m]') || m.trim() === 'opusplan[1m]');
 }
 function ShowModelAndClose(t0) {
   const {

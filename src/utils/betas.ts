@@ -141,6 +141,14 @@ export function modelSupportsContextManagement(model: string): boolean {
     // context management on 3P (its canonical id `claude-opus-5` does not
     // match the `claude-opus-4` prefix).
     canonical.includes('claude-opus-5') ||
+    // 2.1.284 (OCC-101): the v284 model catalog declares
+    // "context_management" in the `capabilities` array of BOTH
+    // `claude-sonnet-5` and `claude-sonnet-5-5` (catalog dumped @198.71M
+    // region; sonnet-5-5 capabilities: effort/max_effort/xhigh_effort/
+    // adaptive_thinking/mid_conv_system/context_management/...). The
+    // `claude-sonnet-5` prefix covers the -5-5 canonical id too (substring).
+    // Pre-existing gap: sonnet-5 itself was missing before this round.
+    canonical.includes('claude-sonnet-5') ||
     // 2.1.257 (Fable 5.1 launch): both `claude-fable-5` and `claude-fable-5-1`
     // declare "context_management" in their 2.1.258 binary `capabilities`
     // arrays (byte-verified). The `claude-fable-5` prefix covers 5-1 too.
