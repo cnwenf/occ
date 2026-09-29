@@ -289,7 +289,9 @@ describe('Gap-113b: CLAUDE_CODE_SUBAGENT_MODEL_FORCE semantics', () => {
   test('without FORCE the tool-specified model wins', () => {
     delete process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE
     const resolved = getAgentModel(undefined, PARENT, 'sonnet')
-    expect(resolved).toBe('claude-sonnet-5')
+    // 2.1.284 (OCC-101): the 'sonnet' alias now resolves to claude-sonnet-5-5
+    // (catalog aliases.sonnet.default = "claude-sonnet-5-5" @198712738 region).
+    expect(resolved).toBe('claude-sonnet-5-5')
   })
 
   test('FORCE voids the tool-specified model (falls back to parent)', () => {
@@ -322,7 +324,8 @@ describe('Gap-113b: CLAUDE_CODE_SUBAGENT_MODEL_FORCE semantics', () => {
   test('falsy FORCE values do not force', () => {
     process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE = '0'
     const resolved = getAgentModel(undefined, PARENT, 'sonnet')
-    expect(resolved).toBe('claude-sonnet-5')
+    // 2.1.284 (OCC-101): 'sonnet' alias → claude-sonnet-5-5 (see above).
+    expect(resolved).toBe('claude-sonnet-5-5')
   })
 })
 

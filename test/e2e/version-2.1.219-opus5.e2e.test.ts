@@ -207,11 +207,16 @@ console.log(JSON.stringify({
     expect(out.haiku45).toBe(false);
   });
 
-  test("1j: --model help text matches the official 2.1.220 binary", async () => {
-    // Source-level: the option string carries the binary-verified example.
+  test("1j: --model help text matches the official 2.1.284 binary (superseded the 2.1.220 pin — v284 dropped the fable-5 example)", async () => {
+    // Source-level: the option string carries the binary-verified text.
+    // Official 2.1.284 ELF @214419817 (byte-recovered):
+    //   "...(e.g. 'fable', 'opus', or 'sonnet') or a model's full name."
+    // — the 2.1.220–2.1.283 trailing "(e.g. 'claude-fable-5')" example was
+    // DROPPED in 2.1.284 (v283 @212489666 still carries it). Assert on the
+    // template-literal close so a comment mention can't satisfy the test.
     const src = await Bun.file(`${REPO_ROOT}/src/main.tsx`).text();
     expect(src).toContain("'fable', 'opus', or 'sonnet'");
-    expect(src).toContain("'claude-fable-5'");
+    expect(src).toContain("or a model's full name.`).addOption");
   });
 });
 
@@ -230,12 +235,18 @@ console.log(JSON.stringify({
  * Opus is preserved as `claude-opus-4-8` per the official structure.
  */
 describe("2.1.219 Opus 5 claude-api skill model vars (e2e)", () => {
-  test("1h: SKILL_MODEL_VARS default Opus is claude-opus-5, prev Opus is 4.8", async () => {
+  test("1h: SKILL_MODEL_VARS default Opus is claude-opus-5-5, prev Opus is claude-opus-5 (2.1.284 `oc` block superseded the 2.1.219 claude-opus-5 pin)", async () => {
     // Source-level: importing claudeApiContent.ts directly via `bun -e` is not
     // viable here because the file imports .md stubs via Bun's text loader
     // (not active outside the build). Parse the SKILL_MODEL_VARS block instead.
     // Mirrors the 1j test pattern (source-level assertion of binary-verified
     // content).
+    // 2.1.284 (OCC-101): the official v284 linux-x64 binary's var table (`oc`
+    // block, byte-verified @230214723 region) migrated again:
+    //   OPUS_ID=claude-opus-5-5  OPUS_NAME=Claude Opus 5.5
+    //   PREV_OPUS_ID=claude-opus-5  PREV_OPUS_NAME=Claude Opus 5
+    //   SONNET_ID=claude-sonnet-5-5  SONNET_NAME=Claude Sonnet 5.5
+    //   PREV_SONNET_ID=claude-sonnet-5  PREV_SONNET_NAME=Claude Sonnet 5
     const src = await Bun.file(
       `${REPO_ROOT}/src/skills/bundled/claudeApiContent.ts`,
     ).text();
@@ -243,25 +254,32 @@ describe("2.1.219 Opus 5 claude-api skill model vars (e2e)", () => {
       const m = src.match(new RegExp(`^\\s*${key}:\\s*'([^']+)'`, "m"));
       return m ? m[1] : null;
     };
-    // Default Opus migrated to claude-opus-5 (binary-verified).
-    expect(extract("OPUS_ID")).toBe("claude-opus-5");
-    expect(extract("OPUS_NAME")).toBe("Claude Opus 5");
-    // Previous Opus preserved as 4.8 (migration-from-4.8, matches official).
-    expect(extract("PREV_OPUS_ID")).toBe("claude-opus-4-8");
-    expect(extract("PREV_OPUS_NAME")).toBe("Claude Opus 4.8");
+    // Default Opus migrated to claude-opus-5-5 (v284 binary-verified).
+    expect(extract("OPUS_ID")).toBe("claude-opus-5-5");
+    expect(extract("OPUS_NAME")).toBe("Claude Opus 5.5");
+    // Previous Opus is now claude-opus-5 (v284 migration chain).
+    expect(extract("PREV_OPUS_ID")).toBe("claude-opus-5");
+    expect(extract("PREV_OPUS_NAME")).toBe("Claude Opus 5");
+    // Sonnet 5.5 launch rows (OCC-101 primary item).
+    expect(extract("SONNET_ID")).toBe("claude-sonnet-5-5");
+    expect(extract("SONNET_NAME")).toBe("Claude Sonnet 5.5");
+    expect(extract("PREV_SONNET_ID")).toBe("claude-sonnet-5");
+    expect(extract("PREV_SONNET_NAME")).toBe("Claude Sonnet 5");
   });
 
-  test("1h: bundled claude-api skill content does not present 4-6/4-8 as the default Opus", async () => {
-    // The OPUS_ID line specifically (not PREV_OPUS_ID) must be claude-opus-5.
+  test("1h: bundled claude-api skill content does not present 4-6/4-8/5 as the default Opus", async () => {
+    // The OPUS_ID line specifically (not PREV_OPUS_ID) must be the v284
+    // default claude-opus-5-5.
     const src = await Bun.file(
       `${REPO_ROOT}/src/skills/bundled/claudeApiContent.ts`,
     ).text();
-    // Exact-line guards: the default Opus line is claude-opus-5.
-    expect(src).toMatch(/^[ \t]*OPUS_ID:[ \t]+'claude-opus-5',?$/m);
-    expect(src).toMatch(/^[ \t]*OPUS_NAME:[ \t]+'Claude Opus 5',?$/m);
+    // Exact-line guards: the default Opus line is claude-opus-5-5.
+    expect(src).toMatch(/^[ \t]*OPUS_ID:[ \t]+'claude-opus-5-5',?$/m);
+    expect(src).toMatch(/^[ \t]*OPUS_NAME:[ \t]+'Claude Opus 5\.5',?$/m);
     // Stale defaults must not appear as the (non-PREV) OPUS_ID line.
     expect(src).not.toMatch(/^[ \t]*OPUS_ID:[ \t]+'claude-opus-4-6',?$/m);
     expect(src).not.toMatch(/^[ \t]*OPUS_ID:[ \t]+'claude-opus-4-8',?$/m);
+    expect(src).not.toMatch(/^[ \t]*OPUS_ID:[ \t]+'claude-opus-5',?$/m);
   });
 });
 

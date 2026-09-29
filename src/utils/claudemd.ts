@@ -289,6 +289,12 @@ export type MemoryFileInfo = {
   type: MemoryType
   content: string
   parent?: string // Path of the file that included this one
+  // CC 2.1.284 (security, OCC-101): canonical path this entry was discovered
+  // under when it reached the walk through a symlink that escapes the original
+  // cwd. Official `O0e` sets `Vn.linkedFrom=kn` (v284 ELF @205759863);
+  // consumed by getExternalClaudeMdIncludes (`KRt` @205771688) to surface the
+  // entry in the external-includes approval dialog.
+  linkedFrom?: string
   globs?: string[] // Glob patterns for file paths this rule applies to
   // True when auto-injection transformed `content` (stripped HTML comments,
   // stripped frontmatter, truncated MEMORY.md) such that it no longer matches
@@ -302,6 +308,40 @@ export type MemoryFileInfo = {
 
 function pathInOriginalCwd(path: string): boolean {
   return pathInWorkingPath(path, getOriginalCwd())
+}
+
+// CC 2.1.284 (security, OCC-101): official `tet` fs fallback, byte-verified in
+// the v284 linux-x64 ELF @205760479 (tail @205761080):
+//   try{return(await e.lstat(n)).isSymbolicLink()}catch{return!1}
+// The storage-v5 fast path ahead of it needs a storageV5 backend OCC does not
+// have, so the fs fallback is the faithful equivalent. "Is this path itself a
+// symlink?" — used by the rules-walker escape gates below.
+function isRulesPathSymlink(filePath: string): boolean {
+  try {
+    return getFsImplementation().lstatSync(filePath).isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+// CC 2.1.284 (security, OCC-101): official `bRn` @205760223:
+//   function bRn(e){if(Ku(we(),e))return!0;let n=Bp(e);
+//     return ket().some((r)=>Bp(r)===n)}
+// we() = originalCwd (@197582016); Ku(a,b) = a contained in b (@201879819);
+// ket() = --add-dir list, consulted only behind
+// CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD. True when `dir` is an ancestor
+// (or equal) of the original cwd or matches an additional dir.
+function isUnderCwdOrAdditionalDirs(dir: string): boolean {
+  if (pathInWorkingPath(getOriginalCwd(), dir)) {
+    return true
+  }
+  if (!isEnvTruthy(process.env.CLAUDE_CODE_ADDITIONAL_DIRECTORIES_CLAUDE_MD)) {
+    return false
+  }
+  const normalizedDir = normalizePathForComparison(dir)
+  return getAdditionalDirectoriesForClaudeMd().some(
+    additional => normalizePathForComparison(additional) === normalizedDir,
+  )
 }
 
 /**
@@ -748,6 +788,35 @@ export async function processMemoryFile(
     return []
   }
 
+  // CC 2.1.284 (security, OCC-101): official `i9` external-allowed computation
+  // and User-scope symlink/hardlink reject — byte-identical in v283 (@203895369)
+  // and v284 (@205757657), so this pre-dates the 2.1.284 delta; OCC's 2.1.282
+  // port omitted it and this round backfills it. Official:
+  //   let F=s&&(n!=="User"||wet())
+  //   if(n==="User"&&!F)try{let Ce=await ae().lstat(e);
+  //     if(g===0&&Ce.isSymbolicLink()||(Ce.nlink??1)>1&&Ce.isFile())return[]}catch{}
+  // wet() = CN()!=="local-agent" (@205762370); OCC reads the same entrypoint
+  // env var its client-type resolver uses (main.tsx CLAUDE_CODE_ENTRYPOINT).
+  // Top-level (depth 0) User-scope symlinks and any hardlinked regular file
+  // are rejected when external includes are not allowed for User scope.
+  const externalAllowed =
+    includeExternal &&
+    (type !== 'User' ||
+      process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent')
+  if (type === 'User' && !externalAllowed) {
+    try {
+      const entryStats = getFsImplementation().lstatSync(filePath)
+      if (
+        (depth === 0 && entryStats.isSymbolicLink()) ||
+        ((entryStats.nlink ?? 1) > 1 && entryStats.isFile())
+      ) {
+        return []
+      }
+    } catch {
+      // Official swallows lstat errors here (fall through and load).
+    }
+  }
+
   processedPaths.add(normalizedPath)
   if (isSymlink) {
     processedPaths.add(normalizePathForComparison(resolvedPath))
@@ -781,7 +850,12 @@ export async function processMemoryFile(
       continue
     }
     const isExternal = !pathInOriginalCwd(resolvedIncludePath)
-    if (isExternal && !includeExternal) {
+    // CC 2.1.284 (security, OCC-101): official gates on `F` (externalAllowed),
+    // not raw includeExternal — `for(let Ce of ve){if(!TP(Ce)&&!F)continue;...}`
+    // (v284 i9 @205757900 region). Identical to `!includeExternal` for non-User
+    // types; for User scope under the local-agent entrypoint it drops external
+    // includes, matching official.
+    if (isExternal && !externalAllowed) {
       continue
     }
 
@@ -817,6 +891,8 @@ export async function processMdRules({
   includeExternal,
   conditionalRule,
   visitedDirs = new Set(),
+  discoveredDir,
+  linkedFrom,
 }: {
   rulesDir: string
   type: MemoryType
@@ -824,6 +900,12 @@ export async function processMdRules({
   includeExternal: boolean
   conditionalRule: boolean
   visitedDirs?: Set<string>
+  // CC 2.1.284 (security, OCC-101): official `O0e` recursion params `M` and
+  // `F` (@205758070). discoveredDir = canonical path the dir was found under
+  // when reached through a relocated symlink; linkedFrom = provenance path
+  // inherited from an escaping-symlink ancestor (feeds MemoryFileInfo.linkedFrom).
+  discoveredDir?: string
+  linkedFrom?: string
 }): Promise<MemoryFileInfo[]> {
   if (visitedDirs.has(rulesDir)) {
     return []
@@ -832,10 +914,11 @@ export async function processMdRules({
   try {
     const fs = getFsImplementation()
 
-    const { resolvedPath: resolvedRulesDir, isSymlink } = safeResolvePath(
-      fs,
-      rulesDir,
-    )
+    const {
+      resolvedPath: resolvedRulesDir,
+      isSymlink,
+      isCanonical,
+    } = safeResolvePath(fs, rulesDir)
 
     // CC 2.1.282 (security): cHe dir gate — `if(nE(ge)||ZO(e,G))return[]`.
     // A denied or unverifiable rules dir skips its whole subtree silently,
@@ -852,6 +935,66 @@ export async function processMdRules({
     if (isSymlink) {
       visitedDirs.add(resolvedRulesDir)
     }
+
+    // CC 2.1.284 (security, OCC-101): external-escape gates ported from the
+    // official v284 rules walker `O0e` (byte-verified in the v284 linux-x64 ELF
+    // @205758070, gate block @205758405). The v283 walker `vMe` (@203895786)
+    // had only the simpler dir-level arm `if(!Ee&&await BEn(W,e,n,S,w)&&!lL(ge))
+    // return[]` — which OCC's 2.1.282 port also omitted — and no linkedFrom
+    // tracking. Official statements (minified → OCC):
+    //   Ce=s&&(n!=="User"||wet())        → externalAllowed  (wet()=CN()!=="local-agent" @205762370)
+    //   Pe=n!=="User"&&!Ku(M??e,jRe())   → notUnderUserRules (jRe()=join(configHome,"rules") @200707141)
+    //   Oe=!Ce||F===void 0&&Pe&&Ee&&ve   → runEscapeChecks
+    //   De=Oe&&await tet(K,e,n,S,w)&&!TP(_e)                → dirIsEscapingSymlink
+    //   Ne=Oe&&!De&&n==="Project"&&Pe&&ve&&!TP(_e)
+    //        &&bRn(Nb(Nb(e)))&&await tet(K,Nb(e),n,S,void 0)→ parentDirIsEscapingSymlink
+    //   if(!Ce&&(De||Ne&&(g||!Cs().hasClaudeMdExternalIncludesApproved)))return[]
+    //   We=F??(De?e:Ne?Nb(e):void 0)     → effectiveLinkedFrom
+    //   $e=Ee?_e:void 0                  → canonicalDirPath
+    const externalAllowed =
+      includeExternal &&
+      (type !== 'User' ||
+        process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent')
+    const notUnderUserRules =
+      type !== 'User' &&
+      !pathInWorkingPath(discoveredDir ?? rulesDir, getUserClaudeRulesDir())
+    const runEscapeChecks =
+      !externalAllowed ||
+      (linkedFrom === undefined &&
+        notUnderUserRules &&
+        isCanonical &&
+        isSymlink)
+    const dirIsEscapingSymlink =
+      runEscapeChecks &&
+      isRulesPathSymlink(rulesDir) &&
+      !pathInOriginalCwd(resolvedRulesDir)
+    const parentDirIsEscapingSymlink =
+      runEscapeChecks &&
+      !dirIsEscapingSymlink &&
+      type === 'Project' &&
+      notUnderUserRules &&
+      isSymlink &&
+      !pathInOriginalCwd(resolvedRulesDir) &&
+      isUnderCwdOrAdditionalDirs(dirname(dirname(rulesDir))) &&
+      isRulesPathSymlink(dirname(rulesDir))
+    if (
+      !externalAllowed &&
+      (dirIsEscapingSymlink ||
+        (parentDirIsEscapingSymlink &&
+          (conditionalRule ||
+            !getCurrentProjectConfig()
+              .hasClaudeMdExternalIncludesApproved)))
+    ) {
+      return []
+    }
+    const effectiveLinkedFrom =
+      linkedFrom ??
+      (dirIsEscapingSymlink
+        ? rulesDir
+        : parentDirIsEscapingSymlink
+          ? dirname(rulesDir)
+          : undefined)
+    const canonicalDirPath = isCanonical ? resolvedRulesDir : undefined
 
     const result: MemoryFileInfo[] = []
     let entries: import('fs').Dirent[]
@@ -890,7 +1033,33 @@ export async function processMdRules({
       const isDirectory = stats ? stats.isDirectory() : entry.isDirectory()
       const isFile = stats ? stats.isFile() : entry.isFile()
 
+      // CC 2.1.284 (security, OCC-101): per-entry escape detection + provenance,
+      // byte-verified against v284 `O0e` @205759353:
+      //   Vt=xf(M??e,ft.name)
+      //   en=$e!==void 0&&Mt!==xf($e,ft.name)&&!TP(Mt)
+      //   kn=We??(en&&Pe?Vt:void 0)
+      // Both branches then start with `if(en&&!Ce)continue` — an entry whose
+      // resolved path is a relocation (differs from the canonical join under
+      // the canonical dir) AND escapes the original cwd is dropped unless
+      // external includes are allowed; when allowed, the loaded file is tagged
+      // linkedFrom so the approval dialog can surface it. v283 `vMe` had the
+      // same drop inline (`if(xe!==void 0&&ze!==Hu(xe,Ne.name)&&!Ee&&!lL(ze))
+      // continue`) but no tagging — OCC's 2.1.282 port omitted both.
+      const expectedEntryPath = join(discoveredDir ?? rulesDir, entry.name)
+      const isEscapingSymlinkEntry =
+        canonicalDirPath !== undefined &&
+        resolvedEntryPath !== join(canonicalDirPath, entry.name) &&
+        !pathInOriginalCwd(resolvedEntryPath)
+      const entryLinkedFrom =
+        effectiveLinkedFrom ??
+        (isEscapingSymlinkEntry && notUnderUserRules
+          ? expectedEntryPath
+          : undefined)
+
       if (isDirectory) {
+        if (isEscapingSymlinkEntry && !externalAllowed) {
+          continue
+        }
         result.push(
           ...(await processMdRules({
             rulesDir: resolvedEntryPath,
@@ -899,15 +1068,31 @@ export async function processMdRules({
             includeExternal,
             conditionalRule,
             visitedDirs,
+            discoveredDir:
+              expectedEntryPath !== resolvedEntryPath
+                ? expectedEntryPath
+                : undefined,
+            linkedFrom: entryLinkedFrom,
           })),
         )
       } else if (isFile && entry.name.endsWith('.md')) {
+        if (isEscapingSymlinkEntry && !externalAllowed) {
+          continue
+        }
         const files = await processMemoryFile(
           resolvedEntryPath,
           type,
           processedPaths,
           includeExternal,
         )
+        // CC 2.1.284: `let In=await i9(Mt,...),[Vn]=In;
+        //   if(Vn&&kn!==void 0)Vn.linkedFrom=kn` (@205759863) — tag the main
+        // file info (processMemoryFile returns the main file first, then
+        // includes), matching the official mutation of the freshly-built info.
+        const [mainFileInfo] = files
+        if (mainFileInfo && entryLinkedFrom !== undefined) {
+          mainFileInfo.linkedFrom = entryLinkedFrom
+        }
         result.push(
           ...files.filter(f => (conditionalRule ? f.globs : !f.globs)),
         )
@@ -1729,6 +1914,19 @@ export function getExternalClaudeMdIncludes(
   for (const file of files) {
     if (file.type !== 'User' && file.parent && !pathInOriginalCwd(file.path)) {
       externals.push({ path: file.path, parent: file.parent })
+    }
+    // CC 2.1.284 (security, OCC-101): second collector branch from official
+    // `KRt` (byte-verified v284 @205771688):
+    //   if(r.type!=="User"&&r.linkedFrom!==void 0&&!TP(r.path))
+    //     n.push({path:r.path,parent:r.linkedFrom})
+    // Surfaces rules entries that reached the walk through an escaping symlink
+    // (tagged by processMdRules) in the external-includes approval dialog.
+    if (
+      file.type !== 'User' &&
+      file.linkedFrom !== undefined &&
+      !pathInOriginalCwd(file.path)
+    ) {
+      externals.push({ path: file.path, parent: file.linkedFrom })
     }
   }
   return externals

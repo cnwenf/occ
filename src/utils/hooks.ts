@@ -5833,8 +5833,13 @@ function parseElicitationHookOutput(
   response?: ElicitationResponse
   blockingError?: HookBlockingError
 } {
-  // Exit code 2 = blocking (same as executeHooks path)
-  if (result.blocked && !result.succeeded) {
+  // Exit code 2 = blocking (same as executeHooks path).
+  // 2.1.284 security port (OCC-101): official v284 `mEr` (byte-verified
+  // @207400684 region) starts with `if(e.blocked)` — v283 `Vbr` (@205549934)
+  // had `if(e.blocked&&!e.succeeded)`. The old `!succeeded` conjunct let a
+  // hook that BOTH blocked (exit 2 semantics) and reported success swallow
+  // the plain-text blocking output.
+  if (result.blocked) {
     return {
       blockingError: {
         blockingError: result.output || `Elicitation blocked by hook`,
@@ -5865,8 +5870,13 @@ function parseElicitationHookOutput(
     // Cast to typed interface for type-safe property access
     const typedParsed = parsed as TypedSyncHookOutput
 
-    // Check for top-level decision: 'block' (exit code 0 + JSON block)
-    if (typedParsed.decision === 'block' || result.blocked) {
+    // Check for top-level decision: 'block' (exit code 0 + JSON block).
+    // 2.1.284 (OCC-101): official v284 `mEr` is `if(s.decision==="block")` —
+    // the v283 `||e.blocked` disjunct was dropped because the `if(e.blocked)`
+    // first branch above now catches every blocked result unconditionally
+    // (v283's `!e.succeeded` conjunct could strand a blocked-but-succeeded
+    // result here). Byte-verified: v284 @207400684 vs v283 @205549934.
+    if (typedParsed.decision === 'block') {
       return {
         blockingError: {
           blockingError: typedParsed.reason || 'Elicitation blocked by hook',

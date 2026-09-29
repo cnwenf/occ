@@ -197,6 +197,25 @@ export const CLAUDE_SONNET_5_CONFIG = {
   gateway: 'claude-sonnet-5',
 } as const satisfies ModelConfig
 
+// Claude Sonnet 5.5 (`claude-sonnet-5-5`) — launched in official Claude Code
+// 2.1.284 (changelog: "Added Claude Sonnet 5.5 (`claude-sonnet-5-5`), now the
+// default Sonnet model on the Anthropic API — 1M context, $2/$10 per Mtok with
+// $0.20/Mtok cache reads"). Provider IDs byte-verified against the official
+// 2.1.284 linux-x64 binary catalog entry (`S8n` baked catalog @198712738,
+// entry dumped from @198712500+60000): first_party/vertex/foundry/
+// anthropic_aws/gateway `claude-sonnet-5-5`, bedrock
+// `us.anthropic.claude-sonnet-5-5`, mantle `anthropic.claude-sonnet-5-5`.
+// Same launch-model shape as sonnet-5/opus-5-5.
+export const CLAUDE_SONNET_5_5_CONFIG = {
+  firstParty: 'claude-sonnet-5-5',
+  bedrock: 'us.anthropic.claude-sonnet-5-5',
+  vertex: 'claude-sonnet-5-5',
+  foundry: 'claude-sonnet-5-5',
+  anthropic_aws: 'claude-sonnet-5-5',
+  mantle: 'anthropic.claude-sonnet-5-5',
+  gateway: 'claude-sonnet-5-5',
+} as const satisfies ModelConfig
+
 export const CLAUDE_FABLE_5_CONFIG = {
   firstParty: 'claude-fable-5',
   bedrock: 'us.anthropic.claude-fable-5',
@@ -233,6 +252,7 @@ export const ALL_MODEL_CONFIGS = {
   sonnet45: CLAUDE_SONNET_4_5_CONFIG,
   sonnet46: CLAUDE_SONNET_4_6_CONFIG,
   sonnet5: CLAUDE_SONNET_5_CONFIG,
+  sonnet55: CLAUDE_SONNET_5_5_CONFIG,
   opus40: CLAUDE_OPUS_4_CONFIG,
   opus41: CLAUDE_OPUS_4_1_CONFIG,
   opus45: CLAUDE_OPUS_4_5_CONFIG,

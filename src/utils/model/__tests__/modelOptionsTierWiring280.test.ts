@@ -85,7 +85,6 @@ afterAll(() => {
 // Import the PRODUCTION module under test AFTER the mocks are registered.
 const { getModelOptions } = await import('../modelOptions.js')
 const {
-  COST_TIER_2_10,
   COST_TIER_4_20_CACHE_READ_0_20,
   formatModelPricing,
 } = await import('../../modelCost.js')
@@ -93,7 +92,6 @@ const { resetModelStringsForTestingOnly, setMainLoopModelOverride, setInitialMai
   await import('src/bootstrap/state.js')
 
 const OPUS55_BASE_PRICE = formatModelPricing(COST_TIER_4_20_CACHE_READ_0_20)
-const SONNET5_PRICE = formatModelPricing(COST_TIER_2_10)
 
 function withEnv(
   env: Record<string, string | undefined>,
@@ -250,7 +248,7 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
       'claude-fable-5-1',
       'haiku',
     ])
-    expect(options[0]?.description).toBe('Sonnet 5 · Efficient for routine tasks')
+    expect(options[0]?.description).toBe('Sonnet 5.5 · Efficient for routine tasks')
     expect(options[1]).toEqual({
       value: 'opus[1m]',
       label: 'Opus (1M context)',
@@ -287,10 +285,15 @@ describe('getModelOptions wiring — extra-usage 1M rows per tier (kv / getMaxSo
       label: 'Opus (1M context)',
       description: `Opus 5.5 with 1M context · Billed as extra usage · ${OPUS55_BASE_PRICE}`,
     })
+    // 2.1.284 (OCC-101, Sonnet 5.5 launch): getMaxSonnet5_1MOption now mirrors
+    // official `fy()` `ut()` branch — "Sonnet 5.5 for long sessions", no
+    // billing/pricing line, plus descriptionForModel (v284 ELF @203847312).
     expect(options[4]).toEqual({
       value: 'sonnet[1m]',
-      label: 'Sonnet (1M context)',
-      description: `Sonnet 5 with 1M context · Billed as extra usage · ${SONNET5_PRICE}`,
+      label: 'Sonnet 5.5 (1M context)',
+      description: 'Sonnet 5.5 for long sessions',
+      descriptionForModel:
+        'Sonnet 5.5 with 1M context window - for long sessions with large codebases',
     })
   })
 

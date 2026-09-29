@@ -4,9 +4,11 @@
  * Loads keybindings from ~/.claude/keybindings.json and watches
  * for changes to reload them automatically.
  *
- * NOTE: User keybinding customization is currently only available for
- * Anthropic employees (USER_TYPE === 'ant'). External users always
- * use the default bindings.
+ * NOTE: gated by the tengu_keybinding_customization_release feature gate,
+ * which defaults to TRUE in the official binary (v283 `yV()` / v284 `KV()`,
+ * byte-verified — see isKeybindingCustomizationEnabled below). The earlier
+ * "Anthropic employees only" note was stale: the official gate has no
+ * USER_TYPE check.
  */
 
 import chokidar, { type FSWatcher } from 'chokidar'
@@ -35,13 +37,22 @@ import {
  *
  * Returns true if the tengu_keybinding_customization_release GrowthBook gate is enabled.
  *
+ * CC 2.1.284 (OCC-101, OCC-100 carry-over): the official gate DEFAULT is
+ * TRUE — byte-verified in the linux-x64 ELFs: v284 `KV()` @204876508 and
+ * v283 `yV()` @203041522 are both
+ * `return x("tengu_keybinding_customization_release",!0)`. OCC's
+ * GrowthBook is stubbed and never fetches, so the fallback IS the shipped
+ * value; the previous `false` default hid the `/keybindings to customize`
+ * help row and gated off the loader for everyone — an environment-visible
+ * divergence from the official default-on behavior.
+ *
  * This function is exported so other parts of the codebase (e.g., /doctor)
  * can check the same condition consistently.
  */
 export function isKeybindingCustomizationEnabled(): boolean {
   return getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_keybinding_customization_release',
-    false,
+    true,
   )
 }
 

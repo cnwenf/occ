@@ -210,13 +210,29 @@ export function getDefaultSonnetModel(): ModelName {
   if (process.env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
     return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
   }
-  // Default to Sonnet 4.5 for 3P since they may not have 4.6/5 yet. Official
-  // 2.1.200 per_provider cross-provider fallback maps sonnet-5 →
-  // sonnet-4-5/4-6 on bedrock/vertex/foundry, so 3P default stays on sonnet-4-5.
-  if (getAPIProvider() !== 'firstParty') {
+  // 2.1.284 (Sonnet 5.5 launch): Claude Sonnet 5.5 is the default Sonnet model
+  // on the Anthropic API. The official 2.1.284 linux-x64 ELF ships a verbatim
+  // per_provider alias table (baked catalog `S8n` @198712738):
+  //   aliases:{sonnet:{default:"claude-sonnet-5-5",
+  //     per_provider:{bedrock:"claude-sonnet-4-5",vertex:"claude-sonnet-4-5",
+  //       foundry:"claude-sonnet-4-5",mantle:"claude-sonnet-4-5",
+  //       anthropic_aws:"claude-sonnet-4-6",gateway:"claude-sonnet-4-6"}}}
+  // plus `latest_per_family:{...sonnet:"claude-sonnet-5-5"...}`. Only
+  // `default` changed v283→v284 (claude-sonnet-5 → claude-sonnet-5-5); the
+  // per_provider table is byte-identical to 2.1.283 — 3P providers still lag
+  // at Sonnet 4.5/4.6. (`anthropic_google_cloud` has no per_provider entry →
+  // falls to default; OCC's provider selection folds it into firstParty.)
+  // History: 2.1.200-era OCC simplification returned sonnet-4-5 for ALL 3P;
+  // this round aligns the table exactly (anthropic_aws/gateway → sonnet-4-6).
+  const provider = getAPIProvider()
+  if (provider === 'anthropic_aws' || provider === 'gateway') {
+    return getModelStrings().sonnet46
+  }
+  if (provider !== 'firstParty') {
+    // bedrock / vertex / foundry / mantle → "claude-sonnet-4-5"
     return getModelStrings().sonnet45
   }
-  return getModelStrings().sonnet5
+  return getModelStrings().sonnet55
 }
 
 /**
@@ -493,8 +509,16 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-opus-4')) {
     return 'claude-opus-4'
   }
-  // Sonnet 5 before 4-6: "claude-sonnet-5" is not a substring of "claude-sonnet-4-6"
-  // but check it first so it isn't caught by the broader claude-sonnet-4 patterns.
+  // Sonnet 5.5 before Sonnet 5 before 4-6: "claude-sonnet-5" IS a substring
+  // of "claude-sonnet-5-5", so the 5-5 branch must come first (2.1.284; the
+  // official binary @200499955 inserts
+  // `if(e.includes("claude-sonnet-5-5"))return"claude-sonnet-5-5";` before
+  // the sonnet-5 branch). None of them are substrings of "claude-sonnet-4-6"
+  // but check them first so they aren't caught by the broader
+  // claude-sonnet-4 patterns.
+  if (name.includes('claude-sonnet-5-5')) {
+    return 'claude-sonnet-5-5'
+  }
   if (name.includes('claude-sonnet-5')) {
     return 'claude-sonnet-5'
   }
@@ -751,6 +775,10 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Opus 4.1'
     case getModelStrings().opus40:
       return 'Opus 4'
+    case getModelStrings().sonnet55 + '[1m]':
+      return 'Sonnet 5.5 (1M context)'
+    case getModelStrings().sonnet55:
+      return 'Sonnet 5.5'
     case getModelStrings().sonnet5 + '[1m]':
       return 'Sonnet 5 (1M context)'
     case getModelStrings().sonnet5:
@@ -1053,7 +1081,15 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (canonical.includes('claude-opus-4')) {
     return 'Opus 4'
   }
-  // Sonnet 5 (native 1M) before the 4.x patterns.
+  // Sonnet 5.5 before Sonnet 5 (canonical `claude-sonnet-5-5` CONTAINS the
+  // substring `claude-sonnet-5`) before the 4.x patterns. 2.1.284 binary
+  // composes the 1M display as display_name + " (1M context)" (`pv`; the
+  // catalog @198719154 carries display_name "Sonnet 5.5" and the literal
+  // "(with 1M context)" has 0 hits for 5.5 — same convention as the 2.1.280
+  // Opus 5.5 launch).
+  if (canonical.includes('claude-sonnet-5-5')) {
+    return has1m ? 'Sonnet 5.5 (1M context)' : 'Sonnet 5.5'
+  }
   if (canonical.includes('claude-sonnet-5')) {
     return has1m ? 'Sonnet 5 (with 1M context)' : 'Sonnet 5'
   }

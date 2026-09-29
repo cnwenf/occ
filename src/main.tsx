@@ -1088,10 +1088,13 @@ async function run(): Promise<CommanderCommand> {
     return Number.isFinite(n) ? n : undefined;
   }).hideHelp()).option('--from-pr [value]', 'Resume a session linked to a PR by PR number/URL, or open interactive picker with optional search term', value => value || true).option('--no-session-persistence', 'Disable session persistence - sessions will not be saved to disk and cannot be resumed (only works with --print)').addOption(new Option('--resume-session-at <message id>', 'When resuming, only messages up to and including the assistant message with <message.id> (use with --resume in print mode)').argParser(String).hideHelp()).addOption(new Option('--rewind-files <user-message-id>', 'Restore files to state at the specified user message and exit (requires --resume)').hideHelp())
   // @[MODEL LAUNCH]: Update the example model ID in the --model help text.
-  // Official 2.1.220 linux-x64 ELF help text (byte-recovered):
+  // Official 2.1.284 linux-x64 ELF help text (byte-recovered @214419817):
   //   "Provide an alias for the latest model (e.g. 'fable', 'opus', or
-  //    'sonnet') or a model's full name (e.g. 'claude-fable-5')."
-  .option('--model <model>', `Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name (e.g. 'claude-fable-5').`).addOption(new Option('--effort <level>', `Effort level for the current session (${EFFORT_LEVELS.join(', ')})`).argParser((rawValue: string) => {
+  //    'sonnet') or a model's full name."
+  // 2.1.284 DROPPED the trailing "(e.g. 'claude-fable-5')" example that
+  // 2.1.220–2.1.283 carried (v283 @212489666 still has it) — presumably to
+  // avoid pinning a specific model ID that goes stale on each launch.
+  .option('--model <model>', `Model for the current session. Provide an alias for the latest model (e.g. 'fable', 'opus', or 'sonnet') or a model's full name.`).addOption(new Option('--effort <level>', `Effort level for the current session (${EFFORT_LEVELS.join(', ')})`).argParser((rawValue: string) => {
     // Official 2.1.283 `_5e` registration (Gap-139a, byte-verified):
     //   .argParser((S)=>{let{level:C,warning:G}=_5e(S);
     //     if(G!==void 0)process.stderr.write(`Warning: ${G}\n`);return C})

@@ -541,8 +541,12 @@ describe('2.1.280 #078: getClaudeAiUserDefaultModelDescription (_Mn port)', () =
   })
 
   test('non-subscriber → Sonnet wording', () => {
+    // 2.1.284 (Sonnet 5.5 launch): the wording composes from the default
+    // Sonnet marketing name — `aliases.sonnet.default` flipped
+    // claude-sonnet-5 → claude-sonnet-5-5 (v284 catalog byte-verified), so
+    // the description follows to "Sonnet 5.5".
     expect(getClaudeAiUserDefaultModelDescription()).toBe(
-      'Sonnet 5 · Efficient for routine tasks',
+      'Sonnet 5.5 · Efficient for routine tasks',
     )
   })
 })

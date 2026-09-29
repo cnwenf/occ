@@ -1004,6 +1004,15 @@ function get3PModelFallbackSuggestion(model: string): string | undefined {
   if (m.includes('fable-5') || m.includes('fable_5')) {
     return getModelStrings().opus5
   }
+  // 2.1.284 (OCC-101, Sonnet 5.5 launch): catalog `fallback_3p` field,
+  // byte-verified in the 2.1.284 ELF baked catalog — claude-sonnet-5-5 →
+  // "claude-sonnet-5". A sonnet-5-5 check MUST precede any plain sonnet-5
+  // check (substring containment), same hazard as the fable-5-1/fable-5
+  // pair above; the official chain has no sonnet-5 row (that entry is
+  // byte-identical v283≡v284), so this is the only new row.
+  if (m.includes('sonnet-5-5') || m.includes('sonnet_5_5')) {
+    return getModelStrings().sonnet5
+  }
   return undefined
 }
 

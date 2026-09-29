@@ -183,6 +183,11 @@ export function modelSupportsAdvisor(model: string): boolean {
     m.includes('opus-4-6') ||
     m.includes('sonnet-4-6') ||
     m.includes('opus-5') ||
+    // 2.1.284 (OCC-101): the v284 model catalog carries `advisor_rank:3` on
+    // BOTH `claude-sonnet-5` and `claude-sonnet-5-5` (catalog dumped @198.71M
+    // region). 'sonnet-5' covers the -5-5 canonical id via substring.
+    // Pre-existing gap: sonnet-5 itself was missing before this round.
+    m.includes('sonnet-5') ||
     process.env.USER_TYPE === 'ant'
   )
 }
@@ -194,6 +199,9 @@ export function isValidAdvisorModel(model: string): boolean {
     m.includes('opus-4-6') ||
     m.includes('sonnet-4-6') ||
     m.includes('opus-5') ||
+    // 2.1.284 (OCC-101): advisor_rank:3 for sonnet-5/sonnet-5-5 — see
+    // modelSupportsAdvisor above.
+    m.includes('sonnet-5') ||
     process.env.USER_TYPE === 'ant'
   )
 }

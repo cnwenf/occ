@@ -161,12 +161,26 @@ export function sanitizeModelName(shortName: string): string {
   if (shortName.includes('fable-5')) return 'claude-fable-5'
   if (shortName.includes('mythos-5-1')) return 'claude-mythos-5-1'
   if (shortName.includes('mythos-5')) return 'claude-mythos-5'
+  // 2.1.284 (OCC-101): official v284 sanitize chain (byte-verified
+  // @200499405 region): `if(e.includes("claude-opus-5-5"))
+  // return"claude-opus-5-5";if(e.includes("claude-opus-5"))
+  // return"claude-opus-5";...;if(e.includes("claude-sonnet-5-5"))
+  // return"claude-sonnet-5-5";if(e.includes("claude-sonnet-5"))
+  // return"claude-sonnet-5";if(e.includes("claude-sonnet-4-6"))...`
+  // The -5-5 arms MUST precede their -5 counterparts ('opus-5' is a substring
+  // of 'opus-5-5' — without this, Opus 5.5 commits were mislabeled
+  // 'claude-opus-5', a pre-existing 2.1.280-launch bug fixed here). The
+  // sonnet-5 arms are new: before this round claude-sonnet-5 fell through to
+  // the generic 'claude' trailer (pre-existing 2.1.265 gap).
+  if (shortName.includes('opus-5-5')) return 'claude-opus-5-5'
   // Opus 5 before 4-x: 'opus-5' is not matched by the 'opus-4' includes below.
   if (shortName.includes('opus-5')) return 'claude-opus-5'
   if (shortName.includes('opus-4-6')) return 'claude-opus-4-6'
   if (shortName.includes('opus-4-5')) return 'claude-opus-4-5'
   if (shortName.includes('opus-4-1')) return 'claude-opus-4-1'
   if (shortName.includes('opus-4')) return 'claude-opus-4'
+  if (shortName.includes('sonnet-5-5')) return 'claude-sonnet-5-5'
+  if (shortName.includes('sonnet-5')) return 'claude-sonnet-5'
   if (shortName.includes('sonnet-4-6')) return 'claude-sonnet-4-6'
   if (shortName.includes('sonnet-4-5')) return 'claude-sonnet-4-5'
   if (shortName.includes('sonnet-4')) return 'claude-sonnet-4'

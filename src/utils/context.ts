@@ -226,11 +226,17 @@ export function getModelMaxOutputTokens(model: string): {
   } else if (
     // OCC-99: the official 2.1.283 model registry (byte-extracted from the
     // ELF, U5(e)/Kl(canonical) max_output_tokens table @197060200) declares
-    // claude-opus-5-5 default=128000 upper=128000 — the ONLY model whose
-    // default equals its upper limit. Must be checked BEFORE the generic
-    // opus-5 branch below, which would give it 64000/128000 and silently
-    // halve the default output budget for the default model.
-    m.includes('opus-5-5')
+    // claude-opus-5-5 default=128000 upper=128000. OCC-101 (2.1.284): the
+    // Sonnet 5.5 launch catalog entry (baked catalog @198712738,
+    // byte-verified) declares the SAME max_output_tokens
+    // {default:128000, upper:128000} for claude-sonnet-5-5 — these two are
+    // the ONLY models whose default equals the upper limit (claude-sonnet-5
+    // stays {64000,128000}). Must be checked BEFORE the generic opus-5 /
+    // sonnet-5 launch-model branches below ('claude-sonnet-5' IS a substring
+    // of 'claude-sonnet-5-5'), which would give 64000/128000 and silently
+    // halve the default output budget.
+    m.includes('opus-5-5') ||
+    m.includes('sonnet-5-5')
   ) {
     defaultTokens = 128_000
     upperLimit = 128_000

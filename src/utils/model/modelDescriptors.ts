@@ -54,6 +54,12 @@ export const CANONICAL_MODEL_CATALOG: readonly string[] = [
   'claude-sonnet-4-5',
   'claude-sonnet-4-6',
   'claude-sonnet-5',
+  // 2.1.284 (OCC-101): the v284 catalog adds claude-sonnet-5-5
+  // (latest_per_family sonnet → "claude-sonnet-5-5"; first-party id list
+  // `ere` ends …"claude-sonnet-5","claude-sonnet-5-5"). Alphabetical order
+  // keeps the shorter prefix first; latestCanonicalModelForFamily('sonnet')
+  // now returns claude-sonnet-5-5 (major 5 minor 5 > 5.0 via `N3n`).
+  'claude-sonnet-5-5',
 ]
 
 /**

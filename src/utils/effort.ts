@@ -596,6 +596,18 @@ export function getDefaultEffortForModel(
     return 'medium'
   }
 
+  // 2.1.284 (OCC-101, Sonnet 5.5 launch): the official catalog entry for
+  // claude-sonnet-5-5 (baked catalog @198712738, byte-verified) declares
+  // `default_effort: "medium"` — unconditional, same shape as the opus-5-5
+  // branch above. claude-sonnet-5 declares "high", which matches the
+  // undefined→high API fallback below, so it still gets no branch — hence
+  // this check MUST stay specific to the 5-5 substring ('sonnet-5' is a
+  // substring of 'sonnet-5-5'; broadening it would drag plain sonnet-5 to
+  // medium).
+  if (model.toLowerCase().includes('sonnet-5-5')) {
+    return 'medium'
+  }
+
   // When ultrathink feature is on, default effort to medium (ultrathink bumps to high)
   if (isUltrathinkEnabled() && modelSupportsEffort(model)) {
     return 'medium'
