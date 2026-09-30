@@ -106,7 +106,13 @@ Official v284 baked model catalog (`S8n` @198712738, "Hand-maintained baked-in m
 
 ## 5. Implementation report
 
-25 files modified + 4 new test files, +640/−107 lines. All ports byte-verified against the v284
+Frozen-round diffstat (`git diff --numstat 6246dc1...12d0f2b`, the 2.1.359-base→merge range):
+**31 files** — 26 modified + 5 new (4 new test files + this ledger doc) — **+2117/−109 lines**.
+(An earlier draft of this paragraph under-reported ~3.3× — "25 files modified + 4 new test
+files, +640/−107" — because it counted only the hand-tallied production sites and missed the
+test-file bulk; corrected in the OCC-101 fix round, P3-7.) The 验收员's follow-up P2-1 patch
+`a967d0f` landed AFTER the merge and is intentionally outside these frozen-round stats.
+All ports byte-verified against the v284
 ELF; every touched site carries a comment citing its offset.
 
 **(A) Sonnet 5.5 launch (item 13 — top priority, reference path OCC-134 Opus 5.5):**
@@ -302,3 +308,45 @@ Release **2.1.360** is gated on the dispatch's acceptance chain: handoff comment
 `## 2.1.360 - <date>` CHANGELOG.md section (feeds the REPL "What's new"), tag `v2.1.360`, push
 tags (CI publishes `@cnwenf/occ` + GitHub Release). This round does NOT cut the release itself —
 per dispatch, the Leader closes the loop after acceptance.
+
+## 10. Fix round (验收员 CHANGES_REQUESTED re-work, 2026-09-30)
+
+The acceptance review of merge `12d0f2b` returned CHANGES_REQUESTED (12 findings; security
+CLEARED_WITH_RISK 0C/0H/0M/1L). This fix round lands all 3 必修项 and all 9 建议同轮项:
+
+- **P2-1** — fixed directly by 验收员 as `a967d0f` (outside this round's diff).
+- **P2-2** — new `src/keybindings/__tests__/customizationGate284.test.ts`: pins the
+  `tengu_keybinding_customization_release` fallback=TRUE (official `KV()` @204876508) under the
+  GrowthBook stub + source-anchored consumer wiring (PromptInputHelpMenu.tsx:322 gate,
+  /keybindings command `isEnabled`, bundled skill `isEnabled`).
+- **P2-3** — `unrecognizedModelSignal233.test.ts` known-list gains `claude-sonnet-5-5` (+`[1m]`).
+- **P3-1/P3-2** — `sonnet55Launch284.test.ts`: exact per-provider default-Sonnet table pins
+  (firstParty `claude-sonnet-5-5`, anthropic_aws `claude-sonnet-4-6`, vertex
+  `claude-sonnet-4-5@20250929`, foundry `claude-sonnet-4-5`, mantle `anthropic.claude-sonnet-4-5`,
+  bedrock `us.anthropic.claude-sonnet-4-5-20250929-v1:0`), `ANTHROPIC_DEFAULT_SONNET_MODEL`
+  priority over every branch, and the `sonnet-5-5[1m]` picker disjunct (source-anchored).
+- **P3-3/P3-5** — new `src/constants/__tests__/envInfoSonnet55_284.test.ts`: knowledge-cutoff
+  matrix pins (opus-5-5/sonnet-5-5 → June 2026; opus-5 → May 2026; sonnet-5 → January 2026 —
+  the `-5-5` rows must precede the `-5` substring rows), 5.5-generation model-IDs sentence, and
+  fast-mode tail removal (`not.toContain('available on Opus')`).
+- **P3-4** — new `src/utils/model/__tests__/threePFallback284.test.ts`: dual-site pins for the
+  `claude-sonnet-5-5 → sonnet5` 3P fallback row (validateModel.ts probe message + errors.ts
+  query-path 404 message), each with a firstParty no-suggestion control.
+- **P3-6 (security)** — `memoryRulesEscape284.test.ts` gains the include-walk F-gate block:
+  User-scope memory under `CLAUDE_CODE_ENTRYPOINT=local-agent` drops escaping `@includes` EVEN
+  with `includeExternal=true` (official `!TP(Ce)&&!F` @205757900 region), plus Project-scope /
+  normal-entrypoint / includeExternal=false / in-cwd controls.
+- **P3-8** — shared-process regression root cause: `getBedrockInferenceProfiles` is
+  `memoize(async …)` (bedrock.ts:7); sonnet55's bedrock-env tests fired the REAL ~2s AWS fetch
+  whose memoized in-flight promise survived the file boundary and wrote real profile strings
+  into session-global `STATE.modelStrings` mid-run, corrupting `bedrockRegionPrefix.test.ts`.
+  Fix (aggressor-side, hermetic): stub the profile fetch in sonnet55Launch284's beforeAll.
+  `bun test src/utils/model/` back to zero-fail.
+- **P3-9** — production change: `FsOperations` gains async `lstat` (NodeFsOperations via
+  `fs/promises`), `isRulesPathSymlink` and the i9 User-scope stat become `await …lstat(…)`,
+  matching official `await e.lstat(n)` (tet @205761080 / i9 @205757657). No remaining
+  `lstatSync` in the claudemd walker.
+- **P3-7** — §5 diffstat corrected to the real frozen-round numstat (31 files, +2117/−109).
+
+Every pin was mutation-self-verified (break the production site → pin RED → restore → GREEN);
+per-item mutation evidence is in the fix-report comment on the issue.

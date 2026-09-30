@@ -378,6 +378,96 @@ describe('CC 2.1.284 — processMemoryFile User-scope reject (i9 backfill)', () 
   })
 })
 
+describe('CC 2.1.284 — processMemoryFile include-walk external gate (i9 F-gate, P3-6)', () => {
+  // SECURITY property: for User-scope memory under the local-agent
+  // entrypoint, externalAllowed (official `F`) is false EVEN WHEN the caller
+  // passed includeExternal=true — escaping @includes must still be dropped.
+  // Official: `for(let Ce of ve){if(!TP(Ce)&&!F)continue;...}` (v284 i9
+  // @205757900 region) gates on F, not on the raw includeExternal argument.
+  function writeUserMemoryWithEscapingInclude(): {
+    main: string
+    secret: string
+  } {
+    const secret = writeOutsideRule('secret.md', 'ESCAPED SECRET CONTENT')
+    const main = join(proj, 'user-memory.md')
+    writeFileSync(main, `MAIN USER MEMORY\n\n@${secret}\n`, 'utf8')
+    return { main, secret }
+  }
+
+  test('local-agent User scope: escaping @include is DROPPED even with includeExternal=true', async () => {
+    // Arrange
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'local-agent'
+    const { main } = writeUserMemoryWithEscapingInclude()
+
+    // Act — s=true (includeExternal), but F = s && wet() = false in local-agent
+    const files = await processMemoryFile(main, 'User', new Set(), true, 0)
+
+    // Assert — main file loads; the escaping include never enters the walk
+    expect(files.length).toBe(1)
+    expect(files[0]?.content).toContain('MAIN USER MEMORY')
+    expect(files.some(f => f.content.includes('ESCAPED SECRET CONTENT'))).toBe(
+      false,
+    )
+  })
+
+  test('normal entrypoint User scope: the same escaping @include loads (F=true)', async () => {
+    // Arrange — CLAUDE_CODE_ENTRYPOINT unset in beforeEach → wet()=true
+    const { main } = writeUserMemoryWithEscapingInclude()
+
+    // Act
+    const files = await processMemoryFile(main, 'User', new Set(), true, 0)
+
+    // Assert — parent first, then the included external file
+    expect(files.length).toBe(2)
+    expect(files[0]?.content).toContain('MAIN USER MEMORY')
+    expect(files[1]?.content).toContain('ESCAPED SECRET CONTENT')
+    expect(files[1]?.parent).toBe(main)
+  })
+
+  test('local-agent Project scope: escaping @include still loads (F keys on User scope only)', async () => {
+    // Arrange
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'local-agent'
+    const { main } = writeUserMemoryWithEscapingInclude()
+
+    // Act — F = s && (type !== 'User' || wet()) → true for Project
+    const files = await processMemoryFile(main, 'Project', new Set(), true, 0)
+
+    // Assert
+    expect(files.length).toBe(2)
+    expect(files[1]?.content).toContain('ESCAPED SECRET CONTENT')
+  })
+
+  test('includeExternal=false drops the escaping include for ANY scope (F conjunct)', async () => {
+    // Arrange
+    const { main } = writeUserMemoryWithEscapingInclude()
+
+    // Act — normal entrypoint, but s=false → F=false
+    const files = await processMemoryFile(main, 'Project', new Set(), false, 0)
+
+    // Assert
+    expect(files.length).toBe(1)
+    expect(files.some(f => f.content.includes('ESCAPED SECRET CONTENT'))).toBe(
+      false,
+    )
+  })
+
+  test('an IN-CWD @include is unaffected by the external gate (local-agent User scope)', async () => {
+    // Arrange — TP(Ce) true → the `!TP&&!F` drop does not fire
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'local-agent'
+    const internal = join(proj, 'internal-include.md')
+    writeFileSync(internal, 'INTERNAL INCLUDE CONTENT', 'utf8')
+    const main = join(proj, 'user-memory.md')
+    writeFileSync(main, `MAIN USER MEMORY\n\n@${internal}\n`, 'utf8')
+
+    // Act
+    const files = await processMemoryFile(main, 'User', new Set(), true, 0)
+
+    // Assert
+    expect(files.length).toBe(2)
+    expect(files[1]?.content).toContain('INTERNAL INCLUDE CONTENT')
+  })
+})
+
 // Fixture helpers — replace the pre-created real rules dir / .claude with a
 // symlink for the dir-level escape tests.
 function rmSyncRulesDir(): void {

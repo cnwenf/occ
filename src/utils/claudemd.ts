@@ -316,9 +316,11 @@ function pathInOriginalCwd(path: string): boolean {
 // The storage-v5 fast path ahead of it needs a storageV5 backend OCC does not
 // have, so the fs fallback is the faithful equivalent. "Is this path itself a
 // symlink?" — used by the rules-walker escape gates below.
-function isRulesPathSymlink(filePath: string): boolean {
+async function isRulesPathSymlink(filePath: string): Promise<boolean> {
   try {
-    return getFsImplementation().lstatSync(filePath).isSymbolicLink()
+    // P3-9 (OCC-101 review): official is `await e.lstat(n)` — async. The
+    // lstatSync variant blocked the event loop inside the async walker.
+    return (await getFsImplementation().lstat(filePath)).isSymbolicLink()
   } catch {
     return false
   }
@@ -805,7 +807,8 @@ export async function processMemoryFile(
       process.env.CLAUDE_CODE_ENTRYPOINT !== 'local-agent')
   if (type === 'User' && !externalAllowed) {
     try {
-      const entryStats = getFsImplementation().lstatSync(filePath)
+      // P3-9 (OCC-101 review): official is `await ae().lstat(e)` — async.
+      const entryStats = await getFsImplementation().lstat(filePath)
       if (
         (depth === 0 && entryStats.isSymbolicLink()) ||
         ((entryStats.nlink ?? 1) > 1 && entryStats.isFile())
@@ -966,7 +969,7 @@ export async function processMdRules({
         isSymlink)
     const dirIsEscapingSymlink =
       runEscapeChecks &&
-      isRulesPathSymlink(rulesDir) &&
+      (await isRulesPathSymlink(rulesDir)) &&
       !pathInOriginalCwd(resolvedRulesDir)
     const parentDirIsEscapingSymlink =
       runEscapeChecks &&
@@ -976,7 +979,7 @@ export async function processMdRules({
       isSymlink &&
       !pathInOriginalCwd(resolvedRulesDir) &&
       isUnderCwdOrAdditionalDirs(dirname(dirname(rulesDir))) &&
-      isRulesPathSymlink(dirname(rulesDir))
+      (await isRulesPathSymlink(dirname(rulesDir)))
     if (
       !externalAllowed &&
       (dirIsEscapingSymlink ||

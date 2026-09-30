@@ -88,6 +88,12 @@ describe('2.1.233 — isModelRecognized', () => {
       'claude-opus-5-5[1m]',
       'claude-fable-5-1',
       'claude-mythos-5-1',
+      // OCC-101 (2.1.284 Sonnet 5.5 launch): the `oA` recognized-model list
+      // gained claude-sonnet-5-5 (+ the [1m] variant) — without these rows
+      // OCC would fire [claude-code:unrecognized_model] on the NEW DEFAULT
+      // sonnet while official stays silent.
+      'claude-sonnet-5-5',
+      'claude-sonnet-5-5[1m]',
     ]) {
       expect(isModelRecognized(model)).toBe(true)
     }

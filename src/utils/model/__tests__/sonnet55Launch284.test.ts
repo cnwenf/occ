@@ -1,4 +1,8 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
+const REPO_SRC = join(import.meta.dir, '..', '..', '..')
 
 // Hermetic for credential-less environments (CI runners): under CI=true /
 // NODE_ENV=test the auth guard (src/utils/auth.ts) demands ANTHROPIC_API_KEY
@@ -28,11 +32,6 @@ process.env.ANTHROPIC_API_KEY ??= 'occ-ci-test-key'
  * Mock-module discipline follows opus55Launch280.test.ts (OCC-97 Gap-97b
  * lesson: snapshot real exports BEFORE mocking, restore in afterAll).
  */
-const actualAuthModule = await import('../../auth.js')
-const actualAuthExports = { ...actualAuthModule }
-const actualSettingsModule = await import('../../settings/settings.js')
-const actualSettingsExports = { ...actualSettingsModule }
-
 const subState = {
   max: false,
   pro: false,
@@ -44,29 +43,64 @@ const subState = {
 
 let mockedSettings: Record<string, unknown> = {}
 
-mock.module('../../auth.js', () => ({
-  ...actualAuthExports,
-  isMaxSubscriber: () => subState.max,
-  isProSubscriber: () => subState.pro,
-  isTeamSubscriber: () => subState.team,
-  isTeamPremiumSubscriber: () => subState.teamPremium,
-  isClaudeAISubscriber: () => subState.claudeAi,
-  getSubscriptionType: () => subState.type,
-}))
+// P3-8 (OCC-101 review): mock registration is DEFERRED to beforeAll and
+// restored in afterAll, and the real exports are captured inside beforeAll
+// (not at module scope) so this file never snapshots another file's
+// still-active mock as "actual" (OCC-97 in-place-mutation hazard).
+// mock.module mutates already-imported namespaces in place, so the
+// top-level `await import`s below still observe the mocked exports once
+// beforeAll has run. The shared-process regression itself (bedrockRegion
+// Prefix 267/3 vs the 243/0 base) was NOT the registration timing — it was
+// this file's bedrock-env tests firing the REAL, memoized ~2s AWS profile
+// fetch, whose late resolution corrupts session-global STATE mid-run for
+// later files. See the bedrock.js stub in beforeAll below (root fix).
+let actualAuthExports: Record<string, unknown> = {}
+let actualSettingsExports: Record<string, unknown> = {}
+let actualBedrockExports: Record<string, unknown> = {}
 
-mock.module('../../settings/settings.js', () => ({
-  ...actualSettingsExports,
-  getSettings_DEPRECATED: () => mockedSettings,
-  getInitialSettings: () => mockedSettings,
-  getEnforceAvailableModels: () =>
-    Boolean(mockedSettings.enforceAvailableModels),
-}))
+beforeAll(async () => {
+  actualAuthExports = { ...((await import('../../auth.js')) as object) }
+  actualSettingsExports = {
+    ...((await import('../../settings/settings.js')) as object),
+  }
+  actualBedrockExports = { ...((await import('../bedrock.js')) as object) }
+  mock.module('../../auth.js', () => ({
+    ...actualAuthExports,
+    isMaxSubscriber: () => subState.max,
+    isProSubscriber: () => subState.pro,
+    isTeamSubscriber: () => subState.team,
+    isTeamPremiumSubscriber: () => subState.teamPremium,
+    isClaudeAISubscriber: () => subState.claudeAi,
+    getSubscriptionType: () => subState.type,
+  }))
+  mock.module('../../settings/settings.js', () => ({
+    ...actualSettingsExports,
+    getSettings_DEPRECATED: () => mockedSettings,
+    getInitialSettings: () => mockedSettings,
+    getEnforceAvailableModels: () =>
+      Boolean(mockedSettings.enforceAvailableModels),
+  }))
+  // P3-8 root fix: the bedrock-env tests below (getDefaultSonnetModel /
+  // picker rows under CLAUDE_CODE_USE_BEDROCK=1) initialize modelStrings,
+  // which fires the REAL getBedrockInferenceProfiles — an actual ~2s AWS
+  // fetch. That promise is memoized in bedrock.js and stays in flight in
+  // the shared sequential queue after this file ends; when it resolves
+  // mid-run it writes real profile strings into the session-global
+  // STATE.modelStrings, corrupting bedrockRegionPrefix.test.ts (the
+  // 267/3-vs-243/0 shared-process regression). Stub it to an immediate
+  // empty list: hermetic, no network, no in-flight leftovers.
+  mock.module('../bedrock.js', () => ({
+    ...actualBedrockExports,
+    getBedrockInferenceProfiles: async () => [],
+  }))
+})
 
 afterAll(() => {
   mock.module('../../auth.js', () => ({ ...actualAuthExports }))
   mock.module('../../settings/settings.js', () => ({
     ...actualSettingsExports,
   }))
+  mock.module('../bedrock.js', () => ({ ...actualBedrockExports }))
 })
 
 const {
@@ -95,7 +129,7 @@ const { modelSupportsContextManagement } = await import('../../betas.js')
 const { modelSupportsAdvisor, isValidAdvisorModel } = await import('../../advisor.js')
 const { sanitizeModelName } = await import('../../commitAttribution.js')
 const { getVertexRegionForModel } = await import('../../envUtils.js')
-const { resetModelStringsForTestingOnly } = await import('src/bootstrap/state.js')
+const { resetModelStringsForTestingOnly } = await import('../../../bootstrap/state.js')
 
 type Usage = Parameters<typeof getModelCosts>[1]
 
@@ -140,6 +174,7 @@ beforeEach(() => {
     'CLAUDE_CODE_USE_VERTEX',
     'CLAUDE_CODE_USE_FOUNDRY',
     'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    'CLAUDE_CODE_USE_MANTLE',
     'CLAUDE_CODE_DISABLE_1M_CONTEXT',
     'VERTEX_REGION_CLAUDE_5_5_SONNET',
     'VERTEX_REGION_CLAUDE_5_SONNET',
@@ -197,6 +232,100 @@ describe('2.1.284: default Sonnet flips to claude-sonnet-5-5 (alias table @198.7
       // that the 3P sonnet55 provider string exists for picker rows.
       expect(getDefaultSonnetModel()).toContain('claude-sonnet-4-5')
     })
+  })
+})
+
+// P3-1 (OCC-101 review): EXACT per-provider default pins. The fuzzy
+// toContain('claude-sonnet-4-5') above cannot catch a wrong provider table
+// (e.g. bedrock returning the vertex or firstParty string). These pins
+// assert the full per-provider lag table from the v284 baked catalog `S8n`
+// @198712738: sonnet alias per_provider {bedrock/vertex/foundry/mantle →
+// "claude-sonnet-4-5", anthropic_aws/gateway → "claude-sonnet-4-6"},
+// default (firstParty) → "claude-sonnet-5-5" — resolved through each
+// provider's CONFIG string (configs.ts). The env override must win over ALL
+// provider branches (getDefaultSonnetModel checks it FIRST).
+describe('2.1.284 P3-1: exact per-provider default Sonnet table', () => {
+  function sonnetDefaultWith(env: Record<string, string>): string {
+    // getModelStrings caches provider-derived strings in session-global
+    // state — reset before each provider switch.
+    resetModelStringsForTestingOnly()
+    let result = ''
+    withEnv(env, () => {
+      result = getDefaultSonnetModel()
+    })
+    return result
+  }
+
+  test('firstParty → claude-sonnet-5-5', () => {
+    expect(sonnetDefaultWith({})).toBe('claude-sonnet-5-5')
+  })
+
+  test('anthropic_aws → sonnet46 string (claude-sonnet-4-6)', () => {
+    expect(sonnetDefaultWith({ CLAUDE_CODE_USE_ANTHROPIC_AWS: '1' })).toBe(
+      'claude-sonnet-4-6',
+    )
+  })
+
+  test('vertex → claude-sonnet-4-5@20250929', () => {
+    expect(sonnetDefaultWith({ CLAUDE_CODE_USE_VERTEX: '1' })).toBe(
+      'claude-sonnet-4-5@20250929',
+    )
+  })
+
+  test('foundry → claude-sonnet-4-5', () => {
+    expect(sonnetDefaultWith({ CLAUDE_CODE_USE_FOUNDRY: '1' })).toBe(
+      'claude-sonnet-4-5',
+    )
+  })
+
+  test('mantle → anthropic.claude-sonnet-4-5', () => {
+    expect(sonnetDefaultWith({ CLAUDE_CODE_USE_MANTLE: '1' })).toBe(
+      'anthropic.claude-sonnet-4-5',
+    )
+  })
+
+  test('bedrock → us.anthropic.claude-sonnet-4-5-20250929-v1:0', () => {
+    // bedrock LAST: its modelStrings init fires an (in this file stubbed)
+    // async profile fetch — no network, no in-flight leftovers.
+    expect(sonnetDefaultWith({ CLAUDE_CODE_USE_BEDROCK: '1' })).toBe(
+      'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+    )
+  })
+
+  test('ANTHROPIC_DEFAULT_SONNET_MODEL wins over every provider branch', () => {
+    for (const env of [
+      {},
+      { CLAUDE_CODE_USE_BEDROCK: '1' },
+      { CLAUDE_CODE_USE_ANTHROPIC_AWS: '1' },
+      { CLAUDE_CODE_USE_VERTEX: '1' },
+    ]) {
+      expect(
+        sonnetDefaultWith({ ...env, ANTHROPIC_DEFAULT_SONNET_MODEL: 'custom-sonnet-pin' }),
+      ).toBe('custom-sonnet-pin')
+    }
+  })
+})
+
+// P3-2 (OCC-101 review): the /model picker's 1M-access disjunct list must
+// carry the sonnet-5-5[1m] row. The official v284 predicate (pdr/Dfr) is
+// generic over the [1m] suffix; OCC approximates it with an explicit
+// disjunct list, so a missing 'sonnet-5-5[1m]' row would silently hide the
+// 1M row for the NEW default sonnet. Source-anchored (the predicate lives
+// inside a React-compiled .tsx closure — runtime reach needs the full
+// picker; the anchor pins the disjunct itself).
+describe('2.1.284 P3-2: /model picker 1M disjunct list (source-anchored)', () => {
+  test("model.tsx checkSonnet1mAccess gate lists sonnet-5-5[1m]", () => {
+    const src = readFileSync(
+      join(REPO_SRC, 'commands/model/model.tsx'),
+      'utf-8',
+    )
+    expect(src).toContain("m.includes('sonnet-5-5[1m]')")
+    // the full disjunct chain stays intact (regression guard for the
+    // surrounding rows the OCC approximation relies on)
+    expect(src).toContain("m.includes('sonnet[1m]')")
+    expect(src).toContain("m.includes('sonnet-4-6[1m]')")
+    expect(src).toContain("m.includes('sonnet-5[1m]')")
+    expect(src).toContain("m.trim() === 'opusplan[1m]'")
   })
 })
 

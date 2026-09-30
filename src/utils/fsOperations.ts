@@ -1,5 +1,6 @@
 import * as fs from 'fs'
 import {
+  lstat as lstatPromise,
   mkdir as mkdirPromise,
   open,
   readdir as readdirPromise,
@@ -28,6 +29,8 @@ export type FsOperations = {
   existsSync(path: string): boolean
   /** Gets file stats asynchronously */
   stat(path: string): Promise<fs.Stats>
+  /** Gets file stats without following symlinks asynchronously */
+  lstat(path: string): Promise<fs.Stats>
   /** Lists directory contents with file type information asynchronously */
   readdir(path: string): Promise<fs.Dirent[]>
   /** Deletes file asynchronously */
@@ -726,6 +729,10 @@ export const NodeFsOperations: FsOperations = {
 
   async stat(fsPath) {
     return statPromise(fsPath)
+  },
+
+  async lstat(fsPath) {
+    return lstatPromise(fsPath)
   },
 
   async readdir(fsPath) {
