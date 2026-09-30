@@ -96,6 +96,20 @@ let getAuthHeaders: (options?: {
 }) => { headers: Record<string, string>; error?: string }
 let clearOAuthTokenCache: () => void
 let clearConfigPathCaches: () => void
+// CC 2.1.285: getAuthHeaders' x-api-key path is reached only when
+// preferThirdPartyAuthentication() is true — i.e. the bootstrap STATE is a
+// non-interactive CLI session (getIsNonInteractiveSession() && clientType !==
+// 'claude-vscode'). Under `bun test src/` (single worker) an earlier file can
+// leak STATE.isInteractive=true / clientType='claude-vscode' (many exercise the
+// interactive path), which flips preferThirdPartyAuthentication() false and
+// starves the env-key branch: the isolated run passes but the full-suite run
+// returns x-api-key: undefined. Pin the two fields through the same public
+// setters main.tsx's bootstrap uses, so this window is deterministic
+// regardless of cross-file STATE leaks. Both values ARE the module defaults
+// (getInitialState: isInteractive=false, clientType='cli'), so no restore is
+// needed — pinning them can only move STATE closer to pristine for later files.
+let setIsInteractive: (value: boolean) => void
+let setClientType: (type: string) => void
 
 const teamOAuthTokens = (
   accessToken: string | null,
@@ -141,6 +155,12 @@ beforeAll(async () => {
   getAuthHeaders = sut.getAuthHeaders
   const auth = await import('../../../utils/auth.js')
   clearOAuthTokenCache = auth.clearOAuthTokenCache
+  // Same singleton instance auth.ts reads preferThirdPartyAuthentication from —
+  // lazily imported here (not at top level) to match this file's
+  // first-instantiation-wins discipline for the real auth stack.
+  const bootstrapState = await import('../../../bootstrap/state.js')
+  setIsInteractive = bootstrapState.setIsInteractive
+  setClientType = bootstrapState.setClientType
   const { getGlobalClaudeFile } = await import('../../../utils/env.js')
   const { getClaudeConfigHomeDir } = await import('../../../utils/envUtils.js')
   clearConfigPathCaches = (): void => {
@@ -157,6 +177,9 @@ beforeEach(() => {
   removeStoredOAuth()
   clearOAuthTokenCache()
   clearConfigPathCaches()
+  // Deterministic bootstrap STATE — see the note on the setter declarations.
+  setIsInteractive(false)
+  setClientType('cli')
 })
 
 afterAll(async () => {

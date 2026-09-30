@@ -50,9 +50,24 @@ const reconnect = {
   reconnectCalls: 0,
 }
 
+// OCC-97 note above says "restore in afterAll", but a spread re-mock does NOT
+// truly un-install a bun mock.module: bun patches `actualState`'s live bindings
+// when the mock installs, so `{ ...actualState }` in afterAll re-captures the
+// MOCKED `getIsNonInteractiveSession` and re-installs the leak. Every later file
+// in the single worker then reads `getIsNonInteractiveSession()` === the frozen
+// `flags.nonInteractive`, which silently flips `preferThirdPartyAuthentication()`
+// (bootstrap/state.ts) and starves unrelated auth paths — e.g. the 2.1.285
+// policyLimits env-bearer fallback test. Capture the real function BY VALUE
+// before installing the mock and delegate to it once `mockActive` is false (the
+// proven otel275 pattern) so the surviving mock behaves exactly like the real
+// module for every subsequent file.
+let mockActive = true
+const realGetIsNonInteractiveSession = actualState.getIsNonInteractiveSession
+
 mock.module('../../../bootstrap/state.js', () => ({
   ...actualState,
-  getIsNonInteractiveSession: () => flags.nonInteractive,
+  getIsNonInteractiveSession: () =>
+    mockActive ? flags.nonInteractive : realGetIsNonInteractiveSession(),
 }))
 mock.module('../../../services/mcp/auth.js', () => ({
   ...actualAuth,
@@ -165,7 +180,9 @@ beforeEach(() => {
 })
 
 afterAll(() => {
-  mock.module('../../../bootstrap/state.js', () => ({ ...actualState }))
+  // Flip the state.js mock into pass-through mode (see the mockActive note
+  // above) — do NOT re-spread actualState, which would re-install the leak.
+  mockActive = false
   mock.module('../../../services/mcp/auth.js', () => ({ ...actualAuth }))
   mock.module('../../../services/mcp/client.js', () => ({ ...actualClient }))
   mock.module('../../../services/mcp/config.js', () => ({ ...actualConfig }))

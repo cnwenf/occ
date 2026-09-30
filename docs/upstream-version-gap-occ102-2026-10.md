@@ -269,7 +269,7 @@ Official subsystem: `exitCommit` state (`eo`/`ane` @221287457 `stampMaxTurnsExit
 - Documented NO-OP/STAGED sub-pieces: `_x`/`WC` bash-task keepalive registration (no OCC keepalive subsystem); `process.on("memoryPressure")` pressure-reap (no OCC producer; X9/Q9 `memory_pressure` entries ported verbatim but producer-less, staged with the official subsystem); snapshot status `cancelled` (`UL`) — OCC task snapshots have no `cancelled` status; the observable killed-summary + notification contract is byte-equivalent.
 - Tests: `src/tasks/LocalShellTask/__tests__/backgroundDeadline285.test.ts` — 17/17 pass (pure `c2n`/`Zee`/`VTo` math incl. env-raise cases, `$an`/`Fan` enabled+disabled branches, X9/Q9 verbatim tables, `backgroundCommandSummary` X9 rendering, `killTask` stopCause persistence, and three REAL-process BashTool wiring tests: 400ms-deadline reap on `sleep 30` with single `<status>killed</status>` + X9 summary + `<note>`Q9 notification, settle-release on a fast `echo`, disabled-capability no-reap). Mutation self-verification: (a) dropping the BashTool raw-timeout pass-through → 1 fail; (b) ignoring `requestedTimeoutMs` in `c2n` → 4 fail; (d) dropping the killTask stopCause spread → 2 fail; all mutants killed, file restored green. Regression: `src/tasks/LocalShellTask/` + `src/tools/BashTool/` = 800 pass / 0 fail; biome lint clean on all 8 touched files.
 
-### Lead (OCC 程序员) — #C sandbox trusted-tier grants (security): PORTED
+### Agent C — sandbox trusted-tier grants (security): PORTED
 
 **2.1.285 security fix — "sandbox letting project/local settings re-open denied
 filesystem read paths / widen the network allowlist": PORTED** (whole subsystem
@@ -373,8 +373,71 @@ WebFetchTool `isEnabled`, spawnUtils `TEAMMATE_ENV_VARS`, managedEnv `PROJECT_SC
   - *Documented divergences (all fail-closed or unreachable)*: (1) remote env pins are NEVER honored — official `Pb()` requires `sessionCache===verifiedPayload`, a state OCC's remote-settings cache cannot distinguish (served vs stale user-writable `remote-settings.json`), so `Pb`/`servedSnapshot`→false; strictly more restrictive; the remote allowedProviders LIST still narrows via the slot intersection. (2) gateway arm STAGED (`zye`/`Qr`/`Ww` stubs — OCC never resolves provider "gateway"). (3) WIF hook (`zf`) STAGED unset. (4) parent tier STAGED (schema key exists, no transport; `dzt`→null). (5) `settleRemotePolicy` STAGED (`sLo` unset — no-op await). (6) telemetry `rn("auth_force_login_org","provider_not_allowed")` STAGED (OCC analytics empty). (7) `ProviderNotAllowedError` keeps the name+message contract, not official base class `I`. (8) `mje` hipaa arm (`oc("hipaa")` → "File upload is disabled by your organization's policy.") NOT ported — polarity of `oc` unverified and it predates the 285 diff (observation: OCC's nearest surface is `isPolicyAllowed` in `src/services/policyLimits`; deferred, not guessed).
   - *Tests*: `allowedProviders285.test.ts` 34 pass / 0 fail (leaf vocabulary, plain-schema filter, strict statusOnly + all-invalid→`[]`, `Gye`, `MJ` not_listed/endpoint/empty-list/unrecognized-only arms, unix-socket arm 1, `qf` promotion, env-pin honored/unpinned, `N_e` mantle dual-descriptor, `k` verdicts, `nmn` incl. real-ELOOP fail-close surviving the `bl()` `jo()` re-read + OS-denied passthrough, `B$t` incl. files dispatch, `JL` ordering via `validateForceLoginOrg`). Mutation self-verification: killing the pin check → 3 fails; killing the schema filter → 1 fail; reverted → 34/0. Settings+API suites: 633 pass / 0 fail.
 
-### Agents C / E — *(pending; in flight)*
+### Agent E — git/mcp/plugin batch: 11 PORTED (items 9–13 PORTED-core + STAGED-wiring), 0 NO-OP
+
+- **Item 1 — git-URL validation + named refusals: PORTED.** New `src/utils/plugins/gitUrlValidation.ts`, wired into `marketplaceManager.ts` + `gitUrlNormalization.ts`; malformed/hostile marketplace & plugin URLs refused with the official named reason. Tests in the 378-green plugins run.
+- **Item 2 — `GIT_SSH`/`core.sshCommand` honored for plugin+marketplace installs: PORTED.** New `gitSshCommand.ts` (`readEnv`+`resolveSshCommand`); credential helpers NOT stripped (per standing rule #049). Plugins suite 353→378 green.
+- **Item 3 — worktree/`/teleport` fetch SSH fail-fast: PORTED (byte-recovered).** `D0` @204089380 (SSH_ASKPASS pins + `withoutControllingTerminal:!0`), `Xen` @204088534 (`/dev/tty` `O_RDWR|O_NOCTTY` probe), `Azo` @196470770 (Windows ssh-env), `Je` @196477428 (spawn wrapper `detached:!0` + group pid), `Oe` @196474487 (`process.kill(-pid,"SIGTERM")` group kill); token deltas v284→v285: `Azo(` 0→2, `withoutControllingTerminal` 0→3, `SSH_ASKPASS_REQUIRE` 4→6. New `gitFetchSshFailFast.ts` (`resolveFetchSshFailFast` + `canOpenControllingTerminal`, `CONFIG_READ_TIMEOUT_MS=5000`, hook-neutralizing args); `execFileNoThrow.ts` gained `withoutControllingTerminal` → `detached:true` + group-kill; both fetch sites in `worktree.ts` + `teleport.tsx` routed through it. Tests 9/0 (incl. live group-kill of a backgrounded `sleep` grandchild).
+- **Items 4–8 — MCP batch: PORTED.** (4) tool-level `alwaysLoad:false` beats server-level (`client.ts` precedence formula); (5) `mcp get` hides plugin-scope stdio command/args/env (sanitized copy: command→type label, args→[], env→`[REDACTED]`); (6) type-field default inference widened to typeless stdio (`Die(i)&&Die(h)`); (7) `mcp list` ws rows `…: url (WS) - health` (marker v285-only @231389086); (8) output sanitization `Tn` (new `cliMessages.ts`) neutralizing line-breaks/ANSI in hostile names+values + not-found builders `iQn`/`u2t` (pre-existing `mcpRemoveAuthCache280.test.ts` assertion updated to new official wording). Tests: combined mcp+handlers 333/0.
+- **Items 9–13 — plugin CLI batch: PORTED-core + STAGED-wiring.** `pluginConfigure.ts` (28 tests), `pluginInstallConfig.ts` (25), `pluginSettingsKeyResolution.ts` (10), `pluginFolderCollision.ts` (27), `mcpbNeedsConfig.ts` (12; log landed in `mcpPluginIntegration.ts`). Wiring STAGED: CLI-surface registration (`main.tsx` + `plugins.ts` handler + `pluginOperations.ts` + `plugin.ts` union variant) must move as one atomic set — piecemeal landing trips an exhaustive switch; flagged for next round, not half-wired.
+- **Self-caught regression:** E's `mcpCliDisplay285.test.ts` initially leaked a `config.js` mock across files (Bun single-worker, OCC-97 class) breaking sibling `mcpRemoveAuthCache280`/`mcpSlice218` 331/2; redundant mock removed → 333/0.
+- Suite totals: mcp+handlers 333/0, mcp 306/0, plugins 378/0, commands/plugin 24/0, item-3 consumers 37/0 + 139/0; biome clean.
 
 ## §6 Testing
 
-*(pending — full-suite + REPL tmux results recorded after all agents land)*
+### 6.1 Full suite (`bun test src/`, single worker, 510 files)
+
+| Run | Commit | Pass | Fail | Notes |
+|---|---|---|---|---|
+| Pristine baseline | `08759e8` (origin/main) | 5819 | 71 | measured in a detached worktree before any round change |
+| Final (this round) | `bc78387` + test-suite fixes below | **6276** | **67** | 1 skip, 15935 expect(), 6344 tests, 142.34s |
+
+Normalized fail-name comm diff (baseline vs final, `sed`-stripped timings, `sort -u`): **zero new failures**; **4 pre-existing baseline failures FIXED** as a side effect of the mock-leak repair below:
+
+- `2.1.233 — signalUnrecognizedModel > the signal fires at most once per model per process`
+- `2.1.233 — signalUnrecognizedModel > unrecognized model in print mode writes the exact stderr line`
+- `2.1.284 P3-4 site 2: query-path 404 assistant message > bedrock 404 message names the deployment + the sonnet5 fallback`
+- `2.1.284 P3-4 site 2: query-path 404 assistant message > firstParty 404 falls to the generic message (no fallback row)`
+
+The remaining 67 fails are all baseline-order-dependent single-worker pollution failures unrelated to this round (same normalized names minus the four above).
+
+### 6.2 The one round-introduced full-suite failure — root cause + repair (resolved)
+
+`envBearerFallback285.test.ts` (Agent A, new) passed isolated but saw `x-api-key: undefined` in the full suite. Causal chain, established empirically (runtime probe + systematic two-file bisect of every `mock.module('../../../bootstrap/state.js', …)` suspect — polluter hit-count: `mcpAuthStubTools274`=1, all others=0):
+
+1. Pre-existing `mcpAuthStubTools274.test.ts` mocks `bootstrap/state.js` with `getIsNonInteractiveSession: () => flags.nonInteractive` (default `false`).
+2. Its afterAll "restore" `mock.module(..., () => ({ ...actualState }))` is defeated: bun patches `actualState`'s **live bindings** when the mock installs, so the spread re-captures the mocked function and re-installs the leak (same mechanism documented in `otelHeadersFailureNotification275.test.ts`).
+3. Leaked `getIsNonInteractiveSession() === false` → `preferThirdPartyAuthentication()` (`bootstrap/state.ts`) false → `getAnthropicApiKeyWithSource` skips the `preferThirdPartyAuthentication() && apiKeyEnv` early-return (`utils/auth.ts`) → victim tests starve.
+
+Fix (two layers):
+
+- **Source repair** — `mcpAuthStubTools274.test.ts` now uses the proven otel275 delegation pattern: capture the real `getIsNonInteractiveSession` **by value** before the mock installs; the mock delegates to the real function once `mockActive` flips false in afterAll (no re-spread of `state.js`). Bisect evidence: 25/1 → 26/0 with the victim; the other four module re-mocks in that file are untouched (out of scope).
+- **Victim hardening** — `envBearerFallback285.test.ts` pins `setIsInteractive(false)` + `setClientType('cli')` in beforeEach through the same public setters main.tsx uses. Both values ARE the module defaults (`getInitialState`), so no restore is needed and pinning can only move STATE closer to pristine for later files. (It cannot use `resetStateForTests()`: that throws unless `NODE_ENV==='test'`, and this window deliberately runs `NODE_ENV=development` to bypass the CI env-credential guard.)
+
+Post-fix: envBearer isolated 12/0, its directory 20/0, biome clean on both files, full suite at the 67/6276 numbers above.
+
+### 6.3 Mutation self-verification (A/B pin-pricks)
+
+Every PORTED security item carries a mutation kill-check in §5 (flip/remove the guard → named tests fail → revert → green). Examples: Agent A allowedProviders 34/0 (kill pin-check → 3 fails; kill schema filter → 1 fail; reverted → 34/0); Agent E SSH fail-fast 9/0 incl. live group-kill of a backgrounded `sleep` grandchild; Lead #85/#54 and Agents B/C/D per their §5 entries.
+
+### 6.4 Build + dist verification
+
+- `bun run build` → `BUILD_EXIT=0`; `dist/cli.js` 31,082,439 B, shebang `#!/usr/bin/env bun`, executable.
+- `./dist/cli.js --version` → `OCC 2.1.362` (package.json source of truth; cli.tsx `MACRO.VERSION` = `2.1.285` upstream-tracked).
+- dist pin-pricks (grep -c on the bundle): `background time limit` ×1 (#85 deadline notify text), `grants restricted to trusted` ×1 (sandbox trusted-tier authorization text).
+
+### 6.5 Real e2e (live API, not mocked)
+
+- **Headless `-p` smoke**: `echo "say PONG" | ./dist/cli.js -p` → `PONG`, exit 0. stderr carried `[claude-code:unrecognized_model] {"model":"glm-5.2",…}` — that is the round-verified 2.1.233 unrecognized-model signal working as intended against the third-party model name; benign.
+- **Live hand-driven tmux REPL** (repl-tmux-e2e-testing skill, Architecture A: detached 200×50 session on `./dist/cli.js` in a fresh temp cwd, `capture-pane -S -` poll-until-text, `kill-session` in an EXIT trap):
+  - boot → `REPL_READY=yes` (footer `⏵⏵ auto mode on (shift+tab to cycle)`);
+  - model round-trip: typed `Reply with exactly the word PONG and nothing else.` + Enter → screen shows `● PONG` (live API through the built dist);
+  - `/status` panel rendered: `Version: 2.1.362`, Session ID, cwd, `Auth token: ANTHROPIC_AUTH_TOKEN`, base URL, `Model: glm-5.2`, `MCP servers: 2 connected, 1 failed`, Setting sources, Auto mode server; Esc dismissed it;
+  - Shift+Tab mode cycle: `⏵⏵ auto mode on` → `⏸ manual mode on` (`MODE_CYCLE=CHANGED`).
+- **Repo e2e harnesses** (`OCC_ENTRYPOINT=$PWD/dist/cli.js CI= bun test …`):
+  - `occ-versioning` + `commands-alignment`: **6 pass / 0 fail / 12 expect()**.
+  - `repl-interactive`: **2 pass / 1 fail** — the fail is `Shift+Tab shows the auto-mode opt-in dialog`, which is (a) documented pre-existing (OCC-44: "fails identically WITH and WITHOUT this round's changes", git-stash A/B verified), (b) pre-existing by construction — the round diff (`08759e8..bc78387`) touches no REPL auto-mode-dialog code (only regex-adjacent hit is the test file `forkPermissionMode285.test.ts`), and (c) environment-explained: in this environment auto mode is already ON at boot (live tmux run above), so the opt-in-dialog path never triggers and Shift+Tab cycles auto→manual directly (verified working live). Not a round regression; recorded honestly rather than "fixed".
+
+### 6.6 Forensics-constraint compliance + cleanup
+
+Binary work used only `strings` / `grep -aobF` / `dd` on the two downloaded ELFs — the official binaries were never executed. Temp artifacts removed after use: `/tmp/cc-diff-285` (rm -rf), `/tmp/occ102-base` baseline worktree (`git worktree remove --force`), all probe scripts deleted; no temp branches were created this round (work went directly on `agent/occ/5d3c0a39`).
