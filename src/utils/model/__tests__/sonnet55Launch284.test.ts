@@ -32,6 +32,17 @@ const actualAuthModule = await import('../../auth.js')
 const actualAuthExports = { ...actualAuthModule }
 const actualSettingsModule = await import('../../settings/settings.js')
 const actualSettingsExports = { ...actualSettingsModule }
+// Test-hygiene (OCC-141): the bedrock withEnv blocks below resolve
+// getModelStrings() with null bootstrap state → initModelStrings() takes the
+// bedrock branch → `void updateBedrockModelStrings()` fires a REAL (memoized)
+// ListInferenceProfiles fetch. In an offline/shared test process its credential
+// resolution hangs, occupying the module-level `sequential` queue and starving
+// bedrockRegionPrefix.test.ts's beforeEach drain (4 × 5s timeouts in
+// shared-process directory sweeps; invisible under ci-test.sh's per-file
+// process isolation). Mock the fetch file-wide — same snapshot/restore
+// discipline as auth/settings above.
+const actualBedrockModule = await import('../bedrock.js')
+const actualBedrockExports = { ...actualBedrockModule }
 
 const subState = {
   max: false,
@@ -62,11 +73,18 @@ mock.module('../../settings/settings.js', () => ({
     Boolean(mockedSettings.enforceAvailableModels),
 }))
 
+// Offline-safe bedrock inference-profile fetch (see hygiene note above).
+mock.module('../bedrock.js', () => ({
+  ...actualBedrockExports,
+  getBedrockInferenceProfiles: async () => [],
+}))
+
 afterAll(() => {
   mock.module('../../auth.js', () => ({ ...actualAuthExports }))
   mock.module('../../settings/settings.js', () => ({
     ...actualSettingsExports,
   }))
+  mock.module('../bedrock.js', () => ({ ...actualBedrockExports }))
 })
 
 const {
