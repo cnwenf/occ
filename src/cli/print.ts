@@ -302,6 +302,7 @@ import {
   getMainThreadAgentType,
   getAllowedChannels,
   setAllowedChannels,
+  setPermissionPromptToolName,
   type ChannelEntry,
 } from 'src/bootstrap/state.js'
 import { runWithWorkload, WORKLOAD_CRON } from 'src/utils/workloadContext.js'
@@ -897,6 +898,12 @@ export async function runHeadless(
   const effectivePermissionPromptToolName = options.sdkUrl
     ? 'stdio'
     : options.permissionPromptToolName
+
+  // CC 2.1.285: publish the active permission-prompt-tool name session-globally
+  // so runAgent's `shouldAvoidPermissionPrompts` builder can route a background
+  // subagent's permission request to the prompt tool instead of auto-denying it
+  // (official `Se=ke()&&QRt(cI())`, where `cI()` reads the launch option).
+  setPermissionPromptToolName(effectivePermissionPromptToolName)
 
   // Callback for when a permission prompt is shown
   const onPermissionPrompt = (details: RequiresActionDetails) => {

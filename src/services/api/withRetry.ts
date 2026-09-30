@@ -2,6 +2,7 @@ import { feature } from 'src/utils/featureFlags.js'
 import type Anthropic from '@anthropic-ai/sdk'
 import {
   APIConnectionError,
+  APIConnectionTimeoutError,
   APIError,
   APIUserAbortError,
 } from '@anthropic-ai/sdk'
@@ -52,6 +53,7 @@ import {
   extractConnectionErrorDetails,
   isAdvisorEntryRefusedError,
   isImageUnprocessableError,
+  isOutputContentFilteredError,
 } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
@@ -115,6 +117,26 @@ export function getDefaultMaxRetries(
     }
   }
   return watchdog ? WATCHDOG_DEFAULT_MAX_RETRIES : DEFAULT_MAX_RETRIES
+}
+
+// CC 2.1.285 (item-B2): official `bIo=0.9`. A non-streaming fallback attempt
+// only counts toward the timeout-retry budget once it has run at least 90% of
+// `nonStreamingTimeoutMs` — i.e. it genuinely hit the timeout rather than
+// failing fast for an unrelated reason. Mirrors the binary's
+//   `Date.now()-Et >= r.nonStreamingTimeoutMs*bIo`.
+const NONSTREAMING_TIMEOUT_ELAPSED_RATIO = 0.9
+
+/**
+ * CC 2.1.285 (item-B2): parse CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES.
+ * Official registry descriptor is `$I=M.int({min:0,digitsOnly:!0})` → a
+ * non-negative integer, or undefined when unset/invalid. `undefined` means the
+ * cap is disabled (the retry loop falls back to its normal maxRetries budget).
+ */
+function getNonstreamingTimeoutRetryCap(): number | undefined {
+  const parsed = parseEnvInt(
+    process.env.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES,
+  )
+  return parsed !== undefined && parsed >= 0 ? parsed : undefined
 }
 
 // Foreground query sources where the user IS blocking on the result — these
@@ -240,6 +262,16 @@ interface RetryOptions {
    * `return Ece(hs)??Tce(hs,"stream")??mK(hs)??gK(hs)??Tae(hs)`.
    */
   retryAdvisorEntryRefused?: (error: APIError) => boolean
+  /**
+   * CC 2.1.285 (item-B2): per-attempt timeout (ms) of a NON-STREAMING fallback
+   * request, set by executeNonStreamingRequest (official `I0t` passes
+   * `nonStreamingTimeoutMs:S`, S = IOo()). When present — together with the
+   * CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES env cap — the retry loop stops
+   * re-sending a fallback that keeps timing out after that many attempts,
+   * instead of looping to maxRetries × the full timeout (minutes of silent
+   * retries). Undefined on the streaming path, so the cap never fires there.
+   */
+  nonStreamingTimeoutMs?: number
 }
 
 export class CannotRetryError extends Error {
@@ -320,7 +352,16 @@ export async function* withRetry<T>(
   // misbehaving stripMediaBlock callback that never returns null.
   let mediaStrips = 0
   const MAX_MEDIA_STRIPS = 20
+  // CC 2.1.285 (item-B2): official `K` (timeout-retry counter) and the env cap
+  // `vn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES`. The cap is read once per
+  // request (it is a stable env value); undefined disables the cap.
+  let nonstreamingTimeoutRetries = 0
+  const nonstreamingTimeoutRetryCap = getNonstreamingTimeoutRetryCap()
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
+    // CC 2.1.285 (item-B2): official `Et=g.now()` — per-attempt start time, used
+    // by the non-streaming-timeout budget check to confirm the attempt actually
+    // ran ~the full timeout (a genuine timeout, not a fast unrelated failure).
+    const attemptStartTime = Date.now()
     if (options.signal?.aborted) {
       throw new APIUserAbortError()
     }
@@ -386,6 +427,22 @@ export async function* withRetry<T>(
 
       return await operation(client, attempt, retryContext)
     } catch (error) {
+      // CC 2.1.285 (item-B3): the official retry loop added a fatal branch for
+      // the API's output content filter near the top of the catch (before the
+      // lastError assignment), g0 predicate @203962444:
+      //   `if(g0(Ft))throw m("api_request","api_request_output_content_filtered"),
+      //      new ic(Ft,h)`
+      // A response blocked by the output content filter is a permanent rejection
+      // — re-sending the same content just gets filtered again — so surface it
+      // immediately instead of retrying for minutes. Placed first (before
+      // lastError/log) to mirror the official fatal-branch precedence.
+      if (isOutputContentFilteredError(error)) {
+        logEvent('api_request', {
+          reason: 'api_request_output_content_filtered',
+        })
+        throw new CannotRetryError(error, retryContext)
+      }
+
       lastError = error
       logForDebugging(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
@@ -740,6 +797,41 @@ export async function* withRetry<T>(
           throw new CannotRetryError(error, retryContext)
         }
         gcpAuthRetries++
+      }
+
+      // CC 2.1.285 (item-B2): CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES cap.
+      // Mirrors the official v285 retry-loop catch (evidence
+      // /tmp/cc-diff-285/evidence/nonstreaming_retries.txt):
+      //   `let Xn,vn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES;
+      //    if(vn!==void 0&&r.nonStreamingTimeoutMs!==void 0&&Ft instanceof gI&&
+      //       Date.now()-Et>=r.nonStreamingTimeoutMs*bIo&&!XW()){
+      //      if(K>=vn)throw m("api_request","api_request_nonstreaming_timeout_exhausted"),
+      //        new ic(Ft,h);
+      //      K++,Xn=vn-K}`
+      // gI ≡ APIConnectionTimeoutError (SDK "Request timed out."), Et ≡
+      // attemptStartTime, bIo ≡ NONSTREAMING_TIMEOUT_ELAPSED_RATIO (0.9),
+      // XW() ≡ isRetryWatchdogEnabled(), ic ≡ CannotRetryError. Without the cap
+      // a fallback that keeps timing out re-sends up to maxRetries times, each
+      // burning the full nonStreamingTimeoutMs — minutes of silent retries
+      // (changelog: "retried up to 21 times when streaming kept failing").
+      // The official's `Xn=vn-K` remaining-budget value feeds its `a0t` retry-
+      // status display; OCC has no `a0t` display-budget surface, so only the
+      // cap (the observable behavior) is ported.
+      if (
+        nonstreamingTimeoutRetryCap !== undefined &&
+        options.nonStreamingTimeoutMs !== undefined &&
+        error instanceof APIConnectionTimeoutError &&
+        Date.now() - attemptStartTime >=
+          options.nonStreamingTimeoutMs * NONSTREAMING_TIMEOUT_ELAPSED_RATIO &&
+        !isRetryWatchdogEnabled()
+      ) {
+        if (nonstreamingTimeoutRetries >= nonstreamingTimeoutRetryCap) {
+          logEvent('api_request', {
+            reason: 'api_request_nonstreaming_timeout_exhausted',
+          })
+          throw new CannotRetryError(error, retryContext)
+        }
+        nonstreamingTimeoutRetries++
       }
 
       // AWS/GCP errors aren't always APIError, but can be retried

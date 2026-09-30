@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import { rmSync, writeFileSync } from 'node:fs'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -59,10 +60,16 @@ const NETWORK_AXIOS_ERROR: Error = Object.assign(
 
 let nextAxiosError: Error = httpAxiosError(400)
 let axiosGetCallCount = 0
+// 2.1.285 wiring test: capture the outgoing headers of the last get call.
+let lastAxiosHeaders: Record<string, string> | null = null
 
 const mockedGet = mock(
-  async (_url: string, _config?: unknown): Promise<never> => {
+  async (
+    _url: string,
+    config?: { headers?: Record<string, string> },
+  ): Promise<never> => {
     axiosGetCallCount += 1
+    lastAxiosHeaders = config?.headers ?? null
     throw nextAxiosError
   },
 )
@@ -104,6 +111,7 @@ const BACKOFF_WAITS_WHEN_RETRYABLE = 5
 
 beforeEach(() => {
   axiosGetCallCount = 0
+  lastAxiosHeaders = null
   recordedSleeps = []
   nextAxiosError = httpAxiosError(400)
   clearConfigPathCaches()
@@ -180,5 +188,101 @@ describe('policyLimits retry — 2.1.281 #103 non-retryable 4xx skips retry', ()
     await refreshPolicyLimits()
     expect(axiosGetCallCount).toBe(1)
     expect(recordedSleeps).toEqual([])
+  })
+})
+
+/**
+ * PORT (CC 2.1.285) — official `pt()` wiring @209340651:
+ *   let O=be(); ... I=await kD(jFt()?{}:{envBearerFallbackFor:O})
+ * The fetch computes the policy-limits endpoint FIRST and hands it to the
+ * header builder as the env-bearer fallback target. This test lives in THIS
+ * file because it owns the axios mock window (see envBearerFallback285.test.ts
+ * header comment for why that file deliberately registers no mocks).
+ *
+ * Scenario = the changelog bug: session authenticates with
+ * ANTHROPIC_AUTH_TOKEN against the Anthropic API while a stored team OAuth
+ * login keeps it policy-eligible. v284 built no headers here ("No API key
+ * available" → auth_failed + skipRetry → zero axios calls); v285 sends
+ * `Authorization: Bearer $ANTHROPIC_AUTH_TOKEN` with NO anthropic-beta.
+ * The stored login is seeded through the REAL plainTextStorage path
+ * (.credentials.json in the temp CLAUDE_CONFIG_DIR); refreshToken:null keeps
+ * checkAndRefreshOAuthTokenIfNeeded on its early-return branch (no network).
+ */
+describe('policyLimits fetch wiring — 2.1.285 pt() passes the endpoint', () => {
+  test('AUTH_TOKEN session with stored team OAuth sends the env bearer to the endpoint', async () => {
+    const { clearOAuthTokenCache } = await import('../../../utils/auth.js')
+    const credentialsPath = join(TEST_CONFIG_DIR, '.credentials.json')
+    const savedApiKey = process.env.ANTHROPIC_API_KEY
+    const savedNodeEnv = process.env.NODE_ENV
+    const savedCi = process.env.CI
+    // The fallback's ng() gate compares the endpoint host against the
+    // configured ANTHROPIC_BASE_URL host — an ambient non-first-party
+    // ANTHROPIC_BASE_URL (e.g. a local proxy) would suppress it. This
+    // scenario is the default-base case: clear it for the test window.
+    const savedBaseUrl = process.env.ANTHROPIC_BASE_URL
+    delete process.env.ANTHROPIC_BASE_URL
+    // bun test defaults NODE_ENV to "test", which makes the real
+    // getAnthropicApiKeyWithSource throw its CI guard when no env credential
+    // exists (isAnthropicAuthEnabled calls it unguarded). This scenario is
+    // exactly the no-API-key case — run it on the normal path.
+    process.env.NODE_ENV = 'development'
+    delete process.env.CI
+    // NODE_ENV≠test arms the config-reading guard; enableConfigs() is the
+    // idempotent process-wide unlock the production bootstrap calls.
+    const { enableConfigs } = await import('../../../utils/config.js')
+    enableConfigs()
+    writeFileSync(
+      credentialsPath,
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: 'stored-oauth-token',
+          refreshToken: null,
+          expiresAt: null,
+          scopes: ['user:profile', 'user:inference'],
+          subscriptionType: 'team',
+          rateLimitTier: null,
+        },
+      }),
+      'utf8',
+    )
+    delete process.env.ANTHROPIC_API_KEY
+    process.env.ANTHROPIC_AUTH_TOKEN = 'sk-ant-env-token'
+    clearOAuthTokenCache()
+    try {
+      nextAxiosError = httpAxiosError(400)
+      await refreshPolicyLimits()
+
+      expect(axiosGetCallCount).toBe(1)
+      expect(lastAxiosHeaders?.Authorization).toBe('Bearer sk-ant-env-token')
+      // Official cRe fallback arm carries no anthropic-beta header.
+      expect(lastAxiosHeaders?.['anthropic-beta']).toBeUndefined()
+      expect(lastAxiosHeaders?.['x-api-key']).toBeUndefined()
+      // 400 is non-retryable (2.1.281 behavior) — single attempt, no backoff.
+      expect(recordedSleeps).toEqual([])
+    } finally {
+      if (savedApiKey === undefined) {
+        delete process.env.ANTHROPIC_API_KEY
+      } else {
+        process.env.ANTHROPIC_API_KEY = savedApiKey
+      }
+      if (savedNodeEnv === undefined) {
+        delete process.env.NODE_ENV
+      } else {
+        process.env.NODE_ENV = savedNodeEnv
+      }
+      if (savedCi === undefined) {
+        delete process.env.CI
+      } else {
+        process.env.CI = savedCi
+      }
+      if (savedBaseUrl === undefined) {
+        delete process.env.ANTHROPIC_BASE_URL
+      } else {
+        process.env.ANTHROPIC_BASE_URL = savedBaseUrl
+      }
+      delete process.env.ANTHROPIC_AUTH_TOKEN
+      rmSync(credentialsPath, { force: true })
+      clearOAuthTokenCache()
+    }
   })
 })

@@ -29,6 +29,7 @@ import { TeleportOperationError, toError } from './errors.js';
 import { execFileNoThrow } from './execFileNoThrow.js';
 import { truncateToWidth } from './format.js';
 import { findGitRoot, getDefaultBranch, getIsClean, gitExe } from './git.js';
+import { resolveFetchSshFailFast } from './gitFetchSshFailFast.js';
 import { safeParseJSON } from './json.js';
 import { logError } from './log.js';
 import { createSystemMessage, createUserMessage } from './messages.js';
@@ -188,15 +189,35 @@ export async function validateGitState(): Promise<void> {
 }
 
 /**
+ * Env pins preventing git credential prompts (official v285 teleport fetch
+ * env base `Zjt()` pins GIT_TERMINAL_PROMPT/GIT_ASKPASS; matches OCC's
+ * worktree.ts GIT_NO_PROMPT_ENV convention).
+ */
+const GIT_NO_PROMPT_ENV = {
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_ASKPASS: ''
+};
+
+/**
  * Fetches a specific branch from remote origin
  * @param branch The branch to fetch. If not specified, fetches all branches.
  */
 async function fetchFromOrigin(branch?: string): Promise<void> {
   const fetchArgs = branch ? ['fetch', 'origin', `${branch}:${branch}`] : ['fetch', 'origin'];
+  // Official v285 `rJo` (@206111563): the --teleport fetch spawns with
+  // `{cwd:r,...await D0(r)}` (2.1.285 changelog item 3) — SSH_ASKPASS pins
+  // and a detached-from-controlling-terminal spawn, shared by the primary
+  // fetch and the refspec retry, so ssh passphrase / new-host prompts fail
+  // fast instead of seizing the terminal.
+  const fetchSpawn = await resolveFetchSshFailFast({ ...process.env, ...GIT_NO_PROMPT_ENV }, getCwd());
+  const fetchOpts = {
+    env: fetchSpawn.env,
+    withoutControllingTerminal: fetchSpawn.withoutControllingTerminal
+  };
   const {
     code: fetchCode,
     stderr: fetchStderr
-  } = await execFileNoThrow(gitExe(), fetchArgs);
+  } = await execFileNoThrow(gitExe(), fetchArgs, fetchOpts);
   if (fetchCode !== 0) {
     // If fetching a specific branch fails, it might not exist locally yet
     // Try fetching just the ref without mapping to local branch
@@ -205,7 +226,7 @@ async function fetchFromOrigin(branch?: string): Promise<void> {
       const {
         code: refFetchCode,
         stderr: refFetchStderr
-      } = await execFileNoThrow(gitExe(), ['fetch', 'origin', branch]);
+      } = await execFileNoThrow(gitExe(), ['fetch', 'origin', branch], fetchOpts);
       if (refFetchCode !== 0) {
         logError(new Error(`Failed to fetch from remote origin: ${refFetchStderr}`));
       }

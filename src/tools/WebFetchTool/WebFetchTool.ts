@@ -1,6 +1,7 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import type { PermissionUpdate } from '../../types/permissions.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
@@ -97,6 +98,20 @@ export const WebFetchTool = buildTool({
   },
   isReadOnly() {
     return true
+  },
+  /**
+   * CC 2.1.285 (item-B1): CLAUDE_CODE_DISABLE_WEB_FETCH kill-switch. The
+   * official binary added this env gate to WebFetch's `isEnabled` — v285
+   * `isEnabled(){return!a.CLAUDE_CODE_DISABLE_WEB_FETCH&&Yt(wye)}`
+   * (@204286795), vs v284 `isEnabled(){return Qt(_ye)}` which had no env gate
+   * (0 hits for the var in v284, 9 in v285). The second conjunct `Yt(wye)` is
+   * the official `allow_web_fetch` managed-policy check; OCC has no counterpart
+   * policy surface, so only the env kill-switch is ported here. When the env var
+   * is truthy the tool is removed from the tool list entirely (buildTool's
+   * default `isEnabled` is `() => true`).
+   */
+  isEnabled() {
+    return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH)
   },
   toAutoClassifierInput(input) {
     return input.prompt ? `${input.url}: ${input.prompt}` : input.url

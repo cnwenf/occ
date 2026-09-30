@@ -488,8 +488,10 @@ export type Tool<
   /**
    * When true, this tool is never deferred — its full schema appears in the
    * initial prompt even when ToolSearch is enabled. For MCP tools, set via
-   * `_meta['anthropic/alwaysLoad']`. Use for tools the model must see on
-   * turn 1 without a ToolSearch round-trip.
+   * `_meta['anthropic/alwaysLoad']` or the server config's `alwaysLoad`
+   * (2.1.285: a tool-level explicit false overrides a dynamic-scope server's
+   * `alwaysLoad`, keeping the tool deferred). Use for tools the model must
+   * see on turn 1 without a ToolSearch round-trip.
    */
   readonly alwaysLoad?: boolean
   /**

@@ -227,6 +227,17 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   'CLAUDE_CODE_CUSTOM_OAUTH_URL',
   'CLAUDE_CODE_SYNC_SKILLS',
   'CLAUDE_CODE_SYNC_PLUGINS',
+  // CC 2.1.285 (item-B1): the official reserved-env set (`Jqn`, @200781142)
+  // adds CLAUDE_CODE_DISABLE_WEB_FETCH alongside the other CLAUDE_CODE_*
+  // tool/plugin gates: `..."CLAUDE_CODE_DISABLE_ATTRIBUTION_CROSS_REPO",
+  // "CLAUDE_CODE_DISABLE_WEB_FETCH","CCR_SESSION_PROFILE",...
+  // "CLAUDE_CODE_SKILL_PROPOSALS"...`. Project/local settings must not be able
+  // to silently disable WebFetch — it is a user/host-level kill-switch. (The
+  // official also lists it in the truthy-only privacy set `b2r` @195969941;
+  // OCC has no `b2r` counterpart, so only the reserved-set membership is
+  // ported — OCC stays stricter, dropping the key from project scope
+  // unconditionally rather than allowing an "off" value through.)
+  'CLAUDE_CODE_DISABLE_WEB_FETCH',
   'CLAUDE_CODE_SKILL_PROPOSALS',
   'CLAUDE_CODE_PLUGIN_CACHE_DIR',
   'CLAUDE_CODE_PLUGIN_SEED_DIR',

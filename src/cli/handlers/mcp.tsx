@@ -16,8 +16,9 @@ import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientCo
 import { connectToServer, getMcpServerConnectionBatchSize, removeMcpAuthCacheEntry } from '../../services/mcp/client.js';
 import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
-import { getDisplayConfig, getDisplayServers, redactMcpErrorDetail } from '../../services/mcp/redaction.js';
-import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, mcpServerHealthStatusLabel, getMcpServerFailureMessage, resolveUnexpandedMcpServers } from '../../services/mcp/utils.js';
+import { mcpServerNotFoundMessage, mcpServerNotFoundMessageWithPending, sanitizeMcpCliText } from '../../services/mcp/cliMessages.js';
+import { getDisplayConfig, getDisplayServers, redactMcpErrorDetail, sanitizeConfigForDisplay } from '../../services/mcp/redaction.js';
+import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, mcpServerHealthStatusLabel, getMcpServerFailureMessage, getProjectMcpServerStatus, isStdioConfig, MCP_FILE_BACKED_SCOPES, resolveUnexpandedMcpServers } from '../../services/mcp/utils.js';
 import { partitionMcpServersByName } from '../../services/mcp/normalization.js';
 import { AppStateProvider } from '../../state/AppState.js';
 import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
@@ -52,6 +53,19 @@ async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig)
   } catch (_error) {
     return '✗ Connection error';
   }
+}
+
+/**
+ * CC 2.1.285 (item 8): the official v285 get/login/logout not-found call sites
+ * pass `r.size>0` to `u2t`, where `r` = the project (.mcp.json) servers still
+ * pending trust approval. Same primitives OCC already uses elsewhere
+ * (`getMcpConfigsByScope('project')` + `getProjectMcpServerStatus`).
+ */
+function hasPendingProjectMcpServers(): boolean {
+  const {
+    servers
+  } = getMcpConfigsByScope('project');
+  return Object.keys(servers).some(serverName => getProjectMcpServerStatus(serverName) === 'pending');
 }
 
 // mcp serve (lines 4512–4532)
@@ -149,7 +163,13 @@ export async function mcpRemoveHandler(name: string, options: {
     if (mcpJsonExists) scopes.push('project');
     if (globalConfig.mcpServers?.[name]) scopes.push('user');
     if (scopes.length === 0) {
-      cliError(`No MCP server found with name: "${name}"`);
+      // CC 2.1.285 (item 8): official v285 remove handler ends in
+      // `si(iQn(o,U(M)))` — M = local-config + raw .mcp.json + user-config
+      // server names, U dedupes (v284: `Ui(wQn(o,D(R)))`, identical sources
+      // and templates; v285 adds the `Tn` sanitization inside the builder).
+      // Replaces OCC's drifted `No MCP server found with name: "${name}"`.
+      const configuredNames = [...new Set([...Object.keys(projectConfig.mcpServers ?? {}), ...Object.keys(projectServers), ...Object.keys(globalConfig.mcpServers ?? {})])];
+      cliError(mcpServerNotFoundMessage(name, configuredNames));
     } else if (scopes.length === 1) {
       // Server exists in only one scope, remove it
       const scope = scopes[0]!;
@@ -211,20 +231,34 @@ export async function mcpListHandler(): Promise<void> {
     } of results) {
       const server = displayConfigs[name];
       if (!server) continue;
+      // CC 2.1.285 (item 7): official v285 row builder `Fe` gained a ws branch
+      // (`if(o.type==="ws")return`${f}: ${o.url} (WS) - ${a}`;` — the string
+      // "(WS) - " exists only in v285 bytes, @231389086) between the http and
+      // claudeai-proxy branches; v284 silently dropped ws servers from
+      // `mcp list`. The health checker `Oe` is byte-identical across versions,
+      // so this is a renderer-only fix (OCC's connectToServer already speaks
+      // ws, so the status above is a real health check).
+      // CC 2.1.285 (item 8): v284 rendered `d.map(Fe).filter(Dr)`; v285 is
+      // `d.map(Fe).filter(Fr).map(Tn)` — each row passes through the
+      // control/format-char sanitizer before printing, so hostile server
+      // names/values cannot inject line breaks or ANSI escapes.
+      let row: string | null = null;
       // Intentionally excluding sse-ide servers here since they're internal
       if (server.type === 'sse') {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`${name}: ${server.url} (SSE) - ${status}`);
+        row = `${name}: ${server.url} (SSE) - ${status}`;
       } else if (server.type === 'http') {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`${name}: ${server.url} (HTTP) - ${status}`);
+        row = `${name}: ${server.url} (HTTP) - ${status}`;
+      } else if (server.type === 'ws') {
+        row = `${name}: ${server.url} (WS) - ${status}`;
       } else if (server.type === 'claudeai-proxy') {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`${name}: ${server.url} - ${status}`);
+        row = `${name}: ${server.url} - ${status}`;
       } else if (!server.type || server.type === 'stdio') {
         const args = Array.isArray((server as any).args) ? (server as any).args : [];
+        row = `${name}: ${(server as any).command} ${args.join(' ')} - ${status}`;
+      }
+      if (row !== null) {
         // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`${name}: ${(server as any).command} ${args.join(' ')} - ${status}`);
+        console.log(sanitizeMcpCliText(row));
       }
     }
   }
@@ -240,37 +274,42 @@ export async function mcpGetHandler(name: string): Promise<void> {
   });
   const server = getMcpConfigByName(name);
   if (!server) {
-    cliError(`No MCP server found with name: ${name}`);
+    // CC 2.1.285 (item 8): official v285 get handler ends in
+    // `si(u2t(t,M,r.size>0))` — M = configured names minus pending/rejected
+    // (OCC's getAllMcpConfigs already filters those), r = pending .mcp.json
+    // servers. Replaces OCC's drifted `No MCP server found with name: ${name}`.
+    const {
+      servers
+    } = await getAllMcpConfigs();
+    return cliError(mcpServerNotFoundMessageWithPending(name, Object.keys(servers), hasPendingProjectMcpServers()));
   }
 
-  // biome-ignore lint/suspicious/noConsole:: intentional console output
-  console.log(`${name}:`);
-  // biome-ignore lint/suspicious/noConsole:: intentional console output
-  console.log(`  Scope: ${getScopeLabel(server.scope)}`);
-
-  // Check server health
+  // Check server health first — official v285 computes the status, builds the
+  // full output block, then renders it in one sanitized pass.
   const status = await checkMcpServerHealth(name, server);
-  // biome-ignore lint/suspicious/noConsole:: intentional console output
-  console.log(`  Status: ${status}`);
+  const lines: string[] = [`${name}:`, `  Scope: ${getScopeLabel(server.scope)}`, `  Status: ${status}`];
 
-  // CC 2.1.268 E16: print config fields from the DISPLAY copy (binary `Wr`'s
-  // `h = Be({[s]:i})[s] ?? Pe(i)`) — authored `${VAR}` templates when the
-  // scope re-parses unexpanded and matches, otherwise the sanitized fallback.
-  // The expanded `server` is still used for Scope/Status/OAuth logic only.
-  const display = getDisplayConfig(name, server, resolveUnexpandedMcpServers);
+  // CC 2.1.268 E16 + CC 2.1.285 (item 5): official v285 display selection —
+  //   h=Die(i)&&!OKe.has(i.scope)?Y(i):Ie({[o]:i})[o]??Y(i)
+  // A stdio-like server whose scope is NOT file-backed (dynamic =
+  // --mcp-config / Agent SDK / plugin) now renders from the SANITIZED copy:
+  // command → type label, args → [], env values → [REDACTED] with the
+  // variable names still shown. File-backed scopes keep the E16
+  // authored-unexpanded path (binary `Ie({[o]:i})[o]??Y(i)`).
+  const display = isStdioConfig(server) && !MCP_FILE_BACKED_SCOPES.has(server.scope) ? sanitizeConfigForDisplay(server) : getDisplayConfig(name, server, resolveUnexpandedMcpServers);
 
-  // Intentionally excluding sse-ide servers here since they're internal
-  if (display.type === 'sse') {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Type: sse`);
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  URL: ${display.url}`);
+  // Intentionally excluding sse-ide servers here since they're internal.
+  // CC 2.1.285 (item 6): official v285 merged the sse/http branches into one
+  // URL branch and gated the stdio branch on `Die(i)&&Die(h)` — v284 required
+  // literal `i.type==="stdio"&&f.type==="stdio"`, so a stdio entry omitting
+  // the `type` field printed no Type/Command/Args/Environment at all.
+  if ((server.type === 'sse' || server.type === 'http') && (display.type === 'sse' || display.type === 'http')) {
+    lines.push(`  Type: ${server.type}`);
+    lines.push(`  URL: ${display.url}`);
     if (display.headers) {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log('  Headers:');
+      lines.push('  Headers:');
       for (const [key, value] of Object.entries(display.headers)) {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`    ${key}: ${value}`);
+        lines.push(`    ${key}: ${value}`);
       }
     }
     if (server.oauth?.clientId || server.oauth?.callbackPort) {
@@ -281,52 +320,27 @@ export async function mcpGetHandler(name: string): Promise<void> {
         if (clientConfig?.clientSecret) parts.push('client_secret configured');
       }
       if (server.oauth.callbackPort) parts.push(`callback_port ${server.oauth.callbackPort}`);
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log(`  OAuth: ${parts.join(', ')}`);
+      lines.push(`  OAuth: ${parts.join(', ')}`);
     }
-  } else if (display.type === 'http') {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Type: http`);
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  URL: ${display.url}`);
-    if (display.headers) {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log('  Headers:');
-      for (const [key, value] of Object.entries(display.headers)) {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`    ${key}: ${value}`);
-      }
-    }
-    if (server.oauth?.clientId || server.oauth?.callbackPort) {
-      const parts: string[] = [];
-      if (server.oauth.clientId) {
-        parts.push('client_id configured');
-        const clientConfig = getMcpClientConfig(name, server);
-        if (clientConfig?.clientSecret) parts.push('client_secret configured');
-      }
-      if (server.oauth.callbackPort) parts.push(`callback_port ${server.oauth.callbackPort}`);
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log(`  OAuth: ${parts.join(', ')}`);
-    }
-  } else if (display.type === 'stdio') {
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Type: stdio`);
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Command: ${display.command}`);
+  } else if (isStdioConfig(server) && isStdioConfig(display)) {
+    lines.push('  Type: stdio');
+    lines.push(`  Command: ${display.command}`);
     const args = Array.isArray(display.args) ? display.args : [];
-    // biome-ignore lint/suspicious/noConsole:: intentional console output
-    console.log(`  Args: ${args.join(' ')}`);
+    lines.push(`  Args: ${args.join(' ')}`);
     if (display.env) {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log('  Environment:');
+      lines.push('  Environment:');
       for (const [key, value] of Object.entries(display.env)) {
-        // biome-ignore lint/suspicious/noConsole:: intentional console output
-        console.log(`    ${key}=${value}`);
+        lines.push(`    ${key}=${value}`);
       }
     }
   }
+  lines.push('', `To remove this server, run: occ mcp remove "${name}" -s ${server.scope}`);
+  // CC 2.1.285 (item 8): official v285 renders `R.map(Tn).join("\n")`
+  // (v284: `M.join("\n")`) — every line passes through the control/format
+  // sanitizer, so hostile names/values cannot inject line breaks or ANSI
+  // escape sequences into the terminal.
   // biome-ignore lint/suspicious/noConsole:: intentional console output
-  console.log(`\nTo remove this server, run: occ mcp remove "${name}" -s ${server.scope}`);
+  console.log(lines.map(sanitizeMcpCliText).join('\n'));
   // Use gracefulShutdown to properly clean up MCP server connections
   // (process.exit bypasses cleanup handlers, leaving child processes orphaned)
   await gracefulShutdown(0);
@@ -436,8 +450,12 @@ export async function mcpLoginHandler(name: string, options: {
   });
   const server = getMcpConfigByName(name);
   if (!server) {
+    // CC 2.1.285 (item 8): official v285 login/logout not-found is
+    // `si(u2t(t,s,r.size>0))` (v284: `Ui(Czt(t,s,r.size>0))` — same
+    // template, no sanitizer). s = configured names minus pending/rejected;
+    // OCC's getAllMcpConfigs already applies that filter.
     const { servers } = await getAllMcpConfigs();
-    cliError(`No MCP server named "${name}". Configured servers: ${Object.keys(servers).join(', ')}`);
+    return cliError(mcpServerNotFoundMessageWithPending(name, Object.keys(servers), hasPendingProjectMcpServers()));
   }
   // claude.ai connector authenticates via the Anthropic account, not per-server
   // OAuth. (No connector configured in-sandbox to verify the binary's exact
@@ -499,8 +517,10 @@ export async function mcpLogoutHandler(name: string): Promise<void> {
   });
   const server = getMcpConfigByName(name);
   if (!server) {
+    // CC 2.1.285 (item 8): same `u2t` builder as the login handler (the
+    // official shares one resolver `v()` between login and logout).
     const { servers } = await getAllMcpConfigs();
-    cliError(`No MCP server named "${name}". Configured servers: ${Object.keys(servers).join(', ')}`);
+    return cliError(mcpServerNotFoundMessageWithPending(name, Object.keys(servers), hasPendingProjectMcpServers()));
   }
   if (server.type !== 'http' && server.type !== 'sse') {
     cliError(`"${name}" doesn't use OAuth — there are no stored credentials to clear.`);

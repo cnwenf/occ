@@ -2183,6 +2183,13 @@ export const fetchToolsForClient = memoizeWithLRU(
         client.config.type === 'sdk' &&
         isEnvTruthy(process.env.CLAUDE_AGENT_SDK_MCP_NO_PREFIX)
 
+      // CC 2.1.285 (item 4) — binary factory call site (byte-identical in
+      // BOTH versions, v285 @229107828 / v284 @231460727):
+      //   serverAlwaysLoad:e.config.alwaysLoad===!0, scope:e.config.scope
+      const serverAlwaysLoad =
+        'alwaysLoad' in client.config && client.config.alwaysLoad === true
+      const isDynamicScope = client.config.scope === 'dynamic'
+
       // Convert MCP tools to our Tool format
       return toolsToProcess
         .map((tool): Tool => {
@@ -2206,6 +2213,19 @@ export const fetchToolsForClient = memoizeWithLRU(
             `Tool "${tool.name}" description`,
             client.name,
           )
+          // CC 2.1.285 (item 4) — binary v284 factory:
+          //   alwaysLoad:h||k._meta?.["anthropic/alwaysLoad"]===!0
+          // became in v285:
+          //   alwaysLoad:h&&!(r==="dynamic"&&D._meta?.["anthropic/alwaysLoad"]===!1)
+          //             ||D._meta?.["anthropic/alwaysLoad"]===!0
+          // (h=serverAlwaysLoad, r=config.scope). A tool that lists its own
+          // `_meta['anthropic/alwaysLoad']` as false now STAYS DEFERRED when
+          // its dynamic-scope server (--mcp-config / Agent SDK / plugin) sets
+          // `alwaysLoad`; explicit true always wins, and non-dynamic scopes
+          // keep the server-level flag. (OCC previously applied only the
+          // tool-level flag — the server-level `alwaysLoad` config was never
+          // honored here, so the full v285 formula is ported.)
+          const toolAlwaysLoadMeta = tool._meta?.['anthropic/alwaysLoad']
           return {
             ...MCPTool,
             // In skip-prefix mode, use the original name for model invocation so MCP tools
@@ -2226,7 +2246,10 @@ export const fetchToolsForClient = memoizeWithLRU(
                     .replace(/\s+/g, ' ')
                     .trim() || undefined
                 : undefined,
-            alwaysLoad: tool._meta?.['anthropic/alwaysLoad'] === true,
+            alwaysLoad:
+              (serverAlwaysLoad &&
+                !(isDynamicScope && toolAlwaysLoadMeta === false)) ||
+              toolAlwaysLoadMeta === true,
             async description() {
               return rawDescription
             },

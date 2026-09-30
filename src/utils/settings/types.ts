@@ -28,6 +28,10 @@ export {
 // Also import for use within this file
 import { type HookCommand, HooksSchema } from '../../schemas/hooks.js'
 import { count } from '../array.js'
+import {
+  ALLOWED_PROVIDER_NAMES,
+  isKnownProviderName,
+} from './allowedProviders.js'
 
 /**
  * Schema for environment variables
@@ -858,6 +862,56 @@ export const SettingsSchema = lazySchema(() =>
         .string()
         .optional()
         .describe('Organization UUID to use for OAuth login'),
+      // CC 2.1.285 `allowedProviders` (official plain schema @196157937,
+      // byte-exact): `Ni((i)=>Array.isArray(i)?i.filter(Eo):i,C(W(L9e)))
+      // .optional().catch(void 0).describe(...)` — C(W(·)) is
+      // z.array(z.enum(·)) (list semantics per the describe text: "an empty
+      // array allows none"); unknown entries are silently pre-filtered on
+      // NON-policy sources; the strict policy parser (policyStrictSchema.ts,
+      // official `An`) additionally records them as statusOnly notices.
+      // Enforcement: allowedProvidersEnforcement.ts.
+      allowedProviders: z
+        .preprocess(
+          value =>
+            Array.isArray(value) ? value.filter(isKnownProviderName) : value,
+          z.array(z.enum(ALLOWED_PROVIDER_NAMES)),
+        )
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Managed settings only (managed-settings.json, MDM, or server-managed). ' +
+            'The API providers Claude Code may use on this machine: "anthropic" (the Anthropic API on ' +
+            "Anthropic's own host, via a claude.ai or Console sign-in or an API key; pair it with " +
+            'forceLoginMethod / forceLoginOrgUUID to require a sign-in), "bedrock", "vertex", ' +
+            '"foundry", "anthropicAws", "mantle" (each meaning that provider\'s own service: its ' +
+            'regional, FIPS, private-endpoint and sovereign-cloud hosts), "customEndpoint" (the ' +
+            "Anthropic API or a cloud provider's API sent to some other host — ANTHROPIC_BASE_URL, " +
+            "that provider's ANTHROPIC_*_BASE_URL, a Foundry resource name that is not a bare name, " +
+            "or for Bedrock the AWS SDK's AWS_ENDPOINT_URL[_BEDROCK[_RUNTIME]] — such as an LLM " +
+            'gateway; admitted only for the value pinned in the "env" block of the same managed ' +
+            'source), or "gateway" (the Cloud gateway sign-in). A session on a provider that is not ' +
+            'listed is refused at startup, at login, and when it next contacts the API, with a ' +
+            'message naming what selected the provider and the entry that would allow it. Under a ' +
+            'list, where first-party traffic goes (ANTHROPIC_BASE_URL, a gateway sign-in) is honored ' +
+            'only when the same managed source pins it in "env" (or forceLoginGatewayUrl), and a ' +
+            'claude ssh tunnel into the machine is refused. A cloud provider\'s credential and tenancy ' +
+            'variables, and the network path and TLS trust (HTTPS_PROXY, NODE_EXTRA_CA_CERTS, ' +
+            'CLAUDE_CODE_CERT_STORE), are not judged by this list; set those for the fleet in the ' +
+            'managed "env" block, whose values replace the user\'s. To route Bedrock through a gateway ' +
+            'for a fleet, pin ANTHROPIC_BEDROCK_BASE_URL there (it is what the clients use, ahead of ' +
+            'an endpoint_url in ~/.aws/config, which this list does not judge); the AWS SDK\'s ' +
+            'AWS_ENDPOINT_URL* pins only sanction where the SDK\'s own clients go and never stand in ' +
+            'for the "bedrock" entry. Unset allows every provider; an empty array allows none. Only a ' +
+            'list in managed-settings.json or MDM is enforcement on the machine: it cannot be widened ' +
+            'or hidden by server-managed settings and reaches every session. A list set only in the ' +
+            'admin console reaches only sessions that fetch your server-managed settings — not a ' +
+            'session on a cloud provider, another organization or a non-Anthropic ANTHROPIC_BASE_URL, ' +
+            'one authenticating only with apiKeyHelper or ANTHROPIC_AUTH_TOKEN, a Pro/Max login, ' +
+            '--bare without an API key, or a first launch before the fetch lands — all conditions the ' +
+            'user controls. Versions that predate this setting ignore it; pair it with a ' +
+            "minimum-version policy on a mixed fleet. 'claude auth status' reports the Anthropic API " +
+            'as apiProvider "firstParty".',
+        ),
       // claude-code 2.1.92: when set in managed/policy settings, the CLI blocks
       // startup until remote managed settings are freshly fetched, and exits
       // (fail-closed) if the fetch fails.

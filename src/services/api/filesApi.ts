@@ -16,6 +16,8 @@ import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
+import { getAPIProvider } from '../../utils/model/providers.js'
+import { assertProviderAllowed } from '../../utils/settings/allowedProvidersEnforcement.js'
 import { sleep } from '../../utils/sleep.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -35,6 +37,31 @@ function getDefaultApiBaseUrl(): string {
     process.env.CLAUDE_CODE_API_BASE_URL ||
     'https://api.anthropic.com'
   )
+}
+
+/**
+ * CC 2.1.285 official `mje` @205945826 (byte-verified), Files API availability gate.
+ * Every official Files API entry (downloadFile @205946511, uploadFile @205948400,
+ * listFilesCreatedAfter @205948696) calls this before touching the network:
+ *
+ *   function mje(e=Oue()){if(Ie()!=="firstParty")throw Error("Files API is unavailable
+ *   on third-party providers (data-residency)");if(B$t("firstParty",e,"files"),
+ *   oc("hipaa"))throw Error("File upload is disabled by your organization's policy.")}
+ *
+ * i.e. third-party dispatch refuses outright (data-residency), and first-party goes
+ * through the `allowedProviders` refusal path (`B$t` → ProviderNotAllowedError) with
+ * the resolved base URL so the org-pin/endpoint checks see the real target.
+ *
+ * NOTE: the official mje also has a `oc("hipaa")` arm ("File upload is disabled by
+ * your organization's policy.") — polarity of `oc` not byte-verified this round and
+ * it predates the 285 diff, so it is NOT ported (recorded as a ledger observation;
+ * OCC's nearest surface is `isPolicyAllowed` in src/services/policyLimits).
+ */
+function assertFilesApiAllowed(baseUrl: string): void {
+  if (getAPIProvider() !== 'firstParty') {
+    throw new Error('Files API is unavailable on third-party providers (data-residency)')
+  }
+  assertProviderAllowed('firstParty', baseUrl, 'files')
 }
 
 function logDebugError(message: string): void {
@@ -134,6 +161,7 @@ export async function downloadFile(
   config: FilesApiConfig,
 ): Promise<Buffer> {
   const baseUrl = config.baseUrl || getDefaultApiBaseUrl()
+  assertFilesApiAllowed(baseUrl)
   const url = `${baseUrl}/v1/files/${fileId}/content`
 
   const headers = {
@@ -382,6 +410,7 @@ export async function uploadFile(
   opts?: { signal?: AbortSignal },
 ): Promise<UploadResult> {
   const baseUrl = config.baseUrl || getDefaultApiBaseUrl()
+  assertFilesApiAllowed(baseUrl)
   const url = `${baseUrl}/v1/files`
 
   const headers = {
@@ -619,6 +648,7 @@ export async function listFilesCreatedAfter(
   config: FilesApiConfig,
 ): Promise<FileMetadata[]> {
   const baseUrl = config.baseUrl || getDefaultApiBaseUrl()
+  assertFilesApiAllowed(baseUrl)
   const headers = {
     Authorization: `Bearer ${config.oauthToken}`,
     'anthropic-version': ANTHROPIC_VERSION,

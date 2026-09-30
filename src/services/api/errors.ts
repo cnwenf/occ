@@ -54,6 +54,7 @@ import { shouldProcessRateLimits } from '../rateLimitMocking.js' // Used for /mo
 import {
   extractConnectionErrorDetails,
   formatAPIError,
+  isOutputContentFilteredError,
   sanitizeAPIError,
 } from './errorUtils.js'
 
@@ -1197,6 +1198,19 @@ export function classifyAPIError(error: unknown): string {
     error.message.toLowerCase().includes('model id')
   ) {
     return 'bedrock_model_access'
+  }
+
+  // CC 2.1.285 (item-B3): the official classifier replaced its inline
+  // `if(e instanceof Error&&e.message.includes("Output blocked..."))
+  //   return"output_content_filtered"` with the shared g0 predicate
+  // (`if(g0(e))return"output_content_filtered"`, v285 @203997850 region),
+  // positioned right after bedrock_model_access. g0 additionally gates on the
+  // effective status (400 / non-HTTP only) so a filter message wrapped in a
+  // retryable 429/529 keeps its transport classification. v284's classifier
+  // already returned this category (the string is unchanged); the delta is the
+  // g0 refactor, mirrored here via isOutputContentFilteredError.
+  if (isOutputContentFilteredError(error)) {
+    return 'output_content_filtered'
   }
 
   // Status code based fallbacks

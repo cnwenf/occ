@@ -186,6 +186,17 @@ class ShellCommandImpl implements ShellCommand {
     }
 
     this.result = this.#createResultPromise()
+
+    // CC 2.1.285: "Fixed a cancelled shell command or hook still starting, and
+    // running to its end, when the cancel arrived while it was being set up."
+    // An AbortSignal that was already aborted before construction never fires
+    // its 'abort' listener, so the pre-2.1.285 build let the command run to
+    // completion. Byte-faithful port of the v285 constructor tail
+    // `if(this.result=this.#P(),this.#m.liveShellCommands.add(this),n.aborted)this.#b()`
+    // (v284 ended at the live-command registration with no aborted check).
+    if (abortSignal.aborted) {
+      this.#abortHandler()
+    }
   }
 
   get status(): 'running' | 'backgrounded' | 'completed' | 'killed' {

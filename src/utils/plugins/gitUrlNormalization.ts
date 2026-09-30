@@ -11,11 +11,14 @@
  *
  * This module MUST stay import-free so it can sit at the bottom of the graph.
  *
- * Faithful port of official Claude Code 2.1.276/2.1.280:
+ * Faithful port of official Claude Code 2.1.276/2.1.280/2.1.285:
  *   - host-normalization module (chunk-7bfrtxgd.js @190787400-190789400:
  *     tIe/YEt/$Tn/bo/i/E_e/nIe)
  *   - git-address parser yAn@191030323 with A7e@191027175, yd/Sd/As@~191031088
  *   - official-org predicates Ctn@191095040 / Sd@191098726 (v280)
+ *   - v285 (@195744448): `SY` now strips embedded \t\n\r before the authority
+ *     scan, `IN` (bracket-host ambiguity check) is new, and `wY` starts with
+ *     `if(IN(t))return!0;`
  */
 
 /**
@@ -117,13 +120,14 @@ function hasSuspiciousHostChars(value: string): boolean {
 }
 
 /**
- * Port of official `E_e`: detect backslash smuggling in a URL's authority
- * (e.g. `https://github.com\@evil.com/...`), which browsers and git can
- * interpret differently.
+ * Port of official `E_e`/`SY` (v285 @195745251): detect backslash smuggling
+ * in a URL's authority (e.g. `https://github.com\@evil.com/...`), which
+ * browsers and git can interpret differently. v285 additionally strips
+ * embedded \t\n\r before scanning (git itself ignores them in URLs).
  */
 export function hasBackslashSmuggling(raw: string): boolean {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `E_e` — strips leading C0/space before authority parsing
-  const url = raw.replace(/^[\x00-\x20]+/, '')
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `SY` — strips leading C0/space and embedded \t\n\r before authority parsing
+  const url = raw.replace(/^[\x00-\x20]+/, '').replace(/[\t\n\r]/g, '')
   const schemeEnd = url.indexOf('://')
   if (schemeEnd === -1) return false
   let rest = url.slice(schemeEnd + 3)
@@ -137,8 +141,77 @@ export function hasBackslashSmuggling(raw: string): boolean {
   return (pathStart === -1 ? rest : rest.slice(0, pathStart)).includes('\\')
 }
 
-/** Port of official `nIe`: entry guard for suspicious git addresses. */
+/** Official `aIe` (v285 @195744865 region): URL parse returning null on failure. */
+function tryParseUrl(value: string): URL | null {
+  try {
+    return new URL(value)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Official `xXn` (v285 @195745086 region): percent-decode every `%XX`
+ * except `%00` (a NUL would truncate the string differently per git version,
+ * so the literal `%00` spelling is kept for the caller's checks).
+ */
+function decodeNonNulPercents(value: string): string {
+  return value.replace(/%([0-9A-Fa-f]{2})/g, (match, hex: string) => {
+    const code = Number.parseInt(hex, 16)
+    return code === 0 ? match : String.fromCharCode(code)
+  })
+}
+
+/**
+ * Port of official `IN` (v285 @195744448, NEW — 0 hits in v284): true when a
+ * git address contains a square bracket that git could read as marking the
+ * host (or the start of a local path) rather than as literal text.
+ *
+ * A bracket is only legitimate as an IPv6 literal host: `git@[2001:db8::1]:…`
+ * (scp-like) or `ssh://[2001:db8::1]/…` / `https://[::1]:443/…` (scheme
+ * form, verified by an ssh:// URL round-trip). Any other `[`/`]` — including
+ * percent-encoded `%5B`/`%5D` — is refused, because git can read it as
+ * redirecting the connection or the local path somewhere else.
+ */
+export function hasAmbiguousBracketHost(raw: string): boolean {
+  let start = 0
+  while (start < raw.length && raw.charCodeAt(start) <= 32) start++
+  const trimmed = raw.slice(start)
+  const schemeMatch = /^([A-Za-z0-9][A-Za-z0-9+.-]*):\/\//.exec(trimmed)
+  const scheme = schemeMatch?.[1]?.toLowerCase()
+  const afterScheme = schemeMatch ? trimmed.slice(schemeMatch[0].length) : trimmed
+  const colonIndex = afterScheme.indexOf(':')
+  const slashIndex = afterScheme.indexOf('/')
+  // Official: `!(s!==undefined ? s!=="file" : scpLike)` — i.e. this branch
+  // runs for a file: URL, or a scheme-less string that is NOT scp-like
+  // (`host:path` with the colon before any slash, no Windows drive letter).
+  const bracketsCannotMarkHost =
+    scheme !== undefined
+      ? scheme === 'file'
+      : !(
+          colonIndex !== -1 &&
+          (slashIndex === -1 || colonIndex < slashIndex) &&
+          !/^[A-Za-z]:/.test(afterScheme)
+        )
+  if (bracketsCannotMarkHost) {
+    // file: URL or bare local path — a bracket here still confuses git's
+    // local-path reading, so only `@[` / leading `[` shapes are refused.
+    const candidate = schemeMatch ? decodeNonNulPercents(afterScheme) : afterScheme
+    return candidate.includes('@[') || candidate.startsWith('[')
+  }
+  const decoded = decodeNonNulPercents(afterScheme)
+  const ipv6Match = schemeMatch
+    ? /^(?:[^@/?#\\[\]]+@)?(\[[0-9A-Fa-f:.]+\])(?::\d*)?(?=\/|$)/.exec(decoded)
+    : /^[^@:/[\]]+@(\[[0-9A-Fa-f:.]+\])(?=:)/.exec(decoded)
+  const isValidIpv6Host =
+    ipv6Match !== null &&
+    !!tryParseUrl(`ssh://${ipv6Match[1]}/`)?.hostname
+  return /[[\]]/.test(decoded.slice(isValidIpv6Host ? (ipv6Match?.[0].length ?? 0) : 0))
+}
+
+/** Port of official `nIe`/`wY` (v285 @195746483): entry guard for suspicious git addresses. */
 function isSuspiciousGitUrl(url: string): boolean {
+  if (hasAmbiguousBracketHost(url)) return true
   if (url.includes('://')) {
     if (hasBackslashSmuggling(url)) return true
     try {

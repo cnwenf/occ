@@ -123,10 +123,30 @@ export function redactUrlCredentials(url: string): string {
 
 /**
  * Strip `://user:pass@` userinfo from every URL embedded in a free-form
- * string (error reasons, log lines). Byte-exact port of official `d8t`
- * (v276 @190591969). Non-URL text (paths, emails without a scheme) is
- * untouched.
+ * string (error reasons, log lines).
+ *
+ * Port of official `d8t` (v276 @190591969) as UPGRADED in CC 2.1.285
+ * ("Fixed redacted logs and transcripts showing part of a URL password that
+ * contains `@`, or all of it when the URL writes its `@` as `%40`").
+ *
+ * Byte evidence (linux-x64 official ELFs, URL-sanitizer module):
+ * - v284 @197674921 region: `function qbn(e){return e.replace(/:\/\/[^/?#]*@/g,"://")}`
+ * - v285 @195514998 region: `function Nbn(e){return e.replace(/:\/\/[^/?#]*(@|%40)/g,
+ *   (n,r)=>r==="@"?"://":"://[REDACTED]%40")}` — the ONLY functional delta in
+ *   the sanitizer module (all sibling functions rename-only).
+ *
+ * Semantics: the userinfo run may now end at a literal `@` (stripped entirely,
+ * as before) OR at an encoded `%40` (the run is replaced with
+ * `://[REDACTED]%40`, keeping the `%40` so a password containing `@` written
+ * as `%40` cannot survive after it). The `%40` alternative is case-sensitive
+ * in the official binary (no `i` flag) — preserved verbatim.
+ *
+ * Non-URL text (paths, emails without a scheme) is untouched.
  */
 export function redactCredentialsInText(text: string): string {
-  return text.replace(/:\/\/[^/?#]*@/g, '://')
+  return text.replace(
+    /:\/\/[^/?#]*(@|%40)/g,
+    (_match: string, at: string): string =>
+      at === '@' ? '://' : '://[REDACTED]%40',
+  )
 }

@@ -56,6 +56,8 @@ import {
 } from './addDirPluginSettings.js'
 import { markPluginVersionOrphaned } from './cacheUtils.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
+import { resolvePluginGitSshEnv } from './gitSshCommand.js'
+import { assertValidGitUrl } from './gitUrlValidation.js'
 import { removeAllPluginsForMarketplace } from './installedPluginsManager.js'
 import {
   areSourcesEquivalent,
@@ -632,7 +634,12 @@ export async function gitPull(
   options?: { sparsePaths?: string[] },
 ): Promise<{ code: number; stderr: string }> {
   logForDebugging(`git pull: cwd=${cwd} ref=${ref ?? 'default'}`)
-  const env = { ...process.env, ...GIT_NO_PROMPT_ENV }
+  // Official v285 honors the user's GIT_SSH / core.sshCommand / ssh.variant for
+  // every plugin git network op. gitPull has no URL in hand (it operates on the
+  // cached repo's origin), so resolve from env + the user's global config; the
+  // resolved GIT_SSH_COMMAND flows into fetch/checkout/pull and submodule update.
+  const ssh = await resolvePluginGitSshEnv('')
+  const env = { ...ssh.env, ...GIT_NO_PROMPT_ENV }
 
   if (ref) {
     const fetchResult = await execFileNoThrowWithCwd(
@@ -902,6 +909,21 @@ export async function gitClone(
   ref?: string,
   sparsePaths?: string[],
 ): Promise<{ code: number; stderr: string }> {
+  // Official clone entry (v285 xJt) validates the address with the strict
+  // `R8` validator BEFORE any git process spawns, so a rejected marketplace
+  // surfaces the named refusal (control chars, %00, ambiguous brackets,
+  // backslash-smuggled authority, bad ssh host/user, non-local file:, bad
+  // protocol) rather than an opaque `git clone` failure. Validation is a pure
+  // throw and happens before the staging dir exists, so a refusal leaks nothing.
+  assertValidGitUrl(gitUrl)
+  // Official v285 (`Har`/`yt`): resolve the user's GIT_SSH / core.sshCommand /
+  // ssh.variant into a GIT_SSH_COMMAND env, appending the variant's batch
+  // options (ssh -> BatchMode+StrictHostKeyChecking, plink -> -batch). The env
+  // var takes precedence over the `-c core.sshCommand=` pin below (git's
+  // GIT_SSH_COMMAND beats core.sshCommand), so a user's custom ssh setup is
+  // honored while the pin stays as the fail-closed baseline (official `nIe`).
+  const ssh = await resolvePluginGitSshEnv(gitUrl)
+  const env = { ...ssh.env, ...GIT_NO_PROMPT_ENV }
   const useSparse = sparsePaths && sparsePaths.length > 0
   const args = [
     '-c',
@@ -935,7 +957,7 @@ export async function gitClone(
   const result = await execFileNoThrowWithCwd(gitExe(), args, {
     timeout: timeoutMs,
     stdin: 'ignore',
-    env: { ...process.env, ...GIT_NO_PROMPT_ENV },
+    env,
   })
 
   // Scrub credentials from execa's error/stderr fields before any logging or
@@ -961,7 +983,7 @@ export async function gitClone(
           cwd: targetPath,
           timeout: timeoutMs,
           stdin: 'ignore',
-          env: { ...process.env, ...GIT_NO_PROMPT_ENV },
+          env,
         },
       )
       if (sparseResult.code !== 0) {
@@ -980,7 +1002,7 @@ export async function gitClone(
           cwd: targetPath,
           timeout: timeoutMs,
           stdin: 'ignore',
-          env: { ...process.env, ...GIT_NO_PROMPT_ENV },
+          env,
         },
       )
       if (checkoutResult.code !== 0) {

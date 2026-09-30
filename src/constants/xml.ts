@@ -32,6 +32,9 @@ export const TASK_TYPE_TAG = 'task-type'
 export const OUTPUT_FILE_TAG = 'output-file'
 export const STATUS_TAG = 'status'
 export const SUMMARY_TAG = 'summary'
+/** Official `xj="note"` (v285 @195567729) — task-notification body note tag
+ * (2.1.285 #85: renders the Q9 stop-cause guidance inside the notification). */
+export const NOTE_TAG = 'note'
 export const REASON_TAG = 'reason'
 export const WORKTREE_TAG = 'worktree'
 export const WORKTREE_PATH_TAG = 'worktreePath'

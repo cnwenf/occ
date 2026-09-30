@@ -34,6 +34,39 @@ export function setCachedSettingsForSource(
 }
 
 /**
+ * Admin-policy load-error aggregate (CC 2.1.285, official `yr()` @196726200 —
+ * the memoized `adminLoadErrors`): every ValidationError produced while
+ * loading the policy chain (remote / MDM / managed file + drop-ins / HKCU).
+ * `adminPolicySurvivor` mirrors the official memoized `adminSurvivor`
+ * (`k1o()`): true when a readable admin source produced policy content, in
+ * which case unreadable lower-priority sources must NOT fail-close the
+ * session (official k1o disjuncts each test one source for content; OCC's
+ * first-wins chain collapses them into the single winning source).
+ * Populated by loadSettingsFromDisk; cleared by resetSettingsCache. Consumers:
+ * the startup org gate in validateForceLoginOrg (official `JL`).
+ */
+let adminPolicyLoadErrors: ValidationError[] | undefined
+let adminPolicySurvivor: boolean | undefined
+
+export function getCachedAdminPolicyLoadErrors():
+  | ValidationError[]
+  | undefined {
+  return adminPolicyLoadErrors
+}
+
+export function getCachedAdminPolicySurvivor(): boolean | undefined {
+  return adminPolicySurvivor
+}
+
+export function setCachedAdminPolicyLoad(
+  errors: ValidationError[],
+  survivor: boolean,
+): void {
+  adminPolicyLoadErrors = errors
+  adminPolicySurvivor = survivor
+}
+
+/**
  * Path-keyed cache for parseSettingsFile. Both getSettingsForSource and
  * loadSettingsFromDisk call parseSettingsFile on the same paths during
  * startup — this dedupes the disk read + zod parse.
@@ -56,6 +89,8 @@ export function resetSettingsCache(): void {
   sessionSettingsCache = null
   perSourceCache.clear()
   parseFileCache.clear()
+  adminPolicyLoadErrors = undefined
+  adminPolicySurvivor = undefined
 }
 
 /**

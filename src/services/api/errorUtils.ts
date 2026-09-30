@@ -476,3 +476,81 @@ export function isAdvisorOrgWideEntryRefusedError(error: unknown): boolean {
     error.message.includes(ADVISOR_ORG_UNAVAILABLE_MESSAGE)
   )
 }
+
+// ---------------------------------------------------------------------------
+// CC 2.1.285 (item-B3): output content filter immediate error.
+//
+// Official v285 extracted the inline "Output blocked by content filtering
+// policy" check into a shared predicate `g0` (@203962444 region):
+//
+//   var QYn="Output blocked by content filtering policy";
+//   function g0(e){
+//     if(!(e instanceof Error)||!e.message.includes(QYn))return!1;
+//     let n="originalError"in e&&e.originalError instanceof Error?e.originalError:e,
+//         r=n instanceof Rt?k9n(n):void 0;   // Rt = APIError
+//     return r===void 0||r===400}
+//
+// `k9n` (@197932304) resolves an effective HTTP status for an APIError:
+//   function k9n(e){
+//     if(typeof e.status==="number")return e.status;
+//     if(nI(e))return 529;   // overloaded shape
+//     if(Se(e))return 429;   // rate-limit shape
+//     return}
+//
+// Why the status gate: the API's output content filter is a permanent rejection
+// — the same content would be filtered again — so it must surface immediately
+// (fatal, no retry) rather than being re-sent for minutes. But the filter
+// message can be wrapped inside an error that also carries a retryable status
+// (529 overloaded / 429 rate-limit); in that case the transport-level status
+// wins and the error stays retryable. Only a bare filter rejection (status 400
+// or no HTTP status at all) is treated as fatal. v284 had only the inline
+// classifier string and retried these like any other error (changelog:
+// "responses blocked by the API's output content filter being re-sent and
+// retried, sometimes for minutes, instead of showing the filter's error right
+// away").
+// ---------------------------------------------------------------------------
+const OUTPUT_CONTENT_FILTER_MESSAGE = 'Output blocked by content filtering policy'
+
+/**
+ * Official `k9n`: the effective HTTP status of an APIError — its numeric
+ * `.status` when present, else 529 for an overloaded-shaped error, else 429 for
+ * a rate-limit-shaped error, else undefined. (The `nI`/`Se` predicates also
+ * test `status===529`/`status===429`, but those branches are unreachable here
+ * because a numeric status already returned, so only the message shapes apply.)
+ */
+function getEffectiveAPIErrorStatus(error: APIError): number | undefined {
+  if (typeof error.status === 'number') {
+    return error.status
+  }
+  if (error.message?.includes('"type":"overloaded_error"')) {
+    return 529
+  }
+  if (error.message?.includes('"type":"rate_limit_error"')) {
+    return 429
+  }
+  return undefined
+}
+
+/**
+ * Official v285 `g0`: true when `error` is the API's output content filter
+ * rejection that must NOT be retried — i.e. its message carries the filter
+ * string AND its effective status is 400 or non-HTTP (undefined). Unwraps a
+ * nested `originalError` first (the filter can be wrapped by the transport).
+ */
+export function isOutputContentFilteredError(error: unknown): boolean {
+  if (
+    !(error instanceof Error) ||
+    !error.message.includes(OUTPUT_CONTENT_FILTER_MESSAGE)
+  ) {
+    return false
+  }
+  const effective =
+    'originalError' in error && error.originalError instanceof Error
+      ? error.originalError
+      : error
+  const status =
+    effective instanceof APIError
+      ? getEffectiveAPIErrorStatus(effective)
+      : undefined
+  return status === undefined || status === 400
+}

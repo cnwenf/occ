@@ -3,7 +3,12 @@ import type { UUID } from 'crypto'
 import { randomUUID } from 'crypto'
 import uniqBy from 'lodash-es/uniqBy.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getProjectRoot, getSessionId } from '../../bootstrap/state.js'
+import {
+  getIsNonInteractiveSession,
+  getPermissionPromptToolName,
+  getProjectRoot,
+  getSessionId,
+} from '../../bootstrap/state.js'
 import { getCommand, getSkillToolCommands, hasCommand } from '../../commands.js'
 import {
   clearSessionSkillAllowlist,
@@ -33,6 +38,7 @@ import type { Tool, Tools, ToolUseContext } from '../../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { Command } from '../../types/command.js'
 import type { AgentId } from '../../types/ids.js'
+import type { PermissionMode } from '../../types/permissions.js'
 import type {
   AssistantMessage,
   Message,
@@ -99,6 +105,80 @@ import {
   isAgentHooksOriginTrusted,
   isBuiltInAgent,
 } from './loadAgentsDir.js'
+
+/**
+ * CC 2.1.285: whether this session is a print/headless run with a
+ * `--permission-prompt-tool` configured to receive permission requests.
+ * Byte-faithful to the official `Se = ke() && QRt(cI())`:
+ *   - `ke()`  = `!host.launchOptions.isInteractive()` → getIsNonInteractiveSession()
+ *   - `cI()`  = `host.launchOptions.permissionPromptToolName()` → getPermissionPromptToolName()
+ *   - `QRt(e)`= `e !== undefined && e !== "none"`
+ * When true, a background subagent's permission request routes to the prompt
+ * tool instead of being auto-denied (shouldAvoidPermissionPrompts stays false).
+ */
+function isPrintModeWithPermissionPromptTool(): boolean {
+  const name = getPermissionPromptToolName()
+  return getIsNonInteractiveSession() && name !== undefined && name !== 'none'
+}
+
+/**
+ * CC 2.1.285: resolve the effective permission mode for a subagent given the
+ * parent session's mode. Pure function (exported for unit tests); the caller
+ * keeps the policy-disabled warning log.
+ *
+ * Byte-faithful to the official v285 builder:
+ *   `if(xe==="bypassPermissions"&&<policy-disabled>)Ze=E.mode
+ *    else if(xe==="bubble"&&(E.mode==="plan"||E.mode==="dontAsk"))Ze=E.mode`
+ * (xe = declared permissionMode, E = parent toolPermissionContext,
+ *  Ze = effective mode). A fork (`permissionMode: 'bubble'`) under the
+ * session's plan/dontAsk mode inherits that mode instead of bubbling, so it
+ * cannot escape plan mode.
+ */
+export function resolveAgentEffectivePermissionMode(
+  agentPermissionMode: PermissionMode,
+  parentMode: PermissionMode,
+  bypassPolicyDisabled: boolean,
+): PermissionMode {
+  if (agentPermissionMode === 'bypassPermissions' && bypassPolicyDisabled) {
+    return parentMode
+  }
+  if (
+    agentPermissionMode === 'bubble' &&
+    (parentMode === 'plan' || parentMode === 'dontAsk')
+  ) {
+    return parentMode
+  }
+  return agentPermissionMode
+}
+
+/**
+ * CC 2.1.285: whether a subagent run must auto-deny permission prompts
+ * (`shouldAvoidPermissionPrompts`). Pure function (exported for unit tests).
+ *
+ * Byte-faithful to the official v285 `ze`/`Se` terms:
+ *   - explicit `canShowPermissionPrompts` wins (negated);
+ *   - `bubble` agents always prompt (requests bubble to the parent terminal);
+ *   - print mode with a permission-prompt-tool (`Se=ke()&&QRt(cI())`) does
+ *     NOT auto-deny — a background subagent's request routes to the prompt
+ *     tool (2.1.285 fix: it was auto-denied before);
+ *   - default: async (background) agents avoid prompts, sync agents don't.
+ */
+export function resolveShouldAvoidPermissionPrompts(
+  canShowPermissionPrompts: boolean | undefined,
+  agentPermissionMode: PermissionMode | undefined,
+  isAsync: boolean,
+): boolean {
+  if (canShowPermissionPrompts !== undefined) {
+    return !canShowPermissionPrompts
+  }
+  if (
+    agentPermissionMode === 'bubble' ||
+    isPrintModeWithPermissionPromptTool()
+  ) {
+    return false
+  }
+  return isAsync
+}
 
 /**
  * Initialize agent-specific MCP servers
@@ -479,38 +559,47 @@ export async function* runAgent({
         state.toolPermissionContext.mode === 'auto'
       )
     ) {
-      let effectiveMode = agentPermissionMode
+      const bypassPolicyDisabled =
+        agentPermissionMode === 'bypassPermissions' &&
+        isBypassPermissionsModeDisabled()
       // 2.1.223 security fix: an agent definition's `bypassPermissions` must
       // not override the org bypass-permissions disable policy. When bypass
       // is policy-disabled (GrowthBook gate or settings
       // `disableBypassPermissionsMode: "disable"`), keep the parent mode and
       // warn — message byte-identical to the official binary.
-      if (
-        agentPermissionMode === 'bypassPermissions' &&
-        isBypassPermissionsModeDisabled()
-      ) {
+      if (bypassPolicyDisabled) {
         logForDebugging(
           `Subagent declared permissionMode: bypassPermissions but this session is not running in a contained no-internet environment (or bypass is policy-disabled); keeping parent mode '${state.toolPermissionContext.mode}'.`,
           { level: 'warn' },
         )
-        effectiveMode = state.toolPermissionContext.mode
       }
+      // CC 2.1.285 (security): a fork (declared `permissionMode: 'bubble'`)
+      // under the session's plan/dontAsk mode inherits that mode instead of
+      // bubbling, so it cannot escape plan mode — see
+      // resolveAgentEffectivePermissionMode for byte-level provenance. The
+      // shouldAvoidPrompts branch below stays keyed on the DECLARED 'bubble'
+      // (official `ze` uses `xe==="bubble"`), so this only changes the
+      // effective mode, not prompt visibility.
+      const effectiveMode = resolveAgentEffectivePermissionMode(
+        agentPermissionMode,
+        state.toolPermissionContext.mode,
+        bypassPolicyDisabled,
+      )
       toolPermissionContext = {
         ...toolPermissionContext,
         mode: effectiveMode,
       }
     }
 
-    // Set flag to auto-deny prompts for agents that can't show UI
-    // Use explicit canShowPermissionPrompts if provided, otherwise:
-    //   - bubble mode: always show prompts (bubbles to parent terminal)
-    //   - default: !isAsync (sync agents show prompts, async agents don't)
-    const shouldAvoidPrompts =
-      canShowPermissionPrompts !== undefined
-        ? !canShowPermissionPrompts
-        : agentPermissionMode === 'bubble'
-          ? false
-          : isAsync
+    // Set flag to auto-deny prompts for agents that can't show UI.
+    // CC 2.1.285: print mode with a --permission-prompt-tool configured no
+    // longer auto-denies a background subagent's request — it routes to the
+    // prompt tool. See resolveShouldAvoidPermissionPrompts for provenance.
+    const shouldAvoidPrompts = resolveShouldAvoidPermissionPrompts(
+      canShowPermissionPrompts,
+      agentPermissionMode,
+      isAsync,
+    )
     if (shouldAvoidPrompts) {
       toolPermissionContext = {
         ...toolPermissionContext,

@@ -10,11 +10,22 @@ import { logError } from '../../utils/log.js'
 import { dequeueAllMatching } from '../../utils/messageQueueManager.js'
 import { evictTaskOutput } from '../../utils/task/diskOutput.js'
 import { updateTaskState } from '../../utils/task/framework.js'
+import type { ShellStopCause } from './backgroundDeadline.js'
 import { isLocalShellTask } from './guards.js'
 
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
 
-export function killTask(taskId: string, setAppState: SetAppStateFn): void {
+/**
+ * 2.1.285 #85: `stopCause` persists WHY the task was stopped out-of-band
+ * (official `prn(e,n)` carries the cause into the task snapshot). Only the
+ * background-deadline reap passes it today; plain kills stay undefined and
+ * render the bare "was stopped" summary.
+ */
+export function killTask(
+  taskId: string,
+  setAppState: SetAppStateFn,
+  stopCause?: ShellStopCause,
+): void {
   updateTaskState(taskId, setAppState, task => {
     if ((task as any).status !== 'running' || !isLocalShellTask(task)) {
       return task
@@ -49,6 +60,7 @@ export function killTask(taskId: string, setAppState: SetAppStateFn): void {
       unregisterCleanup: undefined,
       cleanupTimeoutId: undefined,
       endTime: Date.now(),
+      ...(stopCause !== undefined ? { stopCause } : {}),
     }
   })
   void evictTaskOutput(taskId)

@@ -43,9 +43,12 @@ import { getHkcuSettings, getMdmSettings } from './mdm/settings.js'
 import {
   getCachedParsedFile,
   getCachedSettingsForSource,
+  getCachedAdminPolicyLoadErrors,
+  getCachedAdminPolicySurvivor,
   getPluginSettingsBase,
   getSessionSettingsCache,
   resetSettingsCache,
+  setCachedAdminPolicyLoad,
   setCachedParsedFile,
   setCachedSettingsForSource,
   setSessionSettingsCache,
@@ -71,6 +74,98 @@ import {
  */
 function getManagedSettingsFilePath(): string {
   return join(getManagedFilePath(), 'managed-settings.json')
+}
+
+/**
+ * CC 2.1.285 ("Fixed Claude Code refusing to start when the OS denies
+ * reading the managed settings file") — official classifier set @196726844:
+ *   var ts=new Set(["EACCES","EPERM"]);
+ *   function WYn(e){return e.errorClass==="unreadable"&&e.errno!==void 0&&ts.has(e.errno)}
+ */
+const OS_DENIED_READ_ERRNOS = new Set(['EACCES', 'EPERM'])
+
+/**
+ * Port of the official unreadable-source record builder `G1t` (v285
+ * @196303347, byte-verbatim):
+ *   function G1t(e,n,s="file"){return{file:e,path:"",message:`${s==="directory"?
+ *     "Managed settings drop-in directory":"Settings file"} could not be read:
+ *     ${n instanceof Error?n.message:String(n)}`,severity:"fatal",
+ *     errorClass:"unreadable",...E(n)!==void 0&&{errno:E(n)}}}
+ * v284's `mjt` was identical MINUS the errno spread — that missing errno is
+ * what made v284 fail-close on OS-denied reads (no way to classify them).
+ * Official severity "fatal" maps to OCC's 'error' (OCC's severity union is
+ * 'error'|'warning'; the official non-warning filter `sxe` treats every
+ * non-"warning" severity as blocking-eligible, and 'error' is OCC's
+ * blocking severity). `E(n)` is the errno extractor — `getErrnoCode`
+ * (typeof code === 'string') matches the official idiom byte-for-byte
+ * (`typeof t.code==="string"` @196626265 region).
+ */
+export function managedUnreadableRecord(
+  file: string,
+  error: unknown,
+  kind: 'file' | 'directory' = 'file',
+): ValidationError {
+  const errno = getErrnoCode(error)
+  return {
+    file,
+    path: '',
+    message: `${
+      kind === 'directory'
+        ? 'Managed settings drop-in directory'
+        : 'Settings file'
+    } could not be read: ${error instanceof Error ? error.message : String(error)}`,
+    severity: 'error',
+    errorClass: 'unreadable',
+    ...(errno !== undefined && { errno }),
+  }
+}
+
+/** Official `WYn` @196726844 — true when the OS itself denied the read. */
+export function isOsDeniedUnreadableRecord(record: ValidationError): boolean {
+  return (
+    record.errorClass === 'unreadable' &&
+    record.errno !== undefined &&
+    OS_DENIED_READ_ERRNOS.has(record.errno)
+  )
+}
+
+/**
+ * Official `Yde()` = `sxe(yr())` where `sxe(e){return e.filter(n=>n.severity!=="warning")}`
+ * — the admin-load records eligible to block startup (warnings, e.g. the
+ * strict per-field policy records, never block).
+ */
+export function getBlockingAdminPolicyLoadErrors(): ValidationError[] {
+  return (getCachedAdminPolicyLoadErrors() ?? []).filter(
+    record => record.severity !== 'warning',
+  )
+}
+
+/**
+ * Official `jhn(){return !k1o()&&Yde().length>0}` (v285; v284's `M_e` had
+ * the same shape) — some blocking admin-load failure exists AND no readable
+ * admin policy source survived.
+ */
+export function hasAdminPolicyLoadFailures(): boolean {
+  if (getCachedAdminPolicySurvivor()) {
+    return false
+  }
+  return getBlockingAdminPolicyLoadErrors().length > 0
+}
+
+/**
+ * Official `Y6(){return !k1o()&&Yde().some(e=>!WYn(e))}` — the v285
+ * fail-close predicate: a blocking admin-load failure exists that is NOT an
+ * OS-denied read (other errnos, parse failures). v284 failed close on ANY
+ * blocking record (its `M_e`-gated JL branch), including EACCES/EPERM — the
+ * changelog bug.
+ */
+export function hasNonOsDeniedAdminPolicyLoadFailures(): boolean {
+  if (getCachedAdminPolicySurvivor()) {
+    return false
+  }
+  return getBlockingAdminPolicyLoadErrors().some(
+    record => !isOsDeniedUnreadableRecord(record),
+  )
 }
 
 /**
@@ -130,6 +225,13 @@ export function loadManagedFileSettings(): {
     const code = getErrnoCode(e)
     if (code !== 'ENOENT' && code !== 'ENOTDIR') {
       logError(e)
+      // CC 2.1.285 (official drop-in walk catch @196295743, byte-verified):
+      //   catch(h){let f=E(h);if(f!=="ENOENT"&&f!=="ENOTDIR")
+      //     t(`managed-settings.d read failed: ${h}`,{level:"error"}),
+      //     s.push(G1t(g,h,"directory")),c="didNotLoad"}
+      // The directory-variant unreadable record joins the same aggregate and
+      // gets the same OS-denial classification as file records.
+      errors.push(managedUnreadableRecord(dropInDir, e, 'directory'))
     }
   }
 
@@ -363,6 +465,24 @@ function parseSettingsFileUncached(
     }
   } catch (error) {
     handleFileSystemError(error, path)
+    // CC 2.1.285 (official `Yd` @196302950):
+    //   function Yd(e,n){if(Y8n(e,n),z(e))return Y_e();
+    //     return{settings:null,errors:[G1t(n,e)],loadState:"didNotLoad"}}
+    // A policy source whose read FAILED (not merely absent — ENOENT stays
+    // silent) must produce the unreadable record so the startup org gate
+    // (official `JL`, ported into validateForceLoginOrg) can decide:
+    // EACCES/EPERM → warn + start without this file's policies; any other
+    // errno → fail-close. Before 2.1.285 parity, OCC swallowed every read
+    // error here — an unreadable managed policy silently failed OPEN.
+    // Non-policy sources keep the historical swallow+log behavior (the
+    // official routes those records to its interactive settings dialog; this
+    // changelog item is scoped to managed settings).
+    if (policySource && getErrnoCode(error) !== 'ENOENT') {
+      return {
+        settings: null,
+        errors: [managedUnreadableRecord(path, error)],
+      }
+    }
     return { settings: null, errors: [] }
   }
 }
@@ -941,7 +1061,47 @@ function loadSettingsFromDisk(): SettingsWithErrors {
             settingsMergeCustomizer,
           )
         }
+
+        // CC 2.1.285 (official `yr()` @196726200 — the memoized
+        // `adminLoadErrors` aggregate): record every policy-chain load error
+        // for the startup org gate (validateForceLoginOrg — official `JL`).
+        // adminSurvivor (official `k1o()`): a readable admin source produced
+        // policy content, so unreadable lower-priority sources must not
+        // fail-close the session.
+        setCachedAdminPolicyLoad(
+          [...policyErrors],
+          !!policySettings && Object.keys(policySettings).length > 0,
+        )
+
+        // CC 2.1.285 (official `Qzr()` stderr printer @196727280, scoped to
+        // this changelog item): an OS-denied managed-settings read WARNS and
+        // starts without that file's policies. Official header + `pr()` line
+        // format, byte-verified:
+        //   "Managed settings failed to load; policies from the failed source
+        //    are NOT in effect:"
+        //   pr(e)=`  ${e.file??"managed settings"}${e.path?` (${e.path})`:""}: ${e.message}`
+        const osDeniedRecords = policyErrors.filter(isOsDeniedUnreadableRecord)
+        if (osDeniedRecords.length > 0) {
+          process.stderr.write(
+            `Managed settings failed to load; policies from the failed source are NOT in effect:\n${osDeniedRecords
+              .map(
+                record =>
+                  `  ${record.file ?? 'managed settings'}${
+                    record.path ? ` (${record.path})` : ''
+                  }: ${record.message}`,
+              )
+              .join('\n')}\n`,
+          )
+        }
+
         for (const error of policyErrors) {
+          // OS-denied unreadable records are warn-only (the official v285 JL
+          // passthrough branch `jhn()&&!Y6()`) — they must NOT reach the
+          // blocking InvalidSettingsDialog channel. The official surfaces
+          // them via the Qzr stderr print above, not its dialog.
+          if (isOsDeniedUnreadableRecord(error)) {
+            continue
+          }
           const errorKey = `${error.file}:${error.path}:${error.message}`
           if (!seenErrors.has(errorKey)) {
             seenErrors.add(errorKey)

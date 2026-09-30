@@ -51,6 +51,7 @@ import { logError } from './log.js'
 import { logAntError } from './debug.js'
 import { isPlainObjectValue } from './transcriptAdmission.js'
 import { isENOENT, toError } from './errors.js'
+import { isExitCommitted } from './exitCommit.js'
 import { logOTelEvent } from './telemetry/events.js'
 import type { DiagnosticFile } from '../services/diagnosticTracking.js'
 import { diagnosticTracker } from '../services/diagnosticTracking.js'
@@ -692,6 +693,15 @@ export type Attachment =
       type: 'max_turns_reached'
       maxTurns: number
       turnCount: number
+      /**
+       * Official 2.1.285 (#54): stamped at record time (official `GP`) with
+       * the process exit-commit flag (`eo()`). `false` means the attachment
+       * was persisted before the process committed to exiting — the resume
+       * classifier (official `V4o`) then treats the tail as
+       * `ended_at_max_turns` (complete) instead of `interrupted_turn`.
+       * Absent on transcripts written by pre-2.1.285 builds.
+       */
+      exitCommitted?: boolean
     }
   | {
       type: 'current_session_memory'
@@ -3440,6 +3450,47 @@ export function createAttachmentMessage(
     type: 'attachment',
     uuid: randomUUID(),
     timestamp: new Date().toISOString(),
+  }
+}
+
+/**
+ * Official 2.1.285 (#54) — record-time stamp for max_turns_reached
+ * attachments. Binary evidence: GP @221287457 in the v285 linux-x64 ELF:
+ *
+ *   function GP(e){try{if(e.type!=="attachment"||
+ *     e.attachment.type!=="max_turns_reached")return e;
+ *     let r=eo();if(r)i("tengu_max_turns_reached_exit_committed",{});
+ *     return{...e,attachment:{...e.attachment,exitCommitted:r}}}
+ *     catch(r){return u(r),e}}
+ *
+ * Called from the engine record switch @221275150 BEFORE keep/absorb/record
+ * (`let ze=GP(bl(xe))`), so the persisted transcript carries whether the
+ * process had already committed to exiting when the max-turns attachment was
+ * recorded. On resume the V4o classifier reads `exitCommitted===!1` to
+ * classify an uncommitted max-turns tail as `ended_at_max_turns` (a clean
+ * end) instead of `interrupted_turn` — see conversationRecovery.ts.
+ *
+ * OCC wiring: QueryEngine `case 'attachment'` (the equivalent record path).
+ * The official also applies GP to `progress` messages, but GP is a no-op for
+ * any message whose attachment isn't max_turns_reached, so stamping at the
+ * attachment case alone is behaviorally identical.
+ */
+export function stampMaxTurnsExitCommitted(
+  message: AttachmentMessage,
+): AttachmentMessage {
+  try {
+    if (message.attachment?.type !== 'max_turns_reached') return message
+    const committed = isExitCommitted()
+    if (committed) {
+      logEvent('tengu_max_turns_reached_exit_committed', {})
+    }
+    return {
+      ...message,
+      attachment: { ...message.attachment, exitCommitted: committed },
+    }
+  } catch (error) {
+    logError(error)
+    return message
   }
 }
 

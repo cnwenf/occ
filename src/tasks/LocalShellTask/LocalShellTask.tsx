@@ -1,13 +1,15 @@
 import { feature } from 'src/utils/featureFlags.js';
 import { statSync } from 'fs';
 import { stat } from 'fs/promises';
-import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../constants/xml.js';
+import { NOTE_TAG, OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG } from '../../constants/xml.js';
+import { logEvent } from '../../services/analytics/index.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
 import type { AppState } from '../../state/AppState.js';
 import type { LocalShellSpawnInput, SetAppState, Task, TaskContext, TaskHandle } from '../../Task.js';
 import { createTaskStateBase } from '../../Task.js';
 import type { AgentId } from '../../types/ids.js';
 import { registerCleanup } from '../../utils/cleanupRegistry.js';
+import { logForDebugging } from '../../utils/debug.js';
 import { tailFile } from '../../utils/fsOperations.js';
 import { logError } from '../../utils/log.js';
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
@@ -17,6 +19,7 @@ import { registerTask, updateTaskState } from '../../utils/task/framework.js';
 import { escapeXml } from '../../utils/xml.js';
 import { backgroundAgentTask, isLocalAgentTask } from '../LocalAgentTask/LocalAgentTask.js';
 import { isMainSessionTask } from '../LocalMainSessionTask.js';
+import { BACKGROUND_STOP_CAUSE_NOTE, BACKGROUND_STOP_CAUSE_SUMMARY, type ShellStopCause, computeBackgroundDeadlineMs, isBackgroundDeadlineEnabled } from './backgroundDeadline.js';
 import { type BashTaskKind, isLocalShellTask, type LocalShellTaskState } from './guards.js';
 import { killTask } from './killShellTasks.js';
 import { classifyShellTaskResult } from './shellTaskResult.js';
@@ -105,6 +108,114 @@ The command is likely blocked on an interactive prompt. Kill this task and re-ru
   };
 }
 /**
+ * 2.1.285 #85 (official Ncr @206797679): background-deadline kill callback.
+ * ```js
+ * function Ncr(e,n,r){try{if(!gHr())return;let s=e.taskRegistry.get(e.taskId);
+ *   if(!op(s)||s.status!=="running"||s.notified||
+ *     s.shellCommand?.status!=="backgrounded")return;
+ *   r.cause="deadline",prn(e,"deadline"),
+ *   y("task_local_shell_background_deadline"),
+ *   t(`LocalShellTask ${e.taskId}: stopped at its ${n}ms background deadline`)}
+ *   catch(s){m("task_local_shell_background_deadline","threw"),...,u(s)}}
+ * ```
+ * OCC mapping: the registry read + four-guard check runs inside an
+ * `updateTaskState` identity pass (atomic, mirrors enqueueShellNotification's
+ * claim pattern); `prn`'s notify-then-kill becomes enqueueShellNotification
+ * (claims `notified`, renders X9 summary + Q9 `<note>`) followed by
+ * killTask(stopCause) — killTask's own notified:true then suppresses the
+ * result-handler's duplicate enqueue. Telemetry: OCC's analytics are stubbed,
+ * so `y(...)`/`m(...)` map to logEvent + logForDebugging.
+ */
+function stopBackgroundShellAtDeadline(ctx: {
+  taskId: string;
+  description: string;
+  deadlineMs: number;
+  setAppState: SetAppState;
+  toolUseId?: string;
+  kind: BashTaskKind | undefined;
+  agentId?: AgentId;
+  causeHolder: { cause?: ShellStopCause };
+}): void {
+  const { taskId, description, deadlineMs, setAppState, toolUseId, kind, agentId, causeHolder } = ctx;
+  try {
+    // Official `if(!gHr())return` — the gate is re-checked at fire time.
+    if (!isBackgroundDeadlineEnabled()) return;
+    // Official guard: isLocalShellTask && running && !notified && backgrounded.
+    let eligible = false;
+    updateTaskState<LocalShellTaskState>(taskId, setAppState, task => {
+      if (!isLocalShellTask(task) || task.status !== 'running' || task.notified || task.shellCommand?.status !== 'backgrounded') {
+        return task;
+      }
+      eligible = true;
+      return task;
+    });
+    if (!eligible) return;
+    causeHolder.cause = 'deadline';
+    enqueueShellNotification(taskId, description, 'killed', undefined, setAppState, toolUseId, kind, agentId, undefined, 'deadline');
+    killTask(taskId, setAppState, 'deadline');
+    logEvent('task_local_shell_background_deadline', {});
+    logForDebugging(`LocalShellTask ${taskId}: stopped at its ${deadlineMs}ms background deadline`);
+  } catch (error) {
+    logError(error);
+    logForDebugging(`LocalShellTask ${taskId}: stop at the background deadline failed`);
+  }
+}
+
+/**
+ * 2.1.285 #85 (official mrn @206798147): arm the background-shell deadline.
+ * ```js
+ * function mrn(e,n,r,s,g,h,S){_x(h,`bash:${e}`,r);
+ *   let w={taskId:e,description:n,taskRegistry:r,toolUseId:s,kind:g,agentId:h},
+ *       M=Date.now(),F={},B=c2n(S),
+ *       K=B===void 0?void 0:setTimeout(Ncr,B,w,B,F);K?.unref();
+ *   ...pressure-reap (STAGED in OCC — no memoryPressure subsystem)...
+ *   return(ye)=>{he?.(),clearTimeout(K),
+ *     i("tengu_background_shell_settled",{elapsed_ms:Date.now()-M,
+ *       requested_timeout_ms:S??0,deadline_ms:B??0,
+ *       outcome:me(F.cause?"killed":ye),stop_cause:me(F.cause),
+ *       subagent_owned:h!==void 0});...keepalive release...}}
+ * ```
+ * Call sites (official): spawn `mke` — `w!=="monitor"?mrn(he,s,B,h,w,S,M)`
+ * with the raw requested Bash `timeout` (M); foreground→background `Utn` —
+ * `mrn(e,r,s,g,void 0,w)` with NO timeout (30-minute default). OCC arms at
+ * all three of its background transitions (spawnShellTask, backgroundTask,
+ * backgroundExistingForegroundTask — the last is OCC's in-place auto-background
+ * flip, structurally the same transition as Utn).
+ *
+ * NO-OP divergences: the `_x`/`WC` agent keepalive registration (OCC has no
+ * bash-task keepalive subsystem) and the `process.on("memoryPressure")` reap
+ * (staged per #042 — X9/Q9 memory_pressure entries have no producer).
+ *
+ * @returns release function (official mrn's return) — clears the timer and
+ * emits `tengu_background_shell_settled`; call from the completion handler.
+ * `undefined` when not armed (monitor kind / subsystem disabled).
+ */
+function armBackgroundDeadline(taskId: string, description: string, setAppState: SetAppState, toolUseId: string | undefined, kind: BashTaskKind | undefined, agentId: AgentId | undefined, requestedTimeoutMs: number | undefined): ((outcome: string) => void) | undefined {
+  // Official spawn-site gate: `w!=="monitor"?mrn(...):void 0`.
+  if (kind === 'monitor') return undefined;
+  const deadlineMs = computeBackgroundDeadlineMs(requestedTimeoutMs);
+  if (deadlineMs === undefined) return undefined;
+  const startedAt = Date.now();
+  // Official `F={}` cause holder — Ncr writes `r.cause="deadline"` pre-kill;
+  // the release closure reads it for the settled-telemetry outcome.
+  const causeHolder: { cause?: ShellStopCause } = {};
+  const timer = setTimeout(() => {
+    stopBackgroundShellAtDeadline({ taskId, description, deadlineMs, setAppState, toolUseId, kind, agentId, causeHolder });
+  }, deadlineMs);
+  timer.unref();
+  return outcome => {
+    clearTimeout(timer);
+    logEvent('tengu_background_shell_settled', {
+      elapsed_ms: Date.now() - startedAt,
+      requested_timeout_ms: requestedTimeoutMs ?? 0,
+      deadline_ms: deadlineMs,
+      outcome: causeHolder.cause ? 'killed' : outcome,
+      stop_cause: causeHolder.cause ?? '',
+      subagent_owned: agentId !== undefined
+    });
+  };
+}
+/**
  * 2.1.221: Monitor completion summary. A watch that exits without producing
  * any output says so instead of reporting "stream ended" (binary qZs:
  * `o === 0` → "ended without producing output" + exit suffix; the plain
@@ -151,23 +262,26 @@ export function readMonitorOutputBytes(outputPath: string): number | undefined {
  *   `Background command "grep foo" completed (exit code 1: No matches found)`
  * instead of `... failed with exit code 1`.
  *
- * The official killed branch renders `RV[stopCause]` when a stopCause exists
- * (`RV={memory_pressure:"stopped because the system is running low on
- * memory"}`, produced by the pressure-reap subsystem). OCC has no stopCause
- * producer, so only the undefined-stopCause arm (`"stopped"`) is ported;
- * the RV table stays staged with its producer.
+ * The official killed branch renders `RV[stopCause]` when a stopCause exists.
+ * 2.1.285 #85: the RV table (official `X9` @203048512) now lands in
+ * backgroundDeadline.ts with its first OCC producer — the background-deadline
+ * reap renders `deadline` ("stopped after reaching its background time
+ * limit"). The `memory_pressure` entry stays producer-less (the official
+ * pressure-reap subsystem remains staged per the #042 ledger note); the
+ * undefined-stopCause arm (`"stopped"`) is unchanged.
  */
-export function backgroundCommandSummary(description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, exitNote?: string): string {
+export function backgroundCommandSummary(description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, exitNote?: string, stopCause?: ShellStopCause): string {
   switch (status) {
     case 'completed':
       return `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" completed${exitCode !== undefined ? ` (exit code ${exitCode}${exitNote ? `: ${exitNote}` : ''})` : ''}`;
     case 'failed':
       return `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" failed${exitCode !== undefined ? ` with exit code ${exitCode}` : ''}`;
     case 'killed':
-      return `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was stopped`;
+      // Official e2e killed branch (v285): `${Obe}"${n}" was ${S?X9[S]:"stopped"}`
+      return `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" was ${stopCause ? BACKGROUND_STOP_CAUSE_SUMMARY[stopCause] : 'stopped'}`;
   }
 }
-function enqueueShellNotification(taskId: string, description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, setAppState: SetAppState, toolUseId?: string, kind: BashTaskKind = 'bash', agentId?: AgentId, exitNote?: string): void {
+function enqueueShellNotification(taskId: string, description: string, status: 'completed' | 'failed' | 'killed', exitCode: number | undefined, setAppState: SetAppState, toolUseId?: string, kind: BashTaskKind = 'bash', agentId?: AgentId, exitNote?: string, stopCause?: ShellStopCause): void {
   // Atomically check and set notified flag to prevent duplicate notifications.
   // If the task was already marked as notified (e.g., by TaskStopTool), skip
   // enqueueing to avoid sending redundant messages to the model.
@@ -226,14 +340,19 @@ function enqueueShellNotification(taskId: string, description: string, status: '
   } else {
     // 2.1.280 #042: official h$e non-monitor switch — the completed branch
     // renders the classifier's benign-exit note (`exitNote`) after the code.
-    summary = backgroundCommandSummary(description, status, exitCode, exitNote);
+    // 2.1.285 #85: the killed branch renders X9[stopCause] when present.
+    summary = backgroundCommandSummary(description, status, exitCode, exitNote, stopCause);
   }
   const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
+  // 2.1.285 #85 (official tIt @206794200): a stop-cause guidance note renders
+  // in the notification body — `body:`${w?`\n<${xj}>${Wt(Q9[w])}</${xj}>`:""}``
+  // with xj="note" — appended after <summary>, XML-escaped (Wt).
+  const stopCauseNote = stopCause ? `\n<${NOTE_TAG}>${escapeXml(BACKGROUND_STOP_CAUSE_NOTE[stopCause])}</${NOTE_TAG}>` : '';
   const message = `<${TASK_NOTIFICATION_TAG}>
 <${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${escapeXml(summary)}</${SUMMARY_TAG}>
+<${SUMMARY_TAG}>${escapeXml(summary)}</${SUMMARY_TAG}>${stopCauseNote}
 </${TASK_NOTIFICATION_TAG}>`;
   enqueuePendingNotification({
     value: message,
@@ -259,7 +378,8 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
     toolUseId,
     agentId,
     kind,
-    shell
+    shell,
+    timeout
   } = input;
   const {
     setAppState
@@ -299,6 +419,12 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
   };
   registerTask(taskState, setAppState);
 
+  // 2.1.285 #85 (official mke @206799800): `be=w!=="monitor"?mrn(he,s,B,h,w,S,M):void 0`
+  // — arm the background deadline BEFORE backgrounding, with the raw requested
+  // Bash `timeout` (M); c2n clamps it to the deadline cap (default 30min floor
+  // when absent, 2h+ cap).
+  const releaseBackgroundDeadline = armBackgroundDeadline(taskId, description, setAppState, toolUseId, kind, agentId, timeout);
+
   // Data flows through TaskOutput automatically — no stream listeners needed.
   // Just transition to backgrounded state so the process keeps running.
   shellCommand.background(taskId);
@@ -331,6 +457,9 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
       };
     });
     enqueueShellNotification(taskId, description, wasKilled ? 'killed' : classified.status, result.code, setAppState, toolUseId, kind, agentId, classified.exitNote);
+    // 2.1.285 #85: official grn invokes mrn's release closure with the
+    // terminal outcome (settled telemetry + clearTimeout).
+    releaseBackgroundDeadline?.(wasKilled ? 'killed' : classified.status);
     void evictTaskOutput(taskId);
   });
   return {
@@ -425,6 +554,10 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
     };
   });
   const cancelStallWatchdog = startStallWatchdog(taskId, description, kind, toolUseId, agentId);
+  // 2.1.285 #85 (official Utn @206802800): `F=mrn(e,r,s,g,void 0,w)` —
+  // foreground→background transitions arm with NO requested timeout, so the
+  // deadline is the 30-minute default (c2n(undefined) = min(VTo(), Zee())).
+  const releaseBackgroundDeadline = armBackgroundDeadline(taskId, description, setAppState, toolUseId, kind, agentId, undefined);
 
   // Set up result handler
   void shellCommand.result.then(async result => {
@@ -464,6 +597,7 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
     } else {
       enqueueShellNotification(taskId, description, classified.status, result.code, setAppState, toolUseId, kind, agentId, classified.exitNote);
     }
+    releaseBackgroundDeadline?.(wasKilled ? 'killed' : classified.status);
     void evictTaskOutput(taskId);
   });
   return true;
@@ -542,6 +676,9 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
     };
   });
   const cancelStallWatchdog = startStallWatchdog(taskId, description, undefined, toolUseId, agentId);
+  // 2.1.285 #85: OCC's in-place auto-background flip is structurally the same
+  // transition as the official Utn — arm the default (30-minute) deadline.
+  const releaseBackgroundDeadline = armBackgroundDeadline(taskId, description, setAppState, toolUseId, undefined, agentId, undefined);
 
   // Set up result handler (mirrors backgroundTask's handler)
   void shellCommand.result.then(async result => {
@@ -574,6 +711,7 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
     cleanupFn?.();
     const finalStatus = wasKilled ? 'killed' : classified.status;
     enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, undefined, agentId, classified.exitNote);
+    releaseBackgroundDeadline?.(finalStatus);
     void evictTaskOutput(taskId);
   });
   return true;

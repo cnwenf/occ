@@ -66,6 +66,10 @@ import { MarketplaceSourceSchema } from '../plugins/schemas.js'
 import { logForDebugging } from '../debug.js'
 import { plural } from '../stringUtils.js'
 import {
+  ALLOWED_PROVIDER_NAMES,
+  isValidProviderEntry,
+} from './allowedProviders.js'
+import {
   collectLockFields,
   coerceStringBoolean,
   formatPolicyIssueList,
@@ -187,12 +191,20 @@ function salvagedEntryArraySchema(
  * Official `vo`: fail-closed allowlist array. Invalid entries are dropped
  * with per-entry records; if every entry was invalid (or the whole value is
  * unreadable) an EMPTY allowlist is enforced — never "no restriction".
+ *
+ * CC 2.1.285: the official `An` variant (@196187263) adds
+ * `{invalidEntryIsStatusOnly}` — per-entry "Invalid entry was ignored"
+ * records carry `statusOnly:true` so an unrecognized entry never escalates
+ * to a session-blocking load failure (the fail-closed substitution still
+ * binds). The `An` post-validate callback parameter is omitted: its only
+ * 285 consumer (allowedProviders) passes `void 0`.
  */
 function failClosedAllowlistSchema(
   key: string,
   entrySchema: z.ZodType,
   onIssue: PolicyIssueCallback,
   emptyAllowlistText: string,
+  options?: { invalidEntryIsStatusOnly?: boolean },
 ): z.ZodType {
   return z
     .array(z.any())
@@ -214,6 +226,7 @@ function failClosedAllowlistSchema(
         onIssue({
           path: `${key}[${index}]`,
           message: `Invalid entry was ignored: ${detail}`,
+          ...(options?.invalidEntryIsStatusOnly && { statusOnly: true }),
         })
       }
       if (entries.length > 0 && kept.length === 0) {
@@ -549,6 +562,25 @@ export function buildStrictPolicySchema(onIssue: PolicyIssueCallback): z.ZodType
         return [] as unknown as undefined
       },
     ) as z.ZodType
+  }
+  // CC 2.1.285 (official @196200280, byte-exact):
+  //   g("allowedProviders",()=>An("allowedProviders",
+  //     gu(Ut,{message:`not a known provider name (${L9e.join(", ")})`}),e,
+  //     "no API provider may be used, so Claude Code will not start on this
+  //      machine",void 0,{invalidEntryIsStatusOnly:!0}))
+  // Unrecognized entries are dropped with statusOnly records (they never
+  // block the session); all-invalid / unreadable values enforce an EMPTY
+  // allowlist — no provider may be used (fail-closed).
+  if ('allowedProviders' in shape) {
+    wrapped.allowedProviders = failClosedAllowlistSchema(
+      'allowedProviders',
+      z.custom(isValidProviderEntry, {
+        message: `not a known provider name (${ALLOWED_PROVIDER_NAMES.join(', ')})`,
+      }) as z.ZodType,
+      onIssue,
+      'no API provider may be used, so Claude Code will not start on this machine',
+      { invalidEntryIsStatusOnly: true },
+    )
   }
 
   // 8. Per-block salvage rebuild (`jo`): permissions / autoMode / worktree /

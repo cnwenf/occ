@@ -67,6 +67,7 @@ const ENV_KEYS = [
   'BETA_TRACING_ENDPOINT',
   'CLAUDE_CODE_ENTRYPOINT',
   'CLAUDE_CODE_DIAGNOSTICS_FILE',
+  'CLAUDE_CODE_DISABLE_WEB_FETCH',
 ] as const
 
 const saved: Record<string, string | undefined> = {}
@@ -103,11 +104,15 @@ describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
     // (2.1.281 #034 dangerous-rm kill-switch; official v281 binary Set grows
     // to include it, and project scope must not be able to set a security
     // kill-switch) + 48 telemetry keys from the 2.1.282 `Gcn` spread (P0:
-    // project/local settings may no longer enable telemetry) = 114.
-    expect(blocklist.size).toBe(114)
+    // project/local settings may no longer enable telemetry) +
+    // CLAUDE_CODE_DISABLE_WEB_FETCH (CC 2.1.285 item-B1 WebFetch kill-switch;
+    // official `Jqn` reserved set @200781142 lists it — project scope must not
+    // be able to toggle the WebFetch kill-switch) = 115.
+    expect(blocklist.size).toBe(115)
     expect(blocklist.has('CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT')).toBe(
       true,
     )
+    expect(blocklist.has('CLAUDE_CODE_DISABLE_WEB_FETCH')).toBe(true)
     for (const key of [
       'TMPDIR',
       'TMP',
@@ -146,6 +151,32 @@ describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
     expect(process.env.TMPDIR).toBe(originalTmpdir)
     // Non-blocked project env still applies.
     expect(process.env.OCC_TEST_SAFE_VAR).toBe('from-project')
+  })
+
+  test('project settings cannot set the 2.1.285 WebFetch kill-switch (CLAUDE_CODE_DISABLE_WEB_FETCH)', () => {
+    // CC 2.1.285 (item-B1): the official `Jqn` reserved set (@200781142) lists
+    // CLAUDE_CODE_DISABLE_WEB_FETCH, so project/local scope must not be able to
+    // toggle the WebFetch kill-switch (a project cannot silently disable — or
+    // re-enable — WebFetch for the session).
+    delete process.env.CLAUDE_CODE_DISABLE_WEB_FETCH
+    settingsBySource.projectSettings = {
+      env: { CLAUDE_CODE_DISABLE_WEB_FETCH: '1' },
+    }
+
+    applyConfigEnvironmentVariables()
+
+    expect(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH).toBeUndefined()
+  })
+
+  test('user settings CAN still set CLAUDE_CODE_DISABLE_WEB_FETCH (blocklist is project/local-scope only)', () => {
+    delete process.env.CLAUDE_CODE_DISABLE_WEB_FETCH
+    settingsBySource.userSettings = {
+      env: { CLAUDE_CODE_DISABLE_WEB_FETCH: '1' },
+    }
+
+    applyConfigEnvironmentVariables()
+
+    expect(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH).toBe('1')
   })
 
   test('local settings are equally blocked and user settings can still set the same key', () => {

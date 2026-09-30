@@ -74,6 +74,17 @@ import { errorMessage, getErrnoCode } from '../errors.js'
 import { getClaudeTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
+import {
+  candidateUnderDeniedRead,
+  getClaudeOwnReadDenyBaseline,
+  getTrustedAllowedDomains,
+  getTrustedReadDenyBaseline,
+  getTrustedSettingsSources,
+  getTrustedWebFetchAllowRules,
+  hasTrustedNetworkDenyList,
+  hasTrustedReadDenyList,
+  isUntrustedSource,
+} from './trustedTierGrants.js'
 
 // Local copies to avoid circular dependency
 // (permissions.ts imports SandboxManager, bashPermissions.ts imports permissions.ts)
@@ -214,6 +225,186 @@ function shouldAllowManagedReadPathsOnly(): boolean {
 }
 
 /**
+ * One-time warning latches for the CC 2.1.285 "filesystem/network grants
+ * restricted to trusted settings tiers" fix (official `Mt()` sandbox module
+ * state fields `droppedRepoAllowedDomainsLogged`,
+ * `droppedRepoFilesystemGrantsLogged`, `droppedRepoNetworkAllowancesLogged`).
+ */
+let droppedRepoAllowedDomainsLogged = false
+let droppedRepoFilesystemGrantsLogged = false
+let droppedRepoNetworkAllowancesLogged = false
+
+/** Test-only resets of the one-time trusted-tier grant-restriction warnings. */
+export function _resetAllowedDomainsWarningForTesting(): void {
+  droppedRepoAllowedDomainsLogged = false
+}
+export function _resetFilesystemGrantsWarningForTesting(): void {
+  droppedRepoFilesystemGrantsLogged = false
+}
+export function _resetNetworkAllowancesWarningForTesting(): void {
+  droppedRepoNetworkAllowancesLogged = false
+}
+
+/**
+ * CC 2.1.285 `dB(e)` — restrict the sandbox.network ALLOWANCES (proxy ports,
+ * unix sockets, local binding) to the trusted settings tiers when the admin
+ * sandbox mandate (`Ua`) or the network-restriction gate (`ate` = mandate ||
+ * strictAllowlist || a trusted network deny list) is open, so a project/local
+ * tier cannot replace the filtering proxy. `mergedNetwork` = merged
+ * `settings.sandbox.network`. allowMachLookup (macOS Mach ports) is omitted —
+ * OCC's sandbox-runtime@0.0.44 NetworkRestrictionConfig has no such field.
+ *
+ * Official symbol map: `_ee`/`zO` = all/proxy field lists; `n?kO:wE` =
+ * managedOnly→policy-only getter else first-trusted getter; `Uf` = trusted
+ * array collect; `Km(e,r)=e===!1?!1:wE(r)` = false-sticky boolean.
+ */
+function computeTrustedNetworkAllowances(
+  mergedNetwork:
+    | {
+        allowUnixSockets?: string[]
+        allowAllUnixSockets?: boolean
+        allowLocalBinding?: boolean
+        httpProxyPort?: number
+        socksProxyPort?: number
+      }
+    | undefined,
+): {
+  allowUnixSockets?: string[]
+  allowAllUnixSockets?: boolean
+  allowLocalBinding?: boolean
+  httpProxyPort?: number
+  socksProxyPort?: number
+} {
+  const mandate = shouldRestrictExcludedCommands()
+  // Official `ate()` = mandate || strictAllowlist || trusted network deny list.
+  const restrictionGate =
+    mandate || shouldEnforceStrictAllowlist() || hasTrustedNetworkDenyList()
+  if (!mandate && !restrictionGate) {
+    return {
+      allowUnixSockets: mergedNetwork?.allowUnixSockets,
+      allowAllUnixSockets: mergedNetwork?.allowAllUnixSockets,
+      allowLocalBinding: mergedNetwork?.allowLocalBinding,
+      httpProxyPort: mergedNetwork?.httpProxyPort,
+      socksProxyPort: mergedNetwork?.socksProxyPort,
+    }
+  }
+  const managedOnly = shouldAllowManagedSandboxDomainsOnly()
+  if (!droppedRepoNetworkAllowancesLogged) {
+    droppedRepoNetworkAllowancesLogged = true
+    const untrustedSettings = (
+      ['projectSettings', 'localSettings'] as const
+    ).map((source) =>
+      isSettingSourceEnabled(source) ? getSettingsForSource(source) : null,
+    )
+    const allFields = [
+      'allowUnixSockets',
+      'allowAllUnixSockets',
+      'allowLocalBinding',
+      'httpProxyPort',
+      'socksProxyPort',
+    ] as const
+    const proxyFields = ['httpProxyPort', 'socksProxyPort'] as const
+    const droppedFields = (mandate ? allFields : proxyFields).filter((field) =>
+      untrustedSettings.some((s) => {
+        const value = s?.sandbox?.network?.[field]
+        return value !== undefined && value !== false
+      }),
+    )
+    if (droppedFields.length > 0) {
+      logForDebugging(
+        mandate
+          ? `[sandbox] admin sandbox mandate: ignoring sandbox.network.${droppedFields.join(
+              ', ',
+            )} from project/local settings`
+          : `[sandbox] trusted network deny list or strict allowlist: ignoring sandbox.network.${droppedFields.join(
+              ', ',
+            )} from project/local settings (a project may not replace the filtering proxy)`,
+      )
+    }
+    if (managedOnly) {
+      const flagUserSettings = [
+        getSettingsForSource('flagSettings'),
+        isSettingSourceEnabled('userSettings')
+          ? getSettingsForSource('userSettings')
+          : null,
+      ]
+      const droppedProxyFields = proxyFields.filter((field) =>
+        flagUserSettings.some(
+          (s) => s?.sandbox?.network?.[field] !== undefined,
+        ),
+      )
+      if (droppedProxyFields.length > 0) {
+        logForDebugging(
+          `[sandbox] network.allowManagedDomainsOnly: ignoring sandbox.network.${droppedProxyFields.join(
+            ', ',
+          )} from --settings/user settings; only managed settings may replace the filtering proxy`,
+        )
+      }
+    }
+  }
+  // `h = n ? kO : wE`: managedOnly→policy-only, else first non-undefined
+  // across the trusted tiers (policy, --settings, user-if-enabled).
+  const readTrustedProxyPort = (
+    field: 'httpProxyPort' | 'socksProxyPort',
+  ): number | undefined => {
+    if (managedOnly) {
+      return getSettingsForSource('policySettings')?.sandbox?.network?.[field]
+    }
+    for (const s of getTrustedSettingsSources()) {
+      const value = s?.sandbox?.network?.[field]
+      if (value !== undefined) return value
+    }
+    return undefined
+  }
+  const httpProxyPort = readTrustedProxyPort('httpProxyPort')
+  const socksProxyPort = readTrustedProxyPort('socksProxyPort')
+  if (!mandate) {
+    return {
+      allowUnixSockets: mergedNetwork?.allowUnixSockets,
+      allowAllUnixSockets: mergedNetwork?.allowAllUnixSockets,
+      allowLocalBinding: mergedNetwork?.allowLocalBinding,
+      httpProxyPort,
+      socksProxyPort,
+    }
+  }
+  // Mandate: restrict every field to the trusted tiers.
+  // `Uf(allowUnixSockets)` = dedup union across the trusted tiers.
+  const trustedUnixSockets = [
+    ...new Set(
+      getTrustedSettingsSources().flatMap(
+        (s) => s?.sandbox?.network?.allowUnixSockets ?? [],
+      ),
+    ),
+  ]
+  // `Km(e,r) = e===!1 ? !1 : wE(r)` — false is sticky, else first trusted.
+  const falseStickyTrustedBoolean = (
+    mergedValue: boolean | undefined,
+    field: 'allowAllUnixSockets' | 'allowLocalBinding',
+  ): boolean | undefined => {
+    if (mergedValue === false) return false
+    for (const s of getTrustedSettingsSources()) {
+      const value = s?.sandbox?.network?.[field]
+      if (value !== undefined) return value
+    }
+    return undefined
+  }
+  return {
+    allowUnixSockets:
+      trustedUnixSockets.length > 0 ? trustedUnixSockets : undefined,
+    allowAllUnixSockets: falseStickyTrustedBoolean(
+      mergedNetwork?.allowAllUnixSockets,
+      'allowAllUnixSockets',
+    ),
+    allowLocalBinding: falseStickyTrustedBoolean(
+      mergedNetwork?.allowLocalBinding,
+      'allowLocalBinding',
+    ),
+    httpProxyPort,
+    socksProxyPort,
+  }
+}
+
+/**
  * Convert Claude Code settings format to SandboxRuntimeConfig format
  * (Function exported for testing)
  *
@@ -250,20 +441,69 @@ export function convertToSandboxRuntimeConfig(
       }
     }
   } else {
-    for (const domain of settings.sandbox?.network?.allowedDomains || []) {
+    // CC 2.1.285: when the network-restriction gate `A = _ || T` (admin sandbox
+    // mandate || strictAllowlist) is open, allowedDomains and WebFetch(domain:)
+    // allow rules are honored from the TRUSTED settings tiers only — a
+    // project/local tier may not widen the allowlist a trusted tier set.
+    // Official jm else branch: `A ? Uf(allowedDomains) : merged` and
+    // `A ? OO() : merged.allow`.
+    const restrictNetworkAllowlist =
+      shouldRestrictExcludedCommands() || shouldEnforceStrictAllowlist()
+    const domainSource = restrictNetworkAllowlist
+      ? getTrustedAllowedDomains()
+      : settings.sandbox?.network?.allowedDomains || []
+    for (const domain of domainSource) {
       allowedDomains.push(domain)
     }
-    // 2.1.113: deniedDomains from the sandbox.network setting.
+    // 2.1.113: deniedDomains from the sandbox.network setting (always merged —
+    // a deny list is never widened by this fix).
     for (const domain of settings.sandbox?.network?.deniedDomains || []) {
       deniedDomains.push(domain)
     }
-    for (const ruleString of permissions.allow || []) {
+    const allowRuleSource = restrictNetworkAllowlist
+      ? getTrustedWebFetchAllowRules()
+      : permissions.allow || []
+    for (const ruleString of allowRuleSource) {
       const rule = permissionRuleValueFromString(ruleString)
       if (
         rule.toolName === WEB_FETCH_TOOL_NAME &&
         rule.ruleContent?.startsWith('domain:')
       ) {
         allowedDomains.push(rule.ruleContent.substring('domain:'.length))
+      }
+    }
+    // One-shot report of the dropped project/local entries (official
+    // `droppedRepoAllowedDomainsLogged`). Counts enabled project/local
+    // allowedDomains + WebFetch(domain:) allow entries.
+    if (restrictNetworkAllowlist && !droppedRepoAllowedDomainsLogged) {
+      droppedRepoAllowedDomainsLogged = true
+      const droppedCount = (
+        ['projectSettings', 'localSettings'] as const
+      )
+        .map((source) =>
+          isSettingSourceEnabled(source) ? getSettingsForSource(source) : null,
+        )
+        .reduce(
+          (total, s) =>
+            total +
+            (s?.sandbox?.network?.allowedDomains?.length ?? 0) +
+            (s?.permissions?.allow ?? []).filter((ruleString) => {
+              const rule = permissionRuleValueFromString(ruleString)
+              return (
+                rule.toolName === WEB_FETCH_TOOL_NAME &&
+                rule.ruleContent?.startsWith('domain:') === true
+              )
+            }).length,
+          0,
+        )
+      if (droppedCount > 0) {
+        logForDebugging(
+          `[sandbox] ${
+            shouldRestrictExcludedCommands()
+              ? 'admin sandbox mandate'
+              : 'network.strictAllowlist'
+          }: ignoring ${droppedCount} sandbox.network.allowedDomains / WebFetch(domain:…) allow entries from project/local settings`,
+        )
       }
     }
   }
@@ -369,23 +609,105 @@ export function convertToSandboxRuntimeConfig(
   ])
   allowWrite.push(...additionalDirs)
 
+  // CC 2.1.285: filesystem grants restricted to trusted settings tiers.
+  // Official jm setup: `_=Ua()` (admin sandbox mandate), `N=_||FB()` (mandate
+  // OR a trusted read-deny list exists), `D=N?MB():nS()` (the read-deny
+  // baseline that untrusted project/local allowWrite/allowRead grants are
+  // screened against). `Hm(X)` = untrusted source (project/local).
+  const sandboxMandate = shouldRestrictExcludedCommands()
+  const trustedReadDenyActive = sandboxMandate || hasTrustedReadDenyList()
+  const globCache = new Map<string, (s: string) => boolean>()
+  const readDenyBaseline = trustedReadDenyActive
+    ? getTrustedReadDenyBaseline(cwd, {
+        resolveReadDenyRule: resolvePathPatternForSandbox,
+        resolveFilesystemPath: resolveSandboxFilesystemPath,
+      })
+    : getClaudeOwnReadDenyBaseline(cwd)
+  let droppedMandateWriteCount = 0 // official Ic
+  let droppedReadDenyWriteCount = 0 // official Rc
+  let droppedReadDenyReadCount = 0 // official Nc
+
   // Iterate through each settings source to resolve paths correctly
   // Path patterns like `/foo` are relative to the settings file directory,
   // so we need to know which source each rule came from
   for (const source of SETTING_SOURCES) {
     const sourceSettings = getSettingsForSource(source)
+    const fs = sourceSettings?.sandbox?.filesystem
+    // `Be` = untrusted source. OCC's policySettings is always composed/trusted
+    // (null when absent), so the HKCU-backfilled-policy leg never fires here.
+    const isUntrusted = isUntrustedSource(source)
+    // `et = _ && Be` — under an admin mandate, ALL untrusted write grants are
+    // dropped wholesale (counted Ic) and untrusted read grants are dropped.
+    const isMandateDropped = sandboxMandate && isUntrusted
 
-    // Extract filesystem paths from permission rules
+    // Collect this source's Edit allow-rule contents (`ar`) and fs.allowWrite.
+    const editAllowRules: string[] = []
     if (sourceSettings?.permissions) {
       for (const ruleString of sourceSettings.permissions.allow || []) {
         const rule = permissionRuleValueFromString(ruleString)
         if (rule.toolName === FILE_EDIT_TOOL_NAME && rule.ruleContent) {
-          allowWrite.push(
-            resolvePathPatternForSandbox(rule.ruleContent, source),
-          )
+          editAllowRules.push(rule.ruleContent)
         }
       }
+    }
+    const fsAllowWrite = fs?.allowWrite || []
 
+    if (isMandateDropped) {
+      // Official `et` branch: `Ic += ar.length + fs.allowWrite.length`.
+      droppedMandateWriteCount += editAllowRules.length + fsAllowWrite.length
+    } else {
+      // Write grants (Edit allow-rules + fs.allowWrite), screened against the
+      // read-deny baseline for untrusted sources (official Rc drop).
+      for (const ruleContent of editAllowRules) {
+        const candidate = resolvePathPatternForSandbox(ruleContent, source)
+        if (
+          isUntrusted &&
+          candidateUnderDeniedRead(readDenyBaseline, candidate, cwd, globCache)
+        ) {
+          droppedReadDenyWriteCount++
+          continue
+        }
+        allowWrite.push(candidate)
+      }
+      for (const p of fsAllowWrite) {
+        const candidate = resolveSandboxFilesystemPath(p, source)
+        if (
+          isUntrusted &&
+          candidateUnderDeniedRead(readDenyBaseline, candidate, cwd, globCache)
+        ) {
+          droppedReadDenyWriteCount++
+          continue
+        }
+        allowWrite.push(candidate)
+      }
+    }
+
+    // Read grants (fs.allowRead), gated by allowManagedReadPathsOnly (official
+    // `S`) and screened against the read-deny baseline for untrusted sources
+    // (official Nc drop). Under a mandate, untrusted reads are dropped wholesale
+    // (the `et` branch skips the read loop) — mirrored by isMandateDropped.
+    if (
+      !isMandateDropped &&
+      fs &&
+      (!shouldAllowManagedReadPathsOnly() || source === 'policySettings')
+    ) {
+      for (const p of fs.allowRead || []) {
+        const candidate = resolveSandboxFilesystemPath(p, source)
+        if (
+          isUntrusted &&
+          candidateUnderDeniedRead(readDenyBaseline, candidate, cwd, globCache)
+        ) {
+          droppedReadDenyReadCount++
+          continue
+        }
+        allowRead.push(candidate)
+      }
+    }
+
+    // Deny rules — always honored regardless of tier (the official loop applies
+    // Edit/Read deny + fs.denyWrite/denyRead unconditionally; a deny is never
+    // widened by this fix).
+    if (sourceSettings?.permissions) {
       for (const ruleString of sourceSettings.permissions.deny || []) {
         const rule = permissionRuleValueFromString(ruleString)
         if (rule.toolName === FILE_EDIT_TOOL_NAME && rule.ruleContent) {
@@ -396,27 +718,50 @@ export function convertToSandboxRuntimeConfig(
         }
       }
     }
-
-    // Extract filesystem paths from sandbox.filesystem settings
-    // sandbox.filesystem.* uses standard path semantics (/path = absolute),
-    // NOT the permission-rule convention (/path = settings-relative). #30067
-    const fs = sourceSettings?.sandbox?.filesystem
     if (fs) {
-      for (const p of fs.allowWrite || []) {
-        allowWrite.push(resolveSandboxFilesystemPath(p, source))
-      }
       for (const p of fs.denyWrite || []) {
         denyWrite.push(resolveSandboxFilesystemPath(p, source))
       }
       for (const p of fs.denyRead || []) {
         denyRead.push(resolveSandboxFilesystemPath(p, source))
       }
-      if (!shouldAllowManagedReadPathsOnly() || source === 'policySettings') {
-        for (const p of fs.allowRead || []) {
-          allowRead.push(resolveSandboxFilesystemPath(p, source))
-        }
-      }
     }
+  }
+
+  // CC 2.1.285 one-shot log (official `droppedRepoFilesystemGrantsLogged`).
+  if (
+    (droppedMandateWriteCount > 0 ||
+      droppedReadDenyWriteCount > 0 ||
+      droppedReadDenyReadCount > 0) &&
+    !droppedRepoFilesystemGrantsLogged
+  ) {
+    droppedRepoFilesystemGrantsLogged = true
+    const baselineLabel = sandboxMandate
+      ? 'admin sandbox mandate'
+      : trustedReadDenyActive
+        ? 'managed or --settings read deny'
+        : "Claude Code's own read-deny paths"
+    const parts: string[] = []
+    if (droppedMandateWriteCount > 0) {
+      parts.push(
+        `${droppedMandateWriteCount} sandbox.filesystem.allowWrite / Edit allow-rule path(s) (admin sandbox mandate)`,
+      )
+    }
+    if (droppedReadDenyWriteCount > 0) {
+      parts.push(
+        `${droppedReadDenyWriteCount} sandbox.filesystem.allowWrite / Edit allow-rule path(s) under a denied read path (${baselineLabel})`,
+      )
+    }
+    if (droppedReadDenyReadCount > 0) {
+      parts.push(
+        `${droppedReadDenyReadCount} sandbox.filesystem.allowRead path(s) inside a denied read path (${baselineLabel})`,
+      )
+    }
+    logForDebugging(
+      `[sandbox] filesystem grants restricted to trusted settings tiers: ignoring ${parts.join(
+        ' and ',
+      )} from project/local (or HKCU-backfilled policy) settings`,
+    )
   }
   // Ripgrep config for sandbox (2.1.232 alignment, port of official rTt
   // scope): honored only from policy (managed), --settings flag, and user
@@ -439,11 +784,11 @@ export function convertToSandboxRuntimeConfig(
     network: {
       allowedDomains,
       deniedDomains,
-      allowUnixSockets: settings.sandbox?.network?.allowUnixSockets,
-      allowAllUnixSockets: settings.sandbox?.network?.allowAllUnixSockets,
-      allowLocalBinding: settings.sandbox?.network?.allowLocalBinding,
-      httpProxyPort: settings.sandbox?.network?.httpProxyPort,
-      socksProxyPort: settings.sandbox?.network?.socksProxyPort,
+      // CC 2.1.285 `dB`: proxy ports / unix sockets / local binding are
+      // restricted to the trusted tiers when the mandate / network-restriction
+      // gate is open, so a project/local tier cannot replace the filtering
+      // proxy. allowMachLookup is omitted (no OCC sandbox-runtime field).
+      ...computeTrustedNetworkAllowances(settings.sandbox?.network),
     },
     filesystem: {
       denyRead,

@@ -5,6 +5,7 @@
 import type { TaskStateBase } from '../../Task.js'
 import type { AgentId } from '../../types/ids.js'
 import type { ShellCommand } from '../../utils/ShellCommand.js'
+import type { ShellStopCause } from './backgroundDeadline.js'
 
 export type BashTaskKind = 'bash' | 'monitor'
 
@@ -34,6 +35,11 @@ export type LocalShellTaskState = TaskStateBase & {
    * Without this, a backgrounded shell becomes impossible to stop because
    * shellCommand is the only kill path and it can be null. */
   pid?: number
+  /** 2.1.285 #85: why a task was stopped out-of-band (official `F.cause`
+   * holder → `prn(e,cause)` → `t2e({...stopCause:K})`). Only `deadline` has
+   * an OCC producer (the background-deadline reap); `memory_pressure` stays
+   * staged with the official pressure-reap subsystem. */
+  stopCause?: ShellStopCause
 }
 
 export function isLocalShellTask(task: unknown): task is LocalShellTaskState {

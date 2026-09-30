@@ -238,8 +238,34 @@ export function deserializeMessagesWithInterruptDetection(
     // so the length delta is the proxy.
     const droppedUnresolvedToolUses =
       filteredToolUses.length !== sanitizedMessages.length
-    const internalState = applyResumeStalenessGates(
-      detectTurnInterruption(filteredMessages),
+    // Official 2.1.285 (#54, oHe wrapper @ the resume module):
+    //   oHe(e,n){let r=[],s=V4o(e,n,r),g=r[0];
+    //     return s.kind==="ended_at_max_turns"
+    //       ?{state:{kind:"none"},skippedApiErrorRow:g,endedAtMaxTurns:!0}
+    //       :{state:s,skippedApiErrorRow:g}}
+    // ended_at_max_turns maps to {kind:"none"} BEFORE the staleness gates
+    // (the official's gates consume the oHe output state; they are a no-op on
+    // none). Ft then logs `tengu_max_turns_turn_classified_complete`
+    // (analytics stubbed → logForDebugging under the same env gate as E40).
+    // The official's `Wn=Ft&&(...)` rescueSuppressed fold has no OCC surface
+    // (DeserializeResult carries no rescueSuppressed) — NO-OP, see ledger §4.
+    const detected = detectTurnInterruption(
+      filteredMessages,
+      droppedUnresolvedToolUses,
+    )
+    let internalState: InternalInterruptionState
+    if (detected.kind === 'ended_at_max_turns') {
+      if (process.env.CLAUDE_CODE_RESUME_INTERRUPTED_TURN) {
+        logForDebugging(
+          '[conversationRecovery] tengu_max_turns_turn_classified_complete',
+        )
+      }
+      internalState = { kind: 'none' }
+    } else {
+      internalState = detected
+    }
+    internalState = applyResumeStalenessGates(
+      internalState,
       droppedUnresolvedToolUses
         ? (sanitizedMessages as NormalizedMessage[])
         : filteredMessages,
@@ -261,6 +287,10 @@ export function deserializeMessagesWithInterruptDetection(
         kind: 'interrupted_prompt',
         message: continuationMessage!,
       }
+    } else if (internalState.kind === 'ended_at_max_turns') {
+      // Unreachable: the oHe mapping above converts ended_at_max_turns to
+      // {kind:"none"} before the staleness gates. Defensive for type safety.
+      turnInterruptionState = { kind: 'none' }
     } else {
       turnInterruptionState = internalState
     }
@@ -308,6 +338,11 @@ export function deserializeMessagesWithInterruptDetection(
 type InternalInterruptionState =
   | TurnInterruptionState
   | { kind: 'interrupted_turn' }
+  // Official 2.1.285 (#54, V4o): a trailing max_turns_reached attachment
+  // persisted with exitCommitted===false means the turn ENDED CLEANLY at the
+  // max-turns cap (the process was not shutting down). oHe maps this to
+  // {kind:"none"} + endedAtMaxTurns before any consumer sees it.
+  | { kind: 'ended_at_max_turns' }
 
 /**
  * Determines whether the conversation was interrupted mid-turn based on the
@@ -321,6 +356,7 @@ type InternalInterruptionState =
  */
 function detectTurnInterruption(
   messages: NormalizedMessage[],
+  hasDroppedTrailingToolUses = false,
 ): InternalInterruptionState {
   if (messages.length === 0) {
     return { kind: 'none' }
@@ -384,12 +420,85 @@ function detectTurnInterruption(
   }
 
   if (lastMessage.type === 'attachment') {
+    // Official 2.1.285 (#54, V4o S-branch): backward-scan the trailing
+    // attachment cluster for a max_turns_reached attachment persisted with
+    // `exitCommitted===false` — the query loop hit the max-turns cap while
+    // the process was NOT shutting down, so the turn ended cleanly there.
+    //   M||=B.type==="attachment"&&B.attachment.type==="max_turns_reached"
+    //        &&B.attachment.exitCommitted===!1
+    //   ...
+    //   if(M&&!n)return{kind:"ended_at_max_turns"}
+    // `n` (official: ze.size>0 — trailing unresolved tool-use ids dropped by
+    // the filter) suppresses the classification; OCC's proxy is the
+    // droppedUnresolvedToolUses length delta threaded in by the caller.
+    // Pre-285 OCC/official both classified this tail as interrupted_turn,
+    // which injected a phantom "Continue from where you left off." on resume.
+    if (
+      !hasDroppedTrailingToolUses &&
+      hasUncommittedMaxTurnsTail(messages, lastMessageIdx)
+    ) {
+      return { kind: 'ended_at_max_turns' }
+    }
     // Attachments are part of the user turn — the user provided context but
     // the assistant never responded.
     return { kind: 'interrupted_turn' }
   }
 
   return { kind: 'none' }
+}
+
+/**
+ * Official 2.1.285 (#54, V4o S-branch `M` accumulation). Walks backward from
+ * the last turn-relevant index through the trailing system/progress/
+ * attachment cluster looking for a max_turns_reached attachment whose
+ * persisted `exitCommitted` is strictly `false` (a clean cap-hit recorded by
+ * the QueryEngine stamp — official GP @221275150). Legacy transcripts written
+ * before the stamp lack the field entirely (`undefined`) and do NOT count:
+ * the official `===!1` check keeps pre-285 sessions classified as
+ * interrupted_turn, preserving existing resume behavior for old transcripts.
+ *
+ * Scan-stop rules mirror the official loop:
+ *  - assistant row: the official returns {kind:"none"} there (completed
+ *    turn) — the M gate is never reached, so return false.
+ *  - user row: the official applies its compactSummary/D2t/hY/BV special
+ *    cases first (all v284-era predicates OCC's simplified classifier does
+ *    not port in this branch) and only then the M gate. OCC equivalent:
+ *    meta/compact-summary/completed-local-command-tail user rows keep the
+ *    pre-#54 interrupted_turn classification (return false); any other user
+ *    row reaches the M gate (return the accumulated flag).
+ *  - loop exhausted with no user/assistant row: the official returns
+ *    w?sx(n):{kind:"interrupted_turn"} — the M gate is not reached without a
+ *    user row, so return false.
+ */
+function hasUncommittedMaxTurnsTail(
+  messages: NormalizedMessage[],
+  lastMessageIdx: number,
+): boolean {
+  let sawUncommittedMaxTurns = false
+  for (let i = lastMessageIdx; i >= 0; i--) {
+    const m = messages[i]!
+    if (m.type === 'system' || m.type === 'progress') continue
+    if (m.type === 'attachment') {
+      const att = m.attachment as
+        | { type?: string; exitCommitted?: boolean }
+        | undefined
+      if (att?.type === 'max_turns_reached' && att.exitCommitted === false) {
+        sawUncommittedMaxTurns = true
+      }
+      continue
+    }
+    if (m.type === 'assistant') return false
+    // user row
+    if (
+      (m as { isMeta?: boolean }).isMeta ||
+      (m as { isCompactSummary?: boolean }).isCompactSummary ||
+      isCompleteLocalCommandTail(messages, i)
+    ) {
+      return false
+    }
+    return sawUncommittedMaxTurns
+  }
+  return false
 }
 
 /**

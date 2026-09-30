@@ -627,11 +627,34 @@ export function getMcpServerScopeFromToolName(
 }
 
 // Type guards for MCP server config types
-function isStdioConfig(
+
+/**
+ * Binary `Die` (2.1.285): `e.type==="stdio"||e.type===void 0` — the stdio-like
+ * predicate covering legacy config entries that omit the `type` field. Exported
+ * for the 2.1.285 `mcp get` ports (items 5/6): the display-copy selection and
+ * the Type/Command/Args/Environment branch both gate on this instead of a
+ * literal `type === 'stdio'` comparison.
+ */
+export function isStdioConfig(
   config: McpServerConfig,
 ): config is McpStdioServerConfig {
   return config.type === 'stdio' || config.type === undefined
 }
+
+/**
+ * Binary `lz`/`OKe` (2.1.285): `lz=["enterprise","managed","local","user",
+ * "project"]`, `OKe=new Set(lz)` — the file-backed scopes whose configs can be
+ * re-parsed unexpanded. A stdio-like server OUTSIDE this set (dynamic scope:
+ * `--mcp-config` / Agent SDK / plugin) is rendered from the sanitized copy by
+ * `claude mcp get`, hiding command/args/env values (2.1.285 item 5).
+ */
+export const MCP_FILE_BACKED_SCOPES: ReadonlySet<ConfigScope> = new Set([
+  'enterprise',
+  'managed',
+  'local',
+  'user',
+  'project',
+])
 
 function isSSEConfig(config: McpServerConfig): config is McpSSEServerConfig {
   return config.type === 'sse'

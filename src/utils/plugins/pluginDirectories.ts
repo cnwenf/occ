@@ -89,7 +89,13 @@ export function getPluginSeedDirs(): string[] {
   return raw.split(delimiter).filter(Boolean).map(expandTilde)
 }
 
-function sanitizePluginId(pluginId: string): string {
+/**
+ * Official `xdt` (chunk-98a68crr.js, 2.1.285): folder-name sanitizer used by
+ * both the install-cache path builder and the data-dir path builder. Exported
+ * for pluginFolderCollision.ts (2.1.285 id-collision refusal), which must
+ * compare folders under the exact same sanitization the writers use.
+ */
+export function sanitizePluginId(pluginId: string): string {
   // Same character class as the install-cache sanitizer (pluginLoader.ts)
   return pluginId.replace(/[^a-zA-Z0-9\-_]/g, '-')
 }

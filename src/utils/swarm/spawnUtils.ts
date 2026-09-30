@@ -99,6 +99,11 @@ const TEAMMATE_ENV_VARS = [
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_VERTEX',
   'CLAUDE_CODE_USE_FOUNDRY',
+  // CC 2.1.285 (item-B1): WebFetch kill-switch — forwarded to teammates so a
+  // host that disables WebFetch keeps it disabled inside tmux-spawned
+  // teammates. Official `re[]` list (@226996976) inserts it immediately before
+  // ANTHROPIC_BASE_URL: `...[],"CLAUDE_CODE_DISABLE_WEB_FETCH","ANTHROPIC_BASE_URL",...`.
+  'CLAUDE_CODE_DISABLE_WEB_FETCH',
   // Custom API endpoint
   'ANTHROPIC_BASE_URL',
   // Config directory override

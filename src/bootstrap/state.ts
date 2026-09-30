@@ -69,6 +69,14 @@ type State = {
   initialMainLoopModel: ModelSetting
   modelStrings: ModelStrings | null
   isInteractive: boolean
+  /**
+   * CC 2.1.285: the `--permission-prompt-tool` name for this session (print /
+   * SDK mode). Mirrors the official `host.launchOptions.permissionPromptToolName()`
+   * (`cI()`), read by runAgent's `shouldAvoidPermissionPrompts` builder so a
+   * background subagent's permission request routes to the prompt tool instead
+   * of being auto-denied. `undefined` when no prompt tool is configured.
+   */
+  permissionPromptToolName: string | undefined
   kairosActive: boolean
   // When true, ensureToolResultPairing throws on mismatch instead of
   // repairing with synthetic placeholders. HFI opts in at startup so
@@ -309,6 +317,7 @@ function getInitialState(): State {
     initialMainLoopModel: null,
     modelStrings: null,
     isInteractive: false,
+    permissionPromptToolName: undefined,
     kairosActive: false,
     strictToolResultPairing: false,
     sdkAgentProgressSummariesEnabled: false,
@@ -1081,6 +1090,18 @@ export function getIsInteractive(): boolean {
 
 export function setIsInteractive(value: boolean): void {
   STATE.isInteractive = value
+}
+
+/**
+ * CC 2.1.285: session-global `--permission-prompt-tool` name. Mirrors the
+ * official `cI()` = `host.launchOptions.permissionPromptToolName()`.
+ */
+export function getPermissionPromptToolName(): string | undefined {
+  return STATE.permissionPromptToolName
+}
+
+export function setPermissionPromptToolName(value: string | undefined): void {
+  STATE.permissionPromptToolName = value
 }
 
 export function getClientType(): string {

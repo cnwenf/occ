@@ -1,4 +1,5 @@
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../../services/analytics/index.js'
+import { ALLOWED_OAUTH_BASE_URLS } from '../../constants/oauth.js'
 import { getAWSRegion, isEnvTruthy } from '../envUtils.js'
 
 export type APIProvider =
@@ -184,5 +185,71 @@ export function isAnthropicOwnedProvider(): boolean {
     provider === 'firstParty' ||
     provider === 'anthropic_aws' ||
     provider === 'gateway'
+  )
+}
+
+/**
+ * 2.1.285 (item: ANTHROPIC_AUTH_TOKEN org policy fix): port of the official
+ * endpoint-host predicate `ng(e)` used to gate the env-bearer fallback in the
+ * auth header builder (`cRe`). Byte-verified in the 2.1.285 binary
+ * (auth chunk-f74xvn8g):
+ *
+ *   var RC="api.anthropic.com";                                     // @198111811
+ *   function tg(){if(a.ANTHROPIC_BASE_URL)return Vi(a.ANTHROPIC_BASE_URL);return RC}
+ *   function ng(e){return ji(tg(),e)}
+ *   function ji(e,n){let r=MC(n)?Vi(n):void 0;return e!==void 0&&e===r&&DC(r)}
+ *   function MC(e){try{return new URL(e).protocol==="https:"}catch{return!1}}
+ *   function Vi(e){if(!e)return;try{return new URL(e).host}catch{return}}
+ *   function DC(e){return vh(`https://${e}`)||mIe.some((n)=>Vi(n)===e)}
+ *   function vh(e){try{let t=new URL(e).host;return["api.anthropic.com"].includes(t)}catch{return!1}}
+ *
+ * i.e. the endpoint must be https, its host must equal the configured
+ * ANTHROPIC_BASE_URL host (defaulting to api.anthropic.com), and that host
+ * must be api.anthropic.com or one of the approved FedStart/staging OAuth
+ * hosts (`mIe` — OCC's ALLOWED_OAUTH_BASE_URLS).
+ */
+const DEFAULT_ANTHROPIC_BASE_HOST = 'api.anthropic.com'
+
+function hostOf(url: string | undefined): string | undefined {
+  if (!url) return undefined
+  try {
+    return new URL(url).host
+  } catch {
+    return undefined
+  }
+}
+
+function isApprovedCredentialHost(host: string): boolean {
+  if (host === DEFAULT_ANTHROPIC_BASE_HOST) {
+    return true
+  }
+  return ALLOWED_OAUTH_BASE_URLS.some(url => hostOf(url) === host)
+}
+
+export function isEndpointOnConfiguredAnthropicBase(
+  endpoint: string,
+): boolean {
+  // tg(): `if(a.ANTHROPIC_BASE_URL)return Vi(a.ANTHROPIC_BASE_URL);return RC`
+  // — a SET-but-unparseable base yields undefined (Vi catches), and ji()'s
+  // `e!==void 0` guard then rejects every endpoint. Only an UNSET base
+  // defaults to RC.
+  const baseHost = process.env.ANTHROPIC_BASE_URL
+    ? hostOf(process.env.ANTHROPIC_BASE_URL)
+    : DEFAULT_ANTHROPIC_BASE_HOST
+  let endpointHost: string
+  try {
+    const parsed = new URL(endpoint)
+    // MC: https only
+    if (parsed.protocol !== 'https:') {
+      return false
+    }
+    endpointHost = parsed.host
+  } catch {
+    return false
+  }
+  return (
+    baseHost !== undefined &&
+    endpointHost === baseHost &&
+    isApprovedCredentialHost(endpointHost)
   )
 }

@@ -117,6 +117,7 @@ import {
 } from '@anthropic-ai/sdk/error'
 import {
   extractConnectionErrorDetails,
+  isOutputContentFilteredError,
   stripLastImageBlock,
 } from './errorUtils.js'
 import {
@@ -1013,6 +1014,17 @@ function shouldDeferLspTool(tool: Tool): boolean {
 }
 
 /**
+ * CC 2.1.285 (item-B2): official `Up` (@196085589, top-level ESM scope,
+ * `var Up=2147483647`) — the max signed 32-bit value, which is also the largest
+ * delay `setTimeout` accepts before it wraps/overflows. v285 clamps the
+ * API_TIMEOUT_MS override with it (`IOo(){...if(e)return Math.min(e,Up)...}`),
+ * where v284 returned the raw override (`LCo(){...if(e)return e...}`). This
+ * keeps a pathological API_TIMEOUT_MS from overflowing the fallback's
+ * abort timer.
+ */
+const MAX_TIMER_MS = 2_147_483_647
+
+/**
  * Per-attempt timeout for non-streaming fallback requests, in milliseconds.
  * Reads API_TIMEOUT_MS when set so slow backends and the streaming path
  * share the same ceiling.
@@ -1026,7 +1038,8 @@ function shouldDeferLspTool(tool: Tool): boolean {
  */
 function getNonstreamingFallbackTimeoutMs(): number {
   const override = parseEnvInt(process.env.API_TIMEOUT_MS)
-  if (override) return override
+  // CC 2.1.285 (item-B2): clamp to MAX_TIMER_MS (official `Math.min(e,Up)`).
+  if (override) return Math.min(override, MAX_TIMER_MS)
   return isEnvTruthy(process.env.CLAUDE_CODE_REMOTE) ? 120_000 : 300_000
 }
 
@@ -1072,6 +1085,17 @@ export async function* executeNonStreamingRequest(
     fastMode?: boolean
     signal: AbortSignal
     initialConsecutive529Errors?: number
+    /**
+     * CC 2.1.285 (item-B2): shared retry budget. Official v285's fallback
+     * dispatcher `I0t` now forwards the caller's budget into the loop options
+     * (`maxRetries:n.maxRetries`, @204942557-region) where v284's `uOt` omitted
+     * it — changelog: "the non-streaming fallback now shares the request's
+     * retry budget instead of getting a fresh set of retries". OCC's streaming
+     * query options carry no caller-settable maxRetries today (both loops
+     * resolve the same DEFAULT_MAX_RETRIES), so the plumbing is ported
+     * faithfully and callers may thread an explicit budget when one exists.
+     */
+    maxRetries?: number
     querySource?: QuerySource
     /**
      * 2.1.276 advisor hotfix: the shared one-shot advisor-entry-refused
@@ -1181,8 +1205,15 @@ export async function* executeNonStreamingRequest(
       ...(isFastModeEnabled() && { fastMode: retryOptions.fastMode }),
       signal: retryOptions.signal,
       initialConsecutive529Errors: retryOptions.initialConsecutive529Errors,
+      // CC 2.1.285 (item-B2): shared retry budget (official `maxRetries:n.maxRetries`).
+      maxRetries: retryOptions.maxRetries,
       querySource: retryOptions.querySource,
       retryAdvisorEntryRefused: retryOptions.retryAdvisorEntryRefused,
+      // CC 2.1.285 (item-B2): official `I0t` passes `nonStreamingTimeoutMs:S`
+      // (S = IOo() = this fallbackTimeoutMs) into the loop options so the retry
+      // loop can cap timed-out re-sends via
+      // CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES (see withRetry.ts).
+      nonStreamingTimeoutMs: fallbackTimeoutMs,
     },
   )
 
@@ -3332,6 +3363,44 @@ async function* queryModel(
           error: 'server_error',
         })
         return
+      }
+
+      // CC 2.1.285 (item-B3): a streaming response blocked by the API's output
+      // content filter must NOT fall back to non-streaming — the same content
+      // would be filtered again — so surface the filter's error immediately.
+      // Official v285 streaming-fallback branch (@205047900+ region):
+      //   `if(g0(Rs))throw i("tengu_streaming_fallback_to_non_streaming",
+      //      {model:Ct(M.model),error:_("output_content_filtered"),
+      //       attemptNumber:im,maxOutputTokens:$y,thinkingType:c(r.type),
+      //       fallback_disabled:!0,request_id:_f(Ys),
+      //       fallback_cause:_("output_content_filtered"),
+      //       any_stream_event_yielded:Ls}),Rs`
+      // `any_stream_event_yielded` is omitted — OCC's
+      // tengu_streaming_fallback_to_non_streaming schema does not carry it
+      // (pre-existing divergence); the other fields mirror OCC's disableFallback
+      // event below. This branch sits before disableFallback so a filtered
+      // response is never re-sent regardless of the fallback-disabled flag.
+      if (isOutputContentFilteredError(streamingError)) {
+        logForDebugging(
+          `Error streaming (output content filtered — not retrying): ${errorMessage(streamingError)}`,
+          { level: 'error' },
+        )
+        logEvent('tengu_streaming_fallback_to_non_streaming', {
+          model:
+            options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          error:
+            'output_content_filtered' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          attemptNumber,
+          maxOutputTokens,
+          thinkingType:
+            thinkingConfig.type as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          fallback_disabled: true,
+          request_id: (streamRequestId ??
+            'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          fallback_cause:
+            'output_content_filtered' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        })
+        throw streamingError
       }
 
       // When the flag is enabled, skip the non-streaming fallback and let the

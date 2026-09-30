@@ -987,6 +987,85 @@ export function wrapHookErrorWithStderr(
     : validationError
 }
 
+/** Default quiet window (ms) for `settleHookStreams` — official `gIn=500`. */
+const HOOK_STREAM_QUIET_WINDOW_MS = 500
+/** Default settle cap (ms) for `settleHookStreams` — official `hIn=1e4`. */
+const HOOK_STREAM_SETTLE_CAP_MS = 10_000
+
+/**
+ * Official `it(M,s,h)` (2.1.285 hook module): race `settled` against a
+ * `quietWindowMs` timer. Resolves true if the streams settled in time, false
+ * if the quiet window elapsed first with them still open (e.g. a background
+ * child of the hook inherited and kept the output pipe open). The official
+ * `arm` callback is unused at the completion call site — omitted.
+ */
+function waitForSettledOrQuiet(
+  settled: Promise<boolean>,
+  quietWindowMs: number,
+): Promise<boolean> {
+  return new Promise<boolean>(resolve => {
+    const timer = setTimeout(() => resolve(false), quietWindowMs)
+    void settled.then(value => {
+      clearTimeout(timer)
+      resolve(value)
+    })
+  })
+}
+
+/**
+ * Byte-faithful port of the official 2.1.285 `unt` hook-output settle helper
+ * (v285 binary @203477184, verbatim:
+ * `var gIn=500,hIn=1e4;async function unt({streamsSettled:e,lastDataAt:n,
+ * holdOpen:r,quietWindowMs:s=gIn,capMs:g=hIn,arm:h,now:S=Date.now}){
+ * let w=S(),M=e.then(()=>!0);for(;;){let F=n();
+ * if(await it(M,s,h)||S()-w>=g)return;if(n()!==F)continue;if(r?.())continue;
+ * if(await new Promise((K)=>setImmediate(K)),n()===F)return}}`).
+ *
+ * CC 2.1.285: "Fixed synchronous hooks hanging Claude Code while a background
+ * process the hook started (for example `some-daemon &`) kept its output open;
+ * the hook now finishes shortly after its own process exits." The completion
+ * is keyed on the process 'exit' event; this helper then waits for the output
+ * to go QUIET (a `quietWindowMs` window with no new data, `capMs` total cap)
+ * instead of waiting for the pipes to fully close — a grandchild holding the
+ * write end open no longer blocks the synchronous hook forever.
+ */
+export async function settleHookStreams(opts: {
+  streamsSettled: Promise<void>
+  lastDataAt: () => number
+  holdOpen?: () => boolean
+  quietWindowMs?: number
+  capMs?: number
+  now?: () => number
+}): Promise<void> {
+  const {
+    streamsSettled,
+    lastDataAt,
+    holdOpen,
+    quietWindowMs = HOOK_STREAM_QUIET_WINDOW_MS,
+    capMs = HOOK_STREAM_SETTLE_CAP_MS,
+    now = Date.now,
+  } = opts
+  const startedAt = now()
+  const settled = streamsSettled.then(() => true)
+  for (;;) {
+    const snapshot = lastDataAt()
+    if (
+      (await waitForSettledOrQuiet(settled, quietWindowMs)) ||
+      now() - startedAt >= capMs
+    ) {
+      return
+    }
+    // New data arrived during the quiet window — reset and wait again.
+    if (lastDataAt() !== snapshot) continue
+    // Official holdOpen: runner still active (no OCC runner surface → false).
+    if (holdOpen?.()) continue
+    // Yield one macrotask so any in-flight 'data' event can land, then stop
+    // if the output stayed quiet.
+    await new Promise<void>(resolve => setImmediate(resolve))
+    if (lastDataAt() === snapshot) return
+  }
+}
+
 /**
  * Heuristic for a hook whose script does not exist: exit 2, empty stdout,
  * and a shell "no such file"/"can't open" stderr, on events where a missing
@@ -994,14 +1073,32 @@ export function wrapHookErrorWithStderr(
  * owned by a plugin). Such hooks are reported as non-blocking errors with
  * reinstall guidance instead of blocking the model.
  * Ported verbatim from the official 2.1.248 binary (`i$t`).
+ *
+ * CC 2.1.285: official `gFn` gained two params and an early guard —
+ * `if(g===!0||h===!0)return!1` for `{stdioIncomplete:g,stdioClosedWithoutEnd:h}`
+ * (v285 binary @205149900 region, byte-verified). When the hook's stdio went
+ * quiet before end-of-stream (e.g. a background child held the pipe and the
+ * capture may have discarded output), the empty-stdout premise of the
+ * heuristic is untrustworthy, so the missing-script read is refused
+ * (fail-closed: the hook is treated as a real exit-2 block, not a no-op).
  */
 export function looksLikeMissingHookScript(params: {
   hookEvent: HookEvent
   stdout: string
   stderr: string
   pluginId?: string
+  stdioIncomplete?: boolean
+  stdioClosedWithoutEnd?: boolean
 }): boolean {
-  const { hookEvent, stdout, stderr, pluginId } = params
+  const {
+    hookEvent,
+    stdout,
+    stderr,
+    pluginId,
+    stdioIncomplete,
+    stdioClosedWithoutEnd,
+  } = params
+  if (stdioIncomplete === true || stdioClosedWithoutEnd === true) return false
   return (
     (MISSING_SCRIPT_HOOK_EVENTS.has(hookEvent) ||
       (Boolean(pluginId) && hookEvent === 'UserPromptSubmit')) &&
@@ -1507,6 +1604,22 @@ async function execCommandHook(
   status: number
   aborted?: boolean
   backgrounded?: boolean
+  /**
+   * CC 2.1.285: the process exited with a real exit code (official
+   * `...us!==null&&{exitedNormally:!0}` in the v285 completion spread).
+   */
+  exitedNormally?: boolean
+  /**
+   * CC 2.1.285: stdout/stderr went quiet before end-of-stream — a background
+   * process the hook started may still hold the pipe (official
+   * `...!(Fr&&Nr)&&{stdioIncomplete:!0}`).
+   */
+  stdioIncomplete?: boolean
+  /**
+   * CC 2.1.285: a stdio stream closed without emitting 'end' — captured
+   * output may be partial (official `...Sr&&{stdioClosedWithoutEnd:!0}`).
+   */
+  stdioClosedWithoutEnd?: boolean
 }> {
   // Gated to once-per-session events to keep diag_log volume bounded.
   // started/completed live inside the try/finally so setup-path throws
@@ -1807,6 +1920,11 @@ async function execCommandHook(
   let stdout = ''
   let stderr = ''
   let output = ''
+  // CC 2.1.285: timestamp of the most recent stdout/stderr 'data' event
+  // (official `yr=0`, updated `yr=Date.now()` at the top of both data
+  // handlers) — feeds the settleHookStreams quiet window so a background
+  // process holding the pipe open no longer hangs the synchronous hook.
+  let lastDataAt = 0
 
   // Set up output data collection with explicit UTF-8 encoding
   child.stdout.setEncoding('utf8')
@@ -1820,6 +1938,7 @@ async function execCommandHook(
         stderr: string
         output: string
         status: number
+        backgrounded?: boolean
       }) => void)
     | null = null
   const childIsAsyncPromise = new Promise<{
@@ -1828,6 +1947,7 @@ async function execCommandHook(
     output: string
     status: number
     aborted?: boolean
+    backgrounded?: boolean
   }>(resolve => {
     asyncResolve = resolve
   })
@@ -1840,7 +1960,13 @@ async function execCommandHook(
   // Line buffer for detecting prompt requests in streaming output
   let lineBuffer = ''
 
-  child.stdout.on('data', data => {
+  // CC 2.1.285: named data handlers (official `Cr`/`Er`) prefixed with
+  // `lastDataAt = Date.now()` (official `yr=Date.now()` first statement).
+  // They are removed once the completion settles — or once the hook is
+  // backgrounded — matching official `so.stdout.removeListener("data",Cr),
+  // so.stderr.removeListener("data",Er)`.
+  const stdoutDataHandler = (data: string): void => {
+    lastDataAt = Date.now()
     stdout += data
     output += data
 
@@ -1916,11 +2042,25 @@ async function execCommandHook(
           })
           if (backgrounded) {
             shellCommandTransferred = true
+            // Official (byte-identical v284≡v285): detach the data listeners
+            // before resolving the backgrounded result — from here the async
+            // hook registry owns the process output:
+            // `so.stdout.removeListener("data",Cr),so.stderr.removeListener("data",Er)`
+            child.stdout.removeListener('data', stdoutDataHandler)
+            child.stderr.removeListener('data', stderrDataHandler)
+            // Official async-resolve carries `backgrounded:!0` verbatim in
+            // BOTH v284 and v285 (`Er?.({stdout:pn,...,status:0,
+            // backgrounded:!0})`) — the caller short-circuits to a success
+            // outcome on it. OCC previously omitted the flag here, so the
+            // first-line async path fell through to parseHookOutput on the
+            // `{"async":true}` line; aligned while porting the 2.1.285
+            // exit-keyed completion (byte-evidenced, not a v285 delta).
             asyncResolve?.({
               stdout,
               stderr,
               output,
               status: 0,
+              backgrounded: true,
             })
           }
         } else if (isAsyncHookJSONOutput(parsed) && forceSyncExecution) {
@@ -1936,12 +2076,18 @@ async function execCommandHook(
         logForDebugging(`Hooks: Failed to parse initial response as JSON: ${e}`)
       }
     }
-  })
+  }
 
-  child.stderr.on('data', data => {
+  const stderrDataHandler = (data: string): void => {
+    lastDataAt = Date.now()
     stderr += data
     output += data
-  })
+  }
+
+  // Official registration, byte-identical v284/v285:
+  // `so.stdout.on("data",Cr),so.stderr.on("data",Er)`
+  child.stdout.on('data', stdoutDataHandler)
+  child.stderr.on('data', stderrDataHandler)
 
   const stopProgressInterval = startHookProgressInterval({
     hookId,
@@ -1950,14 +2096,40 @@ async function execCommandHook(
     getOutput: async () => ({ stdout, stderr, output }),
   })
 
-  // Wait for stdout and stderr streams to finish before considering output complete
-  // This prevents a race condition where 'close' fires before all 'data' events are processed
-  const stdoutEndPromise = new Promise<void>(resolve => {
-    child.stdout.on('end', () => resolve())
+  // CC 2.1.285: per-stream SETTLED promises — each resolves on 'end' (normal
+  // EOF) OR on 'close' (pipe closed without EOF). Official v285 byte-extract
+  // (@205145100+2400, verbatim):
+  // `Fr=!1,Nr=!1,Sr=!1,No=new Promise((Xr)=>{so.stdout.once("end",()=>{Fr=!0,
+  // Xr()}),so.stdout.once("close",()=>{if(!Fr)Sr=!0;Xr()})}),vr=new Promise(
+  // (Xr)=>{so.stderr.once("end",()=>{Nr=!0,Xr()}),so.stderr.once("close",()=>
+  // {if(!Nr)Sr=!0;Xr()})})`
+  // v284 waited on 'end' only (`kr=new Promise((Tr)=>{so.stdout.on("end",()=>
+  // Tr())})`) — a background process the hook started kept the pipe open,
+  // 'end' never fired, and the synchronous hook hung (the 2.1.285 fix).
+  let stdoutEnded = false
+  let stderrEnded = false
+  let stdioClosedWithoutEnd = false
+
+  const stdoutSettled = new Promise<void>(resolve => {
+    child.stdout.once('end', () => {
+      stdoutEnded = true
+      resolve()
+    })
+    child.stdout.once('close', () => {
+      if (!stdoutEnded) stdioClosedWithoutEnd = true
+      resolve()
+    })
   })
 
-  const stderrEndPromise = new Promise<void>(resolve => {
-    child.stderr.on('end', () => resolve())
+  const stderrSettled = new Promise<void>(resolve => {
+    child.stderr.once('end', () => {
+      stderrEnded = true
+      resolve()
+    })
+    child.stderr.once('close', () => {
+      if (!stderrEnded) stdioClosedWithoutEnd = true
+      resolve()
+    })
   })
 
   // Write to stdin, making sure to handle EPIPE errors that can happen when
@@ -1994,22 +2166,57 @@ async function execCommandHook(
     child.on('error', reject)
   })
 
-  // Create promise for child process close - but only resolve after streams end
-  // to ensure all output has been collected
+  // CC 2.1.285: official `fs` flag (v284 `is`, identical both versions,
+  // byte-extract: `fs=!1;so.on("exit",()=>{if(!w.aborted)fs=!0})`, registered
+  // BEFORE the completion listener): the process exited on its own, so
+  // `aborted` is only reported when the exit did NOT happen without an abort
+  // (official completion spread `aborted:w.aborted&&!fs`).
+  let exitedWithoutAbort = false
+  child.on('exit', () => {
+    if (!signal.aborted) exitedWithoutAbort = true
+  })
+
+  // CC 2.1.285: completion is keyed on the process 'exit' event plus the
+  // settleHookStreams quiet window — NOT on stream 'close'/'end'. Official
+  // v285 byte-extract (@205146855, verbatim):
+  // `so.on("exit",(us)=>{(async()=>{await unt({streamsSettled:Promise.all(
+  // [No,vr]).then(()=>{}),lastDataAt:()=>yr,holdOpen:()=>xn!==void 0&&
+  // Vn.started&&Vn.exitStatus===void 0}),so.stdout.removeListener("data",Cr),
+  // so.stderr.removeListener("data",Er),Xr({stdout:pn,stderr:Io,output:xr,
+  // status:us??1,aborted:w.aborted&&!fs,...us!==null&&{exitedNormally:!0},
+  // ...!(Fr&&Nr)&&{stdioIncomplete:!0},...Sr&&{stdioClosedWithoutEnd:!0},
+  // ...})})()})`
+  // The official `holdOpen` consults the runner subsystem (`xn`/`Vn`) which
+  // OCC does not port — it is therefore always false here. The runner-result
+  // spreads (`runnerStarted`/`runnerExited`/`resultStdout`/`runnerConflict`)
+  // are omitted for the same reason (no OCC surface).
+  // v284 keyed completion on 'close' and waited for stream 'end' promises:
+  // a background process the hook started (e.g. `some-daemon &`) inherited
+  // the stdout/stderr pipes, 'close'/'end' never fired, and the synchronous
+  // hook hung until its full timeout — the 2.1.285 changelog fix ("the hook
+  // now finishes shortly after its own process exits").
   const childClosePromise = new Promise<{
     stdout: string
     stderr: string
     output: string
     status: number
     aborted?: boolean
+    exitedNormally?: boolean
+    stdioIncomplete?: boolean
+    stdioClosedWithoutEnd?: boolean
   }>(resolve => {
-    let exitCode: number | null = null
+    child.on('exit', (code: number | null) => {
+      void (async () => {
+        await settleHookStreams({
+          streamsSettled: Promise.all([stdoutSettled, stderrSettled]).then(
+            () => {},
+          ),
+          lastDataAt: () => lastDataAt,
+          holdOpen: () => false,
+        })
+        child.stdout.removeListener('data', stdoutDataHandler)
+        child.stderr.removeListener('data', stderrDataHandler)
 
-    child.on('close', code => {
-      exitCode = code ?? 1
-
-      // Wait for both streams to end before resolving with the final output
-      void Promise.all([stdoutEndPromise, stderrEndPromise]).then(() => {
         // Strip lines we processed as prompt requests so parseHookOutput
         // only sees the final hook result. Content-matching against the set
         // of actually-processed lines means prompt JSON can never leak
@@ -2026,10 +2233,13 @@ async function execCommandHook(
           stdout: finalStdout,
           stderr,
           output,
-          status: exitCode!,
-          aborted: signal.aborted,
+          status: code ?? 1,
+          aborted: signal.aborted && !exitedWithoutAbort,
+          ...(code !== null && { exitedNormally: true }),
+          ...(!(stdoutEnded && stderrEnded) && { stdioIncomplete: true }),
+          ...(stdioClosedWithoutEnd && { stdioClosedWithoutEnd: true }),
         })
-      })
+      })()
     })
   })
 
@@ -3742,6 +3952,11 @@ async function* executeHooks({
           stdout: result.stdout,
           stderr: result.stderr,
           pluginId,
+          // CC 2.1.285: official caller passes the new stdio flags —
+          // `gFn({...g:stdioIncomplete,h:stdioClosedWithoutEnd})` refuses the
+          // missing-script read when the capture may be partial (fail-closed).
+          stdioIncomplete: result.stdioIncomplete,
+          stdioClosedWithoutEnd: result.stdioClosedWithoutEnd,
         })
       ) {
         emitHookResponse({

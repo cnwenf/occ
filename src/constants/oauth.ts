@@ -176,7 +176,11 @@ function getLocalOauthConfig(): OauthConfig {
 // Allowed base URLs for CLAUDE_CODE_CUSTOM_OAUTH_URL override.
 // Only FedStart/PubSec deployments are permitted to prevent OAuth tokens
 // from being sent to arbitrary endpoints.
-const ALLOWED_OAUTH_BASE_URLS = [
+// Exported for the 2.1.285 env-bearer fallback host check — the official
+// `DC(e)` predicate (@198112584) tests the endpoint host against
+// `vh` (host === "api.anthropic.com") OR this same approved list
+// (`mIe=["https://beacon.claude-ai.staging.ant.dev","https://claude.fedstart.com","https://claude-staging.fedstart.com"]` @195582744).
+export const ALLOWED_OAUTH_BASE_URLS = [
   'https://beacon.claude-ai.staging.ant.dev',
   'https://claude.fedstart.com',
   'https://claude-staging.fedstart.com',

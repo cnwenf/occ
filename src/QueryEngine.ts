@@ -50,7 +50,7 @@ import type { AgentDefinition } from './tools/AgentTool/loadAgentsDir.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 import { preserveForkLineageAcrossCompaction } from './commands/fork/pointer.js'
 import type { APIError } from '@anthropic-ai/sdk'
-import type { CompactMetadata, Message, SystemCompactBoundaryMessage } from './types/message.js'
+import type { AttachmentMessage, CompactMetadata, Message, SystemCompactBoundaryMessage } from './types/message.js'
 import type { OrphanedPermission } from './types/textInputTypes.js'
 import { createAbortController } from './utils/abortController.js'
 import type { AttributionState } from './utils/commitAttribution.js'
@@ -71,6 +71,7 @@ import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
 import { getInMemoryErrors } from './utils/log.js'
 import { countToolCalls, createSystemMessage, SYNTHETIC_MESSAGES } from './utils/messages.js'
+import { stampMaxTurnsExitCommitted } from './utils/attachments.js'
 import {
   recoverCwdDeletedAtTurnStart,
   toCwdDeletedError,
@@ -988,7 +989,14 @@ export class QueryEngine {
           break
         }
         case 'attachment': {
-          const msg = message as Message
+          // Official 2.1.285 (#54, GP @221275150): stamp `exitCommitted` on
+          // max_turns_reached attachments at record time — BEFORE keep/record
+          // — so resume classification can tell a committed shutdown-exit
+          // tail from an uncommitted clean max-turns end. No-op for all other
+          // attachment types (byte-faithful to GP's guard).
+          const msg = stampMaxTurnsExitCommitted(
+            message as AttachmentMessage,
+          ) as Message
           this.mutableMessages.push(msg)
           // Record inline (same reason as progress above).
           if (persistSession) {

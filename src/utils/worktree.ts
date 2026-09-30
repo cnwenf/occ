@@ -32,6 +32,7 @@ import {
   getDefaultBranch,
   gitExe,
 } from './git.js'
+import { resolveFetchSshFailFast } from './gitFetchSshFailFast.js'
 import {
   executeWorktreeCreateHook,
   executeWorktreeRemoveHook,
@@ -302,7 +303,21 @@ async function getOrCreateWorktree(
   // New worktree: fetch base branch then add
   await mkdir(worktreesDir(repoRoot), { recursive: true })
 
-  const fetchEnv = { ...process.env, ...GIT_NO_PROMPT_ENV }
+  // Official v285 `aPe`: every worktree fetch spawns with `...await D0(dir)`
+  // (2.1.285 changelog item 3) — SSH_ASKPASS_REQUIRE=never + SSH_ASKPASS=false
+  // pins and a detached-from-controlling-terminal spawn, so ssh passphrase /
+  // new-host prompts fail fast instead of seizing the terminal.
+  const fetchSpawn = await resolveFetchSshFailFast(
+    { ...process.env, ...GIT_NO_PROMPT_ENV },
+    repoRoot,
+  )
+  const fetchEnv = fetchSpawn.env
+  const fetchOpts = {
+    cwd: repoRoot,
+    stdin: 'ignore' as const,
+    env: fetchEnv,
+    withoutControllingTerminal: fetchSpawn.withoutControllingTerminal,
+  }
 
   let baseBranch: string
   let baseSha: string | null = null
@@ -311,7 +326,7 @@ async function getOrCreateWorktree(
       await execFileNoThrowWithCwd(
         gitExe(),
         ['fetch', 'origin', `pull/${options.prNumber}/head`],
-        { cwd: repoRoot, stdin: 'ignore', env: fetchEnv },
+        fetchOpts,
       )
     if (prFetchCode !== 0) {
       throw new Error(
@@ -341,7 +356,7 @@ async function getOrCreateWorktree(
       const { code: fetchCode } = await execFileNoThrowWithCwd(
         gitExe(),
         ['fetch', 'origin', defaultBranch],
-        { cwd: repoRoot, stdin: 'ignore', env: fetchEnv },
+        fetchOpts,
       )
       baseBranch = fetchCode === 0 ? originRef : 'HEAD'
     }

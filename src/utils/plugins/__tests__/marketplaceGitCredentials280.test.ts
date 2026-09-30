@@ -117,18 +117,23 @@ describe('marketplace git credential handling (2.1.280 #049)', () => {
       expect(env.GIT_TERMINAL_PROMPT).toBe('0')
       expect(env.GIT_ASKPASS).toBe('')
     }
-    expect(execCalls[0]!.args).toEqual(['pull', 'origin', 'HEAD'])
+    // v285 (changelog item 2): gitPull first reads the user's ssh config
+    // (`git config --get-regexp ^(core\.sshcommand|ssh\.variant)$`) to resolve
+    // GIT_SSH_COMMAND, then runs the network op. Filter that read out.
+    const netCalls = execCalls.filter(call => call.args[0] !== 'config')
+    expect(netCalls[0]!.args).toEqual(['pull', 'origin', 'HEAD'])
   })
 
   test('gitPull with ref: fetch/checkout/pull all credential-helper-free', async () => {
     const result = await gitPull(workdir, 'v1.2.3')
     expect(result.code).toBe(0)
 
-    // fetch → checkout → pull
-    expect(execCalls.length).toBeGreaterThanOrEqual(3)
-    expect(execCalls[0]!.args).toEqual(['fetch', 'origin', 'v1.2.3'])
-    expect(execCalls[1]!.args).toEqual(['checkout', 'v1.2.3'])
-    expect(execCalls[2]!.args).toEqual(['pull', 'origin', 'v1.2.3'])
+    // fetch → checkout → pull (after the v285 ssh-config read, filtered out)
+    const netCalls = execCalls.filter(call => call.args[0] !== 'config')
+    expect(netCalls.length).toBeGreaterThanOrEqual(3)
+    expect(netCalls[0]!.args).toEqual(['fetch', 'origin', 'v1.2.3'])
+    expect(netCalls[1]!.args).toEqual(['checkout', 'v1.2.3'])
+    expect(netCalls[2]!.args).toEqual(['pull', 'origin', 'v1.2.3'])
     for (const call of execCalls) {
       expect(call.args.join(' ')).not.toContain('credential.helper')
       expect(call.opts.stdin).toBe('ignore')

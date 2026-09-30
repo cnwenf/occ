@@ -32,6 +32,10 @@ export const McpStdioServerConfigSchema = lazySchema(() =>
     args: z.array(z.string()).default([]),
     env: z.record(z.string(), z.string()).optional(),
     // 2.1.121: alwaysLoad — all tools from this server skip tool-search deferral.
+    // 2.1.285: "...except a tool the server itself lists with _meta
+    // anthropic/alwaysLoad set to false" (official schema describe text) — for
+    // dynamic-scope servers (--mcp-config / Agent SDK / plugin), a tool-level
+    // explicit false keeps that tool deferred. See fetchToolsForClient.
     alwaysLoad: z.boolean().optional(),
     // 2.1.206: per-server request timeout (ms). When set, overrides the 60s
     // per-HTTP-request timeout and the default tool-call timeout for this

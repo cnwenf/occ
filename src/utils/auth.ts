@@ -73,9 +73,13 @@ import {
   getUsername,
 } from './secureStorage/macOsKeychainHelpers.js'
 import { isTransientReadFailure } from './secureStorage/transientRead.js'
+import { validateProviderAllowed } from './settings/allowedProvidersEnforcement.js'
 import {
+  getBlockingAdminPolicyLoadErrors,
   getSettings_DEPRECATED,
   getSettingsForSource,
+  getSettingsWithErrors,
+  hasNonOsDeniedAdminPolicyLoadFailures,
 } from './settings/settings.js'
 import { sleep } from './sleep.js'
 import { jsonParse, slowLogging } from './slowOperations.js'
@@ -2411,10 +2415,19 @@ export function getAccountInformation() {
 
 /**
  * Result of org validation — either success or a descriptive error.
+ * CC 2.1.285: the official `JL` fail-close result carries `reason` and
+ * `policyUnreadable` (`{valid:!1,reason:"managed_settings_invalid",
+ * policyUnreadable:!0,message:...}` @198654700 region); callers that only
+ * read `message` are unaffected.
  */
 export type OrgValidationResult =
   | { valid: true }
-  | { valid: false; message: string }
+  | {
+      valid: false
+      message: string
+      reason?: string
+      policyUnreadable?: boolean
+    }
 
 /**
  * Validate that the active OAuth token belongs to the organization required
@@ -2425,6 +2438,64 @@ export type OrgValidationResult =
  * token's org (network error, missing profile data), validation fails.
  */
 export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
+  // CC 2.1.285 (official `JL` leading gate @198654100, byte-verified):
+  //   if(jhn()&&!Y6()){ f("auth_force_login_org","policy_denied_passthrough",
+  //       {errno:...,api_provider:...}) }        ← warn + fall through
+  //   else if(jhn()){ let D=Yde()[0]; if(D){ ... return await rn(
+  //       "auth_force_login_org","policy_unreadable_fail_close",{errno:G}),
+  //       {valid:!1,reason:"managed_settings_invalid",policyUnreadable:!0,
+  //        message:`Unable to read managed policy settings....`} } }
+  // The gate runs BEFORE every other branch (unix-socket / third-party /
+  // org-pin) — "Other read errors and unparseable files stop every session".
+  // v284 had the same fail-close text but gated on `M_e()` (ANY blocking
+  // admin-load record, checked only for first-party auth sessions), so an
+  // OS-denied managed-settings read (EACCES/EPERM) refused startup — the
+  // changelog bug. v285 classifies via `WYn` (errno ∈ {EACCES,EPERM} on an
+  // "unreadable" record) and passes those through with a warning.
+  //
+  // Ensure the settings chain has loaded so the admin-load-error aggregate
+  // (official `yr()`) is populated — the official gate likewise reads
+  // `ge("policySettings")` first, which triggers the parse-store load.
+  getSettingsWithErrors()
+  if (hasNonOsDeniedAdminPolicyLoadFailures()) {
+    const firstRecord = getBlockingAdminPolicyLoadErrors()[0]
+    if (firstRecord) {
+      // Telemetry rn("auth_force_login_org","policy_unreadable_fail_close",
+      // {errno}) is STAGED — OCC has no analytics emitter.
+      return {
+        valid: false,
+        reason: 'managed_settings_invalid',
+        policyUnreadable: true,
+        message:
+          `Unable to read managed policy settings.\n` +
+          `This machine may require organization login enforcement, but the policy file failed to load.\n` +
+          `Contact your administrator.\n` +
+          `\n` +
+          `Detail: ${
+            firstRecord.file
+              ? `${firstRecord.file}: ${firstRecord.message}`
+              : firstRecord.message
+          }`,
+      }
+    }
+  }
+  // OS-denied-only case (official `jhn()&&!Y6()` passthrough): the Qzr
+  // stderr warning was already emitted by loadSettingsFromDisk; telemetry
+  // f("auth_force_login_org","policy_denied_passthrough",{errno,
+  // api_provider}) is STAGED. Fall through to the normal validation below —
+  // the session starts WITHOUT the unreadable file's policies.
+
+  // CC 2.1.285 `allowedProviders` (official `JL` @198653600, byte-verified):
+  //   let g=await nmn();if(g)return g;
+  // runs immediately AFTER the load-failure gate and BEFORE the
+  // CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST / ANTHROPIC_UNIX_SOCKET / org-pin
+  // branches. `nmn` (@198648500) fails closed when the policy is unreadable
+  // (yl → managed_settings_invalid + policyUnreadable) and refuses sessions
+  // whose API provider is not admitted by the effective allowedProviders
+  // list (MJ → provider_not_allowed).
+  const providerGate = await validateProviderAllowed()
+  if (providerGate) return providerGate
+
   // `claude ssh` remote: real auth lives on the local machine and is injected
   // by the proxy. The placeholder token can't be validated against the profile
   // endpoint. The local side already ran this check before establishing the session.

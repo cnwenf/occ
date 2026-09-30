@@ -147,3 +147,74 @@ describe('redactCredentialsInText — official d8t alignment', () => {
     expect(redactCredentialsInText(text)).toBe(text)
   })
 })
+
+/**
+ * CC 2.1.285: "Fixed redacted logs and transcripts showing part of a URL
+ * password that contains `@`, or all of it when the URL writes its `@` as
+ * `%40`." Byte evidence — official `Nbn` (v285 @195514998 region, verified
+ * byte-extract @195515080+200):
+ *   `function Nbn(e){return e.replace(/:\/\/[^/?#]*(@|%40)/g,
+ *    (n,r)=>r==="@"?"://":"://[REDACTED]%40")}`
+ * vs v284 `qbn` (@197674921 region): `e.replace(/:\/\/[^/?#]*@/g,"://")`.
+ * The `[REDACTED]` token is literal in the binary (`://[REDACTED]%40` found
+ * verbatim at 195515176 and string-table 101974276; the separate
+ * `[redacted URL]` sentinel is a different constant).
+ *
+ * The text-scrubber half of the fix is exactly the `%40` case: v284's `qbn`
+ * only matched a LITERAL `@`, so a URL whose authority encodes its `@`
+ * delimiter as `%40` (no literal `@`) was never touched and the WHOLE
+ * userinfo leaked. The "part of a password that contains @" half lives in the
+ * separate low-confidence scanner rule table (url-userinfo-* rules), which OCC
+ * does not port — see the STAGED note in the round report.
+ */
+describe('redactCredentialsInText — official Nbn (2.1.285) alignment', () => {
+  test('%40 authority with no literal @ is now redacted (the v284 leak)', () => {
+    // v284 `qbn` regex `[^/?#]*@` finds no literal '@' → returns input
+    // unchanged, leaking all of `user:pass%40`. v285 terminates the userinfo
+    // run at '%40' and replaces it with the verbatim '://[REDACTED]%40'.
+    const text = 'GET https://user:pass%40host/path 404'
+    expect(redactCredentialsInText(text)).toBe(
+      'GET https://[REDACTED]%40host/path 404',
+    )
+  })
+
+  test('%40 authority at end of string is redacted', () => {
+    expect(redactCredentialsInText('dial https://user:pass%40host/')).toBe(
+      'dial https://[REDACTED]%40host/',
+    )
+  })
+
+  test('a literal @ to the right wins over an earlier %40 (rightmost match)', () => {
+    // `[^/?#]*` is greedy and the engine takes the RIGHTMOST terminator, so a
+    // real '@' delimiter after an encoded '%40' consumes the whole userinfo —
+    // identical to v284 here (the %40 is inside the removed run).
+    expect(redactCredentialsInText('https://user:p%40ss@host/x')).toBe(
+      'https://host/x',
+    )
+    expect(redactCredentialsInText('https://user:p%40ss%40more@host/')).toBe(
+      'https://host/',
+    )
+  })
+
+  test('password containing a literal @ is stripped entirely (unchanged from d8t)', () => {
+    const text = 'clone failed: https://user:p@ss@host/ retrying'
+    expect(redactCredentialsInText(text)).toBe(
+      'clone failed: https://host/ retrying',
+    )
+  })
+
+  test('%40 match is case-sensitive (official regex has no i flag)', () => {
+    // Byte-faithful: the binary alternation is `(@|%40)` without /i. Do not
+    // "improve" this to a case-insensitive match — the port is verbatim.
+    expect(redactCredentialsInText('https://user:pass%40host/')).toBe(
+      'https://[REDACTED]%40host/',
+    )
+  })
+
+  test('regression: plain userinfo without @-tricks is unchanged from d8t', () => {
+    const text = `err https://user:${TOKEN}@github.com/o/r.git exit`
+    expect(redactCredentialsInText(text)).toBe(
+      'err https://github.com/o/r.git exit',
+    )
+  })
+})

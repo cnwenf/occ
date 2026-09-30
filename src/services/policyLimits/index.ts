@@ -26,6 +26,7 @@ import {
   checkAndRefreshOAuthTokenIfNeeded,
   getAnthropicApiKeyWithSource,
   getClaudeAIOAuthTokens,
+  isAnthropicAuthEnabled,
 } from '../../utils/auth.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -37,6 +38,7 @@ import {
 import { safeParseJSON } from '../../utils/json.js'
 import {
   getAPIProvider,
+  isEndpointOnConfiguredAnthropicBase,
   isFirstPartyAnthropicBaseUrl,
 } from '../../utils/model/providers.js'
 import { isEssentialTrafficOnly } from '../../utils/privacyLevel.js'
@@ -225,9 +227,22 @@ export async function waitForPolicyLimitsToLoad(): Promise<void> {
 
 /**
  * Get auth headers for policy limits without calling getSettings()
- * Supports both API key and OAuth authentication
+ * Supports both API key and OAuth authentication.
+ *
+ * 2.1.285 (ANTHROPIC_AUTH_TOKEN org-policy fix): port of the official `cRe`
+ * header builder (auth chunk-f74xvn8g @198114510 region, byte-verified). The
+ * v284 builder (`ARe` @200263118) had no `envBearerFallbackFor` arm, so a
+ * session authenticating with ANTHROPIC_AUTH_TOKEN against the Anthropic API
+ * never loaded the organization's policy: its stored team/enterprise OAuth
+ * login kept the session ELIGIBLE (official `$Ce`, unchanged between v284 and
+ * v285), but `nl()` returns false when ANTHROPIC_AUTH_TOKEN is set, so `ut()`
+ * was false, the OAuth branch was skipped, no API key existed, and the build
+ * failed with "No API key available" (auth_failed + skipRetry). v285 inserts
+ * the env-bearer fallback below. Exported for testing.
  */
-function getAuthHeaders(): {
+export function getAuthHeaders(
+  options: { envBearerFallbackFor?: string } = {},
+): {
   headers: Record<string, string>
   error?: string
 } {
@@ -247,13 +262,64 @@ function getAuthHeaders(): {
     // No API key available - continue to check OAuth
   }
 
-  // Fall back to OAuth tokens (for Claude.ai users)
-  const oauthTokens = getClaudeAIOAuthTokens()
-  if (oauthTokens?.accessToken) {
+  // OAuth branch, gated by the official `ut()` predicate
+  // (`ut(){if(!nl())return!1;return RF(ln()?.scopes)}` @198635759,
+  // `RF(e)=vbn(e)`, `vbn(t)=Array.isArray(t)&&t.includes("user:inference")`
+  // @195580177). OCC's isAnthropicAuthEnabled() is the existing `nl()` port.
+  // Without this gate a session that authenticates with ANTHROPIC_AUTH_TOKEN
+  // (or apiKeyHelper / FD) would send its STORED OAuth identity instead of
+  // the env credential the session actually uses — the official skips the
+  // OAuth branch for such sessions and lands on the fallback below.
+  if (isAnthropicAuthEnabled()) {
+    const oauthTokens = getClaudeAIOAuthTokens()
+    if (
+      oauthTokens &&
+      Array.isArray(oauthTokens.scopes) &&
+      oauthTokens.scopes.includes(CLAUDE_AI_INFERENCE_SCOPE)
+    ) {
+      if (!oauthTokens.accessToken) {
+        // Official: {headers:{},error:"No OAuth token available",reasonCode:"no_oauth_token"}
+        return { headers: {}, error: 'No OAuth token available' }
+      }
+      return {
+        headers: {
+          Authorization: `Bearer ${oauthTokens.accessToken}`,
+          'anthropic-beta': OAUTH_BETA_HEADER,
+        },
+      }
+    }
+  }
+
+  // 2.1.285 env-bearer fallback (official `cRe` arm, verbatim):
+  //   let r=e.envBearerFallbackFor,s=r?ev():void 0;
+  //   if(s&&r&&wh()&&ng(r)&&!a.ANTHROPIC_UNIX_SOCKET)
+  //     return{headers:{Authorization:`Bearer ${s}`}};
+  // `ev(){return Db()?void 0:a.ANTHROPIC_AUTH_TOKEN}` and this build's `Db()`
+  // is `return!1` (@195483259) — i.e. the raw env var. `wh()` =
+  // isFirstPartyAnthropicBaseUrl(); `ng(r)` =
+  // isEndpointOnConfiguredAnthropicBase(r). NO anthropic-beta header on this
+  // arm. The official caller passes the endpoint through a statsig
+  // kill-switch (`kD(jFt()?{}:{envBearerFallbackFor:O})`,
+  // `jFt(){return Xt.servedTrue("tengu_copper_kite")}`); the flag is unserved
+  // by default so the fallback is ACTIVE by default — OCC passes the endpoint
+  // unconditionally (tengu_copper_kite is deliberately NOT added to the
+  // feature allowlist). The official `sentEnvBearerDigest` telemetry
+  // (`w=D!==void 0&&I.headers.Authorization===\`Bearer ${D}\`?sne(D):null`)
+  // is STAGED: OCC's fetch-result shape has no telemetry plumbing.
+  const fallbackEndpoint = options.envBearerFallbackFor
+  const envAuthToken = fallbackEndpoint
+    ? process.env.ANTHROPIC_AUTH_TOKEN
+    : undefined
+  if (
+    envAuthToken &&
+    fallbackEndpoint &&
+    isFirstPartyAnthropicBaseUrl() &&
+    isEndpointOnConfiguredAnthropicBase(fallbackEndpoint) &&
+    !process.env.ANTHROPIC_UNIX_SOCKET
+  ) {
     return {
       headers: {
-        Authorization: `Bearer ${oauthTokens.accessToken}`,
-        'anthropic-beta': OAUTH_BETA_HEADER,
+        Authorization: `Bearer ${envAuthToken}`,
       },
     }
   }
@@ -306,7 +372,11 @@ async function fetchPolicyLimits(
   try {
     await checkAndRefreshOAuthTokenIfNeeded()
 
-    const authHeaders = getAuthHeaders()
+    // 2.1.285: the official `pt()` computes the endpoint first (`O=be()`) and
+    // passes it as the env-bearer fallback target
+    // (`I=await kD(jFt()?{}:{envBearerFallbackFor:O})` @209340651 region).
+    const endpoint = getPolicyLimitsEndpoint()
+    const authHeaders = getAuthHeaders({ envBearerFallbackFor: endpoint })
     if (authHeaders.error) {
       return {
         success: false,
@@ -315,7 +385,6 @@ async function fetchPolicyLimits(
       }
     }
 
-    const endpoint = getPolicyLimitsEndpoint()
     const headers: Record<string, string> = {
       ...authHeaders.headers,
       'User-Agent': getClaudeCodeUserAgent(),

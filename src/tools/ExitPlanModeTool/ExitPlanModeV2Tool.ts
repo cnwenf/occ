@@ -39,6 +39,7 @@ import {
 } from '../../utils/teammate.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import { AGENT_TOOL_NAME } from '../AgentTool/constants.js'
+import { FORK_SUBAGENT_TYPE } from '../AgentTool/forkSubagent.js'
 import { TEAM_CREATE_TOOL_NAME } from '../TeamCreateTool/constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from './constants.js'
 import { EXIT_PLAN_MODE_V2_TOOL_PROMPT } from './prompt.js'
@@ -192,7 +193,25 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // For non-teammates, require user confirmation to exit plan mode
     return true
   },
-  async validateInput(_input, { getAppState, options }) {
+  async validateInput(_input, { getAppState, options, agentType }) {
+    const mode = getAppState().toolPermissionContext.mode
+    // CC 2.1.285 (security): a fork cannot exit plan mode — that belongs to the
+    // session that forked it. Byte-faithful to the official v285 validateInput
+    // first branch:
+    //   `if(agentContext.agentType==="subagent"&&agentContext.isBuiltIn===!0
+    //       &&agentContext.subagentName===bF&&(Wa()||permissions().mode==="plan"))
+    //      return{result:!1,message:"A fork cannot exit plan mode; ...",errorCode:2}`
+    // OCC keys fork identity on the subagent ToolUseContext `agentType ===
+    // FORK_SUBAGENT_TYPE` ('fork'); FORK_AGENT is `source: 'built-in'`, so the
+    // official `isBuiltIn` holds implicitly. `Wa()` = isTeammate().
+    if (agentType === FORK_SUBAGENT_TYPE && (isTeammate() || mode === 'plan')) {
+      return {
+        result: false,
+        message:
+          'A fork cannot exit plan mode; that belongs to the session that forked it. Finish your part and report back.',
+        errorCode: 2,
+      }
+    }
     // Teammate AppState may show leader's mode (runAgent.ts skips override in
     // acceptEdits/bypassPermissions/auto); isPlanModeRequired() is the real source
     if (isTeammate()) {
@@ -201,7 +220,6 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
     // The deferred-tool list announces this tool regardless of mode, so the
     // model can call it after plan approval (fresh delta on compact/clear).
     // Reject before checkPermissions to avoid showing the approval dialog.
-    const mode = getAppState().toolPermissionContext.mode
     if (mode !== 'plan') {
       logEvent('tengu_exit_plan_mode_called_outside_plan', {
         model:

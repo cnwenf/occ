@@ -1,5 +1,6 @@
 import { execa } from 'execa'
 import { logForDebugging } from '../debug.js'
+import { logError } from '../log.js'
 import { memoizeWithLRU } from '../memoize.js'
 import { getCachedPowerShellPath } from '../shell/powershellDetection.js'
 import { jsonParse } from '../slowOperations.js'
@@ -1170,7 +1171,32 @@ async function parsePowerShellCommandImpl(
   // PS prompts and ANSI escapes in stdout, (2) command-line escaping issues,
   // (3) temp files. The script itself is large but well within OS arg limits
   // (Windows: 32K chars, Unix: typically 2MB+).
-  const encodedScript = toUtf16LeBase64(script)
+  //
+  // CC 2.1.285: "Fixed the PowerShell tool's permission check skipping deny
+  // and ask rules, and caching that failure for later checks, when its command
+  // parser failed to start (for example when the machine was out of memory)."
+  // v285 wraps the encode step in try/catch (binary @203460116, verbatim
+  // `PowerShell parser: could not encode the parse script: ${l(ye)}` at level
+  // "error") so an encode failure — e.g. OOM inside the Buffer/base64
+  // allocation — becomes an invalid EncodeError result instead of rejecting
+  // the parse() promise. Byte-faithful port of v285
+  // `try{s=IQ(pMn(e))}catch(ye){return t(...),Ew(e,"PowerShell parser could not be started","EncodeError")}`.
+  let encodedScript: string
+  try {
+    encodedScript = toUtf16LeBase64(script)
+  } catch (e: unknown) {
+    logForDebugging(
+      `PowerShell parser: could not encode the parse script: ${
+        e instanceof Error ? e.message : String(e)
+      }`,
+      { level: 'error' },
+    )
+    return makeInvalidResult(
+      command,
+      'PowerShell parser could not be started',
+      'EncodeError',
+    )
+  }
   const args = [
     '-NoProfile',
     '-NonInteractive',
@@ -1264,28 +1290,69 @@ async function parsePowerShellCommandImpl(
 // These should be evicted from the cache so subsequent calls can retry.
 // Deterministic failures (CommandTooLong, syntax errors from successful parses)
 // should stay cached since retrying would produce the same result.
+//
+// CC 2.1.285: the transient set is extended with 'EncodeError' and
+// 'UnexpectedError' (binary v285 @203459800 region, verbatim
+// `SMn=new Set(["PwshSpawnError","PwshError","PwshTimeout","EmptyOutput",
+// "InvalidJson","EncodeError","UnexpectedError"])`) — this is the "caching
+// that failure for later checks" half of the permission-check fix: a parser
+// that failed to start (e.g. OOM) must not have its failure remembered.
 const TRANSIENT_ERROR_IDS = new Set([
   'PwshSpawnError',
   'PwshError',
   'PwshTimeout',
   'EmptyOutput',
   'InvalidJson',
+  'EncodeError',
+  'UnexpectedError',
 ])
 
 const parsePowerShellCommandCached = memoizeWithLRU(
   (command: string) => {
-    const promise = parsePowerShellCommandImpl(command)
+    // CC 2.1.285: parse() must never reject. v285 converts an unexpected
+    // rejection into an invalid UnexpectedError result (binary verbatim
+    // `_Mn(e).catch((s)=>{try{u(s)}catch{}return Ew(e,"PowerShell parser
+    // failed unexpectedly","UnexpectedError")})`) so the permission check
+    // still runs its deny/ask evaluation against a well-formed invalid result
+    // (fail-closed) instead of skipping rules on a thrown error.
+    // logError is OCC's equivalent of the official `u(s)` exception reporter.
+    const promise = parsePowerShellCommandImpl(command).catch(
+      (error: unknown) => {
+        try {
+          logError(error)
+        } catch {
+          // The reporter itself must not break the invalid-result conversion.
+        }
+        return makeInvalidResult(
+          command,
+          'PowerShell parser failed unexpectedly',
+          'UnexpectedError',
+        )
+      },
+    )
     // Evict transient failures after resolution so they can be retried.
     // The current caller still receives the cached promise for this call,
     // ensuring concurrent callers share the same result.
+    //
+    // CC 2.1.285: eviction is identity-guarded on BOTH the fulfill and the
+    // reject path (binary verbatim
+    // `r=()=>{if(this.cached.cache.get(e)===n)this.cached.cache.delete(e)};
+    // n.then((s)=>{if(!s.valid&&SMn.has(...))r()},r)`) so a late-settling
+    // stale promise cannot evict a newer entry stored after a cache.clear(),
+    // and no rejection path can escape eviction.
+    const evictIfCurrent = (): void => {
+      if (parsePowerShellCommandCached.cache.get(command) === promise) {
+        parsePowerShellCommandCached.cache.delete(command)
+      }
+    }
     void promise.then(result => {
       if (
         !result.valid &&
         TRANSIENT_ERROR_IDS.has(result.errors[0]?.errorId ?? '')
       ) {
-        parsePowerShellCommandCached.cache.delete(command)
+        evictIfCurrent()
       }
-    })
+    }, evictIfCurrent)
     return promise
   },
   (command: string) => command,

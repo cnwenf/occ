@@ -20,6 +20,10 @@ import { getMemoryFiles, type MemoryFileInfo } from '../../utils/claudemd.js';
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { formatRelativeTimeAgo } from '../../utils/format.js';
+import {
+  AUTO_MEMORY_RAISE_DENIED_DETAIL,
+  isAutoMemoryRaiseAllowed,
+} from '../../utils/memory/autoMemorySessionGate.js';
 import { projectIsInGitRepo } from '../../utils/memory/versions.js';
 import { updateSettingsForSource } from '../../utils/settings/settings.js';
 import { Select } from '../CustomSelect/index.js';
@@ -204,6 +208,12 @@ export function MemoryFileSelector(t0) {
   if ($[12] !== autoMemoryOn) {
     t5 = function handleToggleAutoMemory() {
       const newValue = !autoMemoryOn;
+      // CC 2.1.285: refuse to turn auto-memory ON from a background / tool-
+      // started / teammate session (official `ht`: `if(h&&!RPe())return`).
+      // Turning it OFF (newValue falsy) still works.
+      if (newValue && !isAutoMemoryRaiseAllowed()) {
+        return;
+      }
       updateSettingsForSource("userSettings", {
         autoMemoryEnabled: newValue
       });
@@ -222,6 +232,11 @@ export function MemoryFileSelector(t0) {
   if ($[14] !== autoDreamOn) {
     t6 = function handleToggleAutoDream() {
       const newValue_0 = !autoDreamOn;
+      // CC 2.1.285: same session-kind gate as auto-memory (official `Mt`:
+      // `if(h&&!RPe())return`). Turning it OFF still works.
+      if (newValue_0 && !isAutoMemoryRaiseAllowed()) {
+        return;
+      }
       updateSettingsForSource("userSettings", {
         autoDreamEnabled: newValue_0
       });
@@ -321,7 +336,14 @@ export function MemoryFileSelector(t0) {
   }
   useKeybinding("select:previous", t12, t13);
   const t14 = focusedToggle === 0;
-  const t15 = autoMemoryOn ? "on" : "off";
+  // CC 2.1.285: when auto-memory is off and cannot be raised from this session
+  // kind, surface the official `OVt` detail on the row (official `HVt` sets
+  // `detail:OVt` when `!enabled && !raiseAllowed`).
+  const t15 = autoMemoryOn
+    ? "on"
+    : isAutoMemoryRaiseAllowed()
+      ? "off"
+      : `off · ${AUTO_MEMORY_RAISE_DENIED_DETAIL}`;
   let t16;
   if ($[30] !== t15) {
     t16 = <Text>Auto-memory: {t15}</Text>;

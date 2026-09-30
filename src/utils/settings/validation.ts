@@ -131,6 +131,24 @@ export type ValidationError = {
   onlySubstitutes?: boolean
   /** True for records from user-writable sources (official HKCU variant). */
   userWritable?: boolean
+  /**
+   * Set to `"unreadable"` on records created when a settings source failed
+   * to load at the OS level (official `errorClass:"unreadable"` — file
+   * loader `G1t` @196303479, MDM/registry loader `Dt` @196640021). Present
+   * since 2.1.284 for the file loader; the v285 record sanitizer (`My`)
+   * passes it through alongside `errno`.
+   */
+  errorClass?: 'unreadable'
+  /**
+   * OS errno code of a failed read (official 2.1.285 addition to `G1t`:
+   * `...E(n)!==void 0&&{errno:E(n)}`, and the `Dt` 4th parameter —
+   * `E(e)` extracts `typeof e.code === "string" ? e.code : undefined`).
+   * `EACCES`/`EPERM` mark an OS-denied read, which the 2.1.285 startup gate
+   * (official `ts`/`WYn` @196726844) treats as warn-and-start; every other
+   * errno — like parse failures — stays fail-close ("Other read errors and
+   * unparseable files stop every session").
+   */
+  errno?: string
   /** MCP-specific metadata - only present for MCP configuration errors */
   mcpErrorMetadata?: {
     /** Which configuration scope this error came from */

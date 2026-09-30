@@ -1,6 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { prependBullets } from '../../constants/prompts.js'
+import { backgroundTimeoutUsageNote } from '../../tasks/LocalShellTask/backgroundDeadline.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -51,7 +52,10 @@ function getBackgroundUsageNote(): string | null {
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
     return null
   }
-  return "You can use the `run_in_background` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter."
+  // 2.1.285 #85: official smt() (@203853400) ends with `${Fan()}` — the
+  // background-deadline usage sentence (empty string when the capability is
+  // off, so the pre-285 text is unchanged in that case).
+  return `You can use the \`run_in_background\` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter.${backgroundTimeoutUsageNote()}`
 }
 
 function getCommitAndPRInstructions(): string {

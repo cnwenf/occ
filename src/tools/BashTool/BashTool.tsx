@@ -12,6 +12,7 @@ import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js';
 import type { SetToolJSXFn, ToolCallProgress, ToolUseContext, ValidationResult } from '../../Tool.js';
 import { buildTool, type ToolDef } from '../../Tool.js';
 import { backgroundExistingForegroundTask, markTaskNotified, registerForeground, spawnShellTask, unregisterForeground } from '../../tasks/LocalShellTask/LocalShellTask.js';
+import { runInBackgroundDescription } from '../../tasks/LocalShellTask/backgroundDeadline.js';
 import type { AgentId } from '../../types/ids.js';
 import type { AssistantMessage } from '../../types/message.js';
 import { parseForSecurity } from '../../utils/bash/ast.js';
@@ -245,7 +246,10 @@ For commands that are harder to parse at a glance (piped commands, obscure flags
 - find . -name "*.tmp" -exec rm {} \\; → "Find and delete all .tmp files recursively"
 - git reset --hard origin/main → "Discard all local changes and match remote main"
 - curl -s url | jq '.data[]' → "Fetch JSON from URL and extract data array elements"`),
-  run_in_background: semanticBoolean(z.boolean().optional()).describe(`Set to true to run this command in the background. Use Read to read the output later.`),
+  // 2.1.285 #85: official $an() (@202100498) — with the deadline subsystem
+  // capable, the description documents `timeout` as the background lifetime
+  // limit; the disabled branch keeps OCC's pre-existing sentence.
+  run_in_background: semanticBoolean(z.boolean().optional()).describe(runInBackgroundDescription()),
   dangerouslyDisableSandbox: semanticBoolean(z.boolean().optional()).describe('Set this to true to dangerously override sandbox mode and run commands without sandboxing.'),
   _simulatedSedEdit: z.object({
     filePath: z.string(),
@@ -1149,6 +1153,12 @@ async function* runShellCommand({
       shellCommand,
       toolUseId,
       agentId,
+      // 2.1.285 #85: official mke passes the raw requested `timeout` into the
+      // spawn input; mrn's c2n(S) turns it into the background deadline
+      // (min(requested, cap); absent → 30-minute default). The foreground
+      // clamp (timeoutMs) intentionally does NOT apply here — for background
+      // spawns `timeout` means lifetime, not foreground blocking budget.
+      ...(timeout !== undefined ? { timeout } : {}),
       // 2.1.280 #042 wiring: BashTool always runs commands through bash —
       // persist it so classifyShellTaskResult dispatches per-shell benign-exit
       // semantics (official Jhe stores `shell` at spawn).

@@ -340,6 +340,10 @@ describe('2.1.280 #048 — mcpRemoveHandler drops the needs-auth cache entry', (
     expect(removedConfigs).toEqual([])
     expect(cacheHasKey(SERVER)).toBe(true)
     expect(exitCodes[0]).toBe(1)
-    expect(stderr).toContain(`No MCP server found with name: "${SERVER}"`)
+    // CC 2.1.285 (item 8): the not-found message is now the official `iQn`
+    // builder — with no configured names anywhere it prints the add-one hint.
+    expect(stderr).toContain(
+      `No MCP server named "${SERVER}". Run \`occ mcp add\` to add one.`,
+    )
   })
 })

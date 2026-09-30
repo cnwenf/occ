@@ -39,6 +39,7 @@ import {
 import type { AppState } from '../state/AppState.js'
 import { runCleanupFunctions } from './cleanupRegistry.js'
 import { logForDebugging } from './debug.js'
+import { commitExit, resetExitCommitForTesting } from './exitCommit.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { toError } from './errors.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -350,6 +351,11 @@ export function gracefulShutdownSync(
   // Set the exit code that will be used when process naturally exits. Note that we do it
   // here inside the sync version too so that it is possible to determine if
   // gracefulShutdownSync was called by checking process.exitCode.
+  // Official 2.1.285 (#54): shutdownSync commits the exit flag when not
+  // already shutting down — `if(!this.shutdownInProgress)process.exitCode=e,ane()`.
+  if (!shutdownInProgress) {
+    commitExit()
+  }
   process.exitCode = exitCode
 
   pendingShutdown = gracefulShutdown(exitCode, reason, options)
@@ -381,6 +387,9 @@ export function isShuttingDown(): boolean {
 export function resetShutdownState(): void {
   shutdownInProgress = false
   resumeHintPrinted = false
+  // Official has no reset for the exit-commit flag; OCC resets it with the
+  // rest of the shutdown state so test files don't leak committed=true.
+  resetExitCommitForTesting()
   if (failsafeTimer !== undefined) {
     clearTimeout(failsafeTimer)
     failsafeTimer = undefined
@@ -411,6 +420,10 @@ export async function gracefulShutdown(
     return
   }
   shutdownInProgress = true
+  // Official 2.1.285 (#54): `shutdown(){if(this.shutdownInProgress)return;
+  // if(this.shutdownInProgress=!0,ane(),process.exitCode=e,...)` — commit the
+  // exit flag as the first action of the async shutdown path.
+  commitExit()
 
   // Resolve the SessionEnd hook budget before arming the failsafe so the
   // failsafe can scale with it. Without this, a user-configured 10s hook

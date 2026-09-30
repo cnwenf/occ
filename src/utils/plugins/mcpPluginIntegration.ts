@@ -21,6 +21,7 @@ import {
   validateUserConfig,
 } from './mcpbHandler.js'
 import { getPluginDataDir } from './pluginDirectories.js'
+import { buildNeedsConfigLogMessage } from './mcpbNeedsConfig.js'
 import {
   getPluginStorageId,
   loadPluginOptions,
@@ -67,12 +68,25 @@ async function loadMcpServersFromMcpb(
 
     // Check if MCPB needs user configuration
     if ('status' in result && result.status === 'needs-config') {
-      // User config needed - this is normal for unconfigured plugins
-      // Don't load the MCP server yet - user can configure via /plugin menu
+      // User config needed - this is normal for unconfigured plugins.
+      // Don't load the MCP server yet - user can configure via /plugin menu.
+      // CC 2.1.285 (changelog item 13): byte-exact official `WJe` log line —
+      // names the bundled server and points at /plugin → Installed → Configure.
       logForDebugging(
-        `MCPB ${redactMcpbPathForDisplay(mcpbPath)} requires user configuration. ` +
-          `User can configure via: /plugin → Manage plugins → ${plugin.name} → Configure`,
+        buildNeedsConfigLogMessage(
+          redactMcpbPathForDisplay(mcpbPath),
+          result.manifest.name,
+          plugin.name,
+        ),
       )
+      // STAGED (out-of-domain, must land atomically): the official also pushes
+      // an `mcpb-needs-config` warning here — `errors.push(
+      // mcpbNeedsConfigWarning(plugin, result.manifest.name))`. It is withheld
+      // until `src/types/plugin.ts` adds the union variant AND both render
+      // switches (`buildPluginErrorMessage` in plugin.ts, `buildErrorMessage`/
+      // `buildErrorGuidance` in commands/plugin/PluginErrors.tsx) gain the
+      // case; pushing before then falls through the exhaustive switches and
+      // renders `undefined`. See the port report's staged-wiring section.
       // Return null to skip this server for now (not an error)
       return null
     }

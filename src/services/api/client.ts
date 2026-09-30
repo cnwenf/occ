@@ -13,6 +13,7 @@ import {
 } from 'src/utils/auth.js'
 import { getUserAgent } from 'src/utils/http.js'
 import { getSmallFastModel } from 'src/utils/model/model.js'
+import { assertProviderAllowed } from 'src/utils/settings/allowedProvidersEnforcement.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
@@ -152,6 +153,12 @@ export async function getAnthropicClient({
    */
   promptId?: string
 }): Promise<Anthropic> {
+  // CC 2.1.285 `allowedProviders` (official `B$t` site @201969594,
+  // byte-verified): the SDK client construction path gates on the effective
+  // provider BEFORE any request is built — `Oe=sc(r);if(B$t(Oe),...)`.
+  // Throws ProviderNotAllowedError when the managed allowlist refuses this
+  // machine's provider or its unpinned endpoint overrides.
+  assertProviderAllowed()
   const containerId = process.env.CLAUDE_CODE_CONTAINER_ID
   const remoteSessionId = process.env.CLAUDE_CODE_REMOTE_SESSION_ID
   const clientApp = process.env.CLAUDE_AGENT_SDK_CLIENT_APP

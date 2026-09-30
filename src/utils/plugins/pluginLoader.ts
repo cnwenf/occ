@@ -73,6 +73,7 @@ import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
+import { redactGitUrl } from '../redactGitUrl.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import {
   clearPluginSettingsBase,
@@ -87,6 +88,7 @@ import { getAddDirEnabledPlugins } from './addDirPluginSettings.js'
 import { verifyAndDemote } from './dependencyResolver.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { checkGitAvailable } from './gitAvailability.js'
+import { assertValidGitUrl } from './gitUrlValidation.js'
 import { getInMemoryInstalledPlugins } from './installedPluginsManager.js'
 import { getManagedPluginNames } from './managedPlugins.js'
 import {
@@ -466,25 +468,16 @@ export async function copyPluginToVersionedCache(
 }
 
 /**
- * Validate a git URL using Node.js URL parsing
+ * Validate a git URL — delegates to the official CC 2.1.285 strict validator
+ * (`R8`, ported in ./gitUrlValidation.ts). v285 changelog: "Plugin
+ * marketplaces: improved errors when a git address is rejected" — refusals
+ * now name the exact problem (control characters, %00, ambiguous brackets,
+ * backslash-smuggled authority, bad ssh host/user shape, non-local file:
+ * URL, unsupported protocol) instead of a generic message, and the echoed
+ * URL is credential-redacted + display-sanitized.
  */
 function validateGitUrl(url: string): string {
-  try {
-    const parsed = new URL(url)
-    if (!['https:', 'http:', 'file:'].includes(parsed.protocol)) {
-      if (!/^git@[a-zA-Z0-9.-]+:/.test(url)) {
-        throw new Error(
-          `Invalid git URL protocol: ${parsed.protocol}. Only HTTPS, HTTP, file:// and SSH (git@) URLs are supported.`,
-        )
-      }
-    }
-    return url
-  } catch {
-    if (/^git@[a-zA-Z0-9.-]+:/.test(url)) {
-      return url
-    }
-    throw new Error(`Invalid git URL: ${url}`)
-  }
+  return assertValidGitUrl(url)
 }
 
 /**
@@ -549,6 +542,10 @@ export async function gitClone(
   ref?: string,
   sha?: string,
 ): Promise<void> {
+  // Official xJt (v285) validates at the clone entry itself (`let h=R8(url)`)
+  // before any git process is spawned — callers that reach gitClone directly
+  // (tests, marketplace flows) get the same strict refusal.
+  assertValidGitUrl(gitUrl)
   // Use --recurse-submodules to initialize submodules
   // Always start with shallow clone for efficiency
   const args = [
@@ -663,8 +660,11 @@ async function installFromGit(
   const safeUrl = validateGitUrl(gitUrl)
   await gitClone(safeUrl, targetPath, ref, sha)
   const refMessage = ref ? ` (ref: ${ref})` : ''
+  // Official xJt (v285 @206590xxx) logs `Cloned repository from ${vp(h)}${w}
+  // to ${n}` — the URL goes through the redactor so embedded credentials can
+  // never reach the debug log verbatim.
   logForDebugging(
-    `Cloned repository from ${safeUrl}${refMessage} to ${targetPath}`,
+    `Cloned repository from ${redactGitUrl(safeUrl)}${refMessage} to ${targetPath}`,
   )
 }
 
