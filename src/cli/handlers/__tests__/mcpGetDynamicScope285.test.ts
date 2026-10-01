@@ -96,8 +96,16 @@ const LEAKY_ENV_PASSWORD = 'hunter2-leak-e2e-001'
 const PLUGIN_HTTP_SERVER = `plugin:${PLUGIN_NAME}:http_leaky`
 const CONNECTOR_URL = 'https://mcp.example.com/e2e-leaky'
 const CLAUDEAI_CONNECTOR = 'claude.ai Leaky'
-// File-backed (user-scope) server for the zero-network pin — seeded through
-// saveGlobalConfig, which writes the in-process TEST fixture under bun test.
+// OCC-103 R4 (P3#4): a claude.ai-ONLY connector whose signature collides
+// with nothing — drives the FOUND direction of the fallback fetch (local
+// miss → ONE fetch → dedupedClaudeAi merge in getAllMcpConfigs → FOUND
+// render, exit 0). Without this pin, dropping `dedupedClaudeAi` from the
+// merge leaves the suite green (reviewer-verified mutation).
+const CLAUDEAI_SOLO = 'claude.ai Solo'
+const SOLO_URL = 'https://mcp.example.com/e2e-solo'
+// File-backed (user-scope) server for the connector-fetch-free pin — seeded
+// through saveGlobalConfig, which writes the in-process TEST fixture under
+// bun test.
 const USER_SERVER = 'e2e_user_server'
 
 let baseDir = ''
@@ -278,8 +286,12 @@ describe('E2E-001 — mcp get resolves dynamic-scope servers (real lookup, seede
  * OCC-103 R2 (P3-c) + R3 (C1): the hoisted getAllMcpConfigs() made every
  * successful `mcp get` unconditionally await fetchClaudeAIMcpConfigsIfEligible
  * (up to FETCH_TIMEOUT_MS=5000 for claude.ai-OAuth users). mcpGetHandler now
- * resolves the LOCAL no-network set first (getClaudeCodeMcpConfigs —
- * file-backed scopes + plugin dynamic scope) and falls back to the full-scope
+ * resolves the LOCAL set first — never paying the claude.ai connector fetch
+ * (getClaudeCodeMcpConfigs — file-backed scopes + plugin dynamic scope;
+ * plugin loading itself stays cache-only unless the
+ * CLAUDE_CODE_SYNC_PLUGIN_INSTALL opt-in delegates to the network-capable
+ * full loader — OCC-103 R4 wording truth-up) — and falls back to the
+ * full-scope
  * resolve only when the local set cannot give a FINAL answer:
  *   - the name is NOT found locally, OR
  *   - the local hit is PLUGIN (dynamic) scope — the only class
@@ -344,7 +356,7 @@ describe('OCC-103 R2 P3-c + R3 C1 — mcp get pays the claude.ai connector fetch
     })
   }
 
-  test('file-backed local hit → ZERO connector fetch invocations (success path stays network-free)', async () => {
+  test('file-backed local hit → ZERO connector fetch invocations (success path pays no connector fetch)', async () => {
     seedUserServer()
     try {
       await withFetchCounter(async calls => {
@@ -404,5 +416,39 @@ describe('OCC-103 R2 P3-c + R3 C1 — mcp get pays the claude.ai connector fetch
       expect(stderr).toContain(`No MCP server named "${PLUGIN_SERVER}n".`)
       expect(exitCodes[0]).toBe(1)
     })
+  })
+
+  // OCC-103 R4 (P3#4): the round-2/3 fetch-counter matrix pinned only the
+  // local-HIT (calls()===0) and local-MISS→not-found (calls()===1) directions
+  // because withFetchCounter always returned `{}`. The value-producing path —
+  // fallback fetch → getAllMcpConfigs claude.ai merge → a claude.ai-ONLY name
+  // renders FOUND with exit 0 — was never driven, so dropping `dedupedClaudeAi`
+  // from the merge (config.ts) left the suite green (reviewer-verified
+  // mutation). This stubs a NON-EMPTY connector set and asserts the FOUND
+  // render, killing that mutant.
+  test('claude.ai-only name → local miss → ONE fetch → connector FOUND render, exit 0', async () => {
+    const connectors = {
+      [CLAUDEAI_SOLO]: {
+        type: 'claudeai-proxy',
+        url: SOLO_URL,
+        id: 'srv_e2e_solo',
+        scope: 'claudeai',
+        eligible: true,
+      },
+    } as unknown as ConnectorSet
+    await withFetchCounter(async calls => {
+      await mcpGetHandler(CLAUDEAI_SOLO)
+      // The name is absent from the local set → exactly ONE fallback fetch…
+      expect(calls()).toBe(1)
+      // …and the merged claude.ai connector renders FOUND (not the not-found
+      // path): this is the assertion a dropped `dedupedClaudeAi` merge breaks.
+      expect(logs).toContain(`${CLAUDEAI_SOLO}:`)
+      expect(logs).toContain('  Scope: claude.ai config')
+      expect(stderr).not.toContain('No MCP server named')
+      expect(exitCodes).not.toContain(1)
+      // Source consistency: the full-scope set `mcp list` renders carries it.
+      const { servers } = await getAllMcpConfigs()
+      expect(servers[CLAUDEAI_SOLO]).toBeDefined()
+    }, connectors)
   })
 })

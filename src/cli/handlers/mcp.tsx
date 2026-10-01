@@ -279,11 +279,18 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // not-found for every plugin dynamic-scope server, making the v285 sanitize
   // branch below unreachable in real execution and the not-found suggester
   // recommend the exact name it claimed absent.
-  // OCC-103 R2 (P3) + R3 (C1): resolve the LOCAL set first (file-backed scopes
-  // + plugin dynamic scope — zero network), and fall back to
+  // OCC-103 R2 (P3) + R3 (C1) + R4 (P3): resolve the LOCAL set first
+  // (file-backed scopes + plugin dynamic scope), and fall back to
   // getAllMcpConfigs() — whose claude.ai connector fetch can block up to
   // FETCH_TIMEOUT_MS for claude.ai-OAuth users — whenever the local set cannot
   // give a FINAL answer: a miss, OR a hit outside the file-backed scopes.
+  // The local-first guarantee is precisely "never pays the claude.ai
+  // connector fetch" — NOT literally zero network in every environment:
+  // getClaudeCodeMcpConfigs() awaits loadAllPluginsCacheOnly(), which under
+  // the CLAUDE_CODE_SYNC_PLUGIN_INSTALL opt-in delegates to the
+  // network-capable full plugin loader (npm/git installs) before returning
+  // (pluginLoader.ts); with the env unset (the default, and always in
+  // interactive startup) plugin loading is cache-only.
   // Why a plugin (dynamic-scope) local hit is only provisional: the local call
   // dedups plugin servers against the DEFAULT EMPTY extraDedupTargets pool,
   // while getAllMcpConfigs() passes the in-flight claude.ai connector fetch as
@@ -292,7 +299,7 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // `mcp list` renders. Trusting the local hit would make `mcp get` print FOUND
   // where list (and the official single global set) shows it suppressed — so
   // plugin hits re-resolve through the full set (suppressed → not-found).
-  // File-backed hits ARE final and keep the zero-network fast path:
+  // File-backed hits ARE final and keep the connector-fetch-free fast path:
   // dedupPluginMcpServers only ever suppresses PLUGIN entries, and claude.ai
   // merges at the lowest precedence under non-colliding `claude.ai <Name>`
   // keys, so the fetch can never remove or override a file-backed server.
