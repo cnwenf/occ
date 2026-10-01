@@ -16,7 +16,7 @@ import type {
   TombstoneMessage,
   ToolUseSummaryMessage,
 } from '../types/message.js'
-import { createAttachmentMessage } from '../utils/attachments.js'
+import { createAttachmentMessage, isBareFilteredAttachment } from '../utils/attachments.js'
 import { logForDebugging } from '../utils/debug.js'
 import { errorMessage } from '../utils/errors.js'
 import type { REPLHookContext } from '../utils/hooks/postSamplingHooks.js'
@@ -295,7 +295,6 @@ export async function* handleStopHooks(
       // it as a system-reminder in the next turn's messages (the attachment
       // alone is UI-only — it does not enter state.messages).
       if (result.additionalContexts && result.additionalContexts.length > 0) {
-        collectedAdditionalContexts.push(...result.additionalContexts)
         const stopHookEvent = toolUseContext.agentId
           ? 'SubagentStop'
           : 'Stop'
@@ -306,6 +305,15 @@ export async function* handleStopHooks(
           toolUseID: stopHookToolUseID,
           hookEvent: stopHookEvent,
         })
+        // CC 2.1.286 (item 57/--bare): official Stop-hook generator @212100178
+        // is `if(!Nen(ue))rt.push(ue);yield ue` vs v285 @210940248
+        // `it.push(fe),yield fe` — i.e. bare mode gates ONLY the collection
+        // push (rt.push ≡ collectedAdditionalContexts.push, per the D6 note
+        // above the attachment is UI-only), while the yield + hasOutput stay
+        // unconditional. Nen ≡ isBareFilteredAttachment (attachments.ts).
+        if (!isBareFilteredAttachment(additionalContextMessage)) {
+          collectedAdditionalContexts.push(...result.additionalContexts)
+        }
         yield additionalContextMessage
         hasOutput = true
       }

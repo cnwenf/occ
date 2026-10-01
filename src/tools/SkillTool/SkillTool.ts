@@ -28,7 +28,7 @@ import type {
   UserMessage,
 } from 'src/types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { areBackgroundTasksDisabled } from '../../utils/envUtils.js'
 import type { PermissionDecision } from 'src/utils/permissions/PermissionResult.js'
 import { getRuleByContentsForTool } from 'src/utils/permissions/permissions.js'
 import {
@@ -170,10 +170,11 @@ export function buildUnknownSkillMessage(
 import type { SkillToolProgress as Progress } from '../../types/tools.js'
 
 // CC 2.1.218 #35: Check if background tasks are disabled at module load time.
-// Mirrors AgentTool.tsx's gate so forked skills honor the same env kill-switch
-// (CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) as agent spawns.
-const isBackgroundTasksDisabled =
-  isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)
+// Mirrors AgentTool.tsx's gate so forked skills honor the same kill-switch.
+// CC 2.1.286 (item 57/--bare): route through the central
+// areBackgroundTasksDisabled() gate (official yl() @202370763 — bare mode
+// now also disables background tasks).
+const isBackgroundTasksDisabled = areBackgroundTasksDisabled()
 
 // Conditional require for remote skill modules — static imports here would
 // pull in akiBackend.ts (via remoteSkillLoader → akiBackend), which has

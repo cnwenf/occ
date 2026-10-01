@@ -65,6 +65,29 @@ export function isBareMode(): boolean {
 }
 
 /**
+ * CC 2.1.286 (item 57/--bare): central background-tasks gate.
+ *
+ * Official v286 `yl` @202370763 (offsets into
+ * /tmp/cc-diff-286/v286/package/claude):
+ *   `function yl(){return GM().backgroundTasksDisabled||
+ *    a.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS||Rr()}`
+ * — TRUE-NEW `||Rr()` (isBareMode) vs v285 `El` @201263733:
+ *   `function El(){return LH().backgroundTasksDisabled||
+ *    a.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS}`
+ * i.e. --bare now disables background tasks everywhere the central gate is
+ * consulted (auto-backgrounding, explicit run_in_background, schema
+ * stripping, agent/skill background spawns, SDK background_tasks control
+ * requests). The `backgroundTasksDisabled` settings key has no OCC
+ * counterpart (pre-existing divergence, not part of the 286 delta).
+ */
+export function areBackgroundTasksDisabled(): boolean {
+  return (
+    isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS) ||
+    isBareMode()
+  )
+}
+
+/**
  * --safe-mode / CLAUDE_CODE_SAFE_MODE — disables all plugins, bundled skills,
  * and hook execution for troubleshooting ("is a plugin/hook causing my
  * problem?"). Prints restart-without-safe-mode guidance on startup.

@@ -2663,6 +2663,26 @@ export function mergeUserMessagesAndToolResults(
   }
 }
 
+/**
+ * Official 2.1.286 (rze): a text block whose `.text` is not a string (a tool
+ * or hook returned an object, number or boolean instead of text) would make
+ * the next API call fail with a 400. The official merge filters those blocks
+ * out and warns once per block, tagged with the FIRST merged message's id.
+ */
+function shouldDropNonStringTextBlock(
+  block: ContentBlockParam | ContentBlock,
+  id: string | undefined,
+): boolean {
+  if (block.type !== 'text' || typeof block.text === 'string') {
+    return false
+  }
+  logForDebugging(
+    `mergeAssistantMessages: text block with non-string .text (id=${id}) — dropped`,
+    { level: 'warn' },
+  )
+  return true
+}
+
 export function mergeAssistantMessages(
   a: AssistantMessage,
   b: AssistantMessage,
@@ -2674,7 +2694,9 @@ export function mergeAssistantMessages(
       content: [
         ...(Array.isArray(a.message.content) ? a.message.content : []),
         ...(Array.isArray(b.message.content) ? b.message.content : []),
-      ] as ContentBlockParam[] | ContentBlock[],
+      ].filter(
+        block => !shouldDropNonStringTextBlock(block, a.message.id),
+      ) as ContentBlockParam[] | ContentBlock[],
     },
   }
 }

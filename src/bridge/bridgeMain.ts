@@ -11,6 +11,10 @@ import {
   logEvent,
   logEventAsync,
 } from '../services/analytics/index.js'
+import {
+  onPolicyLimitsChange,
+  startBackgroundPolling,
+} from '../services/policyLimits/index.js'
 import { isInBundledMode } from '../utils/bundledMode.js'
 import { logForDebugging } from '../utils/debug.js'
 import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
@@ -28,6 +32,10 @@ import {
   isSuppressible403,
   validateBridgeId,
 } from './bridgeApi.js'
+import {
+  type BridgePolicyRefusal,
+  connectedBridgePolicyRefusal,
+} from './bridgePolicyRefusal.js'
 import { formatDuration } from './bridgeStatusUtil.js'
 import { createBridgeLogger } from './bridgeUI.js'
 import { createCapacityWake } from './capacityWake.js'
@@ -150,7 +158,7 @@ export async function runBridgeLoop(
   backoffConfig: BackoffConfig = DEFAULT_BACKOFF,
   initialSessionId?: string,
   getAccessToken?: () => string | undefined | Promise<string | undefined>,
-): Promise<void> {
+): Promise<BridgePolicyRefusal | undefined> {
   // Local abort controller so that onSessionDone can stop the poll loop.
   // Linked to the incoming signal so external aborts also work.
   const controller = new AbortController()
@@ -193,6 +201,13 @@ export async function runBridgeLoop(
   // Signal to wake the at-capacity sleep early when a session completes,
   // so the bridge can immediately accept new work.
   const capacityWake = createCapacityWake(loopSignal)
+
+  // 2.1.286 policy shutdown state (official `qe` flag + `kt` stored refusal,
+  // byte-verified @219444200+ in the v286 binary; v285 has none of this).
+  // runBridgeLoop RETURNS the refusal (official: `return s.logVerbose(
+  // "Environment offline."),kt`).
+  let policyShutdown = false
+  let policyRefusal: BridgePolicyRefusal | undefined
 
   /**
    * Heartbeat all active work items.
@@ -585,7 +600,9 @@ export async function runBridgeLoop(
         }
       }
 
-      if (!loopSignal.aborted) {
+      // Official 2.1.286: `if(!v.aborted&&!qe)Mt()` — the policy-shutdown
+      // flag suppresses the idle-status restart like an abort does.
+      if (!loopSignal.aborted && !policyShutdown) {
         startStatusUpdates()
       }
     }
@@ -598,7 +615,65 @@ export async function runBridgeLoop(
     startStatusUpdates()
   }
 
+  // ── 2.1.286: connected-bridge policy watcher (standalone lane) ─────────
+  // Official (byte-verified @219444200+ in the v286 linux-x64 binary):
+  //   let{startBackgroundPolling:Tt}=await import(...); Tt();
+  //   let st=()=>{ if(v.aborted||qe)return; let r=WAe(!1); if(r===null)return;
+  //     kt=r,qe=!0,oe.abort();
+  //     try{ s.logStatus(r.detail),
+  //       t(`[bridge:policy] Org policy now refuses Remote Control (${r.policy}: ${r.kind}); shutting down`),
+  //       i("tengu_bridge_policy_teardown",{lane:"standalone",policy:r.policy,
+  //         deny_kind:r.kind,outbound_only:!1}) }
+  //     catch(b){ t(`[bridge:policy] Policy shutdown notice failed: ${l(b)}`,
+  //       {level:"error"}), d(b) } };
+  //   Dt=eY()?()=>{}:D0(()=>{queueMicrotask(st)}); if(!eY())st();
+  //   while(!v.aborted){ Tt(); ...
+  // OCC notes: static import replaces the official dynamic import (bundle
+  // splitting only); eY() kill-switch (statsig tengu_lovely_umbrella, unserved
+  // default false) has no OCC surface ≡ false → watcher always on; official
+  // also does captureError(b) in the catch — no OCC surface.
+  startBackgroundPolling()
+  const checkBridgePolicyShutdown = (): void => {
+    if (loopSignal.aborted || policyShutdown) {
+      return
+    }
+    const refusal = connectedBridgePolicyRefusal(false)
+    if (refusal === null) {
+      return
+    }
+    policyRefusal = refusal
+    policyShutdown = true
+    controller.abort()
+    try {
+      logger.logStatus(refusal.detail)
+      logForDebugging(
+        `[bridge:policy] Org policy now refuses Remote Control (${refusal.policy}: ${refusal.kind}); shutting down`,
+      )
+      logEvent('tengu_bridge_policy_teardown', {
+        lane:
+          'standalone' as unknown as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        policy:
+          refusal.policy as unknown as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        deny_kind:
+          refusal.kind as unknown as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        outbound_only: false,
+      })
+    } catch (err) {
+      logForDebugging(
+        `[bridge:policy] Policy shutdown notice failed: ${errorMessage(err)}`,
+        { level: 'error' },
+      )
+    }
+  }
+  const unsubscribePolicyWatch = onPolicyLimitsChange(() => {
+    queueMicrotask(checkBridgePolicyShutdown)
+  })
+  checkBridgePolicyShutdown()
+
   while (!loopSignal.aborted) {
+    // Official calls startBackgroundPolling() as the first statement of every
+    // loop iteration (idempotent in OCC — pollingIntervalId guard).
+    startBackgroundPolling()
     // Fetched once per iteration — the GrowthBook cache refreshes every
     // 5 min, so a loop running at the at-capacity rate picks up config
     // changes within one sleep cycle.
@@ -1401,7 +1476,9 @@ export async function runBridgeLoop(
     }
   }
 
-  // Clean up
+  // Clean up — official order after the loop: `Dt(),Wt(),s.clearStatus(...)`
+  // (unsubscribe policy watch, stop status updates, clear status).
+  unsubscribePolicyWatch()
   stopStatusUpdates()
   logger.clearStatus()
 
@@ -1523,11 +1600,15 @@ export async function runBridgeLoop(
   // error already printed.
   // feature('KAIROS') gate: --session-id is ant-only; without the gate,
   // revert to the pre-PR behavior (archive + deregister on every shutdown).
+  // 2.1.286: official guards the resume path with `preserveOnShutdown&&!qe` —
+  // a policy shutdown must archive+deregister, never print a resume hint for
+  // an org-refused session.
   if (
     feature('KAIROS') &&
     config.spawnMode === 'single-session' &&
     initialSessionId &&
-    !fatalExit
+    !fatalExit &&
+    !policyShutdown
   ) {
     logger.logStatus(
       `Resume this session by running \`occ remote-control --continue\``,
@@ -1578,6 +1659,11 @@ export async function runBridgeLoop(
   await clearBridgePointer(config.dir)
 
   logger.logVerbose('Environment offline.')
+  // Official 2.1.286: `return s.logVerbose("Environment offline."),kt` — the
+  // loop returns the stored policy refusal (undefined when not policy-driven).
+  // Call sites keep ignoring the return for now (official caller consumption
+  // was not recoverable from the binary — not invented here).
+  return policyRefusal
 }
 
 const CONNECTION_ERROR_CODES = new Set([

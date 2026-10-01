@@ -166,6 +166,34 @@ export type DeserializeResult = {
 }
 
 /**
+ * Official 2.1.286 (SVo): returns a copy of the message with non-string text
+ * blocks filtered out, or null when there is nothing to strip (non
+ * assistant/user row, non-array content, or every text block already has a
+ * string `.text`). A text block whose `.text` is an object, number or boolean
+ * is an interrupted-stream artifact — replaying it on resume makes the next
+ * API call fail with a 400.
+ */
+function dropNonStringTextBlocks(message: Message): Message | null {
+  if (message.type !== 'assistant' && message.type !== 'user') {
+    return null
+  }
+  const content = message.message.content
+  if (!Array.isArray(content)) {
+    return null
+  }
+  const filtered = content.filter(
+    block => block.type !== 'text' || typeof block.text === 'string',
+  )
+  if (filtered.length === content.length) {
+    return null
+  }
+  return {
+    ...message,
+    message: { ...message.message, content: filtered },
+  }
+}
+
+/**
  * Deserializes messages from a log file into the format expected by the REPL.
  * Filters unresolved tool uses, orphaned thinking messages, and appends a
  * synthetic assistant sentinel when the last message is from the user.
@@ -190,6 +218,30 @@ export function deserializeMessagesWithInterruptDetection(
       migrateLegacyAttachmentTypes,
     )
 
+    // Official 2.1.286 (SVo pass): drop non-string text blocks BEFORE the
+    // resume sanitize (official order: kVo → SVo + aggregated warn → vge
+    // site:"resume"). Messages whose content becomes empty are dropped
+    // entirely; one aggregated warn reports how many messages were stripped.
+    let nonStringDropCount = 0
+    const nonStringStrippedMessages = migratedMessages.flatMap(message => {
+      const stripped = dropNonStringTextBlocks(message)
+      if (stripped === null) {
+        return [message]
+      }
+      nonStringDropCount += 1
+      const strippedContent = stripped.message.content
+      if (Array.isArray(strippedContent) && strippedContent.length === 0) {
+        return []
+      }
+      return [stripped]
+    })
+    if (nonStringDropCount > 0) {
+      logForDebugging(
+        `deserializeMessages: dropped non-string text block(s) from ${nonStringDropCount} message(s) — interrupted-stream artifact`,
+        { level: 'warn' },
+      )
+    }
+
     // Official 2.1.277 (D4): the resume pipeline sanitizes the WHOLE loaded
     // array before attachment-drop and interrupted-turn handling (`Gln` in
     // `ocn`: `y=Dmt(e)` → `w=iMo(iG(Gln(y)),s)`). Wraps plain-string
@@ -197,7 +249,7 @@ export function deserializeMessagesWithInterruptDetection(
     // blocks, drops unreadable/blank rows, and emits the "resume: ..." warn
     // when anything changed. Prevents the resume crash on sessions whose
     // saved history holds an assistant message stored as a plain string.
-    const sanitizedMessages = sanitizeResumedRows(migratedMessages)
+    const sanitizedMessages = sanitizeResumedRows(nonStringStrippedMessages)
 
     // Strip invalid permissionMode values from deserialized user messages.
     // The field is unvalidated JSON from disk and may contain modes from a different build.

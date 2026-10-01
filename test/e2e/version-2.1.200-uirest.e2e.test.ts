@@ -84,7 +84,7 @@ describe("2.1.200 uirest gaps (e2e)", () => {
       const src = read("src/components/PromptInput/PromptInput.tsx");
       expect(src).toContain("getSettings_DEPRECATED().externalEditorContext");
       expect(src).toContain("getLastAssistantMessage(messages)");
-      expect(src).toContain("editPromptInEditor(input, pastedContents, commentedContext)");
+      expect(src).toContain("editPromptInEditor(input, pastedContents, commentedContext, cursorOffset)");
     });
 
     test("source: config panel item for externalEditorContext", () => {

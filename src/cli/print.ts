@@ -464,6 +464,26 @@ export function canBatchWith(
   )
 }
 
+/**
+ * CC 2.1.286 (official v286 SDK enable handler `Xe` @222648472):
+ * `let K=Ht.find(le=>le.name===w); if(K?.type==="connected")return K;` — a
+ * host re-sending an MCP server enable for a server that is ALREADY connected
+ * is a no-op: return the live client immediately instead of tearing it down
+ * and reconnecting. Only a real disabled/failed→enabled transition redials.
+ *
+ * Pure predicate over the merged live-client pool. Returns the connected
+ * client for `serverName`, or undefined when no connected client exists (so
+ * the caller reconnects). v285 had no such short-circuit (0 hits for
+ * `type==="connected")return K`), so every re-enable reconnected.
+ */
+export function findConnectedMcpClient<T extends { name: string; type: string }>(
+  clients: readonly T[],
+  serverName: string,
+): T | undefined {
+  const client = clients.find(c => c.name === serverName)
+  return client !== undefined && client.type === 'connected' ? client : undefined
+}
+
 export async function runHeadless(
   inputPrompt: string | AsyncIterable<string>,
   getAppState: () => AppState,
@@ -3375,45 +3395,68 @@ function runHeadlessStreaming(
             }))
             sendControlResponseSuccess(message)
           } else {
-            // Enabling: persist + reconnect
+            // Enabling: persist + reconnect.
+            // CC 2.1.286 (official v286 enable handler `Xe` @222648472):
+            // `if(K?.type==="connected")return K;` — a re-sent enable for a
+            // server that is already connected is a no-op: respond right away
+            // without tearing down and reconnecting. Only a real
+            // disabled/failed→enabled transition redials.
             setMcpServerEnabled(serverName, true)
-            const result = await reconnectMcpServerImpl(serverName, config)
-            // Update appState.mcp with the new client, tools, commands, and resources
-            // This ensures the LLM sees updated tools after enabling the server
-            const prefix = getMcpPrefix(serverName)
-            setAppState(prev => ({
-              ...prev,
-              mcp: {
-                ...prev.mcp,
-                clients: prev.mcp.clients.map(c =>
-                  c.name === serverName ? result.client : c,
-                ),
-                tools: [
-                  ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
-                  ...result.tools,
-                ],
-                commands: [
-                  ...reject(prev.mcp.commands, c =>
-                    commandBelongsToServer(c, serverName),
-                  ),
-                  ...result.commands,
-                ],
-                resources:
-                  result.resources && result.resources.length > 0
-                    ? { ...prev.mcp.resources, [serverName]: result.resources }
-                    : omit(prev.mcp.resources, serverName),
-              },
-            }))
-            if (result.client.type === 'connected') {
-              registerElicitationHandlers([result.client])
-              reregisterChannelHandlerAfterReconnect(result.client)
+            const existingClient = findConnectedMcpClient(
+              [
+                ...mcpClients,
+                ...sdkClients,
+                ...dynamicMcpState.clients,
+                ...currentAppState.mcp.clients,
+              ],
+              serverName,
+            )
+            if (existingClient !== undefined) {
+              // Already connected — its tools/commands/resources are already
+              // in appState.mcp from the live connection; nothing to rebuild.
+              // Falls through to the loop's `continue`, matching sibling
+              // branches (never `return` — that would end the stdin loop).
               sendControlResponseSuccess(message)
             } else {
-              const errorMessage =
-                result.client.type === 'failed'
-                  ? (result.client.error ?? 'Connection failed')
-                  : `Server status: ${result.client.type}`
-              sendControlResponseError(message, errorMessage)
+              const result = await reconnectMcpServerImpl(serverName, config)
+              // Update appState.mcp with the new client, tools, commands, and
+              // resources. This ensures the LLM sees updated tools after
+              // enabling the server.
+              const prefix = getMcpPrefix(serverName)
+              setAppState(prev => ({
+                ...prev,
+                mcp: {
+                  ...prev.mcp,
+                  clients: prev.mcp.clients.map(c =>
+                    c.name === serverName ? result.client : c,
+                  ),
+                  tools: [
+                    ...reject(prev.mcp.tools, t => t.name?.startsWith(prefix)),
+                    ...result.tools,
+                  ],
+                  commands: [
+                    ...reject(prev.mcp.commands, c =>
+                      commandBelongsToServer(c, serverName),
+                    ),
+                    ...result.commands,
+                  ],
+                  resources:
+                    result.resources && result.resources.length > 0
+                      ? { ...prev.mcp.resources, [serverName]: result.resources }
+                      : omit(prev.mcp.resources, serverName),
+                },
+              }))
+              if (result.client.type === 'connected') {
+                registerElicitationHandlers([result.client])
+                reregisterChannelHandlerAfterReconnect(result.client)
+                sendControlResponseSuccess(message)
+              } else {
+                const errorMessage =
+                  result.client.type === 'failed'
+                    ? (result.client.error ?? 'Connection failed')
+                    : `Server status: ${result.client.type}`
+                sendControlResponseError(message, errorMessage)
+              }
             }
           }
         } else if (message.request.subtype === 'channel_enable') {

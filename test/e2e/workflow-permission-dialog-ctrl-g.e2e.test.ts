@@ -216,7 +216,9 @@ export default async ({ agent }) => {
 describe('editFileInEditor / getExternalEditor contracts', () => {
   test('editFileInEditor returns EditorResult + no-op when no editor', async () => {
     const src = await Bun.file(PROMPT_EDITOR).text()
-    expect(src).toMatch(/export function editFileInEditor\(filePath:\s*string\):\s*EditorResult/)
+    // CC 2.1.286 (item 48): editFileInEditor gained an optional `line`
+    // (official kZ(n,e) @214205691 vs v285 jQ(n) @213022642).
+    expect(src).toMatch(/export function editFileInEditor\(filePath:\s*string,\s*line\?:\s*number\):\s*EditorResult/)
     expect(src).toContain('return { content: null }')
     expect(src).toContain('return { content: editedContent }')
   })

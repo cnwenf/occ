@@ -130,10 +130,17 @@ const out = {
   fallbackCarriesTrigger: retry.includes("public readonly trigger"),
   // Telemetry: tengu_api_model_not_found_fallback_triggered (binary)
   telemetry: retry.includes("tengu_api_model_not_found_fallback_triggered"),
-  // "API model not found: <model>" log (binary)
-  logNotFound: retry.includes("API model not found:"),
-  // Fallback condition includes model_not_found (not only 529)
-  fallbackUsesReason: retry.includes("fallbackTriggerReason !== null"),
+  // CC 2.1.286 re-pin: v286 DROPPED the "API model not found:" debug log —
+  // the telemetry event now logs UNCONDITIONALLY with a reason field
+  // (byte-verified v286: throw i("tengu_api_model_not_found_fallback_triggered",
+  //   {original_model:..,fallback_model:..,provider:CT(),reason:c(Qo)}), new Tx(..))
+  telemetryReason: retry.includes("reason:"),
+  // CC 2.1.286 re-pin: the v285 fallbackTriggerReason-null gate became the
+  // byte-verified v286 refusal trigger + access-fallback ladder
+  // (Kn=NJe(qt)||LJe(qt); Pn=r.fallbackModel??(Kn&&firstParty?iOe(r):void 0))
+  fallbackUsesReason:
+    retry.includes("isRefusalTrigger") &&
+    retry.includes("resolveAccessFallbackModel"),
 };
 console.log(JSON.stringify(out));
 `;
@@ -150,7 +157,7 @@ console.log(JSON.stringify(out));
     expect(out.reasonServerError).toBe(true);
     expect(out.fallbackCarriesTrigger).toBe(true);
     expect(out.telemetry).toBe(true);
-    expect(out.logNotFound).toBe(true);
+    expect(out.telemetryReason).toBe(true);
     expect(out.fallbackUsesReason).toBe(true);
   });
 

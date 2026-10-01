@@ -31,11 +31,15 @@ class DomainBlockedError extends Error {
 class DomainCheckFailedError extends Error {
   // Official 2.1.268 adds the optional code param (v267 Ygt has none);
   // 'EDEADLINE_PREFLIGHT' marks a preflight check cancelled by the deadline.
+  // Official 2.1.286 adds 'ERATELIMIT_PREFLIGHT' (HTTP 429 from the domain
+  // safety check): the message tells Claude not to retry in a loop.
   code: string | undefined
 
   constructor(domain: string, code?: string) {
     super(
-      `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
+      code === 'ERATELIMIT_PREFLIGHT'
+        ? `The safety check for domain ${domain} is rate-limited (too many domain checks from this network; the limit is shared and can stay exhausted for minutes). Do not retry WebFetch in a loop or sleep to wait it out; continue without this page and report that its safety check was rate-limited. A single later attempt is fine; if that is rate-limited too, stop.`
+        : `Unable to verify if domain ${domain} is safe to fetch. This may be due to network restrictions or enterprise security policies blocking claude.ai.`,
     )
     this.name = 'DomainCheckFailedError'
     this.code = code
@@ -250,7 +254,7 @@ export function invalidUrlErrorMessage(url: string): string {
 type DomainCheckResult =
   | { status: 'allowed' }
   | { status: 'blocked' }
-  | { status: 'check_failed'; error: Error }
+  | { status: 'check_failed'; error: Error; httpStatus?: number }
 
 export async function checkDomainBlocklist(
   domain: string,
@@ -274,10 +278,17 @@ export async function checkDomainBlocklist(
     return {
       status: 'check_failed',
       error: new Error(`Domain check returned status ${response.status}`),
+      httpStatus: response.status,
     }
   } catch (e) {
     logError(e)
-    return { status: 'check_failed', error: e as Error }
+    return {
+      status: 'check_failed',
+      error: e as Error,
+      // Official 2.1.286: surface the HTTP status so the caller can classify
+      // a 429 as ERATELIMIT_PREFLIGHT (httpStatus:isAxiosError(g)?g.response?.status:void 0)
+      httpStatus: axios.isAxiosError(e) ? e.response?.status : undefined,
+    }
   }
 }
 
@@ -534,7 +545,11 @@ export async function getURLMarkdownContent(
         case 'check_failed':
           throw new DomainCheckFailedError(
             hostname,
-            axios.isCancel(checkResult.error) ? 'EDEADLINE_PREFLIGHT' : undefined,
+            axios.isCancel(checkResult.error)
+              ? 'EDEADLINE_PREFLIGHT'
+              : checkResult.httpStatus === 429
+                ? 'ERATELIMIT_PREFLIGHT'
+                : undefined,
           )
       }
     }

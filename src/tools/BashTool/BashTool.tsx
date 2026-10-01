@@ -19,7 +19,7 @@ import { parseForSecurity } from '../../utils/bash/ast.js';
 import { splitCommand_DEPRECATED, splitCommandWithOperators } from '../../utils/bash/commands.js';
 import { extractClaudeCodeHints } from '../../utils/claudeCodeHints.js';
 import { detectCodeIndexingFromCommand } from '../../utils/codeIndexing.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
+import { areBackgroundTasksDisabled, isEnvTruthy } from '../../utils/envUtils.js';
 import { isENOENT, ShellError } from '../../utils/errors.js';
 import { detectFileEncoding, detectLineEndings, getFileModificationTime, writeTextContent } from '../../utils/file.js';
 import { fileHistoryEnabled, fileHistoryTrackEdit } from '../../utils/fileHistory.js';
@@ -226,10 +226,12 @@ function isSilentBashCommand(command: string): boolean {
 const DISALLOWED_AUTO_BACKGROUND_COMMANDS = ['sleep' // Sleep should run in foreground unless explicitly backgrounded by user
 ];
 
-// Check if background tasks are disabled at module load time
-const isBackgroundTasksDisabled =
-// eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
-isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
+// Check if background tasks are disabled at module load time.
+// CC 2.1.286 (item 57/--bare): route through the central
+// areBackgroundTasksDisabled() gate — official yl() @202370763 added
+// `||Rr()` (bare mode) on top of the env/settings check. argv/env are fixed
+// at module load, so the const form stays correct.
+const isBackgroundTasksDisabled = areBackgroundTasksDisabled();
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The command to execute'),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),

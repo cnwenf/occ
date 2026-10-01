@@ -85,18 +85,74 @@ export function isAwaitingUserMessage(message: Message): boolean {
 export function isAwaitingEligibleMessage(message: Message): boolean {
   return (
     isAwaitingUserMessage(message) ||
-    (message.type === 'attachment' && message.attachment?.type === 'queued_command')
+    isQueuedCommandAttachment(message)
   )
+}
+
+/**
+ * CC 2.1.286 (item 55): the queued_command attachment arm of $Qo, extracted.
+ * The official applyEvent attachment branch (`if(h.type==="attachment")
+ * this.stream.awaitModelFor([h])` — v285 @224558227 / v286 @225813406) is
+ * UNCHANGED between versions: queued_command attachment events always go
+ * gray, regardless of dispatch source.
+ */
+export function isQueuedCommandAttachment(message: Message): boolean {
+  return (
+    message.type === 'attachment' && message.attachment?.type === 'queued_command'
+  )
+}
+
+/**
+ * CC 2.1.286 (item 55): official v286 turn-append gray gate `L&&mt`
+ * (@225818516: `if(pBr(),X$o(),L&&mt)this.stream.awaitModelFor(h)`), where:
+ *   - `L` = run's 3rd param (fresh-turn dispatch flag; every official caller
+ *     of the turn-append path passes a truthy value once the turn is starting)
+ *   - `mt` = run's NEW 15th param (`run=async(h,v,L,...,dt,mt=!1)` @225815961),
+ *     fed by the dispatcher as `ht=Ge==="queued"` (@225767067, `Ge` =
+ *     inputSource) at `await gt(...,so,ht)` (@225772771).
+ *
+ * v285 had NO `mt` param (14-arg run @224560782) and gated on `M` alone
+ * (@224563299) — every fresh-turn dispatch went gray. v286 only grays when
+ * the dispatch came from the message queue: typed sends while idle use
+ * `inputSource:h.inputSource??"typed"` (@225766364) → mt=false → the prompt
+ * renders in normal color from the first frame (changelog: "Changed prompts
+ * sent while nothing is running or queued to show in the normal text color
+ * right away instead of gray").
+ */
+export function shouldAwaitModelForDispatch(
+  isFreshTurn: boolean,
+  isQueuedDispatch: boolean,
+): boolean {
+  return isFreshTurn && isQueuedDispatch
 }
 
 /**
  * awaitModelFor @217174519: extract keys from eligible messages; no-op when
  * nothing is extractable; otherwise publish the union with the current set
  * (new Set — never mutate the published snapshot).
+ *
+ * CC 2.1.286 (item 55): plain user messages are only registered when the
+ * dispatch came from the message queue (`isQueuedDispatch` = official run's
+ * new 15th param `mt`, fed from `ht=inputSource==="queued"` @225767067 —
+ * see shouldAwaitModelForDispatch). Typed sends while idle skip the gray
+ * entirely (official gate `L&&mt` @225818516; v285 gated on the fresh-turn
+ * flag alone @224563299 and always grayed). queued_command attachment
+ * events stay unconditional — the official applyEvent attachment branch is
+ * identical in v285 (@224558227) and v286 (@225813406).
+ *
+ * Default is `false` (typed/direct dispatch — the v286 idle-send behavior).
  */
-export function awaitModelForMessages(messages: readonly Message[]): void {
+export function awaitModelForMessages(
+  messages: readonly Message[],
+  isQueuedDispatch: boolean = false,
+): void {
   const keys = messages
-    .filter(isAwaitingEligibleMessage)
+    .filter(
+      message =>
+        isQueuedCommandAttachment(message) ||
+        (shouldAwaitModelForDispatch(true, isQueuedDispatch) &&
+          isAwaitingUserMessage(message)),
+    )
     .flatMap(message => {
       const key = messageAwaitingKey(message)
       return key !== undefined ? [key] : []

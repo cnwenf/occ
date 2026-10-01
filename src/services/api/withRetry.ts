@@ -55,6 +55,17 @@ import {
   isImageUnprocessableError,
   isOutputContentFilteredError,
 } from './errorUtils.js'
+// CC 2.1.286 (items A/B/D): fast-rejection store, ladder gate, allowlist and
+// the shared per-model-call retry ledger.
+import {
+  hasEverOrFallbackFastRejected,
+  isFastRejectedFallback,
+  isSpeedParamRejection,
+  markFastRejected,
+} from '../../utils/model/fastRejection.js'
+import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
+import { isModelFallbackDisabled } from '../../utils/model/modelLadder.js'
+import { type ModelCallRetries, NoApiAttemptsLeftError } from './modelCallRetries.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -272,6 +283,30 @@ interface RetryOptions {
    * retries). Undefined on the streaming path, so the cap never fires there.
    */
   nonStreamingTimeoutMs?: number
+  /**
+   * CC 2.1.286 (item-A): this model was reached via a refusal fallback (the
+   * binary's `r.modelIsRefusalFallbackTarget`). Together with the
+   * fast-rejection store (`SYn`) it gates the new speed-param-rejection retry
+   * branch: a fallback target that rejects the `speed` parameter is recorded
+   * and retried at standard speed instead of failing the turn.
+   */
+  modelIsRefusalFallbackTarget?: boolean
+  /**
+   * CC 2.1.286 (item-B): the previous model of the same tier computed by the
+   * ladder (`src/utils/model/modelLadder.ts` ≡ binary `oPr`/`GBn`), threaded
+   * by the query engine. Used as the fallback when the API REFUSES the
+   * resolved model (404/403) on firstParty and no `--fallback-model` was
+   * given (binary `Pn=r.fallbackModel??(Kn&&Fl(r.model)==="firstParty"?
+   * iOe(r):void 0)`).
+   */
+  accessFallbackModel?: string
+  /**
+   * CC 2.1.286 (item-D): shared per-model-call retry ledger (binary `FFt`,
+   * `src/services/api/modelCallRetries.ts`). One limit covers a whole model
+   * call — with default retry settings a failing call sends at most 14
+   * requests (11 withRetry + 1 chain hop + 2 credential renewals).
+   */
+  modelCallRetries?: ModelCallRetries
 }
 
 export class CannotRetryError extends Error {
@@ -305,6 +340,12 @@ export class FallbackTriggeredError extends Error {
       | 'permission_denied'
       | 'overloaded'
       | 'server_error' = 'overloaded',
+    /**
+     * CC 2.1.286 (item-B): the binary's `Tx` constructor gained a 4th arg —
+     * the original error (`new Tx(r.model,Pn,Qo,qt)`) — so the caller can
+     * inspect the refusal that triggered the hop.
+     */
+    public readonly originalError?: unknown,
   ) {
     super(`Model fallback triggered: ${originalModel} -> ${fallbackModel}`)
     this.name = 'FallbackTriggeredError'
@@ -364,6 +405,21 @@ export async function* withRetry<T>(
     const attemptStartTime = Date.now()
     if (options.signal?.aborted) {
       throw new APIUserAbortError()
+    }
+    // CC 2.1.286 (item-D): binary loop head
+    //   `if(r.modelCallRetries?.takeApiAttempt()===!1)throw new Fd(new pZ,h)`
+    // — the whole-call attempt gate. When the shared ledger is dry (e.g. the
+    // idle-compact path's `{count:1}` budget), no request is sent at all.
+    if (options.modelCallRetries?.takeApiAttempt() === false) {
+      throw new CannotRetryError(new NoApiAttemptsLeftError(), retryContext)
+    }
+
+    // CC 2.1.286 (item-A): binary loop-head coercion
+    //   `if(Ke=!1,h.fastMode&&rBt(h.model))h.fastMode=!1`
+    // — a model family already forced to standard speed this session runs at
+    // standard speed from the FIRST attempt (no re-failing 400).
+    if (retryContext.fastMode && isFastRejectedFallback(retryContext.model)) {
+      retryContext.fastMode = false
     }
 
     // Capture whether fast mode is active before this attempt
@@ -439,6 +495,18 @@ export async function* withRetry<T>(
       if (isOutputContentFilteredError(error)) {
         logEvent('api_request', {
           reason: 'api_request_output_content_filtered',
+        })
+        throw new CannotRetryError(error, retryContext)
+      }
+
+      // CC 2.1.286 (item-D): binary catch top
+      //   `if(r.modelCallRetries?.outOfApiAttempts())throw m("api_request",
+      //     "api_request_attempts_exhausted"),new Fd(qt,h)`
+      // — once the whole-call ledger is dry, any further failure is fatal
+      // (no retry paths below may consume more requests).
+      if (options.modelCallRetries?.outOfApiAttempts()) {
+        logEvent('api_request', {
+          reason: 'api_request_attempts_exhausted',
         })
         throw new CannotRetryError(error, retryContext)
       }
@@ -558,6 +626,27 @@ export async function* withRetry<T>(
         }
       }
 
+      // CC 2.1.286 (item-A): binary branch1 — placed BEFORE branch2 (the
+      // 400 fast-not-enabled path below), matching the official order:
+      //   `if(en&&lOe(qt,h.model)&&(r.modelIsRefusalFallbackTarget||SYn(h.model)))
+      //      {if(aBo(h.model),h.fastMode=!1,Ln)$t--;continue}`
+      // The API rejected the `speed` parameter for a refusal/fallback target
+      // model (400 `'…' does not support the \`speed\` parameter`): record the
+      // family in the fast-rejection store, drop to standard speed and retry
+      // — the turn no longer fails when the fallback model can't run fast.
+      // `Ln` ≡ watchdogRetryEnabled attempt give-back (2.1.281 `if(Sn)gt--`).
+      if (
+        wasFastModeActive &&
+        isSpeedParamRejection(error, retryContext.model) &&
+        (options.modelIsRefusalFallbackTarget ||
+          hasEverOrFallbackFastRejected(retryContext.model))
+      ) {
+        markFastRejected(retryContext.model)
+        retryContext.fastMode = false
+        if (watchdogRetryEnabled) attempt--
+        continue
+      }
+
       // Fast mode fallback: if the API rejects the fast mode parameter
       // (e.g., org doesn't have fast mode enabled), permanently disable fast
       // mode and retry at standard speed.
@@ -629,46 +718,59 @@ export async function* withRetry<T>(
         }
       }
 
-      // 2.1.152/2.1.166 (A16): trigger model fallback immediately (no
-      // 529-counting) when the API rejects the requested model —
-      //   - model_not_found (404 not_found_error referencing a model), OR
-      //   - permission_denied (403 permission_error referencing a model), OR
-      //   - a 5xx server error that is NOT a 529 overload — but ONLY when the
-      //     retry watchdog is OFF (with the watchdog on, 5xx is retried
-      //     instead of falling back, matching the binary's `!vge()&&v3o(b)`).
-      // Mirrors the binary:
-      //   if((FTc(b)||UTc(b)||!vge()&&v3o(b))&&n.fallbackModel&&n.fallbackModel!==n.model)
-      //     {let R=FTc(b)?"model_not_found":UTc(b)?"permission_denied":"server_error"; ...}
-      const fallbackTriggerReason = getFallbackTriggerReason(error)
-      const is5xxTrigger =
-        is5xxServerError(error) && !isRetryWatchdogEnabled()
+      // CC 2.1.286 (item-B): binary trigger rewrite (byte-verified v286):
+      //   let Kn=NJe(qt)||LJe(qt),
+      //       Pn=r.fallbackModel??(Kn&&Fl(r.model)==="firstParty"?iOe(r):void 0);
+      //   if((Kn||!g3()&&dOe(qt))&&Pn&&Pn!==r.model){
+      //     let Qo=NJe(qt)?"model_not_found":LJe(qt)?"permission_denied":"server_error";
+      //     throw i("tengu_api_model_not_found_fallback_triggered",
+      //       {original_model:St(r.model),fallback_model:St(Pn),provider:CT(),reason:c(Qo)}),
+      //       new Tx(r.model,Pn,Qo,qt)}
+      // v285→v286 deltas: (a) when the API REFUSES the resolved model
+      // (404 model_not_found / 403 permission_denied) on firstParty, the
+      // ladder's accessFallbackModel — the previous model of the same tier
+      // (gated by tengu_nifty_finch, computed in src/utils/model/modelLadder.ts)
+      // — is used even without --fallback-model; (b) the telemetry event now
+      // logs UNCONDITIONALLY with a `reason` field (v285 logged only for
+      // model_not_found, without reason); (c) the thrown error carries the
+      // original error. Mappings: NJe/LJe ≡ isModelNotFoundError/
+      // isModelPermissionDeniedError; g3 ≡ isRetryWatchdogEnabled; dOe ≡
+      // is5xxServerError; Fl(model) ≡ getAPIProvider() (OCC has no per-model
+      // provider resolution — the global provider is the established mapping);
+      // iOe ≡ resolveAccessFallbackModel below.
+      const isRefusalTrigger =
+        isModelNotFoundError(error) || isModelPermissionDeniedError(error)
+      const effectiveFallback =
+        options.fallbackModel?.[0] ??
+        (isRefusalTrigger && getAPIProvider() === 'firstParty'
+          ? resolveAccessFallbackModel(options)
+          : undefined)
       if (
-        (fallbackTriggerReason !== null || is5xxTrigger) &&
-        options.fallbackModel &&
-        options.fallbackModel.length > 0
+        (isRefusalTrigger ||
+          (is5xxServerError(error) && !isRetryWatchdogEnabled())) &&
+        effectiveFallback !== undefined &&
+        effectiveFallback !== options.model
       ) {
-        const primaryFallback = options.fallbackModel[0]
-        if (primaryFallback !== options.model) {
-          const trigger =
-            fallbackTriggerReason ?? 'server_error'
-          if (trigger === 'model_not_found') {
-            logEvent('tengu_api_model_not_found_fallback_triggered', {
-              original_model:
-                options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              fallback_model:
-                primaryFallback as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-              provider: getAPIProviderForStatsig(),
-            })
-            logForDebugging(`API model not found: ${options.model}`, {
-              level: 'error',
-            })
-          }
-          throw new FallbackTriggeredError(
-            options.model,
-            primaryFallback,
-            trigger,
-          )
-        }
+        const trigger = isModelNotFoundError(error)
+          ? 'model_not_found'
+          : isModelPermissionDeniedError(error)
+            ? 'permission_denied'
+            : 'server_error'
+        logEvent('tengu_api_model_not_found_fallback_triggered', {
+          original_model:
+            options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          fallback_model:
+            effectiveFallback as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          provider: getAPIProviderForStatsig(),
+          reason:
+            trigger as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        })
+        throw new FallbackTriggeredError(
+          options.model,
+          effectiveFallback,
+          trigger,
+          error,
+        )
       }
 
       // 2.1.157 (J9): unprocessable images — the API rejects the whole request
@@ -732,7 +834,37 @@ export async function* withRetry<T>(
       const watchdogRetryable =
         isRetryWatchdogEnabled() && isWatchdogRetryable(error)
       if (attempt > maxRetries && !persistent && !watchdogRetryable) {
-        throw new CannotRetryError(error, retryContext)
+        // CC 2.1.286 (item-D): binary exhausted block (byte-verified v286):
+        //   if($t>s&&!dn){let Qo=!(qt instanceof It&&qt.status===401)||Fe!==
+        //     void 0||Lke()||bse(qt)||!y7()&&Wc();
+        //     if(!SFt(qt,h.model)||!Qo||r.modelCallRetries?.
+        //       takeCredentialRenewal()!==!0)throw m("api_request",
+        //       "api_request_retry_exhausted"),new Fd(qt,h);$t--}
+        // A credential-renewal error (401/403 auth family, `SFt` ≡
+        // isCredentialRenewalError below) gets up to VMo (2) attempt rewinds
+        // per model call — shared via the ledger — before the retry is
+        // exhausted. Qo mirrors: !(401) || Fe (claude.ai OAuth access token
+        // present) || Lke (firstParty) || bse (revoked-token 401/403) ||
+        // !y7()&&Wc(). Documented simplifications: bse's auth-mode internals
+        // (Bn/mv/lre) have no clean OCC surface → mapped to
+        // isOAuthTokenRevokedError; the profile-implicit term !y7()&&Wc() ≡
+        // false (no OCC surface); Lke ≡ firstParty provider.
+        const credentialRenewalEligible =
+          !(error instanceof APIError && error.status === 401) ||
+          getClaudeAIOAuthTokens()?.accessToken !== undefined ||
+          getAPIProvider() === 'firstParty' ||
+          isOAuthTokenRevokedError(error)
+        if (
+          !isCredentialRenewalError(error) ||
+          !credentialRenewalEligible ||
+          options.modelCallRetries?.takeCredentialRenewal() !== true
+        ) {
+          logEvent('api_request', {
+            reason: 'api_request_retry_exhausted',
+          })
+          throw new CannotRetryError(error, retryContext)
+        }
+        attempt--
       }
 
       // 2.1.208 (#15): a 401 caused by a failed apiKeyHelper must surface the
@@ -968,6 +1100,12 @@ export async function* withRetry<T>(
       // In persistent mode the for-loop `attempt` is clamped at maxRetries+1;
       // use persistentAttempt for telemetry/yields so they show the true count.
       const reportedAttempt = persistent ? persistentAttempt : attempt
+      // CC 2.1.286 (item-D): binary `r.modelCallRetries?.reportHttpFailure(qt,"retry")`
+      // immediately before the tengu_api_retry telemetry — feeds the shared
+      // ledger (classifiable errors run through the decision engine; others
+      // take the plain retries+1 increment) so its counts stay authoritative
+      // across withRetry invocations within one model call.
+      options.modelCallRetries?.reportHttpFailure(error, 'retry')
       logEvent('tengu_api_retry', {
         attempt: reportedAttempt,
         delayMs: delayMs,
@@ -1155,8 +1293,10 @@ export function is529Error(error: unknown): boolean {
 export function isModelNotFoundError(error: unknown): boolean {
   if (!(error instanceof APIError) || error.status !== 404) return false
   const message = error.message ?? ''
+  // `type` is on the JSON body, not the SDK's APIError typings.
+  const errorType = (error as { type?: string }).type
   return (
-    (error.type === 'not_found_error' ||
+    (errorType === 'not_found_error' ||
       message.includes('"type":"not_found_error"')) &&
     message.includes('model:')
   )
@@ -1170,8 +1310,10 @@ export function isModelNotFoundError(error: unknown): boolean {
 export function isModelPermissionDeniedError(error: unknown): boolean {
   if (!(error instanceof APIError) || error.status !== 403) return false
   const message = error.message ?? ''
+  // `type` is on the JSON body, not the SDK's APIError typings.
+  const errorType = (error as { type?: string }).type
   return (
-    (error.type === 'permission_error' ||
+    (errorType === 'permission_error' ||
       message.includes('"type":"permission_error"')) &&
     message.includes('model:')
   )
@@ -1215,6 +1357,73 @@ export function getFallbackTriggerReason(
   if (isModelPermissionDeniedError(error)) return 'permission_denied'
   if (is5xxServerError(error)) return 'server_error'
   return null
+}
+
+/**
+ * CC 2.1.286 (item-B): binary `iOe({accessFallbackModel:e,toolFreeHelper:n})`:
+ *   return e!==void 0&&!d9e()&&Hr(e)&&(n===!0||OTe(e))?e:void 0
+ * The ladder candidate is honored when fallbacks are not env-disabled and the
+ * model passes the allowlist. Documented simplifications: `OTe(e)` (the
+ * auto-model-mode check) ≡ true — OCC has no auto-model mode — so the
+ * toolFreeHelper arm collapses; `d9e` ≡ isModelFallbackDisabled; `Hr` ≡
+ * isModelAllowed.
+ */
+function resolveAccessFallbackModel(
+  options: RetryOptions,
+): string | undefined {
+  const candidate = options.accessFallbackModel
+  return candidate !== undefined &&
+    !isModelFallbackDisabled() &&
+    isModelAllowed(candidate)
+    ? candidate
+    : undefined
+}
+
+/**
+ * CC 2.1.286 (item-D): binary `SFt(e,n)` (byte-verified):
+ *   e instanceof It&&e.status===401||bse(e)||aOe(e)!==void 0&&Boolean(IIe())||
+ *   X7(e)||cOe(e,n)||_F(e)
+ * Credential-renewal classifier for the exhausted-block rewind. Documented
+ * simplifications: the proxy-auth term (`aOe`/`IIe`) is skipped (no OCC
+ * proxy-auth surface); `bse`'s auth-mode internals (Bn/mv/lre) have no clean
+ * OCC surface → mapped to isOAuthTokenRevokedError; `X7` ≡
+ * isOAuthTokenRevokedError; `cOe(e,n)` = the AWS arms (below); `_F(e)` = the
+ * Vertex/Google arms → isVertexAuthError || classifyCloudCredentialError
+ * 'Google Cloud' (OCC's established env-gated GCP classifier).
+ */
+function isCredentialRenewalError(error: unknown): boolean {
+  // Binary SFt arm 1: plain 401.
+  if (error instanceof APIError && error.status === 401) {
+    return true
+  }
+  // Binary bse/X7 arms: revoked OAuth token (403 message match).
+  if (isOAuthTokenRevokedError(error)) {
+    return true
+  }
+  // Binary cOe(e,n) arm: under any AWS-family env (bedrock / anthropic_aws /
+  // mantle), a CredentialsProviderError (B9e) or a 403 renews credentials;
+  // plus uOe: a 401 while the model resolves to anthropicAws/mantle.
+  const provider = getAPIProvider()
+  if (
+    provider === 'bedrock' ||
+    provider === 'anthropic_aws' ||
+    provider === 'mantle'
+  ) {
+    if (
+      isAwsCredentialsProviderError(error) ||
+      (error instanceof APIError && error.status === 403) ||
+      (error instanceof APIError &&
+        error.status === 401 &&
+        (provider === 'anthropic_aws' || provider === 'mantle'))
+    ) {
+      return true
+    }
+  }
+  // Binary _F(e) arm: Vertex/Google credential errors.
+  return (
+    isVertexAuthError(error) ||
+    classifyCloudCredentialError(error) === 'Google Cloud'
+  )
 }
 
 function isOAuthTokenRevokedError(error: unknown): boolean {

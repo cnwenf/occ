@@ -1589,6 +1589,127 @@ export function clearOAuthTokenCache(): void {
   clearKeychainCache()
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.286 (changelog #2): unusable-token recheck when disk is UNCHANGED.
+//
+// Official bug (macOS): user runs /login in another window; the stale
+// ~/.claude/.credentials.json is left behind; this window's memoized token
+// getter keeps serving the dead token, and because the file version/mtime
+// doesn't change, v285's change-checker never reloaded — UI showed "Not
+// logged in" / "Login expired" forever. v286 adds ik(), a 30s-throttled,
+// firstParty-only recheck invoked on the disk-unchanged branches.
+//
+// Byte-verified v286 sources (2.1.286 linux-x64 ELF):
+//   ik (@199703297 region):
+//     async function ik(e,n){try{if(!Bn())return;
+//       let r=e.promise?await e.promise.catch(()=>null):e.value;
+//       if(r===void 0)return;
+//       if(r!==null&&!Pf(r))return;
+//       let s=Date.now();
+//       if(s-e.lastUnusableTokenRecheckAt<PVo)return;
+//       if(e.lastUnusableTokenRecheckAt=s,r!==null)
+//         e.lastKeychainAccessToken=r.accessToken;
+//       await kf(e,n)}catch(r){d(r)}}
+//   PVo=30000 (@198913842); Bn()=`Pe()==="firstParty"`; kf = forced reload.
+//   Pf (@199702674):
+//     function Pf(e){if(e){let n=e.refreshToken;
+//       return n===""||!!n&&bi.has(n)}if(lc())return!1;return}
+//   lc() = CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST; bi = dead-refresh-token Set
+//   (v285 baseline registry, populated by the invalid_grant flow `f8n`).
+//   qk (v285's wA) gained `return ik(e,n)` on the version-match branch and
+//   `await ik(e,n)` on the mtime-match branch; class Wk (v285's bA) gained
+//   the `lastUnusableTokenRecheckAt=0` field.
+//
+// OCC adaptations (no invention — each maps an official construct onto an
+// existing OCC surface):
+// - Bn() → getAPIProvider() === 'firstParty'.
+// - `e.value` → peek of the lodash memoize cache (zero-arg getter ⇒ cache
+//   key `undefined`); `e.promise` has no OCC analog (no priming flow).
+// - kf → clearOAuthTokenCache() + await getClaudeAIOAuthTokensAsync(), the
+//   forced-reload idiom already established by handleOAuth401ErrorImpl.
+// - `lastKeychainAccessToken` bookkeeping deliberately omitted: OCC's reload
+//   has no change-emitter consumer for it.
+// - `bi` mirror (deadOAuthRefreshTokens) keeps Pf's exact shape but stays
+//   empty in OCC: the invalid_grant marking flow (`f8n`) is a v285-baseline
+//   gap living partly in src/services/oauth/client.js (outside this port's
+//   file boundary). The `refreshToken === ''` half is the live signal for
+//   the leftover-credentials bug.
+// ---------------------------------------------------------------------------
+
+/** PVo=30000, byte-verified @198913842. */
+const UNUSABLE_TOKEN_RECHECK_THROTTLE_MS = 30_000
+
+/** Mirror of the official `lastUnusableTokenRecheckAt` field on class Wk. */
+let lastUnusableTokenRecheckAt = 0
+
+/**
+ * Mirror of the official dead-refresh-token registry `bi` (populated by the
+ * invalid_grant flow `f8n`, which OCC hasn't ported yet — stays empty).
+ */
+const deadOAuthRefreshTokens = new Set<string>()
+
+/**
+ * Pf: whether a held token is unusable (must be re-read from disk/keychain).
+ * `undefined` return for the null-token case mirrors the official `return`
+ * (bare, no value) when not host-managed.
+ */
+export function isOAuthTokenUnusable(
+  tokens: OAuthTokens | null,
+): boolean | undefined {
+  if (tokens) {
+    const refreshToken = tokens.refreshToken
+    return (
+      refreshToken === '' ||
+      (!!refreshToken && deadOAuthRefreshTokens.has(refreshToken))
+    )
+  }
+  // lc(): host-managed providers trust the host (token-less is fine).
+  if (isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
+    return false
+  }
+  return undefined
+}
+
+/**
+ * Official `e.promise ? await e.promise.catch(()=>null) : e.value` — read the
+ * currently HELD (memoized) token without populating the cache. lodash
+ * memoize of a zero-arg getter keys the cache at `undefined`; a cache miss
+ * (nothing held yet) returns undefined, which ik treats as "nothing to
+ * recheck".
+ */
+function peekCachedOAuthTokens(): OAuthTokens | null | undefined {
+  const cache = getClaudeAIOAuthTokens.cache
+  if (!cache?.has(undefined)) {
+    return undefined
+  }
+  return cache.get(undefined) as OAuthTokens | null
+}
+
+/**
+ * ik: on a disk-unchanged check, reload credentials when the held token is
+ * unusable (dead/empty refresh token, or logged-out null) — throttled to one
+ * reload per 30s, firstParty-only. Exported for tests.
+ */
+export async function recheckOAuthTokenIfUnusable(): Promise<void> {
+  try {
+    // Bn(): firstParty only.
+    if (getAPIProvider() !== 'firstParty') return
+    const held = peekCachedOAuthTokens()
+    if (held === undefined) return
+    if (held !== null && !isOAuthTokenUnusable(held)) return
+    const now = Date.now()
+    if (now - lastUnusableTokenRecheckAt < UNUSABLE_TOKEN_RECHECK_THROTTLE_MS) {
+      return
+    }
+    lastUnusableTokenRecheckAt = now
+    // kf: forced reload from disk/keychain.
+    clearOAuthTokenCache()
+    await getClaudeAIOAuthTokensAsync()
+  } catch (error) {
+    logError(error)
+  }
+}
+
 let lastCredentialsMtimeMs = 0
 
 // Cross-process staleness: another CC instance may write fresh tokens to
@@ -1596,7 +1717,8 @@ let lastCredentialsMtimeMs = 0
 // Without this, terminal 1's /login fixes terminal 1; terminal 2's /login
 // then revokes terminal 1 server-side, and terminal 1's memoize never
 // re-reads — infinite /login regress (CC-1096, GH#24317).
-async function invalidateOAuthCacheIfDiskChanged(): Promise<void> {
+// Exported for tests (sole production caller: checkAndRefreshOAuthTokenIfNeededImpl).
+export async function invalidateOAuthCacheIfDiskChanged(): Promise<void> {
   try {
     const { mtimeMs } = await stat(
       join(getClaudeConfigHomeDir(), '.credentials.json'),
@@ -1604,7 +1726,11 @@ async function invalidateOAuthCacheIfDiskChanged(): Promise<void> {
     if (mtimeMs !== lastCredentialsMtimeMs) {
       lastCredentialsMtimeMs = mtimeMs
       clearOAuthTokenCache()
+      return
     }
+    // 2.1.286 qk: disk unchanged → run the ik() unusable-token recheck
+    // (leftover-credentials recovery, 30s-throttled).
+    await recheckOAuthTokenIfUnusable()
   } catch {
     // ENOENT — macOS keychain path (file deleted on migration). Clear only
     // the memoize so it delegates to the keychain cache's 30s TTL instead

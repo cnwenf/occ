@@ -263,7 +263,9 @@ describe('npmPluginFetch: resolveNpmPackage (official L6n)', () => {
     expect(execCalls).toHaveLength(1)
     const call = execCalls[0]
     expect(call.file).toBe('npm')
-    expect(call.args).toEqual([
+    // v2.1.286 `dY` hardening: every npm argv prepends --git=<workDir>/git-is-disabled.
+    expect(call.args[0]).toBe(`--git=${join(workDir, 'git-is-disabled')}`)
+    expect(call.args.slice(1)).toEqual([
       'view',
       '--json',
       '--',
@@ -297,7 +299,7 @@ describe('npmPluginFetch: resolveNpmPackage (official L6n)', () => {
       workDir,
       registry: 'https://r',
     })
-    expect(execCalls[0].args.slice(0, 6)).toEqual([
+    expect(execCalls[0].args.slice(1, 7)).toEqual([
       'view',
       '--json',
       '--registry',
@@ -413,7 +415,9 @@ describe('npmPluginFetch: packNpmTarball (official Wnr)', () => {
     expect(packed.equals(tarball)).toBe(true)
     expect(execCalls).toHaveLength(1)
     const call = execCalls[0]
-    expect(call.args).toEqual([
+    // v2.1.286 `dY` hardening: --git=<workDir>/git-is-disabled is prepended.
+    expect(call.args[0]).toBe(`--git=${join(workDir, 'git-is-disabled')}`)
+    expect(call.args.slice(1)).toEqual([
       'pack',
       '--ignore-scripts',
       '--loglevel=error',
@@ -860,7 +864,7 @@ describe('npmPluginFetch: end-to-end pipeline (official qnr npm lane)', () => {
     const workDir = await makeTempDir()
     const dest = join(await makeTempDir(), 'plugin')
     execHandler = async call => {
-      if (call.args[0] === 'view') {
+      if (call.args.includes('view')) {
         return {
           stdout: viewPayload({ 'dist.integrity': sriOf('sha512', tarball) }),
           stderr: '',
@@ -889,7 +893,7 @@ describe('npmPluginFetch: end-to-end pipeline (official qnr npm lane)', () => {
     const workDir = await makeTempDir()
     const dest = join(await makeTempDir(), 'plugin')
     execHandler = async call => {
-      if (call.args[0] === 'view') {
+      if (call.args.includes('view')) {
         return {
           stdout: viewPayload({ 'dist.integrity': 'sha512-TAMPERED' }),
           stderr: '',
@@ -914,7 +918,7 @@ describe('npmPluginFetch: end-to-end pipeline (official qnr npm lane)', () => {
     const workDir = await makeTempDir()
     const dest = join(await makeTempDir(), 'plugin')
     execHandler = async call => {
-      if (call.args[0] === 'view') {
+      if (call.args.includes('view')) {
         return { stdout: viewPayload({}), stderr: '', code: 0 }
       }
       await writeFile(join(call.opts.cwd as string, 'pkg-1.0.0.tgz'), tarball)
@@ -941,7 +945,7 @@ describe('npmPluginFetch: end-to-end pipeline (official qnr npm lane)', () => {
       { name: 'package/a.txt', content: Buffer.from('a') },
     ])
     execHandler = async call => {
-      if (call.args[0] === 'view') {
+      if (call.args.includes('view')) {
         return {
           stdout: viewPayload({ 'dist.integrity': sriOf('sha512', impostor) }),
           stderr: '',
