@@ -99,6 +99,61 @@ for f in "${TEST_FILES[@]}"; do
   fi
 done
 
+# ---------------------------------------------------------------------------
+# Same-worker mock-leak regression (OCC-103 round-3 re-acceptance, P2).
+#
+# The per-file isolation above means cross-file mock.module() leaks can NEVER
+# manifest in CI — which also means a REGRESSION of the leak-repair pattern
+# would ship green. Concretely: src/tools/shared/__tests__/settingSourcesPropagation281.test.ts
+# mocks ../../../bootstrap/state.js with the delegation pattern (real getters
+# captured by value in beforeAll; a `mockActive` flag flipped to false in
+# afterAll so the mocked getters pass through to the REAL implementations for
+# every later file in the same process). If someone "simplifies" that afterAll
+# back to a plain mock.module(..., () => actualStateModule) spread — or removes
+# it — every file that runs AFTER the polluter in one shared process gets
+# frozen stub values (getFlagSettingSourcesRaw() → ['user'] etc.), and
+# src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts fails.
+#
+# So we run the polluter → victim pair in ONE bun process here (polluter first,
+# order matters — bun executes the files in the order given). GREEN requires
+# the afterAll pass-through to actually serve the real getters; RED is the
+# exact round-3 documented failure signature. This step is the CI enforcement
+# that per-file isolation structurally cannot provide. Mutation-verified:
+# reverting the afterAll to the old spread pattern turns this pair RED.
+echo "Same-worker mock-leak regression (polluter -> victim pair, single process)..."
+LEAK_PAIR_POLLUTER="src/tools/shared/__tests__/settingSourcesPropagation281.test.ts"
+LEAK_PAIR_VICTIM="src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts"
+# bun test treats positional args as FILTERS — a renamed/moved file would
+# silently match nothing and the pair would "pass" with only one file run.
+# Fail loudly if either side of the pair disappears.
+if [ ! -f "$LEAK_PAIR_POLLUTER" ] || [ ! -f "$LEAK_PAIR_VICTIM" ]; then
+  FAIL=1
+  FAILED_FILES+=("same-worker leak pair (test file missing — update the pair paths)")
+  echo "FAIL  same-worker leak pair: polluter or victim file not found"
+  echo "      expected: $LEAK_PAIR_POLLUTER"
+  echo "                $LEAK_PAIR_VICTIM"
+  echo ""
+else
+LEAK_PAIR_OUTPUT=$(bun test "$LEAK_PAIR_POLLUTER" "$LEAK_PAIR_VICTIM" --timeout 10000 2>&1)
+LEAK_PAIR_EXIT=$?
+LEAK_PAIR_PASS=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ pass' | tail -1 | grep -oE '[0-9]+' || echo 0)
+LEAK_PAIR_FAIL=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ fail' | tail -1 | grep -oE '[0-9]+' || echo 0)
+LEAK_PAIR_FILES=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE 'across [0-9]+ files?' | tail -1 | grep -oE '[0-9]+' || echo 0)
+TOTAL_PASS=$((TOTAL_PASS + LEAK_PAIR_PASS))
+TOTAL_FAIL=$((TOTAL_FAIL + LEAK_PAIR_FAIL))
+if [ "$LEAK_PAIR_EXIT" -ne 0 ] || [ "$LEAK_PAIR_FAIL" -ne 0 ] || [ "$LEAK_PAIR_FILES" -ne 2 ]; then
+  FAIL=1
+  FAILED_FILES+=("$LEAK_PAIR_POLLUTER + $LEAK_PAIR_VICTIM (same-worker pair)")
+  echo "FAIL  same-worker leak pair  ($LEAK_PAIR_FAIL fail, $LEAK_PAIR_PASS pass, $LEAK_PAIR_FILES files)"
+  echo "      A failure here means the bootstrap/state.js mock-leak repair"
+  echo "      (settingSourcesPropagation281 afterAll delegation) has regressed."
+  echo "$LEAK_PAIR_OUTPUT" | grep -E '^\s*\(fail\)|^\s*✗|error:|Error:' | head -10
+  echo ""
+else
+  echo "OK    same-worker leak pair  ($LEAK_PAIR_PASS pass across $LEAK_PAIR_FILES files)"
+fi
+fi
+
 echo ""
 echo "============================================"
 echo "  Total: $TOTAL_PASS pass / $TOTAL_FAIL fail / $TOTAL_SKIP skip"
