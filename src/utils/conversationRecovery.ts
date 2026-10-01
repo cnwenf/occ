@@ -35,7 +35,7 @@ import {
   createAssistantMessage,
   createUserMessage,
   filterOrphanedThinkingOnlyMessages,
-  filterUnresolvedToolUses,
+  filterUnresolvedToolUsesDetailed,
   filterWhitespaceOnlyAssistantMessages,
   isToolUseResultMessage,
   NO_RESPONSE_REQUESTED,
@@ -212,10 +212,17 @@ export function deserializeMessagesWithInterruptDetection(
       }
     }
 
-    // Filter out unresolved tool uses and any synthetic messages that follow them
-    const filteredToolUses = filterUnresolvedToolUses(
-      sanitizedMessages,
-    ) as NormalizedMessage[]
+    // Filter out unresolved tool uses and any synthetic messages that follow
+    // them. Official 2.1.285 (df-1): the detailed variant (f0e port) also
+    // returns the TRAILING-REGION-scoped unresolved tool-use id set — the
+    // official `ze`, filled by f0e's outTrailingUnresolvedToolUseIds reverse
+    // scan. ze.size>0 is the single signal the official feeds to BOTH the
+    // V4o S-branch and the staleness walk-set selector.
+    const {
+      messages: filteredToolUsesRaw,
+      trailingUnresolvedToolUseIds,
+    } = filterUnresolvedToolUsesDetailed(sanitizedMessages)
+    const filteredToolUses = filteredToolUsesRaw as NormalizedMessage[]
 
     // Filter out orphaned thinking-only assistant messages that can cause API errors
     // during resume. These occur when streaming yields separate messages per content
@@ -230,14 +237,15 @@ export function deserializeMessagesWithInterruptDetection(
       filteredThinking,
     ) as NormalizedMessage[]
 
-    // Official 2.1.269 (E40): staleness gates run inside the official's
-    // deserializeMessages (`iHn`) and downgrade a stale interruption to
-    // {kind:"none"} before any resume consumer sees it. The official walks
-    // the pre-filter set when trailing unresolved tool uses were dropped
-    // (`F.size>0||Pe?me:qUn(xe)`); OCC's filter doesn't report dropped ids,
-    // so the length delta is the proxy.
-    const droppedUnresolvedToolUses =
-      filteredToolUses.length !== sanitizedMessages.length
+    // Official 2.1.269 (E40) + 2.1.285 (df-1): staleness gates run inside
+    // the official's deserializeMessages (`iHn`) and downgrade a stale
+    // interruption to {kind:"none"} before any resume consumer sees it. The
+    // official walk-set selector is `ze.size>0||Et?Qe:nHe(Ut)` — Qe being the
+    // PRE-filter set: the same trailing-region-scoped ze that gates the V4o
+    // S-branch decides which rows the staleness walk sees. OCC has no surface
+    // for the Et re-detection (staged machinery), so the selector reduces to
+    // ze.size>0 ? pre-filter : post-filter.
+    const hasDroppedTrailingToolUses = trailingUnresolvedToolUseIds.size > 0
     // Official 2.1.285 (#54, oHe wrapper @ the resume module):
     //   oHe(e,n){let r=[],s=V4o(e,n,r),g=r[0];
     //     return s.kind==="ended_at_max_turns"
@@ -251,7 +259,7 @@ export function deserializeMessagesWithInterruptDetection(
     // (DeserializeResult carries no rescueSuppressed) — NO-OP, see ledger §4.
     const detected = detectTurnInterruption(
       filteredMessages,
-      droppedUnresolvedToolUses,
+      hasDroppedTrailingToolUses,
     )
     let internalState: InternalInterruptionState
     if (detected.kind === 'ended_at_max_turns') {
@@ -266,7 +274,7 @@ export function deserializeMessagesWithInterruptDetection(
     }
     internalState = applyResumeStalenessGates(
       internalState,
-      droppedUnresolvedToolUses
+      hasDroppedTrailingToolUses
         ? (sanitizedMessages as NormalizedMessage[])
         : filteredMessages,
     )
@@ -428,9 +436,11 @@ function detectTurnInterruption(
     //        &&B.attachment.exitCommitted===!1
     //   ...
     //   if(M&&!n)return{kind:"ended_at_max_turns"}
-    // `n` (official: ze.size>0 — trailing unresolved tool-use ids dropped by
-    // the filter) suppresses the classification; OCC's proxy is the
-    // droppedUnresolvedToolUses length delta threaded in by the caller.
+    // `n` = official ze.size>0 — the TRAILING-REGION-scoped unresolved
+    // tool-use ids from f0e's reverse scan (df-1: previously a global
+    // dropped-length proxy, which let any mid-transcript orphan suppress a
+    // legitimate clean end). Threaded in by the caller from
+    // filterUnresolvedToolUsesDetailed().trailingUnresolvedToolUseIds.
     // Pre-285 OCC/official both classified this tail as interrupted_turn,
     // which injected a phantom "Continue from where you left off." on resume.
     if (

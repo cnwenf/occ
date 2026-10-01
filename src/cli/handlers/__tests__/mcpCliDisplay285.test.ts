@@ -240,6 +240,9 @@ describe('2.1.285 item 6 — mcpGetHandler renders typeless stdio servers', () =
       env: { TOKEN: 'secret-value' },
       scope: 'user',
     } as unknown as ScopedMcpServerConfig
+    // E2E-001 fix: mcpGetHandler now resolves through getAllMcpConfigs (the
+    // same full-scope set `mcp list` renders), not getMcpConfigByName.
+    mockedAll = { plain: plainServer }
     mockedByName = { plain: plainServer }
     mockedUserAuthored = { plain: plainServer }
 
@@ -272,6 +275,10 @@ describe('2.1.285 item 5 — mcpGetHandler redacts dynamic-scope stdio secrets',
       env: { API_KEY: 'super-secret' },
       scope: 'dynamic',
     } as ScopedMcpServerConfig
+    // E2E-001 fix: the get handler resolves dynamic-scope servers through
+    // getAllMcpConfigs; seed the mocked full-scope set (real-lookup coverage
+    // lives in mcpGetDynamicScope285.test.ts).
+    mockedAll = { plug: plugServer }
     mockedByName = { plug: plugServer }
     registerAuthoredUnexpandedConfig('plug', plugServer)
 

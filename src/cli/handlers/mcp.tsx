@@ -272,15 +272,22 @@ export async function mcpGetHandler(name: string): Promise<void> {
   logEvent('tengu_mcp_get', {
     name: name as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });
-  const server = getMcpConfigByName(name);
+  // CC 2.1.285 (item 5 / changelog #101, E2E-001): resolve the name from the
+  // SAME full-scope config set `mcp list` renders — getAllMcpConfigs()
+  // (file-backed scopes + dynamic-scope plugin servers + claude.ai) — instead
+  // of getMcpConfigByName (file-backed scopes only). The old lookup returned
+  // not-found for every dynamic-scope (--mcp-config / plugin / SDK) server,
+  // making the v285 sanitize branch below unreachable in real execution and
+  // the not-found suggester recommend the exact name it claimed absent.
+  const {
+    servers
+  } = await getAllMcpConfigs();
+  const server = servers[name] ?? null;
   if (!server) {
     // CC 2.1.285 (item 8): official v285 get handler ends in
     // `si(u2t(t,M,r.size>0))` — M = configured names minus pending/rejected
     // (OCC's getAllMcpConfigs already filters those), r = pending .mcp.json
     // servers. Replaces OCC's drifted `No MCP server found with name: ${name}`.
-    const {
-      servers
-    } = await getAllMcpConfigs();
     return cliError(mcpServerNotFoundMessageWithPending(name, Object.keys(servers), hasPendingProjectMcpServers()));
   }
 

@@ -6,7 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
 OCC tracks upstream Claude Code releases. The baseline catch-up is `2.1.204`;
-versions above that are OCC-specific releases. **Now tracking Claude Code `2.1.285`** — the OCC-101 round, 2026-09-30, landed the byte-verified
+versions above that are OCC-specific releases. **Now tracking Claude Code `2.1.285`** — the OCC-102 round, 2026-10-01, landed the 2.1.285
+catch-up (136 official changelog entries triaged + a full v284↔v285
+linux-x64 ELF binary diff, md5 `95fadb74…`, strings/dd forensics only —
+never executed; the `allowedProviders` managed setting with its provider
+refusal gates, OS-denied managed-read warn+start, the
+`ANTHROPIC_AUTH_TOKEN` org-policy alignment, and the reliability,
+subagent/permission, sandbox/redaction/hooks, and MCP/plugin/git-URL
+slices — full ledger `docs/upstream-version-gap-occ102-2026-10.md`,
+closed by the OCC-103 acceptance-fix round: `mcp get` full-scope
+dynamic-server resolution + stdio redaction observable, the WebFetch
+`allow_web_fetch` managed-policy conjunct, the resume
+trailing-region-scoped `ze` signal, and the production-wiring test
+hardening); before that, the OCC-101 round, 2026-09-30, landed the byte-verified
 2.1.284 subset (Claude Sonnet 5.5 launch series + the Foundry
 resource-name validation, CLAUDE.md memory-rules walker hardening and
 elicitation-hook exit-2 surfacing security items + the
@@ -283,6 +295,7 @@ for the earlier 2.1.211→2.1.212 history. `docs/upstream-version-gap-occ34.md` 
 - Bedrock SigV4 non-default-port fix (OCC-142 round, reconciled onto the OCC-102 landing): a base URL with a non-default port now signs the canonical `Host` header with the port included (`url.hostname` → `url.host` in `@anthropic-ai/bedrock-sdk@0.26.4` `getAuthHeaders`, via a `patchedDependencies` dep-patch) so requests to non-443 Bedrock endpoints no longer fail SigV4 signature validation; default-port behavior unchanged
 - MCP server name `widgets` reserved in cloud sessions (OCC-142 round): `CLAUDE_CODE_REMOTE` sessions now refuse a user-configured MCP server whose name collides with the built-in `widgets` server (close spellings that fold to the same collision key too, e.g. `widgets_`), matching the official `reserved_name` refusal; local sessions unaffected
 - OCC-142 forensic ledger `docs/upstream-version-gap-occ142.md` (full 136-bullet 2.1.285 triage + byte evidence + parallel-round reconciliation with OCC-102)
+- Acceptance-fix round (OCC-103, CHANGES_REQUESTED findings closed — each mutation-self-verified: break → RED → restore → GREEN): `mcp get` now resolves dynamic-scope servers (plugin / `--mcp-config` / SDK) through the same full-scope set `mcp list` renders, making the v285 stdio command/args/env `[REDACTED]` sanitize observable (E2E-001); WebFetch `isEnabled()` gains the managed-policy conjunct — the `allow_web_fetch` managed setting (policy source only, default allow) now disables the tool org-wide, completing the official `!CLAUDE_CODE_DISABLE_WEB_FETCH && Yt(wye)` gate (contract-002); resume `ended_at_max_turns` suppression + staleness walk-set now read the trailing-region-scoped unresolved tool-use set (official `ze`) instead of a global dropped-length proxy, so a mid-transcript orphan no longer injects a phantom continuation (df-1); production-wiring test hardening for the output-content-filter streaming-fallback rethrow, the non-streaming timeout retry cap, fork permission-mode inheritance, the background-shell foreground→background deadline arms, execCommandHook stdio-flag fail-closed threading (real-child), the provider-allowlist client-construction gate, `redactGitUrl` smuggling shapes, and the WebFetch registry-level kill-switch
 
 ## 2.1.361 - 2026-09-30 (OCC-101 review fix round — acceptance findings closed; one production parity change)
 

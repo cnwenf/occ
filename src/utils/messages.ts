@@ -3134,6 +3134,38 @@ export function getToolUseID(message: NormalizedMessage): string | null {
 }
 
 export function filterUnresolvedToolUses(messages: Message[]): Message[] {
+  return filterUnresolvedToolUsesDetailed(messages).messages
+}
+
+/**
+ * Official 2.1.285 `f0e` result (df-1, review of the OCC-102 #54 follow-up):
+ * the filtered transcript plus the TRAILING-REGION-scoped unresolved tool_use
+ * id set — official `ze`, filled via `r.outTrailingUnresolvedToolUseIds`.
+ * Immutable shape: values are returned, not written into caller-owned
+ * out-params the way the official minified code does.
+ */
+export type FilterUnresolvedToolUsesResult = {
+  readonly messages: Message[]
+  readonly trailingUnresolvedToolUseIds: ReadonlySet<string>
+}
+
+/**
+ * Official 2.1.285 `f0e` (filterUnresolvedToolUses WITH options). Caller:
+ *
+ * ```js
+ * St=f0e(Ne,n,{...,outTrailingUnresolvedToolUseIds:ze,...})
+ * // ze.size>0 then feeds BOTH consumers:
+ * //   oHe(Ut, ze.size>0)                                  // V4o S-branch `n`
+ * //   Zt=!vn&&kind!=="none"&&(ze.size>0||Et?Qe:nHe(Ut))   // staleness walk set
+ * ```
+ *
+ * The trailing scan runs on the PRE-filter array (rows later dropped by the
+ * filter are still scanned), only when the global unresolved set S is
+ * non-empty (official early-returns `e` when S.size===0 → ze stays empty).
+ */
+export function filterUnresolvedToolUsesDetailed(
+  messages: Message[],
+): FilterUnresolvedToolUsesResult {
   // Collect all tool_use IDs and tool_result IDs directly from message content blocks.
   // This avoids calling normalizeMessages() which generates new UUIDs — if those
   // normalized messages were returned and later recorded to the transcript JSONL,
@@ -3161,11 +3193,17 @@ export function filterUnresolvedToolUses(messages: Message[]): Message[] {
   )
 
   if (unresolvedIds.size === 0) {
-    return messages
+    // Official early return: same input reference, ze never filled.
+    return { messages, trailingUnresolvedToolUseIds: new Set<string>() }
   }
 
+  const trailingUnresolvedToolUseIds = collectTrailingUnresolvedToolUseIds(
+    messages,
+    unresolvedIds,
+  )
+
   // Filter out assistant messages whose tool_use blocks are all unresolved
-  return messages.filter(msg => {
+  const filtered = messages.filter(msg => {
     if (msg.type !== 'assistant') return true
     const content = msg.message.content
     if (!Array.isArray(content)) return true
@@ -3179,6 +3217,169 @@ export function filterUnresolvedToolUses(messages: Message[]): Message[] {
     // Remove message only if ALL its tool_use blocks are unresolved
     return !toolUseBlockIds.every(id => unresolvedIds.has(id))
   })
+
+  return { messages: filtered, trailingUnresolvedToolUseIds }
+}
+
+/**
+ * Official 2.1.285 f0e trailing scan (byte-exact from the linux-x64 ELF):
+ *
+ * ```js
+ * let B=af()?Vce:Zme,K=!1;
+ * for(let he=e.length-1;he>=0;he--){let ye=e[he];
+ *   if(ye.type==="system"||ye.type==="progress"||ye.type==="attachment")continue;
+ *   if(ye.type==="user"){let be=ye.message.content;
+ *     if(Array.isArray(be)&&be.some((Re)=>Re.type==="tool_result"))continue;
+ *     if(ye.interruptedByShutdown===!0||!K&&B(ye))continue;
+ *     break}
+ *   if(ye.type==="assistant")K=!0;
+ *   if(ye.type==="assistant"&&Array.isArray(ye.message.content))
+ *     for(let be of ye.message.content)
+ *       if(be.type==="tool_use"&&S.has(be.id))
+ *         r.outTrailingUnresolvedToolUseIds.add(be.id)}
+ * ```
+ *
+ * `af()` = statsig `tengu_foamy_spring`, default true (catch → true) → B=Vce.
+ * The official also fills `outSupersededToolNames` from `be.name` — no OCC
+ * consumer (superseded-tool machinery unported), so it is omitted here.
+ */
+function collectTrailingUnresolvedToolUseIds(
+  messages: Message[],
+  unresolvedIds: ReadonlySet<string>,
+): Set<string> {
+  const trailingIds = new Set<string>()
+  let sawAssistant = false // official K
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]
+    if (
+      msg.type === 'system' ||
+      msg.type === 'progress' ||
+      msg.type === 'attachment'
+    ) {
+      continue
+    }
+    if (msg.type === 'user') {
+      const content = msg.message.content
+      if (
+        Array.isArray(content) &&
+        content.some(b => b.type === 'tool_result')
+      ) {
+        continue
+      }
+      if (
+        msg.interruptedByShutdown === true ||
+        (!sawAssistant && isResumeCompanionUserRow(msg))
+      ) {
+        continue
+      }
+      break // plain user prompt closes the trailing region
+    }
+    if (msg.type === 'assistant') {
+      sawAssistant = true
+      const content = msg.message.content
+      if (Array.isArray(content)) {
+        for (const b of content) {
+          if (b.type === 'tool_use' && unresolvedIds.has(b.id)) {
+            trailingIds.add(b.id)
+          }
+        }
+      }
+    }
+  }
+  return trailingIds
+}
+
+/**
+ * Official 2.1.285 `Vce` — companion user rows the trailing scan continues
+ * past (only while no assistant row was seen yet):
+ *
+ * ```js
+ * function Vce(e){return e.type==="user"&&(e.turnCompanion===!0||
+ *   typeof e.sourceToolUseID==="string"||M6n(e)||Zme(e))}
+ * ```
+ *
+ * `Zme` is gated on CLAUDE_CODE_RESUME_TOLERATES_CONTEXT_APPENDS — OCC has no
+ * surface for that env (official returns false when unset too), so it is
+ * omitted per the Gap-121c convention.
+ */
+function isResumeCompanionUserRow(msg: Message): boolean {
+  if (msg.type !== 'user') return false
+  if (msg.turnCompanion === true) return true
+  if (typeof msg.sourceToolUseID === 'string') return true
+  return isSyntheticLoopFeedbackMetaRow(msg)
+}
+
+// Official 2.1.285 `se` prefix table (byte-exact from the ELF; the empty
+// Fjr entry is filtered out by the official's own `.filter(e=>e.length>0)` —
+// `startsWith('')` would otherwise match every row).
+const META_ROW_PREFIX_TEXTS: readonly string[] = [
+  '[structured-output-enforce]', // Jft
+  '[projects-reply-gate]', // I8e
+  'You ended the turn without calling SendUserMessage.', // hBt
+]
+
+// Official 2.1.285 `ae` exact-match synthetic loop nudge texts (byte-exact
+// from the ELF, concatenations joined). MUt is byte-identical to
+// THINKING_ONLY_NUDGE_TEXT (src/query/thinkingOnlyNudge.ts) and LUt to the
+// output-token-limit recovery nudge (src/query.ts:1410). Duplicated here as
+// literals to keep utils/ free of query/ imports (layering + cycle safety).
+const META_ROW_EXACT_TEXTS: readonly string[] = [
+  // HUt
+  'The previous response failed to produce a valid tool call. Please retry the tool call now.',
+  // Ujr
+  'Your tool call was malformed and could not be parsed. Please retry.',
+  // MUt
+  '[Your previous response had no visible output. Please continue and produce a user-visible response.]',
+  // DUt
+  'The PermissionDenied hook indicated you may retry this tool call.',
+  // H6n
+  'Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded.',
+  // Bjr = H6n + ' Exception: ...'
+  'Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded. Exception: a tool call whose result reads "Interrupted" was already running when the response was stopped; it may have partially or fully completed.',
+  // LUt
+  'Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
+  // NUt
+  'Your response above was cut off mid-stream. Resume directly from where it stops — no apology, no recap. If none of it survived, answer the request from the start.',
+  // $Ut
+  'Your response above was cut off mid-stream and only your next message is delivered. Write the complete response again from the start — no apology, no mention of the cut-off.',
+]
+
+// Official 2.1.285 `$jr` + `O6n` — hook-feedback rows are built as
+// `${event}${O6n}${content}` (Mgn), i.e. "Stop hook feedback:\n..." —
+// byte-identical to what OCC persists (src/utils/hooks.ts).
+const HOOK_FEEDBACK_EVENT_NAMES: readonly string[] = [
+  'Stop',
+  'TeammateIdle',
+  'TaskCreated',
+  'TaskCompleted',
+]
+const HOOK_FEEDBACK_INFIX = ' hook feedback:\n' // O6n (raw newline in the ELF template literal)
+
+/**
+ * Official 2.1.285 `M6n` — isMeta loop-feedback rows (byte-exact from the
+ * ELF): text = string content, or the first text block's text; matched by
+ * `se` prefix / `ae` exact / `${event}${O6n}` prefix.
+ */
+function isSyntheticLoopFeedbackMetaRow(msg: Message): boolean {
+  if (msg.type !== 'user' || msg.isMeta !== true) return false
+  const content = msg.message?.content
+  const firstBlock = Array.isArray(content) ? content[0] : undefined
+  const text =
+    typeof content === 'string'
+      ? content
+      : firstBlock &&
+          firstBlock.type === 'text' &&
+          typeof firstBlock.text === 'string'
+        ? firstBlock.text
+        : undefined
+  if (typeof text !== 'string') return false
+  if (META_ROW_PREFIX_TEXTS.some(prefix => text.startsWith(prefix))) {
+    return true
+  }
+  if (META_ROW_EXACT_TEXTS.includes(text)) return true
+  return HOOK_FEEDBACK_EVENT_NAMES.some(event =>
+    text.startsWith(`${event}${HOOK_FEEDBACK_INFIX}`),
+  )
 }
 
 export function getAssistantMessageText(message: Message): string | null {

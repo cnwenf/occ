@@ -6,6 +6,7 @@ import { formatFileSize } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import { getRuleByContentsForTool } from '../../utils/permissions/permissions.js'
+import { getSettingsForSource } from '../../utils/settings/settings.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { DESCRIPTION, WEB_FETCH_TOOL_NAME } from './prompt.js'
 import {
@@ -64,6 +65,19 @@ function webFetchToolInputToPermissionRuleContent(input: {
   }
 }
 
+/**
+ * CC 2.1.285 (contract-002): the managed-policy conjunct of the official
+ * WebFetch gate (`Yt(wye)` over the `allow_web_fetch` entitlement —
+ * server-populated, HIPAA-R3, `onCacheMiss:"allow"`). OCC has no entitlement
+ * subsystem, so this reads ONLY the policySettings source — the same
+ * admin-controlled slot allowedProvidersEnforcement uses — so a user- or
+ * project-level `allow_web_fetch` can neither disable nor re-enable the tool.
+ * Default is allow when unset (`!== false`), matching `onCacheMiss:"allow"`.
+ */
+function isWebFetchAllowedByManagedPolicy(): boolean {
+  return getSettingsForSource('policySettings')?.allow_web_fetch !== false
+}
+
 export const WebFetchTool = buildTool({
   name: WEB_FETCH_TOOL_NAME,
   searchHint: 'fetch and extract content from a URL',
@@ -100,18 +114,21 @@ export const WebFetchTool = buildTool({
     return true
   },
   /**
-   * CC 2.1.285 (item-B1): CLAUDE_CODE_DISABLE_WEB_FETCH kill-switch. The
-   * official binary added this env gate to WebFetch's `isEnabled` — v285
+   * CC 2.1.285 (item-B1 + contract-002): full official gate
    * `isEnabled(){return!a.CLAUDE_CODE_DISABLE_WEB_FETCH&&Yt(wye)}`
-   * (@204286795), vs v284 `isEnabled(){return Qt(_ye)}` which had no env gate
-   * (0 hits for the var in v284, 9 in v285). The second conjunct `Yt(wye)` is
-   * the official `allow_web_fetch` managed-policy check; OCC has no counterpart
-   * policy surface, so only the env kill-switch is ported here. When the env var
-   * is truthy the tool is removed from the tool list entirely (buildTool's
-   * default `isEnabled` is `() => true`).
+   * (@204286795 / @34173852 new285), vs v284 `isEnabled(){return Qt(_ye)}`
+   * which had no env gate (0 hits for the var in v284, 9 in v285).
+   * Conjunct 1: the CLAUDE_CODE_DISABLE_WEB_FETCH env kill-switch.
+   * Conjunct 2 (`Yt(wye)`, `wye="allow_web_fetch"`): the org policy check —
+   * see isWebFetchAllowedByManagedPolicy(). When either conjunct fails the
+   * tool is removed from the tool list entirely (buildTool's default
+   * `isEnabled` is `() => true`).
    */
   isEnabled() {
-    return !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH)
+    return (
+      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH) &&
+      isWebFetchAllowedByManagedPolicy()
+    )
   },
   toAutoClassifierInput(input) {
     return input.prompt ? `${input.url}: ${input.prompt}` : input.url

@@ -1,5 +1,24 @@
-import { describe, expect, test } from 'bun:test'
+// The real query path computes a message fingerprint reading MACRO.VERSION
+// (build-time constant polyfilled in cli.tsx). Mirror the repo-convention
+// polyfill for test execution (streamIntegrity281 discipline).
+if (typeof globalThis.MACRO === 'undefined') {
+  ;(globalThis as { MACRO?: unknown }).MACRO = { VERSION: 'test' }
+}
+
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from 'bun:test'
 import { APIError } from '@anthropic-ai/sdk'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
+import type { Options } from '../claude.js'
 import { isOutputContentFilteredError } from '../errorUtils.js'
 import { classifyAPIError } from '../errors.js'
 
@@ -19,7 +38,11 @@ import { classifyAPIError } from '../errors.js'
  *
  * g0 is wired into THREE sites, all mirrored here:
  *   1. the retry loop catch (withRetry.ts) — fatal CannotRetryError on attempt 1;
- *   2. the streaming→non-streaming fallback (claude.ts) — rethrow, no fallback;
+ *   2. the streaming→non-streaming fallback (claude.ts) — rethrow, no fallback.
+ *      Driven end-to-end through the REAL queryModelWithStreaming with an
+ *      HTTP-layer fetch/SSE mock in the site-2 describe at the bottom of this
+ *      file (mutation-proven during review: disabling the claude.ts rethrow
+ *      previously kept the whole suite green);
  *   3. classifyAPIError (errors.ts) — 'output_content_filtered'.
  *
  * v284 only had the inline classifier string; OCC previously had NEITHER the
@@ -31,6 +54,72 @@ const FILTER = 'Output blocked by content filtering policy'
 
 const { withRetry, CannotRetryError } =
   require('../withRetry.js') as typeof import('../withRetry.js')
+
+// ---------------------------------------------------------------------------
+// Site-2 harness — drives the REAL queryModelWithStreaming (claude.ts) with an
+// HTTP-layer fetch/SSE mock (streamIntegrity281 discipline). VCR pass-through
+// must be installed BEFORE claude.ts is required; under bun test NODE_ENV
+// ='test' would otherwise activate record/replay and never reach fetch. This
+// file sorts before streamIntegrity281/retryWatchdogRetryAfter281 which install
+// their own module mocks, so the flagged pass-through (flipped off in afterAll)
+// keeps the shared single test process clean for them.
+// ---------------------------------------------------------------------------
+const VCR_MODULE_PATH = '../../vcr.js'
+// Spread snapshot — a bare import namespace has LIVE bindings that bun's
+// mock.module patches; delegating through it would recurse into the mock.
+const realVcr = { ...(await import(VCR_MODULE_PATH)) }
+let vcrMockActive = true
+mock.module(VCR_MODULE_PATH, () => ({
+  ...realVcr,
+  withVCR: ((
+    messages: unknown,
+    f: () => Promise<unknown>,
+    ...rest: unknown[]
+  ) =>
+    vcrMockActive
+      ? f()
+      : (realVcr.withVCR as (...a: unknown[]) => Promise<unknown>)(
+          messages,
+          f,
+          ...rest,
+        )) as typeof realVcr.withVCR,
+  withStreamingVCR: ((
+    messages: unknown,
+    f: () => AsyncGenerator<never, void>,
+    ...rest: unknown[]
+  ) =>
+    vcrMockActive
+      ? f()
+      : (realVcr.withStreamingVCR as (
+          ...a: unknown[]
+        ) => AsyncGenerator<never, void>)(messages, f, ...rest)) as typeof realVcr.withStreamingVCR,
+}))
+
+const { queryModelWithStreaming } = require('../claude.js') as typeof import(
+  '../claude.js'
+)
+const { createUserMessage } = require('../../../utils/messages.js') as typeof import(
+  '../../../utils/messages.js'
+)
+const { asSystemPrompt } = require('../../../utils/systemPromptType.js') as typeof import(
+  '../../../utils/systemPromptType.js'
+)
+const { getEmptyToolPermissionContext } = require('../../../Tool.js') as typeof import(
+  '../../../Tool.js'
+)
+const {
+  _resetForTesting: resetAnalyticsForTesting,
+  attachAnalyticsSink,
+} = require('../../analytics/index.js') as typeof import('../../analytics/index.js')
+const { resetSettingsCache } = require('../../../utils/settings/settingsCache.js') as {
+  resetSettingsCache: () => void
+}
+const { getClaudeConfigHomeDir } = require('../../../utils/envUtils.js') as {
+  getClaudeConfigHomeDir: (() => string) & { cache?: Map<unknown, string> }
+}
+const { getGlobalClaudeFile } = require('../../../utils/env.js') as {
+  getGlobalClaudeFile: (() => string) & { cache?: Map<unknown, string> }
+}
 
 /**
  * Build an APIError carrying the filter message. `.message` is derived by the
@@ -212,4 +301,318 @@ describe('CC 2.1.285 item-B3: withRetry surfaces the filter error immediately', 
     expect(threw).toBeInstanceOf(CannotRetryError)
     expect(attempts).toBe(3)
   }, 30000)
+})
+
+// ---------------------------------------------------------------------------
+// SITE 2 — the streaming→non-streaming fallback branch in claude.ts
+// (:3383 `if (isOutputContentFilteredError(streamingError)) { … throw }`).
+// The tests above drain withRetry directly (site 1) and classifyAPIError
+// (site 3); NEITHER exercises the production streaming entry, so disabling the
+// :3383 immediate rethrow kept them all green (reviewer mutation-test-01).
+// This describe drives the REAL queryModelWithStreaming against an HTTP-layer
+// SSE mock and pins: fetchCount===1 (no non-streaming re-send) + the filter
+// text surfaces as the API-error notice + the fallback_disabled:true event.
+// ---------------------------------------------------------------------------
+const MODEL = 'claude-sonnet-4-6'
+
+let fetchCount = 0
+let responders: Array<(init?: { signal?: AbortSignal | null }) => Response> = []
+let savedFetch: typeof globalThis.fetch
+let tmpConfigDir: string
+let prevConfigDir: string | undefined
+let savedEnv: Record<string, string | undefined> = {}
+
+// Analytics recorder via the real module's sink (attachAnalyticsSink). This
+// file sorts before retryWatchdogRetryAfter281/streamIntegrity281, which each
+// install their own analytics module mock — the sink approach (not mock.module)
+// is the correct one at this alphabetical position (advisorRetryWiring276
+// precedent) and is torn down in afterEach so later files see a clean dispatch.
+let analyticsEvents: Array<{ eventName: string; metadata: Record<string, unknown> }> = []
+
+const ENV_KEYS = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_MODEL',
+  'USER_TYPE',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL',
+  'CLAUDE_CODE_USE_BEDROCK',
+  'CLAUDE_CODE_USE_FOUNDRY',
+  'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+  'CLAUDE_CODE_USE_MANTLE',
+  'CLAUDE_CODE_USE_VERTEX',
+  'CLAUDE_CODE_DISABLE_NONSTREAMING_FALLBACK',
+  'CLAUDE_CODE_RETRY_WATCHDOG',
+  'CLAUDE_STREAM_IDLE_TIMEOUT_MS',
+  'CLAUDE_DISABLE_STREAM_WATCHDOG',
+] as const
+
+function installFetchMock(): void {
+  fetchCount = 0
+  globalThis.fetch = (async (
+    _url: unknown,
+    init?: { signal?: AbortSignal | null },
+  ) => {
+    fetchCount++
+    const responder = responders.shift()
+    if (!responder) {
+      throw new Error(
+        `outputContentFiltered285: unexpected fetch call #${fetchCount}`,
+      )
+    }
+    return responder(init)
+  }) as typeof fetch
+}
+
+function sseEvent(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`
+}
+
+function messageStart(): string {
+  return sseEvent('message_start', {
+    type: 'message_start',
+    message: {
+      id: 'msg_01FILTER',
+      type: 'message',
+      role: 'assistant',
+      model: MODEL,
+      content: [],
+      stop_reason: null,
+      stop_sequence: null,
+      usage: { input_tokens: 10, output_tokens: 1 },
+    },
+  })
+}
+
+/** An SSE `event: error` frame — the SDK's streaming.mjs turns this into
+ *  `throw new APIError(undefined, safeJSON(data) ?? data, undefined, headers)`.
+ *  With the filter text in the body, APIError.makeMessage derives `.message`
+ *  containing FILTER and `.status` is undefined → isOutputContentFilteredError
+ *  returns true (site 2 fires). */
+function sseErrorEvent(
+  message: string,
+  type = 'invalid_request_error',
+): string {
+  return sseEvent('error', { type: 'error', error: { type, message } })
+}
+
+function sseResponse(events: string[]): () => Response {
+  return () =>
+    new Response(events.join(''), {
+      status: 200,
+      headers: { 'content-type': 'text/event-stream' },
+    })
+}
+
+/** A minimal successful NON-streaming message — the fallback re-send reply.
+ *  Queued as a SECOND responder so that if site 2 regresses (rethrow disabled)
+ *  the fallback re-send completes instead of hanging on an unserved request;
+ *  the assertions then FAIL cleanly (fetchCount===2, no filter notice). */
+function nonStreamingMessageResponse(
+  text = 'FALLBACK COMPLETE',
+): () => Response {
+  return () =>
+    new Response(
+      JSON.stringify({
+        id: 'msg_02FALLBACK',
+        type: 'message',
+        role: 'assistant',
+        model: MODEL,
+        content: [{ type: 'text', text }],
+        stop_reason: 'end_turn',
+        stop_sequence: null,
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+      { status: 200, headers: { 'content-type': 'application/json' } },
+    )
+}
+
+function makeOptions(): Options {
+  return {
+    getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+    model: MODEL,
+    isNonInteractiveSession: true,
+    querySource: 'repl_main_thread',
+    agents: [],
+    hasAppendSystemPrompt: false,
+    mcpTools: [],
+  }
+}
+
+type YieldedItem = {
+  type: string
+  isApiErrorMessage?: boolean
+  message?: { content?: unknown }
+  error?: string
+}
+
+async function runQuery(): Promise<{
+  yielded: YieldedItem[]
+  error: unknown
+}> {
+  const controller = new AbortController()
+  const yielded: YieldedItem[] = []
+  let error: unknown = null
+  try {
+    const gen = queryModelWithStreaming({
+      messages: [createUserMessage({ content: 'PING' })],
+      systemPrompt: asSystemPrompt(['You are a test assistant.']),
+      thinkingConfig: { type: 'disabled' },
+      tools: [],
+      signal: controller.signal,
+      options: makeOptions(),
+    })
+    for await (const item of gen) {
+      yielded.push(item as YieldedItem)
+    }
+  } catch (err) {
+    error = err
+  }
+  return { yielded, error }
+}
+
+function apiErrorNotices(yielded: YieldedItem[]): string[] {
+  return yielded
+    .filter(item => item.isApiErrorMessage === true)
+    .map(item => {
+      const content = item.message?.content
+      return Array.isArray(content)
+        ? content
+            .map(b =>
+              b && typeof b === 'object' && 'text' in b
+                ? String((b as { text?: unknown }).text ?? '')
+                : '',
+            )
+            .join('')
+        : ''
+    })
+    .filter(text => text.length > 0)
+}
+
+function assistantTexts(yielded: YieldedItem[]): string[] {
+  const texts: string[] = []
+  for (const item of yielded) {
+    if (item.type !== 'assistant' || item.isApiErrorMessage) continue
+    const content = item.message?.content
+    if (Array.isArray(content)) {
+      for (const block of content) {
+        if (
+          block &&
+          typeof block === 'object' &&
+          (block as { type?: string }).type === 'text'
+        ) {
+          texts.push(String((block as { text?: string }).text ?? ''))
+        }
+      }
+    }
+  }
+  return texts
+}
+
+describe('CC 2.1.285 item-B3 SITE 2: claude.ts streaming→non-streaming fallback rethrows the filter error', () => {
+  beforeEach(() => {
+    savedEnv = {}
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key]
+      delete process.env[key]
+    }
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test'
+    process.env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL = '1'
+
+    tmpConfigDir = mkdtempSync(join(tmpdir(), 'occ-output-filter-'))
+    prevConfigDir = process.env.CLAUDE_CONFIG_DIR
+    process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
+    getClaudeConfigHomeDir.cache?.clear?.()
+    getGlobalClaudeFile.cache?.clear?.()
+    resetSettingsCache()
+
+    resetAnalyticsForTesting()
+    analyticsEvents = []
+    attachAnalyticsSink({
+      logEvent: (eventName, metadata) => {
+        analyticsEvents.push({ eventName, metadata })
+      },
+      logEventAsync: async (eventName, metadata) => {
+        analyticsEvents.push({ eventName, metadata })
+      },
+    })
+
+    responders = []
+    savedFetch = globalThis.fetch
+    installFetchMock()
+  })
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) delete process.env[key]
+      else process.env[key] = savedEnv[key]
+    }
+    if (prevConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
+    else process.env.CLAUDE_CONFIG_DIR = prevConfigDir
+    getClaudeConfigHomeDir.cache?.clear?.()
+    getGlobalClaudeFile.cache?.clear?.()
+    globalThis.fetch = savedFetch
+    rmSync(tmpConfigDir, { recursive: true, force: true })
+    resetAnalyticsForTesting()
+  })
+
+  test('mid-stream output-content-filter error → fetchCount===1 (NO non-streaming re-send) and the filter text surfaces', async () => {
+    responders.push(
+      sseResponse([messageStart(), sseErrorEvent(FILTER)]),
+      // Served ONLY if the :3383 rethrow regresses and the fallback re-send
+      // happens — the assertions below then fail cleanly instead of hanging.
+      nonStreamingMessageResponse(),
+    )
+
+    const { yielded, error } = await runQuery()
+
+    // The filter error is rethrown at :3383, caught by the outer catch, and
+    // surfaced as an API-error notice — queryModelWithStreaming does NOT throw
+    // to the caller.
+    expect(error).toBeNull()
+    // THE core site-2 assertion: exactly one wire request. A non-streaming
+    // fallback re-send would make this 2 (and would be served the responder
+    // above). Disabling the :3383 rethrow breaks this.
+    expect(fetchCount).toBe(1)
+    expect(apiErrorNotices(yielded).join('\n')).toContain(FILTER)
+    expect(assistantTexts(yielded)).not.toContain('FALLBACK COMPLETE')
+
+    const fallback = analyticsEvents.find(
+      e => e.eventName === 'tengu_streaming_fallback_to_non_streaming',
+    )
+    expect(fallback).toBeDefined()
+    expect(fallback?.metadata).toMatchObject({
+      error: 'output_content_filtered',
+      fallback_disabled: true,
+      fallback_cause: 'output_content_filtered',
+    })
+  }, 20000)
+
+  test('control: a NON-filter mid-stream error still falls back to non-streaming (fetchCount===2)', async () => {
+    // Proves the harness CAN fall back, so the fetchCount===1 above is the g0
+    // branch firing — not a broken stream that never reaches the fallback.
+    responders.push(
+      sseResponse([messageStart(), sseErrorEvent('Transient upstream failure', 'api_error')]),
+      nonStreamingMessageResponse(),
+    )
+
+    const { yielded, error } = await runQuery()
+
+    expect(error).toBeNull()
+    expect(fetchCount).toBe(2)
+    expect(assistantTexts(yielded)).toContain('FALLBACK COMPLETE')
+
+    const fallback = analyticsEvents.find(
+      e => e.eventName === 'tengu_streaming_fallback_to_non_streaming',
+    )
+    expect(fallback).toBeDefined()
+    expect(fallback?.metadata).toMatchObject({ fallback_disabled: false })
+  }, 20000)
+})
+
+afterAll(() => {
+  // Flip the passthrough mock off — modules that resolved these bindings keep
+  // the mock namespace for the rest of the shared single-process test run.
+  vcrMockActive = false
 })

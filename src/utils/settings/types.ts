@@ -912,6 +912,26 @@ export const SettingsSchema = lazySchema(() =>
             "minimum-version policy on a mixed fleet. 'claude auth status' reports the Anthropic API " +
             'as apiProvider "firstParty".',
         ),
+      // CC 2.1.285 `allow_web_fetch` — OCC mapping of the official org
+      // entitlement consumed by the WebFetch gate
+      // `isEnabled(){return!a.CLAUDE_CODE_DISABLE_WEB_FETCH&&Yt(wye)}`
+      // (@34173852 new285; key literal `cFe="allow_web_fetch"`, reader `wye`).
+      // In the official binary this is a server-populated entitlement
+      // (requirementId HIPAA-R3, `deniedUnder:["hipaa"]`, `onCacheMiss:"allow"`
+      // — default allow when unset), not a managed-settings.json key. OCC has
+      // no entitlement subsystem, so the admin-controlled analog — the managed
+      // (policySettings) source — carries it, mirroring how
+      // allowedProvidersEnforcement consumes its managed key. Consumed ONLY
+      // from policySettings by WebFetchTool.isEnabled (contract-002);
+      // user/project-level values are deliberately not honored. Non-boolean
+      // values are dropped by the strict policy parse (generic per-field
+      // catch → reads as unset → default allow, matching `onCacheMiss:"allow"`).
+      allow_web_fetch: z
+        .boolean()
+        .optional()
+        .describe(
+          "Managed settings only (managed-settings.json, MDM, or server-managed). Set to false to disable the WebFetch tool for the whole organization — arbitrary-URL egress is disabled by your organization's policy. Unset or true keeps WebFetch enabled (default allow); CLAUDE_CODE_DISABLE_WEB_FETCH is the per-machine env equivalent. Only the managed source is honored.",
+        ),
       // claude-code 2.1.92: when set in managed/policy settings, the CLI blocks
       // startup until remote managed settings are freshly fetched, and exits
       // (fail-closed) if the fetch fails.
