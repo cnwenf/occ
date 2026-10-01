@@ -1,7 +1,7 @@
 # OCC-104 Upstream Version Gap Ledger — Claude Code 2.1.285 → 2.1.286 (2026-10)
 
 **Round**: OCC-104 (issue `078982c8-89a9-4c8f-b071-718d2b1cb71c`), executed 2026-10-01/02 by OCC 程序员.
-**Tracked-upstream pointer**: 2.1.285 → **2.1.286** (this round). OCC release: **2.1.364**.
+**Tracked-upstream pointer**: 2.1.285 → **2.1.286** (this round). OCC release: **2.1.365** (renumbered from 2.1.364 — the parallel OCC-143 round shipped 2.1.364 first; see §5).
 **Official channel state at round time** (npm `dist-tags`, fact-checked 2026-10-02): `stable=2.1.285`, `latest=next=2.1.287`. Publish times: 2.1.285 → 2026-09-29, 2.1.286 → 2026-09-30, 2.1.287 → 2026-10-01.
 **Per directive**: 2.1.287 gets **pre-triage STAGE only** (§8) — no forced alignment this round.
 
@@ -146,12 +146,13 @@ Security items (#10 #12 #19 #20 #23-adjacent #60) all landed or honestly disposi
 - **tsc**: no new type errors vs the 679-error pre-existing baseline under `strict:false` (final count 645; 4 new-file narrowing sites fixed with explicit casts — discriminant-union narrowing fails under strict:false).
 - **Lint**: biome (repo gate) green on touched files.
 - **Build**: `bun run build` green — `dist/cli.js` 29.68 MB.
-- **Live host smoke**: `occ --version` → OCC 2.1.363→**2.1.364** (after bump); `echo "say PONG" | occ -p` → PONG, exit 0; tmux REPL: boot OK, model round-trip REPLPONG OK, `/status` renders (Model/MCP/setting-sources rows + bypass-permissions footer).
+- **Live host smoke**: `occ --version` → OCC 2.1.363→**2.1.364** (after bump), re-smoked **2.1.365** after the OCC-143 merge (build 29.71 MB, MACRO.VERSION=2.1.365); `echo "say PONG" | occ -p` → PONG, exit 0 (both pre- and post-merge); tmux REPL: boot OK, model round-trip REPLPONG OK, `/status` renders (Model/MCP/setting-sources rows + bypass-permissions footer).
+- **Post-merge full unit suite** (merged tree, both rounds combined): `bun test src --isolate` → **6835 pass / 1 skip / 0 fail** across 541 files (= this round's 6811 + OCC-143's 24 secretRedaction tests, exactly additive — zero cross-round interference).
 - **Docker e2e** (`test/e2e` in `occ-e2e:latest`, non-root runner, model creds forwarded): 711 pass / 1 skip / 20 fail (13 unique) — every unique fail classified via a clean-baseline (main @793b605) A/B in the same container: 12 pre-existing, 1 stale-pin artifact re-pinned to the byte-verified v286 shape and green. Full table in §7.
 
 ## 4. STAGED backlog carried to future rounds (priority order)
 
-1. **Log/transcript secret-redaction engine** at v286 shape (#21/#22 — pre-existing whole-module gap; security-positive).
+1. **Log/transcript secret-redaction engine** at v286 shape (#21/#22 — pre-existing whole-module gap; security-positive). **LANDED via the parallel OCC-143 round** (2026-10-02, `src/utils/secretRedaction/` byte-faithful whole-v286 engine rewrite — merged into main alongside this round; ledger `docs/upstream-version-gap-occ143-2026-10.md`). Closed here for bookkeeping.
 2. **Auth refresh cross-process lock** (#5 — needs pid-liveness + takeover dialog + single-flight; also close the v285-baseline GCP three-state probe gap in the same round).
 3. **Model/retry call-site wiring** (#11 dispatch sites, #13 notice plugin, #52 thrashing-breaker + call sites, #56 QueryModel dispatch + stream classifier) — engines all landed and tested; wiring points recovered in file headers.
 4. **REPL queued-drain gray-flag wiring** (#55 — REPL.tsx:3098 + executeQueuedInput→handlePromptSubmit).
@@ -166,8 +167,8 @@ Security items (#10 #12 #19 #20 #23-adjacent #60) all landed or honestly disposi
 
 - `README.md`: 4 places (L8 badge, L16 body, L65 table, L160 footer) 2.1.285 → **2.1.286** (OCC-101 P2-1 lesson: all four).
 - `src/entrypoints/cli.tsx`: `MACRO.VERSION` "2.1.285" → **"2.1.286"** (dev polyfill).
-- `package.json`: 2.1.363 → **2.1.364** (OCC release version; tag/publish happens after 验收 acceptance — not this round).
-- `CHANGELOG.md`: `## 2.1.364 - 2026-10-02` entry added.
+- `package.json`: 2.1.363 → 2.1.364 → **2.1.365** (OCC release version; tag/publish happens after 验收 acceptance — not this round). **Renumber note**: the parallel OCC-143 round (`f40c4ed`) landed on main mid-run and claimed 2.1.364, so this round's release ships as **2.1.365** (same precedent as OCC-103's 2.1.362→2.1.363 renumber). The two rounds were combined with a real `git merge` (conflicts only in `README.md` + `CHANGELOG.md`, resolved by chaining both rounds' text; both 2.1.286 catch-up rounds triaged the same 88-entry changelog independently and their ports are disjoint — this round STAGED #21/#22 redaction exactly where OCC-143 landed it, see §4 item 1).
+- `CHANGELOG.md`: `## 2.1.365 - 2026-10-02 (official 2.1.286 alignment — OCC-104 round)` entry added, above OCC-143's `## 2.1.364` section.
 
 ## 6. Files touched (this round)
 
