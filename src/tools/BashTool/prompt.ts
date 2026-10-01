@@ -4,7 +4,7 @@ import { prependBullets } from '../../constants/prompts.js'
 import { backgroundTimeoutUsageNote } from '../../tasks/LocalShellTask/backgroundDeadline.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { areBackgroundTasksDisabled, isEnvTruthy } from '../../utils/envUtils.js'
 import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
 import { getClaudeTempDir } from '../../utils/permissions/filesystem.js'
 import { getPlatform } from '../../utils/platform.js'
@@ -49,7 +49,9 @@ export function clampTimeoutMs(
 }
 
 function getBackgroundUsageNote(): string | null {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+  // CC 2.1.286 (item 57/--bare): central gate (official yl() @202370763 —
+  // bare mode now also disables background tasks).
+  if (areBackgroundTasksDisabled()) {
     return null
   }
   // 2.1.285 #85: official smt() (@203853400) ends with `${Fan()}` — the

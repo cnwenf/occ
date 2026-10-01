@@ -13,10 +13,6 @@ import {
   MAX_TRANSCRIPT_READ_BYTES,
 } from '../../utils/sessionStorage.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
-import {
-  redactJsonStructural,
-  redactTranscriptJsonl,
-} from '../../utils/secretRedaction/index.js'
 import { redactSensitiveInfo } from '../Feedback.js'
 
 type TranscriptShareResult = {
@@ -61,26 +57,16 @@ export async function submitTranscriptShare(
       // File may not exist
     }
 
-    // 2.1.286 alignment (changelog bullet #21): redact the transcript BEFORE
-    // serialization so redaction can never produce invalid JSON. Structured
-    // messages go through the deep structural redactor (upstream $qt path);
-    // the raw JSONL goes through the line-safe parse -> deep-redact ->
-    // re-serialize pipeline (upstream wkn), which drops api-request lines and
-    // withholds lines whose type cannot be determined. The whole-payload text
-    // redaction below stays as a final belt-and-braces pass.
     const data = {
       trigger,
       version: MACRO.VERSION,
       platform: process.platform,
-      transcript: redactJsonStructural(transcript),
+      transcript,
       subagentTranscripts:
         Object.keys(subagentTranscripts).length > 0
-          ? redactJsonStructural(subagentTranscripts)
+          ? subagentTranscripts
           : undefined,
-      rawTranscriptJsonl:
-        rawTranscriptJsonl === undefined
-          ? undefined
-          : redactTranscriptJsonl(rawTranscriptJsonl),
+      rawTranscriptJsonl,
     }
 
     const content = redactSensitiveInfo(jsonStringify(data))

@@ -27,6 +27,22 @@
  * The unpacked layout is then validated against OCC's existing plugin
  * manifest schema by `cachePlugin` (pluginLoader.ts), unchanged.
  *
+ * v2.1.286 security alignment (changelog: "Changed plugin installs to refuse
+ * npm sources that are git repositories or folders, and to install plugin
+ * dependencies only from registry packages") — VALIDATION half only (the
+ * dependency-installer half is a no-op in OCC: OCC has no plugin-dependency
+ * installer). Added on top of the 2.1.275 pipeline:
+ *  - `resolveNpmPackage` (`bRr`): refuse specs that are not plain registry
+ *    names (`zy` name-check) and validate the registry override (`Z8t`) before
+ *    `npm view`.
+ *  - `packNpmTarball` (`oXt`): validate the resolved tarball URL (`HWe`) +
+ *    registry override (`Z8t`) before `npm pack`; git-repo / folder / `//`-path
+ *    / `#`-whitespace-backslash-control-char / foreign-http sources are refused
+ *    with the official `Mrr` message.
+ *  - every npm argv now prepends `--git=<workDir>/git-is-disabled` (`dY`) so a
+ *    git-backed fetch npm might attempt fails closed.
+ * The pure validators / refusal-string builders live in `npmSpecValidation.ts`.
+ *
  * User-facing refusal strings are byte-exact vs the official binary; helper
  * names in comments reference the official minified identifiers.
  */
@@ -41,6 +57,13 @@ import { logForDebugging } from '../debug.js'
 import { getErrnoCode } from '../errors.js'
 import { execFileNoThrowWithCwd } from '../execFileNoThrow.js'
 import { getFsImplementation } from '../fsOperations.js'
+import {
+  buildInvalidPackageNameMessage,
+  buildRegistryRefusalMessage,
+  isValidNpmPackageName,
+  validateNpmSpecUrl,
+  validateRegistryOverride,
+} from './npmSpecValidation.js'
 
 const gunzipAsync = promisify(gunzip)
 
@@ -48,6 +71,8 @@ const gunzipAsync = promisify(gunzip)
 
 /** Official `JAs` — `npm view` timeout. */
 export const NPM_VIEW_TIMEOUT_MS = 60000
+/** Official `Zor` (v286 @207630472) — `npm config get registry` timeout. */
+export const NPM_CONFIG_GET_TIMEOUT_MS = 30000
 /** Official `ePs` — `npm pack` timeout. */
 export const NPM_PACK_TIMEOUT_MS = 300000
 /** Official `tPs` — exec maxBuffer. */
@@ -263,6 +288,44 @@ function registryArgs(registry: string | undefined): string[] {
   return registry ? ['--registry', registry] : []
 }
 
+/**
+ * Official `dY` (v286 @207633550) — the npm argv hardening. Every npm
+ * invocation prepends `--git=<workDir>/git-is-disabled`, pointing git at a path
+ * that never exists so any git-backed fetch npm might attempt fails closed
+ * (a git repository npm source can never be cloned / run its setup script).
+ * `kue` = `path.join`; the `git-is-disabled` leaf is byte-exact (@207633586).
+ *
+ * The companion hardening (`Crr`/`Trr`: env `npm_config_ignore_scripts:"true"`
+ * and `stdin:"ignore"`) is already carried by `npmIgnoreScriptsEnv` /
+ * `npmExecOptions` from the 2.1.275 port.
+ */
+function npmArgv(workDir: string, args: string[]): string[] {
+  return [`--git=${join(workDir, 'git-is-disabled')}`, ...args]
+}
+
+/**
+ * Official `vue` (v286 @207633680) — probe the default npm registry origin via
+ * `npm config get registry --workspaces=false` (30s timeout). Returns the origin
+ * ONLY when it is `http:` (used to decide whether an http spec/registry override
+ * points at the user's own default registry vs. a foreign host). Any failure,
+ * unparseable value, or non-http registry yields `undefined`.
+ */
+async function getDefaultRegistryOrigin(
+  options: NpmFetchOptions,
+): Promise<string | undefined> {
+  const result = await execFileNoThrowWithCwd(
+    'npm',
+    npmArgv(options.workDir, ['config', 'get', 'registry', '--workspaces=false']),
+    npmExecOptions(options.workDir, NPM_CONFIG_GET_TIMEOUT_MS),
+  )
+  const raw = result.stdout.trim()
+  if (result.code !== 0 || !URL.canParse(raw)) {
+    return undefined
+  }
+  const parsed = new URL(raw)
+  return parsed.protocol === 'http:' ? parsed.origin : undefined
+}
+
 // --- Step 1: metadata resolution (official `L6n`) ---------------------------
 
 /** Official `SPs`/`kPs` — version spec must be a version, range or dist-tag. */
@@ -364,17 +427,37 @@ export async function resolveNpmPackage(
   options: NpmFetchOptions,
 ): Promise<NpmResolution> {
   const spec = `${packageName}@${versionSpec ?? 'latest'}`
+  // Official `bRr` (v286 @207643059): refuse non-registry specs FIRST, then the
+  // version spec (`vrr`), then validate the registry override (`Z8t`) — before
+  // ever shelling out to `npm view`.
+  if (!isValidNpmPackageName(packageName)) {
+    throw npmFetchError(
+      buildInvalidPackageNameMessage(truncateName(packageName)),
+      'npm package name is not a registry name',
+    )
+  }
   validateVersionSpec(packageName, versionSpec)
+  const registryCheck = await validateRegistryOverride(
+    truncateName(packageName),
+    options.registry,
+    () => getDefaultRegistryOrigin(options),
+  )
+  if (!registryCheck.ok) {
+    // repo tsconfig is strict:false — discriminant narrowing is off; assert
+    // the failure arm explicitly (shape verified in npmSpecValidation.ts).
+    const refusal = registryCheck as { ok: false; message: string; reason: string }
+    throw npmFetchError(refusal.message, refusal.reason)
+  }
   const result = await execFileNoThrowWithCwd(
     'npm',
-    [
+    npmArgv(options.workDir, [
       'view',
       '--json',
       ...registryArgs(options.registry),
       '--',
       spec,
       ...NPM_VIEW_FIELDS,
-    ],
+    ]),
     npmExecOptions(options.workDir, NPM_VIEW_TIMEOUT_MS),
   )
   if (result.code !== 0) {
@@ -417,25 +500,54 @@ export interface NpmPackOptions extends NpmFetchOptions {
 }
 
 /**
- * Official `Wnr` — fetch the tarball with `npm pack --ignore-scripts
+ * Official `Wnr`/`oXt` — fetch the tarball with `npm pack --ignore-scripts
  * --loglevel=error` (300s timeout, env `npm_config_ignore_scripts:"true"`),
  * then read it back capped at 256 MiB. npm never runs package scripts.
+ *
+ * v2.1.286 addition (official `oXt` @207635700): before packing, the spec is
+ * validated with `Z8t` (registry override) + `HWe` (the URL must be a plain
+ * http(s) tarball download — not a git host, not a folder, no `//`-prefixed
+ * path, no `#`/whitespace/backslash/control chars, no unencrypted http to a
+ * foreign host). Refusals use the official `Mrr` message template (OCC's npm
+ * lane is the marketplace lane; see `buildRegistryRefusalMessage`).
  */
 export async function packNpmTarball(
   tarballUrl: string,
   options: NpmPackOptions,
 ): Promise<Buffer> {
   const displaySpec = options.displaySpec ?? tarballUrl
+  const displayName = truncateName(displaySpec)
+  const registryCheck = await validateRegistryOverride(
+    displayName,
+    options.registry,
+    () => getDefaultRegistryOrigin(options),
+  )
+  if (!registryCheck.ok) {
+    const refusal = registryCheck as { ok: false; message: string; reason: string }
+    throw npmFetchError(refusal.message, refusal.reason)
+  }
+  // Official `oXt`: `h = Z8t-origin ?? (/^http:/i.test(spec) ? vue() : undefined)`
+  let registryOrigin = registryCheck.origin
+  if (registryOrigin === undefined && /^http:/i.test(tarballUrl)) {
+    registryOrigin = await getDefaultRegistryOrigin(options)
+  }
+  const rejection = validateNpmSpecUrl(tarballUrl, options.registry, registryOrigin)
+  if (rejection !== undefined) {
+    throw npmFetchError(
+      buildRegistryRefusalMessage(displayName, rejection),
+      'npm spec is not a plain tarball download',
+    )
+  }
   const result = await execFileNoThrowWithCwd(
     'npm',
-    [
+    npmArgv(options.workDir, [
       'pack',
       '--ignore-scripts',
       '--loglevel=error',
       ...registryArgs(options.registry),
       '--',
       tarballUrl,
-    ],
+    ]),
     npmExecOptions(options.workDir, NPM_PACK_TIMEOUT_MS),
   )
   if (result.code !== 0) {

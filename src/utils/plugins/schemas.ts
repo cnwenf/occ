@@ -7,6 +7,7 @@ import {
   isOfficialAnthropicsGitUrl,
   OFFICIAL_GITHUB_ORG,
 } from './gitUrlNormalization.js'
+import { isValidNpmRegistryUrl } from './npmSpecValidation.js'
 
 /**
  * First-layer defense against official marketplace impersonation.
@@ -1295,6 +1296,10 @@ export const PluginSourceSchema = lazySchema(() =>
         registry: z
           .string()
           .url()
+          // Official v286 `fJe` refine (byte-identical in v285 `byn`): the
+          // registry override must be an http(s) URL — `.url()` alone also
+          // accepts e.g. `ftp:`/`file:`. Message byte-exact vs the binary.
+          .refine(isValidNpmRegistryUrl, 'Registry must be an http(s) URL')
           .optional()
           .describe(
             'Custom NPM registry URL (defaults to using system default, likely npmjs.org)',

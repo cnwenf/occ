@@ -197,7 +197,7 @@ import {
   isThinkingMessage,
 } from './messages.js'
 import { isHumanTurn } from './messagePredicates.js'
-import { isEnvTruthy, getClaudeConfigHomeDir } from './envUtils.js'
+import { isEnvTruthy, isBareMode, getClaudeConfigHomeDir } from './envUtils.js'
 import { feature } from 'src/utils/featureFlags.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const BRIEF_TOOL_NAME: string | null =
@@ -785,6 +785,39 @@ export type TeamContextAttachment = {
  * This is janky
  * TODO: Generate attachments when we create messages
  */
+/**
+ * CC 2.1.286 (item 57/--bare): universal bare-mode attachment filter —
+ * TRUE-NEW official `Nen` @204280727 (offsets into
+ * /tmp/cc-diff-286/v286/package/claude):
+ *   `function Nen(e){if(!Rr())return!1;let{type:n}=e.attachment;
+ *    return n!=="queued_command"&&n!=="poll_events"}`
+ * (v285's `Nen` is an unrelated coalesce function — name collision; the
+ * attachment filter has 0 hits in v285.) `Rr()` ≡ isBareMode(). Returns true
+ * when the attachment message must be dropped in bare mode; queued_command
+ * and poll_events survive (OCC currently emits no poll_events attachments —
+ * the exclusion is kept byte-faithful for when the surface lands).
+ *
+ * Official consumers (all TRUE-NEW in v286):
+ *   - @208088367 message-normalization loop: `case"attachment":{if(Nen(Do))
+ *     continue;...}` — OCC equivalent is the getAttachments source gate below
+ *     (bare mode never produces non-queued-command attachments).
+ *   - @208081215 read_truncation_notice collection: `!Nen(Do)` — no OCC
+ *     counterpart (read_truncation_notice doesn't exist in OCC).
+ *   - @212100178 Stop-hook additional-context collection:
+ *     `if(!Nen(ue))rt.push(ue);yield ue` — gates ONLY the collected push;
+ *     the yield stays unconditional (v285: `it.push(fe),yield fe`). Ported
+ *     in src/query/stopHooks.ts.
+ */
+export function isBareFilteredAttachment(message: {
+  attachment?: { type?: string }
+}): boolean {
+  if (!isBareMode()) {
+    return false
+  }
+  const attachmentType = message.attachment?.type
+  return attachmentType !== 'queued_command' && attachmentType !== 'poll_events'
+}
+
 export async function getAttachments(
   input: string | null,
   toolUseContext: ToolUseContext,
@@ -796,7 +829,11 @@ export async function getAttachments(
 ): Promise<Attachment[]> {
   if (
     isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS) ||
-    isEnvTruthy(process.env.CLAUDE_CODE_SIMPLE)
+    // CC 2.1.286 (item 57/--bare): official bare detection `Rr()` covers BOTH
+    // the env var and the --bare argv flag (isBareMode ≡ Rr); the raw
+    // CLAUDE_CODE_SIMPLE env check missed gates that run before main.tsx's
+    // action handler sets the env var from the flag.
+    isBareMode()
   ) {
     // query.ts:removeFromQueue dequeues these unconditionally after
     // getAttachmentMessages runs — returning [] here silently drops them.

@@ -13,7 +13,7 @@ import type { Tool } from '../../Tool.js';
 import { backgroundAll } from '../../tasks/LocalShellTask/LocalShellTask.js';
 import type { ProgressMessage } from '../../types/message.js';
 import { env } from '../../utils/env.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
+import { areBackgroundTasksDisabled } from '../../utils/envUtils.js';
 import { getDisplayPath } from '../../utils/file.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { ThemeName } from '../../utils/theme.js';
@@ -69,7 +69,8 @@ export function BackgroundHint(t0) {
   useKeybinding("task:background", handleBackground, t3);
   const baseShortcut = useShortcutDisplay("task:background", "Task", "ctrl+b");
   const shortcut = env.terminal === "tmux" && baseShortcut === "ctrl+b" ? "ctrl+b ctrl+b (twice)" : baseShortcut;
-  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+  // CC 2.1.286 (item 57/--bare): central gate (official yl() @202370763).
+  if (areBackgroundTasksDisabled()) {
     return null;
   }
   let t4;

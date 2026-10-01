@@ -14,7 +14,7 @@ import { backgroundExistingForegroundTask, markTaskNotified, registerForeground,
 import type { AgentId } from '../../types/ids.js';
 import type { AssistantMessage } from '../../types/message.js';
 import { extractClaudeCodeHints } from '../../utils/claudeCodeHints.js';
-import { isEnvTruthy } from '../../utils/envUtils.js';
+import { areBackgroundTasksDisabled } from '../../utils/envUtils.js';
 import { errorMessage as getErrorMessage, ShellError } from '../../utils/errors.js';
 import { truncate } from '../../utils/format.js';
 import { lazySchema } from '../../utils/lazySchema.js';
@@ -225,10 +225,10 @@ function isWindowsSandboxPolicyViolation(): boolean {
   return getPlatform() === 'windows' && SandboxManager.isSandboxEnabledInSettings() && !SandboxManager.areUnsandboxedCommandsAllowed();
 }
 
-// Check if background tasks are disabled at module load time
-const isBackgroundTasksDisabled =
-// eslint-disable-next-line custom-rules/no-process-env-top-level -- Intentional: schema must be defined at module load
-isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS);
+// Check if background tasks are disabled at module load time.
+// CC 2.1.286 (item 57/--bare): central areBackgroundTasksDisabled() gate
+// (official yl() @202370763 added `||Rr()` — bare mode disables bg tasks).
+const isBackgroundTasksDisabled = areBackgroundTasksDisabled();
 const fullInputSchema = lazySchema(() => z.strictObject({
   command: z.string().describe('The PowerShell command to execute'),
   timeout: semanticNumber(z.number().optional()).describe(`Optional timeout in milliseconds (max ${getMaxTimeoutMs()})`),

@@ -83,6 +83,22 @@ function getDeprecatedModelInfo(modelId: string): DeprecationInfo {
 }
 
 /**
+ * CC 2.1.286 (item-B): whether a model is deprecated for the current
+ * provider. Mirrors the binary's `Wgn(e){return Ko(e).isDeprecated}` —
+ * the deprecation cut in the previous-model-of-same-tier ladder
+ * (`oPr`: candidates at/after the first deprecated model are dropped).
+ *
+ * Documented simplification: the official cut is `d7(S)||Wgn(S)` where `d7`
+ * additionally covers catalog remap entries and past-retirement dates; OCC's
+ * DEPRECATED_MODELS table has no remap concept and marks a model deprecated
+ * whenever the current provider has a retirement date, which covers both
+ * arms for OCC's catalog.
+ */
+export function isModelDeprecated(modelId: string): boolean {
+  return getDeprecatedModelInfo(modelId).isDeprecated
+}
+
+/**
  * Get a deprecation warning message for a model, or null if not deprecated
  */
 export function getModelDeprecationWarning(

@@ -1,4 +1,4 @@
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { areBackgroundTasksDisabled } from '../../utils/envUtils.js'
 import { getMaxOutputLength } from '../../utils/shell/outputLimits.js'
 import {
   getPowerShellEdition,
@@ -24,14 +24,16 @@ export function getMaxTimeoutMs(): number {
 }
 
 function getBackgroundUsageNote(): string | null {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+  // CC 2.1.286 (item 57/--bare): central gate (official yl() @202370763).
+  if (areBackgroundTasksDisabled()) {
     return null
   }
   return `  - You can use the \`run_in_background\` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes.`
 }
 
 function getSleepGuidance(): string | null {
-  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS)) {
+  // CC 2.1.286 (item 57/--bare): central gate (official yl() @202370763).
+  if (areBackgroundTasksDisabled()) {
     return null
   }
   return `  - Avoid unnecessary \`Start-Sleep\` commands:

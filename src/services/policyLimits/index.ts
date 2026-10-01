@@ -76,6 +76,14 @@ const LOADING_PROMISE_TIMEOUT_MS = 30000 // 30 seconds
 // Session-level cache for policy restrictions
 let sessionCache: PolicyLimitsResponse['restrictions'] | null = null
 
+// 2.1.286 port (Remote Control policy disconnect): listeners notified when the
+// effective policy cache actually changes — background-poll diff or a
+// successful cache-changing load. Official equivalent is the policy store's
+// verdictChanged stream: `D0(e){return f().verdictChanged.subscribe(e)}`
+// @200064192 (v286). The poll interval itself is unchanged.
+type PolicyLimitsChangeListener = () => void
+const changeListeners = new Set<PolicyLimitsChangeListener>()
+
 /**
  * Test-only sync reset. clearPolicyLimitsCache() does file I/O and is too
  * expensive for preload beforeEach; this only clears the module-level
@@ -86,6 +94,40 @@ export function _resetPolicyLimitsForTesting(): void {
   sessionCache = null
   loadingCompletePromise = null
   loadingCompleteResolve = null
+  changeListeners.clear()
+}
+
+/** Serialized snapshot of the effective cache, for change detection. */
+function sessionCacheSnapshot(): string | null {
+  return sessionCache ? jsonStringify(sessionCache) : null
+}
+
+function notifyPolicyLimitsChange(): void {
+  // Snapshot the listener set so unsubscribes during notification are safe.
+  for (const listener of [...changeListeners]) {
+    try {
+      listener()
+    } catch (e) {
+      logForDebugging(
+        `Policy limits: change listener threw - ${isNodeError(e) ? e.message : String(e)}`,
+      )
+    }
+  }
+}
+
+/**
+ * Subscribe to actual policy-cache changes. Returns an unsubscribe function.
+ * Fires only when jsonStringify(sessionCache) differs before/after a
+ * background poll or a successful cache-changing load — never on no-op
+ * refreshes. 2.1.286 port; official D0/verdictChanged @200064192.
+ */
+export function onPolicyLimitsChange(
+  listener: PolicyLimitsChangeListener,
+): () => void {
+  changeListeners.add(listener)
+  return () => {
+    changeListeners.delete(listener)
+  }
 }
 
 /**
@@ -628,6 +670,27 @@ function getRestrictionsFromCache():
 }
 
 /**
+ * Raw cache entry for one policy, for the 2.1.286 bridge policy watcher
+ * (connectedBridgePolicyRefusal). Distinguishes the three states the official
+ * per-policy verdict fn (Lb @200084227) collapses into cache_miss /
+ * route_missing / org_denied:
+ * - undefined: cache unavailable (ineligible / not loaded / no disk cache)
+ *   → official 'cache_miss' — callers must NEVER disconnect on unknown.
+ * - null: cache loaded but the policy key is absent → official 'route_missing'
+ *   (absent = allowed; the API only includes blocked policies).
+ * - { allowed }: explicit verdict; allowed === false ⇔ official 'org_denied'.
+ */
+export function getPolicyRestrictionFromCache(
+  policy: string,
+): { allowed: boolean } | null | undefined {
+  const restrictions = getRestrictionsFromCache()
+  if (!restrictions) {
+    return undefined
+  }
+  return restrictions[policy] ?? null
+}
+
+/**
  * Load policy limits during CLI initialization
  * Fails open - if fetch fails, continues without restrictions
  * Also starts background polling to pick up changes mid-session
@@ -639,8 +702,15 @@ export async function loadPolicyLimits(): Promise<void> {
     })
   }
 
+  // 2.1.286: notify watchers after a successful cache-changing load.
+  const previousCache = sessionCacheSnapshot()
+
   try {
     await fetchAndLoadPolicyLimits()
+
+    if (sessionCacheSnapshot() !== previousCache) {
+      notifyPolicyLimitsChange()
+    }
 
     if (isPolicyLimitsEligible()) {
       startBackgroundPolling()
@@ -664,7 +734,12 @@ export async function refreshPolicyLimits(): Promise<void> {
     return
   }
 
+  // 2.1.286: post-clear the snapshot is null; notify only if the refresh
+  // actually loaded restrictions into the cache.
   await fetchAndLoadPolicyLimits()
+  if (sessionCacheSnapshot() !== null) {
+    notifyPolicyLimitsChange()
+  }
   logForDebugging('Policy limits: Refreshed after auth change')
 }
 
@@ -694,14 +769,16 @@ async function pollPolicyLimits(): Promise<void> {
     return
   }
 
-  const previousCache = sessionCache ? jsonStringify(sessionCache) : null
+  const previousCache = sessionCacheSnapshot()
 
   try {
     await fetchAndLoadPolicyLimits()
 
-    const newCache = sessionCache ? jsonStringify(sessionCache) : null
+    const newCache = sessionCacheSnapshot()
     if (newCache !== previousCache) {
       logForDebugging('Policy limits: Changed during background poll')
+      // 2.1.286: wake connected-bridge policy watchers (official verdictChanged).
+      notifyPolicyLimitsChange()
     }
   } catch {
     // Don't fail closed for background polling

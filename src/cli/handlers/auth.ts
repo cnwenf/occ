@@ -329,10 +329,21 @@ export async function authStatus(opts: {
     authMethod = 'api_key_helper'
   } else if (authTokenSource !== 'none') {
     authMethod = 'oauth_token'
-  } else if (apiKeySource === 'ANTHROPIC_API_KEY' || hasApiKeyEnvVar) {
+  } else if (
+    // CC 2.1.286 (changelog #1): "Fix `claude auth status` reporting
+    // `claude.ai` for managed-key sessions". Byte-verified delta — v285
+    // @219111981 had a separate `else if(d==="/login managed key")p="claude.ai"`
+    // branch; v286 @220312704 folds managed key into the api_key condition
+    // (`c==="ANTHROPIC_API_KEY"||h||c==="/login managed key"`) and deletes the
+    // claude.ai branch. (v285's extra `||C` profile term has no OCC analog —
+    // OCC lacks the Console-profile surface.) Consequence: managed-key
+    // sessions no longer emit the claude.ai-only JSON fields below, matching
+    // official.
+    apiKeySource === 'ANTHROPIC_API_KEY' ||
+    hasApiKeyEnvVar ||
+    apiKeySource === '/login managed key'
+  ) {
     authMethod = 'api_key'
-  } else if (apiKeySource === '/login managed key') {
-    authMethod = 'claude.ai'
   }
 
   if (opts.text) {

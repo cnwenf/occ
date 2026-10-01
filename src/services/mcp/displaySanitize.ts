@@ -96,28 +96,85 @@ export function truncateToDisplayLength(value: string, max: number): string {
 }
 
 /**
- * Binary `Kin` @194524420: redact `bearer <secret>` / `basic <secret>` and
- * token-family `label: secret` / `label=secret` pairs (incl. JSON-escaped
- * forms) when the secret body looks secret-bearing. `mode: 'none'` skips
- * redaction entirely (used for server names).
+ * Binary `yd` @203208152 (v2.1.286): key-name alternation shared by the
+ * bearer rule, the kv rule, and the embedded-next-key lookahead. Identical
+ * text to the alternation that was inline in the v2.1.274/285 `Kin` regex.
+ */
+const KEY_NAME_PATTERN =
+  String.raw`(?:access[-_ ]?|refresh[-_ ]?|id[-_ ]?|client[-_ ]?|api[-_ ]?|x[-_]api[-_ ]?|session[-_ ]?|auth[-_ ]?)?(?:token|key|secret|password|authorization|credential)s?`
+
+/**
+ * Binary `a7` (v2.1.286): embedded-next-key detector. Matches the start of a
+ * `key[:=] value` pair appearing INSIDE a secret run, so the lazy-stop value
+ * branch can end the current value exactly where the next key begins (286
+ * changelog item 2 — percent-encoded/embedded keys fully masked, one pass each).
+ */
+const NEXT_KEY_PATTERN =
+  String.raw`\b${KEY_NAME_PATTERN}(?:\\*["']|\\+)?\s*[:=\uFF1A\uFF1D]\s*(?:\\*["']|\\+)?\s*(?!=*${KEY_NAME_PATTERN}=*(?![A-Za-z0-9._~+/=%-]))(?=[A-Za-z0-9._~+/=%-]{8})[A-Za-z]*[0-9._~+/=%-]`
+
+/**
+ * Binary `S0` (v2.1.286): value class — lazy-stop before an embedded next key,
+ * otherwise greedy `[A-Za-z0-9._~+/=%-]{8,}` (the v2.1.285 behavior).
+ */
+const SECRET_VALUE_PATTERN =
+  String.raw`(?:[A-Za-z0-9._~+/=%-]+?(?=${NEXT_KEY_PATTERN})|[A-Za-z0-9._~+/=%-]{8,})`
+
+/**
+ * Binary `l7` (v2.1.286): bearer/basic rule. Adds the negative lookahead
+ * `(?![\s:=…]+…${KEY_NAME_PATTERN}=*(?![A-Za-z0-9._~+/=%-]))` so `Bearer
+ * access_token: <secret>` no longer redacts the KEY NAME as the value and
+ * leaks the real secret (286 changelog item 1).
+ */
+const BEARER_RULE = new RegExp(
+  String.raw`(?:\b|(?<=\\[A-Za-z"']))(bearer|basic)(?![\s:=\uFF1A\uFF1D]+(?:(?:\\*["']|\\+)\s*)?${KEY_NAME_PATTERN}=*(?![A-Za-z0-9._~+/=%-]))[\s:=\uFF1A\uFF1D]+(?:(?:\\*["']|\\+)\s*)?(${SECRET_VALUE_PATTERN})`,
+  'gi',
+)
+
+/** Binary `c7` (v2.1.286): token-family `label[:=] value` rule. */
+const KV_RULE = new RegExp(
+  String.raw`(?:\b|(?<=\\[A-Za-z"']))(${KEY_NAME_PATTERN})(?:\\*["']|\\+)?\s*[:=\uFF1A\uFF1D]\s*(?:\\*["']|\\+)?\s*(?!=*${KEY_NAME_PATTERN}=*(?![A-Za-z0-9._~+/=%-]))(${SECRET_VALUE_PATTERN})`,
+  'gi',
+)
+
+/**
+ * Binary `_0` @203208929 (v2.1.286): 5-arg replacer. Bails when the value has
+ * no secret-bearing char; appends a trailing space when a word char directly
+ * follows the match, so a lazy-stop split cannot fuse `[redacted]` with the
+ * next key (`redactedtoken`-style joins).
+ */
+function redactionReplacer(
+  match: string,
+  label: string,
+  secret: string,
+  offset: number,
+  full: string,
+): string {
+  if (!/[0-9._~+/=%-]/.test(secret)) return match
+  return /\w/.test(full[offset + match.length] ?? '')
+    ? `${label} [redacted] `
+    : `${label} [redacted]`
+}
+
+/**
+ * Binary `Kin` @194524420 (v2.1.274) → `Qzn` (v2.1.285) → `rzn` @203209061
+ * (v2.1.286): redact `bearer <secret>` / `basic <secret>` and token-family
+ * `label: secret` / `label=secret` pairs (incl. JSON-escaped forms) when the
+ * secret body looks secret-bearing. `mode: 'none'` skips redaction entirely
+ * (used for server names).
+ *
+ * v2.1.286 rewrite (changelog items 1–2): negative lookahead keeps
+ * `Bearer <key-name>: <secret>` from masking the key name as the value (which
+ * leaked the real secret), and the lazy-stop value class + embedded-next-key
+ * detector fully mask percent-encoded runs and `key1=v1+key2=v2` splits.
  */
 export function redactSecretsForDisplay(
   value: string,
   mode: 'all' | 'none' = 'all',
 ): string {
-  function replacer(match: string, label: string, secret: string): string {
-    return /[0-9._~+/=%-]/.test(secret) ? `${label} [redacted]` : match
-  }
   if (mode === 'none') return value
   return value
-    .replace(
-      /(?:\b|(?<=\\[A-Za-z"']))(bearer|basic)[\s:=\uFF1A\uFF1D]+(?:(?:\\*["']|\\+)\s*)?([A-Za-z0-9._~+/=%-]{8,})/gi,
-      replacer,
-    )
-    .replace(
-      /(?:\b|(?<=\\[A-Za-z"']))((?:access[-_ ]?|refresh[-_ ]?|id[-_ ]?|client[-_ ]?|api[-_ ]?|x[-_]api[-_ ]?|session[-_ ]?|auth[-_ ]?)?(?:token|key|secret|password|authorization|credential)s?)(?:\\*["']|\\+)?\s*[:=\uFF1A\uFF1D]\s*(?:\\*["']|\\+)?\s*([A-Za-z0-9._~+/=%-]{8,})/gi,
-      replacer,
-    )
+    .replace(BEARER_RULE, redactionReplacer)
+    .replace(KV_RULE, redactionReplacer)
 }
 
 /**

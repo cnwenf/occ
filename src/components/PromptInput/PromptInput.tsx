@@ -1500,8 +1500,12 @@ function PromptInput({
             .trim() || undefined;
         }
       }
-      // Pass pastedContents to expand collapsed text references
-      const result = await editPromptInEditor(input, pastedContents, commentedContext);
+      // Pass pastedContents to expand collapsed text references.
+      // CC 2.1.286 (item 48): pass cursorOffset so the editor opens on the
+      // cursor's line — official v286 caller @225289387
+      // `L$(lO,L.pastedContents,l6,L.cursorOffset)` (v285 @224043107 had no
+      // 4th arg).
+      const result = await editPromptInEditor(input, pastedContents, commentedContext, cursorOffset);
       if (result.error) {
         addNotification({
           key: 'external-editor-error',

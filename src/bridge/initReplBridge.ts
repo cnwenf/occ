@@ -19,9 +19,14 @@ import { getOriginalCwd, getSessionId } from '../bootstrap/state.js'
 import type { SDKMessage } from '../entrypoints/agentSdkTypes.js'
 import type { SDKControlResponse } from '../entrypoints/sdk/controlTypes.js'
 import { getFeatureValue_CACHED_WITH_REFRESH } from '../services/analytics/growthbook.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from '../services/analytics/index.js'
 import { getOrganizationUUID } from '../services/oauth/client.js'
 import {
   isPolicyAllowed,
+  onPolicyLimitsChange,
   waitForPolicyLimitsToLoad,
 } from '../services/policyLimits/index.js'
 import type { Message } from '../types/message.js'
@@ -60,6 +65,7 @@ import {
   isCseShimEnabled,
   isEnvLessBridgeEnabled,
 } from './bridgeEnabled.js'
+import { connectedBridgePolicyRefusal } from './bridgePolicyRefusal.js'
 import {
   archiveBridgeSession,
   createBridgeSession,
@@ -108,6 +114,118 @@ export type InitBridgeOptions = {
   tags?: string[]
 }
 
+/**
+ * 2.1.286 port — REPL-lane connected-bridge policy watcher.
+ *
+ * Official (byte-verified @225854200+ in the v286 linux-x64 binary; v285 has
+ * zero hits for any of these strings):
+ *   let Nl = memo(() => {
+ *     let {replBridgeEnabled, replBridgeConnected, replBridgeOutboundOnly}
+ *       = store.getState()
+ *     if (!replBridgeEnabled || !replBridgeConnected) return
+ *     let r = WAe(replBridgeOutboundOnly)          // connectedBridgePolicyRefusal
+ *     if (r === null) return
+ *     try { setState(s => s.replBridgeEnabled ? {...s,
+ *         replBridgeEnabled:!1, replBridgeSessionGroupingId:void 0,
+ *         replBridgeAutoOnByDefault:!1} : s) }      // guarded clear
+ *     catch(e){ log(`[bridge:repl] Policy disconnect failed: ${msg(e)}`,
+ *         {level:"error"}); captureError(e); return }
+ *     try { if(!outboundOnly){ transcript.replace(dedupAppend(r.detail)) }
+ *       log(`[bridge:repl] Org policy now refuses the connected bridge
+ *         (${r.policy}: ${r.kind}, outboundOnly=${outboundOnly}); disconnected`)
+ *       logEvent("tengu_bridge_policy_teardown",{lane:"repl",policy:r.policy,
+ *         deny_kind:r.kind,outbound_only:outboundOnly}) }
+ *     catch(e){ log(`[bridge:repl] Policy disconnect notice failed: ...`) }
+ *   })
+ *   effect(() => { if (!ready || eY()) return        // eY = tengu_lovely_umbrella
+ *     let unsub = D0(() => queueMicrotask(Nl))       // verdictChanged subscribe
+ *     Nl(); return unsub }, [ready])                 // check once + cleanup
+ *
+ * OCC mapping (documented divergences):
+ * - OCC's AppState store is React-context-only; this module cannot clear
+ *   replBridgeEnabled/session-grouping/auto-on fields directly. The honest
+ *   disconnect surface is handle.teardown() + onStateChange('failed', detail),
+ *   which drives useReplBridge's existing failed path (connected:false, pill
+ *   shows the official notice text, enabled auto-clears). Clearing the exact
+ *   AppState fields + transcript dedup append (appendBridgePolicyNotice in
+ *   bridgePolicyRefusal.ts, exported) requires useReplBridge.tsx/REPL.tsx
+ *   changes — owned elsewhere, STAGED.
+ * - eY() kill-switch (statsig tengu_lovely_umbrella, unserved default false)
+ *   has no OCC surface ≡ false → the watcher is always on.
+ * - isConnected() replaces the official replBridgeEnabled&&replBridgeConnected
+ *   gate: handle existence ⇔ enabled, and the wrapped onStateChange tracks
+ *   connected ('ready'/'connected' → true, 'failed' → false, matching
+ *   useReplBridge's handleStateChange).
+ */
+export function attachBridgePolicyWatcher(
+  handle: ReplBridgeHandle,
+  opts: {
+    isConnected: () => boolean
+    onStateChange?: (state: BridgeState, detail?: string) => void
+    outboundOnly: boolean
+  },
+): ReplBridgeHandle {
+  let policyShutdown = false
+  const checkBridgePolicy = (): void => {
+    if (policyShutdown || !opts.isConnected()) {
+      return
+    }
+    const refusal = connectedBridgePolicyRefusal(opts.outboundOnly)
+    if (refusal === null) {
+      return
+    }
+    policyShutdown = true
+    try {
+      // Official clears replBridgeEnabled, whose effect cleanup tears the
+      // bridge down; OCC tears down directly and reports the failure state.
+      void handle.teardown()
+      opts.onStateChange?.('failed', refusal.detail)
+    } catch (err) {
+      logForDebugging(
+        `[bridge:repl] Policy disconnect failed: ${errorMessage(err)}`,
+        { level: 'error' },
+      )
+      // Official also does captureError(err) — no OCC surface, then returns.
+      return
+    }
+    try {
+      // STAGED: `if (!opts.outboundOnly)` transcript notice append — see
+      // appendBridgePolicyNotice (bridgePolicyRefusal.ts); REPL transcript
+      // store is out of this module's reach.
+      logForDebugging(
+        `[bridge:repl] Org policy now refuses the connected bridge (${refusal.policy}: ${refusal.kind}, outboundOnly=${opts.outboundOnly}); disconnected`,
+      )
+      logEvent('tengu_bridge_policy_teardown', {
+        lane:
+          'repl' as unknown as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        policy:
+          refusal.policy as unknown as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        deny_kind:
+          refusal.kind as unknown as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        outbound_only: opts.outboundOnly,
+      })
+    } catch (err) {
+      logForDebugging(
+        `[bridge:repl] Policy disconnect notice failed: ${errorMessage(err)}`,
+        { level: 'error' },
+      )
+    }
+  }
+  const unsubscribe = onPolicyLimitsChange(() => {
+    queueMicrotask(checkBridgePolicy)
+  })
+  // Official wiring effect: check once immediately, subscribe, unsubscribe on
+  // cleanup (here: wrapped into handle.teardown, the REPL's unmount path).
+  checkBridgePolicy()
+  return {
+    ...handle,
+    teardown: async () => {
+      unsubscribe()
+      return handle.teardown()
+    },
+  }
+}
+
 export async function initReplBridge(
   options?: InitBridgeOptions,
 ): Promise<ReplBridgeHandle | null> {
@@ -127,6 +245,20 @@ export async function initReplBridge(
     outboundOnly,
     tags,
   } = options ?? {}
+
+  // 2.1.286: connection tracking for the policy watcher. Official gate is
+  // replBridgeEnabled && replBridgeConnected; handle existence ⇔ enabled and
+  // this flag ⇔ connected ('ready'/'connected' → true, 'failed' → false,
+  // matching useReplBridge's handleStateChange).
+  let bridgeConnectedForPolicy = false
+  const trackedOnStateChange = (state: BridgeState, detail?: string): void => {
+    if (state === 'connected' || state === 'ready') {
+      bridgeConnectedForPolicy = true
+    } else if (state === 'failed') {
+      bridgeConnectedForPolicy = false
+    }
+    onStateChange?.(state, detail)
+  }
 
   // Wire the cse_ shim kill switch so toCompatSessionId respects the
   // GrowthBook gate. Daemon/SDK paths skip this — shim defaults to active.
@@ -439,7 +571,7 @@ export async function initReplBridge(
       '[bridge:repl] Using env-less bridge path (tengu_bridge_repl_v2)',
     )
     const { initEnvLessBridgeCore } = await import('./remoteBridgeCore.js')
-    return initEnvLessBridgeCore({
+    const envLessHandle = await initEnvLessBridgeCore({
       baseUrl,
       orgUUID,
       title,
@@ -462,10 +594,17 @@ export async function initReplBridge(
       onSetModel,
       onSetMaxThinkingTokens,
       onSetPermissionMode,
-      onStateChange,
+      onStateChange: trackedOnStateChange,
       outboundOnly,
       tags,
     })
+    return envLessHandle
+      ? attachBridgePolicyWatcher(envLessHandle, {
+          isConnected: () => bridgeConnectedForPolicy,
+          onStateChange: trackedOnStateChange,
+          outboundOnly: Boolean(outboundOnly),
+        })
+      : null
   }
 
   // ── v1 path: env-based (register/poll/ack/heartbeat) ──────────────────
@@ -504,7 +643,7 @@ export async function initReplBridge(
   // 6. Delegate. BridgeCoreHandle is a structural superset of
   // ReplBridgeHandle (adds writeSdkMessages which REPL callers don't use),
   // so no adapter needed — just the narrower type on the way out.
-  return initBridgeCore({
+  const coreHandle = await initBridgeCore({
     dir: getOriginalCwd(),
     machineName: hostname(),
     branch,
@@ -556,9 +695,16 @@ export async function initReplBridge(
     onSetModel,
     onSetMaxThinkingTokens,
     onSetPermissionMode,
-    onStateChange,
+    onStateChange: trackedOnStateChange,
     perpetual,
   })
+  return coreHandle
+    ? attachBridgePolicyWatcher(coreHandle, {
+        isConnected: () => bridgeConnectedForPolicy,
+        onStateChange: trackedOnStateChange,
+        outboundOnly: Boolean(outboundOnly),
+      })
+    : null
 }
 
 const TITLE_MAX_LEN = 50

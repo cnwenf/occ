@@ -2286,6 +2286,201 @@ export function buildConversationChain(
   return recoverOrphanedParallelToolResults(messages, transcript, seen)
 }
 
+/*
+ * Helpers for recoverOrphanedParallelToolResults — faithful ports of the
+ * official 2.1.286 binary's helper cluster around `Bmr` (byte-verified at
+ * v286 code offset 208294542–208301107; identical in v285 at 207144795):
+ *   gx  → contentHasBlock        qfe → belongsToMsgSegment
+ *   xln → extractBlockIds        IO  → isRecoverableTailNode
+ *   Ufe → assistantToolUseIds    Xie → collectLinearDescendants
+ *   vD  → userToolResultIds      Qie → buildChildrenByUuid
+ *   Rln → isAssistantWithToolUse yB  → buildFilePositionMap
+ *   (inline isObject guard)      NS  → filePositionOf
+ */
+
+type TranscriptContentBlock = {
+  type?: unknown
+  id?: unknown
+  tool_use_id?: unknown
+}
+
+function isPlainObjectBlock(value: unknown): value is TranscriptContentBlock {
+  return (
+    typeof value === 'object' && value !== null && !Array.isArray(value)
+  )
+}
+
+/** Official `gx(e,n)`: content array contains a block of the given type. */
+function contentHasBlock(content: unknown, blockType: string): boolean {
+  return (
+    Array.isArray(content) &&
+    content.some(b => isPlainObjectBlock(b) && b.type === blockType)
+  )
+}
+
+/**
+ * Official `xln(e,n,r)`: collect string ids from content blocks of a given
+ * type under a given key (tool_use→id, tool_result→tool_use_id).
+ */
+function extractBlockIds(
+  content: unknown,
+  blockType: string,
+  idKey: 'id' | 'tool_use_id',
+): string[] {
+  if (!Array.isArray(content)) return []
+  const ids: string[] = []
+  for (const block of content) {
+    if (isPlainObjectBlock(block) && block.type === blockType) {
+      const id = block[idKey]
+      if (typeof id === 'string') ids.push(id)
+    }
+  }
+  return ids
+}
+
+/** Official `Ufe(e)`: tool_use call ids emitted by an assistant message. */
+function assistantToolUseIds(msg: TranscriptMessage): string[] {
+  return msg.type === 'assistant'
+    ? extractBlockIds(msg.message?.content, 'tool_use', 'id')
+    : []
+}
+
+/** Official `vD(e)`: tool_result call ids carried by a user message. */
+function userToolResultIds(msg: TranscriptMessage): string[] {
+  return msg.type === 'user'
+    ? extractBlockIds(msg.message?.content, 'tool_result', 'tool_use_id')
+    : []
+}
+
+/** Official `Rln(e)`: assistant message containing at least one tool_use. */
+function isAssistantWithToolUse(msg: TranscriptMessage): boolean {
+  return (
+    msg.type === 'assistant' && contentHasBlock(msg.message?.content, 'tool_use')
+  )
+}
+
+function messageSubtype(msg: TranscriptMessage): string | undefined {
+  const subtype = (msg as { subtype?: unknown }).subtype
+  return typeof subtype === 'string' ? subtype : undefined
+}
+
+/**
+ * Official `qfe(e,n)`: whether a chain message belongs to the segment of
+ * message.id `msgId` — the run of records produced while the model resolved
+ * one assistant turn (its tool_result users, attachments, non-boundary
+ * system records). Segment end detection for splice ranges.
+ */
+function belongsToMsgSegment(
+  msg: TranscriptMessage,
+  msgId: string | null,
+): boolean {
+  switch (msg.type) {
+    case 'assistant':
+      return msgId !== null && msg.message?.id === msgId
+    case 'user':
+      return (
+        msg.isMeta === true ||
+        contentHasBlock(msg.message?.content, 'tool_result')
+      )
+    case 'attachment':
+      return true
+    case 'system':
+      return messageSubtype(msg) !== 'compact_boundary'
+    default:
+      return false
+  }
+}
+
+/**
+ * Official `IO(e)`: non-conversational records safe to traverse when
+ * recovering a tail — attachments, non-boundary system records, and
+ * isMeta user records that are not tool_result carriers.
+ */
+function isRecoverableTailNode(msg: TranscriptMessage): boolean {
+  if (msg.type === 'attachment') return true
+  if (msg.type === 'system')
+    return messageSubtype(msg) !== 'compact_boundary'
+  return (
+    msg.type === 'user' &&
+    msg.isMeta === true &&
+    !contentHasBlock(msg.message?.content, 'tool_result')
+  )
+}
+
+/** Official `W(At,Ft)`: same sidechain-ness and same agent context. */
+function sameTranscriptContext(
+  a: TranscriptMessage,
+  b: TranscriptMessage,
+): boolean {
+  return (a.isSidechain ?? false) === (b.isSidechain ?? false) && a.agentId === b.agentId
+}
+
+/**
+ * Official `Xie(e,n,r,s)` (+ `I2o`): collect the strictly-linear descendant
+ * chain starting at `start` under `parent`. Bails with [] if any node was
+ * already seen, is not a recoverable tail node in the parent's context, or
+ * if the chain forks (a node has >1 unseen child) — forks mean a real
+ * conversation branch, which the walk must not silently absorb.
+ */
+function collectLinearDescendants(
+  start: TranscriptMessage,
+  parent: TranscriptMessage,
+  childrenByUuid: Map<UUID, TranscriptMessage[]>,
+  seen: Set<UUID>,
+): TranscriptMessage[] {
+  const out: TranscriptMessage[] = []
+  let current: TranscriptMessage | undefined = start
+  while (current !== undefined) {
+    if (
+      seen.has(current.uuid) ||
+      !(
+        current.isSidechain === parent.isSidechain &&
+        isRecoverableTailNode(current)
+      )
+    )
+      return []
+    out.push(current)
+    const kids = (childrenByUuid.get(current.uuid) ?? []).filter(
+      k => !seen.has(k.uuid),
+    )
+    if (kids.length > 1) return []
+    current = kids[0]
+  }
+  return out
+}
+
+/** Official `Qie(e)`: parentUuid → children index over all messages. */
+function buildChildrenByUuid(
+  messages: Map<UUID, TranscriptMessage>,
+): Map<UUID, TranscriptMessage[]> {
+  const children = new Map<UUID, TranscriptMessage[]>()
+  for (const msg of messages.values()) {
+    if (!msg.parentUuid) continue
+    const siblings = children.get(msg.parentUuid)
+    if (siblings) siblings.push(msg)
+    else children.set(msg.parentUuid, [msg])
+  }
+  return children
+}
+
+/** Official `yB(e)`: uuid → file position (messages Map keeps write order). */
+function buildFilePositionMap(
+  messages: Map<UUID, TranscriptMessage>,
+): Map<UUID, number> {
+  const positions = new Map<UUID, number>()
+  let i = 0
+  for (const uuid of messages.keys()) positions.set(uuid, i++)
+  return positions
+}
+
+/** Official `NS(e,n)`: position lookup defaulting to MAX_SAFE_INTEGER. */
+function filePositionOf(
+  positions: Map<UUID, number> | undefined,
+  msg: TranscriptMessage,
+): number {
+  return positions?.get(msg.uuid) ?? Number.MAX_SAFE_INTEGER
+}
+
 /**
  * Post-pass for buildConversationChain: recover sibling assistant blocks and
  * tool_results that the single-parent walk orphaned.
@@ -2297,13 +2492,23 @@ export function buildConversationChain(
  * DIFFERENT assistant. The topology is a DAG; the walk above is a linked-list
  * traversal and keeps only one branch.
  *
- * Two loss modes observed in production (both fixed here):
+ * Loss modes fixed here (official 2.1.286 `Bmr`, byte-verified — v286 code
+ * region offset 208294542; canonical-identical in v285 at 207144795, so the
+ * full mechanism below is the shipped 2.1.286 state):
  *   1. Sibling assistant orphaned: walk goes prev→asstA→TR_A→next, drops asstB
  *      (same message.id, chained off asstA) and TR_B.
  *   2. Progress-fork (legacy, pre-#23537): each tool_use asst had a progress
  *      child (continued the write chain) AND a TR child. Walk followed
  *      progress; TRs were dropped. No longer written (progress removed from
  *      transcript persistence), but old transcripts still have this shape.
+ *   3. Call-id re-anchor (2.1.286 changelog — crashed/killed sessions): a TR
+ *      whose parent assistant never made it to disk (crash mid-batch) is
+ *      re-anchored by matching its tool_result call ids against the tool_use
+ *      ids of the on-chain sibling group, and position-overridden to sort
+ *      right after that group (Math.max(filePos, groupMax + 0.5)).
+ *   4. Tail recovery: linear chains of attachment/system/isMeta records
+ *      hanging off the group (or off in-segment chain records) are pulled
+ *      back in so every turn after a parallel batch survives resume.
  *
  * Read-side fix: the write topology is already on disk for old transcripts;
  * this recovery pass handles them.
@@ -2313,88 +2518,322 @@ function recoverOrphanedParallelToolResults(
   chain: TranscriptMessage[],
   seen: Set<UUID>,
 ): TranscriptMessage[] {
-  type ChainAssistant = TranscriptMessage & { type: 'assistant' }
-  const chainAssistants = chain.filter(
-    (m): m is ChainAssistant => m.type === 'assistant',
-  )
+  const chainAssistants = chain.filter(m => m.type === 'assistant')
   if (chainAssistants.length === 0) return chain
 
-  // Anchor = last on-chain member of each sibling group. chainAssistants is
-  // already in chain order, so later iterations overwrite → last wins.
-  const anchorByMsgId = new Map<string, ChainAssistant>()
-  for (const a of chainAssistants) {
-    if (a.message.id) anchorByMsgId.set(a.message.id, a)
-  }
+  // Official gate `zp()` = statsig tengu_foamy_spring, default true (returns
+  // true whenever no gate reader is registered). OCC has no statsig reader
+  // on this path → gate open, matching the official default behavior.
+  const callIdReanchorEnabled = true
 
-  // O(n) precompute: sibling groups and TR index.
-  // TRs indexed by parentUuid — insertMessageChain:~894 already wrote that
-  // as the srcUUID, and --fork-session strips srcUUID but keeps parentUuid.
-  const siblingsByMsgId = new Map<string, TranscriptMessage[]>()
-  const toolResultsByAsst = new Map<UUID, TranscriptMessage[]>()
+  // message.id → all assistant messages sharing it; plus every user message
+  // carrying tool_result blocks.
+  const assistantsByMsgId = new Map<string, TranscriptMessage[]>()
+  const toolResultsByParent = new Map<UUID, TranscriptMessage[]>()
+  const toolResultUsers: TranscriptMessage[] = []
   for (const m of messages.values()) {
-    if (m.type === 'assistant' && m.message.id) {
-      const group = siblingsByMsgId.get(m.message.id)
+    if (m.type === 'assistant' && m.message?.id) {
+      const group = assistantsByMsgId.get(m.message.id)
       if (group) group.push(m)
-      else siblingsByMsgId.set(m.message.id, [m])
-    } else if (
-      m.type === 'user' &&
-      m.parentUuid &&
-      Array.isArray(m.message.content) &&
-      m.message.content.some(b => b.type === 'tool_result')
-    ) {
-      const group = toolResultsByAsst.get(m.parentUuid)
-      if (group) group.push(m)
-      else toolResultsByAsst.set(m.parentUuid, [m])
+      else assistantsByMsgId.set(m.message.id, [m])
+    } else if (m.type === 'user' && contentHasBlock(m.message?.content, 'tool_result')) {
+      toolResultUsers.push(m)
     }
   }
 
-  // For each message.id group touching the chain: collect off-chain siblings,
-  // then off-chain TRs for ALL members. Splice right after the last on-chain
-  // member so the group stays contiguous for normalizeMessagesForAPI's merge
-  // and every TR lands after its tool_use.
-  const processedGroups = new Set<string>()
-  const inserts = new Map<UUID, TranscriptMessage[]>()
-  let recoveredCount = 0
-  for (const asst of chainAssistants) {
-    const msgId = asst.message.id
-    if (!msgId || processedGroups.has(msgId)) continue
-    processedGroups.add(msgId)
+  // Official `H`: link a tool_result under a parent uuid (deduped by
+  // `${parentUuid}\n${childUuid}`), building the parentUuid → TRs index.
+  const linkedKeys = new Set<string>()
+  const linkToolResult = (parentUuid: UUID, tr: TranscriptMessage): void => {
+    const key = `${parentUuid}\n${tr.uuid}`
+    if (linkedKeys.has(key)) return
+    linkedKeys.add(key)
+    const group = toolResultsByParent.get(parentUuid)
+    if (group) group.push(tr)
+    else toolResultsByParent.set(parentUuid, [tr])
+  }
 
-    const group = siblingsByMsgId.get(msgId) ?? [asst]
-    const orphanedSiblings = group.filter(s => !seen.has(s.uuid))
-    const orphanedTRs: TranscriptMessage[] = []
-    for (const member of group) {
-      const trs = toolResultsByAsst.get(member.uuid)
-      if (!trs) continue
-      for (const tr of trs) {
-        if (!seen.has(tr.uuid)) orphanedTRs.push(tr)
+  // Partition dangling TRs: parent missing, or parent's tool_use ids do not
+  // cover the TR's call ids (crash mid-batch — the source assistant with the
+  // matching tool_use may be gone or orphaned itself).
+  const danglingToolResults: TranscriptMessage[] = []
+  for (const tr of toolResultUsers) {
+    if (tr.parentUuid) linkToolResult(tr.parentUuid, tr)
+    if (!callIdReanchorEnabled) continue
+    const parent = tr.parentUuid ? messages.get(tr.parentUuid) : undefined
+    const parentCallIds = new Set(parent ? assistantToolUseIds(parent) : [])
+    const trCallIds = userToolResultIds(tr)
+    if (
+      trCallIds.length > 0 &&
+      trCallIds.every(id => parentCallIds.has(id))
+    )
+      continue
+    danglingToolResults.push(tr)
+  }
+
+  // Official `he`: call id → assistant that emitted it; null when two
+  // different message.ids claim the same call id (ambiguous → never used).
+  const assistantByCallId = new Map<string, TranscriptMessage | null>()
+  if (danglingToolResults.length > 0) {
+    for (const group of assistantsByMsgId.values()) {
+      for (const asst of group) {
+        if (asst.type !== 'assistant') continue
+        for (const callId of assistantToolUseIds(asst)) {
+          const prev = assistantByCallId.get(callId)
+          assistantByCallId.set(
+            callId,
+            prev === undefined || prev?.message?.id === asst.message?.id
+              ? asst
+              : null,
+          )
+        }
       }
     }
-    if (orphanedSiblings.length === 0 && orphanedTRs.length === 0) continue
-
-    // Timestamp sort keeps content-block / completion order; stable-sort
-    // preserves JSONL write order on ties.
-    orphanedSiblings.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-    orphanedTRs.sort((a, b) => a.timestamp.localeCompare(b.timestamp))
-
-    const anchor = anchorByMsgId.get(msgId)!
-    const recovered = [...orphanedSiblings, ...orphanedTRs]
-    for (const r of recovered) seen.add(r.uuid)
-    recoveredCount += recovered.length
-    inserts.set(anchor.uuid, recovered)
   }
 
-  if (recoveredCount === 0) return chain
+  // Re-link dangling TRs: first by explicit sourceToolAssistantUUID, then by
+  // call-id match against the assistant that emitted the tool_use.
+  for (const tr of danglingToolResults) {
+    const srcUuid =
+      'sourceToolAssistantUUID' in tr
+        ? (tr.sourceToolAssistantUUID as UUID | undefined)
+        : undefined
+    const src =
+      typeof srcUuid === 'string' && srcUuid !== tr.parentUuid
+        ? messages.get(srcUuid as UUID)
+        : undefined
+    if (src && sameTranscriptContext(tr, src)) linkToolResult(src.uuid, tr)
+    for (const callId of userToolResultIds(tr)) {
+      const asst = assistantByCallId.get(callId)
+      if (asst && asst.uuid !== tr.parentUuid && sameTranscriptContext(tr, asst))
+        linkToolResult(asst.uuid, tr)
+    }
+  }
+
+  // Lazy set of all call ids already present on the chain (official `Se`).
+  let chainCallIdsCache: Set<string> | undefined
+  const allChainCallIds = (): Set<string> => {
+    if (chainCallIdsCache === undefined) {
+      chainCallIdsCache = new Set()
+      for (const m of chain)
+        for (const id of userToolResultIds(m)) chainCallIdsCache.add(id)
+    }
+    return chainCallIdsCache
+  }
+
+  // uuid → chain index (official `ve`).
+  const chainIndexByUuid = new Map<UUID, number>()
+  for (let i = 0; i < chain.length; i++) chainIndexByUuid.set(chain[i]!.uuid, i)
+
+  const processedMsgIds = new Set<string>()
+  type RecoveredSegment = {
+    start: number
+    end: number
+    recovered: TranscriptMessage[]
+    anchored: Map<UUID, TranscriptMessage[]>
+  }
+  const segments: RecoveredSegment[] = []
+  let recoveredCount = 0 // official `xe`
+  let tailRecoveredCount = 0 // official `Ie`
+  let callIdRecoveredCount = 0 // official `Ne`
+  let childrenByUuid: Map<UUID, TranscriptMessage[]> | undefined // official `ze`
+  let filePositions: Map<UUID, number> | undefined // official `Fe`
+  // Position overrides so re-anchored records sort right after their group
+  // (official `Ge`).
+  const positionOverrides = new Map<UUID, number>()
+  const sortPos = (m: TranscriptMessage): number =>
+    positionOverrides.get(m.uuid) ?? filePositionOf(filePositions, m)
+  const compareRecovered = (
+    a: TranscriptMessage,
+    b: TranscriptMessage,
+  ): number =>
+    sortPos(a) - sortPos(b) ||
+    filePositionOf(filePositions, a) - filePositionOf(filePositions, b)
+
+  for (const asst of chainAssistants) {
+    const msgId = asst.message?.id
+    if (!msgId || processedMsgIds.has(msgId)) continue
+    processedMsgIds.add(msgId)
+
+    const group = assistantsByMsgId.get(msgId) ?? [asst]
+    const inGroup = (uuid: UUID | null | undefined): boolean =>
+      !!uuid && group.some(m => m.uuid === uuid)
+    const offChainSiblings = group.filter(m => !seen.has(m.uuid))
+    // TRs linked to any group member, split by whether their own parentUuid
+    // is inside the group (anchored) or not (orphaned — crash-lost parent).
+    const anchoredTRs: TranscriptMessage[] = []
+    const orphanedTRs: TranscriptMessage[] = []
+    const visitedTRs = new Set<UUID>()
+    for (const member of group) {
+      for (const tr of toolResultsByParent.get(member.uuid) ?? []) {
+        if (seen.has(tr.uuid) || visitedTRs.has(tr.uuid)) continue
+        visitedTRs.add(tr.uuid)
+        if (inGroup(tr.parentUuid)) anchoredTRs.push(tr)
+        else orphanedTRs.push(tr)
+      }
+    }
+
+    // Call-id re-anchor pass (official `_n.length>0` branch): an orphaned TR
+    // is recovered when one of its call ids is (a) not yet present anywhere
+    // on the chain, (b) unambiguous in assistantByCallId, and (c) emitted by
+    // a member of this group.
+    if (orphanedTRs.length > 0) {
+      filePositions ??= buildFilePositionMap(messages)
+      const knownCallIds = new Set(allChainCallIds())
+      for (const tr of anchoredTRs)
+        for (const id of userToolResultIds(tr)) knownCallIds.add(id)
+      orphanedTRs.sort(compareRecovered)
+      const groupMaxPos = Math.max(
+        ...group.map(m => filePositionOf(filePositions, m)),
+      )
+      for (const tr of orphanedTRs) {
+        const callIds = userToolResultIds(tr)
+        const reanchorable = callIds.some(id => {
+          const emitter = assistantByCallId.get(id)
+          return !knownCallIds.has(id) && !!emitter && inGroup(emitter.uuid)
+        })
+        if (!reanchorable) continue
+        for (const id of callIds) knownCallIds.add(id)
+        positionOverrides.set(
+          tr.uuid,
+          Math.max(filePositionOf(filePositions, tr), groupMaxPos + 0.5),
+        )
+        // Official also calls vj(tr.uuid) here — an LRU touch of the binary's
+        // read-uuid set used by its LogOption leafUuid display pick. OCC has
+        // no such LRU (convertToLogOption uses the chain's last message);
+        // omitted intentionally, no effect on the recovered chain.
+        anchoredTRs.push(tr)
+        callIdRecoveredCount++
+      }
+    }
+
+    const recovered = [...offChainSiblings, ...anchoredTRs]
+    for (const m of recovered) seen.add(m.uuid)
+
+    // Splice range: [first group member index, end of the message.id
+    // segment) — extended past later group members and trailing records
+    // that belong to the same turn (official qfe walk).
+    const startIdx = chainIndexByUuid.get(asst.uuid)!
+    let segmentEnd = startIdx + 1
+    for (const member of group) {
+      const idx = chainIndexByUuid.get(member.uuid)
+      if (idx !== undefined && idx >= segmentEnd) segmentEnd = idx + 1
+    }
+    while (
+      segmentEnd < chain.length &&
+      belongsToMsgSegment(chain[segmentEnd]!, msgId)
+    )
+      segmentEnd++
+
+    // Tail recovery (official `Ct.some(Rln)` branch): when the group issued
+    // tool calls, pull back linear attachment/system/isMeta chains hanging
+    // off the group, off its on-chain TRs, and off in-segment chain records.
+    const anchoredTails = new Map<UUID, TranscriptMessage[]>()
+    if (group.some(isAssistantWithToolUse)) {
+      childrenByUuid ??= buildChildrenByUuid(messages)
+      const children = childrenByUuid
+      const tailRoots = [...group]
+      const tailRootUuids = new Set(group.map(m => m.uuid))
+      for (const member of group) {
+        for (const tr of toolResultsByParent.get(member.uuid) ?? []) {
+          if (seen.has(tr.uuid) && !tailRootUuids.has(tr.uuid)) {
+            tailRootUuids.add(tr.uuid)
+            tailRoots.push(tr)
+          }
+        }
+      }
+      const recoverTail = (
+        root: TranscriptMessage,
+        out: TranscriptMessage[],
+      ): void => {
+        const rootOverride = positionOverrides.get(root.uuid)
+        for (const child of children.get(root.uuid) ?? []) {
+          const descendants = collectLinearDescendants(
+            child,
+            root,
+            children,
+            seen,
+          )
+          for (const d of descendants) {
+            seen.add(d.uuid)
+            out.push(d)
+            if (rootOverride !== undefined) {
+              filePositions ??= buildFilePositionMap(messages)
+              positionOverrides.set(
+                d.uuid,
+                Math.max(filePositionOf(filePositions, d), rootOverride),
+              )
+              // vj(d.uuid) omitted — see note above (no OCC counterpart).
+            }
+          }
+          tailRecoveredCount += descendants.length
+        }
+      }
+      for (const root of tailRoots) recoverTail(root, recovered)
+      for (const m of chain.slice(startIdx + 1, segmentEnd)) {
+        if (!isRecoverableTailNode(m)) continue
+        const tails: TranscriptMessage[] = []
+        recoverTail(m, tails)
+        if (tails.length > 0) anchoredTails.set(m.uuid, tails)
+      }
+    }
+
+    if (recovered.length === 0 && anchoredTails.size === 0) continue
+    recoveredCount += offChainSiblings.length + anchoredTRs.length
+    filePositions ??= buildFilePositionMap(messages)
+    recovered.sort(compareRecovered)
+    segments.push({
+      start: startIdx,
+      end: segmentEnd,
+      recovered,
+      anchored: anchoredTails,
+    })
+  }
+
+  if (segments.length === 0) return chain
   logEvent('tengu_chain_parallel_tr_recovered', {
     recovered_count: recoveredCount,
+    recovered_tail_count: tailRecoveredCount,
   })
+  if (callIdRecoveredCount > 0)
+    logEvent('tengu_chain_tool_result_recovered_by_call_id', {
+      recovered_count: callIdRecoveredCount,
+    })
+
+  // Merge overlapping segments, then splice: recovered records interleave
+  // with the existing segment records by sort position; anchored tails go
+  // immediately after the record they hang off.
+  segments.sort((a, b) => a.start - b.start)
+  const merged: RecoveredSegment[] = []
+  for (const seg of segments) {
+    const last = merged.at(-1)
+    if (last !== undefined && seg.start < last.end) {
+      last.end = Math.max(last.end, seg.end)
+      last.recovered = [...last.recovered, ...seg.recovered].sort(
+        compareRecovered,
+      )
+      for (const [uuid, tails] of seg.anchored)
+        last.anchored.set(uuid, [...(last.anchored.get(uuid) ?? []), ...tails])
+    } else merged.push(seg)
+  }
 
   const result: TranscriptMessage[] = []
-  for (const m of chain) {
-    result.push(m)
-    const toInsert = inserts.get(m.uuid)
-    if (toInsert) result.push(...toInsert)
+  let cursor = 0
+  for (const { start, end, recovered, anchored } of merged) {
+    result.push(...chain.slice(cursor, start + 1))
+    let ri = 0
+    for (let idx = start + 1; idx < end; idx++) {
+      const existing = chain[idx]!
+      const existingPos = filePositionOf(filePositions, existing)
+      while (ri < recovered.length && sortPos(recovered[ri]!) < existingPos)
+        result.push(recovered[ri++]!)
+      result.push(existing)
+      result.push(...(anchored.get(existing.uuid) ?? []))
+    }
+    while (ri < recovered.length) result.push(recovered[ri++]!)
+    cursor = end
   }
+  result.push(...chain.slice(cursor))
   return result
 }
 

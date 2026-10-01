@@ -190,9 +190,15 @@ describe('isAwaitingEligibleMessage ($Qo @217178523)', () => {
 // Store semantics (awaitModelFor @217174519 / markModelReceived @217174696)
 // ---------------------------------------------------------------------------
 
+// CC 2.1.286 (item 55): plain user messages now only register when the
+// dispatch came from the message queue — official v286 run gate `L&&mt`
+// (@225818516) with `mt` = run's new 15th param fed from
+// `ht=inputSource==="queued"` (@225767067). These store-mechanics tests
+// exercise the queued-dispatch path (`true`); the typed/idle path (no dim)
+// is covered in promptsAwaitingModel286.test.ts.
 describe('awaitModelForMessages (awaitModelFor @217174519)', () => {
   test('registers the 24-char uuid prefix of eligible messages', () => {
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })], true)
     const snapshot = getPromptsAwaitingModelSnapshot()
     expect(snapshot.promptsAwaitingModel.has(UUID_A.slice(0, 24))).toBe(true)
     expect(snapshot.promptsAwaitingModel.size).toBe(1)
@@ -223,14 +229,14 @@ describe('awaitModelForMessages (awaitModelFor @217174519)', () => {
     const before = getPromptsAwaitingModelSnapshot()
     awaitModelForMessages([
       makeMessage({ type: 'user', uuid: '' }),
-    ])
+    ], true)
     expect(getPromptsAwaitingModelSnapshot()).toBe(before)
   })
 
   test('publishes the union with previously awaiting keys (immutable new Set)', () => {
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })], true)
     const first = getPromptsAwaitingModelSnapshot()
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_B })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_B })], true)
     const second = getPromptsAwaitingModelSnapshot()
     expect(second.promptsAwaitingModel.size).toBe(2)
     expect(second.promptsAwaitingModel.has(UUID_A.slice(0, 24))).toBe(true)
@@ -248,10 +254,10 @@ describe('awaitModelForMessages (awaitModelFor @217174519)', () => {
     awaitModelForMessages([
       makeMessage({ type: 'user', uuid: UUID_A }),
       makeMessage({ type: 'user', uuid: UUID_B }),
-    ])
+    ], true)
     expect(notified).toBe(1)
     unsubscribe()
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_B })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_B })], true)
     expect(notified).toBe(1)
   })
 })
@@ -261,7 +267,7 @@ describe('markModelReceived (@217174696)', () => {
     awaitModelForMessages([
       makeMessage({ type: 'user', uuid: UUID_A }),
       makeMessage({ type: 'user', uuid: UUID_B }),
-    ])
+    ], true)
     markModelReceived()
     expect(getPromptsAwaitingModelSnapshot().promptsAwaitingModel.size).toBe(0)
   })
@@ -280,7 +286,7 @@ describe('markModelReceived (@217174696)', () => {
   })
 
   test('publishes the shared empty-set constant (RWt @217171099)', () => {
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })], true)
     markModelReceived()
     expect(getPromptsAwaitingModelSnapshot().promptsAwaitingModel).toBe(
       EMPTY_AWAITING_SET,
@@ -288,7 +294,7 @@ describe('markModelReceived (@217174696)', () => {
   })
 
   test('notifies subscribers when it actually clears', () => {
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })], true)
     let notified = 0
     const unsubscribe = subscribeToPromptsAwaitingModel(() => {
       notified += 1
@@ -325,7 +331,7 @@ describe('selectIsAwaitingModel (Pb selector @215281997)', () => {
   })
 
   test('is false for an undefined key (no messageId prop)', () => {
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })], true)
     expect(
       selectIsAwaitingModel(getPromptsAwaitingModelSnapshot(), undefined),
     ).toBe(false)
@@ -341,14 +347,14 @@ describe('selectIsAwaitingModel (Pb selector @215281997)', () => {
   })
 
   test('is true only for registered keys', () => {
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })], true)
     const snapshot = getPromptsAwaitingModelSnapshot()
     expect(selectIsAwaitingModel(snapshot, UUID_A.slice(0, 24))).toBe(true)
     expect(selectIsAwaitingModel(snapshot, UUID_B.slice(0, 24))).toBe(false)
   })
 
   test('flips back to false after markModelReceived', () => {
-    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })])
+    awaitModelForMessages([makeMessage({ type: 'user', uuid: UUID_A })], true)
     markModelReceived()
     expect(
       selectIsAwaitingModel(

@@ -144,6 +144,59 @@ describe('redactSecretsForDisplay (binary Kin)', () => {
   })
 })
 
+describe('redactSecretsForDisplay v2.1.286 rzn rewrite (changelog items 1-2)', () => {
+  // Expected outputs below are A/B-verified against the verbatim official
+  // v286 rzn code extracted from the linux-x64 binary (21/21 SAME).
+  test('item 1 leak repro: Bearer before a key name no longer leaks the secret', () => {
+    // v285 Qzn masked the KEY NAME as the value and left the real secret in
+    // the clear ("Bearer [redacted]: sk-ant-SECRET123"). v286 l7's negative
+    // lookahead defers to the kv rule instead.
+    expect(
+      redactSecretsForDisplay(
+        'Error: Bearer access_token: sk-ant-SECRET123 rejected',
+      ),
+    ).toBe('Error: Bearer access_token [redacted] rejected')
+    expect(
+      redactSecretsForDisplay(
+        'header "Bearer refresh_token: abc12345XYZ" failed',
+      ),
+    ).toBe('header "Bearer refresh_token [redacted]" failed')
+  })
+
+  test('item 2 embedded-key split: each value masked, trailing space prevents joins', () => {
+    // `+` is a word-boundary site, so the lazy-stop branch ends the first
+    // value at `token=` and the kv pass masks the second value too.
+    expect(redactSecretsForDisplay('api_key=SECRET1+token=SECRET22')).toBe(
+      'api_key [redacted] token [redacted]',
+    )
+  })
+
+  test('regression: shapes verified SAME between v285 and v286', () => {
+    expect(
+      redactSecretsForDisplay('Bearer sk-ant-api03-abcdefgh12345678'),
+    ).toBe('Bearer [redacted]')
+    expect(redactSecretsForDisplay('password = hunter2hunter2')).toBe(
+      'password [redacted]',
+    )
+    expect(redactSecretsForDisplay('x-api-key: abc%3D%3Dabcdefgh')).toBe(
+      'x-api-key [redacted]',
+    )
+    expect(redactSecretsForDisplay('token=Bearer%20eyJhbGciOiJIUzI1NiJ9')).toBe(
+      'token [redacted]',
+    )
+    // No \b between `1111` and `apikey` (digit→letter is intra-word), so the
+    // embedded-key lookahead cannot fire and one greedy match consumes both.
+    expect(
+      redactSecretsForDisplay('access_token=AAAA1111apikey=BBBB2222 end'),
+    ).toBe('access_token [redacted] end')
+  })
+
+  test('mode "none" still short-circuits before any rule runs', () => {
+    const s = 'Bearer access_token: sk-ant-SECRET123'
+    expect(redactSecretsForDisplay(s, 'none')).toBe(s)
+  })
+})
+
 describe('sanitizeForDisplay (binary Xi)', () => {
   test('non-string returns empty string', () => {
     expect(sanitizeForDisplay(undefined)).toBe('')
