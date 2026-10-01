@@ -14,7 +14,7 @@ import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientConfig, performMCPOAuthFlow, readClientSecret, revokeServerTokens, saveMcpClientSecret } from '../../services/mcp/auth.js';
 import { connectToServer, getMcpServerConnectionBatchSize, removeMcpAuthCacheEntry } from '../../services/mcp/client.js';
-import { addMcpConfig, getAllMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
+import { addMcpConfig, getAllMcpConfigs, getClaudeCodeMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { mcpServerNotFoundMessage, mcpServerNotFoundMessageWithPending, sanitizeMcpCliText } from '../../services/mcp/cliMessages.js';
 import { getDisplayConfig, getDisplayServers, redactMcpErrorDetail, sanitizeConfigForDisplay } from '../../services/mcp/redaction.js';
@@ -276,13 +276,27 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // SAME full-scope config set `mcp list` renders — getAllMcpConfigs()
   // (file-backed scopes + dynamic-scope plugin servers + claude.ai) — instead
   // of getMcpConfigByName (file-backed scopes only). The old lookup returned
-  // not-found for every dynamic-scope (--mcp-config / plugin / SDK) server,
-  // making the v285 sanitize branch below unreachable in real execution and
-  // the not-found suggester recommend the exact name it claimed absent.
-  const {
-    servers
-  } = await getAllMcpConfigs();
-  const server = servers[name] ?? null;
+  // not-found for every plugin dynamic-scope server, making the v285 sanitize
+  // branch below unreachable in real execution and the not-found suggester
+  // recommend the exact name it claimed absent.
+  // OCC-103 R2 (P3): resolve the LOCAL set first (file-backed scopes + plugin
+  // dynamic scope — zero network), and only fall back to getAllMcpConfigs() —
+  // whose claude.ai connector fetch can block up to FETCH_TIMEOUT_MS for
+  // claude.ai-OAuth users — when the name is NOT found locally. Resolution is
+  // unchanged: getAllMcpConfigs() merges claude.ai at the LOWEST precedence,
+  // so any name present in the local set resolves identically without the
+  // fetch. Note runtime `--mcp-config` / SDK dynamicServers are still not in
+  // either set here (getAllMcpConfigs hardcodes `getClaudeCodeMcpConfigs({},
+  // …)`, and Commander skips the top-level action on subcommand dispatch) —
+  // matching the official CLI, whose `mcp get` does not accept those servers
+  // either.
+  const { servers: localServers } = await getClaudeCodeMcpConfigs();
+  let servers = localServers;
+  let server = servers[name] ?? null;
+  if (!server) {
+    ({ servers } = await getAllMcpConfigs());
+    server = servers[name] ?? null;
+  }
   if (!server) {
     // CC 2.1.285 (item 8): official v285 get handler ends in
     // `si(u2t(t,M,r.size>0))` — M = configured names minus pending/rejected

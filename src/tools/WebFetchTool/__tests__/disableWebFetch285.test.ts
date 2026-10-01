@@ -19,11 +19,14 @@ import { WEB_FETCH_TOOL_NAME } from '../prompt.js'
  *
  * Official v285 `isEnabled(){return!a.CLAUDE_CODE_DISABLE_WEB_FETCH&&Yt(wye)}`
  * (@204286795) added the env gate that v284 lacked (0 hits for the var in v284,
- * 9 in v285). `Yt(wye)` is the official `allow_web_fetch` managed-policy check
- * (contract-002 — ported via the policySettings source, covered in
- * allowWebFetchPolicy285.test.ts). When the env var is truthy the tool is
- * removed from the tool list entirely — pinned at the registry level below
- * (test-08) through the real `getToolsForDefaultPreset()`.
+ * 9 in v285). The env conjunct is the official RAW NEGATION: ANY non-empty
+ * value disables (verified against the official binary — '0'/'false' remove
+ * WebFetch there too); only unset or '' keeps the tool enabled. `Yt(wye)` is
+ * the official `allow_web_fetch` managed-policy check (contract-002 — ported
+ * via the policySettings source, covered in allowWebFetchPolicy285.test.ts).
+ * When the env var is set to any non-empty value the tool is removed from the
+ * tool list entirely — pinned at the registry level below (test-08) through
+ * the real `getToolsForDefaultPreset()`.
  */
 
 const { WebFetchTool } = await import('../WebFetchTool.js')
@@ -57,29 +60,39 @@ describe('CC 2.1.285 item-B1: WebFetchTool.isEnabled honors CLAUDE_CODE_DISABLE_
     expect(WebFetchTool.isEnabled()).toBe(false)
   })
 
-  test('env="yes" → disabled (isEnvTruthy alias)', () => {
+  test('env="yes" → disabled', () => {
     process.env[ENV_KEY] = 'yes'
     expect(WebFetchTool.isEnabled()).toBe(false)
   })
 
-  test('env="on" → disabled (isEnvTruthy alias)', () => {
+  test('env="on" → disabled', () => {
     process.env[ENV_KEY] = 'on'
     expect(WebFetchTool.isEnabled()).toBe(false)
   })
 
-  test('env="0" → enabled (falsy value does not disable)', () => {
+  test('env="0" → disabled (official raw negation — ANY non-empty value disables)', () => {
     process.env[ENV_KEY] = '0'
-    expect(WebFetchTool.isEnabled()).toBe(true)
+    expect(WebFetchTool.isEnabled()).toBe(false)
   })
 
-  test('env="" → enabled (empty string is falsy)', () => {
+  test('env="" → enabled (empty string is the only non-unset enabled value)', () => {
     process.env[ENV_KEY] = ''
     expect(WebFetchTool.isEnabled()).toBe(true)
   })
 
-  test('env="false" → enabled (non-truthy string)', () => {
+  test('env="false" → disabled (raw negation, not a boolean parse)', () => {
     process.env[ENV_KEY] = 'false'
-    expect(WebFetchTool.isEnabled()).toBe(true)
+    expect(WebFetchTool.isEnabled()).toBe(false)
+  })
+
+  test('env="no" → disabled (raw negation — isEnvTruthy would fail open here)', () => {
+    process.env[ENV_KEY] = 'no'
+    expect(WebFetchTool.isEnabled()).toBe(false)
+  })
+
+  test('env=arbitrary garbage → disabled (fail-closed on any non-empty value)', () => {
+    process.env[ENV_KEY] = 'definitely-not-a-boolean'
+    expect(WebFetchTool.isEnabled()).toBe(false)
   })
 })
 
@@ -93,9 +106,12 @@ describe('CC 2.1.285 item-B1: WebFetchTool.isEnabled honors CLAUDE_CODE_DISABLE_
  * `/etc/claude-code/managed-settings.json` cannot flip the contract-002
  * `allow_web_fetch` conjunct underneath these assertions (the real-file
  * loader→cache→isEnabled chain is covered in allowWebFetchPolicy285.test.ts).
- * USER_TYPE=ant is deliberately NOT used: it trips an unrelated latent
- * `resolveAntModel` ReferenceError in model.ts's ant-only branch under the
- * registry's getAllBaseTools() walk.
+ * USER_TYPE=ant is deliberately NOT used here: model.ts's ant-only branch
+ * calls the `resolveAntModel` GLOBAL installed by cli.tsx's USER_TYPE-gated
+ * dynamic import (Gap-133a — deliberate design that keeps the ant codename
+ * table DCE-strippable, NOT a missing import), which `bun test` never runs.
+ * The ant-profile registry+policy combination is covered in
+ * allowWebFetchPolicy285.test.ts, which installs the same polyfill.
  */
 describe('CC 2.1.285 test-08: getToolsForDefaultPreset() registry-level kill-switch', () => {
   beforeEach(() => {

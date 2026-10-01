@@ -924,8 +924,12 @@ export const SettingsSchema = lazySchema(() =>
       // allowedProvidersEnforcement consumes its managed key. Consumed ONLY
       // from policySettings by WebFetchTool.isEnabled (contract-002);
       // user/project-level values are deliberately not honored. Non-boolean
-      // values are dropped by the strict policy parse (generic per-field
-      // catch → reads as unset → default allow, matching `onCacheMiss:"allow"`).
+      // values can never evaluate to `false` → default allow on EVERY parse
+      // path: the strict policy parse drops them (generic per-field catch →
+      // reads as unset), while the remote first-source-wins branch the gate
+      // can also consume runs only sanitizePolicySourceData (a string like
+      // `"yes"` survives as-is — still `!== false`). Either way the result
+      // matches the official `onCacheMiss:"allow"` default.
       allow_web_fetch: z
         .boolean()
         .optional()

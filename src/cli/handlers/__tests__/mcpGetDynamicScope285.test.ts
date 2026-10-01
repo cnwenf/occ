@@ -254,3 +254,54 @@ describe('E2E-001 — mcp get resolves dynamic-scope servers (real lookup, seede
     expect(logs).not.toContain('  Scope:')
   })
 })
+
+/**
+ * OCC-103 R2 (P3-c): the hoisted getAllMcpConfigs() made every successful
+ * `mcp get` unconditionally await fetchClaudeAIMcpConfigsIfEligible (up to
+ * FETCH_TIMEOUT_MS=5000 for claude.ai-OAuth users). mcpGetHandler now resolves
+ * the LOCAL no-network set first (getClaudeCodeMcpConfigs — file-backed +
+ * plugin dynamic scope) and only falls back to the full-scope fetch when the
+ * name is NOT found. Both directions are pinned with a call counter on the
+ * claudeai module seam (restored per-test — OCC-97 mock-leak discipline).
+ * The pair is self-verifying: if Bun failed to propagate the mid-file
+ * mock.module into the already-loaded config.js, the not-found test's
+ * `calls === 1` assertion would fail loudly rather than silently pass.
+ */
+describe('OCC-103 R2 P3-c — mcp get pays the claude.ai connector fetch only on the not-found path', () => {
+  async function withFetchCounter(
+    fn: (calls: () => number) => Promise<void>,
+  ): Promise<void> {
+    const actualClaudeai = await import('../../../services/mcp/claudeai.js')
+    let calls = 0
+    mock.module('../../../services/mcp/claudeai.js', () => ({
+      ...actualClaudeai,
+      fetchClaudeAIMcpConfigsIfEligible: async () => {
+        calls++
+        return {}
+      },
+    }))
+    try {
+      await fn(() => calls)
+    } finally {
+      mock.module('../../../services/mcp/claudeai.js', () => actualClaudeai)
+    }
+  }
+
+  test('server resolves locally → ZERO connector fetch invocations (success path is network-free)', async () => {
+    await withFetchCounter(async calls => {
+      await mcpGetHandler(PLUGIN_SERVER)
+      expect(logs).toContain(`${PLUGIN_SERVER}:`)
+      expect(exitCodes).not.toContain(1)
+      expect(calls()).toBe(0)
+    })
+  })
+
+  test('absent name → falls back to the full-scope resolve (exactly ONE fetch), not-found behavior preserved', async () => {
+    await withFetchCounter(async calls => {
+      await mcpGetHandler(`${PLUGIN_SERVER}n`)
+      expect(calls()).toBe(1)
+      expect(stderr).toContain(`No MCP server named "${PLUGIN_SERVER}n".`)
+      expect(exitCodes[0]).toBe(1)
+    })
+  })
+})

@@ -1,7 +1,6 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import type { PermissionUpdate } from '../../types/permissions.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
@@ -118,7 +117,13 @@ export const WebFetchTool = buildTool({
    * `isEnabled(){return!a.CLAUDE_CODE_DISABLE_WEB_FETCH&&Yt(wye)}`
    * (@204286795 / @34173852 new285), vs v284 `isEnabled(){return Qt(_ye)}`
    * which had no env gate (0 hits for the var in v284, 9 in v285).
-   * Conjunct 1: the CLAUDE_CODE_DISABLE_WEB_FETCH env kill-switch.
+   * Conjunct 1: the CLAUDE_CODE_DISABLE_WEB_FETCH env kill-switch, parsed as
+   * the official RAW NEGATION of the env value — ANY non-empty string
+   * ('1', 'true', '0', 'false', garbage alike) disables the tool; only unset
+   * or '' keeps this conjunct enabled. Deliberately NOT isEnvTruthy(): that
+   * would fail OPEN ('0'/'false' would keep the tool enabled) where the
+   * official binary already removes WebFetch from the tool list — the wrong
+   * direction for a security-relevant egress kill-switch.
    * Conjunct 2 (`Yt(wye)`, `wye="allow_web_fetch"`): the org policy check —
    * see isWebFetchAllowedByManagedPolicy(). When either conjunct fails the
    * tool is removed from the tool list entirely (buildTool's default
@@ -126,7 +131,7 @@ export const WebFetchTool = buildTool({
    */
   isEnabled() {
     return (
-      !isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_WEB_FETCH) &&
+      !process.env.CLAUDE_CODE_DISABLE_WEB_FETCH &&
       isWebFetchAllowedByManagedPolicy()
     )
   },
