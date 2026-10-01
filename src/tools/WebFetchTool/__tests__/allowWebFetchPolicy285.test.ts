@@ -235,6 +235,11 @@ describe('CC 2.1.285 contract-002: allow_web_fetch is a recognized boolean key i
  * globals before walking the registry.
  */
 describe('CC 2.1.285 test-08 (ant profile): registry-level WebFetch removal with the real managed-file loader', () => {
+  // OCC-97 mock-leak discipline (OCC-103 R3 test-note): track whether THIS
+  // suite installed the globals — if another suite/startup already had them,
+  // removing them here would tear down state this suite does not own.
+  let installedAntGlobals = false
+
   beforeAll(async () => {
     const g = globalThis as Record<string, unknown>
     if (typeof g.resolveAntModel === 'undefined') {
@@ -242,7 +247,16 @@ describe('CC 2.1.285 test-08 (ant profile): registry-level WebFetch removal with
       g.resolveAntModel = antModels.resolveAntModel
       g.getAntModels = antModels.getAntModels
       g.getAntModelOverrideConfig = antModels.getAntModelOverrideConfig
+      installedAntGlobals = true
     }
+  })
+
+  afterAll(() => {
+    if (!installedAntGlobals) return
+    const g = globalThis as Record<string, unknown>
+    delete g.resolveAntModel
+    delete g.getAntModels
+    delete g.getAntModelOverrideConfig
   })
 
   test('USER_TYPE=ant + managed allow_web_fetch:false → WebFetch excluded from the default preset', async () => {

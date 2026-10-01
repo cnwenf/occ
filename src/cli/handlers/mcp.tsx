@@ -279,13 +279,24 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // not-found for every plugin dynamic-scope server, making the v285 sanitize
   // branch below unreachable in real execution and the not-found suggester
   // recommend the exact name it claimed absent.
-  // OCC-103 R2 (P3): resolve the LOCAL set first (file-backed scopes + plugin
-  // dynamic scope — zero network), and only fall back to getAllMcpConfigs() —
-  // whose claude.ai connector fetch can block up to FETCH_TIMEOUT_MS for
-  // claude.ai-OAuth users — when the name is NOT found locally. Resolution is
-  // unchanged: getAllMcpConfigs() merges claude.ai at the LOWEST precedence,
-  // so any name present in the local set resolves identically without the
-  // fetch. Note runtime `--mcp-config` / SDK dynamicServers are still not in
+  // OCC-103 R2 (P3) + R3 (C1): resolve the LOCAL set first (file-backed scopes
+  // + plugin dynamic scope — zero network), and fall back to
+  // getAllMcpConfigs() — whose claude.ai connector fetch can block up to
+  // FETCH_TIMEOUT_MS for claude.ai-OAuth users — whenever the local set cannot
+  // give a FINAL answer: a miss, OR a hit outside the file-backed scopes.
+  // Why a plugin (dynamic-scope) local hit is only provisional: the local call
+  // dedups plugin servers against the DEFAULT EMPTY extraDedupTargets pool,
+  // while getAllMcpConfigs() passes the in-flight claude.ai connector fetch as
+  // extraDedupTargets — so a plugin server whose signature (stdio command+args,
+  // or URL) matches a claude.ai connector is SUPPRESSED in the full set that
+  // `mcp list` renders. Trusting the local hit would make `mcp get` print FOUND
+  // where list (and the official single global set) shows it suppressed — so
+  // plugin hits re-resolve through the full set (suppressed → not-found).
+  // File-backed hits ARE final and keep the zero-network fast path:
+  // dedupPluginMcpServers only ever suppresses PLUGIN entries, and claude.ai
+  // merges at the lowest precedence under non-colliding `claude.ai <Name>`
+  // keys, so the fetch can never remove or override a file-backed server.
+  // Note runtime `--mcp-config` / SDK dynamicServers are still not in
   // either set here (getAllMcpConfigs hardcodes `getClaudeCodeMcpConfigs({},
   // …)`, and Commander skips the top-level action on subcommand dispatch) —
   // matching the official CLI, whose `mcp get` does not accept those servers
@@ -293,7 +304,7 @@ export async function mcpGetHandler(name: string): Promise<void> {
   const { servers: localServers } = await getClaudeCodeMcpConfigs();
   let servers = localServers;
   let server = servers[name] ?? null;
-  if (!server) {
+  if (!server || !MCP_FILE_BACKED_SCOPES.has(server.scope)) {
     ({ servers } = await getAllMcpConfigs());
     server = servers[name] ?? null;
   }

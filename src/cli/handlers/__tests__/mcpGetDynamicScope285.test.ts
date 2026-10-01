@@ -79,6 +79,7 @@ const { clearPluginCache } = await import(
 const { clearAuthoredUnexpandedRegistry } = await import(
   '../../../services/mcp/redaction.js'
 )
+const { saveGlobalConfig } = await import('../../../utils/config.js')
 
 const PLUGIN_NAME = 'e2e-plugin'
 const PLUGIN_SERVER = `plugin:${PLUGIN_NAME}:leaky_mcpjson`
@@ -86,6 +87,18 @@ const LEAKY_COMMAND = 'node'
 const LEAKY_ARGS = '/opt/leakpath/server.js'
 const LEAKY_ENV_KEY = 'sk-leak-e2e-001-secret'
 const LEAKY_ENV_PASSWORD = 'hunter2-leak-e2e-001'
+// OCC-103 R3 (C1): a URL-based plugin server whose dedup signature
+// (`url:<url>`, getMcpServerSignature) can collide with a claude.ai connector
+// — the ONLY class where local-first and full-set resolution can diverge
+// (dedupPluginMcpServers suppresses PLUGIN entries against the
+// extraDedupTargets pool; the local call's pool is empty, getAllMcpConfigs()
+// passes the connector fetch).
+const PLUGIN_HTTP_SERVER = `plugin:${PLUGIN_NAME}:http_leaky`
+const CONNECTOR_URL = 'https://mcp.example.com/e2e-leaky'
+const CLAUDEAI_CONNECTOR = 'claude.ai Leaky'
+// File-backed (user-scope) server for the zero-network pin — seeded through
+// saveGlobalConfig, which writes the in-process TEST fixture under bun test.
+const USER_SERVER = 'e2e_user_server'
 
 let baseDir = ''
 let savedEnv: Record<string, string | undefined> = {}
@@ -121,6 +134,12 @@ function seedInlinePlugin(): string {
             API_KEY: LEAKY_ENV_KEY,
             PASSWORD: LEAKY_ENV_PASSWORD,
           },
+        },
+        // R3 (C1) collision target: signature `url:${CONNECTOR_URL}` matches
+        // the stubbed claude.ai connector in the suppression-direction test.
+        http_leaky: {
+          type: 'http',
+          url: CONNECTOR_URL,
         },
       },
     }),
@@ -256,20 +275,34 @@ describe('E2E-001 — mcp get resolves dynamic-scope servers (real lookup, seede
 })
 
 /**
- * OCC-103 R2 (P3-c): the hoisted getAllMcpConfigs() made every successful
- * `mcp get` unconditionally await fetchClaudeAIMcpConfigsIfEligible (up to
- * FETCH_TIMEOUT_MS=5000 for claude.ai-OAuth users). mcpGetHandler now resolves
- * the LOCAL no-network set first (getClaudeCodeMcpConfigs — file-backed +
- * plugin dynamic scope) and only falls back to the full-scope fetch when the
- * name is NOT found. Both directions are pinned with a call counter on the
- * claudeai module seam (restored per-test — OCC-97 mock-leak discipline).
- * The pair is self-verifying: if Bun failed to propagate the mid-file
- * mock.module into the already-loaded config.js, the not-found test's
- * `calls === 1` assertion would fail loudly rather than silently pass.
+ * OCC-103 R2 (P3-c) + R3 (C1): the hoisted getAllMcpConfigs() made every
+ * successful `mcp get` unconditionally await fetchClaudeAIMcpConfigsIfEligible
+ * (up to FETCH_TIMEOUT_MS=5000 for claude.ai-OAuth users). mcpGetHandler now
+ * resolves the LOCAL no-network set first (getClaudeCodeMcpConfigs —
+ * file-backed scopes + plugin dynamic scope) and falls back to the full-scope
+ * resolve only when the local set cannot give a FINAL answer:
+ *   - the name is NOT found locally, OR
+ *   - the local hit is PLUGIN (dynamic) scope — the only class
+ *     dedupPluginMcpServers can suppress once a same-signature claude.ai
+ *     connector enters the dedup pool. R3 C1: the local call's pool is the
+ *     DEFAULT EMPTY extraDedupTargets, while getAllMcpConfigs() passes the
+ *     connector fetch — an ungated local plugin hit printed FOUND where
+ *     `mcp list` (full set, like the official single global set) renders it
+ *     SUPPRESSED.
+ * File-backed hits can never be suppressed (dedupPluginMcpServers filters the
+ * PLUGIN set only) and claude.ai merges at the lowest precedence under
+ * non-colliding keys, so they keep calls()===0. Every direction is pinned
+ * with a call counter on the claudeai module seam (restored per-test — OCC-97
+ * mock-leak discipline). The matrix is self-verifying: if Bun failed to
+ * propagate the mid-file mock.module into the already-loaded config.js, the
+ * `calls === 1` assertions would fail loudly rather than silently pass.
  */
-describe('OCC-103 R2 P3-c — mcp get pays the claude.ai connector fetch only on the not-found path', () => {
+describe('OCC-103 R2 P3-c + R3 C1 — mcp get pays the claude.ai connector fetch only when the local set cannot decide', () => {
+  type ConnectorSet = Record<string, ScopedMcpServerConfig>
+
   async function withFetchCounter(
     fn: (calls: () => number) => Promise<void>,
+    fetchResult: ConnectorSet = {},
   ): Promise<void> {
     const actualClaudeai = await import('../../../services/mcp/claudeai.js')
     let calls = 0
@@ -277,7 +310,7 @@ describe('OCC-103 R2 P3-c — mcp get pays the claude.ai connector fetch only on
       ...actualClaudeai,
       fetchClaudeAIMcpConfigsIfEligible: async () => {
         calls++
-        return {}
+        return fetchResult
       },
     }))
     try {
@@ -287,13 +320,81 @@ describe('OCC-103 R2 P3-c — mcp get pays the claude.ai connector fetch only on
     }
   }
 
-  test('server resolves locally → ZERO connector fetch invocations (success path is network-free)', async () => {
+  /** Seed a file-backed (user-scope) server via the in-process config fixture. */
+  function seedUserServer(): void {
+    saveGlobalConfig(cfg => ({
+      ...cfg,
+      mcpServers: {
+        ...cfg.mcpServers,
+        [USER_SERVER]: {
+          type: 'stdio',
+          command: 'node',
+          args: ['/opt/e2e-user/server.js'],
+        },
+      },
+    }))
+  }
+
+  /** OCC-97: never leak the user-scope seed into sibling suites. */
+  function clearUserServer(): void {
+    saveGlobalConfig(cfg => {
+      const next = { ...(cfg.mcpServers ?? {}) }
+      delete next[USER_SERVER]
+      return { ...cfg, mcpServers: next }
+    })
+  }
+
+  test('file-backed local hit → ZERO connector fetch invocations (success path stays network-free)', async () => {
+    seedUserServer()
+    try {
+      await withFetchCounter(async calls => {
+        await mcpGetHandler(USER_SERVER)
+        expect(logs).toContain(`${USER_SERVER}:`)
+        expect(logs).toContain('  Scope: User config (available in all your projects)')
+        expect(exitCodes).not.toContain(1)
+        expect(calls()).toBe(0)
+      })
+    } finally {
+      clearUserServer()
+    }
+  })
+
+  test('plugin-scope local hit → re-resolves through the full set (ONE fetch), still FOUND when no connector collides', async () => {
     await withFetchCounter(async calls => {
       await mcpGetHandler(PLUGIN_SERVER)
       expect(logs).toContain(`${PLUGIN_SERVER}:`)
       expect(exitCodes).not.toContain(1)
-      expect(calls()).toBe(0)
+      expect(calls()).toBe(1)
     })
+  })
+
+  test('plugin server whose signature collides with a claude.ai connector → suppressed → not-found (get agrees with list)', async () => {
+    const connectors = {
+      [CLAUDEAI_CONNECTOR]: {
+        type: 'claudeai-proxy',
+        url: CONNECTOR_URL,
+        id: 'srv_e2e_leaky',
+        scope: 'claudeai',
+        eligible: true,
+      },
+    } as unknown as ConnectorSet
+    await withFetchCounter(async calls => {
+      await mcpGetHandler(PLUGIN_HTTP_SERVER)
+      // R3 C1 pin: the local empty-pool pass KEEPS the plugin server, but the
+      // full set suppresses it against the same-signature connector — get must
+      // report not-found, exactly what `mcp list` renders from the same set.
+      expect(calls()).toBe(1)
+      expect(stderr).toContain(`No MCP server named "${PLUGIN_HTTP_SERVER}".`)
+      expect(exitCodes[0]).toBe(1)
+      expect(logs).not.toContain(`${PLUGIN_HTTP_SERVER}:`)
+
+      // get/list consistency, asserted on the full-scope source list renders.
+      const { servers } = await getAllMcpConfigs()
+      expect(servers[PLUGIN_HTTP_SERVER]).toBeUndefined()
+      expect(servers[CLAUDEAI_CONNECTOR]).toBeDefined()
+      // the stdio plugin server (no colliding connector) is untouched
+      expect(servers[PLUGIN_SERVER]).toBeDefined()
+    }, connectors)
   })
 
   test('absent name → falls back to the full-scope resolve (exactly ONE fetch), not-found behavior preserved', async () => {
