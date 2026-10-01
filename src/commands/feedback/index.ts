@@ -7,6 +7,7 @@ import { getLastAPIRequest } from '../../bootstrap/state.js'
 import { env } from '../../utils/env.js'
 import { getGitState, getIsGit } from '../../utils/git.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { redactJsonValue, redactSecrets } from '../../utils/secretRedaction/index.js'
 
 // OCC customization: /feedback is AI-powered. It is a `prompt` command —
 // getPromptForCommand collects process-exclusive diagnostics (version, env,
@@ -23,75 +24,11 @@ import { jsonStringify } from '../../utils/slowOperations.js'
 const FEEDBACK_REPO = 'cnwenf/occ'
 
 // Redact secrets from any string before it reaches the model or GitHub.
-// Mirrors the redactor in src/components/Feedback.tsx so behavior stays
-// consistent with the original CC feedback path. Inlined here (rather than
-// imported) to avoid a runtime cycle: Feedback.tsx transitively pulls in
-// services/api/claude.ts → commands.ts, which references this module's
-// default export at init time (TDZ).
-function redactSensitiveInfo(text: string): string {
-  let redacted = text
-
-  // Anthropic API keys (sk-ant...) with or without quotes
-  redacted = redacted.replace(/"(sk-ant[^\s"']{24,})"/g, '"[REDACTED_API_KEY]"')
-  // eslint-disable-next-line custom-rules/no-lookbehind-regex -- .replace(re, string) on /bug path: no-match returns same string
-  redacted = redacted.replace(
-    /(?<![A-Za-z0-9"'])(sk-ant-?[A-Za-z0-9_-]{10,})(?![A-Za-z0-9"'])/g,
-    '[REDACTED_API_KEY]',
-  )
-
-  // AWS keys - AWSXXXX format
-  redacted = redacted.replace(
-    /AWS key: "(AWS[A-Z0-9]{20,})"/g,
-    'AWS key: "[REDACTED_AWS_KEY]"',
-  )
-  // AWS AKIAXXX keys
-  redacted = redacted.replace(/(AKIA[A-Z0-9]{16})/g, '[REDACTED_AWS_KEY]')
-
-  // Google Cloud keys
-  // eslint-disable-next-line custom-rules/no-lookbehind-regex -- same as above
-  redacted = redacted.replace(
-    /(?<![A-Za-z0-9])(AIza[A-Za-z0-9_-]{35})(?![A-Za-z0-9])/g,
-    '[REDACTED_GCP_KEY]',
-  )
-
-  // Vertex AI service account keys
-  // eslint-disable-next-line custom-rules/no-lookbehind-regex -- same as above
-  redacted = redacted.replace(
-    /(?<![A-Za-z0-9])([a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com)(?![A-Za-z0-9])/g,
-    '[REDACTED_GCP_SERVICE_ACCOUNT]',
-  )
-
-  // Generic API keys in headers
-  redacted = redacted.replace(
-    /(["']?x-api-key["']?\s*[:=]\s*["']?)[^"',\s)}\]]+/gi,
-    '$1[REDACTED_API_KEY]',
-  )
-
-  // Authorization headers and Bearer tokens
-  redacted = redacted.replace(
-    /(["']?authorization["']?\s*[:=]\s*["']?(bearer\s+)?)[^"',\s)}\]]+/gi,
-    '$1[REDACTED_TOKEN]',
-  )
-
-  // AWS environment variables
-  redacted = redacted.replace(
-    /(AWS[_-][A-Za-z0-9_]+\s*[=:]\s*)["']?[^"',\s)}\]]+["']?/gi,
-    '$1[REDACTED_AWS_VALUE]',
-  )
-
-  // GCP environment variables
-  redacted = redacted.replace(
-    /(GOOGLE[_-][A-Za-z0-9_]+\s*[=:]\s*)["']?[^"',\s)}\]]+["']?/gi,
-    '$1[REDACTED_GCP_VALUE]',
-  )
-
-  // Environment variables with keys
-  redacted = redacted.replace(
-    /((API[-_]?KEY|TOKEN|SECRET|PASSWORD)\s*[=:]\s*)["']?[^"',\s)}\]]+["']?/gi,
-    '$1[REDACTED]',
-  )
-  return redacted
-}
+// 2.1.286 alignment: uses the ported official secret-redaction engine
+// (src/utils/secretRedaction, changelog bullets #17-#20). The engine module
+// has zero app imports, so importing it here is safe from the TDZ cycle that
+// previously forced this file to inline its own naive redactor.
+const redactSensitiveInfo = redactSecrets
 
 const MAX_ERRORS = 20
 const MAX_ERROR_LEN = 4000
@@ -253,8 +190,11 @@ async function buildPromptText(
       )
       .join('\n') || '- (no errors captured)'
 
+  // 2.1.286 alignment: deep-redact the structured API request value-by-value
+  // BEFORE serializing (upstream redacts transcript JSON structurally so
+  // redaction can never corrupt the serialization), then truncate.
   const apiReqText = lastApiReq
-    ? truncate(redactSensitiveInfo(jsonStringify(lastApiReq)), MAX_API_REQUEST_LEN)
+    ? truncate(jsonStringify(redactJsonValue(lastApiReq)), MAX_API_REQUEST_LEN)
     : '(no API request captured)'
 
   const transcriptText = summarizeMessages(messages)
