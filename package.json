@@ -154,6 +154,7 @@
         "uuid": "^11.0.0"
     },
     "patchedDependencies": {
+        "@anthropic-ai/bedrock-sdk@0.26.4": "patches/@anthropic-ai%2Fbedrock-sdk@0.26.4.patch",
         "@anthropic-ai/sandbox-runtime@0.0.44": "patches/@anthropic-ai%2Fsandbox-runtime@0.0.44.patch"
     }
 }

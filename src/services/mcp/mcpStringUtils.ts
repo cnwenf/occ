@@ -41,6 +41,29 @@ export function getMcpPrefix(serverName: string): string {
 }
 
 /**
+ * Canonical "collision key" for an MCP server name — verbatim port of the
+ * official claude-code 2.1.285 `Jd` (new285.txt @ 34903711):
+ *
+ *   function Jd(e){return ys(`${Us(e)}tool`)?.serverName}
+ *
+ * where `Us` = getMcpPrefix (new285.txt @ 19977107,
+ * `function Us(e){return \`mcp__${wn(e)}__\`}`) and `ys` = mcpInfoFromString
+ * (new285.txt @ 19976961). It builds the tool-name prefix for the server,
+ * appends a synthetic "tool" segment, and parses the serverName back out.
+ * Because the prefix ends in "__", a name whose normalized form has TRAILING
+ * underscores merges them into the "__" delimiter — e.g. "widgets_" →
+ * "mcp__widgets___tool".split("__")[1] === "widgets". Two config keys sharing a
+ * collision key would register identical `mcp__…__…` tool names, which is why
+ * the official reserves close spellings (claude-code 2.1.285 bullet #93).
+ * Returns undefined when the name cannot round-trip to an "mcp" prefix.
+ */
+export function getMcpServerNameCollisionKey(
+  serverName: string,
+): string | undefined {
+  return mcpInfoFromString(`${getMcpPrefix(serverName)}tool`)?.serverName
+}
+
+/**
  * Builds a fully qualified MCP tool name from server and tool names.
  * Inverse of mcpInfoFromString().
  * @param serverName Name of the MCP server (unnormalized)

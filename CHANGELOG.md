@@ -280,6 +280,9 @@ for the earlier 2.1.211→2.1.212 history. `docs/upstream-version-gap-occ34.md` 
 - Claude Code 2.1.285 catch-up (OCC-102 round): the `allowedProviders` managed setting — machine-tier ∩ policy-slot effective list, fail-closed strict policy parse with statusOnly notices for unrecognized entries, env-pinned `customEndpoint` admission, provider refusal gates on the API client, Files API, and login/auth-validity paths, and the 60 s policy-unreadable fail-close throttle (byte-verified against the official v2.1.285 linux-x64 ELF)
 - OS-denied managed-settings reads now warn and start instead of refusing startup; other read errors and unparseable files still stop every session
 - `ANTHROPIC_AUTH_TOKEN` org-policy alignment plus the reliability/schema, subagent/permission/memory, sandbox/redaction/hooks, and MCP/plugin/git-URL slices of the 2.1.285 diff — full ledger in `docs/upstream-version-gap-occ102-2026-10.md`
+- Bedrock SigV4 non-default-port fix (OCC-142 round, reconciled onto the OCC-102 landing): a base URL with a non-default port now signs the canonical `Host` header with the port included (`url.hostname` → `url.host` in `@anthropic-ai/bedrock-sdk@0.26.4` `getAuthHeaders`, via a `patchedDependencies` dep-patch) so requests to non-443 Bedrock endpoints no longer fail SigV4 signature validation; default-port behavior unchanged
+- MCP server name `widgets` reserved in cloud sessions (OCC-142 round): `CLAUDE_CODE_REMOTE` sessions now refuse a user-configured MCP server whose name collides with the built-in `widgets` server (close spellings that fold to the same collision key too, e.g. `widgets_`), matching the official `reserved_name` refusal; local sessions unaffected
+- OCC-142 forensic ledger `docs/upstream-version-gap-occ142.md` (full 136-bullet 2.1.285 triage + byte evidence + parallel-round reconciliation with OCC-102)
 
 ## 2.1.361 - 2026-09-30 (OCC-101 review fix round — acceptance findings closed; one production parity change)
 

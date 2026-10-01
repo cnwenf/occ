@@ -17,6 +17,7 @@ import {
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { getErrnoCode } from '../../utils/errors.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { safeParseJSON } from '../../utils/json.js'
 import { logError } from '../../utils/log.js'
@@ -60,6 +61,7 @@ import {
 } from './types.js'
 import { getProjectMcpServerStatus } from './utils.js'
 import { isReservedClaudeBrowserName } from './normalization.js'
+import { getMcpServerNameCollisionKey } from './mcpStringUtils.js'
 
 /**
  * Get the path to the managed MCP configuration file
@@ -1529,18 +1531,67 @@ function readMcpConfigFileContents(params: {
 }
 
 /**
- * Reserved MCP server names — binary `UIt` (2.1.220 linux-x64 ELF):
+ * Official claude-code 2.1.285 reserved server-name constant `a9e`
+ * (new285.txt @ 23972878: `a9e="widgets"`) and its collision key
+ * `CN=Jd(a9e)` (@ 34904041), computed with the same `Jd` round-trip OCC now
+ * mirrors via getMcpServerNameCollisionKey. Evaluates to "widgets".
+ */
+const WIDGETS_SERVER_NAME = 'widgets'
+const WIDGETS_COLLISION_KEY = getMcpServerNameCollisionKey(WIDGETS_SERVER_NAME)
+
+/**
+ * SECURITY (claude-code 2.1.285 bullet #93): the MCP server name `widgets` is
+ * RESERVED in cloud sessions and on self-hosted runners — a user server under
+ * it, or a close spelling such as `widgets_`, no longer loads and must be
+ * renamed. This is NEW in 2.1.285: 2.1.284's gate `MRe` (gone284.txt @
+ * 35296792) has NO widgets branch; 2.1.285's `hRe` adds one (new285.txt @
+ * 34904041):
+ *
+ *   CN=Jd(a9e); … if(r===CN)
+ *     return (n?.hosted ?? a.CLAUDE_CODE_REMOTE) && !(n?.hostCarrier && e===a9e);
+ *
+ * `r=Jd(e)` is the collision key of the name being checked, so the branch fires
+ * for "widgets" AND every close spelling that round-trips to the same key
+ * ("widgets_", "widgets__", "widgets " — trailing underscores / space merge
+ * into the "__" delimiter). The gate is the cloud-session env
+ * `CLAUDE_CODE_REMOTE` (via the `n.hosted ?? a.CLAUDE_CODE_REMOTE` fallback).
+ *
+ * OCC PORT / SCOPE: OCC has `CLAUDE_CODE_REMOTE` (isEnvTruthy) but NO
+ * `hostCarrier` plumbing — src/self-hosted-runner/main.ts is a no-op stub and
+ * OCC registers no internal carrier-owned "widgets" server. So the
+ * `!(n.hostCarrier && e===a9e)` carve-out (which lets the self-hosted runner's
+ * OWN internal widgets server load) is unreachable here and is intentionally
+ * NOT ported; the faithful portable gate reduces to the env check below. If OCC
+ * grows a real self-hosted-runner carrier, re-add the carve-out. Matching is
+ * CASE-SENSITIVE and does not fold hyphens (official uses the light `wn`
+ * normalizer, new285.txt @ 36336340, imported by the MCP module @ 19976914),
+ * so "Widgets", "widgets-", "_widgets", "mywidgets" are NOT reserved.
+ */
+function isReservedWidgetsServerName(name: string): boolean {
+  if (!isEnvTruthy(process.env.CLAUDE_CODE_REMOTE)) {
+    return false
+  }
+  return getMcpServerNameCollisionKey(name) === WIDGETS_COLLISION_KEY
+}
+
+/**
+ * Reserved MCP server names — binary `UIt` (2.1.220 linux-x64 ELF) baseline:
  * `xY(e)||J_e(e)||Ler(e)||e===dWn`, i.e. the normalized name equals
  * `claude-in-chrome` or `computer-use`, normalizes into the Claude
  * Preview/Browser reserved set, or the name is exactly `workspace`. The
  * binary's second parameter (`hostCarrier`) is unused in 2.1.220.
+ *
+ * EXTENDED by claude-code 2.1.285 bullet #93 with the cloud-session `widgets`
+ * reservation (see isReservedWidgetsServerName) — a gated addition, not part of
+ * the always-resolved 2.1.220 set.
  */
 function isReservedMcpServerName(name: string): boolean {
   return (
     isClaudeInChromeMCPServer(name) ||
     isComputerUseMCPServer(name) ||
     isReservedClaudeBrowserName(name) ||
-    name === 'workspace'
+    name === 'workspace' ||
+    isReservedWidgetsServerName(name)
   )
 }
 

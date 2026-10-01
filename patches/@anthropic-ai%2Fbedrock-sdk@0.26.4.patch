@@ -1,0 +1,36 @@
+diff --git a/core/auth.js b/core/auth.js
+index 4b43afdf2f71868de2331668186920934b235278..06064443149b63930707681a7822c713f9402a10 100644
+--- a/core/auth.js
++++ b/core/auth.js
+@@ -90,7 +90,12 @@ const getAuthHeaders = async (req, props) => {
+     // of this message may not see this header, so we remove it from the set of headers
+     // that are signed.
+     delete headers['connection'];
+-    headers['host'] = url.hostname;
++    // SECURITY (Claude Code 2.1.285 changelog bullet #92): sign the Host header
++    // with the full `host` (host[:port]) instead of `hostname`, so a base URL on
++    // a non-default port produces a SigV4 signature whose canonical Host header
++    // matches the request line. `URL.host` omits the default port (443/https,
++    // 80/http) automatically, so default-port behavior is unchanged.
++    headers['host'] = url.host;
+     const request = new protocol_http_1.HttpRequest({
+         method: req.method.toUpperCase(),
+         protocol: url.protocol,
+diff --git a/core/auth.mjs b/core/auth.mjs
+index 2b59e564a5ac56c37bf0be2c01abfc4015560a79..0d099b984e55a4271104cba303ccd6760cdb1055 100644
+--- a/core/auth.mjs
++++ b/core/auth.mjs
+@@ -51,7 +51,12 @@ export const getAuthHeaders = async (req, props) => {
+     // of this message may not see this header, so we remove it from the set of headers
+     // that are signed.
+     delete headers['connection'];
+-    headers['host'] = url.hostname;
++    // SECURITY (Claude Code 2.1.285 changelog bullet #92): sign the Host header
++    // with the full `host` (host[:port]) instead of `hostname`, so a base URL on
++    // a non-default port produces a SigV4 signature whose canonical Host header
++    // matches the request line. `URL.host` omits the default port (443/https,
++    // 80/http) automatically, so default-port behavior is unchanged.
++    headers['host'] = url.host;
+     const request = new HttpRequest({
+         method: req.method.toUpperCase(),
+         protocol: url.protocol,
