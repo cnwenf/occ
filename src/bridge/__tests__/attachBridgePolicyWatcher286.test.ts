@@ -139,6 +139,7 @@ const { refreshPolicyLimits, _resetPolicyLimitsForTesting } = await import(
 const { getGlobalClaudeFile } = await import('../../utils/env.js')
 const { getClaudeConfigHomeDir } = await import('../../utils/envUtils.js')
 type ReplBridgeHandle = import('../replBridge.js').ReplBridgeHandle
+type BridgeState = import('../replBridge.js').BridgeState
 
 const RC_NOTICE =
   "Remote Control was turned off by your organization's policy."
@@ -302,6 +303,72 @@ describe('attachBridgePolicyWatcher — 2.1.286 REPL-lane policy disconnect', ()
     await refreshPolicyLimits()
     await flushAsync()
     expect(teardown).toHaveBeenCalledTimes(1)
+    expect(telemetryEvents).toHaveLength(1)
+  })
+
+  test('reconnect re-check (official effect deps [ready]): a refusal that flips while disconnected tears down on reconnect', async () => {
+    nextRestrictions = RC_ALLOWED
+    await refreshPolicyLimits()
+    const { handle, teardown } = makeFakeHandle()
+    let connected = true
+    let stateHook: ((state: BridgeState) => void) | undefined
+    const stateChanges: Array<[string, string | undefined]> = []
+
+    attachBridgePolicyWatcher(handle, {
+      isConnected: () => connected,
+      onStateChange: (state, detail) => {
+        stateChanges.push([state, detail])
+      },
+      outboundOnly: false,
+      registerStateHook: hook => {
+        stateHook = hook
+      },
+    })
+    expect(teardown).not.toHaveBeenCalled()
+
+    // Transport drops. 'reconnecting' is not a ready/connected transition, so
+    // it must not re-run the check either.
+    connected = false
+    stateHook?.('reconnecting')
+    await flushAsync()
+    expect(teardown).not.toHaveBeenCalled()
+
+    // Org turns Remote Control off DURING the disconnect. The real
+    // subscription fires the real check, but the official
+    // enabled&&connected gate skips it — the SEC-1 blind spot.
+    nextRestrictions = RC_DENIED
+    await refreshPolicyLimits()
+    await flushAsync()
+    expect(teardown).not.toHaveBeenCalled()
+    expect(stateChanges).toEqual([])
+    expect(telemetryEvents).toEqual([])
+
+    // Reconnect: the official effect deps are [ready], so Nl() runs again the
+    // moment the bridge is ready/connected — the pending refusal is honored
+    // immediately, exactly once, with the official notice + telemetry.
+    connected = true
+    stateHook?.('ready')
+    await flushAsync()
+    expect(teardown).toHaveBeenCalledTimes(1)
+    expect(stateChanges).toEqual([['failed', RC_NOTICE]])
+    expect(telemetryEvents).toEqual([
+      {
+        name: 'tengu_bridge_policy_teardown',
+        metadata: {
+          lane: 'repl',
+          policy: 'allow_remote_control',
+          deny_kind: 'org_denied',
+          outbound_only: false,
+        },
+      },
+    ])
+
+    // A further ready/connected transition must not re-fire (policyShutdown
+    // latch), and 'connected' is accepted exactly like 'ready'.
+    stateHook?.('connected')
+    await flushAsync()
+    expect(teardown).toHaveBeenCalledTimes(1)
+    expect(stateChanges).toEqual([['failed', RC_NOTICE]])
     expect(telemetryEvents).toHaveLength(1)
   })
 

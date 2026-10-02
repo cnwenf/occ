@@ -156,6 +156,15 @@ export type InitBridgeOptions = {
  *   gate: handle existence ⇔ enabled, and the wrapped onStateChange tracks
  *   connected ('ready'/'connected' → true, 'failed' → false, matching
  *   useReplBridge's handleStateChange).
+ * - Official effect deps are `[ready]`, so the effect body (and its `Nl()`
+ *   check) re-runs every time the bridge becomes ready/connected again. OCC
+ *   has no reactive store here, so the caller feeds each state transition in
+ *   through `registerStateHook` and the watcher re-runs checkBridgePolicy on
+ *   'ready'/'connected' — closing the reconnect blind spot where a refusal
+ *   that flipped while isConnected() was false stayed skipped until the next
+ *   policy-change event. The re-check keeps the official semantics intact:
+ *   same enabled&&connected gate (never disconnects on unknown), same
+ *   policyShutdown latch (fires at most once per watcher).
  */
 export function attachBridgePolicyWatcher(
   handle: ReplBridgeHandle,
@@ -163,6 +172,13 @@ export function attachBridgePolicyWatcher(
     isConnected: () => boolean
     onStateChange?: (state: BridgeState, detail?: string) => void
     outboundOnly: boolean
+    /**
+     * OCC-side reconnect feed for the official `[ready]` dep re-run (see the
+     * OCC mapping note above). The caller registers to receive the hook and
+     * invokes it with every bridge state transition; only 'ready'/'connected'
+     * re-run the policy check.
+     */
+    registerStateHook?: (hook: (state: BridgeState) => void) => void
   },
 ): ReplBridgeHandle {
   let policyShutdown = false
@@ -214,6 +230,17 @@ export function attachBridgePolicyWatcher(
   const unsubscribe = onPolicyLimitsChange(() => {
     queueMicrotask(checkBridgePolicy)
   })
+  // Official `[ready]` dep re-run: `effect(..., [ready])` re-executes its body
+  // (subscribe + `Nl()`) whenever the bridge becomes ready again, so a refusal
+  // that landed while disconnected is caught on reconnect. Synchronous like
+  // the official `Nl()` in the effect body; checkBridgePolicy re-applies the
+  // connected gate and the policyShutdown latch, so this can neither
+  // disconnect on unknown state nor fire twice.
+  opts.registerStateHook?.(state => {
+    if (state === 'connected' || state === 'ready') {
+      checkBridgePolicy()
+    }
+  })
   // Official wiring effect: check once immediately, subscribe, unsubscribe on
   // cleanup (here: wrapped into handle.teardown, the REPL's unmount path).
   checkBridgePolicy()
@@ -251,6 +278,11 @@ export async function initReplBridge(
   // this flag ⇔ connected ('ready'/'connected' → true, 'failed' → false,
   // matching useReplBridge's handleStateChange).
   let bridgeConnectedForPolicy = false
+  // Registered by attachBridgePolicyWatcher (official effect deps `[ready]`):
+  // feeding each transition back lets the watcher re-check the policy on
+  // reconnect, so a refusal that flipped during a disconnect is honored
+  // immediately instead of at the next policy-change event.
+  let policyStateHook: ((state: BridgeState) => void) | undefined
   const trackedOnStateChange = (state: BridgeState, detail?: string): void => {
     if (state === 'connected' || state === 'ready') {
       bridgeConnectedForPolicy = true
@@ -258,6 +290,11 @@ export async function initReplBridge(
       bridgeConnectedForPolicy = false
     }
     onStateChange?.(state, detail)
+    // After the caller's callback AND after the connected flag is updated:
+    // the watcher's re-check reads isConnected() (this flag), and a refusal
+    // found there re-enters this function with 'failed' — so the consumer sees
+    // ready → failed(with the official notice), never the reverse.
+    policyStateHook?.(state)
   }
 
   // Wire the cse_ shim kill switch so toCompatSessionId respects the
@@ -603,6 +640,9 @@ export async function initReplBridge(
           isConnected: () => bridgeConnectedForPolicy,
           onStateChange: trackedOnStateChange,
           outboundOnly: Boolean(outboundOnly),
+          registerStateHook: hook => {
+            policyStateHook = hook
+          },
         })
       : null
   }
@@ -703,6 +743,9 @@ export async function initReplBridge(
         isConnected: () => bridgeConnectedForPolicy,
         onStateChange: trackedOnStateChange,
         outboundOnly: Boolean(outboundOnly),
+        registerStateHook: hook => {
+          policyStateHook = hook
+        },
       })
     : null
 }

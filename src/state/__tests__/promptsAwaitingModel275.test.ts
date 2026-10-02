@@ -456,7 +456,12 @@ describe('REPL wiring (applyEvent @217198853 / turn-append @217203761 / reset @2
   const source = readSource('src/screens/REPL.tsx')
 
   test('registers sent messages BEFORE appending them to the transcript', () => {
-    const registerIdx = source.indexOf('awaitModelForMessages(newMessages)')
+    // CC 2.1.286 ITEM 55: the turn-append call gained the queued-dispatch
+    // flag (`awaitModelForMessages(newMessages, isQueuedDispatch === true)`);
+    // the v275 ordering contract (register → append) is unchanged.
+    const registerIdx = source.indexOf(
+      'awaitModelForMessages(newMessages, isQueuedDispatch === true)',
+    )
     const appendIdx = source.indexOf(
       'setMessages(oldMessages => [...oldMessages, ...newMessages])',
     )

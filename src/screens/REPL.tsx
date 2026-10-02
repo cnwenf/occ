@@ -216,7 +216,7 @@ import { useIDEIntegration } from '../hooks/useIDEIntegration.js';
 import exit from '../commands/exit/index.js';
 import { ExitFlow } from '../components/ExitFlow.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
-import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter } from '../utils/messageQueueManager.js';
+import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter, makeQueuedDispatchOnQuery } from '../utils/messageQueueManager.js';
 import { type SendNowFlushDeps, sendQueuedNow, sendQueuedNowOnEmptyEnter, SEND_NOW_ABORT_REASON, SEND_NOW_EMPTY_ENTER_GATE, QUEUED_SEND_NOW_SOURCE } from '../utils/sendNow.js';
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
@@ -3056,7 +3056,7 @@ export function REPL({
     // Signal that a query turn has completed successfully
     await onTurnComplete?.(messagesRef.current);
   }, [initialMcpClients, resetLoadingState, getToolUseContext, toolPermissionContext, setAppState, customSystemPrompt, onTurnComplete, appendSystemPrompt, canUseTool, mainThreadAgentDefinition, onQueryEvent, sessionTitle, titleDisabled]);
-  const onQuery = useCallback(async (newMessages: MessageType[], abortController: AbortController, shouldQuery: boolean, additionalAllowedTools: string[], mainLoopModelParam: string, onBeforeQueryCallback?: (input: string, newMessages: MessageType[]) => Promise<boolean>, input?: string, effort?: EffortValue): Promise<void> => {
+  const onQuery = useCallback(async (newMessages: MessageType[], abortController: AbortController, shouldQuery: boolean, additionalAllowedTools: string[], mainLoopModelParam: string, onBeforeQueryCallback?: (input: string, newMessages: MessageType[]) => Promise<boolean>, input?: string, effort?: EffortValue, isQueuedDispatch?: boolean): Promise<void> => {
     // If this is a teammate, mark them as active when starting a turn
     if (isAgentSwarmsEnabled()) {
       const teamName = getTeamName();
@@ -3095,7 +3095,15 @@ export function REPL({
       // CC 2.1.275 ITEM O — official turn-append @217203761 registers the
       // sent messages as awaiting the model BEFORE appending them to the
       // transcript, so they render gray from the first frame.
-      awaitModelForMessages(newMessages);
+      // CC 2.1.286 ITEM 55 — official gate is now `L&&mt` @225818516: `mt` is
+      // run's new 15th param (`run=async(h,v,L,...,dt,mt=!1)` @225815961),
+      // fed by dispatcher `xZe` as `ht=Ge==="queued"` @225767067 (`Ge` =
+      // inputSource) at `await gt(...,so,ht)` @225772771. Only the queued
+      // drain (executeQueuedInput → makeQueuedDispatchOnQuery wrapper below)
+      // passes the flag; typed submits use `inputSource:h.inputSource??"typed"`
+      // @225766364 → mt=false → normal color right away (v285 gated on `M`
+      // alone @224563299 and always grayed).
+      awaitModelForMessages(newMessages, isQueuedDispatch === true);
       setMessages(oldMessages => [...oldMessages, ...newMessages]);
       responseLengthRef.current = 0;
       if (feature('TOKEN_BUDGET')) {
@@ -4084,6 +4092,16 @@ export function REPL({
   // Process queued commands when query completes and queue has items
 
   const executeQueuedInput = useCallback(async (queuedCommands: QueuedCommand[]) => {
+    // CC 2.1.286 ITEM 55 — queued-drain dispatch: wrap onQuery so the
+    // turn-append registration receives isQueuedDispatch=true. Official:
+    // the dispatcher tags the drain `ht=Ge==="queued"` @225767067 and passes
+    // it as run's final arg (`await gt(...,so,ht)` @225772771; gate `L&&mt`
+    // @225818516). handlePromptSubmit's fixed 8-arg onQuery call is shared
+    // with the typed path, so the tag rides on the callback identity instead
+    // of as data. The typed onSubmit keeps the raw onQuery → mt=false →
+    // normal color right away (`inputSource:h.inputSource??"typed"`
+    // @225766364).
+    const onQueuedDispatch = makeQueuedDispatchOnQuery(onQuery);
     await handlePromptSubmit({
       helpers: {
         setCursorOffset: () => {},
@@ -4101,7 +4119,7 @@ export function REPL({
       ideSelection,
       setUserInputOnProcessing,
       setAbortController,
-      onQuery,
+      onQuery: onQueuedDispatch,
       setAppState,
       querySource: getQuerySourceForREPL(),
       onBeforeQuery,

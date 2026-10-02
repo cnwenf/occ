@@ -289,15 +289,28 @@ interface RetryOptions {
    * fast-rejection store (`SYn`) it gates the new speed-param-rejection retry
    * branch: a fallback target that rejects the `speed` parameter is recorded
    * and retried at standard speed instead of failing the turn.
+   *
+   * STAGED in OCC production: no caller sets this flag yet — the official
+   * setter is the refusal/queued retry dispatch in the query engine (outside
+   * this round's retry-module scope; gap doc §4 backlog item 3). The branch
+   * it gates is therefore dormant until wired; the fast-rejection STORE is
+   * still live in production via the withRetry loop-head coercion.
    */
   modelIsRefusalFallbackTarget?: boolean
   /**
    * CC 2.1.286 (item-B): the previous model of the same tier computed by the
-   * ladder (`src/utils/model/modelLadder.ts` ≡ binary `oPr`/`GBn`), threaded
-   * by the query engine. Used as the fallback when the API REFUSES the
-   * resolved model (404/403) on firstParty and no `--fallback-model` was
-   * given (binary `Pn=r.fallbackModel??(Kn&&Fl(r.model)==="firstParty"?
-   * iOe(r):void 0)`).
+   * ladder (`src/utils/model/modelLadder.ts` ≡ binary `oPr`/`GBn`). Used as
+   * the fallback when the API REFUSES the resolved model (404/403) on
+   * firstParty and no `--fallback-model` was given (binary
+   * `Pn=r.fallbackModel??(Kn&&Fl(r.model)==="firstParty"?iOe(r):void 0)`).
+   *
+   * STAGED in OCC production: nothing sets this option yet. The official
+   * producer is the query-engine dispatch (`let A=GBn(Ze,st,ce)` @212168274
+   * threaded as `accessFallbackModel:A` @212172692) — outside this round's
+   * retry-module scope (see the modelLadder.ts header STAGED block and
+   * docs/upstream-version-gap-occ104-2026-10.md §4 backlog item 3). Until
+   * wired, the option stays `undefined` and the ladder arm of the
+   * refusal-fallback branch is dormant.
    */
   accessFallbackModel?: string
   /**
@@ -305,6 +318,12 @@ interface RetryOptions {
    * `src/services/api/modelCallRetries.ts`). One limit covers a whole model
    * call — with default retry settings a failing call sends at most 14
    * requests (11 withRetry + 1 chain hop + 2 credential renewals).
+   *
+   * STAGED in OCC production: `createModelCallRetries` has no production
+   * caller yet — the official producer is the QueryModel construction site
+   * (@206191201, recovered in the modelCallRetries.ts header STAGED block;
+   * gap doc §4 backlog item 3). The four `options.modelCallRetries?.x()`
+   * hooks below are therefore no-ops until the query engine wires the ledger.
    */
   modelCallRetries?: ModelCallRetries
 }
@@ -730,7 +749,12 @@ export async function* withRetry<T>(
       // (404 model_not_found / 403 permission_denied) on firstParty, the
       // ladder's accessFallbackModel — the previous model of the same tier
       // (gated by tengu_nifty_finch, computed in src/utils/model/modelLadder.ts)
-      // — is used even without --fallback-model; (b) the telemetry event now
+      // — is used even without --fallback-model. NOTE: this arm is DORMANT in
+      // OCC production — no caller populates `options.accessFallbackModel`
+      // (the query-engine producer @212172692 is STAGED; see the
+      // accessFallbackModel JSDoc + gap doc §4 item 3), so resolveAccess-
+      // FallbackModel always returns undefined and only --fallback-model hops.
+      // (b) the telemetry event now
       // logs UNCONDITIONALLY with a `reason` field (v285 logged only for
       // model_not_found, without reason); (c) the thrown error carries the
       // original error. Mappings: NJe/LJe ≡ isModelNotFoundError/

@@ -1643,6 +1643,17 @@ const UNUSABLE_TOKEN_RECHECK_THROTTLE_MS = 30_000
 let lastUnusableTokenRecheckAt = 0
 
 /**
+ * @internal Test-only reset for the ik() throttle clock: restores the official
+ * `lastUnusableTokenRecheckAt` mirror to its class-Wk field initializer (`=0`)
+ * so recheck cases can't inherit a stamp written by a preceding test in the same
+ * bun process. Production never calls this — PVo=30000 and the ik() recheck
+ * logic above are untouched.
+ */
+export function _resetUnusableTokenRecheckForTesting(): void {
+  lastUnusableTokenRecheckAt = 0
+}
+
+/**
  * Mirror of the official dead-refresh-token registry `bi` (populated by the
  * invalid_grant flow `f8n`, which OCC hasn't ported yet — stays empty).
  */

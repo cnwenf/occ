@@ -14,6 +14,7 @@ import {
 import {
   onPolicyLimitsChange,
   startBackgroundPolling,
+  stopBackgroundPolling,
 } from '../services/policyLimits/index.js'
 import { isInBundledMode } from '../utils/bundledMode.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -1481,6 +1482,15 @@ export async function runBridgeLoop(
   unsubscribePolicyWatch()
   stopStatusUpdates()
   logger.clearStatus()
+  // OCC addition — the recovered official cleanup sequence above
+  // (`Dt(),Wt(),s.clearStatus(...)`) contains no polling-stop identity, and
+  // none was recoverable elsewhere in the dumped tail, so this call is NOT
+  // claimed as official: it guarantees the policyLimits singleton interval
+  // armed by this loop's two startBackgroundPolling() sites leaves no residual
+  // fetch/notify loop behind after a policy-refusal-driven return. Safe on
+  // every exit path — it runs only after the loop has exited, and the loop
+  // re-arms polling on each iteration (idempotent via pollingIntervalId).
+  stopBackgroundPolling()
 
   const loopDurationMs = Date.now() - loopStartTime
   logEvent('tengu_bridge_shutdown', {
@@ -1661,9 +1671,41 @@ export async function runBridgeLoop(
   logger.logVerbose('Environment offline.')
   // Official 2.1.286: `return s.logVerbose("Environment offline."),kt` — the
   // loop returns the stored policy refusal (undefined when not policy-driven).
-  // Call sites keep ignoring the return for now (official caller consumption
-  // was not recoverable from the binary — not invented here).
+  // Both callers now consume it: bridgeMain() through
+  // consumeBridgePolicyRefusal, runBridgeHeadless by propagating it.
   return policyRefusal
+}
+
+/**
+ * Caller-side consumption of runBridgeLoop's returned policy refusal (2.1.286).
+ *
+ * Official evidence: the LOOP side is byte-recovered — `kt=r,qe=!0,oe.abort()`
+ * then `s.logStatus(r.detail)` + the `[bridge:policy]` debug line +
+ * `tengu_bridge_policy_teardown` (@219444200+), and the tail
+ * `return s.logVerbose("Environment offline."),kt`. What the official
+ * interactive caller did with that return (exit code / offline semantics) was
+ * NOT recoverable from the binary, so none is invented here.
+ *
+ * OCC decision (ledger docs/upstream-version-gap-occ104-2026-10.md row #12):
+ * a policy refusal is an orderly org-mandated shutdown, not a crash — the
+ * caller keeps its existing exit path, and this helper only adds a distinct
+ * status line + debug line so the refusal-driven exit is distinguishable from
+ * a clean signal-driven teardown. Returns true when a refusal was consumed.
+ */
+export function consumeBridgePolicyRefusal(
+  refusal: BridgePolicyRefusal | undefined,
+  logger: BridgeLogger,
+): boolean {
+  if (refusal === undefined) {
+    return false
+  }
+  logger.logStatus(
+    `Remote Control stopped by organization policy (${refusal.policy}: ${refusal.kind}).`,
+  )
+  logForDebugging(
+    `[bridge:policy] Standalone bridge offline after org-policy refusal (${refusal.policy}: ${refusal.kind})`,
+  )
+  return true
 }
 
 const CONNECTION_ERROR_CODES = new Set([
@@ -2815,8 +2857,9 @@ export async function bridgeMain(args: string[]): Promise<void> {
     pointerRefreshTimer.unref?.()
   }
 
+  let policyRefusal: BridgePolicyRefusal | undefined
   try {
-    await runBridgeLoop(
+    policyRefusal = await runBridgeLoop(
       config,
       environmentId,
       environmentSecret,
@@ -2847,6 +2890,13 @@ export async function bridgeMain(args: string[]): Promise<void> {
     }
     process.stdin.pause()
   }
+
+  // 2.1.286: consume the refusal the loop returns (official loop tail
+  // `return s.logVerbose("Environment offline."),kt`) instead of discarding
+  // it — an org-policy shutdown must be distinguishable from a clean
+  // signal-driven exit. The official caller-side exit shape is unrecoverable,
+  // so the exit(0) below is kept; see consumeBridgePolicyRefusal.
+  consumeBridgePolicyRefusal(policyRefusal, logger)
 
   // The bridge bypasses init.ts (and its graceful shutdown handler), so we
   // must exit explicitly.
@@ -2893,11 +2943,14 @@ export type HeadlessBridgeOpts = {
  * transient to the right exit code.
  *
  * Resolves cleanly when `signal` aborts and the poll loop tears down.
+ * Resolves with the loop's policy refusal (2.1.286 `kt`) when the shutdown was
+ * org-policy-driven, so the daemon worker CAN distinguish that exit from a
+ * clean teardown; undefined otherwise.
  */
 export async function runBridgeHeadless(
   opts: HeadlessBridgeOpts,
   signal: AbortSignal,
-): Promise<void> {
+): Promise<BridgePolicyRefusal | undefined> {
   const { dir, log } = opts
 
   // Worker inherits the supervisor's CWD. chdir first so git utilities
@@ -3037,7 +3090,13 @@ export async function runBridgeHeadless(
     }
   }
 
-  await runBridgeLoop(
+  // 2.1.286: propagate the loop's policy refusal instead of discarding it.
+  // The official worker-side consumption is unrecoverable, so the value is
+  // handed to the caller as-is (OCC decision — see consumeBridgePolicyRefusal
+  // for the interactive lane's equivalent). No in-repo caller of
+  // runBridgeHeadless exists yet; the daemon worker picks the refusal up when
+  // that lane lands.
+  const policyRefusal = await runBridgeLoop(
     config,
     environmentId,
     environmentSecret,
@@ -3049,6 +3108,7 @@ export async function runBridgeHeadless(
     initialSessionId,
     async () => opts.getAccessToken(),
   )
+  return policyRefusal
 }
 
 /** BridgeLogger adapter that routes everything to a single line-log fn. */

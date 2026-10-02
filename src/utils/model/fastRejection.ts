@@ -32,7 +32,13 @@
  * `` `Using standard speed on ${getPublicModelDisplayName(model)} · fast mode
  * wasn't available` ``, kind/color `warning`, priority immediate. OCC's
  * plugin/notice surface is out of scope for the retry modules; the
- * `onFallbackModelFastRejected` signal below is the wiring point.
+ * `onFallbackModelFastRejected` signal below is the wiring point. Until that
+ * plugin lands, `clearFastRejectedFallbackModels` (session-reset `n9e`) and
+ * both `on*` subscription signals have ZERO production callers/subscribers —
+ * they are STAGED wiring points, exercised only by unit tests. The store is
+ * still seeded in production: `markFastRejected` runs inside the withRetry
+ * speed-rejection branch, so `isFastRejectedFallback`/`hasEverOrFallback-
+ * FastRejected` gate real retries; only the interactive NOTICE is dormant.
  */
 import { APIError } from '@anthropic-ai/sdk'
 import { logForDebugging } from '../debug.js'

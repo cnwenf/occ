@@ -24,6 +24,7 @@
 import {
   afterAll,
   beforeAll,
+  beforeEach,
   expect,
   spyOn,
   test,
@@ -32,6 +33,7 @@ import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
+  _resetUnusableTokenRecheckForTesting,
   clearOAuthTokenCache,
   getClaudeAIOAuthTokens,
   invalidateOAuthCacheIfDiskChanged,
@@ -102,6 +104,15 @@ beforeAll(() => {
   nowSpy = spyOn(Date, 'now').mockImplementation(() => fakeNow)
 })
 
+// The ik() throttle clock (`lastUnusableTokenRecheckAt`, auth.ts) is module
+// state shared by every case here and by any later file in the same bun
+// process. Zero it before each case so none can inherit a stamp written by a
+// predecessor — a case that needs the clock armed must stamp it itself, via a
+// real unthrottled recheck (see the PVo throttle test below).
+beforeEach(() => {
+  _resetUnusableTokenRecheckForTesting()
+})
+
 afterAll(() => {
   nowSpy.mockRestore()
   if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
@@ -112,6 +123,8 @@ afterAll(() => {
   }
   getClaudeConfigHomeDir.cache?.clear?.()
   clearOAuthTokenCache()
+  // Don't leak this file's throttle stamp into later files of a shared run.
+  _resetUnusableTokenRecheckForTesting()
   try {
     rmSync(tmpConfigDir, { recursive: true, force: true })
   } catch {
@@ -197,12 +210,23 @@ test('qk: disk unchanged + dead held token → invalidate rechecks and reloads (
 })
 
 test('ik: reload is throttled to one per 30s (PVo)', async () => {
-  // Arrange: dead token held again; distinct fresh token on disk.
+  // Arrange: dead token held again (empty refreshToken), and the SAME dead
+  // token still on disk — so the priming recheck below reloads without the
+  // held value changing and the throttle clock stays the only thing under test.
   writeCred('dead-held-2', '')
   primeHeldToken()
+
+  // Prime the clock honestly: beforeEach zeroed lastUnusableTokenRecheckAt, so
+  // this first recheck is unthrottled and takes the official
+  // `e.lastUnusableTokenRecheckAt=s` stamp at the current fakeNow. No reliance
+  // on any preceding case's write.
+  await recheckOAuthTokenIfUnusable()
+  expect(getClaudeAIOAuthTokens()?.accessToken).toBe('dead-held-2')
+
+  // Another window's /login lands on disk at the SAME mtime.
   writeCred('fresh-good-2', 'rt-fresh-2')
 
-  // Act 1: 29,999ms after the last reload → throttled, cache untouched.
+  // Act 1: 29,999ms after the priming reload → throttled, cache untouched.
   fakeNow += RECHECK_THROTTLE_MS - 1
   await recheckOAuthTokenIfUnusable()
   expect(getClaudeAIOAuthTokens()?.accessToken).toBe('dead-held-2')

@@ -46,13 +46,15 @@ import {
  * renders in normal color immediately. Busy typed send → enqueued →
  * drained with inputSource "queued" → mt=true → gray until message_start.
  *
- * OCC wiring note (STAGED sub-piece): REPL.tsx:3098 (turn-append) calls
- * `awaitModelForMessages(newMessages)` with the default flag=false, so both
- * typed AND queued-drained sends skip the gray. Threading `true` from the
- * queued drain (executeQueuedInput → handlePromptSubmit) requires touching
- * REPL.tsx / handlePromptSubmit.ts, which are outside this task's allowed
- * touch list — the port keeps the default-false signature ready for that
- * wiring.
+ * OCC wiring note (WIRED — review G3 fix): REPL.tsx's onQuery callback takes
+ * `isQueuedDispatch?: boolean` as its 9th param (official `mt=!1` @225815961)
+ * and the turn-append calls `awaitModelForMessages(newMessages,
+ * isQueuedDispatch === true)`. Only the queued drain sets it:
+ * executeQueuedInput wraps its onQuery via makeQueuedDispatchOnQuery
+ * (src/utils/messageQueueManager.ts) — the analog of the official dispatcher
+ * appending `ht=Ge==="queued"` @225767067 as run's final arg. Typed submits
+ * and every other onQuery caller pass ≤8 args → flag undefined → no gray.
+ * Dispatch-chain tests: src/utils/__tests__/queuedDrainGray286.test.ts.
  */
 
 const UUID_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'

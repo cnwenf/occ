@@ -3,6 +3,7 @@ import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs
 import type { Permutations } from 'src/types/utils.js'
 import { getSessionId } from '../bootstrap/state.js'
 import type { AppState } from '../state/AppState.js'
+import type { Message } from '../types/message.js'
 import type {
   QueueOperation,
   QueueOperationMessage,
@@ -15,6 +16,7 @@ import type {
 } from '../types/textInputTypes.js'
 import type { PastedContent } from './config.js'
 import { logForDebugging } from './debug.js'
+import type { EffortValue } from './effort.js'
 import { extractTextContent } from './messages.js'
 import { objectGroupBy } from './objectGroupBy.js'
 import { recordQueueOperation } from './sessionStorage.js'
@@ -571,4 +573,87 @@ export function isSlashCommand(cmd: QueuedCommand): boolean {
     cmd.value.trim().startsWith('/') &&
     !cmd.skipSlashCommands
   )
+}
+
+// ============================================================================
+// CC 2.1.286 (item 55) — queued-drain dispatch tag
+// ============================================================================
+
+/**
+ * The turn-append dispatch callback shape shared by handlePromptSubmit's
+ * `BaseExecutionParams.onQuery` (8 args) and the REPL onQuery callback. The
+ * REPL callback takes one extra optional trailing flag (`isQueuedDispatch`) —
+ * the OCC analog of the official run's NEW 15th param `mt=!1` (@225815961,
+ * v286 binary /tmp/cc-diff-286/v286/package/claude).
+ */
+export type QueuedTaggedTurnDispatch = (
+  newMessages: Message[],
+  abortController: AbortController,
+  shouldQuery: boolean,
+  additionalAllowedTools: string[],
+  mainLoopModel: string,
+  onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>,
+  input?: string,
+  effort?: EffortValue,
+  isQueuedDispatch?: boolean,
+) => Promise<void>
+
+/** The fixed 8-arg shape handlePromptSubmit calls `params.onQuery` with. */
+export type TurnAppendDispatch = (
+  newMessages: Message[],
+  abortController: AbortController,
+  shouldQuery: boolean,
+  additionalAllowedTools: string[],
+  mainLoopModel: string,
+  onBeforeQuery?: (input: string, newMessages: Message[]) => Promise<boolean>,
+  input?: string,
+  effort?: EffortValue,
+) => Promise<void>
+
+/**
+ * CC 2.1.286 (item 55): tag a turn-append dispatch callback as queue-drain
+ * sourced.
+ *
+ * Official: the dispatcher `xZe` computes `ht=Ge==="queued"` (@225767067,
+ * `Ge` = inputSource) and threads it as run's final argument
+ * (`await gt(...,so,ht)` @225772771); the queued drain is the only caller
+ * passing `inputSource:"queued"` (@225759170), typed submits fall back to
+ * `inputSource:h.inputSource??"typed"` (@225766364 → mt=false → normal color
+ * right away). The turn-append gate is `L&&mt` (@225818516).
+ *
+ * OCC: the queued drain (executeQueuedInput → handlePromptSubmit →
+ * executeUserInput) converges with the typed path on the SAME fixed 8-arg
+ * `onQuery(...)` call in handlePromptSubmit, so the flag cannot travel
+ * through it as data. The drain instead hands handlePromptSubmit a wrapped
+ * callback that appends `isQueuedDispatch=true` as the 9th argument — the
+ * structural analog of the official dispatcher appending `ht` — feeding the
+ * REPL turn-append `awaitModelForMessages(newMessages, isQueuedDispatch)`.
+ * Every other onQuery caller (typed submit, initial/plan message, speculation
+ * accept) passes the raw callback → the 9th param defaults undefined → no
+ * gray, matching the official `mt=!1` default.
+ */
+export function makeQueuedDispatchOnQuery(
+  onQuery: QueuedTaggedTurnDispatch,
+): TurnAppendDispatch {
+  return (
+    newMessages,
+    abortController,
+    shouldQuery,
+    additionalAllowedTools,
+    mainLoopModel,
+    onBeforeQuery,
+    input,
+    effort,
+  ) =>
+    onQuery(
+      newMessages,
+      abortController,
+      shouldQuery,
+      additionalAllowedTools,
+      mainLoopModel,
+      onBeforeQuery,
+      input,
+      effort,
+      true,
+    )
 }
