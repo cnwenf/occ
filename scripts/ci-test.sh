@@ -100,11 +100,19 @@ for f in "${TEST_FILES[@]}"; do
 done
 
 # ---------------------------------------------------------------------------
-# Same-worker mock-leak regression (OCC-103 round-3 re-acceptance, P2).
+# Same-worker mock-leak regressions (OCC-103 round-3 re-acceptance P2;
+# OCC-104 acceptance P2).
 #
 # The per-file isolation above means cross-file mock.module() leaks can NEVER
 # manifest in CI — which also means a REGRESSION of the leak-repair pattern
-# would ship green. Concretely: src/tools/shared/__tests__/settingSourcesPropagation281.test.ts
+# would ship green. Known polluter -> victim pairs are therefore ALSO run
+# together in ONE bun process here (order matters — bun executes the files in
+# the order given). GREEN requires the afterAll/beforeEach delegation guards
+# to actually serve the real implementations; RED is the documented failure
+# signature of the original leak. This step is the CI enforcement that
+# per-file isolation structurally cannot provide.
+#
+# Pair 1 (OCC-103 round-3): src/tools/shared/__tests__/settingSourcesPropagation281.test.ts
 # mocks ../../../bootstrap/state.js with the delegation pattern (real getters
 # captured by value in beforeAll; a `mockActive` flag flipped to false in
 # afterAll so the mocked getters pass through to the REAL implementations for
@@ -113,46 +121,70 @@ done
 # it — every file that runs AFTER the polluter in one shared process gets
 # frozen stub values (getFlagSettingSourcesRaw() → ['user'] etc.), and
 # src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts fails.
+# Mutation-verified: reverting the afterAll to the old spread pattern turns
+# this pair RED.
 #
-# So we run the polluter → victim pair in ONE bun process here (polluter first,
-# order matters — bun executes the files in the order given). GREEN requires
-# the afterAll pass-through to actually serve the real getters; RED is the
-# exact round-3 documented failure signature. This step is the CI enforcement
-# that per-file isolation structurally cannot provide. Mutation-verified:
-# reverting the afterAll to the old spread pattern turns this pair RED.
-echo "Same-worker mock-leak regression (polluter -> victim pair, single process)..."
-LEAK_PAIR_POLLUTER="src/tools/shared/__tests__/settingSourcesPropagation281.test.ts"
-LEAK_PAIR_VICTIM="src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts"
-# bun test treats positional args as FILTERS — a renamed/moved file would
-# silently match nothing and the pair would "pass" with only one file run.
-# Fail loudly if either side of the pair disappears.
-if [ ! -f "$LEAK_PAIR_POLLUTER" ] || [ ! -f "$LEAK_PAIR_VICTIM" ]; then
-  FAIL=1
-  FAILED_FILES+=("same-worker leak pair (test file missing — update the pair paths)")
-  echo "FAIL  same-worker leak pair: polluter or victim file not found"
-  echo "      expected: $LEAK_PAIR_POLLUTER"
-  echo "                $LEAK_PAIR_VICTIM"
-  echo ""
-else
-LEAK_PAIR_OUTPUT=$(bun test "$LEAK_PAIR_POLLUTER" "$LEAK_PAIR_VICTIM" --timeout 10000 2>&1)
-LEAK_PAIR_EXIT=$?
-LEAK_PAIR_PASS=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ pass' | tail -1 | grep -oE '[0-9]+' || echo 0)
-LEAK_PAIR_FAIL=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ fail' | tail -1 | grep -oE '[0-9]+' || echo 0)
-LEAK_PAIR_FILES=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE 'across [0-9]+ files?' | tail -1 | grep -oE '[0-9]+' || echo 0)
-TOTAL_PASS=$((TOTAL_PASS + LEAK_PAIR_PASS))
-TOTAL_FAIL=$((TOTAL_FAIL + LEAK_PAIR_FAIL))
-if [ "$LEAK_PAIR_EXIT" -ne 0 ] || [ "$LEAK_PAIR_FAIL" -ne 0 ] || [ "$LEAK_PAIR_FILES" -ne 2 ]; then
-  FAIL=1
-  FAILED_FILES+=("$LEAK_PAIR_POLLUTER + $LEAK_PAIR_VICTIM (same-worker pair)")
-  echo "FAIL  same-worker leak pair  ($LEAK_PAIR_FAIL fail, $LEAK_PAIR_PASS pass, $LEAK_PAIR_FILES files)"
-  echo "      A failure here means the bootstrap/state.js mock-leak repair"
-  echo "      (settingSourcesPropagation281 afterAll delegation) has regressed."
-  echo "$LEAK_PAIR_OUTPUT" | grep -E '^\s*\(fail\)|^\s*✗|error:|Error:' | head -10
-  echo ""
-else
-  echo "OK    same-worker leak pair  ($LEAK_PAIR_PASS pass across $LEAK_PAIR_FILES files)"
-fi
-fi
+# Pair 2 (OCC-104 acceptance P2): src/bridge/__tests__/attachBridgePolicyWatcher286.test.ts
+# originally shipped plain-spread mock.module captures of
+# services/analytics/index.js (logEvent), utils/debug.js (logForDebugging) and
+# axios (default.get). bun's mock.module is permanent process-wide, so the
+# analytics capture swallowed every later file's telemetry —
+# src/services/api/__tests__/withRetryIntegration286.test.ts (which captures
+# via the REAL attachAnalyticsSink) saw zero events, failing its item-B/item-D
+# sink assertions in BOTH file orders (377 pass / 21 fail across
+# src/bridge/__tests__ + src/services/api/__tests__ at 54bc4ba). Fixed with
+# the delegation + `mockActive` pattern, with the flag flipped ONLY in the
+# polluter's beforeEach/afterEach so the shims are transparent for every other
+# file's tests regardless of load order. Both orders are guarded here because
+# the original leak reproduced in both. Mutation-verified: restoring the
+# original 54bc4ba polluter (unconditional capture shims + spread-style
+# afterAll restore) turns this pair RED in both argument orders (12 pass /
+# 4 fail each). The BY-VALUE pre-mock captures used in the afterAll re-pin are
+# load-bearing — a namespace spread evaluated at afterAll time copies bun's
+# already re-pointed live bindings, re-installing the capture shim.
+echo "Same-worker mock-leak regressions (polluter -> victim pairs, single process)..."
+LEAK_PAIRS=(
+  "src/tools/shared/__tests__/settingSourcesPropagation281.test.ts|src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts"
+  "src/bridge/__tests__/attachBridgePolicyWatcher286.test.ts|src/services/api/__tests__/withRetryIntegration286.test.ts"
+  "src/services/api/__tests__/withRetryIntegration286.test.ts|src/bridge/__tests__/attachBridgePolicyWatcher286.test.ts"
+)
+for pair in "${LEAK_PAIRS[@]}"; do
+  LEAK_PAIR_POLLUTER="${pair%%|*}"
+  LEAK_PAIR_VICTIM="${pair##*|}"
+  # bun test treats positional args as FILTERS — a renamed/moved file would
+  # silently match nothing and the pair would "pass" with only one file run.
+  # Fail loudly if either side of the pair disappears.
+  if [ ! -f "$LEAK_PAIR_POLLUTER" ] || [ ! -f "$LEAK_PAIR_VICTIM" ]; then
+    FAIL=1
+    FAILED_FILES+=("same-worker leak pair (test file missing — update the pair paths)")
+    echo "FAIL  same-worker leak pair: polluter or victim file not found"
+    echo "      expected: $LEAK_PAIR_POLLUTER"
+    echo "                $LEAK_PAIR_VICTIM"
+    echo ""
+    continue
+  fi
+  LEAK_PAIR_OUTPUT=$(bun test "$LEAK_PAIR_POLLUTER" "$LEAK_PAIR_VICTIM" --timeout 10000 2>&1)
+  LEAK_PAIR_EXIT=$?
+  LEAK_PAIR_PASS=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ pass' | tail -1 | grep -oE '[0-9]+' || echo 0)
+  LEAK_PAIR_FAIL=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE '[0-9]+ fail' | tail -1 | grep -oE '[0-9]+' || echo 0)
+  LEAK_PAIR_FILES=$(echo "$LEAK_PAIR_OUTPUT" | grep -oE 'across [0-9]+ files?' | tail -1 | grep -oE '[0-9]+' || echo 0)
+  TOTAL_PASS=$((TOTAL_PASS + LEAK_PAIR_PASS))
+  TOTAL_FAIL=$((TOTAL_FAIL + LEAK_PAIR_FAIL))
+  if [ "$LEAK_PAIR_EXIT" -ne 0 ] || [ "$LEAK_PAIR_FAIL" -ne 0 ] || [ "$LEAK_PAIR_FILES" -ne 2 ]; then
+    FAIL=1
+    FAILED_FILES+=("$LEAK_PAIR_POLLUTER + $LEAK_PAIR_VICTIM (same-worker pair)")
+    echo "FAIL  same-worker leak pair  ($LEAK_PAIR_FAIL fail, $LEAK_PAIR_PASS pass, $LEAK_PAIR_FILES files)"
+    echo "      polluter: $LEAK_PAIR_POLLUTER"
+    echo "      victim:   $LEAK_PAIR_VICTIM"
+    echo "      A failure here means a mock.module delegation leak guard"
+    echo "      (mockActive pass-through) on the polluter side has regressed."
+    echo "$LEAK_PAIR_OUTPUT" | grep -E '^\s*\(fail\)|^\s*✗|error:|Error:' | head -10
+    echo ""
+  else
+    echo "OK    same-worker leak pair  ($LEAK_PAIR_PASS pass across $LEAK_PAIR_FILES files)"
+    echo "      $LEAK_PAIR_POLLUTER -> $LEAK_PAIR_VICTIM"
+  fi
+done
 
 echo ""
 echo "============================================"

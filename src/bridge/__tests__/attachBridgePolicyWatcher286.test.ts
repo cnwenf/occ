@@ -1,4 +1,12 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  mock,
+  test,
+} from 'bun:test'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -30,8 +38,11 @@ if (typeof globalThis.MACRO === 'undefined') {
  * real modules. The refusal is driven through the REAL policyLimits cache:
  * an axios-level mock feeds refreshPolicyLimits, and mid-session org flips
  * are simulated by changing the payload and re-refreshing (which fires the
- * real onPolicyLimitsChange subscription). Only analytics + debug capture
- * mocks are used (observation-only, spread actuals).
+ * real onPolicyLimitsChange subscription). The analytics/debug/axios shims
+ * below use the OCC-103 round-3 delegation + `mockActive` pattern (exemplar:
+ * sessionStorage.parallelTRRecovery286.test.ts) — leak-free in a shared
+ * `bun test` process, guarded by scripts/ci-test.sh (see the same-worker
+ * leak-pair section there).
  */
 
 // --- hermetic env: eligible Console API-key user, temp config dir
@@ -57,36 +68,67 @@ delete process.env.ANTHROPIC_UNIX_SOCKET
 delete process.env.CLAUDE_CODE_USE_BEDROCK
 delete process.env.CLAUDE_CODE_OAUTH_TOKEN
 
-// --- observation-only mocks (analytics + debug capture; never restored away
-// mid-file, so they stay stable for every test regardless of file order)
+// --- leak-free delegation shims (analytics + debug + axios).
+// bun's mock.module() is PERMANENT process-wide: an afterAll restore does NOT
+// propagate to files loaded later in the same `bun test` process (documented
+// in scripts/ci-test.sh:4-12; this file originally shipped the plain-spread
+// capture variant and was the OCC-104 P2 cross-file polluter). Every shim
+// therefore delegates to the REAL function captured by value unless
+// `mockActive` is true — and the flag is flipped ONLY in this file's
+// beforeEach/afterEach (never at module top level), so the shims stay
+// transparent for every other file's tests regardless of load order.
+let mockActive = false
+
 const actualAnalytics = await import('../../services/analytics/index.js')
+const actualLogEvent = actualAnalytics.logEvent
 const telemetryEvents: Array<{ name: string; metadata: unknown }> = []
 mock.module('../../services/analytics/index.js', () => ({
   ...actualAnalytics,
   logEvent: (name: string, metadata?: unknown) => {
+    if (!mockActive) {
+      actualLogEvent(name, metadata as never)
+      return
+    }
     telemetryEvents.push({ name, metadata })
   },
 }))
 
 const actualDebug = await import('../../utils/debug.js')
+const actualLogForDebugging = actualDebug.logForDebugging
 const debugLines: Array<{ line: string; opts?: unknown }> = []
 mock.module('../../utils/debug.js', () => ({
   ...actualDebug,
   logForDebugging: (line: string, opts?: unknown) => {
+    if (!mockActive) {
+      actualLogForDebugging(line, opts as never)
+      return
+    }
     debugLines.push({ line, opts })
   },
 }))
 
-// --- axios mock: single module-scope registration, closure-controlled
+// --- axios shim: single module-scope registration, closure-controlled;
+// passes through to the real axios.get whenever this file's tests are not
+// running. The real default export AND its `get` method are captured BY VALUE
+// pre-mock — delegating through `actualAxios.default.get` at call time would
+// resolve the (possibly re-pointed) namespace binding and self-recurse into
+// the shim.
 const actualAxios = await import('axios')
+const actualAxiosDefault = actualAxios.default
+const actualAxiosGet = actualAxiosDefault.get
 type Restrictions = Record<string, { allowed: boolean }>
 let nextRestrictions: Restrictions = {}
-const mockedGet = mock(async (): Promise<{ status: number; data: unknown }> => {
-  return { status: 200, data: { restrictions: nextRestrictions } }
-})
+const mockedGet = mock(
+  async (url: string, config?: unknown): Promise<unknown> => {
+    if (!mockActive) {
+      return actualAxiosGet.call(actualAxiosDefault, url, config as never)
+    }
+    return { status: 200, data: { restrictions: nextRestrictions } }
+  },
+)
 mock.module('axios', () => ({
   ...actualAxios,
-  default: { ...actualAxios.default, get: mockedGet },
+  default: { ...actualAxiosDefault, get: mockedGet },
 }))
 
 // --- SUT + real collaborators (imported AFTER the mock registrations)
@@ -136,6 +178,9 @@ const flushAsync = async (): Promise<void> => {
 }
 
 beforeEach(() => {
+  // Capture window: ONLY this file's own tests see the shims; every other
+  // file in the same process gets the real implementations (see above).
+  mockActive = true
   nextRestrictions = {}
   telemetryEvents.length = 0
   debugLines.length = 0
@@ -145,16 +190,30 @@ beforeEach(() => {
   _resetPolicyLimitsForTesting()
 })
 
+afterEach(() => {
+  mockActive = false
+})
+
 afterAll(async () => {
+  // Leak guard (OCC-97/129 convention): keep the delegation flag off and
+  // re-pin the REAL function references captured pre-mock, so even a
+  // freshly-loaded later file resolves the real implementations.
+  mockActive = false
   _resetPolicyLimitsForTesting()
+  // Re-pin with the BY-VALUE references captured pre-mock — spreading the
+  // namespace here would copy bun's live (already re-pointed) bindings.
   mock.module('axios', () => ({
     ...actualAxios,
-    default: actualAxios.default,
+    default: actualAxiosDefault,
   }))
   mock.module('../../services/analytics/index.js', () => ({
     ...actualAnalytics,
+    logEvent: actualLogEvent,
   }))
-  mock.module('../../utils/debug.js', () => ({ ...actualDebug }))
+  mock.module('../../utils/debug.js', () => ({
+    ...actualDebug,
+    logForDebugging: actualLogForDebugging,
+  }))
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) {
       delete process.env[key]
