@@ -35,7 +35,7 @@ Cluster column: A=permission-integrity, B=protocol-auth-security, C=features, D1
 | 3 | agents view `n:<text>` name/task filter | C | STAGED | feature add on `occ agents` daemon dashboard; needs design pass |
 | 4 | OTEL `user_prompt` gains `prompt_text` | C | **PORTED** | `04c472a` — processTextPrompt.ts emits both keys from one redacted value (official `G$t` shape) + processTextPromptOtel287.test.ts |
 | 5 | MCP URL prompts / 2025-11-25 protocol / `bareElicitationCapability` | C | STAGED | legacy-elicitation flag default flips `!1`→`!0`; OCC bare `{}` capabilities deliberate — conflict documented, decision needed |
-| 6 | Windows startup warning: Bash deny also disables PowerShell | E | **PORTED** | E-item10 — decision-function factoring + verbatim warning string; see §6 |
+| 6 | Windows startup warning: Bash deny also disables PowerShell | E | **PORTED** | `1b8b426` — powershellStripWarning.ts pure decidePowerShellStrip (five ye-checks) + permissionSetup wiring into startup warnings + 17-test decision table; PARTIAL: official Bash-family predicate `ne` body unrecovered (kept v286 Bash-only shape), gitBashMissing arm unreachable in OCC (fatal findGitBashPath) |
 | 7 | Self-hosted runner built-in `gh api` | E | NO-OP{NO-SURFACE} | Anthropic-managed-git self-hosted runner absent from OCC |
 | 8 | Fast mode off in agent-owned remote sessions | D1 | NO-OP{NO-SURFACE} | no remote-session owner surface; OCC fast-mode is local pricing only |
 | 9 | RC reconnect gives up after 30s and retries | D2 | NO-OP{ALREADY-ALIGNED} | OCC daemon/RC architecture differs; no stalled-reconnect shape |
@@ -43,7 +43,7 @@ Cluster column: A=permission-integrity, B=protocol-auth-security, C=features, D1
 | 11 | Tool heartbeats to SDK hosts on stalled stream | D1 | NO-OP{NO-SURFACE} | `tool_heartbeat` = 0 hits in OCC; no heartbeat-to-SDK channel |
 | 12 | Bedrock/Vertex startup checks ignore enforced availableModels | D1 | NO-OP{NO-SURFACE} | managed-settings enforcement path absent; OCC allowlist filters picker post-build |
 | 13 | Chrome browser picker JSON parse error | D2 | NO-OP{NO-SURFACE} | Claude-in-Chrome picker absent |
-| 14 | Fable `/model` row saves version id not alias | D1 | **PORTED** | D1-item4 — `getFablePickerRow` `value: model` → `value: 'fable'` (official `U8`→`U3` entire delta, v286@203061451/v287@205079818); see §6 |
+| 14 | Fable `/model` row saves version id not alias | D1 | **PORTED** | `6a3527f` — `getFablePickerRow` `value: model` → `value: 'fable'` (official `U8`→`U3` entire delta, v286@203061451/v287@205079818); tail-insert custom-pin path untouched; 6 tests + 8 stale v286 tier-wiring assertions updated |
 | 15 | Opus5.5↔Sonnet5.5 switch rewrites MCP announcements / drops thinking | D1 | NO-OP{NO-SURFACE} | all dedicated machinery STRUCT-EQUAL; site unrecoverable (honesty note in D1 report); OCC lacks thinkingStrip/announce-rewrite machinery |
 | 16 | Bedrock Guardrails mid-response block w/ leading thinking | D1 | NO-OP{PLATFORM} | `guardrail` = 0 hits; Bedrock-Guardrails streaming interception absent |
 | 17 | Dangerous `rm` loses always-ask on `~`/wildcard redirect | A | NO-OP{ALREADY-ALIGNED} | detector byte-identical v286↔v287; OCC raw-command RM_ROOT_HOME_PATTERN never strips redirects — 11/11 bypass forms match |
@@ -54,17 +54,17 @@ Cluster column: A=permission-integrity, B=protocol-auth-security, C=features, D1
 | 22 | Bash prompts show "Contains simple_expansion" internal names | D2 | **PORTED** | `3520a6f` — ast.ts NODE_TYPE_EXPLANATIONS (26 entries) + tooComplex() rewrite + bashPromptPlainLanguage287.test.ts |
 | 23 | Fullscreen "unrecoverable interface error" on held scroll key | D2 | NO-OP{NO-SURFACE} | official fullscreen-alt-screen machinery absent |
 | 24 | Org per-tool permission ceilings dropped for `__proto__` MCP tool | B | NO-OP{NO-SURFACE} | no org ceiling surface (`effective_max_permission` = 0 hits); note: use Object.create(null) if ever ported |
-| 25 | Large MCP JSON: Read offset/limit cannot split one long line | D1 | **PORTED** | D1-item9 — getLargeOutputInstructions line-shape aware (official `vsn` legacy branch verbatim, 3-way JSON/long-line/short-lines) + call-site lineStats; see §6 |
+| 25 | Large MCP JSON: Read offset/limit cannot split one long line | D1 | **PORTED** | `2835008` — getLargeOutputInstructions line-shape aware (official `vsn` legacy branch, differential-harness 9/9 byte-identical) + client.ts call-site computePersistedLineStats; PARTIAL: `QMt()` subagent variant deferred (no flag), caller gate lacks singleton-unwrap arm, `.txt` extension observation |
 | 26 | Commit-attribution reminder inside tool result after compaction | D1 | NO-OP{NO-SURFACE} | `remote_session_change` attachment path absent; v287 change was constant-hoist only |
-| 27 | SR: cursor away from typed text in search boxes / sign-in code fields | E | **PORTED** | E-UI — ConsoleOAuthFlow focus/showCursor + SearchBox SR borderless/cursor (official `showCursor:` 42→45 sites + `vy`→`By`); see §6 |
+| 27 | SR: cursor away from typed text in search boxes / sign-in code fields | E | **PORTED** | `5e06429` — ConsoleOAuthFlow masked-code field focus+showCursor (official 3 new sites) + SearchBox SR borderless/`useDeclaredCursor` (official `By`/`cE`, display-cell based); PARTIAL: sign-in field render test STAGED (TextInput harness timeout), source-level verification substituted |
 | 28 | SR: Enter refused with nothing typed on /rewind summarize | E | NO-OP{ALREADY-ALIGNED} | OCC /rewind summarize already accepts empty input |
 | 29 | SR: "Tab to amend" hint where Tab does nothing | E | NO-OP{NO-SURFACE} | OCC has no Tab-to-amend affordance; official JS delta unrecoverable |
 | 30 | SR: arrow-key / "Select with numbers" hint lies | E | NO-OP{NO-SURFACE} | OCC menus don't emit those hints; delta recovered for future g5 port |
-| 31 | SR: changed lines left out of file-edit approval diffs | E | **PORTED** | E-UI — StructuredDiff SR gate emits changed-line text; see §6 |
+| 31 | SR: changed lines left out of file-edit approval diffs | E | **PORTED** | `5e06429` — StructuredDiff shouldUseColorDiff gate: SR → Text fallback (SR serializer has no ink-raw-ansi case); 6 tests |
 | 32 | SR: --teleport progress + MCP form re-sent every spinner frame | E | STAGED | needs SR announcement-engine rework; bundle with #34 |
 | 33 | DISABLE_EXPERIMENTAL_BETAS keeps structured-output format | B | **PORTED** | `04c472a` — betas.ts/claude.ts/sideQuery.ts env gate (session-title + prompt-hook requests) + structuredOutputsEnvGate287/FormatGate287 tests |
 | 34 | SR: top lines dropped when previous screen taller than window | E | STAGED | SR engine viewport-diff work; bundle with #32 |
-| 35 | `--include-partial-messages` message_stop late/never on cut-short reply | D1 | **PORTED** | D1-item11 — flushStreamClose generator + openBlockIsTool suppression set (official `Um`/`INo`) at terminal points in claude.ts; see §6 |
+| 35 | `--include-partial-messages` message_stop late/never on cut-short reply | D1 | **PORTED** | `23e1daf` — flushStreamClose (≡ official `Um`) + OPEN_BLOCK_TOOL_TYPES (≡ `INo` @208171771) + openBlockIsTool at 4 v287-added terminal sites (G@3292/B@3463/C@3502/F@3646); StreamTruncatedError path left unflushed per official; 9 tests + 100 regression |
 | 36 | `claude agents` not showing waited-on permission prompt | D2 | NO-OP{NO-SURFACE} | daemon dashboard permission relay absent |
 | 37 | /ultrareview `.git/info/attributes` advice on UTF-16 .gitattributes | D2 | NO-OP{NO-SURFACE} | /ultrareview gated off in OCC build |
 | 38 | `claude remote-control` register behind HTTP proxy | D2 | STAGED | official fix NOT RECOVERED (code-only change, no new strings) — nothing to port faithfully |
@@ -155,16 +155,65 @@ The kickoff flagged the security-relevant subset for priority handling. Disposit
 
 ## 3. Verification
 
-_(filled at round end)_
+- **Full suite**: `bun test src --isolate` at final HEAD — **7040 pass / 1 skip / 0 fail** (7041 tests, 563 files, 434.75 s). Round baseline (HEAD `6dcc320`): 6850 pass / 2 skip / 0 fail (6852 tests, 544 files) → **+189 tests, zero failures**; 19 new test files + 5 extended.
+- **Build**: `bun run build` green — `dist/cli.js` 29.73 MB, MACRO.VERSION/BINARY_NAME injected.
+- **Live e2e** (built `dist/cli.js`, live gateway): `--version` → `OCC 2.1.365` (pre-bump build); headless `echo … | cli.js -p` round trip → exact reply, exit 0; stdin-guard behavior verified (silent when a controlling terminal exists — OCC classifies piped stdin as non-interactive, guard fires only on interactive + non-TTY stdin + no /dev/tty override, per the official precondition); **tmux REPL e2e**: boot → prompt render → `reply with exactly: REPL287-OK` round trip → `/status` (Version/cwd/Model rows) → clean `/exit`.
+- **Per-port targeted tests**: every landed port ran its own green targeted + regression batch before commit (details + counts in `docs/gap-research-287/impl-*.md` and the commit list §6); security port #46 additionally A/B-verified against a real `git-http-backend` (http refused / https+ssh allowed); #25 verified by a differential harness executing the extracted official `vsn`+`mio`+`XK` (dump read-only) — 9/9 byte-identical.
+- **Forensic hygiene**: official binaries never executed; all official code quoted from `strings`/`dd` byte windows at recorded offsets; novelty proven via message strings + hit counts, never minified identifiers.
 
 ## 4. STAGED backlog carried to future rounds
 
-_(filled at round end)_
+21 STAGED entries + named PARTIAL sub-pieces. Recovered official code for each lives in the cluster reports (`docs/gap-research-287/`); nothing was invented.
+
+| Entry | Subject | Prerequisite / rationale |
+|---|---|---|
+| #1 #2 | Claude Mods + you-should-know built-in mod | dark-shipped upstream (string counts unchanged); large subsystem — needs its own round when upstream lights it up |
+| #3 | agents view `n:<text>` filter | `occ agents` dashboard feature add; design pass |
+| #5 | MCP URL prompts / 2025-11-25 / `bareElicitationCapability` | official flips legacy-elicitation default `!1`→`!0`; OCC's bare `{}` capabilities are deliberate — conflict needs a decision |
+| #18 | `-p`/SDK model-fallback repeat suppression | official `gdn` latch recovered; port together with the #35 stream-state rework (shared envelope state) |
+| #21 | /advisor pairing matrix (Sonnet 5.5 advises Opus 4.7/4.8) | data-only upstream change; recovered values recorded in D2 report |
+| #32 #34 | SR announcement engine (spinner re-reads; taller-previous-screen top lines) | needs SR viewport-diff engine rework; bundle both |
+| #38 | RC register behind HTTP proxy | official fix NOT RECOVERED (code-only, no new strings) — nothing to port faithfully |
+| #44 | stream-json `context:fork` skill streaming | fork-path delta needs dedicated decompilation (`invocation_trigger` 7=7) |
+| #57 | headless MCP needs-auth clear-on-success | official `clearNeedsAuth` recovered verbatim; OCC needs a tool-success hook + `peekSettledConnection` analogue over its disk-TTL cache first |
+| #61 | /config chevrons / stacking / PgUp-PgDn | render-only; PgUp/PgDn 8→6 delta needs per-site decompilation |
+| #62 | marketplace plain-language errors | bundle with the admission-validator rework (M1 cache-only admission filter) |
+| #65 | SDK priority "now" keeps web fetch alive | preempt-path logic (`'now'` 7→11) needs decompilation |
+| #67 | /skill names mid-message announcement | `disable-model-invocation` 18=18; behavior delta needs decompilation |
+| #71 #72 | dashed-line prompt framing | cosmetic; delta not isolable (`"dashed"` 3=3) |
+| #73 | headless MCP per-server transient-connect retry | official `lEt`/`k` recovered verbatim (`s6t=[500,1500,4000]` + telemetry); needs memoized-connect-result store + `discardMemoizedConnectResult` first |
+| #78 | shell-write symlink carriedOut hardening | core NOT-AFFECTED; residual low-severity: carriedOut not forced `classifierApprovable:!1` (unverified in binary) |
+| #79 | Opus 4.7+/Fable 1M default on 3P | `native_1m_3p` 5→0 catalog refactor; OCC substring matching needs a catalog-reshape decision |
+| #80 | `claude agents` queued replies / deferred slash cmds | daemon dashboard behavior change |
+
+**PARTIAL sub-pieces of landed ports** (core shipped): #10 `uWt` path-redaction unrecovered + enqueue shape maps body→value (OCC queue lacks summary/stopHookActive/turnAttribution); #25 `QMt()` subagent-prompt variant deferred (no `tengu_mcp_subagent_prompt` flag) + singleton-unwrap caller-gate arm absent; #27 sign-in code-field render test (TextInput harness timeout — source-level verification substituted); #31 BashPermissionRequest-style render coverage via probe tests; #35 companion #18 latch (see above); #40 render tests replaced by wiring probes; #45 consent-render visual test (no harness); #49 `/\.+$/` widening out of scope; #59 full-boot integration test needs pty+setsid harness (manual live e2e done); #6 official `ne` Bash-family predicate body unrecovered + `gitBashMissing` arm unreachable (fatal `findGitBashPath`); B3 env parse uses OCC `isEnvTruthy` convention vs official raw-string truthiness (documented); gitTransport uppercase-scheme fidelity quirk pinned by test.
 
 ## 5. Version bumps (this round)
 
-_(filled at round end)_
+- `package.json`: `2.1.365` → **`2.1.366`** (release gated on 验收 acceptance; tag `v2.1.366` + npm publish after acceptance per the release workflow — not pushed this round).
+- `src/entrypoints/cli.tsx` MACRO polyfill `VERSION`: `"2.1.286"` → **`"2.1.287"`** (dev-mode tracked-upstream pointer).
+- `README.md`: badge, intro narrative, capability-parity row, dev-mode note, tracking section — 5 pins `2.1.286` → `2.1.287` with the OCC-105 summary prepended.
+- `CHANGELOG.md`: "Now tracking" narrative updated + new **`## 2.1.366 - 2026-10-03 (official 2.1.287 alignment — OCC-105 round)`** section (15 user-facing bullets).
 
 ## 6. Files touched (this round)
 
-_(filled at round end)_
+13 commits on `main` (branch `agent/occ/31dcd1ce` → `origin/main`):
+
+| Commit | Content | Files |
+|---|---|---|
+| `3093896` | ledger skeleton + cluster A/B/C reports | docs ×4 |
+| `04c472a` | first-wave ports (#4 #33 #42 #45 #83) | errors.ts, Feedback.tsx, betas.ts, claude.ts, sideQuery.ts, mcp/client.ts, processTextPrompt.ts + 5 test files (13 files, +1293) |
+| `684972f` | git transport gate (#46) | gitTransport.ts (new 91L), marketplaceManager.ts, pluginLoader.ts, schemas.ts + 2 test files |
+| `3520a6f` | Bash plain-language prompts (#22) | bash/ast.ts (NODE_TYPE_EXPLANATIONS ×26 + tooComplex rewrite), specialVarLoops274.test.ts + bashPromptPlainLanguage287.test.ts |
+| `ab9a792` | asyncRewake dedup (#10) | hooks.ts (+168) + asyncRewakeMissingScript287.test.ts |
+| `e13fcd2` | stdin startup guard (#59) | stdinGuard.ts (new 250L), main.tsx, renderOptions.ts + stdinGuard287.test.ts (23 tests) |
+| `fcb65a8` | UI small fixes (#40 #49 #68) | theme.ts, HighlightedThinkingText.tsx, desktopDeepLink.ts, AssistantThinkingMessage.tsx, BashPermissionRequest.tsx + 4 test files |
+| `0ef7eba` | full 106-entry ledger + D1/D2/E reports | docs ×4 (+1526) |
+| `6a3527f` | Fable alias (#14) | modelOptions.ts, modelOptionsTierWiring280.test.ts + fablePickerAlias287.test.ts |
+| `1b8b426` | PowerShell strip warning (#6) | powershellStripWarning.ts (new), permissionSetup.ts + test (17) |
+| `5e06429` | screen-reader batch (#27 #31) | ConsoleOAuthFlow.tsx, SearchBox.tsx, StructuredDiff.tsx + 2 test files |
+| `23e1daf` | message_stop flush (#35) | claude.ts (+147) + partialMessagesFlush287.test.ts (485L) |
+| `2835008` | MCP JSON guidance (#25) | mcpOutputStorage.ts (+158), mcp/client.ts + mcpOutputJsonPaging287.test.ts + impl reports ×2 |
+| _(final)_ | version bumps + ledger completion | package.json, cli.tsx, README.md, CHANGELOG.md, this ledger |
+
+Research/impl reports: `docs/gap-research-287/` — 6 cluster reports + impl-d1-item4/9/11. Temp forensics artifacts `/tmp/cc-diff-287/` removed at round end.
