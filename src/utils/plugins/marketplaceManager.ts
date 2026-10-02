@@ -57,6 +57,7 @@ import {
 import { markPluginVersionOrphaned } from './cacheUtils.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { resolvePluginGitSshEnv } from './gitSshCommand.js'
+import { isPartialCloneTransport } from './gitTransport.js'
 import { assertValidGitUrl } from './gitUrlValidation.js'
 import { removeAllPluginsForMarketplace } from './installedPluginsManager.js'
 import {
@@ -938,7 +939,18 @@ export async function gitClone(
     // after sparse-checkout is configured. Submodules are intentionally dropped
     // for sparse clones — sparse monorepos rarely need them, and recursing
     // submodules would defeat the partial-clone bandwidth savings.
-    args.push('--filter=blob:none', '--no-checkout')
+    //
+    // Official v287 (`slr` @206995523): the `--filter=blob:none` half is gated
+    // on the URL transport — `if(F4n(e))j.push("--filter=blob:none");
+    // j.push("--no-checkout")`. A partial clone's follow-up checkout lazy-fetches
+    // from the promisor remote, and git blocks that fetch under an
+    // https:ssh-only protocol policy (`fatal: transport 'http' not allowed`), so
+    // over plain http OCC falls back to a full (still `--depth 1`) clone with
+    // nothing to lazy-fetch. `--no-checkout` stays unconditional.
+    if (isPartialCloneTransport(gitUrl)) {
+      args.push('--filter=blob:none')
+    }
+    args.push('--no-checkout')
   } else {
     args.push('--recurse-submodules', '--shallow-submodules')
   }

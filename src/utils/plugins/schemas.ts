@@ -1362,7 +1362,7 @@ export const PluginSourceSchema = lazySchema(() =>
           .min(1)
           .describe(
             'Subdirectory within the repo containing the plugin (e.g., "tools/claude-plugin"). ' +
-              'Cloned sparsely using partial clone (--filter=tree:0) to minimize bandwidth for monorepos.',
+              'Checked out sparsely — over https or ssh as a partial clone (--filter=tree:0) — to minimize bandwidth for monorepos.',
           ),
         ref: z
           .string()
