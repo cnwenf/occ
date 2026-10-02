@@ -403,3 +403,169 @@ describe('ITEM 13 (2.1.276): MIN_DESKTOP_VERSION constant', () => {
     expect(MIN_DESKTOP_VERSION).toBe('1.1.2396')
   })
 })
+
+// ---------------------------------------------------------------------------
+// 2.1.287 #15 — /desktop opener failure cause naming (official v287 `y()`)
+//
+// Official v287 (@218727474 region) destructures `timedOut`/`maxBufferExceeded`
+// off the exec result and adds two early returns BEFORE the v276 `D()`
+// failed/exited-N fallthrough, byte-exact:
+//   if(…,u)return{opened:!1,detail:`\`${e}\` timed out`}
+//   if(c)return{opened:!1,detail:`\`${e}\` printed too much output`}
+// The debug log line still fires BEFORE the branches (official `if(t(…),u)`).
+// ---------------------------------------------------------------------------
+
+describe('ITEM 15 (2.1.287): buildDeepLinkOpenerResult cause naming (official y)', () => {
+  test('timedOut → byte-exact "`opener` timed out" (early return, no stderr quote)', () => {
+    const result = buildDeepLinkOpenerResult('xdg-open', {
+      stdout: '',
+      stderr: 'partial output before kill',
+      code: 1,
+      timedOut: true,
+    })
+    expect(result).toEqual({ opened: false, detail: '`xdg-open` timed out' })
+  })
+
+  test('maxBufferExceeded → byte-exact "`opener` printed too much output"', () => {
+    const result = buildDeepLinkOpenerResult('xdg-open', {
+      stdout: '',
+      stderr: 'f'.repeat(300),
+      code: 1,
+      maxBufferExceeded: true,
+    })
+    expect(result).toEqual({
+      opened: false,
+      detail: '`xdg-open` printed too much output',
+    })
+  })
+
+  test('official branch order: timedOut wins when both flags are set (u before c)', () => {
+    const result = buildDeepLinkOpenerResult('open', {
+      stdout: '',
+      stderr: '',
+      code: 1,
+      timedOut: true,
+      maxBufferExceeded: true,
+    })
+    expect(result).toEqual({ opened: false, detail: '`open` timed out' })
+  })
+
+  test('code 0 short-circuits before the cause branches (official o===0 first)', () => {
+    const result = buildDeepLinkOpenerResult('xdg-open', {
+      stdout: '',
+      stderr: '',
+      code: 0,
+      exitCode: 0,
+      timedOut: true,
+      maxBufferExceeded: true,
+    })
+    expect(result).toEqual({ opened: true })
+  })
+
+  test('debug log still fires before the early return (official t(…) then u)', () => {
+    buildDeepLinkOpenerResult('xdg-open', {
+      stdout: '',
+      stderr: '',
+      code: 1,
+      timedOut: true,
+    })
+    expect(debugLines).toEqual([
+      {
+        message: 'Deep link opener xdg-open failed: code 1, exitCode undefined',
+        level: undefined,
+      },
+    ])
+  })
+
+  test('neither flag (plain non-zero exit) → v276 fallthrough unchanged', () => {
+    const result = buildDeepLinkOpenerResult('xdg-open', {
+      stdout: '',
+      stderr: 'boom.',
+      code: 1,
+      exitCode: 3,
+      timedOut: false,
+      maxBufferExceeded: false,
+    })
+    expect(result).toEqual({
+      opened: false,
+      detail: '`xdg-open` exited 3: boom',
+    })
+  })
+})
+
+describe('ITEM 15 (2.1.287): runOpenerCommand execa v9 field mapping', () => {
+  // execa v9 renamed the old `maxBufferExceeded` result field to `isMaxBuffer`
+  // (node_modules/execa result.d.ts) — runOpenerCommand maps it back to the
+  // official v287 `y()` field name. `timedOut` passes through unchanged.
+  test('linux: execa timedOut → user error names the timeout cause', async () => {
+    setPlatform('linux')
+    execFileHandler = async () => ({
+      stdout: 'claude.desktop',
+      stderr: '',
+      code: 0,
+    })
+    execaHandler = async () => ({
+      failed: true,
+      stdout: '',
+      stderr: '',
+      exitCode: undefined,
+      timedOut: true,
+      shortMessage: 'xdg-open timed out after 600000 milliseconds',
+    })
+
+    const result = await openCurrentSessionInDesktop()
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe(
+      "Couldn't open Claude Desktop (`xdg-open` timed out). Open Claude Desktop and run /desktop again.",
+    )
+  })
+
+  test('linux: execa isMaxBuffer → user error names the output-overflow cause', async () => {
+    setPlatform('linux')
+    execFileHandler = async () => ({
+      stdout: 'claude.desktop',
+      stderr: '',
+      code: 0,
+    })
+    execaHandler = async () => ({
+      failed: true,
+      stdout: 'x'.repeat(200),
+      stderr: '',
+      exitCode: undefined,
+      isMaxBuffer: true,
+      shortMessage: 'maxBuffer exceeded',
+    })
+
+    const result = await openCurrentSessionInDesktop()
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe(
+      "Couldn't open Claude Desktop (`xdg-open` printed too much output). Open Claude Desktop and run /desktop again.",
+    )
+  })
+
+  test('linux: plain non-zero exit (no flags) → v276 fallthrough end-to-end', async () => {
+    setPlatform('linux')
+    execFileHandler = async () => ({
+      stdout: 'claude.desktop',
+      stderr: '',
+      code: 0,
+    })
+    execaHandler = async () => ({
+      failed: true,
+      stdout: '',
+      stderr: 'no handler found.',
+      exitCode: 3,
+      timedOut: false,
+      isMaxBuffer: false,
+    })
+
+    const result = await openCurrentSessionInDesktop()
+
+    expect(result.success).toBe(false)
+    expect(result.error).toBe(
+      "Couldn't open Claude Desktop (`xdg-open` exited 3: no handler found). Open Claude Desktop and run /desktop again.",
+    )
+  })
+})

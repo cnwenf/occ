@@ -8,6 +8,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../../services/analytics
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../../services/analytics/index.js';
 import { sanitizeToolNameForAnalytics } from '../../../services/analytics/metadata.js';
 import { useAppState } from '../../../state/AppState.js';
+import { useSettings } from '../../../hooks/useSettings.js';
 import { BashTool } from '../../../tools/BashTool/BashTool.js';
 import { getFirstWordPrefix, getSimpleCommandPrefix } from '../../../tools/BashTool/bashPermissions.js';
 import { getDestructiveCommandWarning } from '../../../tools/BashTool/destructiveCommandWarning.js';
@@ -40,7 +41,14 @@ const CHECKING_TEXT = 'Attempting to auto-approve\u2026';
 // JSX tree was reconstructed 20-60 times per classifier check.
 function ClassifierCheckingSubtitle() {
   const $ = _c(6);
-  const [ref, glimmerIndex] = useShimmerAnimation("requesting", CHECKING_TEXT, false);
+  // 2.1.287 #11 (GAP 2): the classifier shimmer animated regardless of the
+  // "Reduce motion" setting (hardcoded `false` third arg). useShimmerAnimation's
+  // third param is `isStalled` — passing prefersReducedMotion stalls the shimmer
+  // (clock unsubscribed, glimmerIndex -100 → no highlighted char), so it does
+  // NOT animate with Reduce motion on. Same settings access pattern as
+  // Spinner.tsx (`settings.prefersReducedMotion ?? false` via useSettings()).
+  const settings = useSettings();
+  const [ref, glimmerIndex] = useShimmerAnimation("requesting", CHECKING_TEXT, settings.prefersReducedMotion ?? false);
   let t0;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t0 = [...CHECKING_TEXT];
