@@ -1319,6 +1319,13 @@ function getFablePricingSuffix(model: string, fastMode: boolean): string {
  * the picker's post-step. `cl` is the blurb; `Bc()` (usage-credits suffix)
  * is staged-empty (docs/upstream-version-gap-occ113.md); subscribers get no
  * pricing suffix (`ft()?"":In(e,n)`).
+ *
+ * 2.1.287 (CL:18, byte-verified): official `U8` (v286) → `U3` (v287) — the
+ * ONLY delta is `value:e` → `value:"fable"`, i.e. the row stores the family
+ * ALIAS instead of the passed-in concrete version id, so picking Fable saves
+ * a default that follows the newest Fable, exactly like the first-party Opus
+ * and Sonnet rows already store `'opus'`/`'sonnet'`. `name`/`description`/
+ * `descriptionForModel` stay computed from the concrete `model` (unchanged).
  */
 function getFablePickerRow(model: string, fastMode = false): ModelOption {
   const name = getFableMarketingName(model) ?? 'Fable 5.1'
@@ -1327,7 +1334,7 @@ function getFablePickerRow(model: string, fastMode = false): ModelOption {
     ? ''
     : getFablePricingSuffix(model, fastMode)
   return {
-    value: model,
+    value: 'fable',
     label: 'Fable',
     description: `${name} · ${blurb}${pricingSuffix}`,
     descriptionForModel: `${name} - most capable for your hardest and longest-running tasks`,

@@ -174,7 +174,7 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     expect(options.map(o => o.value)).toEqual([
       null,
       'sonnet',
-      'claude-fable-5-1',
+      'fable',
       'haiku',
     ])
     expect(options[0]).toEqual({
@@ -197,7 +197,7 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     expect(options.map(o => o.value)).toEqual([
       null,
       'sonnet',
-      'claude-fable-5-1',
+      'fable',
       'haiku',
     ])
     expect(options[0]?.description).toBe(
@@ -213,7 +213,7 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     expect(options.map(o => o.value)).toEqual([
       null,
       'sonnet',
-      'claude-fable-5-1',
+      'fable',
       'haiku',
     ])
     expect(options[0]?.description).toBe(
@@ -229,7 +229,7 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     expect(options.map(o => o.value)).toEqual([
       null,
       'sonnet',
-      'claude-fable-5-1',
+      'fable',
       'haiku',
     ])
     expect(options[0]?.description).toBe(
@@ -245,7 +245,7 @@ describe('getModelOptions wiring — 2.1.280 #078 plan-tier gate (getModelOption
     expect(options.map(o => o.value)).toEqual([
       null,
       'opus[1m]',
-      'claude-fable-5-1',
+      'fable',
       'haiku',
     ])
     expect(options[0]?.description).toBe('Sonnet 5.5 · Efficient for routine tasks')
@@ -275,7 +275,7 @@ describe('getModelOptions wiring — extra-usage 1M rows per tier (kv / getMaxSo
     expect(options.map(o => o.value)).toEqual([
       null,
       'opus[1m]',
-      'claude-fable-5-1',
+      'fable',
       'sonnet',
       'sonnet[1m]',
       'haiku',
@@ -306,7 +306,7 @@ describe('getModelOptions wiring — extra-usage 1M rows per tier (kv / getMaxSo
       null,
       'sonnet',
       'sonnet[1m]',
-      'claude-fable-5-1',
+      'fable',
       'haiku',
     ])
     expect(options.some(o => o.value === 'opus[1m]')).toBe(false)
@@ -324,7 +324,7 @@ describe('getModelOptions wiring — 3P-sonnet-probe demotion (tv) flips Pro off
       expect(options.map(o => o.value)).toEqual([
         null,
         'opus',
-        'claude-fable-5-1',
+        'fable',
         'haiku',
       ])
       expect(options[0]?.description).toBe(
