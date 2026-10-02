@@ -79,7 +79,10 @@ describe('/feedback: redaction safety', () => {
     )
     const text = (blocks[0] as { type: 'text'; text: string }).text
     expect(text).not.toContain('sk-ant-api03-deadbeef')
-    expect(text).toContain('[REDACTED_API_KEY]')
+    // Token aligned with the ported official redaction engine (OCC-143):
+    // redactSecrets emits '[REDACTED]' — the pre-port naive redactor's
+    // '[REDACTED_API_KEY]' is gone (acceptance re-review must-fix, 2026-10).
+    expect(text).toContain('[REDACTED]')
   })
 })
 

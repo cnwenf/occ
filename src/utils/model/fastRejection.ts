@@ -35,10 +35,22 @@
  * `onFallbackModelFastRejected` signal below is the wiring point. Until that
  * plugin lands, `clearFastRejectedFallbackModels` (session-reset `n9e`) and
  * both `on*` subscription signals have ZERO production callers/subscribers —
- * they are STAGED wiring points, exercised only by unit tests. The store is
- * still seeded in production: `markFastRejected` runs inside the withRetry
- * speed-rejection branch, so `isFastRejectedFallback`/`hasEverOrFallback-
- * FastRejected` gate real retries; only the interactive NOTICE is dormant.
+ * they are STAGED wiring points, exercised only by unit tests.
+ *
+ * DORMANT IN PRODUCTION — the WHOLE cluster, not just the notice (acceptance
+ * re-review finding, 2026-10-02): both stores' only writer is
+ * `markFastRejected`, whose only production caller is the withRetry
+ * speed-rejection branch — and that branch's gate requires
+ * `options.modelIsRefusalFallbackTarget` (ZERO production setters; the
+ * official producer is the query-engine refusal/queued dispatch, gap doc §4
+ * backlog item 3) OR `hasEverOrFallbackFastRejected` (which needs an
+ * already-seeded store — a circular fixpoint). So in OCC production the
+ * store is never seeded, the loop-head coercion reads it empty and never
+ * fires, and a first speed-param 400 on a fallback still fails the turn.
+ * The mechanism is exercised only by tests that inject the flag explicitly
+ * (`withRetryIntegration286`); runtime-verified by the acceptance probe
+ * (TARGET: production shape → store stays empty; CONTROL: injected flag →
+ * branch recovers at standard speed).
  */
 import { APIError } from '@anthropic-ai/sdk'
 import { logForDebugging } from '../debug.js'

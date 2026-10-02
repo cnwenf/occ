@@ -293,8 +293,14 @@ interface RetryOptions {
    * STAGED in OCC production: no caller sets this flag yet — the official
    * setter is the refusal/queued retry dispatch in the query engine (outside
    * this round's retry-module scope; gap doc §4 backlog item 3). The branch
-   * it gates is therefore dormant until wired; the fast-rejection STORE is
-   * still live in production via the withRetry loop-head coercion.
+   * it gates is therefore dormant until wired — and because this flag (or an
+   * already-seeded store, which only that branch can seed — a circular
+   * fixpoint) is the ONLY production path to `markFastRejected`, the
+   * fast-rejection store is never seeded in production either: the loop-head
+   * coercion reads an empty store and never fires. The whole cluster (store
+   * seeding, branch1, loop-head coercion, interactive notice) is dormant /
+   * production call-site wiring STAGED until the query-engine producer
+   * lands. See the fastRejection.ts header DORMANT block for the full chain.
    */
   modelIsRefusalFallbackTarget?: boolean
   /**
