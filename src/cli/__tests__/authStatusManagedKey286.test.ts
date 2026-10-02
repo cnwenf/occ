@@ -55,6 +55,7 @@ let exitSpy: { mockRestore(): void }
 
 const savedEnv: Record<string, string | undefined> = {}
 let savedNodeEnv: string | undefined
+let savedCi: string | undefined
 let savedConfigDir: string | undefined
 
 beforeAll(() => {
@@ -66,6 +67,14 @@ beforeAll(() => {
   // these tests in 'development' mode against a real tmp config dir.
   savedNodeEnv = process.env.NODE_ENV
   process.env.NODE_ENV = 'development'
+
+  // Same throw guard has a second arm: `isEnvTruthy(process.env.CI)`
+  // (src/utils/auth.ts). GitHub Actions always sets CI=true, so neutralizing
+  // NODE_ENV alone still made the config-file managed-key path unreachable
+  // there (CI run 36969528273 red). Clear CI for the duration of this suite
+  // so the guard cannot fire regardless of the runner environment.
+  savedCi = process.env.CI
+  delete process.env.CI
 
   savedConfigDir = process.env.CLAUDE_CONFIG_DIR
   process.env.CLAUDE_CONFIG_DIR = tmpConfigDir
@@ -90,6 +99,8 @@ beforeAll(() => {
 afterAll(() => {
   if (savedNodeEnv === undefined) delete process.env.NODE_ENV
   else process.env.NODE_ENV = savedNodeEnv
+  if (savedCi === undefined) delete process.env.CI
+  else process.env.CI = savedCi
   if (savedConfigDir === undefined) delete process.env.CLAUDE_CONFIG_DIR
   else process.env.CLAUDE_CONFIG_DIR = savedConfigDir
   for (const k of ENV_TO_CLEAR) {
