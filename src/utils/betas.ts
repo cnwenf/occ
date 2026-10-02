@@ -164,6 +164,21 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
   if (provider !== 'firstParty' && provider !== 'foundry') {
     return false
   }
+  // 2.1.287: kill-switch env arm, port of the official v287 `FSn` fix
+  // (v286 `yhn` never consulted the env var — the bug that kept
+  // session-title/prompt-hook requests sending output_config.format behind
+  // Bedrock gateways that reject it):
+  //
+  //   function FSn(e){let n=Be(e),r=lc(e);if(!H$(r))return!1;if(K4())return!1;return!lr(n,"claude-opus-4-1")}
+  //   function K4(){return a.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS||UD()}   // UD(){return Il("hipaa")}
+  //
+  // The hipaa-taint arm (UD) is omitted — OCC has no classifier taint
+  // registry (see the shouldSendExtendedCacheTtlBeta note below), so only
+  // the env var applies. isEnvTruthy matches the parsing every other
+  // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS gate in this file uses.
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+    return false
+  }
   return (
     canonical.includes('claude-sonnet-4-6') ||
     canonical.includes('claude-sonnet-4-5') ||

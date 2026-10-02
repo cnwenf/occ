@@ -65,9 +65,14 @@ export function processTextPrompt(
       ? input
       : input.findLast(block => block.type === 'text')?.text || ''
   if (otelPromptText) {
+    // CC 2.1.287 (#4) — binary G$t(e){let o=me(e);return{prompt:o,prompt_text:o}}
+    // @203885633: prompt_text is a copy of prompt (same redaction) for backends
+    // that nest dotted keys. Compute the redacted value once.
+    const redactedPrompt = redactIfDisabled(otelPromptText)
     void logOTelEvent('user_prompt', {
       prompt_length: String(otelPromptText.length),
-      prompt: redactIfDisabled(otelPromptText),
+      prompt: redactedPrompt,
+      prompt_text: redactedPrompt,
       'prompt.id': promptId,
     })
   }

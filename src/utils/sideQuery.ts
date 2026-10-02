@@ -205,7 +205,15 @@ export async function sideQuery(opts: SideQueryOptions): Promise<BetaMessage> {
       messages,
       ...(tools && { tools }),
       ...(tool_choice && { tool_choice }),
-      ...(output_format && { output_config: { format: output_format } }),
+      // 2.1.287: output_config gated on the same predicate as the beta push
+      // above (official v287 sideQuery: `Ft=Boolean(S)&&ht(()=>FSn(We))&&
+      // t_e(We,"structured_outputs")` controls BOTH) — previously the format
+      // was written unconditionally, so CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+      // left a bare output_config.format on the wire that Bedrock gateways reject.
+      ...(output_format &&
+        modelSupportsStructuredOutputs(model) && {
+          output_config: { format: output_format },
+        }),
       ...(temperature !== undefined && { temperature }),
       ...(stop_sequences && { stop_sequences }),
       ...(thinkingConfig && { thinking: thinkingConfig }),

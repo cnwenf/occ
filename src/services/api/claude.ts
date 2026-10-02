@@ -2159,13 +2159,20 @@ async function* queryModel(
 
     // Merge outputFormat into extraBodyParams.output_config alongside effort
     // Requires structured-outputs beta header per SDK (see parse() in messages.mjs)
-    if (options.outputFormat && !('format' in outputConfig)) {
+    // 2.1.287: the format WRITE is gated on the capability predicate too,
+    // matching official `lNo` (`if(!e||"format"in n||!FSn(s)||!t_e(s,"structured_outputs"))return;`
+    // — no format without the gate). Previously only the beta-header push was
+    // gated, so CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS still sent
+    // output_config.format on the wire (Bedrock gateways reject it — the v286
+    // bug fixed by v287 `FSn`).
+    if (
+      options.outputFormat &&
+      !('format' in outputConfig) &&
+      modelSupportsStructuredOutputs(options.model)
+    ) {
       outputConfig.format = options.outputFormat as BetaJSONOutputFormat
-      // Add beta header if not already present and provider supports it
-      if (
-        modelSupportsStructuredOutputs(options.model) &&
-        !betasParams.includes(STRUCTURED_OUTPUTS_BETA_HEADER)
-      ) {
+      // Add beta header if not already present (capability already gated above)
+      if (!betasParams.includes(STRUCTURED_OUTPUTS_BETA_HEADER)) {
         betasParams.push(STRUCTURED_OUTPUTS_BETA_HEADER)
       }
     }

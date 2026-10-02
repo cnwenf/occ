@@ -166,6 +166,9 @@ export const ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH =
   'Your ANTHROPIC_API_KEY belongs to a disabled organization · Unset the environment variable to use your subscription instead'
 export const ORG_DISABLED_ERROR_MESSAGE_ENV_KEY =
   'Your ANTHROPIC_API_KEY belongs to a disabled organization · Update or unset the environment variable'
+// 2.1.287 `Elt` (interactive arm of `Q3n`): byte-verified identical to the
+// official v287 constant 'OAuth token revoked · Please run /login' (the `·` is
+// U+00B7 MIDDLE DOT) — no change needed.
 export const TOKEN_REVOKED_ERROR_MESSAGE =
   'OAuth token revoked · Please run /login'
 export const CCR_AUTH_ERROR_MESSAGE =
@@ -209,9 +212,14 @@ export function getRequestTooLargeErrorMessage(): string {
 export const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
   'Your account does not have access to Claude Code. Please run /login.'
 
+// 2.1.287 `Q3n`: the print-mode/non-interactive arm now leads with
+// "Failed to authenticate: OAuth token revoked. …", replacing the removed v286
+// `aYn()` string ("Your account does not have access to Claude. …"). `ke()`
+// (official non-interactive check) ≡ OCC's getIsNonInteractiveSession(). The
+// interactive arm stays TOKEN_REVOKED_ERROR_MESSAGE (≡ official `Elt`).
 export function getTokenRevokedErrorMessage(): string {
   return getIsNonInteractiveSession()
-    ? 'Your account does not have access to Claude. Please login again or contact your administrator.'
+    ? 'Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.'
     : TOKEN_REVOKED_ERROR_MESSAGE
 }
 
@@ -860,11 +868,17 @@ export function getAssistantMessageFromError(
     })
   }
 
-  // Check for OAuth token revocation error
+  // Check for OAuth token revocation error.
+  // 2.1.287 `PZ`: a revoked claude.ai token can now surface as HTTP 401
+  // "OAuth access token has been revoked" — previously it fell through to the
+  // generic `API Error: 401`. The original 403 "OAuth token has been revoked"
+  // arm is kept; the official predicate matches both (status+message paired).
   if (
     error instanceof APIError &&
-    error.status === 403 &&
-    error.message.includes('OAuth token has been revoked')
+    ((error.status === 403 &&
+      error.message.includes('OAuth token has been revoked')) ||
+      (error.status === 401 &&
+        error.message.includes('OAuth access token has been revoked')))
   ) {
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
@@ -1165,10 +1179,15 @@ export function classifyAPIError(error: unknown): string {
     return 'invalid_api_key'
   }
 
+  // 2.1.287 `PZ`: the revoked-token classifier matches the 401 arm too
+  // ("OAuth access token has been revoked"), mirroring the predicate in
+  // getAssistantMessageFromError above. Both arms stay status+message paired.
   if (
     error instanceof APIError &&
-    error.status === 403 &&
-    error.message.includes('OAuth token has been revoked')
+    ((error.status === 403 &&
+      error.message.includes('OAuth token has been revoked')) ||
+      (error.status === 401 &&
+        error.message.includes('OAuth access token has been revoked')))
   ) {
     return 'token_revoked'
   }

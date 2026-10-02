@@ -254,7 +254,9 @@ export function Feedback({
     if (step === 'done') {
       if (key.return && title) {
         // Open GitHub issue URL when Enter is pressed
-        const issueUrl = createGitHubIssueUrl(feedbackId ?? '', title, description, getSanitizedErrorLogs());
+        // 2.1.287: getSanitizedErrorLogs() arg dropped here ONLY — errors still
+        // go to the Anthropic report POST in submitReport() (unchanged).
+        const issueUrl = createGitHubIssueUrl(feedbackId ?? '', title, description);
         void openBrowser(issueUrl);
       }
       if (error) {
@@ -331,6 +333,16 @@ export function Feedback({
                 </Text>
               </Text>}
             <Text>- Current session transcript</Text>
+            {/* 2.1.287 alignment (official consent screen @~234334584 region):
+                new row after the Session transcript row. Official gates it on
+                `f!=="share"` — OCC's consent screen has no share/feedback mode
+                distinction (NO-SURFACE), so the row renders unconditionally. */}
+            <Text>
+              - Recent error messages:{' '}
+              <Text dimColor>
+                up to the last 100 since you launched Claude Code (may include file paths)
+              </Text>
+            </Text>
           </Box>
           <Box marginTop={1}>
             <Text wrap="wrap" dimColor>
@@ -364,59 +376,43 @@ export function Feedback({
         </Box>}
     </Dialog>;
 }
-export function createGitHubIssueUrl(feedbackId: string, title: string, description: string, errors: Array<{
-  error?: string;
-  timestamp?: string;
-}>): string {
+// 2.1.287 alignment (official `st(c,i,o)` @~234334584, byte-verified in
+// docs/gap-research-287/cluster-b-protocol-auth-security.md Item 6): the
+// `errors` param is DROPPED — the pre-filled GitHub issue no longer embeds
+// recent error messages (the `**Errors**` json section and the old v286
+// truncation note are gone; both v286-only, v287=0 hits). Errors still flow
+// to the Anthropic report POST above (:169-190, unchanged — official keeps
+// it). Description is budgeted as a LINE ARRAY with a per-line
+// encoded-length loop and a 50-byte slack.
+export function createGitHubIssueUrl(feedbackId: string, title: string, description: string): string {
   const sanitizedTitle = redactSensitiveInfo(title);
   const sanitizedDescription = redactSensitiveInfo(description);
-  const bodyPrefix = `**Bug Description**\n${sanitizedDescription}\n\n` + `**Environment Info**\n` + `- Platform: ${env.platform}\n` + `- Terminal: ${env.terminal}\n` + `- Version: ${MACRO.VERSION || 'unknown'}\n` + `- Feedback ID: ${feedbackId}\n` + `\n**Errors**\n\`\`\`json\n`;
-  const errorSuffix = `\n\`\`\`\n`;
-  const errorsJson = jsonStringify(errors);
+  // Official v287 normalizes the description via Cs(o) into an array of lines
+  // and concatenates each line's encoding WITHOUT a separator in the budget
+  // loop below. OCC's call site holds a plain string, so split into lines that
+  // KEEP their trailing '\n' — the separator-less concatenation then rebuilds
+  // the original text exactly (faithful Cs(o) mirror).
+  const descriptionLines = sanitizedDescription.split(/(?<=\n)/);
   const baseUrl = `${GITHUB_ISSUES_REPO_URL}/new?title=${encodeURIComponent(sanitizedTitle)}&labels=user-reported,bug&body=`;
-  const truncationNote = `\n**Note:** Content was truncated.\n`;
-  const encodedPrefix = encodeURIComponent(bodyPrefix);
-  const encodedSuffix = encodeURIComponent(errorSuffix);
-  const encodedNote = encodeURIComponent(truncationNote);
-  const encodedErrors = encodeURIComponent(errorsJson);
-
-  // Calculate space available for errors
-  const spaceForErrors = GITHUB_URL_LIMIT - baseUrl.length - encodedPrefix.length - encodedSuffix.length - encodedNote.length;
-
-  // If description alone exceeds limit, truncate everything
-  if (spaceForErrors <= 0) {
-    const ellipsis = encodeURIComponent('…');
-    const buffer = 50; // Extra safety margin
-    const maxEncodedLength = GITHUB_URL_LIMIT - baseUrl.length - ellipsis.length - encodedNote.length - buffer;
-    const fullBody = bodyPrefix + errorsJson + errorSuffix;
-    let encodedFullBody = encodeURIComponent(fullBody);
-    if (encodedFullBody.length > maxEncodedLength) {
-      encodedFullBody = encodedFullBody.slice(0, maxEncodedLength);
-      // Don't cut in middle of %XX sequence
-      const lastPercent = encodedFullBody.lastIndexOf('%');
-      if (lastPercent >= encodedFullBody.length - 2) {
-        encodedFullBody = encodedFullBody.slice(0, lastPercent);
+  const encodedHeader = encodeURIComponent(`**Bug Description**\n`);
+  const encodedEnvInfo = encodeURIComponent(`\n\n**Environment Info**\n` + `- Platform: ${env.platform}\n` + `- Terminal: ${env.terminal}\n` + `- Version: ${MACRO.VERSION || 'unknown'}\n` + `- Feedback ID: ${feedbackId}\n`);
+  let encodedDescription = encodeURIComponent(descriptionLines.join(''));
+  const descriptionBudget = GITHUB_URL_LIMIT - baseUrl.length - encodedHeader.length - encodedEnvInfo.length;
+  if (encodedDescription.length > descriptionBudget) {
+    const encodedNote = encodeURIComponent(`…\n\n**Note:** The description was shortened to fit GitHub's link length limit. The full description was sent to Anthropic with the feedback report; its Feedback ID is below.`);
+    const URL_SLACK = 50; // Official `h=50` — extra safety margin
+    const lineBudget = descriptionBudget - encodedNote.length - URL_SLACK;
+    encodedDescription = '';
+    for (const line of descriptionLines) {
+      const encodedLine = encodeURIComponent(line);
+      if (encodedDescription.length + encodedLine.length > lineBudget) {
+        break;
       }
+      encodedDescription += encodedLine;
     }
-    return baseUrl + encodedFullBody + ellipsis + encodedNote;
+    encodedDescription += encodedNote;
   }
-
-  // If errors fit, no truncation needed
-  if (encodedErrors.length <= spaceForErrors) {
-    return baseUrl + encodedPrefix + encodedErrors + encodedSuffix;
-  }
-
-  // Truncate errors to fit (prioritize keeping description)
-  // Slice encoded errors directly, then trim to avoid cutting %XX sequences
-  const ellipsis = encodeURIComponent('…');
-  const buffer = 50; // Extra safety margin
-  let truncatedEncodedErrors = encodedErrors.slice(0, spaceForErrors - ellipsis.length - buffer);
-  // If we cut in middle of %XX, back up to before the %
-  const lastPercent = truncatedEncodedErrors.lastIndexOf('%');
-  if (lastPercent >= truncatedEncodedErrors.length - 2) {
-    truncatedEncodedErrors = truncatedEncodedErrors.slice(0, lastPercent);
-  }
-  return baseUrl + encodedPrefix + truncatedEncodedErrors + ellipsis + encodedSuffix + encodedNote;
+  return baseUrl + encodedHeader + encodedDescription + encodedEnvInfo;
 }
 async function generateTitle(description: string, abortSignal: AbortSignal): Promise<string> {
   try {
