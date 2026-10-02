@@ -85,6 +85,7 @@ import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import {
+  computePersistedLineStats,
   getBinaryBlobSavedMessage,
   getFormatDescription,
   getLargeOutputInstructions,
@@ -3524,11 +3525,23 @@ export async function processMCPResult(
     persistedSizeChars: persistResult.originalSize,
   } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
 
+  // CC 2.1.287 #29: compute the persisted content's line-shape stats ONLY for
+  // plain-text results. Official gates the stats on `ie = type==="toolResult"
+  // || unwrappedSingletonText !== undefined` and leaves them undefined for
+  // JSON-persisted results, so the guidance says the file is JSON (Read's
+  // offset/limit cannot split its one long line) instead of recommending
+  // offset/limit paging. OCC has no singleton-text unwrap, so the gate is
+  // `type === 'toolResult'`.
+  const lineStats =
+    type === 'toolResult' ? computePersistedLineStats(contentStr) : undefined
+
   const formatDescription = getFormatDescription(type, schema)
   return getLargeOutputInstructions(
     persistResult.filepath,
     persistResult.originalSize,
     formatDescription,
+    undefined,
+    lineStats,
   )
 }
 
