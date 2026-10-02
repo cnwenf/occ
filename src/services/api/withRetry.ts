@@ -1426,7 +1426,7 @@ function isCredentialRenewalError(error: unknown): boolean {
   if (error instanceof APIError && error.status === 401) {
     return true
   }
-  // Binary bse/X7 arms: revoked OAuth token (403 message match).
+  // Binary bse/PZ arms: revoked OAuth token (403 or 401 message match — 2.1.287).
   if (isOAuthTokenRevokedError(error)) {
     return true
   }
@@ -1456,11 +1456,23 @@ function isCredentialRenewalError(error: unknown): boolean {
   )
 }
 
+/**
+ * 2.1.287: official predicate renamed `X7` → `PZ` and widened to also match
+ * 401 "OAuth access token has been revoked" (previously 403-only). Byte-
+ * verified from the official 2.1.287 linux binary @200866142:
+ *   function PZ(e){if(!(e instanceof xt))return!1;let r=e.message??"";
+ *     return e.status===403&&r.includes("OAuth token has been revoked")||
+ *       e.status===401&&r.includes("OAuth access token has been revoked")}
+ * All official callers share the single predicate, so every OCC usage site
+ * (retry classification, credential-renewal arms) widens identically.
+ */
 function isOAuthTokenRevokedError(error: unknown): boolean {
+  if (!(error instanceof APIError)) return false
+  const message = error.message ?? ''
   return (
-    error instanceof APIError &&
-    error.status === 403 &&
-    (error.message?.includes('OAuth token has been revoked') ?? false)
+    (error.status === 403 && message.includes('OAuth token has been revoked')) ||
+    (error.status === 401 &&
+      message.includes('OAuth access token has been revoked'))
   )
 }
 

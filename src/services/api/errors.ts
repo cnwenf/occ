@@ -210,8 +210,13 @@ export const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
   'Your account does not have access to Claude Code. Please run /login.'
 
 export function getTokenRevokedErrorMessage(): string {
+  // 2.1.287: print-mode message changed from the generic "Your account does
+  // not have access to Claude..." to the explicit revoked-token wording.
+  // Mirrors binary `Q3n`:
+  //   function Q3n(){return ke()?"Failed to authenticate: OAuth token revoked.
+  //     Please log in again or contact your administrator.":Elt}
   return getIsNonInteractiveSession()
-    ? 'Your account does not have access to Claude. Please login again or contact your administrator.'
+    ? 'Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.'
     : TOKEN_REVOKED_ERROR_MESSAGE
 }
 
@@ -219,6 +224,25 @@ export function getOauthOrgNotAllowedErrorMessage(): string {
   return getIsNonInteractiveSession()
     ? 'Your organization does not have access to Claude. Please login again or contact your administrator.'
     : OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE
+}
+
+/**
+ * 2.1.287: official `PZ` — the revoked-OAuth-token predicate now also matches
+ * 401 "OAuth access token has been revoked" (previously 403-only "OAuth token
+ * has been revoked" in `X7`). Byte-verified from the official 2.1.287 linux
+ * binary @200866142:
+ *   function PZ(e){if(!(e instanceof xt))return!1;let r=e.message??"";
+ *     return e.status===403&&r.includes("OAuth token has been revoked")||
+ *       e.status===401&&r.includes("OAuth access token has been revoked")}
+ */
+export function isOAuthTokenRevokedAPIError(error: unknown): boolean {
+  if (!(error instanceof APIError)) return false
+  const message = error.message ?? ''
+  return (
+    (error.status === 403 && message.includes('OAuth token has been revoked')) ||
+    (error.status === 401 &&
+      message.includes('OAuth access token has been revoked'))
+  )
 }
 
 /**
@@ -861,11 +885,10 @@ export function getAssistantMessageFromError(
   }
 
   // Check for OAuth token revocation error
-  if (
-    error instanceof APIError &&
-    error.status === 403 &&
-    error.message.includes('OAuth token has been revoked')
-  ) {
+  // 2.1.287: official classifier chain `if(PZ(e))return ns({error:
+  //   "authentication_failed",content:Q3n()})` — predicate now covers the
+  //   401 "OAuth access token has been revoked" form too (was 403-only).
+  if (isOAuthTokenRevokedAPIError(error)) {
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
       content: getTokenRevokedErrorMessage(),
@@ -1165,11 +1188,10 @@ export function classifyAPIError(error: unknown): string {
     return 'invalid_api_key'
   }
 
-  if (
-    error instanceof APIError &&
-    error.status === 403 &&
-    error.message.includes('OAuth token has been revoked')
-  ) {
+  // 2.1.287: widened via the shared `PZ`-mirroring predicate — a 401
+  //   "OAuth access token has been revoked" now also classifies as
+  //   token_revoked instead of falling through to generic auth_error.
+  if (isOAuthTokenRevokedAPIError(error)) {
     return 'token_revoked'
   }
 
