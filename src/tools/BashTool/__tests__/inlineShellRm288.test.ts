@@ -461,3 +461,154 @@ describe('2.1.288 #54 bashToolHasPermission integration (deny in ALL modes)', ()
     expect(['allow', 'passthrough']).toContain(result.behavior)
   })
 })
+
+// ── OCC-106 P2-1 fix: verb-position indirection (acceptance regression) ──
+//
+// Before the fix, resolveRmVerb only matched the LITERAL words rm/rmdir at
+// command position, so `r=rm; $r -rf /` passed through in ALL modes while
+// `rm -rf /` was denied — the #54 deny-in-all-modes property was bypassed by
+// one level of variable indirection. The fix resolves command-position words
+// through the persisted AssignmentMap (official ZYt/DYt sentinel re-judgment
+// at the verb position) and emits the A4o inlineShellRuntimeTarget block for
+// unresolvable verb forms carrying a dangerous rm-shaped target.
+describe('OCC-106 P2-1 verb-position indirection (must block)', () => {
+  test('x=rm; $x -rf / resolves the verb through the assignment map → uue unchecked', () => {
+    // Arrange / Act
+    const block = findDangerousInlineShellRm(`bash -c 'x=rm; $x -rf /'`)
+
+    // Assert — same verdict as the literal `rm -rf /` (shape 1)
+    expect(block).not.toBeNull()
+    expect(block!.category).toBe('inlineShellUnchecked')
+    expect(block!.message).toBe(OFFICIAL_UNCHECKED_MESSAGE)
+    expect(block!.reason).toBe(OFFICIAL_UNCHECKED_REASON)
+  })
+
+  test('H=rm; $H -rf ~ resolves to a dangerous home rm → uue unchecked', () => {
+    const block = findDangerousInlineShellRm(`bash -c 'H=rm; $H -rf ~'`)
+    expect(block).not.toBeNull()
+    expect(block!.category).toBe('inlineShellUnchecked')
+    expect(block!.message).toBe(OFFICIAL_UNCHECKED_MESSAGE)
+  })
+
+  test('x="rm"; $x -rf ${HOME}/x → resolved verb + rooted runtime target → A4o', () => {
+    const block = findDangerousInlineShellRm(
+      `bash -c 'x="rm"; $x -rf \${HOME}/x'`,
+    )
+    expect(block).not.toBeNull()
+    expect(block!.category).toBe('inlineShellRuntimeTarget')
+    expect(block!.message).toBe(OFFICIAL_A4O_MESSAGE)
+    expect(block!.reason).toBe(OFFICIAL_A4O_REASON)
+    expect(block!.kind).toBe('inline_shell_script')
+  })
+
+  test('"$(echo rm)" -rf / → command-substitution verb is runtime-only → A4o', () => {
+    const block = findDangerousInlineShellRm(
+      `bash -c '"$(echo rm)" -rf /'`,
+    )
+    expect(block).not.toBeNull()
+    expect(block!.category).toBe('inlineShellRuntimeTarget')
+    expect(block!.message).toBe(OFFICIAL_A4O_MESSAGE)
+  })
+
+  test('C=$(echo rm); $C -rf / → Kk-sentinel/unmapped verb → A4o', () => {
+    const block = findDangerousInlineShellRm(
+      `bash -c 'C=$(echo rm); $C -rf /'`,
+    )
+    expect(block).not.toBeNull()
+    expect(block!.category).toBe('inlineShellRuntimeTarget')
+    expect(block!.message).toBe(OFFICIAL_A4O_MESSAGE)
+  })
+
+  test('x=1 rm -rf / → same-segment prefix assignment no longer hides the literal verb', () => {
+    const block = findDangerousInlineShellRm(`bash -c 'x=1 rm -rf /'`)
+    expect(block).not.toBeNull()
+    // Either the detector pass or the verb-position scan may own this shape;
+    // both are non-approvable dangerousRemoval verdicts.
+    const isOfficialText =
+      OFFICIAL_FAMILY_TEXTS.includes(block!.message) ||
+      block!.message.startsWith('Destructive command blocked: ')
+    expect(isOfficialText).toBe(true)
+  })
+
+  test('$LOGCMD -rf / with rm text elsewhere in the script → unresolvable verb + dangerous target → A4o', () => {
+    const block = findDangerousInlineShellRm(
+      `bash -c 'r=rm; $LOGCMD -rf /'`,
+    )
+    expect(block).not.toBeNull()
+    expect(block!.category).toBe('inlineShellRuntimeTarget')
+    expect(block!.message).toBe(OFFICIAL_A4O_MESSAGE)
+  })
+})
+
+describe('OCC-106 P2-1 verb-position indirection (must NOT over-block)', () => {
+  const negatives: ReadonlyArray<readonly [string, string]> = [
+    ['bash -c \'x=rm; $x file.txt\'', 'resolved verb on a safe relative target'],
+    ['bash -c \'r=rm; $LOGCMD done\'', 'unresolvable verb with a safe target'],
+    ['bash -c \'D=build; rm -rf "$D"\'', 'safe-literal target resolution (pre-existing)'],
+    ['bash -c "echo rm"', 'rm as an echo argument (pre-existing)'],
+  ]
+  for (const [command, label] of negatives) {
+    test(`allows: ${label}`, () => {
+      expect(findDangerousInlineShellRm(command)).toBeNull()
+    })
+  }
+})
+
+describe('OCC-106 P2-1 production wiring (verb indirection denies in ALL modes)', () => {
+  const AUTO_DENY_ENVELOPE_PREFIX =
+    /^Permission for this command was denied by a built-in Claude Code safety check/
+  const REPRO_COMMAND = `bash -c 'r=rm; $r -rf /'`
+
+  test('default mode denies the reviewer repro with the dangerousRemoval circuit breaker', async () => {
+    // Act
+    const result = await bashToolHasPermission(
+      { command: REPRO_COMMAND, description: '' } as never,
+      makeContext('default'),
+    )
+
+    // Assert
+    expect(result.behavior).toBe('deny')
+    expect(result.message).toMatch(AUTO_DENY_ENVELOPE_PREFIX)
+    const reason = (
+      result as {
+        decisionReason?: {
+          type?: string
+          classifierApprovable?: boolean
+          circuitBreaker?: string
+        }
+      }
+    ).decisionReason
+    expect(reason?.type).toBe('safetyCheck')
+    expect(reason?.classifierApprovable).toBe(false)
+    expect(reason?.circuitBreaker).toBe('dangerousRemoval')
+  })
+
+  test('bypassPermissions mode denies the reviewer repro', async () => {
+    const result = await bashToolHasPermission(
+      { command: REPRO_COMMAND, description: '' } as never,
+      makeContext('bypassPermissions'),
+    )
+    expect(result.behavior).toBe('deny')
+    expect(result.message).toMatch(AUTO_DENY_ENVELOPE_PREFIX)
+    expect(result.message).toContain(OFFICIAL_UNCHECKED_MESSAGE)
+  })
+
+  test('a permissive Bash(*:*) allow rule cannot auto-allow the reviewer repro', async () => {
+    const result = await bashToolHasPermission(
+      { command: REPRO_COMMAND, description: '' } as never,
+      makeContext('default', ['Bash(*:*)']),
+    )
+    expect(result.behavior).toBe('deny')
+    expect(result.message).toMatch(AUTO_DENY_ENVELOPE_PREFIX)
+  })
+
+  test('command-substitution verb repro denies under bypassPermissions with the A4o text', async () => {
+    const result = await bashToolHasPermission(
+      { command: `bash -c '"$(echo rm)" -rf /'`, description: '' } as never,
+      makeContext('bypassPermissions'),
+    )
+    expect(result.behavior).toBe('deny')
+    expect(result.message).toMatch(AUTO_DENY_ENVELOPE_PREFIX)
+    expect(result.message).toContain(OFFICIAL_A4O_MESSAGE)
+  })
+})

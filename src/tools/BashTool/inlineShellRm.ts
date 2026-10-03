@@ -53,6 +53,15 @@
  *    ANY taint marker is present; the official may instead emit `A4o` when
  *    the tainted value flows into a parseable rm target. Both are
  *    non-approvable dangerousRemoval verdicts.
+ * 7. Command-position words are resolved through the persisted assignment
+ *    map before the rm-verb test (`x=rm; $x -rf /` ≡ `rm -rf /` — the
+ *    official ZYt/DYt sentinel re-judgment applied at the verb position,
+ *    closing the verb-indirection bypass). Unresolvable verb forms (an
+ *    unmapped name, the Kk null sentinel, `$(…)`/backtick substitution,
+ *    special params) yield a runtime verb: the `A4o` block fires only when
+ *    the segment ALSO carries a dangerous rm-shaped target, bounding the
+ *    deny-in-all-modes over-firing against non-rm runtime commands
+ *    (`$LOGCMD done` stays allowed; `$LOGCMD -rf /` blocks).
  */
 
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: the official A4o message contains a literal bash `${NAME:?}` guard idiom, not a JS template placeholder.
@@ -190,8 +199,19 @@ export type InlineShellScript = {
 /** Per-target classification result. */
 type TargetVerdict = 'safe' | 'runtime' | 'literalDanger'
 
-/** rm invocation resolved from one script segment. */
-type RmVerbArgv = { readonly verb: 'rm' | 'rmdir'; readonly args: readonly string[] }
+/**
+ * Command verb resolved from one script segment. `runtime` = the verb-position
+ * word is not statically resolvable (unmapped variable, official `Kk` null
+ * sentinel, command substitution, or special parameter) — the segment MAY be
+ * an rm, so its targets still get judged (divergence note 7).
+ */
+type ResolvedVerb =
+  | {
+      readonly kind: 'literal'
+      readonly verb: 'rm' | 'rmdir'
+      readonly args: readonly string[]
+    }
+  | { readonly kind: 'runtime'; readonly args: readonly string[] }
 
 // Assignment map: name → safe literal value, or null when the assignment
 // exists but is not statically resolvable (official `Kk` sentinel).
@@ -421,27 +441,40 @@ function findDangerousTargetBlock(script: string): InlineShellRmBlock | null {
     const tokens = tokenizeNormalizedSegment(rawSegment.trim())
     if (tokens.length === 0) continue
     const prefix = takePrefixAssignments(tokens)
-    const rmArgv = resolveRmVerb(tokens)
-    if (rmArgv === null) {
+    // Prefix assignments AND the ones persisted from earlier standalone
+    // assignment segments both scope this segment's verb + target resolution
+    // (divergence note 7: the verb word goes through the same sentinel
+    // re-judgment as leading-`$` targets).
+    const effective = mergeAssignments(persisted, prefix.map)
+    const verb = resolveCommandVerb(tokens.slice(prefix.count), effective)
+    if (verb === null) {
       // Standalone assignment segments persist (official ye list); prefix
       // assignments on a verb segment are scoped to that segment only.
-      if (prefix.size > 0 && tokens.every((t) => ASSIGNMENT_TOKEN_RE.test(t))) {
-        persisted = mergeAssignments(persisted, prefix)
+      if (prefix.map.size > 0 && prefix.count === tokens.length) {
+        persisted = mergeAssignments(persisted, prefix.map)
       }
       continue
     }
-    const effective = mergeAssignments(persisted, prefix)
-    for (const target of collectRmTargets(rmArgv.args)) {
+    for (const target of collectRmTargets(verb.args)) {
       const verdict = classifyTarget(target, effective)
       if (verdict === 'runtime') return runtimeTargetBlock()
-      if (verdict === 'literalDanger') return uncheckedBlock()
+      if (verdict === 'literalDanger') {
+        // An unresolvable runtime verb next to a dangerous target is the
+        // official A4o sentinel re-judgment: the actual command is known only
+        // when it runs, so it cannot be promised NOT to be an rm on it.
+        return verb.kind === 'runtime' ? runtimeTargetBlock() : uncheckedBlock()
+      }
     }
   }
   return null
 }
 
-function takePrefixAssignments(tokens: readonly string[]): AssignmentMap {
+function takePrefixAssignments(tokens: readonly string[]): {
+  readonly map: AssignmentMap
+  readonly count: number
+} {
   let map: AssignmentMap = new Map()
+  let count = 0
   for (const token of tokens) {
     const match = ASSIGNMENT_TOKEN_RE.exec(token)
     if (match === null) break
@@ -452,8 +485,9 @@ function takePrefixAssignments(tokens: readonly string[]): AssignmentMap {
       ...map,
       [match[1]!, SAFE_LITERAL_VALUE_RE.test(value) ? value : null],
     ])
+    count++
   }
-  return map
+  return { map, count }
 }
 
 function mergeAssignments(base: AssignmentMap, overlay: AssignmentMap): AssignmentMap {
@@ -461,13 +495,51 @@ function mergeAssignments(base: AssignmentMap, overlay: AssignmentMap): Assignme
   return new Map([...base, ...overlay])
 }
 
-function resolveRmVerb(tokens: readonly string[]): RmVerbArgv | null {
+function resolveCommandVerb(
+  tokens: readonly string[],
+  assignments: AssignmentMap,
+): ResolvedVerb | null {
   if (tokens.length === 0) return null
   const argv = [tokens[0]!.replace(ARGV_BASENAME_RE, ''), ...tokens.slice(1)]
   const stripped = stripPrivilegeWrapperArgv(stripSafeWrapperArgv(argv))
-  const verb = stripped[0]
-  if (verb !== 'rm' && verb !== 'rmdir') return null
-  return { verb, args: stripped.slice(1) }
+  const verbWord = stripped[0]
+  if (verbWord === undefined) return null
+  const args = stripped.slice(1)
+  const resolved = resolveVerbWord(verbWord, assignments)
+  if (resolved.status === 'runtime') return { kind: 'runtime', args }
+  if (resolved.value !== 'rm' && resolved.value !== 'rmdir') return null
+  return { kind: 'literal', verb: resolved.value, args }
+}
+
+/**
+ * Resolve a single command-position word (official ZYt/DYt sentinel
+ * re-judgment at the verb position — the `r=rm; $r -rf /` bypass fix):
+ * - `$(` or a backtick anywhere in the word → runtime (known only when it
+ *   runs; the quote-stripping tokenizer delivers `"$(echo rm)"` as
+ *   `$(echo rm)`).
+ * - A leading named-variable expansion resolves through the assignment map;
+ *   a safe-literal value re-joins the remainder (`${x}dir` → value+`dir`).
+ *   An unmapped name or the Kk null sentinel → runtime.
+ * - Any other leading `$` (special params `$@`, `$1`, `$?`, …) → runtime.
+ * - A plain word → itself, literal.
+ */
+function resolveVerbWord(
+  word: string,
+  assignments: AssignmentMap,
+):
+  | { readonly status: 'literal'; readonly value: string }
+  | { readonly status: 'runtime' } {
+  if (word.includes('$(') || word.includes('`')) return { status: 'runtime' }
+  const resolved = resolveLeadingVariable(word, assignments)
+  if (resolved !== null) {
+    const { value, remainder } = resolved
+    if (remainder.includes('$') || remainder.includes('`')) {
+      return { status: 'runtime' }
+    }
+    return { status: 'literal', value: value + remainder }
+  }
+  if (word.startsWith('$')) return { status: 'runtime' }
+  return { status: 'literal', value: word }
 }
 
 function collectRmTargets(args: readonly string[]): readonly string[] {
