@@ -34,9 +34,13 @@ const LEGACY_TAIL = `If you believe this capability is essential to complete the
 // Official `Tjs` tail — new 2.1.268 auto-mode stop suffix.
 const AUTO_MODE_TAIL = `If you believe this capability is essential to complete the user's request, first try a safer method. Get as much of the rest of the task done as you can, then STOP and explain to the user what you were trying to do and why you need this permission. Let the user decide how to proceed.`
 
-// OCC's BASH_CLASSIFIER-conditional long rule hint (feature is in
-// FEATURE_ALLOWLIST → live in tests); intentionally kept untouched.
-const LONG_RULE_HINT = `To allow this type of action in the future, the user can add a permission rule like Bash(prompt: <description of allowed action>) to their settings. At the end of your session, recommend what permission rules to add so you don't get blocked again.`
+// CC 2.1.288 #15: the OCC-original BASH_CLASSIFIER long rule hint
+// (`Bash(prompt: <description …>)` + "At the end of your session …") was
+// removed — it matched neither official binary (0 hits in v287 AND v288).
+// Official v288 `bKn` appends this sentence ONLY when allowRuleToolName is
+// defined; with no options, no hint is appended at all.
+const officialRuleHint = (toolName: string): string =>
+  `To allow this type of action in the future, the user can add a permission rule for ${toolName} to their settings.`
 
 describe('2.1.268 — denial guidance suffix split', () => {
   test('DENIAL_WORKAROUND_GUIDANCE renders identically to the pre-split fused constant', () => {
@@ -68,14 +72,30 @@ describe('2.1.268 — denial guidance suffix split', () => {
   test('buildYoloRejectionMessage uses base + auto-mode suffix (official H5t/Tjs)', () => {
     // CC 2.1.281 #109: official `hxn` @204144495 now embeds the outcome-scope
     // guidance (`lKe`) unconditionally between the stop suffix and the
-    // permission-rule hint — expectation updated from the 2.1.268 structure.
-    expect(buildYoloRejectionMessage('test reason')).toBe(
+    // permission-rule hint. CC 2.1.288 #15: the hint itself is now gated on
+    // `allowRuleToolName` (official `bKn`) — with the option set, the official
+    // v288 sentence is appended; the base (prefix → guidance) is unchanged.
+    expect(
+      buildYoloRejectionMessage('test reason', { allowRuleToolName: 'Bash' }),
+    ).toBe(
       `Permission for this action was denied by the Claude Code auto mode classifier. Reason: test reason. ` +
         `If you have other tasks that don't depend on this action, continue working on those. ` +
         `${BASE}${AUTO_MODE_TAIL} ` +
         `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE} ` +
-        LONG_RULE_HINT,
+        officialRuleHint('Bash'),
     )
+  })
+
+  test('buildYoloRejectionMessage without allowRuleToolName carries no rule hint (2.1.288 #15)', () => {
+    const message = buildYoloRejectionMessage('test reason')
+    expect(message).toBe(
+      `Permission for this action was denied by the Claude Code auto mode classifier. Reason: test reason. ` +
+        `If you have other tasks that don't depend on this action, continue working on those. ` +
+        `${BASE}${AUTO_MODE_TAIL} ` +
+        `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE}`,
+    )
+    expect(message).not.toContain('To allow this type of action in the future')
+    expect(message).not.toContain('Bash(prompt')
   })
 
   test('yolo message contains the new auto-mode guidance and drops the legacy junction', () => {

@@ -58,7 +58,12 @@ describe('CC 2.1.281 #109: guidance injection into auto-mode denials (official h
   test('guidance sits between the stop suffix and the permission-rule hint (official template order)', () => {
     jest.useFakeTimers()
     try {
-      const message = buildYoloRejectionMessage('network exfiltration risk')
+      // CC 2.1.288 #15: the rule hint is now gated on allowRuleToolName
+      // (official `bKn`) — pass it so the hint renders and the ordering
+      // (stop suffix → outcome-scope guidance → rule hint) can be asserted.
+      const message = buildYoloRejectionMessage('network exfiltration risk', {
+        allowRuleToolName: 'Bash',
+      })
       const stopIdx = message.indexOf('Let the user decide how to proceed.')
       const guidanceIdx = message.indexOf(OUTCOME_SCOPE_DENIAL_GUIDANCE)
       const ruleHintIdx = message.indexOf(

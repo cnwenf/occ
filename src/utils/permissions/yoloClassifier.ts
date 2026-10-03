@@ -33,7 +33,7 @@ import {
   extractTextContent,
 } from '../messages.js'
 import { resolveAntModel } from '../model/antModels.js'
-import { getMainLoopModel } from '../model/model.js'
+import { getCanonicalName, getMainLoopModel } from '../model/model.js'
 import { getModelStrings } from '../model/modelStrings.js'
 import { getAPIProvider } from '../model/providers.js'
 import { getAutoModeConfig } from '../settings/settings.js'
@@ -1479,6 +1479,27 @@ export function _resetClassifierSonnet5DefaultCache(): void {
 }
 
 /**
+ * CC 2.1.288 #76: canonical model names that cannot serve as the auto-mode
+ * classifier. An `ANTHROPIC_DEFAULT_SONNET_MODEL` pin whose trimmed value
+ * normalizes (via the OCC canonical-name resolver, equivalent of the official
+ * `Nm`) to one of these is ignored — warn once, fall through to the Sonnet 5
+ * default. Official v288 (verbatim): `yI=["claude-sonnet-5-5","claude-opus-5-5"]`.
+ */
+const CLASSIFIER_INELIGIBLE_PIN_CANONICAL_NAMES: readonly string[] = [
+  'claude-sonnet-5-5',
+  'claude-opus-5-5',
+]
+
+// Official `Lb` warn-once latch: the #76 pin-ignore warning is logged at most
+// once per process, no matter how many classifier calls hit it.
+let classifierPinIgnoredWarned = false
+
+/** @internal reset the #76 warn-once latch for tests. */
+export function _resetClassifierPinIgnoreWarnLatch(): void {
+  classifierPinIgnoredWarned = false
+}
+
+/**
  * Get the model for the classifier.
  * Ant-only env var takes precedence, then GrowthBook JSON config override.
  * 2.1.210 #27: for external (non-firstParty) sessions, defaults to Sonnet 5
@@ -1486,8 +1507,13 @@ export function _resetClassifierSonnet5DefaultCache(): void {
  * pinned". `ANTHROPIC_DEFAULT_SONNET_MODEL` overrides for external sessions
  * (unless it equals the 3P-probe marker, which OCC cannot drive without
  * Statsig — treated as a normal override). Explicit overrides above still win.
+ *
+ * CC 2.1.288 #76: a pin naming Claude Sonnet 5.5 / Opus 5.5 (after trim +
+ * canonical normalization) is IGNORED — warn once, use the Sonnet 5 default.
+ *
+ * @internal exported for tests (2.1.288 #76) — not part of the public API.
  */
-function getClassifierModel(): string {
+export function getClassifierModel(): string {
   if (process.env.USER_TYPE === 'ant') {
     const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
     if (envModel) return envModel
@@ -1508,8 +1534,33 @@ function getClassifierModel(): string {
   if (getAPIProvider() !== 'firstParty') {
     const envSonnet = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
     const probeMarker = process.env.CLAUDE_CODE_3P_PROBE_WROTE_SONNET_DEFAULT
-    if (envSonnet && envSonnet !== probeMarker) {
-      return envSonnet
+    const pinnedModel =
+      envSonnet !== undefined && envSonnet !== probeMarker
+        ? envSonnet
+        : undefined
+    // CC 2.1.288 #76 (official v288 `bI` insert, verbatim recovered in
+    // docs/gap-research-288/cluster-a-permission-sandbox.md §#76): a pin whose
+    // trimmed value normalizes to Sonnet 5.5 / Opus 5.5 cannot serve as the
+    // classifier — warn once (official `Lb` latch) and fall through to the
+    // Sonnet 5 default. `Nm` → getCanonicalName (OCC's canonical-name
+    // resolver), `iT` → trim. The warning substitutes the RAW pin value.
+    if (
+      pinnedModel !== undefined &&
+      CLASSIFIER_INELIGIBLE_PIN_CANONICAL_NAMES.includes(
+        getCanonicalName(pinnedModel.trim()),
+      )
+    ) {
+      if (!classifierPinIgnoredWarned) {
+        classifierPinIgnoredWarned = true
+        logForDebugging(
+          `Auto mode classifier: ANTHROPIC_DEFAULT_SONNET_MODEL=${pinnedModel} cannot serve as the classifier; using the Sonnet 5 default instead`,
+          { level: 'warn' },
+        )
+      }
+      return getClassifierSonnet5Default()
+    }
+    if (pinnedModel) {
+      return pinnedModel
     }
     return getClassifierSonnet5Default()
   }
