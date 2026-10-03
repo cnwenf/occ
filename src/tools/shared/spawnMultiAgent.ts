@@ -67,8 +67,12 @@ import {
 import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
 import { registerTask } from '../../utils/task/framework.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
-import type { CustomAgentDefinition } from '../AgentTool/loadAgentsDir.js'
-import { isCustomAgent } from '../AgentTool/loadAgentsDir.js'
+import type {
+  AgentDefinition,
+  CustomAgentDefinition,
+  PluginAgentDefinition,
+} from '../AgentTool/loadAgentsDir.js'
+import { isBuiltInAgent } from '../AgentTool/loadAgentsDir.js'
 
 function getDefaultTeammateModel(leaderModel: string | null): string {
   const configured = getGlobalConfig().teammateDefaultModel
@@ -99,6 +103,44 @@ export function resolveTeammateModel(
     return leaderModel ?? getDefaultTeammateModel(leaderModel)
   }
   return inputModel ?? getDefaultTeammateModel(leaderModel)
+}
+
+/**
+ * CC 2.1.288 PORT #38: resolve a teammate's agent definition BY NAME from
+ * the active agent definitions so a plugin-defined agent spawned by name
+ * runs with its own prompt/tools/disallowedTools/effort instead of the
+ * generic-prompt + tools:['*'] defaults.
+ *
+ * The official handleSpawnInProcess filters its carried definition with `Ma`
+ * — recovered byte-for-byte from the 2.1.288 ELF (@208728957):
+ *   `function Ma(e){return e.source==="built-in"}`
+ * i.e. ONLY built-in definitions count as placeholders/defaults; plugin
+ * definitions are real definitions. Previously OCC's `isCustomAgent` filter
+ * (which excludes source==='plugin') dropped plugin teammates here, a
+ * privilege-scope regression: the plugin agent's disallowedTools were ignored
+ * and it got the full wildcard tool scope.
+ *
+ * Structural divergence: the official receives `agentDefinition` on the spawn
+ * input; OCC's AgentTool passes only `agent_type`, so OCC resolves it here
+ * from activeAgents — the same by-name lookup the official resume path does
+ * (`activeAgents.find(ce => ce.agentType === i.customAgentType && !Ma(ce))`).
+ *
+ * Exported as a pure test seam.
+ */
+export function resolveTeammateAgentDefinition(
+  activeAgents: AgentDefinition[],
+  agentType: string | undefined,
+): CustomAgentDefinition | PluginAgentDefinition | undefined {
+  if (!agentType) {
+    return undefined
+  }
+  const foundAgent = activeAgents.find(a => a.agentType === agentType)
+  // Official `Ma`: built-in definitions are placeholders → undefined keeps
+  // the default teammate behavior; custom AND plugin definitions pass.
+  if (foundAgent && !isBuiltInAgent(foundAgent)) {
+    return foundAgent
+  }
+  return undefined
 }
 
 // ============================================================================
@@ -887,14 +929,14 @@ async function handleSpawnInProcess(
   // Assign a unique color to this teammate
   const teammateColor = assignTeammateColor(teammateId)
 
-  // Look up custom agent definition if agent_type is provided
-  let agentDefinition: CustomAgentDefinition | undefined
+  // Look up the agent definition by name if agent_type is provided
+  // (CC 2.1.288 #38: plugin definitions now resolve too; built-ins are
+  // placeholders → default behavior)
+  const agentDefinition = resolveTeammateAgentDefinition(
+    context.options.agentDefinitions.activeAgents,
+    agent_type,
+  )
   if (agent_type) {
-    const allAgents = context.options.agentDefinitions.activeAgents
-    const foundAgent = allAgents.find(a => a.agentType === agent_type)
-    if (foundAgent && isCustomAgent(foundAgent)) {
-      agentDefinition = foundAgent
-    }
     logForDebugging(
       `[handleSpawnInProcess] agent_type=${agent_type}, found=${!!agentDefinition}`,
     )

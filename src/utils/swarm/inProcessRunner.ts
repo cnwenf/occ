@@ -45,7 +45,10 @@ import {
   getProgressUpdate,
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
-import type { CustomAgentDefinition } from '../../tools/AgentTool/loadAgentsDir.js'
+import type {
+  CustomAgentDefinition,
+  PluginAgentDefinition,
+} from '../../tools/AgentTool/loadAgentsDir.js'
 import { runAgent } from '../../tools/AgentTool/runAgent.js'
 import { awaitClassifierAutoApproval } from '../../tools/BashTool/bashPermissions.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
@@ -476,8 +479,9 @@ export type InProcessRunnerConfig = {
   taskId: string
   /** Initial prompt for the teammate */
   prompt: string
-  /** Optional agent definition (for specialized agents) */
-  agentDefinition?: CustomAgentDefinition
+  /** Optional agent definition (for specialized agents; CC 2.1.288 #38:
+   * plugin definitions are accepted alongside custom ones) */
+  agentDefinition?: CustomAgentDefinition | PluginAgentDefinition
   /** Teammate context for AsyncLocalStorage */
   teammateContext: TeammateContext
   /** Parent's tool use context */
@@ -512,6 +516,67 @@ export type InProcessRunnerResult = {
   error?: string
   /** Messages produced by the agent */
   messages: Message[]
+}
+
+/**
+ * CC 2.1.288 PORT #38: build the synthetic agent definition an in-process
+ * teammate hands to runAgent(). A plugin-defined agent spawned by name must
+ * run with its OWN prompt/tools/disallowedTools/effort instead of the
+ * tools:['*'] + generic-prompt defaults. Prompt composition happens at the
+ * call site (agentDefinition.getSystemPrompt() is appended to the teammate
+ * system prompt as "# Custom Agent Instructions"); here we propagate tools
+ * (unioned with team-essential tools), disallowedTools, effort and model onto
+ * the resolved definition so runAgent's existing enforcement applies —
+ * resolveAgentTools() subtracts disallowedTools and the effortValue override
+ * honors effort — exactly like the subagent_type path, without duplicating
+ * its logic. Exported as a pure test seam.
+ */
+export function buildTeammateResolvedDefinition(
+  agentDefinition: CustomAgentDefinition | PluginAgentDefinition | undefined,
+  agentName: string,
+  teammateSystemPrompt: string,
+): CustomAgentDefinition {
+  return {
+    agentType: agentName,
+    whenToUse: `In-process teammate: ${agentName}`,
+    getSystemPrompt: () => teammateSystemPrompt,
+    // Inject team-essential tools so teammates can always respond to
+    // shutdown requests, send messages, and coordinate via the task list,
+    // even with explicit tool lists
+    tools: agentDefinition?.tools
+      ? [
+          ...new Set([
+            ...agentDefinition.tools,
+            SEND_MESSAGE_TOOL_NAME,
+            TEAM_CREATE_TOOL_NAME,
+            TEAM_DELETE_TOOL_NAME,
+            TASK_CREATE_TOOL_NAME,
+            TASK_GET_TOOL_NAME,
+            TASK_LIST_TOOL_NAME,
+            TASK_UPDATE_TOOL_NAME,
+          ]),
+        ]
+      : ['*'],
+    source: 'projectSettings',
+    // IMPORTANT: permissionMode 'default' so teammates always get full tool
+    // access regardless of the leader's permission mode.
+    permissionMode: 'default',
+    // #38: propagate disallowedTools so runAgent's resolveAgentTools()
+    // subtracts them (previously dropped — plugin teammates got the full
+    // wildcard '*' scope despite their definition denying tools)
+    ...(agentDefinition?.disallowedTools
+      ? { disallowedTools: agentDefinition.disallowedTools }
+      : {}),
+    // #38: propagate effort so runAgent's effortValue override
+    // (`agentDefinition.effort !== undefined ? ... : state.effortValue`)
+    // applies; the !== undefined guard keeps integer effort 0 alive
+    ...(agentDefinition?.effort !== undefined
+      ? { effort: agentDefinition.effort }
+      : {}),
+    // Propagate model from custom agent definition so getAgentModel()
+    // can use it as a fallback when no tool-level model is specified
+    ...(agentDefinition?.model ? { model: agentDefinition.model } : {}),
+  }
 }
 
 /**
@@ -971,35 +1036,12 @@ export async function runInProcessTeammate(
   }
 
   // Resolve agent definition - use full system prompt with teammate addendum
-  // IMPORTANT: Set permissionMode to 'default' so teammates always get full tool
-  // access regardless of the leader's permission mode.
-  const resolvedAgentDefinition: CustomAgentDefinition = {
-    agentType: identity.agentName,
-    whenToUse: `In-process teammate: ${identity.agentName}`,
-    getSystemPrompt: () => teammateSystemPrompt,
-    // Inject team-essential tools so teammates can always respond to
-    // shutdown requests, send messages, and coordinate via the task list,
-    // even with explicit tool lists
-    tools: agentDefinition?.tools
-      ? [
-          ...new Set([
-            ...agentDefinition.tools,
-            SEND_MESSAGE_TOOL_NAME,
-            TEAM_CREATE_TOOL_NAME,
-            TEAM_DELETE_TOOL_NAME,
-            TASK_CREATE_TOOL_NAME,
-            TASK_GET_TOOL_NAME,
-            TASK_LIST_TOOL_NAME,
-            TASK_UPDATE_TOOL_NAME,
-          ]),
-        ]
-      : ['*'],
-    source: 'projectSettings',
-    permissionMode: 'default',
-    // Propagate model from custom agent definition so getAgentModel()
-    // can use it as a fallback when no tool-level model is specified
-    ...(agentDefinition?.model ? { model: agentDefinition.model } : {}),
-  }
+  // (CC 2.1.288 #38: own prompt/tools/disallowedTools/effort/model propagate)
+  const resolvedAgentDefinition = buildTeammateResolvedDefinition(
+    agentDefinition,
+    identity.agentName,
+    teammateSystemPrompt,
+  )
 
   // All messages across all prompts
   const allMessages: Message[] = []
