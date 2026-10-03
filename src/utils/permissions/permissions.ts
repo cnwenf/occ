@@ -89,6 +89,16 @@ import {
 } from '../classifierApprovals.js'
 import { isInProtectedNamespace } from '../envUtils.js'
 import { executePermissionRequestHooks } from '../hooks.js'
+import { computeAutoModeAllowRuleToolName } from './allowRuleHint.js'
+// CC 2.1.288 #65 — auto mode classifier overflow now compacts (pending
+// registry, deny+compact arm strings, tengu_merry_popcorn gate).
+import {
+  buildOverflowCompactDenyMessage,
+  CLASSIFIER_OVERFLOW_COMPACT_REASON,
+  isClassifierOverflowCompactEnabled,
+  OVERFLOW_COMPACT_TELEMETRY_EVENT,
+  registerClassifierOverflowPending,
+} from './classifierOverflowPending.js'
 import {
   AUTO_REJECT_MESSAGE,
   buildClassifierUnavailableMessage,
@@ -950,6 +960,55 @@ export const hasPermissionsToUseTool = async (
         // error, won't recover on retry. Skip iron_gate and fall back to
         // normal prompting so the user can approve/deny manually.
         if (classifierResult.transcriptTooLong) {
+          // CC 2.1.288 #65: official v288 registers a pending overflow
+          // compaction BEFORE any arm/throw (`ri=$At()?zEt(...):void 0;
+          // Xr=ri!==void 0`), emits requested telemetry only on 'requested',
+          // and routes to the deny+compact arm (Xr) — which precedes the
+          // headless throw, so a headless run with a registerable pending
+          // returns deny instead of aborting. `denied:true` is fixed because
+          // this site is always a real deny decision (OCC has no
+          // permissionRound). `arm:'deny'` is fixed because OCC lacks the
+          // classifierOnly/allow/AskUserQuestion arms at this site.
+          const overflowRegistration = isClassifierOverflowCompactEnabled()
+            ? registerClassifierOverflowPending(context, context.messages, {
+                toolName: tool.name,
+                denied: true,
+                mode: appState.toolPermissionContext.mode,
+              })
+            : undefined
+          if (overflowRegistration === 'requested') {
+            logEvent(OVERFLOW_COMPACT_TELEMETRY_EVENT, {
+              stage:
+                'requested' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              arm:
+                'deny' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              toolName: sanitizeToolNameForAnalytics(tool.name),
+              isMcp: tool.isMcp ?? false,
+              isSubagent: context.agentId !== undefined,
+              headless:
+                appState.toolPermissionContext.shouldAvoidPermissionPrompts ===
+                true,
+              // OCC has no server-side classifier path (official
+              // `serverPath:vn&&!Ts`).
+              serverPath: false,
+            })
+          }
+          if (overflowRegistration !== undefined) {
+            logForDebugging(
+              `Auto mode classifier transcript too long for ${tool.name}, denying and compacting before the next request`,
+              { level: 'warn' },
+            )
+            return {
+              behavior: 'deny',
+              decisionReason: {
+                type: 'classifier',
+                classifier: 'auto-mode',
+                reason: CLASSIFIER_OVERFLOW_COMPACT_REASON,
+                noVerdict: true,
+              },
+              message: buildOverflowCompactDenyMessage(tool.name),
+            }
+          }
           if (appState.toolPermissionContext.shouldAvoidPermissionPrompts) {
             // Permanent condition (transcript only grows) — deny-retry-deny
             // wastes tokens without ever hitting the denial-limit abort.
@@ -1045,7 +1104,13 @@ export const hasPermissionsToUseTool = async (
             ),
             category: classifierResult.category,
           },
-          message: buildYoloRejectionMessage(classifierResult.reason),
+          // CC 2.1.288 #15 (official `dXo` @209972359): the settings-rule hint
+          // names the actual blocked tool — computed from the official `S`
+          // predicate (allow-rule-capable tool) — instead of a hardcoded Bash
+          // rule. `undefined` (suppressed tool) drops the hint entirely.
+          message: buildYoloRejectionMessage(classifierResult.reason, {
+            allowRuleToolName: computeAutoModeAllowRuleToolName(tool, result),
+          }),
         }
       }
 

@@ -4,7 +4,10 @@ import { getSdkBetas } from '../../bootstrap/state.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
-import { getSessionAutoCompactWindow } from '../../utils/autoCompactWindow.js'
+import {
+  getSessionAutoCompactWindow,
+  resolveAutoCompactWindow,
+} from '../../utils/autoCompactWindow.js'
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -12,6 +15,13 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { hasExactErrorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
 import { logError } from '../../utils/log.js'
+// CC 2.1.288 #65 — auto mode classifier overflow now compacts (LFo consumer,
+// ojt finalize, TY not-run handler).
+import {
+  consumeClassifierOverflowForCompaction,
+  finalizeOverflowCompaction,
+  reportOverflowCompactionNotRun,
+} from '../../utils/permissions/classifierOverflowPending.js'
 import { tokenCountWithEstimation } from '../../utils/tokens.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../analytics/growthbook.js'
 import { getMaxOutputTokensForModel } from '../api/claude.js'
@@ -20,6 +30,7 @@ import { setLastSummarizedMessageId } from '../SessionMemory/sessionMemoryUtils.
 import {
   type CompactionResult,
   compactConversation,
+  ERROR_MESSAGE_NOT_ENOUGH_MESSAGES,
   ERROR_MESSAGE_USER_ABORT,
   isPreCompactBlockError,
   type RecompactionInfo,
@@ -37,28 +48,22 @@ export function getEffectiveContextWindowSize(model: string): number {
     getMaxOutputTokensForModel(model),
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   )
-  let contextWindow = getContextWindowForModel(model, getSdkBetas())
+  const contextWindow = getContextWindowForModel(model, getSdkBetas())
 
-  // Official precedence (2.1.221+, OCC-58): the CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  // env var takes precedence over everything ("/autocompact" refuses to change
-  // the setting while it is set). Otherwise the session window resolved from
-  // the --autocompact flag / autoCompactWindow setting applies. In both cases
-  // the window only ever shrinks the effective context (capped by the model's
-  // native window) — mirroring the official "capped to model limit" behavior.
-  const autoCompactWindow = process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
-  if (autoCompactWindow) {
-    const parsed = parseInt(autoCompactWindow, 10)
-    if (!isNaN(parsed) && parsed > 0) {
-      contextWindow = Math.min(contextWindow, parsed)
-    }
-  } else {
-    const sessionWindow = getSessionAutoCompactWindow()
-    if (sessionWindow !== undefined) {
-      contextWindow = Math.min(contextWindow, sessionWindow)
-    }
-  }
+  // Gap-288 #79 (official 2.1.288 `Dw`/`TK`): the effective window is the
+  // shared resolver's `window` — env CLAUDE_CODE_AUTO_COMPACT_WINDOW takes
+  // precedence over everything ("/autocompact" refuses to change the setting
+  // while it is set), then the session override (per-model aggregate, a bare
+  // number from the --autocompact flag, or undefined for auto). The resolver
+  // caps to the model's native window — the official "capped to model limit"
+  // behavior.
+  const { window } = resolveAutoCompactWindow(
+    model,
+    contextWindow,
+    getSessionAutoCompactWindow(),
+  )
 
-  return contextWindow - reservedTokensForSummary
+  return window - reservedTokensForSummary
 }
 
 export type AutoCompactTrackingState = {
@@ -81,6 +86,16 @@ export const MANUAL_COMPACT_BUFFER_TOKENS = 3_000
 // BQ 2026-03-10: 1,279 sessions had 50+ consecutive failures (up to 3,272)
 // in a single session, wasting ~250K API calls/day globally.
 const MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES = 3
+
+// CC 2.1.288 #65 — official `GJn` set (yHr guard `V$e(g)` @209126458):
+// query sources for which a pending classifier-overflow compaction cannot
+// run (canCompact=false → the consumer reports skipped/unavailable).
+const NON_COMPACTABLE_OVERFLOW_QUERY_SOURCES: ReadonlySet<string> = new Set([
+  'prompt_suggestion',
+  'away_summary',
+  'agent_summary',
+  'hook_prompt',
+])
 
 export function getAutoCompactThreshold(model: string): number {
   const effectiveContextWindow = getEffectiveContextWindowSize(model)
@@ -291,14 +306,39 @@ export async function autoCompactIfNeeded(
   compactionResult?: CompactionResult
   consecutiveFailures?: number
 }> {
-  if (isEnvTruthy(process.env.DISABLE_COMPACT)) {
+  // CC 2.1.288 #65 — official yHr head (@209126458):
+  // `V=LFo(n,e,!K&&Df()&&g!==void 0&&!WO(g)&&!V$e(g)&&!qan(g,r,H))`
+  // The consumer runs BEFORE the DISABLE_COMPACT early return and primes
+  // canCompact for the permissions-side registry. `qan` (reactive-compact
+  // routing) is identically false in OCC (REACTIVE_COMPACT is off), and the
+  // official `WO(g)` ("compact") guard extends to OCC's forked
+  // session_memory/compact sources — they re-enter autoCompactIfNeeded
+  // sharing the parent's registry key, so running the consumer there would
+  // spuriously clear the parent's pending mid-compaction.
+  const compactDisabled = isEnvTruthy(process.env.DISABLE_COMPACT)
+  const overflowPending =
+    querySource === 'compact' || querySource === 'session_memory'
+      ? undefined
+      : consumeClassifierOverflowForCompaction(
+          toolUseContext,
+          messages,
+          !compactDisabled &&
+            isAutoCompactEnabled() &&
+            querySource !== undefined &&
+            !NON_COMPACTABLE_OVERFLOW_QUERY_SOURCES.has(querySource),
+        )
+
+  if (compactDisabled) {
     return { wasCompacted: false }
   }
 
   // Circuit breaker: stop retrying after N consecutive failures.
   // Without this, sessions where context is irrecoverably over the limit
   // hammer the API with doomed compaction attempts on every turn.
+  // Official v288: a pending classifier-overflow compaction BYPASSES the
+  // breaker (`if(V===void 0&&h?.consecutiveFailures!==void 0&&...)`).
   if (
+    overflowPending === undefined &&
     tracking?.consecutiveFailures !== undefined &&
     tracking.consecutiveFailures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES
   ) {
@@ -313,7 +353,9 @@ export async function autoCompactIfNeeded(
     snipTokensFreed,
   )
 
-  if (!shouldCompact) {
+  // Official v288: `if(!(V!==void 0||await OFo(...)))return{kind:"not_needed"}`
+  // — a pending classifier-overflow FORCES compaction below the threshold.
+  if (overflowPending === undefined && !shouldCompact) {
     return { wasCompacted: false }
   }
 
@@ -346,7 +388,16 @@ export async function autoCompactIfNeeded(
     markPostCompaction()
     return {
       wasCompacted: true,
-      compactionResult: sessionMemoryResult,
+      // CC 2.1.288 #65 — official ojt: append the VHt reminder + emit the
+      // compacted telemetry when this compaction satisfied a pending
+      // classifier-overflow request.
+      compactionResult: overflowPending
+        ? finalizeOverflowCompaction(
+            toolUseContext,
+            overflowPending,
+            sessionMemoryResult,
+          )
+        : sessionMemoryResult,
     }
   }
 
@@ -375,7 +426,16 @@ export async function autoCompactIfNeeded(
 
     return {
       wasCompacted: true,
-      compactionResult,
+      // CC 2.1.288 #65 — official ojt: append the VHt reminder + emit the
+      // compacted telemetry when this compaction satisfied a pending
+      // classifier-overflow request.
+      compactionResult: overflowPending
+        ? finalizeOverflowCompaction(
+            toolUseContext,
+            overflowPending,
+            compactionResult,
+          )
+        : compactionResult,
       // Reset failure count on success
       consecutiveFailures: 0,
     }
@@ -386,6 +446,13 @@ export async function autoCompactIfNeeded(
       logForDebugging(
         `autocompact: compaction blocked by PreCompact hook; continuing uncompacted`,
       )
+      // CC 2.1.288 #65 — official TY: `if(V)TY(n,V,{kind:"skipped",reason:"hook_blocked"})`
+      if (overflowPending) {
+        reportOverflowCompactionNotRun(toolUseContext, overflowPending, {
+          kind: 'skipped',
+          reason: 'hook_blocked',
+        })
+      }
       return {
         wasCompacted: false,
         consecutiveFailures: tracking?.consecutiveFailures ?? 0,
@@ -393,6 +460,20 @@ export async function autoCompactIfNeeded(
     }
     if (!hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)) {
       logError(error)
+    }
+    // CC 2.1.288 #65 — official TY failure routing (@209126458 catch block):
+    // `Ne=gP(Fe,rR)` (user abort) → failed/aborted (retryable, epoch NOT
+    // spent); `ze=V!==void 0&&gP(Fe,u_e)` (too few messages) →
+    // failed/too_few_groups; otherwise failed/error.
+    if (overflowPending) {
+      reportOverflowCompactionNotRun(toolUseContext, overflowPending, {
+        kind: 'failed',
+        reason: hasExactErrorMessage(error, ERROR_MESSAGE_USER_ABORT)
+          ? 'aborted'
+          : hasExactErrorMessage(error, ERROR_MESSAGE_NOT_ENOUGH_MESSAGES)
+            ? 'too_few_groups'
+            : 'error',
+      })
     }
     // Increment consecutive failure count for circuit breaker.
     // The caller threads this through autoCompactTracking so the
