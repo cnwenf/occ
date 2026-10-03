@@ -209,6 +209,30 @@ export function getRequestTooLargeErrorMessage(): string {
     ? `Request too large (${limits}). Try with a smaller file.`
     : `Request too large (${limits}). Double press esc to go back and try with a smaller file.`
 }
+// Official v288 gap #49 (docs/gap-research-288/cluster-c-instructions-resume.md):
+// binary-verbatim `kF` signature list — the API rejects whole-PDF document
+// blocks on Claude 3 Opus/Sonnet with these substrings. v287 lacked them, so
+// the strip sanitizer never fired and every subsequent turn re-sent the PDF
+// and failed again.
+export const MODEL_UNSUPPORTED_PDF_SIGNATURES = [
+  'does not support pdf input',
+  'does not support pdfs',
+]
+/** Official v288 `t6n(e){let n=e.toLowerCase();return kF.some((r)=>n.includes(r))}`. */
+export function isModelUnsupportedPdfError(message: string): boolean {
+  const lowercased = message.toLowerCase()
+  return MODEL_UNSUPPORTED_PDF_SIGNATURES.some(signature =>
+    lowercased.includes(signature),
+  )
+}
+/**
+ * Official v288 `TSe()` (with `Ua` = "API Error" ≡ API_ERROR_MESSAGE_PREFIX):
+ * the model-specific message surfaced when a PDF document was removed because
+ * the model does not accept PDF documents. NEVER paraphrase.
+ */
+export function getModelUnsupportedPdfErrorMessage(): string {
+  return `${API_ERROR_MESSAGE_PREFIX}: this model does not accept PDF documents, so a PDF in the conversation was removed. Ask Claude to read specific pages of the file instead (they are sent as images), or switch to a model that reads PDFs.`
+}
 export const OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE =
   'Your account does not have access to Claude Code. Please run /login.'
 
@@ -640,6 +664,28 @@ export function getAssistantMessageFromError(
       content: getPdfInvalidErrorMessage(),
       error: 'invalid_request',
     })
+  }
+
+  // Official v288 gap #49: Claude 3 Opus/Sonnet reject whole-PDF document
+  // blocks with "does not support pdf input"/"does not support pdfs" (binary
+  // `kF` signatures, `t6n` predicate). Official `z8("document", n)` with
+  // r = t6n(n): content = TSe(), apiError = "media_removed",
+  // apiErrorParams = {media:"document", media_reason:"unsupported_by_model"}.
+  // Without this arm the document block persisted in conversation context and
+  // every subsequent turn re-sent the PDF and failed again.
+  if (error instanceof Error && isModelUnsupportedPdfError(error.message)) {
+    return {
+      ...createAssistantAPIErrorMessage({
+        content: getModelUnsupportedPdfErrorMessage(),
+        apiError: 'media_removed',
+        error: 'invalid_request',
+        errorDetails: error.message,
+      }),
+      apiErrorParams: {
+        media: 'document',
+        media_reason: 'unsupported_by_model',
+      },
+    }
   }
 
   // Check for image size errors (e.g., "image exceeds 5 MB maximum: 5316852 bytes > 5242880 bytes")

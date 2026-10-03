@@ -32,10 +32,12 @@ import {
 } from '../services/analytics/growthbook.js'
 import {
   getImageTooLargeErrorMessage,
+  getModelUnsupportedPdfErrorMessage,
   getPdfInvalidErrorMessage,
   getPdfPasswordProtectedErrorMessage,
   getPdfTooLargeErrorMessage,
   getRequestTooLargeErrorMessage,
+  isModelUnsupportedPdfError,
 } from '../services/api/errors.js'
 import type { AnyObject, Progress } from '../Tool.js'
 import { isConnectorTextBlock } from '../types/connectorText.js'
@@ -340,36 +342,66 @@ export function isClassifierDenial(content: string): boolean {
 }
 
 /**
+ * Options for {@link buildYoloRejectionMessage} — mirrors the official v288
+ * `bKn(e, n)` options object.
+ */
+export interface YoloRejectionMessageOptions {
+  /**
+   * CC 2.1.288 #15: display name of the tool a permission allow rule can
+   * target for the blocked action (computed by the caller from the official
+   * `S` predicate — see computeAutoModeAllowRuleToolName). When `undefined`,
+   * no settings-rule hint is appended at all (official `bKn` gates on
+   * `n.allowRuleToolName === void 0` and returns the base message unchanged).
+   */
+  allowRuleToolName?: string
+}
+
+/**
  * Build a rejection message for auto mode classifier denials.
  * Encourages continuing with other tasks and suggests permission rules.
  *
  * 2.1.268: official `H5t` now composes the shared base with the auto-mode
  * stop suffix (`Tjs` — "first try a safer method ... get as much of the rest
  * of the task done ... then STOP") instead of the legacy suffix (`LOr`).
- * The BASH_CLASSIFIER-conditional ruleHint below is OCC's existing frame and
- * is intentionally kept (official gates its short rule hint via Zvr()/EM()).
+ *
+ * CC 2.1.288 #15: official `bKn` appends the settings-rule hint ONLY when
+ * `allowRuleToolName` is defined, naming the actual blocked tool — fixing
+ * denials that pointed Claude at a Bash permission rule when the blocked tool
+ * was not Bash. The hint sentence is verbatim from the v288 binary. This
+ * replaces OCC's pre-existing feature-gated `Bash(prompt: <description …>)`
+ * phrasing + "At the end of your session …" sentence, which matched NEITHER
+ * official binary (0 hits in both v287 and v288 — OCC-original divergence,
+ * removed per docs/gap-research-288/cluster-a-permission-sandbox.md §#15).
+ * The official's additional `!WZo()||Xh()` session gates are not mapped —
+ * OCC's pre-288 frame had no equivalent gates (existing divergence kept).
  *
  * @param reason - The classifier's reason for denying the action
+ * @param options - Optional hint control (see {@link YoloRejectionMessageOptions})
  */
-export function buildYoloRejectionMessage(reason: string): string {
+export function buildYoloRejectionMessage(
+  reason: string,
+  options?: YoloRejectionMessageOptions,
+): string {
   const prefix = AUTO_MODE_REJECTION_PREFIX
 
-  const ruleHint = feature('BASH_CLASSIFIER')
-    ? `To allow this type of action in the future, the user can add a permission rule like ` +
-      `Bash(prompt: <description of allowed action>) to their settings. ` +
-      `At the end of your session, recommend what permission rules to add so you don't get blocked again.`
-    : `To allow this type of action in the future, the user can add a Bash permission rule to their settings.`
-
-  return (
+  const base =
     `${prefix}${reason}. ` +
     `If you have other tasks that don't depend on this action, continue working on those. ` +
     `${DENIAL_WORKAROUND_GUIDANCE_BASE}${AUTO_MODE_STOP_SUFFIX} ` +
     // CC 2.1.281 #109: official `hxn` @204144495 embeds the outcome-scope
     // guidance (`lKe` @200520908) unconditionally between the stop suffix and
     // the permission-rule hint — every auto-mode denial carries it.
-    `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE} ` +
-    ruleHint
-  )
+    `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE}`
+
+  // CC 2.1.288 #15 (official `bKn` @211301793): hint only when the blocked
+  // tool can carry an allow rule; sentence verbatim from the v288 binary.
+  if (options?.allowRuleToolName === undefined) {
+    return base
+  }
+  const ruleHint =
+    `To allow this type of action in the future, the user can add a permission rule for ` +
+    `${options.allowRuleToolName} to their settings.`
+  return `${base} ${ruleHint}`
 }
 
 /**
@@ -2243,6 +2275,12 @@ export function normalizeMessagesForAPI(
     [getPdfInvalidErrorMessage()]: new Set(['document']),
     [getImageTooLargeErrorMessage()]: new Set(['image']),
     [getRequestTooLargeErrorMessage()]: new Set(['document', 'image']),
+    // Official v288 gap #49: model-unsupported-PDF strip. The composed TSe
+    // message matches exactly; raw API signatures ("does not support pdf
+    // input"/"does not support pdfs" — binary `kF`) match via the `t6n`
+    // substring predicate below (isModelUnsupportedPdfError), since the API
+    // returns them embedded in longer 400 bodies.
+    [getModelUnsupportedPdfErrorMessage()]: new Set(['document']),
   }
 
   // Walk the reordered messages to build a targeted strip map:
@@ -2262,7 +2300,14 @@ export function normalizeMessagesForAPI(
     if (!errorText) {
       continue
     }
-    const blockTypesToStrip = errorToBlockTypes[errorText]
+    // Official v288 gap #49: exact-match keys first, then the `t6n`
+    // substring predicate for the raw API signatures embedded in longer
+    // error bodies (e.g. transcripts persisted before the TSe composition).
+    const blockTypesToStrip =
+      errorToBlockTypes[errorText] ??
+      (isModelUnsupportedPdfError(errorText)
+        ? new Set(['document'])
+        : undefined)
     if (!blockTypesToStrip) {
       continue
     }
