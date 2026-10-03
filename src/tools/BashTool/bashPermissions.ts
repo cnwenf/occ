@@ -85,6 +85,7 @@ import {
   findDestructiveCommandBlock,
   findCatastrophicSubstitutionBlock,
 } from './destructiveCommandWarning.js'
+import { findDangerousInlineShellRm } from './inlineShellRm.js'
 import { checkPermissionMode } from './modeValidation.js'
 import { checkPathConstraints } from './pathValidation.js'
 import { checkSedConstraints } from './sedValidation.js'
@@ -2517,6 +2518,61 @@ export async function bashToolHasPermission(
         // Unreachable while canShowDialog is false — defensive fallback that
         // keeps the pre-281 deny if a future caller flips canShowDialog on
         // before the dialog layer honors the window.
+        return legacyDeny
+      }
+      return resolution.decision
+    }
+  }
+
+  // CC 2.1.288 #54 (anthropics/claude-code#96300): a dangerous rm (such as
+  // one on / or the home directory) inside a `bash -c` / `sh -c` script must
+  // never run without a prompt under bypassPermissions mode or a shell allow
+  // rule. The official v288 subsystem (`pue`/`C4o`/`ZYt`/`DYt`) extracts the
+  // -c script and re-judges it through the dangerous-rm checker, forcing a
+  // non-bypassable ask (`uue`/`A4o`: decisionReason {type:'safetyCheck',
+  // classifierApprovable:!1, circuitBreaker:'dangerousRemoval'}). OCC
+  // approximation: src/tools/BashTool/inlineShellRm.ts (string-level
+  // extractor + existing detectors + runtime-value target scan + traversal
+  // literal scan). Like the substitution gate above, this runs in ALL modes
+  // (including bypassPermissions/auto) and denies through the same
+  // dangerousRmAutoDeny resolver with canShowDialog:false → the official
+  // `$0t` no-prompt deny branch, so no rule, mode, or classifier can
+  // override it. Kill-switch: CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT
+  // (raw truthiness, matching the official `pue` gate).
+  {
+    const inlineBlock = findDangerousInlineShellRm(input.command)
+    if (inlineBlock !== null) {
+      const mode = appState.toolPermissionContext.mode
+      // Official telemetry fires the bare uL("inline_shell_script") /
+      // uL("inline_shell_unchecked") names; no tengu_-prefixed inline-shell
+      // event exists in the v288 dumps, so the established too-complex event
+      // carries the #54 category + the official bare name as kind.
+      logEvent('tengu_bash_dangerous_rm_too_complex', {
+        category: inlineBlock.category,
+        kind: inlineBlock.kind,
+        mode,
+      })
+      const decisionReason: PermissionDecisionReason = {
+        type: 'safetyCheck' as const,
+        reason: inlineBlock.reason,
+        classifierApprovable: false,
+        circuitBreaker: 'dangerousRemoval' as const,
+      }
+      const legacyDeny = {
+        behavior: 'deny' as const,
+        message: inlineBlock.message,
+        decisionReason,
+      }
+      const resolution = resolveDangerousRmSafetyCheck({
+        flaggedText: inlineBlock.message,
+        canShowDialog: false,
+        config: getDangerousRmAutoDenyConfig(),
+        legacyDeny,
+        permissionMode: mode,
+      })
+      if (resolution.kind === 'prompt-with-auto-deny-window') {
+        // Unreachable while canShowDialog is false — same defensive fallback
+        // as the substitution gate above.
         return legacyDeny
       }
       return resolution.decision

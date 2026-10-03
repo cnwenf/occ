@@ -337,6 +337,12 @@ export type PermissionDecisionReason =
        * parse-error paths and non-classifier decisions.
        */
       category?: string
+      /**
+       * CC 2.1.288 #65: the classifier overflowed its context window and
+       * produced NO verdict (official `noVerdict:!0` on the deny+compact arm).
+       * The call was not judged unsafe — it was not reviewed at all.
+       */
+      noVerdict?: boolean
     }
   | {
       type: 'workingDir'
@@ -350,6 +356,14 @@ export type PermissionDecisionReason =
       // shell configs) — the classifier can see context and decide. False
       // for Windows path bypass attempts and cross-machine bridge messages.
       classifierApprovable: boolean
+      /**
+       * CC 2.1.288 #54: the official dangerous-removal family verdicts
+       * (binary `uue`/`A4o`/`GRg`) carry
+       * `circuitBreaker:"dangerousRemoval"` — a marker that no permission
+       * rule, bypassPermissions mode, or auto-mode classifier may override
+       * the check. Optional: only dangerous-rm safety checks set it.
+       */
+      circuitBreaker?: 'dangerousRemoval'
     }
   | {
       type: 'other'

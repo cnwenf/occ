@@ -623,7 +623,9 @@ const SUBSTITUTION_TAIL_STRIP_REPLACEMENT = '$1$3'
 const LONG_RECURSIVE_FLAG_RE = /^--r/
 const SHORT_RECURSIVE_FLAG_RE = /^-[a-zA-Z]*[rR]/
 // argv[0] basename step (NEW in v281: `De[0]=De[0].replace(/^.*[\\/]/,"")`).
-const ARGV_BASENAME_RE = /^.*[\\/]/
+// CC 2.1.288 #54: exported for reuse by inlineShellRm.ts (same basename step
+// as the official C4o extractor).
+export const ARGV_BASENAME_RE = /^.*[\\/]/
 
 // Official `jy` ask-builder message for the wholeSubstitution verdict
 // (byte-exact v2.1.281 wording).
@@ -743,8 +745,9 @@ export function normalizeCommandSubstitutions(text: string): string {
  * consumed (not kept), adjacent quoted/unquoted runs concatenate into ONE
  * word (`"__CMDSUB__"/*` → `__CMDSUB__/*`), splits happen on unquoted
  * whitespace, and backslash escapes the next character.
+ * CC 2.1.288 #54: exported for reuse by inlineShellRm.ts.
  */
-function tokenizeNormalizedSegment(segment: string): string[] {
+export function tokenizeNormalizedSegment(segment: string): string[] {
   const tokens: string[] = []
   let current = ''
   let hasToken = false
@@ -852,8 +855,10 @@ function skipEnvArgsLocal(a: readonly string[]): number {
  * (time/nohup/timeout/nice/stdbuf/env/command/builtin/noglob) from argv.
  * argv[0] is basenamed for wrapper-name matching only (slices keep the
  * original token). Unparseable wrapper flags fail CLOSED (return unchanged).
+ * CC 2.1.288 #54: exported for reuse by inlineShellRm.ts (the official C4o
+ * extractor strips the same Rp wrapper family).
  */
-function stripSafeWrapperArgv(input: readonly string[]): string[] {
+export function stripSafeWrapperArgv(input: readonly string[]): string[] {
   let n = input.slice()
   for (;;) {
     const base = n[0]?.replace(ARGV_BASENAME_RE, '')
@@ -1004,8 +1009,10 @@ const PRIVILEGE_WRAPPER_POSITIONAL_CHECKS: Record<
  * tracer wrapper family (sudo/doas/pkexec/watch/ionice/setsid/taskset/chrt/
  * strace/ltrace/flock/script/unshare/nsenter/exec/command/builtin/noglob/
  * nocorrect/env) from argv, recursing through `-c`-style command strings.
+ * CC 2.1.288 #54: exported for reuse by inlineShellRm.ts (the official C4o
+ * extractor strips the same aFt wrapper family).
  */
-function stripPrivilegeWrapperArgv(input: readonly string[]): string[] {
+export function stripPrivilegeWrapperArgv(input: readonly string[]): string[] {
   let n = input.slice()
   for (;;) {
     while (n[0] !== undefined && ENV_ASSIGNMENT_ARGV_RE.test(n[0]))
