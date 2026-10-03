@@ -718,6 +718,13 @@ export const FileEditTool = buildTool({
       limit: undefined,
     })
 
+    // CC 2.1.288 (#53): a successful edit triggers nested-memory discovery for
+    // the edited path, mirroring FileReadTool.ts:1424 — the end-of-turn drain
+    // (getNestedMemoryAttachments) picks up any nested CLAUDE.md / path-scoped
+    // rules under it. Success path only; failure paths throw before reaching
+    // here.
+    toolUseContext.nestedMemoryAttachmentTriggers?.add(absoluteFilePath)
+
     // 7. Log events
     if (absoluteFilePath.endsWith(`${sep}CLAUDE.md`)) {
       logEvent('tengu_write_claudemd', {})

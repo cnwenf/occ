@@ -1850,6 +1850,12 @@ export function memoryFilesToAttachments(
             globs: memoryFile.globs,
             triggerFilePath,
             parentFilePath: memoryFile.parent,
+            // CC 2.1.288 (#61): thread the subagent identity from the tool use
+            // context into the hook input (both undefined on the main thread).
+            agentInfo: {
+              agentId: toolUseContext.agentId,
+              agentType: toolUseContext.agentType,
+            },
           },
         )
       }

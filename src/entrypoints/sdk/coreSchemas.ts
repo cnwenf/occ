@@ -717,6 +717,10 @@ export const InstructionsLoadedHookInputSchema = lazySchema(() =>
       globs: z.array(z.string()).optional(),
       trigger_file_path: z.string().optional(),
       parent_file_path: z.string().optional(),
+      // CC 2.1.288 (#61): createBaseHookInput emits the active effort level on
+      // every hook input (2.1.133); declare it here so the SDK contract for
+      // file-access load reasons preserves it instead of stripping it.
+      effort: z.object({ level: z.string() }).optional(),
     }),
   ),
 )

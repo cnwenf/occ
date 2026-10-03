@@ -662,6 +662,13 @@ export const FileWriteTool = buildTool({
       limit: undefined,
     })
 
+    // CC 2.1.288 (#53): a successful write triggers nested-memory discovery for
+    // the written path, mirroring FileReadTool.ts:1424 — the end-of-turn drain
+    // (getNestedMemoryAttachments) picks up any nested CLAUDE.md / path-scoped
+    // rules under it. Success path only; failure paths throw before reaching
+    // here.
+    context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
+
     // Log when writing to CLAUDE.md
     if (fullFilePath.endsWith(`${sep}CLAUDE.md`)) {
       logEvent('tengu_write_claudemd', {})

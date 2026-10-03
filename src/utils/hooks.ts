@@ -6435,6 +6435,11 @@ export async function executeInstructionsLoadedHooks(
     triggerFilePath?: string
     parentFilePath?: string
     timeoutMs?: number
+    // CC 2.1.288 (#61): subagent identity for file-access loads. Threaded into
+    // createBaseHookInput so the hook input carries agent_id / agent_type;
+    // callers without agent context (e.g. the eager session-start load in
+    // claudemd.ts) omit it and both fields stay undefined.
+    agentInfo?: { agentId?: string; agentType?: string }
   },
 ): Promise<void> {
   const {
@@ -6442,10 +6447,11 @@ export async function executeInstructionsLoadedHooks(
     triggerFilePath,
     parentFilePath,
     timeoutMs = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
+    agentInfo,
   } = options ?? {}
 
   const hookInput: InstructionsLoadedHookInput = {
-    ...createBaseHookInput(undefined),
+    ...createBaseHookInput(undefined, undefined, agentInfo),
     hook_event_name: 'InstructionsLoaded',
     file_path: filePath,
     memory_type: memoryType,
