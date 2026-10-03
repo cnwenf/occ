@@ -164,19 +164,35 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
   if (provider !== 'firstParty' && provider !== 'foundry') {
     return false
   }
-  // 2.1.287: kill-switch env arm, port of the official v287 `FSn` fix
-  // (v286 `yhn` never consulted the env var — the bug that kept
-  // session-title/prompt-hook requests sending output_config.format behind
-  // Bedrock gateways that reject it):
+  // 2.1.287/2.1.288: kill-switch env arms, port of the official gate
+  // progression. v287 `FSn`@201390036 (2 arms) fixed the v286 `yhn` bug that
+  // kept session-title/prompt-hook requests sending output_config.format
+  // behind Bedrock gateways that reject it; v288 `aEn`@202198805 (3 arms,
+  // changelog #14) added the SECOND, INDEPENDENT kill switch
+  // CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS for Mantle/gateways:
   //
-  //   function FSn(e){let n=Be(e),r=lc(e);if(!H$(r))return!1;if(K4())return!1;return!lr(n,"claude-opus-4-1")}
-  //   function K4(){return a.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS||UD()}   // UD(){return Il("hipaa")}
+  //   v287: function FSn(e){let n=Be(e),r=lc(e);if(!H$(r))return!1;if(K4())return!1;return!lr(n,"claude-opus-4-1")}
+  //         function K4(){return a.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS||UD()}   // UD(){return Il("hipaa")}
+  //   v288: function aEn(e){let n=Be(e),r=uc(e);if(!rF(r))return!1;if(O3())return!1;
+  //           if(a.CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS)return!1;return!sr(n,"claude-opus-4-1")}
+  //         function O3(){return a.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS||sL()}   // sL(){return Ml("hipaa")} @200808412
   //
-  // The hipaa-taint arm (UD) is omitted — OCC has no classifier taint
+  // The hipaa-taint arm (UD/sL) is omitted — OCC has no classifier taint
   // registry (see the shouldSendExtendedCacheTtlBeta note below), so only
-  // the env var applies. isEnvTruthy matches the parsing every other
-  // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS gate in this file uses.
+  // the env vars apply. isEnvTruthy matches the parsing every other
+  // CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS gate in this file uses (the
+  // official arms are raw-string-truthy — pre-existing OCC convention).
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
+    return false
+  }
+  // 2.1.288 (#14): the third official arm — INDEPENDENT of the
+  // DISABLE_EXPERIMENTAL_BETAS arm above (either variable alone disables
+  // structured outputs, so gateway users no longer have to kill every
+  // experimental beta to stop output_config.format going on the wire).
+  // v288 format writer `NWo`@209277463 consults aEn for both the format
+  // write and the structured-outputs beta push, exactly like the OCC
+  // callers (claude.ts / sideQuery.ts) consult this predicate.
+  if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS)) {
     return false
   }
   return (

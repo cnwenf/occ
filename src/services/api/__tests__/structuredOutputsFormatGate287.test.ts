@@ -126,6 +126,7 @@ const ENV_KEYS = [
   'CLAUDE_CODE_OAUTH_TOKEN',
   '_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL',
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
+  'CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS',
   'CLAUDE_CODE_DISABLE_THINKING',
   'CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING',
   'CLAUDE_CODE_USE_BEDROCK',
@@ -382,6 +383,70 @@ describe('2.1.287 Item 3 — claude.ts format write honors the kill switch', () 
     expect('output_config' in (requests[0]!.body as object)).toBe(false)
     expect(JSON.stringify(requests[0]!.body)).not.toContain('output_config')
     expect(hasStructuredOutputsBeta(requests[0]!)).toBe(false)
+    expect(assistantText(yielded)).toBe('PONG')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 3. 2.1.288 (gap-research-288 cluster-d #14) — the v288 gate `aEn`@202198805
+//    added a THIRD arm, independent of the v287 EB arm:
+//      function aEn(e){let n=Be(e),r=uc(e);if(!rF(r))return!1;if(O3())return!1;
+//        if(a.CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS)return!1;return!sr(n,"claude-opus-4-1")}
+//    CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS alone must strip the format write
+//    (official writer `NWo`@209277463 consults aEn) so Mantle/gateway setups
+//    that reject structured outputs can turn them off without disabling every
+//    experimental beta.
+// ---------------------------------------------------------------------------
+describe('2.1.288 #14 — claude.ts format write honors CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS', () => {
+  test('CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS=1 (EB unset) omits BOTH output_config.format AND the structured-outputs beta', async () => {
+    // Arrange — the new arm must fire WITHOUT the v287 EB var (independence).
+    process.env.CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS = '1'
+    delete process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS
+    responders = [successSSEResponse()]
+
+    // Act
+    const yielded = await runQuery()
+
+    // Assert — no output_config anywhere in the wire body, no beta header,
+    // and the turn still completes (only the format is stripped).
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.body).toBeDefined()
+    expect('output_config' in (requests[0]!.body as object)).toBe(false)
+    expect(JSON.stringify(requests[0]!.body)).not.toContain('output_config')
+    expect(hasStructuredOutputsBeta(requests[0]!)).toBe(false)
+    expect(assistantText(yielded)).toBe('PONG')
+  })
+
+  test('CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS=1 with DISABLE_EXPERIMENTAL_BETAS explicitly falsy still strips the format', async () => {
+    // Arrange — the new arm does not depend on the EB arm's value.
+    process.env.CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS = '1'
+    process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = '0'
+    responders = [successSSEResponse()]
+
+    // Act
+    await runQuery()
+
+    // Assert
+    expect(requests).toHaveLength(1)
+    expect('output_config' in (requests[0]!.body as object)).toBe(false)
+    expect(hasStructuredOutputsBeta(requests[0]!)).toBe(false)
+  })
+
+  test('CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS=0 (falsy) leaves the format write + beta push unchanged', async () => {
+    // Arrange — falsy values must NOT disable (isEnvTruthy convention, same
+    // parsing as the sibling EB arm).
+    process.env.CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS = '0'
+    responders = [successSSEResponse()]
+
+    // Act
+    const yielded = await runQuery()
+
+    // Assert
+    expect(requests).toHaveLength(1)
+    expect(requests[0]!.body?.output_config).toEqual({
+      format: OUTPUT_FORMAT,
+    })
+    expect(hasStructuredOutputsBeta(requests[0]!)).toBe(true)
     expect(assistantText(yielded)).toBe('PONG')
   })
 })

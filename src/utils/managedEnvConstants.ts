@@ -140,6 +140,17 @@ export const SAFE_ENV_VARS = new Set([
   'CLAUDE_CODE_API_KEY_HELPER_TTL_MS',
   'CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS',
   'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  // 2.1.288 (#14): structured-outputs kill switch (second independent arm of
+  // the official v288 gate `aEn`@202198805; registered in the official v288
+  // env registry @199612605 and paired with DISABLE_EXPERIMENTAL_BETAS in the
+  // session-env set @212352579 and the child-env propagation
+  // `...a.X&&{X:"1"}` @213670299). Note: the official pre-trust safe-env
+  // allowlist (@199900616 region) does NOT list it — OCC registers it here
+  // anyway as a curated extension: like its DISABLE_EXPERIMENTAL_BETAS
+  // sibling it is fail-safe (can only stop output_config.format being sent;
+  // no redirect/trust/exfil surface), so applying it from settings before the
+  // trust dialog cannot harm.
+  'CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS',
   'CLAUDE_CODE_DISABLE_TERMINAL_TITLE',
   'CLAUDE_CODE_ENABLE_AUTO_MODE',
   'CLAUDE_CODE_ENABLE_FEEDBACK_SURVEY_FOR_OTEL',
