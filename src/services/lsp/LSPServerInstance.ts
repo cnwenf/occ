@@ -5,8 +5,9 @@ import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
-import { sleep } from '../../utils/sleep.js'
+import { sleep, withTimeout } from '../../utils/sleep.js'
 import type { createLSPClient as createLSPClientType } from './LSPClient.js'
+import { resolveRequestTimeoutMs } from './requestTimeout.js'
 import type { LspServerState, ScopedLspServerConfig } from './types.js'
 
 /**
@@ -118,11 +119,17 @@ export function createLSPServerInstance(
   // Propagate crash state so ensureServerStarted can restart on next use.
   // Without this, state stays 'running' after crash and the server is never
   // restarted (zombie state).
-  const client = createLSPClient(name, error => {
-    state = 'error'
-    lastError = error
-    crashRecoveryCount++
-  })
+  // Official v288 (#55): per-server `requestTimeout` (default 60000 ms) is
+  // armed on the client so sendRequest can't hang forever.
+  const client = createLSPClient(
+    name,
+    error => {
+      state = 'error'
+      lastError = error
+      crashRecoveryCount++
+    },
+    resolveRequestTimeoutMs(config),
+  )
 
   /**
    * Starts the LSP server and initializes it with workspace information.
@@ -490,22 +497,4 @@ export function createLSPServerInstance(
     onNotification,
     onRequest,
   }
-}
-
-/**
- * Race a promise against a timeout. Cleans up the timer regardless of outcome
- * to avoid unhandled rejections from orphaned setTimeout callbacks.
- */
-function withTimeout<T>(
-  promise: Promise<T>,
-  ms: number,
-  message: string,
-): Promise<T> {
-  let timer: ReturnType<typeof setTimeout>
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout((rej, msg) => rej(new Error(msg)), ms, reject, message)
-  })
-  return Promise.race([promise, timeoutPromise]).finally(() =>
-    clearTimeout(timer!),
-  )
 }

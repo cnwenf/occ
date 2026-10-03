@@ -991,6 +991,15 @@ export const LspServerConfigSchema = lazySchema(() =>
       .positive()
       .optional()
       .describe('Maximum time to wait for graceful shutdown (milliseconds)'),
+    requestTimeout: z
+      .number()
+      .int()
+      .positive()
+      .max(2147483647)
+      .optional()
+      .describe(
+        'Maximum time to wait for the server to answer a request (milliseconds). Defaults to 60000.',
+      ),
     restartOnCrash: z
       .boolean()
       .optional()

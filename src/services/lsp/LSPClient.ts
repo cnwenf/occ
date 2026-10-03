@@ -14,7 +14,9 @@ import type {
 import { logForDebugging } from '../../utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
+import { withTimeout } from '../../utils/sleep.js'
 import { subprocessEnv } from '../../utils/subprocessEnv.js'
+import { DEFAULT_LSP_REQUEST_TIMEOUT_MS } from './requestTimeout.js'
 /**
  * LSP client interface.
  */
@@ -47,10 +49,16 @@ export type LSPClient = {
  * @param onCrash - Called when the server process exits unexpectedly (non-zero
  *   exit code during operation, not during intentional stop). Allows the owner
  *   to propagate crash state so the server can be restarted on next use.
+ * @param requestTimeoutMs - Official v288 (gap-report cluster-f #55) per-server
+ *   `requestTimeout`: how long sendRequest waits for the server to answer
+ *   before rejecting. Defaults to the official 60000 ms. Prevents LSP tool
+ *   calls hanging indefinitely when a server uses dynamic capability
+ *   registration or stops responding.
  */
 export function createLSPClient(
   serverName: string,
   onCrash?: (error: Error) => void,
+  requestTimeoutMs: number = DEFAULT_LSP_REQUEST_TIMEOUT_MS,
 ): LSPClient {
   // State variables in closure
   let process: ChildProcess | undefined
@@ -301,7 +309,18 @@ export function createLSPClient(
       }
 
       try {
-        return await connection.sendRequest(method, params)
+        // Official v288 (#55): requests time out after the configured
+        // requestTimeout instead of hanging forever. Error text is verbatim:
+        // `Request has exceeded the configured ${ms} ms requestTimeout.`
+        // (Promise.race already subscribes to the request promise, so a late
+        // rejection after the timeout wins cannot become unhandled.)
+        return await withTimeout(
+          // Promise.resolve normalizes vscode-jsonrpc's Thenable to a native
+          // Promise (also guarantees the race subscribes to it).
+          Promise.resolve(connection.sendRequest(method, params)),
+          requestTimeoutMs,
+          `Request has exceeded the configured ${requestTimeoutMs} ms requestTimeout.`,
+        )
       } catch (error) {
         const err = error as Error
         logError(

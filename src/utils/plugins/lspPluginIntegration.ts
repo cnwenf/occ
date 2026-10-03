@@ -15,6 +15,7 @@ import { getPluginDataDir } from './pluginDirectories.js'
 import {
   getPluginStorageId,
   loadPluginOptions,
+  type PluginOptionSchema,
   type PluginOptionValues,
   substitutePluginVariables,
   substituteUserConfigVariables,
@@ -222,30 +223,135 @@ async function loadLspServersFromManifest(
 }
 
 /**
+ * Extract manifest user_config defaults (official v288 @207469709, gap-report
+ * cluster-b Item 22): unset `${user_config.KEY}` refs resolve to the manifest
+ * field's `default` before being reported as unexpanded.
+ */
+function getManifestUserConfigDefaults(plugin: {
+  manifest?: { userConfig?: PluginOptionSchema }
+}): PluginOptionValues {
+  const schema = plugin.manifest?.userConfig
+  if (!schema) {
+    return {}
+  }
+  const defaults: PluginOptionValues = {}
+  for (const [key, field] of Object.entries(schema)) {
+    const defaultValue = (
+      field as { default?: string | number | boolean | string[] } | undefined
+    )?.default
+    if (defaultValue !== undefined) {
+      defaults[key] = defaultValue
+    }
+  }
+  return defaults
+}
+
+/**
+ * Deep-substitute placeholder strings inside a JSON-ish value (objects and
+ * arrays are walked immutably — new containers, non-string scalars passed
+ * through). Mirrors the official v288 `NX` helper used for plugin LSP
+ * `initializationOptions`/`settings`.
+ */
+function substitutePlaceholdersDeep(
+  value: unknown,
+  resolveString: (input: string) => string,
+): unknown {
+  if (typeof value === 'string') {
+    return resolveString(value)
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => substitutePlaceholdersDeep(item, resolveString))
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      out[key] = substitutePlaceholdersDeep(item, resolveString)
+    }
+    return out
+  }
+  return value
+}
+
+/**
  * Resolve environment variables for plugin LSP servers.
  * Handles ${CLAUDE_PLUGIN_ROOT}, ${user_config.X}, and general ${VAR}
  * substitution. Tracks missing environment variables for error reporting.
+ *
+ * Official v288 (@207469709, gap-report cluster-b Item 22): `initializationOptions`
+ * and `settings` go through the SAME substitution as command/args/env (deep walk),
+ * manifest defaults fill unset user_config keys, and keys that remain unexpanded
+ * are left literal and reported with the official warning (verbatim).
  */
 export function resolvePluginLspEnvironment(
   config: LspServerConfig,
-  plugin: { path: string; source: string },
+  plugin: {
+    path: string
+    source: string
+    manifest?: { userConfig?: PluginOptionSchema }
+  },
   userConfig?: PluginOptionValues,
   _errors?: PluginError[],
 ): LspServerConfig {
   const allMissingVars: string[] = []
+  // user_config keys left unexpanded in initializationOptions/settings —
+  // reported once, deduped, in first-seen order (official `L(h).join(", ")`).
+  const unexpandedUserConfigKeys = new Set<string>()
+
+  // Manifest defaults fill unset user_config keys (saved values win).
+  const manifestDefaults = getManifestUserConfigDefaults(plugin)
+  const effectiveUserConfig =
+    userConfig !== undefined || Object.keys(manifestDefaults).length > 0
+      ? { ...manifestDefaults, ...userConfig }
+      : undefined
 
   const resolveValue = (value: string): string => {
     // First substitute plugin-specific variables
     let resolved = substitutePluginVariables(value, plugin)
 
     // Then substitute user config variables if provided
-    if (userConfig) {
-      resolved = substituteUserConfigVariables(resolved, userConfig)
+    if (effectiveUserConfig) {
+      resolved = substituteUserConfigVariables(resolved, effectiveUserConfig)
     }
 
     // Finally expand general environment variables
     const { expanded, missingVars } = expandEnvVarsInString(resolved)
     allMissingVars.push(...missingVars)
+
+    return expanded
+  }
+
+  // Lenient variant for initializationOptions/settings: the official v288
+  // behavior leaves an unexpandable ${user_config.*} literal and collects the
+  // key name for the "Left unexpanded…" warning instead of throwing (the
+  // strict resolveValue throw semantics for command/args/env are preserved).
+  const resolveValueLenient = (value: string): string => {
+    let resolved = substitutePluginVariables(value, plugin)
+
+    if (effectiveUserConfig) {
+      resolved = resolved.replace(
+        /\$\{user_config\.([^}]+)\}/g,
+        (match, key: string) => {
+          const configValue = effectiveUserConfig[key]
+          if (configValue === undefined) {
+            unexpandedUserConfigKeys.add(key)
+            return match
+          }
+          return String(configValue)
+        },
+      )
+    } else {
+      for (const match of resolved.matchAll(/\$\{user_config\.([^}]+)\}/g)) {
+        unexpandedUserConfigKeys.add(match[1])
+      }
+    }
+
+    const { expanded, missingVars } = expandEnvVarsInString(resolved)
+    // A leftover ${user_config.KEY} also matches the generic ${VAR} env
+    // pattern; it is reported by the official "Left unexpanded…" warning
+    // below, not double-reported as a missing environment variable.
+    allMissingVars.push(
+      ...missingVars.filter(name => !name.startsWith('user_config.')),
+    )
 
     return expanded
   }
@@ -280,12 +386,37 @@ export function resolvePluginLspEnvironment(
     resolved.workspaceFolder = resolveValue(resolved.workspaceFolder)
   }
 
+  // Official v288 (@207469709): `if(H.initializationOptions!==void 0)
+  // H.initializationOptions=NX(H.initializationOptions,B)` — and the same for
+  // settings. Deep-substitute so the server never sees literal placeholders.
+  if (resolved.initializationOptions !== undefined) {
+    resolved.initializationOptions = substitutePlaceholdersDeep(
+      resolved.initializationOptions,
+      resolveValueLenient,
+    )
+  }
+  if (resolved.settings !== undefined) {
+    resolved.settings = substitutePlaceholdersDeep(
+      resolved.settings,
+      resolveValueLenient,
+    )
+  }
+
   // Log missing variables if any were found
   if (allMissingVars.length > 0) {
     const uniqueMissingVars = [...new Set(allMissingVars)]
     const warnMsg = `Missing environment variables in plugin LSP config: ${uniqueMissingVars.join(', ')}`
     logError(new Error(warnMsg))
     logForDebugging(warnMsg, { level: 'warn' })
+  }
+
+  // Official v288 warning, verbatim (byte-faithful — do not paraphrase):
+  // `Left unexpanded in plugin LSP initializationOptions/settings (not set): ${names.join(", ")}`
+  if (unexpandedUserConfigKeys.size > 0) {
+    const names = [...unexpandedUserConfigKeys]
+    logForDebugging(
+      `Left unexpanded in plugin LSP initializationOptions/settings (not set): ${names.join(", ")}`,
+    )
   }
 
   return resolved
