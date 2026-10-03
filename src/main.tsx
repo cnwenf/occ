@@ -4866,9 +4866,13 @@ async function run(): Promise<CommanderCommand> {
     process.exit(0);
   });
 
-  // Project command - manage Claude Code project state
-  const projectCmd = program.command('project').description('Manage Claude Code project state').configureHelp(createSortedHelpConfig());
-  projectCmd.command('purge [path]').description('Delete all Claude Code state for a project (transcripts, tasks, file history, config entry)').option('--dry-run', 'List what would be deleted without deleting').option('--all', 'Purge state for every project (mutually exclusive with [path])').option('-i, --interactive', 'Interactively select a project to purge').action(async (path: string | undefined, options: {
+  // Purge command - delete all Claude Code state for a project.
+  // CC 2.1.288 #77: the canonical command is now top-level `claude purge`;
+  // `claude project purge` is kept as a hidden legacy alias that prints a
+  // rename notice before running. Both share `purgeProjectHandler`.
+  // Descriptions/notice are verbatim from the official 2.1.288 binary
+  // (dn/Mn @216868818); they are also exported from projectPurge.ts.
+  program.command('purge [path]').description('Delete all Claude Code state for a project (transcripts, tasks, file history, config entry)').option('--dry-run', 'List what would be deleted without deleting').option('--all', 'Purge state for every project (mutually exclusive with [path])').option('-i, --interactive', 'Interactively select a project to purge').action(async (path: string | undefined, options: {
     dryRun?: boolean;
     all?: boolean;
     interactive?: boolean;
@@ -4876,6 +4880,24 @@ async function run(): Promise<CommanderCommand> {
     const {
       purgeProjectHandler
     } = await import('./cli/handlers/projectPurge.js');
+    await purgeProjectHandler(path, options);
+    process.exit(0);
+  });
+
+  // Project command - manage Claude Code project state
+  const projectCmd = program.command('project').description('Manage Claude Code project state').configureHelp(createSortedHelpConfig());
+  projectCmd.command('purge [path]', {
+    hidden: true
+  }).description('`claude project purge` is now `claude purge`. Delete all Claude Code state for a project (transcripts, tasks, file history, config entry)').option('--dry-run', 'List what would be deleted without deleting').option('--all', 'Purge state for every project (mutually exclusive with [path])').option('-i, --interactive', 'Interactively select a project to purge').action(async (path: string | undefined, options: {
+    dryRun?: boolean;
+    all?: boolean;
+    interactive?: boolean;
+  }) => {
+    const {
+      purgeProjectHandler,
+      emitProjectPurgeRenameNotice
+    } = await import('./cli/handlers/projectPurge.js');
+    emitProjectPurgeRenameNotice();
     await purgeProjectHandler(path, options);
     process.exit(0);
   });

@@ -19,6 +19,29 @@ import { logEvent } from '../../services/analytics/index.js'
 
 type PurgeItemKind = 'dir' | 'config-key'
 
+/**
+ * CC 2.1.288 #77 — `claude project purge` was renamed to `claude purge`; the
+ * old name still works and prints a notice. All four strings below are verbatim
+ * from the official 2.1.288 binary's CLI command-registration chunk
+ * (@216868818): `dn` (rename prefix), `Mn` (command description), the legacy
+ * notice `${dn}. The old name still works for now.`, and the legacy description
+ * `${dn}. ${Mn}`.
+ */
+export const PROJECT_PURGE_RENAME_PREFIX =
+  '`claude project purge` is now `claude purge`'
+export const PURGE_COMMAND_DESCRIPTION =
+  'Delete all Claude Code state for a project (transcripts, tasks, file history, config entry)'
+export const PROJECT_PURGE_RENAME_NOTICE = `${PROJECT_PURGE_RENAME_PREFIX}. The old name still works for now.`
+export const PROJECT_PURGE_LEGACY_DESCRIPTION = `${PROJECT_PURGE_RENAME_PREFIX}. ${PURGE_COMMAND_DESCRIPTION}`
+
+/**
+ * Emitted on the legacy `claude project purge` path before the purge runs.
+ * Written to stderr so it never corrupts piped `--dry-run` stdout.
+ */
+export function emitProjectPurgeRenameNotice(): void {
+  process.stderr.write(`${PROJECT_PURGE_RENAME_NOTICE}\n`)
+}
+
 type PurgeItem = {
   kind: PurgeItemKind
   path: string

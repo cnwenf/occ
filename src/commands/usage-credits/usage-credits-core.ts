@@ -54,7 +54,10 @@ export async function runUsageCredits(): Promise<UsageCreditsResult> {
       if (eligibility?.is_allowed === false) {
         return {
           type: 'message',
-          value: 'Please contact your admin to manage extra usage settings.',
+          // CC 2.1.288 #68: name the cause (the org turned credit requests off)
+          // instead of deflecting to an admin. Verbatim from the official v288
+          // binary `ple` is_allowed===false branch (@219946788).
+          value: 'Usage credit requests are turned off for your organization.',
         }
       }
     } catch (error) {
