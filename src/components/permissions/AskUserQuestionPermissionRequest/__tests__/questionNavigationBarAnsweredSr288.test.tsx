@@ -42,13 +42,33 @@ function setSR(on: boolean): void {
  * Hold the instance open before exiting — the SR flat-render frame flushes on
  * a later tick than the normal screen-buffer blit (same finding as the
  * searchBoxScreenReader287 harness).
+ *
+ * `shouldExit` (optional) makes the hold CONDITION-based: exit as soon as the
+ * predicate sees the expected frame in the accumulated stdout, with `ms` as a
+ * hard deadline. Fixed-margin holds flaked under full-gauntlet parallel load
+ * (re-render frame flush exceeded the margin); polling the actual output is
+ * load-independent and still fails honestly at the deadline when the memo
+ * cache is genuinely stale.
  */
-function Hold({ ms }: { ms: number }) {
+function Hold({ ms, shouldExit }: { ms: number; shouldExit?: () => boolean }) {
   const { exit } = useApp()
   React.useLayoutEffect(() => {
-    const timer = setTimeout(exit, ms)
-    return () => clearTimeout(timer)
-  }, [exit, ms])
+    const deadline = setTimeout(exit, ms)
+    let poll: ReturnType<typeof setInterval> | undefined
+    if (shouldExit) {
+      poll = setInterval(() => {
+        if (shouldExit()) {
+          if (poll) clearInterval(poll)
+          // grace tick so the rest of the frame's writes land before exit
+          setTimeout(exit, 15)
+        }
+      }, 10)
+    }
+    return () => {
+      clearTimeout(deadline)
+      if (poll) clearInterval(poll)
+    }
+  }, [exit, ms, shouldExit])
   return null
 }
 
@@ -56,6 +76,7 @@ function Hold({ ms }: { ms: number }) {
 async function renderSrStripped(
   node: React.ReactNode,
   holdMs = 30,
+  exitWhen?: (output: string) => boolean,
 ): Promise<string> {
   let output = ''
   const stdout = new PassThrough()
@@ -70,10 +91,15 @@ async function renderSrStripped(
     ref: () => {},
     unref: () => {},
   }) as unknown as NodeJS.ReadStream
+  // Strip ANSI before matching so the predicate sees the same text the
+  // assertion will (the raw stream carries color escapes around the label).
+  const shouldExit = exitWhen
+    ? () => exitWhen(stripAnsi(output))
+    : undefined
   const instance = await render(
     <>
       {node}
-      <Hold ms={holdMs} />
+      <Hold ms={holdMs} shouldExit={shouldExit} />
     </>,
     { stdout: stdout as unknown as NodeJS.WriteStream, stdin, patchConsole: false },
   )
@@ -228,14 +254,16 @@ describe('v2.1.288 #67: QuestionNavigationBar SR "answered" label', () => {
     setSR(true)
     const newAnswers = { [q1.question]: 'OAuth' }
 
-    // Act — hold 120ms so the re-render frame flushes.
+    // Act — condition-based hold: exit as soon as the answered frame appears,
+    // 3s hard deadline (fixed 120ms margin flaked under gauntlet load).
     const out = await renderSrStripped(
       <AnswersChangeDriver
         questions={TWO_QUESTIONS}
         newAnswers={newAnswers}
         changeMs={20}
       />,
-      120,
+      3000,
+      o => o.includes(ANSWERED_ON),
     )
 
     // Assert
