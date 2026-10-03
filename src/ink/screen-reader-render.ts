@@ -14,7 +14,13 @@
  */
 import type { DOMNode, DOMElement, AccessibilityProps } from './dom.js'
 import { LayoutDisplay } from './layout/node.js'
-import { drainScreenReaderAnnouncements } from '../utils/screenReader.js'
+import {
+  drainScreenReaderAnnouncements,
+  consumeScreenReaderAnnouncementHoldMs,
+  startScreenReaderAnnouncementHold,
+  isScreenReaderAnnouncementHoldActive,
+  shouldRewriteHeldScreenReaderAnnouncement,
+} from '../utils/screenReader.js'
 import { stringWidth } from './stringWidth.js'
 import { wrapAnsi } from './wrapAnsi.js'
 
@@ -25,6 +31,7 @@ import { wrapAnsi } from './wrapAnsi.js'
  * output (binary: `oHh`). Matches C0 controls (except \t \n), DEL+C1, LRE/RLE
  * etc., and isolate marks.
  */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: the character class IS the point \u2014 this regex strips C0/C1 controls and bidi marks from screen-reader output (binary: oHh)
 const CONTROL_OR_BIDI = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u202a-\u202e\u2066-\u2069]/
 
 /**
@@ -313,16 +320,68 @@ export type CursorDeclaration = {
 /**
  * State carried across SR renders (binary: the `prevScreenReaderLines` +
  * `prevScreenReaderPark` fields on `F6t`).
+ *
+ * 2.1.288 #66 adds the held-announcement fields (binary @213409894:
+ * `srAnnouncementHoldTimer=null;srHeldAnnouncements=[];
+ * srRewriteHeldAnnouncement=Z8o();`). Official
+ * `resetScreenReaderDiffState()` resets ONLY prevLines/prevPark/
+ * prevParkDeclared — held announcements, the hold timer, and the rewrite
+ * flag deliberately survive it, so `reset()` below must not touch them.
  */
 export class ScreenReaderDiffState {
   prevLines: string[] = []
   prevPark: ScreenReaderPark = { row: 0, col: 0 }
+  /**
+   * Render-freeze timer armed when a `{hold: true}` announcement is written
+   * (binary: `srAnnouncementHoldTimer`). While armed AND the hold window is
+   * active, SR renders are skipped so the announcement stays the last thing
+   * on screen. The timer callback re-requests a render.
+   */
+  holdTimer: ReturnType<typeof setTimeout> | null = null
+  /**
+   * Announcements re-appended to every frame until invalidated (keypress,
+   * lines-above changed, too-many-lines) — binary: `srHeldAnnouncements`.
+   * Entries are already sanitized (official stores the sanitized drain).
+   */
+  heldAnnouncements: string[] = []
+  /**
+   * Captured once at construction (binary field initializer `=Z8o()`):
+   * when true, held lines survive a change in the lines above and are
+   * rewritten into the new frame instead of being dropped.
+   */
+  rewriteHeldAnnouncement = shouldRewriteHeldScreenReaderAnnouncement()
 
   reset(): void {
     this.prevLines = []
     this.prevPark = { row: 0, col: 0 }
   }
 }
+
+/**
+ * Options for {@link renderScreenReaderDiff} (2.1.288 #66). Official reads
+ * these from renderer fields (`this.terminalRows`, `this.isExiting`,
+ * `this.onRender`); OCC's pure-function port takes them per call. All
+ * optional so pre-288 call sites keep compiling.
+ */
+export type ScreenReaderRenderOptions = {
+  /** Terminal height in rows (binary: `this.terminalRows`). Default 24. */
+  terminalRows?: number
+  /**
+   * Exit-in-progress flag (binary: `this.isExiting`). Ink sets this true at
+   * the start of unmount() and passes it through onRenderScreenReader, so the
+   * final SR render bypasses the hold freeze and flushes held lines instead of
+   * carrying them. Default false for standalone/unit call sites.
+   */
+  isExiting?: boolean
+  /** Re-render callback for the hold-timer expiry (binary: `this.onRender()`). */
+  requestRender?: () => void
+}
+
+/**
+ * Held-lines invalidation threshold (binary: `FC=3` @213406306; usage
+ * `Q=j>Math.min(FC,Math.floor(this.terminalRows/4))`).
+ */
+const SR_HELD_LINES_MAX = 3
 
 /**
  * Compute the terminal "park" position for the declared cursor, in
@@ -371,7 +430,21 @@ export function renderScreenReaderDiff(
   state: ScreenReaderDiffState,
   cursorDeclaration: CursorDeclaration,
   write: (data: string) => void,
+  options: ScreenReaderRenderOptions = {},
 ): ScreenReaderDiffState {
+  const terminalRows = options.terminalRows ?? 24
+  const isExiting = options.isExiting ?? false
+  // 2.1.288 #66 top guard (binary @213429748):
+  //   if(this.srAnnouncementHoldTimer!==null){
+  //     if(r9o()&&!this.isExiting)return;
+  //     clearTimeout(this.srAnnouncementHoldTimer),this.srAnnouncementHoldTimer=null}
+  // While a {hold:true} announcement's freeze window is active, the whole SR
+  // render is skipped so nothing overwrites the announcement.
+  if (state.holdTimer !== null) {
+    if (isScreenReaderAnnouncementHoldActive() && !isExiting) return state
+    clearTimeout(state.holdTimer)
+    state.holdTimer = null
+  }
   const serialized = serializeNode(rootNode)
   const logicalLines = serialized === '' ? [] : serialized.split('\n')
   // Wrap each logical line to the terminal width and trimEnd each wrapped row.
@@ -398,18 +471,30 @@ export function renderScreenReaderDiff(
     cursorDeclaration,
   )
 
-  // 2.1.210 #30: drain the SR announce queue and append each entry to the
-  // wrapped-lines array (binary: `for(let x of uxc()){let k=GKn(x);...}`).
-  // Announce strings (e.g. `[manual mode on]` from Shift+Tab mode-cycle) are
-  // sanitized, wrapped to columns, and appended after the serialized content.
-  // `announceInsert` (= binary `s`) marks the first appended announce line;
-  // the diff forces re-emit from there so the screen reader speaks the announce.
+  // 2.1.210 #30 + 2.1.288 #66: drain the SR announce queue, replace the
+  // held-announcement set with the sanitized drain, and append ALL held
+  // announcements to the wrapped-lines array (binary @213430744:
+  // `let H=-1,F=o9o().map(se=>Us(se)).filter(se=>se!=="");
+  //  if(F.length>0||this.isExiting)this.srHeldAnnouncements=F;
+  //  let k=x.length;for(let se of this.srHeldAnnouncements)
+  //    for(let le of se.split("\n")){if(H===-1&&F.length>0)H=x.length;…}`).
+  // Held entries are re-appended on EVERY frame until invalidated (keypress
+  // release, lines-above changed, too-many-lines), so short announcements
+  // stay on screen instead of vanishing on the next render.
+  // `announceInsert` (= binary `H`) marks the first appended announce line —
+  // set only on frames with a fresh drain — and the diff forces re-emit from
+  // there so the screen reader speaks the announce.
   let announceInsert = -1
-  for (const announceStr of drainScreenReaderAnnouncements()) {
-    const sanitized = sanitizeSrText(announceStr)
-    if (sanitized === '') continue
-    for (const row of sanitized.split('\n')) {
-      if (announceInsert === -1) announceInsert = wrappedLines.length
+  const drained = drainScreenReaderAnnouncements()
+    .map(announceStr => sanitizeSrText(announceStr))
+    .filter(sanitized => sanitized !== '')
+  if (drained.length > 0 || isExiting) state.heldAnnouncements = drained
+  const heldBase = wrappedLines.length
+  for (const held of state.heldAnnouncements) {
+    for (const row of held.split('\n')) {
+      if (announceInsert === -1 && drained.length > 0) {
+        announceInsert = wrappedLines.length
+      }
       if (row === '') {
         wrappedLines.push('')
       } else {
@@ -418,8 +503,34 @@ export function renderScreenReaderDiff(
       }
     }
   }
+  // Binary `let L=t9o()` — the pending hold request is consumed exactly once
+  // per frame here, BEFORE the diff and the unchanged early-return (an
+  // identical frame consumes the request without arming a timer).
+  const holdMs = consumeScreenReaderAnnouncementHoldMs()
 
   const prev = state.prevLines
+  // Held-lines invalidation (binary: `let B=this.prevScreenReaderLines,
+  // j=x.length-k,Q=j>Math.min(FC,Math.floor(this.terminalRows/4));
+  // if(Q)this.srHeldAnnouncements=[];
+  // if(F.length===0&&j>0&&(Q||!this.srRewriteHeldAnnouncement&&
+  //   (B.length!==x.length||x.some((se,le)=>le<k&&se!==B[le]))))
+  //   this.srHeldAnnouncements=[],x.length=k;`).
+  const heldLineCount = wrappedLines.length - heldBase
+  const tooManyHeldLines =
+    heldLineCount > Math.min(SR_HELD_LINES_MAX, Math.floor(terminalRows / 4))
+  if (tooManyHeldLines) state.heldAnnouncements = []
+  if (
+    drained.length === 0 &&
+    heldLineCount > 0 &&
+    (tooManyHeldLines ||
+      (!state.rewriteHeldAnnouncement &&
+        (prev.length !== wrappedLines.length ||
+          wrappedLines.some((line, idx) => idx < heldBase && line !== prev[idx]))))
+  ) {
+    state.heldAnnouncements = []
+    wrappedLines.length = heldBase
+  }
+
   // lastLineIdx + park fallback use the post-announce wrappedLines (binary:
   // `l=Math.max(0,n.length-1),c=i??{row:l,col:Nt(n[l]??"")}`).
   const lastLineIdx = Math.max(0, wrappedLines.length - 1)
@@ -477,6 +588,20 @@ export function renderScreenReaderDiff(
     (park.row !== lastLineIdx ? moveCursor(0, park.row - lastLineIdx) : '')
 
   write(returnToBottom + body + toPark)
+
+  // 2.1.288 #66/#7 arm (binary @213434144:
+  // `if(this.writeContent(...),H!==-1&&L>0&&!this.isExiting)
+  //    n9o(L),this.srAnnouncementHoldTimer=setTimeout(()=>{
+  //      this.srAnnouncementHoldTimer=null,this.onRender()},L);`).
+  // Only a frame that actually inserted a fresh announcement (H!==-1) AND
+  // consumed a {hold:true} request (L>0) freezes subsequent renders for L ms.
+  if (announceInsert !== -1 && holdMs > 0 && !isExiting) {
+    startScreenReaderAnnouncementHold(holdMs)
+    state.holdTimer = setTimeout(() => {
+      state.holdTimer = null
+      options.requestRender?.()
+    }, holdMs)
+  }
 
   state.prevLines = wrappedLines
   state.prevPark = park

@@ -6,6 +6,7 @@ import { stringWidth } from '../../../ink/stringWidth.js';
 import { Box, Text } from '../../../ink.js';
 import type { Question } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
 import { truncateToWidth } from '../../../utils/format.js';
+import { isScreenReaderEnabled } from '../../../utils/screenReader.js';
 type Props = {
   questions: Question[];
   currentQuestionIndex: number;
@@ -13,7 +14,7 @@ type Props = {
   hideSubmitTab?: boolean;
 };
 export function QuestionNavigationBar(t0) {
-  const $ = _c(39);
+  const $ = _c(41);
   const {
     questions,
     currentQuestionIndex,
@@ -24,6 +25,7 @@ export function QuestionNavigationBar(t0) {
   const {
     columns
   } = useTerminalSize();
+  const srEnabled = isScreenReaderEnabled();
   let t2;
   if ($[0] !== columns || $[1] !== currentQuestionIndex || $[2] !== hideSubmitTab || $[3] !== questions) {
     bb0: {
@@ -107,62 +109,64 @@ export function QuestionNavigationBar(t0) {
     t3 = $[16];
   }
   let t4;
-  if ($[17] !== answers || $[18] !== currentQuestionIndex || $[19] !== questions || $[20] !== tabDisplayTexts) {
+  if ($[17] !== answers || $[18] !== currentQuestionIndex || $[19] !== srEnabled || $[20] !== questions || $[21] !== tabDisplayTexts) {
     let t5;
-    if ($[22] !== answers || $[23] !== currentQuestionIndex || $[24] !== tabDisplayTexts) {
+    if ($[23] !== answers || $[24] !== currentQuestionIndex || $[25] !== srEnabled || $[26] !== tabDisplayTexts) {
       t5 = (q_1, index_2) => {
         const isSelected = index_2 === currentQuestionIndex;
         const isAnswered = q_1?.question && !!answers[q_1.question];
         const checkbox = isAnswered ? figures.checkboxOn : figures.checkboxOff;
         const displayText = tabDisplayTexts[index_2] || q_1?.header || `Q${index_2 + 1}`;
-        return <Box key={q_1?.question || `question-${index_2}`}>{isSelected ? <Text backgroundColor="permission" color="inverseText">{" "}{checkbox} {displayText}{" "}</Text> : <Text>{" "}{checkbox} {displayText}{" "}</Text>}</Box>;
+        return <Box key={q_1?.question || `question-${index_2}`}>{isSelected ? <Text backgroundColor="permission" color="inverseText">{" "}{checkbox} {srEnabled && isAnswered ? "answered " : ""}{displayText}{" "}</Text> : <Text>{" "}{checkbox} {srEnabled && isAnswered ? "answered " : ""}{displayText}{" "}</Text>}</Box>;
       };
-      $[22] = answers;
-      $[23] = currentQuestionIndex;
-      $[24] = tabDisplayTexts;
-      $[25] = t5;
+      $[23] = answers;
+      $[24] = currentQuestionIndex;
+      $[25] = srEnabled;
+      $[26] = tabDisplayTexts;
+      $[27] = t5;
     } else {
-      t5 = $[25];
+      t5 = $[27];
     }
     t4 = questions.map(t5);
     $[17] = answers;
     $[18] = currentQuestionIndex;
-    $[19] = questions;
-    $[20] = tabDisplayTexts;
-    $[21] = t4;
+    $[19] = srEnabled;
+    $[20] = questions;
+    $[21] = tabDisplayTexts;
+    $[22] = t4;
   } else {
-    t4 = $[21];
+    t4 = $[22];
   }
   let t5;
-  if ($[26] !== currentQuestionIndex || $[27] !== hideSubmitTab || $[28] !== questions.length) {
+  if ($[28] !== currentQuestionIndex || $[29] !== hideSubmitTab || $[30] !== questions.length) {
     t5 = !hideSubmitTab && <Box key="submit">{currentQuestionIndex === questions.length ? <Text backgroundColor="permission" color="inverseText">{" "}{figures.tick} Submit{" "}</Text> : <Text> {figures.tick} Submit </Text>}</Box>;
-    $[26] = currentQuestionIndex;
-    $[27] = hideSubmitTab;
-    $[28] = questions.length;
-    $[29] = t5;
+    $[28] = currentQuestionIndex;
+    $[29] = hideSubmitTab;
+    $[30] = questions.length;
+    $[31] = t5;
   } else {
-    t5 = $[29];
+    t5 = $[31];
   }
   let t6;
-  if ($[30] !== currentQuestionIndex || $[31] !== hideArrows || $[32] !== questions.length) {
+  if ($[32] !== currentQuestionIndex || $[33] !== hideArrows || $[34] !== questions.length) {
     t6 = !hideArrows && <Text color={currentQuestionIndex === questions.length ? "inactive" : undefined}>{" "}→</Text>;
-    $[30] = currentQuestionIndex;
-    $[31] = hideArrows;
-    $[32] = questions.length;
-    $[33] = t6;
+    $[32] = currentQuestionIndex;
+    $[33] = hideArrows;
+    $[34] = questions.length;
+    $[35] = t6;
   } else {
-    t6 = $[33];
+    t6 = $[35];
   }
   let t7;
-  if ($[34] !== t3 || $[35] !== t4 || $[36] !== t5 || $[37] !== t6) {
+  if ($[36] !== t3 || $[37] !== t4 || $[38] !== t5 || $[39] !== t6) {
     t7 = <Box flexDirection="row" marginBottom={1}>{t3}{t4}{t5}{t6}</Box>;
-    $[34] = t3;
-    $[35] = t4;
-    $[36] = t5;
-    $[37] = t6;
-    $[38] = t7;
+    $[36] = t3;
+    $[37] = t4;
+    $[38] = t5;
+    $[39] = t6;
+    $[40] = t7;
   } else {
-    t7 = $[38];
+    t7 = $[40];
   }
   return t7;
 }

@@ -12,7 +12,7 @@ import { logEvent } from 'src/services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { isEnvTruthy } from 'src/utils/envUtils.js';
 import { logError } from 'src/utils/log.js';
-import { isScreenReaderEnabled as isScreenReaderEnabledFlag } from 'src/utils/screenReader.js';
+import { isScreenReaderEnabled as isScreenReaderEnabledFlag, endScreenReaderAnnouncementHold } from 'src/utils/screenReader.js';
 import { format } from 'util';
 import { colorize } from './colorize.js';
 import App from './components/App.js';
@@ -132,6 +132,12 @@ export default class Ink {
   };
   // Ignore last render after unmounting a tree to prevent empty output before exit
   private isUnmounted = false;
+  // 2.1.288 #66 — set true at the start of unmount() so the screen-reader
+  // flat-render flushes held announcements instead of freezing them (binary:
+  // `this.isExiting=!0` @213455138, read by onRenderScreenReader's top guard,
+  // held-lines core, and arm). Distinct from isUnmounted, which gates the
+  // whole render.
+  private isExiting = false;
   private isPaused = false;
   private readonly container: FiberRoot;
   private rootNode: dom.DOMElement;
@@ -629,7 +635,51 @@ export default class Ink {
       (data: string) => {
         this.options.stdout.write(data);
       },
+      // 2.1.288 #66 (binary @213429748/@213430744/@213434144): the renderer
+      // reads `this.terminalRows` (too-many-held-lines threshold),
+      // `this.isExiting` (flush held lines instead of freezing on exit), and
+      // re-renders on hold-timer expiry via `this.onRender()`.
+      {
+        terminalRows: this.terminalRows,
+        isExiting: this.isExiting,
+        requestRender: () => {
+          this.onRender();
+        },
+      },
     );
+  }
+
+  /**
+   * 2.1.288 #66 — keypress release of the SR announcement hold (binary
+   * @213420431, verbatim):
+   *
+   *   requestInputPriorityFrame=()=>{this.inputPriorityUntil=this.pacerNow()+Hyo;
+   *     let n=!1;
+   *     if(this.srAnnouncementHoldTimer!==null)zWe(),n=!0;
+   *     if(this.isScreenReaderEnabled&&this.srHeldAnnouncements.length>0)
+   *       this.srHeldAnnouncements=[],n=!0;
+   *     if(n)this.onRender()};
+   *
+   * The first line is the frame pacer (inputPriorityUntil/Hyo) — OCC's Ink
+   * has no frame pacer (NO-SURFACE), so only the SR release is ported: end
+   * the hold window (zWe = endHold) and drop the held announcement lines so
+   * user input immediately wins over a frozen SR frame. Wired from App's
+   * keyreader path (official: `if(n.some(Bd))this.props.onInputPriorityFrame()`
+   * before discreteUpdates @213339384).
+   */
+  requestInputPriorityFrame(): void {
+    let released = false;
+    if (this.screenReaderState.holdTimer !== null) {
+      endScreenReaderAnnouncementHold();
+      released = true;
+    }
+    if (this.isScreenReaderEnabled && this.screenReaderState.heldAnnouncements.length > 0) {
+      this.screenReaderState.heldAnnouncements = [];
+      released = true;
+    }
+    if (released) {
+      this.onRender();
+    }
   }
   onRender() {
     if (this.isUnmounted || this.isPaused) {
@@ -1723,9 +1773,21 @@ export default class Ink {
     if (!this.altScreenActive) return;
     dispatchHover(this.rootNode, col, row, this.hoveredNodes);
   }
-  dispatchKeyboardEvent(parsedKey: ParsedKey): void {
+  /**
+   * v2.1.288 #64 bridge: `defaultPrevented` carries the useInput-family
+   * InputEvent's prevented flag across (official has a single shared keyboard
+   * event; OCC splits InputEvent/KeyboardEvent — see App.processKeysInBatch).
+   * Pre-preventing here makes downstream guards like PermissionRuleList's
+   * `!De.defaultPrevented&&De.key.length===1` search router (binary
+   * @238030944) skip keys the select digit shortcut already consumed
+   * (@222622084).
+   */
+  dispatchKeyboardEvent(parsedKey: ParsedKey, defaultPrevented = false): void {
     const target = this.focusManager.activeElement ?? this.rootNode;
     const event = new KeyboardEvent(parsedKey);
+    if (defaultPrevented) {
+      event.preventDefault();
+    }
     dispatcher.dispatchDiscrete(target, event);
 
     // Tab cycling is the default action — only fires if no handler
@@ -1912,7 +1974,7 @@ export default class Ink {
   };
   render(node: ReactNode): void {
     this.currentNode = node;
-    const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent}>
+    const tree = <App stdin={this.options.stdin} stdout={this.options.stdout} stderr={this.options.stderr} exitOnCtrlC={this.options.exitOnCtrlC} onExit={this.unmount} terminalColumns={this.terminalColumns} terminalRows={this.terminalRows} selection={this.selection} onSelectionChange={this.notifySelectionChange} onClickAt={this.dispatchClick} onHoverAt={this.dispatchHover} getHyperlinkAt={this.getHyperlinkAt} onOpenHyperlink={this.openHyperlink} onMultiClick={this.handleMultiClick} onSelectionDrag={this.handleSelectionDrag} onStdinResume={this.reassertTerminalModes} onCursorDeclaration={this.setCursorDeclaration} dispatchKeyboardEvent={this.dispatchKeyboardEvent} onInputPriorityFrame={this.requestInputPriorityFrame}>
         <ScreenReaderContext.Provider value={this.isScreenReaderEnabled}>
           <TerminalWriteProvider value={this.writeRaw}>
             {node}
@@ -1926,6 +1988,18 @@ export default class Ink {
   unmount(error?: Error | number | null): void {
     if (this.isUnmounted) {
       return;
+    }
+    // 2.1.288 #66 (binary @213455138, verbatim): `if(this.isExiting=!0,
+    // …if(this.srAnnouncementHoldTimer!==null)clearTimeout(this.srAnnouncementHoldTimer),
+    // this.srAnnouncementHoldTimer=null;…this.onRender(),…` — mark exiting so
+    // the final SR render flushes held announcements instead of freezing
+    // them, and clear the hold timer so it can't fire post-unmount. (The
+    // official srStartupQuietTimer/srPreParkTimer clears in the same chain
+    // belong to SR subsystems OCC does not have — NO-SURFACE.)
+    this.isExiting = true;
+    if (this.screenReaderState.holdTimer !== null) {
+      clearTimeout(this.screenReaderState.holdTimer);
+      this.screenReaderState.holdTimer = null;
     }
     this.onRender();
     this.unsubscribeExit();

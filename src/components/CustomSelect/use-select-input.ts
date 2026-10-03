@@ -231,10 +231,14 @@ export const useSelectInput = <T>({
       }
 
       if (key.pageDown) {
+        // Official @222622084: `if(h.key==="pagedown"){h.preventDefault(),i.focusNextPage();return}`
+        event.preventDefault()
         state.focusNextPage()
       }
 
       if (key.pageUp) {
+        // Official @222622084: `if(h.key==="pageup"){h.preventDefault(),i.focusPreviousPage();return}`
+        event.preventDefault()
         state.focusPreviousPage()
       }
 
@@ -247,6 +251,8 @@ export const useSelectInput = <T>({
         ) {
           const isFocusedOptionDisabled = focusedOption?.disabled === true
           if (!isFocusedOptionDisabled) {
+            // Official @222622084: `if(W?.disabled!==!0)h.preventDefault(),i.selectFocusedOption?.(),i.onChange?.(E)`
+            event.preventDefault()
             state.selectFocusedOption?.()
             state.onChange?.(state.focusedValue)
           }
@@ -256,7 +262,14 @@ export const useSelectInput = <T>({
           disableSelection !== 'numeric' &&
           /^[0-9]+$/.test(normalizedInput)
         ) {
-          const index = parseInt(normalizedInput) - 1
+          // Official @222622084: `h.preventDefault()` fires BEFORE the range
+          // check — an out-of-range digit is still consumed here and never
+          // reaches the PermissionRuleList-style search router
+          // (`!De.defaultPrevented&&De.key.length===1` @238030944).
+          event.preventDefault()
+          // radix 10 is behavior-identical to official `parseInt(I)-1`
+          // (@222622084) — normalizedInput is digit-only past the regex gate
+          const index = parseInt(normalizedInput, 10) - 1
           if (index >= 0 && index < state.options.length) {
             const selectedOption = state.options[index]!
             if (selectedOption.disabled === true) {

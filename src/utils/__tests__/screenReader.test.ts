@@ -294,7 +294,7 @@ describe('2.1.210 #30 screen reader: announce in render-diff (binary uxc drain i
     renderScreenReaderDiff(root, 80, state, null, (d) => written.push(d))
     expect(written.join('')).toContain('[manual mode on]')
   })
-  test('announce is transient — appears on one frame, erased on the next', () => {
+  test('announce is held until released (2.1.288 #66 supersedes the 2.1.210 transient behavior)', () => {
     const root = createNode('ink-root')
     appendChildNode(root, createTextNode('stable'))
     const state = new ScreenReaderDiffState()
@@ -305,16 +305,24 @@ describe('2.1.210 #30 screen reader: announce in render-diff (binary uxc drain i
     const written2: string[] = []
     renderScreenReaderDiff(root, 80, state, null, (d) => written2.push(d))
     expect(written2.join('')).toContain('[plan mode on]')
-    // Third frame: queue is empty → announce line NOT in wrappedLines.
-    // The diff sees prev has the announce line, current doesn't → erases it.
-    // This is a write (the erase), not a no-op — the announce is transient.
+    // v2.1.288 #66: the drained announcement became a HELD line — the next
+    // frame re-appends it, the diff is unchanged, and NOTHING is written
+    // (pre-288 this frame erased the announcement; that vanish-on-next-render
+    // was the bug the 2.1.288 changelog fixed).
     const written3: string[] = []
     renderScreenReaderDiff(root, 80, state, null, (d) => written3.push(d))
-    // The erase body should contain cursor-up + erase-line sequences.
-    expect(written3.length).toBeGreaterThan(0)
-    // Fourth frame: now content + park truly unchanged → no write.
+    expect(written3).toEqual([])
+    expect(state.heldAnnouncements).toEqual(['[plan mode on]'])
+    // Still held on a further unchanged frame.
     renderScreenReaderDiff(root, 80, state, null, () => {
-      throw new Error('should not write on unchanged frame with no announce')
+      throw new Error('should not write while the announcement is held')
     })
+    // Release (official requestInputPriorityFrame keypress path): held lines
+    // dropped → the next frame erases the announcement (a write).
+    state.heldAnnouncements = []
+    const written5: string[] = []
+    renderScreenReaderDiff(root, 80, state, null, (d) => written5.push(d))
+    expect(written5.length).toBeGreaterThan(0)
+    expect(written5.join('')).not.toContain('[plan mode on]')
   })
 })

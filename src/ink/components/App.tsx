@@ -85,7 +85,19 @@ type Props = {
   readonly onCursorDeclaration?: CursorDeclarationSetter;
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.
-  readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void;
+  // v2.1.288 #64: `defaultPrevented` bridges the InputEvent (useInput
+  // handlers) and the KeyboardEvent (DOM onKeyDown handlers) — the official
+  // shares ONE event object between both families, so a preventDefault() by
+  // a useInput handler (e.g. the select's digit shortcut) is visible to
+  // onKeyDown routers. OCC has two event objects, so the flag is carried
+  // across explicitly.
+  readonly dispatchKeyboardEvent: (parsedKey: ParsedKey, defaultPrevented?: boolean) => void;
+  // v2.1.288 #66 (binary @213339384): keyreader calls
+  // `if(n.some(Bd))this.props.onInputPriorityFrame()` before discreteUpdates
+  // — releases the SR announcement hold / held lines on real user input so
+  // the next frame reflects the keypress immediately. Optional so
+  // testing.tsx doesn't need to stub it (official is non-optional).
+  readonly onInputPriorityFrame?: () => void;
 };
 
 // Multi-click detection thresholds. 500ms is the macOS default; a small
@@ -327,6 +339,17 @@ export default class App extends PureComponent<Props, State> {
     // This batches all state updates from handleInput and all useInput
     // listeners together within one high-priority update context.
     if (keys.length > 0) {
+      // v2.1.288 #66 (binary @213339384): the keyreader calls
+      // `if(n.some(Bd))this.props.onInputPriorityFrame()` BEFORE
+      // discreteUpdates — releases any SR announcement hold so the frame
+      // reflecting the keypress isn't frozen. Official
+      // `Bd = n.kind==="paste"||n.kind==="key"&&n.name!=="wheelup"&&
+      // n.name!=="wheeldown"&&n.name!=="mouse"`; OCC's ParsedInput has no
+      // 'paste' kind (paste arrives as keys with isPasted), so the predicate
+      // is the key-only half.
+      if (keys.some(isInputPriorityKey)) {
+        this.props.onInputPriorityFrame?.();
+      }
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined);
     }
 
@@ -449,6 +472,16 @@ export default class App extends PureComponent<Props, State> {
   };
 }
 
+/**
+ * v2.1.288 #66 — the key half of the official keyreader predicate `Bd`
+ * (binary @213339384): a real user key (not a wheel scroll). The official
+ * `n.kind==="paste"` half has no OCC counterpart (paste arrives as keys with
+ * `isPasted`), so it is omitted.
+ */
+function isInputPriorityKey(item: ParsedInput): boolean {
+  return item.kind === 'key' && item.name !== 'wheelup' && item.name !== 'wheeldown' && item.name !== 'mouse';
+}
+
 // Helper to process all keys within a single discrete update context.
 // discreteUpdates expects (fn, a, b, c, d) -> fn(a, b, c, d)
 function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined, _unused2: undefined): void {
@@ -517,7 +550,13 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
     app.internal_eventEmitter.emit('input', event);
 
     // Also dispatch through the DOM tree so onKeyDown handlers fire.
-    app.props.dispatchKeyboardEvent(item);
+    // v2.1.288 #64 bridge: the official has ONE keyboard event object shared
+    // by the useInput family (emitted above) and DOM onKeyDown handlers, so a
+    // preventDefault() by a useInput handler (e.g. the select's digit
+    // shortcut) is visible to onKeyDown routers (e.g. PermissionRuleList's
+    // search-mode fallback `!De.defaultPrevented&&De.key.length===1`).
+    // OCC dispatches a separate KeyboardEvent here — carry the flag across.
+    app.props.dispatchKeyboardEvent(item, event.defaultPrevented);
   }
 }
 

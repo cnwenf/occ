@@ -188,14 +188,54 @@ const SR_ANNOUNCE_MAX = 16
 let srAnnounceQueue: string[] = []
 
 /**
- * Push an announce string to the SR queue (binary: `cxc(e)`). The string is
- * emitted verbatim (after sanitization + wrapping) by the next SR flat-render
- * frame. Not gated on SR being enabled — the drain (`drainScreenReaderAnnouncements`)
- * only runs in `onRenderScreenReader`, which is only called when SR is on, so
- * pushes while SR is off are silently dropped on overflow.
+ * 2.1.288 #66/#7 — hold-requested flag (binary: `#t` on class `E`). Set by
+ * `pushScreenReaderAnnouncement(str, {hold: true})`; consumed exactly once by
+ * `consumeScreenReaderAnnouncementHoldMs()` (binary: `takeHoldRequest()`).
+ * Also cleared by `endScreenReaderAnnouncementHold()` (binary: `endHold()`
+ * sets `#a=0,#t=!1`) and by `resetScreenReaderAnnouncements()`.
  */
-export function pushScreenReaderAnnouncement(str: string): void {
+let srHoldRequested = false
+
+/**
+ * 2.1.288 #66 — absolute hold-window deadline in epoch ms (binary: `#a`).
+ * While `Date.now() < srHoldUntilMs`, the SR renderer freezes re-renders so
+ * the held announcement stays the last thing on screen (binary:
+ * `holdActive(e){return e<this.#a}`). 0 = no active hold.
+ */
+let srHoldUntilMs = 0
+
+/**
+ * Default hold duration in ms (binary: `a.CLAUDE_AX_ANNOUNCEMENT_HOLD_MS??1000`).
+ */
+const SR_ANNOUNCEMENT_HOLD_DEFAULT_MS = 1000
+
+/**
+ * Upper cap for the hold duration (binary: `Math.min(…,1e4)` in `t9o`).
+ */
+const SR_ANNOUNCEMENT_HOLD_MAX_MS = 10_000
+
+/**
+ * Push an announce string to the SR queue (binary: `cxc(e)` / 2.1.288 `QW(e,n)`).
+ * The string is emitted verbatim (after sanitization + wrapping) by the next
+ * SR flat-render frame. Not gated on SR being enabled — the drain
+ * (`drainScreenReaderAnnouncements`) only runs in `onRenderScreenReader`,
+ * which is only called when SR is on, so pushes while SR is off are silently
+ * dropped on overflow.
+ *
+ * 2.1.288 #7/#66: `{hold: true}` additionally raises the hold-request flag
+ * (binary: `queueAnnouncement(e,n=!1){if(this.#e.push(e),n)this.#t=!0;…}`),
+ * which makes the next SR render arm a hold window (render freeze) so the
+ * announcement isn't immediately overwritten. Only the permission-mode
+ * announcements push with hold in the official binary (`{hold:!0}` occurs
+ * exactly twice — the dialog helper `HE` and the REPL initialMessage
+ * consumer, both `[${TL(mode)} on]`).
+ */
+export function pushScreenReaderAnnouncement(
+  str: string,
+  options?: { hold?: boolean },
+): void {
   srAnnounceQueue.push(str)
+  if (options?.hold === true) srHoldRequested = true
   if (srAnnounceQueue.length > SR_ANNOUNCE_MAX) {
     srAnnounceQueue.splice(0, srAnnounceQueue.length - SR_ANNOUNCE_MAX)
   }
@@ -214,7 +254,75 @@ export function drainScreenReaderAnnouncements(): string[] {
   return drained
 }
 
-/** Clear the announce queue (test isolation / SR reset). */
+/**
+ * Clear the announce queue (test isolation / SR reset). 2.1.288: official
+ * class `E.reset()` also clears the hold state (`#e.length=0,#t=!1,#a=0`),
+ * so the pending hold request and active hold window are cleared here too.
+ */
 export function resetScreenReaderAnnouncements(): void {
   srAnnounceQueue = []
+  srHoldRequested = false
+  srHoldUntilMs = 0
+}
+
+// ──────────────── Announcement hold (2.1.288 #66; binary: `t9o`/`n9o`/`zWe`/`r9o`) ────────────────
+
+/**
+ * Consume the pending hold request and return the hold duration in ms
+ * (binary: `t9o()`):
+ *
+ *   function t9o(){if(r().takeHoldRequest())
+ *     return Math.min(a.CLAUDE_AX_ANNOUNCEMENT_HOLD_MS??1000,1e4);return 0}
+ *
+ * Returns 0 when no `{hold: true}` push is pending. The flag is one-shot —
+ * taking it clears it (binary: `takeHoldRequest(){let e=this.#t;return
+ * this.#t=!1,e}`). `CLAUDE_AX_ANNOUNCEMENT_HOLD_MS` overrides the 1000ms
+ * default, capped at 10s. Official reads a schema-typed env record (`a.`);
+ * OCC parses the raw string — a non-numeric value falls back to the default
+ * (official `??1000` covers undefined; NaN coercion is OCC-defined).
+ */
+export function consumeScreenReaderAnnouncementHoldMs(): number {
+  const held = srHoldRequested
+  srHoldRequested = false
+  if (!held) return 0
+  const raw = process.env.CLAUDE_AX_ANNOUNCEMENT_HOLD_MS
+  const parsed = raw === undefined ? Number.NaN : Number(raw)
+  const ms = Number.isNaN(parsed) ? SR_ANNOUNCEMENT_HOLD_DEFAULT_MS : parsed
+  return Math.min(ms, SR_ANNOUNCEMENT_HOLD_MAX_MS)
+}
+
+/**
+ * Open the hold window for `ms` milliseconds (binary: `n9o(e){r().startHold(
+ * Date.now()+e)}`). While active, `isScreenReaderAnnouncementHoldActive()`
+ * returns true and the SR renderer skips re-renders (render freeze) so the
+ * held announcement stays on screen.
+ */
+export function startScreenReaderAnnouncementHold(ms: number): void {
+  srHoldUntilMs = Date.now() + ms
+}
+
+/**
+ * Close the hold window and discard any pending hold request (binary:
+ * `zWe()` → `endHold(){this.#a=0,this.#t=!1}`). Called on keypress so user
+ * input immediately wins over a frozen SR frame.
+ */
+export function endScreenReaderAnnouncementHold(): void {
+  srHoldUntilMs = 0
+  srHoldRequested = false
+}
+
+/** Whether the hold window is currently active (binary: `r9o(){return
+ * r().holdActive(Date.now())}` → `holdActive(e){return e<this.#a}`). */
+export function isScreenReaderAnnouncementHoldActive(): boolean {
+  return Date.now() < srHoldUntilMs
+}
+
+/**
+ * Whether held announcements may be rewritten by changed lines above
+ * (binary: `Z8o(){return a.CLAUDE_AX_REWRITE_HELD_ANNOUNCEMENT??!1}`).
+ * Default false: when the lines above a held announcement change, the held
+ * lines are dropped instead of being re-emitted in a rewritten frame.
+ */
+export function shouldRewriteHeldScreenReaderAnnouncement(): boolean {
+  return isEnvTruthy(process.env.CLAUDE_AX_REWRITE_HELD_ANNOUNCEMENT)
 }

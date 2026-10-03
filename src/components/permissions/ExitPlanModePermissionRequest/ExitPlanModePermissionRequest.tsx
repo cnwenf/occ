@@ -25,7 +25,7 @@ import { enqueuePendingNotification } from '../../../utils/messageQueueManager.j
 import { createUserMessage } from '../../../utils/messages.js';
 import { getMainLoopModel, getRuntimeMainLoopModel } from '../../../utils/model/model.js';
 import { createPromptRuleContent, isClassifierPermissionsEnabled, PROMPT_PREFIX } from '../../../utils/permissions/bashClassifier.js';
-import { type PermissionMode, toExternalPermissionMode } from '../../../utils/permissions/PermissionMode.js';
+import { type PermissionMode, permissionModeIndicator, toExternalPermissionMode } from '../../../utils/permissions/PermissionMode.js';
 import type { PermissionUpdate } from '../../../utils/permissions/PermissionUpdateSchema.js';
 import { isAutoModeGateEnabled, restoreDangerousPermissions, stripDangerousPermissionsForAutoMode } from '../../../utils/permissions/permissionSetup.js';
 import { getPewterLedgerVariant, isPlanModeInterviewPhaseEnabled } from '../../../utils/planModeV2.js';
@@ -33,6 +33,7 @@ import { getPlan, getPlanFilePath } from '../../../utils/plans.js';
 import { editFileInEditor, editPromptInEditor } from '../../../utils/promptEditor.js';
 import { getCurrentSessionTitle, getTranscriptPath, saveAgentName, saveCustomTitle } from '../../../utils/sessionStorage.js';
 import { getSettings_DEPRECATED } from '../../../utils/settings/settings.js';
+import { pushScreenReaderAnnouncement } from '../../../utils/screenReader.js';
 import { type OptionWithDescription, Select } from '../../CustomSelect/index.js';
 import { Markdown } from '../../Markdown.js';
 import { PermissionDialog } from '../PermissionDialog.js';
@@ -48,6 +49,25 @@ import type { ImageDimensions } from '../../../utils/imageResizer.js';
 import { maybeResizeAndDownsampleImageBlock } from '../../../utils/imageResizer.js';
 import { cacheImagePath, storeImage } from '../../../utils/imageStore.js';
 type ResponseValue = 'yes-bypass-permissions' | 'yes-accept-edits' | 'yes-accept-edits-keep-context' | 'yes-default-keep-context' | 'yes-resume-auto-mode' | 'yes-auto-clear-context' | 'ultraplan' | 'no';
+
+/**
+ * 2.1.288 #7 — screen-reader announcement of the new permission mode on plan
+ * approval (binary @229358293: `function HE(h){QW(`[${TL(h)} on]`,{hold:!0})}`).
+ * Verbatim official string: bracket, mode indicator, space, "on", bracket;
+ * `{hold: true}` arms the #66 announcement hold window. The clearContext rows
+ * do NOT call this — the REPL initialMessage consumer announces those (also
+ * the Shift+Tab keyboard-shortcut path, which routes through initialMessage).
+ *
+ * Divergence: official guards two of the three call sites with `!==!1` because
+ * official onAllow returns a boolean; OCC's onAllow returns void
+ * (PermissionRequest.tsx ToolUseConfirm.onAllow), so OCC announces
+ * unconditionally after the call.
+ */
+function announcePermissionModeOn(mode: PermissionMode): void {
+  pushScreenReaderAnnouncement(`[${permissionModeIndicator(mode)} on]`, {
+    hold: true
+  });
+}
 
 /**
  * Build permission updates for plan approval, including prompt-based rules if provided.
@@ -419,6 +439,8 @@ export function ExitPlanModePermissionRequest({
       }));
       onDone();
       toolUseConfirm.onAllow(updatedInput, [], acceptFeedback);
+      // 2.1.288 #7 — official @229364175: `E(Kr()),HE("auto")` (unconditional).
+      announcePermissionModeOn('auto');
       return;
     }
 
@@ -448,6 +470,10 @@ export function ExitPlanModePermissionRequest({
       setNeedsPlanModeExitAttachment(true);
       onDone();
       toolUseConfirm.onAllow(updatedInput, buildPermissionUpdates(keepContextMode, allowedPrompts), acceptFeedback);
+      // 2.1.288 #7 — official @229364489: `E(Kr())!==!1)HE(bs)` where bs is the
+      // keepContextMode. OCC's onAllow returns void, so the `!==!1` guard
+      // cannot be mirrored — announce unconditionally (documented divergence).
+      announcePermissionModeOn(keepContextMode);
       return;
     }
 
@@ -586,6 +612,9 @@ export function ExitPlanModePermissionRequest({
           mode: 'default',
           destination: 'session'
         }]);
+        // 2.1.288 #7 — official @229365336: `!==!1)HE("default")`. OCC's
+        // onAllow returns void — announce unconditionally (divergence, above).
+        announcePermissionModeOn('default');
       } else {
         logEvent('tengu_plan_exit', {
           planLengthChars: 0,

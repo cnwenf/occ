@@ -194,6 +194,18 @@ export class InputEvent extends Event {
   readonly key: Key
   readonly input: string
 
+  /**
+   * v2.1.288 #64 bridge: the official has ONE keyboard event object shared by
+   * the useInput family and DOM onKeyDown handlers (binary @222622084:
+   * `h.preventDefault()` inside the select digit branch is visible to the
+   * PermissionRuleList router's `!De.defaultPrevented` guard @238030944).
+   * OCC dispatches two event objects (InputEvent via EventEmitter,
+   * KeyboardEvent via the DOM dispatcher), so InputEvent grows a
+   * preventDefault/defaultPrevented pair and App.processKeysInBatch carries
+   * the flag into dispatchKeyboardEvent (see ink.tsx).
+   */
+  private _defaultPrevented = false
+
   constructor(keypress: ParsedKey) {
     super()
     const [key, input] = parseKey(keypress)
@@ -201,5 +213,13 @@ export class InputEvent extends Event {
     this.keypress = keypress
     this.key = key
     this.input = input
+  }
+
+  get defaultPrevented(): boolean {
+    return this._defaultPrevented
+  }
+
+  preventDefault(): void {
+    this._defaultPrevented = true
   }
 }

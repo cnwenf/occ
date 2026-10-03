@@ -692,7 +692,10 @@ export function PermissionRuleList(t0) {
         setIsSearchMode(true);
         setSearchQuery("");
       } else {
-        if (e.key.length === 1 && e.key !== "j" && e.key !== "k" && e.key !== "m" && e.key !== "i" && e.key !== "r" && e.key !== " ") {
+        // v2.1.288 #64 — official @238030944: `else if(!De.defaultPrevented&&De.key.length===1&&…)`
+        // A digit already consumed by the Select shortcut (preventDefault in
+        // use-select-input) must NOT open search.
+        if (!e.defaultPrevented && e.key.length === 1 && e.key !== "j" && e.key !== "k" && e.key !== "m" && e.key !== "i" && e.key !== "r" && e.key !== " ") {
           e.preventDefault();
           setIsSearchMode(true);
           setSearchQuery(e.key);

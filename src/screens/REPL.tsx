@@ -126,6 +126,8 @@ import type { ToolPermissionContext, Tool } from '../Tool.js';
 import { applyPermissionUpdate, applyPermissionUpdates, persistPermissionUpdate } from '../utils/permissions/PermissionUpdate.js';
 import { buildPermissionUpdates } from '../components/permissions/ExitPlanModePermissionRequest/ExitPlanModePermissionRequest.js';
 import { stripDangerousPermissionsForAutoMode } from '../utils/permissions/permissionSetup.js';
+import { permissionModeIndicator } from '../utils/permissions/PermissionMode.js';
+import { pushScreenReaderAnnouncement } from '../utils/screenReader.js';
 import type { PermissionMode } from '../types/permissions.js';
 import { getScratchpadDir, isScratchpadEnabled } from '../utils/permissions/filesystem.js';
 import { WEB_FETCH_TOOL_NAME } from '../tools/WebFetchTool/prompt.js';
@@ -218,6 +220,7 @@ import { ExitFlow } from '../components/ExitFlow.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter, makeQueuedDispatchOnQuery } from '../utils/messageQueueManager.js';
 import { type SendNowFlushDeps, sendQueuedNow, sendQueuedNowOnEmptyEnter, SEND_NOW_ABORT_REASON, SEND_NOW_EMPTY_ENTER_GATE, QUEUED_SEND_NOW_SOURCE } from '../utils/sendNow.js';
+import { stampSendNowCutSignal } from '../utils/sendNowCut.js';
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
 import { startBackgroundSession } from '../tasks/LocalMainSessionTask.js';
@@ -3306,6 +3309,23 @@ export function REPL({
         };
       });
 
+      // 2.1.288 #7 — SR announcement of the new permission mode on plan
+      // approval (binary @229541912, immediately after the setAppState that
+      // consumes the initialMessage's mode):
+      //   let xt=N.getState().toolPermissionContext.mode;
+      //   if(Ct.mode&&xt===Ct.mode)QW(`[${TL(xt)} on]`,{hold:!0});
+      // The `resultingMode === initialMsg.mode` guard means no announcement
+      // when the TRANSCRIPT_CLASSIFIER 'auto'-override above changed the
+      // landed mode — same observable behavior as official. This consumer
+      // also covers the dialog's clearContext rows and the Shift+Tab
+      // keyboard-shortcut approval path (both route through initialMessage).
+      const resultingMode = store.getState().toolPermissionContext.mode;
+      if (initialMsg.mode && resultingMode === initialMsg.mode) {
+        pushScreenReaderAnnouncement(`[${permissionModeIndicator(resultingMode)} on]`, {
+          hold: true
+        });
+      }
+
       // Create file history snapshot for code rewind
       if (fileHistoryEnabled()) {
         void fileHistoryMakeSnapshot((updater: (prev: FileHistoryState) => FileHistoryState) => {
@@ -4148,6 +4168,14 @@ export function REPL({
       if (!controller || controller.signal.aborted) {
         return false;
       }
+      // CC 2.1.288 #59: official `interruptForSubmit` @229515877 records the
+      // signal BEFORE aborting — `this._sendNowCutSignal=h.signal,
+      // h.abort(fl("user-cancel"))` — so the interrupt placeholder this cut
+      // produces gets stamped `interruptedBySendNow` and the row renderer can
+      // drop the "What should Claude do instead?" hint. The Esc interrupt
+      // aborts with the same reason string, so signal identity is the only
+      // discriminator.
+      stampSendNowCutSignal(controller.signal);
       controller.abort(SEND_NOW_ABORT_REASON);
       return true;
     },
