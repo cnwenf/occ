@@ -5,6 +5,9 @@
  */
 import { basename } from 'path'
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process'
+import { constants as BUFFER_CONSTANTS } from 'buffer'
+import snakeCase from 'lodash-es/snakeCase.js'
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import { pathExists } from './file.js'
 import { parseEnvInt } from './envValidation.js'
 import { wrapSpawn } from './ShellCommand.js'
@@ -2766,16 +2769,200 @@ function hasHookForEvent(
   appState: AppState | undefined,
   sessionId: string,
 ): boolean {
-  const snap = getHooksConfigFromSnapshot()?.[hookEvent]
-  if (snap && snap.length > 0) return true
-  const reg = getRegisteredHooks()?.[hookEvent]
-  if (reg && reg.length > 0) return true
-  if (appState?.sessionHooks.get(sessionId)?.hooks[hookEvent]) return true
-  return false
+  try {
+    const snap = getHooksConfigFromSnapshot()?.[hookEvent]
+    if (snap && snap.length > 0) return true
+    const reg = getRegisteredHooks()?.[hookEvent]
+    if (reg && reg.length > 0) return true
+    if (appState?.sessionHooks.get(sessionId)?.hooks[hookEvent]) return true
+    return false
+  } catch {
+    // claude-code 2.1.288 #57: a throw here is the same matcher failure
+    // getMatchingHooks surfaces. Over-approximate (per the doc above) so the
+    // full matching path runs and the fail-closed guard decides — never let
+    // this fast-path existence check become a silent skip for guarded events.
+    return true
+  }
+}
+
+// ---------------------------------------------------------------------------
+// claude-code 2.1.288 #57: PreToolUse/PermissionRequest hooks FAIL CLOSED.
+// When hook matching throws, or the hook input can't be written as JSON (or
+// exceeds the size cap), guarded tool calls are BLOCKED instead of silently
+// proceeding with no hooks. All shapes/messages byte-extracted from the
+// official v288 binary:
+//   vz=new Set(["PreToolUse","PermissionRequest"])              @199956866
+//   kHn="tengu_quiet_hopcroft"                                  @207801374
+//   bq: guarded? try{value!==true}catch{true} — opt-out gate    @~207801400
+//   Mlt: Math.floor(buffer.constants.MAX_STRING_LENGTH/2)       (size cap)
+//   a2t(e,n): n.length>Mlt()&&bq(e)                             (oversize)
+//   lee: blocking-result builder                                @~207801650
+//   Ilt: JSON-unwritable message                                @207801776
+//   Olt: matcher-failure message                                @207802077
+//   d2t: logError + tengu_feature_bad(hook_<snake(event)>)      @209482506
+//   C0e: script-hook guard (dormant in OCC — no 'script' type)  @209481900
+// ---------------------------------------------------------------------------
+
+/** Official `vz` — the events whose hooks must fail closed. */
+export const GUARDED_HOOK_EVENTS: ReadonlySet<HookEvent> = new Set<HookEvent>([
+  'PreToolUse',
+  'PermissionRequest',
+])
+
+/** Official `kHn` — GrowthBook dynamic-config key that opts OUT of fail-closed. */
+export const HOOK_FAIL_CLOSED_OPT_OUT_KEY = 'tengu_quiet_hopcroft'
+
+/**
+ * Official `bq(e)`: whether matcher/serialization failures for this event
+ * must BLOCK the call. Non-guarded events keep the legacy fail-open behavior.
+ * Official: `if(!vz.has(e))return!1;try{let{value:n,source:r}=co(kHn,!1);
+ * return!(n===!0&&r==="payload"&&!$fe())}catch{return!0}`.
+ *
+ * Deviation: OCC's getFeatureValue_CACHED_MAY_BE_STALE does not expose the
+ * value's source, so any explicit `true` counts as opt-out (official requires
+ * source==="payload" and a default-host check). A throwing read still fails
+ * CLOSED, matching the official catch→true.
+ */
+export function shouldFailClosedForHookEvent(hookEvent: HookEvent): boolean {
+  if (!GUARDED_HOOK_EVENTS.has(hookEvent)) {
+    return false
+  }
+  try {
+    const optedOut = getFeatureValue_CACHED_MAY_BE_STALE<boolean>(
+      HOOK_FAIL_CLOSED_OPT_OUT_KEY,
+      false,
+    )
+    return optedOut !== true
+  } catch {
+    return true
+  }
+}
+
+/** Official `Mlt()`: half of the runtime's max string length, per call. */
+export function getHookInputSizeLimit(): number {
+  return Math.floor(BUFFER_CONSTANTS.MAX_STRING_LENGTH / 2)
+}
+
+/** Official `a2t(e,n)`: `n.length>Mlt()&&bq(e)`. */
+export function isHookInputOverSizeLimit(
+  hookEvent: HookEvent,
+  json: string,
+): boolean {
+  return json.length > getHookInputSizeLimit() && shouldFailClosedForHookEvent(hookEvent)
+}
+
+/**
+ * Official `Ilt(e)` — verbatim block message for hook input that can't be
+ * written as JSON. `error === undefined` drops the "(JSON error: …)" suffix
+ * (official: remote/cloud calls only; OCC always passes the error).
+ */
+export function hookInputNotJsonWritableMessage(error?: unknown): string {
+  return `Blocked: this call's input can't be written as JSON, so the hook could not check it. The input is too large, or contains a value that JSON can't represent (such as a BigInt or a circular reference). Retry with a smaller, plain input.${error === undefined ? '' : ` (JSON error: ${errorMessage(error)})`}`
+}
+
+/**
+ * Official `Olt(e,n)` — verbatim block message when hook matching itself
+ * fails. `e` is the hook EVENT name (not the `Event:matcher` hook name).
+ */
+export function hookMatchingFailedBlockingMessage(
+  hookEvent: HookEvent,
+  error?: unknown,
+): string {
+  return `Blocked: Claude Code could not work out which hooks apply to this call. Retry with a different input. If every call is blocked, check the ${hookEvent} hooks in /hooks or in your settings.${error === undefined ? '' : ` (${errorMessage(error)})`}`
+}
+
+/**
+ * Official `lee(e,n,r)`: build the fail-closed blocking result, or `undefined`
+ * when the event is not guarded / opted out (caller then fails open).
+ * PermissionRequest additionally carries the deny permissionRequestResult.
+ */
+export function buildHookFailClosedBlockingResult(
+  hookEvent: HookEvent,
+  command: string,
+  message: string,
+):
+  | {
+      blockingError: HookBlockingError
+      permissionRequestResult?: PermissionRequestResult
+    }
+  | undefined {
+  if (!shouldFailClosedForHookEvent(hookEvent)) {
+    return undefined
+  }
+  return {
+    blockingError: { blockingError: message, command },
+    ...(hookEvent === 'PermissionRequest'
+      ? {
+          permissionRequestResult: {
+            behavior: 'deny',
+            message,
+          } as PermissionRequestResult,
+        }
+      : {}),
+  }
+}
+
+/**
+ * Official `C0e(e,n,r,s)`: a 'script'-type hook on a guarded event that could
+ * not run BLOCKS — "a guard that cannot run blocks". DORMANT in OCC: the OCC
+ * hook union has no 'script' type, so this always returns undefined today;
+ * ported verbatim so the guard exists if script hooks ever land.
+ */
+export function buildScriptGuardDidNotRunResult(
+  hook: HookResult['hook'],
+  hookEvent: HookEvent,
+  hookLabel: string,
+  reason: string,
+): HookResult | undefined {
+  if (
+    (hook as { type: string }).type !== 'script' ||
+    !GUARDED_HOOK_EVENTS.has(hookEvent)
+  ) {
+    return undefined
+  }
+  const message = `[${hookLabel}]: did not run (${reason}) — a ${hookEvent} guard that cannot run blocks`
+  return {
+    blockingError: { blockingError: message, command: hookLabel },
+    ...buildHookFailClosedBlockingResult(hookEvent, hookLabel, message),
+    outcome: 'blocking',
+    hook,
+  }
+}
+
+/**
+ * Official `d2t(e,n)` + `m(Eee(e),code)`: logError("Failed to match hooks")
+ * and emit tengu_feature_bad with feature_name `hook_${snakeCase(event)}`
+ * (official `Eee`, e.g. PreToolUse → hook_pre_tool_use).
+ */
+export function logHookFeatureBadTelemetry(
+  hookEvent: HookEvent,
+  errorCode: string,
+): void {
+  logEvent('tengu_feature_bad', {
+    feature_name:
+      `hook_${snakeCase(hookEvent)}` as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    error_code:
+      errorCode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  })
+}
+
+/** Official `d2t(e,n)`. Fires for ALL events (guard-independent), like the official. */
+export function logHookMatchingFailedTelemetry(
+  hookEvent: HookEvent,
+  cause: unknown,
+): void {
+  logError(new Error('Failed to match hooks', { cause }))
+  logHookFeatureBadTelemetry(hookEvent, 'hook_matching_failed')
 }
 
 /**
  * Get hook commands that match the given query
+ *
+ * claude-code 2.1.288 #57: matching errors PROPAGATE (the old fail-open
+ * `catch { return [] }` let a guarded PreToolUse/PermissionRequest call run
+ * with NO hooks checked). Both callers — executeHooks (REPL) and
+ * executeHooksOutsideREPL (SDK/-p) — catch and apply the fail-closed guard;
+ * non-guarded events keep the old fail-open behavior there.
  * @param appState The current app state (optional for backwards compatibility)
  * @param sessionId The current session ID (main session or agent ID)
  * @param hookEvent The hook event
@@ -2789,313 +2976,309 @@ export async function getMatchingHooks(
   hookInput: HookInput,
   tools?: Tools,
 ): Promise<MatchedHook[]> {
-  try {
-    const hookMatchers = getHooksConfig(appState, sessionId, hookEvent)
+  const hookMatchers = getHooksConfig(appState, sessionId, hookEvent)
 
-    // If you change the criteria below, then you must change
-    // src/utils/hooks/hooksConfigManager.ts as well.
-    let matchQuery: string | undefined 
-    switch (hookInput.hook_event_name) {
-      case 'PreToolUse':
-      case 'PostToolUse':
-      case 'PostToolUseFailure':
-      case 'PermissionRequest':
-      case 'PermissionDenied':
-        matchQuery = hookInput.tool_name as string
-        break
-      case 'SessionStart':
-        matchQuery = hookInput.source as string
-        break
-      case 'Setup':
-        matchQuery = hookInput.trigger as string
-        break
-      case 'PreCompact':
-      case 'PostCompact':
-        matchQuery = hookInput.trigger as string
-        break
-      case 'Notification':
-        matchQuery = hookInput.notification_type as string
-        break
-      case 'SessionEnd':
-        matchQuery = hookInput.reason as string
-        break
-      case 'PostSession':
-        matchQuery = hookInput.reason as string
-        break
-      case 'StopFailure':
-        matchQuery = hookInput.error as string
-        break
-      case 'SubagentStart':
-        matchQuery = hookInput.agent_type as string
-        break
-      case 'SubagentStop':
-        matchQuery = hookInput.agent_type as string
-        break
-      case 'TeammateIdle':
-      case 'TaskCreated':
-      case 'TaskCompleted':
-        break
-      case 'Elicitation':
-        matchQuery = hookInput.mcp_server_name as string
-        break
-      case 'ElicitationResult':
-        matchQuery = hookInput.mcp_server_name as string
-        break
-      case 'ConfigChange':
-        matchQuery = hookInput.source as string
-        break
-      // 2.1.219: DirectoryAdded matches on the add origin (decompiled `a2t`
-      // invokes the executor with matchQuery: source).
-      case 'DirectoryAdded':
-        matchQuery = hookInput.source as string
-        break
-      case 'InstructionsLoaded':
-        matchQuery = hookInput.load_reason as string
-        break
-      case 'FileChanged':
-        matchQuery = basename(hookInput.file_path as string)
-        break
-      // cross-version: UserPromptExpansion matches on the expanded command
-      // name (e.g. "/review", "mcp__foo__bar") — binary: command_name.
-      case 'UserPromptExpansion':
-        matchQuery = hookInput.command_name as string
-        break
-      default:
-        break
-    }
+  // If you change the criteria below, then you must change
+  // src/utils/hooks/hooksConfigManager.ts as well.
+  let matchQuery: string | undefined 
+  switch (hookInput.hook_event_name) {
+    case 'PreToolUse':
+    case 'PostToolUse':
+    case 'PostToolUseFailure':
+    case 'PermissionRequest':
+    case 'PermissionDenied':
+      matchQuery = hookInput.tool_name as string
+      break
+    case 'SessionStart':
+      matchQuery = hookInput.source as string
+      break
+    case 'Setup':
+      matchQuery = hookInput.trigger as string
+      break
+    case 'PreCompact':
+    case 'PostCompact':
+      matchQuery = hookInput.trigger as string
+      break
+    case 'Notification':
+      matchQuery = hookInput.notification_type as string
+      break
+    case 'SessionEnd':
+      matchQuery = hookInput.reason as string
+      break
+    case 'PostSession':
+      matchQuery = hookInput.reason as string
+      break
+    case 'StopFailure':
+      matchQuery = hookInput.error as string
+      break
+    case 'SubagentStart':
+      matchQuery = hookInput.agent_type as string
+      break
+    case 'SubagentStop':
+      matchQuery = hookInput.agent_type as string
+      break
+    case 'TeammateIdle':
+    case 'TaskCreated':
+    case 'TaskCompleted':
+      break
+    case 'Elicitation':
+      matchQuery = hookInput.mcp_server_name as string
+      break
+    case 'ElicitationResult':
+      matchQuery = hookInput.mcp_server_name as string
+      break
+    case 'ConfigChange':
+      matchQuery = hookInput.source as string
+      break
+    // 2.1.219: DirectoryAdded matches on the add origin (decompiled `a2t`
+    // invokes the executor with matchQuery: source).
+    case 'DirectoryAdded':
+      matchQuery = hookInput.source as string
+      break
+    case 'InstructionsLoaded':
+      matchQuery = hookInput.load_reason as string
+      break
+    case 'FileChanged':
+      matchQuery = basename(hookInput.file_path as string)
+      break
+    // cross-version: UserPromptExpansion matches on the expanded command
+    // name (e.g. "/review", "mcp__foo__bar") — binary: command_name.
+    case 'UserPromptExpansion':
+      matchQuery = hookInput.command_name as string
+      break
+    default:
+      break
+  }
 
-    logForDebugging(
-      `Getting matching hook commands for ${hookEvent} with query: ${matchQuery}`,
-      { level: 'verbose' },
-    )
-    logForDebugging(`Found ${hookMatchers.length} hook matchers in settings`, {
-      level: 'verbose',
-    })
+  logForDebugging(
+    `Getting matching hook commands for ${hookEvent} with query: ${matchQuery}`,
+    { level: 'verbose' },
+  )
+  logForDebugging(`Found ${hookMatchers.length} hook matchers in settings`, {
+    level: 'verbose',
+  })
 
-    // Extract hooks with their plugin context (if any)
-    // 2.1.191/2.1.195: matcher events admit comma-separated tool lists and
-    // hyphenated identifiers as exact-match literals.
-    const commaHyphenSupport = MATCHER_COMMA_HYPHEN_EVENTS.has(hookEvent)
-    // 2.1.276: gate on `undefined`, not truthiness (binary `uBn`:
-    // `w!==void 0?y.filter(...):y`). With truthiness, SubagentStop's
-    // `agent_type: agentType ?? ''` skipped matcher filtering for every
-    // subagent without a resolved agent type, firing ALL SubagentStop hooks
-    // regardless of matcher. `''` is a real match value: it fails a specific
-    // matcher (e.g. 'code-reviewer') and only passes absent/'*' matchers.
-    const filteredMatchers = matchQuery !== undefined
-      ? hookMatchers.filter(
-          matcher =>
-            !matcher.matcher ||
-            matchesPattern(matchQuery, matcher.matcher, commaHyphenSupport),
-        )
-      : hookMatchers
-
-    const matchedHooks: MatchedHook[] = filteredMatchers.flatMap(matcher => {
-      // Check if this is a PluginHookMatcher (has pluginRoot) or SkillHookMatcher (has skillRoot)
-      const pluginRoot =
-        'pluginRoot' in matcher ? matcher.pluginRoot : undefined
-      const pluginId = 'pluginId' in matcher ? matcher.pluginId : undefined
-      const skillRoot = 'skillRoot' in matcher ? matcher.skillRoot : undefined
-      const hookSource = pluginRoot
-        ? 'pluginName' in matcher
-          ? `plugin:${matcher.pluginName}`
-          : 'plugin'
-        : skillRoot
-          ? 'skillName' in matcher
-            ? `skill:${matcher.skillName}`
-            : 'skill'
-          : 'settings'
-      return matcher.hooks.map(hook => ({
-        hook,
-        pluginRoot,
-        pluginId,
-        skillRoot,
-        hookSource,
-      }))
-    })
-
-    // Deduplicate hooks by command/prompt/url within the same source context.
-    // Key is namespaced by pluginRoot/skillRoot (see hookDedupKey above) so
-    // cross-plugin template collisions don't drop hooks (gh-29724).
-    //
-    // Note: new Map(entries) keeps the LAST entry on key collision, not first.
-    // For settings hooks this means the last-merged scope wins; for
-    // same-plugin duplicates the pluginRoot is identical so it doesn't matter.
-    // Fast-path: callback/function hooks don't need dedup (each is unique).
-    // Skip the 6-pass filter + 4×Map + 4×Array.from below when all hooks are
-    // callback/function — the common case for internal hooks like
-    // sessionFileAccessHooks/attributionHooks (44x faster in microbench).
-    if (
-      matchedHooks.every(
-        m => m.hook.type === 'callback' || m.hook.type === 'function',
+  // Extract hooks with their plugin context (if any)
+  // 2.1.191/2.1.195: matcher events admit comma-separated tool lists and
+  // hyphenated identifiers as exact-match literals.
+  const commaHyphenSupport = MATCHER_COMMA_HYPHEN_EVENTS.has(hookEvent)
+  // 2.1.276: gate on `undefined`, not truthiness (binary `uBn`:
+  // `w!==void 0?y.filter(...):y`). With truthiness, SubagentStop's
+  // `agent_type: agentType ?? ''` skipped matcher filtering for every
+  // subagent without a resolved agent type, firing ALL SubagentStop hooks
+  // regardless of matcher. `''` is a real match value: it fails a specific
+  // matcher (e.g. 'code-reviewer') and only passes absent/'*' matchers.
+  const filteredMatchers = matchQuery !== undefined
+    ? hookMatchers.filter(
+        matcher =>
+          !matcher.matcher ||
+          matchesPattern(matchQuery, matcher.matcher, commaHyphenSupport),
       )
-    ) {
-      return matchedHooks
-    }
+    : hookMatchers
 
-    // Helper to extract the `if` condition from a hook for dedup keys.
-    // Hooks with different `if` conditions are distinct even if otherwise identical.
-    const getIfCondition = (hook: { if?: string }): string => hook.if ?? ''
+  const matchedHooks: MatchedHook[] = filteredMatchers.flatMap(matcher => {
+    // Check if this is a PluginHookMatcher (has pluginRoot) or SkillHookMatcher (has skillRoot)
+    const pluginRoot =
+      'pluginRoot' in matcher ? matcher.pluginRoot : undefined
+    const pluginId = 'pluginId' in matcher ? matcher.pluginId : undefined
+    const skillRoot = 'skillRoot' in matcher ? matcher.skillRoot : undefined
+    const hookSource = pluginRoot
+      ? 'pluginName' in matcher
+        ? `plugin:${matcher.pluginName}`
+        : 'plugin'
+      : skillRoot
+        ? 'skillName' in matcher
+          ? `skill:${matcher.skillName}`
+          : 'skill'
+        : 'settings'
+    return matcher.hooks.map(hook => ({
+      hook,
+      pluginRoot,
+      pluginId,
+      skillRoot,
+      hookSource,
+    }))
+  })
 
-    const uniqueCommandHooks = Array.from(
-      new Map(
-        matchedHooks
-          .filter(
-            (
-              m,
-            ): m is MatchedHook & { hook: HookCommand & { type: 'command' } } =>
-              m.hook.type === 'command',
-          )
-          // shell is part of identity: {command:'echo x', shell:'bash'}
-          // and {command:'echo x', shell:'powershell'} are distinct hooks,
-          // not duplicates. Default to 'bash' so legacy configs (no shell
-          // field) still dedup against explicit shell:'bash'.
-          .map(m => [
-            hookDedupKey(
-              m,
-              `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${getIfCondition(m.hook)}`,
-            ),
-            m,
-          ]),
-      ).values(),
+  // Deduplicate hooks by command/prompt/url within the same source context.
+  // Key is namespaced by pluginRoot/skillRoot (see hookDedupKey above) so
+  // cross-plugin template collisions don't drop hooks (gh-29724).
+  //
+  // Note: new Map(entries) keeps the LAST entry on key collision, not first.
+  // For settings hooks this means the last-merged scope wins; for
+  // same-plugin duplicates the pluginRoot is identical so it doesn't matter.
+  // Fast-path: callback/function hooks don't need dedup (each is unique).
+  // Skip the 6-pass filter + 4×Map + 4×Array.from below when all hooks are
+  // callback/function — the common case for internal hooks like
+  // sessionFileAccessHooks/attributionHooks (44x faster in microbench).
+  if (
+    matchedHooks.every(
+      m => m.hook.type === 'callback' || m.hook.type === 'function',
     )
-    const uniquePromptHooks = Array.from(
-      new Map(
-        matchedHooks
-          .filter(m => m.hook.type === 'prompt')
-          .map(m => [
-            hookDedupKey(
-              m,
-              `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
-            ),
-            m,
-          ]),
-      ).values(),
-    )
-    const uniqueAgentHooks = Array.from(
-      new Map(
-        matchedHooks
-          .filter(m => m.hook.type === 'agent')
-          .map(m => [
-            hookDedupKey(
-              m,
-              `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
-            ),
-            m,
-          ]),
-      ).values(),
-    )
-    const uniqueHttpHooks = Array.from(
-      new Map(
-        matchedHooks
-          .filter(m => m.hook.type === 'http')
-          .map(m => [
-            hookDedupKey(
-              m,
-              `${(m.hook as { url: string }).url}\0${getIfCondition(m.hook as { if?: string })}`,
-            ),
-            m,
-          ]),
-      ).values(),
-    )
-    const callbackHooks = matchedHooks.filter(m => m.hook.type === 'callback')
-    // Function hooks don't need deduplication - each callback is unique
-    const functionHooks = matchedHooks.filter(m => m.hook.type === 'function')
-    // 2.1.118: mcp_tool hooks dedup by server/tool identity.
-    const uniqueMcpToolHooks = Array.from(
-      new Map(
-        matchedHooks
-          .filter(
-            (m): m is MatchedHook & { hook: HookCommand & { type: 'mcp_tool' } } =>
-              m.hook.type === 'mcp_tool',
-          )
-          .map(m => [
-            hookDedupKey(
-              m,
-              `${m.hook.server}/${m.hook.tool}\0${getIfCondition(m.hook)}`,
-            ),
-            m,
-          ]),
-      ).values(),
-    )
-    const uniqueHooks = [
-      ...uniqueCommandHooks,
-      ...uniquePromptHooks,
-      ...uniqueAgentHooks,
-      ...uniqueHttpHooks,
-      ...uniqueMcpToolHooks,
-      ...callbackHooks,
-      ...functionHooks,
-    ]
+  ) {
+    return matchedHooks
+  }
 
-    // Filter hooks based on their `if` condition. This allows hooks to specify
-    // conditions like "Bash(git *)" to only run for git commands, avoiding
-    // process spawning overhead for non-matching commands.
-    const hasIfCondition = uniqueHooks.some(
-      h =>
-        (h.hook.type === 'command' ||
-          h.hook.type === 'prompt' ||
-          h.hook.type === 'agent' ||
-          h.hook.type === 'http' ||
-          h.hook.type === 'mcp_tool') &&
-        (h.hook as { if?: string }).if,
-    )
-    const ifMatcher = hasIfCondition
-      ? await prepareIfConditionMatcher(hookInput, tools)
-      : undefined
-    const ifFilteredHooks = uniqueHooks.filter(h => {
-      if (
-        h.hook.type !== 'command' &&
-        h.hook.type !== 'prompt' &&
-        h.hook.type !== 'agent' &&
-        h.hook.type !== 'http' &&
-        h.hook.type !== 'mcp_tool'
-      ) {
-        return true
-      }
-      const ifCondition = (h.hook as { if?: string }).if
-      if (!ifCondition) {
-        return true
-      }
-      if (!ifMatcher) {
-        logForDebugging(
-          `Hook if condition "${ifCondition}" cannot be evaluated for non-tool event ${hookInput.hook_event_name}`,
+  // Helper to extract the `if` condition from a hook for dedup keys.
+  // Hooks with different `if` conditions are distinct even if otherwise identical.
+  const getIfCondition = (hook: { if?: string }): string => hook.if ?? ''
+
+  const uniqueCommandHooks = Array.from(
+    new Map(
+      matchedHooks
+        .filter(
+          (
+            m,
+          ): m is MatchedHook & { hook: HookCommand & { type: 'command' } } =>
+            m.hook.type === 'command',
         )
-        return false
-      }
-      if (ifMatcher(ifCondition)) {
-        return true
-      }
+        // shell is part of identity: {command:'echo x', shell:'bash'}
+        // and {command:'echo x', shell:'powershell'} are distinct hooks,
+        // not duplicates. Default to 'bash' so legacy configs (no shell
+        // field) still dedup against explicit shell:'bash'.
+        .map(m => [
+          hookDedupKey(
+            m,
+            `${m.hook.shell ?? DEFAULT_HOOK_SHELL}\0${m.hook.command}\0${getIfCondition(m.hook)}`,
+          ),
+          m,
+        ]),
+    ).values(),
+  )
+  const uniquePromptHooks = Array.from(
+    new Map(
+      matchedHooks
+        .filter(m => m.hook.type === 'prompt')
+        .map(m => [
+          hookDedupKey(
+            m,
+            `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
+          ),
+          m,
+        ]),
+    ).values(),
+  )
+  const uniqueAgentHooks = Array.from(
+    new Map(
+      matchedHooks
+        .filter(m => m.hook.type === 'agent')
+        .map(m => [
+          hookDedupKey(
+            m,
+            `${(m.hook as { prompt: string }).prompt}\0${getIfCondition(m.hook as { if?: string })}`,
+          ),
+          m,
+        ]),
+    ).values(),
+  )
+  const uniqueHttpHooks = Array.from(
+    new Map(
+      matchedHooks
+        .filter(m => m.hook.type === 'http')
+        .map(m => [
+          hookDedupKey(
+            m,
+            `${(m.hook as { url: string }).url}\0${getIfCondition(m.hook as { if?: string })}`,
+          ),
+          m,
+        ]),
+    ).values(),
+  )
+  const callbackHooks = matchedHooks.filter(m => m.hook.type === 'callback')
+  // Function hooks don't need deduplication - each callback is unique
+  const functionHooks = matchedHooks.filter(m => m.hook.type === 'function')
+  // 2.1.118: mcp_tool hooks dedup by server/tool identity.
+  const uniqueMcpToolHooks = Array.from(
+    new Map(
+      matchedHooks
+        .filter(
+          (m): m is MatchedHook & { hook: HookCommand & { type: 'mcp_tool' } } =>
+            m.hook.type === 'mcp_tool',
+        )
+        .map(m => [
+          hookDedupKey(
+            m,
+            `${m.hook.server}/${m.hook.tool}\0${getIfCondition(m.hook)}`,
+          ),
+          m,
+        ]),
+    ).values(),
+  )
+  const uniqueHooks = [
+    ...uniqueCommandHooks,
+    ...uniquePromptHooks,
+    ...uniqueAgentHooks,
+    ...uniqueHttpHooks,
+    ...uniqueMcpToolHooks,
+    ...callbackHooks,
+    ...functionHooks,
+  ]
+
+  // Filter hooks based on their `if` condition. This allows hooks to specify
+  // conditions like "Bash(git *)" to only run for git commands, avoiding
+  // process spawning overhead for non-matching commands.
+  const hasIfCondition = uniqueHooks.some(
+    h =>
+      (h.hook.type === 'command' ||
+        h.hook.type === 'prompt' ||
+        h.hook.type === 'agent' ||
+        h.hook.type === 'http' ||
+        h.hook.type === 'mcp_tool') &&
+      (h.hook as { if?: string }).if,
+  )
+  const ifMatcher = hasIfCondition
+    ? await prepareIfConditionMatcher(hookInput, tools)
+    : undefined
+  const ifFilteredHooks = uniqueHooks.filter(h => {
+    if (
+      h.hook.type !== 'command' &&
+      h.hook.type !== 'prompt' &&
+      h.hook.type !== 'agent' &&
+      h.hook.type !== 'http' &&
+      h.hook.type !== 'mcp_tool'
+    ) {
+      return true
+    }
+    const ifCondition = (h.hook as { if?: string }).if
+    if (!ifCondition) {
+      return true
+    }
+    if (!ifMatcher) {
       logForDebugging(
-        `Skipping hook due to if condition "${ifCondition}" not matching`,
+        `Hook if condition "${ifCondition}" cannot be evaluated for non-tool event ${hookInput.hook_event_name}`,
       )
       return false
-    })
-
-    // HTTP hooks are not supported for SessionStart/Setup events. In headless
-    // mode the sandbox ask callback deadlocks because the structuredInput
-    // consumer hasn't started yet when these hooks fire.
-    const filteredHooks =
-      hookEvent === 'SessionStart' || hookEvent === 'Setup'
-        ? ifFilteredHooks.filter(h => {
-            if (h.hook.type === 'http') {
-              logForDebugging(
-                `Skipping HTTP hook ${(h.hook as { url: string }).url} — HTTP hooks are not supported for ${hookEvent}`,
-              )
-              return false
-            }
-            return true
-          })
-        : ifFilteredHooks
-
+    }
+    if (ifMatcher(ifCondition)) {
+      return true
+    }
     logForDebugging(
-      `Matched ${filteredHooks.length} unique hooks for query "${matchQuery || 'no match query'}" (${matchedHooks.length} before deduplication)`,
-      { level: 'verbose' },
+      `Skipping hook due to if condition "${ifCondition}" not matching`,
     )
-    return filteredHooks
-  } catch {
-    return []
-  }
+    return false
+  })
+
+  // HTTP hooks are not supported for SessionStart/Setup events. In headless
+  // mode the sandbox ask callback deadlocks because the structuredInput
+  // consumer hasn't started yet when these hooks fire.
+  const filteredHooks =
+    hookEvent === 'SessionStart' || hookEvent === 'Setup'
+      ? ifFilteredHooks.filter(h => {
+          if (h.hook.type === 'http') {
+            logForDebugging(
+              `Skipping HTTP hook ${(h.hook as { url: string }).url} — HTTP hooks are not supported for ${hookEvent}`,
+            )
+            return false
+          }
+          return true
+        })
+      : ifFilteredHooks
+
+  logForDebugging(
+    `Matched ${filteredHooks.length} unique hooks for query "${matchQuery || 'no match query'}" (${matchedHooks.length} before deduplication)`,
+    { level: 'verbose' },
+  )
+  return filteredHooks
 }
 
 /**
@@ -3258,13 +3441,33 @@ async function* executeHooks({
   const appState = toolUseContext ? toolUseContext.getAppState() : undefined
   // Use the agent's session ID if available, otherwise fall back to main session
   const sessionId = toolUseContext?.agentId ?? getSessionId()
-  const matchingHooks = await getMatchingHooks(
-    appState,
-    sessionId,
-    hookEvent,
-    hookInput,
-    toolUseContext?.options?.tools,
-  )
+  // claude-code 2.1.288 #57 (official REPL generator matcher catch):
+  //   catch(yo){if(!V)d2t(Ne,yo);let Po=lee(Ne,ze,Olt(Ne,yo));
+  //           if(Po!==void 0){yield Po;return}…Bt=[]}
+  // Telemetry fires for all events; only guarded (non-opted-out) events get
+  // the blocking yield — everything else keeps the old fail-open ([]).
+  let matchingHooks: MatchedHook[]
+  try {
+    matchingHooks = await getMatchingHooks(
+      appState,
+      sessionId,
+      hookEvent,
+      hookInput,
+      toolUseContext?.options?.tools,
+    )
+  } catch (error) {
+    logHookMatchingFailedTelemetry(hookEvent, error)
+    const failClosed = buildHookFailClosedBlockingResult(
+      hookEvent,
+      hookName,
+      hookMatchingFailedBlockingMessage(hookEvent, error),
+    )
+    if (failClosed !== undefined) {
+      yield { ...failClosed }
+      return
+    }
+    matchingHooks = []
+  }
   if (matchingHooks.length === 0) {
     return
   }
@@ -3382,13 +3585,31 @@ async function* executeHooks({
     | { ok: true; value: string }
     | { ok: false; error: unknown }
     | undefined
+  // claude-code 2.1.288 #57 (official `Mo`): why this batch's hook input
+  // could not be serialized — consumed by the batch-tail tengu_feature_bad.
+  let jsonInputFailureCode:
+    | 'hook_input_too_large'
+    | 'hook_input_stringify_failed'
+    | undefined
   function getJsonInput() {
     if (jsonInputResult !== undefined) {
       return jsonInputResult
     }
+    // Official `_o` serializer: stringify, then the a2t size cap →
+    // RangeError("Hook input is over the size limit"); the catch records
+    // Mo = oversize ? hook_input_too_large : hook_input_stringify_failed.
+    let isOverSizeLimit = false
     try {
-      return (jsonInputResult = { ok: true, value: jsonStringify(hookInput) })
+      const value = jsonStringify(hookInput)
+      isOverSizeLimit = isHookInputOverSizeLimit(hookEvent, value)
+      if (isOverSizeLimit) {
+        throw new RangeError('Hook input is over the size limit')
+      }
+      return (jsonInputResult = { ok: true, value })
     } catch (error) {
+      jsonInputFailureCode = isOverSizeLimit
+        ? 'hook_input_too_large'
+        : 'hook_input_stringify_failed'
       logError(
         Error(`Failed to stringify hook ${hookName} input`, { cause: error }),
       )
@@ -3499,20 +3720,43 @@ async function* executeHooks({
     try {
       const jsonInputRes = getJsonInput()
       if (!jsonInputRes.ok) {
-        yield {
-          message: createAttachmentMessage({
-            type: 'hook_error_during_execution',
-            hookName,
-            toolUseID,
-            hookEvent,
-            content: `Failed to prepare hook input: ${errorMessage((jsonInputRes as { ok: false; error: unknown }).error)}`,
-            command: hookCommand,
-            durationMs: Date.now() - hookStartMs,
-          }),
-          outcome: 'non_blocking_error',
-          hook,
-        }
+        // claude-code 2.1.288 #57 (official per-hook block @209530200):
+        //   if(!Os.ok){Jr();…na=lee(Ne,Xr,`[${Xr}]: ${Ilt(Os.error)}${ds}`);
+        //   yield na!==void 0?{...na,outcome:"blocking",hook:yo}
+        //        :C0e(yo,Ne,Xr,`hook input: ${l(Os.error)}`)??{…legacy…};return}
+        // cleanup() runs BEFORE the yield (official Jr()); guarded events
+        // BLOCK, non-guarded events keep the legacy non_blocking_error
+        // attachment (fail-open, unchanged).
         cleanup()
+        const jsonInputError = (jsonInputRes as { ok: false; error: unknown })
+          .error
+        const failClosed = buildHookFailClosedBlockingResult(
+          hookEvent,
+          hookCommand,
+          `[${hookCommand}]: ${hookInputNotJsonWritableMessage(jsonInputError)}${
+            pluginId ? `\nThis hook comes from the ${pluginId} plugin.` : ''
+          }`,
+        )
+        yield failClosed !== undefined
+          ? { ...failClosed, outcome: 'blocking' as const, hook }
+          : (buildScriptGuardDidNotRunResult(
+              hook,
+              hookEvent,
+              hookCommand,
+              `hook input: ${errorMessage(jsonInputError)}`,
+            ) ?? {
+              message: createAttachmentMessage({
+                type: 'hook_error_during_execution',
+                hookName,
+                toolUseID,
+                hookEvent,
+                content: `Failed to prepare hook input: ${errorMessage(jsonInputError)}`,
+                command: hookCommand,
+                durationMs: Date.now() - hookStartMs,
+              }),
+              outcome: 'non_blocking_error' as const,
+              hook,
+            })
         return
       }
       const jsonInput = jsonInputRes.value
@@ -4568,6 +4812,15 @@ async function* executeHooks({
   getStatsStore()?.observe('hook_duration_ms', totalDurationMs)
   addToTurnHookDuration(totalDurationMs)
 
+  // claude-code 2.1.288 #57 (official batch-tail `Mo` @~209551778):
+  //   if(Mo)m(Eee(Ne),Mo) — report why this batch's hook input could not be
+  // serialized. The rest of the official else-chain (non_blocking_error /
+  // cancelled / success telemetry) maps to OCC's existing tengu_repl_hook_
+  // finished below and is left unchanged.
+  if (jsonInputFailureCode) {
+    logHookFeatureBadTelemetry(hookEvent, jsonInputFailureCode)
+  }
+
   logEvent(`tengu_repl_hook_finished`, {
     hookName:
       hookName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -4696,12 +4949,25 @@ async function executeHooksOutsideREPL({
   const appState = getAppState ? getAppState() : undefined
   // Use main session ID for outside-REPL hooks
   const sessionId = getSessionId()
-  const matchingHooks = await getMatchingHooks(
-    appState,
-    sessionId,
-    hookEvent,
-    hookInput,
-  )
+  // claude-code 2.1.288 #57 (official SDK path @209553300):
+  //   .catch((Qe)=>{if(d2t(he,Qe),bq(he))throw Qe;return[]})
+  // Telemetry always; guarded events rethrow (the SDK caller surfaces the
+  // failure), non-guarded events keep the old fail-open ([]).
+  let matchingHooks: MatchedHook[]
+  try {
+    matchingHooks = await getMatchingHooks(
+      appState,
+      sessionId,
+      hookEvent,
+      hookInput,
+    )
+  } catch (error) {
+    logHookMatchingFailedTelemetry(hookEvent, error)
+    if (shouldFailClosedForHookEvent(hookEvent)) {
+      throw error
+    }
+    return []
+  }
   if (matchingHooks.length === 0) {
     return []
   }
@@ -4730,11 +4996,27 @@ async function executeHooksOutsideREPL({
   }
 
   // Validate and stringify the hook input
+  // claude-code 2.1.288 #57 (official SDK path @209553300):
+  //   try{if(Ae=b(g),Pe=a2t(he,Ae),Pe)throw RangeError("Hook input is over
+  //   the size limit")}catch(Qe){if(c(Qe),m(Eee(he),Pe?"hook_input_too_
+  //   large":"hook_input_stringify_failed"),bq(he))throw Qe;return[]}
   let jsonInput: string
+  let isOverSizeLimit = false
   try {
     jsonInput = jsonStringify(hookInput)
+    isOverSizeLimit = isHookInputOverSizeLimit(hookEvent, jsonInput)
+    if (isOverSizeLimit) {
+      throw new RangeError('Hook input is over the size limit')
+    }
   } catch (error) {
     logError(error)
+    logHookFeatureBadTelemetry(
+      hookEvent,
+      isOverSizeLimit ? 'hook_input_too_large' : 'hook_input_stringify_failed',
+    )
+    if (shouldFailClosedForHookEvent(hookEvent)) {
+      throw error
+    }
     return []
   }
 
