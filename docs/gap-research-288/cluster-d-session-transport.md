@@ -13,6 +13,7 @@ Binaries: `/tmp/cc-diff-288/v287/package/claude`, `/tmp/cc-diff-288/v288/package
 | 58 | First request in fresh env / after model switch used built-in output limit + auto-compact window, not the server's | NO-OP{PLATFORM} |
 | 14 | Session titles/memory recall/prompt hooks failed on Mantle/gateways rejecting structured outputs; `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS` added | PORT-CANDIDATE |
 | 39 | Headless sessions occasionally ignored SIGTERM when a supervisor sends SIGCONT alongside | STAGED |
+| 37 | Second `gcpAuthRefresh`/`awsAuthRefresh` browser sign-in opened on wake-from-sleep while another process signs in | NO-OP{NO-SURFACE} |
 | 75 | Background command time limit now applies only in unattended sessions | PORT-CANDIDATE (regression-risk: 勿回退 OCC-102 reap) |
 | 30 | Cross-session message falsely reported delivered when the target session held it | NO-OP{NO-SURFACE} |
 | 56 | `idle_prompt` notification hooks fired while background agents still running | PORT-CANDIDATE |
@@ -257,6 +258,35 @@ let N={activeAgents:[],allAgents:[]},
 
 ---
 
+## Auth / credential refresh
+
+### #37 — second `gcpAuthRefresh`/`awsAuthRefresh` browser sign-in on wake-from-sleep — **NO-OP{NO-SURFACE}**
+
+**Changelog:** Fixed a second `gcpAuthRefresh`/`awsAuthRefresh` browser sign-in opening when a laptop wakes from sleep while another Claude Code process is signing in.
+
+**Official forensics (this round).** Both versions carry the full cross-process auth-refresh coordination lock: v287 `vB` = v288 `ZB` (waiter state machine with `lockfilePath/outcomePath/holderPath/requestPath` built by `af`=`vf`, holder-liveness probe `PB`=`lH`, takeover/handover/reprobe). The `CLAUDE_CODE_DISABLE_AUTH_REFRESH_LOCK` gate is present in BOTH (3 string sites each: v287 101099684/198580109/201596496, v288 101195920/199610643/202410748; `qr()`@v287 = `Xr()`@v288 = `!a.CLAUDE_CODE_DISABLE_AUTH_REFRESH_LOCK`). The ndiff over the 8KB lock-module window (`lk287/lk288.txt` @201596450/202410700) shows 17 opcodes, all inside this module. THE fix:
+
+- v287 @201598183 — lock acquire passes a **fixed stale timeout**:
+  ```js
+  let Ee=await sa(n,{lockfilePath:n,realpath:!1,stale:60000,update:xw,onCompromised:...})
+  ```
+- v288 @202412446 — stale is **gated on holder liveness** (`ff`=60000, `1/0`=Infinity):
+  ```js
+  let Ae=await da(n,{lockfilePath:n,realpath:!1,stale:X?ff:1/0,update:Kw,onCompromised:...})
+  ```
+  with new loop-local `X` (init `X=!1`, re-armed `if(X=!1,V.valid>0)...`) assigned each iteration @~202414380: `z=rH(z,xe,zt,he),X=it!=="live"` where `it` is the holder-liveness verdict (`"live"/"orphaned"/"unproven"`, same classifier both versions).
+
+Semantics: holder record LIVE → `stale:Infinity` → proper-lockfile never treats the lock as stale, so a second process can't steal it — the wake-from-sleep clock jump (holder couldn't `update` the lockfile while suspended, v287 saw mtime > 60s and took over, opening a duplicate browser sign-in) no longer triggers takeover. Holder not live → 60s reclaim preserved. Companion deltas in the same window: per-process takeover tracking (`ae` Set + `oe={...oe,sentAt:he}`), `vn=he-z.touchedAt` restructure with a 4th verdict arm, log text shortened `"taking it without waiting for it to go stale"` → `"taking it"`, stale-reason templates now interpolate `${ff/1000} s`/`${$w/1000} s`.
+
+**OCC state (verified this round).**
+- OCC has **none** of this coordination module: grep `AUTH_REFRESH_LOCK|lockfilePath|holderPath|auth_refresh_lock|takeover` over `src/` → zero hits.
+- `runAwsAuthRefresh` (`src/utils/auth.ts:679-712`) executes the configured refresh command directly (only the trust-dialog security gate at :688-700); `gcpAuthRefresh` config accessors at `auth.ts:1051-1070`; consumed at `src/services/api/client.ts:356`. No cross-process lock guards either browser sign-in.
+- OCC's only proper-lockfile use in auth is the OAuth token-refresh lock `src/utils/auth.ts:1907-1909` (`lockfile.lock(claudeDir,{onCompromised:...})` with default stale, `ELOCKED` → bounded retry with 1-2s jitter, :1912-1926; lazy loader `src/utils/lockfile.ts`) — a different, simpler lock guarding token-file refresh, not the gcp/aws browser sign-in coordination the official fix touches.
+
+**Verdict:** NO-OP{NO-SURFACE}. The fixed bug requires the official's cross-process auth-refresh coordination lock (stealing a LIVE holder's lock via the fixed 60s stale timeout); OCC runs `gcpAuthRefresh`/`awsAuthRefresh` directly with no such lock, so the stale-steal duplicate-signin failure mode cannot occur. If the coordination module is ever ported, port the v288 liveness-gated shape (`stale:X?ff:1/0`), never v287's fixed `stale:60000`.
+
+---
+
 ## PORT-CANDIDATEs ranked
 
 1. **#75** — smallest diff, fixes a LIVE OCC bug (interactive sessions reaping background shells at 30 min); official delta fully recovered (`Fz()` predicate + `ufn()` gate). Regression-risk flagged by Leader: keep the OCC-102 reap for unattended sessions — the port ADDS the gate, never removes the machinery.
@@ -266,4 +296,4 @@ let N={activeAgents:[],allAgents:[]},
 5. **#56** — idle_prompt firing during running background agents is user-visible noise; port is a self-contained predicate module + a REPL timer guard, but needs the AppStateStore subscription wiring.
 
 STAGED (no action now): #36 (subsumed by #8/#34), #39 (no recoverable delta; OCC registration already matches).
-NO-OP: #58{PLATFORM}, #30/#17/#40 {NO-SURFACE}, #48 {ALREADY-ALIGNED}.
+NO-OP: #58{PLATFORM}, #30/#37/#17/#40 {NO-SURFACE}, #48 {ALREADY-ALIGNED}.
