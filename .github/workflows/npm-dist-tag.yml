@@ -1,0 +1,36 @@
+name: Fix npm dist-tag
+
+# 运维工作流：手动把某个已发布版本设为指定 dist-tag（默认 latest）。
+# 用途：并行推多个 tag 时 publish.yml 的 `npm publish` 会互相竞争 latest，
+# 后落地者获胜（例如 v2.1.366/v2.1.367 同时发布后 latest 停在 2.1.366）。
+# 需要仓库 Settings → Secrets → Actions 里的 NPM_TOKEN（与 publish.yml 相同）。
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "已发布的包版本号（如 2.1.367）"
+        required: true
+        type: string
+      dist_tag:
+        description: "要设置的 dist-tag"
+        required: false
+        default: "latest"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  dist-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set dist-tag
+        run: |
+          echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> ~/.npmrc
+          npm dist-tag add "@cnwenf/occ@${VERSION}" "${DIST_TAG}"
+          npm dist-tag ls @cnwenf/occ
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          DIST_TAG: ${{ inputs.dist_tag }}
