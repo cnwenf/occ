@@ -74,6 +74,7 @@ import { gitExe } from '../git.js'
 import { lazySchema } from '../lazySchema.js'
 import { logError } from '../log.js'
 import { redactGitUrl } from '../redactGitUrl.js'
+import { redactCredentialsInText } from '../redactUrl.js'
 import { getSettings_DEPRECATED } from '../settings/settings.js'
 import {
   clearPluginSettingsBase,
@@ -786,6 +787,26 @@ export async function installFromGitSubdir(
       )
     }
 
+    // Official v288 (@210993448/@210994570): `sparse-checkout set --cone`
+    // alone does not reliably materialise the cone worktree on git < 2.39,
+    // so an explicit tree read must follow it. Verbatim official error
+    // strings — the debug log redacts stderr, the thrown error carries the
+    // credential-scrubbed stderr (official `S6(Ye.stderr,w)` counterpart).
+    const readTreeResult = await execFileNoThrowWithCwd(
+      gitExe(),
+      ['read-tree', '-u', '--reset'],
+      { cwd: cloneDir },
+    )
+    if (readTreeResult.code !== 0) {
+      logForDebugging(
+        'plugin git-subdir read-tree (post sparse-checkout) failed (stderr redacted)',
+        { level: 'warn' },
+      )
+      throw new Error(
+        `git read-tree after sparse-checkout failed: ${redactCredentialsInText(readTreeResult.stderr)}`,
+      )
+    }
+
     // Capture the resolved commit SHA before discarding the clone. The
     // extracted subdir has no .git, so the caller can't rev-parse it later.
     // If the source specified a full 40-char sha we already know it; otherwise
@@ -849,6 +870,25 @@ export async function installFromGitSubdir(
     // before moving it out. rename ENOENT is wrapped with a friendlier
     // message that references the source path, not internal temp dirs.
     const resolvedSubdir = validatePathWithinBase(cloneDir, subdirPath)
+
+    // v288 Item 24 port hardening: verify the subdir is actually populated
+    // before caching. A read-tree that "succeeds" but leaves the directory
+    // empty (git < 2.39 sparse cone not materialised) must fail the install
+    // instead of caching an incomplete plugin. ENOENT falls through to the
+    // rename below, which produces the friendly not-found error.
+    let subdirEntries: string[] | null = null
+    try {
+      subdirEntries = await readdir(resolvedSubdir)
+    } catch (e: unknown) {
+      if (!isENOENT(e)) throw e
+    }
+    if (subdirEntries !== null && subdirEntries.length === 0) {
+      throw new Error(
+        `Subdirectory '${subdirPath}' in repository ${gitUrl}${ref ? ` (ref: ${ref})` : ''} ` +
+          'is empty after git read-tree — refusing to cache an incomplete plugin.',
+      )
+    }
+
     try {
       await rename(resolvedSubdir, targetPath)
     } catch (e: unknown) {

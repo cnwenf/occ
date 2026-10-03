@@ -38,6 +38,7 @@ import { execFileNoThrow, execFileNoThrowWithCwd } from '../execFileNoThrow.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { gitExe } from '../git.js'
 import { logError } from '../log.js'
+import { getPlatform } from '../platform.js'
 import { redactUrlCredentials } from '../redactUrl.js'
 import {
   getInitialSettings,
@@ -50,13 +51,14 @@ import {
   jsonStringify,
   writeFileSync_DEPRECATED,
 } from '../slowOperations.js'
+import { which } from '../which.js'
 import {
   getAddDirEnabledPlugins,
   getAddDirExtraMarketplaces,
 } from './addDirPluginSettings.js'
 import { markPluginVersionOrphaned } from './cacheUtils.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
-import { resolvePluginGitSshEnv } from './gitSshCommand.js'
+import { readEnv, resolvePluginGitSshEnv } from './gitSshCommand.js'
 import { isPartialCloneTransport } from './gitTransport.js'
 import { assertValidGitUrl } from './gitUrlValidation.js'
 import { removeAllPluginsForMarketplace } from './installedPluginsManager.js'
@@ -822,11 +824,55 @@ function enhanceGitPullErrorMessages(result: {
  * contact. Users who already have github.com in known_hosts see no change;
  * users who don't are routed to the HTTPS clone path.
  *
- * @returns true if SSH auth succeeds and github.com is already trusted
+ * 2.1.288 upstream port (official `drt` @~207590400): the probe is hardened
+ * with pre-checks that decide "stay on SSH" without falling back to HTTPS:
+ *   (a) windows, or GIT_SSH_COMMAND / GIT_SSH set → the user explicitly
+ *       configured an SSH transport; don't second-guess it.
+ *   (b) `git ls-remote --get-url -- <sshUrl>` must echo the URL unchanged —
+ *       a git config `url.*.insteadOf` rewrite (or git failing to answer)
+ *       means the SSH URL wouldn't actually be used as-is → stay on SSH.
+ *   (c) the existing `ssh -T` auth probe (authenticated → stay on SSH).
+ *   (d) no ssh binary on PATH → nothing to fall back FROM; HTTPS is fine.
+ *   (e) `ssh -G git@github.com` must show a straight connection to
+ *       github.com (hostname github.com, no ProxyCommand/ProxyJump) — a
+ *       proxied/rewritten host may be a corp relay the HTTPS path would
+ *       bypass → stay on SSH.
+ * Both (b) and (e) use the official 5s timeouts.
+ *
+ * Polarity note: official `drt` returns true = "fall back to HTTPS"; this
+ * OCC predicate returns true = "stay on SSH / try SSH first" (i.e. !drt).
+ * Exported for testing.
+ *
+ * @param sshUrl the scp-like GitHub SSH URL that would be cloned
+ * @returns true if SSH should stay the primary transport
  */
-async function isGitHubSshLikelyConfigured(): Promise<boolean> {
+export async function isGitHubSshLikelyConfigured(
+  sshUrl: string,
+): Promise<boolean> {
   try {
-    // Quick SSH connection test with 2 second timeout
+    // (a) Windows / explicit SSH env overrides → stay on SSH.
+    if (getPlatform() === 'windows') {
+      return true
+    }
+    const env = process.env
+    if (readEnv(env, 'GIT_SSH_COMMAND') || readEnv(env, 'GIT_SSH')) {
+      return true
+    }
+
+    // (b) git must echo the SSH URL back unchanged (no insteadOf rewrite).
+    const urlCheck = await execFileNoThrow(
+      gitExe(),
+      ['ls-remote', '--get-url', '--', sshUrl],
+      { timeout: 5000 },
+    )
+    if (urlCheck.code !== 0 || urlCheck.stdout.trim() !== sshUrl) {
+      logForDebugging(
+        `GitHub SSH URL is rewritten by git config, or git could not say (code=${urlCheck.code}): staying on SSH`,
+      )
+      return true
+    }
+
+    // (c) Quick SSH connection test with 2 second timeout
     // This fails fast if SSH isn't configured
     const result = await execFileNoThrow(
       'ssh',
@@ -854,7 +900,33 @@ async function isGitHubSshLikelyConfigured(): Promise<boolean> {
     logForDebugging(
       `SSH config check: code=${result.code} configured=${configured}`,
     )
-    return configured
+    if (configured) {
+      return true
+    }
+
+    // (d) No ssh binary at all → HTTPS fallback is safe.
+    if ((await which('ssh')) === null) {
+      return false
+    }
+
+    // (e) ssh -G must show a straight, unproxied connection to github.com.
+    const sshConfig = await execFileNoThrow('ssh', ['-G', 'git@github.com'], {
+      timeout: 5000,
+    })
+    const configLines = sshConfig.stdout
+      .split('\n')
+      .map(line => line.trim())
+    const straightToGitHub =
+      sshConfig.code === 0 &&
+      configLines.includes('hostname github.com') &&
+      !configLines.some(line => /^proxy(command|jump)(?! none$)/.test(line))
+    if (straightToGitHub) {
+      return false
+    }
+    logForDebugging(
+      `ssh -G does not show git@github.com going straight to github.com (code=${sshConfig.code}): staying on SSH`,
+    )
+    return true
   } catch (error) {
     // Any error means SSH isn't configured properly
     logForDebugging(`SSH configuration check failed: ${errorMessage(error)}`, {
@@ -862,6 +934,37 @@ async function isGitHubSshLikelyConfigured(): Promise<boolean> {
     })
     return false
   }
+}
+
+/**
+ * One GitHub transport attempt for the dual-transport (SSH/HTTPS) fetch.
+ * 2.1.288 upstream port (official @210734308 `e`/`n` attempt records).
+ */
+export type GitHubTransportAttempt = {
+  transport: 'SSH' | 'HTTPS'
+  url: string
+  error: Error
+}
+
+/**
+ * 2.1.288 upstream port (official @210734308): when BOTH the SSH and HTTPS
+ * marketplace fetches fail, surface both errors — first-tried transport on
+ * top — instead of only the second. The official combines ONLY when the two
+ * messages differ; identical errors surface as the single (second) error.
+ * Returns the second error (identity preserved, as the official mutates and
+ * returns `n.error`).
+ */
+export function combineBothAttemptsError(
+  first: GitHubTransportAttempt,
+  second: GitHubTransportAttempt,
+): Error {
+  if (first.error.message !== second.error.message) {
+    second.error.message =
+      `Fetching the marketplace from GitHub failed on both attempts. ` +
+      `${first.transport} (${first.url}): ${first.error.message}\n\n` +
+      `${second.transport} (${second.url}): ${second.error.message}`
+  }
+  return second.error
 }
 
 /**
@@ -1781,7 +1884,7 @@ async function loadAndCacheMarketplace(
         // 2.1.141: CLAUDE_CODE_PLUGIN_PREFER_HTTPS forces HTTPS (no SSH key needed).
         const sshConfigured = isEnvTruthy(process.env.CLAUDE_CODE_PLUGIN_PREFER_HTTPS)
           ? false
-          : await isGitHubSshLikelyConfigured()
+          : await isGitHubSshLikelyConfigured(sshUrl)
 
         if (sshConfigured) {
           // SSH looks good, try it first
@@ -1829,10 +1932,14 @@ async function loadAndCacheMarketplace(
               )
               lastError = null // Success!
             } catch (httpsErr) {
-              // HTTPS also failed - use HTTPS error as the final error
-              lastError = toError(httpsErr)
+              // HTTPS also failed — 2.1.288 Item 52 (official @210734308):
+              // combine both transport errors, first-tried (SSH) on top.
+              lastError = combineBothAttemptsError(
+                { transport: 'SSH', url: sshUrl, error: lastError },
+                { transport: 'HTTPS', url: httpsUrl, error: toError(httpsErr) },
+              )
 
-              // Log HTTPS failure for monitoring (both SSH and HTTPS failed)
+              // Log failure for monitoring (both SSH and HTTPS failed)
               logError(lastError)
             }
           }
@@ -1891,10 +1998,14 @@ async function loadAndCacheMarketplace(
               )
               lastError = null // Success!
             } catch (sshErr) {
-              // SSH also failed - use SSH error as the final error
-              lastError = toError(sshErr)
+              // SSH also failed — 2.1.288 Item 52 (official @210734308):
+              // combine both transport errors, first-tried (HTTPS) on top.
+              lastError = combineBothAttemptsError(
+                { transport: 'HTTPS', url: httpsUrl, error: lastError },
+                { transport: 'SSH', url: sshUrl, error: toError(sshErr) },
+              )
 
-              // Log SSH failure for monitoring (both HTTPS and SSH failed)
+              // Log failure for monitoring (both HTTPS and SSH failed)
               logError(lastError)
             }
           }
@@ -2912,7 +3023,9 @@ export async function refreshMarketplace(
             onProgress,
           )
         } else {
-          const sshConfigured = await isGitHubSshLikelyConfigured()
+          const sshConfigured = await isGitHubSshLikelyConfigured(sshUrl)
+          const primaryTransport = sshConfigured ? 'SSH' : 'HTTPS'
+          const fallbackTransport = sshConfigured ? 'HTTPS' : 'SSH'
           const primaryUrl = sshConfigured ? sshUrl : httpsUrl
           const fallbackUrl = sshConfigured ? httpsUrl : sshUrl
 
@@ -2924,18 +3037,35 @@ export async function refreshMarketplace(
               source.sparsePaths,
               onProgress,
             )
-          } catch {
+          } catch (primaryErr) {
             logForDebugging(
-              `Marketplace refresh failed with ${sshConfigured ? 'SSH' : 'HTTPS'} for ${source.repo}, falling back to ${sshConfigured ? 'HTTPS' : 'SSH'}`,
+              `Marketplace refresh failed with ${primaryTransport} for ${source.repo}, falling back to ${fallbackTransport}`,
               { level: 'info' },
             )
-            gitResult = await cacheMarketplaceFromGit(
-              fallbackUrl,
-              installLocation,
-              source.ref,
-              source.sparsePaths,
-              onProgress,
-            )
+            try {
+              gitResult = await cacheMarketplaceFromGit(
+                fallbackUrl,
+                installLocation,
+                source.ref,
+                source.sparsePaths,
+                onProgress,
+              )
+            } catch (fallbackErr) {
+              // 2.1.288 Item 52 (official @210734308): both transports failed
+              // — surface both errors, first-tried transport on top.
+              throw combineBothAttemptsError(
+                {
+                  transport: primaryTransport,
+                  url: primaryUrl,
+                  error: toError(primaryErr),
+                },
+                {
+                  transport: fallbackTransport,
+                  url: fallbackUrl,
+                  error: toError(fallbackErr),
+                },
+              )
+            }
           }
         }
       } else {
