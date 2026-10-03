@@ -88,6 +88,7 @@ import { getAddDirEnabledPlugins } from './addDirPluginSettings.js'
 import { verifyAndDemote } from './dependencyResolver.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
 import { checkGitAvailable } from './gitAvailability.js'
+import { isPartialCloneTransport } from './gitTransport.js'
 import { assertValidGitUrl } from './gitUrlValidation.js'
 import { getInMemoryInstalledPlugins } from './installedPluginsManager.js'
 import { getManagedPluginNames } from './managedPlugins.js'
@@ -711,10 +712,14 @@ function resolveGitSubdirUrl(url: string): string {
  * Uses partial clone (--filter=tree:0) + sparse-checkout so only the tree
  * objects along the path and the blobs under it are downloaded. For large
  * monorepos this is dramatically cheaper than a full clone — the tree objects
- * for a million-file repo can be hundreds of MB, all avoided here.
+ * for a million-file repo can be hundreds of MB, all avoided here. The
+ * partial-clone filter is applied only when the URL transport allows the
+ * lazy fetches it implies (https or ssh); over plain http the clone is full
+ * (still --depth 1) so no lazy fetch has to run over a transport git may
+ * block (`fatal: transport 'http' not allowed`).
  *
  * Sequence:
- * 1. clone --depth 1 --filter=tree:0 --no-checkout [--branch ref]
+ * 1. clone --depth 1 [--filter=tree:0] --no-checkout [--branch ref]
  * 2. sparse-checkout set --cone -- <path>
  * 3. If sha: fetch --depth 1 origin <sha> (fallback: --unshallow), then
  *    checkout <sha>. The partial-clone filter is stored in remote config so
@@ -749,7 +754,12 @@ export async function installFromGitSubdir(
     'clone',
     '--depth',
     '1',
-    '--filter=tree:0',
+    // Official v287 (@207252449): the tree filter is gated on the URL
+    // transport — `...F4n(w)?["--filter=tree:0"]:[]`. Over plain http a partial
+    // clone's later sparse-checkout/checkout would lazy-fetch trees and blobs
+    // over a transport git may block (`fatal: transport 'http' not allowed`),
+    // so http clones fully (still --depth 1). --no-checkout stays unconditional.
+    ...(isPartialCloneTransport(gitUrl) ? ['--filter=tree:0'] : []),
     '--no-checkout',
   ]
   if (ref) {

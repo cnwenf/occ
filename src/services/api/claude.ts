@@ -1374,6 +1374,82 @@ export class StreamTruncatedError extends Error {
 }
 
 /**
+ * CL:39 (2.1.287): the official tool-block suppression set `INo`
+ * (byte-verified @208171771:
+ * `INo=new Set(["tool_use","server_tool_use","mcp_tool_use"])`).
+ *
+ * When the stream is flushed while one of these block types is still open, the
+ * synthetic `content_block_stop` is SUPPRESSED — the tool result supplies its
+ * own close — but the synthetic `message_stop` is still emitted. v286's `Bl`
+ * had no such suppression (it always synthesized the `content_block_stop`).
+ */
+export const OPEN_BLOCK_TOOL_TYPES = new Set([
+  'tool_use',
+  'server_tool_use',
+  'mcp_tool_use',
+])
+
+/**
+ * CL:39 (2.1.287): the mutable message-envelope state the flush generator
+ * reads and resets. Mirrors the official `nf`/`Ph`/`N_` triple updated per
+ * streamed event (`Fs`):
+ *   message_start      → nf=!0, Ph=null,  N_=!1
+ *   content_block_start→ Ph=Fs.index,     N_=INo.has(Fs.content_block.type)
+ *   content_block_stop → Ph=null,         N_=!1
+ *   message_stop       → nf=!1, Ph=null,  N_=!1
+ */
+export interface StreamEnvelopeState {
+  /** message_start seen, message_stop not yet seen (official `nf`). */
+  messageEnvelopeOpen: boolean
+  /** index of the content block currently open, else null (official `Ph`). */
+  openBlockIndex: number | null
+  /** whether the open block is a tool block (official `N_`). */
+  openBlockIsTool: boolean
+}
+
+/** A synthesized closing `stream_event` emitted by {@link flushStreamClose}. */
+export type StreamCloseEvent =
+  | {
+      type: 'stream_event'
+      event: { type: 'content_block_stop'; index: number }
+    }
+  | { type: 'stream_event'; event: { type: 'message_stop' } }
+
+/**
+ * CL:39 (2.1.287): the official flush generator `Um` (byte-verified):
+ *
+ *   function*Um(){if(!nf)return;let $s=N_?null:Ph;if(nf=!1,Ph=null,N_=!1,
+ *   $s!==null)yield{type:"stream_event",event:{type:"content_block_stop",
+ *   index:$s}};yield{type:"stream_event",event:{type:"message_stop"}}}
+ *
+ * Called at every stream terminal point so an `--include-partial-messages`
+ * consumer receives the closing `content_block_stop`/`message_stop` for a
+ * cut-short reply instead of seeing it as still in progress. Guarded by
+ * `messageEnvelopeOpen` (the official `nf` check): a stream that already
+ * received a real `message_stop` cleared the flag, so the flush is a no-op and
+ * emits nothing extra. Resets the state so a second call is also a no-op.
+ *
+ * Mutates `state` in place — a faithful port of the official, whose `Um`
+ * mutates the closure variables `nf`/`Ph`/`N_`.
+ */
+export function* flushStreamClose(
+  state: StreamEnvelopeState,
+): Generator<StreamCloseEvent> {
+  if (!state.messageEnvelopeOpen) return
+  const idx = state.openBlockIsTool ? null : state.openBlockIndex
+  state.messageEnvelopeOpen = false
+  state.openBlockIndex = null
+  state.openBlockIsTool = false
+  if (idx !== null) {
+    yield {
+      type: 'stream_event',
+      event: { type: 'content_block_stop', index: idx },
+    }
+  }
+  yield { type: 'stream_event', event: { type: 'message_stop' } }
+}
+
+/**
  * #019 (2.1.281): the official duplicate-start guard (v281 `sgo`,
  * byte-verified @202553165): a content_block_start is a duplicate when the
  * previous block at that index was already CLOSED and carries the same
@@ -2159,13 +2235,20 @@ async function* queryModel(
 
     // Merge outputFormat into extraBodyParams.output_config alongside effort
     // Requires structured-outputs beta header per SDK (see parse() in messages.mjs)
-    if (options.outputFormat && !('format' in outputConfig)) {
+    // 2.1.287: the format WRITE is gated on the capability predicate too,
+    // matching official `lNo` (`if(!e||"format"in n||!FSn(s)||!t_e(s,"structured_outputs"))return;`
+    // — no format without the gate). Previously only the beta-header push was
+    // gated, so CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS still sent
+    // output_config.format on the wire (Bedrock gateways reject it — the v286
+    // bug fixed by v287 `FSn`).
+    if (
+      options.outputFormat &&
+      !('format' in outputConfig) &&
+      modelSupportsStructuredOutputs(options.model)
+    ) {
       outputConfig.format = options.outputFormat as BetaJSONOutputFormat
-      // Add beta header if not already present and provider supports it
-      if (
-        modelSupportsStructuredOutputs(options.model) &&
-        !betasParams.includes(STRUCTURED_OUTPUTS_BETA_HEADER)
-      ) {
+      // Add beta header if not already present (capability already gated above)
+      if (!betasParams.includes(STRUCTURED_OUTPUTS_BETA_HEADER)) {
         betasParams.push(STRUCTURED_OUTPUTS_BETA_HEADER)
       }
     }
@@ -2359,9 +2442,13 @@ async function* queryModel(
   //   (started but not stopped), null when no block is open.
   // - closedContentBlocks (pl): the set of already-closed content blocks, used
   //   to detect duplicate/replayed events for closed indexes.
+  // CL:39 (2.1.287) adds openBlockIsTool (official `N_`): whether the open
+  // block is a tool block (OPEN_BLOCK_TOOL_TYPES ≡ official `INo`). The flush
+  // generator suppresses the synthetic content_block_stop for tool blocks.
   let messageEnvelopeOpen = false
   let streamReachedTerminal = false
   let openBlockIndex: number | null = null
+  let openBlockIsTool = false
   const closedContentBlocks = new Set<BetaContentBlock | ConnectorTextBlock>()
   let didFallBackToNonStreaming = false
   let fallbackMessage: AssistantMessage | undefined
@@ -2370,6 +2457,26 @@ async function* queryModel(
   let research: unknown 
   let isFastModeRequest = isFastMode // Keep separate state as it may change if falling back
   let isAdvisorInProgress = false
+
+  // CL:39 (2.1.287): closure adapter over the exported `flushStreamClose`
+  // (≡ official `Um`). The official generator mutates the closure variables
+  // `nf`/`Ph`/`N_` directly; OCC keeps those as the local `let`s above, so this
+  // wrapper projects them into a StreamEnvelopeState, delegates the event
+  // emission to the single-source-of-truth generator, then writes the reset
+  // state back. Called as `yield* flushStreamCloseLocal()` at each stream
+  // terminal point so the synthetic close events flow through the same
+  // forwarding path as the real `stream_event` yield below.
+  function* flushStreamCloseLocal(): Generator<StreamCloseEvent> {
+    const state: StreamEnvelopeState = {
+      messageEnvelopeOpen,
+      openBlockIndex,
+      openBlockIsTool,
+    }
+    yield* flushStreamClose(state)
+    messageEnvelopeOpen = state.messageEnvelopeOpen
+    openBlockIndex = state.openBlockIndex
+    openBlockIsTool = state.openBlockIsTool
+  }
 
   // Official 2.1.273 gateway hints (byte-verified): the wire values are
   // computed ONCE before the retry loop, then re-applied to every attempt's
@@ -2568,6 +2675,7 @@ async function* queryModel(
     messageEnvelopeOpen = false
     streamReachedTerminal = false
     openBlockIndex = null
+    openBlockIsTool = false
     closedContentBlocks.clear()
     isAdvisorInProgress = false
 
@@ -2789,6 +2897,10 @@ async function* queryModel(
             // #019 (2.1.281): track the currently open block index (v281
             // `Ii=Ys.index` after the block is constructed).
             openBlockIndex = part.index
+            // CL:39 (2.1.287): record whether the open block is a tool block
+            // (official `N_=INo.has(Fs.content_block.type)`) so the flush
+            // generator can suppress the synthetic content_block_stop for it.
+            openBlockIsTool = OPEN_BLOCK_TOOL_TYPES.has(part.content_block.type)
             break
           }
           case 'content_block_delta': {
@@ -2946,6 +3058,8 @@ async function* queryModel(
             // #019 (2.1.281): no block is open anymore (v281 `Ii=null`,
             // before the partial-message check).
             openBlockIndex = null
+            // CL:39 (2.1.287): official `content_block_stop)Ph=null,N_=!1`.
+            openBlockIsTool = false
             if (!partialMessage) {
               logEvent('tengu_streaming_error', {
                 error_type:
@@ -3167,6 +3281,16 @@ async function* queryModel(
         throw new StreamTruncatedError()
       }
 
+      // CL:39 (2.1.287) — official terminal call site G
+      // (`ch("stream_completed",Zi??null,Au!==null?il:null),yield*Um();break e`
+      // @208282711, after the finally block on normal completion). Reached only
+      // on a clean fall-through past the truncation guard above: either the
+      // envelope already closed (real message_stop → flush is a no-op) or the
+      // stream is terminal with the envelope still open (a cut-short reply that
+      // never got its message_stop → flush synthesizes the close events so an
+      // --include-partial-messages consumer stops showing it as in progress).
+      yield* flushStreamCloseLocal()
+
       // Log summary if any stalls occurred during streaming
       if (stallCount > 0) {
         logForDebugging(
@@ -3330,6 +3454,13 @@ async function* queryModel(
           request_id: (streamRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+        // CL:39 (2.1.287) — official terminal call site B
+        // (`...tengu_streaming_close_after_complete...ch("stream_completed",
+        // Zi??null,il),yield*Um();break e` @208275702). The connection dropped
+        // after the terminal stop_reason with all blocks closed; the envelope
+        // may still be open (no message_stop arrived), so flush the synthetic
+        // close before completing.
+        yield* flushStreamCloseLocal()
         return
       }
 
@@ -3358,6 +3489,17 @@ async function* queryModel(
           request_id: (streamRequestId ??
             'unknown') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
+        // CL:39 (2.1.287) — official terminal call sites C+D (the synthesized
+        // stop_reason / partial-finalize path:
+        // `...has_output:ji,synthesized_stop_reason:c(Bge),cause:SYe...oM(),
+        // yield*Um();let EYe=ns({content:ji?...` @208275702+). The flush runs
+        // after the analytics and BEFORE the incomplete-response notice is
+        // yielded, matching the official order (`yield*Um()` precedes the
+        // `ns({content:...})` notice build). A stop_reason was just synthesized
+        // on the last yielded message; the envelope is still open, so emit the
+        // synthetic content_block_stop (suppressed for a tool block) +
+        // message_stop the --include-partial-messages consumer needs.
+        yield* flushStreamCloseLocal()
         yield createAssistantAPIErrorMessage({
           content: `${API_ERROR_MESSAGE_PREFIX}: ${getMidStreamPartialNotice(midStreamCause)}`,
           error: 'server_error',
@@ -3490,6 +3632,18 @@ async function* queryModel(
           ? 'watchdog'
           : 'other') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
+      // CL:39 (2.1.287) — official terminal call site F (the non-streaming
+      // fallback: `...XL=Zi,Zi=null,yield*Um(),yield*Lge(),yield{type:
+      // "streaming_fallback_began",cause:Ga}` @208282711 region). The official
+      // flushes the partial stream's envelope (Um) BEFORE re-requesting via the
+      // non-streaming path (Lge), so the --include-partial-messages consumer
+      // sees the cut-short reply's message_stop instead of it hanging open
+      // across the fallback. NOTE: OCC has NO `streaming_fallback_began` yielded
+      // message (it signals the fallback via the `onStreamingFallback()` callback
+      // + the tengu_streaming_fallback_to_non_streaming analytics event) — that
+      // message type is NO-SURFACE here — but the flush itself is portable and
+      // is placed at the same point (immediately before the fallback request).
+      yield* flushStreamCloseLocal()
       const result = yield* executeNonStreamingRequest(
         { model: options.model, source: options.querySource, promptId },
         {

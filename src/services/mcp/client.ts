@@ -85,6 +85,7 @@ import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import {
+  computePersistedLineStats,
   getBinaryBlobSavedMessage,
   getFormatDescription,
   getLargeOutputInstructions,
@@ -2189,6 +2190,12 @@ export const fetchToolsForClient = memoizeWithLRU(
       const serverAlwaysLoad =
         'alwaysLoad' in client.config && client.config.alwaysLoad === true
       const isDynamicScope = client.config.scope === 'dynamic'
+      // CC 2.1.287 (#7) — binary factories On()@232967426 / La()@233273756:
+      //   serverDefersAllTools:e.config.alwaysLoad===!1
+      // A server configured with `alwaysLoad:false` defers ALL of its tools
+      // behind tool search (the v287 `!g&&` gate prefix below).
+      const serverDefersAllTools =
+        'alwaysLoad' in client.config && client.config.alwaysLoad === false
 
       // Convert MCP tools to our Tool format
       return toolsToProcess
@@ -2246,10 +2253,19 @@ export const fetchToolsForClient = memoizeWithLRU(
                     .replace(/\s+/g, ' ')
                     .trim() || undefined
                 : undefined,
+            // CC 2.1.287 (#7) — binary v287 gate @232962174:
+            //   alwaysLoad:!g&&(h&&!(r==="dynamic"&&U._meta?.["anthropic/alwaysLoad"]===!1)
+            //             ||U._meta?.["anthropic/alwaysLoad"]===!0)
+            // (g=serverDefersAllTools, h=serverAlwaysLoad, r=config.scope).
+            // Server `alwaysLoad:false` ⇒ EVERY tool of that server defers
+            // behind tool search — the !g&& prefix overrides even a tool-level
+            // _meta['anthropic/alwaysLoad']===true. alwaysLoad:true/undefined
+            // keep the v285 formula unchanged.
             alwaysLoad:
-              (serverAlwaysLoad &&
+              !serverDefersAllTools &&
+              ((serverAlwaysLoad &&
                 !(isDynamicScope && toolAlwaysLoadMeta === false)) ||
-              toolAlwaysLoadMeta === true,
+                toolAlwaysLoadMeta === true),
             async description() {
               return rawDescription
             },
@@ -3509,11 +3525,23 @@ export async function processMCPResult(
     persistedSizeChars: persistResult.originalSize,
   } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
 
+  // CC 2.1.287 #29: compute the persisted content's line-shape stats ONLY for
+  // plain-text results. Official gates the stats on `ie = type==="toolResult"
+  // || unwrappedSingletonText !== undefined` and leaves them undefined for
+  // JSON-persisted results, so the guidance says the file is JSON (Read's
+  // offset/limit cannot split its one long line) instead of recommending
+  // offset/limit paging. OCC has no singleton-text unwrap, so the gate is
+  // `type === 'toolResult'`.
+  const lineStats =
+    type === 'toolResult' ? computePersistedLineStats(contentStr) : undefined
+
   const formatDescription = getFormatDescription(type, schema)
   return getLargeOutputInstructions(
     persistResult.filepath,
     persistResult.originalSize,
     formatDescription,
+    undefined,
+    lineStats,
   )
 }
 

@@ -1,7 +1,16 @@
 # OCC-144 Upstream Version Gap Ledger — Claude Code 2.1.286 → 2.1.287 (2026-10)
 
 **Round**: OCC-144 (issue `6067a265-1eed-4124-a17f-583474d036d9`), executed 2026-10-03 by OCC 程序员 (version catch-up, autopilot-triggered).
-**Tracked-upstream pointer**: 2.1.286 → **2.1.287** (this round). OCC release: **2.1.366** (from 2.1.365).
+**Tracked-upstream pointer**: 2.1.286 → **2.1.287** (this round). OCC release: **2.1.367** (from 2.1.366 — see the cross-round addendum below; 2.1.366 was the parallel OCC-105 round's release).
+
+## 0. Cross-round addendum — the parallel OCC-105 round (discovered at merge time)
+
+While this round was running, a **parallel round (OCC-105, ledger `docs/upstream-version-gap-occ105-2026-10.md`)** performed its own 2.1.287 catch-up, merged to main and cut release commit `69d3709` (**2.1.366**) on 2026-10-02 — but **never pushed the `v2.1.366` tag**, so 2.1.366 never published to npm (remote tags/releases end at v2.1.365; npm latest = 2.1.365 as of 2026-10-03T07:55Z). This round therefore:
+
+1. **Merged origin/main into this branch** and deduplicated: the two rounds **independently byte-verified and ported the same #44 revoked-OAuth-token fix** (convergent validation — both recovered the official `PZ` predicate and `Q3n` message; OCC-105 cites `PZ` @198284746, this round @200866142 — different extraction windows of the same function, semantics identical). The **OCC-105 `errors.ts` implementation is canonical** (inline widened predicates at both sites + the print-mode message, with its own test file `revokedTokenLogin287.test.ts`); this round's duplicate `errors.ts` edits and its redundant test file `oauthTokenRevoked287.test.ts` were **dropped at merge resolution**.
+2. **Kept this round's complementary delta**: OCC-105 did NOT widen `src/services/api/withRetry.ts`'s local `isOAuthTokenRevokedError` mirror (still 403-only on main). Since the official `PZ` is a **single shared predicate at ALL call sites**, this round's widening (byte-verified @200866142, JSDoc-cited) is a genuine parity fix — behaviorally neutral at OCC's current call sites (every revoked-401 already flows through the plain-401 arms first: `withRetry` lines 491/499 OR it with a bare 401 check, `isCredentialRenewalError` returns true for any 401, `credentialRenewalEligible`'s leading `!(401)` term, and `shouldRetry`'s 401 branch precedes the predicate) but keeps the mirror equivalent for future call sites.
+3. **Completes the stranded release chain**: tag `v2.1.366` at OCC-105's release commit `69d3709` (publishes the announced 2.1.366 to npm), then this round's docs/parity release as **`v2.1.367`**.
+4. **Status corrections from the OCC-105 changelog** — these entries in §2 below were dispositioned by this round BEFORE the merge was visible; OCC-105 actually landed them (statuses superseded to **PORTED via OCC-105**): #6 (OTEL `prompt_text`), #8 (Windows Bash-deny→PowerShell warning — this round had it NO-OP PLATFORM; OCC has the surface after all), #12 (`asyncRewake` missing-script report-once), #16 (Fable `/model` alias save), #24 (plain-language Bash permission prompts — the "Contains simple_expansion" fix), #27 (JSON/line-shape-aware large-MCP-result guidance), #35 (`CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS` structured-output gate), #37 (`--include-partial-messages` synthetic `content_block_stop`/`message_stop`), #42+#51+#70 (reduce-motion/`/desktop` cause/light-theme contrast), #48 (marketplace http transport — this round guessed ALREADY-ALIGNED from the `gitUrlValidation.ts` allowlist; OCC-105 landed the official "transport 'http' not allowed" https/ssh-only refusal with a real git-http-backend A/B harness — **this round's guess was wrong, corrected**), #61 (piped-stdin startup guard — same NO-OP PLATFORM correction as #8), #85 (`alwaysLoad:false` defers tools behind tool search), #29/#33/#36 (screen-reader sign-in cursor / diff changed-lines / borderless search boxes — partial). The remaining STAGED items (incl. the §3 security P0s #19/#26/#80/#83/#41/#88/#47) are NOT in OCC-105's changelog and stay STAGED for the next round.
 **Official channel state at round time** (npm `dist-tags`, fact-checked 2026-10-03): `stable=2.1.285`, `latest=next=2.1.288`. Publish times: 2.1.286 → 2026-09-30T17:14Z, 2.1.287 → 2026-10-01T16:59Z, **2.1.288 → 2026-10-02T18:30Z** (promoted to `latest` DURING this round — at round start `latest` was 2.1.287, per the OCC-104 §8 pre-triage).
 **Per directive + convention**: this round aligns to **2.1.287** (the byte-forensics target). **2.1.288 gets pre-triage STAGE only** (§5) — no forced alignment this round; it is the next round's top priority.
 
@@ -27,9 +36,9 @@ The single PORTED item is the #44 revoked-OAuth-token fix (a §8-security item f
 
 ## 1. PORTED — revoked-OAuth-token cluster (#44)
 
-**#44** — *"Fixed a revoked claude.ai login showing a generic `API Error: 401` instead of 'OAuth token revoked'; in `-p` mode the error now starts with 'Failed to authenticate'."* → **PORTED** (byte-verified, committed `8949b28`, 10 new tests).
+**#44** — *"Fixed a revoked claude.ai login showing a generic `API Error: 401` instead of 'OAuth token revoked'; in `-p` mode the error now starts with 'Failed to authenticate'."* → **PORTED** (byte-verified; first landed on this branch as `8949b28`, then deduplicated at merge in favor of the parallel OCC-105 `errors.ts` implementation — see §0; this round's surviving code delta is the `withRetry.ts` mirror widening).
 
-Two byte-verified deltas recovered from the official 2.1.287 linux ELF and ported:
+Two byte-verified deltas recovered from the official 2.1.287 linux ELF (both rounds recovered the same two independently):
 
 **(a) Predicate widened 403-only → 403 ∪ 401.** Official renamed the shared revoked-token predicate `X7`→`PZ` and added the 401 form. v286 `X7` @198922605:
 ```js
@@ -43,8 +52,6 @@ function PZ(e){if(!(e instanceof xt))return!1;let r=e.message??"";
 ```
 Newness proof: `"OAuth access token has been revoked"` → **zero hits in v286**; v287 hits @102012624 (string table) + @200866303 (inside `PZ`). The old 403 string survives at 5 sites in BOTH versions (the retry-wrapper `withOAuth401Retry` @v286 199173020 / @v287 201120899 and the org-status fetch @v286 199325880 / @v287 201275267 are **byte-identical modulo minified renames** — verified by `dd` window extraction; those two axios sites are NOT part of the delta and OCC's `src/utils/http.ts` `withOAuth401Retry` + `src/utils/fastMode.ts` stay as-is). `PZ` replaced `X7` at ALL call sites (single shared identifier), so every consumer of the predicate widens identically.
 
-OCC port: `isOAuthTokenRevokedAPIError` (new exported helper, `src/services/api/errors.ts`) + the two inline 403-only sites (`errors.ts` classifier + `token_revoked` type resolver) now route through it; `isOAuthTokenRevokedError` (`src/services/api/withRetry.ts`, documented `X7 ≡` mirror) widened to the same `PZ` shape. All 5 withRetry consumers are positive checks (retry classification, credential-renewal arms) → widening is safe and matches the official shared-predicate semantics.
-
 **(b) Print-mode message changed.** Official message fn renamed `aYn`→`Q3n`. v286 `aYn`:
 ```js
 function aYn(){return ke()?"Your account does not have access to Claude. Please login again or contact your administrator.":Rst}
@@ -53,9 +60,11 @@ v287 `Q3n` @207163766:
 ```js
 function Q3n(){return ke()?"Failed to authenticate: OAuth token revoked. Please log in again or contact your administrator.":Elt}
 ```
-`ke()` = print-mode (`-p`) predicate (same name both versions); `Elt`/`Rst` = `"OAuth token revoked \xB7 Please run /login"` (the interactive string, unchanged). Newness proof: `"Failed to authenticate: OAuth token revoked"` → zero v286 hits; v287 @98564528 + @207163785. OCC port: `getTokenRevokedErrorMessage()` non-interactive branch now returns the explicit revoked wording; interactive branch keeps `TOKEN_REVOKED_ERROR_MESSAGE` (`'OAuth token revoked · Please run /login'`) unchanged.
+`ke()` = print-mode (`-p`) predicate (same name both versions); `Elt`/`Rst` = `"OAuth token revoked \xB7 Please run /login"` (the interactive string, unchanged). Newness proof: `"Failed to authenticate: OAuth token revoked"` → zero v286 hits; v287 @98564528 + @207163785.
 
-Tests: `src/services/api/__tests__/oauthTokenRevoked287.test.ts` — 10 tests / 13 expects (predicate: 403-old-form ✓, 401-new-form ✓, embedded ✓, 401-with-403-wording ✗, 403-with-401-wording ✗, unrelated-403 ✗, non-APIError ✗; message: print-mode explicit wording ✓, NOT-old-generic ✓, interactive short prompt ✓). Full `src/services/api/` suite: **380 pass / 0 fail / 1286 expect()** across 27 files.
+OCC port (final merged state): `src/services/api/errors.ts` — the two inline 403-only sites (the `getAssistantMessageFromError` classifier + the `token_revoked` type resolver) widened to the full `PZ` shape and `getTokenRevokedErrorMessage()`'s non-interactive branch switched to the explicit revoked wording, interactive branch keeps `TOKEN_REVOKED_ERROR_MESSAGE` (`'OAuth token revoked · Please run /login'`) unchanged (**OCC-105's implementation, canonical**; this round's equivalent port via an exported `isOAuthTokenRevokedAPIError` helper was dropped at merge as a duplicate). `src/services/api/withRetry.ts` — the local `isOAuthTokenRevokedError` mirror widened to the identical `PZ` shape (**this round's surviving delta**; OCC-105 left it 403-only). All 5 withRetry consumers are positive checks (retry classification, credential-renewal arms) and each already handles plain 401s first, so the widening is behaviorally neutral today and matches the official shared-predicate semantics.
+
+Tests: the canonical coverage is OCC-105's `src/services/api/__tests__/revokedTokenLogin287.test.ts` (predicate arms + negative controls + print-mode message through the public classifiers). This round's independent `oauthTokenRevoked287.test.ts` (10 tests / 13 expects — 403-old ✓, 401-new ✓, embedded ✓, cross-wired status/message ✗, unrelated-403 ✗, non-APIError ✗; print-mode explicit wording ✓, not-old-generic ✓, interactive short prompt ✓) passed against this round's implementation pre-merge and was **removed at merge resolution as redundant**. Pre-merge full `src/services/api/` suite with it: **380 pass / 0 fail / 1286 expect()** across 27 files.
 
 ## 2. Per-entry triage (#3–#108)
 
@@ -243,12 +252,17 @@ Of the 8 OCC-104 §8 security items: **1 PORTED** (#44, byte-verified), **7 STAG
 
 ## 4. Test / build / release evidence
 
-- New tests: `src/services/api/__tests__/oauthTokenRevoked287.test.ts` — 10 pass / 0 fail / 13 expect().
+Pre-merge (branch-only tree, before the OCC-105 merge — historical):
+- New tests (this round's, since deduped): `src/services/api/__tests__/oauthTokenRevoked287.test.ts` — 10 pass / 0 fail / 13 expect(). Removed at merge as redundant with main's canonical `revokedTokenLogin287.test.ts` (see §0/§1).
 - API suite regression: `bun test src/services/api/` — 380 pass / 0 fail / 1286 expect() across 27 files.
-- Full suite: `bun test src --isolate` — **6861 pass / 1 skip / 0 fail / 17172 expect()** across 545 files (328 s).
+- Full suite: `bun test src --isolate` — 6861 pass / 1 skip / 0 fail / 17172 expect() across 545 files (328 s).
 - Build: `bun run build` green — `dist/cli.js` 29.71 MB, `MACRO.VERSION=2.1.366` injected; `./dist/cli.js --version` → `OCC 2.1.366`.
-- REPL/headless smoke: `echo "say PONG" | ./dist/cli.js -p` → `PONG`, exit 0 (live model; the `unrecognized_model` glm-5.2 warning is pre-existing env config noise, also present in prior rounds).
-- OCC release **2.1.366** (from 2.1.365); tracked-upstream pointer advances to **2.1.287**.
+
+Post-merge (final merged tree — the numbers that shipped):
+- Full suite: `bun test src --isolate` — **7040 pass / 1 skip / 0 fail / 17750 expect()** across 563 files (337 s).
+- Build: `bun run build` green — `dist/cli.js` 29.73 MB, `MACRO.VERSION=2.1.367` injected; `./dist/cli.js --version` → `OCC 2.1.367`.
+- REPL/headless smoke on the final build: `echo "say PONG" | ./dist/cli.js -p` → `PONG`, exit 0 (live model; the `unrecognized_model` glm-5.2 warning is pre-existing env config noise, also present in prior rounds); tmux interactive REPL round-trip (`say PONG` → `● PONG`) green.
+- OCC release **2.1.367** (from the stranded 2.1.366 — this round completes the `v2.1.366` tag/publish chain, see §0); tracked-upstream pointer advances to **2.1.287**.
 
 ## 5. 2.1.288 pre-triage (STAGE only — promoted to `latest` mid-round; next-round top priority)
 

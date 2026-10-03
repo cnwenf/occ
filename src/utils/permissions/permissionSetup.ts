@@ -1,6 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { relative } from 'path'
 import {
+  getIsInteractive,
   getOriginalCwd,
   handleAutoModeTransition,
   handlePlanModeTransition,
@@ -13,6 +14,9 @@ import type {
 } from '../../Tool.js'
 import { getCwd } from '../cwd.js'
 import { isEnvTruthy } from '../envUtils.js'
+import { getPlatform } from '../platform.js'
+import { isPowerShellToolEnabled } from '../shell/shellToolUtils.js'
+import { decidePowerShellStrip } from '../shell/powershellStripWarning.js'
 import type { SettingSource } from '../settings/constants.js'
 import { SETTING_SOURCES } from '../settings/constants.js'
 import {
@@ -1072,6 +1076,86 @@ export async function initializeToolPermissionContext({
       rulesFromDisk,
       parsedAllowedToolsCli,
     )
+  }
+
+  // v287 Item 10 (binary @213518738): on Windows with Git Bash missing, denying
+  // the Bash tool also turns off the PowerShell tool, so Claude has neither shell
+  // tool. The official then excludes PowerShellTool from the tool set
+  // (`v = [...v, St]`) and — interactive startup only (`vb()`) — pushes a startup
+  // warning. Faithful port of the recovered gate
+  // `if (O()==="windows" && Fa() && Pe && !ye) { v=[...v,St]; ...warn... }`.
+  //
+  // gitBashMissing: OCC's findGitBashPath() (windowsPaths.ts) is FATAL and runs
+  // during init() (main.tsx:971 → setShellIfWindows) BEFORE this site
+  // (main.tsx:2084), so on any reachable Windows runtime Git Bash is present here
+  // — the official's "git-bash missing but process still alive" precondition is
+  // UNREACHABLE in OCC (STAGED structural divergence; see powershellStripWarning.ts).
+  // The pure decidePowerShellStrip() implements the COMPLETE gate and is unit-tested
+  // for gitBashMissing===true, so this activates by flipping the one input below if
+  // OCC later adopts the official's non-fatal git-bash + PowerShell-fallback model.
+  const disallowRuleValues = parsedDisallowedToolsCli.map(
+    permissionRuleValueFromString,
+  )
+  const allowRuleValues = parsedAllowedToolsCli.map(permissionRuleValueFromString)
+  const baseToolNames = parseBaseToolsFromCLI(baseToolsCli ?? []).map(
+    normalizeLegacyToolName,
+  )
+  const powershellStrip = decidePowerShellStrip({
+    platform: getPlatform(),
+    gitBashMissing: false,
+    interactive: getIsInteractive(),
+    bashDeny: {
+      // Pe term 1 — q.some((r) => r.toolName === Bash)
+      cliDisallowNamesBash: disallowRuleValues.some(
+        rv => rv.toolName === BASH_TOOL_NAME,
+      ),
+      // Pe term 2 / r.length > 0 — B.some(deny && ruleValue.toolName === Bash)
+      diskDenyNamesBash: rulesFromDisk.some(
+        r => r.ruleBehavior === 'deny' && r.ruleValue.toolName === BASH_TOOL_NAME,
+      ),
+      // fe (v286 shape; bash-family `ne` STAGED) — blanket Bash in CLI disallow
+      cliDisallowBlanketBash: disallowRuleValues.some(
+        rv => rv.toolName === BASH_TOOL_NAME && rv.ruleContent === undefined,
+      ),
+      // r.some((p) => p.source === "policySettings")
+      diskDenyBashFromPolicy: rulesFromDisk.some(
+        r =>
+          r.ruleBehavior === 'deny' &&
+          r.ruleValue.toolName === BASH_TOOL_NAME &&
+          r.source === 'policySettings',
+      ),
+    },
+    powershellEnabled: {
+      // ye check 1 — env var (OCC's canonical Windows+env gate, same one tools.ts
+      // uses for PowerShellTool visibility, so strip stays consistent with visibility)
+      envEnabled: isPowerShellToolEnabled(),
+      // ye check 2 — allowlist (--tools base list) names PowerShell
+      inAllowlist: baseToolNames.includes(POWERSHELL_TOOL_NAME),
+      // ye check 3 — rule source S (CLI --allowedTools) names PowerShell
+      namedByAllowedCli: allowRuleValues.some(
+        rv => rv.toolName === POWERSHELL_TOOL_NAME,
+      ),
+      // ye check 4 — rule source q (CLI --disallowedTools) names PowerShell
+      namedByDisallowedCli: disallowRuleValues.some(
+        rv => rv.toolName === POWERSHELL_TOOL_NAME,
+      ),
+      // ye check 5 — rule source B (settings/disk rules) names PowerShell
+      namedByDiskRules: rulesFromDisk.some(
+        r => r.ruleValue.toolName === POWERSHELL_TOOL_NAME,
+      ),
+    },
+  })
+  if (powershellStrip.disallowPowerShell) {
+    // v = [...v, St] — flow PowerShell into alwaysDenyRules.cliArg (consumed by
+    // applyPermissionRulesToPermissionContext below) so filterToolsByDenyRules
+    // (tools.ts) strips PowerShellTool from the model-visible tool set.
+    parsedDisallowedToolsCli = [
+      ...parsedDisallowedToolsCli,
+      POWERSHELL_TOOL_NAME,
+    ]
+  }
+  if (powershellStrip.warning) {
+    warnings.push(powershellStrip.warning)
   }
 
   let toolPermissionContext = applyPermissionRulesToPermissionContext(

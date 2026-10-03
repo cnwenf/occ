@@ -1,6 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import type { ThinkingBlock, ThinkingBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import React from 'react';
+import { useSettings } from '../../hooks/useSettings.js';
 import { Box, Text } from '../../ink.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { Markdown } from '../Markdown.js';
@@ -30,6 +31,12 @@ export function AssistantThinkingMessage(t0) {
     hideInTranscript: t3,
     isStreaming
   } = t0;
+  // 2.1.287 #11 (GAP 1): the inline thinking spinner animated regardless of
+  // the "Reduce motion" setting — thread it through with the same access
+  // pattern Spinner.tsx uses (`settings.prefersReducedMotion ?? false`).
+  // Unconditional hook call (before the early returns) per the rules of hooks.
+  const settings = useSettings();
+  const reducedMotion = settings.prefersReducedMotion ?? false;
   const {
     thinking
   } = t1;
@@ -69,7 +76,9 @@ export function AssistantThinkingMessage(t0) {
   if (isStreaming) {
     return (
       <Box flexDirection="column" gap={1} marginTop={addMargin ? 1 : 0} width="100%">
-        <InlineThinkingSpinner />
+        {/* 2.1.287 #11: reducedMotion freezes the spinner on frame 0 and
+            unsubscribes its useAnimationFrame clock (see InlineThinkingSpinner). */}
+        <InlineThinkingSpinner reducedMotion={reducedMotion} />
         <Box paddingLeft={2}>
           {/* capProseWidth: official xs @220216483 renders thinking prose via
               `e(Ei,{dimColor:!0,capProseWidth:!0,...})` (2.1.282). */}

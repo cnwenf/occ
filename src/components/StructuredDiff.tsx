@@ -5,6 +5,7 @@ import { memo } from 'react';
 import { useSettings } from '../hooks/useSettings.js';
 import { Box, NoSelect, RawAnsi, useTheme } from '../ink.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
+import { isScreenReaderEnabled } from '../utils/screenReader.js';
 import sliceAnsi from '../utils/sliceAnsi.js';
 import { expectColorDiff } from './StructuredDiff/colorDiff.js';
 import { StructuredDiffFallback } from './StructuredDiff/Fallback.js';
@@ -92,6 +93,24 @@ function renderColorDiff(patch: StructuredPatchHunk, firstLine: string | null, f
   perHunk.set(key, entry);
   return entry;
 }
+
+/**
+ * Whether the color-diff (`<RawAnsi>`) render path should be used.
+ *
+ * Official v287 Item 5 (option 1): screen-reader users get the plain-Text
+ * `StructuredDiffFallback` instead. OCC's SR serializer
+ * (src/ink/screen-reader-render.ts) walks ink-text / ink-virtual-text /
+ * ink-link / ink-box / ink-root but has NO ink-raw-ansi case, so a `<RawAnsi>`
+ * color diff serializes to nothing and the entire diff is invisible to a screen
+ * reader. Falling back to the Text-based renderer makes diff lines SR-visible.
+ *
+ * The CLAUDE_CODE_SYNTAX_HIGHLIGHT env gate (colorDiff.ts `expectColorDiff`)
+ * still governs the non-SR path unchanged — this predicate only adds the SR
+ * condition. Pure and side-effect free so the gate decision is unit-testable.
+ */
+export function shouldUseColorDiff(skipHighlighting: boolean, syntaxHighlightingDisabled: boolean, screenReaderEnabled: boolean): boolean {
+  return !skipHighlighting && !syntaxHighlightingDisabled && !screenReaderEnabled;
+}
 export const StructuredDiff = memo(function StructuredDiff(t0: Props) {
   const $ = _c(26);
   const {
@@ -111,7 +130,10 @@ export const StructuredDiff = memo(function StructuredDiff(t0: Props) {
   let t2;
   if ($[0] !== dim || $[1] !== fileContent || $[2] !== filePath || $[3] !== firstLine || $[4] !== patch || $[5] !== safeWidth || $[6] !== skipHighlighting || $[7] !== syntaxHighlightingDisabled || $[8] !== theme) {
     const splitGutter = isFullscreenEnvEnabled();
-    t2 = skipHighlighting || syntaxHighlightingDisabled ? null : renderColorDiff(patch, firstLine, filePath, fileContent ?? null, theme, safeWidth, dim, splitGutter);
+    // Screen-reader gate (official v287 Item 5, option 1) — see shouldUseColorDiff.
+    // isScreenReaderEnabled() is a process-constant cached singleton, so reading
+    // it inside this memo body is safe without adding a dep slot.
+    t2 = shouldUseColorDiff(skipHighlighting, syntaxHighlightingDisabled, isScreenReaderEnabled()) ? renderColorDiff(patch, firstLine, filePath, fileContent ?? null, theme, safeWidth, dim, splitGutter) : null;
     $[0] = dim;
     $[1] = fileContent;
     $[2] = filePath;

@@ -11,8 +11,12 @@ let cachedStdinOverride: ReadStream | undefined | null = null
  * Gets a ReadStream for /dev/tty when stdin is piped.
  * This allows interactive Ink rendering even when stdin is a pipe.
  * Result is cached for the lifetime of the process.
+ *
+ * Exported for the claude-code 2.1.287 (#21) piped-stdin startup guard: an
+ * `undefined` result here is exactly the "no readable keyboard" condition the
+ * official guard reports before Ink mounts (see `src/utils/stdinGuard.ts`).
  */
-function getStdinOverride(): ReadStream | undefined {
+export function getStdinOverride(): ReadStream | undefined {
   // Return cached result if already computed
   if (cachedStdinOverride !== null) {
     return cachedStdinOverride

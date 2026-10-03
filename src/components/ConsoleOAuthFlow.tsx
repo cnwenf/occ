@@ -12,6 +12,7 @@ import { sendNotification } from '../services/notifier.js';
 import { OAuthService } from '../services/oauth/index.js';
 import { getOauthAccountInfo, validateForceLoginOrg } from '../utils/auth.js';
 import { logError } from '../utils/log.js';
+import { isScreenReaderEnabled } from '../utils/screenReader.js';
 import { getSettings_DEPRECATED } from '../utils/settings/settings.js';
 import { Select } from './CustomSelect/select.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
@@ -525,7 +526,16 @@ function OAuthStatusMessage(t0) {
         }
         let t3;
         if ($[24] !== cursorOffset || $[25] !== handleSubmitCode || $[26] !== oauthStatus.url || $[27] !== pastedCode || $[28] !== setCursorOffset || $[29] !== setPastedCode || $[30] !== showPastePrompt || $[31] !== textInputColumns) {
-          t3 = showPastePrompt && <Box><Text>{PASTE_HERE_MSG}</Text><TextInput value={pastedCode} onChange={setPastedCode} onSubmit={value => handleSubmitCode(value, oauthStatus.url)} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={textInputColumns} mask="*" /></Box>;
+          // Official v287 @222279552: the sign-in paste-code field gains
+          // `focus:!0,showCursor:z` where z = Ze() = isScreenReaderEnabled().
+          // v286 passed NO focus prop here at all. focus:true activates this
+          // TextInput's useInput (it is the only input rendered in the
+          // waiting_for_login/showPastePrompt branch, so it steals no focus);
+          // showCursor under SR lets BaseTextInput declare the native cursor
+          // (t1 = focus && showCursor && terminalFocus) so screen readers track
+          // the masked caret. isScreenReaderEnabled() is a process-constant
+          // cached singleton, so reading it in this memo body needs no dep slot.
+          t3 = showPastePrompt && <Box><Text>{PASTE_HERE_MSG}</Text><TextInput value={pastedCode} onChange={setPastedCode} onSubmit={value => handleSubmitCode(value, oauthStatus.url)} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} columns={textInputColumns} mask="*" focus={true} showCursor={isScreenReaderEnabled()} /></Box>;
           $[24] = cursorOffset;
           $[25] = handleSubmitCode;
           $[26] = oauthStatus.url;

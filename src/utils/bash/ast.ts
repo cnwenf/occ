@@ -2700,14 +2700,68 @@ function stripRawString(text: string): string {
   return text.slice(1, -1)
 }
 
-function tooComplex(node: Node): ParseForSecurityResult {
-  const reason =
-    node.type === 'ERROR'
-      ? 'Parse error'
-      : DANGEROUS_TYPES.has(node.type)
-        ? `Contains ${node.type}`
-        : `Unhandled node type: ${node.type}`
-  return { kind: 'too-complex', reason, nodeType: node.type }
+/**
+ * Plain-language explanations for parser node types, shown in the Bash
+ * permission prompt when a command is too complex to statically analyze.
+ * Byte-exact port of the official Claude Code 2.1.287 `Rt` map (the 26-entry
+ * node-type → explanation table consumed by the too-complex builder `_()`).
+ * Replaces the pre-287 behavior that leaked raw internal parser names such as
+ * `Contains simple_expansion` into the prompt. Insertion order matches the
+ * official `new Map([...])`. See docs/gap-research-287/cluster-d2-misc.md #6.
+ */
+export const NODE_TYPE_EXPLANATIONS: ReadonlyMap<string, string> = new Map([
+  ['simple_expansion', 'a variable'],
+  ['expansion', 'a variable in braces'],
+  ['command_substitution', 'the output of another command'],
+  ['process_substitution', 'another command used as a file'],
+  ['brace_expression', 'a brace pattern'],
+  ['ansi_c_string', 'text with escape codes'],
+  ['translated_string', 'text the shell may translate'],
+  ['test_command', 'a test in brackets'],
+  ['herestring_redirect', 'a here-string'],
+  ['heredoc_redirect', 'a here-document'],
+  ['subshell', 'a group of commands in parentheses'],
+  ['compound_statement', 'a group of commands in braces or double parentheses'],
+  ['for_statement', 'a for or select loop'],
+  ['c_style_for_statement', 'a for loop with a counter'],
+  ['while_statement', 'a while or until loop'],
+  ['until_statement', 'an until loop'],
+  ['if_statement', 'an if statement'],
+  ['case_statement', 'a case statement'],
+  ['function_definition', 'a function definition'],
+  ['array', 'a list of values'],
+  ['string', 'quoted text'],
+  ['file_redirect', 'a redirect to or from a file'],
+  ['pipeline', 'a pipeline'],
+  ['concatenation', 'text joined from several pieces'],
+  ['variable_assignment', 'a variable assignment'],
+  ['variable_assignments', 'several variable assignments'],
+])
+
+/**
+ * Build the 'too-complex' rejection for a node we can't statically analyze.
+ * Byte-exact port of the official Claude Code 2.1.287 `_()` builder:
+ *   - ERROR node            → reason 'Parse error'
+ *   - mapped node type      → 'Part of this command (<explanation>) cannot be
+ *                             checked in advance'
+ *   - unmapped/unknown type → 'Part of this command cannot be checked in
+ *                             advance'
+ * The return shape (`{ kind, reason, nodeType }`) is unchanged from the pre-287
+ * OCC builder; only the `reason` strings differ. See
+ * docs/gap-research-287/cluster-d2-misc.md #6.
+ */
+export function tooComplex(node: Node): ParseForSecurityResult {
+  if (node.type === 'ERROR')
+    return { kind: 'too-complex', reason: 'Parse error', nodeType: node.type }
+  const explanation = NODE_TYPE_EXPLANATIONS.get(node.type)
+  return {
+    kind: 'too-complex',
+    reason:
+      explanation === undefined
+        ? 'Part of this command cannot be checked in advance'
+        : `Part of this command (${explanation}) cannot be checked in advance`,
+    nodeType: node.type,
+  }
 }
 
 // ────────────────────────────────────────────────────────────────────────────

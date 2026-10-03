@@ -197,6 +197,10 @@ function firstLine(text: string): string {
  * `{code:0, exitCode:0}`; failure → `{code: exitCode ?? 1, error, exitCode}`
  * with `exitCode` left undefined on signal-kill/spawn failure; spawn throw →
  * `{stdout:'', stderr:'', code:1}`.
+ *
+ * 2.1.287 #15: the official v287 builder `y()` additionally destructures
+ * `timedOut`/`maxBufferExceeded` off the exec result (@218727474 region) so
+ * the failure detail can name the cause instead of quoting partial output.
  */
 export type OpenerExecResult = {
   stdout: string
@@ -204,6 +208,10 @@ export type OpenerExecResult = {
   code: number
   exitCode?: number
   error?: string
+  /** Official v287 `y()` field — set when the opener hit OPENER_TIMEOUT_MS. */
+  timedOut?: boolean
+  /** Official v287 `y()` field — set when the opener exceeded the output buffer. */
+  maxBufferExceeded?: boolean
 }
 
 /** Result of a deep-link open attempt — official v276 `{opened,detail}` shape. */
@@ -268,6 +276,13 @@ async function runOpenerCommand(
         result as unknown as ExecaFailureFields,
         code,
       ),
+      // 2.1.287 #15: execa v9 reports the timeout kill as `timedOut` and the
+      // output-buffer overflow as `isMaxBuffer` on the (reject:false) result —
+      // mapped to the official v287 `y()` field names (`timedOut` /
+      // `maxBufferExceeded`; the official wrapper's runner uses the older
+      // execa naming). Both stay undefined on plain non-zero exits.
+      timedOut: result.timedOut || undefined,
+      maxBufferExceeded: result.isMaxBuffer || undefined,
     }
   } catch {
     // Official spawn-throw fallback: empty output, code 1, no exitCode.
@@ -287,12 +302,27 @@ async function runOpenerCommand(
  *       u=wn(Or(i.trim())||(n===void 0?s:"")||"",v).replace(/\.$/,"");
  *   return{opened:!1,detail:u.length===0?l:`${l}: ${u}`}}
  * ```
+ *
+ * 2.1.287 #15: the official v287 builder `y()` (@218727474 region) adds two
+ * early-return branches BEFORE the `failed`/`exited N` fallthrough, byte-exact:
+ * ```js
+ * function y(e,n){let{code:o,exitCode:r,stderr:a,error:s,timedOut:u,maxBufferExceeded:c}=n;
+ *   if(o===0)return{opened:!0};
+ *   let i=a||s;
+ *   if(t(`Deep link opener ${e} failed: …`),u)return{opened:!1,detail:`\`${e}\` timed out`};
+ *   if(c)return{opened:!1,detail:`\`${e}\` printed too much output`};
+ *   …unchanged fallthrough…}
+ * ```
+ * so a timeout kill / output overflow names the cause instead of quoting
+ * partial stderr. (v287 also widens the fallthrough's trailing-dot strip from
+ * `/\.$/` to `/\.+$/`; OCC keeps the v276 `/\.$/` fallthrough intact — only
+ * the two named branches are ported here.)
  */
 export function buildDeepLinkOpenerResult(
   openerName: string,
   result: OpenerExecResult,
 ): DeepLinkOpenResult {
-  const { code, exitCode, stderr, error } = result
+  const { code, exitCode, stderr, error, timedOut, maxBufferExceeded } = result
   if (code === 0) {
     return { opened: true }
   }
@@ -300,6 +330,14 @@ export function buildDeepLinkOpenerResult(
   logForDebugging(
     `Deep link opener ${openerName} failed: code ${code}, exitCode ${exitCode ?? 'undefined'}${context ? `: ${context}` : ''}`,
   )
+  // Official v287 `y()`: `if(…,u)return{opened:!1,detail:`\`${e}\` timed out`}`
+  if (timedOut) {
+    return { opened: false, detail: `\`${openerName}\` timed out` }
+  }
+  // Official v287 `y()`: `if(c)return{opened:!1,detail:`\`${e}\` printed too much output`}`
+  if (maxBufferExceeded) {
+    return { opened: false, detail: `\`${openerName}\` printed too much output` }
+  }
   const prefix =
     exitCode === undefined
       ? `\`${openerName}\` failed`

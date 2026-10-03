@@ -63,7 +63,7 @@ import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, r
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage } from './utils/messages.js';
 import { getPlatform } from './utils/platform.js';
-import { getBaseRenderOptions } from './utils/renderOptions.js';
+import { getBaseRenderOptions, getStdinOverride } from './utils/renderOptions.js';
 import { getSessionIngressAuthToken } from './utils/sessionIngressAuth.js';
 import { settingsChangeDetector } from './utils/settings/changeDetector.js';
 import { skillChangeDetector } from './utils/skills/skillChangeDetector.js';
@@ -176,6 +176,7 @@ import { registerMainThreadAgentHooks } from 'src/utils/hooks/registerFrontmatte
 import { isRestrictedToPluginOnly, isSourceAdminTrusted } from 'src/utils/settings/pluginOnlyPolicy.js';
 import { refreshModelCapabilities } from 'src/utils/model/modelCapabilities.js';
 import { peekForStdinData, writeToStderr } from 'src/utils/process.js';
+import { classifyStdinGuardCase, exitWithStdinGuardMessage, shouldRunStdinGuard } from 'src/utils/stdinGuard.js';
 import { checkForwardSubagentTextGuard } from 'src/utils/forwardSubagentTextGuard.js';
 import { setCwd } from 'src/utils/Shell.js';
 import { type ProcessedResume, processResumedConversation } from 'src/utils/sessionRestore.js';
@@ -1168,6 +1169,31 @@ async function run(): Promise<CommanderCommand> {
       );
       // eslint-disable-next-line custom-rules/no-process-exit
       process.exit(1);
+    }
+
+    // claude-code 2.1.287 (#21, byte-verified port): piped/redirected stdin
+    // startup guard. An interactive session whose stdin is not a TTY and for
+    // which no /dev/tty override could be opened used to boot Ink and die on
+    // the 'Raw mode is not supported' throw (src/ink/components/App.tsx:225).
+    // Official v287 instead says why on stderr and exits non-zero, pointing at
+    // -p for piped input. Runs before Ink mounts; the official strings, the
+    // windows/ci/tty_unavailable classification and the fd-0 stat classifier
+    // live in src/utils/stdinGuard.ts (official lr/ns/uro/rs/Vl/Xl).
+    //
+    // Only probe the /dev/tty override in the affected case (interactive +
+    // non-TTY stdin): getStdinOverride() caches and holds an open TTY handle,
+    // which the headless -p path never asked for.
+    const stdinOverrideProbeNeeded = !getIsNonInteractiveSession() && !process.stdin.isTTY;
+    if (shouldRunStdinGuard({
+      isInteractive: !getIsNonInteractiveSession(),
+      isStdinTty: Boolean(process.stdin.isTTY),
+      hasStdinOverride: stdinOverrideProbeNeeded ? getStdinOverride() !== undefined : false
+    })) {
+      await exitWithStdinGuardMessage(classifyStdinGuardCase({
+        platform: process.platform,
+        ciEnvValue: process.env.CI
+      }));
+      return program;
     }
 
     // --bare = one-switch minimal mode. Sets SIMPLE so all the existing

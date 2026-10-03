@@ -27,7 +27,10 @@ export function HighlightedThinkingText(t0) {
   const isAwaitingModel = awaitingModel === undefined ? false : awaitingModel;
   const dimmed = isQueued || isAwaitingModel;
   const isSelected = useContext(MessageActionsSelectedContext);
-  const pointerColor = isSelected ? "suggestion" : "subtle";
+  // 2.1.287 #25: official rtt non-brief pointer color v286 "subtle" → v287
+  // "inactive" (`color:y?"suggestion":"inactive"` @~222068923). Brief-layout
+  // branch (`_=y?"suggestion":x?"subtle":"text"`) is unchanged upstream.
+  const pointerColor = isSelected ? "suggestion" : "inactive";
   // official non-brief body color (rtt @215137852): M=selectionHighlight?"suggestion":g?"inactive":"text"
   // (OCC keeps isSelected only for the pointer; body dims via g per official rtt).
   const bodyColor = dimmed ? "inactive" : "text";

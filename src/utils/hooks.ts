@@ -339,11 +339,15 @@ function executeInBackground({
         outcome: result.code === 0 ? 'success' : 'error',
       })
       if (result.code === 2) {
-        enqueuePendingNotification({
-          value: wrapInSystemReminder(
-            `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
-          ),
-          mode: 'task-notification',
+        // Official v287 `QLe`: a missing hook script exits 2 on every run and
+        // used to wake the model each time; report the broken install once and
+        // drop identical repeats. A genuine exit-2 keeps the existing
+        // "Stop hook blocking error" wake, unchanged.
+        handleAsyncRewakeExit2({
+          hookName,
+          command,
+          stdout,
+          stderr,
         })
       }
     })
@@ -1067,6 +1071,13 @@ export async function settleHookStreams(opts: {
 }
 
 /**
+ * Interpreter "can't open file" signature shared by the sync missing-script
+ * heuristic (`looksLikeMissingHookScript`, official `gFn`/`i$t`) and the
+ * asyncRewake detector (`detectMissingHookScript`, official 2.1.287 `Bit`).
+ */
+const MISSING_SCRIPT_SIGNATURE = /no such file|can't open/i
+
+/**
  * Heuristic for a hook whose script does not exist: exit 2, empty stdout,
  * and a shell "no such file"/"can't open" stderr, on events where a missing
  * script is the overwhelmingly likely cause (or any UserPromptSubmit hook
@@ -1103,8 +1114,153 @@ export function looksLikeMissingHookScript(params: {
     (MISSING_SCRIPT_HOOK_EVENTS.has(hookEvent) ||
       (Boolean(pluginId) && hookEvent === 'UserPromptSubmit')) &&
     !stdout.trim() &&
-    /no such file|can't open/i.test(stderr)
+    MISSING_SCRIPT_SIGNATURE.test(stderr)
   )
+}
+
+/**
+ * Extracts the offending script path from an interpreter "can't open file"
+ * error message. PARTIAL — official `Bit`'s body was not recovered (see
+ * `detectMissingHookScript`); this is the honest minimal equivalent covering the
+ * common interpreter/shell forms.
+ */
+function extractMissingScriptPath(
+  text: string,
+  scriptPaths?: readonly string[],
+): string | undefined {
+  // Prefer a caller-supplied script path the error text references — mirrors
+  // official `Bit` matching the interpreter output "against the hook's script
+  // paths".
+  if (scriptPaths) {
+    for (const candidate of scriptPaths) {
+      if (candidate && text.includes(candidate)) return candidate
+    }
+  }
+  // Python: `can't open file '/path/x.py'` / `cannot open file "X"`.
+  const quoted = text.match(/can(?:'?t|not) open (?:file )?['"]([^'"]+)['"]/i)
+  if (quoted?.[1]) return quoted[1]
+  // Shell: `/path/x.sh: No such file or directory`.
+  const noSuchFile = text.match(/(?:^|[\s:])(\S+): No such file or directory/i)
+  if (noSuchFile?.[1]) return noSuchFile[1]
+  // dash/sh: `/path/x.py: not found`.
+  const notFound = text.match(/(?:^|[\s:])(\S+): not found/i)
+  if (notFound?.[1]) return notFound[1]
+  // Bash: `bash: /path/x.sh: can't open`.
+  const cantOpen = text.match(/(?:^|[\s:])(\S+): can'?t open/i)
+  if (cantOpen?.[1]) return cantOpen[1]
+  return undefined
+}
+
+/**
+ * Official v287 `Bit` — missing-script detector for the asyncRewake exit-2
+ * path. Scans stdout/stderr for an interpreter "can't open file" signature and
+ * returns the offending script path plus the interpreter output, or `undefined`
+ * when the exit-2 looks like genuine blocking feedback.
+ *
+ * PARTIAL: `Bit`'s body was not recovered in the report (only its call shape
+ * `Bit({stdout, stderr, scriptPaths})` and its `{scriptPath, output}` return).
+ * This minimal equivalent reuses the same signature regex as
+ * `looksLikeMissingHookScript` and extracts the path from the interpreter
+ * message, preferring a caller-supplied `scriptPaths` entry the error text
+ * references. `output` mirrors the official else-branch convention
+ * (`stderr || stdout`). When the signature is present but no path can be
+ * determined it returns `undefined`, so the caller falls back to the generic
+ * wake rather than emitting a message with a placeholder path.
+ */
+export function detectMissingHookScript(params: {
+  stdout: string
+  stderr: string
+  scriptPaths?: readonly string[]
+}): { scriptPath: string; output: string } | undefined {
+  const { stdout, stderr, scriptPaths } = params
+  const haystack = MISSING_SCRIPT_SIGNATURE.test(stderr) ? stderr : stdout
+  if (!MISSING_SCRIPT_SIGNATURE.test(haystack)) return undefined
+  const scriptPath = extractMissingScriptPath(haystack, scriptPaths)
+  if (scriptPath === undefined) return undefined
+  return { scriptPath, output: stderr || stdout }
+}
+
+/**
+ * Official v287 `Hit` dedup set — asyncRewake missing-script reported once.
+ * Keyed on `${hookName}\n${command}`. A broken hook whose script cannot be
+ * opened exits 2 on every run; pre-287 OCC woke the model each time (the
+ * changelog bug). The first occurrence is reported; identical repeats are
+ * dropped with a warn log.
+ *
+ * PARTIAL: official `Hit(Uit.of(U().host), key, output)` also takes a host
+ * context and the interpreter output; neither `Hit`'s body nor `Uit`/`U` were
+ * recovered, so this minimal equivalent keys only on `${hookName}\n${command}`
+ * (per the report) and is consulted only in the missing-script branch — the
+ * official warn message references the scriptPath, so its dedup only fires when
+ * a missing script was detected. Genuine blocking feedback always wakes.
+ */
+const reportedMissingHookScripts = new Set<string>()
+
+/**
+ * Test-only: clear the asyncRewake missing-script dedup set so each test starts
+ * from a clean "never reported" state.
+ */
+export function _resetReportedMissingHookScriptsForTesting(): void {
+  reportedMissingHookScripts.clear()
+}
+
+/**
+ * Official v287 `QLe` — asyncRewake exit-code-2 handler.
+ *
+ * A missing hook script exits 2 on every run; pre-287 OCC unconditionally woke
+ * the model with "Stop hook blocking error …" each time (the 2.1.287 changelog
+ * bug: "waking Claude over and over … when the hook's script file is missing").
+ * Now the broken installation is reported ONCE and identical repeats are dropped
+ * with a warn log. A genuine exit-2 (real blocking feedback) keeps OCC's
+ * existing wake, byte-for-byte unchanged.
+ *
+ * DELTA vs official `FMt({summary, body, priority, stopHookActive,
+ * turnAttribution})`: OCC's `enqueuePendingNotification` takes
+ * `{value, mode, priority}` only. The official `body` maps to `value` (wrapped
+ * in a system reminder, preserving OCC's existing shape) and `priority:'next'`
+ * is set (the field exists). The official `summary`
+ * (`${hookType} hook could not open ${uWt(scriptPath)}`), `stopHookActive:true`
+ * and `turnAttribution:'inherit'` have no OCC slot and are dropped. `uWt`
+ * (official path redaction/basename) was not recovered; it applies to the
+ * summary only, which OCC does not surface.
+ */
+export function handleAsyncRewakeExit2(params: {
+  hookName: string
+  command: string
+  stdout: string
+  stderr: string
+  scriptPaths?: readonly string[]
+}): void {
+  const { hookName, command, stdout, stderr, scriptPaths } = params
+  const missing = detectMissingHookScript({ stdout, stderr, scriptPaths })
+
+  if (missing === undefined) {
+    // Genuine blocking feedback — OCC's existing wake, unchanged.
+    enqueuePendingNotification({
+      value: wrapInSystemReminder(
+        `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
+      ),
+      mode: 'task-notification',
+    })
+    return
+  }
+
+  const dedupKey = `${hookName}\n${command}`
+  if (reportedMissingHookScripts.has(dedupKey)) {
+    logForDebugging(
+      `Hooks: asyncRewake hook "${hookName}" (${command}) exited 2 again because ${missing.scriptPath} cannot be opened; already reported, not waking the model`,
+      { level: 'warn' },
+    )
+    return
+  }
+  reportedMissingHookScripts.add(dedupKey)
+
+  const body = `${hookName} hook could not run: ${missing.scriptPath} cannot be opened, so its command exited with code 2 without doing any work. This is a broken hook installation, not feedback on your work; it is reported this once and identical repeats are dropped. Interpreter output: ${missing.output}`
+  enqueuePendingNotification({
+    value: wrapInSystemReminder(body),
+    mode: 'task-notification',
+    priority: 'next',
+  })
 }
 
 export function parseHookOutput(stdout: string): {
