@@ -99,6 +99,8 @@ export default function TextInput(props: Props): React.ReactNode {
     onHistoryUp: props.onHistoryUp,
     onHistoryDown: props.onHistoryDown,
     onClearInput: props.onClearInput,
+    // CC 2.1.288 #3 — Ctrl+C first-press draft hold (see useTextInput.ts).
+    onHoldCleared: props.onHoldCleared,
     focus: props.focus,
     mask: props.mask,
     multiline: props.multiline,

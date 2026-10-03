@@ -11,7 +11,7 @@ export type Props = VimTextInputProps & {
   highlights?: TextHighlight[];
 };
 export default function VimTextInput(props) {
-  const $ = _c(41);
+  const $ = _c(42);
   const [theme] = useTheme();
   const isTerminalFocused = useTerminalFocus();
   useClipboardImageHint(isTerminalFocused, !!props.onImagePaste);
@@ -44,7 +44,7 @@ export default function VimTextInput(props) {
   // the mode getter the new value-shaped switch predicate (`Twr`) consults.
   // Without it neither the vim dot-repeat offset compensation nor the base
   // 2.1.273 keypress guard (`shouldTriggerModeSwitch`) can fire in vim mode.
-  if ($[2] !== props.columns || $[3] !== props.cursorOffset || $[4] !== props.disableCursorMovementForUpDownKeys || $[5] !== props.disableEscapeDoublePress || $[6] !== props.focus || $[7] !== props.highlightPastedText || $[8] !== props.inputFilter || $[9] !== props.mask || $[10] !== props.maxVisibleLines || $[11] !== props.multiline || $[12] !== props.onChange || $[13] !== props.onChangeCursorOffset || $[14] !== props.onClearInput || $[15] !== props.onExit || $[16] !== props.onExitMessage || $[17] !== props.onHistoryDown || $[18] !== props.onHistoryReset || $[19] !== props.onHistoryUp || $[20] !== props.onImagePaste || $[21] !== props.onModeChange || $[22] !== props.onSubmit || $[23] !== props.onUndo || $[24] !== props.value || $[25] !== t12 || $[26] !== t14 || $[27] !== t15 || $[38] !== props.onHistorySearch || $[39] !== props.onToggleHelp || $[40] !== props.getInputMode) {
+  if ($[2] !== props.columns || $[3] !== props.cursorOffset || $[4] !== props.disableCursorMovementForUpDownKeys || $[5] !== props.disableEscapeDoublePress || $[6] !== props.focus || $[7] !== props.highlightPastedText || $[8] !== props.inputFilter || $[9] !== props.mask || $[10] !== props.maxVisibleLines || $[11] !== props.multiline || $[12] !== props.onChange || $[13] !== props.onChangeCursorOffset || $[14] !== props.onClearInput || $[15] !== props.onExit || $[16] !== props.onExitMessage || $[17] !== props.onHistoryDown || $[18] !== props.onHistoryReset || $[19] !== props.onHistoryUp || $[20] !== props.onImagePaste || $[21] !== props.onModeChange || $[22] !== props.onSubmit || $[23] !== props.onUndo || $[24] !== props.value || $[25] !== t12 || $[26] !== t14 || $[27] !== t15 || $[38] !== props.onHistorySearch || $[39] !== props.onToggleHelp || $[40] !== props.getInputMode || $[41] !== props.onHoldCleared) {
     t16 = {
       value: t0,
       onChange: t1,
@@ -55,6 +55,9 @@ export default function VimTextInput(props) {
       onHistoryUp: t6,
       onHistoryDown: t7,
       onClearInput: t8,
+      // CC 2.1.288 #3 — forwarded so the Ctrl+C draft hold also fires in vim
+      // mode (`useVimInput` spreads its props into `useTextInput`).
+      onHoldCleared: props.onHoldCleared,
       focus: t9,
       mask: t10,
       multiline: t11,
@@ -105,6 +108,7 @@ export default function VimTextInput(props) {
     $[38] = props.onHistorySearch;
     $[39] = props.onToggleHelp;
     $[40] = props.getInputMode;
+    $[41] = props.onHoldCleared;
     $[28] = t16;
   } else {
     t16 = $[28];

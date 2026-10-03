@@ -51,6 +51,12 @@ export type UseTextInputProps = {
   onHistoryDown?: () => void
   onHistoryReset?: () => void
   onClearInput?: () => void
+  /**
+   * CC 2.1.288 #3 — fired on the FIRST Ctrl+C press, before the clear, so the
+   * caller can hold the draft for an Up-arrow restore. Official arm site
+   * @228993610: `if(Ad.ctrl&&Ad.key==="c"&&(X_===0||eT))N.holdCleared();`
+   */
+  onHoldCleared?: () => void
   focus?: boolean
   mask?: string
   multiline?: boolean
@@ -94,6 +100,7 @@ export function useTextInput({
   onHistoryDown,
   onHistoryReset,
   onClearInput,
+  onHoldCleared,
   mask = '',
   multiline = false,
   cursorChar,
@@ -126,6 +133,11 @@ export function useTextInput({
     },
     () => onExit?.(),
     () => {
+      // CC 2.1.288 #3 — official arm site @228993610 runs `N.holdCleared()`
+      // on the FIRST Ctrl+C press, BEFORE the clear, and unconditionally: the
+      // "skip whitespace-only drafts" guard lives in the store
+      // (`if(h.trim()!=="")` @228665940), not at the call site.
+      onHoldCleared?.()
       if (originalValue) {
         onChange('')
         setOffset(0)

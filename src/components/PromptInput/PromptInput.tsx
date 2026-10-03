@@ -70,6 +70,7 @@ import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { getFastModeUnavailableReason, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import type { PromptInputHelpers } from '../../utils/handlePromptSubmit.js';
+import { applyHeldClearedDraft, heldClearedDraft } from '../../utils/heldClearedDraft.js';
 import { getImageFromClipboard, PASTE_THRESHOLD, saveClipboardImageToTempFile } from '../../utils/imagePaste.js';
 import type { ImageDimensions } from '../../utils/imageResizer.js';
 import { cacheImagePath, storeImage } from '../../utils/imageStore.js';
@@ -1017,6 +1018,22 @@ function PromptInput({
   // Only use history navigation when there are 0 or 1 slash command suggestions.
   // Footer nav is NOT here — when a pill is selected, TextInput focus=false so
   // these never fire. The Footer keybinding context handles ↑/↓ instead.
+
+  // CC 2.1.288 #3 — official arm site @228993610:
+  //   `if(Ad.ctrl&&Ad.key==="c"&&(X_===0||eT))N.holdCleared();`
+  // fires on the FIRST Ctrl+C press, BEFORE the clear runs. Official
+  // `holdCleared` @228665940 reads the editor state itself
+  // (`this.#i` = `{value, mode, pastedContents}`) and owns the
+  // whitespace-only skip (`if(h.trim()!=="")`), so this is a bare snapshot.
+  // The slot is separate from the Ctrl+S `stash` slot (`popStash` is unchanged
+  // v287→v288), so hold-cleared and stash never clobber each other.
+  function handleHoldCleared() {
+    heldClearedDraft.holdCleared({
+      value: input,
+      mode,
+      pastedContents
+    });
+  }
   function handleHistoryUp() {
     if (suggestions.length > 1) {
       return;
@@ -1026,6 +1043,23 @@ function PromptInput({
     // In multiline inputs, up arrow should move the cursor (handled by TextInput)
     // and only trigger history when at the top of the input.
     if (!isCursorOnFirstLine) {
+      return;
+    }
+
+    // CC 2.1.288 #3 — official history-up `Iy` @228991419 puts the draft
+    // restore AFTER the suggestions-open and cursor-past-line-1 bails and
+    // BEFORE the queued-command branch, so a Ctrl+C-cleared draft wins over
+    // both:
+    //   `if(N.restoreCleared()){wn(Py(N.value));return}`
+    // Empty-prompt-only and single-shot are enforced inside the store.
+    const heldDraft = heldClearedDraft.restoreCleared(input);
+    if (heldDraft) {
+      applyHeldClearedDraft(heldDraft, {
+        setValue: trackAndSetInput,
+        setCursorOffset,
+        setPastedContents,
+        setMode: onModeChange
+      });
       return;
     }
 
@@ -2450,6 +2484,9 @@ function PromptInput({
     onHistoryUp: handleHistoryUp,
     onHistoryDown: handleHistoryDown,
     onHistoryReset: resetHistory,
+    // CC 2.1.288 #3 — hold the draft on the first Ctrl+C press so Up on the
+    // now-empty prompt brings it back (see handleHoldCleared/handleHistoryUp).
+    onHoldCleared: handleHoldCleared,
     placeholder,
     onExit,
     onExitMessage: (show, key) => setExitMessage({

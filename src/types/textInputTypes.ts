@@ -107,6 +107,20 @@ export type BaseTextInputProps = {
   readonly onClearInput?: () => void
 
   /**
+   * CC 2.1.288 #3 — called on the FIRST Ctrl+C press, BEFORE the input is
+   * cleared, so the draft can be held for an Up-arrow restore.
+   *
+   * Official arm site @228993610:
+   *   `if(Ad.ctrl&&Ad.key==="c"&&(X_===0||eT))N.holdCleared();`
+   * The official store reads its own editor state (`this.#i`), so this callback
+   * takes no arguments — the implementer snapshots its own value/mode/pasted
+   * contents. The "skip whitespace-only" guard lives in the store
+   * (`if(h.trim()!=="")` @228665940), not here, so this fires unconditionally
+   * on the first press.
+   */
+  readonly onHoldCleared?: () => void
+
+  /**
    * Getter for the current prompt input mode. When provided, useTextInput
    * treats an input-mode character (e.g. `!`) typed at the start of the input
    * as a mode-switch trigger only if the current mode differs from the mode
