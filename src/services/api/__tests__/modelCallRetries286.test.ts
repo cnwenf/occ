@@ -12,6 +12,13 @@ import { afterAll, describe, expect, mock, test } from 'bun:test'
  * path (reportHttpFailure), the triedWithoutStreaming restore quirk, the
  * renewal cap (VMo=2), the api-attempt gate, retriesLeft arithmetic, the
  * stream-path decisions (KMo/mOe) and undoLastCount.
+ *
+ * CC 2.1.288 (#8/#34) note: `streamFailed` is now a 4-field classification —
+ * `outlastedNonStreamingTimeout` is REQUIRED (binary `Uzt` always emits it).
+ * Every literal below passes `false`, i.e. the v287 behavior, so these v286
+ * pins are unchanged by the rework; the v288 deltas (the `timedOut` cause, the
+ * thinking-only timedOut arm, the outlasted-streams-again tail) are pinned in
+ * retryTimeoutEngine288.test.ts. `KMo` is `TWo` in v288.
  */
 
 const GROWTHBOOK_PATH = '../../analytics/growthbook.js'
@@ -205,6 +212,7 @@ describe('2.1.286 item-D — decideAttempt (binary hOe)', () => {
       cause: 'serverError' as const,
       progress: 'thinkingOnly' as const,
       stopReasonReceived: false,
+      outlastedNonStreamingTimeout: false,
     }
     const first = decideAttempt(failure, initialAttemptCounts(), defaultConfig(), false)
     expect(first.decision).toBe('retry')
@@ -224,6 +232,7 @@ describe('2.1.286 item-D — decideAttempt (binary hOe)', () => {
           cause: 'denied',
           progress: 'nothing',
           stopReasonReceived: false,
+          outlastedNonStreamingTimeout: false,
         },
         initialAttemptCounts(),
         defaultConfig(),
@@ -237,6 +246,7 @@ describe('2.1.286 item-D — decideAttempt (binary hOe)', () => {
           cause: 'connectionLost',
           progress: 'output',
           stopReasonReceived: true,
+          outlastedNonStreamingTimeout: false,
         },
         initialAttemptCounts(),
         defaultConfig(),
@@ -322,6 +332,7 @@ describe('2.1.286 item-D — createModelCallRetries (binary FFt)', () => {
       cause: 'overloaded' as const,
       progress: 'started' as const,
       stopReasonReceived: false,
+      outlastedNonStreamingTimeout: false,
     }
     expect(ledger.onStreamFailed(overloaded, false)).toBe('retry')
     const afterFirst = ledger.counts()
@@ -359,6 +370,7 @@ describe('2.1.286 item-D — createModelCallRetries (binary FFt)', () => {
           cause: 'serverError',
           progress: 'started',
           stopReasonReceived: false,
+          outlastedNonStreamingTimeout: false,
         },
         true,
       ),

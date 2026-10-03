@@ -65,7 +65,11 @@ import {
 } from '../../utils/model/fastRejection.js'
 import { isModelAllowed } from '../../utils/model/modelAllowlist.js'
 import { isModelFallbackDisabled } from '../../utils/model/modelLadder.js'
-import { type ModelCallRetries, NoApiAttemptsLeftError } from './modelCallRetries.js'
+import {
+  isAPIErrorBodyType,
+  type ModelCallRetries,
+  NoApiAttemptsLeftError,
+} from './modelCallRetries.js'
 
 const abortError = () => new APIUserAbortError()
 
@@ -130,24 +134,52 @@ export function getDefaultMaxRetries(
   return watchdog ? WATCHDOG_DEFAULT_MAX_RETRIES : DEFAULT_MAX_RETRIES
 }
 
-// CC 2.1.285 (item-B2): official `bIo=0.9`. A non-streaming fallback attempt
-// only counts toward the timeout-retry budget once it has run at least 90% of
-// `nonStreamingTimeoutMs` — i.e. it genuinely hit the timeout rather than
-// failing fast for an unrelated reason. Mirrors the binary's
-//   `Date.now()-Et >= r.nonStreamingTimeoutMs*bIo`.
+// CC 2.1.285 (item-B2): official `bIo=0.9` (v288 `Wjo=0.9` @209247927). A
+// non-streaming fallback attempt only counts toward the timeout-retry budget
+// once it has run at least 90% of `nonStreamingTimeoutMs` — i.e. it genuinely
+// hit the timeout rather than failing fast for an unrelated reason. Mirrors the
+// binary's `Date.now()-Et >= r.nonStreamingTimeoutMs*bIo` (v288:
+// `g.now()-Wt>=r.nonStreamingTimeoutMs*Wjo`).
 const NONSTREAMING_TIMEOUT_ELAPSED_RATIO = 0.9
 
 /**
- * CC 2.1.285 (item-B2): parse CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES.
- * Official registry descriptor is `$I=M.int({min:0,digitsOnly:!0})` → a
- * non-negative integer, or undefined when unset/invalid. `undefined` means the
- * cap is disabled (the retry loop falls back to its normal maxRetries budget).
+ * CC 2.1.288 (#34): binary `Vjo = 2` @209247927 (`Wjo=0.9,Vjo=2`). The default
+ * non-streaming-timeout retry cap an UNATTENDED session gets when the stream
+ * that triggered the fallback had itself outlasted the timeout: three timeouts
+ * total (1 initial + 2 retries) before
+ * `api_request_nonstreaming_timeout_exhausted`. This is the whole of changelog
+ * #34 — "retrying for hours after a very long response stream failed … now
+ * gives up after three timeouts".
  */
-function getNonstreamingTimeoutRetryCap(): number | undefined {
+const WATCHDOG_STREAM_TIMEOUT_RETRY_CAP = 2
+
+/**
+ * CC 2.1.285 (item-B2) / CC 2.1.288 (#34): resolve the non-streaming-timeout
+ * retry cap. Official registry descriptor is `$I=M.int({min:0,digitsOnly:!0})`
+ * → a non-negative integer, or undefined when unset/invalid.
+ *
+ * v287 read the env var ONLY:
+ *   `let Qt,nn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES;`  @208138418
+ * v288 adds the watchdog default @209253534:
+ *   `let an,fn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES??
+ *       (dY()&&r.failedStreamOutlastedTimeout?Vjo:void 0);`
+ * with `function dY(){return a.CLAUDE_CODE_RETRY_WATCHDOG}` @209248012 — i.e.
+ * the explicit env value still wins, and otherwise an unattended session whose
+ * failed stream outlasted the non-streaming timeout gets `Vjo` (2).
+ * `undefined` disables the cap (the loop falls back to its maxRetries budget).
+ */
+function getNonstreamingTimeoutRetryCap(
+  failedStreamOutlastedTimeout: boolean | undefined,
+): number | undefined {
   const parsed = parseEnvInt(
     process.env.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES,
   )
-  return parsed !== undefined && parsed >= 0 ? parsed : undefined
+  if (parsed !== undefined && parsed >= 0) {
+    return parsed
+  }
+  return isRetryWatchdogEnabled() && failedStreamOutlastedTimeout
+    ? WATCHDOG_STREAM_TIMEOUT_RETRY_CAP
+    : undefined
 }
 
 // Foreground query sources where the user IS blocking on the result — these
@@ -284,6 +316,27 @@ interface RetryOptions {
    */
   nonStreamingTimeoutMs?: number
   /**
+   * CC 2.1.288 (#34): the failed STREAM that triggered this non-streaming
+   * fallback ran at least as long as the non-streaming timeout would have.
+   * Binary `r.failedStreamOutlastedTimeout`, threaded from the stream-failure
+   * classifier's `outlastedNonStreamingTimeout` @209400922:
+   *   `yield*_9e({requestId:…,cause:el,…},Hf&&(uu?.outlastedNonStreamingTimeout??!1))`
+   * → dispatch options `isNonStreamingRequest:!0,nonStreamingTimeoutMs:S,
+   *   failedStreamOutlastedTimeout:n.failedStreamOutlastedTimeout` @209284691.
+   * Together with the retry watchdog (`dY()`) it supplies the DEFAULT
+   * `Vjo = 2` timeout-retry cap when CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES
+   * is unset — the fix for unattended sessions retrying for hours after a very
+   * long stream failed.
+   *
+   * STAGED in OCC production: no caller sets this yet — the producer is the
+   * claude.ts stream loop (`he.monotonicNow()-Ih>=nqt()`, @209280726), outside
+   * this round's retry-module scope. The option is honored end-to-end here and
+   * covered by retryTimeoutEngine288.test.ts; it stays `undefined` until the
+   * stream loop computes it, which means OCC's watchdog cap behavior is
+   * unchanged for live traffic (v287-equivalent) until that wiring lands.
+   */
+  failedStreamOutlastedTimeout?: boolean
+  /**
    * CC 2.1.286 (item-A): this model was reached via a refusal fallback (the
    * binary's `r.modelIsRefusalFallbackTarget`). Together with the
    * fast-rejection store (`SYn`) it gates the new speed-param-rejection retry
@@ -418,11 +471,15 @@ export async function* withRetry<T>(
   // misbehaving stripMediaBlock callback that never returns null.
   let mediaStrips = 0
   const MAX_MEDIA_STRIPS = 20
-  // CC 2.1.285 (item-B2): official `K` (timeout-retry counter) and the env cap
-  // `vn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES`. The cap is read once per
-  // request (it is a stable env value); undefined disables the cap.
+  // CC 2.1.285 (item-B2) / CC 2.1.288 (#34): official `K` (timeout-retry
+  // counter) and the cap
+  // `fn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES??(dY()&&r.failedStreamOutlastedTimeout?Vjo:void 0)`.
+  // Resolved once per request (both inputs are stable for the request);
+  // undefined disables the cap.
   let nonstreamingTimeoutRetries = 0
-  const nonstreamingTimeoutRetryCap = getNonstreamingTimeoutRetryCap()
+  const nonstreamingTimeoutRetryCap = getNonstreamingTimeoutRetryCap(
+    options.failedStreamOutlastedTimeout,
+  )
   for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
     // CC 2.1.285 (item-B2): official `Et=g.now()` — per-attempt start time, used
     // by the non-streaming-timeout budget check to confirm the attempt actually
@@ -961,22 +1018,38 @@ export async function* withRetry<T>(
         gcpAuthRetries++
       }
 
-      // CC 2.1.285 (item-B2): CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES cap.
-      // Mirrors the official v285 retry-loop catch (evidence
-      // /tmp/cc-diff-285/evidence/nonstreaming_retries.txt):
-      //   `let Xn,vn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES;
-      //    if(vn!==void 0&&r.nonStreamingTimeoutMs!==void 0&&Ft instanceof gI&&
-      //       Date.now()-Et>=r.nonStreamingTimeoutMs*bIo&&!XW()){
-      //      if(K>=vn)throw m("api_request","api_request_nonstreaming_timeout_exhausted"),
-      //        new ic(Ft,h);
-      //      K++,Xn=vn-K}`
-      // gI ≡ APIConnectionTimeoutError (SDK "Request timed out."), Et ≡
-      // attemptStartTime, bIo ≡ NONSTREAMING_TIMEOUT_ELAPSED_RATIO (0.9),
-      // XW() ≡ isRetryWatchdogEnabled(), ic ≡ CannotRetryError. Without the cap
-      // a fallback that keeps timing out re-sends up to maxRetries times, each
-      // burning the full nonStreamingTimeoutMs — minutes of silent retries
-      // (changelog: "retried up to 21 times when streaming kept failing").
-      // The official's `Xn=vn-K` remaining-budget value feeds its `a0t` retry-
+      // CC 2.1.285 (item-B2) / CC 2.1.288 (#34): the non-streaming-timeout
+      // retry cap. v285/v287 shape (evidence
+      // /tmp/cc-diff-285/evidence/nonstreaming_retries.txt; v287 @208138418,
+      // `!C6()` ≡ isRetryWatchdogEnabled()):
+      //   `let Qt,nn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES;
+      //    if(nn!==void 0&&r.nonStreamingTimeoutMs!==void 0&&Yt instanceof AA&&
+      //       Date.now()-Xt>=r.nonStreamingTimeoutMs*tLo&&!C6()){
+      //      if(K>=nn)throw m("api_request","api_request_nonstreaming_timeout_exhausted"),
+      //        new Zd(Yt,h);
+      //      K++,Qt=nn-K}`
+      // v288 @209253534 — the `!C6()` guard is GONE and the cap gains a
+      // watchdog default:
+      //   `let an,fn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES??
+      //       (dY()&&r.failedStreamOutlastedTimeout?Vjo:void 0);
+      //    if(fn!==void 0&&r.nonStreamingTimeoutMs!==void 0&&rn instanceof UA&&
+      //       g.now()-Wt>=r.nonStreamingTimeoutMs*Wjo){
+      //      if(V>=fn)throw m("api_request","api_request_nonstreaming_timeout_exhausted"),
+      //        new sc(rn,h);
+      //      V++,an=fn-V}`
+      // UA ≡ APIConnectionTimeoutError (SDK "Request timed out."), Wt ≡
+      // attemptStartTime, Wjo ≡ NONSTREAMING_TIMEOUT_ELAPSED_RATIO (0.9),
+      // sc ≡ CannotRetryError, `fn` ≡ nonstreamingTimeoutRetryCap (which folds
+      // in dY() ≡ isRetryWatchdogEnabled() @209248012 ≡ v287 C6() @208132898
+      // and Vjo ≡ WATCHDOG_STREAM_TIMEOUT_RETRY_CAP = 2).
+      //
+      // Removing `!C6()` IS changelog #34: under the watchdog the cap used to be
+      // suppressed outright, so an unattended session whose very long stream
+      // failed re-sent the timing-out fallback until its 300-deep budget ran dry
+      // — hours of silent retries. In v288 the watchdog is precisely the case
+      // that GETS a default cap of 2, and an explicit env cap now applies with
+      // the watchdog on as well.
+      // The official's `an=fn-V` remaining-budget value feeds its `a0t` retry-
       // status display; OCC has no `a0t` display-budget surface, so only the
       // cap (the observable behavior) is ported.
       if (
@@ -984,8 +1057,7 @@ export async function* withRetry<T>(
         options.nonStreamingTimeoutMs !== undefined &&
         error instanceof APIConnectionTimeoutError &&
         Date.now() - attemptStartTime >=
-          options.nonStreamingTimeoutMs * NONSTREAMING_TIMEOUT_ELAPSED_RATIO &&
-        !isRetryWatchdogEnabled()
+          options.nonStreamingTimeoutMs * NONSTREAMING_TIMEOUT_ELAPSED_RATIO
       ) {
         if (nonstreamingTimeoutRetries >= nonstreamingTimeoutRetryCap) {
           logEvent('api_request', {
@@ -1361,6 +1433,31 @@ function is5xxServerError(error: unknown): boolean {
     error.status >= 500 &&
     error.status < 600 &&
     error.status !== 529
+  )
+}
+
+/**
+ * CC 2.1.288 (#8): binary `Hf` — the stream-failure server-error predicate
+ * @209389300 region:
+ *   `let Hf=GB(Ys)||S$e(Ys)||Ys instanceof xt&&(Ys.type==="api_error"||Ys.type==="timeout_error")`
+ * v287 (`bm`) had the `api_error` arm only:
+ *   `bm=TB($s)||wLe($s)||$s instanceof xt&&$s.type==="api_error"`
+ * GB ≡ is529Error (@201586077, byte-identical to v287 TB @200866741),
+ * S$e ≡ is5xxServerError (@209263220), xt ≡ APIError. The `timeout_error`
+ * addition is what makes a mid-response API timeout a SERVER error at all —
+ * the precondition for #8's `timedOut` cause and its retry arms
+ * (see `classifyServerErrorStreamCause` in modelCallRetries.ts).
+ *
+ * Consumed by the stream loop when it builds the `streamFailed` classification
+ * (STAGED producer: claude.ts — see the modelCallRetries.ts header).
+ */
+export function isStreamFailureServerError(error: unknown): boolean {
+  return (
+    is529Error(error) ||
+    is5xxServerError(error) ||
+    (error instanceof APIError &&
+      (isAPIErrorBodyType(error, 'api_error') ||
+        isAPIErrorBodyType(error, 'timeout_error')))
   )
 }
 

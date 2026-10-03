@@ -41,6 +41,19 @@ import { join } from 'path'
  * Without the cap, a fallback that keeps timing out re-sends up to maxRetries
  * times, each burning the full nonStreamingTimeoutMs — minutes of silent
  * retries. The cap stops after CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES.
+ *
+ * UPDATED BY CC 2.1.288 (#34): the trailing `&&!XW()` guard was REMOVED and the
+ * cap gained a watchdog default — v288 @209253534:
+ *   `let an,fn=a.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES??
+ *       (dY()&&r.failedStreamOutlastedTimeout?Vjo:void 0);`
+ * with `dY()` ≡ isRetryWatchdogEnabled (@209248012, v287 `C6()` @208132898) and
+ * `Vjo=2` @209247927. So under the watchdog the cap now FIRES (env value
+ * honored, else 2 when the failed stream outlasted the timeout) instead of
+ * being suppressed — changelog: "Fixed unattended sessions
+ * (CLAUDE_CODE_RETRY_WATCHDOG) retrying for hours after a very long response
+ * stream failed; Claude Code now streams again, and gives up after three
+ * timeouts." The watchdog assertions below are the v288 semantics; the
+ * v288-specific matrix lives in retryTimeoutEngine288.test.ts.
  */
 
 const { withRetry, CannotRetryError } =
@@ -219,11 +232,12 @@ describe('CC 2.1.285 item-B2: CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES cap', () 
   )
 
   test(
-    'retry watchdog ON: cap suppressed (official !XW() guard)',
+    'retry watchdog ON: the env cap now FIRES (v288 removed the !XW() guard)',
     async () => {
-      // XW() ≡ isRetryWatchdogEnabled(). With the watchdog on, the official
-      // gate `!XW()` is false → the cap never fires regardless of the env, so
-      // the loop retries to maxRetries+1 = 2 even with cap=0.
+      // CC 2.1.288 (#34): v287's gate ended in `&&!XW()`, so with the watchdog
+      // on the cap never fired and the loop burned its whole budget — the
+      // "retrying for hours" bug. v288 @209253534 dropped the guard: cap=0 makes
+      // the first qualifying timeout fatal even under the watchdog.
       process.env.CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES = '0'
       process.env.CLAUDE_CODE_RETRY_WATCHDOG = '1'
       const { attempts, threw } = await drainTimeoutRetries({
@@ -231,7 +245,7 @@ describe('CC 2.1.285 item-B2: CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES cap', () 
         nonStreamingTimeoutMs: 0,
       })
       expect(threw).toBeInstanceOf(CannotRetryError)
-      expect(attempts).toBe(2)
+      expect(attempts).toBe(1)
     },
     30000,
   )

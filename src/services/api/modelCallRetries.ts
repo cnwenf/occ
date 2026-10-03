@@ -34,6 +34,57 @@
  *     onStreamFailed from claude.ts).
  *   - The retry-status classifier kind `no_api_attempts_left` (`vae`) — OCC
  *     has no retry-status classifier surface.
+ *
+ * ---------------------------------------------------------------------------
+ * CC 2.1.288 (#8 + #34, one coupled retry-engine rework; transitively #36).
+ *
+ * #8 changelog: "Fixed mid-response API timeouts failing the turn:
+ * non-interactive sessions and subagents now continue from the partial
+ * response, and thinking-only responses are retried."
+ *
+ * Byte-verified v288 linux-x64 ELF evidence (`dd`+`grep -aobF` only — the
+ * official binary was never executed):
+ *   - `timedOut` stream-fail cause, classifier `xWo` @209272473:
+ *       `if(e.isServerError)return e.error instanceof xt&&
+ *        e.error.type==="timeout_error"?"timedOut":"serverError"`
+ *     (v287 had no `timedOut`; `xt` = APIError.)
+ *   - decision engine `TWo` @209267xxx (v287 `VLo`), thinking-only arm:
+ *       `case"serverError":case"timedOut":if(r)return w;
+ *        if(h.hasFallbackModel&&!h.persistent)return{decision:"useFallbackModel",counts:g};
+ *        return rH("afterThinkingOnly",e==="timedOut"?1:2,g,h,w)`
+ *     and the full-output tail:
+ *       `case"serverError":return s&&!r&&n!=="partialOutput"?
+ *          rH("afterThinkingOnly",2,g,h,H):H;
+ *        case"timedOut":case"malformed":case"badRequest":case"unknown":return H`
+ *     (`s` = outlastedNonStreamingTimeout, `r` = stopReasonReceived,
+ *      `n` = progress, `w` = fail, `B` = keepPartial, `H` = the non-streaming
+ *      outcome `Yle(g,h,S)`, `rH` = bumpCounterOrFail.)
+ *   - classified-failure field, builder `Uzt` @209272254 + call site
+ *     @209391338:
+ *       `{kind:"streamFailed",cause:r,progress:n,stopReasonReceived:e.stopReasonReceived,
+ *         outlastedNonStreamingTimeout:e.outlastedNonStreamingTimeout}`
+ *       `outlastedNonStreamingTimeout:he.monotonicNow()-Ih>=nqt()`
+ *
+ * The paired #34 watchdog-cap half of this rework lives in withRetry.ts
+ * (`WATCHDOG_STREAM_TIMEOUT_RETRY_CAP`, `getNonstreamingTimeoutRetryCap`,
+ * `failedStreamOutlastedTimeout`) — the two changelog items share one
+ * `outlastedNonStreamingTimeout` signal, which is why they are one port.
+ *
+ * STAGED (v288, same reason as above — the producer is claude.ts, outside this
+ * port's files):
+ *   - the `Uzt` classifier itself, incl. its complete-response suppression
+ *     (`if(e.complete){if(r==="connectionLost"||r==="truncated"||r==="stalled"||
+ *      (r==="overloaded"||r==="serverError"||r==="timedOut")&&n==="output")return}`)
+ *     and its 12 stream-state inputs (`stalled`/`truncated`/`malformed`/
+ *     `denied`/`anyEvent`/`anyBlockFinished`/`anyOutputShown`/…) — OCC has no
+ *     producer for those flags.
+ *   - the `outlastedNonStreamingTimeout` computation
+ *     `he.monotonicNow()-Ih>=nqt()` with `function nqt(){let e=$c(process.env.
+ *     API_TIMEOUT_MS);if(e)return Math.min(e,Hu);return a.CLAUDE_CODE_REMOTE?
+ *     120000:300000}` @209280726.
+ *   - the widened fallback-model trigger @209389300 region:
+ *     `if(Nl==="useFallbackModel"&&(uu?.cause==="serverError"||
+ *      uu?.cause==="timedOut")&&V.fallbackModel){…}` (v287: `serverError` only).
  */
 import { APIConnectionError, APIError } from '@anthropic-ai/sdk'
 import { logError } from 'src/utils/log.js'
@@ -77,6 +128,13 @@ export const MAX_STALL_RETRIES = 1
 /** Binary `NFt = 2` — max after-thinking-only retries (literal 2 in KMo). */
 export const MAX_AFTER_THINKING_ONLY_RETRIES = 2
 
+/**
+ * CC 2.1.288 (#8): binary `e==="timedOut"?1:2` — a thinking-only response
+ * killed by a mid-response API TIMEOUT gets one retry, half the server-error
+ * allowance (a timeout already burned the full request window).
+ */
+export const MAX_AFTER_THINKING_ONLY_RETRIES_TIMED_OUT = 1
+
 export type AttemptDecision =
   | 'retry'
   | 'fail'
@@ -94,6 +152,8 @@ export type StreamFailCause =
   | 'denied'
   | 'overloaded'
   | 'serverError'
+  /** CC 2.1.288 (#8): a mid-response API timeout (body type `timeout_error`). */
+  | 'timedOut'
   | 'stalled'
   | 'truncated'
   | 'connectionLost'
@@ -118,7 +178,64 @@ export type ClassifiedFailure =
       cause: StreamFailCause
       progress: StreamProgress
       stopReasonReceived: boolean
+      /**
+       * CC 2.1.288 (#8/#34): the failed stream ran at least as long as the
+       * non-streaming timeout would have (`he.monotonicNow()-Ih>=nqt()`).
+       * Required so every producer states it explicitly — the #34 watchdog cap
+       * keys off exactly this signal. STAGED producer: claude.ts computes it
+       * and threads it as `failedStreamOutlastedTimeout` into the non-streaming
+       * dispatch (@209400922 / @209284691).
+       */
+      outlastedNonStreamingTimeout: boolean
     }
+
+/**
+ * CC 2.1.288 (#8): binary `xt.type` read.
+ *
+ * The official bundled SDK derives the API error type from the response body —
+ * `class xt extends Un{constructor(n,e,t,r,o){…this.type=o??null}}` with
+ * `static generate(…){…let i=o?.error?.type;…}` @199295200 — so its
+ * classifiers can read `e.error.type==="timeout_error"` directly. OCC pins
+ * `@anthropic-ai/sdk@0.80.0`, whose `APIError` constructor sets only
+ * `status`/`headers`/`requestID`/`error` (no `.type`). This reads the same
+ * body field (`error.error.type`, or a flat `error.type`) and honors an
+ * instance `.type` when a newer SDK does set one, so the ported classifiers
+ * behave identically across SDK versions.
+ *
+ * The message-substring fallback mirrors OCC's established convention for
+ * bodies that were never parsed (`is529Error`, `isModelNotFoundError`,
+ * `isModelPermissionDeniedError` all do `message.includes('"type":"…"')`) —
+ * notably a mid-stream SSE error event, which is exactly the case #8 fixes.
+ */
+export function isAPIErrorBodyType(error: unknown, type: string): boolean {
+  if (!(error instanceof APIError)) {
+    return false
+  }
+  const instanceType = (error as { type?: unknown }).type
+  if (instanceType === type) {
+    return true
+  }
+  const body = error.error as
+    | { type?: unknown; error?: { type?: unknown } }
+    | null
+    | undefined
+  if (body?.error?.type === type || body?.type === type) {
+    return true
+  }
+  return error.message?.includes(`"type":"${type}"`) ?? false
+}
+
+/**
+ * CC 2.1.288 (#8): binary `xWo` server-error arm @209272473 —
+ *   `if(e.isServerError)return e.error instanceof xt&&
+ *    e.error.type==="timeout_error"?"timedOut":"serverError"`
+ * Maps a failure already known to be a server error onto the stream-fail cause.
+ */
+export function classifyServerErrorStreamCause(
+  error: unknown,
+): 'timedOut' | 'serverError' {
+  return isAPIErrorBodyType(error, 'timeout_error') ? 'timedOut' : 'serverError'
+}
 
 /** Binary `FFt(e,…)` config — built once per model call (staged @206191201). */
 export interface ModelCallRetriesConfig {
@@ -258,18 +375,35 @@ function decideHttpError(
   return { decision: 'fail', counts }
 }
 
-/** Binary `KMo({cause,progress,stopReasonReceived},s,g,h)` (byte-verified). */
+/**
+ * Binary `TWo({cause,progress,stopReasonReceived,outlastedNonStreamingTimeout},
+ * g,h,S)` @209267xxx (byte-verified; v287 was `KMo`, the 3-field shape).
+ *
+ * CC 2.1.288 (#8/#34) deltas over v287:
+ *   - thinking-only `case"timedOut"` joins `case"serverError"` with its own
+ *     retry count (`e==="timedOut"?1:2`) — changelog "thinking-only responses
+ *     are retried";
+ *   - the full-output tail splits `serverError` off `malformed`: when the
+ *     failed stream OUTLASTED the non-streaming timeout (`s`), no stop reason
+ *     arrived (`!r`) and nothing but thinking was streamed (`n!=="partialOutput"`),
+ *     it bumps `afterThinkingOnly` and STREAMS AGAIN instead of falling
+ *     straight to a non-streaming retry — changelog "now streams again";
+ *   - `timedOut` in the tail returns the plain non-streaming outcome, i.e. it
+ *     continues from the partial response rather than failing the turn.
+ */
 function decideStreamFailed(
   failure: {
     cause: StreamFailCause
     progress: StreamProgress
     stopReasonReceived: boolean
+    outlastedNonStreamingTimeout: boolean
   },
   counts: ModelCallAttemptCounts,
   config: ModelCallRetriesConfig,
   allowNonStreamingRetry: boolean,
 ): AttemptOutcome {
-  const { cause, progress, stopReasonReceived } = failure
+  const { cause, progress, stopReasonReceived, outlastedNonStreamingTimeout } =
+    failure
   const fail: AttemptOutcome = { decision: 'fail', counts }
   const keepPartial: AttemptOutcome = { decision: 'keepPartial', counts }
   const nonStreaming = retryWithoutStreamingOutcome(counts, config, allowNonStreamingRetry)
@@ -298,6 +432,7 @@ function decideStreamFailed(
               keepPartial,
             )
       case 'serverError':
+      case 'timedOut':
         if (stopReasonReceived) {
           return fail
         }
@@ -306,7 +441,9 @@ function decideStreamFailed(
         }
         return bumpCounterOrFail(
           'afterThinkingOnly',
-          MAX_AFTER_THINKING_ONLY_RETRIES,
+          cause === 'timedOut'
+            ? MAX_AFTER_THINKING_ONLY_RETRIES_TIMED_OUT
+            : MAX_AFTER_THINKING_ONLY_RETRIES,
           counts,
           config,
           fail,
@@ -338,6 +475,19 @@ function decideStreamFailed(
     case 'connectionLost':
       return stopReasonReceived ? nonStreaming : retryOrFail(counts, config, nonStreaming)
     case 'serverError':
+      // CC 2.1.288 (#34): `s&&!r&&n!=="partialOutput"?rH("afterThinkingOnly",2,g,h,H):H`
+      return outlastedNonStreamingTimeout &&
+        !stopReasonReceived &&
+        progress !== 'partialOutput'
+        ? bumpCounterOrFail(
+            'afterThinkingOnly',
+            MAX_AFTER_THINKING_ONLY_RETRIES,
+            counts,
+            config,
+            nonStreaming,
+          )
+        : nonStreaming
+    case 'timedOut':
     case 'malformed':
     case 'badRequest':
     case 'unknown':
