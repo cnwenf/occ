@@ -182,7 +182,12 @@ const SPECIAL_VAR_NAMES = new Set([
  * abort/diverge the shell at runtime. Recovered verbatim from the official
  * 2.1.251 binary (set `or`); CC 2.1.260 extended it with the zsh
  * REPORTTIME/REPORTMEMORY/DIRSTACKSIZE/BAUD integer-attr variables
- * (set `WYe` in the official 2.1.260 binary).
+ * (set `WYe` in the official 2.1.260 binary); CC 2.1.288 #28 ("prompt before
+ * a BASHPID assignment whose value the shell would evaluate as arithmetic")
+ * extended it to the current 42 members — set `fyt` @203549536 in the
+ * official 2.1.288 binary adds BASHPID plus the pre-existing-gap
+ * BASH_MONOSECONDS/BASH_TRAPSIG (all three between EPOCHREALTIME and
+ * COLUMNS). Members and order below are byte-exact from the v288 `fyt` dump.
  */
 const INTEGER_ATTR_SHELL_VARS = new Set([
   'RANDOM',
@@ -194,6 +199,9 @@ const INTEGER_ATTR_SHELL_VARS = new Set([
   'SRANDOM',
   'EPOCHSECONDS',
   'EPOCHREALTIME',
+  'BASHPID', // v288 #28
+  'BASH_MONOSECONDS', // v288 set member (pre-existing OCC gap closed)
+  'BASH_TRAPSIG', // v288 set member (pre-existing OCC gap closed)
   'COLUMNS',
   'LINES',
   'SHLVL',
@@ -362,7 +370,11 @@ const SPECIAL_SHELL_VARS = new Set([
  * statically verified as a plain decimal integer — the shell arithmetically
  * evaluates such an assignment RHS, which executes `$(cmd)` inside
  * subscripts and can abort/diverge at runtime. Verbatim port of the official
- * 2.1.251 binary's `Jo`.
+ * 2.1.251 binary's `Jo`; re-verified byte-for-byte unchanged against the
+ * official 2.1.288 binary's `qe` (`if(!fyt.has(e))return!1;
+ * if(n.includes("[")||n.includes("`")||/\$\(/.test(n)||Pi(n))return!0;
+ * if(!/^(0|[1-9][0-9]{0,17})$/.test(n))return!0; return!1`) — the v288 #28
+ * delta is the extended set only, not the checker logic.
  */
 function hasIntegerAttrArithEvalRisk(name: string, value: string): boolean {
   if (!INTEGER_ATTR_SHELL_VARS.has(name)) return false
@@ -2703,52 +2715,58 @@ function stripRawString(text: string): string {
 /**
  * Plain-language explanations for parser node types, shown in the Bash
  * permission prompt when a command is too complex to statically analyze.
- * Byte-exact port of the official Claude Code 2.1.287 `Rt` map (the 26-entry
- * node-type → explanation table consumed by the too-complex builder `_()`).
- * Replaces the pre-287 behavior that leaked raw internal parser names such as
- * `Contains simple_expansion` into the prompt. Insertion order matches the
- * official `new Map([...])`. See docs/gap-research-287/cluster-d2-misc.md #6.
+ * Byte-exact port of the official Claude Code 2.1.288 `vt` map (@203543557
+ * region — the 26-entry sentence-case node-type → explanation table consumed
+ * by the too-complex builder `_()`). The 2.1.287 `Rt` map OCC previously
+ * matched used lowercase explanations; v288 (#72, "shorter reason when part
+ * of a command can't be checked before it runs") replaced both the map
+ * strings and the builder template. Insertion order matches the official
+ * `new Map([...])`. See docs/gap-research-288/cluster-a-permission-sandbox.md
+ * #72 and /tmp/cc-diff-288/r72_builder.txt.
  */
 export const NODE_TYPE_EXPLANATIONS: ReadonlyMap<string, string> = new Map([
-  ['simple_expansion', 'a variable'],
-  ['expansion', 'a variable in braces'],
-  ['command_substitution', 'the output of another command'],
-  ['process_substitution', 'another command used as a file'],
-  ['brace_expression', 'a brace pattern'],
-  ['ansi_c_string', 'text with escape codes'],
-  ['translated_string', 'text the shell may translate'],
-  ['test_command', 'a test in brackets'],
-  ['herestring_redirect', 'a here-string'],
-  ['heredoc_redirect', 'a here-document'],
-  ['subshell', 'a group of commands in parentheses'],
-  ['compound_statement', 'a group of commands in braces or double parentheses'],
-  ['for_statement', 'a for or select loop'],
-  ['c_style_for_statement', 'a for loop with a counter'],
-  ['while_statement', 'a while or until loop'],
-  ['until_statement', 'an until loop'],
-  ['if_statement', 'an if statement'],
-  ['case_statement', 'a case statement'],
-  ['function_definition', 'a function definition'],
-  ['array', 'a list of values'],
-  ['string', 'quoted text'],
-  ['file_redirect', 'a redirect to or from a file'],
-  ['pipeline', 'a pipeline'],
-  ['concatenation', 'text joined from several pieces'],
-  ['variable_assignment', 'a variable assignment'],
-  ['variable_assignments', 'several variable assignments'],
+  ['simple_expansion', 'A variable'],
+  ['expansion', 'A variable in braces'],
+  ['command_substitution', 'A nested command'],
+  ['process_substitution', 'A command used as a file'],
+  ['brace_expression', 'A brace pattern'],
+  ['ansi_c_string', 'Text with escape codes'],
+  ['translated_string', 'Translatable text'],
+  ['test_command', 'A test in brackets'],
+  ['herestring_redirect', 'A here-string'],
+  ['heredoc_redirect', 'A here-document'],
+  ['subshell', 'A group in parentheses'],
+  ['compound_statement', 'A group in braces or double parentheses'],
+  ['for_statement', 'A for or select loop'],
+  ['c_style_for_statement', 'A counting for loop'],
+  ['while_statement', 'A while or until loop'],
+  ['until_statement', 'An until loop'],
+  ['if_statement', 'An if statement'],
+  ['case_statement', 'A case statement'],
+  ['function_definition', 'A function definition'],
+  ['array', 'A list of values'],
+  ['string', 'Quoted text'],
+  ['file_redirect', 'A file redirect'],
+  ['pipeline', 'A pipeline'],
+  ['concatenation', 'Joined pieces of text'],
+  ['variable_assignment', 'A variable assignment'],
+  ['variable_assignments', 'Variable assignments'],
 ])
 
 /**
  * Build the 'too-complex' rejection for a node we can't statically analyze.
- * Byte-exact port of the official Claude Code 2.1.287 `_()` builder:
+ * Byte-exact port of the official Claude Code 2.1.288 `_()` builder:
  *   - ERROR node            → reason 'Parse error'
- *   - mapped node type      → 'Part of this command (<explanation>) cannot be
- *                             checked in advance'
- *   - unmapped/unknown type → 'Part of this command cannot be checked in
- *                             advance'
- * The return shape (`{ kind, reason, nodeType }`) is unchanged from the pre-287
- * OCC builder; only the `reason` strings differ. See
- * docs/gap-research-287/cluster-d2-misc.md #6.
+ *   - mapped node type      → '<Explanation> in this command can't be checked
+ *                             before it runs'
+ *   - unmapped/unknown type → 'This command can't be checked before it runs'
+ * Official v288 template (verbatim):
+ *   `${n===void 0 ? "This command" : `${n} in this command`} can't be checked
+ *    before it runs`
+ * Replaces the v287 long form ("Part of this command (…) cannot be checked
+ * in advance"). The return shape (`{ kind, reason, nodeType }`) is unchanged;
+ * only the `reason` strings differ. See
+ * docs/gap-research-288/cluster-a-permission-sandbox.md #72.
  */
 export function tooComplex(node: Node): ParseForSecurityResult {
   if (node.type === 'ERROR')
@@ -2756,10 +2774,9 @@ export function tooComplex(node: Node): ParseForSecurityResult {
   const explanation = NODE_TYPE_EXPLANATIONS.get(node.type)
   return {
     kind: 'too-complex',
-    reason:
-      explanation === undefined
-        ? 'Part of this command cannot be checked in advance'
-        : `Part of this command (${explanation}) cannot be checked in advance`,
+    reason: `${
+      explanation === undefined ? 'This command' : `${explanation} in this command`
+    } can't be checked before it runs`,
     nodeType: node.type,
   }
 }
@@ -2812,18 +2829,18 @@ const EVAL_LIKE_BUILTINS = new Set([
   'source',
   '.',
   'exec',
-  'command',
-  'builtin',
+  // NOTE (v288 #72): 'command', 'builtin' and 'noglob' are intentionally
+  // NOT members — the official v288 `d8` set (@203561310 region: eval,
+  // source, ., exec, nocorrect, fc, coproc, trap, enable, mapfile,
+  // readarray, hash, bind, complete, compgen, alias, let) omits them
+  // because the wrapper strip loop in checkSemantics unwraps them first
+  // (`command rm` is checked as `rm`). Keeping them here would over-block
+  // the inert bare forms (`command`, `builtin --`) the official allows.
   'fc',
   // `coproc rm -rf /` spawns rm as a coprocess. tree-sitter parses it as
   // a plain command with argv[0]='coproc', so permission rules and path
   // validation would check 'coproc' not 'rm'.
   'coproc',
-  // Zsh precommand modifiers: `noglob cmd args` runs cmd with globbing off.
-  // They parse as ordinary commands (noglob is argv[0], the real command is
-  // argv[1]) so permission matching against argv[0] would see 'noglob', not
-  // the wrapped command.
-  'noglob',
   'nocorrect',
   // `trap 'cmd' SIGNAL` — cmd runs as shell code on signal/exit. EXIT fires
   // at end of every BashTool invocation, so this is guaranteed execution.
@@ -2927,6 +2944,83 @@ const PROC_ENVIRON_RE = /\/proc\/.*\/environ/
  */
 const NEWLINE_HASH_RE = /\n[ \t]*#/
 
+/**
+ * Awk-family interpreters (official v288 `NSe` @203546798, verbatim).
+ * An awk program is source code passed as an argument — system(), pipes,
+ * @load and /inet/ sockets inside it execute arbitrary commands.
+ */
+const AWK_FAMILY = new Set(['awk', 'gawk', 'mawk', 'nawk'])
+
+/**
+ * Awk options whose NEXT argument is the program/file operand, not program
+ * text (official v288 `Pt`, verbatim). Used by the xargs-gives-awk scan to
+ * skip option operands when looking for the program text.
+ */
+const AWK_NEXT_ARG_OPTION_RE = /^(?:-[FvW]$|--(?:fie|a$|as))/
+
+/**
+ * Process-wrapper commands that start another program (official v288 `W4`
+ * @203547944, verbatim). What they start can't be checked statically —
+ * `watch rm -rf /` re-runs rm on a timer, `strace`/`nsenter` change the
+ * execution context. Rejected with args; bare `watch` alone is inert.
+ */
+const PROCESS_WRAPPER_COMMANDS = new Set([
+  'watch',
+  'ionice',
+  'chrt',
+  'setsid',
+  'taskset',
+  'strace',
+  'ltrace',
+  'script',
+  'flock',
+  'unshare',
+  'nsenter',
+])
+
+/**
+ * Inspect an awk argument for execution primitives. Official v288 `pyt()`
+ * @203546874, byte-exact port: 5 regex→reason pairs, returns false when the
+ * text is inert. SECURITY: without this, a literal `awk '{system("id")}'`
+ * (no placeholder — a fully static program) passes every other argv check.
+ */
+function inspectAwkProgram(arg: string): string | false {
+  if (/(?<![A-Za-z_])system[\s\\]*\(/.test(arg)) {
+    return 'awk program contains system() which executes arbitrary commands'
+  }
+  if (
+    /(?:^|[^|])\|&?[^/|%";#{}]*"/.test(arg) ||
+    /(?:^|[^|])\|&?[\s\\]*getline\b/.test(arg)
+  ) {
+    return 'awk program contains a command pipe (| "cmd" or | getline) which executes arbitrary commands'
+  }
+  if (
+    /@[\s\\]*(?:load|include)\b|@[\s\\]*\w+(?:::\w+)?(?:\[[^\]]*\])*[\s\\]*\(/.test(
+      arg,
+    )
+  ) {
+    return 'awk program contains @load/@include or an @indirect call which can execute arbitrary code'
+  }
+  if (/(?<![A-Za-z_])extension[\s\\]*\(/.test(arg)) {
+    return 'awk program contains extension() which loads arbitrary native code (legacy gawk)'
+  }
+  if (/"\/inet[46]?\//.test(arg)) {
+    return 'awk program opens a gawk /inet/ network socket which can exfiltrate data'
+  }
+  return false
+}
+
+/**
+ * True when the value contains a runtime placeholder — the official v288
+ * `Pi()` predicate: the real text is only known at execution time, so it
+ * can't be checked before the command runs.
+ */
+function containsPlaceholder(value: string): boolean {
+  return (
+    value.includes(CMDSUB_PLACEHOLDER) || value.includes(VAR_PLACEHOLDER)
+  )
+}
+
 export type SemanticCheckResult = { ok: true } | { ok: false; reason: string }
 
 /**
@@ -2940,11 +3034,42 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
     // `nohup eval "..."` and `timeout 5 jq 'system(...)'` are checked
     // against the wrapped command, not the wrapper. Inlined here to avoid
     // circular import with bashPermissions.ts.
+    //
+    // v288 #72: wrapper failure reasons use the official 2.1.288 short
+    // forms ("'timeout --x' can't be checked before it runs" etc.), and the
+    // strip loop mirrors the official `FJn` region (@203550620-203553200)
+    // byte-for-byte: basename normalization (so `/usr/bin/timeout` strips
+    // too), plus `command` (flags /^-[pvV]+$/ only; -v/-V keep name
+    // 'command'), `builtin`/`noglob` (raw argv[0], optional `--` after
+    // builtin), and `xargs` (only when argv[1] is not a flag; sets
+    // viaXargs for the post-strip xargs checks). All wrapper reason strings
+    // verbatim from the binary — see
+    // docs/gap-research-288/cluster-a-permission-sandbox.md #72.
+    // STAGED (v288 #72, sole remaining gap): the official awk/find blocks
+    // gate their first branch on `r.hasUnquotedGlob` ("awk command contains
+    // unquoted glob characters — could glob-expand to a planted program or
+    // flag before awk runs" / find equivalent). OCC's SimpleCommand has no
+    // hasUnquotedGlob field — porting it needs extractor plumbing beyond
+    // #72's message-alignment scope. Every other official reason below is
+    // recovered verbatim and implemented.
     let a = cmd.argv
+    let viaXargs = false
     for (;;) {
-      if (a[0] === 'time' || a[0] === 'nohup') {
+      const base = a[0]?.replace(/^.*[\\/]/, '')
+      const wrapper =
+        base === 'time' ||
+        base === 'nohup' ||
+        base === 'timeout' ||
+        base === 'nice' ||
+        base === 'stdbuf' ||
+        base === 'env' ||
+        base === 'command' ||
+        base === 'xargs'
+          ? base
+          : a[0]
+      if (wrapper === 'time' || wrapper === 'nohup') {
         a = a.slice(1)
-      } else if (a[0] === 'timeout') {
+      } else if (wrapper === 'timeout') {
         // `timeout 5`, `timeout 5s`, `timeout 5.5`, plus optional GNU flags
         // preceding the duration. Long: --foreground, --kill-after=N,
         // --signal=SIG, --preserve-status. Short: -k DUR, -s SIG, -v (also
@@ -2975,9 +3100,10 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           } else if (arg.startsWith('--')) {
             // Unknown long flag, OR --kill-after/--signal with non-allowlisted
             // value (e.g. placeholder from $() substitution). Fail closed.
+            // Reason: official v288 short form (FJn @203551221), verbatim.
             return {
               ok: false,
-              reason: `timeout with ${arg} flag cannot be statically analyzed`,
+              reason: `'timeout ${arg}' can't be checked before it runs`,
             }
           } else if (arg === '-v') {
             i++ // --verbose, no argument
@@ -2992,9 +3118,10 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           } else if (arg.startsWith('-')) {
             // Unknown flag OR -k/-s with non-allowlisted value — can't locate
             // wrapped cmd. Reject, don't fall through to name='timeout'.
+            // Reason: official v288 short form (FJn @203551221), verbatim.
             return {
               ok: false,
-              reason: `timeout with ${arg} flag cannot be statically analyzed`,
+              reason: `'timeout ${arg}' can't be checked before it runs`,
             }
           } else {
             break // non-flag — should be the duration
@@ -3011,26 +3138,34 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           // (fail-OPEN) so `timeout .5 eval "id"` with `Bash(timeout:*)` left
           // name='timeout' and eval was never checked. Now fail CLOSED —
           // consistent with the unknown-FLAG handling above (lines ~1895,1912).
+          // Reason: official v288 short form (FJn @203551221), verbatim.
           return {
             ok: false,
-            reason: `timeout duration '${a[i]}' cannot be statically analyzed`,
+            reason: `timeout duration '${a[i]}' can't be checked before it runs`,
           }
         } else {
           break // no more args — `timeout` alone, inert
         }
-      } else if (a[0] === 'nice') {
+      } else if (wrapper === 'nice') {
         // `nice cmd`, `nice -n N cmd`, `nice -N cmd` (legacy). All run cmd
         // at a lower priority. argv[0] check must see the wrapped cmd.
         if (a[1] === '-n' && a[2] && /^-?\d+$/.test(a[2])) {
           a = a.slice(3)
         } else if (a[1] && /^-\d+$/.test(a[1])) {
           a = a.slice(2) // `nice -10 cmd`
-        } else if (a[1] && /[$(`]/.test(a[1])) {
+        } else if (
+          a[1] &&
+          (/[$(`]/.test(a[1]) || containsPlaceholder(a[1]))
+        ) {
           // SECURITY: walkArgument returns node.text for arithmetic_expansion,
           // so `nice $((0-5)) jq ...` has a[1]='$((0-5))'. Bash expands it to
           // '-5' (legacy nice syntax) and execs jq; we'd slice(1) here and
           // set name='$((0-5))' which skips the jq system() check entirely.
           // Fail closed — mirrors the timeout-duration fail-closed above.
+          // NOTE (v288 #72): the official v288 `FJn` dump retains this long
+          // reason verbatim (`nice argument '${t[1]}' contains expansion —
+          // cannot statically determine wrapped command`) — nice was NOT
+          // shortened, so OCC stays byte-identical to official here.
           return {
             ok: false,
             reason: `nice argument '${a[1]}' contains expansion — cannot statically determine wrapped command`,
@@ -3038,7 +3173,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
         } else {
           a = a.slice(1) // bare `nice cmd`
         }
-      } else if (a[0] === 'env') {
+      } else if (wrapper === 'env') {
         // `env [VAR=val...] [-i] [-0] [-v] [-u NAME...] cmd args` runs cmd.
         // argv[0] check must see cmd, not env. Skip known-safe forms only.
         // SECURITY: -S splits a string into argv (mini-shell) — must reject.
@@ -3056,9 +3191,10 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           } else if (arg.startsWith('-')) {
             // -S (argv splitter), -C (altwd), -P (altpath), --anything,
             // or unknown flag. Can't model — reject the whole command.
+            // Reason: official v288 short form (FJn @203551221), verbatim.
             return {
               ok: false,
-              reason: `env with ${arg} flag cannot be statically analyzed`,
+              reason: `'env ${arg}' can't be checked before it runs`,
             }
           } else {
             break // the wrapped command
@@ -3069,7 +3205,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
         } else {
           break // `env` alone (no wrapped cmd) — inert, name='env'
         }
-      } else if (a[0] === 'stdbuf') {
+      } else if (wrapper === 'stdbuf') {
         // `stdbuf -o0 cmd` (fused), `stdbuf -o 0 cmd` (space-separated),
         // multiple flags (`stdbuf -o0 -eL cmd`), long forms (`--output=0`).
         // SECURITY: previous handling only stripped ONE flag and fell through
@@ -3089,9 +3225,10 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
             // --output MODE (space-separated long) or unknown flag. GNU
             // stdbuf long options use `=` syntax, but getopt_long also
             // accepts space-separated — we can't enumerate safely, reject.
+            // Reason: official v288 short form (FJn @203551221), verbatim.
             return {
               ok: false,
-              reason: `stdbuf with ${arg} flag cannot be statically analyzed`,
+              reason: `'stdbuf ${arg}' can't be checked before it runs`,
             }
           } else {
             break // the wrapped command
@@ -3101,6 +3238,49 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           a = a.slice(i)
         } else {
           break // `stdbuf` with no flags or no wrapped cmd — inert
+        }
+      } else if (wrapper === 'command') {
+        // `command [-p] [-v|-V] [--] cmd args` runs cmd bypassing shell
+        // functions. Official v288 (@203552202): only /^-[pvV]+$/ flags are
+        // strippable; -v/-V are existence checks that never execute argv[1],
+        // so the loop breaks with name='command' (which then passes the
+        // eval-like check — 'command' is NOT in the official `d8` set).
+        let i = 1
+        let sawV = false
+        while (i < a.length && a[i]!.startsWith('-') && a[i] !== '--') {
+          const flag = a[i]!
+          if (!/^-[pvV]+$/.test(flag)) {
+            // Reason: official v288 short form (@203552202), verbatim.
+            return {
+              ok: false,
+              reason: `'command ${flag}' can't be checked before it runs`,
+            }
+          }
+          if (flag.includes('v') || flag.includes('V')) sawV = true
+          i++
+        }
+        if (a[i] === '--') i++
+        if (sawV || i >= a.length) break
+        a = a.slice(i)
+      } else if (a[0] === 'builtin' || a[0] === 'noglob') {
+        // Official v288 checks the RAW argv[0] here (not the basename):
+        // `builtin [--] cmd` / `noglob cmd` (zsh precommand modifier).
+        const skip = a[0] === 'builtin' && a[1] === '--' ? 2 : 1
+        if (skip < a.length) {
+          a = a.slice(skip)
+        } else {
+          break // bare `builtin`/`noglob` — inert
+        }
+      } else if (wrapper === 'xargs') {
+        // Official v288 (@203552995): strip `xargs` only when argv[1] is not
+        // a flag — otherwise xargs' own flags could rewrite what runs
+        // (-I, -P, -n change the invoked program's argv). viaXargs gates the
+        // post-strip "What xargs adds/gives" checks below.
+        if (a.length >= 2 && !a[1]!.startsWith('-')) {
+          a = a.slice(1)
+          viaXargs = true
+        } else {
+          break
         }
       } else {
         break
@@ -3263,6 +3443,20 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
       }
     }
 
+    // `jobs -x cmd` (or +x) runs cmd in each job's context — what it starts
+    // is only resolved at runtime. Official v288 (@203559309): any arg
+    // matching /^[+-].*x/ trips the check. Reason verbatim.
+    if (name === 'jobs') {
+      for (let i = 1; i < a.length; i++) {
+        if (/^[+-].*x/.test(a[i]!)) {
+          return {
+            ok: false,
+            reason: "What 'jobs -x' starts can't be checked before it runs",
+          }
+        }
+      }
+    }
+
     // SECURITY: Shell reserved keywords as argv[0] indicate a tree-sitter
     // mis-parse. `! for i in a; do :; done` parses as `command "for i in a"`
     // + `command "do :"` + `command "done"` — tree-sitter fails to recognize
@@ -3272,6 +3466,45 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
       return {
         ok: false,
         reason: `Shell keyword '${name}' as command name — tree-sitter mis-parse`,
+      }
+    }
+
+    // Post-xargs-strip checks (official v288 @203559521/@203559787, gated
+    // on the `s` flag set when `xargs` was stripped above).
+    // - `xargs find`/`xargs jq`: xargs APPENDS runtime-determined paths to
+    //   the program's argv — find's -exec/-delete and jq's file reads then
+    //   operate on unchecked input. Reason verbatim.
+    // - `xargs awk...`: scan for program text (a non-flag operand, or
+    //   anything after `--`, skipping -F/-v/-W/--fie*/-a/--as* operands).
+    //   No program text means awk would read its program from the piped
+    //   input at runtime. Reason verbatim.
+    if (viaXargs) {
+      if (name === 'find' || name === 'jq') {
+        return {
+          ok: false,
+          reason: `What xargs adds to ${name} can't be checked before it runs`,
+        }
+      }
+      if (AWK_FAMILY.has(name)) {
+        let hasProgramText = false
+        for (let i = 1; i < a.length; i++) {
+          const arg = a[i]!
+          if (arg === '--') {
+            hasProgramText = i + 1 < a.length
+            break
+          }
+          if (arg === '-' || !arg.startsWith('-')) {
+            hasProgramText = true
+            break
+          }
+          if (!arg.includes('=') && AWK_NEXT_ARG_OPTION_RE.test(arg)) i++
+        }
+        if (!hasProgramText) {
+          return {
+            ok: false,
+            reason: `The program xargs gives ${name} can't be checked before it runs`,
+          }
+        }
       }
     }
 
@@ -3340,6 +3573,45 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
       }
     }
 
+    // Awk-family program checks (official v288 @203560400-203560826). The
+    // program text is an argument, so system()/pipes/@load inside it never
+    // trip the command-name or substitution checks above.
+    // STAGED (v288 #72, sole remaining gap): the official block's FIRST
+    // branch gates on `r.hasUnquotedGlob` ("awk command contains unquoted
+    // glob characters — could glob-expand to a planted program or flag
+    // before awk runs"); OCC's SimpleCommand carries no hasUnquotedGlob
+    // field, so that one branch awaits extractor plumbing. Everything else
+    // here is verbatim from the binary.
+    if (AWK_FAMILY.has(name)) {
+      for (const arg of a) {
+        const programReason = inspectAwkProgram(arg)
+        if (programReason !== false) {
+          return { ok: false, reason: programReason }
+        }
+        if (containsPlaceholder(arg)) {
+          // Reason: official v288 short form (@203560656), verbatim.
+          return {
+            ok: false,
+            reason: "awk is given text that can't be checked before it runs",
+          }
+        }
+      }
+      if (
+        a.some(
+          arg =>
+            /^-[bcCghIkMnNOPrsStV]*[fEileDW]/.test(arg) ||
+            /^--(?:fil|e|i|lo|s|de)/.test(arg),
+        )
+      ) {
+        // -f/-E/-i program-file and -D/-W debug options load text OCC never
+        // sees. Reason: official v288 short form (@203560826), verbatim.
+        return {
+          ok: false,
+          reason: "awk has an option that can't be checked before it runs",
+        }
+      }
+    }
+
     if (ZSH_DANGEROUS_BUILTINS.has(name)) {
       return {
         ok: false,
@@ -3348,12 +3620,7 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
     }
 
     if (EVAL_LIKE_BUILTINS.has(name)) {
-      // `command -v foo` / `command -V foo` are POSIX existence checks that
-      // only print paths — they never execute argv[1]. Bare `command foo`
-      // does bypass function/alias lookup (the concern), so keep blocking it.
-      if (name === 'command' && (a[1] === '-v' || a[1] === '-V')) {
-        // fall through to remaining checks
-      } else if (
+      if (
         name === 'fc' &&
         !a.slice(1).some(arg => /^-[^-]*[es]/.test(arg))
       ) {
@@ -3376,6 +3643,18 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
           ok: false,
           reason: `'${name}' evaluates arguments as shell code`,
         }
+      }
+    }
+
+    // Process wrappers (watch/strace/nsenter/…): with at least one argument
+    // they start another program whose argv OCC's permission matching never
+    // sees (it matches argv[0]=the wrapper). Official v288 (@203561860):
+    // `W4.has(a) && t.length>1` — bare `watch` with no args is inert.
+    // Reason verbatim.
+    if (PROCESS_WRAPPER_COMMANDS.has(name) && a.length > 1) {
+      return {
+        ok: false,
+        reason: `What '${name}' starts can't be checked before it runs`,
       }
     }
 

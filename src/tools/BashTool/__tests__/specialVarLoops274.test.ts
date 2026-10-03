@@ -68,10 +68,10 @@ describe('2.1.274 S1: special-variable assignments → too-complex (ask)', () =>
     ['PS4=`id` set -x', 'PS4 value derived from cmdsub/variable'],
     ['for i in 1 2; do PS4=$i; done', 'PS4 value derived from cmdsub/variable'],
     ['RANDOM=2+2', 'integer attribute'],
-    // Updated for the 2.1.287 #6 plain-language port: this case reaches
-    // tooComplex() with nodeType command_substitution, whose reason changed
-    // from `Contains command_substitution` to the official v287 explanation.
-    ['OPTIND=x[$(id)]', 'the output of another command'],
+    // Updated for the 2.1.288 #72 short-reason port: this case reaches
+    // tooComplex() with nodeType command_substitution, whose explanation is
+    // the official v288 sentence-case `vt` string ("A nested command").
+    ['OPTIND=x[$(id)]', 'A nested command'],
   ])('%s → too-complex', (cmd, reasonPart) => {
     const r = parseSecurity(cmd)
     expect(r.kind).toBe('too-complex')
