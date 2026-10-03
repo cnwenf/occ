@@ -86,6 +86,11 @@ import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import { sanitizePath } from './path.js'
 import {
+  acquireLoadCoordination,
+  acquireRewriteCoordination,
+  type TranscriptCoordinationHandle,
+} from './transcriptRewriteCoordinator.js'
+import {
   dirMatchesProjectPath,
   extractJsonStringField,
   extractLastJsonStringField,
@@ -1109,19 +1114,31 @@ class Project {
           )
           return
         }
-        const content = await readFile(this.sessionFile, { encoding: 'utf-8' })
-        const lines = content.split('\n').filter((line: string) => {
-          if (!line.trim()) return true
-          try {
-            const entry = jsonParse(line)
-            return entry.uuid !== targetUuid
-          } catch {
-            return true // Keep malformed lines
-          }
-        })
-        await writeFile(this.sessionFile, lines.join('\n'), {
-          encoding: 'utf8',
-        })
+        // CC 2.1.288 #12: whole-file rewrite — acquire rewrite coordination so
+        // a concurrent loadTranscriptFile of this same file waits for us (and
+        // we wait ≤5s for any in-flight load) instead of observing a truncated
+        // file. Official `performRemoveByUuid(e,n,r){using s=await wM(e);...}`
+        // (@211508839) wraps the whole method; OCC's fast path above is a
+        // targeted positional truncate (not a whole-file rewrite), so only the
+        // slow-path read+rewrite is wrapped here.
+        const rewriteHandle = await acquireRewriteCoordination(this.sessionFile)
+        try {
+          const content = await readFile(this.sessionFile, { encoding: 'utf-8' })
+          const lines = content.split('\n').filter((line: string) => {
+            if (!line.trim()) return true
+            try {
+              const entry = jsonParse(line)
+              return entry.uuid !== targetUuid
+            } catch {
+              return true // Keep malformed lines
+            }
+          })
+          await writeFile(this.sessionFile, lines.join('\n'), {
+            encoding: 'utf8',
+          })
+        } finally {
+          rewriteHandle[Symbol.dispose]()
+        }
       } catch {
         // Silently ignore errors - the file might not exist yet
       }
@@ -1792,8 +1809,15 @@ export async function hydrateRemoteSession(
 
     // Replace local logs with remote logs. writeFile truncates, so no
     // unlink is needed; an empty remoteLogs array produces an empty file.
+    // CC 2.1.288 #12: whole-file rewrite — coordinate with concurrent loads
+    // (official remote hydration `_0r`: `using w=await wM(S)`).
     const content = remoteLogs.map(e => jsonStringify(e) + '\n').join('')
-    await writeFile(sessionFile, content, { encoding: 'utf8', mode: 0o600 })
+    const rewriteHandle = await acquireRewriteCoordination(sessionFile)
+    try {
+      await writeFile(sessionFile, content, { encoding: 'utf8', mode: 0o600 })
+    } finally {
+      rewriteHandle[Symbol.dispose]()
+    }
 
     logForDebugging(`Hydrated ${remoteLogs.length} entries from remote`)
     return remoteLogs.length > 0
@@ -1843,9 +1867,16 @@ export async function hydrateFromCCRv2InternalEvents(
     await mkdir(projectDir, { recursive: true, mode: 0o700 })
 
     // Write foreground transcript
+    // CC 2.1.288 #12: whole-file rewrite — coordinate with concurrent loads
+    // (official CCR v2 foreground hydrate: `using an=await wM(w)`).
     const sessionFile = getTranscriptPathForSession(sessionId)
     const fgContent = events.map(e => jsonStringify(e.payload) + '\n').join('')
-    await writeFile(sessionFile, fgContent, { encoding: 'utf8', mode: 0o600 })
+    const fgRewriteHandle = await acquireRewriteCoordination(sessionFile)
+    try {
+      await writeFile(sessionFile, fgContent, { encoding: 'utf8', mode: 0o600 })
+    } finally {
+      fgRewriteHandle[Symbol.dispose]()
+    }
 
     logForDebugging(
       `Hydrated ${events.length} foreground entries from CCR v2 internal events`,
@@ -1878,10 +1909,18 @@ export async function hydrateFromCCRv2InternalEvents(
           const agentContent = entries
             .map(p => jsonStringify(p) + '\n')
             .join('')
-          await writeFile(agentFile, agentContent, {
-            encoding: 'utf8',
-            mode: 0o600,
-          })
+          // CC 2.1.288 #12: whole-file rewrite of the subagent transcript —
+          // coordinate with concurrent loads (official CCR v2 subagent
+          // hydrate: `using an=await wM(w)`).
+          const agentRewriteHandle = await acquireRewriteCoordination(agentFile)
+          try {
+            await writeFile(agentFile, agentContent, {
+              encoding: 'utf8',
+              mode: 0o600,
+            })
+          } finally {
+            agentRewriteHandle[Symbol.dispose]()
+          }
         }
 
         logForDebugging(
@@ -4158,7 +4197,15 @@ export async function loadTranscriptFile(
   // the loop when > 0.
   let droppedAttachmentCount = 0
 
+  // CC 2.1.288 #12: LOAD side of the rewrite/load coordination registry
+  // (official `Kyn`). Acquired before the whole-file read(s) below
+  // (readTranscriptForLoad chunked scan + readFile) so a concurrent
+  // whole-file rewrite of THIS path (tombstone slow path, remote/CCR-v2
+  // hydrate) waits for the read to finish instead of racing it and leaving
+  // the loader observing a truncated file. Released in the finally below.
+  let loadHandle: TranscriptCoordinationHandle | undefined
   try {
+    loadHandle = await acquireLoadCoordination(filePath)
     // For large transcripts, avoid materializing megabytes of stale content.
     // Single forward chunked read: attribution-snapshot lines are skipped at
     // the fd level (never buffered), compact boundaries truncate the
@@ -4378,6 +4425,9 @@ export async function loadTranscriptFile(
     }
   } catch {
     // File doesn't exist or can't be read
+  } finally {
+    // CC 2.1.288 #12: release the load window so a waiting rewrite proceeds.
+    loadHandle?.[Symbol.dispose]()
   }
 
   // CC 2.1.275 (M1): byte-exact official `xW` error log when attachment rows

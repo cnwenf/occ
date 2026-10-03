@@ -1,13 +1,21 @@
 import type { UUID } from 'crypto'
 import { useEffect, useRef } from 'react'
+import { logEvent } from 'src/services/analytics/index.js'
 import { useAppState } from '../state/AppState.js'
 import type { Message } from '../types/message.js'
 import { isAgentSwarmsEnabled } from '../utils/agentSwarmsEnabled.js'
+import { registerCleanup } from '../utils/cleanupRegistry.js'
+import { isCompactBoundaryMessage } from '../utils/messages.js'
 import {
   cleanMessagesForLogging,
+  flushSessionStorage,
   isChainParticipant,
   recordTranscript,
 } from '../utils/sessionStorage.js'
+import {
+  TranscriptRecorder,
+  type TranscriptSnapshot,
+} from './transcriptRecorder.js'
 
 /**
  * Hook that logs messages to the transcript
@@ -23,13 +31,30 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
   // and only pass the new tail to recordTranscript. Avoids O(n) filter+scan
   // on every setMessages (~20x/turn, so n=3000 was ~120k wasted iterations).
   const lastRecordedLengthRef = useRef(0)
-  const lastParentUuidRef = useRef<UUID | undefined>(undefined)
   // First-uuid change = compaction or /clear rebuilt the array; length alone
   // can't detect this since post-compact [CB,summary,...keep,new] may be longer.
   const firstMessageUuidRef = useRef<UUID | undefined>(undefined)
-  // Guard against stale async .then() overwriting a fresher sync update when
-  // an incremental render fires before the compaction .then() resolves.
-  const callSeqRef = useRef(0)
+
+  // CC 2.1.288 #11: the recorder owns the `parentWait` state machine that
+  // replaces the v287 fire-and-forget write + `callSequence` drop (which lost
+  // an overtaken write's `lastRecordedUuid` and left the last turn unsaved).
+  // It serializes writes, holds the newest snapshot while one is in flight,
+  // replays it on settle, registers the replay with the exit-wait set, skips
+  // bare-compact-boundary tails, and emits `tengu_transcript_parent_wait`.
+  // Persisted across renders in a ref; `lastParentUuid` (the parent hint) now
+  // lives on the recorder instead of a standalone ref.
+  const recorderRef = useRef<TranscriptRecorder | undefined>(undefined)
+  if (recorderRef.current === undefined) {
+    recorderRef.current = new TranscriptRecorder({
+      writeFn: recordTranscript,
+      registerExitWait: registerCleanup,
+      emitTelemetry: logEvent,
+      flush: flushSessionStorage,
+      now: () => Date.now(),
+      isCompactBoundary: isCompactBoundaryMessage,
+    })
+  }
+  const recorder = recorderRef.current
 
   useEffect(() => {
     if (ignore) return
@@ -55,6 +80,12 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
       !wasFirstRender &&
       currentFirstUuid === firstMessageUuidRef.current &&
       prevLength > messages.length
+    // Head reset = compaction / `/clear` rebuilt the array (head uuid changed).
+    // The recorder uses this to drop a held snapshot from the stale array.
+    const isHeadReset =
+      currentFirstUuid !== undefined &&
+      !wasFirstRender &&
+      currentFirstUuid !== firstMessageUuidRef.current
 
     const startIndex = isIncremental ? prevLength : 0
     if (startIndex === messages.length) return
@@ -62,31 +93,25 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
     // Full array on first call + after compaction: recordTranscript's own
     // O(n) dedup loop handles messagesToKeep interleaving correctly there.
     const slice = startIndex === 0 ? messages : messages.slice(startIndex)
-    const parentHint = isIncremental ? lastParentUuidRef.current : undefined
+    const parentHint = isIncremental ? recorder.lastParentUuid : undefined
 
-    // Fire and forget - we don't want to block the UI.
-    const seq = ++callSeqRef.current
-    void recordTranscript(
-      slice,
-      isAgentSwarmsEnabled()
+    const snapshot: TranscriptSnapshot = {
+      messages: slice,
+      options: isAgentSwarmsEnabled()
         ? {
             teamName: teamContext?.teamName,
             agentName: teamContext?.selfAgentName,
           }
         : {},
+      // Captured now (before the sync-walk below advances it) so a snapshot
+      // held by the recorder replays against the correct parent.
       parentHint,
-      messages,
-    ).then(lastRecordedUuid => {
-      // For compaction/full array case (!isIncremental): use the async return
-      // value. After compaction, messagesToKeep in the array are skipped
-      // (already in transcript), so the sync loop would find a wrong UUID.
-      // Skip if a newer effect already ran (stale closure would overwrite the
-      // fresher sync update from the subsequent incremental render).
-      if (seq !== callSeqRef.current) return
-      if (lastRecordedUuid && !isIncremental) {
-        lastParentUuidRef.current = lastRecordedUuid
-      }
-    })
+      allMessages: messages,
+      isIncremental,
+      isHeadReset,
+    }
+    // Fire-and-forget at the UI level, but serialized inside the recorder.
+    recorder.record(snapshot)
 
     // Sync-walk safe for: incremental (pure new-tail slice), first-render
     // (no messagesToKeep interleaving), and same-head shrink. Shrink is the
@@ -98,7 +123,8 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
     // the async .then() correction is raced out by the next effect's seq bump
     // on large sessions where recordTranscript(fullArray) is slow. Only the
     // compaction case (first uuid changed) remains unsafe — tail may be
-    // messagesToKeep whose last-actually-recorded uuid differs.
+    // messagesToKeep whose last-actually-recorded uuid differs, so the recorder
+    // corrects it from the write result there.
     if (isIncremental || wasFirstRender || isSameHeadShrink) {
       // Match EXACTLY what recordTranscript persists: cleanMessagesForLogging
       // applies both the isLoggableMessage filter and (for external users) the
@@ -110,7 +136,7 @@ export function useLogMessages(messages: Message[], ignore: boolean = false) {
       const last = cleanMessagesForLogging(slice, messages).findLast(
         isChainParticipant,
       )
-      if (last) lastParentUuidRef.current = last.uuid as UUID
+      if (last) recorder.lastParentUuid = last.uuid as UUID
     }
 
     lastRecordedLengthRef.current = messages.length
