@@ -26,11 +26,8 @@ import {
   buildCodeEditToolAttributes,
   isCodeEditingTool,
 } from '../../hooks/toolPermission/permissionLogging.js'
-import {
-  decisionReasonToOTelSource,
-  isSdkPermissionAbort,
-  sdkPermissionDecisionLabel,
-} from '../../hooks/toolPermission/sdkPermissionTelemetry.js'
+import { mapPermissionDecisionToTelemetry } from '../../hooks/toolPermission/permissionDecisionMapper.js'
+import { isSdkPermissionAbort } from '../../hooks/toolPermission/sdkPermissionTelemetry.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { ToolDurationEntry } from '../api/gatewayHints.js'
 import {
@@ -950,27 +947,26 @@ async function checkPermissionsAndCallTool(
     )
   }
 
+  // CC 2.1.288 #31/#32: the official computes the {decision, source} pair ONCE
+  // here (`mo = Aho(zn, s.abortController.signal.aborted)` @208843560) and
+  // reuses it for BOTH the headless `tool_decision` emit and — as the fallback —
+  // both `tool.blocked_on_user` span ends, replacing the v287 `"unknown"`
+  // fallbacks (#31). #32: the v287 `behavior !== "ask"` emit-gate clause
+  // (@207737973) was dropped in v288 (`if(!s.toolDecisions.has(n))` @208843664),
+  // so `ask` outcomes now emit `tool_decision` too.
+  const mappedDecision = mapPermissionDecisionToTelemetry(
+    permissionDecision,
+    toolUseContext.abortController.signal.aborted,
+  )
+
   // Emit tool_decision OTel event and code-edit counter if the interactive
   // permission path didn't already log it (headless mode bypasses permission
   // logging, so we need to emit both the generic event and the code-edit
   // counter here)
-  if (
-    permissionDecision.behavior !== 'ask' &&
-    !toolUseContext.toolDecisions?.has(toolUseID)
-  ) {
-    // CC 2.1.216 #29: a failed/interrupted permission-prompt request is
-    // reported as an abort, not a user rejection.
-    const decision = sdkPermissionDecisionLabel(
-      permissionDecision.behavior,
-      permissionDecision.decisionReason,
-    )
-    const source = decisionReasonToOTelSource(
-      permissionDecision.decisionReason,
-      permissionDecision.behavior,
-    )
+  if (!toolUseContext.toolDecisions?.has(toolUseID)) {
     void logOTelEvent('tool_decision', {
-      decision,
-      source,
+      decision: mappedDecision.decision,
+      source: mappedDecision.source,
       tool_name: sanitizeToolNameForAnalytics(tool.name),
     })
 
@@ -979,8 +975,8 @@ async function checkPermissionsAndCallTool(
       void buildCodeEditToolAttributes(
         tool,
         processedInput,
-        decision,
-        source,
+        mappedDecision.decision,
+        mappedDecision.source,
       ).then(attributes => getCodeEditToolDecisionCounter()?.add(1, attributes))
     }
   }
@@ -1009,9 +1005,12 @@ async function checkPermissionsAndCallTool(
     // a rejection, and do not fire the can_use_tool_rejected analytics event
     // for it.
     const isAbort = isSdkPermissionAbort(permissionDecision.decisionReason)
+    // CC 2.1.288 #31: source falls back to the Aho-computed pair (`mo.source`)
+    // instead of the v287 `"unknown"`. The decision stays OCC's CC 2.1.216 #29
+    // `isAbort ? 'abort' : 'reject'` (official literal is always "reject").
     endToolBlockedOnUserSpan(
       isAbort ? 'abort' : 'reject',
-      decisionInfo?.source || 'unknown',
+      decisionInfo?.source || mappedDecision.source,
     )
     endToolSpan()
 
@@ -1192,9 +1191,11 @@ async function checkPermissionsAndCallTool(
   }
 
   const decisionInfo = toolUseContext.toolDecisions?.get(toolUseID)
+  // CC 2.1.288 #31: both fallbacks use the Aho-computed pair (`mo.decision` /
+  // `mo.source`) instead of the v287 `"unknown"` literals.
   endToolBlockedOnUserSpan(
-    decisionInfo?.decision || 'unknown',
-    decisionInfo?.source || 'unknown',
+    decisionInfo?.decision || mappedDecision.decision,
+    decisionInfo?.source || mappedDecision.source,
   )
   startToolExecutionSpan()
 
