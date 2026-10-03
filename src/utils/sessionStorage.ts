@@ -1054,7 +1054,19 @@ class Project {
   async removeMessageByUuid(targetUuid: UUID): Promise<void> {
     return this.trackWrite(async () => {
       if (this.sessionFile === null) return
+      // CC 2.1.288 #12 (OCC-106 P2-2 fix): official
+      // `performRemoveByUuid(e,n,r){using s=await wM(e);...}` (@211508839)
+      // wraps the WHOLE method in rewrite coordination — the tail-splice fast
+      // path included. A positional ftruncate + trailing write is still two
+      // non-atomic syscalls on a live transcript, and REPL.tsx fires this
+      // fire-and-forget, so without coordination a concurrent
+      // loadTranscriptFile (/resume, forked session, hydrate, lite-metadata
+      // tail read) can observe the file cut short — the exact #12 failure.
+      // Acquire once here and dispose in the finally, matching the sibling
+      // mutations' try/finally shape.
+      let rewriteHandle: TranscriptCoordinationHandle | null = null
       try {
+        rewriteHandle = await acquireRewriteCoordination(this.sessionFile)
         let fileSize = 0
         const fh = await fsOpen(this.sessionFile, 'r+')
         try {
@@ -1093,7 +1105,8 @@ class Project {
               const afterLen = bytesRead - lineEnd
               // Truncate first, then re-append the trailing lines. In the
               // common case (target is the last entry) afterLen is 0 and
-              // this is a single ftruncate.
+              // this is a single ftruncate. Both syscalls run under the
+              // method-wide rewrite coordination acquired above.
               await fh.truncate(absLineStart)
               if (afterLen > 0) {
                 await fh.write(tail, lineEnd, afterLen, absLineStart)
@@ -1114,33 +1127,23 @@ class Project {
           )
           return
         }
-        // CC 2.1.288 #12: whole-file rewrite — acquire rewrite coordination so
-        // a concurrent loadTranscriptFile of this same file waits for us (and
-        // we wait ≤5s for any in-flight load) instead of observing a truncated
-        // file. Official `performRemoveByUuid(e,n,r){using s=await wM(e);...}`
-        // (@211508839) wraps the whole method; OCC's fast path above is a
-        // targeted positional truncate (not a whole-file rewrite), so only the
-        // slow-path read+rewrite is wrapped here.
-        const rewriteHandle = await acquireRewriteCoordination(this.sessionFile)
-        try {
-          const content = await readFile(this.sessionFile, { encoding: 'utf-8' })
-          const lines = content.split('\n').filter((line: string) => {
-            if (!line.trim()) return true
-            try {
-              const entry = jsonParse(line)
-              return entry.uuid !== targetUuid
-            } catch {
-              return true // Keep malformed lines
-            }
-          })
-          await writeFile(this.sessionFile, lines.join('\n'), {
-            encoding: 'utf8',
-          })
-        } finally {
-          rewriteHandle[Symbol.dispose]()
-        }
+        const content = await readFile(this.sessionFile, { encoding: 'utf-8' })
+        const lines = content.split('\n').filter((line: string) => {
+          if (!line.trim()) return true
+          try {
+            const entry = jsonParse(line)
+            return entry.uuid !== targetUuid
+          } catch {
+            return true // Keep malformed lines
+          }
+        })
+        await writeFile(this.sessionFile, lines.join('\n'), {
+          encoding: 'utf8',
+        })
       } catch {
         // Silently ignore errors - the file might not exist yet
+      } finally {
+        rewriteHandle?.[Symbol.dispose]()
       }
     })
   }
