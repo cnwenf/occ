@@ -10,10 +10,12 @@ import type { Tools } from '../Tool.js';
 import { type ConnectorTextBlock, isConnectorTextBlock } from '../types/connectorText.js';
 import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../types/message.js';
 import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js';
+import { getToolUseIdsFromCollapsedGroup } from '../utils/collapseReadSearch.js';
 import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
 import { logError } from '../utils/log.js';
 import type { buildMessageLookups } from '../utils/messages.js';
 import { CompactSummary } from './CompactSummary.js';
+import { InterruptedBySendNowContext } from './InterruptedByUser.js';
 import { AdvisorMessage } from './messages/AdvisorMessage.js';
 import { AssistantRedactedThinkingMessage } from './messages/AssistantRedactedThinkingMessage.js';
 import { AssistantTextMessage } from './messages/AssistantTextMessage.js';
@@ -227,7 +229,16 @@ function MessageImpl(t0) {
         } else {
           t5 = $[63];
         }
-        return t5;
+        // CC 2.1.288 #59 — official `case "user"` @227595016:
+        //   `const Te=l.interruptedBySendNow===!0; …
+        //    Fe=e(Lt.Provider,{value:Te,children:qe}); return Fe`
+        // The provider threads the send-now flag down to `InterruptedByUser`,
+        // which drops the "What should Claude do instead?" hint when it is true.
+        // Deliberately NOT memoized into a new `$` slot: `$[64]+` are shared with
+        // the later switch cases, and the wrapped child `t5` is itself memoized,
+        // so React still bails out on the subtree.
+        const isBySendNow = message.interruptedBySendNow === true;
+        return <InterruptedBySendNowContext.Provider value={isBySendNow}>{t5}</InterruptedBySendNowContext.Provider>;
       }
     case "system":
       {
@@ -338,7 +349,21 @@ function MessageImpl(t0) {
         const t2 = verbose || isTranscriptMode;
         let t3;
         if ($[86] !== inProgressToolUseIDs || $[87] !== isActiveCollapsedGroup || $[88] !== lookups || $[89] !== message || $[90] !== shouldAnimate || $[91] !== t2 || $[92] !== tools) {
-          t3 = <OffscreenFreeze><CollapsedReadSearchContent message={message} inProgressToolUseIDs={inProgressToolUseIDs} shouldAnimate={shouldAnimate} verbose={t2} tools={tools} lookups={lookups} isActiveGroup={isActiveCollapsedGroup} /></OffscreenFreeze>;
+          // CC 2.1.288 #59 — official `case "collapsed_read_search"` @227597624:
+          //   `Me=(uo)=>{let Do=p.toolResultByToolUseID.get(uo);
+          //               return Do?.type==="user"&&Do.interruptedBySendNow===!0}`
+          //   `se=o7(l).some(Me); let vo=se; …
+          //    Te=e(Ck,{children:e(Lt.Provider,{value:vo,children:ye})})`
+          // A collapsed group counts as a send-now cut when ANY of its tool
+          // results is a send-now-stamped interrupt placeholder, and the
+          // provider sits INSIDE the freeze wrapper (`Ck`). This is a pure
+          // function of `message` + `lookups`, both already memo deps above, so
+          // no new `$` slot is needed.
+          const isBySendNow = getToolUseIdsFromCollapsedGroup(message).some((toolUseID) => {
+            const toolResult = lookups.toolResultByToolUseID.get(toolUseID);
+            return toolResult?.type === "user" && toolResult.interruptedBySendNow === true;
+          });
+          t3 = <OffscreenFreeze><InterruptedBySendNowContext.Provider value={isBySendNow}><CollapsedReadSearchContent message={message} inProgressToolUseIDs={inProgressToolUseIDs} shouldAnimate={shouldAnimate} verbose={t2} tools={tools} lookups={lookups} isActiveGroup={isActiveCollapsedGroup} /></InterruptedBySendNowContext.Provider></OffscreenFreeze>;
           $[86] = inProgressToolUseIDs;
           $[87] = isActiveCollapsedGroup;
           $[88] = lookups;

@@ -46,6 +46,17 @@ export type Message = {
    * as a message field — it travels as the `x-claude-code-prompt-id` header.
    */
   promptId?: string
+  /**
+   * CC 2.1.288 #59 — official `_stampSendNowCut` @229515877 marks the interrupt
+   * placeholder produced by a ctrl+enter "send now" cut with
+   * `{...h, interruptedBySendNow: !0}` so the row renderer can tell it apart
+   * from a user Esc interrupt (both abort with reason `"user-cancel"`). Read at
+   * `l.interruptedBySendNow===!0` @227595016 (user row) / @227597624
+   * (collapsed read-search group) and persisted by the official splitter `UEr`
+   * @211321347. When true, the "What should Claude do instead?" hint is
+   * suppressed on the Interrupted row.
+   */
+  interruptedBySendNow?: boolean
   attachment?: { type: string; toolUseID?: string; [key: string]: unknown }
   message?: {
     role?: string

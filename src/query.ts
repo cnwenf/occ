@@ -70,6 +70,13 @@ import {
   stripSignatureBlocks,
   wrapInSystemReminder,
 } from './utils/messages.js'
+// CC 2.1.288 #59: official `_applyMessage` @229522066 runs every inbound
+// message through `_stampSendNowCut(h, this._snapshot.abortController?.signal)`
+// (@229515877). OCC has no single message-apply choke point, so the stamp is
+// applied where the interrupt placeholder is produced — the two
+// `createUserInterruptionMessage` yield sites below — which is the only place
+// the flag is observable (the Interrupted row renderer).
+import { stampSendNowCut } from './utils/sendNowCut.js'
 import { generateToolUseSummary } from './services/toolUseSummary/toolUseSummaryGenerator.js'
 import { prependUserContext, appendSystemContext } from './utils/api.js'
 // K3 (ultracode): consume the ultracode system-reminder decision from
@@ -1210,9 +1217,12 @@ async function* queryLoop(
       // generic `[Request interrupted by user]`. The two are distinct
       // constants in the official binary (GI vs t8).
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
-        yield createUserInterruptionMessage({
-          toolUse: hasToolUseBlocks(assistantMessages),
-        })
+        yield stampSendNowCut(
+          createUserInterruptionMessage({
+            toolUse: hasToolUseBlocks(assistantMessages),
+          }),
+          toolUseContext.abortController.signal,
+        )
       }
       return { reason: 'aborted_streaming' }
     }
@@ -1818,9 +1828,12 @@ async function* queryLoop(
       // Skip the interruption message for submit-interrupts — the queued
       // user message that follows provides sufficient context.
       if (toolUseContext.abortController.signal.reason !== 'interrupt') {
-        yield createUserInterruptionMessage({
-          toolUse: true,
-        })
+        yield stampSendNowCut(
+          createUserInterruptionMessage({
+            toolUse: true,
+          }),
+          toolUseContext.abortController.signal,
+        )
       }
       // Check maxTurns before returning when aborted
       const nextTurnCountOnAbort = turnCount + 1
