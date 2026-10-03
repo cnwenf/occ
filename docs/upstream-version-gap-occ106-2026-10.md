@@ -125,15 +125,84 @@ Cluster column: A=permission-sandbox, B=protocol-auth-mcp-plugin, C=instructions
 
 ## 2. Security disposition summary (kickoff priority list)
 
-_Filled after cluster A/B/C land._
+All 10 kickoff security clusters dispositioned; every PORTED cluster is committed on main with byte-level A/B evidence in `docs/gap-research-288/`.
+
+| Kickoff # | Entry | Disposition | Evidence anchor |
+|---|---|---|---|
+| 1 | #54 dangerous `rm` via `bash -c`/`sh -c` (#96300) | **PORTED** — commit `566d8b3` | New v288 inline-shell-rm subsystem recovered @209742531+: `/^(?:r?ba)?sh$/ -c` extractor, depth-8 value walker, synthetic rebuild re-judged through permission checker, `circuitBreaker:'dangerousRemoval'` pre-gate no rule/bypass/classifier may override. All 7 gap shapes block in every mode; 53 new tests. cluster-a §54 |
+| 2 | #57 PreToolUse/PermissionRequest hook fail-closed | **PORTED** — commit `88f3422` | Ilt @207801776 / Olt @207802077 byte-exact; guard set + MAX_STRING_LENGTH/2 size cap + tengu_quiet_hopcroft opt-out; 22 TDD tests. cluster-a §57 |
+| 3 | #28 BASHPID arithmetic-eval assignment prompt | **PORTED** — commit `d7eaced` | `fyt` integer-attr set 41→42, BASHPID after EPOCHREALTIME @203549536 region byte-verified; INTEGER_ATTR_SHELL_VARS 39→full official set. cluster-a §28 |
+| 4 | #27 sandbox heredoc unquoted-delimiter narrowing | NO-OP{ALREADY-ALIGNED} | Official fix `plainUnquotedHeredocs` reparse under `tengu_amber_larch` @209762993 repairs official AST+sandbox-auto-allow path — dormant in OCC (TREE_SITTER_BASH off); live legacy path already fail-closed. cluster-a §27 |
+| 5 | #45 sandbox.credentials.files × blockReadsOutsideWorkingDirectories | NO-OP{NO-SURFACE} | Delta recovered (`_He`→`p1e` merge @210245781) but bug needs BOTH settings keys; OCC ships neither. cluster-a §45 |
+| 6 | #4 MCP OAuth scope step-up re-auth prompt | NO-OP{ALREADY-ALIGNED} | Step-up surface struct-equal v287↔v288 (`re-authenticate` 41→41, `stepUp` 31→31); dark-shipped v287. OCC has markStepUpPending on 403 insufficient_scope (services/mcp/auth.ts). cluster-b §4 |
+| 7 | #35 `/login` false success (#73861) + #60 `--bare` /login overwrite | **#35 PORTED** — commit `ebc61c1` / **#60 STAGED** | #35: storage-result plumbing (caller branch @223557800, auth_storage_failure @223558737), fresh/previous/none resolver, verbatim render copy; 33 new tests. #60: bare resolver byte-identical v287↔v288 ($k@201658612 ≡ Qk@202473225) — pure logic gate, unrecoverable by string novelty; honest STAGED. cluster-b §35/§60 |
+| 8 | #24/#44/#52 git transport cluster | **PORTED** — commit `61ecfc2` | #24 read-tree -u --reset @210993448/210994570; #44 drt SSH probe @~207590400; #52 both-attempts error combine @210734308. cluster-b |
+| 9 | #53 path-scoped .claude/rules + nested CLAUDE.md on Write/Edit | **PORTED** — commit `0c0f49d` | nestedMemoryAttachmentTriggers on Write AND Edit true-success paths (FileReadTool:1424 shape); failure paths add nothing; 5 new tests + regression sweeps. cluster-c §53 |
+| 10 | #41 MCP >16MB / unparseable double-run | NO-OP{ALREADY-ALIGNED} | OCC structurally immune — capMcpResponseBody THROWS >16MB (client.ts), transformMCPResult THROWS unparseable; no retry-after-oversize path. cluster-b §41 |
+
+Summary: 10 clusters → **6 PORTED** (commits `566d8b3`, `88f3422`, `d7eaced`, `ebc61c1`, `61ecfc2`, `0c0f49d`), **1 sub-arm STAGED** (#60, unrecoverable-by-strings rationale), **4 NO-OP** with structural-immunity or dormancy proofs. Zero invented code.
 
 ## 3. Verification
 
-_Filled at round end._
+**Full suite** — `bun test src --isolate` (609 files, 7599 tests, 19,147 expect() calls):
+- Baseline (pre-round): 7040 pass / 1 skip / 0 fail.
+- Run 1 (at `0c0f49d`, pre-hardening): 7597 pass / 1 skip / **1 fail** — the sole failure was the #67 `questionNavigationBarAnsweredSr288` memo-cache timing test (fixed 120ms hold margin not met under 609-file parallel load; passes 3/3 in isolation). Hardened in `66b62ee`: condition-based hold (poll stripped stdout for the expected frame, 3s hard deadline) — verified 3/3 isolated + 1/1 under synthetic 8-way CPU load.
+- Run 2 (final, at `66b62ee`): **7598 pass / 1 skip / 0 fail** [489.17s] — zero regressions vs baseline; net **+558 tests** from this round.
+- Known test-pollution class documented: combined multi-file single-invocation runs can cross-fail via `mock.module` leakage; per-file isolation runs are authoritative (all flagged combined-run failures this round passed in isolation).
+
+**Build** — `bun run build`: green, `dist/cli.js` 29.82 MB (MACRO.VERSION injected 2.1.367 pre-bump).
+
+**Headless real-model round trip** — `echo "say PONG" | bun dist/cli.js -p` → `PONG`, exit 0 (glm-5.2 via configured base URL; the `unrecognized_model` notice line is pre-existing behavior for non-catalog models).
+
+**tmux REPL live test** — `bun dist/cli.js` in tmux 200×50: boot banner renders (version/model/proj lines), chat `say PONG only` → `● PONG` (57,936 tokens in session), `/status` renders full panel (Version/Session ID/cwd/auth/model/MCP servers), `/exit` terminates cleanly (session + server gone). Live environment — NOT blocked (the earlier subagent-reported "no server running on /tmp/tmux-0/default" blocker was sandbox-scoped to that subagent, A/B-proven environmental at the time).
+
+**Per-cluster targeted suites** — each port commit carries its own TDD suite results in §1 rows / §2 (e.g. #54 BashTool+permissions 1082 pass/1 pre-existing skip; #65 46 tests; #8/#34 35 tests; E SR group 51 new + 204 sweep; #53/#61 10/10 isolated).
+
+**Gate test for the #59 TDZ fix** — `backgroundDeadlineTransition285.test.ts` 4/0 (circular-import lazy-getter verified).
 
 ## 4. STAGED backlog carried to future rounds
 
-_Filled at round end; includes OCC-105 §4 carry-over status updates._
+### 4a. This round's STAGED entries (11) + PARTIAL sub-pieces
+
+| Entry | Subject | Prerequisite / rationale |
+|---|---|---|
+| #6 | agents view Ctrl+F find / Alt+↑↓ group jump / rename / setGroup | new actions + keybindings + telemetry recovered (0→7/8/9 hits), but the group data model is NOT isolable from the binary; OCC FleetViewScreen needs a design pass — bundle with OCC-105 #3 (`n:<text>` filter) + #80 (queued replies) into one agents-view round |
+| #10 | `--resume` dropping just-restored compaction context | zero string footprint; all suspect regions byte-identical v287↔v288 modulo renames — pure conditional/ordering change beyond strings/dd reach. OCC surface mapped (compact.ts, sessionStorage.ts) |
+| #13 | resume of ≤2.1.286 conversations dropping earlier thinking | every thinking-handling region compares identical after rename normalization; no version-gate strings exist in either binary — zero-footprint, nothing faithful to port |
+| #26 | background sessions ending on plugin reload/disable with in-flight timers | real change is a lifecycle guard with no novel string; reload-hold machinery byte-identical. OCC `disablePluginOp` (pluginOperations.ts) lacks in-flight coordination — needs dedicated decompilation |
+| #36 | Stop during Bedrock credential lookup → fallback model | subsumed by the #8/#34 retry-engine port (all Bedrock/credential/abort modules byte-identical; no separate delta). Abort semantics verified preserved (`APIUserAbortError` before fallback classification, pinned by test in `9067336`) |
+| #39 | headless SIGTERM ignored when SIGCONT arrives alongside | signal registration byte-identical; only new code is `attributeSigcont` telemetry; likely Bun-runtime-level fix, not statically recoverable |
+| #56 | `idle_prompt` hooks firing while background agents run | official `backgroundAgents:{subscribe,getSnapshot}` defer recovered (@229798414/@205138548); OCC needs an AppStateStore subscription wired into REPL.tsx — deferred this round (file collision with concurrent UI work); first candidate for next round |
+| #60 | `/login` in `--bare` session could replace saved login | bare credential-source resolver byte-identical v287↔v288 ($k@201658612 ≡ Qk@202473225); pure logic gate unrecoverable by string novelty; OCC surface real (isBareMode gates) — needs behavioral decompilation |
+| #63 | terminal cursor not following typed text in fullscreen viewer search | call-site family not attributable (`declareCursor` 8→9 lands in history-search, not transcript viewer); not guessed |
+| #74 | Remote Control expired-credential proactive renewal | renewal lane strings recovered (`environmentSecretExpiresIn` 0→5 etc.) but the renewal ENGINE (`gLn`/`mLn`/gates/pacing) unrecovered (defined in another chunk); OCC RC surface is trimmed anyway |
+| #78 | agents view `n:` filter Enter opens best name-match | v288 scorer `eu` @217622180 recovered, but `Ii` scorer imported from another chunk — contract cannot be reconstructed faithfully |
+
+**PARTIAL sub-pieces of landed ports (core shipped):**
+- **#72** — the `hasUnquotedGlob`-gated awk/find first branches of official `FJn` stay STAGED: OCC's `SimpleCommand` type lacks the field; all other wrapper/xargs/awk/jobs/W4 branches landed byte-exact (`d7eaced`, ast.ts NOTE comment in place).
+- **#5** — explicit `--max-findings <n>|all` flag half landed (`551c6fc`: parser + 32 cap + notes); cross-session sticky reuse STAGED (`BundledSkillDefinition` has no typed-args hook `onUserTypedArgs`). Full `nn()` notes-builder recovered verbatim in the cluster-e addendum (@216202100); landed port re-verified byte-faithful. Adjacent `ultra` cloud-review tier (Ea() @216203400) is a separate absent surface, NOT part of #5.
+- **#8/#34** — retry ENGINE landed (`9067336`), producer side STAGED: OCC's claude.ts has no stream-failure builder at all (gap-report claim it "follows the v287 shape" was factually wrong — absent, not lagging). Until `outlastedNonStreamingTimeout` computation + `failedStreamOutlastedTimeout` threading + widened `Hf` call site land, the watchdog default cap of 2 never arms (live traffic behaves v287-identically); the `!C6()`-removal half of #34 IS live. `modelCallRetries.ts` remains unwired overall (pre-existing v286 staging).
+- **#62** — mcp serve agent-defs landed (`b51c031`); `src/daemon/workflowWorker.ts:90` carries the same hardcoded `{activeAgents:[],allAgents:[]}` empties (outside the port's file ownership) — follow-up candidate.
+
+### 4b. OCC-105 §4 carry-over status (21 items — none force-closed this round per kickoff)
+
+Intersections handled this round:
+- OCC-105 #5 (MCP elicitation/bareElicitationCapability) — ADJACENT: v288 #80 landed userConfirmsCompletion threading through the same elicitationHandler/ElicitationDialog files (`007e411`); the legacy-elicitation default flip conflict (`!1`→`!0`) remains a decision item → KEEP STAGED.
+- OCC-105 #57 (headless MCP needs-auth clear-on-success) + #73 (per-server transient-connect retry) — client.ts touched by v288 #69 (prewait skip) in different regions; both KEEP STAGED (prerequisites unchanged: tool-success hook / memoized-connect-result store).
+- OCC-105 #62 (marketplace plain-language errors) — marketplaceManager.ts touched by v288 #44/#52 (SSH probe + both-attempts error, `61ecfc2`) which partially overlaps the error-message surface → KEEP STAGED (narrowed; re-check bundling with M1 admission-validator rework).
+- OCC-105 #18 (`-p`/SDK model-fallback repeat suppression) — v288 #8/#34 retry-engine port reworked the same withRetry.ts region (`9067336`) → KEEP STAGED (re-examine next round with the new engine shape).
+- OCC-105 #21 /advisor pairing matrix — no v288 intersection → KEEP STAGED (data-only, values in 287 D2 report).
+- Remaining OCC-105 items (#1/#2 Claude Mods, #3 agents-view filter [now bundle with v288 #6/#78], #32/#34 SR engine [v288 #66 hold-API landed — re-scope against the new screenReader.ts surface], #38 RC proxy, #44 context:fork, #61 /config chevrons, #65 SDK 'now', #67 /skill announcement, #71/#72 dashed-line, #78 shell-write symlink, #79 1M-3P catalog, #80 agents queued replies) — no v288 intersection → KEEP STAGED as-is.
+
+### 4c. OCC-105 acceptance P3 follow-ups (8→6 grouped) status
+
+Per kickoff: intersecting items handled together; non-intersecting kept/updated — not force-closed.
+1. PowerShell strip unwired (permissionSetup.ts) — no v288 intersection → KEEP.
+2. MCP large-output singleton-unwrap sub-arm (client.ts region) — client.ts touched by #69/#80 in different regions → KEEP, refresh line ref next round.
+3. missing-script dedup key width (hooks.ts) — hooks.ts rewritten by #57 (`88f3422`) and touched again by #61 (`0c0f49d`, confined to executeInstructionsLoadedHooks); asyncRewake dedup path VERIFIED intact this round (`reportedMissingHookScripts` Set + `dedupKey = hookName\ncommand` at hooks.ts:1200/:1251, `detectMissingHookScript`/`looksLikeMissingHookScript` heuristics untouched; legacy non_blocking_error outcomes at :3692+ byte-preserved) → KEEP open (key-width divergence vs official unchanged), refreshed line ref :1251.
+4. plain-language path DORMANT — bashPromptPlainLanguage287.test.ts SUPERSEDED by …288.test.ts this round; dormancy caveat (TREE_SITTER_BASH off) carries forward verbatim; v288 #72/#28 ports are AST-path alignment, live legacy path already fail-closed → KEEP + RE-NOTED.
+5. structured-diff SR gate render wiring — no v288 intersection (note: #66 hold-API now touches the SR render path; re-verify wiring assertions next round) → KEEP.
+6. reduced-motion GAP2 jumper coverage — no v288 intersection → KEEP.
 
 ## 5. Version bumps (this round)
 
@@ -144,4 +213,12 @@ _Filled at round end; includes OCC-105 §4 carry-over status updates._
 
 ## 6. Files touched (this round)
 
-_Filled at round end._
+32 commits (`9ade624`…HEAD at round end), 141 files changed (+25,108 / −1,124 at `0c0f49d`; +35/−7 more in the `66b62ee` test hardening): 74 source files, 59 test files, 8 docs.
+
+**New source modules** (all binary-verified ports): `src/hooks/toolPermission/permissionDecisionMapper.ts` (#31/#32), `src/tools/BashTool/inlineShellRm.ts` (#54 SECURITY), `src/utils/permissions/classifierOverflowPending.ts` (#65), `src/utils/permissions/allowRuleHint.ts` (#76), `src/utils/sendNowCut.ts` (#59), `src/utils/heldClearedDraft.ts` (#3), `src/services/lsp/requestTimeout.ts` (#55).
+
+**Core touched**: `src/query.ts` + `src/types/message.ts` (#59 send-now cut signal), `src/screens/REPL.tsx` (#59 stamp + #7/#64/#66/#67 keyboard/SR group), `src/services/api/withRetry.ts` + `modelCallRetries.ts` + `errors.ts` (#8/#34), `src/services/compact/autoCompact.ts` + `src/utils/autoCompactWindow.ts` + `tokens.ts` (#9/#79/#65), `src/utils/hooks.ts` (#57 fail-closed + #61 agentInfo), `src/tools/BashTool/bashPermissions.ts` + `destructiveCommandWarning.ts` (#54), `src/utils/permissions/permissions.ts` (#65), `src/types/permissions.ts` (#54 decisionReason + #65 noVerdict), `src/utils/bash/ast.ts` (#28/#72), `src/cli/handlers/auth.ts` + `src/components/ConsoleOAuthFlow.tsx` (#35), `src/entrypoints/mcp.ts` (#62), `src/services/mcp/client.ts` + `elicitationHandler.ts` + `src/components/mcp/ElicitationDialog.tsx` (#80/#69), `src/utils/plugins/marketplaceManager.ts` + `pluginLoader.ts` + `schemas.ts` (#24/#44/#52/#38), `src/ink/*` + `src/utils/screenReader.ts` (#7/#64/#66/#67), `src/components/CustomSelect/use-select-input.ts` (#64 digit-consume), `src/components/permissions/**` (#66/#67), `src/services/lsp/*` (#22/#55), `src/utils/localInstaller.ts` + `autoUpdater.ts` (#50), `src/services/api/claude.ts` region files (#49), `src/utils/swarm/inProcessRunner.ts` (#38), `src/main.tsx` (#77 purge), `src/cli/handlers/projectPurge.ts` (#77), `src/skills/bundled/simplify.ts` (#5), `src/commands/usage-credits/usage-credits-core.ts` (#68), `src/utils/betas.ts` + `managedEnvConstants.ts` (#14), `src/services/tools/toolExecution.ts` (#31/#32), `src/hooks/transcriptRecorder.ts` + `src/utils/transcriptRewriteCoordinator.ts` + `sessionStorage.ts` (#11/#12), `src/tasks/LocalShellTask/backgroundDeadline.ts` (#75), `src/utils/attachments.ts` (#53), `src/tools/FileWriteTool` + `FileEditTool` (#53), `src/entrypoints/sdk/coreSchemas.ts` (#53 effort field), `src/utils/permissions/yoloClassifier.ts` (#15), `src/components/PromptInput/PromptInput.tsx` + `TextInput.tsx` + `VimTextInput.tsx` + `src/hooks/useTextInput.ts` + `src/types/textInputTypes.ts` (#66 input-priority frames), `src/components/InterruptedByUser.tsx` + `Message.tsx` (#59), `src/utils/messages.ts` (#59 lazy-prefix import).
+
+**Docs**: this ledger + `docs/gap-research-288/` (cluster-a/b/c/d/e/f forensics reports + cluster-e addendum).
+
+**Version-trio commit** (round end): `package.json` → 2.1.368, `src/entrypoints/cli.tsx` MACRO polyfill VERSION → "2.1.288", README ×4 pins + dev note, `CHANGELOG.md` new `## 2.1.368` section.

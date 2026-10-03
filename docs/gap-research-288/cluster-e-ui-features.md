@@ -985,3 +985,14 @@ scheduled, then 7 with `{hold:true}`) · quick wins = 68 + 77 + 59 · input batc
 | 78 | `Ii` (the name-match scorer) | imported from another chunk |
 
 Everything else in this cluster is recovered to byte level with the offsets above.
+
+---
+
+## Addendum (post-freeze verification, researcher aa7e5fb8528965222, orchestrator-appended)
+
+The 987-line report above is the frozen evidence baseline cited by the ledger rows. Two additions from the researcher's final verification pass:
+
+1. **#5 full `nn()` notes-builder recovered verbatim** (v288 `@216202100`) — the §#5 transcription was partial. Complete builder branches: ignored-note (`` `--max-findings` was ignored: type a whole number above zero, `all`, or `default` after it.${reused?"":" Using the usual limit."}`` — `Using the usual limit.` is part of the official note, appended only when `reused` is false), no-cap branch (`` `--max-findings` does not change this review: low effort here has no maximum.` ``), and two reuse forms (`all` vs numeric with attribution prefix `${r==="you"?"You":"The user"} set \`--max-findings ${asked}\` last time.`), `join(" ")`-ed into one line. The landed OCC port (`simplify.ts`, commit 551c6fc) was re-checked against this: `MAX_FINDINGS_FLAG_REGEX` character-identical to official `Qo`, `CODE_REVIEW_MAX_FINDINGS_CAP = 32` matches `var We=32`, parser matches `He`; its ignored-note hardcodes `" Using the usual limit."` unconditionally — correct, since ignored ⇒ `reused===false`. The reuse half remains STAGED (no `onUserTypedArgs` hook on `BundledSkillDefinition`).
+2. **Adjacent discovery, NOT part of #5**: official `/code-review` description builder (`Ea()` @216203400) references an `ultra` effort tier ("deep multi-agent review in the cloud", gated by `Bft()`, requires claude.ai account) with `--post`/`--no-post` GitHub PR semantics — a cloud-review surface OCC lacks entirely; noted so it is not mistaken for a missing piece of #5.
+
+Citation freshness: the report's `OCC state` line numbers are a ~03:00 snapshot; for landed entries cite symbol names (ports shift lines). #64/#67 anchors were still accurate at freeze time and have since landed (commit 37f2074).
