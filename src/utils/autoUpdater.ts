@@ -16,6 +16,10 @@ import { ClaudeError, getErrnoCode, isENOENT } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
+import {
+  resolveGlobalProbeTarget,
+  verifyNpmInstallLanded,
+} from './localInstaller.js'
 import { logError } from './log.js'
 import { gte, lt, lte, parseVersion } from './semver.js'
 import { getInitialSettings, getSettingsForSource } from './settings/settings.js'
@@ -661,7 +665,8 @@ To fix this issue:
       return 'install_failed'
     }
 
-    const { hasPermissions } = await checkGlobalInstallPermissions()
+    const { hasPermissions, npmPrefix } =
+      await checkGlobalInstallPermissions()
     if (!hasPermissions) {
       return 'no_permissions'
     }
@@ -684,6 +689,16 @@ To fix this issue:
         `Failed to install new version of claude: ${installResult.stdout} ${installResult.stderr}`,
       )
       logError(error)
+      return 'install_failed'
+    }
+
+    // 2.1.288 #50: exit 0 alone no longer means success — re-probe the
+    // installed binary's --version in the install prefix before reporting
+    // the update as applied (official v288 post-install verification).
+    const verification = await verifyNpmInstallLanded(packageManager, () =>
+      resolveGlobalProbeTarget(npmPrefix),
+    )
+    if (verification.status === 'install_failed') {
       return 'install_failed'
     }
 
