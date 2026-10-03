@@ -22,6 +22,7 @@ import { OAuthService } from '../../services/oauth/index.js'
 import type { OAuthTokens } from '../../services/oauth/types.js'
 import {
   clearOAuthTokenCache,
+  getClaudeAIOAuthTokens,
   getAnthropicApiKeyWithSource,
   getAuthTokenSource,
   getOauthAccountInfo,
@@ -30,6 +31,7 @@ import {
   saveOAuthTokensIfNeeded,
   validateForceLoginOrg,
 } from '../../utils/auth.js'
+import { getSecureStorage } from '../../utils/secureStorage/index.js'
 import { getOAuthTokenFromFileDescriptor } from '../../utils/authFileDescriptor.js'
 import { saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -89,10 +91,68 @@ export function resolveTransientLoginSaveMessage(args: {
 }
 
 /**
+ * CC 2.1.288 #35: which credential the session will actually authenticate with
+ * after a login whose credential save FAILED. Byte-verified official `vDe`
+ * tail (@~223531700 in the v288 ELF; v287's `LHe` returned void):
+ *
+ *   sessionAuth: o.success || P5r(e.accessToken) ? "fresh" : Zp() ? "previous" : "none"
+ *
+ * where P5r(t) = t != null && mn()?.accessToken === t (the in-process token IS
+ * the new token — e.g. an env/fd OAuth override matches) and Zp() =
+ * mn()?.accessToken != null (some other in-process token exists). mn() is the
+ * memoized credential getter (env → fd → secure storage) ≡ OCC's
+ * {@link getClaudeAIOAuthTokens}. Exported + parameterised so it is
+ * unit-testable (same pattern as {@link resolveTransientLoginSaveMessage}).
+ */
+export type LoginSessionAuth = 'fresh' | 'previous' | 'none'
+
+export function resolveLoginSessionAuth(args: {
+  storageSuccess: boolean
+  newAccessToken: string | null | undefined
+  sessionAccessToken: string | null | undefined
+}): LoginSessionAuth {
+  const { storageSuccess, newAccessToken, sessionAccessToken } = args
+  if (storageSuccess) return 'fresh'
+  if (newAccessToken != null && sessionAccessToken === newAccessToken) {
+    return 'fresh'
+  }
+  if (sessionAccessToken != null) return 'previous'
+  return 'none'
+}
+
+/**
+ * CC 2.1.288 #35: storage outcome reported by {@link installOAuthTokens} —
+ * mirrors official `{storage:{success, backendName, transient, sessionAuth}}`.
+ * `backendName` is the secure-storage implementation name ('plaintext',
+ * 'keychain', '<primary>-with-<secondary>-fallback'); the official attaches it
+ * inside the token-save fn (`Ttr` → `{...D, backendName: w.name}`), OCC
+ * attaches it one level up in installOAuthTokens (identical observable value —
+ * it is always `getSecureStorage().name`).
+ */
+export type OAuthTokenInstallStorageResult = {
+  success: boolean
+  backendName?: string
+  transient?: boolean
+  sessionAuth: LoginSessionAuth
+}
+
+export type OAuthTokenInstallResult = {
+  storage: OAuthTokenInstallStorageResult
+}
+
+/**
  * Shared post-token-acquisition logic. Saves tokens, fetches profile/roles,
  * and sets up the local auth state.
+ *
+ * CC 2.1.288 #35: returns the storage outcome `{storage:{success, backendName,
+ * transient, sessionAuth}}` (official `vDe` return shape) so callers can
+ * distinguish a persisted login from one whose credential save failed —
+ * ConsoleOAuthFlow renders the `storage_failed` state + `auth_storage_failure`
+ * notification instead of "login successful".
  */
-export async function installOAuthTokens(tokens: OAuthTokens): Promise<void> {
+export async function installOAuthTokens(
+  tokens: OAuthTokens,
+): Promise<OAuthTokenInstallResult> {
   // Clear old state before saving new credentials
   await performLogout({ clearOnboarding: false })
 
@@ -168,6 +228,23 @@ export async function installOAuthTokens(tokens: OAuthTokens): Promise<void> {
   }
 
   await clearAuthRelatedCaches()
+
+  // CC 2.1.288 #35: report the storage outcome. Computed at the very end (after
+  // the caches are cleared) so the sessionAuth classification reads the CURRENT
+  // credential resolution — mirrors official vDe's return-tail read of mn().
+  const sessionTokens = getClaudeAIOAuthTokens()
+  return {
+    storage: {
+      success: storageResult.success,
+      backendName: getSecureStorage().name,
+      transient: storageResult.transient,
+      sessionAuth: resolveLoginSessionAuth({
+        storageSuccess: storageResult.success,
+        newAccessToken: tokens.accessToken,
+        sessionAccessToken: sessionTokens?.accessToken ?? null,
+      }),
+    },
+  }
 }
 
 export async function authLogin({

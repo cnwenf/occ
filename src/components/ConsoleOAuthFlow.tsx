@@ -47,11 +47,64 @@ type OAuthStatus = {
   state: 'success';
   token?: string;
 } | {
+  // CC 2.1.288 #35: the browser sign-in succeeded but the credential save
+  // failed. Official v288 `W({state:"storage_failed",backendName:me.backendName,
+  // sessionAuth:me.sessionAuth,transient:me.transient})` @223557800.
+  state: 'storage_failed';
+  backendName?: string;
+  sessionAuth: 'fresh' | 'previous' | 'none';
+  transient?: boolean;
+} | {
   state: 'error';
   message: string;
   toRetry?: OAuthStatus;
 };
 const PASTE_HERE_MSG = 'Paste code here if prompted > ';
+
+/**
+ * CC 2.1.288 #35 — verbatim official notification strings from the caller
+ * branch (v288 ELF: "may not have been saved" @223558664, "could not be
+ * saved" @223558737, notificationType "auth_storage_failure" @223558787).
+ * Official: `DM({message:me.transient?"Claude Code login needs attention:
+ * credentials may not have been saved":"Claude Code login needs attention:
+ * credentials could not be saved",notificationType:"auth_storage_failure"},…)`.
+ */
+export const AUTH_STORAGE_FAILURE_NOTIFICATION_TYPE = 'auth_storage_failure';
+export const AUTH_STORAGE_FAILURE_MESSAGE_TRANSIENT = 'Claude Code login needs attention: credentials may not have been saved';
+export const AUTH_STORAGE_FAILURE_MESSAGE_PERMANENT = 'Claude Code login needs attention: credentials could not be saved';
+export function resolveAuthStorageFailureNotification(transient: boolean | undefined): string {
+  return transient ? AUTH_STORAGE_FAILURE_MESSAGE_TRANSIENT : AUTH_STORAGE_FAILURE_MESSAGE_PERMANENT;
+}
+
+/**
+ * CC 2.1.288 #35 — user-facing display name for a secure-storage backend
+ * (official `Gt` @223576870, byte-verified; NEW in v288).
+ */
+export function getStorageBackendDisplayName(backendName: string | undefined): string {
+  switch (backendName) {
+    case 'keychain':
+      return 'the macOS Keychain';
+    case 'keychain-with-plaintext-fallback':
+      return 'the macOS Keychain or the credentials file';
+    case 'windows-credman':
+      return 'Windows Credential Manager';
+    case 'windows-credman-with-plaintext-fallback':
+      return 'Windows Credential Manager or the credentials file';
+    case 'plaintext':
+      return 'the credentials file';
+    default:
+      return 'secure storage';
+  }
+}
+
+/**
+ * CC 2.1.288 #35 — analytics scrubber for the storage backend (official `n8o`
+ * @202275360 + `TL` known-name set @202275228: `e!==void 0&&TL.has(e)?e:"other"`).
+ */
+const KNOWN_STORAGE_BACKEND_NAMES = new Set(['keychain', 'plaintext', 'windows-credman', 'keychain-with-plaintext-fallback', 'windows-credman-with-plaintext-fallback']);
+export function storageBackendAnalyticsName(backendName: string | undefined): string {
+  return backendName !== undefined && KNOWN_STORAGE_BACKEND_NAMES.has(backendName) ? backendName : 'other';
+}
 export function ConsoleOAuthFlow({
   onDone,
   startingMessage,
@@ -109,15 +162,20 @@ export function ConsoleOAuthFlow({
     }
   }, [oauthStatus]);
 
-  // Handle Enter to continue on success state
+  // Handle Enter to continue on success state (and on a fresh storage_failed —
+  // CC 2.1.288 #35: official gates `a.state==="storage_failed"&&a.sessionAuth
+  // ==="fresh"` into this handler and SKIPS the tengu_oauth_success log there:
+  // `if(a.state!=="storage_failed") i(…,"tengu_oauth_success",…); h()`).
   useKeybinding('confirm:yes', () => {
-    logEvent('tengu_oauth_success', {
-      loginWithClaudeAi
-    });
+    if (oauthStatus.state !== 'storage_failed') {
+      logEvent('tengu_oauth_success', {
+        loginWithClaudeAi
+      });
+    }
     onDone();
   }, {
     context: 'Confirmation',
-    isActive: oauthStatus.state === 'success' && mode !== 'setup-token'
+    isActive: oauthStatus.state === 'success' && mode !== 'setup-token' || oauthStatus.state === 'storage_failed' && oauthStatus.sessionAuth === 'fresh'
   });
 
   // Handle Enter to continue from platform setup
@@ -130,7 +188,10 @@ export function ConsoleOAuthFlow({
     isActive: oauthStatus.state === 'platform_setup'
   });
 
-  // Handle Enter to retry on error state
+  // Handle Enter to retry on error state (and on a non-fresh storage_failed —
+  // CC 2.1.288 #35: official retries to `P==="claudeai"||P==="console"?
+  // {state:"ready_to_start"}:{state:"idle"}` where P is the effective forced
+  // login method; OCC has no gateway surface, so P ≡ forceLoginMethod).
   useKeybinding('confirm:yes', () => {
     if (oauthStatus.state === 'error' && oauthStatus.toRetry) {
       setPastedCode('');
@@ -138,10 +199,20 @@ export function ConsoleOAuthFlow({
         state: 'about_to_retry',
         nextState: oauthStatus.toRetry
       });
+    } else if (oauthStatus.state === 'storage_failed' && oauthStatus.sessionAuth !== 'fresh') {
+      setPastedCode('');
+      setOAuthStatus({
+        state: 'about_to_retry',
+        nextState: forceLoginMethod === 'claudeai' || forceLoginMethod === 'console' ? {
+          state: 'ready_to_start'
+        } : {
+          state: 'idle'
+        }
+      });
     }
   }, {
     context: 'Confirmation',
-    isActive: oauthStatus.state === 'error' && !!oauthStatus.toRetry
+    isActive: oauthStatus.state === 'error' && !!oauthStatus.toRetry || oauthStatus.state === 'storage_failed' && oauthStatus.sessionAuth !== 'fresh'
   });
   useEffect(() => {
     if (pastedCode === 'c' && oauthStatus.state === 'waiting_for_login' && showPastePrompt && !urlCopied) {
@@ -233,18 +304,47 @@ export function ConsoleOAuthFlow({
           token: result.accessToken
         });
       } else {
-        await installOAuthTokens(result);
+        const installResult = await installOAuthTokens(result);
         const orgResult = await validateForceLoginOrg();
         if (!orgResult.valid) {
           throw new Error((orgResult as { valid: false; message: string }).message);
         }
-        setOAuthStatus({
-          state: 'success'
-        });
-        void sendNotification({
-          message: 'Claude Code login successful',
-          notificationType: 'auth_success'
-        }, terminal);
+        // CC 2.1.288 #35: official v288 branches on the save result —
+        // `let me=Y?.storage; if(me&&!me.success){ W({state:"storage_failed",…}),
+        // i("tengu_oauth_persist_failure_shown",{storageBackend:n8o(me.backendName),
+        // session_auth:d(me.sessionAuth),transient:me.transient===!0}),
+        // me.sessionAuth==="fresh"&&o?.(), DM({message:…needs attention…,
+        // notificationType:"auth_storage_failure"},…) } else W({state:"success"}),
+        // o?.(), DM({message:"Claude Code login successful",
+        // notificationType:"auth_success"},…)`.
+        // NO-SURFACE: the official `o?.()` is the onAuthSuccess prop — OCC's
+        // ConsoleOAuthFlow has no such prop (success continues via Enter/onDone).
+        const storage = installResult?.storage;
+        if (storage && !storage.success) {
+          setOAuthStatus({
+            state: 'storage_failed',
+            backendName: storage.backendName,
+            sessionAuth: storage.sessionAuth,
+            transient: storage.transient
+          });
+          logEvent('tengu_oauth_persist_failure_shown', {
+            storageBackend: storageBackendAnalyticsName(storage.backendName) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            session_auth: storage.sessionAuth as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+            transient: storage.transient === true
+          });
+          void sendNotification({
+            message: resolveAuthStorageFailureNotification(storage.transient),
+            notificationType: AUTH_STORAGE_FAILURE_NOTIFICATION_TYPE
+          }, terminal);
+        } else {
+          setOAuthStatus({
+            state: 'success'
+          });
+          void sendNotification({
+            message: 'Claude Code login successful',
+            notificationType: 'auth_success'
+          }, terminal);
+        }
       }
     } catch (err_0) {
       const errorMessage = (err_0 as Error).message;
@@ -602,6 +702,37 @@ function OAuthStatusMessage(t0) {
           t2 = $[43];
         }
         return t2;
+      }
+    case "storage_failed":
+      {
+        // CC 2.1.288 #35: official storage_failed render @223572100-223575000
+        // (byte-verified). `be = Gt(o.backendName)`; wrapper Box column gap 1
+        // [main, advice, footer]. NO-SURFACE: the official non-fresh footer's
+        // escape hint renders only when allowContinueWithoutLogin (E) is true —
+        // OCC has no such prop (official default false → hint renders null), so
+        // the `{" "}` stays and the hint is omitted, faithful to the default.
+        const backendDisplayName = getStorageBackendDisplayName(oauthStatus.backendName);
+        const storageFailedMain = oauthStatus.sessionAuth === "fresh" ? <>
+            <Text color="warning">{oauthStatus.transient ? `Logged in for now, but Claude Code couldn't confirm your new credentials were saved to ${backendDisplayName}.` : `Logged in for now, but your new credentials could not be saved to ${backendDisplayName}.`}</Text>
+            <Text color="warning">{oauthStatus.transient ? "This login may expire mid-session and may not persist after you exit Claude Code." : "This login may expire mid-session and will not persist after you exit Claude Code."}</Text>
+          </> : oauthStatus.sessionAuth === "previous" ? <>
+            <Text color="error">Sign-in completed in the browser, but your new credentials could not be saved to {backendDisplayName} — a previous login's credentials are still in place and will be used instead.</Text>
+            <Text dimColor={true}>(Your new sign-in did not replace the existing credentials.)</Text>
+          </> : <>
+            <Text color="error">Sign-in completed in the browser, but your credentials could not be saved to {backendDisplayName} — you are not logged in.</Text>
+            <Text dimColor={true}>(No previous login on this machine is usable right now either.)</Text>
+          </>;
+        const storageFailedAdvice = <Box flexDirection="column">
+            <Text dimColor={true}>To avoid having to log in again each session:</Text>
+            <Text dimColor={true}>{["  ", "• fix access to ", backendDisplayName, ", then run /login again"]}</Text>
+            <Text dimColor={true}>{["  ", "• or run claude setup-token and set CLAUDE_CODE_OAUTH_TOKEN"]}</Text>
+          </Box>;
+        const storageFailedFooter = oauthStatus.sessionAuth === "fresh" ? <Text color="permission">Press <Text bold={true}>Enter</Text> to continue…</Text> : <Text color="permission">Press <Text bold={true}>Enter</Text> to retry.{" "}</Text>;
+        return <Box flexDirection="column" gap={1}>
+            <Box flexDirection="column">{storageFailedMain}</Box>
+            {storageFailedAdvice}
+            {storageFailedFooter}
+          </Box>;
       }
     case "error":
       {
