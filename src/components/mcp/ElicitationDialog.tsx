@@ -993,7 +993,13 @@ function ElicitationURLDialog({
   const {
     serverName,
     signal,
-    waitingState
+    waitingState,
+    // CC 2.1.288 (#80) — official `Pe` prop (`OB` @229223775: `const ht=Pe??!1`).
+    // True when the requesting server cannot send
+    // notifications/elicitation/complete (no elicitationId to correlate it), so
+    // the accept button becomes " I'm done, continue  " and the tool call
+    // resumes only on that explicit press.
+    userConfirmsCompletion
   } = event;
   const urlParams = event.params as ElicitRequestURLParams;
   const {
@@ -1002,7 +1008,16 @@ function ElicitationURLDialog({
   } = urlParams;
   const [phase, setPhase] = useState<'prompt' | 'waiting'>('prompt');
   const phaseRef = useRef<'prompt' | 'waiting'>('prompt');
-  const [focusedButton, setFocusedButton] = useState<'accept' | 'decline' | 'open' | 'action' | 'cancel'>('accept');
+  // Official initial focus @229235276 region:
+  //   Ac(he==="waiting"?"open":bo&&!qo?(Pe?"open":"accept"):"decline")
+  // OCC has no `bo`/`qo` (url-openable / url-overflows) equivalent — the URL
+  // dialog always offers the browser path — so `bo&&!qo` is treated as true.
+  const [focusedButton, setFocusedButton] = useState<'accept' | 'decline' | 'open' | 'action' | 'cancel'>(userConfirmsCompletion ? 'open' : 'accept');
+  // Official `sr` — the browser was already opened, so the button reads
+  // " Open again  " instead of " Open in browser  ".
+  const [hasOpened, setHasOpened] = useState(false);
+  // Official `dn` — one answer per elicitation; later presses are ignored.
+  const answeredRef = useRef(false);
   const showCancel = waitingState?.showCancel ?? false;
   useNotifyAfterTimeout('Claude Code needs your input', 'elicitation_url_dialog');
   useRegisterOverlay('elicitation-url', undefined);
@@ -1048,24 +1063,66 @@ function ElicitationURLDialog({
     }
   }, [phase, event.completed, onWaitingDismiss, showCancel]);
   const handleAccept = useCallback(() => {
+    // Official `Un` (@229244616 region):
+    //   ()=>{if(!bo||dn.current){return} if(H("accept")===!1){return}
+    //        if(dn.current=!0,Pe){return}
+    //        So.current=Date.now(),os(yt),un("waiting"),Xo("open")}
+    if (answeredRef.current) {
+      return;
+    }
+    answeredRef.current = true;
+    if (userConfirmsCompletion) {
+      // CC 2.1.288 (#80): the server can never report completion, so this
+      // press IS the completion signal — answer and stop. No browser launch
+      // (the user already opened it) and no waiting phase.
+      onResponse('accept');
+      // OCC: the REPL keeps a URL 'accept' queued for phase 2, so dismiss to
+      // close the overlay — the equivalent of official's single-phase answer.
+      onWaitingDismiss?.('dismiss');
+      return;
+    }
     void openBrowser(url);
     onResponse('accept');
     setPhase('waiting');
     phaseRef.current = 'waiting';
     setFocusedButton('open');
-  }, [onResponse, url]);
+  }, [onResponse, onWaitingDismiss, url, userConfirmsCompletion]);
+
+  /** Official `Rn` — open the URL and move focus to the accept button. */
+  const handleOpen = useCallback(() => {
+    if (answeredRef.current) {
+      return;
+    }
+    void openBrowser(url);
+    setHasOpened(true);
+    setFocusedButton('accept');
+  }, [url]);
 
   // eslint-disable-next-line custom-rules/prefer-use-keybindings -- raw input for button navigation
   useInput((_input, key) => {
     if (phase === 'prompt') {
+      // Official prompt-phase key handler: with `bo&&Pe` the arrows cycle
+      // ["open","accept","decline"], otherwise they toggle accept/decline.
+      type PromptButtonName = 'accept' | 'decline' | 'open';
+      const promptButtons: readonly PromptButtonName[] = userConfirmsCompletion ? ['open', 'accept', 'decline'] : ['accept', 'decline'];
       if (key.leftArrow || key.rightArrow) {
-        setFocusedButton(prev => prev === 'accept' ? 'decline' : 'accept');
+        setFocusedButton(prev_1 => {
+          const idx = promptButtons.indexOf(prev_1 as PromptButtonName);
+          if (idx === -1) {
+            return promptButtons[0]!;
+          }
+          const delta = key.rightArrow ? 1 : -1;
+          return promptButtons[(idx + delta + promptButtons.length) % promptButtons.length]!;
+        });
         return;
       }
       if (key.return) {
-        if (focusedButton === 'accept') {
+        if (focusedButton === 'open') {
+          handleOpen();
+        } else if (focusedButton === 'accept') {
           handleAccept();
-        } else {
+        } else if (!answeredRef.current) {
+          answeredRef.current = true;
           onResponse('decline');
         }
       }
@@ -1150,11 +1207,19 @@ function ElicitationURLDialog({
           </Text>
         </Box>
         <Box>
+          {userConfirmsCompletion && <>
+              <Text color="success">
+                {focusedButton === 'open' ? figures.pointer : ' '}
+              </Text>
+              <Text bold={focusedButton === 'open'} color={focusedButton === 'open' ? 'success' : undefined} dimColor={focusedButton !== 'open'}>
+                {hasOpened ? ' Open again  ' : ' Open in browser  '}
+              </Text>
+            </>}
           <Text color="success">
             {focusedButton === 'accept' ? figures.pointer : ' '}
           </Text>
           <Text bold={focusedButton === 'accept'} color={focusedButton === 'accept' ? 'success' : undefined} dimColor={focusedButton !== 'accept'}>
-            {' Accept  '}
+            {userConfirmsCompletion ? " I'm done, continue  " : ' Accept  '}
           </Text>
           <Text color="error">
             {focusedButton === 'decline' ? figures.pointer : ' '}

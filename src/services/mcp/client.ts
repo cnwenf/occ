@@ -126,7 +126,11 @@ import {
   runElicitationResultHooks,
 } from './elicitationHandler.js'
 import { filterMcpAppUiResources } from './mcpAppUiResources.js'
-import { buildMcpToolName } from './mcpStringUtils.js'
+import {
+  buildMcpToolName,
+  getMcpServerNameCollisionKey,
+  mcpInfoFromString,
+} from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import { getMcpRoots } from './roots.js'
 import { getLoggingSafeMcpBaseUrl, getProjectMcpServerStatus } from './utils.js'
@@ -139,7 +143,7 @@ const fetchMcpSkillsForClient = feature('MCP_SKILLS')
   : null
 
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
-import type { AssistantMessage } from 'src/types/message.js'
+import type { AssistantMessage, Message } from 'src/types/message.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { classifyMcpToolForCollapse } from '../../tools/MCPTool/classifyForCollapse.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
@@ -3040,12 +3044,51 @@ export const MCP_CONNECTION_TIMEOUT_MS = 5000
 
 export type McpConnectionWaitResult = 'connected' | 'timed-out' | 'skipped'
 
+/**
+ * CC 2.1.288 (#69) — options for the first-turn prewait. `skipServerNames` is
+ * the official `ga` option of the same name (@226009370:
+ * `skipServerNames:he` destructured from the options bag and applied in the
+ * per-client predicate `K=(It)=>…&&!he?.has(It.name)&&…`).
+ */
+export type McpConnectionWaitOptions = {
+  /**
+   * Servers the prewait must NOT block on (computeFirstTurnSkipServerNames).
+   */
+  skipServerNames?: ReadonlySet<string>
+  /**
+   * Names of the servers covered by `connectionPromise`. OCC races ONE merged
+   * batch promise where the official subscribes to per-client store state, so
+   * the skip can only short-circuit the wait when it covers the whole batch —
+   * otherwise the batch is awaited unchanged (fail-safe: never skip a server
+   * the caller still needs).
+   */
+  batchServerNames?: readonly string[]
+}
+
 export async function waitForMcpConnectionBatch(
   connectionPromise: Promise<unknown>,
   label: string,
+  options?: McpConnectionWaitOptions,
 ): Promise<McpConnectionWaitResult> {
   if (isEnvTruthy(process.env.MCP_CONNECTION_NONBLOCKING)) {
     logMCPDebug(label, 'running fully async (MCP_CONNECTION_NONBLOCKING)')
+    return 'skipped'
+  }
+  // CC 2.1.288 (#69): a first turn whose deferred servers are neither required
+  // nor referenced proceeds without waiting for them. The connections keep
+  // running in the background, so a later turn still sees the servers.
+  const { skipServerNames, batchServerNames } = options ?? {}
+  if (
+    skipServerNames &&
+    skipServerNames.size > 0 &&
+    batchServerNames &&
+    batchServerNames.length > 0 &&
+    batchServerNames.every(name => skipServerNames.has(name))
+  ) {
+    logMCPDebug(
+      label,
+      `first-turn prewait skipped ${batchServerNames.length} deferred server(s); connecting in background`,
+    )
     return 'skipped'
   }
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -3064,6 +3107,177 @@ export async function waitForMcpConnectionBatch(
     return 'timed-out'
   }
   return 'connected'
+}
+
+/**
+ * Official `qh` (@226009370) — the shared empty skip set returned by every
+ * bail-out branch of `$h`, so callers can compare identity in tests and never
+ * allocate on the common "nothing to skip" path.
+ */
+export const EMPTY_SKIP_SERVER_NAMES: ReadonlySet<string> = new Set<string>()
+
+/**
+ * The subset of an MCP client entry the first-turn prewait reads. Structurally
+ * satisfied by `MCPServerConnection`.
+ */
+export type McpPrewaitClient = {
+  name: string
+  type: string
+  config: ScopedMcpServerConfig
+}
+
+export type FirstTurnPrewaitInput = {
+  /** Official `clients:r` — the connection-store client entries. */
+  clients: readonly McpPrewaitClient[]
+  /** Official `messages:s` — the conversation the first turn was built from. */
+  messages: readonly Message[]
+  /**
+   * Official `VPe()==="tst"`. Required (no default) so a caller can never skip
+   * servers on a later turn by omission.
+   */
+  isFirstTurn: boolean
+  /**
+   * Official `requiredServerNames:n` — a thunk returning SEGMENT names
+   * (`fF(name)`), not raw config keys.
+   */
+  requiredServerNames?: () => ReadonlySet<string>
+}
+
+/**
+ * Official `fF` (@199725239):
+ *   function fF(e){return as(`${$s(e)}x`)?.serverName??En(e)}
+ * i.e. the collision key of the name, falling back to the normalized name.
+ * OCC ports `as` as mcpInfoFromString / `$s` as getMcpPrefix (together
+ * `getMcpServerNameCollisionKey`, official `Jd`) and `En` as normalizeNameForMCP.
+ */
+function getMcpServerNameSegment(serverName: string): string {
+  return getMcpServerNameCollisionKey(serverName) ?? normalizeNameForMCP(serverName)
+}
+
+/** Official `qs` — tolerant "list of strings" read of an attachment field. */
+function toStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
+/**
+ * Minimal port of the official conversation scan `uR` (@226009370). Returns the
+ * set of MCP server names the conversation references, or `undefined` when the
+ * answer cannot be trusted — which `$h` turns into "skip nothing".
+ *
+ * OCC divergence: the official seeds the set from `nY(e,…)` (its full
+ * surfaced-name collector) and bails on three builtin tool names (`lR`); OCC
+ * has neither, so it scans assistant `tool_use` names, `deferred_tools_delta`
+ * attachment names, and `mcp__…` tokens in message text. Every divergence is
+ * in the fail-safe direction: an over-broad scan keeps waiting on a server, it
+ * never skips one that is actually referenced.
+ */
+function collectFirstTurnServerNames(
+  messages: readonly Message[],
+): Set<string> | undefined {
+  const toolNames = new Set<string>()
+  const scanText = (text: string): void => {
+    for (const match of text.matchAll(/mcp__[\w.-]+/g)) {
+      toolNames.add(match[0])
+    }
+  }
+  for (const message of messages) {
+    if (message.type === 'attachment') {
+      const attachment = message.attachment as
+        | { type?: string; addedNames?: unknown; wireHiddenNames?: unknown }
+        | undefined
+      if (attachment?.type === 'deferred_tools_delta') {
+        for (const name of toStringList(attachment.addedNames)) {
+          toolNames.add(name)
+        }
+        for (const name of toStringList(attachment.wireHiddenNames)) {
+          toolNames.add(name)
+        }
+      }
+      continue
+    }
+    const content = message.message?.content as unknown
+    if (typeof content === 'string') {
+      scanText(content)
+      continue
+    }
+    if (!Array.isArray(content)) continue
+    for (const block of content as Array<Record<string, unknown> | undefined>) {
+      if (block?.type === 'tool_use' && typeof block.name === 'string') {
+        toolNames.add(block.name)
+      } else if (block?.type === 'text' && typeof block.text === 'string') {
+        scanText(block.text)
+      }
+    }
+  }
+  const serverNames = new Set<string>()
+  for (const name of toolNames) {
+    const info = mcpInfoFromString(name)
+    if (info) {
+      serverNames.add(info.serverName)
+    } else if (name.startsWith('mcp__')) {
+      // Official: `else if(lR.has(h)||h.startsWith("mcp__"))return` — an
+      // MCP-looking name we cannot attribute to a server means the scan is
+      // unreliable, so bail out and wait for everything.
+      return undefined
+    }
+  }
+  return serverNames
+}
+
+/**
+ * CC 2.1.288 (#69) — port of the official `$h` (@226009370): on the FIRST turn
+ * only, pending stdio servers configured `alwaysLoad:false` that are neither
+ * required nor referenced by the first-turn messages go into `skipServerNames`
+ * so the wait orchestrator does not block on them.
+ *
+ * Official gate: `if(g.length===0||!e()||VPe()!=="tst"||!Qh())return qh`.
+ * OCC divergence: `policyAllows()` (`e`) and the deferral-active check (`Qh`)
+ * have no OCC counterpart — OCC's deferral IS the `alwaysLoad:false` candidate
+ * predicate (see serverDefersAllTools above), so a candidate that passes the
+ * filter is by construction fully deferred.
+ */
+export function computeFirstTurnSkipServerNames({
+  clients,
+  messages,
+  isFirstTurn,
+  requiredServerNames,
+}: FirstTurnPrewaitInput): ReadonlySet<string> {
+  const candidates = clients.filter(client => {
+    const config = client.config as { type?: string; alwaysLoad?: unknown }
+    return (
+      client.type === 'pending' &&
+      config.alwaysLoad === false &&
+      (config.type === undefined || config.type === 'stdio')
+    )
+  })
+  if (candidates.length === 0 || !isFirstTurn) return EMPTY_SKIP_SERVER_NAMES
+
+  let referenced: Set<string> | undefined
+  try {
+    referenced = collectFirstTurnServerNames(messages)
+  } catch (error) {
+    // Official (verbatim): `MCP prewait: reading the conversation failed: ${l(s)}`
+    logForDebugging(
+      `MCP prewait: reading the conversation failed: ${errorMessage(error)}`,
+      { level: 'error' },
+    )
+    return EMPTY_SKIP_SERVER_NAMES
+  }
+  if (referenced === undefined) return EMPTY_SKIP_SERVER_NAMES
+
+  const required = requiredServerNames?.() ?? EMPTY_SKIP_SERVER_NAMES
+  return new Set(
+    candidates
+      .map(client => ({
+        name: client.name,
+        segment: getMcpServerNameSegment(client.name),
+      }))
+      .filter(
+        entry => !required.has(entry.segment) && !referenced?.has(entry.segment),
+      )
+      .map(entry => entry.name),
+  )
 }
 
 // Not memoized: called only 2-3 times at startup/reconfig. The inner work
@@ -3693,7 +3907,13 @@ export async function callMCPToolWithUrlElicitationRetry({
           // Print/SDK mode: delegate to structuredIO which sends a control request
           userResult = await handleElicitation(serverName, elicitation, signal)
         } else {
-          // REPL mode: queue for ElicitationDialog with two-phase consent/waiting flow
+          // REPL mode: queue for ElicitationDialog with two-phase consent/waiting flow.
+          // CC 2.1.288 (#80): this -32042 retry path ALWAYS carries an
+          // elicitationId (validated above), so the official gate
+          // `...e.mode==="url"&&r===void 0&&{userConfirmsCompletion:!0}`
+          // (@234154439) leaves `userConfirmsCompletion` unset here — the
+          // dialog keeps the " Accept  " label and the waiting phase driven by
+          // onWaitingDismiss('retry').
           const waitingState: ElicitationWaitingState = {
             actionLabel: 'Retry now',
             showCancel: true,

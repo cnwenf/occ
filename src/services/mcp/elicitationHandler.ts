@@ -44,6 +44,21 @@ export type ElicitationRequestEvent = {
   onWaitingDismiss?: (action: 'dismiss' | 'retry' | 'cancel') => void
   /** Set to true by the completion notification handler when the server confirms completion. */
   completed?: boolean
+  /**
+   * CC 2.1.288 (#80) — official `userConfirmsCompletion`, set by the
+   * elicitation manager `ask` (2.1.288 linux-x64 ELF @234154439):
+   *
+   *   let c=await l(RJ,{serverName:a,params:e,
+   *     ...e.mode==="url"&&r===void 0&&{userConfirmsCompletion:!0}},…)
+   *
+   * `r` is the `elicitationId`. `notifications/elicitation/complete` is
+   * correlated by elicitationId, so a URL elicitation that carries none gives
+   * the server NO way to report "I'm done" — the user's explicit press is the
+   * only resume signal. Absent (undefined) means the server CAN report
+   * completion; the dialog wrapper defaults it (`OB` @229223775:
+   * `const ht=Pe??!1`).
+   */
+  userConfirmsCompletion?: boolean
 }
 
 function getElicitationMode(params: ElicitRequestParams): 'form' | 'url' {
@@ -135,6 +150,17 @@ export function registerElicitationHandler(
                   params: request.params,
                   signal: extra.signal,
                   waitingState,
+                  // CC 2.1.288 (#80) — byte-faithful to the official spread
+                  // `...e.mode==="url"&&r===void 0&&{userConfirmsCompletion:!0}`
+                  // (@234154439): the flag is present ONLY for a URL
+                  // elicitation with no elicitationId, i.e. a server that
+                  // cannot send notifications/elicitation/complete. The dialog
+                  // then labels its accept button " I'm done, continue  " and
+                  // resumes the tool call only on that explicit press.
+                  ...(mode === 'url' &&
+                    elicitationId === undefined && {
+                      userConfirmsCompletion: true,
+                    }),
                   respond: (result: ElicitResult) => {
                     extra.signal.removeEventListener('abort', onAbort)
                     logEvent('tengu_mcp_elicitation_response', {
