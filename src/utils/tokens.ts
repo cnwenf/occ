@@ -1,7 +1,11 @@
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { roughTokenCountEstimationForMessages } from '../services/tokenEstimation.js'
 import type { AssistantMessage, ContentItem, Message } from '../types/message.js'
-import { SYNTHETIC_MESSAGES, SYNTHETIC_MODEL } from './messages.js'
+import {
+  isCompactBoundaryMessage,
+  SYNTHETIC_MESSAGES,
+  SYNTHETIC_MODEL,
+} from './messages.js'
 import { jsonStringify } from './slowOperations.js'
 
 export function getTokenUsage(message: Message): Usage | undefined {
@@ -52,6 +56,179 @@ export function getTokenCountFromUsage(usage: Usage): number {
     (usage.cache_read_input_tokens ?? 0) +
     usage.output_tokens
   )
+}
+
+/**
+ * Gap-288 #9 — official v2.1.288 token walk-back cluster
+ * (`s7n`/`ca`/`pa`/`Dpe`/`Ax`/`Nwt`/`Fwt`/`Am`).
+ *
+ * v288 walks back past assistant messages whose token usage sums to ZERO
+ * (input + cache_creation + cache_read === 0, official `Nwt`) instead of
+ * stopping at the first message that merely HAS a `usage` object. A zero-usage
+ * reply (e.g. a server-side tool-loop turn reporting 0 top-level tokens) no
+ * longer measures as 0 context — which previously let `shouldAutoCompact` skip
+ * and the next request hit "Prompt is too long".
+ *
+ * Symbol map (official → OCC):
+ *   s7n = sumInputTokens              Dpe = normalizeUsage
+ *   ca  = isSkippedIterationType      pa  = isValidUsageIteration
+ *   Ax  = getTokenCountFromUsageNormalized   Nwt = isZeroTokenUsage
+ *   Fwt = findTokenAnchor             Am  = tokenCountWithEstimation
+ */
+
+/** The four numeric token fields after `Dpe` normalization (all present). */
+type NormalizedUsage = {
+  input_tokens: number
+  output_tokens: number
+  cache_creation_input_tokens: number
+  cache_read_input_tokens: number
+}
+
+/**
+ * Loose view of a usage object: the Stainless `BetaUsage` type does not yet
+ * carry `iterations`, so it is read through this shape (cast like
+ * finalContextTokensFromLastResponse / advisor.ts).
+ */
+type UsageShape = {
+  input_tokens?: number
+  output_tokens?: number
+  cache_creation_input_tokens?: number
+  cache_read_input_tokens?: number
+  iterations?: unknown
+}
+
+/**
+ * Official `Ae` (the numeric-field validator inside `pa`) is unrecoverable from
+ * the binary (minified-name collision); interpreted as a finite-number check,
+ * which rejects NaN/Infinity so a malformed iteration cannot poison the sum.
+ * DIVERGENCE (documented): exact official `Ae` body unknown.
+ */
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
+}
+
+/** Official `s7n` — the input-side token sum (input + cache_creation + cache_read). */
+function sumInputTokens(usage: NormalizedUsage): number {
+  return (
+    usage.input_tokens +
+    usage.cache_creation_input_tokens +
+    usage.cache_read_input_tokens
+  )
+}
+
+/** Official `ca` — iteration types skipped when normalizing usage. */
+function isSkippedIterationType(iteration: unknown): boolean {
+  if (typeof iteration !== 'object' || iteration === null) {
+    return false
+  }
+  const { type } = iteration as { type?: unknown }
+  return type === 'advisor_message' || type === 'compaction'
+}
+
+/** Official `pa` — a valid usage iteration (real message with a non-zero sum). */
+function isValidUsageIteration(iteration: unknown): boolean {
+  if (typeof iteration !== 'object' || iteration === null) {
+    return false
+  }
+  const n = iteration as Record<string, unknown>
+  if (n.type !== 'message' && n.type !== 'fallback_message') {
+    return false
+  }
+  return (
+    isFiniteNumber(n.input_tokens) &&
+    isFiniteNumber(n.output_tokens) &&
+    isFiniteNumber(n.cache_creation_input_tokens) &&
+    isFiniteNumber(n.cache_read_input_tokens) &&
+    n.input_tokens + n.cache_creation_input_tokens + n.cache_read_input_tokens >
+      0
+  )
+}
+
+/**
+ * Official `Dpe` — normalize a usage object. Defaults the four fields to 0;
+ * when the top-level input sum is NON-ZERO and `iterations` is present, prefers
+ * the last non-skipped valid iteration (server-side tool loops report only the
+ * first turn at the top level — the final context window lives in the last
+ * iteration). A zero top-level sum returns the base zeros WITHOUT reading
+ * iterations — that is exactly the `Nwt` skip case `Fwt` walks past (binary
+ * guard verified: `if(s7n(n)===0||!Array.isArray(e.iterations))return n`).
+ */
+function normalizeUsage(usage: UsageShape): NormalizedUsage {
+  const base: NormalizedUsage = {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_creation_input_tokens: usage.cache_creation_input_tokens ?? 0,
+    cache_read_input_tokens: usage.cache_read_input_tokens ?? 0,
+  }
+  if (sumInputTokens(base) === 0 || !Array.isArray(usage.iterations)) {
+    return base
+  }
+  const candidate = usage.iterations.findLast(
+    iteration => !isSkippedIterationType(iteration),
+  )
+  if (!isValidUsageIteration(candidate)) {
+    return base
+  }
+  const normalized = candidate as NormalizedUsage
+  return {
+    input_tokens: normalized.input_tokens,
+    output_tokens: normalized.output_tokens,
+    cache_creation_input_tokens: normalized.cache_creation_input_tokens,
+    cache_read_input_tokens: normalized.cache_read_input_tokens,
+  }
+}
+
+/** Official `Ax` — full context tokens from a usage object (normalized input sum + output). */
+function getTokenCountFromUsageNormalized(usage: UsageShape): number {
+  const normalized = normalizeUsage(usage)
+  return sumInputTokens(normalized) + normalized.output_tokens
+}
+
+/** Official `Nwt` — true when a usage object carries zero input-side tokens. */
+function isZeroTokenUsage(usage: UsageShape): boolean {
+  return sumInputTokens(normalizeUsage(usage)) === 0
+}
+
+type TokenAnchor = { tokens: number; anchorIndex: number }
+
+/**
+ * Official `Fwt` — find the token anchor: walking back from the end, a compact
+ * boundary anchors with {tokens:0} (everything before it was summarized away);
+ * otherwise the last assistant message with NON-ZERO usage anchors, extended
+ * back over same-`message.id` sibling records (parallel-tool-call splits) so
+ * every interleaved tool_result lands in the estimation slice.
+ */
+function findTokenAnchor(messages: readonly Message[]): TokenAnchor | null {
+  let n = messages.length - 1
+  while (n >= 0) {
+    const message = messages[n]
+    if (message && isCompactBoundaryMessage(message)) {
+      return { tokens: 0, anchorIndex: n }
+    }
+    const usage = message ? getTokenUsage(message) : undefined
+    if (message && usage && !isZeroTokenUsage(usage as UsageShape)) {
+      const responseId = getAssistantMessageId(message)
+      if (responseId) {
+        let h = n - 1
+        while (h >= 0) {
+          const prior = messages[h]
+          const priorId = prior ? getAssistantMessageId(prior) : undefined
+          if (priorId === responseId) {
+            n = h
+          } else if (priorId !== undefined) {
+            break
+          }
+          h--
+        }
+      }
+      return {
+        tokens: getTokenCountFromUsageNormalized(usage as UsageShape),
+        anchorIndex: n,
+      }
+    }
+    n--
+  }
+  return null
 }
 
 export function tokenCountFromLastAPIResponse(messages: Message[]): number {
@@ -262,43 +439,28 @@ export function getAssistantMessageContentLength(
  *   [..., assistant(id=A), user(result), assistant(id=A), user(result), ...]
  * If we stop at the LAST assistant record, we only estimate the one tool_result
  * after it and miss all the earlier interleaved tool_results — which will ALL
- * be in the next API request. To avoid undercounting, after finding a usage-
- * bearing record we walk back to the FIRST sibling with the same message.id
- * so every interleaved tool_result is included in the rough estimate.
+ * be in the next API request. To avoid undercounting, findTokenAnchor walks
+ * back to the FIRST sibling with the same message.id so every interleaved
+ * tool_result is included in the rough estimate.
+ *
+ * Gap-288 #9 (official `Am`): the anchor is found by `findTokenAnchor`
+ * (official `Fwt`), which SKIPS zero-usage assistant messages and handles the
+ * compact-boundary case; when no anchor exists (no real usage, no boundary) it
+ * falls back to a rough estimate over the whole transcript.
  */
 export function tokenCountWithEstimation(messages: readonly Message[]): number {
-  let i = messages.length - 1
-  while (i >= 0) {
-    const message = messages[i]
-    const usage = message ? getTokenUsage(message) : undefined
-    if (message && usage) {
-      // Walk back past any earlier sibling records split from the same API
-      // response (same message.id) so interleaved tool_results between them
-      // are included in the estimation slice.
-      const responseId = getAssistantMessageId(message)
-      if (responseId) {
-        let j = i - 1
-        while (j >= 0) {
-          const prior = messages[j]
-          const priorId = prior ? getAssistantMessageId(prior) : undefined
-          if (priorId === responseId) {
-            // Earlier split of the same API response — anchor here instead.
-            i = j
-          } else if (priorId !== undefined) {
-            // Hit a different API response — stop walking.
-            break
-          }
-          // priorId === undefined: a user/tool_result/attachment message,
-          // possibly interleaved between splits — keep walking.
-          j--
-        }
-      }
-      return (
-        getTokenCountFromUsage(usage) +
-        roughTokenCountEstimationForMessages(messages.slice(i + 1) as Parameters<typeof roughTokenCountEstimationForMessages>[0])
-      )
-    }
-    i--
+  const anchor = findTokenAnchor(messages)
+  if (!anchor) {
+    return roughTokenCountEstimationForMessages(
+      messages as Parameters<typeof roughTokenCountEstimationForMessages>[0],
+    )
   }
-  return roughTokenCountEstimationForMessages(messages as Parameters<typeof roughTokenCountEstimationForMessages>[0])
+  return (
+    anchor.tokens +
+    roughTokenCountEstimationForMessages(
+      messages.slice(
+        anchor.anchorIndex + 1,
+      ) as Parameters<typeof roughTokenCountEstimationForMessages>[0],
+    )
+  )
 }

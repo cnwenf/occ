@@ -1181,6 +1181,20 @@ export const SettingsSchema = lazySchema(() =>
                   .describe(
                     'Maximum effort level for this model. Within one settings file it replaces the top-level maxEffortLevel for the model ("max" exempts it); across settings files the lowest applicable value wins. Keyed like effortLevel: the canonical model name also matches its dated, [1m], Bedrock and Vertex spellings.',
                   ),
+                // Gap-288 #79 (official 2.1.288): per-model auto-compact
+                // window. Official shape `$e([R("auto"),da()])` =
+                // union(literal('auto'), int 100k..1M); describe byte-verified
+                // from the binary (@200106159).
+                autoCompactWindow: z
+                  .union([
+                    z.literal('auto'),
+                    z.number().int().min(100_000).max(1_000_000),
+                  ])
+                  .optional()
+                  .catch(undefined)
+                  .describe(
+                    'Auto-compact window for this model, in tokens (100000 to 1000000), or "auto" for the window tuned for the model. Within one settings file it replaces the top-level autoCompactWindow for the model. /autocompact saves here. The canonical model name as key also matches its dated, [1m], Bedrock and Vertex spellings.',
+                  ),
               })
               .passthrough()
               .optional()
