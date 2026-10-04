@@ -9,6 +9,7 @@ import { getGraphemeSegmenter } from '../utils/intl.js'
 import sliceAnsi from '../utils/sliceAnsi.js'
 import { reorderBidi } from './bidi.js'
 import { type Rectangle, unionRect } from './layout/geometry.js'
+import { replaceBidi } from './normalize-text.js'
 import {
   blitRegion,
   CellWidth,
@@ -639,15 +640,25 @@ function writeLineToScreen(
   stylePool: StylePool,
   charCache: Map<string, ClusteredChar[]>,
 ): number {
-  let characters = charCache.get(line)
+  // CC 2.1.289 changelog #19 — bidi override neutralization at paint time.
+  // Upstream hands the frozen table `bft=[[1564,1564],[8234,8238],[8294,8297]]`
+  // (@205420347) to its NATIVE painter, so an override never reaches a cell;
+  // `Ya` (@213553684) is the same replacement for the non-wrap text path. OCC's
+  // cell writer IS the painter, so `replaceBidi` (official `Ya`) runs here.
+  // U+FFFD is width 1 exactly like every code point in those ranges, so measure
+  // and paint stay in agreement — an RLO can no longer reverse a row underneath
+  // the layout that measured it. The cache is keyed on the neutralized line
+  // because that is the string actually clustered below.
+  const paintLine = replaceBidi(line)
+  let characters = charCache.get(paintLine)
   if (!characters) {
     characters = reorderBidi(
       styledCharsWithGraphemeClustering(
-        styledCharsFromTokens(tokenize(line)),
+        styledCharsFromTokens(tokenize(paintLine)),
         stylePool,
       ),
     )
-    charCache.set(line, characters)
+    charCache.set(paintLine, characters)
   }
 
   let offsetX = x

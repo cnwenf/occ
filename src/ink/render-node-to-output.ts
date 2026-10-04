@@ -5,6 +5,11 @@ import getMaxWidth from './get-max-width.js'
 import type { Rectangle } from './layout/geometry.js'
 import { LayoutDisplay, LayoutEdge, type LayoutNode } from './layout/node.js'
 import { nodeCache, pendingClears } from './node-cache.js'
+import {
+  isWrapTextMode,
+  normalizeStyledPieces,
+  normalizeText,
+} from './normalize-text.js'
 import type Output from './output.js'
 import renderBorder from './render-border.js'
 import type { Screen } from './screen.js'
@@ -284,6 +289,17 @@ function applyStylesToWrappedText(
 
     resultLines.push(styledLine)
 
+    // Skip a carriage return, then the newline that corresponds to this line
+    // break. Official `cf` @213697395 (v288: `nf`) does both:
+    //   if (M<m.length && m[M]==="\r") M++;
+    //   if (M<m.length && m[M]==="\n") M++;
+    // The CR skip is load-bearing because `Rv`'s /\r\n?/g -> "\n" pre-pass makes
+    // CRLF (and a bare CR) emit ONE wrapped line break: without consuming the
+    // source CR here, every following segment's styling shifts one character.
+    if (charIndex < originalPlain.length && originalPlain[charIndex] === '\r') {
+      charIndex++
+    }
+
     // Skip newline character in original that corresponds to this line break.
     // This is needed when the original text contains actual newlines (not just
     // wrapping-inserted newlines). Without this, charIndex gets out of sync
@@ -343,7 +359,14 @@ function wrapWithSoftWrap(
       softWrap: undefined,
     }
   }
-  const origLines = plainText.split('\n')
+  // Official `Rv` @213698178 splits on `n.replace(/\r\n?/g,"\n").split("\n")`:
+  // a CR (bare or as part of CRLF) is a HARD line break, never a soft-wrap
+  // continuation. Without the pre-pass a lone CR stays inside one long line, the
+  // wrapper soft-splits it, and `screen.softWrap` marks the second row as a
+  // continuation — which makes text selection glue the two rows together and
+  // lets a short "tab + CRLF" text claim a row it does not own (CC 2.1.289
+  // changelog #19).
+  const origLines = plainText.replace(/\r\n?/g, '\n').split('\n')
   const outLines: string[] = []
   const softWrap: boolean[] = []
   for (const orig of origLines) {
@@ -606,15 +629,26 @@ function renderNodeSelf(
         output.write(x, y, text)
       }
     } else if (node.nodeName === 'ink-text') {
-      const segments = squashTextNodesToSegments(
-        node,
-        inheritedBackgroundColor
-          ? { backgroundColor: inheritedBackgroundColor }
-          : undefined,
+      // CC 2.1.289 changelog #19 — official `Gs` @213699402:
+      //   let Z = wr(n, ...), ie = dC(Z)
+      // `ie` is the piece-normalized plain text: when any styled piece carries a
+      // control byte, tabs are already expanded to literal spaces (shared column
+      // register across pieces) and stray escapes / C1 controls are rewritten, so
+      // what gets styled is exactly what the yoga measure path (`mE` @213590147)
+      // measured. That shared normalizer is what stops a short "tab + CRLF" text
+      // from drawing over the rows below it.
+      const normalized = normalizeStyledPieces(
+        squashTextNodesToSegments(
+          node,
+          inheritedBackgroundColor
+            ? { backgroundColor: inheritedBackgroundColor }
+            : undefined,
+        ),
       )
+      const segments = normalized.segments
 
       // First, get plain text to check if wrapping is needed
-      const plainText = segments.map(s => s.text).join('')
+      const plainText = normalized.text
 
       if (plainText.length > 0) {
         // Upstream Ink uses getMaxWidth(yogaNode) unclamped here. That
@@ -627,8 +661,18 @@ function renderNodeSelf(
         const maxWidth = Math.min(getMaxWidth(yogaNode), output.width - x)
         const textWrap = node.style.textWrap ?? 'wrap'
 
+        // Official: `ce = ja(ne) ? ie : XX(ie)` then `Ee = lf(ce) > le`. In a
+        // non-wrap mode (truncate/clip) the whole string goes through the
+        // single-string normalizer `XX` first — tabs become literal spaces and
+        // bidi overrides become U+FFFD — because those modes have no cell-writer
+        // tab expansion to fall back on. In a wrap mode `ie` is measured as-is
+        // (the writer still expands any surviving tab at 8-column stops).
+        const widthProbeText = isWrapTextMode(textWrap)
+          ? plainText
+          : normalizeText(plainText)
+
         // Check if wrapping is needed
-        const needsWrapping = widestLine(plainText) > maxWidth
+        const needsWrapping = widestLine(widthProbeText) > maxWidth
 
         let text: string
         let softWrap: boolean[] | undefined
@@ -668,10 +712,29 @@ function renderNodeSelf(
           // Hyperlinks are handled per-run in applyStylesToWrappedText via
           // wrapWithOsc8Link, similar to how styles are applied per-run.
         } else {
-          // No wrapping needed: apply styles directly
+          // No wrapping needed: apply styles directly.
+          //
+          // Official `Gs` re-slices every segment out of `ce` when normalization
+          // changed the text (`let fe = ce !== ie`):
+          //   xe += se.text.length
+          //   Me = XX(ie.slice(0, xe)).length
+          //   ue = ce.slice(Ce, Me); Ce = Me
+          // i.e. walk the ORIGINAL offsets but emit the NORMALIZED characters, so
+          // a tab-expanded or bidi-neutralized run keeps its own styles instead of
+          // shifting every following segment's styling one character over.
+          const renormalized = widthProbeText !== plainText
+          let consumed = 0
+          let emitted = 0
           text = segments
             .map(segment => {
-              let styledText = applyTextStyles(segment.text, segment.styles)
+              let segmentText = segment.text
+              if (renormalized) {
+                consumed += segment.text.length
+                const end = normalizeText(plainText.slice(0, consumed)).length
+                segmentText = widthProbeText.slice(emitted, end)
+                emitted = end
+              }
+              let styledText = applyTextStyles(segmentText, segment.styles)
               if (segment.hyperlink) {
                 styledText = wrapWithOsc8Link(styledText, segment.hyperlink)
               }

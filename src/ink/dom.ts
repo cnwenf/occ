@@ -4,9 +4,13 @@ import type { LayoutNode } from './layout/node.js'
 import { LayoutDisplay, LayoutMeasureMode } from './layout/node.js'
 import measureText from './measure-text.js'
 import { addPendingClear, nodeCache } from './node-cache.js'
-import squashTextNodes from './squash-text-nodes.js'
+import {
+  hasControlChars,
+  isWrapTextMode,
+  normalizePieces,
+} from './normalize-text.js'
+import squashTextNodes, { squashTextNodesToSegments } from './squash-text-nodes.js'
 import type { Styles, TextStyles } from './styles.js'
-import { expandTabs } from './tabstops.js'
 import wrapText from './wrap-text.js'
 
 type InkNode = {
@@ -366,10 +370,21 @@ const measureTextNode = function (
 ): { width: number; height: number } {
   const rawText =
     node.nodeName === '#text' ? node.nodeValue : squashTextNodes(node)
+  const textWrap = node.style?.textWrap ?? 'wrap'
 
-  // Expand tabs for measurement (worst case: 8 spaces each).
-  // Actual tab expansion happens in output.ts based on screen position.
-  const text = expandTabs(rawText)
+  // CC 2.1.289 changelog #19 — official `mE` @213590147 measures the SAME
+  // shared normalization the render path (`Gs` @213699402) paints:
+  //   g = Oc(n.nodeName!=="#text" && u9r(m) ? wr(n).map(M=>M.text) : [m], ja(y))
+  // Tabs become literal spaces at 8-column stops, stray escapes / C1 controls
+  // become CAN or U+FFFD, so measure and paint can never disagree — which is
+  // what used to let a short "tab + CRLF" text draw over the rows below it.
+  // Styled pieces are split out only when the squashed text actually carries a
+  // control byte (`u9r`), keeping the clean-text fast path allocation-free.
+  const pieces =
+    node.nodeName !== '#text' && hasControlChars(rawText)
+      ? squashTextNodesToSegments(node).map(segment => segment.text)
+      : [rawText]
+  const text = normalizePieces(pieces, isWrapTextMode(textWrap))
 
   const dimensions = measureText(text, width)
 
@@ -397,7 +412,6 @@ const measureTextNode = function (
     return measureText(text, effectiveWidth)
   }
 
-  const textWrap = node.style?.textWrap ?? 'wrap'
   const wrappedText = wrapText(text, width, textWrap)
 
   return measureText(wrappedText, width)

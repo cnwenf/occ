@@ -19,7 +19,10 @@ import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
 import { count, uniq } from './array.js'
-import { getFsImplementation, getPathsForPermissionCheck } from './fsOperations.js'
+import {
+  getFsImplementation,
+  getPathsForPermissionCheck,
+} from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
 import type { IDESelection } from '../hooks/useIdeSelection.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
@@ -129,7 +132,10 @@ import {
   formatAgentLine,
   shouldInjectAgentListInMessages,
 } from '../tools/AgentTool/prompt.js'
-import { filterDeniedAgents } from './permissions/permissions.js'
+import {
+  filterDeniedAgents,
+  getRuleListForToolName,
+} from './permissions/permissions.js'
 import { getSubscriptionType } from './auth.js'
 import { mcpInfoFromString } from '../services/mcp/mcpStringUtils.js'
 import {
@@ -1696,7 +1702,7 @@ async function getOutputStyleAttachment(): Promise<Attachment[]> {
   ]
 }
 
-async function getSelectedLinesFromIDE(
+export async function getSelectedLinesFromIDE(
   ideSelection: IDESelection | null,
   toolUseContext: ToolUseContext,
 ): Promise<Attachment[]> {
@@ -4311,21 +4317,79 @@ export function getContextEfficiencyAttachment(
 }
 
 
+/**
+ * Official aje(ctx) gate (CC 2.1.289, changelog #3 SECURITY): does this
+ * permission context carry at least one Read deny rule that could match a
+ * path? `Kn(ctx,"read","deny").size>0` in the binary. Used to skip the
+ * symlink-spelling resolution (getPathsForPermissionCheck does sync fs
+ * syscalls) when no read-deny rule exists — pure-context check, no I/O.
+ */
+function hasReadDenyRules(
+  toolPermissionContext: ToolPermissionContext,
+): boolean {
+  return (
+    getRuleListForToolName(
+      toolPermissionContext,
+      FILE_READ_TOOL_NAME,
+      'deny',
+    ).length > 0
+  )
+}
+
+/**
+ * Deny gate for the IDE-context auto-read attachment surfaces (@-mentioned,
+ * changed, and IDE-selected files). CC 2.1.289 changelog #3 (SECURITY):
+ * "Fixed `Read` deny rules not applying to files @-mentioned, changed, or
+ * selected in the IDE through a symlink".
+ *
+ * Mirrors the official v289 landing gate `aje(ctx) && bge(Sge(path,ctx))`:
+ *   - aje(ctx)  — only resolve spellings when a read-deny rule exists
+ *                 (hasReadDenyRules below; skips getPathsForPermissionCheck's
+ *                 sync fs syscalls otherwise). Official fidelity short-circuit.
+ *   - Sge(path) — every spelling: original + each symlink target + canonical
+ *                 landing. OCC analogue: getPathsForPermissionCheck.
+ *   - bge(...)  — deny if ANY spelling matches a read-deny rule.
+ *
+ * The pre-fix (v288-equivalent) surface-only match was the vulnerability:
+ * a symlink `./link -> ./secret/x` under deny `Read(./secret/**)` matched only
+ * the surface `./link`, bypassing the rule. This is the single gate all six
+ * IDE-context auto-read call sites funnel through (doc §3b) — hardening it
+ * closes every surface at once and cannot regress the Read tool, which has
+ * its own separate resolution-aware check (checkReadPermissionForTool).
+ *
+ * Exported for tests (OCC-146 readDenySymlink289 suite consumes it).
+ */
 export function isFileReadDenied(
   filePath: string,
   toolPermissionContext: ToolPermissionContext,
 ): boolean {
-  // CC 2.1.289 #3 (security): "Read deny rules not applying to files
-  // @-mentioned, changed, or selected in the IDE through a symlink." This
-  // attachment path (IDE selection / @-mention) previously checked ONLY the
-  // requested spelling, so `deny Read(<realpath>)` was bypassed by an
-  // @-mention of a symlink pointing at it. getPathsForPermissionCheck yields
-  // the requested path PLUS every symlink target in the chain — the same set
-  // checkReadPermissionForTool uses — so deny now matches on ANY spelling
-  // (fail-closed, mirroring matchingAllowRuleForAllSpellings on the allow side).
+  // Surface match (v288 behavior) — always computed, no fs syscalls.
+  const surfaceDenied =
+    matchingRuleForInput(
+      filePath,
+      toolPermissionContext,
+      'read',
+      'deny',
+    ) !== null
+
+  // aje(ctx) short-circuit: with zero read-deny rules no spelling can match,
+  // so return the surface result directly and skip the resolution syscalls.
+  if (!hasReadDenyRules(toolPermissionContext)) {
+    return surfaceDenied
+  }
+  if (surfaceDenied) {
+    return true
+  }
+
+  // bge(Sge(path), ctx): deny if ANY spelling (original + each symlink target
+  // + canonical landing) matches a read-deny rule.
   return getPathsForPermissionCheck(filePath).some(
     spelling =>
-      matchingRuleForInput(spelling, toolPermissionContext, 'read', 'deny') !==
-      null,
+      matchingRuleForInput(
+        spelling,
+        toolPermissionContext,
+        'read',
+        'deny',
+      ) !== null,
   )
 }

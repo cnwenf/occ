@@ -11,6 +11,7 @@ import {
   LayoutWrap,
 } from './layout/node.js'
 import type { BorderStyle, BorderTextOptions } from './render-border.js'
+import { resolveBorderStyle } from './render-border.js'
 
 export type RGBColor = `rgb(${number},${number},${number})`
 export type HexColor = `#${string}`
@@ -701,7 +702,11 @@ const applyBorderStyles = (
   const resolved = resolvedStyle ?? style
 
   if ('borderStyle' in style) {
-    const borderWidth = style.borderStyle ? 1 : 0
+    // CC 2.1.289 changelog #11 — border width follows the same validity check
+    // as the render side. Official measure caller `uE` (@213586148):
+    // `let y=Dvn(u.borderStyle)?1:0` — an unknown/invalid style reserves no
+    // border inset in layout, matching render-border's skip-draw behavior.
+    const borderWidth = resolveBorderStyle(style.borderStyle) ? 1 : 0
 
     node.setBorder(
       LayoutEdge.Top,

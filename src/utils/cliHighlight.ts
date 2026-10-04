@@ -5,7 +5,10 @@
 // deps is a separate sweep; this ref preserves the status quo.
 /// <reference lib="dom" />
 
+import { createRequire } from 'module'
 import { extname } from 'path'
+import { hashPair } from './hash.js'
+import { type BoundedHljs, installHighlightBounds } from './hljsBound.js'
 
 export type CliHighlight = {
   highlight: typeof import('cli-highlight').highlight
@@ -21,7 +24,8 @@ let cliHighlightPromise: Promise<CliHighlight | null> | undefined
 let loadedGetLanguage: ((name: string) => { name: string } | undefined) | undefined
 
 /**
- * CC 2.1.289 changelog #2 (OCC-side mitigation, documented divergence):
+ * CC 2.1.289 changelog #2 (OCC-side mitigation, kept ALONGSIDE the official
+ * bounded-emitter port below — defense in depth):
  * "Fixed the terminal freezing on short code blocks with many unclosed
  * `<script>` tags or deeply nested `${` substitutions."
  *
@@ -31,11 +35,10 @@ let loadedGetLanguage: ((name: string) => { name: string } | undefined) | undefi
  * highlighting runs synchronously in the render path, one pathological
  * code block in assistant output freezes the whole REPL.
  *
- * The official fix lives inside their bundled highlighter (no extractable
- * named marker in the 2.1.289 ELF), so instead of guessing their mechanism
- * this guard skips highlighting (plain-text render — cosmetic-only loss)
- * when an html/xml-family block carries more `<script` open tags than the
- * threshold. Threshold 8 keeps worst-case highlight cost ≈ tens of ms.
+ * NOTE (OCC-107 merge): the official mechanism WAS later recovered from the
+ * 2.1.289 ELF (budgeted emitter `Se(n)` / `HighlightBoundError`, installed
+ * below via hljsBound.ts) — this guard remains as a cheap pre-filter so the
+ * pathological html family never even enters the emitter.
  * The deeply-nested `${` (javascript) half of the official item does NOT
  * reproduce in OCC's cli-highlight js grammar (400-deep ≈ 15ms) — no guard
  * needed; recorded in docs/upstream-version-gap-occ146-2026-10.md.
@@ -54,20 +57,94 @@ export function isPathologicalHtmlForHighlight(
   return tags !== null && tags.length > MAX_SCRIPT_TAGS_TO_HIGHLIGHT
 }
 
+/**
+ * Gap-289 #2 failure memo — official v289 renderer catch (s289.txt
+ * @37062551): `catch{return e.lang=null,[[D(t),i]]}` — a block that blew the
+ * highlight budget renders plain AND is never re-highlighted on subsequent
+ * streaming re-renders. The official memo lives on its persistent block
+ * descriptor (`e.lang=null`); OCC's marked tokens are re-lexed per render, so
+ * the memo is centralized here (keyed like Fallback.tsx's hlCache) where it
+ * covers every consumer — markdown fences, file previews, permission
+ * dialogs. Bounded LRU-by-insertion-order, same 500 cap as hlCache.
+ */
+const HIGHLIGHT_FAILURE_MEMO_MAX = 500
+const highlightFailureMemo = new Set<string>()
+
+function memoizeHighlightFailure(key: string): void {
+  if (highlightFailureMemo.size >= HIGHLIGHT_FAILURE_MEMO_MAX) {
+    const oldest = highlightFailureMemo.keys().next().value
+    if (oldest !== undefined) highlightFailureMemo.delete(oldest)
+  }
+  highlightFailureMemo.add(key)
+}
+
+/**
+ * Wraps cli-highlight's highlight: on HighlightBoundError (budget/depth-cap
+ * throw from the bounded emitter installed below) — or any other throw —
+ * returns the raw code unchanged, mirroring the official plain-text
+ * fallback. Without this the bound throw would surface as an unhandled
+ * exception inside Ink render.
+ */
+function withPlainFallback(
+  rawHighlight: CliHighlight['highlight'],
+): CliHighlight['highlight'] {
+  return (code, options) => {
+    const key = hashPair(options?.language ?? '', code)
+    if (highlightFailureMemo.has(key)) return code
+    try {
+      return rawHighlight(code, options)
+    } catch {
+      memoizeHighlightFailure(key)
+      return code
+    }
+  }
+}
+
 async function loadCliHighlight(): Promise<CliHighlight | null> {
   try {
     const cliHighlight = await import('cli-highlight')
     // cache hit — cli-highlight already loaded highlight.js
     const highlightJs = await import('highlight.js')
+    // Gap-289 #2 — mirror the official hljs-manager core():
+    // `let n=e.loadCore();Se(n);` (s289.txt @17553789; the exact 1-token diff
+    // vs v288). cli-highlight `require`s this same module instance, so
+    // configuring the bounded emitter + budget plugin here bounds its
+    // internal hljs.highlight call too. Idempotent (official ne/isBounded
+    // guard). Official `ke()`: unwrap the interop default.
+    const hljs = ((highlightJs as { default?: unknown }).default ??
+      highlightJs) as BoundedHljs
+    installHighlightBounds(hljs)
+    // OCC-specific: cli-highlight pins highlight.js@^10.7.1, so under Bun's
+    // isolated node_modules store it resolves a SEPARATE v10 instance from
+    // OCC's root v11 dep — the instance that actually renders terminal
+    // highlights. Reach it with a require anchored at cli-highlight's own
+    // location and bound it too. (The official binary vendors a single hljs
+    // core, so its one `Se(n)` call suffices; here two instances exist.)
+    // No-op when already bounded (idempotent). In the bundled dist this
+    // resolve fails — scripts/build.ts injects the install into the inlined
+    // highlight.js copies instead.
+    try {
+      const anchoredRequire = createRequire(
+        import.meta.resolveSync('cli-highlight'),
+      )
+      const cliHighlightJs = anchoredRequire('highlight.js') as {
+        default?: unknown
+      } | null
+      const chHljs = ((cliHighlightJs as { default?: unknown })?.default ??
+        cliHighlightJs) as BoundedHljs | null
+      if (chHljs) installHighlightBounds(chHljs)
+    } catch {
+      // bundled/dist or unresolvable — build-time injection covers it
+    }
     loadedGetLanguage = (highlightJs as { getLanguage?: typeof loadedGetLanguage }).getLanguage
     return {
-      highlight: (code, options) =>
-        // CC 2.1.289 #2 guard: plain passthrough (valid unhighlighted
-        // string — same shape cli-highlight returns for plaintext) when the
-        // html/xml grammar would blow up exponentially.
+      // OCC-107 merge: their pathological-html pre-filter INSIDE the official
+      // bounded-emitter plain fallback (defense in depth, both suites pinned).
+      highlight: withPlainFallback((code, options) =>
         isPathologicalHtmlForHighlight(code, options?.language)
           ? code
           : cliHighlight.highlight(code, options),
+      ),
       supportsLanguage: cliHighlight.supportsLanguage,
     }
   } catch {

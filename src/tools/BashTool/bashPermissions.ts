@@ -1225,6 +1225,173 @@ export function stripAllLeadingEnvVars(
   return stripped.trim()
 }
 
+/**
+ * CC 2.1.289 changelog #14 (SECURITY) port — text-level equivalent of the
+ * official v289 matcher variant-builder fix (byte-recovered @210022797):
+ *
+ *   v288: if(be.length>0&&be[0]!==ye[0])V.push(be.join(" "))
+ *   v289: if(be.length>0&&(be[0]!==ye[0]||(h?.envVars.length??0)>0))V.push(be.join(" "))
+ *
+ * The official fix pushes the AST argv-joined variant (assignments land in
+ * `envVars`, NOT `argv`) into the deny/ask match candidates whenever the AST
+ * saw ANY envVars, regardless of whether the (byte-identical 288↔289) regex
+ * stripper succeeded — that regex intentionally refuses `$`/backtick values.
+ * OCC's live path is text-based (tree-sitter AST dormant), so the equivalent
+ * compensation is this quote-aware ITERATIVE character scanner (NOT a regex —
+ * the CodeQL #671 ReDoS constraint on `$`-containing values stands). It
+ * consumes leading `NAME=`/`NAME+=` assignments whose values may contain
+ * expanded forms ENV_VAR_PATTERN refuses ($VAR, "$VAR", $(cmd), `cmd`) and
+ * returns the post-assignment remainder — the command deny/ask rules must see.
+ *
+ * Fail-closed: returns null (no variant pushed) on unterminated
+ * quote/substitution, trailing backslash, zero assignments consumed, or
+ * assignments with no trailing command; existing guards
+ * (hasQuotedBracketCloserInConditional, M4/M5, catastrophic-substitution)
+ * continue to handle pathological shapes as today.
+ *
+ * Deny/ask-only: the variant is added exclusively inside the stripAllEnvVars
+ * branch of filterRulesByContentsMatchingInput (allow matching never passes
+ * stripAllEnvVars:true), so no new ALLOW surface is created and
+ * BINARY_HIJACK_VARS semantics are structurally preserved.
+ */
+export function stripLeadingEnvAssignmentsQuoteAware(
+  command: string,
+): string | null {
+  const isSpace = (c: string): boolean =>
+    c === ' ' || c === '\t' || c === '\n' || c === '\r'
+  const isNameStart = (c: string): boolean =>
+    (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c === '_'
+  const isNameChar = (c: string): boolean =>
+    isNameStart(c) || (c >= '0' && c <= '9')
+
+  const len = command.length
+  let pos = 0
+  let assignmentsConsumed = 0
+  let remainderStart = len
+
+  for (;;) {
+    while (pos < len && isSpace(command[pos]!)) pos++
+    if (pos >= len) {
+      remainderStart = len
+      break
+    }
+    const tokenStart = pos
+
+    // Match NAME (optionally `+=`) followed by `=`. Not an assignment → the
+    // remainder starts at this token.
+    if (!isNameStart(command[pos]!)) {
+      remainderStart = tokenStart
+      break
+    }
+    let cursor = pos + 1
+    while (cursor < len && isNameChar(command[cursor]!)) cursor++
+    if (command[cursor] === '+') cursor++
+    if (command[cursor] !== '=') {
+      remainderStart = tokenStart
+      break
+    }
+    pos = cursor + 1
+
+    // Consume value segments (concatenated, e.g. `A="x"y$(z)`) until
+    // whitespace or EOF. Fail-closed on any unterminated construct.
+    let failed = false
+    while (pos < len && !isSpace(command[pos]!)) {
+      const c = command[pos]!
+      if (c === "'") {
+        // Single quotes: bash suppresses all expansion; backslash is literal.
+        pos++
+        while (pos < len && command[pos] !== "'") pos++
+        if (pos >= len) {
+          failed = true
+          break
+        }
+        pos++
+      } else if (c === '"') {
+        // Double quotes: honor `\` escapes; `$`/backtick ALLOWED inside.
+        pos++
+        for (;;) {
+          if (pos >= len) {
+            failed = true
+            break
+          }
+          if (command[pos] === '\\') {
+            pos += 2
+            continue
+          }
+          if (command[pos] === '"') {
+            pos++
+            break
+          }
+          pos++
+        }
+        if (failed) break
+      } else if (c === '$' && command[pos + 1] === '(') {
+        // `$(…)` substitution with paren-depth counting; quotes/escapes inside
+        // are honored so parens in string literals don't skew the depth.
+        pos += 2
+        let depth = 1
+        while (pos < len && depth > 0) {
+          const d = command[pos]!
+          if (d === '\\') {
+            pos += 2
+            continue
+          }
+          if (d === "'" || d === '"') {
+            const q = d
+            pos++
+            while (pos < len && command[pos] !== q) {
+              if (q === '"' && command[pos] === '\\') pos++
+              pos++
+            }
+            if (pos >= len) {
+              failed = true
+              break
+            }
+            pos++
+            continue
+          }
+          if (d === '(') depth++
+          else if (d === ')') depth--
+          pos++
+        }
+        if (failed || depth > 0) {
+          failed = true
+          break
+        }
+      } else if (c === '`') {
+        // Backtick substitution: scan to closing backtick honoring `\` escapes.
+        pos++
+        while (pos < len && command[pos] !== '`') {
+          if (command[pos] === '\\') pos++
+          pos++
+        }
+        if (pos >= len) {
+          failed = true
+          break
+        }
+        pos++
+      } else if (c === '\\') {
+        if (pos + 1 >= len) {
+          failed = true
+          break
+        }
+        pos += 2
+      } else {
+        pos++
+      }
+    }
+    if (failed) return null
+    assignmentsConsumed++
+  }
+
+  const remainder = command.slice(remainderStart).trim()
+  // Text-level analogue of `(be[0]!==ye[0]||(h?.envVars.length??0)>0)`:
+  // push the remainder only when at least one assignment was consumed AND a
+  // trailing command exists (fail-closed otherwise).
+  if (assignmentsConsumed === 0 || remainder === '') return null
+  return remainder
+}
+
 function filterRulesByContentsMatchingInput(
   input: z.infer<typeof BashTool.inputSchema>,
   rules: Map<string, PermissionRule>,
@@ -1275,6 +1442,18 @@ function filterRulesByContentsMatchingInput(
   // Without iteration, single-pass compositions miss multi-layer interleaving.
   if (stripAllEnvVars) {
     const seen = new Set(commandsToTry)
+    // CC 2.1.289 changelog #14: also scan the ORIGINAL command text. In prefix
+    // mode the only candidate is `commandWithoutRedirections`, and
+    // extractOutputRedirections can glue `)` to the next word
+    // (`FOO=$(pwd) rm -rf build` → `FOO=$(pwd)rm -rf build`), which changes
+    // assignment-value tokenization. The official v289 variant builder parses
+    // the whole input text (`ye = h?.argv ?? fu(H)`), not the redirect-stripped
+    // text — seeding the original mirrors that.
+    const originalStripped = stripLeadingEnvAssignmentsQuoteAware(command)
+    if (originalStripped !== null && !seen.has(originalStripped)) {
+      commandsToTry.push(originalStripped)
+      seen.add(originalStripped)
+    }
     let startIdx = 0
 
     // Iterate until no new candidates are produced (fixed-point)
@@ -1290,6 +1469,21 @@ function filterRulesByContentsMatchingInput(
         if (!seen.has(envStripped)) {
           commandsToTry.push(envStripped)
           seen.add(envStripped)
+        }
+        // CC 2.1.289 changelog #14 (SECURITY): quote-aware scanner variant —
+        // the text-level analogue of the official v289 variant-builder
+        // condition (@210022797: `(be[0]!==ye[0]||(h?.envVars.length??0)>0)`).
+        // ENV_VAR_PATTERN refuses `$`/backtick values (ReDoS guard), so for
+        // `TZ="$HOME" rm -rf build` the regex strip is a no-op and deny/ask
+        // rules never saw `rm -rf build`. Push the post-assignment remainder
+        // as an ADDITIONAL deny/ask-only candidate whenever at least one
+        // leading assignment was consumed; fail-closed (null) on parse
+        // ambiguity. Allow matching never enters this branch — no new ALLOW
+        // surface (mirrors official: argv variant feeds deny/ask callers).
+        const expandedStripped = stripLeadingEnvAssignmentsQuoteAware(cmd)
+        if (expandedStripped !== null && !seen.has(expandedStripped)) {
+          commandsToTry.push(expandedStripped)
+          seen.add(expandedStripped)
         }
         // Try stripping safe wrappers
         const wrapperStripped = stripSafeWrappers(cmd)
@@ -1925,6 +2119,9 @@ function checkSandboxAutoAllow(
     },
   }
 }
+
+/** @internal — exported for CC 2.1.289 changelog #14 sandbox auto-allow testing. */
+export { checkSandboxAutoAllow as _checkSandboxAutoAllowForTesting }
 
 /**
  * Filter out `cd ${cwd}` prefix subcommands, keeping astCommands aligned.

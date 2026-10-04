@@ -117,7 +117,20 @@ export function formatToken(
           )
         }
       }
-      return highlight.highlight(token.text, { language }) + EOL
+      try {
+        return highlight.highlight(token.text, { language }) + EOL
+      } catch {
+        // CC 2.1.289 changelog #2 — official v289 renderer catch (s289.txt
+        // @37062551): `catch{return e.lang=null,[[D(t),i]]}` (v288 had no
+        // memo). A block whose highlighting blew the budget (or threw for
+        // any other reason) renders as plain text, and the lang=null memo
+        // keeps subsequent renders of the SAME token from re-attempting it.
+        // (OCC's cliHighlight wrapper already catches HighlightBoundError
+        // centrally with a persistent cross-render failure memo; this mirrors
+        // the official call-site catch for any other highlighter passed in.)
+        token.lang = null
+        return token.text + EOL
+      }
     }
     case 'codespan': {
       // inline code

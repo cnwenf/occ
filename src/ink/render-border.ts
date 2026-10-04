@@ -25,12 +25,86 @@ export const CUSTOM_BORDER_STYLES = {
     bottomLeft: ' ',
     bottomRight: ' ',
   },
+  // CC 2.1.289 changelog #11 — separate pre-existing gap, closed here with byte
+  // evidence. Official v289's custom style set `n` (@203025405) is
+  // `{dashed, quote}`; OCC previously shipped only `dashed`, so `Dvn("quote")`
+  // would resolve to undefined here while official draws it. `quote` recovered
+  // verbatim from the binary bytes:
+  //   quote:{top:" ",left:"▎",right:" ",bottom:" ",
+  //          topLeft:" ",topRight:" ",bottomLeft:" ",bottomRight:" "}
+  quote: {
+    top: ' ',
+    left: '▎',
+    right: ' ',
+    bottom: ' ',
+    topLeft: ' ',
+    topRight: ' ',
+    bottomLeft: ' ',
+    bottomRight: ' ',
+  },
 } as const
 
 export type BorderStyle =
   | keyof Boxes
   | keyof typeof CUSTOM_BORDER_STYLES
   | BoxStyle
+
+// CC 2.1.289 changelog #11 — validating border-style resolver, byte-faithful to
+// official v289 `Dvn` (@203025539) + shape validator `p` + object guard `N`
+// (chunk-q75vj0vh @200117203). Official module (@203025405..203025664):
+//   var m=["top","left","right","bottom","topLeft","topRight","bottomLeft","bottomRight"];
+//   var p=(t)=>N(t)&&m.every((r)=>typeof t[r]==="string");
+//   var o={...R.default,...n};   // R.default = cli-boxes defaults, n = {dashed,quote}
+//   function Dvn(t){let i=typeof t==="string"&&Object.hasOwn(o,t)?o[t]:t;return p(i)?i:void 0}
+//   function N(e){return typeof e==="object"&&e!==null&&!Array.isArray(e)}
+
+/** Official `m` — the eight glyphs a complete border style object must provide. */
+const BORDER_STYLE_KEYS = [
+  'top',
+  'left',
+  'right',
+  'bottom',
+  'topLeft',
+  'topRight',
+  'bottomLeft',
+  'bottomRight',
+] as const
+
+/**
+ * Official `p` = `N(t) && m.every((r) => typeof t[r] === "string")`, with `N`
+ * inlined: a non-null, non-array object whose eight border keys are all strings.
+ */
+function isValidBorderStyle(value: unknown): value is BoxStyle {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    BORDER_STYLE_KEYS.every(
+      key => typeof (value as Record<string, unknown>)[key] === 'string',
+    )
+  )
+}
+
+/** Official `o = {...R.default, ...n}` — cli-boxes defaults ∪ custom styles. */
+const KNOWN_BORDER_STYLES: Record<string, BoxStyle> = {
+  ...cliBoxes,
+  ...CUSTOM_BORDER_STYLES,
+}
+
+/**
+ * Official `Dvn`: resolve a border style to a complete style object, or
+ * `undefined` when it is unknown/invalid. A string is looked up (via
+ * `Object.hasOwn`) in the merged known set; anything else is passed through;
+ * the result must satisfy the shape validator. Never throws — an unrecognized
+ * style yields `undefined` so the caller draws no border.
+ */
+export function resolveBorderStyle(style: unknown): BoxStyle | undefined {
+  const resolved =
+    typeof style === 'string' && Object.hasOwn(KNOWN_BORDER_STYLES, style)
+      ? KNOWN_BORDER_STYLES[style]
+      : style
+  return isValidBorderStyle(resolved) ? resolved : undefined
+}
 
 function embedTextInBorder(
   borderLine: string,
@@ -85,15 +159,15 @@ const renderBorder = (
   node: DOMNode,
   output: Output,
 ): void => {
-  if (node.style.borderStyle) {
+  // CC 2.1.289 changelog #11 — resolve through the validating resolver (official
+  // `Dvn`) and skip border drawing entirely when it is unknown/invalid. Official
+  // `eC` caller (@213691631): `let g=Dvn(f.style.borderStyle);if(g!==void 0){...}`.
+  // An unrecognized style previously resolved to `undefined` here and crashed at
+  // `box.topLeft` below → freeze / forced quit at launch. Now: no border, no throw.
+  const box = resolveBorderStyle(node.style.borderStyle)
+  if (box !== undefined) {
     const width = Math.floor(node.yogaNode!.getComputedWidth())
     const height = Math.floor(node.yogaNode!.getComputedHeight())
-    const box =
-      typeof node.style.borderStyle === 'string'
-        ? (CUSTOM_BORDER_STYLES[
-            node.style.borderStyle as keyof typeof CUSTOM_BORDER_STYLES
-          ] ?? cliBoxes[node.style.borderStyle as keyof Boxes])
-        : node.style.borderStyle
 
     const topBorderColor = node.style.borderTopColor ?? node.style.borderColor
     const bottomBorderColor =

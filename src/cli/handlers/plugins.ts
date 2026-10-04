@@ -52,6 +52,7 @@ import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js'
 import type { PluginSource } from '../../utils/plugins/schemas.js'
 import {
   type ValidationResult,
+  validateColocatedPlugin,
   validateManifest,
   validatePluginContents,
 } from '../../utils/plugins/validatePlugin.js'
@@ -120,11 +121,31 @@ export async function pluginValidateHandler(
       const manifestDir = dirname(result.filePath)
       if (basename(manifestDir) === '.claude-plugin') {
         contentResults = await validatePluginContents(dirname(manifestDir))
-        for (const r of contentResults) {
-          console.log(`Validating ${r.fileType}: ${r.filePath}\n`)
-          printValidationResult(r)
-        }
       }
+    } else {
+      // CC 2.1.289 changelog #16/#22(a): when the user pointed validate at a
+      // FOLDER whose .claude-plugin/ holds BOTH marketplace.json and
+      // plugin.json, v288 returned the marketplace result and never validated
+      // the co-located plugin (official `kTt` early-return — OCC mirrored it
+      // in validateManifest's directory branch). v289's reader (`JTt`
+      // @v289:236588478) validates the co-located plugin.json too — with kind
+      // "anthropic" when an Anthropic-named marketplace lists this folder
+      // (#22(a), `p=c!==void 0&&qCn(c.name)&&c.plugins.some(m=>Ae(m,a,a))`) —
+      // and reports it only when it has findings (official `f` gate),
+      // alongside the plugin's content files. validateManifest keeps OCC's
+      // single-result signature; the composition happens here, like it
+      // already does for the plugin-file case (research-doc option b).
+      const colocated = await validateColocatedPlugin(manifestPath, result)
+      if (colocated) {
+        contentResults = [
+          ...(colocated.pluginResult ? [colocated.pluginResult] : []),
+          ...colocated.contents,
+        ]
+      }
+    }
+    for (const r of contentResults) {
+      console.log(`Validating ${r.fileType}: ${r.filePath}\n`)
+      printValidationResult(r)
     }
 
     const allSuccess = result.success && contentResults.every(r => r.success)

@@ -7,6 +7,7 @@ import { FRONTMATTER_REGEX } from '../frontmatterParser.js'
 import { jsonParse } from '../slowOperations.js'
 import { parseYaml } from '../yaml.js'
 import {
+  ALLOWED_OFFICIAL_MARKETPLACE_NAMES,
   PluginHooksSchema,
   PluginManifestSchema,
   PluginMarketplaceEntrySchema,
@@ -78,6 +79,24 @@ export type ValidationWarning = {
   path: string
   message: string
 }
+
+/**
+ * CC 2.1.289 changelog #22(a): the official plugin-manifest validator is
+ * `de(n,r={kind:"alone"})` @v289:236548207 — a plugin folder listed by an
+ * Anthropic-named marketplace is validated with kind "anthropic" instead.
+ *
+ * In the official binary the kind gates ONLY the reserved-name/imitation rule
+ * `eAt` @v289:227489997 (gate @236553486: `s.kind==="alone"||s.kind==="entry"
+ * &&s.entryName!==m.name?eAt(m.name):void 0`, appending `Puo` @227489908 "If
+ * this is one of Anthropic's own plugins, validate the marketplace that lists
+ * it." for the alone case). The kebab-case warning @236553327 is UNCONDITIONAL
+ * (no kind reference — single `s.kind` use in the validator chunk). OCC has no
+ * `eAt` analogue, so the parameter is threaded for signature parity and is
+ * currently unobservable in OCC's rule set. Do NOT invent kind-dependent
+ * suppression here (the research doc's #22(a) gloss conflated `eAt` with the
+ * kebab rule; the binary is the source of truth).
+ */
+export type PluginValidationKind = 'anthropic' | 'alone'
 
 /**
  * Detect whether a file is a plugin manifest or marketplace manifest
@@ -166,10 +185,17 @@ function marketplaceSourceHint(p: string): string {
 }
 
 /**
- * Validate a plugin manifest file (plugin.json)
+ * Validate a plugin manifest file (plugin.json).
+ *
+ * CC 2.1.289 changelog #22(a): `kind` mirrors the official validator
+ * `de(n,r={kind:"alone"})` @v289:236548207 — see PluginValidationKind for why
+ * it is currently unobservable in OCC (the official kind gate wraps only
+ * `eAt`, which OCC has no analogue of; the kebab-case warning below stays
+ * unconditional exactly as in the official binary @236553327).
  */
 export async function validatePluginManifest(
   filePath: string,
+  kind: PluginValidationKind = 'alone',
 ): Promise<ValidationResult> {
   const errors: ValidationError[] = []
   const warnings: ValidationWarning[] = []
@@ -868,6 +894,167 @@ export async function validatePluginContents(
   }
 
   return results
+}
+
+// ---------------------------------------------------------------------------
+// CC 2.1.289 changelog #16 + #22(a): co-located marketplace.json/plugin.json
+// ---------------------------------------------------------------------------
+
+/**
+ * Official `Ai` @v289:200231407 — the single alias that counts as an Anthropic
+ * marketplace name besides the 14 `jMe` names @200231492 (OCC's
+ * ALLOWED_OFFICIAL_MARKETPLACE_NAMES is byte-identical to `jMe`).
+ */
+const ANTHROPIC_MARKETPLACE_ALIAS_NAMES = ['healthcare']
+
+/**
+ * Official `qCn` @v289:200231909: `jMe.has(lowercased)||Ai.includes(lowercased)`.
+ * Deliberately EXCLUDES the community names (`n4t` = claude-community /
+ * claude-plugins-community) — qCn never consulted them in either version.
+ */
+export function isAnthropicMarketplaceName(name: string): boolean {
+  const lowercased = name.toLowerCase()
+  return (
+    ALLOWED_OFFICIAL_MARKETPLACE_NAMES.has(lowercased) ||
+    ANTHROPIC_MARKETPLACE_ALIAS_NAMES.includes(lowercased)
+  )
+}
+
+/** Official `Ye` @v289:236543967: strip ONE trailing path separator. */
+function stripTrailingSeparator(p: string): string {
+  return p.endsWith(path.sep) ? p.slice(0, -path.sep.length) : p
+}
+
+/** Official `Yt` @v289:236543967: `Ye(resolve(a))===Ye(resolve(b))`. */
+function isSameResolvedPath(a: string, b: string): boolean {
+  return (
+    stripTrailingSeparator(path.resolve(a)) ===
+    stripTrailingSeparator(path.resolve(b))
+  )
+}
+
+/**
+ * Official `Ae(n,r,s)` @v289:236544054:
+ * `typeof source==="string"&&Yt(resolve(root,source),folder)` — object sources
+ * (github/git/url) never identify a local folder.
+ */
+export function marketplaceEntryListsFolder(
+  entry: { source?: unknown },
+  marketplaceRoot: string,
+  folder: string,
+): boolean {
+  return (
+    typeof entry.source === 'string' &&
+    isSameResolvedPath(path.resolve(marketplaceRoot, entry.source), folder)
+  )
+}
+
+/**
+ * Official `Me` @v289:236544255 — the LENIENT marketplace reader used by the
+ * co-location branch: readFile → JSON → schema safeParse → data|undefined,
+ * swallowing every failure. Distinct from validateMarketplaceManifest, which
+ * REPORTS findings; here a broken manifest simply means "not an Anthropic
+ * marketplace" (kind falls back to "alone").
+ */
+async function readMarketplaceManifestLenient(
+  filePath: string,
+): Promise<z.infer<ReturnType<typeof PluginMarketplaceSchema>> | undefined> {
+  try {
+    const content = await readFile(filePath, { encoding: 'utf-8' })
+    const result = PluginMarketplaceSchema().safeParse(jsonParse(content))
+    return result.success ? result.data : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * CC 2.1.289 changelog #22(a) — official detection `c`/`p` inside `JTt`
+ * @v289:236588478:
+ *
+ * ```js
+ * let c=await Me(s),
+ *     p=c!==void 0&&qCn(c.name)&&c.plugins.some(m=>Ae(m,a,a)),
+ *     d=await de(T.join(i,"plugin.json"),{kind:p?"anthropic":"alone"})
+ * ```
+ *
+ * kind is "anthropic" only when the co-located marketplace.json parses under
+ * the lenient reader, its name is one of Anthropic's, AND its plugins[] lists
+ * the folder itself. (The official tag-prepare path `QTt` uses the same
+ * qCn-based detection in both versions.)
+ */
+export async function detectColocatedPluginKind(
+  marketplaceJsonPath: string,
+  pluginRoot: string,
+): Promise<PluginValidationKind> {
+  const marketplace = await readMarketplaceManifestLenient(marketplaceJsonPath)
+  const listsThisFolder =
+    marketplace !== undefined &&
+    isAnthropicMarketplaceName(marketplace.name) &&
+    marketplace.plugins.some(entry =>
+      marketplaceEntryListsFolder(entry, pluginRoot, pluginRoot),
+    )
+  return listsThisFolder ? 'anthropic' : 'alone'
+}
+
+export type ColocatedPluginValidation = {
+  /**
+   * The co-located plugin.json result — null when it is clean (official `f`
+   * gate, see validateColocatedPlugin).
+   */
+  pluginResult: ValidationResult | null
+  /** The plugin's content-file results (official `je(a)`). */
+  contents: ValidationResult[]
+}
+
+/**
+ * CC 2.1.289 changelog #16 — the v289 co-location branch of official `JTt`
+ * @v289:236588478, adapted to OCC's single-result `validateManifest` signature
+ * (research-doc option b: the CLI handler composes, like it already does for
+ * the plugin-file case). v288's `kTt` @v288:236232779 returned the marketplace
+ * result and never looked at a co-located plugin.json — the bug #16 fixed.
+ *
+ * Returns null when the branch does not apply (official equivalents):
+ * - the result is not a marketplace manifest (fileType gate), or
+ * - the manifest is not inside a `.claude-plugin` directory
+ *   (`T.basename(i)!==".claude-plugin"`), or
+ * - the user pointed at the manifest file itself instead of the folder
+ *   (`T.resolve(n)!==a`), or
+ * - no co-located plugin.json exists (`d.errors[0]?.code==="ENOENT"`).
+ *
+ * Otherwise the co-located plugin.json is validated with the #22(a) kind and
+ * included in `pluginResult` ONLY when it has findings — official `f` gate
+ * `d.errors.length>0||d.warnings.length>0||(d.notes?.length??0)>0` (OCC's
+ * ValidationResult has no `notes` field — #22(b) NO-OP). `contents` carries the
+ * plugin's content-file results (official `...await je(a)`), which the co-
+ * located plugin.json's mere existence unlocks even when the plugin is clean.
+ */
+export async function validateColocatedPlugin(
+  inputPath: string,
+  marketplaceResult: ValidationResult,
+): Promise<ColocatedPluginValidation | null> {
+  if (marketplaceResult.fileType !== 'marketplace') return null
+  const manifestDir = path.dirname(marketplaceResult.filePath) // official i
+  const pluginRoot = path.dirname(manifestDir) // official a
+  if (path.basename(manifestDir) !== '.claude-plugin') return null
+  if (path.resolve(inputPath) !== pluginRoot) return null
+
+  const kind = await detectColocatedPluginKind(
+    marketplaceResult.filePath,
+    pluginRoot,
+  )
+  const pluginResult = await validatePluginManifest(
+    path.join(manifestDir, 'plugin.json'),
+    kind,
+  )
+  if (pluginResult.errors[0]?.code === 'ENOENT') return null
+
+  const hasFindings =
+    pluginResult.errors.length > 0 || pluginResult.warnings.length > 0
+  return {
+    pluginResult: hasFindings ? pluginResult : null,
+    contents: await validatePluginContents(pluginRoot),
+  }
 }
 
 /**

@@ -50,6 +50,35 @@ const occBundlePlugin = {
         `export const feature = (n) => A.has(n);`,
       loader: 'js' as const,
     }))
+    // Gap-289 #2 — the single-file dist inlines cli-highlight's own
+    // highlight.js@10 copy, which the runtime anchored require in
+    // cliHighlight.ts cannot reach (no resolvable 'cli-highlight' path in
+    // the bundle). Mirror the official core-load install
+    // (`let n=e.loadCore();Se(n);`) at BUILD time: append the bounds
+    // installer to the bundled highlight.js CJS entry (lib/index.js ends
+    // `module.exports = hljs;` after registering all languages) so the
+    // inlined instance is bounded at module load. Idempotent — the runtime
+    // install's isBounded guard no-ops on the already-wrapped emitter.
+    build.onLoad(
+      { filter: /node_modules[\\/]highlight\.js[\\/]lib[\\/]index\.js$/ },
+      async (args: any) => {
+        const source = await Bun.file(args.path).text()
+        const boundPath = join(
+          import.meta.dir,
+          '..',
+          'src',
+          'utils',
+          'hljsBound.ts',
+        )
+        return {
+          contents:
+            source +
+            `\n;try{require(${JSON.stringify(boundPath)}).installHighlightBounds(` +
+            `module.exports&&(module.exports.default||module.exports))}catch(e){}\n`,
+          loader: 'js' as const,
+        }
+      },
+    )
   },
 }
 
