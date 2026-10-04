@@ -17,7 +17,8 @@ the BASHPID integer-attr assignment prompt, the `/login` false-success fix
 git-transport trio (`read-tree -u --reset`, marketplace SSH probe,
 both-attempts error combine), and nested CLAUDE.md / path-scoped `.claude/rules`
 re-trigger on Write/Edit — plus the retry engine (`timedOut` cause +
-non-streaming watchdog cap), auto-mode classifier-overflow compaction, the
+non-streaming watchdog cap engine landed, producer STAGED — cap not live),
+auto-mode classifier-overflow compaction, the
 send-now-cut "What should Claude do instead?" interrupt prompt, Ctrl+C
 prompt-clear recovery, the screen-reader + keyboard group (hold-API priority
 frames, digit-consume parity, "answered" labels), zero-token walk-back +
@@ -340,7 +341,7 @@ for the earlier 2.1.211→2.1.212 history. `docs/upstream-version-gap-occ34.md` 
 - Security: `/login` no longer reports success when saving credentials fails — the success toast moved behind the save check, with explicit transient/permanent `auth_storage_failure` messaging.
 - Security: git-transport trio — marketplace checkout uses `read-tree -u --reset`, `plugin marketplace add` over SSH probes the transport before failing, and both-attempts errors are combined into one message.
 - Security: nested CLAUDE.md / path-scoped `.claude/rules` re-trigger on Write **and** Edit success paths (previously read-only), and instructions-loaded hooks now carry agent info.
-- Reliability: retry engine learns the `timedOut` cause and the non-streaming watchdog honors `CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES` (cap default 2); zero-token walk-back and per-model auto-compact windows land; transcript recorder tail guard + rewrite/load coordination harden resume.
+- Reliability: retry engine learns the `timedOut` cause; non-streaming watchdog cap — engine landed, producer STAGED (cap not live): the explicit `CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES` env cap is honored end-to-end (pinned by a production-entry test through `claude.ts` + HTTP-layer mock), but the official watchdog-default cap of 2 has no producer yet — no caller computes `failedStreamOutlastedTimeout` — so unattended live traffic behaves v287-identically until that wiring lands; zero-token walk-back and per-model auto-compact windows land; transcript recorder tail guard + rewrite/load coordination harden resume.
 - Auto mode: classifier overflow now triggers a compaction instead of stalling the turn (official `tengu_merry_popcorn` path); rejections show the allow-rule hint; yolo classifier model pinned.
 - UX: interrupting a send-now cut asks "What should Claude do instead?"; a prompt cleared with Ctrl+C can be restored (`holdCleared`/`restoreCleared`); screen-reader batch — input-priority hold frames, digit-key consume parity with the official router, "answered " labels beside question-dialog checkboxes, control/bidi-character stripping.
 - `mcp serve` now loads real agent definitions asynchronously; `tool_decision` telemetry falls back to the computed permission-decision mapper; LSP client gains the 60s request timeout + init-options `user_config` substitution; background command time limit applies only in unattended sessions; post-update install verification; PDF `media_removed` strip for model-unsupported files; `--max-findings <n>|all` for the simplify skill; `CLAUDE_CODE_DISABLE_STRUCTURED_OUTPUTS` env gate; usage-credits message + purge rename; elicitation user-confirms-completion + first-turn prewait skip.

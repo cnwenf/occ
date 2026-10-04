@@ -334,6 +334,9 @@ interface RetryOptions {
    * covered by retryTimeoutEngine288.test.ts; it stays `undefined` until the
    * stream loop computes it, which means OCC's watchdog cap behavior is
    * unchanged for live traffic (v287-equivalent) until that wiring lands.
+   * The production-entry cap path (env `CLAUDE_CODE_NONSTREAMING_TIMEOUT_RETRIES`
+   * arm, driven through claude.ts `queryModelWithStreaming` + HTTP-layer mock)
+   * is covered by __tests__/nonstreamingCapProduction288.test.ts.
    */
   failedStreamOutlastedTimeout?: boolean
   /**
