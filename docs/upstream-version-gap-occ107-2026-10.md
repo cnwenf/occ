@@ -1,7 +1,7 @@
 # OCC-107 Upstream Version Gap Ledger — Claude Code 2.1.288 → 2.1.289 (2026-10)
 
 **Round**: OCC-107 (issue `f750121a-a1ec-44ee-a795-c5ca7a92a5d2`), executed 2026-10-05 by OCC 程序员.
-**Tracked-upstream pointer**: 2.1.288 → **2.1.289** (this round). OCC release: **2.1.369** (tag/publish after 验收 acceptance).
+**Tracked-upstream pointer**: 2.1.288 → **2.1.289** (this round). OCC release: **2.1.370** (renumbered from 2.1.369 — the parallel OCC-146 round shipped 2.1.369 first; see §5a).
 **Official channel state at round time** (npm `dist-tags`, re-verified this round): `stable=2.1.285`, `latest=next=2.1.289` (published 2026-10-03T20:12:02Z).
 
 ## Method
@@ -15,7 +15,7 @@
 
 - Reran failed publish run `37166618773` (attempt 3, 2026-10-04T17:09Z): **still E404 on `PUT @cnwenf%2focc`** — repo secret `NPM_TOKEN` remains expired/not rotated. Owner action still required (rotate → rerun). npm `latest` stays `2.1.367`.
 - Release/tag consistency re-verified this round: the attempt-3 run DID create the **v2.1.368 GitHub Release** (2026-10-04T17:09:33Z) before failing at npm — `/releases` 168 ≡ `/tags` 168, no backfill needed for v2.1.368.
-- This round's v2.1.369 release will hit the same npm blocker until rotated; per issue 发版流程, if the v2.1.369 Release step is skipped due to the npm failure, backfill manually with `gh release create v2.1.369 --generate-notes` (idempotent).
+- This round's release (renumbered **v2.1.370** — see §5a) will hit the same npm blocker until rotated; per issue 发版流程, if the v2.1.370 Release step is skipped due to the npm failure, backfill manually with `gh release create v2.1.370 --generate-notes` (idempotent). (The parallel round's v2.1.369 Release WAS created despite its npm failure — evidence the Release step survives the E404.)
 
 ## Summary counts (27 entries)
 
@@ -105,6 +105,15 @@ All commands run on the round worktree (`agent/occ/2fafb176` @ c62bdff + this ro
 
 A research subagent performing baseline A/B comparison ran `git stash -u` on the round worktree at 06:20 and was stopped before restoring. The full round (18 tracked ±, 18 untracked files, +5518 lines) was recovered intact via `git stash pop`; post-restore verification: 243/0 across all 289-port suites + src/ink, version markers and ledger content confirmed. Lesson recorded: subagents doing baseline comparison must use a **detached worktree** (`git worktree add --detach`), never stash the live round tree.
 
+### §3 addendum — post-rebase re-verification at 2.1.370 (after the §5a merge onto OCC-146)
+
+- Combined both-rounds security suites on merged code: **76/0** (OCC-146's 40 + this round's 36).
+- Full src suite (`bun test src --isolate`): **7807 pass / 1 skip / 0 fail**, 19580 `expect()`, 622 files, 523.23s (= 7767 + 40, zero merge regressions).
+- Rebuild: `dist/cli.js` 29.84 MB, `MACRO.VERSION=2.1.370`; `bun dist/cli.js --version` → **`OCC 2.1.370`**.
+- Headless: `echo "say PONG only" | bun dist/cli.js -p` → `PONG`, exit 0.
+- tmux REPL: welcome box renders `OCC v2.1.370 · Open C Code`; `/exit` terminates cleanly.
+- Biome lint clean on all three merge-resolved files (`attachments.ts`, `cliHighlight.ts`, `bashPermissions.ts`); no conflict markers anywhere in `src/`.
+
 ## 4. STAGED backlog carried to future rounds
 
 1. **#6a local-folder-marketplace in-place serving** — official v289 serves plugins installed from a local-folder marketplace in place (no stale copy). OCC lacks the v288-era in-place-serving prerequisite subsystem; recovered bytes in cluster-e §#6. Land after the plugin-serving rework.
@@ -119,11 +128,29 @@ A research subagent performing baseline A/B comparison ran `git stash -u` on the
 
 ## 5. Version bumps (this round)
 
-- `package.json`: `2.1.368` → **`2.1.369`**.
+- `package.json`: `2.1.369` (OCC-146) → **`2.1.370`** (this round's original 2.1.368→2.1.369 bump renumbered after the collision — §5a).
 - `src/entrypoints/cli.tsx` dev polyfill `MACRO.VERSION`: `2.1.288` → **`2.1.289`** (tracked-upstream pointer; build overrides with pkg.version).
 - `README.md`: badge `Tracks: Claude Code 2.1.289 (partial)`, intro tracking paragraph (OCC-107 summary prepended), capability-parity table row, dev-polyfill note, Tracks bullet.
-- `CHANGELOG.md`: new `## 2.1.369 - 2026-10-05 (official 2.1.289 alignment — OCC-107 round)` section (7 user-facing bullets) + intro "Now tracking Claude Code `2.1.289`" chain entry.
-- Release: tag **v2.1.369** after merge to main; npm publish expected to fail on the expired `NPM_TOKEN` (carry-over §above) — GitHub Release backfilled manually if the CI Release step is skipped; `/releases` ≡ `/tags` re-verified after.
+- `CHANGELOG.md`: new `## 2.1.370 - 2026-10-05 (official 2.1.289 alignment — OCC-107 round)` section (7 user-facing bullets, cross-referencing the 2.1.369 OCC-146 items where the two rounds overlap) + merged intro "Now tracking Claude Code `2.1.289`" chain entry (OCC-107 first, then OCC-146, then the OCC-106 chain).
+- Release: tag **v2.1.370** after merge to main; npm publish expected to fail on the expired `NPM_TOKEN` (carry-over §above) — GitHub Release backfilled manually if the CI Release step is skipped; `/releases` ≡ `/tags` re-verified after.
+
+## 5a. Version collision with the parallel OCC-146 round (resolved)
+
+While this round was in verification, the parallel **OCC-146** run pushed to main (`c77b8f8` fix(289) security subset + `2c8cbde` chore(release): **2.1.369**, tag `v2.1.369`, GitHub Release created 2026-10-04T19:50:21Z, npm publish failed on the same expired `NPM_TOKEN`). OCC-146 independently triaged the same v288↔v289 delta (28-entry list, ledger `docs/upstream-version-gap-occ146-2026-10.md`) and landed overlapping ports of #1/#2/#3/#14-15.
+
+**Resolution** — this round rebased onto `origin/main` (2c8cbde) and MERGED both implementations, keeping the union (no work discarded from either round):
+
+| File | OCC-146 (kept) | OCC-107 (kept) | Merge |
+|---|---|---|---|
+| `bashPermissions.ts` | widened `ENV_VAR_PATTERN` (simple-expansion strip, command-substitution refusal) | quote-aware `stripLeadingEnvAssignmentsQuoteAware` deny/ask variant builder | auto-merged; both wired into the `stripAllEnvVars` fixed-point |
+| `attachments.ts` | `isFileReadDenied` all-spelling check (exported) | byte-faithful `aje`/`wge` port: same all-spelling check + `hasReadDenyRules` short-circuit + surface-first | OCC-107 implementation (superset) + kept `export` for the OCC-146 test suite |
+| `cliHighlight.ts` | `isPathologicalHtmlForHighlight` >8-unclosed-`<script>` passthrough pre-filter | official budgeted emitter install (both hljs instances) + failure memo + `withPlainFallback` | composed: their guard INSIDE `withPlainFallback` (defense in depth) |
+| `permissions.ts` | recursive `isRuleAskDecisionReason` (#1 `G5e`) | — (this round: NO-OP{NO-SURFACE} + STAGED recursion-hardening note §4.4 — their port closes it) | kept as-is |
+| #19 verdict | "structurally immune" | binary evidence: v288 measure/render asymmetry DID reproduce (stray-ESC content loss, C1 drop, CR row inflation) → full pipeline ported | OCC-107 verdict stands (binary-verified, probe-reproduced); CHANGELOG notes the revision |
+
+**Post-merge verification**: combined security-suite run 76/0 (their 40: compoundNestedAsk289 7 + envPrefixExpansion289 22 + cliHighlight289 7 + readDenySymlink289 4; this round's 36: envPrefixDenyAsk289 19 + attachmentsSymlinkDenyLanding289 8 + hljsBound289 9); full src suite re-run + dist rebuild + smoke re-run at 2.1.370 recorded in §3 addendum.
+
+**Release renumber**: this round ships as **2.1.370** (2.1.369 is taken — tag + GitHub Release exist; npm publish pending the same NPM_TOKEN rotation).
 
 ## 6. Files touched (this round)
 
@@ -161,4 +188,4 @@ A research subagent performing baseline A/B comparison ran `git stash -u` on the
 - `docs/upstream-version-gap-occ107-2026-10.md` (this ledger)
 
 **Release metadata:**
-- `package.json` (2.1.368 → 2.1.369), `CHANGELOG.md` (2.1.369 section), `README.md` (tracks 2.1.289), `src/entrypoints/cli.tsx` (dev polyfill VERSION 2.1.289)
+- `package.json` (2.1.369 → 2.1.370 after the §5a renumber), `CHANGELOG.md` (2.1.370 section + merged intro), `README.md` (tracks 2.1.289), `src/entrypoints/cli.tsx` (dev polyfill VERSION 2.1.289)
