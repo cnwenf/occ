@@ -1271,6 +1271,54 @@ function handleDenialLimitExceeded(
 }
 
 /**
+ * CC 2.1.289 changelog #1 (security):
+ *   "Fixed a deny or ask rule on a nested part of a compound shell command not
+ *    holding over a user-installed mod's approval on managed machines."
+ *
+ * Faithful port of the official recursive ask-predicate (binary `G5e`, reached
+ * via `cY`). Official's hook / classifier / bypassPermissions override paths are
+ * all gated on `!cY(result)`, so an ask rule on a *nested* part of a compound
+ * command holds over a mod's approval. OCC's equivalent gate is
+ * checkRuleBasedPermissions (step 1f below), which resolveHookPermissionDecision
+ * consults before letting a PreToolUse-hook (the OCC analog of a "user-installed
+ * mod") allow stand.
+ *
+ * The recursion into `subcommandResults` is the crux: a compound command
+ * (`a && b`) wraps each subcommand's decision, and a nested compound wraps again,
+ * so a rule-ask on an inner part is only reachable recursively. OCC previously
+ * inspected only the top-level `type === 'rule'`, so a compound whose merged
+ * decision is `{behavior:'ask', decisionReason:{type:'subcommandResults', …}}`
+ * (≥2 non-allow parts, see bashPermissions.ts merge flow) fell through to null
+ * and a hook allow bypassed the nested ask rule.
+ *
+ * Returns true ONLY for genuine rule asks (ruleBehavior === 'ask'); passthrough /
+ * allow sub-results never trigger. Fail-closed by construction — it can only add
+ * a prompt, never remove one. The deny half of #1 was already covered (step 1d
+ * returns any deny, including denies wrapped in subcommandResults).
+ */
+function isRuleAskDecisionReason(
+  decisionReason: PermissionDecisionReason | undefined,
+): boolean {
+  if (
+    decisionReason?.type === 'rule' &&
+    decisionReason.rule.ruleBehavior === 'ask'
+  ) {
+    return true
+  }
+  if (decisionReason?.type === 'subcommandResults') {
+    for (const sub of decisionReason.reasons.values()) {
+      if (
+        sub.behavior === 'ask' &&
+        isRuleAskDecisionReason(sub.decisionReason)
+      ) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/**
  * Check only the rule-based steps of the permission pipeline — the subset
  * that bypassPermissions mode respects (everything that fires before step 2a).
  *
@@ -1346,10 +1394,12 @@ export async function checkRuleBasedPermissions(
 
   // 1f. Content-specific ask rules from tool.checkPermissions
   // (e.g. Bash(npm publish:*) → {ask, type:'rule', ruleBehavior:'ask'})
+  // CC 2.1.289 #1: also hold an ask rule NESTED inside a compound command's
+  // subcommandResults (recursive isRuleAskDecisionReason — official G5e port),
+  // so a user-installed mod/hook allow cannot bypass the nested part's ask.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'rule' &&
-    toolPermissionResult.decisionReason.rule.ruleBehavior === 'ask'
+    isRuleAskDecisionReason(toolPermissionResult.decisionReason)
   ) {
     return toolPermissionResult
   }
@@ -1459,10 +1509,12 @@ async function hasPermissionsToUseToolInner(
   // checkPermissions returns {behavior:'ask', decisionReason:{type:'rule',
   // rule:{ruleBehavior:'ask'}}}. This must be respected even in bypass mode,
   // just as deny rules are respected at step 1d.
+  // CC 2.1.289 #1: recursive isRuleAskDecisionReason (official G5e port) so an
+  // ask rule nested inside a compound command's subcommandResults also holds
+  // over bypassPermissions — official gates bypass on !cY(result) identically.
   if (
     toolPermissionResult?.behavior === 'ask' &&
-    toolPermissionResult.decisionReason?.type === 'rule' &&
-    toolPermissionResult.decisionReason.rule.ruleBehavior === 'ask'
+    isRuleAskDecisionReason(toolPermissionResult.decisionReason)
   ) {
     return toolPermissionResult
   }

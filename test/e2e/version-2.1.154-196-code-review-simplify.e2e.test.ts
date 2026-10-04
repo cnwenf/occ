@@ -23,7 +23,7 @@ const desc = "Review the current diff for correctness bugs and reuse/simplificat
 console.log(JSON.stringify({
   hasDesc: src.includes(desc),
   hasName: src.includes("name: 'code-review'"),
-  hasHint: src.includes("'[low|medium|high|xhigh|max] [--fix] [--comment] [<target>]'"),
+  hasHint: src.includes("'[low|medium|high|xhigh|max] [--fix] [--comment] [<target>] [--max-findings <n>|all]'"),
 }));
 `;
     const out = JSON.parse((await $`bun -e ${script}`.quiet()).stdout.toString().trim());
@@ -103,7 +103,7 @@ console.log(JSON.stringify({
     expect(out.count).toBe(2);
     expect(out.crAlias).toBeNull();
     expect(out.spAlias).toBeNull();
-    expect(out.crHint).toBe("[low|medium|high|xhigh|max] [--fix] [--comment] [<target>]");
+    expect(out.crHint).toBe("[low|medium|high|xhigh|max] [--fix] [--comment] [<target>] [--max-findings <n>|all]");
     expect(out.spHint).toBe("[<target>]");
     expect(out.crDescOk).toBe(true);
     expect(out.spDescOk).toBe(true);

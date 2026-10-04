@@ -19,7 +19,7 @@ import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
 import { count, uniq } from './array.js'
-import { getFsImplementation } from './fsOperations.js'
+import { getFsImplementation, getPathsForPermissionCheck } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
 import type { IDESelection } from '../hooks/useIdeSelection.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
@@ -4311,15 +4311,21 @@ export function getContextEfficiencyAttachment(
 }
 
 
-function isFileReadDenied(
+export function isFileReadDenied(
   filePath: string,
   toolPermissionContext: ToolPermissionContext,
 ): boolean {
-  const denyRule = matchingRuleForInput(
-    filePath,
-    toolPermissionContext,
-    'read',
-    'deny',
+  // CC 2.1.289 #3 (security): "Read deny rules not applying to files
+  // @-mentioned, changed, or selected in the IDE through a symlink." This
+  // attachment path (IDE selection / @-mention) previously checked ONLY the
+  // requested spelling, so `deny Read(<realpath>)` was bypassed by an
+  // @-mention of a symlink pointing at it. getPathsForPermissionCheck yields
+  // the requested path PLUS every symlink target in the chain — the same set
+  // checkReadPermissionForTool uses — so deny now matches on ANY spelling
+  // (fail-closed, mirroring matchingAllowRuleForAllSpellings on the allow side).
+  return getPathsForPermissionCheck(filePath).some(
+    spelling =>
+      matchingRuleForInput(spelling, toolPermissionContext, 'read', 'deny') !==
+      null,
   )
-  return denyRule !== null
 }

@@ -1147,10 +1147,12 @@ export const BINARY_HIJACK_VARS = /^(LD_|DYLD_|PATH$)/
  * permission prompts are), with BINARY_HIJACK_VARS as a blocklist.
  *
  * SECURITY: Uses a broader value pattern than stripSafeWrappers. The value
- * pattern excludes only actual shell injection characters ($, backtick, ;, |,
- * &, parens, redirects, quotes, backslash) and whitespace. Characters like
- * =, +, @, ~, , are harmless in unquoted env var assignment position and must
- * be matched to prevent trivial bypass via e.g. `FOO=a=b denied_command`.
+ * pattern excludes shell injection characters (backtick, ;, |, &, parens,
+ * redirects, quotes, backslash) and whitespace, plus `$` EXCEPT simple
+ * parameter expansions (`$VAR`, `${VAR}`, and `$VAR` inside double quotes) —
+ * see the CC 2.1.289 #13/#14 note below. Characters like =, +, @, ~, , are
+ * harmless in unquoted env var assignment position and must be matched to
+ * prevent trivial bypass via e.g. `FOO=a=b denied_command`.
  *
  * @param blocklist - optional regex tested against each var name; matching vars
  *   are NOT stripped (and stripping stops there). Omit for deny rules; pass
@@ -1164,26 +1166,48 @@ export function stripAllLeadingEnvVars(
   //
   // - Standard assignment (FOO=bar), append (FOO+=bar), array (FOO[0]=bar)
   // - Single-quoted values: '[^'\n\r]*' — bash suppresses all expansion
-  // - Double-quoted values with backslash escapes: "(?:\\.|[^"$`\\\n\r])*"
+  // - Double-quoted values with backslash escapes:
+  //   "(?:\\.|[^"$`\\\n\r]|\$(?!\())*"
   //   In bash double quotes, only \$, \`, \", \\, and \newline are special.
   //   Other \x sequences are harmless, so we allow \. inside double quotes.
-  //   We still exclude raw $ and ` (without backslash) to block expansion.
-  // - Unquoted values: excludes shell metacharacters, allows backslash escapes
+  //   Raw backtick stays excluded (command substitution), and `$` is only
+  //   allowed when NOT followed by `(` — so "$HOME"/"${HOME}" strip but
+  //   "$(cmd)" does not.
+  // - Unquoted values: excludes shell metacharacters, allows backslash
+  //   escapes, plus explicit `$VAR` / `${VAR}` simple-expansion atoms
   // - Concatenated segments: FOO='x'y"z" — bash concatenates adjacent segments
   //
   // SECURITY: Trailing whitespace MUST be [ \t]+ (horizontal only), NOT \s+.
   //
   // The outer * matches one atomic unit per iteration: a complete quoted
-  // string, a backslash-escape pair, or a single unquoted safe character.
-  // The inner double-quote alternation (?:...|...)* is bounded by the
-  // closing ", so it cannot interact with the outer * for backtracking.
+  // string, a `$VAR`/`${VAR}` expansion, a backslash-escape pair, or a single
+  // unquoted safe character. The inner double-quote alternation (?:...)* is
+  // bounded by the closing ", so it cannot interact with the outer * for
+  // backtracking. All alternation atoms are first-char disjoint (quote /
+  // `${` / `$`+ident / backslash / safe-char), so matching stays linear —
+  // the CodeQL #671 ReDoS concern (overlapping atoms under nested
+  // quantifiers) does not apply to the expansion atoms.
   //
-  // Note: $ is excluded from unquoted/double-quoted value classes to block
-  // dangerous forms like $(cmd), ${var}, and $((expr)). This means
-  // FOO=$VAR is not stripped — adding $VAR matching creates ReDoS risk
-  // (CodeQL #671) and $VAR bypasses are low-priority.
+  // CC 2.1.289 #13/#14 (security): official fixed deny/ask rules missing
+  // commands behind an env-var prefix whose value is an expansion
+  // (`TZ="$HOME" rm -rf build` / bare `VAR=x cmd`) under sandbox auto-allow —
+  // official re-runs per-subcommand deny/ask against the AST-normalized text
+  // (binary `b5o`: `if(r.length>1||r[0]?.text!==s)`), where the AST rebuilds
+  // `.text` from argv WITHOUT env assignments. OCC's live path is the legacy
+  // string path (tree-sitter WASM unavailable at runtime — see OCC-46), whose
+  // equivalent normalization is THIS stripper feeding deny/ask candidates in
+  // filterRulesByContentsMatchingInput. Previously `$` was excluded entirely
+  // ("$VAR bypasses are low-priority" — pre-2.1.289 stance), so
+  // `TZ="$HOME" rm -rf build` was NOT stripped → deny `Bash(rm:*)` missed →
+  // sandbox auto-allow allowed it. Now simple expansions strip; command
+  // substitution (`$(...)`, backtick) still does NOT strip — conservative:
+  // official's AST path recurses into the inner command and checks it too,
+  // which a regex cannot replicate; failing to strip keeps the full command
+  // as the only candidate (never fewer deny/ask matches than before).
+  // Stripping is fail-closed by construction: candidates are ADDED to the
+  // deny/ask matching set, never replaced.
   const ENV_VAR_PATTERN =
-    /^([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?)\+?=(?:'[^'\n\r]*'|"(?:\\.|[^"$`\\\n\r])*"|\\.|[^ \t\n\r$`;|&()<>\\\\'"])*[ \t]+/
+    /^([A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?)\+?=(?:'[^'\n\r]*'|"(?:\\.|[^"$`\\\n\r]|\$(?!\())*"|\$\{[A-Za-z_][A-Za-z0-9_]*\}|\$[A-Za-z_][A-Za-z0-9_]*|\\.|[^ \t\n\r$`;|&()<>\\\\'"])*[ \t]+/
 
   let stripped = command
   let previousStripped = ''
