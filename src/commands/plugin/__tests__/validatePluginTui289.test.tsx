@@ -75,10 +75,13 @@ async function writePluginJson(root: string, content: string): Promise<void> {
  * Render <ValidatePlugin path onComplete> in the real Ink reconciler and
  * resolve with the output string the component hands to onComplete.
  * process.exitCode is saved/restored (the component sets it — leaking 1 into
- * the bun test process would fail the whole run).
+ * the bun test process would fail the whole run). Bun quirk: assigning
+ * `undefined` does NOT clear a previously-set exitCode (the getter keeps the
+ * last number), so an untouched baseline restores to 0 explicitly — CI's
+ * per-file runner checks the exit code and caught the leak.
  */
 async function runTuiValidation(path: string | undefined): Promise<string> {
-  const prevExitCode = process.exitCode
+  const prevExitCode = process.exitCode ?? 0
   const stream = new PassThrough()
   let resolveOutput: (value: string) => void = () => {}
   let rejectOutput: (reason: Error) => void = () => {}
