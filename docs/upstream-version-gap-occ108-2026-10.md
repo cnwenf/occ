@@ -166,3 +166,32 @@ gaps had to be fixed before release. Both fixed:
 Build green (dist/cli.js 29.84 MB); biome lint warnings-only on touched
 files. Pushed to main (`3857667..15049ee`). Re-verification handed back to
 `@OCC 验收员`.
+
+## 7. Acceptance PASS + release protocol (2026-10-06, tag `v2.1.370` advanced)
+
+验收员 re-verified both fixes on the fixed HEAD and closed acceptance:
+
+- P2 mutation killed: with the gate reverted + rebuilt, goal-gate FAILS on
+  the new line-122 negative assertion (pane shows `⏸ manual mode on
+  (shift+tab to cycle)`); with the gate restored + rebuilt, goal-gate +
+  trust-gate + version-hooks-2.1.248 → 19 pass / 0 fail. P3 grep 0
+  `hasModePart` left. Units `manualModeCycleHint108` 6/6 + PromptInput
+  53/53; e2e 19 pass / 0 fail / 66 expect; build green. README Tracks badge
+  four places (`2.1.289 (partial)` in badge/正文/表格/页脚) verified
+  一致 with §1 — no change.
+- **Release shape (folded OCC-108 fixes into the still-unpublished 2.1.370)**:
+  because §2's "do NOT re-push the tag" premise (tag = final content) is
+  stale after this round's code changes, and §5 forbids a version bump, the
+  `v2.1.370` lightweight tag was **force-advanced** off `8cc2d0e` onto the
+  accepted-main-tip release commit (`087cf14` + this ledger §7 + the
+  2.1.370 CHANGELOG bullet — the exact content that passed acceptance). Precedent: the same tag was already
+  force-advanced twice within its OCC-107 lifecycle
+  (`1021ad5`→`54f9a85`→`8cc2d0e`) to fold in acceptance fixes.
+- **NPM_TOKEN blocker unchanged** (secret last rotated 2026-07-05): the
+  tag-push-triggered publish run still fails `E404` at the npm step. After
+  the owner rotates the GitHub secret, re-run **this round's** Publish run
+  (the one on the advanced tag) — do **NOT** re-run the three stale
+  `8cc2d0e`-era runs (they carried the pre-fix footer divergence).
+  GitHub Release `v2.1.370` already exists and is idempotent (`gh release
+  create` skips when present); the workflow's publish step gates it, so a
+  green npm publish will release the tagged artifacts without a new Release.
