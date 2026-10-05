@@ -139,3 +139,30 @@ the decompilation — the ambiguity that justified STOP is resolved.
 Code changed this round → `@OCC 安全审核员` relay per the dispatch. Release
 cut stays gated on acceptance (no version bump this round — the fix rides the
 next release train).
+
+## 6. Acceptance WARN round — P2/P3 test-coverage fixes (2026-10-06, commit `15049ee`)
+
+验收员 verdict WARN: HEAD behavior correct, but two reproducible test-coverage
+gaps had to be fixed before release. Both fixed:
+
+- **P2 (test-01 / F-rdf-1) — mutation-surviving gate.** Reverting
+  `PromptInputFooterLeftSide.tsx` `shouldShowModeHint` to the pre-PR
+  `primaryItemCount < 2` kept all unit tests + the 8 e2e `manual mode on`
+  markers green while the real default-mode footer regressed to
+  `(shift+tab to cycle)`. Fix: `test/e2e/goal-gate.e2e.test.ts` first
+  default-mode boot now adds
+  `expect(capturePane().toLowerCase()).not.toContain("shift+tab")` right
+  after the ready marker. **Mutation self-verified killed**: with the gate
+  reverted + rebuilt, the goal-gate test FAILS on exactly that assertion
+  (pane shows `⏸ manual mode on (shift+tab to cycle)`); with the gate
+  restored + rebuilt, goal-gate + trust-gate + version-hooks-2.1.248 →
+  19 pass / 0 fail / 66 expect.
+- **P3 (test-03 / contract-2 / SEC-1 / F-rdf-3) — dead param.** Removed
+  `hasModePart` from `shouldRenderShortcutsHint` in all three places
+  (declaration, call site, unit test — 6 occurrences). `hasActiveModePart`
+  remains the exact official `!(An&&Is&&Gn)` mapping; grep confirms zero
+  `hasModePart` occurrences left. PromptInput suite 53 pass / 98 expect.
+
+Build green (dist/cli.js 29.84 MB); biome lint warnings-only on touched
+files. Pushed to main (`3857667..15049ee`). Re-verification handed back to
+`@OCC 验收员`.
