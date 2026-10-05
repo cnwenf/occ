@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  collectContentValidationResults,
   detectColocatedPluginKind,
   isAnthropicMarketplaceName,
   marketplaceEntryListsFolder,
@@ -423,5 +424,98 @@ describe('CC 2.1.289 #22(a) — anthropic-kind detection (official qCn + Ae)', (
     const defaulted = await validatePluginManifest(pluginPath)
     const explicit = await validatePluginManifest(pluginPath, 'alone')
     expect(defaulted).toEqual(explicit)
+  })
+})
+
+/**
+ * OCC-107 acceptance-fix ③ (2026-10-05) — the TUI `/plugin validate`
+ * (ValidatePlugin.tsx) advertised co-location validation in its help text
+ * ("both, and the plugin, if both exist") but only ever called
+ * validateManifest(path), while the CLI path (src/cli/handlers/plugins.ts)
+ * correctly composed the extra content results. Fix: ONE shared composition
+ * helper — collectContentValidationResults(inputPath, result) — used by both
+ * surfaces, mirroring the official handler's splice (plugin manifest →
+ * validatePluginContents of the plugin root; marketplace manifest →
+ * validateColocatedPlugin with the f-gated pluginResult + contents).
+ */
+describe('OCC-107 acceptance-fix ③ — collectContentValidationResults (shared TUI ≡ CLI composition)', () => {
+  test('marketplace folder input + INVALID co-located plugin.json → [pluginResult, ...contents]', async () => {
+    // Arrange
+    const root = await makeTempRoot('occ107-helper-')
+    await writeMarketplace(root, 'occ-test-market', [
+      { name: 'demo-plugin', source: './' },
+    ])
+    await writePluginJson(root, '{ truncated plugin.json')
+    await mkdir(join(root, 'commands'), { recursive: true })
+    await writeFile(join(root, 'commands', 'hello.md'), 'Say hello.')
+
+    // Act
+    const result = await validateManifest(root)
+    const contents = await collectContentValidationResults(root, result)
+
+    // Assert — the invalid co-located plugin.json is reported first (f-gate
+    // has findings), then the content files.
+    expect(result.fileType).toBe('marketplace')
+    expect(contents.length).toBeGreaterThanOrEqual(2)
+    expect(contents[0]?.fileType).toBe('plugin')
+    expect(contents[0]?.success).toBe(false)
+    expect(contents.some(r => r.fileType === 'command')).toBe(true)
+  })
+
+  test('marketplace folder input + CLEAN co-located plugin.json → contents only (official f-gate drops the silent pluginResult)', async () => {
+    const root = await makeTempRoot('occ107-helper-clean-')
+    await writeMarketplace(root, 'occ-test-market', [
+      { name: 'demo-plugin', source: './' },
+    ])
+    await writePluginJson(root, JSON.stringify(CLEAN_PLUGIN))
+    await mkdir(join(root, 'commands'), { recursive: true })
+    await writeFile(join(root, 'commands', 'hello.md'), 'Say hello.')
+
+    const result = await validateManifest(root)
+    const contents = await collectContentValidationResults(root, result)
+
+    expect(contents.some(r => r.fileType === 'plugin')).toBe(false)
+    expect(contents.some(r => r.fileType === 'command')).toBe(true)
+    expect(contents.every(r => r.success || r.warnings.length > 0)).toBe(true)
+  })
+
+  test('plugin manifest inside .claude-plugin → validatePluginContents of the plugin root', async () => {
+    const root = await makeTempRoot('occ107-helper-plugin-')
+    const pluginPath = await writePluginJson(root, JSON.stringify(CLEAN_PLUGIN))
+    await mkdir(join(root, 'commands'), { recursive: true })
+    await writeFile(join(root, 'commands', 'hello.md'), 'Say hello.')
+
+    const result = await validateManifest(pluginPath)
+    const contents = await collectContentValidationResults(pluginPath, result)
+
+    expect(result.fileType).toBe('plugin')
+    expect(contents.some(r => r.fileType === 'command')).toBe(true)
+  })
+
+  test('marketplace.json pointed at DIRECTLY (not the folder) → [] (official resolve(n)!==a gate)', async () => {
+    const root = await makeTempRoot('occ107-helper-direct-')
+    const marketplacePath = await writeMarketplace(root, 'occ-test-market', [
+      { name: 'demo-plugin', source: './' },
+    ])
+    await writePluginJson(root, '{ truncated plugin.json')
+
+    const result = await validateManifest(marketplacePath)
+    const contents = await collectContentValidationResults(
+      marketplacePath,
+      result,
+    )
+
+    expect(contents).toEqual([])
+  })
+
+  test('plugin manifest NOT inside a .claude-plugin directory → []', async () => {
+    const root = await makeTempRoot('occ107-helper-loose-')
+    const loosePath = join(root, 'plugin.json')
+    await writeFile(loosePath, JSON.stringify(CLEAN_PLUGIN))
+
+    const result = await validateManifest(loosePath)
+    const contents = await collectContentValidationResults(loosePath, result)
+
+    expect(contents).toEqual([])
   })
 })

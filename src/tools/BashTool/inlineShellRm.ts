@@ -60,8 +60,18 @@
  *    unmapped name, the Kk null sentinel, `$(…)`/backtick substitution,
  *    special params) yield a runtime verb: the `A4o` block fires only when
  *    the segment ALSO carries a dangerous rm-shaped target, bounding the
- *    deny-in-all-modes over-firing against non-rm runtime commands
- *    (`$LOGCMD done` stays allowed; `$LOGCMD -rf /` blocks).
+ *    deny-in-all-modes over-firing against non-rm runtime commands.
+ *    ACCURACY NOTE (OCC-107 acceptance, comment-only correction — the
+ *    previous example was wrong): the whole analysis sits behind the
+ *    RM_VERB_RE literal-rm prefilter in analyzeInlineShellScript, so a
+ *    script with no literal `rm`/`rmdir` word anywhere returns null before
+ *    any verb/target scan. A bare `$LOGCMD -rf /` therefore stays ALLOWED
+ *    (the unmapped runtime verb never reaches the A4o arm); the runtime-verb
+ *    block only fires when a literal rm word elsewhere in the same script
+ *    passes the gate (e.g. `rm -i old.txt; $LOGCMD -rf /`). Known fail-safe
+ *    over-block (P3, accepted): `x=rm $x -rf /` blocks even though bash
+ *    expands `$x` with the PRE-command value (a prefix assignment never
+ *    reaches its own command's expansion) — deny-in-all-modes direction.
  */
 
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: the official A4o message contains a literal bash `${NAME:?}` guard idiom, not a JS template placeholder.

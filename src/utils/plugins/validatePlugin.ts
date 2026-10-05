@@ -1058,6 +1058,41 @@ export async function validateColocatedPlugin(
 }
 
 /**
+ * OCC-107 acceptance-fix ③ — the SINGLE content-results composition shared by
+ * both `plugin validate` surfaces: the CLI handler
+ * (src/cli/handlers/plugins.ts) and the TUI command
+ * (src/commands/plugin/ValidatePlugin.tsx). Extracted from the composition
+ * the CLI handler has carried since CC 2.1.289 #16 so the TUI can no longer
+ * diverge from it — the TUI previously called validateManifest alone and
+ * printed "Validation passed" even when a co-located plugin.json was broken,
+ * while its help text advertised co-location validation (fake success).
+ *
+ * - plugin manifest inside a `.claude-plugin` directory → the plugin root's
+ *   content-file results (official plugin-file branch),
+ * - marketplace manifest → validateColocatedPlugin's f-gated pluginResult +
+ *   contents (official `JTt` @v289:236588478 co-location branch),
+ * - anything else → empty array.
+ */
+export async function collectContentValidationResults(
+  inputPath: string,
+  result: ValidationResult,
+): Promise<ValidationResult[]> {
+  if (result.fileType === 'plugin') {
+    const manifestDir = path.dirname(result.filePath)
+    if (path.basename(manifestDir) === '.claude-plugin') {
+      return await validatePluginContents(path.dirname(manifestDir))
+    }
+    return []
+  }
+  const colocated = await validateColocatedPlugin(inputPath, result)
+  if (!colocated) return []
+  return [
+    ...(colocated.pluginResult ? [colocated.pluginResult] : []),
+    ...colocated.contents,
+  ]
+}
+
+/**
  * Validate a manifest file or directory (auto-detects type)
  */
 export async function validateManifest(

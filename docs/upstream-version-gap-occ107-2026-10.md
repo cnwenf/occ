@@ -189,3 +189,48 @@ While this round was in verification, the parallel **OCC-146** run pushed to mai
 
 **Release metadata:**
 - `package.json` (2.1.369 → 2.1.370 after the §5a renumber), `CHANGELOG.md` (2.1.370 section + merged intro), `README.md` (tracks 2.1.289), `src/entrypoints/cli.tsx` (dev polyfill VERSION 2.1.289)
+
+## 7. Acceptance-fix addendum (2026-10-05, post-verdict — 验收员 暂不通过 round)
+
+The first acceptance verdict passed 6/7 PORTED features and rejected #14 (env-prefix stripping) plus flagged two more P2 items. All three fixed under TDD (RED reproduced first), plus one comment-only P3 correction. Version stays **2.1.370** (npm never published — E404 pending NPM_TOKEN rotation — so the fix folds into the same release).
+
+### ① P2-security fail-open (RELEASE BLOCKER) — ANSI-C `$'…'` escaped quote
+
+- Defect: `stripLeadingEnvAssignmentsQuoteAware` treated every `'` inside a `$'…'` value as the terminator, ignoring `\'`. Probe `TZ=a\' b' rm x` under `Bash(rm *)` deny + sandbox auto-allow returned **allow** — but real bash keeps the ANSI-C string open through the escaped quote and runs `rm x` (ground-truthed against live /bin/bash: RM-RAN args=[x]). Deny match dropped = fail-open.
+- Fix: the ANSI-C branch now consumes `\x` escape pairs (including `\'`) and only closes on an unescaped `'`; unterminated ANSI-C → `null` (fail-closed, per verdict). Bare `'…'` values keep bash semantics (backslash literal inside bare quotes) — pinned by a control test.
+- Verdict parity bar met: what the official 2.1.289 AST-side compensation (`be`/`ye` argv-variant builder @210022797) covers, the OCC quote-aware scanner now covers too — the scanner's deny/ask-only candidate for the probe is `rm x`, and `_checkSandboxAutoAllowForTesting` returns `deny`.
+
+### ② P2 false-deny — value scan swallowed bare metacharacters
+
+- Defect: `FOO=x|grep rm file` scanned through the bare `|` and produced candidate `rm file`; bash actually runs `grep rm file` (ground-truthed: GREP-RAN args=[rm file]) → a legitimate command falsely denied.
+- Fix: an unquoted `;`, `|`, `&`, or mid-value `(` in the assignment word aborts the scan → `null` → caller falls back to the v288-equivalent candidate set (per verdict: "值段扫描在未引号包裹的 `;` `|` `&` `(` `<` `>` 处停止").
+- **Design refinement vs the verdict's literal wording (`<` `>` and value-start `(`):** blanket-null on these would CREATE new fail-opens — bash ground truth: in `FOO=a<b rm x`, `A=(1) rm x`, `FOO=a> rm x` the trailing command STILL RUNS (redirections and array assignments glue to the assignment word), and the official AST strips redirections natively. So the scanner instead **skips redirections** (`<`, `>`, `<>`, `<<`, `<<-`, `>|`, `&>`, `>&N`, space-separated and process-sub targets) and **consumes value-start `(…)` as an array assignment**, then continues to the real command — MORE bash-faithful AND deny-preserving (all 13 forms yield the trailing `rm x`/`x` candidate). Mid-value `(` (`FOO=x(y)`) is a bash syntax error → `null`. Unterminated array → `null`.
+- Deny backstop: `;`/`|`/`&` subcommands are deny-checked separately by splitCommand, so scanner-null on separators loses no coverage — twin probe `FOO=bar|rm x` (bash DOES run `rm x` via the second segment; ground-truthed: RM-RAN) stays **denied** end-to-end (pinned).
+
+### ③ P2 TUI fake success — `/plugin validate` co-location
+
+- Defect: `ValidatePlugin.tsx` help promised "(both, and the plugin, if both exist)" but `runValidation` only called `validateManifest(path)`; the CLI handler was the only surface composing `validateColocatedPlugin`. A folder with a truncated co-located `plugin.json` printed "✔ Validation passed" in the TUI (RED reproduced verbatim).
+- Fix: extracted the composition into shared `collectContentValidationResults(inputPath, result)` in `validatePlugin.ts` (DRY — handles both the plugin-manifest `.claude-plugin` case and the marketplace/other case via `validateColocatedPlugin`, preserving the f-gate: clean plugin manifests contribute no result). CLI handler refactored onto it (behavior unchanged); TUI splices per-file sections (`Validating <fileType>: <path>` + errors/warnings) and computes `allSuccess`/`hasWarnings` across ALL results — verdict now honest, `process.exitCode` 0/1 semantics unchanged. New Ink behavioral test renders the real component (`validatePluginTui289.test.tsx`): invalid co-located plugin.json → sections + "Validation failed", NOT "Validation passed"; clean plugin + bare command file → command section spliced, "passed with warnings", no f-gated plugin section.
+
+### P3 dispositions (informational items from the verdict)
+
+- **inlineShellRm over-block `sh -c 'x=rm $x -rf /'`**: kept as-is (fail-safe/deny-in-all-modes direction, consistent with divergence note 6). The inaccurate divergence-note-7 comment was corrected (comment-only): the RM_VERB_RE literal-rm prefilter short-circuits first, so a bare `$LOGCMD -rf /` stays ALLOWED (previous comment claimed it blocks); the runtime-verb A4o arm only fires when a literal rm word elsewhere passes the gate. The over-block case is now documented in the note.
+- **ink P2 clean-tab+wrap asymmetry**: byte-identical to official 2.1.289 behavior — NOT an OCC regression; deferred (no invented divergence from official).
+
+### Regression evidence
+
+- 28 new tests in `envPrefixDenyAsk289.test.ts` (scanner + verdict-level probes for ①②, incl. both acceptance probes promoted to permanent tests); 5 new tests in `pluginValidateColocated289.test.ts` (shared composition); 2 new Ink tests (`validatePluginTui289.test.tsx`).
+- Mandated suites: `envPrefixDenyAsk289` 47/0, `envPrefixExpansion289` green, BashTool full **900 pass / 0 fail** (872 baseline + 28 new), `pluginValidateColocated289` + TUI 23/0; plugin sweep (`src/utils/plugins` + `src/commands/plugin`) **551 pass / 0 fail**; the four mandated files together **92 pass / 0 fail**; biome lint clean on all changed files.
+- Full `bun test src/` shows 105 failures on BOTH this tree and a clean-HEAD detached worktree baseline of `1021ad5` — fail-name sets byte-identical (mock.module/global-state cross-file pollution, pre-existing); **zero new failures introduced**.
+
+### Files touched (acceptance fix)
+
+- `src/tools/BashTool/bashPermissions.ts` (①② scanner + doc-comment rewrite)
+- `src/tools/BashTool/inlineShellRm.ts` (P3 comment-only correction)
+- `src/utils/plugins/validatePlugin.ts` (③ new shared `collectContentValidationResults`)
+- `src/cli/handlers/plugins.ts` (③ refactored onto the shared helper)
+- `src/commands/plugin/ValidatePlugin.tsx` (③ TUI fix)
+- `src/tools/BashTool/__tests__/envPrefixDenyAsk289.test.ts` (+28 tests)
+- `src/utils/plugins/__tests__/pluginValidateColocated289.test.ts` (+5 tests)
+- `src/commands/plugin/__tests__/validatePluginTui289.test.tsx` (new, 2 tests)
+- `docs/upstream-version-gap-occ107-2026-10.md` (this addendum), `CHANGELOG.md` (2.1.370 acceptance-fix bullets)

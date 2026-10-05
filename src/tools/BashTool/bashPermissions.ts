@@ -1244,8 +1244,22 @@ export function stripAllLeadingEnvVars(
  * returns the post-assignment remainder — the command deny/ask rules must see.
  *
  * Fail-closed: returns null (no variant pushed) on unterminated
- * quote/substitution, trailing backslash, zero assignments consumed, or
- * assignments with no trailing command; existing guards
+ * quote/substitution/array, trailing backslash, a bare (unquoted) command
+ * separator or mid-value paren in the value scan (`;` `|` `&` `(` — bash
+ * ENDS the assignment word there, and the text after belongs to another
+ * segment that splitCommand's per-subcommand recheck already deny-checks;
+ * producing a cross-segment candidate instead FALSE-denies, e.g.
+ * `FOO=x|grep rm file` runs `grep rm file`, not `rm`), zero assignments
+ * consumed, or assignments with no trailing command. Redirections glued to
+ * the assignment word (`<` `>` `&>` `<>` `<<` `<<-` `>|` `>&N`/`<&N`,
+ * process-substitution targets, space-separated targets) are SKIPPED, not
+ * nulled — real bash still runs the trailing command (`FOO=a<b rm x` runs
+ * `rm x`) and the official AST strips redirections natively, so nulling
+ * there would CREATE fail-opens instead of closing them. Value-start
+ * `(…)` is consumed as an array assignment (`A=(1) rm x` runs `rm x`).
+ * `$'…'` ANSI-C values honor backslash escapes (`\'` does NOT close the
+ * string — `TZ=$'a\' b' rm x` runs `rm x`); bare `'…'` values do not.
+ * Existing guards
  * (hasQuotedBracketCloserInConditional, M4/M5, catastrophic-substitution)
  * continue to handle pathological shapes as today.
  *
@@ -1265,6 +1279,65 @@ export function stripLeadingEnvAssignmentsQuoteAware(
     isNameStart(c) || (c >= '0' && c <= '9')
 
   const len = command.length
+
+  // Scan a balanced `(...)` group. `start` must index the opening `(`.
+  // Returns the index just past the matching `)`, or -1 when the group (or
+  // any quote/escape inside it) is unterminated. Honors `\` escapes, bare
+  // `'…'`/`"…"` quotes, `$'…'` ANSI-C quotes and nested parens so quoted
+  // parens don't skew the depth.
+  const scanParenGroup = (start: number): number => {
+    let p = start + 1
+    let depth = 1
+    while (p < len) {
+      const d = command[p]!
+      if (d === '\\') {
+        if (p + 1 >= len) return -1
+        p += 2
+        continue
+      }
+      if (d === '$' && command[p + 1] === "'") {
+        p += 2
+        for (;;) {
+          if (p >= len) return -1
+          if (command[p] === '\\') {
+            p += 2
+            continue
+          }
+          if (command[p] === "'") {
+            p++
+            break
+          }
+          p++
+        }
+        continue
+      }
+      if (d === "'" || d === '"') {
+        const q = d
+        p++
+        for (;;) {
+          if (p >= len) return -1
+          if (q === '"' && command[p] === '\\') {
+            p += 2
+            continue
+          }
+          if (command[p] === q) {
+            p++
+            break
+          }
+          p++
+        }
+        continue
+      }
+      if (d === '(') depth++
+      else if (d === ')') {
+        depth--
+        if (depth === 0) return p + 1
+      }
+      p++
+    }
+    return -1
+  }
+
   let pos = 0
   let assignmentsConsumed = 0
   let remainderStart = len
@@ -1291,13 +1364,37 @@ export function stripLeadingEnvAssignmentsQuoteAware(
       break
     }
     pos = cursor + 1
+    const valueStart = pos
 
     // Consume value segments (concatenated, e.g. `A="x"y$(z)`) until
-    // whitespace or EOF. Fail-closed on any unterminated construct.
+    // whitespace or EOF. Fail-closed on any unterminated construct and on
+    // bare command separators (bash ends the assignment word there).
     let failed = false
     while (pos < len && !isSpace(command[pos]!)) {
       const c = command[pos]!
-      if (c === "'") {
+      if (c === '$' && command[pos + 1] === "'") {
+        // ANSI-C quoting `$'…'`: backslash escapes are interpreted, so `\'`
+        // is a literal quote and the string CONTINUES (bash runs the command
+        // after the real closing quote). Closing at the escaped quote
+        // mis-cuts the remainder and drops the deny match (fail-open).
+        pos += 2
+        for (;;) {
+          if (pos >= len) {
+            failed = true
+            break
+          }
+          if (command[pos] === '\\') {
+            pos += 2
+            continue
+          }
+          if (command[pos] === "'") {
+            pos++
+            break
+          }
+          pos++
+        }
+        if (failed) break
+      } else if (c === "'") {
         // Single quotes: bash suppresses all expansion; backslash is literal.
         pos++
         while (pos < len && command[pos] !== "'") pos++
@@ -1325,39 +1422,26 @@ export function stripLeadingEnvAssignmentsQuoteAware(
           pos++
         }
         if (failed) break
-      } else if (c === '$' && command[pos + 1] === '(') {
-        // `$(…)` substitution with paren-depth counting; quotes/escapes inside
-        // are honored so parens in string literals don't skew the depth.
-        pos += 2
-        let depth = 1
-        while (pos < len && depth > 0) {
-          const d = command[pos]!
-          if (d === '\\') {
-            pos += 2
-            continue
-          }
-          if (d === "'" || d === '"') {
-            const q = d
-            pos++
-            while (pos < len && command[pos] !== q) {
-              if (q === '"' && command[pos] === '\\') pos++
-              pos++
-            }
-            if (pos >= len) {
-              failed = true
-              break
-            }
-            pos++
-            continue
-          }
-          if (d === '(') depth++
-          else if (d === ')') depth--
-          pos++
-        }
-        if (failed || depth > 0) {
+      } else if (c === '(' && pos === valueStart) {
+        // Value-start `(...)` is an ARRAY assignment (`A=(1) rm x`) — a legal
+        // env prefix in bash and the trailing command RUNS, so consume the
+        // balanced group to keep deny coverage. A paren appearing mid-value
+        // (`FOO=x(y)`) is a bash syntax error and fails closed below.
+        const after = scanParenGroup(pos)
+        if (after < 0) {
           failed = true
           break
         }
+        pos = after
+      } else if (c === '$' && command[pos + 1] === '(') {
+        // `$(…)` substitution with paren-depth counting; quotes/escapes inside
+        // are honored so parens in string literals don't skew the depth.
+        const after = scanParenGroup(pos + 1)
+        if (after < 0) {
+          failed = true
+          break
+        }
+        pos = after
       } else if (c === '`') {
         // Backtick substitution: scan to closing backtick honoring `\` escapes.
         pos++
@@ -1370,12 +1454,57 @@ export function stripLeadingEnvAssignmentsQuoteAware(
           break
         }
         pos++
+      } else if (
+        c === '<' ||
+        c === '>' ||
+        (c === '&' && command[pos + 1] === '>')
+      ) {
+        // Redirection operator glued to the assignment word. Bash still runs
+        // the trailing command (`FOO=a<b rm x` runs `rm x`), and the official
+        // AST strips redirections natively — so SKIP the operator and its
+        // target instead of failing closed. Handles `<` `>` `<>` `<<` `<<-`
+        // `>|` `&>` `>&N`/`<&N`, process-substitution `>(…)`/`<(…)` targets,
+        // and space-separated targets (`FOO=a> out cmd`) by returning to the
+        // value loop, which consumes the target word through the same
+        // quote-aware branches.
+        if (c === '&') pos++
+        let lastOp = ''
+        while (pos < len && (command[pos] === '<' || command[pos] === '>')) {
+          lastOp = command[pos]!
+          pos++
+        }
+        if (lastOp === '<' && command[pos] === '-') {
+          pos++ // `<<-` heredoc with tab-stripping
+        } else if (command[pos] === '&') {
+          pos++ // fd dup: `>&1` / `<&2`
+        } else if (lastOp === '>' && command[pos] === '|') {
+          pos++ // `>|` noclobber override
+        }
+        if (command[pos] === '(') {
+          // Process substitution as the redirect target: `>(cmd)` / `<(cmd)`
+          const after = scanParenGroup(pos)
+          if (after < 0) {
+            failed = true
+            break
+          }
+          pos = after
+        }
+        while (pos < len && isSpace(command[pos]!)) pos++
       } else if (c === '\\') {
         if (pos + 1 >= len) {
           failed = true
           break
         }
         pos += 2
+      } else if (c === ';' || c === '|' || c === '&' || c === '(') {
+        // Bare (unquoted) command separator, or a mid-value paren (bash
+        // syntax error): the assignment word ENDS here and the text after
+        // belongs to another segment. Fail closed — no cross-segment
+        // candidate (that false-denies, e.g. `FOO=x|grep rm file`); the
+        // segments after the separator are deny-checked by splitCommand's
+        // per-subcommand recheck, which is where bash actually cuts.
+        failed = true
+        break
       } else {
         pos++
       }

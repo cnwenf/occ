@@ -5,7 +5,7 @@ import { useEffect } from 'react';
 import { Box, Text } from '../../ink.js';
 import { errorMessage } from '../../utils/errors.js';
 import { logError } from '../../utils/log.js';
-import { validateManifest } from '../../utils/plugins/validatePlugin.js';
+import { collectContentValidationResults, validateManifest } from '../../utils/plugins/validatePlugin.js';
 import { plural } from '../../utils/stringUtils.js';
 type Props = {
   onComplete: (result?: string) => void;
@@ -52,8 +52,41 @@ export function ValidatePlugin(t0) {
             output = output + "\n";
             output;
           }
-          if (result.success) {
-            if (result.warnings.length > 0) {
+
+          // OCC-107 acceptance-fix ③: splice in the co-located plugin.json /
+          // content-file results via the SAME shared composition the CLI
+          // handler (src/cli/handlers/plugins.ts) uses, so the TUI finally
+          // honors its help-text promise ("both, and the plugin, if both
+          // exist") instead of printing a fake pass over a broken plugin.
+          const contentResults = await collectContentValidationResults(path, result);
+          for (const r of contentResults) {
+            output = output + `Validating ${r.fileType}: ${r.filePath}\n\n`;
+            output;
+            if (r.errors.length > 0) {
+              output = output + `${figures.cross} Found ${r.errors.length} ${plural(r.errors.length, "error")}:\n\n`;
+              output;
+              r.errors.forEach(error_1 => {
+                output = output + `  ${figures.pointer} ${error_1.path}: ${error_1.message}\n`;
+                output;
+              });
+              output = output + "\n";
+              output;
+            }
+            if (r.warnings.length > 0) {
+              output = output + `${figures.warning} Found ${r.warnings.length} ${plural(r.warnings.length, "warning")}:\n\n`;
+              output;
+              r.warnings.forEach(warning_1 => {
+                output = output + `  ${figures.pointer} ${warning_1.path}: ${warning_1.message}\n`;
+                output;
+              });
+              output = output + "\n";
+              output;
+            }
+          }
+          const allSuccess = result.success && contentResults.every(r => r.success);
+          const hasWarnings = result.warnings.length > 0 || contentResults.some(r => r.warnings.length > 0);
+          if (allSuccess) {
+            if (hasWarnings) {
               output = output + `${figures.tick} Validation passed with warnings\n`;
               output;
             } else {

@@ -4,7 +4,6 @@
  */
 /* eslint-disable custom-rules/no-process-exit -- CLI subcommand handlers intentionally exit */
 import figures from 'figures'
-import { basename, dirname } from 'path'
 import { setUseCoworkPlugins } from '../../bootstrap/state.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -51,10 +50,9 @@ import {
 import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js'
 import type { PluginSource } from '../../utils/plugins/schemas.js'
 import {
+  collectContentValidationResults,
   type ValidationResult,
-  validateColocatedPlugin,
   validateManifest,
-  validatePluginContents,
 } from '../../utils/plugins/validatePlugin.js'
 import {
   redactCredentialsInText,
@@ -112,37 +110,18 @@ export async function pluginValidateHandler(
     console.log(`Validating ${result.fileType} manifest: ${result.filePath}\n`)
     printValidationResult(result)
 
-    // If this is a plugin manifest located inside a .claude-plugin directory,
-    // also validate the plugin's content files (skills, agents, commands,
-    // hooks). Works whether the user passed a directory or the plugin.json
-    // path directly.
-    let contentResults: ValidationResult[] = []
-    if (result.fileType === 'plugin') {
-      const manifestDir = dirname(result.filePath)
-      if (basename(manifestDir) === '.claude-plugin') {
-        contentResults = await validatePluginContents(dirname(manifestDir))
-      }
-    } else {
-      // CC 2.1.289 changelog #16/#22(a): when the user pointed validate at a
-      // FOLDER whose .claude-plugin/ holds BOTH marketplace.json and
-      // plugin.json, v288 returned the marketplace result and never validated
-      // the co-located plugin (official `kTt` early-return — OCC mirrored it
-      // in validateManifest's directory branch). v289's reader (`JTt`
-      // @v289:236588478) validates the co-located plugin.json too — with kind
-      // "anthropic" when an Anthropic-named marketplace lists this folder
-      // (#22(a), `p=c!==void 0&&qCn(c.name)&&c.plugins.some(m=>Ae(m,a,a))`) —
-      // and reports it only when it has findings (official `f` gate),
-      // alongside the plugin's content files. validateManifest keeps OCC's
-      // single-result signature; the composition happens here, like it
-      // already does for the plugin-file case (research-doc option b).
-      const colocated = await validateColocatedPlugin(manifestPath, result)
-      if (colocated) {
-        contentResults = [
-          ...(colocated.pluginResult ? [colocated.pluginResult] : []),
-          ...colocated.contents,
-        ]
-      }
-    }
+    // CC 2.1.289 changelog #16/#22(a) + OCC-107 acceptance-fix ③: the
+    // content-results composition (plugin manifest inside .claude-plugin →
+    // validatePluginContents of the plugin root; marketplace folder input →
+    // the f-gated co-located pluginResult + contents) now lives in the shared
+    // collectContentValidationResults helper so the TUI /plugin validate
+    // (ValidatePlugin.tsx) and this CLI handler can never diverge again —
+    // the TUI used to skip this composition entirely and printed a fake
+    // "Validation passed" over a broken co-located plugin.json.
+    const contentResults = await collectContentValidationResults(
+      manifestPath,
+      result,
+    )
     for (const r of contentResults) {
       console.log(`Validating ${r.fileType}: ${r.filePath}\n`)
       printValidationResult(r)
