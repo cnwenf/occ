@@ -153,7 +153,6 @@ export function shouldRenderModeCycleHint(mode: PermissionMode | undefined, prim
 export function shouldRenderShortcutsHint(input: {
   partsCount: number;
   hasTasksPart: boolean;
-  hasModePart: boolean;
   hasActiveModePart: boolean;
   showHint: boolean;
 }): boolean {
@@ -459,7 +458,6 @@ function ModeIndicator({
   if (shouldRenderShortcutsHint({
     partsCount: parts.length,
     hasTasksPart: !!tasksPart,
-    hasModePart: !!modePart,
     // Official `!(An&&Is&&Gn)`: only a NON-DEFAULT mode chip suppresses the
     // fallback — the manual-mode chip renders alongside "? for shortcuts".
     hasActiveModePart: !!modePart && hasActiveMode,

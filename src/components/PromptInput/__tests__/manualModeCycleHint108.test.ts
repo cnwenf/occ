@@ -87,19 +87,21 @@ describe('official shortcuts-hint fallback — mode chip does NOT suppress it', 
     // chip (es), and the `!(An&&Is&&Gn)` term only fires for a NON-DEFAULT
     // mode chip (Gn=!CQo). Manual mode → Gn=false → fallback renders, giving
     // the live-verified official footer `⏸ manual mode on · ? for shortcuts`.
-    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasModePart: true, hasActiveModePart: false, showHint: true })).toBe(true)
-    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasModePart: false, hasActiveModePart: false, showHint: true })).toBe(true)
+    // With the manual chip present (hasActiveModePart=false) …
+    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasActiveModePart: false, showHint: true })).toBe(true)
+    // … and with no chip at all — same verdict (the old `!modePart` term is gone).
+    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasActiveModePart: false, showHint: true })).toBe(true)
   })
 
   test('suppressed by a NON-DEFAULT mode chip (official !(An&&Is&&Gn) term)', () => {
     // e.g. acceptEdits/plan/auto: the chip already carries
     // `(shift+tab to cycle)`, so the fallback stays hidden.
-    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasModePart: true, hasActiveModePart: true, showHint: true })).toBe(false)
+    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasActiveModePart: true, showHint: true })).toBe(false)
   })
 
   test('suppressed by any part, the tasks pill, or showHint=false', () => {
-    expect(shouldRenderShortcutsHint({ partsCount: 1, hasTasksPart: false, hasModePart: true, hasActiveModePart: false, showHint: true })).toBe(false)
-    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: true, hasModePart: true, hasActiveModePart: false, showHint: true })).toBe(false)
-    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasModePart: true, hasActiveModePart: false, showHint: false })).toBe(false)
+    expect(shouldRenderShortcutsHint({ partsCount: 1, hasTasksPart: false, hasActiveModePart: false, showHint: true })).toBe(false)
+    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: true, hasActiveModePart: false, showHint: true })).toBe(false)
+    expect(shouldRenderShortcutsHint({ partsCount: 0, hasTasksPart: false, hasActiveModePart: false, showHint: false })).toBe(false)
   })
 })

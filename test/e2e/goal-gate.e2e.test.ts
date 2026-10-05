@@ -113,6 +113,13 @@ describe.skipIf(!!process.env.CI)("/goal trusted/hooks gate (tmux e2e)", () => {
       // "⏸ manual mode on · ? for shortcuts" — "shift+tab" only appears in
       // NON-default modes. Wait on the always-present chip text instead.
       expect(await waitForText("manual mode on", 20_000)).toBe(true);
+      // Mutation guard (OCC-108 acceptance P2): the ready-marker alone does not
+      // pin the gate — reverting shouldShowModeHint to the pre-PR
+      // `primaryItemCount < 2` keeps "manual mode on" on screen while the
+      // default-mode footer regresses to "(shift+tab to cycle)". This negative
+      // assertion kills that mutant: in default/manual mode "shift+tab" must
+      // NOT appear anywhere in the pane.
+      expect(capturePane().toLowerCase()).not.toContain("shift+tab");
       sendLine("/goal make all tests pass");
       // Official verbatim hooks-gate message.
       expect(await waitForText("hooks are restricted", 8_000)).toBe(true);
