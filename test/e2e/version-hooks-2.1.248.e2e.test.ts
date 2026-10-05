@@ -327,7 +327,7 @@ describe.skipIf(!!process.env.CI)('S24 regression in the interactive REPL (tmux 
     // Arrange: REPL home whose UserPromptSubmit hook exits 2 with malformed
     // JSON. No model needed — the block precedes any API call. The project
     // dir is pre-trusted in the seed so the REPL boots straight to the
-    // prompt; the mode-pill footer ("shift+tab to cycle") marks ready.
+    // prompt; the mode-pill footer ("manual mode on") marks ready.
     const root = mkdtempSync(join(tmpdir(), 'occ-108-repl-'))
     const proj = join(root, 'proj')
     mkdirSync(proj, { recursive: true })
@@ -338,7 +338,8 @@ describe.skipIf(!!process.env.CI)('S24 regression in the interactive REPL (tmux 
     )
     startRepl(home, proj)
     try {
-      expect(await waitForText('shift+tab', 30_000)).toBe(true)
+      // OCC-108: manual-mode footer no longer shows "shift+tab" — chip instead.
+      expect(await waitForText('manual mode on', 30_000)).toBe(true)
 
       // Act
       sendLine('hello 108')

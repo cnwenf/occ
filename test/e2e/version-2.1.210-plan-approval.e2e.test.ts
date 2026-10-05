@@ -134,7 +134,9 @@ describe.skipIf(SKIP)("2.1.210 plan-approval label (tmux e2e)", () => {
     const home = freshSeededHome(project);
     startRepl(home, project);
     try {
-      await waitForText("shift+tab", 25_000);
+      // OCC-108: manual-mode footer no longer shows "shift+tab" (official
+      // Gn=!CQo gate) — wait on the always-present mode chip instead.
+      await waitForText("manual mode on", 25_000);
       // Drive a plan-eliciting turn.
       sendLine("Read target.txt, then present a one-step plan to add a greeting comment at the top of target.txt.");
       // Wait for the ExitPlanMode approval dialog.
@@ -163,7 +165,9 @@ describe.skipIf(SKIP)("2.1.210 plan-approval label (tmux e2e)", () => {
     execSync(`chmod +x ${editorScript}`);
     startRepl(home, project, { EDITOR: editorScript });
     try {
-      await waitForText("shift+tab", 25_000);
+      // OCC-108: manual-mode footer no longer shows "shift+tab" (official
+      // Gn=!CQo gate) — wait on the always-present mode chip instead.
+      await waitForText("manual mode on", 25_000);
       sendLine("Read target.txt, then present a one-step plan to add a greeting comment at the top of target.txt.");
       await waitForText("exit plan mode", 60_000);
       // Edit the plan in the external editor via Ctrl+G, then approve.

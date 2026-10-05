@@ -107,12 +107,12 @@ describe.skipIf(!!process.env.CI)("/goal trusted/hooks gate (tmux e2e)", () => {
     const home = freshSeededHome({ trustForOcc: true, disableAllHooks: true });
     startRepl(home);
     try {
-      // Ready-gate: the idle footer. "? for shortcuts" was the old target, but
-      // since the 2.1.251 mode-indicator parity the default-mode chip
-      // ("⏸ manual mode on (shift+tab to cycle)") always renders and
-      // suppresses the shortcuts hint — wait on the stable chip hint instead
-      // (same target the sibling REPL e2es use).
-      expect(await waitForText("shift+tab", 20_000)).toBe(true);
+      // Ready-gate: the idle footer. OCC-108 aligned the manual-mode footer
+      // with the official binary (`Gn=!CQo(mode)` gate): in default/manual
+      // mode the cycle hint is suppressed and the footer reads
+      // "⏸ manual mode on · ? for shortcuts" — "shift+tab" only appears in
+      // NON-default modes. Wait on the always-present chip text instead.
+      expect(await waitForText("manual mode on", 20_000)).toBe(true);
       sendLine("/goal make all tests pass");
       // Official verbatim hooks-gate message.
       expect(await waitForText("hooks are restricted", 8_000)).toBe(true);
@@ -129,9 +129,9 @@ describe.skipIf(!!process.env.CI)("/goal trusted/hooks gate (tmux e2e)", () => {
     const home = freshSeededHome({ trustForOcc: true });
     startRepl(home);
     try {
-      // Ready-gate: see the first test — the mode chip suppresses the
-      // "? for shortcuts" hint, so wait on the stable chip hint.
-      expect(await waitForText("shift+tab", 20_000)).toBe(true);
+      // Ready-gate: see the first test — the manual-mode footer no longer
+      // contains "shift+tab" (OCC-108 official parity), so wait on the chip.
+      expect(await waitForText("manual mode on", 20_000)).toBe(true);
       sendLine("/goal make all tests pass");
       // The gate messages must NOT appear; "Goal set:" acks the set.
       // (This triggers a model query — the ack renders before the model replies.)

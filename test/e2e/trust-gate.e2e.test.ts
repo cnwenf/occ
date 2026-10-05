@@ -156,11 +156,11 @@ describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
       await new Promise((r) => setTimeout(r, 300));
       sendKeys("Enter");
       await dismissApiKeyDialogIfPresent();
-      // Ready marker: OCC's manual-mode footer renders "manual mode on
-      // (shift+tab to cycle)". (Official 2.1.263 renders "· ? for shortcuts ·
-      // ← for agents" on the same line — footer-composition divergence tracked
-      // in docs/upstream-version-gap-occ118.md, not a trust-gate concern.)
-      expect(await waitForText("shift+tab", 15_000)).toBe(true);
+      // Ready marker: OCC-108 aligned the manual-mode footer with the
+      // official binary — default/manual mode now renders
+      // "⏸ manual mode on · ? for shortcuts" (no "shift+tab" cycle hint;
+      // that only shows in NON-default modes). Wait on the chip text.
+      expect(await waitForText("manual mode on", 15_000)).toBe(true);
 
       // Trust persisted to .claude.json
       expect(readSettingsTrust(home).trust).toBe(true);
@@ -179,13 +179,13 @@ describe.skipIf(!!process.env.CI)("Trust gate (tmux e2e, fresh HOME)", () => {
       await new Promise((r) => setTimeout(r, 300));
       sendKeys("Enter"); // accept
       await dismissApiKeyDialogIfPresent();
-      expect(await waitForText("shift+tab", 15_000)).toBe(true);
+      expect(await waitForText("manual mode on", 15_000)).toBe(true);
       killRepl();
 
       // Reboot in the same HOME — trust already persisted, API-key rejection
       // persisted, so no dialogs: straight to the manual-mode REPL footer.
       startRepl(home);
-      expect(await waitForText("shift+tab", 15_000)).toBe(true);
+      expect(await waitForText("manual mode on", 15_000)).toBe(true);
       expect(capturePane().toLowerCase()).not.toContain("quick safety check");
     } finally {
       killRepl();

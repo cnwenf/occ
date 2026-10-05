@@ -14,6 +14,7 @@ import type { ToolPermissionContext } from '../../Tool.js';
 import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, permissionModeIndicator, permissionModeSymbol, getModeColor } from '../../utils/permissions/PermissionMode.js';
+import type { PermissionMode } from '../../types/permissions.js';
 import { BackgroundTaskStatus } from '../tasks/BackgroundTaskStatus.js';
 import { isBackgroundTask } from '../../tasks/types.js';
 import { isPanelAgentTask } from '../../tasks/LocalAgentTask/LocalAgentTask.js';
@@ -123,6 +124,40 @@ function ProactiveCountdown() {
     t4 = $[6];
   }
   return t4;
+}
+/**
+ * Official 2.1.289 cycle-hint gate (byte-verified, workdir/official-strings.txt
+ * @36621715 region): the mode chip renders its `(shift+tab to cycle)` child as
+ *   `Gn&&vs&&…e(B,{chord:Nt,action:"cycle",parens:!0,…})`
+ * where `Gn=!CQo(An)` and `function CQo(e){return e==="default"||e===void 0}`.
+ * So the hint is SUPPRESSED in default/manual mode and shown for every
+ * non-default mode while fewer than 2 primary items occupy the footer
+ * (`vs=sr<2&&…`, `sr=(Qo||Gn?1:0)+(rs?1:0)`). The width-headroom terms of
+ * `vs` stay staged (per-site decompilation pending — see the OCC-108 ledger);
+ * the mode gate + primary-item count are unambiguous.
+ */
+export function shouldRenderModeCycleHint(mode: PermissionMode | undefined, primaryItemCount: number): boolean {
+  return !isDefaultMode(mode) && primaryItemCount < 2;
+}
+/**
+ * Official 2.1.289 shortcuts-hint fallback (same renderer):
+ *   `if(ds.length===0&&!Qr&&!(An&&Is&&Gn)&&…){…ds.push(…"? for shortcuts"…)}`
+ * `ds` is the parts list WITHOUT the mode chip (`es` renders separately), so
+ * the MANUAL-mode chip does NOT suppress "? for shortcuts" — live-verified:
+ * the official manual-mode footer reads `⏸ manual mode on · ? for shortcuts ·
+ * ← for agents`. OCC's old `!modePart` term wrongly suppressed the hint ever
+ * since 2.1.203 made the chip render in default mode too. The official
+ * `!(An&&Is&&Gn)` term still suppresses the fallback when a NON-DEFAULT mode
+ * chip is on screen (Gn true) — `hasActiveModePart` mirrors exactly that.
+ */
+export function shouldRenderShortcutsHint(input: {
+  partsCount: number;
+  hasTasksPart: boolean;
+  hasModePart: boolean;
+  hasActiveModePart: boolean;
+  showHint: boolean;
+}): boolean {
+  return input.partsCount === 0 && !input.hasTasksPart && !input.hasActiveModePart && input.showHint;
 }
 export function PromptInputFooterLeftSide(t0) {
   const $ = _c(27);
@@ -337,8 +372,10 @@ function ModeIndicator({
   // low enough to show PR status on standard 80-col terminals.
   const shouldShowPrStatus = isPrStatusEnabled() && prStatus.number !== null && prStatus.reviewState !== null && prStatus.url !== null && primaryItemCount < 2 && (primaryItemCount === 0 || columns >= 80);
 
-  // Hide the shift+tab hint when there are 2 primary items
-  const shouldShowModeHint = primaryItemCount < 2;
+  // Hide the shift+tab hint when there are 2 primary items — and, per the
+  // official 2.1.289 `Gn=!CQo(mode)` gate, ALWAYS in default/manual mode
+  // (see shouldRenderModeCycleHint).
+  const shouldShowModeHint = shouldRenderModeCycleHint(currentMode, primaryItemCount);
 
   // Check if we have in-process teammates (showing pills)
   // In spinner-tree mode, pills are disabled - teammates appear in the spinner tree instead
@@ -419,7 +456,15 @@ function ModeIndicator({
   // reconciler throws on Box-in-Text. Computed here so the empty-checks
   // below still treat "pill present" as non-empty.
   const tasksPart = hasBackgroundTasks && !hasTeammatePills && !shouldHideTasksFooter(tasks, showSpinnerTree) ? <BackgroundTaskStatus tasksSelected={tasksSelected} isViewingTeammate={isViewingTeammate} teammateFooterIndex={teammateFooterIndex} isLeaderIdle={!isLoading} onOpenDialog={onOpenTasksDialog} /> : null;
-  if (parts.length === 0 && !tasksPart && !modePart && showHint) {
+  if (shouldRenderShortcutsHint({
+    partsCount: parts.length,
+    hasTasksPart: !!tasksPart,
+    hasModePart: !!modePart,
+    // Official `!(An&&Is&&Gn)`: only a NON-DEFAULT mode chip suppresses the
+    // fallback — the manual-mode chip renders alongside "? for shortcuts".
+    hasActiveModePart: !!modePart && hasActiveMode,
+    showHint
+  })) {
     parts.push(<Text dimColor key="shortcuts-hint">
         ? for shortcuts
       </Text>);
