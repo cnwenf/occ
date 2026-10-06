@@ -192,6 +192,14 @@ publish stale content).
 `bun run build` → `dist/cli.js` **29.89 MB (31,337,280 B)**, injected
 `MACRO.VERSION=2.1.370`, `MACRO.BINARY_NAME=occ`.
 
+Post-release-record rebuild (after the CHANGELOG 2.1.371 section +
+`package.json` bump, commit `chore(release): 2.1.371`): `bun run build` →
+same 29.89 MB (31,337,280 B), injected `MACRO.VERSION=2.1.371`;
+`./dist/cli.js --version` → `OCC 2.1.371`; headless `echo "say PONG" |
+./dist/cli.js -p` → `PONG`, exit 0; key-suite spot-check (`bun test
+src/utils/permissions` + `queuedRewindMessages290` + `planModeResume`)
+→ **356 pass / 1 skip / 0 fail / 854 expect()** across 28 files.
+
 ### 7.4 Live e2e — real API, production binary, tmux REPL
 
 Runtime env note: `ANTHROPIC_BASE_URL` points at the owner's Aliyun MaaS
