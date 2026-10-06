@@ -1498,37 +1498,28 @@ export const RIPGREP_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
   }
 
 // ---------------------------------------------------------------------------
-// PYRIGHT_READ_ONLY_COMMANDS — pyright static type checker
+// PYRIGHT_READ_ONLY_COMMANDS — removed in official 2.1.290
 // ---------------------------------------------------------------------------
-
-export const PYRIGHT_READ_ONLY_COMMANDS: Record<string, ExternalCommandConfig> =
-  {
-    pyright: {
-      respectsDoubleDash: false, // pyright treats -- as a file path, not end-of-options
-      safeFlags: {
-        '--outputjson': 'none',
-        '--project': 'string',
-        '-p': 'string',
-        '--pythonversion': 'string',
-        '--pythonplatform': 'string',
-        '--typeshedpath': 'string',
-        '--venvpath': 'string',
-        '--level': 'string',
-        '--stats': 'none',
-        '--verbose': 'none',
-        '--version': 'none',
-        '--dependencies': 'none',
-        '--warnings': 'none',
-      },
-      additionalCommandIsDangerousCallback: (
-        _rawCommand: string,
-        args: string[],
-      ) => {
-        // Check if --watch or -w appears as a standalone token (flag)
-        return args.some(t => t === '--watch' || t === '-w')
-      },
-    },
-  }
+// The `pyright` read-only auto-allow entry (289's standalone `AVo` object,
+// spread into the read-only table) was deleted ENTIRELY upstream in 2.1.290.
+// Byte-verified (verify-290-snippets-report.md ITEM #4): 289 spread `...AVo`
+// (AVo = `{pyright:{respectsDoubleDash:!1,safeFlags:{...},
+// additionalCommandIsDangerousCallback:(e,n)=>n.some(r=>r==="--watch"||
+// r==="-w")}}` @cc289 204054681) into the assembly @209993049 (`...AVo,...gbn,`);
+// 290 drops it and spreads only `...CTn,` @213184268 (CTn = gbn renamed =
+// docker logs / docker inspect). Motive prose new in 290 (@219331639/@219346683):
+// pyright "runs python3 there, which imports from that directory first" -> an
+// interpreter in cwd is never read-only. Grep-hit correction (supersedes the
+// earlier "Fig completion spec" reading): 289 had TWO `pyright:{` byte hits --
+// one real CommandConfig (`AVo`), one `copyright:{` HTML-entity-table FALSE
+// POSITIVE; 290/291 retain only the false positive, so the REAL CommandConfig
+// count went 1 -> 0. The genuine Fig completion spec is a DIFFERENT literal
+// (`{name:"pyright",description:"Type checker for Python"}` @213481051), kept in
+// all versions -- it was never the second `pyright:{` hit. OCC mirrors the
+// deletion: no PYRIGHT_READ_ONLY_COMMANDS constant, no spread into
+// COMMAND_ALLOWLIST (see src/tools/BashTool/readOnlyValidation.ts). OCC keeps
+// its own completion spec at src/utils/bash/specs/pyright.ts.
+// See docs/gap-research-291/cluster-a-bash-permissions.md #4.
 
 // ---------------------------------------------------------------------------
 // EXTERNAL_READONLY_COMMANDS — cross-shell read-only commands
@@ -1718,9 +1709,12 @@ export function validateFlags(
 
     if (token === '--') {
       // SECURITY: Only break if the tool respects POSIX `--` (default: true).
-      // Tools like pyright don't respect `--` — they treat it as a file path
-      // and continue processing subsequent tokens as flags. Breaking here
-      // would let `pyright -- --createstub os` auto-approve a file-write flag.
+      // Some tools don't respect `--` — they treat it as a positional/file
+      // operand and keep processing subsequent tokens as flags. Breaking here
+      // would let a smuggled write/execute flag after `--` auto-approve.
+      // Current `respectsDoubleDash:false` tools: macOS `base64` and `ps`
+      // (e.g. `ps -- -e …` must NOT terminate option parsing). (pyright used
+      // this mechanism pre-2.1.290 but was de-listed entirely — see #4 above.)
       if (config.respectsDoubleDash !== false) {
         i++
         break // Everything after -- is arguments

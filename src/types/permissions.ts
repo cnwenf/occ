@@ -362,8 +362,16 @@ export type PermissionDecisionReason =
        * `circuitBreaker:"dangerousRemoval"` — a marker that no permission
        * rule, bypassPermissions mode, or auto-mode classifier may override
        * the check. Optional: only dangerous-rm safety checks set it.
+       *
+       * CC 2.1.291 (cluster C item 1, security 🔒): the official y1 write
+       * gate's settings branch (and its 289 dB predecessor) carries
+       * `circuitBreaker:"claudeSettingsFile"` for every settings-file write
+       * ask, including writes that land on the TARGET of a symlinked
+       * settings file (the 291 fix — such writes also get
+       * classifierApprovable:false and the "…leads here through a link."
+       * message suffix).
        */
-      circuitBreaker?: 'dangerousRemoval'
+      circuitBreaker?: 'dangerousRemoval' | 'claudeSettingsFile'
     }
   | {
       type: 'other'

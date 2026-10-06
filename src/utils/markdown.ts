@@ -1,5 +1,5 @@
 import chalk from 'chalk'
-import { marked, type Token, type Tokens } from 'marked'
+import { marked, Tokenizer, type Token, type Tokens } from 'marked'
 import stripAnsi from 'strip-ansi'
 import { color } from '../components/design-system/color.js'
 import { BLOCKQUOTE_BAR } from '../constants/figures.js'
@@ -8,6 +8,10 @@ import { supportsHyperlinks } from '../ink/supports-hyperlinks.js'
 import type { CliHighlight } from './cliHighlight.js'
 import { logForDebugging } from './debug.js'
 import { createHyperlink } from './hyperlink.js'
+import {
+  markdownLexGuard,
+  maxNestingFallbackToken,
+} from './markdownLexLevel.js'
 import { stripPromptXMLTags } from './messages.js'
 import type { ThemeName } from './theme.js'
 
@@ -16,18 +20,83 @@ import type { ThemeName } from './theme.js'
 // causing styled text to shift right.
 const EOL = '\n'
 
+/**
+ * CC 2.1.290 render-catch fallback message — byte-exact from the official
+ * 2.1.290 linux-x64 binary string table (em-dash U+2014, verified via the
+ * UTF-8 bytes e2 80 94):
+ * "markdown rendering exceeded the stack — input is too deeply nested"
+ */
+export const MARKDOWN_STACK_FALLBACK_MESSAGE =
+  'markdown rendering exceeded the stack — input is too deeply nested'
+
+// CC 2.1.290 guard (official `z` extension @216038583): the blockquote/list/
+// emStrong wrappers call the PRISTINE prototype tokenizers captured here.
+// `marked.use({tokenizer})` wraps the default tokenizer instance (not the
+// prototype), and the wrapper's `false` return makes marked fall through to
+// that instance's own method — which is the wrapped one — so capturing the
+// prototype originals keeps the guard wrappers from recursing into themselves.
+// Official: `se/oe/ie = AIe.prototype.{blockquote,list,emStrong}`.
+const originalBlockquote = Tokenizer.prototype.blockquote
+const originalList = Tokenizer.prototype.list
+const originalEmStrong = Tokenizer.prototype.emStrong
+
 let markedConfigured = false
 
 export function configureMarked(): void {
   if (markedConfigured) return
   markedConfigured = true
 
-  // Disable strikethrough parsing - the model often uses ~ for "approximate"
-  // (e.g., ~100) and rarely intends actual strikethrough formatting
   marked.use({
     tokenizer: {
+      // Disable strikethrough parsing - the model often uses ~ for "approximate"
+      // (e.g., ~100) and rarely intends actual strikethrough formatting.
+      // (The official 290 `z` extension replaces `del` with a strict custom
+      // `~~...~~` tokenizer; OCC keeps its documented disable divergence —
+      // out of scope for this guard port.)
       del() {
         return undefined
+      },
+      // CC 2.1.290 cluster E item #1 — depth-guarded recursive tokenizers.
+      // Official verbatim (@216038583):
+      //   blockquote(e){return this.rules.other.blockquoteStart.test(e)
+      //     ?w.lexLevel(this.lexer,()=>se.call(this,e)):void 0}
+      blockquote(src) {
+        return this.rules.other.blockquoteStart.test(src)
+          ? markdownLexGuard.lexLevel(this.lexer, () =>
+              originalBlockquote.call(this, src),
+            )
+          : undefined
+      },
+      //   list(e){return this.rules.block.list.test(e)
+      //     ?w.lexLevel(this.lexer,()=>oe.call(this,e)):void 0}
+      list(src) {
+        return this.rules.block.list.test(src)
+          ? markdownLexGuard.lexLevel(this.lexer, () =>
+              originalList.call(this, src),
+            )
+          : undefined
+      },
+      //   emStrong(e,t,n){return this.rules.inline.emStrongLDelim.test(e)
+      //     ?w.lexLevel(this.lexer,()=>ie.call(this,e,t,n)):void 0}
+      emStrong(src, maskedSrc, prevChar) {
+        return this.rules.inline.emStrongLDelim.test(src)
+          ? markdownLexGuard.lexLevel(this.lexer, () =>
+              originalEmStrong.call(this, src, maskedSrc, prevChar),
+            )
+          : undefined
+      },
+      // At-cap flattening fallback. Official verbatim:
+      //   paragraph(e){let t=B(this,e);return t?{type:"paragraph",...t}:!1}
+      //   text(e){let t=B(this,e);return t?{type:"text",...t}:!1}
+      // `false` = marked's "fall through to the original tokenizer" signal;
+      // B short-circuits on a cheap WeakMap read when below the cap.
+      paragraph(src) {
+        const flat = maxNestingFallbackToken(this, src)
+        return flat ? { type: 'paragraph', ...flat } : false
+      },
+      text(src) {
+        const flat = maxNestingFallbackToken(this, src)
+        return flat ? { type: 'text', ...flat } : false
       },
     },
   })
@@ -39,11 +108,21 @@ export function applyMarkdown(
   highlight: CliHighlight | null = null,
 ): string {
   configureMarked()
-  return marked
-    .lexer(stripPromptXMLTags(content))
-    .map(_ => formatToken(_, theme, 0, null, null, highlight))
-    .join('')
-    .trim()
+  try {
+    return marked
+      .lexer(stripPromptXMLTags(content))
+      .map(_ => formatToken(_, theme, 0, null, null, highlight))
+      .join('')
+      .trim()
+  } catch (error) {
+    // CC 2.1.290 render catch: a stack overflow anywhere in lex/format
+    // degrades to the official fallback message as plain text instead of
+    // crashing the caller. RangeError ONLY — every other error rethrows.
+    if (error instanceof RangeError) {
+      return MARKDOWN_STACK_FALLBACK_MESSAGE
+    }
+    throw error
+  }
 }
 
 /**

@@ -16,6 +16,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
+import { escapeControlCharsAsEntities } from '../../utils/displayEscape.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isENOENT } from '../../utils/errors.js'
 import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
@@ -444,18 +445,20 @@ export const FileWriteTool = buildTool({
       // silently ended the turn as DECLINED PERMISSION. Surface a clear
       // validation error instead. Messages + errorCodes are byte-copied from
       // the binary; the interpolated path is the raw input (not expandPath'd),
-      // matching the official `${g}`.
+      // matching the official `${ad(g)}` (CC 2.1.291 G#9: ad =
+      // escapeControlCharsAsEntities, so a control char in the path renders as
+      // `&#NN;` instead of breaking the single-line message).
       if (fileStat.isDirectory()) {
         return {
           result: false,
-          message: `${file_path} is a directory, not a file. To create a file inside it, include the file name in file_path.`,
+          message: `${escapeControlCharsAsEntities(file_path)} is a directory, not a file. To create a file inside it, include the file name in file_path.`,
           errorCode: 17,
         }
       }
       if (!fileStat.isFile()) {
         return {
           result: false,
-          message: `${file_path} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
+          message: `${escapeControlCharsAsEntities(file_path)} exists but is not a regular file (a device, FIFO or socket). Write only creates or overwrites regular files.`,
           errorCode: 18,
         }
       }

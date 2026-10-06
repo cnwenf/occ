@@ -3,6 +3,7 @@ import { basename, relative } from 'path';
 import React, { Suspense, use, useMemo } from 'react';
 import { FileEditToolDiff } from 'src/components/FileEditToolDiff.js';
 import { getCwd } from 'src/utils/cwd.js';
+import { escapeControlCharsAsEntities } from 'src/utils/displayEscape.js';
 import { isENOENT } from 'src/utils/errors.js';
 import { detectEncodingForResolvedPath } from 'src/utils/fileRead.js';
 import { getFsImplementation } from 'src/utils/fsOperations.js';
@@ -176,7 +177,9 @@ function SedEditPermissionRequestInner(t0) {
   const t8 = props.onReject;
   let t9;
   if ($[14] !== filePath) {
-    t9 = relative(getCwd(), filePath);
+    // CC 2.1.291 (G#9): escape control chars (incl. line breaks) in the
+    // displayed path so a filename with \n can't spoof extra dialog lines.
+    t9 = escapeControlCharsAsEntities(relative(getCwd(), filePath));
     $[14] = filePath;
     $[15] = t9;
   } else {
@@ -184,7 +187,7 @@ function SedEditPermissionRequestInner(t0) {
   }
   let t10;
   if ($[16] !== filePath) {
-    t10 = basename(filePath);
+    t10 = escapeControlCharsAsEntities(basename(filePath));
     $[16] = filePath;
     $[17] = t10;
   } else {

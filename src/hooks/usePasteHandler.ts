@@ -1,21 +1,58 @@
-import { basename } from 'path'
+import { basename, isAbsolute } from 'path'
 import React from 'react'
 import { logError } from 'src/utils/log.js'
 import { useDebounceCallback } from 'usehooks-ts'
 import type { InputEvent, Key } from '../ink.js'
 import type { TerminalQuerier } from '../ink/terminal-querier.js'
+import { AppStoreContext } from '../state/AppState.js'
+import type { ToolPermissionContext } from '../Tool.js'
+import { logForDiagnosticsNoPII } from '../utils/diagLogs.js'
+import { logForDebugging } from '../utils/debug.js'
 import {
+  asImageFilePath,
   getImageFromClipboard,
   isImageFilePath,
   PASTE_THRESHOLD,
   tryReadImageFromPath,
 } from '../utils/imagePaste.js'
+import type { ImageWithDimensions } from '../utils/imagePaste.js'
 import { readClipboardImageViaOSC52 } from '../utils/osc52ClipboardRead.js'
+import { readPastedFileGuarded } from '../utils/permissions/guardedRead.js'
+import { getPersistedReadDenyContext } from '../utils/permissions/readDeny.js'
 import type { ImageDimensions } from '../utils/imageResizer.js'
 import { getPlatform } from '../utils/platform.js'
 
 const CLIPBOARD_CHECK_DEBOUNCE_MS = 50
 const PASTE_COMPLETION_TIMEOUT_MS = 100
+
+/** Telemetry event for a drag/paste of image paths that produced no image. */
+const IMAGE_DRAG_EVENT = 'input_image_drag'
+
+/** Official v290's three failure reasons (byte-verified @220573300). */
+type ImageDragFailureReason = 'read_withheld' | 'read_failed' | 'read_threw'
+
+/**
+ * Official `p("input_image_drag", reason)` / `m("input_image_drag",
+ * "read_threw")`. OCC's PII-free diagnostics sink is the testable stand-in for
+ * the OTel counter (which no-ops under NODE_ENV=test); the event name and the
+ * reason strings are byte-identical, and neither carries a path.
+ */
+function logImageDragFailure(reason: ImageDragFailureReason): void {
+  logForDiagnosticsNoPII('warn', IMAGE_DRAG_EVENT, { reason })
+}
+
+/**
+ * Official `he=K.every((be)=>yr(PNr(be)??""))` with `yr` = `isAbsolute` from
+ * "path" (byte-verified in the chunk's import list @220572106): every cleaned
+ * image path in the gesture is absolute. The temp-screenshot clipboard
+ * fallback only applies to a real drag — a VSCode-terminal bare filename must
+ * not trigger a clipboard read.
+ */
+function allPastedImagePathsAbsolute(imagePaths: readonly string[]): boolean {
+  return imagePaths.every(
+    imagePath => isAbsolute(asImageFilePath(imagePath) ?? ''),
+  )
+}
 
 type PasteHandlerProps = {
   onPaste?: (text: string) => void
@@ -61,6 +98,33 @@ export function usePasteHandler({
   const pastePendingRef = React.useRef(false)
 
   const isMacOS = React.useMemo(() => getPlatform() === 'macos', [])
+
+  const appStore = React.useContext(AppStoreContext)
+
+  /**
+   * Official v290's paste-read context getter (byte-verified @220572106):
+   * ```js
+   * ()=>{let he=o?.getState().toolPermissionContext; return he?[he,igs(he)]:[]}
+   * ```
+   * `o` is the app store read from context — BOTH the live context and the
+   * persisted-deny-only view (`igs`) are consulted on every read, and a
+   * missing store yields an empty array, which `resolveGuardedRead` fails
+   * closed on (`"refused"`). Live closure, not a snapshot: official re-invokes
+   * it on both sides of the symlink resolution.
+   */
+  const getPermissionContexts = React.useCallback(
+    (): readonly ToolPermissionContext[] => {
+      const context = appStore?.getState().toolPermissionContext
+      return context ? [context, getPersistedReadDenyContext()] : []
+    },
+    [appStore],
+  )
+
+  /** Official `iLo`'s third parameter: `sgs(path, getPermissionContexts, …)`. */
+  const readPastedImage = React.useCallback(
+    (path: string) => readPastedFileGuarded(path, getPermissionContexts),
+    [getPermissionContexts],
+  )
 
   React.useEffect(() => {
     return () => {
@@ -133,6 +197,7 @@ export function usePasteHandler({
           isMacOS,
           hasQuerier,
           pastePendingRef,
+          readPastedImage,
         ) => {
           pastePendingRef.current = false
           setPasteState(({ chunks }) => {
@@ -165,42 +230,80 @@ export function usePasteHandler({
 
               // Process all image paths
               void Promise.all(
-                imagePaths.map(imagePath => tryReadImageFromPath(imagePath)),
-              ).then(results => {
-                const validImages = results.filter(
-                  (r): r is NonNullable<typeof r> => r !== null,
-                )
-
-                if (validImages.length > 0) {
-                  // Successfully read at least one image
-                  for (const imageData of validImages) {
-                    const filename = basename(imageData.path)
-                    onImagePaste(
-                      imageData.base64,
-                      imageData.mediaType,
-                      filename,
-                      imageData.dimensions,
-                      imageData.path,
-                    )
+                imagePaths.map(imagePath =>
+                  tryReadImageFromPath(imagePath, readPastedImage),
+                ),
+              )
+                .then(results => {
+                  if (!isMountedRef.current) {
+                    return
                   }
-                  // If some paths weren't images, paste them as text
-                  const nonImageLines = lines.filter(
-                    line => !isImageFilePath(line),
+                  // Official: `we=me.includes("refused")` — a denial withholds
+                  // THAT image, disables the clipboard fallback for the whole
+                  // gesture and reports `read_withheld` instead of
+                  // `read_failed` when nothing survived.
+                  const anyRefused = results.includes('refused')
+                  const validImages = results.filter(
+                    (r): r is ImageWithDimensions & { path: string } =>
+                      r !== null && r !== 'refused',
                   )
-                  if (nonImageLines.length > 0 && onPaste) {
-                    onPaste(nonImageLines.join('\n'))
+
+                  if (validImages.length > 0) {
+                    // Successfully read at least one image
+                    for (const imageData of validImages) {
+                      const filename = basename(imageData.path)
+                      onImagePaste(
+                        imageData.base64,
+                        imageData.mediaType,
+                        filename,
+                        imageData.dimensions,
+                        imageData.path,
+                      )
+                    }
+                    // If some paths weren't images, paste them as text
+                    const nonImageLines = lines.filter(
+                      line => !isImageFilePath(line),
+                    )
+                    if (nonImageLines.length > 0 && onPaste) {
+                      onPaste(nonImageLines.join('\n'))
+                    }
+                    setIsPasting(false)
+                  } else if (
+                    isTempScreenshot &&
+                    isMacOS &&
+                    !anyRefused &&
+                    allPastedImagePathsAbsolute(imagePaths)
+                  ) {
+                    // For temporary screenshot files that no longer exist, try clipboard
+                    checkClipboardForImage()
+                  } else {
+                    logImageDragFailure(
+                      anyRefused ? 'read_withheld' : 'read_failed',
+                    )
+                    if (onPaste) {
+                      onPaste(pastedText)
+                    }
+                    setIsPasting(false)
                   }
-                  setIsPasting(false)
-                } else if (isTempScreenshot && isMacOS) {
-                  // For temporary screenshot files that no longer exist, try clipboard
-                  checkClipboardForImage()
-                } else {
+                })
+                .catch(error => {
+                  // Official gained this arm in v290 alongside the guard: a
+                  // read that throws must not leave the paste half-swallowed.
+                  if (!isMountedRef.current) {
+                    return
+                  }
+                  logImageDragFailure('read_threw')
+                  logForDebugging(
+                    `Image paste read failed: ${
+                      error instanceof Error ? error.message : String(error)
+                    }`,
+                    { level: 'error' },
+                  )
                   if (onPaste) {
                     onPaste(pastedText)
                   }
                   setIsPasting(false)
-                }
-              })
+                })
               return { chunks: [], timeoutId: null }
             }
 
@@ -231,9 +334,17 @@ export function usePasteHandler({
         isMacOS,
         !!querier,
         pastePendingRef,
+        readPastedImage,
       )
     },
-    [checkClipboardForImage, isMacOS, onImagePaste, onPaste, querier],
+    [
+      checkClipboardForImage,
+      isMacOS,
+      onImagePaste,
+      onPaste,
+      querier,
+      readPastedImage,
+    ],
   )
 
   // Paste detection is now done via the InputEvent's keypress.isPasted flag,

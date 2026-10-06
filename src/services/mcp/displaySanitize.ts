@@ -19,7 +19,18 @@
  * routes display strings through this family: NFKC normalization, invisible-
  * character stripping (prompt-injection defense), quote/angle-bracket
  * neutralization, secret-pattern redaction, and code-point-safe truncation.
+ *
+ * CC 2.1.290 (cluster E item #6): both NFKC sites now route through the
+ * chunked engine `zTe` (src/utils/chunkedNormalize.ts), matching the official
+ * 2.1.290 `Zr`/`Da` (`Da(zTe(e).replace(/['`]/g," "),n,"none")` and
+ * `iao(zTe(e)).replaceAll(...)`) — a malicious tool description or server
+ * name with a very long combining-character run can no longer stall the
+ * tool-list / permission-prompt render on platforms whose `.normalize()`
+ * degrades on such runs (JSC). Output is byte-equivalent to direct
+ * `.normalize('NFKC')` (Unicode-guaranteed canonical equivalence).
  */
+
+import { chunkedNFKC } from '../../utils/chunkedNormalize.js'
 
 /** Binary `jo` @187512407 — surrogate pairs, lone high, lone low. */
 const SURROGATE_PATTERN =
@@ -191,7 +202,7 @@ export function sanitizeForDisplay(
   redact: 'all' | 'none' = 'all',
 ): string {
   if (typeof input !== 'string') return ''
-  const cleaned = stripInvisibleForDisplay(input.normalize('NFKC'))
+  const cleaned = stripInvisibleForDisplay(chunkedNFKC(input))
     .replaceAll(
       /[<>";\u2018\u2019\u201A\u201C\u201D\u201E\u00AB\u20BB\u2039\u203A\u2329\u232A\u27E8\u27E9\u27EA\u27EB\u3008\u3009\u300A\u300B]/g,
       ' ',
@@ -222,7 +233,7 @@ export function sanitizeDisplayUrl(url: string, max = 1024): string {
 export function sanitizeServerNameForDisplay(name: unknown, max = 64): string {
   if (typeof name !== 'string') return ''
   return sanitizeForDisplay(
-    name.normalize('NFKC').replace(/['`]/g, ' '),
+    chunkedNFKC(name).replace(/['`]/g, ' '),
     max,
     'none',
   )

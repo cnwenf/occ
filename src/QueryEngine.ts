@@ -19,6 +19,10 @@ import type { BetaMessageDeltaUsage } from '@anthropic-ai/sdk/resources/beta/mes
 import { accumulateUsage, updateUsage } from 'src/services/api/claude.js'
 import type { NonNullableUsage } from 'src/services/api/logging.js'
 import { EMPTY_USAGE } from 'src/services/api/logging.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from 'src/services/analytics/index.js'
 import stripAnsi from 'strip-ansi'
 import type { Command } from './commands.js'
 import { getSlashCommandToolSkills } from './commands.js'
@@ -69,7 +73,7 @@ import {
 } from './utils/fileStateCache.js'
 import { headlessProfilerCheckpoint } from './utils/headlessProfiler.js'
 import { registerStructuredOutputEnforcement } from './utils/hooks/hookHelpers.js'
-import { getInMemoryErrors } from './utils/log.js'
+import { getInMemoryErrors, logError } from './utils/log.js'
 import { countToolCalls, createSystemMessage, SYNTHETIC_MESSAGES } from './utils/messages.js'
 import { stampMaxTurnsExitCommitted } from './utils/attachments.js'
 import {
@@ -223,6 +227,205 @@ export type QueryEngineConfig = {
     yieldedSystemMsg: Message,
     store: Message[],
   ) => { messages: Message[]; executed: boolean } | undefined
+}
+
+// ---------------------------------------------------------------------------
+// CC 2.1.290 (cluster-f item C) — trailing API-error notice skip.
+//
+// Official 2.1.290 added `yOo` (@217856370 in the 2.1.290 linux-x64 ELF,
+// byte-identical in 2.1.291; `tengu_trailing_api_error_notice_skipped` has
+// 0 hits in cc289 → the fix is new in 2.1.290). Verbatim official:
+//
+//   function yOo({trailing:e,preceding:s,terminalReason:n,retractionExhausted:r}){
+//     return e?.type==="assistant"&&e.isApiErrorMessage===!0&&e.error==="server_error"
+//       &&n==="completed"&&!r&&s!==void 0&&uht(s)&&ehn(s)!==!1}
+//   function uht(e){if(e.type!=="user")return!1;let n=e.message.content;
+//     if(!Array.isArray(n)||n.length===0)return!1;
+//     return n.every(r=>typeof r==="object"&&r!==null&&"type"in r&&r.type==="tool_result")}
+//   var KKt="claude/endTurn";function VKt(e){return e?._meta?.[KKt]===!0}
+//   function ehn(e){if(e.type!=="user")return!1;
+//     let n=e.toolEndsTurn?"tool":VKt(e.mcpMeta)?"mcp_meta":!1;if(!n)return!1;
+//     let r=e.message.content;
+//     if(Array.isArray(r)&&r.some(s=>s.type==="tool_result"&&s.is_error===!0))return!1;
+//     return n}
+//
+// Call site (official envelope builder): `if(et&&yOo({trailing:qt,
+// preceding:pt.at(-2),terminalReason:kt,retractionExhausted:gt.length===0&&
+// Wt.size>0})) et=!1,Ft=null,Mt=void 0,It=void 0,Ut="",ct="tool_use",
+// i("tengu_trailing_api_error_notice_skipped",{engine:_("session_engine"),
+// has_structured_output:gt.length>0})` — where `et` is the envelope's
+// is_error, `Ut`/`Ct` the result text, `ct` the stop_reason, `gt` the
+// delivered structured outputs and `kt` query()'s terminal `{reason}`.
+// Followed by `let os=et?Ut:Ct; if(os===""){let W=gt.at(-1)?.data;
+// if(W!==void 0)os=JSON.stringify(W)}`.
+// ---------------------------------------------------------------------------
+
+/** Official `KKt` — the MCP `_meta` key that marks a turn-ending tool. */
+const MCP_END_TURN_META_KEY = 'claude/endTurn'
+
+type ContentBlockLike = { type?: unknown; [key: string]: unknown }
+
+function asContentBlocks(content: unknown): ContentBlockLike[] | undefined {
+  return Array.isArray(content) ? (content as ContentBlockLike[]) : undefined
+}
+
+function isToolResultBlock(block: ContentBlockLike): boolean {
+  return (
+    typeof block === 'object' &&
+    block !== null &&
+    'type' in block &&
+    block.type === 'tool_result'
+  )
+}
+
+/** Official `VKt`. */
+function hasMcpEndTurnMeta(mcpMeta: unknown): boolean {
+  const meta = (mcpMeta as { _meta?: Record<string, unknown> } | undefined)
+    ?._meta
+  return meta?.[MCP_END_TURN_META_KEY] === true
+}
+
+/** Official `uht` — the row is a user row of nothing but tool_result blocks. */
+function isToolResultOnlyUserRow(msg: Message | undefined): boolean {
+  if (msg === undefined || msg.type !== 'user') return false
+  const blocks = asContentBlocks(msg.message?.content)
+  if (blocks === undefined || blocks.length === 0) return false
+  return blocks.every(block => isToolResultBlock(block))
+}
+
+/**
+ * OCC ids of the StructuredOutput `tool_use` blocks issued during the current
+ * query — OCC's stand-in for official's per-row `toolEndsTurn` flag.
+ */
+function collectStructuredOutputToolUseIds(
+  turnRows: readonly Message[],
+): Set<string> {
+  const ids = new Set<string>()
+  for (const row of turnRows) {
+    if (row.type !== 'assistant') continue
+    for (const block of asContentBlocks(row.message?.content) ?? []) {
+      if (
+        block.type === 'tool_use' &&
+        block.name === SYNTHETIC_OUTPUT_TOOL_NAME &&
+        typeof block.id === 'string'
+      ) {
+        ids.add(block.id)
+      }
+    }
+  }
+  return ids
+}
+
+function answersToolUse(
+  msg: Message,
+  toolUseIds: ReadonlySet<string>,
+): boolean {
+  if (toolUseIds.size === 0) return false
+  const blocks = asContentBlocks(msg.message?.content)
+  if (blocks === undefined) return false
+  return blocks.some(
+    block =>
+      isToolResultBlock(block) &&
+      typeof block.tool_use_id === 'string' &&
+      toolUseIds.has(block.tool_use_id),
+  )
+}
+
+/**
+ * Official `ehn` — which kind of turn-ending tool result this row is, or
+ * `false` when it is not one (or when any tool_result in it errored).
+ *
+ * OCC mapping note: official's first branch reads `e.toolEndsTurn`, a field
+ * the official tool runner stamps from `Tool.call()`'s `endsTurn:!0` return
+ * (SyntheticOutputTool @209542699 returns it; the user-message factory then
+ * carries it as `toolEndsTurn` @212350884). OCC has no `endsTurn` plumbing
+ * (`grep -rn endsTurn src` → 0 hits), so the verbatim branch is kept for the
+ * day it lands and, until then, the equivalent signal is derived: the row
+ * answers a `StructuredOutput` tool_use issued in this same turn. The
+ * `claude/endTurn` mcpMeta branch and the errored-tool_result veto are
+ * verbatim.
+ */
+function classifyTurnEndingToolResultRow(
+  msg: Message | undefined,
+  structuredOutputToolUseIds: ReadonlySet<string>,
+): 'tool' | 'mcp_meta' | false {
+  if (msg === undefined || msg.type !== 'user') return false
+  const kind: 'tool' | 'mcp_meta' | false =
+    msg.toolEndsTurn || answersToolUse(msg, structuredOutputToolUseIds)
+      ? 'tool'
+      : hasMcpEndTurnMeta(msg.mcpMeta)
+        ? 'mcp_meta'
+        : false
+  if (!kind) return false
+  const blocks = asContentBlocks(msg.message?.content)
+  if (
+    blocks !== undefined &&
+    blocks.some(block => isToolResultBlock(block) && block.is_error === true)
+  ) {
+    return false
+  }
+  return kind
+}
+
+/** Official `yOo`. */
+function shouldSkipTrailingApiErrorNotice(args: {
+  trailing: Message | undefined
+  preceding: Message | undefined
+  terminalReason: string | undefined
+  retractionExhausted: boolean
+  structuredOutputToolUseIds: ReadonlySet<string>
+}): boolean {
+  const {
+    trailing,
+    preceding,
+    terminalReason,
+    retractionExhausted,
+    structuredOutputToolUseIds,
+  } = args
+  return (
+    trailing?.type === 'assistant' &&
+    trailing.isApiErrorMessage === true &&
+    trailing.error === 'server_error' &&
+    terminalReason === 'completed' &&
+    !retractionExhausted &&
+    preceding !== undefined &&
+    isToolResultOnlyUserRow(preceding) &&
+    classifyTurnEndingToolResultRow(preceding, structuredOutputToolUseIds) !==
+      false
+  )
+}
+
+/** Second-to-last assistant|user row — official `pt.at(-2)`.
+ *
+ * OCC's `messages` array also holds attachment/progress rows, so the pair is
+ * taken from the same assistant|user filter OCC already applies when picking
+ * the terminal `result` row. */
+function findPrecedingTerminalRow(
+  messages: readonly Message[],
+  trailing: Message | undefined,
+): Message | undefined {
+  const trailingIndex =
+    trailing === undefined ? -1 : messages.lastIndexOf(trailing)
+  const start = trailingIndex === -1 ? messages.length - 1 : trailingIndex - 1
+  for (let i = start; i >= 0; i--) {
+    const row = messages[i]
+    if (row.type === 'assistant' || row.type === 'user') return row
+  }
+  return undefined
+}
+
+/**
+ * `yield*` delegation that surfaces the inner generator's return value.
+ * `for await...of` discards it, and official reads the turn's terminal reason
+ * from exactly that value (`kt=W.value?W.value.reason:void 0`). Delegation
+ * (rather than a hand-rolled iterator) keeps early `return`/`throw`
+ * propagation to the inner generator intact.
+ */
+async function* captureTerminalReason<T, TReturn>(
+  source: AsyncGenerator<T, TReturn>,
+  onTerminal: (value: TReturn) => void,
+): AsyncGenerator<T, void> {
+  onTerminal(yield* source)
 }
 
 /**
@@ -822,18 +1025,30 @@ export class QueryEngine {
       ? countToolCalls(this.mutableMessages, SYNTHETIC_OUTPUT_TOOL_NAME)
       : 0
 
-    for await (const message of query({
-      messages,
-      systemPrompt,
-      userContext,
-      systemContext,
-      canUseTool: wrappedCanUseTool,
-      toolUseContext: processUserInputContext,
-      fallbackModel,
-      querySource: 'sdk',
-      maxTurns,
-      taskBudget,
-    })) {
+    // CC 2.1.290 (cluster-f item C): row count when the query loop starts —
+    // everything after this index in `messages` belongs to the current turn.
+    const turnStartRowCount = messages.length
+    // Official `kt` — the turn's terminal reason, read from query()'s
+    // generator return value (`kt=W.value?W.value.reason:void 0`).
+    let terminalReason: string | undefined
+
+    for await (const message of captureTerminalReason(
+      query({
+        messages,
+        systemPrompt,
+        userContext,
+        systemContext,
+        canUseTool: wrappedCanUseTool,
+        toolUseContext: processUserInputContext,
+        fallbackModel,
+        querySource: 'sdk',
+        maxTurns,
+        taskBudget,
+      }),
+      terminal => {
+        terminalReason = (terminal as { reason?: string } | undefined)?.reason
+      },
+    )) {
       // Record assistant, user, and compact boundary messages
       if (
         message.type === 'assistant' ||
@@ -1334,6 +1549,58 @@ export class QueryEngine {
         textResult = lastContent.text
       }
       isApiError = Boolean(result.isApiErrorMessage)
+    }
+
+    // CC 2.1.290 (cluster-f item C): the trailing API-error notice skip —
+    // official `yOo` at the envelope call site (verbatim decompile in the
+    // helper block above). When the turn-ending tool already delivered and
+    // the connection then dropped mid-stream on the follow-up request, the
+    // run succeeded: is_error must be false so headless `--json-schema` exits
+    // 0 instead of 1. The error row itself stays in the stream/transcript for
+    // diagnostics; only the envelope decision changes. Official effects:
+    // `et=!1` (is_error), `Ut=""` (result text), `ct="tool_use"`
+    // (stop_reason) + the tengu_trailing_api_error_notice_skipped event.
+    // `Ft`/`Mt`/`It` (apiErrorStatus/apiErrorCode/apiError) have no OCC
+    // envelope field, so there is nothing to clear for those.
+    try {
+      if (
+        isApiError &&
+        shouldSkipTrailingApiErrorNotice({
+          trailing: result,
+          preceding: findPrecedingTerminalRow(messages, result),
+          terminalReason,
+          // Official `retractionExhausted: gt.length===0 && Wt.size>0`. `Wt`
+          // is official's tombstone-driven structured-output retraction set,
+          // populated in the engine's `tombstone` branch; OCC's
+          // `case 'tombstone'` only skips the control signal and tracks no
+          // retractions, so `Wt` is always empty and the clause is
+          // structurally always false. Kept in the signature for parity —
+          // port the tombstone retraction filter first if that ever changes.
+          retractionExhausted: false,
+          structuredOutputToolUseIds: collectStructuredOutputToolUseIds(
+            messages.slice(turnStartRowCount),
+          ),
+        })
+      ) {
+        isApiError = false
+        lastStopReason = 'tool_use'
+        // Official `os=et?Ut:Ct` (Ut="" and Ct="" for an error row) plus the
+        // `if(os==="")os=JSON.stringify(gt.at(-1).data)` fallback. Scoped to
+        // this branch on purpose: OCC's normal (non-error) --json-schema run
+        // keeps the assistant text as `result`.
+        textResult =
+          structuredOutputFromTool === undefined
+            ? ''
+            : JSON.stringify(structuredOutputFromTool)
+        logEvent('tengu_trailing_api_error_notice_skipped', {
+          engine:
+            'session_engine' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          has_structured_output: structuredOutputFromTool !== undefined,
+        })
+      }
+    } catch (error) {
+      // Official wraps the whole skip in try/catch → `c(W)` (logError).
+      logError(error)
     }
 
     yield {

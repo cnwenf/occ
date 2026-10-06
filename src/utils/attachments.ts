@@ -24,6 +24,8 @@ import {
   getPathsForPermissionCheck,
 } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
+import type { Dirent } from 'fs'
+import { setImmediate as yieldToEventLoop } from 'timers/promises'
 import type { IDESelection } from '../hooks/useIdeSelection.js'
 import { TODO_WRITE_TOOL_NAME } from '../tools/TodoWriteTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
@@ -47,7 +49,7 @@ import {
   getConditionalRulesForCwdLevelDirectory,
   type MemoryFileInfo,
 } from './claudemd.js'
-import { dirname, parse, relative, resolve } from 'path'
+import { dirname, join, parse, relative, resolve } from 'path'
 import { getCwd } from 'src/utils/cwd.js'
 import { getViewedTeammateTask } from '../state/selectors.js'
 import { logError } from './log.js'
@@ -136,6 +138,15 @@ import {
   filterDeniedAgents,
   getRuleListForToolName,
 } from './permissions/permissions.js'
+import {
+  hasReadDenyRules,
+  isFileReadDenied,
+} from './permissions/readDeny.js'
+import {
+  assertGuardedReadUnchanged,
+  checkTimeReadResolutions,
+  guardedAttachedReadContext,
+} from './permissions/guardedRead.js'
 import { getSubscriptionType } from './auth.js'
 import { mcpInfoFromString } from '../services/mcp/mcpStringUtils.js'
 import {
@@ -2001,6 +2012,119 @@ function logAtMentionOtel(
   })
 }
 
+/** Official `zkt` — how many directory entries the deny filter scans at most. */
+const DIR_ENTRY_SCAN_LIMIT = 10000
+/** Official `Kkt` — how many entry names are collected into the listing. */
+const MAX_DIR_ENTRIES = 1000
+/** Official `kkt` — yield to the event loop every N scanned entries. */
+const DIR_SCAN_YIELD_INTERVAL = 50
+
+/**
+ * Official `Gkt` (2.1.290) per-entry judge, OCC port: deny the entry when ANY
+ * spelling of `<dir>/<name>` matches a Read deny rule.
+ *
+ * Official builds the spellings from the *directory's* resolved landing
+ * (`n.spellings.map(s => join(s, entry.name))`), denies on a surface match
+ * (`isDenied`), then denies when any spelling is denied (`Fne`) or — for
+ * non-file entries — when a spelling is a denied directory
+ * (`Akt` = `ca(path,ctx,"read","deny",{isDirectory:!0})`).
+ *
+ * OCC deviation (documented in docs/gap-research-291/cluster-b-read-deny-mentions.md):
+ * `matchingRuleForInput` has no `{isDirectory:true}` option, and
+ * `isFileReadDenied` already expands the *entry's own* spellings (surface +
+ * every symlink target + canonical landing), which subsumes both `Fne` and the
+ * entry-level symlink case `Akt` guards. Official's `isHeldOutside` (`vS`) and
+ * unsettled-landing (`TB` → undefined) arms are N-A here: OCC has neither
+ * `--restricted` nor `blockReadsOutsideWorkingDirectories` (grep-proven, staged
+ * since OCC-107/108).
+ *
+ * Fail-closed exactly like official's `.catch(() => true)`.
+ */
+async function isMentionedDirEntryReadDenied(
+  dirPath: string,
+  entry: Dirent,
+  toolPermissionContext: ToolPermissionContext,
+): Promise<boolean> {
+  try {
+    return isFileReadDenied(
+      join(dirPath, entry.name),
+      toolPermissionContext,
+    )
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Names to list for an @-mentioned folder, honouring Read deny rules.
+ *
+ * CC 2.1.290 changelog (security): "Fixed Read deny rules not applying to …
+ * file names listed for an @-mentioned folder". Byte-faithful port of the
+ * official `d7n` collector (@210756965) — including its exact loop order, so
+ * the scan cap, the collect cap, the yield cadence and the overflow message all
+ * match the official binary:
+ *
+ * ```js
+ * async function d7n(e, n, r) {
+ *   let s = sy(n.context), g = [], h = Math.min(e.length, 1e4), S = 0
+ *   while (S < h && g.length < 1000) {
+ *     if (s && S > 0 && S % 50 === 0) await setImmediate()
+ *     let W = e[S], q = W === void 0 || await Gkt(W, n, r).catch(() => true)
+ *     if (s && r.aborted) break
+ *     if (S++, W !== void 0 && !q) g.push(W.name)
+ *   }
+ *   return S < e.length ? [...g, `… and ${e.length - S} more entries`] : g
+ * }
+ * ```
+ *
+ * `readsBlocked` mirrors official `sy(context)`; with no Read deny rules the
+ * listing stays a pure slice (no resolution syscalls, no yields, no abort
+ * checks) — the same `aje` short-circuit `isFileReadDenied` uses.
+ */
+export async function listMentionedDirectoryEntries(
+  dirPath: string,
+  entries: ReadonlyArray<Dirent | undefined>,
+  toolPermissionContext: ToolPermissionContext,
+  isAborted: () => boolean = () => false,
+): Promise<string[]> {
+  const readsBlocked = hasReadDenyRules(toolPermissionContext)
+  const collected: string[] = []
+  const scanLimit = Math.min(entries.length, DIR_ENTRY_SCAN_LIMIT)
+  let scanned = 0
+
+  while (scanned < scanLimit && collected.length < MAX_DIR_ENTRIES) {
+    if (
+      readsBlocked &&
+      scanned > 0 &&
+      scanned % DIR_SCAN_YIELD_INTERVAL === 0
+    ) {
+      await yieldToEventLoop()
+    }
+
+    const entry = entries[scanned]
+    const denied =
+      entry === undefined ||
+      (await isMentionedDirEntryReadDenied(
+        dirPath,
+        entry,
+        toolPermissionContext,
+      ))
+
+    if (readsBlocked && isAborted()) {
+      break
+    }
+
+    scanned++
+    if (entry !== undefined && !denied) {
+      collected.push(entry.name)
+    }
+  }
+
+  return scanned < entries.length
+    ? [...collected, `… and ${entries.length - scanned} more entries`]
+    : collected
+}
+
 async function processAtMentionedFiles(
   input: string,
   toolUseContext: ToolUseContext,
@@ -2029,14 +2153,15 @@ async function processAtMentionedFiles(
               const entries = await readdir(absoluteFilename, {
                 withFileTypes: true,
               })
-              const MAX_DIR_ENTRIES = 1000
-              const truncated = entries.length > MAX_DIR_ENTRIES
-              const names = entries.slice(0, MAX_DIR_ENTRIES).map(e => e.name)
-              if (truncated) {
-                names.push(
-                  `\u2026 and ${entries.length - MAX_DIR_ENTRIES} more entries`,
-                )
-              }
+              // CC 2.1.290 (security, cluster B1): the listing is deny-filtered
+              // per entry (`d7n`/`Gkt` port) \u2014 caps + overflow message live in
+              // listMentionedDirectoryEntries.
+              const names = await listMentionedDirectoryEntries(
+                absoluteFilename,
+                entries,
+                appState.toolPermissionContext,
+                () => toolUseContext.abortController.signal.aborted,
+              )
               const stdout = names.join('\n')
               logEvent('tengu_at_mention_extracting_directory_success', {})
               logAtMentionOtel('directory', true)
@@ -2187,6 +2312,12 @@ export async function getChangedFiles(
   if (filePaths.length === 0) return []
 
   const appState = toolUseContext.getAppState()
+  // CC 2.1.290 B3 — official `GTr` @213674000 computes `h=sy(r)` ONCE for the
+  // whole sweep, then per file `be=h?await TB(he,…):[he]` and
+  // `Qb.call(Te,h?await LMe(he,be,e):e)`: the changed-file read carries a
+  // stashed attached-read toolUseId so FileReadTool's own symlink assert has an
+  // approved landing to compare against.
+  const readsBlocked = hasReadDenyRules(appState.toolPermissionContext)
   const results = await Promise.all(
     filePaths.map(async filePath => {
       const fileState = toolUseContext.readFileState.get(filePath)
@@ -2211,6 +2342,10 @@ export async function getChangedFiles(
         }
 
         const fileInput = { file_path: normalizedPath }
+        const checkTimeResolutions = checkTimeReadResolutions(
+          normalizedPath,
+          readsBlocked,
+        )
 
         // Validate file path is valid
         const isValid = await FileReadTool.validateInput(
@@ -2221,7 +2356,15 @@ export async function getChangedFiles(
           return null
         }
 
-        const result = await FileReadTool.call(fileInput, toolUseContext)
+        const result = await FileReadTool.call(
+          fileInput,
+          guardedAttachedReadContext(
+            normalizedPath,
+            readsBlocked,
+            checkTimeResolutions,
+            toolUseContext,
+          ),
+        )
         // Extract only the changed section
         if (result.data.type === 'text') {
           const snippet = getSnippetForTwoFileDiff(
@@ -2243,6 +2386,15 @@ export async function getChangedFiles(
 
         // For non-text files (images), apply the same token limit logic as FileReadTool
         if (result.data.type === 'image') {
+          // Official guards the changed-file image read with the SAME
+          // check-time spellings (`h?await PMe(he,be,…)` @213674600). A link
+          // swapped since the check throws SymlinkReadRefusedError, which the
+          // sweep's catch below turns into "no attachment".
+          assertGuardedReadUnchanged(
+            normalizedPath,
+            readsBlocked,
+            checkTimeResolutions,
+          )
           try {
             const data = await readImageWithTokenBudget(normalizedPath)
             return {
@@ -3162,6 +3314,21 @@ export async function generateFileAttachment(
     return null
   }
 
+  // CC 2.1.290 B3 — official `A1t` prologue (@213687900):
+  //   let H=sy(de(n)), W=!H?[e]:h?.landing??await TB(e,{…},signal); … let q=W
+  // and then BOTH read sites call `Qb.call(input, H?await LMe(e,q,ctx):ctx)`
+  // (@213690234 truncated, @213690750 main). The spellings are resolved ONCE,
+  // before any IO, and stashed under a synthetic `attached-read-<uuid>`
+  // toolUseId so FileReadTool's own assertSymlinkResolutionsUnchangedForRead
+  // has an approved landing to compare against — without the stash entry that
+  // assert falls back to a fresh resolution and no-ops (the 289-shaped hole:
+  // a link flipped between the deny check and the read escaped).
+  const readsBlocked = hasReadDenyRules(appState.toolPermissionContext)
+  const checkTimeResolutions = checkTimeReadResolutions(
+    filename,
+    readsBlocked,
+  )
+
   // Check file size before attempting to read (skip for PDFs — they have their own size/page handling below)
   if (
     mode === 'at-mention' &&
@@ -3273,7 +3440,15 @@ export async function generateFileAttachment(
           offset: offset ?? 1,
           limit: MAX_LINES_TO_READ,
         }
-        const result = await FileReadTool.call(truncatedInput, toolUseContext)
+        const result = await FileReadTool.call(
+          truncatedInput,
+          guardedAttachedReadContext(
+            filename,
+            readsBlocked,
+            checkTimeResolutions,
+            toolUseContext,
+          ),
+        )
         logEvent(successEventName, {})
         if (mode === 'at-mention') logAtMentionOtel('file', true)
 
@@ -3298,7 +3473,15 @@ export async function generateFileAttachment(
     }
 
     try {
-      const result = await FileReadTool.call(fileInput, toolUseContext)
+      const result = await FileReadTool.call(
+        fileInput,
+        guardedAttachedReadContext(
+          filename,
+          readsBlocked,
+          checkTimeResolutions,
+          toolUseContext,
+        ),
+      )
       logEvent(successEventName, {})
       if (mode === 'at-mention') logAtMentionOtel('file', true)
       return {
@@ -4317,79 +4500,9 @@ export function getContextEfficiencyAttachment(
 }
 
 
-/**
- * Official aje(ctx) gate (CC 2.1.289, changelog #3 SECURITY): does this
- * permission context carry at least one Read deny rule that could match a
- * path? `Kn(ctx,"read","deny").size>0` in the binary. Used to skip the
- * symlink-spelling resolution (getPathsForPermissionCheck does sync fs
- * syscalls) when no read-deny rule exists — pure-context check, no I/O.
- */
-function hasReadDenyRules(
-  toolPermissionContext: ToolPermissionContext,
-): boolean {
-  return (
-    getRuleListForToolName(
-      toolPermissionContext,
-      FILE_READ_TOOL_NAME,
-      'deny',
-    ).length > 0
-  )
-}
-
-/**
- * Deny gate for the IDE-context auto-read attachment surfaces (@-mentioned,
- * changed, and IDE-selected files). CC 2.1.289 changelog #3 (SECURITY):
- * "Fixed `Read` deny rules not applying to files @-mentioned, changed, or
- * selected in the IDE through a symlink".
- *
- * Mirrors the official v289 landing gate `aje(ctx) && bge(Sge(path,ctx))`:
- *   - aje(ctx)  — only resolve spellings when a read-deny rule exists
- *                 (hasReadDenyRules below; skips getPathsForPermissionCheck's
- *                 sync fs syscalls otherwise). Official fidelity short-circuit.
- *   - Sge(path) — every spelling: original + each symlink target + canonical
- *                 landing. OCC analogue: getPathsForPermissionCheck.
- *   - bge(...)  — deny if ANY spelling matches a read-deny rule.
- *
- * The pre-fix (v288-equivalent) surface-only match was the vulnerability:
- * a symlink `./link -> ./secret/x` under deny `Read(./secret/**)` matched only
- * the surface `./link`, bypassing the rule. This is the single gate all six
- * IDE-context auto-read call sites funnel through (doc §3b) — hardening it
- * closes every surface at once and cannot regress the Read tool, which has
- * its own separate resolution-aware check (checkReadPermissionForTool).
- *
- * Exported for tests (OCC-146 readDenySymlink289 suite consumes it).
- */
-export function isFileReadDenied(
-  filePath: string,
-  toolPermissionContext: ToolPermissionContext,
-): boolean {
-  // Surface match (v288 behavior) — always computed, no fs syscalls.
-  const surfaceDenied =
-    matchingRuleForInput(
-      filePath,
-      toolPermissionContext,
-      'read',
-      'deny',
-    ) !== null
-
-  // aje(ctx) short-circuit: with zero read-deny rules no spelling can match,
-  // so return the surface result directly and skip the resolution syscalls.
-  if (!hasReadDenyRules(toolPermissionContext)) {
-    return surfaceDenied
-  }
-  if (surfaceDenied) {
-    return true
-  }
-
-  // bge(Sge(path), ctx): deny if ANY spelling (original + each symlink target
-  // + canonical landing) matches a read-deny rule.
-  return getPathsForPermissionCheck(filePath).some(
-    spelling =>
-      matchingRuleForInput(
-        spelling,
-        toolPermissionContext,
-        'read',
-        'deny',
-      ) !== null,
-  )
-}
+// CC 2.1.290 (cluster B): the Read-deny predicate moved to the shared
+// `permissions/readDeny.ts` util so the paste/drag image guard, the
+// @-mentioned directory listing filter and the instruction-file (CLAUDE.md)
+// gate all consult ONE implementation — official shares `UB`/`Jhn` the same
+// way. Re-exported here so existing importers/tests keep working.
+export { isFileReadDenied } from './permissions/readDeny.js'

@@ -6,7 +6,7 @@ import { Ansi, Box, Text, useTheme } from '../ink.js';
 import { BLACK_CIRCLE } from '../constants/figures.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
-import { configureMarked, formatToken } from '../utils/markdown.js';
+import { configureMarked, formatToken, MARKDOWN_STACK_FALLBACK_MESSAGE } from '../utils/markdown.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
 import { streamingTextStore } from './streamingTextStore.js';
 import type { ThemeName } from '../utils/theme.js';
@@ -206,7 +206,6 @@ function MarkdownBody(t0) {
   configureMarked();
   let elements: React.ReactNode[];
   if ($[0] !== children || $[1] !== dimColor || $[2] !== highlight || $[3] !== theme || $[4] !== maxProseWidth) {
-    const tokens = cachedLexer(stripPromptXMLTags(children));
     elements = [];
     let nonTableContent = "";
     // Official 2.1.282 Lr @216869295+: prose blocks are pushed with
@@ -224,31 +223,42 @@ function MarkdownBody(t0) {
         nonTableContent = "";
       }
     };
-    for (const token of tokens) {
-      if (token.type === "table") {
-        flushNonTableContent();
-        elements.push(<MarkdownTable key={elements.length} token={token as Tokens.Table} highlight={highlight} />);
-      } else if (token.type === "list" && listHasTaskItems(token as Tokens.List)) {
-        // GFM task list — render checkboxes ([ ]/[x]) instead of dropping them.
-        // Lists are prose in the official clamp matrix (zo applies
-        // `maxWidth:R` to list items), so task lists get the cap too.
-        flushNonTableContent();
-        elements.push(wrapProse(<Ansi key={elements.length} dimColor={dimColor}>{formatTaskList(token as Tokens.List, theme, highlight)}</Ansi>));
-      } else if (maxProseWidth !== undefined && token.type === "code") {
-        // Fenced code keeps FULL width when the cap is active (official code
-        // special-case). Flush the pending prose batch first so the code
-        // block lands outside the capped wrapper, then render it uncapped.
-        // trimEnd() only: the code token's first line may carry meaningful
-        // leading indentation (Python/YAML); a full .trim() would strip it
-        // (acceptance RT① regression) while later lines keep theirs.
-        flushNonTableContent();
-        elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatToken(token, theme, 0, null, null, highlight).trimEnd()}</Ansi>);
-      } else {
-        nonTableContent = nonTableContent + formatToken(token, theme, 0, null, null, highlight);
-        nonTableContent;
+    try {
+      const tokens = cachedLexer(stripPromptXMLTags(children));
+      for (const token of tokens) {
+        if (token.type === "table") {
+          flushNonTableContent();
+          elements.push(<MarkdownTable key={elements.length} token={token as Tokens.Table} highlight={highlight} />);
+        } else if (token.type === "list" && listHasTaskItems(token as Tokens.List)) {
+          // GFM task list — render checkboxes ([ ]/[x]) instead of dropping them.
+          // Lists are prose in the official clamp matrix (zo applies
+          // `maxWidth:R` to list items), so task lists get the cap too.
+          flushNonTableContent();
+          elements.push(wrapProse(<Ansi key={elements.length} dimColor={dimColor}>{formatTaskList(token as Tokens.List, theme, highlight)}</Ansi>));
+        } else if (maxProseWidth !== undefined && token.type === "code") {
+          // Fenced code keeps FULL width when the cap is active (official code
+          // special-case). Flush the pending prose batch first so the code
+          // block lands outside the capped wrapper, then render it uncapped.
+          // trimEnd() only: the code token's first line may carry meaningful
+          // leading indentation (Python/YAML); a full .trim() would strip it
+          // (acceptance RT① regression) while later lines keep theirs.
+          flushNonTableContent();
+          elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatToken(token, theme, 0, null, null, highlight).trimEnd()}</Ansi>);
+        } else {
+          nonTableContent = nonTableContent + formatToken(token, theme, 0, null, null, highlight);
+          nonTableContent;
+        }
       }
+      flushNonTableContent();
+    } catch (error) {
+      // CC 2.1.290 cluster E item #1 — render catch. A RangeError escaping
+      // the lex/format path (deeply nested input that still overflows despite
+      // the depth guard, or any other stack exhaustion) degrades to the
+      // official fallback message as plain text instead of crashing the REPL.
+      // RangeError ONLY — every other error rethrows (no silent swallow).
+      if (!(error instanceof RangeError)) throw error;
+      elements = [<Ansi key={0} dimColor={dimColor}>{MARKDOWN_STACK_FALLBACK_MESSAGE}</Ansi>];
     }
-    flushNonTableContent();
     $[0] = children;
     $[1] = dimColor;
     $[2] = highlight;
@@ -309,7 +319,19 @@ export function StreamingMarkdown({
 
   // Lex only from current boundary — O(unstable length), not O(full text)
   const boundary = stablePrefixRef.current.length;
-  const tokens = marked.lexer(stripped.substring(boundary));
+  let tokens: Token[];
+  try {
+    tokens = marked.lexer(stripped.substring(boundary));
+  } catch (error) {
+    // CC 2.1.290 cluster E item #1 — render catch. On stack overflow, leave
+    // the stable prefix where it is and delegate the WHOLE stripped input to
+    // <Markdown>, whose own MarkdownBody catch emits the official fallback
+    // message as plain text (RangeError only; anything else rethrows).
+    if (!(error instanceof RangeError)) throw error;
+    return <Box flexDirection="column" gap={1}>
+        <Markdown capProseWidth={true}>{stripped}</Markdown>
+      </Box>;
+  }
 
   // Last non-space token is the growing block; everything before is final
   let lastContentIdx = tokens.length - 1;

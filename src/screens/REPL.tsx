@@ -52,7 +52,8 @@ import { useWorkflowProgressPoller } from '../hooks/useWorkflowProgressPoller.js
 import { useRemoteControlChannel } from '../hooks/useRemoteControlChannel.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
-import { MessageSelector, selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
+import { selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
+import { RewindMessageSelector } from '../components/RewindMessageSelector.js';
 import { useIdeLogging } from '../hooks/useIdeLogging.js';
 import { PermissionRequest, type ToolUseConfirm } from '../components/permissions/PermissionRequest.js';
 import { ElicitationDialog } from '../components/mcp/ElicitationDialog.js';
@@ -5240,7 +5241,7 @@ export function REPL({
                 {cursor &&
           // inputValue is REPL state; typed text survives the round-trip.
           <MessageActionsBar cursor={cursor} />}
-                {focusedInputDialog === 'message-selector' && <MessageSelector messages={messages} preselectedMessage={messageSelectorPreselect} onPreRestore={onCancel} onRestoreCode={async (message: UserMessage) => {
+                {focusedInputDialog === 'message-selector' && <RewindMessageSelector messages={messages} preselectedMessage={messageSelectorPreselect} onPreRestore={onCancel} onRestoreCode={async (message: UserMessage) => {
             await fileHistoryRewind((updater: (prev: FileHistoryState) => FileHistoryState) => {
               setAppState(prev => ({
                 ...prev,

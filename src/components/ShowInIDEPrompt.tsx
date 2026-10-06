@@ -3,6 +3,7 @@ import { basename, relative } from 'path';
 import React from 'react';
 import { Box, Text } from '../ink.js';
 import { getCwd } from '../utils/cwd.js';
+import { escapeControlCharsAsEntities } from '../utils/displayEscape.js';
 import { isSupportedVSCodeTerminal } from '../utils/ide.js';
 import { Select } from './CustomSelect/index.js';
 import { Pane } from './design-system/Pane.js';
@@ -49,7 +50,10 @@ export function ShowInIDEPrompt(t0) {
   }
   let t2;
   if ($[2] !== symlinkTarget) {
-    t2 = symlinkTarget && <Text color="warning">{relative(getCwd(), symlinkTarget).startsWith("..") ? `This will modify ${symlinkTarget} (outside working directory) via a symlink` : `Symlink target: ${symlinkTarget}`}</Text>;
+    // CC 2.1.291 (G#9): escape the DISPLAYED symlinkTarget so a target whose
+    // name contains \n can't spoof extra dialog lines. The `.startsWith("..")`
+    // working-directory check stays on the RAW value (logic, not display).
+    t2 = symlinkTarget && <Text color="warning">{relative(getCwd(), symlinkTarget).startsWith("..") ? `This will modify ${escapeControlCharsAsEntities(symlinkTarget)} (outside working directory) via a symlink` : `Symlink target: ${escapeControlCharsAsEntities(symlinkTarget)}`}</Text>;
     $[2] = symlinkTarget;
     $[3] = t2;
   } else {
@@ -64,7 +68,7 @@ export function ShowInIDEPrompt(t0) {
   }
   let t4;
   if ($[5] !== filePath) {
-    t4 = basename(filePath);
+    t4 = escapeControlCharsAsEntities(basename(filePath));
     $[5] = filePath;
     $[6] = t4;
   } else {

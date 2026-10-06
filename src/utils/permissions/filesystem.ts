@@ -54,6 +54,12 @@ import { createReadRuleSuggestion } from './PermissionUpdate.js'
 import type { PermissionUpdate } from './PermissionUpdateSchema.js'
 import { getRuleListForToolName } from './permissions.js'
 import {
+  getSettingsFileLinkMap,
+  isSettingsFileLink,
+  settingsLinkFoldKey,
+  settingsLinkLookupKey,
+} from './settingsFileLinks.js'
+import {
   collapsePatternSlashes,
   escapePatternPath,
   getOrInitPhysicalTwins,
@@ -651,7 +657,12 @@ export function checkPathSafetyForAutoEdit(
   precomputedPathsToCheck?: readonly string[],
 ):
   | { safe: true }
-  | { safe: false; message: string; classifierApprovable: boolean } {
+  | {
+      safe: false
+      message: string
+      classifierApprovable: boolean
+      circuitBreaker?: 'claudeSettingsFile'
+    } {
   // Get all paths to check (original + symlink resolved paths)
   const pathsToCheck =
     precomputedPathsToCheck ?? getPathsForPermissionCheck(path)
@@ -664,6 +675,47 @@ export function checkPathSafetyForAutoEdit(
         message: `Claude requested permissions to write to ${path}, which contains a suspicious Windows path pattern that requires manual approval.`,
         classifierApprovable: false,
       }
+    }
+  }
+
+  // CC 2.1.291 (cluster C item 1, security 🔒) — official y1 settings branch
+  // (@~206563452, verbatim):
+  //   if(S){let R=ol(),x=w.map((A)=>TE(Ke(A))),
+  //     I=x.map((A)=>R.get(A)).find((A)=>A!==void 0),
+  //     L=I===void 0||x.includes(TE(I))?"":` The Claude Code settings file
+  //       ${ZI(I)} leads here through a link.`;
+  //     return{safe:!1,message:`Claude requested permissions to write to
+  //       ${ad(e)}, but you haven't granted it yet.${L}`,
+  //       classifierApprovable:I===void 0,
+  //       circuitBreaker:"claudeSettingsFile"}}
+  // Trigger S = Mrr(w)!=="none"; its "certain literal" arm is hf=nMe∪…, so
+  // ANY checked path that is a settings-file link spelling (or an internal
+  // settings spelling) fires this branch — that is the actual 289→291 fix:
+  // writing the TARGET of a symlinked settings file previously never reached
+  // a settings gate. The Mrr resolved-settings certain/possible arm
+  // (MSt/yf/xZe) needs the settings-dir locate subsystem OCC lacks (doc
+  // items 2/4, out of this wave). ZI(I) → formatPathForPermissionMessage
+  // (sanitize + 160-char truncate; official To=160). ad(e) (the 291-global
+  // message display wrapper) is out of item-1 scope — OCC keeps the raw
+  // `${path}` interpolation like every other OCC write message.
+  if (pathsToCheck.some(isSettingsFileLink)) {
+    const linkMap = getSettingsFileLinkMap()
+    const foldedChecks = pathsToCheck.map(settingsLinkLookupKey)
+    const linkTarget = foldedChecks
+      .map(key => linkMap.get(key))
+      .find(target => target !== undefined)
+    // Official TE(I) uses no expandPath (I is already an absolute settings
+    // path from Cr()), hence the plain fold key here.
+    const linkSuffix =
+      linkTarget === undefined ||
+      foldedChecks.includes(settingsLinkFoldKey(linkTarget))
+        ? ''
+        : ` The Claude Code settings file ${formatPathForPermissionMessage(linkTarget)} leads here through a link.`
+    return {
+      safe: false,
+      message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.${linkSuffix}`,
+      classifierApprovable: linkTarget === undefined,
+      circuitBreaker: 'claudeSettingsFile',
     }
   }
 
@@ -2211,7 +2263,12 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
           },
         ]
       : generateSuggestions(path, 'write', toolPermissionContext, pathsToCheck)
-    const failedCheck = safetyCheck as { safe: false; message: string; classifierApprovable: boolean }
+    const failedCheck = safetyCheck as {
+      safe: false
+      message: string
+      classifierApprovable: boolean
+      circuitBreaker?: 'claudeSettingsFile'
+    }
     // CC 2.1.280 (changelog #005) lPn @194288316: when the descriptor's
     // landing moved (r2e ≠ null), the unsafe-ask gains the landing sentence —
     // binary D_: `F=lPn(u,m,r); J=F===null?R.message:`${R.message} ${F.sentence}.`;
@@ -2242,6 +2299,12 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
         type: 'safetyCheck',
         reason: message,
         classifierApprovable,
+        // CC 2.1.291 (cluster C item 1) — official Yf @204082772 non-
+        // restricted arm spreads the gate result's circuitBreaker into the
+        // decisionReason: `...e.circuitBreaker&&{circuitBreaker:e.circuitBreaker}`.
+        ...(failedCheck.circuitBreaker !== undefined && {
+          circuitBreaker: failedCheck.circuitBreaker,
+        }),
       },
     }
   }

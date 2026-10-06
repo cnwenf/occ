@@ -17,7 +17,6 @@ import {
   type FlagArgType,
   GH_READ_ONLY_COMMANDS,
   GIT_READ_ONLY_COMMANDS,
-  PYRIGHT_READ_ONLY_COMMANDS,
   RIPGREP_READ_ONLY_COMMANDS,
   validateFlags,
 } from '../../utils/shell/readOnlyCommandValidation.js'
@@ -121,6 +120,22 @@ const FD_SAFE_FLAGS: Record<string, FlagArgType> = {
   '--hyperlink': 'string',
   '--and': 'string',
   '--format': 'string',
+}
+
+/**
+ * Well-formed flag token (official 2.1.290 `Cze` helper, byte-verified
+ * @206581431): `e.startsWith("-")&&e.length>1&&rf.test(e)` with
+ * `rf=/^-[a-zA-Z0-9_-]/`. True when a token looks like a real option
+ * (`-e`, `--forest`, `-x`), false for bare positional words (`foo1e`, `axe`)
+ * and for a lone `-`. The 290 `ps` callback uses `!isWellFormedFlagToken(t)`
+ * to decide whether a token is a bare word that could carry a BSD-style `e`
+ * (environment-dump) modifier. See docs/gap-research-291 #3.
+ */
+const WELL_FORMED_FLAG_TOKEN_RE = /^-[a-zA-Z0-9_-]/
+function isWellFormedFlagToken(token: string): boolean {
+  return (
+    token.startsWith('-') && token.length > 1 && WELL_FORMED_FLAG_TOKEN_RE.test(token)
+  )
 }
 
 // Central configuration for allowlist-based command validation
@@ -361,6 +376,10 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
     },
   },
   ps: {
+    // Official 2.1.290 (byte-verified @213176201): ps does NOT honor POSIX
+    // `--` as an end-of-options terminator, so validateFlags must keep
+    // checking flags after `--`. Closes `ps -- -e …` smuggling.
+    respectsDoubleDash: false,
     safeFlags: {
       // UNIX-style process selection (these are safe)
       '-e': 'none', // Select all processes
@@ -416,16 +435,37 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
       '-V': 'none',
       '--version': 'none',
     },
-    // Block BSD-style 'e' modifier which shows environment variables
-    // BSD options are letter-only tokens without a leading dash
+    // Official 2.1.290 four-condition callback (byte-verified @213176201),
+    // replacing the 289-era `/^[a-zA-Z]*e[a-zA-Z]*$/` bare-token check that
+    // missed forms like `foo1e` and `-Xe`. `_rawCommand` is the command name
+    // (unused, matching the official `(e,n)` signature); `args` is argv after
+    // the command name. Boolean is 1:1 with the official
+    //   r || (s && !(g && h.length <= 1)):
+    //   r — a NON-well-formed-flag token (bare word) containing e/E is
+    //       dangerous (BSD-style `e` dumps process environments).
+    //   s — some `-[letters]*e` flag exists (`-e`, `-fe`, …).
+    //   g — every token is `--forest` or a whitelisted `-[AacdeFfjlwHLTm]+`
+    //       short-flag bundle.
+    //   h — collects `--forest` plus every H/L/T/m character across tokens.
+    // An e-bearing flag is only safe when every token lands in the safe
+    // letter set AND at most one forest/thread (H/L/T/m) flag is present.
     additionalCommandIsDangerousCallback: (
       _rawCommand: string,
       args: string[],
     ) => {
-      // Check for BSD-style 'e' in letter-only tokens (not -e which is UNIX-style)
-      // A BSD-style option is a token of only letters (no leading dash) containing 'e'
-      return args.some(
-        a => !a.startsWith('-') && /^[a-zA-Z]*e[a-zA-Z]*$/.test(a),
+      const hasBareWordWithE = args.some(
+        a => !isWellFormedFlagToken(a) && /[eE]/.test(a),
+      )
+      const hasEFlag = args.some(a => /^-[a-zA-Z]*e/.test(a))
+      const allSafeLetterFlags = args.every(
+        a => a === '--forest' || /^-[AacdeFfjlwHLTm]+$/.test(a),
+      )
+      const forestThreadFlags = args.flatMap(a =>
+        a === '--forest' ? [a] : (a.match(/[HLTm]/g) ?? []),
+      )
+      return (
+        hasBareWordWithE ||
+        (hasEFlag && !(allSafeLetterFlags && forestThreadFlags.length <= 1))
       )
     },
   },
@@ -1133,7 +1173,22 @@ const COMMAND_ALLOWLIST: Record<string, CommandConfig> = {
   // fdfind is the Debian/Ubuntu package name for fd — same binary, same flags
   fdfind: { safeFlags: { ...FD_SAFE_FLAGS } },
 
-  ...PYRIGHT_READ_ONLY_COMMANDS,
+  // Official 2.1.290 de-lists `pyright` from the read-only table entirely.
+  // Byte-verified (verify-290-snippets-report.md ITEM #4): 289 spread `...AVo`
+  // (AVo = `{pyright:{respectsDoubleDash:!1,safeFlags:{...},
+  // additionalCommandIsDangerousCallback:(e,n)=>n.some(r=>r==="--watch"||
+  // r==="-w")}}` @cc289 204054681) into the table assembly @209993049
+  // (`...AVo,...gbn,`); 290 drops it and spreads only `...CTn,` @213184268
+  // (CTn = gbn renamed = docker logs / docker inspect). Motive prose new in 290
+  // (@219331639/@219346683): pyright "runs python3 there, which imports from
+  // that directory first" -> an interpreter in cwd is never read-only. The
+  // former PYRIGHT_READ_ONLY_COMMANDS spread is intentionally NOT re-added, so
+  // pyright now falls through to a `no-rule-match` ask; an explicit
+  // `Bash(pyright:*)` allow rule still works (the rule channel is unaffected).
+  // NOTE: the surviving `pyright:{` grep hit in 290/291 is a `copyright:{`
+  // HTML-entity-table FALSE POSITIVE, not a command spec -- the real
+  // CommandConfig count went 1 -> 0. OCC keeps its own completion spec at
+  // src/utils/bash/specs/pyright.ts. See cluster-a-bash-permissions.md #4.
   ...DOCKER_READ_ONLY_COMMANDS,
 }
 

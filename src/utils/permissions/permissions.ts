@@ -54,6 +54,10 @@ import {
   type PermissionRuleFromEditableSettings,
   shouldAllowManagedPermissionRulesOnly,
 } from './permissionsLoader.js'
+import {
+  PLAN_MODE_FLOOR_REASON,
+  shouldHonorClassifierAllow,
+} from './planModeClassifierGate.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const classifierDecisionModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -1111,6 +1115,33 @@ export const hasPermissionsToUseTool = async (
           message: buildYoloRejectionMessage(classifierResult.reason, {
             allowRuleToolName: computeAutoModeAllowRuleToolName(tool, result),
           }),
+        }
+      }
+
+      // CC 2.1.290 (cluster-d Item 1 / D#1): plan-mode structural floor on the
+      // classifier allow. Official `_rn` (@213320210) only honors a classifier
+      // "allow" in plan mode when the tool call is STRUCTURALLY read-only; a
+      // non-read-only call falls back to prompting the user (plan_mode_floor)
+      // even though the classifier allowed it. auto mode stays unconditional
+      // (`case"auto":return!0`). Placed BEFORE the success side-effects below so
+      // a floored call is not recorded as an approval / subsequent-approval.
+      if (
+        !shouldHonorClassifierAllow(
+          appState.toolPermissionContext.mode,
+          tool,
+          input,
+          context,
+        )
+      ) {
+        logForDebugging(
+          `Plan mode classifier allow floored to ask for ${tool.name}: not structurally read-only`,
+        )
+        return {
+          ...result,
+          decisionReason: {
+            type: 'other',
+            reason: PLAN_MODE_FLOOR_REASON,
+          },
         }
       }
 

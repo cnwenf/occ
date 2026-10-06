@@ -18,6 +18,8 @@
  * NODE_EXTRA_CA_CERTS was applied).
  *
  * Skipped when:
+ * - essential-traffic privacy level (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC) —
+ *   the warm-up is nonessential traffic
  * - proxy/mTLS/unix socket configured (preconnect would use wrong transport —
  *   the SDK passes a custom dispatcher/agent that doesn't share the global pool)
  * - Bedrock/Vertex/Foundry (different endpoints, different auth)
@@ -25,6 +27,7 @@
 
 import { getOauthConfig } from '../constants/oauth.js'
 import { isEnvTruthy } from './envUtils.js'
+import { isEssentialTrafficOnly } from './privacyLevel.js'
 
 let fired = false
 
@@ -38,6 +41,14 @@ export function preconnectAnthropicApi(): void {
     isEnvTruthy(process.env.CLAUDE_CODE_USE_VERTEX) ||
     isEnvTruthy(process.env.CLAUDE_CODE_USE_FOUNDRY)
   ) {
+    return
+  }
+  // Skip the warm-up preconnect under essential-traffic-only privacy
+  // (CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC). Official CC 2.1.291 (@218728135,
+  // fn `P`) inserts `if(Rt())return;` after the provider/gateway check and before
+  // the proxy check, where `Rt(){return HCt()==="essential-traffic"}`. The startup
+  // HEAD is a warm-up, not essential traffic, so it is suppressed at that level.
+  if (isEssentialTrafficOnly()) {
     return
   }
   // Skip if proxy/mTLS/unix — SDK's custom dispatcher won't reuse this pool

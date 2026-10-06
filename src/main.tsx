@@ -631,11 +631,17 @@ export async function main() {
   process.on('SIGINT', () => {
     // In print mode, print.ts registers its own SIGINT handler that aborts
     // the in-flight query and calls gracefulShutdown; skip here to avoid
-    // preempting it with a synchronous process.exit().
+    // racing it.
     if (process.argv.includes('-p') || process.argv.includes('--print')) {
       return;
     }
-    process.exit(0);
+    // CC 2.1.291 (cluster-f item A, OCC amplifier #2): this early handler
+    // used to call a bare process.exit(0), which preempted the
+    // setupGracefulShutdown SIGINT listener (registered later) and skipped
+    // the transcript exit-flush entirely. Route through gracefulShutdown
+    // instead — it is idempotent (shutdownInProgress guard), so the later
+    // official-parity handler coexists harmlessly.
+    void gracefulShutdown(0);
   });
   profileCheckpoint('main_warning_handler_initialized');
 
@@ -3528,7 +3534,12 @@ async function run(): Promise<CommanderCommand> {
       agentDefinitions,
       currentCwd,
       cliAgents,
-      initialState
+      initialState,
+      // CC 2.1.290 plan-mode resume restore: pinned when the mode was
+      // supplied on invocation (official permissionModeSuppliedOnInvocation
+      // ≡ permissionModeCliSet shape: cli mode !== undefined ||
+      // dangerouslySkipPermissions — cc289 gt object @217274448).
+      startupModePinned: permissionModeCli !== undefined || Boolean(dangerouslySkipPermissions)
     };
     if (options.continue) {
       // Continue the most recent conversation directly

@@ -446,7 +446,11 @@ export type Tool<
   inputsEquivalent?(a: z.infer<Input>, b: z.infer<Input>): boolean
   isConcurrencySafe(input: z.infer<Input>): boolean
   isEnabled(): boolean
-  isReadOnly(input: z.infer<Input>): boolean
+  // CC 2.1.290 (cluster-d D#1): official `_rn` calls `isReadOnly(input, ctx)`
+  // with the tool-use context as an optional 2nd arg. Existing single-param
+  // impls stay valid (a function with fewer params is assignable). Tools that
+  // need the context to decide read-only-ness align later; default impl unchanged.
+  isReadOnly(input: z.infer<Input>, context?: ToolUseContext): boolean
   /** Defaults to false. Only set when the tool performs irreversible operations (delete, overwrite, send). */
   isDestructive?(input: z.infer<Input>): boolean
   /**

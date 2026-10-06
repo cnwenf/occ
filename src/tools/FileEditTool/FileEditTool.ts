@@ -15,6 +15,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { countLinesChanged } from '../../utils/diff.js'
+import { escapeControlCharsAsEntities } from '../../utils/displayEscape.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isENOENT } from '../../utils/errors.js'
 import {
@@ -366,7 +367,12 @@ export const FileEditTool = buildTool({
       return {
         result: false,
         behavior: 'ask',
-        message,
+        // CC 2.1.291 (G#9): the official escapes the WHOLE assembled message
+        // once at the return boundary — byte-verified
+        // `return{result:!1,behavior:"ask",message:ad(ot),errorCode:4}` — so a
+        // control char reaching the message via a suggested path cannot forge
+        // extra dialog lines. Identity for control-char-free text.
+        message: escapeControlCharsAsEntities(message),
         errorCode: 4,
       }
     }

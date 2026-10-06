@@ -30,6 +30,7 @@ import { buildTool, type ToolDef } from '../../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
 import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
+import { escapeControlCharsAsEntities } from '../../utils/displayEscape.js'
 import { getClaudeConfigHomeDir, isEnvTruthy } from '../../utils/envUtils.js'
 import { getErrnoCode, isAbortError, isENOENT } from '../../utils/errors.js'
 import {
@@ -625,7 +626,11 @@ export const FileReadTool = buildTool({
     ) {
       return {
         result: false,
-        message: `This tool cannot read binary files. The file appears to be a binary ${ext} file. Please use appropriate tools for binary file analysis.`,
+        // CC 2.1.291 (G#5): byte-verified official 291 wording — the tail now
+        // points at a skill / shell command instead of the 289 "Please use
+        // appropriate tools for binary file analysis." errorCode (4), the first
+        // sentence, and the ${ext} interpolation are unchanged.
+        message: `This tool cannot read binary files. The file appears to be a binary ${ext} file. Use a skill for this file type if one is available, or a shell command or script that can read the format.`,
         errorCode: 4,
       }
     }
@@ -635,7 +640,11 @@ export const FileReadTool = buildTool({
     if (isBlockedDevicePath(fullFilePath)) {
       return {
         result: false,
-        message: `Cannot read '${file_path}': this device file would block or produce infinite output.`,
+        // CC 2.1.291 (G#9): the interpolated path is escaped — byte-verified
+        // official `Cannot read '${ad(g)}': this device file…` (ad =
+        // escapeControlCharsAsEntities), so a control char in the path cannot
+        // break the single-line message. Identity for normal device paths.
+        message: `Cannot read '${escapeControlCharsAsEntities(file_path)}': this device file would block or produce infinite output.`,
         errorCode: 9,
       }
     }
@@ -797,7 +806,11 @@ export const FileReadTool = buildTool({
         } else if (similarFilename) {
           message += ` Did you mean ${similarFilename}?`
         }
-        throw new Error(message)
+        // CC 2.1.291 (G#9): the official escapes the WHOLE assembled message
+        // once at the throw boundary — byte-verified `new P(ad(Wt),"File does
+        // not exist")` — so a control char reaching the message via a suggested
+        // path cannot forge extra lines. Identity for control-char-free text.
+        throw new Error(escapeControlCharsAsEntities(message))
       }
       throw error
     }

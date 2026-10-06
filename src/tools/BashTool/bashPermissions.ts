@@ -14,6 +14,7 @@ import type { PendingClassifierCheck } from '../../types/permissions.js'
 import { count } from '../../utils/array.js'
 import {
   checkSemantics,
+  enumerateDeclarationPrefixReadings,
   nodeTypeId,
   type ParseForSecurityResult,
   parseForSecurityFromAst,
@@ -26,7 +27,7 @@ import {
   getCommandSubcommandPrefix,
   splitCommand_DEPRECATED,
 } from '../../utils/bash/commands.js'
-import { parseCommandRaw } from '../../utils/bash/parser.js'
+import { type Node, parseCommandRaw } from '../../utils/bash/parser.js'
 import { tryParseShellCommand } from '../../utils/bash/shellQuote.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -1860,6 +1861,94 @@ function matchingRulesForInput(
 export { matchingRulesForInput as _matchingRulesForInputForTesting }
 
 /**
+ * Official 2.1.290 #5 (gap-research-291 cluster-a) — per-reading rule re-match
+ * for declare/typeset/export/readonly/local PREFIX assignments.
+ *
+ * Bash PERSISTS a prefix assignment in front of a special declaration builtin
+ * (`X=evil declare -x X`), so a later `$X` can resolve to the assigned value
+ * and must be reachable by deny/ask rules. Static analysis can't know WHICH
+ * prefix names persist, so — mirroring the official `wVe(…,h,S)` reading loop
+ * (@213264822) and the inline-script decision fold (@213255257) — we enumerate
+ * the persistence readings (`Ior` → `enumerateDeclarationPrefixReadings`),
+ * re-parse under each, and fold:
+ *   - any reading whose resolved subcommands hit a DENY rule → deny (wins);
+ *   - any reading that hits an ASK rule → ask;
+ *   - readings non-exhaustive (>3 names) OR any reading re-parses too-complex
+ *     → ask (official `ot||=!Dn` / `ot||= …too-complex`);
+ *   - otherwise → null (caller proceeds on the normal allow path).
+ *
+ * Returns null when the command carries no declaration prefixes (the
+ * overwhelming majority), leaving the caller's existing flow untouched.
+ */
+export function resolveDeclarationPrefixDecision(
+  cmd: string,
+  root: Node,
+  toolPermissionContext: ToolPermissionContext,
+): PermissionResult | null {
+  const base = parseForSecurityFromAst(cmd, root)
+  if (
+    base.kind !== 'simple' ||
+    base.declarationPrefixes === undefined ||
+    base.declarationPrefixes.length === 0
+  ) {
+    return null
+  }
+  const { readings, exhaustive } = enumerateDeclarationPrefixReadings(
+    base.declarationPrefixes.length,
+  )
+  let denyRule: PermissionRule | undefined
+  let askRule: PermissionRule | undefined
+  let tooComplexReason: string | undefined
+  for (const reading of readings) {
+    const parsed = parseForSecurityFromAst(cmd, root, {
+      declarationPrefix: reading,
+    })
+    if (parsed.kind === 'too-complex') {
+      tooComplexReason ??= parsed.reason
+      continue
+    }
+    if (parsed.kind !== 'simple') continue
+    for (const sc of parsed.commands) {
+      const subInput = {
+        command: sc.text,
+      } as z.infer<typeof BashTool.inputSchema>
+      const m = matchingRulesForInput(subInput, toolPermissionContext, 'prefix')
+      denyRule ??= m.matchingDenyRules[0]
+      askRule ??= m.matchingAskRules[0]
+    }
+  }
+  if (denyRule !== undefined) {
+    return {
+      behavior: 'deny',
+      message: `Permission to use ${BashTool.name} with command ${cmd} has been denied.`,
+      decisionReason: { type: 'rule', rule: denyRule },
+    }
+  }
+  if (askRule !== undefined) {
+    const decisionReason = { type: 'rule' as const, rule: askRule }
+    return {
+      behavior: 'ask',
+      message: createPermissionRequestMessage(BashTool.name, decisionReason),
+      decisionReason,
+    }
+  }
+  if (!exhaustive || tooComplexReason !== undefined) {
+    const decisionReason = {
+      type: 'other' as const,
+      reason:
+        tooComplexReason ??
+        "The variables set in front of declarations in this command can't be checked before it runs",
+    }
+    return {
+      behavior: 'ask',
+      message: createPermissionRequestMessage(BashTool.name, decisionReason),
+      decisionReason,
+    }
+  }
+  return null
+}
+
+/**
  * Checks if the subcommand is an exact match for a permission rule
  */
 export const bashToolCheckExactMatchPermission = (
@@ -3205,6 +3294,24 @@ export async function bashToolHasPermission(
         message: createPermissionRequestMessage(BashTool.name, decisionReason),
         suggestions: [],
       }
+    }
+    // Official 2.1.290 #5: declaration-prefix (declare/typeset/export/
+    // readonly/local) variable names must be reachable by deny/ask rules.
+    // Re-match per persistence reading; deny wins, non-exhaustive/too-complex
+    // → ask. Guarded on `astRoot` — the AST path is dormant until
+    // TREE_SITTER_BASH is enabled (shadow mode forces parse-unavailable above),
+    // so this is future-parity wiring, exercised directly by the unit tests.
+    if (
+      astRoot !== null &&
+      astResult.declarationPrefixes !== undefined &&
+      astResult.declarationPrefixes.length > 0
+    ) {
+      const declDecision = resolveDeclarationPrefixDecision(
+        input.command,
+        astRoot as Node,
+        appState.toolPermissionContext,
+      )
+      if (declDecision !== null) return declDecision
     }
     // Stash the tokenized subcommands for use below. Downstream code (rule
     // matching, path extraction, cd detection) still operates on strings, so

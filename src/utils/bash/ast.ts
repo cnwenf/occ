@@ -40,9 +40,33 @@ export type SimpleCommand = {
 }
 
 export type ParseForSecurityResult =
-  | { kind: 'simple'; commands: SimpleCommand[] }
+  | {
+      kind: 'simple'
+      commands: SimpleCommand[]
+      /**
+       * Official 2.1.290 #5 (gap-research-291 cluster-a): variable names set as
+       * a PREFIX of a special declaration builtin (`X=v declare|typeset|export|
+       * readonly|local …`). Bash persists these into the shell (unlike a normal
+       * command's transient env prefix), so a later `$X` may resolve to the
+       * assigned value. Present only on the BASE parse (no `declarationPrefix`
+       * reading) and only when at least one prefix name was seen — mirrors
+       * official's `declarationPrefixes` (count = `.length`) /
+       * `declarationPrefixBashKeeps` (names) reporting when `s===void 0`.
+       */
+      declarationPrefixes?: string[]
+    }
   | { kind: 'too-complex'; reason: string; nodeType?: string }
   | { kind: 'parse-unavailable' }
+
+/**
+ * Options for `parseForSecurityFromAst`. `declarationPrefix` is the official
+ * 2.1.290 `Az(…,{declarationPrefix:s})` reading: a boolean per prefix name
+ * (in source order) saying whether that name is treated as PERSISTED into the
+ * shell. `undefined` = base parse (persist all, report `declarationPrefixes`).
+ */
+export type ParseForSecurityOptions = {
+  declarationPrefix?: boolean[]
+}
 
 /**
  * Structural node types that represent composition of commands. We recurse
@@ -546,6 +570,135 @@ const ZSH_TILDE_BRACKET_RE = /~\[/
 const ZSH_EQUALS_EXPANSION_RE = /(?:^|[\s;&|])=[a-zA-Z_]/
 
 /**
+ * Official 2.1.290 reason string for the zsh/bash variable-name differential
+ * (byte-verified @206342406 in the cc290 ELF; see
+ * docs/gap-research-291/verify-290-snippets-report.md ITEM #2). Upstream authors
+ * it in the per-node builder `b(e)` when an ERROR node's text matches `We` (or
+ * `${`+`Lor`). OCC's pure-TS parser yields a `concatenation`/`simple_expansion`
+ * (never ERROR) for these tokens, so the post-parse escalation
+ * `escalateZshDifferentialVar` below sets this string directly to match the
+ * official observable reason. This deviates from the gap doc's #2 point-3 (which
+ * suggested an OCC-specific wording on the assumption no official string
+ * existed); forensics found the real upstream string, and
+ * aligning-with-official-binary mandates matching it verbatim.
+ */
+const ZSH_DIFFERENTIAL_VAR_REASON =
+  "A $ followed by non-ASCII text in this command can't be checked before it runs"
+
+/**
+ * Official 2.1.290 `We` @206280333 (byte-verified): a whole token of the form
+ * `$` + zero-or-more zsh expansion-flag chars (`#^=~+`) + a variable name,
+ * where the token contains at least one NON-ASCII char. bash variable names are
+ * ASCII-only, so `$=vær` is an inert literal in bash, but zsh applies expansion
+ * flags (`$=var` word-splits, `$~var` globs, `$^var` rc-expands, `$+var`
+ * exists-tests) — the two shells read the token differently and static analysis
+ * can't reconcile them → ask. The `[\u0080-\uffff]` classes are LITERAL
+ * backslash-u escapes in the official JS source (forensically confirmed), not
+ * raw codepoints; the NON-ASCII restriction is load-bearing (pure-ASCII `$=var`
+ * is NOT escalated upstream — do not over-tighten).
+ */
+const ZSH_DIFFERENTIAL_VAR_TOKEN_RE = /^\$[#^=~+]*[\w\u0080-\uffff]+$/
+const NON_ASCII_RE = /[\u0080-\uffff]/
+
+/** Official `We` — token-level zsh differential variable test. */
+function isZshDifferentialVarToken(text: string): boolean {
+  return ZSH_DIFFERENTIAL_VAR_TOKEN_RE.test(text) && NON_ASCII_RE.test(text)
+}
+
+/**
+ * OCC adaptation of official 2.1.290 `Be` @206279777 (byte-verified):
+ *   function Be(e){if(e.type==="ERROR"&&(e.text.startsWith("${")||We(e.text)))
+ *     return!0; for(let t of e.children)if(t&&Be(t))return!0; return!1}
+ * Official gates the `We` token test on the node being an ERROR node, because
+ * upstream's tree-sitter WASM emits ERROR for `$=vær`-class tokens. OCC's
+ * pure-TS parser instead emits a `concatenation` whose `.text` IS the whole
+ * `$…` token (verified: `$=vær` → concatenation[$,word]), never an ERROR node.
+ * So the faithful OCC equivalent tests `We` on ANY node's text — the `^…$`
+ * anchors mean only a node whose entire text is a differential token matches
+ * (the `$=vær` concatenation), never a wrapping `command`/`program` (those
+ * contain spaces) nor a quoted `string` (text carries the `"` delimiters) nor a
+ * `string_content` child (text lacks the leading `$`). The official
+ * ERROR+`${`-prefix branch is retained verbatim for structural parity.
+ */
+function hasZshDifferentialVarNode(node: Node): boolean {
+  if (
+    isZshDifferentialVarToken(node.text) ||
+    (node.type === 'ERROR' && node.text.startsWith('${'))
+  ) {
+    return true
+  }
+  for (const child of node.children) {
+    if (child && hasZshDifferentialVarNode(child)) return true
+  }
+  return false
+}
+
+/**
+ * Official 2.1.290 `Ue` @206279914 (byte-verified): recursive tree scan for a
+ * `$#` simple_expansion (special_variable_name `#`) immediately followed by a
+ * NON-ASCII variable name that is subscripted (`[`) or history-modified
+ * (`:letter`/`:&`) — zsh `$#name[…]` / `$#name:x` syntax. Following-sibling
+ * texts are accumulated while each is wholly word/non-ASCII; the first sibling
+ * that isn't is appended, then the scan stops (matching the official loop, which
+ * appends before testing).
+ */
+const ZSH_DIFFERENTIAL_SUBSCRIPT_NAME_RE = /^[\w\u0080-\uffff]*$/
+const ZSH_DIFFERENTIAL_SUBSCRIPT_RE = /^[\w\u0080-\uffff]*(?=\[|:[a-zA-Z&])/
+function hasZshDifferentialSubscript(node: Node): boolean {
+  const children = node.children
+  for (let r = 0; r < children.length; r++) {
+    const s = children[r]
+    if (!s) continue
+    if (
+      s.type === 'simple_expansion' &&
+      s.children.some(
+        o => o?.type === 'special_variable_name' && o.text === '#',
+      )
+    ) {
+      let accumulated = ''
+      for (let l = r + 1; l < children.length; l++) {
+        const a = children[l]?.text ?? ''
+        accumulated += a
+        if (!ZSH_DIFFERENTIAL_SUBSCRIPT_NAME_RE.test(a)) break
+      }
+      const m = ZSH_DIFFERENTIAL_SUBSCRIPT_RE.exec(accumulated)
+      if (m && NON_ASCII_RE.test(m[0])) return true
+    }
+    if (hasZshDifferentialSubscript(s)) return true
+  }
+  return false
+}
+
+/**
+ * Official 2.1.290 `Az` tail escalation @206279674 (byte-verified):
+ *   if (x.kind==="too-complex" && x.nodeType!=="ERROR" && (Be(t)||Ue(t)))
+ *     return {...x, nodeType:"ERROR"}
+ * Upstream overrides only `nodeType` (the reason was already authored by `b(e)`
+ * on the ERROR node). OCC's parser produces no ERROR node for these tokens, so
+ * the base result carries the generic `$`/variable reason — this adaptation also
+ * sets the official reason string so the observable too-complex reason matches
+ * upstream. `nodeType:'ERROR'` routes to analytics id -1 (parse failure) exactly
+ * as official's `kgr` does (nodeTypeId, :461).
+ */
+function escalateZshDifferentialVar(
+  result: ParseForSecurityResult,
+  root: Node,
+): ParseForSecurityResult {
+  if (
+    result.kind === 'too-complex' &&
+    result.nodeType !== 'ERROR' &&
+    (hasZshDifferentialVarNode(root) || hasZshDifferentialSubscript(root))
+  ) {
+    return {
+      ...result,
+      reason: ZSH_DIFFERENTIAL_VAR_REASON,
+      nodeType: 'ERROR',
+    }
+  }
+  return result
+}
+
+/**
  * Brace character combined with quote characters. Constructions like
  * `{a'}',b}` use quoted braces inside brace expansion context to obfuscate
  * the expansion from regex-based detection. In bash, `{a'}',b}` expands to
@@ -641,6 +794,115 @@ export async function parseForSecurity(
 }
 
 /**
+ * Bash SPECIAL declaration builtins. A variable assignment placed in FRONT of
+ * one of these (`X=evil declare -x X`) PERSISTS in the shell after the command
+ * finishes — unlike an assignment in front of a normal command (`X=evil cmd`),
+ * which is a transient env prefix visible only to `cmd`. Official 2.1.290 #5
+ * keys its declaration-prefix handling off exactly this set. `local` is
+ * included for parity with the official list even though it only persists
+ * within a function body (OCC does not model function scope).
+ */
+const DECLARATION_BUILTINS = new Set([
+  'declare',
+  'typeset',
+  'export',
+  'readonly',
+  'local',
+])
+
+/** Official 2.1.290 String#1 (@206279215, gate `B&&x.kind==="simple"`). */
+const DECL_PREFIX_BRANCH_REASON =
+  "A variable set in front of a declaration inside a branch or loop can't be checked before it runs"
+
+/** Official 2.1.290 String#2 (@206279503, gate `s!==void 0&&…&&Gt()!==s.length`). */
+const DECL_PREFIX_MISMATCH_REASON =
+  "The variables set in front of declarations in this command can't be checked before it runs"
+
+/**
+ * Per-parse declaration-prefix state. Mirrors the official `Az` module state:
+ * `names` = `Gt()` (ordered prefix names encountered), `inBranch` = `B` (inside
+ * an if/while/for body), `reading` = the `declarationPrefix:s` option. Reset per
+ * parse. (Official also tracks `Zt()` = the persisted-name array; on the base
+ * parse every prefix persists, so `names` doubles as that report and no
+ * separate `keeps` slot is needed.)
+ */
+type DeclPrefixCtx = {
+  reading: boolean[] | undefined
+  names: string[]
+  inBranch: boolean
+}
+
+let declPrefixCtx: DeclPrefixCtx | null = null
+
+/**
+ * Official 2.1.290 `Ior(e,t)` (@206276467) — verbatim port. Enumerates the
+ * possible "which prefix names actually persist" readings for `nameCount`
+ * declaration-prefix names:
+ *   - `nameCount ≤ 3` → all `2**nameCount` bitmask vectors, `exhaustive:true`.
+ *   - `nameCount > 3` → heuristic set: [all-false, all-true] + one-hot per
+ *     index while `nameCount ≤ 8 && o < nameCount`, plus the caller's
+ *     `observed` reading iff it has the right length and isn't already present;
+ *     `exhaustive:false`.
+ * `observed` corresponds to the official's second arg `t` (the reading hint
+ * from the inline-script decision loop).
+ */
+export function enumerateDeclarationPrefixReadings(
+  nameCount: number,
+  observed?: boolean[],
+): { readings: boolean[][]; exhaustive: boolean } {
+  const make = (fn: (index: number) => boolean): boolean[] =>
+    Array.from({ length: nameCount }, (_n, l) => fn(l))
+  if (nameCount <= 3) {
+    return {
+      readings: Array.from({ length: 2 ** nameCount }, (_o, n) =>
+        make(l => Math.floor(n / 2 ** l) % 2 === 1),
+      ),
+      exhaustive: true,
+    }
+  }
+  const readings: boolean[][] = [make(() => false), make(() => true)]
+  for (let o = 0; nameCount <= 8 && o < nameCount; o++) {
+    readings.push(make(n => n === o))
+  }
+  if (
+    observed?.length === nameCount &&
+    !readings.some(r => r.every((v, l) => v === observed[l]))
+  ) {
+    readings.push([...observed])
+  }
+  return { readings, exhaustive: false }
+}
+
+/**
+ * Apply the official 2.1.290 declaration-prefix post-parse gates:
+ *   - String#2: a reading was supplied but the parser counted a DIFFERENT number
+ *     of prefix names than the reading predicted → too-complex (the reading is
+ *     stale/misaligned; can't trust the resolution).
+ *   - Base parse (`reading===undefined`) on a simple result with ≥1 prefix name
+ *     → attach `declarationPrefixes` so the rule matcher knows to enumerate
+ *     readings (official `x={...x,declarationPrefixes:y.length,
+ *     declarationPrefixBashKeeps:y}`).
+ */
+function finalizeDeclarationPrefix(
+  result: ParseForSecurityResult,
+  ctx: DeclPrefixCtx,
+): ParseForSecurityResult {
+  if (
+    ctx.reading !== undefined &&
+    result.kind === 'simple' &&
+    ctx.names.length !== ctx.reading.length
+  ) {
+    return { kind: 'too-complex', reason: DECL_PREFIX_MISMATCH_REASON }
+  }
+  if (ctx.reading === undefined && result.kind === 'simple') {
+    if (ctx.names.length > 0) {
+      return { ...result, declarationPrefixes: [...ctx.names] }
+    }
+  }
+  return result
+}
+
+/**
  * Same as parseForSecurity but takes a pre-parsed AST root so callers that
  * need the tree for other purposes can parse once and share. Pre-checks
  * still run on `cmd` — they catch tree-sitter/bash differentials that a
@@ -649,6 +911,7 @@ export async function parseForSecurity(
 export function parseForSecurityFromAst(
   cmd: string,
   root: Node | typeof PARSE_ABORTED,
+  opts?: ParseForSecurityOptions,
 ): ParseForSecurityResult {
   // Pre-checks: characters that cause tree-sitter and bash to disagree on
   // word boundaries. These run before tree-sitter because they're the known
@@ -705,7 +968,29 @@ export function parseForSecurityFromAst(
     }
   }
 
-  return walkProgram(root)
+  // Official 2.1.290 #5: install a fresh declaration-prefix parse context
+  // (mirrors upstream `Az`'s module state `Zt()`/`Gt()`/`B`, snapshotted and
+  // restored around the parse). `parseForSecurityFromAst` is synchronous and
+  // non-reentrant, so a single module slot is safe; the save/restore keeps a
+  // nested call (should one ever be added) from corrupting the outer parse.
+  const savedDeclPrefixCtx = declPrefixCtx
+  declPrefixCtx = {
+    reading: opts?.declarationPrefix,
+    names: [],
+    inBranch: false,
+  }
+  try {
+    // Official 2.1.290 `Az` tail: after the walk, escalate a too-complex result
+    // to the zsh variable-name differential (ERROR nodeType + official reason)
+    // when the tree carries a `We`/`Ue` offending token, then apply the
+    // declaration-prefix reading-mismatch / reporting gates.
+    return finalizeDeclarationPrefix(
+      escalateZshDifferentialVar(walkProgram(root), root),
+      declPrefixCtx,
+    )
+  } finally {
+    declPrefixCtx = savedDeclPrefixCtx
+  }
 }
 
 function walkProgram(root: Node): ParseForSecurityResult {
@@ -1043,12 +1328,20 @@ function collectCommands(
     // and copied into the body scope. ALWAYS VAR_PLACEHOLDER — see above.
     varScope.set(loopVar, VAR_PLACEHOLDER)
     const bodyScope = new Map(varScope)
+    // Official 2.1.290 #5: a declaration prefix inside a loop body is
+    // control-flow-conditional → the walkCommand #5 block emits String#1.
+    const savedBranch = declPrefixCtx?.inBranch ?? false
+    if (declPrefixCtx) declPrefixCtx.inBranch = true
     for (const c of doGroup.children) {
       if (!c) continue
       if (c.type === 'do' || c.type === 'done' || c.type === ';') continue
       const err = collectCommands(c, commands, bodyScope)
-      if (err) return err
+      if (err) {
+        if (declPrefixCtx) declPrefixCtx.inBranch = savedBranch
+        return err
+      }
     }
+    if (declPrefixCtx) declPrefixCtx.inBranch = savedBranch
     return null
   }
 
@@ -1069,6 +1362,12 @@ function collectCommands(
     // tree-sitter if_statement children: if, COND..., then, THEN-BODY...,
     // [elif_clause...], [else_clause], fi. We distinguish condition from
     // then-body by tracking whether we've seen the `then` token.
+    // Official 2.1.290 #5: everything inside an if/while construct (condition
+    // and branches) is control-flow-conditional, so a declaration prefix here
+    // → String#1. Restored before the final `return null`; the early returns
+    // below all abort the parse (per-parse ctx is reset by the caller).
+    const savedBranch = declPrefixCtx?.inBranch ?? false
+    if (declPrefixCtx) declPrefixCtx.inBranch = true
     let seenThen = false
     for (const child of node.children) {
       if (!child) continue
@@ -1167,6 +1466,7 @@ function collectCommands(
         }
       }
     }
+    if (declPrefixCtx) declPrefixCtx.inBranch = savedBranch
     return null
   }
 
@@ -1915,6 +2215,13 @@ function walkCommand(
 ): ParseForSecurityResult {
   const argv: string[] = []
   const envVars: { name: string; value: string }[] = []
+  // Full prefix-assignment records (with `isAppend`) so a declaration-builtin
+  // prefix can be applied to varScope faithfully. See the post-loop #5 block.
+  const prefixAssignments: {
+    name: string
+    value: string
+    isAppend: boolean
+  }[] = []
   const redirects: Redirect[] = [...extraRedirects]
 
   for (const child of node.children) {
@@ -1938,7 +2245,11 @@ function walkCommand(
         // bash — VAR is only visible to `cmd` as an env var, NOT to
         // subsequent commands. Do NOT add to global varScope — that would
         // let `VAR=safe cmd1 && rm $VAR` resolve $VAR when bash has unset it.
+        // EXCEPTION (official 2.1.290 #5): when `cmd` is a SPECIAL declaration
+        // builtin (declare/typeset/export/readonly/local) the prefix DOES
+        // persist — handled in the post-loop block below, not here.
         envVars.push({ name: ev.name, value: ev.value })
+        prefixAssignments.push(ev)
         break
       }
       case 'command_name': {
@@ -1993,6 +2304,44 @@ function walkCommand(
       }
       default:
         return tooComplex(child)
+    }
+  }
+
+  // Official 2.1.290 #5: a prefix assignment in front of a SPECIAL declaration
+  // builtin (declare/typeset/export/readonly/local) PERSISTS in the shell, so a
+  // later `$X` can resolve to the assigned value and must be reachable by
+  // deny/ask rules. Record the names as `declarationPrefixes` and persist them
+  // into varScope per the current reading (base parse = persist all).
+  //
+  // Branch/loop guard (official String#1, gate `B&&x.kind==="simple"`): inside
+  // an if/while/for body the persistence is conditional on control flow we
+  // can't statically resolve → too-complex verbatim.
+  if (
+    declPrefixCtx !== null &&
+    prefixAssignments.length > 0 &&
+    DECLARATION_BUILTINS.has(argv[0] ?? '')
+  ) {
+    if (declPrefixCtx.inBranch) {
+      return {
+        kind: 'too-complex',
+        reason: DECL_PREFIX_BRANCH_REASON,
+        nodeType: 'declaration_command',
+      }
+    }
+    for (const ev of prefixAssignments) {
+      const index = declPrefixCtx.names.length
+      declPrefixCtx.names.push(ev.name)
+      // Base parse (no reading): persist every declaration prefix so `$X`
+      // resolves — mirrors official reporting `declarationPrefixBashKeeps` on
+      // the `s===void 0` parse. Under a reading: persist only names the reading
+      // marks true; the rest stay transient (a later `$X` → too-complex).
+      const persist =
+        declPrefixCtx.reading === undefined
+          ? true
+          : declPrefixCtx.reading[index] === true
+      if (persist) {
+        applyVarToScope(varScope, ev)
+      }
     }
   }
 

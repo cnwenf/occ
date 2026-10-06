@@ -5,6 +5,7 @@ import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
 import { FileWriteTool } from '../../../tools/FileWriteTool/FileWriteTool.js';
 import { getCwd } from '../../../utils/cwd.js';
+import { escapeControlCharsAsEntities } from '../../../utils/displayEscape.js';
 import { isENOENT } from '../../../utils/errors.js';
 import { readFileSync } from '../../../utils/fileRead.js';
 import { FilePermissionDialog } from '../FilePermissionDialog/FilePermissionDialog.js';
@@ -94,7 +95,9 @@ export function FileWritePermissionRequest(props) {
   const t7 = fileExists ? "Overwrite file" : "Create file";
   let t8;
   if ($[5] !== file_path) {
-    t8 = relative(getCwd(), file_path);
+    // CC 2.1.291 (G#9): escape control chars (incl. line breaks) in the
+    // displayed path so a filename with \n can't spoof extra dialog lines.
+    t8 = escapeControlCharsAsEntities(relative(getCwd(), file_path));
     $[5] = file_path;
     $[6] = t8;
   } else {
@@ -102,7 +105,7 @@ export function FileWritePermissionRequest(props) {
   }
   let t9;
   if ($[7] !== file_path) {
-    t9 = basename(file_path);
+    t9 = escapeControlCharsAsEntities(basename(file_path));
     $[7] = file_path;
     $[8] = t9;
   } else {

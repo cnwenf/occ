@@ -80,6 +80,10 @@ import {
 import type { MemoryType } from './memory/types.js'
 import { expandPath } from './path.js'
 import { pathInWorkingPath } from './permissions/filesystem.js'
+import {
+  getPersistedReadDenyContext,
+  isFileReadDenied,
+} from './permissions/readDeny.js'
 import { isSettingSourceEnabled } from './settings/constants.js'
 import { getInitialSettings } from './settings/settings.js'
 import {
@@ -531,6 +535,31 @@ function logMemoryPathRefusal(surface: string, path: string): void {
   )
 }
 
+// CC 2.1.290 (security, cluster B4): instruction-file withheld reasons — the
+// official `dSt` table (@210758400), verbatim. `outside` has no OCC trigger
+// (blockReadsOutsideWorkingDirectories / --restricted are absent — N-A per
+// docs/gap-research-291/cluster-b-read-deny-mentions.md §B4) but is kept so
+// the table matches the binary and the arm is ready when that surface lands.
+const INSTRUCTION_NOT_LOADED_REASONS = {
+  denied: 'a Read deny rule covers it',
+  outside:
+    "it's read from outside your working directories, where reads are blocked",
+  unsettled: "where it leads couldn't be worked out",
+} as const
+
+type InstructionNotLoadedReason =
+  keyof typeof INSTRUCTION_NOT_LOADED_REASONS
+
+/** Official `lSt`: `Instruction file not loaded: ${path} (${dSt[reason]})`. */
+function logInstructionFileNotLoaded(
+  path: string,
+  reason: InstructionNotLoadedReason,
+): void {
+  logForDebugging(
+    `Instruction file not loaded: ${path} (${INSTRUCTION_NOT_LOADED_REASONS[reason]})`,
+  )
+}
+
 /**
  * Used by processMemoryFile → getMemoryFiles so the event loop stays
  * responsive during the directory walk (many readFile attempts, most
@@ -542,11 +571,24 @@ async function safelyReadMemoryFileAsync(
   type: MemoryType,
   includeBasePath?: string,
 ): Promise<{ info: MemoryFileInfo | null; includePaths: string[] }> {
+  // CC 2.1.290 (security, cluster B4): a persisted `Read` deny rule now
+  // withholds instruction files. Official judges the candidate with `Bkt`
+  // against the `N2`-extended context BEFORE any read; OCC consults the same
+  // shared predicate (`isFileReadDenied` — surface spelling + every symlink
+  // spelling) against `igs`' persisted-deny context, because memory files load
+  // at startup where no engine permission context exists yet.
+  if (isFileReadDenied(filePath, getPersistedReadDenyContext())) {
+    logInstructionFileNotLoaded(filePath, 'denied')
+    return { info: null, includePaths: [] }
+  }
   // CC 2.1.282 (security): read-site chokepoint. Every memory read funnels
   // through here (project/user probes via processMemoryFile, plus the direct
-  // AutoMem/TeamMem callers), so this is the last-line nE/ZO gate. Silent.
+  // AutoMem/TeamMem callers), so this is the last-line nE/ZO gate. Fail-closed
+  // on unverifiable ancestry — the official 2.1.290 `unsettled` arm, whose
+  // wording is now logged alongside the pre-existing containment diagnostic.
   if (isDeniedMemoryPath(filePath) || shouldRefuseMemorySymlink(filePath)) {
     logMemoryPathRefusal('read', filePath)
+    logInstructionFileNotLoaded(filePath, 'unsettled')
     return { info: null, includePaths: [] }
   }
   try {
@@ -558,6 +600,14 @@ async function safelyReadMemoryFileAsync(
     return { info: null, includePaths: [] }
   }
 }
+
+/**
+ * Test-visible alias for the read-site chokepoint above (convention:
+ * `setSessionWritePermissionStashForTesting`). The unsettled/denied arms are
+ * otherwise unreachable from `processMemoryFile`, which runs the same 2.1.282
+ * predicates earlier in its own gate.
+ */
+export const safelyReadMemoryFileAsyncForTesting = safelyReadMemoryFileAsync
 
 type MarkdownToken = {
   type: string

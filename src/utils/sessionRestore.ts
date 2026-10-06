@@ -421,6 +421,15 @@ export async function processResumedConversation(
     currentCwd: string
     cliAgents: AgentDefinition[]
     initialState: AppState
+    /**
+     * CC 2.1.290: the permission mode was supplied on invocation
+     * (--permission-mode / --dangerously-skip-permissions) — pins the
+     * startup mode and disables the plan-mode resume restore. Official
+     * `startupModePinned: r.permissionModeSuppliedOnInvocation || R`
+     * (cc290 @218638816; the `R` proactivity half has no OCC surface —
+     * `startupModeDecidedByProactivityLevel` does not exist in OCC).
+     */
+    startupModePinned: boolean
   },
 ): Promise<ProcessedResume> {
   // Match coordinator/normal mode to the resumed session
@@ -531,6 +540,30 @@ export async function processResumedConversation(
     context.agentDefinitions,
   )
 
+  // CC 2.1.290 (changelog-entries-290.txt:99): restore plan mode when
+  // resuming with --continue / --resume <session-id>. Official call site
+  // (cc290 sessionRestore @218638816, lazy-imported):
+  //   b = planModeOnInteractiveResume(b ?? r.initialState.toolPermissionContext,
+  //       {storedPermissionMode: y, messages: e.messages, forkSession: u,
+  //        startupModePinned: r.permissionModeSuppliedOnInvocation || R}) ?? b
+  // OCC does not persist a session-level permissionMode (ResumeLoadResult
+  // carries none — official `y = e.permissionMode`), so storedPermissionMode
+  // is undefined → recordedMode "absent" → the official transcript lane
+  // (M(messages) === "open") decides. See src/utils/planModeResume.ts.
+  const { planModeOnInteractiveResume } = await import('./planModeResume.js')
+  const planRestoredContext = planModeOnInteractiveResume(
+    context.initialState.toolPermissionContext,
+    {
+      storedPermissionMode: undefined,
+      messages: result.messages,
+      forkSession: opts.forkSession,
+      startupModePinned: context.startupModePinned,
+    },
+  )
+  const resumedInitialState = planRestoredContext
+    ? { ...context.initialState, toolPermissionContext: planRestoredContext }
+    : context.initialState
+
   return {
     messages: result.messages,
     fileHistorySnapshots: result.fileHistorySnapshots,
@@ -541,7 +574,7 @@ export async function processResumedConversation(
       : result.agentColor) as AgentColorName | undefined,
     restoredAgentDef: restoredAgent,
     initialState: {
-      ...context.initialState,
+      ...resumedInitialState,
       ...(resumedAgentType && { agent: resumedAgentType }),
       ...(restoredAttribution && { attribution: restoredAttribution }),
       ...(standaloneAgentContext && { standaloneAgentContext }),

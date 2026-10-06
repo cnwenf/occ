@@ -528,13 +528,38 @@ export function asImageFilePath(text: string): string | null {
 }
 
 /**
+ * The reader for one pasted/dragged image path — official v290 `iLo`'s third
+ * parameter (@216794877), which v290 introduced so the read could be the
+ * permission-guarded one (`sgs` @210758104). Returns the bytes, or a sentinel:
+ *
+ * - `'refused'` — a Read deny rule matched (surface or symlink landing), or a
+ *   link was swapped mid-read. The caller must WITHHOLD the image.
+ * - `'absent'`  — nothing there to read.
+ * - `undefined` — no read was attempted (relative path whose clipboard
+ *   counterpart did not match).
+ *
+ * Required, not optional: an unguarded call site is a type error.
+ */
+export type PastedImageReader = (
+  path: string,
+) => Promise<Buffer | 'refused' | 'absent' | undefined>
+
+/** What one pasted/dragged image path yielded — official `iLo`'s return. */
+export type PastedImageResult =
+  | (ImageWithDimensions & { path: string })
+  | 'refused'
+  | null
+
+/**
  * Try to find and read an image file, falling back to clipboard search
  * @param text Pasted text that might be an image filename or path
- * @returns Object containing the image path and base64 data, or null if not found
+ * @param readPastedFile Guarded reader (CC 2.1.290 B1) — see PastedImageReader
+ * @returns The image, `'refused'` when the read was denied, or null if not found
  */
 export async function tryReadImageFromPath(
   text: string,
-): Promise<(ImageWithDimensions & { path: string }) | null> {
+  readPastedFile: PastedImageReader,
+): Promise<PastedImageResult> {
   // Strip terminal added spaces or quotes to dragged in paths
   const cleanedPath = asImageFilePath(text)
 
@@ -543,48 +568,53 @@ export async function tryReadImageFromPath(
   }
 
   const imagePath = cleanedPath
-  let imageBuffer
+  let imageBuffer: Buffer | 'refused' | 'absent' | undefined
 
   try {
     if (isAbsolute(imagePath)) {
-      imageBuffer = getFsImplementation().readFileBytesSync(imagePath)
+      imageBuffer = await readPastedFile(imagePath)
     } else {
       // VSCode Terminal just grabs the text content which is the filename
       // instead of getting the full path of the file pasted with cmd-v. So
       // we check if it matches the filename of the image in the clipboard.
       const clipboardPath = await getImagePathFromClipboard()
       if (clipboardPath && imagePath === basename(clipboardPath)) {
-        imageBuffer = getFsImplementation().readFileBytesSync(clipboardPath)
+        imageBuffer = await readPastedFile(clipboardPath)
       }
     }
   } catch (e) {
     logError(e as Error)
     return null
   }
-  if (!imageBuffer) {
+  // Official v290 arm order (byte-verified `iLo`): the refusal sentinel is
+  // checked BEFORE the falsy check, so it propagates to the paste handler
+  // (which withholds the image, skips the clipboard fallback and reports
+  // `read_withheld`) instead of being swallowed as "not an image".
+  if (imageBuffer === 'refused') {
+    return 'refused'
+  }
+  if (!imageBuffer || imageBuffer === 'absent') {
     return null
   }
-  if (imageBuffer.length === 0) {
+
+  let bytes = imageBuffer
+  if (bytes.length === 0) {
     logForDebugging(`Image file is empty: ${imagePath}`, { level: 'warn' })
     return null
   }
 
   // BMP is not supported by the API — convert to PNG via Sharp.
-  if (
-    imageBuffer.length >= 2 &&
-    imageBuffer[0] === 0x42 &&
-    imageBuffer[1] === 0x4d
-  ) {
+  if (bytes.length >= 2 && bytes[0] === 0x42 && bytes[1] === 0x4d) {
     const sharp = await getImageProcessor()
-    imageBuffer = await sharp(imageBuffer).png().toBuffer()
+    bytes = await sharp(bytes).png().toBuffer()
   }
 
   // Resize if needed to stay under 5MB API limit
   // Extract extension from path for format hint
   const ext = extname(imagePath).slice(1).toLowerCase() || 'png'
   const resized = await maybeResizeAndDownsampleImageBuffer(
-    imageBuffer,
-    imageBuffer.length,
+    bytes,
+    bytes.length,
     ext,
   )
   const base64Image = resized.buffer.toString('base64')

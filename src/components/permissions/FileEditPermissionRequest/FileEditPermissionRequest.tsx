@@ -3,6 +3,7 @@ import { basename, relative } from 'path';
 import React from 'react';
 import { FileEditToolDiff } from 'src/components/FileEditToolDiff.js';
 import { getCwd } from 'src/utils/cwd.js';
+import { escapeControlCharsAsEntities } from 'src/utils/displayEscape.js';
 import type { z } from 'zod/v4';
 import { Text } from '../../../ink.js';
 import { FileEditTool } from '../../../tools/FileEditTool/FileEditTool.js';
@@ -61,13 +62,15 @@ export function FileEditPermissionRequest(props) {
     t7 = props.onReject;
     t8 = props.workerBadge;
     t9 = "Edit file";
-    t10 = relative(getCwd(), file_path);
+    // CC 2.1.291 (G#9): escape control chars (incl. line breaks) in the
+    // displayed path so a filename with \n can't spoof extra dialog lines.
+    t10 = escapeControlCharsAsEntities(relative(getCwd(), file_path));
     T1 = Text;
     t2 = "Do you want to make this edit to";
     t3 = " ";
     T0 = Text;
     t0 = true;
-    t1 = basename(file_path);
+    t1 = escapeControlCharsAsEntities(basename(file_path));
     $[0] = props.onDone;
     $[1] = props.onReject;
     $[2] = props.toolUseConfirm;

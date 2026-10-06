@@ -86,11 +86,6 @@ import { logError } from './log.js'
 import { extractTag, isCompactBoundaryMessage } from './messages.js'
 import { sanitizePath } from './path.js'
 import {
-  acquireLoadCoordination,
-  acquireRewriteCoordination,
-  type TranscriptCoordinationHandle,
-} from './transcriptRewriteCoordinator.js'
-import {
   dirMatchesProjectPath,
   extractJsonStringField,
   extractLastJsonStringField,
@@ -1054,19 +1049,16 @@ class Project {
   async removeMessageByUuid(targetUuid: UUID): Promise<void> {
     return this.trackWrite(async () => {
       if (this.sessionFile === null) return
-      // CC 2.1.288 #12 (OCC-106 P2-2 fix): official
-      // `performRemoveByUuid(e,n,r){using s=await wM(e);...}` (@211508839)
-      // wraps the WHOLE method in rewrite coordination — the tail-splice fast
-      // path included. A positional ftruncate + trailing write is still two
-      // non-atomic syscalls on a live transcript, and REPL.tsx fires this
-      // fire-and-forget, so without coordination a concurrent
-      // loadTranscriptFile (/resume, forked session, hydrate, lite-metadata
-      // tail read) can observe the file cut short — the exact #12 failure.
-      // Acquire once here and dispose in the finally, matching the sibling
-      // mutations' try/finally shape.
-      let rewriteHandle: TranscriptCoordinationHandle | null = null
+      // CC 2.1.291 regression fix #2: official 291 DELETED the 2.1.288
+      // rewrite↔load coordination barrier wholesale (byte evidence:
+      // `loadWaitMs`/`abandonedLoads` counts 5→0 in cc291, all seven
+      // `using s=await EI(e)` lease sites gone — see
+      // docs/gap-research-291/cluster-f-session-durability.md item A).
+      // OCC's verbatim 288 port (transcriptRewriteCoordinator.ts) is
+      // removed with it: the 5000ms rewrite-side wait also raced OCC's
+      // 2000ms graceful-shutdown cleanup budget. The tail-splice below
+      // runs uncoordinated, matching official 291.
       try {
-        rewriteHandle = await acquireRewriteCoordination(this.sessionFile)
         let fileSize = 0
         const fh = await fsOpen(this.sessionFile, 'r+')
         try {
@@ -1105,8 +1097,7 @@ class Project {
               const afterLen = bytesRead - lineEnd
               // Truncate first, then re-append the trailing lines. In the
               // common case (target is the last entry) afterLen is 0 and
-              // this is a single ftruncate. Both syscalls run under the
-              // method-wide rewrite coordination acquired above.
+              // this is a single ftruncate.
               await fh.truncate(absLineStart)
               if (afterLen > 0) {
                 await fh.write(tail, lineEnd, afterLen, absLineStart)
@@ -1142,8 +1133,6 @@ class Project {
         })
       } catch {
         // Silently ignore errors - the file might not exist yet
-      } finally {
-        rewriteHandle?.[Symbol.dispose]()
       }
     })
   }
@@ -1812,15 +1801,10 @@ export async function hydrateRemoteSession(
 
     // Replace local logs with remote logs. writeFile truncates, so no
     // unlink is needed; an empty remoteLogs array produces an empty file.
-    // CC 2.1.288 #12: whole-file rewrite — coordinate with concurrent loads
-    // (official remote hydration `_0r`: `using w=await wM(S)`).
+    // CC 2.1.291: the 288 rewrite-coordination lease around this write was
+    // deleted upstream (cluster-f item A) — direct write, matching official.
     const content = remoteLogs.map(e => jsonStringify(e) + '\n').join('')
-    const rewriteHandle = await acquireRewriteCoordination(sessionFile)
-    try {
-      await writeFile(sessionFile, content, { encoding: 'utf8', mode: 0o600 })
-    } finally {
-      rewriteHandle[Symbol.dispose]()
-    }
+    await writeFile(sessionFile, content, { encoding: 'utf8', mode: 0o600 })
 
     logForDebugging(`Hydrated ${remoteLogs.length} entries from remote`)
     return remoteLogs.length > 0
@@ -1870,16 +1854,11 @@ export async function hydrateFromCCRv2InternalEvents(
     await mkdir(projectDir, { recursive: true, mode: 0o700 })
 
     // Write foreground transcript
-    // CC 2.1.288 #12: whole-file rewrite — coordinate with concurrent loads
-    // (official CCR v2 foreground hydrate: `using an=await wM(w)`).
+    // CC 2.1.291: rewrite-coordination lease deleted upstream (cluster-f
+    // item A) — direct write, matching official.
     const sessionFile = getTranscriptPathForSession(sessionId)
     const fgContent = events.map(e => jsonStringify(e.payload) + '\n').join('')
-    const fgRewriteHandle = await acquireRewriteCoordination(sessionFile)
-    try {
-      await writeFile(sessionFile, fgContent, { encoding: 'utf8', mode: 0o600 })
-    } finally {
-      fgRewriteHandle[Symbol.dispose]()
-    }
+    await writeFile(sessionFile, fgContent, { encoding: 'utf8', mode: 0o600 })
 
     logForDebugging(
       `Hydrated ${events.length} foreground entries from CCR v2 internal events`,
@@ -1912,18 +1891,12 @@ export async function hydrateFromCCRv2InternalEvents(
           const agentContent = entries
             .map(p => jsonStringify(p) + '\n')
             .join('')
-          // CC 2.1.288 #12: whole-file rewrite of the subagent transcript —
-          // coordinate with concurrent loads (official CCR v2 subagent
-          // hydrate: `using an=await wM(w)`).
-          const agentRewriteHandle = await acquireRewriteCoordination(agentFile)
-          try {
-            await writeFile(agentFile, agentContent, {
-              encoding: 'utf8',
-              mode: 0o600,
-            })
-          } finally {
-            agentRewriteHandle[Symbol.dispose]()
-          }
+          // CC 2.1.291: rewrite-coordination lease deleted upstream
+          // (cluster-f item A) — direct write, matching official.
+          await writeFile(agentFile, agentContent, {
+            encoding: 'utf8',
+            mode: 0o600,
+          })
         }
 
         logForDebugging(
@@ -4200,15 +4173,11 @@ export async function loadTranscriptFile(
   // the loop when > 0.
   let droppedAttachmentCount = 0
 
-  // CC 2.1.288 #12: LOAD side of the rewrite/load coordination registry
-  // (official `Kyn`). Acquired before the whole-file read(s) below
-  // (readTranscriptForLoad chunked scan + readFile) so a concurrent
-  // whole-file rewrite of THIS path (tombstone slow path, remote/CCR-v2
-  // hydrate) waits for the read to finish instead of racing it and leaving
-  // the loader observing a truncated file. Released in the finally below.
-  let loadHandle: TranscriptCoordinationHandle | undefined
+  // CC 2.1.291: the 288 LOAD-side coordination lease acquired here was
+  // deleted upstream (all seven `using s=await EI(e)` sites gone in cc291
+  // — cluster-f item A). The whole-file read(s) below run uncoordinated,
+  // matching official 291.
   try {
-    loadHandle = await acquireLoadCoordination(filePath)
     // For large transcripts, avoid materializing megabytes of stale content.
     // Single forward chunked read: attribution-snapshot lines are skipped at
     // the fd level (never buffered), compact boundaries truncate the
@@ -4428,9 +4397,6 @@ export async function loadTranscriptFile(
     }
   } catch {
     // File doesn't exist or can't be read
-  } finally {
-    // CC 2.1.288 #12: release the load window so a waiting rewrite proceeds.
-    loadHandle?.[Symbol.dispose]()
   }
 
   // CC 2.1.275 (M1): byte-exact official `xW` error log when attachment rows

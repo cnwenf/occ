@@ -12,3 +12,8 @@ coverage
 .occ-research/
 # npm pack artifacts
 *.tgz
+# Raw ELF strings set-diffs from version-gap forensics (38-39 MB each).
+# Regenerable from the recorded md5s + the commands in the round ledger;
+# only the markdown cluster docs and the changelog dump are committed.
+docs/gap-research-*/new-in-*.txt
+docs/gap-research-*/gone-from-*.txt
