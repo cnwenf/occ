@@ -301,3 +301,25 @@ Repo hygiene: `docs/gap-research-*/new-in-*.txt` and `gone-from-*.txt` (the
 38–39 MB raw ELF strings set-diffs) are now `.gitignore`d — regenerable from the
 recorded md5s plus the commands in §2, and prior rounds commit only the
 markdown cluster docs and `changelog-entries-*.txt`.
+
+### 7.7 Post-merge CI catch — one stale pre-290 test (fixed same round)
+
+Local verification ran `bun test src`; CI runs the broader suite including
+`test/`. CI run **37544611823** on merge commit `5801585`: **9370 pass / 1
+fail / 335 skip** across 854 files. The single failure was
+`test/tools/EnterPlanModeAutoBash.test.ts` → "plan+auto bash reaches
+classifier path": a 2.1.218-era fixture that (a) mocked a `Tool` via
+`as unknown as Tool` **without** the required `isReadOnly` method — the D#1
+port of official `_rn` (@213320210) calls `tool.isReadOnly(parsed.data,
+context)`, so the mock threw `TypeError` — and (b) asserted the pre-290
+outcome (`allow` + `decisionReason.type 'classifier'`), which official 2.1.290
+**intentionally changed**: a non-read-only plan-mode classifier allow is now
+floored to ask with reason `plan_mode_floor`. Per the official semantics the
+test was stale, not the implementation. Fixed: mock gained `isReadOnly: () =>
+false` (mirrors the real BashTool for an unprovable command and the
+`Tool.ts:859` default "assume writes"), assertions updated to `behavior
+'ask'` + `decisionReason.reason 'plan_mode_floor'`, test name and HONEST
+CONCLUSION comment rewritten to document the 290 floor. Re-run: file **6 pass
+/ 0 fail**; sanity `bun test test/tools src/utils/permissions` **386 pass / 1
+skip / 0 fail**; biome clean on the changed file. Lesson recorded: future
+rounds must run `bun test` over `test/` too, not just `src/`, before merge.

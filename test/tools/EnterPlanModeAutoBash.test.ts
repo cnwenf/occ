@@ -177,7 +177,7 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
     expect(result.behavior).toBe('allow')
   })
 
-  test('plan+auto bash reaches classifier path → rule-based allow (no dialog) for no-classifier-input tool', async () => {
+  test('plan+auto bash reaches classifier path → 2.1.290 plan-mode floor: non-read-only classifier allow is floored to ask (plan_mode_floor)', async () => {
     // Arrange: plan + flag set, a bash tool whose checkPermissions returns
     // 'ask' in ALL modes (so no acceptEdits fast-path allow). This forces
     // the flow to reach the classifier path.
@@ -192,6 +192,10 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
     // action is '' → returns shouldBlock:false ("Tool declares no
     // classifier-relevant input") — a REAL rule-based allow path BEFORE
     // the ant-only classifier API is ever called.
+    // `isReadOnly: () => false` mirrors the REAL BashTool for an unprovable
+    // command — and satisfies the Tool interface contract the CC 2.1.290
+    // plan-mode floor relies on (official `_rn` @213320210 calls
+    // `r.isReadOnly(h.data,g)`; every real tool implements it).
     const tool: Tool = {
       name: 'Bash',
       userFacingName: () => 'Bash',
@@ -205,6 +209,7 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
       }),
       description: async () => 'Bash',
       isMcp: false,
+      isReadOnly: () => false,
     } as unknown as Tool
     const ctx = createContext('plan')
     const msg = createAssistantMessage()
@@ -217,20 +222,25 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
       'plan-auto-unprovable',
     )
 
-    // Assert: the flag routed the flow INTO the classifier path. The
-    // classifier's "no classifier-relevant input" rule-based path allows
-    // it (no dialog) — this is a REAL auto-decide, not the stubbed API.
-    expect(result.behavior).toBe('allow')
-    expect(result.decisionReason?.type).toBe('classifier')
+    // Assert: the flag routed the flow INTO the classifier path and the
+    // rule-based "no classifier-relevant input" allow was reached — but the
+    // CC 2.1.290 plan-mode structural floor (official `_rn` plan branch,
+    // `shouldHonorClassifierAllow`) no longer HONORS that allow for a
+    // non-read-only call: it falls back to ask with the official
+    // `plan_mode_floor` reason. (Pre-2.1.290 this asserted allow +
+    // decisionReason.type 'classifier' — the 290 port intentionally changed
+    // the observable behavior.)
+    expect(result.behavior).toBe('ask')
+    expect(result.decisionReason?.reason).toBe('plan_mode_floor')
 
-    // HONEST CONCLUSION (documented, not faked): for a tool that declares
-    // no classifier-relevant input, plan+auto achieves no-dialog via this
-    // rule-based allow. For a REAL bash command that DOES declare
-    // classifier-relevant input, the path would proceed to the ant-only
-    // classifier API (stubbed/unavailable in OCC external builds) →
-    // fail-open to dialog (or fail-closed if tengu_iron_gate_closed).
-    // TRUE no-dialog for classifier-relevant bash is BLOCKED by the
-    // ant-only classifier stub — a deliberate external-build trim.
+    // HONEST CONCLUSION (documented, not faked): under official 2.1.290
+    // semantics, plan mode NEVER auto-allows a non-read-only tool call via
+    // the classifier — the floor prompts the user instead. A structurally
+    // read-only call (isReadOnly → true) is still honored with no dialog.
+    // For a REAL bash command that DOES declare classifier-relevant input,
+    // the path would proceed to the ant-only classifier API
+    // (stubbed/unavailable in OCC external builds) → fail-open to dialog
+    // (or fail-closed if tengu_iron_gate_closed).
   })
 })
 
