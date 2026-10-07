@@ -741,8 +741,23 @@ export const hasPermissionsToUseTool = async (
       // acceptEdits mode, which would silently bypass the classifier. REPL
       // code can contain VM escapes between inner tool calls; the classifier
       // must see the glue JavaScript, not just the inner tool calls.
+      //
+      // Official 2.1.289/290/291 (binary-verified, 验收 P2-2): the fast-path
+      // gate ends with `!Er` where `Er=Ce==="plan"&&!Kn` — plan mode NEVER
+      // runs the acceptEdits simulation (`Kn` is the server-held-shell-allow
+      // reroute, which OCC does not have, so the OCC guard is simply
+      // mode === 'plan'). Byte offsets of the guard / gated `try`:
+      //   cc289 `Wo=Ce==="plan"&&!nn` @210258204, `!Wo)try` @210258689
+      //   cc290 `br=Ce==="plan"&&!Kn` @213334712, `!br)try` @213335197
+      //   cc291 `Er=Ce==="plan"&&!Kn` @213291816, `!Er)try` @213292302
+      // Without this guard a real write tool (isReadOnly false; allow under
+      // acceptEdits) in plan + isPlanModeAutoBashActive returned
+      // allow {type:'mode',mode:'auto'} here, bypassing the 2.1.290
+      // plan_mode_floor — the floor only gates the classifier allow path
+      // below, never this early return.
       if (
         result.behavior === 'ask' &&
+        appState.toolPermissionContext.mode !== 'plan' &&
         tool.name !== AGENT_TOOL_NAME &&
         tool.name !== REPL_TOOL_NAME
       ) {

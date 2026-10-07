@@ -5,6 +5,7 @@ import { isAbsolute, resolve, sep } from 'path'
 import { readFileSync } from 'node:fs'
 import type { z } from 'zod/v4'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
+import { escapeControlCharsAsEntities } from '../../utils/displayEscape.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -429,7 +430,9 @@ export function checkBashRedirectAndPatternSafety(
   // ~/.config/git/…) must always prompt, even in acceptEdits.
   for (const r of outputRedirects) {
     if (r.target && isShellStartupFileTarget(r.target)) {
-      const reason = `Claude requested permissions to edit ${r.target} which is a sensitive file.`
+      // Official 2.1.290+ shape wraps the path: `edit ${ad(e)} which is a
+      // sensitive file.` (cc291 byte evidence; cc289 has zero `${ad(`).
+      const reason = `Claude requested permissions to edit ${escapeControlCharsAsEntities(r.target)} which is a sensitive file.`
       return {
         behavior: 'ask',
         message: createPermissionRequestMessage(BashTool.name, {

@@ -19,9 +19,12 @@
  * symlinked settings file previously never reached the settings gate.
  *
  * ZI(I) → OCC `formatPathForPermissionMessage` (sanitize + 160-char truncate;
- * official To=160). ad(e) (the 291-global display wrapper) is out of item-1
- * scope; OCC keeps the raw `${path}` interpolation like every other OCC
- * write message.
+ * official To=160). ad(e) → OCC `escapeControlCharsAsEntities`
+ * (displayEscape.ts, verbatim `ad` port). Byte evidence ad() is 2.1.290-GLOBAL
+ * (验收 P2-1 correction — an earlier revision claimed it was out of scope):
+ * cc289 ELF has ZERO `${ad(` message shapes; cc290/cc291 each carry 6
+ * `write to ${ad(` + 9 `read from ${ad(` shapes, so every path-interpolated
+ * permission message in filesystem.ts is wrapped, this gate included.
  *
  * Note (doc deviation, binary-verified): writing the symlinked settings file
  * ITSELF yields classifierApprovable FALSE — I is defined (the landing
@@ -274,5 +277,47 @@ describe('checkWritePermissionForTool — circuitBreaker forwarding (official Yf
       classifierApprovable: false,
       circuitBreaker: 'claudeSettingsFile',
     })
+  })
+})
+
+/**
+ * 验收 P2-1 (2026-10-07): the official 2.1.290+ message shape is
+ * `write to ${ad(e)}` — the path is display-escaped. A control char in the
+ * path (legal in POSIX filenames; constructible by a malicious CLAUDE.md or
+ * model output) must render as its HTML numeric entity so it cannot forge
+ * extra lines/buttons in the permission dialog. `escapeControlCharsAsEntities`
+ * is the verbatim `ad` port; identity for plain paths, so the tests above are
+ * unaffected.
+ */
+describe('ad(e) display escaping in write-permission messages (验收 P2-1)', () => {
+  test('settings-link gate message escapes a \\n in the path as &#10; (no raw newline)', () => {
+    const cfg = mkCfg('nl')
+    const settingsPath = join(cfg, 'settings.json')
+    const target = join(farm, 'evil\nname.json')
+    writeFileSync(target, '{}')
+    symlinkSync(target, settingsPath)
+
+    const result = checkPathSafetyForAutoEdit(target) as UnsafeResult
+
+    expect(result.safe).toBe(false)
+    expect(result.message).toContain(`write to ${join(farm, 'evil&#10;name.json')},`)
+    expect(result.message).not.toContain('evil\nname.json')
+    expect(result.circuitBreaker).toBe('claudeSettingsFile')
+  })
+
+  test('default write ask (outside working dir) escapes \\n and \\x1b as entities', () => {
+    mkCfg('nl2')
+    const hostile = join(farm, 'esc\x1b[31m\nfake-button.txt')
+
+    const result = checkWritePermissionForTool(
+      fakeEditTool,
+      { file_path: hostile },
+      makeContext({ workdir: proj }),
+    ) as { behavior: string; message: string }
+
+    expect(result.behavior).toBe('ask')
+    expect(result.message).toContain('&#27;[31m&#10;fake-button.txt')
+    expect(result.message).not.toContain('\x1b')
+    expect(result.message.split('\n').length).toBe(1)
   })
 })

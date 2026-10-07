@@ -17,6 +17,7 @@ import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/anal
 import type { AnyObject, Tool, ToolPermissionContext } from '../../Tool.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { getCwd } from '../cwd.js'
+import { escapeControlCharsAsEntities } from '../displayEscape.js'
 import { logForDebugging } from '../debug.js'
 import { getClaudeConfigHomeDir } from '../envUtils.js'
 import {
@@ -672,7 +673,7 @@ export function checkPathSafetyForAutoEdit(
     if (hasSuspiciousWindowsPathPattern(pathToCheck)) {
       return {
         safe: false,
-        message: `Claude requested permissions to write to ${path}, which contains a suspicious Windows path pattern that requires manual approval.`,
+        message: `Claude requested permissions to write to ${escapeControlCharsAsEntities(path)}, which contains a suspicious Windows path pattern that requires manual approval.`,
         classifierApprovable: false,
       }
     }
@@ -695,9 +696,14 @@ export function checkPathSafetyForAutoEdit(
   // a settings gate. The Mrr resolved-settings certain/possible arm
   // (MSt/yf/xZe) needs the settings-dir locate subsystem OCC lacks (doc
   // items 2/4, out of this wave). ZI(I) → formatPathForPermissionMessage
-  // (sanitize + 160-char truncate; official To=160). ad(e) (the 291-global
-  // message display wrapper) is out of item-1 scope — OCC keeps the raw
-  // `${path}` interpolation like every other OCC write message.
+  // (sanitize + 160-char truncate; official To=160). ad(e) → the official
+  // global message display wrapper, ported verbatim as
+  // escapeControlCharsAsEntities (displayEscape.ts). Byte evidence it is
+  // 2.1.290-global (not item-1-local): cc289 has ZERO `${ad(` shapes while
+  // cc290/cc291 each carry 6 `write to ${ad(` + 9 `read from ${ad(` message
+  // shapes — so EVERY path-interpolated permission message in this file is
+  // wrapped, not just this branch. (An earlier revision of this comment
+  // wrongly declared the wrapper out of scope; 验收 P2-1 caught it.)
   if (pathsToCheck.some(isSettingsFileLink)) {
     const linkMap = getSettingsFileLinkMap()
     const foldedChecks = pathsToCheck.map(settingsLinkLookupKey)
@@ -713,7 +719,7 @@ export function checkPathSafetyForAutoEdit(
         : ` The Claude Code settings file ${formatPathForPermissionMessage(linkTarget)} leads here through a link.`
     return {
       safe: false,
-      message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.${linkSuffix}`,
+      message: `Claude requested permissions to write to ${escapeControlCharsAsEntities(path)}, but you haven't granted it yet.${linkSuffix}`,
       classifierApprovable: linkTarget === undefined,
       circuitBreaker: 'claudeSettingsFile',
     }
@@ -724,7 +730,7 @@ export function checkPathSafetyForAutoEdit(
     if (isClaudeConfigFilePath(pathToCheck)) {
       return {
         safe: false,
-        message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.`,
+        message: `Claude requested permissions to write to ${escapeControlCharsAsEntities(path)}, but you haven't granted it yet.`,
         classifierApprovable: true,
       }
     }
@@ -735,7 +741,7 @@ export function checkPathSafetyForAutoEdit(
     if (isDangerousFilePathToAutoEdit(pathToCheck)) {
       return {
         safe: false,
-        message: `Claude requested permissions to edit ${path} which is a sensitive file.`,
+        message: `Claude requested permissions to edit ${escapeControlCharsAsEntities(path)} which is a sensitive file.`,
         classifierApprovable: true,
       }
     }
@@ -1913,7 +1919,7 @@ export function checkReadPermissionForTool(
     if (pathToCheck.startsWith('\\\\') || pathToCheck.startsWith('//')) {
       return {
         behavior: 'ask',
-        message: `Claude requested permissions to read from ${path}, which appears to be a UNC path that could access network resources.`,
+        message: `Claude requested permissions to read from ${escapeControlCharsAsEntities(path)}, which appears to be a UNC path that could access network resources.`,
         decisionReason: {
           type: 'other',
           reason: 'UNC path detected (defense-in-depth check)',
@@ -1927,7 +1933,7 @@ export function checkReadPermissionForTool(
     if (hasSuspiciousWindowsPathPattern(pathToCheck)) {
       return {
         behavior: 'ask',
-        message: `Claude requested permissions to read from ${path}, which contains a suspicious Windows path pattern that requires manual approval.`,
+        message: `Claude requested permissions to read from ${escapeControlCharsAsEntities(path)}, which contains a suspicious Windows path pattern that requires manual approval.`,
         decisionReason: {
           type: 'other',
           reason:
@@ -1971,7 +1977,7 @@ export function checkReadPermissionForTool(
     if (askRule) {
       return {
         behavior: 'ask',
-        message: `Claude requested permissions to read from ${path}, but you haven't granted it yet.`,
+        message: `Claude requested permissions to read from ${escapeControlCharsAsEntities(path)}, but you haven't granted it yet.`,
         decisionReason: {
           type: 'rule',
           rule: askRule,
@@ -2038,7 +2044,7 @@ export function checkReadPermissionForTool(
   // At this point, isInWorkingDir is false (from step #6), so path is outside working directories
   return {
     behavior: 'ask',
-    message: `Claude requested permissions to read from ${path}, but you haven't granted it yet.`,
+    message: `Claude requested permissions to read from ${escapeControlCharsAsEntities(path)}, but you haven't granted it yet.`,
     suggestions: generateSuggestions(
       path,
       'read',
@@ -2320,7 +2326,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
     if (askRule) {
       return {
         behavior: 'ask',
-        message: `Claude requested permissions to write to ${path}, but you haven't granted it yet.`,
+        message: `Claude requested permissions to write to ${escapeControlCharsAsEntities(path)}, but you haven't granted it yet.`,
         decisionReason: {
           type: 'rule',
           rule: askRule,
@@ -2385,7 +2391,7 @@ export function checkWritePermissionForTool<Input extends AnyObject>(
   // reaches Dr when P (every-spelling inside) is false — mirrored by the
   // !isInWorkingDir guard; when P is true the ask carries NO decisionReason
   // (binary `if(P)` plain-ask branch @194287165 region).
-  const baseAskMessage = `Claude requested permissions to write to ${path}, but you haven't granted it yet.`
+  const baseAskMessage = `Claude requested permissions to write to ${escapeControlCharsAsEntities(path)}, but you haven't granted it yet.`
   const askSuggestions = generateSuggestions(
     path,
     'write',

@@ -403,12 +403,28 @@ Already landed pre-round: `src/utils/claudemd.ts:580`
    `Failed to read pasted image file ${s}: …` at level error; mediaType from
    `detectImageFormatFromBase64` after resize instead of official's buffer-side
    `fy(i)` + "not a supported image" warn; no WSL `toLocalPath` arm.
+5. Landing-read timeout (验收 P3, wired 2026-10-07): official `Vkt`/`Nkt` open
+   the verified landing with `AbortSignal.timeout(XA)` — cc291 `Nkt` @210714577
+   `lMe(Ke(e),n,AbortSignal.timeout(jA))((h)=>h.handle.readFile())`, `jA`=1000.
+   OCC's `getFsImplementation().readFileBytes(path, maxBytes?)` seam takes no
+   signal, so `guardedRead.ts` `readLandingBytes` RACES the read against
+   `AbortSignal.timeout(GUARDED_READ_TIMEOUT_MS)` (the previously-exported-but-
+   unwired `XA` const). Same 1000 ms bound; on timeout the promise rejects into
+   the existing catch → `"absent"`/`"refused"` sentinel exactly as official maps
+   `r===void 0`. Two honest sub-points: (a) the `unexamined` branch of
+   `readPastedFileGuarded` is deliberately NOT wrapped — official `ogs`
+   (@210715481 `s==="unexamined"?oe().readFileBytes(Une(e)):…`) carries no
+   signal there either, so OCC matches (the 验收 "both live reads" note lumped
+   these; only the landing read has an official timeout); (b) OCC's absence
+   probe (`resolutionsUnchangedAndAbsent`→lstat) is not itself timeout-wrapped
+   whereas official `Ekt` passes `AbortSignal.timeout(jA)` — a residual, low
+   risk (metadata lstat on an already-resolved path), recorded not dropped.
 
 ### Tests
 
 | Suite | Result |
 |---|---|
-| `guardedRead291.test.ts` | 23 pass |
+| `guardedRead291.test.ts` | 25 pass (incl. 2 landing-timeout tests: hang→refused, fast-read→bytes) |
 | `imagePasteDeny291.test.ts` | 8 pass |
 | `usePasteHandlerDeny291.test.tsx` | 4 pass / 17 expect() — drives the REAL hook through a REAL ink mount (PassThrough stdout/stdin), telemetry asserted via `CLAUDE_CODE_DIAGNOSTICS_FILE` |
 | `attachmentsAttachedReadStash291.test.ts` | 6 pass / 19 expect() |

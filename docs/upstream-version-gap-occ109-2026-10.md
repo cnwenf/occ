@@ -323,3 +323,83 @@ CONCLUSION comment rewritten to document the 290 floor. Re-run: file **6 pass
 / 0 fail**; sanity `bun test test/tools src/utils/permissions` **386 pass / 1
 skip / 0 fail**; biome clean on the changed file. Lesson recorded: future
 rounds must run `bun test` over `test/` too, not just `src/`, before merge.
+
+### 7.8 验收 打回 fix round (2026-10-07) — P2-1 / P2-2 / P3
+
+验收员 rejected release v2.1.371 pending three hand-reproduced defects on HEAD
+`21d0477`. All three fixed this round (byte-verified against cc289/290/291; no
+official binary executed).
+
+**P2-1 — `ad(e)` display escaping is 2.1.290-global, not item-1-local.** The y1
+settings-link write message (`filesystem.ts:716`) and every other
+path-interpolated permission message shipped a raw `${path}`. Byte ruling: cc289
+has **zero** `${ad(` message shapes; cc290 and cc291 each carry **6**
+`write to ${ad(` + **9** `read from ${ad(` shapes → `ad()` wrapping is a
+2.1.290-GLOBAL change, not local to the settings-link branch. Fix: wrapped all
+10 raw-path sites in `filesystem.ts` (:675/716/727/738/1916/1930/1974/2041/2323/2388)
+plus the G7 shell-startup redirect reason in `bashPermissions.ts` (~:432) in
+`escapeControlCharsAsEntities` (the verbatim `ad` port, `displayEscape.ts`;
+identity for plain paths → zero regression on the existing assertions). Tests:
+`settingsFileLinkGate291.test.ts` gained a `describe` asserting a `\n` in the
+path renders `&#10;` (and a `\x1b`+`\n` hostile name renders `&#27;…&#10;`,
+single-line, no raw control byte). 17 pass / 67 expect() across the two
+settings-link files.
+
+**P2-2 — plan-mode floor was bypassed by the acceptEdits fast-path.** The
+reviewer's probe (a real-FileWrite-semantics tool: `isReadOnly→false`, allow
+under acceptEdits, ask otherwise) under `mode:'plan'` + `isPlanModeAutoBashActive`
+returned `allow {type:'mode',mode:'auto'}` on HEAD — the acceptEdits simulation
+fast-path (`permissions.ts:744`) fired BEFORE the 2.1.290 `plan_mode_floor`
+(which only gates the classifier-allow landing at `:1143`). The `:180` test's
+"ask in ALL modes" mock exercised a fictional path (a real write tool allows
+under acceptEdits), and the test-comment / cluster-d "plan mode NEVER
+auto-allows" claim was false. Official binary ruling (dd + `grep -aboF`, no
+execution): **all three** binaries gate the acceptEdits simulation on a plan
+guard — `X=Ce==="plan"&&!Kn` feeding the fast-path `try` gate `…&&!X)try{`:
+
+| ver | guard def | gated `try` |
+|---|---|---|
+| cc289 | `Wo=Ce==="plan"&&!nn` @210258204 | `!Wo)try` @210258689 |
+| cc290 | `br=Ce==="plan"&&!Kn` @213334712 | `!br)try` @213335197 |
+| cc291 | `Er=Ce==="plan"&&!Kn` @213291816 | `!Er)try` @213292302 |
+
+`Kn` is the server-held-shell-allow reroute (no OCC surface), so the OCC guard
+reduces to `mode === 'plan'`. Contrast: the official **safe-allowlist** fast-path
+(cc291 `if(!Di&&!Bo&&jr)` @~213295651, `jr=ot===void 0&&!Bt&&Cmt(e,n)`) carries
+**no** `Er` guard — allowlisted safe tools still auto-allow in plan mode; OCC's
+allowlist fast-path (`permissions.ts:804`) already matches and was left
+untouched. Fix: added `appState.toolPermissionContext.mode !== 'plan'` to the
+acceptEdits fast-path entry condition (mirrors `!Er`). Tests:
+`EnterPlanModeAutoBash.test.ts` `:180` replaced with `createWriteTool`
+(real write semantics); the two flag-set/flag-clear plan tests now assert
+`ask + plan_mode_floor` (flag set, block entered) vs plain `ask` with NO floor
+reason (flag clear, block skipped); the auto-mode control asserts the fast-path
+STILL fires (`allow {type:'mode',mode:'auto'}`, `Er` false). Header "NEVER"
+overclaim corrected to the scoped form (non-read-only never auto-allowed via
+acceptEdits-sim OR classifier; read-only + safe-allowlist still allowed).
+cluster-d Item 1 gained a 验收-P2-2 修正 subsection with the byte table.
+
+**P3 — guardedRead landing-read timeout was declared but unwired.**
+`guardedRead.ts:81` defined `GUARDED_READ_TIMEOUT_MS = 1000` (official `XA`) and
+even exported it (`:447`), but the `readFileBytes` call at `:313`
+(`readGuardedAtLanding`, the verified-landing read) had no timeout. Byte ruling:
+official `Vkt`/`Nkt` open the landing with `AbortSignal.timeout` — cc291 `Nkt`
+@210714577 `lMe(Ke(e),n,AbortSignal.timeout(jA))((h)=>h.handle.readFile())`,
+`jA`=1000. OCC's `readFileBytes(path, maxBytes?)` seam takes no signal, so
+`readLandingBytes` now RACES the read against
+`AbortSignal.timeout(GUARDED_READ_TIMEOUT_MS)`; on timeout the promise rejects
+into the existing catch → `absent`/`refused` sentinel, matching official's
+`r===void 0` mapping. Honest sub-points recorded in module deviation 6 +
+cluster-b deviation 5: (a) the `unexamined` branch (`:351`) is deliberately NOT
+wrapped — official `ogs` (@210715481 `oe().readFileBytes(Une(e))`) has no signal
+there either, so OCC matches (the 验收 "both live reads" note lumped the two;
+only the landing read carries an official timeout); (b) the absence probe
+(`resolutionsUnchangedAndAbsent`→lstat) is not timeout-wrapped whereas official
+`Ekt` passes `AbortSignal.timeout(jA)` — a residual, low-risk (metadata lstat on
+an already-resolved path). Test seam `_setGuardedReadTimeoutForTesting(ms)`
+added; `guardedRead291.test.ts` +2 tests (hang→refused with a 30 ms timeout,
+fast-read→bytes control) → 25 pass.
+
+Verification this round ran BOTH trees per the §7.7 lesson (`bun test src` and
+`bun test test/`), plus biome on every changed file and a build sanity — see
+the run log in the 复验 comment.

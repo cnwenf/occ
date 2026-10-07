@@ -85,6 +85,7 @@ const {
   readGuardedAtLanding,
   readPastedFileGuarded,
   resolveGuardedRead,
+  _setGuardedReadTimeoutForTesting,
 } = await import('../guardedRead.js')
 
 let farm: string
@@ -425,6 +426,55 @@ describe('CC 2.1.290 B2 — mid-read symlink swap is refused', () => {
     expect(Buffer.isBuffer(outcome)).toBe(true)
     if (Buffer.isBuffer(outcome)) {
       expect(outcome.equals(readFileSync(join(openDir, 'b.png')))).toBe(true)
+    }
+  })
+})
+
+describe('验收 P3 — verified-landing read honors the official XA timeout', () => {
+  test('a landing read that hangs past the timeout → "refused" (present-but-stuck is not "absent")', async () => {
+    // Official `Vkt`/`Nkt` open the landing with `AbortSignal.timeout(XA)`;
+    // OCC races `readFileBytes` against the same 1000 ms bound. A landing that
+    // never returns bytes (dangling NFS/FUSE mount, wedged device) must abort
+    // instead of hanging the permission flow. Lower the timeout via the test
+    // seam so the hang resolves in ms, not a full second.
+    _setGuardedReadTimeoutForTesting(30)
+    try {
+      const linkPath = makeLink('hang.png', join(openDir, 'b.png'))
+      const spellings = getPathsForPermissionCheck(linkPath)
+      // Simulate a stuck landing: readFileBytes never settles. The stash gate
+      // (lstat/realpath/readlink) still passes, so the flow reaches the read.
+      const readSpy = spyOnFs('readFileBytes')
+      readSpy.mockImplementation(
+        () => new Promise<Buffer>(() => {}) as Promise<Buffer>,
+      )
+
+      const outcome = await readGuardedAtLanding(linkPath, spellings)
+
+      // The read was attempted (raced), timed out, and the catch mapped it to
+      // a sentinel. The landing still EXISTS (lstat succeeds), so
+      // `resolutionsUnchangedAndAbsent` is false → "refused", not "absent".
+      expect(readSpy).toHaveBeenCalledTimes(1)
+      expect(outcome).toBe('refused')
+    } finally {
+      _setGuardedReadTimeoutForTesting(undefined)
+    }
+  })
+
+  test('a landing read that settles before the timeout still returns bytes', async () => {
+    // Control: the race must not spuriously reject a normal fast read.
+    _setGuardedReadTimeoutForTesting(2000)
+    try {
+      const linkPath = makeLink('fast.png', join(openDir, 'b.png'))
+      const spellings = getPathsForPermissionCheck(linkPath)
+
+      const outcome = await readGuardedAtLanding(linkPath, spellings)
+
+      expect(Buffer.isBuffer(outcome)).toBe(true)
+      if (Buffer.isBuffer(outcome)) {
+        expect(outcome.toString('utf8')).toBe('PUBLIC-IMAGE')
+      }
+    } finally {
+      _setGuardedReadTimeoutForTesting(undefined)
     }
   })
 })

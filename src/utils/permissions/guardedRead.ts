@@ -57,6 +57,19 @@ import {
  *    in OCC's `ToolPermissionContext` → N-A.
  * 5. `LMe`'s macOS `stashIdentity` arm — OCC's stash has no identity lane
  *    (deviation 1) → N-A.
+ * 6. Landing-read timeout (验收 P3, 2026-10-07): official `Vkt`/`Nkt` open the
+ *    verified landing with `AbortSignal.timeout(XA)` (cc291 `Nkt` @210714577
+ *    `lMe(Ke(e),n,AbortSignal.timeout(jA))(...)`). OCC's `readFileBytes`
+ *    abstraction takes no signal, so `readLandingBytes` RACES the read against
+ *    `AbortSignal.timeout(GUARDED_READ_TIMEOUT_MS)` — same 1000 ms bound, same
+ *    absent/refused landing on timeout. Two sub-points kept honest: (a) the
+ *    `unexamined` branch of `readPastedFileGuarded` is NOT wrapped — official
+ *    `ogs` (@210715481 `oe().readFileBytes(Une(e))`) carries no signal there
+ *    either, so OCC matches (conformant, not a deviation); (b) OCC's absence
+ *    probe (`resolutionsUnchangedAndAbsent`→lstat) is not itself
+ *    timeout-wrapped, whereas official `Ekt` passes `AbortSignal.timeout(jA)`
+ *    — a residual, low-risk (metadata lstat on a path already resolved once),
+ *    recorded here rather than silently dropped.
  */
 
 /** Official `Ykt` outcomes that are not a spelling set. */
@@ -77,8 +90,58 @@ export type GuardedReadResult = Buffer | 'refused' | 'absent'
  */
 export type PermissionContextGetter = () => readonly ToolPermissionContext[]
 
-/** Official `XA` — resolution/absence probe timeout (ms). */
+/** Official `XA` (cc291 `jA`) — resolution/absence probe timeout (ms). */
 const GUARDED_READ_TIMEOUT_MS = 1000
+
+/**
+ * Live timeout for the verified-landing read. Defaults to the official `XA`;
+ * the test seam `_setGuardedReadTimeoutForTesting` lowers it so a
+ * hanging-read test resolves in milliseconds instead of a full second.
+ */
+let guardedReadTimeoutMs = GUARDED_READ_TIMEOUT_MS
+
+/** Test-only: override the guarded-landing read timeout (undefined resets). */
+export function _setGuardedReadTimeoutForTesting(
+  ms: number | undefined,
+): void {
+  guardedReadTimeoutMs = ms ?? GUARDED_READ_TIMEOUT_MS
+}
+
+/**
+ * Read the verified landing under the official `XA` timeout.
+ *
+ * Official `Vkt`/`Nkt` open the landing with `AbortSignal.timeout(jA)`:
+ * `lMe(Ke(e),n,AbortSignal.timeout(jA))((h)=>h.handle.readFile())` (cc291
+ * `Nkt` @210714577), so a landing that never returns bytes — a dangling
+ * NFS/FUSE mount, a symlink target wedged on a stuck device — aborts after
+ * `XA` ms instead of hanging the permission flow; on abort the read yields
+ * `void 0` and official maps it to `"absent"`/`"refused"`.
+ *
+ * OCC's `readFileBytes(path, maxBytes?)` abstraction takes no signal, so the
+ * same `AbortSignal.timeout(GUARDED_READ_TIMEOUT_MS)` is RACED against the
+ * read here; on timeout the race rejects and the caller's catch maps it to
+ * absent/refused exactly as official maps `r===void 0`.
+ *
+ * Scope: ONLY the verified-landing read is wrapped. Official's `unexamined`
+ * branch (`ogs`: `oe().readFileBytes(Une(e))`, cc291 @210715481) carries NO
+ * signal, and OCC's `readPastedFileGuarded` unexamined branch matches it — so
+ * that call is deliberately left unwrapped (conformant, not a deviation).
+ */
+async function readLandingBytes(landing: string): Promise<Buffer> {
+  const signal = AbortSignal.timeout(guardedReadTimeoutMs)
+  const timeout = new Promise<never>((_resolve, reject) => {
+    signal.addEventListener(
+      'abort',
+      () => reject(signal.reason ?? new Error('guarded read timeout')),
+      { once: true },
+    )
+  })
+  return await Promise.race([
+    getFsImplementation().readFileBytes(landing),
+    timeout,
+  ])
+}
+
 
 /** Official warn text emitted by `sgs` on refusal. */
 const PASTED_READ_REFUSED_MESSAGE =
@@ -310,7 +373,7 @@ export async function readGuardedAtLanding(
     checkTimeSpellings[checkTimeSpellings.length - 1] ??
     dotdotNormalizedReadPath(path)
   try {
-    return await getFsImplementation().readFileBytes(landing)
+    return await readLandingBytes(landing)
   } catch {
     const outcome = (await resolutionsUnchangedAndAbsent(
       path,

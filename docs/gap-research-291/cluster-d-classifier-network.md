@@ -71,6 +71,24 @@ Dn=Drn(ke.decisionReason)&&!vye(Sf(e),n)||!ot&&!Ye&&o5n(ke.decisionReason,e,n,H)
 
 **STAGED**（子分支 N-A：`o5n`/`pgn` 的 mcpServerPolicy 析取项在 OCC 无对应表面，grep 证明缺失；待 OCC 引入 server-pushed 权限规则时随该 feature 一并移植）。
 
+### 修正（验收 P2-2，2026-10-07）—— 结构门只覆盖分类器 allow，不覆盖 acceptEdits 快路
+
+上文把 `_rn`/`shouldHonorClassifierAllow` 结构门描述为「plan 模式非只读调用不会被自动放行」的保证，这是一个**过度声明**：该门只拦截**分类器 allow 落地**这一条路径（permissions.ts:1143）。在它之前还存在一条独立的 **acceptEdits 快路**（permissions.ts:744，`result.behavior==='ask'` 时用 `mode:'acceptEdits'` 覆盖重跑 `tool.checkPermissions`，allow 即 `return {behavior:'allow',decisionReason:{type:'mode',mode:'auto'}}`）。一个真实写工具（`isReadOnly→false`；cwd 写在 acceptEdits 下 allow）在 plan+auto 下会命中这条快路被直接放行，**绕过** plan_mode_floor——这正是验收员在 HEAD `21d0477` 上复现的 `PROBE-BEHAVIOR: allow REASON: {"type":"mode","mode":"auto"}`。
+
+官方二进制裁决（byte 取证，未执行官方二进制）：官方在 289/290/291 都把这条 acceptEdits 模拟快路显式关在 plan 模式之外——快路的 `try` 前置门以一个 `Er`/`br`/`Wo` 布尔收尾，其定义为 `X=Ce==="plan"&&!Kn`（`Ce`= 生效权限模式，`Kn`= server-held-shell-allow 重路，OCC 无此表面故等价 `mode==='plan'`）：
+
+| 版本 | 守卫定义偏移 | 门内 `!X)try` 偏移 |
+|---|---|---|
+| cc289 | `Wo=Ce==="plan"&&!nn` @210258204 | `!Wo)try` @210258689 |
+| cc290 | `br=Ce==="plan"&&!Kn` @213334712 | `!br)try` @213335197 |
+| cc291 | `Er=Ce==="plan"&&!Kn` @213291816 | `!Er)try` @213292302 |
+
+即官方 **plan 模式永不运行 acceptEdits 模拟快路**（`Kn` 重路除外，OCC 无）。对照：官方安全工具白名单快路（cc291 @213295651 `if(!Di&&!Bo&&jr)`，`jr=ot===void 0&&!Bt&&Cmt(e,n)`）**不**带 `Er` 守卫——白名单工具在 plan 模式仍可自动放行，OCC 的白名单快路（permissions.ts:804）与之一致，本次不动。
+
+OCC 修复：在 acceptEdits 快路的进入条件加入 `appState.toolPermissionContext.mode !== 'plan'`（等价官方 `!Er`），使 plan+auto 下的非只读写落到分类器路径 → plan_mode_floor（permissions.ts:1143）→ ask + `decisionReason.reason:'plan_mode_floor'`。auto 模式不受影响（`Er` 仅在 plan 为真）。真实写工具语义回归测试见 `test/tools/EnterPlanModeAutoBash.test.ts`（`createWriteTool`：acceptEdits 下 allow、否则 ask、`isReadOnly→false`）；旧「所有模式都 ask」的 mock 测的是一条不存在的快路，已替换。
+
+修正后的准确表述：**plan 模式下，非只读工具调用既不会经 acceptEdits 模拟快路（Er 门）、也不会经分类器 allow（`_rn` 结构门）被自动放行；只读调用与安全白名单工具仍可无对话框放行。**
+
 ### 移植方案 + 测试计划
 
 方案（`src/utils/permissions/permissions.ts`）：

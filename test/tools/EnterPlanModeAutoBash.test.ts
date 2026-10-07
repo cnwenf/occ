@@ -21,20 +21,34 @@ import { PLAN_MODE_AUTO_BASH_HANDLING_ENABLED } from '../../src/tools/EnterPlanM
  * :530-535 condition so plan+auto (flag set) ENTERS the classifier path
  * (previously the flag was INERT — set by EnterPlanModeTool but never read).
  *
- * HONEST conclusion: with the flag wired, plan+auto for an unprovable-read-only
- * bash command ENTERS the classifier path. But in OCC (external build) the AI
- * classifier is a stub (bashClassifier.ts line 1: "Stub for external builds -
- * classifier permissions feature is ANT-ONLY"), so the classifier path
- * fail-opens to dialog (return 'ask'). TRUE "no-dialog" alignment is therefore
- * BLOCKED by the ant-only classifier stub — a deliberate external-build trim.
- * These tests assert the flag IS consulted (the auto-mode block is entered),
- * NOT a fake "no-dialog" e2e.
+ * 验收 P2-2 correction (2026-10-07): an earlier revision of this file proved
+ * "block entered" by letting the acceptEdits fast-path ALLOW a write-shaped
+ * tool in PLAN mode. That was the bug, not the proof: official 289/290/291
+ * gate the acceptEdits fast-path on `!Er` where `Er=Ce==="plan"&&!Kn`
+ * (cc289 @210258204/210258689, cc290 @213334712/213335197, cc291
+ * @213291816/213292302) — plan mode NEVER runs the acceptEdits simulation.
+ * OCC's permissions.ts now mirrors the `!Er` guard.
  *
- * How the tests prove the flag is consulted: the acceptEdits fast-path only
- * fires INSIDE the auto-mode block. A bash tool whose checkPermissions returns
- * 'ask' in plan/auto but 'allow' in acceptEdits will be ALLOWED (fast-path
- * fires) when the flag is set (block entered), but will return 'ask' (dialog,
- * block skipped) when the flag is clear.
+ * How the tests prove the flag is consulted (post-fix): the 2.1.290
+ * plan_mode_floor only runs INSIDE the auto-mode classifier block. A
+ * non-read-only tool in plan mode returns ask with
+ * `decisionReason.reason === 'plan_mode_floor'` when the flag is set (block
+ * entered, fast-path skipped per `Er`, classifier allow floored), but a PLAIN
+ * ask with no decisionReason when the flag is clear (block skipped). In AUTO
+ * mode the acceptEdits fast-path still fires (`Er` is false) — asserted below
+ * so the plan gate is provably plan-only.
+ *
+ * Scope note on "NEVER": plan mode never auto-allows a NON-READ-ONLY call via
+ * the acceptEdits simulation (Er gate) or the classifier (plan_mode_floor).
+ * Safe-allowlist tools CAN still auto-allow in plan mode — the official
+ * allowlist gate `if(!Di&&!Bo&&jr)` (cc291 @213295651 region) carries no
+ * `Er` guard, and OCC's allowlist fast-path matches.
+ *
+ * In OCC (external build) the AI classifier is a stub (bashClassifier.ts
+ * line 1: "Stub for external builds - classifier permissions feature is
+ * ANT-ONLY"), so tools that declare classifier-relevant input fail-open to
+ * dialog. These fixtures declare none → the REAL rule-based allow path runs
+ * before the ant-only classifier API is ever called.
  */
 
 function createBashTool(): Tool {
@@ -45,9 +59,9 @@ function createBashTool(): Tool {
       parse: (i: unknown) => i,
       safeParse: (i: unknown) => ({ success: true, data: i }),
     },
-    // Returns 'ask' in plan/auto mode, 'allow' in acceptEdits mode. This
-    // lets the acceptEdits fast-path fire (proving the auto-mode block was
-    // entered) when the planModeAutoBash flag routes us there.
+    // Returns 'ask' in plan/auto mode, 'allow' in acceptEdits mode. Used for
+    // the AUTO-mode control: the acceptEdits fast-path fires there (`Er` only
+    // gates plan mode), proving the auto-mode block was entered.
     checkPermissions: async (
       _input: unknown,
       ctx: { getAppState: () => { toolPermissionContext: { mode: string } } },
@@ -63,6 +77,46 @@ function createBashTool(): Tool {
     },
     description: async () => 'Bash',
     isMcp: false,
+  } as unknown as Tool
+}
+
+/**
+ * 验收 P2-2 fixture — REAL write-tool semantics (the reviewer's probe shape):
+ * a cwd file write is ALLOWED under acceptEdits and asks otherwise, and the
+ * tool is NOT read-only. Pre-fix, the acceptEdits fast-path in plan mode
+ * returned allow {type:'mode',mode:'auto'} for this tool, bypassing the
+ * plan_mode_floor. Post-fix (official `Er` gate), plan mode must floor it to
+ * ask + plan_mode_floor; auto mode must still fast-path allow it.
+ * Declares no `toAutoClassifierInput` → classifyYoloAction's compact action
+ * is '' → shouldBlock:false rule-based allow BEFORE the ant-only classifier
+ * API — so the floor at permissions.ts:1143 is genuinely reached.
+ */
+function createWriteTool(): Tool {
+  return {
+    name: 'FileWrite',
+    userFacingName: () => 'Write',
+    inputSchema: {
+      parse: (i: unknown) => i,
+      safeParse: (i: unknown) => ({ success: true, data: i }),
+    },
+    checkPermissions: async (
+      _input: unknown,
+      ctx: { getAppState: () => { toolPermissionContext: { mode: string } } },
+    ) => {
+      const mode = ctx.getAppState().toolPermissionContext.mode
+      if (mode === 'acceptEdits') {
+        // Real FileWriteTool: a write inside the working dir is allowed in
+        // acceptEdits mode.
+        return { behavior: 'allow' as const }
+      }
+      return {
+        behavior: 'ask' as const,
+        message: 'Claude requested permissions to write to the file',
+      }
+    },
+    description: async () => 'Write',
+    isMcp: false,
+    isReadOnly: () => false,
   } as unknown as Tool
 }
 
@@ -99,7 +153,7 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
     expect(PLAN_MODE_AUTO_BASH_HANDLING_ENABLED).toBe(true)
   })
 
-  test('flag set + mode plan + isAutoModeActive false → auto-mode block ENTERED (acceptEdits fast-path fires)', async () => {
+  test('flag set + mode plan + isAutoModeActive false → auto-mode block ENTERED (non-read-only write floored to ask + plan_mode_floor)', async () => {
     // Arrange: plan mode, auto-mode NOT active, but planModeAutoBash flag set.
     // This is the state EnterPlanModeTool creates when entering plan mode
     // from auto.
@@ -110,28 +164,32 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
     const { hasPermissionsToUseTool } = await import(
       '../../src/utils/permissions/permissions.js'
     )
-    const tool = createBashTool()
+    const tool = createWriteTool()
     const ctx = createContext('plan')
     const msg = createAssistantMessage()
 
     const result = await hasPermissionsToUseTool(
       tool,
-      { command: 'git status' },
+      { file_path: 'notes.md', content: 'x' },
       ctx,
       msg,
       'plan-auto-flag-set',
     )
 
-    // Assert: the auto-mode block was entered → the acceptEdits fast-path
-    // fired → result is 'allow'. WITHOUT the wiring (flag inert), the
-    // auto-mode block would be skipped → result would be 'ask' (dialog).
-    expect(result.behavior).toBe('allow')
-    expect(result.behavior).not.toBe('ask')
+    // Assert: the auto-mode block was entered. Proof it was entered: the
+    // plan_mode_floor decisionReason is ONLY stamped inside the block. The
+    // acceptEdits fast-path did NOT fire (official `Er` gate — plan mode
+    // never simulates acceptEdits), the classifier-path rule-based allow was
+    // floored because the tool is not read-only. WITHOUT the wiring (flag
+    // inert), the block would be skipped → plain ask, no decisionReason.
+    expect(result.behavior).toBe('ask')
+    expect(result.decisionReason?.reason).toBe('plan_mode_floor')
   })
 
-  test('flag clear + mode plan + isAutoModeActive false → auto-mode block SKIPPED (dialog)', async () => {
+  test('flag clear + mode plan + isAutoModeActive false → auto-mode block SKIPPED (plain dialog ask, no floor reason)', async () => {
     // Arrange: plan mode, auto-mode NOT active, planModeAutoBash flag clear.
-    // The auto-mode block must NOT be entered → dialog ('ask').
+    // The auto-mode block must NOT be entered → dialog ('ask') with NO
+    // plan_mode_floor decisionReason (the floor only runs inside the block).
     setAutoModeActive(false)
     setPlanModeAutoBashActive(false)
     expect(isPlanModeAutoBashActive()).toBe(false)
@@ -139,23 +197,25 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
     const { hasPermissionsToUseTool } = await import(
       '../../src/utils/permissions/permissions.js'
     )
-    const tool = createBashTool()
+    const tool = createWriteTool()
     const ctx = createContext('plan')
     const msg = createAssistantMessage()
 
     const result = await hasPermissionsToUseTool(
       tool,
-      { command: 'git status' },
+      { file_path: 'notes.md', content: 'x' },
       ctx,
       msg,
       'plan-auto-flag-clear',
     )
 
-    // Assert: auto-mode block skipped → no acceptEdits fast-path → 'ask'.
+    // Assert: auto-mode block skipped → the tool's own checkPermissions ask
+    // passes through untouched — no plan_mode_floor stamp.
     expect(result.behavior).toBe('ask')
+    expect(result.decisionReason?.reason).not.toBe('plan_mode_floor')
   })
 
-  test('flag set + mode auto → auto-mode block ENTERED (isAutoModeActive alone already routes)', async () => {
+  test('flag set + mode auto → acceptEdits fast-path STILL fires (Er gate is plan-only)', async () => {
     setAutoModeActive(true)
     setPlanModeAutoBashActive(true)
 
@@ -174,73 +234,56 @@ describe('CC 2.1.218 #31: isPlanModeAutoBashActive wired into permission flow', 
       'auto-mode-active',
     )
 
+    // Official: `Er=Ce==="plan"&&!Kn` — in AUTO mode Er is false, so the
+    // acceptEdits simulation runs and allows. The fast-path return shape is
+    // decisionReason {type:'mode',mode:'auto'}.
     expect(result.behavior).toBe('allow')
+    expect(result.decisionReason).toEqual({ type: 'mode', mode: 'auto' })
   })
 
-  test('plan+auto bash reaches classifier path → 2.1.290 plan-mode floor: non-read-only classifier allow is floored to ask (plan_mode_floor)', async () => {
-    // Arrange: plan + flag set, a bash tool whose checkPermissions returns
-    // 'ask' in ALL modes (so no acceptEdits fast-path allow). This forces
-    // the flow to reach the classifier path.
+  test('验收 P2-2 regression: real write-tool semantics in plan+auto → ask + plan_mode_floor (acceptEdits fast-path must NOT bypass the floor)', async () => {
+    // The reviewer's probe, verbatim in shape: a tool with REAL FileWrite
+    // semantics — isReadOnly false; checkPermissions ALLOWs under acceptEdits
+    // (a cwd write would) and asks otherwise — under mode 'plan' with
+    // isPlanModeAutoBashActive. Pre-fix this returned
+    //   PROBE-BEHAVIOR: allow REASON: {"type":"mode","mode":"auto"}
+    // because the acceptEdits fast-path at permissions.ts:744 fired BEFORE
+    // the plan_mode_floor and simulated acceptEdits mode. Official
+    // 289/290/291 gate that simulation on `!Er` (`Er=Ce==="plan"&&!Kn`), so
+    // plan mode must reach the floor instead.
     setAutoModeActive(false)
     setPlanModeAutoBashActive(true)
 
     const { hasPermissionsToUseTool } = await import(
       '../../src/utils/permissions/permissions.js'
     )
-    // Tool that returns 'ask' in ALL modes — no fast-path allow. It also
-    // declares no `toAutoClassifierInput`, so classifyYoloAction's compact
-    // action is '' → returns shouldBlock:false ("Tool declares no
-    // classifier-relevant input") — a REAL rule-based allow path BEFORE
-    // the ant-only classifier API is ever called.
-    // `isReadOnly: () => false` mirrors the REAL BashTool for an unprovable
-    // command — and satisfies the Tool interface contract the CC 2.1.290
-    // plan-mode floor relies on (official `_rn` @213320210 calls
-    // `r.isReadOnly(h.data,g)`; every real tool implements it).
-    const tool: Tool = {
-      name: 'Bash',
-      userFacingName: () => 'Bash',
-      inputSchema: {
-        parse: (i: unknown) => i,
-        safeParse: (i: unknown) => ({ success: true, data: i }),
-      },
-      checkPermissions: async () => ({
-        behavior: 'ask' as const,
-        message: 'unprovable-read-only bash',
-      }),
-      description: async () => 'Bash',
-      isMcp: false,
-      isReadOnly: () => false,
-    } as unknown as Tool
+    const tool = createWriteTool()
     const ctx = createContext('plan')
     const msg = createAssistantMessage()
 
     const result = await hasPermissionsToUseTool(
       tool,
-      { command: 'some-unprovable-command' },
+      { file_path: 'notes.md', content: 'x' },
       ctx,
       msg,
-      'plan-auto-unprovable',
+      'p2-2-probe',
     )
 
-    // Assert: the flag routed the flow INTO the classifier path and the
-    // rule-based "no classifier-relevant input" allow was reached — but the
-    // CC 2.1.290 plan-mode structural floor (official `_rn` plan branch,
-    // `shouldHonorClassifierAllow`) no longer HONORS that allow for a
-    // non-read-only call: it falls back to ask with the official
-    // `plan_mode_floor` reason. (Pre-2.1.290 this asserted allow +
-    // decisionReason.type 'classifier' — the 290 port intentionally changed
-    // the observable behavior.)
     expect(result.behavior).toBe('ask')
     expect(result.decisionReason?.reason).toBe('plan_mode_floor')
+    // The bug's exact observable — an allow with mode/auto reason — must not
+    // reappear.
+    expect(result.behavior).not.toBe('allow')
 
-    // HONEST CONCLUSION (documented, not faked): under official 2.1.290
-    // semantics, plan mode NEVER auto-allows a non-read-only tool call via
-    // the classifier — the floor prompts the user instead. A structurally
-    // read-only call (isReadOnly → true) is still honored with no dialog.
-    // For a REAL bash command that DOES declare classifier-relevant input,
-    // the path would proceed to the ant-only classifier API
-    // (stubbed/unavailable in OCC external builds) → fail-open to dialog
-    // (or fail-closed if tengu_iron_gate_closed).
+    // HONEST CONCLUSION (scoped, not overclaimed): plan mode never auto-allows
+    // a NON-READ-ONLY tool call — neither via the acceptEdits simulation (Er
+    // gate) nor via the classifier allow (2.1.290 `_rn` floor). A structurally
+    // read-only call (isReadOnly → true) is still honored with no dialog, and
+    // safe-allowlist tools still auto-allow in plan mode (the official
+    // allowlist gate carries no Er guard). For a REAL bash command that
+    // declares classifier-relevant input, the path proceeds to the ant-only
+    // classifier API (stubbed/unavailable in OCC external builds) → fail-open
+    // to dialog (or fail-closed if tengu_iron_gate_closed).
   })
 })
 
