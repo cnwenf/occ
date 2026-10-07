@@ -209,7 +209,16 @@ describe('2.1.288 #72: end-to-end through parseForSecurityFromAst', () => {
  * the wrapper strip loop reads only argv.
  */
 function semanticsFor(argv: string[]) {
-  const cmd: SimpleCommand = { argv, envVars: [], redirects: [], text: argv.join(' ') }
+  // hasUnquotedGlob: false — synthetic wrapper-strip fixture; the official
+  // 2.1.289+ field is set by the parser (CC 2.1.290 port). These argvs carry
+  // no globs, and the strip loop reads only argv.
+  const cmd: SimpleCommand = {
+    argv,
+    envVars: [],
+    redirects: [],
+    text: argv.join(' '),
+    hasUnquotedGlob: false,
+  }
   return checkSemantics([cmd])
 }
 

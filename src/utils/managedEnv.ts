@@ -238,6 +238,20 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   // ported — OCC stays stricter, dropping the key from project scope
   // unconditionally rather than allowing an "off" value through.)
   'CLAUDE_CODE_DISABLE_WEB_FETCH',
+  // CC 2.1.290 (#161): "Changed CLAUDE_CODE_DISABLE_ATTACHMENTS so a
+  // repository's .claude/settings.json or .claude/settings.local.json can no
+  // longer set it; shell, user and managed settings still can." Byte-verified
+  // against the official 2.1.290 linux-x64 ELF: the reserved-env set (`mir`,
+  // @5736663 region) gains "CLAUDE_CODE_DISABLE_PROACTIVITY",
+  // "CLAUDE_CODE_DISABLE_ATTACHMENTS" between "CLAUDE_CODE_CCR_SURFACE" and
+  // "CLAUDE_CODE_TETHER_LIVE"; the 2.1.289 set (`sZn`, @205191667 region) has
+  // NEITHER. The other new 290 set members (RELAUNCH_PROACTIVITY_*,
+  // DISABLE_PROACTIVITY, REMOTE_TOOLS_HOST_ALLOWS_UNATTENDED) gate
+  // official-only dormant surfaces OCC does not ship — only
+  // DISABLE_ATTACHMENTS has a live OCC consumer (attachments.ts:848
+  // isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_ATTACHMENTS)), so only it is
+  // ported. Same kill-switch pattern as the 2.1.285 WebFetch entry above.
+  'CLAUDE_CODE_DISABLE_ATTACHMENTS',
   'CLAUDE_CODE_SKILL_PROPOSALS',
   'CLAUDE_CODE_PLUGIN_CACHE_DIR',
   'CLAUDE_CODE_PLUGIN_SEED_DIR',

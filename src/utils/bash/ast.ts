@@ -18,6 +18,7 @@
  * argv[0] against permission rules and flag allowlists. If no, ask the user.
  */
 
+import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import { SHELL_KEYWORDS } from './bashParser.js'
 import type { Node } from './parser.js'
 import { PARSE_ABORTED, parseCommandRaw } from './parser.js'
@@ -37,6 +38,34 @@ export type SimpleCommand = {
   redirects: Redirect[]
   /** Original source span for this command (for UI display) */
   text: string
+  /**
+   * CC 2.1.289+: quote-aware whole-text scan of the ORIGINAL source span
+   * for unquoted glob chars (`*`, `?`, `[`). Official `hasUnquotedGlob`,
+   * produced at every SimpleCommand construction site via `T(e.text)`
+   * (2.1.289) / `I(e.text)` (2.1.290). Consumed by the awk/find gates in
+   * checkSemantics: an unquoted glob can expand to a planted program or
+   * flag before the command runs.
+   */
+  hasUnquotedGlob: boolean
+  /**
+   * CC 2.1.290: per-argv-element unquoted-glob record, parallel to argv.
+   * Official `argvUnquotedGlob` — set only by the simple-command walker
+   * (`Kt`); declaration/test/unset/redirect-only sites leave it undefined
+   * and `kAn`'s undefined-fallback semantics apply. Element rule (official
+   * verbatim): word-like node → `I(node.text) || me(node)`; bare
+   * `$VAR` (simple_expansion) → `true` (resolved value's source quoting is
+   * not visible in the node text).
+   */
+  argvUnquotedGlob?: boolean[]
+  /**
+   * CC 2.1.290: official `carveOutMayDesyncQuoteScan` — true when a
+   * cat-heredoc command-substitution carve-out during this command's walk
+   * had quote/backtick/backslash chars in its text (`gt.test(p.text) →
+   * N++`), meaning the whole-text quote scan may desync from bash's real
+   * quote state. `kAn` then falls back to the conservative resolved-argv
+   * scan.
+   */
+  carveOutMayDesyncQuoteScan?: boolean
 }
 
 export type ParseForSecurityResult =
@@ -117,6 +146,189 @@ const VAR_PLACEHOLDER = '__TRACKED_VAR__'
  */
 function containsAnyPlaceholder(value: string): boolean {
   return value.includes(CMDSUB_PLACEHOLDER) || value.includes(VAR_PLACEHOLDER)
+}
+
+/*
+ * ============================================================================
+ * CC 2.1.289/2.1.290 unquoted-glob machinery — verbatim ports from the
+ * official bash-security module (2.1.289 `T()`; 2.1.290 `I()`, `St`/`V()`,
+ * `me()`, `kAn()`, `gt`/`N`). Consumed by the awk/find gates in
+ * checkSemantics and produced by walkCommand / the SimpleCommand push sites.
+ * ============================================================================
+ */
+
+/**
+ * Quote-aware whole-text scan for unquoted glob characters. Official
+ * 2.1.289 `T(e)` / 2.1.290 `I(e)`, verbatim state machine: tracks
+ * single-quote, double-quote, backtick, backslash-escape and
+ * word-start-`#`-comment states; returns true on the first `*`, `?` or `[`
+ * that bash would glob-expand (i.e. appears outside quotes/comments).
+ */
+function hasUnquotedGlobChars(text: string): boolean {
+  let inBacktick = false
+  let inSingle = false
+  let inDouble = false
+  let atWordStart = true
+  let i = 0
+  while (i < text.length) {
+    const c = text[i]!
+    if (inBacktick) {
+      if (
+        c === '\\' &&
+        (text[i + 1] === '`' || text[i + 1] === '\\' || text[i + 1] === '$')
+      ) {
+        i += 2
+      } else {
+        if (c === '`') inBacktick = false
+        i++
+      }
+    } else if (inSingle) {
+      if (c === "'") inSingle = false
+      i++
+    } else if (inDouble) {
+      if (
+        c === '\\' &&
+        (text[i + 1] === '"' || text[i + 1] === '\\' || text[i + 1] === '`')
+      ) {
+        i += 2
+      } else if (c === '`') {
+        inBacktick = true
+        i++
+      } else {
+        if (c === '"') inDouble = false
+        i++
+      }
+    } else if (c === '\\' && i + 1 < text.length) {
+      // Escaped char: a line continuation (\<LF>) preserves word-start,
+      // any other escape ends it (so `a\#b` is not a comment).
+      if (text[i + 1] !== '\n') atWordStart = false
+      i += 2
+    } else if (c === '#' && atWordStart) {
+      while (i < text.length && text[i] !== '\n') i++
+      atWordStart = true
+    } else if (c === '`') {
+      inBacktick = true
+      atWordStart = false
+      i++
+    } else {
+      if (c === '*' || c === '?' || c === '[') return true
+      if (c === "'") inSingle = true
+      else if (c === '"') inDouble = true
+      atWordStart =
+        c === ' ' ||
+        c === '\t' ||
+        c === '\n' ||
+        c === ';' ||
+        c === '|' ||
+        c === '&' ||
+        c === '(' ||
+        c === ')' ||
+        c === '<' ||
+        c === '>'
+      i++
+    }
+  }
+  return false
+}
+
+/**
+ * Official 2.1.290 `St` — resolved-argument glob matcher. Unlike
+ * hasUnquotedGlobChars this runs on the RESOLVED argv value (quotes
+ * already stripped by the walker), and `[` only counts when a later `]`
+ * exists (a bare `[` in a resolved value is literal to bash only if
+ * unclosed... official keeps the class verbatim: `/[*?]|\[[^\]]*\]/`).
+ */
+const RESOLVED_ARG_GLOB_RE = /[*?]|\[[^\]]*\]/
+
+/** Official 2.1.290 `V(e)`. */
+function resolvedArgHasGlob(arg: string): boolean {
+  return RESOLVED_ARG_GLOB_RE.test(arg)
+}
+
+/**
+ * Official 2.1.290 `gt` — a carved-out command substitution whose text
+ * contains quote/backtick/backslash chars may desync the whole-text quote
+ * scan (the carve-out replaces a quoted region with a placeholder).
+ */
+const CMD_SUB_QUOTE_DESYNC_RE = /["`\\]/
+
+/**
+ * Official 2.1.290 module-global `N` — incremented by walkString's
+ * cat-heredoc carve-out when `gt.test(p.text)`. walkCommand snapshots it
+ * at entry (`l=N`) and sets `carveOutMayDesyncQuoteScan: N!==l`. Like the
+ * official, the counter is never reset between parses — the per-command
+ * snapshot diff is what matters.
+ */
+let quoteScanCarveOuts = 0
+
+/**
+ * Official 2.1.290 `kAn(e)` — verbatim. Decides whether a SimpleCommand's
+ * RESOLVED argv/redirects still carry glob risk that the whole-text scan
+ * could not see (e.g. a tracked var resolving to `*` inside quotes:
+ * `VAR='*' && find . "$VAR"` — .text has no unquoted glob, but the
+ * resolved argv element does).
+ *
+ * Branch semantics (official):
+ * - carve-out desync possible, OR no per-arg record and some argv element
+ *   holds a placeholder → conservative full scan of argv + non-heredoc
+ *   redirect targets;
+ * - no record, no placeholder → false (whole-text scan already covered it);
+ * - record length mismatch (shouldn't happen) → conservative argv scan;
+ * - else → an element counts only when it globs AND (its source was
+ *   unquoted-globby OR it holds a placeholder).
+ */
+function commandHasResolvableUnquotedGlob(cmd: SimpleCommand): boolean {
+  const record = cmd.argvUnquotedGlob
+  if (
+    cmd.carveOutMayDesyncQuoteScan === true ||
+    (record === undefined && cmd.argv.some(containsAnyPlaceholder))
+  ) {
+    return (
+      cmd.argv.some(resolvedArgHasGlob) ||
+      cmd.redirects.some(
+        r => r.op !== '<<' && r.op !== '<<<' && resolvedArgHasGlob(r.target),
+      )
+    )
+  }
+  if (record === undefined) return false
+  if (record.length !== cmd.argv.length)
+    return cmd.argv.some(resolvedArgHasGlob)
+  return cmd.argv.some(
+    (arg, i) =>
+      resolvedArgHasGlob(arg) && (record[i] === true || containsAnyPlaceholder(arg)),
+  )
+}
+
+/** Official 2.1.290 `Xt`. */
+const GLOB_NODE_CHARS = '*?['
+
+/**
+ * Official 2.1.290 `me(e)` — verbatim per-node-type unquoted-glob check on
+ * a tree-sitter argument node. word/number: raw scan skipping backslash
+ * escapes; string/raw_string/simple_expansion/arithmetic_expansion: false
+ * (their content is quoted or runtime-resolved — the resolved value is
+ * handled by the `kAn` record); concatenation: any child; any other node
+ * type: true (fail closed).
+ */
+function nodeMayContainUnquotedGlob(node: Node): boolean {
+  switch (node.type) {
+    case 'word':
+    case 'number':
+      for (let i = 0; i < node.text.length; i++) {
+        if (node.text[i] === '\\') i++
+        else if (GLOB_NODE_CHARS.includes(node.text[i]!)) return true
+      }
+      return false
+    case 'string':
+    case 'raw_string':
+    case 'simple_expansion':
+    case 'arithmetic_expansion':
+      return false
+    case 'concatenation':
+      return node.children.some(c => c !== null && nodeMayContainUnquotedGlob(c))
+    default:
+      return true
+  }
 }
 
 /**
@@ -1119,6 +1331,10 @@ function collectCommands(
     // expansions still reject via walkArgument. argv[0] is the builtin name so
     // `Bash(export:*)` rules match.
     const argv: string[] = []
+    // CC 2.1.290: official declaration_command site snapshots the cat-heredoc
+    // carve-out counter before walking children (`l=N`) and pushes
+    // `carveOutMayDesyncQuoteScan:N!==l` alongside `hasUnquotedGlob:I(e.text)`.
+    const carveOutsAtEntry = quoteScanCarveOuts
     for (const child of node.children) {
       if (!child) continue
       switch (child.type) {
@@ -1216,7 +1432,14 @@ function collectCommands(
           return tooComplex(child)
       }
     }
-    commands.push({ argv, envVars: [], redirects: [], text: node.text })
+    commands.push({
+      argv,
+      envVars: [],
+      redirects: [],
+      text: node.text,
+      hasUnquotedGlob: hasUnquotedGlobChars(node.text),
+      carveOutMayDesyncQuoteScan: quoteScanCarveOuts !== carveOutsAtEntry,
+    })
     return null
   }
 
@@ -1504,6 +1727,10 @@ function collectCommands(
     const gapErr = checkTestCommandUnparsedBytes(node, inBracketBracket)
     if (gapErr) return gapErr
     const argv: string[] = ['[[']
+    // CC 2.1.290: official test_command site snapshots the carve-out counter
+    // before walking children (`h=N`) and pushes
+    // `carveOutMayDesyncQuoteScan:N!==h`.
+    const carveOutsAtEntry = quoteScanCarveOuts
     for (const child of node.children) {
       if (!child) continue
       if (
@@ -1529,7 +1756,14 @@ function collectCommands(
       const err = walkTestExpr(child, argv, commands, varScope, inBracketBracket)
       if (err) return err
     }
-    commands.push({ argv, envVars: [], redirects: [], text: node.text })
+    commands.push({
+      argv,
+      envVars: [],
+      redirects: [],
+      text: node.text,
+      hasUnquotedGlob: hasUnquotedGlobChars(node.text),
+      carveOutMayDesyncQuoteScan: quoteScanCarveOuts !== carveOutsAtEntry,
+    })
     return null
   }
 
@@ -1549,6 +1783,10 @@ function collectCommands(
     //    / IFS / PS4) is too-complex — removing e.g. PATH or IFS silently
     //    reconfigures every subsequent command.
     const argv: string[] = []
+    // CC 2.1.290: official unset_command site snapshots the carve-out counter
+    // before walking children (`l=N`) and pushes
+    // `carveOutMayDesyncQuoteScan:N!==l`.
+    const carveOutsAtEntry = quoteScanCarveOuts
     let sawFunctionFlag = false
     let sawName = false
     let isUnsetenv = false
@@ -1611,7 +1849,14 @@ function collectCommands(
           return tooComplex(child)
       }
     }
-    commands.push({ argv, envVars: [], redirects: [], text: node.text })
+    commands.push({
+      argv,
+      envVars: [],
+      redirects: [],
+      text: node.text,
+      hasUnquotedGlob: hasUnquotedGlobChars(node.text),
+      carveOutMayDesyncQuoteScan: quoteScanCarveOuts !== carveOutsAtEntry,
+    })
     return null
   }
 
@@ -2023,7 +2268,13 @@ function walkRedirectedStatement(
   if (!innerCommand) {
     // `> file` alone is valid bash (truncates file). Represent as a command
     // with empty argv so downstream sees the write.
-    commands.push({ argv: [], envVars: [], redirects, text: node.text })
+    commands.push({
+      argv: [],
+      envVars: [],
+      redirects,
+      text: node.text,
+      hasUnquotedGlob: hasUnquotedGlobChars(node.text),
+    })
     return null
   }
 
@@ -2223,6 +2474,10 @@ function walkCommand(
     isAppend: boolean
   }[] = []
   const redirects: Redirect[] = [...extraRedirects]
+  // CC 2.1.290 official `Kt`: `h` (per-arg unquoted-glob record) and the
+  // carve-out counter snapshot (`l=N`) for carveOutMayDesyncQuoteScan.
+  const argvUnquotedGlob: boolean[] = []
+  const carveOutsAtEntry = quoteScanCarveOuts
 
   for (const child of node.children) {
     if (!child) continue
@@ -2253,13 +2508,15 @@ function walkCommand(
         break
       }
       case 'command_name': {
-        const arg = walkArgument(
-          child.children[0] ?? child,
-          innerCommands,
-          varScope,
-        )
+        const nameNode = child.children[0] ?? child
+        const arg = walkArgument(nameNode, innerCommands, varScope)
         if (typeof arg !== 'string') return arg
         argv.push(arg)
+        // Official: `a.push(x),h.push(I(m.text)||me(m))`
+        argvUnquotedGlob.push(
+          hasUnquotedGlobChars(nameNode.text) ||
+            nodeMayContainUnquotedGlob(nameNode),
+        )
         break
       }
       case 'word':
@@ -2271,6 +2528,10 @@ function walkCommand(
         const arg = walkArgument(child, innerCommands, varScope)
         if (typeof arg !== 'string') return arg
         argv.push(arg)
+        // Official: `a.push(m),h.push(I(u.text)||me(u))`
+        argvUnquotedGlob.push(
+          hasUnquotedGlobChars(child.text) || nodeMayContainUnquotedGlob(child),
+        )
         break
       }
       // NOTE: command_substitution as a BARE argument (not inside a string)
@@ -2287,6 +2548,10 @@ function walkCommand(
         const v = resolveSimpleExpansion(child, varScope, false)
         if (typeof v !== 'string') return v
         argv.push(v)
+        // Official: `A++;a.push(m),h.push(!0)` — a bare $VAR's resolved
+        // value is ALWAYS recorded as unquoted-glob-risky (the source node
+        // text says nothing about the value's quoting).
+        argvUnquotedGlob.push(true)
         break
       }
       case 'file_redirect': {
@@ -2390,7 +2655,23 @@ function walkCommand(
       : node.text
   return {
     kind: 'simple',
-    commands: [{ argv, envVars, redirects, text }],
+    // Official 2.1.290 `Kt` return: `{argv:a,envVars:p,redirects:c,text:f,
+    // hasUnquotedGlob:I(e.text),argvSourceLiteral:A===n,
+    // carveOutMayDesyncQuoteScan:N!==l,argvUnquotedGlob:h}`.
+    // argvSourceLiteral is NOT ported — OCC has no consumer for it (the
+    // official uses it for env-prefix/command-name provenance; nothing in
+    // the kAn gate path reads it). See gap ledger OCC-148.
+    commands: [
+      {
+        argv,
+        envVars,
+        redirects,
+        text,
+        hasUnquotedGlob: hasUnquotedGlobChars(node.text),
+        argvUnquotedGlob,
+        carveOutMayDesyncQuoteScan: quoteScanCarveOuts !== carveOutsAtEntry,
+      },
+    ],
   }
 }
 
@@ -2601,6 +2882,13 @@ function walkString(
         const heredocBody = extractSafeCatHeredoc(child)
         if (heredocBody === 'DANGEROUS') return tooComplex(child)
         if (heredocBody !== null) {
+          // CC 2.1.290: official string walker increments the module-global
+          // carve-out counter here (`if(gt.test(p.text))N++`) when the
+          // substitution text contains quote/backtick/backslash chars — the
+          // whole-text quote scan (hasUnquotedGlobChars) may then desync
+          // from bash's real quote state across the carve-out. walkCommand
+          // snapshots the counter to set carveOutMayDesyncQuoteScan.
+          if (CMD_SUB_QUOTE_DESYNC_RE.test(child.text)) quoteScanCarveOuts++
           // SECURITY: the body IS the substitution result. Previously we
           // dropped it → `rm "$(cat <<'EOF'\n/etc/passwd\nEOF)"` produced
           // argv ['rm',''] while bash runs `rm /etc/passwd`. validatePath('')
@@ -3307,6 +3595,125 @@ const AWK_FAMILY = new Set(['awk', 'gawk', 'mawk', 'nawk'])
  */
 const AWK_NEXT_ARG_OPTION_RE = /^(?:-[FvW]$|--(?:fie|a$|as))/
 
+/*
+ * CC 2.1.290 find semantic block — constants and predicates verbatim from
+ * the official bash-security module (`nn`, `rn`, `an`, `lt`, `sn`, `PVt`,
+ * `OVt`, `IVt`, `mwt`, `xOn`). The whole `if(a==="find"){…}` block in
+ * checkSemantics was absent from OCC before this port (the v288 #72 round
+ * only ported the wrapper-strip + awk blocks and its STAGED note understated
+ * the find gap — see docs/upstream-version-gap-occ148-2026-10.md).
+ */
+
+/** Official `nn` — find primaries that execute commands or modify files. */
+const FIND_ACTION_FLAGS = new Set([
+  '-exec',
+  '-execdir',
+  '-ok',
+  '-okdir',
+  '-delete',
+  '-rm',
+  '-fprint',
+  '-fprint0',
+  '-fprintf',
+  '-fls',
+  '-files0-from',
+])
+
+/**
+ * Official `xOn(e)`: `e!=="-rm"||o()` — `-rm` counts as an action unless
+ * the `tengu_warm_sunrise` remote gate explicitly disables it (official
+ * `o()` requires value===false AND source==="payload" AND defaultHost).
+ * Divergence note (same pattern as dangerousRmAutoDeny.ts): OCC's
+ * getFeatureValue_CACHED_MAY_BE_STALE does not expose source/defaultHost,
+ * so any resolved `false` is treated as the kill-switch; with no live
+ * GrowthBook client the default (true) applies and `-rm` is an action.
+ */
+function findFlagIsAction(arg: string): boolean {
+  if (!FIND_ACTION_FLAGS.has(arg)) return false
+  if (arg !== '-rm') return true
+  try {
+    const value = getFeatureValue_CACHED_MAY_BE_STALE<unknown>(
+      'tengu_warm_sunrise',
+      true,
+    )
+    return value !== false
+  } catch {
+    return true
+  }
+}
+
+/** Official `an` (`OVt`) — options read differently by find versions. */
+const FIND_VERSION_DIVERGENT_OPTION_RE = /^-[dsx]+f$/
+
+/** Official `lt` (`IVt`) — bundled flag forms whose value follows. */
+const FIND_VALUE_TAKING_FLAG_RE =
+  /^-(?:[EHLPXdsx]*D|f|[dsx]*[EHLPX][EHLPXdsx]*f)$/
+
+/** Official `sn` — the `-newerXY` family. */
+const FIND_NEWER_FAMILY_RE = /^-newer[aBcm][aBcmt]$/
+
+/** Official `rn` — named options whose NEXT argument is their value. */
+const FIND_NAMED_VALUE_OPTIONS = new Set([
+  '-name',
+  '-iname',
+  '-path',
+  '-ipath',
+  '-lname',
+  '-ilname',
+  '-regex',
+  '-iregex',
+  '-wholename',
+  '-iwholename',
+  '-samefile',
+  '-newer',
+  '-anewer',
+  '-cnewer',
+  '-mnewer',
+  '-perm',
+  '-user',
+  '-group',
+  '-uid',
+  '-gid',
+  '-size',
+  '-type',
+  '-xtype',
+  '-fstype',
+  '-inum',
+  '-links',
+  '-used',
+  '-context',
+  '-amin',
+  '-cmin',
+  '-mmin',
+  '-atime',
+  '-ctime',
+  '-mtime',
+  '-mindepth',
+  '-maxdepth',
+  '-printf',
+  '-regextype',
+  '-D',
+  '-f',
+  '-flags',
+  '-Bnewer',
+  '-Btime',
+  '-Bmin',
+  '-files0-from',
+  '-xattrname',
+])
+
+/** Official `mwt(e)`: `rn.has(e)||sn.test(e)||lt.test(e)`. */
+function findOptionTakesValue(arg: string): boolean {
+  return (
+    FIND_NAMED_VALUE_OPTIONS.has(arg) ||
+    FIND_NEWER_FAMILY_RE.test(arg) ||
+    FIND_VALUE_TAKING_FLAG_RE.test(arg)
+  )
+}
+
+/** Official find-block resolved-argument glob class: `/[[\]*?]/`. */
+const FIND_ARG_GLOB_RE = /[[\]*?]/
+
 /**
  * Process-wrapper commands that start another program (official v288 `W4`
  * @203547944, verbatim). What they start can't be checked statically —
@@ -3377,7 +3784,16 @@ export type SemanticCheckResult = { ok: true } | { ok: false; reason: string }
  * catch commands that tokenize fine but are dangerous by name or argument
  * content. Returns the first failure or {ok: true}.
  */
-export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
+export function checkSemantics(
+  commands: SimpleCommand[],
+  options?: { sourceGlobRecord?: boolean },
+): SemanticCheckResult {
+  // Official 2.1.290 `Hor(e,t)`: `let r=t?.sourceGlobRecord!==!1` — the
+  // per-arg argvUnquotedGlob record is honored unless the caller explicitly
+  // says the source glob record is unavailable. Both OCC call sites
+  // (bashPermissions.ts) pass no options → true, matching the official
+  // default.
+  const useGlobRecord = options?.sourceGlobRecord !== false
   for (const cmd of commands) {
     // Strip safe wrapper commands (nohup, time, timeout N, nice -n N) so
     // `nohup eval "..."` and `timeout 5 jq 'system(...)'` are checked
@@ -3394,13 +3810,12 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
     // viaXargs for the post-strip xargs checks). All wrapper reason strings
     // verbatim from the binary — see
     // docs/gap-research-288/cluster-a-permission-sandbox.md #72.
-    // STAGED (v288 #72, sole remaining gap): the official awk/find blocks
-    // gate their first branch on `r.hasUnquotedGlob` ("awk command contains
-    // unquoted glob characters — could glob-expand to a planted program or
-    // flag before awk runs" / find equivalent). OCC's SimpleCommand has no
-    // hasUnquotedGlob field — porting it needs extractor plumbing beyond
-    // #72's message-alignment scope. Every other official reason below is
-    // recovered verbatim and implemented.
+    // STAGED gap CLOSED (CC 2.1.290 round, was v288 #72 sole remaining
+    // gap): the official awk/find blocks gate their first branch on
+    // `o.hasUnquotedGlob||r&&kAn(o)`. SimpleCommand now carries
+    // hasUnquotedGlob (2.1.289 `T(e.text)`) + argvUnquotedGlob/
+    // carveOutMayDesyncQuoteScan (2.1.290 `Kt`), and the gates are
+    // implemented below at the awk-family and find blocks.
     let a = cmd.argv
     let viaXargs = false
     for (;;) {
@@ -3925,13 +4340,22 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
     // Awk-family program checks (official v288 @203560400-203560826). The
     // program text is an argument, so system()/pipes/@load inside it never
     // trip the command-name or substitution checks above.
-    // STAGED (v288 #72, sole remaining gap): the official block's FIRST
-    // branch gates on `r.hasUnquotedGlob` ("awk command contains unquoted
-    // glob characters — could glob-expand to a planted program or flag
-    // before awk runs"); OCC's SimpleCommand carries no hasUnquotedGlob
-    // field, so that one branch awaits extractor plumbing. Everything else
-    // here is verbatim from the binary.
+    // CC 2.1.289/290: FIRST branch is the unquoted-glob gate — official
+    // `if(Zve.has(a)){if(o.hasUnquotedGlob||r&&kAn(o))return{ok:!1,…}}`.
+    // An unquoted glob in the source (or a resolved argv element the record
+    // flags) can glob-expand to a planted program file or flag before awk
+    // runs. Reason verbatim.
     if (AWK_FAMILY.has(name)) {
+      if (
+        cmd.hasUnquotedGlob ||
+        (useGlobRecord && commandHasResolvableUnquotedGlob(cmd))
+      ) {
+        return {
+          ok: false,
+          reason:
+            'awk command contains unquoted glob characters — could glob-expand to a planted program or flag before awk runs',
+        }
+      }
       for (const arg of a) {
         const programReason = inspectAwkProgram(arg)
         if (programReason !== false) {
@@ -3957,6 +4381,65 @@ export function checkSemantics(commands: SimpleCommand[]): SemanticCheckResult {
         return {
           ok: false,
           reason: "awk has an option that can't be checked before it runs",
+        }
+      }
+    }
+
+    // CC 2.1.290 find block — official `if(a==="find"){…}`, verbatim
+    // structure. Iterates the STRIPPED argv (`n` in the official, `a` here)
+    // from index 1; the gate itself reads the ORIGINAL command object (`o`)
+    // so hasUnquotedGlob/kAn see the full source text and resolved argv.
+    // The `prev` carry (`g`/`c` officially) tracks lt-form flags whose
+    // value follows: the value still gets the zs/glob checks (official
+    // `!g&&` guards), matching the binary exactly.
+    if (name === 'find') {
+      if (
+        cmd.hasUnquotedGlob ||
+        (useGlobRecord && commandHasResolvableUnquotedGlob(cmd))
+      ) {
+        return {
+          ok: false,
+          reason:
+            'find contains unquoted glob characters — could glob-expand to a dangerous action before find runs',
+        }
+      }
+      let prevWasValueFlag = false
+      for (let i = 1; i < a.length; i++) {
+        const arg = a[i]!
+        const prev = prevWasValueFlag
+        prevWasValueFlag = false
+        if (findFlagIsAction(arg)) {
+          return {
+            ok: false,
+            reason: `find with '${arg}' executes commands or modifies files — cannot be auto-allowed by a Bash(find:*) prefix rule`,
+          }
+        }
+        if (FIND_VERSION_DIVERGENT_OPTION_RE.test(arg)) {
+          return {
+            ok: false,
+            reason: `find option '${arg}' is read differently by different versions of find — could hide a following action`,
+          }
+        }
+        if (!prev && FIND_VALUE_TAKING_FLAG_RE.test(arg)) {
+          prevWasValueFlag = true
+          continue
+        }
+        if (!prev && findOptionTakesValue(arg)) {
+          i++
+          continue
+        }
+        if (containsAnyPlaceholder(arg)) {
+          return {
+            ok: false,
+            reason:
+              'find argument is runtime-determined — could resolve to a dangerous action',
+          }
+        }
+        if (FIND_ARG_GLOB_RE.test(arg)) {
+          return {
+            ok: false,
+            reason: `find argument '${arg}' contains glob characters — could glob-expand to a dangerous action`,
+          }
         }
       }
     }

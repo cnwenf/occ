@@ -107,8 +107,11 @@ describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
     // project/local settings may no longer enable telemetry) +
     // CLAUDE_CODE_DISABLE_WEB_FETCH (CC 2.1.285 item-B1 WebFetch kill-switch;
     // official `Jqn` reserved set @200781142 lists it — project scope must not
-    // be able to toggle the WebFetch kill-switch) = 115.
-    expect(blocklist.size).toBe(115)
+    // be able to toggle the WebFetch kill-switch) +
+    // CLAUDE_CODE_DISABLE_ATTACHMENTS (CC 2.1.290 #161; official `mir`
+    // reserved set @5736663 region lists it — repo settings can no longer
+    // disable attachments) = 116.
+    expect(blocklist.size).toBe(116)
     expect(blocklist.has('CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT')).toBe(
       true,
     )

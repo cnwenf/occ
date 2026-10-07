@@ -734,9 +734,13 @@ const COMMAND_VALIDATOR: Partial<
  *     M=undefined) `bAn` reduces to exactly `q4o(args, U)` — the git preamble
  *     is gated on `n!==void 0` and the quote filter on `n===void 0` returning
  *     early. OCC's LIVE path IS that legacy shell-quote path (TREE_SITTER_BASH
- *     is not in the feature allowlist), so q4o is the faithful reduction; the
- *     dormant AST path matches official's argvUnquotedGlob-absent fallback
- *     (`if(h===void 0||…)return d`), so both callers get q4o semantics.
+ *     is not in the feature allowlist), so q4o is the faithful reduction.
+ *     NOTE (CC 2.1.290 round): the AST parser now PRODUCES `argvUnquotedGlob`
+ *     (consumed by the checkSemantics awk/find unquoted-glob gates), but this
+ *     path-validation layer still does not thread the record through, so both
+ *     callers keep q4o semantics — matching official's record-absent fallback
+ *     (`if(h===void 0||…)return d`). Threading the record into AST-path
+ *     validation would only affect the dormant shadow path.
  *
  * Write/create commands are NOT augmented (official `fe` appends H only when
  * F==="read"; for writes H feeds the Oe/Ge read-deny-rule channel OCC does
