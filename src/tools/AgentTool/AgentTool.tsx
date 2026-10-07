@@ -3,6 +3,7 @@ import * as React from 'react';
 import { buildTool, type ToolDef, toolMatchesName } from 'src/Tool.js';
 import type { AssistantMessage, Message as MessageType, NormalizedUserMessage } from 'src/types/message.js';
 import { getQuerySourceForAgent } from 'src/utils/promptCategory.js';
+import { EFFORT_LEVELS } from '../../utils/effort.js';
 import { z } from 'zod/v4';
 import { clearInvokedSkillsForAgent, getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { enhanceSystemPromptWithEnvDetails, getSystemPrompt } from '../../constants/prompts.js';
@@ -87,6 +88,14 @@ const baseInputSchema = lazySchema(() => z.object({
   prompt: z.string().describe('The task for the agent to perform'),
   subagent_type: z.string().optional().describe('The type of specialized agent to use for this task'),
   model: z.enum(['sonnet', 'opus', 'haiku']).optional().describe("Optional model override for this agent. Takes precedence over the agent definition's model frontmatter. If omitted, uses the agent definition's model, or inherits from the parent."),
+  // CC 2.1.292 (occ149 P3): official Do schema (@219359930) gained
+  // `effort:j(Hc).optional().describe("Reasoning effort for this agent. …"
+  // +(RZ()?' Ignored for subagent_type: "fork": a fork runs at your own
+  // effort.':""))`. Hc ≡ EFFORT_LEVELS (OCC's level constant — same enum the
+  // agent-frontmatter effort field uses); RZ() ≡ isForkSubagentEnabled()
+  // (the fork-path gate — a fork inherits the parent's thinkingConfig via
+  // useExactTools, so a per-call effort would be dropped anyway).
+  effort: z.enum(EFFORT_LEVELS).optional().describe('Reasoning effort for this agent. Set this ONLY when the user, or instructions such as CLAUDE.md or a skill, explicitly ask that this agent or delegated work run at a specific effort level, never on your own judgment; otherwise omit it and the agent runs at its usual effort.' + (isForkSubagentEnabled() ? ' Ignored for subagent_type: "fork": a fork runs at your own effort.' : '')),
   run_in_background: z.boolean().optional().describe('Set to true to run this agent in the background. You will be notified when it completes.')
 }));
 
@@ -259,6 +268,7 @@ export const AgentTool = buildTool({
     subagent_type,
     description,
     model: modelParam,
+    effort,
     run_in_background,
     name,
     team_name,
@@ -679,6 +689,11 @@ export const AgentTool = buildTool({
       isAsync: shouldRunAsync,
       querySource: toolUseContext.options.querySource ?? getQuerySourceForAgent(selectedAgent.agentType, isBuiltInAgent(selectedAgent)),
       model: isForkPath ? undefined : model,
+      // CC 2.1.292 (occ149 P3): per-call effort override. The official Do
+      // schema promises "Ignored for subagent_type: \"fork\": a fork runs at
+      // your own effort" whenever the fork path is live, so the fork spawn
+      // drops the param exactly like `model` above.
+      effort: isForkPath ? undefined : effort,
       // Fork path: pass parent's system prompt AND parent's exact tool
       // array (cache-identical prefix). workerTools is rebuilt under
       // permissionMode 'bubble' which differs from the parent's mode, so

@@ -341,6 +341,22 @@ export type PDFReferenceAttachment = {
   displayPath: string
 }
 
+/**
+ * CC 2.1.292 (occ149 P5): official `cer.at_mention_reference` attachment —
+ * emitted instead of silently dropping an @-mentioned file that could not be
+ * attached, so the model still learns the user referenced it. `unread` is the
+ * official discriminant:
+ * - 'too_large'   — file exceeds the read size limit (fileSize carries the stat size)
+ * - 'unexamined'  — file could not be examined at all
+ * - undefined     — attachments are simply not automatic in this session
+ */
+export type AtMentionReferenceAttachment = {
+  type: 'at_mention_reference'
+  mentions: string[]
+  unread?: 'too_large' | 'unexamined'
+  fileSize?: number
+}
+
 export type AlreadyReadFileAttachment = {
   type: 'already_read_file'
   filename: string
@@ -465,6 +481,7 @@ export type Attachment =
   | FileAttachment
   | CompactFileReferenceAttachment
   | PDFReferenceAttachment
+  | AtMentionReferenceAttachment
   | AlreadyReadFileAttachment
   /**
    * An at-mentioned file was edited
@@ -3303,6 +3320,7 @@ export async function generateFileAttachment(
   | FileAttachment
   | CompactFileReferenceAttachment
   | PDFReferenceAttachment
+  | AtMentionReferenceAttachment
   | AlreadyReadFileAttachment
   | null
 > {
@@ -3345,7 +3363,16 @@ export async function generateFileAttachment(
           size_bytes: stats.size,
           mode,
         } as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS)
-        return null
+        // CC 2.1.292 (occ149 P5): official no longer drops the mention
+        // silently — it emits an `at_mention_reference` attachment so the
+        // model is told the user @-mentioned the file, why its contents are
+        // absent, and that it should Read it in portions itself.
+        return {
+          type: 'at_mention_reference',
+          mentions: [relative(getCwd(), filename)],
+          unread: 'too_large',
+          fileSize: stats.size,
+        }
       } catch {
         // If we can't stat the file, proceed with normal reading (will fail later if file doesn't exist)
       }

@@ -4,49 +4,38 @@ import { getMainLoopModel } from './model/model.js'
 export const DOCUMENT_EXTENSIONS = new Set(['pdf'])
 
 /**
- * Parse a page range string into firstPage/lastPage numbers.
+ * CC 2.1.292 (occ149 P4): strict pages parser, byte-faithful port of the
+ * official `Dns` (@207454659):
+ *   /^(\d{1,9})(?:\s*(-)\s*(\d{1,9})?)?$/  against the TRIMMED string.
+ * The 2.1.291 parser (and OCC's previous parseInt-lenient one) silently
+ * degraded list-style inputs — parseInt("6,9,15") === 6 — so "6,9,15" was
+ * accepted as page 6 alone. The anchored regex now rejects anything that is
+ * not exactly one page ("3"), one range ("1-5"), or one open-ended range
+ * ("3-"), so the caller returns the official usage error instead.
+ *
  * Supported formats:
  * - "5" → { firstPage: 5, lastPage: 5 }
  * - "1-10" → { firstPage: 1, lastPage: 10 }
+ * - "1 - 10" → same (whitespace around the dash allowed)
  * - "3-" → { firstPage: 3, lastPage: Infinity }
  *
- * Returns null on invalid input (non-numeric, zero, inverted range).
- * Pages are 1-indexed.
+ * Returns null on invalid input (non-numeric, zero, inverted range, lists,
+ * more than 9 digits per number). Pages are 1-indexed.
  */
 export function parsePDFPageRange(
   pages: string,
 ): { firstPage: number; lastPage: number } | null {
-  const trimmed = pages.trim()
-  if (!trimmed) {
+  const match = /^(\d{1,9})(?:\s*(-)\s*(\d{1,9})?)?$/.exec(pages.trim())
+  if (!match) {
     return null
   }
-
-  // "N-" open-ended range
-  if (trimmed.endsWith('-')) {
-    const first = parseInt(trimmed.slice(0, -1), 10)
-    if (isNaN(first) || first < 1) {
-      return null
-    }
-    return { firstPage: first, lastPage: Infinity }
-  }
-
-  const dashIndex = trimmed.indexOf('-')
-  if (dashIndex === -1) {
-    // Single page: "5"
-    const page = parseInt(trimmed, 10)
-    if (isNaN(page) || page < 1) {
-      return null
-    }
-    return { firstPage: page, lastPage: page }
-  }
-
-  // Range: "1-10"
-  const first = parseInt(trimmed.slice(0, dashIndex), 10)
-  const last = parseInt(trimmed.slice(dashIndex + 1), 10)
-  if (isNaN(first) || isNaN(last) || first < 1 || last < 1 || last < first) {
+  const [, firstStr, dash, lastStr] = match
+  const firstPage = Number(firstStr)
+  const lastPage = lastStr ? Number(lastStr) : dash ? Infinity : firstPage
+  if (firstPage < 1 || lastPage < firstPage) {
     return null
   }
-  return { firstPage: first, lastPage: last }
+  return { firstPage, lastPage }
 }
 
 /**

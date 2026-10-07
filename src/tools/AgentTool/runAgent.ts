@@ -77,6 +77,7 @@ import {
 import { getTotalCost } from '../../cost-tracker.js'
 import { getAgentModel } from '../../utils/model/agent.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
+import type { EffortValue } from '../../utils/effort.js'
 import {
   clearAgentTranscriptSubdir,
   recordSidechainTranscript,
@@ -354,6 +355,7 @@ export async function* runAgent({
   querySource,
   override,
   model,
+  effort,
   maxTurns,
   subagentDepth,
   preserveToolUseResults,
@@ -385,6 +387,11 @@ export async function* runAgent({
     agentId?: AgentId
   }
   model?: ModelAlias
+  /** CC 2.1.292 (occ149 P3): per-call reasoning-effort override from the
+   * Agent tool's `effort` input. Precedence: tool param > agent-definition
+   * frontmatter `effort` > inherited session effortValue. Undefined on the
+   * fork path (a fork runs at the parent's effort). */
+  effort?: EffortValue
   maxTurns?: number
   /** B9 (2.1.172): subagent nesting depth. Default 0 (top-level). Cap = 5.
    * Throws "Subagent nesting limit reached" when exceeded. */
@@ -661,11 +668,16 @@ export async function* runAgent({
       }
     }
 
-    // Override effort level if agent defines one
+    // Override effort level if agent defines one.
+    // CC 2.1.292 (occ149 P3): the Agent tool's per-call `effort` param sits
+    // at the top of the precedence chain — tool param > agent-definition
+    // frontmatter > inherited session value.
     const effortValue =
-      agentDefinition.effort !== undefined
-        ? agentDefinition.effort
-        : state.effortValue
+      effort !== undefined
+        ? effort
+        : agentDefinition.effort !== undefined
+          ? agentDefinition.effort
+          : state.effortValue
 
     if (
       toolPermissionContext === state.toolPermissionContext &&

@@ -66,12 +66,21 @@ export function getProxyUrl(env: EnvLike = process.env): string | undefined {
 }
 
 /**
- * Get the NO_PROXY environment variable value
- * Prefers lowercase over uppercase (no_proxy > NO_PROXY)
+ * Get the NO_PROXY environment variable value.
+ *
+ * CC 2.1.292 (occ149 P6): official `YLe` (@203986xxx, byte-verified) —
+ * `if(e.no_proxy==="*"||e.NO_PROXY==="*")return"*"` then official `__r`:
+ * when BOTH variables are set with different values their lists are merged
+ * (`${no_proxy},${NO_PROXY}`); otherwise the lowercase variant wins.
+ * (Pre-292 OCC used precedence-only `no_proxy || NO_PROXY`.)
  * @param env Environment variables to check (defaults to process.env for production use)
  */
 export function getNoProxy(env: EnvLike = process.env): string | undefined {
-  return env.no_proxy || env.NO_PROXY
+  if (env.no_proxy === '*' || env.NO_PROXY === '*') return '*'
+  const lower = env.no_proxy
+  const upper = env.NO_PROXY
+  if (lower && upper && lower !== upper) return `${lower},${upper}`
+  return lower || upper
 }
 
 /**
@@ -97,7 +106,10 @@ export function shouldBypassProxy(
   try {
     const url = new URL(urlString)
     const hostname = url.hostname.toLowerCase()
-    const port = url.port || (url.protocol === 'https:' ? '443' : '80')
+    // CC 2.1.292 (occ149 P6): official `py` treats wss: like https: for the
+    // default-port calculation (`s=r.protocol==="https:"||r.protocol==="wss:"`).
+    const isSecure = url.protocol === 'https:' || url.protocol === 'wss:'
+    const port = url.port || (isSecure ? '443' : '80')
     const hostWithPort = `${hostname}:${port}`
 
     // Split by comma or space and trim each entry
@@ -214,7 +226,9 @@ export const getProxyAgent = memoize((uri: string): undici.Dispatcher => {
     // Override both HTTP and HTTPS proxy with the provided URI
     httpProxy: uri,
     httpsProxy: uri,
-    noProxy: process.env.NO_PROXY || process.env.no_proxy,
+    // CC 2.1.292 (occ149 P6): official `yn` passes the merged list —
+    // `noProxy:YLe({no_proxy,NO_PROXY})` — not precedence-only.
+    noProxy: getNoProxy(),
   }
 
   // Set both connect and requestTls so TLS options apply to both paths:
@@ -284,8 +298,17 @@ export function getWebSocketProxyUrl(url: string): string | undefined {
  *   into non-Anthropic-API fetch paths (MCP HTTP/SSE transports, etc.) or those
  *   requests get misrouted to api.anthropic.com. Only the Anthropic SDK client
  *   should pass `true` here.
+ * @param opts.url - CC 2.1.292 (occ149 P6): the target URL of the request, when
+ *   known. Official `Xi` gained `if(e.url&&py(e.url))return{...o,...BRt()}` —
+ *   a NO_PROXY-matching target bypasses the proxy entirely (changelog: "Fixed
+ *   NO_PROXY being ignored for Claude Code's own API requests when
+ *   HTTPS_PROXY is set"). Without it, an explicit `proxy` fetch option (Bun)
+ *   overrides the runtime's env-proxy logic and its NO_PROXY handling.
  */
-export function getProxyFetchOptions(opts?: { forAnthropicAPI?: boolean }): {
+export function getProxyFetchOptions(opts?: {
+  forAnthropicAPI?: boolean
+  url?: string
+}): {
   tls?: TLSConfig
   dispatcher?: undici.Dispatcher
   proxy?: string
@@ -308,6 +331,11 @@ export function getProxyFetchOptions(opts?: { forAnthropicAPI?: boolean }): {
 
   // If we have a proxy, use the proxy agent (which includes mTLS config)
   if (proxyUrl) {
+    // CC 2.1.292 (occ149 P6): NO_PROXY-matching targets skip the proxy —
+    // official `if(e.url&&py(e.url))return{...o,...BRt()}` (base + TLS only).
+    if (opts?.url && shouldBypassProxy(opts.url)) {
+      return { ...base, ...getTLSFetchOptions() }
+    }
     if (typeof Bun !== 'undefined') {
       return { ...base, proxy: proxyUrl, ...getTLSFetchOptions() }
     }

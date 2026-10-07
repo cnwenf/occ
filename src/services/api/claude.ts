@@ -238,6 +238,7 @@ import {
 } from '../compact/microCompact.js'
 import { getInitializationStatus } from '../lsp/manager.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
+import { filterMcpToolsForApi } from '../mcp/mcpToolNameFilter.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
 import { resolveQueryPromptId } from './promptId.js'
@@ -1617,6 +1618,10 @@ async function* queryModel(
   StreamEvent | AssistantMessage | SystemAPIErrorMessage,
   void
 > {
+  // CC 2.1.292 (occ149 P1): official o9e — drop MCP tools whose name exceeds
+  // the API's 128-char limit (and hiddenFromModel ones) before ANY request
+  // assembly (schemas, ToolSearch listing, cache markers) sees the list.
+  tools = filterMcpToolsForApi(tools)
   // Check cheap conditions first — the off-switch await blocks on GrowthBook
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
   // entirely. Subscribers don't hit this path at all.

@@ -1182,7 +1182,16 @@ export async function* withRetry<T>(
         //    m("api_request","api_request_retry_after_too_long"),new Fc(It,g)`.
         // (a) gt+M: accumulated persistent waits feed the exponent, so a 5xx
         //     after long 429/529 waits does not restart backoff at attempt 1.
-        delayMs = getRetryDelay(attempt + persistentAttempt, retryAfter)
+        // CC 2.1.292 (occ149 P2): official call site now passes the
+        // CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS override (a$ 5th param)
+        // ONLY for overloaded-shaped errors (oB(Jt)); capMs stays `void 0`
+        // → 32000 default. is529Error is OCC's oB equivalent.
+        delayMs = getRetryDelay(
+          attempt + persistentAttempt,
+          retryAfter,
+          undefined,
+          is529Error(error) ? getOverloadedRetryBaseDelayMs() : undefined,
+        )
         if (watchdogRetryEnabled) {
           // (b) S6(): cap at TRe=6h and enter heartbeat long-wait mode (yn).
           delayMs = Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
@@ -1296,13 +1305,22 @@ function getRetryAfter(error: unknown): string | null {
 // (Math.max), so `Retry-After: 0` waits the exponential-backoff amount
 // instead of re-requesting instantly, and the result is rounded to an
 // integer like the binary.
+// CC 2.1.292 (occ149 P2): official a$ (@205639755) grew a 5th param — the
+// base-delay override (`a=le`, le=500 default), wrapping gT with
+// `baseMs:a` instead of the hardcoded 500:
+//   `function a$(e,r,n=32000,o=Math.random,a=le){let s=Math.round(gT({
+//     attempt:e,baseMs:a,capMs:n,jitter:{kind:"proportional",ratio:0.25},
+//     random:o}));if(r){let c=parseInt(r,10);if(!isNaN(c))return
+//     Math.max(c*1000,s)}return s}`
+// OCC exposes it as the 4th param baseDelayMs (default BASE_DELAY_MS=500).
 export function getRetryDelay(
   attempt: number,
   retryAfterHeader?: string | null,
   maxDelayMs = 32000,
+  baseDelayMs: number = BASE_DELAY_MS,
 ): number {
   const baseDelay = Math.min(
-    BASE_DELAY_MS * Math.pow(2, attempt - 1),
+    baseDelayMs * Math.pow(2, attempt - 1),
     maxDelayMs,
   )
   const backoffMs = Math.round(baseDelay + Math.random() * 0.25 * baseDelay)
@@ -1315,6 +1333,40 @@ export function getRetryDelay(
   }
 
   return backoffMs
+}
+
+// CC 2.1.292 (occ149 P2): env registry descriptor for the overloaded retry
+// base delay — `hi=H.int({min:500,max:32000,digitsOnly:!0})` @203747314.
+// A digits-only integer within [500, 32000] is honored; anything else
+// (unset, non-numeric, out of range) yields undefined so the a$ default
+// (le=500) applies. Consumed ONLY at the non-persistent backoff call site
+// and ONLY for overloaded errors — official @214125966:
+//   `Wo=a$(Vt+G,Ao,void 0,r.random,
+//     oB(Jt)?a.CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS:void 0)`
+// (oB = overloaded-shaped check → OCC is529Error).
+const OVERLOADED_RETRY_BASE_DELAY_MIN_MS = 500
+const OVERLOADED_RETRY_BASE_DELAY_MAX_MS = 32000
+
+export function getOverloadedRetryBaseDelayMs(): number | undefined {
+  const raw = process.env.CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS
+  if (raw === undefined) {
+    return undefined
+  }
+  // digitsOnly (official `M.int` parse — see getMaxMcpDescriptionLength for
+  // the byte-verified parser): reject anything that is not an integer
+  // literal (1e6 / 64_000 / 1,000 / 1500.5 all fail).
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    return undefined
+  }
+  const parsed = parseEnvInt(raw)
+  if (
+    parsed !== undefined &&
+    parsed >= OVERLOADED_RETRY_BASE_DELAY_MIN_MS &&
+    parsed <= OVERLOADED_RETRY_BASE_DELAY_MAX_MS
+  ) {
+    return parsed
+  }
+  return undefined
 }
 
 export function parseMaxTokensContextOverflowError(error: APIError):

@@ -4235,6 +4235,40 @@ Read the team config to discover your teammates' names. Check the task list peri
         }),
       ])
     }
+    case 'at_mention_reference': {
+      // CC 2.1.292 (occ149 P5): official `cer.at_mention_reference`
+      // (@215812921) — all three case texts verbatim. `mentions` already
+      // carries display paths (the official renderer's Bd map is applied at
+      // creation time in OCC, matching the pdf_reference displayPath
+      // convention). en ≡ formatFileSize, ct ≡ FILE_READ_TOOL_NAME,
+      // Na ≡ wrapMessagesInSystemReminder, Re ≡ createUserMessage.
+      const mentioned = `The user @-mentioned ${attachment.mentions.join(', ')}`
+      const readHint =
+        'if these are files or directories in your working directory, read them with your file tools before responding.'
+      let content: string
+      switch (attachment.unread) {
+        case 'too_large':
+          content =
+            `${mentioned} (${formatFileSize(attachment.fileSize ?? 0)}). ` +
+            'Its contents were not attached because the file is too large to read all at once, ' +
+            `and a ${FILE_READ_TOOL_NAME} call with no limit parameter will fail. ` +
+            'Read it in portions with the offset and limit parameters, starting with a few hundred lines, ' +
+            'or search for specific content instead of reading the whole file.'
+          break
+        case 'unexamined':
+          content = `${mentioned}. They could not be examined and were not attached: ${readHint}`
+          break
+        default:
+          content = `${mentioned}. File contents are not attached automatically in this session: ${readHint}`
+          break
+      }
+      return wrapMessagesInSystemReminder([
+        createUserMessage({
+          content,
+          isMeta: true,
+        }),
+      ])
+    }
     case 'selected_lines_in_ide': {
       const maxSelectionLength = 2000
       const content =

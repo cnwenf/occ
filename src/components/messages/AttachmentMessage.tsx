@@ -158,6 +158,22 @@ export function AttachmentMessage({
           Referenced PDF <Text bold>{attachment.displayPath}</Text> (
           {attachment.pageCount} pages)
         </Line>;
+    case 'at_mention_reference':
+      // CC 2.1.292 (occ149 P5) — display-side counterpart of the official
+      // `at_mention_reference` attachment (the API-facing text lives in
+      // utils/messages.ts). UI wording is OCC's own: the official terminal
+      // render for this case was not extractable, so it mirrors the
+      // Referenced-file/PDF Line style instead of being guessed verbatim.
+      return <Line>
+          @-mentioned <Text bold>{attachment.mentions.join(', ')}</Text>{' '}
+          <Text dimColor>
+            (
+            {attachment.unread === 'too_large'
+              ? `${attachment.fileSize !== undefined ? `${formatFileSize(attachment.fileSize)}, ` : ''}too large to attach — read it in portions`
+              : 'contents not attached'}
+            )
+          </Text>
+        </Line>;
     case 'selected_lines_in_ide':
       return <Line>
           ⧉ Selected{' '}
