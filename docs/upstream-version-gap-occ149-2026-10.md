@@ -341,7 +341,23 @@ hook-output `<system-reminder>`-escaping candidate (§7).
   v2.1.368–370/372/373) and /releases ≡ /tags parity is verified after.
   npm publish stays pending until the owner rotates `NPM_TOKEN` and re-runs
   Publish **for the newest tag only**.
-- RELEASE_RESULT_PLACEHOLDER
+- **Final results (2026-10-08):** feat commit `c6694e5` (this ledger +
+  P1–P6 + 75 tests), release commit `58f2c5a` (`chore(release): 2.1.374` —
+  package.json bump, CHANGELOG `## 2.1.374 - 2026-10-08` section + tracking
+  line, README badge → `Claude Code 2.1.292 (partial)`); fast-forwarded
+  `origin/main` `9d16235 → 58f2c5a`; tag `v2.1.374` pushed. CI on main:
+  **success** (run 37681992479, 13m41s). Publish-to-npm run 37682018899:
+  **failed** with the known `E404 … PUT
+  https://registry.npmjs.org/@cnwenf%2focc` (dead `NPM_TOKEN`, unchanged
+  owner action). GitHub Release created manually after an idempotent
+  `gh release view` probe: **https://github.com/cnwenf/occ/releases/tag/v2.1.374**
+  (https://github.com/cnwenf/occ/releases shows **173 total**).
+  Post-release parity `gh api …/releases` ≡ `…/tags`:
+  **173 ≡ 173** (identical tag lists, `v2.1.374` included — checked after
+  the release creation). Stale branches: none — remote heads after
+  cleanup are exactly `main` (the round branch `agent/occ-leader/77562aa6`
+  was deleted post-merge). Build re-verified at the release commit:
+  `dist/cli.js` 29.90 MB, `OCC 2.1.374`, 75/75 new tests green.
 
 ## §10 — Next-round priorities
 
