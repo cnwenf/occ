@@ -205,12 +205,29 @@ to the next gap round (2.1.292 is `next`-channel, not `latest`).
 | all `src/tools/BashTool/` | **974 pass / 0 fail / 47 files** |
 | Biome lint (all changed files) | clean |
 | `bun run build` | green — `dist/cli.js` 29.89 MB |
-| full CI gate (`scripts/ci-test.sh`) + e2e (tmux REPL, `-p` smoke) | see §6.2/§6.3 (appended below) |
+| full CI gate (`scripts/ci-test.sh`, committed tree 9cf2ae1) | **9504 pass / 11 fail / 12 skip — 856 files checked** |
 
-### 6.2 E2E
+CI-gate failure disposition: the 8 failed files are all e2e. 7 of them
+(commands-behavior, repl-interactive [documented pre-existing OCC-44
+Shift+Tab gap], resume-command-name, version-2.1.208-screen-reader,
+version-2.1.210-plan-approval, version-2.1.221-autocompact,
+version-2.1.329-effort-cap — 10 failed tests) are the **exact pre-existing
+baseline set** carried from the prior gate run. The 8th
+(`real-coding.e2e.test.ts`, 1 failed live-model `toContain` assertion under
+gate load) **passes 13/13 / 39 expect() on isolated rerun** — live-model
+flakiness (glm-5.2 output variance), not a regression from this round's
+changes. No src/ file fails.
 
-*(filled in after the e2e run — tmux REPL boot, model round-trip, quit
-message; `occ -p` headless PONG; version string.)*
+### 6.2 E2E (live, on the committed tree — `dist/cli.js` rebuilt @ 9cf2ae1)
+
+| Check | Result |
+|---|---|
+| `node dist/cli.js --version` | `OCC 2.1.371` (pre-bump build) |
+| headless `echo "say PONG" \| bun dist/cli.js -p` | `PONG`, exit 0 (the `[claude-code:unrecognized_model]` stderr line for env-default `glm-5.2` is pre-existing env behavior, not a defect) |
+| tmux REPL boot | banner renders: `OCC v2.1.371 · Open C Code`, MODEL/PROJ rows, effort indicator, auto-mode footer |
+| REPL model round-trip (`say PONG exactly once`) | thinking + tool calls + `PONG` rendered; 67,749 tokens billed — full query loop live |
+| REPL `/status` | Version 2.1.371, session ID, cwd, auth token, base URL, model glm-5.2, MCP servers (3 connected/1 failed), setting sources — all rows render |
+| REPL `/quit` | clean exit, `EXIT_CODE=0`, tmux server shuts down, no hang/orphan |
 
 ### 6.3 Release
 
