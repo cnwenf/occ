@@ -21,11 +21,15 @@ import type { Tool } from 'src/Tool.js'
 import type { PermissionDecision } from 'src/types/permissions.js'
 import { buildYoloRejectionMessage } from '../../messages.js'
 import { computeAutoModeAllowRuleToolName } from '../allowRuleHint.js'
-import { AUTO_MODE_OUTCOME_SCOPE_GUIDANCE } from '../autoModeOutcomeGuidance.js'
 
 // Official v288 `bKn` hint sentence — verbatim, with the tool name substituted.
 const officialHint = (toolName: string): string =>
   `To allow this type of action in the future, the user can add a permission rule for ${toolName} to their settings.`
+
+// CC 2.1.293 #38: the official `fnr` revert deleted the 281 outcome-scope
+// guidance — the base message now ends at the auto-mode stop suffix (vver
+// `UUr` tail), with no trailing space.
+const AUTO_MODE_STOP_SUFFIX_END = 'Let the user decide how to proceed.'
 
 function makeTool(partial: Partial<Tool> & { name: string }): Tool {
   return partial as Tool
@@ -65,9 +69,9 @@ describe('CC 2.1.288 #15: buildYoloRejectionMessage hint parameterization (offic
     const message = buildYoloRejectionMessage('suppressed tool action')
     expect(message).not.toContain('To allow this type of action in the future')
     expect(message).not.toContain('permission rule')
-    // Official `bKn` returns the base message `g` unchanged when the hint is
-    // gated off — no trailing joiner space either.
-    expect(message.endsWith(AUTO_MODE_OUTCOME_SCOPE_GUIDANCE)).toBe(true)
+    // Official `bKn`/`fnr` returns the base message `g` unchanged when the
+    // hint is gated off — post-2.1.293 #38 the base ends at the stop suffix.
+    expect(message.endsWith(AUTO_MODE_STOP_SUFFIX_END)).toBe(true)
   })
 
   test('explicitly passing allowRuleToolName: undefined behaves like no options', () => {
@@ -91,10 +95,11 @@ describe('CC 2.1.288 #15: buildYoloRejectionMessage hint parameterization (offic
       "If you have other tasks that don't depend on this action, continue working on those. ",
     )
     expect(message).toContain('first try a safer method')
-    expect(message).toContain(AUTO_MODE_OUTCOME_SCOPE_GUIDANCE)
-    // Hint is joined with a single space after the outcome-scope guidance.
+    expect(message.endsWith(officialHint('Read'))).toBe(true)
+    // CC 2.1.293 #38: hint is joined with a single space after the stop
+    // suffix (the 281 outcome-scope guidance was reverted out of `fnr`).
     expect(message).toContain(
-      `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE} ${officialHint('Read')}`,
+      `${AUTO_MODE_STOP_SUFFIX_END} ${officialHint('Read')}`,
     )
   })
 })

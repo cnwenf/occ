@@ -39,6 +39,10 @@ export function modelSupportsEffort(model: string): boolean {
   // 2.1.280: claude-opus-5-5 auto-matches via the 'opus-5' substring — the
   // official 2.1.280 catalog entry (@191988119, byte-verified) lists
   // effort/max_effort/xhigh_effort/per_turn_effort in its `capabilities`.
+  // 2.1.293 (OCC-111): the haiku-5-5 catalog entry (@204773604, byte-
+  // verified) lists effort/max_effort/xhigh_effort/per_turn_effort — the
+  // first haiku with effort support, so it must be allowlisted ABOVE the
+  // `haiku` exclusion below.
   if (
     m.includes('opus-4-6') ||
     m.includes('opus-4-7') ||
@@ -46,6 +50,7 @@ export function modelSupportsEffort(model: string): boolean {
     m.includes('opus-5') ||
     m.includes('sonnet-4-6') ||
     m.includes('sonnet-5') ||
+    m.includes('haiku-5-5') ||
     m.includes('fable-5')
   ) {
     return true
@@ -74,6 +79,8 @@ export function modelSupportsMaxEffort(model: string): boolean {
   // OCC-37 (1g): opus-5; OCC-97 (Gap-97d): the official 2.1.233 model
   // registry (byte-verified) lists "max_effort" in the `capabilities` array
   // of opus-4-6/opus-4-7/opus-4-8/opus-5/sonnet-4-6/sonnet-5/fable-5.
+  // 2.1.293 (OCC-111): haiku-5-5 capabilities (@204773604) include
+  // "max_effort".
   const m = model.toLowerCase()
   if (
     m.includes('opus-4-6') ||
@@ -82,6 +89,7 @@ export function modelSupportsMaxEffort(model: string): boolean {
     m.includes('opus-5') ||
     m.includes('sonnet-4-6') ||
     m.includes('sonnet-5') ||
+    m.includes('haiku-5-5') ||
     m.includes('fable-5')
   ) {
     return true
@@ -105,12 +113,14 @@ export function modelSupportsXhighEffort(model: string): boolean {
   // 2.1.111: xhigh for Opus 4.7; 2.1.154: also Opus 4.8; 2.1.219 (OCC-37 1g):
   // also Opus 5. OCC-97 (Gap-97d): the official 2.1.233 model registry
   // (byte-verified) additionally lists "xhigh_effort" for sonnet-5 and
-  // fable-5.
+  // fable-5. 2.1.293 (OCC-111): haiku-5-5 capabilities (@204773604) include
+  // "xhigh_effort".
   if (
     lower.includes('opus-4-7') ||
     lower.includes('opus-4-8') ||
     lower.includes('opus-5') ||
     lower.includes('sonnet-5') ||
+    lower.includes('haiku-5-5') ||
     lower.includes('fable-5')
   ) {
     return true
@@ -605,6 +615,14 @@ export function getDefaultEffortForModel(
   // substring of 'sonnet-5-5'; broadening it would drag plain sonnet-5 to
   // medium).
   if (model.toLowerCase().includes('sonnet-5-5')) {
+    return 'medium'
+  }
+
+  // 2.1.293 (OCC-111, Haiku 5.5 launch): the official catalog entry for
+  // claude-haiku-5-5 (@204773604, byte-verified) declares
+  // `default_effort: "medium"` — unconditional, same shape as the opus-5-5 /
+  // sonnet-5-5 branches above.
+  if (model.toLowerCase().includes('haiku-5-5')) {
     return 'medium'
   }
 

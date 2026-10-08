@@ -216,10 +216,14 @@ describe('flushQueuedMessagesCore (F$t)', () => {
 // ---------------------------------------------------------------------------
 
 describe('sendQueuedNow (O$t)', () => {
-  test('cancelled → true + input_send_now_key event with no reason', () => {
+  test('cancelled → true + input_send_now_key event (293: fell_back_to_cancel reason)', () => {
     const rec = makeFlushDeps()
     expect(sendQueuedNow(rec.deps)).toBe(true)
-    expect(rec.events).toEqual([{ event: 'input_send_now_key', reason: undefined }])
+    // CC 2.1.293 L28 Phase 1 (Cst @234772005): the tengu_velvet_panda gate
+    // defaults TRUE, so a cancelled flush without a deliverWithoutCancel
+    // success logs the fallback reason. The 292 O$t form logged no reason;
+    // see sendNowDeliverWithoutCancel293.test.ts for the full matrix.
+    expect(rec.events).toEqual([{ event: 'input_send_now_key', reason: 'fell_back_to_cancel' }])
   })
 
   test('no_live_controller → false + input_send_now_key with no_live_controller reason', () => {

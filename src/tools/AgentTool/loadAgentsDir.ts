@@ -14,6 +14,7 @@ import {
   McpServerConfigSchema,
 } from '../../services/mcp/types.js'
 import type { ToolUseContext } from '../../Tool.js'
+import { compareNamesAsciiFirst } from '../../utils/asciiFirstCompare.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
   EFFORT_LEVELS,
@@ -29,6 +30,7 @@ import {
   parseAgentToolsFromFrontmatter,
   parseSlashCommandToolsFromFrontmatter,
 } from '../../utils/markdownConfigLoader.js'
+import { NAME_MAX_LENGTH } from '../../utils/nameSafety.js'
 import {
   PERMISSION_MODES,
   type PermissionMode,
@@ -238,7 +240,13 @@ export function getActiveAgentsFromList(
     }
   }
 
-  return Array.from(agentMap.values())
+  // ASCII-first by agentType (CC 2.1.293 #46 — official
+  // `Array.from(z.values()).sort((V,Y)=>ZCe(V.agentType,Y.agentType))`).
+  // This list feeds the "Available agent types" system-reminder lines, so the
+  // order is model-visible and must not depend on agent load order or locale.
+  return Array.from(agentMap.values()).sort((a, b) =>
+    compareNamesAsciiFirst(a.agentType, b.agentType),
+  )
 }
 
 /**
@@ -559,6 +567,13 @@ export function getParseError(frontmatter: Record<string, unknown>): string {
     return 'Missing required "name" field in frontmatter'
   }
 
+  // CC 2.1.292 §C6 (official BFo @213518427): an agent `name` longer than the
+  // shared 256-char limit (iY) is rejected. Official order checks length
+  // BEFORE the ":" namespacing reject.
+  if (agentType.length > NAME_MAX_LENGTH) {
+    return `Invalid "name": names must be at most ${NAME_MAX_LENGTH} characters`
+  }
+
   // CC 2.1.218 #34: ":" in an agent name is reserved for plugin namespacing.
   if (agentType.normalize('NFKC').includes(':')) {
     return 'Invalid "name": names must not contain ":" (reserved for plugin namespacing)'
@@ -731,6 +746,17 @@ export function parseAgentFromMarkdown(
     // Validate required fields — silently skip files without any agent
     // frontmatter (they're likely co-located reference documentation)
     if (!agentType || typeof agentType !== 'string') {
+      return null
+    }
+    // CC 2.1.292 §C6 (official EXn @213521927): an agent `name` longer than the
+    // shared 256-char limit (iY) is rejected — the file is skipped (null) and an
+    // error is logged. Checked before the ":" reject to match the official
+    // order (missing name → length → NFKC ":").
+    if (agentType.length > NAME_MAX_LENGTH) {
+      logForDebugging(
+        `Agent file ${filePath} has invalid name '${agentType}': names must be at most ${NAME_MAX_LENGTH} characters`,
+        { level: 'error' },
+      )
       return null
     }
     // CC 2.1.218 #34: an agent `name` containing ":" is rejected — ":" is

@@ -266,6 +266,67 @@ export class SearchPatternError extends Error {
   }
 }
 
+// CC 2.1.292 C1 (binary `zB` @208892821 + errno constants
+// `vte=1,QB=2,_te=5,Tte=13,wte=20,Cte=2,Ate=3,Ite=5`): ripgrep exited 2
+// because it could NOT READ its target (permission denied, I/O error, etc.) and
+// produced no result lines. Without this the caller resolved `[]` and Grep/Glob
+// rendered "No matches found" / "No files found" for a search that never ran —
+// the exact misreport the official class fixes. The reason/guidance text below
+// is byte-copied from the binary. The official extends the telemetry base class
+// `P`; OCC drops that second `super()` argument (matching the existing
+// SearchPatternError / RipgrepSpawnResourceError ports, which extend plain
+// Error).
+//
+// errno constants — posix: EPERM=1(vte), ENOENT=2(QB), EIO=5(_te),
+// EACCES=13(Tte), ENOTDIR=20(wte); windows: ERROR_FILE_NOT_FOUND=2(Cte),
+// ERROR_PATH_NOT_FOUND=3(Ate), ERROR_ACCESS_DENIED=5(Ite).
+const RG_EPERM_ERRNO = 1
+const RG_ENOENT_ERRNO = 2
+const RG_EIO_ERRNO = 5
+const RG_EACCES_ERRNO = 13
+const RG_ENOTDIR_ERRNO = 20
+const RG_WIN_FILE_NOT_FOUND_ERRNO = 2
+const RG_WIN_PATH_NOT_FOUND_ERRNO = 3
+const RG_WIN_ACCESS_DENIED_ERRNO = 5
+
+// binary `GB` — the "don't shell out" hint interpolated into both guidance arms.
+const RG_RECURSIVE_SEARCH_SHELL_HINT =
+  'Do not run a recursive search in the shell instead (for example grep -r, find or rg)'
+
+// binary `oir` — the fd-3 pin target. STAGED: OCC does not pass this target yet
+// (the `inheritFd` / resolver-pin lane is not implemented), so the
+// `target !== RG_FD3_PIN_TARGET` exemption in the dispatch always applies and
+// bare ENOENT/ENOTDIR stay "no matches" (existence-check territory). Kept
+// verbatim for taxonomy parity; the pinning lane lands separately.
+const RG_FD3_PIN_TARGET = '/proc/self/fd/3'
+
+export class RipgrepTargetUnreadableError extends Error {
+  constructor(errno: number) {
+    const isWindows = getPlatform() === 'windows'
+    // binary `n = r ? e===Ite : e===Tte || e===vte`
+    const isPermission = isWindows
+      ? errno === RG_WIN_ACCESS_DENIED_ERRNO
+      : errno === RG_EACCES_ERRNO || errno === RG_EPERM_ERRNO
+    // binary `s`
+    const reason = isPermission
+      ? 'permission denied'
+      : !isWindows && errno === RG_EIO_ERRNO
+        ? 'input/output error'
+        : !isWindows && errno === RG_ENOENT_ERRNO
+          ? 'the file Claude Code opened was not passed to ripgrep'
+          : 'an operating system error'
+    // binary `h` — permission arm tells the user; the rest instruct a
+    // model-level retry-once ("Run the search once more").
+    const guidance = isPermission
+      ? `Tell the user that the path could not be read. ${RG_RECURSIVE_SEARCH_SHELL_HINT}.`
+      : `Run the search once more. If it fails again, tell the user that the search is failing. ${RG_RECURSIVE_SEARCH_SHELL_HINT}: it can also reach other files, which this tool is set to leave out.`
+    super(
+      `Search failed: ripgrep could not read the path it was given (${reason}, os error ${errno}), so nothing was searched. This is not a "no matches" result. ${guidance}`,
+    )
+    this.name = 'RipgrepTargetUnreadableError'
+  }
+}
+
 // 2.1.208 #14d: null byte in args/target/cwd would cause spawn to fail with
 // a cryptic error. Mirrors binary Y6c (RipgrepNullByteError).
 export class RipgrepNullByteError extends Error {
@@ -852,6 +913,72 @@ export async function ripGrep(
         logError(error)
       }
 
+      // CC 2.1.292 C1 dispatch order (byte-verified @208905300–208907900):
+      // XB (usage) → zB (target unreadable) → [stdinSourceFailed — OCC has no
+      // stdin lane] → uf (spawn resource) → JB (output too large) → rir
+      // (timeout) → resolve. All six reject arms are mutually exclusive on
+      // (exit code, signal, stderr shape), so the order is behaviorally safe;
+      // it is matched to the official for taxonomy parity.
+
+      // 2.1.208 #14b: exit code 2 + pattern-parse-error stderr = invalid regex/
+      // glob/type, not "no matches". Reject so the model sees a tool error
+      // instead of silently returning "No files found".
+      // Binary: n?.rejectOnInputError && a.code===2 && y.length===0 && FYh.test(c)
+      if (
+        options?.rejectOnInputError &&
+        error.code === 2 &&
+        lines.length === 0 &&
+        RG_PATTERN_ERROR_REGEX.test(stderr)
+      ) {
+        reject(new SearchPatternError(stderr))
+        return
+      }
+
+      // CC 2.1.292 C1 (binary `zB` throw site @208906460): exit code 2, every
+      // stdout line is a `--json` summary (OCC never passes `--json`, so this is
+      // vacuously true exactly when `lines` is empty — the unreadable-target
+      // case), and stderr is a SINGLE line of the form `rg: <target>: ... (os
+      // error N)`. That means ripgrep could not read its target and searched
+      // nothing — NOT "no matches". Reject with the errno-classified guidance.
+      //
+      // Exemption (binary `he = r!==oir && (windows?[2,3]:[2,20]).includes(N)`):
+      // bare ENOENT(2)/ENOTDIR(20) stay "no matches" (existence-check territory)
+      // UNLESS the target is the fd-3 pin. OCC has no fd pin yet (STAGED), so
+      // `target !== RG_FD3_PIN_TARGET` is always true and 2/20 are always exempt.
+      if (
+        options?.rejectOnInputError &&
+        error.code === 2 &&
+        lines.every(line => line.endsWith('"type":"summary"}')) &&
+        stderr.startsWith(`rg: ${target}: `) &&
+        !stderr.trimEnd().includes('\n')
+      ) {
+        const errno = Number(/\(os error (\d+)\)\s*$/.exec(stderr)?.[1])
+        const isExemptErrno =
+          target !== RG_FD3_PIN_TARGET &&
+          (getPlatform() === 'windows'
+            ? [RG_WIN_FILE_NOT_FOUND_ERRNO, RG_WIN_PATH_NOT_FOUND_ERRNO]
+            : [RG_ENOENT_ERRNO, RG_ENOTDIR_ERRNO]
+          ).includes(errno)
+        if (!Number.isNaN(errno) && !isExemptErrno) {
+          reject(new RipgrepTargetUnreadableError(errno))
+          return
+        }
+      }
+
+      // 2.1.277 (binary `Mu.from(T, rejectOnInputError, "emitted")`, gated on
+      // `z.length===0`): the OS could not start ripgrep (EAGAIN/ENOMEM/EMFILE/
+      // ENFILE on the spawn syscall) and no lines were produced, so `[]` would
+      // misreport the search as "no matches". Reject with a retryable, user-
+      // actionable error instead. Gated on rejectOnInputError, so Glob/@-file
+      // callers (which intentionally pass none) keep their `[]` semantics.
+      if (lines.length === 0) {
+        const spawnResourceError = RipgrepSpawnResourceError.from(error, options?.rejectOnInputError)
+        if (spawnResourceError) {
+          reject(spawnResourceError)
+          return
+        }
+      }
+
       // 2.1.275 (binary `o8`): the cap was hit before a single complete line
       // was read, so `[]` would misreport the search as "no matches". The
       // `startsWith('stderr')` discriminator matches Node/Bun's own execFile
@@ -876,34 +1003,6 @@ export async function ripGrep(
           ),
         )
         return
-      }
-
-      // 2.1.208 #14b: exit code 2 + pattern-parse-error stderr = invalid regex/
-      // glob/type, not "no matches". Reject so the model sees a tool error
-      // instead of silently returning "No files found".
-      // Binary: n?.rejectOnInputError && a.code===2 && y.length===0 && FYh.test(c)
-      if (
-        options?.rejectOnInputError &&
-        error.code === 2 &&
-        lines.length === 0 &&
-        RG_PATTERN_ERROR_REGEX.test(stderr)
-      ) {
-        reject(new SearchPatternError(stderr))
-        return
-      }
-
-      // 2.1.277 (binary `Mu.from(T, rejectOnInputError, "emitted")`, gated on
-      // `z.length===0`): the OS could not start ripgrep (EAGAIN/ENOMEM/EMFILE/
-      // ENFILE on the spawn syscall) and no lines were produced, so `[]` would
-      // misreport the search as "no matches". Reject with a retryable, user-
-      // actionable error instead. Gated on rejectOnInputError, so Glob/@-file
-      // callers (which intentionally pass none) keep their `[]` semantics.
-      if (lines.length === 0) {
-        const spawnResourceError = RipgrepSpawnResourceError.from(error, options?.rejectOnInputError)
-        if (spawnResourceError) {
-          reject(spawnResourceError)
-          return
-        }
       }
 
       resolve(lines)

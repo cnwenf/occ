@@ -185,6 +185,9 @@ export function sanitizeModelName(shortName: string): string {
   if (shortName.includes('sonnet-4-5')) return 'claude-sonnet-4-5'
   if (shortName.includes('sonnet-4')) return 'claude-sonnet-4'
   if (shortName.includes('sonnet-3-7')) return 'claude-sonnet-3-7'
+  // 2.1.293 (OCC-111): haiku-5-5 before haiku-4-5 (neither is a substring of
+  // the other; the -5-5-first order mirrors the official chain convention).
+  if (shortName.includes('haiku-5-5')) return 'claude-haiku-5-5'
   if (shortName.includes('haiku-4-5')) return 'claude-haiku-4-5'
   if (shortName.includes('haiku-3-5')) return 'claude-haiku-3-5'
   // Unknown models get a generic name

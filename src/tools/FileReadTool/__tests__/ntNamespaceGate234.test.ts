@@ -40,7 +40,14 @@ describe('FileReadTool NT-namespace rejection (CC 2.1.234)', () => {
     )
   })
 
-  test('still defers UNC paths to the permission flow (unchanged behavior)', async () => {
+  test('POSIX runtime: //server/share collapses to a local path in expandPath — no UNC surface here', async () => {
+    // CC 2.1.292 replaced the old UNC "defer to the permission flow"
+    // ({result:true}) with a pre-I/O hard reject. On a POSIX runtime
+    // '//server/share/file.txt' normalizes to '/server/share/file.txt' (a
+    // local filename — POSIX has no SMB UNC surface), so validateInput passes
+    // it; the raw '//host' form is still gated by checkReadPermissionForTool
+    // (see filesystem.unc.test.ts). On a Windows runtime the same input IS
+    // rejected by the 292 gate (see uncGate292.test.ts).
     const result = await FileReadTool.validateInput(
       { file_path: '//server/share/file.txt' } as never,
       contextWithNoRules(),

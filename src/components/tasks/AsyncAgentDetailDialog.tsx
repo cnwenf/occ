@@ -99,7 +99,7 @@ export function AsyncAgentDetailDialog(t0) {
   const displayPrompt = agent.prompt.length > 300 ? agent.prompt.substring(0, 297) + "\u2026" : agent.prompt;
   const tokenCount = agent.result?.totalTokens ?? agent.progress?.tokenCount;
   const toolUseCount = agent.result?.totalToolUseCount ?? agent.progress?.toolUseCount;
-  const t6 = agent.selectedAgent?.agentType ?? "agent";
+  const t6 = agent.selectedAgent?.agentType ?? agent.agentType;
   const t7 = agent.description || "Async agent";
   let t8;
   if ($[11] !== t6 || $[12] !== t7) {

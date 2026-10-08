@@ -251,10 +251,14 @@ describe('modelRowsValueEqual (official zr)', () => {
     expect(modelRowsValueEqual(row('sonnet'), row('sonnet[1m]'))).toBe(true)
   })
 
-  test('1M variant of a non-1M family is a DIFFERENT row (haiku)', () => {
-    // Parsed bases are equal, has1mContext differs, and haiku does not
-    // support 1M → official zr returns false.
-    expect(modelRowsValueEqual(row('haiku'), row('haiku[1m]'))).toBe(false)
+  test('1M variants of a 1M-capable family are the same row (haiku, 2.1.293)', () => {
+    // 2.1.293 (OCC-111): haiku FLIPPED into the 1M-capable set — the
+    // claude-haiku-5-5 catalog entry carries native_1m + supports_1m_beta,
+    // so the official zr merge arm (modelSupports1M(parsedA)) now fires for
+    // the haiku alias too. Pre-2.1.293 this asserted false (haiku-4-5 had no
+    // 1M); the non-1M-distinct case stays covered by the qwen3.8-max[1m]
+    // custom-value test below.
+    expect(modelRowsValueEqual(row('haiku'), row('haiku[1m]'))).toBe(true)
   })
 
   test('different families never match', () => {

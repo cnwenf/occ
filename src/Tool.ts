@@ -627,7 +627,10 @@ export type Tool<
     agents: AgentDefinition[]
     allowedAgentTypes?: string[]
   }): Promise<string>
-  userFacingName(input: Partial<z.infer<Input>> | undefined): string
+  userFacingName(
+    input: Partial<z.infer<Input>> | undefined,
+    options?: { activeAgents?: readonly AgentDefinition[] },
+  ): string
   userFacingNameBackgroundColor?(
     input: Partial<z.infer<Input>> | undefined,
   ): keyof Theme | undefined
@@ -796,6 +799,7 @@ export type Tool<
     options: {
       shouldAnimate: boolean
       tools: Tools
+      activeAgents?: readonly AgentDefinition[]
     },
   ): React.ReactNode | null
 }

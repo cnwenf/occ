@@ -10,6 +10,7 @@ import {
   CLAUDE_FABLE_5_1_CONFIG,
   CLAUDE_FABLE_5_CONFIG,
   CLAUDE_HAIKU_4_5_CONFIG,
+  CLAUDE_HAIKU_5_5_CONFIG,
   CLAUDE_OPUS_4_1_CONFIG,
   CLAUDE_OPUS_4_5_CONFIG,
   CLAUDE_OPUS_4_6_CONFIG,
@@ -44,6 +45,27 @@ import {
 //   REQUIRED on this type. (The binary's Zod schema parses the catalog field
 //   as `.nullish()` defensively for external data, but every actual tier
 //   definition — baked constants and pricing_tiers alike — includes it.)
+/**
+ * 2.1.293 (OCC-111): long-prompt pricing tier. The official v293 pricing
+ * table (`haiku_55` @204772202) introduces a `long_prompt` sub-object:
+ *   long_prompt:{above_prompt_tokens:1e5,input:0.5,output:2.5,
+ *     cache_write_5m:0.625,cache_write_1h:1,cache_read:0.05}
+ * i.e. requests whose prompt exceeds `abovePromptTokens` are billed at the
+ * premium rates. STAGED: OCC ports the DATA verbatim but has no consumption
+ * site yet — the extract carries no v293 call site that applies the tier in
+ * cost accounting (tokensToUSDCost), so wiring it would be invention
+ * (aligning-with-official-binary: "Never invent"). The field is optional;
+ * only COST_HAIKU_55 populates it.
+ */
+export type LongPromptCosts = {
+  abovePromptTokens: number
+  inputTokens: number
+  outputTokens: number
+  promptCacheWriteTokens: number
+  promptCacheWrite1hTokens: number
+  promptCacheReadTokens: number
+}
+
 export type ModelCosts = {
   inputTokens: number
   outputTokens: number
@@ -51,6 +73,8 @@ export type ModelCosts = {
   promptCacheWrite1hTokens: number
   promptCacheReadTokens: number
   webSearchRequests: number
+  /** 2.1.293: optional long-prompt premium tier (see LongPromptCosts). */
+  longPrompt?: LongPromptCosts
 }
 
 // Pricing tier for Sonnet 5 (post-promo standard price): $2 input / $10 output
@@ -206,6 +230,34 @@ export const COST_HAIKU_45 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Pricing for Haiku 5.5: $0.10 input / $0.50 output per Mtok
+// 2.1.293 (OCC-111, Haiku 5.5 launch): verbatim from the official 2.1.293
+// linux-x64 ELF pricing table `haiku_55` (@204772202):
+//   haiku_55:{input:0.1,output:0.5,cache_write_5m:0.125,cache_write_1h:0.2,
+//     cache_read:0.01,web_search:0.01,
+//     long_prompt:{above_prompt_tokens:1e5,input:0.5,output:2.5,
+//       cache_write_5m:0.625,cache_write_1h:1,cache_read:0.05}}
+// The baked catalog entry for `claude-haiku-5-5` carries `pricing:"haiku_55"`.
+// The long_prompt tier is NEW pricing shape (above 100K prompt tokens the
+// premium rates apply) — see LongPromptCosts; consumption is STAGED (no
+// official v293 accounting call site in the extract).
+export const COST_HAIKU_55 = {
+  inputTokens: 0.1,
+  outputTokens: 0.5,
+  promptCacheWriteTokens: 0.125,
+  promptCacheWrite1hTokens: 0.2,
+  promptCacheReadTokens: 0.01,
+  webSearchRequests: 0.01,
+  longPrompt: {
+    abovePromptTokens: 100_000,
+    inputTokens: 0.5,
+    outputTokens: 2.5,
+    promptCacheWriteTokens: 0.625,
+    promptCacheWrite1hTokens: 1,
+    promptCacheReadTokens: 0.05,
+  },
+} as const satisfies ModelCosts
+
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 /**
@@ -260,6 +312,12 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_HAIKU_35,
   [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:
     COST_HAIKU_45,
+  // Haiku 5.5 is `haiku_55` ($0.10/$0.50) — binary-verified: the baked 2.1.293
+  // model catalog entry for `claude-haiku-5-5` (@204773604 region, OCC-111)
+  // carries `pricing:"haiku_55"`. No fast-mode branch: the haiku-5-5
+  // capabilities list (byte-verified) has no fast_mode.
+  [firstPartyNameToCanonical(CLAUDE_HAIKU_5_5_CONFIG.firstParty)]:
+    COST_HAIKU_55,
   [firstPartyNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.firstParty)]:
     COST_TIER_3_15,
   [firstPartyNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.firstParty)]:

@@ -20,7 +20,6 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
-import { AUTO_MODE_OUTCOME_SCOPE_GUIDANCE } from './permissions/autoModeOutcomeGuidance.js'
 import type { AgentId } from 'src/types/ids.js'
 import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
@@ -364,15 +363,20 @@ export interface YoloRejectionMessageOptions {
  * stop suffix (`Tjs` — "first try a safer method ... get as much of the rest
  * of the task done ... then STOP") instead of the legacy suffix (`LOr`).
  *
- * CC 2.1.288 #15: official `bKn` appends the settings-rule hint ONLY when
- * `allowRuleToolName` is defined, naming the actual blocked tool — fixing
- * denials that pointed Claude at a Bash permission rule when the blocked tool
- * was not Bash. The hint sentence is verbatim from the v288 binary. This
- * replaces OCC's pre-existing feature-gated `Bash(prompt: <description …>)`
- * phrasing + "At the end of your session …" sentence, which matched NEITHER
- * official binary (0 hits in both v287 and v288 — OCC-original divergence,
- * removed per docs/gap-research-288/cluster-a-permission-sandbox.md §#15).
- * The official's additional `!WZo()||Xh()` session gates are not mapped —
+ * CC 2.1.293 #38: official `fnr` revert (`Qat` deleted, vver byte-verified) —
+ * the 2.1.281 outcome-scope guidance is GONE from the official binary
+ * ("This denial applies to the outcome" s292:2 → s293:0, along with the
+ * other three guidance sentences). Post-revert template (dd @216697200):
+ *   g = `${prefix}${reason}. If you have other tasks that don't depend on
+ *        this action, continue working on those. ` + stopSuffix
+ * i.e. the message ends at the stop suffix — no trailing space, no guidance —
+ * unless the rule hint below is appended.
+ *
+ * CC 2.1.288 #15: official `bKn`/`fnr` appends the settings-rule hint ONLY
+ * when `allowRuleToolName` is defined, naming the actual blocked tool —
+ * fixing denials that pointed Claude at a Bash permission rule when the
+ * blocked tool was not Bash. The hint sentence is verbatim from the binary.
+ * The official's additional `!fUn()||iy()` session gates are not mapped —
  * OCC's pre-288 frame had no equivalent gates (existing divergence kept).
  *
  * @param reason - The classifier's reason for denying the action
@@ -387,11 +391,7 @@ export function buildYoloRejectionMessage(
   const base =
     `${prefix}${reason}. ` +
     `If you have other tasks that don't depend on this action, continue working on those. ` +
-    `${DENIAL_WORKAROUND_GUIDANCE_BASE}${AUTO_MODE_STOP_SUFFIX} ` +
-    // CC 2.1.281 #109: official `hxn` @204144495 embeds the outcome-scope
-    // guidance (`lKe` @200520908) unconditionally between the stop suffix and
-    // the permission-rule hint — every auto-mode denial carries it.
-    `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE}`
+    `${DENIAL_WORKAROUND_GUIDANCE_BASE}${AUTO_MODE_STOP_SUFFIX}`
 
   // CC 2.1.288 #15 (official `bKn` @211301793): hint only when the blocked
   // tool can carry an allow rule; sentence verbatim from the v288 binary.
@@ -3713,6 +3713,56 @@ export function wrapInSystemReminder(content: string): string {
   return `<system-reminder>\n${content}\n</system-reminder>`
 }
 
+// CC 2.1.292 §C4 (cluster-c-h-carryover): hook-output system-reminder escaping.
+// Official escaper family (@207407893–207408400 / @212080879 / @215793338):
+//
+//   ont(e) = e.replaceAll(/<(?=\s*(?:\/\s*)?system-reminder\b)/gi,"&lt;")
+//   AT(e)  = ont(e).replace(/<(?=\s*(?:\/\s*)?$)/,"&lt;")
+//   Ol(e)  = `<system-reminder>\n${e}\n</system-reminder>`   (≡ wrapInSystemReminder)
+//   Bbe(e) = Ol(AT(e))
+//
+// External-content hook renderers wrap with Bbe (escape + wrap); internal
+// renderers (token_usage, budget_usd, …) keep the bare Ol (wrapInSystemReminder).
+
+const SYSTEM_REMINDER_OPEN = '<system-reminder>'
+const SYSTEM_REMINDER_CLOSE = '</system-reminder>'
+
+/**
+ * `ont`: escape any `<` that could open or close a `system-reminder` tag
+ * (whitespace-tolerant, case-insensitive, word-boundary guarded). Only the `<`
+ * is replaced — the rest of the tag text is left intact.
+ */
+function escapeSystemReminderTagOpeners(content: string): string {
+  return content.replaceAll(/<(?=\s*(?:\/\s*)?system-reminder\b)/gi, '&lt;')
+}
+
+/**
+ * `AT`: the official two-stage escaper for external content that will live
+ * inside a `<system-reminder>` wrapper.
+ *
+ * Stage 1 (`ont`): neutralize any `<` that could open/close a system-reminder
+ * tag. Stage 2: neutralize a trailing bare `<` (followed only by whitespace/`/`
+ * at end-of-string) — it could fuse with the wrapper's `\n</system-reminder>`
+ * into a forged close tag.
+ */
+export function escapeSystemReminderContent(content: string): string {
+  return escapeSystemReminderTagOpeners(content).replace(
+    /<(?=\s*(?:\/\s*)?$)/,
+    '&lt;',
+  )
+}
+
+/**
+ * `Bbe` = `Ol(AT(e))`: the escaped system-reminder wrapper. Use for
+ * external/untrusted hook output (blocking errors, additional context, stopped
+ * continuation, hook success) so injected `</system-reminder>` sequences cannot
+ * break out of the wrapper.
+ */
+export function wrapInSystemReminderEscaped(content: string): string {
+  return `${SYSTEM_REMINDER_OPEN}\n${escapeSystemReminderContent(content)}\n${SYSTEM_REMINDER_CLOSE}`
+}
+
+
 export function wrapMessagesInSystemReminder(
   messages: UserMessage[],
 ): UserMessage[] {
@@ -4145,7 +4195,9 @@ Read the team config to discover your teammates' names. Check the task list peri
   }
 
   // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- teammate_mailbox/team_context/skill_discovery/bagel_console handled above
-  // biome-ignore lint/nursery/useExhaustiveSwitchCases: teammate_mailbox/team_context/max_turns_reached/skill_discovery/bagel_console handled above, can't add case for dead code elimination
+  // (the former biome-ignore useExhaustiveSwitchCases suppression was dropped:
+  //  the CC 2.1.292 C10 `withheld_memory` case completed the union, so the
+  //  switch is exhaustive and the suppression became a lint warning itself.)
   switch (attachment.type) {
     case 'directory': {
       return wrapMessagesInSystemReminder([
@@ -4363,6 +4415,13 @@ Read the team config to discover your teammates' names. Check the task list peri
           isMeta: true,
         }),
       ])
+    }
+    case 'withheld_memory': {
+      // CC 2.1.292 (C10 carryover): official `cer.withheld_memory: () => []`
+      // (@215809500 region) — the withheld instruction-file notice is a
+      // UI/transcript-only surface; the model sees nothing (the files are
+      // withheld precisely because the model must not read them).
+      return []
     }
     case 'relevant_memories': {
       return wrapMessagesInSystemReminder(
@@ -4703,9 +4762,16 @@ You have exited auto mode. The user may now want to interact more directly. You 
 
       // Handle systemMessage
       if (response.systemMessage) {
+        const systemMessage = response.systemMessage
         messages.push(
           createUserMessage({
-            content: response.systemMessage as string | ContentBlockParam[],
+            // CC 2.1.292 §C4: official applies AT (escapeSystemReminderContent)
+            // to string systemMessage; the wrapMessagesInSystemReminder
+            // finalizer below (≡ official `Na`) supplies the Ol wrapper.
+            content:
+              typeof systemMessage === 'string'
+                ? escapeSystemReminderContent(systemMessage)
+                : (systemMessage as ContentBlockParam[]),
             isMeta: true,
           }),
         )
@@ -4717,9 +4783,13 @@ You have exited auto mode. The user may now want to interact more directly. You 
         'additionalContext' in response.hookSpecificOutput &&
         response.hookSpecificOutput.additionalContext
       ) {
+        const additionalContext = response.hookSpecificOutput.additionalContext
         messages.push(
           createUserMessage({
-            content: response.hookSpecificOutput.additionalContext as string | ContentBlockParam[],
+            content:
+              typeof additionalContext === 'string'
+                ? escapeSystemReminderContent(additionalContext)
+                : (additionalContext as ContentBlockParam[]),
             isMeta: true,
           }),
         )
@@ -4764,7 +4834,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'hook_blocking_error':
       return [
         createUserMessage({
-          content: wrapInSystemReminder(
+          content: wrapInSystemReminderEscaped(
             `${attachment.hookName} hook blocking error from command: "${attachment.blockingError.command}": ${attachment.blockingError.blockingError}`,
           ),
           isMeta: true,
@@ -4782,7 +4852,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       }
       return [
         createUserMessage({
-          content: wrapInSystemReminder(
+          content: wrapInSystemReminderEscaped(
             `${attachment.hookName} hook success: ${attachment.content}`,
           ),
           isMeta: true,
@@ -4794,7 +4864,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
       }
       return [
         createUserMessage({
-          content: wrapInSystemReminder(
+          content: wrapInSystemReminderEscaped(
             `${attachment.hookName} hook additional context: ${attachment.content.join('\n')}`,
           ),
           isMeta: true,
@@ -4804,7 +4874,7 @@ You have exited auto mode. The user may now want to interact more directly. You 
     case 'hook_stopped_continuation':
       return [
         createUserMessage({
-          content: wrapInSystemReminder(
+          content: wrapInSystemReminderEscaped(
             `${attachment.hookName} hook stopped continuation: ${attachment.message}`,
           ),
           isMeta: true,

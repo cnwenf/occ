@@ -19,6 +19,7 @@ import { asSystemPrompt } from '../../utils/systemPromptType.js'
 import { getWebFetchCacheTtlMs } from './cacheTtl.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { makeSecondaryModelPrompt } from './prompt.js'
+import { sliceHead } from './textSlice.js'
 
 // Custom error classes for domain blocking
 class DomainBlockedError extends Error {
@@ -652,11 +653,15 @@ export async function applyPromptToMarkdown(
   signal: AbortSignal,
   isNonInteractiveSession: boolean,
   isPreapprovedDomain: boolean,
+  contentLead = '',
 ): Promise<string> {
-  // Truncate content to avoid "Prompt is too long" errors from the secondary model
+  // Truncate content to avoid "Prompt is too long" errors from the secondary
+  // model. Item #018a — official uses the surrogate-safe head slicer
+  // `zJn(e)=ne(e,$Tn)` (@213370702), NOT a plain `.slice(0, 100000)` which
+  // can leave a lone high surrogate dangling at the cut point.
   const truncatedContent =
     markdownContent.length > MAX_MARKDOWN_LENGTH
-      ? markdownContent.slice(0, MAX_MARKDOWN_LENGTH) +
+      ? sliceHead(markdownContent, MAX_MARKDOWN_LENGTH) +
         '\n\n[Content truncated due to length...]'
       : markdownContent
 
@@ -667,7 +672,10 @@ export async function applyPromptToMarkdown(
   )
   const assistantMessage = await queryHaiku({
     systemPrompt: asSystemPrompt([]),
-    userPrompt: modelPrompt,
+    // Official Jht builds `userPrompt: `${contentLead}${modelPrompt}`` — the
+    // caller-supplied lead (the "one part of a longer page" preamble when
+    // offset > 0) precedes the standard layout. Item #018a.
+    userPrompt: `${contentLead}${modelPrompt}`,
     signal,
     options: {
       querySource: 'web_fetch_apply',

@@ -69,7 +69,6 @@ export function filterAllowedSdkBetas(
   }
 
   if (isClaudeAISubscriber()) {
-    // biome-ignore lint/suspicious/noConsole: intentional warning
     console.warn(
       'Warning: Custom betas are only available for API key users. Ignoring provided betas.',
     )
@@ -78,7 +77,6 @@ export function filterAllowedSdkBetas(
 
   const { allowed, disallowed } = partitionBetasByAllowlist(sdkBetas)
   for (const beta of disallowed) {
-    // biome-ignore lint/suspicious/noConsole: intentional warning
     console.warn(
       `Warning: Beta header '${beta}' is not allowed. Only the following betas are supported: ${ALLOWED_SDK_BETAS.join(', ')}`,
     )
@@ -135,6 +133,11 @@ export function modelSupportsContextManagement(model: string): boolean {
     canonical.includes('claude-opus-4') ||
     canonical.includes('claude-sonnet-4') ||
     canonical.includes('claude-haiku-4') ||
+    // 2.1.293 (OCC-111): the v293 catalog declares "context_management" in
+    // the `capabilities` array of `claude-haiku-5-5` (@204773604). The
+    // `claude-haiku-5` prefix keeps the newest generation ahead of the
+    // broader arms, matching the sonnet-5 precedent below.
+    canonical.includes('claude-haiku-5') ||
     // OCC-37 (1g): opus-5 declares "context_management" in its binary 2.1.220
     // `capabilities` array (recovered via `dd` around offset 177163000),
     // mirroring opus-4-8. Without this branch opus-5 would be denied

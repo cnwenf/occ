@@ -30,7 +30,13 @@ import type { outputSchema, Progress, RemoteLaunchedOutput } from './AgentTool.j
 import { inputSchema } from './AgentTool.js';
 import { getAgentColor } from './agentColorManager.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
+import type { AgentDefinition } from './loadAgentsDir.js';
 const MAX_PROGRESS_MESSAGES_TO_SHOW = 3;
+
+// Official 2.1.293 #14 (binary constant `eje="worker"` @220326400). A CUSTOM
+// agent literally named `worker` must keep its name; only a built-in (or
+// unregistered) `worker` collapses to the generic "Agent" label.
+const WORKER_AGENT_TYPE = 'worker';
 
 /**
  * Guard: checks if progress data has a `message` field (agent_progress or
@@ -659,10 +665,12 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
 }>, options: {
   shouldAnimate: boolean;
   tools: Tools;
+  activeAgents?: readonly AgentDefinition[];
 }): React.ReactNode | null {
   const {
     shouldAnimate,
-    tools
+    tools,
+    activeAgents
   } = options;
 
   // Calculate stats for each agent
@@ -674,7 +682,7 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
     result
   }) => {
     const stats = calculateAgentStats(progressMessages);
-    const lastToolInfo = extractLastToolInfo(progressMessages, tools);
+    const lastToolInfo = extractLastToolInfo(progressMessages, tools, activeAgents);
     const parsedInput = inputSchema().safeParse(param.input);
 
     // teammate_spawned is not part of the exported Output type (cast through unknown
@@ -690,12 +698,14 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
     if (isTeammateSpawn && parsedInput.success && parsedInput.data.name) {
       agentType = `@${parsedInput.data.name}`;
       const subagentType = parsedInput.data.subagent_type;
-      description = isCustomSubagentType(subagentType) ? subagentType : undefined;
+      description = isCustomSubagentType(subagentType, activeAgents) ? subagentType : undefined;
       taskDescription = parsedInput.data.description;
       // Use the custom agent definition's color on the type, not the name
-      descriptionColor = isCustomSubagentType(subagentType) ? getAgentColor(subagentType) as keyof Theme | undefined : undefined;
+      descriptionColor = isCustomSubagentType(subagentType, activeAgents) ? getAgentColor(subagentType) as keyof Theme | undefined : undefined;
     } else {
-      agentType = parsedInput.success ? userFacingName(parsedInput.data) : 'Agent';
+      agentType = parsedInput.success ? userFacingName(parsedInput.data, {
+        activeAgents
+      }) : 'Agent';
       description = parsedInput.success ? parsedInput.data.description : undefined;
       color = parsedInput.success ? userFacingNameBackgroundColor(parsedInput.data) : undefined;
       taskDescription = undefined;
@@ -757,21 +767,44 @@ export function renderGroupedAgentToolUse(toolUses: Array<{
       {agentStats.map((stat, index) => <AgentProgressLine key={stat.id} agentType={stat.agentType} description={stat.description} descriptionColor={stat.descriptionColor} taskDescription={stat.taskDescription} toolUseCount={stat.toolUseCount} tokens={stat.tokens} color={stat.color} isLast={index === agentStats.length - 1} isResolved={stat.isResolved} isError={stat.isError} isAsync={stat.isAsync} shouldAnimate={shouldAnimate} lastToolInfo={stat.lastToolInfo} hideType={allSameType} name={stat.name} />)}
     </Box>;
 }
+/**
+ * Resolve the display name for a subagent type, matching official 2.1.293 #14
+ * (`dOr` @220331500). Returns `undefined` when the type should collapse to the
+ * generic "Agent" label:
+ *   - empty / general-purpose → undefined
+ *   - a built-in (or unregistered) `worker` → undefined
+ *   - a CUSTOM `worker` (any non-built-in source) → "worker"
+ *   - any other custom type → itself
+ * `activeAgents` is the session's loaded agent definitions; needed to tell a
+ * custom `worker` apart from a built-in one.
+ */
+export function resolveAgentDisplayName(
+  subagentType: string | undefined,
+  activeAgents?: readonly AgentDefinition[],
+): string | undefined {
+  if (!subagentType || subagentType === GENERAL_PURPOSE_AGENT.agentType) {
+    return undefined;
+  }
+  if (subagentType !== WORKER_AGENT_TYPE) {
+    return subagentType;
+  }
+  const found = activeAgents?.find(a => a.agentType === WORKER_AGENT_TYPE);
+  return found !== undefined && found.source !== 'built-in' ? subagentType : undefined;
+}
 export function userFacingName(input: Partial<{
   description: string;
   prompt: string;
   subagent_type: string;
   name: string;
   team_name: string;
-}> | undefined): string {
-  if (input?.subagent_type && input.subagent_type !== GENERAL_PURPOSE_AGENT.agentType) {
-    // Display "worker" agents as "Agent" for cleaner UI
-    if (input.subagent_type === 'worker') {
-      return 'Agent';
-    }
-    return input.subagent_type;
-  }
-  return 'Agent';
+}> | undefined, {
+  activeAgents
+}: {
+  activeAgents?: readonly AgentDefinition[];
+} = {}): string {
+  // Official `G2n` @220331500: `return dOr(n?.subagent_type,e)??"Agent"`.
+  // OCC has no `RV` fetch-collapse path, so only the dOr branch is ported.
+  return resolveAgentDisplayName(input?.subagent_type, activeAgents) ?? 'Agent';
 }
 export function userFacingNameBackgroundColor(input: Partial<{
   description: string;
@@ -785,7 +818,7 @@ export function userFacingNameBackgroundColor(input: Partial<{
   // Get the color for this agent
   return getAgentColor(input.subagent_type) as keyof Theme | undefined;
 }
-export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tools: Tools): string | null {
+export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tools: Tools, activeAgents?: readonly AgentDefinition[]): string | null {
   // Build tool_use lookup from all progress messages (needed for reverse iteration)
   const toolUseByID = new Map<string, ToolUseBlockParam>();
   for (const pm of progressMessages) {
@@ -849,7 +882,9 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
         const parsedInput = tool.inputSchema.safeParse(input);
 
         // Get user-facing tool name
-        const userFacingToolName = tool.userFacingName(parsedInput.success ? parsedInput.data : undefined);
+        const userFacingToolName = tool.userFacingName(parsedInput.success ? parsedInput.data : undefined, {
+          activeAgents
+        });
 
         // Try to get summary from the tool itself
         if (tool.getToolUseSummary) {
@@ -866,6 +901,6 @@ export function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[
   }
   return null;
 }
-function isCustomSubagentType(subagentType: string | undefined): subagentType is string {
-  return !!subagentType && subagentType !== GENERAL_PURPOSE_AGENT.agentType && subagentType !== 'worker';
+export function isCustomSubagentType(subagentType: string | undefined, activeAgents?: readonly AgentDefinition[]): subagentType is string {
+  return resolveAgentDisplayName(subagentType, activeAgents) !== undefined;
 }

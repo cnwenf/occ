@@ -31,6 +31,11 @@ export type LeanEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 const LEAN_PROMPT_MODELS = [
   'claude-opus-4-8',
   'claude-sonnet-5',
+  // 2.1.293 (OCC-111): the haiku-5-5 catalog entry (@204773604, byte-
+  // verified) lists "lean_prompt" in its `capabilities`. Checked BEFORE the
+  // `haiku` full-prompt arm in shouldUseFullSystemPrompt, so haiku-5-5 gets
+  // the lean prompt while haiku-4-5/3-5 keep the full prompt.
+  'claude-haiku-5-5',
   'claude-fable-5',
   'claude-mythos-5',
 ]

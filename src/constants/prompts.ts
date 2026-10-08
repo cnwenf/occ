@@ -57,6 +57,7 @@ import {
 } from './systemPromptSections.js'
 // 2.1.257 (Fable 5.1 launch): the fable_identity dynamic section.
 import { getFableIdentitySection } from './fableIdentity.js'
+import { getEarlyStoppingGuidanceSection } from './earlyStoppingGuidance.js'
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -132,19 +133,22 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
 // @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
-// 2.1.284 (OCC-101, Sonnet 5.5 launch): the values below are the v284
-// latest_per_family table byte-verified from the official 2.1.284 linux-x64
+// 2.1.293 (OCC-111, Haiku 5.5 launch): the values below are the v293
+// latest_per_family table byte-verified from the official 2.1.293 linux-x64
 // ELF: `{fable:"claude-fable-5-1",opus:"claude-opus-5-5",
-// sonnet:"claude-sonnet-5-5",haiku:"claude-haiku-4-5"}`. The official (`J8n`)
+// sonnet:"claude-sonnet-5-5",haiku:"claude-haiku-5-5"}`. The official (`J8n`)
 // renders `Model IDs — ${display_name}: '${id}'` per family from this table
-// (haiku keeps the dated first-party id); the prose lead-in ("The most recent
-// Claude models are the Claude 5 family and Haiku 4.5.") is UNCHANGED in v284.
-// Drift fixed here: opus was stale at claude-opus-5 since the 2.1.280 launch.
+// (haiku now the undated 5.5 canonical id; the v284 table still pinned the
+// dated haiku-4-5 id). The prose lead-in ("The most recent Claude models are
+// the Claude 5 family and Haiku 4.5.") — see the deviation note at the
+// env-info sentence below: v293's haiku default IS the 5 family generation,
+// so the lead-in is bumped to Haiku 5.5 (reasoned inference; the exact v293
+// lead-in prose was not byte-extracted).
 const CLAUDE_LATEST_MODEL_IDS = {
   fable: 'claude-fable-5-1',
   opus: 'claude-opus-5-5',
   sonnet: 'claude-sonnet-5-5',
-  haiku: 'claude-haiku-4-5-20251001',
+  haiku: 'claude-haiku-5-5',
 }
 
 function getHooksSection(): string {
@@ -490,6 +494,14 @@ ${CYBER_RISK_INSTRUCTION}`,
             getThinkingGuidanceSection(model),
           ),
         ]),
+    // 2.1.293 (OCC-111, Haiku 5.5 launch): heron_brook — early-stopping
+    // guidance for haiku-5-5 (official `ap("heron_brook",()=>BLo()??ULo(h,s))`;
+    // the BLo client-data override arm is N/A in OCC). NOT lean-gated: the
+    // official ULo gate is capability + GrowthBook flag only, so haiku-5-5
+    // (a lean_prompt model) still receives it.
+    systemPromptSection('heron_brook', () =>
+      getEarlyStoppingGuidanceSection(model),
+    ),
     // When delta enabled, instructions are announced via persisted
     // mcp_instructions_delta attachments (attachments.ts) instead of this
     // per-turn recompute, which busts the prompt cache on late MCP connect.
@@ -690,7 +702,12 @@ export async function computeSimpleEnvInfo(
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `The most recent Claude models are the Claude 5 family and Haiku 4.5. Model IDs — Fable 5.1: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 5.5: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5.5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 4.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
+      // 2.1.293 (OCC-111): the Model IDs table now renders the v293
+      // latest_per_family haiku entry ('claude-haiku-5-5', display_name
+      // "Haiku 5.5"). The lead-in prose is bumped to Haiku 5.5 to match —
+      // REASONED INFERENCE (the exact v293 lead-in string was not
+      // byte-extracted; v284's lead-in named the then-latest haiku).
+      : `The most recent Claude models are the Claude 5 family and Haiku 5.5. Model IDs — Fable 5.1: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 5.5: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5.5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 5.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
@@ -747,6 +764,11 @@ function getKnowledgeCutoff(modelId: string): string | null {
     return 'May 2025'
   } else if (canonical.includes('claude-opus-4-5')) {
     return 'May 2025'
+  } else if (canonical.includes('claude-haiku-5-5')) {
+    // 2.1.293 (OCC-111): v293 catalog `knowledge_cutoff:"June 2026"` for
+    // claude-haiku-5-5 (@204773604, byte-verified). MUST precede the
+    // claude-haiku-4 arm below.
+    return 'June 2026'
   } else if (canonical.includes('claude-haiku-4')) {
     return 'February 2025'
   } else if (

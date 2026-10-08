@@ -6,9 +6,12 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
-# Bun requires unzip + ca-certificates; git for any MCP/plugin git scenarios.
+# Bun requires unzip + ca-certificates; git for any MCP/plugin git scenarios;
+# ripgrep because OCC's markdown-config enumeration (loadMarkdownFiles — agents,
+# CLAUDE.md discovery) spawns `rg --files` by default and the image ships no
+# vendored/bundled rg, so without it project agent dirs silently load empty.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl unzip git tmux \
+        ca-certificates curl unzip git tmux ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Bun >= 1.3.11 (OCC requirement). Install to /opt/bun (world-executable)

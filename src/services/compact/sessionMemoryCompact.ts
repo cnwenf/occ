@@ -39,7 +39,10 @@ import {
   createPlanAttachmentIfNeeded,
 } from './compact.js'
 import { estimateMessageTokens } from './microCompact.js'
-import { getCompactUserSummaryMessage } from './prompt.js'
+import {
+  applyPreservedMessagesNote,
+  getCompactUserSummaryMessage,
+} from './prompt.js'
 
 /**
  * Configuration for session memory compaction thresholds
@@ -465,7 +468,6 @@ function createCompactionResultFromSessionMemory(
     truncatedContent,
     true,
     transcriptPath,
-    true,
   )
 
   if (wasTruncated) {
@@ -473,13 +475,20 @@ function createCompactionResultFromSessionMemory(
     summaryContent += `\n\nSome session memory sections were truncated for length. The full session memory can be viewed at: ${memoryPath}`
   }
 
-  const summaryMessages = [
-    createUserMessage({
-      content: summaryContent,
-      isCompactSummary: true,
-      isVisibleInTranscriptOnly: true,
-    }),
-  ]
+  // Official 2.1.293 entry #4 gate (vver @214898708):
+  //   vt=Ne.length>0?n.summaryMessages.map(gJt):n.summaryMessages
+  // The post-summary note is attached ONLY when preserved tail messages
+  // follow the summary on this session-memory commit path.
+  const summaryMessages = applyPreservedMessagesNote(
+    [
+      createUserMessage({
+        content: summaryContent,
+        isCompactSummary: true,
+        isVisibleInTranscriptOnly: true,
+      }),
+    ],
+    messagesToKeep,
+  )
 
   const planAttachment = createPlanAttachmentIfNeeded(agentId)
   const attachments = planAttachment ? [planAttachment] : []

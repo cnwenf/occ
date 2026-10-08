@@ -240,6 +240,11 @@ export function agentToolResultSchema() {
     // results verbatim without re-validation). Used to gate the sync
     // result trailer — one-shot built-ins skip the SendMessage hint.
     agentType: z.string().optional(),
+    // Official 2.1.293 #9: whether SendMessage is in the session tool table,
+    // captured at launch/completion so the result trailer only offers
+    // SendMessage continuation when it's actually available. Optional —
+    // absent (legacy/resume) reads back as default-true.
+    canContinueAgent: z.boolean().optional(),
     content: z.array(z.object({ type: z.literal('text'), text: z.string() })),
     totalToolUseCount: z.number(),
     totalDurationMs: z.number(),

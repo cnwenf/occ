@@ -18,6 +18,11 @@ import { UserImageMessage } from './UserImageMessage.js';
 import { toInkColor } from '../../utils/ink.js';
 import { jsonParse } from '../../utils/slowOperations.js';
 import { plural } from '../../utils/stringUtils.js';
+import {
+  withheldLine,
+  withheldMore,
+  withheldShown,
+} from '../../utils/withheldMemory.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js';
 import { tryRenderPlanApprovalMessage, formatTeammateMessageContent } from './PlanApprovalMessage.js';
@@ -185,6 +190,27 @@ export function AttachmentMessage({
       return <Line>
           Loaded <Text bold>{attachment.displayPath}</Text>
         </Line>;
+    case 'withheld_memory': {
+      // CC 2.1.292 (C10 carryover): UI/transcript-only surface (the model
+      // renderer returns []). Official rows are the `F1t` triplet —
+      // `Instruction file not loaded (<reason>): path:<path>` — capped at
+      // SHOWN_MOST (20) by `Zgt` with the `U1t` overflow row beneath.
+      const { shown, more } = withheldShown(attachment.entries);
+      return <Box flexDirection="column">
+          {shown.map(entry => {
+            const line = withheldLine(entry.why, entry.displayPath);
+            return <Line key={entry.path}>
+                <Text dimColor>{line.lead} </Text>
+                <Text bold>
+                  {line.mark}{line.path}
+                </Text>
+              </Line>;
+          })}
+          {more > 0 && <Line>
+              <Text dimColor>{withheldMore({ more })}</Text>
+            </Line>}
+        </Box>;
+    }
     case 'relevant_memories':
       // Usually absorbed into a CollapsedReadSearchGroup (collapseReadSearch.ts)
       // so this only renders when the preceding tool was non-collapsible (Edit,

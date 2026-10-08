@@ -48,8 +48,16 @@ import typescriptClaudeApiToolUse from './claude-api/typescript/claude-api/tool-
 //   v284 `oc`: OPUS_ID=claude-opus-5-5, PREV_OPUS_ID=claude-opus-5,
 //     SONNET_ID=claude-sonnet-5-5, PREV_SONNET_ID=claude-sonnet-5,
 //     PREV_SONNET_NAME=Claude Sonnet 5 (no NEXT vars)
-// The table below is byte-identical to the v284 `oc` block (same key order).
-// Fable/Mythos/Haiku vars were already at their v284 values in v283 and are
+// The table below is byte-identical to the v284 `oc` block (same key order),
+// EXCEPT the haiku vars migrated for 2.1.293.
+//
+// 2.1.293 Haiku 5.5 launch (OCC-111): HAIKU_ID/HAIKU_NAME migrated to the
+// catalog-latest haiku (claude-haiku-5-5 / "Claude Haiku 5.5", byte-verified
+// from the v293 catalog @204773604). PREV_HAIKU_ID/PREV_HAIKU_NAME are a
+// REASONED INFERENCE from the sonnet55 PREV_* migration pattern (the v293
+// skill-var block itself was not byte-extracted); substitution is generic
+// `{{KEY}}` so unused keys are inert.
+// Fable/Mythos vars were already at their v284 values in v283 and are
 // now registered here too (OCC previously omitted them; substitution is
 // generic `{{KEY}}` so unused keys are inert). The two files the header
 // comment names for manual updates (claude-api/SKILL.md pricing table,
@@ -70,10 +78,12 @@ export const SKILL_MODEL_VARS = {
   PREV_OPUS_NAME: 'Claude Opus 5',
   SONNET_ID: 'claude-sonnet-5-5',
   SONNET_NAME: 'Claude Sonnet 5.5',
-  HAIKU_ID: 'claude-haiku-4-5',
-  HAIKU_NAME: 'Claude Haiku 4.5',
+  HAIKU_ID: 'claude-haiku-5-5',
+  HAIKU_NAME: 'Claude Haiku 5.5',
   PREV_SONNET_ID: 'claude-sonnet-5',
   PREV_SONNET_NAME: 'Claude Sonnet 5',
+  PREV_HAIKU_ID: 'claude-haiku-4-5',
+  PREV_HAIKU_NAME: 'Claude Haiku 4.5',
 } satisfies Record<string, string>
 
 export const SKILL_PROMPT: string = skillPrompt

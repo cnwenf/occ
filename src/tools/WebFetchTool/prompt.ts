@@ -13,6 +13,7 @@ export const DESCRIPTION = `
 Usage notes:
   - IMPORTANT: If an MCP-provided web fetch tool is available, prefer using that tool instead of this one, as it may have fewer restrictions.
   - The URL must be a fully-formed valid URL
+  - localhost and other hostnames without a dot are not supported; for a local server, use curl via Bash
   - HTTP URLs will be automatically upgraded to HTTPS
   - The prompt should describe what information you want to extract from the page
   - This tool is read-only and does not modify any files

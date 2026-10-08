@@ -47,6 +47,7 @@ import {
   trackGitOperations,
 } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
+import { type BashReadTriggerContext, recordBashReadFiles } from './bashReadCommands.js';
 import { interpretCommandResult } from './commandSemantics.js';
 import { clampTimeoutMs, getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
 import { checkReadOnlyConstraints } from './readOnlyValidation.js';
@@ -468,125 +469,13 @@ function maybeGhRateLimitHint(command: string, output: string): string {
   return GH_RATE_LIMIT_HINT
 }
 
-// J4 (read-before-edit): when the model reads a file via grep/head/tail/cat
-// in Bash, the file was never marked as "read" in readFileState — so a
-// subsequent Edit on the same path errored "File has not been read yet."
-// The official binary marks these via a markFilesAsRead helper; here we parse
-// the command argv for file paths and, for each path that exists as a regular
-// file, record { content, timestamp } mirroring applySedEdit (~line 404) and
-// FileReadTool so the Edit tool's read-state check passes.
-const BASH_READ_FILE_COMMANDS = new Set(['grep', 'head', 'tail', 'cat'])
-
-/**
- * Best-effort quote-aware tokenizer for a single sub-command string. Splits
- * on whitespace but honors single/double quotes and backslash escapes. Used
- * only to extract candidate file paths from grep/head/tail/cat argv — never
- * for execution, so a naive tokenizer is safe; the on-disk existence check
- * filters out patterns and option values.
- */
-function tokenizeArgs(command: string): string[] {
-  const tokens: string[] = []
-  let i = 0
-  const len = command.length
-  while (i < len) {
-    while (i < len && /\s/.test(command[i])) i++
-    if (i >= len) break
-    let token = ''
-    while (i < len && !/\s/.test(command[i])) {
-      const ch = command[i]
-      if (ch === '"' || ch === "'") {
-        const quote = ch
-        i++
-        while (i < len && command[i] !== quote) {
-          token += command[i]
-          i++
-        }
-        if (i < len) i++ // skip closing quote
-      } else if (ch === '\\') {
-        i++
-        if (i < len) {
-          token += command[i]
-          i++
-        }
-      } else {
-        token += ch
-        i++
-      }
-    }
-    if (token !== '') tokens.push(token)
-  }
-  return tokens
-}
-
-/**
- * Returns the first token that isn't an env-var assignment (FOO=bar),
- * i.e. the actual command name. Handles leading `VAR=val` prefixes.
- */
-function getCommandName(tokens: string[]): string | undefined {
-  for (const t of tokens) {
-    if (!t) continue
-    if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) continue
-    return t
-  }
-  return undefined
-}
-
-/**
- * For each grep/head/tail/cat sub-command in `command`, mark every file-path
- * argument that resolves to an existing regular file in `readFileState`. This
- * unblocks a subsequent Edit/Write on the same path. Best-effort and never
- * throws — a parse or stat failure simply skips that token.
- */
-async function markReadCommandFilesAsRead(
-  command: string,
-  readFileState: ToolUseContext['readFileState'],
-): Promise<void> {
-  // Cheap pre-filter: avoid the heavy splitCommandWithOperators + tokenize
-  // for commands that obviously don't read files.
-  if (!command || !/\b(?:grep|head|tail|cat)\b/.test(command)) return
-  let subCommands: string[]
-  try {
-    subCommands = splitCommandWithOperators(command)
-  } catch {
-    subCommands = [command]
-  }
-  const fs = getFsImplementation()
-  for (const sub of subCommands) {
-    const tokens = tokenizeArgs(sub)
-    const cmdName = getCommandName(tokens)
-    if (!cmdName || !BASH_READ_FILE_COMMANDS.has(cmdName)) continue
-    // grep's first non-flag arg is the PATTERN, not a file. Skip it; the
-    // existence check filters it anyway, but this avoids stat-ing a path
-    // that coincidentally matches the pattern string.
-    let seenNonFlag = 0
-    for (let i = 1; i < tokens.length; i++) {
-      const t = tokens[i]
-      if (!t || t.startsWith('-')) continue
-      seenNonFlag++
-      if (cmdName === 'grep' && seenNonFlag === 1) continue
-      let absoluteFilePath: string
-      try {
-        absoluteFilePath = expandPath(t)
-      } catch {
-        continue // invalid path (e.g. null bytes) — skip
-      }
-      try {
-        const st = await fs.stat(absoluteFilePath)
-        if (!st.isFile()) continue
-        const encoding = detectFileEncoding(absoluteFilePath)
-        const content = await fs.readFile(absoluteFilePath, { encoding })
-        readFileState.set(absoluteFilePath, {
-          content,
-          timestamp: Math.floor(st.mtimeMs),
-          offset: undefined,
-          limit: undefined,
-        })
-      } catch {
-        // not a real file (pattern, option value) or unreadable — skip
-      }
-    }
-  }
-}
+// CC 2.1.293 changelog #29 — the read-before-edit recorder for single-file
+// cat/head/tail/sed -n/grep commands now lives in ./bashReadCommands.ts
+// (recordBashReadFiles ≡ official _Rn). It replaces the old loose `J4`
+// extractor here (BASH_READ_FILE_COMMANDS + tokenizeArgs + getCommandName +
+// markReadCommandFilesAsRead), which recognized too many forms, had no
+// exit-code/size/abort gates, no line slicing, and — the 292 bug — never fired
+// the nested-memory trigger. See bashReadCommands.ts for the byte-verified port.
 
 // Official 2.1.261 default for the spec window when `bashOutputMaxChars` is
 // unset (the OBt() fallback MBt = 30000). Load-time value only — buildTool's
@@ -1036,9 +925,34 @@ export const BashTool = buildTool({
       persistedOutputPath,
       persistedOutputSize
     };
-    // J4: mark files read by grep/head/tail/cat so a subsequent Edit on the
-    // same path doesn't reject with "File has not been read yet."
-    await markReadCommandFilesAsRead(input.command, toolUseContext.readFileState)
+    // CC 2.1.293 #29 (official _Rn call site @216678800): record single-file
+    // cat/head/tail/sed -n/grep reads into readFileState (read-before-edit) AND
+    // fire the nested-memory trigger so path-scoped rules + nested CLAUDE.md
+    // load when Claude views a file via a Bash read command instead of Read.
+    // Guarded by the official `!Ce && !Mo && !Ie.backgroundTaskId` (not
+    // interrupted, not image output, not a background task). The trigger
+    // context mirrors the official `s.remoteCall===void 0 &&
+    // s.nestedMemoryAttachmentTriggers ? {triggers, permissions} : void 0`;
+    // OCC has no remoteCall (always undefined) so the gate reduces to the
+    // nestedMemoryAttachmentTriggers presence check, and `permissions` is a
+    // thunk over the live toolPermissionContext (matches cRn's e.permissions()).
+    if (!wasInterrupted && !isImage && !result.backgroundTaskId) {
+      const triggerContext: BashReadTriggerContext | undefined =
+        toolUseContext.nestedMemoryAttachmentTriggers
+          ? {
+              triggers: toolUseContext.nestedMemoryAttachmentTriggers,
+              permissions: () => getAppState().toolPermissionContext
+            }
+          : undefined;
+      await recordBashReadFiles(
+        input.command,
+        toolUseContext.readFileState,
+        abortController.signal,
+        result.code,
+        persistedOutputPath !== undefined || stdout.length > getBashOutputMaxChars(),
+        triggerContext
+      )
+    }
     return {
       data
     };

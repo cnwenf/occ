@@ -1913,16 +1913,36 @@ export function checkReadPermissionForTool(
   const pathsToCheck = getPathsForPermissionCheck(path)
 
   // 1. Defense-in-depth: Block UNC paths early (before other checks)
-  // This catches paths starting with \\ or // that could access network resources
-  // This may catch some UNC patterns not detected by containsVulnerableUncPath
+  // This catches paths starting with \\ or // that could access network resources.
+  //
+  // CC 2.1.292 security fix (official changelog): "Fixed PreToolUse hook
+  // approvals and auto mode bypassing the permission prompt for file reads
+  // from network (UNC) paths."
+  //   Step A — the ask is classified 'safetyCheck' with
+  //   classifierApprovable:false so ALL THREE bypass-immunity floors in
+  //   permissions.ts hold at once: step 1g (a PreToolUse hook 'allow' cannot
+  //   stand), the auto-mode lane (immune to the acceptEdits fast-path, the
+  //   YOLO allowlist fast-path — Read is allowlisted — and the classifier),
+  //   and the bypassPermissions floor (1g runs before the bypass allow).
+  //   Step B — detection reuses containsVulnerableUncPath (Windows-gated,
+  //   same platform gating as official) so vulnerable UNC forms match
+  //   ANYWHERE in the path (DavWWWRoot, @SSL@ ports, mixed separators), not
+  //   only at position 0. The prefix checks stay alongside it:
+  //   containsVulnerableUncPath is Windows-gated, while `//host/share` must
+  //   keep gating on POSIX too.
   for (const pathToCheck of pathsToCheck) {
-    if (pathToCheck.startsWith('\\\\') || pathToCheck.startsWith('//')) {
+    if (
+      pathToCheck.startsWith('\\\\') ||
+      pathToCheck.startsWith('//') ||
+      containsVulnerableUncPath(pathToCheck)
+    ) {
       return {
         behavior: 'ask',
         message: `Claude requested permissions to read from ${escapeControlCharsAsEntities(path)}, which appears to be a UNC path that could access network resources.`,
         decisionReason: {
-          type: 'other',
+          type: 'safetyCheck',
           reason: 'UNC path detected (defense-in-depth check)',
+          classifierApprovable: false,
         },
       }
     }

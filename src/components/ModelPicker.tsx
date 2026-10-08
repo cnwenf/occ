@@ -525,6 +525,12 @@ export function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'righ
   // OCC-82 (official 2.1.267 `dt`): the ladder is additionally SLICED to the
   // effective settings cap — `Sr(cap ? Mu.indexOf(cap)+1 : Mu.length)` — so
   // levels above the cap are not selectable in the picker.
+  // CC 2.1.293 changelog #7 (official $0e @234071645, byte-verified vs vprev
+  // zFe @232902886 in /tmp/cc-diff-293): the ←/→ step no longer wraps with
+  // `(Me+1)%he.length` / `(Me-1+he.length)%he.length` — it CLAMPS with
+  // `Math.min(Ie+1,he.length-1)` / `Math.max(Ie-1,0)`. The 292 wrap was a bug
+  // surface: right-arrow past the highest level landed on 'low', which the
+  // picker could then persist as the model's default effort.
   const capIndex =
     cap !== undefined && cap !== null ? EFFORT_LEVEL_ORDER.indexOf(cap) : EFFORT_LEVEL_ORDER.length - 1;
   const levels = EFFORT_LEVEL_ORDER.filter(
@@ -537,9 +543,9 @@ export function cycleEffortLevel(current: EffortLevel, direction: 'left' | 'righ
   const idx = levels.indexOf(clamped);
   const currentIndex = idx !== -1 ? idx : levels.length - 1;
   if (direction === 'right') {
-    return levels[(currentIndex + 1) % levels.length]!;
+    return levels[Math.min(currentIndex + 1, levels.length - 1)]!;
   } else {
-    return levels[(currentIndex - 1 + levels.length) % levels.length]!;
+    return levels[Math.max(currentIndex - 1, 0)]!;
   }
 }
 const EFFORT_LEVEL_ORDER: EffortLevel[] = ['low', 'medium', 'high', 'xhigh', 'max'];

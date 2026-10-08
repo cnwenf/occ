@@ -217,6 +217,54 @@ function emptyGrepResult(outputMode: string): { data: Output } {
   }
 }
 
+/**
+ * CC 2.1.292 C5 (binary `cEt` @212215273): Grep stray-parameter tolerance.
+ * Models sometimes pass `file_path` (the Read/Write spelling) instead of Grep's
+ * canonical `path`. Coerce it so the call succeeds instead of bouncing a
+ * strictObject validation error, and emit the verbatim resultNote so the model
+ * learns the canonical name. Byte-faithful to the official:
+ *
+ *   function cEt(e){if(!L(e)||typeof e.file_path!=="string"||e.file_path==="")return null;
+ *    let{file_path:n,...r}=e,s=!Object.hasOwn(r,"path");
+ *    if(!s&&r.path!==n)return null;
+ *    return{input:s?{...r,path:n}:r,shapeClass:s?"file_path":"repeated_file_path",
+ *     resultNote:`Note: ${qr}'s parameter for where to search is named \`path\`.
+ *      ${s?"`file_path` was read as `path`.":"`file_path` repeated `path` and was ignored."}`}}
+ *
+ * `L`=isRecord, `qr`=GREP_TOOL_NAME ("Grep").
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+export function coerceGrepInput(raw: unknown): {
+  input: Record<string, unknown>
+  shapeClass: string
+  resultNote: string
+} | null {
+  if (!isRecord(raw)) return null
+  const filePath = raw.file_path
+  if (typeof filePath !== 'string' || filePath === '') return null
+  // binary `let{file_path:n,...r}=e` — a copy without file_path (immutable:
+  // the caller's object is never mutated).
+  const rest: Record<string, unknown> = { ...raw }
+  delete rest.file_path
+  const pathWasAbsent = !Object.hasOwn(rest, 'path')
+  // binary `if(!s&&r.path!==n)return null` — a present-but-different `path` is a
+  // genuine conflict; do not guess. Leave it so strictObject validation rejects
+  // the call normally (no coercion, no note).
+  if (!pathWasAbsent && rest.path !== filePath) return null
+  return {
+    input: pathWasAbsent ? { ...rest, path: filePath } : rest,
+    shapeClass: pathWasAbsent ? 'file_path' : 'repeated_file_path',
+    resultNote: `Note: ${GREP_TOOL_NAME}'s parameter for where to search is named \`path\`. ${
+      pathWasAbsent
+        ? '`file_path` was read as `path`.'
+        : '`file_path` repeated `path` and was ignored.'
+    }`,
+  }
+}
+
 export const GrepTool = buildTool({
   name: GREP_TOOL_NAME,
   searchHint: 'search file contents with regex (ripgrep)',
@@ -239,6 +287,19 @@ export const GrepTool = buildTool({
   },
   get outputSchema(): OutputSchema {
     return outputSchema()
+  },
+  // CC 2.1.292 C5 (binary Grep def @212219127): `coerceInput(e){return
+  // pH(fEt(),cEt(e))}`. The pH gate (@212144777
+  // `n!==null&&e.safeParse(n.input).success?n:null`) returns the repair ONLY
+  // when the COERCED input passes the strict schema, so a partial repair (e.g.
+  // file_path→path but still no `pattern`, or a leftover stray key) yields null
+  // and validation proceeds on the ORIGINAL input (no note either). Byte-verified
+  // NO `coerceInputBeforePluginHooks` on the Grep def — that flag is Write-only.
+  coerceInput(input) {
+    const repair = coerceGrepInput(input)
+    return repair !== null && inputSchema().safeParse(repair.input).success
+      ? repair
+      : null
   },
   isConcurrencySafe() {
     return true

@@ -160,6 +160,7 @@ import {
 import { getTaskOutputPath } from './task/diskOutput.js'
 import { drainPendingMessages } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { TaskType, TaskStatus } from '../Task.js'
+import type { SessionId } from '../types/ids.js'
 import {
   getOriginalCwd,
   getSessionId,
@@ -245,6 +246,22 @@ import {
 } from './hooks.js'
 import { jsonStringify } from './slowOperations.js'
 import { isPDFExtension } from './pdfUtils.js'
+// CC 2.1.292 (C3 carryover): `aHe` guard — image-extension check for the
+// too_large at_mention_reference gate (@215048836).
+import { IMAGE_EXTENSION_REGEX } from './imagePaste.js'
+// CC 2.1.292 (C10 carryover): session-scoped withheld store (official `rfe`).
+import {
+  collectWithheldPass,
+  KEPT_MOST,
+  noteWithheld,
+  owedNoMore,
+  owedWithheld,
+  oweWithheld,
+  withheldShown,
+  withheldToldsOf,
+  type WithheldEntry,
+  type WithheldReason,
+} from './withheldMemory.js'
 import { getLocalISODate } from '../constants/common.js'
 import { getPDFPageCount } from './pdf.js'
 import { PDF_AT_MENTION_INLINE_THRESHOLD } from '../constants/apiLimits.js'
@@ -271,6 +288,7 @@ import { isInProcessTeammate } from './teammateContext.js'
 import { removeTeammateFromTeamFile } from './swarm/teamHelpers.js'
 import { unassignTeammateTasks } from './tasks.js'
 import { getCompanionIntroAttachment } from '../buddy/prompt.js'
+import { compareNamesAsciiFirst } from './asciiFirstCompare.js'
 
 export const TODO_REMINDER_CONFIG = {
   TURNS_SINCE_WRITE: 10,
@@ -355,6 +373,32 @@ export type AtMentionReferenceAttachment = {
   mentions: string[]
   unread?: 'too_large' | 'unexamined'
   fileSize?: number
+  /**
+   * CC 2.1.292 (C3 carryover): official `displayPath: Yk(oe(), ln.path)` on
+   * the too_large reference (@215048836) — path relative to CWD at creation
+   * time, for stable display (same convention as pdf_reference/directory).
+   */
+  displayPath?: string
+}
+
+/**
+ * CC 2.1.292 (C10 carryover): official `withheld_memory` attachment (`Kun`
+ * @215044000). Emitted on the main thread when instruction files were
+ * withheld (Read-deny / unjudged / unsettled) during a nested-memory pass —
+ * previously these were silently skipped. UI/transcript-only: the official
+ * model renderer is `withheld_memory: () => []` (the files are withheld
+ * precisely because the model must not see them). `by` stamps the session
+ * store token so the transcript re-scan (toldIn) recognizes it.
+ */
+export type WithheldMemoryAttachment = {
+  type: 'withheld_memory'
+  entries: Array<{
+    path: string
+    why: WithheldReason
+    /** Path relative to CWD at creation time, for stable display */
+    displayPath: string
+  }>
+  by: string
 }
 
 export type AlreadyReadFileAttachment = {
@@ -482,6 +526,10 @@ export type Attachment =
   | CompactFileReferenceAttachment
   | PDFReferenceAttachment
   | AtMentionReferenceAttachment
+  /**
+   * CC 2.1.292 (C10): instruction files withheld during a nested-memory pass
+   */
+  | WithheldMemoryAttachment
   | AlreadyReadFileAttachment
   /**
    * An at-mentioned file was edited
@@ -1653,7 +1701,7 @@ export function getAgentListingDeltaAttachment(
 
   // Sort for deterministic output — agent load order is nondeterministic
   // (plugin load races, MCP async connect).
-  added.sort((a, b) => a.agentType.localeCompare(b.agentType))
+  added.sort((a, b) => compareNamesAsciiFirst(a.agentType, b.agentType))
   removed.sort()
 
   return [
@@ -1914,73 +1962,173 @@ export function memoryFilesToAttachments(
  * @param appState The app state containing tool permission context
  * @returns Array of nested memory attachments
  */
+/**
+ * CC 2.1.292 (C10 carryover): official `Kun` (@215044000) — build the
+ * `withheld_memory` attachment from this pass's fresh candidates:
+ *   let r = new Set(Zgt(cJe(e)).shown.map(({path}) => path)); wMe(e, r);
+ *   let s = n.filter(({path}) => !r.has(path));
+ *   if (s.length === 0 || ve()) return [];
+ *   return [{type:"withheld_memory", entries: s.map(g => ({...g,
+ *     displayPath: Yk(oe(), g.path)})), by: F_.of(e).token}]
+ * The first SHOWN_MOST owed entries (agent-side kMe bookkeeping) are drained
+ * and suppressed; `ve()` omitted (unrecovered — see withheldMemory.ts header).
+ * OCC addition: the session `seen` set (official `EMe` bookkeeping) dedups
+ * across turns — an entry already told this session never re-attaches.
+ */
+function createWithheldMemoryAttachments(
+  sessionId: SessionId,
+  entries: WithheldEntry[],
+): Attachment[] {
+  const store = withheldToldsOf(sessionId)
+  const drained = new Set(
+    withheldShown(Array.from(store.owed.values())).shown.map(
+      ({ path }) => path,
+    ),
+  )
+  owedWithheld(sessionId, drained)
+  const fresh = entries.filter(
+    ({ path }) => !drained.has(path) && !store.seen.has(path),
+  )
+  if (fresh.length === 0) {
+    return []
+  }
+  for (const { path } of fresh) {
+    if (store.seen.size < KEPT_MOST) {
+      store.seen.add(path)
+    }
+  }
+  return [
+    {
+      type: 'withheld_memory',
+      entries: fresh.map(entry => ({
+        ...entry,
+        displayPath: relative(getCwd(), entry.path),
+      })),
+      by: store.token,
+    },
+  ]
+}
+
+/** Test-visible alias (convention: `safelyReadMemoryFileAsyncForTesting`). */
+export const createWithheldMemoryAttachmentsForTesting =
+  createWithheldMemoryAttachments
+
 async function getNestedMemoryAttachmentsForFile(
   filePath: string,
   toolUseContext: ToolUseContext,
   appState: { toolPermissionContext: ToolPermissionContext },
 ): Promise<Attachment[]> {
-  const attachments: Attachment[] = []
-
   try {
     // Early return if path is not in allowed working path
     if (!pathInAllowedWorkingPath(filePath, appState.toolPermissionContext)) {
-      return attachments
+      return []
     }
 
-    const processedPaths = new Set<string>()
-    const originalCwd = getOriginalCwd()
-
-    // Phase 1: Process Managed and User conditional rules
-    const managedUserRules = await getManagedAndUserConditionalRules(
-      filePath,
-      processedPaths,
-    )
-    attachments.push(
-      ...memoryFilesToAttachments(managedUserRules, toolUseContext, filePath),
+    // CC 2.1.292 (C10 carryover): official `Vun` (@215044000) — run the
+    // nested pass under a per-call withheld collector (the official threads a
+    // Map `G` through its reader wrapper; OCC uses AsyncLocalStorage so the
+    // claudemd.ts read chokepoint reports (path, why) without threading five
+    // signatures). Denied/unjudged/unsettled instruction files are no longer
+    // silently skipped.
+    const { result: attachments, withheld } = await collectWithheldPass(() =>
+      runNestedMemoryPhases(filePath, toolUseContext),
     )
 
-    // Phase 2: Get directories to process
-    const { nestedDirs, cwdLevelDirs } = getDirectoriesToProcess(
-      filePath,
-      originalCwd,
+    const sessionId = getSessionId()
+    // Official `bMe` — paths that loaded fine this pass are owed no more.
+    owedNoMore(
+      sessionId,
+      attachments
+        .filter(a => a.type === 'nested_memory')
+        .map(a => (a.type === 'nested_memory' ? a.path : ''))
+        .filter(p => p !== ''),
     )
-
-    const skipProjectLevel = getFeatureValue_CACHED_MAY_BE_STALE(
-      'tengu_paper_halyard',
-      false,
-    )
-
-    // Phase 3: Process nested directories (CWD → target)
-    // Each directory gets: CLAUDE.md + unconditional rules + conditional rules
-    for (const dir of nestedDirs) {
-      const memoryFiles = (
-        await getMemoryFilesForNestedDirectory(dir, filePath, processedPaths)
-      ).filter(
-        f => !skipProjectLevel || (f.type !== 'Project' && f.type !== 'Local'),
-      )
-      attachments.push(
-        ...memoryFilesToAttachments(memoryFiles, toolUseContext, filePath),
-      )
+    if (toolUseContext.agentId !== undefined) {
+      // Official `kMe` — inside an agent, entries are only owed; no
+      // attachment is emitted (a later main-thread pass drains them).
+      if (withheld.length > 0) {
+        oweWithheld(sessionId, withheld)
+      }
+    } else {
+      // Official main-thread arm: `QB(Y,z)` + owed-filter + `.slice(0,XR)` +
+      // `Kun` (called unconditionally, matching `Vun`, so owed entries drain
+      // even when this pass found nothing new).
+      noteWithheld(sessionId, withheld)
+      const { owed } = withheldToldsOf(sessionId)
+      const fresh = withheld
+        .filter(({ path }) => !owed.has(path))
+        .slice(0, KEPT_MOST)
+      attachments.push(...createWithheldMemoryAttachments(sessionId, fresh))
     }
 
-    // Phase 4: Process CWD-level directories (root → CWD)
-    // Only conditional rules (unconditional rules are already loaded eagerly)
-    for (const dir of cwdLevelDirs) {
-      const conditionalRules = (
-        await getConditionalRulesForCwdLevelDirectory(
-          dir,
-          filePath,
-          processedPaths,
-        )
-      ).filter(
-        f => !skipProjectLevel || (f.type !== 'Project' && f.type !== 'Local'),
-      )
-      attachments.push(
-        ...memoryFilesToAttachments(conditionalRules, toolUseContext, filePath),
-      )
-    }
+    return attachments
   } catch (error) {
     logError(error)
+    return []
+  }
+}
+
+/** Test-visible alias (convention: `safelyReadMemoryFileAsyncForTesting`). */
+export const getNestedMemoryAttachmentsForTesting =
+  getNestedMemoryAttachmentsForFile
+
+/** The four nested-memory phases (pre-C10 body of the function above). */
+async function runNestedMemoryPhases(
+  filePath: string,
+  toolUseContext: ToolUseContext,
+): Promise<Attachment[]> {
+  const attachments: Attachment[] = []
+  const processedPaths = new Set<string>()
+  const originalCwd = getOriginalCwd()
+
+  // Phase 1: Process Managed and User conditional rules
+  const managedUserRules = await getManagedAndUserConditionalRules(
+    filePath,
+    processedPaths,
+  )
+  attachments.push(
+    ...memoryFilesToAttachments(managedUserRules, toolUseContext, filePath),
+  )
+
+  // Phase 2: Get directories to process
+  const { nestedDirs, cwdLevelDirs } = getDirectoriesToProcess(
+    filePath,
+    originalCwd,
+  )
+
+  const skipProjectLevel = getFeatureValue_CACHED_MAY_BE_STALE(
+    'tengu_paper_halyard',
+    false,
+  )
+
+  // Phase 3: Process nested directories (CWD → target)
+  // Each directory gets: CLAUDE.md + unconditional rules + conditional rules
+  for (const dir of nestedDirs) {
+    const memoryFiles = (
+      await getMemoryFilesForNestedDirectory(dir, filePath, processedPaths)
+    ).filter(
+      f => !skipProjectLevel || (f.type !== 'Project' && f.type !== 'Local'),
+    )
+    attachments.push(
+      ...memoryFilesToAttachments(memoryFiles, toolUseContext, filePath),
+    )
+  }
+
+  // Phase 4: Process CWD-level directories (root → CWD)
+  // Only conditional rules (unconditional rules are already loaded eagerly)
+  for (const dir of cwdLevelDirs) {
+    const conditionalRules = (
+      await getConditionalRulesForCwdLevelDirectory(
+        dir,
+        filePath,
+        processedPaths,
+      )
+    ).filter(
+      f => !skipProjectLevel || (f.type !== 'Project' && f.type !== 'Local'),
+    )
+    attachments.push(
+      ...memoryFilesToAttachments(conditionalRules, toolUseContext, filePath),
+    )
   }
 
   return attachments
@@ -2028,6 +2176,82 @@ function logAtMentionOtel(
     success: String(success),
   })
 }
+
+/**
+ * Official `q5e` (CC 2.1.293, changelog #47) — per-resolver cap on at_mention
+ * telemetry. Agent and MCP-resource resolvers emit at most this many
+ * statsig/OTEL events per prompt read; overflow is reported once via
+ * `tengu_at_mention_unreported`. File/directory mention emits are NOT capped
+ * (official leaves them untouched).
+ */
+export const AT_MENTION_OTEL_CAP = 100
+
+/**
+ * Official `Ix` (CC 2.1.293 #47, vver @~216024405) — index-gated at_mention
+ * emitter, verbatim shape:
+ *
+ *   function Ix(e,n,r){if(e>=q5e)return;
+ *     if(n==="agent")i(r?"tengu_at_mention_agent_success":"tengu_at_mention_agent_not_found",{});
+ *     else i(r?"tengu_at_mention_mcp_resource_success":"tengu_at_mention_mcp_resource_error",{});
+ *     xX({mentionType:n,success:r})}
+ *
+ * The gate is index-based (`index >= q5e` → no emit) and gates BOTH the
+ * statsig event (`i` → `logEvent`) and the OTEL emit (`xX` →
+ * `logAtMentionOtel`) together.
+ */
+function emitAtMention(
+  index: number,
+  mentionType: 'agent' | 'mcp_resource',
+  success: boolean,
+): void {
+  if (index >= AT_MENTION_OTEL_CAP) return
+  if (mentionType === 'agent') {
+    logEvent(
+      success
+        ? 'tengu_at_mention_agent_success'
+        : 'tengu_at_mention_agent_not_found',
+      {},
+    )
+  } else {
+    logEvent(
+      success
+        ? 'tengu_at_mention_mcp_resource_success'
+        : 'tengu_at_mention_mcp_resource_error',
+      {},
+    )
+  }
+  logAtMentionOtel(mentionType, success)
+}
+
+/**
+ * Official `Xfn` (CC 2.1.293 #47) — at_mention overflow reporter, verbatim
+ * shape:
+ *
+ *   function Xfn(e,n){if(n>q5e)i("tengu_at_mention_unreported",{mention_type:d(e),count:n-q5e})}
+ *
+ * Called once per resolver invocation (before mapping) with the mention count;
+ * emits a single `tengu_at_mention_unreported` event carrying the number of
+ * mentions that will NOT be reported (`count - q5e`), only when `count > q5e`.
+ * `mention_type` is an enum-like value ('agent' | 'mcp_resource'), never a
+ * code/filepath string — hence the VERIFIED marker (official `d(e)`).
+ */
+function reportAtMentionOverflow(
+  mentionType: 'agent' | 'mcp_resource',
+  count: number,
+): void {
+  if (count > AT_MENTION_OTEL_CAP) {
+    logEvent('tengu_at_mention_unreported', {
+      mention_type:
+        mentionType as unknown as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      count: count - AT_MENTION_OTEL_CAP,
+    })
+  }
+}
+
+/** Test-visible alias (convention: `safelyReadMemoryFileAsyncForTesting`). */
+export const emitAtMentionForTesting = emitAtMention
+/** Test-visible alias (convention: `safelyReadMemoryFileAsyncForTesting`). */
+export const reportAtMentionOverflowForTesting = reportAtMentionOverflow
 
 /** Official `zkt` — how many directory entries the deny filter scans at most. */
 const DIR_ENTRY_SCAN_LIMIT = 10000
@@ -2224,18 +2448,20 @@ function processAgentMentions(
   const agentMentions = extractAgentMentions(input)
   if (agentMentions.length === 0) return []
 
-  const results = agentMentions.map(mention => {
+  // CC 2.1.293 #47 — official `_Pr`: report overflow ONCE before mapping
+  // (`Xfn("agent",r.length)`), then gate every per-mention emit on its index.
+  reportAtMentionOverflow('agent', agentMentions.length)
+
+  const results = agentMentions.map((mention, index) => {
     const agentType = mention.replace('agent-', '')
     const agentDef = agents.find(def => def.agentType === agentType)
 
     if (!agentDef) {
-      logEvent('tengu_at_mention_agent_not_found', {})
-      logAtMentionOtel('agent', false)
+      emitAtMention(index, 'agent', false)
       return null
     }
 
-    logEvent('tengu_at_mention_agent_success', {})
-    logAtMentionOtel('agent', true)
+    emitAtMention(index, 'agent', true)
 
     return {
       type: 'agent_mention' as const,
@@ -2248,6 +2474,9 @@ function processAgentMentions(
   )
 }
 
+/** Test-visible alias (convention: `safelyReadMemoryFileAsyncForTesting`). */
+export const processAgentMentionsForTesting = processAgentMentions
+
 async function processMcpResourceAttachments(
   input: string,
   toolUseContext: ToolUseContext,
@@ -2257,23 +2486,26 @@ async function processMcpResourceAttachments(
 
   const mcpClients = toolUseContext.options.mcpClients || []
 
+  // CC 2.1.293 #47 — official `SPr`: report overflow ONCE before mapping
+  // (`Xfn("mcp_resource",g.length)`), then gate every per-mention emit on its
+  // index (all six emit pairs route through `emitAtMention`).
+  reportAtMentionOverflow('mcp_resource', resourceMentions.length)
+
   const results = await Promise.all(
-    resourceMentions.map(async mention => {
+    resourceMentions.map(async (mention, index) => {
       try {
         const [serverName, ...uriParts] = mention.split(':')
         const uri = uriParts.join(':') // Rejoin in case URI contains colons
 
         if (!serverName || !uri) {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
-          logAtMentionOtel('mcp_resource', false)
+          emitAtMention(index, 'mcp_resource', false)
           return null
         }
 
         // Find the MCP client
         const client = mcpClients.find(c => c.name === serverName)
         if (!client || client.type !== 'connected') {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
-          logAtMentionOtel('mcp_resource', false)
+          emitAtMention(index, 'mcp_resource', false)
           return null
         }
 
@@ -2282,8 +2514,7 @@ async function processMcpResourceAttachments(
           toolUseContext.options.mcpResources?.[serverName] || []
         const resourceInfo = serverResources.find(r => r.uri === uri)
         if (!resourceInfo) {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
-          logAtMentionOtel('mcp_resource', false)
+          emitAtMention(index, 'mcp_resource', false)
           return null
         }
 
@@ -2292,8 +2523,7 @@ async function processMcpResourceAttachments(
             uri,
           })
 
-          logEvent('tengu_at_mention_mcp_resource_success', {})
-          logAtMentionOtel('mcp_resource', true)
+          emitAtMention(index, 'mcp_resource', true)
 
           return {
             type: 'mcp_resource' as const,
@@ -2304,14 +2534,12 @@ async function processMcpResourceAttachments(
             content: result,
           }
         } catch (error) {
-          logEvent('tengu_at_mention_mcp_resource_error', {})
-          logAtMentionOtel('mcp_resource', false)
+          emitAtMention(index, 'mcp_resource', false)
           logError(error)
           return null
         }
       } catch {
-        logEvent('tengu_at_mention_mcp_resource_error', {})
-        logAtMentionOtel('mcp_resource', false)
+        emitAtMention(index, 'mcp_resource', false)
         return null
       }
     }),
@@ -2321,6 +2549,10 @@ async function processMcpResourceAttachments(
     (result): result is NonNullable<typeof result> => result !== null,
   ) as Attachment[]
 }
+
+/** Test-visible alias (convention: `safelyReadMemoryFileAsyncForTesting`). */
+export const processMcpResourceAttachmentsForTesting =
+  processMcpResourceAttachments
 
 export async function getChangedFiles(
   toolUseContext: ToolUseContext,
@@ -3367,12 +3599,32 @@ export async function generateFileAttachment(
         // silently — it emits an `at_mention_reference` attachment so the
         // model is told the user @-mentioned the file, why its contents are
         // absent, and that it should Read it in portions itself.
-        return {
-          type: 'at_mention_reference',
-          mentions: [relative(getCwd(), filename)],
-          unread: 'too_large',
-          fileSize: stats.size,
+        // CC 2.1.292 (C3 carryover): the official consumer-side guard trio
+        // (@215048836) gates that reference:
+        //   AI(ln.path).ext !== "" && !aHe(ln.path) && !v$(ln.path)
+        // Extensionless files, image files (`aHe` ≡ IMAGE_EXTENSION_REGEX)
+        // and the session plan file (`v$` ≡ getPlanFilePath) never get the
+        // too_large reference — they are dropped (return null) like the
+        // official resolver path, leaving them to their dedicated surfaces.
+        // The analytics event still fires for every over-limit non-PDF file
+        // (the official logs it before the guard).
+        const isPlanFile = ext === '.md' && filename === getPlanFilePath()
+        if (
+          ext !== '' &&
+          !IMAGE_EXTENSION_REGEX.test(filename) &&
+          !isPlanFile
+        ) {
+          return {
+            type: 'at_mention_reference',
+            mentions: [relative(getCwd(), filename)],
+            unread: 'too_large',
+            fileSize: stats.size,
+            // Official `displayPath: Yk(oe(), ln.path)` — CWD-relative
+            // display path (same convention as pdf_reference/directory).
+            displayPath: relative(getCwd(), filename),
+          }
         }
+        return null
       } catch {
         // If we can't stat the file, proceed with normal reading (will fail later if file doesn't exist)
       }

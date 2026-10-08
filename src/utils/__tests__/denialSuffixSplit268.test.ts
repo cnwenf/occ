@@ -5,7 +5,6 @@ import {
   DENIAL_WORKAROUND_GUIDANCE,
   DONT_ASK_REJECT_MESSAGE,
 } from '../messages.js'
-import { AUTO_MODE_OUTCOME_SCOPE_GUIDANCE } from '../permissions/autoModeOutcomeGuidance.js'
 
 /**
  * 2.1.268 alignment: the fused DENIAL_WORKAROUND_GUIDANCE constant was split
@@ -69,30 +68,29 @@ describe('2.1.268 — denial guidance suffix split', () => {
     }
   })
 
-  test('buildYoloRejectionMessage uses base + auto-mode suffix (official H5t/Tjs)', () => {
-    // CC 2.1.281 #109: official `hxn` @204144495 now embeds the outcome-scope
-    // guidance (`lKe`) unconditionally between the stop suffix and the
-    // permission-rule hint. CC 2.1.288 #15: the hint itself is now gated on
-    // `allowRuleToolName` (official `bKn`) — with the option set, the official
-    // v288 sentence is appended; the base (prefix → guidance) is unchanged.
+  test('buildYoloRejectionMessage uses base + auto-mode suffix (official fnr, post-293 revert)', () => {
+    // CC 2.1.293 #38: official `fnr` (dd @216697200) reverted the 281
+    // outcome-scope guidance — the sole delta vs vprev `ier` is `${Qat}` +
+    // its preceding space deleted, so the base ends at the stop suffix.
+    // CC 2.1.288 #15: the hint is gated on `allowRuleToolName` (official
+    // `bKn`) — with the option set, the official sentence is appended after
+    // a single space.
     expect(
       buildYoloRejectionMessage('test reason', { allowRuleToolName: 'Bash' }),
     ).toBe(
       `Permission for this action was denied by the Claude Code auto mode classifier. Reason: test reason. ` +
         `If you have other tasks that don't depend on this action, continue working on those. ` +
         `${BASE}${AUTO_MODE_TAIL} ` +
-        `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE} ` +
         officialRuleHint('Bash'),
     )
   })
 
-  test('buildYoloRejectionMessage without allowRuleToolName carries no rule hint (2.1.288 #15)', () => {
+  test('buildYoloRejectionMessage without allowRuleToolName carries no rule hint (2.1.288 #15) and ends at the stop suffix (2.1.293 #38)', () => {
     const message = buildYoloRejectionMessage('test reason')
     expect(message).toBe(
       `Permission for this action was denied by the Claude Code auto mode classifier. Reason: test reason. ` +
         `If you have other tasks that don't depend on this action, continue working on those. ` +
-        `${BASE}${AUTO_MODE_TAIL} ` +
-        `${AUTO_MODE_OUTCOME_SCOPE_GUIDANCE}`,
+        `${BASE}${AUTO_MODE_TAIL}`,
     )
     expect(message).not.toContain('To allow this type of action in the future')
     expect(message).not.toContain('Bash(prompt')

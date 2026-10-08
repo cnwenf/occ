@@ -42,7 +42,7 @@ export function emitProjectPurgeRenameNotice(): void {
   process.stderr.write(`${PROJECT_PURGE_RENAME_NOTICE}\n`)
 }
 
-type PurgeItem = {
+export type PurgeItem = {
   kind: PurgeItemKind
   path: string
   // For config-key items, the project path key to remove from config.projects
@@ -239,7 +239,7 @@ export async function purgeProjectHandler(
   await executeDeletion(items)
 }
 
-async function executeDeletion(items: PurgeItem[]): Promise<void> {
+export async function executeDeletion(items: PurgeItem[]): Promise<void> {
   const failures: string[] = []
   for (const item of items) {
     const failure = await deleteItem(item)
@@ -248,11 +248,28 @@ async function executeDeletion(items: PurgeItem[]): Promise<void> {
     }
   }
   if (failures.length > 0) {
+    // CC 2.1.293 #33 — official `K` (@231701020): keep deleting, list the
+    // failures, tell the user what is still on disk, then exit nonzero so
+    // scripts/CI observe the failure. The failed-items line
+    // (`N item(s) failed:\n  <paths>`) is byte-identical to the official, and
+    // the trailing "\nWhat could not be deleted is still on disk: …" sentence
+    // is verbatim from report §33 / the binary (single combined message, as the
+    // official builds one string). The official gates that sentence on a
+    // `delete_failed_` failure code; OCC's `deleteItem` returns a bare path
+    // string with no code, so it is emitted for any failure (documented
+    // divergence — every OCC failure is an on-disk delete or a config write).
+    //
+    // The official anti-hang path `Tt` (`Purge stopped before it finished: …`,
+    // analytics `purgeStoppedByError` / `stopped_${code}`) is NOT ported:
+    // OCC's `deleteItem` is non-interactive and swallows per-item errors, so a
+    // purge can never hang mid-flight and that event is unreachable here
+    // (report §33: "no `purgeStoppedByError` equivalent needed").
     logEvent('cli_purge_project', { stage: 'config_write_failed' })
     // eslint-disable-next-line no-console
     console.error(
-      `${failures.length} item(s) failed:\n  ${failures.join('\n  ')}`,
+      `${failures.length} item(s) failed:\n  ${failures.join('\n  ')}\nWhat could not be deleted is still on disk: fix the cause and run the command again, or delete those paths by hand.`,
     )
+    process.exit(1)
   } else {
     logEvent('cli_purge_project', { stage: 'complete' })
     // eslint-disable-next-line no-console

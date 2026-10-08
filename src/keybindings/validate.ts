@@ -164,8 +164,45 @@ function closestModifierMatch(
   return best
 }
 
+/** CC 2.1.293 #34 — max keystroke length shown in a validation message. */
+const KEYSTROKE_DISPLAY_MAX = 80
+
+/**
+ * Surrogate-safe prefix slice, byte-faithful to the official `ne(t, n)` used by
+ * the §34 truncation `tc`: drop a trailing lone high surrogate so the display
+ * never cuts a surrogate pair in half. The official wraps the result in `gIt`
+ * (a `Buffer.from(t,'utf16le').toString('utf16le')` round-trip) which is an
+ * identity under the Bun/Node runtime, so it is folded out here.
+ */
+function sliceTruncating(text: string, max: number): string {
+  if (max <= 0) return ''
+  if (text.length <= max) return text
+  const head = text.slice(0, max)
+  const lastUnit = head.charCodeAt(max - 1)
+  return lastUnit >= 0xd800 && lastUnit <= 0xdbff ? head.slice(0, -1) : head
+}
+
+/**
+ * Truncate a keystroke for display, byte-faithful to the official `tc(t, n)`:
+ * when `t.length > n`, return the surrogate-safe `n`-char prefix followed by
+ * `… [+<remaining> chars]` (report §34).
+ */
+function truncateKeystroke(
+  text: string,
+  max = KEYSTROKE_DISPLAY_MAX,
+): string {
+  if (text.length <= max) return text
+  const head = sliceTruncating(text, max)
+  return `${head}… [+${text.length - head.length} chars]`
+}
+
 /**
  * Validate a single key (chord) string and return any parse errors.
+ *
+ * 2.1.293 #34: faithful port of the official `Xe` head (report §34) — a lone
+ * `" "` is the space key (no empty-part error), and a space adjacent to `"+"`
+ * that splits off a keyless press is its own parse_error. Both messages show a
+ * keystroke truncated to 80 chars via `truncateKeystroke` (official `tc`).
  *
  * 2.1.283 (OCC-138 / G2): faithful port of the official `Me(e,r)` validator
  * (byte-extracted from the v2.1.283 ELF keybindings chunk). Replaces the
@@ -186,18 +223,31 @@ function validateKeystroke(
   keystroke: string,
   context?: string,
 ): KeybindingWarning | null {
-  const parts = keystroke.toLowerCase().split('+')
+  // CC 2.1.293 #34 — official `Xe` head (report §34, verbatim):
+  //   n = e.trim(); s = e === " " ? [] : n.split(/\s+/)
+  //   c = e !== " " && e.split("+").some(p => !p.trim())
+  //   g = /\s\+|\+\s/.test(n) && s.some(p => parseKeystroke(p).key === "")
+  //   if (c || g) -> parse_error, message keyed off c, display = tc(e, 80).
+  const trimmedKeystroke = keystroke.trim()
+  const chordParts = keystroke === ' ' ? [] : trimmedKeystroke.split(/\s+/)
+  const hasEmptyPart =
+    keystroke !== ' ' && keystroke.split('+').some(part => !part.trim())
+  const hasSpaceNextToPlus =
+    /\s\+|\+\s/.test(trimmedKeystroke) &&
+    chordParts.some(part => parseKeystroke(part).key === '')
 
-  for (const part of parts) {
-    const trimmed = part.trim()
-    if (!trimmed) {
-      return {
-        type: 'parse_error',
-        severity: 'error',
-        message: `Empty key part in "${keystroke}"`,
-        key: keystroke,
-        suggestion: 'Remove extra "+" characters',
-      }
+  if (hasEmptyPart || hasSpaceNextToPlus) {
+    const display = truncateKeystroke(keystroke)
+    return {
+      type: 'parse_error',
+      severity: 'error',
+      message: hasEmptyPart
+        ? `Empty key part in "${display}"`
+        : `A space next to "+" splits "${display}" into separate presses, and one of them has no key`,
+      key: keystroke,
+      suggestion: hasEmptyPart
+        ? 'Remove extra "+" characters'
+        : 'Remove the spaces next to "+"',
     }
   }
 
@@ -205,7 +255,7 @@ function validateKeystroke(
   const rebuiltGroups: string[] = []
   let allFuzzyMatched = true
 
-  for (const keystrokePart of keystroke.trim().split(/\s+/)) {
+  for (const keystrokePart of chordParts) {
     const tokens = keystrokePart.split('+')
     const realKeyIndex = tokens.findLastIndex(
       token => parseKeystroke(token).key !== '',

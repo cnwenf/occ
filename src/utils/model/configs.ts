@@ -58,6 +58,31 @@ export const CLAUDE_HAIKU_4_5_CONFIG = {
   gateway: 'claude-haiku-4-5',
 } as const satisfies ModelConfig
 
+/**
+ * 2.1.293 (OCC-111, Haiku 5.5 launch): provider_ids table byte-verified from
+ * the official 2.1.293 linux-x64 ELF baked catalog (@204773604):
+ *   {first_party:"claude-haiku-5-5", bedrock:"us.anthropic.claude-haiku-5-5",
+ *    vertex:"claude-haiku-5-5", foundry:"claude-haiku-5-5",
+ *    anthropic_aws:"claude-haiku-5-5", anthropic_google_cloud:"claude-haiku-5-5",
+ *    mantle:"anthropic.claude-haiku-5-5"}
+ * NO date suffix on any provider id (unlike haiku 4.5 `-20251001`) and the
+ * vertex id is bare (no @date). gateway is NOT in the official provider_ids
+ * table; OCC's ModelConfig type requires the slot, filled per the OCC
+ * convention (bare first-party id) — the official gateway alias lag
+ * (gateway → claude-haiku-4-5) lives in getDefaultHaikuModel's per-provider
+ * table. anthropic_google_cloud is folded into firstParty per the standing
+ * OCC divergence (getAPIProvider never returns it).
+ */
+export const CLAUDE_HAIKU_5_5_CONFIG = {
+  firstParty: 'claude-haiku-5-5',
+  bedrock: 'us.anthropic.claude-haiku-5-5',
+  vertex: 'claude-haiku-5-5',
+  foundry: 'claude-haiku-5-5',
+  anthropic_aws: 'claude-haiku-5-5',
+  mantle: 'anthropic.claude-haiku-5-5',
+  gateway: 'claude-haiku-5-5',
+} as const satisfies ModelConfig
+
 export const CLAUDE_SONNET_4_CONFIG = {
   firstParty: 'claude-sonnet-4-20250514',
   bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
@@ -246,6 +271,7 @@ export const CLAUDE_FABLE_5_1_CONFIG = {
 export const ALL_MODEL_CONFIGS = {
   haiku35: CLAUDE_3_5_HAIKU_CONFIG,
   haiku45: CLAUDE_HAIKU_4_5_CONFIG,
+  haiku55: CLAUDE_HAIKU_5_5_CONFIG,
   sonnet35: CLAUDE_3_5_V2_SONNET_CONFIG,
   sonnet37: CLAUDE_3_7_SONNET_CONFIG,
   sonnet40: CLAUDE_SONNET_4_CONFIG,

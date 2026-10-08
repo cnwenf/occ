@@ -7,6 +7,7 @@ import {
   COST_TIER_3_15,
   COST_HAIKU_35,
   COST_HAIKU_45,
+  COST_HAIKU_55,
   formatModelPricing,
   getModelPricingString,
   getOpus5CostTier,
@@ -463,6 +464,25 @@ function getCustomHaikuOption(): ModelOption | undefined {
   }
 }
 
+// @[MODEL LAUNCH] 2.1.293 (OCC-111, Haiku 5.5 launch): the new latest-haiku
+// row. Mirrors the getSonnet55Option pattern (2.1.284): the slogan "Fastest
+// for quick answers" is the established haiku-family slogan and the pricing
+// suffix is firstParty-only. descriptionForModel is a REASONED INFERENCE
+// (the v293 binary row string was not byte-extracted; it mirrors the haiku-4-5
+// row's "lower cost but less capable than Sonnet <gen>" shape with the
+// catalog-latest sonnet). Exported for the launch test suite, matching
+// getSonnet55Option's export convention.
+export function getHaiku55Option(): ModelOption {
+  const is3P = getAPIProvider() !== 'firstParty'
+  return {
+    value: 'haiku',
+    label: 'Haiku',
+    description: `Haiku 5.5 · Fastest for quick answers${is3P ? '' : ` · ${formatModelPricing(COST_HAIKU_55)}`}`,
+    descriptionForModel:
+      'Haiku 5.5 - fastest for quick answers. Lower cost but less capable than Sonnet 5.5.',
+  }
+}
+
 function getHaiku45Option(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
@@ -486,8 +506,14 @@ function getHaiku35Option(): ModelOption {
 }
 
 function getHaikuOption(): ModelOption {
-  // Return correct Haiku option based on provider
+  // Return correct Haiku option based on provider.
+  // 2.1.293 (OCC-111): firstParty now defaults to haiku-5-5 (the v293 alias
+  // flip); every 3P provider lags at haiku-4-5, so the 3P rows keep
+  // rendering "Haiku 4.5" exactly like the official 3P picker does.
   const haikuModel = getDefaultHaikuModel()
+  if (haikuModel === getModelStrings().haiku55) {
+    return getHaiku55Option()
+  }
   return haikuModel === getModelStrings().haiku45
     ? getHaiku45Option()
     : getHaiku35Option()
@@ -623,10 +649,14 @@ const MaxSonnet5Option: ModelOption = {
   description: 'Sonnet 5.5 · Efficient for routine tasks',
 }
 
-const MaxHaiku45Option: ModelOption = {
+// 2.1.293 (OCC-111): subscriber (Max/Standard) haiku row. Mirrors the
+// MaxSonnet5Option pattern — the official renders the catalog-latest family
+// displayName dynamically, so with the v293 haiku flip this row now says
+// Haiku 5.5 (subscriber pickers are firstParty-only).
+const MaxHaikuOption: ModelOption = {
   value: 'haiku',
   label: 'Haiku',
-  description: 'Haiku 4.5 · Fastest for quick answers',
+  description: 'Haiku 5.5 · Fastest for quick answers',
 }
 
 // NOTE: the pre-2.1.280 OCC tail appended an "Opus Plan Mode" row when the
@@ -654,7 +684,8 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       getFable5Option(),
       getSonnet55Option(),
       getSonnet5_1MOption(),
-      getHaiku45Option(),
+      // 2.1.293 (OCC-111): provider-aware dispatch (Haiku 5.5 on firstParty).
+      getHaikuOption(),
     ]
   }
 
@@ -677,7 +708,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
         premiumOptions.push(getMaxSonnet5_1MOption())
       }
 
-      premiumOptions.push(MaxHaiku45Option)
+      premiumOptions.push(MaxHaikuOption)
       return premiumOptions
     }
 
@@ -697,7 +728,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       }
     }
 
-    standardOptions.push(MaxHaiku45Option)
+    standardOptions.push(MaxHaikuOption)
     return standardOptions
   }
 
@@ -743,7 +774,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       } else if (checkSonnet1mAccess()) {
         customOptions.push(getSonnet5_1MOption())
       }
-      customOptions.push(customHaiku ?? getHaiku45Option())
+      customOptions.push(customHaiku ?? getHaikuOption())
       return customOptions
     }
     // Stock firstParty layout (no ANTHROPIC_DEFAULT_*_MODEL overrides).
@@ -760,7 +791,9 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
         payg1POptions.push(getOpus55_1MOption(fastMode))
       }
     }
-    payg1POptions.push(getHaiku45Option())
+    // 2.1.293 (OCC-111): stock firstParty haiku row now provider-aware
+    // (Haiku 5.5 on 1P).
+    payg1POptions.push(getHaikuOption())
     return payg1POptions
   }
 
