@@ -276,6 +276,69 @@ type InputSchema = ReturnType<typeof inputSchema>;
 // Use fullInputSchema for the type to always include run_in_background
 // (even when it's omitted from the schema, the code needs to handle it)
 export type BashToolInput = z.infer<ReturnType<typeof fullInputSchema>>;
+
+// CC 2.1.295 item #022 ("Bash tool calls failing when model passes
+// `command_description` instead of `description`"). Official Bash def
+// @219165025 wires `coerceInput:fvn` DIRECTLY (no mU safeParse gate — unlike
+// the Grep def, the repair is applied unconditionally and the normal parse
+// validates afterwards). Byte-faithful to `fvn` @219107781 (dump @219107800):
+//
+//   function fvn(e){if(!L(e))return null;let n={...e},r=[];
+//   if("timeout_ms"in n&&!("timeout"in n)){let s=n.timeout_ms;
+//     if(typeof s==="number"||typeof s==="string"&&/^\d+$/.test(s))
+//       n.timeout=s,delete n.timeout_ms,r.push("timeout_ms")}
+//   if("command_description"in n){
+//     if(!("description"in n)&&typeof n.command_description==="string")
+//       n.description=n.command_description,r.push("command_description");
+//     else r.push("command_description_dropped");
+//     delete n.command_description}
+//   return r.length?{input:n,shapeClass:r.join(",")}:null}
+//
+// `L`=isRecord. The 294 equivalent `cRn` had ONLY the timeout_ms branch; the
+// command_description alias (and its `command_description_dropped` sibling —
+// fired when `description` is already present or the value is not a string) is
+// the 295 delta: 0 string-dump hits in s294, 3 in s295 (`command_description`
+// @99517632, `command_description_dropped` @99517660, code cluster
+// @219108012-219108221). NOTE: the same-named `fvn` @219672245 is an unrelated
+// native-installer helper (`claude.exe` name chooser) — not this function.
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+export function coerceBashInput(raw: unknown): {
+  input: Record<string, unknown>;
+  shapeClass: string;
+} | null {
+  if (!isRecord(raw)) return null;
+  // binary `let n={...e}` — a fresh shallow copy; the caller's object is never
+  // mutated (all writes go to the copy).
+  const input: Record<string, unknown> = { ...raw };
+  const shapeClasses: string[] = [];
+  if ('timeout_ms' in input && !('timeout' in input)) {
+    const timeoutMs = input.timeout_ms;
+    // binary keeps the raw value as-is (number or digit-string); the schema's
+    // semanticNumber accepts the string form at parse time.
+    if (typeof timeoutMs === 'number' || typeof timeoutMs === 'string' && /^\d+$/.test(timeoutMs)) {
+      input.timeout = timeoutMs;
+      delete input.timeout_ms;
+      shapeClasses.push('timeout_ms');
+    }
+  }
+  if ('command_description' in input) {
+    const commandDescription = input.command_description;
+    if (!('description' in input) && typeof commandDescription === 'string') {
+      input.description = commandDescription;
+      shapeClasses.push('command_description');
+    } else {
+      shapeClasses.push('command_description_dropped');
+    }
+    delete input.command_description;
+  }
+  return shapeClasses.length > 0 ? {
+    input,
+    shapeClass: shapeClasses.join(',')
+  } : null;
+}
+
 const COMMON_BACKGROUND_COMMANDS = ['npm', 'yarn', 'pnpm', 'node', 'python', 'python3', 'go', 'cargo', 'make', 'docker', 'terraform', 'webpack', 'vite', 'jest', 'pytest', 'curl', 'wget', 'build', 'test', 'serve', 'watch', 'dev'] as const;
 function getCommandTypeForLogging(command: string): AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS {
   const parts = splitCommand_DEPRECATED(command);
@@ -546,6 +609,10 @@ export const BashTool = buildTool({
     };
     return isSearchOrReadBashCommand(parsed.data.command);
   },
+  // CC 2.1.295 #022: official Bash def wires `coerceInput:fvn` directly (no
+  // safeParse gate — contrast the Grep def's mU wrapper). toolExecution.ts
+  // applies the repair, then the normal parse validates the coerced input.
+  coerceInput: coerceBashInput,
   get inputSchema(): InputSchema {
     return inputSchema();
   },

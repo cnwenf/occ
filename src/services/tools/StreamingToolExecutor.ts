@@ -10,6 +10,11 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import type { ToolDurationEntry } from '../api/gatewayHints.js'
+import {
+  clearExclusiveQueuedBehindCheck,
+  type ExclusiveQueuedBehindCheck,
+  setExclusiveQueuedBehindCheck,
+} from './exclusiveCallRegistry.js'
 import { runToolUse } from './toolExecution.js'
 
 type MessageUpdate = {
@@ -55,6 +60,12 @@ export class StreamingToolExecutor {
   // Aborting this does NOT abort the parent — query.ts won't end the turn.
   private siblingAbortController: AbortController
   private discarded = false
+  // Official 2.1.295 `responseOpen` (s295 @9359360 `class gs{...responseOpen=!0}`):
+  // true while the assistant response can still deliver new tool calls, so an
+  // exclusive (non-concurrency-safe) call may yet queue behind the running
+  // one. Flipped false when getRemainingResults starts draining — the
+  // response is over and no new calls can arrive.
+  private responseOpen = true
   // Signal to wake up getRemainingResults when progress is available
   private progressAvailableResolve?: () => void
 
@@ -277,6 +288,27 @@ export class StreamingToolExecutor {
     )
     this.updateInterruptibleState()
 
+    // CC 2.1.295 (#026) — official scheduler registration (s295 @9365045):
+    // `let T=Gn().exclusiveCallQueuedBehind,C={isQueued:()=>!this.discarded&&
+    // this.tools.slice(this.tools.indexOf(e)+1).some((R)=>R.status==="queued"
+    // &&!R.isConcurrencySafe),mayYetBeQueued:()=>!this.discarded&&this.
+    // responseOpen,holdLogged:!1};T.set(e.id,C);using S={[Symbol.dispose]:
+    // ()=>{if(T.get(e.id)===C)T.delete(e.id)}}` — keyed by the executing
+    // tool's tool_use id; the local-agent auto-background timer consults it
+    // so a subagent is never backgrounded while an exclusive call (edit /
+    // shell) is queued behind its Agent call. OCC uses try/finally in place
+    // of `using`; the identity guard lives in clearExclusiveQueuedBehindCheck.
+    const exclusiveCheck: ExclusiveQueuedBehindCheck = {
+      isQueued: () =>
+        !this.discarded &&
+        this.tools
+          .slice(this.tools.indexOf(tool) + 1)
+          .some(later => later.status === 'queued' && !later.isConcurrencySafe),
+      mayYetBeQueued: () => !this.discarded && this.responseOpen,
+      holdLogged: false,
+    }
+    setExclusiveQueuedBehindCheck(tool.id, exclusiveCheck)
+
     const messages: Message[] = []
     const contextModifiers: Array<(context: ToolUseContext) => ToolUseContext> =
       []
@@ -406,7 +438,12 @@ export class StreamingToolExecutor {
       }
     }
 
-    const promise = collectResults()
+    const promise = collectResults().finally(() => {
+      // Official `[Symbol.dispose]` (s295 @9365045) — runs when the tool call
+      // finishes; identity-guarded so a late dispose never removes a newer
+      // registration for the same tool_use id.
+      clearExclusiveQueuedBehindCheck(tool.id, exclusiveCheck)
+    })
     tool.promise = promise
 
     // Process more queue when done
@@ -468,6 +505,11 @@ export class StreamingToolExecutor {
    * Also yields progress messages as they become available
    */
   async *getRemainingResults(): AsyncGenerator<MessageUpdate, void> {
+    // Official 2.1.295 (s295 @9367479): `async*getRemainingResults(){if(this.
+    // responseOpen=!1,...` — draining starts only after the assistant
+    // response ended, so no new exclusive call can queue behind the running
+    // ones from this point on.
+    this.responseOpen = false
     if (this.discarded) {
       return
     }

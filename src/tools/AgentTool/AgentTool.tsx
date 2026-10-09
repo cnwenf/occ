@@ -929,6 +929,9 @@ export const AgentTool = buildTool({
             prompt,
             selectedAgent,
             setAppState: rootSetAppState,
+            // CC 2.1.295 (#026) — the auto-background hold probe reads the
+            // live task state on every timer fire/re-arm.
+            getAppState: () => toolUseContext.getAppState(),
             toolUseId: toolUseContext.toolUseId,
             autoBackgroundMs: getAutoBackgroundMs() || undefined
           });

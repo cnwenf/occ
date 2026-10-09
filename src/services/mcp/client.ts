@@ -293,31 +293,60 @@ export function resolveMcpMaxResultSizeChars(
 const DEFAULT_MAX_MCP_DESCRIPTION_LENGTH = 2048
 
 /**
- * Effective MCP description/instruction cap (binary `lV`).
- *
- * Re-reads `process.env` on every call rather than memoizing: the official
- * getter is a lazy property over `process.env` that re-parses whenever the raw
- * string changes, so a mid-session env change takes effect on the next read.
+ * CC 2.1.295 item #112 — tool-search load path cap (binary `Qts=16384`
+ * @213397142; `_Rn=2048,Qts=16384` is s295-only, s294 has neither token).
+ * MCP tool descriptions LOADED THROUGH TOOL SEARCH are truncated at 16,384
+ * chars instead of 2,048 — the model explicitly asked for the tool, so it
+ * gets the fuller description; the general (always-loaded) path stays 2048.
  */
-export function getMaxMcpDescriptionLength(): number {
+const TOOL_SEARCH_MAX_MCP_DESCRIPTION_LENGTH = 16384
+
+/**
+ * Raw `CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH` env override, or undefined when
+ * unset/invalid (the `a.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH??` half of the
+ * official getter — parsing rules documented above).
+ */
+function getEnvMcpDescriptionLength(): number | undefined {
   const raw = process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
   if (raw === undefined) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+    return undefined
   }
   // digitsOnly: reject anything that is not an integer literal. Unlike the
   // generic `M.int()` vars (which accept `1e6` / `64_000` via parseEnvInt's
   // notation branch), THIS var is bound with `digitsOnly:!0`.
   if (!/^[+-]?\d+$/.test(raw.trim())) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+    return undefined
   }
   const parsed = parseEnvInt(raw)
   if (parsed === undefined || !Number.isFinite(parsed)) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+    return undefined
   }
   if (parsed < 1) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH // min: 1
+    return undefined // min: 1
   }
   return parsed
+}
+
+/**
+ * Effective MCP description/instruction cap (binary `mx`, 295 form
+ * @~217055278: `mx(e=!1){return a.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH??
+ * (e?Qts:_Rn)}`; s294's `UF(){return ...??X5o}` had NO branch — the
+ * `loadedThroughToolSearch` parameter is the 295 delta). The env override
+ * wins for BOTH load paths, exactly like the official `??`.
+ *
+ * Re-reads `process.env` on every call rather than memoizing: the official
+ * getter is a lazy property over `process.env` that re-parses whenever the raw
+ * string changes, so a mid-session env change takes effect on the next read.
+ */
+export function getMaxMcpDescriptionLength(
+  loadedThroughToolSearch = false,
+): number {
+  return (
+    getEnvMcpDescriptionLength() ??
+    (loadedThroughToolSearch
+      ? TOOL_SEARCH_MAX_MCP_DESCRIPTION_LENGTH
+      : DEFAULT_MAX_MCP_DESCRIPTION_LENGTH)
+  )
 }
 
 /**
@@ -356,8 +385,13 @@ export function truncateMcpDescription(
   text: string,
   label: string,
   serverName?: string,
+  // CC 2.1.295 #112 — official truncator gained a cap parameter in 295:
+  // `Jt(e,r,n,s=mx())` @243847045 (s294 `Qo` computed `let s=lV()` inline).
+  // The factory passes `mx(!0)` (16384) for the tool-search variant; all
+  // other call sites keep the default (env ?? 2048).
+  cap: number = getMaxMcpDescriptionLength(),
 ): string {
-  const limit = getMaxMcpDescriptionLength()
+  const limit = cap
   if (text.length <= limit) {
     return text
   }
@@ -2356,6 +2390,22 @@ export const fetchToolsForClient = memoizeWithLRU(
             `Tool "${tool.name}" description`,
             client.name,
           )
+          // CC 2.1.295 (#112) — the official factory (@243900141, dup
+          // @244085866) now computes TWO eager truncation variants:
+          //   _e=Jt(Re,`Tool "${q.name}" description`,e)          // env ?? 2048
+          //   ce=Jt(Re,`Tool "${q.name}" description`,e,mx(!0))   // env ?? 16384
+          //   async prompt({loadedThroughToolSearch:Ee}){return Ee?ce:_e}
+          // s294 computed only the single variant. The wider cap applies ONLY
+          // when the tool is being sent because tool search discovered it
+          // (official call site @217614375:
+          // `loadedThroughToolSearch:bn&&ur(Kn)&&Nn(Kn,Cr)`); the general
+          // always-loaded path keeps 2048.
+          const toolSearchTruncatedDescription = truncateMcpDescription(
+            rawDescription,
+            `Tool "${tool.name}" description`,
+            client.name,
+            getMaxMcpDescriptionLength(true),
+          )
           // CC 2.1.285 (item 4) — binary v284 factory:
           //   alwaysLoad:h||k._meta?.["anthropic/alwaysLoad"]===!0
           // became in v285:
@@ -2405,8 +2455,28 @@ export const fetchToolsForClient = memoizeWithLRU(
             async description() {
               return rawDescription
             },
-            async prompt() {
-              return truncatedDescription
+            async prompt(options?: unknown) {
+              // CC 2.1.295 (#112) — official:
+              //   async prompt({loadedThroughToolSearch:Ee}){return Ee?ce:_e}
+              // OCC's Tool.prompt options type (src/Tool.ts) does not declare
+              // the flag yet and the API-schema serializer (src/utils/api.ts)
+              // does not pass it (both OUTSIDE this change's cluster — the
+              // official also gates its schema-cache key with an `"LT:"` bit
+              // @215678602 when `loadedThroughToolSearch===!0&&isMcp===!0`).
+              // Read the flag structurally so the behavior is dormant-but-
+              // exact: a caller that passes it gets the 16384 variant; every
+              // current caller keeps the byte-identical 2048 behavior.
+              const loadedThroughToolSearch =
+                typeof options === 'object' &&
+                options !== null &&
+                'loadedThroughToolSearch' in options &&
+                Boolean(
+                  (options as { loadedThroughToolSearch?: unknown })
+                    .loadedThroughToolSearch,
+                )
+              return loadedThroughToolSearch
+                ? toolSearchTruncatedDescription
+                : truncatedDescription
             },
             isConcurrencySafe() {
               return tool.annotations?.readOnlyHint ?? false
