@@ -89,8 +89,18 @@ export const SandboxFilesystemConfigSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe(
+          // CC 2.1.292 (OCC-150): trailing re-check sentence is byte-verbatim
+          // from the official allowWrite-side describe (Wc @11317030 of the
+          // 2.1.292 linux-x64 ELF). The official describe is assembled at
+          // runtime from conditional fragments (Fc/$c gates incl. a
+          // credentials.files leg OCC does not have); OCC keeps its static
+          // short describe and appends the sentence its behavior now matches
+          // (per-command refreshConfig() in wrapWithSandbox).
           'Additional paths to allow writing within the sandbox. ' +
-            'Merged with paths from Edit(...) allow permission rules.',
+            'Merged with paths from Edit(...) allow permission rules. ' +
+            'A value inside a directory sandboxed commands can already write ' +
+            'is re-checked before every command and dropped once it has been ' +
+            're-pointed into a denied read path.',
         ),
       denyWrite: z
         .array(z.string())
@@ -110,8 +120,14 @@ export const SandboxFilesystemConfigSchema = lazySchema(() =>
         .array(z.string())
         .optional()
         .describe(
+          // CC 2.1.292 (OCC-150): trailing re-check sentence is byte-verbatim
+          // from the official allowRead-side describe (Bc @14021955 of the
+          // 2.1.292 linux-x64 ELF) — same assembly note as allowWrite above.
           'Paths to re-allow reading within denyRead regions. ' +
-            'Takes precedence over denyRead for matching paths.',
+            'Takes precedence over denyRead for matching paths. ' +
+            'A value inside a directory sandboxed commands can write is ' +
+            're-checked before every command and dropped once it has been ' +
+            're-pointed into a denied path.',
         ),
       allowManagedReadPathsOnly: z
         .boolean()

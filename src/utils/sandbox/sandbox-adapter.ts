@@ -1511,6 +1511,26 @@ async function wrapWithSandbox(
     } else {
       throw new Error('Sandbox failed to initialize. ')
     }
+    // CC 2.1.292 (OCC-150): per-command re-check of the filesystem grants.
+    // Official schema describe (Bc @14021955 / Wc @11317030 of the 2.1.292
+    // linux-x64 ELF, byte-verified): "A value inside a directory sandboxed
+    // commands can write is re-checked before every command and dropped once
+    // it has been re-pointed into a denied path." Before this fix the config
+    // was built once at initialize() (plus on settings changes), so a project
+    // grant whose path a sandboxed command re-pointed into a managed/user
+    // read-deny path mid-session (e.g. replacing a directory with a symlink)
+    // kept standing for the rest of the session — official changelog:
+    // "Fixed a managed sandbox read-deny path (and user ones beside it) that
+    // appears or re-points mid-session not dropping project grants inside it
+    // or ending credential injection from files it covers." The screening
+    // itself (candidateUnderDeniedRead, which live-resolves through
+    // realpathExistingPrefix) is the 2.1.285 machinery already in
+    // convertToSandboxRuntimeConfig; the 292 delta is the RE-CHECK CADENCE:
+    // refreshConfig() is synchronous, so rebuilding here cannot race the
+    // command spawn. The credential-injection leg of the changelog has no
+    // OCC surface (no sandbox.credentials.files setting — see
+    // trustedTierGrants.ts header).
+    refreshConfig()
   }
 
   return BaseSandboxManager.wrapWithSandbox(
