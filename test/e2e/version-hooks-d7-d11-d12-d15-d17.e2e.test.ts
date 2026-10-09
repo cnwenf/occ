@@ -41,8 +41,15 @@ describe('D7 (2.1.145) background_tasks/session_crons in Stop hook input', () =>
     expect(src).toContain("local_workflow: 'workflow'")
     expect(src).toContain("monitor_mcp: 'monitor'")
     expect(src).toContain("mcp_task: 'MCP task'")
-    // cap marker matches binary Jye: "… [+N chars]"
-    expect(src).toMatch(/… \[\+\$\{.*\} chars\]/)
+    // cap marker matches binary Jye: "… [+N chars]" — the implementation moved
+    // to src/utils/hooks/hookHelpers.ts in the 2.1.294 hook-judgment round (so
+    // execPromptHook's blocking-path cap shares it without an import cycle
+    // against hooks.ts); hooks.ts re-imports capHookString/HOOK_STRING_CAP.
+    const helperSrc = await Bun.file(
+      `${REPO_ROOT}/src/utils/hooks/hookHelpers.ts`,
+    ).text()
+    expect(helperSrc).toMatch(/… \[\+\$\{.*\} chars\]/)
+    expect(src).toContain("from './hooks/hookHelpers.js'")
   })
 
   test('runtime: getSessionCronsForHookInput maps session crons', async () => {
