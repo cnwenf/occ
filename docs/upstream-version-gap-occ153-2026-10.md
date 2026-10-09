@@ -1,0 +1,232 @@
+# Upstream Version Gap — OCC-153 (2026-10-10 round)
+
+轮次定位：官方 `latest` 已晋升 **2.1.295**（2026-10-08T18:22Z 发布，**143 条 changelog —— 史上单版最大之一**，上一轮 occ150 已对 293/294 收口），`next` = **2.1.296**（2026-10-09T16:58Z 发布，**无 changelog 段**）。OCC main（HEAD `45d8388`，package version `2.1.377`，README badge "Now tracking Claude Code 2.1.294"）→ **本轮 gap = 2.1.295 全量移植 + 2.1.296 next-only 建档**。调研由 Leader 按 `upstream-tracking` / `aligning-with-official-binary` skill 纪律完成：所有二进制侧断言给出可复现取证数字；未逐站点取证的一律标 needs per-site forensics，**Never invent**。
+
+## §0 版本事实（three-way verified：npm dist-tags × 发布时间 × ELF 取证）
+
+npm dist-tags（2026-10-09T17:0xZ 核查）：`latest=2.1.295`，`next=2.1.296`，`stable=2.1.286`。
+发布时间（`npm view time`）：2.1.294 = 2026-10-08T03:42Z（上轮已移植）；2.1.295 = 2026-10-08T18:22Z；2.1.296 = 2026-10-09T16:58Z。
+
+| version | ELF bytes | md5 | 自身版本标记数（raw bytes / strings 行） | 备注 |
+|---|---|---|---|---|
+| 2.1.294 | 252,755,128 | `66d0b5080c038991d342e1e0594d21c7` | 2564 / 150 | **md5 与 occ150 ledger §0 一致 —— 证据链不断** |
+| 2.1.295 | 256,113,848 | `4f067be625a3fc99f1c76a563d14cfdb` | 2629 / 149 | 较 294 **+3,358,720 B —— 实打实逻辑增量**（对比 293↔294 同尺寸重打包） |
+| 2.1.296 | 257,068,216 | `3c8749470f70a26efadf982b587e1548` | 2644 / 153 | next-only，无 changelog，本轮只建档 |
+
+`strings -n 8 | sort -u` 全量集合差分：
+- **294→295：added 20,182 / removed 17,060**（unique 行；s294=315,636，s295=318,758）—— 非对称，真实变化叠加重打包噪声。
+- **295→296：added 17,942 / removed 16,806**（s296=319,894）—— 非对称、量级大；无 changelog 对照无法安全分诊 → **顺延下轮**（惯例：next-only 不移植；occ150 轮对 294 的处理同款）。
+
+官方 CHANGELOG 快照：8,707 行（raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md）；`## 2.1.295` 段 = 第 3–148 行 = **143 条**；`## 2.1.296` 段不存在。
+
+OCC 侧现状：`@cnwenf/occ` npm latest = **2.1.367**（E404 事故，OCC-151 blocked，等 owner 轮换 NPM_TOKEN）；GitHub tags=176 / releases=175，唯一缺口 = `v2.1.377`（npm 补发载体，OCC-151 解锁 re-run 后由 publish.yml 幂等补 Release 条目）。
+
+## §1 本轮优先级队列（port round queue）
+
+**P0 安全批（4 条）**：#031 conceal/色彩残留隐藏文本链接地址、#050 raw terminal hyperlink 字节 → 可点击隐藏地址链接（OCC-109 `ad()` 转义族直接相关）、#073 server-managed settings 缓存篡改 → 个人 plugin 被计为 org-managed（提权面）、#076 tabs/bidi 控制字符行尾丢失/覆写邻行（Trojan-source 渲染面）。
+
+**P1 正确性/安全加固批（25 条）**：#001 hooks `onFailure:"block"`、#014 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS`、#016 `[1m]` beta 被拒自动重发、#017 `-p` 多轮丢前轮输出、#018 MCP 远程重连退避≤30s、#019 MCP 错误回复含网络错误名误断连、#022 Bash `command_description` 别名、#026 AUTO_BACKGROUND 与排队 edit/shell 竞态、#035 linked-worktree subagent 误用父会话 git 上下文、#037 `--tools`/`--restricted` 漏延迟注册 built-in + deprecated 名越集、#044 bash for-loop glob 权限精度、#056 万行响应冻结且 ctrl+c 失灵、#061 `cat` 无输出仍标记已读（**直接修正 293 轮 bashReadCommands.ts 移植**）、#067 嵌套引用冻结+GB 级内存、#070 async SessionStart 未变 context 每次 resume 重注入、#071 `CLAUDE_ENV_FILE` 变量 /resume//branch 后不达 Bash、#072 skill `allowed-tools`/`effort` 在流结束前完成时被丢弃 → `-p` 拒绝 skill Bash、#078 async hook 多行 JSON 输出被忽略、#088 Edit 内容变了但 mtime 未前进 → 误判已读（stale-read 防护）、#090 scheduled task rewind/resume 丢失/复活、#091 语法高亮冻结（超长行/空行连/未闭合 heredoc）、#095 /rewind 后 prompt 丢失 + turn 复活、#108 Grep 接受 `-l`/`-c`/`-r`、#112 tool-search MCP 描述 cap 2048→16384、#124 ws MCP >16MiB 直接断连（DoS；OCC `maxPayload` 0 命中 → 疑似真缺口）。
+
+**P2（44 条）/ P3（26 条）**：见 §3 表；本轮按性价比取舍，未消化的记 STAGED 结转下轮。
+**N/A（44 条）**：Gateway/VSCode/Slack/Cloud/Runner/Chrome/CodeReview-action 七族 + MODS-runtime 专有条目 + #092 seed-admin（OCC 0 命中，occ150 §7.3 已证 NO-OP）。
+
+## §2 新增 env/token 取证（294→295，token 集合差分，已排除 minify 邻接噪声）
+
+真实新增 token（9 组）+ v295 ELF 首见字节偏移（python `mmap.find`，可复现；dd 取证用）：
+
+| token | offset | 关联 |
+|---|---|---|
+| `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | @99966792 | #014（P1） |
+| `CLAUDE_CODE_SLEEP_COMPACT` | @95416468 | 无 changelog —— 隐藏特性，侦察 |
+| `CLAUDE_CODE_SUBAGENT_CONFIG_WARNING` | @93815440 | 无 changelog —— 疑与 #113 相关，侦察 |
+| `CLAUDE_CODE_WEBSEARCH_CITATIONS` | @95578280 | 无 changelog —— 侦察 |
+| `CLAUDE_SESSION_SURFACE` | @104922062 | 无 changelog —— 侦察 |
+| `CLAUDE_CODE_RESTRICT_PERSONAL_CONFIG` | @94550008 | 无 changelog —— 疑与 #037/#073 相关，侦察 |
+| `CLAUDE_CODE_AUTOUPDATER_DISABLED_BY_HOST` | @95417452 | 无 changelog —— host 面，侦察 |
+| `CLAUDE_CODE_DISABLE_BG_STABLE_PATH` / `CLAUDE_PTY_HOST_NO_STABLE_PATH` | @93309560 / @93301896 | 无 changelog —— pty/bg stable path，疑与 #097 相关 |
+| `CLAUDE_RUNNER_FETCH_SERVER_PROGRESS_CAP_MS` | @97829376 | #130（runner 专用，N/A） |
+
+字符串计数佐证：`command_description` **0→3 命中**（#022 新别名，@99517632）；`7501` 3→7（#002 OSC 7501）；`onFailure` 48→55 行（#001）；`context-1m` 3→5（#016）；`upstream_ttfb_ms` 3→7（#006 gateway）。消失 token：`CLAUDE_CODE_ARTIFACT_FIVE_CLASS_ASKS`、`CLAUDE_CODE_INTRO_FRAME`（artifact 族面复核参考）。
+
+**OCC 侧 grep 实证（main @45d8388）**：`onFailure`=0、`7501`=0、`command_description`=0、`maxPayload`=0、`seed-admin`=0 → #001/#002/#022/#124 为真缺口、#092 N/A 确认。已有面：`RETRY_WATCHDOG`（withRetry.ts）、`context-1m`（bootstrap/state.ts 等）、`CLAUDE_ENV_FILE`（sessionEnvironment.ts/hooks.ts）、`allowed-tools`（SkillTool）、`DEFAULT_MAX_MCP_DESCRIPTION_LENGTH = 2048`（services/mcp/client.ts:292 → #112 改的是 tool-search 路径 cap）、plugin hooks（utils/plugins/loadPluginHooks.ts，仅薄层）。
+
+**产品面宽度普查**（grep -rlE 文件数）：worktree 121、mcpServe 62、WebSocket 55、rewind 45、remoteControl 44、advisor 40、Fable 36、toolSearch 31、cron/ScheduledTask 24、ultrareview 24、tui 18、Artifact 11、vim 11、/copy 10、autoBackground 9、PushNotification 2、loopWakeup 2。**结论：OCC 产品面很宽 —— 只有七大分发面族（Gateway 服务端/VSCode 扩展/Slack/Cloud web/Runner/Chrome 扩展/CodeReview action）与 mods-runtime 专有机制可整族 N/A，其余一律逐项 verify，不许整族拍 N/A。**
+
+## §3 2.1.295 changelog 逐条 triage（143 条）
+
+处置代号：P0/P1/P2/P3 = 本轮优先级；PORT = OCC 面已证 0 命中的真缺口可直接排移植；CAND = 候选（面已证存在）；CAND-v = 需先核验 OCC 对应面；N/A-x = 族级无面。
+
+| # | 处置 | 摘要 |
+|---|---|---|
+| 001 | P1-PORT | hooks `onFailure:"block"`：起不来/超时/异常码 → block 而非放行（OCC 0 命中） |
+| 002 | P2-PORT | OSC 7501 Program Status Protocol（working/waiting/done 终端状态；OCC 0 命中） |
+| 003 | P3-CAND | /copy picker 引文去 `>` 标记 |
+| 004 | P2-CAND | plugin install/enable/disable/marketplace add：settings 文件不加载时告警 |
+| 005 | P2-CAND | `claude -p` 末轮后仍挂着时 stderr 说明在等什么 |
+| 006 | N/A-GATEWAY | `timeouts.upstream_ttfb_ms` gateway 云上游 |
+| 007 | P3-CAND | "Backgrounding cancelled" 提示 |
+| 008 | N/A-GATEWAY | upstream `models` 列表 + `*` 通配 |
+| 009 | N/A-GATEWAY | `forceLoginMethod:"gateway"` + `forceLoginGatewayUrl` |
+| 010 | P3-CAND | plugin validate README 缺 install-line 建议（不改 exit code） |
+| 011 | N/A-GATEWAY | `upstream_request_id` 审计事件 |
+| 012 | N/A-MODS | `$.ui.notify` |
+| 013 | N/A-MODS | mod Button children |
+| 014 | P1-PORT | `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` 限制无人值守重试等待（token @99966792） |
+| 015 | N/A-GATEWAY | 成功推理响应 `request-id` 头 |
+| 016 | P1-CAND | `[1m]` 模型 beta 被 gateway/Bedrock/Vertex/Foundry 拒 → 去 beta 重发 |
+| 017 | P1-CAND | `-p` 文本输出：bg 工作开启新轮时不再丢前轮响应 |
+| 018 | P1-CAND | 远程 MCP headless/SDK：>15s 故障后不再永久断连；紧循环重连退避≤30s |
+| 019 | P1-CAND | MCP 错误回复恰含网络错误名 → 不再误断连 |
+| 020 | P2-CAND | MCP 分页 cursor 重复 → 同页最多问 20 次 |
+| 021 | P2-CAND-v | MCP 返回 CSS/JS/XML 不再存成 .bin（Read 拒读）；font/icon 独立扩展名 |
+| 022 | P1-PORT | Bash 模型传 `command_description` 不再失败（0→3 命中 @99517632） |
+| 023 | N/A-CHROME | `host:80` deny 规则适用 plain http |
+| 024 | P3-CAND-v | /plugin Errors tab Enter 删 marketplace 先询问 |
+| 025 | P2-CAND | marketplace add：名字装不了任何 plugin → 拒绝而非报成功 |
+| 026 | P1-CAND | `CLAUDE_AUTO_BACKGROUND_TASKS`：edit/shell 在排队时不把 subagent 送 bg（会提前起跑） |
+| 027 | P2-CAND-v | PushNotification 在 remote-control 会话误报 "not sent" |
+| 028 | P2-CAND-v | remote 会话 >256 文件 vouch 拒绝 |
+| 029 | P2-CAND-v | login refresh 后 managed settings 启动加载偶发失败 |
+| 030 | P2-CAND | /tui 无法重启时不再无提示/raw error 退出 |
+| 031 | **P0-CAND** | 回复残留色彩/conceal 样式隐藏文本链接地址（含表格/问题预览换行处） |
+| 032 | P2-CAND-v | gateway 会话 Fable `availableModels` → /model picker 内置行优先于 modelPicker 行 |
+| 033 | N/A-GATEWAY | admin spend view 陈旧 groups/cap |
+| 034 | N/A-GATEWAY | `DISABLE_NONESSENTIAL_TRAFFIC` vs gateway spend limit 显示 |
+| 035 | P1-CAND | linked-worktree subagent 不再显示父会话 git branch/status/commits |
+| 036 | P2-CAND | 打字取消 backgrounding → 前台继续干活（不再停在当前 tool 末尾） |
+| 037 | P1-CAND | `--tools`/`--restricted` 对 launch 后注册的 built-in 生效 + deprecated 名不达集外 tool |
+| 038 | P2-CAND | 等 MCP resource list 时 interrupt 不再拖到超时才结束 turn |
+| 039 | P2-CAND-v | hook 深嵌套 tool input 静默截断 → guard 可能放行未见内容 |
+| 040 | P2-CAND-v | Esc 停不掉被 ← 移到 bg 的自定步 /loop；取消 pending wakeup 给提示 |
+| 041 | P2-CAND | bg 会话 commands/hooks 继承 `FORCE_COLOR=3` → 输出混入色码 |
+| 042 | P3-CAND-v | `claude agents` 退出时不再拉起新 bg service |
+| 043 | P3-CAND | 自定义 agent 名 `worker` 不再显示成 "Agent" |
+| 044 | P1-CAND | bash for-loop over glob patterns 权限检查精度 |
+| 045 | P2-CAND-v | Workflow subagent 的 forked skill 结果误投主对话 |
+| 046 | P2-CAND-v | in-process teammate 首次 SendMessage 失败（tool search 未加载） |
+| 047 | P3-CAND | resume 提示不再归因 `TaskStop`（不可能是该因） |
+| 048 | P3-CAND-v | 从 tasks panel/客户端停长 MCP 调用时要告知 Claude |
+| 049 | P2-CAND-v | bg 会话进程 down 时到点的 /loop wakeup 不再无声丢失 |
+| 050 | **P0-CAND** | raw terminal hyperlink 字节被画成可点击+隐藏地址链接（OCC-109 `ad()` 转义族直接相关） |
+| 051 | P2-CAND | marketplace 大 git submodule 仓库 add/refresh 失败 → 只 fetch 含 plugin 的 submodule |
+| 052 | P3-CAND | /advisor 对不可用已存模型不再打勾，开在 "No advisor" |
+| 053 | P3-CAND | bg MCP tool 通知不再显示缩短 task id |
+| 054 | P2-CAND | vim `~` 越过 EOL（后续 `x` 空转）+ `3~` 冲进下一行 |
+| 055 | P2-CAND | macOS 重音文本（NFD）粘贴到 prompt 中部光标多偏一格 |
+| 056 | P1-CAND | 万行级响应终端冻结且 ctrl+c 失灵 |
+| 057 | P2-CAND-v | mod reload 期间调用绕过另一 mod 带 `.catch` 的 guard hook（worker 重启窗口） |
+| 058 | P2-CAND-v | hooks 模块嵌套数千层 → 加载/校验裸 stack-overflow |
+| 059 | P3-CAND-v | `claude plugin test` 放行会删 tool call/result/thinking 块的 `session.append` hook |
+| 060 | P2-CAND-v | kill+二次 resume 后不再提示可用 SendMessage 恢复 bg subagent |
+| 061 | P1-CAND | `cat` 等无输出仍标记文件已读（**直接修正 293 轮 bashReadCommands.ts 移植**） |
+| 062 | P2-CAND-v | plugin option 名 `constructor`/`prototype` 恒读默认值且编辑不重载 |
+| 063 | N/A-MODS | hot-reload 读取窗口期 save 丢失 |
+| 064 | N/A-MODS | hot-reload 询问每轮重复 |
+| 065 | P2-CAND-v | /model /fast /output-style 保存设置未询问 plugin `config.set` hook |
+| 066 | P3-CAND | piped 输出 bold 紧跟 dim 画得微弱 |
+| 067 | P1-CAND | 引用逐层嵌套回复 → 冻结数秒 + GB 级内存 |
+| 068 | N/A-MODS | hot-reload 毫秒级 save 丢失 |
+| 069 | P2-CAND | `claude mcp serve` bg Bash 结果不报输出文件名 + 描述承诺不来通知 |
+| 070 | P1-CAND | async SessionStart hook 未变 context 每次 resume 重复注入 |
+| 071 | P1-CAND | SessionStart 写入 `CLAUDE_ENV_FILE` 的变量在 in-app /resume//branch 后不达 Bash |
+| 072 | P1-CAND | Skill tool 在响应流结束前完成 → `allowed-tools`/`effort` 被丢 → `-p` 拒绝 skill 的 Bash |
+| 073 | **P0-CAND-v** | server-managed settings 缓存被篡改 → 个人 plugin 计为 org-managed（提权面；需核 OCC managed-settings/plugin provenance） |
+| 074 | P2-CAND | Claude 3 Opus/3.x Sonnet 会话不再被提供 tool search（模型会拒） |
+| 075 | P3-CAND-v | `-p`/SDK 会话不再把生成类型文件写进 `--plugin-dir` |
+| 076 | **P0-CAND** | tabs/bidi 控制字符文本行尾丢失或覆写邻行（Trojan-source 渲染面） |
+| 077 | P3-CAND | /model Max effort 误报 "已存为默认"（Max 仅当前会话） |
+| 078 | P1-CAND | async hook JSON 输出跨多行打印时被忽略（OCC hooks.ts:6529 单 `JSON.parse(trimmed)` 站点需核） |
+| 079 | P2-CAND | Read 空 `pages` 参数按省略处理而非拒绝（**直接修正 292/294 轮 strict pages parser 移植**） |
+| 080 | N/A-VSCODE | Windows drive-letter 大小写 project-scope plugins（#74612） |
+| 081 | P3-CAND | Windows 盘符大小写 → plugin install/uninstall 记录丢失/重复 |
+| 082 | P2-CAND-v | `←` 后立刻 `↑`/`Esc` 收回 queued message 丢失 |
+| 083 | N/A-MODS | SDK host 提前关 enable 问题 → 整会话 hot-reload 关闭 |
+| 084 | N/A-MODS | `prompt.submit` 改写/丢弃后仍按原文存 history/queued 记录 |
+| 085 | P2-CAND | 非交互会话：请求未用到的 MCP server 不再提示需认证 |
+| 086 | N/A-GATEWAY | `claude_code.auth` OTEL gateway sign-in |
+| 087 | P2-CAND-v | 巨型 interface plugin 在 worker stall 时把别的 plugin 卸载 |
+| 088 | P1-CAND | Edit：内容变了但 mtime 未前进 → 仍当已读（stale-read 防护） |
+| 089 | P2-CAND | CRLF 短命令输出被画成单行 |
+| 090 | P1-CAND | scheduled task：停掉的任务 rewind+resume 复活；Esc/rewind+compaction 后 resume 丢失 |
+| 091 | P1-CAND | 语法高亮冻结数秒~数分钟：超长行/长空行连/未闭合 string/heredoc |
+| 092 | N/A | `~/.claude/seed-admin` 临时文件保留清理（OCC 0 命中；occ150 §7.3 已证 NO-OP） |
+| 093 | P2-CAND-v | Desktop/SDK：`disableAutoMode` 移除后拒绝切回 auto mode 直至重启 |
+| 094 | P2-CAND-v | claude.ai-synced plugin hooks 长会话 "Plugin directory does not exist" |
+| 095 | P1-CAND | /rewind 后发送的 prompt 丢失 + 被移除 turn 复活（bg 移动/kill 后 resume） |
+| 096 | N/A-CLOUD | mod `session.receive` hook 权限询问挂起 cloud 会话 |
+| 097 | P3-CAND-v | macOS 更新后 bg 会话重启跑出 stable app wrapper（疑关联 `CLAUDE_PTY_HOST_NO_STABLE_PATH` 新 token） |
+| 098 | P2-CAND-v | headless/SDK 迟到 sign-in/reconnect 把 `setMcpServers()` 服务集重列成自己的 |
+| 099 | P2-CAND-v | /config auto-update channel 保存前未询问 plugin `config.set` hook |
+| 100 | P2-CAND-v | macOS 会话启动 file count 触及其他 app 数据 → 隐私弹窗（home 及以上目录启动时） |
+| 101 | N/A-GATEWAY | Bedrock CountTokens API |
+| 102 | N/A-GATEWAY | PostgreSQL read-only 30s 告警 |
+| 103 | P3-CAND-v | RC/claude.ai/desktop 等待状态：MCP tool 用 server+可读名而非 `mcp__server__tool` |
+| 104 | N/A-GATEWAY | gateway 后台请求用 Haiku 4.5 |
+| 105 | N/A-GATEWAY | Bedrock 非 US 区 models 处理 |
+| 106 | P3-CAND | headless `rate_limit_event` 说明是否开了 extra usage |
+| 107 | P3-CAND-v | `plugin-authoring` 内置 skill 改进（无终端会话不给终端命令） |
+| 108 | P1-CAND | Grep 带 `-l`/`-c`/`-r` flag 的搜索直接跑而非失败 |
+| 109 | P3-CAND | plugin validate：hooks 顶层 `var` 重绑报错带行号+原因+修法 |
+| 110 | P3-CAND | Workflow `scriptPath` 拒绝文案 → 指路 inline `script` |
+| 111 | P3-CAND-v | 大文件上传失败无因 → Claude 报告失败而非缩文件 |
+| 112 | P1-CAND | tool-search 加载的 MCP tool 描述 cap 2048→**16384**（OCC client.ts:292 = 2048；核官方是否只改 tool-search 路径） |
+| 113 | P2-CAND | subagent `skills` 字段预载 ≤32 个、各一次 |
+| 114 | P3-CAND-v | attached bg 会话 idle Ctrl+C 不动 pending /loop wakeup（双击 detach、loop 续跑） |
+| 115 | P3-CAND-v | `claude agents` 与 bg service 同停：会话约 1 分钟内停 + 提示 |
+| 116 | P2-CAND-v | claude.ai connectors 默认协商 MCP `2026-07-28` + `MCP_PROTOCOL_NEGOTIATION=legacy`（两版字符串同计数 6/6 —— 疑文档迟录，需 per-site） |
+| 117 | P3-CAND-v | Artifact 无背景页白底（疑 cloud viewer 侧） |
+| 118 | N/A-MODS | mod 跑后拒绝 tool call 的措辞 |
+| 119 | P2-CAND | tab stops 从文本起点计（indent 2 → 首 stop 8 列） |
+| 120 | P2-CAND-v | Artifact tool telemetry-off 权限提示统一为五问 |
+| 121 | P3-CAND-v | telemetry-off 安装：scheduled/Run-now 发布私有 artifact 免询问 |
+| 122 | N/A-MODS | org mods toast 优先 |
+| 123 | N/A-GATEWAY | `desktop` policy key 启动告警 |
+| 124 | P1-CAND | ws MCP >16MiB 消息不解析直接断连（OCC `maxPayload` 0 命中 → 疑似真缺口，DoS 面） |
+| 125 | N/A-VSCODE | 文件行点击打开 |
+| 126 | N/A-VSCODE | fork/rewind "Message not found in session" |
+| 127 | N/A-VSCODE | 快捷键误切 permission mode |
+| 128 | N/A-VSCODE | 双视图焦点跳动错投输入 |
+| 129 | N/A-RUNNER | 停传 `CCR_AUTO_MODE_*` 三 env |
+| 130 | N/A-RUNNER | git fetch progress cap（`CLAUDE_RUNNER_FETCH_SERVER_PROGRESS_CAP_MS`） |
+| 131 | N/A-CLOUD | unarchive 后首条消息无回复 |
+| 132 | N/A-CLOUD | 旧 routines 不递 saved prompt |
+| 133 | N/A-CLOUD | 断线追赶一次性渲染 |
+| 134 | N/A-CLOUD | setup script 输入框 UI |
+| 135 | N/A-SLACK | settings 确认卡 30 分钟 |
+| 136 | N/A-SLACK | Enterprise Grid 共享频道通知限频 |
+| 137 | N/A-SLACK | fork 线程卡 raw Slack codes |
+| 138 | N/A-SLACK | Working status 空转 |
+| 139 | N/A-SLACK | busy channel 他 bot @Claude 无应答 |
+| 140 | N/A-SLACK | channel manager 添加确认 |
+| 141 | N/A-CODE-REVIEW | re-review open findings 计数 |
+| 142 | N/A-CODE-REVIEW | 大 CLAUDE.md 被 PR 编辑时规则跳过 |
+| 143 | P2-CAND-v | `xhigh`/`max` effort 下 web search + agent hook 评估显著变慢 |
+
+**统计**：P0=4，P1=25，P2=44，P3=26，N/A=44（GATEWAY 13 / MODS 9 / SLACK 6 / VSCODE 5 / CLOUD 5 / RUNNER 2 / CODEREVIEW 2 / CHROME 1 / seed-admin 1）——合计 143 ✓。
+
+## §4 2.1.296（next-only）建档
+
+发布 2026-10-09T16:58Z，无 changelog 段；ELF md5 `3c8749470f70a26efadf982b587e1548`，257,068,216 B；vs 295 strings 差分 added 17,942 / removed 16,806（非对称，含真实变化）。**处置：顺延下轮**（changelog 落地或晋升 latest 后再逐站点取证）。侦察线索留给下轮：新 token 差分、`CLAUDE_CODE_SLEEP_COMPACT` 等 §2 无 changelog token 是否在 296 有对应条目。
+
+## §5 结转债务（本轮账本内跟踪）
+
+1. **occ150 §4/§8.4 STAGED**：#018 WebFetch 100k reader+offset（取证 70%，helper 集清单在 occ149 §8）、#148 skills/custom-commands `!` 原始控制字符拒绝、OCC-109 STAGED 清单、occ150 P2 簇（teleport/←、paste、vim、keybindings、MCP HTTP 泄漏等 —— 与本轮 §3 P2 部分重叠，合并处理）。
+2. **OCC-111 验收 APPROVED_WITH_RISK 的 7 项 findings**（见 OCC-111 验收评论）—— 若前两轮未消化，本轮验收员复核。
+3. **npm E404（OCC-151 blocked）**：`NPM_TOKEN` 90 天过期（2026-07-05+90d≈10-03），等 owner 人类轮换。**对本轮的影响：发版时 publish.yml 会在 npm publish 步红 —— 预期内、非本轮回归**；GitHub Release 步骤因 `if: success()` 不会跑 → **tag 后需手动 `gh release create <tag> --generate-notes`（幂等）**。`v2.1.377` 载体 tag 保持无 Release 现状（OCC-151 解锁 re-run 后由 workflow 幂等补齐），当前 tags=176/releases=175 唯一缺口即此，验收口径按此调整。
+4. **`agent/occ/01bb1c9b` 分支**保留至 npm 补发完成后由程序员处置（occ150 验收意见）。
+
+## §6 移植轮执行顺序（给 OCC 程序员）
+
+1. **重新下载** 294/295（如需 next 对照再下 296）ELF —— 勿复用他人工作目录二进制；核对 §0 md5；只跑授权 A/B，不执行官方二进制。取证工具：`strings -n 8 | sort -u` + `comm`；字节站点 python `mmap.find`（grep -boF 对 256MB 无换行 blob 会静默失败，本轮已踩坑）→ `dd bs=1 skip=OFFSET count=N`。
+2. **P0 安全批 4 条**（#031/#050/#076 渲染安全簇可并案取证 —— 同属输出净化/转义面；#073 先核 OCC managed-settings/plugin provenance 面再定 PORT/NO-OP）。
+3. **P1 25 条按簇**：hook 簇（#001/#078/#070/#071/#072）→ MCP 簇（#018/#019/#112/#124）→ 冻结/DoS 簇（#056/#067/#091）→ 权限/stale-read 簇（#037/#044/#088/#061）→ headless/model（#017/#016/#022/#014）→ 会话状态簇（#026/#035/#090/#095/#108）。
+4. P2/P3 视取证成本取舍；未消化项在本账本追加新 § 记 STAGED，不许静默丢弃。
+5. 每项配测试 + 全量 git-stash A/B 零回归 + Docker e2e A/B + live smoke（headless `-p` + tmux REPL 真实模型 round-trip）。
+6. **发布**：合 main → version bump（2.1.378 起，若被并行轮抢占则顺延）→ CHANGELOG + README badge（Now tracking 2.1.295）→ tag `v2.1.378` → publish.yml npm 步**预期红**（OCC-151，不算回归）→ 手动 `gh release create v2.1.378 --generate-notes`（幂等）→ 核验 /releases ≡ /tags（残留缺口应仍只有 v2.1.377）→ 回帖汇报（含 /releases 总条目数 + Release 链接，按发版流程第 5 条）。
+7. **交接链**：程序员完成 → 评论 @OCC 安全审核员（后门检查，重点 P0 渲染安全簇 + #073 提权面）→ @OCC 验收员（对齐/合并/分支清理 + 像人类用户一样真实使用 REPL/uvx 一致性；通过后通知程序员发版收口）→ Leader 汇总 + lark 汇报 + issue 置 done。
+
+## §7 调研工件与复现方法
+
+- 本 run 工作目录 `/tmp/cc-diff-295`：tgz×3（294/295/296）、`v29{4,5,6}/package/claude`、`s29{4,5,6}.txt`（strings 全量排序去重）、`added295.txt`/`removed295.txt`（comm 差分）、`envtok29{4,5}.txt`（token 集合）。**本 run 结束即销毁（skill 纪律：二进制不留 /tmp）** —— 移植轮必须自行重新下载，§0 md5/计数即校验基准。
+- 官方 changelog 快照 `/tmp/cc-CHANGELOG.md`（8,707 行）同源销毁；来源 URL 见 §0。
+- 复现命令：`npm pack @anthropic-ai/claude-code-linux-x64@<ver>`；`md5sum`；`strings -n 8 <elf> | sort -u`；`comm -13/-23`；token 差分 `grep -ohE '\bCLAUDE_[A-Z0-9_]{3,}\b' | sort -u` 后 comm。
