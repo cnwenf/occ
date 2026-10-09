@@ -14,6 +14,7 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import { backgroundTimeoutUsageNote } from '../tasks/LocalShellTask/backgroundDeadline.js'
 import {
   findToolByName,
   getEmptyToolPermissionContext,
@@ -28,6 +29,7 @@ import {
   isAgentHooksOriginTrusted,
   sanitizeTrustKey,
 } from '../tools/AgentTool/loadAgentsDir.js'
+import { BASH_TOOL_NAME } from '../tools/BashTool/toolName.js'
 import { getTools } from '../tools.js'
 import { createAbortController } from '../utils/abortController.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -38,6 +40,7 @@ import { getMainLoopModel } from '../utils/model/model.js'
 import { hasPermissionsToUseTool } from '../utils/permissions/permissions.js'
 import { setCwd } from '../utils/Shell.js'
 import { jsonStringify } from '../utils/slowOperations.js'
+import { getTaskOutputPath } from '../utils/task/diskOutput.js'
 import { getErrorParts } from '../utils/toolErrors.js'
 import { zodToJsonSchema } from '../utils/zodToJsonSchema.js'
 
@@ -85,6 +88,139 @@ function logUntrustedAgentDefinitionSkip(agentDef: {
     fromAdditionalDirectory:
       'false' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
+}
+
+// ── CC 2.1.295 serve-mode background Bash ─────────────────────────────────
+//
+// Official 2.1.295 serve factory (s295 verbatim; `y` = http mode, `Y=Sw()`
+// is the host-config singleton — stdio `mcp serve` takes the else branch):
+//
+//   Y.disableBackgroundAgentLaunch(),Y.disableRemoteAgentIsolation(),
+//   Y.disableBackgroundDeadline(),y?xIr(Sw()):Y.disableBackgroundCompletionNotice()
+//
+// New in 2.1.295 (verified absent from s294):
+//
+//   function Ole(){return!Sw().backgroundCompletionNoticeDisabled}
+//   var sYt="Nothing notifies you when the command finishes: read the output
+//     file that the result names to check on it. The file gets no line when
+//     the command ends, so if you need to know that it has, end the command
+//     with an `echo` of your own."
+//
+// Raw (stdio) serve tool-result serialization — NO mapper call; the
+// interactive mapToolResultToToolResultBlockParam texts ("Output is being
+// written to: …") never reach raw-serve clients:
+//
+//   let o=j.data,b=typeof o==="object"&&o!==null&&"backgroundTaskId"in o
+//     &&typeof o.backgroundTaskId==="string"
+//     ?{...o,backgroundOutputPath:ku(o.backgroundTaskId)}:o;
+//   A={content:[{type:"text",text:_(b)}]}
+//
+// `ku(e)` ≡ OCC getTaskOutputPath(taskId) (join(getTaskOutputDir(),
+// `${taskId}.output`)), `_` ≡ jsonStringify. OCC has no host-config singleton,
+// so the Ole()-gated serve surface is reproduced here: result enrichment via
+// serializeServeToolResultData(), description gating via
+// toServeModeBashDescription(). The startup disable*() calls have no OCC
+// equivalents beyond the existing setBackgroundDeadlineDisabled setter
+// (module-global; staged — see the round's gap notes).
+
+/** Official `sYt` — serve-mode background-completion sentence, verbatim. */
+const SERVE_BACKGROUND_NO_NOTICE_SENTENCE =
+  'Nothing notifies you when the command finishes: read the output file that the result names to check on it. The file gets no line when the command ends, so if you need to know that it has, end the command with an `echo` of your own.'
+
+/**
+ * The interactive Bash usage-note segment (BashTool/prompt.ts
+ * getBackgroundUsageNote) that promises completion notifications. The
+ * official serve-mode note (fxt()) replaces it: "Only use this if you don't
+ * need the result immediately. ${sYt} You do not need to use '&' …" — no
+ * notification promise and no backgroundTimeoutUsageNote() suffix.
+ */
+const INTERACTIVE_BACKGROUND_NOTICE_PROMISE =
+  "Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes."
+
+const SERVE_BACKGROUND_NOTICE_REPLACEMENT = `Only use this if you don't need the result immediately. ${SERVE_BACKGROUND_NO_NOTICE_SENTENCE}`
+
+/**
+ * Sleep sub-items dropped from the served Bash description where the official
+ * gates on Ole() (serve stdio sets backgroundCompletionNoticeDisabled → the
+ * Monitor bullet and both notification-promise bullets are not emitted).
+ * The "`sleep N` … is blocked" bullet is deliberately NOT in this set: OCC's
+ * serve validateInput still blocks long leading sleeps (the official's Ole()
+ * gate there lives in BashTool.validateInput — shared file, staged), so
+ * keeping that bullet stays truthful to actual OCC serve behavior.
+ */
+const SERVE_STRIPPED_NOTIFICATION_BULLETS: ReadonlySet<string> = new Set([
+  'Use the Monitor tool to stream events from a background process (each stdout line is a notification). For one-shot "wait until done," use Bash with run_in_background instead.',
+  'If your command is long running and you would like to be notified when it finishes — use `run_in_background`. No sleep needed.',
+  'If waiting for a background task you started with `run_in_background`, you will be notified when it completes — do not poll.',
+])
+
+function isServeStrippedBulletLine(line: string): boolean {
+  const trimmed = line.trimStart()
+  return (
+    trimmed.startsWith('- ') &&
+    SERVE_STRIPPED_NOTIFICATION_BULLETS.has(trimmed.slice(2))
+  )
+}
+
+/**
+ * Rewrite the interactive Bash description into the official 2.1.295
+ * serve-mode description (evidence-found route — see banner):
+ * 1. swap the notification-promise segment for the official `sYt` text,
+ * 2. strip the backgroundTimeoutUsageNote() suffix (the official serve note
+ *    has none — serve sessions run with disableBackgroundDeadline()),
+ * 3. drop the notification-promise sleep bullets (Ole() gating).
+ * Pure and idempotent; text the transform does not recognize passes through
+ * unchanged.
+ */
+export function toServeModeBashDescription(description: string): string {
+  let transformed = description.replaceAll(
+    INTERACTIVE_BACKGROUND_NOTICE_PROMISE,
+    SERVE_BACKGROUND_NOTICE_REPLACEMENT,
+  )
+  const deadlineNote = backgroundTimeoutUsageNote()
+  if (deadlineNote !== '') {
+    transformed = transformed.replaceAll(deadlineNote, '')
+  }
+  return transformed
+    .split('\n')
+    .filter(line => !isServeStrippedBulletLine(line))
+    .join('\n')
+}
+
+type BackgroundTaskResultData = Record<string, unknown> & {
+  backgroundTaskId: string
+}
+
+function isBackgroundTaskResultData(
+  data: unknown,
+): data is BackgroundTaskResultData {
+  return (
+    typeof data === 'object' &&
+    data !== null &&
+    'backgroundTaskId' in data &&
+    typeof (data as { backgroundTaskId?: unknown }).backgroundTaskId ===
+      'string'
+  )
+}
+
+/**
+ * Official raw-serve tool-result serialization (banner evidence): background
+ * task results gain `backgroundOutputPath: ku(backgroundTaskId)` — the
+ * `.output` file the served client should read, since no completion
+ * notification exists in serve mode. Non-background data serializes plain.
+ * Immutable (spreads into a new object; the input is never mutated). Errors
+ * (e.g. from getTaskOutputPath) propagate to the CallTool handler's catch →
+ * explicit isError result + logError, mirroring the official (no local
+ * try/catch, never silently swallowed).
+ */
+export function serializeServeToolResultData(data: unknown): string {
+  if (isBackgroundTaskResultData(data)) {
+    return jsonStringify({
+      ...data,
+      backgroundOutputPath: getTaskOutputPath(data.backgroundTaskId),
+    })
+  }
+  return jsonStringify(data)
 }
 
 export async function startMCPServer(
@@ -179,13 +315,21 @@ export async function startMCPServer(
                 outputSchema = convertedSchema as ToolOutput
               }
             }
+            const description = await tool.prompt({
+              getToolPermissionContext: async () => toolPermissionContext,
+              tools,
+              agents: agentDefinitions.activeAgents,
+            })
             return {
               ...tool,
-              description: await tool.prompt({
-                getToolPermissionContext: async () => toolPermissionContext,
-                tools,
-                agents: agentDefinitions.activeAgents,
-              }),
+              // CC 2.1.295: the served Bash description is Ole()-gated —
+              // serve clients get no background-completion notifications, so
+              // the served surface swaps in the official `sYt` text and drops
+              // the notification-promise bullets (see toServeModeBashDescription).
+              description:
+                tool.name === BASH_TOOL_NAME
+                  ? toServeModeBashDescription(description)
+                  : description,
               inputSchema: zodToJsonSchema(tool.inputSchema) as ToolInput,
               outputSchema,
             }
@@ -254,7 +398,13 @@ export async function startMCPServer(
         const finalResult = await tool.call(
           (args ?? {}) as never,
           toolUseContext,
-          hasPermissionsToUseTool,
+          // Pre-existing CanUseToolFn variance error (committed at HEAD,
+          // unrelated to this round): hasPermissionsToUseTool declares an
+          // extra optional `hookAskFloor?` param + narrower arg types than the
+          // CanUseToolFn alias. Runtime is correct (exercised by the serve
+          // e2e tests). Silenced with the same `as never` idiom used on the
+          // args above to keep mcp.ts tsc-clean; no behavior change.
+          hasPermissionsToUseTool as never,
           createAssistantMessage({
             content: [],
           }),
@@ -264,10 +414,13 @@ export async function startMCPServer(
           content: [
             {
               type: 'text' as const,
+              // CC 2.1.295 raw-serve: background task data gains
+              // `backgroundOutputPath` (official `ku` ≡ getTaskOutputPath)
+              // before JSON serialization; everything else serializes plain.
               text:
                 typeof finalResult === 'string'
                   ? finalResult
-                  : jsonStringify(finalResult.data),
+                  : serializeServeToolResultData(finalResult.data),
             },
           ],
         }

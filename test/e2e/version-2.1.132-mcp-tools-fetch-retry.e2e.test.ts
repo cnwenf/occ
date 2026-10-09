@@ -10,9 +10,14 @@ describe('MCP tools-fetch-failed retry + status (2.1.132, e2e)', () => {
   test('fetchToolsForClient retries tools/list (requestToolsListWithRetry)', async () => {
     const src = await Bun.file(`${REPO_ROOT}/src/services/mcp/client.ts`).text()
     expect(src).toContain('requestToolsListWithRetry')
-    // 3 attempts with backoff
-    expect(src).toMatch(/attempts\s*=\s*3/)
-    expect(src).toContain('500 * (i + 1)')
+    // 2.1.295 (item 2): the retry now runs inside the official paginated
+    // walker — [250, 500, 1000]ms delays (`Os`) gated by isRetryableListError
+    // (`jn`), replacing the old 3×500·(i+1)ms loop.
+    const pagination = await Bun.file(
+      `${REPO_ROOT}/src/services/mcp/listPagination.ts`,
+    ).text()
+    expect(pagination).toContain('[250, 500, 1000]')
+    expect(pagination).toContain('isRetryableListError')
   })
 
   test('SDK connection flow sets toolsFetchError instead of hard-failing', async () => {

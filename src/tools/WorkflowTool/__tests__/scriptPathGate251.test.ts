@@ -93,11 +93,14 @@ describe('2.1.251: Workflow scriptPath readable-set gate (Gap-109c)', () => {
     // Act
     const verdict = checkScriptPathReadable(outsidePath, ctx)
 
-    // Assert — exact It() message from the binary.
+    // Assert — exact It() message from the binary (CC 2.1.295 item-5 added
+    // the second line guiding inline `script` usage — official `Xt`).
     expect(verdict).toBe(scriptPathNotReadableMessage(outsidePath))
     expect(verdict).toBe(
       'scriptPath must be a script path this tool returned, or a file you can ' +
-        `already read (the working directory or a directory you have added): ${outsidePath}`,
+        `already read (the working directory or a directory you have added): ${outsidePath}\n` +
+        'A session that cannot call Read cannot load any scriptPath. ' +
+        "Pass the whole script inline through Workflow's `script` input instead.",
     )
   })
 

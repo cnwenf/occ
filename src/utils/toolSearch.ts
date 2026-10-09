@@ -200,8 +200,24 @@ export function getToolSearchMode(): ToolSearchMode {
 /**
  * Default patterns for models that do NOT support tool_reference.
  * New models are assumed to support tool_reference unless explicitly listed here.
+ *
+ * CC 2.1.295 changelog: "Fixed Claude 3 Opus and Claude 3.x Sonnet sessions
+ * being offered tool search, which those models reject, where feature flags
+ * are unavailable" — official binary verbatim:
+ * `var Da=["claude-3-opus","claude-3-sonnet","claude-3-haiku"];
+ *  function Bst(e){return!pPt(e??et(),Da)}`
+ * where pPt is a substring-includes check (same semantics as
+ * modelSupportsToolReference below). Note the substring semantics: e.g.
+ * 'claude-3-5-sonnet' does NOT contain 'claude-3-sonnet', so 3.5 models stay
+ * supported. OCC additionally keeps its pre-existing bare 'haiku' pattern
+ * (OCC-conservative superset of the official list — documented deviation).
  */
-const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = ['haiku']
+const DEFAULT_UNSUPPORTED_MODEL_PATTERNS = [
+  'haiku',
+  'claude-3-opus',
+  'claude-3-sonnet',
+  'claude-3-haiku',
+]
 
 /**
  * Get the list of model patterns that do NOT support tool_reference.

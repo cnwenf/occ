@@ -43,8 +43,13 @@ type BaseProps = {
 };
 
 /**
- * Bold and dim are mutually exclusive in terminals.
- * This type ensures you can use one or the other, but not both.
+ * Weight styling. CC 2.1.295: bold and dim COEXIST — the official emitter
+ * `wqe` applies both when both are set (`if(i.bold)e=ge.bold(e);
+ * if(i.dim)e=ge.dim(e)`), SGR 1/2 set them independently, and SGR 22 clears
+ * both. The runtime below already spreads both flags into the text styles;
+ * the union keeps the pre-existing single-flag shapes and adds the combined
+ * one. (The old "mutually exclusive" union was an OCC invention contradicted
+ * by the official binary.)
  */
 type WeightProps = {
   bold?: never;
@@ -55,6 +60,9 @@ type WeightProps = {
 } | {
   dim: boolean;
   bold?: never;
+} | {
+  bold: boolean;
+  dim: boolean;
 };
 export type Props = BaseProps & WeightProps;
 const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {

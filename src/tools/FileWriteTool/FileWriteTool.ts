@@ -49,10 +49,12 @@ import {
   FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
   FILE_NOT_READ_MESSAGE,
   FILE_STATE_CURRENT_NOTE,
+  fileStateMatchesDisk,
   fileStateMatchesNormalized,
   getGuardModel,
   getModelBucket,
   isCoveredByReadDenyRule,
+  isFileStateFullyTrusted,
   isFullReadOfFileState,
   isNotebookPathForGuard,
   isOldModel,
@@ -658,11 +660,24 @@ export const FileWriteTool = buildTool({
 
     // Update read timestamp, to invalidate stale writes. Content stored in
     // the canonical readFileState form (binary J9: BOM-stripped, LF-only).
+    // CC 2.1.295 reseed propagation (official
+    // `Te=k4(ke)&&PLe(ke,FS(G)); set(...,!Te&&{contentNotInModelContext:!0})`):
+    // the fresh entry is only trusted when the PRIOR entry was a trusted full
+    // read (k4 ≡ isFileStateFullyTrusted) that still matched the pre-write
+    // disk content (PLe ≡ fileStateMatchesDisk against FS(G) ≡
+    // normalizeForComparison(oldContent)). New files (no prior entry) always
+    // seed flagged — the model has not seen this content via a Read.
+    const priorState = readFileState.get(fullFilePath)
+    const priorTrustedAndCurrent =
+      isFileStateFullyTrusted(priorState) &&
+      priorState !== undefined &&
+      fileStateMatchesDisk(priorState, normalizeForComparison(oldContent ?? ''))
     readFileState.set(fullFilePath, {
       content: normalizeForComparison(content),
       timestamp: getFileModificationTime(fullFilePath),
       offset: undefined,
       limit: undefined,
+      ...(!priorTrustedAndCurrent && { contentNotInModelContext: true }),
     })
 
     // CC 2.1.288 (#53): a successful write triggers nested-memory discovery for

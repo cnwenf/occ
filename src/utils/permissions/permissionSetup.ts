@@ -1718,9 +1718,42 @@ export function prepareContextForPlanMode(
 }
 
 /**
+ * CC 2.1.295: re-evaluate the cached `isAutoModeAvailable` flag against the
+ * FRESH gate after a settings change.
+ *
+ * Official v295 computes the gate fresh — `l_r(e) = !Y(e) && !ae()`
+ * (s295.txt :398/:429) — and its settings-change mapper `Tc` treats
+ * `disableAutoMode` as permission-affecting (s295 :17852/:18053/:18099:
+ * `o==="disableAutoMode"&&n==="disable" → ["permissions.disableAutoMode"]`),
+ * so every settings change re-runs the availability check.
+ *
+ * OCC caches the flag: startup sets `isAutoModeAvailable:
+ * isAutoModeGateEnabled()` and `canCycleToAuto` requires
+ * `ctx.isAutoModeAvailable && isAutoModeGateEnabled()` — so once the auto-mode
+ * opt-in decline (PromptInput `handleAutoModeOptInDecline`) sticks the flag to
+ * false, REMOVING `disableAutoMode` from settings never restores auto mode
+ * without a restart. This re-evaluation clears/restores the sticky flag from
+ * the live gate on every settings change (called from transitionPlanAutoMode,
+ * which applySettingsChange + Config.tsx invoke on settings changes).
+ *
+ * Immutable: returns the SAME context reference when nothing changes.
+ */
+export function reevaluateAutoModeAvailability(
+  context: ToolPermissionContext,
+): ToolPermissionContext {
+  if (!feature('TRANSCRIPT_CLASSIFIER')) return context
+  const available = isAutoModeGateEnabled()
+  if (context.isAutoModeAvailable === available) return context
+  return { ...context, isAutoModeAvailable: available }
+}
+
+/**
  * Reconciles auto-mode state during plan mode after a settings change.
- * Compares desired state (shouldPlanUseAutoMode) against actual state
- * (isAutoModeActive) and activates/deactivates auto accordingly. No-op when
+ * First re-evaluates the cached isAutoModeAvailable flag against the fresh
+ * gate (CC 2.1.295 — removes the sticky-false set by the opt-in decline when
+ * settings re-enable auto mode). Then compares desired state
+ * (shouldPlanUseAutoMode) against actual state (isAutoModeActive) and
+ * activates/deactivates auto accordingly. Plan reconciliation is a no-op when
  * not in plan mode. Called from applySettingsChange so that toggling
  * useAutoModeDuringPlan mid-plan takes effect immediately.
  */
@@ -1728,11 +1761,12 @@ export function transitionPlanAutoMode(
   context: ToolPermissionContext,
 ): ToolPermissionContext {
   if (!feature('TRANSCRIPT_CLASSIFIER')) return context
-  if (context.mode !== 'plan') return context
+  const reconciled = reevaluateAutoModeAvailability(context)
+  if (reconciled.mode !== 'plan') return reconciled
   // Mirror prepareContextForPlanMode's entry-time exclusion — never activate
   // auto mid-plan when the user entered from a dangerous mode.
-  if (context.prePlanMode === 'bypassPermissions') {
-    return context
+  if (reconciled.prePlanMode === 'bypassPermissions') {
+    return reconciled
   }
 
   const want = shouldPlanUseAutoMode()
@@ -1742,16 +1776,16 @@ export function transitionPlanAutoMode(
     // syncPermissionRulesFromDisk (called before us in applySettingsChange)
     // re-adds dangerous rules from disk without touching strippedDangerousRules.
     // Re-strip so the classifier isn't bypassed by prefix-rule allow matches.
-    return stripDangerousPermissionsForAutoMode(context)
+    return stripDangerousPermissionsForAutoMode(reconciled)
   }
-  if (!want && !have) return context
+  if (!want && !have) return reconciled
 
   if (want) {
     autoModeStateModule?.setAutoModeActive(true)
     setNeedsAutoModeExitAttachment(false)
-    return stripDangerousPermissionsForAutoMode(context)
+    return stripDangerousPermissionsForAutoMode(reconciled)
   }
   autoModeStateModule?.setAutoModeActive(false)
   setNeedsAutoModeExitAttachment(true)
-  return restoreDangerousPermissions(context)
+  return restoreDangerousPermissions(reconciled)
 }

@@ -29,6 +29,15 @@ export const STOPPED_DISPLAY_MS = 3_000
 // Grace period for terminal local_agent tasks in the coordinator panel
 export const PANEL_GRACE_MS = 30_000
 
+// Retention window for terminal mcp_task rows before eviction. Official
+// 2.1.295 (binary `yI=30000`): both eviction sites guard
+// `task.type === "mcp_task" && (task.endTime ?? 0) + yI > Date.now()` so a
+// just-stopped/just-finished MCP background task stays visible in /tasks for a
+// beat (its stop notification settles) before the row is GC'd. Defined here —
+// not in McpBackgroundTask.ts — because that module imports this one
+// (registerTask/updateTaskState) and a back-import would be circular.
+export const MCP_TASK_RETENTION_MS = 30_000
+
 // Attachment type for task status updates
 export type TaskAttachment = {
   type: 'task_status'
@@ -152,6 +161,15 @@ export function evictTerminalTask(
     if ('retain' in task && (task.evictAfter ?? Infinity) > Date.now()) {
       return prev
     }
+    // MCP background tasks linger for a short retention window after they end
+    // (official 2.1.295: `(endTime ?? 0) + yI > Date.now()`), so the row stays
+    // visible while its stop notification settles before being GC'd.
+    if (
+      task.type === 'mcp_task' &&
+      (task.endTime ?? 0) + MCP_TASK_RETENTION_MS > Date.now()
+    ) {
+      return prev
+    }
     const { [taskId]: _, ...remainingTasks } = prev.tasks
     return { ...prev, tasks: remainingTasks }
   })
@@ -253,6 +271,14 @@ export function applyTaskOffsetsAndEvictions(
         continue
       }
       if ('retain' in fresh && (fresh.evictAfter ?? Infinity) > Date.now()) {
+        continue
+      }
+      // Same MCP retention window as evictTerminalTask (official 2.1.295 bulk
+      // eviction site mirrors the eager site).
+      if (
+        fresh.type === 'mcp_task' &&
+        (fresh.endTime ?? 0) + MCP_TASK_RETENTION_MS > Date.now()
+      ) {
         continue
       }
       delete newTasks[id]

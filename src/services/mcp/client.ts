@@ -125,6 +125,7 @@ import {
   runElicitationHooks,
   runElicitationResultHooks,
 } from './elicitationHandler.js'
+import { isNetworkError, walkPaginatedList } from './listPagination.js'
 import { filterMcpAppUiResources } from './mcpAppUiResources.js'
 import {
   buildMcpToolName,
@@ -928,6 +929,144 @@ export function getServerCacheKey(
   return `${name}-${jsonStringify(serverRef)}`
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.295 (item 3): rapid-drop reconnect backoff for remote transports.
+// The official `yDo` factory attaches a close handler to every connected
+// REMOTE client (`le()`: type !== undefined && type !== 'stdio' &&
+// type !== 'sdk') and redials it, applying a capped exponential hold-off
+// when the transport keeps dropping soon after connecting:
+//
+//   lifetime   = max(0, now - connectionStart)
+//   rapidDrops = lifetime < 10_000 ? (previous ?? 0) + 1 : 0    (nns = 1e4)
+//   holdoff    = rapidDrops > 1 ? gnt(rapidDrops - 1) - lifetime : 0
+//   gnt(a)     = min(30_000, 1000 * 2^(a-1))                    (w/h)
+//   log: `${config.type} transport closed again soon after it connected:
+//          reconnecting in ${holdoff}ms`
+//
+// The interactive REPL replaces client.onclose with its own reconnect loop
+// (useManageMCPConnections), so this drives the shared/headless close path,
+// which previously had NO redial and NO backoff at all.
+// ---------------------------------------------------------------------------
+
+/** Official `nns`: a drop within this connection lifetime counts as rapid. */
+export const RAPID_DROP_THRESHOLD_MS = 10_000
+/** Official `w`: base delay for the redial hold-off exponential. */
+export const RECONNECT_BACKOFF_BASE_MS = 1_000
+/** Official `h`: ceiling for the redial hold-off. */
+export const RECONNECT_BACKOFF_CAP_MS = 30_000
+/** Official `ie`/`ae`: wait up to 5×1s for an unsettled explicit dial. */
+const UNSETTLED_DIAL_WAIT_ROUNDS = 5
+const UNSETTLED_DIAL_WAIT_MS = 1_000
+
+/** Rapid-drop counts keyed by server cache key (official: WeakMap + seed). */
+const rapidDropCounts = new Map<string, number>()
+const headlessRedialsInFlight = new Set<string>()
+const explicitReconnectsInFlight = new Set<string>()
+const activeHeadlessRedials = new Set<AbortController>()
+let headlessRedialsCancelled = false
+
+registerCleanup(async () => {
+  headlessRedialsCancelled = true
+  for (const controller of activeHeadlessRedials) {
+    controller.abort()
+  }
+  activeHeadlessRedials.clear()
+})
+
+/** Official rapid-drop counting: increment only when the drop was rapid. */
+export function nextRapidDropCount(
+  previousCount: number,
+  connectionLifetimeMs: number,
+): number {
+  return connectionLifetimeMs < RAPID_DROP_THRESHOLD_MS
+    ? previousCount + 1
+    : 0
+}
+
+/** Official `gnt`: capped exponential backoff min(capMs, baseMs·2^(a-1)). */
+export function reconnectBackoffMs(attempt: number): number {
+  return Math.min(
+    RECONNECT_BACKOFF_CAP_MS,
+    RECONNECT_BACKOFF_BASE_MS * 2 ** (attempt - 1),
+  )
+}
+
+/**
+ * Official hold-off `T`: the backoff for attempt-1 minus the lifetime the
+ * connection already managed, never before the second consecutive rapid
+ * drop (attempt <= 1 reconnects immediately, as before).
+ */
+export function computeReconnectHoldoffMs(
+  rapidDropAttempt: number,
+  connectionLifetimeMs: number,
+): number {
+  if (rapidDropAttempt <= 1) return 0
+  return Math.max(
+    0,
+    reconnectBackoffMs(rapidDropAttempt - 1) - connectionLifetimeMs,
+  )
+}
+
+function scheduleHeadlessRemoteRedial(
+  name: string,
+  serverRef: ScopedMcpServerConfig,
+  connectionLifetimeMs: number,
+): void {
+  if (headlessRedialsCancelled) return
+  const key = getServerCacheKey(name, serverRef)
+  const rapidDrops = nextRapidDropCount(
+    rapidDropCounts.get(key) ?? 0,
+    connectionLifetimeMs,
+  )
+  rapidDropCounts.set(key, rapidDrops)
+
+  const holdoffMs = computeReconnectHoldoffMs(rapidDrops, connectionLifetimeMs)
+  if (holdoffMs > 0) {
+    logMCPDebug(
+      name,
+      `${serverRef.type} transport closed again soon after it connected: reconnecting in ${holdoffMs}ms`,
+    )
+  }
+  if (headlessRedialsInFlight.has(key)) return
+  headlessRedialsInFlight.add(key)
+
+  const abortController = new AbortController()
+  activeHeadlessRedials.add(abortController)
+  void (async () => {
+    try {
+      if (holdoffMs > 0) {
+        await sleep(holdoffMs, abortController.signal, { unref: true })
+      }
+      // Let an in-flight explicit reconnect (reconnectMcpServerImpl) settle
+      // so the background redial doesn't race it — the official waits up to
+      // 5×1s on unsettled dials for the same server.
+      for (
+        let round = 0;
+        round < UNSETTLED_DIAL_WAIT_ROUNDS &&
+        explicitReconnectsInFlight.has(key);
+        round++
+      ) {
+        await sleep(UNSETTLED_DIAL_WAIT_MS, abortController.signal, {
+          unref: true,
+        })
+      }
+      if (abortController.signal.aborted || headlessRedialsCancelled) return
+      const redial = await connectToServer(name, serverRef)
+      if (redial.type !== 'connected') {
+        // Don't leave a failed background dial in the memo cache — the next
+        // use should get a fresh dial, exactly like the lazy-redial behavior.
+        connectToServer.cache.delete(key)
+      }
+    } catch (error) {
+      connectToServer.cache.delete(key)
+      logMCPDebug(name, `Background redial failed: ${errorMessage(error)}`)
+    } finally {
+      activeHeadlessRedials.delete(abortController)
+      headlessRedialsInFlight.delete(key)
+    }
+  })()
+}
+
 /**
  * TODO (ollie): The memoization here increases complexity by a lot, and im not sure it really improves performance
  * Attempts to connect to a single MCP server
@@ -1601,6 +1740,9 @@ export const connectToServer = memoize(
       // Enhanced connection drop detection and logging for all transport types
       const connectionStartTime = Date.now()
       let hasErrorOccurred = false
+      // Set when cleanup() closes the client deliberately (server removal /
+      // disable / shutdown) so the shared onclose doesn't schedule a redial.
+      let intentionalClose = false
 
       // Store original handlers
       const originalOnerror = client.onerror
@@ -1631,21 +1773,13 @@ export const connectToServer = memoize(
         })
       }
 
-      const isTerminalConnectionError = (msg: string): boolean => {
-        return (
-          msg.includes('ECONNRESET') ||
-          msg.includes('ETIMEDOUT') ||
-          msg.includes('EPIPE') ||
-          msg.includes('EHOSTUNREACH') ||
-          msg.includes('ECONNREFUSED') ||
-          msg.includes('Body Timeout Error') ||
-          msg.includes('terminated') ||
-          // SDK SSE reconnection intermediate errors — may be wrapped around the
-          // actual network error, so the substrings above won't match
-          msg.includes('SSE stream disconnected') ||
-          msg.includes('Failed to reconnect SSE stream')
-        )
-      }
+      // CC 2.1.295 (item 1): the terminal-connection-error classification now
+      // uses the official `ua` network-error classifier (see listPagination.ts)
+      // instead of substring matching on the message alone. Numeric error
+      // codes/statuses (HTTP statuses, JSON-RPC codes — including negative
+      // codes like ListPaginationExceeded) are never network errors, so a
+      // SERVER error reply that merely mentions "ECONNRESET" no longer counts
+      // toward dropping the connection.
 
       // Enhanced error handler with detailed logging
       client.onerror = (error: Error) => {
@@ -1732,7 +1866,7 @@ export const connectToServer = memoize(
             return
           }
 
-          if (isTerminalConnectionError(error.message)) {
+          if (isNetworkError(error)) {
             consecutiveConnectionErrors++
             logMCPDebug(
               name,
@@ -1781,12 +1915,24 @@ export const connectToServer = memoize(
         connectToServer.cache.delete(key)
         logMCPDebug(name, `Cleared connection cache for reconnection`)
 
+        // CC 2.1.295 (item 3): redial remote transports with rapid-drop
+        // backoff so a flapping server can't trigger an uncapped reconnect
+        // storm. Local (stdio/sdk) servers keep lazy-redial-on-next-use only.
+        // Deliberate closes (cleanup: server removal/disable, shutdown) skip
+        // the redial entirely.
+        if (!intentionalClose && !isLocalMcpServer(serverRef)) {
+          scheduleHeadlessRemoteRedial(name, serverRef, uptime)
+        }
+
         if (originalOnclose) {
           originalOnclose()
         }
       }
 
       const cleanup = async () => {
+        // Mark deliberate teardown so the shared onclose skips the 2.1.295
+        // headless redial (item 3) for this client.
+        intentionalClose = true
         // In-process servers (e.g. Chrome MCP) don't have child processes or stderr
         if (inProcessServer) {
           try {
@@ -2135,43 +2281,24 @@ export function mcpToolInputToAutoClassifierInput(
 
 /**
  * 2.1.132: retry tools/list on transient failure (official retries before
- * giving up + marking "tools fetch failed"). 3 attempts, 500ms backoff.
- * 2.1.144: follow pagination (nextCursor) — accumulate all pages, retrying
- * each page individually on transient failure.
+ * giving up + marking "tools fetch failed").
+ * 2.1.144: follow pagination (nextCursor) — accumulate all pages.
+ * 2.1.295 (item 2): delegated to the official paginated list walker —
+ * repeated-cursor stop, 20-page cap, official [250, 500, 1000]ms transient
+ * retry schedule, and tengu_mcp_list_paginated telemetry.
  */
 async function requestToolsListWithRetry(
   client: Client,
-  attempts = 3,
+  serverName: string,
 ): Promise<ListToolsResult> {
-  const allTools: ListToolsResult['tools'] = []
-  let cursor: string | undefined
-  do {
-    let lastError: unknown
-    let result: ListToolsResult | undefined
-    for (let i = 0; i < attempts; i++) {
-      try {
-        result = (await client.request(
-          {
-            method: 'tools/list',
-            ...(cursor ? { params: { cursor } } : {}),
-          },
-          ListToolsResultSchema,
-        )) as ListToolsResult
-        break
-      } catch (e) {
-        lastError = e
-        if (i < attempts - 1) {
-          await new Promise(r => setTimeout(r, 500 * (i + 1)))
-        }
-      }
-    }
-    if (!result) {
-      throw lastError
-    }
-    allTools.push(...result.tools)
-    cursor = (result as { nextCursor?: string }).nextCursor
-  } while (cursor)
-  return { tools: allTools } as ListToolsResult
+  const tools = (await walkPaginatedList(
+    client,
+    serverName,
+    'tools/list',
+    ListToolsResultSchema,
+    result => (result as unknown as ListToolsResult).tools,
+  )) as ListToolsResult['tools']
+  return { tools } as ListToolsResult
 }
 
 export const fetchToolsForClient = memoizeWithLRU(
@@ -2183,7 +2310,7 @@ export const fetchToolsForClient = memoizeWithLRU(
         return []
       }
 
-      const result = await requestToolsListWithRetry(client.client)
+      const result = await requestToolsListWithRetry(client.client, client.name)
 
       // Sanitize tool data from MCP server
       const toolsToProcess = recursivelySanitizeUnicode(result.tools)
@@ -2583,20 +2710,15 @@ export const fetchResourcesForClient = memoizeWithLRU(
       }
 
       // 2.1.144: follow pagination (nextCursor) for resources/list.
-      let resources: NonNullable<ListResourcesResult['resources']> = []
-      let cursor: string | undefined
-      do {
-        const result = await client.client.request(
-          {
-            method: 'resources/list',
-            ...(cursor ? { params: { cursor } } : {}),
-          },
-          ListResourcesResultSchema,
-        )
-        if (!result.resources) break
-        resources = resources.concat(result.resources)
-        cursor = (result as { nextCursor?: string }).nextCursor
-      } while (cursor)
+      // 2.1.295 (item 2): via the guarded paginated list walker (repeated-
+      // cursor stop, 20-page cap, transient retry, list-paginated telemetry).
+      const resources = (await walkPaginatedList(
+        client.client,
+        client.name,
+        'resources/list',
+        ListResourcesResultSchema,
+        result => (result as unknown as ListResourcesResult).resources,
+      )) as NonNullable<ListResourcesResult['resources']>
 
       if (!resources.length) return []
 
@@ -2633,20 +2755,15 @@ export const fetchCommandsForClient = memoizeWithLRU(
       }
 
       // 2.1.144: follow pagination (nextCursor) for prompts/list.
-      const allPrompts: NonNullable<ListPromptsResult['prompts']> = []
-      let cursor: string | undefined
-      do {
-        const result = (await client.client.request(
-          {
-            method: 'prompts/list',
-            ...(cursor ? { params: { cursor } } : {}),
-          },
-          ListPromptsResultSchema,
-        )) as ListPromptsResult
-        if (!result.prompts) break
-        allPrompts.push(...result.prompts)
-        cursor = (result as { nextCursor?: string }).nextCursor
-      } while (cursor)
+      // 2.1.295 (item 2): via the guarded paginated list walker (repeated-
+      // cursor stop, 20-page cap, transient retry, list-paginated telemetry).
+      const allPrompts = (await walkPaginatedList(
+        client.client,
+        client.name,
+        'prompts/list',
+        ListPromptsResultSchema,
+        result => (result as unknown as ListPromptsResult).prompts,
+      )) as NonNullable<ListPromptsResult['prompts']>
 
       if (!allPrompts.length) return []
 
@@ -2768,7 +2885,17 @@ export async function reconnectMcpServerImpl(
     clearKeychainCache()
 
     await clearServerCache(name, config)
-    const client = await connectToServer(name, config)
+    // 2.1.295 (item 3): while an explicit reconnect is in flight, a pending
+    // headless rapid-drop redial for the same server waits instead of racing
+    // this dial (official `isControlReconnectInFlight` / unsettled-dial wait).
+    const reconnectKey = getServerCacheKey(name, config)
+    explicitReconnectsInFlight.add(reconnectKey)
+    let client: MCPServerConnection
+    try {
+      client = await connectToServer(name, config)
+    } finally {
+      explicitReconnectsInFlight.delete(reconnectKey)
+    }
 
     if (client.type !== 'connected') {
       return {

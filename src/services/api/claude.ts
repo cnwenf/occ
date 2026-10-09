@@ -22,6 +22,7 @@ import type { Stream } from '@anthropic-ai/sdk/streaming.mjs'
 import { randomUUID } from 'crypto'
 import {
   getAPIProvider,
+  getAPIProviderForStatsig,
   isFirstPartyAnthropicBaseUrl,
 } from 'src/utils/model/providers.js'
 import {
@@ -67,6 +68,7 @@ import {
   CAPPED_DEFAULT_MAX_TOKENS,
   getModelMaxOutputTokens,
   getSonnet1mExpTreatmentEnabled,
+  modelSupports1M,
 } from '../../utils/context.js'
 import { resolveAppliedEffort } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -1105,6 +1107,15 @@ export async function* executeNonStreamingRequest(
      * same handler instance as the streaming loop.
      */
     retryAdvisorEntryRefused?: (error: APIError) => boolean
+    /**
+     * CC 2.1.295 (item-1): the shared one-shot context-1m beta 400 heal
+     * handler (official `qtt` in the sync onApiError fatal-400 chain) — the
+     * official wires it into the non-streaming fallback too, so the fallback
+     * gets the same handler instance as the streaming loop. Returns true
+     * when the 400 was healed and the request must be resent WITHOUT the
+     * `context-1m-2025-08-07` beta.
+     */
+    retryContext1mBetaRefused?: (error: APIError) => boolean
   },
   paramsFromContext: (context: RetryContext) => BetaMessageStreamParams,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
@@ -1210,6 +1221,8 @@ export async function* executeNonStreamingRequest(
       maxRetries: retryOptions.maxRetries,
       querySource: retryOptions.querySource,
       retryAdvisorEntryRefused: retryOptions.retryAdvisorEntryRefused,
+      // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
+      retryContext1mBetaRefused: retryOptions.retryContext1mBetaRefused,
       // CC 2.1.285 (item-B2): official `I0t` passes `nonStreamingTimeoutMs:S`
       // (S = IOo() = this fallbackTimeoutMs) into the loop options so the retry
       // loop can cap timed-out re-sends via
@@ -2199,24 +2212,171 @@ async function* queryModel(
   // were dynamically added, so we can log and send it to telemetry.
   let lastRequestBetas: string[] | undefined
 
+  // CC 2.1.295 (item-1): the context-1m beta 400 heal state machine —
+  // official `sb` ("idle"→"retrying"/"guessing"→"spent"/"unproven") with
+  // `SEe=()=>sb!=="idle"&&sb!=="spent"` (@217663765 region). `OJe` (the
+  // request-carried-the-beta latch) maps to `lastRequestBetas` including
+  // CONTEXT_1M_BETA_HEADER; the official provider-trust gate `qCe(cc(Y.model))`
+  // is not portable (its firstParty branch calls an unresolvable predicate),
+  // so per task spec the OCC gate is modelSupports1M(options.model) — the
+  // beta is only ever sent for 1M-capable models; `Rp()` (thinking-binding
+  // controls active) is identically false in OCC (no binding beta exists),
+  // so the unnamed-rejection arm needs no extra condition. The official
+  // per-model spent registry `$wr` (NIo/Gr/$n) has no OCC surface — heal
+  // stays request-scoped (documented deviation).
+  let context1mHealState:
+    | 'idle'
+    | 'retrying'
+    | 'guessing'
+    | 'spent'
+    | 'unproven' = 'idle'
+  const isContext1mHealActive = (): boolean =>
+    context1mHealState !== 'idle' && context1mHealState !== 'spent'
+
+  // Official `Yie` — named rejection:
+  //   `function Yie(e){return e instanceof xt&&e.status===400&&
+  //     (e.message.includes(YS.header)||e.message.includes("long context beta"))}`
+  const isNamedContext1mRejection = (error: APIError): boolean =>
+    error.status === 400 &&
+    (error.message.includes(CONTEXT_1M_BETA_HEADER) ||
+      error.message.includes('long context beta'))
+  // Official `iN` — unnamed rejection:
+  //   `function iN(e){return e instanceof xt&&e.status===400&&
+  //     e.message.toLowerCase().includes("invalid beta flag")}`
+  const isUnnamedInvalidBetaFlag = (error: APIError): boolean =>
+    error.status === 400 &&
+    error.message.toLowerCase().includes('invalid beta flag')
+
+  /**
+   * CC 2.1.295 (item-1): official `qtt` (@217663765, byte-verified) — the
+   * fatal-400 chain handler returning verdict `"retry:context-1m-beta"`.
+   * Returns true when the 400 reads as the backend rejecting the
+   * `context-1m-2025-08-07` beta: the state machine latches
+   * (idle→retrying/guessing), paramsFromContext filters the header off the
+   * resend, and withRetry retries without consuming budget. A second 400
+   * while latched flips it to spent/unproven and returns false (at most ONE
+   * beta-stripped resend per request); 'spent' short-circuits silently.
+   */
+  const retryContext1mBetaRefused = (error: APIError): boolean => {
+    if (error.status !== 400) {
+      return false
+    }
+    try {
+      const named = isNamedContext1mRejection(error)
+      const unnamed = !named && isUnnamedInvalidBetaFlag(error)
+      if (context1mHealState === 'spent') {
+        return false
+      }
+      if (context1mHealState !== 'idle') {
+        context1mHealState =
+          context1mHealState === 'guessing' && unnamed ? 'spent' : 'unproven'
+        logForDebugging(
+          `[betas] the resend without ${CONTEXT_1M_BETA_HEADER} also got an HTTP 400, so the backend is not recorded as rejecting it; ${
+            context1mHealState === 'spent'
+              ? 'both said "invalid beta flag", so it is sent again from the next attempt'
+              : 'it stays off for the remaining attempts of this request and is sent again on the next request'
+          }`,
+          { level: 'warn' },
+        )
+        return false
+      }
+      const betasCarried1m =
+        lastRequestBetas?.includes(CONTEXT_1M_BETA_HEADER) ?? false
+      if (
+        !betasCarried1m ||
+        !modelSupports1M(options.model) ||
+        !(named || unnamed)
+      ) {
+        return false
+      }
+      context1mHealState = named ? 'retrying' : 'guessing'
+      logForDebugging(
+        `[betas] an HTTP 400 ${
+          named
+            ? 'reads as the backend rejecting'
+            : 'says "invalid beta flag", which may be about'
+        } ${CONTEXT_1M_BETA_HEADER}; resending once without it`,
+        { level: 'warn' },
+      )
+      return true
+    } catch (err) {
+      // Official `catch(Uo){return c(Uo),null}` — log and fall through to the
+      // normal non-retryable 400 path.
+      logForDebugging(
+        `[betas] context-1m beta heal handler threw: ${String(err)}`,
+        { level: 'error' },
+      )
+      return false
+    }
+  }
+
+  /**
+   * CC 2.1.295 (item-1): official `Ztt` (@217664050, byte-verified) — called
+   * when a request succeeds after a heal (stream `message_start`:
+   * `sEe(),Ztt(),dp=Fs.message`; non-streaming success: `_Ze(),iEe(),sEe(),
+   * Ztt(),uZe()`). Marks the beta "spent" for this request, filters it from
+   * the base beta list, and logs `tengu_beta_400_healed`
+   * {beta,model,provider,status:400,unnamed}. Official also calls
+   * `$wr(Y.model)` (per-model spent registry) — no OCC surface, skipped.
+   */
+  const markContext1mBetaHealed = (): void => {
+    if (
+      context1mHealState !== 'retrying' &&
+      context1mHealState !== 'guessing'
+    ) {
+      return
+    }
+    const unnamed = context1mHealState === 'guessing'
+    context1mHealState = 'spent'
+    try {
+      betas = betas.filter(b => b !== CONTEXT_1M_BETA_HEADER)
+      logEvent('tengu_beta_400_healed', {
+        beta:
+          CONTEXT_1M_BETA_HEADER as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        model:
+          options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        provider: getAPIProviderForStatsig(),
+        status: 400,
+        unnamed,
+      })
+    } catch (err) {
+      logForDebugging(
+        `[betas] context-1m beta healed-mark threw: ${String(err)}`,
+        { level: 'error' },
+      )
+    }
+  }
+
   const paramsFromContext = (retryContext: RetryContext) => {
-    const betasParams = [...betas]
+    // CC 2.1.295 (item-1): official params-builder filter (`RLn`,
+    // @217663765-adjacent) — while a heal is active (SEe), the
+    // context-1m header is stripped from the betas and the dynamic Sonnet-1M
+    // push is gated off:
+    //   `let Zo=ct.filter((td)=>td!==YS||!SEe());
+    //    if(!Zo.includes(YS)&&!SEe()&&uUn(Kn.model)!==null)Zo.push(YS)`
+    const healActive = isContext1mHealActive()
+    const betasParams = betas.filter(
+      b => b !== CONTEXT_1M_BETA_HEADER || !healActive,
+    )
 
     // Append 1M beta dynamically for the Sonnet 1M experiment.
     if (
       !betasParams.includes(CONTEXT_1M_BETA_HEADER) &&
+      !healActive &&
       getSonnet1mExpTreatmentEnabled(retryContext.model)
     ) {
       betasParams.push(CONTEXT_1M_BETA_HEADER)
     }
 
     // For Bedrock, include both model-based betas and dynamically-added tool search header
+    // CC 2.1.295 (item-1): official also filters the Bedrock beta list —
+    // `.filter((td)=>td!==YS||!SEe())` (@217663765-adjacent).
     const bedrockBetas =
       getAPIProvider() === 'bedrock'
         ? [
             ...getBedrockExtraBodyParamsBetas(retryContext.model),
             ...(toolSearchHeader ? [toolSearchHeader] : []),
-          ]
+          ].filter(b => b !== CONTEXT_1M_BETA_HEADER || !healActive)
         : []
     const extraBodyParams = getExtraBodyParams(bedrockBetas)
 
@@ -2656,6 +2816,12 @@ async function* queryModel(
         },
         // 2.1.276 advisor hotfix: official `zHe` (see handler creation above).
         retryAdvisorEntryRefused,
+        // CC 2.1.295 (item-1): official `qtt` — context-1m beta 400 heal
+        // (see handler creation above). Chain position mirrors the official
+        // fatal-400 chain: after the named beta-rejection scanner (`EZe`),
+        // before the thinking-binding handler (`fRe`) — both neighbor slots
+        // collapse to "immediately after retryAdvisorEntryRefused" in OCC.
+        retryContext1mBetaRefused,
       },
     )
 
@@ -2804,6 +2970,11 @@ async function* queryModel(
           case 'message_start': {
             // #018 (2.1.281): the message envelope opens (v281 `ml=!0`).
             messageEnvelopeOpen = true
+            // CC 2.1.295 (item-1): official message_start success mark —
+            // `sEe(),Ztt(),dp=Fs.message`: the stream opened cleanly, so if
+            // this attempt was a beta-stripped heal resend, mark the
+            // context-1m beta spent and log tengu_beta_400_healed.
+            markContext1mBetaHealed()
             partialMessage = part.message
             ttftMs = Date.now() - start
             usage = updateUsage(usage, part.message?.usage)
@@ -3660,6 +3831,8 @@ async function* queryModel(
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
           retryAdvisorEntryRefused,
+          // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
+          retryContext1mBetaRefused,
         },
         paramsFromContext,
         (attempt, _startTime, tokens) => {
@@ -3674,6 +3847,10 @@ async function* queryModel(
           prevToolDurationsForWire,
         },
       )
+      // CC 2.1.295 (item-1): official non-streaming success mark —
+      // `_Ze(),iEe(),sEe(),Ztt(),uZe()`: the request answered, so a pending
+      // beta-stripped heal is confirmed and tengu_beta_400_healed is logged.
+      markContext1mBetaHealed()
 
       const m: AssistantMessage = {
         message: {
@@ -3767,6 +3944,8 @@ async function* queryModel(
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
             retryAdvisorEntryRefused,
+            // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
+            retryContext1mBetaRefused,
           },
           paramsFromContext,
           (attempt, _startTime, tokens) => {
@@ -3781,6 +3960,8 @@ async function* queryModel(
             prevToolDurationsForWire,
           },
         )
+        // CC 2.1.295 (item-1): official non-streaming success mark (`Ztt()`).
+        markContext1mBetaHealed()
 
         const m: AssistantMessage = {
           message: {

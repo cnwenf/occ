@@ -87,6 +87,7 @@ import type { ProcessUserInputContext } from '../../utils/processUserInput/proce
 import { editPromptInEditor } from '../../utils/promptEditor.js';
 import { hasAutoModeOptIn, hasAutoModeOptInDismissed, getSettings_DEPRECATED } from '../../utils/settings/settings.js';
 import { getLastAssistantMessage } from '../../utils/messages.js';
+import { nfcInsert } from '../../utils/nfcInsert.js';
 import { findBtwTriggerPositions } from '../../utils/sideQuestion.js';
 import { getSendNowChordDisplay, hasExtendedKeyboardSupport, resolveSendNowKeyAction, SEND_NOW_HINT_ACTION, SEND_NOW_HINT_PADDING_LEFT, shouldAttemptEmptyEnterFlush, shouldFlushAfterSendNowSubmit, shouldPreferEnterChord, shouldShowSendNowHint } from '../../utils/sendNow.js';
 import { findSlashCommandPositions } from '../../utils/suggestions/commandSuggestions.js';
@@ -1425,9 +1426,14 @@ function PromptInput({
   function insertTextAtCursor(text: string) {
     // Push current state to buffer before inserting
     pushToBuffer(input, cursorOffset, pastedContents);
-    const newInput = input.slice(0, cursorOffset) + text + input.slice(cursorOffset);
-    trackAndSetInput(newInput);
-    setCursorOffset(cursorOffset + text.length);
+    // CC 2.1.295 official `insertText` (@236618722) + `jF` NFC-splice
+    // (@236615963): NFC-normalize the whole value around the insertion and
+    // set the cursor to the grapheme-adjusted splice end. Fixes the cursor
+    // landing one char too far when macOS NFD text (e.g. decomposed `é`) is
+    // pasted mid-prompt and NFC composition shrinks the string underneath.
+    const { written, end } = nfcInsert(input, cursorOffset, text);
+    trackAndSetInput(written);
+    setCursorOffset(end);
   }
   const doublePressEscFromEmpty = useDoublePress(() => {}, () => onShowMessageSelector());
 

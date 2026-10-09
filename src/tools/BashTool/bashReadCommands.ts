@@ -20,12 +20,17 @@ import { isFileReadDenied } from '../../utils/permissions/readDeny.js'
  *
  *   TBr  @216611223 -> parseBashReadCommands   (top-level condition set)
  *   EBr             -> parseSed                (sed -n '<a,b>p' / '<a>p')
- *   CBr + RBr       -> parseCatFamily          (cat/nl/bat/batcat)
+ *   CBr + RBr       -> parseCatFamily          (cat/nl/bat/batcat; 295 CBr
+ *                                                also sets `numbered`)
  *   xBr + gRn       -> parseHead               (head, default 10 lines)
  *   ABr + gRn       -> parseTail               (tail, default 10 lines)
  *   NBr             -> parseGrepFamily         (grep/egrep/fgrep/rg)
  *   FBr  @216614918 -> sliceBashReadContent    (tail / start-end line slicing)
- *   _Rn  @216615382 -> recordBashReadFiles     (6-param post-exec recorder)
+ *   _Rn / gvn (295) -> recordBashReadFiles     (post-exec recorder; 295 takes
+ *                                                model-visible stdout, not a
+ *                                                boolean — see CC 2.1.295 below)
+ *   oUr (295)       -> bashOutputContainsParsedContent (containment check)
+ *   nUr (295)       -> stripBashLineNumberPrefix       (cat -n prefix strip)
  *   cRn  @216615924 -> fireNestedMemoryTrigger (trigger fire, read-deny gated)
  *   AH   @208866471 -> isFileReadDenied        (read-deny predicate)
  *   Ou              -> tokenizeSegment         (quote-aware tokenizer)
@@ -53,10 +58,16 @@ import { isFileReadDenied } from '../../utils/permissions/readDeny.js'
  *   collision-ambiguous in the binary; OCC follows its existing
  *   detectFileEncoding+readFile pattern (same as FileReadTool and the pre-#29
  *   BashTool recorder) rather than force an ambiguous port.
- * - The official `_Rn` persists `contentNotInModelContext` on the FileState
- *   entry. OCC's FileState type has no such field and nothing consumes it
- *   (fileStateGuard.ts:46), so the flag is threaded for signature fidelity but
- *   NOT persisted.
+ * - Since the 2.1.295 round the official recorder (renamed `_Rn` -> `gvn` in
+ *   the 295 binary) takes the model-visible stdout (`Ur?void 0:Qo` at the call
+ *   site) instead of a boolean, persists `contentNotInModelContext` on the
+ *   seeded FileState entry, and SKIPS the seed entirely when the parsed
+ *   content is not contained in what the model actually saw (oUr containment).
+ *   OCC's FileState carries the flag (fileStateCache.ts) and
+ *   k4/isFileStateFullyTrusted (fileStateGuard.ts) consumes it — this file is
+ *   the faithful port of that recorder. The official sanitizer `vg` is still
+ *   collision-ambiguous, so OCC passes the raw decoded content where the
+ *   official passes `vg(Y)` (same detectFileEncoding pattern as above).
  */
 
 // ─── constants (verbatim: kBr/SBr/bBr/wBr/vBr before TBr @216611100) ─────────
@@ -82,7 +93,11 @@ export const BASH_READ_MAX_FILE_BYTES = 10_485_760
  * `startLine`/`endLine` drive FBr's start-end branch; `tailLines` drives its
  * tail branch; `requiresExitZero` gates grep-family on exit code 0;
  * `contentNotInModelContext` marks grep-family (content shown as matches, not
- * the whole file) — threaded for fidelity, not persisted by OCC (see header).
+ * the whole file) — persisted on the seeded FileState entry since 2.1.295;
+ * `numbered` marks cat-family invocations whose output carries line numbers
+ * (`nl`, `cat -n`, `bat --number`) — official 295 CBr:
+ * `let h=n[0]==="nl"||n.includes("-n")||n.includes("--number")` — and drives
+ * oUr's number-stripping containment fallback.
  */
 export type BashReadSpec = {
   filePath: string
@@ -91,6 +106,7 @@ export type BashReadSpec = {
   tailLines?: number
   requiresExitZero?: boolean
   contentNotInModelContext?: boolean
+  numbered?: boolean
 }
 
 /**
@@ -233,7 +249,16 @@ function parseCatFamily(segment: string): BashReadSpec | null {
     file = tok
   }
   if (file === null || file === '-') return null
-  return { filePath: file, startLine: undefined, endLine: undefined }
+  // 295 CBr (verbatim): `let h=n[0]==="nl"||n.includes("-n")||n.includes("--number")`
+  // — only set when true (official spread `...h&&{numbered:h}`).
+  const numbered =
+    tokens[0] === 'nl' || tokens.includes('-n') || tokens.includes('--number')
+  return {
+    filePath: file,
+    startLine: undefined,
+    endLine: undefined,
+    ...(numbered && { numbered }),
+  }
 }
 
 // ─── gRn: head/tail line-count parser (shared) ───────────────────────────────
@@ -510,6 +535,52 @@ export function sliceBashReadContent(
   }
 }
 
+// ─── nUr + oUr: 295 model-visible-output containment ─────────────────────────
+
+/**
+ * nUr (2.1.295, verbatim `function nUr(e){let n=/^[ \t]*\d+[ \t]/.exec(e);
+ * return n?e.slice(n[0].length):/^[ \t]*$/.test(e)?"":e}`) — strip a leading
+ * `cat -n` / `nl` style line-number prefix (`<spaces><digits><space/tab>`) from
+ * one output line; a whitespace-only line collapses to "".
+ *
+ * NOTE: distinct from utils/file.ts `stripLineNumberPrefix`, which strips the
+ * Read tool's `   123→content` (arrow) format — do not merge the two.
+ */
+export function stripBashLineNumberPrefix(line: string): string {
+  const match = /^[ \t]*\d+[ \t]/.exec(line)
+  if (match) {
+    return line.slice(match[0].length)
+  }
+  return /^[ \t]*$/.test(line) ? '' : line
+}
+
+/**
+ * oUr (2.1.295, verbatim `function oUr(e,n,r){let s=n.replace(/^(\s*\n)+/,"")
+ * .trimEnd(),h=e.replaceAll("\r\n","\n");return h.includes(s)||r===!0&&h
+ * .split("\n").map(nUr).join("\n").includes(s)}`) — did the model actually see
+ * the parsed file content in the command output? Leading blank lines are
+ * trimmed from the parsed content, both sides are LF-normalized, and the
+ * containment check runs against the raw output OR (when the spec was
+ * `numbered`) against the output with per-line number prefixes stripped.
+ *
+ * @param modelVisibleOutput e — the stdout the model will see (Qo at the call site)
+ * @param parsedContent n — the sliced file content about to be seeded
+ * @param numbered r — the spec's cat-family numbered flag
+ */
+export function bashOutputContainsParsedContent(
+  modelVisibleOutput: string,
+  parsedContent: string,
+  numbered: boolean | undefined,
+): boolean {
+  const target = parsedContent.replace(/^(\s*\n)+/, '').trimEnd()
+  const output = modelVisibleOutput.replaceAll('\r\n', '\n')
+  return (
+    output.includes(target) ||
+    (numbered === true &&
+      output.split('\n').map(stripBashLineNumberPrefix).join('\n').includes(target))
+  )
+}
+
 // ─── cRn: trigger fire (read-deny gated) ─────────────────────────────────────
 
 /**
@@ -531,43 +602,56 @@ function fireNestedMemoryTrigger(
   }
 }
 
-// ─── _Rn: the 6-param post-exec recorder ─────────────────────────────────────
+// ─── gvn (295; _Rn in 293): the post-exec recorder ───────────────────────────
 
 /**
- * _Rn @216615382 — record every single-file read the command performed into
- * `readFileState`, and fire the nested-memory trigger for each. Verbatim
- * structure (params: command, readFileState, abortSignal, exitCode,
- * contentNotInModelContext, triggerContext):
+ * gvn (2.1.295; `_Rn` @216615382 in 293) — record every single-file read the
+ * command performed into `readFileState`, and fire the nested-memory trigger
+ * for each. Verbatim 295 structure (params: command, readFileState,
+ * abortSignal, exitCode, modelVisibleOutput, triggerContext):
  *
- *   S = TBr(command).filter(h => !h.requiresExitZero || exitCode===0);
+ *   S = jHr(command).filter(h => !h.requiresExitZero || exitCode===0);
  *   if(S.length===0) return;
  *   await Promise.all(S.map(async h => {
- *     z = Je(h.filePath);
+ *     G = Qe(h.filePath);
  *     try {
- *       if(readFileState.get(z)) { cRn(ctx,z); return }   // ★ already-recorded
- *       V = await fs.stat(z); if(V.size>10485760) return;  //   path STILL fires
+ *       if(readFileState.get(G)) { pvn(ctx,G); return }   // ★ already-recorded
+ *       V = await fs.stat(G);
+ *       if(!V.isFile()||V.size>10485760) return;           //   path STILL fires
  *       if(signal.aborted) return;
- *       Y = await fs.readFile(z); slice = FBr(Ih(Y), h);
- *       if(slice===null) return;
- *       readFileState.set(z, {content, timestamp, offset, limit, …});
- *       cRn(ctx,z)
+ *       Y = await fs.readFile(G); he = vg(Y); _e = tUr(he, h);
+ *       if(_e===null || !_e.content.trim() && he.trim()) return;
+ *       if(h!==void 0 && !H.contentNotInModelContext && !oUr(h,_e.content,H.numbered)) return;
+ *       readFileState.set(G, {content, timestamp, offset, limit,
+ *         ...(H.contentNotInModelContext||h===void 0)&&{contentNotInModelContext:!0}});
+ *       pvn(ctx,G)
  *     } catch {}
  *   }))
  *
- * ★ THE 292 FIX: the already-recorded early-return fires cRn(ctx,z) — this is
+ * ★ THE 292 FIX: the already-recorded early-return fires pvn(ctx,G) — this is
  * the exact path the pre-fix recorder skipped, so re-viewing an already-read
  * file with cat/head/tail now (re)injects its nested CLAUDE.md / path rules.
  *
- * `contentNotInModelContext` (official param `g`) is threaded for signature
- * fidelity but NOT persisted — OCC's FileState has no such field and nothing
- * consumes it (fileStateGuard.ts:46). See the module header.
+ * THE 295 FIX (changelog: "Fixed a file being treated as already read after
+ * a Bash command such as `cat` ran without printing it"): the 5th param became
+ * the model-visible stdout (`Ur?void 0:Qo` at the call site — undefined when
+ * the output was persisted/truncated or the call ran remotely/nested), and
+ * the seed is SKIPPED unless the parsed content is contained in that output
+ * (oUr). When seeded from an invisible/persisted output or a grep-family spec,
+ * the entry carries `contentNotInModelContext:true` so k4-gated consumers
+ * (Read dedupe stub, at-mention already_read shortcut) re-send the content
+ * instead of claiming it is already in context.
+ *
+ * `vg` (the official content sanitizer between readFile and slicing) is
+ * collision-ambiguous in the binary; OCC passes the raw decoded content
+ * through the existing detectFileEncoding pattern (see module header).
  */
 export async function recordBashReadFiles(
   command: string,
   readFileState: FileStateCache,
   abortSignal: AbortSignal,
   exitCode: number,
-  contentNotInModelContext: boolean,
+  modelVisibleOutput: string | undefined,
   triggerContext?: BashReadTriggerContext,
 ): Promise<void> {
   const specs = parseBashReadCommands(command).filter(
@@ -585,17 +669,37 @@ export async function recordBashReadFiles(
           return
         }
         const stat = await fs.stat(absPath)
-        if (stat.size > BASH_READ_MAX_FILE_BYTES) return
+        if (!stat.isFile() || stat.size > BASH_READ_MAX_FILE_BYTES) return
         if (abortSignal.aborted) return
         const encoding = detectFileEncoding(absPath)
         const raw = await fs.readFile(absPath, { encoding })
         const slice = sliceBashReadContent(raw, spec)
-        if (slice === null) return
+        // 295: `if(_e===null||!_e.content.trim()&&he.trim())return;` — an empty
+        // parsed window over non-empty disk content means the command printed
+        // nothing of the file; seeding would fabricate a read.
+        if (slice === null || (!slice.content.trim() && raw.trim())) return
+        // 295 oUr containment: when the model-visible output is known and the
+        // spec is not grep-family, only seed if the model actually saw the
+        // parsed content in that output.
+        if (
+          modelVisibleOutput !== undefined &&
+          !spec.contentNotInModelContext &&
+          !bashOutputContainsParsedContent(
+            modelVisibleOutput,
+            slice.content,
+            spec.numbered,
+          )
+        ) {
+          return
+        }
         readFileState.set(absPath, {
           content: slice.content,
           timestamp: Math.floor(stat.mtimeMs),
           offset: slice.offset,
           limit: slice.limit,
+          ...(spec.contentNotInModelContext || modelVisibleOutput === undefined
+            ? { contentNotInModelContext: true }
+            : undefined),
         })
         fireNestedMemoryTrigger(triggerContext, absPath)
       } catch {
@@ -603,6 +707,4 @@ export async function recordBashReadFiles(
       }
     }),
   )
-  // contentNotInModelContext is intentionally not persisted (see header).
-  void contentNotInModelContext
 }

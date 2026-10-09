@@ -246,37 +246,49 @@ export function executeReplace(
 
 /**
  * Execute toggle case (~ command).
+ *
+ * CC 2.1.295 official `yn` (@225581736): the toggle loop STOPS at a newline
+ * (never toggles or counts '\n', so `3~` near EOL stays on the line), each
+ * toggled grapheme is NFC-normalized after case flip, and the final offset is
+ * clamped via `A9` (= `KZ` clamp — OCC `clampOffset` — with a
+ * snapOutOfPlaceholder fallback) so `~` on the last char of a line leaves the
+ * cursor ON that char (a following `x` still deletes it) instead of running
+ * past it.
  */
 export function executeToggleCase(count: number, ctx: OperatorContext): void {
-  const startOffset = ctx.cursor.offset
-
-  if (startOffset >= ctx.text.length) return
-
-  let newText = ctx.text
-  let offset = startOffset
+  const columns = ctx.cursor.measuredText.columns
+  let text = ctx.text
+  let offset = ctx.cursor.offset
   let toggled = 0
 
-  while (offset < newText.length && toggled < count) {
-    const grapheme = firstGrapheme(newText.slice(offset))
+  while (offset < text.length && text[offset] !== '\n' && toggled < count) {
+    const grapheme = firstGrapheme(text.slice(offset))
     const graphemeLen = grapheme.length
 
-    const toggledGrapheme =
+    // Official `yn`: `(L===L.toUpperCase()?L.toLowerCase():L.toUpperCase()).normalize("NFC")`
+    const toggledGrapheme = (
       grapheme === grapheme.toUpperCase()
         ? grapheme.toLowerCase()
         : grapheme.toUpperCase()
+    ).normalize('NFC')
 
-    newText =
-      newText.slice(0, offset) +
-      toggledGrapheme +
-      newText.slice(offset + graphemeLen)
+    text = text.slice(0, offset) + toggledGrapheme + text.slice(offset + graphemeLen)
     offset += toggledGrapheme.length
     toggled++
   }
 
-  ctx.setText(newText)
-  // Cursor moves to position after the last toggled character
-  // At end of line, cursor can be at the "end" position
-  ctx.setOffset(offset)
+  // Official `yn`: `if(T===0)return;` — nothing toggled, no mutation recorded.
+  if (toggled === 0) return
+
+  const newCursor = Cursor.fromText(text, columns)
+  // Official `A9(_, I)` = `KZ` clamp + snapOutOfPlaceholder fallback:
+  //   x = KZ(text, h); return snapOutOfPlaceholder(x,"start") === x ? x : h
+  const clamped = clampOffset(newCursor.text, offset)
+  const finalOffset =
+    newCursor.snapOutOfPlaceholder(clamped, 'start') === clamped ? clamped : offset
+
+  ctx.setText(text)
+  ctx.setOffset(finalOffset)
   ctx.recordChange({ type: 'toggleCase', count })
 }
 

@@ -134,6 +134,10 @@ import type {
   SkillHookMatcher,
 } from './settings/types.js'
 import { getHookDisplayText } from './hooks/hooksSettings.js'
+import {
+  applyOnFailureBlockOutcome,
+  applyOnFailureBlockRaw,
+} from './hooks/onFailureBlock.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { firstLineOf } from './stringUtils.js'
@@ -628,6 +632,12 @@ export interface HookResult {
    * abort. Pairs with the tengu_hook_prompt_timeout telemetry event.
    */
   timedOut?: boolean
+  /**
+   * CC 2.1.295 (official K_t): set when a failed/timed-out result was
+   * converted to a blocking error by onFailure:"block" — the original prompt
+   * is suppressed in favor of the blocking error.
+   */
+  suppressOriginalPrompt?: boolean
   stopReason?: string
   /**
    * claude-code /goal: the goal Stop-hook evaluator assessed the goal as
@@ -1758,6 +1768,14 @@ async function execCommandHook(
   skillRoot?: string,
   forceSyncExecution?: boolean,
   requestPrompt?: (request: PromptRequest) => Promise<PromptResponse>,
+  /**
+   * CC 2.1.295 (Item 4): session id used to key the CLAUDE_ENV_FILE path
+   * (~/.claude/session-env/<id>/). Resume/branch flows fire SessionStart
+   * hooks BEFORE switchSession(), so the global getSessionId() still returns
+   * the OLD id; callers pass hookInput.session_id (always resolved) so env
+   * files land in the session being resumed INTO and reach Bash afterwards.
+   */
+  envSessionId?: string,
 ): Promise<{
   stdout: string
   stderr: string
@@ -1952,7 +1970,11 @@ async function execCommandHook(
       hookEvent === 'FileChanged') &&
     hookIndex !== undefined
   ) {
-    envVars.CLAUDE_ENV_FILE = await getHookEnvFilePath(hookEvent, hookIndex)
+    envVars.CLAUDE_ENV_FILE = await getHookEnvFilePath(
+      hookEvent,
+      hookIndex,
+      envSessionId,
+    )
   }
 
   // When agent worktrees are removed, getCwd() may return a deleted path via
@@ -4080,6 +4102,9 @@ async function* executeHooks({
         skillRoot,
         forceSyncExecution,
         boundRequestPrompt,
+        // Item 4: key CLAUDE_ENV_FILE by the hook input's session_id, not the
+        // global getSessionId() — resume fires these hooks before switchSession.
+        hookInput.session_id,
       )
       cleanup?.()
       const durationMs = Date.now() - hookStartMs
@@ -4517,7 +4542,15 @@ async function* executeHooks({
   let permissionBehavior: (PermissionResult['behavior'] | 'defer') | undefined
 
   // Run all hooks in parallel and wait for all to complete
-  for await (const result of all(hookPromises)) {
+  for await (const rawResult of all(hookPromises)) {
+    // CC 2.1.295 (official K_t): the onFailure:"block" conversion runs in the
+    // consumer loop BEFORE the outcome tally, so a converted failure counts
+    // as 'blocking'. `signal` is the parent abort signal (official `y`,
+    // proven by the http-cancelled attachment's `timedOut:!y?.aborted`).
+    // The official's script-hook (Et → Nmr/Fmr) and personal-hook
+    // (O4e + CLAUDE_CODE_RESTRICT_PERSONAL_CONFIG) wrappers are not ported —
+    // neither surface exists in OCC.
+    const result = applyOnFailureBlockOutcome(rawResult, hookEvent, signal)
     outcomes[result.outcome]++
 
     // 2.1.280 (#004): count successful-hook stdout chars and detect
@@ -4897,6 +4930,13 @@ export type HookOutsideReplResult = {
   blocked: boolean
   watchPaths?: string[]
   systemMessage?: string
+  /**
+   * CC 2.1.295 (official `...S?.aborted&&{cancelled:!0}`): set on abort
+   * results when the PARENT signal aborted. V_t (applyOnFailureBlockRaw)
+   * leaves parent-cancelled results unchanged — onFailure:"block" only
+   * converts the hook's OWN failures/timeouts.
+   */
+  cancelled?: boolean
 }
 
 export function hasBlockingResult(results: HookOutsideReplResult[]): boolean {
@@ -5153,6 +5193,9 @@ async function executeHooksOutsideREPL({
               succeeded: false,
               output: 'Hook cancelled',
               blocked: false,
+              // CC 2.1.295: official `...S?.aborted&&{cancelled:!0}` — marks
+              // a PARENT-signal abort so V_t passes the result through.
+              ...(signal?.aborted && { cancelled: true }),
             }
           }
 
@@ -5243,6 +5286,13 @@ async function executeHooksOutsideREPL({
           hookIndex,
           pluginRoot,
           pluginId,
+          undefined,
+          undefined,
+          undefined,
+          // Item 4: key CLAUDE_ENV_FILE by the hook input's session_id, not
+          // the global getSessionId() — resume/branch flows run these hooks
+          // before switchSession().
+          hookInput.session_id,
         )
 
         // Clear timeout if hook completes
@@ -5255,6 +5305,9 @@ async function executeHooksOutsideREPL({
             succeeded: false,
             output: 'Hook cancelled',
             blocked: false,
+            // CC 2.1.295: official `...S?.aborted&&{cancelled:!0}` — marks
+            // a PARENT-signal abort so V_t passes the result through.
+            ...(signal?.aborted && { cancelled: true }),
           }
         }
 
@@ -5339,8 +5392,20 @@ async function executeHooksOutsideREPL({
     },
   )
 
-  // Wait for all hooks to complete and collect results
-  return await Promise.all(hookPromises)
+  // Wait for all hooks to complete and collect results.
+  // CC 2.1.295 (official V_t): onFailure:"block" converts raw failures
+  // (spawn errors, timeouts, non-0/2 exits, invalid JSON) into blocked
+  // results. The official wraps each hook's promise inside the Promise.all
+  // construction with `.then(Gt => V_t(hook, {...Gt}))`; OCC applies the same
+  // transform on the same hook↔result pairing (hookPromises is built from
+  // matchingHooks.map, so indices align 1:1).
+  return await Promise.all(
+    hookPromises.map((promise, idx) =>
+      promise.then(result =>
+        applyOnFailureBlockRaw(matchingHooks[idx]?.hook, result),
+      ),
+    ),
+  )
 }
 
 /**

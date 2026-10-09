@@ -13,6 +13,7 @@ import {
   maxNestingFallbackToken,
 } from './markdownLexLevel.js'
 import { stripPromptXMLTags } from './messages.js'
+import { stripRawHyperlinks } from './stripRawHyperlinks.js'
 import type { ThemeName } from './theme.js'
 
 // Use \n unconditionally — os.EOL is \r\n on Windows, and the extra \r
@@ -110,7 +111,12 @@ export function applyMarkdown(
   configureMarked()
   try {
     return marked
-      .lexer(stripPromptXMLTags(content))
+      // CC 2.1.295 P0 render-security: strip RAW OSC-8 hyperlink sequences
+      // from untrusted source BEFORE lexing (official `Ecn` control-char
+      // walkTokens strip, @220891500 region) so smuggled clickable cells
+      // never reach the terminal. Markdown-generated links are unaffected —
+      // `formatToken`'s link renderer emits OSC-8 downstream of this strip.
+      .lexer(stripPromptXMLTags(stripRawHyperlinks(content)))
       .map(_ => formatToken(_, theme, 0, null, null, highlight))
       .join('')
       .trim()

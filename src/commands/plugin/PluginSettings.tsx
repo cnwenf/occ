@@ -7,7 +7,7 @@ import { Byline } from '../../components/design-system/Byline.js';
 import { Pane } from '../../components/design-system/Pane.js';
 import { Tab, Tabs } from '../../components/design-system/Tabs.js';
 import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithKeybindings.js';
-import { Box, Text } from '../../ink.js';
+import { Box, Text, useInput } from '../../ink.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { PluginError } from '../../types/plugin.js';
@@ -15,9 +15,11 @@ import { errorMessage } from '../../utils/errors.js';
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
 import { loadMarketplacesWithGracefulDegradation } from '../../utils/plugins/marketplaceHelpers.js';
 import { loadKnownMarketplacesConfig, removeMarketplaceSource } from '../../utils/plugins/marketplaceManager.js';
+import { loadAllPlugins } from '../../utils/plugins/pluginLoader.js';
 import { getPluginEditableScopes } from '../../utils/plugins/pluginStartupCheck.js';
 import type { EditableSettingSource } from '../../utils/settings/constants.js';
 import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js';
+import { plural } from '../../utils/stringUtils.js';
 import { AddMarketplace } from './AddMarketplace.js';
 import { BrowseMarketplace } from './BrowseMarketplace.js';
 import { DiscoverPlugins } from './DiscoverPlugins.js';
@@ -104,6 +106,21 @@ type ErrorRow = {
   guidance?: string | null;
   action: ErrorRowAction;
   scope?: string;
+};
+
+/**
+ * CC 2.1.295 port: a marketplace removal waiting for y/n confirmation in the
+ * Errors tab, with the names of the plugins that will be uninstalled along
+ * with it (official dialog builds its list from the marketplace's installed
+ * plugins).
+ */
+type PendingMarketplaceRemoval = {
+  action: Extract<ErrorRowAction, {
+    kind: 'remove-extra-marketplace';
+  } | {
+    kind: 'remove-installed-marketplace';
+  }>;
+  pluginNames: string[];
 };
 
 /**
@@ -354,6 +371,49 @@ function removeExtraMarketplace(name: string, sources: Array<{
     }
   }
 }
+/**
+ * CC 2.1.295 port — the Errors-tab "remove marketplace?" confirmation dialog,
+ * verbatim to the official texts (binary evidence s295@2750572: bold
+ * warning-color title with the italic marketplace name, the warning-color
+ * "This will also uninstall N plugin(s) from this marketplace:" row when
+ * plugins would be uninstalled, the dimColor name column at marginTop:1
+ * marginLeft:2, and the "Press y to confirm or n to cancel" footer with bold
+ * y/n). Same dialog shape as ManageMarketplaces' confirm-remove view.
+ * Exported for tests.
+ */
+export function MarketplaceRemovalConfirm({
+  name,
+  pluginNames
+}: {
+  name: string;
+  pluginNames: string[];
+}): React.ReactNode {
+  const pluginCount = pluginNames.length;
+  return <Box flexDirection="column">
+      <Text bold color="warning">
+        Remove marketplace <Text italic>{name}</Text>?
+      </Text>
+      <Box flexDirection="column">
+        {pluginCount > 0 && <Box marginTop={1}>
+            <Text color="warning">
+              This will also uninstall {pluginCount}{' '}
+              {plural(pluginCount, 'plugin')} from this marketplace:
+            </Text>
+          </Box>}
+        {pluginCount > 0 && <Box flexDirection="column" marginTop={1} marginLeft={2}>
+              {pluginNames.map(pluginName => <Text key={pluginName} dimColor>
+                  • {pluginName}
+                </Text>)}
+            </Box>}
+        <Box marginTop={1}>
+          <Text>
+            Press <Text bold>y</Text> to confirm or <Text bold>n</Text> to
+            cancel
+          </Text>
+        </Box>
+      </Box>
+    </Box>;
+}
 function ErrorsTabContent(t0) {
   const $ = _c(26);
   const {
@@ -366,6 +426,12 @@ function ErrorsTabContent(t0) {
   const setAppState = useSetAppState();
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [actionMessage, setActionMessage] = useState(null);
+  // CC 2.1.295 port: Enter on a failed marketplace no longer removes it
+  // outright — the removal waits here until y/n confirmation (official
+  // changelog: "Fixed `/plugin`'s Errors tab removing a marketplace that
+  // failed to load, and uninstalling its plugins, on Enter without asking
+  // first").
+  const [pendingRemoval, setPendingRemoval] = useState<PendingMarketplaceRemoval | null>(null);
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     t1 = [];
@@ -404,18 +470,18 @@ function ErrorsTabContent(t0) {
   const otherErrors = errors.filter(_temp7);
   const pluginScopes = getPluginEditableScopes();
   const rows = buildErrorRows(failedMarketplaces, extraMarketplaceErrors, pluginLoadingErrors, otherErrors, marketplaceLoadFailures, transientErrors, pluginScopes);
-  let t4;
-  if ($[3] !== setViewState) {
-    t4 = () => {
-      setViewState({
-        type: "menu"
-      });
-    };
-    $[3] = setViewState;
-    $[4] = t4;
-  } else {
-    t4 = $[4];
-  }
+  // CC 2.1.295 port: Esc cancels the pending removal confirmation first;
+  // only an unconfirmed list exits to the menu. (Plain closure instead of the
+  // memoized t4 slot — it must see the current `pendingRemoval`.)
+  const handleBack = () => {
+    if (pendingRemoval !== null) {
+      setPendingRemoval(null);
+      return;
+    }
+    setViewState({
+      type: "menu"
+    });
+  };
   let t5;
   if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
     t5 = {
@@ -425,7 +491,68 @@ function ErrorsTabContent(t0) {
   } else {
     t5 = $[5];
   }
-  useKeybinding("confirm:no", t4, t5);
+  useKeybinding("confirm:no", handleBack, t5);
+  // CC 2.1.295 port: the actual removal, run only after y confirmation.
+  // Bodies unchanged from the pre-confirm implementation.
+  const executePendingRemoval = (pending: PendingMarketplaceRemoval) => {
+    const {
+      action
+    } = pending;
+    setPendingRemoval(null);
+    if (action.kind === "remove-extra-marketplace") {
+      const scopes = action.sources.map(_temp8).join(", ");
+      removeExtraMarketplace(action.name, action.sources);
+      clearAllCaches();
+      setAppState(prev_0 => ({
+        ...prev_0,
+        plugins: {
+          ...prev_0.plugins,
+          errors: prev_0.plugins.errors.filter(e_2 => !("marketplace" in e_2 && e_2.marketplace === action.name)),
+          installationStatus: {
+            ...prev_0.plugins.installationStatus,
+            marketplaces: prev_0.plugins.installationStatus.marketplaces.filter(m_1 => m_1.name !== action.name)
+          }
+        }
+      }));
+      setActionMessage(`${figures.tick} Removed "${action.name}" from ${scopes} settings`);
+      markPluginsChanged();
+      return;
+    }
+    ;
+    (async () => {
+      ;
+      try {
+        await removeMarketplaceSource(action.name);
+        clearAllCaches();
+        setMarketplaceLoadFailures(prev => prev.filter(f => f.name !== action.name));
+        setActionMessage(`${figures.tick} Removed marketplace "${action.name}"`);
+        markPluginsChanged();
+      } catch (t6) {
+        const err = t6;
+        setActionMessage(`Failed to remove "${action.name}": ${err instanceof Error ? err.message : String(err)}`);
+      }
+    })();
+  };
+  // CC 2.1.295 port: gather the plugins that the removal will uninstall
+  // (same loadAllPlugins + `@marketplace` source-suffix convention as
+  // ManageMarketplaces' confirm-remove dialog), then ask before removing.
+  const beginMarketplaceRemoval = action => {
+    ;
+    (async () => {
+      let pluginNames: string[] = [];
+      try {
+        const {
+          enabled,
+          disabled
+        } = await loadAllPlugins();
+        pluginNames = [...enabled, ...disabled].filter(plugin => plugin.source.endsWith(`@${action.name}`)).map(plugin => plugin.name);
+      } catch {}
+      setPendingRemoval({
+        action,
+        pluginNames
+      });
+    })();
+  };
   const handleSelect = () => {
     const row = rows[selectedIndex];
     if (!row) {
@@ -442,40 +569,9 @@ function ErrorsTabContent(t0) {
           break;
         }
       case "remove-extra-marketplace":
-        {
-          const scopes = action.sources.map(_temp8).join(", ");
-          removeExtraMarketplace(action.name, action.sources);
-          clearAllCaches();
-          setAppState(prev_0 => ({
-            ...prev_0,
-            plugins: {
-              ...prev_0.plugins,
-              errors: prev_0.plugins.errors.filter(e_2 => !("marketplace" in e_2 && e_2.marketplace === action.name)),
-              installationStatus: {
-                ...prev_0.plugins.installationStatus,
-                marketplaces: prev_0.plugins.installationStatus.marketplaces.filter(m_1 => m_1.name !== action.name)
-              }
-            }
-          }));
-          setActionMessage(`${figures.tick} Removed "${action.name}" from ${scopes} settings`);
-          markPluginsChanged();
-          break;
-        }
       case "remove-installed-marketplace":
         {
-          (async () => {
-            ;
-            try {
-              await removeMarketplaceSource(action.name);
-              clearAllCaches();
-              setMarketplaceLoadFailures(prev => prev.filter(f => f.name !== action.name));
-              setActionMessage(`${figures.tick} Removed marketplace "${action.name}"`);
-              markPluginsChanged();
-            } catch (t6) {
-              const err = t6;
-              setActionMessage(`Failed to remove "${action.name}": ${err instanceof Error ? err.message : String(err)}`);
-            }
-          })();
+          beginMarketplaceRemoval(action);
           break;
         }
       case "managed-only":
@@ -492,7 +588,7 @@ function ErrorsTabContent(t0) {
   } else {
     t7 = $[6];
   }
-  const t8 = rows.length > 0;
+  const t8 = rows.length > 0 && pendingRemoval === null;
   let t9;
   if ($[7] !== t8) {
     t9 = {
@@ -509,12 +605,33 @@ function ErrorsTabContent(t0) {
     "select:next": () => setSelectedIndex(prev_2 => Math.min(rows.length - 1, prev_2 + 1)),
     "select:accept": handleSelect
   }, t9);
+  // CC 2.1.295 port: y/n confirmation input for the pending marketplace
+  // removal (official footer: "Press y to confirm or n to cancel").
+  // eslint-disable-next-line custom-rules/prefer-use-keybindings -- y/n confirmation not in keybinding schema (same pattern as ManageMarketplaces)
+  useInput(input => {
+    if (input === 'y' || input === 'Y') {
+      const pending = pendingRemoval;
+      if (pending !== null) {
+        executePendingRemoval(pending);
+      }
+    } else if (input === 'n' || input === 'N') {
+      setPendingRemoval(null);
+    }
+  }, {
+    isActive: pendingRemoval !== null
+  });
   const clampedIndex = Math.min(selectedIndex, Math.max(0, rows.length - 1));
   if (clampedIndex !== selectedIndex) {
     setSelectedIndex(clampedIndex);
   }
   const selectedAction = rows[clampedIndex]?.action;
   const hasAction = selectedAction && selectedAction.kind !== "none" && selectedAction.kind !== "managed-only";
+  // CC 2.1.295 port: the official Errors-tab confirm dialog (see
+  // MarketplaceRemovalConfirm below), replacing the pre-295 behavior where
+  // Enter removed the marketplace and uninstalled its plugins immediately.
+  if (pendingRemoval !== null) {
+    return <MarketplaceRemovalConfirm name={pendingRemoval.action.name} pluginNames={pendingRemoval.pluginNames} />;
+  }
   if (rows.length === 0) {
     let t10;
     if ($[9] === Symbol.for("react.memo_cache_sentinel")) {

@@ -229,9 +229,18 @@ type BaseTextStyleProps = {
   inverse?: boolean;
 };
 
-// Wrapper component that handles bold/dim mutual exclusivity for Text
+// Wrapper component that forwards bold/dim to Text.
+//
+// CC 2.1.295: bold and dim COEXIST — the official styled-text emitter `wqe`
+// (v294 `XGe` identical) applies both when both are set:
+//   if(i.bold)e=ge.bold(e); if(i.dim)e=ge.dim(e)
+// and the official SGR parser maps 1→bold, 2→dim independently (22 clears
+// both). The previous OCC version treated them as mutually exclusive and
+// dropped `bold` whenever `dim` was set, so bold drawn directly after dim
+// (e.g. in piped output) rendered faint. Text's runtime already spreads both
+// flags; only the WeightProps type union needed widening.
 function StyledText(t0) {
-  const $ = _c(14);
+  const $ = _c(10);
   let bold;
   let children;
   let dim;
@@ -254,38 +263,16 @@ function StyledText(t0) {
     dim = $[3];
     rest = $[4];
   }
-  if (dim) {
-    let t1;
-    if ($[5] !== children || $[6] !== rest) {
-      t1 = <Text {...rest} dim={true}>{children}</Text>;
-      $[5] = children;
-      $[6] = rest;
-      $[7] = t1;
-    } else {
-      t1 = $[7];
-    }
-    return t1;
-  }
-  if (bold) {
-    let t1;
-    if ($[8] !== children || $[9] !== rest) {
-      t1 = <Text {...rest} bold={true}>{children}</Text>;
-      $[8] = children;
-      $[9] = rest;
-      $[10] = t1;
-    } else {
-      t1 = $[10];
-    }
-    return t1;
-  }
   let t1;
-  if ($[11] !== children || $[12] !== rest) {
-    t1 = <Text {...rest}>{children}</Text>;
-    $[11] = children;
-    $[12] = rest;
-    $[13] = t1;
+  if ($[5] !== bold || $[6] !== children || $[7] !== dim || $[8] !== rest) {
+    t1 = <Text {...rest} bold={bold === true} dim={dim === true}>{children}</Text>;
+    $[5] = bold;
+    $[6] = children;
+    $[7] = dim;
+    $[8] = rest;
+    $[9] = t1;
   } else {
-    t1 = $[13];
+    t1 = $[9];
   }
   return t1;
 }

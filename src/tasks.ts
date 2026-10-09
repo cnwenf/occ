@@ -3,6 +3,7 @@ import type { Task, TaskType } from './Task.js'
 import { DreamTask } from './tasks/DreamTask/DreamTask.js'
 import { LocalAgentTask } from './tasks/LocalAgentTask/LocalAgentTask.js'
 import { LocalShellTask } from './tasks/LocalShellTask/LocalShellTask.js'
+import { McpBackgroundTask } from './tasks/McpBackgroundTask/McpBackgroundTask.js'
 import { RemoteAgentTask } from './tasks/RemoteAgentTask/RemoteAgentTask.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -25,6 +26,11 @@ export function getAllTasks(): Task[] {
     LocalAgentTask,
     RemoteAgentTask,
     DreamTask,
+    // 2.1.212: MCP tool calls auto-backgrounded after the threshold. Registered
+    // unconditionally (not feature-gated) so getTaskByType('mcp_task') resolves
+    // and stopTask() can stop a long-running MCP call — matching official
+    // 2.1.295, where mcp_task is a first-class task-registry entry.
+    McpBackgroundTask,
   ]
   if (LocalWorkflowTask) tasks.push(LocalWorkflowTask)
   if (MonitorMcpTask) tasks.push(MonitorMcpTask)

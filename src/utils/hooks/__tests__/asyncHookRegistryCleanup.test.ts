@@ -78,7 +78,9 @@ function createMockShellCommand(opts: {
 describe('AsyncHookRegistry cleanup (#29 — async hook output retained after backgrounding)', () => {
   test('checkForAsyncHookResponses remove-path calls shellCommand.cleanup() for hooks with no stdout', async () => {
     // Arrange: register a hook that has completed but produced no stdout.
-    // This triggers the 'remove' path (responseAttachmentSent || !stdout.trim()).
+    // CC 2.1.295: empty stdout flows through readAsyncHookResponse —
+    // finalizeHook (cleanup) runs, then the empty payload skips the
+    // attachment ('remove' path).
     clearAllAsyncHooks()
     const { sc, getCleanupCalls } = createMockShellCommand({
       stdout: '',
@@ -103,11 +105,14 @@ describe('AsyncHookRegistry cleanup (#29 — async hook output retained after ba
   })
 
   test('checkForAsyncHookResponses response-path calls shellCommand.cleanup() via finalizeHook', async () => {
-    // Arrange: register a hook that completed with stdout containing JSON.
+    // Arrange: register a hook that completed with stdout containing a
+    // schema-recognized JSON answer. (CC 2.1.295: answers are validated via
+    // mkt — an all-unrecognized-key payload like {"ok":true} strips to {} and
+    // takes the empty-payload skip path instead; see asyncHookJson295 tests.)
     // This triggers the 'response' path → finalizeHook → cleanup().
     clearAllAsyncHooks()
     const { sc, getCleanupCalls } = createMockShellCommand({
-      stdout: '{"ok":true}',
+      stdout: '{"systemMessage":"delivered"}',
       status: 'completed',
     })
     registerPendingAsyncHook({

@@ -306,6 +306,23 @@ interface RetryOptions {
    */
   retryAdvisorEntryRefused?: (error: APIError) => boolean
   /**
+   * CC 2.1.295 (item-1): when an HTTP 400 arrives on a request that carried
+   * the `context-1m-2025-08-07` beta (official `qtt` in the fatal-400
+   * onApiError chain, verdict `"retry:context-1m-beta"` @217674937), the
+   * retry loop calls this so claude.ts can latch its heal state machine and
+   * resend once WITHOUT the beta — the params builder filters the header
+   * while the latch is active (official `ct.filter((td)=>td!==YS||!SEe())`
+   * with `SEe=()=>sb!=="idle"&&sb!=="spent"`). Returns true when the request
+   * was healed and must be retried; the state machine
+   * (idle→retrying/guessing→spent/unproven) bounds it to a single extra
+   * attempt per request — a second 400 flips the latch and returns false so
+   * the error surfaces. Mirrors the official chain position: after the named
+   * beta-rejection scanner (`EZe`), before the thinking-binding handler
+   * (`fRe`) — in OCC both neighbor slots collapse to "immediately after the
+   * advisor-entry handler, before the shouldRetry/exhaustion gates".
+   */
+  retryContext1mBetaRefused?: (error: APIError) => boolean
+  /**
    * CC 2.1.285 (item-B2): per-attempt timeout (ms) of a NON-STREAMING fallback
    * request, set by executeNonStreamingRequest (official `I0t` passes
    * `nonStreamingTimeoutMs:S`, S = IOo()). When present — together with the
@@ -452,6 +469,16 @@ export async function* withRetry<T>(
   let consecutive529Errors = options.initialConsecutive529Errors ?? 0
   let lastError: unknown
   let persistentAttempt = 0
+  // CC 2.1.295 (item-3): capacity-wait budget ledger — official
+  // `V=r.modelCallRetries?.capacityWait??{spentMs:0}` (@217570880 region).
+  // spentMs accumulates every heartbeat chunk slept for a watchdog capacity
+  // error (529/429) and CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS caps the
+  // total. DEVIATION: the official shares the ledger across withRetry
+  // invocations within one model call via r.modelCallRetries; OCC's
+  // ModelCallRetries has no capacityWait field, so the budget is
+  // per-withRetry-call (same fallback the official takes when no ledger is
+  // threaded — `??{spentMs:0}`).
+  const capacityWait = { spentMs: 0 }
   // 2.1.208 (#15): count 401s caused by a failed apiKeyHelper so the real
   // error surfaces within 3 attempts instead of silently retrying up to
   // DEFAULT_MAX_RETRIES (10) and showing a generic 401. Mirrors the binary's
@@ -912,6 +939,28 @@ export async function* withRetry<T>(
         continue
       }
 
+      // CC 2.1.295 (item-1): official `qtt` — the context-1m beta 400 heal,
+      // wired into the fatal-400 classification chain between the named
+      // beta-rejection scanner (`EZe`) and the thinking-binding handler
+      // (`fRe`): `let nk=qtt(lc);if(nk!==null)return nk` → verdict
+      // `"retry:context-1m-beta"` (@217674937 sync onApiError chain,
+      // @217685470 stream chain). When an HTTP 400 arrives on a request
+      // that carried the `context-1m-2025-08-07` beta for a 1M-context
+      // model, the claude.ts handler latches its state machine
+      // (idle→retrying/guessing), the params builder filters the beta off
+      // the resend, and the loop retries without consuming the retry budget
+      // — same one-shot contract as the advisor handler above. A second 400
+      // flips the latch (spent/unproven) and the handler returns false, so
+      // the error falls through to the normal non-retryable 400 path.
+      if (
+        error instanceof APIError &&
+        error.status === 400 &&
+        options.retryContext1mBetaRefused?.(error)
+      ) {
+        attempt--
+        continue
+      }
+
       // Only retry if the error indicates we should
       const persistent =
         isPersistentRetryEnabled() && isTransientCapacityError(error)
@@ -1196,6 +1245,33 @@ export async function* withRetry<T>(
           // (b) S6(): cap at TRe=6h and enter heartbeat long-wait mode (yn).
           delayMs = Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
           watchdogLongWait = true
+          // CC 2.1.295 (item-3): capacity-wait budget — official, inside the
+          // capacity branch (`no=FK()&&Xrn(err)` ≡ watchdogRetryable):
+          //   `let Eo=(a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS??1/0)
+          //      -V.spentMs;
+          //    if(Eo<=0)throw m("api_request",
+          //      "api_request_capacity_wait_exhausted"),new Zc(nn,y);
+          //    ...; ir=Math.min(ir,Eo)` (@217570880).
+          // The env (descriptor `ci=H.int({min:1,digitsOnly:!0})`) caps the
+          // TOTAL time one model call may spend waiting out 529/429 capacity
+          // errors under the retry watchdog; spentMs accumulates across the
+          // heartbeat-chunked sleeps below. Budget exhausted → stop waiting
+          // and surface the retry-exhausted error path (CannotRetryError,
+          // the official `Zc` ≡ RetryError class) instead of sleeping again.
+          // Without the env the budget is Infinity — pre-295 behavior.
+          if (watchdogRetryable) {
+            const budgetRemainingMs =
+              (getRetryWatchdogMaxWaitMs() ?? Number.POSITIVE_INFINITY) -
+              capacityWait.spentMs
+            if (budgetRemainingMs <= 0) {
+              logEvent('api_request', {
+                reason:
+                  'api_request_capacity_wait_exhausted' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+              })
+              throw new CannotRetryError(error, retryContext)
+            }
+            delayMs = Math.min(delayMs, budgetRemainingMs)
+          }
         } else if (delayMs > RETRY_AFTER_TOO_LONG_THRESHOLD_MS) {
           // (c) Kn>Opo: fail loudly instead of sleeping uncapped past a minute.
           logEvent('tengu_api_retry_after_too_long', {
@@ -1260,6 +1336,14 @@ export async function* withRetry<T>(
           }
           const chunk = Math.min(remaining, HEARTBEAT_INTERVAL_MS)
           await sleep(chunk, options.signal, { abortError })
+          // CC 2.1.295 (item-3): official spentMs accounting inside the
+          // heartbeat-chunked capacity sleep —
+          //   `if(no)V.spentMs+=Cr?Math.min(Io,Math.round(h.monotonicNow()-po)):Io`
+          // (Io=chunk, Cr=early-wake flag). OCC's sleep has no early-wake
+          // path (only abort, which throws), so every chunk counts in full.
+          if (watchdogRetryable) {
+            capacityWait.spentMs += chunk
+          }
           remaining -= chunk
         }
         // 2.1.281 (#022): official tail `if(Kt)gt--` replaces the v280 clamp
@@ -1364,6 +1448,44 @@ export function getOverloadedRetryBaseDelayMs(): number | undefined {
     parsed >= OVERLOADED_RETRY_BASE_DELAY_MIN_MS &&
     parsed <= OVERLOADED_RETRY_BASE_DELAY_MAX_MS
   ) {
+    return parsed
+  }
+  return undefined
+}
+
+// CC 2.1.295 (item-3): env registry descriptor for the retry-watchdog
+// capacity-wait budget — `ci=H.int({min:1,digitsOnly:!0})`, exported as
+// CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS (@206929253 export map). A
+// digits-only integer >= 1 is honored; anything else (unset, non-numeric,
+// < 1) yields undefined so the official `??1/0` (Infinity — uncapped,
+// pre-295 behavior) applies. Caps the TOTAL time a watchdog session may
+// spend waiting out capacity errors (529/429); once the budget is
+// exhausted the retry loop stops waiting and surfaces the retry-exhausted
+// error path (official @217570880:
+//   `let Eo=(a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS??1/0)-V.spentMs;
+//    if(Eo<=0)throw m("api_request",
+//      "api_request_capacity_wait_exhausted"),new Zc(nn,y)`).
+// NOTE (official `===undefined` condition, @217930511):
+//   `FK()&&a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS===void 0
+//     ?"skipped_retry_watchdog":null`
+// belongs to the rewind_limit_question gate (tU) — OCC has no
+// rewind_limit_question surface (grep 0 hits), so there is nothing to
+// port there; recorded here for traceability.
+const RETRY_WATCHDOG_MAX_WAIT_MIN_MS = 1
+
+export function getRetryWatchdogMaxWaitMs(): number | undefined {
+  const raw = process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS
+  if (raw === undefined) {
+    return undefined
+  }
+  // digitsOnly (official `H.int` parse — same parser convention as
+  // getOverloadedRetryBaseDelayMs above): reject anything that is not an
+  // integer literal (1e3 / 6_000 / 1,000 / 150.5 all fail).
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    return undefined
+  }
+  const parsed = parseEnvInt(raw)
+  if (parsed !== undefined && parsed >= RETRY_WATCHDOG_MAX_WAIT_MIN_MS) {
     return parsed
   }
   return undefined

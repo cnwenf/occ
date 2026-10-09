@@ -10,13 +10,22 @@ import { getPlatform } from './platform.js'
 // undefined = not yet loaded (need to check disk)
 // null = checked disk, no files exist (don't check again)
 // string = loaded and cached (use cached value)
-let sessionEnvScript: string | null | undefined = undefined
+let sessionEnvScript: string | null | undefined 
 
-export async function getSessionEnvDirPath(): Promise<string> {
+/**
+ * CC 2.1.295 (Item 4): `sessionId` overrides the global getSessionId() key.
+ * Resume/branch flows fire SessionStart hooks BEFORE switchSession(), so the
+ * hook's own input session_id (the session being resumed INTO) must key the
+ * env dir — otherwise CLAUDE_ENV_FILE writes land in the OLD session's dir
+ * and never reach Bash after the switch.
+ */
+export async function getSessionEnvDirPath(
+  sessionId?: string,
+): Promise<string> {
   const sessionEnvDir = join(
     getClaudeConfigHomeDir(),
     'session-env',
-    getSessionId(),
+    sessionId ?? getSessionId(),
   )
   await mkdir(sessionEnvDir, { recursive: true })
   return sessionEnvDir
@@ -25,9 +34,13 @@ export async function getSessionEnvDirPath(): Promise<string> {
 export async function getHookEnvFilePath(
   hookEvent: 'Setup' | 'SessionStart' | 'CwdChanged' | 'FileChanged',
   hookIndex: number,
+  sessionId?: string,
 ): Promise<string> {
   const prefix = hookEvent.toLowerCase()
-  return join(await getSessionEnvDirPath(), `${prefix}-hook-${hookIndex}.sh`)
+  return join(
+    await getSessionEnvDirPath(sessionId),
+    `${prefix}-hook-${hookIndex}.sh`,
+  )
 }
 
 export async function clearCwdEnvFiles(): Promise<void> {

@@ -925,18 +925,30 @@ export const BashTool = buildTool({
       persistedOutputPath,
       persistedOutputSize
     };
-    // CC 2.1.293 #29 (official _Rn call site @216678800): record single-file
-    // cat/head/tail/sed -n/grep reads into readFileState (read-before-edit) AND
-    // fire the nested-memory trigger so path-scoped rules + nested CLAUDE.md
-    // load when Claude views a file via a Bash read command instead of Read.
-    // Guarded by the official `!Ce && !Mo && !Ie.backgroundTaskId` (not
-    // interrupted, not image output, not a background task). The trigger
-    // context mirrors the official `s.remoteCall===void 0 &&
-    // s.nestedMemoryAttachmentTriggers ? {triggers, permissions} : void 0`;
-    // OCC has no remoteCall (always undefined) so the gate reduces to the
-    // nestedMemoryAttachmentTriggers presence check, and `permissions` is a
-    // thunk over the live toolPermissionContext (matches cRn's e.permissions()).
+    // CC 2.1.293 #29 (official _Rn call site @216678800; 295 gvn call site):
+    // record single-file cat/head/tail/sed -n/grep reads into readFileState
+    // (read-before-edit) AND fire the nested-memory trigger so path-scoped
+    // rules + nested CLAUDE.md load when Claude views a file via a Bash read
+    // command instead of Read. Guarded by the official
+    // `!Ce && !Mo && !Ie.backgroundTaskId` (not interrupted, not image output,
+    // not a background task). The trigger context mirrors the official
+    // `s.remoteCall===void 0 && s.nestedMemoryAttachmentTriggers ?
+    // {triggers, permissions} : void 0`; OCC has no remoteCall (always
+    // undefined) so the gate reduces to the nestedMemoryAttachmentTriggers
+    // presence check, and `permissions` is a thunk over the live
+    // toolPermissionContext (matches cRn's e.permissions()).
+    //
+    // CC 2.1.295 ("Fixed a file being treated as already read after a Bash
+    // command such as `cat` ran without printing it"): the 5th recorder param
+    // is now the model-visible stdout — official `Ur?void 0:Qo` where Ur is
+    // the persisted/too-long/inner-call/budget condition and Qo is data.stdout
+    // (≡ compressedStdout here, ghHint included). undefined tells the recorder
+    // the model never saw the output → seed with contentNotInModelContext;
+    // a defined value enables the oUr containment skip-seed. OCC has no
+    // innerCall/budget disjuncts (pre-existing simplification).
     if (!wasInterrupted && !isImage && !result.backgroundTaskId) {
+      const outputNotFullyVisibleToModel =
+        persistedOutputPath !== undefined || stdout.length > getBashOutputMaxChars();
       const triggerContext: BashReadTriggerContext | undefined =
         toolUseContext.nestedMemoryAttachmentTriggers
           ? {
@@ -949,7 +961,7 @@ export const BashTool = buildTool({
         toolUseContext.readFileState,
         abortController.signal,
         result.code,
-        persistedOutputPath !== undefined || stdout.length > getBashOutputMaxChars(),
+        outputNotFullyVisibleToModel ? undefined : compressedStdout,
         triggerContext
       )
     }

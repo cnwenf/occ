@@ -2,6 +2,7 @@ import type { Command } from '../commands.js'
 import type { LocalCommandCall } from '../types/command.js'
 import {
   canUserConfigureAdvisor,
+  getEffectiveAdvisorModel,
   isValidAdvisorModel,
   modelSupportsAdvisor,
 } from '../utils/advisor.js'
@@ -21,7 +22,15 @@ const call: LocalCommandCall = async (args, context) => {
   )
 
   if (!arg) {
-    const current = context.getAppState().advisorModel
+    // CC 2.1.295 port: a saved advisor model that is no longer available
+    // reads as "No advisor" — the official dialog fix ("it now opens on 'No
+    // advisor'") instead of showing a checkmark on the unavailable saved
+    // model. Display-only: the saved setting is left untouched, exactly like
+    // the official fix. See getEffectiveAdvisorModel in utils/advisor.ts.
+    const current = getEffectiveAdvisorModel(
+      context.getAppState().advisorModel,
+      model => isValidAdvisorModel(model) && isModelAllowed(model),
+    )
     if (!current) {
       return {
         type: 'text',

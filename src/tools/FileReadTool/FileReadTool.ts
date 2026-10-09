@@ -344,8 +344,18 @@ const inputSchema = lazySchema(() =>
       'The number of lines to read. Only provide if the file is too large to read at once.',
     ),
     pages: z
-      .string()
-      .optional()
+      .preprocess(
+        // CC 2.1.295 changelog: "Fixed the Read tool rejecting calls with an
+        // empty `pages` parameter instead of treating it as omitted" —
+        // official schema field verbatim:
+        // `pages:Yi((e)=>typeof e==="string"&&e.trim()===""?void 0:e,o().optional())`
+        // (Yi ≡ z.preprocess): an empty/whitespace-only string is coerced to
+        // undefined at the schema layer, BEFORE validateInput runs, so the
+        // strict `if (pages !== undefined)` parse below never sees it.
+        value =>
+          typeof value === 'string' && value.trim() === '' ? undefined : value,
+        z.string().optional(),
+      )
       .describe(
         `Page range for PDF files (e.g., "1-5", "3", "10-20"). Only applicable to PDF files. Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
       ),
@@ -814,9 +824,15 @@ export const FileReadTool = buildTool({
     // by Read). Edit/Write store offset=undefined — their readFileState
     // entry reflects post-edit mtime, so deduping against it would wrongly
     // point the model at the pre-edit Read content.
+    // CC 2.1.295: official gate is verbatim
+    // `if(Je&&!Je.isPartialView&&!Je.contentNotInModelContext&&Je.offset!==void 0)`
+    // — entries seeded from a Bash read the model never saw (grep-family or
+    // persisted/truncated output) must NOT produce the file_unchanged stub;
+    // the content is re-sent instead.
     if (
       existingState &&
       !existingState.isPartialView &&
+      !existingState.contentNotInModelContext &&
       existingState.offset !== undefined
     ) {
       const rangeMatch =

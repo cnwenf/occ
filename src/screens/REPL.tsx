@@ -171,6 +171,7 @@ import type { MCPServerConnection } from '../services/mcp/types.js';
 import type { ScopedMcpServerConfig } from '../services/mcp/types.js';
 import { randomUUID, type UUID } from 'crypto';
 import { processSessionStartHooks } from '../utils/sessionStart.js';
+import { dedupeSessionStartHookMessages } from '../utils/hooks/sessionStartContextDedupe.js';
 import { executeSessionEndHooks, getSessionEndHookTimeoutMs } from '../utils/hooks.js';
 import { registerMainThreadAgentHooks } from '../utils/hooks/registerFrontmatterHooks.js';
 import { isRestrictedToPluginOnly, isSourceAdminTrusted } from '../utils/settings/pluginOnlyPolicy.js';
@@ -1918,8 +1919,10 @@ export function REPL({
         model: mainLoopModel
       });
 
-      // Append hook messages to the conversation
-      messages.push(...hookMessages);
+      // Append hook messages to the conversation — dedupe SessionStart
+      // additionalContext already present in the restored transcript so
+      // repeated resumes don't re-inject identical context.
+      messages.push(...dedupeSessionStartHookMessages(hookMessages, messages));
       // For forks, generate a new plan slug and copy the plan content so the
       // original and forked sessions don't clobber each other's plan files.
       // For regular resumes, reuse the original session's plan slug.

@@ -16,11 +16,13 @@ import type { LocalShellTaskState } from 'src/tasks/LocalShellTask/guards.js';
 import { LocalShellTask } from 'src/tasks/LocalShellTask/LocalShellTask.js';
 // Type import is erased at build time — safe even though module is ant-gated.
 import type { LocalWorkflowTaskState } from 'src/tasks/LocalWorkflowTask/LocalWorkflowTask.js';
+import { McpBackgroundTask, type McpBackgroundTaskState } from 'src/tasks/McpBackgroundTask/McpBackgroundTask.js';
 import type { MonitorMcpTaskState } from 'src/tasks/MonitorMcpTask/MonitorMcpTask.js';
 import { RemoteAgentTask, type RemoteAgentTaskState } from 'src/tasks/RemoteAgentTask/RemoteAgentTask.js';
 import { type BackgroundTaskState, isBackgroundTask, type TaskState } from 'src/tasks/types.js';
 import type { DeepImmutable } from 'src/types/utils.js';
 import { intersperse } from 'src/utils/array.js';
+import { truncate } from 'src/utils/format.js';
 import { TEAM_LEAD_NAME } from 'src/utils/swarm/constants.js';
 import { stopUltraplan } from '../../commands/ultraplan.js';
 import type { CommandResultDisplay } from '../../commands.js';
@@ -95,6 +97,12 @@ type ListItem = {
   task: DeepImmutable<MonitorMcpTaskState>;
 } | {
   id: string;
+  type: 'mcp_task';
+  label: string;
+  status: string;
+  task: DeepImmutable<McpBackgroundTaskState>;
+} | {
+  id: string;
   type: 'dream';
   label: string;
   status: string;
@@ -160,7 +168,10 @@ export function BackgroundTasksDialog({
       };
     }
     const allItems = getSelectableBackgroundTasks(typedTasks, foregroundedTaskId);
-    if (allItems.length === 1) {
+    // mcp_task has no detail dialog (the BackgroundTask switch returns undefined
+    // for it), so auto-entering detail on a lone MCP task would strand the
+    // dialog with navigation dead. Keep it in list view where 'x' can stop it.
+    if (allItems.length === 1 && allItems[0]!.type !== 'mcp_task') {
       skippedListOnMount.current = true;
       return {
         mode: 'detail',
@@ -185,6 +196,7 @@ export function BackgroundTasksDialog({
     teammateTasks,
     workflowTasks,
     mcpMonitors,
+    mcpTasks,
     dreamTasks: dreamTasks_0,
     allSelectableItems
   } = useMemo(() => {
@@ -207,6 +219,7 @@ export function BackgroundTasksDialog({
     const workflows = sorted.filter(item_2 => item_2.type === 'local_workflow');
     const monitorMcp = sorted.filter(item_3 => item_3.type === 'monitor_mcp');
     const dreamTasks = sorted.filter(item_4 => item_4.type === 'dream');
+    const mcp = sorted.filter(item_12 => item_12.type === 'mcp_task');
     // In spinner-tree mode, exclude teammates from the dialog (they appear in the tree)
     const teammates = showSpinnerTree ? [] : sorted.filter(item_5 => item_5.type === 'in_process_teammate');
     // Add leader entry when there are teammates, so users can foreground back to leader
@@ -222,12 +235,13 @@ export function BackgroundTasksDialog({
       agentTasks: agent,
       workflowTasks: workflows,
       mcpMonitors: monitorMcp,
+      mcpTasks: mcp,
       dreamTasks,
       teammateTasks: [...leaderItem, ...teammates],
       // Order MUST match JSX render order (teammates \u2192 bash \u2192 monitorMcp \u2192
-      // remote \u2192 agent \u2192 workflows \u2192 dream) so \u2193/\u2191 navigation moves the cursor
+      // remote \u2192 agent \u2192 workflows \u2192 dream \u2192 mcp) so \u2193/\u2191 navigation moves the cursor
       // visually downward.
-      allSelectableItems: [...leaderItem, ...teammates, ...bash, ...monitorMcp, ...remote, ...agent, ...workflows, ...dreamTasks]
+      allSelectableItems: [...leaderItem, ...teammates, ...bash, ...monitorMcp, ...remote, ...agent, ...workflows, ...dreamTasks, ...mcp]
     };
   }, [typedTasks, foregroundedTaskId, showSpinnerTree]);
   const currentSelection = allSelectableItems[selectedIndex] ?? null;
@@ -245,7 +259,10 @@ export function BackgroundTasksDialog({
           onDone('Viewing leader', {
             display: 'system'
           });
-        } else {
+        } else if (current.type !== 'mcp_task') {
+          // mcp_task has no detail dialog — Enter is a no-op for it (the row is
+          // stopped with 'x' from the list). Entering detail would strand the
+          // dialog with navigation dead.
           setViewState({
             mode: 'detail',
             itemId: current.id
@@ -310,6 +327,8 @@ export function BackgroundTasksDialog({
         } else {
           void killRemoteAgentTask(currentSelection_0.id);
         }
+      } else if (currentSelection_0.type === 'mcp_task' && currentSelection_0.status === 'running') {
+        void killMcpTask(currentSelection_0.id);
       }
     }
     if (e.key === 'f') {
@@ -342,6 +361,9 @@ export function BackgroundTasksDialog({
   }
   async function killRemoteAgentTask(taskId_3: string): Promise<void> {
     await RemoteAgentTask.kill(taskId_3, setAppState);
+  }
+  async function killMcpTask(taskId_4: string): Promise<void> {
+    await McpBackgroundTask.kill(taskId_4, setAppState);
   }
 
   // Wrap onDone in useEffectEvent to get a stable reference that always calls
@@ -438,7 +460,7 @@ export function BackgroundTasksDialog({
               {runningAgentCount}{' '}
               {runningAgentCount !== 1 ? 'active agents' : 'active agent'}
             </Text>] : [])], index => <Text key={`separator-${index}`}> · </Text>);
-  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(currentSelection !== null && currentSelection !== undefined && currentSelection.type !== 'leader' ? [<KeyboardShortcutHint key="delete" shortcut="x x" action="delete" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
+  const actions = [<KeyboardShortcutHint key="upDown" shortcut="↑/↓" action="select" />, <KeyboardShortcutHint key="enter" shortcut="Enter" action="view" />, ...(currentSelection?.type === 'in_process_teammate' && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="foreground" shortcut="f" action="foreground" />] : []), ...((currentSelection?.type === 'local_bash' || currentSelection?.type === 'local_agent' || currentSelection?.type === 'in_process_teammate' || currentSelection?.type === 'local_workflow' || currentSelection?.type === 'monitor_mcp' || currentSelection?.type === 'dream' || currentSelection?.type === 'remote_agent' || currentSelection?.type === 'mcp_task') && currentSelection.status === 'running' ? [<KeyboardShortcutHint key="kill" shortcut="x" action="stop" />] : []), ...(currentSelection !== null && currentSelection !== undefined && currentSelection.type !== 'leader' ? [<KeyboardShortcutHint key="delete" shortcut="x x" action="delete" />] : []), ...(agentTasks.some(t => t.status === 'running') ? [<KeyboardShortcutHint key="kill-all" shortcut={killAgentsShortcut} action="stop all agents" />] : []), <KeyboardShortcutHint key="esc" shortcut="←/Esc" action="close" />];
   const handleCancel = () => onDone('Background tasks dialog dismissed', {
     display: 'system'
   });
@@ -512,6 +534,15 @@ export function BackgroundTasksDialog({
                   {dreamTasks_0.map(item_11 => <Item key={item_11.id} item={item_11} isSelected={item_11.id === currentSelection?.id} />)}
                 </Box>
               </Box>}
+
+            {mcpTasks.length > 0 && <Box flexDirection="column" marginTop={teammateTasks.length > 0 || bashTasks.length > 0 || mcpMonitors.length > 0 || remoteSessions.length > 0 || agentTasks.length > 0 || workflowTasks.length > 0 || dreamTasks_0.length > 0 ? 1 : 0}>
+                <Text dimColor>
+                  <Text bold>{'  '}MCP tasks</Text> ({mcpTasks.length})
+                </Text>
+                <Box flexDirection="column">
+                  {mcpTasks.map(item_13 => <Item key={item_13.id} item={item_13} isSelected={item_13.id === currentSelection?.id} />)}
+                </Box>
+              </Box>}
           </Box>}
       </Dialog>
     </Box>;
@@ -574,6 +605,15 @@ function toListItem(task: BackgroundTaskState): ListItem {
         status: task.status,
         task
       };
+    case 'mcp_task':
+      return {
+        id: task.id,
+        type: 'mcp_task',
+        // description is `${serverName}/${toolName}` (see makeMcpBackgroundTask).
+        label: task.description,
+        status: task.status,
+        task
+      };
   }
 }
 function Item(t0) {
@@ -608,7 +648,7 @@ function Item(t0) {
   const t5 = isSelected && !useGreyPointer ? "suggestion" : undefined;
   let t6;
   if ($[4] !== item.task || $[5] !== item.type || $[6] !== maxActivityWidth) {
-    t6 = item.type === "leader" ? <Text>@{TEAM_LEAD_NAME}</Text> : <BackgroundTaskComponent task={item.task} maxActivityWidth={maxActivityWidth} />;
+    t6 = item.type === "leader" ? <Text>@{TEAM_LEAD_NAME}</Text> : item.type === "mcp_task" ? <Text>{truncate(item.task.description, maxActivityWidth, true)}</Text> : <BackgroundTaskComponent task={item.task} maxActivityWidth={maxActivityWidth} />;
     $[4] = item.task;
     $[5] = item.type;
     $[6] = maxActivityWidth;
