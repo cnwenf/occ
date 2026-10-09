@@ -165,6 +165,7 @@ import {
 import { all } from './generators.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
 import { execPromptHook } from './hooks/execPromptHook.js'
+import { capHookString, HOOK_STRING_CAP } from './hooks/hookHelpers.js'
 import type { Message, AssistantMessage } from '../types/message.js'
 import { execAgentHook } from './hooks/execAgentHook.js'
 import { execHttpHook } from './hooks/execHttpHook.js'
@@ -507,21 +508,9 @@ const BACKGROUND_TASK_TYPE_LABELS: Record<string, string> = {
   remote_agent: 'cloud session',
 }
 
-// Cap a string at `limit` chars, appending a "… [+N chars]" marker when
-// clipped. Avoids splitting a UTF-16 surrogate pair at the boundary (binary:
-// MT + Jye). Description/command/prompt fields are all capped at 1000 chars.
-function capHookString(value: string, limit: number): string {
-  if (value.length <= limit) return value
-  let sliced = value.slice(0, limit)
-  const lastCode = sliced.charCodeAt(limit - 1)
-  // High surrogate (0xd800-0xdbff) at the boundary would orphan its pair.
-  if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
-    sliced = sliced.slice(0, -1)
-  }
-  return `${sliced}… [+${value.length - sliced.length} chars]`
-}
-
-const HOOK_STRING_CAP = 1000
+// capHookString / HOOK_STRING_CAP moved to ./hooks/hookHelpers.js (2.1.294
+// round) so execPromptHook's blocking-path cap (official Npr=500) shares the
+// same implementation without a value-level import cycle against this module.
 
 // Map the session's in-flight background tasks to the E7c hook-input shape.
 // Binary: Oql(taskRegistry.all()) — iterates task states, filters to
@@ -631,6 +620,13 @@ export interface HookResult {
   blockingError?: HookBlockingError
   outcome: 'success' | 'blocking' | 'non_blocking_error' | 'cancelled'
   preventContinuation?: boolean
+  /**
+   * CC 2.1.294 (official Pon timeout path): set on outcome 'cancelled' when
+   * the cancellation was caused by the hook's OWN timeout (the combined signal
+   * aborted while the parent abortController did not) rather than a user/parent
+   * abort. Pairs with the tengu_hook_prompt_timeout telemetry event.
+   */
+  timedOut?: boolean
   stopReason?: string
   /**
    * claude-code /goal: the goal Stop-hook evaluator assessed the goal as

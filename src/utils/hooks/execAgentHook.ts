@@ -23,6 +23,7 @@ import type { AgentHook } from '../settings/types.js'
 import { jsonStringify } from '../slowOperations.js'
 import { asSystemPrompt } from '../systemPromptType.js'
 import {
+  HOOK_JUDGMENT_GUIDANCE,
   addArgumentsToPrompt,
   createStructuredOutputTool,
   hookResponseSchema,
@@ -104,15 +105,25 @@ export async function execAgentHook(
         structuredOutputTool,
       ]
 
+      // CC 2.1.294 (OCC-150): official `Rt` head — Stop/SubagentStop keep the
+      // stop-condition wording; every other event gets the generic
+      // evaluate-the-condition head (byte-verified from the 294 ELF).
+      const isStopEvent = hookEvent === 'Stop' || hookEvent === 'SubagentStop'
+      const promptHead = isStopEvent
+        ? 'You are verifying a stop condition in Claude Code. Your task is to verify that the agent completed the given plan.'
+        : `You are evaluating a ${hookEvent} hook in Claude Code. Your task is to evaluate the condition described in the user message.`
+      // OCC always has a local transcript path (no served-remote sessions —
+      // the official `z`/"served for another machine's session" branch is
+      // dormant in OCC and intentionally not ported).
       const systemPrompt = asSystemPrompt([
-        `You are verifying a stop condition in Claude Code. Your task is to verify that the agent completed the given plan. The conversation transcript is available at: ${transcriptPath}\nYou can read this file to analyze the conversation history if needed.
+        `${promptHead} The conversation transcript is available at: ${transcriptPath}\nYou can read this file to analyze the conversation history if needed.
 
 Use the available tools to inspect the codebase and verify the condition.
 Use as few steps as possible - be efficient and direct.
 
-When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
-- ok: true if the condition is met
-- ok: false with reason if the condition is not met`,
+When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool, always with a reason.
+
+${HOOK_JUDGMENT_GUIDANCE}`,
       ])
 
       const model = hook.model ?? getSmallFastModel()
@@ -242,6 +253,8 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
           logEvent('tengu_agent_stop_hook_max_turns', {
             durationMs: Date.now() - hookStartTime,
             turnCount,
+            hookEvent:
+              hookEvent as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
             agentName:
               agentName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           })
@@ -258,6 +271,8 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
           durationMs: Date.now() - hookStartTime,
           turnCount,
           errorType: 1, // 1 = no structured output
+          hookEvent:
+            hookEvent as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
           agentName:
             agentName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         })
@@ -272,6 +287,16 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
         logForDebugging(
           `Hooks: Agent hook condition was not met: ${structuredOutputResult.reason}`,
         )
+        // CC 2.1.294 (OCC-150): official adds the blocking telemetry event
+        // (byte-verified @24381500 region of the 294 ELF) — was missing in OCC.
+        logEvent('tengu_agent_stop_hook_blocking', {
+          durationMs: Date.now() - hookStartTime,
+          turnCount,
+          hookEvent:
+            hookEvent as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+          agentName:
+            agentName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        })
         return {
           hook,
           outcome: 'blocking',
@@ -287,6 +312,8 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
       logEvent('tengu_agent_stop_hook_success', {
         durationMs: Date.now() - hookStartTime,
         turnCount,
+        hookEvent:
+          hookEvent as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
         agentName:
           agentName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
@@ -319,6 +346,8 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
     logEvent('tengu_agent_stop_hook_error', {
       durationMs: Date.now() - hookStartTime,
       errorType: 2, // 2 = general error
+      hookEvent:
+        hookEvent as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       agentName:
         agentName as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
