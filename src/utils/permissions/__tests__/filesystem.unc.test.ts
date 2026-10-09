@@ -53,7 +53,8 @@ afterAll(() => {
 })
 
 // Import AFTER the platform mock so readOnlyCommandValidation sees it.
-const { checkReadPermissionForTool } = await import('../filesystem.js')
+const { checkReadPermissionForTool, checkNetworkMountReadSurface } =
+  await import('../filesystem.js')
 const { checkRuleBasedPermissions, hasPermissionsToUseTool } = await import(
   '../permissions.js'
 )
@@ -247,5 +248,78 @@ describe('UNC read ask is bypass-immune (plan tests #2-#4)', () => {
     )
     expect(result.behavior).toBe('ask')
     expect(result.decisionReason?.type).not.toBe('safetyCheck')
+  })
+})
+
+// ── OCC-152: the official `Ba` WSL-distro UNC exemption is SURFACE-ONLY ──
+//
+// checkNetworkMountReadSurface (official AHe) exempts \\wsl.localhost\<distro>\
+// and \\wsl$\<distro>\ shares (isDeniedUncPath = isUncPath && !isWslUncPath).
+// That exemption does NOT reach the production entry checkReadPermissionForTool
+// on Windows: the OCC-111 step-1b leg (containsVulnerableUncPath) re-hits the
+// same \\wsl.localhost\ / \\wsl$\ spellings and returns a byte-identical UNC
+// safetyCheck ask (and step 2 hasSuspiciousWindowsPathPattern embeds the same
+// detector). These tests drive the PRODUCTION ENTRY (not the isolated helper)
+// and pin the actual behavior: on Windows a WSL-distro UNC read STILL ASKS.
+// No regression vs the pre-292 review base, ask-only, bypass-immune. This is
+// deliberately documented rather than "fixed" — see the checkNetworkMountRead
+// Surface docblock for why threading the exemption through would weaken the
+// ask (downgrade to a classifier-approvable {type:'other'}) or newly allow
+// unprompted WSL-distro UNC reads.
+
+describe('WSL-distro UNC: surface exemption vs production entry (OCC-152)', () => {
+  const WSL_LOCALHOST = '\\\\wsl.localhost\\Ubuntu\\tmp\\x'
+  const WSL_DOLLAR = '\\\\wsl$\\Ubuntu\\file.txt'
+  const UNC_REASON = 'UNC path detected (defense-in-depth check)'
+
+  test('isolated AHe surface EXEMPTS the WSL-distro share (official Ba) → null', () => {
+    // isUncPath true but isWslUncPath true → isDeniedUncPath false; no
+    // automount/kernel surface either → null. This is the exemption the docs
+    // claim — but it holds on THIS helper only (see the two tests below).
+    expect(
+      checkNetworkMountReadSurface(
+        fakeReadTool,
+        WSL_LOCALHOST,
+        [WSL_LOCALHOST],
+        {},
+      ),
+    ).toBeNull()
+  })
+
+  test('production entry on WINDOWS: \\\\wsl.localhost\\… STILL asks (step-1b overrides the surface exemption)', () => {
+    platformOverride = 'windows'
+    try {
+      const result = checkReadPermissionForTool(
+        fakeReadTool,
+        { file_path: WSL_LOCALHOST },
+        makePermissionContext(),
+      )
+      expect(result.behavior).toBe('ask')
+      expect(result.decisionReason?.type).toBe('safetyCheck')
+      const reason = result.decisionReason as {
+        classifierApprovable: boolean
+        reason: string
+      }
+      // Identical UNC safetyCheck ask (bypass-immune), NOT the exemption.
+      expect(reason.classifierApprovable).toBe(false)
+      expect(reason.reason).toBe(UNC_REASON)
+    } finally {
+      platformOverride = null
+    }
+  })
+
+  test('production entry on WINDOWS: \\\\wsl$\\… legacy spelling STILL asks too', () => {
+    platformOverride = 'windows'
+    try {
+      const result = checkReadPermissionForTool(
+        fakeReadTool,
+        { file_path: WSL_DOLLAR },
+        makePermissionContext(),
+      )
+      expect(result.behavior).toBe('ask')
+      expect(result.decisionReason?.type).toBe('safetyCheck')
+    } finally {
+      platformOverride = null
+    }
   })
 })

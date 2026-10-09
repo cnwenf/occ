@@ -2012,6 +2012,30 @@ const readUncMessage = (displayPath: string) =>
  *    (adds \\?\ device-namespace paths) minus the WSL exemption (official
  *    `Ba`); automount/kernel/glob asks are NEW. All changes are ask-only —
  *    no read that previously worked is newly denied.
+ *  - SCOPE OF THE WSL EXEMPTION (OCC-152): the official `Ba` WSL-distro
+ *    exemption (`\\wsl.localhost\<distro>\…`, `\\wsl$\<distro>\…`) is honored
+ *    by THIS surface only — it makes `isDeniedUncPath` return false so step 1
+ *    does not raise the network-mount safetyCheck. It does NOT make a WSL-dist
+ *    UNC read silently allowed end-to-end. In the production entry
+ *    checkReadPermissionForTool the subsequent OCC-side Windows hardening legs
+ *    re-hit the same spellings and still ask: step 1b (`containsVulnerableUnc
+ *    Path`'s backslash/forward-slash UNC patterns match `\\wsl.localhost\` and
+ *    `\\wsl$\`) fires first with a byte-identical `Xe` safetyCheck ask, and
+ *    step 2 (`hasSuspiciousWindowsPathPattern`, which embeds the same
+ *    detector) would too. Net effect on Windows (the only platform with WSL
+ *    shares): a WSL-distro UNC read STILL ASKS — identical to the pre-292
+ *    review-base behavior (no regression, ask-only, bypass-immune). On
+ *    linux/macOS both legs are Windows-gated no-ops, so the path simply falls
+ *    through to the ordinary working-directory permission logic. This
+ *    divergence is deliberately NOT "fixed" by threading the exemption into
+ *    those legs: exempting step 1b alone would merely downgrade the ask to
+ *    step 2's classifier-approvable `{type:'other'}` (re-opening the exact
+ *    bypass 2.1.292 closed), and exempting both would newly allow unprompted
+ *    WSL-distro UNC reads — a loosening out of scope for a P3 and unnecessary
+ *    for official fidelity (these OCC hardening legs pre-date `AHe` and are
+ *    additive). Pinned by the Windows-gated integration tests in
+ *    __tests__/filesystem.unc.test.ts ("surface exemption vs production
+ *    entry"). See ledger docs/upstream-version-gap-occ150-2026-10.md §8.1.
  */
 export function checkNetworkMountReadSurface(
   tool: Tool,
@@ -2168,6 +2192,16 @@ export function checkReadPermissionForTool(
   // linux/macOS); the ask is byte-identical to the step-1 UNC ask (same `Xe`
   // safetyCheck shape, message and reason), so the same bypass-immunity floors
   // hold — a PreToolUse hook allow or auto mode cannot stand over it either.
+  // NOTE (OCC-152): this leg deliberately does NOT mirror the official `Ba`
+  // WSL-distro exemption — its backslash/forward-slash patterns also match
+  // \\wsl.localhost\… and \\wsl$\… spellings that step 1 exempts, so on
+  // Windows a WSL-distro UNC read still asks HERE (safetyCheck, bypass-immune,
+  // same as the pre-292 review base). Do not add an isWslUncPath skip without
+  // also handling step 2 (hasSuspiciousWindowsPathPattern embeds the same
+  // detector): exempting this leg alone would downgrade the ask to step 2's
+  // classifier-approvable {type:'other'} — re-opening the 2.1.292 bypass.
+  // See the checkNetworkMountReadSurface docblock + the Windows-gated pins in
+  // __tests__/filesystem.unc.test.ts.
   for (const pathToCheck of pathsToCheck) {
     if (containsVulnerableUncPath(pathToCheck)) {
       return networkMountSafetyAsk(

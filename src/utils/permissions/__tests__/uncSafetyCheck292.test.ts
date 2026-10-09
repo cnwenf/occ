@@ -141,9 +141,16 @@ describe('2.1.292 checkNetworkMountReadSurface — path arms (official AHe)', ()
     expect(reasonOf(r).classifierApprovable).toBe(false)
   })
 
-  test('WSL-distro UNC share is EXEMPT (official Ba) → null', () => {
+  test('WSL-distro UNC share is EXEMPT on this surface (official Ba) → null', () => {
     // \\\\wsl.localhost\Ubuntu\tmp\x — isUncPath true but isWslUncPath true →
     // isDeniedUncPath false. No automount/kernel surface either → null.
+    // SCOPE (OCC-152): the exemption holds on the ISOLATED AHe surface only.
+    // In the production entry checkReadPermissionForTool the OCC-side step-1b
+    // leg (containsVulnerableUncPath, Windows-gated) re-hits \\wsl.localhost\ /
+    // \\wsl$\ spellings, so on Windows a WSL-distro UNC read STILL asks
+    // (safetyCheck, bypass-immune) — pinned by the Windows-gated integration
+    // tests in filesystem.unc.test.ts. Do not read this null as "WSL UNC reads
+    // are allowed end-to-end".
     expect(surface(readTool, '\\\\wsl.localhost\\Ubuntu\\tmp\\x')).toBeNull()
   })
 
