@@ -16,6 +16,7 @@ import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import { checkStatsigFeatureGate_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
 import type { AnyObject, Tool, ToolPermissionContext } from '../../Tool.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
+import { GLOB_TOOL_NAME } from '../../tools/GlobTool/prompt.js'
 import { getCwd } from '../cwd.js'
 import { escapeControlCharsAsEntities } from '../displayEscape.js'
 import { logForDebugging } from '../debug.js'
@@ -33,7 +34,14 @@ import {
   getDirectoryForPath,
   sanitizePath,
 } from '../path.js'
-import { shouldDenyMacosNetworkMountPath } from '../macosKernelPaths.js'
+import {
+  isAutomountBrowsePath,
+  isAutomountPrefixPath,
+  isDeniedUncPath,
+  isFoldedBareNet,
+  isKernelResolvedPathPrefix,
+  shouldDenyMacosNetworkMountPath,
+} from '../macosKernelPaths.js'
 import { getPlanSlug, getPlansDirectory } from '../plans.js'
 import { getPlatform } from '../platform.js'
 import { getProjectDir } from '../sessionStorage.js'
@@ -1889,6 +1897,226 @@ export function expandPathForWriteDescriptor(rawPath: string): string {
   }
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.292 (OCC-150 P0 security): official `Xe` safety-ask builder @17962440
+// of the 2.1.292 linux-x64 ELF strings dump (byte-verified):
+//   function Xe(e,n){return{behavior:"ask",message:e,
+//     decisionReason:{type:"safetyCheck",classifierApprovable:!1,reason:n}}}
+// Every official read-side network-mount ask (UNC / automount -hosts / automount
+// browse / kernel-resolved — path AND glob variants, official `AHe` @17945150)
+// is built through this shape. The non-classifier-approvable `safetyCheck`
+// reason IS the 2.1.292 changelog fix ("PreToolUse hook approvals + auto mode
+// bypassing the prompt for UNC network paths"):
+//  - the official ask-decision filter `NA`/`Nd` @24658991/24666588 only keeps
+//    `safetyCheck`/`subcommandResults` asks when re-resolving after a hook
+//    allow, so a PreToolUse hook `allow` can no longer swallow the prompt
+//    (OCC equivalent: checkRuleBasedPermissions step 1g in permissions.ts).
+//  - the official auto-mode immunity filter `Nt` @24626300
+//    (`!classifierApprovable && type==="safetyCheck"`) forces
+//    tengu_auto_mode_fallback_to_ask, so the transcript classifier can never
+//    approve these asks (OCC equivalent: hasPermissionsToUseTool wrapper,
+//    permissions.ts auto-mode block).
+// The pre-292 OCC UNC ask used `decisionReason:{type:'other'}`, which NEITHER
+// filter catches — both bypasses were live.
+// ---------------------------------------------------------------------------
+
+/** Official reason strings (byte-verbatim from `AHe` @17945150, s292 dump). */
+const AUTOMOUNT_HOSTS_ASK_REASON =
+  'Automount -hosts path detected (defense-in-depth check)'
+const AUTOMOUNT_BROWSE_ASK_REASON =
+  'Automount browse surface detected (defense-in-depth check)'
+const KERNEL_RESOLVED_ASK_REASON =
+  'Kernel-resolved path prefix (/.vol etc.) detected (defense-in-depth check)'
+const UNC_PATH_ASK_REASON = 'UNC path detected (defense-in-depth check)'
+const UNC_GLOB_ASK_REASON = 'UNC glob pattern detected (defense-in-depth check)'
+const AUTOMOUNT_HOSTS_GLOB_ASK_REASON =
+  'Automount -hosts glob pattern detected (defense-in-depth check)'
+const AUTOMOUNT_BROWSE_GLOB_ASK_REASON =
+  'Automount browse surface glob pattern detected (defense-in-depth check)'
+const KERNEL_RESOLVED_GLOB_ASK_REASON =
+  'Kernel-resolved path prefix (/.vol etc.) glob pattern detected (defense-in-depth check)'
+
+/** Official `Xe` — non-classifier-approvable safety ask. */
+export function networkMountSafetyAsk(
+  message: string,
+  reason: string,
+): PermissionDecision {
+  return {
+    behavior: 'ask',
+    message,
+    decisionReason: {
+      type: 'safetyCheck',
+      classifierApprovable: false,
+      reason,
+    },
+  }
+}
+
+// Official read-message templates (byte-verbatim, `AHe` @17945150). The read
+// variants interpolate the ORIGINAL getPath result through the official `gd`
+// display escaper (≡ escapeControlCharsAsEntities, mapping established by the
+// earlier accepted UNC port); the glob variants interpolate the RAW pattern
+// (official uses `${S}` with no formatter).
+const readAutomountHostsMessage = (displayPath: string) =>
+  `Claude requested permissions to read from ${displayPath}, which is under the /net automount map and could trigger a DNS lookup and NFS mount to a remote host.`
+const readAutomountBrowseMessage = (displayPath: string) =>
+  `Claude requested permissions to read from ${displayPath}, which is under the /Network automount browse surface and could trigger a directory-service lookup and mount to a remote host.`
+const readKernelResolvedMessage = (displayPath: string) =>
+  `Claude requested permissions to read from ${displayPath}, which is under /.vol, /.file, /.nofollow or /.resolve (paths the macOS kernel redirects) and could reach a network mount, triggering a DNS lookup and mount to a remote host.`
+const readUncMessage = (displayPath: string) =>
+  `Claude requested permissions to read from ${displayPath}, which appears to be a UNC path that could access network resources.`
+
+/**
+ * CC 2.1.292 (OCC-150 P0 security): OCC port of official `AHe` @17945150
+ * (s292 strings dump of the 2.1.292 linux-x64 ELF, byte-verified in full) —
+ * the read-side network-mount defense-in-depth surface. Returns a `Xe` safety
+ * ask or null. Official check order, preserved exactly:
+ *
+ *  1. direct on the getPath result `g`: automount -hosts (`Ji(g)||hb(g)`),
+ *     browse surface (`Ax(g)`), kernel-resolved (`xS(g)`). NOTE: the official
+ *     direct checks have NO UNC arm — UNC is per-spelling only.
+ *  2. per-spelling loop over `w = s ?? lo(g)` (≡ getPathsForPermissionCheck):
+ *     UNC (`Dn(S)&&!Ba(S)`), automount -hosts, browse, kernel.
+ *  3. Glob-tool branch (`e.name===ao`, ao="Glob" @16244308): UNC,
+ *     automount -hosts, browse, kernel on `input.pattern`.
+ *
+ * The official suspicious-Windows loop (`sK(S,h)` → inline type:'other' ask)
+ * stays in the caller (step 2 of checkReadPermissionForTool), faithful to the
+ * official split — only the network-mount asks are `Xe` safetyChecks.
+ *
+ * Documented deltas from the official binary (ledger:
+ * docs/upstream-version-gap-occ150-2026-10.md):
+ *  - `_G(e,n)` @17929158 is the trustedNetworkDirectories exemption. That
+ *    field is ABSENT from OCC's ToolPermissionContext, and official `_G`
+ *    returns false whenever the exemption set is empty/absent, so `!_G(...)`
+ *    is unconditionally true here — omitting `_G` is behavior-equivalent for
+ *    OCC. The trusted-network-directories SETTINGS surface itself is a
+ *    separate staged ledger item.
+ *  - `Ax` (browse surface) is `function Ax(t){return!1}` @13347436 — a
+ *    compiled-out stub in the linux ELF. OCC ships one cross-platform source,
+ *    so it is gated on `getPlatform()==='macos'` (the same darwin gate the
+ *    already-reviewed write-side shouldDenyMacosNetworkMountPath uses with
+ *    these same primitives) and reuses the earlier isAutomountBrowsePath port.
+ *    It never fires on linux/CI — faithful to the stubbed binary — and on
+ *    macOS it only ever ASKS (safe direction). A security reviewer may veto
+ *    the macOS gate; removing it restores exact linux-binary behavior.
+ *  - primitive mappings (all byte-verified in the 13.34M helper cluster of the
+ *    s292 dump): `Ji` @13345891 ≡ isAutomountPrefixPath (via `Oa`/`DCe`
+ *    memoized ..-folded prefix walk @13346262/13346338), `hb` @13346897 ≡
+ *    isFoldedBareNet, `xS` @13343159 ≡ isKernelResolvedPathPrefix
+ *    (/\/\.(?:vol|file|nofollow|resolve)(?:\/|$)/i gate + folded first
+ *    segment), `Dn&&!Ba` ≡ isDeniedUncPath (UNC prefix or Windows device
+ *    namespace, minus the WSL-distro exemption).
+ *  - behavior vs pre-292 OCC: the ask type flips 'other' → safetyCheck with
+ *    classifierApprovable:false (the fix); UNC detection becomes a superset
+ *    (adds \\?\ device-namespace paths) minus the WSL exemption (official
+ *    `Ba`); automount/kernel/glob asks are NEW. All changes are ask-only —
+ *    no read that previously worked is newly denied.
+ */
+export function checkNetworkMountReadSurface(
+  tool: Tool,
+  path: string,
+  pathsToCheck: string[],
+  input: { [key: string]: unknown },
+): PermissionDecision | null {
+  const isMacos = getPlatform() === 'macos'
+  const displayPath = escapeControlCharsAsEntities(path)
+
+  // Official predicate compositions: Ji||hb (automount -hosts), Ax (browse —
+  // stubbed `return!1` on linux, macOS-gated here), xS (kernel-resolved),
+  // Dn&&!Ba (denied UNC).
+  const isAutomountHosts = (candidate: string): boolean =>
+    isAutomountPrefixPath(candidate) || isFoldedBareNet(candidate)
+  const isBrowseSurface = (candidate: string): boolean =>
+    isMacos && isAutomountBrowsePath(candidate)
+  const isKernelResolved = (candidate: string): boolean =>
+    isKernelResolvedPathPrefix(candidate)
+  const isDeniedUnc = (candidate: string): boolean => isDeniedUncPath(candidate)
+
+  // 1. Direct checks on the raw getPath result (automount/browse/kernel only).
+  if (isAutomountHosts(path)) {
+    return networkMountSafetyAsk(
+      readAutomountHostsMessage(displayPath),
+      AUTOMOUNT_HOSTS_ASK_REASON,
+    )
+  }
+  if (isBrowseSurface(path)) {
+    return networkMountSafetyAsk(
+      readAutomountBrowseMessage(displayPath),
+      AUTOMOUNT_BROWSE_ASK_REASON,
+    )
+  }
+  if (isKernelResolved(path)) {
+    return networkMountSafetyAsk(
+      readKernelResolvedMessage(displayPath),
+      KERNEL_RESOLVED_ASK_REASON,
+    )
+  }
+
+  // 2. Per-spelling loop (original + resolved symlink spellings): UNC first
+  // (official order), then automount/browse/kernel on each spelling.
+  for (const spelling of pathsToCheck) {
+    if (isDeniedUnc(spelling)) {
+      return networkMountSafetyAsk(
+        readUncMessage(displayPath),
+        UNC_PATH_ASK_REASON,
+      )
+    }
+    if (isAutomountHosts(spelling)) {
+      return networkMountSafetyAsk(
+        readAutomountHostsMessage(displayPath),
+        AUTOMOUNT_HOSTS_ASK_REASON,
+      )
+    }
+    if (isBrowseSurface(spelling)) {
+      return networkMountSafetyAsk(
+        readAutomountBrowseMessage(displayPath),
+        AUTOMOUNT_BROWSE_ASK_REASON,
+      )
+    }
+    if (isKernelResolved(spelling)) {
+      return networkMountSafetyAsk(
+        readKernelResolvedMessage(displayPath),
+        KERNEL_RESOLVED_ASK_REASON,
+      )
+    }
+  }
+
+  // 3. Glob-tool pattern branch (official `e.name===ao && typeof n.pattern===
+  // "string"`). Messages interpolate the RAW pattern, byte-faithful.
+  if (tool.name === GLOB_TOOL_NAME) {
+    const pattern = input.pattern
+    if (typeof pattern === 'string') {
+      if (isDeniedUnc(pattern)) {
+        return networkMountSafetyAsk(
+          `Claude requested permissions to glob ${pattern}, which appears to be a UNC pattern that could access network resources.`,
+          UNC_GLOB_ASK_REASON,
+        )
+      }
+      if (isAutomountHosts(pattern)) {
+        return networkMountSafetyAsk(
+          `Claude requested permissions to glob ${pattern}, which is under the /net automount map and could trigger a DNS lookup and NFS mount to a remote host.`,
+          AUTOMOUNT_HOSTS_GLOB_ASK_REASON,
+        )
+      }
+      if (isBrowseSurface(pattern)) {
+        return networkMountSafetyAsk(
+          `Claude requested permissions to glob ${pattern}, which is under the /Network automount browse surface and could trigger a directory-service lookup and mount to a remote host.`,
+          AUTOMOUNT_BROWSE_GLOB_ASK_REASON,
+        )
+      }
+      if (isKernelResolved(pattern)) {
+        return networkMountSafetyAsk(
+          `Claude requested permissions to glob ${pattern}, which is under /.vol, /.file, /.nofollow or /.resolve (paths the macOS kernel redirects) and could reach a network mount, triggering a DNS lookup and mount to a remote host.`,
+          KERNEL_RESOLVED_GLOB_ASK_REASON,
+        )
+      }
+    }
+  }
+
+  return null
+}
+
 /**
  * Permission result for read permission for the specified tool & tool input
  */
@@ -1912,20 +2140,24 @@ export function checkReadPermissionForTool(
   // 6× = 30 syscalls per Read permission check).
   const pathsToCheck = getPathsForPermissionCheck(path)
 
-  // 1. Defense-in-depth: Block UNC paths early (before other checks)
-  // This catches paths starting with \\ or // that could access network resources
-  // This may catch some UNC patterns not detected by containsVulnerableUncPath
-  for (const pathToCheck of pathsToCheck) {
-    if (pathToCheck.startsWith('\\\\') || pathToCheck.startsWith('//')) {
-      return {
-        behavior: 'ask',
-        message: `Claude requested permissions to read from ${escapeControlCharsAsEntities(path)}, which appears to be a UNC path that could access network resources.`,
-        decisionReason: {
-          type: 'other',
-          reason: 'UNC path detected (defense-in-depth check)',
-        },
-      }
-    }
+  // 1. Defense-in-depth: network-mount read surface (official `AHe` @17945150).
+  // UNC / automount -hosts / automount browse (macOS) / kernel-resolved paths —
+  // checked early (before the suspicious-Windows loop, the deny/ask rules and
+  // edit-implies-read), on the raw getPath result, every permission-check
+  // spelling, and (for the Glob tool) the pattern. CC 2.1.292 security fix:
+  // these asks are non-classifier-approvable `safetyCheck`s (official `Xe`), so
+  // neither a PreToolUse hook allow (step 1g in permissions.ts) nor the
+  // auto-mode classifier (immunity block in permissions.ts) can bypass the
+  // prompt. See networkMountSafetyAsk / checkNetworkMountReadSurface for the
+  // byte-level official evidence and documented deltas.
+  const networkMountAsk = checkNetworkMountReadSurface(
+    tool,
+    path,
+    pathsToCheck,
+    input,
+  )
+  if (networkMountAsk) {
+    return networkMountAsk
   }
 
   // 2. Check for suspicious Windows path patterns (defense in depth)
