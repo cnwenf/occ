@@ -37,13 +37,13 @@ ELF 取证（linux-x64 平台包，`npm pack @anthropic-ai/claude-code-linux-x64
 
 ## §1 本轮优先级队列（port round queue）
 
-**P0 — 安全相邻（先做）**
+**P0 — 安全相邻（先做）** ✅ 全部处置完毕（详见 §7）
 1. OCC-149 §7 STAGED 的四条 **2.1.292 安全修复**（当时未落地，结转）：
-   - UNC 路径绕过 PreToolUse hook 审批 + auto-mode（OCC 现状：`src/tools/FileReadTool/FileReadTool.ts:599-603` 已有 pre-I/O `isUncPath` 检查，但 **hook/permission 审批路径没有**同等防护 —— 优先补齐）
-   - sandboxed 命令可读 `/ultrareview` 在 `~/.claude/seed-admin` 的暂存副本
-   - managed sandbox read-deny 路径中途出现/被重指向
-   - 篡改磁盘上的 server-managed settings 缓存可顶掉 policy plugin
-2. **2.1.294 两条 hook 判定修复**（§3）：instruction 式 `prompt`/`agent` hooks "allowing what they should block"；Stop/SubagentStop instruction hooks 判定过松。OCC 面：`src/utils/hooks/execPromptHook.ts`（244 行）、`execAgentHook.ts`（339 行）。需专项反编译取证。
+   - UNC 路径绕过 PreToolUse hook 审批 + auto-mode（OCC 现状：`src/tools/FileReadTool/FileReadTool.ts:599-603` 已有 pre-I/O `isUncPath` 检查，但 **hook/permission 审批路径没有**同等防护 —— 优先补齐）→ **已移植 @dec5581**（Xe/AHe safetyCheck ask + hook 传播 + auto-mode 免疫，§7.0 第④条）
+   - sandboxed 命令可读 `/ultrareview` 在 `~/.claude/seed-admin` 的暂存副本 → **NO-OP（无面）**（§7.3）
+   - managed sandbox read-deny 路径中途出现/被重指向 → **已移植 @3a4ee2c**（per-command refreshConfig 复查节奏，§7.1）
+   - 篡改磁盘上的 server-managed settings 缓存可顶掉 policy plugin → **NO-OP（无面）**（§7.2）
+2. **2.1.294 两条 hook 判定修复**（§3）：instruction 式 `prompt`/`agent` hooks "allowing what they should block"；Stop/SubagentStop instruction hooks 判定过松。OCC 面：`src/utils/hooks/execPromptHook.ts`（244 行）、`execAgentHook.ts`（339 行）。需专项反编译取证。→ **已移植 @278fa58**
 
 **P1 — 旗舰功能**
 3. **Haiku 5.5**（2.1.293）：§2 有完整逐字提取，照 OCC-36/37（Opus 5 launch）的模型上新 playbook 移植。
@@ -122,8 +122,8 @@ OCC 现状：全仓 `claude-haiku-5-5` 0 处。移植触点：`src/utils/model/c
 | 13 | 文件读失败后 footer agent 计数 | CAND | PromptInputFooter 面存在 |
 | 14 | 自定义 agent "worker" 显示为 "Agent" | CAND | 小 UI fix |
 | 15 | Artifact transcript 行 "(unprintable path)" | N/A(核验) | OCC 仅 ReviewArtifactTool，无 Artifact 云发布 |
-| 16 | /ultrareview 上传在 Linux 拒绝（嵌套 checkout；sandbox 中 settings 解析失败） | CAND | OCC 有 `cli/handlers/ultrareview.ts` + `commands/review/ultrareviewCommand.tsx` + `services/api/ultrareviewQuota.ts` |
-| 17 | /ultrareview split-index 建议的 git 命令 | CAND | 同上 |
+| 16 | /ultrareview 上传在 Linux 拒绝（嵌套 checkout；sandbox 中 settings 解析失败） | CAND | OCC 有 `cli/handlers/ultrareview.ts` + `commands/review/ultrareviewCommand.tsx` + `services/api/ultrareviewQuota.ts`。**更正（§7.3）**：该面是纯云 launch+polling，无本地文件暂存 —— 与 seed-admin 修复③无关，不因此升级为 P0 |
+| 17 | /ultrareview split-index 建议的 git 命令 | CAND | 同上（云轮询 flavor，无 seed-admin/本地 staging 面） |
 | 18 | RC/cloud 长会话流式 | N/A | 无 cloud sessions；OCC RemoteControl 是 daemon 绑定，不同物 |
 | 19 | RC 凭证恢复后重传起始历史 | N/A | 同上 |
 | 20 | PushNotification "Remote Control inactive"（claude remote-control 期间） | CAND(核验) | OCC cli.tsx:170 有 `remote-control` 参数分支 → 核验 PushNotificationTool 门控是否同病 |
@@ -180,3 +180,37 @@ OCC 现状：全仓 `claude-haiku-5-5` 0 处。移植触点：`src/utils/model/c
 ## §6 调研工件
 
 - 本轮 Leader 工作目录内：三版 tgz/ELF、`s29{2,3,4}.txt`（strings 全量）、`u29{2,3,4}.txt`（排序去重）、`added/removed29{3,4}.txt`（comm 差分）、官方 `CHANGELOG-official.md`（8561 行，raw.githubusercontent.com/anthropics/claude-code/main/CHANGELOG.md）。工作目录为运行时本地、随 run 销毁 —— 移植轮**必须自行重新下载**（skill 纪律），本文所有 md5/计数即为其校验基准。
+
+## §7 P0(c) — 2.1.292 其余三条安全修复专项取证结果（程序员轮，2026-10-09）
+
+四条 2.1.292 安全修复的最终处置：④ UNC PreToolUse/auto-mode 绕过 = 已移植 @dec5581（见 §3 行 1-4 + uncSafetyCheck292.test.ts）；①②③ 本轮结论如下。
+
+### §7.0 取证事实修正（对 §1/§3 早期记录的更正）
+
+- 2.1.292 changelog 四条原文已从 s293 @30917516 逐字节提取（不再依赖转述）：
+  1. "Fixed sandboxed commands being able to read the staged file copies of /ultrareview uploads under ~/.claude/seed-admin"
+  2. "Fixed a managed sandbox read-deny path (and user ones beside it) that appears or re-points mid-session not dropping project grants inside it or ending credential injection from files it covers"
+  3. "Fixed a tampered on-disk cache of server-managed settings being able to switch off or unseat the built-in policy plugin while the settings fetch failed"
+  4. "Security: Fixed PreToolUse hook approvals and auto mode bypassing the permission prompt for file reads from network (UNC) paths"
+- 早期偏移更正：HXt/gLn @24626300 系**误标**（HXt/gLn 实为 auto-mode 分类器 reason 串 @14014575/14014650）；"re-pointed" @18005996/@18009280 是 task-output symlink 子系统（OCC-107 域），与修复②无关。修复②真实站点：schema describe 区 @14020700-14022400（Bc/Wc/Fc/$c/Qe）+ 组装片段区 @11316300-11318800 + Sandbox Linux runtime @10274900/@10345900。修复③真实站点：kn policyHelper 类 @15472402 s292 + gt() 静态 payload @15488031；staged-copy swap guard @21738265。修复①真实站点：s293 @9138599（敏感目录枚举 + git-bundle seeding）。
+
+### §7.1 修复② managed sandbox read-deny re-point — **PORTED @3a4ee2c**
+
+- 判定：四条中唯一有真实 OCC 面的一条。筛查机制本身（`candidateUnderDeniedRead` + `realpathExistingPrefix` live 解析）在 2.1.285 移植时已就位；292 的 delta 是**复查节奏**——官方 Bc @14021955 / Wc @11317030 describe 均含 "re-checked before every command and dropped once it has been re-pointed into a denied (read) path"。OCC 原节奏 = 仅 initialize()/settings 变更/手动 refresh 时重建 config，命令边界不复查。
+- 移植：`wrapWithSandbox()`（sandbox-adapter.ts，Shell.ts:264 per-command 调用点）在 isSandboxingEnabled 门内、委托 runtime 前调用 `refreshConfig()`（同步函数 → 无竞态窗口；`BaseSandboxManager.updateConfig` = deep-clone + parentProxy 重解析，无状态、成本低；builder 成本有界 ≈6 stat）。sandboxTypes.ts allowRead/allowWrite describe 追加官方两句（byte-verbatim）。13 个新测试（readDenyRepoint292.test.ts）：真 fs symlink re-point 丢弃、mid-session 出现路径丢弃、allowWrite 腿、trusted 侧豁免、benign 回指重准入、节奏/describe 源 pin。48/48（新+285 回归）、sandbox 目录 92/92、lint 净。
+- changelog 后半句 "ending credential injection from files it covers" = **无 OCC 面**（OCC 无 sandbox.credentials.files；trustedTierGrants.ts:45-46 已记录）。官方 Fc/$c 条件组装 describe 机制未移植（OCC 保持静态 describe + 追加与现行为相符的句子）。
+
+### §7.2 修复① 篡改 settings 缓存 → unseat 内置 policy plugin — **NO-OP（无面）**
+
+- 官方修复整体位于 policyHelper arming/seating 机制（kn 类 @15472402：armedFromUserWritableBase / retiredHelperPaths / remoteArmGeneration / midSessionArmingEnabled / osAdminArming / defaultFallback；gt() @15488031 静态默认 payload + "(cached, not yet verified this session)" 标记）。OCC 无该机制：policyStrictSchema.ts:38 "policyHelper/policyHelpers static-payload machinery — keys absent in OCC"；`registerBuiltinPlugin`（builtinPlugins.ts:28）**零调用者** → 不存在"内置 policy plugin 席位"可被 unseat。
+- OCC 缓存文件（remoteManagedSettings，saveSettings = 0o600 + datasync；checksum 仅 HTTP ETag 用，computeChecksumFromSettings @135）与其余全部磁盘 settings 文件同属一个文件系统信任域——能篡改缓存的攻击者同样能篡改 ~/.claude/settings.json，无差异化攻击面。官方加静态 payload 席位正是因为其有需要保护的 policy plugin。
+
+### §7.3 修复③ seed-admin staged copies — **NO-OP（无面）**
+
+- 官方站点 s293 @9138599：敏感目录枚举（agent-memory-local/project、api-dumps、downloads、local-settings、paste-cache、project-settings、**seed-admin**、storage-v2）+ git-bundle seeding 机制（refs/seed/stash、refs/seed/root、"# v2 git bundle"、"Do not run git in this folder"）。seed-admin = /ultrareview 上传的本地暂存副本。
+- OCC src/ 零 seed-admin 引用；`cli/handlers/ultrareview.ts` 是**纯云 launch+polling**（RemoteAgentTask），不做本地文件暂存 → 无副本可读。**更正 §3 表行 16/17 的误导性备注**："OCC 有 ultrareview 面" 成立（三文件存在），但其 flavor 是云轮询，与本修复的本地 staging 无关。OCC 亦无敏感目录 deny 清单、无 sandbox.credentials.files。
+
+### §7.4 P0 收口状态
+
+- P0 四项全部处置完毕：④ @dec5581、2.1.294 hook 判定 @278fa58、② @3a4ee2c、①③ NO-OP 有据。分支 agent/occ/01bb1c9b 已推送。
+- P2 簇 / P3 STAGED 不在本轮恢复指令范围 → 顺延下轮（§1 记录不变）。
