@@ -251,10 +251,21 @@ describe('modelRowsValueEqual (official zr)', () => {
     expect(modelRowsValueEqual(row('sonnet'), row('sonnet[1m]'))).toBe(true)
   })
 
-  test('1M variant of a non-1M family is a DIFFERENT row (haiku)', () => {
-    // Parsed bases are equal, has1mContext differs, and haiku does not
-    // support 1M → official zr returns false.
-    expect(modelRowsValueEqual(row('haiku'), row('haiku[1m]'))).toBe(false)
+  test('1M variant of the default haiku family MERGES since 2.1.293 (haiku-5-5 is 1M-capable)', () => {
+    // OCC-150 (2.1.293): the default haiku is now claude-haiku-5-5, whose
+    // catalog entry carries native_1m/supports_1m_beta (@13883100) → the
+    // official zr tail arm `Bh(g)` (modelSupports1M) returns true, so the
+    // [1m] variant is the SAME row — haiku joined opus/sonnet. Pre-293 this
+    // pinned false (haiku-4-5 had no 1M support).
+    expect(modelRowsValueEqual(row('haiku'), row('haiku[1m]'))).toBe(true)
+  })
+
+  test('1M variant of an explicitly non-1M model is still a DIFFERENT row (haiku-4-5)', () => {
+    // zr false-arm coverage: parsed bases are equal, has1mContext differs,
+    // and claude-haiku-4-5 does not support 1M → official zr returns false.
+    expect(
+      modelRowsValueEqual(row('claude-haiku-4-5'), row('claude-haiku-4-5[1m]')),
+    ).toBe(false)
   })
 
   test('different families never match', () => {

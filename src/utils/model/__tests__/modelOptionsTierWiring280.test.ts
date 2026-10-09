@@ -24,7 +24,7 @@ process.env.ANTHROPIC_API_KEY ??= 'occ-ci-test-key'
  *
  * Row shapes are asserted as concrete values recovered from the same
  * byte-verified builders pinned in opus55Launch280.test.ts (Tv/_v/kv/Pg +
- * MaxSonnet5Option/MaxHaiku45Option), with the extra-usage 1M rows toggled
+ * MaxSonnet5Option/getMaxHaikuOption), with the extra-usage 1M rows toggled
  * deterministically via a mocked getGlobalConfig
  * (cachedExtraUsageDisabledReason drives checkOpus1mAccess/checkSonnet1mAccess).
  *

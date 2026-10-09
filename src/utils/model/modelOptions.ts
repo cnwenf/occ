@@ -5,8 +5,6 @@ import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import {
   COST_TIER_2_10,
   COST_TIER_3_15,
-  COST_HAIKU_35,
-  COST_HAIKU_45,
   formatModelPricing,
   getModelPricingString,
   getOpus5CostTier,
@@ -34,6 +32,7 @@ import {
   isOpusDefaultTier,
   getOpus46PricingSuffix,
   getOpus55PricingSuffix,
+  getPublicModelDisplayName,
   parseUserSpecifiedModel,
   renderDefaultModelSetting,
   resolveAnthropicDefaultModel,
@@ -463,34 +462,32 @@ function getCustomHaikuOption(): ModelOption | undefined {
   }
 }
 
-function getHaiku45Option(): ModelOption {
-  const is3P = getAPIProvider() !== 'firstParty'
-  return {
-    value: 'haiku',
-    label: 'Haiku',
-    description: `Haiku 4.5 · Fastest for quick answers${is3P ? '' : ` · ${formatModelPricing(COST_HAIKU_45)}`}`,
-    descriptionForModel:
-      'Haiku 4.5 - fastest for quick answers. Lower cost but less capable than Sonnet 4.6.',
-  }
-}
-
-function getHaiku35Option(): ModelOption {
-  const is3P = getAPIProvider() !== 'firstParty'
-  return {
-    value: 'haiku',
-    label: 'Haiku',
-    description: `Haiku 3.5 for simple tasks${is3P ? '' : ` · ${formatModelPricing(COST_HAIKU_35)}`}`,
-    descriptionForModel:
-      'Haiku 3.5 - faster and lower cost, but less capable than Sonnet. Use for simple tasks.',
-  }
-}
-
-function getHaikuOption(): ModelOption {
-  // Return correct Haiku option based on provider
+// 2.1.293 (Haiku 5.5 launch, OCC-150): the official binary replaced the static
+// per-version Haiku rows with ONE dynamic row — binary `MM` (byte-verified
+// @20387050):
+//   function MM(){let e=n2(),n=sE(e)??"Haiku";return{value:"haiku",label:"Haiku",
+//     description:`${n} \xB7 ${$h}${xr(e,!1)}`,
+//     descriptionForModel:`${n} - fastest for quick answers. Lower cost but less
+//       capable than Sonnet.`}}
+// with n2 = getDefaultHaikuModel, sE = getPublicModelDisplayName, $h = the
+// "Fastest for quick answers" slogan constant, and xr(model,!1) the
+// ` · $X/$Y per Mtok` pricing suffix (JNn-gated; OCC keeps its established
+// is3P suppression convention used by every other row here). The old static
+// rows ("Haiku 4.5 - … less capable than Sonnet 4.6." / "Haiku 3.5 for simple
+// tasks") are GONE from the 293 binary (0 string hits). 3P providers whose
+// default Haiku is still 4.5 render "Haiku 4.5 · Fastest for quick answers"
+// automatically through the same dynamic row.
+export function getHaikuOption(): ModelOption {
   const haikuModel = getDefaultHaikuModel()
-  return haikuModel === getModelStrings().haiku45
-    ? getHaiku45Option()
-    : getHaiku35Option()
+  const displayName = getPublicModelDisplayName(haikuModel) ?? 'Haiku'
+  const is3P = getAPIProvider() !== 'firstParty'
+  const pricing = getModelPricingString(haikuModel)
+  return {
+    value: 'haiku',
+    label: 'Haiku',
+    description: `${displayName} · Fastest for quick answers${is3P || pricing === undefined ? '' : ` · ${pricing}`}`,
+    descriptionForModel: `${displayName} - fastest for quick answers. Lower cost but less capable than Sonnet.`,
+  }
 }
 
 // 2.1.280 (#001): Max/Standard current Opus row. Binary `Og` (byte-verified):
@@ -623,10 +620,21 @@ const MaxSonnet5Option: ModelOption = {
   description: 'Sonnet 5.5 · Efficient for routine tasks',
 }
 
-const MaxHaiku45Option: ModelOption = {
-  value: 'haiku',
-  label: 'Haiku',
-  description: 'Haiku 4.5 · Fastest for quick answers',
+// 2.1.293 (Haiku 5.5 launch, OCC-150): the subscriber-tier Haiku row went
+// dynamic too — binary `DM` (byte-verified @20388485 region):
+//   function DM(){return{value:"haiku",label:"Haiku",
+//     description:`${sE(n2())??"Haiku"} \xB7 ${$h}`}}
+// No pricing suffix and no descriptionForModel on the subscriber rows (the
+// adjacent Max-tier sonnet row `$M` is likewise dynamic officially; OCC's
+// static "Sonnet 5.5 · Efficient for routine tasks" still matches the current
+// catalog-latest sonnet — pre-existing divergence, noted in the ledger).
+export function getMaxHaikuOption(): ModelOption {
+  const displayName = getPublicModelDisplayName(getDefaultHaikuModel()) ?? 'Haiku'
+  return {
+    value: 'haiku',
+    label: 'Haiku',
+    description: `${displayName} · Fastest for quick answers`,
+  }
 }
 
 // NOTE: the pre-2.1.280 OCC tail appended an "Opus Plan Mode" row when the
@@ -654,7 +662,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       getFable5Option(),
       getSonnet55Option(),
       getSonnet5_1MOption(),
-      getHaiku45Option(),
+      getHaikuOption(),
     ]
   }
 
@@ -677,7 +685,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
         premiumOptions.push(getMaxSonnet5_1MOption())
       }
 
-      premiumOptions.push(MaxHaiku45Option)
+      premiumOptions.push(getMaxHaikuOption())
       return premiumOptions
     }
 
@@ -697,7 +705,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       }
     }
 
-    standardOptions.push(MaxHaiku45Option)
+    standardOptions.push(getMaxHaikuOption())
     return standardOptions
   }
 
@@ -743,7 +751,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       } else if (checkSonnet1mAccess()) {
         customOptions.push(getSonnet5_1MOption())
       }
-      customOptions.push(customHaiku ?? getHaiku45Option())
+      customOptions.push(customHaiku ?? getHaikuOption())
       return customOptions
     }
     // Stock firstParty layout (no ANTHROPIC_DEFAULT_*_MODEL overrides).
@@ -760,7 +768,7 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
         payg1POptions.push(getOpus55_1MOption(fastMode))
       }
     }
-    payg1POptions.push(getHaiku45Option())
+    payg1POptions.push(getHaikuOption())
     return payg1POptions
   }
 

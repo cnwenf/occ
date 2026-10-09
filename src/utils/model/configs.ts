@@ -216,6 +216,24 @@ export const CLAUDE_SONNET_5_5_CONFIG = {
   gateway: 'claude-sonnet-5-5',
 } as const satisfies ModelConfig
 
+// Claude Haiku 5.5 (`claude-haiku-5-5`) — launched in official Claude Code
+// 2.1.293, now the default Haiku model on the Anthropic API (3P defaults stay
+// on haiku-4-5). Provider IDs from the ledger's verbatim 2.1.293 catalog
+// extract (docs/upstream-version-gap-occ150-2026-10.md §2): first_party/
+// vertex/foundry/anthropic_aws/anthropic_google_cloud `claude-haiku-5-5`,
+// bedrock `us.anthropic.claude-haiku-5-5`, mantle
+// `anthropic.claude-haiku-5-5`. `gateway` is absent from the extract — it
+// follows the launch-model convention (bare id), same as sonnet-5-5/opus-5-5.
+export const CLAUDE_HAIKU_5_5_CONFIG = {
+  firstParty: 'claude-haiku-5-5',
+  bedrock: 'us.anthropic.claude-haiku-5-5',
+  vertex: 'claude-haiku-5-5',
+  foundry: 'claude-haiku-5-5',
+  anthropic_aws: 'claude-haiku-5-5',
+  mantle: 'anthropic.claude-haiku-5-5',
+  gateway: 'claude-haiku-5-5',
+} as const satisfies ModelConfig
+
 export const CLAUDE_FABLE_5_CONFIG = {
   firstParty: 'claude-fable-5',
   bedrock: 'us.anthropic.claude-fable-5',
@@ -246,6 +264,7 @@ export const CLAUDE_FABLE_5_1_CONFIG = {
 export const ALL_MODEL_CONFIGS = {
   haiku35: CLAUDE_3_5_HAIKU_CONFIG,
   haiku45: CLAUDE_HAIKU_4_5_CONFIG,
+  haiku55: CLAUDE_HAIKU_5_5_CONFIG,
   sonnet35: CLAUDE_3_5_V2_SONNET_CONFIG,
   sonnet37: CLAUDE_3_7_SONNET_CONFIG,
   sonnet40: CLAUDE_SONNET_4_CONFIG,

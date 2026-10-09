@@ -10,6 +10,7 @@ import {
   CLAUDE_FABLE_5_1_CONFIG,
   CLAUDE_FABLE_5_CONFIG,
   CLAUDE_HAIKU_4_5_CONFIG,
+  CLAUDE_HAIKU_5_5_CONFIG,
   CLAUDE_OPUS_4_1_CONFIG,
   CLAUDE_OPUS_4_5_CONFIG,
   CLAUDE_OPUS_4_6_CONFIG,
@@ -206,6 +207,27 @@ export const COST_HAIKU_45 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// Pricing for Haiku 5.5 (`haiku_55` tier): $0.10 input / $0.50 output per
+// Mtok. Values from the ledger's verbatim 2.1.293 `pricing_tiers.haiku_55`
+// extract (docs/upstream-version-gap-occ150-2026-10.md §2):
+//   haiku_55:{input:0.1,output:0.5,cache_write_5m:0.125,cache_write_1h:0.2,
+//             cache_read:0.01,web_search:0.01, long_prompt:{…}}
+// The `long_prompt` sub-tier (above 100k prompt tokens: $0.50/$2.50,
+// cache_write_5m 0.625, cache_write_1h 1, cache_read 0.05) has NO
+// representation in OCC's flat `ModelCosts` type — no prior tier models it
+// either — so it is intentionally not ported (documented in the launch
+// report). No fast-mode branch: haiku-5-5 is fast-mode ELIGIBLE (gate
+// `n!=="claude-haiku-5-5"`), but the ledger lists no fast pricing tier for
+// `haiku_55`, so base pricing applies in both speeds.
+export const COST_HAIKU_55 = {
+  inputTokens: 0.1,
+  outputTokens: 0.5,
+  promptCacheWriteTokens: 0.125,
+  promptCacheWrite1hTokens: 0.2,
+  promptCacheReadTokens: 0.01,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 const DEFAULT_UNKNOWN_MODEL_COST = COST_TIER_5_25
 
 /**
@@ -260,6 +282,10 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
     COST_HAIKU_35,
   [firstPartyNameToCanonical(CLAUDE_HAIKU_4_5_CONFIG.firstParty)]:
     COST_HAIKU_45,
+  // Haiku 5.5 is the new `haiku_55` tier ($0.10/$0.50) — verbatim from the
+  // 2.1.293 catalog extract in ledger §2 (`pricing:"haiku_55"`).
+  [firstPartyNameToCanonical(CLAUDE_HAIKU_5_5_CONFIG.firstParty)]:
+    COST_HAIKU_55,
   [firstPartyNameToCanonical(CLAUDE_3_5_V2_SONNET_CONFIG.firstParty)]:
     COST_TIER_3_15,
   [firstPartyNameToCanonical(CLAUDE_3_7_SONNET_CONFIG.firstParty)]:

@@ -72,7 +72,12 @@ export function modelSupports1M(model: string): boolean {
     canonical.includes('opus-4-6') ||
     canonical.includes('opus-4-7') ||
     canonical.includes('opus-4-8') ||
-    canonical.includes('opus-5')
+    canonical.includes('opus-5') ||
+    // 2.1.293 (Haiku 5.5 launch): ledger §2 catalog extract for
+    // claude-haiku-5-5 — context:{window:1e6, native_1m:!0,
+    // supports_1m_beta:!0}. Haiku 4.5 stays 200k (no 1M beta), so the check
+    // is scoped to the exact 5-5 canonical.
+    canonical.includes('claude-haiku-5-5')
   )
 }
 
@@ -236,7 +241,13 @@ export function getModelMaxOutputTokens(model: string): {
     // of 'claude-sonnet-5-5'), which would give 64000/128000 and silently
     // halve the default output budget.
     m.includes('opus-5-5') ||
-    m.includes('sonnet-5-5')
+    m.includes('sonnet-5-5') ||
+    // 2.1.293 (Haiku 5.5 launch): the ledger's verbatim catalog extract for
+    // claude-haiku-5-5 declares the SAME max_output_tokens
+    // {default:128000, upper:128000}. 'haiku-4' below would otherwise catch
+    // nothing here ('claude-haiku-5-5' does not contain 'haiku-4'), but this
+    // branch must stay ahead of the generic fall-through.
+    m.includes('haiku-5-5')
   ) {
     defaultTokens = 128_000
     upperLimit = 128_000

@@ -85,6 +85,10 @@ const KNOWN_CANONICAL_MODELS: ReadonlySet<string> = new Set([
   'claude-sonnet-4-6',
   'claude-sonnet-4-5',
   'claude-sonnet-4',
+  // OCC-150: the official 2.1.293 `Rce` catalog registers claude-haiku-5-5
+  // (Haiku 5.5 launch) — without it OCC would fire
+  // [claude-code:unrecognized_model] for the new default Haiku.
+  'claude-haiku-5-5',
   'claude-haiku-4-5',
   'claude-fable-5',
   'claude-3-7-sonnet',

@@ -70,8 +70,10 @@ export const SKILL_MODEL_VARS = {
   PREV_OPUS_NAME: 'Claude Opus 5',
   SONNET_ID: 'claude-sonnet-5-5',
   SONNET_NAME: 'Claude Sonnet 5.5',
-  HAIKU_ID: 'claude-haiku-4-5',
-  HAIKU_NAME: 'Claude Haiku 4.5',
+  // OCC-150 (2.1.293 Haiku 5.5 launch): byte-verified @48793569 — only
+  // HAIKU_ID/HAIKU_NAME changed (no PREV_HAIKU_* vars exist officially).
+  HAIKU_ID: 'claude-haiku-5-5',
+  HAIKU_NAME: 'Claude Haiku 5.5',
   PREV_SONNET_ID: 'claude-sonnet-5',
   PREV_SONNET_NAME: 'Claude Sonnet 5',
 } satisfies Record<string, string>

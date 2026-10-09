@@ -32,6 +32,9 @@ const LEAN_PROMPT_MODELS = [
   'claude-opus-4-8',
   'claude-sonnet-5',
   'claude-fable-5',
+  // OCC-150: the 2.1.293 haiku-5-5 registry entry carries "lean_prompt" in
+  // its capabilities array (verified verbatim @13883234).
+  'claude-haiku-5-5',
   'claude-mythos-5',
 ]
 

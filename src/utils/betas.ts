@@ -152,7 +152,12 @@ export function modelSupportsContextManagement(model: string): boolean {
     // 2.1.257 (Fable 5.1 launch): both `claude-fable-5` and `claude-fable-5-1`
     // declare "context_management" in their 2.1.258 binary `capabilities`
     // arrays (byte-verified). The `claude-fable-5` prefix covers 5-1 too.
-    canonical.includes('claude-fable-5')
+    canonical.includes('claude-fable-5') ||
+    // 2.1.293 (Haiku 5.5 launch): the ledger's verbatim catalog extract lists
+    // "context_management" in the `capabilities` of claude-haiku-5-5. The
+    // `claude-haiku-4` prefix above does NOT match the 5-5 canonical id, so
+    // this branch is required for 3P haiku-5-5.
+    canonical.includes('claude-haiku-5-5')
   )
 }
 
@@ -201,7 +206,8 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
     canonical.includes('claude-opus-4-1') ||
     canonical.includes('claude-opus-4-5') ||
     canonical.includes('claude-opus-4-6') ||
-    canonical.includes('claude-haiku-4-5')
+    canonical.includes('claude-haiku-4-5') ||
+    canonical.includes('claude-haiku-5-5')
   )
 }
 

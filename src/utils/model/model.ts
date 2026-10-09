@@ -266,8 +266,26 @@ export function getDefaultHaikuModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
   }
 
-  // Haiku 4.5 is available on all platforms (first-party, Foundry, Bedrock, Vertex)
-  return getModelStrings().haiku45
+  // 2.1.293 (Haiku 5.5 launch): Claude Haiku 5.5 is the default Haiku model on
+  // the Anthropic API. Verbatim per_provider alias table from the ledger's
+  // 2.1.293 catalog extract (docs/upstream-version-gap-occ150-2026-10.md §2):
+  //   haiku:{default:"claude-haiku-5-5",
+  //     per_provider:{bedrock:"claude-haiku-4-5",vertex:"claude-haiku-4-5",
+  //       foundry:"claude-haiku-4-5",mantle:"claude-haiku-4-5"}}
+  // Providers WITHOUT a per_provider entry (firstParty, anthropic_aws,
+  // anthropic_google_cloud, gateway) fall to `default` → claude-haiku-5-5 —
+  // same fall-through convention as the sonnet table above. 3P providers lag
+  // at Haiku 4.5.
+  const provider = getAPIProvider()
+  if (
+    provider === 'bedrock' ||
+    provider === 'vertex' ||
+    provider === 'foundry' ||
+    provider === 'mantle'
+  ) {
+    return getModelStrings().haiku45
+  }
+  return getModelStrings().haiku55
 }
 
 /**
@@ -530,6 +548,14 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   }
   if (name.includes('claude-sonnet-4')) {
     return 'claude-sonnet-4'
+  }
+  // Haiku 5.5 before Haiku 4.5 (ordering discipline from the 5-5 launches:
+  // `-5-5` branches precede their shorter siblings; no substring collision
+  // between `claude-haiku-5-5` and `claude-haiku-4-5`, but the newer model
+  // is matched first to keep the family block in descending-version order).
+  // Canonical id verbatim from the 2.1.293 catalog extract (ledger §2).
+  if (name.includes('claude-haiku-5-5')) {
+    return 'claude-haiku-5-5'
   }
   if (name.includes('claude-haiku-4-5')) {
     return 'claude-haiku-4-5'
@@ -803,6 +829,10 @@ export function getPublicModelDisplayName(model: ModelName): string | null {
       return 'Fable 5.1'
     case getModelStrings().fable5:
       return 'Fable 5'
+    case getModelStrings().haiku55 + '[1m]':
+      return 'Haiku 5.5 (1M context)'
+    case getModelStrings().haiku55:
+      return 'Haiku 5.5'
     case getModelStrings().haiku45:
       return 'Haiku 4.5'
     case getModelStrings().haiku35:
@@ -1117,6 +1147,14 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   }
   if (canonical.includes('claude-fable-5')) {
     return 'Fable 5'
+  }
+  // Haiku 5.5 before Haiku 4.5, same descending-version discipline as the
+  // sonnet-5-5 block above. display_name "Haiku 5.5" verbatim from the 2.1.293
+  // catalog extract (ledger §2); the 1M composition follows the 2.1.280+
+  // convention (display_name + " (1M context)") — the ledger's
+  // supports_1m_beta/native_1m are both true for haiku-5-5.
+  if (canonical.includes('claude-haiku-5-5')) {
+    return has1m ? 'Haiku 5.5 (1M context)' : 'Haiku 5.5'
   }
   if (canonical.includes('claude-haiku-4-5')) {
     return 'Haiku 4.5'
