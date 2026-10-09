@@ -665,8 +665,13 @@ function renderNodeSelf(
         // non-wrap mode (truncate/clip) the whole string goes through the
         // single-string normalizer `XX` first — tabs become literal spaces and
         // bidi overrides become U+FFFD — because those modes have no cell-writer
-        // tab expansion to fall back on. In a wrap mode `ie` is measured as-is
-        // (the writer still expands any surviving tab at 8-column stops).
+        // tab expansion to fall back on. In a wrap mode `ie` is measured as-is.
+        // CC 2.1.295 #076: OCC's `dC` (normalizeStyledPieces) has ALREADY
+        // expanded any tab in `ie` to literal spaces, because — unlike official's
+        // native screen-aware `CellSegmenter` — OCC's JS `widestLine`/`lf` counts
+        // a raw tab as width 0 while the writer expands it to 8-column stops.
+        // Leaving the tab raw here would under-measure the line, skip the wrap,
+        // and clip its tail at the screen edge.
         const widthProbeText = isWrapTextMode(textWrap)
           ? plainText
           : normalizeText(plainText)

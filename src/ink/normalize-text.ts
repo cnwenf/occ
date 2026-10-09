@@ -244,7 +244,10 @@ export function isWrapTextMode(mode: string | undefined): boolean {
 }
 
 export interface NormalizedStyledPieces {
-  /** The segments to style with — the input array when nothing needed cleaning. */
+  /**
+   * The segments to style with — the input array by reference only when nothing
+   * needed cleaning AND no tab needed expanding; otherwise fresh objects.
+   */
   readonly segments: StyledSegment[]
   /** The joined, normalized plain text (official `dC`'s return value). */
   readonly text: string
@@ -256,20 +259,51 @@ export interface NormalizedStyledPieces {
  * caller's array untouched (ECC immutability rule). Either way the invariant
  * that matters is the same: `text === segments.map(s => s.text).join('')`, so
  * `buildCharToSegmentMap` stays aligned with the wrapped output.
+ *
+ * CC 2.1.295 changelog #076 — "text with tabs or bidirectional control
+ * characters losing its end at the edge of the screen or drawing over nearby
+ * rows". Official measures AND paints through its native, screen-aware
+ * `Bun.ant.CellSegmenter({ …, screen })` (byte-identical in v294 and v295), so
+ * it can hand a raw tab to the writer and still wrap at the right column. OCC
+ * has no such native segmenter: its paint path (`Gs`) measures/wraps the text
+ * returned here with the JS `widestLine`, where a TAB counts as width 0, while
+ * the cell writer (`writeLineToScreen`) expands a surviving TAB to 8-column
+ * stops. That mismatch under-measures the line, skips the wrap, and clips the
+ * tail at the screen edge. So `dC` pre-expands tabs for CLEAN pieces here —
+ * exactly as `normalizePieces`/`Oc` (the yoga measure path) already does — to
+ * keep measure == wrap == paint. Bidi overrides are still left to the painter in
+ * wrap mode: they measure width 1 and the writer draws U+FFFD (also width 1), so
+ * they never desync — #076's bidi half is a verified NO-OP for OCC.
  */
 export function normalizeStyledPieces(
   segments: StyledSegment[],
 ): NormalizedStyledPieces {
   const texts = segments.map(segment => segment.text)
   const normalized = normalizeDirtyPieces(texts)
-  if (normalized === undefined) {
-    return { segments, text: texts.join('') }
+  if (normalized !== undefined) {
+    return {
+      segments: segments.map((segment, index) => ({
+        ...segment,
+        text: normalized[index] ?? '',
+      })),
+      text: normalized.join(''),
+    }
   }
+  // Clean pieces: no control byte to rewrite, but a TAB must still become
+  // literal spaces so the JS width probe measures what the writer will draw
+  // (see the #076 note above). Mirrors `Oc`'s clean-piece branch, which always
+  // expands tabs. Tab-free clean text is returned by reference (no allocation),
+  // and bidi is left for the painter (width 1 either side — never desyncs).
+  const joined = texts.join('')
+  if (!joined.includes('\t')) {
+    return { segments, text: joined }
+  }
+  const expanded = expandTabsInPieces(texts)
   return {
     segments: segments.map((segment, index) => ({
       ...segment,
-      text: normalized[index] ?? '',
+      text: expanded[index] ?? '',
     })),
-    text: normalized.join(''),
+    text: expanded.join(''),
   }
 }

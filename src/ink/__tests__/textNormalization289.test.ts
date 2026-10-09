@@ -604,12 +604,12 @@ describe('2.1.289 #19: normalizeSingleString (official $se)', () => {
   })
 })
 
-describe('2.1.289 #19: normalizeStyledPieces (official dC)', () => {
-  test('returns the same array and raw join for clean pieces', () => {
-    // Arrange — dC only ever rewrites pieces when Hc says they are dirty;
-    // tab expansion for clean wrap-mode text is the painter's job.
+describe('2.1.289 #19 / 2.1.295 #076: normalizeStyledPieces (official dC)', () => {
+  test('returns the same array and raw join for clean, tab-free pieces', () => {
+    // Arrange — dC only rewrites pieces when Hc says they are dirty, and only
+    // expands tabs; a clean, tab-free run is handed back by reference (no alloc).
     const segments = [
-      { text: 'a\tb', styles: {} },
+      { text: 'ab', styles: {} },
       { text: 'c', styles: {} },
     ]
 
@@ -618,7 +618,30 @@ describe('2.1.289 #19: normalizeStyledPieces (official dC)', () => {
 
     // Assert
     expect(result.segments).toBe(segments)
-    expect(result.text).toBe('a\tbc')
+    expect(result.text).toBe('abc')
+  })
+
+  test('expands a TAB in clean pieces so paint measures what the writer draws (2.1.295 #076)', () => {
+    // Arrange — pre-#076 dC returned the raw join for clean pieces and left the
+    // tab for the cell writer to expand. But `Gs` measures/wraps this text with
+    // the JS `widestLine`, where a tab is width 0, while the writer expands it
+    // to 8-column stops → the line is under-wrapped and its tail is clipped at
+    // the screen edge. dC now pre-expands the tab, matching normalizePieces/Oc
+    // (the measure path), so measure == wrap == paint.
+    const segments = [
+      { text: 'a\tb', styles: {} },
+      { text: 'c', styles: {} },
+    ]
+
+    // Act
+    const result = normalizeStyledPieces(segments)
+
+    // Assert — 'a' (col 0) + tab pads to col 8 (7 spaces) + 'b', then 'c'.
+    expect(result.segments.map(s => s.text)).toEqual(['a       b', 'c'])
+    expect(result.text).toBe('a       bc')
+    // The styling invariant survives the expansion.
+    expect(result.text).toBe(result.segments.map(s => s.text).join(''))
+    expect(result.segments).not.toBe(segments)
   })
 
   test('normalizes every piece with a shared column when dirty', () => {
