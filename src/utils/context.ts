@@ -69,15 +69,16 @@ export function modelSupports1M(model: string): boolean {
   return (
     canonical.includes('claude-sonnet-4') ||
     canonical.includes('claude-sonnet-5') ||
+    // 2.1.293 (OCC-111): the haiku-5-5 catalog entry (@204773604) carries
+    // context:{window:1e6,native_1m:!0,supports_1m_beta:!0} — same shape as
+    // sonnet-5-5, so 1M is [1m]-opt-in through this predicate (OCC keeps the
+    // sonnet-5-5 precedent: even native_1m models default to the standard
+    // window unless the [1m] suffix / beta header is present).
+    canonical.includes('claude-haiku-5') ||
     canonical.includes('opus-4-6') ||
     canonical.includes('opus-4-7') ||
     canonical.includes('opus-4-8') ||
-    canonical.includes('opus-5') ||
-    // 2.1.293 (Haiku 5.5 launch): ledger §2 catalog extract for
-    // claude-haiku-5-5 — context:{window:1e6, native_1m:!0,
-    // supports_1m_beta:!0}. Haiku 4.5 stays 200k (no 1M beta), so the check
-    // is scoped to the exact 5-5 canonical.
-    canonical.includes('claude-haiku-5-5')
+    canonical.includes('opus-5')
   )
 }
 
@@ -240,13 +241,14 @@ export function getModelMaxOutputTokens(model: string): {
     // sonnet-5 launch-model branches below ('claude-sonnet-5' IS a substring
     // of 'claude-sonnet-5-5'), which would give 64000/128000 and silently
     // halve the default output budget.
+    // 2.1.293 (OCC-111): the Haiku 5.5 launch catalog entry (@204773604)
+    // declares the SAME max_output_tokens {default:128000, upper:128000} for
+    // claude-haiku-5-5. Must be checked BEFORE the `haiku-4` branch below
+    // (which would give 32000/64000); 'haiku-5-5' is not matched by
+    // 'haiku-4', but the arm order keeps the newest generation first per the
+    // established convention.
     m.includes('opus-5-5') ||
     m.includes('sonnet-5-5') ||
-    // 2.1.293 (Haiku 5.5 launch): the ledger's verbatim catalog extract for
-    // claude-haiku-5-5 declares the SAME max_output_tokens
-    // {default:128000, upper:128000}. 'haiku-4' below would otherwise catch
-    // nothing here ('claude-haiku-5-5' does not contain 'haiku-4'), but this
-    // branch must stay ahead of the generic fall-through.
     m.includes('haiku-5-5')
   ) {
     defaultTokens = 128_000

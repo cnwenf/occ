@@ -936,8 +936,10 @@ describe('cycleEffortLevel under a cap (official dt ladder slice)', () => {
     // opus-4-7 supports max+xhigh, but the cap slices the ladder to
     // [low, medium, high] — official Sr(Mu.indexOf(cap)+1).
     expect(cycleEffortLevel('medium', 'right', true, true, 'high')).toBe('high')
-    expect(cycleEffortLevel('high', 'right', true, true, 'high')).toBe('low')
-    expect(cycleEffortLevel('low', 'left', true, true, 'high')).toBe('high')
+    // 293 changelog #7 ($0e @234071645): end clamps replace the 292 modulo
+    // wrap — right-at-cap-top stays, left-at-lowest stays.
+    expect(cycleEffortLevel('high', 'right', true, true, 'high')).toBe('high')
+    expect(cycleEffortLevel('low', 'left', true, true, 'high')).toBe('low')
   })
 
   test('cap=medium slices the ladder to [low, medium]', async () => {
@@ -945,24 +947,27 @@ describe('cycleEffortLevel under a cap (official dt ladder slice)', () => {
     expect(cycleEffortLevel('low', 'right', true, true, 'medium')).toBe(
       'medium',
     )
+    // 293 #7: clamps at the ladder top (292 wrapped to 'low').
     expect(cycleEffortLevel('medium', 'right', true, true, 'medium')).toBe(
-      'low',
+      'medium',
     )
   })
 
   test('an over-cap current level resumes from the last ladder entry', async () => {
     const { cycleEffortLevel } = await import('../../components/ModelPicker.js')
     // 'xhigh' is not in the [low, medium] ladder → resume at 'medium', then
-    // step right → wraps to 'low'.
+    // step right → 293 clamps at the last entry (292 wrapped to 'low').
     expect(cycleEffortLevel('xhigh', 'right', true, true, 'medium')).toBe(
-      'low',
+      'medium',
     )
   })
 
   test('without a cap argument the cycle behavior is unchanged (regression guard)', async () => {
     const { cycleEffortLevel } = await import('../../components/ModelPicker.js')
     expect(cycleEffortLevel('high', 'right', true, true)).toBe('xhigh')
-    expect(cycleEffortLevel('high', 'right', false, false)).toBe('low')
+    // 293 #7: 'high' is the top of the [low, medium, high] ladder here, so the
+    // right step clamps (292 wrapped to 'low').
+    expect(cycleEffortLevel('high', 'right', false, false)).toBe('high')
   })
 })
 

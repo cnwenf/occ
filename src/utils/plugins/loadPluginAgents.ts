@@ -26,6 +26,7 @@ import {
   parseAgentToolsFromFrontmatter,
   parseSlashCommandToolsFromFrontmatter,
 } from '../markdownConfigLoader.js'
+import { validateFrontmatterName } from '../nameSafety.js'
 import { loadAllPluginsCacheOnly } from './pluginLoader.js'
 import {
   loadPluginOptions,
@@ -86,7 +87,8 @@ async function loadAgentFromFile(
     )
 
     const baseAgentName =
-      (frontmatter.name as string) || basename(filePath).replace(/\.md$/, '')
+      validateFrontmatterName(frontmatter.name, `plugin agent ${filePath}`) ||
+      basename(filePath).replace(/\.md$/, '')
 
     // Apply namespace prefixing like we do for commands
     const nameParts = [pluginName, ...namespace, baseAgentName]

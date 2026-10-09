@@ -29,6 +29,14 @@ beforeAll(async () => {
 })
 
 afterAll(() => {
+  // `mock.restore()` does NOT undo `mock.module()` registrations in Bun, so
+  // the check1mAccess override (opus1m/sonnet1m=true) leaked into every later
+  // file in a combined `bun test src/utils/model` run — flipping
+  // modelOptionsTierWiring280's 1M-access rows (pre-existing cross-file
+  // contamination, root-caused via git-stash A/B). Re-register the real
+  // module explicitly (same discipline as the launch test suites: snapshot
+  // real exports, restore in afterAll).
+  mock.module(CHECK_1M_PATH, () => ({ ...realCheck1m }))
   mock.restore()
 })
 

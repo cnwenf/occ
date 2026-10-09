@@ -58,6 +58,31 @@ export const CLAUDE_HAIKU_4_5_CONFIG = {
   gateway: 'claude-haiku-4-5',
 } as const satisfies ModelConfig
 
+/**
+ * 2.1.293 (OCC-111, Haiku 5.5 launch): provider_ids table byte-verified from
+ * the official 2.1.293 linux-x64 ELF baked catalog (@204773604):
+ *   {first_party:"claude-haiku-5-5", bedrock:"us.anthropic.claude-haiku-5-5",
+ *    vertex:"claude-haiku-5-5", foundry:"claude-haiku-5-5",
+ *    anthropic_aws:"claude-haiku-5-5", anthropic_google_cloud:"claude-haiku-5-5",
+ *    mantle:"anthropic.claude-haiku-5-5"}
+ * NO date suffix on any provider id (unlike haiku 4.5 `-20251001`) and the
+ * vertex id is bare (no @date). gateway is NOT in the official provider_ids
+ * table; OCC's ModelConfig type requires the slot, filled per the OCC
+ * convention (bare first-party id) — the official gateway alias lag
+ * (gateway → claude-haiku-4-5) lives in getDefaultHaikuModel's per-provider
+ * table. anthropic_google_cloud is folded into firstParty per the standing
+ * OCC divergence (getAPIProvider never returns it).
+ */
+export const CLAUDE_HAIKU_5_5_CONFIG = {
+  firstParty: 'claude-haiku-5-5',
+  bedrock: 'us.anthropic.claude-haiku-5-5',
+  vertex: 'claude-haiku-5-5',
+  foundry: 'claude-haiku-5-5',
+  anthropic_aws: 'claude-haiku-5-5',
+  mantle: 'anthropic.claude-haiku-5-5',
+  gateway: 'claude-haiku-5-5',
+} as const satisfies ModelConfig
+
 export const CLAUDE_SONNET_4_CONFIG = {
   firstParty: 'claude-sonnet-4-20250514',
   bedrock: 'us.anthropic.claude-sonnet-4-20250514-v1:0',
@@ -214,24 +239,6 @@ export const CLAUDE_SONNET_5_5_CONFIG = {
   anthropic_aws: 'claude-sonnet-5-5',
   mantle: 'anthropic.claude-sonnet-5-5',
   gateway: 'claude-sonnet-5-5',
-} as const satisfies ModelConfig
-
-// Claude Haiku 5.5 (`claude-haiku-5-5`) — launched in official Claude Code
-// 2.1.293, now the default Haiku model on the Anthropic API (3P defaults stay
-// on haiku-4-5). Provider IDs from the ledger's verbatim 2.1.293 catalog
-// extract (docs/upstream-version-gap-occ150-2026-10.md §2): first_party/
-// vertex/foundry/anthropic_aws/anthropic_google_cloud `claude-haiku-5-5`,
-// bedrock `us.anthropic.claude-haiku-5-5`, mantle
-// `anthropic.claude-haiku-5-5`. `gateway` is absent from the extract — it
-// follows the launch-model convention (bare id), same as sonnet-5-5/opus-5-5.
-export const CLAUDE_HAIKU_5_5_CONFIG = {
-  firstParty: 'claude-haiku-5-5',
-  bedrock: 'us.anthropic.claude-haiku-5-5',
-  vertex: 'claude-haiku-5-5',
-  foundry: 'claude-haiku-5-5',
-  anthropic_aws: 'claude-haiku-5-5',
-  mantle: 'anthropic.claude-haiku-5-5',
-  gateway: 'claude-haiku-5-5',
 } as const satisfies ModelConfig
 
 export const CLAUDE_FABLE_5_CONFIG = {

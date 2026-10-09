@@ -4,10 +4,20 @@ import type { PermissionUpdate } from '../../types/permissions.js'
 import { formatFileSize } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { isBinaryContentType } from '../../utils/mcpOutputStorage.js'
 import { getRuleByContentsForTool } from '../../utils/permissions/permissions.js'
 import { getSettingsForSource } from '../../utils/settings/settings.js'
+import { dropStrayWebFetchParams } from './coerceInput.js'
+import {
+  coerceNumericString,
+  makeContentLead,
+  makeCoverageNote,
+  makePastEndMessage,
+  OFFSET_DESCRIBE,
+} from './offsetParam.js'
 import { isPreapprovedHost } from './preapproved.js'
 import { DESCRIPTION, WEB_FETCH_TOOL_NAME } from './prompt.js'
+import { sliceHead, sliceTail } from './textSlice.js'
 import {
   getToolUseSummary,
   renderToolResultMessage,
@@ -26,6 +36,16 @@ const inputSchema = lazySchema(() =>
   z.strictObject({
     url: z.string().url().describe('The URL to fetch content from'),
     prompt: z.string().describe('The prompt to run on the fetched content'),
+    // Item #018a — official T2t @213374410:
+    //   offset:pO(E().int().nonnegative().optional()).describe("Character position in the page text to start reading from. ...")
+    // `pO` is the z.preprocess numeric-string coercion (XMe @211419386) —
+    // models sometimes emit `"offset":"500"`.
+    offset: z
+      .preprocess(
+        coerceNumericString,
+        z.number().int().nonnegative().optional(),
+      )
+      .describe(OFFSET_DESCRIBE),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -80,8 +100,13 @@ function isWebFetchAllowedByManagedPolicy(): boolean {
 export const WebFetchTool = buildTool({
   name: WEB_FETCH_TOOL_NAME,
   searchHint: 'fetch and extract content from a URL',
-  // 100K chars - tool result persistence threshold
-  maxResultSizeChars: 100_000,
+  // Item #018a — official WebFetch def is `XN=50000` (@204567883, wired as
+  // `maxResultSizeChars:XN` via o_ @213376381); OCC previously shipped
+  // 100_000. The official def also carries
+  // `skipAggregateToolResultBudget:!0`, but that field does not exist on
+  // OCC's Tool type (query-engine budget plumbing owned elsewhere) — staged
+  // deviation, see docs/gap-research-293/webfetch-018-forensics.md.
+  maxResultSizeChars: 50_000,
   shouldDefer: true,
   async description(input) {
     const { url } = input as { url: string }
@@ -137,6 +162,20 @@ export const WebFetchTool = buildTool({
   },
   toAutoClassifierInput(input) {
     return input.prompt ? `${input.url}: ${input.prompt}` : input.url
+  },
+  // Gap-293 C5 (WebFetch part) — official wiring @213376925:
+  //   `coerceInput(e){return pH(T2t(),zKt(e))}` where the pH gate
+  //   (@212144777) is `n!==null&&e.safeParse(n.input).success?n:null`.
+  // `zKt` drops exactly the three stray params (text_content_token_limit,
+  // html_extraction_method, web_fetch_pdf_extract_text) and only when the
+  // repaired input passes the full strict schema — otherwise the normal
+  // validation error stands. No `coerceInputBeforePluginHooks` flag: the
+  // official WebFetch def does not carry one (unlike Write).
+  coerceInput(input) {
+    const repair = dropStrayWebFetchParams(input)
+    return repair !== null && inputSchema().safeParse(repair.input).success
+      ? repair
+      : null
   },
   async checkPermissions(input, context): Promise<PermissionDecision> {
     const appState = context.getAppState()
@@ -242,10 +281,11 @@ ${DESCRIPTION}`
   renderToolUseMessage,
   renderToolUseProgressMessage,
   renderToolResultMessage,
-  async call(
-    { url, prompt },
-    { abortController, options: { isNonInteractiveSession } },
-  ) {
+  async call({ url, prompt, offset = 0 }, context) {
+    const {
+      abortController,
+      options: { isNonInteractiveSession },
+    } = context
     const start = Date.now()
 
     const response = await getURLMarkdownContent(url, abortController)
@@ -269,7 +309,7 @@ Status: ${response.statusCode} ${statusText}
 
 To complete your request, I need to fetch content from the redirected URL. Please use WebFetch again with these parameters:
 - url: "${response.redirectUrl}"
-- prompt: "${prompt}"`
+- prompt: "${prompt}"${offset > 0 ? `\n- offset: ${offset}` : ''}`
 
       const output: Output = {
         bytes: Buffer.byteLength(message),
@@ -297,21 +337,51 @@ To complete your request, I need to fetch content from the redirected URL. Pleas
 
     const isPreapproved = isPreapprovedUrl(url)
 
+    // Item #018a — official call-site branch @213387569 (always-on pieces).
+    // `Rn=Xl(Ut,Ut.length-H)` — the surrogate-safe tail slice from `offset`
+    // on (see textSlice.ts).
+    const sliced = sliceTail(content, content.length - offset)
+
     let result: string
-    if (
+    // NOTE (item #018b, STAGED): the official branch (1) `agent_raw` — the
+    // verbatim reader `LLo` used inside the built-in `web-fetch` subagent
+    // (env-gated CLAUDE_CODE_WEB_FETCH_AGENT ?? tengu_clever_orbit, default
+    // false) — is NOT ported. Branches (2)–(4) below are the always-on paths.
+    if (offset > 0 && sliced === '') {
+      // (2) past_end — verbatim message, no secondary-model call.
+      result = makePastEndMessage(offset, content.length)
+    } else if (
+      // (3) raw_markdown — preapproved host serving text/markdown under the
+      // 100k remainder cap ($Tn) is returned verbatim (offset-sliced).
       isPreapproved &&
       contentType.includes('text/markdown') &&
-      content.length < MAX_MARKDOWN_LENGTH
+      sliced.length < MAX_MARKDOWN_LENGTH
     ) {
-      result = content
+      result = sliced
     } else {
+      // (4) secondary_model — official passes
+      // `contentLead:H>0?\`The content below is one part of a longer page: it starts ${H} characters into the page's ${Ut.length}.\n\`:""`
       result = await applyPromptToMarkdown(
         prompt,
-        content,
+        sliced,
         abortController.signal,
         isNonInteractiveSession,
         isPreapproved,
+        offset > 0 ? makeContentLead(offset, content.length) : '',
       )
+      // Official coverage note: `Ln=Ut.length-Rn.length`, `Eo=Ln+zJn(Rn).length`
+      // (zJn = surrogate-safe head cap at $Tn=100_000); appended when
+      // `Eo<Ut.length && !In(binary) && Je(toolUseId)!==void 0`.
+      const coveredStart = content.length - sliced.length
+      const coveredEnd =
+        coveredStart + sliceHead(sliced, MAX_MARKDOWN_LENGTH).length
+      if (
+        coveredEnd < content.length &&
+        !isBinaryContentType(contentType) &&
+        context.toolUseId !== undefined
+      ) {
+        result += makeCoverageNote(content.length, coveredStart, coveredEnd)
+      }
     }
 
     // Binary content (PDFs, etc.) was additionally saved to disk with a

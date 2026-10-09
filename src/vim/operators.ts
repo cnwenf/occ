@@ -5,7 +5,7 @@
  */
 
 import { Cursor } from '../utils/Cursor.js'
-import { firstGrapheme, lastGrapheme } from '../utils/intl.js'
+import { firstGrapheme, getGraphemeSegmenter, lastGrapheme } from '../utils/intl.js'
 import { countCharInString } from '../utils/stringUtils.js'
 import {
   isInclusiveMotion,
@@ -416,7 +416,9 @@ export function executeIndent(
 
   const newText = lines.join('\n')
   const currentLineText = lines[currentLine] ?? ''
-  const firstNonBlank = (currentLineText.match(/^\s*/)?.[0] ?? '').length
+  // CC 2.1.293 #35 — official `$t` grapheme-walk (was 292 `/^\s*/`): keeps the
+  // cursor on the last grapheme of an all-whitespace line, never past EOL.
+  const firstNonBlank = firstNonBlankGraphemeIndex(currentLineText)
 
   ctx.setText(newText)
   ctx.setOffset(getLineStartOffset(lines, currentLine) + firstNonBlank)
@@ -456,6 +458,38 @@ export function executeOpenLine(
  */
 function getLineStartOffset(lines: string[], lineIndex: number): number {
   return lines.slice(0, lineIndex).join('\n').length + (lineIndex > 0 ? 1 : 0)
+}
+
+/**
+ * CC 2.1.293 #35/#36 — index of the first non-blank grapheme in `line`, or the
+ * index of the LAST grapheme when the line is all spaces/tabs. Byte-faithful
+ * port of the official vver helper `$t(l)` (report §35, verbatim):
+ *
+ *   function $t(l){let h=0;for(let{segment:O,index:x}of ba().segment(l))
+ *     if(h=x,O!==" "&&O!=="\t")break;return h}
+ *
+ * Replaces the 2.1.292 leading-whitespace-regex cursor placement: on an
+ * all-whitespace line that regex matched the WHOLE line and put the cursor PAST
+ * end-of-line, whereas `$t` keeps it on the last grapheme. `ba()` is
+ * getGraphemeSegmenter().
+ */
+function firstNonBlankGraphemeIndex(line: string): number {
+  let h = 0
+  for (const { segment, index } of getGraphemeSegmenter().segment(line)) {
+    h = index
+    if (segment !== ' ' && segment !== '\t') break
+  }
+  return h
+}
+
+/**
+ * Offset of the start of the last logical line in `text` (the char after the
+ * final '\n', or 0 when there is none). Byte-faithful to the official
+ * `Rt(text, text.length)` last-line-start helper used by the vver linewise-
+ * delete cursor placement (report §36a).
+ */
+function lastLineStartOffset(text: string): number {
+  return text.lastIndexOf('\n') + 1
 }
 
 /**
@@ -872,13 +906,22 @@ export function executeVisualOperator(
     ) {
       start -= 1
     }
+    // CC 2.1.293 #36a — official `bo` cursor placement (was a plain
+    // `Math.min(start, len - lastGrapheme)` clamp). `hasTextAfter` is measured
+    // against the ORIGINAL text, before the delete.
+    const hasTextAfter = range.to < ctx.text.length
     const newText = ctx.text.slice(0, start) + ctx.text.slice(range.to)
     ctx.setText(newText)
-    const maxOff = Math.max(
-      0,
-      newText.length - (lastGrapheme(newText).length || 1),
+    // base = start of the line the cursor lands on: `range.from` when text
+    // survives after the deleted span, else the new last line's start (`Rt`).
+    const base = hasTextAfter ? range.from : lastLineStartOffset(newText)
+    const lineEnd = newText.indexOf('\n', base)
+    const lineEndClamped = lineEnd === -1 ? newText.length : lineEnd
+    // `$t` (report §35) walks to the first non-blank grapheme within that line.
+    const firstNonBlank = firstNonBlankGraphemeIndex(
+      newText.slice(base, lineEndClamped),
     )
-    ctx.setOffset(Math.min(start, maxOff))
+    ctx.setOffset(base + firstNonBlank)
     ctx.recordChange({ type: 'visualOp', op, span, linewise })
     return
   }
@@ -964,7 +1007,11 @@ export function replayVisualOp(
   ctx: OperatorContext,
 ): void {
   const range = getVisualRangeFromSpan(span, linewise, ctx)
-  if (range.from === range.to) return
+  // CC 2.1.293 #36b — official `xo`: `if(I===k&&!(O&&x.text.length>0))return`.
+  // A linewise replay proceeds on an empty span-range as long as text exists,
+  // so `.` after a linewise V+d acts on the cursor's current line (applyOperator
+  // on the empty range still re-yanks that line into the register linewise).
+  if (range.from === range.to && !(linewise && ctx.text.length > 0)) return
   applyOperator(op, range.from, range.to, ctx, linewise)
 }
 
@@ -1238,6 +1285,7 @@ export function executeVisualIndent(
   const newText = lines.join('\n')
   ctx.setText(newText)
   const firstLineText = lines[startLine] ?? ''
-  const firstNonBlank = (firstLineText.match(/^\s*/)?.[0] ?? '').length
+  // CC 2.1.293 #35 — official `$t` grapheme-walk (was 292 `/^\s*/`).
+  const firstNonBlank = firstNonBlankGraphemeIndex(firstLineText)
   ctx.setOffset(range.from + firstNonBlank)
 }

@@ -57,6 +57,7 @@ import {
 } from './systemPromptSections.js'
 // 2.1.257 (Fable 5.1 launch): the fable_identity dynamic section.
 import { getFableIdentitySection } from './fableIdentity.js'
+import { getEarlyStoppingGuidanceSection } from './earlyStoppingGuidance.js'
 import { SLEEP_TOOL_NAME } from '../tools/SleepTool/prompt.js'
 import { TICK_TAG } from './xml.js'
 import { logForDebugging } from '../utils/debug.js'
@@ -132,19 +133,17 @@ export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY =
   '__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__'
 
 // @[MODEL LAUNCH]: Update the model family IDs below to the latest in each tier.
-// 2.1.284 (OCC-101, Sonnet 5.5 launch): the values below are the v284
-// latest_per_family table byte-verified from the official 2.1.284 linux-x64
+// 2.1.293 (OCC-111, Haiku 5.5 launch): the values below are the v293
+// latest_per_family table byte-verified from the official 2.1.293 linux-x64
 // ELF: `{fable:"claude-fable-5-1",opus:"claude-opus-5-5",
-// sonnet:"claude-sonnet-5-5",haiku:"claude-haiku-4-5"}`. The official (`J8n`)
+// sonnet:"claude-sonnet-5-5",haiku:"claude-haiku-5-5"}`. The official (`J8n`)
 // renders `Model IDs — ${display_name}: '${id}'` per family from this table
-// (haiku keeps the dated first-party id); the prose lead-in ("The most recent
-// Claude models are the Claude 5 family and Haiku 4.5.") is UNCHANGED in v284.
-// Drift fixed here: opus was stale at claude-opus-5 since the 2.1.280 launch.
-// 2.1.293 (Haiku 5.5 launch, OCC-150): official `TLo` (byte-verified
-// @23471900) now reads `I2().latest_per_family` — verified @13899000 as
-// `{fable:"claude-fable-5-1",opus:"claude-opus-5-5",sonnet:"claude-sonnet-5-5",
-// haiku:"claude-haiku-5-5"}` — and the lead-in drops "and Haiku 4.5" (Haiku is
-// now part of the Claude 5 family naming). The haiku id loses its dated suffix.
+// (haiku now the undated 5.5 canonical id; the v284 table still pinned the
+// dated haiku-4-5 id). The prose lead-in ("The most recent Claude models are
+// the Claude 5 family and Haiku 4.5.") — see the deviation note at the
+// env-info sentence below: v293's haiku default IS the 5 family generation,
+// so the lead-in is bumped to Haiku 5.5 (reasoned inference; the exact v293
+// lead-in prose was not byte-extracted).
 const CLAUDE_LATEST_MODEL_IDS = {
   fable: 'claude-fable-5-1',
   opus: 'claude-opus-5-5',
@@ -495,6 +494,14 @@ ${CYBER_RISK_INSTRUCTION}`,
             getThinkingGuidanceSection(model),
           ),
         ]),
+    // 2.1.293 (OCC-111, Haiku 5.5 launch): heron_brook — early-stopping
+    // guidance for haiku-5-5 (official `ap("heron_brook",()=>BLo()??ULo(h,s))`;
+    // the BLo client-data override arm is N/A in OCC). NOT lean-gated: the
+    // official ULo gate is capability + GrowthBook flag only, so haiku-5-5
+    // (a lean_prompt model) still receives it.
+    systemPromptSection('heron_brook', () =>
+      getEarlyStoppingGuidanceSection(model),
+    ),
     // When delta enabled, instructions are announced via persisted
     // mcp_instructions_delta attachments (attachments.ts) instead of this
     // per-turn recompute, which busts the prompt cache on late MCP connect.
@@ -510,12 +517,6 @@ ${CYBER_RISK_INSTRUCTION}`,
     ),
     systemPromptSection('scratchpad', () => getScratchpadInstructions()),
     systemPromptSection('frc', () => getFunctionResultClearingSection(model)),
-    // 2.1.293 (OCC-150): heron_brook — Haiku 5.5 early-stopping guidance.
-    // Official order places it late in the dynamic list (after brief, before
-    // brook_heron/willow_tern/autonomy_append — none of which OCC ships); NOT
-    // stripped from the lean prompt (officially unconditional, and its only
-    // target model haiku-5-5 IS a lean-prompt model).
-    systemPromptSection('heron_brook', () => getHeronBrookSection(model)),
     // 2.1.206 alignment: the "summarize_tool_results" section ("When working
     // with tool results...") was removed from the lean prompt — it is absent
     // from the official 2.1.206 main-prompt block for all models. The section
@@ -701,7 +702,12 @@ export async function computeSimpleEnvInfo(
     knowledgeCutoffMessage,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
-      : `The most recent Claude models are the Claude 5 family. Model IDs — Fable 5.1: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 5.5: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5.5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 5.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
+      // 2.1.293 (OCC-111): the Model IDs table now renders the v293
+      // latest_per_family haiku entry ('claude-haiku-5-5', display_name
+      // "Haiku 5.5"). The lead-in prose is bumped to Haiku 5.5 to match —
+      // REASONED INFERENCE (the exact v293 lead-in string was not
+      // byte-extracted; v284's lead-in named the then-latest haiku).
+      : `The most recent Claude models are the Claude 5 family and Haiku 5.5. Model IDs — Fable 5.1: '${CLAUDE_LATEST_MODEL_IDS.fable}', Opus 5.5: '${CLAUDE_LATEST_MODEL_IDS.opus}', Sonnet 5.5: '${CLAUDE_LATEST_MODEL_IDS.sonnet}', Haiku 5.5: '${CLAUDE_LATEST_MODEL_IDS.haiku}'. When building AI applications, default to the latest and most capable Claude models.`,
     process.env.USER_TYPE === 'ant' && isUndercover()
       ? null
       : `Claude Code is available as a CLI in the terminal, desktop app (Mac/Windows), web app (claude.ai/code), and IDE extensions (VS Code, JetBrains).`,
@@ -759,10 +765,9 @@ function getKnowledgeCutoff(modelId: string): string | null {
   } else if (canonical.includes('claude-opus-4-5')) {
     return 'May 2025'
   } else if (canonical.includes('claude-haiku-5-5')) {
-    // 2.1.293 (OCC-150): catalog entry byte-verified @13883100 —
-    // display_name:"Haiku 5.5", knowledge_cutoff:"June 2026". Must precede the
-    // 'claude-haiku-4' arm (no overlap, but keeps the specific-before-broad
-    // convention).
+    // 2.1.293 (OCC-111): v293 catalog `knowledge_cutoff:"June 2026"` for
+    // claude-haiku-5-5 (@204773604, byte-verified). MUST precede the
+    // claude-haiku-4 arm below.
     return 'June 2026'
   } else if (canonical.includes('claude-haiku-4')) {
     return 'February 2025'
@@ -773,41 +778,6 @@ function getKnowledgeCutoff(modelId: string): string | null {
     return 'January 2025'
   }
   return null
-}
-
-// 2.1.293 (Haiku 5.5 launch, OCC-150): the heron_brook dynamic section text —
-// binary `HLo` (byte-verified @23480542). In 2.1.292 the heron_brook slot
-// carried the "# Writing for the user" text (`wNo`); 293 REPLACED it with the
-// early-stopping guidance below and moved "Writing for the user" to a separate
-// brook_heron section (`jLo`), which OCC does not ship (never ported; out of
-// this round's scope).
-const HERON_BROOK_EARLY_STOPPING_SECTION = `The reasoning effort setting changes how much you think before you act. It does not change how much of the request you are expected to finish. A turn lasts as long as you keep working, so a large task can be finished in the turn where it was asked. The size of a task is not a reason to check in first.
-Ending your turn stops all work until the user replies, and they may be away for a while. If you stop before changing anything, they come back to the same code they left, plus a message to read and answer. End your turn when the request is done or nothing is left that you can do without them.
-Ask before you start only when you cannot name the most likely reading of the request. If you can name it, act on it, and say in your final message which reading you took. The other reason to ask first is that the whole task depends on a fact, a file, or access that only they have. Their approval of a choice you could make yourself is not one of these. Actions that are hard to reverse or outward-facing still need their confirmation. If they say they want to approve something before you go on, such as a plan, stop there. Words that only set an order, such as "plan, then build", are not a stopping point. Do each step and keep going. If they are asking a question or still deciding between options, they want your answer, not a change. If they also asked for work, answer and then do it.
-The user can inspect and undo edits to files in the working tree. Such edits are not hard-to-reverse or outward-facing actions, unless they would overwrite changes the user has in progress. That leaves the open choices to you: how to build the change, how to split it up, how to handle a case the request did not cover. Pick what you would recommend, and keep to what the user wrote where they were specific. List your choices in the final message so the user can redirect you. Start editing once you know the first change. A design worked out in files persists, while a long stretch of thinking can be cut off and lost.
-When one part of a task is blocked, unclear, or apparently wrong, the rest usually is not. If you suspect a step will fail, try it before you report it. Finish everything that does not depend on the stuck part, and open your final message with what is stuck. Finished parts are useful to the user even when the whole task is not done. Setting up the project so you can build and test it, such as installing its declared dependencies, is part of the work. If the code still cannot be built or run here, say so and make the changes you can verify by reading. If you investigate a problem and cannot find the cause, report what you ruled out and what would settle it. A question at the end of finished work costs the user one reply, the same as a question asked before any work.`
-
-/**
- * heron_brook section (2.1.293). Official insertion (byte-verified @23511036):
- * `ap("heron_brook",()=>BLo()??ULo(h,s))` where:
- * - `BLo()` returns a client-data/statsig-string override (`tengu_heron_brook`
- *   via `EVt()`) — that client-data mechanism is absent in OCC → always null.
- * - `ULo(e,n)`: `if(!DN("haiku_5_5_early_stopping_guidance",e,n))return null;
- *   return Fr("tengu_idempotent_wolf",!0)?HLo:null` — a baked-catalog
- *   capability gate + a statsig gate with default true. In the 293 catalog only
- *   the claude-haiku-5-5 entry carries "haiku_5_5_early_stopping_guidance"
- *   (byte-verified @13883929); OCC has no served-capability lookup, so the
- *   capability check is the canonical-model match (same convention as
- *   leanPrompt.ts's hardcoded registry list). OCC's statsig stub returns the
- *   gate default (true), so the statsig arm is a no-op — mirroring prior
- *   default-true gate ports.
- */
-function getHeronBrookSection(model: string): string | null {
-  const canonical = getCanonicalName(model)
-  if (!canonical.includes('claude-haiku-5-5')) {
-    return null
-  }
-  return HERON_BROOK_EARLY_STOPPING_SECTION
 }
 
 function getShellInfoLine(): string {

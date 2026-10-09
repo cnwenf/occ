@@ -188,9 +188,9 @@ export function modelSupportsAdvisor(model: string): boolean {
     // region). 'sonnet-5' covers the -5-5 canonical id via substring.
     // Pre-existing gap: sonnet-5 itself was missing before this round.
     m.includes('sonnet-5') ||
-    // 2.1.293 (Haiku 5.5 launch): the ledger's verbatim catalog extract
-    // carries `advisor_rank:4` on `claude-haiku-5-5` — the first haiku with
-    // an advisor rank.
+    // 2.1.293 (OCC-111): the v293 catalog entry for `claude-haiku-5-5`
+    // (@204773604, byte-verified) carries `advisor_rank:4`. 'haiku-5-5' is
+    // NOT a substring of 'claude-haiku-4-5', so haiku 4.5 stays ineligible.
     m.includes('haiku-5-5') ||
     process.env.USER_TYPE === 'ant'
   )
@@ -206,7 +206,9 @@ export function isValidAdvisorModel(model: string): boolean {
     // 2.1.284 (OCC-101): advisor_rank:3 for sonnet-5/sonnet-5-5 — see
     // modelSupportsAdvisor above.
     m.includes('sonnet-5') ||
-    // 2.1.293: advisor_rank:4 for haiku-5-5 — see modelSupportsAdvisor above.
+    // 2.1.293 (OCC-111): advisor_rank:4 for haiku-5-5 — see
+    // modelSupportsAdvisor above. 'haiku-5-5' is not a substring of
+    // 'claude-haiku-4-5', so haiku 4.5 stays ineligible.
     m.includes('haiku-5-5') ||
     process.env.USER_TYPE === 'ant'
   )

@@ -229,5 +229,12 @@ function get3PFallbackSuggestion(model: string): string | undefined {
   ) {
     return getModelStrings().sonnet5
   }
+  // 2.1.293 (OCC-111, Haiku 5.5 launch): catalog `fallback_3p` —
+  // claude-haiku-5-5 → "claude-haiku-4-5" (byte-verified in the 2.1.293 ELF,
+  // @204773604). 'haiku-5-5' is not a substring of 'claude-haiku-4-5', so no
+  // ordering hazard with the older haiku ids.
+  if (lowerModel.includes('haiku-5-5') || lowerModel.includes('haiku_5_5')) {
+    return getModelStrings().haiku45
+  }
   return undefined
 }

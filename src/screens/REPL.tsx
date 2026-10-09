@@ -220,7 +220,7 @@ import exit from '../commands/exit/index.js';
 import { ExitFlow } from '../components/ExitFlow.js';
 import { getCurrentWorktreeSession } from '../utils/worktree.js';
 import { popAllEditable, enqueue, type SetAppState, getCommandQueue, getCommandQueueLength, removeByFilter, makeQueuedDispatchOnQuery } from '../utils/messageQueueManager.js';
-import { type SendNowFlushDeps, sendQueuedNow, sendQueuedNowOnEmptyEnter, SEND_NOW_ABORT_REASON, SEND_NOW_EMPTY_ENTER_GATE, QUEUED_SEND_NOW_SOURCE } from '../utils/sendNow.js';
+import { type SendNowFlushDeps, sendQueuedNow, sendQueuedNowOnEmptyEnter, SEND_NOW_ABORT_REASON, SEND_NOW_DELIVER_WITHOUT_CANCEL_GATE, SEND_NOW_EMPTY_ENTER_GATE, QUEUED_SEND_NOW_SOURCE } from '../utils/sendNow.js';
 import { stampSendNowCutSignal } from '../utils/sendNowCut.js';
 import { useCommandQueue } from '../hooks/useCommandQueue.js';
 import { SessionBackgroundHint } from '../components/SessionBackgroundHint.js';
@@ -4188,8 +4188,17 @@ export function REPL({
       ? { reason: reason as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS }
       : {})
   }), [inputMode, queryGuard]);
+  // Send-now KEY gesture: gated by tengu_velvet_panda (official NSn @214600349,
+  // default TRUE), read at call time from the cached GrowthBook store — same
+  // convention as the empty-Enter gate below. Phase 1 ships no lowLatency
+  // engine, so deps carry no deliverWithoutCancel and every flush takes the
+  // _st fallback core (logging fell_back_to_cancel on success). Phases 2-4
+  // staged per docs/gap-research-293/cluster-c-h-carryover.md §L28.
   const handleSendQueuedNow = useCallback(
-    () => sendQueuedNow(buildSendNowFlushDeps()),
+    () => sendQueuedNow(
+      buildSendNowFlushDeps(),
+      getFeatureValue_CACHED_MAY_BE_STALE(SEND_NOW_DELIVER_WITHOUT_CANCEL_GATE, true)
+    ),
     [buildSendNowFlushDeps]
   );
   // Empty-Enter gesture: gated by tengu_jiggly_mochi (official Oae @216671717),

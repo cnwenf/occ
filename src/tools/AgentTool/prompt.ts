@@ -68,6 +68,7 @@ export async function getPrompt(
   agentDefinitions: AgentDefinition[],
   isCoordinator?: boolean,
   allowedAgentTypes?: string[],
+  continueAvailable: boolean = true,
 ): Promise<string> {
   // Filter agents by allowed types when Agent(x,y) restricts which agents can be spawned
   const effectiveAgents = allowedAgentTypes
@@ -276,6 +277,15 @@ When NOT to use the ${AGENT_TOOL_NAME} tool:
 - Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses`
       : ''
 
+  // Official 2.1.293 #9 (prompt builder `H6o` @215972233): only advertise
+  // SendMessage continuation when SendMessage is actually in the tool table.
+  // When it isn't (host / permission-rule / --tools removed it), swap in the
+  // official "cannot be continued from here" fallback so Claude isn't told to
+  // use a tool it doesn't have.
+  const continueBullet = continueAvailable
+    ? `- To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's ID or name as the \`to\` field. The agent resumes with its full context preserved. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}`
+    : `- A previously spawned agent cannot be continued from here. Every ${AGENT_TOOL_NAME} call starts a fresh agent with no memory of prior runs.`
+
   // Non-coordinator gets the full prompt with all sections
   return `${shared}
 ${whenNotToUseSection}
@@ -292,7 +302,7 @@ Usage notes:
 - **Foreground vs background**: Use foreground (default) when you need the agent's results before you can proceed — e.g., research agents whose findings inform your next steps. Use background when you have genuinely independent work to do in parallel.`
       : ''
   }
-- To continue a previously spawned agent, use ${SEND_MESSAGE_TOOL_NAME} with the agent's ID or name as the \`to\` field. The agent resumes with its full context preserved. ${forkEnabled ? 'Each fresh Agent invocation with a subagent_type starts without context — provide a complete task description.' : 'Each Agent invocation starts fresh — provide a complete task description.'}
+${continueBullet}
 - The agent's outputs should generally be trusted
 - Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.)${forkEnabled ? '' : ", since it is not aware of the user's intent"}
 - If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.

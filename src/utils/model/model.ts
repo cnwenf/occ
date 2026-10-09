@@ -266,23 +266,26 @@ export function getDefaultHaikuModel(): ModelName {
     return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
   }
 
-  // 2.1.293 (Haiku 5.5 launch): Claude Haiku 5.5 is the default Haiku model on
-  // the Anthropic API. Verbatim per_provider alias table from the ledger's
-  // 2.1.293 catalog extract (docs/upstream-version-gap-occ150-2026-10.md §2):
-  //   haiku:{default:"claude-haiku-5-5",
+  // 2.1.293 (Haiku 5.5 launch): Claude Haiku 5.5 is the default Haiku model
+  // on the Anthropic API. The official 2.1.293 linux-x64 ELF ships a verbatim
+  // per_provider alias table (@204789153):
+  //   aliases:{haiku:{default:"claude-haiku-5-5",
   //     per_provider:{bedrock:"claude-haiku-4-5",vertex:"claude-haiku-4-5",
-  //       foundry:"claude-haiku-4-5",mantle:"claude-haiku-4-5"}}
-  // Providers WITHOUT a per_provider entry (firstParty, anthropic_aws,
-  // anthropic_google_cloud, gateway) fall to `default` → claude-haiku-5-5 —
-  // same fall-through convention as the sonnet table above. 3P providers lag
-  // at Haiku 4.5.
+  //       foundry:"claude-haiku-4-5",mantle:"claude-haiku-4-5",
+  //       anthropic_aws:"claude-haiku-4-5",
+  //       anthropic_google_cloud:"claude-haiku-4-5",
+  //       gateway:"claude-haiku-4-5"}}}
+  // plus `latest_per_family:{...haiku:"claude-haiku-5-5"...}`. v292 had
+  // default:"claude-haiku-4-5"; v293 flips ONLY the first-party default —
+  // every 3P provider (incl. anthropic_aws and gateway, unlike the Sonnet
+  // table) lags at Haiku 4.5. Divergence note: the official table maps
+  // anthropic_google_cloud → claude-haiku-4-5, but OCC's provider selection
+  // folds anthropic_google_cloud into firstParty (standing divergence), so
+  // OCC resolves it to claude-haiku-5-5.
   const provider = getAPIProvider()
-  if (
-    provider === 'bedrock' ||
-    provider === 'vertex' ||
-    provider === 'foundry' ||
-    provider === 'mantle'
-  ) {
+  if (provider !== 'firstParty') {
+    // bedrock / vertex / foundry / mantle / anthropic_aws / gateway →
+    // "claude-haiku-4-5" (resolved through each provider's CONFIG string)
     return getModelStrings().haiku45
   }
   return getModelStrings().haiku55
@@ -549,11 +552,9 @@ export function firstPartyNameToCanonical(name: ModelName): ModelShortName {
   if (name.includes('claude-sonnet-4')) {
     return 'claude-sonnet-4'
   }
-  // Haiku 5.5 before Haiku 4.5 (ordering discipline from the 5-5 launches:
-  // `-5-5` branches precede their shorter siblings; no substring collision
-  // between `claude-haiku-5-5` and `claude-haiku-4-5`, but the newer model
-  // is matched first to keep the family block in descending-version order).
-  // Canonical id verbatim from the 2.1.293 catalog extract (ledger §2).
+  // 2.1.293: haiku-5-5 before haiku-4-5 (neither is a substring of the
+  // other, but the -5-5-first order mirrors the official chain and keeps
+  // the newest generation ahead of the broader family arms below).
   if (name.includes('claude-haiku-5-5')) {
     return 'claude-haiku-5-5'
   }
@@ -1019,10 +1020,11 @@ export function parseUserSpecifiedModel(
  * context window from 1M to 200K, which trips autocompact at 23% apparent usage
  * and surfaces "Context limit reached" even though nothing overflowed.
  *
- * We only carry [1m] when the target actually supports it (sonnet/opus). A skill
- * with `model: haiku` on a 1M session still downgrades — haiku has no 1M variant,
- * so the autocompact that follows is correct. Skills that already specify [1m]
- * are left untouched.
+ * We only carry [1m] when the target actually supports it. A skill with
+ * `model: haiku` inherits [1m] since 2.1.293 — haiku 5.5 is native_1m
+ * (supports_1m_beta). Older haiku targets (3.5/4.5, no 1M variant) still
+ * downgrade, so the autocompact that follows is correct. Skills that already
+ * specify [1m] are left untouched.
  */
 export function resolveSkillModelOverride(
   skillModel: string,
@@ -1148,11 +1150,10 @@ export function getMarketingNameForModel(modelId: string): string | undefined {
   if (canonical.includes('claude-fable-5')) {
     return 'Fable 5'
   }
-  // Haiku 5.5 before Haiku 4.5, same descending-version discipline as the
-  // sonnet-5-5 block above. display_name "Haiku 5.5" verbatim from the 2.1.293
-  // catalog extract (ledger §2); the 1M composition follows the 2.1.280+
-  // convention (display_name + " (1M context)") — the ledger's
-  // supports_1m_beta/native_1m are both true for haiku-5-5.
+  // 2.1.293: Haiku 5.5 before Haiku 4.5. The catalog carries display_name
+  // "Haiku 5.5" with native_1m + supports_1m_beta, so the 1M variant follows
+  // the same display_name + " (1M context)" convention as the Sonnet 5.5 /
+  // Opus 5.5 launches.
   if (canonical.includes('claude-haiku-5-5')) {
     return has1m ? 'Haiku 5.5 (1M context)' : 'Haiku 5.5'
   }

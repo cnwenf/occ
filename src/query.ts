@@ -68,7 +68,7 @@ import {
   createToolUseSummaryMessage,
   createMicrocompactBoundaryMessage,
   stripSignatureBlocks,
-  wrapInSystemReminder,
+  wrapInSystemReminderEscaped,
 } from './utils/messages.js'
 // CC 2.1.288 #59: official `_applyMessage` @229522066 runs every inbound
 // message through `_stampSendNowCut(h, this._snapshot.abortController?.signal)`
@@ -1595,7 +1595,10 @@ async function* queryLoop(
         if (stopHookAdditionalContexts.length > 0) {
           continuationMessages.push(
             createUserMessage({
-              content: wrapInSystemReminder(
+              // CC 2.1.292 §C4: additionalContext is untrusted hook output —
+              // Bbe (wrapInSystemReminderEscaped) not bare Ol, so an injected
+              // `</system-reminder>` cannot break out of the wrapper.
+              content: wrapInSystemReminderEscaped(
                 `Stop hook additional context:\n${stopHookAdditionalContexts.join('\n')}`,
               ),
               isMeta: true,

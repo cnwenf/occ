@@ -249,9 +249,11 @@ describe("Gap-97h: model picker effort cycle matches the official VXm", () => {
     expect(cycleEffortLevel("xhigh", "right", true, true)).toBe("max");
     expect(cycleEffortLevel("xhigh", "left", true, true)).toBe("high");
     expect(cycleEffortLevel("max", "left", true, true)).toBe("xhigh");
-    // wraparound
-    expect(cycleEffortLevel("max", "right", true, true)).toBe("low");
-    expect(cycleEffortLevel("low", "left", true, true)).toBe("max");
+    // 293 changelog #7 (official $0e @234071645): the 292 wraparound
+    // (`he[(Me+1)%he.length]`) is replaced by end clamps — right-at-max stays
+    // max, left-at-low stays low. See effortWrap293.test.ts.
+    expect(cycleEffortLevel("max", "right", true, true)).toBe("max");
+    expect(cycleEffortLevel("low", "left", true, true)).toBe("low");
   });
 
   test("xhigh is skipped when the model lacks xhigh_effort", () => {
@@ -263,14 +265,17 @@ describe("Gap-97h: model picker effort cycle matches the official VXm", () => {
   test("a configured level the model can't take clamps to high", () => {
     // Official clamp: current==='xhigh' && !includeXhigh → 'high' before cycling.
     expect(cycleEffortLevel("xhigh", "right", true, false)).toBe("max");
-    expect(cycleEffortLevel("max", "right", false, false)).toBe("low");
+    // 293 #7: 'max' pre-clamps to 'high' — the LAST entry of [low,medium,high] —
+    // and the right step now clamps there instead of wrapping to 'low'.
+    expect(cycleEffortLevel("max", "right", false, false)).toBe("high");
   });
 
   test("clamp applies before cycling on a minimal-capability model", () => {
-    // No xhigh, no max (e.g. a base model): xhigh clamps to 'high', then the
-    // right step wraps the three-level list to 'low'. The official last-entry
-    // fallback (levels.length-1) stays in place for values that survive the
-    // clamp without a list slot (e.g. 'ultracode' once that cycles).
-    expect(cycleEffortLevel("xhigh", "right", false, false)).toBe("low");
+    // No xhigh, no max (e.g. a base model): xhigh clamps to 'high', the last
+    // entry of the three-level list; the 293 right step clamps there (292
+    // wrapped to 'low'). The official last-entry fallback (levels.length-1)
+    // stays in place for values that survive the clamp without a list slot
+    // (e.g. 'ultracode' once that cycles).
+    expect(cycleEffortLevel("xhigh", "right", false, false)).toBe("high");
   });
 });

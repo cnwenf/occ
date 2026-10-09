@@ -148,9 +148,10 @@ import type { PermissionResult } from './permissions/PermissionResult.js'
 import { registerPendingAsyncHook } from './hooks/AsyncHookRegistry.js'
 import { enqueuePendingNotification } from './messageQueueManager.js'
 import {
+  escapeSystemReminderContent,
   extractTextContent,
   getLastAssistantMessage,
-  wrapInSystemReminder,
+  wrapInSystemReminderEscaped,
 } from './messages.js'
 import {
   emitHookStarted,
@@ -1235,8 +1236,11 @@ export function handleAsyncRewakeExit2(params: {
 
   if (missing === undefined) {
     // Genuine blocking feedback — OCC's existing wake, unchanged.
+    // CC 2.1.292 §C4: the body interpolates untrusted hook stderr/stdout, so
+    // wrap with Bbe (wrapInSystemReminderEscaped) not bare Ol — an injected
+    // `</system-reminder>` in hook output must not break out of the wrapper.
     enqueuePendingNotification({
-      value: wrapInSystemReminder(
+      value: wrapInSystemReminderEscaped(
         `Stop hook blocking error from command "${hookName}": ${stderr || stdout}`,
       ),
       mode: 'task-notification',
@@ -1256,7 +1260,9 @@ export function handleAsyncRewakeExit2(params: {
 
   const body = `${hookName} hook could not run: ${missing.scriptPath} cannot be opened, so its command exited with code 2 without doing any work. This is a broken hook installation, not feedback on your work; it is reported this once and identical repeats are dropped. Interpreter output: ${missing.output}`
   enqueuePendingNotification({
-    value: wrapInSystemReminder(body),
+    // CC 2.1.292 §C4: body interpolates the interpreter output (untrusted) —
+    // Bbe not bare Ol, matching the exit-2 arm above.
+    value: wrapInSystemReminderEscaped(body),
     mode: 'task-notification',
     priority: 'next',
   })
@@ -3290,13 +3296,19 @@ export function getPreToolHookBlockingMessage(
   return `${hookName} hook error: ${blockingError.blockingError}`
 }
 
+// CC 2.1.292 §C4 residual (cluster-c-h-carryover): the Stop / TeammateIdle /
+// TaskCreated / TaskCompleted async system-message bodies are the official
+// jyt/tqr/nqr/rzt = `IDn(label, AT(blockingError))` @214391719. AT
+// (escapeSystemReminderContent) is applied to the untrusted blockingError
+// BEFORE composition so an injected `</system-reminder>` cannot break out of
+// the downstream system-reminder wrapper. All four builders below follow it.
 /**
  * Format a list of blocking errors from a Stop hook's configured commands.
  * @param blockingErrors Array of blocking errors from hooks
  * @returns Formatted message to give feedback to the model
  */
 export function getStopHookMessage(blockingError: HookBlockingError): string {
-  return `Stop hook feedback:\n${blockingError.blockingError}`
+  return `Stop hook feedback:\n${escapeSystemReminderContent(blockingError.blockingError)}`
 }
 
 /**
@@ -3307,7 +3319,7 @@ export function getStopHookMessage(blockingError: HookBlockingError): string {
 export function getTeammateIdleHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TeammateIdle hook feedback:\n${blockingError.blockingError}`
+  return `TeammateIdle hook feedback:\n${escapeSystemReminderContent(blockingError.blockingError)}`
 }
 
 /**
@@ -3318,7 +3330,7 @@ export function getTeammateIdleHookMessage(
 export function getTaskCreatedHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TaskCreated hook feedback:\n${blockingError.blockingError}`
+  return `TaskCreated hook feedback:\n${escapeSystemReminderContent(blockingError.blockingError)}`
 }
 
 /**
@@ -3329,7 +3341,7 @@ export function getTaskCreatedHookMessage(
 export function getTaskCompletedHookMessage(
   blockingError: HookBlockingError,
 ): string {
-  return `TaskCompleted hook feedback:\n${blockingError.blockingError}`
+  return `TaskCompleted hook feedback:\n${escapeSystemReminderContent(blockingError.blockingError)}`
 }
 
 /**

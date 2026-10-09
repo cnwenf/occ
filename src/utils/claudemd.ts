@@ -44,7 +44,9 @@ import { logEvent } from 'src/services/analytics/index.js'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getOriginalCwd,
+  getSessionId,
 } from '../bootstrap/state.js'
+import type { ToolPermissionContext } from '../Tool.js'
 import { truncateEntrypointContent } from '../memdir/memdir.js'
 import { getAutoMemEntrypoint, isAutoMemoryEnabled } from '../memdir/paths.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
@@ -82,8 +84,10 @@ import { expandPath } from './path.js'
 import { pathInWorkingPath } from './permissions/filesystem.js'
 import {
   getPersistedReadDenyContext,
+  hasReadDenyRules,
   isFileReadDenied,
 } from './permissions/readDeny.js'
+import { noteWithheld, recordWithheldInPass } from './withheldMemory.js'
 import { isSettingSourceEnabled } from './settings/constants.js'
 import { getInitialSettings } from './settings/settings.js'
 import {
@@ -540,24 +544,36 @@ function logMemoryPathRefusal(surface: string, path: string): void {
 // (blockReadsOutsideWorkingDirectories / --restricted are absent — N-A per
 // docs/gap-research-291/cluster-b-read-deny-mentions.md §B4) but is kept so
 // the table matches the binary and the arm is ready when that surface lands.
-const INSTRUCTION_NOT_LOADED_REASONS = {
-  denied: 'a Read deny rule covers it',
-  outside:
-    "it's read from outside your working directories, where reads are blocked",
-  unsettled: "where it leads couldn't be worked out",
-} as const
+// CC 2.1.292 (C10 carryover): the table moved to the session-scoped withheld
+// store (utils/withheldMemory.ts) and gained the official fourth arm
+// `unjudged` (`XB` @212089000). The once-per-path debug line (official
+// `QB`/`lSt`) is now `noteWithheld` — a root-keyed map would re-log after
+// /cd; the session store does not.
 
-type InstructionNotLoadedReason =
-  keyof typeof INSTRUCTION_NOT_LOADED_REASONS
-
-/** Official `lSt`: `Instruction file not loaded: ${path} (${dSt[reason]})`. */
-function logInstructionFileNotLoaded(
-  path: string,
-  reason: InstructionNotLoadedReason,
-): void {
-  logForDebugging(
-    `Instruction file not loaded: ${path} (${INSTRUCTION_NOT_LOADED_REASONS[reason]})`,
-  )
+/**
+ * Official `kbt` (@212089xxx): `WRn(e)&&"denied"||Vge(e,ct,"deny").length>0
+ * &&"unjudged"||void 0` — the deny-side judgment for an instruction-file
+ * candidate. WRn ≡ isFileReadDenied (surface + every symlink spelling);
+ * Vge(e,Read,'deny').length>0 ≡ hasReadDenyRules. NEW in 2.1.292 is the
+ * `unjudged` arm: deny rules exist but no working directory is available to
+ * resolve them against, so the candidate cannot be judged — fail closed and
+ * withhold it as `unjudged`.
+ *
+ * `hasWorkingDirectory` is injectable for tests; the live default reads the
+ * session's original cwd (blank/unset ⇒ no working directory).
+ */
+export function judgeInstructionWithheldForTesting(
+  filePath: string,
+  context: ToolPermissionContext,
+  hasWorkingDirectory: boolean = Boolean(getOriginalCwd()),
+): 'denied' | 'unjudged' | undefined {
+  if (isFileReadDenied(filePath, context)) {
+    return 'denied'
+  }
+  if (hasReadDenyRules(context) && !hasWorkingDirectory) {
+    return 'unjudged'
+  }
+  return undefined
 }
 
 /**
@@ -577,8 +593,18 @@ async function safelyReadMemoryFileAsync(
   // shared predicate (`isFileReadDenied` — surface spelling + every symlink
   // spelling) against `igs`' persisted-deny context, because memory files load
   // at startup where no engine permission context exists yet.
-  if (isFileReadDenied(filePath, getPersistedReadDenyContext())) {
-    logInstructionFileNotLoaded(filePath, 'denied')
+  // CC 2.1.292 (C10 carryover): judgment moved to the official `kbt` shape
+  // (judgeInstructionWithheldForTesting above) — adding the `unjudged` arm —
+  // and the tell goes through the session store (`QB`/noteWithheld: once per
+  // session+path, survives /cd) plus the per-pass collector that feeds the
+  // attachments-side `withheld_memory` producer (`Vun`'s `G` map).
+  const judged = judgeInstructionWithheldForTesting(
+    filePath,
+    getPersistedReadDenyContext(),
+  )
+  if (judged !== undefined) {
+    noteWithheld(getSessionId(), [{ path: filePath, why: judged }])
+    recordWithheldInPass({ path: filePath, why: judged })
     return { info: null, includePaths: [] }
   }
   // CC 2.1.282 (security): read-site chokepoint. Every memory read funnels
@@ -588,7 +614,8 @@ async function safelyReadMemoryFileAsync(
   // wording is now logged alongside the pre-existing containment diagnostic.
   if (isDeniedMemoryPath(filePath) || shouldRefuseMemorySymlink(filePath)) {
     logMemoryPathRefusal('read', filePath)
-    logInstructionFileNotLoaded(filePath, 'unsettled')
+    noteWithheld(getSessionId(), [{ path: filePath, why: 'unsettled' }])
+    recordWithheldInPass({ path: filePath, why: 'unsettled' })
     return { info: null, includePaths: [] }
   }
   try {

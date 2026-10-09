@@ -280,6 +280,21 @@ export async function initEnvLessBridgeCore(
   const flushGate = new FlushGate<Message>()
 
   let initialFlushDone = false
+  // CC 2.1.293 #19 — promise-settle tracking. Set UNCONDITIONALLY at the top
+  // of the initial flush's .finally (the official's deferred `R.resolve()`
+  // before the transport-swap guards). recoverFromAuthFailure consults it: a
+  // completed history upload is never re-sent after a 401 rebuild; only an
+  // unsettled flush (whose writeBatch may have silently no-op'd on the closed
+  // uploader) re-arms the re-flush.
+  let initialFlushSettled = false
+  // Official 2.1.293 handle field `firstHistoryFlush:()=>Vn` — the composed
+  // promise `Vn = Promise.all([flushPromise, deferred])`, undefined until a
+  // flush starts. The official consumer is the handoff-wait engine's
+  // "first_history_flush" phase (`at=n.firstHistoryFlush(); if(at!==void 0)
+  // ...await ee(at)`); OCC has not ported that engine yet — the field is
+  // carried verbatim so a future handoff port wires up without re-deriving
+  // the settle semantics.
+  let firstHistoryFlush: Promise<void> | undefined
   let tornDown = false
   let authRecoveryInFlight = false
   // Latch for onUserMessage — flips true when the callback returns true
@@ -394,11 +409,22 @@ export async function initEnvLessBridgeCore(
         // the stale .finally() must not drain the gate or signal connected.
         // (Same guard pattern as replBridge.ts:1119.)
         const flushTransport = transport
-        void flushHistory(initialMessages)
+        // CC 2.1.293 #19 — verbatim official shape (vver binary):
+        //   _=Ea(G), R=Promise.withResolvers();
+        //   _.catch(log).finally(()=>{ if(R.resolve(), w!==v||O||Q||De) return;
+        //                              Wt(), yr() });
+        //   Vn=Promise.all([_,R.promise]); Vn.catch(()=>{})
+        // The deferred resolves at the TOP of .finally — BEFORE the
+        // transport-swap guards — so the settle is recorded unconditionally.
+        const flushPromise = flushHistory(initialMessages)
+        const settled = Promise.withResolvers<void>()
+        flushPromise
           .catch(e =>
             logForDebugging(`[remote-bridge] flushHistory failed: ${e}`),
           )
           .finally(() => {
+            initialFlushSettled = true
+            settled.resolve()
             // authRecoveryInFlight catches the v1-vs-v2 asymmetry: v1 nulls
             // transport synchronously in setOnClose (replBridge.ts:1175), so
             // transport !== flushTransport trips immediately. v2 doesn't null —
@@ -414,6 +440,10 @@ export async function initEnvLessBridgeCore(
             drainFlushGate()
             onStateChange?.('connected')
           })
+        firstHistoryFlush = Promise.all([flushPromise, settled.promise]).then(
+          () => undefined,
+        )
+        firstHistoryFlush.catch(() => {})
       } else if (!flushGate.active) {
         onStateChange?.('connected')
       }
@@ -567,12 +597,22 @@ export async function initEnvLessBridgeCore(
         }
         return
       }
-      // If 401 interrupted the initial flush, writeBatch may have silently
-      // no-op'd on the closed uploader (ccr.close() ran in the SSE wrapper
-      // before our setOnClose callback). Reset so the new onConnect re-flushes.
+      // CC 2.1.293 #19: official 2.1.293 DELETED the unconditional
+      // `initialFlushDone = false` reset that 2.1.292 carried here — a 401
+      // arriving after a completed flush flipped the flag back and the
+      // rebuilt transport's onConnect re-sent the entire starting history
+      // (remote viewer saw the transcript twice). The re-arm is now
+      // conditional on the flush promise NOT having settled: if 401
+      // interrupted the flush, writeBatch may have silently no-op'd on the
+      // closed uploader (ccr.close() ran in the SSE wrapper before our
+      // setOnClose callback), so the new onConnect must re-flush. A settled
+      // flush (success OR error — the official deferred resolves
+      // unconditionally) never re-sends.
       // (v1 scopes initialFlushDone inside the per-transport closure at
       // replBridge.ts:1027 so it resets naturally; v2 has it at outer scope.)
-      initialFlushDone = false
+      if (!initialFlushSettled) {
+        initialFlushDone = false
+      }
       await rebuildTransport(fresh, 'auth_401_recovery')
       logForDebugging('[remote-bridge] Transport rebuilt after 401')
     } catch (err) {
@@ -760,6 +800,11 @@ export async function initEnvLessBridgeCore(
   }
 
   // ── 10. Handle ──────────────────────────────────────────────────────────
+  // `as ReplBridgeHandle`: the object carries the official 2.1.293
+  // `firstHistoryFlush` field, which OCC's ReplBridgeHandle type does not
+  // declare (replBridge.ts — outside this change's scope; no OCC handoff-wait
+  // consumer exists yet). Runtime consumers destructure only the typed
+  // fields, so the extra field is inert until the handoff port lands.
   return {
     bridgeSessionId: sessionId,
     environmentId: '',
@@ -879,11 +924,22 @@ export async function initEnvLessBridgeCore(
       void transport.write(makeResultMessage(sessionId))
       logForDebugging(`[remote-bridge] Sent result`)
     },
+    /**
+     * Official 2.1.293 handle field, verbatim semantics:
+     * `firstHistoryFlush:()=>Vn` where `Vn = Promise.all([flushPromise,
+     * deferred])`. The deferred resolves at the top of the flush's .finally
+     * (before the transport-swap guards), so Vn settles exactly when the
+     * initial-history flush settles or is invalidated by a swap. undefined
+     * until a flush starts — the official handoff-wait engine checks
+     * `at!==void 0` before awaiting. No OCC consumer yet (see handle cast
+     * above); kept so the handoff port can wire it directly.
+     */
+    firstHistoryFlush: (): Promise<void> | undefined => firstHistoryFlush,
     async teardown() {
       unregister()
       await teardown()
     },
-  }
+  } as ReplBridgeHandle
 }
 
 // ─── Session API (v2 /code/sessions, no env) ─────────────────────────────────

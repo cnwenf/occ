@@ -40,11 +40,10 @@ export const CANONICAL_MODEL_CATALOG: readonly string[] = [
   'claude-fable-5',
   'claude-fable-5-1',
   'claude-haiku-4-5',
-  // 2.1.293 (Haiku 5.5 launch): the v293 catalog registers claude-haiku-5-5
-  // (ledger §2 verbatim entry `id:"claude-haiku-5-5"`, `family:"haiku"`;
-  // default-haiku switch → "claude-haiku-5-5"). Alphabetical order keeps
-  // haiku-4-5 first; latestCanonicalModelForFamily('haiku') now returns
-  // claude-haiku-5-5 (5.5 > 4.5).
+  // 2.1.293 (OCC-111): the v293 catalog adds claude-haiku-5-5
+  // (latest_per_family haiku → "claude-haiku-5-5", alias table @204789153).
+  // Alphabetical order keeps the shorter/older prefix first;
+  // latestCanonicalModelForFamily('haiku') now returns claude-haiku-5-5.
   'claude-haiku-5-5',
   'claude-mythos-5',
   'claude-mythos-5-1',

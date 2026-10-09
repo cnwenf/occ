@@ -45,6 +45,7 @@ import { createAgentWorktree, hasWorktreeChanges, removeAgentWorktree } from '..
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js';
 import { spawnTeammate } from '../shared/spawnMultiAgent.js';
 import { setAgentColor } from './agentColorManager.js';
 import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extractPartialResult, finalizeAgentTool, getLastToolUseName, resolveAgentTools, runAsyncAgentLifecycle } from './agentToolUtils.js';
@@ -176,7 +177,8 @@ export const outputSchema = lazySchema(() => {
     description: z.string().describe('The description of the task'),
     prompt: z.string().describe('The prompt for the agent'),
     outputFile: z.string().describe('Path to the output file for checking agent progress'),
-    canReadOutputFile: z.boolean().optional().describe('Whether the calling agent has Read/Bash tools to check progress')
+    canReadOutputFile: z.boolean().optional().describe('Whether the calling agent has Read/Bash tools to check progress'),
+    canContinueAgent: z.boolean().optional().describe('Whether SendMessage is available to continue this agent (persisted at launch so resume reads it back; defaults true when absent)')
   });
   return z.union([syncOutputSchema, asyncOutputSchema]);
 });
@@ -248,7 +250,11 @@ export const AgentTool = buildTool({
     // Use inline env check instead of coordinatorModule to avoid circular
     // dependency issues during test module loading.
     const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) : false;
-    return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes);
+    // Official 2.1.293 #9 gate (`Dw(o){return o.some((e)=>Dt(e,nr))}`, nr="SendMessage"):
+    // only tell the model it can continue/message subagents when SendMessage is
+    // actually in this session's tool table.
+    const continueAvailable = tools.some(t => toolMatchesName(t, SEND_MESSAGE_TOOL_NAME));
+    return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes, continueAvailable);
   },
   name: AGENT_TOOL_NAME,
   searchHint: 'delegate work to a subagent',
@@ -846,6 +852,9 @@ export const AgentTool = buildTool({
         getWorktreeResult: cleanupWorktreeIfNeeded
       })));
       const canReadOutputFile = toolUseContext.options.tools.some(t => toolMatchesName(t, FILE_READ_TOOL_NAME) || toolMatchesName(t, BASH_TOOL_NAME));
+      // #9: persist whether SendMessage is available so the async_launched
+      // footer (and later resume read-back) only offers continuation when it is.
+      const canContinueAgent = toolUseContext.options.tools.some(t => toolMatchesName(t, SEND_MESSAGE_TOOL_NAME));
       return {
         data: {
           isAsync: true as const,
@@ -854,7 +863,8 @@ export const AgentTool = buildTool({
           description: description,
           prompt: prompt,
           outputFile: getTaskOutputPath(agentBackgroundTask.agentId),
-          canReadOutputFile
+          canReadOutputFile,
+          canContinueAgent
         }
       };
     } else {
@@ -1139,6 +1149,8 @@ export const AgentTool = buildTool({
 
                 // Return async_launched result immediately
                 const canReadOutputFile = toolUseContext.options.tools.some(t => toolMatchesName(t, FILE_READ_TOOL_NAME) || toolMatchesName(t, BASH_TOOL_NAME));
+                // #9: same SendMessage gate as the launch site (backgrounded mid-execution).
+                const canContinueAgent = toolUseContext.options.tools.some(t => toolMatchesName(t, SEND_MESSAGE_TOOL_NAME));
                 return {
                   data: {
                     isAsync: true as const,
@@ -1147,7 +1159,8 @@ export const AgentTool = buildTool({
                     description: description,
                     prompt: prompt,
                     outputFile: getTaskOutputPath(backgroundedTaskId),
-                    canReadOutputFile
+                    canReadOutputFile,
+                    canContinueAgent
                   }
                 };
               }
@@ -1366,7 +1379,10 @@ export const AgentTool = buildTool({
             status: 'completed' as const,
             prompt,
             ...agentResult,
-            ...worktreeResult
+            ...worktreeResult,
+            // #9: gate the completed trailer's SendMessage continuation hint on
+            // whether SendMessage is actually in this session's tool table.
+            canContinueAgent: toolUseContext.options.tools.some(t => toolMatchesName(t, SEND_MESSAGE_TOOL_NAME))
           }
         };
       }));
@@ -1436,7 +1452,11 @@ The agent is now running and will receive instructions via mailbox.`
       };
     }
     if (data.status === 'async_launched') {
-      const prefix = `Async agent launched successfully.\nagentId: ${data.agentId} (internal ID - do not mention to user. Use SendMessage with to: '${data.agentId}' to continue this agent.)\nThe agent is working in the background. You will be notified automatically when it completes.`;
+      // #9 (official @220374706): drop the SendMessage continuation clause when
+      // SendMessage isn't in the tool table (canContinueAgent===false). Absent
+      // (legacy/resume) defaults to continue-available.
+      const continueClause = data.canContinueAgent === false ? '' : ` Use SendMessage with to: '${data.agentId}' to continue this agent.`;
+      const prefix = `Async agent launched successfully.\nagentId: ${data.agentId} (internal ID - do not mention to user.${continueClause})\nThe agent is working in the background. You will be notified automatically when it completes.`;
       const instructions = data.canReadOutputFile ? `Do not duplicate this agent's work — avoid working with the same files or topics it is using. Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.\noutput_file: ${data.outputFile}\nIf asked, you can check progress before completion by using ${FILE_READ_TOOL_NAME} or ${BASH_TOOL_NAME} tail on the output file.` : `Briefly tell the user what you launched and end your response. Do not generate any other text — agent results will arrive in a subsequent message.`;
       const text = `${prefix}\n${instructions}`;
       return {
@@ -1476,7 +1496,7 @@ The agent is now running and will receive instructions via mailbox.`
         type: 'tool_result',
         content: [...contentOrMarker, {
           type: 'text',
-          text: `agentId: ${data.agentId} (use SendMessage with to: '${data.agentId}' to continue this agent)${worktreeInfoText}
+          text: `agentId: ${data.agentId}${data.canContinueAgent === false ? '' : ` (use SendMessage with to: '${data.agentId}' to continue this agent)`}${worktreeInfoText}
 <usage>total_tokens: ${data.totalTokens}
 tool_uses: ${data.totalToolUseCount}
 duration_ms: ${data.totalDurationMs}</usage>`

@@ -342,7 +342,6 @@ export function getCompactUserSummaryMessage(
   summary: string,
   suppressFollowUpQuestions?: boolean,
   transcriptPath?: string,
-  recentMessagesPreserved?: boolean,
 ): string {
   const formattedSummary = formatCompactSummary(summary)
 
@@ -352,10 +351,6 @@ ${formattedSummary}`
 
   if (transcriptPath) {
     baseSummary += `\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`
-  }
-
-  if (recentMessagesPreserved) {
-    baseSummary += `\n\nRecent messages are preserved verbatim.`
   }
 
   if (suppressFollowUpQuestions) {
@@ -375,4 +370,69 @@ You are running in autonomous/proactive mode. This is NOT a first wake-up — yo
   }
 
   return baseSummary
+}
+
+/**
+ * Official 2.1.293 changelog entry #4 — "Compaction: own last actions before
+ * compaction treated as after". Byte-verbatim port of the vver binary `iJt`
+ * constant (@214877650 in the 2.1.293 linux-x64 ELF, extracted via
+ * /bin/grep -aboF + dd). 293 REPLACES the dead 292-era sentence
+ * "R␣ecent messages are preserved verbatim." (0 hits in the 293 binary) with
+ * this note, attached to each compact summary message when — and only when —
+ * preserved tail messages follow it (see `applyPreservedMessagesNote`).
+ */
+export const PRESERVED_RECENT_MESSAGES_NOTE =
+  'The messages after this summary are the most recent messages from before compaction, kept verbatim. The summary was written without seeing them, so something it says has not happened yet may already have happened in them.'
+
+/** Minimal structural shape the official `gJt` applier operates on. */
+type SummaryMessageLike = {
+  message: {
+    content?: string | Array<Record<string, unknown>>
+    [key: string]: unknown
+  }
+  [key: string]: unknown
+}
+
+/**
+ * Byte-faithful port of official 2.1.293 `gJt` (@214875400):
+ *
+ *   function gJt(e){let{content:n}=e.message;return{...e,message:{...e.message,
+ *     content:typeof n==="string"?`${n}\n\n${iJt}`:[...n,{type:"text",text:iJt}]}}}
+ *
+ * String content → `content + "\n\n" + NOTE`; array content → a trailing
+ * `{type:"text",text:NOTE}` block. Immutable (spread copies), like the official.
+ */
+export function appendPreservedMessagesNote<T extends SummaryMessageLike>(
+  message: T,
+): T {
+  const content = message.message.content
+  return {
+    ...message,
+    message: {
+      ...message.message,
+      content:
+        typeof content === 'string'
+          ? `${content}\n\n${PRESERVED_RECENT_MESSAGES_NOTE}`
+          : [...(content ?? []), { type: 'text', text: PRESERVED_RECENT_MESSAGES_NOTE }],
+    },
+  }
+}
+
+/**
+ * Official 2.1.293 application gate (vver commit path @214898708):
+ *
+ *   vt=Ne.length>0?n.summaryMessages.map(gJt):n.summaryMessages
+ *
+ * The note is applied ONLY on the reactive/session-memory compact commit path
+ * and ONLY when preserved tail messages exist (`messagesToKeep.length > 0`),
+ * so the note truthfully describes messages that follow the summary. The
+ * full/partial compact paths (compact.ts) do NOT attach it — official scope.
+ */
+export function applyPreservedMessagesNote<T extends SummaryMessageLike>(
+  summaryMessages: T[],
+  messagesToKeep: readonly unknown[],
+): T[] {
+  return messagesToKeep.length > 0
+    ? summaryMessages.map(appendPreservedMessagesNote)
+    : summaryMessages
 }

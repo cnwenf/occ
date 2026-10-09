@@ -29,8 +29,12 @@ describe("F15 at_mention OTEL log (2.1.122)", () => {
     // directory + file + agent + mcp_resource resolution points are wired
     expect(s).toContain("logAtMentionOtel('directory', true)");
     expect(s).toContain("logAtMentionOtel('file', false)");
-    expect(s).toContain("logAtMentionOtel('agent', false)");
-    expect(s).toContain("logAtMentionOtel('mcp_resource', true)");
+    // CC 2.1.293 #47: agent + mcp_resource emits now route through the
+    // official `Ix` index-gated wrapper (`emitAtMention`), which fans out to
+    // the same `logAtMentionOtel(mentionType, success)` OTEL emitter.
+    expect(s).toContain("emitAtMention(index, 'agent', false)");
+    expect(s).toContain("emitAtMention(index, 'mcp_resource', true)");
+    expect(s).toContain("logAtMentionOtel(mentionType, success)");
   });
 });
 

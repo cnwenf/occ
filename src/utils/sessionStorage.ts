@@ -671,6 +671,20 @@ export function setInternalEventWriter(writer: InternalEventWriter): void {
   getProject().setInternalEventWriter(writer)
 }
 
+/**
+ * L26 (CC 2.1.292) — official export `FYr as sealTranscriptAppendsForShutdown`.
+ * Seals the transcript append side during shutdown: appendEntry skips via
+ * shouldSkipPersistence, enqueueWrite no-ops, and persistToRemote returns
+ * immediately. Official call site: the CCR v2 client's internal-event lane
+ * closure (`ccrClient.onInternalEventLaneClosed = FYr`, fired inside
+ * CCRClient.finishShutdown after the lane drains). OCC's ccrClient.ts has no
+ * onInternalEventLaneClosed hook yet — wiring the shutdown side is a
+ * documented handoff; terminal, idempotent, safe to call more than once.
+ */
+export function sealTranscriptAppendsForShutdown(): void {
+  getProject().sealAppendsForShutdown()
+}
+
 type InternalEventReader = () => Promise<
   { payload: Record<string, unknown>; agent_id?: string }[] | null
 >
@@ -723,6 +737,14 @@ class Project {
   private internalEventWriter: InternalEventWriter | null = null
   private internalEventReader: InternalEventReader | null = null
   private internalSubagentEventReader: InternalEventReader | null = null
+  // L26 (CC 2.1.292, verbatim `appendsSealedForShutdown=!1`): append-side
+  // shutdown seal. Once the CCR v2 internal-event lane closes, transcript
+  // appends must stop on BOTH sides (local file + remote) — writing a local
+  // tail the remote copy never received breaks the local/remote parity that
+  // the CCR v2 resume path (hydrateFromCCRv2InternalEvents) relies on.
+  // Sealed via sealAppendsForShutdown() — terminal, no unseal (official has
+  // none either).
+  appendsSealedForShutdown = false
   private pendingWriteCount: number = 0
   private flushResolvers: Array<() => void> = []
   // Per-file write queues. Each entry carries a resolve callback so
@@ -772,7 +794,28 @@ class Project {
     }
   }
 
+  /**
+   * L26 (CC 2.1.292, verbatim `sealAppendsForShutdown(){this.appendsSealedForShutdown=!0}`).
+   * Official wiring: exported as `sealTranscriptAppendsForShutdown` and fired
+   * from the CCR v2 client's shutdown path via
+   * `ccrClient.onInternalEventLaneClosed = FYr` (called inside
+   * `CCRClient.finishShutdown`, after the internal-event lane drains). OCC's
+   * ccrClient.ts has no onInternalEventLaneClosed hook — the mechanism +
+   * module export land here; the shutdown-side wiring is a documented
+   * handoff (that file is outside this change's scope).
+   */
+  sealAppendsForShutdown(): void {
+    this.appendsSealedForShutdown = true
+  }
+
   private enqueueWrite(filePath: string, entry: Entry): Promise<void> {
+    // L26 (CC 2.1.292, verbatim
+    // `enqueueWrite(e,n,r){if(this.appendsSealedForShutdown)return Promise.resolve();...}`):
+    // defense-in-depth for callers that bypass appendEntry's
+    // shouldSkipPersistence guard — a sealed shutdown drops local appends too.
+    if (this.appendsSealedForShutdown) {
+      return Promise.resolve()
+    }
     return new Promise<void>(resolve => {
       let queue = this.writeQueues.get(filePath)
       if (!queue) {
@@ -1152,7 +1195,13 @@ class Project {
       (getNodeEnv() === 'test' && !allowTestPersistence) ||
       getSettings_DEPRECATED()?.cleanupPeriodDays === 0 ||
       isSessionPersistenceDisabled() ||
-      isEnvTruthy(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY)
+      isEnvTruthy(process.env.CLAUDE_CODE_SKIP_PROMPT_HISTORY) ||
+      // L26 (CC 2.1.292, verbatim
+      // `shouldSkipPersistence(){return La()||this.appendsSealedForShutdown}`):
+      // a sealed shutdown stops ALL transcript persistence via the shared
+      // guard — appendEntry, materializeSessionFile, and every path that
+      // consults this method.
+      this.appendsSealedForShutdown
     )
   }
 
@@ -1453,8 +1502,36 @@ class Project {
             messageSet.add(entry.uuid)
 
             if (isTranscriptMessage(entry)) {
-              await this.persistToRemote(sessionId, entry)
+              // L26 (CC 2.1.292, verbatim:
+              //   `if(this.internalEventWriter&&$s())this.persistToRemote(n,e);
+              //    else await this.persistToRemote(n,e)`):
+              // during shutdown with a CCR v2 writer registered, persist
+              // fire-and-forget — an awaited internal-event POST can stall
+              // gracefulShutdown's 2s cleanup race and lose the whole exit
+              // window. The writer lane drains itself before the seal lands
+              // (sealTranscriptAppendsForShutdown).
+              if (this.internalEventWriter && isShuttingDown()) {
+                void this.persistToRemote(sessionId, entry)
+              } else {
+                await this.persistToRemote(sessionId, entry)
+              }
             }
+          } else if (
+            this.internalEventWriter &&
+            isTranscriptMessage(entry)
+          ) {
+            // L26 (CC 2.1.292, verbatim:
+            //   `else if(this.internalEventWriter&&jM(e))this.persistToRemote(n,e)`):
+            // sidechain (subagent) transcript entries DO reach Remote Control
+            // — through the CCR v2 internal-event lane with the agentId writer
+            // option, fire-and-forget (the official call is unawaited).
+            // Writer-gated BY DESIGN: the v1 session-ingress path must keep
+            // skipping sidechain rows — inc-4718 above (single Last-Uuid chain
+            // per sessionId → fork-inherited UUIDs 409 → exhaust retries →
+            // gracefulShutdownSync(1)). This branch requires
+            // internalEventWriter, so persistToRemote's v1 arm is unreachable
+            // for sidechain entries and the inc-4718 comment stays true.
+            void this.persistToRemote(sessionId, entry)
           }
         }
       }
@@ -1497,9 +1574,47 @@ class Project {
   }
 
   private async persistToRemote(sessionId: UUID, entry: TranscriptMessage) {
-    if (isShuttingDown()) {
+    // L26 (CC 2.1.292, verbatim head:
+    //   `if(this.appendsSealedForShutdown)return;
+    //    if($s()&&!this.internalEventWriter)return;`):
+    // the seal is the hard stop (internal-event lane closed — see
+    // sealAppendsForShutdown). The bare isShuttingDown() skip OCC carried
+    // before this port now applies ONLY to the v1 ingress path: CCR v2
+    // writer uploads must still complete during shutdown (the main thread
+    // fires them fire-and-forget from appendEntry; sidechain always does),
+    // otherwise the session's final turns vanish from Remote Control.
+    if (this.appendsSealedForShutdown) {
       return
     }
+    if (isShuttingDown() && !this.internalEventWriter) {
+      return
+    }
+    // L26 N-A guards — official 2.1.292/293 persistToRemote carries two more
+    // skips between the shutdown head and the writer branch, both depending
+    // on machinery OCC does not have (0 hits in src), so both predicates
+    // would be constant-false here. Documented verbatim for a future port
+    // instead of landed as unreachable dead code:
+    //
+    //   ① /teleport skip (bridge/teleport guard — N-A):
+    //     `if(jZn(n,this.internalEventWriterSessionId)){t("[persist-remote]
+    //      Skipping upload: the row is the /teleport-pulled conversation's");return}`
+    //     OCC has no /teleport-pull path and no internalEventWriterSessionId
+    //     (the official tracks which session a pulled conversation belongs
+    //     to so its rows are not re-uploaded as this worker's).
+    //
+    //   ② compact-pair taint skip (bridge-only account-memory redaction —
+    //     N-A):
+    //     `if(Tve(n)&&(this.foreignWithheldEntryUuids.delete(n.uuid)||yk(la(e))))
+    //      {t("[persist-remote] Skipping compact-pair upload: conversation
+    //      carries a history-suppression taint");return}`
+    //     where Tve = compact-pair predicate (compact boundary OR user
+    //     isCompactSummary), foreignWithheldEntryUuids = entries withheld
+    //     from Remote Control by a FOREIGN session's redaction pass, and
+    //     `yk` = the per-account history-suppression taint. None of the
+    //     taint sources exist in OCC (no foreignWithheldEntryUuids /
+    //     foreignToBridgeSession / account-memory withholding bridge), so
+    //     the guard can never fire — porting it without the redaction
+    //     bridge would be speculative dead code.
 
     // CCR v2 path: write as internal worker event
     if (this.internalEventWriter) {

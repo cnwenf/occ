@@ -3,6 +3,7 @@
  * Used by both the CLI `claude agents` handler and the interactive `/agents` command.
  */
 
+import { compareNamesAsciiFirst } from '../../utils/asciiFirstCompare.js'
 import { getDefaultSubagentModel } from '../../utils/model/agent.js'
 import {
   getSourceDisplayName,
@@ -92,13 +93,13 @@ export function getOverrideSourceLabel(source: AgentSource): string {
 }
 
 /**
- * Compare agents alphabetically by name (case-insensitive).
+ * Compare agents by name using the ASCII-first ordering official uses for
+ * names announced to the model (CC 2.1.293 #46 — binary `ZCe`). ASCII names
+ * sort before non-ASCII ones; inside ASCII the ordering is locale-aware.
  */
 export function compareAgentsByName(
   a: AgentDefinition,
   b: AgentDefinition,
 ): number {
-  return a.agentType.localeCompare(b.agentType, undefined, {
-    sensitivity: 'base',
-  })
+  return compareNamesAsciiFirst(a.agentType, b.agentType)
 }

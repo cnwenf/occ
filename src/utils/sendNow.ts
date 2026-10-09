@@ -17,6 +17,16 @@
  *   - zvt hint predicate        @216606400
  *   - WOe/kvo/vvo chord pick    @216602629
  *
+ * CC 2.1.293 (L28 Phase 1) updates the KEY gesture to the official
+ * Cst/Tst/_st shape (v2.1.293 binary, Cst @234772005, NSn flag @214600349 —
+ * `tengu_velvet_panda`, default true): when the gate is on and an optional
+ * `deliverWithoutCancel` dep succeeds, the queued messages are delivered
+ * WITHOUT interrupting the live turn; otherwise the pre-existing flush core
+ * runs as the `_st` fallback and a successful cancel logs the
+ * `fell_back_to_cancel` reason. The empty-Enter gesture (vst) is UNCHANGED in
+ * 293 (byte-verified). Low-latency engine phases 2-4 stay staged — see the
+ * ledger in docs/gap-research-293/cluster-c-h-carryover.md §L28.
+ *
  * The flush does NOT dispatch the queue itself: interrupting the running turn
  * (abort with reason 'user-cancel') ends it, queryGuard goes idle, and the
  * existing useQueueProcessor drains the queue automatically — exactly the
@@ -55,6 +65,18 @@ export const SEND_NOW_HINT_ACTION = 'send now'
 export const SEND_NOW_HINT_PADDING_LEFT = 2
 /** GrowthBook gate for the empty-Enter flush only (Oae @216671717). */
 export const SEND_NOW_EMPTY_ENTER_GATE = 'tengu_jiggly_mochi'
+/**
+ * CC 2.1.293 L28 Phase 1 — GrowthBook gate for the deliver-without-cancel
+ * send-now flush (official NSn @214600349: `T("tengu_velvet_panda",!0)`,
+ * default TRUE).
+ */
+export const SEND_NOW_DELIVER_WITHOUT_CANCEL_GATE = 'tengu_velvet_panda'
+/**
+ * CC 2.1.293 L28 Phase 1 — telemetry reason when the gated flush could not
+ * deliver without cancelling and fell back to the interrupt core (official
+ * Cst @234772005: `p("input_send_now_key","fell_back_to_cancel")`).
+ */
+export const FELL_BACK_TO_CANCEL_REASON = 'fell_back_to_cancel'
 /** Interrupt reason — official interruptForSubmit aborts with oc("user-cancel") @217190800. */
 export const SEND_NOW_ABORT_REASON = 'user-cancel'
 
@@ -98,8 +120,24 @@ export interface SendNowFlushDeps {
   readonly interruptRunningTurn: () => boolean
   /** tengu_cancel telemetry with source 'queued_send_now' (C2o @217111200). */
   readonly onCancelTelemetry: () => void
-  /** Flush-event telemetry; reason is set only for no_live_controller. */
+  /** Flush-event telemetry; reason set for no_live_controller / fell_back_to_cancel. */
   readonly logFlushEvent: (event: string, reason?: string) => void
+  /**
+   * CC 2.1.293 L28 Phase 1 — optional low-latency delivery (official
+   * `h.deliverWithoutCancel()`, Cst @234772005; upstream wires it to the
+   * lowLatency engine `EIt.sendQueuedNow`). Returns true when the eligible
+   * queued messages were delivered WITHOUT interrupting the running turn.
+   * OCC Phase 1 ships no low-latency engine yet, so the REPL leaves this
+   * undefined and every flush lands on the Drt/_st fallback core below.
+   *
+   * Phases 2-4 stay STAGED — ledger:
+   * docs/gap-research-293/cluster-c-h-carryover.md §L28 "Verdict + phased
+   * port plan" (Phase 2: queue promoteToNow/demoteFromNow + 'now' priority +
+   * Fo head-state machine; Phase 3: tool-detach registry backgroundNow +
+   * task backgrounding; Phase 4: CCR control-request send_now — blocked on
+   * the frame-intake subsystem).
+   */
+  readonly deliverWithoutCancel?: () => boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -124,23 +162,33 @@ export function hasSendNowEligibleCommands(
 }
 
 // ---------------------------------------------------------------------------
-// Flush core (F$t/O$t/L$t @217111100-217111700)
+// Flush core (F$t/O$t/L$t @217111100-217111700; 293 Cst/Tst/_st @234772005)
 // ---------------------------------------------------------------------------
 
 /**
- * F$t: guard → interrupt → cancel telemetry. Pure; side effects only through
- * injected deps, in official order (interrupt BEFORE tengu_cancel).
+ * Tst (2.1.293) ≡ Ert: the send-now flush guard — prompt mode, a live turn,
+ * and at least one eligible queued command. Official verbatim:
+ *   `function Tst(h){return(h.mode??"prompt")==="prompt"&&h.turn.guard.isActive&&vnr(h.queue)}`
+ * (h.turn.guard.isActive ≡ deps.isQueryActive; vnr ≡ hasSendNowEligibleCommands.)
+ */
+export function isSendNowFlushable(deps: SendNowFlushDeps): boolean {
+  return (
+    (deps.mode ?? 'prompt') === 'prompt' &&
+    deps.isQueryActive &&
+    hasSendNowEligibleCommands(deps.queue)
+  )
+}
+
+/**
+ * _st (2.1.293) ≡ Drt ≡ F$t: guard → interrupt → cancel telemetry. Pure;
+ * side effects only through injected deps, in official order (interrupt
+ * BEFORE tengu_cancel). Kept as the fallback core of the 293 key handler —
+ * the official kept this exact function as the `Drt` fallback of `Cst`.
  */
 export function flushQueuedMessagesCore(
   deps: SendNowFlushDeps,
 ): SendNowFlushOutcome {
-  if ((deps.mode ?? 'prompt') !== 'prompt') {
-    return 'nothing_to_send'
-  }
-  if (!deps.isQueryActive) {
-    return 'nothing_to_send'
-  }
-  if (!hasSendNowEligibleCommands(deps.queue)) {
+  if (!isSendNowFlushable(deps)) {
     return 'nothing_to_send'
   }
   if (!deps.interruptRunningTurn()) {
@@ -150,11 +198,53 @@ export function flushQueuedMessagesCore(
   return 'cancelled'
 }
 
-/** O$t: send-now KEY gesture — 'input_send_now_key' on success/failure. */
-export function sendQueuedNow(deps: SendNowFlushDeps): boolean {
+/**
+ * Cst (2.1.293, ≡ Irt) — send-now KEY gesture. Official verbatim @234772005:
+ *
+ *   function Cst(h){let k=NSn();
+ *    if(k&&Tst(h)&&h.deliverWithoutCancel())return y("input_send_now_key"),!0;
+ *    switch(_st(h)){
+ *     case"cancelled":if(k)p("input_send_now_key","fell_back_to_cancel");
+ *      else y("input_send_now_key");return!0;
+ *     case"no_live_controller":return p("input_send_now_key","no_live_controller"),!1;
+ *     case"nothing_to_send":return!1}}
+ *   NSn(){return T("tengu_velvet_panda",!0)}   // @214600349, default TRUE
+ *
+ * OCC deviations (documented):
+ *   - `k` is injected as `deliverWithoutCancelGateEnabled` (default true,
+ *     matching the official NSn default) instead of read inside the function —
+ *     same pure-module convention as sendQueuedNowOnEmptyEnter/`gateEnabled`;
+ *     the REPL reads SEND_NOW_DELIVER_WITHOUT_CANCEL_GATE from
+ *     getFeatureValue_CACHED_MAY_BE_STALE at call time.
+ *   - `h.deliverWithoutCancel` is OPTIONAL (official always wires it to the
+ *     lowLatency engine `EIt`, which OCC lacks until Phases 2-4 — staged per
+ *     docs/gap-research-293/cluster-c-h-carryover.md §L28); when absent, the
+ *     guarded deliver arm is skipped and the flush always takes the _st
+ *     fallback, so a successful cancel logs `fell_back_to_cancel`.
+ *
+ * This REPLACES the 2.1.276 O$t handler (`flushQueuedMessagesCore` +
+ * unconditional no-reason event).
+ */
+export function sendQueuedNow(
+  deps: SendNowFlushDeps,
+  deliverWithoutCancelGateEnabled = true,
+): boolean {
+  if (
+    deliverWithoutCancelGateEnabled &&
+    isSendNowFlushable(deps) &&
+    deps.deliverWithoutCancel !== undefined &&
+    deps.deliverWithoutCancel()
+  ) {
+    deps.logFlushEvent(SEND_NOW_KEY_EVENT)
+    return true
+  }
   const outcome = flushQueuedMessagesCore(deps)
   if (outcome === 'cancelled') {
-    deps.logFlushEvent(SEND_NOW_KEY_EVENT)
+    if (deliverWithoutCancelGateEnabled) {
+      deps.logFlushEvent(SEND_NOW_KEY_EVENT, FELL_BACK_TO_CANCEL_REASON)
+    } else {
+      deps.logFlushEvent(SEND_NOW_KEY_EVENT)
+    }
     return true
   }
   if (outcome === 'no_live_controller') {

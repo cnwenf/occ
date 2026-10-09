@@ -122,9 +122,9 @@ export function modelSupportsAdaptiveThinking(model: string): boolean {
   // model registry (byte-verified) lists "adaptive_thinking" in the
   // `capabilities` array of opus-4-6/opus-4-7/opus-4-8/opus-5/sonnet-4-6/
   // sonnet-5/fable-5 (fable-5 falls through to the 1P default-true below).
-  // 2.1.293 (Haiku 5.5 launch): the ledger's verbatim catalog extract lists
-  // "adaptive_thinking" for claude-haiku-5-5 — the first haiku with it. This
-  // check MUST precede the `canonical.includes('haiku')` exclusion below.
+  // 2.1.293 (OCC-111): the haiku-5-5 catalog entry (@204773604, byte-
+  // verified) lists "adaptive_thinking" — the first haiku with it, so it
+  // must be allowlisted ABOVE the `haiku` exclusion below.
   if (
     canonical.includes('opus-4-6') ||
     canonical.includes('opus-4-7') ||

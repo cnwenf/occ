@@ -5,6 +5,7 @@ import type {
   MCPServerConnection,
 } from '../services/mcp/types.js'
 import type { Message } from '../types/message.js'
+import { compareNamesAsciiFirst } from './asciiFirstCompare.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 
 export type McpInstructionsDelta = {
@@ -121,7 +122,10 @@ export function getMcpInstructionsDelta(
     midCount,
   })
 
-  added.sort((a, b) => a.name.localeCompare(b.name))
+  // ASCII-first by server name (CC 2.1.293 #46 — official
+  // `ke.sort((xe,Ie)=>ZCe(xe.name,Ie.name))`); `removedNames` stays a plain
+  // code-unit `.sort()` upstream, so it is deliberately left alone here.
+  added.sort((a, b) => compareNamesAsciiFirst(a.name, b.name))
   return {
     addedNames: added.map(a => a.name),
     addedBlocks: added.map(a => a.block),

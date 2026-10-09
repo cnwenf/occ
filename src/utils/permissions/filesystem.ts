@@ -2160,6 +2160,23 @@ export function checkReadPermissionForTool(
     return networkMountAsk
   }
 
+  // 1b. Windows-only mid-path UNC forms (DavWWWRoot WebDAV, @SSL@ NTLM ports,
+  // mixed separators) that carry no UNC PREFIX — the parallel OCC-111
+  // (v2.1.375) 2.1.292 UNC port's detector (docs/gap-research-293/
+  // security-cluster-292.md item 1, Step B), kept alongside the official-shape
+  // `AHe` surface above. containsVulnerableUncPath is Windows-gated (no-op on
+  // linux/macOS); the ask is byte-identical to the step-1 UNC ask (same `Xe`
+  // safetyCheck shape, message and reason), so the same bypass-immunity floors
+  // hold — a PreToolUse hook allow or auto mode cannot stand over it either.
+  for (const pathToCheck of pathsToCheck) {
+    if (containsVulnerableUncPath(pathToCheck)) {
+      return networkMountSafetyAsk(
+        readUncMessage(escapeControlCharsAsEntities(path)),
+        UNC_PATH_ASK_REASON,
+      )
+    }
+  }
+
   // 2. Check for suspicious Windows path patterns (defense in depth)
   for (const pathToCheck of pathsToCheck) {
     if (hasSuspiciousWindowsPathPattern(pathToCheck)) {

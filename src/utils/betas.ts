@@ -69,7 +69,6 @@ export function filterAllowedSdkBetas(
   }
 
   if (isClaudeAISubscriber()) {
-    // biome-ignore lint/suspicious/noConsole: intentional warning
     console.warn(
       'Warning: Custom betas are only available for API key users. Ignoring provided betas.',
     )
@@ -78,7 +77,6 @@ export function filterAllowedSdkBetas(
 
   const { allowed, disallowed } = partitionBetasByAllowlist(sdkBetas)
   for (const beta of disallowed) {
-    // biome-ignore lint/suspicious/noConsole: intentional warning
     console.warn(
       `Warning: Beta header '${beta}' is not allowed. Only the following betas are supported: ${ALLOWED_SDK_BETAS.join(', ')}`,
     )
@@ -135,6 +133,11 @@ export function modelSupportsContextManagement(model: string): boolean {
     canonical.includes('claude-opus-4') ||
     canonical.includes('claude-sonnet-4') ||
     canonical.includes('claude-haiku-4') ||
+    // 2.1.293 (OCC-111): the v293 catalog declares "context_management" in
+    // the `capabilities` array of `claude-haiku-5-5` (@204773604). The
+    // `claude-haiku-5` prefix keeps the newest generation ahead of the
+    // broader arms, matching the sonnet-5 precedent below.
+    canonical.includes('claude-haiku-5') ||
     // OCC-37 (1g): opus-5 declares "context_management" in its binary 2.1.220
     // `capabilities` array (recovered via `dd` around offset 177163000),
     // mirroring opus-4-8. Without this branch opus-5 would be denied
@@ -152,12 +155,7 @@ export function modelSupportsContextManagement(model: string): boolean {
     // 2.1.257 (Fable 5.1 launch): both `claude-fable-5` and `claude-fable-5-1`
     // declare "context_management" in their 2.1.258 binary `capabilities`
     // arrays (byte-verified). The `claude-fable-5` prefix covers 5-1 too.
-    canonical.includes('claude-fable-5') ||
-    // 2.1.293 (Haiku 5.5 launch): the ledger's verbatim catalog extract lists
-    // "context_management" in the `capabilities` of claude-haiku-5-5. The
-    // `claude-haiku-4` prefix above does NOT match the 5-5 canonical id, so
-    // this branch is required for 3P haiku-5-5.
-    canonical.includes('claude-haiku-5-5')
+    canonical.includes('claude-fable-5')
   )
 }
 
@@ -206,8 +204,7 @@ export function modelSupportsStructuredOutputs(model: string): boolean {
     canonical.includes('claude-opus-4-1') ||
     canonical.includes('claude-opus-4-5') ||
     canonical.includes('claude-opus-4-6') ||
-    canonical.includes('claude-haiku-4-5') ||
-    canonical.includes('claude-haiku-5-5')
+    canonical.includes('claude-haiku-4-5')
   )
 }
 

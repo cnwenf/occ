@@ -85,6 +85,7 @@ import {
 } from '../../utils/permissions/symlinkResolutionStash.js'
 import { readFileInRange } from '../../utils/readFileInRange.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
+import { containsVulnerableUncPath } from '../../utils/shell/readOnlyCommandValidation.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
 import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
@@ -443,6 +444,89 @@ type OutputSchema = ReturnType<typeof outputSchema>
 
 export type Output = z.infer<OutputSchema>
 
+// ── CC 2.1.292 §C5: Read stray-parameter coercion (official `_7n` port) ──
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * Official `z6e` @214910800 (verbatim semantics): finite number → itself;
+ * integer string (optional sign, surrounding whitespace tolerated) →
+ * Number(value); anything else → undefined.
+ */
+function readNumericParam(value: unknown): number | undefined {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined
+  }
+  if (typeof value === 'string' && /^[-+]?\d+$/.test(value.trim())) {
+    return Number(value)
+  }
+  return undefined
+}
+
+/**
+ * Official 2.1.292 Read coercer `_7n` @214910800 (docs/gap-research-293/
+ * cluster-c-h-carryover.md §C5):
+ *   - single-element offset/limit arrays are unwrapped (offset_array/limit_array)
+ *   - negative offset is dropped (offset_neg)
+ *   - non-positive limit is dropped (limit_dropped)
+ *   - legacy `length` migrates to `limit` when limit is absent, and is always
+ *     deleted (length)
+ *   - a stray `description` parameter is dropped (drop_description)
+ * offset/limit are only READ through z6e for the sign checks — raw values are
+ * preserved (numeric strings are coerced later by the schema's
+ * semanticNumber); only the `length` migration writes a z6e number.
+ * Returns null when nothing changed; operates on a shallow copy so the
+ * API-bound input is never mutated. Official wiring @214918706:
+ * `coerceInput:_7n` — direct, no pH safeParse gate, no feature flag, no
+ * resultNote (silent coercion; shapeClass telemetry only, via
+ * tengu_tool_input_coerced in toolExecution.ts).
+ */
+export function coerceReadInput(raw: unknown): {
+  input: Record<string, unknown>
+  shapeClass: string
+} | null {
+  if (!isRecord(raw)) return null
+  const n: Record<string, unknown> = { ...raw }
+  const shapeClasses: string[] = []
+  if (Array.isArray(n.offset) && n.offset.length === 1) {
+    n.offset = n.offset[0]
+    shapeClasses.push('offset_array')
+  }
+  if (Array.isArray(n.limit) && n.limit.length === 1) {
+    n.limit = n.limit[0]
+    shapeClasses.push('limit_array')
+  }
+  const offset = readNumericParam(n.offset)
+  if (offset !== undefined && offset < 0) {
+    delete n.offset
+    shapeClasses.push('offset_neg')
+  }
+  const limit = readNumericParam(n.limit)
+  if (limit !== undefined && limit <= 0) {
+    delete n.limit
+    shapeClasses.push('limit_dropped')
+  }
+  if ('length' in n) {
+    const length = readNumericParam(n.length)
+    // Checked AFTER limit_dropped: official reads `!("limit"in n)` at this
+    // point, so {limit:0,length:5} migrates to limit:5.
+    if (!('limit' in n) && length !== undefined && length > 0) {
+      n.limit = length
+    }
+    delete n.length
+    shapeClasses.push('length')
+  }
+  if (Object.hasOwn(n, 'description')) {
+    delete n.description
+    shapeClasses.push('drop_description')
+  }
+  return shapeClasses.length
+    ? { input: n, shapeClass: shapeClasses.join(',') }
+    : null
+}
+
 export const FileReadTool = buildTool({
   name: FILE_READ_TOOL_NAME,
   searchHint: 'read files, images, PDFs, notebooks',
@@ -473,6 +557,11 @@ export const FileReadTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
+  // Official v2.1.292 Read tool def @214918706 (verbatim): `coerceInput:_7n`
+  // — wired DIRECT: no pH safeParse gate, no feature flag, and no
+  // coerceInputBeforePluginHooks flag (unlike the Write tool, which uses all
+  // three). Silent coercion; shapeClass telemetry only, no resultNote.
+  coerceInput: coerceReadInput,
   userFacingName,
   getToolUseSummary,
   getActivityDescription(input) {
@@ -596,12 +685,31 @@ export const FileReadTool = buildTool({
       }
     }
 
-    // SECURITY: UNC path check (no I/O) — defer filesystem operations
-    // until after user grants permission to prevent NTLM credential leaks
+    // SECURITY (CC 2.1.292, official changelog): "Fixed PreToolUse hook
+    // approvals and auto mode bypassing the permission prompt for file reads
+    // from network (UNC) paths." Official fix = a hard pre-I/O REJECT inside
+    // read_file (binary `rtn` gate, `kr.untrusted_unc` reason map) emitting the
+    // verbatim reason string below. A validateInput reject cannot be
+    // short-circuited by a PreToolUse hook 'allow' or by auto/bypass mode, and
+    // no filesystem access (stat/open that could leak NTLM credentials) ever
+    // happens. Detection = the prefix checks (platform-independent, keeps
+    // POSIX `//host` coverage) + containsVulnerableUncPath (Windows-gated
+    // anywhere-match: DavWWWRoot, @SSL@ ports, mixed separators — same
+    // platform gating as the official detection).
+    // Documented divergence from official (security-cluster-292.md §1.3 KISS
+    // option (ii)): OCC has no trustedNetworkDirectories settings field, so
+    // ALL UNC reads are rejected here — no trusted-network allowance lane.
     const isUncPath =
-      fullFilePath.startsWith('\\\\') || fullFilePath.startsWith('//')
+      fullFilePath.startsWith('\\\\') ||
+      fullFilePath.startsWith('//') ||
+      containsVulnerableUncPath(fullFilePath)
     if (isUncPath) {
-      return { result: true }
+      return {
+        result: false,
+        message:
+          'read_file: untrusted UNC path rejected before filesystem access',
+        errorCode: 1,
+      }
     }
 
     // SECURITY: NT-namespace device paths (\??\..., \Device\..., etc.) are

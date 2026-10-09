@@ -60,6 +60,7 @@ import {
   parseSlashCommandToolsFromFrontmatter,
 } from '../utils/markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../utils/model/model.js'
+import { validateFrontmatterName } from '../utils/nameSafety.js'
 import { gateAllowedToolsAtLoad } from '../utils/permissions/frontmatterGrants.js'
 import {
   filterRefusedReservedNames,
@@ -426,14 +427,15 @@ export function parseSkillFrontmatterFields(
   return {
     // 2.1.186: display-name frontmatter (normalized to displayName). Falls
     // back to the `name` field for backwards compatibility.
+    // CC 2.1.292 §C6 (official Z_e `displayName:M4t(e.name,`skill ${r}`)`):
+    // an over-long (>256) frontmatter `name` is ignored + warned, so
+    // displayName falls through to undefined (caller-supplied name is kept).
     displayName:
       frontmatter.displayName != null
         ? String(frontmatter.displayName)
         : frontmatter['display-name'] != null
           ? String(frontmatter['display-name'])
-          : frontmatter.name != null
-            ? String(frontmatter.name)
-            : undefined,
+          : validateFrontmatterName(frontmatter.name, `skill ${resolvedName}`),
     description,
     hasUserSpecifiedDescription: validatedDescription !== null,
     allowedTools: parseSlashCommandToolsFromFrontmatter(

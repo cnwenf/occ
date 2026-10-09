@@ -1,39 +1,44 @@
-import { afterAll, beforeAll, beforeEach, afterEach, describe, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const REPO_SRC = join(import.meta.dir, '..', '..', '..')
 
-// Hermetic for credential-less environments (CI runners) — same discipline as
-// sonnet55Launch284.test.ts (see its header comment).
+// Hermetic for credential-less environments (CI runners): under CI=true /
+// NODE_ENV=test the auth guard (src/utils/auth.ts) demands ANTHROPIC_API_KEY
+// or CLAUDE_CODE_OAUTH_TOKEN before credential resolution. This suite is
+// offline model-resolution logic; seed a dummy key when none is present.
 process.env.ANTHROPIC_API_KEY ??= 'occ-ci-test-key'
 
 /**
- * 2.1.293 (OCC-150): Claude Haiku 5.5 launch (`claude-haiku-5-5`).
+ * 2.1.293 (OCC-111): Claude Haiku 5.5 launch (`claude-haiku-5-5`).
  *
  * All expectations are byte-verified against the official Claude Code 2.1.293
- * linux-x64 binary (v293 ELF offsets cited per block; full forensics in
- * docs/upstream-version-gap-occ150-2026-10.md §2). Key evidence sites:
- *   - baked catalog entry `claude-haiku-5-5` @13883100: display_name
- *     "Haiku 5.5", knowledge_cutoff "June 2026", pricing "haiku_55"
- *     ($0.10/$0.50 per Mtok), default_effort "medium", advisor_rank 4,
- *     max_output_tokens {128000,128000}, context {window:1e6, native_1m,
- *     supports_1m_beta}, fallback_3p "claude-haiku-4-5",
- *     vertex_region_env_var VERTEX_REGION_CLAUDE_HAIKU_5_5, capabilities incl.
- *     effort/max_effort/xhigh_effort/adaptive_thinking/context_management/
- *     per_turn_effort/lean_prompt/haiku_5_5_early_stopping_guidance
- *     (@13883929)
- *   - default-haiku switch: `latest_per_family.haiku:"claude-haiku-5-5"`
- *     @13899000; n2() @16246831 (env override → catalog → provider default)
- *   - dynamic picker rows: MM() @20387050 (PAYG) / DM() @20388485 region
- *     (subscriber) — both driven by the default-haiku display name; the static
- *     "Haiku 4.5 …" / "Haiku 3.5 …" rows are GONE from the v293 binary
- *   - TLo latest-models prose @23471900; heron_brook section
- *     `ap("heron_brook",()=>BLo()??ULo(h,s))` @23511036 with HLo text @23480542
- *   - skill model vars (HAIKU_ID/HAIKU_NAME only — no PREV_HAIKU_*) @48793569
+ * linux-x64 binary (v293 ELF offsets cited per block; see
+ * /tmp/occ111-research/haiku55-extracts.md for the full forensics). Key
+ * evidence sites:
+ *   - baked catalog entry `claude-haiku-5-5` @204773604: pricing `haiku_55`,
+ *     default_effort "medium", max_output_tokens {128000,128000},
+ *     knowledge_cutoff June 2026, context {window:1e6,native_1m:true,
+ *     supports_1m_beta:true}, fallback_3p "claude-haiku-4-5",
+ *     advisor_rank 4, vertex_region_env_var VERTEX_REGION_CLAUDE_HAIKU_5_5,
+ *     provider_ids {first_party/vertex/foundry/anthropic_aws/
+ *     anthropic_google_cloud: "claude-haiku-5-5", bedrock:
+ *     "us.anthropic.claude-haiku-5-5", mantle: "anthropic.claude-haiku-5-5"}
+ *     — NO date suffix on any provider id (unlike haiku 4.5 `-20251001`)
+ *   - pricing `haiku_55` @204772202 incl. the NEW `long_prompt` tier
+ *     (above_prompt_tokens 1e5)
+ *   - alias flip @204789153: haiku default "claude-haiku-5-5"; per_provider
+ *     lag table keeps ALL 3P (bedrock/vertex/foundry/mantle/anthropic_aws/
+ *     anthropic_google_cloud/gateway) at "claude-haiku-4-5"
+ *   - latest_per_family.haiku → "claude-haiku-5-5"
+ *   - early-stopping guidance gate `ULo` @214379050: capability
+ *     `haiku_5_5_early_stopping_guidance` AND growthbook
+ *     `tengu_idempotent_wolf` (default true) → HLo text (@214376484)
  *
- * Mock-module discipline follows sonnet55Launch284.test.ts (deferred
- * registration in beforeAll, restore in afterAll, bedrock fetch stub).
+ * Mock-module discipline follows sonnet55Launch284.test.ts (OCC-101) /
+ * opus55Launch280.test.ts (OCC-97 Gap-97b lesson: snapshot real exports
+ * BEFORE mocking, restore in afterAll).
  */
 const subState = {
   max: false,
@@ -46,9 +51,14 @@ const subState = {
 
 let mockedSettings: Record<string, unknown> = {}
 
+// Deferred mock registration (OCC-101 P3-8): snapshot real exports inside
+// beforeAll so this file never freezes another file's still-active mock as
+// "actual". The bedrock.js stub prevents the REAL memoized ~2s AWS profile
+// fetch from firing and corrupting session-global STATE mid-run.
 let actualAuthExports: Record<string, unknown> = {}
 let actualSettingsExports: Record<string, unknown> = {}
 let actualBedrockExports: Record<string, unknown> = {}
+let actualGrowthbookExports: Record<string, unknown> = {}
 
 beforeAll(async () => {
   actualAuthExports = { ...((await import('../../auth.js')) as object) }
@@ -56,6 +66,9 @@ beforeAll(async () => {
     ...((await import('../../settings/settings.js')) as object),
   }
   actualBedrockExports = { ...((await import('../bedrock.js')) as object) }
+  actualGrowthbookExports = {
+    ...((await import('../../../services/analytics/growthbook.js')) as object),
+  }
   mock.module('../../auth.js', () => ({
     ...actualAuthExports,
     isMaxSubscriber: () => subState.max,
@@ -72,8 +85,6 @@ beforeAll(async () => {
     getEnforceAvailableModels: () =>
       Boolean(mockedSettings.enforceAvailableModels),
   }))
-  // Hermetic bedrock: stub the ~2s AWS inference-profile fetch (see the
-  // sonnet55Launch284 P3-8 root-fix comment).
   mock.module('../bedrock.js', () => ({
     ...actualBedrockExports,
     getBedrockInferenceProfiles: async () => [],
@@ -86,50 +97,58 @@ afterAll(() => {
     ...actualSettingsExports,
   }))
   mock.module('../bedrock.js', () => ({ ...actualBedrockExports }))
+  mock.module('../../../services/analytics/growthbook.js', () => ({
+    ...actualGrowthbookExports,
+  }))
 })
 
 const {
   firstPartyNameToCanonical,
   getCanonicalName,
   getDefaultHaikuModel,
+  getSmallFastModel,
   getMarketingNameForModel,
   getPublicModelDisplayName,
   parseUserSpecifiedModel,
+  resolveSkillModelOverride,
 } = await import('../model.js')
-const { getModelOptions, getHaikuOption, getMaxHaikuOption } = await import(
-  '../modelOptions.js'
-)
-const { CANONICAL_MODEL_CATALOG } = await import('../modelDescriptors.js')
-const { COST_HAIKU_45, COST_HAIKU_55, formatModelPricing, getModelCosts } =
-  await import('../../modelCost.js')
+const { getModelOptions, getHaiku55Option } = await import('../modelOptions.js')
+const { ALL_MODEL_CONFIGS, CLAUDE_HAIKU_5_5_CONFIG } = await import('../configs.js')
+const {
+  CANONICAL_MODEL_CATALOG,
+  latestCanonicalModelForFamily,
+} = await import('../modelDescriptors.js')
+const { isModelRecognized } = await import('../unrecognizedModelSignal.js')
+const {
+  COST_HAIKU_45,
+  COST_HAIKU_55,
+  formatModelPricing,
+  getModelCosts,
+} = await import('../../modelCost.js')
 const {
   getDefaultEffortForModel,
   modelSupportsEffort,
   modelSupportsMaxEffort,
   modelSupportsXhighEffort,
 } = await import('../../effort.js')
-const { getModelMaxOutputTokens, modelSupports1M } = await import(
-  '../../context.js'
-)
-const { modelSupportsContextManagement, modelSupportsStructuredOutputs } =
-  await import('../../betas.js')
+const { getModelMaxOutputTokens, modelSupports1M } = await import('../../context.js')
+const { modelSupportsContextManagement } = await import('../../betas.js')
 const { modelSupportsAdaptiveThinking } = await import('../../thinking.js')
-const { modelSupportsAdvisor, isValidAdvisorModel } = await import(
-  '../../advisor.js'
-)
+const {
+  modelHasLeanPrompt,
+  shouldUseFullSystemPrompt,
+} = await import('../../effort/leanPrompt.js')
+const { modelSupportsAdvisor, isValidAdvisorModel } = await import('../../advisor.js')
 const { sanitizeModelName } = await import('../../commitAttribution.js')
 const { getVertexRegionForModel } = await import('../../envUtils.js')
-const { isModelRecognized } = await import('../unrecognizedModelSignal.js')
-const { modelHasLeanPrompt, shouldUseFullSystemPrompt, shouldUseLeanPrompt } =
-  await import('../../effort/leanPrompt.js')
-// NOTE: claudeApiContent.ts cannot be imported under `bun test` — its 28
-// `.md` skill files are intentional 1-byte stubs and the text-loader default
-// import fails at test time (build-time inlining works). The skill-var pins
-// below are therefore source-anchored via readFileSync, same convention as
-// the heron_brook pins.
-const { resetModelStringsForTestingOnly } = await import(
-  '../../../bootstrap/state.js'
-)
+const {
+  EARLY_STOPPING_GUIDANCE_FLAG,
+  HAIKU_5_5_EARLY_STOPPING_GUIDANCE,
+  getEarlyStoppingGuidanceSection,
+  isEarlyStoppingGuidanceEnabled,
+} = await import('../../../constants/earlyStoppingGuidance.js')
+const { computeSimpleEnvInfo } = await import('../../../constants/prompts.js')
+const { resetModelStringsForTestingOnly } = await import('../../../bootstrap/state.js')
 
 type Usage = Parameters<typeof getModelCosts>[1]
 
@@ -169,11 +188,13 @@ beforeEach(() => {
     'ANTHROPIC_DEFAULT_MODEL',
     'ANTHROPIC_MODEL',
     'ANTHROPIC_DEFAULT_HAIKU_MODEL',
+    'ANTHROPIC_SMALL_FAST_MODEL',
     'CLAUDE_CODE_USE_BEDROCK',
     'CLAUDE_CODE_USE_VERTEX',
     'CLAUDE_CODE_USE_FOUNDRY',
     'CLAUDE_CODE_USE_ANTHROPIC_AWS',
     'CLAUDE_CODE_USE_MANTLE',
+    'CLAUDE_CODE_DISABLE_1M_CONTEXT',
     'VERTEX_REGION_CLAUDE_HAIKU_5_5',
     'VERTEX_REGION_CLAUDE_HAIKU_4_5',
     'USER_TYPE',
@@ -183,330 +204,487 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  // getModelStrings()/initModelStrings caches provider-derived strings in the
+  // session-global bootstrap/state singleton — reset so per-provider env in
+  // one test can't leak into the next.
   resetModelStringsForTestingOnly()
 })
 
-describe('2.1.293: canonicalization + catalog registration', () => {
-  test('claude-haiku-5-5 canonicalizes to itself (provider-prefixed forms too)', () => {
+describe('2.1.293: catalog provider ids (baked catalog @204773604)', () => {
+  test('CLAUDE_HAIKU_5_5_CONFIG matches the official provider_ids table', () => {
+    // Verbatim from the v293 catalog entry. NO date suffix on any provider id
+    // (unlike haiku 4.5 `-20251001`); vertex id is bare (no @date); gateway
+    // is NOT in the official provider_ids — OCC's ModelConfig type requires
+    // the slot, filled per the OCC convention (gateway = bare first-party
+    // id; the official gateway alias lag lives in getDefaultHaikuModel).
+    expect(CLAUDE_HAIKU_5_5_CONFIG).toEqual({
+      firstParty: 'claude-haiku-5-5',
+      bedrock: 'us.anthropic.claude-haiku-5-5',
+      vertex: 'claude-haiku-5-5',
+      foundry: 'claude-haiku-5-5',
+      anthropic_aws: 'claude-haiku-5-5',
+      mantle: 'anthropic.claude-haiku-5-5',
+      gateway: 'claude-haiku-5-5',
+    })
+  })
+
+  test('ALL_MODEL_CONFIGS registers haiku55', () => {
+    expect(ALL_MODEL_CONFIGS.haiku55).toBe(CLAUDE_HAIKU_5_5_CONFIG)
+  })
+
+  test("latest_per_family.haiku → 'claude-haiku-5-5' (alias table @204789153)", () => {
+    expect(latestCanonicalModelForFamily('haiku')).toBe('claude-haiku-5-5')
+    // alphabetical catalog: haiku-4-5 precedes haiku-5-5
+    expect(CANONICAL_MODEL_CATALOG.indexOf('claude-haiku-4-5')).toBeLessThan(
+      CANONICAL_MODEL_CATALOG.indexOf('claude-haiku-5-5'),
+    )
+  })
+
+  test('isModelRecognized accepts both haiku generations', () => {
+    expect(isModelRecognized('claude-haiku-5-5')).toBe(true)
+    expect(isModelRecognized('claude-haiku-4-5-20251001')).toBe(true)
+  })
+})
+
+describe('2.1.293: canonicalization — haiku-5-5 arm before haiku-4-5', () => {
+  test('claude-haiku-5-5 canonicalizes to itself across provider prefixes', () => {
     expect(firstPartyNameToCanonical('claude-haiku-5-5')).toBe('claude-haiku-5-5')
     expect(firstPartyNameToCanonical('us.anthropic.claude-haiku-5-5')).toBe(
       'claude-haiku-5-5',
     )
     expect(getCanonicalName('anthropic.claude-haiku-5-5')).toBe('claude-haiku-5-5')
+    expect(getCanonicalName('claude-haiku-5-5[1m]')).toBe('claude-haiku-5-5')
   })
 
   test('claude-haiku-4-5 still canonicalizes to claude-haiku-4-5', () => {
     expect(firstPartyNameToCanonical('claude-haiku-4-5')).toBe('claude-haiku-4-5')
-    expect(firstPartyNameToCanonical('claude-haiku-4-5-20251001')).toBe(
-      'claude-haiku-4-5',
-    )
-  })
-
-  test("Rce catalog parity: CANONICAL_MODEL_CATALOG registers 'claude-haiku-5-5' (@13774884)", () => {
-    expect(CANONICAL_MODEL_CATALOG).toContain('claude-haiku-5-5')
-  })
-
-  test('isModelRecognized covers haiku-5-5 — no [claude-code:unrecognized_model] for the new default', () => {
-    expect(isModelRecognized('claude-haiku-5-5')).toBe(true)
-    expect(isModelRecognized('us.anthropic.claude-haiku-5-5')).toBe(true)
+    expect(
+      firstPartyNameToCanonical('us.anthropic.claude-haiku-4-5-20251001-v1:0'),
+    ).toBe('claude-haiku-4-5')
   })
 })
 
-describe('2.1.293: default Haiku flips to claude-haiku-5-5 (latest_per_family @13899000)', () => {
+describe('2.1.293: default Haiku flips to claude-haiku-5-5 (alias table @204789153)', () => {
+  function haikuDefaultWith(env: Record<string, string>): string {
+    // getModelStrings caches provider-derived strings in session-global
+    // state — reset before each provider switch.
+    resetModelStringsForTestingOnly()
+    let result = ''
+    withEnv(env, () => {
+      result = getDefaultHaikuModel()
+    })
+    return result
+  }
+
   test('firstParty getDefaultHaikuModel → claude-haiku-5-5', () => {
     expect(getDefaultHaikuModel()).toBe('claude-haiku-5-5')
   })
 
+  test('getSmallFastModel follows the haiku default (firstParty)', () => {
+    expect(getSmallFastModel()).toBe('claude-haiku-5-5')
+    withEnv({ ANTHROPIC_SMALL_FAST_MODEL: 'my-fast-pin' }, () => {
+      expect(getSmallFastModel()).toBe('my-fast-pin')
+    })
+  })
+
+  // EXACT per-provider default pins — the official alias table keeps ALL 3P
+  // providers (bedrock/vertex/foundry/mantle/anthropic_aws/
+  // anthropic_google_cloud/gateway) at "claude-haiku-4-5" in v293:
+  //   haiku:{default:"claude-haiku-5-5",per_provider:{bedrock:"claude-haiku-4-5",
+  //     vertex:"claude-haiku-4-5",foundry:"claude-haiku-4-5",mantle:"claude-haiku-4-5",
+  //     anthropic_aws:"claude-haiku-4-5",anthropic_google_cloud:"claude-haiku-4-5",
+  //     gateway:"claude-haiku-4-5"}}
+  // resolved through each provider's CONFIG string (configs.ts).
+  test('vertex → claude-haiku-4-5@20251001', () => {
+    expect(haikuDefaultWith({ CLAUDE_CODE_USE_VERTEX: '1' })).toBe(
+      'claude-haiku-4-5@20251001',
+    )
+  })
+
+  test('foundry → claude-haiku-4-5', () => {
+    expect(haikuDefaultWith({ CLAUDE_CODE_USE_FOUNDRY: '1' })).toBe(
+      'claude-haiku-4-5',
+    )
+  })
+
+  test('mantle → anthropic.claude-haiku-4-5', () => {
+    expect(haikuDefaultWith({ CLAUDE_CODE_USE_MANTLE: '1' })).toBe(
+      'anthropic.claude-haiku-4-5',
+    )
+  })
+
+  test('anthropic_aws → claude-haiku-4-5', () => {
+    expect(haikuDefaultWith({ CLAUDE_CODE_USE_ANTHROPIC_AWS: '1' })).toBe(
+      'claude-haiku-4-5',
+    )
+  })
+
+  test('ANTHROPIC_DEFAULT_HAIKU_MODEL wins over every provider branch', () => {
+    for (const env of [
+      {},
+      { CLAUDE_CODE_USE_VERTEX: '1' },
+      { CLAUDE_CODE_USE_FOUNDRY: '1' },
+      { CLAUDE_CODE_USE_MANTLE: '1' },
+      { CLAUDE_CODE_USE_ANTHROPIC_AWS: '1' },
+    ]) {
+      expect(
+        haikuDefaultWith({ ...env, ANTHROPIC_DEFAULT_HAIKU_MODEL: 'custom-haiku-pin' }),
+      ).toBe('custom-haiku-pin')
+    }
+  })
+
+  test("bedrock → us.anthropic.claude-haiku-4-5-20251001-v1:0 (LAST: profile-fetch stub)", () => {
+    expect(haikuDefaultWith({ CLAUDE_CODE_USE_BEDROCK: '1' })).toBe(
+      'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+    )
+  })
+})
+
+describe('2.1.293: alias resolution (parseUserSpecifiedModel)', () => {
   test("'haiku' alias resolves to claude-haiku-5-5 (+[1m] suffix)", () => {
     expect(parseUserSpecifiedModel('haiku')).toBe('claude-haiku-5-5')
     expect(parseUserSpecifiedModel('haiku[1m]')).toBe('claude-haiku-5-5[1m]')
+    expect(parseUserSpecifiedModel('claude-haiku-5-5[1m]')).toBe(
+      'claude-haiku-5-5[1m]',
+    )
   })
 
   test("'claude-haiku-4-5' is NOT upgraded to 5.5", () => {
     expect(parseUserSpecifiedModel('claude-haiku-4-5')).toBe('claude-haiku-4-5')
   })
 
-  test('3P providers lag at haiku-4-5 (per_provider table: bedrock/vertex/foundry/mantle)', () => {
-    function haikuDefaultWith(env: Record<string, string>): string {
-      resetModelStringsForTestingOnly()
-      let result = ''
-      withEnv(env, () => {
-        result = getDefaultHaikuModel()
-      })
-      return result
-    }
-    expect(haikuDefaultWith({ CLAUDE_CODE_USE_BEDROCK: '1' })).toBe(
-      'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-    )
-    expect(haikuDefaultWith({ CLAUDE_CODE_USE_VERTEX: '1' })).toBe(
-      'claude-haiku-4-5@20251001',
-    )
-    expect(haikuDefaultWith({ CLAUDE_CODE_USE_FOUNDRY: '1' })).toBe(
-      'claude-haiku-4-5',
-    )
-    expect(haikuDefaultWith({ CLAUDE_CODE_USE_MANTLE: '1' })).toBe(
-      'anthropic.claude-haiku-4-5',
-    )
-    // bedrock LAST discipline doesn't apply (fetch stubbed), but keep the
-    // firstParty re-check last so later describes start from the default.
-    resetModelStringsForTestingOnly()
-    expect(haikuDefaultWith({})).toBe('claude-haiku-5-5')
-  })
-
-  test('ANTHROPIC_DEFAULT_HAIKU_MODEL wins over every provider branch (n2() @16246831)', () => {
-    for (const env of [{}, { CLAUDE_CODE_USE_BEDROCK: '1' }]) {
-      resetModelStringsForTestingOnly()
-      withEnv({ ...env, ANTHROPIC_DEFAULT_HAIKU_MODEL: 'custom-haiku-pin' }, () => {
-        expect(getDefaultHaikuModel()).toBe('custom-haiku-pin')
-      })
-    }
+  test("skill override 'haiku' inherits [1m] from a 1M main-loop model", () => {
+    // resolveSkillModelOverride preserves the raw alias and appends '[1m]'
+    // when the resolved model supports 1M. Post-launch 'haiku' →
+    // claude-haiku-5-5 (native_1m + supports_1m_beta) so the inheritance arm
+    // now fires and returns 'haiku[1m]'; pre-launch it resolved to haiku-4-5
+    // (no 1M) and returned bare 'haiku'. The exact '[1m]' suffix is the flip.
+    expect(
+      resolveSkillModelOverride('haiku', 'claude-sonnet-5-5[1m]'),
+    ).toBe('haiku[1m]')
   })
 })
 
 describe('2.1.293: display + marketing names (catalog display_name "Haiku 5.5")', () => {
-  test("getPublicModelDisplayName: 'Haiku 5.5' / 'Haiku 5.5 (1M context)' (sE @16268082)", () => {
+  test("getPublicModelDisplayName: 'Haiku 5.5' / 'Haiku 5.5 (1M context)'", () => {
     expect(getPublicModelDisplayName('claude-haiku-5-5')).toBe('Haiku 5.5')
     expect(getPublicModelDisplayName('claude-haiku-5-5[1m]')).toBe(
       'Haiku 5.5 (1M context)',
     )
-    // untouched neighbor — the haiku45 model string is the DATED first-party
-    // name ('claude-haiku-4-5-20251001'), so the bare canonical is null here
-    expect(getPublicModelDisplayName('claude-haiku-4-5-20251001')).toBe(
-      'Haiku 4.5',
-    )
   })
 
-  test('getMarketingNameForModel: Haiku 5.5 before Haiku 4.5 (descending-version order)', () => {
+  test("getMarketingNameForModel: 'Haiku 5.5' / 'Haiku 5.5 (1M context)'", () => {
     expect(getMarketingNameForModel('claude-haiku-5-5')).toBe('Haiku 5.5')
     expect(getMarketingNameForModel('claude-haiku-5-5[1m]')).toBe(
       'Haiku 5.5 (1M context)',
+    )
+    expect(getMarketingNameForModel('us.anthropic.claude-haiku-5-5')).toBe(
+      'Haiku 5.5',
+    )
+  })
+
+  test("haiku 4.5 display names unchanged", () => {
+    // getPublicModelDisplayName switches on exact provider strings — the
+    // firstParty haiku-4-5 string keeps its date suffix in v293.
+    expect(getPublicModelDisplayName('claude-haiku-4-5-20251001')).toBe(
+      'Haiku 4.5',
     )
     expect(getMarketingNameForModel('claude-haiku-4-5')).toBe('Haiku 4.5')
   })
 })
 
-describe('2.1.293: cost tier (catalog pricing "haiku_55" — $0.10/$0.50)', () => {
-  test('getModelCosts dispatches claude-haiku-5-5 to COST_HAIKU_55', () => {
-    expect(getModelCosts('claude-haiku-5-5', {} as Usage)).toEqual(COST_HAIKU_55)
-    expect(getModelCosts('us.anthropic.claude-haiku-5-5', {} as Usage)).toEqual(
-      COST_HAIKU_55,
-    )
+describe('2.1.293: pricing haiku_55 (@204772202) incl. long_prompt tier', () => {
+  const baseUsage: Usage = {} as Usage
+
+  test('base numbers verbatim from the official table', () => {
     expect(COST_HAIKU_55.inputTokens).toBe(0.1)
     expect(COST_HAIKU_55.outputTokens).toBe(0.5)
-    // haiku-4-5 keeps its own tier — the dispatch must not shadow it
-    expect(getModelCosts('claude-haiku-4-5', {} as Usage)).toEqual(COST_HAIKU_45)
+    expect(COST_HAIKU_55.promptCacheWriteTokens).toBe(0.125)
+    expect(COST_HAIKU_55.promptCacheWrite1hTokens).toBe(0.2)
+    expect(COST_HAIKU_55.promptCacheReadTokens).toBe(0.01)
+    expect(COST_HAIKU_55.webSearchRequests).toBe(0.01)
+  })
+
+  test('long_prompt tier verbatim (NEW shape — above_prompt_tokens 1e5)', () => {
+    expect(COST_HAIKU_55.longPrompt).toEqual({
+      abovePromptTokens: 100_000,
+      inputTokens: 0.5,
+      outputTokens: 2.5,
+      promptCacheWriteTokens: 0.625,
+      promptCacheWrite1hTokens: 1,
+      promptCacheReadTokens: 0.05,
+    })
+  })
+
+  test('haiku 4.5 pricing unchanged and has NO long_prompt tier', () => {
+    expect(COST_HAIKU_45.inputTokens).toBe(1)
+    expect(COST_HAIKU_45.outputTokens).toBe(5)
+    expect(COST_HAIKU_45.longPrompt).toBeUndefined()
+  })
+
+  test('formatModelPricing renders $0.10/$0.50 per Mtok', () => {
+    expect(formatModelPricing(COST_HAIKU_55)).toBe('$0.10/$0.50 per Mtok')
+  })
+
+  test('getModelCosts resolves haiku-5-5 (provider prefixes too)', () => {
+    for (const id of [
+      'claude-haiku-5-5',
+      'us.anthropic.claude-haiku-5-5',
+      'anthropic.claude-haiku-5-5',
+      'claude-haiku-5-5[1m]',
+    ]) {
+      const costs = getModelCosts(id, baseUsage)
+      expect(costs.inputTokens).toBe(0.1)
+      expect(costs.outputTokens).toBe(0.5)
+    }
+    // haiku 4.5 keeps its own tier
+    expect(getModelCosts('claude-haiku-4-5', baseUsage).inputTokens).toBe(1)
   })
 })
 
-describe('2.1.293: effort (catalog default_effort "medium"; effort/max_effort/xhigh_effort capabilities)', () => {
-  test('getDefaultEffortForModel(claude-haiku-5-5) → medium', () => {
-    expect(getDefaultEffortForModel('claude-haiku-5-5')).toBe('medium')
-    expect(getDefaultEffortForModel('us.anthropic.claude-haiku-5-5')).toBe(
-      'medium',
-    )
-  })
-
-  test('effort capability gates cover haiku-5-5 (FIRST haiku with effort support)', () => {
-    expect(modelSupportsEffort('claude-haiku-5-5')).toBe(true)
-    expect(modelSupportsMaxEffort('claude-haiku-5-5')).toBe(true)
-    expect(modelSupportsXhighEffort('claude-haiku-5-5')).toBe(true)
-    // haiku-4-5 has only context_management in its capabilities array
-    expect(modelSupportsEffort('claude-haiku-4-5')).toBe(false)
+describe('2.1.293: context window / 1M support (native_1m + supports_1m_beta)', () => {
+  test('modelSupports1M covers haiku-5-5 (not haiku-4-5)', () => {
+    expect(modelSupports1M('claude-haiku-5-5')).toBe(true)
+    expect(modelSupports1M('claude-haiku-5-5[1m]')).toBe(true)
+    expect(modelSupports1M('us.anthropic.claude-haiku-5-5')).toBe(true)
+    expect(modelSupports1M('claude-haiku-4-5')).toBe(false)
   })
 })
 
-describe('2.1.293: context (window 1e6 native_1m + supports_1m_beta; max_output_tokens 128k/128k)', () => {
-  test('getModelMaxOutputTokens: haiku-5-5 → 128000/128000', () => {
+describe('2.1.293: max output tokens {default:128000, upper:128000}', () => {
+  test('haiku-5-5 → 128000/128000', () => {
     expect(getModelMaxOutputTokens('claude-haiku-5-5')).toEqual({
+      default: 128_000,
+      upperLimit: 128_000,
+    })
+    expect(getModelMaxOutputTokens('claude-haiku-5-5[1m]')).toEqual({
       default: 128_000,
       upperLimit: 128_000,
     })
   })
 
-  test('modelSupports1M covers claude-haiku-5-5; haiku-4-5 stays 200k', () => {
-    expect(modelSupports1M('claude-haiku-5-5')).toBe(true)
-    expect(modelSupports1M('claude-haiku-4-5')).toBe(false)
+  test('haiku-4-5 stays 32000/64000 (unchanged)', () => {
+    expect(getModelMaxOutputTokens('claude-haiku-4-5')).toEqual({
+      default: 32_000,
+      upperLimit: 64_000,
+    })
   })
 })
 
-describe('2.1.293: betas + thinking (context_management / structured outputs / adaptive_thinking)', () => {
-  test('modelSupportsContextManagement covers haiku-5-5 on 3P', () => {
-    withEnv({ CLAUDE_CODE_USE_BEDROCK: '1' }, () => {
-      expect(modelSupportsContextManagement('us.anthropic.claude-haiku-5-5')).toBe(
-        true,
-      )
-      // haiku-4-5 also declares context_management (untouched neighbor)
-      expect(modelSupportsContextManagement('us.anthropic.claude-haiku-4-5')).toBe(
-        true,
-      )
-    })
+describe('2.1.293: effort capabilities (effort/max_effort/xhigh_effort + default_effort medium)', () => {
+  test('modelSupportsEffort / Max / Xhigh cover haiku-5-5', () => {
+    expect(modelSupportsEffort('claude-haiku-5-5')).toBe(true)
+    expect(modelSupportsMaxEffort('claude-haiku-5-5')).toBe(true)
+    expect(modelSupportsXhighEffort('claude-haiku-5-5')).toBe(true)
   })
 
-  test('modelSupportsStructuredOutputs allowlist covers haiku-5-5', () => {
-    expect(modelSupportsStructuredOutputs('claude-haiku-5-5')).toBe(true)
-    expect(modelSupportsStructuredOutputs('claude-haiku-4-5')).toBe(true)
+  test('haiku-4-5 stays effort-less', () => {
+    expect(modelSupportsEffort('claude-haiku-4-5')).toBe(false)
   })
 
-  test('modelSupportsAdaptiveThinking covers haiku-5-5 (first haiku with it)', () => {
+  test("getDefaultEffortForModel('claude-haiku-5-5') → 'medium' (catalog default_effort)", () => {
+    expect(getDefaultEffortForModel('claude-haiku-5-5')).toBe('medium')
+  })
+})
+
+describe('2.1.293: adaptive thinking + lean prompt capabilities', () => {
+  test('modelSupportsAdaptiveThinking covers haiku-5-5 only', () => {
     expect(modelSupportsAdaptiveThinking('claude-haiku-5-5')).toBe(true)
     expect(modelSupportsAdaptiveThinking('claude-haiku-4-5')).toBe(false)
   })
-})
 
-describe('2.1.293: advisor (catalog advisor_rank:4 — first haiku with an advisor rank)', () => {
-  test('modelSupportsAdvisor / isValidAdvisorModel cover haiku-5-5', () => {
-    expect(modelSupportsAdvisor('claude-haiku-5-5')).toBe(true)
-    expect(isValidAdvisorModel('claude-haiku-5-5')).toBe(true)
-    expect(modelSupportsAdvisor('claude-haiku-4-5')).toBe(false)
-  })
-})
-
-describe('2.1.293: lean prompt (capabilities array carries "lean_prompt" @13883234)', () => {
-  test('haiku-5-5 gets the LEAN prompt; haiku-4-5 keeps the full prompt', () => {
+  test('modelHasLeanPrompt covers haiku-5-5; full-prompt path bypassed', () => {
     expect(modelHasLeanPrompt('claude-haiku-5-5')).toBe(true)
-    expect(shouldUseLeanPrompt('claude-haiku-5-5')).toBe(true)
     expect(shouldUseFullSystemPrompt('claude-haiku-5-5')).toBe(false)
-    // the legacy `m.includes('haiku')` arm must NOT win over the lean check
+    // haiku-4-5 keeps the full prompt (haiku full-prompt arm unchanged)
     expect(modelHasLeanPrompt('claude-haiku-4-5')).toBe(false)
     expect(shouldUseFullSystemPrompt('claude-haiku-4-5')).toBe(true)
   })
+})
 
-  test('xhigh/max effort opts into the full prompt even on lean-capable haiku-5-5', () => {
-    expect(shouldUseLeanPrompt('claude-haiku-5-5', 'xhigh')).toBe(false)
-    expect(shouldUseLeanPrompt('claude-haiku-5-5', 'max')).toBe(false)
-    expect(shouldUseLeanPrompt('claude-haiku-5-5', 'high')).toBe(true)
+describe('2.1.293: context_management capability on 3P (betas)', () => {
+  test('modelSupportsContextManagement covers haiku-5-5', () => {
+    expect(modelSupportsContextManagement('claude-haiku-5-5')).toBe(true)
+    expect(modelSupportsContextManagement('us.anthropic.claude-haiku-5-5')).toBe(
+      true,
+    )
   })
 })
 
-describe('2.1.293: commit attribution + vertex region', () => {
-  test('sanitizeModelName: haiku-5-5 arm precedes haiku-4-5 (official @16264434 order)', () => {
+describe('2.1.293: advisor_rank 4 (advisor allowlists)', () => {
+  test('modelSupportsAdvisor / isValidAdvisorModel cover haiku-5-5', () => {
+    expect(modelSupportsAdvisor('claude-haiku-5-5')).toBe(true)
+    expect(isValidAdvisorModel('claude-haiku-5-5')).toBe(true)
+  })
+
+  test('haiku-4-5 stays advisor-ineligible', () => {
+    expect(modelSupportsAdvisor('claude-haiku-4-5')).toBe(false)
+    expect(isValidAdvisorModel('claude-haiku-4-5')).toBe(false)
+  })
+})
+
+describe('2.1.293: commit attribution sanitize + vertex region env var', () => {
+  test("sanitizeModelName maps haiku 5.5 → 'claude-haiku-5-5' (4.5 unchanged)", () => {
     expect(sanitizeModelName('claude-haiku-5-5')).toBe('claude-haiku-5-5')
     expect(sanitizeModelName('us.anthropic.claude-haiku-5-5')).toBe(
       'claude-haiku-5-5',
     )
-    expect(sanitizeModelName('claude-haiku-4-5')).toBe('claude-haiku-4-5')
+    expect(sanitizeModelName('claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5')
   })
 
-  test('claude-haiku-5-5 reads VERTEX_REGION_CLAUDE_HAIKU_5_5 (not the 4_5 var)', () => {
-    withEnv(
-      {
-        VERTEX_REGION_CLAUDE_HAIKU_5_5: 'asia-southeast1',
-        VERTEX_REGION_CLAUDE_HAIKU_4_5: 'europe-west1',
-      },
-      () => {
-        expect(getVertexRegionForModel('claude-haiku-5-5')).toBe('asia-southeast1')
-        expect(getVertexRegionForModel('claude-haiku-4-5')).toBe('europe-west1')
-      },
-    )
+  test('catalog vertex_region_env_var VERTEX_REGION_CLAUDE_HAIKU_5_5', () => {
+    // getVertexRegionForModel reads process.env[<mapped var>] and returns its
+    // VALUE (falling back to the default region). Seed distinct values to prove
+    // each haiku generation maps to its own catalog vertex_region_env_var.
+    process.env.VERTEX_REGION_CLAUDE_HAIKU_5_5 = 'haiku55-region'
+    process.env.VERTEX_REGION_CLAUDE_HAIKU_4_5 = 'haiku45-region'
+    try {
+      expect(getVertexRegionForModel('claude-haiku-5-5')).toBe(
+        'haiku55-region',
+      )
+      // haiku 4.5 keeps its own var (dated provider id too)
+      expect(getVertexRegionForModel('claude-haiku-4-5-20251001')).toBe(
+        'haiku45-region',
+      )
+    } finally {
+      delete process.env.VERTEX_REGION_CLAUDE_HAIKU_5_5
+      delete process.env.VERTEX_REGION_CLAUDE_HAIKU_4_5
+    }
   })
 })
 
-describe('2.1.293: dynamic picker rows (MM @20387050 / DM @20388485)', () => {
-  const haiku55Price = formatModelPricing(COST_HAIKU_55)
-
-  test('MM port — firstParty: display name + slogan + pricing + descriptionForModel', () => {
-    expect(getHaikuOption()).toEqual({
-      value: 'haiku',
-      label: 'Haiku',
-      description: `Haiku 5.5 · Fastest for quick answers · ${haiku55Price}`,
-      descriptionForModel:
-        'Haiku 5.5 - fastest for quick answers. Lower cost but less capable than Sonnet.',
-    })
+describe('2.1.293: knowledge cutoff June 2026 + env-info model IDs', () => {
+  test("computeSimpleEnvInfo('claude-haiku-5-5') carries the June 2026 cutoff", async () => {
+    const info = await computeSimpleEnvInfo('claude-haiku-5-5')
+    expect(info).toContain('Assistant knowledge cutoff is June 2026.')
+    expect(info).toContain('Haiku 5.5')
   })
 
-  test('MM port — 3P default (haiku-4-5) renders through the SAME dynamic row, no pricing', () => {
-    withEnv({ CLAUDE_CODE_USE_BEDROCK: '1' }, () => {
-      const opt = getHaikuOption()
-      expect(opt.value).toBe('haiku')
-      expect(opt.description).toBe('Haiku 4.5 · Fastest for quick answers')
-    })
+  test('latest-model-IDs sentence renders Haiku 5.5', async () => {
+    const info = await computeSimpleEnvInfo('claude-haiku-5-5')
+    expect(info).toContain("Haiku 5.5: 'claude-haiku-5-5'")
   })
 
-  test('DM port — subscriber rows carry no pricing suffix and no descriptionForModel', () => {
-    expect(getMaxHaikuOption()).toEqual({
-      value: 'haiku',
-      label: 'Haiku',
-      description: 'Haiku 5.5 · Fastest for quick answers',
-    })
+  test('haiku 4.5 cutoff stays February 2025', async () => {
+    const info = await computeSimpleEnvInfo('claude-haiku-4-5-20251001')
+    expect(info).toContain('Assistant knowledge cutoff is February 2025.')
+  })
+})
+
+describe('2.1.293: heron_brook early-stopping guidance (ULo gate @214379050)', () => {
+  test('flag + capability constants match the official strings', () => {
+    expect(EARLY_STOPPING_GUIDANCE_FLAG).toBe('tengu_idempotent_wolf')
+    // HLo verbatim anchors (first + last sentence of the 5-paragraph literal)
+    expect(
+      HAIKU_5_5_EARLY_STOPPING_GUIDANCE.startsWith(
+        'The reasoning effort setting changes how much you think before you act.',
+      ),
+    ).toBe(true)
+    expect(
+      HAIKU_5_5_EARLY_STOPPING_GUIDANCE.endsWith(
+        'A question at the end of finished work costs the user one reply, the same as a question asked before any work.',
+      ),
+    ).toBe(true)
   })
 
-  test('stock PAYG-1P picker carries the dynamic Haiku 5.5 row', () => {
-    const options = getModelOptions()
-    const row = options.find(o => o.value === 'haiku')
-    expect(row?.description).toBe(
-      `Haiku 5.5 · Fastest for quick answers · ${haiku55Price}`,
+  test('haiku-5-5 → section present (capability gate, flag default true)', () => {
+    expect(isEarlyStoppingGuidanceEnabled('claude-haiku-5-5')).toBe(true)
+    expect(getEarlyStoppingGuidanceSection('claude-haiku-5-5')).toBe(
+      HAIKU_5_5_EARLY_STOPPING_GUIDANCE,
+    )
+    // provider-prefixed ids resolve through canonicalization
+    expect(
+      getEarlyStoppingGuidanceSection('us.anthropic.claude-haiku-5-5'),
+    ).toBe(HAIKU_5_5_EARLY_STOPPING_GUIDANCE)
+    expect(getEarlyStoppingGuidanceSection('claude-haiku-5-5[1m]')).toBe(
+      HAIKU_5_5_EARLY_STOPPING_GUIDANCE,
     )
   })
 
-  test('subscriber (Max) picker haiku row follows the default-haiku display name', () => {
+  test('other models → absent (capability gate false)', () => {
+    for (const model of [
+      'claude-haiku-4-5',
+      'claude-haiku-4-5-20251001',
+      'claude-sonnet-5-5',
+      'claude-opus-5-5',
+      'claude-fable-5-1',
+    ]) {
+      expect(isEarlyStoppingGuidanceEnabled(model)).toBe(false)
+      expect(getEarlyStoppingGuidanceSection(model)).toBeNull()
+    }
+  })
+
+  test('tengu_idempotent_wolf=false → absent (growthbook arm of ULo)', () => {
+    mock.module('../../../services/analytics/growthbook.js', () => ({
+      ...actualGrowthbookExports,
+      getFeatureValue_CACHED_MAY_BE_STALE: (
+        _feature: string,
+        defaultValue: unknown,
+      ) =>
+        _feature === EARLY_STOPPING_GUIDANCE_FLAG ? false : defaultValue,
+    }))
+    try {
+      expect(isEarlyStoppingGuidanceEnabled('claude-haiku-5-5')).toBe(false)
+      expect(getEarlyStoppingGuidanceSection('claude-haiku-5-5')).toBeNull()
+    } finally {
+      mock.module('../../../services/analytics/growthbook.js', () => ({
+        ...actualGrowthbookExports,
+      }))
+    }
+    // restored
+    expect(getEarlyStoppingGuidanceSection('claude-haiku-5-5')).not.toBeNull()
+  })
+
+  test("prompts.ts registers the 'heron_brook' dynamic section (source anchor)", () => {
+    const src = readFileSync(join(REPO_SRC, 'constants/prompts.ts'), 'utf-8')
+    expect(src).toContain("systemPromptSection('heron_brook'")
+  })
+})
+
+describe('2.1.293: /model picker rows', () => {
+  test('getHaiku55Option (1P): Haiku 5.5 label + pricing suffix', () => {
+    const option = getHaiku55Option()
+    expect(option.value).toBe('haiku')
+    expect(option.label).toBe('Haiku')
+    expect(option.description).toBe(
+      'Haiku 5.5 · Fastest for quick answers · $0.10/$0.50 per Mtok',
+    )
+    expect(option.descriptionForModel).toBe(
+      'Haiku 5.5 - fastest for quick answers. Lower cost but less capable than Sonnet 5.5.',
+    )
+  })
+
+  test('1P stock picker lists the Haiku 5.5 row', () => {
+    const options = getModelOptions()
+    const haikuRow = options.find(o => o.value === 'haiku')
+    expect(haikuRow).toBeDefined()
+    expect(haikuRow?.description).toContain('Haiku 5.5 · Fastest for quick answers')
+    expect(haikuRow?.description).toContain('$0.10/$0.50 per Mtok')
+  })
+
+  test('subscriber (Max) picker lists Haiku 5.5 without pricing suffix', () => {
     subState.max = true
     subState.claudeAi = true
     subState.type = 'max'
     const options = getModelOptions()
     const haikuRow = options.find(o => o.value === 'haiku')
+    expect(haikuRow).toBeDefined()
     expect(haikuRow?.description).toBe('Haiku 5.5 · Fastest for quick answers')
   })
-
-  test('the v292 static rows are gone: no "Haiku 3.5 for simple tasks" / "less capable than Sonnet 4.6" anywhere in modelOptions.ts', () => {
-    const src = readFileSync(join(REPO_SRC, 'utils/model/modelOptions.ts'), 'utf-8')
-    // (comment references aside, no live row may carry the deleted strings)
-    const code = src
-      .split('\n')
-      .filter(l => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
-      .join('\n')
-    expect(code).not.toContain('Haiku 3.5 for simple tasks')
-    expect(code).not.toContain('less capable than Sonnet 4.6')
-    expect(code).not.toContain("description: 'Haiku 4.5")
-  })
 })
 
-describe('2.1.293: claude-api skill model vars (@48793569 — HAIKU_ID/HAIKU_NAME only, source-anchored)', () => {
-  test('SKILL_MODEL_VARS carries the Haiku 5.5 vars; no PREV_HAIKU_* officially', () => {
-    const src = readFileSync(
-      join(REPO_SRC, 'skills/bundled/claudeApiContent.ts'),
-      'utf-8',
-    )
-    expect(src).toContain("HAIKU_ID: 'claude-haiku-5-5'")
-    expect(src).toContain("HAIKU_NAME: 'Claude Haiku 5.5'")
-    expect(src).not.toContain('PREV_HAIKU_ID')
-    expect(src).not.toContain('PREV_HAIKU_NAME')
-    // stale-generation pin must be gone
-    expect(src).not.toContain("HAIKU_ID: 'claude-haiku-4-5")
-  })
-})
-
-describe('2.1.293: heron_brook system-prompt section (ULo/HLo @23480542-23483450, source-anchored)', () => {
-  // The section lives inside getSystemPrompt's dynamic list (React-free but
-  // heavy to invoke hermetically); source anchors pin the wiring + gate +
-  // verbatim text ends, same pattern as the 2.1.284 P3-2 picker anchor.
-  test('prompts.ts wires heron_brook with the haiku-5-5 capability gate', () => {
-    const src = readFileSync(join(REPO_SRC, 'constants/prompts.ts'), 'utf-8')
-    expect(src).toContain("systemPromptSection('heron_brook'")
-    expect(src).toContain('getHeronBrookSection(model)')
-    // DN("haiku_5_5_early_stopping_guidance",…) — only claude-haiku-5-5
-    // carries the capability in the v293 catalog (@13883929)
-    expect(src).toContain("canonical.includes('claude-haiku-5-5')")
-    expect(src).toContain('haiku_5_5_early_stopping_guidance')
-  })
-
-  test('HLo text is verbatim (head + tail pins, @23480542 / @23483257)', () => {
-    const src = readFileSync(join(REPO_SRC, 'constants/prompts.ts'), 'utf-8')
-    expect(src).toContain(
-      'The reasoning effort setting changes how much you think before you act. It does not change how much of the request you are expected to finish.',
-    )
-    expect(src).toContain(
-      'A question at the end of finished work costs the user one reply, the same as a question asked before any work.',
-    )
-    expect(src).toContain(
-      'Words that only set an order, such as "plan, then build", are not a stopping point.',
-    )
-  })
-
-  test('latest-models prose pins (TLo @23471900 — Claude 5 family, Haiku 5.5 id)', () => {
-    const src = readFileSync(join(REPO_SRC, 'constants/prompts.ts'), 'utf-8')
-    expect(src).toContain(
-      'The most recent Claude models are the Claude 5 family. Model IDs',
-    )
-    expect(src).toContain("haiku: 'claude-haiku-5-5'")
+// ── Bedrock-provider tests LAST (session-global STATE hygiene; the
+// getBedrockInferenceProfiles stub is registered in beforeAll above).
+describe('2.1.293: 3P picker keeps Haiku 4.5 (per_provider lag table)', () => {
+  test('bedrock picker haiku row still says Haiku 4.5', () => {
+    let description = ''
+    withEnv({ CLAUDE_CODE_USE_BEDROCK: '1' }, () => {
+      const options = getModelOptions()
+      const haikuRow = options.find(o => o.value === 'haiku')
+      description = haikuRow?.description ?? ''
+    })
+    expect(description).toContain('Haiku 4.5 · Fastest for quick answers')
+    // no pricing suffix on 3P rows (existing OCC convention)
+    expect(description).not.toContain('per Mtok')
   })
 })

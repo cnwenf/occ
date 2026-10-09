@@ -212,8 +212,11 @@ const VERTEX_REGION_OVERRIDES: ReadonlyArray<[string, string]> = [
   ['claude-sonnet-5-5', 'VERTEX_REGION_CLAUDE_5_5_SONNET'],
   ['claude-3-5-haiku', 'VERTEX_REGION_CLAUDE_3_5_HAIKU'],
   ['claude-fable-5-1', 'VERTEX_REGION_CLAUDE_FABLE_5_1'],
-  ['claude-haiku-4-5', 'VERTEX_REGION_CLAUDE_HAIKU_4_5'],
+  // 2.1.293 (OCC-111): v293 catalog `vertex_region_env_var` for claude-haiku-5-5
+  // (@204773604, byte-verified). Before claude-haiku-4-5 by convention (neither
+  // is a prefix of the other under startsWith matching, so no hazard).
   ['claude-haiku-5-5', 'VERTEX_REGION_CLAUDE_HAIKU_5_5'],
+  ['claude-haiku-4-5', 'VERTEX_REGION_CLAUDE_HAIKU_4_5'],
   ['claude-opus-4-1', 'VERTEX_REGION_CLAUDE_4_1_OPUS'],
   ['claude-opus-4-5', 'VERTEX_REGION_CLAUDE_4_5_OPUS'],
   ['claude-opus-4-6', 'VERTEX_REGION_CLAUDE_4_6_OPUS'],

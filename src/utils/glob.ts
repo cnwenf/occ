@@ -116,7 +116,14 @@ export async function glob(
     args.push('--glob', exclusion)
   }
 
-  const allPaths = await ripGrep(args, searchDir, abortSignal)
+  // CC 2.1.292 C1: thread rejectOnInputError so an unreadable search target
+  // surfaces as RipgrepTargetUnreadableError (binary `zB`) instead of a silent
+  // empty file list — Glob shares the ripgrep collector/dispatch with Grep. The
+  // official glob also passes `rawLines`/`inheritFd`/`beforeSpawn` for the fd-3
+  // pin lane; that lane is STAGED, so only rejectOnInputError is threaded here.
+  const allPaths = await ripGrep(args, searchDir, abortSignal, {
+    rejectOnInputError: true,
+  })
 
   // ripgrep returns relative paths, convert to absolute
   const absolutePaths = allPaths.map(p =>

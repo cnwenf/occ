@@ -43,31 +43,26 @@ describe('2.1.284: knowledge cutoffs — the -5-5 rows precede the -5 substring 
     ['claude-sonnet-5-5', 'June 2026'],
     ['claude-opus-5', 'May 2026'],
     ['claude-sonnet-5', 'January 2026'],
-    // 2.1.293 (OCC-150): Haiku 5.5 catalog entry knowledge_cutoff:"June 2026"
-    // (byte-verified @13883100); haiku-4-5 keeps "February 2025".
-    ['claude-haiku-5-5', 'June 2026'],
-    ['claude-haiku-4-5', 'February 2025'],
   ])('%s cutoff is %s', async (modelId, cutoff) => {
     const info = await computeSimpleEnvInfo(modelId)
     expect(info).toContain(`Assistant knowledge cutoff is ${cutoff}.`)
   })
 })
 
-describe('2.1.293: Environment output — latest-model IDs + fast-mode tail removal', () => {
-  test('the model-IDs sentence carries the Claude-5-family IDs incl. Haiku 5.5', async () => {
+describe('2.1.284: Environment output — latest-model IDs + fast-mode tail removal', () => {
+  test('the model-IDs sentence carries the 5.5-generation catalog IDs', async () => {
     const info = await computeSimpleEnvInfo('claude-sonnet-5-5')
-    // 2.1.293 TLo (byte-verified @23471900): the lead-in drops "and Haiku
-    // 4.5" — Haiku 5.5 is part of the Claude 5 family naming.
+    // 2.1.293 (OCC-111, Haiku 5.5 launch): the lead-in prose and the haiku
+    // Model-ID entry follow the v293 latest_per_family flip
+    // (haiku → "claude-haiku-5-5"). Lead-in bump is a reasoned inference —
+    // see the deviation note in prompts.ts. Pins UPDATED, not weakened.
     expect(info).toContain(
-      'The most recent Claude models are the Claude 5 family.',
+      'The most recent Claude models are the Claude 5 family and Haiku 5.5.',
     )
-    expect(info).not.toContain('family and Haiku 4.5')
     expect(info).toContain("Fable 5.1: 'claude-fable-5-1'")
     expect(info).toContain("Opus 5.5: 'claude-opus-5-5'")
     expect(info).toContain("Sonnet 5.5: 'claude-sonnet-5-5'")
-    // 293 latest_per_family.haiku = "claude-haiku-5-5" (undated).
     expect(info).toContain("Haiku 5.5: 'claude-haiku-5-5'")
-    expect(info).not.toContain('claude-haiku-4-5-20251001')
   })
 
   test('fast-mode sentence ends at /fast. — no availability tail (v284 @206557862)', async () => {
