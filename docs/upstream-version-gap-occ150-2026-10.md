@@ -214,3 +214,35 @@ OCC 现状：全仓 `claude-haiku-5-5` 0 处。移植触点：`src/utils/model/c
 
 - P0 四项全部处置完毕：④ @dec5581、2.1.294 hook 判定 @278fa58、② @3a4ee2c、①③ NO-OP 有据。分支 agent/occ/01bb1c9b 已推送。
 - P2 簇 / P3 STAGED 不在本轮恢复指令范围 → 顺延下轮（§1 记录不变）。
+
+## §8 并行轮合流 + 验证收口 + 发布 v2.1.376（程序员轮，2026-10-09）
+
+### §8.1 并行 OCC-111 轮碰撞与合流决策
+
+- 事实：本分支工作期间，OCC-111 轮（branch agent/occ/5f8b5d8b）已向 main 发布 **v2.1.375**（`d759576`，tag 已推）。其 `28f2dd3 feat(2.1.293)`（126 files，+13732/−678）自带**完整的 Haiku 5.5 launch 移植** + 较窄的 2.1.292 UNC 修复（Windows mid-path detector）+ bash read-command tracking + ASCII-first sort + withheldMemory + WebFetch #018 offset helpers。merge-base = `7e93d04`。
+- 合流（merge commit `89cf41d`，parents b93fcd5 + d759576）：
+  - **Haiku 5.5 面全部取 main**：15 个冲突文件 + 4 个 auto-merge 重复声明文件（configs.ts / betas.ts / leanPrompt.ts / envUtils.ts，`CLAUDE_HAIKU_5_5_CONFIG has already been declared`）→ `git checkout origin/main --`。本分支早先的 `b449fa4` 移植被**取代**（main 的是已发布、已验收版本）。
+  - **UNC 双移植合并**（filesystem.ts `checkReadPermissionForTool`）：本分支官方 `AHe` @17945150 网络挂载读面（`checkNetworkMountReadSurface`：isDeniedUncPath=isUncPath&&!isWslUncPath、automount -hosts、macOS-gated browse、kernel-resolved、Glob pattern arm；`Xe`-shape safetyCheck ask）保持为 step 1；OCC-111 的 Windows-only mid-path detector（`containsVulnerableUncPath`：DavWWWRoot/@SSL@/混合分隔符，非 Windows 恒 false）作为 step 1b。两腿 ask 串 byte-identical（message/reason/decisionReason 三件套双方逐字节核对）→ bypass 免疫地板对两腿同样成立。两套测试共存：32/32 pass（本分支 uncSafetyCheck292 + main filesystem.unc）。
+  - **本分支独有且保留**：`278fa58`（2.1.294 hook 判定：capHookString/HOOK_STRING_CAP 迁移 hookHelpers.ts + HookResult.timedOut `Pon` 路径）、`3a4ee2c`（2.1.292 修复② re-point cadence）、`03724bf`（本 ledger §7）、`b93fcd5`（e2e pin follow）。hooks.ts auto-merge 干净（diff vs main = 恰好 278fa58 的内容）。
+  - main 的 `src/services/compact/src/` 目录合并删除（其 28f2dd3 重构）照单接受。
+- **处置分歧记录**：OCC-111 的 security-cluster-292.md 将修复②（read-deny re-point）判为 "IMMUNE-N-A（subsystem absent）"；本轮 §7.1 取证认定 2.1.285 筛查机制**活着**（candidateUnderDeniedRead + realpathExistingPrefix），292 的 delta 是复查节奏 → 已按官方 Bc/Wc describe 移植。本移植是**加法**（不与 main 任何改动冲突），分歧不影响合流正确性；以 §7.1 的活体证据为准。其余三条双方结论一致（①③④：①③ NO-OP 双方同判；④ 双方都移植，本轮合并为超集）。
+
+### §8.2 合流后验证（全绿）
+
+- UNC 双套件 32/0；permissions 全 shard 368/0；model shard 944 pass / 3 fail（3 个 = 已知环境 fail：resolveAnthropicDefaultModel allowlist、getAttributionHeader baseline、ignoreEnvOptOut bypass——与 §6 A/B 基线同一集合）；permissions+sandbox+hooks 组合 shard 中 matcherCache×2 + dirSingleSegmentAllow×4 fail，隔离重跑 9/0、5/0 → platform mock.module shard 污染（与更早 policyLimits×12 同类），非合流回归。
+- lint：17 errors / 232 warnings，全部位于 bridgeMain.ts + cli/exit.ts——两文件与 origin/main **byte-identical**（git diff 为空）→ 零新增。
+- build 绿：dist/cli.js 29.95 MB，MACRO.VERSION 注入正确。host e2e version-hooks 两文件 21/0。
+- 合流前完整验证链见 §6/此前记录：sharded 全量 A/B（~7652 tests）fail 集合 identical、live smoke 绿（--version=2.1.374 当时、headless -p PONG、tmux REPL boot + PONG round-trip + "⏵⏵ bypass permissions on"）、Docker e2e 658/73/12 全部环境归因（容器 root guard → --dangerously-skip-permissions 系全灭、tmux-in-container、ANTHROPIC_API_KEY 未转发、只读挂载 module-not-found；本轮自有 e2e 文件 d7-d17 24/0 + hooks-exec 0 fail）。
+
+### §8.3 发布 v2.1.376
+
+- CHANGELOG：头部 "Now tracking Claude Code `2.1.294`" + 新 `## 2.1.376 - 2026-10-09` section（5 bullets）；package.json 2.1.375→2.1.376；`chore(release): 2.1.376` = `fbcf1ea`。
+- 推送：branch ✓；`HEAD:main` fast-forward（d759576..fbcf1ea，推前复核 origin/main 未再移动 + merge-base --is-ancestor 确认 FF）✓；tag `v2.1.376` ✓。
+- publish.yml run 37895113070：build 步绿（VERSION=2.1.376 注入、tarball 6.6MB 打包成功），**npm publish E404 fail**——与 2.1.373/374/375 三次 run 完全同型的**既有基础设施问题**（npm registry 侧 PUT 404；npm latest 停在 2.1.367）。非本轮引入，需 npm owner 凭据处置 → 记录移交。
+- GitHub Release `v2.1.376` 已按 v2.1.375 同型创建（title=v2.1.376，body=Full Changelog compare 链接），现为 Latest。tag≡release 全量 parity：**175/175，双向零缺口**。
+
+### §8.4 移交状态
+
+- P0/P1 + 验证 + 发布全部收口。P2 簇（§4）/ P3 STAGED 顺延下轮（恢复指令范围外）。
+- npm E404（自 2.1.368 起）为跨轮遗留 infra 问题，建议单开 issue 给有 npm 凭据的角色。
+- 下一步：安全审查（合流后 diff 面 = 89cf41d..fbcf1ea 相对 main 的净增量：278fa58 + dec5581(UNC 合并形态) + 3a4ee2c + e2e/ledger/CHANGELOG）→ 验收员。
