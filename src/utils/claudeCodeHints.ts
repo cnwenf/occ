@@ -212,18 +212,43 @@ function isHintTagLine(line: string): boolean {
 
 /**
  * Official `lL` — drop whole-line hint tags from hook stdout/stderr/output
- * before the text can reach the model through the hook side channel. Splits
- * on `\n` only (a trailing `\r` from CRLF output is removed by `trim()`),
- * does NOT collapse the blank lines left behind — collapsing belongs to the
+ * before the text can reach the model through the hook side channel. Does
+ * NOT collapse the blank lines left behind — collapsing belongs to the
  * extraction path, not to this filter. Fast path returns the input string
  * itself when it contains no tag-open sequence.
+ *
+ * OCC hardening (OCC-113 post-review P3#1): the official splits on `\n`
+ * only; OCC additionally treats U+2028/U+2029 as line boundaries because
+ * the extraction path (`findTagMatchesInLine`, official `Act`) recognizes
+ * them — otherwise hook output could smuggle a protocol-legal hint-tag line
+ * past the sanitizer with Unicode separators. A dropped tag line takes
+ * exactly one adjacent separator with it (preceding preferred), which
+ * reproduces the original filter+join('\n') semantics on \n-only text. A
+ * trailing `\r` from CRLF output is still removed by `trim()` before the
+ * whole-line test.
  */
+const LINE_BOUNDARY_SPLIT_RE = /([\n\u2028\u2029])/
+
 export function stripHintTagLines(text: string): string {
   if (!text.includes(HINT_TAG_OPEN)) return text
-  return text
-    .split('\n')
-    .filter(line => !isHintTagLine(line.trim()))
-    .join('\n')
+  // The capture group keeps the boundaries: even indices are content
+  // segments, odd indices are the single-char separators between them.
+  const parts = text.split(LINE_BOUNDARY_SPLIT_RE)
+  let out = ''
+  let pendingSep = ''
+  for (let i = 0; i < parts.length; i += 2) {
+    const content = parts[i]!
+    const sepAfter = i + 1 < parts.length ? parts[i + 1]! : ''
+    if (isHintTagLine(content.trim())) {
+      // Drop the tag line plus one adjacent separator: the pending
+      // (preceding) one when there is one, else the following one.
+      pendingSep = pendingSep !== '' ? sepAfter : ''
+      continue
+    }
+    out += pendingSep + content
+    pendingSep = sepAfter
+  }
+  return out
 }
 
 /**

@@ -177,10 +177,13 @@ const WEB_OUTPUT_TOOL_NAMES = new Set([WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME
  * before the subcommand. The regex below mirrors OCC's established
  * `gitCmdRe` tolerance pattern from gitOperationTracking.ts (`-c`/`-C <arg>`
  * and `--k=v` global options), replacing the former plain
- * `/\bgit\s+commit\b/`.
+ * `/\bgit\s+commit\b/`. OCC-113 post-review P3#2: boolean long global flags
+ * (`git --no-pager commit`, `git --no-optional-locks commit -q`) match too —
+ * the `=\S+` value half is optional. Telemetry-only widening; the official
+ * `Oss` behavior for `--no-pager` is not in the 296 evidence (blocked item).
  */
 const GIT_COMMIT_COMMAND_RE =
-  /\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+commit\b/
+  /\bgit(?:\s+-[cC]\s+\S+|\s+--\S+)*\s+commit\b/
 
 /** Short timeout — a telemetry-adjacent read must never stall tool exec. */
 const GIT_HEAD_STATE_TIMEOUT_MS = 5000

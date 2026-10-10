@@ -74,6 +74,22 @@ describe('2.1.296 #044 — isGitCommitCommandShape (official Oss half of R7t)', 
     expect(isGitCommitCommandShape('gitcommit')).toBe(false)
     expect(isGitCommitCommandShape('git commitx')).toBe(false)
   })
+
+  test('P3#2 (OCC-113 review): boolean long global flags before the subcommand match (`git --no-pager commit`)', () => {
+    expect(isGitCommitCommandShape('git --no-pager commit')).toBe(true)
+    expect(isGitCommitCommandShape('git --no-pager commit -q -m "x"')).toBe(true)
+    expect(isGitCommitCommandShape('git --no-pager -C /x commit')).toBe(true)
+    expect(isGitCommitCommandShape('git -c a=b --no-pager commit')).toBe(true)
+    expect(isGitCommitCommandShape('git --no-optional-locks commit -q')).toBe(
+      true,
+    )
+    // Still closed for non-commit subcommands behind the same flags.
+    expect(isGitCommitCommandShape('git --no-pager log')).toBe(false)
+    expect(isGitCommitCommandShape('git --no-pager push origin main')).toBe(
+      false,
+    )
+    expect(isGitCommitCommandShape('git --no-pager show v1.0')).toBe(false)
+  })
 })
 
 describe('2.1.296 #044 — readGitHeadState (official ZTo analog, session cwd)', () => {

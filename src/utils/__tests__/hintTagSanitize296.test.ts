@@ -238,6 +238,36 @@ describe('stripHintTagLines — hook-output sanitizer (official lL)', () => {
     // 5 lines → the tag line is removed → 4 lines → 3 newlines, no collapse.
     expect(stripHintTagLines(`a\n\n${TAG}\n\nb`)).toBe('a\n\n\nb')
   })
+
+  test('P3#1 (OCC-113 review): U+2028/U+2029 count as line boundaries — protocol-legal tag lines cannot ride the hook channel', () => {
+    // The extraction path recognizes U+2028/U+2029 as boundaries (official
+    // `Act`); the sanitizer must drop the same lines or hook output would be
+    // strictly more permissive than tool output. The LS/PS consts hold
+    // literal separator characters (invisible in source) — same convention
+    // as the extraction test above.
+    const LS = ' '
+    const PS = ' '
+    expect(stripHintTagLines(`keep${LS}${TAG}${LS}keep2`)).toBe(
+      `keep${LS}keep2`,
+    )
+    expect(stripHintTagLines(`keep${PS}${TAG}${PS}keep2`)).toBe(
+      `keep${PS}keep2`,
+    )
+    // A U+2028-delimited tag segment inside one \n line.
+    expect(stripHintTagLines(`a\nb${LS}${TAG}${LS}c\nd`)).toBe(`a\nb${LS}c\nd`)
+    // Leading tag with a Unicode separator: the separator drops with the line
+    // (same semantics as the leading-\n case).
+    expect(stripHintTagLines(`${TAG}${LS}next`)).toBe('next')
+    // Mid-line lookalikes around a Unicode boundary stay verbatim.
+    const lookalike = `log said ${TAG} inline${LS}x`
+    expect(stripHintTagLines(lookalike)).toBe(lookalike)
+    // Over-long cap still applies on Unicode-separated segments.
+    const longTag = `<claude-code-hint v=1 type=plugin value=foo@bar pad="${'x'.repeat(
+      1100,
+    )}"/>`
+    const longText = `a${LS}${longTag}${LS}b`
+    expect(stripHintTagLines(longText)).toBe(longText)
+  })
 })
 
 describe('internal helpers (official Ctr / v1n)', () => {
