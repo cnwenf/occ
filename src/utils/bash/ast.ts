@@ -543,6 +543,15 @@ const ENV_INFLUENCING_VARS = new Set([
  * Shell-managed variables whose value is runtime-determined or expanded by
  * the shell itself (prompts, matches, per-command state). Recovered verbatim
  * from the official 2.1.251 binary (set `Vo`).
+ *
+ * Official name (v296 export alias @231459065): `BASH_IMPLICITLY_REBOUND_VARS`
+ * — bash may rebind these between an assignment and a later expansion
+ * (BASH_ARGV0 IS $0; function calls rebind it), so a tracked literal for one
+ * is untrustworthy and its use must prompt. Aligned to the official v296 set
+ * `KLn` @212066150: adds BASH_ARGV0 after BASH_LINENO (CC 2.1.296 #031, the
+ * only v295→v296 content delta — v295 `eLn` @211429632 lacks it) plus
+ * BASH_MONOSECONDS/BASH_TRAPSIG after BASHPID (present in BOTH v295+v296
+ * official sets; pre-existing OCC gap closed).
  */
 const SPECIAL_SHELL_VARS = new Set([
   '_',
@@ -555,6 +564,8 @@ const SPECIAL_SHELL_VARS = new Set([
   'EPOCHREALTIME',
   'SRANDOM',
   'BASHPID',
+  'BASH_MONOSECONDS',
+  'BASH_TRAPSIG',
   'HISTCMD',
   'ERRNO',
   'REPLY',
@@ -568,6 +579,7 @@ const SPECIAL_SHELL_VARS = new Set([
   'BASH_ARGC',
   'BASH_SUBSHELL',
   'BASH_LINENO',
+  'BASH_ARGV0',
   'BASH_REMATCH',
   'MATCH',
   'match',
@@ -3395,6 +3407,22 @@ function resolveSimpleExpansion(
   // '__LOOP_STATIC__', resolved as cwd-relative → PASSED → bypass.
   const trackedValue = varScope.get(varName)
   if (trackedValue !== undefined) {
+    // CC 2.1.296 #031 — official v296 resolver `Z` @212066655 (v295
+    // @211430429 identical with `eLn`):
+    //   `let n=t.get(s);if(n!==void 0){if(KLn.has(s))
+    //     return r&&le.has(s)&&s!=="BASHPID"?_:b(e);...}`
+    // A tracked assignment of an implicitly-rebound shell var must NOT
+    // substitute the literal — bash can rebind these between assignment and
+    // use (BASH_ARGV0=evil && eval "$BASH_ARGV0" pre-fix resolved to
+    // `eval evil` and auto-approved). In-string SAFE_ENV_VARS members (except
+    // BASHPID) degrade to the placeholder; everything else is too-complex.
+    if (SPECIAL_SHELL_VARS.has(varName)) {
+      return insideString &&
+        SAFE_ENV_VARS.has(varName) &&
+        varName !== 'BASHPID'
+        ? VAR_PLACEHOLDER
+        : tooComplex(node)
+    }
     if (containsAnyPlaceholder(trackedValue)) {
       // Non-literal: bare → reject, inside string → VAR_PLACEHOLDER
       // (walkString's solo-placeholder gate rejects `"$VAR"` alone).
