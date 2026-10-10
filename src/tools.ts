@@ -137,6 +137,7 @@ const WorkflowTool = feature('WORKFLOW_SCRIPTS')
 /* eslint-enable custom-rules/no-process-env-top-level, @typescript-eslint/no-require-imports */
 import type { ToolPermissionContext } from './Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
+import { withholdToolsOutsideLaunchList } from './utils/permissions/launchToolList.js'
 import { hasEmbeddedSearchTools } from './utils/embeddedTools.js'
 import { isEnvTruthy } from './utils/envUtils.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
@@ -262,6 +263,13 @@ export function getAllBaseTools(): Tools {
  * Uses the same matcher as the runtime permission check (step 1a), so MCP
  * server-prefix rules like `mcp__server` strip all tools from that server
  * before the model sees them — not just at call time.
+ *
+ * CC 2.1.295 #037: after the deny-rule pass, tools outside the session's
+ * positive `--tools` launch list are withheld too. The deny rules alone are a
+ * startup snapshot — they can only name tools that already existed when the
+ * context was built, so a built-in that registers after launch slipped through.
+ * The launch list is re-checked on every pool build, which closes that hole.
+ * Mirrors the official `Y5` filter body (v295 @214477161).
  */
 export function filterToolsByDenyRules<
   T extends {
@@ -269,7 +277,10 @@ export function filterToolsByDenyRules<
     mcpInfo?: { serverName: string; toolName: string }
   },
 >(tools: readonly T[], permissionContext: ToolPermissionContext): T[] {
-  return tools.filter(tool => !getDenyRuleForTool(permissionContext, tool))
+  return withholdToolsOutsideLaunchList(
+    tools.filter(tool => !getDenyRuleForTool(permissionContext, tool)),
+    permissionContext,
+  )
 }
 
 export const getTools = (permissionContext: ToolPermissionContext): Tools => {
