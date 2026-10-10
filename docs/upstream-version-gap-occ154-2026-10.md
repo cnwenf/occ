@@ -145,3 +145,29 @@ OCC 侧现状：GitHub tags=releases **177=177 零缺口**（occ153 §10.2）；
 - 官方 changelog 快照：本轮 workdir `cc-CHANGELOG-snapshot.md`（8,789 行，源 URL 见 §0）；run 结束销毁，复现直接 curl 同源。
 - OCC 侧 grep：main @`6ff64c8`，命令与命中数全部记录在 §2，可逐条复现。
 - 本调研未下载/执行任何官方二进制；ELF 数字均引自 occ153 §0/§4 已录基线（其原始取证 run 记录在案）。
+
+## §7 移植轮实施日志（程序员，feature/occ154-296，滚动更新）
+
+### §7.1 已落地切片（每切片 commit+push，抗中断）
+
+- **salvage 采纳（§5.2）**：8× 295-STAGED-P1 全部落地（c4ec98d #017-295、609a19c #035-295、f745b4f #037-295、1bef78b #044-295、0e0fe2e #056/#067-295、753099f #091-295、3a2212a #072-295、01db9a2 mock 清理）。
+- **P0 #031**（8e1fa81）：BASH_ARGV0 AST+legacy 双路径 + live-path 补偿守卫。
+- **P0 #032**（a217491）：Edit/Write/NotebookEdit 非 UTF-8 拒绝（isLossyUtf8Decode/lossyDecode 管线，官方 aen/UTs 文案，errorCode 15）。
+- **#059**（8e38726）：Sonnet 5.5 cache read $0.20→$0.10（tier_2_10_cache_read_0_10 @207704167 + remap @207711856）。
+- **#061**（bf37986）：MCP 描述默认 cap 2048→4096（v296 @214045823 `sxn=4096,sns=16384`；getter `Ax` @217807549；tool-search 16384 不变；env override 两路径均优先）。39/39 目标测试 + mcp 目录全量 414/0。
+
+### §7.2 hook/managed 簇裁定（#007/#008/#019）：**VERIFIED N/A（OCC 无生产者面），无代码改动**
+
+ELF 逐站点取证结论（v295 md5 4f067be6…/v296 md5 3c874947…，python mmap.find，全部字节可复核）：
+
+1. **v296 hook 区域唯一 delta = 新 "hook did not run" 子系统**：全部 updatedMCPToolOutput 消费站点（redaction builder、qV/YY 经典链、managed runner p9n/o7n、PostToolUse 生成器、输出解析器）与全部 12 个 managedHooksOnly 站点 v295→v296 **逐字节相同**（仅压缩名变化）。
+2. 新子系统三个生产者，OCC 均无对应面：
+   - `SOe(e,n,r)` @216154360 = `pluginHookRunner.refusal(pluginId,…)` —— OCC plugins 已裁（grep `pluginHookRunner|\.refusal` 0 命中）。
+   - `notTested` ← `QTt` 异常 @214073652：**仅 cloud session 抛出**（`Ce()` 门内 "This hook's matcher cannot be tested in a cloud session"）—— OCC 无 cloud session；v295 `notTested`:0 → v296:6，收集函数 v295 `dan` @217842203 无 QTt catch，v296 `Fdn` @218604265 新增 `ke` 包装 + `_e` map + `Fe` 重排（仅 `_e.size>0` 时生效）。
+   - `jY()` kill switch @216153456 读远程 gate `HXn`（payload 源）—— OCC 无远程 gate 基建（GrowthBook 空实现）。
+   - `bOe` 结果构造器 @216154448 仅被上述两分支消费；v296 全二进制 `suppressOriginalPrompt` 代码站点 33→34，唯一新增即 bOe 自身，无新消费者。
+3. **OCC 已承载可观测契约**（更早轮次已落）：2.1.288 #57 fail-closed 守卫（匹配错误传播，guarded 事件 fail-closed，hooks.ts:2985 区）、`buildScriptGuardDidNotRunResult`（官方 N5e/C0e，script 型休眠）、`onFailureBlock.ts`（官方 K_t/V_t，含 `suppressOriginalPrompt` + PermissionRequest deny）、`processUserInput.ts:196` blockingError→`shouldQuery:false`（未检查 prompt 不放行）。
+4. **#019 mod `prompt.submit` 半区**：OCC 无 mods 面（grep 0 命中）→ N/A（与 §3 MODS 3 项同类）。
+5. projectRoot "no longer a working copy" 分支 v295 已存在（非 v296 delta）；OCC 侧属 OCC-46 worktree-pin STAGED 结转，维持 staged。
+
+**裁定：#007/#008/#019 三项在 OCC live surface 上无字节可移植内容，判定 VERIFIED N/A；语义等价保障已由 288#57/onFailureBlock 既有移植承载。非静默丢弃，证据如上。**
