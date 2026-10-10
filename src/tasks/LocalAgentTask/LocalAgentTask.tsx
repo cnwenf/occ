@@ -1,6 +1,8 @@
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG, WORKTREE_BRANCH_TAG, WORKTREE_PATH_TAG, WORKTREE_TAG } from '../../constants/xml.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
+import { logEvent } from '../../services/analytics/index.js';
+import { getExclusiveQueuedBehindCheck } from '../../services/tools/exclusiveCallRegistry.js';
 import type { AppState } from '../../state/AppState.js';
 import type { SetAppState, Task, TaskStateBase } from '../../Task.js';
 import { createTaskStateBase } from '../../Task.js';
@@ -14,6 +16,7 @@ import type { Message } from '../../types/message.js';
 import { createAbortController, createChildAbortController } from '../../utils/abortController.js';
 import { registerCleanup } from '../../utils/cleanupRegistry.js';
 import { getToolSearchOrReadInfo } from '../../utils/collapseReadSearch.js';
+import { logForDebugging } from '../../utils/debug.js';
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import { executeNotificationHooks } from '../../utils/hooks.js';
 import { logError } from '../../utils/log.js';
@@ -553,6 +556,54 @@ export function registerAsyncAgent({
 // When backgroundAgentTask is called, it resolves the corresponding promise
 const backgroundSignalResolvers = new Map<string, () => void>();
 
+// CC 2.1.295 (#026) — official `_Br=1000` (s295 @52426730 region): re-check
+// interval while the assistant response is still streaming and an exclusive
+// call may yet queue behind this subagent's Agent call.
+const AUTO_BACKGROUND_REARM_MS = 1000;
+
+/**
+ * CC 2.1.295 (#026) — verbatim port of the official hold probe `Awn`
+ * (s295 @52425740 region):
+ *   `function Awn(e){if(e.status!=="running"||e.isBackgrounded||e.toolUseId===
+ *    void 0)return;let n=Gn().exclusiveCallQueuedBehind.get(e.toolUseId);
+ *    if(n===void 0)return;if(!n.isQueued())return n.mayYetBeQueued()?
+ *    "response_streaming":void 0;...return"call_queued_behind"}`
+ *
+ * 'call_queued_behind'  — an exclusive (non-concurrency-safe) tool call is
+ *   queued behind this subagent's Agent call: backgrounding would release the
+ *   executor's exclusive lock and start that call BEFORE the subagent
+ *   finished (the 2.1.294 bug).
+ * 'response_streaming' — the assistant response is still streaming, so an
+ *   exclusive call may yet arrive and queue behind; re-check shortly.
+ * undefined            — no hold; auto-background may proceed.
+ */
+export function getAutoBackgroundHold(
+  task: unknown,
+): 'call_queued_behind' | 'response_streaming' | undefined {
+  if (!isLocalAgentTask(task) || task.status !== 'running' || task.isBackgrounded || task.toolUseId === undefined) {
+    return undefined;
+  }
+  const check = getExclusiveQueuedBehindCheck(task.toolUseId);
+  if (check === undefined) {
+    return undefined;
+  }
+  if (!check.isQueued()) {
+    return check.mayYetBeQueued() ? 'response_streaming' : undefined;
+  }
+  if (!check.holdLogged) {
+    check.holdLogged = true;
+    logForDebugging(
+      `[local-agent] subagent ${task.id} stays in the foreground: no automatic move to the background while a tool call that must run alone is queued behind its Agent call ${task.toolUseId}`,
+      { level: 'warn' },
+    );
+    // Official: f("task_local_agent_auto_background","call_queued_behind").
+    // OCC's logEvent metadata accepts only boolean|number, so the reason is
+    // encoded numerically (1 = call_queued_behind).
+    logEvent('task_local_agent_auto_background', { hold_reason: 1 });
+  }
+  return 'call_queued_behind';
+}
+
 /**
  * Register a foreground agent task that could be backgrounded later.
  * Called when an agent has been running long enough to show the BackgroundHint.
@@ -564,6 +615,7 @@ export function registerAgentForeground({
   prompt,
   selectedAgent,
   setAppState,
+  getAppState,
   autoBackgroundMs,
   toolUseId
 }: {
@@ -572,6 +624,12 @@ export function registerAgentForeground({
   prompt: string;
   selectedAgent: AgentDefinition;
   setAppState: SetAppState;
+  /**
+   * CC 2.1.295 (#026) — reader for the auto-background hold probe. The
+   * official timer reads the live task from app state on every fire/re-arm;
+   * when absent, the hold check degrades to "no hold" (pre-295 behavior).
+   */
+  getAppState?: () => AppState;
   autoBackgroundMs?: number;
   toolUseId?: string;
 }): {
@@ -615,7 +673,26 @@ export function registerAgentForeground({
   // Auto-background after timeout if configured
   let cancelAutoBackground: (() => void) | undefined;
   if (autoBackgroundMs !== undefined && autoBackgroundMs > 0) {
-    const timer = setTimeout((setAppState, agentId) => {
+    // CC 2.1.295 (#026) — official arming
+    // `let dt=setTimeout(Pwn,V,H,e,Math.min(V,_Br),(nt)=>{dt=nt});tt=()=>clearTimeout(dt)`:
+    // initial delay = autoBackgroundMs; re-arm delay = Math.min(autoBackgroundMs, 1000).
+    const rearmMs = Math.min(autoBackgroundMs, AUTO_BACKGROUND_REARM_MS);
+    let timer: ReturnType<typeof setTimeout>;
+    const onAutoBackgroundTimer = () => {
+      const task = getAppState ? getAppState().tasks[agentId] : undefined;
+      const hold = getAutoBackgroundHold(task);
+      if (hold === 'call_queued_behind') {
+        // Official `l9r`: skip when any hold is active — do NOT background and
+        // do NOT re-arm. The subagent stays in the foreground so the exclusive
+        // (edit/shell) call queued behind it cannot start before it finishes.
+        return;
+      }
+      if (hold === 'response_streaming') {
+        // Official `Pwn`: re-arm at min(autoBackgroundMs, 1000) while the
+        // response may still queue an exclusive call behind this Agent call.
+        timer = setTimeout(onAutoBackgroundTimer, rearmMs);
+        return;
+      }
       // Mark task as backgrounded and resolve the signal
       setAppState(prev => {
         const prevTask = prev.tasks[agentId];
@@ -638,7 +715,10 @@ export function registerAgentForeground({
         resolver();
         backgroundSignalResolvers.delete(agentId);
       }
-    }, autoBackgroundMs, setAppState, agentId);
+      // Official `l9r` success path: g("task_local_agent_auto_background").
+      logEvent('task_local_agent_auto_background', {});
+    };
+    timer = setTimeout(onAutoBackgroundTimer, autoBackgroundMs);
     cancelAutoBackground = () => clearTimeout(timer);
   }
   return {

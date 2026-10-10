@@ -92,11 +92,20 @@ export const WORKFLOW_SCRIPT_MAX_BYTES = 524288
  * It — the binary's message when a scriptPath falls outside the readable
  * set (or fails any TOCTOU check). Byte-verbatim; note it names the RAW
  * scriptPath the caller supplied, never the canonical path.
+ * CC 2.1.295 (item-5): the official `Xt` grew a second line guiding the
+ * caller to the inline `script` input (@227949074, byte-verified):
+ *   `Xt(e){return\`scriptPath must be ... : ${e}\nA session that cannot
+ *     call ${ot} cannot load any scriptPath. Pass the whole script inline
+ *     through ${du}'s \`script\` input instead.\`}`
+ * with ot="Read" (FILE_READ_TOOL_NAME) and du="Workflow"
+ * (WORKFLOW_TOOL_NAME).
  */
 export function scriptPathNotReadableMessage(scriptPath: string): string {
   return (
     'scriptPath must be a script path this tool returned, or a file you can ' +
-    `already read (the working directory or a directory you have added): ${scriptPath}`
+    `already read (the working directory or a directory you have added): ${scriptPath}\n` +
+    `A session that cannot call ${FILE_READ_TOOL_NAME} cannot load any scriptPath. ` +
+    `Pass the whole script inline through ${WORKFLOW_TOOL_NAME}'s \`script\` input instead.`
   )
 }
 

@@ -198,6 +198,16 @@ export function getLargeOutputInstructions(
  * Map a mime type to a file extension. Conservative: known types get their
  * proper extension; unknown types get 'bin'. The extension matters because
  * the Read tool dispatches on it (PDFs, images, etc. need the right ext).
+ *
+ * CC 2.1.295 (item 4): the official ext→mime map (`R` in the binary,
+ * evidence /tmp/cc295/ev/ext_map_css.txt) gained CSS/JS/XML, fonts, icons,
+ * AVIF and WASM entries — so those payloads no longer persist as .bin:
+ *   ".css":"text/css", ".js"/".mjs":"text/javascript",
+ *   ".xml":"application/xml", ".avif":"image/avif",
+ *   ".ico":"image/vnd.microsoft.icon", ".woff":"font/woff",
+ *   ".woff2":"font/woff2", ".ttf":"font/ttf", ".otf":"font/otf",
+ *   ".wasm":"application/wasm"
+ * This reverse (mime→ext) mapping mirrors exactly those entries.
  */
 export function extensionForMimeType(mimeType: string | undefined): string {
   if (!mimeType) return 'bin'
@@ -216,6 +226,12 @@ export function extensionForMimeType(mimeType: string | undefined): string {
       return 'html'
     case 'text/markdown':
       return 'md'
+    case 'text/css':
+      return 'css'
+    case 'text/javascript':
+      return 'js'
+    case 'application/xml':
+      return 'xml'
     case 'application/zip':
       return 'zip'
     case 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
@@ -248,6 +264,20 @@ export function extensionForMimeType(mimeType: string | undefined): string {
       return 'webp'
     case 'image/svg+xml':
       return 'svg'
+    case 'image/avif':
+      return 'avif'
+    case 'image/vnd.microsoft.icon':
+      return 'ico'
+    case 'font/woff':
+      return 'woff'
+    case 'font/woff2':
+      return 'woff2'
+    case 'font/ttf':
+      return 'ttf'
+    case 'font/otf':
+      return 'otf'
+    case 'application/wasm':
+      return 'wasm'
     default:
       return 'bin'
   }

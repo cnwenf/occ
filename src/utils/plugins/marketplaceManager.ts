@@ -81,7 +81,11 @@ import {
   getPluginSeedDirs,
   getPluginsDirectory,
 } from './pluginDirectories.js'
-import { parsePluginIdentifier } from './pluginIdentifier.js'
+import {
+  buildMarketplaceNameRefusalMessage,
+  isValidPluginIdPart,
+  parsePluginIdentifier,
+} from './pluginIdentifier.js'
 import { deletePluginOptions } from './pluginOptionsStorage.js'
 import {
   assertMarketplaceNameNotReservedImitation,
@@ -2332,6 +2336,20 @@ export async function addMarketplaceSource(
   )
   if (sourceValidationError) {
     throw new Error(sourceValidationError)
+  }
+
+  // CC 2.1.295 port: refuse marketplace names no plugin can ever be
+  // installed under — `plugin@marketplace` ids require each half to match
+  // the official `mt` pattern. Names already registered before this check
+  // existed stay usable (official `!Object.hasOwn(S, ke)` skip). Message is
+  // the official throw verbatim (buildMarketplaceNameRefusalMessage).
+  // Deviation: the official also skips a second, unrecoverable name set
+  // (`v0(S)`) — only the own-property check is ported.
+  if (
+    !isValidPluginIdPart(marketplace.name) &&
+    !Object.hasOwn(existingConfig, marketplace.name)
+  ) {
+    throw new Error(buildMarketplaceNameRefusalMessage(marketplace.name))
   }
 
   // Name collision with different source: overwrite (settings intent wins).

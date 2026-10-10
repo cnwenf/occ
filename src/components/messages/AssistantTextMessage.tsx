@@ -12,6 +12,7 @@ import { isAutoCompactExplicitlyOff } from '../../services/compact/autoCompact.j
 import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js';
 import { getDefaultSonnetModel, renderModelName } from '../../utils/model/model.js';
 import { isMacOsKeychainLocked } from '../../utils/secureStorage/macOsKeychainStorage.js';
+import { stripRawHyperlinks } from '../../utils/stripRawHyperlinks.js';
 import { CtrlOToExpand } from '../CtrlOToExpand.js';
 import { InterruptedByUser } from '../InterruptedByUser.js';
 import { Markdown } from '../Markdown.js';
@@ -244,12 +245,19 @@ export function AssistantTextMessage(t0) {
         } else {
           t4 = $[24];
         }
+        // CC 2.1.295 P0 render-security: strip RAW OSC-8 hyperlink sequences
+        // from model text BEFORE markdown rendering (official `Ecn` walkTokens
+        // control-char strip, @220891500 region) — smuggled clickable cells
+        // with a hidden address never reach the terminal; the anchor text
+        // stays visible as plain text. Markdown-generated links keep working
+        // (the link renderer emits OSC-8 downstream of this strip).
+        const safeText = stripRawHyperlinks(text);
         let t5;
-        if ($[25] !== text) {
+        if ($[25] !== safeText) {
           // capProseWidth: official za @220213403 renders the assistant text
           // body as `e(Ei,{capProseWidth:!0,children:_})` (2.1.282).
-          t5 = <Box flexDirection="column"><Markdown capProseWidth={true}>{text}</Markdown></Box>;
-          $[25] = text;
+          t5 = <Box flexDirection="column"><Markdown capProseWidth={true}>{safeText}</Markdown></Box>;
+          $[25] = safeText;
           $[26] = t5;
         } else {
           t5 = $[26];

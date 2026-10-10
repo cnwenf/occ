@@ -25,6 +25,7 @@ import { errorMessage } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js'
 import { getInstallCounts } from '../../utils/plugins/installCounts.js'
+import { warnIfSettingsFileDoesNotLoad } from '../../utils/plugins/settingsFileLoadWarning.js'
 import {
   isPluginInstalled,
   loadInstalledPluginsV2,
@@ -493,6 +494,11 @@ export async function marketplaceAddHandler(
       source_type:
         sourceType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
+
+    // CC 2.1.295: warn when the settings file this command just declared the
+    // marketplace in does not load — Claude Code ignores a broken settings
+    // file WHOLE, so the declaration silently has no effect. Non-fatal.
+    warnIfSettingsFileDoesNotLoad(settingSource)
 
     cliOk(
       alreadyMaterialized

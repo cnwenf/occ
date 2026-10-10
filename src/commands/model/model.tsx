@@ -6,7 +6,7 @@ import { COMMON_HELP_ARGS, COMMON_INFO_ARGS } from '../../constants/xml.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
-import { type EffortLevel } from '../../utils/effort.js';
+import { type EffortLevel, toPersistableEffort } from '../../utils/effort.js';
 import { isBilledAsExtraUsage } from '../../utils/extraUsage.js';
 import { clearFastModeCooldown, isFastModeAvailable, isFastModeEnabled, isFastModeSupportedByModel } from '../../utils/fastMode.js';
 import { MODEL_ALIASES } from '../../utils/model/aliases.js';
@@ -116,8 +116,23 @@ function ModelPickerWrapper({ onDone }: {
     const saveResult = saveModelAsDefault(model);
     const isSaved = saveResult.kind === "saved";
     let message = `Set model to ${chalk.bold(renderModelLabel(model))}${isSaved ? " and saved as your default for new sessions" : " for this session only"}`;
+    // CC 2.1.295 (item-4): the effort suffix must not claim the effort was
+    // saved as a default when it wasn't persisted. Official (@247150291,
+    // byte-verified):
+    //   `if(r!==void 0)L+=K&&f_e(r)===void 0
+    //     ?` · ${ub(r)} effort for this session only`
+    //     :` with ${ub(r)} effort``
+    // K = isSaved (model persisted); f_e ≡ toPersistableEffort — 'max' is
+    // session-scoped for external users (non-ant), so toPersistableEffort
+    // returns undefined and the copy says "for this session only". Ants
+    // (and every persistable level) keep the "with X effort" copy — the
+    // persisted path is unchanged.
     if (effort !== undefined) {
-      message = message + ` with ${chalk.bold(effort)} effort`;
+      message =
+        message +
+        (isSaved && toPersistableEffort(effort) === undefined
+          ? ` \xB7 ${chalk.bold(effort)} effort for this session only`
+          : ` with ${chalk.bold(effort)} effort`);
     }
     let wasFastModeToggledOn: boolean | undefined;
     if (isFastModeEnabled()) {

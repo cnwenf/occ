@@ -15,6 +15,17 @@ export type FileState = {
   // `content` here holds the RAW disk bytes (for getChangedFiles diffing),
   // not what the model saw.
   isPartialView?: boolean
+  // CC 2.1.295 (official FileState field, consumed via k4): true when the
+  // model never saw this entry's content — seeded from a Bash read whose
+  // output was persisted/truncated (gvn 5th param undefined), from a
+  // grep-family spec (content shown as matches, not the whole file), from
+  // Write/Edit reseeds whose prior state was not a trusted full read, or
+  // from resume-time Edit disk re-extraction (queryHelpers). Flagged entries
+  // never satisfy the trusted-full-read predicate (k4 ≡
+  // isFileStateFullyTrusted in fileStateGuard.ts), so the Read dedupe stub
+  // and the at-mention already_read_file shortcut re-send the content
+  // instead of claiming the file is already in context.
+  contentNotInModelContext?: boolean
 }
 
 // Default max entries for read file state caches

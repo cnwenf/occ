@@ -490,6 +490,13 @@ export function extractReadFilesFromMessages(
           // Cowork cold-restart per turn), so disk content at extraction time
           // IS the post-edit state. No dedup: processing every Edit preserves
           // last-wins semantics when Read/Write interleave (Edit→Read→Edit).
+          //
+          // CC 2.1.295: official seed carries `contentNotInModelContext:!0`
+          // (verbatim `ee={content:FS(G),timestamp:ZPs(le),offset:void 0,
+          // limit:void 0,contentNotInModelContext:!0}`, identical in 294/295)
+          // — the re-extracted disk content was never shown to the model, so
+          // k4-gated consumers (Read dedupe stub, at-mention already_read)
+          // must re-send it instead of claiming it is already in context.
           const editFilePath = fileEditToolUseIds.get(content.tool_use_id)
           if (editFilePath && content.is_error !== true) {
             try {
@@ -500,6 +507,7 @@ export function extractReadFilesFromMessages(
                 timestamp: getFileModificationTime(editFilePath),
                 offset: undefined,
                 limit: undefined,
+                contentNotInModelContext: true,
               })
             } catch (e: unknown) {
               if (!isFsInaccessible(e)) {

@@ -221,6 +221,34 @@ export function getInitialAdvisorSetting(): string | undefined {
   return getInitialSettings().advisorModel
 }
 
+/**
+ * CC 2.1.295 port — unavailable saved advisor model handling.
+ *
+ * Official changelog: "Fixed the `/advisor` dialog showing a checkmark on a
+ * saved advisor model that is no longer available; it now opens on 'No
+ * advisor'". Official picker logic (binary evidence ev/advisor_no.txt): the
+ * saved-model option is offered only while the model is available —
+ * `c = a && !p && aVe(a) ? {label,value:a} : void 0` — and the initial
+ * selection falls back to "off" ("No advisor") when it is not:
+ * `v = a && aVe(a) ? c?.value ?? p ?? "off" : "off"`.
+ *
+ * OCC ships no advisor dialog; its analog surface is the no-arg `/advisor`
+ * status display, which must not present an unavailable saved model as the
+ * current selection. This helper is the pure core of that behavior. Like the
+ * official fix it is display-only — the saved setting itself is left
+ * untouched (the official dialog just opens on "No advisor" until the user
+ * picks a model).
+ */
+export function getEffectiveAdvisorModel(
+  savedModel: string | undefined,
+  isModelAvailable: (model: string) => boolean,
+): string | undefined {
+  if (savedModel === undefined) {
+    return undefined
+  }
+  return isModelAvailable(savedModel) ? savedModel : undefined
+}
+
 export function getAdvisorUsage(
   usage: BetaUsage,
 ): Array<BetaUsage & { model: string }> {

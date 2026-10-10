@@ -6,6 +6,7 @@ import { TEAMMATE_MESSAGE_TAG } from '../../constants/xml.js';
 import { Ansi, Box, Text, type TextProps } from '../../ink.js';
 import { toInkColor } from '../../utils/ink.js';
 import { jsonParse } from '../../utils/slowOperations.js';
+import { stripRawHyperlinks } from '../../utils/stripRawHyperlinks.js';
 import { isShutdownApproved } from '../../utils/teammateMailbox.js';
 import { MessageResponse } from '../MessageResponse.js';
 import { tryRenderPlanApprovalMessage } from './PlanApprovalMessage.js';
@@ -183,10 +184,16 @@ export function TeammateMessageContent(t0) {
   } else {
     t4 = $[7];
   }
+  // CC 2.1.295 P0 render-security: strip RAW OSC-8 hyperlink sequences from
+  // teammate text BEFORE the raw-ANSI `<Ansi>` render (official `Ecn`
+  // control-char strip, @220891500 region) — a smuggled clickable cell with
+  // a hidden address never reaches the terminal; the anchor text stays
+  // visible as plain text.
+  const safeContent = stripRawHyperlinks(content);
   let t5;
-  if ($[8] !== content || $[9] !== isTranscriptMode) {
-    t5 = isTranscriptMode && <Box paddingLeft={2}><Text><Ansi>{content}</Ansi></Text></Box>;
-    $[8] = content;
+  if ($[8] !== safeContent || $[9] !== isTranscriptMode) {
+    t5 = isTranscriptMode && <Box paddingLeft={2}><Text><Ansi>{safeContent}</Ansi></Text></Box>;
+    $[8] = safeContent;
     $[9] = isTranscriptMode;
     $[10] = t5;
   } else {

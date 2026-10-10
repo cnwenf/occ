@@ -10,7 +10,7 @@ import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/gr
 import { logEvent } from '../../services/analytics/index.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { logMCPError } from '../../utils/log.js'
+import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import { parseEnvInt } from '../../utils/envValidation.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { isOutputLineTruncated } from '../../utils/terminal.js'
@@ -22,6 +22,12 @@ import { renderToolResultMessage, renderToolUseMessage, userFacingName } from '.
  * to advertise support for MCP "skills" / directory reads.
  */
 const MCP_SKILLS_EXTENSION = 'io.modelcontextprotocol/skills'
+
+/**
+ * CC 2.1.295 (item 2): hard page cap on a single directory walk — the
+ * official readMcpDirectory's `var a=20`.
+ */
+const MAX_DIRECTORY_READ_PAGES = 20
 
 /**
  * Default timeout for the resources/directory/read request, mirroring the
@@ -144,6 +150,13 @@ export const ReadMcpResourceDirTool = buildTool({
     // optional nextCursor; follow cursors until exhausted. An InvalidParams
     // error on the first page means the URI is a file resource, not a
     // directory — tell the model to use ReadMcpResource instead.
+    //
+    // CC 2.1.295 (item 2): official readMcpDirectory (`R`) guards the walk
+    // with a hard 20-page cap (`a=20`, "stopped at 20 pages with more
+    // pending") and — on InvalidParams from a CURSOR page (page > 0) — logs
+    // and returns the entries gathered from prior pages instead of throwing
+    // the whole listing away. No sent-cursor Set and no
+    // tengu_mcp_list_paginated telemetry in the official directory walk.
     const resources: Output['resources'] = []
     let cursor: string | undefined
     let page = 0
@@ -160,11 +173,9 @@ export const ReadMcpResourceDirTool = buildTool({
           { timeout: getDirectoryReadTimeoutMs() },
         )) as ListResourcesResult
       } catch (e) {
-        if (
-          page === 0 &&
-          e instanceof McpError &&
-          e.code === ErrorCode.InvalidParams
-        ) {
+        const isInvalidParams =
+          e instanceof McpError && e.code === ErrorCode.InvalidParams
+        if (page === 0 && isInvalidParams) {
           logMCPError(
             client.name,
             `resources/directory/read ${uri}: page 1 returned ${e.code} — not a directory`,
@@ -175,6 +186,13 @@ export const ReadMcpResourceDirTool = buildTool({
               error: `Not a directory resource: ${uri}. If it is a file resource, use ReadMcpResource instead.`,
             },
           }
+        }
+        if (isInvalidParams) {
+          logMCPDebug(
+            client.name,
+            `resources/directory/read ${uri}: page ${page + 1} returned InvalidParams on cursor; returning ${resources.length} entries from prior pages`,
+          )
+          break
         }
         throw e
       }
@@ -189,6 +207,13 @@ export const ReadMcpResourceDirTool = buildTool({
       cursor = result.nextCursor
       page++
       if (cursor === undefined) break
+      if (page >= MAX_DIRECTORY_READ_PAGES) {
+        logMCPDebug(
+          client.name,
+          `resources/directory/read ${uri}: stopped at ${MAX_DIRECTORY_READ_PAGES} pages with more pending`,
+        )
+        break
+      }
     }
 
     logEvent('tengu_mcp_resource_dir_read', {

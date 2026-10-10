@@ -11,8 +11,12 @@ import { errorMessage } from '../../utils/errors.js'
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js'
 import { logError } from '../../utils/log.js'
 import { getManagedPluginNames } from '../../utils/plugins/managedPlugins.js'
-import { parsePluginIdentifier } from '../../utils/plugins/pluginIdentifier.js'
+import {
+  parsePluginIdentifier,
+  scopeToSettingSource,
+} from '../../utils/plugins/pluginIdentifier.js'
 import type { PluginScope } from '../../utils/plugins/schemas.js'
+import { warnIfSettingsFileDoesNotLoad } from '../../utils/plugins/settingsFileLoadWarning.js'
 import { writeToStdout } from '../../utils/process.js'
 import {
   buildPluginTelemetryFields,
@@ -96,6 +100,22 @@ function handlePluginCommandError(
 }
 
 /**
+ * CC 2.1.295 port: after a plugin command wrote to a scope's settings file,
+ * warn when that file does not load — Claude Code ignores a broken settings
+ * file WHOLE, so the write silently has no effect. Non-fatal; the command's
+ * success output and exit code are untouched. `managed` scope is never
+ * written by these commands (official `pIr` early-out).
+ */
+function warnIfWrittenScopeSettingsDoNotLoad(
+  scope: PluginScope | undefined,
+): void {
+  if (scope === undefined || scope === 'managed') {
+    return
+  }
+  warnIfSettingsFileDoesNotLoad(scopeToSettingSource(scope))
+}
+
+/**
  * CLI command: Install a plugin non-interactively
  * @param plugin Plugin identifier (name or plugin@marketplace)
  * @param scope Installation scope: user, project, or local (defaults to 'user')
@@ -137,6 +157,8 @@ export async function installPlugin(
         'cli-explicit' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       ...buildPluginTelemetryFields(name, marketplace, getManagedPluginNames()),
     })
+
+    warnIfWrittenScopeSettingsDoNotLoad(result.scope || scope)
 
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
@@ -221,6 +243,8 @@ export async function enablePlugin(
       ...buildPluginTelemetryFields(name, marketplace, getManagedPluginNames()),
     })
 
+    warnIfWrittenScopeSettingsDoNotLoad(result.scope)
+
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)
   } catch (error) {
@@ -261,6 +285,8 @@ export async function disablePlugin(
         result.scope as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       ...buildPluginTelemetryFields(name, marketplace, getManagedPluginNames()),
     })
+
+    warnIfWrittenScopeSettingsDoNotLoad(result.scope)
 
     // eslint-disable-next-line custom-rules/no-process-exit
     process.exit(0)

@@ -22,24 +22,77 @@ import { extractTextContent, stripPromptXMLTags } from '../../utils/messages.js'
 import { countCharInString } from '../../utils/stringUtils.js';
 const COPY_DIR = join(tmpdir(), 'claude');
 const RESPONSE_FILENAME = 'response.md';
+// CC 2.1.295: the filename a quoted passage copies to (official `ge="copy.md"`).
+const QUOTE_FILENAME = 'copy.md';
 const MAX_LOOKBACK = 20;
-type CodeBlock = {
-  code: string;
+
+/**
+ * A `/copy` picker entry — either a fenced code block or a quoted
+ * (blockquote) passage of the drafted response.
+ *
+ * CC 2.1.295 port. Official changelog: "Added quoted text to the `/copy`
+ * picker, so a drafted message copies without its `>` markers". Official
+ * entry shapes (binary evidence): code `{kind:"code",text:c.text,lang:c.lang}`,
+ * quote `{kind:"quote",text}` with the text normalized via
+ * `text.replace(/^\s*\n/,"").trimEnd()` (marked's blockquote token text
+ * already carries no `>` markers, so a drafted message copies without them).
+ */
+export type CopyEntry = {
+  kind: 'code';
+  text: string;
   lang: string | undefined;
+} | {
+  kind: 'quote';
+  text: string;
 };
-function extractCodeBlocks(markdown: string): CodeBlock[] {
+
+/**
+ * Lex a drafted response into picker entries (official `Ve` mechanism):
+ * 'space' tokens are skipped; 'code' tokens push a code entry; blockquote
+ * tokens are normalized (`replace(/^\s*\n/,'').trimEnd()`), skipped when
+ * empty, and MERGED into the previous entry while it is also a quote
+ * (consecutive blockquotes become one entry joined by "\n"); any other token
+ * resets the merge state.
+ */
+export function extractCopyEntries(markdown: string): CopyEntry[] {
   const tokens = marked.lexer(stripPromptXMLTags(markdown));
-  const blocks: CodeBlock[] = [];
+  const entries: CopyEntry[] = [];
   for (const token of tokens) {
+    if (token.type === 'space') {
+      continue;
+    }
     if (token.type === 'code') {
       const codeToken = token as Tokens.Code;
-      blocks.push({
-        code: codeToken.text,
+      entries.push({
+        kind: 'code',
+        text: codeToken.text,
         lang: codeToken.lang
       });
+      continue;
     }
+    if (token.type === 'blockquote') {
+      const quoteToken = token as Tokens.Blockquote;
+      const normalized = quoteToken.text.replace(/^\s*\n/, '').trimEnd();
+      if (normalized === '') {
+        continue;
+      }
+      const prev = entries[entries.length - 1];
+      if (prev?.kind === 'quote') {
+        entries[entries.length - 1] = {
+          ...prev,
+          text: `${prev.text}\n${normalized}`
+        };
+      } else {
+        entries.push({
+          kind: 'quote',
+          text: normalized
+        });
+      }
+      continue;
+    }
+    // Any other token breaks a run of consecutive blockquotes.
   }
-  return blocks;
+  return entries;
 }
 
 /**
@@ -110,7 +163,7 @@ function truncateLine(text: string, maxLen: number): string {
 }
 type PickerProps = {
   fullText: string;
-  codeBlocks: CodeBlock[];
+  entries: CopyEntry[];
   messageAge: number;
   onDone: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -121,7 +174,7 @@ function CopyPicker(t0) {
   const $ = _c(33);
   const {
     fullText,
-    codeBlocks,
+    entries,
     messageAge,
     onDone
   } = t0;
@@ -140,7 +193,7 @@ function CopyPicker(t0) {
     t2 = $[1];
   }
   let t3;
-  if ($[2] !== codeBlocks || $[3] !== t2) {
+  if ($[2] !== entries || $[3] !== t2) {
     let t4;
     if ($[5] === Symbol.for("react.memo_cache_sentinel")) {
       t4 = {
@@ -152,8 +205,8 @@ function CopyPicker(t0) {
     } else {
       t4 = $[5];
     }
-    t3 = [t2, ...codeBlocks.map(_temp), t4];
-    $[2] = codeBlocks;
+    t3 = [t2, ...entries.map(_temp), t4];
+    $[2] = entries;
     $[3] = t2;
     $[4] = t3;
   } else {
@@ -161,7 +214,7 @@ function CopyPicker(t0) {
   }
   const options = t3;
   let t4;
-  if ($[6] !== codeBlocks || $[7] !== fullText) {
+  if ($[6] !== entries || $[7] !== fullText) {
     t4 = function getSelectionContent(selected) {
       if (selected === "full" || selected === "always") {
         return {
@@ -169,14 +222,14 @@ function CopyPicker(t0) {
           filename: RESPONSE_FILENAME
         };
       }
-      const block_0 = codeBlocks[selected];
+      const entry = entries[selected];
       return {
-        text: block_0.code,
-        filename: `copy${fileExtension(block_0.lang)}`,
+        text: entry.text,
+        filename: entry.kind === "quote" ? QUOTE_FILENAME : `copy${fileExtension(entry.lang)}`,
         blockIndex: selected
       };
     };
-    $[6] = codeBlocks;
+    $[6] = entries;
     $[7] = fullText;
     $[8] = t4;
   } else {

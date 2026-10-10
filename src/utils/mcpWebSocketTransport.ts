@@ -5,12 +5,28 @@ import {
 } from '@modelcontextprotocol/sdk/types.js'
 import type WsWebSocket from 'ws'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
-import { toError } from './errors.js'
+import {
+  TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  toError,
+} from './errors.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
 
 // WebSocket readyState constants (same for both native and ws)
 const WS_CONNECTING = 0
 const WS_OPEN = 1
+
+/**
+ * CC 2.1.295 (item 8): hard cap on a single incoming MCP WebSocket message.
+ * Official binary constant `cne=16777216` (same var block as the reconnect
+ * backoff constants w/h/nns), checked in the official transport's
+ * `onBunMessage` BEFORE parsing:
+ *
+ *   if(Buffer.byteLength(r)>cne){this.handleError(new x(
+ *     `MCP server sent a WebSocket message over ${cne/1024/1024} MiB.
+ *      Claude Code did not read it and closed the connection.`,
+ *     "mcp websocket message over the cap")),this.close().catch(()=>{});return}
+ */
+export const MAX_WS_MESSAGE_BYTES = 16 * 1024 * 1024
 
 // Minimal interface shared by globalThis.WebSocket and ws.WebSocket
 type WebSocketLike = {
@@ -78,6 +94,7 @@ export class WebSocketTransport implements Transport {
     try {
       const data =
         typeof event.data === 'string' ? event.data : String(event.data)
+      if (this.rejectIfOversized(data)) return
       const messageObj = jsonParse(data)
       const message = JSONRPCMessageSchema.parse(messageObj)
       this.onmessage?.(message)
@@ -97,6 +114,10 @@ export class WebSocketTransport implements Transport {
   // Node (ws package) event handlers
   private onNodeMessage = (data: Buffer) => {
     try {
+      // OCC extension: the official transport is Bun-only, so the cap has no
+      // upstream Node-path counterpart — mirror the same guard on the Buffer
+      // before it is stringified/parsed.
+      if (this.rejectIfOversized(data)) return
       const messageObj = jsonParse(data.toString('utf-8'))
       const message = JSONRPCMessageSchema.parse(messageObj)
       this.onmessage?.(message)
@@ -111,6 +132,24 @@ export class WebSocketTransport implements Transport {
 
   private onNodeClose = () => {
     this.handleCloseCleanup()
+  }
+
+  /**
+   * CC 2.1.295 (item 8): reject an over-cap incoming message — surface the
+   * official TelemetrySafeError (`x`) via handleError, close the socket, and
+   * report that the caller must NOT process the message. Byte-exact official
+   * error text; the safe description is 'mcp websocket message over the cap'.
+   */
+  private rejectIfOversized(data: string | Buffer): boolean {
+    if (Buffer.byteLength(data) <= MAX_WS_MESSAGE_BYTES) return false
+    this.handleError(
+      new TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
+        `MCP server sent a WebSocket message over ${MAX_WS_MESSAGE_BYTES / 1024 / 1024} MiB. Claude Code did not read it and closed the connection.`,
+        'mcp websocket message over the cap',
+      ),
+    )
+    this.close().catch(() => {})
+    return true
   }
 
   // Shared error handler

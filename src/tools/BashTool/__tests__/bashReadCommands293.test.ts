@@ -179,7 +179,10 @@ describe('group 1 — sed -n line-range slicing + trigger', () => {
       cache,
       freshSignal(),
       0,
-      false,
+      // 295 #061: the 5th param is now `modelVisibleOutput` (string|undefined),
+      // not the old boolean. `sed -n '5,10p'` prints exactly lines 5-10, so pass
+      // that stdout; oUr containment then seeds the sliced window (offset 5).
+      ['line 5', 'line 6', 'line 7', 'line 8', 'line 9', 'line 10'].join('\n'),
       ctx,
     )
     const entry = cache.get(expandPath(file))
@@ -409,7 +412,8 @@ describe('group 5 — newly recognized command forms', () => {
       cache,
       freshSignal(),
       0,
-      false,
+      // 295 #061: modelVisibleOutput = what tail printed (the last 3 lines).
+      'line 18\nline 19\nline 20',
       ctx,
     )
     const entry = cache.get(expandPath(file))
@@ -440,7 +444,10 @@ describe('group 6 — read-deny gate suppresses the trigger (cRn/AH)', () => {
       cache,
       freshSignal(),
       0,
-      false,
+      // 295 #061: `cat` prints the whole file, so that is the modelVisibleOutput;
+      // containment seeds readFileState, and the read-deny gate below still
+      // suppresses the nested-memory trigger.
+      LINES_20,
       ctx,
     )
     // readFileState.set is NOT gated (read-before-edit still works)…
@@ -485,7 +492,9 @@ describe('group 6 — read-deny gate suppresses the trigger (cRn/AH)', () => {
       cache,
       freshSignal(),
       0,
-      false,
+      // 295 #061: `cat` prints the whole file = modelVisibleOutput; a non-denied
+      // path passes containment, seeds, and fires the trigger.
+      LINES_20,
       ctx,
     )
     expect(ctx.triggers.has(key)).toBe(true)

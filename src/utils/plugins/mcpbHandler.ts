@@ -21,6 +21,11 @@ import {
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { getSystemDirectories } from '../systemDirectories.js'
 import { classifyFetchError, logPluginFetch } from './fetchTelemetry.js'
+import {
+  isStorableOptionKey,
+  readOwnOption,
+  withoutUnsafeOptionKeys,
+} from './optionKeySafety.js'
 /**
  * User configuration values for MCPB
  */
@@ -159,7 +164,9 @@ export function loadMcpServerUserConfig(
     logForDebugging(
       `Loaded user config for ${pluginId}/${serverName} (settings + secureStorage)`,
     )
-    return { ...nonSensitive, ...sensitive }
+    // 2.1.295: drop a stored `__proto__` key (official `pge`) before it can
+    // reach a downstream `obj[key] = value` assignment.
+    return withoutUnsafeOptionKeys({ ...nonSensitive, ...sensitive })
   } catch (error) {
     const errorObj = toError(error)
     logError(errorObj)
@@ -201,7 +208,14 @@ export function saveMcpServerUserConfig(
     const sensitive: Record<string, string> = {}
 
     for (const [key, value] of Object.entries(config)) {
-      if (schema[key]?.sensitive === true) {
+      // 2.1.295: reject `__proto__` (official `pge`) — `nonSensitive[key] =
+      // value` with that key would re-point the object's prototype; and read
+      // the schema own-property-only so keys named `constructor`/`prototype`
+      // split by their declared schema, not an inherited prototype member.
+      if (!isStorableOptionKey(key)) {
+        continue
+      }
+      if (readOwnOption(schema, key)?.sensitive === true) {
         sensitive[key] = String(value)
       } else {
         nonSensitive[key] = value
@@ -351,7 +365,12 @@ export function validateUserConfig(
 
   // Check each field in the schema
   for (const [key, fieldSchema] of Object.entries(schema)) {
-    const value = values[key]
+    // 2.1.295 port ("Fixed plugin options named `constructor` or `prototype`
+    // always reading as their default and never reloading the plugin when
+    // edited"): own-property read — without it, a schema field named e.g.
+    // `constructor` reads Object.prototype.constructor from `values` and
+    // never sees the user's saved own value.
+    const value = readOwnOption(values, key)
 
     // Check required fields
     if (fieldSchema.required && (value === undefined || value === '')) {

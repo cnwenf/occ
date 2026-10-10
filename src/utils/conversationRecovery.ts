@@ -42,6 +42,7 @@ import {
   normalizeMessages,
 } from './messages.js'
 import { copyPlanForResume } from './plans.js'
+import { dedupeSessionStartHookMessages } from './hooks/sessionStartContextDedupe.js'
 import { processSessionStartHooks } from './sessionStart.js'
 import { sanitizeResumedRows } from './transcriptAdmission.js'
 import {
@@ -1067,8 +1068,10 @@ export async function loadConversationForResume(
     // Process session start hooks for resume
     const hookMessages = await processSessionStartHooks('resume', { sessionId })
 
-    // Append hook messages to the conversation
-    messages.push(...hookMessages)
+    // Append hook messages to the conversation — dedupe SessionStart
+    // additionalContext already present in the restored transcript so
+    // repeated resumes don't re-inject identical context.
+    messages.push(...dedupeSessionStartHookMessages(hookMessages, messages))
 
     return {
       messages,

@@ -68,6 +68,7 @@ import {
   getGuardModel,
   getModelBucket,
   isCoveredByReadDenyRule,
+  isFileStateFullyTrusted,
   isFullReadOfFileState,
   isOldModel,
   normalizeForComparison,
@@ -446,7 +447,19 @@ export const FileEditTool = buildTool({
     // Check if file exists and get its last modified time
     if (lastRead) {
       const lastWriteTime = getFileModificationTime(fullFilePath)
-      if (lastWriteTime > lastRead.timestamp) {
+      // CC 2.1.295 changelog: "Fixed Edit treating a file as fully read when
+      // its contents changed without its modification time advancing" — the
+      // staleness trigger is no longer mtime-only. Official 295 keys on
+      // refreshedBehindModel (Qbn) + mtime; OCC has no refresh subsystem, so
+      // the OCC adaptation (task-prescribed) adds the content-drift disjunct:
+      // a trusted full read whose cached content no longer matches disk is
+      // stale EVEN IF mtime did not advance. The inner recovery path below is
+      // unchanged.
+      if (
+        lastWriteTime > lastRead.timestamp ||
+        (isFullReadOfFileState(lastRead) &&
+          !fileStateMatchesDisk(lastRead, fileContent))
+      ) {
         // Timestamp indicates modification, but on Windows timestamps can change
         // without content changes (cloud sync, antivirus, etc.). For full reads,
         // compare content as a fallback to avoid false positives (binary
@@ -717,11 +730,33 @@ export const FileEditTool = buildTool({
     // 6. Update read timestamp, to invalidate stale writes. Content stored
     // BOM-stripped (binary Hxe); line endings are preserved by Edit, so no
     // CRLF normalization here.
+    // CC 2.1.295 reseed propagation (official
+    // `lo=h||no||ao||jt&&(!k4(en)||Nn||!PLe(en,FS(Nt)))` then
+    // `set(...,lo&&{contentNotInModelContext:!0},jt&&en?.isPartialView===!0&&{isPartialView:!0})`):
+    // h=userModified, en=prior state, Nn=staleRecovered, Nt=originalFileContents,
+    // jt=text-comparable (always true on OCC's text edit path). The `no`
+    // (team-context rewrite) and `ao` (invisible-char decode / harness-tag
+    // defuse) disjuncts have no OCC analogues and are omitted. The fresh entry
+    // is only unflagged when the prior entry was a trusted full read (k4 ≡
+    // isFileStateFullyTrusted) that still matched the pre-edit disk content
+    // (PLe ≡ fileStateMatchesDisk) and neither userModified nor staleRecovered
+    // applies; a prior partial view propagates isPartialView.
+    const priorState = readFileState.get(absoluteFilePath)
+    const priorTrustedAndCurrent =
+      priorState !== undefined &&
+      fileStateMatchesDisk(priorState, stripBom(originalFileContents))
+    const contentNotInModelContext =
+      userModified === true ||
+      !isFileStateFullyTrusted(priorState) ||
+      staleRecovered === true ||
+      !priorTrustedAndCurrent
     readFileState.set(absoluteFilePath, {
       content: stripBom(updatedFile),
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
       limit: undefined,
+      ...(contentNotInModelContext && { contentNotInModelContext: true }),
+      ...(priorState?.isPartialView === true && { isPartialView: true }),
     })
 
     // CC 2.1.288 (#53): a successful edit triggers nested-memory discovery for

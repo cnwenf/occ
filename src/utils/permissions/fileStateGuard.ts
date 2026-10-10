@@ -21,6 +21,8 @@
  *   FGS  -> isReadToolUnavailableForGuard
  *   Gxf  -> isReadAutoAllowedForPath
  *   $ot  -> isFullReadOfFileState
+ *   LA   -> isFullReadOfFileState (2.1.295 binary spelling)
+ *   k4   -> isFileStateFullyTrusted (2.1.295)
  *   Exe  -> fileStateMatchesDisk
  *   Hxe  -> stripBom
  *   J9   -> normalizeForComparison
@@ -43,8 +45,11 @@
  *   `context.options.mainLoopModel`.
  * - The official `contentHash` FileState fast path (Exe) is absent in OCC's
  *   FileState; the content-compare fallback is the official's own else-branch.
- * - The official `contentNotInModelContext` flag (h9e) is not tracked by
- *   OCC's FileState; nothing in OCC consumes it.
+ * - The official `contentNotInModelContext` flag (2.1.295 FileState field) is
+ *   tracked by OCC's FileState since the 2.1.295 round; the trusted-full-read
+ *   predicate k4 (isFileStateFullyTrusted below) is its official consumer —
+ *   the Edit/Write not-read and staleness gates deliberately do NOT check it
+ *   (official 295 gates are `!Re||Re.isPartialView` / LA-based recovery).
  * - `readNotAutoAllowed` is passed as a thunk exactly like the official
  *   call sites (`() => !Mwt(...)`), keeping the double negation out of the
  *   guard bodies.
@@ -315,6 +320,24 @@ export function isFullReadOfFileState(state: FileState): boolean {
     return true
   }
   return state.content !== '' && countCharInString(state.content, '\n') + 1 < state.limit
+}
+
+/**
+ * k4 (2.1.295, verbatim `function k4(e){return e!==void 0&&LA(e)&&!e.contentNotInModelContext}`)
+ * — the trusted-full-read predicate: the entry exists, covered the whole
+ * file (LA ≡ isFullReadOfFileState), and its content actually reached the
+ * model's context. Consumers (official 295): the Read dedupe stub gate, the
+ * at-mention already_read_file gate, and the Write/Edit reseed propagation
+ * (`Te=k4(ke)&&PLe(ke,FS(G))`).
+ */
+export function isFileStateFullyTrusted(
+  state: FileState | undefined,
+): boolean {
+  return (
+    state !== undefined &&
+    isFullReadOfFileState(state) &&
+    !state.contentNotInModelContext
+  )
 }
 
 /** Hxe */

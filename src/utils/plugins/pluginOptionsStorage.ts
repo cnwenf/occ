@@ -27,6 +27,11 @@ import {
   validateUserConfig,
 } from './mcpbHandler.js'
 import { getPluginDataDir } from './pluginDirectories.js'
+import {
+  isStorableOptionKey,
+  readOwnOption,
+  withoutUnsafeOptionKeys,
+} from './optionKeySafety.js'
 
 export type PluginOptionValues = UserConfigValues
 export type PluginOptionSchema = UserConfigSchema
@@ -56,8 +61,11 @@ export function getPluginStorageId(plugin: LoadedPlugin): string {
 export const loadPluginOptions = memoize(
   (pluginId: string): PluginOptionValues => {
     const settings = getSettings_DEPRECATED()
-    const nonSensitive =
-      settings.pluginConfigs?.[pluginId]?.options ?? ({} as PluginOptionValues)
+    // 2.1.295: a stored `__proto__` key is dropped on load (official `pge`)
+    // so it can never reach a downstream `obj[key] = value` assignment.
+    const nonSensitive = withoutUnsafeOptionKeys(
+      settings.pluginConfigs?.[pluginId]?.options ?? ({} as PluginOptionValues),
+    ) as PluginOptionValues
 
     // NOTE: storage.read() spawns `security find-generic-password` on macOS
     // (~50-100ms, synchronous). Mitigated by the memoize above (per-pluginId,
@@ -65,9 +73,10 @@ export const loadPluginOptions = memoize(
     // per session per plugin-with-options. /reload-plugins clears the memoize
     // and the next hook/MCP-load after that eats a fresh spawn.
     const storage = getSecureStorage()
-    const sensitive =
+    const sensitive = withoutUnsafeOptionKeys(
       storage.read()?.pluginSecrets?.[pluginId] ??
-      ({} as Record<string, string>)
+        ({} as Record<string, string>),
+    ) as Record<string, string>
 
     // secureStorage wins on collision — schema determines destination so
     // collision shouldn't happen, but if a user hand-edits settings.json we
@@ -96,7 +105,15 @@ export function savePluginOptions(
   const sensitive: Record<string, string> = {}
 
   for (const [key, value] of Object.entries(values)) {
-    if (schema[key]?.sensitive === true) {
+    // 2.1.295: reject `__proto__` (official `pge`) — `nonSensitive[key] =
+    // value` with that key would re-point the object's prototype; and read
+    // the schema own-property-only so options named `constructor`/`prototype`
+    // split sensitive/non-sensitive by their declared schema, not by an
+    // inherited Object.prototype member.
+    if (!isStorableOptionKey(key)) {
+      continue
+    }
+    if (readOwnOption(schema, key)?.sensitive === true) {
       sensitive[key] = String(value)
     } else {
       nonSensitive[key] = value
@@ -298,8 +315,11 @@ export function getUnconfiguredOptions(
   // parse error strings.
   const unconfigured: PluginOptionSchema = {}
   for (const [key, fieldSchema] of Object.entries(manifestSchema)) {
+    // 2.1.295: own-property read — an option named `constructor`/`prototype`
+    // must validate against its SAVED value (or undefined → unconfigured),
+    // never against the inherited Object.prototype member.
     const single = validateUserConfig(
-      { [key]: saved[key] } as PluginOptionValues,
+      { [key]: readOwnOption(saved, key) } as PluginOptionValues,
       { [key]: fieldSchema },
     )
     if (!single.valid) {
@@ -358,7 +378,10 @@ export function substituteUserConfigVariables(
   userConfig: PluginOptionValues,
 ): string {
   return value.replace(/\$\{user_config\.([^}]+)\}/g, (_match, key) => {
-    const configValue = userConfig[key]
+    // 2.1.295: own-property read — `${user_config.constructor}` must report
+    // "missing" (throw) instead of substituting the inherited Object
+    // constructor's source.
+    const configValue = readOwnOption(userConfig, key)
     if (configValue === undefined) {
       throw new Error(
         `Missing required user configuration value: ${key}. ` +
@@ -393,10 +416,13 @@ export function substituteUserConfigInContent(
   valueTransform?: (value: string) => string,
 ): string {
   return content.replace(/\$\{user_config\.([^}]+)\}/g, (match, key) => {
-    if (schema[key]?.sensitive === true) {
+    // 2.1.295: own-property reads for both the schema's `sensitive` flag and
+    // the option value — inherited Object.prototype members must not leak
+    // into skill/agent content.
+    if (readOwnOption(schema, key)?.sensitive === true) {
       return `[sensitive option '${key}' not available in skill content]`
     }
-    const value = options[key]
+    const value = readOwnOption(options, key)
     if (value === undefined) {
       return match
     }

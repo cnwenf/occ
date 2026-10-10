@@ -56,6 +56,7 @@ import { logError } from './log.js'
 import { logAntError } from './debug.js'
 import { isPlainObjectValue } from './transcriptAdmission.js'
 import { isENOENT, toError } from './errors.js'
+import { isFileStateFullyTrusted } from './permissions/fileStateGuard.js'
 import { isExitCommitted } from './exitCommit.js'
 import { logOTelEvent } from './telemetry/events.js'
 import type { DiagnosticFile } from '../services/diagnosticTracking.js'
@@ -3654,8 +3655,17 @@ export async function generateFileAttachment(
       // In this case, we should not use the optimization since we can't reliably
       // compare modification times. Only use optimization when timestamp <= mtimeMs,
       // indicating it was stored by FileEdit/WriteTool with actual mtimeMs.
+      //
+      // CC 2.1.295: the official gate is
+      // `ke=k4(he)&&(he.content!==""||(he.contentLength??0)===0)&&!_e` —
+      // k4 ≡ isFileStateFullyTrusted (full read AND content actually reached
+      // the model's context). OCC has no contentLength field and no remote
+      // read (_e), so the gate reduces to k4 + the mtime equality below.
+      // Entries seeded from an unseen Bash read (grep-family / persisted /
+      // truncated output) re-send the content instead of claiming already-read.
 
       if (
+        isFileStateFullyTrusted(existingFileState) &&
         existingFileState.timestamp <= mtimeMs &&
         mtimeMs === existingFileState.timestamp
       ) {

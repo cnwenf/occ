@@ -2,6 +2,7 @@ import type {
   EditableSettingSource,
   SettingSource,
 } from '../settings/constants.js'
+import { sliceHead } from '../truncateMiddle.js'
 import {
   ALLOWED_OFFICIAL_MARKETPLACE_NAMES,
   type PluginScope,
@@ -64,6 +65,43 @@ export function parsePluginIdentifier(plugin: string): ParsedPluginIdentifier {
  */
 export function buildPluginId(name: string, marketplace?: string): string {
   return marketplace ? `${name}@${marketplace}` : name
+}
+
+/**
+ * Official 2.1.295 `mt` — the shape every half of a plugin id
+ * (`plugin@marketplace`) must have for Claude Code to be able to install
+ * from it: starts with a letter or digit, then letters/digits/`.`/`_`/`-`,
+ * up to 128 characters total.
+ */
+const PLUGIN_ID_HALF_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+/**
+ * True when `part` can serve as one half of a plugin id
+ * (`plugin@marketplace`) — official 2.1.295 `r0` check used by
+ * `marketplace add` to refuse names no plugin can ever be installed under.
+ */
+export function isValidPluginIdPart(part: string): boolean {
+  return PLUGIN_ID_HALF_PATTERN.test(part)
+}
+
+/** Official 2.1.295 shared rule sentence (`a3n`), verbatim. */
+export const PLUGIN_ID_PART_RULES_SENTENCE =
+  'Each part of a plugin id (plugin@marketplace) may use only the letters a-z and A-Z, digits, ".", "_" and "-", and must start with a letter or digit.'
+
+/** Official `je(ke, 64)` — the refusal message caps the name at 64 chars. */
+const MARKETPLACE_NAME_DISPLAY_CAP = 64
+
+/**
+ * Official 2.1.295 `marketplace add` refusal message for a name no plugin
+ * can be installed under, verbatim template.
+ */
+export function buildMarketplaceNameRefusalMessage(name: string): string {
+  return (
+    `Cannot add marketplace "${sliceHead(name, MARKETPLACE_NAME_DISPLAY_CAP)}": ` +
+    `Claude Code cannot install plugins from a marketplace with this name. ` +
+    `${PLUGIN_ID_PART_RULES_SENTENCE} ` +
+    `The name is set by "name" in the marketplace's marketplace.json; ask its maintainer to change it.`
+  )
 }
 
 /**
