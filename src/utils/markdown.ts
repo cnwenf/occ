@@ -2,16 +2,21 @@ import chalk from 'chalk'
 import { marked, Tokenizer, type Token, type Tokens } from 'marked'
 import stripAnsi from 'strip-ansi'
 import { color } from '../components/design-system/color.js'
-import { BLOCKQUOTE_BAR } from '../constants/figures.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import { supportsHyperlinks } from '../ink/supports-hyperlinks.js'
 import type { CliHighlight } from './cliHighlight.js'
 import { logForDebugging } from './debug.js'
 import { createHyperlink } from './hyperlink.js'
+import { renderBlockquoteWindowed } from './markdownBlockquote.js'
 import {
   markdownLexGuard,
   maxNestingFallbackToken,
 } from './markdownLexLevel.js'
+import {
+  lheadingMatchesOverride,
+  lexWithWindowing,
+  type WindowedToken,
+} from './markdownWindowed.js'
 import { stripPromptXMLTags } from './messages.js'
 import { stripRawHyperlinks } from './stripRawHyperlinks.js'
 import type { ThemeName } from './theme.js'
@@ -86,6 +91,20 @@ export function configureMarked(): void {
             )
           : undefined
       },
+      // CC 2.1.295 changelog #056 — bounded lheading while windowed-lexing.
+      // Official verbatim (v295 `Ke` extension, md_v295_pretty.js:433; v296
+      // re-verified @221722111 — re-minified name, identical body):
+      //   lheading(e){return(J.isHeld()?Y.test(e):be.test(e))?!1:void0}
+      // `false` = fall through to marked's original tokenizer; `undefined` =
+      // no token (marked moves to the next rule). While the windowed lexer's
+      // hold counter is up, the test is the {1,100}-bounded regex so a huge
+      // non-heading can't backtrack marked's original `(?:[^\n]+\n)+?` (the
+      // catastrophic-backtracking half of the freeze); when not held the test
+      // is marked's original regex, so behavior is identical to having no
+      // override at all.
+      lheading(src) {
+        return lheadingMatchesOverride(src) ? false : undefined
+      },
       // At-cap flattening fallback. Official verbatim:
       //   paragraph(e){let t=B(this,e);return t?{type:"paragraph",...t}:!1}
       //   text(e){let t=B(this,e);return t?{type:"text",...t}:!1}
@@ -110,14 +129,33 @@ export function applyMarkdown(
 ): string {
   configureMarked()
   try {
-    return marked
-      // CC 2.1.295 P0 render-security: strip RAW OSC-8 hyperlink sequences
-      // from untrusted source BEFORE lexing (official `Ecn` control-char
-      // walkTokens strip, @220891500 region) so smuggled clickable cells
-      // never reach the terminal. Markdown-generated links are unaffected —
-      // `formatToken`'s link renderer emits OSC-8 downstream of this strip.
-      .lexer(stripPromptXMLTags(stripRawHyperlinks(content)))
-      .map(_ => formatToken(_, theme, 0, null, null, highlight))
+    // CC 2.1.295 changelog #056 — official TNt entry @220897948 (v296
+    // re-verified: T$t @221722950, same structure under re-minified names):
+    //   TNt(e,t,n){Wft();let r=qK(e),s=sXe(r)&&ow();
+    //     return Ecn(iXe(Em,r)).map((o)=>PH(o,t,{...})).join("").trim()}
+    // The whole-text `marked.lexer` call is replaced by the windowed entry
+    // (`iXe` → lexWithWindowing): whole-text-safe input still takes marked's
+    // own lexer unchanged; anything larger is lexed in 1000-line windows with
+    // the bounded lheading hold, so a tens-of-thousands-of-lines response
+    // can't freeze the render loop. Every top-level token renders through the
+    // PH wrapper (renderTokenWindowed below).
+    //
+    // PIPELINE ORDERING (reconciled with main's audited P0 render cluster,
+    // occ153 §9.2): main's raw OSC-8 strip (`stripRawHyperlinks`) + prompt-XML
+    // strip stay PRE-LEX, over the exact text the windowed lexer consumes —
+    // the same slot the official's own pre-lex normalization `qK(e)` occupies
+    // before `iXe`. The salvage branch's post-lex `Ecn` token sanitizer
+    // (markdownSanitize.ts, #031/#050 family) is deliberately NOT adopted:
+    // main's pre-lex strip supersedes its raw-control-byte role (complete
+    // OSC-8 sequences are removed entirely before any lexer sees them, so
+    // there is no inert residue for a token sanitizer to defang), and the
+    // windowed path keeps its own second layer (PH strip below) for raw
+    // control bytes surfaced by windowed tokenization.
+    return lexWithWindowing(
+      marked,
+      stripPromptXMLTags(stripRawHyperlinks(content)),
+    )
+      .map(_ => renderTokenWindowed(_, theme, highlight, 0))
       .join('')
       .trim()
   } catch (error) {
@@ -129,6 +167,57 @@ export function applyMarkdown(
     }
     throw error
   }
+}
+
+// CC 2.1.295 changelog #056 — official PH wrapper regexes
+// (md_v295_pretty.js:346, verbatim; v296 re-verified @221722950 region —
+// same literals, re-minified names):
+//   Ue=/\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
+//   Mt=/\x9d|\x1b(?!\[)/   Dt=/\x9d/g   Wt=/\x1b(?!\[)/g
+// biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `Ue` — the OSC 8 ESC/BEL bytes ARE the wrapper's match target
+const OSC8_SEQUENCE = /\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
+// biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `Mt` — the C1/bare-ESC control bytes ARE the wrapper's match target
+const WINDOWED_CONTROL_TEST = /\x9d|\x1b(?!\[)/
+const C1_OSC_TERMINATOR = /\x9d/g
+// biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `Wt` — the bare-ESC control byte IS the wrapper's match target
+const BARE_ESCAPE = /\x1b(?!\[)/g
+
+/**
+ * Official `PH(e,t,n)` @220898328 (v296 re-verified — identical body under a
+ * re-minified name): render one token; when it came from the windowed lexer
+ * (`windowed:true`) and its rendered output carries OSC8 / C1 / bare-ESC
+ * bytes (raw source the normal inline path would have consumed), strip them.
+ * Applied at the official's two PH sites: the top-level entry map and the
+ * blockquote `draw` callback.
+ *
+ * Exported for the component render path (Markdown.tsx) — the official
+ * component serializer threads the same windowed-marking strip through its
+ * token renderer.
+ */
+export function renderTokenWindowed(
+  token: Token,
+  theme: ThemeName,
+  highlight: CliHighlight | null,
+  quotesAround: number,
+): string {
+  const rendered = formatToken(
+    token,
+    theme,
+    0,
+    null,
+    null,
+    highlight,
+    null,
+    quotesAround,
+  )
+  return 'windowed' in token &&
+    (token as WindowedToken).windowed === true &&
+    WINDOWED_CONTROL_TEST.test(rendered)
+    ? rendered
+        .replace(OSC8_SEQUENCE, '')
+        .replace(C1_OSC_TERMINATOR, '')
+        .replace(BARE_ESCAPE, '')
+    : rendered
 }
 
 /**
@@ -151,24 +240,31 @@ export function formatToken(
   parent: Token | null = null,
   highlight: CliHighlight | null = null,
   orderedListMeta: OrderedListMeta | null = null,
+  // Official Ut option `quotesAround:w=0` (CC 2.1.295 #067): how many
+  // blockquote levels an ancestor already drew bars for. Threaded through
+  // list/list_item recursion; consumed ONLY by the blockquote case as
+  // `around` (bars an ancestor level already painted must not be repainted).
+  quotesAround = 0,
 ): string {
   switch (token.type) {
-    case 'blockquote': {
-      const inner = (token.tokens ?? [])
-        .map(_ => formatToken(_, theme, 0, null, null, highlight))
-        .join('')
-      // Prefix each line with a dim vertical bar. Keep text italic but at
-      // normal brightness — chalk.dim is nearly invisible on dark themes.
-      // Render the bar on every line — including blank lines between
-      // paragraphs — so the left bar is continuous across the whole blockquote.
-      const bar = chalk.dim(BLOCKQUOTE_BAR)
-      return inner
-        .split(EOL)
-        .map(line =>
-          stripAnsi(line).trim() ? `${bar} ${chalk.italic(line)}` : bar,
-        )
-        .join(EOL)
-    }
+    case 'blockquote':
+      // CC 2.1.295 changelog #067 — official case"blockquote" @220898676
+      // (v296 re-verified @221718500 region — row-group renderer with the
+      // same constants: depth limit 6, bar cap 16):
+      //   return Me(e.tokens??[], w, (u,f)=>PH(u,t,{listDepth:0,
+      //     orderedListNumber:null, parent:null, highlight:i, ...,
+      //     quotesAround:f}))
+      // Row-group renderer: classic per-line dim-bar+italic below depth 6,
+      // one-shot capped bar prefix (max 16) at depth >= 6 — no per-level
+      // re-split/re-join blowup on deeply nested quotes (the pre-v295
+      // O(depth × lines) freeze + gigabyte intermediate strings). Blank lines
+      // pass through unchanged (official Nt; resolves OCC's old blank→bar
+      // divergence, including the old trailing-bar after the final newline).
+      return renderBlockquoteWindowed(
+        token.tokens ?? [],
+        quotesAround,
+        (child, depth) => renderTokenWindowed(child, theme, highlight, depth),
+      )
     case 'code': {
       // CC 2.1.280 changelog #071: fenced code blocks that don't name a
       // language are colored like inline code. Official v280 @202965215
@@ -309,6 +405,10 @@ export function formatToken(
             token,
             highlight,
             listMeta,
+            // CC 2.1.295 #067 — thread the ancestor blockquote depth so a
+            // quote nested inside a list item doesn't repaint bars already
+            // drawn by its ancestors.
+            quotesAround,
           ),
         )
         .join('')
@@ -340,7 +440,7 @@ export function formatToken(
         .filter(_ => _.type !== 'checkbox')
         .map(
           _ =>
-            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, item, highlight, orderedListMeta)}`,
+            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, item, highlight, orderedListMeta, quotesAround)}`,
         )
         .join('')
         .replace(/^(?:[ \t]*\n)+/, '')

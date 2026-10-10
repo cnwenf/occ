@@ -6,7 +6,8 @@ import { Ansi, Box, Text, useTheme } from '../ink.js';
 import { BLACK_CIRCLE } from '../constants/figures.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
-import { configureMarked, formatToken, MARKDOWN_STACK_FALLBACK_MESSAGE } from '../utils/markdown.js';
+import { configureMarked, formatToken, MARKDOWN_STACK_FALLBACK_MESSAGE, renderTokenWindowed } from '../utils/markdown.js';
+import { lexWithWindowing } from '../utils/markdownWindowed.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
 import { streamingTextStore } from './streamingTextStore.js';
 import type { ThemeName } from '../utils/theme.js';
@@ -128,7 +129,31 @@ function cachedLexer(content: string): Token[] {
     tokenCache.set(key, hit);
     return hit;
   }
-  const tokens = marked.lexer(content);
+  // CC 2.1.295 changelog #056 — the official component path lexes through
+  // the windowed entry: xn @231691728 `let f=Ecn(zr(p?uNo:Em,i))` with
+  //   zr(o,i){try{return iXe(o,i)}catch(p){return Xr(p,i),Vr(i)}}
+  // (v296 re-verified @221722950 region: same call graph, re-minified names).
+  // `iXe` → lexWithWindowing: whole-text-safe content takes marked's own
+  // lexer unchanged; anything larger is lexed in 1000-line windows with the
+  // bounded lheading hold. This is the site of the changelog freeze — the
+  // REPL renders assistant responses through this component, so a
+  // tens-of-thousands-of-lines reply previously ran one whole-text
+  // marked.lexer pass (quadratic paragraph/inline scans) per re-render.
+  // Documented divergences (reconciled with main's audited P0 render
+  // cluster, occ153 §9.2 — not invented):
+  //  • The salvage branch wrapped this call in sanitizeMarkdownTokens (the
+  //    official Ecn, #031/#050 family — NOT adopted here): main's audited
+  //    stripRawHyperlinks already runs at the callers (AssistantTextMessage /
+  //    UserTeammateMessage) before <Markdown>, and src/ink/normalize-text.ts
+  //    sweeps residual C1/bare-ESC at the render layer, so the component path
+  //    keeps main's sanitize chain instead of a second overlapping one.
+  //  • zr's RangeError → synthetic-paragraph fallback is OCC's existing 290
+  //    behavior instead (MarkdownBody's catch → fallback message) — kept, not
+  //    re-invented.
+  // Tokens memoized below may carry `windowed` marks; MarkdownBody renders
+  // them through renderTokenWindowed (the official's PH-wrapped serializer),
+  // which strips raw OSC8/C1/bare-ESC bytes from WINDOWED tokens only.
+  const tokens = lexWithWindowing(marked, content);
   if (tokenCache.size >= TOKEN_CACHE_MAX) {
     // LRU-ish: drop oldest. Map preserves insertion order.
     const first = tokenCache.keys().next().value;
@@ -242,10 +267,12 @@ function MarkdownBody(t0) {
           // trimEnd() only: the code token's first line may carry meaningful
           // leading indentation (Python/YAML); a full .trim() would strip it
           // (acceptance RT① regression) while later lines keep theirs.
+          // CC 2.1.295 #056: rendered through renderTokenWindowed (official PH
+          // wrapper) — identical to formatToken for non-windowed tokens.
           flushNonTableContent();
-          elements.push(<Ansi key={elements.length} dimColor={dimColor}>{formatToken(token, theme, 0, null, null, highlight).trimEnd()}</Ansi>);
+          elements.push(<Ansi key={elements.length} dimColor={dimColor}>{renderTokenWindowed(token, theme, highlight, 0).trimEnd()}</Ansi>);
         } else {
-          nonTableContent = nonTableContent + formatToken(token, theme, 0, null, null, highlight);
+          nonTableContent = nonTableContent + renderTokenWindowed(token, theme, highlight, 0);
           nonTableContent;
         }
       }
