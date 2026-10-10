@@ -352,3 +352,43 @@ P3（19 条）：
 ---
 
 **本轮结账**：landed **39** = P0 4 + P1 15 + P2/P3 20；STAGED **60** = P1 10 + P2 31 + P3 19；N/A **44**（§3 族级）—— 39+60+44 = 143 ✓ 无静默丢弃。2.1.296 next-only 顺延不变（§4）。
+
+## §9 Leader 收口裁决（2026-10-10，OCC-153）
+
+### §9.0 并行运行对账（事实记录）
+
+本轮出现两个独立程序员 run 平行执行同一 2.1.295 移植：
+- **获救 run 链**（f7902863/f2414eaf 抢救 + 续作）已合入 main：`ce6184a`→`6270e7a`(P0 render)→`c47976c`→`d242c13`(#061)→`7f60e40`(§8 closeout)→`d474a2b`(**release 2.1.378**)→`9137d91`(merge)→`644764b`(README 2.1.295)→`3042443`+`69b1282`（验收 NEEDS_CHANGES 修复轮：P1×2 must-fix + 11 defects 含 SEC-1/2，+97 tests，9141 pass sharded，zero net-new fail，build+headless+REPL smoke green）。安全审核与验收修复 substance 均在该链内完成并有 commit 级证据。
+- **第二 run**（评论 `cb2aba55`）独立完成同轮移植后按「顺延 if preempted」条款**未合并、未擅自 tag/release**，成果保全于分支 `agent/occ/f29b7705-1791569680`@`1d4bbd2`。**main 拥有 2.1.378 版本号与实现所有权**；第二 run 的 release commit 已从其分支头 drop。处置正确，予以记录。
+
+### §9.1 裁决 (a)：v2.1.378 暂缓 tag —— 先补验收员独立终验
+
+main 树上**尚无验收员作为独立 agent 的 PASS 判定**（本轮审核/验收修复由获救 run 内部完成；issue 链条要求「验收员像人类用户一样验证 → 全部合并 main → 分支清理 → 通知程序员发版」）。裁决：
+1. 移交 **OCC 验收员** 对 main `69b1282`（2.1.378）做独立终验（人类用户视角真实使用 REPL/headless、对齐主张抽验、SEC-1/2 与 P1×2 must-fix 在树确认、分支清理核验）。安全审核 substance 已在案（SEC-1/2 已修+测试钉住），**不重复送审**。
+2. 验收 PASS 后由验收员通知程序员发版：tag `v2.1.378` → publish.yml **npm 步预期 RED**（OCC-151，非回归）→ 手动 `gh release create v2.1.378 --generate-notes`（幂等）→ parity 核验：**残留缺口应仅剩 v2.1.377**（OCC-151 载体）。
+3. NEEDS_CHANGES 则回程序员修复后重验。
+
+### §9.2 裁决 (b)：salvage 分支 8 项 STAGED-P1 立项下轮采纳
+
+`agent/occ/f29b7705-1791569680`@`1d4bbd2` 含 §8.2 STAGED P1×10 中 **8 项的完整移植**（专项二进制取证 + byte-offset 证据注释 + 测试，基于 v295 ELF md5 `4f067be625a3fc99f1c76a563d14cfdb`）：#017（printTextResults）、#035（context.ts worktree）、#037半（launchToolList）、#044（bash ast for-loop glob）、#056（markdownWindowed）、#067（markdownBlockquote）、#072（StreamingToolExecutor applied-layers）、#091（hljsGrammarPatches/hljsLimit）。裁决：
+- **分支保留、不删除**（下轮采纳载体，待遇同 §5.4 的 npm 补发载体先例）；下轮（次日 autopilot）台账以本节为入口，cherry-pick/参照移植，把 §8.2 从 10 收敛到 2（#090/#095 双方独立取证后均维持 STAGED，与 main 一致）。
+- **采纳警示**：#056/#067/#091 与 main 已审 P0 render 簇（stripRawHyperlinks/conceal、normalize-text tab 展开）有交互，需对位调和而非盲目覆盖。
+- 附带摘取：`test/commands/clear/clear-cost-reset.test.ts` 的 `mock.module` live-binding 毒化修复（进程级污染放大器）。
+
+### §9.3 裁决 (c)：#073 取证口径冲突补记
+
+- 两份独立取证判 **NO-OP**（评论 `e04419b1`：OCC grep 0 命中 server-managed settings cache，结构性免疫；`cb2aba55` 同判）。
+- main 已验收树为 **PORTED**（`src/plugins/managedPlugins.ts` + `pluginIdentifier.ts`/`mcpbHandler.ts` + `managedPluginsVouching295.test.ts`，经验收修复轮）。
+- **裁决：以 main 已验收实现为准**（结构性 parity 的防御纵深，测试钉住）。取证教训入账：**grep 0 命中 ≠ 无受攻击面** —— vouch 基建（remoteVerified/vouchedTiers）OCC 早已存在，官方 295 的修复是把 plugin provenance 接线到该基建；单 token grep 会漏判"接线型"修复。下轮起 #073 复核以 main 实现为基线，N/A 判定不得只凭 grep 0 命中。
+
+### §9.4 分支清理状态（裁决时点）
+
+- `fix/occ153-review`：fully-merged，**Leader 已删**（`git branch -r --merged` 核验后 push --delete）。
+- `agent/occ/f29b7705-1791569680`：**有意保留**（§9.2 采纳载体）。
+- `agent/occ/f7902863-*` 等获救 run 分支：已被平台/前序 run 清理（fetch --prune 确认）。
+- §5.4 所记 `agent/occ/01bb1c9b`：已不在远端（本节更正，该债务项关闭）。
+- 当前远端 = `main` + 1 载体分支，满足验收"残留分支清理"口径（载体分支为记录在案的例外）。
+
+### §9.5 发布状态快照（裁决时点，待验收 PASS 后更新）
+
+远端 tags 止于 `v2.1.377`（tag-without-Release，OCC-151 载体）；GitHub Releases Latest = `v2.1.376`；`v2.1.378` 已 bump 在 main（`d474a2b`）**未 tag**。npm `@cnwenf/occ` latest 仍 2.1.367（OCC-151 blocked，等 owner 轮换 NPM_TOKEN）。
