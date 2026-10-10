@@ -171,3 +171,29 @@ ELF 逐站点取证结论（v295 md5 4f067be6…/v296 md5 3c874947…，python m
 5. projectRoot "no longer a working copy" 分支 v295 已存在（非 v296 delta）；OCC 侧属 OCC-46 worktree-pin STAGED 结转，维持 staged。
 
 **裁定：#007/#008/#019 三项在 OCC live surface 上无字节可移植内容，判定 VERIFIED N/A；语义等价保障已由 288#57/onFailureBlock 既有移植承载。非静默丢弃，证据如上。**
+
+### §7.3 会话/恢复簇裁定（#009/#014/#030）：**VERIFIED N/A（三项均为 remote-transport 面或 OCC 已承载等价语义），无代码改动**
+
+ELF 逐站点取证（v295/v296，python mmap.find + 区域 sig 归一化 realdiff，偏移量全部可复核）：
+
+**#030（resume 打断轮重跑）— N/A，remote-transport 专属机械**
+1. `CLAUDE_CODE_RESUME_INTERRUPTED_TURN` 区域 v296 全部 delta 被 `n.isRemoteTransport()` 门控（OCC grep `isRemoteTransport|parkedPermission|resumeStalePromptCancel` = 0 文件）。
+2. 本地恢复面（conversationRecovery 区，v295@231307502 ↔ v296@232059784）**逐字节相同（仅压缩名变化）**。
+3. v296 新增全部为远端件：inherited-ask 领养机制（`inheritedAnswerOff` killswitch `tengu_ccr_inherited_approval_killswitch`、`offerInheritedAnswer` 0→3、深比较输入守卫 + `MI=180000` 新鲜度、`servedCallsNeverSent`（`gXo({forwarding,…})` 构造、遥测 `never_sent`）、`interruptedTurn` 描述符（仅作 `_w`/resumeStalePromptCancel 遥测消费）、`send_now==="stopped"` 队列冲洗。
+4. OCC 本地 `detectTurnInterruption`（conversationRecovery.ts:418）结构性免疫：重跑需尾随未决 tool_use；已完成轮（工具结果在场）→ `{kind:'none'}`，不会重跑。
+
+**#014（resumed subagent 被告知"用户拒绝"）— N/A，修复作用域 = `mcp__remote-devices__`，OCC 无该面且已承载等价语义**
+1. v296 真实 delta 定位（deserializeMessages v295 `MNt`@~216137474 ↔ v296 `C$t`@~216886971，stamped-token 锚定 realdiff）：新函数 `zFt(e,n,r,s)`@216859784 区 —— 把持久化的 `interruptedByShutdown===true` 用户行（`uSe`@207899579：type user + 该 flag + 含 tool_result）当其全部 tool_result 属于未决 `qFt` 组时，剥掉 flag、内容改写为 `V`、置 `toolDenialKind:"interrupted"`，id 并入 `answeredToolUseIds`；调用点 `dt=Je?zFt(Ve,V,nt,[w,...S??[]]):Ve`，门 `Je=G&&!zre()`（G=RESUME_INTERRUPTED_TURN env；`zre()`@211049111=`CLAUDE_CODE_REMOTE_TOOLS_FORWARD===!0`）。
+2. `qFt` 作用域：assistant 行全部 tool_use 名以 `$mo=Bo(da)` 前缀开头；`Bo(e)=\`mcp__${In(e)}__\``@208712902、`da="remote-devices"`@209540839 → 修复只作用于 **remote-devices MCP 调用**（远端 handoff 机械；`handedOff===!0` 行跳过）。后三个 `GFt` 站点（223984756/233621075/238471357）为跨 chunk 同名冲突（`assembleToolPool`），与本修复无关。
+3. 内容常量 v295 已有（仅换名）：`Iu/Hu`="[Request interrupted by user for tool use]"、`oN/bP`="[Tool call interrupted: the session ended before this call's result was recorded…]"、`sN/gN`="[Tool call result not in this copy…]"；`V=!G?Hu:y?gN:bP` 选择逻辑两版相同。token 计数：`toolDenialKind:"interrupted"` 3→4（唯一新站点 @216860140 即 zFt 内）、`interruptedByShutdown` 28→29（新站点 @216860080 同区）。
+4. OCC 侧三重免疫：(a) 无 `interruptedByShutdown` **写入者**（仅 messages.ts:3300/3337 读侧 scan-continue，2.1.285 #54 移植）→ `uSe` 输入集恒空；(b) 无 remote-devices server（grep 0）→ `qFt/GFt` 作用域恒空；(c) OCC `ensureToolResultPairing` 对尾随未决 tool_use 已填 `SESSION_ENDED_MESSAGE`（messages.ts:253，字节等同官方 `oN/bP`；resumePlaceholderFamily281 测试承载）—— 即官方修复后的行为，不存在"用户拒绝"误标路径。
+
+**#009（headless 启动被关掉的 .mcp.json/plugin server）— N/A（logic-only 上游修复不可低成本定位；OCC 触发条件不存在）**
+1. 全部相关 token 计数 v295→v296 相同：`disabledMcpServers` 6/6（站点区域逐一 realdiff：仅压缩名/chunk-import 变化）、`disabledMcpjsonServers` 32/32、`enabledMcpjsonServers` 27/27、`enableAllProjectMcpServers` 20/20、`strict-mcp-config` 24/24、`add_directory` 14/14、`reconnectMcp` 29/29、`refreshMcp` 27/27、`reloadPlugins` 10/10；无新增字符串字面量（added296/removed296 扫描：mcp 相关命中均为改名噪声对）。mcpconfig 窗口唯一实变 = `OHe→sDe`（`reopen_refetch`/`before_handler` 分类，属 #030 remote-tools 族，非本项）。模块布局在两版间大幅移位，索引配对区域 diff 不可靠 → 定位成本超收益，停止 ELF 挖掘（判断依据记录在案，非静默丢弃）。
+2. OCC 侧行为审计（触发条件不存在 + 每次刷新即场咨询）：
+   - headless 无 `add_directory`（grep 0 文件）→ "改目录后" 触发路径不存在；`setCwd` 仅 setup.ts 启动期（MCP 启动前）。
+   - `reload_plugins` 控制请求（print.ts:3237）→ `applyPluginMcpDiff()`（print.ts:1963）**每次现调 `getAllMcpConfigs()` 新鲜解析**，不缓存启动期列表。
+   - 采集点即场过滤（config.ts getClaudeCodeMcpConfigs）：项目 `.mcp.json` 仅 `getProjectMcpServerStatus(name)==='approved'` 进入（:1213，内部咨询 `disabledMcpjsonServers`，utils.ts:371）；手动 server 全量 `!isMcpServerDisabled(name)` + policy（:1235）；plugin server 拆分 disabled/policy-blocked（:1249）；连接点复查（client.ts:3122/3165）。
+   - 结论：官方 bug 条件（reload/cd 后用陈旧列表启动被关 server）在 OCC 的双咨询 + 无 cd 面下不可复现。
+
+**裁定：#009/#014/#030 三项 VERIFIED N/A。会话/恢复簇关闭，P1 余量：#002/#006（frontmatter/tool 面）→ #023（WorkflowTool DoS）→ #016（redaction）→ #050（Windows bash）。**
