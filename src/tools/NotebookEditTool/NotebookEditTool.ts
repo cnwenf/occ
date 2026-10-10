@@ -35,6 +35,10 @@ import {
   stashCheckTimeResolutions,
 } from '../../utils/permissions/symlinkResolutionStash.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import {
+  NOT_UTF8_REFUSAL_MESSAGE,
+  shouldRefuseNonUtf8Edit,
+} from '../../utils/utf8Safety.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from './constants.js'
 import { DESCRIPTION, PROMPT } from './prompt.js'
 import {
@@ -316,6 +320,32 @@ export const NotebookEditTool = buildTool({
         message:
           'File has been modified since read, either by the user or by a linter. Read it again before attempting to write it.',
         errorCode: 10,
+      }
+    }
+
+    // CC 2.1.296 (aen): refuse edits to notebooks whose bytes are not valid
+    // UTF-8. NotebookEdit re-saves the whole file as UTF-8, which would replace
+    // every undecodable byte with U+FFFD. utf16le (FF FE BOM) is exempt — OCC
+    // round-trips it losslessly (see utf8Safety.ts header). Runs before the
+    // content read so nothing is written.
+    try {
+      const rawBytes = await getFsImplementation().readFileBytes(fullPath)
+      const encoding: BufferEncoding =
+        rawBytes.length >= 2 && rawBytes[0] === 0xff && rawBytes[1] === 0xfe
+          ? 'utf16le'
+          : 'utf8'
+      if (shouldRefuseNonUtf8Edit(rawBytes, encoding)) {
+        return {
+          result: false,
+          message: NOT_UTF8_REFUSAL_MESSAGE,
+          errorCode: 12,
+        }
+      }
+    } catch (e) {
+      // ENOENT is handled by the content read below ('Notebook file does not
+      // exist.'); any other read error propagates.
+      if (!isENOENT(e)) {
+        throw e
       }
     }
 

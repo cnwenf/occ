@@ -2,7 +2,10 @@
  * Secret-redaction engine - public API with readable names.
  *
  * Port of the official Claude Code 2.1.286 general-purpose redactor rewrite
- * (changelog bullets #17-#21). Internal modules keep the upstream minified
+ * (changelog bullets #17-#21), upgraded to the official 2.1.296 engine
+ * (two-phase plain/escaped assign scanner + redactOnly gating + per-rule
+ * prefilter; see engine.ts / assignScanner.ts / rules.ts headers). Internal
+ * modules keep the upstream minified
  * identifiers verbatim (precedent: src/services/mcp/redaction.ts keeps
  * tQn/JGo/ezo) so future version diffs stay mechanical; this barrel is the
  * only surface the rest of OCC should import.

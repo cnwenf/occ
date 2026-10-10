@@ -74,6 +74,11 @@ import {
   assertSymlinkResolutionsUnchangedForWrite,
   stashCheckTimeResolutions,
 } from '../../utils/permissions/symlinkResolutionStash.js'
+import {
+  containsReplacementChar,
+  shouldRefuseUfffdWrite,
+  UFFFD_WRITE_REFUSAL_MESSAGE,
+} from '../../utils/utf8Safety.js'
 import { gitDiffSchema, hunkSchema } from '../FileEditTool/types.js'
 import { FILE_WRITE_TOOL_NAME, getWriteToolDescription } from './prompt.js'
 import {
@@ -618,6 +623,21 @@ export const FileWriteTool = buildTool({
             toolPermissionContext,
           ),
       })
+    }
+
+    // CC 2.1.296 (UTs): refuse the write when the file on disk is not valid
+    // UTF-8 AND the new content holds U+FFFD — the marker Read shows for bytes
+    // it could not decode. If the content came from Read, writing it back would
+    // destroy the original characters. Only reached when the file exists
+    // (meta !== null); utf16le is exempt (OCC round-trips it losslessly). This
+    // is the Write-path companion to Edit/NotebookEdit's aen load guard — Edit
+    // pre-empts a non-UTF-8 disk file before a U+FFFD-content check could
+    // matter, so Write is UTs's only non-redundant home. Nothing is written.
+    if (meta !== null && containsReplacementChar(content)) {
+      const diskBytes = await getFsImplementation().readFileBytes(fullFilePath)
+      if (shouldRefuseUfffdWrite(diskBytes, meta.encoding, content)) {
+        throw new FileStateError(UFFFD_WRITE_REFUSAL_MESSAGE)
+      }
     }
 
     // Ensure parent directory exists right before the write. The binary does

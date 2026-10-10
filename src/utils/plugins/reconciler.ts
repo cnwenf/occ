@@ -21,6 +21,7 @@ import {
   getDeclaredMarketplaces,
   loadKnownMarketplacesConfig,
 } from './marketplaceManager.js'
+import { readOwnOption } from './optionKeySafety.js'
 import {
   findImitatedReservedName,
   isLocalMarketplaceSource,
@@ -61,7 +62,9 @@ export function diffMarketplaces(
   const upToDate: string[] = []
 
   for (const [name, intent] of Object.entries(declared)) {
-    const state = materialized[name]
+    // 2.1.296: own-property read — a declared name like `constructor` must
+    // report "missing" instead of hitting an Object.prototype member.
+    const state = readOwnOption(materialized, name)
     const normalizedIntent = normalizeSource(intent.source, opts?.projectRoot)
 
     if (!state) {
