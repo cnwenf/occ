@@ -120,6 +120,7 @@ const {
 } = await import('../modelOptions.js')
 const {
   COST_TIER_2_10,
+  COST_TIER_2_10_CACHE_READ_0_10,
   formatModelPricing,
   getModelCosts,
 } = await import('../../modelCost.js')
@@ -346,14 +347,18 @@ describe('2.1.284: display + marketing names (catalog display_name "Sonnet 5.5")
   })
 })
 
-describe('2.1.284: cost tier (catalog pricing "tier_2_10" @198712738)', () => {
-  test('getModelCosts dispatches claude-sonnet-5-5 to tier_2_10', () => {
-    expect(getModelCosts('claude-sonnet-5-5', {} as Usage)).toEqual(COST_TIER_2_10)
-    expect(getModelCosts('us.anthropic.claude-sonnet-5-5', {} as Usage)).toEqual(
-      COST_TIER_2_10,
+describe('2.1.296: cost tier (catalog pricing "tier_2_10_cache_read_0_10")', () => {
+  test('getModelCosts dispatches claude-sonnet-5-5 to tier_2_10_cache_read_0_10', () => {
+    // CC 2.1.296 (#059): cache-read repricing $0.20 → $0.10 — the catalog
+    // entry for claude-sonnet-5-5 now carries pricing:"tier_2_10_cache_read_0_10".
+    expect(getModelCosts('claude-sonnet-5-5', {} as Usage)).toEqual(
+      COST_TIER_2_10_CACHE_READ_0_10,
     )
-    // claude-sonnet-5 keeps the same 2/10 tier (2.1.243 repricing) — the
-    // dispatch must not shadow it
+    expect(getModelCosts('us.anthropic.claude-sonnet-5-5', {} as Usage)).toEqual(
+      COST_TIER_2_10_CACHE_READ_0_10,
+    )
+    // claude-sonnet-5 keeps the 2/10 tier with cache_read $0.20 (2.1.243
+    // repricing, unchanged in 296) — the dispatch must not shadow it
     expect(getModelCosts('claude-sonnet-5', {} as Usage)).toEqual(COST_TIER_2_10)
   })
 })
@@ -438,7 +443,7 @@ describe('2.1.284: Vertex region override (catalog vertex_region_env_var)', () =
 })
 
 describe('2.1.284: picker rows (yi @~203843935 / ST @203844509 / wT @203844326 / fy @203847312 / MT @203850393)', () => {
-  const sonnet55Price = formatModelPricing(COST_TIER_2_10)
+  const sonnet55Price = formatModelPricing(COST_TIER_2_10_CACHE_READ_0_10)
 
   test('getSonnet55Option (yi render) — firstParty', () => {
     expect(getSonnet55Option()).toEqual({

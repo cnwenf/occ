@@ -71,6 +71,8 @@ import {
   ShellError,
   TelemetrySafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
 } from '../../utils/errors.js'
+import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
+import { gitExe } from '../../utils/git.js'
 import { executePermissionDeniedHooks } from '../../utils/hooks.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -162,6 +164,122 @@ const SLOW_PHASE_LOG_THRESHOLD_MS = 2000
  * 2.1.282-era contentAttributes block in runToolUse below.)
  */
 const WEB_OUTPUT_TOOL_NAMES = new Set([WEB_FETCH_TOOL_NAME, WEB_SEARCH_TOOL_NAME])
+
+/**
+ * CC 2.1.296 (#044): OTel `git_commit_id` for quiet / global-option git
+ * commits. Official gate:
+ *   `R7t(e,n)=xd()&&(e.name===Bash||e.name===PowerShell)&&typeof n==="object"
+ *     &&n!==null&&"command"in n&&typeof n.command==="string"&&Oss(n.command)`
+ * with `xd()` ≡ isToolDetailsLoggingEnabled() and `Oss` the command-shape
+ * matcher (definition not in the 296 evidence). The changelog item fixes
+ * commits made via `git commit -q` and `git -C <dir> commit` going
+ * unrecorded, so `Oss` recognizes interspersed flags and global options
+ * before the subcommand. The regex below mirrors OCC's established
+ * `gitCmdRe` tolerance pattern from gitOperationTracking.ts (`-c`/`-C <arg>`
+ * and `--k=v` global options), replacing the former plain
+ * `/\bgit\s+commit\b/`.
+ */
+const GIT_COMMIT_COMMAND_RE =
+  /\bgit(?:\s+-[cC]\s+\S+|\s+--\S+=\S+)*\s+commit\b/
+
+/** Short timeout — a telemetry-adjacent read must never stall tool exec. */
+const GIT_HEAD_STATE_TIMEOUT_MS = 5000
+
+type GitHeadState = { headSha?: string; branch?: string }
+
+/**
+ * Injectable exec seam for the HEAD-state reads. Defaults to the real
+ * `execFileNoThrow`; tests pass a fake so they stay hermetic — bun's
+ * process-global `mock.module` in dedicated-mock test files (e.g. the
+ * execFileNoThrow mockers) would otherwise leak into real-git spawns and
+ * flip these reads to undefined depending on shard composition.
+ */
+type GitExecFn = typeof execFileNoThrow
+
+/**
+ * Pure command-shape half of the official gate (`Oss(n.command)` — the
+ * definition is not in the 296 evidence; the changelog item names the two
+ * missed shapes, `git commit -q` and `git -C <dir> commit`). Exported for
+ * tests.
+ */
+export function isGitCommitCommandShape(command: string): boolean {
+  return GIT_COMMIT_COMMAND_RE.test(command)
+}
+
+function isOtelGitCommitToolCall(toolName: string, input: unknown): boolean {
+  return (
+    isToolDetailsLoggingEnabled() &&
+    (toolName === BASH_TOOL_NAME || toolName === POWERSHELL_TOOL_NAME) &&
+    typeof input === 'object' &&
+    input !== null &&
+    'command' in input &&
+    typeof (input as { command: unknown }).command === 'string' &&
+    isGitCommitCommandShape((input as { command: string }).command)
+  )
+}
+
+/**
+ * Read the repo HEAD state (sha + branch) at the session cwd — OCC's side of
+ * the official `ZTo` pre-state read (definition not in the evidence).
+ * Returns undefined outside a git repo or on spawn failure; never throws —
+ * telemetry must not break tool execution. Exported for tests.
+ */
+export async function readGitHeadState(
+  exec: GitExecFn = execFileNoThrow,
+): Promise<GitHeadState | undefined> {
+  try {
+    const [head, branch] = await Promise.all([
+      exec(gitExe(), ['rev-parse', 'HEAD'], {
+        timeout: GIT_HEAD_STATE_TIMEOUT_MS,
+        preserveOutputOnError: false,
+        useCwd: true,
+      }),
+      exec(gitExe(), ['rev-parse', '--abbrev-ref', 'HEAD'], {
+        timeout: GIT_HEAD_STATE_TIMEOUT_MS,
+        preserveOutputOnError: false,
+        useCwd: true,
+      }),
+    ])
+    if (head.code !== 0 && branch.code !== 0) {
+      return undefined // not a git repo
+    }
+    const headSha =
+      head.code === 0 ? head.stdout.trim() || undefined : undefined
+    const branchRaw = branch.code === 0 ? branch.stdout.trim() : ''
+    // Detached HEAD prints the literal 'HEAD' (git.ts convention).
+    const branchName =
+      branchRaw && branchRaw !== 'HEAD' ? branchRaw : undefined
+    return { headSha, branch: branchName }
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * OCC's side of the official `Mss(stdout,cwd,preState)`: stdout sha first
+ * (the `[branch sha]` line of a plain commit — this covers `git -C <dir>
+ * commit` too), else the pre/post HEAD-state diff (the official mechanism
+ * for `git commit -q`, whose stdout is empty). A root commit (no pre HEAD,
+ * post HEAD present) resolves through the diff as well. Exported for tests.
+ */
+export async function resolveGitCommitInfo(
+  stdout: string,
+  preState: GitHeadState | undefined,
+  exec: GitExecFn = execFileNoThrow,
+): Promise<{ commitId: string; branch?: string } | undefined> {
+  const fromStdout = parseGitCommitId(stdout)
+  if (fromStdout) {
+    return { commitId: fromStdout }
+  }
+  if (preState === undefined) {
+    return undefined
+  }
+  const postState = await readGitHeadState(exec)
+  if (postState?.headSha && postState.headSha !== preState.headSha) {
+    return { commitId: postState.headSha, branch: postState.branch }
+  }
+  return undefined
+}
 
 export function classifyToolError(error: unknown): string {
   if (
@@ -1227,6 +1345,15 @@ async function checkPermissionsAndCallTool(
   } else if (processedInput !== backfilledClone) {
     callInput = processedInput
   }
+  // CC 2.1.296 (#044): pre-call HEAD-state snapshot for git-commit commands
+  // (official: `uo=s.session.project?.cwd; if(uo!==void 0&&R7t(e,vt))
+  // Ur=await ZTo(uo)` — captured after input finalization, BEFORE the tool
+  // call). Consumed by the post-call resolveGitCommitInfo below so a commit
+  // that prints no sha (`git commit -q`) is still recorded.
+  let gitCommitPreState: GitHeadState | undefined
+  if (isOtelGitCommitToolCall(tool.name, processedInput)) {
+    gitCommitPreState = await readGitHeadState()
+  }
   try {
     const result = await tool.call(
       callInput,
@@ -1408,20 +1535,33 @@ async function checkPermissionsAndCallTool(
       ...mcpToolDetailsForAnalytics(tool.name, mcpServerType, mcpServerBaseUrl),
     })
 
-    // Enrich tool parameters with git commit ID from successful git commit output
+    // Enrich tool parameters with git commit info from successful git commit
+    // output.
+    // CC 2.1.296 (#044): official post-call —
+    //   `ui=!backgroundTaskId&&!interrupted;
+    //    Ka=await Mss(String(gr.data.stdout),cwd,ui?Ur:void 0);
+    //    ts.git_commit_id=Ka.commitId; if(Ka.branch)ts.git_branch=Ka.branch`
+    // — a backgrounded or interrupted command skips the pre/post HEAD-state
+    // diff (it may not have completed), and a HEAD-state-derived branch
+    // also flows into `git_branch`.
     if (
-      isToolDetailsLoggingEnabled() &&
-      (tool.name === BASH_TOOL_NAME || tool.name === POWERSHELL_TOOL_NAME) &&
-      'command' in processedInput &&
-      typeof processedInput.command === 'string' &&
-      processedInput.command.match(/\bgit\s+commit\b/) &&
+      isOtelGitCommitToolCall(tool.name, processedInput) &&
       result.data &&
       typeof result.data === 'object' &&
       'stdout' in result.data
     ) {
-      const gitCommitId = parseGitCommitId(String(result.data.stdout))
-      if (gitCommitId) {
-        toolParameters.git_commit_id = gitCommitId
+      const resultData = result.data as Record<string, unknown>
+      const completedInForeground =
+        !resultData.backgroundTaskId && resultData.interrupted !== true
+      const gitCommitInfo = await resolveGitCommitInfo(
+        String(resultData.stdout),
+        completedInForeground ? gitCommitPreState : undefined,
+      )
+      if (gitCommitInfo?.commitId) {
+        toolParameters.git_commit_id = gitCommitInfo.commitId
+        if (gitCommitInfo.branch) {
+          toolParameters.git_branch = gitCommitInfo.branch
+        }
       }
     }
 

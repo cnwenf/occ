@@ -56,6 +56,10 @@ const PROVIDER_MANAGED_ENV_VARS = new Set([
   // 2.1.257 (Gap-113b): member of the official provider-managed set `Tg`
   // (byte-verified in the 2.1.258 ELF).
   'CLAUDE_CODE_SUBAGENT_MODEL_FORCE',
+  // CC 2.1.296 (#003): member of the official managed-env list (@208771578)
+  // and 3P-probe list (@208765415); schema-registered as `H.str()` right
+  // after SUBAGENT_MODEL/_FORCE (`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL:()=>LU`).
+  'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL',
 ])
 
 const PROVIDER_MANAGED_ENV_PREFIXES = [
@@ -175,6 +179,10 @@ export const SAFE_ENV_VARS = new Set([
   'CLAUDE_CODE_USE_BEDROCK',
   'CLAUDE_CODE_USE_FOUNDRY',
   'CLAUDE_CODE_USE_VERTEX',
+  // CC 2.1.296 (#003): same class of model-routing var as
+  // CLAUDE_CODE_SUBAGENT_MODEL above — a model ID preference with no
+  // endpoint/trust impact.
+  'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL',
   'DISABLE_AUTOUPDATER',
   'DISABLE_BUG_COMMAND',
   'DISABLE_COMPACT',

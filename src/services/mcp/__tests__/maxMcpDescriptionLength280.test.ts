@@ -31,11 +31,14 @@ import {
  * The `M.int({min:1,digitsOnly:!0})` transform is the contract asserted here:
  * digits-only integers >= 1 are honored with NO upper clamp; everything else
  * (unset, empty, non-digit, sci-notation, digit separators, fractional, 0,
- * negative) falls back to 2048.
+ * negative) falls back to the default. The default was t4e=2048 in 2.1.280;
+ * CC 2.1.296 #061 raised it to 4096 (see mcpDescriptionCap296.test.ts) —
+ * DEFAULT_LIMIT below tracks the CURRENT default, so the parse/truncation
+ * contract assertions here remain version-accurate.
  */
 
 const ENV_KEY = 'CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH'
-const DEFAULT_LIMIT = 2048
+const DEFAULT_LIMIT = 4096 // 2048 in 2.1.280; raised by CC 2.1.296 #061
 /** Official suffix: U+2026 HORIZONTAL ELLIPSIS, one space, `[truncated]`. */
 const SUFFIX = '… [truncated]'
 
@@ -81,7 +84,7 @@ function repeat(char: string, count: number): string {
 }
 
 describe('2.1.280 #003 — getMaxMcpDescriptionLength (binary lV)', () => {
-  test('unset env uses the 2048 default (binary t4e)', () => {
+  test('unset env uses the 4096 default (2.1.280 t4e=2048, raised by 296 #061)', () => {
     expect(getMaxMcpDescriptionLength()).toBe(DEFAULT_LIMIT)
   })
 
@@ -162,20 +165,20 @@ describe('2.1.280 #003 — truncateMcpDescription (binary Qo)', () => {
     )
   })
 
-  test('invalid env values truncate at the 2048 default', () => {
+  test('invalid env values truncate at the 4096 default', () => {
     process.env[ENV_KEY] = '1e6' // digitsOnly rejects → default
-    const text = repeat('y', 3000)
+    const text = repeat('y', 5000)
     const result = truncateMcpDescription(text, 'Server instructions')
     expect(result).toBe(`${repeat('y', DEFAULT_LIMIT)}${SUFFIX}`)
   })
 
   test('logs the official template when a server name is supplied', () => {
-    const text = repeat('z', 3000)
+    const text = repeat('z', 5000)
     truncateMcpDescription(text, 'Server instructions', 'my-srv')
     expect(mcpDebugLog).toEqual([
       {
         serverName: 'my-srv',
-        message: `Server instructions truncated from 3000 to ${DEFAULT_LIMIT} chars`,
+        message: `Server instructions truncated from 5000 to ${DEFAULT_LIMIT} chars`,
       },
     ])
   })
@@ -203,7 +206,7 @@ describe('2.1.280 #003 — truncateMcpDescription (binary Qo)', () => {
   })
 
   test('no log when the server name is omitted (r!==void 0 guard)', () => {
-    truncateMcpDescription(repeat('z', 3000), 'Server instructions')
+    truncateMcpDescription(repeat('z', 5000), 'Server instructions')
     expect(mcpDebugLog).toEqual([])
   })
 })
@@ -279,12 +282,12 @@ describe('2.1.280 #003 — truncateMcpServerInstructions (binary Zo)', () => {
   })
 
   test('oversized instructions are truncated and logged', () => {
-    const result = truncateMcpServerInstructions(repeat('i', 2100), 'srv')
+    const result = truncateMcpServerInstructions(repeat('i', 5000), 'srv')
     expect(result).toBe(`${repeat('i', DEFAULT_LIMIT)}${SUFFIX}`)
     expect(mcpDebugLog).toEqual([
       {
         serverName: 'srv',
-        message: `Server instructions truncated from 2100 to ${DEFAULT_LIMIT} chars`,
+        message: `Server instructions truncated from 5000 to ${DEFAULT_LIMIT} chars`,
       },
     ])
   })

@@ -522,10 +522,20 @@ export function loadScriptFromSource(
     throw new WorkflowScriptError(`Workflow script ${label} is empty`)
   }
 
-  const { metaJson, bodyStart } = extractMetaStatement(source)
+  // CC 2.1.296 (#043): CRLF acceptance — the official script sanitizer now
+  // normalizes Windows line endings before parsing (binary `I3n(e)=
+  // Lpe(gf(e).replace(/\r\n/g,"\n").split("\n").map(Rn).join("\n"),R3n)`):
+  // `\r\n` → `\n` up front. Without this, a CRLF-saved script fails the
+  // `export const meta` first-statement match / determinism scans on the
+  // stray `\r`s. Minimal port: normalization only — OCC does not adopt the
+  // per-line control-char strip (Rn) or the 10240-char cap (R3n), which
+  // belong to the official's separate string-field sanitizer family.
+  const normalizedSource = source.replace(/\r\n/g, '\n')
+
+  const { metaJson, bodyStart } = extractMetaStatement(normalizedSource)
   const meta = parseMeta(metaJson)
 
-  let body = source.slice(bodyStart).trim()
+  let body = normalizedSource.slice(bodyStart).trim()
   if (!body) {
     throw new WorkflowScriptError(
       `Workflow script ${label} has no body after \`export const meta\``,
@@ -543,7 +553,10 @@ export function loadScriptFromSource(
     hasDefaultExport,
     defaultExportExpr,
     scriptPath: scriptPath ?? '<inline>',
-    source,
+    // Normalized (CC 2.1.296 #043): consumers recompile this via the VM
+    // engine (WorkflowTool/primitives `script: loaded.source`), so they get
+    // the CRLF→LF version the official sanitizer produces.
+    source: normalizedSource,
   }
 }
 
