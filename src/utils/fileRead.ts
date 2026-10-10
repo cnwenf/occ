@@ -12,6 +12,7 @@
  * import from file.ts.
  */
 
+import { isUtf8 } from 'buffer'
 import { logForDebugging } from './debug.js'
 import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 
@@ -66,16 +67,31 @@ export function detectLineEndingsForString(content: string): LineEndingType {
 }
 
 /**
- * Like readFileSync but also returns the detected encoding and original line
- * ending style in one filesystem pass. Callers writing the file back (e.g.
- * FileEditTool) can reuse these instead of calling detectFileEncoding /
- * detectLineEndings separately, which would each redo safeResolvePath +
- * readSync(4KB).
+ * CC 2.1.296 #032 (official IAo, encoding chunk @208689628):
+ * `IAo(n,e)=e==="utf8"&&!isUtf8(n)` — a utf8-decoded buffer whose bytes are
+ * NOT valid UTF-8 decodes lossily (every undecodable byte becomes U+FFFD).
+ * The gate is encoding-conditional: utf16le (BOM-detected) content is never
+ * flagged, matching the official `e==="utf8"&&` guard exactly.
+ */
+export function isLossyUtf8Decode(
+  bytes: Buffer,
+  encoding: BufferEncoding,
+): boolean {
+  return encoding === 'utf8' && !isUtf8(bytes)
+}
+
+/**
+ * Like readFileSync but also returns the detected encoding, original line
+ * ending style, and a lossy-decode flag in one filesystem pass. Callers
+ * writing the file back (e.g. FileEditTool) can reuse these instead of
+ * calling detectFileEncoding / detectLineEndings separately, which would
+ * each redo safeResolvePath + readSync(4KB).
  */
 export function readFileSyncWithMetadata(filePath: string): {
   content: string
   encoding: BufferEncoding
   lineEndings: LineEndingType
+  lossyDecode: boolean
 } {
   const fs = getFsImplementation()
   const { resolvedPath, isSymlink } = safeResolvePath(fs, filePath)
@@ -84,8 +100,14 @@ export function readFileSyncWithMetadata(filePath: string): {
     logForDebugging(`Reading through symlink: ${filePath} -> ${resolvedPath}`)
   }
 
+  // CC 2.1.296 #032 (official nwe): read the raw bytes ONCE, then derive
+  // encoding (BOM sniff), the decoded content, and the lossy flag from the
+  // same buffer — mirroring `{content,encoding,lineEndings,...IAo(i,s)&&
+  // {lossyDecode:!0}}`. Reading a string directly would discard the bytes
+  // needed by isUtf8.
+  const bytes = fs.readFileBytesSync(resolvedPath)
   const encoding = detectEncodingForResolvedPath(resolvedPath)
-  const raw = fs.readFileSync(resolvedPath, { encoding })
+  const raw = bytes.toString(encoding)
   // Detect line endings from the raw head before CRLF normalization erases
   // the distinction. 4096 code units is ≥ detectLineEndings's 4096-byte
   // readSync sample (line endings are ASCII, so the unit mismatch is moot).
@@ -94,6 +116,7 @@ export function readFileSyncWithMetadata(filePath: string): {
     content: raw.replaceAll('\r\n', '\n'),
     encoding,
     lineEndings,
+    lossyDecode: isLossyUtf8Decode(bytes, encoding),
   }
 }
 

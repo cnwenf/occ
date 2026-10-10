@@ -48,6 +48,7 @@ import {
   FileStateError,
   FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
   FILE_NOT_READ_MESSAGE,
+  FILE_NOT_VALID_UTF8_WRITE_MESSAGE,
   FILE_STATE_CURRENT_NOTE,
   fileStateMatchesDisk,
   fileStateMatchesNormalized,
@@ -618,6 +619,17 @@ export const FileWriteTool = buildTool({
             toolPermissionContext,
           ),
       })
+    }
+
+    // CC 2.1.296 #032 (official Write call Kto @216339393): after the
+    // call-time staleness guard (qto), `if(Je?.lossyDecode&&n.includes(
+    // "\uFFFD"))throw new C8(UTs)` — CONDITIONAL on both the disk file decoding
+    // lossily AND the incoming content carrying U+FFFD (what Read showed for
+    // undecodable bytes). Writing such content back would persist the
+    // replacement chars, destroying the original bytes. An intentional
+    // whole-file rewrite (no U+FFFD) or a clean UTF-8 disk file proceeds.
+    if (meta?.lossyDecode && content.includes('\uFFFD')) {
+      throw new FileStateError(FILE_NOT_VALID_UTF8_WRITE_MESSAGE)
     }
 
     // Ensure parent directory exists right before the write. The binary does

@@ -30,6 +30,7 @@ import {
   expandPathForWriteDescriptor,
 } from '../../utils/permissions/filesystem.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import { FILE_NOT_VALID_UTF8_EDIT_MESSAGE } from '../../utils/permissions/fileStateGuard.js'
 import {
   assertSymlinkResolutionsUnchangedForWrite,
   stashCheckTimeResolutions,
@@ -320,8 +321,14 @@ export const NotebookEditTool = buildTool({
     }
 
     let content: string
+    let lossyDecode = false
     try {
-      content = readFileSyncWithMetadata(fullPath).content
+      // CC 2.1.296 #032 (official validateInput @219777185):
+      // `({content:he,lossyDecode:_e}=await E_(G,f$))` — capture the lossy
+      // flag alongside the content in the same read.
+      const meta = readFileSyncWithMetadata(fullPath)
+      content = meta.content
+      lossyDecode = meta.lossyDecode
     } catch (e) {
       if (isENOENT(e)) {
         return {
@@ -331,6 +338,16 @@ export const NotebookEditTool = buildTool({
         }
       }
       throw e
+    }
+    // CC 2.1.296 #032 (official `if(_e)return{result:!1,message:aen,
+    // errorCode:15}`): the non-UTF-8 refusal fires BEFORE the JSON parse, so
+    // a lossy .ipynb gets errorCode 15 (aen), not errorCode 6 (invalid JSON).
+    if (lossyDecode) {
+      return {
+        result: false,
+        message: FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+        errorCode: 15,
+      }
     }
     const notebook = safeParseJSON(content) as NotebookContent | null
     if (!notebook) {
@@ -409,8 +426,28 @@ export const NotebookEditTool = buildTool({
       // one safeResolvePath + readFileSync pass, replacing the previous
       // detectFileEncoding + readFile + detectLineEndings chain (each of
       // which redid safeResolvePath and/or a 4KB readSync).
-      const { content, encoding, lineEndings } =
+      const { content, encoding, lineEndings, lossyDecode } =
         readFileSyncWithMetadata(fullPath)
+      // CC 2.1.296 #032 (official call @219778736): after the read,
+      // `if(Te.lossyDecode)return _e(aen)` — return the shared error stub
+      // (not a throw) BEFORE jsonParse, so a non-UTF-8 notebook is refused
+      // with the aen message and never re-encoded to UTF-8 with U+FFFD.
+      if (lossyDecode) {
+        return {
+          data: {
+            new_source,
+            old_source: undefined,
+            cell_type: cell_type ?? 'code',
+            language: 'python',
+            edit_mode: 'replace',
+            error: FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+            cell_id,
+            notebook_path: fullPath,
+            original_file: '',
+            updated_file: '',
+          },
+        }
+      }
       // Must use non-memoized jsonParse here: safeParseJSON caches by content
       // string and returns a shared object reference, but we mutate the
       // notebook in place below (cells.splice, targetCell.source = ...).
