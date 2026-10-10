@@ -15,6 +15,10 @@ import {
 } from '../../services/mcp/types.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { compareNamesAsciiFirst } from '../../utils/asciiFirstCompare.js'
+import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
+} from '../../utils/autoCompactWindow.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
   EFFORT_LEVELS,
@@ -79,7 +83,7 @@ const AgentMcpServerSpecSchema = lazySchema(() =>
 // Zod schemas for JSON agent validation
 // Note: HooksSchema is lazy so the circular chain AppState -> loadAgentsDir -> settings/types
 // is broken at module load time
-const AgentJsonSchema = lazySchema(() =>
+export const AgentJsonSchema = lazySchema(() =>
   z.object({
     description: z.string().min(1, 'Description cannot be empty'),
     tools: z.array(z.string()).optional(),
@@ -99,6 +103,15 @@ const AgentJsonSchema = lazySchema(() =>
     mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
     hooks: HooksSchema().optional(),
     maxTurns: z.number().int().positive().optional(),
+    // CC 2.1.296 #002 (official agent schema @208188475):
+    // `autoCompactWindow:E().int().min(b0).max(TN).optional()` — same bounds as
+    // the settings-level autoCompactWindow (100000..1000000).
+    autoCompactWindow: z
+      .number()
+      .int()
+      .min(AUTO_COMPACT_WINDOW_MIN)
+      .max(AUTO_COMPACT_WINDOW_MAX)
+      .optional(),
     skills: z.array(z.string()).optional(),
     initialPrompt: z.string().optional(),
     memory: z.enum(['user', 'project', 'local']).optional(),
@@ -132,6 +145,12 @@ export type BaseAgentDefinition = {
   effort?: EffortValue
   permissionMode?: PermissionMode
   maxTurns?: number // Maximum number of agentic turns before stopping
+  /** CC 2.1.296 #002 (official 2.1.296 agent-definition schema):
+   * "Token count at which this agent compacts its own conversation when it
+   * runs as a subagent. It only lowers the window the subagent would
+   * otherwise inherit. No effect on the main session agent."
+   * Bounds: AUTO_COMPACT_WINDOW_MIN..AUTO_COMPACT_WINDOW_MAX (100000..1000000). */
+  autoCompactWindow?: number
   filename?: string // Original filename without .md extension (for user/project/managed agents)
   baseDir?: string
   criticalSystemReminder_EXPERIMENTAL?: string // Short message re-injected at every user turn
@@ -668,6 +687,10 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.hooks ? { hooks: parsed.hooks } : {}),
       ...(parsed.maxTurns !== undefined ? { maxTurns: parsed.maxTurns } : {}),
+      // CC 2.1.296 #002: subagent-level auto-compact window (--agents JSON).
+      ...(parsed.autoCompactWindow !== undefined
+        ? { autoCompactWindow: parsed.autoCompactWindow }
+        : {}),
       ...(parsed.skills && parsed.skills.length > 0
         ? { skills: parsed.skills }
         : {}),
@@ -730,6 +753,105 @@ export function extractAgentCacheTtl(
 }
 
 /**
+ * CC 2.1.296 #055: frontmatter keys recognized in custom agent files.
+ *
+ * Base list is the official 2.1.296 recognized-field whitelist (`Wf`
+ * @210942084): ["name","description","prompt","tools","disallowedTools",
+ * "model","effort","permissionMode","mcpServers","hooks","maxTurns",
+ * "autoCompactWindow","skills","initialPrompt","memory","background",
+ * "omitClaudeMd","isolation"]. OCC additionally accepts `color` (agent color)
+ * and `experimental` (experimental.cacheTtl, official 2.1.248 `uBt`) in
+ * markdown frontmatter, so those are unioned in — never warn for fields OCC
+ * actually supports.
+ */
+export const RECOGNIZED_AGENT_FRONTMATTER_FIELDS: readonly string[] = [
+  'name',
+  'description',
+  'prompt',
+  'tools',
+  'disallowedTools',
+  'model',
+  'effort',
+  'permissionMode',
+  'mcpServers',
+  'hooks',
+  'maxTurns',
+  'autoCompactWindow',
+  'skills',
+  'initialPrompt',
+  'memory',
+  'background',
+  'omitClaudeMd',
+  'isolation',
+  // OCC-supported additions (not in the official Wf whitelist):
+  'color',
+  'experimental',
+]
+
+/** Simple Levenshtein edit distance (small strings only). */
+function editDistance(a: string, b: string): number {
+  const rows = a.length + 1
+  const cols = b.length + 1
+  const dist: number[][] = Array.from({ length: rows }, (_, i) =>
+    Array.from({ length: cols }, (_unused, j) => (i === 0 ? j : j === 0 ? i : 0)),
+  )
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      dist[i]![j] = Math.min(
+        dist[i - 1]![j]! + 1,
+        dist[i]![j - 1]! + 1,
+        dist[i - 1]![j - 1]! + cost,
+      )
+    }
+  }
+  return dist[a.length]![b.length]!
+}
+
+/** Max edit distance for a "did you mean" suggestion to be shown. */
+const TYPO_SUGGESTION_MAX_DISTANCE = 2
+
+/**
+ * CC 2.1.296 #055: suggest the nearest recognized frontmatter key for a
+ * likely typo. A case-insensitive exact match always wins; otherwise the
+ * closest recognized key within TYPO_SUGGESTION_MAX_DISTANCE edits.
+ * Returns undefined when nothing is close enough (no guess is better than
+ * a wrong guess).
+ */
+export function suggestRecognizedAgentField(
+  field: string,
+): string | undefined {
+  const lower = field.toLowerCase()
+  for (const candidate of RECOGNIZED_AGENT_FRONTMATTER_FIELDS) {
+    if (candidate.toLowerCase() === lower) {
+      return candidate
+    }
+  }
+  let best: string | undefined
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const candidate of RECOGNIZED_AGENT_FRONTMATTER_FIELDS) {
+    const distance = editDistance(lower, candidate.toLowerCase())
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = candidate
+    }
+  }
+  return bestDistance <= TYPO_SUGGESTION_MAX_DISTANCE ? best : undefined
+}
+
+/**
+ * CC 2.1.296 #055: frontmatter keys in a custom agent file that OCC does not
+ * recognize, each with a likely-typo suggestion when one is close enough.
+ */
+export function findUnrecognizedAgentFrontmatterFields(
+  frontmatter: Record<string, unknown>,
+): Array<{ field: string; suggestion: string | undefined }> {
+  return Object.keys(frontmatter)
+    .filter(field => !RECOGNIZED_AGENT_FRONTMATTER_FIELDS.includes(field))
+    .map(field => ({ field, suggestion: suggestRecognizedAgentField(field) }))
+}
+
+/**
  * Parses agent definition from markdown file data
  */
 export function parseAgentFromMarkdown(
@@ -779,6 +901,23 @@ export function parseAgentFromMarkdown(
 
     // Unescape newlines in whenToUse that were escaped for YAML parsing
     whenToUse = whenToUse.replace(/\\n/g, '\n')
+
+    // CC 2.1.296 #055: with --debug, name unrecognized frontmatter fields in
+    // custom agent files and hint at likely typos. logForDebugging is gated on
+    // the debug log level, so this stays silent without --debug. Only reached
+    // for files that passed the name/description validation above (i.e. real
+    // agent attempts, not co-located reference docs).
+    // DEVIATION NOTE: the exact official message string was not captured in
+    // the 2.1.296 forensics — composed in OCC's existing agent-warning style.
+    for (const { field, suggestion } of findUnrecognizedAgentFrontmatterFields(
+      frontmatter,
+    )) {
+      logForDebugging(
+        `Agent file ${filePath} has unrecognized frontmatter field '${field}'${
+          suggestion ? `. Did you mean '${suggestion}'?` : ''
+        }`,
+      )
+    }
 
     const color = frontmatter['color'] as AgentColorName | undefined
     const modelRaw = frontmatter['model']
@@ -880,6 +1019,28 @@ export function parseAgentFromMarkdown(
       )
     }
 
+    // CC 2.1.296 #002: parse autoCompactWindow from frontmatter. Official
+    // schema: int within the settings-level autoCompactWindow bounds
+    // (AUTO_COMPACT_WINDOW_MIN..AUTO_COMPACT_WINDOW_MAX). Invalid values are
+    // logged and ignored (field omitted), matching OCC's maxTurns/effort
+    // frontmatter error style.
+    const autoCompactWindowRaw = frontmatter['autoCompactWindow']
+    let autoCompactWindow: number | undefined
+    if (autoCompactWindowRaw !== undefined) {
+      const parsedWindow = parsePositiveIntFromFrontmatter(autoCompactWindowRaw)
+      if (
+        parsedWindow !== undefined &&
+        parsedWindow >= AUTO_COMPACT_WINDOW_MIN &&
+        parsedWindow <= AUTO_COMPACT_WINDOW_MAX
+      ) {
+        autoCompactWindow = parsedWindow
+      } else {
+        logForDebugging(
+          `Agent file ${filePath} has invalid autoCompactWindow '${autoCompactWindowRaw}'. Must be an integer between ${AUTO_COMPACT_WINDOW_MIN} and ${AUTO_COMPACT_WINDOW_MAX}.`,
+        )
+      }
+    }
+
     // Extract filename without extension
     const filename = basename(filePath, '.md')
 
@@ -968,6 +1129,7 @@ export function parseAgentFromMarkdown(
         ? { permissionMode: permissionModeRaw as PermissionMode }
         : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
       ...(background ? { background } : {}),
       ...(omitClaudeMd ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),

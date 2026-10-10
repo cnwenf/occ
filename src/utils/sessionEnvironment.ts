@@ -201,3 +201,64 @@ function sortHookEnvFiles(a: string, b: string): number {
   const bIndex = parseInt(bMatch?.[2] || '0', 10)
   return aIndex - bIndex
 }
+
+// ---------------------------------------------------------------------------
+// CC 2.1.296 #036: plain-assignment parser for the session environment.
+// Ported from the official 2.1.296 binary (`K8n` line regex, `V8n` quote
+// unwrap regex, `A_t` map builder — forensics-batch7 "cOe continuation").
+// PowerShell cannot dot-source the bash-style session env script, so the
+// official builds a Map of the plain assignments and injects them into the
+// pwsh child-process env. ALL-OR-NOTHING: every line of the joined script
+// must be a comment/blank or a plain assignment (optionally `export ` /
+// `declare -x ` prefixed); any other line (functions, conditionals, command
+// substitutions, ...) yields an EMPTY map — no partial application.
+// ---------------------------------------------------------------------------
+
+/** Official `K8n` — VERBATIM from the 2.1.296 binary. */
+export const PLAIN_ASSIGNMENT_LINE_REGEX =
+  /^(?:\s*(?:#.*)?|(?:export +|declare -x +)?([A-Za-z_]\w*)=((?:[\w@%+=:,./-]|'[^'\0]*'|"(?:[^"\\$`\0]|\\[^\0])*")*))$/
+
+/** Official `V8n` — VERBATIM from the 2.1.296 binary. */
+const QUOTE_UNWRAP_REGEX = /'([^']*)'|"((?:[^"\\]|\\.)*)"/g
+
+/** Official `V8n` replacement's inner unescape — `\\([$`"\\])` → `$1`. */
+const DOUBLE_QUOTE_UNESCAPE_REGEX = /\\([$`"\\])/g
+
+/**
+ * Official `A_t`: parse the session environment script (same joined script
+ * the bash path dot-sources) into a key→value Map of plain assignments.
+ * Returns an EMPTY Map when any line is not a comment/blank/plain assignment
+ * ("Session environment is not all plain assignments").
+ *
+ * DEVIATION NOTE: the official has a Windows-only branch (a value containing
+ * `/` or `\` DELETES the key — path-mangling protection). OCC's
+ * getSessionEnvironmentScript() returns null on Windows already, so that
+ * branch is dead here and omitted; the parser itself is platform-agnostic.
+ */
+export async function getSessionEnvironmentMap(): Promise<
+  Map<string, string>
+> {
+  const script = await getSessionEnvironmentScript()
+  const result = new Map<string, string>()
+  for (const line of script?.split('\n') ?? []) {
+    const match = PLAIN_ASSIGNMENT_LINE_REGEX.exec(line.trimEnd())
+    if (match === null) {
+      logForDebugging('Session environment is not all plain assignments')
+      return new Map()
+    }
+    const [, key, value] = match
+    // Comment/blank lines match with undefined groups — skip them.
+    if (key === undefined || value === undefined) {
+      continue
+    }
+    const unwrapped = value.replace(
+      QUOTE_UNWRAP_REGEX,
+      (_full, singleQuoted: string | undefined, doubleQuoted: string | undefined) =>
+        singleQuoted ??
+        doubleQuoted?.replace(DOUBLE_QUOTE_UNESCAPE_REGEX, '$1') ??
+        '',
+    )
+    result.set(key, unwrapped)
+  }
+  return result
+}

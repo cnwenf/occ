@@ -1,6 +1,7 @@
 import { tmpdir } from 'os'
 import { join } from 'path'
 import { join as posixJoin } from 'path/posix'
+import { getSessionEnvironmentMap } from '../sessionEnvironment.js'
 import { getSessionEnvVars } from '../sessionEnvVars.js'
 import type { ShellProvider } from './shellProvider.js'
 
@@ -116,6 +117,16 @@ export function createPowerShellProvider(shellPath: string): ShellProvider {
       // overridden by `/env TMPDIR=...`. bashProvider.ts has these in the
       // opposite order (pre-existing), but sandbox isolation should win.
       for (const [key, value] of getSessionEnvVars()) {
+        env[key] = value
+      }
+      // CC 2.1.296 #036: PowerShell can't dot-source the bash-style session
+      // environment script (CLAUDE_ENV_FILE + hook env files), so the
+      // official parses its plain assignments into a Map and injects them
+      // into the pwsh child env. ALL-OR-NOTHING: if any line isn't a plain
+      // assignment the Map is empty and nothing is applied. Merged AFTER
+      // /env vars for bash parity (the sourced script wins there too), and
+      // BEFORE the sandbox TMPDIR block so sandbox isolation still wins.
+      for (const [key, value] of await getSessionEnvironmentMap()) {
         env[key] = value
       }
       if (currentSandboxTmpDir) {

@@ -1116,7 +1116,12 @@ export async function runInProcessTeammate(
       const tokenCount = tokenCountWithEstimation(allMessages)
       if (
         tokenCount >
-        getAutoCompactThreshold(toolUseContext.options.mainLoopModel)
+        getAutoCompactThreshold(
+          toolUseContext.options.mainLoopModel,
+          // CC 2.1.296 #002: honor a subagent's autoCompactWindow override
+          // (min-lowering happens inside getAutoCompactThreshold).
+          toolUseContext.options.subagentAutoCompactWindow,
+        )
       ) {
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,

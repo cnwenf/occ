@@ -911,6 +911,12 @@ export async function* runAgent({
     // reads undefined and only the message-scan fallback fires — which
     // autocompact defeats by replacing the fork-boilerplate message.
     ...(useExactTools && { querySource }),
+    // CC 2.1.296 #002: the agent definition's autoCompactWindow lowers the
+    // subagent's inherited auto-compact window (min semantics applied in
+    // services/compact/autoCompact.ts). Never set on the main session context.
+    ...(agentDefinition.autoCompactWindow !== undefined && {
+      subagentAutoCompactWindow: agentDefinition.autoCompactWindow,
+    }),
   }
 
   // Create subagent context using shared helper
