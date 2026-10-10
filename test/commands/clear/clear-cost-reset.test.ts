@@ -81,9 +81,20 @@ mock.module('../../../src/tasks/InProcessTeammateTask/types.js', () => ({
   isInProcessTeammateTask: () => false,
 }))
 
-mock.module('../../../src/tasks/LocalAgentTask/LocalAgentTask.js', () => ({
-  isLocalAgentTask: () => false,
-}))
+// LocalAgentTask mock REMOVED (OCC-153 / 2.1.295 round) — the
+// `isLocalAgentTask: () => false` mock leaked process-wide (bun mock.module
+// patches live ESM bindings, including the module's own internal call sites,
+// and there is no reliable restore — a captured namespace is itself patched
+// retroactively). Victim: src/tasks/LocalAgentTask/__tests__/
+// autoBackgroundHold026.test.ts ran later in the same single-process suite
+// and its registerAgentForeground auto-background timer took the poisoned
+// guard — the YGe state updater early-returned (`!isLocalAgentTask(prevTask)`)
+// while the resolver still fired, so the background signal resolved with
+// isBackgrounded=false. Same leak class as the guards.js / analytics /
+// sessionStorage removals above. The real isLocalAgentTask is a pure
+// `task.type === 'local_agent'` check — safe to use un-mocked here
+// (clearConversation has no local_agent tasks in this suite), and
+// conversation.ts loads the real module fine in the test env.
 
 // LocalShellTask/guards.js mock REMOVED — `isLocalShellTask: () => false`
 // leaked process-wide into killShellTasks.js, so backgroundShellStop's killTask
