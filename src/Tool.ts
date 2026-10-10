@@ -145,6 +145,16 @@ export type ToolPermissionContext = DeepImmutable<{
   awaitAutomatedChecksBeforeDialog?: boolean
   /** Stores the permission mode before model-initiated plan mode entry, so it can be restored on exit */
   prePlanMode?: PermissionMode
+  /**
+   * CC 2.1.295 #037 — the positive `--tools` launch list, frozen at startup
+   * (official: `...Y!==void 0&&{toolsKeptByLaunchList:Object.freeze([...Y])}`
+   * @222921207, classified `"not_serialized"` @250317444). `undefined` means
+   * no narrowing was requested (or the `default` preset was), so nothing is
+   * gated. When present, built-in tools that register AFTER launch and are not
+   * on this list are withheld by filterToolsByDenyRules — the startup deny-rule
+   * snapshot alone could not name a tool it had never seen.
+   */
+  toolsKeptByLaunchList?: readonly string[]
 }>
 
 export const getEmptyToolPermissionContext: () => ToolPermissionContext =
@@ -626,6 +636,13 @@ export type Tool<
     tools: Tools
     agents: AgentDefinition[]
     allowedAgentTypes?: string[]
+    /**
+     * 2.1.295 (#112): true when this tool's schema is being loaded THROUGH tool
+     * search this request. MCP tools select the 16384-char description variant
+     * instead of the default 2048-char one (binary factory `Vn` @243900998:
+     * `async prompt({loadedThroughToolSearch:Ee}){return Ee?ce:_e}`).
+     */
+    loadedThroughToolSearch?: boolean
   }): Promise<string>
   userFacingName(
     input: Partial<z.infer<Input>> | undefined,

@@ -2,16 +2,28 @@ import chalk from 'chalk'
 import { marked, Tokenizer, type Token, type Tokens } from 'marked'
 import stripAnsi from 'strip-ansi'
 import { color } from '../components/design-system/color.js'
-import { BLOCKQUOTE_BAR } from '../constants/figures.js'
 import { stringWidth } from '../ink/stringWidth.js'
 import { supportsHyperlinks } from '../ink/supports-hyperlinks.js'
 import type { CliHighlight } from './cliHighlight.js'
 import { logForDebugging } from './debug.js'
 import { createHyperlink } from './hyperlink.js'
+import { renderBlockquoteWindowed } from './markdownBlockquote.js'
 import {
   markdownLexGuard,
   maxNestingFallbackToken,
 } from './markdownLexLevel.js'
+import {
+  afterStyleReset,
+  sanitizeMarkdownTokens,
+  shownAddress,
+  shownAddressWithTitle,
+  stripRenderInvisible,
+} from './markdownSanitize.js'
+import {
+  lheadingMatchesOverride,
+  lexWithWindowing,
+  type WindowedToken,
+} from './markdownWindowed.js'
 import { stripPromptXMLTags } from './messages.js'
 import type { ThemeName } from './theme.js'
 
@@ -19,6 +31,14 @@ import type { ThemeName } from './theme.js'
 // breaks the character-to-segment mapping in applyStylesToWrappedText,
 // causing styled text to shift right.
 const EOL = '\n'
+
+/**
+ * CC 2.1.295 #031 — official mailto detector `/^mailto:/i` @220900053 (the link
+ * case). Case-insensitive per the official binary, so `MAILTO:` is handled the
+ * same as `mailto:`; the pre-port OCC check was a case-sensitive
+ * `startsWith('mailto:')`.
+ */
+const MAILTO_SCHEME = /^mailto:/i
 
 /**
  * CC 2.1.290 render-catch fallback message — byte-exact from the official
@@ -85,6 +105,18 @@ export function configureMarked(): void {
             )
           : undefined
       },
+      // CC 2.1.295 changelog #056 — bounded lheading while windowed-lexing.
+      // Official verbatim (Ke extension, md_v295_pretty.js:433):
+      //   lheading(e){return(J.isHeld()?Y.test(e):be.test(e))?!1:void0}
+      // `false` = fall through to marked's original tokenizer; `undefined` =
+      // no token (marked moves to the next rule). While the windowed lexer's
+      // hold counter is up, the test is the {1,100}-bounded regex so a huge
+      // non-heading can't backtrack `(?:[^\n]+\n)+?`; when not held the test
+      // is marked's original regex, so behavior is identical to having no
+      // override at all.
+      lheading(src) {
+        return lheadingMatchesOverride(src) ? false : undefined
+      },
       // At-cap flattening fallback. Official verbatim:
       //   paragraph(e){let t=B(this,e);return t?{type:"paragraph",...t}:!1}
       //   text(e){let t=B(this,e);return t?{type:"text",...t}:!1}
@@ -109,9 +141,21 @@ export function applyMarkdown(
 ): string {
   configureMarked()
   try {
-    return marked
-      .lexer(stripPromptXMLTags(content))
-      .map(_ => formatToken(_, theme, 0, null, null, highlight))
+    // CC 2.1.295 changelog #056 + #050/#031 — official TNt entry @220898004:
+    //   TNt(e,t,n){Wft();let r=qK(e),s=sXe(r)&&ow();
+    //     return Ecn(iXe(Em,r)).map((o)=>PH(o,t,{...,linkCap:s})).join("").trim()}
+    // The whole-text `marked.lexer` call is replaced by the windowed entry
+    // (`iXe` → lexWithWindowing); `Ecn` → sanitizeMarkdownTokens wraps that lex
+    // BEFORE rendering (#050: raw OSC 8 hyperlink bytes in a reply or a
+    // teammate's message are neutralized to inert text on BOTH the windowed and
+    // the whole-text-safe path — `Ecn` wraps `iXe`, which covers both); and every
+    // top-level token renders through the PH wrapper. The official's linkCap
+    // (`s=sXe(r)&&ow()` → the `qt` scheme validator) is a separate feature and
+    // stays STAGED (see the port report).
+    return sanitizeMarkdownTokens(
+      lexWithWindowing(marked, stripPromptXMLTags(content)),
+    )
+      .map(_ => renderTokenWindowed(_, theme, highlight, 0))
       .join('')
       .trim()
   } catch (error) {
@@ -123,6 +167,51 @@ export function applyMarkdown(
     }
     throw error
   }
+}
+
+// CC 2.1.295 changelog #056 — official PH wrapper regexes
+// (md_v295_pretty.js:346, verbatim):
+//   Ue=/\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
+//   Mt=/\x9d|\x1b(?!\[)/   Dt=/\x9d/g   Wt=/\x1b(?!\[)/g
+// biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `Ue` — the OSC 8 ESC/BEL bytes ARE the wrapper's match target
+const OSC8_SEQUENCE = /\x1b\]8;[^;\x07\x1b]*;([^\x07\x1b]*)(?:\x07|\x1b\\)/g
+// biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `Mt` — the C1/bare-ESC control bytes ARE the wrapper's match target
+const WINDOWED_CONTROL_TEST = /\x9d|\x1b(?!\[)/
+const C1_OSC_TERMINATOR = /\x9d/g
+// biome-ignore lint/suspicious/noControlCharactersInRegex: byte-faithful port of official `Wt` — the bare-ESC control byte IS the wrapper's match target
+const BARE_ESCAPE = /\x1b(?!\[)/g
+
+/**
+ * Official `PH(e,t,n)` — render one token; when it came from the windowed
+ * lexer (`windowed:true`) and its rendered output carries OSC8 / C1 /
+ * bare-ESC bytes (raw source the normal inline path would have consumed),
+ * strip them. Applied at the official's two PH sites: the top-level entry
+ * map and the blockquote `draw` callback.
+ */
+function renderTokenWindowed(
+  token: Token,
+  theme: ThemeName,
+  highlight: CliHighlight | null,
+  quotesAround: number,
+): string {
+  const rendered = formatToken(
+    token,
+    theme,
+    0,
+    null,
+    null,
+    highlight,
+    null,
+    quotesAround,
+  )
+  return 'windowed' in token &&
+    (token as WindowedToken).windowed === true &&
+    WINDOWED_CONTROL_TEST.test(rendered)
+    ? rendered
+        .replace(OSC8_SEQUENCE, '')
+        .replace(C1_OSC_TERMINATOR, '')
+        .replace(BARE_ESCAPE, '')
+    : rendered
 }
 
 /**
@@ -145,24 +234,28 @@ export function formatToken(
   parent: Token | null = null,
   highlight: CliHighlight | null = null,
   orderedListMeta: OrderedListMeta | null = null,
+  // Official Ut option `quotesAround:w=0` (CC 2.1.295 #067): how many
+  // blockquote levels an ancestor already drew bars for. Threaded through
+  // list/list_item; consumed ONLY by the blockquote case as `around`.
+  quotesAround = 0,
 ): string {
   switch (token.type) {
-    case 'blockquote': {
-      const inner = (token.tokens ?? [])
-        .map(_ => formatToken(_, theme, 0, null, null, highlight))
-        .join('')
-      // Prefix each line with a dim vertical bar. Keep text italic but at
-      // normal brightness — chalk.dim is nearly invisible on dark themes.
-      // Render the bar on every line — including blank lines between
-      // paragraphs — so the left bar is continuous across the whole blockquote.
-      const bar = chalk.dim(BLOCKQUOTE_BAR)
-      return inner
-        .split(EOL)
-        .map(line =>
-          stripAnsi(line).trim() ? `${bar} ${chalk.italic(line)}` : bar,
-        )
-        .join(EOL)
-    }
+    case 'blockquote':
+      // CC 2.1.295 changelog #067 — official case"blockquote":
+      //   return Me(e.tokens??[], w, (u,f)=>PH(u,t,{listDepth:0,
+      //     orderedListNumber:null, parent:null, highlight:i, glueProse:!1,
+      //     linkCap:k, screenReader:c, promptMode:d, quotesAround:f}))
+      // Row-group renderer: classic per-line dim-bar+italic below depth 6,
+      // one-shot capped bar prefix (max 16) at depth >= 6 — no per-level
+      // re-split/re-join blowup on deeply nested quotes. Blank lines pass
+      // through unchanged (official Nt; resolves OCC's old blank→bar
+      // divergence). linkCap/screenReader/promptMode are sanitize/UI-family
+      // options OCC's serializer doesn't carry — reported, not invented.
+      return renderBlockquoteWindowed(
+        token.tokens ?? [],
+        quotesAround,
+        (child, depth) => renderTokenWindowed(child, theme, highlight, depth),
+      )
     case 'code': {
       // CC 2.1.280 changelog #071: fenced code blocks that don't name a
       // language are colored like inline code. Official v280 @202965215
@@ -262,28 +355,81 @@ export function formatToken(
       }
     case 'hr':
       return '---'
-    case 'image':
-      return token.href
-    case 'link': {
-      // Prevent mailto links from being displayed as clickable links
-      if (token.href.startsWith('mailto:')) {
-        // Extract email from mailto: link and display as plain text
-        const email = token.href.replace(/^mailto:/, '')
-        return email
+    case 'image': {
+      // CC 2.1.295 #050/#031 — official case"image" @220900053 (verbatim):
+      //   {if(!e.text&&!e.title)return De(e.href,X(e));
+      //    let u=e.title?` "${e.title}"`:"",f=ue(e.href,X(e),u);
+      //    return e.text?`${e.text}${f}`:f.replace(" (","(")}
+      // The pre-port bare `return token.href` is replaced: an image address
+      // drawn as text now carries the afterStyleReset (De/ue → Fe) so a colour
+      // or conceal style a reply left open can no longer hide it (#031), and is
+      // invisible-stripped (H).
+      const styleReset = afterStyleReset(token) // X(e)
+      if (!token.text && !token.title) {
+        return shownAddress(token.href, styleReset) // De(e.href,X(e))
       }
-      // Extract display text from the link's child tokens
+      const titleSuffix = token.title ? ` "${token.title}"` : '' // u
+      const address = shownAddressWithTitle(token.href, styleReset, titleSuffix) // f=ue(...)
+      return token.text ? `${token.text}${address}` : address.replace(' (', '(')
+    }
+    case 'link': {
+      // CC 2.1.295 #031 (+#050) — official case"link" @220900053+. The
+      // #031-critical routing is ported: `T=X(e)` (afterStyleReset) is threaded
+      // as createHyperlink's `shownUrlStart` so a style reset precedes any
+      // address DRAWN AS TEXT, and an address shown as text is invisible-
+      // stripped (H). The mailto branch is a faithful port (De/ue/H/X).
+      // STAGED (beyond #031/#050 — the separate linkCap + defanged-marker
+      // features, each needing infrastructure this port must not invent):
+      //   • `qt` per-link scheme validator @220904589 (needs the lRn/Kz/qe/
+      //     qoo/cfr URL subsystem) + `k` linkCap gate → OCC's `m` collapses to
+      //     supportsHyperlinks() (createHyperlink's own gate).
+      //   • `Ikr` claude.ai URL detection @207262927 and the `x&&S` branch.
+      //   • `yEo`/`Qd` (U+29C9 TWO JOINED SQUARES) defanged-marker prefixing
+      //     @208124049 and the `m&&S&&Z` title-as-drawn-address (`pe`) branch.
+      //   • rw's fuller unsupported-terminal `${text}${reset} (${url})` form
+      //     @220883281 (needs PBr url-matches-text @220883649 + the exact `dn`
+      //     normalizer = Bun.stripANSI @206632589; OCC uses strip-ansi, an
+      //     equivalent). See the port report for exact reasons + offsets.
+      const styleReset = afterStyleReset(token) // T = X(e)
+      const titleSuffix = token.title ? ` ("${token.title}")` : '' // u
+      // Official mailto branch (verbatim):
+      //   if(/^mailto:/i.test(e.href)){let I=e.href.replace(/^mailto:/i,""),F=X(e);
+      //     return(e.text&&e.text!==H(I)?`${e.text}${ue(I,F)}`:De(I,F))+u}
+      if (MAILTO_SCHEME.test(token.href)) {
+        const email = token.href.replace(MAILTO_SCHEME, '') // I
+        const strippedEmail = stripRenderInvisible(email) // H(I)
+        const body =
+          token.text && token.text !== strippedEmail
+            ? `${token.text}${shownAddressWithTitle(email, styleReset)}` // ue(I,F)
+            : shownAddress(email, styleReset) // De(I,F)
+        return body + titleSuffix
+      }
+      // Extract display text from the link's child tokens (official `y`).
       const linkText = (token.tokens ?? [])
         .map(_ => formatToken(_, theme, 0, null, token, highlight))
         .join('')
+      // Official `L=dn(y)`; `dn(e)=Bun.stripANSI(e)` @206632589 ≡ OCC's stripAnsi.
       const plainLinkText = stripAnsi(linkText)
-      // If the link has meaningful display text (different from the URL),
-      // show it as a clickable hyperlink. In terminals that support OSC 8,
-      // users see the text and can hover/click to see the URL.
-      if (plainLinkText && plainLinkText !== token.href) {
-        return createHyperlink(token.href, linkText)
+      // Official `S=Boolean(L&&L!==e.href)` — text differs from the address.
+      const hasMeaningfulText = Boolean(
+        plainLinkText && plainLinkText !== token.href,
+      )
+      // OCC `m` analog: no linkCap/qt, so a link is hyperlinkable iff the
+      // terminal supports OSC 8. Official `g=m?f:H(f??e.href)` — the address is
+      // invisible-stripped only when it will be DRAWN AS TEXT (m false); an
+      // OSC 8 target keeps the raw href so it reaches the link intact.
+      const isHyperlinkable = supportsHyperlinks()
+      const address = isHyperlinkable
+        ? token.href
+        : stripRenderInvisible(token.href)
+      const hyperlinkOptions = {
+        shownUrlStart: styleReset, // #031: reset before a drawn-as-text address
+        supportsHyperlinks: isHyperlinkable,
       }
-      // When the display text matches the URL (or is empty), just show the URL
-      return createHyperlink(token.href)
+      const drawn = hasMeaningfulText
+        ? createHyperlink(address, linkText, hyperlinkOptions)
+        : createHyperlink(address, undefined, hyperlinkOptions)
+      return drawn + titleSuffix
     }
     case 'list': {
       // Official v281 `a6n` @205766744: `{first: start === "" ? 1 : start,
@@ -303,6 +449,8 @@ export function formatToken(
             token,
             highlight,
             listMeta,
+            // CC 2.1.295 #067 — thread the ancestor blockquote depth
+            quotesAround,
           ),
         )
         .join('')
@@ -334,7 +482,7 @@ export function formatToken(
         .filter(_ => _.type !== 'checkbox')
         .map(
           _ =>
-            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, item, highlight, orderedListMeta)}`,
+            `${'  '.repeat(listDepth)}${formatToken(_, theme, listDepth + 1, orderedListNumber, item, highlight, orderedListMeta, quotesAround)}`,
         )
         .join('')
         .replace(/^(?:[ \t]*\n)+/, '')

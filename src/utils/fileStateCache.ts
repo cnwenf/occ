@@ -15,6 +15,23 @@ export type FileState = {
   // `content` here holds the RAW disk bytes (for getChangedFiles diffing),
   // not what the model saw.
   isPartialView?: boolean
+  // Official 2.1.295 (#088): the recorded content is NOT fully present in the
+  // model's context — e.g. an edit was applied to a file whose disk contents
+  // no longer matched the read baseline, or the user modified the file behind
+  // a permission prompt. isFullyReadOfFileState (official k4) treats such a
+  // record as not-fully-read even when offset/limit/isPartialView describe a
+  // full view, and the Edit result mapper suppresses the "file state is
+  // current" note. Set sites (official v295): FileEditTool call(), Write
+  // call() (userModified branch), NotebookEdit call(), BashTool sed
+  // emulation; Read never sets it.
+  contentNotInModelContext?: boolean
+  // Official: set only by the transcript-restoration seeding path (resume /
+  // rewind re-seeds readFileState from transcript tool results, v295
+  // @222713171). OCC has no transcript-restore seeding surface today, so
+  // nothing sets this field — it exists so fileStateMatchesBaseline tolerates
+  // the official trailing-newline mismatch (PLe) verbatim if such seeding is
+  // ever ported.
+  contentFromTranscript?: boolean
 }
 
 // Default max entries for read file state caches

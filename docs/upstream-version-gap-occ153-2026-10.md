@@ -230,3 +230,26 @@ OCC 侧现状：`@cnwenf/occ` npm latest = **2.1.367**（E404 事故，OCC-151 b
 - 本 run 工作目录 `/tmp/cc-diff-295`：tgz×3（294/295/296）、`v29{4,5,6}/package/claude`、`s29{4,5,6}.txt`（strings 全量排序去重）、`added295.txt`/`removed295.txt`（comm 差分）、`envtok29{4,5}.txt`（token 集合）。**本 run 结束即销毁（skill 纪律：二进制不留 /tmp）** —— 移植轮必须自行重新下载，§0 md5/计数即校验基准。
 - 官方 changelog 快照 `/tmp/cc-CHANGELOG.md`（8,707 行）同源销毁；来源 URL 见 §0。
 - 复现命令：`npm pack @anthropic-ai/claude-code-linux-x64@<ver>`；`md5sum`；`strings -n 8 <elf> | sort -u`；`comm -13/-23`；token 差分 `grep -ohE '\bCLAUDE_[A-Z0-9_]{3,}\b' | sort -u` 后 comm。
+
+## §8 本轮 STAGED 结转（2.1.378 轮，程序员记录 — 不许静默丢弃）
+
+**处置汇总**：P0×4 = 3 PORTED（#031/#050/#076）+ 1 NO-OP（#073，OCC 无 server-managed settings 缓存面，grep 0 命中实证）；P1×25 = 22 PORTED + 3 STAGED（#037 后半、#090、#095）；P2×44 / P3×26 **全部 STAGED 结转下轮**（本轮工时被 P0/P1 全量取证吃掉，未做 P2/P3 逐条成本复核 —— 下轮从 §3 表 P2/P3 行直接续）。
+
+### §8.1 P1 内 STAGED（架构缺口/跨簇阻塞，取证已完成、落点已写明）
+
+| 项 | 判定 | 缺口与复起条件 | 取证存档 |
+|---|---|---|---|
+| #037 后半（deprecated 名越集） | STAGED | 修复位于 `toolAliases`/`aliasSources()` 代理展开匹配器（v295 @211469687+，`aliasSources` 0→5 新增）；OCC 无 toolAliases/aliasSources/familyParentToolName 任何代码路径，移植=凭空发明整个子系统 → 违 skill 纪律。前半（launch-list 正门 `toolsKeptByLaunchList` @222921207）已 PORTED | 本轮 #037 移植报告（issue 评论） |
+| #090（scheduled task rewind/resume 丢失/复活） | STAGED | 官方修复实体=`session_cron_carry` 转录子系统（v295 @217386000–217390800：`win`/`hE`/`nZo`/`rZo`/`M1`/`YZt`/`$Xr`/`VZt`；`hE()`=`tengu_kairos_cron` 门 @214609790）；OCC 会话 cron 为进程私有内存态（bootstrap/state.ts、cronScheduler.ts:377），从不转录重建 → 官方回归在 OCC 不可显现，但 OCC 也非"等价"（cron 根本不跨 resume）。忠实移植需整套 carry 子系统 + resume 重建 | `/tmp/cc-153/i090_i095_findings.md`（本轮销毁前已摘录关键偏移入本表） |
+| #095（/rewind 后 prompt 丢失 + turn 复活） | STAGED-BLOCKED | 官方修复=全新 `Rat` last-prompt 跟踪器（v295 @237472194，方法名 v294 全 -1）+ **决定性半区在 resume 侧 leaf 选择**（@219520638，sessionStorage/types/logs 簇）；OCC rewind 纯内存（REPL.tsx:3915）、转录 append-only、resume 无 leaf 消歧 → OCC 大概率带病，但簇内单侧移植=死代码。需与 resume/persistence 簇并案（4 步落地计划已存 findings 文件） | 同上 |
+
+### §8.2 移植中登记的邻接 STAGED（官方实存、OCC 缺基础设施）
+
+1. **P0 link-case 深层件**（#031 邻接，本轮仅 PORTED critical path）：`qt` scheme 校验器 + linkCap `k` 门 @220904589（需 URL-scheme 白名单子系统 lRn/Kz/qe/qoo/cfr）；`Ikr` claude.ai 特判 @207262927；`yEo`/`Qd` U+29C9 defanged 前缀 + `pe` title-as-address 分支 @208124049（需 linkCap `m` 门）；`rw` 完整 unsupported 形态 `${content}${reset} (${url})` @220883281（需 `PBr` url-matches-text @220883649 + `dn`=Bun.stripANSI @206632589 —— 此件为**先存分歧**非本轮引入）。
+2. **#072 尾件**：`applyEndedRunLayers`（延迟并发安全层）—— OCC 无 deferred concurrency-safe layers 机制，已在 StreamingToolExecutor.ts 注释登记。
+3. **#108 邻接**：v295 Grep `-o`（--only-matching）为独立新特性，不属 #108 修复面，未移植。
+4. **#044 邻接（先存分歧）**：官方 `Oe(e)` loop killswitch、`F(r,c)` scope merge-back、variable_assignment 分支 `C` push、`select`→too-complex；且 OCC AST 路径 flag 休眠（TREE_SITTER_BASH 不在 allowlist）——本轮为正确性平价移植。
+
+### §8.3 P2×44 + P3×26 全量结转
+
+见 §3 表 P2/P3 行（含 §5.1 occ150 P2 簇重叠项合并处理原则）。下轮起点：2.1.296 若已晋升 latest，先做 295→296 增量取证，再消化本表 STAGED + P2/P3。

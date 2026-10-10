@@ -29,6 +29,7 @@ import { lazySchema } from '../../utils/lazySchema.js';
 import { expandPath } from '../../utils/path.js';
 import { getCwd } from '../../utils/cwd.js';
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js';
+import { fileStateMatchesBaselineOrTranscript, isFullyReadOfFileState, stripBom } from '../../utils/permissions/fileStateGuard.js';
 import { maybeRecordPluginHint } from '../../utils/plugins/hintRecommendation.js';
 import { exec } from '../../utils/Shell.js';
 import type { ExecResult } from '../../utils/ShellCommand.js';
@@ -48,6 +49,7 @@ import {
 } from '../shared/gitOperationTracking.js';
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
 import { type BashReadTriggerContext, recordBashReadFiles } from './bashReadCommands.js';
+import { coerceBashInput } from './coerceInput.js';
 import { interpretCommandResult } from './commandSemantics.js';
 import { clampTimeoutMs, getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
 import { checkReadOnlyConstraints } from './readOnlyValidation.js';
@@ -409,6 +411,11 @@ async function applySedEdit(simulatedEdit: {
     await fileHistoryTrackEdit(toolUseContext.updateFileHistoryState, absoluteFilePath, parentMessage.uuid);
   }
 
+  // 2.1.295 (#088, binary `ke=n.readFileState.get(S)`): the read record is
+  // captured BEFORE the write so the post-write freshness decision compares
+  // against the pre-write disk content (`G`), not the new bytes.
+  const lastRead = toolUseContext.readFileState.get(absoluteFilePath);
+
   // Detect line endings and write new content
   const endings = detectLineEndings(absoluteFilePath);
   writeTextContent(absoluteFilePath, newContent, encoding, endings);
@@ -416,12 +423,27 @@ async function applySedEdit(simulatedEdit: {
   // Notify VS Code about the file change
   notifyVscodeFileUpdated(absoluteFilePath, originalContent, newContent);
 
-  // Update read timestamp to invalidate stale writes
+  // 2.1.295 (#088, binary `Te=k4(ke)&&PLe(ke,FS(G))`): the post-write record
+  // keeps full-read status only when the last read was a full read AND its
+  // baseline still matched the pre-write disk content. v294 additionally
+  // tolerated a frozen mtime (`...||be<=ke.timestamp` after a pre-stat);
+  // v295 REMOVES that tolerance — a content match is now required.
+  const contentInModelContext =
+    isFullyReadOfFileState(lastRead) &&
+    fileStateMatchesBaselineOrTranscript(lastRead, stripBom(originalContent));
+
+  // Update read timestamp to invalidate stale writes. Official v295 set
+  // statement verbatim:
+  //   n.readFileState.set(S,{content:FS(h),timestamp:be,offset:void 0,
+  //     limit:void 0,...!Te&&{contentNotInModelContext:!0}})
+  // (`FS(h)` = stripBom(newContent) — OCC previously stored the raw
+  // newContent; aligned here as part of the v295 statement.)
   toolUseContext.readFileState.set(absoluteFilePath, {
-    content: newContent,
+    content: stripBom(newContent),
     timestamp: getFileModificationTime(absoluteFilePath),
     offset: undefined,
-    limit: undefined
+    limit: undefined,
+    ...(!contentInModelContext && { contentNotInModelContext: true })
   });
 
   // Return success result matching sed output format (sed produces no output on success)
@@ -548,6 +570,16 @@ export const BashTool = buildTool({
   },
   get inputSchema(): InputSchema {
     return inputSchema();
+  },
+  // CC 2.1.295 (#022, binary Bash def @219165025): `coerceInput:fvn` — a
+  // DIRECT reference with NO `pH` schema-success gate (that gate is
+  // WebFetch/Grep-only) and NO `coerceInputBeforePluginHooks` (Write-only).
+  // fvn (@219108012) aliases `timeout_ms`→`timeout` (v294 cRn carryover) and
+  // — NEW in v295 — `command_description`→`description` (dropped, with
+  // shapeClass `command_description_dropped`, when `description` is present
+  // or the value isn't a string). See ./coerceInput.ts for the verbatim port.
+  coerceInput(input) {
+    return coerceBashInput(input);
   },
   get outputSchema(): OutputSchema {
     return outputSchema();

@@ -3,6 +3,7 @@ import memoize from 'lodash-es/memoize.js'
 import {
   getAdditionalDirectoriesForClaudeMd,
   isMemoryLoadingPaused,
+  getOriginalCwd,
   setCachedClaudeMdContent,
 } from './bootstrap/state.js'
 import { getLocalISODate } from './constants/common.js'
@@ -13,12 +14,68 @@ import {
 } from './utils/claudemd.js'
 import { logForDiagnosticsNoPII } from './utils/diagLogs.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
-import { execFileNoThrow } from './utils/execFileNoThrow.js'
+import {
+  execFileNoThrow,
+  execFileNoThrowWithCwd,
+} from './utils/execFileNoThrow.js'
 import { getBranch, getDefaultBranch, getIsGit, gitExe } from './utils/git.js'
+import {
+  getCommonDir,
+  readGitHead,
+  resolveGitDir,
+} from './utils/git/gitFilesystem.js'
 import { shouldIncludeGitInstructions } from './utils/gitSettings.js'
 import { logError } from './utils/log.js'
 
 const MAX_STATUS_CHARS = 2000
+
+// Official 2.1.295 git-status builder args (binary `lQn` = v294 `Z8n`):
+// ["--no-optional-locks","status","--short",Y_] with Y_="--ignore-submodules=dirty".
+const GIT_STATUS_ARGS = [
+  '--no-optional-locks',
+  'status',
+  '--short',
+  '--ignore-submodules=dirty',
+] as const
+const GIT_LOG_ARGS = ['--no-optional-locks', 'log', '--oneline', '-n', '5'] as const
+const GIT_USER_NAME_ARGS = ['config', 'user.name'] as const
+
+type GitStatusFields = {
+  branch: string
+  mainBranch: string
+  status: string
+  log: string
+  userName: string
+}
+
+/**
+ * Assemble the git-status system-context block. Shared by the global builder
+ * (getGitStatus) and the worktree builder (getGitStatusForWorktree) — the
+ * official binary uses ONE message tail for both paths (v295 `dQn`: identical
+ * POe truncation + array + join("\n\n") after the `S===null` fork).
+ */
+function buildGitStatusMessage({
+  branch,
+  mainBranch,
+  status,
+  log,
+  userName,
+}: GitStatusFields): string {
+  const truncatedStatus =
+    status.length > MAX_STATUS_CHARS
+      ? status.substring(0, MAX_STATUS_CHARS) +
+        '\n... (truncated because it exceeds 2k characters. If you need more information, run "git status" using BashTool)'
+      : status
+
+  return [
+    `This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.`,
+    `Current branch: ${branch}`,
+    `Main branch (you will usually use this for PRs): ${mainBranch}`,
+    ...(userName ? [`Git user: ${userName}`] : []),
+    `Status:\n${truncatedStatus || '(clean)'}`,
+    `Recent commits:\n${log}`,
+  ].join('\n\n')
+}
 
 // System prompt injection for cache breaking (ant-only, ephemeral debugging state)
 let systemPromptInjection: string | null = null
@@ -62,17 +119,13 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
     const [branch, mainBranch, status, log, userName] = await Promise.all([
       getBranch(),
       getDefaultBranch(),
-      execFileNoThrow(gitExe(), ['--no-optional-locks', 'status', '--short'], {
+      execFileNoThrow(gitExe(), [...GIT_STATUS_ARGS], {
         preserveOutputOnError: false,
       }).then(({ stdout }) => stdout.trim()),
-      execFileNoThrow(
-        gitExe(),
-        ['--no-optional-locks', 'log', '--oneline', '-n', '5'],
-        {
-          preserveOutputOnError: false,
-        },
-      ).then(({ stdout }) => stdout.trim()),
-      execFileNoThrow(gitExe(), ['config', 'user.name'], {
+      execFileNoThrow(gitExe(), [...GIT_LOG_ARGS], {
+        preserveOutputOnError: false,
+      }).then(({ stdout }) => stdout.trim()),
+      execFileNoThrow(gitExe(), [...GIT_USER_NAME_ARGS], {
         preserveOutputOnError: false,
       }).then(({ stdout }) => stdout.trim()),
     ])
@@ -82,26 +135,12 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
       status_length: status.length,
     })
 
-    // Check if status exceeds character limit
-    const truncatedStatus =
-      status.length > MAX_STATUS_CHARS
-        ? status.substring(0, MAX_STATUS_CHARS) +
-          '\n... (truncated because it exceeds 2k characters. If you need more information, run "git status" using BashTool)'
-        : status
-
     logForDiagnosticsNoPII('info', 'git_status_completed', {
       duration_ms: Date.now() - startTime,
       truncated: status.length > MAX_STATUS_CHARS,
     })
 
-    return [
-      `This is the git status at the start of the conversation. Note that this status is a snapshot in time, and will not update during the conversation.`,
-      `Current branch: ${branch}`,
-      `Main branch (you will usually use this for PRs): ${mainBranch}`,
-      ...(userName ? [`Git user: ${userName}`] : []),
-      `Status:\n${truncatedStatus || '(clean)'}`,
-      `Recent commits:\n${log}`,
-    ].join('\n\n')
+    return buildGitStatusMessage({ branch, mainBranch, status, log, userName })
   } catch (error) {
     logForDiagnosticsNoPII('error', 'git_status_failed', {
       duration_ms: Date.now() - startTime,
@@ -110,6 +149,127 @@ export const getGitStatus = memoize(async (): Promise<string | null> => {
     return null
   }
 })
+
+/**
+ * Official 2.1.295 (#035): "Fixed subagents in their own linked worktree
+ * being shown the parent session's git branch, status and recent commits."
+ *
+ * Binary mechanism (v295 `dQn(e)`, git-status builder @215537428):
+ *   if(pZ()&&!Ht()){                       // inside an agent ALS-cwd override, not remote
+ *     let Te=se(),Re=gr(Te);               // current (agent) cwd → repo root
+ *     let Ce=Vl(),...,Fe=bAe(Me),Ge=bAe(Re) // main-session cwd + agent cwd worktree info
+ *     if(...Ge.gitDir!==Ge.commonDir && Ge.commonDir===Fe.commonDir
+ *            && Ge.gitDir!==Fe.gitDir){     // agent cwd is a LINKED worktree of the SAME repo
+ *       let Je=await q2(Ge.workTree,{pin:Ge})
+ *       if(Je.ok)S={cwd:Te,pin:Ge,filterDriversOff:Je.args}}
+ *   }
+ *   w = S===null ? {preserveOutputOnError:!1,env:ks()}
+ *                : {cwd:S.cwd,preserveOutputOnError:!1,env:ks(void 0,{repository:S.pin})}
+ *   H = it(Mt(),[...S?.filterDriversOff??[],...lQn],w)   // status runs IN the worktree
+ *   branch = S===null ? Id()
+ *                     : sse(S.pin.gitDir).then(Te=>Te?.type==="branch"?Te.name:"HEAD")
+ *
+ * `pZ()` = an agent-scoped AsyncLocalStorage cwd override is active (subagent
+ * context); `se()` = ALS cwd ?? session cwd; `Vl()` = session originalCwd;
+ * `bAe` = worktree-info resolver ({gitDir,workTree,commonDir}); `sse` = HEAD
+ * reader ({type:"branch",name} | {type:"detached",sha} | null).
+ *
+ * OCC mapping: the subagent's ALS cwd override IS the explicit `worktreePath`
+ * passed to runAgent, and the session originalCwd is OCC's `getOriginalCwd()`
+ * (binary `Vl()`; NOT `getCwd()`, which runAgent's `runWithCwdOverride`
+ * wrapper already points at the worktree). The
+ * worktree-info resolver maps to resolveGitDir + getCommonDir; `sse` maps
+ * byte-for-byte to readGitHead. Returns null when `worktreePath` is NOT a
+ * linked worktree of the current session's repo (binary: S stays null →
+ * caller keeps the global-path git status).
+ *
+ * STAGED (official mechanisms intentionally not ported — the worktree-pin
+ * subsystem is absent from OCC, staged since OCC-46 for 2.1.222):
+ *   - `env:ks(void 0,{repository:S.pin})` — the GIT_DIR/GIT_WORK_TREE/
+ *     GIT_COMMON_DIR pinned env (binary `kus`). Running the git commands with
+ *     cwd=worktreePath resolves the identical worktree natively; the pin is a
+ *     sandbox hardening on top.
+ *   - `filterDriversOff` (`q2`/`rHn`) — the config-safety scan that neutralizes
+ *     filter/LFS drivers via `-c key=value` args. Deeply coupled to the pin
+ *     subsystem's config reader; status/log output is unaffected for repos
+ *     without smudge/clean filters, and for repos WITH them the official args
+ *     only skip driver execution (a perf/safety optimization).
+ */
+export async function getGitStatusForWorktree(
+  worktreePath: string,
+): Promise<string | null> {
+  const startTime = Date.now()
+  logForDiagnosticsNoPII('info', 'git_status_worktree_started')
+
+  try {
+    // Binary `Ge=bAe(gr(se()))` vs `Fe=bAe(gr(Vl()))` — worktree info for the
+    // agent cwd and the main-session cwd. `Vl()` reads the session
+    // originalCwd — NOT the ALS-overridable current cwd — because runAgent
+    // executes inside runWithCwdOverride(worktreePath), where getCwd() would
+    // already return the worktree. `Re===null → git_status_skipped_not_git`.
+    const [worktreeGitDir, mainGitDir] = await Promise.all([
+      resolveGitDir(worktreePath),
+      resolveGitDir(getOriginalCwd()),
+    ])
+    if (worktreeGitDir === null || mainGitDir === null) {
+      logForDiagnosticsNoPII('info', 'git_status_worktree_skipped_not_git')
+      return null
+    }
+    const worktreeCommonDir = (await getCommonDir(worktreeGitDir)) ?? worktreeGitDir
+    const mainCommonDir = (await getCommonDir(mainGitDir)) ?? mainGitDir
+
+    // Binary linked-worktree condition, verbatim:
+    // Ge.gitDir!==Ge.commonDir && Ge.commonDir===Fe.commonDir && Ge.gitDir!==Fe.gitDir
+    if (
+      worktreeGitDir === worktreeCommonDir ||
+      worktreeCommonDir !== mainCommonDir ||
+      worktreeGitDir === mainGitDir
+    ) {
+      logForDiagnosticsNoPII('info', 'git_status_worktree_skipped_not_linked')
+      return null
+    }
+
+    // Binary `w={cwd:S.cwd,preserveOutputOnError:!1,env:ks(void 0,{repository:S.pin})}`
+    // (pin env staged — see doc comment).
+    const worktreeExecOptions = {
+      cwd: worktreePath,
+      preserveOutputOnError: false as const,
+    }
+    const [head, mainBranch, status, log, userName] = await Promise.all([
+      // Binary: sse(S.pin.gitDir).then(Te=>Te?.type==="branch"?Te.name:"HEAD")
+      readGitHead(worktreeGitDir),
+      getDefaultBranch(),
+      execFileNoThrowWithCwd(gitExe(), [...GIT_STATUS_ARGS], worktreeExecOptions).then(
+        ({ stdout }) => stdout.trim(),
+      ),
+      execFileNoThrowWithCwd(gitExe(), [...GIT_LOG_ARGS], worktreeExecOptions).then(
+        ({ stdout }) => stdout.trim(),
+      ),
+      execFileNoThrowWithCwd(gitExe(), [...GIT_USER_NAME_ARGS], worktreeExecOptions).then(
+        ({ stdout }) => stdout.trim(),
+      ),
+    ])
+
+    logForDiagnosticsNoPII('info', 'git_status_worktree_completed', {
+      duration_ms: Date.now() - startTime,
+      status_length: status.length,
+    })
+
+    return buildGitStatusMessage({
+      branch: head?.type === 'branch' ? head.name : 'HEAD',
+      mainBranch,
+      status,
+      log,
+      userName,
+    })
+  } catch (error) {
+    logForDiagnosticsNoPII('error', 'git_status_failed', {
+      duration_ms: Date.now() - startTime,
+    })
+    logError(error)
+    return null
+  }
+}
 
 /**
  * This context is prepended to each conversation, and cached for the duration of the conversation.

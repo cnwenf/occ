@@ -13,6 +13,16 @@ export const OSC8_ST = '\x1b\\'
 
 type HyperlinkOptions = {
   supportsHyperlinks?: boolean
+  /**
+   * CC 2.1.295 #031 — official `rw` @220883281 threads `shownUrlStart` (the
+   * afterStyleReset `Fe` = "\x1B[28m\x1B[39m\x1B[49m") and emits it immediately
+   * before any address DRAWN AS TEXT (the non-hyperlink branch), so a colour or
+   * conceal style a reply left open can no longer hide the address. The OSC 8
+   * branch does NOT emit it — there the address lives inside the escape
+   * sequence, not in drawn text. Defaults to "" so every pre-existing caller
+   * (`linkifyIssueReferences`, sign-in, the OSC 8 path) stays byte-identical.
+   */
+  shownUrlStart?: string
 }
 
 /**
@@ -23,7 +33,8 @@ type HyperlinkOptions = {
  * @param content - Optional content to display as the link text (only when hyperlinks are supported).
  *                  If provided and hyperlinks are supported, this text is shown as a clickable link.
  *                  If hyperlinks are not supported, content is ignored and only the URL is shown.
- * @param options - Optional overrides for testing (supportsHyperlinks)
+ * @param options - Optional overrides for testing (supportsHyperlinks) and the
+ *                  CC 2.1.295 #031 `shownUrlStart` style reset (draw-as-text only)
  */
 export function createHyperlink(
   url: string,
@@ -32,7 +43,13 @@ export function createHyperlink(
 ): string {
   const hasSupport = options?.supportsHyperlinks ?? supportsHyperlinks()
   if (!hasSupport) {
-    return url
+    // #031: prefix a drawn-as-text address with the style reset so a leftover
+    // colour/conceal style can't hide it (see HyperlinkOptions.shownUrlStart).
+    // STAGED: official rw's fuller `${content}${reset} (${url})` form for
+    // meaningful text (needs PBr @220883649 + the exact `dn` normalizer) — a
+    // pre-existing OCC divergence, not introduced here.
+    const shownUrlStart = options?.shownUrlStart ?? ''
+    return `${shownUrlStart}${url}`
   }
 
   // Apply basic ANSI blue color - wrap-ansi preserves this across line breaks

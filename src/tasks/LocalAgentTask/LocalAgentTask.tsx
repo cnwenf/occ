@@ -1,6 +1,7 @@
 import { getSdkAgentProgressSummariesEnabled } from '../../bootstrap/state.js';
 import { OUTPUT_FILE_TAG, STATUS_TAG, SUMMARY_TAG, TASK_ID_TAG, TASK_NOTIFICATION_TAG, TOOL_USE_ID_TAG, WORKTREE_BRANCH_TAG, WORKTREE_PATH_TAG, WORKTREE_TAG } from '../../constants/xml.js';
 import { abortSpeculation } from '../../services/PromptSuggestion/speculation.js';
+import { getAutoBackgroundHoldReason } from '../../services/tools/exclusiveCallRegistry.js';
 import type { AppState } from '../../state/AppState.js';
 import type { SetAppState, Task, TaskStateBase } from '../../Task.js';
 import { createTaskStateBase } from '../../Task.js';
@@ -553,6 +554,12 @@ export function registerAsyncAgent({
 // When backgroundAgentTask is called, it resolves the corresponding promise
 const backgroundSignalResolvers = new Map<string, () => void>();
 
+// Official 2.1.295 (#026) binary `_Br=1000`: while the model response is
+// still streaming (more exclusive calls may yet be queued behind the Agent
+// call), the auto-background timer re-arms itself at this interval instead of
+// backgrounding the subagent.
+const AUTO_BACKGROUND_HOLD_RETRY_MS = 1000;
+
 /**
  * Register a foreground agent task that could be backgrounded later.
  * Called when an agent has been running long enough to show the BackgroundHint.
@@ -612,11 +619,47 @@ export function registerAgentForeground({
   backgroundSignalResolvers.set(agentId, resolveBackgroundSignal!);
   registerTask(taskState, setAppState);
 
-  // Auto-background after timeout if configured
+  // Auto-background after timeout if configured.
+  // Official 2.1.295 (#026) structure, verbatim from the binary:
+  //   EQo arm:  `dt=setTimeout(Pwn,V,H,e,Math.min(V,_Br),(nt)=>{dt=nt});
+  //              tt=()=>clearTimeout(dt)`   (V=autoBackgroundMs, _Br=1000)
+  //   Pwn(registry,taskId,retry,arm):
+  //     `h=registry.get(taskId); if(In(h)&&Awn(h)==="response_streaming"){
+  //        arm(setTimeout(Pwn,retry,registry,taskId,retry,arm)); return}
+  //      l9r(taskId,registry)`
+  //   l9r(taskId,registry): `r=registry.get(taskId); if(In(r)&&a9r(r))return!1;
+  //     s=YGe(taskId,registry); if(s)g("task_local_agent_auto_background"); return s`
+  // The arm-setter keeps cancelAutoBackground pointed at the LATEST timer.
+  // A "call_queued_behind" hold makes l9r refuse WITHOUT re-arming: the
+  // one-shot automatic move simply does not happen while an exclusive tool
+  // call waits behind the Agent call (manual backgrounding is unaffected).
   let cancelAutoBackground: (() => void) | undefined;
   if (autoBackgroundMs !== undefined && autoBackgroundMs > 0) {
-    const timer = setTimeout((setAppState, agentId) => {
-      // Mark task as backgrounded and resolve the signal
+    const retryMs = Math.min(autoBackgroundMs, AUTO_BACKGROUND_HOLD_RETRY_MS);
+    let timer: ReturnType<typeof setTimeout>;
+    const arm = (next: ReturnType<typeof setTimeout>): void => {
+      timer = next;
+    };
+    const onAutoBackgroundTimer = (): void => {
+      // OCC has no global task registry handle here; build the `Awn` task view
+      // from registerAgentForeground's captured state. The resolver entry is
+      // deleted when the task is backgrounded or unregistered, so its absence
+      // means isBackgrounded (Awn then early-returns and YGe no-ops below).
+      const holdReason = getAutoBackgroundHoldReason({
+        id: agentId,
+        status: 'running',
+        isBackgrounded: !backgroundSignalResolvers.has(agentId),
+        toolUseId
+      });
+      if (holdReason === 'response_streaming') {
+        arm(setTimeout(onAutoBackgroundTimer, retryMs));
+        return;
+      }
+      if (holdReason === 'call_queued_behind') {
+        // l9r refuses — no re-arm (official behavior).
+        return;
+      }
+      // YGe: mark task as backgrounded and resolve the signal
       setAppState(prev => {
         const prevTask = prev.tasks[agentId];
         if (!isLocalAgentTask(prevTask) || prevTask.isBackgrounded) {
@@ -638,7 +681,8 @@ export function registerAgentForeground({
         resolver();
         backgroundSignalResolvers.delete(agentId);
       }
-    }, autoBackgroundMs, setAppState, agentId);
+    };
+    arm(setTimeout(onAutoBackgroundTimer, autoBackgroundMs));
     cancelAutoBackground = () => clearTimeout(timer);
   }
   return {

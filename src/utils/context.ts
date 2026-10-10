@@ -1,5 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: ANT-ONLY import markers must not be reordered
 import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
+import { isContext1mRefusedForModel } from '../bootstrap/state.js'
 import { getGlobalConfig } from './config.js'
 import { parseEnvInt } from './envValidation.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -107,7 +108,12 @@ export function getContextWindowForModel(
   }
 
   // [1m] suffix — explicit client-side opt-in, respected over all detection
-  if (has1mContext(model)) {
+  // CC 2.1.295 (#016): …except the context-1m refusal latch — official `dUn`
+  // (@209463598: `(_p(e)||ikr(n)?.includes(YS.header)===!0&&a7(e))&&!Gr(e)`)
+  // gates EVERY 1M-sizing arm on `!Gr(e)`: once the backend refused the beta
+  // for this model and answered without it, the context window is sized
+  // without 1M (the effective server-side window really is 200K).
+  if (has1mContext(model) && !isContext1mRefusedForModel(model)) {
     return 1_000_000
   }
 
@@ -122,7 +128,13 @@ export function getContextWindowForModel(
     return cap.max_input_tokens
   }
 
-  if (betas?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model)) {
+  if (
+    betas?.includes(CONTEXT_1M_BETA_HEADER) &&
+    modelSupports1M(model) &&
+    // CC 2.1.295 (#016): ≡ official `dUn`'s `&&!Gr(e)` — the refusal latch
+    // sizes the window without 1M even when the beta list carries the header.
+    !isContext1mRefusedForModel(model)
+  ) {
     return 1_000_000
   }
   if (getSonnet1mExpTreatmentEnabled(model)) {
@@ -146,6 +158,13 @@ export function getSonnet1mExpTreatmentEnabled(model: string): boolean {
     return false
   }
   if (!getCanonicalName(model).includes('sonnet-4-6')) {
+    return false
+  }
+  // CC 2.1.295 (#016): ≡ official `uUn`'s new latch gate (@209465489:
+  // `if(Gr(e))return null`, absent in v294) — once the backend refused the
+  // context-1m beta for this model, the kelp-forest experiment never re-adds
+  // it (beta assembly @217637260 and 1M sizing both consult this).
+  if (isContext1mRefusedForModel(model)) {
     return false
   }
   return getGlobalConfig().clientDataCache?.['coral_reef_sonnet'] === 'true'

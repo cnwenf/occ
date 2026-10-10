@@ -12,6 +12,25 @@ import { jsonParse, jsonStringify } from './slowOperations.js'
 const WS_CONNECTING = 0
 const WS_OPEN = 1
 
+// Official 2.1.295 receive-side cap (`cne=16777216` in the v295 binary,
+// onBunMessage @243779021): a message larger than this is NOT parsed — the
+// transport reports a coded error and closes the connection (DoS guard #124).
+const MCP_WEBSOCKET_MAX_MESSAGE_BYTES = 16777216
+
+/**
+ * Coded error mirroring the official binary's `new x(message, code)` shape
+ * (the `x` class lives in another chunk; the observable contract is the
+ * message string plus a `code` string property).
+ */
+class CodedWebSocketError extends Error {
+  readonly code: string
+  constructor(message: string, code: string) {
+    super(message)
+    this.name = 'CodedWebSocketError'
+    this.code = code
+  }
+}
+
 // Minimal interface shared by globalThis.WebSocket and ws.WebSocket
 type WebSocketLike = {
   readonly readyState: number
@@ -73,11 +92,33 @@ export class WebSocketTransport implements Transport {
   onerror?: (error: Error) => void
   onmessage?: (message: JSONRPCMessage) => void
 
+  /**
+   * Official 2.1.295 oversized-message guard (v295 onBunMessage @243779021):
+   * `if (Buffer.byteLength(data) > 16777216) { handleError(coded); close(); return }`
+   * — the payload is never parsed. Returns true when the message was rejected.
+   */
+  private rejectOversizeMessage(byteLength: number): boolean {
+    if (byteLength > MCP_WEBSOCKET_MAX_MESSAGE_BYTES) {
+      this.handleError(
+        new CodedWebSocketError(
+          `MCP server sent a WebSocket message over ${MCP_WEBSOCKET_MAX_MESSAGE_BYTES / 1024 / 1024} MiB. Claude Code did not read it and closed the connection.`,
+          'mcp websocket message over the cap',
+        ),
+      )
+      void this.close().catch(() => {})
+      return true
+    }
+    return false
+  }
+
   // Bun (native WebSocket) event handlers
   private onBunMessage = (event: MessageEvent) => {
     try {
       const data =
         typeof event.data === 'string' ? event.data : String(event.data)
+      if (this.rejectOversizeMessage(Buffer.byteLength(data))) {
+        return
+      }
       const messageObj = jsonParse(data)
       const message = JSONRPCMessageSchema.parse(messageObj)
       this.onmessage?.(message)
@@ -95,8 +136,14 @@ export class WebSocketTransport implements Transport {
   }
 
   // Node (ws package) event handlers
+  // NOTE: the official binary only runs the Bun path; OCC keeps a node-ws
+  // compat branch, so the same 16 MiB receive guard is applied here as a
+  // faithful extension of the official behavior.
   private onNodeMessage = (data: Buffer) => {
     try {
+      if (this.rejectOversizeMessage(data.byteLength)) {
+        return
+      }
       const messageObj = jsonParse(data.toString('utf-8'))
       const message = JSONRPCMessageSchema.parse(messageObj)
       this.onmessage?.(message)

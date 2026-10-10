@@ -81,6 +81,20 @@ const BIDI_CODE_POINTS = [
 const RED_OPEN = `${ESC}[31m`
 const RED_CLOSE = `${ESC}[39m`
 
+/**
+ * 2.1.295 #76 — grapheme-cluster fixtures. Spelled as code points so this file
+ * stays pure ASCII. `stringWidth` is NOT additive across these clusters when a
+ * piece boundary splits them: width(MAN + ZWJ) = 2 and width(WOMAN) = 2, but
+ * width(MAN + ZWJ + WOMAN) = 2 — exactly the divergence 2.1.295 fixed by
+ * deferring the measure into a single `pending` buffer measured once at the tab.
+ */
+const ZWJ = String.fromCodePoint(0x200d)
+const VS16 = String.fromCodePoint(0xfe0f)
+const MAN = String.fromCodePoint(0x1f468)
+const WOMAN = String.fromCodePoint(0x1f469)
+const WHITE_FLAG = String.fromCodePoint(0x1f3f3)
+const RAINBOW = String.fromCodePoint(0x1f308)
+
 describe('2.1.289 #19: TAB_INTERVAL (official YSt)', () => {
   test('the tab stop interval is 8 columns', () => {
     // Arrange / Act / Assert
@@ -429,7 +443,7 @@ describe('2.1.289 #19: piecesAreDirty (official p9r)', () => {
   })
 })
 
-describe('2.1.289 #19: expandTabsInPieces (official $rr)', () => {
+describe('2.1.295 #76: expandTabsInPieces (official $rr -> dwr -> YTo)', () => {
   test('expands a tab to the next 8-column stop', () => {
     // Arrange / Act / Assert
     expect(expandTabsInPieces(['a\tb'])).toEqual(['a       b'])
@@ -488,6 +502,97 @@ describe('2.1.289 #19: expandTabsInPieces (official $rr)', () => {
     // Act / Assert
     expect(expandTabsInPieces(pieces)).toEqual(pieces)
   })
+
+  // ---------------------------------------------------------------------------
+  // 2.1.295 #76 — "text with tabs ... losing its end at the edge of the screen
+  // or drawing over nearby rows". Official `dwr` @206283910 (v294) advanced the
+  // column counter EAGERLY (`r += ae(f)` for every text part as it was emitted).
+  // Official `YTo` @208573587 (v295) instead buffers the text in `pending` and
+  // calls `ae(i)` — `stringWidth` — ONCE, at the tab:
+  //
+  //   if(h==="\t"){r+=ae(i);let R=n-r%n;u+=" ".repeat(R);r+=R;i=""}
+  //
+  // `stringWidth` is not additive across grapheme clusters, so a cluster split
+  // over a piece boundary now measures as ONE grapheme instead of two. Every
+  // test below is a real v294-vs-v295 divergence or a fixture pinning the new
+  // `pending` bookkeeping that the clean-piece fast path must maintain.
+  // ---------------------------------------------------------------------------
+
+  test('measures the whole pending run at the tab, not each piece eagerly (split ZWJ cluster)', () => {
+    // Arrange — MAN + ZWJ is an incomplete ZWJ sequence and WOMAN is a separate
+    // grapheme: width(MAN+ZWJ) = 2, width(WOMAN) = 2, width(MAN+ZWJ+WOMAN) = 2.
+    const pieces = [`${MAN}${ZWJ}`, `${WOMAN}\tx`]
+
+    // Act
+    const result = expandTabsInPieces(pieces)
+
+    // Assert — v295 measures the joined run once: 8 - 2 = 6 spaces.
+    // v294 added 2 + 2 eagerly and produced only 8 - 4 = 4 spaces.
+    expect(result).toEqual([`${MAN}${ZWJ}`, `${WOMAN}      x`])
+  })
+
+  test('measures the whole pending run at the tab for a variation-selector cluster split too', () => {
+    // Arrange — WHITE_FLAG + VS16 + ZWJ / RAINBOW is the second measured
+    // non-additive split (2 + 2 eager vs 2 joined).
+    const pieces = [`${WHITE_FLAG}${VS16}${ZWJ}`, `${RAINBOW}\tx`]
+
+    // Act
+    const result = expandTabsInPieces(pieces)
+
+    // Assert — 8 - 2 = 6 spaces (v294: 4).
+    expect(result).toEqual([
+      `${WHITE_FLAG}${VS16}${ZWJ}`,
+      `${RAINBOW}      x`,
+    ])
+  })
+
+  test('the clean-piece fast path still feeds the pending run', () => {
+    // Arrange — 'ab' and 'cd' both take the v295 fast path
+    // (`!QWn(o) && !o.includes("\t")` → return the piece verbatim), but each
+    // still appends to `pending` so the later tab sees the full 4-cell run.
+    const pieces = ['ab', 'cd', '\te']
+
+    // Act / Assert — 8 - 4 = 4 spaces; the clean pieces are byte-identical.
+    expect(expandTabsInPieces(pieces)).toEqual(['ab', 'cd', '    e'])
+  })
+
+  test('a tab in an earlier piece empties the pending run', () => {
+    // Arrange — `YTo` sets `i=""` after padding, so 'bcde' (fast path) restarts
+    // the run at column 8 rather than continuing from column 1.
+    const pieces = ['a\t', 'bcde', '\tf']
+
+    // Act / Assert — first tab: 8 - 1 = 7 spaces (column 8); second tab:
+    // 8 + 4 = 12 → 8 - 12 % 8 = 4 spaces.
+    expect(expandTabsInPieces(pieces)).toEqual(['a       ', 'bcde', '    f'])
+  })
+
+  test('the fast path re-seeds pending from the last newline of a clean piece', () => {
+    // Arrange — `d = o.lastIndexOf("\n") + 1` → the fast path drops everything
+    // before the final newline, resets `r`/`i`, and seeds `pending` with 'gh'.
+    const pieces = ['abcdef\ngh', '\tx']
+
+    // Act / Assert — the clean piece is returned byte-identical; the tab pads
+    // 8 - 2 = 6 spaces off the run that started after the newline.
+    expect(expandTabsInPieces(pieces)).toEqual(['abcdef\ngh', '      x'])
+  })
+
+  test('a pass-through escape sequence joins the pending run without advancing the column', () => {
+    // Arrange — `mt` returns undefined for a well-formed SGR, so `YTo` appends
+    // the raw value to BOTH `u` and `i`. `stringWidth` ignores ANSI, so the run
+    // still measures as 2 cells.
+    const pieces = [RED_OPEN, 'ab', '\tx']
+
+    // Act / Assert — 8 - 2 = 6 spaces.
+    expect(expandTabsInPieces(pieces)).toEqual([RED_OPEN, 'ab', '      x'])
+  })
+
+  test('a clean piece ending in a newline leaves the pending run empty', () => {
+    // Arrange — tailStart === piece.length, so `pending` is seeded with ''.
+    const pieces = ['xyz\n', 'ab\tc']
+
+    // Act / Assert — the tab pads 8 - 2 = 6 spaces.
+    expect(expandTabsInPieces(pieces)).toEqual(['xyz\n', 'ab      c'])
+  })
 })
 
 describe('2.1.289 #19: replaceBidi (official Ya / R8e / bft)', () => {
@@ -515,14 +620,41 @@ describe('2.1.289 #19: replaceBidi (official Ya / R8e / bft)', () => {
   })
 })
 
-describe('2.1.289 #19: normalizeDirtyPieces (official Hc)', () => {
+describe('2.1.295 #76: normalizeDirtyPieces (official Hc -> Dc -> _c)', () => {
   test('returns undefined for clean pieces (the fast path)', () => {
-    // Arrange / Act / Assert
-    expect(normalizeDirtyPieces(['a\tb', RED_OPEN])).toBeUndefined()
+    // Arrange / Act / Assert — v295 `_c` gate is
+    // `n.some(u => F0r.test(u)) || XTo(n)`; neither a tab/bidi nor a rewritable
+    // control byte is present, so the pieces are returned untouched.
+    expect(normalizeDirtyPieces([`plain ${RED_OPEN}text`, RED_CLOSE])).toBeUndefined()
+  })
+
+  test('treats a piece holding only a TAB as dirty (2.1.295 widened gate)', () => {
+    // Arrange — 2.1.294 `Dc` gated on `Ayo(n)` (piecesAreDirty) alone, so a
+    // tab-only piece was NOT dirty and the tab survived to the painter.
+    // 2.1.295 `_c` adds `n.some(u => /[\\t<bidi>]/u.test(u))` (v295 @221164627).
+    const pieces = ['a\tb', RED_OPEN]
+
+    // Act
+    const normalized = normalizeDirtyPieces(pieces)
+
+    // Assert
+    expect(normalized).toEqual(['a       b', RED_OPEN])
+  })
+
+  test('treats a piece holding only a BIDI override as dirty (2.1.295 widened gate)', () => {
+    // Arrange — changelog #76 names "bidirectional control characters" alongside
+    // tabs. In wrap mode 2.1.294 left these for the native painter entirely.
+    const pieces = [`a${ch(0x202e)}b`]
+
+    // Act
+    const normalized = normalizeDirtyPieces(pieces)
+
+    // Assert
+    expect(normalized).toEqual([`a${FFFD}b`])
   })
 
   test('returns bidi-replaced, control-cleaned, tab-expanded pieces when dirty', () => {
-    // Arrange — dirty via the C1 control; bidi is replaced by the Ya pre-map
+    // Arrange — dirty via the C1 control; bidi is replaced by the Ya/Nc pre-map
     const pieces = [`a${C1_OSC}${ch(0x202e)}`, '\tb']
 
     // Act
@@ -533,43 +665,42 @@ describe('2.1.289 #19: normalizeDirtyPieces (official Hc)', () => {
   })
 })
 
-describe('2.1.289 #19: normalizePieces / normalizeText (official Oc / XX)', () => {
-  test('clean + wrap mode: expands tabs, keeps bidi (painter owns it)', () => {
-    // Arrange — official Oc: `let m = u ? n.join("") : Ya(n.join(""))`; the
-    // bidi table is handed to the screen painter (native, constructed with
-    // bft) for wrap-mode text. OCC's painter equivalent applies replaceBidi
-    // in output.ts writeLineToScreen.
+describe('2.1.295 #76: normalizePieces / normalizeText (official Oc -> _c -> wc / XX -> L7 -> eIe)', () => {
+  test('expands tabs AND replaces bidi in every mode (the isWrapMode arg is gone)', () => {
+    // Arrange — 2.1.294 `_c(n,u)` kept the bidi override when `u` (isWrapMode)
+    // was true: `let m = u ? n.join("") : Ya(n.join(""))`. 2.1.295
+    // `wc(n){return(_c(n)??n).join("")}` has no wrap-mode branch at all
+    // (v295 @221164597) — bidi neutralization moved into the widened dirty gate,
+    // so it now happens per piece in EVERY mode.
     const pieces = [`a\tb${ch(0x202e)}`]
 
     // Act / Assert
-    expect(normalizePieces(pieces, true)).toBe(`a       b${ch(0x202e)}`)
-  })
-
-  test('clean + non-wrap mode: replaces bidi AND expands tabs', () => {
-    // Arrange / Act / Assert
-    expect(normalizePieces([`a\tb${ch(0x202e)}`], false)).toBe(`a       b${FFFD}`)
+    expect(normalizePieces(pieces)).toBe(`a       b${FFFD}`)
   })
 
   test('clean text without tabs or bidi is returned byte-identical', () => {
     // Arrange
     const pieces = [`plain ${RED_OPEN}text${RED_CLOSE}`]
 
-    // Act / Assert
-    expect(normalizePieces(pieces, true)).toBe(pieces[0])
-    expect(normalizePieces(pieces, false)).toBe(pieces[0])
+    // Act / Assert — `wc` falls back to `n` and joins, so the string is verbatim
+    expect(normalizePieces(pieces)).toBe(pieces[0])
   })
 
-  test('dirty pieces take the per-piece path in BOTH wrap modes', () => {
-    // Arrange — Hc runs before the wrap gate, so dirty text is normalized
+  test('clean pieces are joined verbatim across pieces', () => {
+    // Arrange / Act / Assert
+    expect(normalizePieces(['ab', 'cd'])).toBe('abcd')
+  })
+
+  test('dirty pieces take the per-piece path', () => {
+    // Arrange — the gate runs before any join, so dirty text is normalized
     // identically for wrap and truncate modes.
     const pieces = [`a${C1_OSC}`, '\tb']
 
     // Act / Assert — 'a' + FFFD = 2 cells → 6 spaces to column 8
-    expect(normalizePieces(pieces, true)).toBe(`a${FFFD}      b`)
-    expect(normalizePieces(pieces, false)).toBe(`a${FFFD}      b`)
+    expect(normalizePieces(pieces)).toBe(`a${FFFD}      b`)
   })
 
-  test('normalizeText is the single-string non-wrap entry (XX = Oc([n], false))', () => {
+  test('normalizeText is the single-string entry (XX = Oc([n], false) -> eIe = wc([n]))', () => {
     // Arrange / Act / Assert
     expect(normalizeText('a\tb')).toBe('a       b')
     expect(normalizeText(`a${ch(0x202e)}b`)).toBe(`a${FFFD}b`)
@@ -604,10 +735,30 @@ describe('2.1.289 #19: normalizeSingleString (official $se)', () => {
   })
 })
 
-describe('2.1.289 #19: normalizeStyledPieces (official dC)', () => {
+describe('2.1.295 #76: normalizeStyledPieces (official dC -> uC -> hC)', () => {
   test('returns the same array and raw join for clean pieces', () => {
-    // Arrange — dC only ever rewrites pieces when Hc says they are dirty;
-    // tab expansion for clean wrap-mode text is the painter's job.
+    // Arrange — hC only ever rewrites pieces when _c says they are dirty. A tab
+    // makes them dirty as of 2.1.295, so the clean case needs neither tab, bidi
+    // nor a rewritable control byte.
+    const segments = [
+      { text: `a${RED_OPEN}b`, styles: {} },
+      { text: 'c', styles: {} },
+    ]
+
+    // Act
+    const result = normalizeStyledPieces(segments)
+
+    // Assert
+    expect(result.segments).toBe(segments)
+    expect(result.text).toBe(`a${RED_OPEN}bc`)
+  })
+
+  test('expands a tab inside a styled piece (2.1.295 widened gate reaches hC)', () => {
+    // Arrange — 2.1.294 `uC` returned the raw join here (a tab is not a control
+    // byte, so `Dc` said "clean") and left tab expansion to the cell writer.
+    // 2.1.295 `hC` calls the widened `_c`, so the segment texts come back
+    // already expanded — which is exactly what let the paint path drop its own
+    // second normalization probe.
     const segments = [
       { text: 'a\tb', styles: {} },
       { text: 'c', styles: {} },
@@ -617,8 +768,11 @@ describe('2.1.289 #19: normalizeStyledPieces (official dC)', () => {
     const result = normalizeStyledPieces(segments)
 
     // Assert
-    expect(result.segments).toBe(segments)
-    expect(result.text).toBe('a\tbc')
+    expect(result.segments).not.toBe(segments)
+    expect(result.segments.map(s => s.text)).toEqual(['a       b', 'c'])
+    expect(result.text).toBe('a       bc')
+    // the caller's array is never mutated (ECC immutability rule)
+    expect(segments.map(s => s.text)).toEqual(['a\tb', 'c'])
   })
 
   test('normalizes every piece with a shared column when dirty', () => {
@@ -659,7 +813,7 @@ describe('2.1.289 #19: normalizeStyledPieces (official dC)', () => {
   })
 })
 
-describe('2.1.289 #19: isWrapTextMode (official ja)', () => {
+describe('2.1.295 #76: isWrapTextMode (official ja -> op)', () => {
   test('is true for the wrap modes', () => {
     // Arrange / Act / Assert
     expect(isWrapTextMode('wrap')).toBe(true)
@@ -679,5 +833,21 @@ describe('2.1.289 #19: isWrapTextMode (official ja)', () => {
     ] as const) {
       expect(isWrapTextMode(mode)).toBe(false)
     }
+  })
+
+  test('the pipeline no longer keys off it — bidi is replaced in every mode', () => {
+    // Arrange — 2.1.289/2.1.294 threaded `ja(y)` into `_c(n, u)` so clean pieces
+    // were bidi-neutralized ONLY when the consumer was in a wrap mode; a
+    // truncate/clip consumer (`L7` → `_c(..., !1)`) got the bidi byte through
+    // untouched. 2.1.295 drops the parameter entirely (`wc(n)` @221164548) and
+    // moves bidi replacement into `_c`, per piece, unconditionally. The helper
+    // itself survives (as `op` @221165265) for other callers.
+    const bidi = `a${ch(0x202e)}b`
+
+    // Act
+    const result = normalizeText(bidi)
+
+    // Assert — v294 left the U+202E byte through on the truncate path.
+    expect(result).toBe(`a${FFFD}b`)
   })
 })

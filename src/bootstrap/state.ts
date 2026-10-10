@@ -259,6 +259,18 @@ type State = {
   // benefit to keeping thinking). Once latched, stays on so the newly-warmed
   // thinking-cleared cache isn't busted by flipping back to keep:'all'.
   thinkingClearLatched: boolean | null
+  // CC 2.1.295 (#016): models whose context-1m beta was refused by the
+  // backend (HTTP 400) and which answered once the beta was removed.
+  // Official host-store `requestLatches.context1mRefusedModels()` (@206597264:
+  // `context1mRefusedModels(){return this.#i}markContext1mRefused(e){this.#i.add(e)}
+  // clearContext1mRefused(){this.#i=new Set}`). Keys are model names with any
+  // `[1m]`/`[2m]` suffix stripped (official `$n` @206949551:
+  // `e.replace(/\[(1|2)m\]/gi,"")`). While latched, the beta is left out for
+  // the model and its context window is sized without 1M; cleared on
+  // conversation reset (/clear, compaction) — official `zGn()` @206601086 —
+  // and (officially) on provider change (`dln` @224977400); a resume starts a
+  // fresh process, so the in-memory set naturally resets.
+  context1mRefusedModels: Set<string>
   // Current prompt ID (UUID) correlating a user prompt with subsequent OTel events
   promptId: string | null
   // Last API requestId for the main conversation chain (not subagents).
@@ -437,6 +449,8 @@ function getInitialState(): State {
     fastModeHeaderLatched: null,
     cacheEditingHeaderLatched: null,
     thinkingClearLatched: null,
+    // CC 2.1.295 (#016): context-1m refusal latch (empty = nothing refused)
+    context1mRefusedModels: new Set<string>(),
     // Current prompt ID
     promptId: null,
     lastMainRequestId: undefined,
@@ -1813,12 +1827,55 @@ export function setThinkingClearLatched(v: boolean): void {
 /**
  * Reset beta header latches to null. Called on /clear and /compact so a
  * fresh conversation gets fresh header evaluation.
+ *
+ * CC 2.1.295 (#016): official `zGn()` (@206601086) does BOTH the sticky-beta
+ * unlatch and `RPr()` (clearContext1mRefused) at these same conversation-reset
+ * points (`X6` @214995691 and the compaction path @217460559), so the
+ * context-1m refusal latch is cleared here too — "tried again after /clear,
+ * a compaction, a resume or a provider change".
  */
 export function clearBetaHeaderLatches(): void {
   STATE.afkModeHeaderLatched = null
   STATE.fastModeHeaderLatched = null
   STATE.cacheEditingHeaderLatched = null
   STATE.thinkingClearLatched = null
+  clearContext1mRefusedModels()
+}
+
+/**
+ * CC 2.1.295 (#016): official `$n` (@206949551) — the latch key drops the
+ * client-side context-window suffix so `sonnet[1m]` and bare `sonnet` share
+ * one latch entry: `e.replace(/\[(1|2)m\]/gi,"")`.
+ */
+function context1mLatchKey(model: string): string {
+  return model.replace(/\[(1|2)m\]/gi, '')
+}
+
+/**
+ * CC 2.1.295 (#016): official `Gr` (@209332298: `function Gr(e){return
+ * LIo($n(e))}`) — whether the backend refused the context-1m beta for this
+ * model and answered once it was removed. While true, the beta is left out
+ * of requests (`Cc` strip @209477214, `uUn` kelp gate @209465489) and the
+ * context window is sized without 1M (`dUn` @209463598).
+ */
+export function isContext1mRefusedForModel(model: string): boolean {
+  return STATE.context1mRefusedModels.has(context1mLatchKey(model))
+}
+
+/**
+ * CC 2.1.295 (#016): official `NIo` (@206597264:
+ * `markContext1mRefused(e){this.#i.add(e)}`) — bare store mark; the
+ * already-latched pre-check and the `[betas] the backend rejected …` warn log
+ * live in the `$wr` wrapper (latchContext1mRefused in
+ * services/api/context1mBetaRetry.ts).
+ */
+export function markContext1mRefusedModel(model: string): void {
+  STATE.context1mRefusedModels.add(context1mLatchKey(model))
+}
+
+/** Official `RPr` (@206597264: `clearContext1mRefused(){this.#i=new Set}`). */
+export function clearContext1mRefusedModels(): void {
+  STATE.context1mRefusedModels = new Set<string>()
 }
 
 export function getPromptId(): string | null {

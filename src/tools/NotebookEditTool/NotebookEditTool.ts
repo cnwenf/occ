@@ -13,7 +13,8 @@ import { z } from 'zod/v4'
 import { buildTool, type ToolDef, type ToolUseContext } from '../../Tool.js'
 import type { NotebookCell, NotebookContent } from '../../types/notebook.js'
 import { getCwd } from '../../utils/cwd.js'
-import { isENOENT } from '../../utils/errors.js'
+import { logForDebugging } from '../../utils/debug.js'
+import { errorMessage, isENOENT } from '../../utils/errors.js'
 import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
 import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
 import { safeParseJSON } from '../../utils/json.js'
@@ -22,13 +23,18 @@ import {
   macosNetworkMountDenyMessage,
   shouldDenyMacosNetworkMountPath,
 } from '../../utils/macosKernelPaths.js'
-import { parseCellId } from '../../utils/notebook.js'
+import { parseCellId, renderNotebookCells } from '../../utils/notebook.js'
 import { validateNullByteFreeFields } from '../../utils/nullByteValidation.js'
 import {
   checkLeafSymlinkWriteDeny,
   checkWritePermissionForTool,
   expandPathForWriteDescriptor,
 } from '../../utils/permissions/filesystem.js'
+import {
+  fileStateMatchesBaselineOrTranscript,
+  isFullyReadOfFileState,
+  stripBom,
+} from '../../utils/permissions/fileStateGuard.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
 import {
   assertSymlinkResolutionsUnchangedForWrite,
@@ -411,6 +417,9 @@ export const NotebookEditTool = buildTool({
       // which redid safeResolvePath and/or a 4KB readSync).
       const { content, encoding, lineEndings } =
         readFileSyncWithMetadata(fullPath)
+      // 2.1.295 (#088, binary `Fe=await Lv(be.ioPath)`): pre-write mtime,
+      // captured before any mutation, for the frozen-mtime freshness fallback.
+      const preWriteMtime = getFileModificationTime(fullPath)
       // Must use non-memoized jsonParse here: safeParseJSON caches by content
       // string and returns a shared object reference, but we mutate the
       // notebook in place below (cells.splice, targetCell.source = ...).
@@ -432,6 +441,42 @@ export const NotebookEditTool = buildTool({
             original_file: '',
             updated_file: '',
           },
+        }
+      }
+
+      // 2.1.295 (#088, binary tt-logic — computed AFTER parse/validate and
+      // BEFORE any cell mutation). Official v295 verbatim:
+      //   let Je=G.get(he),tt=!1;
+      //   if(k4(Je)){
+      //     if(tt=PLe(Je,FS(Re)),!tt&&Fe<=Je.timestamp)
+      //       try{tt=PLe(Je,_(_9e(Ge)))}
+      //       catch(qt){t(`NotebookEdit: the cells cannot be rendered as
+      //         Read renders them: ${l(qt)}`)}
+      //   }
+      // Read stores notebooks as jsonStringify(rendered cells), so the
+      // raw-content compare (stripBom(content)) normally fails and the
+      // frozen-mtime fallback — render the parsed cells exactly as Read
+      // renders them (renderNotebookCells ≡ _9e) — is the real matcher.
+      // `tt` true ⇒ post-write record keeps full-read status; false ⇒ the
+      // record is marked contentNotInModelContext (k4 goes false downstream).
+      const lastRead = readFileState.get(fullPath)
+      let contentInModelContext = false
+      if (isFullyReadOfFileState(lastRead)) {
+        contentInModelContext = fileStateMatchesBaselineOrTranscript(
+          lastRead,
+          stripBom(content),
+        )
+        if (!contentInModelContext && preWriteMtime <= lastRead.timestamp) {
+          try {
+            contentInModelContext = fileStateMatchesBaselineOrTranscript(
+              lastRead,
+              jsonStringify(renderNotebookCells(notebook)),
+            )
+          } catch (error) {
+            logForDebugging(
+              `NotebookEdit: the cells cannot be rendered as Read renders them: ${errorMessage(error)}`,
+            )
+          }
         }
       }
 
@@ -522,11 +567,16 @@ export const NotebookEditTool = buildTool({
       // FileWriteTool). offset:undefined breaks FileReadTool's dedup match —
       // without this, Read→NotebookEdit→Read in the same millisecond would
       // return the file_unchanged stub against stale in-context content.
+      // 2.1.295 (#088, binary `...!tt&&{contentNotInModelContext:!0}`): when
+      // the pre-write content was not verifiably in the model context, the
+      // post-write record is marked so k4 consumers stop treating it as a
+      // full read.
       readFileState.set(fullPath, {
         content: updatedContent,
         timestamp: getFileModificationTime(fullPath),
         offset: undefined,
         limit: undefined,
+        ...(!contentInModelContext && { contentNotInModelContext: true }),
       })
       const data = {
         new_source,

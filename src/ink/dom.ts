@@ -6,7 +6,6 @@ import measureText from './measure-text.js'
 import { addPendingClear, nodeCache } from './node-cache.js'
 import {
   hasControlChars,
-  isWrapTextMode,
   normalizePieces,
 } from './normalize-text.js'
 import squashTextNodes, { squashTextNodesToSegments } from './squash-text-nodes.js'
@@ -372,19 +371,27 @@ const measureTextNode = function (
     node.nodeName === '#text' ? node.nodeValue : squashTextNodes(node)
   const textWrap = node.style?.textWrap ?? 'wrap'
 
-  // CC 2.1.289 changelog #19 — official `mE` @213590147 measures the SAME
-  // shared normalization the render path (`Gs` @213699402) paints:
-  //   g = Oc(n.nodeName!=="#text" && u9r(m) ? wr(n).map(M=>M.text) : [m], ja(y))
+  // CC 2.1.289 changelog #19 — official `mE` measures the SAME shared
+  // normalization the render path (`Is`/`ks`) paints:
+  //   2.1.294: g = _c(n.nodeName!=="#text" && Tyo(m) ? wr(n).map(A=>A.text) : [m], ja(y))
+  //   2.1.295: g = wc(n.nodeName!=="#text" && QWn(m) ? _r(n).map(_=>_.text) : [m])
   // Tabs become literal spaces at 8-column stops, stray escapes / C1 controls
   // become CAN or U+FFFD, so measure and paint can never disagree — which is
   // what used to let a short "tab + CRLF" text draw over the rows below it.
   // Styled pieces are split out only when the squashed text actually carries a
-  // control byte (`u9r`), keeping the clean-text fast path allocation-free.
+  // control byte (`Tyo`/`QWn`), keeping the clean-text fast path allocation-free.
+  //
+  // CC 2.1.295 changelog #76 dropped the second argument. `ja(y)`
+  // (isWrapTextMode) used to decide whether clean pieces were bidi-neutralized
+  // on the joined string; 2.1.295's `wc(n){return(_c(n)??n).join("")}` has no
+  // wrap-mode branch at all, because the tab-or-bidi case moved into the
+  // widened `normalizeDirtyPieces` gate and is now handled per piece in every
+  // wrap mode (v295 @221201067).
   const pieces =
     node.nodeName !== '#text' && hasControlChars(rawText)
       ? squashTextNodesToSegments(node).map(segment => segment.text)
       : [rawText]
-  const text = normalizePieces(pieces, isWrapTextMode(textWrap))
+  const text = normalizePieces(pieces)
 
   const dimensions = measureText(text, width)
 

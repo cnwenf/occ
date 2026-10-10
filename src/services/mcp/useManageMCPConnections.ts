@@ -62,6 +62,7 @@ import {
 } from '../../state/AppState.js'
 import { errorMessage } from '../../utils/errors.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
+import { logForDiagnosticsNoPII } from '../../utils/diagLogs.js'
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import { enqueue } from '../../utils/messageQueueManager.js'
 import {
@@ -83,12 +84,28 @@ import {
 } from './claudeai.js'
 import { registerElicitationHandler } from './elicitationHandler.js'
 import { getMcpPrefix } from './mcpStringUtils.js'
+import {
+  FAST_RECONNECT_ATTEMPTS,
+  SLOW_RECONNECT_ATTEMPTS,
+  TOTAL_RECONNECT_ATTEMPTS,
+  fastReconnectDelayMs,
+  goesToSlowPhase,
+  isYoungClose,
+  slowReconnectDelayMs,
+  youngCloseHoldOffMs,
+} from './reconnectBackoff.js'
 import { commandBelongsToServer, excludeStalePluginClients } from './utils.js'
 
-// Constants for reconnection with exponential backoff
-const MAX_RECONNECT_ATTEMPTS = 5
-const INITIAL_BACKOFF_MS = 1000
-const MAX_BACKOFF_MS = 30000
+// Reconnection schedule constants/helpers moved to ./reconnectBackoff.ts —
+// byte-faithful ports of the official 2.1.295 machinery (gap #018): fast phase
+// TJ=5 attempts (1s/2s/4s/8s), slow background phase bRn=8 full-jitter
+// attempts ([15s,300s] cap), young-close threshold nns=10s + hold-off, and the
+// Wge retryability gate deciding whether the slow phase runs at all.
+
+// Official watcher `yDo`'s `E = new WeakMap()` (@241120400): per-connection
+// young-close counts keyed by the SDK client instance, so repeated drops of a
+// just-established connection escalate the hold-off instead of tight-looping.
+const youngCloseCounts = new WeakMap<object, number>()
 
 /**
  * Create a unique key for a plugin error to enable deduplication
@@ -366,8 +383,14 @@ export function useManageMCPConnections(
           // re-running for every already-connected server on each state change.
           registerElicitationHandler(client.client, client.name, setAppState)
 
+          // 2.1.295 (#018): uptime is measured from when the close watcher is
+          // wired onto this connection (official `R=S()` in watcher `yDo`
+          // @241120400). A close before nns (10s) counts as a "young close".
+          const connectedAt = Date.now()
+
           client.client.onclose = () => {
             const configType = client.config.type ?? 'stdio'
+            const uptimeMs = Date.now() - connectedAt
 
             clearServerCache(client.name, client.config).catch(() => {
               logForDebugging(
@@ -387,15 +410,10 @@ export function useManageMCPConnections(
               return
             }
 
-            // Handle automatic reconnection for remote transports
-            // Skip stdio (local process) and sdk (internal) - they don't support reconnection
+            // Handle automatic reconnection for remote transports.
+            // Skip stdio (local process) and sdk (internal) — official gate
+            // `le(n){return n.type!==void 0&&n.type!=="stdio"&&n.type!=="sdk"}`.
             if (configType !== 'stdio' && configType !== 'sdk') {
-              const transportType = getTransportDisplayName(configType)
-              logMCPDebug(
-                client.name,
-                `${transportType} transport closed/disconnected, attempting automatic reconnection`,
-              )
-
               // Cancel any existing reconnection attempt for this server
               const existingTimer = reconnectTimersRef.current.get(client.name)
               if (existingTimer) {
@@ -403,13 +421,83 @@ export function useManageMCPConnections(
                 reconnectTimersRef.current.delete(client.name)
               }
 
-              // Attempt reconnection with exponential backoff
+              // Young-close counting (official `A = d<nns ? (E.get(client)??0)+1 : 0`,
+              // E = WeakMap keyed by the SDK client instance).
+              const youngCloses = isYoungClose(uptimeMs)
+                ? (youngCloseCounts.get(client.client) ?? 0) + 1
+                : 0
+
+              // Hold-off (official `v(h,r,R)`: `T = r>1 ? gnt(r-1) - R : 0`,
+              // applied only while the client is still shown connected in
+              // state). A server that drops each connection right after
+              // connect is reconnected with escalating delay (up to 30s)
+              // instead of a tight loop. The official's
+              // isControlReconnectInFlight gate has no OCC analog (skipped).
+              let holdOffMs = youngCloseHoldOffMs(youngCloses, uptimeMs)
+              if (
+                holdOffMs > 0 &&
+                !store
+                  .getState()
+                  .mcp.clients.some(
+                    c => c.type === 'connected' && c.client === client.client,
+                  )
+              ) {
+                holdOffMs = 0
+              }
+              if (holdOffMs > 0) {
+                logMCPDebug(
+                  client.name,
+                  `${client.config.type} transport closed again soon after it connected: reconnecting in ${holdOffMs}ms`,
+                )
+              }
+
+              // Two-phase reconnect loop — official `de` @241124366:
+              // W = TJ + bRn = 13 attempts. Fast phase (1..5) delays
+              // gnt(u-1) = 1s/2s/4s/8s; slow background phase (6..13) uses
+              // full-jitter AH(base 30s, cap 300s, floor 15s). The slow phase
+              // only runs when the final failure is retryable (Wge) and not an
+              // auth rejection (cqt).
               const reconnectWithBackoff = async () => {
+                const sleepCancellable = (ms: number) =>
+                  new Promise<void>(resolve => {
+                    // eslint-disable-next-line no-restricted-syntax -- timer stored in ref for cancellation; sleep() doesn't expose the handle
+                    const timer = setTimeout(resolve, ms)
+                    reconnectTimersRef.current.set(client.name, timer)
+                  })
+                const emitDiag = (
+                  slowPhase: boolean,
+                  data: Record<string, unknown>,
+                ) => {
+                  // Official diagnostics channel `ee(level,event,data)` with
+                  // allowlisted events mcp_auto_reconnect / mcp_slow_reconnect.
+                  logForDiagnosticsNoPII(
+                    'info',
+                    slowPhase ? 'mcp_slow_reconnect' : 'mcp_auto_reconnect',
+                    data,
+                  )
+                }
+
+                // Official watcher: hold-off sleep runs before attempt 1.
+                if (holdOffMs > 0) {
+                  await sleepCancellable(holdOffMs)
+                }
+
                 for (
                   let attempt = 1;
-                  attempt <= MAX_RECONNECT_ATTEMPTS;
+                  attempt <= TOTAL_RECONNECT_ATTEMPTS;
                   attempt++
                 ) {
+                  // Official `H = u - TJ`; >0 means the slow background phase.
+                  const slowAttempt = attempt - FAST_RECONNECT_ATTEMPTS
+
+                  if (attempt > 1) {
+                    await sleepCancellable(
+                      slowAttempt > 0
+                        ? slowReconnectDelayMs(slowAttempt - 1)
+                        : fastReconnectDelayMs(attempt - 1),
+                    )
+                  }
+
                   // Check if server was disabled while we were waiting
                   if (isMcpServerDisabled(client.name)) {
                     logMCPDebug(
@@ -420,80 +508,151 @@ export function useManageMCPConnections(
                     return
                   }
 
-                  updateServer({
-                    ...client,
-                    type: 'pending',
-                    reconnectAttempt: attempt,
-                    maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
-                  })
+                  if (slowAttempt > 0) {
+                    // Official slow-phase pending record carries NO attempt
+                    // counters: `{name:s,type:"pending",config:y}`.
+                    updateServer({
+                      name: client.name,
+                      type: 'pending',
+                      config: client.config,
+                    })
+                  } else {
+                    updateServer({
+                      ...client,
+                      type: 'pending',
+                      reconnectAttempt: attempt,
+                      maxReconnectAttempts: FAST_RECONNECT_ATTEMPTS,
+                    })
+                  }
 
-                  const reconnectStartTime = Date.now()
+                  // Official per-attempt log. found_closed (transport already
+                  // closed when wired) has no OCC detection surface — OCC only
+                  // reaches this handler via a live onclose, so the "closed"
+                  // variant always applies.
+                  logMCPDebug(
+                    client.name,
+                    attempt === 1
+                      ? `${client.config.type} transport closed — reconnecting (attempt 1/${FAST_RECONNECT_ATTEMPTS})`
+                      : slowAttempt > 0
+                        ? `Background reconnect attempt ${slowAttempt}/${SLOW_RECONNECT_ATTEMPTS}`
+                        : `Reconnect attempt ${attempt}/${FAST_RECONNECT_ATTEMPTS}`,
+                  )
+
+                  // Official: reconnectMcpServerImpl(...).catch(k => ({client:
+                  // {name,type:"failed",config,error:l(k)},tools:[],commands:[]})).
+                  // The official's mid-dial settled-connection reuse
+                  // (peekSettledConnection/Uee/Lfe) and hasUnsettledDial skips
+                  // have no OCC analog and are not ported.
+                  let result: {
+                    client: MCPServerConnection
+                    tools: Tool[]
+                    commands: Command[]
+                    resources?: ServerResource[]
+                  }
                   try {
-                    const result = await reconnectMcpServerImpl(
+                    result = await reconnectMcpServerImpl(
                       client.name,
                       client.config,
                     )
-                    const elapsed = Date.now() - reconnectStartTime
-
-                    if (result.client.type === 'connected') {
-                      logMCPDebug(
-                        client.name,
-                        `${transportType} reconnection successful after ${elapsed}ms (attempt ${attempt})`,
-                      )
-                      reconnectTimersRef.current.delete(client.name)
-                      onConnectionAttempt(result)
-                      return
-                    }
-
-                    logMCPDebug(
-                      client.name,
-                      `${transportType} reconnection attempt ${attempt} completed with status: ${result.client.type}`,
-                    )
-
-                    // On final attempt, update state with the result
-                    if (attempt === MAX_RECONNECT_ATTEMPTS) {
-                      logMCPDebug(
-                        client.name,
-                        `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached, giving up`,
-                      )
-                      reconnectTimersRef.current.delete(client.name)
-                      onConnectionAttempt(result)
-                      return
-                    }
                   } catch (error) {
-                    const elapsed = Date.now() - reconnectStartTime
                     logMCPError(
                       client.name,
-                      `${transportType} reconnection attempt ${attempt} failed after ${elapsed}ms: ${error}`,
+                      `Reconnection attempt ${attempt} threw: ${errorMessage(error)}`,
                     )
-
-                    // On final attempt, mark as failed
-                    if (attempt === MAX_RECONNECT_ATTEMPTS) {
-                      logMCPDebug(
-                        client.name,
-                        `Max reconnection attempts (${MAX_RECONNECT_ATTEMPTS}) reached, giving up`,
-                      )
-                      reconnectTimersRef.current.delete(client.name)
-                      updateServer({ ...client, type: 'failed' })
-                      return
+                    result = {
+                      client: {
+                        name: client.name,
+                        type: 'failed',
+                        config: client.config,
+                        error: errorMessage(error),
+                      },
+                      tools: [],
+                      commands: [],
                     }
                   }
 
-                  // Schedule next retry with exponential backoff
-                  const backoffMs = Math.min(
-                    INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1),
-                    MAX_BACKOFF_MS,
-                  )
+                  if (result.client.type === 'connected') {
+                    // Official success preset `E(x, S+u-1)`: the NEW client's
+                    // young-close counter starts at (youngCloses + attempt - 1)
+                    // so an immediate re-drop resumes at the escalated hold-off.
+                    youngCloseCounts.set(
+                      result.client.client,
+                      youngCloses + attempt - 1,
+                    )
+                    reconnectTimersRef.current.delete(client.name)
+                    logMCPDebug(client.name, `Reconnected (attempt ${attempt})`)
+                    // Official success telemetry `g(event, {attempts,
+                    // found_closed, young_closes})` — the success outcome
+                    // string was not recoverable from the binary; only the
+                    // verified data fields are emitted.
+                    emitDiag(slowAttempt > 0, {
+                      attempts: attempt,
+                      found_closed: false,
+                      young_closes: youngCloses,
+                    })
+                    onConnectionAttempt(result)
+                    return
+                  }
+
+                  // Retryability (official `O = Wge(a) && (a.errorCode===void 0
+                  // || !cqt.has(a.errorCode))`) decides give-up vs slow phase.
+                  const retryable = goesToSlowPhase(result.client)
+
+                  if (
+                    attempt === FAST_RECONNECT_ATTEMPTS ||
+                    (slowAttempt > 0 &&
+                      (!retryable ||
+                        attempt === TOTAL_RECONNECT_ATTEMPTS))
+                  ) {
+                    logMCPDebug(
+                      client.name,
+                      slowAttempt <= 0 && retryable
+                        ? `Still failing after ${attempt} attempts`
+                        : `Reconnect gave up after ${attempt} attempts: ${result.client.type}`,
+                    )
+                    reconnectTimersRef.current.delete(client.name)
+                    onConnectionAttempt(result)
+
+                    if (result.client.type === 'needs-auth') {
+                      emitDiag(slowAttempt > 0, {
+                        outcome: 'needs_auth',
+                        attempts: attempt,
+                        found_closed: false,
+                        young_closes: youngCloses,
+                      })
+                      return
+                    }
+                    if (slowAttempt > 0) {
+                      emitDiag(true, {
+                        outcome: retryable ? 'gave_up' : 'not_retryable',
+                        attempts: attempt,
+                        found_closed: false,
+                      })
+                      return
+                    }
+                    emitDiag(false, {
+                      outcome: 'exhausted',
+                      attempts: attempt,
+                      found_closed: false,
+                      young_closes: youngCloses,
+                      goes_slow: retryable,
+                    })
+                    if (!retryable) {
+                      return
+                    }
+                    logMCPDebug(
+                      client.name,
+                      `Reconnect attempts spent; retrying in the background, up to ${SLOW_RECONNECT_ATTEMPTS} more times`,
+                    )
+                    continue
+                  }
+
                   logMCPDebug(
                     client.name,
-                    `Scheduling reconnection attempt ${attempt + 1} in ${backoffMs}ms`,
+                    slowAttempt > 0
+                      ? `Background reconnect attempt ${slowAttempt} did not connect (${result.client.type})`
+                      : `Reconnect attempt ${attempt} did not connect (${result.client.type}); next in ${fastReconnectDelayMs(attempt)}ms`,
                   )
-
-                  await new Promise<void>(resolve => {
-                    // eslint-disable-next-line no-restricted-syntax -- timer stored in ref for cancellation; sleep() doesn't expose the handle
-                    const timer = setTimeout(resolve, backoffMs)
-                    reconnectTimersRef.current.set(client.name, timer)
-                  })
                 }
               }
 
@@ -1167,16 +1326,4 @@ export function useManageMCPConnections(
   )
 
   return { reconnectMcpServer, toggleMcpServer }
-}
-
-function getTransportDisplayName(type: string): string {
-  switch (type) {
-    case 'http':
-      return 'HTTP'
-    case 'ws':
-    case 'ws-ide':
-      return 'WebSocket'
-    default:
-      return 'SSE'
-  }
 }

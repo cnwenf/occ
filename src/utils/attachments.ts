@@ -204,6 +204,7 @@ import {
   checkForAsyncHookResponses,
   removeDeliveredAsyncHooks,
 } from './hooks/AsyncHookRegistry.js'
+import { isDuplicateSessionStartResponse } from './hooks/sessionStartContextDedupe.js'
 import {
   checkForLSPDiagnostics,
   clearAllLSPDiagnostics,
@@ -424,6 +425,10 @@ export type AsyncHookResponseAttachment = {
   hookName: string
   hookEvent: HookEvent | 'StatusLine' | 'FileSuggestion'
   toolName?: string
+  // CC 2.1.295 (#070): set for SessionStart responses only (official
+  // `...w==="SessionStart"&&{command,pluginId}`) — feeds the dedupe gate.
+  command?: string
+  pluginId?: string
   response: SyncHookJSONOutput
   stdout: string
   stderr: string
@@ -1125,7 +1130,7 @@ export async function getAttachments(
           getUnifiedTaskAttachments(toolUseContext),
         ),
         maybe('async_hook_responses', async () =>
-          getAsyncHookResponseAttachments(),
+          getAsyncHookResponseAttachments(messages ?? []),
         ),
         maybe('token_usage', async () =>
           Promise.resolve(
@@ -4257,7 +4262,9 @@ async function getUnifiedTaskAttachments(
   }))
 }
 
-async function getAsyncHookResponseAttachments(): Promise<Attachment[]> {
+async function getAsyncHookResponseAttachments(
+  messages: Message[],
+): Promise<Attachment[]> {
   const responses = await checkForAsyncHookResponses()
 
   if (responses.length === 0) {
@@ -4268,34 +4275,65 @@ async function getAsyncHookResponseAttachments(): Promise<Attachment[]> {
     `Hooks: getAsyncHookResponseAttachments found ${responses.length} responses`,
   )
 
-  const attachments = responses.map(
-    ({
+  // CC 2.1.295 (#070): official `JMr` — seed the prior-attachment list from
+  // the conversation (only when a SessionStart response is pending) so an
+  // async SessionStart hook's unchanged context is NOT re-added on every
+  // resume; official `Umn` gate below.
+  const priorAttachments: unknown[] = responses.some(
+    r => r.hookEvent === 'SessionStart',
+  )
+    ? messages.flatMap(m =>
+        m?.type === 'attachment'
+          ? [(m as AttachmentMessage).attachment]
+          : [],
+      )
+    : []
+
+  const attachments: Attachment[] = []
+  for (const {
+    processId,
+    response,
+    hookName,
+    hookEvent,
+    toolName,
+    pluginId,
+    command,
+    stdout,
+    stderr,
+    exitCode,
+  } of responses) {
+    if (
+      hookEvent === 'SessionStart' &&
+      isDuplicateSessionStartResponse(
+        { response, command, pluginId },
+        priorAttachments,
+      )
+    ) {
+      logForDebugging(
+        `Hooks: Not adding the output of ${processId} (${hookName}) to the conversation: Claude already sees the same text from an earlier SessionStart run`,
+      )
+      continue
+    }
+    logForDebugging(
+      `Hooks: Creating attachment for ${processId} (${hookName}): ${jsonStringify(response)}`,
+    )
+    const attachment = {
+      type: 'async_hook_response' as const,
       processId,
-      response,
       hookName,
       hookEvent,
       toolName,
-      pluginId,
+      ...(hookEvent === 'SessionStart' && { command, pluginId }),
+      response,
       stdout,
       stderr,
       exitCode,
-    }) => {
-      logForDebugging(
-        `Hooks: Creating attachment for ${processId} (${hookName}): ${jsonStringify(response)}`,
-      )
-      return {
-        type: 'async_hook_response' as const,
-        processId,
-        hookName,
-        hookEvent,
-        toolName,
-        response,
-        stdout,
-        stderr,
-        exitCode,
-      }
-    },
-  )
+    }
+    attachments.push(attachment)
+    // Accumulate created attachments so duplicates within one batch are
+    // also caught (official `r.push(ke)`).
+    priorAttachments.push(attachment)
+  }
 
   // Remove delivered hooks from registry to prevent re-processing
   if (responses.length > 0) {

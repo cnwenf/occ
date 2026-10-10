@@ -568,6 +568,16 @@ export interface ModelCallRetries {
   retriesLeft(): number
   /** Binary `takeCredentialRenewal()` — at most VMo (2) per model call. */
   takeCredentialRenewal(): boolean
+  /**
+   * CC 2.1.295 (#014): binary `capacityWait:{spentMs:0}` @217582858 (ledger
+   * factory) / `V=r.modelCallRetries?.capacityWait??{spentMs:0}` @217560903
+   * (withRetry head). Wall-clock milliseconds already spent in unattended
+   * retry-mode capacity waits for this model call; withRetry charges each
+   * slept heartbeat chunk here and checks the remaining
+   * CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS budget against it. Shared across
+   * withRetry invocations within one model call.
+   */
+  capacityWait: { spentMs: number }
   /** Binary `takeApiAttempt()` — the whole-call request gate. */
   takeApiAttempt(): boolean
   /** Binary `outOfApiAttempts` (B). */
@@ -699,6 +709,9 @@ export function createModelCallRetries(
       credentialRenewalsLeft--
       return true
     },
+    // CC 2.1.295 (#014): official ledger factory ships `capacityWait:{spentMs:0}`
+    // (@217582858) — fresh per model call, mutated in place by withRetry.
+    capacityWait: { spentMs: 0 },
     takeApiAttempt() {
       if (apiAttemptsLeft === undefined) {
         return true

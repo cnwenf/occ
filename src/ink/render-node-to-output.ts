@@ -6,9 +6,7 @@ import type { Rectangle } from './layout/geometry.js'
 import { LayoutDisplay, LayoutEdge, type LayoutNode } from './layout/node.js'
 import { nodeCache, pendingClears } from './node-cache.js'
 import {
-  isWrapTextMode,
   normalizeStyledPieces,
-  normalizeText,
 } from './normalize-text.js'
 import type Output from './output.js'
 import renderBorder from './render-border.js'
@@ -629,14 +627,21 @@ function renderNodeSelf(
         output.write(x, y, text)
       }
     } else if (node.nodeName === 'ink-text') {
-      // CC 2.1.289 changelog #19 — official `Gs` @213699402:
-      //   let Z = wr(n, ...), ie = dC(Z)
-      // `ie` is the piece-normalized plain text: when any styled piece carries a
-      // control byte, tabs are already expanded to literal spaces (shared column
+      // CC 2.1.289 changelog #19 — official paint path (`Is` 2.1.294 @218814334
+      // / `ks` 2.1.295 @221312120):
+      //   let J = wr(n, ...), ie = uC(J)      (v294)
+      //   let Q = _r(n, ...), ne = hC(Q)      (v295)
+      // `ie`/`ne` is the piece-normalized plain text: when any styled piece is
+      // dirty, tabs are already expanded to literal spaces (shared column
       // register across pieces) and stray escapes / C1 controls are rewritten, so
-      // what gets styled is exactly what the yoga measure path (`mE` @213590147)
+      // what gets styled is exactly what the yoga measure path (`dE`/`mE`)
       // measured. That shared normalizer is what stops a short "tab + CRLF" text
       // from drawing over the rows below it.
+      //
+      // CC 2.1.295 changelog #76 widened the dirty gate inside `uC`/`hC` to
+      // "carries a tab OR a bidi override OR a rewritable control byte", which is
+      // what let 2.1.295 delete the paint path's own second normalization pass
+      // (see the `needsWrapping` and no-wrap branches below).
       const normalized = normalizeStyledPieces(
         squashTextNodesToSegments(
           node,
@@ -661,18 +666,23 @@ function renderNodeSelf(
         const maxWidth = Math.min(getMaxWidth(yogaNode), output.width - x)
         const textWrap = node.style.textWrap ?? 'wrap'
 
-        // Official: `ce = ja(ne) ? ie : XX(ie)` then `Ee = lf(ce) > le`. In a
-        // non-wrap mode (truncate/clip) the whole string goes through the
-        // single-string normalizer `XX` first — tabs become literal spaces and
-        // bidi overrides become U+FFFD — because those modes have no cell-writer
-        // tab expansion to fall back on. In a wrap mode `ie` is measured as-is
-        // (the writer still expands any surviving tab at 8-column stops).
-        const widthProbeText = isWrapTextMode(textWrap)
-          ? plainText
-          : normalizeText(plainText)
-
-        // Check if wrapping is needed
-        const needsWrapping = widestLine(widthProbeText) > maxWidth
+        // Check if wrapping is needed.
+        //
+        // CC 2.1.295 changelog #76 removed the second normalization pass here.
+        // v294 was `ce = ja(ne) ? ie : XX(ie)` then `Ee = lf(ce) > le`
+        // (@218814334): in a non-wrap mode (truncate/clip) the whole string went
+        // through `normalizeText` (`XX`/`L7`) again before being measured,
+        // because `normalizeStyledPieces` (`uC`) only cleaned pieces that carried
+        // a control byte — a tab or a bidi override in an otherwise clean run
+        // survived all the way to this probe. v295 is
+        // `fe = ie === "wrap-stream" || of(ne) > le` (@221312120): `hC` now
+        // inherits the widened tab-or-bidi dirty gate, so `ne` (plainText) is
+        // already fully normalized and gets measured directly.
+        //
+        // Official also ORs in `ie === "wrap-stream"`; OCC's TextWrap union has
+        // no wrap-stream mode (src/ink/styles.ts), so that term is unreachable
+        // and stays omitted.
+        const needsWrapping = widestLine(plainText) > maxWidth
 
         let text: string
         let softWrap: boolean[] | undefined
@@ -714,27 +724,23 @@ function renderNodeSelf(
         } else {
           // No wrapping needed: apply styles directly.
           //
-          // Official `Gs` re-slices every segment out of `ce` when normalization
-          // changed the text (`let fe = ce !== ie`):
+          // CC 2.1.295 changelog #76 removed v294's re-slice pass, which walked
+          // the ORIGINAL segment offsets but emitted the NORMALIZED characters
+          // (`Gs` @218814334):
+          //   let fe = ce !== ie, xe = 0, Ce = 0
           //   xe += se.text.length
           //   Me = XX(ie.slice(0, xe)).length
           //   ue = ce.slice(Ce, Me); Ce = Me
-          // i.e. walk the ORIGINAL offsets but emit the NORMALIZED characters, so
-          // a tab-expanded or bidi-neutralized run keeps its own styles instead of
-          // shifting every following segment's styling one character over.
-          const renormalized = widthProbeText !== plainText
-          let consumed = 0
-          let emitted = 0
+          // It existed only because `ce` (the second `L7` normalization) could
+          // differ from `ie` (normalizeStyledPieces' output) character for
+          // character, so each run had to be re-cut out of `ce` to keep its own
+          // styles. v295 is
+          //   ce = Q.map(Ce => { let he = wqe(Ce.text, Ce.styles); ... })
+          // (@221312120) — `Ce.text` already IS the normalized text, so styling
+          // the segment verbatim needs no offset arithmetic at all.
           text = segments
             .map(segment => {
-              let segmentText = segment.text
-              if (renormalized) {
-                consumed += segment.text.length
-                const end = normalizeText(plainText.slice(0, consumed)).length
-                segmentText = widthProbeText.slice(emitted, end)
-                emitted = end
-              }
-              let styledText = applyTextStyles(segmentText, segment.styles)
+              let styledText = applyTextStyles(segment.text, segment.styles)
               if (segment.hyperlink) {
                 styledText = wrapWithOsc8Link(styledText, segment.hyperlink)
               }

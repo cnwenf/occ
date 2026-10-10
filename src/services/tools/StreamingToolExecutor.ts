@@ -10,6 +10,10 @@ import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import type { AssistantMessage, Message } from '../../types/message.js'
 import { createChildAbortController } from '../../utils/abortController.js'
 import type { ToolDurationEntry } from '../api/gatewayHints.js'
+import {
+  clearExclusiveCallQueuedBehind,
+  setExclusiveCallQueuedBehind,
+} from './exclusiveCallRegistry.js'
 import { runToolUse } from './toolExecution.js'
 
 type MessageUpdate = {
@@ -55,6 +59,21 @@ export class StreamingToolExecutor {
   // Aborting this does NOT abort the parent — query.ts won't end the turn.
   private siblingAbortController: AbortController
   private discarded = false
+  // Official 2.1.295 (`responseOpen=!0`): true while the model response is
+  // still streaming (more tool calls — possibly exclusive ones — may yet be
+  // queued); flipped to false at the top of getRemainingResults(), matching
+  // the binary (`if(this.responseOpen=!1,this.discarded)return`).
+  private responseOpen = true
+  // Official 2.1.295 (#072, binary v295 `appliedLayers=!1` @ ~223344772;
+  // v294 had `appliedConcurrencySafeLayers=!1` @ ~220834890): set when a
+  // non-concurrency-safe tool applies its context modifiers immediately in
+  // executeTool. getRemainingResults() gates its final `yield{newContext}`
+  // on this flag so a skill's allowed-tools/effort — applied when the Skill
+  // tool finished BEFORE the response stream ended (its result message was
+  // already drained mid-stream by getCompletedResults, whose consumer
+  // ignores newContext, matching the official `vn` consumer @ v295
+  // ~223441153) — still reaches the next turn instead of being dropped.
+  private appliedLayers = false
   // Signal to wake up getRemainingResults when progress is available
   private progressAvailableResolve?: () => void
 
@@ -325,6 +344,27 @@ export class StreamingToolExecutor {
         { once: true },
       )
 
+      // Official 2.1.295 (#026): register this executing call in the global
+      // exclusiveCallQueuedBehind registry so auto-background can refuse to
+      // move a subagent to the background while a tool call that must run
+      // alone is queued behind its Agent call. Binary:
+      //   C={isQueued:()=>!this.discarded&&this.tools.slice(this.tools.indexOf(e)+1)
+      //        .some((R)=>R.status==="queued"&&!R.isConcurrencySafe),
+      //      mayYetBeQueued:()=>!this.discarded&&this.responseOpen,holdLogged:!1};
+      //   T.set(e.id,C); using S={[Symbol.dispose]:()=>{if(T.get(e.id)===C)T.delete(e.id)}}
+      // The `using` disposal maps to the finally-block clear below (identity-
+      // guarded inside clearExclusiveCallQueuedBehind).
+      const hold = {
+        isQueued: () =>
+          !this.discarded &&
+          this.tools
+            .slice(this.tools.indexOf(tool) + 1)
+            .some(t => t.status === 'queued' && !t.isConcurrencySafe),
+        mayYetBeQueued: () => !this.discarded && this.responseOpen,
+        holdLogged: false,
+      }
+      setExclusiveCallQueuedBehind(tool.id, hold)
+
       const generator = runToolUse(
         tool.block,
         tool.assistantMessage,
@@ -337,72 +377,82 @@ export class StreamingToolExecutor {
       // message when it is the one that caused the error.
       let thisToolErrored = false
 
-      for await (const update of generator) {
-        // Check if we were aborted by a sibling tool error or user interruption.
-        // Only add the synthetic error if THIS tool didn't produce the error.
-        const abortReason = this.getAbortReason(tool)
-        if (abortReason && !thisToolErrored) {
-          messages.push(
-            this.createSyntheticErrorMessage(
-              tool.id,
-              abortReason,
-              tool.assistantMessage,
-            ),
-          )
-          break
-        }
-
-        const isErrorResult =
-          update.message.type === 'user' &&
-          Array.isArray(update.message.message.content) &&
-          update.message.message.content.some(
-            _ => _.type === 'tool_result' && _.is_error === true,
-          )
-
-        if (isErrorResult) {
-          thisToolErrored = true
-          // Only Bash errors cancel siblings. Bash commands often have implicit
-          // dependency chains (e.g. mkdir fails → subsequent commands pointless).
-          // Read/WebFetch/etc are independent — one failure shouldn't nuke the rest.
-          if (tool.block.name === BASH_TOOL_NAME) {
-            this.hasErrored = true
-            this.erroredToolDescription = this.getToolDescription(tool)
-            this.siblingAbortController.abort('sibling_error')
+      try {
+        for await (const update of generator) {
+          // Check if we were aborted by a sibling tool error or user interruption.
+          // Only add the synthetic error if THIS tool didn't produce the error.
+          const abortReason = this.getAbortReason(tool)
+          if (abortReason && !thisToolErrored) {
+            messages.push(
+              this.createSyntheticErrorMessage(
+                tool.id,
+                abortReason,
+                tool.assistantMessage,
+              ),
+            )
+            break
           }
-        }
 
-        if (update.message) {
-          // Progress messages go to pendingProgress for immediate yielding
-          if (update.message.type === 'progress') {
-            tool.pendingProgress.push(update.message)
-            // Signal that progress is available
-            if (this.progressAvailableResolve) {
-              this.progressAvailableResolve()
-              this.progressAvailableResolve = undefined
+          const isErrorResult =
+            update.message.type === 'user' &&
+            Array.isArray(update.message.message.content) &&
+            update.message.message.content.some(
+              _ => _.type === 'tool_result' && _.is_error === true,
+            )
+
+          if (isErrorResult) {
+            thisToolErrored = true
+            // Only Bash errors cancel siblings. Bash commands often have implicit
+            // dependency chains (e.g. mkdir fails → subsequent commands pointless).
+            // Read/WebFetch/etc are independent — one failure shouldn't nuke the rest.
+            if (tool.block.name === BASH_TOOL_NAME) {
+              this.hasErrored = true
+              this.erroredToolDescription = this.getToolDescription(tool)
+              this.siblingAbortController.abort('sibling_error')
             }
-          } else {
-            messages.push(update.message)
+          }
+
+          if (update.message) {
+            // Progress messages go to pendingProgress for immediate yielding
+            if (update.message.type === 'progress') {
+              tool.pendingProgress.push(update.message)
+              // Signal that progress is available
+              if (this.progressAvailableResolve) {
+                this.progressAvailableResolve()
+                this.progressAvailableResolve = undefined
+              }
+            } else {
+              messages.push(update.message)
+            }
+          }
+          if (update.contextModifier) {
+            contextModifiers.push(update.contextModifier.modifyContext)
+          }
+          if (update.toolDuration) {
+            tool.toolDuration = update.toolDuration
           }
         }
-        if (update.contextModifier) {
-          contextModifiers.push(update.contextModifier.modifyContext)
-        }
-        if (update.toolDuration) {
-          tool.toolDuration = update.toolDuration
-        }
-      }
-      tool.results = messages
-      tool.contextModifiers = contextModifiers
-      tool.status = 'completed'
-      this.updateInterruptibleState()
+        tool.results = messages
+        tool.contextModifiers = contextModifiers
+        tool.status = 'completed'
+        this.updateInterruptibleState()
 
-      // NOTE: we currently don't support context modifiers for concurrent
-      //       tools. None are actively being used, but if we want to use
-      //       them in concurrent tools, we need to support that here.
-      if (!tool.isConcurrencySafe && contextModifiers.length > 0) {
-        for (const modifier of contextModifiers) {
-          this.toolUseContext = modifier(this.toolUseContext)
+        // NOTE: we currently don't support context modifiers for concurrent
+        //       tools. None are actively being used, but if we want to use
+        //       them in concurrent tools, we need to support that here.
+        if (!tool.isConcurrencySafe && contextModifiers.length > 0) {
+          for (const modifier of contextModifiers) {
+            this.toolUseContext = modifier(this.toolUseContext)
+          }
+          // Official 2.1.295 (#072, binary v295 @ ~223352019:
+          // `this.toolUseContext=WAe(this.toolUseContext,n),this.appliedLayers=!0`
+          // — v294 applied the layers here WITHOUT setting any flag, so when
+          // the tool's messages were consumed mid-stream the applied context
+          // was never re-surfaced after the stream ended).
+          this.appliedLayers = true
         }
+      } finally {
+        clearExclusiveCallQueuedBehind(tool.id, hold)
       }
     }
 
@@ -468,6 +518,10 @@ export class StreamingToolExecutor {
    * Also yields progress messages as they become available
    */
   async *getRemainingResults(): AsyncGenerator<MessageUpdate, void> {
+    // Official 2.1.295 (#026): the response is closed once the caller starts
+    // draining remaining results — no more exclusive calls can be queued after
+    // this point (binary: `if(this.responseOpen=!1,this.discarded)return`).
+    this.responseOpen = false
     if (this.discarded) {
       return
     }
@@ -503,6 +557,21 @@ export class StreamingToolExecutor {
 
     for (const result of this.getCompletedResults()) {
       yield result
+    }
+
+    // Official 2.1.295 (#072, binary v295 @ ~223353300:
+    // `if(this.applyEndedRunLayers(),this.appliedLayers)yield{newContext:this.toolUseContext}`
+    // — v294 gated on `appliedConcurrencySafeLayers`, which the non-
+    // concurrency-safe immediate-apply path never set; a Skill tool that
+    // finished before the stream ended had its result message (the only
+    // carrier of newContext) drained mid-stream, so its applied allowed-
+    // tools/effort never reached the post-stream consumer and the next turn
+    // denied the skill's Bash in `-p` runs). OCC has no applyEndedRunLayers
+    // (deferred concurrency-safe layer application is intentionally
+    // unsupported — see the NOTE in executeTool), so the comma operator
+    // collapses to the flag check.
+    if (this.appliedLayers) {
+      yield { newContext: this.toolUseContext }
     }
   }
 

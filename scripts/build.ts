@@ -59,6 +59,12 @@ const occBundlePlugin = {
     // `module.exports = hljs;` after registering all languages) so the
     // inlined instance is bounded at module load. Idempotent — the runtime
     // install's isBounded guard no-ops on the already-wrapped emitter.
+    // CC 2.1.295 #091 — installHighlightBounds now also carries the Layer A
+    // limit plugin (v295 `L` form); Layer B (applyGrammarPatches) is a
+    // separate call in cliHighlight.ts that the bundled dist can't reach, so
+    // inject it here too (patches the still-uncompiled stored grammar trees;
+    // hljs compiles lazily at highlight time, so load-time patching is
+    // timing-equivalent to the official registerLanguage wrapper).
     build.onLoad(
       { filter: /node_modules[\\/]highlight\.js[\\/]lib[\\/]index\.js$/ },
       async (args: any) => {
@@ -70,10 +76,19 @@ const occBundlePlugin = {
           'utils',
           'hljsBound.ts',
         )
+        const patchesPath = join(
+          import.meta.dir,
+          '..',
+          'src',
+          'utils',
+          'hljsGrammarPatches.ts',
+        )
         return {
           contents:
             source +
             `\n;try{require(${JSON.stringify(boundPath)}).installHighlightBounds(` +
+            `module.exports&&(module.exports.default||module.exports))}catch(e){}\n` +
+            `\n;try{require(${JSON.stringify(patchesPath)}).applyGrammarPatches(` +
             `module.exports&&(module.exports.default||module.exports))}catch(e){}\n`,
           loader: 'js' as const,
         }

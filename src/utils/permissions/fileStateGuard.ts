@@ -21,7 +21,11 @@
  *   FGS  -> isReadToolUnavailableForGuard
  *   Gxf  -> isReadAutoAllowedForPath
  *   $ot  -> isFullReadOfFileState
+ *   k4   -> isFullyReadOfFileState
  *   Exe  -> fileStateMatchesDisk
+ *   H$   -> (Exe content-compare fallback; OCC has no contentHash)
+ *   F    -> fileStateMatchesBaseline
+ *   PLe  -> fileStateMatchesBaselineOrTranscript
  *   Hxe  -> stripBom
  *   J9   -> normalizeForComparison
  *   i3o  -> fileStateMatchesNormalized
@@ -37,14 +41,28 @@
  * the call-time guards, and the stale-recovery rule use the identical Mwt
  * predicate. The retired `tengu_velvet_mallet` flag from 2.1.227 was Write-only.
  *
+ * The 2.1.295 change (#088 — changelog: "Fixed Edit treating a file as fully
+ * read when its contents changed without its modification time advancing"):
+ * adds `contentNotInModelContext` to FileState, plus the k4/F/PLe helpers
+ * that pair it with the read-baseline match. Edit/sed/NotebookEdit call()
+ * now mark the post-write record `contentNotInModelContext` when the pre-write
+ * disk content no longer matched the read baseline (even if mtime is frozen),
+ * which (a) suppresses the "file state is current" note and (b) makes k4
+ * false for downstream consumers. See the call-site files for the verbatim
+ * ported expressions.
+ *
  * OCC adaptations (documented, behavior-preserving):
  * - The official threads `permissionLayers` through RL(); OCC has no
  *   permission-layers subsystem, so the guard model is simply
  *   `context.options.mainLoopModel`.
- * - The official `contentHash` FileState fast path (Exe) is absent in OCC's
- *   FileState; the content-compare fallback is the official's own else-branch.
- * - The official `contentNotInModelContext` flag (h9e) is not tracked by
- *   OCC's FileState; nothing in OCC consumes it.
+ * - The official `contentHash` FileState fast path (Exe) and the sha256+byte
+ *   `readBaseline` fast path (F -> dre) are absent in OCC's FileState; both
+ *   reduce to the official's content-compare fallback (H$), which is the
+ *   official's own else-branch. `contentFromTranscript` is tracked on OCC's
+ *   FileState but only ever set by the transcript-restore seeding path, which
+ *   OCC does not yet implement — so the PLe trailing-newline tolerance is
+ *   dormant until that seeding lands (the field is present for byte-parity
+ *   with the official PLe body).
  * - `readNotAutoAllowed` is passed as a thunk exactly like the official
  *   call sites (`() => !Mwt(...)`), keeping the double negation out of the
  *   guard bodies.
@@ -328,12 +346,57 @@ export function normalizeForComparison(content: string): string {
 }
 
 /**
- * Exe — does the cached file state still match on-disk content? The official
- * compares a contentHash when present; OCC's FileState has no hash, so this
- * is the official's content-compare fallback.
+ * Exe / H$ — does the cached file state still match on-disk content? The
+ * official compares a contentHash when present; OCC's FileState has no hash,
+ * so this is the official's content-compare fallback.
  */
 export function fileStateMatchesDisk(state: FileState, diskContent: string): boolean {
   return state.content === diskContent
+}
+
+/**
+ * F (2.1.295) — baseline-preferred match. The official prefers a sha256+byte
+ * compare against `readBaseline` when the record carries one; OCC's FileState
+ * has neither `readBaseline` nor `contentHash`, so F reduces to the official's
+ * own H$ fallback branch (content compare).
+ */
+export function fileStateMatchesBaseline(state: FileState, diskContent: string): boolean {
+  return fileStateMatchesDisk(state, diskContent)
+}
+
+/**
+ * PLe (2.1.295) — F plus the transcript-restoration tolerance: a record seeded
+ * from the transcript may be missing a single trailing newline relative to
+ * disk, and that alone must not mark the file unread. Verbatim structure of
+ * `F(e,n)||e.contentFromTranscript===!0&&n.endsWith("\n")&&F(e,n.slice(0,-1))`.
+ */
+export function fileStateMatchesBaselineOrTranscript(
+  state: FileState,
+  diskContent: string,
+): boolean {
+  return (
+    fileStateMatchesBaseline(state, diskContent) ||
+    (state.contentFromTranscript === true &&
+      diskContent.endsWith('\n') &&
+      fileStateMatchesBaseline(state, diskContent.slice(0, -1)))
+  )
+}
+
+/**
+ * k4 (2.1.295) — is the record a FULL read whose content is actually in the
+ * model's context? Same view-shape check as $ot (isFullReadOfFileState) but
+ * additionally false when `contentNotInModelContext` is set (e.g. an edit
+ * applied over disk changes the model never saw). Verbatim structure of
+ * `e!==void 0&&LA(e)&&!e.contentNotInModelContext`. Consumers: Edit call(),
+ * sed-emulation path, NotebookEdit call() — each pairs it with PLe to decide
+ * whether the post-write record keeps full-read status.
+ */
+export function isFullyReadOfFileState(
+  state: FileState | undefined,
+): state is FileState {
+  return (
+    state !== undefined && isFullReadOfFileState(state) && !state.contentNotInModelContext
+  )
 }
 
 /** i3o */

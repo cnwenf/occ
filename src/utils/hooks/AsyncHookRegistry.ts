@@ -6,7 +6,12 @@ import type {
 import { logForDebugging } from '../debug.js'
 import type { ShellCommand } from '../ShellCommand.js'
 import { invalidateSessionEnvCache } from '../sessionEnvironment.js'
-import { jsonParse, jsonStringify } from '../slowOperations.js'
+import { errorMessage } from '../errors.js'
+import { jsonStringify } from '../slowOperations.js'
+import {
+  extractAsyncHookSyncResponse,
+  hasUnreadableAsyncHookJsonAnswer,
+} from './asyncHookJson.js'
 import { emitHookResponse, startHookProgressInterval } from './hookEvents.js'
 
 export type PendingAsyncHook = {
@@ -118,6 +123,10 @@ export async function checkForAsyncHookResponses(): Promise<
     hookEvent: HookEvent | 'StatusLine' | 'FileSuggestion'
     toolName?: string
     pluginId?: string
+    // CC 2.1.295 (#070): official `_kt` payload gained `command:e.command` —
+    // the SessionStart dedupe gate (official `Umn`) compares command+pluginId
+    // to decide whether two hook runs share a source.
+    command: string
     stdout: string
     stderr: string
     exitCode?: number
@@ -130,6 +139,7 @@ export async function checkForAsyncHookResponses(): Promise<
     hookEvent: HookEvent | 'StatusLine' | 'FileSuggestion'
     toolName?: string
     pluginId?: string
+    command: string
     stdout: string
     stderr: string
     exitCode?: number
@@ -186,35 +196,33 @@ export async function checkForAsyncHookResponses(): Promise<
         return { type: 'remove' as const, processId: hook.processId }
       }
 
-      const lines = stdout.split('\n')
-      logForDebugging(
-        `Hooks: Processing ${lines.length} lines of stdout for ${hook.processId}`,
-      )
-
       const execResult = await hook.shellCommand.result
       const exitCode = execResult.code
 
+      // CC 2.1.295 (#078): extract the JSON answer from the WHOLE stdout
+      // (official `fkt`), so a pretty-printed multi-line JSON object is
+      // recognized; per-line scanning survives only as the in-candidate
+      // fallback. When nothing can be read but a line begins with `{`,
+      // log the official guidance error (official `pkt` branch).
       let response: SyncHookJSONOutput = {}
-      for (const line of lines) {
-        if (line.trim().startsWith('{')) {
+      try {
+        const parsed = extractAsyncHookSyncResponse(stdout)
+        if (parsed !== undefined) {
           logForDebugging(
-            `Hooks: Found JSON line: ${line.trim().substring(0, 100)}...`,
+            `Hooks: Found sync response from ${hook.processId}: ${jsonStringify(parsed)}`,
           )
-          try {
-            const parsed = jsonParse(line.trim())
-            if (!('async' in parsed)) {
-              logForDebugging(
-                `Hooks: Found sync response from ${hook.processId}: ${jsonStringify(parsed)}`,
-              )
-              response = parsed
-              break
-            }
-          } catch {
-            logForDebugging(
-              `Hooks: Failed to parse JSON from ${hook.processId}: ${line.trim()}`,
-            )
-          }
+          response = parsed
+        } else if (hasUnreadableAsyncHookJsonAnswer(stdout)) {
+          logForDebugging(
+            `Hooks: async hook ${hook.processId} (${hook.hookName}) printed a stdout line that begins with { but no JSON answer could be read. After any {"async":true} line, print one JSON object and nothing else, or put the object on one line.`,
+            { level: 'error' },
+          )
         }
+      } catch (error) {
+        logForDebugging(
+          `Hooks: Failed to read the JSON answer of ${hook.processId} (${hook.hookName}), so it is dropped: ${errorMessage(error)}`,
+          { level: 'error' },
+        )
       }
 
       hook.responseAttachmentSent = true
@@ -231,6 +239,7 @@ export async function checkForAsyncHookResponses(): Promise<
           hookEvent: hook.hookEvent,
           toolName: hook.toolName,
           pluginId: hook.pluginId,
+          command: hook.command,
           stdout,
           stderr,
           exitCode,

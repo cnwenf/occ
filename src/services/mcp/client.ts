@@ -287,34 +287,51 @@ export function resolveMcpMaxResultSizeChars(
  *
  * So: digits-only integers >= 1 are honored verbatim with NO upper clamp;
  * anything else (unset, empty, non-digit, sci-notation, separators, 0,
- * negative, NaN) falls back to 2048 through the `??`.
+ * negative, NaN) falls back through the `??` to the variant default
+ * (2048 default path / 16384 tool-search path — see `mx` below).
  */
 const DEFAULT_MAX_MCP_DESCRIPTION_LENGTH = 2048
 
 /**
- * Effective MCP description/instruction cap (binary `lV`).
+ * Tool-search variant of the cap — official 2.1.295 `_Rn=2048,Qts=16384`
+ * (@213397583). Gap #112: descriptions loaded THROUGH tool search are cut at
+ * 16384 chars, not 2048. v294 had only `X5o=2048` (@211972652, single cap via
+ * `UF(){return a.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH??X5o}` @214595818).
+ */
+const TOOL_SEARCH_MAX_MCP_DESCRIPTION_LENGTH = 16384
+
+/**
+ * Effective MCP description/instruction cap — port of official 2.1.295
+ * `function mx(e=!1){return a.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH??(e?Qts:_Rn)}`
+ * (@217055321): the env override wins for BOTH variants; otherwise tool-search
+ * loading gets 16384 and the default path 2048.
  *
  * Re-reads `process.env` on every call rather than memoizing: the official
  * getter is a lazy property over `process.env` that re-parses whenever the raw
  * string changes, so a mid-session env change takes effect on the next read.
  */
-export function getMaxMcpDescriptionLength(): number {
+export function getMaxMcpDescriptionLength(isToolSearch = false): number {
   const raw = process.env.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH
   if (raw === undefined) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+    return isToolSearch
+      ? TOOL_SEARCH_MAX_MCP_DESCRIPTION_LENGTH
+      : DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
   }
+  const fallback = isToolSearch
+    ? TOOL_SEARCH_MAX_MCP_DESCRIPTION_LENGTH
+    : DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
   // digitsOnly: reject anything that is not an integer literal. Unlike the
   // generic `M.int()` vars (which accept `1e6` / `64_000` via parseEnvInt's
   // notation branch), THIS var is bound with `digitsOnly:!0`.
   if (!/^[+-]?\d+$/.test(raw.trim())) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+    return fallback
   }
   const parsed = parseEnvInt(raw)
   if (parsed === undefined || !Number.isFinite(parsed)) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH
+    return fallback
   }
   if (parsed < 1) {
-    return DEFAULT_MAX_MCP_DESCRIPTION_LENGTH // min: 1
+    return fallback // min: 1
   }
   return parsed
 }
@@ -342,6 +359,11 @@ const MCP_DESCRIPTION_TRUNCATION_SUFFIX = '… [truncated]'
  * official logs `${label} truncated from ${len} to ${cap} chars` at MCP debug
  * level before returning the truncated text.
  *
+ * 2.1.295 signature adds the optional 4th `limit` param (binary `Jt` @217055321:
+ * `function Jt(e,r,n,s=mx()){if(e.length<=s)return e;...return ne(e,s)+"… [truncated]"}`)
+ * — the tool factory passes `mx(!0)` (16384) to precompute the tool-search
+ * variant of each description.
+ *
  * NOTE: the official slices with the surrogate-aware `re(e,n)` (@190617057),
  * which is NOT a 2.1.280 delta (identical in 2.1.278) and whose inner `Ie()`
  * normalizer is not byte-verified. OCC matches its observable contract: a cut
@@ -355,8 +377,8 @@ export function truncateMcpDescription(
   text: string,
   label: string,
   serverName?: string,
+  limit: number = getMaxMcpDescriptionLength(),
 ): string {
-  const limit = getMaxMcpDescriptionLength()
   if (text.length <= limit) {
     return text
   }
@@ -397,6 +419,84 @@ export function truncateMcpServerInstructions(
     return instructions
   }
   return truncateMcpDescription(instructions, 'Server instructions', serverName)
+}
+
+/**
+ * Structured network/terminal-connection error classifier — byte-faithful port
+ * of official 2.1.295 `Ir` (@243847856, dup @244006230):
+ *
+ *   var qo=["ECONNRESET","ETIMEDOUT","EPIPE","EHOSTUNREACH","ECONNREFUSED"],
+ *       kr=new Set([...qo,"ConnectionRefused","ConnectionClosed"]),
+ *       Ar=/^Error POSTing to endpoint \(HTTP (\d+)\)/;
+ *   function qt(e){return typeof e==="number"&&e>=100&&e<=599}
+ *   function Ir(e){if(e.name==="AbortError")return!0;
+ *     let r="code"in e?e.code:void 0,n="status"in e?e.status:void 0,s=Ar.exec(e.message)?.[1];
+ *     if(qt(n)||qt(r)||typeof r==="number"&&r<0||s!==void 0&&qt(Number(s)))return!1;
+ *     if(typeof r==="string"&&kr.has(r))return!0;
+ *     let h=e.message;
+ *     return qo.some((y)=>h.includes(y))||h.includes("Body Timeout Error")||
+ *       /\bterminated\b/.test(h)||h.includes("SSE stream disconnected")||
+ *       h.includes("Failed to reconnect SSE stream")}
+ *
+ * This replaces the v294-era pure string matcher (binary `Ar` @240892414) that
+ * caused gap #019: a server's error REPLY whose message merely *contained* a
+ * network error name (e.g. JSON-RPC code -32603 with "ECONNRESET" in the text,
+ * or a negative `code`) was misclassified as a terminal connection error and
+ * the live connection was dropped. v295 checks structured `status`/`code`
+ * properties FIRST (HTTP-range status/code → application error, not network;
+ * negative numeric code → not network), then the string code set, and only
+ * falls back to message substrings last.
+ */
+const NETWORK_ERROR_MESSAGE_CODES = [
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'EPIPE',
+  'EHOSTUNREACH',
+  'ECONNREFUSED',
+]
+const TERMINAL_CONNECTION_CODES = new Set([
+  ...NETWORK_ERROR_MESSAGE_CODES,
+  'ConnectionRefused',
+  'ConnectionClosed',
+])
+const POSTING_HTTP_ERROR_PATTERN = /^Error POSTing to endpoint \(HTTP (\d+)\)/
+
+function isHttpStatusCode(value: unknown): value is number {
+  return typeof value === 'number' && value >= 100 && value <= 599
+}
+
+export function isNetworkConnectionError(error: Error): boolean {
+  if (error.name === 'AbortError') {
+    return true
+  }
+  const code =
+    'code' in error ? (error as { code?: unknown }).code : undefined
+  const status =
+    'status' in error ? (error as { status?: unknown }).status : undefined
+  const postingStatus = POSTING_HTTP_ERROR_PATTERN.exec(error.message)?.[1]
+  // Structured checks first: an HTTP-range status/code, a negative numeric
+  // code, or the SSE-transport "Error POSTing to endpoint (HTTP n)" wrapper
+  // all mean an application/HTTP-level error — NOT a dead connection.
+  if (
+    isHttpStatusCode(status) ||
+    isHttpStatusCode(code) ||
+    (typeof code === 'number' && code < 0) ||
+    (postingStatus !== undefined && isHttpStatusCode(Number(postingStatus)))
+  ) {
+    return false
+  }
+  if (typeof code === 'string' && TERMINAL_CONNECTION_CODES.has(code)) {
+    return true
+  }
+  // Message-substring fallback (last, per v295).
+  const message = error.message
+  return (
+    NETWORK_ERROR_MESSAGE_CODES.some(c => message.includes(c)) ||
+    message.includes('Body Timeout Error') ||
+    /\bterminated\b/.test(message) ||
+    message.includes('SSE stream disconnected') ||
+    message.includes('Failed to reconnect SSE stream')
+  )
 }
 
 /**
@@ -1631,22 +1731,6 @@ export const connectToServer = memoize(
         })
       }
 
-      const isTerminalConnectionError = (msg: string): boolean => {
-        return (
-          msg.includes('ECONNRESET') ||
-          msg.includes('ETIMEDOUT') ||
-          msg.includes('EPIPE') ||
-          msg.includes('EHOSTUNREACH') ||
-          msg.includes('ECONNREFUSED') ||
-          msg.includes('Body Timeout Error') ||
-          msg.includes('terminated') ||
-          // SDK SSE reconnection intermediate errors — may be wrapped around the
-          // actual network error, so the substrings above won't match
-          msg.includes('SSE stream disconnected') ||
-          msg.includes('Failed to reconnect SSE stream')
-        )
-      }
-
       // Enhanced error handler with detailed logging
       client.onerror = (error: Error) => {
         const uptime = Date.now() - connectionStartTime
@@ -1732,7 +1816,11 @@ export const connectToServer = memoize(
             return
           }
 
-          if (isTerminalConnectionError(error.message)) {
+          // v295 `Ir(M)` — structured classification on the Error object (not
+          // its message): a server error REPLY carrying a network-error name
+          // in text, an HTTP-range status/code, or a negative code is NOT a
+          // dead connection and must not tear the transport down (gap #019).
+          if (isNetworkConnectionError(error)) {
             consecutiveConnectionErrors++
             logMCPDebug(
               name,
@@ -2223,11 +2311,23 @@ export const fetchToolsForClient = memoizeWithLRU(
           // `description()` returns the RAW text and `prompt()` the truncated
           // one, both computed once at list time (so the truncation notice is
           // logged once per tool, not once per prompt() call).
+          //
+          // 2.1.295 (#112) — factory `Vn` (@243900141, dup `Fc` @244085866)
+          // now computes BOTH truncation variants eagerly at list time:
+          //   _e=Jt(Re,`Tool "${q.name}" description`,e)          // default cap (2048)
+          //   ce=Jt(Re,`Tool "${q.name}" description`,e,mx(!0))   // tool-search cap (16384)
+          // and `prompt({loadedThroughToolSearch})` selects between them.
           const rawDescription = tool.description ?? ''
           const truncatedDescription = truncateMcpDescription(
             rawDescription,
             `Tool "${tool.name}" description`,
             client.name,
+          )
+          const toolSearchTruncatedDescription = truncateMcpDescription(
+            rawDescription,
+            `Tool "${tool.name}" description`,
+            client.name,
+            getMaxMcpDescriptionLength(true),
           )
           // CC 2.1.285 (item 4) — binary v284 factory:
           //   alwaysLoad:h||k._meta?.["anthropic/alwaysLoad"]===!0
@@ -2278,8 +2378,11 @@ export const fetchToolsForClient = memoizeWithLRU(
             async description() {
               return rawDescription
             },
-            async prompt() {
-              return truncatedDescription
+            async prompt(options?: { loadedThroughToolSearch?: boolean }) {
+              // v295: `prompt({loadedThroughToolSearch:Ee}){return Ee?ce:_e}`
+              return options?.loadedThroughToolSearch === true
+                ? toolSearchTruncatedDescription
+                : truncatedDescription
             },
             isConcurrencySafe() {
               return tool.annotations?.readOnlyHint ?? false

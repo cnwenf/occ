@@ -159,6 +159,24 @@ function getToolResultFromCell(cell: NotebookCellSource) {
 }
 
 /**
+ * Renders a parsed notebook's cells exactly as the Read tool renders them
+ * (official `_9e` @218364749, 2.1.295):
+ *   `function _9e(e){let n=e.metadata?.language_info?.name??"python";
+ *     return e.cells.map((r,s)=>Lpn(r,s,n,!1))}`
+ * `Lpn` is `processCell`. NotebookEdit uses this to reproduce the string the
+ * Read tool stored in readFileState (jsonStringify of these cells) so the
+ * #088 frozen-mtime freshness fallback can compare content rather than mtime.
+ */
+export function renderNotebookCells(
+  notebook: NotebookContent,
+): NotebookCellSource[] {
+  const language = notebook.metadata?.language_info?.name ?? 'python'
+  return notebook.cells.map((cell, index) =>
+    processCell(cell, index, language, false),
+  )
+}
+
+/**
  * Reads and parses a Jupyter notebook file into processed cell data
  */
 export async function readNotebook(
@@ -169,17 +187,15 @@ export async function readNotebook(
   const buffer = await getFsImplementation().readFileBytes(fullPath)
   const content = buffer.toString('utf-8')
   const notebook = jsonParse(content) as NotebookContent
-  const language = notebook.metadata.language_info?.name ?? 'python'
   if (cellId) {
+    const language = notebook.metadata.language_info?.name ?? 'python'
     const cell = notebook.cells.find(c => c.id === cellId)
     if (!cell) {
       throw new Error(`Cell with ID "${cellId}" not found in notebook`)
     }
     return [processCell(cell, notebook.cells.indexOf(cell), language, true)]
   }
-  return notebook.cells.map((cell, index) =>
-    processCell(cell, index, language, false),
-  )
+  return renderNotebookCells(notebook)
 }
 
 /**

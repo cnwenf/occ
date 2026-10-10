@@ -126,6 +126,14 @@ export async function toolToAPISchema(
     model?: string
     /** When true, mark this tool with defer_loading for tool search */
     deferLoading?: boolean
+    /**
+     * 2.1.295 (#112): this MCP tool's description is loaded through tool
+     * search this request → prompt() gets the 16384-char variant and the
+     * schema cache key gains an "LT:" marker so the two variants never share
+     * a cache entry (binary @215678602:
+     * `en=n.loadedThroughToolSearch===!0&&e.isMcp===!0?"LT:":""`).
+     */
+    loadedThroughToolSearch?: boolean
     cacheControl?: {
       type: 'ephemeral'
       scope?: 'global' | 'org'
@@ -144,10 +152,19 @@ export async function toolToAPISchema(
   // call — name-only keying returned a stale schema (5.4% → 51% err rate, see
   // PR#25424). MCP tools also set inputJSONSchema but each has a stable schema,
   // so including it preserves their GB-flip cache stability.
+  //
+  // 2.1.295 (#112): the official key prefixes an "LT:" marker when the tool is
+  // MCP and loaded through tool search (binary @215678602:
+  // `en=n.loadedThroughToolSearch===!0&&e.isMcp===!0?"LT:":""`, spliced into
+  // `an` before the name segment) so the 16384-char and 2048-char description
+  // variants of the same MCP tool never collide in the session cache.
+  const ltMarker =
+    options.loadedThroughToolSearch === true && tool.isMcp === true ? 'LT:' : ''
   const cacheKey =
-    'inputJSONSchema' in tool && tool.inputJSONSchema
+    ltMarker +
+    ('inputJSONSchema' in tool && tool.inputJSONSchema
       ? `${tool.name}:${jsonStringify(tool.inputJSONSchema)}`
-      : tool.name
+      : tool.name)
   const cache = getToolSchemaCache()
   let base = cache.get(cacheKey)
   if (!base) {
@@ -173,6 +190,9 @@ export async function toolToAPISchema(
         tools: options.tools,
         agents: options.agents,
         allowedAgentTypes: options.allowedAgentTypes,
+        // Official `Leo(e,n)` → `e.prompt(n)` passes the whole options bag, so
+        // the MCP factory sees loadedThroughToolSearch (v295 @215675577).
+        loadedThroughToolSearch: options.loadedThroughToolSearch,
       }),
       input_schema,
     }

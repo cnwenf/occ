@@ -81,6 +81,19 @@ const outputSchema = lazySchema(() =>
       .describe(
         'True when the file changed on disk since the last read but the edit still applied cleanly (2.1.228 stale recovery)',
       ),
+    // Official v295 OutputSchema (@218990530) adds
+    // `contentNotInModelContext:M().optional().catch(void 0)` alongside
+    // staleRecovered. #088: set when the edit applied over disk content the
+    // model never saw (contents changed without mtime advancing); the result
+    // mapper suppresses the "file state is current" note and downstream k4
+    // consumers treat the record as not-fully-read.
+    contentNotInModelContext: z
+      .boolean()
+      .optional()
+      .catch(undefined)
+      .describe(
+        'True when the post-write file state is not fully present in the model context (2.1.295 #088)',
+      ),
     gitDiff: gitDiffSchema().optional(),
   }),
 )

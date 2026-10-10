@@ -217,52 +217,136 @@ function emptyGrepResult(outputMode: string): { data: Output } {
   }
 }
 
-/**
- * CC 2.1.292 C5 (binary `cEt` @212215273): Grep stray-parameter tolerance.
- * Models sometimes pass `file_path` (the Read/Write spelling) instead of Grep's
- * canonical `path`. Coerce it so the call succeeds instead of bouncing a
- * strictObject validation error, and emit the verbatim resultNote so the model
- * learns the canonical name. Byte-faithful to the official:
- *
- *   function cEt(e){if(!L(e)||typeof e.file_path!=="string"||e.file_path==="")return null;
- *    let{file_path:n,...r}=e,s=!Object.hasOwn(r,"path");
- *    if(!s&&r.path!==n)return null;
- *    return{input:s?{...r,path:n}:r,shapeClass:s?"file_path":"repeated_file_path",
- *     resultNote:`Note: ${qr}'s parameter for where to search is named \`path\`.
- *      ${s?"`file_path` was read as `path`.":"`file_path` repeated `path` and was ignored."}`}}
- *
- * `L`=isRecord, `qr`=GREP_TOOL_NAME ("Grep").
- */
+// CC 2.1.295 (#108): binary `fZn` @215618396 — the grep-flag → output_mode map
+// used by `coerceGrepInput` below. `[flag, shapeClass, outputMode]`.
+const GREP_FLAG_TO_OUTPUT_MODE = [
+  ['-l', 'flag_l', 'files_with_matches'],
+  ['-c', 'flag_c', 'count'],
+] as const
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+// CC 2.1.295 (#108): binary `BE` @208234413 — `e==="true"?!0:e==="false"?!1:e`.
+// Resolves a model-supplied grep-flag value to a boolean exactly the way
+// semanticBoolean()'s preprocess does: the string literals "true"/"false" map to
+// booleans, everything else passes through unchanged. So `-l: true` and
+// `-l: "true"` both count as "set" (`=== true`), while `-l: 1` does not
+// (`1 !== true`). Kept local to the GrepTool cluster instead of exported from
+// semanticBoolean.ts (a shared util used by Write/Edit/etc.) to avoid a
+// cross-cluster edit.
+function resolveSemanticBooleanValue(value: unknown): unknown {
+  return value === 'true' ? true : value === 'false' ? false : value
+}
+
+/**
+ * CC 2.1.295 (#108): binary `lCt` @215618396 — Grep stray-parameter + grep-flag
+ * tolerance. Supersedes the 2.1.292 C5 `cEt` (file_path-only, single shapeClass)
+ * with a MERGED coercion that ALSO accepts grep's `-l`/`-c`/`-r` command-line
+ * flags, so a search sent with those flags runs instead of failing strictObject
+ * validation. Byte-faithful to the official v295 linux-x64 ELF (@215618396):
+ *
+ *   var fZn=[["-l","flag_l","files_with_matches"],["-c","flag_c","count"]];
+ *   function lCt(e){if(!L(e))return null;let n={...e},r=[],s=[],h=n.file_path;
+ *    if(typeof h==="string"&&h!==""){let y=!Object.hasOwn(n,"path");
+ *     if(y||n.path===h)delete n.file_path,n.path=h,r.push(y?"file_path":"repeated_file_path"),
+ *      s.push(`${Jr}'s parameter for where to search is named \`path\`. ${y?"`file_path` was read as `path`.":"`file_path` repeated `path` and was ignored."}`)}
+ *    for(let[y,S,w]of fZn){if(BE(n[y])!==!0)continue;let H=!Object.hasOwn(n,"output_mode");
+ *     if(H||n.output_mode===w)delete n[y],n.output_mode=w,r.push(H?S:`repeated_${S}`),
+ *      s.push(H?`\`${y}\` is not a ${Jr} parameter and was read as \`output_mode: "${w}"\`.`:`\`${y}\` repeated \`output_mode\` and was ignored.`)}
+ *    if(BE(n["-r"])===!0)delete n["-r"],r.push("flag_r"),
+ *     s.push(`\`-r\` was ignored: ${Jr} always searches a directory recursively.`);
+ *    return r.length?{input:n,shapeClass:r.join(","),resultNote:`Note: ${s.join(" ")}`}:null}
+ *
+ * `L`=isRecord, `Jr`=GREP_TOOL_NAME ("Grep"), `BE`=resolveSemanticBooleanValue.
+ * The v294 baseline (@213178135) had NO `-l`/`-c`/`-r` branch — its Grep
+ * coercion was file_path-only with a single shapeClass, matching OCC's pre-#108
+ * `coerceGrepInput`. Note the two structural upgrades carried by the merge:
+ * shapeClass is now comma-joined (`r.join(",")`) and the note space-joined
+ * (`s.join(" ")`), so several repairs accumulate in one pass; and a conflicting
+ * `path`/`output_mode` no longer early-returns null — it just skips that one
+ * repair (a leftover stray key then fails the strict schema at the `mU` gate).
+ */
 export function coerceGrepInput(raw: unknown): {
   input: Record<string, unknown>
   shapeClass: string
   resultNote: string
 } | null {
   if (!isRecord(raw)) return null
-  const filePath = raw.file_path
-  if (typeof filePath !== 'string' || filePath === '') return null
-  // binary `let{file_path:n,...r}=e` — a copy without file_path (immutable:
-  // the caller's object is never mutated).
-  const rest: Record<string, unknown> = { ...raw }
-  delete rest.file_path
-  const pathWasAbsent = !Object.hasOwn(rest, 'path')
-  // binary `if(!s&&r.path!==n)return null` — a present-but-different `path` is a
-  // genuine conflict; do not guess. Leave it so strictObject validation rejects
-  // the call normally (no coercion, no note).
-  if (!pathWasAbsent && rest.path !== filePath) return null
-  return {
-    input: pathWasAbsent ? { ...rest, path: filePath } : rest,
-    shapeClass: pathWasAbsent ? 'file_path' : 'repeated_file_path',
-    resultNote: `Note: ${GREP_TOOL_NAME}'s parameter for where to search is named \`path\`. ${
-      pathWasAbsent
-        ? '`file_path` was read as `path`.'
-        : '`file_path` repeated `path` and was ignored.'
-    }`,
+  // binary `let n={...e}` — a shallow copy; the caller's object is never mutated
+  // (every `delete`/assign below operates on this copy, not on `raw`).
+  const input: Record<string, unknown> = { ...raw }
+  const shapeClasses: string[] = []
+  const notes: string[] = []
+
+  // (1) file_path → path (preserved verbatim from the 2.1.292 C5 `cEt`).
+  const filePath = input.file_path
+  if (typeof filePath === 'string' && filePath !== '') {
+    const pathWasAbsent = !Object.hasOwn(input, 'path')
+    // binary `if(y||n.path===h)` — apply only when `path` is absent OR already
+    // equal; a present-but-different `path` is a genuine conflict, left
+    // untouched (file_path stays in `input`) so strictObject rejects the call
+    // normally — no guess.
+    if (pathWasAbsent || input.path === filePath) {
+      delete input.file_path
+      input.path = filePath
+      shapeClasses.push(pathWasAbsent ? 'file_path' : 'repeated_file_path')
+      notes.push(
+        `${GREP_TOOL_NAME}'s parameter for where to search is named \`path\`. ${
+          pathWasAbsent
+            ? '`file_path` was read as `path`.'
+            : '`file_path` repeated `path` and was ignored.'
+        }`,
+      )
+    }
   }
+
+  // (2) -l / -c → output_mode (NEW in 2.1.295 #108). binary `for(let[y,S,w]of fZn)`.
+  for (const [flag, shapeClass, outputMode] of GREP_FLAG_TO_OUTPUT_MODE) {
+    // binary `if(BE(n[y])!==!0)continue` — only a value that resolves to boolean
+    // true (i.e. `true` or `"true"`) is treated as the flag being set.
+    if (resolveSemanticBooleanValue(input[flag]) !== true) continue
+    const outputModeWasAbsent = !Object.hasOwn(input, 'output_mode')
+    // binary `if(H||n.output_mode===w)` — apply only when `output_mode` is absent
+    // OR already equals the mapped mode; a conflicting `output_mode` leaves the
+    // stray flag in place so strictObject rejects the call — no guess. (Passing
+    // BOTH `-l` and `-c` with no output_mode hits this: `-l` sets the mode, then
+    // `-c` sees a present-but-different mode and is left in → gate nulls it.)
+    if (outputModeWasAbsent || input.output_mode === outputMode) {
+      delete input[flag]
+      input.output_mode = outputMode
+      shapeClasses.push(
+        outputModeWasAbsent ? shapeClass : `repeated_${shapeClass}`,
+      )
+      notes.push(
+        outputModeWasAbsent
+          ? `\`${flag}\` is not a ${GREP_TOOL_NAME} parameter and was read as \`output_mode: "${outputMode}"\`.`
+          : `\`${flag}\` repeated \`output_mode\` and was ignored.`,
+      )
+    }
+  }
+
+  // (3) -r → always ignored (Grep is recursive by default) (NEW in 2.1.295 #108).
+  // binary `if(BE(n["-r"])===!0)` — unconditional delete + note (no conflict
+  // case: `-r` maps to nothing, it is simply dropped).
+  if (resolveSemanticBooleanValue(input['-r']) === true) {
+    delete input['-r']
+    shapeClasses.push('flag_r')
+    notes.push(
+      `\`-r\` was ignored: ${GREP_TOOL_NAME} always searches a directory recursively.`,
+    )
+  }
+
+  // binary `return r.length?{...}:null` — no repairs applied → null (nothing to
+  // coerce; validation proceeds on the ORIGINAL input, with no note).
+  return shapeClasses.length
+    ? {
+        input,
+        shapeClass: shapeClasses.join(','),
+        resultNote: `Note: ${notes.join(' ')}`,
+      }
+    : null
 }
 
 export const GrepTool = buildTool({
@@ -288,13 +372,15 @@ export const GrepTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  // CC 2.1.292 C5 (binary Grep def @212219127): `coerceInput(e){return
-  // pH(fEt(),cEt(e))}`. The pH gate (@212144777
-  // `n!==null&&e.safeParse(n.input).success?n:null`) returns the repair ONLY
-  // when the COERCED input passes the strict schema, so a partial repair (e.g.
-  // file_path→path but still no `pattern`, or a leftover stray key) yields null
-  // and validation proceeds on the ORIGINAL input (no note either). Byte-verified
-  // NO `coerceInputBeforePluginHooks` on the Grep def — that flag is Write-only.
+  // CC 2.1.295 (#108): binary Grep def @215622816 `coerceInput(e){return
+  // mU(dCt(),lCt(e))}` — `mU` is the same 2-arg gate as 2.1.292's `pH`
+  // (@212144777 `n!==null&&e.safeParse(n.input).success?n:null`): it returns the
+  // repair ONLY when the COERCED input passes the strict schema, so a partial
+  // repair (e.g. file_path→path but still no `pattern`, or a leftover stray key
+  // such as a conflicting `-l`/`-c`) yields null and validation proceeds on the
+  // ORIGINAL input (no note either). Unchanged by #108 — only the `lCt` coercion
+  // it wraps was widened. Byte-verified NO `coerceInputBeforePluginHooks` on the
+  // Grep def — that flag is Write-only.
   coerceInput(input) {
     const repair = coerceGrepInput(input)
     return repair !== null && inputSchema().safeParse(repair.input).success

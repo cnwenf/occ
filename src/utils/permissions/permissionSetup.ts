@@ -749,15 +749,26 @@ export function transitionPermissionMode(
 }
 
 /**
+ * True when the raw `--tools` argv is a preset request (e.g. `default`) rather
+ * than an explicit tool list.
+ *
+ * CC 2.1.295 #037: the official `literalToolsNarrowing` (`QHs` @222914830)
+ * returns `toolsKept: undefined` for the preset case
+ * (`s||o.kept.includes("preset:default")?void 0:c`), i.e. a preset session
+ * carries NO positive launch list and is never gated by
+ * isOutsideLaunchToolList. Extracted from parseBaseToolsFromCLI so both the
+ * deny-list derivation and the launch-list derivation share one predicate.
+ */
+export function isBaseToolsPresetRequest(baseTools: string[]): boolean {
+  return parseToolPreset(baseTools.join(' ').trim()) !== null
+}
+
+/**
  * Parse base tools specification from CLI
  * Handles both preset names (default, none) and custom tool lists
  */
 export function parseBaseToolsFromCLI(baseTools: string[]): string[] {
-  // Join all array elements and check if it's a single preset name
-  const joinedInput = baseTools.join(' ').trim()
-  const preset = parseToolPreset(joinedInput)
-
-  if (preset) {
+  if (isBaseToolsPresetRequest(baseTools)) {
     return getToolsForDefaultPreset()
   }
 
@@ -1000,6 +1011,13 @@ export async function initializeToolPermissionContext({
   )
   let parsedDisallowedToolsCli = parseToolListFromCLI(disallowedToolsCli)
 
+  // CC 2.1.295 #037 — the positive `--tools` launch list, kept alongside the
+  // deny-rule snapshot derived from it. `undefined` when `--tools` was not
+  // passed or named a preset, which disables the late-registration gate
+  // entirely (official `QHs` @222914830 returns `toolsKept: void 0` for the
+  // preset case).
+  let toolsKeptByLaunchList: readonly string[] | undefined
+
   // If base tools are specified, automatically deny all tools NOT in the base set
   // We need to check if base tools were explicitly provided (not just empty default)
   if (baseToolsCli && baseToolsCli.length > 0) {
@@ -1010,6 +1028,9 @@ export async function initializeToolPermissionContext({
     const allToolNames = getToolsForDefaultPreset()
     const toolsToDisallow = allToolNames.filter(tool => !baseToolsSet.has(tool))
     parsedDisallowedToolsCli = [...parsedDisallowedToolsCli, ...toolsToDisallow]
+    if (!isBaseToolsPresetRequest(baseToolsCli)) {
+      toolsKeptByLaunchList = [...baseToolsSet]
+    }
   }
 
   const warnings: string[] = []
@@ -1238,8 +1259,19 @@ export async function initializeToolPermissionContext({
     ),
   )
 
+  // CC 2.1.295 #037 — freeze the positive `--tools` launch list onto the
+  // context (official: `...Y!==void 0&&{toolsKeptByLaunchList:Object.freeze([...Y])}`
+  // @222921207). Spread into a new object; the context is never mutated.
+  const contextWithLaunchList =
+    toolsKeptByLaunchList === undefined
+      ? toolPermissionContext
+      : {
+          ...toolPermissionContext,
+          toolsKeptByLaunchList: Object.freeze([...toolsKeptByLaunchList]),
+        }
+
   return {
-    toolPermissionContext,
+    toolPermissionContext: contextWithLaunchList,
     warnings,
     dangerousPermissions,
     overlyBroadBashPermissions,

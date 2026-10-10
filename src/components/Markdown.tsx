@@ -7,6 +7,7 @@ import { BLACK_CIRCLE } from '../constants/figures.js';
 import { type CliHighlight, getCliHighlightPromise } from '../utils/cliHighlight.js';
 import { hashContent } from '../utils/hash.js';
 import { configureMarked, formatToken, MARKDOWN_STACK_FALLBACK_MESSAGE } from '../utils/markdown.js';
+import { sanitizeMarkdownTokens } from '../utils/markdownSanitize.js';
 import { stripPromptXMLTags } from '../utils/messages.js';
 import { streamingTextStore } from './streamingTextStore.js';
 import type { ThemeName } from '../utils/theme.js';
@@ -107,8 +108,13 @@ function cachedLexer(content: string): Token[] {
   // Skips marked.lexer's full GFM parse (~3ms on long content). Not cached —
   // reconstruction is a single object allocation, and caching would retain
   // 4× content in raw/text fields plus the hash key for zero benefit.
+  // CC 2.1.295 #050/#031 — official xn @231692124 fast path
+  // `if(!fn.test(i)&&(p||!i.includes(un)))return Ecn(Vr(i))`: the synthetic
+  // paragraph tokens are sanitized (Ecn → sanitizeMarkdownTokens) before they
+  // reach formatToken, so raw OSC 8 / control bytes in a plain-text reply are
+  // neutralized and any surviving SGR flags the link/image tokens afterStyle.
   if (!hasMarkdownSyntax(content)) {
-    return [{
+    return sanitizeMarkdownTokens([{
       type: 'paragraph',
       raw: content,
       text: content,
@@ -117,7 +123,7 @@ function cachedLexer(content: string): Token[] {
         raw: content,
         text: content
       }]
-    } as Token];
+    } as Token]);
   }
   const key = hashContent(content);
   const hit = tokenCache.get(key);
@@ -128,7 +134,11 @@ function cachedLexer(content: string): Token[] {
     tokenCache.set(key, hit);
     return hit;
   }
-  const tokens = marked.lexer(content);
+  // Official xn real-lex path `let f=Ecn(zr(p?uNo:Em,i)); ... o.set(a,f)` —
+  // the SANITIZED tokens are what's memoized, so a cache hit is never
+  // re-sanitized (and the render-time Ecn call short-circuits on the cleaned
+  // `raw`, returning the array by identity).
+  const tokens = sanitizeMarkdownTokens(marked.lexer(content));
   if (tokenCache.size >= TOKEN_CACHE_MAX) {
     // LRU-ish: drop oldest. Map preserves insertion order.
     const first = tokenCache.keys().next().value;

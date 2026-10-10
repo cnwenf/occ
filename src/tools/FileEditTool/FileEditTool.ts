@@ -64,11 +64,13 @@ import {
   FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
   FILE_NOT_READ_MESSAGE,
   FILE_STATE_CURRENT_NOTE,
+  fileStateMatchesBaselineOrTranscript,
   fileStateMatchesDisk,
   getGuardModel,
   getModelBucket,
   isCoveredByReadDenyRule,
   isFullReadOfFileState,
+  isFullyReadOfFileState,
   isOldModel,
   normalizeForComparison,
   READ_DENY_EDIT_MESSAGE,
@@ -644,12 +646,15 @@ export const FileEditTool = buildTool({
     // 2.1.228 call-time guard (binary C8b): throws FileStateError when the
     // edit must not proceed; returns true when the file changed since the
     // last read but the edit still applies cleanly (staleRecovered).
+    // 2.1.295 (#088): the read record is captured once (binary `en=s.get(he)`)
+    // and reused for the contentNotInModelContext computation below.
+    const lastRead = readFileState.get(absoluteFilePath)
     const staleRecovered =
       fileExists &&
       checkEditFileStateAtCall({
         absoluteFilePath,
         fileContents: originalFileContents,
-        lastRead: readFileState.get(absoluteFilePath),
+        lastRead,
         oldString: old_string,
         replaceAll: replace_all,
         model: getGuardModel(toolUseContext),
@@ -661,6 +666,27 @@ export const FileEditTool = buildTool({
             toolPermissionContext,
           ),
       })
+
+    // 2.1.295 (#088, binary `lo`): the post-write record must not claim
+    // full-read status when the model never saw the pre-write disk content —
+    // including the frozen-mtime case where contents changed without the
+    // modification time advancing. Official v295 verbatim:
+    //   lo = h || no || ao || jt && (!k4(en) || Nn || !PLe(en, FS(Nt)))
+    // h=userModified; no (harness-tag defusing) and ao (memory-dir invisible-
+    // char stripping) are trimmed surfaces in OCC — always false here;
+    // jt=fileExists; k4=isFullyReadOfFileState; Nn=staleRecovered;
+    // PLe=fileStateMatchesBaselineOrTranscript; FS=stripBom;
+    // Nt=originalFileContents. v294 had only `h||no||ao||jt&&(!Rte(en)||Nn)`;
+    // the `!PLe(en,FS(Nt))` disjunct is the #088 fix.
+    const contentNotInModelContext =
+      (userModified ?? false) ||
+      (fileExists &&
+        (!isFullyReadOfFileState(lastRead) ||
+          staleRecovered ||
+          !fileStateMatchesBaselineOrTranscript(
+            lastRead,
+            stripBom(originalFileContents),
+          )))
 
     // 3. Use findActualString to handle quote normalization
     const actualOldString =
@@ -715,13 +741,23 @@ export const FileEditTool = buildTool({
     notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, updatedFile)
 
     // 6. Update read timestamp, to invalidate stale writes. Content stored
-    // BOM-stripped (binary Hxe); line endings are preserved by Edit, so no
-    // CRLF normalization here.
+    // BOM-stripped (binary Hxe/FS); line endings are preserved by Edit, so no
+    // CRLF normalization here. Official v295 set statement verbatim:
+    //   s.set(he,{content:FS(An),timestamp:Vo,offset:void 0,limit:void 0,
+    //     ...lo&&{contentNotInModelContext:!0},
+    //     ...jt&&en?.isPartialView===!0&&{isPartialView:!0}})
+    // `lo` = contentNotInModelContext (#088); the isPartialView carryover
+    // preserves partial-view status through an edit of an auto-injected /
+    // offset-read file (present in official v294 AND v295 — OCC previously
+    // omitted both spreads; #088 reconstructs the statement to parity).
     readFileState.set(absoluteFilePath, {
       content: stripBom(updatedFile),
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
       limit: undefined,
+      ...(contentNotInModelContext && { contentNotInModelContext: true }),
+      ...(fileExists &&
+        lastRead?.isPartialView === true && { isPartialView: true }),
     })
 
     // CC 2.1.288 (#53): a successful edit triggers nested-memory discovery for
@@ -763,7 +799,9 @@ export const FileEditTool = buildTool({
       })
     }
 
-    // 8. Yield result
+    // 8. Yield result (official v295 `ct`: `...Ge&&{staleRecovered:!0},
+    // ...Je&&{contentNotInModelContext:!0}` — syncedSkillNext is a trimmed
+    // OCC surface)
     const data = {
       filePath: file_path,
       oldString: actualOldString,
@@ -773,6 +811,7 @@ export const FileEditTool = buildTool({
       userModified: userModified ?? false,
       replaceAll: replace_all,
       ...(staleRecovered && { staleRecovered: true }),
+      ...(contentNotInModelContext && { contentNotInModelContext: true }),
       ...(gitDiff && { gitDiff }),
     }
     return {
@@ -780,16 +819,24 @@ export const FileEditTool = buildTool({
     }
   },
   mapToolResultToToolResultBlockParam(data: FileEditOutput, toolUseID) {
-    const { filePath, userModified, replaceAll, staleRecovered } = data
+    const {
+      filePath,
+      userModified,
+      replaceAll,
+      staleRecovered,
+      contentNotInModelContext,
+    } = data
     const modifiedNote = userModified
       ? '.  The user modified your proposed changes before accepting them. '
       : ''
     // 2.1.228 (binary shape): stale-recovery disclosure takes precedence;
-    // otherwise the "file state is current" note is appended unless the user
-    // modified the edit.
+    // 2.1.295 (#088, binary `Y=y?" (note: ...)":s||S?"":hyr`): the "file
+    // state is current" note is also suppressed when the post-write record
+    // was marked contentNotInModelContext — the model did NOT see the
+    // pre-write disk content, so claiming currency would be wrong.
     const trailingNote = staleRecovered
       ? ' (note: the file had been modified on disk since you last read it — the edit applied cleanly, but the file contains other changes not in your context. Read it before edits that depend on surrounding context.)'
-      : userModified
+      : userModified || contentNotInModelContext
         ? ''
         : FILE_STATE_CURRENT_NOTE
 

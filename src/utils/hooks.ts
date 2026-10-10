@@ -134,6 +134,14 @@ import type {
   SkillHookMatcher,
 } from './settings/types.js'
 import { getHookDisplayText } from './hooks/hooksSettings.js'
+// CC 2.1.295 (#001): onFailure:"block" helpers (official jIe/W_t/Zre/q_t/K_t/V_t).
+import {
+  applyOnFailureBlockOutsideRepl,
+  applyOnFailureBlockTransform,
+  hookJsonOutputAlreadyBlocks,
+  hookMustSucceed,
+  shouldBlockOnHookFailure,
+} from './hooks/onFailureBlock.js'
 import { logForDebugging } from './debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { firstLineOf } from './stringUtils.js'
@@ -653,6 +661,13 @@ export interface HookResult {
   sessionTitle?: string
   // 2.1.152: MessageDisplay hook replaces the on-screen delta (display-only).
   displayContent?: string
+  // CC 2.1.295 (#001): set by the onFailure:"block" transform (official K_t)
+  // — when a UserPromptSubmit prompt is blocked, the original prompt text is
+  // suppressed from the blocking message. NOTE: OCC has no downstream
+  // consumer yet (the official schema-level suppressOriginalPrompt for
+  // UserPromptSubmit hookSpecificOutput is a separate unported feature);
+  // the field is carried faithfully so the dataflow matches official.
+  suppressOriginalPrompt?: boolean
   hook: HookCommand | HookCallback | FunctionHook
 }
 
@@ -680,6 +695,10 @@ export type AggregatedHookResult = {
   sessionTitle?: string
   // 2.1.152: MessageDisplay hook replaces the on-screen delta (display-only).
   displayContent?: string
+  // CC 2.1.295 (#001): propagated from the per-hook onFailure:"block"
+  // transform (official aggregation yield `suppressOriginalPrompt:Ho.suppressOriginalPrompt`
+  // @217876851).
+  suppressOriginalPrompt?: boolean
 }
 
 /**
@@ -1758,6 +1777,12 @@ async function execCommandHook(
   skillRoot?: string,
   forceSyncExecution?: boolean,
   requestPrompt?: (request: PromptRequest) => Promise<PromptResponse>,
+  // CC 2.1.295 (#071): explicit session id for this hook's CLAUDE_ENV_FILE env
+  // dir (threaded to getHookEnvFilePath); undefined → ambient getSessionId().
+  // Official threads it via the hook context object (`{...L5(n),envFileSessionId}`
+  // → `Mn.CLAUDE_ENV_FILE=await Uht(n,G,h.envFileSessionId)` @217811376); OCC's
+  // execCommandHook is positional, so it is a trailing param.
+  envFileSessionId?: string,
 ): Promise<{
   stdout: string
   stderr: string
@@ -1952,7 +1977,13 @@ async function execCommandHook(
       hookEvent === 'FileChanged') &&
     hookIndex !== undefined
   ) {
-    envVars.CLAUDE_ENV_FILE = await getHookEnvFilePath(hookEvent, hookIndex)
+    // CC 2.1.295 (#071): thread envFileSessionId so the env file lands in the
+    // resumed session's dir (official `Uht(n,G,h.envFileSessionId)` @217811376).
+    envVars.CLAUDE_ENV_FILE = await getHookEnvFilePath(
+      hookEvent,
+      hookIndex,
+      envFileSessionId,
+    )
   }
 
   // When agent worktrees are removed, getCwd() may return a deleted path via
@@ -3408,6 +3439,7 @@ async function* executeHooks({
   forceSyncExecution,
   requestPrompt,
   toolInputSummary,
+  envFileSessionId,
 }: {
   hookInput: HookInput
   toolUseID: string
@@ -3422,6 +3454,10 @@ async function* executeHooks({
     toolInputSummary?: string | null,
   ) => (request: PromptRequest) => Promise<PromptResponse>
   toolInputSummary?: string | null
+  // CC 2.1.295 (#071): explicit session id for the SessionStart hook's
+  // CLAUDE_ENV_FILE env dir; threaded down to execCommandHook →
+  // getHookEnvFilePath. Undefined → ambient getSessionId().
+  envFileSessionId?: string
 }): AsyncGenerator<AggregatedHookResult> {
   if (shouldDisableAllHooksIncludingManaged()) {
     return
@@ -4078,8 +4114,15 @@ async function* executeHooks({
         pluginRoot,
         pluginId,
         skillRoot,
-        forceSyncExecution,
+        // CC 2.1.295 (#001): official passes
+        // `Tt.type==="script"||Zre(Tt,he)` @217889674 — an onFailure:"block"
+        // hook cannot escape into the background via a runtime
+        // {"async":true} announcement (OCC has no script hook type).
+        forceSyncExecution || shouldBlockOnHookFailure(hook, hookEvent),
         boundRequestPrompt,
+        // CC 2.1.295 (#071): pass the resumed session id so a SessionStart hook's
+        // CLAUDE_ENV_FILE is written under the resumed session's env dir.
+        envFileSessionId,
       )
       cleanup?.()
       const durationMs = Date.now() - hookStartMs
@@ -4119,9 +4162,44 @@ async function* executeHooks({
       }
 
       // Try JSON parsing first
-      const { json, plainText, validationError } = parseHookOutput(
-        result.stdout,
-      )
+      const {
+        json: parsedJson,
+        plainText,
+        validationError,
+      } = parseHookOutput(result.stdout)
+
+      // CC 2.1.295 (#001): official `il`/`Il`/`jl` @217868823 — when the
+      // hook must succeed (onFailure:"block" on an event that honors it) and
+      // exited with a code other than 0/2, its parsed JSON output is
+      // DISCARDED (`Il=il?void 0:ls`) so a failure cannot turn into an
+      // approve/allow; the result falls through to the non_blocking_error
+      // yield below (then K_t promotes it to blocking). Exception: JSON that
+      // already blocks (`z_t`) is kept. A sync `continue:false` survives as
+      // preventContinuation/stopReason (`jl`) on the failure result.
+      const discardFailedHookJson =
+        hookMustSucceed(hook, hookEvent) &&
+        result.status !== 0 &&
+        result.status !== 2 &&
+        !(
+          parsedJson !== undefined &&
+          hookJsonOutputAlreadyBlocks(parsedJson, hookEvent)
+        )
+      const json = discardFailedHookJson ? undefined : parsedJson
+      const failureContinuation =
+        discardFailedHookJson &&
+        parsedJson !== undefined &&
+        isSyncHookJSONOutput(parsedJson) &&
+        (parsedJson as TypedSyncHookOutput).continue === false
+          ? {
+              preventContinuation: true as const,
+              ...(
+                (parsedJson as TypedSyncHookOutput).stopReason !== undefined && {
+                  stopReason: (parsedJson as TypedSyncHookOutput)
+                    .stopReason as string,
+                }
+              ),
+            }
+          : undefined
 
       if (validationError && result.status !== 2) {
         // 2.1.248 (Gap-108a): a malformed/schema-failing stdout is reported
@@ -4446,6 +4524,9 @@ async function* executeHooks({
           command: hookCommand,
           durationMs,
         }),
+        // CC 2.1.295 (#001): official `jl` is spread ONLY into this yield
+        // (@217874xxx) — continue:false survives the JSON discard.
+        ...failureContinuation,
         outcome: 'non_blocking_error' as const,
         hook,
       }
@@ -4517,7 +4598,13 @@ async function* executeHooks({
   let permissionBehavior: (PermissionResult['behavior'] | 'defer') | undefined
 
   // Run all hooks in parallel and wait for all to complete
-  for await (const result of all(hookPromises)) {
+  for await (const rawResult of all(hookPromises)) {
+    // CC 2.1.295 (#001): official K_t call site @217875152 — the transform
+    // runs on every per-hook result BEFORE the outcome tally:
+    //   Fr=K_t(po,Je,y,Et,Cr!==void 0&&O4e(Cr,Je));hr[Ho.outcome]++
+    // (Et/remoteCall and the O4e/personal source are STAGED — see
+    // onFailureBlock.ts; `signal` is the parent abort signal, official `y`.)
+    const result = applyOnFailureBlockTransform(rawResult, hookEvent, signal)
     outcomes[result.outcome]++
 
     // 2.1.280 (#004): count successful-hook stdout chars and detect
@@ -4554,6 +4641,9 @@ async function* executeHooks({
     if (result.blockingError) {
       yield {
         blockingError: result.blockingError,
+        // CC 2.1.295 (#001): official aggregation @217876851 —
+        // `yield{blockingError:Ho.blockingError,suppressOriginalPrompt:Ho.suppressOriginalPrompt,...di}`
+        suppressOriginalPrompt: result.suppressOriginalPrompt,
       }
     }
 
@@ -4895,6 +4985,14 @@ export type HookOutsideReplResult = {
   succeeded: boolean
   output: string
   blocked: boolean
+  /**
+   * CC 2.1.295 (#001): set when the parent signal was already aborted (user
+   * interrupt) — official `...S?.aborted&&{cancelled:!0}` @217887827/
+   * 217889674. V_t (applyOnFailureBlockOutsideRepl) skips blocking on
+   * cancelled:true but DOES block on a timeout ("Hook cancelled" output
+   * without this flag).
+   */
+  cancelled?: boolean
   watchPaths?: string[]
   systemMessage?: string
 }
@@ -5153,6 +5251,10 @@ async function executeHooksOutsideREPL({
               succeeded: false,
               output: 'Hook cancelled',
               blocked: false,
+              // CC 2.1.295 (#001): official `...S?.aborted&&{cancelled:!0}`
+              // @217887827 — distinguishes a user interrupt (V_t skips) from
+              // a timeout (V_t blocks).
+              ...(signal?.aborted && { cancelled: true }),
             }
           }
 
@@ -5243,6 +5345,11 @@ async function executeHooksOutsideREPL({
           hookIndex,
           pluginRoot,
           pluginId,
+          // CC 2.1.295 (#001): official passes
+          // `Tt.type==="script"||Zre(Tt,he)` as forceSyncExecution @217889674
+          // (OCC has no script hook type).
+          undefined,
+          shouldBlockOnHookFailure(hook, hookEvent),
         )
 
         // Clear timeout if hook completes
@@ -5255,6 +5362,9 @@ async function executeHooksOutsideREPL({
             succeeded: false,
             output: 'Hook cancelled',
             blocked: false,
+            // CC 2.1.295 (#001): official `...S?.aborted&&{cancelled:!0}`
+            // @217889674 — user interrupt skips V_t; timeout blocks.
+            ...(signal?.aborted && { cancelled: true }),
           }
         }
 
@@ -5340,7 +5450,19 @@ async function executeHooksOutsideREPL({
   )
 
   // Wait for all hooks to complete and collect results
-  return await Promise.all(hookPromises)
+  // CC 2.1.295 (#001): official V_t call site @217891418 — each promise is
+  // wrapped: `nt[jt].then((Gt)=>V_t(Nt,{...Gt,...}))` so an onFailure:"block"
+  // hook that failed/timed out outside the REPL comes back blocked.
+  return await Promise.all(
+    hookPromises.map((promise, hookIndex) =>
+      promise.then(result => {
+        const matched = matchingHooks[hookIndex]
+        return matched === undefined
+          ? result
+          : applyOnFailureBlockOutsideRepl(matched.hook, result)
+      }),
+    ),
+  )
 }
 
 /**
@@ -5862,6 +5984,11 @@ export async function* executeSessionStartHooks(
   signal?: AbortSignal,
   timeoutMs: number = TOOL_HOOK_EXECUTION_TIMEOUT_MS,
   forceSyncExecution?: boolean,
+  // CC 2.1.295 (#071): explicit session id for the SessionStart hook's
+  // CLAUDE_ENV_FILE env dir; forwarded to executeHooks → execCommandHook →
+  // getHookEnvFilePath. Undefined → ambient getSessionId() (the startup /
+  // compact / clear behavior, unchanged).
+  envFileSessionId?: string,
 ): AsyncGenerator<AggregatedHookResult> {
   const hookInput: SessionStartHookInput = {
     ...createBaseHookInput(undefined, sessionId),
@@ -5878,6 +6005,7 @@ export async function* executeSessionStartHooks(
     signal,
     timeoutMs,
     forceSyncExecution,
+    envFileSessionId,
   })
 }
 

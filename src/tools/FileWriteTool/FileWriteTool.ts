@@ -657,12 +657,22 @@ export const FileWriteTool = buildTool({
     notifyVscodeFileUpdated(fullFilePath, oldContent, content)
 
     // Update read timestamp, to invalidate stale writes. Content stored in
-    // the canonical readFileState form (binary J9: BOM-stripped, LF-only).
+    // the canonical readFileState form (binary J9/vg: BOM-stripped, LF-only).
+    // Official set statement (identical in v294 and v295):
+    //   h.set(G,{content:vg(n),timestamp:qt,offset:void 0,limit:void 0,
+    //     ...(y||Gt)&&{contentNotInModelContext:!0}})
+    // y = userModified; Gt = memory-dir-stamped write (trimmed OCC surface).
+    // Complementary #088 plumbing: OCC previously stored no flag here, so a
+    // user-modified Write record would still count as fully read for the
+    // 2.1.295 k4 consumers (sed path, NotebookEdit, subsequent Edits).
     readFileState.set(fullFilePath, {
       content: normalizeForComparison(content),
       timestamp: getFileModificationTime(fullFilePath),
       offset: undefined,
       limit: undefined,
+      ...((context.userModified ?? false) && {
+        contentNotInModelContext: true,
+      }),
     })
 
     // CC 2.1.288 (#53): a successful write triggers nested-memory discovery for

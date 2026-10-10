@@ -38,6 +38,11 @@
  *   z  = installBounds              Se = installHighlightBounds
  */
 
+// CC 2.1.295 #091 Layer A — the before:highlight LIMIT plugin installed by
+// the restructured v295 `L` installer below (import is type-safe: hljsLimit
+// imports only the BoundedHljs TYPE from this module — no runtime cycle).
+import { makeHighlightLimitPlugin } from './hljsLimit.js'
+
 /** Official `he` — max emitter stack height (nesting depth cap). */
 export const MAX_HEIGHT = 32
 /** Official `me` — max subLanguage fanout counted toward the budget. */
@@ -295,11 +300,19 @@ function budgetPlugin(
 }
 
 /**
- * Official `z(e,n)` / `Se(e)` — one-time installer. Grabs hljs's current
- * emitter class via an empty highlightAuto probe, swaps in the bounded
- * subclass (official `e.configure({__emitter:te(r,o)})`) and adds the budget
- * plugin. No-op when already bounded (official `ne` guard) — safe to call on
- * every core load.
+ * Official `z(e,n)` / `Se(e)`; CC 2.1.295 shape (`L(r,e)` @57119 in the hl
+ * module):
+ *   `let o=r.highlightAuto("",[])._emitter.constructor;
+ *    if("isBounded"in o)return;
+ *    if(r.addPlugin(B(r)),!U(o))return;
+ *    let n={left:Infinity};
+ *    r.configure({__emitter:Z(o,n)}),r.addPlugin(Y(n,X(r,e)))`
+ * One-time installer. Grabs hljs's current emitter class via an empty
+ * highlightAuto probe; returns immediately when already bounded. Otherwise
+ * installs the 2.1.295 #091 LIMIT plugin FIRST (it guards pure-regex
+ * backtracking that never reaches the emitter budget), then — only when the
+ * emitter class is wrappable — swaps in the bounded subclass and adds the
+ * per-call budget plugin. Safe to call on every core load.
  */
 export function installHighlightBounds(
   hljs: BoundedHljs,
@@ -310,6 +323,12 @@ export function installHighlightBounds(
   // exposes `emitter`.
   const probe = hljs.highlightAuto('', [])
   const emitterCtor = (probe._emitter ?? probe.emitter)?.constructor
+  // Official v295 early return: `"isBounded"in o` — checked BEFORE the limit
+  // plugin so re-installs don't stack duplicate plugins.
+  if (emitterCtor !== undefined && 'isBounded' in (emitterCtor as object)) return
+  // Official v295: `r.addPlugin(B(r))` — the length/long-line limit plugin
+  // (hljsLimit.ts), installed even when the emitter class can't be wrapped.
+  hljs.addPlugin(makeHighlightLimitPlugin(hljs))
   if (!isUnboundedEmitterClass(emitterCtor)) return
   const budget: Budget = { left: Number.POSITIVE_INFINITY }
   hljs.configure({ __emitter: boundedEmitter(emitterCtor, budget) })

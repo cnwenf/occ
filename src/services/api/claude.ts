@@ -128,6 +128,7 @@ import {
   getPromptCache1hAllowlist,
   getSessionId,
   getThinkingClearLatched,
+  isContext1mRefusedForModel,
   setAfkModeHeaderLatched,
   setCacheEditingHeaderLatched,
   setFastModeHeaderLatched,
@@ -279,6 +280,7 @@ import {
   createAdvisorEntryRefusedRetryHandler,
   isAdvisorEnabledForCurrentHost,
 } from './advisorRetry.js'
+import { createContext1mBetaRetryHandler } from './context1mBetaRetry.js'
 import {
   CannotRetryError,
   FallbackTriggeredError,
@@ -1105,6 +1107,19 @@ export async function* executeNonStreamingRequest(
      * same handler instance as the streaming loop.
      */
     retryAdvisorEntryRefused?: (error: APIError) => boolean
+    /**
+     * CC 2.1.295 (#016): the shared context-1m-beta 400 healing handler
+     * (official `qtt`) — like the advisor handler, the official wires it
+     * into both the streaming and the sync/non-streaming fatal chains, so
+     * the fallback shares the same per-request state machine instance.
+     */
+    retryContext1mBetaRefused?: (error: unknown) => boolean
+    /**
+     * CC 2.1.295 (#016): official `Ztt` — confirm the context-1m heal when
+     * the non-streaming response settles (@217675328). Called with the
+     * shared handler's confirmHealed(); no-op unless this request healed.
+     */
+    confirmContext1mHealed?: () => void
   },
   paramsFromContext: (context: RetryContext) => BetaMessageStreamParams,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
@@ -1210,6 +1225,9 @@ export async function* executeNonStreamingRequest(
       maxRetries: retryOptions.maxRetries,
       querySource: retryOptions.querySource,
       retryAdvisorEntryRefused: retryOptions.retryAdvisorEntryRefused,
+      // CC 2.1.295 (#016): official fatal chains carry `qtt` in both the
+      // streaming and non-streaming loops (@217674936/@217685469).
+      retryContext1mBetaRefused: retryOptions.retryContext1mBetaRefused,
       // CC 2.1.285 (item-B2): official `I0t` passes `nonStreamingTimeoutMs:S`
       // (S = IOo() = this fallbackTimeoutMs) into the loop options so the retry
       // loop can cap timed-out re-sends via
@@ -1225,6 +1243,13 @@ export async function* executeNonStreamingRequest(
       yield e.value
     }
   } while (!e.done)
+
+  // CC 2.1.295 (#016): official non-streaming success settle
+  // (@217675328-region: `Ztt()` fires when the response arrives) — the
+  // resend without the context-1m beta answered, so confirm the heal
+  // (conversation-betas strip + process latch + tengu_beta_400_healed).
+  // No-op unless this request went through the healing retry.
+  retryOptions.confirmContext1mHealed?.()
 
   return e.value as BetaMessage
 }
@@ -1682,6 +1707,18 @@ async function* queryModel(
   // attempt — paramsFromContext picks it up via live binding.
   let betas = getMergedBetas(options.model, { isAgenticQuery })
 
+  // CC 2.1.295 (#016): the context-1m refusal latch strips the beta at the
+  // source — official `Cc` (@209477214:
+  // `function Cc(e,n){return n.includes(YS)&&Gr(e)?n.filter((r)=>r!==YS):n}`,
+  // applied inside the model-betas resolvers `d7`/`Kvs`). OCC applies it at
+  // the merged-betas consumption point so the memoized getMergedBetas cache
+  // stays latch-agnostic; the effect on the wire is identical. Covers every
+  // source: model betas for `[1m]` models and SDK-provided betas
+  // (ALLOWED_SDK_BETAS includes context-1m).
+  if (isContext1mRefusedForModel(options.model)) {
+    betas = betas.filter(beta => beta !== CONTEXT_1M_BETA_HEADER)
+  }
+
   // Official 2.1.245 main request builder: `if(N==="1h"&&hh()&&!me.includes(G8))
   // me.push(G8)` — whenever this request resolves a 1h prompt-cache TTL, the
   // extended-cache-ttl beta header accompanies the cache_control writes.
@@ -1808,12 +1845,15 @@ async function* queryModel(
   // ToolSearchTool returns tool_reference blocks which unsupported models can't handle
   let filteredTools: Tools
 
-  if (useToolSearch) {
-    // Dynamic tool loading: Only include deferred tools that have been discovered
-    // via tool_reference blocks in the message history. This eliminates the need
-    // to predeclare all deferred tools upfront and removes limits on tool quantity.
-    const discoveredToolNames = extractDiscoveredToolNames(messages)
+  // Dynamic tool loading: tools discovered via tool_reference blocks in the
+  // message history. Hoisted out of the useToolSearch branch because the
+  // tool-schema builder also needs it for the 2.1.295 loadedThroughToolSearch
+  // flag (#112 — binary call site @217614375:
+  // `loadedThroughToolSearch: bn && ur(Kn) && Nn(Kn,Cr)`).
+  const discoveredToolNames = extractDiscoveredToolNames(messages)
 
+  if (useToolSearch) {
+    // Only include deferred tools that have been discovered
     filteredTools = tools.filter(tool => {
       // Always include non-deferred tools
       if (!deferredToolNames.has(tool.name)) return true
@@ -1898,6 +1938,12 @@ async function* queryModel(
         allowedAgentTypes: options.allowedAgentTypes,
         model: options.model,
         deferLoading: willDefer(tool),
+        // 2.1.295 (#112): MCP tool loaded THROUGH tool search this request →
+        // its description uses the 16384-char tool-search cap instead of
+        // 2048. Official: `bn && ur(Kn) && Nn(Kn,Cr)` = tool-search on &&
+        // this tool defers this request && it was discovered via search.
+        loadedThroughToolSearch:
+          useToolSearch && willDefer(tool) && discoveredToolNames.has(tool.name),
       }),
     ),
   )
@@ -2199,22 +2245,60 @@ async function* queryModel(
   // were dynamically added, so we can log and send it to telemetry.
   let lastRequestBetas: string[] | undefined
 
+  // CC 2.1.295 (#016): context-1m-beta 400 healing (official `qtt`/`Ztt`/
+  // `SEe` closure — see context1mBetaRetry.ts). Created once per request and
+  // shared by the streaming and non-streaming retry loops, matching the
+  // official per-query-engine `sb` closure (@217634933).
+  // `requestCarriedContext1mBeta` ≡ official `OJe` — refreshed at every
+  // request build (`OJe=qw.includes(YS)||Ma.includes(YS)` @217642062, the
+  // conversation betas OR the bedrock body-param betas carried the header).
+  let requestCarriedContext1mBeta = false
+  const context1mBetaRetry = createContext1mBetaRetryHandler({
+    model: options.model,
+    getBetas: () => betas,
+    setBetas: next => {
+      betas = next
+    },
+    requestCarriedBeta: () => requestCarriedContext1mBeta,
+  })
+
   const paramsFromContext = (retryContext: RetryContext) => {
-    const betasParams = [...betas]
+    // CC 2.1.295 (#016): official betas assembly (@217637260) filters the
+    // context-1m beta while the healing state machine suppresses it —
+    // `let Zo=ct.filter((td)=>td!==YS||!SEe())` for the conversation betas
+    // and the same filter on the bedrock `Ma` list. (The process-level
+    // refusal latch strip already happened where `betas` is assembled.)
+    const context1mSuppressed = context1mBetaRetry.isSuppressed()
+    const betasParams = context1mSuppressed
+      ? [...betas].filter(beta => beta !== CONTEXT_1M_BETA_HEADER)
+      : [...betas]
 
     // Append 1M beta dynamically for the Sonnet 1M experiment.
+    // CC 2.1.295 (#016): official push is gated on `!SEe()`
+    // (`if(!Zo.includes(YS)&&!SEe()&&uUn(Kn.model)!==null)Zo.push(YS)`);
+    // the `uUn`-internal latch gate (`if(Gr(e))return null` @209465489)
+    // lives inside getSonnet1mExpTreatmentEnabled.
     if (
       !betasParams.includes(CONTEXT_1M_BETA_HEADER) &&
+      !context1mSuppressed &&
       getSonnet1mExpTreatmentEnabled(retryContext.model)
     ) {
       betasParams.push(CONTEXT_1M_BETA_HEADER)
     }
 
     // For Bedrock, include both model-based betas and dynamically-added tool search header
+    // CC 2.1.295 (#016): ≡ official `Ma` filter (`Kvs(Kn.model).filter((td)=>
+    // td!==YS||!SEe())`) plus the `Cc` latch strip that the official applies
+    // inside `Kvs` itself (getBedrockExtraBodyParamsBetas is latch-agnostic
+    // in OCC, so both filters are applied at this consumption point).
+    const bedrockContext1mAllowed =
+      !context1mSuppressed && !isContext1mRefusedForModel(retryContext.model)
     const bedrockBetas =
       getAPIProvider() === 'bedrock'
         ? [
-            ...getBedrockExtraBodyParamsBetas(retryContext.model),
+            ...getBedrockExtraBodyParamsBetas(retryContext.model).filter(
+              beta => beta !== CONTEXT_1M_BETA_HEADER || bedrockContext1mAllowed,
+            ),
             ...(toolSearchHeader ? [toolSearchHeader] : []),
           ]
         : []
@@ -2366,6 +2450,12 @@ async function* queryModel(
       : undefined
 
     lastRequestBetas = betasParams
+    // CC 2.1.295 (#016): ≡ official `OJe=qw.includes(YS)||Ma.includes(YS)`
+    // (@217642062) — recorded per request build so the healing handler only
+    // fires when the outgoing request actually carried the context-1m beta.
+    requestCarriedContext1mBeta =
+      betasParams.includes(CONTEXT_1M_BETA_HEADER) ||
+      bedrockBetas.includes(CONTEXT_1M_BETA_HEADER)
 
     return {
       model: normalizeModelStringForAPI(options.model),
@@ -2656,6 +2746,8 @@ async function* queryModel(
         },
         // 2.1.276 advisor hotfix: official `zHe` (see handler creation above).
         retryAdvisorEntryRefused,
+        // CC 2.1.295 (#016): official `qtt` (see context1mBetaRetry.ts).
+        retryContext1mBetaRefused: context1mBetaRetry.handleRefusal,
       },
     )
 
@@ -2804,6 +2896,12 @@ async function* queryModel(
           case 'message_start': {
             // #018 (2.1.281): the message envelope opens (v281 `ml=!0`).
             messageEnvelopeOpen = true
+            // CC 2.1.295 (#016): official streaming success settle
+            // (@217692222: `Of=!0,sEe(),Ztt(),dp=Fs.message…`) — the resend
+            // without the context-1m beta answered, so the heal is confirmed:
+            // strip the beta from the conversation betas, latch the model,
+            // emit tengu_beta_400_healed. No-op unless this request healed.
+            context1mBetaRetry.confirmHealed()
             partialMessage = part.message
             ttftMs = Date.now() - start
             usage = updateUsage(usage, part.message?.usage)
@@ -3660,6 +3758,9 @@ async function* queryModel(
           initialConsecutive529Errors: is529Error(streamingError) ? 1 : 0,
           querySource: options.querySource,
           retryAdvisorEntryRefused,
+          // CC 2.1.295 (#016): shared per-request healing handler.
+          retryContext1mBetaRefused: context1mBetaRetry.handleRefusal,
+          confirmContext1mHealed: context1mBetaRetry.confirmHealed,
         },
         paramsFromContext,
         (attempt, _startTime, tokens) => {
@@ -3767,6 +3868,9 @@ async function* queryModel(
             ...(isFastModeEnabled() && { fastMode: isFastMode }),
             signal,
             retryAdvisorEntryRefused,
+            // CC 2.1.295 (#016): shared per-request healing handler.
+            retryContext1mBetaRefused: context1mBetaRetry.handleRefusal,
+            confirmContext1mHealed: context1mBetaRetry.confirmHealed,
           },
           paramsFromContext,
           (attempt, _startTime, tokens) => {

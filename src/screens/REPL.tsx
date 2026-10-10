@@ -1912,8 +1912,18 @@ export function REPL({
       });
 
       // Process session start hooks for resume
+      // CC 2.1.295 (#071): pass envFileSessionId (= the resumed session id) so a
+      // SessionStart hook's CLAUDE_ENV_FILE is written under the RESUMED session's
+      // env dir, not the ambient (pre-switch) one. switchSession() runs later
+      // (~line 1979), so without this the hook writes to the old session's dir and
+      // the Bash tool never sees it after the switch. Mirrors official's single
+      // envFileSessionId caller — the in-app resume/fork path
+      // `mJ(H,L==="fork"?"fork":"resume",{sessionId:h,envFileSessionId:Ub(h),...})`
+      // @236484631 (Ub is identity @206479248). Covers both /resume and /branch
+      // (branch routes through this same resume callback with entrypoint==='fork').
       const hookMessages = await processSessionStartHooks('resume', {
         sessionId,
+        envFileSessionId: sessionId,
         agentType: mainThreadAgentDefinition?.agentType,
         model: mainLoopModel
       });

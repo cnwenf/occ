@@ -9,9 +9,16 @@ import { shouldAllowManagedHooksOnly } from './hooks/hooksConfigSnapshot.js'
 import { executeSessionStartHooks, executeSetupHooks } from './hooks.js'
 import { logError } from './log.js'
 import { loadPluginHooks } from './plugins/loadPluginHooks.js'
+import { invalidateSessionEnvCache } from './sessionEnvironment.js'
 
 type SessionStartHooksOptions = {
   sessionId?: string
+  // CC 2.1.295 (#071): when set, SessionStart hooks write CLAUDE_ENV_FILE under
+  // THIS session's env dir (not the ambient one) and the session-env cache is
+  // invalidated. Used by the in-app /resume + /branch path where switchSession()
+  // runs after the hooks. Mirrors official mJ's `envFileSessionId` option
+  // (@217319721).
+  envFileSessionId?: string
   agentType?: string
   model?: string
   forceSyncExecution?: boolean
@@ -36,6 +43,7 @@ export async function processSessionStartHooks(
   source: 'startup' | 'resume' | 'clear' | 'compact',
   {
     sessionId,
+    envFileSessionId,
     agentType,
     model,
     forceSyncExecution,
@@ -137,6 +145,7 @@ export async function processSessionStartHooks(
     undefined,
     undefined,
     forceSyncExecution,
+    envFileSessionId,
   )) {
     if (hookResult.message) {
       hookMessages.push(hookResult.message)
@@ -153,6 +162,17 @@ export async function processSessionStartHooks(
     if (hookResult.watchPaths && hookResult.watchPaths.length > 0) {
       allWatchPaths.push(...hookResult.watchPaths)
     }
+  }
+
+  // CC 2.1.295 (#071): when an explicit envFileSessionId was threaded to the
+  // SessionStart hooks (the in-app /resume + /branch path), the hook env files
+  // were written under the resumed session's dir. Invalidate the module-level
+  // session-env cache so the Bash tool re-reads it instead of serving a stale
+  // pre-resume value. Mirrors official mJ's `..._e||ke!==void 0)kte()` @217322255
+  // (v294 G9 fired only on `_e`/newPluginsOnly @214856490); OCC has no
+  // newPluginsOnly, so the trigger reduces to `envFileSessionId !== undefined`.
+  if (envFileSessionId !== undefined) {
+    invalidateSessionEnvCache()
   }
 
   if (allWatchPaths.length > 0) {

@@ -343,9 +343,19 @@ const inputSchema = lazySchema(() =>
     limit: semanticNumber(z.number().int().positive().optional()).describe(
       'The number of lines to read. Only provide if the file is too large to read at once.',
     ),
+    // 2.1.295 (#079): an empty/whitespace-only `pages` string is treated as
+    // omitted instead of being rejected. Official v295 schema verbatim
+    // (@218369451):
+    //   pages:Yi((e)=>typeof e==="string"&&e.trim()===""?void 0:e,
+    //     o().optional()).describe(...)
+    // (Yi = z.preprocess, o() = z.string). The page-range parser itself is
+    // byte-identical v294↔v295 — the fix is purely schema-level.
     pages: z
-      .string()
-      .optional()
+      .preprocess(
+        (v: unknown) =>
+          typeof v === 'string' && v.trim() === '' ? undefined : v,
+        z.string().optional(),
+      )
       .describe(
         `Page range for PDF files (e.g., "1-5", "3", "10-20"). Only applicable to PDF files. Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
       ),

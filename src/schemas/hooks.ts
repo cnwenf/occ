@@ -26,6 +26,19 @@ const IfConditionSchema = lazySchema(() =>
     ),
 )
 
+// 2.1.295 (#001): `onFailure` for command and HTTP hooks. Official `ni`
+// @208157433 — enum + describe verbatim. Command schema gains it between
+// timeout and statusMessage (@208158815); http schema between timeout and
+// headers (@208162216). prompt/agent/mcp_tool schemas have NO onFailure.
+const OnFailureSchema = lazySchema(() =>
+  z
+    .enum(['continue', 'block'])
+    .optional()
+    .describe(
+      "What a failure of this hook does: it could not start (a missing script or plugin directory), timed out, exited with a code other than 0 or 2, or printed JSON that is invalid or fails validation. 'continue' (default): the failure is reported and the action goes ahead. 'block': the failure counts as exit code 2, so the action the event guards (a tool call, a permission request, a prompt) is blocked. Ignored for async hooks and on Stop, SubagentStop, TaskCompleted and TeammateIdle.",
+    ),
+)
+
 // Internal factory for individual hook schemas (shared between exported
 // discriminated union members and the HookCommandSchema factory)
 function buildHookSchemas() {
@@ -44,6 +57,8 @@ function buildHookSchemas() {
       .positive()
       .optional()
       .describe('Timeout in seconds for this specific command'),
+    // 2.1.295 (#001): onFailure:"block" — a failure counts as exit code 2.
+    onFailure: OnFailureSchema(),
     statusMessage: z
       .string()
       .optional()
@@ -125,6 +140,8 @@ function buildHookSchemas() {
       .positive()
       .optional()
       .describe('Timeout in seconds for this specific request'),
+    // 2.1.295 (#001): onFailure:"block" — a failure counts as exit code 2.
+    onFailure: OnFailureSchema(),
     headers: z
       .record(z.string(), z.string())
       .optional()

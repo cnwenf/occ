@@ -10,24 +10,41 @@ import { getPlatform } from './platform.js'
 // undefined = not yet loaded (need to check disk)
 // null = checked disk, no files exist (don't check again)
 // string = loaded and cached (use cached value)
-let sessionEnvScript: string | null | undefined = undefined
+let sessionEnvScript: string | null | undefined 
 
-export async function getSessionEnvDirPath(): Promise<string> {
+// CC 2.1.295 (#071): official getSessionEnvDirPath takes an explicit session id
+// defaulting to the ambient getSessionId() — `uIe(e=K())` @215372474
+// (`join(getConfigHome(),"session-env",e)`). Threading the resumed session id
+// through getHookEnvFilePath makes a SessionStart hook's CLAUDE_ENV_FILE land in
+// the resumed session's env dir even when the ambient id still points at the
+// pre-/resume session (the in-app /resume + /branch bug).
+export async function getSessionEnvDirPath(
+  sessionId: string = getSessionId(),
+): Promise<string> {
   const sessionEnvDir = join(
     getClaudeConfigHomeDir(),
     'session-env',
-    getSessionId(),
+    sessionId,
   )
   await mkdir(sessionEnvDir, { recursive: true })
   return sessionEnvDir
 }
 
+// CC 2.1.295 (#071): official getHookEnvFilePath threads an optional session id
+// down to the env dir — `Uht(e,n,r){let s=e.toLowerCase();return
+// join(await uIe(r),`${s}-hook-${n}.sh`)}` @215372992. When envFileSessionId is
+// undefined, getSessionEnvDirPath's default keeps the ambient behavior
+// (`uIe(e=K())`).
 export async function getHookEnvFilePath(
   hookEvent: 'Setup' | 'SessionStart' | 'CwdChanged' | 'FileChanged',
   hookIndex: number,
+  envFileSessionId?: string,
 ): Promise<string> {
   const prefix = hookEvent.toLowerCase()
-  return join(await getSessionEnvDirPath(), `${prefix}-hook-${hookIndex}.sh`)
+  return join(
+    await getSessionEnvDirPath(envFileSessionId),
+    `${prefix}-hook-${hookIndex}.sh`,
+  )
 }
 
 export async function clearCwdEnvFiles(): Promise<void> {

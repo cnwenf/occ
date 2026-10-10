@@ -1222,6 +1222,69 @@ function walkProgram(root: Node): ParseForSecurityResult {
 }
 
 /**
+ * Official v295 `ge(e)` (@211427258; unchanged from v294) — recursive
+ * arithmetic_expansion containment check. Feeds the for_statement
+ * complex-iteration-word flag (`h`): an arithmetic expansion such as
+ * `$((x[$(id)]))` can arith-eval at runtime in ways the static model
+ * cannot see, so a loop iterating over one must stay visible to the
+ * permission check even when its body extracts no commands.
+ */
+function containsArithmeticExpansion(node: Node): boolean {
+  if (node.type === 'arithmetic_expansion') return true
+  for (const child of node.children) {
+    if (child && containsArithmeticExpansion(child)) return true
+  }
+  return false
+}
+
+/**
+ * Official v295 `wAs()` (@208923529) — the `tengu_vast_puddle` remote gate
+ * for the 2.1.295 fix "Fixed Bash permission checks for for-loops over glob
+ * patterns, improving permission-check accuracy" (new in v295; absent from
+ * v294). Official semantics: the gate is ON unless a live payload explicitly
+ * resolves it false (`value===false && source==="payload" && defaultHost`).
+ * Divergence note (same pattern as findFlagIsAction/tengu_warm_sunrise):
+ * OCC's getFeatureValue_CACHED_MAY_BE_STALE does not expose source/
+ * defaultHost, so any resolved `false` is treated as the kill-switch; with
+ * no live GrowthBook client the default (true) applies.
+ */
+function forLoopGlobDetectionEnabled(): boolean {
+  try {
+    const value = getFeatureValue_CACHED_MAY_BE_STALE<unknown>(
+      'tengu_vast_puddle',
+      true,
+    )
+    return value !== false
+  } catch {
+    return true
+  }
+}
+
+/**
+ * Official v295 `C(e,t)` (@211427156; unchanged from v294 @208576864) —
+ * pushes a synthetic `true` command carrying the FULL source text of the
+ * construct. Downstream consumes subcommand texts (`commands.map(c => c.text)`
+ * in bashPermissions); a for-loop whose body extracts no real commands is
+ * invisible to prefix-rule matching and would auto-approve as inert. The
+ * synthetic entry exposes the raw loop text to rule matching so loops with
+ * runtime-resolved iteration words (arithmetic expansion — v294 baseline;
+ * unquoted globs — the 2.1.295 #044 delta) go through the normal permission
+ * check instead.
+ */
+function pushSyntheticTrueCommand(
+  commands: SimpleCommand[],
+  node: Node,
+): void {
+  commands.push({
+    argv: ['true'],
+    envVars: [],
+    redirects: [],
+    text: node.text,
+    hasUnquotedGlob: hasUnquotedGlobChars(node.text),
+  })
+}
+
+/**
  * Recursively collect leaf `command` nodes from a structural wrapper node.
  * Returns an error result on any disallowed node type, or null on success.
  */
@@ -1495,6 +1558,13 @@ function collectCommands(
     // string-embedding (`echo "item: $i"`) stays simple. This reverts some
     // of the too-complex→simple rescues in the original PR — each one was a
     // potential path-validation bypass.
+    // Official v295 `let n=null,l=null,a=t.length,h=!1` (@211390537):
+    // `a` = command count at branch ENTRY (captured before the word-list
+    // walk, so iteration words that themselves push commands — e.g.
+    // `for i in $(ls *.txt)` via collectCommandSubstitution — suppress the
+    // synthetic push below), `h` = complex-iteration-word flag.
+    const commandsAtEntry = commands.length
+    let sawComplexIterationWord = false
     let loopVar: string | null = null
     let doGroup: Node | null = null
     for (const child of node.children) {
@@ -1521,6 +1591,26 @@ function collectCommands(
         // where the iteration word itself is a disallowed expansion.
         const arg = walkArgument(child, commands, varScope)
         if (typeof arg !== 'string') return arg
+        // Official v295 `if(ge(d))h=!0;else if((T(d.text)||ee(d))&&wAs())h=!0`
+        // (@211391071/@211391085). The ge→h arm is the v294 baseline
+        // (@208540813, previously unported in OCC); the glob else-if is the
+        // 2.1.295 changelog #044 delta ("Fixed Bash permission checks for
+        // for-loops over glob patterns"): an unquoted glob in an iteration
+        // word (full-text scan `T`=hasUnquotedGlobChars, or per-node
+        // `ee`=nodeMayContainUnquotedGlob) expands at runtime to filenames
+        // the static model cannot enumerate → flag the loop so the tail
+        // push below keeps it visible to permission-rule matching.
+        // Gate `wAs`=forLoopGlobDetectionEnabled (tengu_vast_puddle,
+        // @208923529, default on; new in v295).
+        if (containsArithmeticExpansion(child)) {
+          sawComplexIterationWord = true
+        } else if (
+          (hasUnquotedGlobChars(child.text) ||
+            nodeMayContainUnquotedGlob(child)) &&
+          forLoopGlobDetectionEnabled()
+        ) {
+          sawComplexIterationWord = true
+        }
       }
     }
     if (loopVar === null || doGroup === null) return tooComplex(node)
@@ -1565,6 +1655,18 @@ function collectCommands(
       }
     }
     if (declPrefixCtx) declPrefixCtx.inBranch = savedBranch
+    // Official v295 tail `if(F(r,c),h&&t.length===a)C(t,e)` (@211391836;
+    // v294 @208541539). The `F(r,c)` scope merge-back arm has NO OCC
+    // counterpart — OCC walks the body on a discarded scope copy (see
+    // SECURITY note above), a pre-existing fail-closed divergence. The
+    // complex-word arm is ported verbatim: if an iteration word was
+    // flagged (arithmetic expansion or, per #044, unquoted glob) AND the
+    // loop extracted ZERO commands overall, push a synthetic `true`
+    // command carrying the full loop text so prefix-rule matching sees
+    // the loop instead of an invisible empty command list (auto-allow).
+    if (sawComplexIterationWord && commands.length === commandsAtEntry) {
+      pushSyntheticTrueCommand(commands, node)
+    }
     return null
   }
 
