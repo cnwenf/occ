@@ -1052,7 +1052,14 @@ function scheduleHeadlessRemoteRedial(
     rapidDropCounts.get(key) ?? 0,
     connectionLifetimeMs,
   )
-  rapidDropCounts.set(key, rapidDrops)
+  // dataflow-006: prune the entry when the count resets to zero (stable
+  // connection) so the module-level Map doesn't grow unboundedly over a
+  // long-lived REPL session.
+  if (rapidDrops === 0) {
+    rapidDropCounts.delete(key)
+  } else {
+    rapidDropCounts.set(key, rapidDrops)
+  }
 
   const holdoffMs = computeReconnectHoldoffMs(rapidDrops, connectionLifetimeMs)
   if (holdoffMs > 0) {
@@ -1085,11 +1092,16 @@ function scheduleHeadlessRemoteRedial(
         })
       }
       if (abortController.signal.aborted || headlessRedialsCancelled) return
-      const redial = await connectToServer(name, serverRef)
+      // dataflow-003: re-read the latest config so any changes made during the
+      // holdoff window (e.g. URL rotation, header update) are picked up instead
+      // of reconnecting with the stale serverRef captured at drop time.
+      const { servers: latestServers } = await getAllMcpConfigs()
+      const latestRef = latestServers[name] ?? serverRef
+      const redial = await connectToServer(name, latestRef)
       if (redial.type !== 'connected') {
         // Don't leave a failed background dial in the memo cache — the next
         // use should get a fresh dial, exactly like the lazy-redial behavior.
-        connectToServer.cache.delete(key)
+        connectToServer.cache.delete(getServerCacheKey(name, latestRef))
       }
     } catch (error) {
       connectToServer.cache.delete(key)
@@ -1100,6 +1112,32 @@ function scheduleHeadlessRemoteRedial(
     }
   })()
 }
+
+/**
+ * @internal Test-only: expose the rapidDropCounts map so dataflow-006 pruning
+ * can be verified (key deleted when count resets to zero on a stable connection).
+ * Precedent: `_resetMcpAuthCacheForTesting` above.
+ */
+export const _rapidDropCountsForTesting = rapidDropCounts
+
+/**
+ * @internal Test-only: expose the in-flight redial guard set so the redial
+ * wiring integration probe can assert exactly-once scheduling and cleanup.
+ */
+export const _headlessRedialsInFlightForTesting = headlessRedialsInFlight
+
+/**
+ * @internal Test-only: expose the active redial AbortController set so the
+ * redial wiring integration probe can assert cleanup after success/failure.
+ */
+export const _activeHeadlessRedialsForTesting = activeHeadlessRedials
+
+/**
+ * @internal Test-only: expose scheduleHeadlessRemoteRedial for integration
+ * probes that verify the in-flight race guard, rapidDropCounts pruning, and
+ * activeHeadlessRedials cleanup without needing a real MCP transport.
+ */
+export const _scheduleHeadlessRemoteRedialForTesting = scheduleHeadlessRemoteRedial
 
 /**
  * TODO (ollie): The memoization here increases complexity by a lot, and im not sure it really improves performance
@@ -2458,14 +2496,18 @@ export const fetchToolsForClient = memoizeWithLRU(
             async prompt(options?: unknown) {
               // CC 2.1.295 (#112) — official:
               //   async prompt({loadedThroughToolSearch:Ee}){return Ee?ce:_e}
-              // OCC's Tool.prompt options type (src/Tool.ts) does not declare
-              // the flag yet and the API-schema serializer (src/utils/api.ts)
-              // does not pass it (both OUTSIDE this change's cluster — the
-              // official also gates its schema-cache key with an `"LT:"` bit
-              // @215678602 when `loadedThroughToolSearch===!0&&isMcp===!0`).
-              // Read the flag structurally so the behavior is dormant-but-
-              // exact: a caller that passes it gets the 16384 variant; every
-              // current caller keeps the byte-identical 2048 behavior.
+              // Review-round wiring (OCC-153 acceptance): Tool.prompt's
+              // options type (src/Tool.ts) now declares the flag and the
+              // API-schema serializer (src/utils/api.ts) passes it, derived
+              // as `options.loadedThroughToolSearch ?? (deferLoading &&
+              // isMcp)` — the tool-search-discovered deferred MCP tools
+              // serialized at claude.ts (`deferLoading:true`), mirroring the
+              // official call-site gate @217614375
+              // (`bn&&ur(Kn)&&Nn(Kn,Cr)`). The schema-cache key carries the
+              // official `"LT:"` bit @215678602 when
+              // `loadedThroughToolSearch===!0&&isMcp===!0`, so the 2048 and
+              // 16384 variants never share a cache entry. Non-tool-search
+              // callers keep the byte-identical 2048 behavior.
               const loadedThroughToolSearch =
                 typeof options === 'object' &&
                 options !== null &&

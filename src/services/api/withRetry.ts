@@ -1473,6 +1473,33 @@ export function getOverloadedRetryBaseDelayMs(): number | undefined {
 // port there; recorded here for traceability.
 const RETRY_WATCHDOG_MAX_WAIT_MIN_MS = 1
 
+// dataflow-007 (occ153 review): the digits-only fail-open below is the
+// official semantics (`??1/0` → uncapped budget) and stays UNCHANGED, but a
+// non-empty value we cannot honor is no longer silent — warn once per
+// distinct offending value (same warn-once convention as
+// maxRetriesClampWarned above) so a misconfiguration that leaves the
+// capacity-wait budget at Infinity is discoverable.
+const ignoredRetryWatchdogMaxWaitWarned = new Set<string>()
+
+/** Test-only: clear the warn-once dedupe set (cf. clearFastModeCooldown). */
+export function resetIgnoredRetryWatchdogMaxWaitWarnedForTesting(): void {
+  ignoredRetryWatchdogMaxWaitWarned.clear()
+}
+
+function warnIgnoredRetryWatchdogMaxWait(raw: string): void {
+  // An empty value is equivalent to unset (official `??1/0`) — stay silent.
+  if (raw.trim() === '' || ignoredRetryWatchdogMaxWaitWarned.has(raw)) {
+    return
+  }
+  ignoredRetryWatchdogMaxWaitWarned.add(raw)
+  logForDebugging(
+    `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS='${raw}' is not a digits-only ` +
+      `integer >= ${RETRY_WATCHDOG_MAX_WAIT_MIN_MS} — ignoring it; the ` +
+      `capacity-wait budget stays uncapped (Infinity).`,
+    { level: 'warn' },
+  )
+}
+
 export function getRetryWatchdogMaxWaitMs(): number | undefined {
   const raw = process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS
   if (raw === undefined) {
@@ -1482,12 +1509,16 @@ export function getRetryWatchdogMaxWaitMs(): number | undefined {
   // getOverloadedRetryBaseDelayMs above): reject anything that is not an
   // integer literal (1e3 / 6_000 / 1,000 / 150.5 all fail).
   if (!/^[+-]?\d+$/.test(raw.trim())) {
+    warnIgnoredRetryWatchdogMaxWait(raw)
     return undefined
   }
   const parsed = parseEnvInt(raw)
   if (parsed !== undefined && parsed >= RETRY_WATCHDOG_MAX_WAIT_MIN_MS) {
     return parsed
   }
+  // Digits-only but below the min (e.g. '0', '-5') — same fail-open, same
+  // one-time warning: the operator set a value that is being ignored.
+  warnIgnoredRetryWatchdogMaxWait(raw)
   return undefined
 }
 

@@ -626,6 +626,14 @@ export type Tool<
     tools: Tools
     agents: AgentDefinition[]
     allowedAgentTypes?: string[]
+    /**
+     * CC 2.1.295 #112 — true when this tool is being serialized because tool
+     * search discovered it (a deferred MCP tool pulled in via a tool_reference
+     * block). MCP tools widen their description cap 2048→16384 for this case
+     * (see getMaxMcpDescriptionLength in services/mcp/client.ts); every other
+     * tool ignores the flag. Mirrors the official `Tool.prompt` options bit.
+     */
+    loadedThroughToolSearch?: boolean
   }): Promise<string>
   userFacingName(
     input: Partial<z.infer<Input>> | undefined,

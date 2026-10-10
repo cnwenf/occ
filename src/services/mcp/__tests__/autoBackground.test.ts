@@ -294,12 +294,22 @@ function makeRun<T>(): RunHandle<T> {
 
 function makeRegistry(): McpBackgroundTaskRegistry & {
   registered: McpBackgroundTaskState[]
+  updates: Array<{ taskId: string; task: McpBackgroundTaskState }>
 } {
   const registered: McpBackgroundTaskState[] = []
+  const updates: Array<{ taskId: string; task: McpBackgroundTaskState }> = []
   return {
     registered,
+    updates,
     register(task) {
       registered.push(task)
+    },
+    update(taskId, updater) {
+      const existing = registered.find(t => t.id === taskId)
+      if (existing) {
+        const updated = updater(existing)
+        updates.push({ taskId, task: updated })
+      }
     },
   }
 }
@@ -520,5 +530,95 @@ describe('callMcpToolWithAutoBackground', () => {
     run.resolve({ content: 'fast' })
     const outcome = await outcomeP
     expect(outcome.kind).toBe('settled')
+  })
+
+  // ct-04: the completion observer must write endTime/notified so the
+  // retention gate in framework.ts can evict naturally-completed rows.
+  test('ct-04: backgrounded run that resolves → taskRegistry.update called with completed/endTime/notified', async () => {
+    // Arrange
+    const run = makeRun<{ content: string }>()
+    const registry = makeRegistry()
+
+    const outcome = await callMcpToolWithAutoBackground({
+      run: run.fn,
+      serverName: 'srv',
+      toolName: 'tl',
+      toolUseId: 'tuu-ct04',
+      parentAbortController: new AbortController(),
+      taskRegistry: registry,
+      autoBackgroundMs: 30,
+    })
+    expect(outcome.kind).toBe('backgrounded')
+    expect(registry.registered.length).toBe(1)
+    // No update yet — the run is still pending
+    expect(registry.updates.length).toBe(0)
+
+    // Act — resolve the backgrounded run
+    run.resolve({ content: 'late-result' })
+    // Drain microtasks so the .then() completion observer fires
+    await new Promise(r => setTimeout(r, 10))
+
+    // Assert — the completion observer wrote endTime + notified
+    expect(registry.updates.length).toBe(1)
+    const updated = registry.updates[0]!.task
+    expect(updated.status).toBe('completed')
+    expect(updated.mcpStatus).toBe('completed')
+    expect(updated.notified).toBe(true)
+    expect(typeof updated.endTime).toBe('number')
+    expect(updated.abortController).toBeUndefined()
+  })
+
+  test('ct-04: backgrounded run that rejects → taskRegistry.update called with failed/endTime/notified', async () => {
+    // Arrange
+    const run = makeRun<{ content: string }>()
+    const registry = makeRegistry()
+
+    const outcome = await callMcpToolWithAutoBackground({
+      run: run.fn,
+      serverName: 'srv',
+      toolName: 'tl',
+      toolUseId: 'tuu-ct04f',
+      parentAbortController: new AbortController(),
+      taskRegistry: registry,
+      autoBackgroundMs: 30,
+    })
+    expect(outcome.kind).toBe('backgrounded')
+    expect(registry.updates.length).toBe(0)
+
+    // Act — reject the backgrounded run
+    run.reject(new Error('tool exploded'))
+    await new Promise(r => setTimeout(r, 10))
+
+    // Assert — the completion observer wrote failed + endTime + notified
+    expect(registry.updates.length).toBe(1)
+    const updated = registry.updates[0]!.task
+    expect(updated.status).toBe('failed')
+    expect(updated.mcpStatus).toBe('failed')
+    expect(updated.notified).toBe(true)
+    expect(typeof updated.endTime).toBe('number')
+    expect(updated.abortController).toBeUndefined()
+  })
+
+  test('ct-04: settled (non-backgrounded) run does NOT call taskRegistry.update', async () => {
+    // Arrange — tool resolves before the threshold
+    const run = makeRun<{ content: string }>()
+    const registry = makeRegistry()
+
+    const outcomeP = callMcpToolWithAutoBackground({
+      run: run.fn,
+      serverName: 'srv',
+      toolName: 'tl',
+      toolUseId: 'tuu-settled',
+      parentAbortController: new AbortController(),
+      taskRegistry: registry,
+      autoBackgroundMs: 10000,
+    })
+    run.resolve({ content: 'fast' })
+    const outcome = await outcomeP
+
+    // Assert — no task registered, no update called
+    expect(outcome.kind).toBe('settled')
+    expect(registry.registered.length).toBe(0)
+    expect(registry.updates.length).toBe(0)
   })
 })

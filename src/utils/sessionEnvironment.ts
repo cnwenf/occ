@@ -10,7 +10,28 @@ import { getPlatform } from './platform.js'
 // undefined = not yet loaded (need to check disk)
 // null = checked disk, no files exist (don't check again)
 // string = loaded and cached (use cached value)
-let sessionEnvScript: string | null | undefined 
+let sessionEnvScript: string | null | undefined
+
+/**
+ * SEC-2 hardening: the session id becomes a path segment under
+ * `<config>/session-env/` and the directory is created recursively, so a
+ * hostile or corrupt id (e.g. `../../evil`, `a/b`) must never be
+ * interpolated verbatim — `mkdir` would otherwise escape the session-env
+ * root. Only `[A-Za-z0-9_-]` survives; every other character (including
+ * `.`, `/`, `\`, NUL) is replaced with `_`. Canonical session ids are uuids
+ * (hex digits + dashes), so the on-disk layout for legitimate ids is
+ * unchanged. An id that sanitizes to the empty string maps to `_`.
+ */
+const UNSAFE_SEGMENT_CHARACTERS = /[^A-Za-z0-9_-]/g
+const SANITIZED_EMPTY_SEGMENT = '_'
+
+export function sanitizeSessionIdSegment(sessionId: string): string {
+  const sanitized = sessionId.replace(
+    UNSAFE_SEGMENT_CHARACTERS,
+    SANITIZED_EMPTY_SEGMENT,
+  )
+  return sanitized === '' ? SANITIZED_EMPTY_SEGMENT : sanitized
+}
 
 /**
  * CC 2.1.295 (Item 4): `sessionId` overrides the global getSessionId() key.
@@ -18,6 +39,9 @@ let sessionEnvScript: string | null | undefined
  * hook's own input session_id (the session being resumed INTO) must key the
  * env dir — otherwise CLAUDE_ENV_FILE writes land in the OLD session's dir
  * and never reach Bash after the switch.
+ *
+ * The id is passed through `sanitizeSessionIdSegment` (SEC-2) before it
+ * becomes a path segment.
  */
 export async function getSessionEnvDirPath(
   sessionId?: string,
@@ -25,7 +49,7 @@ export async function getSessionEnvDirPath(
   const sessionEnvDir = join(
     getClaudeConfigHomeDir(),
     'session-env',
-    sessionId ?? getSessionId(),
+    sanitizeSessionIdSegment(sessionId ?? getSessionId()),
   )
   await mkdir(sessionEnvDir, { recursive: true })
   return sessionEnvDir

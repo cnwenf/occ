@@ -32,6 +32,7 @@ import {
   registerMcpBackgroundTask,
 } from '../../tasks/McpBackgroundTask/McpBackgroundTask.js'
 import type { SetAppState } from '../../Task.js'
+import { updateTaskState } from '../../utils/task/framework.js'
 
 /** Binary-verified default threshold (official $cy = 120000). */
 export const DEFAULT_MCP_AUTO_BACKGROUND_MS = 120000
@@ -220,6 +221,13 @@ export type McpAutoBackgroundOutcome<T> =
  */
 export type McpBackgroundTaskRegistry = {
   register(task: McpBackgroundTaskState): void
+  /**
+   * ct-04: patch a registered task's state when the backgrounded call settles
+   * naturally. Without this the row stays `running`/`notified:false` forever —
+   * the retention gate in framework.ts can never evict it and the model is
+   * never told the outcome.
+   */
+  update(taskId: string, updater: (task: McpBackgroundTaskState) => McpBackgroundTaskState): void
 }
 
 /**
@@ -232,6 +240,9 @@ export function makeAppStateTaskRegistry(
   return {
     register(task) {
       registerMcpBackgroundTask(task, setAppState)
+    },
+    update(taskId, updater) {
+      updateTaskState<McpBackgroundTaskState>(taskId, setAppState, updater)
     },
   }
 }
@@ -333,13 +344,32 @@ export async function callMcpToolWithAutoBackground<T>({
   taskRegistry.register(task)
   onBackgrounded?.()
 
-  // Suppress unhandled-rejection from the still-pending run: its eventual
-  // settlement is handled by the background-task completion observer, not by
-  // this returned promise. We attach a no-op catcher so a backgrounded call
-  // that later rejects doesn't emit unhandledRejection.
-  resultPromise.catch(() => {
-    /* backgrounded — result handled by the task completion observer */
-  })
+  // ct-04: observe the backgrounded call's eventual settlement and write
+  // endTime/notified so the retention gate in framework.ts can evict the row
+  // and the model learns the outcome. Without this the task stays
+  // running/notified:false forever — a zombie row that never terminates.
+  resultPromise.then(
+    () => {
+      taskRegistry.update(task.id, t => ({
+        ...t,
+        status: 'completed',
+        mcpStatus: 'completed',
+        endTime: Date.now(),
+        notified: true,
+        abortController: undefined,
+      }))
+    },
+    () => {
+      taskRegistry.update(task.id, t => ({
+        ...t,
+        status: 'failed',
+        mcpStatus: 'failed',
+        endTime: Date.now(),
+        notified: true,
+        abortController: undefined,
+      }))
+    },
+  )
 
   return {
     kind: 'backgrounded',

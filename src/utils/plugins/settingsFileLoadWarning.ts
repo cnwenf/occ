@@ -25,6 +25,15 @@
  * as-is; the official truncation `je(path, 80)` maps to `sliceHead(path, 80)`.
  * The check never throws into the command: any internal failure is logged
  * with the official skip message and returns null.
+ *
+ * dataflow-004 (OCC-side fix, deviation from a strict `pIr` port): OCC's
+ * `parseSettingsFile` only produces the `errorClass: "unreadable"` record
+ * for POLICY sources (settings.ts CC 2.1.285 catch arm) — non-policy OS read
+ * failures are swallowed into `{settings: null, errors: []}`, which would
+ * make the official `it could not be read` branch unreachable here (this
+ * checker never sees policySettings). The warning path therefore probes the
+ * file's readability directly (`isFileUnreadable`) when the parse yields no
+ * blocking error; parseSettingsFile's swallow+log semantics are untouched.
  */
 import { existsSync } from 'fs'
 import { basename } from 'path'
@@ -35,12 +44,47 @@ import {
   parseSettingsFile,
 } from '../settings/settings.js'
 import { logForDebugging } from '../debug.js'
-import { errorMessage } from '../errors.js'
+import { errorMessage, getErrnoCode } from '../errors.js'
+import { getFsImplementation } from '../fsOperations.js'
 import { plural } from '../stringUtils.js'
 import { sliceHead } from '../truncateMiddle.js'
 
 /** Official `je(f.path, 80)` — the invalid-value path is capped at 80 chars. */
 const PATH_DISPLAY_CAP = 80
+
+/** The official warning sentence, given the file and its `<reason>` branch. */
+function buildLoadFailureWarning(filePath: string, reason: string): string {
+  return `${filePath} does not load (${reason}), so Claude Code ignores the whole file, including anything this command wrote there. Fix the file, then run this command again if its change is missing. If a newer Claude Code wrote the file, update Claude Code instead.`
+}
+
+/**
+ * dataflow-004 fix: true when `filePath` exists on disk but its content
+ * cannot be read at the OS level (EACCES/EPERM/EISDIR/...).
+ *
+ * Why this probe is needed: for NON-policy sources `parseSettingsFile`
+ * swallows every OS read failure into `{settings: null, errors: []}` (only
+ * `policySource: true` produces the `errorClass: "unreadable"` record), so
+ * an existing-but-unreadable user/project/local settings file would reach
+ * this checker with zero blocking errors and stay completely silent — the
+ * official `it could not be read` reason was dead code for every source the
+ * checker can see (policySettings early-outs above). The probe reads via the
+ * same fs abstraction (`getFsImplementation`) as `parseSettingsFileUncached`
+ * so the two layers observe the same failures (and tests can swap the fs
+ * implementation). ENOENT is NOT unreadable — a file that vanished between
+ * the existence check and the read has nothing to load, matching the
+ * official non-userSettings existence early-out.
+ */
+function isFileUnreadable(filePath: string): boolean {
+  if (!existsSync(filePath)) {
+    return false
+  }
+  try {
+    getFsImplementation().readFileSync(filePath, { encoding: 'utf8' })
+    return false
+  } catch (error) {
+    return getErrnoCode(error) !== 'ENOENT'
+  }
+}
 
 /**
  * Build the official warning for a settings source whose file does not load,
@@ -82,6 +126,13 @@ export function getSettingsFileLoadWarning(
     )
     const [first] = blocking
     if (first === undefined) {
+      // dataflow-004 fix: parseSettingsFile swallows OS read failures for
+      // non-policy sources, so probe readability directly — an existing but
+      // unreadable file still gets the official 'it could not be read'
+      // warning instead of silence.
+      if (isFileUnreadable(filePath)) {
+        return buildLoadFailureWarning(filePath, 'it could not be read')
+      }
       return null
     }
     const otherCount = blocking.length - 1
@@ -95,7 +146,7 @@ export function getSettingsFileLoadWarning(
         : first.errorClass === 'unreadable'
           ? 'it could not be read'
           : 'it is not a JSON object'
-    return `${filePath} does not load (${reason}), so Claude Code ignores the whole file, including anything this command wrote there. Fix the file, then run this command again if its change is missing. If a newer Claude Code wrote the file, update Claude Code instead.`
+    return buildLoadFailureWarning(filePath, reason)
   } catch (error) {
     // Official catch arm, verbatim message.
     logForDebugging(

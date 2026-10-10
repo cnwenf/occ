@@ -21,11 +21,22 @@
  * that set (per content entry — an attachment whose contexts are ALL already
  * present is dropped entirely). Immutable: inputs are never mutated.
  *
- * Identity note: processSessionStartHooks aggregates the additionalContexts
- * of ALL SessionStart hooks into a single attachment whose hookName is
- * 'SessionStart', so per-hook identity beyond the attachment hookName is not
- * recoverable from the persisted transcript; the fingerprint uses the
- * attachment hookName as the identity component.
+ * Identity note (ct-03, P3 known limitation — documented, not fixed):
+ * this dedupe works at the AGGREGATED ATTACHMENT level, not the individual
+ * hook level. processSessionStartHooks merges the additionalContexts of ALL
+ * SessionStart hooks into a SINGLE attachment whose hookName is the literal
+ * 'SessionStart', so per-hook identity (which hook produced which context
+ * entry) is already lost before it is persisted — the fingerprint can only
+ * use the attachment hookName as the identity component. Consequences:
+ *   - two different hooks injecting identical context text share one
+ *     fingerprint (deduped as one);
+ *   - if a hook is renamed/removed but another keeps emitting the same
+ *     text, the entry is still considered present.
+ * Official parity for this identity model is UNVERIFIED — the official
+ * 2.1.295 dedupe surface is not extractable from the binary strings dump,
+ * so whether the official fingerprint carries finer-grained hook identity
+ * is unknown. Accepted as a P3 known limitation; behavior is pinned by
+ * sessionStartContextDedupe.test.ts.
  */
 
 import { createHash } from 'node:crypto'

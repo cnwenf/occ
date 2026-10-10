@@ -305,6 +305,12 @@ export function BackgroundTasksDialog({
         e.preventDefault();
         // Reset the window so a third rapid press isn't treated as a delete.
         lastCtrlXPressRef.current = 0;
+        // dataflow-001: a running mcp_task must go through the same kill/abort
+        // path as single-x before its row is removed — otherwise the transport
+        // and AbortController stay alive with no way to stop them.
+        if (currentForDelete.type === 'mcp_task' && currentForDelete.status === 'running') {
+          void killMcpTask(currentForDelete.id);
+        }
         void deleteBackgroundSession({ id: currentForDelete.id, type: currentForDelete.type }, setAppState as never);
         return;
       }
