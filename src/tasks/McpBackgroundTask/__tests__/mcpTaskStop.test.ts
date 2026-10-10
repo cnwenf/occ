@@ -278,4 +278,81 @@ describe('MCP_TASK_RETENTION_MS eviction window (official yI=30000)', () => {
     // Assert — GC'd once the window has passed.
     expect(holder.tasks[killed.id]).toBeUndefined()
   })
+
+  // ct-04: naturally completed tasks (endTime written by the completion
+  // observer in autoBackground.ts) must also be retained inside the window
+  // and evicted outside it — symmetric with the killed path.
+  test('ct-04: retains a naturally-completed mcp_task whose endTime is within the window', () => {
+    // Arrange — simulate the completion observer writing endTime + notified
+    const completed = makeTerminalTask({
+      status: 'completed',
+      endTime: Date.now(),
+    })
+    const holder = makeStateHolder({ [completed.id]: completed })
+
+    // Act
+    evictTerminalTask(completed.id, holder.setAppState)
+
+    // Assert — still present inside the retention window
+    expect(holder.tasks[completed.id]).toBeDefined()
+  })
+
+  test('ct-04: evicts a naturally-completed mcp_task whose retention window has elapsed', () => {
+    // Arrange
+    const completed = makeTerminalTask({
+      status: 'completed',
+      endTime: Date.now() - (MCP_TASK_RETENTION_MS + 1000),
+    })
+    const holder = makeStateHolder({ [completed.id]: completed })
+
+    // Act
+    evictTerminalTask(completed.id, holder.setAppState)
+
+    // Assert — GC'd once the window has passed, same as killed rows
+    expect(holder.tasks[completed.id]).toBeUndefined()
+  })
+
+  test('ct-04: a terminal mcp_task with no endTime is evicted immediately (asymmetric guard)', () => {
+    // Arrange — endTime undefined means (0 + 30000 > now) is false → evict
+    const noEndTime = makeTerminalTask({ endTime: undefined })
+    const holder = makeStateHolder({ [noEndTime.id]: noEndTime })
+
+    // Act
+    evictTerminalTask(noEndTime.id, holder.setAppState)
+
+    // Assert — evicted (the gate treats missing endTime as 0, which is always
+    // outside the 30s window relative to Date.now())
+    expect(holder.tasks[noEndTime.id]).toBeUndefined()
+  })
+})
+
+// --- SEC-1: XML escaping of taskId and toolUseId ---------------------------
+
+describe('SEC-1: buildMcpTaskStoppedNotification escapes taskId and toolUseId', () => {
+  test('XML-escapes taskId containing angle brackets and ampersand', () => {
+    // Act
+    const xml = buildMcpTaskStoppedNotification('id<>&', 'srv/tool', 'tu')
+
+    // Assert — raw special chars must not appear unescaped in the tag value
+    expect(xml).not.toContain('>id<>&<')
+    expect(xml).toContain('id&lt;&gt;&amp;')
+  })
+
+  test('XML-escapes toolUseId containing angle brackets and ampersand', () => {
+    // Act
+    const xml = buildMcpTaskStoppedNotification('p1', 'srv/tool', 'tu<>&')
+
+    // Assert
+    expect(xml).not.toContain('>tu<>&<')
+    expect(xml).toContain('tu&lt;&gt;&amp;')
+  })
+
+  test('does not double-escape already-safe ids', () => {
+    // Act
+    const xml = buildMcpTaskStoppedNotification('safe-id_123', 'srv/tool', 'tu_456')
+
+    // Assert — plain alphanumeric ids pass through unchanged
+    expect(xml).toContain('<task-id>safe-id_123</task-id>')
+    expect(xml).toContain('<tool-use-id>tu_456</tool-use-id>')
+  })
 })

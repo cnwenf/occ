@@ -10,7 +10,7 @@ import { useExitOnCtrlCDWithKeybindings } from '../../hooks/useExitOnCtrlCDWithK
 import { Box, Text, useInput } from '../../ink.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
-import type { PluginError } from '../../types/plugin.js';
+import type { PluginError, PluginLoadResult } from '../../types/plugin.js';
 import { errorMessage } from '../../utils/errors.js';
 import { clearAllCaches } from '../../utils/plugins/cacheUtils.js';
 import { loadMarketplacesWithGracefulDegradation } from '../../utils/plugins/marketplaceHelpers.js';
@@ -122,6 +122,72 @@ type PendingMarketplaceRemoval = {
   }>;
   pluginNames: string[];
 };
+
+/**
+ * ct-01 fix: outcome of gathering the plugins that a marketplace removal
+ * would uninstall. When `loadAllPlugins()` fails (corrupt plugin dir,
+ * permission denial, ...) the affected-plugin count is UNKNOWN — the old
+ * empty-catch showed the confirm dialog with an empty list anyway, letting
+ * the user confirm an irreversible removal while believing zero plugins
+ * were affected (the uninstall itself runs by marketplace name, not by this
+ * list). A `blocked` preparation surfaces the load error instead and never
+ * opens the dialog.
+ */
+export type MarketplaceRemovalPreparation = {
+  status: 'ready';
+  pending: PendingMarketplaceRemoval;
+} | {
+  status: 'blocked';
+  message: string;
+};
+
+/**
+ * Gather the plugins the removal of `action.name` would uninstall (same
+ * loadAllPlugins + `@marketplace` source-suffix convention as
+ * ManageMarketplaces' confirm-remove dialog). Exported for tests; the
+ * loader is injectable so a rejecting loadAllPlugins can be simulated.
+ */
+export async function prepareMarketplaceRemoval(
+  action: PendingMarketplaceRemoval['action'],
+  loadPlugins: () => Promise<PluginLoadResult> = loadAllPlugins,
+): Promise<MarketplaceRemovalPreparation> {
+  try {
+    const {
+      enabled,
+      disabled
+    } = await loadPlugins();
+    const pluginNames = [...enabled, ...disabled].filter(plugin => plugin.source.endsWith(`@${action.name}`)).map(plugin => plugin.name);
+    return {
+      status: 'ready',
+      pending: {
+        action,
+        pluginNames
+      }
+    };
+  } catch (err) {
+    return {
+      status: 'blocked',
+      message: `Cannot remove "${action.name}": failed to load its plugin list (${errorMessage(err)}). The number of affected plugins is unknown, so the removal was not started.`
+    };
+  }
+}
+
+/**
+ * ct-01 fix: apply a preparation to the Errors-tab state. `blocked` surfaces
+ * the error via actionMessage and leaves `pendingRemoval` unset (no confirm
+ * dialog, no y/n keybinding armed); `ready` opens the confirm dialog.
+ */
+export function applyRemovalPreparation(
+  prepared: MarketplaceRemovalPreparation,
+  setPendingRemoval: (pending: PendingMarketplaceRemoval) => void,
+  setActionMessage: (message: string) => void,
+): void {
+  if (prepared.status === 'blocked') {
+    setActionMessage(prepared.message);
+    return;
+  }
+  setPendingRemoval(prepared.pending);
+}
 
 /**
  * Determine which settings sources define an extraKnownMarketplace entry.
@@ -536,21 +602,14 @@ function ErrorsTabContent(t0) {
   // CC 2.1.295 port: gather the plugins that the removal will uninstall
   // (same loadAllPlugins + `@marketplace` source-suffix convention as
   // ManageMarketplaces' confirm-remove dialog), then ask before removing.
+  // ct-01 fix: a FAILED plugin load no longer opens the confirm dialog with
+  // an empty (falsely reassuring) plugin list — the error is surfaced via
+  // actionMessage and pendingRemoval stays unset, so the removal cannot be
+  // confirmed while the affected-plugin count is unknown.
   const beginMarketplaceRemoval = action => {
     ;
     (async () => {
-      let pluginNames: string[] = [];
-      try {
-        const {
-          enabled,
-          disabled
-        } = await loadAllPlugins();
-        pluginNames = [...enabled, ...disabled].filter(plugin => plugin.source.endsWith(`@${action.name}`)).map(plugin => plugin.name);
-      } catch {}
-      setPendingRemoval({
-        action,
-        pluginNames
-      });
+      applyRemovalPreparation(await prepareMarketplaceRemoval(action), setPendingRemoval, setActionMessage);
     })();
   };
   const handleSelect = () => {

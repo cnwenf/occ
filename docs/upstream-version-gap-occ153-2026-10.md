@@ -243,8 +243,8 @@ OCC 侧现状：`@cnwenf/occ` npm latest = **2.1.367**（E404 事故，OCC-151 b
 | #073 managed 缓存篡改→个人 plugin 计 org | P0 | `plugins/managedPlugins.ts`（+`pluginIdentifier.ts`/`mcpbHandler.ts`）+ `managedPluginsVouching295.test.ts` |
 | #076 tabs/bidi 行尾丢失/覆写邻行 | P0 | `ink/normalize-text.ts` tab 预展开 + `tabsBidiEol295.test.tsx`；bidi NO-OP-PINNED（既有 U+FFFD 替换已覆盖） |
 | #001 hooks `onFailure:"block"` | P1 | `hooks/onFailureBlock.ts` + `schemas/hooks.ts` + `onFailureBlock.test.ts` |
-| #014 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | P1 | `api/withRetry.ts` env 上限（token @99966792 对应） |
-| #016 `[1m]` beta 被拒→去 beta 重发 | P1 | `api/claude.ts` context-1m heal 分支 |
+| #014 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | P1 | `api/withRetry.ts` env 上限（token @99966792 对应）。**review 轮诚实注记（dataflow-002）**：预算账本 per-`withRetry()` 调用重置（`capacityWait={spentMs:0}`），非官方 per-model-call 共享累计——一回合 N 次连续可重试调用可各睡满 cap；非容量重试（watchdogRetryable=false / transient 5xx）不计入预算。per-model-call 移植因二进制取证被禁（"Never invent"）暂不做；当前语义 + env getter（含 malformed warn-once，dataflow-007）+ budget-exhaust telemetry + heartbeat 累计已由 `retryWatchdog295Review.test.ts` 22 用例钉住（mutation M1/M2 均红） |
+| #016 `[1m]` beta 被拒→去 beta 重发 | P1 | `api/claude.ts` context-1m heal 分支；review 轮补 focused 覆盖 `context1mBetaHeal295Review.test.ts`（7 用例：真实 `queryModelWithStreaming` + fetch mock，断言恰好一次去 beta 重发、`tengu_beta_400_healed` 恰一次、spent/unproven 锁存、modelSupports1M/betasCarried1m/classifier 三门拒绝；mutation「heal 永不触发」即红） |
 | #018 MCP 重连退避≤30s | P1 | `mcp/client.ts` + `reconnectBackoff295.test.ts` |
 | #019 错误回复含网络错误名→误断连 | P1 | `mcp/listPagination.ts` isNetworkError + `listPagination295.test.ts` |
 | #022 Bash `command_description` 别名 | P1 | `BashTool.tsx` + `commandDescriptionAlias295.test.ts` |
@@ -255,7 +255,7 @@ OCC 侧现状：`@cnwenf/occ` npm latest = **2.1.367**（E404 事故，OCC-151 b
 | #078 async hook 多行 JSON 被忽略 | P1 | `hooks/AsyncHookRegistry.ts`（+445 行）+ `asyncHookJson295.test.ts`（497 行） |
 | #088 Edit mtime 未前进误判已读 | P1 | `FileEditTool.ts` stale-read guard + `fileStateGuard.ts`/`fileStateCache.ts`/`queryHelpers.ts` contentNotInModelContext |
 | #108 Grep `-l`/`-c`/`-r` 直接跑 | P1 | `GrepTool.ts` + `grepFlags295.test.ts` |
-| #112 tool-search 描述 cap 2048→16384 | P1 | `toolSearchDescCap295.test.ts` + client/toolSearch cap 站点 |
+| #112 tool-search 描述 cap 2048→16384 | P1 | `toolSearchDescCap295.test.ts` + client/toolSearch cap 站点。**review 轮补接线（P1 must-fix）**：原实现 16384 分支生产不可达（无调用点传 `loadedThroughToolSearch`）。现已按官方模式接线：`Tool.prompt` options 类型（Tool.ts）+ `toolToAPISchema`（utils/api.ts）以 `loadedThroughToolSearch ?? (deferLoading && isMcp)` 推导（≡ 官方调用点 `bn&&ur(Kn)&&Nn(Kn,Cr)`：claude.ts tool-search 发现的 deferred MCP 工具即以 `deferLoading:true` 序列化）+ 官方 `"LT:"` cache key 位（@215678602）区分 2048/16384 缓存；测试 15 用例走真实工厂+序列化器（mutation 删 16384 分支即红），非 tool-search 路径保持 2048 不变 |
 | #124 ws MCP >16MiB 直接断连 | P1 | `mcpWebSocketTransport.ts` maxPayload + `mcpWebSocketTransportCap295.test.ts` |
 | #003 /copy picker 引文去 `>` 标记 | P3 | `copy/copy.tsx` QUOTE_FILENAME + quoted-passage entry（官方 `ge="copy.md"` port） |
 | #004 settings 文件不加载告警 | P2 | `plugins/settingsFileLoadWarning.ts` + 295 测试（pluginCliCommands/cli handlers 接线） |

@@ -23,7 +23,7 @@ import { countCharInString } from '../../utils/stringUtils.js';
 const COPY_DIR = join(tmpdir(), 'claude');
 const RESPONSE_FILENAME = 'response.md';
 // CC 2.1.295: the filename a quoted passage copies to (official `ge="copy.md"`).
-const QUOTE_FILENAME = 'copy.md';
+export const QUOTE_FILENAME = 'copy.md';
 const MAX_LOOKBACK = 20;
 
 /**
@@ -57,6 +57,10 @@ export type CopyEntry = {
 export function extractCopyEntries(markdown: string): CopyEntry[] {
   const tokens = marked.lexer(stripPromptXMLTags(markdown));
   const entries: CopyEntry[] = [];
+  // Merge state: true only while the previous lexed token contributed a
+  // quote entry. Any other token resets it, so quotes separated by a
+  // paragraph (or any non-quote block) never merge.
+  let mergingQuote = false;
   for (const token of tokens) {
     if (token.type === 'space') {
       continue;
@@ -68,16 +72,18 @@ export function extractCopyEntries(markdown: string): CopyEntry[] {
         text: codeToken.text,
         lang: codeToken.lang
       });
+      mergingQuote = false;
       continue;
     }
     if (token.type === 'blockquote') {
       const quoteToken = token as Tokens.Blockquote;
       const normalized = quoteToken.text.replace(/^\s*\n/, '').trimEnd();
       if (normalized === '') {
+        mergingQuote = false;
         continue;
       }
       const prev = entries[entries.length - 1];
-      if (prev?.kind === 'quote') {
+      if (mergingQuote && prev?.kind === 'quote') {
         entries[entries.length - 1] = {
           ...prev,
           text: `${prev.text}\n${normalized}`
@@ -88,9 +94,11 @@ export function extractCopyEntries(markdown: string): CopyEntry[] {
           text: normalized
         });
       }
+      mergingQuote = true;
       continue;
     }
     // Any other token breaks a run of consecutive blockquotes.
+    mergingQuote = false;
   }
   return entries;
 }

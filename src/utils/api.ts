@@ -126,6 +126,14 @@ export async function toolToAPISchema(
     model?: string
     /** When true, mark this tool with defer_loading for tool search */
     deferLoading?: boolean
+    /**
+     * CC 2.1.295 #112 — true when this tool is serialized because tool search
+     * discovered it. An MCP tool then renders its description at the wider
+     * 16384 cap instead of 2048 (getMaxMcpDescriptionLength in
+     * services/mcp/client.ts). When omitted it is derived from `deferLoading`
+     * for MCP tools — see the derivation note below.
+     */
+    loadedThroughToolSearch?: boolean
     cacheControl?: {
       type: 'ephemeral'
       scope?: 'global' | 'org'
@@ -144,10 +152,28 @@ export async function toolToAPISchema(
   // call — name-only keying returned a stale schema (5.4% → 51% err rate, see
   // PR#25424). MCP tools also set inputJSONSchema but each has a stable schema,
   // so including it preserves their GB-flip cache stability.
-  const cacheKey =
+  //
+  // CC 2.1.295 #112 — derive the tool-search load flag. The caller may pass it
+  // explicitly; otherwise fall back to the production signal. claude.ts marks a
+  // tool defer_loading ONLY when tool search discovered it (undiscovered
+  // deferred tools are filtered out before serialization, and non-MCP LSP
+  // defers are excluded by the isMcp guard), so `deferLoading && isMcp` equals
+  // the official `loadedThroughToolSearch:bn&&ur(Kn)&&Nn(Kn,Cr)` condition
+  // without threading a new argument through the claude.ts call site.
+  const loadedThroughToolSearch =
+    options.loadedThroughToolSearch ??
+    (options.deferLoading === true && tool.isMcp === true)
+
+  const schemaKey =
     'inputJSONSchema' in tool && tool.inputJSONSchema
       ? `${tool.name}:${jsonStringify(tool.inputJSONSchema)}`
       : tool.name
+  // The official gates the schema-cache key with an `"LT:"` bit when
+  // `loadedThroughToolSearch===!0&&isMcp===!0` (@215678602), so the 2048-capped
+  // schema of an always-loaded MCP tool is never reused for the 16384-capped
+  // tool-search variant of the same tool (and vice versa) within a session.
+  const cacheKey =
+    loadedThroughToolSearch && tool.isMcp === true ? `LT:${schemaKey}` : schemaKey
   const cache = getToolSchemaCache()
   let base = cache.get(cacheKey)
   if (!base) {
@@ -173,6 +199,7 @@ export async function toolToAPISchema(
         tools: options.tools,
         agents: options.agents,
         allowedAgentTypes: options.allowedAgentTypes,
+        loadedThroughToolSearch,
       }),
       input_schema,
     }
