@@ -68,6 +68,22 @@ export class StreamingToolExecutor {
   private responseOpen = true
   // Signal to wake up getRemainingResults when progress is available
   private progressAvailableResolve?: () => void
+  // Official 2.1.295 (#072) `appliedLayers` — byte-verified in BOTH binaries:
+  //   v295 field decl @ 223344772 (`...drainGeneration=0;appliedLayers=!1;`)
+  //   v296 field decl @ 224126969 (identical; class `gs` = this executor)
+  // Placed last among the fields, matching the official `gs` field order
+  // (`...responseOpen;progressAvailableResolve;...;appliedLayers=!1;
+  // constructor`). Set true when a NON-concurrency-safe tool applies its
+  // context modifiers immediately in executeTool (the skill path).
+  // getRemainingResults() gates its final `yield { newContext }` on this flag
+  // so a skill's allowed-tools/effort — applied when the Skill tool finished
+  // BEFORE the response stream ended (its result message, the only carrier of
+  // newContext, was already drained mid-stream by getCompletedResults whose
+  // consumer ignores newContext) — still reaches the next turn instead of
+  // being dropped. v294 named this `appliedConcurrencySafeLayers` and the
+  // immediate-apply path never set it, so the final gate stayed false → the
+  // drop #072 fixes.
+  private appliedLayers = false
 
   constructor(
     private readonly toolDefinitions: Tools,
@@ -435,6 +451,14 @@ export class StreamingToolExecutor {
         for (const modifier of contextModifiers) {
           this.toolUseContext = modifier(this.toolUseContext)
         }
+        // Official 2.1.295 (#072) immediate-apply site — byte-verified in BOTH
+        // binaries (`!e.isConcurrencySafe&&n.length>0)this.toolUseContext=
+        // WAe(this.toolUseContext,n),this.appliedLayers=!0`):
+        //   v295 @ 223352014 (helper `WAe`) · v296 @ 224134210 (helper `_Ce`)
+        // v294 applied the layers here WITHOUT setting any flag the final
+        // drain checked, so a tool whose messages were consumed mid-stream
+        // never re-surfaced its applied context after the stream ended.
+        this.appliedLayers = true
       }
     }
 
@@ -545,6 +569,25 @@ export class StreamingToolExecutor {
 
     for (const result of this.getCompletedResults()) {
       yield result
+    }
+
+    // Official 2.1.295 (#072) final-drain gate — byte-verified in BOTH
+    // binaries (`for(let e of this.getCompletedResults())yield e;if(this.
+    // applyEndedRunLayers(),this.appliedLayers)yield{newContext:this.
+    // toolUseContext}`):
+    //   v295 @ 223353268 · v296 @ 224135464 (identical)
+    // v294 gated on `appliedConcurrencySafeLayers`, which the non-
+    // concurrency-safe immediate-apply path never set; a Skill tool that
+    // finished before the stream ended had its result message (the only
+    // carrier of newContext) drained mid-stream, so its applied allowed-
+    // tools/effort never reached the post-stream consumer and the next turn
+    // denied the skill's Bash in `-p` runs. OCC has no applyEndedRunLayers
+    // (deferred concurrency-safe layer application is intentionally
+    // unsupported — see the NOTE in executeTool), so the official comma
+    // operator `this.applyEndedRunLayers(),this.appliedLayers` collapses to
+    // the flag check.
+    if (this.appliedLayers) {
+      yield { newContext: this.toolUseContext }
     }
   }
 
