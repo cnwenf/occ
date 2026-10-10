@@ -9,6 +9,7 @@ import { createRequire } from 'module'
 import { extname } from 'path'
 import { hashPair } from './hash.js'
 import { type BoundedHljs, installHighlightBounds } from './hljsBound.js'
+import { applyGrammarPatches } from './hljsGrammarPatches.js'
 
 export type CliHighlight = {
   highlight: typeof import('cli-highlight').highlight
@@ -80,10 +81,11 @@ function memoizeHighlightFailure(key: string): void {
 
 /**
  * Wraps cli-highlight's highlight: on HighlightBoundError (budget/depth-cap
- * throw from the bounded emitter installed below) — or any other throw —
- * returns the raw code unchanged, mirroring the official plain-text
- * fallback. Without this the bound throw would surface as an unhandled
- * exception inside Ink render.
+ * throw from the bounded emitter installed below), HighlightLimitError (CC
+ * 2.1.295 #091 before:highlight length/long-line rejection from hljsLimit)
+ * — or any other throw — returns the raw code unchanged, mirroring the
+ * official plain-text fallback. Without this the bound/limit throw would
+ * surface as an unhandled exception inside Ink render.
  */
 function withPlainFallback(
   rawHighlight: CliHighlight['highlight'],
@@ -114,6 +116,13 @@ async function loadCliHighlight(): Promise<CliHighlight | null> {
     const hljs = ((highlightJs as { default?: unknown }).default ??
       highlightJs) as BoundedHljs
     installHighlightBounds(hljs)
+    // CC 2.1.295 #091 Layer B — patch the catastrophic-backtracking grammar
+    // regexes in place (official patches at registerLanguage time via its
+    // `O(name, loader)` wrapper; both hljs generations compile grammars
+    // lazily inside highlight(), so patching the stored trees here — before
+    // any highlight call — is timing-equivalent. See hljsGrammarPatches.ts
+    // header for the full divergence note.)
+    applyGrammarPatches(hljs)
     // OCC-specific: cli-highlight pins highlight.js@^10.7.1, so under Bun's
     // isolated node_modules store it resolves a SEPARATE v10 instance from
     // OCC's root v11 dep — the instance that actually renders terminal
@@ -132,7 +141,13 @@ async function loadCliHighlight(): Promise<CliHighlight | null> {
       } | null
       const chHljs = ((cliHighlightJs as { default?: unknown })?.default ??
         cliHighlightJs) as BoundedHljs | null
-      if (chHljs) installHighlightBounds(chHljs)
+      if (chHljs) {
+        installHighlightBounds(chHljs)
+        // CC 2.1.295 #091 Layer B — same in-place grammar patching for the
+        // v10 instance cli-highlight actually renders through (pairs whose
+        // `old` source doesn't exist in v10 grammars are designed no-ops).
+        applyGrammarPatches(chHljs)
+      }
     } catch {
       // bundled/dist or unresolvable — build-time injection covers it
     }

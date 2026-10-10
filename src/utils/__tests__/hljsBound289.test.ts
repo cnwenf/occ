@@ -252,9 +252,10 @@ describe('289 #2 — hljsBound wrapper unit tests', () => {
     }
   })
 
-  test('deeply nested ${ on a bounded instance completes (value or HighlightBoundError only)', async () => {
+  test('deeply nested ${ on a bounded instance completes (value or HighlightBoundError/HighlightLimitError only)', async () => {
     const { HighlightBoundError, installHighlightBounds } =
       await loadBoundModule()
+    const { HighlightLimitError } = await import('../hljsLimit.ts')
     const inst = await freshHljs(['javascript'])
     installHighlightBounds(inst)
     const t0 = Date.now()
@@ -267,9 +268,17 @@ describe('289 #2 — hljsBound wrapper unit tests', () => {
     } catch (err) {
       threw = err
     }
-    // Depth cap (32) / depth² charges may legitimately trip the bound; any
-    // OTHER error (or a hang) is a failure.
-    expect(threw === null || threw instanceof HighlightBoundError).toBeTrue()
+    // CC 2.1.295 #091: installHighlightBounds now also installs the Layer A
+    // LIMIT plugin (hljsLimit.ts) — this 10,000-char single-line input trips
+    // the long-line excess guard (1e8 > 16e6) and throws HighlightLimitError
+    // BEFORE the emitter budget ever runs. Either official guard error is a
+    // pass; the depth cap (32) / depth² charges may still trip the v289
+    // bound on other shapes. Any OTHER error (or a hang) is a failure.
+    expect(
+      threw === null ||
+        threw instanceof HighlightBoundError ||
+        threw instanceof HighlightLimitError,
+    ).toBeTrue()
     expect(Date.now() - t0).toBeLessThan(5_000)
   })
 })
