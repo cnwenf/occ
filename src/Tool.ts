@@ -188,6 +188,12 @@ export type ToolUseContext = {
     refreshTools?: () => Tools
     /** Forward subagent text/thinking into stream-json output (CC 2.1.211) */
     forwardSubagentText?: boolean
+    /** CC 2.1.296 #002: per-agent auto-compact window from the subagent's
+     * frontmatter / --agents definition (`autoCompactWindow`). Set on subagent
+     * contexts only. It only LOWERS the window the subagent would otherwise
+     * inherit — the effective window is min(inherited, this value). No effect
+     * on the main session agent. */
+    subagentAutoCompactWindow?: number
   }
   abortController: AbortController
   readFileState: FileStateCache

@@ -3,8 +3,10 @@
  */
 
 import { Buffer } from 'buffer'
+import { logForDebugging } from '../../utils/debug.js'
 import { env } from '../../utils/env.js'
 import { execFileNoThrow } from '../../utils/execFileNoThrow.js'
+import { getPlatform } from '../../utils/platform.js'
 import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
 
@@ -102,6 +104,76 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
 }
 
 /**
+ * CC 2.1.296 #017: which terminal multiplexer (if any) is driving the
+ * session. Official `HYt()` in the 296 setClipboard guard (`mux=` field).
+ */
+export type ClipboardMultiplexer = 'tmux' | 'screen' | null
+
+export function getMultiplexer(): ClipboardMultiplexer {
+  if (process.env['TMUX']) return 'tmux'
+  if (process.env['STY']) return 'screen'
+  return null
+}
+
+/**
+ * CC 2.1.296 #017: older VTE-based terminals (GNOME Terminal, Tilix, ...)
+ * mishandle the OSC 52 clipboard query/write and leak a stray `52;c;…`
+ * escape onto the screen. The official 296 binary suppresses the OSC 52
+ * emission entirely when ALL of the following hold (forensics-batch5 `yE`):
+ *
+ *   mux === null && nativeAvailable && (platform === 'linux' || 'wsl')
+ *   && R7r() && (flavor === 'vte-based' || flavor === 'gnome-terminal')
+ *   && TERM?.startsWith('xterm') === true
+ *   && !XTERM_VERSION && !ALACRITTY_WINDOW_ID && !ALACRITTY_LOG
+ *   && !KITTY_WINDOW_ID && !WEZTERM_PANE
+ *
+ * Rationale: every clause is an escape-hatch. The native clipboard tool
+ * already succeeded (nativeAvailable), so skipping OSC 52 loses nothing;
+ * real xterm/alacritty/kitty/wezterm advertise themselves via env vars and
+ * are exempt; tmux/screen routes go through DCS passthrough untouched.
+ *
+ * DEVIATION NOTE: the official conjunction includes an opaque predicate
+ * `R7r()` whose definition was not captured in any evidence file (single
+ * usage site; binary reading out of scope). It is OMITTED here — the guard
+ * is therefore at most as wide as the official one, and only fires when the
+ * native copy already put the text on the clipboard.
+ *
+ * Pure injectable predicate (all signals as params) so tests don't have to
+ * mutate memoized getPlatform()/frozen env.terminal.
+ */
+export interface VteOsc52GuardContext {
+  mux: ClipboardMultiplexer
+  nativeAvailable: boolean
+  platform: string
+  flavor: string | undefined
+  env: {
+    TERM?: string
+    XTERM_VERSION?: string
+    ALACRITTY_WINDOW_ID?: string
+    ALACRITTY_LOG?: string
+    KITTY_WINDOW_ID?: string
+    WEZTERM_PANE?: string
+  }
+}
+
+export function shouldSuppressOsc52OnOlderVte(
+  ctx: VteOsc52GuardContext,
+): boolean {
+  return (
+    ctx.mux === null &&
+    ctx.nativeAvailable &&
+    (ctx.platform === 'linux' || ctx.platform === 'wsl') &&
+    (ctx.flavor === 'vte-based' || ctx.flavor === 'gnome-terminal') &&
+    ctx.env.TERM?.startsWith('xterm') === true &&
+    !ctx.env.XTERM_VERSION &&
+    !ctx.env.ALACRITTY_WINDOW_ID &&
+    !ctx.env.ALACRITTY_LOG &&
+    !ctx.env.KITTY_WINDOW_ID &&
+    !ctx.env.WEZTERM_PANE
+  )
+}
+
+/**
  * OSC 52 clipboard write: ESC ] 52 ; c ; <base64> BEL/ST
  * 'c' selects the clipboard (vs 'p' for primary selection on X11).
  *
@@ -124,7 +196,9 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  *
  * If load-buffer fails entirely, fall through to raw OSC 52.
  *
- * Outside tmux, write raw OSC 52 to stdout (caller handles the write).
+ * Outside tmux, write raw OSC 52 to stdout (caller handles the write) —
+ * UNLESS the CC 2.1.296 #017 older-VTE guard fires (see
+ * shouldSuppressOsc52OnOlderVte): then return '' and emit nothing.
  *
  * Local (no SSH_CONNECTION): also shell out to a native clipboard utility.
  * OSC 52 and tmux -w both depend on terminal settings — iTerm2 disables
@@ -132,24 +206,55 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
  * utilities (pbcopy/wl-copy/xclip/xsel/clip.exe) always work locally. Over
  * SSH these would write to the remote clipboard — OSC 52 is the right path there.
  *
+ * CC 2.1.296: the linux native-tool probe is now AWAITED before the guard
+ * is computed (official `await x().probe()`), so `native=` in the debug log
+ * and the guard conjunction see the resolved tool. First-call latency moves
+ * from fire-and-forget into this await; subsequent calls hit the cache and
+ * resolve immediately (copy still fires ahead of the tmux await).
+ *
  * Returns the sequence for the caller to write to stdout (raw OSC 52
- * outside tmux, DCS-wrapped inside).
+ * outside tmux, DCS-wrapped inside, '' when the VTE guard suppresses).
  */
 export async function setClipboard(text: string): Promise<string> {
   const b64 = Buffer.from(text, 'utf8').toString('base64')
   const raw = osc(OSC.CLIPBOARD, 'c', b64)
 
-  // Native safety net — fire FIRST, before the tmux await, so a quick
-  // focus-switch after selecting doesn't race pbcopy. Previously this ran
-  // AFTER awaiting tmux load-buffer, adding ~50-100ms of subprocess latency
-  // before pbcopy even started — fast cmd+tab → paste would beat it
-  // (https://anthropic.slack.com/archives/C07VBSHV7EV/p1773943921788829).
-  // Gated on SSH_CONNECTION (not SSH_TTY) since tmux panes inherit SSH_TTY
-  // forever but SSH_CONNECTION is in tmux's default update-environment and
-  // clears on local attach. Fire-and-forget.
-  if (!process.env['SSH_CONNECTION']) copyNative(text)
+  // Native safety net — run FIRST, before the tmux await, so a quick
+  // focus-switch after selecting doesn't race pbcopy. Gated on
+  // SSH_CONNECTION (not SSH_TTY) since tmux panes inherit SSH_TTY forever
+  // but SSH_CONNECTION is in tmux's default update-environment and clears
+  // on local attach. Awaited on linux ONLY for the first-call tool probe
+  // (2.1.296 #017 needs nativeAvailable to decide the VTE guard); the
+  // cached/darwin/win32 paths stay fire-and-forget.
+  const ssh = Boolean(process.env['SSH_CONNECTION'])
+  const nativeAvailable = ssh ? false : await copyNativeWithAvailability(text)
 
   const tmuxBufferLoaded = await tmuxLoadBuffer(text)
+
+  const mux = getMultiplexer()
+  const suppressVte = shouldSuppressOsc52OnOlderVte({
+    mux,
+    nativeAvailable,
+    platform: getPlatform(),
+    flavor: env.terminal,
+    env: process.env,
+  })
+  // Official 296 emit-mode labels (forensics-batch5 `f=`): none(vte) when
+  // the guard fires, else mux-based. DEVIATION: OCC's tmux path emits only
+  // the DCS-wrapped sequence when load-buffer succeeded (raw otherwise),
+  // while the official tmux label is 'raw+dcs' — label kept verbatim, and
+  // `predicted=` maps to OCC's getClipboardPath() toast predictor.
+  const emit = suppressVte
+    ? 'none(vte)'
+    : mux === 'tmux'
+      ? 'raw+dcs'
+      : mux === 'screen'
+        ? 'dcs'
+        : 'raw'
+  logForDebugging(
+    `clipboard: setClipboard mux=${mux ?? 'none'} ssh=${ssh} native=${nativeAvailable} predicted=${getClipboardPath()} emit=${emit} bytes=${text.length}`,
+  )
+  if (suppressVte) return ''
 
   // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
   // too, and BEL works everywhere for OSC 52.
@@ -162,59 +267,64 @@ export async function setClipboard(text: string): Promise<string> {
 // Cached after first attempt so repeated mouse-ups skip the probe chain.
 let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
 
+const LINUX_COPY_OPTS = { useCwd: false, timeout: 2000 } as const
+
 /**
- * Shell out to a native clipboard utility as a safety net for OSC 52.
- * Only called when not in an SSH session (over SSH, these would write to
- * the remote machine's clipboard — OSC 52 is the right path there).
- * Fire-and-forget: failures are silent since OSC 52 may have succeeded.
+ * Shell out to a native clipboard utility as a safety net for OSC 52,
+ * returning whether a native tool handled the copy. Only called when not in
+ * an SSH session (over SSH, these would write to the remote machine's
+ * clipboard — OSC 52 is the right path there).
+ *
+ * darwin/win32: fire-and-forget (pbcopy/clip.exe always exist) → true.
+ * linux: resolve the cached tool; first call probes by ACTUALLY COPYING the
+ * text with wl-copy → xclip → xsel in order (probe semantics preserved from
+ * the pre-296 fire-and-forget chain — the winning probe IS the copy), and
+ * awaits the chain so the 2.1.296 #017 VTE guard sees real availability.
  */
-function copyNative(text: string): void {
-  const opts = { input: text, useCwd: false, timeout: 2000 }
+async function copyNativeWithAvailability(text: string): Promise<boolean> {
+  const opts = { ...LINUX_COPY_OPTS, input: text }
   switch (process.platform) {
     case 'darwin':
       void execFileNoThrow('pbcopy', [], opts)
-      return
-    case 'linux': {
-      if (linuxCopy === null) return
-      if (linuxCopy === 'wl-copy') {
-        void execFileNoThrow('wl-copy', [], opts)
-        return
-      }
-      if (linuxCopy === 'xclip') {
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
-        return
-      }
-      if (linuxCopy === 'xsel') {
-        void execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
-        return
-      }
-      // First call: probe wl-copy (Wayland) then xclip/xsel (X11), cache winner.
-      void execFileNoThrow('wl-copy', [], opts).then(r => {
-        if (r.code === 0) {
-          linuxCopy = 'wl-copy'
-          return
-        }
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts).then(
-          r2 => {
-            if (r2.code === 0) {
-              linuxCopy = 'xclip'
-              return
-            }
-            void execFileNoThrow('xsel', ['--clipboard', '--input'], opts).then(
-              r3 => {
-                linuxCopy = r3.code === 0 ? 'xsel' : null
-              },
-            )
-          },
-        )
-      })
-      return
-    }
+      return true
     case 'win32':
       // clip.exe is always available on Windows. Unicode handling is
       // imperfect (system locale encoding) but good enough for a fallback.
       void execFileNoThrow('clip', [], opts)
-      return
+      return true
+    case 'linux': {
+      if (linuxCopy === 'wl-copy') {
+        void execFileNoThrow('wl-copy', [], opts)
+        return true
+      }
+      if (linuxCopy === 'xclip') {
+        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
+        return true
+      }
+      if (linuxCopy === 'xsel') {
+        void execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
+        return true
+      }
+      if (linuxCopy === null) return false
+      // First call: probe wl-copy (Wayland) then xclip/xsel (X11), cache
+      // winner. AWAITED (2.1.296): the guard needs the resolved tool. The
+      // probe copies the actual text, so success == copy done.
+      const wl = await execFileNoThrow('wl-copy', [], opts)
+      if (wl.code === 0) {
+        linuxCopy = 'wl-copy'
+        return true
+      }
+      const xc = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
+      if (xc.code === 0) {
+        linuxCopy = 'xclip'
+        return true
+      }
+      const xs = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
+      linuxCopy = xs.code === 0 ? 'xsel' : null
+      return linuxCopy !== null
+    }
+    default:
+      return false
   }
 }
 

@@ -8,6 +8,10 @@
  */
 
 import { z } from 'zod/v4'
+import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
+} from '../../utils/autoCompactWindow.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 
 // ============================================================================
@@ -1307,6 +1311,19 @@ export const AgentDefinitionSchema = lazySchema(() =>
         .optional()
         .describe(
           'Maximum number of agentic turns (API round-trips) before stopping',
+        ),
+      // CC 2.1.296 #002: official agent-definition schema entry (@208188475) —
+      // `autoCompactWindow:E().int().min(b0).max(TN).optional().describe(...)`.
+      // b0/TN are the settings-level autoCompactWindow bounds (100000/1000000).
+      // The describe() text below is VERBATIM from the official binary.
+      autoCompactWindow: z
+        .number()
+        .int()
+        .min(AUTO_COMPACT_WINDOW_MIN)
+        .max(AUTO_COMPACT_WINDOW_MAX)
+        .optional()
+        .describe(
+          'Token count at which this agent compacts its own conversation when it runs as a subagent. It only lowers the window the subagent would otherwise inherit. No effect on the main session agent.',
         ),
       background: z
         .boolean()

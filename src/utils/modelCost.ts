@@ -97,6 +97,24 @@ export const COST_TIER_2_10 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// CC 2.1.296 (#059): Sonnet 5.5 cache-read repricing $0.20 → $0.10.
+// Recovered verbatim from the 2.1.296 baked model catalog (ev-pricing296):
+//   pricing_tiers.tier_2_10_cache_read_0_10 = {input:2,output:10,
+//     cache_write_5m:2.5,cache_write_1h:4,cache_read:0.1,web_search:0.01}
+// and the `claude-sonnet-5-5` entry now carries
+// `pricing:"tier_2_10_cache_read_0_10"` (was `tier_2_10`). Every other
+// figure is identical to tier_2_10; `claude-sonnet-5` stays on tier_2_10
+// (cache_read 0.2). Naming follows the existing cache-read-variant tiers
+// (COST_TIER_10_50_CACHE_READ_0_25 / COST_TIER_4_20_CACHE_READ_0_20).
+export const COST_TIER_2_10_CACHE_READ_0_10 = {
+  inputTokens: 2,
+  outputTokens: 10,
+  promptCacheWriteTokens: 2.5,
+  promptCacheWrite1hTokens: 4,
+  promptCacheReadTokens: 0.1,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Standard pricing tier for Sonnet models: $3 input / $15 output per Mtok
 // Binary: pricing_tiers.tier_3_15 cache_write_1h = 6
 export const COST_TIER_3_15 = {
@@ -334,13 +352,14 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   // standard price now shown in the /model picker and used for cost tracking.
   [firstPartyNameToCanonical(CLAUDE_SONNET_5_CONFIG.firstParty)]:
     COST_TIER_2_10,
-  // Sonnet 5.5 is `tier_2_10` ($2/$10, cache_read $0.20) — binary-verified:
-  // the baked 2.1.284 model catalog entry for `claude-sonnet-5-5` (@198712738
-  // region, OCC-101) carries `pricing:"tier_2_10"` — the SAME tier as
-  // claude-sonnet-5, so no new tier constant is needed. No fast-mode branch:
-  // the sonnet-5-5 capabilities list (byte-verified) has no fast_mode.
+  // Sonnet 5.5 is `tier_2_10_cache_read_0_10` ($2/$10, cache_read $0.10) —
+  // binary-verified in the 2.1.296 baked model catalog (CC 2.1.296 #059;
+  // earlier rounds had it on `tier_2_10` with cache_read $0.20). Only the
+  // cache-read figure differs from claude-sonnet-5's tier. No fast-mode
+  // branch: the sonnet-5-5 capabilities list (byte-verified) has no
+  // fast_mode.
   [firstPartyNameToCanonical(CLAUDE_SONNET_5_5_CONFIG.firstParty)]:
-    COST_TIER_2_10,
+    COST_TIER_2_10_CACHE_READ_0_10,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.firstParty)]:
     COST_TIER_15_75,

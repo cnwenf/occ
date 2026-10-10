@@ -83,10 +83,12 @@ import {
 } from './pluginDirectories.js'
 import {
   buildMarketplaceNameRefusalMessage,
+  buildUnrecordableMarketplaceNameMessage,
   isValidPluginIdPart,
   parsePluginIdentifier,
 } from './pluginIdentifier.js'
 import { deletePluginOptions } from './pluginOptionsStorage.js'
+import { isRecordableName, readOwnOption } from './optionKeySafety.js'
 import {
   assertMarketplaceNameNotReservedImitation,
   findImitatedReservedName,
@@ -246,7 +248,9 @@ export function getMarketplaceDeclaringSource(
 
   for (const source of editableSources) {
     const settings = getSettingsForSource(source)
-    if (settings?.extraKnownMarketplaces?.[name]) {
+    // 2.1.296: own-property read — a `constructor`/`prototype` name must
+    // not resolve to an Object.prototype member.
+    if (readOwnOption(settings?.extraKnownMarketplaces, name)) {
       return source
     }
   }
@@ -270,6 +274,13 @@ export function saveMarketplaceToSettings(
     | 'localSettings' = 'userSettings',
 ): void {
   const existing = getSettingsForSource(settingSource) ?? {}
+  // 2.1.296: refuse names that cannot be a key of the install records —
+  // `current[name] = entry` with `__proto__` re-points the prototype (the
+  // entry silently disappears / pollutes), and `constructor`/`prototype`
+  // poison every later `records[name]` read.
+  if (!isRecordableName(name)) {
+    throw new Error(buildUnrecordableMarketplaceNameMessage(name))
+  }
   const current = { ...existing.extraKnownMarketplaces }
   current[name] = entry
   updateSettingsForSource(settingSource, { extraKnownMarketplaces: current })
@@ -503,6 +514,16 @@ export async function registerSeedMarketplaces(): Promise<boolean> {
 
     for (const [name, seedEntry] of Object.entries(seedConfig)) {
       if (claimed.has(name)) continue
+
+      // 2.1.296: a seed entry whose name cannot be a key of the install
+      // records would poison every `primary[name]` lookup — skip it.
+      if (!isRecordableName(name)) {
+        logForDebugging(
+          `Seed marketplace '${name}' has a name that cannot be a key of the install records, skipping`,
+          { level: 'warn' },
+        )
+        continue
+      }
 
       // Compute installLocation relative to THIS seedDir, not the build-time
       // path baked into the seed's JSON. Handles multi-stage Docker builds
@@ -2352,11 +2373,26 @@ export async function addMarketplaceSource(
     throw new Error(buildMarketplaceNameRefusalMessage(marketplace.name))
   }
 
+  // CC 2.1.296 port: refuse names that cannot be a key of the install
+  // records — `records[name]` for `constructor`/`prototype` hits an
+  // Object.prototype member (truthy!), which made marketplace update and
+  // plugin install fail with internal TypeErrors, and `records[name] = x`
+  // with `__proto__` re-points the prototype. Official throws
+  // UnrecordablePluginIdError (category "plugin id cannot be a key of the
+  // install records"). No grandfather exemption here — unlike the 295 rule
+  // above, such a name could never have been recorded without crashing.
+  if (!isRecordableName(marketplace.name)) {
+    throw new Error(buildUnrecordableMarketplaceNameMessage(marketplace.name))
+  }
+
   // Name collision with different source: overwrite (settings intent wins).
   // Seed-managed entries are admin-controlled and cannot be overwritten.
   // Re-read config after clone (may take a while; another process may have written).
   const config = await loadKnownMarketplacesConfig()
-  const oldEntry = config[marketplace.name]
+  // 2.1.296: own-property read — defense-in-depth behind the
+  // isRecordableName refusal above (a hand-edited record file can still
+  // carry prototype-colliding names).
+  const oldEntry = readOwnOption(config, marketplace.name)
   if (oldEntry) {
     const seedDir = seedDirFor(oldEntry.installLocation)
     if (seedDir) {
@@ -2433,14 +2469,16 @@ export async function addMarketplaceSource(
 export async function removeMarketplaceSource(name: string): Promise<void> {
   const config = await loadKnownMarketplacesConfig()
 
-  if (!config[name]) {
+  // 2.1.296: own-property read — a name like `constructor`/`prototype`
+  // must report "not found" instead of hitting an Object.prototype member.
+  const entry = readOwnOption(config, name)
+  if (!entry) {
     throw new Error(`Marketplace '${name}' not found`)
   }
 
   // Seed-registered marketplaces are admin-baked into the container — removing
   // them is a category error. They'd resurrect on next startup anyway. Guide
   // the user to the right action instead.
-  const entry = config[name]
   const seedDir = seedDirFor(entry.installLocation)
   if (seedDir) {
     throw new Error(
@@ -2481,7 +2519,9 @@ export async function removeMarketplaceSource(name: string): Promise<void> {
     } = {}
 
     // Remove from extraKnownMarketplaces if present
-    if (settings.extraKnownMarketplaces?.[name]) {
+    // 2.1.296: own-property read — never treat an Object.prototype member
+    // as a declared marketplace.
+    if (readOwnOption(settings.extraKnownMarketplaces, name)) {
       const updatedMarketplaces: Partial<
         SettingsJson['extraKnownMarketplaces']
       > = { ...settings.extraKnownMarketplaces }
@@ -2585,7 +2625,8 @@ export async function getMarketplaceCacheOnly(
   name: string,
 ): Promise<PluginMarketplace | null> {
   const config = await loadKnownMarketplacesConfigSafe()
-  const entry = config[name]
+  // 2.1.296: own-property read (never an Object.prototype member).
+  const entry = readOwnOption(config, name)
 
   if (!entry) {
     return null
@@ -2630,7 +2671,8 @@ export async function getMarketplaceCacheOnly(
 export const getMarketplace = memoize(
   async (name: string): Promise<PluginMarketplace> => {
     const config = await loadKnownMarketplacesConfig()
-    const entry = config[name]
+    // 2.1.296: own-property read (never an Object.prototype member).
+    const entry = readOwnOption(config, name)
 
     if (!entry) {
       throw new Error(
@@ -2727,7 +2769,8 @@ export async function getPluginByIdCacheOnly(pluginId: string): Promise<{
     // so pluginLoader's no-enterprise-policy fallback cannot resolve a
     // plugin through an imitation or untrusted reserved-name entry.
     const config = await loadKnownMarketplacesConfigSafe()
-    const marketplaceConfig = config[marketplaceName]
+    // 2.1.296: own-property read (never an Object.prototype member).
+    const marketplaceConfig = readOwnOption(config, marketplaceName)
 
     if (!marketplaceConfig) {
       return null
@@ -2792,7 +2835,8 @@ export async function getPluginById(pluginId: string): Promise<{
 
   try {
     const config = await loadKnownMarketplacesConfig()
-    const marketplaceConfig = config[marketplaceName]
+    // 2.1.296: own-property read (never an Object.prototype member).
+    const marketplaceConfig = readOwnOption(config, marketplaceName)
     if (!marketplaceConfig) {
       return null
     }
@@ -2916,7 +2960,8 @@ export async function refreshMarketplace(
   onProgress?: MarketplaceProgressCallback,
 ): Promise<void> {
   const config = await loadKnownMarketplacesConfig()
-  const entry = config[name]
+  // 2.1.296: own-property read (never an Object.prototype member).
+  const entry = readOwnOption(config, name)
 
   if (!entry) {
     throw new Error(
@@ -3172,7 +3217,8 @@ export async function setMarketplaceAutoUpdate(
   autoUpdate: boolean,
 ): Promise<void> {
   const config = await loadKnownMarketplacesConfig()
-  const entry = config[name]
+  // 2.1.296: own-property read (never an Object.prototype member).
+  const entry = readOwnOption(config, name)
 
   if (!entry) {
     throw new Error(
@@ -3207,8 +3253,11 @@ export async function setMarketplaceAutoUpdate(
   // source that declared it to avoid creating duplicates at wrong scope
   const declaringSource = getMarketplaceDeclaringSource(name)
   if (declaringSource) {
-    const declared =
-      getSettingsForSource(declaringSource)?.extraKnownMarketplaces?.[name]
+    // 2.1.296: own-property read (never an Object.prototype member).
+    const declared = readOwnOption(
+      getSettingsForSource(declaringSource)?.extraKnownMarketplaces,
+      name,
+    )
     if (declared) {
       saveMarketplaceToSettings(
         name,

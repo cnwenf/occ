@@ -23,6 +23,25 @@ export function isStorableOptionKey(key: string): boolean {
 }
 
 /**
+ * Names that can never be a key of the install records (CC 2.1.296). The
+ * official throws `UnrecordablePluginIdError` (binary `gbn`, category
+ * "plugin id cannot be a key of the install records") when a plugin/marketplace
+ * id fails its recordability schema (`L7e`/`D7e`). `constructor`/`prototype`
+ * collide with Object.prototype members — an unguarded `records[name]` read
+ * hits the inherited member (truthy!) and marketplace update/install then fail
+ * with internal TypeErrors; `__proto__` additionally re-points the prototype
+ * on assignment. Marketplace `add` refuses these names outright; all record
+ * lookups use own-property reads (`readOwnOption`) so already-records-shaped
+ * data can never trip over an inherited member.
+ */
+const UNRECORDABLE_NAMES = new Set(['constructor', 'prototype'])
+
+/** True when `name` is safe to use as a key of the install records. */
+export function isRecordableName(name: string): boolean {
+  return isStorableOptionKey(name) && !UNRECORDABLE_NAMES.has(name)
+}
+
+/**
  * Own-property read for an option table. Returns undefined — never an
  * Object.prototype member — when the table has no own `key`.
  */

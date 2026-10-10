@@ -1,4 +1,5 @@
 import type { PermissionMode } from '../permissions/PermissionMode.js'
+import { getAgentContext, isSubagentContext } from '../agentContext.js'
 import { isEnvTruthy } from '../envUtils.js'
 import { capitalize } from '../stringUtils.js'
 import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
@@ -41,8 +42,29 @@ export function getAgentModel(
   toolSpecifiedModel?: ModelAlias,
   permissionMode?: PermissionMode,
 ): string {
-  if (process.env.CLAUDE_CODE_SUBAGENT_MODEL) {
-    return parseUserSpecifiedModel(process.env.CLAUDE_CODE_SUBAGENT_MODEL)
+  // CC 2.1.296 (#003): CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL — workflow-specific
+  // subagent model env, registered in the official env schema right after
+  // CLAUDE_CODE_SUBAGENT_MODEL/_FORCE
+  // (`CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL:()=>LU`, `LU=H.str()`) and present
+  // in both the managed-env list (@208771578) and the 3P-probe list
+  // (@208765415). Agents spawned by a workflow prefer it over the generic
+  // CLAUDE_CODE_SUBAGENT_MODEL; non-workflow subagents are unchanged.
+  // OCC's workflow discriminator: WorkflowTool primitives wrap the whole
+  // workflow-agent run in runWithAgentContext(SubagentContext{workflowRunId,
+  // workflowName, ...}) (the official 2.1.273 wrap port), and runAgent's
+  // getAgentModel call executes inside that wrapped drain — so the ambient
+  // ALS context carries workflowRunId exactly for workflow-spawned agents.
+  // (Deviation note: the 296 evidence pins the env's existence/registration
+  // but not its consumption site; ALS-based detection is OCC's minimal
+  // adaptation given runAgent.ts is out of scope for this change.)
+  const ambientAgentContext = getAgentContext()
+  const subagentModelEnv =
+    (isSubagentContext(ambientAgentContext) &&
+    ambientAgentContext.workflowRunId !== undefined
+      ? process.env.CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL
+      : undefined) ?? process.env.CLAUDE_CODE_SUBAGENT_MODEL
+  if (subagentModelEnv) {
+    return parseUserSpecifiedModel(subagentModelEnv)
   }
 
   // 2.1.257 (Gap-113b): CLAUDE_CODE_SUBAGENT_MODEL_FORCE forces every

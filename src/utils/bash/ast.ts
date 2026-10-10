@@ -543,6 +543,24 @@ const ENV_INFLUENCING_VARS = new Set([
  * Shell-managed variables whose value is runtime-determined or expanded by
  * the shell itself (prompts, matches, per-command state). Recovered verbatim
  * from the official 2.1.251 binary (set `Vo`).
+ *
+ * CC 2.1.296 (changelog: "Fixed Bash permission checks auto-approving some
+ * commands that assign the BASH_ARGV0 shell variable and then use it"): the
+ * official set — spelled `KLn` in the 2.1.296 binary (minified names drift per
+ * build; the MEMBERS are the invariant) — carries three members OCC's `Vo`
+ * port was missing: `BASH_MONOSECONDS` + `BASH_TRAPSIG` (already present in
+ * OCC's INTEGER_ATTR set since v288 #28, but absent here) and `BASH_ARGV0`
+ * (this round's delta). Members + order below are byte-aligned to the 2.1.296
+ * `KLn` dump (ev-bashargv0.txt): the three additions slot in exactly where the
+ * official places them (BASH_MONOSECONDS/BASH_TRAPSIG after BASHPID;
+ * BASH_ARGV0 after BASH_LINENO).
+ *
+ * This set is consumed by BOTH official call sites OCC mirrors:
+ *  - the for-loop guard (`${name} as loop variable bypasses assignment
+ *    validation`) — official for_statement branch `KLn.has(n)`;
+ *  - the variable-expansion resolver (`resolveSimpleExpansion` ≡ official
+ *    `Z`) — official `if(KLn.has(s))return r&&le.has(s)&&s!=="BASHPID"?_:b(e)`,
+ *    i.e. a tracked special var is NEVER trusted as a static literal.
  */
 const SPECIAL_SHELL_VARS = new Set([
   '_',
@@ -555,6 +573,8 @@ const SPECIAL_SHELL_VARS = new Set([
   'EPOCHREALTIME',
   'SRANDOM',
   'BASHPID',
+  'BASH_MONOSECONDS', // v296 KLn member (pre-existing OCC gap closed)
+  'BASH_TRAPSIG', // v296 KLn member (pre-existing OCC gap closed)
   'HISTCMD',
   'ERRNO',
   'REPLY',
@@ -568,6 +588,7 @@ const SPECIAL_SHELL_VARS = new Set([
   'BASH_ARGC',
   'BASH_SUBSHELL',
   'BASH_LINENO',
+  'BASH_ARGV0', // v296 delta — the changelog's named variable
   'BASH_REMATCH',
   'MATCH',
   'match',
@@ -3284,6 +3305,26 @@ function resolveSimpleExpansion(
   // '__LOOP_STATIC__', resolved as cwd-relative → PASSED → bypass.
   const trackedValue = varScope.get(varName)
   if (trackedValue !== undefined) {
+    // CC 2.1.296 (official Z / KLn guard, ev-bashargv0.txt:
+    // `if(KLn.has(s))return r&&le.has(s)&&s!=="BASHPID"?_:b(e)`): a
+    // shell-managed special variable (BASH_ARGV0, PIPESTATUS, BASH_REMATCH,
+    // PS1..PS4, RANDOM, …) can be reassigned by the shell itself between the
+    // assignment and the use, so its tracked literal value cannot be trusted
+    // statically — even when we just saw `BASH_ARGV0=foo`. Without this guard
+    // `BASH_ARGV0=x cmd; … $BASH_ARGV0` resolved to the literal `x` and
+    // auto-approved (the 2.1.296 changelog bug). Map: r=insideString,
+    // le=SAFE_ENV_VARS, _=VAR_PLACEHOLDER, b(e)=tooComplex. The BASHPID
+    // carve-out (`s!=="BASHPID"`) is verbatim: BASHPID is the shell PID, never
+    // a stable literal, so it is always too-complex on use (existing v288 #28
+    // BASHPID assignment-gate behavior is untouched — that gate fires on the
+    // assignment node, not here).
+    if (SPECIAL_SHELL_VARS.has(varName)) {
+      return insideString &&
+        SAFE_ENV_VARS.has(varName) &&
+        varName !== 'BASHPID'
+        ? VAR_PLACEHOLDER
+        : tooComplex(node)
+    }
     if (containsAnyPlaceholder(trackedValue)) {
       // Non-literal: bare → reject, inside string → VAR_PLACEHOLDER
       // (walkString's solo-placeholder gate rejects `"$VAR"` alone).

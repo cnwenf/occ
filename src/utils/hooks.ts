@@ -139,6 +139,7 @@ import {
   applyOnFailureBlockRaw,
 } from './hooks/onFailureBlock.js'
 import { logForDebugging } from './debug.js'
+import { stripHintTagLines } from './claudeCodeHints.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { firstLineOf } from './stringUtils.js'
 import {
@@ -2446,7 +2447,18 @@ async function execCommandHook(
     await promptChain
     diagExitCode = result.status
     diagAborted = result.aborted ?? false
-    return result
+    // 2.1.296 (official `lL`): strip whole-line <claude-code-hint …/> tags
+    // from hook stdout/stderr/output before the text can reach the model via
+    // the hook side channel (blocking errors, hook_success content, etc.).
+    // The official applies this at both command-hook result sites (normal +
+    // ranElsewhere); OCC has no runner subsystem, so this single choke point
+    // in execCommandHook is the equivalent.
+    return {
+      ...result,
+      stdout: stripHintTagLines(result.stdout),
+      stderr: stripHintTagLines(result.stderr),
+      output: stripHintTagLines(result.output),
+    }
   } catch (error) {
     // Handle errors from stdin write or child process
     const code = getErrnoCode(error)

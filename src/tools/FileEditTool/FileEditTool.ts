@@ -83,6 +83,10 @@ import {
   stashCheckTimeResolutions,
 } from '../../utils/permissions/symlinkResolutionStash.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
+import {
+  NOT_UTF8_REFUSAL_MESSAGE,
+  shouldRefuseNonUtf8Edit,
+} from '../../utils/utf8Safety.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
 import { FILE_EDIT_TOOL_NAME } from './constants.js'
 import { getEditToolDescription } from './prompt.js'
@@ -329,6 +333,10 @@ export const FileEditTool = buildTool({
     // instead of calling detectFileEncoding (which does its own sync readSync
     // and would fail with a wasted ENOENT when the file doesn't exist).
     let fileContent: string | null
+    // CC 2.1.296 (aen): set when the on-disk bytes are not valid UTF-8 and
+    // this edit would re-save them as UTF-8 (lossy — every undecodable byte
+    // becomes U+FFFD). Checked right after the read; refuses before any write.
+    let nonUtf8Refusal = false
     try {
       const fileBuffer = await fs.readFileBytes(fullFilePath)
       const encoding: BufferEncoding =
@@ -337,6 +345,10 @@ export const FileEditTool = buildTool({
         fileBuffer[1] === 0xfe
           ? 'utf16le'
           : 'utf8'
+      // CC 2.1.296: legacy-encoding / binary files are refused (Windows-1252,
+      // Shift-JIS, GBK, …). utf16le round-trips losslessly in OCC so it is
+      // exempt (see utf8Safety.ts header).
+      nonUtf8Refusal = shouldRefuseNonUtf8Edit(fileBuffer, encoding)
       // Binary J9 shape: BOM-stripped + LF-normalized, the canonical form
       // readFileState stores, so stale-content comparisons line up.
       fileContent = normalizeForComparison(fileBuffer.toString(encoding))
@@ -345,6 +357,17 @@ export const FileEditTool = buildTool({
         fileContent = null
       } else {
         throw e
+      }
+    }
+
+    // CC 2.1.296 (aen): refuse edits to non-UTF-8 files verbatim — nothing is
+    // written. Runs before the not-exist / stale / match branches so the
+    // refusal wins over any downstream validation.
+    if (nonUtf8Refusal) {
+      return {
+        result: false,
+        message: NOT_UTF8_REFUSAL_MESSAGE,
+        errorCode: 14,
       }
     }
 

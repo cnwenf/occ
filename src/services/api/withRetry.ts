@@ -234,6 +234,13 @@ const HEARTBEAT_INTERVAL_MS = 30_000
 // (v280 `ufr=60000` @199569644 is unchanged); the finalized §P4 triage note
 // claiming 600000 contradicts the ELF — the bytes win.
 const RETRY_AFTER_TOO_LONG_THRESHOLD_MS = 60_000
+// CC 2.1.296 (#004): the proportional jitter ratio applied to the backoff
+// delay (official `jitter:{kind:"proportional",ratio:0.25}` inside a$/gT;
+// `Swo` in the 296 ELF). getRetryDelay multiplies baseDelay by it, and the
+// retry-after-too-long guard now stretches its threshold by the same ratio
+// over the overloaded max-delay override:
+//   `dr>Math.max(ehr,Math.ceil((or??0)*(1+Swo)))`.
+const RETRY_DELAY_JITTER_RATIO = 0.25
 // Binary long-wait telemetry literal @202417418-region:
 // `if(yn&&Kn>60000)i("tengu_api_persistent_retry_wait",...)`.
 const PERSISTENT_RETRY_WAIT_LOG_THRESHOLD_MS = 60_000
@@ -1235,11 +1242,23 @@ export async function* withRetry<T>(
         // CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS override (a$ 5th param)
         // ONLY for overloaded-shaped errors (oB(Jt)); capMs stays `void 0`
         // → 32000 default. is529Error is OCC's oB equivalent.
+        // CC 2.1.296 (#004): official grew the paired MAX_DELAY override —
+        //   `let Vo=w1(an),or=Vo?a.CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS
+        //      :void 0;
+        //    dr=MF(on+G,fo,or,r.random,
+        //      Vo?a.CLAUDE_CODE_OVERLOADED_RETRY_BASE_DELAY_MS:void 0)`
+        // (w1≡is529Error, MF≡getRetryDelay): for 529-shaped errors ONLY, the
+        // env feeds a$'s capMs param (undefined → the 32000 default, pre-296
+        // behavior) and stretches the retry-after-too-long guard below.
+        const overloaded529 = is529Error(error)
+        const overloadedMaxDelayMs = overloaded529
+          ? getOverloadedRetryMaxDelayMs()
+          : undefined
         delayMs = getRetryDelay(
           attempt + persistentAttempt,
           retryAfter,
-          undefined,
-          is529Error(error) ? getOverloadedRetryBaseDelayMs() : undefined,
+          overloadedMaxDelayMs,
+          overloaded529 ? getOverloadedRetryBaseDelayMs() : undefined,
         )
         if (watchdogRetryEnabled) {
           // (b) S6(): cap at TRe=6h and enter heartbeat long-wait mode (yn).
@@ -1272,7 +1291,20 @@ export async function* withRetry<T>(
             }
             delayMs = Math.min(delayMs, budgetRemainingMs)
           }
-        } else if (delayMs > RETRY_AFTER_TOO_LONG_THRESHOLD_MS) {
+        } else if (
+          delayMs >
+          // CC 2.1.296 (#004): `dr>Math.max(ehr,Math.ceil((or??0)*(1+Swo)))`
+          // — a set overloaded max-delay override stretches the threshold to
+          // the override's jitter ceiling (the largest delay the capped
+          // backoff can produce); unset keeps the plain 60s threshold
+          // (Math.ceil(0*(1+ratio))=0 < RETRY_AFTER_TOO_LONG_THRESHOLD_MS).
+          Math.max(
+            RETRY_AFTER_TOO_LONG_THRESHOLD_MS,
+            Math.ceil(
+              (overloadedMaxDelayMs ?? 0) * (1 + RETRY_DELAY_JITTER_RATIO),
+            ),
+          )
+        ) {
           // (c) Kn>Opo: fail loudly instead of sleeping uncapped past a minute.
           logEvent('tengu_api_retry_after_too_long', {
             delayMs,
@@ -1407,7 +1439,9 @@ export function getRetryDelay(
     baseDelayMs * Math.pow(2, attempt - 1),
     maxDelayMs,
   )
-  const backoffMs = Math.round(baseDelay + Math.random() * 0.25 * baseDelay)
+  const backoffMs = Math.round(
+    baseDelay + Math.random() * RETRY_DELAY_JITTER_RATIO * baseDelay,
+  )
 
   if (retryAfterHeader) {
     const seconds = parseInt(retryAfterHeader, 10)
@@ -1448,6 +1482,37 @@ export function getOverloadedRetryBaseDelayMs(): number | undefined {
     parsed >= OVERLOADED_RETRY_BASE_DELAY_MIN_MS &&
     parsed <= OVERLOADED_RETRY_BASE_DELAY_MAX_MS
   ) {
+    return parsed
+  }
+  return undefined
+}
+
+// CC 2.1.296 (#004): CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS — "Added
+// `CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS` environment variable to set a
+// longer maximum delay for the backoff when retrying an overloaded (529)
+// request" (cl-296). Official consumes the registry-parsed env directly at
+// the call site (`or=Vo?a.CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS:void 0`),
+// feeding a$/MF's capMs param AND the stretched retry-after-too-long guard
+// `Math.max(ehr,Math.ceil((or??0)*(1+Swo)))`. Unlike the base-delay env
+// (`hi=H.int({min:500,max:32000,digitsOnly:!0})` @203747314), the 296
+// evidence carries NO recoverable H.int descriptor for this env, so OCC
+// parses digits-only and requires a positive integer (minimal sanity floor —
+// a non-positive capMs would feed negative backoff into the sleep loop;
+// documented deviation, not a byte-verified bound). Invalid values yield
+// undefined → the a$ capMs default (32000) applies, pre-296 behavior.
+export function getOverloadedRetryMaxDelayMs(): number | undefined {
+  const raw = process.env.CLAUDE_CODE_OVERLOADED_RETRY_MAX_DELAY_MS
+  if (raw === undefined) {
+    return undefined
+  }
+  // digitsOnly (official `M.int` parse — see getMaxMcpDescriptionLength for
+  // the byte-verified parser): reject anything that is not an integer
+  // literal (1e6 / 64_000 / 1,000 / 1500.5 all fail).
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    return undefined
+  }
+  const parsed = parseEnvInt(raw)
+  if (parsed !== undefined && parsed >= 1) {
     return parsed
   }
   return undefined

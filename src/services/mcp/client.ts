@@ -288,16 +288,28 @@ export function resolveMcpMaxResultSizeChars(
  *
  * So: digits-only integers >= 1 are honored verbatim with NO upper clamp;
  * anything else (unset, empty, non-digit, sci-notation, separators, 0,
- * negative, NaN) falls back to 2048 through the `??`.
+ * negative, NaN) falls back to the default through the `??`.
+ *
+ * CC 2.1.296 (#061): "Changed the default limit on MCP tool descriptions
+ * sent up front and on MCP server instructions from 2,048 to 4,096
+ * characters" (cl-296). The 296 getter keeps the same shape — binary
+ * `Ax(e=!1){return a.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH??(e?sns:sxn)}`
+ * @217807600-region — with the general-path constant (sxn, formerly
+ * t4e/_Rn=2048) now 4096. The tool-search constant (sns≡Qts=16384, occ153
+ * #112) is unchanged. Both surfaces (tool descriptions AND server
+ * instructions) flow through this one constant in OCC —
+ * truncateMcpDescription and truncateMcpServerInstructions — so the single
+ * flip covers the whole changelog item.
  */
-const DEFAULT_MAX_MCP_DESCRIPTION_LENGTH = 2048
+const DEFAULT_MAX_MCP_DESCRIPTION_LENGTH = 4096
 
 /**
  * CC 2.1.295 item #112 — tool-search load path cap (binary `Qts=16384`
  * @213397142; `_Rn=2048,Qts=16384` is s295-only, s294 has neither token).
  * MCP tool descriptions LOADED THROUGH TOOL SEARCH are truncated at 16,384
- * chars instead of 2,048 — the model explicitly asked for the tool, so it
- * gets the fuller description; the general (always-loaded) path stays 2048.
+ * chars instead of the general default (2,048 in s295; 4,096 since 296 per
+ * #061) — the model explicitly asked for the tool, so it gets the fuller
+ * description; the general (always-loaded) path keeps the default.
  */
 const TOOL_SEARCH_MAX_MCP_DESCRIPTION_LENGTH = 16384
 
@@ -388,7 +400,7 @@ export function truncateMcpDescription(
   // CC 2.1.295 #112 — official truncator gained a cap parameter in 295:
   // `Jt(e,r,n,s=mx())` @243847045 (s294 `Qo` computed `let s=lV()` inline).
   // The factory passes `mx(!0)` (16384) for the tool-search variant; all
-  // other call sites keep the default (env ?? 2048).
+  // other call sites keep the default (env ?? 4096 since CC 2.1.296 #061).
   cap: number = getMaxMcpDescriptionLength(),
 ): string {
   const limit = cap
@@ -2430,14 +2442,14 @@ export const fetchToolsForClient = memoizeWithLRU(
           )
           // CC 2.1.295 (#112) — the official factory (@243900141, dup
           // @244085866) now computes TWO eager truncation variants:
-          //   _e=Jt(Re,`Tool "${q.name}" description`,e)          // env ?? 2048
+          //   _e=Jt(Re,`Tool "${q.name}" description`,e)          // env ?? default cap (2048 in s295; 4096 since 296 #061)
           //   ce=Jt(Re,`Tool "${q.name}" description`,e,mx(!0))   // env ?? 16384
           //   async prompt({loadedThroughToolSearch:Ee}){return Ee?ce:_e}
           // s294 computed only the single variant. The wider cap applies ONLY
           // when the tool is being sent because tool search discovered it
           // (official call site @217614375:
           // `loadedThroughToolSearch:bn&&ur(Kn)&&Nn(Kn,Cr)`); the general
-          // always-loaded path keeps 2048.
+          // always-loaded path keeps the default cap (4096 since 296 #061).
           const toolSearchTruncatedDescription = truncateMcpDescription(
             rawDescription,
             `Tool "${tool.name}" description`,
@@ -2505,9 +2517,10 @@ export const fetchToolsForClient = memoizeWithLRU(
               // official call-site gate @217614375
               // (`bn&&ur(Kn)&&Nn(Kn,Cr)`). The schema-cache key carries the
               // official `"LT:"` bit @215678602 when
-              // `loadedThroughToolSearch===!0&&isMcp===!0`, so the 2048 and
-              // 16384 variants never share a cache entry. Non-tool-search
-              // callers keep the byte-identical 2048 behavior.
+              // `loadedThroughToolSearch===!0&&isMcp===!0`, so the default
+              // (4096 since 296 #061) and 16384 variants never share a cache
+              // entry. Non-tool-search callers keep the byte-identical
+              // default-cap behavior.
               const loadedThroughToolSearch =
                 typeof options === 'object' &&
                 options !== null &&

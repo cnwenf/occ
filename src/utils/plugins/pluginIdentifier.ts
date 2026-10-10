@@ -105,6 +105,23 @@ export function buildMarketplaceNameRefusalMessage(name: string): string {
 }
 
 /**
+ * Official 2.1.296 refusal for names that cannot be a key of the install
+ * records (`constructor`/`prototype`/`__proto__`). The official throws
+ * `UnrecordablePluginIdError` with the category "plugin id cannot be a key
+ * of the install records"; the user-facing template is recovered in OCC's
+ * existing marketplace-add refusal style (the official message body `ECn`
+ * is not in the evidence dump, so only the category wording is verbatim).
+ */
+export function buildUnrecordableMarketplaceNameMessage(name: string): string {
+  return (
+    `Cannot add marketplace "${sliceHead(name, MARKETPLACE_NAME_DISPLAY_CAP)}": ` +
+    `the name cannot be a key of the install records ` +
+    `("constructor", "prototype" and "__proto__" collide with JavaScript object internals). ` +
+    `The name is set by "name" in the marketplace's marketplace.json; ask its maintainer to change it.`
+  )
+}
+
+/**
  * Check if a marketplace name is an official (Anthropic-controlled) marketplace.
  * Used for telemetry redaction — official plugin identifiers are safe to log to
  * general-access additional_metadata; third-party identifiers go only to the
