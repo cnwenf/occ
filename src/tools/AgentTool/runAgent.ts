@@ -19,7 +19,11 @@ import {
   enhanceSystemPromptWithEnvDetails,
 } from '../../constants/prompts.js'
 import type { QuerySource } from '../../constants/querySource.js'
-import { getSystemContext, getUserContext } from '../../context.js'
+import {
+  getGitStatusForWorktree,
+  getSystemContext,
+  getUserContext,
+} from '../../context.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import { query } from '../../query.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../../services/analytics/growthbook.js'
@@ -521,6 +525,23 @@ export async function* runAgent({
     override?.systemContext ?? getSystemContext(),
   ])
 
+  // Official 2.1.295 (#035): a subagent running in its own linked worktree
+  // must get git branch/status/log computed FROM that worktree — not the
+  // parent session's snapshot (binary `dQn` worktree branch, gated on
+  // `pZ()&&!Ht()` + the linked-worktree condition). getGitStatusForWorktree
+  // returns null when worktreePath isn't a linked worktree of the current
+  // session's repo, which keeps the parent's gitStatus (binary: S===null →
+  // global path). Replace-only: if the gates (CLAUDE_CODE_REMOTE /
+  // includeGitInstructions) omitted gitStatus from the parent context, we
+  // must not introduce it here (binary `g3r()` gate).
+  const worktreeGitStatus = worktreePath
+    ? await getGitStatusForWorktree(worktreePath)
+    : null
+  const systemContextWithWorktreeGit =
+    worktreeGitStatus !== null && 'gitStatus' in baseSystemContext
+      ? { ...baseSystemContext, gitStatus: worktreeGitStatus }
+      : baseSystemContext
+
   // Read-only agents (Explore, Plan) don't act on commit/PR/lint rules from
   // CLAUDE.md — the main agent has full context and interprets their output.
   // Dropping claudeMd here saves ~5-15 Gtok/week across 34M+ Explore spawns.
@@ -541,12 +562,12 @@ export async function* runAgent({
   // need git info they run `git status` themselves and get fresh data.
   // Saves ~1-3 Gtok/week fleet-wide.
   const { gitStatus: _omittedGitStatus, ...systemContextNoGit } =
-    baseSystemContext
+    systemContextWithWorktreeGit
   const resolvedSystemContext =
     agentDefinition.agentType === 'Explore' ||
     agentDefinition.agentType === 'Plan'
       ? systemContextNoGit
-      : baseSystemContext
+      : systemContextWithWorktreeGit
 
   // Override permission mode if agent defines one
   // However, don't override if parent is in bypassPermissions or acceptEdits mode - those should always take precedence
