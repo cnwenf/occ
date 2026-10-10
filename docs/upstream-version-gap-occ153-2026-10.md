@@ -230,3 +230,125 @@ OCC 侧现状：`@cnwenf/occ` npm latest = **2.1.367**（E404 事故，OCC-151 b
 - 本 run 工作目录 `/tmp/cc-diff-295`：tgz×3（294/295/296）、`v29{4,5,6}/package/claude`、`s29{4,5,6}.txt`（strings 全量排序去重）、`added295.txt`/`removed295.txt`（comm 差分）、`envtok29{4,5}.txt`（token 集合）。**本 run 结束即销毁（skill 纪律：二进制不留 /tmp）** —— 移植轮必须自行重新下载，§0 md5/计数即校验基准。
 - 官方 changelog 快照 `/tmp/cc-CHANGELOG.md`（8,707 行）同源销毁；来源 URL 见 §0。
 - 复现命令：`npm pack @anthropic-ai/claude-code-linux-x64@<ver>`；`md5sum`；`strings -n 8 <elf> | sort -u`；`comm -13/-23`；token 差分 `grep -ohE '\bCLAUDE_[A-Z0-9_]{3,}\b' | sort -u` 后 comm。
+## §8 STAGED（本轮结转）+ 落地清单
+
+本轮取证预算集中于 P0 渲染安全四件套 + 15 条可 binary-verify 的 P1 站点（每站点官方 ELF 逐字节取证 + 测试落地）；深子系统 P1（10 条）与其余 P2/P3 未做逐站点取证，按 §6.4 no-silent-drop 纪律全部显式结转，下轮按 §6.1 重新下载 ELF 复核。Never-invent：无二进制证据的站点一律 STAGED，不猜测、不部分认账。
+
+### §8.1 本轮已落地（39 条 = P0 4 + P1 15 + P2/P3 20；commits ce6184a+6270e7a+c47976c+d242c13，range 0004682..d242c13）
+
+| item | prio | evidence |
+|---|---|---|
+| #031 conceal/色彩残留隐藏链接地址 | P0 | `utils/hyperlink.ts` `SHOWN_URL_NEUTRALIZER` + `concealLinkSanitize295.test.ts` |
+| #050 raw hyperlink 字节→可点击隐藏地址 | P0 | `utils/stripRawHyperlinks.ts` + `stripRawHyperlinks295` / `rawHyperlinkSanitize295` 测试 |
+| #073 managed 缓存篡改→个人 plugin 计 org | P0 | `plugins/managedPlugins.ts`（+`pluginIdentifier.ts`/`mcpbHandler.ts`）+ `managedPluginsVouching295.test.ts` |
+| #076 tabs/bidi 行尾丢失/覆写邻行 | P0 | `ink/normalize-text.ts` tab 预展开 + `tabsBidiEol295.test.tsx`；bidi NO-OP-PINNED（既有 U+FFFD 替换已覆盖） |
+| #001 hooks `onFailure:"block"` | P1 | `hooks/onFailureBlock.ts` + `schemas/hooks.ts` + `onFailureBlock.test.ts` |
+| #014 `CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS` | P1 | `api/withRetry.ts` env 上限（token @99966792 对应） |
+| #016 `[1m]` beta 被拒→去 beta 重发 | P1 | `api/claude.ts` context-1m heal 分支 |
+| #018 MCP 重连退避≤30s | P1 | `mcp/client.ts` + `reconnectBackoff295.test.ts` |
+| #019 错误回复含网络错误名→误断连 | P1 | `mcp/listPagination.ts` isNetworkError + `listPagination295.test.ts` |
+| #022 Bash `command_description` 别名 | P1 | `BashTool.tsx` + `commandDescriptionAlias295.test.ts` |
+| #026 AUTO_BACKGROUND 排队竞态 | P1 | `exclusiveCallRegistry.ts` + `LocalAgentTask.tsx`/`StreamingToolExecutor.ts` + `autoBackgroundHold295`/`exclusiveCallRegistry295` 测试 |
+| #061 `cat` 无输出仍标已读 | P1 | `bashReadCommands.ts` 重写 + 293 测试签名迁移（d242c13） |
+| #070 SessionStart context 重复注入 | P1 | `hooks/sessionStartContextDedupe.ts` + 同名测试（REPL.tsx / conversationRecovery.ts 双接线） |
+| #071 `CLAUDE_ENV_FILE` resume 后不达 Bash | P1 | `sessionEnvironment.ts` + `sessionEnvKeying295.test.ts` |
+| #078 async hook 多行 JSON 被忽略 | P1 | `hooks/AsyncHookRegistry.ts`（+445 行）+ `asyncHookJson295.test.ts`（497 行） |
+| #088 Edit mtime 未前进误判已读 | P1 | `FileEditTool.ts` stale-read guard + `fileStateGuard.ts`/`fileStateCache.ts`/`queryHelpers.ts` contentNotInModelContext |
+| #108 Grep `-l`/`-c`/`-r` 直接跑 | P1 | `GrepTool.ts` + `grepFlags295.test.ts` |
+| #112 tool-search 描述 cap 2048→16384 | P1 | `toolSearchDescCap295.test.ts` + client/toolSearch cap 站点 |
+| #124 ws MCP >16MiB 直接断连 | P1 | `mcpWebSocketTransport.ts` maxPayload + `mcpWebSocketTransportCap295.test.ts` |
+| #003 /copy picker 引文去 `>` 标记 | P3 | `copy/copy.tsx` QUOTE_FILENAME + quoted-passage entry（官方 `ge="copy.md"` port） |
+| #004 settings 文件不加载告警 | P2 | `plugins/settingsFileLoadWarning.ts` + 295 测试（pluginCliCommands/cli handlers 接线） |
+| #020 分页 cursor 重复→同页最多 20 次 | P2 | `listPagination.ts` + `listPagination295.test.ts`；e2e 132-fetch-retry / 144-pagination 同步更新 |
+| #021 MCP CSS/JS/XML 不再存 .bin | P2 | `mcpOutputStorage.ts` ext map + `mcpOutputStorageExtMap295.test.ts` |
+| #024 /plugin Errors tab 删除先询问 | P3 | `PluginSettings.tsx` + `errorsTabRemovalConfirm295.test.tsx` |
+| #025 marketplace 名装不了→拒绝 | P2 | `marketplaceManager.ts` refusal（官方 `mt` verbatim）+ `marketplaceNameRefusal295.test.ts` |
+| #038 resource list interrupt 拖到超时 | P2 | `ListMcpResourcesTool.ts` abort + `listMcpResourcesAbort295.test.ts` |
+| #048 停长 MCP 调用要告知 Claude | P3 | `tasks.ts`/`task/framework.ts` mcp_task 一等注册 + `buildMcpTaskStoppedNotification`（官方 `SQn`/`Di` binary-verified）+ `mcpTaskStop.test.ts`；BackgroundTasksDialog stop 快捷键 |
+| #052 /advisor 不可用模型不打勾 | P3 | `utils/advisor.ts`/`commands/advisor.ts` + `advisorNoCheckmark295.test.ts` |
+| #054 vim `~` 越 EOL / `3~` 冲行 | P2 | `vim/operators.ts` + `vimToggleCase295.test.ts` |
+| #055 NFD 粘贴光标偏一格 | P2 | `utils/nfcInsert.ts` + `nfcInsert295.test.ts`（PromptInput insertText NFC-splice，官方 @236618722） |
+| #062 plugin option `constructor`/`prototype` | P2 | `optionKeySafety.ts` + `pluginOptionsStorage.ts` + `pluginOptionsProtoKeys295.test.ts` |
+| #066 piped bold 紧跟 dim 微弱 | P3 | `ink/Ansi.tsx` + `ansiBoldDim295.test.tsx` |
+| #069 mcp serve bg Bash 输出文件名 | P2 | `entrypoints/mcp.ts`（+167）+ `mcpServeBackgroundBash295.test.ts` |
+| #074 Claude 3 不再被提供 tool search | P2 | `utils/toolSearch.ts` deny 集（官方 `Da`/`Bst` verbatim，substring 语义） |
+| #077 /model Max effort 误报已存默认 | P3 | `model/model.tsx` `toPersistableEffort` suffix（官方 @247150291 verbatim） |
+| #079 Read 空 `pages` 按省略处理 | P2 | `FileReadTool.ts` preprocess（官方 `Yi` verbatim）+ FileWriteTool reseed 传播 |
+| #093 disableAutoMode 移除后仍拒 auto | P2 | `permissions/permissionSetup.ts` fresh-eval gate + `autoModeReevaluate295.test.ts` |
+| #110 scriptPath 拒绝文案指路 inline | P3 | `WorkflowTool/scriptLoader.ts` 第二行指引（@227949074 byte-verified）+ `scriptPathGate251.test.ts` 更新 |
+| #119 tab stops 从文本起点计 | P2 | `normalize-text.ts`/`render-node-to-output.ts` + `tabStopsFromTextStart295.test.ts`（NO-OP pin） |
+
+### §8.2 STAGED P1（10 条）
+
+- **#017** `-p` bg 开新轮丢前轮输出（§3）— print-mode turn-loop 需逐站点反编译；本轮 diff 无二进制证据，不猜。
+- **#035** linked-worktree subagent 误用父会话 git 上下文 — worktree 子系统（121 文件面）需专项取证；本轮 diff 0 命中。
+- **#037** `--tools`/`--restricted` 漏延迟注册 built-in + deprecated 名越集 — tool-registry gating 需专项反编译；本轮仅注释级旁证。
+- **#044** bash for-loop over glob 权限精度 — bash AST 权限站点（OCC-44/46 敏感链）需逐站点取证；0 命中。
+- **#056** 万行响应冻结 + ctrl+c 失灵 — 渲染循环/背压子系统需反编译；本轮 `10000` 命中仅 #018 RAPID_DROP 常量。
+- **#067** 嵌套引用冻结 + GB 级内存 — quote 递归站点未取证；diff 0 命中。
+- **#072** skill `allowed-tools`/`effort` 流结束前完成被丢 — SkillTool 流式完成竞态需专项取证；allowed-tools 0 命中。
+- **#090** scheduled task rewind/resume 丢失/复活 — scheduled+rewind 双子系统（45 文件面）需逐站点取证；本轮仅 rewind NO-OP 注释。
+- **#091** 语法高亮冻结（超长行/空行连/未闭合 heredoc）— highlighter 路径未取证；heredoc/highlight 0 命中。
+- **#095** /rewind 后 prompt 丢失 + turn 复活 — 与 #090 同 rewind 子系统，下轮 ELF 重取后合并做。
+
+### §8.3 STAGED P2/P3（49 条 = P2 31 + P3 19）
+
+P2（31 条，reason 分组：F=需逐站点取证 / V=需面核验 / T=低价值 trim 候选）：
+
+- **#002** OSC 7501 program status — F：面 0 命中真缺口，下轮取证后 port
+- **#005** `-p` 末轮挂起 stderr 说明 — V：print 面存在，站点未取证
+- **#027** PushNotification remote-control 误报 — V：PushNotification 面仅 2 文件
+- **#028** remote >256 文件 vouch 拒绝 — V：remote-control 面需先核
+- **#029** login refresh 后 managed settings 偶发不加载 — F：permissionSetup 本轮改动属 #093，#029 站点无证据
+- **#030** /tui 无法重启静默退出 — V：tui 面 18 文件需核
+- **#032** gateway Fable picker 行序 — V：gateway 侧行为，model.tsx 本轮 0 命中
+- **#036** 打字取消 backgrounding 前台继续 — F：bg 子系统逐站点
+- **#039** hook 深嵌套 input 静默截断 — F：hook guard 站点未取证
+- **#040** Esc 停不掉 bg /loop + wakeup 提示 — F：loop/wakeup 面仅 2 文件需取证
+- **#041** bg 会话 FORCE_COLOR=3 混色码 — V：bg 输出面需核
+- **#045** Workflow forked skill 结果误投 — F：workflow 子系统逐站点
+- **#046** teammate 首次 SendMessage 失败 — F：in-process teammate + tool-search 竞态
+- **#049** bg down 时 /loop wakeup 无声丢失 — F：与 #040 同族合并取证
+- **#051** marketplace 大 submodule 只 fetch plugin 子模块 — F：本轮 marketplaceManager 仅落 #025
+- **#057** mod reload 绕过 guard hook — V：MODS 相邻面需核
+- **#058** hooks 数千层嵌套 stack-overflow — F：hook loader 站点未取证
+- **#060** kill+二次 resume 无恢复提示 — V：面需核
+- **#065** /model 等保存未问 config.set hook — F：plugin hook 面逐站点
+- **#082** `←` 后 `↑`/`Esc` 收回 queued message 丢失 — F：PromptInput 本轮改动仅 #055 NFC
+- **#085** 非交互会话未用 MCP 仍提示认证 — F：client.ts auth 提示站点本轮 0 命中
+- **#087** 巨型 plugin worker stall 卸载他 plugin — F：plugin worker 子系统
+- **#089** CRLF 短命令输出画成单行 — V：本轮 diff CRLF 0 命中
+- **#094** synced plugin "directory does not exist" — V：claude.ai-sync 面需核
+- **#098** headless 迟到 sign-in 重列 setMcpServers — F：SDK 面逐站点
+- **#099** /config channel 未问 config.set hook — F：与 #065 同族
+- **#100** macOS file count 隐私弹窗 — V：平台特定面需核
+- **#113** subagent skills ≤32 预载 — F：`CLAUDE_CODE_SUBAGENT_CONFIG_WARNING`（§2）同族侦察
+- **#116** connectors MCP 协议协商 2026-07-28 — F：两版字符串同计数 6/6，§3 已标需 per-site
+- **#120** Artifact 五问权限统一 — V：Artifact 面 11 文件需核
+- **#143** xhigh/max effort 下 web search+hook 变慢 — F：性能面，无二进制站点证据
+
+P3（19 条）：
+
+- **#007** "Backgrounding cancelled" 提示 — V
+- **#010** plugin validate README 建议 — T
+- **#042** claude agents 退出不拉新 bg service — V
+- **#043** agent 名 worker 显示成 "Agent" — V
+- **#047** resume 提示误归因 TaskStop — V
+- **#053** bg MCP 通知不再显示缩短 task id — F：本轮 McpBackgroundTask 仅 #048 stop-通知路径，完成通知 shortened→full 站点无证据，不部分认账
+- **#059** plugin test 放行删块 session.append hook — V
+- **#075** `-p`/SDK 写生成文件进 --plugin-dir — V
+- **#081** Windows 盘符大小写 plugin 记录 — T：平台特定低价值
+- **#097** macOS 更新后 bg 重启跑 stable wrapper — V：`CLAUDE_PTY_HOST_NO_STABLE_PATH`（§2）侦察同族
+- **#103** RC 等待状态 MCP tool 可读名 — V
+- **#106** headless rate_limit_event extra usage — V
+- **#107** plugin-authoring skill 改进 — T：OCC skill .md 为 stub 面
+- **#109** plugin validate var 重绑报错带行号 — T
+- **#111** 大文件上传失败无因 — F：本轮 attachments.ts 改动属 #088 fileStateGuard 族，非 #111
+- **#114** attached bg idle Ctrl+C 不动 wakeup — V
+- **#115** claude agents 与 bg service 同停 — V
+- **#117** Artifact 无背景页白底 — V：疑 cloud viewer 侧
+- **#121** telemetry-off 私有 artifact 免询问 — V
+
+---
+
+**本轮结账**：landed **39** = P0 4 + P1 15 + P2/P3 20；STAGED **60** = P1 10 + P2 31 + P3 19；N/A **44**（§3 族级）—— 39+60+44 = 143 ✓ 无静默丢弃。2.1.296 next-only 顺延不变（§4）。
