@@ -9,6 +9,10 @@ import {
 import { waitForRemoteManagedSettingsToLoad } from 'src/services/remoteManagedSettings/index.js'
 import { StructuredIO } from 'src/cli/structuredIO.js'
 import { RemoteIO } from 'src/cli/remoteIO.js'
+import {
+  PrintTextResults,
+  type PrintableResultMessage,
+} from 'src/cli/printTextResults.js'
 import { handleOAuthCallbackUrlControl } from 'src/cli/mcpOAuthCallbackControl.js'
 import {
   enableUltracodeForSession,
@@ -972,6 +976,24 @@ export async function runHeadless(
   const needsFullArray = options.outputFormat === 'json' && options.verbose
   const messages: SDKMessage[] = []
   let lastMessage: SDKMessage | undefined
+
+  // CC 2.1.295 #017: `claude -p` text output must print each turn's response
+  // when the turn ends (previously only the final result was printed, so
+  // earlier responses were dropped when background work started another turn).
+  // Official constructs the printer + text-mode flag here:
+  //   Gd=R.outputFormat!=="json"&&R.outputFormat!=="stream-json",
+  //   mo=new Ig({maxTurns:R.maxTurns,maxBudgetUsd:R.maxBudgetUsd})
+  // (v296 offset 233583727; re-verified — v295 had `Pt=...; Ma=new hg(...)`
+  // @ ~241654050, semantically identical modulo minified renames). v294 had
+  // no printer — it printed once in the final switch below (v294 offset
+  // ~238822933).
+  const isTextOutputMode =
+    options.outputFormat !== 'json' && options.outputFormat !== 'stream-json'
+  const textResultsPrinter = new PrintTextResults({
+    maxTurns: options.maxTurns,
+    maxBudgetUsd: options.maxBudgetUsd,
+  })
+
   // Streamlined mode transforms messages when CLAUDE_CODE_STREAMLINED_OUTPUT=true and using stream-json
   // Build flag gates this out of external builds; env var is the runtime opt-in for ant builds
   const transformToStreamlined =
@@ -1032,6 +1054,24 @@ export async function runHeadless(
         messages.push(message)
       }
       lastMessage = message
+      // CC 2.1.295 #017: official prints each result at turn end inside the
+      // drain loop (v296 offset 233585825; re-verified — v295 @ ~241654205):
+      //   if(Gd&&!Ln){if(HT(di,dn),dn.type==="result")
+      //     mo.printAtTurnEnd(dn,Gr?void 0:di.partialForResult)}
+      // `di` (partialForResult tracker LT/HT) is unchanged v295↔v296 and was
+      // byte-identical in v294↔v295 (v294 @ ~238747449) — a pre-existing
+      // separate gap, unported in OCC, so the partial prefix is always
+      // undefined here (print()'s success branch handles that exactly as
+      // official does for `n===void 0`). `Ln`/`Gr` (handbackPointerResults /
+      // lateReleasedResults WeakSets) belong to the unported holdback
+      // subsystem; lateReleasedResults is new-in-v295 but only suppresses the
+      // partial prefix OCC never passes.
+      if (isTextOutputMode && message.type === 'result') {
+        textResultsPrinter.printAtTurnEnd(
+          message as PrintableResultMessage,
+          undefined,
+        )
+      }
     }
   }
 
@@ -1053,28 +1093,18 @@ export async function runHeadless(
       if (!lastMessage || lastMessage.type !== 'result') {
         throw new Error('No messages returned')
       }
-      switch (lastMessage.subtype) {
-        case 'success':
-          writeToStdout(
-            (lastMessage.result as string).endsWith('\n')
-              ? (lastMessage.result as string)
-              : (lastMessage.result as string) + '\n',
-          )
-          break
-        case 'error_during_execution':
-          writeToStdout(`Execution error`)
-          break
-        case 'error_max_turns':
-          writeToStdout(`Error: Reached max turns (${options.maxTurns})`)
-          break
-        case 'error_max_budget_usd':
-          writeToStdout(`Error: Exceeded USD budget (${options.maxBudgetUsd})`)
-          break
-        case 'error_max_structured_output_retries':
-          writeToStdout(
-            `Error: Failed to provide valid structured output after maximum retries`,
-          )
-      }
+      // CC 2.1.295 #017: replaces v294's inline per-subtype print (v294
+      // offset ~238822933 — identical to the switch that stood here).
+      // Official calls `mo.printAtExit(_r,di.partialForResult)` (v296 offset
+      // 233586406; re-verified — v295 `Ma.printAtExit(Hr,Bi...)` @
+      // ~241654784): no-ops when the final result already printed at its
+      // turn end (identity check vs lastPrinted), so single-turn output is
+      // unchanged; with tengu_jazzy_puddle off nothing printed in-loop and
+      // printAtExit prints exactly once here (v294 behavior preserved).
+      textResultsPrinter.printAtExit(
+        lastMessage as PrintableResultMessage,
+        undefined,
+      )
   }
 
   // Log headless latency metrics for the final turn
