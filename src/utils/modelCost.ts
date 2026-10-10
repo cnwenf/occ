@@ -97,6 +97,29 @@ export const COST_TIER_2_10 = {
   webSearchRequests: 0.01,
 } as const satisfies ModelCosts
 
+// 2.1.296 (#059): pricing tier for `claude-sonnet-5-5` — Sonnet 5.5 cache
+// reads repriced to $0.10/Mtok (was $0.20). Recovered verbatim from the
+// official 2.1.296 linux-x64 binary's model catalog `pricing_tiers` table
+// (@207704167):
+//   tier_2_10_cache_read_0_10: input 2, output 10, cache_write_5m 2.5,
+//                              cache_write_1h 4, cache_read 0.1,
+//                              web_search 0.01
+// Same as tier_2_10 except cache_read 0.1 (vs 0.2). The v296 catalog entry
+// for `claude-sonnet-5-5` (@207711856) carries
+// `pricing:"tier_2_10_cache_read_0_10"`; `claude-sonnet-5` keeps
+// `pricing:"tier_2_10"` (sonnet-5-5 is the ONLY model→tier reassignment in
+// the v295→v296 catalog diff). Follows the tier_10_50_cache_read_0_25 /
+// tier_4_20_cache_read_0_20 naming precedent. Matches the 2.1.296 changelog:
+// "price Sonnet 5.5 cache reads at $0.10 per million tokens (was $0.20)".
+export const COST_TIER_2_10_CACHE_READ_0_10 = {
+  inputTokens: 2,
+  outputTokens: 10,
+  promptCacheWriteTokens: 2.5,
+  promptCacheWrite1hTokens: 4,
+  promptCacheReadTokens: 0.1,
+  webSearchRequests: 0.01,
+} as const satisfies ModelCosts
+
 // Standard pricing tier for Sonnet models: $3 input / $15 output per Mtok
 // Binary: pricing_tiers.tier_3_15 cache_write_1h = 6
 export const COST_TIER_3_15 = {
@@ -334,13 +357,14 @@ export const MODEL_COSTS: Record<ModelShortName, ModelCosts> = {
   // standard price now shown in the /model picker and used for cost tracking.
   [firstPartyNameToCanonical(CLAUDE_SONNET_5_CONFIG.firstParty)]:
     COST_TIER_2_10,
-  // Sonnet 5.5 is `tier_2_10` ($2/$10, cache_read $0.20) — binary-verified:
-  // the baked 2.1.284 model catalog entry for `claude-sonnet-5-5` (@198712738
-  // region, OCC-101) carries `pricing:"tier_2_10"` — the SAME tier as
-  // claude-sonnet-5, so no new tier constant is needed. No fast-mode branch:
-  // the sonnet-5-5 capabilities list (byte-verified) has no fast_mode.
+  // Sonnet 5.5 is `tier_2_10_cache_read_0_10` ($2/$10, cache_read $0.10) —
+  // binary-verified: the baked 2.1.296 model catalog entry for
+  // `claude-sonnet-5-5` (@207711856) carries
+  // `pricing:"tier_2_10_cache_read_0_10"` (repriced from `tier_2_10` in the
+  // 2.1.284 catalog; #059). No fast-mode branch: the sonnet-5-5 capabilities
+  // list (byte-verified) has no fast_mode.
   [firstPartyNameToCanonical(CLAUDE_SONNET_5_5_CONFIG.firstParty)]:
-    COST_TIER_2_10,
+    COST_TIER_2_10_CACHE_READ_0_10,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_CONFIG.firstParty)]: COST_TIER_15_75,
   [firstPartyNameToCanonical(CLAUDE_OPUS_4_1_CONFIG.firstParty)]:
     COST_TIER_15_75,

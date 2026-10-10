@@ -3,7 +3,7 @@ import { getInitialMainLoopModel } from '../../bootstrap/state.js'
 import { isClaudeAISubscriber } from '../auth.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import {
-  COST_TIER_2_10,
+  COST_TIER_2_10_CACHE_READ_0_10,
   COST_TIER_3_15,
   COST_HAIKU_35,
   COST_HAIKU_45,
@@ -173,7 +173,7 @@ export function getSonnet55Option(): ModelOption {
   return {
     value: is3P ? getModelStrings().sonnet55 : 'sonnet',
     label: 'Sonnet',
-    description: `Sonnet 5.5 · Efficient for routine tasks${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
+    description: `Sonnet 5.5 · Efficient for routine tasks${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10_CACHE_READ_0_10)}`}`,
     descriptionForModel:
       'Sonnet 5.5 - efficient for routine tasks. Generally recommended for most coding tasks',
   }
@@ -390,7 +390,7 @@ export function getSonnet5_1MOption(): ModelOption {
   return {
     value: is3P ? getModelStrings().sonnet55 + '[1m]' : 'sonnet[1m]',
     label: 'Sonnet 5.5 (1M context)',
-    description: `Sonnet 5.5 for long sessions${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10)}`}`,
+    description: `Sonnet 5.5 for long sessions${is3P ? '' : ` · ${formatModelPricing(COST_TIER_2_10_CACHE_READ_0_10)}`}`,
     descriptionForModel:
       'Sonnet 5.5 with 1M context window - for long sessions with large codebases',
   }
