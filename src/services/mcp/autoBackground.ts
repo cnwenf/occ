@@ -348,26 +348,37 @@ export async function callMcpToolWithAutoBackground<T>({
   // endTime/notified so the retention gate in framework.ts can evict the row
   // and the model learns the outcome. Without this the task stays
   // running/notified:false forever — a zombie row that never terminates.
+  // Both branches carry the McpBackgroundTask.kill() running-state guard:
+  // kill() wins the race (status 'killed' is terminal), so a late settle
+  // must never overwrite it with 'completed'/'failed'.
   resultPromise.then(
     () => {
-      taskRegistry.update(task.id, t => ({
-        ...t,
-        status: 'completed',
-        mcpStatus: 'completed',
-        endTime: Date.now(),
-        notified: true,
-        abortController: undefined,
-      }))
+      taskRegistry.update(task.id, t =>
+        t.status !== 'running'
+          ? t
+          : {
+              ...t,
+              status: 'completed',
+              mcpStatus: 'completed',
+              endTime: Date.now(),
+              notified: true,
+              abortController: undefined,
+            },
+      )
     },
     () => {
-      taskRegistry.update(task.id, t => ({
-        ...t,
-        status: 'failed',
-        mcpStatus: 'failed',
-        endTime: Date.now(),
-        notified: true,
-        abortController: undefined,
-      }))
+      taskRegistry.update(task.id, t =>
+        t.status !== 'running'
+          ? t
+          : {
+              ...t,
+              status: 'failed',
+              mcpStatus: 'failed',
+              endTime: Date.now(),
+              notified: true,
+              abortController: undefined,
+            },
+      )
     },
   )
 

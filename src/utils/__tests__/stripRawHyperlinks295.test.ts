@@ -23,6 +23,7 @@ import { stripRawHyperlinks } from '../stripRawHyperlinks.js'
 const ESC = '\x1b'
 const BEL = '\x07'
 const ST = '\x1b\\'
+const C1 = '\x9d'
 const THEME = 'dark' as const
 
 const EVIL_BEL = `${ESC}]8;;http://evil\x07click here${ESC}]8;;\x07`
@@ -67,6 +68,31 @@ describe('stripRawHyperlinks — util (official Ue shape, fixed-point)', () => {
   test('fast path returns the same string when no OSC-8 introducer', () => {
     const input = 'no escapes here'
     expect(stripRawHyperlinks(input)).toBe(input)
+  })
+
+  test('C1 OSC introducer (\\x9d) is swept per official Dt — acceptance F1', () => {
+    // 8-bit OSC introducer smuggling a clickable cell; Dt deletes the \x9d
+    // byte, leaving inert printable residue (BEL stays — official Dt/Wt only
+    // sweep \x9d and bare ESC, never BEL).
+    const out = stripRawHyperlinks(`${C1}8;;https://evil.example${BEL}click`)
+    expect(out).not.toContain(C1)
+    expect(out).toBe(`8;;https://evil.example${BEL}click`)
+  })
+
+  test('C1 introducer with ST terminator is defanged (Dt + Wt)', () => {
+    const out = stripRawHyperlinks(`${C1}8;;https://evil.example${ST}click`)
+    expect(out).not.toContain(C1)
+    expect(out).not.toContain(ESC)
+    expect(out).toBe('8;;https://evil.example\\click')
+  })
+
+  test('C1-only text reaches the sweep (fast path no longer skips it)', () => {
+    // Pre-fix, strings without the \x1b]8; introducer returned early and
+    // \x9d survived verbatim; the probe now includes the C1 introducer.
+    const input = `safe text ${C1} more text`
+    const out = stripRawHyperlinks(input)
+    expect(out).not.toContain(C1)
+    expect(out).toBe('safe text  more text')
   })
 })
 

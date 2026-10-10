@@ -354,9 +354,20 @@ export function normalizeForComparison(content: string): string {
  * Exe — does the cached file state still match on-disk content? The official
  * compares a contentHash when present; OCC's FileState has no hash, so this
  * is the official's content-compare fallback.
+ *
+ * OCC adaptation (2.1.295 acceptance F4): both sides pass through J9
+ * (normalizeForComparison) before the compare. Edit's reseed stores content
+ * derived from `new_string`, which can carry CRLF while the disk write is
+ * LF-normalized — an exact compare then misreports content drift and the
+ * next consecutive Edit false-fails stale (errorCode 7). Normalization is
+ * idempotent for already-canonical inputs, so exact-match semantics are
+ * unchanged for LF content.
  */
 export function fileStateMatchesDisk(state: FileState, diskContent: string): boolean {
-  return state.content === diskContent
+  return (
+    normalizeForComparison(state.content) ===
+    normalizeForComparison(diskContent)
+  )
 }
 
 /** i3o */

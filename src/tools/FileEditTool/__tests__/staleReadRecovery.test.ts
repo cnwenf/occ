@@ -8,6 +8,7 @@ import { getFileModificationTime } from 'src/utils/file.js'
 import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
 import {
   editWouldApplyToTelemetry,
+  fileStateMatchesDisk,
   getModelBucket,
   isFullReadOfFileState,
   isNotebookPathForGuard,
@@ -147,6 +148,20 @@ describe('2.1.228 fileStateGuard helpers', () => {
     expect(editWouldApplyToTelemetry('applies')).toBe('success')
     expect(editWouldApplyToTelemetry('no_match')).toBe('errorCode8')
     expect(editWouldApplyToTelemetry('ambiguous')).toBe('errorCode9')
+  })
+
+  test('F4: fileStateMatchesDisk normalizes line endings on both sides', () => {
+    // Acceptance F4: Edit's reseed could store CRLF (from new_string) while
+    // the disk write is LF-normalized — the compare must not misfire.
+    const crlfState = { content: 'a\r\nb', timestamp: 1 }
+    expect(fileStateMatchesDisk(crlfState, 'a\nb')).toBe(true)
+    expect(fileStateMatchesDisk(crlfState, 'a\r\nb')).toBe(true)
+    // Genuine content differences still fail.
+    expect(fileStateMatchesDisk(crlfState, 'a\nb\nc')).toBe(false)
+    // BOM is stripped on both sides too (J9 canonical form).
+    expect(
+      fileStateMatchesDisk({ content: '\uFEFFa\nb', timestamp: 1 }, 'a\nb'),
+    ).toBe(true)
   })
 })
 
@@ -335,5 +350,37 @@ describe('2.1.228 FileEditTool.validateInput stale-read recovery (Mwt semantics)
     // Assert: Read-deny-covered paths cannot be edited.
     expect(result.result).toBe(false)
     expect(result.errorCode).toBe(13)
+  })
+
+  test('F4: cached CRLF state vs LF disk is NOT false-stale (consecutive-edit drift)', async () => {
+    // Arrange: disk is all-LF; the cached readFileState holds the CRLF form
+    // (as a pre-fix Edit reseed would store when new_string carried CRLF).
+    // No external modification happens — mtime equals the recorded timestamp,
+    // so only the content-drift disjunct can fire.
+    const filePath = join(tmpDir, 'f4-crlf.txt')
+    const diskContent = 'header line\nTARGET_UNIQUE_TOKEN\nfooter line'
+    await writeFile(filePath, diskContent)
+    const readAt = getFileModificationTime(filePath)
+    const ctx = makeContext(makePermissionContext())
+    seedRead(
+      ctx,
+      filePath,
+      'header line\r\nTARGET_UNIQUE_TOKEN\r\nfooter line',
+      readAt,
+    )
+
+    // Act
+    const result = await FileEditTool.validateInput(
+      {
+        file_path: filePath,
+        old_string: 'TARGET_UNIQUE_TOKEN',
+        new_string: 'REPLACED',
+      },
+      ctx,
+    )
+
+    // Assert: line-ending-normalized match → not stale (pre-fix this failed
+    // with errorCode 7 / false tengu_edit_tool_stale_read in default mode).
+    expect(result.result).toBe(true)
   })
 })
