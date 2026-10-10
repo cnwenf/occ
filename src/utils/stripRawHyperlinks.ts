@@ -22,8 +22,9 @@
  * ANSI-strip `jar` / OCC `stripAnsiSequences` in textSanitize.ts) so a nested
  * payload like `\x1b]8;;\x1b]8;;URL\x07\x07` cannot reassemble — the inner
  * complete sequence is removed first and the outer residue completes on the
- * next pass. Any leftover bare ESC (unterminated introducer) is then deleted
- * per official `Wt`, leaving only inert printable residue.
+ * next pass. Then official `Dt` sweeps C1 OSC introducers (`\x9d`), and any
+ * leftover bare ESC (unterminated introducer) is deleted per official `Wt`,
+ * leaving only inert printable residue.
  *
  * Sanitization MUST run on the raw source BEFORE markdown lexing so
  * markdown-generated links keep working: the official link renderer (`rw`)
@@ -41,6 +42,12 @@ const STRIP_PASSES = 4
 // biome-ignore lint/suspicious/noControlCharactersInRegex: official-derived OSC-8 strip regex (v295 `Ue` @220895091)
 const OSC8_SEQUENCE_RE = /\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/g
 
+// Official `Dt` (v295): C1 OSC introducer sweep — `\x9d` (8-bit OSC) can
+// start a hyperlink sequence in 8-bit-clean transports; deleting the byte
+// defangs the introducer into inert text. (No biome suppression needed: the
+// noControlCharactersInRegex rule targets C0, not C1.)
+const C1_OSC_INTRO_RE = /\x9d/g
+
 // Official `Wt` (v295, `PH` chain): bare ESC not starting a CSI/SGR run.
 // biome-ignore lint/suspicious/noControlCharactersInRegex: official-derived bare-ESC strip regex (v295 `Wt`)
 const BARE_ESC_RE = /\x1b(?!\[)/g
@@ -48,19 +55,26 @@ const BARE_ESC_RE = /\x1b(?!\[)/g
 /** Fast-path probe — the official OSC-8 introducer. */
 const OSC8_INTRO = '\x1b]8;'
 
+/** Fast-path probe — the C1 (8-bit) OSC introducer swept by official `Dt`. */
+const C1_OSC_INTRO = '\x9d'
+
 /**
  * Strip raw OSC-8 hyperlink escape sequences from untrusted display text,
  * leaving the anchor text visible as plain text. Fixed-point (≤4 passes)
- * `Ue` strip, then official `Wt` bare-ESC sweep for unterminated residue.
+ * `Ue` strip, then official `Dt` C1-introducer sweep, then official `Wt`
+ * bare-ESC sweep for unterminated residue.
  */
 export function stripRawHyperlinks(text: string): string {
-  if (!text.includes(OSC8_INTRO)) return text
+  if (!text.includes(OSC8_INTRO) && !text.includes(C1_OSC_INTRO)) return text
   let result = text
   for (let pass = 0; pass < STRIP_PASSES; pass++) {
     const next = result.replace(OSC8_SEQUENCE_RE, '')
     if (next === result) break
     result = next
   }
+  // Official `Dt`: sweep C1 OSC introducers so an 8-bit `\x9d8;;URL\x07`
+  // cannot reach the terminal as a clickable cell.
+  result = result.replace(C1_OSC_INTRO_RE, '')
   // Defang unterminated/orphaned introducers: delete the bare ESC byte per
   // official `Wt` — printable residue stays visible but inert.
   return result.replace(BARE_ESC_RE, '')

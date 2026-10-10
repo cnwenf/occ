@@ -727,9 +727,11 @@ export const FileEditTool = buildTool({
     // Notify VSCode about the file change for diff view
     notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, updatedFile)
 
-    // 6. Update read timestamp, to invalidate stale writes. Content stored
-    // BOM-stripped (binary Hxe); line endings are preserved by Edit, so no
-    // CRLF normalization here.
+    // 6. Update read timestamp, to invalidate stale writes. Content stored in
+    // the canonical J9 form (normalizeForComparison: BOM-stripped, LF-only) —
+    // acceptance F4: `updatedFile` can carry CRLF from `new_string` while
+    // writeTextContent LF-normalizes the disk; storing raw CRLF here made the
+    // next consecutive Edit's drift compare misfire as false-stale.
     // CC 2.1.295 reseed propagation (official
     // `lo=h||no||ao||jt&&(!k4(en)||Nn||!PLe(en,FS(Nt)))` then
     // `set(...,lo&&{contentNotInModelContext:!0},jt&&en?.isPartialView===!0&&{isPartialView:!0})`):
@@ -751,7 +753,7 @@ export const FileEditTool = buildTool({
       staleRecovered === true ||
       !priorTrustedAndCurrent
     readFileState.set(absoluteFilePath, {
-      content: stripBom(updatedFile),
+      content: normalizeForComparison(updatedFile),
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
       limit: undefined,

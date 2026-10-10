@@ -599,6 +599,67 @@ describe('callMcpToolWithAutoBackground', () => {
     expect(updated.abortController).toBeUndefined()
   })
 
+  // Acceptance F3: kill() wins the race — a settle arriving after the task
+  // was killed must NOT overwrite the terminal 'killed' status (mirrors the
+  // McpBackgroundTask.kill() running-state guard).
+  test('F3: kill-then-reject → settle observer keeps status "killed" (no failed overwrite)', async () => {
+    // Arrange
+    const run = makeRun<{ content: string }>()
+    const registry = makeRegistry()
+
+    const outcome = await callMcpToolWithAutoBackground({
+      run: run.fn,
+      serverName: 'srv',
+      toolName: 'tl',
+      toolUseId: 'tuu-kill-reject',
+      parentAbortController: new AbortController(),
+      taskRegistry: registry,
+      autoBackgroundMs: 30,
+    })
+    expect(outcome.kind).toBe('backgrounded')
+    expect(registry.registered.length).toBe(1)
+
+    // Simulate kill(): the registry row moves to the terminal 'killed' state.
+    registry.registered[0]!.status = 'killed'
+
+    // Act — the backgrounded call rejects AFTER the kill
+    run.reject(new Error('aborted by kill'))
+    await new Promise(r => setTimeout(r, 10))
+
+    // Assert — the observer saw a non-running task and left it untouched
+    expect(registry.updates.length).toBe(1)
+    expect(registry.updates[0]!.task).toBe(registry.registered[0])
+    expect(registry.updates[0]!.task.status).toBe('killed')
+  })
+
+  test('F3: kill-then-resolve → settle observer keeps status "killed" (no completed overwrite)', async () => {
+    // Arrange
+    const run = makeRun<{ content: string }>()
+    const registry = makeRegistry()
+
+    const outcome = await callMcpToolWithAutoBackground({
+      run: run.fn,
+      serverName: 'srv',
+      toolName: 'tl',
+      toolUseId: 'tuu-kill-resolve',
+      parentAbortController: new AbortController(),
+      taskRegistry: registry,
+      autoBackgroundMs: 30,
+    })
+    expect(outcome.kind).toBe('backgrounded')
+
+    // Simulate kill() before the late settlement lands.
+    registry.registered[0]!.status = 'killed'
+
+    // Act — the backgrounded call resolves AFTER the kill
+    run.resolve({ content: 'too late' })
+    await new Promise(r => setTimeout(r, 10))
+
+    // Assert
+    expect(registry.updates.length).toBe(1)
+    expect(registry.updates[0]!.task.status).toBe('killed')
+  })
+
   test('ct-04: settled (non-backgrounded) run does NOT call taskRegistry.update', async () => {
     // Arrange — tool resolves before the threshold
     const run = makeRun<{ content: string }>()
