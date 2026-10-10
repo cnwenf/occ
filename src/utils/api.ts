@@ -129,7 +129,8 @@ export async function toolToAPISchema(
     /**
      * CC 2.1.295 #112 — true when this tool is serialized because tool search
      * discovered it. An MCP tool then renders its description at the wider
-     * 16384 cap instead of 2048 (getMaxMcpDescriptionLength in
+     * 16384 cap instead of the default cap — 4096 since 2.1.296 #061, 2048
+     * before (getMaxMcpDescriptionLength in
      * services/mcp/client.ts). When omitted it is derived from `deferLoading`
      * for MCP tools — see the derivation note below.
      */

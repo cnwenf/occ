@@ -28,9 +28,17 @@ import type { MCPServerConnection, ScopedMcpServerConfig } from '../types.js'
  *   tool-search-discovered tools; schema-cache bit @215678602 adds `"LT:"`
  *   when `loadedThroughToolSearch===!0&&isMcp===!0`.
  *
+ * CC 2.1.296 #061 SUPERSESSION: the default (sent-up-front) cap is now 4,096
+ * (was 2,048); the tool-search cap stays 16,384. v296 ELF @214045823:
+ * `sxn=4096,sns=16384` (v295 @213397126: `_Rn=2048,Qts=16384`); getter
+ * @217807549 `Ax(e=!1){return a.CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH??
+ * (e?sns:sxn)}` — same shape as the 295 `mx`. 2.1.296 changelog line 61:
+ * "Changed the default limit on MCP tool descriptions sent up front and on
+ * MCP server instructions from 2,048 to 4,096 characters."
+ *
  * Scope note: this suite pins BOTH the cap layer (the mx/Jt equivalents in
  * client.ts) AND the production serializer wiring. As of the #112 catch-up the
- * MCP factory computes the 2048 and 16384 variants, `Tool.prompt`'s options
+ * MCP factory computes the 4096 and 16384 variants, `Tool.prompt`'s options
  * type declares `loadedThroughToolSearch`, and `toolToAPISchema` (utils/api.ts)
  * plumbs the flag into `tool.prompt()` — derived from `deferLoading && isMcp`
  * (the official call-site condition `bn&&ur(Kn)&&Nn(Kn,Cr)`, since claude.ts
@@ -41,7 +49,7 @@ import type { MCPServerConnection, ScopedMcpServerConfig } from '../types.js'
  */
 
 const ENV_KEY = 'CLAUDE_CODE_MAX_MCP_DESCRIPTION_LENGTH'
-const DEFAULT_LIMIT = 2048
+const DEFAULT_LIMIT = 4096
 const TOOL_SEARCH_LIMIT = 16384
 /** Official suffix: U+2026 HORIZONTAL ELLIPSIS, one space, `[truncated]`. */
 const SUFFIX = '… [truncated]'
@@ -62,7 +70,7 @@ afterEach(() => {
 })
 
 describe('2.1.295 #112 — getMaxMcpDescriptionLength (binary mx @~217055278)', () => {
-  test('general path stays 2048, tool-search path is 16384 (env unset)', () => {
+  test('general path stays 4096, tool-search path is 16384 (env unset)', () => {
     // Arrange / Act / Assert — `mx(e=!1){return ...??(e?Qts:_Rn)}`
     expect(getMaxMcpDescriptionLength()).toBe(DEFAULT_LIMIT)
     expect(getMaxMcpDescriptionLength(false)).toBe(DEFAULT_LIMIT)
@@ -89,9 +97,9 @@ describe('2.1.295 #112 — getMaxMcpDescriptionLength (binary mx @~217055278)', 
 })
 
 describe('2.1.295 #112 — truncateMcpDescription cap parameter (binary Jt @243847045)', () => {
-  test('default cap still truncates a 3000-char description at 2048 + suffix', () => {
+  test('default cap still truncates a 5000-char description at 4096 + suffix', () => {
     // Arrange
-    const text = 'x'.repeat(3000)
+    const text = 'x'.repeat(5000)
 
     // Act
     const result = truncateMcpDescription(text, 'Tool "t" description')
@@ -100,9 +108,9 @@ describe('2.1.295 #112 — truncateMcpDescription cap parameter (binary Jt @2438
     expect(result).toBe('x'.repeat(DEFAULT_LIMIT) + SUFFIX)
   })
 
-  test('explicit 16384 cap passes a 3000-char description through untouched', () => {
+  test('explicit 16384 cap passes a 5000-char description through untouched', () => {
     // Arrange
-    const text = 'x'.repeat(3000)
+    const text = 'x'.repeat(5000)
 
     // Act — the factory's tool-search variant: Jt(Re,label,e,mx(!0))
     const result = truncateMcpDescription(
@@ -155,7 +163,7 @@ describe('2.1.295 #112 — truncateMcpDescription cap parameter (binary Jt @2438
  * — and assert the cap on the rendered schema's description.
  */
 describe('2.1.295 #112 — 16384 cap reaches the API serializer (production path)', () => {
-  // > 2048 and < 16384: a length that cleanly distinguishes the two caps.
+  // > 4096 and < 16384: a length that cleanly distinguishes the two caps.
   const LONG_DESC = 5000
   const SUFFIX_LEN = SUFFIX.length
 
@@ -223,7 +231,7 @@ describe('2.1.295 #112 — 16384 cap reaches the API serializer (production path
     clearToolSchemaCache()
   })
 
-  test('MCP tool discovered via tool search is NOT truncated to 2048 (deferLoading production signal)', async () => {
+  test('MCP tool discovered via tool search is NOT truncated to 4096 (deferLoading production signal)', async () => {
     // Arrange — claude.ts marks a discovered deferred MCP tool defer_loading:true.
     const desc = 'x'.repeat(LONG_DESC)
     const { tool, tools } = await buildMcpTool('cap295-reach-defer', desc)
@@ -231,12 +239,12 @@ describe('2.1.295 #112 — 16384 cap reaches the API serializer (production path
     // Act
     const schema = await serialize(tool, tools, { deferLoading: true })
 
-    // Assert — all 5000 chars survive (≤ 16384 cap); no 2048 cut, no suffix.
+    // Assert — all 5000 chars survive (≤ 16384 cap); no 4096 cut, no suffix.
     expect(schema.description).toBe(desc)
     expect((schema.description as string).length).toBe(LONG_DESC)
   })
 
-  test('MCP tool discovered via tool search is NOT truncated to 2048 (explicit loadedThroughToolSearch)', async () => {
+  test('MCP tool discovered via tool search is NOT truncated to 4096 (explicit loadedThroughToolSearch)', async () => {
     // Arrange
     const desc = 'x'.repeat(LONG_DESC)
     const { tool, tools } = await buildMcpTool('cap295-reach-explicit', desc)
@@ -248,7 +256,7 @@ describe('2.1.295 #112 — 16384 cap reaches the API serializer (production path
     expect(schema.description).toBe(desc)
   })
 
-  test('MCP tool NOT loaded through tool search stays truncated at 2048 + suffix', async () => {
+  test('MCP tool NOT loaded through tool search stays truncated at 4096 + suffix', async () => {
     // Arrange — an always-loaded MCP tool (no defer_loading, not discovered).
     const desc = 'x'.repeat(LONG_DESC)
     const { tool, tools } = await buildMcpTool('cap295-reach-normal', desc)
@@ -256,12 +264,12 @@ describe('2.1.295 #112 — 16384 cap reaches the API serializer (production path
     // Act
     const schema = await serialize(tool, tools)
 
-    // Assert — unchanged 2048 behavior.
+    // Assert — default-cap behavior (4096 since 2.1.296 #061).
     expect(schema.description).toBe('x'.repeat(DEFAULT_LIMIT) + SUFFIX)
     expect((schema.description as string).length).toBe(DEFAULT_LIMIT + SUFFIX_LEN)
   })
 
-  test('explicit loadedThroughToolSearch:false keeps the 2048 truncation', async () => {
+  test('explicit loadedThroughToolSearch:false keeps the 4096 truncation', async () => {
     // Arrange
     const desc = 'x'.repeat(LONG_DESC)
     const { tool, tools } = await buildMcpTool('cap295-reach-false', desc)
@@ -288,8 +296,8 @@ describe('2.1.295 #112 — 16384 cap reaches the API serializer (production path
     )
   })
 
-  test('cache key distinguishes forms: the 2048 entry is not reused for the tool-search variant', async () => {
-    // Arrange — serialize the SAME tool normally first (caches the 2048 base),
+  test('cache key distinguishes forms: the 4096 entry is not reused for the tool-search variant', async () => {
+    // Arrange — serialize the SAME tool normally first (caches the 4096 base),
     // then as tool-search-discovered WITHOUT clearing the cache in between.
     const desc = 'x'.repeat(LONG_DESC)
     const { tool, tools } = await buildMcpTool('cap295-cache-fwd', desc)
@@ -298,7 +306,7 @@ describe('2.1.295 #112 — 16384 cap reaches the API serializer (production path
     const normal = await serialize(tool, tools) // caches under `<name>:<schema>`
     const viaSearch = await serialize(tool, tools, { deferLoading: true }) // `LT:<name>:<schema>`
 
-    // Assert — the second call did NOT return the stale 2048 base.
+    // Assert — the second call did NOT return the stale 4096 base.
     expect(normal.description).toBe('x'.repeat(DEFAULT_LIMIT) + SUFFIX)
     expect(viaSearch.description).toBe(desc)
   })
