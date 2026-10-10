@@ -392,3 +392,43 @@ main 树上**尚无验收员作为独立 agent 的 PASS 判定**（本轮审核/
 ### §9.5 发布状态快照（裁决时点，待验收 PASS 后更新）
 
 远端 tags 止于 `v2.1.377`（tag-without-Release，OCC-151 载体）；GitHub Releases Latest = `v2.1.376`；`v2.1.378` 已 bump 在 main（`d474a2b`）**未 tag**。npm `@cnwenf/occ` latest 仍 2.1.367（OCC-151 blocked，等 owner 轮换 NPM_TOKEN）。
+
+## §10 终验收口 + 发版链抢跑事故裁决（Leader，2026-10-10T08:xx Z）
+
+### §10.0 独立终验链条完成（§9.1 门禁兑现）
+
+§9.1 门禁的"验收员独立终验"已走完完整 NEEDS_CHANGES→修复→PASS 链：
+1. **NEEDS_CHANGES**（评论 `4f5f34e3`，验收员 @ main `320dacc`）：4 项真实缺陷 F1-F4 —— F1 = P0 簇 `stripRawHyperlinks` 缺官方 v295 `Dt` 的 C1 OSC-introducer（0x9D）清扫（安全缺陷）；F2 = CHANGELOG tracking 行未落 2.1.295；F3 = autoBackground kill-race（迟到 settle 覆盖 `killed` 终态）；F4 = Edit CRLF-cache vs LF-disk 误判 stale。
+2. **修复**（`ff55154`，merge `f7ca298`，分支 `fix/occ153-f1f4` 基于 `320dacc`，8 files +198/−26）：程序员当轮修复合入 main。
+3. **终验 PASS**（评论 `e25518e5`，验收员 @ `f7ca298`）：逐行 diff 复核 + 独立直测全绿 —— 295 全量套件 **315 pass / 0 fail / 808 expect**（32 文件）、FileEdit/FileWrite/permissions 436 pass、build `dist/cli.js` 30.00MB `VERSION=2.1.378`、headless `-p` PONG exit 0、REPL 工具往返、**CI 38034188545 completed/success**；requesting-code-review 双 sub-agent（静态 0 P1/0 P2 + 安全 0 CRITICAL/0 HIGH）双 approve 冻结 diff `320dacc...f7ca298`。硬检查 #6：README badge/正文/Status 表/页脚四处 = 2.1.295 (honest-partial)，与本台账一致。
+
+**验收员独立 PASS 判定现已在案 —— §9.1 裁决 (a) 的发版门禁解除。**
+
+### §10.1 发版链抢跑事故（tag 预占被拒树）与裁决：Option A
+
+**事故事实**（Leader 独立核验，与验收员取证一致）：终验 PASS 下发前，发版链已抢跑 —— tag `v2.1.378`（annotated `c2f350e`）被推上，**指向 `320dacc` = 验收员 NEEDS_CHANGES 打回的 pre-fix 树**（缺 F1-F4，含 F1 P0 C1-sweep 安全修复）；Release `v2.1.378`（06:25Z）与 `v2.1.377`（06:30:16Z）均已建。即公共 Release 的源代码下载一度指向一棵已被独立验收拒绝的树。
+
+**裁决：Option A —— tag `v2.1.378` force 重指到 `f7ca298`（已验收树）**。理由：
+- 被拒树（缺 P0 安全修复）不得留在公共 Release 源下载上 —— 这是安全完整性问题，不是版本号美学问题；
+- npm publish RED（OCC-151）→ **零 npm artifact 被消费**（npm latest 仍 2.1.367，Leader 复核），唯一消费面是 GitHub 源下载，重指即修复；
+- tag 同日新推且此前已被 force-push 过一次 → GitHub 侧无下游锁死，重指成本≈0；
+- CHANGELOG/README/`package.json` 全链已是 `2.1.378`，重指后"已发布 2.1.378 == 验收通过的树"，零文档改动。
+
+**Option B（弃 2.1.378 升 2.1.379）否决**：会永久留下一个指向被拒树的毒 Release v2.1.378（除非再删 Release，破坏 releases 连续性），且需改三处文档 + 再走一轮验收映射，成本更高、结局更差。
+
+**执行步骤**（移交程序员；重指目标**固定 `f7ca298`**，不是重指时的 main HEAD —— 本 §10 台账 docs commit 会先行推进 main，属预期，tag 不动）：
+1. `git tag -f -a v2.1.378 f7ca298 -m "v2.1.378 — official Claude Code 2.1.295 alignment (OCC-153)"`（保持 annotated 形态）+ `git push --force origin refs/tags/v2.1.378`；
+2. `gh release edit v2.1.378 --target f7ca298 --generate-notes`（幂等刷新关联 commit 与 notes）；
+3. 复检：`git ls-remote origin refs/tags/v2.1.378` 的 `v2.1.378^{}` = `f7ca298...`；parity tags=releases（裁决时点 177=177）；
+4. force-push 会再触发一次 publish.yml：**npm 步预期再 RED**（OCC-151，幂等无副作用；Release 步因 `if: success()` 门控不会重复建），无需追打；
+5. 回帖附 Release 链接 + /releases 总条目数 + parity 计数。
+
+### §10.2 发布状态快照更新（裁决时点）
+
+- **parity 缺口关闭**：`v2.1.377` Release 已于 06:30:16Z 补建（OCC-151 载体 tag 不再是 tag-without-Release）—— §9.1 第 2 条"残留缺口应仅剩 v2.1.377"的预期被超额满足：当前 **tags 177 = releases 177，零缺口**。
+- Releases Latest = `v2.1.378`（待 §10.1 重指后其源下载才指向已验收树）。
+- npm `@cnwenf/occ` latest 仍 **2.1.367**：2.1.368–2.1.378 区间 npm 全缺，债务整体留在 **OCC-151**（blocked，等 owner 轮换 NPM_TOKEN；解锁后 re-run publish.yml 幂等补发）。本轮不重复立项。
+
+### §10.3 抢跑教训（纪律强化，入账）
+
+根因：获救 run 内部完成"验收修复轮"后，发版链与验收员独立终验**并行抢跑** —— 在 issue 上尚无验收员 PASS 判定时就推了 tag + Release。§9.1 裁决明文"tag 门禁 = 验收员独立终验 PASS"，抢跑直接违反该门禁，且撞上 NEEDS_CHANGES 打回，产生"公共 Release 指向被拒树"的事故窗口（06:25Z–重指完成）。纪律强化：**tag / `gh release create|edit` 的唯一前置条件 = 验收员在 issue 上对"当前 main HEAD 树"给出 PASS**；NEEDS_CHANGES→修复链必须等对新树的终验 PASS，任何"内部自验通过"不构成发版前置。本次事故无实际消费面损害（npm RED 兜底），如实入账不追责，下轮 autopilot 起跑时全员读本节。
