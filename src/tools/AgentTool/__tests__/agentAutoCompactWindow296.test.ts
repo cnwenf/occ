@@ -26,7 +26,9 @@ import { getMaxOutputTokensForModel } from '../../../services/api/claude.js'
 import {
   AUTO_COMPACT_WINDOW_MAX,
   AUTO_COMPACT_WINDOW_MIN,
+  getSessionAutoCompactWindow,
   setSessionAutoCompactWindow,
+  wrapAutoCompactWindowCeiling,
 } from '../../../utils/autoCompactWindow.js'
 import {
   AgentJsonSchema,
@@ -324,10 +326,17 @@ describe('CC 2.1.296 #002: subagent window override consumption', () => {
     setSessionAutoCompactWindow(150_000)
     const inherited = getEffectiveContextWindowSize(TEST_MODEL)
 
-    // Act
-    const effective = getEffectiveContextWindowSize(TEST_MODEL, 900_000)
+    // Act — R2 #002 switch: the "never raises" contract is enforced at the
+    // spawn site by the official WJn ceiling wrap (@223498818, consumed via
+    // the spawn-site structure @223555765), not by a raw min() at
+    // consumption time. Subagent contexts carry the wrapped ceiling shape.
+    const wrapped = wrapAutoCompactWindowCeiling(
+      getSessionAutoCompactWindow(),
+      900_000,
+    )
+    const effective = getEffectiveContextWindowSize(TEST_MODEL, wrapped)
 
-    // Assert — min(inherited, override) = inherited
+    // Assert — ceiling semantics: effective = inherited (never raised)
     expect(effective).toBe(inherited)
   })
 })

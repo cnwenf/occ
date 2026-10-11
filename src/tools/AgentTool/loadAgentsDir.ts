@@ -14,6 +14,10 @@ import {
   McpServerConfigSchema,
 } from '../../services/mcp/types.js'
 import type { ToolUseContext } from '../../Tool.js'
+import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
+} from '../../utils/autoCompactWindow.js'
 import { compareNamesAsciiFirst } from '../../utils/asciiFirstCompare.js'
 import {
   AUTO_COMPACT_WINDOW_MAX,
@@ -26,7 +30,10 @@ import {
   parseEffortValue,
 } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { parsePositiveIntFromFrontmatter } from '../../utils/frontmatterParser.js'
+import {
+  parseAutoCompactWindowFromFrontmatter,
+  parsePositiveIntFromFrontmatter,
+} from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -103,9 +110,9 @@ export const AgentJsonSchema = lazySchema(() =>
     mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
     hooks: HooksSchema().optional(),
     maxTurns: z.number().int().positive().optional(),
-    // CC 2.1.296 #002 (official agent schema @208188475):
-    // `autoCompactWindow:E().int().min(b0).max(TN).optional()` — same bounds as
-    // the settings-level autoCompactWindow (100000..1000000).
+    // 2.1.296 PORT #002 (official --agents schema @217449940):
+    // `autoCompactWindow:E().int().min(b0).max(TN).optional()` — between
+    // maxTurns and skills, no describe on this schema.
     autoCompactWindow: z
       .number()
       .int()
@@ -145,11 +152,11 @@ export type BaseAgentDefinition = {
   effort?: EffortValue
   permissionMode?: PermissionMode
   maxTurns?: number // Maximum number of agentic turns before stopping
-  /** CC 2.1.296 #002 (official 2.1.296 agent-definition schema):
-   * "Token count at which this agent compacts its own conversation when it
-   * runs as a subagent. It only lowers the window the subagent would
-   * otherwise inherit. No effect on the main session agent."
-   * Bounds: AUTO_COMPACT_WINDOW_MIN..AUTO_COMPACT_WINDOW_MAX (100000..1000000). */
+  /** 2.1.296 PORT #002. Official agent-definition schema describe
+   * (byte-verified @208188475): "Token count at which this agent compacts
+   * its own conversation when it runs as a subagent. It only lowers the
+   * window the subagent would otherwise inherit. No effect on the main
+   * session agent." Valid range [1e5, 1e6] (`b0`/`TN` @207848454). */
   autoCompactWindow?: number
   filename?: string // Original filename without .md extension (for user/project/managed agents)
   baseDir?: string
@@ -687,7 +694,6 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.hooks ? { hooks: parsed.hooks } : {}),
       ...(parsed.maxTurns !== undefined ? { maxTurns: parsed.maxTurns } : {}),
-      // CC 2.1.296 #002: subagent-level auto-compact window (--agents JSON).
       ...(parsed.autoCompactWindow !== undefined
         ? { autoCompactWindow: parsed.autoCompactWindow }
         : {}),
@@ -1019,26 +1025,23 @@ export function parseAgentFromMarkdown(
       )
     }
 
-    // CC 2.1.296 #002: parse autoCompactWindow from frontmatter. Official
-    // schema: int within the settings-level autoCompactWindow bounds
-    // (AUTO_COMPACT_WINDOW_MIN..AUTO_COMPACT_WINDOW_MAX). Invalid values are
-    // logged and ignored (field omitted), matching OCC's maxTurns/effort
-    // frontmatter error style.
+    // 2.1.296 PORT #002: parse autoCompactWindow from frontmatter. Official
+    // parser @217695969 (byte-verified):
+    //   `let ut=r.autoCompactWindow,Rt=ihr(ut);
+    //    if(ut!==void 0&&Rt===void 0)t(`Agent file ${e} has invalid
+    //    autoCompactWindow '${ut}'. Must be an integer from ${b0} to ${TN}.`,
+    //    {level:"warn"})`
     const autoCompactWindowRaw = frontmatter['autoCompactWindow']
-    let autoCompactWindow: number | undefined
-    if (autoCompactWindowRaw !== undefined) {
-      const parsedWindow = parsePositiveIntFromFrontmatter(autoCompactWindowRaw)
-      if (
-        parsedWindow !== undefined &&
-        parsedWindow >= AUTO_COMPACT_WINDOW_MIN &&
-        parsedWindow <= AUTO_COMPACT_WINDOW_MAX
-      ) {
-        autoCompactWindow = parsedWindow
-      } else {
-        logForDebugging(
-          `Agent file ${filePath} has invalid autoCompactWindow '${autoCompactWindowRaw}'. Must be an integer between ${AUTO_COMPACT_WINDOW_MIN} and ${AUTO_COMPACT_WINDOW_MAX}.`,
-        )
-      }
+    const autoCompactWindow =
+      parseAutoCompactWindowFromFrontmatter(autoCompactWindowRaw)
+    if (
+      autoCompactWindowRaw !== undefined &&
+      autoCompactWindow === undefined
+    ) {
+      logForDebugging(
+        `Agent file ${filePath} has invalid autoCompactWindow '${autoCompactWindowRaw}'. Must be an integer from ${AUTO_COMPACT_WINDOW_MIN} to ${AUTO_COMPACT_WINDOW_MAX}.`,
+        { level: 'warn' },
+      )
     }
 
     // Extract filename without extension

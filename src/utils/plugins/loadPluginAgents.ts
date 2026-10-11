@@ -14,10 +14,15 @@ import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
 import { getPluginErrorMessage } from '../../types/plugin.js'
+import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
+} from '../autoCompactWindow.js'
 import { logForDebugging } from '../debug.js'
 import { EFFORT_LEVELS, parseEffortValue } from '../effort.js'
 import {
   coerceDescriptionToString,
+  parseAutoCompactWindowFromFrontmatter,
   parseFrontmatter,
   parsePositiveIntFromFrontmatter,
 } from '../frontmatterParser.js'
@@ -187,6 +192,23 @@ async function loadAgentFromFile(
       )
     }
 
+    // 2.1.296 PORT #002: parse autoCompactWindow. Official plugin parser
+    // @217649573 (byte-verified):
+    //   `t(`Plugin agent file ${e} has invalid autoCompactWindow '${Cn}'.
+    //     Must be an integer from ${b0} to ${TN}.`,{level:"warn"})`
+    const autoCompactWindowRaw = frontmatter.autoCompactWindow
+    const autoCompactWindow =
+      parseAutoCompactWindowFromFrontmatter(autoCompactWindowRaw)
+    if (
+      autoCompactWindowRaw !== undefined &&
+      autoCompactWindow === undefined
+    ) {
+      logForDebugging(
+        `Plugin agent file ${filePath} has invalid autoCompactWindow '${autoCompactWindowRaw}'. Must be an integer from ${AUTO_COMPACT_WINDOW_MIN} to ${AUTO_COMPACT_WINDOW_MAX}.`,
+        { level: 'warn' },
+      )
+    }
+
     // Parse disallowedTools
     const disallowedTools =
       frontmatter.disallowedTools !== undefined
@@ -230,6 +252,7 @@ async function loadAgentFromFile(
       ...(isolation ? { isolation } : {}),
       ...(effort !== undefined ? { effort } : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
       ...(cacheTtl !== undefined ? { cacheTtl } : {}),
     } as AgentDefinition
   } catch (error) {

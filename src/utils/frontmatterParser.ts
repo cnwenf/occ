@@ -3,6 +3,10 @@
  * Extracts and parses YAML frontmatter between --- delimiters
  */
 
+import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
+} from './autoCompactWindow.js'
 import { logForDebugging } from './debug.js'
 import type { HooksSettings } from './settings/types.js'
 import { parseYaml } from './yaml.js'
@@ -362,6 +366,27 @@ export function parsePositiveIntFromFrontmatter(
   }
 
   return undefined
+}
+
+/**
+ * Parses a subagent `autoCompactWindow` frontmatter value.
+ *
+ * Port of the official 2.1.296 `ihr` (byte-verified @211911797):
+ *   `function ihr(e){let n=h0n(e);return n!==void 0&&n>=b0&&n<=TN?n:void 0}`
+ * (`h0n` = parsePositiveIntFromFrontmatter, `b0`=1e5, `TN`=1e6.)
+ *
+ * @returns the token count when it is an integer within
+ * [AUTO_COMPACT_WINDOW_MIN, AUTO_COMPACT_WINDOW_MAX], else undefined.
+ */
+export function parseAutoCompactWindowFromFrontmatter(
+  value: unknown,
+): number | undefined {
+  const parsed = parsePositiveIntFromFrontmatter(value)
+  return parsed !== undefined &&
+    parsed >= AUTO_COMPACT_WINDOW_MIN &&
+    parsed <= AUTO_COMPACT_WINDOW_MAX
+    ? parsed
+    : undefined
 }
 
 /**

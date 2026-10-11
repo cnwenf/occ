@@ -5,6 +5,7 @@ import type { QuerySource } from '../../constants/querySource.js'
 import type { ToolUseContext } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import {
+  type AutoCompactWindowOverride,
   getSessionAutoCompactWindow,
   resolveAutoCompactWindow,
 } from '../../utils/autoCompactWindow.js'
@@ -43,14 +44,12 @@ import { trySessionMemoryCompaction } from './sessionMemoryCompact.js'
 const MAX_OUTPUT_TOKENS_FOR_SUMMARY = 20_000
 
 // Returns the context window size minus the max output tokens for the model.
-//
-// CC 2.1.296 #002: `subagentWindowOverride` carries a running subagent's
-// frontmatter/--agents `autoCompactWindow`. Official describe: "It only
-// lowers the window the subagent would otherwise inherit. No effect on the
-// main session agent." → effective window = min(inherited window, override).
+// 2.1.296 #002: subagent contexts thread their own override
+// (toolUseContext.options.autoCompactWindow) via the optional param; the
+// default keeps every main-thread caller on the session singleton.
 export function getEffectiveContextWindowSize(
   model: string,
-  subagentWindowOverride?: number,
+  override: AutoCompactWindowOverride = getSessionAutoCompactWindow(),
 ): number {
   const reservedTokensForSummary = Math.min(
     getMaxOutputTokensForModel(model),
@@ -64,21 +63,11 @@ export function getEffectiveContextWindowSize(
   // while it is set), then the session override (per-model aggregate, a bare
   // number from the --autocompact flag, or undefined for auto). The resolver
   // caps to the model's native window — the official "capped to model limit"
-  // behavior.
-  const { window } = resolveAutoCompactWindow(
-    model,
-    contextWindow,
-    getSessionAutoCompactWindow(),
-  )
+  // behavior. 2.1.296 #002: the resolver also understands the ceiling shape
+  // (subagent autoCompactWindow only LOWERS the inherited window).
+  const { window } = resolveAutoCompactWindow(model, contextWindow, override)
 
-  // CC 2.1.296 #002: a subagent's autoCompactWindow only LOWERS the inherited
-  // window (min semantics) — it can never raise it above the resolved window.
-  const effectiveWindow =
-    subagentWindowOverride !== undefined
-      ? Math.min(window, subagentWindowOverride)
-      : window
-
-  return effectiveWindow - reservedTokensForSummary
+  return window - reservedTokensForSummary
 }
 
 export type AutoCompactTrackingState = {
@@ -114,12 +103,9 @@ const NON_COMPACTABLE_OVERFLOW_QUERY_SOURCES: ReadonlySet<string> = new Set([
 
 export function getAutoCompactThreshold(
   model: string,
-  subagentWindowOverride?: number,
+  override: AutoCompactWindowOverride = getSessionAutoCompactWindow(),
 ): number {
-  const effectiveContextWindow = getEffectiveContextWindowSize(
-    model,
-    subagentWindowOverride,
-  )
+  const effectiveContextWindow = getEffectiveContextWindowSize(model, override)
 
   const autocompactThreshold =
     effectiveContextWindow - AUTOCOMPACT_BUFFER_TOKENS
@@ -142,7 +128,7 @@ export function getAutoCompactThreshold(
 export function calculateTokenWarningState(
   tokenUsage: number,
   model: string,
-  subagentWindowOverride?: number,
+  override: AutoCompactWindowOverride = getSessionAutoCompactWindow(),
 ): {
   percentLeft: number
   isAboveWarningThreshold: boolean
@@ -150,13 +136,10 @@ export function calculateTokenWarningState(
   isAboveAutoCompactThreshold: boolean
   isAtBlockingLimit: boolean
 } {
-  const autoCompactThreshold = getAutoCompactThreshold(
-    model,
-    subagentWindowOverride,
-  )
+  const autoCompactThreshold = getAutoCompactThreshold(model, override)
   const threshold = isAutoCompactEnabled()
     ? autoCompactThreshold
-    : getEffectiveContextWindowSize(model, subagentWindowOverride)
+    : getEffectiveContextWindowSize(model, override)
 
   const percentLeft = Math.max(
     0,
@@ -172,7 +155,7 @@ export function calculateTokenWarningState(
   const isAboveAutoCompactThreshold =
     isAutoCompactEnabled() && tokenUsage >= autoCompactThreshold
 
-  const actualContextWindow = getEffectiveContextWindowSize(model)
+  const actualContextWindow = getEffectiveContextWindowSize(model, override)
   const defaultBlockingLimit =
     actualContextWindow - MANUAL_COMPACT_BUFFER_TOKENS
 
@@ -246,9 +229,7 @@ export async function shouldAutoCompact(
   // pre-snip context, so tokenCountWithEstimation can't see the savings.
   // Subtract the rough-delta that snip already computed.
   snipTokensFreed = 0,
-  // CC 2.1.296 #002: subagent frontmatter/--agents autoCompactWindow (only
-  // lowers the inherited window). Undefined on the main session.
-  subagentWindowOverride?: number,
+  override: AutoCompactWindowOverride = getSessionAutoCompactWindow(),
 ): Promise<boolean> {
   // Recursion guards. session_memory and compact are forked agents that
   // would deadlock.
@@ -307,11 +288,8 @@ export async function shouldAutoCompact(
   }
 
   const tokenCount = tokenCountWithEstimation(messages) - snipTokensFreed
-  const threshold = getAutoCompactThreshold(model, subagentWindowOverride)
-  const effectiveWindow = getEffectiveContextWindowSize(
-    model,
-    subagentWindowOverride,
-  )
+  const threshold = getAutoCompactThreshold(model, override)
+  const effectiveWindow = getEffectiveContextWindowSize(model, override)
 
   logForDebugging(
     `autocompact: tokens=${tokenCount} threshold=${threshold} effectiveWindow=${effectiveWindow}${snipTokensFreed > 0 ? ` snipFreed=${snipTokensFreed}` : ''}`,
@@ -320,7 +298,7 @@ export async function shouldAutoCompact(
   const { isAboveAutoCompactThreshold } = calculateTokenWarningState(
     tokenCount,
     model,
-    subagentWindowOverride,
+    override,
   )
 
   return isAboveAutoCompactThreshold
@@ -378,16 +356,17 @@ export async function autoCompactIfNeeded(
   }
 
   const model = toolUseContext.options.mainLoopModel
-  // CC 2.1.296 #002: a subagent's own autoCompactWindow (frontmatter /
-  // --agents) lowers its inherited auto-compact window. Undefined on the main
-  // session context → main conversation behavior is unchanged.
-  const subagentWindowOverride = toolUseContext.options.subagentAutoCompactWindow
+  // 2.1.296 #002: subagent contexts carry their own (possibly
+  // ceiling-wrapped) override; main-thread contexts fall back to the
+  // session singleton. Official threads options.autoCompactWindow per-query.
+  const autoCompactOverride =
+    toolUseContext.options.autoCompactWindow ?? getSessionAutoCompactWindow()
   const shouldCompact = await shouldAutoCompact(
     messages,
     model,
     querySource,
     snipTokensFreed,
-    subagentWindowOverride,
+    autoCompactOverride,
   )
 
   // Official v288: `if(!(V!==void 0||await OFo(...)))return{kind:"not_needed"}`
@@ -400,10 +379,7 @@ export async function autoCompactIfNeeded(
     isRecompactionInChain: tracking?.compacted === true,
     turnsSincePreviousCompact: tracking?.turnCounter ?? -1,
     previousCompactTurnId: tracking?.turnId,
-    autoCompactThreshold: getAutoCompactThreshold(
-      model,
-      subagentWindowOverride,
-    ),
+    autoCompactThreshold: getAutoCompactThreshold(model, autoCompactOverride),
     querySource,
   }
 

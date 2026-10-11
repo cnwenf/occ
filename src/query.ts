@@ -659,7 +659,7 @@ async function* queryLoop(
     let turnModel = toolUseContext.options.mainLoopModel
     const turnContextRoom = createContextRoom({
       getModel: () => turnModel,
-      autoCompactWindow: toolUseContext.options.subagentAutoCompactWindow,
+      autoCompactWindow: toolUseContext.options.autoCompactWindow,
       getMessages: () => messagesForQuery,
     })
     toolUseContext = {
