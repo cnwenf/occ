@@ -103,7 +103,9 @@ import {
 } from '../../utils/telemetry/perfettoTracing.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
+import { getSessionAutoCompactWindow } from '../../utils/autoCompactWindow.js'
 import { resolveAgentTools } from './agentToolUtils.js'
+import { computeSubagentAutoCompactWindow } from './forkSubagent.js'
 import {
   type AgentDefinition,
   hasFrontmatterHooks,
@@ -932,6 +934,20 @@ export async function* runAgent({
     // reads undefined and only the message-scan fallback fires — which
     // autocompact defeats by replacing the fork-boilerplate message.
     ...(useExactTools && { querySource }),
+    // 2.1.296 PORT #002: thread the auto-compact window override down the
+    // subagent chain. Official spawn site @223555765:
+    //   `autoCompactWindow: e.agentType===Q$&&Xa(e)
+    //      ? n.options.autoCompactWindow
+    //      : WJn(n.options.autoCompactWindow, e.autoCompactWindow)`
+    // The inherited value is the parent context's override, falling back to
+    // OCC's session singleton (the official threads it per-query from
+    // bootstrap `XEo(options.autocompact)`; OCC sets the singleton once from
+    // main.tsx — semantics equivalent: both are the value the parent query
+    // would resolve against at spawn time).
+    autoCompactWindow: computeSubagentAutoCompactWindow(
+      agentDefinition,
+      toolUseContext.options.autoCompactWindow ?? getSessionAutoCompactWindow(),
+    ),
   }
 
   // Create subagent context using shared helper

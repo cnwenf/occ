@@ -197,3 +197,32 @@ ELF 逐站点取证（v295/v296，python mmap.find + 区域 sig 归一化 realdi
    - 结论：官方 bug 条件（reload/cd 后用陈旧列表启动被关 server）在 OCC 的双咨询 + 无 cd 面下不可复现。
 
 **裁定：#009/#014/#030 三项 VERIFIED N/A。会话/恢复簇关闭，P1 余量：#002/#006（frontmatter/tool 面）→ #023（WorkflowTool DoS）→ #016（redaction）→ #050（Windows bash）。**
+
+### §7.4 #002 子代理 `autoCompactWindow`（frontmatter/`--agents` 可设 + ceiling 解析）：**PORT DONE（8 文件 + 21 测试，A/B 零回归）**
+
+**官方取证（v296 ELF，全部字节核实，偏移可复核）**：
+- 界值 @207848454：`b0=1e5, TN=1e6`（[100000, 1000000]）。
+- agent-def schema describe @208188475："Token count at which this agent compacts its own conversation when it runs as a subagent. It only lowers the window the subagent would otherwise inherit. No effect on the main session agent."
+- `--agents` zod @217449940：`autoCompactWindow:E().int().min(b0).max(TN).optional()`（位于 maxTurns 与 skills 之间）。
+- frontmatter 解析器 `ihr` @211911797：正整数 + 闭区间界，否则 undefined。
+- 常规 markdown 警告 @217695969：`` `Agent file ${e} has invalid autoCompactWindow '${ut}'. Must be an integer from ${b0} to ${TN}.` `` `{level:"warn"}`；plugin 警告 @217649573 同文（前缀 "Plugin agent file"）。
+- ceiling 谓词 `nIt`：`typeof e==="object"&&"ceiling"in e`；包装器 `WJn` @223498818：ceiling undefined 时恒等返回 inherited，否则 `{ceiling:s,inner:n}`。
+- 解析器 `iv` ceiling 分支：先解析 inner；`inner.source==="env"` 或 `inner.window<=ceiling` → inner；否则 `{window:Math.min(ctx,ceiling),configured:ceiling,source:"settings"}`（env 豁免）。
+- spawn 接线 @223555765：`e.agentType===Q$&&Xa(e)?n.options.autoCompactWindow:WJn(n.options.autoCompactWindow,e.autoCompactWindow)`（`Q$="fork"` @211657790；`Xa=isBuiltInAgent`，经 chunk export alias 块 @243898894 `Xa as isBuiltInAgent` 消歧 —— WJn 存在跨 chunk 同名冲突[markdown-link extractor]，已排除）。
+- inProcessRunner 阈值 @242303606：teammate 自身 `agentDefinition.autoCompactWindow` 重包 ceiling（该站点无 fork 检查）。
+
+**OCC 移植（9 改 1 新）**：
+1. `src/utils/autoCompactWindow.ts` — `AutoCompactWindowCeiling` 类型 + `isAutoCompactWindowCeiling`（nIt）+ `wrapAutoCompactWindowCeiling`（WJn）+ `resolveAutoCompactWindow` 顶部 ceiling 分支（iv 顺序：branch 在 env 检查前，env 豁免经 `inner.source` 判定；嵌套 ceiling 更紧者胜）。
+2. `src/utils/frontmatterParser.ts` — `parseAutoCompactWindowFromFrontmatter`（ihr：复用 parsePositiveIntFromFrontmatter + 闭区间界）。
+3. `src/tools/AgentTool/loadAgentsDir.ts` — AgentJsonSchema 插入 `autoCompactWindow: z.number().int().min(...).max(...).optional()`（maxTurns/skills 之间）；BaseAgentDefinition 增 `autoCompactWindow?: number`（官方 describe 原文入注释）；markdown 解析 + 字节级同款警告；JSON 解析条件展开。
+4. `src/utils/plugins/loadPluginAgents.ts` — 同款解析块 + "Plugin agent file" 警告（`{level:'warn'}`）。
+5. `src/Tool.ts` — `options.autoCompactWindow?: AutoCompactWindowOverride`（官方按 query 逐层透传；OCC 以 session 单例回退，语义等价，注释已说明）。
+6. `src/tools/AgentTool/forkSubagent.ts` — 官方内联 spawn 接线提取为可测纯函数 `computeSubagentAutoCompactWindow`（fork+isBuiltInAgent → inherited 原引用透传；否则 wrap ceiling）。
+7. `src/tools/AgentTool/runAgent.ts` — agentOptions 接线：`computeSubagentAutoCompactWindow(agentDefinition, toolUseContext.options.autoCompactWindow ?? getSessionAutoCompactWindow())`。
+8. `src/services/compact/autoCompact.ts` — `getEffectiveContextWindowSize`/`getAutoCompactThreshold`/`calculateTokenWarningState`/`shouldAutoCompact` 增 override 形参（默认 `getSessionAutoCompactWindow()`，主线程调用方零改动）；`autoCompactIfNeeded` 从 `toolUseContext.options.autoCompactWindow` 取 override 贯穿阈值/窗口/recompactionInfo。
+9. `src/utils/swarm/inProcessRunner.ts` — teammate 阈值站点按官方 @242303606 重包 ceiling。
+10. `src/tools/AgentTool/__tests__/autoCompactWindowSubagent296.test.ts`（新）— 21 测试全绿：ihr 边界/类型、WJn 恒等与形状、nIt、iv ceiling 分支（cap/passthrough/auto-cap/env 豁免/嵌套更紧胜）、markdown/JSON 两解析路径、fork 透传（同引用）与 wrap。
+
+**验证**：新增 21/21 绿；邻接回归 AgentTool+autoCompactWindow 211、compact+swarm+plugins 627、frontmatter 61、tokens walkback 7 全过；biome clean；tsc 触达文件零新错；`bun run build` 绿（dist/cli.js 30.05 MB）。**git-stash A/B（src/utils 全 chunk）**：dirty 16 fail ↔ clean 16 fail，归一化后 fail 集逐名相同（DiskTaskOutput×5、InstructionsLoaded×2、getBedrockModelStrings×4[环境超时]、large-memory-files×4、stripInvisibleText×1 —— 全部既有/环境性）→ **零回归**。
+
+**裁定：#002 PORT DONE。P1 余量：#006（Read allow_large）→ #023（WorkflowTool DoS）→ #016（redaction）→ #050（Windows bash）。**

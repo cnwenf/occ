@@ -56,6 +56,7 @@ import type {
   ToolProgressData,
   WebSearchProgress,
 } from './types/tools.js'
+import type { AutoCompactWindowOverride } from './utils/autoCompactWindow.js'
 import type { FileStateCache } from './utils/fileStateCache.js'
 import type { DenialTrackingState } from './utils/permissions/denialTracking.js'
 import type { SystemPrompt } from './utils/systemPromptType.js'
@@ -198,6 +199,14 @@ export type ToolUseContext = {
     refreshTools?: () => Tools
     /** Forward subagent text/thinking into stream-json output (CC 2.1.211) */
     forwardSubagentText?: boolean
+    /** Per-query auto-compact window override (CC 2.1.296 #002). Official
+     * threads `options.autoCompactWindow` from bootstrap into every subagent
+     * spawn (`WJn(n.options.autoCompactWindow, e.autoCompactWindow)`
+     * @223555765). OCC bootstraps a session singleton instead
+     * (getSessionAutoCompactWindow); this field carries the inherited/
+     * ceiling-wrapped override down the subagent chain. Undefined falls
+     * back to the session singleton at consumption sites. */
+    autoCompactWindow?: AutoCompactWindowOverride
   }
   abortController: AbortController
   readFileState: FileStateCache

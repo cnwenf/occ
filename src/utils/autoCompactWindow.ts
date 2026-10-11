@@ -64,11 +64,54 @@ export type AutoCompactWindowAggregate = {
 /**
  * Session/CLI override tri-state (official `XEo` result): undefined = auto,
  * a number = explicit window, an aggregate = "no CLI flag, use settings".
+ *
+ * 2.1.296 (OCC-154 #002) adds a fourth shape: a per-subagent ceiling wrapper
+ * (official `{ceiling, inner}` from `WJn` @223498818) produced when a spawned
+ * agent's definition carries `autoCompactWindow`. It only ever LOWERS the
+ * window the subagent would otherwise inherit.
  */
 export type AutoCompactWindowOverride =
   | AutoCompactWindowAggregate
+  | AutoCompactWindowCeiling
   | number
   | undefined
+
+/**
+ * Official 2.1.296 ceiling wrapper shape (byte-verified @223498818):
+ *   `function WJn(e,s){let n=e;return s===void 0?n:{ceiling:s,inner:n}}`
+ * `inner` is the inherited override; `ceiling` is the subagent's own
+ * autoCompactWindow.
+ */
+export type AutoCompactWindowCeiling = {
+  ceiling: number
+  inner: AutoCompactWindowOverride
+}
+
+/**
+ * Official ceiling predicate `nIt` (byte-verified):
+ *   `function nIt(e){return typeof e==="object"&&"ceiling"in e}`
+ * (undefined fails typeof==="object"; null is guarded — `"ceiling" in null`
+ * would throw, and the official receives only override values.)
+ */
+export function isAutoCompactWindowCeiling(
+  value: AutoCompactWindowOverride,
+): value is AutoCompactWindowCeiling {
+  return (
+    typeof value === 'object' && value !== null && 'ceiling' in value
+  )
+}
+
+/**
+ * Official ceiling wrapper `WJn` (byte-verified @223498818). Identity when
+ * the ceiling is undefined, so callers can wrap unconditionally.
+ */
+export function wrapAutoCompactWindowCeiling(
+  inherited: AutoCompactWindowOverride,
+  ceiling: number | undefined,
+): AutoCompactWindowOverride {
+  if (ceiling === undefined) return inherited
+  return { ceiling, inner: inherited }
+}
 
 /** Official `Dw` result. `configured` is ALWAYS a number (auto → contextWindow). */
 export type ResolvedAutoCompactWindow = {
@@ -207,6 +250,22 @@ export function resolveAutoCompactWindow(
   contextWindow: number,
   override: AutoCompactWindowOverride,
 ): ResolvedAutoCompactWindow {
+  // Official 2.1.296 ceiling branch (byte-verified, `iv`):
+  //   `if(nIt(n)){let _e=iv(e,n.inner,r),{ceiling:ke}=n;
+  //     if(_e.source==="env"||_e.window<=ke)return _e;
+  //     return{window:Math.min(h,ke),configured:ke,source:"settings"}}`
+  // An env-var window is EXEMPT from the subagent ceiling; otherwise the
+  // ceiling only applies when the inherited window is larger than it.
+  if (isAutoCompactWindowCeiling(override)) {
+    const inner = resolveAutoCompactWindow(model, contextWindow, override.inner)
+    if (inner.source === 'env' || inner.window <= override.ceiling) return inner
+    return {
+      window: Math.min(contextWindow, override.ceiling),
+      configured: override.ceiling,
+      source: 'settings',
+    }
+  }
+
   const envRaw = process.env[ENV_WINDOW_KEY]
   if (envRaw) {
     const parsed = parseInt(envRaw, 10)

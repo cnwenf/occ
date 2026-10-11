@@ -14,6 +14,10 @@ import {
   McpServerConfigSchema,
 } from '../../services/mcp/types.js'
 import type { ToolUseContext } from '../../Tool.js'
+import {
+  AUTO_COMPACT_WINDOW_MAX,
+  AUTO_COMPACT_WINDOW_MIN,
+} from '../../utils/autoCompactWindow.js'
 import { compareNamesAsciiFirst } from '../../utils/asciiFirstCompare.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -22,7 +26,10 @@ import {
   parseEffortValue,
 } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { parsePositiveIntFromFrontmatter } from '../../utils/frontmatterParser.js'
+import {
+  parseAutoCompactWindowFromFrontmatter,
+  parsePositiveIntFromFrontmatter,
+} from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import {
@@ -99,6 +106,15 @@ const AgentJsonSchema = lazySchema(() =>
     mcpServers: z.array(AgentMcpServerSpecSchema()).optional(),
     hooks: HooksSchema().optional(),
     maxTurns: z.number().int().positive().optional(),
+    // 2.1.296 PORT #002 (official --agents schema @217449940):
+    // `autoCompactWindow:E().int().min(b0).max(TN).optional()` — between
+    // maxTurns and skills, no describe on this schema.
+    autoCompactWindow: z
+      .number()
+      .int()
+      .min(AUTO_COMPACT_WINDOW_MIN)
+      .max(AUTO_COMPACT_WINDOW_MAX)
+      .optional(),
     skills: z.array(z.string()).optional(),
     initialPrompt: z.string().optional(),
     memory: z.enum(['user', 'project', 'local']).optional(),
@@ -132,6 +148,12 @@ export type BaseAgentDefinition = {
   effort?: EffortValue
   permissionMode?: PermissionMode
   maxTurns?: number // Maximum number of agentic turns before stopping
+  /** 2.1.296 PORT #002. Official agent-definition schema describe
+   * (byte-verified @208188475): "Token count at which this agent compacts
+   * its own conversation when it runs as a subagent. It only lowers the
+   * window the subagent would otherwise inherit. No effect on the main
+   * session agent." Valid range [1e5, 1e6] (`b0`/`TN` @207848454). */
+  autoCompactWindow?: number
   filename?: string // Original filename without .md extension (for user/project/managed agents)
   baseDir?: string
   criticalSystemReminder_EXPERIMENTAL?: string // Short message re-injected at every user turn
@@ -668,6 +690,9 @@ export function parseAgentFromJson(
         : {}),
       ...(parsed.hooks ? { hooks: parsed.hooks } : {}),
       ...(parsed.maxTurns !== undefined ? { maxTurns: parsed.maxTurns } : {}),
+      ...(parsed.autoCompactWindow !== undefined
+        ? { autoCompactWindow: parsed.autoCompactWindow }
+        : {}),
       ...(parsed.skills && parsed.skills.length > 0
         ? { skills: parsed.skills }
         : {}),
@@ -880,6 +905,25 @@ export function parseAgentFromMarkdown(
       )
     }
 
+    // 2.1.296 PORT #002: parse autoCompactWindow from frontmatter. Official
+    // parser @217695969 (byte-verified):
+    //   `let ut=r.autoCompactWindow,Rt=ihr(ut);
+    //    if(ut!==void 0&&Rt===void 0)t(`Agent file ${e} has invalid
+    //    autoCompactWindow '${ut}'. Must be an integer from ${b0} to ${TN}.`,
+    //    {level:"warn"})`
+    const autoCompactWindowRaw = frontmatter['autoCompactWindow']
+    const autoCompactWindow =
+      parseAutoCompactWindowFromFrontmatter(autoCompactWindowRaw)
+    if (
+      autoCompactWindowRaw !== undefined &&
+      autoCompactWindow === undefined
+    ) {
+      logForDebugging(
+        `Agent file ${filePath} has invalid autoCompactWindow '${autoCompactWindowRaw}'. Must be an integer from ${AUTO_COMPACT_WINDOW_MIN} to ${AUTO_COMPACT_WINDOW_MAX}.`,
+        { level: 'warn' },
+      )
+    }
+
     // Extract filename without extension
     const filename = basename(filePath, '.md')
 
@@ -968,6 +1012,7 @@ export function parseAgentFromMarkdown(
         ? { permissionMode: permissionModeRaw as PermissionMode }
         : {}),
       ...(maxTurns !== undefined ? { maxTurns } : {}),
+      ...(autoCompactWindow !== undefined ? { autoCompactWindow } : {}),
       ...(background ? { background } : {}),
       ...(omitClaudeMd ? { omitClaudeMd } : {}),
       ...(memory ? { memory } : {}),

@@ -62,6 +62,10 @@ import { TEAM_DELETE_TOOL_NAME } from '../../tools/TeamDeleteTool/constants.js'
 import type { Message } from '../../types/message.js'
 import type { PermissionDecision } from '../../types/permissions.js'
 import {
+  getSessionAutoCompactWindow,
+  wrapAutoCompactWindowCeiling,
+} from '../../utils/autoCompactWindow.js'
+import {
   createAssistantAPIErrorMessage,
   createUserMessage,
 } from '../../utils/messages.js'
@@ -1114,9 +1118,22 @@ export async function runInProcessTeammate(
       // Check if compaction is needed before building context
       let contextMessages = allMessages
       const tokenCount = tokenCountWithEstimation(allMessages)
+      // 2.1.296 PORT #002 — official threshold site @242303606 (byte-verified):
+      //   `if($e>f3(Xd(ee),WJn(y.options.autoCompactWindow,W.autoCompactWindow)))`
+      // The teammate's own agentDefinition.autoCompactWindow re-wraps the
+      // inherited override as a ceiling here (NO fork check at this site —
+      // the fork passthrough lives in the AgentTool spawn wiring). OCC's
+      // inherited value falls back to the session singleton.
       if (
         tokenCount >
-        getAutoCompactThreshold(toolUseContext.options.mainLoopModel)
+        getAutoCompactThreshold(
+          toolUseContext.options.mainLoopModel,
+          wrapAutoCompactWindowCeiling(
+            toolUseContext.options.autoCompactWindow ??
+              getSessionAutoCompactWindow(),
+            agentDefinition?.autoCompactWindow,
+          ),
+        )
       ) {
         logForDebugging(
           `[inProcessRunner] ${identity.agentId} compacting history (${tokenCount} tokens)`,

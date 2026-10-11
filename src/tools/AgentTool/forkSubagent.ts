@@ -13,7 +13,15 @@ import type {
 } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { createUserMessage } from '../../utils/messages.js'
-import type { BuiltInAgentDefinition } from './loadAgentsDir.js'
+import {
+  type AutoCompactWindowOverride,
+  wrapAutoCompactWindowCeiling,
+} from '../../utils/autoCompactWindow.js'
+import {
+  type AgentDefinition,
+  type BuiltInAgentDefinition,
+  isBuiltInAgent,
+} from './loadAgentsDir.js'
 
 /**
  * Fork subagent feature gate.
@@ -69,6 +77,40 @@ export const FORK_AGENT = {
   baseDir: 'built-in',
   getSystemPrompt: () => '',
 } satisfies BuiltInAgentDefinition
+
+/**
+ * 2.1.296 PORT #002: per-subagent auto-compact window wiring at spawn time.
+ *
+ * Official spawn site (byte-verified @223555765):
+ *   `autoCompactWindow: e.agentType===Q$&&Xa(e)
+ *      ? n.options.autoCompactWindow
+ *      : WJn(n.options.autoCompactWindow, e.autoCompactWindow)`
+ * with `Q$="fork"` (@211657790) and `Xa=isBuiltInAgent` (resolved via the
+ * chunk export alias block @243898894 `Xa as isBuiltInAgent`), `n` = parent
+ * toolUseContext, `e` = the spawned agent definition, `WJn` =
+ * wrapAutoCompactWindowCeiling.
+ *
+ * Semantics: the built-in fork agent copies the parent conversation (and the
+ * parent's compaction state), so it inherits the parent's override UNWRAPPED
+ * — a ceiling applied to a fork would compact the copied context earlier
+ * than the parent's own window. Every other agent wraps its own
+ * `autoCompactWindow` (if any) as a ceiling around the inherited override.
+ */
+export function computeSubagentAutoCompactWindow(
+  agentDefinition: AgentDefinition,
+  inherited: AutoCompactWindowOverride,
+): AutoCompactWindowOverride {
+  if (
+    agentDefinition.agentType === FORK_SUBAGENT_TYPE &&
+    isBuiltInAgent(agentDefinition)
+  ) {
+    return inherited
+  }
+  return wrapAutoCompactWindowCeiling(
+    inherited,
+    agentDefinition.autoCompactWindow,
+  )
+}
 
 /**
  * Guard against recursive forking. Fork children keep the Agent tool in their
