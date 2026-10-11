@@ -502,15 +502,29 @@ export function checkBashRedirectAndPatternSafety(
  * so we suppress such 'ask' results at the bash layer and let the generic
  * bypass auto-allow (step 2a) apply. Explicit deny/ask *rules* (decisionReason
  * type 'rule') are still honored — only safety/path 'ask' results are bypassed.
+ *
+ * CC 2.1.296 #050 EXCEPTION: asks carrying circuitBreaker:'dangerousRemoval'
+ * (the critical-path rm ask — official changelog entry 50: "Fixed `rm -rf
+ * /c/Users/<name>` in Git Bash not asking in bypass permissions mode") are
+ * NEVER suppressed: the official circuitBreaker marker means no permission
+ * rule, bypassPermissions mode, or auto-mode classifier may override the
+ * check (src/types/permissions.ts). They pass through to permissions.ts
+ * step 1g, which keeps safetyCheck asks bypass-immune. The G6 protected-path
+ * suppression above is unchanged for asks without the breaker.
  */
 function maybeSuppressForBypass(
   pathResult: PermissionResult,
   toolPermissionContext: ToolPermissionContext,
 ): PermissionResult {
+  const reason = pathResult.decisionReason
+  const isDangerousRemovalBreaker =
+    reason?.type === 'safetyCheck' &&
+    reason.circuitBreaker === 'dangerousRemoval'
   if (
     toolPermissionContext.mode === 'bypassPermissions' &&
     pathResult.behavior === 'ask' &&
-    pathResult.decisionReason?.type !== 'rule'
+    reason?.type !== 'rule' &&
+    !isDangerousRemovalBreaker
   ) {
     return {
       behavior: 'passthrough',

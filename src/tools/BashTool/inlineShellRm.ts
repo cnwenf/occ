@@ -78,7 +78,7 @@
 
 import { homedir } from 'node:os'
 import { posix as posixPath } from 'node:path'
-import { isDangerousRemovalPath } from '../../utils/permissions/pathValidation.js'
+import { isDangerousRemovalPathWindowsAware } from '../../utils/permissions/gitBashPaths.js'
 import {
   ARGV_BASENAME_RE,
   type CatastrophicSubstitutionBlock,
@@ -667,9 +667,12 @@ function isDangerousLiteralTarget(resolved: string): boolean {
   if (resolved === '*') return true
   // `X/*` deletes the CONTENTS of X: dangerous only when X itself is a
   // dangerous removal path (or the glob is the root `/*`).
+  // CC 2.1.296 #050: the windows-aware wrapper mirrors the official v296
+  // analyzer — the Git-Bash translation applies wherever the critical-path
+  // predicate runs (identical behavior on non-Windows platforms).
   const globBase = resolved.replace(/\/\*$/, '')
   if (globBase !== resolved) {
-    return globBase === '' || isDangerousRemovalPath(globBase)
+    return globBase === '' || isDangerousRemovalPathWindowsAware(globBase)
   }
-  return isDangerousRemovalPath(resolved)
+  return isDangerousRemovalPathWindowsAware(resolved)
 }

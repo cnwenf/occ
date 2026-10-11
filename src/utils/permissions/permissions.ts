@@ -1455,11 +1455,17 @@ export async function checkRuleBasedPermissions(
   // allow. checkPathSafetyForAutoEdit returns {type:'safetyCheck'} for these.
   // --dangerously-skip-protected-paths: auto-allow protected-path writes
   // instead of prompting. Return null (no objection) so the caller proceeds.
+  // CC 2.1.296 #050: the dangerousRemoval circuit breaker is NOT a
+  // protected-path write — the flag must not swallow it (official: no
+  // permission rule, bypass mode, or classifier may override the check).
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
-    if (isSkipProtectedPathsEnabled()) {
+    if (
+      isSkipProtectedPathsEnabled() &&
+      toolPermissionResult.decisionReason.circuitBreaker !== 'dangerousRemoval'
+    ) {
       return null
     }
     return toolPermissionResult
@@ -1571,11 +1577,17 @@ async function hasPermissionsToUseToolInner(
   // --dangerously-skip-protected-paths: auto-allow protected-path writes
   // instead of prompting. This applies in ALL modes (default, acceptEdits,
   // auto, plan, bypass) so the flag works independently of the active mode.
+  // CC 2.1.296 #050: the dangerousRemoval circuit breaker is NOT a
+  // protected-path write — the flag must not swallow it (official: no
+  // permission rule, bypass mode, or classifier may override the check).
   if (
     toolPermissionResult?.behavior === 'ask' &&
     toolPermissionResult.decisionReason?.type === 'safetyCheck'
   ) {
-    if (isSkipProtectedPathsEnabled()) {
+    if (
+      isSkipProtectedPathsEnabled() &&
+      toolPermissionResult.decisionReason.circuitBreaker !== 'dangerousRemoval'
+    ) {
       return {
         behavior: 'allow',
         updatedInput: getUpdatedInputOrFallback(toolPermissionResult, input),

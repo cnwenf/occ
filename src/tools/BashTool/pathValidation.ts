@@ -13,11 +13,11 @@ import { allWorkingDirectories } from '../../utils/permissions/filesystem.js'
 import type { PermissionResult } from '../../utils/permissions/PermissionResult.js'
 import { createReadRuleSuggestion } from '../../utils/permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../../utils/permissions/PermissionUpdateSchema.js'
+import { isDangerousRemovalPathWindowsAware } from '../../utils/permissions/gitBashPaths.js'
 import {
   expandTilde,
   type FileOperationType,
   formatDirectoryList,
-  isDangerousRemovalPath,
   validatePath,
 } from '../../utils/permissions/pathValidation.js'
 import type { BashTool } from './BashTool.js'
@@ -146,14 +146,27 @@ function checkDangerousRemovalPaths(
       ? cleanPath
       : resolve(cwd, cleanPath)
 
-    // Check if this is a dangerous path (using the non-symlink-resolved path)
-    if (isDangerousRemovalPath(absolutePath)) {
+    // Check if this is a dangerous path (using the non-symlink-resolved path).
+    // CC 2.1.296 #050: official call site ① — the analyzer's critical-path
+    // check became `wwe(Pe)` (Git-Bash/Cygwin drive-letter translation via
+    // Xun/qwr, windows-gated) so `rm -rf /c/Users/<name>` in Git Bash matches
+    // the Windows-form critical paths. See utils/permissions/gitBashPaths.ts.
+    if (isDangerousRemovalPathWindowsAware(absolutePath)) {
       return {
         behavior: 'ask',
         message: `Dangerous ${command} operation detected: '${absolutePath}'\n\nThis command would remove a critical system directory. This requires explicit approval and cannot be auto-allowed by permission rules.`,
+        // CC 2.1.296 #050: the official dangerousRemoval ask carries
+        // circuitBreaker:"dangerousRemoval" — no permission rule,
+        // bypassPermissions mode, or auto-mode classifier may override it
+        // (changelog entry 50's "asking in bypass permissions mode" outcome).
+        // Same shape the CC 2.1.288 #54 inline-shell port uses; permissions.ts
+        // step 1g keeps safetyCheck asks bypass-immune and the auto-mode
+        // classifier honors classifierApprovable:false.
         decisionReason: {
-          type: 'other',
+          type: 'safetyCheck',
           reason: `Dangerous ${command} operation on critical path: ${absolutePath}`,
+          classifierApprovable: false,
+          circuitBreaker: 'dangerousRemoval',
         },
         // Don't provide suggestions - we don't want to encourage saving dangerous commands
         suggestions: [],
