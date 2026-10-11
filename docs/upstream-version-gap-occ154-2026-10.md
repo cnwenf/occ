@@ -586,3 +586,42 @@ Leader 委派修复轮：验收员候选验证 12 项裁决（11 confirmed / 1 f
 
 **发布 gate 解除**：可 bump 2.1.380 → tag → npm release（GitHub Workflow）→ 观察 CI。发布链继续执行。
 
+## §12 CI 红事件 + tag 抢跑第二次与重指裁决 + 发布收尾终值（程序员，main `ab5155a`，2026-10-12）
+
+### §12.1 CI 红事件（3 断言根因）
+
+事件：release commit `6b86a76`（v2.1.380）合入 main 后，全量 CI run **38159349311** = RED：**11009 pass / 3 fail / 336 skip**。基线 v2.1.379（`66905e9`，run 38092338578）全绿 → 3 处失败全部由本轮（occ154）引入，非既有。
+
+| # | 失败断言 | 根因 |
+|---|---|---|
+| 1 | `test/utils/model/version-2.1.257-gap113.test.ts:357` `toContain('CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set')` | R2 #003 SWITCH 已把生产 `primitives.ts:554` 切成官方 v296 `QTe` 文案 `'...FORCE is on'`，但该既有 pin 仍钉 v295 时代 `'is set'`（陈旧注释引 2.1.258 ELF @7904700）。v296 ELF 复核（只读 tar-pipe + `grep -aboF`，二进制从未执行）：`'...FORCE is on'` @**97085204**（另一处 @228311386），`is set` **零命中**。 |
+| 2–3 | `test/e2e/version-2.1.145-read-partial-view.e2e.test.ts` 两个 test | #006 Slice A+B 把 PARTIAL-notice builder 从 `FileReadTool.ts` 迁到 `allowLarge.ts`，并以官方 token-cap 面（`ALLOW_LARGE_FIELD_NAME`/`buildTokenCapPartialView`/`PARTIAL_VIEW_PREFIX`）取代 2.1.145 时代的 `PARTIAL_VIEW_MAX_LINES = 2000`/`buildPartialViewIfNeeded`；该测试的 source-grep 目标与死符号双双陈旧（test 1 败于 cap/builder pin，test 2 败于已迁移的 notice 子串）。 |
+
+共性教训：SWITCH/迁移类切片改动生产文案或文件布局时，必须在**同一切片**内同步更新钉住旧面的既有测试（本轮 R2 #003 与 #006 各自漏更）。
+
+### §12.2 复测盲区更正
+
+§11.8 复测 battery 为 focused 12 套件 + 受影响 scope（59 文件，855/2）+ build/smoke，**未跑全量 CI**；两个陈旧文件不在 focused 清单内 → 出现"生产 PASS 落袋"与"全量 CI RED"并存。更正纪律：合入/验收前必须以合并候选 HEAD 的 GitHub Actions 全量 CI `conclusion=success` 为准（或至少全量跑既有测试中与本轮改动面相关的部分）；"本地 focused 全绿"不能替代全量门禁。本轮已按此执行：`ab5155a` 全量 CI 绿后才交接复测。
+
+### §12.3 tag 抢跑第二次 + Leader 重指裁决（Option A 先例）
+
+- 事实：`v2.1.380` tag 于 17:21Z 先行 push（指向 `6b86a76`），早于验收员 17:50Z 复测 —— §10.3 式"抢跑发布"**第二次发生**（两次均在程序员侧）。
+- 外部消费面核查：`gh release view v2.1.380` = not found（tag push 只触发 publish.yml；npm Publish 步 RED = OCC-151，Create GitHub Release 步 skipped）；npm `@cnwenf/occ@2.1.380` = 404 → **零外部消费**，重指无破坏面。
+- Leader 裁决（评论 6a1f50e0）：① 修复面 = **test-only**（任何 `src/` 改动会作废已落袋的生产 PASS）；② **坑位维持 2.1.380、tag 重指，不 bump 2.1.381**（先例 = occ153 账本 §10.1 Option A）；③ gate 不变 —— 仅在验收员对修复后 main HEAD final PASS 之后才允许重指 tag / 建 release。
+- 纪律强化：tag/release 操作**只能**在验收员对该确切 HEAD final PASS 之后执行。本节为第二次记录；再犯按流程事故升级 Leader 单独追责。
+
+### §12.4 df-01 证伪终裁
+
+验收员复测**维持 FALSIFIED**（字节级复核全记录见 §11.8）：官方 `lOr` 经 `Xd(e.model())` 取**静态** `options.mainLoopModel` 的 bytes-per-token；LEGACY bpt 集合同时含 `claude-haiku-4-5` 与 `claude-sonnet-4-5`（均 bpt 4），升级分歧前提不成立；mutation（`allowLarge.ts:127` 硬编码 bpt=3）→ 3 钉全 RED，恢复后 54/0 全绿，钉真实咬合。终裁 = 证伪成立，无需生产改动；原 oracle 1052091（取活模型 bpt 3）在官方源码语义下不成立。
+
+### §12.5 发布收尾终值（2026-10-12）
+
+- **修复 commit**：`ab5155a`（test-only：gap113 pin `'is set'`→`'is on'` + partial-view e2e 重指 `allowLarge.ts`/token-cap 符号 + CHANGELOG 2.1.380 段补注 "Stale-test repair ×2"；零 `src/` 改动，版本维持 2.1.380）。本地 scoped 40/0。
+- **全量 CI**：run **38163454343 = success**（https://github.com/cnwenf/occ/actions/runs/38163454343）。attempt 1 = 11011 pass / 1 fail / 336 skip，唯一 fail = `backgroundTasksDialogMcp295.test.tsx:133` `waitFor timed out` @3101ms —— 该文件在 `66905e9..ab5155a` 零触及，双方本地隔离复跑均 4/0（≈1.5s），验收员逐行核实定性 = **环境计时 flake，非回归**；`--failed` 重跑全绿（attempt 2 = success）。
+- **验收员复测修复后 HEAD = PASS**（四项 + 硬检查 #6 + 独立 code-review PASS；唯一 LOW 项为修复前既有语义，非本轮引入，不阻断）→ release gate 解除。
+- **tag 重指**：删除远端旧 tag（`6b86a76`）→ 在验收 HEAD `ab5155a` 重打 `v2.1.380` → push。publish.yml run **38166512400**：npm Publish 步 = failure（OCC-151 预期 RED），Create GitHub Release 步 = skipped（预期）。
+- **手动 release**：`gh release create v2.1.380 --generate-notes` → https://github.com/cnwenf/occ/releases/tag/v2.1.380（标题格式沿 v2.1.379 同款）。
+- **parity 终值：releases 179 = tags 179**，双向 `comm` 差集均为空。
+- **分支清理终值**：`feature/occ154-296`（`0c637e0`）+ `agent/occ/f29b7705-1791569680`（`1d4bbd2`）远端 + 本地全部删除，`git ls-remote --heads` 命中 0。
+- 本 §12 以 docs-only commit 落在 tag 之后（tag 快照 = 验收 HEAD `ab5155a` 不受影响）。occ154 轮至此收尾：0 残留 gap（§11）、v2.1.380 发布产物齐备、账本单一权威（§10.5）。
+
