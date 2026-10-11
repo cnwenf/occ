@@ -110,8 +110,11 @@ describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
     // be able to toggle the WebFetch kill-switch) +
     // CLAUDE_CODE_DISABLE_ATTACHMENTS (CC 2.1.290 #161; official `mir`
     // reserved set @5736663 region lists it — repo settings can no longer
-    // disable attachments) = 116.
-    expect(blocklist.size).toBe(116)
+    // disable attachments) +
+    // CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL (CC 2.1.296 #003; official `obr`
+    // scrubber set @211233225 gains it — project scope must not be able to
+    // set the workflow subagent model) = 117.
+    expect(blocklist.size).toBe(117)
     expect(blocklist.has('CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT')).toBe(
       true,
     )

@@ -55,6 +55,10 @@ import {
 } from './prefixStagger.js'
 import type { WorkflowMeta } from './scriptLoader.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
+import {
+  getWorkflowSubagentModel,
+  resolveWorkflowSubagentEffectiveModel,
+} from '../../utils/model/workflowSubagentModel.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
@@ -532,21 +536,39 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     // Wall-clock start is captured before the stagger wait (binary: Ce=Date.now()
     // precedes the gate), so held time counts toward the agent's elapsed ms.
     const agentStartTime = Date.now()
-    // 2.1.257 (Gap-113b): CLAUDE_CODE_SUBAGENT_MODEL_FORCE voids the
-    // per-agent model override (byte-verified in the 2.1.258 ELF:
-    // `if(O?.model!==void 0&&a.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
-    //   t(`Workflow agent model "${O.model}" ignored: ...`),O.model=void 0`).
+    // 2.1.257 (Gap-113b) + 2.1.296 (#003): the per-agent model override is
+    // voided under a two-arm check — official v296 @228311306 (verbatim):
+    // `let kt=QTe()!==void 0?"CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL is set"
+    //   :a.CLAUDE_CODE_SUBAGENT_MODEL_FORCE
+    //     ?"CLAUDE_CODE_SUBAGENT_MODEL_FORCE is on":void 0;
+    //  if(J?.model!==void 0&&kt!==void 0)
+    //    t(`Workflow agent model "${J.model}" ignored: ${kt}`),J.model=void 0;`
+    // v295 had the FORCE arm only, worded "...FORCE is set" (@227975827);
+    // v296 rewords it to "...FORCE is on" and adds the workflow-env arm.
+    // (FORCE is checked via isEnvTruthy per OCC's Gap-113b adaptation.)
     let workflowAgentModel = opts.model as string | undefined
+    const modelSuppressionReason =
+      getWorkflowSubagentModel() !== undefined
+        ? 'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL is set'
+        : isEnvTruthy(process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+          ? 'CLAUDE_CODE_SUBAGENT_MODEL_FORCE is on'
+          : undefined
     if (
       workflowAgentModel !== undefined &&
-      isEnvTruthy(process.env.CLAUDE_CODE_SUBAGENT_MODEL_FORCE)
+      modelSuppressionReason !== undefined
     ) {
       logForDebugging(
-        `Workflow agent model "${workflowAgentModel}" ignored: CLAUDE_CODE_SUBAGENT_MODEL_FORCE is set`,
+        `Workflow agent model "${workflowAgentModel}" ignored: ${modelSuppressionReason}`,
       )
       workflowAgentModel = undefined
     }
-    const agentModel = workflowAgentModel ?? getMainLoopModel()
+    // Official `Bt` @228307864 precedence for the effective model (used for
+    // the stagger key + started-event telemetry): explicit > QTe() workflow
+    // env > general subagent env (≠inherit) > main loop model.
+    const agentModel = resolveWorkflowSubagentEffectiveModel(
+      workflowAgentModel,
+      getMainLoopModel(),
+    )
 
     // CC 2.1.229 (changelog #24 / binary `Ze` + `RZp().enter`): stagger
     // same-prefix siblings so later agents read the cached prompt prefix

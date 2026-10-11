@@ -321,6 +321,13 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   'TEMP',
   'XDG_RUNTIME_DIR',
   'CLAUDE_JOB_DIR',
+  // CC 2.1.296 (#003): the official settings-env scrubber managed-key set
+  // `obr` (@211233225; the `ee(e)` gate inside `m(e,n,i,E)`) gains
+  // "CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL" — v295's set tail (@210502979)
+  // ends at CLAUDE_CODE_ENABLE_CFC, v296 appends the workflow-subagent-model
+  // token. Project/local settings can no longer set the workflow subagent
+  // model; shell env, user and managed settings still can.
+  'CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL',
 ])
 
 const PROJECT_SCOPED_SOURCES = new Set<SettingSource | 'globalConfig'>([

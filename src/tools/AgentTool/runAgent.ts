@@ -485,6 +485,11 @@ export async function* runAgent({
     toolUseContext.options.mainLoopModel,
     model,
     permissionMode,
+    // CC 2.1.296 (#003): the official YU resolver takes an
+    // `{inWorkflowRun:...}` context (call site @228342056:
+    // `YU(void 0,...,{inWorkflowRun:p!==void 0})`). OCC's workflow spawn
+    // path (WorkflowTool/primitives.ts) passes querySource:'workflow'.
+    querySource === 'workflow',
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
