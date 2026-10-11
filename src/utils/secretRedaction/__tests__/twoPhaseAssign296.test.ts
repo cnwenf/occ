@@ -33,6 +33,16 @@ const OAUTH_TOKEN = 'sk-ant-oat01-abcdefghij0123456789abcd'
 const LOOSE_JWT =
   'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U'
 
+// OCC-114 coverage-gap closure — CHAIN context COMBINATION: the key-with-no-value
+// chain pattern (a valueless `token=` opening a lookahead window whose value is
+// the following secret) embedded INSIDE an escaped-quote (shell-string JSON)
+// context. The existing suite pins CHAIN plain-only and ESCAPED_JSON
+// escaped-only; these two exercise BOTH scanner phases at once (plain + escaped
+// run together because ESCAPED_QUOTE_RE matches), which is the combination the
+// prior acceptance round flagged as untested.
+const CHAIN_IN_ESCAPED_JSON = String.raw`echo {\"token\": \"\", \"api_key\": \"CHAINCOMBOSECRETAAA111\"}`
+const CHAIN_IN_ESCAPED_KV = String.raw`token= \"api_key\": \"CHAINCOMBOSECRETBBB222\"`
+
 function ruleById(id: string) {
   const rule = St.find((r) => r.id === id)
   expect(rule).toBeDefined()
@@ -90,6 +100,38 @@ describe('escaped-quote JSON inside shell strings (296 changelog fix)', () => {
     const out = redactJsonValue({ command: ESCAPED_KV })
     expect(JSON.stringify(out)).not.toContain('ESCAPEDJSONSECRET123456')
     expect(out.command).toContain('[REDACTED]')
+  })
+})
+
+describe('CHAIN context combination — valueless-key chain inside an escaped-quote context', () => {
+  // Both inputs contain escaped quotes, so scanAssignSpans runs the plain phase
+  // AND the escaped phase (ESCAPED_QUOTE_RE gate). The security-critical property
+  // is end-to-end: redactSecrets must strip the secret in BOTH shapes. The
+  // valueless-key chain span (the exact 296 fix) is what covers the escaped-KV
+  // shape; the escaped-JSON shape is caught by the sensitive-assign-escaped rule
+  // directly. Both are pinned so the combination cannot silently regress.
+  test('ESCAPED_QUOTE_RE fires so both phases run', () => {
+    expect(ESCAPED_QUOTE_RE.test(CHAIN_IN_ESCAPED_JSON)).toBe(true)
+    expect(ESCAPED_QUOTE_RE.test(CHAIN_IN_ESCAPED_KV)).toBe(true)
+  })
+
+  test('escaped-JSON empty-value-then-secret: redactSecrets removes the secret end to end', () => {
+    const out = redactSecrets(CHAIN_IN_ESCAPED_JSON)
+    expect(out).not.toContain('CHAINCOMBOSECRETAAA111')
+    expect(out).toContain('[REDACTED]')
+  })
+
+  test('escaped-KV chain: the valueless-key chain span covers the secret', () => {
+    const covered = mergeSpans(scanAssignSpans(CHAIN_IN_ESCAPED_KV))
+      .map(([s, e]) => CHAIN_IN_ESCAPED_KV.slice(s, e))
+      .join('|')
+    expect(covered).toContain('CHAINCOMBOSECRETBBB222')
+  })
+
+  test('escaped-KV chain: redactSecrets removes the chained secret end to end', () => {
+    const out = redactSecrets(CHAIN_IN_ESCAPED_KV)
+    expect(out).not.toContain('CHAINCOMBOSECRETBBB222')
+    expect(out).toContain('[REDACTED]')
   })
 })
 

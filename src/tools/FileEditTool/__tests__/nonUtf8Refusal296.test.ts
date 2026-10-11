@@ -19,6 +19,7 @@ import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import {
   FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+  FILE_NOT_VALID_UTF8_WRITE_MESSAGE,
   normalizeForComparison,
 } from 'src/utils/permissions/fileStateGuard.js'
 import { stashCheckTimeResolutions } from 'src/utils/permissions/symlinkResolutionStash.js'
@@ -305,5 +306,46 @@ describe('CC 2.1.296 #032 FileEditTool non-UTF-8 refusal', () => {
 
     // Assert
     expect(await readFile(filePath, 'utf8')).toBe('header\nREPLACED\nfooter')
+  })
+
+  // OCC-114 coverage-gap closure — non-UTF8 × U+FFFD COMBINATION: the disk file
+  // is lossy (cp1252) AND new_string itself carries U+FFFD (the model Read the
+  // lossy decode and is editing that content back — the exact round-trip data-
+  // loss scenario the Write-side UTs guard exists for). Contract on the Edit
+  // path: the official disk-only guard (`Re=IAo(Ze,ut)` → `if(Re)return
+  // {result:!1,message:aen,errorCode:15}`) fires FIRST and never inspects
+  // new_string, so the refusal is the Edit aen message (errorCode 15) — NOT
+  // the Write-path UTs message — and nothing is written. Pins guard
+  // separation: the U+FFFD-content check belongs to FileWriteTool only.
+  test('lossy disk + U+FFFD-bearing new_string → Edit aen refusal (errorCode 15), never the Write UTs message, nothing written', async () => {
+    // Arrange — cp1252 bytes on disk; new_string holds U+FFFD from a lossy
+    // Read round-trip ('caf�' is what Read shows for 0x63 0x61 0x66 0xE9).
+    const ctx = makeContext()
+    const filePath = join(tmpDir, 'combo-cp1252-ufffd.txt')
+    await writeFile(filePath, CP1252_CAFE)
+    seedRead(ctx, filePath, CP1252_CAFE)
+
+    // Act
+    const result = await FileEditTool.validateInput(
+      {
+        file_path: filePath,
+        old_string: 'caf',
+        new_string: 'caf� — edited around the replacement char',
+        replace_all: false,
+      } as never,
+      ctx,
+    )
+
+    // Assert — official Edit shape: aen/15, NOT the Write UTs message; disk
+    // bytes untouched.
+    expect(result).toEqual({
+      result: false,
+      message: OFFICIAL_AEN,
+      errorCode: 15,
+    })
+    expect(result.message).toBe(FILE_NOT_VALID_UTF8_EDIT_MESSAGE)
+    expect(result.message).not.toBe(FILE_NOT_VALID_UTF8_WRITE_MESSAGE)
+    expect('behavior' in result).toBe(false)
+    expect(Buffer.compare(await readFile(filePath), CP1252_CAFE)).toBe(0)
   })
 })
