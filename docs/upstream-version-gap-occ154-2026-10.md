@@ -551,8 +551,38 @@ Leader 委派修复轮：验收员候选验证 12 项裁决（11 confirmed / 1 f
 
 ### §11.7 gate 与移交
 
-- **发布 gate 不变**：验收员复测 PASS 前不 bump（2.1.380）不 tag；复测对象 = `feature/occ154-reconcile` HEAD `18bc174`。
+- **发布 gate 不变**：验收员复测 PASS 前不 bump（2.1.380）不 tag；复测对象 = `feature/occ154-reconcile` HEAD `21447d0`（复测后）。
 - **移交时必须显式提请验收员重裁 df-01**（本轮 ELF 证伪推翻其 confirmed 裁决，证据链 §11.3）。
 - `/tmp/cc-diff-296` 官方取证保留至合入 main。
 - 修复轮范围外零改动：`feature/occ154-296`、main、生产代码除 contract-002/df-02/contract-001 三处（均官方语义）外未触碰。
+
+### §11.8 验收员复测记录（验收员，HEAD `21447d0`，2026-10-12）
+
+复测对象 = 修复轮 HEAD `21447d0`（比 §11.6 记录的 `18bc174` 多一个 docs-only commit，生产/测试代码零差异）。**复测结论：PASS，可进入发布链。**
+
+**df-01 重裁（接受程序员的 ELF 证伪）**。逐字节复核官方 v296 ELF（/tmp/cc-diff-296 `s296.txt`）：
+- 官方 `lOr` @1722587：`let{bytesPerToken:G}=Xd(e.model())` —— bpt 经 facade `e.model()` 取 **静态** `options.mainLoopModel`；contextRoom 仅供 `threshold`/`held()`/`claimed()`。官方即混合语义（静态 bpt × 活 threshold），HEAD 一致。
+- `e.model()` = `qu(e)=p(e)??e.options.mainLoopModel`；`p(e)` 仅当存在 `kind:"model"` 权限层时覆盖。逐站点排查所有 `Tn=[...{kind:"model",mainLoopModel:...}]` 安装点（15+ 处），全部位于 runAgent/agent-spawn/skill/SDK 覆盖路径（含 `yn(C)` 子代理权限声明处理器），**主线程 plan 路径无任何 kind:model 层**（plan-upgrade 只写入 runtimeModel，引用官方 `rg`）。
+- LEGACY bpt 集合（官方 `kh` 的 rF Set）同时含 `claude-haiku-4-5` 与 `claude-sonnet-4-5`（均 bpt 4）→ 升级对两端 bpt 相同，分歧前提不成立。
+- 复测探针的升级目标实为 `claude-sonnet-5-5`（bpt 3，非 legacy）而非程序员 §11.3 所引 `claude-sonnet-4-5` —— 该表述有出入，但证伪的核心分支（#1：官方 bpt 静态取源）独立成立：即使升级目标是 bpt-3 模型，官方仍以静态 `options.mainLoopModel`（haiku-4-5，bpt 4）计算 → H·12 = 1402788 = HEAD。**原 oracle 1052091（取活模型 bpt 3）在官方源码语义下不成立**。df-01 维持 falsified。
+- **mutation 执行确认**（`21447d0` worktree）：allowLarge296.test.ts HEAD 54/0 全绿（含 3 钉）；硬编码 `bytesPerToken=3` 于 allowLarge.ts:127 → **51/3 红**（3 钉全 RED：expect 1402788 got 1052091 / sonnet-4-5 1402788→1052091 / haiku must-not-be-1052091），既有 51 测试全绿 → 钉真实咬合。恢复后 54/0。
+
+**复测 battery（HEAD `21447d0`，全部复跑）**：
+
+| 项 | 结果 |
+|---|---|
+| 修复轮 focused 12 套件 | **179 pass / 0 fail / 693 expect()**（与 §11.6 逐字节一致） |
+| 受影响 scope（59 文件） | **855/2**，失败集合逐字相同（agentTelemetry ×2 shared-process sink 泄漏竞争），隔离执行下该文件 4/0 绿 → **非本轮回归** |
+| contract-002（ef67c5e） | diff 对齐官方 `n?.spawnedByWorkflowRunId??e.spawnedByWorkflowRunId`（forkedAgent）+ `dt!==void 0\|\|...\|\|n.spawnedByWorkflowRunId!==void 0`（runAgent inWorkflowRun 判别）；workflowSubagentModel296 + AgentTool + WorkflowTool **287/0**（26 文件） |
+| df-02（4dd8f4a） | 真 `query()` 驱动 queryFallbackRoom296 **2/0** + contextRoom296 **35/0** + allowLarge296 **54/0**；mutation（删 `turnModel = nextFallbackModel`）→ df-02 RED（767000→167000 即原缺陷）恢复绿；t-05 同文件同过 |
+| C 覆盖 ×5 | t-02 12/0、t-03 4/0、t-04 4/0、t-06 13/0、t-05（含于 4dd8f4a）2/0 |
+| D e2e（18bc174） | build 后 dist-hljs-injection **2/0**（Leg1 marker 门 + Leg2 tmux REPL 真键 canary） |
+| build | 绿：dist/cli.js 30.09 MB，`OCC 2.1.379`（未 bump，gate 未开） |
+| headless `-p`（真 key） | `echo "say PONG"` → **PONG**，exit 0 |
+| REPL 快烟（真 key，tmux） | boot ready @2s；live round-trip `● SMOKE-OK` @4s |
+| README Tracks badge 四处 | badge(2.1.296 partial)/正文/表格/页脚 = **2.1.296 (partial)** 一致，与账本 §0/§8 对齐（硬检查 #6 通过，无需改 README） |
+
+**验收结论：修复轮 12 项裁决全部处置到位 —— contract-001/002、df-02 genuine-FIXED，df-01/df-03 FALSIFIED（维持，df-01 经重裁确认），t-01..t-06 全部以真实测试钉合，D 项产物级 e2e 双向 mutation 验证。无真实缺陷残留。**
+
+**发布 gate 解除**：可 bump 2.1.380 → tag → npm release（GitHub Workflow）→ 观察 CI。发布链继续执行。
 
