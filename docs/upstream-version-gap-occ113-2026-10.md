@@ -1,5 +1,7 @@
 # Upstream Version Gap Ledger — OCC-113 追齐轮 2.1.295 → 2.1.296（2026-10-11）
 
+> **会师横幅（OCC-154 reconcile 轮，2026-10-11）**：本账本与 `docs/upstream-version-gap-occ154-2026-10.md` 曾平行追齐同一版本 2.1.296（撞车根因与护栏见该文 §10）。两账本已在 reconcile 分支收敛为**单一权威记录**：9 个重复项的逐项终裁（SWITCH ×4 / KEEP MAIN ×5，含官方 ELF 字节证据与语料差分结果）以该文 **§9** 为准；本文件保留作 OCC-113 轨（v2.1.379，c1634c5/f3ed083/b1eb311）的原始移植记录，不再单独更新。
+
 > 本账本记录 OCC（open claude code）对齐官方 claude-code **2.1.296** 的 gap 调研、逐条 triage、
 > 二进制取证索引与移植执行计划。格式沿用 `upstream-version-gap-occ153-2026-10.md`。
 > 纪律：**只取证不执行**（官方 ELF 只做 strings/mmap 字节取证，绝不运行）；**Never invent**
