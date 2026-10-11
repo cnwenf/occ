@@ -287,6 +287,19 @@ export type ToolUseContext = {
    * non-worktree-isolated subagents.
    */
   agentWorktree?: string
+  /**
+   * CC 2.1.296 (#003 fix-round contract-002): the workflow run id when this
+   * context belongs to an agent spawned (directly or transitively) by a
+   * workflow run. Official field on the tool-use context — the nested
+   * context builder carries it (`spawnedByWorkflowRunId:n?.
+   * spawnedByWorkflowRunId??e.spawnedByWorkflowRunId` @40876994 region) and
+   * the runAgent model resolver reads it for the inWorkflowRun discriminator
+   * (`{inWorkflowRun:dt!==void 0||!Ut&&!ut&&n.spawnedByWorkflowRunId!==
+   * void 0}` @228342056 region), so nested Agent-tool spawns inside a
+   * workflow agent keep honoring CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL.
+   * Undefined on the main thread and outside workflow runs.
+   */
+  spawnedByWorkflowRunId?: string
   /** When true, canUseTool must always be called even when hooks auto-approve.
    *  Used by speculation for overlay file path rewriting. */
   requireCanUseTool?: boolean

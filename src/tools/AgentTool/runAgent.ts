@@ -373,6 +373,7 @@ export async function* runAgent({
   worktreePath,
   description,
   transcriptSubdir,
+  spawnedByWorkflowRunId,
   onQueryProgress,
 }: {
   agentDefinition: AgentDefinition
@@ -436,6 +437,13 @@ export async function* runAgent({
   /** Optional subdirectory under subagents/ to group this agent's transcript
    * with related ones (e.g. workflows/<runId> for workflow subagents). */
   transcriptSubdir?: string
+  /** CC 2.1.296 (#003 fix-round contract-002): the workflow run id when this
+   * agent is spawned directly by a workflow run. Official runAgent param `dt`
+   * (`spawnedByWorkflowRunId:dt`), threaded into the model resolver's
+   * inWorkflowRun discriminator and propagated onto the subagent's
+   * ToolUseContext so transitively-nested Agent-tool spawns keep honoring
+   * CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL. */
+  spawnedByWorkflowRunId?: string
   /** Optional callback fired on every message yielded by query() — including
    * stream_event deltas that runAgent otherwise drops. Use to detect liveness
    * during long single-block streams (e.g. thinking) where no assistant
@@ -487,11 +495,19 @@ export async function* runAgent({
     toolUseContext.options.mainLoopModel,
     model,
     permissionMode,
-    // CC 2.1.296 (#003): the official YU resolver takes an
-    // `{inWorkflowRun:...}` context (call site @228342056:
-    // `YU(void 0,...,{inWorkflowRun:p!==void 0})`). OCC's workflow spawn
-    // path (WorkflowTool/primitives.ts) passes querySource:'workflow'.
-    querySource === 'workflow',
+    // CC 2.1.296 (#003, fix-round contract-002): official inWorkflowRun
+    // discriminator (call site @228342056 region):
+    //   {inWorkflowRun:dt!==void 0||!Ut&&!ut&&n.spawnedByWorkflowRunId!==void 0}
+    // `dt` = this runAgent's own spawnedByWorkflowRunId param (direct
+    // workflow spawn; WorkflowTool/primitives.ts passes ctx.runId), `n` = the
+    // parent toolUseContext whose spawnedByWorkflowRunId field carries
+    // workflow lineage into transitively-nested Agent-tool spawns. `Ut`
+    // (subagent-resume override) and `ut` (isTeammate) have no OCC spawn
+    // path, so the `!Ut&&!ut` guard is vacuously satisfied here. The prior
+    // `querySource === 'workflow'` check only fired for the direct spawn and
+    // dropped CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL on nested spawns.
+    spawnedByWorkflowRunId !== undefined ||
+      toolUseContext.spawnedByWorkflowRunId !== undefined,
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
@@ -972,6 +988,11 @@ export async function* runAgent({
     criticalSystemReminder_EXPERIMENTAL:
       agentDefinition.criticalSystemReminder_EXPERIMENTAL,
     contentReplacementState,
+    // CC 2.1.296 (#003 fix-round contract-002): official `air` builder takes
+    // `spawnedByWorkflowRunId:dt` (@211809071 region) — stamp this spawn's
+    // workflow lineage onto the subagent context so its own nested
+    // Agent-tool spawns resolve inWorkflowRun via the context field.
+    spawnedByWorkflowRunId,
   })
 
   // Preserve tool use results for subagents with viewable transcripts (in-process teammates)

@@ -330,6 +330,14 @@ export type SubagentContextOverrides = {
   abortController?: AbortController
   /** Override the getAppState function */
   getAppState?: ToolUseContext['getAppState']
+  /**
+   * CC 2.1.296 (#003 fix-round contract-002): workflow run id override.
+   * Official nested-context builder: `spawnedByWorkflowRunId:n?.
+   * spawnedByWorkflowRunId??e.spawnedByWorkflowRunId` — explicit override
+   * wins, otherwise the parent context's value is inherited so workflow
+   * lineage propagates to transitively-nested subagents.
+   */
+  spawnedByWorkflowRunId?: string
 
   /**
    * Explicit opt-in to share parent's setAppState callback.
@@ -552,6 +560,14 @@ export function createSubagentContext(
     // Undefined on headless contexts (no-op stub there) → subagents inherit
     // undefined too, and the cap helpers treat undefined as a no-op.
     taskRegistry: parentContext.taskRegistry,
+    // CC 2.1.296 (#003 fix-round contract-002): inherit workflow-run lineage
+    // so transitively-nested subagents keep honoring
+    // CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL (official `n?.spawnedByWorkflowRunId
+    // ??e.spawnedByWorkflowRunId`). An explicit override wins; otherwise the
+    // parent's value carries through.
+    spawnedByWorkflowRunId:
+      overrides?.spawnedByWorkflowRunId ??
+      parentContext.spawnedByWorkflowRunId,
   }
 }
 

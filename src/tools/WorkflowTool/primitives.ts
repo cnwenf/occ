@@ -624,6 +624,11 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
       worktreePath,
       description: opts.label ?? prompt.slice(0, 80),
       transcriptSubdir: `workflows/${ctx.runId}`,
+      // CC 2.1.296 (#003 fix-round contract-002): stamp the workflow run id
+      // so runAgent's inWorkflowRun discriminator honors
+      // CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL for this agent AND (via the
+      // subagent ToolUseContext field) its transitively-nested Agent spawns.
+      spawnedByWorkflowRunId: ctx.runId,
       onQueryProgress,
       override: { agentId: agentId as AgentId },
     })

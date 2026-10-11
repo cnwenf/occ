@@ -75,8 +75,10 @@ import { _getProjectScopeBlockedEnvKeysForTesting } from '../../managedEnv.js'
  *   (the source OCC's managedEnv applies to process.env last).
  * - The FORCE checks use isEnvTruthy, consistent with OCC's Gap-113b FORCE
  *   handling (the official uses raw env-string truthiness).
- * - inWorkflowRun signal → runAgent's querySource === 'workflow' (the value
- *   WorkflowTool/primitives.ts already passes when spawning).
+ * - inWorkflowRun signal → the official spawnedByWorkflowRunId discriminator
+ *   (fix-round contract-002): runAgent's own param (direct workflow spawn,
+ *   passed by WorkflowTool/primitives.ts) OR the parent toolUseContext field
+ *   (transitively-nested Agent spawns; propagated by createSubagentContext).
  *
  * Policy-env seeding follows disableWebFetch285.test.ts
  * (setCachedSettingsForSource public cache API, reset to null after).
@@ -320,17 +322,75 @@ describe('2.1.296 #003 wiring', () => {
     ).toBe(true)
   })
 
-  test('runAgent threads inWorkflowRun from querySource (source-anchored pin)', () => {
+  test('runAgent threads inWorkflowRun from spawnedByWorkflowRunId (source-anchored pin)', () => {
     // runAgent.ts cannot be imported hermetically (huge module graph) —
     // pinned with source-anchored readFileSync assertions (established OCC
     // convention, see dangerousRm296.test.ts).
+    //
+    // contract-002 fix: the discriminator is the official
+    // `dt!==void 0||...&&n.spawnedByWorkflowRunId!==void 0` — a direct-spawn
+    // param OR the parent toolUseContext field (nested lineage). The prior
+    // `querySource === 'workflow'` only fired on the direct spawn.
     const src = readFileSync(
       join(import.meta.dir, '..', '..', '..', 'tools', 'AgentTool', 'runAgent.ts'),
       'utf8',
     )
     const threaded =
-      /const resolvedAgentModel = getAgentModel\(\s*agentDefinition\.model,\s*toolUseContext\.options\.mainLoopModel,\s*model,\s*permissionMode,\s*(?:\/\/[^\n]*\n\s*)*querySource === 'workflow',\s*\)/g
+      /const resolvedAgentModel = getAgentModel\(\s*agentDefinition\.model,\s*toolUseContext\.options\.mainLoopModel,\s*model,\s*permissionMode,\s*(?:\/\/[^\n]*\n\s*)*spawnedByWorkflowRunId !== undefined \|\|\s*toolUseContext\.spawnedByWorkflowRunId !== undefined,\s*\)/g
     expect((src.match(threaded) ?? []).length).toBe(1)
+    // runAgent must stamp the field onto the nested subagent context so
+    // transitively-nested Agent spawns inherit workflow lineage.
+    expect(src).toContain('spawnedByWorkflowRunId,')
+  })
+
+  test('nested spawn lineage: createSubagentContext propagates spawnedByWorkflowRunId', async () => {
+    // contract-002 core: a workflow-spawned agent's own Agent-tool spawn must
+    // still resolve CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL. The official threads
+    // this via the toolUseContext field (n.spawnedByWorkflowRunId); OCC's
+    // createSubagentContext must inherit it from the parent context.
+    const { createSubagentContext } = await import('../../forkedAgent.js')
+    const { FileStateCache } = await import('../../fileStateCache.js')
+    const parent = {
+      options: { mcpClients: [], tools: [], mainLoopModel: 'claude-sonnet-4-5' },
+      abortController: new AbortController(),
+      readFileState: new FileStateCache(10, 100_000),
+      spawnedByWorkflowRunId: 'wf_run_42',
+      getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+      setAppState: () => {},
+    } as never
+    const child = createSubagentContext(parent)
+    expect(child.spawnedByWorkflowRunId).toBe('wf_run_42')
+    // The nested discriminator (param undefined, context field set) fires —
+    // mirrors runAgent's `spawnedByWorkflowRunId !== undefined ||
+    // toolUseContext.spawnedByWorkflowRunId !== undefined` shape.
+    process.env[WORKFLOW_ENV] = 'claude-haiku-4-5'
+    const nestedSpawnParam: string | undefined = undefined
+    const nestedInWorkflowRun =
+      nestedSpawnParam !== undefined || child.spawnedByWorkflowRunId !== undefined
+    expect(nestedInWorkflowRun).toBe(true)
+    expect(
+      getAgentModel(undefined, 'claude-sonnet-4-5', undefined, 'default', nestedInWorkflowRun),
+    ).toBe('claude-haiku-4-5')
+  })
+
+  test('explicit override wins over parent lineage (official n?.X??e.X)', async () => {
+    const { createSubagentContext } = await import('../../forkedAgent.js')
+    const { FileStateCache } = await import('../../fileStateCache.js')
+    const parent = {
+      options: { mcpClients: [], tools: [], mainLoopModel: 'claude-sonnet-4-5' },
+      abortController: new AbortController(),
+      readFileState: new FileStateCache(10, 100_000),
+      getAppState: () => ({ toolPermissionContext: { mode: 'default' } }),
+      setAppState: () => {},
+    } as never
+    // Parent has no lineage; explicit override stamps it.
+    const child = createSubagentContext(parent, {
+      spawnedByWorkflowRunId: 'wf_direct',
+    })
+    expect(child.spawnedByWorkflowRunId).toBe('wf_direct')
+    // Parent without lineage and no override → field stays undefined (inert).
+    const plain = createSubagentContext(parent)
+    expect(plain.spawnedByWorkflowRunId).toBeUndefined()
   })
 
   test('primitives suppression is the official two-arm kt (source-anchored pin)', () => {
