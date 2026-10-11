@@ -49,6 +49,7 @@ import {
   isValidWorkflowRunId,
 } from './WorkflowEngine.js'
 import { WorkflowJournal } from './journal.js'
+import { stringifyResultGated } from './prettyFits.js'
 import { resolveWorkflowScript } from '../../utils/effort/workflowDiscovery.js'
 import { getInitialSettings } from '../../utils/settings/settings.js'
 import { getRuleByContentsForToolName } from '../../utils/permissions/permissions.js'
@@ -559,10 +560,11 @@ export const WorkflowTool = buildTool({
         : ''
     parts.push({
       type: 'text',
+      // 2.1.296 #023 (official ajr @225609040): pretty-print only when the
+      // Hps estimator says indent-2 fits in 8× the compact length — a
+      // ~20k-deep result would otherwise expand ~40 KB into ~800 MB.
       text: `Workflow completed in ${durationMs}ms with ${agentCount} agent(s).${failSummary}${logSummary}\n\nResult:\n${
-        typeof result === 'string'
-          ? result
-          : JSON.stringify(result, null, 2)
+        typeof result === 'string' ? result : stringifyResultGated(result)
       }`,
     })
     return {
