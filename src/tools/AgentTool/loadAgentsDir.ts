@@ -19,10 +19,6 @@ import {
   AUTO_COMPACT_WINDOW_MIN,
 } from '../../utils/autoCompactWindow.js'
 import { compareNamesAsciiFirst } from '../../utils/asciiFirstCompare.js'
-import {
-  AUTO_COMPACT_WINDOW_MAX,
-  AUTO_COMPACT_WINDOW_MIN,
-} from '../../utils/autoCompactWindow.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
   EFFORT_LEVELS,
