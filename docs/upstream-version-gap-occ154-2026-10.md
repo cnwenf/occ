@@ -469,3 +469,90 @@ ELF 逐站点取证（v295/v296，python mmap.find + 区域 sig 归一化 realdi
 3. **命中即串行**：同一官方版本只允许**一条**对齐轨在飞。后启动方要么等先启动方合入后做增量 gap（只补 diff），要么由 Leader 显式裁决分工面（按 changelog 条目区间切分，两轨条目集合不相交），禁止两轨各自全量移植。
 4. **开工声明**：追齐轮开工 issue 评论必须写明目标版本号 + 已核查的在飞轨清单（"无在飞轨"也要显式写），供 Leader 与他轨程序员对表。
 5. **账本单一权威**：同一版本号的 gap 账本只开一份 `docs/upstream-version-gap-occ<N>-*.md`；他轨接手时在原文档追加 §，不另开新档（本轮 occ113/occ154 双账本已在 §9 收敛为单一权威记录，occ113 文档头部加会师横幅互指）。
+
+## §11 修复轮记录（程序员，feature/occ154-reconcile，`dd61baa`→`18bc174`，2026-10-11）
+
+Leader 委派修复轮：验收员候选验证 12 项裁决（11 confirmed / 1 falsified）全部采纳，处理 confirmed 项。修复决策规则：优先官方 v296 ELF 语义（取证 `/tmp/cc-diff-296`，R5 批准有效）；不可行则回退 main 行为 + 账本 STAGED。全程未触碰 `feature/occ154-296` 与 main；小切片 commit+push。
+
+### §11.1 commit 链（9 commits，均已 push）
+
+| commit | 项 | 内容 |
+|---|---|---|
+| `4a4d871` | contract-001 | loadAgentsDir.ts 重复 AUTO_COMPACT_WINDOW 命名导入块去重（TS2300 ×4 归零） |
+| `ef67c5e` | contract-002 | 官方 v296 `spawnedByWorkflowRunId` lineage 机制移植（Tool.ts 字段 + forkedAgent 继承 + runAgent 判别 @官方调用点 228342056 + primitives 传 runId）；嵌套 spawn 不再丢 `CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL` |
+| `4dd8f4a` | df-02 + t-05 | query.ts:1104 `turnModel = nextFallbackModel`（镜像官方 `Yn(vt)` @53594595 原地刷新）+ queryFallbackRoom296.test.ts（299 行，真 query() 生成器驱动，兼作 t-05 接线钉） |
+| `c9d2b11` | df-01 | **ELF 证伪 → 无生产代码变更**；allowLarge296.test.ts 追加 3 钉固定官方混合语义（详见 §11.2） |
+| `adfc3ce` | t-02 | hljsLimit295.test.ts（12 tests）：Layer A before:highlight 边界常量/专属 cap/权重钉 |
+| `c526dcb` | t-03 | hljsGrammarPatches295.test.ts（4 tests）：Layer B LANGUAGE_PATCHES 契约钉（真实 v11.11.1 上验证） |
+| `bbf11a8` | t-04 | hljsBoundGuard295.test.ts（4 tests）：hljsBound 双守卫安装接线钉（M-A/M-B） |
+| `307887d` | t-06 | markdownWindowedTable295.test.ts（2 tests/15 expects）：GIVEUP_WINDOW_LINES=16000 常量钉 + 1100 行表格 windowTable fixture |
+| `18bc174` | t-01 ≡ e2e-01 | test/e2e/dist-hljs-injection.e2e.test.ts（335 行，两腿产物级回归；详见 §11.4） |
+
+### §11.2 逐项处置（12 项裁决）
+
+| finding | 验收员裁决 | 本轮处置 | mutation-verify |
+|---|---|---|---|
+| contract-001 | confirmed | **FIXED** `4a4d871`（卫生项） | n/a（tsc TS2300 ×4→0 即验证） |
+| contract-002 | confirmed | **FIXED** `ef67c5e`（官方 lineage 语义） | 删 forkedAgent 继承→RED，恢复→GREEN；workflowSubagentModel296 29/0；scope：AgentTool+model 631/0、WorkflowTool 66/0 |
+| df-01 | confirmed | **ELF-FALSIFIED → 无生产变更** + 3 钉 `c9d2b11`；证伪链见 §11.3；**请验收员复测时重裁** | 硬编码 bpt=3 于 allowLarge.ts:127 → 3 钉全 RED、既有 51 绿；contextRoom296 35 不受影响（89/89） |
+| df-02 | confirmed | **FIXED** `4dd8f4a`（官方 `Yn(vt)` 语义：room getter `()=>Rt` @53561900 活刷新，room identity + claimed() 保持，不重跑 seeding） | 删 `turnModel = nextFallbackModel` → df-02 RED（167000≠767000）；删 `contextRoom: () => turnContextRoom` 接线 → df-02+t-05 双 RED；基线 86/86 两 mutation 下保持绿 |
+| df-03 | **falsified（验收员）** | 无代码变更，证伪结论存档 §11.5 | n/a |
+| t-01 ≡ e2e-01 | confirmed | **FIXED** `18bc174`（两腿产物级回归测试） | 双向 ×2 轮，见 §11.4 |
+| t-02 | confirmed | hljsLimit295.test.ts `adfc3ce` | 3/3 配方 RED（limit 50000→100000 3 fail；markdown WEIGHT_RULES 删条目 1 fail；excess-limit off-by-one 2 fail），restore GREEN 12/12 |
+| t-03 | confirmed | hljsGrammarPatches295.test.ts `c526dcb` | 删 markdown+python patch 条目 → 3 RED（fence/link/number）、rust 对照 GREEN；restore 4/4（与 t-02 合跑 16/16） |
+| t-04 | confirmed | hljsBoundGuard295.test.ts `bbf11a8` | M-A（禁 limit-guard 安装）→ 2 RED；M-B（删 isBounded 早退）→ 1 RED；restore 后四 hljs 套件 29/29 |
+| t-05 | confirmed | 并入 `4dd8f4a` driver test（contextRoom 逐轮接线钉） | 同 df-02 行第二 mutation：删接线 → t-05 RED（原 86/86 全绿盲区被咬住） |
+| t-06 | confirmed | markdownWindowedTable295.test.ts `307887d` | M-C1 GIVEUP 16000→999 → 常量钉 RED（既有 13 绿）；M-C2 行循环 cap → rows 1000≠1100 RED；restore 15/0/57（两 windowed 套件） |
+
+### §11.3 df-01 ELF 证伪存档（完整链）
+
+验收员 finding：plan-mode 'haiku'→sonnet-4-5 升级场景，`raised.maxSizeBytes` 取静态 `options.mainLoopModel`（bpt 4 → 1402788）而非 contextRoom 活跃已升级模型（bpt 3 → oracle 1052091），声称两 cap 之间读文件 HEAD 放行 / oracle 拒绝。
+
+**官方 v296 ELF 取证（/tmp/cc-diff-296，strings + mmap.find，未执行官方二进制）**：
+
+1. 官方 `lOr` @1722587：`raised.maxSizeBytes` 的 bytesPerToken(bpt) 来自 facade `e.model()` —— 即**静态** `options.mainLoopModel`；threshold 来自 live contextRoom。**官方本身就是混合语义**（静态 bpt × 活 threshold），HEAD 与官方一致。
+2. **LEGACY bytesPerToken 集合同时包含 `claude-haiku-4-5` 与 `claude-sonnet-4-5`（均 bpt 4）**：验收员设想的升级对（haiku→sonnet-4-5）两端 bpt 相同 → 静态与活跃取值结果一致 → **分歧前提不成立**。
+3. oracle 1052091 = floor(167000×0.7)×9 = 116899×9，要求 sonnet-4-5 的 bpt=3；官方 bytesPerToken 对 sonnet-4-5 返回 4（116899×12 = 1402788，即验收员自己引用的"静态值"）。**oracle 计算有误**。
+
+处置：无生产代码变更；allowLarge296.test.ts 3 钉固定官方混合语义（含升级场景 1402788 断言），mutation（硬编码 bpt=3）全 RED 证明钉咬合。**此证伪推翻验收员 confirmed 裁决，复测时请重裁。**
+
+### §11.4 D 项（t-01≡e2e-01）产物级回归：设计取证与三个环境发现
+
+**dist hljs 拓扑取证**（byte-offset 级）：dist/cli.js 内联两代 hljs —— cli-highlight 私有的 @10.7.3（块 ≈9.33M–11.77M，注入点 #1 @11765242）与根 @11.11.1（块 ≈12.12M–13.71M，注入点 #2 @13710716）。cli-highlight 经 `require_lib8`（= @10.7.3 lib/index.js，def @11754500）绑定 hljs → **dist 实际渲染实例是 @10，唯一约束就是 build 注入**（cliHighlight.ts 运行时安装只覆盖 @11；其锚定 require @10 在 bundle 内按设计失败）。
+
+**灾难输入选型**（hljs@10.7.3 store 拷贝实测）：`handlebars` 语言（内嵌 xml subLanguage → 级联复现，且**不在** html/xml/xhtml 前置过滤集内）+ `<script>`×24 = 无界 >70s（×20 = 13.1s）；有界（双守卫）→ HighlightBoundError @16ms。排除的候选：markdown 未闭合 fence **线性**（40k 字符 28ms，无冻结）、js `'${`×5000 = 32ms、js 55k = 55ms、xml ×20 = 13.2s 但被前置过滤挡住（不可判别）。
+
+**两腿**：
+- Leg 1（ungated，CI-red 门）：dist 提取注入 marker —— `.installHighlightBounds(module` ×2、`.applyGrammarPatches(module` ×2（rename-tolerant：匹配 `module.`/`module2.` 两形，不匹配 cliHighlight.ts 的 2 处裸运行时调用）、`hljs.registerLanguage` ≥300（两代均内联）。ci.yml 先 build 后 test（:37 注释）→ 发布机注入静默失效必 CI 红。
+- Leg 2（skipIf(CI)，tmux REPL + mock SSE 流式 ```handlebars fence）：**判别信号 = 事件循环响应性（keystroke canary），不是 pane 文本** —— 见发现 2/3。
+
+**三个环境/设计发现**（后续任何产物级高亮测试必读）：
+1. **FORCE_COLOR 必需**：沙箱父环境无 TERM → 产物整个 TUI 无色、fence 全 plain、高亮管线整体休眠（mutation 下 leg 2 假绿）。`FORCE_COLOR=1 TERM=xterm-256color` 后 mutation dist 上 js fence 可着色 → 管线经无界 @10 实跑。
+2. **Suspense fallback 画面不可判别**：Markdown.tsx 在 `getCliHighlightPromise` 决议前先以 fallback（highlight=null）画出 plain fence 体 → mutation dist 的 pane 在 ~1s 就显示 `<script>`×24（冻结发生在其后的同步高亮重渲染）。健康 dist 的最终画面同样是 plain（有界抛错 → memo → 降级），**两侧 pane 文本相同**。
+3. **pre-freeze echo race → 双 canary**：冻结开始前的 ~100ms 窗口内敲键仍会被 echo（实测出现过一次假绿）。设计：早 canary 发送但**不断言**，settle 5s（mutation 侧冻结确定在途且持续 >70s；健康侧轮次早已完成），晚 canary 必须 30s 内 echo。
+
+**mutation 矩阵（双向，各 ×2 轮确定性复现）**：注入 filter 置 no-op（`/node_modules…/` → `/MUTATION_NOOP…/`）→ build 仍 exit 0 → leg 1 RED（marker 2→0）+ leg 2 RED（模式 A：冻结抢在 fallback flush 前 → fence 30s 不上屏；模式 B：fence 上屏但晚 canary 37s 不 echo）；restore → rebuild → 两腿 GREEN ×2（全程 7.6s）。既有 hljs 套件 36/36 绿。
+
+### §11.5 df-03 证伪存档（验收员产出，按 Leader 指令仅账本记录）
+
+`printTextResults.ts` 的 `autoModeUnavailableStopNotice` latch 在 OCC 全 src 树**无任何 setter** → 可达性为零；官方同状态同样输出空 stderr；base `print.ts:1064-1066` 已同款 stdout 处理。port 文档记明的 no-op 准确，本 diff 未引入/扩大失败。无代码变更。探针存档于验收员 runtime（`static-findings-dataflow:df-03.probe.test.ts`）。
+
+### §11.6 终验 battery（HEAD `18bc174`，2026-10-11）
+
+| 项 | 结果 |
+|---|---|
+| 修复轮 focused 12 套件（allowLarge296 / queryFallbackRoom296 / workflowSubagentModel296 / contextRoom296 / hljsLimit295 / hljsGrammarPatches295 / hljsBoundGuard295 / hljsBound289 / cliHighlight289 / markdownWindowed295 / markdownWindowedTable295 / markdownBlockquote295） | **179 pass / 0 fail / 693 expect()** |
+| 受影响 scope（AgentTool+WorkflowTool+FileReadTool+utils/model+src/__tests__，59 文件） | head **855/2** vs base `dd61baa` worktree **848/2** —— 失败集合逐字相同（agentTelemetry ×2），delta +7 = 本轮新增测试 |
+| 上述 2 fail 定性 | agentTelemetry.test.ts 头注**自带文档**的 shared-process analytics-sink 泄漏竞争（attachAnalyticsSink 幂等、泄漏 sink 优先）；CI 以 scripts/ci-test.sh 逐文件进程隔离运行 → 隔离下该文件 4/0 绿、WorkflowTool 全目录逐文件全绿。**非本轮回归** |
+| build | 绿：dist/cli.js 30.09 MB，`OCC 2.1.379`（未 bump，gate 未开） |
+| headless `-p`（真 key） | `echo "say PONG" \| dist/cli.js -p` → PONG，exit 0 |
+| REPL 快烟（真 key，tmux） | boot ready @2s；live round-trip（真实 API）SMOKE-OK @4s |
+| dist-hljs-injection e2e（健康 dist） | GREEN ×3 轮（含 mutation 验证前/后） |
+
+### §11.7 gate 与移交
+
+- **发布 gate 不变**：验收员复测 PASS 前不 bump（2.1.380）不 tag；复测对象 = `feature/occ154-reconcile` HEAD `18bc174`。
+- **移交时必须显式提请验收员重裁 df-01**（本轮 ELF 证伪推翻其 confirmed 裁决，证据链 §11.3）。
+- `/tmp/cc-diff-296` 官方取证保留至合入 main。
+- 修复轮范围外零改动：`feature/occ154-296`、main、生产代码除 contract-002/df-02/contract-001 三处（均官方语义）外未触碰。
+
