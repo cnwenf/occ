@@ -117,6 +117,7 @@ import {
   finalContextTokensFromLastResponse,
   tokenCountWithEstimation,
 } from './utils/tokens.js'
+import { createContextRoom } from './utils/contextRoom.js'
 import { ESCALATED_MAX_TOKENS } from './utils/context.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from './services/analytics/growthbook.js'
 import { SLEEP_TOOL_NAME } from './tools/SleepTool/prompt.js'
@@ -643,9 +644,28 @@ async function* queryLoop(
     }
 
     //TODO: no need to set toolUseContext.messages during set-up since it is updated here
+    //
+    // 2.1.296 PORT #006 — per-turn context room (official query-loop wiring
+    // @224224750 `contextRoom:ra(()=>Rt,p.options.autoCompactWindow,()=>P)`).
+    // The Read tool's `allow_large` path consults this to size an oversized
+    // read to the tokens that still fit this turn. The room closes over a
+    // LAZY model getter because the official `Rt` (resolved model state) maps
+    // to OCC's `currentModel`, which is only computed AFTER this spread (the
+    // StreamingToolExecutor below receives the post-spread context, so the
+    // room must be installed here). `turnModel` is seeded with the static
+    // option and refreshed to the runtime-resolved model once known; both
+    // `getModel` and `getMessages` read live so held()/threshold track the
+    // in-flight turn.
+    let turnModel = toolUseContext.options.mainLoopModel
+    const turnContextRoom = createContextRoom({
+      getModel: () => turnModel,
+      autoCompactWindow: toolUseContext.options.autoCompactWindow,
+      getMessages: () => messagesForQuery,
+    })
     toolUseContext = {
       ...toolUseContext,
       messages: messagesForQuery,
+      contextRoom: () => turnContextRoom,
     }
 
     const assistantMessages: AssistantMessage[] = []
@@ -680,6 +700,10 @@ async function* queryLoop(
         permissionMode === 'plan' &&
         doesMostRecentAssistantMessageExceed200k(messagesForQuery),
     })
+    // 2.1.296 PORT #006: refresh the room's lazy model getter to the
+    // runtime-resolved model (official `Rt`), so held()/threshold use the
+    // correct bytesPerToken and context window for this turn.
+    turnModel = currentModel
 
     // Fable 5 research preview: debit one credit per query turn.
     if (isFableModel(currentModel)) {

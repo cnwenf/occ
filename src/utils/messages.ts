@@ -3385,6 +3385,15 @@ const META_ROW_PREFIX_TEXTS: readonly string[] = [
   'You ended the turn without calling SendUserMessage.', // hBt
 ]
 
+// Official 2.1.296 `nMt` @207901928 — cut-off resume nudge (stream survived).
+// Exported for the #006 contextRoom cutoff-carrier check (official `CAs`),
+// which fires exactly on these two texts.
+export const CUTOFF_RESUME_STREAM_TEXT =
+  'Your response above was cut off mid-stream. Resume directly from where it stops — no apology, no recap. If none of it survived, answer the request from the start.'
+// Official 2.1.296 `rMt` @207902105 — cut-off resume nudge (nothing survived).
+export const CUTOFF_RESUME_REWRITE_TEXT =
+  'Your response above was cut off mid-stream and only your next message is delivered. Write the complete response again from the start — no apology, no mention of the cut-off.'
+
 // Official 2.1.285 `ae` exact-match synthetic loop nudge texts (byte-exact
 // from the ELF, concatenations joined). MUt is byte-identical to
 // THINKING_ONLY_NUDGE_TEXT (src/query/thinkingOnlyNudge.ts) and LUt to the
@@ -3406,9 +3415,9 @@ const META_ROW_EXACT_TEXTS: readonly string[] = [
   // LUt
   'Output token limit hit. Resume directly — no apology, no recap of what you were doing. Pick up mid-thought if that is where the cut happened. Break remaining work into smaller pieces.',
   // NUt
-  'Your response above was cut off mid-stream. Resume directly from where it stops — no apology, no recap. If none of it survived, answer the request from the start.',
+  CUTOFF_RESUME_STREAM_TEXT,
   // $Ut
-  'Your response above was cut off mid-stream and only your next message is delivered. Write the complete response again from the start — no apology, no mention of the cut-off.',
+  CUTOFF_RESUME_REWRITE_TEXT,
 ]
 
 // Official 2.1.285 `$jr` + `O6n` — hook-feedback rows are built as
@@ -3426,8 +3435,11 @@ const HOOK_FEEDBACK_INFIX = ' hook feedback:\n' // O6n (raw newline in the ELF t
  * Official 2.1.285 `M6n` — isMeta loop-feedback rows (byte-exact from the
  * ELF): text = string content, or the first text block's text; matched by
  * `se` prefix / `ae` exact / `${event}${O6n}` prefix.
+ *
+ * Exported for the 2.1.296 #006 contextRoom cutoff-carrier check (official
+ * `CAs` = `r3e(msg)` + first-text ∈ {nMt, rMt}).
  */
-function isSyntheticLoopFeedbackMetaRow(msg: Message): boolean {
+export function isSyntheticLoopFeedbackMetaRow(msg: Message): boolean {
   if (msg.type !== 'user' || msg.isMeta !== true) return false
   const content = msg.message?.content
   const firstBlock = Array.isArray(content) ? content[0] : undefined

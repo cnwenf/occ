@@ -17,9 +17,11 @@ import {
 } from '../utils/model/bedrock.js'
 import {
   getDefaultSonnetModel,
+  getCanonicalName,
   getMainLoopModel,
   getSmallFastModel,
   normalizeModelStringForAPI,
+  type ModelName,
 } from '../utils/model/model.js'
 import { jsonStringify } from '../utils/slowOperations.js'
 import { isToolReferenceBlock } from '../utils/toolSearch.js'
@@ -242,6 +244,56 @@ export function roughTokenCountEstimationForFileType(
 }
 
 /**
+ * Official 2.1.296 `rF` @210122710 (byte-verified) — canonical model names
+ * whose rough estimation ratio stays at the legacy 4 bytes/token. Every other
+ * model uses 3.
+ *
+ * The official set spells the bare Claude 4.0 models 'claude-opus-4-0' /
+ * 'claude-sonnet-4-0'; OCC's getCanonicalName returns 'claude-opus-4' /
+ * 'claude-sonnet-4' for those, so both spellings are carried here to keep
+ * the observable behavior identical.
+ */
+const LEGACY_BYTES_PER_TOKEN_MODELS: ReadonlySet<string> = new Set([
+  'claude-3-opus',
+  'claude-3-sonnet',
+  'claude-3-haiku',
+  'claude-3-5-sonnet',
+  'claude-3-5-haiku',
+  'claude-3-7-sonnet',
+  'claude-opus-4-0',
+  'claude-opus-4-1',
+  'claude-opus-4-5',
+  'claude-opus-4-6',
+  'claude-sonnet-4-0',
+  'claude-sonnet-4-5',
+  'claude-sonnet-4-6',
+  'claude-haiku-4-5',
+  // OCC canonical aliases for the official '-0' entries:
+  'claude-opus-4',
+  'claude-sonnet-4',
+])
+
+/**
+ * Official 2.1.296 `kh` @210122985 (byte-verified):
+ *   `function kh(e){if(!e)return 4;let n=Dt(e),
+ *     r=Ht(We(n)).replace(/[._]/g,"-");return rF.has(r)?4:3}`
+ *
+ * Dt = resolveOverriddenModel, We = canonicalize, Ht = lowercase — the
+ * composition is exactly OCC's getCanonicalName (which already resolves
+ * overrides and lowercases) plus the [._] → - normalization. Empty model → 4;
+ * legacy canonical names → 4; everything else → 3.
+ */
+export function bytesPerTokenForModel(model: string | undefined): number {
+  if (!model) {
+    return 4
+  }
+  const canonical = getCanonicalName(model as ModelName)
+    .toLowerCase()
+    .replace(/[._]/g, '-')
+  return LEGACY_BYTES_PER_TOKEN_MODELS.has(canonical) ? 4 : 3
+}
+
+/**
  * Estimates token count for a Message object by extracting and analyzing its text content.
  * This provides a more reliable estimate than getTokenUsage for messages that may have been compacted.
  * Uses Haiku for token counting (Haiku 4.5 supports thinking blocks), except:
@@ -330,19 +382,23 @@ export function roughTokenCountEstimationForMessages(
     message?: { content?: unknown }
     attachment?: Attachment
   }[],
+  bytesPerToken?: number,
 ): number {
   let totalTokens = 0
   for (const message of messages) {
-    totalTokens += roughTokenCountEstimationForMessage(message)
+    totalTokens += roughTokenCountEstimationForMessage(message, bytesPerToken)
   }
   return totalTokens
 }
 
-export function roughTokenCountEstimationForMessage(message: {
-  type: string
-  message?: { content?: unknown }
-  attachment?: Attachment
-}): number {
+export function roughTokenCountEstimationForMessage(
+  message: {
+    type: string
+    message?: { content?: unknown }
+    attachment?: Attachment
+  },
+  bytesPerToken?: number,
+): number {
   if (
     (message.type === 'assistant' || message.type === 'user') &&
     message.message?.content
@@ -353,6 +409,7 @@ export function roughTokenCountEstimationForMessage(message: {
         | Array<Anthropic.ContentBlock>
         | Array<Anthropic.ContentBlockParam>
         | undefined,
+      bytesPerToken,
     )
   }
 
@@ -360,7 +417,10 @@ export function roughTokenCountEstimationForMessage(message: {
     const userMessages = normalizeAttachmentForAPI(message.attachment)
     let total = 0
     for (const userMsg of userMessages) {
-      total += roughTokenCountEstimationForContent(userMsg.message.content)
+      total += roughTokenCountEstimationForContent(
+        userMsg.message.content,
+        bytesPerToken,
+      )
     }
     return total
   }
@@ -374,28 +434,30 @@ function roughTokenCountEstimationForContent(
     | Array<Anthropic.ContentBlock>
     | Array<Anthropic.ContentBlockParam>
     | undefined,
+  bytesPerToken?: number,
 ): number {
   if (!content) {
     return 0
   }
   if (typeof content === 'string') {
-    return roughTokenCountEstimation(content)
+    return roughTokenCountEstimation(content, bytesPerToken)
   }
   let totalTokens = 0
   for (const block of content) {
-    totalTokens += roughTokenCountEstimationForBlock(block)
+    totalTokens += roughTokenCountEstimationForBlock(block, bytesPerToken)
   }
   return totalTokens
 }
 
 function roughTokenCountEstimationForBlock(
   block: string | Anthropic.ContentBlock | Anthropic.ContentBlockParam,
+  bytesPerToken?: number,
 ): number {
   if (typeof block === 'string') {
-    return roughTokenCountEstimation(block)
+    return roughTokenCountEstimation(block, bytesPerToken)
   }
   if (block.type === 'text') {
-    return roughTokenCountEstimation(block.text)
+    return roughTokenCountEstimation(block.text, bytesPerToken)
   }
   if (block.type === 'image' || block.type === 'document') {
     // https://platform.claude.com/docs/en/build-with-claude/vision#calculate-image-costs
@@ -411,7 +473,10 @@ function roughTokenCountEstimationForBlock(
     return 2000
   }
   if (block.type === 'tool_result') {
-    return roughTokenCountEstimationForContent(block.content as any)
+    return roughTokenCountEstimationForContent(
+      block.content as any,
+      bytesPerToken,
+    )
   }
   if (block.type === 'tool_use') {
     // input is the JSON the model generated — arbitrarily large (bash
@@ -419,19 +484,20 @@ function roughTokenCountEstimationForBlock(
     // char count; the API re-serializes anyway so this is what it sees.
     return roughTokenCountEstimation(
       block.name + jsonStringify(block.input ?? {}),
+      bytesPerToken,
     )
   }
   if (block.type === 'thinking') {
-    return roughTokenCountEstimation(block.thinking)
+    return roughTokenCountEstimation(block.thinking, bytesPerToken)
   }
   if (block.type === 'redacted_thinking') {
-    return roughTokenCountEstimation(block.data)
+    return roughTokenCountEstimation(block.data, bytesPerToken)
   }
   // server_tool_use, web_search_tool_result, mcp_tool_use, etc. —
   // text-like payloads (tool inputs, search results, no base64).
   // Stringify-length tracks the serialized form the API sees; the
   // key/bracket overhead is single-digit percent on real blocks.
-  return roughTokenCountEstimation(jsonStringify(block))
+  return roughTokenCountEstimation(jsonStringify(block), bytesPerToken)
 }
 
 async function countTokensWithBedrock({

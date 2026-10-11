@@ -57,6 +57,7 @@ import type {
   WebSearchProgress,
 } from './types/tools.js'
 import type { AutoCompactWindowOverride } from './utils/autoCompactWindow.js'
+import type { ContextRoom } from './utils/contextRoom.js'
 import type { FileStateCache } from './utils/fileStateCache.js'
 import type { DenialTrackingState } from './utils/permissions/denialTracking.js'
 import type { SystemPrompt } from './utils/systemPromptType.js'
@@ -307,6 +308,17 @@ export type ToolUseContext = {
     maxTokens?: number
     maxSizeBytes?: number
   }
+  /**
+   * 2.1.296 PORT #006 — per-turn context room (official query-loop wiring
+   * @224224750 `contextRoom:ra(()=>Rt,p.options.autoCompactWindow,()=>P)`,
+   * exposed to tools via the ToolUseContext proxy `contextRoom:()=>
+   * e.contextRoom` @211809071). The Read tool's `allow_large` path calls
+   * `context.contextRoom?.()` to size an oversized read to the tokens that
+   * still fit this turn; undefined means "room unavailable" (refuse
+   * allow_large). Optional so non-query contexts (tests, one-off tool runs)
+   * keep working without it.
+   */
+  contextRoom?: () => ContextRoom | undefined
   globLimits?: {
     maxResults?: number
   }
