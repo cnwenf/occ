@@ -77,6 +77,14 @@ describe('CC 2.1.296 #032 isLossyUtf8Decode (official IAo)', () => {
       false,
     )
   })
+
+  // Absorbed from the OCC-113 track suite (utf8Safety296, R2 #032 switch):
+  // 0xFF never appears in a valid UTF-8 sequence.
+  test('a stray 0xFF byte is lossy (never valid in UTF-8)', () => {
+    expect(isLossyUtf8Decode(Buffer.from([0x61, 0xff, 0x62]), 'utf8')).toBe(
+      true,
+    )
+  })
 })
 
 describe('CC 2.1.296 #032 readFileSyncWithMetadata.lossyDecode (official nwe)', () => {
