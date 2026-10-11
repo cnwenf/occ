@@ -353,11 +353,14 @@ describe('Gap-113b: FORCE sites in the subagent surfaces (source-verified)', () 
       join(SRC, 'tools/WorkflowTool/primitives.ts'),
       'utf-8',
     )
-    // Byte-verified log message (official 2.1.296 ELF offset 97085204).
-    // v296 QTe reworded v295's "...FORCE is set" (@227975827) to "...FORCE
-    // is on"; zero "is set" hits remain in the 2.1.296 binary. The earlier
-    // pin here cited the 2.1.258 offset (7904700) with the v295 wording.
+    // Byte-verified log message. v295 wording was "...FORCE is set" (official
+    // 2.1.258 ELF offset 7904700); v296 rewords the arm to "...FORCE is on"
+    // (official 2.1.296 ELF @228311386 — re-confirmed by OCC-114 binary
+    // forensics: "...FORCE is set" has ZERO hits in the v296 ELF) and adds the
+    // CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL arm (@228311306). OCC-154 ported the
+    // v296 wording; this pin tracks it.
     expect(src).toContain('CLAUDE_CODE_SUBAGENT_MODEL_FORCE is on')
+    expect(src).toContain('CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL is set')
     expect(src).toContain('Workflow agent model "')
   })
 

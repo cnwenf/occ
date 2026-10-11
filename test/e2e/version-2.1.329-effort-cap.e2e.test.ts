@@ -566,23 +566,38 @@ describe.skipIf(!!process.env.CI || !tmuxAvailable())(
         sendLiteral('/model')
         sendKey('Enter')
         expect(await waitForText('Select model', 15_000)).toBe(true)
-        // Flow ported from the reviewer's verified probe: Up 4 → row 1 =
-        // Default (Sonnet 5); Right → toggle xhigh (sonnet-5 is xhigh-capable
-        // and NOT capped here); Down → the capped claude-opus-4-7 row, where
-        // the focusedCapped note must render.
-        for (let i = 0; i < 4; i++) {
-          sendKey('Up')
-          await new Promise(r => setTimeout(r, 150))
-        }
+        // UPDATED (OCC-114 acceptance): the original fixed script (Up×4 → row
+        // "Default (Sonnet 5)", Right → xhigh, Down → capped opus row) pinned
+        // an environment-dependent roster shape. The picker roster is built
+        // from the live default/tier resolution + the custom-base-URL rows
+        // (OCC-43 xJn): the Default row now resolves to Opus 4.7 (1M context)
+        // — itself the capped model — and a Fable row shifts the positions,
+        // so Up×4 from the initial claude-sonnet-5 row wrapped to haiku and
+        // Down wrapped onto Default (NO_PREFERENCE): the capped note rendered
+        // (Default resolves to the capped opus) but Enter took the
+        // onSelect(null) reset path — effortLevel was persisted (clamped, via
+        // getDefaultMainLoopModel) while NO model key was written. Navigation
+        // is now CONTENT-DRIVEN: toggle xhigh on the initially focused
+        // claude-sonnet-5 row (xhigh-capable, uncapped), then walk Up until
+        // the capped note renders on a NON-Default row (the custom
+        // claude-opus-4-7 row) — robust to roster order/count changes.
+        const CAPPED_NOTE =
+          'Higher effort levels are capped by your settings or organization.'
         sendKey('Right')
         await new Promise(r => setTimeout(r, 300))
-        sendKey('Down')
-        expect(
-          await waitForText(
-            'Higher effort levels are capped by your settings or organization.',
-            10_000,
-          ),
-        ).toBe(true)
+        let reachedCappedRow = false
+        for (let i = 0; i < 8 && !reachedCappedRow; i++) {
+          sendKey('Up')
+          await new Promise(r => setTimeout(r, 200))
+          const pane = capturePane()
+          if (!pane.includes(CAPPED_NOTE)) continue
+          // The focused list row is the one carrying the ❯ cursor ("❯ N. label").
+          const focused = pane.match(/^\s*❯\s*\d+\.\s*(.+?)\s{2,}/m)?.[1] ?? ''
+          // Skip the Default (NO_PREFERENCE) row — it renders the note too
+          // (resolves to the capped opus) but Enter there writes no model.
+          if (!focused.includes('Default')) reachedCappedRow = true
+        }
+        expect(reachedCappedRow).toBe(true)
         sendKey('Enter')
         // The picker clamps the stale over-cap xhigh to the cap before
         // persisting (official 2.1.267: ladder/note via dt(t)/wr, persist via
@@ -592,7 +607,11 @@ describe.skipIf(!!process.env.CI || !tmuxAvailable())(
         const deadline = Date.now() + 15_000
         while (Date.now() < deadline) {
           settings = JSON.parse(readFileSync(settingsPath, 'utf8'))
-          if (settings.effortLevel !== undefined) break
+          // The picker persists effortLevel first, then the /model handler
+          // saves the model as default — two sequential writes to the same
+          // file. Poll for BOTH so the assertion can't observe the
+          // intermediate state (effortLevel present, model not yet).
+          if (settings.effortLevel !== undefined && settings.model !== undefined) break
           await new Promise(r => setTimeout(r, 200))
         }
         expect(settings.effortLevel).toBe('high')

@@ -15,6 +15,20 @@ import { runOcc, tempDir } from "./helpers";
  * output). Runs against the BUILT dist/cli.js with an isolated HOME so the
  * settings persistence is asserted on a temp settings.json.
  *
+ * UPDATED (OCC-114 acceptance): the 2.1.288 #79 per-model auto-compact window
+ * port (commit 759f2b5) reworded the non-interactive messages to the official
+ * per-model shape — `Auto-compact window for ${canonicalModel}: …` /
+ * `… for ${canonicalModel} set to …` (official 2.1.296 ELF re-verified by
+ * OCC-114 forensics: "Auto-compact window for " @97574744, setter strings
+ * "set to auto in settings, but a higher-priority override is active"
+ * @97575617, "capped to model limit of" @97575766, "is set and takes
+ * precedence." @97575288; the plain "Auto-compact window: " @104296864 is a
+ * different UI surface, not this command). The pre-288 plain-shape pins below
+ * were left stale by that round and failed against the per-model messages —
+ * they now match the official per-model shape with a model-agnostic regex
+ * (the canonical model name is environment-dependent, e.g. qwen3.8-max on the
+ * dashscope endpoint).
+ *
  * Gated out of CI (needs model creds for the round-trip cases).
  */
 
@@ -81,7 +95,9 @@ describe.skipIf(!!process.env.CI)("2.1.221 /autocompact non-interactive (e2e)", 
         60_000,
       );
       expect(res.code).toBe(0);
-      expect(res.stdout).toContain("Auto-compact window: auto");
+      // 2.1.288 per-model shape (official v296 ELF @97574744); the canonical
+      // model name varies by environment.
+      expect(res.stdout).toMatch(/Auto-compact window for \S+: auto/);
       expect(res.stdout).toContain(
         "Auto-compact summarizes the conversation when context usage approaches this limit. The actual threshold is the minimum of this setting and your model's maximum context window.",
       );
@@ -101,12 +117,25 @@ describe.skipIf(!!process.env.CI)("2.1.221 /autocompact non-interactive (e2e)", 
         60_000,
       );
       expect(set.code).toBe(0);
-      expect(set.stdout).toContain("Auto-compact window set to 500k tokens");
+      expect(set.stdout).toMatch(/Auto-compact window for \S+ set to 500k tokens/);
 
       const settingsPath = join(dir, ".claude", "settings.json");
       expect(existsSync(settingsPath)).toBe(true);
       const saved = JSON.parse(readFileSync(settingsPath, "utf8"));
-      expect(saved.autoCompactWindow).toBe(500000);
+      // 2.1.288 #79: /autocompact persists PER-MODEL (official Mqr →
+      // modelSettings[canonicalKey].autoCompactWindow — "modelSettings"
+      // byte-verified in the official v296 ELF @93718928), not the pre-288
+      // top-level autoCompactWindow key. The canonical key is the
+      // environment model's, so match on the value across model entries.
+      const savedPerModel = Object.values(
+        (saved.modelSettings ?? {}) as Record<
+          string,
+          { autoCompactWindow?: unknown }
+        >,
+      );
+      expect(savedPerModel.some((m) => m.autoCompactWindow === 500000)).toBe(
+        true,
+      );
 
       // Describe now reports the settings source.
       const describe = await runOcc(
@@ -122,9 +151,20 @@ describe.skipIf(!!process.env.CI)("2.1.221 /autocompact non-interactive (e2e)", 
         { ...CLEAN_ENV, HOME: dir },
         60_000,
       );
-      expect(reset.stdout).toContain("Auto-compact window set to auto");
+      expect(reset.stdout).toMatch(/Auto-compact window for \S+ set to auto/);
       const afterReset = JSON.parse(readFileSync(settingsPath, "utf8"));
       expect(afterReset.autoCompactWindow).toBeUndefined();
+      // Reset writes the per-model "auto" sentinel (official nPt: parsed
+      // 'auto' → modelSettings[key].autoCompactWindow = "auto").
+      const resetPerModel = Object.values(
+        (afterReset.modelSettings ?? {}) as Record<
+          string,
+          { autoCompactWindow?: unknown }
+        >,
+      );
+      expect(resetPerModel.some((m) => m.autoCompactWindow === "auto")).toBe(
+        true,
+      );
     } finally {
       cleanup();
     }
@@ -140,7 +180,7 @@ describe.skipIf(!!process.env.CI)("2.1.221 /autocompact non-interactive (e2e)", 
         60_000,
       );
       expect(res.code).toBe(0);
-      expect(res.stdout).toContain("Auto-compact window set to 200k tokens");
+      expect(res.stdout).toMatch(/Auto-compact window for \S+ set to 200k tokens/);
     } finally {
       cleanup();
     }
