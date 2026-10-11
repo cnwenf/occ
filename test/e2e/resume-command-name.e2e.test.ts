@@ -89,9 +89,16 @@ function runInteractiveOcc(
     }
     const collect = (chunk: Buffer | string) => {
       output += chunk.toString()
+      // Ready markers must survive RAW PTY bytes (no tmux decoding): the boot
+      // box text ("Open C Code") arrives fragmented by cursor-move escapes
+      // (`Open\x1b[1CC\x1b[1CCode`), and since the official-2.1.289 footer
+      // parity round (OCC-108, commit 3857667) manual mode omits the
+      // "shift+tab" cycle hint in favor of "? for shortcuts" — so the only
+      // dependable contiguous token in the ready footer is "shortcuts".
       if (
         output.toLowerCase().includes('shift+tab') ||
-        output.toLowerCase().includes('open c code')
+        output.toLowerCase().includes('open c code') ||
+        output.toLowerCase().includes('shortcuts')
       ) {
         if (beforeExit && !beforeExitSent) {
           beforeExitSent = true

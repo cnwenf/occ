@@ -17,6 +17,16 @@ import { REPO_ROOT } from "./helpers";
  *      path (onRenderScreenReader → serializeNode) emits plain text, no borders.
  *
  * Gated out of CI (needs tmux + model creds).
+ *
+ * UPDATED (OCC-114 acceptance): the seeded home now pre-approves the parent
+ * env's ANTHROPIC_API_KEY (customApiKeyResponses, key truncated to its last
+ * 20 chars per the official normalizeApiKeyForConfig scheme). Without it, the
+ * custom-API-key approval dialog (ApproveApiKey → design-system Pane →
+ * Divider) renders on boot; the Divider's literal U+2500 text is NOT a box
+ * border — the SR serializer faithfully keeps text nodes (official R0c/oHh
+ * sanitize controls/bidi only), so the divider legitimately survives
+ * flat-render and tripped assertion (b). This test makes no API call; the
+ * dialog is pure environment noise, not a screen-reader regression.
  */
 
 const BIN = process.env.OCC_ENTRYPOINT ?? `${REPO_ROOT}/dist/cli.js`;
@@ -37,6 +47,11 @@ function tmux(args: string[]): string {
 function freshSeededHome(): string {
   const home = mkdtempSync(join(tmpdir(), "occ-sr-"));
   mkdirSync(join(home, ".claude"), { recursive: true });
+  // Pre-approve the inherited env API key (official truncation: last 20
+  // chars) so the interactive approval dialog never renders — its Pane
+  // Divider emits literal U+2500 TEXT (kept by the faithful SR text
+  // serializer), which would trip the no-box-drawing assertion below.
+  const envApiKey = process.env.ANTHROPIC_API_KEY;
   writeFileSync(
     join(home, ".claude.json"),
     JSON.stringify({
@@ -48,6 +63,14 @@ function freshSeededHome(): string {
       lastOnboardingVersion: "2.1.200",
       lastReleaseNotesSeen: "2.1.200",
       projects: { [REPO_ROOT]: { hasTrustDialogAccepted: true } },
+      ...(envApiKey
+        ? {
+            customApiKeyResponses: {
+              approved: [envApiKey.slice(-20)],
+              rejected: [],
+            },
+          }
+        : {}),
     }),
   );
   writeFileSync(

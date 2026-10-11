@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { REPO_ROOT } from "./helpers";
@@ -22,6 +22,13 @@ import { REPO_ROOT } from "./helpers";
  * keep-context path calls `onAllow(updatedInput)`:
  *   - no edit  -> updatedInput = {}            -> "Approved Plan", no clobber
  *   - Ctrl+G   -> updatedInput = { plan }      -> "Approved Plan (edited by user)"
+ *
+ * UPDATED (OCC-114 acceptance): since the 2.1.218-alignment V2 dialog, the
+ * pane renders the summary chrome "User approved Claude's plan" for BOTH
+ * cases; the "Approved Plan[(edited by user)]" label survives only in the
+ * tool_result content (ExitPlanModeV2Tool planLabel) that is sent to the
+ * model and persisted in the session transcript — so the label assertions
+ * read ~/.claude/projects/**\/*.jsonl under the seeded home.
  *
  * Gated out of CI (needs tmux + model creds + a built dist/cli.js).
  */
@@ -96,10 +103,66 @@ async function waitForText(substr: string, timeoutMs = 30_000): Promise<boolean>
   return false;
 }
 
+/**
+ * Wait for the V2 "Ready to code?" dialog, approving any incidental file
+ * permission prompt ("Do you want to proceed?" — e.g. a Read outside the
+ * trusted set) that renders on the way. The plan dialog itself asks
+ * "Would you like to proceed?" so the watcher can never confuse the two.
+ */
+async function waitForPlanDialog(timeoutMs = 120_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const pane = capturePane().toLowerCase();
+    if (pane.includes("ready to code?")) return true;
+    if (pane.includes("do you want to proceed?")) {
+      sendKeys("Enter"); // "1. Yes" is the focused default
+      await new Promise((r) => setTimeout(r, 800));
+      continue;
+    }
+    await new Promise((r) => setTimeout(r, 300));
+  }
+  return false;
+}
+
+/**
+ * Concatenate every session transcript JSONL under the seeded home. The
+ * ExitPlanMode tool_result (with the "Approved Plan" label) is persisted
+ * there; the V2 pane renders only the summary chrome ("User approved
+ * Claude's plan"), so the label assertion reads the transcript.
+ */
+function readTranscripts(home: string): string {
+  const projRoot = join(home, ".claude", "projects");
+  if (!existsSync(projRoot)) return "";
+  let out = "";
+  for (const entry of readdirSync(projRoot, { recursive: true }) as string[]) {
+    const p = join(projRoot, entry);
+    if (p.endsWith(".jsonl") && existsSync(p)) {
+      try { out += readFileSync(p, "utf8"); } catch { /* being written */ }
+    }
+  }
+  return out;
+}
+
+/** Poll the transcripts until `needle` appears (label flush lags the pane). */
+async function waitForTranscriptText(home: string, needle: string, timeoutMs = 30_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (readTranscripts(home).includes(needle)) return true;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 /** Seed a temp HOME that has completed onboarding + trusts the temp project. */
 function freshSeededHome(projectDir: string): string {
   const home = mkdtempSync(join(tmpdir(), "occ-plan-app-"));
   mkdirSync(join(home, ".claude"), { recursive: true });
+  // UPDATED (OCC-114 acceptance): pre-approve an inherited ANTHROPIC_API_KEY
+  // (official truncation: last 20 chars). Without this seed, environments
+  // that export a real key boot into the "Detected a custom API key"
+  // approval dialog and the REPL never reaches plan mode — both tests then
+  // time out on waitForText. Same harness fix as the screen-reader e2e.
+  const envApiKey = process.env.ANTHROPIC_API_KEY;
   writeFileSync(
     join(home, ".claude.json"),
     JSON.stringify({
@@ -111,13 +174,31 @@ function freshSeededHome(projectDir: string): string {
       lastOnboardingVersion: "2.1.200",
       lastReleaseNotesSeen: "2.1.200",
       projects: { [projectDir]: { hasTrustDialogAccepted: true } },
+      ...(envApiKey && envApiKey.length >= 20
+        ? {
+            customApiKeyResponses: {
+              approved: [envApiKey.slice(-20)],
+              rejected: [],
+            },
+          }
+        : {}),
     }),
   );
   // Start in plan mode so the model calls ExitPlanMode; disable hooks so the
   // e2e isn't perturbed by user hooks.
+  // UPDATED (OCC-114 acceptance): the seed previously set a TOP-LEVEL
+  // `defaultMode: "plan"` — but permissionSetup only reads the schema-valid
+  // `permissions.defaultMode` (true since before this test was written), so
+  // plan mode NEVER activated and the flow depended on the live model
+  // honoring the appended system prompt alone (qwen3.8-max presents a text
+  // plan instead of calling ExitPlanMode → both tests timed out). Seed the
+  // canonical location so the REPL genuinely boots into plan mode.
   writeFileSync(
     join(home, ".claude", "settings.json"),
-    JSON.stringify({ disableAllHooks: true, defaultMode: "plan" }),
+    JSON.stringify({
+      disableAllHooks: true,
+      permissions: { defaultMode: "plan" },
+    }),
   );
   return home;
 }
@@ -134,27 +215,46 @@ describe.skipIf(SKIP)("2.1.210 plan-approval label (tmux e2e)", () => {
     const home = freshSeededHome(project);
     startRepl(home, project);
     try {
-      // OCC-108: manual-mode footer no longer shows "shift+tab" (official
-      // Gn=!CQo gate) — wait on the always-present mode chip instead.
-      await waitForText("manual mode on", 25_000);
+      // OCC-108: the footer no longer shows "shift+tab" (official Gn=!CQo
+      // gate) — wait on the always-present mode chip instead. With
+      // permissions.defaultMode=plan now genuinely active (OCC-114 fix),
+      // the chip reads "plan mode on".
+      await waitForText("plan mode on", 25_000);
       // Drive a plan-eliciting turn.
       sendLine("Read target.txt, then present a one-step plan to add a greeting comment at the top of target.txt.");
-      // Wait for the ExitPlanMode approval dialog.
-      await waitForText("exit plan mode", 60_000);
+      // Wait for the ExitPlanMode approval dialog. UPDATED (OCC-114
+      // acceptance): the 2.1.218-alignment V2 dialog (official v296 ELF
+      // byte-verified: "Ready to code?" @93855112, "Yes, and use auto mode"
+      // @94190972) replaced the V1 surface whose title contained
+      // "exit plan mode". 120s budget: the live model (qwen3.8-max) can take
+      // >60s to read the file, compose the plan and call ExitPlanMode.
+      // Shift+Tab (auto-accept-edits keep-context) and Ctrl+G ($EDITOR)
+      // bindings are unchanged in V2.
+      const dialogShown = await waitForPlanDialog();
+      expect(dialogShown).toBe(true);
       // Approve with no edit via Shift+Tab (auto-accept-edits keep-context).
       sendKeys("S-Tab");
-      // The tool_result renders the label.
-      const ok = await waitForText("approved plan", 60_000);
-      expect(ok).toBe(true);
+      // UPDATED (OCC-114 acceptance): assert on the PERSISTED transcript, not
+      // the pane header. The V2 pane chrome ("User approved Claude's plan")
+      // is transient: approving enters auto mode and the model immediately
+      // executes the plan, whose output can flood tmux scrollback past the
+      // history-limit and evict the header before any poll observes it
+      // (observed in the wild). The tool_result label "## Approved Plan:"
+      // (ExitPlanModeV2Tool planLabel — the exact string CC 2.1.210 #12 Bug 1
+      // mislabeled) is durable in ~/.claude/projects/**/*.jsonl.
+      const labeled = await waitForTranscriptText(home, "## Approved Plan:", 60_000);
+      expect(labeled).toBe(true);
       const pane = capturePane();
       // Bug 1: an unedited approval must NOT carry the edited-by-user suffix.
       expect(pane).not.toContain("(edited by user)");
+      const mislabeled = await waitForTranscriptText(home, "Approved Plan (edited by user)", 3_000);
+      expect(mislabeled).toBe(false);
     } finally {
       killRepl();
       rmSync(home, { recursive: true, force: true });
       rmSync(project, { recursive: true, force: true });
     }
-  }, 180_000);
+  }, 300_000);
 
   test("approve WITH edit (Ctrl+G) -> 'Approved Plan (edited by user)'", async () => {
     const project = freshProject();
@@ -165,21 +265,56 @@ describe.skipIf(SKIP)("2.1.210 plan-approval label (tmux e2e)", () => {
     execSync(`chmod +x ${editorScript}`);
     startRepl(home, project, { EDITOR: editorScript });
     try {
-      // OCC-108: manual-mode footer no longer shows "shift+tab" (official
-      // Gn=!CQo gate) — wait on the always-present mode chip instead.
-      await waitForText("manual mode on", 25_000);
+      // OCC-108: the footer no longer shows "shift+tab" (official Gn=!CQo
+      // gate) — wait on the mode chip instead (plan mode genuinely active
+      // since the OCC-114 permissions.defaultMode seed fix).
+      await waitForText("plan mode on", 25_000);
       sendLine("Read target.txt, then present a one-step plan to add a greeting comment at the top of target.txt.");
-      await waitForText("exit plan mode", 60_000);
-      // Edit the plan in the external editor via Ctrl+G, then approve.
+      // V2 dialog header (see the sibling test's OCC-114 note; same 120s
+      // live-model budget + incidental-prompt tolerance).
+      const dialogShown = await waitForPlanDialog();
+      expect(dialogShown).toBe(true);
+      // Edit the plan in the external editor via Ctrl+G. UPDATED (OCC-114
+      // acceptance): wait for the editor round-trip to complete — the dialog
+      // re-renders with the "✔Plan saved!" toast — instead of a fixed sleep.
+      // Under load (test 1's REPL just tore down) the alt-screen handoff back
+      // from $EDITOR can exceed 1.5s and an early Shift+Tab gets swallowed.
       sendKeys("C-g");
-      await new Promise((r) => setTimeout(r, 1500));
+      const editorDone = await waitForText("plan saved!", 15_000);
+      expect(editorDone).toBe(true);
+      // Approve via Shift+Tab, retrying while the dialog is still up (the
+      // first key can be lost to the screen handoff).
       sendKeys("S-Tab");
-      const ok = await waitForText("approved plan (edited by user)", 60_000);
-      expect(ok).toBe(true);
+      // Poll the PERSISTED transcript for the edited label — the pane header
+      // is transient (see the sibling test: auto-mode execution can evict it
+      // from tmux scrollback). Re-send Shift+Tab while the dialog is still up
+      // (the first key can be lost to the $EDITOR alt-screen handoff).
+      let editedLabel = false;
+      for (let attempt = 0; attempt < 8 && !editedLabel; attempt++) {
+        editedLabel = await waitForTranscriptText(home, "Approved Plan (edited by user)", 8_000);
+        if (!editedLabel) {
+          const paneNow = capturePane().toLowerCase();
+          if (paneNow.includes("would you like to proceed?") || paneNow.includes("ready to code?")) {
+            sendKeys("S-Tab");
+          }
+        }
+      }
+      if (!editedLabel) {
+        // Surface the pane for diagnosis (dead session → empty capture).
+        throw new Error(
+          "edited-plan approval never reached the transcript; pane tail:\n" +
+            capturePane().split("\n").slice(-30).join("\n"),
+        );
+      }
+      expect(editedLabel).toBe(true);
+      // The Ctrl+G edit itself (marker line appended by the EDITOR script)
+      // must reach the model in the echoed plan.
+      const markerEchoed = await waitForTranscriptText(home, "[plan edited by user via Ctrl-G]", 5_000);
+      expect(markerEchoed).toBe(true);
     } finally {
       killRepl();
       rmSync(home, { recursive: true, force: true });
       rmSync(project, { recursive: true, force: true });
     }
-  }, 180_000);
+  }, 300_000);
 });
