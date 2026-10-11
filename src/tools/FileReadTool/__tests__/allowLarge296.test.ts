@@ -383,6 +383,115 @@ describe('computeAllowLargeRoom (official lOr @219148327)', () => {
   })
 })
 
+// ── OCC-154 df-01 falsification pin: lOr bpt comes from options.mainLoopModel (STATIC), and the haiku→sonnet-4-5 plan-upgrade pair does NOT change it ──
+//
+// The 验收员 df-01 finding claimed plan-mode 'haiku'→'sonnet' upgrade should
+// make raised.maxSizeBytes use the LIVE (upgraded) model's bytesPerToken,
+// producing 1052091 where HEAD produces 1402788. ELF forensics on the official
+// v296 linux-x64 binary FALSIFIED this on two independent grounds:
+//
+// 1. lOr's cap computes `let{bytesPerToken:G}=Xd(e.model())`, where the facade
+//    `model:()=>qu(e)` and `qu(e)=p(e)??e.options.mainLoopModel`. Enumerating
+//    all 15 `kind:"model"` permission-layer installers shows NONE is a
+//    main-thread per-turn plan-mode layer (they are runAgent/SDK/agent-spawn/
+//    skill overrides only), and all 5 `p.options.mainLoopModel` write sites are
+//    switch/fallback — so on the main thread qu(e) resolves to the STATIC
+//    setting. The plan-mode upgrade (pg/avr @50565098) flows only to the query
+//    loop's resolved-model binding (be/Rt) → the room THRESHOLD, and to the API
+//    call model; it never rewrites options.mainLoopModel nor installs a model
+//    permission layer. So lOr's bpt is the static option model's, full stop.
+//
+// 2. Even taking the finding's own upgrade pair, BOTH 'claude-haiku-4-5' and
+//    'claude-sonnet-4-5' are LEGACY_BYTES_PER_TOKEN_MODELS → bpt 4. The cap is
+//    H·4·3 = H·12 = 1402788 whether the option reads haiku or sonnet. The
+//    finding's 1052091 = H·9 requires bpt 3, which sonnet-4-5 does NOT have —
+//    the oracle was miscomputed (a bpt-3 model like opus-5 gives 1052091).
+//
+// roomTokens H = floor(167000·0.7) = 116899 (167000·0.7 = 116899.99999999999
+// in IEEE-754 → floor 116899); 167000 = getAutoCompactThreshold('claude-sonnet-4-5')
+// (200k effective window − 33k autocompact buffer), the live upgraded room.
+describe('computeAllowLargeRoom df-01 pin (official lOr bpt = Xd(options.mainLoopModel), STATIC)', () => {
+  const SONNET_ROOM_THRESHOLD = 167000
+  const ROOM_TOKENS = 116899
+
+  function contextWithRoomAndModel(room: FakeRoom, mainLoopModel: string) {
+    return {
+      options: { mainLoopModel },
+      contextRoom: () => room,
+    } as never
+  }
+
+  test('static haiku option (bpt 4) + live sonnet room → maxSizeBytes = H·12 = 1402788', async () => {
+    const { bytesPerTokenForModel } = await import(
+      '../../../services/tokenEstimation.js'
+    )
+    expect(bytesPerTokenForModel('claude-haiku-4-5')).toBe(4)
+
+    const base = { maxSizeBytes: 1000, maxTokens: 100 }
+    const room = makeRoom(SONNET_ROOM_THRESHOLD, 0, 0)
+    const result = computeAllowLargeRoom(
+      contextWithRoomAndModel(room, 'claude-haiku-4-5'),
+      undefined,
+      base,
+    )
+    expect(result.roomTokens).toBe(ROOM_TOKENS)
+    expect(result.raised).toEqual({
+      maxTokens: ROOM_TOKENS,
+      maxSizeBytes: ROOM_TOKENS * 4 * 3,
+    })
+    expect(result.raised?.maxSizeBytes).toBe(1402788)
+  })
+
+  test('the actual plan-upgrade target sonnet-4-5 is ALSO bpt 4 → identical 1402788 (premise void)', async () => {
+    const { bytesPerTokenForModel } = await import(
+      '../../../services/tokenEstimation.js'
+    )
+    // The finding assumed haiku→sonnet changes the cap. It does not: sonnet-4-5
+    // is legacy bpt 4, same as haiku-4-5. Both ends of the upgrade give 1402788.
+    expect(bytesPerTokenForModel('claude-sonnet-4-5')).toBe(4)
+
+    const base = { maxSizeBytes: 1000, maxTokens: 100 }
+    const room = makeRoom(SONNET_ROOM_THRESHOLD, 0, 0)
+    const result = computeAllowLargeRoom(
+      contextWithRoomAndModel(room, 'claude-sonnet-4-5'),
+      undefined,
+      base,
+    )
+    expect(result.raised?.maxSizeBytes).toBe(ROOM_TOKENS * 4 * 3)
+    expect(result.raised?.maxSizeBytes).toBe(1402788)
+  })
+
+  test('falsified oracle 1052091 = H·9 needs a bpt-3 model (opus-5), NOT sonnet-4-5', async () => {
+    const { bytesPerTokenForModel } = await import(
+      '../../../services/tokenEstimation.js'
+    )
+    expect(bytesPerTokenForModel('claude-opus-5')).toBe(3)
+
+    const base = { maxSizeBytes: 1000, maxTokens: 100 }
+    const room = makeRoom(SONNET_ROOM_THRESHOLD, 0, 0)
+
+    // The cap tracks the OPTION model's bpt: opus-5 (bpt 3) → 116899·3·3 =
+    // 1052091. This is where the finding's oracle number actually comes from —
+    // a bpt-3 model, not the sonnet-4-5 the finding named.
+    const opusResult = computeAllowLargeRoom(
+      contextWithRoomAndModel(room, 'claude-opus-5'),
+      undefined,
+      base,
+    )
+    expect(opusResult.raised?.maxSizeBytes).toBe(ROOM_TOKENS * 3 * 3)
+    expect(opusResult.raised?.maxSizeBytes).toBe(1052091)
+
+    // With the haiku option the cap must NOT be the bpt-3 oracle value.
+    const haikuResult = computeAllowLargeRoom(
+      contextWithRoomAndModel(room, 'claude-haiku-4-5'),
+      undefined,
+      base,
+    )
+    expect(haikuResult.raised?.maxSizeBytes).not.toBe(1052091)
+    expect(haikuResult.raised?.maxSizeBytes).toBe(1402788)
+  })
+})
+
 // ── _hn: error transformer ──
 
 describe('transformReadError (official _hn @219149198)', () => {
