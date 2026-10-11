@@ -83,12 +83,25 @@ import {
   assertSymlinkResolutionsUnchangedForRead,
   stashCheckTimeResolutions,
 } from '../../utils/permissions/symlinkResolutionStash.js'
-import { readFileInRange } from '../../utils/readFileInRange.js'
+import {
+  FileTooLargeError,
+  readFileInRange,
+  SelectedRangeTooLargeError,
+} from '../../utils/readFileInRange.js'
+import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { semanticNumber } from '../../utils/semanticNumber.js'
 import { containsVulnerableUncPath } from '../../utils/shell/readOnlyCommandValidation.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js'
-import { GREP_TOOL_NAME } from '../GrepTool/prompt.js'
+import {
+  type AllowLargeRoom,
+  buildTokenCapPartialView,
+  BYTES_PER_TOKEN_FLOOR_DIVISOR,
+  computeAllowLargeRoom,
+  logAllowLargeEvent,
+  ROUGH_LENGTH_TOKEN_RATIO,
+  selectAllowLargeMessage,
+} from './allowLarge.js'
 import { getDefaultFileReadingLimits } from './limits.js'
 import {
   DESCRIPTION,
@@ -191,20 +204,17 @@ export class MaxFileReadTokenExceededError extends Error {
   constructor(
     public tokenCount: number,
     public maxTokens: number,
+    // CC 2.1.296 #006: official `$de` gained a 3rd ctor arg (default "") whose
+    // text is appended to the message — the allow_large selector suffix
+    // (Aws/Bgo/Cws) added by the official `_hn` error transformer.
+    suffix: string = '',
   ) {
     super(
-      `File content (${tokenCount} tokens) exceeds maximum allowed tokens (${maxTokens}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.`,
+      `File content (${tokenCount} tokens) exceeds maximum allowed tokens (${maxTokens}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.${suffix}`,
     )
     this.name = 'MaxFileReadTokenExceededError'
   }
 }
-
-// 2.1.145: On token-limit excess, return a truncated "PARTIAL view" page
-// with a notice instead of throwing a hard error. The notice tells the
-// model how to fetch the next page (Read offset/limit) or search (Grep).
-// Matches the official binary: Djt="[Truncated: PARTIAL view — ", Kct=2000.
-const PARTIAL_VIEW_PREFIX = '[Truncated: PARTIAL view — '
-const PARTIAL_VIEW_MAX_LINES = 2000
 
 /**
  * Side-channel from call() to mapToolResultToToolResultBlockParam: the
@@ -212,6 +222,10 @@ const PARTIAL_VIEW_MAX_LINES = 2000
  * object identity. Keeps the notice out of the output schema (which
  * flows into SDK types) while still prepending it to the model-facing
  * tool_result content. Auto-GCs when the data object becomes unreachable.
+ *
+ * CC 2.1.296 #006: the official delivers this notice as a separate
+ * `read_truncation_notice` attachment; OCC keeps the prepend channel
+ * (documented divergence — see allowLarge.ts header).
  */
 const partialViewNotices = new WeakMap<object, string>()
 
@@ -220,78 +234,124 @@ function partialViewNoticePrefix(data: object): string {
 }
 
 /**
- * Build a PARTIAL view (notice + truncated content) when the read content
- * exceeds the token cap. Returns null when content fits.
+ * CC 2.1.296 #006 — official `_hn` @219149198 (verbatim):
+ *   `function _hn(e,{room:n,optedIn:r,readMaxSizeBytes:s,ext:h}){
+ *      let y,S,w;
+ *      if(e instanceof r0e&&e.maxSizeBytes===s)
+ *        w=n(),y=new r0e(e.sizeInBytes,e.maxSizeBytes,
+ *                        Ave(w,r,{bytes:e.sizeInBytes})),
+ *        S={totalBytes:e.sizeInBytes};
+ *      else if(e instanceof LVe)
+ *        w=n(),y=new LVe(e.selectedBytes,e.maxSelectedBytes,
+ *                        Ave(w,r,{bytes:e.selectedBytes})),
+ *        S={totalBytes:e.selectedBytes};
+ *      else if(e instanceof $de)
+ *        w=n(),y=new $de(e.tokenCount,e.maxTokens,
+ *                        Ave(w,r,{tokens:e.tokenCount})),
+ *        S={tokens:e.tokenCount};
+ *      else return e;
+ *      if(r){let H=w.roomTokens===void 0?"unavailable":"too_large";
+ *            Chn(w,d(H),S,h)}
+ *      return y}`
  *
- * Line-based pagination is used when the file has more than
- * PARTIAL_VIEW_MAX_LINES lines; otherwise a char-based excerpt is used
- * (the file has "very long lines and cannot be paginated by line").
- *
- * Ranged reads (explicit limit) keep the throw path: the model picked the
- * slice and should narrow it rather than receive an silently-truncated page.
- * Full reads (limit === undefined) get the PARTIAL view.
+ * Rebuilds the three read-limit error classes with the allow_large message
+ * suffix and logs `tengu_file_read_allow_large` when the read was opted in.
+ * `d` = fromEnum = identity, so outcome strings pass through raw.
  */
-async function buildPartialViewIfNeeded(opts: {
-  content: string
-  ext: string
-  maxTokens: number
-  totalLines: number
-  limit: number | undefined
-}): Promise<{
-  notice: string
-  truncatedContent: string
-  numLines: number
-  tokenCount: number
-} | null> {
-  const { content, ext, maxTokens, totalLines, limit } = opts
-
-  // Cheap estimate first — skip the API roundtrip for small reads.
-  const tokenEstimate = roughTokenCountEstimationForFileType(content, ext)
-  if (!tokenEstimate || tokenEstimate <= maxTokens / 4) return null
-
-  const tokenCount = (await countTokensWithAPI(content)) ?? tokenEstimate
-  if (tokenCount <= maxTokens) return null
-
-  // Ranged read: throw so the model narrows its explicit slice.
-  if (limit !== undefined) {
-    throw new MaxFileReadTokenExceededError(tokenCount, maxTokens)
+export function transformReadError(
+  error: unknown,
+  opts: {
+    room: () => AllowLargeRoom
+    optedIn: boolean
+    readMaxSizeBytes: number
+    ext?: string
+  },
+): unknown {
+  let room: AllowLargeRoom
+  let transformed: Error
+  let extra: Record<string, unknown>
+  if (
+    error instanceof FileTooLargeError &&
+    error.maxSizeBytes === opts.readMaxSizeBytes
+  ) {
+    room = opts.room()
+    transformed = new FileTooLargeError(
+      error.sizeInBytes,
+      error.maxSizeBytes,
+      selectAllowLargeMessage(room, opts.optedIn, { bytes: error.sizeInBytes }),
+    )
+    extra = { totalBytes: error.sizeInBytes }
+  } else if (error instanceof SelectedRangeTooLargeError) {
+    room = opts.room()
+    transformed = new SelectedRangeTooLargeError(
+      error.selectedBytes,
+      error.maxSelectedBytes,
+      selectAllowLargeMessage(room, opts.optedIn, {
+        bytes: error.selectedBytes,
+      }),
+    )
+    extra = { totalBytes: error.selectedBytes }
+  } else if (error instanceof MaxFileReadTokenExceededError) {
+    room = opts.room()
+    transformed = new MaxFileReadTokenExceededError(
+      error.tokenCount,
+      error.maxTokens,
+      selectAllowLargeMessage(room, opts.optedIn, { tokens: error.tokenCount }),
+    )
+    extra = { tokens: error.tokenCount }
+  } else {
+    return error
   }
-
-  const cap = maxTokens
-
-  if (totalLines > PARTIAL_VIEW_MAX_LINES) {
-    const T = PARTIAL_VIEW_MAX_LINES
-    const lines = content.split('\n')
-    const truncatedContent = lines.slice(0, T).join('\n')
-    const notice =
-      '<system-reminder>' +
-      PARTIAL_VIEW_PREFIX +
-      `showing lines 1-${T} of ${totalLines} total (${tokenCount} tokens, cap ${cap}). ` +
-      `Call ${FILE_READ_TOOL_NAME} with offset=${T + 1} limit=${T} for the next page, ` +
-      `or ${GREP_TOOL_NAME} to find a specific section. ` +
-      `Do NOT answer from this page alone if the answer may be further in the file.` +
-      ']</system-reminder>'
-    return { notice, truncatedContent, numLines: T, tokenCount }
+  if (opts.optedIn) {
+    const outcome = room.roomTokens === undefined ? 'unavailable' : 'too_large'
+    logAllowLargeEvent(room, outcome, extra, opts.ext)
   }
+  return transformed
+}
 
-  // Very long lines — cannot paginate by line. Truncate by character.
-  const totalChars = content.length
-  const charCap = Math.max(1, cap * 4)
-  const truncatedContent = content.slice(0, charCap)
-  const notice =
-    '<system-reminder>' +
-    PARTIAL_VIEW_PREFIX +
-    `showing the first ${truncatedContent.length} of ${totalChars} characters (${tokenCount} tokens, cap ${cap}); ` +
-    `this file has very long lines and cannot be paginated by line. ` +
-    `Use ${GREP_TOOL_NAME} to find a specific section, or ${FILE_READ_TOOL_NAME} with offset/limit to page through it. ` +
-    `Do NOT answer from this excerpt alone if the answer may be elsewhere in the file.` +
-    ']</system-reminder>'
-  return {
-    notice,
-    truncatedContent,
-    numLines: truncatedContent.split('\n').length,
-    tokenCount,
+/**
+ * CC 2.1.296 #006 — official `khn` @219149776 (verbatim):
+ *   `async function khn(e,n,r,s,h=!1,y=!1){
+ *      let S=r??qW().maxTokens,w=uit(e,n),
+ *          H=y&&w?Math.max(w,Math.ceil(Buffer.byteLength(e)/iOr)):w;
+ *      if(!H||H<=S/4)return H||void 0;
+ *      if(!h&&e.length>S*jgo)throw new $de(H,S);
+ *      let V=await Wgt(e,s)??H;
+ *      if(V>S)throw new $de(V,S);
+ *      return V}`
+ *
+ * e=content, n=ext, r=maxTokens cap (already raised when applicable),
+ * h=wholeFile, y=raised. uit ≡ roughTokenCountEstimationForFileType,
+ * Wgt ≡ countTokensWithAPI. DIVERGENCE: the official passes credentials as
+ * `s` to Wgt — OCC's countTokensWithAPI takes content only.
+ */
+export async function countReadTokensForRead(
+  content: string,
+  ext: string,
+  maxTokens: number | undefined,
+  wholeFile: boolean,
+  raised: boolean,
+): Promise<number | undefined> {
+  const cap = maxTokens ?? getDefaultFileReadingLimits().maxTokens
+  const rough = roughTokenCountEstimationForFileType(content, ext)
+  const estimate =
+    raised && rough
+      ? Math.max(
+          rough,
+          Math.ceil(Buffer.byteLength(content) / BYTES_PER_TOKEN_FLOOR_DIVISOR),
+        )
+      : rough
+  if (!estimate || estimate <= cap / 4) {
+    return estimate || undefined
   }
+  if (!wholeFile && content.length > cap * ROUGH_LENGTH_TOKEN_RATIO) {
+    throw new MaxFileReadTokenExceededError(estimate, cap)
+  }
+  const counted = (await countTokensWithAPI(content)) ?? estimate
+  if (counted > cap) {
+    throw new MaxFileReadTokenExceededError(counted, cap)
+  }
+  return counted
 }
 
 // Common image extensions
@@ -359,6 +419,13 @@ const inputSchema = lazySchema(() =>
       .describe(
         `Page range for PDF files (e.g., "1-5", "3", "10-20"). Only applicable to PDF files. Maximum ${PDF_MAX_PAGES_PER_READ} pages per request.`,
       ),
+    // CC 2.1.296 #006: official schema field @219133376 (verbatim, after
+    // `pages`): `[hue]:$w(M().optional()).describe("Set to true to read a
+    // text file, ...")`. $w ≡ semanticBoolean (z.preprocess 'true'/'false'
+    // coercion with the optional INSIDE).
+    allow_large: semanticBoolean(z.boolean().optional()).describe(
+      'Set to true to read a text file, or a line range of one, that is over the usual size limits, up to what still fits in your context. Only use this when you genuinely need all of it or the user asked for the whole file; otherwise read it in parts with offset and limit, or search it.',
+    ),
   }),
 )
 type InputSchema = ReturnType<typeof inputSchema>
@@ -385,6 +452,14 @@ const outputSchema = lazySchema(() => {
           .describe('Number of lines in the returned content'),
         startLine: z.number().describe('The starting line number'),
         totalLines: z.number().describe('Total number of lines in the file'),
+        // CC 2.1.296 #006: set when the text path fell back to a token-cap
+        // PARTIAL view. NOTE: the official output object does NOT carry this
+        // field (its notice travels via the read_truncation_notice attachment)
+        // — OCC keeps it as a documented divergence for the prepend channel.
+        truncatedByTokenCap: z
+          .boolean()
+          .optional()
+          .describe('True when the content is a token-cap truncated page'),
       }),
     }),
     z.object({
@@ -770,7 +845,7 @@ export const FileReadTool = buildTool({
     return { result: true }
   },
   async call(
-    { file_path, offset = 1, limit = undefined, pages },
+    { file_path, offset = 1, limit = undefined, pages, allow_large },
     context,
     _canUseTool?,
     parentMessage?,
@@ -781,6 +856,15 @@ export const FileReadTool = buildTool({
     const maxSizeBytes =
       fileReadingLimits?.maxSizeBytes ?? defaults.maxSizeBytes
     const maxTokens = fileReadingLimits?.maxTokens ?? defaults.maxTokens
+
+    // CC 2.1.296 #006: official `nOr` entry @219145200 —
+    //   `Fe=()=>lOr(y,S,{maxSizeBytes:Re,maxTokens:Pe}),He=h?Fe():void 0`
+    // The room closure is computed lazily (fresh each call — the room
+    // shrinks as sibling reads claim tokens); `allowLarge` is the opt-in
+    // snapshot taken ONCE at entry and carried into the text path.
+    const computeRoom = (): AllowLargeRoom =>
+      computeAllowLargeRoom(context, parentMessage, { maxSizeBytes, maxTokens })
+    const allowLarge = allow_large ? computeRoom() : undefined
 
     // Telemetry: track when callers override default read limits.
     // Only fires on override (low volume) — event count = override frequency.
@@ -890,6 +974,8 @@ export const FileReadTool = buildTool({
         readFileState,
         context,
         parentMessage?.message.id,
+        computeRoom,
+        allowLarge,
       )
     } catch (error) {
       // Handle file-not-found: suggest similar files
@@ -913,6 +999,8 @@ export const FileReadTool = buildTool({
               readFileState,
               context,
               parentMessage?.message.id,
+              computeRoom,
+              allowLarge,
             )
           } catch (altError) {
             if (!isENOENT(altError)) {
@@ -1163,6 +1251,11 @@ async function callInner(
   readFileState: ToolUseContext['readFileState'],
   context: ToolUseContext,
   messageId: string | undefined,
+  // CC 2.1.296 #006: official `Ft` object @219147380 carries `room:Fe`
+  // (lazy fresh-room closure) + `allowLarge:He` (entry snapshot) into the
+  // text path — flattened to two trailing params here.
+  room: () => AllowLargeRoom,
+  allowLarge: AllowLargeRoom | undefined,
 ): Promise<{
   data: Output
   newMessages?: ReturnType<typeof createUserMessage>[]
@@ -1517,97 +1610,198 @@ async function callInner(
   }
 
   // --- Text file (single async read via readFileInRange) ---
+  // CC 2.1.296 #006: official text path `dOr` @219156400-219161350. Locals
+  // map to the minified names: Pe=raisedMaxSizeBytes, Fe=raisedMaxTokens,
+  // He=analyticsExt, Ve=errorTransformOpts, an=wholeFile, Wt=content,
+  // Vt=finalContent, dt=lineCount→shownLines, Ze=totalLines, ut=totalBytes,
+  // Rt=readBytes, vt=mtimeMs, Sn=countedTokens, Cn=partialNotice, Y=allowLarge.
+  const raisedMaxSizeBytes = allowLarge?.raised?.maxSizeBytes ?? maxSizeBytes
+  const raisedMaxTokens = allowLarge?.raised?.maxTokens ?? maxTokens
+  const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
+  const errorTransformOpts = {
+    room,
+    optedIn: allowLarge !== undefined,
+    readMaxSizeBytes: raisedMaxSizeBytes,
+    ext: analyticsExt,
+  }
   const lineOffset = offset === 0 ? 0 : offset - 1
-  // 2.1.208 #30: For ranged reads (limit defined), pass maxSelectedBytes so
-  // readFileInRange can reject a single extremely long line (no newline) that
-  // would otherwise balloon memory. w9i = 128 → maxTokens * 128 bytes.
-  // Binary: s===void 0 ? void 0 : {maxSelectedBytes: c*w9i}
+  // 2.1.208 #30 + CC 2.1.296 #006: for ranged reads (limit defined), pass
+  // maxSelectedBytes so readFileInRange can reject a single extremely long
+  // line (no newline) that would otherwise balloon memory. Official v296:
+  // `{maxSelectedBytes:Math.max(G*jgo,Y?.raised?.maxSizeBytes??0)}` — the
+  // raised byte cap widens the range budget when allow_large opted in.
   const readOptions =
     limit === undefined
       ? undefined
-      : { maxSelectedBytes: maxTokens * 128 }
+      : {
+          maxSelectedBytes: Math.max(
+            maxTokens * ROUGH_LENGTH_TOKEN_RATIO,
+            allowLarge?.raised?.maxSizeBytes ?? 0,
+          ),
+        }
   const { content, lineCount, totalLines, totalBytes, readBytes, mtimeMs } =
     await readFileInRange(
       resolvedFilePath,
       lineOffset,
       limit,
-      limit === undefined ? maxSizeBytes : undefined,
+      limit === undefined ? raisedMaxSizeBytes : undefined,
       context.abortController.signal,
       readOptions,
+    ).catch((error: unknown) => {
+      throw transformReadError(error, errorTransformOpts)
+    })
+
+  // Official `an=(y??1)<=1&&S===void 0&&w===void 0` — the token-cap PARTIAL
+  // view only applies to whole-file reads; ranged reads keep the throw path
+  // (via transformReadError → suffix + telemetry).
+  const wholeFile = offset <= 1 && limit === undefined && pages === undefined
+
+  let countedTokens: number | undefined
+  let finalContent = content
+  let shownLines = lineCount
+  let paged = false
+  let partialNotice: string | undefined
+  try {
+    // Official: `khn(Y?.raised?Q5e({content:Wt,startLine:Math.max(1,y),
+    // tabAwareSeparator:VYe()}):Wt,h,Fe,he.credentials,an,Y?.raised!==void 0)`
+    // — when the caps were raised, the token count is measured on the
+    // LINE-NUMBERED content (that is what the model receives). OCC
+    // divergence: addLineNumbers has no tabAwareSeparator param and
+    // countTokensWithAPI takes no credentials.
+    countedTokens = await countReadTokensForRead(
+      allowLarge?.raised
+        ? addLineNumbers({ content, startLine: Math.max(1, offset) })
+        : content,
+      ext,
+      raisedMaxTokens,
+      wholeFile,
+      allowLarge?.raised !== undefined,
     )
+    if (allowLarge?.raised && countedTokens !== undefined) {
+      // Official: `let mo=V().raised?.maxTokens??G;if(Sn>mo)throw new $de(Sn,
+      // mo);he.contextRoom()?.claim(Sn)` — re-check against FRESH room
+      // (sibling large reads in the same turn share it), then claim.
+      const freshCap = room().raised?.maxTokens ?? maxTokens
+      if (countedTokens > freshCap) {
+        throw new MaxFileReadTokenExceededError(countedTokens, freshCap)
+      }
+      context.contextRoom?.()?.claim(countedTokens)
+    }
+  } catch (error) {
+    if (error instanceof MaxFileReadTokenExceededError && wholeFile) {
+      // Official `dOr` catch branch — build the best-fitting first page
+      // instead of failing the whole read.
+      countedTokens = error.tokenCount
+      const view = buildTokenCapPartialView({
+        filePath: fullFilePath,
+        content,
+        tokenCount: error.tokenCount,
+        baseMaxTokens: maxTokens,
+        errorMaxTokens: error.maxTokens,
+        raisedMaxTokens: allowLarge?.raised?.maxTokens,
+        room: room(),
+        optedIn: allowLarge !== undefined,
+        totalLines,
+      })
+      finalContent = view.content
+      shownLines = view.shownLines
+      paged = true
+      // OCC divergence: the official delivers `Cn` as a separate
+      // read_truncation_notice attachment; OCC prepends via the
+      // partialViewNotices channel, so it keeps the system-reminder wrapper.
+      partialNotice = `<system-reminder>${view.notice}</system-reminder>`
+    } else {
+      throw transformReadError(error, errorTransformOpts)
+    }
+  }
 
-  // 2.1.145: On token-limit excess for a full read, return a truncated
-  // PARTIAL view page (with a notice) instead of throwing. Ranged reads
-  // (explicit limit) still throw via buildPartialViewIfNeeded. The cheap
-  // token estimate inside the builder short-circuits the API roundtrip for
-  // reads that are well under the cap.
-  const partial = await buildPartialViewIfNeeded({
-    content,
-    ext,
-    maxTokens,
-    totalLines,
-    limit,
-  })
-  const effectiveContent = partial?.truncatedContent ?? content
-  const effectiveNumLines = partial?.numLines ?? lineCount
-
+  // Official: `be.set(r,{content:Vt,timestamp:Math.floor(vt),offset:y,
+  // limit:on,...Cn!==void 0&&{isPartialView:!0}})` — RAW final content (no
+  // notice prepend; v296 changed this from OCC's 2.1.145-era behavior) and
+  // the paged line count becomes the recorded limit so a follow-up Read
+  // resumes where the page ended.
   readFileState.set(fullFilePath, {
-    content: partial ? partial.notice + effectiveContent : effectiveContent,
+    content: finalContent,
     timestamp: Math.floor(mtimeMs),
     offset,
-    limit,
-    ...(partial && { isPartialView: true }),
+    limit: paged ? shownLines : limit,
+    ...(paged && { isPartialView: true }),
   })
   context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
   // Snapshot before iterating — a listener that unsubscribes mid-callback
   // would splice the live array and skip the next listener.
   for (const listener of fileReadListeners.slice()) {
-    listener(resolvedFilePath, effectiveContent)
+    listener(resolvedFilePath, finalContent)
   }
 
   const data = {
     type: 'text' as const,
     file: {
       filePath: file_path,
-      content: effectiveContent,
-      numLines: effectiveNumLines,
-      startLine: offset,
+      content: finalContent,
+      numLines: shownLines,
+      // Official: `startLine:Cn!==void 0?Math.max(1,y):y`
+      startLine: paged ? Math.max(1, offset) : offset,
       totalLines,
+      // OCC divergence (documented): official output object has no
+      // truncatedByTokenCap field — its notice travels via the attachment.
+      ...(paged && { truncatedByTokenCap: true }),
     },
   }
-  if (partial) {
-    partialViewNotices.set(data, partial.notice)
+  if (paged && partialNotice !== undefined) {
+    partialViewNotices.set(data, partialNotice)
   }
   if (isAutoMemFile(fullFilePath)) {
     memoryFileMtimes.set(data, mtimeMs)
   }
 
+  // Official: `ov({operation:"read",tool:"FileReadTool",filePath:r,
+  // content:Vt})` — logs the FINAL (possibly paged) content.
   logFileOperation({
     operation: 'read',
     tool: 'FileReadTool',
     filePath: fullFilePath,
-    content,
+    content: finalContent,
   })
 
   const sessionFileType = detectSessionFileType(fullFilePath)
-  const analyticsExt = getFileExtensionForAnalytics(fullFilePath)
   logEvent('tengu_session_file_read', {
     totalLines,
-    readLines: effectiveNumLines,
+    readLines: shownLines,
     totalBytes,
-    readBytes,
+    // Official: `readBytes:Cn!==void 0?Buffer.byteLength(Vt,"utf8"):Rt`
+    readBytes: paged ? Buffer.byteLength(finalContent, 'utf8') : readBytes,
     offset,
-    ...(partial && { truncatedByTokenCap: true }),
+    ...(paged && { truncatedByTokenCap: true }),
     ...(limit !== undefined && { limit }),
     ...(analyticsExt !== undefined && { ext: analyticsExt }),
     ...(messageId !== undefined && {
       messageID:
         messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     }),
+    // OCC divergence (documented): official v296 has no is_session_memory /
+    // truncatedByTokenCap keys here — OCC keeps both.
     is_session_memory: sessionFileType === 'session_memory',
     is_session_transcript: sessionFileType === 'session_transcript',
+    ...(allowLarge !== undefined && { allow_large: true }),
   })
+
+  // Official tail: `if(Y)Chn(Y,d(Cn===void 0?"fit":"paged"),{totalBytes:ut,
+  // totalLines:Ze,readLines:qt,...Sn!==void 0&&{tokens:Sn}},He)`
+  if (allowLarge) {
+    logAllowLargeEvent(
+      allowLarge,
+      paged ? 'paged' : 'fit',
+      {
+        totalBytes,
+        totalLines,
+        readLines: shownLines,
+        ...(countedTokens !== undefined && { tokens: countedTokens }),
+      },
+      analyticsExt,
+    )
+  }
 
   return { data }
 }

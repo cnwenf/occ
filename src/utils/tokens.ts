@@ -77,7 +77,7 @@ export function getTokenCountFromUsage(usage: Usage): number {
  */
 
 /** The four numeric token fields after `Dpe` normalization (all present). */
-type NormalizedUsage = {
+export type NormalizedUsage = {
   input_tokens: number
   output_tokens: number
   cache_creation_input_tokens: number
@@ -107,8 +107,9 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value)
 }
 
-/** Official `s7n` — the input-side token sum (input + cache_creation + cache_read). */
-function sumInputTokens(usage: NormalizedUsage): number {
+/** Official `s7n` — the input-side token sum (input + cache_creation + cache_read).
+ * Exported for the 2.1.296 #006 allow_large room calc (official `lOr`/`VRt`). */
+export function sumInputTokens(usage: NormalizedUsage): number {
   return (
     usage.input_tokens +
     usage.cache_creation_input_tokens +
@@ -153,7 +154,7 @@ function isValidUsageIteration(iteration: unknown): boolean {
  * iterations — that is exactly the `Nwt` skip case `Fwt` walks past (binary
  * guard verified: `if(s7n(n)===0||!Array.isArray(e.iterations))return n`).
  */
-function normalizeUsage(usage: UsageShape): NormalizedUsage {
+export function normalizeUsage(usage: UsageShape): NormalizedUsage {
   const base: NormalizedUsage = {
     input_tokens: usage.input_tokens ?? 0,
     output_tokens: usage.output_tokens ?? 0,

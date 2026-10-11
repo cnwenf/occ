@@ -69,9 +69,13 @@ export class FileTooLargeError extends Error {
   constructor(
     public sizeInBytes: number,
     public maxSizeBytes: number,
+    // CC 2.1.296 #006: official `r0e` gained a 3rd ctor arg (default "") whose
+    // text is appended to the message — the allow_large selector suffix
+    // (Aws/Bgo/Cws) added by the official `_hn` error transformer.
+    suffix: string = '',
   ) {
     super(
-      `File content (${formatFileSize(sizeInBytes)}) exceeds maximum allowed size (${formatFileSize(maxSizeBytes)}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.`,
+      `File content (${formatFileSize(sizeInBytes)}) exceeds maximum allowed size (${formatFileSize(maxSizeBytes)}). Use offset and limit parameters to read specific portions of the file, or search for specific content instead of reading the whole file.${suffix}`,
     )
     this.name = 'FileTooLargeError'
   }
@@ -84,9 +88,11 @@ export class SelectedRangeTooLargeError extends Error {
   constructor(
     public selectedBytes: number,
     public maxSelectedBytes: number,
+    // CC 2.1.296 #006: official `LVe` gained the same 3rd suffix arg.
+    suffix: string = '',
   ) {
     super(
-      `The requested line range contains over ${formatFileSize(maxSelectedBytes)} of text, more than a read can return. Use a smaller limit — or, if a single line is this large, no limit will fit it: search for specific content instead.`,
+      `The requested line range contains over ${formatFileSize(maxSelectedBytes)} of text, more than a read can return. Use a smaller limit — or, if a single line is this large, no limit will fit it: search for specific content instead.${suffix}`,
     )
     this.name = 'SelectedRangeTooLargeError'
   }
