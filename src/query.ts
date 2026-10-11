@@ -1088,6 +1088,21 @@ async function* queryLoop(
             currentModel = nextFallbackModel
             attemptWithFallback = true
 
+            // OCC-154 fix df-02 (official `Yn(vt)` @53594595). The official
+            // fallback chain-advance calls the in-place model updater `Yn`,
+            // which reassigns BOTH the resolved model binding (`be`) and its
+            // model-info (`Rt=Xd(be)`); the per-turn contextRoom closes over
+            // `()=>Rt`, so its threshold/held() recompute live for the
+            // fallback model. OCC's room closes over `getModel: () =>
+            // turnModel` (query.ts:~660); `currentModel` alone is NOT read by
+            // that closure, so without this refresh the room threshold stays
+            // pinned to the pre-fallback model (e.g. claude-sonnet-4-5 →
+            // 167000 instead of claude-sonnet-4-5[1m] → 767000). This is the
+            // exact counterpart of `Yn(vt)`; `options.mainLoopModel` is
+            // rewritten separately below (mirror of official
+            // `p.options={...p.options,mainLoopModel:be,...}`).
+            turnModel = nextFallbackModel
+
             // Clear assistant messages since we'll retry the entire request
             yield* yieldMissingToolResultBlocks(
               assistantMessages,
