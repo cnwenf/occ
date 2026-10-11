@@ -100,6 +100,25 @@ export const READ_DENY_WRITE_MESSAGE =
 export const FILE_STATE_CURRENT_NOTE =
   ' (file state is current in your context — no need to Read it back)'
 
+/**
+ * CC 2.1.296 #032 — aen @101773572 / @208137040 (byte-exact). Edit +
+ * NotebookEdit refusal when the file on disk is not valid UTF-8: saving the
+ * whole file back as UTF-8 would persist U+FFFD over every undecodable byte.
+ * Defined in the official file-state constants chunk beside ren/oen/sen and
+ * thrown via `class C8 extends Error{name="FileStateError"}` (YMe mirror).
+ */
+export const FILE_NOT_VALID_UTF8_EDIT_MESSAGE =
+  'File is not valid UTF-8. It may use a legacy encoding such as Windows-1252, Shift-JIS or GBK, or be binary. This tool saves the whole file as UTF-8, which would replace every byte it cannot decode with U+FFFD. Nothing was written. Make the change with a shell command that reads and writes the file in its own encoding, or ask the user whether to convert the file to UTF-8 first.'
+
+/**
+ * CC 2.1.296 #032 — UTs @101773960 / @208137426 (byte-exact). Write refusal
+ * when the disk file decodes lossily AND the incoming content carries U+FFFD
+ * (the replacement char Read showed for undecodable bytes) — writing it back
+ * would destroy those characters.
+ */
+export const FILE_NOT_VALID_UTF8_WRITE_MESSAGE =
+  'The file on disk is not valid UTF-8, and the new content holds U+FFFD, which is what Read shows for the bytes of that file it cannot decode. If the content came from Read, writing it destroys those characters. Nothing was written. Make the change with a shell command that reads and writes the file in its own encoding, or ask the user whether to convert the file to UTF-8 first.'
+
 /** YMe */
 export class FileStateError extends Error {
   constructor(message: string) {

@@ -1,37 +1,56 @@
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'bun:test'
 import type { ToolPermissionContext, ToolUseContext } from 'src/Tool.js'
 import { getDefaultAppState } from 'src/state/AppStateStore.js'
 import { getFileModificationTime } from 'src/utils/file.js'
 import { createFileStateCacheWithSizeLimit } from 'src/utils/fileStateCache.js'
-import { normalizeForComparison } from 'src/utils/permissions/fileStateGuard.js'
-import { NOT_UTF8_REFUSAL_MESSAGE } from 'src/utils/utf8Safety.js'
-import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import { NotebookEditTool } from 'src/tools/NotebookEditTool/NotebookEditTool.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from 'src/tools/NotebookEditTool/constants.js'
+import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
+import {
+  FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+  normalizeForComparison,
+} from 'src/utils/permissions/fileStateGuard.js'
+import { stashCheckTimeResolutions } from 'src/utils/permissions/symlinkResolutionStash.js'
 
-// Transitive imports read MACRO.VERSION (build-time constant polyfilled in
-// cli.tsx). Mirror the repo-convention polyfill.
 if (typeof globalThis.MACRO === 'undefined') {
   ;(globalThis as { MACRO?: unknown }).MACRO = { VERSION: 'test' }
 }
 
 /**
- * CC 2.1.296 (aen) — changelog: "Fixed Edit and NotebookEdit replacing every
- * non-ASCII character in files that are not valid UTF-8 …; such edits are now
- * refused."
+ * CC 2.1.296 changelog #032 (P0) — the NotebookEdit refusals.
  *
- * NotebookEditTool.validateInput reads content via readFileSyncWithMetadata (a
- * string, not bytes), so the guard adds a raw-byte read before it (errorCode
- * 12) and refuses verbatim when the bytes are not valid UTF-8. It sits after
- * the not-read (errorCode 9) and stale (errorCode 10) guards, so a prior Read
- * must be seeded to reach it. utf16le (FF FE BOM) is exempt.
+ * Binary evidence (official ELF v296, never executed; strings + mmap.find):
+ * - NotebookEdit validateInput @219777185:
+ *   `({content:he,lossyDecode:_e}=await E_(G,f$))` then
+ *   `if(_e)return{result:!1,message:aen,errorCode:15}` — BEFORE the JSON
+ *   parse, so a lossy .ipynb gets the UTF-8 refusal (errorCode 15), not
+ *   "Notebook is not valid JSON." (errorCode 6).
+ * - NotebookEdit call @219778736: `Te=await be.readExisting(f$)`;
+ *   `if(Te===null)return _e("Notebook file does not exist.")`;
+ *   `if(Te.lossyDecode)return _e(aen)` — the error STUB `_e(be)` shape:
+ *   `{data:{new_source:r,old_source:void 0,cell_type:h??"code",
+ *   language:"python",edit_mode:"replace",error:be,cell_id:s,
+ *   notebook_path:he,original_file:"",updated_file:""}}` — a returned
+ *   error result, not a throw.
+ * - `aen` = the shared Edit/NotebookEdit refusal message @101773572.
  */
 
-// GBK bytes for "中文" — invalid UTF-8 (see the FileEditTool 296 test).
-const GBK_BYTES = Buffer.from([0xd6, 0xd0, 0xce, 0xc4])
+// Shift-JIS "か" bytes spliced into JSON-ish content — lossy under utf8 AND
+// not valid JSON, so refusal-ordering is observable (15 before 6).
+const LOSSY_NB_BYTES = Buffer.from([
+  0x7b, 0x22, 0x63, 0x65, 0x6c, 0x6c, 0x73, 0x22, 0x3a, 0x82, 0xa9, 0x7d,
+]) // {"cells":か} with か in Shift-JIS
 
 function makePermissionContext(): ToolPermissionContext {
   return {
@@ -44,13 +63,18 @@ function makePermissionContext(): ToolPermissionContext {
   } as ToolPermissionContext
 }
 
-function makeContext(permContext: ToolPermissionContext): ToolUseContext {
+let toolUseCounter = 0
+
+function makeContext(): ToolUseContext {
+  toolUseCounter += 1
   const readFileState = createFileStateCacheWithSizeLimit(100)
   const appState = {
     ...getDefaultAppState(),
-    toolPermissionContext: permContext,
+    toolPermissionContext: makePermissionContext(),
   }
   return {
+    toolUseId: `toolu_nb032_${toolUseCounter}`,
+    abortController: new AbortController(),
     options: {
       mainLoopModel: 'claude-opus-5',
       tools: [
@@ -59,95 +83,134 @@ function makeContext(permContext: ToolPermissionContext): ToolUseContext {
       ],
     },
     readFileState,
+    updateFileHistoryState: () => {},
+    nestedMemoryAttachmentTriggers: new Set<string>(),
+    dynamicSkillDirTriggers: new Set<string>(),
     getAppState: () => appState,
   } as unknown as ToolUseContext
 }
 
-describe('2.1.296 (aen) — NotebookEdit refuses non-UTF-8 notebooks verbatim', () => {
-  let tmpDir: string
+let tmpDir: string
+let savedCheckpointEnv: string | undefined
 
-  beforeEach(async () => {
-    tmpDir = await mkdtemp(join(tmpdir(), 'occ-nbedit-utf8-'))
-  })
-  afterEach(async () => {
-    await rm(tmpDir, { recursive: true, force: true })
-  })
+beforeAll(() => {
+  savedCheckpointEnv = process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
+  process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING = '1'
+})
 
-  test('GBK-bytes .ipynb → refused with the verbatim aen message, nothing written', async () => {
-    // Arrange — a non-UTF-8 file with a .ipynb extension. The aen guard fires
-    // before the JSON parse, so the (invalid) notebook body is never reached.
-    const filePath = join(tmpDir, 'gbk.ipynb')
-    await writeFile(filePath, GBK_BYTES)
-    const ctx = makeContext(makePermissionContext())
-    // Seed a prior Read so the not-read (errorCode 9) guard passes and the
-    // stale check (mtime === timestamp) does not fire.
-    ctx.readFileState.set(filePath, {
-      content: normalizeForComparison(GBK_BYTES.toString('utf8')),
-      timestamp: getFileModificationTime(filePath),
-      offset: undefined,
-      limit: undefined,
-    })
-    const before = await readFile(filePath)
+afterAll(() => {
+  if (savedCheckpointEnv === undefined) {
+    delete process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING
+  } else {
+    process.env.CLAUDE_CODE_DISABLE_FILE_CHECKPOINTING = savedCheckpointEnv
+  }
+})
+
+beforeEach(async () => {
+  tmpDir = await mkdtemp(join(tmpdir(), 'occ-nb-032-'))
+})
+
+afterEach(async () => {
+  await rm(tmpDir, { recursive: true, force: true })
+})
+
+function seedRead(
+  ctx: ToolUseContext,
+  filePath: string,
+  bytes: Buffer,
+): void {
+  ctx.readFileState.set(filePath, {
+    content: normalizeForComparison(bytes.toString('utf8')),
+    timestamp: getFileModificationTime(filePath),
+    offset: undefined,
+    limit: undefined,
+  })
+}
+
+describe('CC 2.1.296 #032 NotebookEditTool non-UTF-8 refusal', () => {
+  test('validateInput refuses a lossy .ipynb with errorCode 15 BEFORE the JSON-parse error', async () => {
+    // Arrange — the bytes are also invalid JSON; official ordering puts the
+    // UTF-8 refusal (15/aen) ahead of "Notebook is not valid JSON." (6).
+    const ctx = makeContext()
+    const filePath = join(tmpDir, 'lossy.ipynb')
+    await writeFile(filePath, LOSSY_NB_BYTES)
+    seedRead(ctx, filePath, LOSSY_NB_BYTES)
 
     // Act
     const result = await NotebookEditTool.validateInput(
       {
         notebook_path: filePath,
-        edit_mode: 'insert',
-        cell_type: 'code',
         new_source: 'print("hi")',
-      },
+        cell_id: 'cell-0',
+        edit_mode: 'replace',
+      } as never,
       ctx,
     )
 
-    // Assert — hard refusal (errorCode 12), exact message, disk untouched.
-    expect(result.result).toBe(false)
-    expect(result.errorCode).toBe(12)
-    expect(result.message).toBe(NOT_UTF8_REFUSAL_MESSAGE)
-    expect(await readFile(filePath)).toEqual(before)
+    // Assert
+    expect(result).toEqual({
+      result: false,
+      message: FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+      errorCode: 15,
+    })
+    expect(result.message).not.toContain('not valid JSON')
   })
 
-  test('valid UTF-8 .ipynb is NOT refused by the aen guard', async () => {
-    // Arrange — a real (minimal) notebook with multibyte UTF-8 in a cell.
-    const filePath = join(tmpDir, 'ok.ipynb')
-    const notebook = {
-      cells: [
-        {
-          cell_type: 'code',
-          id: 'cell-1',
-          metadata: {},
-          execution_count: null,
-          outputs: [],
-          source: ['café 日本語\n'],
-        },
-      ],
-      metadata: {},
-      nbformat: 4,
-      nbformat_minor: 5,
-    }
-    const content = JSON.stringify(notebook)
-    await writeFile(filePath, content, 'utf8')
-    const ctx = makeContext(makePermissionContext())
-    ctx.readFileState.set(filePath, {
-      content: normalizeForComparison(content),
-      timestamp: getFileModificationTime(filePath),
-      offset: undefined,
-      limit: undefined,
-    })
+  test('validateInput control: valid UTF-8 non-JSON .ipynb still gets errorCode 6', async () => {
+    // Arrange — proves the lossy gate did not swallow the JSON error path.
+    const ctx = makeContext()
+    const filePath = join(tmpDir, 'notjson.ipynb')
+    const bytes = Buffer.from('this is not json', 'utf8')
+    await writeFile(filePath, bytes)
+    seedRead(ctx, filePath, bytes)
 
     // Act
     const result = await NotebookEditTool.validateInput(
       {
         notebook_path: filePath,
+        new_source: 'x',
+        cell_id: 'cell-0',
         edit_mode: 'replace',
-        cell_id: 'cell-1',
-        new_source: 'print("edited")',
-      },
+      } as never,
       ctx,
     )
 
-    // Assert — specifically not the aen refusal.
-    expect(result.errorCode).not.toBe(12)
-    expect(result.message).not.toBe(NOT_UTF8_REFUSAL_MESSAGE)
+    // Assert
+    expect(result.result).toBe(false)
+    expect((result as { errorCode?: number }).errorCode).toBe(6)
+    expect(result.message).toBe('Notebook is not valid JSON.')
+  })
+
+  test('call returns the official error stub on a lossy .ipynb and leaves disk untouched', async () => {
+    // Arrange
+    const ctx = makeContext()
+    const filePath = join(tmpDir, 'call-lossy.ipynb')
+    await writeFile(filePath, LOSSY_NB_BYTES)
+    seedRead(ctx, filePath, LOSSY_NB_BYTES)
+    stashCheckTimeResolutions(ctx as never, filePath, 'write')
+
+    // Act
+    const result = (await NotebookEditTool.call(
+      {
+        notebook_path: filePath,
+        new_source: 'print("hi")',
+        cell_id: 'cell-0',
+        edit_mode: 'replace',
+      } as never,
+      ctx as never,
+      undefined as never,
+      { uuid: 'msg_nb032' } as never,
+    )) as { data: Record<string, unknown> }
+
+    // Assert — official `_e(aen)` stub shape: returned error result, not a
+    // throw; updated_file/original_file empty.
+    expect(result.data.error).toBe(FILE_NOT_VALID_UTF8_EDIT_MESSAGE)
+    expect(result.data.updated_file).toBe('')
+    expect(result.data.original_file).toBe('')
+    expect(result.data.cell_type).toBe('code')
+    expect(result.data.language).toBe('python')
+    expect(result.data.edit_mode).toBe('replace')
+    expect(result.data.notebook_path).toBe(filePath)
+    expect(Buffer.compare(await readFile(filePath), LOSSY_NB_BYTES)).toBe(0)
   })
 })

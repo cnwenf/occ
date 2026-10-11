@@ -31,6 +31,7 @@ import {
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
 import {
+  isLossyUtf8Decode,
   type LineEndingType,
   readFileSyncWithMetadata,
 } from '../../utils/fileRead.js'
@@ -63,6 +64,7 @@ import {
   FileStateError,
   FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
   FILE_NOT_READ_MESSAGE,
+  FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
   FILE_STATE_CURRENT_NOTE,
   fileStateMatchesDisk,
   getGuardModel,
@@ -83,10 +85,6 @@ import {
   stashCheckTimeResolutions,
 } from '../../utils/permissions/symlinkResolutionStash.js'
 import { validateInputForSettingsFileEdit } from '../../utils/settings/validateEditTool.js'
-import {
-  NOT_UTF8_REFUSAL_MESSAGE,
-  shouldRefuseNonUtf8Edit,
-} from '../../utils/utf8Safety.js'
 import { NOTEBOOK_EDIT_TOOL_NAME } from '../NotebookEditTool/constants.js'
 import { FILE_EDIT_TOOL_NAME } from './constants.js'
 import { getEditToolDescription } from './prompt.js'
@@ -333,10 +331,10 @@ export const FileEditTool = buildTool({
     // instead of calling detectFileEncoding (which does its own sync readSync
     // and would fail with a wasted ENOENT when the file doesn't exist).
     let fileContent: string | null
-    // CC 2.1.296 (aen): set when the on-disk bytes are not valid UTF-8 and
-    // this edit would re-save them as UTF-8 (lossy — every undecodable byte
-    // becomes U+FFFD). Checked right after the read; refuses before any write.
-    let nonUtf8Refusal = false
+    // CC 2.1.296 #032 (official Re=IAo(Ze,ut)): set when the utf8-decoded
+    // bytes are not valid UTF-8; the refusal fires after the stale-read
+    // block, matching the official ordering.
+    let fileContentLossy = false
     try {
       const fileBuffer = await fs.readFileBytes(fullFilePath)
       const encoding: BufferEncoding =
@@ -345,10 +343,7 @@ export const FileEditTool = buildTool({
         fileBuffer[1] === 0xfe
           ? 'utf16le'
           : 'utf8'
-      // CC 2.1.296: legacy-encoding / binary files are refused (Windows-1252,
-      // Shift-JIS, GBK, …). utf16le round-trips losslessly in OCC so it is
-      // exempt (see utf8Safety.ts header).
-      nonUtf8Refusal = shouldRefuseNonUtf8Edit(fileBuffer, encoding)
+      fileContentLossy = isLossyUtf8Decode(fileBuffer, encoding)
       // Binary J9 shape: BOM-stripped + LF-normalized, the canonical form
       // readFileState stores, so stale-content comparisons line up.
       fileContent = normalizeForComparison(fileBuffer.toString(encoding))
@@ -357,17 +352,6 @@ export const FileEditTool = buildTool({
         fileContent = null
       } else {
         throw e
-      }
-    }
-
-    // CC 2.1.296 (aen): refuse edits to non-UTF-8 files verbatim — nothing is
-    // written. Runs before the not-exist / stale / match branches so the
-    // refusal wins over any downstream validation.
-    if (nonUtf8Refusal) {
-      return {
-        result: false,
-        message: NOT_UTF8_REFUSAL_MESSAGE,
-        errorCode: 14,
       }
     }
 
@@ -528,6 +512,18 @@ export const FileEditTool = buildTool({
       }
     }
 
+    // CC 2.1.296 #032 (official validateInput @219762357): the non-UTF-8
+    // refusal fires AFTER the stale-read block (Pe) and BEFORE old_string
+    // matching — `if(Re)return{result:!1,message:aen,errorCode:15}`. No
+    // behavior field (unlike the stale-read ask).
+    if (fileContentLossy) {
+      return {
+        result: false,
+        message: FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+        errorCode: 15,
+      }
+    }
+
     const file = fileContent
 
     // Use findActualString to handle quote normalization
@@ -675,6 +671,7 @@ export const FileEditTool = buildTool({
       fileExists,
       encoding,
       lineEndings: endings,
+      lossyDecode,
     } = readFileForEdit(absoluteFilePath)
 
     // 2.1.228 call-time guard (binary C8b): throws FileStateError when the
@@ -697,6 +694,14 @@ export const FileEditTool = buildTool({
             toolPermissionContext,
           ),
       })
+
+    // CC 2.1.296 #032 (official call yjr): after the call-time staleness
+    // guard ($n=kjr(...)), `if(on)throw new C8(aen)` — the lossy refusal is
+    // a FileStateError thrown BEFORE findActualString/patch/write, so a
+    // non-UTF-8 file is never re-encoded to UTF-8 with U+FFFD replacements.
+    if (lossyDecode) {
+      throw new FileStateError(FILE_NOT_VALID_UTF8_EDIT_MESSAGE)
+    }
 
     // 3. Use findActualString to handle quote normalization
     const actualOldString =
@@ -876,6 +881,7 @@ function readFileForEdit(absoluteFilePath: string): {
   fileExists: boolean
   encoding: BufferEncoding
   lineEndings: LineEndingType
+  lossyDecode: boolean
 } {
   try {
     // eslint-disable-next-line custom-rules/no-sync-fs
@@ -885,6 +891,7 @@ function readFileForEdit(absoluteFilePath: string): {
       fileExists: true,
       encoding: meta.encoding,
       lineEndings: meta.lineEndings,
+      lossyDecode: meta.lossyDecode,
     }
   } catch (e) {
     if (isENOENT(e)) {
@@ -893,6 +900,7 @@ function readFileForEdit(absoluteFilePath: string): {
         fileExists: false,
         encoding: 'utf8',
         lineEndings: 'LF',
+        lossyDecode: false,
       }
     }
     throw e
