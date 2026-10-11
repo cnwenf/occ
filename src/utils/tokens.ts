@@ -89,7 +89,7 @@ type NormalizedUsage = {
  * carry `iterations`, so it is read through this shape (cast like
  * finalContextTokensFromLastResponse / advisor.ts).
  */
-type UsageShape = {
+export type UsageShape = {
   input_tokens?: number
   output_tokens?: number
   cache_creation_input_tokens?: number
@@ -184,8 +184,9 @@ function getTokenCountFromUsageNormalized(usage: UsageShape): number {
   return sumInputTokens(normalized) + normalized.output_tokens
 }
 
-/** Official `Nwt` — true when a usage object carries zero input-side tokens. */
-function isZeroTokenUsage(usage: UsageShape): boolean {
+/** Official `Nwt` — true when a usage object carries zero input-side tokens.
+ * Exported for the 2.1.296 #006 contextRoom held() scan (official `IHe`). */
+export function isZeroTokenUsage(usage: UsageShape): boolean {
   return sumInputTokens(normalizeUsage(usage)) === 0
 }
 
@@ -448,11 +449,15 @@ export function getAssistantMessageContentLength(
  * compact-boundary case; when no anchor exists (no real usage, no boundary) it
  * falls back to a rough estimate over the whole transcript.
  */
-export function tokenCountWithEstimation(messages: readonly Message[]): number {
+export function tokenCountWithEstimation(
+  messages: readonly Message[],
+  bytesPerToken?: number,
+): number {
   const anchor = findTokenAnchor(messages)
   if (!anchor) {
     return roughTokenCountEstimationForMessages(
       messages as Parameters<typeof roughTokenCountEstimationForMessages>[0],
+      bytesPerToken,
     )
   }
   return (
@@ -461,6 +466,7 @@ export function tokenCountWithEstimation(messages: readonly Message[]): number {
       messages.slice(
         anchor.anchorIndex + 1,
       ) as Parameters<typeof roughTokenCountEstimationForMessages>[0],
+      bytesPerToken,
     )
   )
 }
