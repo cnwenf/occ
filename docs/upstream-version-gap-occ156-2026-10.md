@@ -117,7 +117,7 @@ function gpn(e){let n=W2n();if(n!==void 0)return n;if(!_Tn())return ...}  // 门
 | occ154-ported: autoCompactWindow | ✅ §2 P7-P8 |
 | occ154-ported: WORKFLOW_SUBAGENT_MODEL | ✅ §2 P13（静态+UT） |
 | occ154-ported: OVERLOADED_RETRY_MAX_DELAY | ✅ §2 P11-P12 |
-| occ154-ported: managed hooks cluster | 🔬 调查中（见 §6.1） |
+| occ154-ported: managed hooks cluster | ✅ §6.1（行为 A/B 4-run 矩阵全对齐） |
 | 核心主干: footer/agent-status | ✅ → GAP occ156-01 |
 | 核心主干: session/resume | ⏳ 待测 |
 | 核心主干: 工具调用/权限 | ⏳ 待测 |
@@ -125,9 +125,20 @@ function gpn(e){let n=W2n();if(n!==void 0)return n;if(!_Tn())return ...}  // 门
 | 核心主干: MCP | ⏳ 待测 |
 | 核心主干: /command palette | ⏳ 待测 |
 
-### §6.1 ManagedHooks 面复核（进行中）
+### §6.1 ManagedHooks 面复核 — VERIFIED PARITY（行为 A/B）
 
-grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6; ManagedHooks: src=12 official=30`。OCC 12 个 src 文件为真实生产面：`allowManagedHooksOnly` policy 强制（`hooksSettings.ts:107-109`、`execHttpHook.ts:46`、`hooksConfigSnapshot.ts:12-27`、`policyLocks.ts`、`HooksConfigMenu.tsx`、`REPL.tsx`、`sessionStart.ts`、`settings/types.ts`）+ 2 tests（managedOnlyKeys283、hooksFailClosed288）。occ154 §7.2 的 VERIFIED N/A 裁决针对特定 fix cluster（#007/#008/#019），非整面缺失。计数差 12 vs 30 为弱证据，需行为 A/B 定案（managed-settings allowManagedHooksOnly=true 下双侧 hook 可见性/执行一致性）。
+grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6; ManagedHooks: src=12 official=30`。OCC 12 个 src 文件为真实生产面：`allowManagedHooksOnly` policy 强制（`hooksSettings.ts:107-109`、`execHttpHook.ts:46`、`hooksConfigSnapshot.ts:12-27`、`policyLocks.ts`、`HooksConfigMenu.tsx`、`REPL.tsx`、`sessionStart.ts`、`settings/types.ts`）+ 2 tests（managedOnlyKeys283、hooksFailClosed288）。occ154 §7.2 的 VERIFIED N/A 裁决针对特定 fix cluster（#007/#008/#019），非整面缺失。
+
+**行为 A/B 定案（2026-10-13，4-run 矩阵）**：`/etc/claude-code/managed-settings.json` = `{"allowManagedHooksOnly":true,"hooks":{"UserPromptSubmit":[touch MANAGED_HOOK_MARKER]}}`，CLAUDE_CONFIG_DIR 用户 settings.json 带 `UserPromptSubmit → touch USER_HOOK_MARKER`，双侧 `-p "hi" --debug`：
+
+| Run | 侧 | managed 门控 | USER_MARKER | MANAGED_MARKER |
+|---|---|---|---|---|
+| 1 | 官方 2.1.296 | ✅ | **no**（被抑制 ✓） | **YES**（managed hook 执行 ✓） |
+| 2 | OCC 2.1.380 | ✅ | **no** ✓ | **YES** ✓ |
+| 3 | 官方（control，无 managed settings） | — | **YES**（用户 hook 恢复 ✓） | — |
+| 4 | OCC（control） | — | **YES** ✓ | — |
+
+结论：`allowManagedHooksOnly` 门控语义（用户 hook 抑制 + managed settings-file hooks 仍执行 + 撤销后恢复）双侧行为一致。计数差 12 vs 30 源于官方模块拆分粒度（官方另有 plugin-hooks skip 文案、goal 门控、edit_hook refusal 等分支；OCC 对应面由 hooksFailClosed288/managedOnlyKeys283 UT 钉住）。测试后 `/etc/claude-code` 已清理。**PARITY VERIFIED。**
 
 ## §7 STAGED verify-first triage（待填）
 
