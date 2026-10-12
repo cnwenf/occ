@@ -309,5 +309,5 @@ grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6;
 - **CI**：main HEAD `e150dc2` 的 GitHub Actions run `38296973381`（docs-only，与前一 run `38178958699` @ `3b9ec3a` success 同构）；§8 本次补记 commit 触发的 run 结果在交付评论中给出。
 - **分支清理（taskbook #4）**：`git ls-remote --heads origin` 复核，远端残留分支 `agent/occ/2db3a4dc` 已不存在（此前已被删除），无需操作。
 - **发布纪律**：未打任何 tag；`2.1.381` 严禁抢跑，待验收 PASS 后由发布流程决定。
-- **升级项**：occ156-03（auto mode 默认 + 公告 + opt-in 迁移，P1）按 taskbook「拿不准→问 Leader」升级，等 Leader 定夺是否开独立切片。
+- **升级项**：occ156-03（auto mode 默认 + 公告 + opt-in 迁移，P1）按 taskbook「拿不准→问 Leader」升级。**中途更新**：并行轮 OCC-115 已落 `7b17869`（auto-default nudge：`autoDefaultNudge.ts` + `AutoDefaultNudgeDialog.tsx` + main.tsx 启动块，accept→startup 切 auto；官方 gate aMr/dialog qhe/resolver Ckt+Tkt 字节核验），覆盖 occ156-03 的 nudge/公告面；**残余 delta**（是否无条件默认 auto + `tengu_migrate_reset_auto_opt_in_for_default_offer` 迁移 + `skipAutoPermissionPrompts` 逃生门）仍待 Leader 定夺。
 - **交接**：本轮变更集为 docs-only → 按 taskbook #6 直接交 @OCC 验收员。
