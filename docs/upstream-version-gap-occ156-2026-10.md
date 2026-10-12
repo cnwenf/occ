@@ -197,6 +197,30 @@ children:[".......", e(n,{color:"clawd_body",children:"█ █   █ █"}),
 
 - **裁决**：STAGED。built-in skills 补齐是大切片（9 个 skill 本体 + loader）；`~` 格式 / Auto-compact window 行 / 头部布局为小切片 cosmetic 三件套，可与 occ156-04/05 合并推进。
 
+### GAP occ156-10（P2，stream-json 契约面）thinking_tokens 事件 + init/result 字段集漂移
+
+`-p --output-format stream-json --verbose` 同 prompt 双侧 A/B（`Use the Read tool to read /tmp/ab/small.txt then reply with only its last line.`）：
+
+- **核心工具流 PARITY**：`tool_use Read {"file_path": "/tmp/ab/small.txt"}` 双侧同参；`tool_result` 内容**逐字节一致**（`1\talpha\n2\tbeta\n3\tgamma\n4\tdelta\n5\tepsilon\n6\t…`）；终文本 `epsilon` 一致；`result success is_error=False` 一致。
+- **漂移 1 — `system:thinking_tokens` 事件**：官方全程持续发射（`{estimated_tokens, estimated_tokens_delta}`，本 run 数十条）；OCC **0 条**。SDK/编程消费者可见的契约面。
+- **漂移 2 — `system:init` 字段集**：官方 23 字段，OCC 13。官方独有：`analytics_disabled, capabilities, fast_mode_disabled_reason, memory_paths, messaging_socket_path, per_turn_effort_active, product_feedback_disabled, terminal_slash_commands, view_mode`。
+- **漂移 3 — `result` 字段集**：官方独有 11 字段：`api_error_status, fast_mode_disabled_reason, first_content_frame_ms, queued_turn_count, result_index, safety_stops, subagent_stats, terminal_reason, time_to_request_ms, ttft_ms, ttft_stream_ms`（OCC 已有 fast_mode_state/is_error/modelUsage/permission_denials/stop_reason）。
+- **裁决**：STAGED，建议独立小切片（stream-json 契约定为 SDK 面，部分字段绑官方基建——messaging_socket_path/analytics_disabled 需 N/A 甄别；thinking_tokens 与 ttft/时延字段可低成本补）。与 occ154 STAGED #013（model/token）家族相邻，triage 时并看。
+
+### GAP occ156-11（P3，resume picker 文案/热键漂移）
+
+`--resume` picker tmux A/B（共享 CLAUDE_CONFIG_DIR，**双侧互读对方 session 文件成功** — 会话格式互操作 parity，正面结论）：搜索框 `⌕ Search…`、条目格式 `3 seconds ago · HEAD · 6.3KB` 一致。漂移：
+
+| 项 | 官方 | OCC |
+|---|---|---|
+| 标题 | `  Resume session` | `Resume Session`（大小写/缩进） |
+| 项目分组头 | `  repl`（folder 分组） | 缺 |
+| Ctrl+B 提示 | `Ctrl+B to only show current branch` | `Ctrl+B to toggle branch` |
+| 预览热键 | `Space to preview` | `Ctrl+V to preview`（**功能级差异**：预览触发键不同） |
+| 尾缀 | — | 末尾多 ` ·` |
+
+- **裁决**：STAGED（cosmetic+1 个热键行为差；小切片可清）。
+
 ## §4 FALSIFIED / 非 gap 观察
 
 - **F1 Read 0-based 行号（FALSIFIED）**：初见 OCC `0\tLINE-000000` vs 官方 `1\t...` 疑似 gap；但两侧调用参数不同（OCC 侧带了 `offset:0`）。强制同参数复验：官方对 `offset:0` **同样**输出 `0\talpha`。结论：行号镜像 offset 值（offset:0→0-based；默认 offset=1→1-based cat -n），**双侧一致，非 gap**。留档以示 Never-invent 纪律执行。
@@ -222,7 +246,7 @@ children:[".......", e(n,{color:"clawd_body",children:"█ █   █ █"}),
 | occ154-ported: OVERLOADED_RETRY_MAX_DELAY | ✅ §2 P11-P12 |
 | occ154-ported: managed hooks cluster | ✅ §6.1（行为 A/B 4-run 矩阵全对齐） |
 | 核心主干: footer/agent-status | ✅ → GAP occ156-01（全模式循环补充证据） |
-| 核心主干: session/resume | ⏳ 待测 |
+| 核心主干: session/resume | ✅ picker A/B → GAP occ156-11；会话文件跨侧互读 PARITY |
 | 核心主干: 工具调用/权限 | ✅ 模式循环 4 态逐字节一致；`--permission-mode` 六选一致；默认模式差 → GAP occ156-03；工具流 stream A/B 见 §2 补充 |
 | 核心主干: hooks 行为 | ✅ §6.1（4-run 矩阵） |
 | 核心主干: MCP | ✅ `mcp list` 双侧一致（仅品牌名 claude/occ 差，属 N1 类）；深度 MCP 会话面属 occ154 #048 STAGED 家族 |
