@@ -94,6 +94,20 @@ function gpn(e){let n=W2n();if(n!==void 0)return n;if(!_Tn())return ...}  // 门
 - **性质**：Anthropic 一次性计费变更公告，仅 auto-mode 面 + gateway 用户可见（OCC 用户恒走 gateway → 官方侧恰是该公告的目标受众）。
 - **裁决**：**STAGED（P3）**。理由：时效性公告（未来官方版本大概率移除）、依附 auto-mode classifier 计费基础设施（OCC 无 Anthropic 计费面）、纯展示无行为影响。证据已存档，如 Leader 要求严格逐字对齐可低成本补 render。
 
+### GAP occ156-03（P1，生产行为）auto mode 默认权限模式 + 公告 + opt-in 迁移缺失
+
+- **现象（tmux 实测，同一 fresh CLAUDE_CONFIG_DIR，官方先跑写完 onboarding 状态后 OCC 复用同一 config）**：
+  - 官方主 REPL footer：`⏵⏵ auto mode on (shift+tab to cycle) · ← for agents`，并展示一次性公告块：`▎ Auto mode is now Claude Code's default permission mode. / ▎ Auto mode lets Claude handle permission prompts automatically. ... / ▎ https://code.claude.com/docs/en/permission-modes`
+  - OCC footer：`⏸ manual mode on · ? for shortcuts`，无公告块。
+  - config 证据：官方跑完后 `.claude.json` 含 `hasResetAutoModeOptInForDefaultOffer:true, hasSeenAutoDefaultNotice:true`；**OCC 读同一文件仍以 manual 启动** → 非状态问题，是逻辑缺失。
+- **grep 证据**：官方 `Auto mode is now` 2 hits（`QMr="Auto mode is now Claude Code's default permission mode."` + `ZMr` 正文）；OCC src **0 hits**。
+- **官方机制 RE 存档**：
+  - surface id `fNt="auto-mode-default"`；`Jh(l)` 置 `hasSeenAutoDefaultNotice` + 遥测 `tengu_auto_default_notice_shown`；
+  - 迁移 `Bt(e)`：`if(ce().hasResetAutoModeOptInForDefaultOffer)return!0; if(o2r()!=="enabled")return!0; ...skipAutoPermissionP...`（userSettings 逃生门）→ 重置 opt-in，遥测 `tengu_migrate_reset_auto_opt_in_for_default_offer` / `migration_reset_auto_mode_opt_in`；
+  - 相关 config keys：`autoModeOptInDismissed`、`hasSeenAutoDefaultNudge`、`hasSeenAutoModeEntryWarning`；
+  - OCC 现状：`auto` 模式本体存在（`--permission-mode` 六选一致、可 cycle），缺的是 **默认值切换 + 一次性公告 + opt-in 重置迁移 + 门控**（`o2r()==="enabled"` 可用性门、managed/safe-mode 排除等）。
+- **裁决**：**上报 Leader 定夺**（taskbook 第 4 条"拿不准→问 Leader"）。理由：改变每个新会话的默认安全姿态（manual→auto 自动放行低风险工具调用），且官方门控链（o2r 可用性探测、skipAutoPermissionPrompts 逃生门、企业 managed 排除）需完整 RE 后再动，不宜自验收轮内当天手术。证据与 RE 存档已 turnkey，可开独立小切片 issue。
+
 ## §4 FALSIFIED / 非 gap 观察
 
 - **F1 Read 0-based 行号（FALSIFIED）**：初见 OCC `0\tLINE-000000` vs 官方 `1\t...` 疑似 gap；但两侧调用参数不同（OCC 侧带了 `offset:0`）。强制同参数复验：官方对 `offset:0` **同样**输出 `0\talpha`。结论：行号镜像 offset 值（offset:0→0-based；默认 offset=1→1-based cat -n），**双侧一致，非 gap**。留档以示 Never-invent 纪律执行。
