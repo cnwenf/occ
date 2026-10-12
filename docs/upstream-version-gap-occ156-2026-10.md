@@ -110,6 +110,7 @@ function gpn(e){let n=W2n();if(n!==void 0)return n;if(!_Tn())return ...}  // 门
   - 相关 config keys：`autoModeOptInDismissed`、`hasSeenAutoDefaultNudge`、`hasSeenAutoModeEntryWarning`；
   - OCC 现状：`auto` 模式本体存在（`--permission-mode` 六选一致、可 cycle），缺的是 **默认值切换 + 一次性公告 + opt-in 重置迁移 + 门控**（`o2r()==="enabled"` 可用性门、managed/safe-mode 排除等）。
 - **裁决**：**上报 Leader 定夺**（taskbook 第 4 条"拿不准→问 Leader"）。理由：改变每个新会话的默认安全姿态（manual→auto 自动放行低风险工具调用），且官方门控链（o2r 可用性探测、skipAutoPermissionPrompts 逃生门、企业 managed 排除）需完整 RE 后再动，不宜自验收轮内当天手术。证据与 RE 存档已 turnkey，可开独立小切片 issue。
+- **Leader 裁决（2026-10-13，裁决评论 `b16f18f6`）：STAGED-BY-LEADER** —— 本轮**不**无条件切 auto，OCC 默认维持 manual。理由：① 官方 stable 通道仍停 2.1.287，2.1.296 仅在 latest/next；以未晋升 stable 的版本为基准切换默认安全 posture 属冒进；② `7b17869` 已复现官方**同意路径**（nudge 对话框 + 公告面，官方 gate aMr/dialog qhe/resolver Ckt+Tkt 字节核验在案），官方迁移策略核心（用户显式同意 opt-in）已覆盖，OCC 用户不会被静默切模式。**复议触发条件 = 官方 stable ≥ 2.1.296**（届时连同 `tengu_migrate_reset_auto_opt_in_for_default_offer` 迁移 + `skipAutoPermissionPrompts` 逃生门 + `o2r()==="enabled"` 门控链一起字节取证再裁决）。
 
 ### GAP occ156-04（P3，cosmetic）WelcomeV2 splash 分隔符字符漂移（`.` → `…`）
 
@@ -301,7 +302,17 @@ grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6;
 **occ153 §8.2 余 2**：#090、#095 继续 STAGED（本轮无新证据）。
 
 **本轮新增 STAGED**：occ156-01（footer agent-status，RE turnkey 存档）、occ156-02（classifier 计费公告）、occ156-04/05（splash 分隔符 + ThemePicker 编号）、occ156-06（palette 命令集）、occ156-07（描述文案 ×11）、occ156-08（/status 面）、occ156-09（/context built-in skills ×9 + 布局）、occ156-10（stream-json envelope）、occ156-11（resume picker）。
-**升级通道**：occ156-03（auto mode 默认，P1）→ Leader 定夺独立切片。
+**升级通道**：occ156-03（auto mode 默认，P1）→ Leader 已裁决 **STAGED-BY-LEADER**（裁决评论 `b16f18f6`，详见 §3 occ156-03 裁决补记；复议触发条件 = 官方 stable ≥ 2.1.296）。
+
+### 7.4 安全审核 LOW 项 verify-first 登记（Leader 裁决 `b16f18f6`，下轮处置）
+
+`7b17869` 安全审核 PASS（`f243887c` + `10dd1435`，无 CRITICAL/HIGH），LOW×3 处置：
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| LOW-1 | `main.tsx:2677` nudge accept persist 后重查闸无 try/catch（persist 失败异常路径） | **下轮 verify-first**（不阻塞 2.1.381 发版） |
+| LOW-2 | 显式 CLI 模式（如 `--permission-mode`）下 nudge 抑制行为，需与官方 `aMr` 对照字节取证 | **下轮 verify-first**（官方 aMr 对显式 CLI 指定的行为核对） |
+| LOW-3 | gate_off 时不应发 `tengu_auto_default_nudge_resolved` 遥测 | **已关闭**（`035311d` 修正 + merge-semantics 单测在案） |
 
 ## §8 修复/交付
 
@@ -311,6 +322,6 @@ grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6;
 - **`7b17869` 安全审核归属（验收 F2.2）**：该 src feat 变更权限模式面（auto-default nudge），截至本修订**无安全审核链记录**（occ115 账本无安全审核节、无对口 multica issue）。归属裁定：**不并入 occ156-03**（occ156-03 = "是否无条件默认 auto + 迁移" 的产品决策，归 Leader）；`7b17869` 的代码安全审核为独立前置项，**已在 OCC-156 线程补走 @OCC 安全审核员**。在安全审核证据（或 Leader 明确 Waive 记录）落帖之前，含该 commit 的 HEAD **不得进入发版决策**，后续轮次勿误判为已审。
 - **CI**：main HEAD `3958dfb` run `38297606817` **success**（https://github.com/cnwenf/occ/actions/runs/38297606817）；本次口径修正 commit 的 run 结果在复审交接评论中给出。
 - **分支清理（taskbook #4 + 验收 F1）**：① 远端残留分支 `agent/occ/2db3a4dc` 已不存在（此前已被删除）；② 本轮工作分支 `agent/occ156-selfaccept`（tip `e150dc2`，已确认为 main 祖先、内容全量合入）已 `git push origin --delete` 删除。远端现收敛为**仅 main**。
-- **发布纪律**：未打任何 tag；`2.1.381` 严禁抢跑，待验收 PASS 后由发布流程决定。
+- **发布纪律**：未打任何 tag；`2.1.381` 严禁抢跑，待验收 PASS 后由发布流程决定。**终态（2026-10-13）**：安全审核 PASS（`10dd1435`）+ 验收复审 PASS（`c5ba76dd`）后，Leader 裁决批准发版 v2.1.381（`b16f18f6`）；release commit（CHANGELOG + version bump + 本账本 §3/§7.4/§8 补记，零 src/）基于 `035311d`。
 - **升级项**：occ156-03（auto mode 默认 + 公告 + opt-in 迁移，P1）按 taskbook「拿不准→问 Leader」升级。**中途更新**：并行轮 OCC-115 已落 `7b17869`（auto-default nudge：`autoDefaultNudge.ts` + `AutoDefaultNudgeDialog.tsx` + main.tsx 启动块，accept→startup 切 auto；官方 gate aMr/dialog qhe/resolver Ckt+Tkt 字节核验），覆盖 occ156-03 的 nudge/公告面；**残余 delta**（是否无条件默认 auto + `tengu_migrate_reset_auto_opt_in_for_default_offer` 迁移 + `skipAutoPermissionPrompts` 逃生门）仍待 Leader 定夺。
 - **交接（口径修正）**：本轮程序员产出为 docs-only，但交付 HEAD 含 `7b17869` src feat → 按 taskbook #6 完整路由应为 **先 @OCC 安全审核员（对 `7b17869`）再 @OCC 验收员复审**；首次交接按 "docs-only 直送验收" 路由属技术性越权（验收 F2 认定），已补正。
