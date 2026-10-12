@@ -142,11 +142,26 @@ done
 # 4 fail each). The BY-VALUE pre-mock captures used in the afterAll re-pin are
 # load-bearing — a namespace spread evaluated at afterAll time copies bun's
 # already re-pointed live bindings, re-installing the capture shim.
+#
+# Pair 3 (OCC-115 acceptance FIX-001): src/utils/permissions/__tests__/autoDefaultNudge296.test.ts
+# originally shipped the same unsafe plain-spread afterAll "restore" for
+# config.js / settings/settings.js (OCC-97 era). bun live-patched the captured
+# namespaces, so the re-spread re-installed the shims process-wide and the
+# settings capture (updateSettingsForSource never touching disk) leaked into
+# src/utils/permissions/__tests__/autoDefaultNudge296Merge.test.ts, which
+# drives the REAL settings module against a temp CLAUDE_CONFIG_DIR — its
+# merge-no-clobber assertions failed in BOTH file orders (21 pass / 2 fail;
+# standalone 3/3). Both files converted to the delegation + `mockActive`
+# pattern (by-value pre-mock capture; afterAll only flips the flag so the
+# permanent mocks pass through), both orders guarded here because the original
+# leak reproduced in both.
 echo "Same-worker mock-leak regressions (polluter -> victim pairs, single process)..."
 LEAK_PAIRS=(
   "src/tools/shared/__tests__/settingSourcesPropagation281.test.ts|src/cli/handlers/__tests__/mcpGetDynamicScope285.test.ts"
   "src/bridge/__tests__/attachBridgePolicyWatcher286.test.ts|src/services/api/__tests__/withRetryIntegration286.test.ts"
   "src/services/api/__tests__/withRetryIntegration286.test.ts|src/bridge/__tests__/attachBridgePolicyWatcher286.test.ts"
+  "src/utils/permissions/__tests__/autoDefaultNudge296.test.ts|src/utils/permissions/__tests__/autoDefaultNudge296Merge.test.ts"
+  "src/utils/permissions/__tests__/autoDefaultNudge296Merge.test.ts|src/utils/permissions/__tests__/autoDefaultNudge296.test.ts"
 )
 for pair in "${LEAK_PAIRS[@]}"; do
   LEAK_PAIR_POLLUTER="${pair%%|*}"

@@ -134,3 +134,14 @@ F-fix verification (real model creds, built `dist/cli.js`, tmux):
 - Full suite `CI=1 bash scripts/ci-test.sh`: **11041 pass / 0 fail / 119 skip across 986 test files, 0 failed** + all 3 same-worker mock-leak regression pairs OK.
 
 No tag / release cut in this round — 验收员 re-acceptance is required first.
+
+## 9. Re-acceptance FIX round (2026-10-13, 验收员 PASS-with-conditions → FIX-001/FIX-002)
+
+验收员 re-acceptance of `035311d` PASSED conditionally on one release-blocking P2:
+
+| Item | Fix |
+|---|---|
+| **OCC115-FIX-001 (P2)** same-worker mock leak | `autoDefaultNudge296.test.ts`'s afterAll "restore" was the unsafe plain-spread pattern (`mock.module(path, () => ({...actual}))`) that ci-test.sh L130-144 warns about: bun live-patches the captured namespace, so the re-spread re-installed the config/settings shims process-wide. Running the sibling pair in ONE bun process (`bun test autoDefaultNudge296.test.ts autoDefaultNudge296Merge.test.ts`) leaked the `updateSettingsForSource` capture into the merge test — the real settings file was never written and the merge-no-clobber assertions failed in BOTH orders (21 pass / 2 fail; each file standalone was green). Fixed by converting BOTH files to the delegation + `mockActive` pattern (settingSourcesPropagation281 / attachBridgePolicyWatcher286 precedent): real functions captured BY VALUE before any mock.module install; every mocked export delegates to the real one once `mockActive` flips false in afterAll. The pair is now registered in `scripts/ci-test.sh` LEAK_PAIRS in BOTH orders (the leak reproduced in both — withRetry286 precedent), with a Pair-3 comment block. The merge test docblock's misleading "afterAll restores (OCC-97)" claim was corrected to describe the delegation pattern. Post-fix: pair 23 pass / 0 fail / 2 files in both orders; standalone 20/20 + 3/3; all 5 registered leak pairs green. |
+| **OCC115-FIX-002 (P3, latent)** memoize leak | The merge test's temp `CLAUDE_CONFIG_DIR` could leak into later files via `getGlobalClaudeFile`'s UNKEYED memoize. Hardened per bridgePolicyRefusal286 precedent: afterAll now calls `getGlobalClaudeFile.cache.clear()` + `getClaudeConfigHomeDir.cache.clear()` after restoring the env window. |
+
+No production code changed in this round — test infrastructure only (`autoDefaultNudge296.test.ts`, `autoDefaultNudge296Merge.test.ts`, `scripts/ci-test.sh`). Tag/release remains gated on 验收员 re-verification.

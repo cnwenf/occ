@@ -15,9 +15,16 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
  *   resolved event (official logs it only for non-gate_off outcomes);
  *   decline → flag + outcome "declined".
  *
- * Mock pattern: autoModeReevaluate295.test.ts (spread-actual + afterAll
- * restore, dynamic import of the target AFTER mocks — Bun mock.module leak
- * OCC-97).
+ * Mock pattern: delegation + `mockActive` (settingSourcesPropagation281 /
+ * attachBridgePolicyWatcher286 precedent — OCC-97/OCC-103). The real
+ * functions are captured BY VALUE before any mock.module install; every
+ * mocked export delegates to the real one once `mockActive` flips false in
+ * afterAll. Do NOT restore via a namespace re-spread: bun live-patches the
+ * captured namespace, so an afterAll re-spread re-installs the shims and
+ * leaks them into every later file in the same worker — the old plain-spread
+ * restore here leaked the settings/config shims into
+ * autoDefaultNudge296Merge.test.ts (OCC115-FIX-001; the pair is guarded in
+ * scripts/ci-test.sh LEAK_PAIRS).
  */
 
 // MACRO polyfill (permissionSetup import graph reads MACRO.VERSION).
@@ -30,6 +37,40 @@ const actualSettings = await import('../../settings/settings.js')
 const actualBetas = await import('../../betas.js')
 const actualModel = await import('../../model/model.js')
 const actualAnalytics = await import('../../../services/analytics/index.js')
+
+// BY-VALUE capture of the real functions BEFORE any mock.module install.
+// The namespace objects above get live-patched by bun once mocked, so only
+// pre-mock function references are trustworthy (OCC115-FIX-001 — see the
+// header comment; load-bearing, do not "simplify" back to a re-spread).
+const realFns = {
+  getGlobalConfig: actualConfig.getGlobalConfig as () => Record<string, unknown>,
+  saveGlobalConfig: actualConfig.saveGlobalConfig as unknown as (
+    updater: (current: Record<string, unknown>) => Record<string, unknown>,
+  ) => void,
+  getSettingsForSource: actualSettings.getSettingsForSource as unknown as (
+    source: string,
+  ) => Record<string, unknown> | null,
+  updateSettingsForSource:
+    actualSettings.updateSettingsForSource as unknown as (
+      source: string,
+      settings: Record<string, unknown>,
+    ) => { error: Error | null },
+  getSettings_DEPRECATED: actualSettings.getSettings_DEPRECATED as () => Record<
+    string,
+    unknown
+  >,
+  modelSupportsAutoMode: actualBetas.modelSupportsAutoMode as (
+    model?: string,
+  ) => boolean,
+  getMainLoopModel: actualModel.getMainLoopModel as () => string,
+  logEvent: actualAnalytics.logEvent as (
+    name: string,
+    metadata?: Record<string, unknown>,
+  ) => void,
+}
+
+/** Flipped false in afterAll — the permanent mocks then pass through. */
+let mockActive = true
 
 const mockState: {
   config: Record<string, unknown>
@@ -51,41 +92,58 @@ const mockState: {
 
 mock.module('../../config.js', () => ({
   ...actualConfig,
-  getGlobalConfig: () => mockState.config,
+  getGlobalConfig: () =>
+    mockActive ? mockState.config : realFns.getGlobalConfig(),
   saveGlobalConfig: (
     updater: (current: Record<string, unknown>) => Record<string, unknown>,
   ) => {
-    mockState.config = updater(mockState.config)
+    if (mockActive) {
+      mockState.config = updater(mockState.config)
+      return
+    }
+    realFns.saveGlobalConfig(updater)
   },
 }))
 mock.module('../../settings/settings.js', () => ({
   ...actualSettings,
   getSettingsForSource: (source: string) =>
-    mockState.settingsBySource[source] ?? null,
+    mockActive
+      ? (mockState.settingsBySource[source] ?? null)
+      : realFns.getSettingsForSource(source),
   updateSettingsForSource: (
     source: string,
     settings: Record<string, unknown>,
   ) => {
+    if (!mockActive) {
+      return realFns.updateSettingsForSource(source, settings)
+    }
     if (mockState.settingsWriteError) {
       return { error: mockState.settingsWriteError }
     }
     mockState.settingsWrites.push({ source, settings })
     return { error: null }
   },
-  getSettings_DEPRECATED: () => mockState.mergedSettings,
+  getSettings_DEPRECATED: () =>
+    mockActive ? mockState.mergedSettings : realFns.getSettings_DEPRECATED(),
 }))
 mock.module('../../betas.js', () => ({
   ...actualBetas,
-  modelSupportsAutoMode: () => mockState.supportsAutoMode,
+  modelSupportsAutoMode: (model?: string) =>
+    mockActive ? mockState.supportsAutoMode : realFns.modelSupportsAutoMode(model),
 }))
 mock.module('../../model/model.js', () => ({
   ...actualModel,
-  getMainLoopModel: () => 'claude-test',
+  getMainLoopModel: () =>
+    mockActive ? 'claude-test' : realFns.getMainLoopModel(),
 }))
 mock.module('../../../services/analytics/index.js', () => ({
   ...actualAnalytics,
-  logEvent: (name: string, metadata: Record<string, unknown>) => {
-    mockState.events.push({ name, metadata })
+  logEvent: (name: string, metadata?: Record<string, unknown>) => {
+    if (mockActive) {
+      mockState.events.push({ name, metadata: metadata ?? {} })
+      return
+    }
+    realFns.logEvent(name, metadata)
   },
 }))
 
@@ -97,14 +155,11 @@ const { _resetForTesting: resetAutoModeState } = await import(
 )
 
 afterAll(() => {
-  // Restore real modules (OCC-97: Bun mock.module leaks across files).
-  mock.module('../../config.js', () => ({ ...actualConfig }))
-  mock.module('../../settings/settings.js', () => ({ ...actualSettings }))
-  mock.module('../../betas.js', () => ({ ...actualBetas }))
-  mock.module('../../model/model.js', () => ({ ...actualModel }))
-  mock.module('../../../services/analytics/index.js', () => ({
-    ...actualAnalytics,
-  }))
+  // Flip every mock into pass-through mode — do NOT re-spread the captured
+  // namespaces (bun live-patched them; a re-spread would re-install the
+  // shims — the OCC115-FIX-001 leak). The permanent mocks now behave exactly
+  // like the real modules for every subsequent file in this worker.
+  mockActive = false
 })
 
 /** Baseline: onboarding done, nudge unanswered, user pinned defaultMode. */
