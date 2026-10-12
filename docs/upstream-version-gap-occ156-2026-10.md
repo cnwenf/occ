@@ -267,6 +267,38 @@ grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6;
 
 结论：`allowManagedHooksOnly` 门控语义（用户 hook 抑制 + managed settings-file hooks 仍执行 + 撤销后恢复）双侧行为一致。计数差 12 vs 30 源于官方模块拆分粒度（官方另有 plugin-hooks skip 文案、goal 门控、edit_hook refusal 等分支；OCC 对应面由 hooksFailClosed288/managedOnlyKeys283 UT 钉住）。测试后 `/etc/claude-code` 已清理。**PARITY VERIFIED。**
 
-## §7 STAGED verify-first triage（待填）
+## §7 STAGED verify-first triage（2026-10-13，本轮完成）
+
+方法：verify-first 5 项逐个 src/test 取证；quick-win 族对照 296 UT battery（29 文件）+ prod grep 定消化状态；大成本族按 taskbook 结转 STAGED。**无静默丢弃：occ154 §8.2 28 项 + occ153 余 2 项全部列出处置。**
+
+### 7.1 verify-first 5 项处置
+
+| # | 项 | 取证 | 处置 |
+|---|---|---|---|
+| #013 | model/token | `claude-haiku-4-5` 已注册（`tokenEstimation.ts:270`、`model/configs.ts`）→ "未注册则 N/A" 出口不成立；`modelCostSonnet55CacheRead296.test` 已覆盖 cache-read 成本 | **部分消化，余 adaptive-thinking budget 半继续 STAGED** |
+| #015 | hook 输出改写 | `claudeCodeHints.ts`：`extractClaudeCodeHints`（官方 Mct）+ `stripHintTagLines`（官方 lL sanitizer），`hintTagSanitize296.test` 201 行 | **DIGESTED（296 轮已 port，出 STAGED）** |
+| #018 | /diff 期间 toasts 挂起 | OCC 无通用 toastQueue 基建（仅 `ScrollKeybindingHandler.tsx:387` selection-copy toast） | **STAGED（N/A-leaning，待通用 toast 面落地后复核）** |
+| #038 | /code-review 输出尾格式 | `commands/review.ts` 57 行薄壳 + `review/` 目录存在；palette 描述与官方一致（本轮 join 无漂移）；raw-JSON-array 尾格式需 live run 验证 | **STAGED（verify-first 半完成，余行为验证）** |
+| #060 | dataviz | 命令面已实体（`dataviz.ts` prompt 型 + `datavizSkillContent.test` 色板/四序列断言）；但官方以 **built-in skill** 形态入 /context 列表（~480 tokens），OCC skill 形态缺 | **STAGED（精化：并入 occ156-09 built-in skills 大包）** |
+
+### 7.2 quick-win 族消化状态（对照 296 battery + prod grep）
+
+| # | 族 | 证据 | 处置 |
+|---|---|---|---|
+| #044 | OTEL git_commit_id | `otelGitCommitId296.test` + prod `toolExecution.ts` | **DIGESTED** |
+| #046 | U+2028/2029 | prod 命中 `commands.ts` / `subagentOutputSanitizer.ts` / `loadAgentsDir.ts` + `workflowScriptCrlf296.test` | **DIGESTED** |
+| #027/#028 | prototype-key | `optionKeySafety.ts`（occ154 注：295#062 已落）+ `pluginSecretsProtoKeys296.test` + `marketplaceConstructorName296.test` | **DIGESTED** |
+| #036/#047 | PowerShell/gitbash | `powershellSessionEnv296.test` + `gitBashPaths296.test` + `sessionEnvPlainAssignments296.test` | **DIGESTED** |
+| #017 | OSC52/VTE | `osc52VteGuard296.test` | **DIGESTED** |
+| #049 | plugin HTTPS retry | prod 未见对应 retry 逻辑（仅 migration 注释） | **STAGED** |
+| #057 | hook debug log | `hookEvents.ts` 弱命中，未定案 | **STAGED** |
+
+### 7.3 大成本/其余族结转（全部 STAGED，入口以本 §7.3 为准）
+
+#033/#034/#062 autoBackground/`←` 家族（**关联本轮 occ156-01 footer agent-status + occ156-06c /fork，建议三包合并排期**）、#005/#020/#035 plugin hook、#048 MCP graceful shutdown、#012 teleport、#018/#051/#052/#056 UI 杂项、#039 artifact、#042 startup hang、#038 /code-review（余行为验证）、#055 frontmatter debug（`agentFrontmatterWarnings296.test` 相邻覆盖警告面，debug-log 面未定案）、#057、#049、#013 余半、#060（并入 occ156-09）。
+**occ153 §8.2 余 2**：#090、#095 继续 STAGED（本轮无新证据）。
+
+**本轮新增 STAGED**：occ156-01（footer agent-status，RE turnkey 存档）、occ156-02（classifier 计费公告）、occ156-04/05（splash 分隔符 + ThemePicker 编号）、occ156-06（palette 命令集）、occ156-07（描述文案 ×11）、occ156-08（/status 面）、occ156-09（/context built-in skills ×9 + 布局）、occ156-10（stream-json envelope）、occ156-11（resume picker）。
+**升级通道**：occ156-03（auto mode 默认，P1）→ Leader 定夺独立切片。
 
 ## §8 修复/交付（待填）
