@@ -73,6 +73,7 @@ function b9e(){
 // transient: needsInput 变化→"awaiting"；succeeded 增加→"done" delta xo=Se-io；Rz=2500ms 后清除
 ```
 
+- **补充证据（shift+tab 全模式循环 A/B，2026-10-13）**：循环序一致（auto→manual→accept edits→plan→auto），四个模式指示串**逐字节一致**（`⏵⏵ auto mode on (shift+tab to cycle)` / `⏸ manual mode on` / `⏵⏵ accept edits on (shift+tab to cycle)` / `⏸ plan mode on (shift+tab to cycle)`）。差异仅在：官方 footer 在**每个模式态**都追加 `· ← for agents` 后缀（manual 态为 `⏸ manual mode on · ? for shortcuts · ← for agents`，agent hint 与 shortcuts hint **并存追加**，非替换）；OCC 所有模式态均无该后缀。→ occ156-01 精确化：缺的是 footer 组合里的 agent-status hint 槽位（b9e 组件整体），port 时为在现有 hint 后追加的独立槽，不动 mode/shortcuts hint 本体。
 - **裁决**：**STAGED（turnkey 存档）**，不在本轮中途做 UI 手术。理由：完整 4 态组件 + 2500ms transient + needsInput/succeeded 计数是独立 UI feature，与 occ154 STAGED ← 家族（#033/#034/#062 autoBackground/`←`，大成本）同根，宜整包推进；本轮性质为自验收，生产改动纪律为小切片。反编译已全文存档如上，后续 port 可直接取用（参照 #044 先例）。
 
 ### GAP occ156-02（P3）auto-mode classifier 计费公告缺失（gateway 分支）
@@ -127,6 +128,47 @@ children:[".......", e(n,{color:"clawd_body",children:"█ █   █ █"}),
 - **机制**：OCC `Select` 组件已有 `hideIndexes` prop（`select.tsx:452` 条件渲染 `${i}.`），OCC `ThemePicker.tsx` 未传；官方二进制 `hideIndexes` 53 hits（组件面存在），官方主题选择器行为证明其隐藏编号（✔ 位置差异疑似 ThemePicker label 装饰自渲染，待修时对照）。
 - **裁决**：STAGED（P3 cosmetic）。修复 = ThemePicker 传 `hideIndexes` + ✔ 位置对照官方，加 snapshot 测试；建议与 occ156-04 同切片。
 
+### GAP occ156-06（P2，功能面）/command palette 命令集漂移
+
+**枚举方法**：tmux 双侧 palette 全量滚动采集（48×Down + 严格行正则），疑点用 C-u 清空 + filter probe 复核（palette 可见性 ≠ 命令存在性）；OCC src/commands registry 交叉核对。官方 palette 可见 61 条；OCC 枚举 51 + probe 补认 /theme /usage /tasks /tui /skill-doctor /terminal-setup /feedback(bug)。
+
+**a) OCC 真缺失（filter probe 无匹配 + src registry 无目录）×6**：
+| 命令 | 官方描述（tmux 采集） | 官方二进制佐证 |
+|---|---|---|
+| `/subtask` | — | s296 5 hits |
+| `/radio` | Listen to Claude FM lo-fi radio | `dTo={type:"local",name:"radio",...}` 存档 |
+| `/import` | — | palette 枚举 |
+| `/list-agents` | — | s296 4 hits |
+| `/auto-mode-setup` | Teach auto mode about your environment, plus optional rule tweaks | palette 枚举（与 occ156-03 同族） |
+| `/design-login` | Authorize design-system access for /design-sync with your claude.ai account | s296 28 hits（claude.ai 绑定，OCC gateway 场景适配性存疑） |
+
+**b) `/advisor` 可见性门控漂移**：同一 gateway 环境，官方 palette 显示 `/advisor`（`isEnabled:()=>bE(), isHidden:!bE()`，bE() 本环境=true），OCC 隐藏（`advisor.ts:122 isEnabled:()=>canUserConfigureAdvisor()` = `isAdvisorEnabled() && getAdvisorConfig().canUserConfigure`，本环境=false）。OCC 命令本体存在（`src/commands/advisor.ts`，OCC-37 已 port）。官方 `bE()` 未完整 RE → 机制 CAND、行为 CONFIRMED。
+- **裁决**：STAGED。b) 需先 RE 官方 bE() 再改门控；a) 中 auto-mode-setup 并入 occ156-03 切片，design-login 需 Leader 定 claude.ai 面取舍，radio/stickers 为官方 fun-surface（低成本可补），subtask/import/list-agents 需独立 RE。
+
+**c) `/fork` 语义漂移**：官方 /branch（"Create a branch of the current conversation at this point"）与 /fork（"Copy this conversation into a new background session and keep working here"）**分立**；OCC 只有 `/branch (fork)` 别名合一。官方 /fork = 后台会话复制语义，OCC 缺该独立命令。STAGED（后台会话家族，关联 occ154 #033/#034/#062 autoBackground 大包）。
+
+**d) OCC-specific 命令（非 gap，留档）**：`/daemon`、`/pause-memory`、`/scroll-speed`、`/setup-bedrock`、`/setup-vertex`（官方同环境 probe 无匹配；OCC 扩展面/历史遗留，是否收敛由 Leader 定）。
+
+### GAP occ156-07（P3，文案面）palette 描述文本漂移 ×11
+
+同命令同环境采集（join 比对），官方 2.1.296 文案 vs OCC 现文案：
+
+| 命令 | 官方 | OCC |
+|---|---|---|
+| /config | Open settings | Open config panel |
+| /diff | Toggle the diff panel showing uncommitted changes | View uncommitted changes and per-turn diffs |
+| /exit | Exit the CLI | Exit the REPL |
+| /fast | Toggle fast mode (Opus) | Toggle fast mode (Opus 4.8 only) |
+| /keybindings | Open your keyboard shortcuts file | Open or create your keybindings configuration file |
+| /login | Switch Anthropic accounts | Sign in with your Anthropic account |
+| /memory | Edit CLAUDE.md files and memory settings | Open a memory file in your editor |
+| /permissions | Manage allow and deny tool permission rules | Manage allow & deny tool permission rules |
+| /sandbox | ◯ sandbox disabled (⏎ to configure) | ⚠ sandbox disabled (⏎ to configure)（图标漂移） |
+| /doctor | Health-check the user's Claude Code setup and fix issues: diagnose installation health — what the `claude doctor` terminal diagnostics cover — from local data | Diagnose and verify your Claude Code installation and settings |
+| /skill-doctor | **Show which loaded skills are unused and costing context** | **Diagnose skill issues (missing frontmatter, invalid fields, broken paths)**（语义级漂移：官方=上下文成本分析，OCC=skill 诊断） |
+
+- **裁决**：STAGED（一个 metadata 小切片可清 9 条纯文案；/skill-doctor 为语义漂移需单独立项对照官方行为）。注意 /login、/sandbox 描述可能状态相关，修复切片时先复核状态同构。
+
 ## §4 FALSIFIED / 非 gap 观察
 
 - **F1 Read 0-based 行号（FALSIFIED）**：初见 OCC `0\tLINE-000000` vs 官方 `1\t...` 疑似 gap；但两侧调用参数不同（OCC 侧带了 `offset:0`）。强制同参数复验：官方对 `offset:0` **同样**输出 `0\talpha`。结论：行号镜像 offset 值（offset:0→0-based；默认 offset=1→1-based cat -n），**双侧一致，非 gap**。留档以示 Never-invent 纪律执行。
@@ -151,12 +193,12 @@ children:[".......", e(n,{color:"clawd_body",children:"█ █   █ █"}),
 | occ154-ported: WORKFLOW_SUBAGENT_MODEL | ✅ §2 P13（静态+UT） |
 | occ154-ported: OVERLOADED_RETRY_MAX_DELAY | ✅ §2 P11-P12 |
 | occ154-ported: managed hooks cluster | ✅ §6.1（行为 A/B 4-run 矩阵全对齐） |
-| 核心主干: footer/agent-status | ✅ → GAP occ156-01 |
+| 核心主干: footer/agent-status | ✅ → GAP occ156-01（全模式循环补充证据） |
 | 核心主干: session/resume | ⏳ 待测 |
-| 核心主干: 工具调用/权限 | ⏳ 待测 |
-| 核心主干: hooks 行为 | ⏳ 待测 |
-| 核心主干: MCP | ⏳ 待测 |
-| 核心主干: /command palette | ⏳ 待测 |
+| 核心主干: 工具调用/权限 | ✅ 模式循环 4 态逐字节一致；`--permission-mode` 六选一致；默认模式差 → GAP occ156-03；工具流 stream A/B 见 §2 补充 |
+| 核心主干: hooks 行为 | ✅ §6.1（4-run 矩阵） |
+| 核心主干: MCP | ✅ `mcp list` 双侧一致（仅品牌名 claude/occ 差，属 N1 类）；深度 MCP 会话面属 occ154 #048 STAGED 家族 |
+| 核心主干: /command palette | ✅ → GAP occ156-06 / occ156-07 |
 
 ### §6.1 ManagedHooks 面复核 — VERIFIED PARITY（行为 A/B）
 
