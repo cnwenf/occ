@@ -169,6 +169,34 @@ children:[".......", e(n,{color:"clawd_body",children:"█ █   █ █"}),
 
 - **裁决**：STAGED（一个 metadata 小切片可清 9 条纯文案；/skill-doctor 为语义漂移需单独立项对照官方行为）。注意 /login、/sandbox 描述可能状态相关，修复切片时先复核状态同构。
 
+### GAP occ156-08（P2/P3，/status 面）tab 集 + 字段 + 诊断段漂移
+
+同环境 tmux A/B（同一 /tmp/ab/repl + 共享 CLAUDE_CONFIG_DIR）：
+
+| 项 | 官方 2.1.296 | OCC 2.1.380 |
+|---|---|---|
+| tab 集 | `Settings  Status  Config  Usage  Stats`（5） | `Status  Config  Usage`（3，缺 Settings/Stats） |
+| Session kind | `interactive` | 缺 |
+| Peer address | `uds:/tmp/.../cc-socks/*.sock` | 缺（官方 peer-socket 基建面，OCC N/A 候选） |
+| Setting sources | `User settings` | ✅ 一致 |
+| Managed settings (remote) | `not fetched — not available with a custom ANTHROPIC_BASE_URL` | 缺 |
+| Organization policy | `not fetched with a custom ANTHROPIC_BASE_URL` | 缺 |
+| Auto mode server | `Disabled` | ✅ 一致 |
+| System diagnostics 段 | 5 条 native-install 体检警告（PATH/npm 残留/broken binary） | 缺（官方 native installer 基建绑定，OCC 无 native 安装面 → 部分 N/A 候选） |
+
+- **裁决**：STAGED。Settings/Stats tab + Session kind + Managed/Org policy 两行为真 surface（gateway 环境文案官方已给全）；Peer address / System diagnostics 与官方专有基建耦合，port 前需 Leader 定 N/A 边界。
+
+### GAP occ156-09（P2，/context 面）built-in skills 集 + 布局漂移
+
+同环境 tmux A/B：grid 可视化、六类目（System prompt/System tools/Skills/Messages/Free space/Autocompact buffer）结构一致，计数差在系统提示品牌差范围内（1.4k/1.3k、17.6k/17.4k）。真漂移：
+
+1. **Built-in skills 集**：官方 13 个（dataviz ~480、claude-api ~360、update-config ~240、code-review ~210、run ~120、loop ~120、plugin-authoring ~90、workflow-authoring ~80、keybindings-help ~80、fewer-permission-prompts ~60、simplify ~60、security-review ~30、init ~20）；OCC 仅 5 个（update-config 228、code-review 150、keybindings-help 82、simplify 62、verify 22）。**缺 9**：dataviz（= occ154 STAGED #060 已知）、claude-api、run、loop、plugin-authoring、workflow-authoring、fewer-permission-prompts、security-review、init（后四者 OCC 以 slash command 形态存在，skill 形态缺）；**OCC 独有**：verify（官方 296 无此 built-in skill）。
+2. **token 计数格式**：官方 `~480 tokens`（约数取整）vs OCC `228 tokens`（精确值）。
+3. **`Auto-compact window: 200k tokens` 行**：官方有，OCC 缺（autoCompactWindow 面已 port，此为展示缺口）。
+4. **头部布局**：官方 model 行 + 独立计数行（`21k/200k tokens (11%)` 第二行右侧）；OCC 合并单行（`qwen3.8-max · 19.1k/200k tokens (10%)`）。
+
+- **裁决**：STAGED。built-in skills 补齐是大切片（9 个 skill 本体 + loader）；`~` 格式 / Auto-compact window 行 / 头部布局为小切片 cosmetic 三件套，可与 occ156-04/05 合并推进。
+
 ## §4 FALSIFIED / 非 gap 观察
 
 - **F1 Read 0-based 行号（FALSIFIED）**：初见 OCC `0\tLINE-000000` vs 官方 `1\t...` 疑似 gap；但两侧调用参数不同（OCC 侧带了 `offset:0`）。强制同参数复验：官方对 `offset:0` **同样**输出 `0\talpha`。结论：行号镜像 offset 值（offset:0→0-based；默认 offset=1→1-based cat -n），**双侧一致，非 gap**。留档以示 Never-invent 纪律执行。
