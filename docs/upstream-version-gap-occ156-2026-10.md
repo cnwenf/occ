@@ -301,4 +301,13 @@ grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6;
 **本轮新增 STAGED**：occ156-01（footer agent-status，RE turnkey 存档）、occ156-02（classifier 计费公告）、occ156-04/05（splash 分隔符 + ThemePicker 编号）、occ156-06（palette 命令集）、occ156-07（描述文案 ×11）、occ156-08（/status 面）、occ156-09（/context built-in skills ×9 + 布局）、occ156-10（stream-json envelope）、occ156-11（resume picker）。
 **升级通道**：occ156-03（auto mode 默认，P1）→ Leader 定夺独立切片。
 
-## §8 修复/交付（待填）
+## §8 修复/交付
+
+**本轮为纯自验收轮：零 src/ 生产代码改动。** 交付物 = 本账本（docs-only）。
+
+- **变更集**：`3b9ec3a..e150dc2`（fast-forward 合入 main 并 push；工作分支 `agent/occ156-selfaccept` 上 8 个增量 commit，全部只动 `docs/upstream-version-gap-occ156-2026-10.md`）。
+- **CI**：main HEAD `e150dc2` 的 GitHub Actions run `38296973381`（docs-only，与前一 run `38178958699` @ `3b9ec3a` success 同构）；§8 本次补记 commit 触发的 run 结果在交付评论中给出。
+- **分支清理（taskbook #4）**：`git ls-remote --heads origin` 复核，远端残留分支 `agent/occ/2db3a4dc` 已不存在（此前已被删除），无需操作。
+- **发布纪律**：未打任何 tag；`2.1.381` 严禁抢跑，待验收 PASS 后由发布流程决定。
+- **升级项**：occ156-03（auto mode 默认 + 公告 + opt-in 迁移，P1）按 taskbook「拿不准→问 Leader」升级，等 Leader 定夺是否开独立切片。
+- **交接**：本轮变更集为 docs-only → 按 taskbook #6 直接交 @OCC 验收员。
