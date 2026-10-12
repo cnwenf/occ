@@ -108,6 +108,25 @@ function gpn(e){let n=W2n();if(n!==void 0)return n;if(!_Tn())return ...}  // 门
   - OCC 现状：`auto` 模式本体存在（`--permission-mode` 六选一致、可 cycle），缺的是 **默认值切换 + 一次性公告 + opt-in 重置迁移 + 门控**（`o2r()==="enabled"` 可用性门、managed/safe-mode 排除等）。
 - **裁决**：**上报 Leader 定夺**（taskbook 第 4 条"拿不准→问 Leader"）。理由：改变每个新会话的默认安全姿态（manual→auto 自动放行低风险工具调用），且官方门控链（o2r 可用性探测、skipAutoPermissionPrompts 逃生门、企业 managed 排除）需完整 RE 后再动，不宜自验收轮内当天手术。证据与 RE 存档已 turnkey，可开独立小切片 issue。
 
+### GAP occ156-04（P3，cosmetic）WelcomeV2 splash 分隔符字符漂移（`.` → `…`）
+
+- **现象（tmux 实测 + 字节级）**：onboarding splash art 分隔符，官方 = ASCII `0x2e`（`.......█ █   █ █........`），OCC = U+2026 `e2 80 a6`（`…………………█ █   █ █………`）。顶部横线官方 58 × `.`，OCC 60 × `…`。
+- **官方二进制字面量存档**（WelcomeV2 对应模块）：
+
+```js
+children:[".......", e(n,{color:"clawd_body",children:"█ █   █ █"}),
+          "..........................░..........▒...."]
+```
+
+- **OCC 现状**：`src/components/LogoV2/WelcomeV2.tsx` 全组件硬编码 `…` 序列（lines 32/101/117/192/243/300/307/352/411/418 等）。
+- **裁决**：STAGED（P3 cosmetic）。修复 = 字面量替换（`.`×7 / `.`×26+░+`.`×10+▒+`.`×4 等，逐段对照官方），需重排 WELCOME_V2_WIDTH 对齐；建议与 occ156-05 合一个 cosmetic-parity 小切片。
+
+### GAP occ156-05（P3，cosmetic）ThemePicker 选项编号 + ✔ 位置漂移
+
+- **现象（tmux 实测）**：onboarding 主题选择器，官方渲染无编号、✔ 前置（`❯ ✔ Dark mode`）；OCC 渲染带编号、✔ 后置（`❯ 2. Dark mode ✔`）。同屏对照，trust dialog（2 项）双侧均无编号一致。
+- **机制**：OCC `Select` 组件已有 `hideIndexes` prop（`select.tsx:452` 条件渲染 `${i}.`），OCC `ThemePicker.tsx` 未传；官方二进制 `hideIndexes` 53 hits（组件面存在），官方主题选择器行为证明其隐藏编号（✔ 位置差异疑似 ThemePicker label 装饰自渲染，待修时对照）。
+- **裁决**：STAGED（P3 cosmetic）。修复 = ThemePicker 传 `hideIndexes` + ✔ 位置对照官方，加 snapshot 测试；建议与 occ156-04 同切片。
+
 ## §4 FALSIFIED / 非 gap 观察
 
 - **F1 Read 0-based 行号（FALSIFIED）**：初见 OCC `0\tLINE-000000` vs 官方 `1\t...` 疑似 gap；但两侧调用参数不同（OCC 侧带了 `offset:0`）。强制同参数复验：官方对 `offset:0` **同样**输出 `0\talpha`。结论：行号镜像 offset 值（offset:0→0-based；默认 offset=1→1-based cat -n），**双侧一致，非 gap**。留档以示 Never-invent 纪律执行。
