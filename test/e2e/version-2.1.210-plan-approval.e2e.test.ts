@@ -173,6 +173,15 @@ function freshSeededHome(projectDir: string): string {
       hasCompletedOnboarding: true,
       lastOnboardingVersion: "2.1.200",
       lastReleaseNotesSeen: "2.1.200",
+      // UPDATED (OCC-115 acceptance F-fix): seed the auto-default-nudge
+      // one-shot flag. This home completes onboarding AND pins a non-auto
+      // userSettings permissions.defaultMode ("plan", below) — exactly the
+      // 2.1.296 nudge gate (`aMr`) — so without the flag the nudge modal
+      // blocks the REPL at startup and swallows the first prompt (both tests
+      // timed out in waitForPlanDialog). This test verifies plan-approval
+      // labels and no-clobber, not the nudge (which has its own e2e:
+      // version-2.1.296-auto-default-nudge.e2e.test.ts).
+      hasSeenAutoDefaultNudge: true,
       projects: { [projectDir]: { hasTrustDialogAccepted: true } },
       ...(envApiKey && envApiKey.length >= 20
         ? {

@@ -146,14 +146,17 @@ export async function resolveAutoDefaultNudge(
     choice === 'accept' ? trySwitchToAutoDefault() : 'declined'
   if (outcome !== 'gate_off') {
     markNudgeSeen()
+    // Official `Ckt` logs the resolved event only for non-gate_off outcomes
+    // (gate_off is a transient failure — the nudge can reappear once the
+    // gate recovers, so there is nothing "resolved" yet).
+    logEvent('tengu_auto_default_nudge_resolved', {
+      choice:
+        choice as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      outcome:
+        outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      current_mode:
+        currentMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    })
   }
-  logEvent('tengu_auto_default_nudge_resolved', {
-    choice:
-      choice as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    outcome:
-      outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    current_mode:
-      currentMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-  })
   return outcome
 }

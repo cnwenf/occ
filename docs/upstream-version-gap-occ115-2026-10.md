@@ -10,14 +10,26 @@ Official-binary discipline this round: **forensics only** — `strings` / `grep 
 
 ## 1. Self-acceptance results (real tmux REPL round-trips)
 
-### OCC-114 surfaces — ALL VERIFIED PASSING
+### OCC-114 surfaces
 
 | Surface | Test | Result |
 |---|---|---|
 | `twoPhaseAssign296` (TaskList two-phase assign) | unit + e2e suite | PASS |
 | `nonUtf8Refusal296` (non-UTF8 read refusal) | unit + e2e suite | PASS |
 | Screen-reader held-announce | e2e | PASS |
-| Plan-approval transcript persistence | e2e | PASS |
+| Plan-approval transcript persistence | e2e | **CORRECTED** — originally recorded PASS in error; see §8 |
+
+> **Correction (2026-10-13, acceptance F-fix):** the Plan-approval row above
+> was falsely reported as PASS in the first version of this ledger. The
+> plan-approval e2e was last run BEFORE the Gap B nudge port landed and was
+> never re-run after it, so the self-acceptance claim "OCC-114 四个新测试面
+> 4/4 PASS" was overstated (3/4 actually re-verified at the time). 验收员
+> acceptance caught the regression: the nudge gate (`aMr`) fires on this
+> test's seeded home (onboarding complete + userSettings `permissions.
+> defaultMode:"plan"` + no `hasSeenAutoDefaultNudge`) and the modal swallowed
+> the first prompt → 0/2 with 120s `waitForPlanDialog` timeouts. Fixed by
+> seeding `hasSeenAutoDefaultNudge:true` in `freshSeededHome()`; clean rerun
+> **2/2 PASS** (§8).
 
 ### Core mainline REPL (tmux, built `dist/cli.js`, 200×50)
 
@@ -91,5 +103,34 @@ Subagent re-verified all 19 STAGED items of `docs/upstream-version-gap-occ113-20
 
 ## 7. Round test status
 
-- New unit: 20/20 pass. New e2e: 3/3 pass. `repl-interactive` e2e: 3/3 pass.
-- Canonical full suite (`CI=1 bash scripts/ci-test.sh`, per-file process isolation): **11038 pass / 0 fail / 119 skip across 985 test files, 0 failed** + all 3 same-worker mock-leak regression pairs OK.
+> Numbers below are the FINAL post-F-fix state (§8). The first ledger version
+> falsely listed plan-approval e2e as PASS — see the §1 correction box.
+
+- Nudge unit `autoDefaultNudge296.test.ts`: **20/20 pass** (gate_off outcomes now assert NO `tengu_auto_default_nudge_resolved` event, matching the official non-gate_off-only logging — §8 P3-1).
+- Nudge merge-semantics unit `autoDefaultNudge296Merge.test.ts` (NEW, §8 P3-4): **3/3 pass** — real `updateSettingsForSource` against a temp `CLAUDE_CONFIG_DIR`; the accept write flips only `permissions.defaultMode` and preserves sibling `permissions.*` fields + unrelated top-level keys.
+- Nudge e2e `version-2.1.296-auto-default-nudge.e2e.test.ts`: **3/3 pass** (real tmux REPL).
+- Plan-approval e2e `version-2.1.210-plan-approval.e2e.test.ts`: **2/2 pass** after the §8 P1 seed fix (was 0/2 — falsely recorded PASS before).
+- `repl-interactive` e2e: 3/3 pass.
+- Canonical full suite (`CI=1 bash scripts/ci-test.sh`, per-file process isolation): **11038 pass / 0 fail / 119 skip across 985 test files, 0 failed** + all 3 same-worker mock-leak regression pairs OK (pre-F-fix run; tmux e2e files are `describe.skipIf(CI)` there — which is exactly why the P1 regression escaped it). Post-F-fix rerun: **11041 pass / 0 fail / 119 skip across 986 files, 0 failed** + all 3 leak pairs OK (§8).
+
+## 8. Acceptance F-fix round (2026-10-13, 验收员 REJECT → fixes)
+
+验收员 rejected the first handoff: **P1** plan-approval e2e regression (0/2) + false records in this ledger. Fixes:
+
+| Item | Fix |
+|---|---|
+| **P1** plan-approval e2e 0/2 | `freshSeededHome()` now seeds `hasSeenAutoDefaultNudge:true` in `.claude.json`. Root cause: the seeded home (onboarding complete + userSettings `permissions.defaultMode:"plan"` + flag absent) is exactly the nudge gate `aMr` trigger state, so the Gap B startup modal blocked the REPL and swallowed the first prompt. The test verifies plan-approval labels/no-clobber, not the nudge (which has its own e2e). Clean rerun: **2/2 pass**. CI could not catch it — tmux e2e is `describe.skipIf(!!process.env.CI)`. |
+| **Records** §1 false PASS | §1 row corrected + correction box added; the "OCC-114 四个新测试面 4/4 PASS" claim is retracted (was 3/4 re-verified; plan-approval was stale pre-nudge-port output). §7 rewritten. |
+| **P3-1** gate_off telemetry doc/code conflict | Code aligned to the official binary + docblock + §3 row: `resolveAutoDefaultNudge` now logs `tengu_auto_default_nudge_resolved` ONLY for non-gate_off outcomes (guard moved around `logEvent`, mirroring official `Ckt`'s `if(H!=="gate_off")` block). Two unit assertions flipped to `expect(resolvedEvent()).toBeUndefined()`; the gate-disabled variant also pins no-event. |
+| **P3-2** main.tsx accept-path silent gate_off degradation | CONFIRMED intentional — documented divergence #3 (§3): pre-REPL there is no notification host, so gate_off degrades to a debug log; the nudge stays re-appearable because the one-shot flag is NOT set on gate_off (official-faithful). |
+| **P3-3** `markNudgeSeen` swallows config-write errors | CONFIRMED intentional fail-soft (mirrors official `Ae` best-effort write): a failed flag write only means the nudge may reappear next launch — benign, and the debug log records it. |
+| **P3-4** missing merge-clobber unit test | NEW `autoDefaultNudge296Merge.test.ts` (3 tests) exercises the REAL settings module against a temp `CLAUDE_CONFIG_DIR` and pins that the accept write merges (lodash `mergeWith`) without clobbering sibling `permissions.allow/deny/ask/additionalDirectories` or unrelated top-level keys — including across a second accept after the user re-pins a mode. |
+
+F-fix verification (real model creds, built `dist/cli.js`, tmux):
+
+- plan-approval e2e: **2/2 pass** (46.05s clean rerun).
+- nudge e2e: **3/3 pass** (21 expects) after the P3-1 code change.
+- nudge units: 20/20 + new merge file 3/3.
+- Full suite `CI=1 bash scripts/ci-test.sh`: **11041 pass / 0 fail / 119 skip across 986 test files, 0 failed** + all 3 same-worker mock-leak regression pairs OK.
+
+No tag / release cut in this round — 验收员 re-acceptance is required first.
