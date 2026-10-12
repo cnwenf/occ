@@ -14,9 +14,11 @@
 | 官方 latest/next | 2.1.296（无更新版本） | npm registry 查询（本轮 run 1 核实） |
 | OCC 已对齐 tag | v2.1.380 @ `ab5155a` | git tag |
 | main HEAD | `3b9ec3adf`（= 工作分支基点） | git |
-| `ab5155a..3b9ec3adf` | 4 commits，实质 test-only（见 §1） | git diff |
+| `ab5155a..3b9ec3adf` | 5 commits（4 test + 1 docs occ154 账本收尾），实质 test-only（见 §1） | git rev-list / git log |
 
 ## §1 Task-1 复核：ab5155a..3b9ec3adf 是否 test-only
+
+> 计数口径（验收 F2 修正）：区间 `git rev-list --count` = **5 commits**：`d076169` docs(occ154 §12 账本收尾) + `d3eafae`/`80d12d7`/`1d3966b`/`3b9ec3a` 4 个 test。此前交接文字误写 "4 commits"（漏计 docs 收尾 commit），test-only 裁决本身不受影响。
 
 `git diff ab5155a..origin/main --name-only | rg '^src/'` 命中 **2 个文件**：
 
@@ -303,11 +305,12 @@ grep 复核：`managedHooks: src=0 official=21; managed_hooks: src=0 official=6;
 
 ## §8 修复/交付
 
-**本轮为纯自验收轮：零 src/ 生产代码改动。** 交付物 = 本账本（docs-only）。
+**本轮程序员产出为零 src/ 生产代码改动（10 个 docs-only commit）；但交付 HEAD 范围含 1 个并行轮 src feat（`7b17869`，OCC-115），计数口径按验收 F2 修正如下。**
 
-- **变更集**：`3b9ec3a..e150dc2`（fast-forward 合入 main 并 push；工作分支 `agent/occ156-selfaccept` 上 8 个增量 commit，全部只动 `docs/upstream-version-gap-occ156-2026-10.md`）。
-- **CI**：main HEAD `e150dc2` 的 GitHub Actions run `38296973381`（docs-only，与前一 run `38178958699` @ `3b9ec3a` success 同构）；§8 本次补记 commit 触发的 run 结果在交付评论中给出。
-- **分支清理（taskbook #4）**：`git ls-remote --heads origin` 复核，远端残留分支 `agent/occ/2db3a4dc` 已不存在（此前已被删除），无需操作。
+- **变更集（口径修正）**：交付范围 `3b9ec3a..3958dfb`（及后续修订）= **11+ commits：10 个 occ156 docs-only**（工作分支 `agent/occ156-selfaccept` 上 8 个增量 commit fast-forward 合入 + §8 补记 2 个）**+ 1 个生产 src feat `7b17869`**（OCC-115 并行轮，cnwenf 提交，auto-default nudge，988+44 行 src 变更——非本轮产出，但落在交付 HEAD 范围内）。此前交接文字 "10 个 docs-only commit" 口径不成立，予以更正。
+- **`7b17869` 安全审核归属（验收 F2.2）**：该 src feat 变更权限模式面（auto-default nudge），截至本修订**无安全审核链记录**（occ115 账本无安全审核节、无对口 multica issue）。归属裁定：**不并入 occ156-03**（occ156-03 = "是否无条件默认 auto + 迁移" 的产品决策，归 Leader）；`7b17869` 的代码安全审核为独立前置项，**已在 OCC-156 线程补走 @OCC 安全审核员**。在安全审核证据（或 Leader 明确 Waive 记录）落帖之前，含该 commit 的 HEAD **不得进入发版决策**，后续轮次勿误判为已审。
+- **CI**：main HEAD `3958dfb` run `38297606817` **success**（https://github.com/cnwenf/occ/actions/runs/38297606817）；本次口径修正 commit 的 run 结果在复审交接评论中给出。
+- **分支清理（taskbook #4 + 验收 F1）**：① 远端残留分支 `agent/occ/2db3a4dc` 已不存在（此前已被删除）；② 本轮工作分支 `agent/occ156-selfaccept`（tip `e150dc2`，已确认为 main 祖先、内容全量合入）已 `git push origin --delete` 删除。远端现收敛为**仅 main**。
 - **发布纪律**：未打任何 tag；`2.1.381` 严禁抢跑，待验收 PASS 后由发布流程决定。
 - **升级项**：occ156-03（auto mode 默认 + 公告 + opt-in 迁移，P1）按 taskbook「拿不准→问 Leader」升级。**中途更新**：并行轮 OCC-115 已落 `7b17869`（auto-default nudge：`autoDefaultNudge.ts` + `AutoDefaultNudgeDialog.tsx` + main.tsx 启动块，accept→startup 切 auto；官方 gate aMr/dialog qhe/resolver Ckt+Tkt 字节核验），覆盖 occ156-03 的 nudge/公告面；**残余 delta**（是否无条件默认 auto + `tengu_migrate_reset_auto_opt_in_for_default_offer` 迁移 + `skipAutoPermissionPrompts` 逃生门）仍待 Leader 定夺。
-- **交接**：本轮变更集为 docs-only → 按 taskbook #6 直接交 @OCC 验收员。
+- **交接（口径修正）**：本轮程序员产出为 docs-only，但交付 HEAD 含 `7b17869` src feat → 按 taskbook #6 完整路由应为 **先 @OCC 安全审核员（对 `7b17869`）再 @OCC 验收员复审**；首次交接按 "docs-only 直送验收" 路由属技术性越权（验收 F2 认定），已补正。
