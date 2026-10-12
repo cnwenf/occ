@@ -55,5 +55,11 @@ const FEATURE_ALLOWLIST: Set<string> = new Set([
   // the auto-background primitive is self-contained and only wraps the MCP
   // tool-call dispatch site.
   'tengu_mcp_auto_background',
+  // 2.1.296: auto-default nudge gate. Official reads k("tengu_maple_pier", !0)
+  // — GrowthBook default TRUE (byte-verified in the official linux-x64 binary,
+  // gate fn `aMr`). OCC's GrowthBook is an empty stub and feature() returns
+  // false for unregistered names, so membership here is what reproduces the
+  // default-true behavior of the official gate.
+  'tengu_maple_pier',
 ])
 export const feature = (name: string): boolean => FEATURE_ALLOWLIST.has(name)

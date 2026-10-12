@@ -11,10 +11,10 @@ import { REPO_ROOT } from "./helpers";
  * reading the decoded pane output via `tmux capture-pane -p`.
  *
  * This tests REPL-only features that -p mode can't reach:
- * - Shift+Tab permission mode cycling (default → acceptEdits → plan → auto)
+ * - Shift+Tab permission mode cycling with official indicator chips
+ *   (bypassPermissions → auto → default/manual → acceptEdits → plan)
+ * - Auto-mode entry banner (official 2.1.296 — legacy opt-in dialog removed)
  * - /goal panel open + Escape dismiss
- * - /feedback dialog
- * - /context interactive panel
  *
  * Gated out of CI (needs tmux + model creds).
  */
@@ -119,6 +119,32 @@ async function waitForText(substr: string, timeoutMs = 15_000): Promise<boolean>
 }
 
 describe.skipIf(!!process.env.CI)("REPL interactive (tmux e2e)", () => {
+  /**
+   * The footer permission-mode chip ("⏸ manual mode on · …", "⏵⏵ accept
+   * edits on · …") is the authoritative mode indicator. capture-pane uses
+   * -S - (scrollback included), so older frames still contain previous chip
+   * text — scan from the BOTTOM and take the last chip-like line instead of
+   * doing whole-pane substring checks.
+   */
+  function currentModeChip(): string {
+    const lines = capturePane().split("\n")
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim()
+      if (/(mode on|edits on|permissions on)/.test(line)) return line
+    }
+    return ""
+  }
+
+  /** Poll until the footer chip contains `label` (official indicator text). */
+  async function waitForChip(label: string, timeoutMs = 10_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs
+    while (Date.now() < deadline) {
+      if (currentModeChip().includes(label)) return true
+      await new Promise(r => setTimeout(r, 200))
+    }
+    return false
+  }
+
   test("Shift+Tab cycles through permission modes", async () => {
     const home = freshSeededHome();
     startRepl(home)
@@ -126,62 +152,62 @@ describe.skipIf(!!process.env.CI)("REPL interactive (tmux e2e)", () => {
       // Wait for REPL to render
       await waitForText("shift+tab", 20_000)
 
-      // Capture initial state
-      const before = capturePane()
+      // Booted with --dangerously-skip-permissions → bypassPermissions.
+      // Official 2.1.296 carousel (getNextPermissionMode, live-verified
+      // against the official binary's indicator table):
+      //   bypassPermissions → auto → default(manual) → acceptEdits → plan → bypassPermissions
+      expect(await waitForChip("bypass permissions on", 5_000)).toBe(true)
 
-      // Send Shift+Tab (tmux: S-Tab)
-      sendKeys("S-Tab")
-      await new Promise(r => setTimeout(r, 500))
-      const after1 = capturePane()
-
-      // Send again
-      sendKeys("S-Tab")
-      await new Promise(r => setTimeout(r, 500))
-      const after2 = capturePane()
-
-      // Send again — should eventually reach auto or cycle back
-      sendKeys("S-Tab")
-      await new Promise(r => setTimeout(r, 500))
-      const after3 = capturePane()
-
-      // At least one of the mode strings should differ from initial
-      const modes = ["default", "acceptEdits", "plan", "auto", "bypass"]
-      const found = [after1, after2, after3].some(pane =>
-        modes.some(m => pane.toLowerCase().includes(m.toLowerCase()) && !before.toLowerCase().includes(m.toLowerCase())),
-      )
-      expect(found).toBe(true)
+      const cycle = [
+        "auto mode on",
+        "manual mode on",
+        "accept edits on",
+        "plan mode on",
+        "bypass permissions on",
+      ]
+      for (const chip of cycle) {
+        sendKeys("S-Tab")
+        expect(await waitForChip(chip, 5_000)).toBe(true)
+      }
     } finally {
       killRepl()
       rmSync(home, { recursive: true, force: true })
     }
   }, 30_000)
 
-  test("Shift+Tab shows the auto-mode opt-in dialog", async () => {
+  test("entering auto mode via carousel shows the auto-mode banner and no legacy opt-in dialog", async () => {
+    // Official 2.1.296 contract (binary forensics): the old 4-option
+    // "Enable auto mode?" opt-in dialog was REMOVED from the official binary
+    // (0 string hits) and is dead in OCC (hasAutoModeOptIn() ≡ true since the
+    // TRANSCRIPT_CLASSIFIER allowlist entry). Entering auto mode through the
+    // Shift+Tab carousel instead emits the official auto-mode description
+    // banner into the transcript (REPL.tsx createSystemMessage with
+    // getAutoModeDescription()).
     const home = freshSeededHome();
     startRepl(home)
     try {
       await waitForText("shift+tab", 20_000)
 
-      // Cycle through modes with Shift+Tab until the auto-mode opt-in dialog
-      // appears. Assert on the dialog TITLE ("Enable auto mode?") — not on the
-      // bare substring "auto", which is also matched by the dialog body text
-      // and would pass even when auto mode is NOT actually active (the dialog
-      // explicitly does not activate the classifier until the user confirms).
+      // Cycle with Shift+Tab until the footer chip reports auto mode.
       for (let i = 0; i < 8; i++) {
         sendKeys("S-Tab")
-        if (await waitForText("enable auto mode?", 2_000)) {
+        if (await waitForChip("auto mode on", 2_000)) {
+          // The official description banner appears in the transcript.
+          expect(
+            await waitForText(
+              "Auto mode lets Claude handle permission prompts automatically",
+              5_000,
+            ),
+          ).toBe(true)
+          // The legacy opt-in dialog must NOT render.
           const pane = capturePane()
-          // All four options render (the 4th is gated on !declineExits, which
-          // is false in the REPL carousel, so "No, don't ask again" shows).
-          expect(pane).toContain("Yes, and make it my default mode")
-          expect(pane).toContain("Yes, enable auto mode")
-          expect(pane).toMatch(/No, (go back|exit)/)
-          expect(pane).toContain("No, don't ask again")
+          expect(pane).not.toContain("Enable auto mode?")
+          expect(pane).not.toContain("Yes, and make it my default mode")
           return
         }
       }
-      // If the dialog never appeared, fail.
-      expect(false).toBe(true)
+      // Auto mode never became the active chip — fail.
+      expect(currentModeChip()).toContain("auto mode on")
     } finally {
       killRepl()
       rmSync(home, { recursive: true, force: true })

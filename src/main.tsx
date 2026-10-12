@@ -95,7 +95,7 @@ import { initializeAnalyticsGates } from 'src/services/analytics/sink.js';
 import { getOriginalCwd, setAdditionalDirectoriesForClaudeMd, setIsRemoteMode, setMainLoopModelOverride, setMainThreadAgentType, setTeleportedSessionInfo } from './bootstrap/state.js';
 import { filterCommandsForRemoteMode, getCommands } from './commands.js';
 import type { StatsStore } from './context/stats.js';
-import { launchAssistantInstallWizard, launchAssistantSessionChooser, launchInvalidSettingsDialog, launchResumeChooser, launchSnapshotUpdateDialog, launchTeleportRepoMismatchDialog, launchTeleportResumeWrapper } from './dialogLaunchers.js';
+import { launchAssistantInstallWizard, launchAssistantSessionChooser, launchAutoDefaultNudgeDialog, launchInvalidSettingsDialog, launchResumeChooser, launchSnapshotUpdateDialog, launchTeleportRepoMismatchDialog, launchTeleportResumeWrapper } from './dialogLaunchers.js';
 import { SHOW_CURSOR } from './ink/termio/dec.js';
 import { exitWithError, exitWithMessage, getRenderContext, renderAndRun, showSetupScreens } from './interactiveHelpers.js';
 import { initBuiltinPlugins } from './plugins/bundled/index.js';
@@ -1695,7 +1695,7 @@ async function run(): Promise<CommanderCommand> {
       const addendum = getTeammatePromptAddendum().TEAMMATE_SYSTEM_PROMPT_ADDENDUM;
       appendSystemPrompt = appendSystemPrompt ? `${appendSystemPrompt}\n\n${addendum}` : addendum;
     }
-    const {
+    let {
       mode: permissionMode,
       notification: permissionModeNotification
     } = initialPermissionModeFromCLI({
@@ -2645,6 +2645,43 @@ async function run(): Promise<CommanderCommand> {
       // default model for this session without mutating persisted settings.
       effectiveMainLoopModel = await ensureFableConsent(root, effectiveMainLoopModel);
       setInitialMainLoopModel(effectiveMainLoopModel);
+
+      // 2.1.296 auto-default nudge (Gap B port of official aMr/qhe/Ckt/Tkt).
+      // Runs AFTER setInitialMainLoopModel so isAutoModeGateEnabled() can
+      // consult the resolved main-loop model (modelSupportsAutoMode). Offers
+      // to persist auto as the default only when the USER settings layer
+      // explicitly pins a non-auto permissions.defaultMode, no other layer
+      // pins it, the one-shot config flag is unset, and the tengu_maple_pier
+      // gate is on. See src/utils/permissions/autoDefaultNudge.ts for the
+      // official semantics + documented OCC divergences.
+      {
+        const {
+          resolveAutoDefaultNudge,
+          shouldShowAutoDefaultNudge
+        } = await import('./utils/permissions/autoDefaultNudge.js');
+        const nudgeCurrentMode = shouldShowAutoDefaultNudge();
+        if (nudgeCurrentMode) {
+          const choice = await launchAutoDefaultNudgeDialog(root, {
+            currentMode: permissionMode
+          });
+          const nudgeOutcome = await resolveAutoDefaultNudge(choice, permissionMode);
+          if (nudgeOutcome === 'switched') {
+            // Official Tkt switches the LIVE permission context via
+            // cT("auto", ctx, setCtx, "auto_default_nudge") before persisting.
+            // OCC's nudge runs pre-REPL, so the equivalent is transitioning the
+            // startup toolPermissionContext that initialState consumes below.
+            const {
+              transitionPermissionMode
+            } = await import('./utils/permissions/permissionSetup.js');
+            toolPermissionContext = {
+              ...transitionPermissionMode(permissionMode, 'auto', toolPermissionContext),
+              mode: 'auto' as const
+            };
+            permissionMode = 'auto';
+            setSessionBypassPermissionsMode(false);
+          }
+        }
+      }
 
       // Now that trust is established and GrowthBook has auth headers,
       // resolve the --remote-control / --rc entitlement gate.

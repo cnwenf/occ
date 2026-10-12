@@ -16,6 +16,7 @@ import type { AppState } from './state/AppStateStore.js';
 import type { AgentMemoryScope } from './tools/AgentTool/agentMemory.js';
 import type { TeleportRemoteResponse } from './utils/conversationRecovery.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
+import type { PermissionMode } from './utils/permissions/PermissionMode.js';
 import type { ValidationError } from './utils/settings/validation.js';
 
 // Type-only access to ResumeConversation's Props via the module type.
@@ -49,6 +50,21 @@ export async function launchInvalidSettingsDialog(root: Root, props: {
     InvalidSettingsDialog
   } = await import('./components/InvalidSettingsDialog.js');
   return showSetupDialog(root, done => <InvalidSettingsDialog settingsErrors={props.settingsErrors} onContinue={done} onExit={props.onExit} />);
+}
+
+/**
+ * 2.1.296 auto-default nudge (Gap B port of official dialog `qhe`).
+ * Wiring mirrors the official: Esc/cancel resolves to 'decline' (the dialog's
+ * own onCancel maps to decline), so the launcher only ever resolves
+ * 'accept' | 'decline' — the caller feeds the choice to resolveAutoDefaultNudge.
+ */
+export async function launchAutoDefaultNudgeDialog(root: Root, props: {
+  currentMode: PermissionMode;
+}): Promise<'accept' | 'decline'> {
+  const {
+    AutoDefaultNudgeDialog
+  } = await import('./components/AutoDefaultNudgeDialog.js');
+  return showSetupDialog<'accept' | 'decline'>(root, done => <AutoDefaultNudgeDialog currentMode={props.currentMode} onDone={done} />);
 }
 
 /**
