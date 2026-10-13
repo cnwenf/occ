@@ -124,8 +124,7 @@ Official side = forensic byte evidence only (binary never executed — occ115 di
 ## 6. Delivery
 
 - Fixes commit `3d916ce` (src/main.tsx + src/utils/permissions/autoDefaultNudge.ts + unit tests) — this round's ONLY src/ production change (2 files, both nudge-surface).
-- Full canonical suite (`CI=1 bash scripts/ci-test.sh`): see result below.
+- Full canonical suite (`CI=1 bash scripts/ci-test.sh`, per-file process isolation): **11087 pass / 0 fail / 119 skip across 991 test files, exit 0** + all same-worker mock-leak regression pairs OK (incl. the nudge pair 23-pass in both orders).
 - occ157-03 recorded, NOT fixed — escalated to Leader (scope discipline: outcome-mapping semantics change, predates this round, pinned by unit tests since occ115).
 - Release/tag decision belongs to Leader; README Tracks badge verified at 2.1.296.
-
- TBD-fullsuite
+- This round produced src/ production changes (occ157-01/02 fixes) → per Leader's rule, the release/tag decision still belongs to Leader. Zero NEW tags cut by this run.
