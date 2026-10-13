@@ -71,7 +71,7 @@ function Ckt(h,C,L){
 
 The braceless `if(H!=="gate_off")` guards ONLY the `Ae(...).catch(c)` flag write. The `i(...)` telemetry call is OUTSIDE it — official logs `resolved` for EVERY non-cancelled choice, including `outcome:"gate_off"` (cancelled never reaches `Ckt`: `ZIe` early-returns). occ115 §8 P3-1 moved OCC's `logEvent` INSIDE the guard based on a misread of this brace structure ("mirroring official Ckt's if(H!=="gate_off") block" — the block is one statement, not the telemetry). Fix: `markNudgeSeen()` stays guarded; `logEvent` moved out; docblock + unit assertions corrected. Analytics are stubbed in OCC, so this is contract-surface parity, not behavior-visible — but the event contract is what future telemetry work will pin against.
 
-### occ157-03 (P3, edge path) — accept-with-persist-error maps to `gate_off`; official maps to `switched` → **RECORDED, NOT FIXED (scope discipline; Leader decision)**
+### occ157-03 (P3, edge path) — accept-with-persist-error maps to `gate_off`; official maps to `switched` → **STAGED-BY-LEADER / documented divergence (Leader ruling `217419ec`)**
 
 Official byte-exact `Tkt` @238435880 region:
 
@@ -88,6 +88,8 @@ function Tkt({getToolPermissionContext:h,setToolPermissionContext:C,addNotificat
 ```
 
 Official semantics: `gate_off` ⟺ `kj(ctx)` false OR live-switch `cT(...).ok` false. The persist (`Tn(...)`) is fire-and-forget with `.catch(c)` — a persist failure STILL returns `"switched"` (flag set, nudge never reappears, default silently unpersisted). OCC's `trySwitchToAutoDefault()` maps `updateSettingsForSource` `{error}` → `gate_off` (flag NOT set → nudge reappears next launch). Both behaviors are defensible; OCC's is friendlier (retry on next launch) but diverges from official. Not fixed this round: it is neither a P1/P2 regression nor LOW-1/LOW-2, the divergence predates this round (pinned by unit tests since occ115: "write-error→gate_off"), and changing outcome-mapping semantics mid-acceptance-round exceeds the Leader-granted fix scope. **Escalated to Leader via §6 handover.**
+
+**Leader ruling (`217419ec`, 2026-10-13): STAGED-BY-LEADER / documented divergence — NOT fixed.** Rationale: official `Tkt`'s fire-and-forget persist (failure still returns `"switched"`, silently dropping the user's default) is the user-worse behavior; OCC's `{error}→gate_off→re-ask next launch` mapping is friendlier and unit-test-pinned since occ115, so aligning to the official defect has no user value. Official stable remains 2.1.287 (whole 2.1.296 nudge-migration surface not yet promoted — occ156-03), so a single-point semantics mapping must not move first. **Re-adjudication trigger: official stable ≥ 2.1.296 (re-reviewed in the same batch as occ156-03).**
 
 ## 4. Self-acceptance runs (OCC side, real tmux REPL + `-p` stream-json)
 
@@ -125,7 +127,8 @@ Official side = forensic byte evidence only (binary never executed — occ115 di
 
 - **Merged to main:** delivery HEAD `73b9a89` (linear descendant of pre-round `780b1b8`; fast-forward verified via `git merge-base --is-ancestor origin/main HEAD` → `git push origin HEAD:main`, since `main` was checked out in another worktree). Remote = `main` only; work branch never pushed. Official binary + probe dirs removed from `/tmp`.
 - Fixes commit `3d916ce` (src/main.tsx + src/utils/permissions/autoDefaultNudge.ts + unit tests) — this round's ONLY src/ production change (2 files, both nudge-surface).
-- Full canonical suite (`CI=1 bash scripts/ci-test.sh`, per-file process isolation): **11087 pass / 0 fail / 119 skip across 991 test files, exit 0** + all same-worker mock-leak regression pairs OK (incl. the nudge pair 23-pass in both orders).
+- Full canonical suite (`CI=1 bash scripts/ci-test.sh`, per-file process isolation): **11087 pass / 0 fail / 119 skip across 986 test files, exit 0** + all same-worker mock-leak regression pairs OK (incl. the nudge pair 23-pass in both orders). Count口径 correction (acceptance `05a93aae`): the run prints 991 OK lines = 986 per-file OK lines + 5 leak-pair OK lines; the authoritative test-file count is **986** (prior draft conflated the two).
+- CI-vs-local number delta — root cause (acceptance `05a93aae`附注, recorded here for账面自洽): GitHub Actions CI (run 38445242819) reported 11086 pass / 339 skip vs local 11087 pass / 119 skip. The delta is fully explained by 3 files: ① `dynamicMcpConfig.test.ts` — CI's inflated skip total comes from the `ci-test.sh` `[0-9]+ skip` counting regex mis-matching the describe name `2.1.219 skipped-errors module store` under GitHub Actions verbose output (true skip count = 0 on both sides); ② `searchTargetGate251` ±1 (`skipIf(IS_ROOT)` — CI runs non-root, local runs root → skip); ③ `sandboxRuntimeZshTrapPatch` −2/+2 (`skipIf(!hasZsh)` — CI has no zsh). **0 fail / exit 0 identical on both sides**; no substantive conclusion affected.
 - GitHub Actions CI on the delivered main HEAD: **run 38442463072 — completed / success (green)**.
 - occ157-03 recorded, NOT fixed — escalated to Leader (scope discipline: outcome-mapping semantics change, predates this round, pinned by unit tests since occ115).
 - Release/tag decision belongs to Leader; README Tracks badge verified at 2.1.296.
