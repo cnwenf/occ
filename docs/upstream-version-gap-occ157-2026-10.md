@@ -91,20 +91,41 @@ Official semantics: `gate_off` ⟺ `kj(ctx)` false OR live-switch `cT(...).ok` f
 
 ## 4. Self-acceptance runs (OCC side, real tmux REPL + `-p` stream-json)
 
-(Filled in as runs complete — see §4.1 nudge surface, §4.2 core trunk.)
+Official side = forensic byte evidence only (binary never executed — occ115 discipline). OCC side = built `dist/cli.js` (30.09MB, MACRO.VERSION=2.1.381, `bun dist/cli.js --version` → `OCC 2.1.381`) on the FIXED build (`3d916ce`).
 
 ### 4.1 Auto-default nudge surface
 
- TBD
+| Run | Scope | Result |
+|---|---|---|
+| Unit pair `autoDefaultNudge296.test.ts` + `autoDefaultNudge296Merge.test.ts` (both orders, leak-pair discipline) | gate matrix, resolver outcomes incl. the 3 flipped gate_off telemetry assertions, merge-no-clobber | **23 pass / 0 fail / 50 expects, both orders** |
+| e2e `version-2.1.296-auto-default-nudge.e2e.test.ts` (real tmux REPL) | (a) verbatim dialog strings + Esc decline + flag persisted + settings untouched + relaunch suppression; (b) Enter accept → userSettings `defaultMode:"auto"` persisted + live switch (footer chip `auto mode on`) + relaunch boots straight into auto; (c) no pin → no dialog, no flag | **3 pass / 21 expects** |
+| Manual tmux probe — explicit `--permission-mode acceptEdits` + userSettings pin `plan` (occ157-01 regression probe) | decline label renders the PINNED mode: **"No, keep plan mode"** (pre-fix would render "No, keep accept edits"); Esc → `hasSeenAutoDefaultNudge` written, settings pin untouched, session footer stays `accept edits on` | **PASS** — matches official `ZIe(h, C=gateResult, …)` semantics |
+| Dialog verbatim surface (same probe capture) | title "Make auto mode your default permission mode?", full body sentence, accept label "Yes, set auto mode as my default permission mode", `❯` cursor + "Enter to confirm · Esc to cancel" footer | **PASS** (byte-identical to official `qhe` strings) |
 
 ### 4.2 Core trunk spot-checks
 
- TBD
+| Run | Scope | Result |
+|---|---|---|
+| e2e `repl-interactive.e2e.test.ts` | Shift+Tab 5-mode carousel with official chip labels + auto-entry banner + legacy opt-in dialog absent | **pass** (part of 26/26 below) |
+| e2e `version-hooks-events.e2e.test.ts` | hook event wiring | **pass** |
+| e2e `resume-interrupted-turn-221.e2e.test.ts` | resume of interrupted turn | **pass** |
+| e2e `version-2.1.200-tools-stream.e2e.test.ts` | stream-json tool events | **pass** — 4 files combined: **26 pass / 0 fail / 138 expects** |
+| Manual `bun dist/cli.js -p "Reply with exactly: OK" --output-format stream-json` (real gateway creds) | envelope order + contract fields: `system/hook_started` → `system/hook_response` → `system/init{cwd,session_id,tools,…}` → `assistant{message…}` → `result{subtype:success,is_error,duration_ms,duration_api_ms,num_turns,result,stop_reason,session_id,…}` | **PASS** (exit 0) |
 
 ## 5. occ156 ledger carryover disposition (§3/§5/§7 — no silent drops)
 
- TBD
+- **§3 occ156-01/02/04/05/06/07/08/09/10/11** — all remain **STAGED, untouched** (this round's Leader scope = nudge surface + LOW-1/LOW-2 + trunk spot-checks; no new evidence for these families this round). occ156-10 note: this round's manual `-p` envelope run (§4.2) re-confirms the init/result field-set surfaces named there are still divergent-as-recorded; no re-triage attempted.
+- **§3 occ156-03 (P1 auto-mode default migration)** — remains **STAGED-BY-LEADER** (ruling comment `b16f18f6`). Re-review trigger = official **stable ≥ 2.1.296**; re-checked this round: `npm view @anthropic-ai/claude-code dist-tags` → `stable: 2.1.287, next: 2.1.296, latest: 2.1.296` → **NOT triggered**, untouched.
+- **§5 STAGED carry-ins** (occ154 §8.2 ×28 families, occ153 §8.2 #090/#095, occ156 §7.3 list) — all continue **STAGED** per occ156 §7.3 as the authoritative entry point; no silent drops, no new evidence this round.
+- **§7.4 LOW-1** → **CLOSED-FALSIFIED** this round (§2, full throw-safety chain audit; no fix needed).
+- **§7.4 LOW-2** → suppression claim **FALSIFIED**; verification surfaced the real adjacent gap **occ157-01, FIXED** this round (§2/§3).
+- **§7.4 LOW-3** (closed by `035311d` on the claim "gate_off 时不应发 resolved 遥测") → **REOPENED AND CORRECTED** by this round's byte-exact re-extraction: the official braceless `if(H!=="gate_off")` guards ONLY the flag write; telemetry is unconditional. `035311d`'s guard move was based on a brace misread. Fixed as **occ157-02** (§3); 3 unit assertions flipped back with byte evidence in comments.
 
 ## 6. Delivery
 
- TBD
+- Fixes commit `3d916ce` (src/main.tsx + src/utils/permissions/autoDefaultNudge.ts + unit tests) — this round's ONLY src/ production change (2 files, both nudge-surface).
+- Full canonical suite (`CI=1 bash scripts/ci-test.sh`): see result below.
+- occ157-03 recorded, NOT fixed — escalated to Leader (scope discipline: outcome-mapping semantics change, predates this round, pinned by unit tests since occ115).
+- Release/tag decision belongs to Leader; README Tracks badge verified at 2.1.296.
+
+ TBD-fullsuite
