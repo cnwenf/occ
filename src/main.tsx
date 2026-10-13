@@ -2661,10 +2661,15 @@ async function run(): Promise<CommanderCommand> {
         } = await import('./utils/permissions/autoDefaultNudge.js');
         const nudgeCurrentMode = shouldShowAutoDefaultNudge();
         if (nudgeCurrentMode) {
+          // Official ZIe(h, C, ...) passes the GATE's return value C (the
+          // pinned userSettings defaultMode) to both the dialog payload
+          // {currentMode: C} and the resolver Ckt(choice, C, ...) — NOT the
+          // session mode, which can differ under an explicit
+          // --permission-mode launch flag (OCC-157 gap occ157-01).
           const choice = await launchAutoDefaultNudgeDialog(root, {
-            currentMode: permissionMode
+            currentMode: nudgeCurrentMode
           });
-          const nudgeOutcome = await resolveAutoDefaultNudge(choice, permissionMode);
+          const nudgeOutcome = await resolveAutoDefaultNudge(choice, nudgeCurrentMode);
           if (nudgeOutcome === 'switched') {
             // Official Tkt switches the LIVE permission context via
             // cT("auto", ctx, setCtx, "auto_default_nudge") before persisting.

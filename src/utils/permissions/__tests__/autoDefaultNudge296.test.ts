@@ -11,8 +11,9 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test'
  * - resolver `Ckt`/`Tkt`: cancelled → no writes/events; accept + gate ok →
  *   userSettings write {permissions:{defaultMode:"auto"}} + config flag +
  *   tengu_auto_default_nudge_resolved{choice,outcome:"switched",current_mode};
- *   accept + gate off → "gate_off" WITHOUT setting the flag AND WITHOUT the
- *   resolved event (official logs it only for non-gate_off outcomes);
+ *   accept + gate off → "gate_off" WITHOUT setting the flag but WITH the
+ *   resolved event (official Ckt's braceless `if(H!=="gate_off")` guards only
+ *   the flag write — the telemetry call is unconditional; OCC-157 occ157-02);
  *   decline → flag + outcome "declined".
  *
  * Mock pattern: delegation + `mockActive` (settingSourcesPropagation281 /
@@ -305,9 +306,14 @@ describe('CC 2.1.296 — resolveAutoDefaultNudge (official resolver Ckt/Tkt)', (
     // Official Ckt: `if(H!=="gate_off")` guards the flag write — gate_off must
     // leave the one-shot flag unset so the nudge can reappear after recovery.
     expect(mockState.config.hasSeenAutoDefaultNudge).toBeUndefined()
-    // Official logs tengu_auto_default_nudge_resolved only for non-gate_off
-    // outcomes (gate_off is transient — nothing is "resolved" yet).
-    expect(resolvedEvent()).toBeUndefined()
+    // Official Ckt (byte-exact, OCC-157 occ157-02): the resolved telemetry
+    // call sits OUTSIDE the braceless gate_off guard — it fires for every
+    // non-cancelled choice, including gate_off.
+    expect(resolvedEvent()?.metadata).toEqual({
+      choice: 'accept',
+      outcome: 'gate_off',
+      current_mode: 'default',
+    })
   })
 
   test('accept while the gate is disabled via settings: gate_off', async () => {
@@ -316,16 +322,16 @@ describe('CC 2.1.296 — resolveAutoDefaultNudge (official resolver Ckt/Tkt)', (
     const outcome = await resolveAutoDefaultNudge('accept', 'default')
     expect(outcome).toBe('gate_off')
     expect(mockState.config.hasSeenAutoDefaultNudge).toBeUndefined()
-    expect(resolvedEvent()).toBeUndefined()
+    expect(resolvedEvent()?.metadata?.outcome).toBe('gate_off')
   })
 
-  test('accept when the settings write fails: gate_off, flag not set, no event', async () => {
+  test('accept when the settings write fails: gate_off, flag not set, event still logged', async () => {
     seedEligibleState('default')
     mockState.settingsWriteError = new Error('EACCES')
     const outcome = await resolveAutoDefaultNudge('accept', 'default')
     expect(outcome).toBe('gate_off')
     expect(mockState.config.hasSeenAutoDefaultNudge).toBeUndefined()
-    expect(resolvedEvent()).toBeUndefined()
+    expect(resolvedEvent()?.metadata?.outcome).toBe('gate_off')
   })
 
   test('flag write is idempotent (official Ae guard: hasSeenAutoDefaultNudge ? c : {...c,...})', async () => {

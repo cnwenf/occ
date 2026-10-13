@@ -25,8 +25,10 @@ import { isAutoModeGateEnabled } from './permissionSetup.js'
  *   `permissions.defaultMode: "auto"` to userSettings ("switched"); decline →
  *   just set the one-shot config flag ("declined"); accept while the auto gate
  *   is unavailable → "gate_off" WITHOUT setting the flag (so the nudge can
- *   reappear once the gate recovers). Non-gate_off outcomes log
- *   `tengu_auto_default_nudge_resolved {choice, outcome, current_mode}`.
+ *   reappear once the gate recovers). EVERY non-cancelled outcome (including
+ *   gate_off) logs `tengu_auto_default_nudge_resolved {choice, outcome,
+ *   current_mode}` — the official flag-write guard does not cover the
+ *   telemetry call (byte-exact `Ckt`, re-verified OCC-157).
  *
  * Documented OCC divergences (pre-REPL dialog slot has no live REPL context):
  * - No first-turn-activity wait (official `HKt`) — the nudge runs in the
@@ -146,17 +148,20 @@ export async function resolveAutoDefaultNudge(
     choice === 'accept' ? trySwitchToAutoDefault() : 'declined'
   if (outcome !== 'gate_off') {
     markNudgeSeen()
-    // Official `Ckt` logs the resolved event only for non-gate_off outcomes
-    // (gate_off is a transient failure — the nudge can reappear once the
-    // gate recovers, so there is nothing "resolved" yet).
-    logEvent('tengu_auto_default_nudge_resolved', {
-      choice:
-        choice as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      outcome:
-        outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-      current_mode:
-        currentMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-    })
   }
+  // Official `Ckt` (byte-exact, 2.1.296): the braceless `if(H!=="gate_off")`
+  // guards ONLY the `Ae(...hasSeenAutoDefaultNudge...).catch(c)` flag write —
+  // the `i("tengu_auto_default_nudge_resolved",...)` call sits OUTSIDE it, so
+  // the resolved event fires for EVERY non-cancelled choice INCLUDING
+  // gate_off. (occ115 §8 P3-1 moved this logEvent inside the guard on a
+  // brace misread; OCC-157 gap occ157-02 restores the official contract.)
+  logEvent('tengu_auto_default_nudge_resolved', {
+    choice:
+      choice as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    outcome:
+      outcome as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    current_mode:
+      currentMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  })
   return outcome
 }
