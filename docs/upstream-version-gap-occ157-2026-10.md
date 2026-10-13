@@ -123,8 +123,10 @@ Official side = forensic byte evidence only (binary never executed — occ115 di
 
 ## 6. Delivery
 
+- **Merged to main:** delivery HEAD `73b9a89` (linear descendant of pre-round `780b1b8`; fast-forward verified via `git merge-base --is-ancestor origin/main HEAD` → `git push origin HEAD:main`, since `main` was checked out in another worktree). Remote = `main` only; work branch never pushed. Official binary + probe dirs removed from `/tmp`.
 - Fixes commit `3d916ce` (src/main.tsx + src/utils/permissions/autoDefaultNudge.ts + unit tests) — this round's ONLY src/ production change (2 files, both nudge-surface).
 - Full canonical suite (`CI=1 bash scripts/ci-test.sh`, per-file process isolation): **11087 pass / 0 fail / 119 skip across 991 test files, exit 0** + all same-worker mock-leak regression pairs OK (incl. the nudge pair 23-pass in both orders).
+- GitHub Actions CI on the delivered main HEAD: **run 38442463072 — completed / success (green)**.
 - occ157-03 recorded, NOT fixed — escalated to Leader (scope discipline: outcome-mapping semantics change, predates this round, pinned by unit tests since occ115).
 - Release/tag decision belongs to Leader; README Tracks badge verified at 2.1.296.
 - This round produced src/ production changes (occ157-01/02 fixes) → per Leader's rule, the release/tag decision still belongs to Leader. Zero NEW tags cut by this run.
