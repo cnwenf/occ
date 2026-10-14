@@ -228,6 +228,14 @@ Security-priority entries named by Leader — coverage: sandbox `--plugin-dir` w
 - Files: `src/services/mcp/config.ts` (helper + 6 guards), `src/services/mcp/__tests__/mcpPrototypeNameSafety299.test.ts` (new, 5 tests / 13 expect).
 - Tests: new file 5 pass; MCP shard `src/services/mcp/__tests__/` 431 pass / 0 fail; biome lint clean.
 
+**#55 LANDED** — settings file ignored when `enabledMcpjsonServers`/`disabledMcpjsonServers` is a plain string.
+- Official changelog 2.1.299 line 57: "Fixed a settings file being ignored when `enabledMcpjsonServers` or `disabledMcpjsonServers` held a single server name (letters, digits, - or _) as a plain string."
+- OCC root cause: both keys were `z.array(z.string()).optional()`. Settings are validated with `SettingsSchema().strict().safeParse(json)` (`validation.ts:293`) and parsed with `SettingsSchema().safeParse/.strip().parse` (`settings.ts`), so a hand-written `"enabledMcpjsonServers": "github"` failed array validation and the WHOLE settings file was rejected — not just that key.
+- Fix: added `mcpjsonServerListSchema()` — a `z.preprocess` coercing a single plain string matching `^[a-zA-Z0-9_-]+$` (the changelog's "letters, digits, - or _") into a one-element array before the array schema runs. All downstream readers (`getProjectMcpServerStatus` `.some`, approval-dialog spread/`|| []`, migration `.length`) keep seeing an array; a non-bare-name string (spaces/dots/empty) is left untouched and still fails. Inferred type stays `string[] | undefined`.
+- Files: `src/utils/settings/types.ts` (helper + 2 fields), `src/utils/settings/__tests__/mcpjsonServersPlainString299.test.ts` (new, 4 tests / 13 expect).
+- Tests: new file 4 pass; settings shard `src/utils/settings/__tests__/` 326 pass / 0 fail; biome lint clean.
+
+
 
 ## §4 Long-tail / orchestrator items
 
