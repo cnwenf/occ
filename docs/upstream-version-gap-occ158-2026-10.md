@@ -219,7 +219,15 @@ Security-priority entries named by Leader — coverage: sandbox `--plugin-dir` w
 
 ## §3 Cluster results (appended as clusters land — push checkpoint per cluster)
 
-_(pending — this section is updated in-run as each cluster completes: byte evidence, files changed, tests, regressions)_
+### Cluster A — MCP name-safety
+
+**#42 LANDED** (SECURITY) — MCP servers named `constructor`/`prototype` never connected.
+- Official changelog 2.1.299 line 44: "Fixed MCP servers named `constructor` or `prototype` in an MCP config never being connected."
+- OCC root cause: the add/remove existence guards in `src/services/mcp/config.ts` used plain-object bracket truthiness (`servers[name]`, `globalConfig.mcpServers?.[name]`, `projectConfig.mcpServers?.[name]`, `!existingServers[name]`, `!config.mcpServers?.[name]` ×2). A plain `{}` inherits `constructor`/`toString`/`valueOf`/`hasOwnProperty` from `Object.prototype`, so a server literally named `constructor` read as the inherited function (truthy) → `addMcpConfig` threw "already exists" → never added/connected; `removeMcpConfig` symmetrically saw a phantom entry.
+- Fix: extracted `hasMcpServerEntry(container, name)` = `container != null && Object.hasOwn(container, name)` (own-property semantics, prototype-chain ignored, missing-container tolerant) and routed all 6 guards through it. `Object.hasOwn` is the codebase's established idiom for this __proto__/prototype-key hazard (cf. the mcpServers `__proto__` guard at config.ts ~1730). The connect/merge path (`getClaudeCodeMcpConfigs`: `Object.entries` + `Object.assign({}, …)`) and the gates (`isMcpServerDisabled` `.includes`, `getProjectMcpServerStatus` `.some`) were audited and are already prototype-safe — no change needed there.
+- Files: `src/services/mcp/config.ts` (helper + 6 guards), `src/services/mcp/__tests__/mcpPrototypeNameSafety299.test.ts` (new, 5 tests / 13 expect).
+- Tests: new file 5 pass; MCP shard `src/services/mcp/__tests__/` 431 pass / 0 fail; biome lint clean.
+
 
 ## §4 Long-tail / orchestrator items
 

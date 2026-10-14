@@ -637,6 +637,30 @@ function expandEnvVars(config: McpServerConfig): {
 }
 
 /**
+ * Own-property membership test for an MCP server config container keyed by
+ * server name.
+ *
+ * claude-code 2.1.299 (changelog line 44): "Fixed MCP servers named
+ * `constructor` or `prototype` in an MCP config never being connected."
+ *
+ * The add/remove existence guards previously used plain-object bracket
+ * truthiness (`servers[name]`, `mcpServers?.[name]`). A plain `{}` inherits
+ * `constructor`/`toString`/`valueOf`/`hasOwnProperty`/… from `Object.prototype`,
+ * so for a server literally named `constructor` the read returned the inherited
+ * function (truthy) and the guard wrongly concluded the server "already exists"
+ * — it could never be added, hence never connected. This predicate tests OWN
+ * membership only, ignoring the prototype chain, and tolerates a missing
+ * container (the guards chain with `?.`). `Object.hasOwn` is the codebase's
+ * established idiom for this exact __proto__/prototype-key hazard.
+ */
+export function hasMcpServerEntry(
+  container: object | undefined | null,
+  name: string,
+): boolean {
+  return container != null && Object.hasOwn(container, name)
+}
+
+/**
  * Add a new MCP server configuration
  * @param name The name of the server
  * @param config The server configuration
@@ -723,21 +747,21 @@ export async function addMcpConfig(
   switch (scope) {
     case 'project': {
       const { servers } = getProjectMcpConfigsFromCwd()
-      if (servers[name]) {
+      if (hasMcpServerEntry(servers, name)) {
         throw new Error(`MCP server ${name} already exists in .mcp.json`)
       }
       break
     }
     case 'user': {
       const globalConfig = getGlobalConfig()
-      if (globalConfig.mcpServers?.[name]) {
+      if (hasMcpServerEntry(globalConfig.mcpServers, name)) {
         throw new Error(`MCP server ${name} already exists in user config`)
       }
       break
     }
     case 'local': {
       const projectConfig = getCurrentProjectConfig()
-      if (projectConfig.mcpServers?.[name]) {
+      if (hasMcpServerEntry(projectConfig.mcpServers, name)) {
         throw new Error(`MCP server ${name} already exists in local config`)
       }
       break
@@ -815,7 +839,7 @@ export async function removeMcpConfig(
     case 'project': {
       const { servers: existingServers } = getProjectMcpConfigsFromCwd()
 
-      if (!existingServers[name]) {
+      if (!hasMcpServerEntry(existingServers, name)) {
         throw new Error(`No MCP server found with name: ${name} in .mcp.json`)
       }
 
@@ -840,7 +864,7 @@ export async function removeMcpConfig(
 
     case 'user': {
       const config = getGlobalConfig()
-      if (!config.mcpServers?.[name]) {
+      if (!hasMcpServerEntry(config.mcpServers, name)) {
         throw new Error(`No user-scoped MCP server found with name: ${name}`)
       }
       saveGlobalConfig(current => {
@@ -856,7 +880,7 @@ export async function removeMcpConfig(
     case 'local': {
       // Check if server exists before updating
       const config = getCurrentProjectConfig()
-      if (!config.mcpServers?.[name]) {
+      if (!hasMcpServerEntry(config.mcpServers, name)) {
         throw new Error(`No project-local MCP server found with name: ${name}`)
       }
       saveCurrentProjectConfig(current => {
