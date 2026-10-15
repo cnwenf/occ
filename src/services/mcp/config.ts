@@ -648,6 +648,30 @@ function expandEnvVars(config: McpServerConfig): {
 }
 
 /**
+ * Own-property membership test for an MCP server config container keyed by
+ * server name.
+ *
+ * claude-code 2.1.299 (changelog line 44): "Fixed MCP servers named
+ * `constructor` or `prototype` in an MCP config never being connected."
+ *
+ * The add/remove existence guards previously used plain-object bracket
+ * truthiness (`servers[name]`, `mcpServers?.[name]`). A plain `{}` inherits
+ * `constructor`/`toString`/`valueOf`/`hasOwnProperty`/… from `Object.prototype`,
+ * so for a server literally named `constructor` the read returned the inherited
+ * function (truthy) and the guard wrongly concluded the server "already exists"
+ * — it could never be added, hence never connected. This predicate tests OWN
+ * membership only, ignoring the prototype chain, and tolerates a missing
+ * container (the guards chain with `?.`). `Object.hasOwn` is the codebase's
+ * established idiom for this exact __proto__/prototype-key hazard.
+ */
+export function hasMcpServerEntry(
+  container: object | undefined | null,
+  name: string,
+): boolean {
+  return container != null && Object.hasOwn(container, name)
+}
+
+/**
  * Add a new MCP server configuration
  * @param name The name of the server
  * @param config The server configuration

@@ -303,6 +303,33 @@ export const AttributionObjectSchema = lazySchema(() =>
   }),
 )
 
+/**
+ * Schema for the `enabledMcpjsonServers` / `disabledMcpjsonServers` settings.
+ *
+ * claude-code 2.1.299 (changelog line 57): "Fixed a settings file being ignored
+ * when `enabledMcpjsonServers` or `disabledMcpjsonServers` held a single server
+ * name (letters, digits, - or _) as a plain string." Settings are validated in
+ * strict mode, so a bare-string value previously failed the array schema and the
+ * whole file was rejected. This preprocessor coerces a single plain string
+ * matching `^[a-zA-Z0-9_-]+$` into a one-element array before validation, so
+ * every downstream reader keeps seeing an array; a string that is not a bare
+ * server name is left untouched and still fails (genuinely malformed input stays
+ * rejected). Inferred type remains `string[] | undefined`.
+ */
+const BARE_MCP_SERVER_NAME = /^[a-zA-Z0-9_-]+$/
+function mcpjsonServerListSchema(description: string) {
+  return z
+    .preprocess(
+      value =>
+        typeof value === 'string' && BARE_MCP_SERVER_NAME.test(value)
+          ? [value]
+          : value,
+      z.array(z.string()),
+    )
+    .optional()
+    .describe(description)
+}
+
 export const SettingsSchema = lazySchema(() =>
   z
     .object({
@@ -522,15 +549,13 @@ export const SettingsSchema = lazySchema(() =>
           'Whether to automatically approve all MCP servers in the project',
         ),
       // List of approved MCP servers from .mcp.json
-      enabledMcpjsonServers: z
-        .array(z.string())
-        .optional()
-        .describe('List of approved MCP servers from .mcp.json'),
+      enabledMcpjsonServers: mcpjsonServerListSchema(
+        'List of approved MCP servers from .mcp.json',
+      ),
       // List of rejected MCP servers from .mcp.json
-      disabledMcpjsonServers: z
-        .array(z.string())
-        .optional()
-        .describe('List of rejected MCP servers from .mcp.json'),
+      disabledMcpjsonServers: mcpjsonServerListSchema(
+        'List of rejected MCP servers from .mcp.json',
+      ),
       // Enterprise allowlist of MCP servers
       allowedMcpServers: z
         .array(AllowedMcpServerEntrySchema())
