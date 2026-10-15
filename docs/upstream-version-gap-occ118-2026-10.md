@@ -256,7 +256,15 @@ Advisory (T1): OCC's fs-only `isInTransientGitState` (gitDiff.ts:308, commitAttr
 
 ## 4. e2e / A/B acceptance
 
-<!-- E2E -->
+**Run date:** 2026-10-16, on `agent/occ/8045b9c7` @ `62d4d78` (all 21 PORT items + ledger).
+
+- **Build:** `bun run build` green — `dist/cli.js` 30.24 MB (31,709,403 bytes), MACRO.VERSION=2.1.383 injected.
+- **Full suite (`bash scripts/ci-test.sh`, per-file process isolation):** **12205 pass / 1 fail / 12 skip · 1090 files.** Baseline (pristine main + dist) = 11990/1/12 · 1063 files → **+215 pass / +27 files = this round's new tests, zero new failures.** Sole fail = pre-existing allowed `test/e2e/commands-behavior.e2e.test.ts` → `/feedback (no args)` GitHub-issue creation external dependency (identical to baseline; not touched this round).
+- **Live `-p` smoke (real API):** `dist/cli.js --version` → `OCC 2.1.383`; `echo … | dist/cli.js -p` → `PONG`, exit 0 (glm-5.2 custom endpoint; `unrecognized_model` line = pre-existing env noise).
+- **Real REPL (tmux, Architecture A per repl-tmux-e2e-testing):** boot → ready in ~2s; live in-REPL model round-trip (`❯ Reply with exactly: REPL300-PONG` → `● REPL300-PONG`, 43,158 tokens consumed); `/status` renders full panel (Version 2.1.383 / Session ID / cwd / Auth token / API key / base URL / Model / `MCP servers: 2 connected, 1 failed` / Setting sources); `Shift+Tab` cycles `bypass permissions on` → `auto mode on`; `/exit` clean exit, session killed, scratch dir removed — no leak. Bundled `repl-interactive.e2e.test.ts` 3/3 in-suite.
+- **Artifact behavioral probes:** `dist/cli.js daemon stop --any` (no daemon) → `No background sessions found.` exit 0 (#43 no-op path; force-kill/displace path unit-covered with REAL SIGTERM-trapping processes in displaceHolderRealProc300). Presence-only dist checks (not the done-gate): #18 `this conversation already declared ToolSearch` ×1, #29 `basing worktree on local HEAD` ×1, #43 `force-killing it (SIGKILL)` ×1, #63 `Sandbox commands, with auto-allow` ×1.
+- **behavior-driven-done checklist:** (1) no stubs — the 4 new files are 289/393/505/401 real lines; (2) visual items verified at render level (#47 SGR-2+37 vs SGR-97 at chalk level 1; #63 labels); (3) no new feature-flag enablements (BRIDGE_MODE stays dead — #66 parse-level only); (4) behavioral e2e above, not source-grep; (5) no regression vs baseline; (6) every binary claim self-verified via strings/grep -aboF/dd — **official ELF never executed** (Leader forensic discipline held all round).
+- **Official A/B:** not executed this round beyond strings forensics — the official linux-x64 binary is never run (discipline); behavioral parity evidence = byte-verified strings + the unit/e2e gates above. #55's warn surfaces via `logForDiagnosticsNoPII` (diagnostics log, not stderr) → unit-seam covered (managedHostTlsProxyStrip300 12/12).
 
 ## 5. npm publish debt re-check (owner-side, report-only)
 
