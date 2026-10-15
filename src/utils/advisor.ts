@@ -138,11 +138,20 @@ export function isAdvisorEnabled(): boolean {
   if (advisorOrgDisabled) {
     return false
   }
-  // Strict firstParty: the official yct() requires He()==="firstParty" —
-  // foundry is EXCLUDED here even though shouldIncludeFirstPartyOnlyBetas()
-  // admits it for other betas (Bedrock/Vertex/foundry 400 on the advisor
-  // beta header / tool schema).
-  if (getAPIProvider() !== 'firstParty') {
+  // Official 2.1.300 gate `_It` (byte-verified @222993478 in the v300 ELF):
+  //   if(a.CLAUDE_CODE_DISABLE_ADVISOR_TOOL||bP())return!1;
+  //   let e=Ie();return(e==="firstParty"||wD(e))&&ny()
+  //   wD(e=Ie()){return e==="anthropicAws"||e==="anthropicGoogleCloud"}
+  //     (byte-verified @216213859)
+  // The v300 delta widens the v299 strict-firstParty arm to firstParty||wD —
+  // `/advisor` on Claude Platform on AWS. OCC folds the official
+  // `anthropicGoogleCloud` provider into firstParty (see providers.ts), so the
+  // wD() arm reduces to OCC's `'anthropic_aws'` (= official `anthropicAws`).
+  // Foundry/bedrock/vertex/mantle stay EXCLUDED (shouldIncludeFirstPartyOnlyBetas()
+  // admits foundry for other betas, but the official advisor gate does not).
+  // v300's statsig default `{enabled:wD(Ie())}` is analytics-only (stubbed in OCC).
+  const provider = getAPIProvider()
+  if (provider !== 'firstParty' && provider !== 'anthropic_aws') {
     return false
   }
   if (isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS)) {
