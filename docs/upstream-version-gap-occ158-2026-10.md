@@ -588,3 +588,22 @@ Re-verified this round (report-only per Leader ruling — **does NOT block** the
 - **publish.yml**: runs 38665634031 + 38665831260 both failed at the `npm publish` step with the standing E404 credential-scope debt (§5) — reported, not blocked. `Create GitHub Release` is `if: success()`-gated behind npm, so the Release was created manually with the workflow's exact idempotent command: <https://github.com/cnwenf/occ/releases/tag/v2.1.383>.
 - **Parity**: 182 tags = 182 releases — exact parity holds (the round-opening "183" estimate miscounted; v2.1.371 was never tagged).
 - **npm debt re-check (report-only)**: registry `latest` still 2.1.367; missing v2.1.368–v2.1.383 (15 versions; 371 never tagged). Owner-side `NPM_TOKEN` rotation required — see §5.
+
+## 7. Final adjudication & carryover (authoritative entry for next round)
+
+**Dual PASS achieved 2026-10-15T03:32Z; Leader final ruling: v2.1.383 RATIFIED. OCC-158 closed done.**
+
+- **Security review (追溯, `v2.1.382...v2.1.383`)**: PASS 5/5 designated areas (WP1 #052/#070 key-leak gating incl. intentional non-gate at `client.ts:483` = official-consistent; WP7 #122/#167; WP8 #152; WP10 #154/#065/#158/#159; WP3 #025). 107 tests run / 0 fail. No backdoor, no hardcoded secret, no credential-leak path. Full record: OCC-158 comment `7b6363f7`.
+- **Acceptance review**: PASS on all four mandates — real build+run of v2.1.383 (headless `-p` + tmux REPL: banner, `/status`, live model round-trip, `/btw`), release chain verified (tag `v2.1.383`→`cde3c919`→Release; 182 tags = 182 releases), remote branches clean (only `main`), README/CHANGELOG "Tracks: Claude Code 2.1.299 (partial)" consistent with this ledger; PORT spot-checks #042/#032/#030 live + 170 module tests pass. Full record: OCC-158 comment `aeba027e`.
+- **Procedural note (recorded, not waived)**: the tag was cut by the parallel 13-WP run *before* dual PASS + Leader ruling. Ruling = no rollback (main green, content complete, public tag/Release); retroactive dual review convened and ratified. Any future FAIL-class finding goes fix-forward as v2.1.384+, never tag mutation.
+
+**Fix-forward candidates for the next round (non-blocking, ranked):**
+1. WP8 #152(b): cross-origin `beforeRedirect` OAuth-revocation check (security review recommends prioritizing).
+2. WP8 #152(a): plain-user-http ≤5-hop redirect rule.
+3. §3 Follow-ups 1–7 remain open as recorded (notably `wnr` @226127734 SDK-registration reserved-name surface; WP11 interactive Settings/Usage.tsx #017 wiring).
+
+**STAGED carryover**: this ledger's STAGED set (§2 cluster entries + §3 counts) is authoritative for next-round re-adjudication, same as occ156 §7.3 / occ157 §5 were for this one.
+
+**npm debt (owner-side, OCC-151)**: registry `latest` = 2.1.367; v2.1.368–v2.1.383 (15 versions; v2.1.371 never tagged) pending `NPM_TOKEN` rotation to read-write scope on `@cnwenf/occ`, then republish.
+
+**Infra note (owner-side)**: five programmer-run deaths at 1h12m–1h51m this round ("task cancelled by server" ×4, runtime offline ×1) — suspect platform-side duration cap or host restart policy on runtime `rc-w89y8lw66bt3tl4l0thd`; mitigated via ledger checkpoints + per-item push + self-continuation chain.
