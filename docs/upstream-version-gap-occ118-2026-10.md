@@ -274,6 +274,34 @@ Re-verified 2026-10-16: npm `@cnwenf/occ` dist-tags `latest` = **2.1.367** (unch
 
 <!-- DELIVERY -->
 
+**Release commit:** `chore(release): 2.1.384 — official 2.1.299→2.1.300 alignment (OCC-118)` at the tip of branch `agent/occ/8045b9c7` (implementation chain `a935bb3`…`698b4d3` + this release commit; 4-file release pattern per `e798433` precedent: README 4 Tracks sites, CHANGELOG header prepend + new `## 2.1.384` section, package.json `2.1.383`→`2.1.384`, this ledger §6/§7).
+
+**Merge method — ff-push to origin/main.** Local `main` is checked out by another runtime's worktree (`…/285d630e/workdir/occ`, stale at `e9dc9f2` = 2.1.354) → `git checkout main` fails with "already used by worktree". `origin/main` = `b5e0591` = merge-base with this branch (branch strictly ahead) → delivered via `git push origin agent/occ/8045b9c7:main` (fast-forward), matching origin/main's linear branch-push history (occ158 precedent `b5e0591`/`d51297b`). Verified post-push via `git ls-remote origin main`.
+
+**NO tag this round.** Tag `v2.1.384` + GitHub Release (publish.yml) fire ONLY after 验收员 acceptance notification, in a later run — per Leader instruction.
+
+**Residual branch cleanup:** `agent/occ156-selfaccept` verified already deleted on origin — no-op.
+
+**npm publish debt:** unchanged from §5 (latest published = 2.1.367; 2.1.368–2.1.383 unpublished — NPM_TOKEN lacks write scope; owner-side, record-only, not blocking the release flow).
+
+**Resource safety:** `/tmp/cc-diff-300` forensic artifacts (both official ELFs + strings dumps) deleted at round end; the official binaries were never executed.
+
 ## 7. Final adjudication & carryover (authoritative entry for next round)
 
 <!-- ADJUDICATION -->
+
+**Authoritative entry for the next round (OCC-118 §7):**
+
+1. **Aligned-through state:** OCC is aligned through official **2.1.300** (honest-partial). Final tally: **PORT 21 (all landed) · STAGED 11 · N-A 50 · ALREADY-ALIGNED 6**. Release `2.1.384` merged to `origin/main`; tag + GitHub Release pending 验收员 acceptance. Next round starts from npm dist-tags re-check; **2.1.301** (`next` channel, published 2026-10-15, no CHANGELOG section) is pre-triage archive only — NOT aligned (OCC-95 convention).
+
+2. **occ158 §7 carryover — UNCHANGED.** Re-adjudication trigger ("official `stable` ≥ 2.1.296") did NOT fire this round (`stable` = 2.1.292 < 2.1.296; `latest` = 2.1.300, `next` = 2.1.301). The whole occ158 STAGED set carries as-is (incl. #106/#108 sandbox-runtime symlink bypass, #107 glob brace divergence, #109 worktree awk acceptance, #150 workflow VM depth-guard probe, #073 resume double-run inheritance check, E-cluster #002/#003/#009/#019/#066/#104/#140, render family #061/#063/#083/#084). Next-round trigger re-check: `npm view @anthropic-ai/claude-code dist-tags --json` → fire iff `stable` ≥ 2.1.296. New-evidence scan this round showed all gate-vocabulary families count-balanced (minifier-rename noise) — no carryover item gained porting evidence.
+
+3. **This round's STAGED 11 (carry with rationale):** #6 (gen_ai.* span attrs — module-wide OTel span rework), #15 (background-task retention rule not string-recoverable), #17 (FleetView burst-discrimination — no marker string), #30 (`tables.list` reftable read — OCC gitFilesystem has zero reftable read support), #37/#40 (balanced-marker logic-only deltas — no leaf max_tokens detection in OCC), #42 (OS-cert TLS mechanism not string-recoverable), #46 (`loadedNames` recovered but OCC has no recordedToolDescriptions ledger to attach — see #18 deviation), #53 (PDF `modelReadsByPage` capability mapping unrecoverable), #61 (no handoff-file mechanism in OCC), #62 (whole new transcript-record subsystem). Re-adjudication trigger: new binary evidence in a future strings delta, or subsystem landing in OCC.
+
+4. **Key deviation carry-list (documented in §3, verify before "fixing"):** #36 persisted 7-day refusal latch NOT ported (conversation-scoped module map only — official persistence layer out of scope); #19 org-pin telemetry STAGED (refusal behavior landed); #41 K-arms prompt sections staged (anti-poll clauses landed); #59 gzip compression level = default (official level not recoverable from binary); #43 `daemon_stop_still_running` telemetry envelope approximated; #29 `--no-track` NOT ported (OCC passes branch name — documented deviation); #18 conversation latch mirrors official `recordedToolDescriptions.has("ToolSearch")` with a module-level boolean (no ledger subsystem — #46 STAGED dependency); #66 dormant parse-level only (BRIDGE_MODE dead code — bundle with next bridge touch).
+
+5. **Fix-forward candidates (non-blocking, ranked):** occ158 §7 list carries (WP8 #152(b) cross-origin `beforeRedirect` OAuth-revocation check; WP8 #152(a) plain-user-http ≤5-hop redirect rule; occ158 §3 follow-ups 1–7) + NEW this round: T1 advisory — OCC's fs-only `isInTransientGitState` (`src/utils/gitDiff.ts:308`, `src/utils/commitAttribution.ts:869`) shares entry #20's reftable blind-spot class; #30 reftable read layer would close both.
+
+6. **Test baseline for next round:** `bash scripts/ci-test.sh` → **12205 pass / 1 fail / 12 skip · 1090 files** (this round, post-merge state). Sole allowed fail: `test/e2e/commands-behavior.e2e.test.ts` → `/feedback (no args)` (external dependency; pre-existing since occ158 baseline 11990/1/12). e2e requires `bun run build` first; build artifact `dist/cli.js` 31,709,403 bytes at this round's HEAD.
+
+7. **npm publish debt:** carried, owner-side (see §5) — `@cnwenf/occ` npm latest = 2.1.367; 2.1.368–2.1.383 unpublished (NPM_TOKEN lacks write scope); E404 on `npm view @cnwenf/occ@<ver>` for those versions is EXPECTED and must not block future rounds. Tag + GitHub Release publish normally regardless.
