@@ -535,7 +535,33 @@ OCC connects `claudeai-proxy` servers via `StreamableHTTPClientTransport` (`src/
 
 ## 4. e2e / A/B acceptance
 
-<!-- PENDING: tmux real REPL round-trips + headless -p + behavioral A/B vs runnable official 2.1.299 (/tmp/cc-official299/bin/claude — runnable channel only; forensic ELF copies never executed) -->
+All runs 2026-10-15 against commit `1bee626` build (`dist/cli.js` 30.20 MB, MACRO.VERSION=2.1.382). Official channel: `/tmp/cc-official299/bin/claude` (runnable npm channel — the no-execute discipline binds only the forensic ELF copies in /tmp/cc-diff-299; both removed after this section per upstream-tracking skill).
+
+### Headless `-p`
+
+- OCC: `echo "Reply with exactly one word: PONG" | bun dist/cli.js -p` → `PONG`, exit 0 (with the known `[claude-code:unrecognized_model] {"model":"glm-5.2"}` gateway-model notice).
+- Official 2.1.299 A/B: same prompt → same `unrecognized_model` notice + `PONG`, exit 0. **Core path parity confirmed.**
+- Official-only extra output: the v299 auto-mode-classifier **billing-migration notice** ("We're changing auto mode to no longer charge for classifier requests… this session isn't eligible because your requests go through <gateway>"). Tied to Anthropic first-party classifier-billing backend; explicitly not applicable to gateway sessions. **N-A for OCC** (billing/analytics stubbed) — recorded, not ported.
+
+### #041 stream-json control-protocol e2e (WP8 scenario, live)
+
+`-p --input-format stream-json --output-format stream-json --verbose` with `CLAUDE_CODE_ENABLE_AUTO_MODE=1` (gateway provider requires the opt-in per the official `Olt` rule):
+
+- Positive: `set_model claude-sonnet-4-6` → success; `set_permission_mode auto` → success `{mode:"auto"}`; auto held for 6s with NO status event; `set_model claude-haiku-4-5` (explicit denylist) → **immediate `system/status permissionMode=default` downgrade event + success response**. Exactly the 2.1.299 fix behavior.
+- Negative control: same sequence but `set_model claude-opus-5` (auto-capable) → success with **no** downgrade event; session stays auto. Gate is model-conditional, not unconditional.
+
+### tmux real REPL
+
+200×50 tmux session, `bun dist/cli.js`:
+
+- Boot: banner `OCC v2.1.382 · Open C Code`, model line `glm-5.2 with xhigh effort · API Usage Billing`, PROJ git branch, both-auth-vars warning rendered.
+- Live model round-trip: `❯ Reply with exactly one word: PONG` → `● PONG` (58201 tokens).
+- `/status`: dialog renders Version 2.1.382, session ID, auth token + API key rows, base URL, model, `MCP servers: 2 connected, 1 failed`, `Auto mode server: Disabled`; Esc dismisses ("Status dialog dismissed").
+- `/btw what is 2+2?…` (#105/#033 surface): side-question overlay answered `4` with the scroll-preserving dialog chrome (`↑/↓ to scroll · ←/→ to switch · c to copy · Space, Enter, or Escape to dismiss`) — keepsScrollPosition path exercised live.
+- `/exit` clean exit.
+- WP6's deeper interaction scenarios (#091 dialog-hold timing, #031 mouse double-click collapse deferral, #049 updater separator visuals) are pinned by 43 unit/component tests + specified in the WP6 report; not automated in tmux this round (mouse-sequence injection unreliable in headless tmux).
+- Repo e2e suites ran inside the CI gate: 158 `test/e2e` files incl. `occ-versioning`, `commands-alignment`, `version-2.1.219-*` (all pass); `repl-interactive` 3 skip (pre-existing sandbox-stall constraint, OCC-41/42) — covered by the live tmux session above instead.
+
 
 ## 5. npm publish debt re-check (owner-side, report-only)
 
