@@ -478,6 +478,43 @@ export function isAdvisorOrgWideEntryRefusedError(error: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// CC 2.1.300 (#36): MCP tool input-schema refusal classifier.
+//
+// Official v300 `AGe.resolve` (@225850721, byte-verified) inlines the scan:
+//
+//   if(!(e instanceof Rt)||e.status!==400)return;
+//   let h=/\btools\.(\d+)\.(?:custom\.)?input_schema\b/.exec(e.message)?.[1];
+//   if(h===void 0)return;
+//
+// (regex constant @107537522/@225851219). When the API rejects one MCP tool's
+// input schema the whole conversation used to fail on every turn with the
+// same 400; the v300 healer records the offending tool and re-sends it with
+// `{type:"object"}` (no parameters) for the rest of the conversation. The
+// `(?:custom\.)?` arm covers the tools.N.custom.input_schema error shape the
+// API emits for custom-tool entries.
+// ---------------------------------------------------------------------------
+
+/** Official v300 regex @107537522 (byte-verified). */
+const TOOL_SCHEMA_REFUSED_PATTERN =
+  /\btools\.(\d+)\.(?:custom\.)?input_schema\b/
+
+/**
+ * Official v300 `AGe.resolve` head: extract the refused tool's index from an
+ * HTTP 400 whose message points at `tools.N.input_schema` (or
+ * `tools.N.custom.input_schema`). Returns undefined for non-APIError values,
+ * non-400 statuses, and messages the pattern does not match.
+ */
+export function extractRefusedToolSchemaIndex(
+  error: unknown,
+): number | undefined {
+  if (!(error instanceof APIError) || error.status !== 400) {
+    return undefined
+  }
+  const match = TOOL_SCHEMA_REFUSED_PATTERN.exec(error.message ?? '')?.[1]
+  return match === undefined ? undefined : Number(match)
+}
+
+// ---------------------------------------------------------------------------
 // CC 2.1.285 (item-B3): output content filter immediate error.
 //
 // Official v285 extracted the inline "Output blocked by content filtering

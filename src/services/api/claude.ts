@@ -30,6 +30,7 @@ import {
   getCLISyspromptPrefix,
 } from '../../constants/system.js'
 import {
+  findToolByName,
   getEmptyToolPermissionContext,
   type QueryChainTracking,
   type Tool,
@@ -288,6 +289,11 @@ import {
   type RetryContext,
   withRetry,
 } from './withRetry.js'
+import {
+  applyRefusedToolSchemas,
+  createToolSchemaRefusedResolver,
+  type SentToolSchemaEntry,
+} from './refusedToolSchemas.js'
 
 // Define a type that represents valid JSON values
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray
@@ -1116,6 +1122,16 @@ export async function* executeNonStreamingRequest(
      * `context-1m-2025-08-07` beta.
      */
     retryContext1mBetaRefused?: (error: APIError) => boolean
+    /**
+     * CC 2.1.300 (#36): the shared MCP tool input-schema refusal handler
+     * (official `AGe`/`sut` @227866518) — the official wires the same
+     * resolver instance into the sync onApiError chain too, so the
+     * non-streaming fallback gets the same conversation-scoped heal as the
+     * streaming loop. Returns true when the refused tool was recorded and
+     * the request must be re-sent with that tool's schema flattened to
+     * `{type:"object"}` (official `W1t`).
+     */
+    retryToolSchemaRefused?: (error: APIError) => boolean
   },
   paramsFromContext: (context: RetryContext) => BetaMessageStreamParams,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
@@ -1223,6 +1239,8 @@ export async function* executeNonStreamingRequest(
       retryAdvisorEntryRefused: retryOptions.retryAdvisorEntryRefused,
       // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
       retryContext1mBetaRefused: retryOptions.retryContext1mBetaRefused,
+      // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
+      retryToolSchemaRefused: retryOptions.retryToolSchemaRefused,
       // CC 2.1.285 (item-B2): official `I0t` passes `nonStreamingTimeoutMs:S`
       // (S = IOo() = this fallbackTimeoutMs) into the loop options so the retry
       // loop can cap timed-out re-sends via
@@ -2347,6 +2365,25 @@ async function* queryModel(
     }
   }
 
+  // CC 2.1.300 (#36): official `eut=new AGe(st)` (@227866518) — one resolver
+  // per request over the conversation-scoped refusedToolSchemas map (official
+  // `st.refusedToolSchemas`). The official resolve indexes `DB` — the exact
+  // tools array that was sent — so `tools.N.input_schema` addresses the same
+  // array the API saw; `lastSentTools` mirrors `DB` and is refreshed on every
+  // params build (official `gd=W1t(gd,st)` @227858355 applies the
+  // substitution inside the params builder). `un(r,name)` = findToolByName
+  // over the request's tool registry.
+  const toolSchemaRefusedResolver = createToolSchemaRefusedResolver()
+  let lastSentTools: readonly SentToolSchemaEntry[] =
+    allTools as unknown as SentToolSchemaEntry[]
+  const retryToolSchemaRefused = (error: APIError): boolean =>
+    toolSchemaRefusedResolver.resolve(
+      error,
+      lastSentTools,
+      name => findToolByName(tools, name),
+      options.querySource,
+    ) !== undefined
+
   const paramsFromContext = (retryContext: RetryContext) => {
     // CC 2.1.295 (item-1): official params-builder filter (`RLn`,
     // @217663765-adjacent) — while a heal is active (SEe), the
@@ -2527,6 +2564,15 @@ async function* queryModel(
 
     lastRequestBetas = betasParams
 
+    // CC 2.1.300 (#36): official `gd=W1t(gd,st)` (@227858355) — tools whose
+    // input_schema the API refused earlier in this conversation go out as
+    // {type:"object"} (no parameters) for the rest of the conversation;
+    // lastSentTools keeps the resolver's tools.N index space aligned with
+    // the exact array sent (official `DB`).
+    lastSentTools = applyRefusedToolSchemas(
+      allTools as unknown as SentToolSchemaEntry[],
+    )
+
     return {
       model: normalizeModelStringForAPI(options.model),
       messages: addCacheBreakpoints(
@@ -2540,7 +2586,7 @@ async function* queryModel(
         options.agentCacheTtlOverride,
       ),
       system,
-      tools: allTools,
+      tools: lastSentTools as unknown as typeof allTools,
       tool_choice: options.toolChoice,
       ...(useBetas && { betas: betasParams }),
       metadata: getAPIMetadata(),
@@ -2822,6 +2868,9 @@ async function* queryModel(
         // before the thinking-binding handler (`fRe`) — both neighbor slots
         // collapse to "immediately after retryAdvisorEntryRefused" in OCC.
         retryContext1mBetaRefused,
+        // CC 2.1.300 (#36): official `AGe`/`sut` — MCP tool input-schema
+        // refusal heal (see handler creation above).
+        retryToolSchemaRefused,
       },
     )
 
@@ -3833,6 +3882,8 @@ async function* queryModel(
           retryAdvisorEntryRefused,
           // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
           retryContext1mBetaRefused,
+          // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
+          retryToolSchemaRefused,
         },
         paramsFromContext,
         (attempt, _startTime, tokens) => {
@@ -3957,6 +4008,8 @@ async function* queryModel(
             retryAdvisorEntryRefused,
             // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
             retryContext1mBetaRefused,
+            // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
+            retryToolSchemaRefused,
           },
           paramsFromContext,
           (attempt, _startTime, tokens) => {

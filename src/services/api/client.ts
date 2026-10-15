@@ -32,6 +32,15 @@ import {
   isEnvTruthy,
 } from '../../utils/envUtils.js'
 import { assertBedrockStreamingContentType } from './bedrockContentTypeGuard.js'
+import {
+  classifyGzipRejection,
+  classifyGzipResendOutcome,
+  gzipRequestBody,
+  latchGzipRequestBodyOff,
+  logGzipRequestBodyFallback,
+  noteGzipRequestBodySent,
+  shouldGzipRequestBody,
+} from './gzipRequestBody.js'
 import { applyClientGatewayHintHeaders } from './gatewayHints.js'
 
 /**
@@ -563,7 +572,58 @@ export function buildFetch(
     } catch {
       // never let logging crash the fetch
     }
-    const response = await inner(input, { ...init, headers })
+    // CC 2.1.300 (#59): official @220216119 — large api.anthropic.com JSON
+    // bodies go out gzip-compressed (`vMt` decision + `bNt` padding; the
+    // official sets Bun's `compress:"gzip"`, OCC sets Content-Encoding
+    // directly). On a gzip rejection (`a_o`/`i_o`: 400/403/415 that reads as
+    // an intermediary or origin JSON-parse failure) the latch turns gzip off
+    // process-wide and the identity body is re-sent once.
+    let dispatchInit: RequestInit = { ...init, headers }
+    let identityBody: string | undefined
+    if (url !== '' && typeof init?.body === 'string') {
+      const decision = shouldGzipRequestBody(url, init.body)
+      if (decision?.gzip) {
+        identityBody = init.body
+        const gzipHeaders = new Headers(headers)
+        gzipHeaders.set('Content-Encoding', 'gzip')
+        // The gzipped payload length no longer matches any caller-computed
+        // Content-Length; let the fetch implementation set it.
+        gzipHeaders.delete('Content-Length')
+        dispatchInit = {
+          ...init,
+          headers: gzipHeaders,
+          // Node's Buffer is a valid fetch body at runtime; the SDK's
+          // BodyInit union is typed against the DOM ArrayBufferView.
+          body: gzipRequestBody(init.body) as unknown as NonNullable<
+            RequestInit['body']
+          >,
+        }
+        noteGzipRequestBodySent()
+      }
+    }
+    let response = await inner(input, dispatchInit)
+    if (identityBody !== undefined) {
+      const rejection = await classifyGzipRejection(response)
+      if (rejection !== null) {
+        // Official `a_o`: latch (`q()`), cancel the rejected body, strip the
+        // compression, re-dispatch with the identity body, log `S({…})`.
+        latchGzipRequestBodyOff()
+        await response.body?.cancel().catch(() => {})
+        const rejectedStatus = response.status
+        const viaCloudflare = response.headers.get('cf-ray') !== null
+        response = await inner(input, { ...init, headers })
+        const retryOutcome = await classifyGzipResendOutcome(response)
+        logGzipRequestBodyFallback({
+          rejection,
+          status: rejectedStatus,
+          viaCloudflare,
+          retryOutcome,
+          retryStatus: response.status,
+          latched: 'process',
+          bodyChars: identityBody.length,
+        })
+      }
+    }
     // 2.1.208 (#16): Bedrock streaming content-type guard. If a gateway/proxy
     // transformed the binary event-stream response (content-type is no longer
     // application/vnd.amazon.eventstream), throw a clear, actionable error

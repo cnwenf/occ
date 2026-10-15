@@ -51,6 +51,7 @@ import {
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import {
   extractConnectionErrorDetails,
+  extractRefusedToolSchemaIndex,
   isAdvisorEntryRefusedError,
   isImageUnprocessableError,
   isOutputContentFilteredError,
@@ -340,6 +341,19 @@ interface RetryOptions {
    * advisor-entry handler, before the shouldRetry/exhaustion gates".
    */
   retryContext1mBetaRefused?: (error: APIError) => boolean
+  /**
+   * CC 2.1.300 (#36): when an HTTP 400 points at `tools.N.input_schema`
+   * (official `AGe.resolve` regex @107537522 — the API rejected an MCP
+   * tool's input schema), the retry loop calls this so claude.ts can record
+   * the refused tool (conversation-scoped `refusedToolSchemas` map, official
+   * `st`) and retry immediately; the params builder re-sends that tool with
+   * `{type:"object"}` (official `W1t`, @227858355) for the rest of the
+   * conversation. Returns true when a refusal was recorded and the request
+   * must be retried. Bounded by the official per-request cap of 8 recorded
+   * replacements (`lFo`) plus the already_replaced guard, so the heal cannot
+   * loop. Retry token shape: `retry:tool-schema-refused-N` (@240729).
+   */
+  retryToolSchemaRefused?: (error: APIError) => boolean
   /**
    * CC 2.1.285 (item-B2): per-attempt timeout (ms) of a NON-STREAMING fallback
    * request, set by executeNonStreamingRequest (official `I0t` passes
@@ -974,6 +988,24 @@ export async function* withRetry<T>(
         error instanceof APIError &&
         error.status === 400 &&
         options.retryContext1mBetaRefused?.(error)
+      ) {
+        attempt--
+        continue
+      }
+
+      // CC 2.1.300 (#36): official `AGe` heal wired via `sut` (@227866518) —
+      // an HTTP 400 naming `tools.N.input_schema` means the API refused an
+      // MCP tool's input schema. The claude.ts handler records the tool in
+      // the conversation-scoped refusedToolSchemas map and the params builder
+      // re-sends it with {type:"object"} (official `W1t`); the loop retries
+      // without consuming budget, matching the hooks above. The classifier
+      // gate mirrors the official resolve head (400 + regex) so unrelated
+      // 400s never reach the handler; its internal cap (lFo=8) and
+      // already_replaced guard bound the heal.
+      if (
+        error instanceof APIError &&
+        extractRefusedToolSchemaIndex(error) !== undefined &&
+        options.retryToolSchemaRefused?.(error)
       ) {
         attempt--
         continue
