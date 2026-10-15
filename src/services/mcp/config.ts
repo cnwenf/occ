@@ -1528,6 +1528,16 @@ function readMcpConfigFileContents(params: {
     }
   }
 
+  // claude-code 2.1.299 #32: an EMPTY `.mcp.json` (0 bytes / whitespace-only) is
+  // a legitimate "no servers configured" state, not a JSON syntax error. Without
+  // this gate `safeParseJSON('')` returns null (`if (!json) return null`) and the
+  // file is reported as the fatal "MCP config is not a valid JSON", which
+  // `mcp list` / `doctor` / `/status` surface as "invalid". Treat empty content
+  // as an empty server map so it parses as a valid config with zero servers.
+  if (configContent.trim() === '') {
+    return { parsedJson: { mcpServers: {} } }
+  }
+
   const parsedJson = safeParseJSON(configContent)
 
   if (!parsedJson) {
