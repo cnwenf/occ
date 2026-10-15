@@ -243,6 +243,21 @@ Security-priority entries named by Leader — coverage: sandbox `--plugin-dir` w
 - Files: `src/utils/permissions/permissions.ts` (import + `toolMatchesRule` MCP branch), `src/utils/permissions/__tests__/mcpWholeNameRuleMatch299.test.ts` (new, 13 tests / 14 expect).
 - Tests: new file 13 pass; permissions shard `src/utils/permissions/__tests__/` 452 pass / 1 skip / 0 fail; biome lint clean.
 
+**#32 LANDED** — empty `.mcp.json` reported as invalid by `mcp list` / `doctor` / `/status`. (commit 7648383)
+- Official changelog 2.1.299 line 60: "Fixed `claude mcp list`, `claude doctor` and `/status` reporting an empty `.mcp.json` as invalid."
+- OCC root cause: `.mcp.json` project-config path is `parseMcpConfigFromFilePath` → `readMcpConfigFileContents` (config.ts:1483) → `parseMcpConfig`. For an EMPTY file (0 bytes / whitespace-only), `fs.readFileSync` returns `''`; `safeParseJSON('')` returns `null` (`src/utils/json.ts:50` `if (!json) return null`), so config.ts:1533 emitted the fatal `"MCP config is not a valid JSON"` — which list/doctor/status surface as "invalid". An empty file is a legitimate "no servers configured" state, not a JSON syntax error.
+- Fix: gate whitespace-only content to `{ mcpServers: {} }` in `readMcpConfigFileContents` before the `safeParseJSON` step, so it flows through `parseMcpConfig` as a valid config with zero servers and no error. Non-empty malformed JSON still reports invalid (regression-tested).
+- Scope note: `{}` (empty JSON *object* with no `mcpServers` key) is NOT changed — it is valid JSON that fails the required-`mcpServers` schema, a distinct case from the changelog's "empty `.mcp.json`" (a content-less file). Left as-is to avoid over-reach; revisit only with v299 binary evidence that official also relaxed the schema.
+- Files: `src/services/mcp/config.ts` (`readMcpConfigFileContents` empty-content gate), `src/services/mcp/__tests__/mcpEmptyConfigValid299.test.ts` (new, 4 tests / 11 expect, fs injected via `setFsImplementation`).
+- Tests: new file RED 2 fail → GREEN 4 pass; MCP shard `src/services/mcp/__tests__/` 435 pass / 0 fail; biome lint clean.
+
+**#43 STAGED (evidence)** — MCP `constructor`/`toString` permission-prompt site not conclusively located.
+- Official changelog 2.1.299 line 43: MCP servers named `constructor`/`toString`/`valueOf` etc. caused a spurious permission prompt (prototype-name read hazard).
+- Investigation: `getMcpConfigByName` (config.ts:1103) DOES use unsafe bracket-truthiness (`enterpriseServers[name]`, `localServers[name]`, `projectServers[name]`, `userServers[name]`) over plain `{}` containers, so `getMcpConfigByName('constructor')` returns a phantom truthy `Object.prototype.constructor`. BUT tracing its callers shows they are reconnect / CLI / telemetry / agent-spec paths — NOT the auto/bypass permission gate that decides whether to prompt. So this site is a real latent prototype-read bug but is NOT confirmed as the #43 symptom site.
+- #42 (commit 0da14ee) already hardened the 6 existence guards in the server-add/config-merge path via `hasMcpServerEntry` (`Object.hasOwn`). The #43 permission-prompt site is elsewhere and requires deeper v299 forensics to locate faithfully — STAGED per the "never invent" discipline rather than guessed. A safe, in-scope hardening candidate for the next run: route `getMcpConfigByName`'s 4 lookups through `Object.hasOwn` (defense-in-depth; independent of whether it is THE #43 site).
+
+**#110 STAGED (pending)** — `claude mcp add <name> -- <command> --background` misparsed as a background session; needs arg-parser forensics (not yet started).
+
 
 
 
