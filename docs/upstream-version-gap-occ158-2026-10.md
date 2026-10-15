@@ -235,6 +235,15 @@ Security-priority entries named by Leader — coverage: sandbox `--plugin-dir` w
 - Files: `src/utils/settings/types.ts` (helper + 2 fields), `src/utils/settings/__tests__/mcpjsonServersPlainString299.test.ts` (new, 4 tests / 13 expect).
 - Tests: new file 4 pass; settings shard `src/utils/settings/__tests__/` 326 pass / 0 fail; biome lint clean.
 
+**#65 + #158 LANDED** (SECURITY) — MCP `mcp__<server>` rules must key off the server's WHOLE normalized name.
+- Official changelog 2.1.299 line 65: "Fixed deny and ask rules for an MCP server (`mcp__<server>`) not applying when the server's normalized name contains a double underscore." Line 158: "Changed MCP allow rules to reach only the server they name: `mcp__a` no longer allows a server named `a__b` or `a_`; write `mcp__<server>__*` with the server's whole normalized name."
+- OCC root cause: `toolMatchesRule` (`src/utils/permissions/permissions.ts`) re-parsed the tool's own qualified name via `mcpInfoFromString`, which does `split('__')` and truncates the server name at the FIRST `__` (a documented "Known limitation" in `mcpStringUtils.ts`). For a server whose normalized name contains `__` (literal `a__b`, or `a  b` → `a__b`): #65 — a deny/ask rule `mcp__a__b` parsed as server `a` + tool `b` and never matched (fail-open); #158 — an allow rule `mcp__a` parsed as server `a` and over-reached onto `a__b` / `a_`.
+- Fix: the tool's real server name is available as `tool.mcpInfo.serverName`, so the MCP branch now compares the rule string against the whole-name forms `mcp__${normalizeNameForMCP(serverName)}` and `mcp__…__*` directly (exact-tool rules still match on the qualified name upstream; a legacy `split`-parse fallback is kept for the no-`mcpInfo` edge). This is the natural correct implementation of the #158 contract ("whole normalized name"), not an invented behavior.
+- Note: `isToolFromMcpServer` (utils.ts) shares the same `split('__')` truncation but is NOT the permission-rule path named by #65/#158; left unchanged (no evidence it's in scope — avoid scope creep).
+- Files: `src/utils/permissions/permissions.ts` (import + `toolMatchesRule` MCP branch), `src/utils/permissions/__tests__/mcpWholeNameRuleMatch299.test.ts` (new, 13 tests / 14 expect).
+- Tests: new file 13 pass; permissions shard `src/utils/permissions/__tests__/` 452 pass / 1 skip / 0 fail; biome lint clean.
+
+
 
 
 ## §4 Long-tail / orchestrator items

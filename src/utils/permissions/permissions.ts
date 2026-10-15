@@ -5,6 +5,7 @@ import {
   getToolNameForPermissionCheck,
   mcpInfoFromString,
 } from '../../services/mcp/mcpStringUtils.js'
+import { normalizeNameForMCP } from '../../services/mcp/normalization.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
@@ -284,8 +285,33 @@ function toolMatchesRule(
     return true
   }
 
-  // MCP server-level permission: rule "mcp__server1" matches tool "mcp__server1__tool1"
-  // Also supports wildcard: rule "mcp__server1__*" matches all tools from server1
+  // MCP server-level permission: rule "mcp__server1" matches tool
+  // "mcp__server1__tool1"; wildcard "mcp__server1__*" matches all its tools.
+  //
+  // claude-code 2.1.299 #65 + #158: matching must key off the server's WHOLE
+  // normalized name, not a blind split('__') of the qualified name. Splitting
+  // truncates the server name at the first '__', so a server whose normalized
+  // name contains '__' (literal "a__b", or "a  b" -> "a__b") previously:
+  //   - #65: had its deny/ask rule "mcp__a__b" parse as server "a" + tool "b"
+  //     and never match -> rules silently not applied (fail-open).
+  //   - #158: let an allow rule "mcp__a" match the truncated server "a" and
+  //     over-reach onto servers "a__b" and "a_".
+  // The tool's real server name is known here (tool.mcpInfo.serverName), so
+  // compare the rule string against the whole-name forms directly. Per #158, a
+  // rule reaches only the server it names: to match "a__b" you write the whole
+  // normalized name ("mcp__a__b" or "mcp__a__b__*").
+  const serverName = tool.mcpInfo?.serverName
+  if (serverName !== undefined) {
+    const normalizedServer = normalizeNameForMCP(serverName)
+    const ruleString = rule.ruleValue.toolName
+    return (
+      ruleString === `mcp__${normalizedServer}` ||
+      ruleString === `mcp__${normalizedServer}__*`
+    )
+  }
+
+  // Fallback (no mcpInfo — e.g. an MCP tool name without structured info):
+  // best-effort legacy parse of the qualified name.
   const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName)
   const toolInfo = mcpInfoFromString(nameForRuleMatch)
 
