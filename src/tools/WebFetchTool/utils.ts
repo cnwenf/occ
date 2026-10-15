@@ -6,10 +6,13 @@ import {
 } from '../../services/analytics/index.js'
 import { queryHaiku } from '../../services/api/claude.js'
 import { createCombinedAbortSignal } from '../../utils/combinedAbortSignal.js'
+import { type EffortValue } from '../../utils/effort.js'
 import { parseEnvInt } from '../../utils/envValidation.js'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
+import { modelFamilyKey } from '../../utils/model/fastRejection.js'
+import { getSmallFastModel } from '../../utils/model/model.js'
 import {
   isBinaryContentType,
   persistBinaryContent,
@@ -647,6 +650,69 @@ export async function getURLMarkdownContent(
   return entry
 }
 
+/**
+ * CC 2.1.299 (#156): "WebFetch page reads pick effort like web searches: the
+ * caller's effort level when the read runs on the caller's model, otherwise
+ * the small-model setting."
+ *
+ * Official mechanism (v299 ELF forensics, /tmp/cc-diff-299 — byte-exact):
+ *   - The WebFetch secondary-model apply (`VTt`, v299 @225757953) gained a
+ *     `helperEffortFor` field threaded from the tool-use context
+ *     (@225776749: `helperEffortFor:h.helperEffortFor`); v296's `avt`
+ *     (@217539548) is identical WITHOUT it (`helperEffortFor` string counts:
+ *     v299 = 11, v296 = 0 — true-new in 2.1.299).
+ *   - The context accessor (@219600672) is `helperEffortFor:(s)=>nen(e,s)`.
+ *   - `nen` (v299 @219478902):
+ *     `function nen(e,o){return UBn(o,Tc(e))?{effortValue:jh(e),turnEffort:Bh(e.permissionLayers)}:{effortValue:Rks(e.getAppState(),o),turnEffort:void 0}}`
+ *     — same model family → the caller's effort; else → the settings effort
+ *     for the helper model (`Rks` = `wd(Fyo(e),n,{withHold:!1})`, @218710257;
+ *     `Fyo` strips a session level-override so only the configured value
+ *     survives). `UBn(e,n){return lK(e)===lK(n)}` is family equality via the
+ *     canonical model key (`lK`, @218709653) — OCC's `modelFamilyKey`.
+ *   - The helper query (`JD`/`BNr`, @226727688) calls it with the RESOLVED
+ *     helper model and spreads the result into the request options:
+ *     `options:{...y,...h?.(S),model:S,...}`.
+ *
+ * OCC adaptation (KISS, surgical): the apply query runs through `queryHaiku`,
+ * which pins the model to `getSmallFastModel()` (mirroring official `JD`'s
+ * helper-model resolution) but passes `effortValue` through to
+ * `resolveAppliedEffort`. So the ported decision is just the effort value:
+ *   - helper (small) model family === caller model family → the caller's
+ *     effort (official `jh(e)` = OCC `appState.effortValue`, the same source
+ *     WebSearchTool passes — "pick effort like web searches");
+ *   - else → `undefined`: OCC has no per-model settings-effort table
+ *     (`modelSettings` entries only carry `maxEffortLevel`, a CAP, not a
+ *     target — see src/utils/effort/cap.ts), so there is no faithful source
+ *     for official `Rks`'s "small-model setting" here. Passing the global
+ *     `effortLevel` setting instead would risk an effort level the small
+ *     model does not support (e.g. xhigh on haiku); the pre-#156 behavior
+ *     (no effort on the apply query) is the safe reduction. `turnEffort`
+ *     likewise has no OCC analog (no permission-layer turn effort) and is
+ *     dropped in both branches.
+ */
+export interface WebFetchApplyEffort {
+  /** Caller's resolved model (official `Tc(e)` — OCC: options.mainLoopModel). */
+  callerModel?: string
+  /** Caller's session effort (official `jh(e)` — OCC: appState.effortValue). */
+  callerEffortValue?: EffortValue
+}
+
+/**
+ * Pure decision helper mirroring official `nen`'s effortValue half: the
+ * caller's effort when the small (helper) model is the same family as the
+ * caller's model (`UBn(o,Tc(e))`), else undefined (see adaptation note on
+ * WebFetchApplyEffort). Exported for unit tests.
+ */
+export function webFetchApplyEffortValue(
+  effort: WebFetchApplyEffort | undefined,
+  smallModel: string = getSmallFastModel(),
+): EffortValue | undefined {
+  if (effort?.callerModel === undefined) return undefined
+  return modelFamilyKey(smallModel) === modelFamilyKey(effort.callerModel)
+    ? effort.callerEffortValue
+    : undefined
+}
+
 export async function applyPromptToMarkdown(
   prompt: string,
   markdownContent: string,
@@ -654,6 +720,7 @@ export async function applyPromptToMarkdown(
   isNonInteractiveSession: boolean,
   isPreapprovedDomain: boolean,
   contentLead = '',
+  effort?: WebFetchApplyEffort,
 ): Promise<string> {
   // Truncate content to avoid "Prompt is too long" errors from the secondary
   // model. Item #018a — official uses the surrogate-safe head slicer
@@ -670,6 +737,9 @@ export async function applyPromptToMarkdown(
     prompt,
     isPreapprovedDomain,
   )
+  // CC 2.1.299 (#156): official BNr spreads `...h?.(S)` (helperEffortFor
+  // called with the resolved helper model) into the request options.
+  const effortValue = webFetchApplyEffortValue(effort)
   const assistantMessage = await queryHaiku({
     systemPrompt: asSystemPrompt([]),
     // Official Jht builds `userPrompt: `${contentLead}${modelPrompt}`` — the
@@ -683,6 +753,7 @@ export async function applyPromptToMarkdown(
       isNonInteractiveSession,
       hasAppendSystemPrompt: false,
       mcpTools: [],
+      effortValue,
     },
   })
 

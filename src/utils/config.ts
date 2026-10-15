@@ -1516,6 +1516,17 @@ function getConfig<A>(
     const fileContent = fs.readFileSync(file, {
       encoding: 'utf-8',
     })
+    // CC 2.1.299 (#039): a 0-byte config file counts as ABSENT, not corrupt.
+    // The bwrap sandbox leaves 0-byte mount-point stubs at config-dir paths
+    // (official prompt text @107002052 — "A 0-byte one belongs to the
+    // sandbox"; official doctor diagnostic @228225896). Parsing '' as JSON
+    // would trip the corrupted-file machinery (stderr warning, .corrupted
+    // backup copy, tengu_config_parse_error telemetry) and the default config
+    // it returns would then be saved over the stub — going straight to
+    // defaults keeps the residue inert.
+    if (fileContent.length === 0) {
+      return createDefault()
+    }
     try {
       // Strip BOM before parsing - PowerShell 5.x adds BOM to UTF-8 files
       const parsedConfig = jsonParse(stripBOM(fileContent))

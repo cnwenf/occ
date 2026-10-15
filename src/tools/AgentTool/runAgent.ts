@@ -33,7 +33,8 @@ import {
   connectToServer,
   fetchToolsForClient,
 } from '../../services/mcp/client.js'
-import { getMcpConfigByName } from '../../services/mcp/config.js'
+import { filterMcpServersByPolicy, getMcpConfigByName } from '../../services/mcp/config.js'
+import { isReservedPrototypeMcpServerName } from '../../services/mcp/mcpStringUtils.js'
 import type {
   MCPServerConnection,
   ScopedMcpServerConfig,
@@ -197,7 +198,9 @@ export function resolveShouldAvoidPermissionPrompts(
  * @param parentClients MCP clients inherited from parent context
  * @returns Merged clients (parent + agent-specific), agent MCP tools, and cleanup function
  */
-async function initializeAgentMcpServers(
+// Exported for unit tests (CC 2.1.299 #081 policy-gate coverage) — production
+// callers go through runAgent().
+export async function initializeAgentMcpServers(
   agentDefinition: AgentDefinition,
   parentClients: MCPServerConnection[],
 ): Promise<{
@@ -266,12 +269,41 @@ async function initializeAgentMcpServers(
         continue
       }
       const [serverName, serverConfig] = entries[0]!
+      // CC 2.1.299 (official @225906218, byte-exact): reserved prototype names
+      // (`__proto__`, ...) in agent frontmatter are skipped before any
+      // registration/connect —
+      // `if(EBe(h)){t(`[Agent: ${e.agentType}] Skipping reserved MCP server
+      //   name '${h}' in frontmatter`,{level:"warn"});continue}`
+      if (isReservedPrototypeMcpServerName(serverName)) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Skipping reserved MCP server name '${serverName}' in frontmatter`,
+          { level: 'warn' },
+        )
+        continue
+      }
       name = serverName
       config = {
         ...serverConfig,
         scope: 'dynamic' as const,
       } as ScopedMcpServerConfig
       isNewlyCreated = true
+    }
+
+    // CC 2.1.299 (#081): enterprise-policy gate BEFORE any connect/start.
+    // Official v299 checks the skip reason before spawning (health-check `Ze`
+    // gates via `Ec`; a policy-blocked server is reported, never started).
+    // A frontmatter server denied via allowedMcpServers/deniedMcpServers is
+    // skipped here instead of being connected — v296-era behavior connected
+    // unconditionally (same bug class as the `mcp list`/`get` path).
+    // filterMcpServersByPolicy is the same helper print.ts (#080) and the
+    // mcp.tsx health check use; it exempts sdk-type servers internally.
+    const { blocked } = filterMcpServersByPolicy({ [name]: config })
+    if (blocked.length > 0) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] MCP server '${name}' blocked by enterprise policy — not starting`,
+        { level: 'warn' },
+      )
+      continue
     }
 
     // Connect to the server

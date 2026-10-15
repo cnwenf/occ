@@ -1,10 +1,12 @@
 import { z } from 'zod/v4'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { cronToHuman } from '../../utils/cron.js'
-import { listAllCronTasks } from '../../utils/cronTasks.js'
+import { getCronJitterConfig } from '../../utils/cronJitterConfig.js'
+import { listAllCronTasks, taskNextFireAt } from '../../utils/cronTasks.js'
 import { truncate } from '../../utils/format.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getTeammateContext } from '../../utils/teammateContext.js'
+import { nextRunUiSuffix } from './nextRunDisplay.js'
 import {
   buildCronListPrompt,
   CRON_LIST_DESCRIPTION,
@@ -27,6 +29,13 @@ const outputSchema = lazySchema(() =>
         prompt: z.string(),
         recurring: z.boolean().optional(),
         durable: z.boolean().optional(),
+        // Official 2.1.299 (#074) `MLn` describe, byte-exact (v299 @248836603).
+        nextFireAt: z
+          .number()
+          .optional()
+          .describe(
+            "Epoch ms of the job's next run, the scheduler's per-job offset included",
+          ),
       }),
     ),
   }),
@@ -67,14 +76,24 @@ export const CronListTool = buildTool({
     const tasks = ctx
       ? allTasks.filter(t => t.agentId === ctx.agentId)
       : allTasks
-    const jobs = tasks.map(t => ({
-      id: t.id,
-      cron: t.cron,
-      humanSchedule: cronToHuman(t.cron),
-      prompt: t.prompt,
-      ...(t.recurring ? { recurring: true } : {}),
-      ...(t.durable === false ? { durable: false } : {}),
-    }))
+    // Official 2.1.299 (#074, v299 @248837000): `i=Yq(),s=Date.now(); …
+    // a=e.nextFireAt??Iat(e,i); …a!==null&&{nextFireAt:Math.max(a,s)}` —
+    // report the scheduler-accurate next run per job, clamped to now (a job
+    // whose computed fire time already passed will fire on the next tick).
+    const jitterCfg = getCronJitterConfig()
+    const now = Date.now()
+    const jobs = tasks.map(t => {
+      const next = taskNextFireAt(t, jitterCfg)
+      return {
+        id: t.id,
+        cron: t.cron,
+        humanSchedule: cronToHuman(t.cron),
+        prompt: t.prompt,
+        ...(t.recurring ? { recurring: true } : {}),
+        ...(t.durable === false ? { durable: false } : {}),
+        ...(next !== null && { nextFireAt: Math.max(next, now) }),
+      }
+    })
     return { data: { jobs } }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
@@ -86,7 +105,7 @@ export const CronListTool = buildTool({
           ? output.jobs
               .map(
                 j =>
-                  `${j.id} — ${j.humanSchedule}${j.recurring ? ' (recurring)' : ' (one-shot)'}${j.durable === false ? ' [session-only]' : ''}: ${truncate(j.prompt, 80, true)}`,
+                  `${j.id} — ${j.humanSchedule}${j.recurring ? ' (recurring)' : ' (one-shot)'}${j.durable === false ? ' [session-only]' : ''}${nextRunUiSuffix(j.nextFireAt)}: ${truncate(j.prompt, 80, true)}`,
               )
               .join('\n')
           : 'No scheduled jobs.',

@@ -47,6 +47,7 @@ import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import { logEvent } from '../analytics/index.js'
 import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from '../analytics/metadata.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
+import { getMcpServerHeaders } from './headersHelper.js'
 import type { McpHTTPServerConfig, McpSSEServerConfig } from './types.js'
 import { getLoggingSafeMcpBaseUrl } from './utils.js'
 import { performCrossAppAccess, XaaTokenExchangeError } from './xaa.js'
@@ -192,19 +193,84 @@ export async function normalizeOAuthErrorBody(
 /* eslint-enable eslint-plugin-n/no-unsupported-features/node-builtins */
 
 /**
+ * CC 2.1.299 #116: strict same-origin check — official `Uie` (v299
+ * @215367688, byte-verbatim): `function Uie(e,n){try{let r=new URL(e).origin,
+ * s=new URL(n).origin;return r!=="null"&&r===s}catch{return!1}}`.
+ */
+function isSameOrigin(url: string | URL, baseUrl: string | URL): boolean {
+  try {
+    const a = new URL(String(url)).origin
+    const b = new URL(String(baseUrl)).origin
+    return a !== 'null' && a === b
+  } catch {
+    return false
+  }
+}
+
+/**
+ * CC 2.1.299 #116: configured headers (static + headersHelper) for ONE OAuth
+ * request URL — official `qbn`+`_`+`U` (v299 header chunk @252581400, new in
+ * v299): `qbn(e,r,n){return U(r,n)?Object.fromEntries(await _(e,r)):{}}`,
+ * `U(e,r){return(!!e.headers||!!e.headersHelper)&&Uie(String(r),e.url)}`,
+ * and `_` builds the combined headers then `n.delete("authorization")`.
+ * Configured headers are attached ONLY when the request URL is same-origin
+ * with the configured server URL (an OAuth AS on another origin gets none —
+ * official parity) and `authorization` is always stripped (OAuth flows set
+ * their own client authentication).
+ */
+async function getOAuthConfiguredHeaders(
+  serverName: string,
+  serverConfig: McpSSEServerConfig | McpHTTPServerConfig | undefined,
+  url: string | URL,
+): Promise<Record<string, string>> {
+  if (!serverConfig) return {}
+  if (!serverConfig.headers && !serverConfig.headersHelper) return {}
+  if (!isSameOrigin(url, serverConfig.url)) return {}
+  const combined = await getMcpServerHeaders(serverName, serverConfig)
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(combined)) {
+    if (key.toLowerCase() === 'authorization') continue
+    out[key] = value
+  }
+  return out
+}
+
+/**
  * Creates a fetch function with a fresh 30-second timeout for each OAuth request.
  * Used by ClaudeAuthProvider for metadata discovery and token refresh.
  * Prevents stale timeout signals from affecting auth operations.
+ *
+ * CC 2.1.299 #116: when serverName/serverConfig are provided, the server's
+ * configured `headers`/`headersHelper` are attached to same-origin requests
+ * (official `fle` wrapper semantics, minus its manual-redirect loop which is
+ * #152 scope): request's own headers WIN over configured ones — official
+ * `fle` builds `new Headers(configured)` then overlays `init.headers`.
  */
-function createAuthFetch(): FetchLike {
+function createAuthFetch(
+  serverName?: string,
+  serverConfig?: McpSSEServerConfig | McpHTTPServerConfig,
+): FetchLike {
   return async (url: string | URL, init?: RequestInit) => {
+    let effectiveInit = init
+    if (serverName && serverConfig) {
+      const configured = await getOAuthConfiguredHeaders(
+        serverName,
+        serverConfig,
+        url,
+      )
+      if (Object.keys(configured).length > 0) {
+        const merged = new Headers(configured)
+        new Headers(init?.headers).forEach((value, key) => merged.set(key, value))
+        effectiveInit = { ...init, headers: merged }
+      }
+    }
     const timeoutSignal = AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS)
-    const isPost = init?.method?.toUpperCase() === 'POST'
+    const isPost = effectiveInit?.method?.toUpperCase() === 'POST'
 
     // No existing signal - just use timeout
-    if (!init?.signal) {
+    if (!effectiveInit?.signal) {
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const response = await fetch(url, { ...init, signal: timeoutSignal })
+      const response = await fetch(url, { ...effectiveInit, signal: timeoutSignal })
       return isPost ? normalizeOAuthErrorBody(response) : response
     }
 
@@ -212,22 +278,22 @@ function createAuthFetch(): FetchLike {
     const controller = new AbortController()
     const abort = () => controller.abort()
 
-    init.signal.addEventListener('abort', abort)
+    effectiveInit.signal.addEventListener('abort', abort)
     timeoutSignal.addEventListener('abort', abort)
 
     // Cleanup to prevent event listener leaks after fetch completes
     const cleanup = () => {
-      init.signal?.removeEventListener('abort', abort)
+      effectiveInit?.signal?.removeEventListener('abort', abort)
       timeoutSignal.removeEventListener('abort', abort)
     }
 
-    if (init.signal.aborted) {
+    if (effectiveInit.signal.aborted) {
       controller.abort()
     }
 
     try {
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const response = await fetch(url, { ...init, signal: controller.signal })
+      const response = await fetch(url, { ...effectiveInit, signal: controller.signal })
       cleanup()
       return isPost ? normalizeOAuthErrorBody(response) : response
     } catch (error) {
@@ -588,6 +654,7 @@ async function revokeToken({
   clientSecret,
   accessToken,
   authMethod = 'client_secret_basic',
+  configuredHeaders = {},
 }: {
   serverName: string
   endpoint: string
@@ -597,12 +664,21 @@ async function revokeToken({
   clientSecret?: string
   accessToken?: string
   authMethod?: 'client_secret_basic' | 'client_secret_post'
+  /**
+   * CC 2.1.299 #116: server's configured headers for this endpoint (official
+   * `Pe` param `configuredHeaders:v`, spread as `y={...v,"Content-Type":
+   * "application/x-www-form-urlencoded"}` — Content-Type wins; the Bearer
+   * retry keeps them via `{...headers, Authorization}`). Computed by the
+   * caller with the same-origin gate (official `qbn`).
+   */
+  configuredHeaders?: Record<string, string>
 }): Promise<void> {
   const params = new URLSearchParams()
   params.set('token', token)
   params.set('token_type_hint', tokenTypeHint)
 
   const headers: Record<string, string> = {
+    ...configuredHeaders,
     'Content-Type': 'application/x-www-form-urlencoded',
   }
 
@@ -677,10 +753,14 @@ async function revokeServerSideTokens(
       // than the MCP URL — use the persisted discoveryState if we have it.
       const asUrl =
         tokenData.discoveryState?.authorizationServerUrl ?? serverConfig.url
+      // CC 2.1.299 #116: official `De` runs discovery with
+      // `fetchFn:fle(e,t,Jzt())` (configured-header-aware) and computes the
+      // revocation headers with `qbn(e,t,revocationEndpointStr)`.
       const metadata = await fetchAuthServerMetadata(
         serverName,
         asUrl,
         serverConfig.oauth?.authServerMetadataUrl,
+        createAuthFetch(serverName, serverConfig),
       )
 
       if (!metadata) {
@@ -694,6 +774,13 @@ async function revokeServerSideTokens(
           logMCPDebug(serverName, 'Server does not support token revocation')
         } else {
           const revocationEndpointStr = String(revocationEndpoint)
+          // CC 2.1.299 #116: official `A=await qbn(e,t,v)` — configured
+          // headers for the revocation endpoint (same-origin gate inside).
+          const configuredHeaders = await getOAuthConfiguredHeaders(
+            serverName,
+            serverConfig,
+            revocationEndpointStr,
+          )
           // RFC 7009 defines revocation_endpoint_auth_methods_supported
           // separately from the token endpoint's list; prefer it if present.
           const authMethods =
@@ -726,6 +813,7 @@ async function revokeServerSideTokens(
                 clientSecret: tokenData.clientSecret,
                 accessToken: tokenData.accessToken,
                 authMethod,
+                configuredHeaders,
               })
             } catch (error: unknown) {
               // Log but continue
@@ -748,6 +836,7 @@ async function revokeServerSideTokens(
                 clientSecret: tokenData.clientSecret,
                 accessToken: tokenData.accessToken,
                 authMethod,
+                configuredHeaders,
               })
             } catch (error: unknown) {
               logMCPDebug(
@@ -1247,7 +1336,8 @@ export async function performMCPOAuthFlow(
         serverName,
         serverConfig.url,
         serverConfig.oauth?.authServerMetadataUrl,
-        undefined,
+        // CC 2.1.299 #116: configured-header-aware fetch for OAuth discovery.
+        createAuthFetch(serverName, serverConfig),
         wwwAuthParams.resourceMetadataUrl,
       )
       if (metadata) {
@@ -1478,6 +1568,10 @@ export async function performMCPOAuthFlow(
             serverUrl: serverConfig.url,
             scope: wwwAuthParams.scope,
             resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+            // CC 2.1.299 #116: DCR + discovery inside the SDK auth() run
+            // through the configured-header-aware fetch (official threads
+            // `fle` through the OAuth client chunk).
+            fetchFn: createAuthFetch(serverName, serverConfig),
           })
           logMCPDebug(serverName, `Initial auth result: ${result}`)
 
@@ -1520,6 +1614,9 @@ export async function performMCPOAuthFlow(
       serverUrl: serverConfig.url,
       authorizationCode,
       resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+      // CC 2.1.299 #116: token exchange (POST) carries configured headers on
+      // same-origin requests — official `fle` non-GET path.
+      fetchFn: createAuthFetch(serverName, serverConfig),
     })
 
     logMCPDebug(serverName, `Auth result: ${result}`)
@@ -2385,6 +2482,8 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
           this.serverName,
           this.serverConfig.url,
           metadataUrl,
+          // CC 2.1.299 #116: configured-header-aware discovery fetch.
+          createAuthFetch(this.serverName, this.serverConfig),
         )
         if (metadata) {
           return {
@@ -2527,7 +2626,9 @@ export class ClaudeAuthProvider implements OAuthClientProvider {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         logMCPDebug(this.serverName, `Starting token refresh`)
-        const authFetch = createAuthFetch()
+        // CC 2.1.299 #116: refresh discovery + token POST carry the server's
+        // configured headers (official `fle`-wrapped refresh fetch).
+        const authFetch = createAuthFetch(this.serverName, this.serverConfig)
 
         // Reuse cached metadata from the initial OAuth flow if available,
         // since metadata (token endpoint URL, etc.) is static per auth server.

@@ -12,6 +12,8 @@ import { installOrUpdateClaudePackage, localInstallationExists } from '../utils/
 import { removeInstalledSymlink } from '../utils/nativeInstaller/index.js';
 import { gt, gte } from '../utils/semver.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
+import { shouldRenderAutoUpdater } from './autoUpdaterVisibility.js';
+import { UpdaterSeparator } from './UpdaterSeparator.js';
 type Props = {
   isUpdating: boolean;
   onChangeIsUpdating: (isUpdating: boolean) => void;
@@ -19,6 +21,9 @@ type Props = {
   autoUpdaterResult: AutoUpdaterResult | null;
   showSuccessMessage: boolean;
   verbose: boolean;
+  // Official v299 (#049): undefined → no separator node; true → leading
+  // dim " ·" so the notice renders BESIDE other status chrome.
+  withSeparator?: boolean;
 };
 export function AutoUpdater({
   isUpdating,
@@ -26,7 +31,8 @@ export function AutoUpdater({
   onAutoUpdaterResult,
   autoUpdaterResult,
   showSuccessMessage,
-  verbose
+  verbose,
+  withSeparator
 }: Props): React.ReactNode {
   const [versions, setVersions] = useState<{
     global?: string | null;
@@ -179,13 +185,18 @@ export function AutoUpdater({
 
   // Check every 30 minutes
   useInterval(checkForUpdates, 30 * 60 * 1000);
-  if (!autoUpdaterResult?.version && (!versions.global || !versions.latest)) {
-    return null;
-  }
-  if (!autoUpdaterResult?.version && !isUpdating) {
+  // Official v299 (#049) null guard — see shouldRenderAutoUpdater.
+  if (!shouldRenderAutoUpdater({
+    verbose,
+    isUpdating,
+    autoUpdaterResult,
+    showSuccessMessage,
+    updateSemver
+  })) {
     return null;
   }
   return <Box flexDirection="row" gap={1}>
+      <UpdaterSeparator withSeparator={withSeparator} />
       {verbose && <Text dimColor wrap="truncate">
           globalVersion: {versions.global} &middot; latestVersion:{' '}
           {versions.latest}

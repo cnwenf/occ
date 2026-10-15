@@ -3880,6 +3880,17 @@ async function* queryModel(
       newMessages.push(m)
       fallbackMessage = m
       yield m
+      // CC 2.1.299 (#125): a reply cut off at the output token limit must
+      // surface a notice after the non-streaming fallback — previously this
+      // path ended the turn silently. Official: `qf = QGn(result); if
+      // (qf !== undefined) yield qf;`
+      const cutShortNotice = buildNonStreamingCutShortMessage(
+        result,
+        maxOutputTokens,
+      )
+      if (cutShortNotice !== undefined) {
+        yield cutShortNotice
+      }
     } finally {
       clearStreamIdleTimers()
     }
@@ -3987,6 +3998,14 @@ async function* queryModel(
         newMessages.push(m)
         fallbackMessage = m
         yield m
+        // CC 2.1.299 (#125): cut-short notice (see the other fallback site).
+        const cutShortNotice = buildNonStreamingCutShortMessage(
+          result,
+          maxOutputTokens,
+        )
+        if (cutShortNotice !== undefined) {
+          yield cutShortNotice
+        }
 
         // Continue to success logging below
       } catch (fallbackError) {
@@ -4659,6 +4678,82 @@ export async function queryWithModel({
 // The SDK's 21333-token cap is derived from 10min × 128k tokens/hour, but we
 // bypass it by setting a client-level timeout, so we can cap higher.
 export const MAX_NON_STREAMING_TOKENS = 64_000
+
+/**
+ * Official 2.1.299 (#125) `ckn` — cut-short notice builder for the
+ * max_tokens / model_context_window_exceeded stop reasons, with the
+ * non-streaming wording variant (`isAtNonStreamingCap` = the request was
+ * capped by the non-streaming maximum, so raising
+ * CLAUDE_CODE_MAX_OUTPUT_TOKENS cannot help).
+ */
+function buildCutShortErrorMessage(
+  stopReason: string | null | undefined,
+  maxTokens: number,
+  outputTokens: number,
+  isAtNonStreamingCap = false,
+): AssistantMessage | undefined {
+  if (stopReason === 'max_tokens') {
+    logEvent('tengu_max_tokens_reached', { max_tokens: maxTokens })
+    return createAssistantAPIErrorMessage({
+      content: isAtNonStreamingCap
+        ? `${API_ERROR_MESSAGE_PREFIX}: Claude's response exceeded the ${maxTokens} output token maximum for a request sent without streaming. The CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable cannot raise this limit.`
+        : `${API_ERROR_MESSAGE_PREFIX}: Claude's response exceeded the ${maxTokens} output token maximum. To configure this behavior, set the CLAUDE_CODE_MAX_OUTPUT_TOKENS environment variable.`,
+      apiError: 'max_output_tokens',
+      error: 'max_output_tokens',
+    })
+  }
+  if (stopReason === 'model_context_window_exceeded') {
+    logEvent('tengu_context_window_exceeded', {
+      max_tokens: maxTokens,
+      output_tokens: outputTokens,
+    })
+    return createAssistantAPIErrorMessage({
+      content: `${API_ERROR_MESSAGE_PREFIX}: The model has reached its context window limit.`,
+      apiError: 'max_output_tokens',
+      error: 'max_output_tokens',
+    })
+  }
+  return undefined
+}
+
+/**
+ * Official 2.1.299 (#125) `QGn` — cut-short notice for a NON-STREAMING
+ * response. Changelog: "Fixed replies cut off at the output token limit
+ * ending the turn silently, with no retry or error, after a request fell
+ * back to non-streaming mode." The streaming path already surfaces
+ * max_tokens stops; the non-streaming fallback sites did not, so a reply
+ * cut at the cap ended the turn silently. Official call site:
+ * `let qf = QGn(result); if (qf !== undefined) yield qf;`
+ *
+ * `requestedMaxTokens` is the PRE-cap requested max_tokens (official `Bb`);
+ * the effective maximum is min(requested, MAX_NON_STREAMING_TOKENS)
+ * (official `Math.min(Bb, Gan)`), and the "cannot raise this limit" wording
+ * is selected when the request was capped by the non-streaming maximum
+ * (official `Bb >= Gan`). The official `tengu_vast_sunset` gate defaults to
+ * true; OCC has no statsig-gate runtime, so it is treated as always-on.
+ */
+export function buildNonStreamingCutShortMessage(
+  result: {
+    stop_reason?: string | null
+    usage?: { output_tokens?: number } | null
+  },
+  requestedMaxTokens: number,
+): AssistantMessage | undefined {
+  try {
+    return buildCutShortErrorMessage(
+      result.stop_reason,
+      Math.min(requestedMaxTokens, MAX_NON_STREAMING_TOKENS),
+      result.usage?.output_tokens ?? 0,
+      requestedMaxTokens >= MAX_NON_STREAMING_TOKENS,
+    )
+  } catch {
+    logForDebugging(
+      'building the cut-short error for a non-streaming response failed',
+      { level: 'error' },
+    )
+    return undefined
+  }
+}
 
 /**
  * Adjusts thinking budget when max_tokens is capped for non-streaming fallback.

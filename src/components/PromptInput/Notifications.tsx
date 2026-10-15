@@ -13,6 +13,7 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { useVoiceEnabled } from '../../hooks/useVoiceEnabled.js';
 import { Box, Text } from '../../ink.js';
 import { OAuthExpiryNotice } from './OAuthExpiryNotice.js';
+import { PlanModeBypassNotice } from './PlanModeBypassNotice.js';
 import { useClaudeAiLimits } from '../../services/claudeAiLimitsHook.js';
 import { calculateTokenWarningState } from '../../services/compact/autoCompact.js';
 import type { MCPServerConnection } from '../../services/mcp/types.js';
@@ -22,6 +23,7 @@ import type { AutoUpdaterResult } from '../../utils/autoUpdater.js';
 import { getExternalEditor } from '../../utils/editor.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { formatDuration } from '../../utils/format.js';
+import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { setEnvHookNotifier } from '../../utils/hooks/fileChangedWatcher.js';
 import { toIDEDisplayName } from '../../utils/ide.js';
 import { getMessagesAfterCompactBoundary } from '../../utils/messages.js';
@@ -278,6 +280,9 @@ function NotificationContent({
   const isBriefOnly = feature('KAIROS') || feature('KAIROS_BRIEF') ?
   // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
   useAppState(s_1 => s_1.isBriefOnly) : false;
+  // OCC adaptation (#049): fullscreen clips this column to a single row —
+  // see the composed hint+updater row in the return below.
+  const isFullscreen = isFullscreenEnvEnabled();
 
   // When voice is actively recording or processing, replace all
   // notifications with just the voice indicator.
@@ -286,11 +291,30 @@ function NotificationContent({
   }
   return <>
       <IdeStatusIndicator ideSelection={ideSelection} mcpClients={mcpClients} />
-      {notifications.current && ('jsx' in notifications.current ? <Text wrap="truncate" key={notifications.current.key}>
-            {notifications.current.jsx}
-          </Text> : <Text color={notifications.current.color} dimColor={!notifications.current.color} wrap="truncate">
-            {notifications.current.text}
-          </Text>)}
+      {(() => {
+        // OCC adaptation (official v299 #049): OCC fullscreen clips this
+        // Notifications column to height=1 (PromptInput.tsx:2618), so the
+        // idle "/clear to save tokens" hint (notifications.current) and the
+        // "Update installed" notice are mutually exclusive — whichever loses
+        // the single-row clip is hidden. Official shows them BESIDE each
+        // other; we reproduce that by composing the current notification and
+        // the auto-updater into ONE horizontal row (withSeparator adds the
+        // leading " ·" divider) whenever fullscreen would otherwise clip one
+        // of them. Non-fullscreen keeps the vertical stack (footer renders
+        // the updater separately below).
+        const current = notifications.current ? ('jsx' in notifications.current ? <Text wrap="truncate" key={notifications.current.key}>
+              {notifications.current.jsx}
+            </Text> : <Text color={notifications.current.color} dimColor={!notifications.current.color} wrap="truncate">
+              {notifications.current.text}
+            </Text>) : null;
+        if (isFullscreen && current && shouldShowAutoUpdater) {
+          return <Box flexDirection="row" flexShrink={0}>
+              {current}
+              <AutoUpdaterWrapper verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isAutoUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={!isShowingCompactMessage} withSeparator={true} />
+            </Box>;
+        }
+        return current;
+      })()}
       {isInOverageMode && !isTeamOrEnterprise && <Box>
           <Text dimColor wrap="truncate">
             Now using extra usage
@@ -321,7 +345,7 @@ function NotificationContent({
           </Text>
         </Box>}
       {!isBriefOnly && <TokenWarning tokenUsage={tokenUsage} model={mainLoopModel} />}
-      {shouldShowAutoUpdater && <AutoUpdaterWrapper verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isAutoUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={!isShowingCompactMessage} />}
+      {shouldShowAutoUpdater && !(isFullscreen && notifications.current) && <AutoUpdaterWrapper verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isAutoUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={!isShowingCompactMessage} />}
       {feature('VOICE_MODE') ? voiceEnabled && voiceError && <Box>
               <Text color="error" wrap="truncate">
                 {voiceError}
@@ -329,5 +353,6 @@ function NotificationContent({
             </Box> : null}
       <MemoryUsageIndicator />
       <SandboxPromptFooterHint />
+      <PlanModeBypassNotice />
     </>;
 }

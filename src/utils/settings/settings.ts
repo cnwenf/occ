@@ -62,7 +62,11 @@ import {
   createPolicyIssueSink,
   managedDocNotObjectRecord,
 } from './policyStrictSchema.js'
-import { type SettingsJson, SettingsSchema } from './types.js'
+import {
+  coerceMcpjsonServerStrings,
+  type SettingsJson,
+  SettingsSchema,
+} from './types.js'
 import {
   formatZodError,
   type SettingsWithErrors,
@@ -442,6 +446,12 @@ function parseSettingsFileUncached(
       }
     }
 
+    // CC 2.1.299 #055 (official `Tt` @215650380: `if(!r?.policySource)pOr(e)`):
+    // coerce a single-string enabled/disabledMcpjsonServers value to a
+    // one-element list BEFORE schema validation — non-policy sources only
+    // (the policy branch returned above). Mutates the private clone in place.
+    coerceMcpjsonServerStrings(data)
+
     // CC 2.1.283 (official `Ad` via `Gye` non-policy branch): the managed-only
     // model-governance keys are stripped from every non-policy source, each
     // with a "<key>" is only honored from managed settings warning. The policy
@@ -581,6 +591,68 @@ export function getSettingsForSource(
   return result
 }
 
+/**
+ * CC 2.1.299 (#097): the auth-pin key family. Official composition spec
+ * (byte-exact, v299 linux-x64 binary @110685262 region):
+ *   "... and the keys taken from the highest source only: the auth pins
+ *    forceLoginOrgUUID, forceLoginMethod, forceLoginGatewayUrl and
+ *    gatewayInternalNetworks ... In both modes, a forceLoginOrgUUID, or a
+ *    forceLoginMethod of claudeai or console, that this machine's own MDM
+ *    policy or managed settings file sets applies ahead of server-managed
+ *    settings. ... HKCU and --managed-settings never take part in the merge."
+ * So when the remote (server-managed) source wins the first-wins policy pick,
+ * the auth-pin keys still resolve per-key MDM (HKLM/plist) →
+ * managed-settings.json → remote: a local admin pin outranks the remote pin
+ * and the remote value applies only when no local source pins that key. The
+ * rest of the winning source's content — and the first-wins order itself —
+ * is unchanged.
+ */
+const AUTH_PIN_KEYS = [
+  'forceLoginOrgUUID',
+  'forceLoginMethod',
+  'forceLoginGatewayUrl',
+  'gatewayInternalNetworks',
+] as const
+
+/**
+ * Collect the auth-pin keys the LOCAL admin sources set (MDM HKLM/plist
+ * first, then managed-settings.json). HKCU is excluded — the official spec
+ * says it never takes part in the merge. Exported for tests.
+ */
+export function getLocalAuthPinOverrides(): Record<string, unknown> {
+  const filePins = loadManagedFileSettings().settings
+  const localSources: Array<Record<string, unknown> | null> = [
+    getMdmSettings().settings as unknown as Record<string, unknown>,
+    (filePins as unknown as Record<string, unknown>) ?? null,
+  ]
+  const overrides: Record<string, unknown> = {}
+  for (const key of AUTH_PIN_KEYS) {
+    for (const source of localSources) {
+      const value = source?.[key]
+      if (value !== undefined) {
+        overrides[key] = value
+        break
+      }
+    }
+  }
+  return overrides
+}
+
+/**
+ * Overlay the local admin auth pins onto a REMOTE-won policy object
+ * (immutable — returns a new object when anything is overridden). Only the
+ * remote-won case needs this: when MDM or the managed file wins it IS the
+ * highest local source, and when HKCU wins no remote pin is involved — the
+ * rest of the policySettings merge order stays unchanged. Exported for tests.
+ */
+export function applyLocalAuthPinPrecedence(
+  remoteSettings: SettingsJson,
+): SettingsJson {
+  const overrides = getLocalAuthPinOverrides()
+  if (Object.keys(overrides).length === 0) return remoteSettings
+  return { ...remoteSettings, ...overrides } as SettingsJson
+}
+
 function getSettingsForSourceUncached(
   source: SettingSource,
 ): SettingsJson | null {
@@ -609,7 +681,9 @@ function getSettingsForSourceUncached(
           `[settings] ${warning.file}: ${warning.path}: ${warning.message}`,
         )
       }
-      return remoteSettings
+      // CC 2.1.299 (#097): local MDM / managed-file auth pins apply AHEAD of
+      // the remote source (official composition spec @110685262 region).
+      return applyLocalAuthPinPrecedence(remoteSettings)
     }
 
     const mdmResult = getMdmSettings()
@@ -977,6 +1051,7 @@ function loadSettingsFromDisk(): SettingsWithErrors {
       // that has content. Priority: remote > HKLM/plist > managed-settings.json > HKCU
       if (source === 'policySettings') {
         let policySettings: SettingsJson | null = null
+        let policyFromRemote = false
         const policyErrors: ValidationError[] = []
 
         // 1. Remote (highest priority)
@@ -1002,6 +1077,7 @@ function loadSettingsFromDisk(): SettingsWithErrors {
           ).safeParse(remoteSettings)
           if (result.success) {
             policySettings = result.data as SettingsJson
+            policyFromRemote = true
             policyErrors.push(...remoteWarnings, ...remoteErrors)
           } else {
             // Remote exists but is invalid — surface errors even as we fall
@@ -1051,6 +1127,13 @@ function loadSettingsFromDisk(): SettingsWithErrors {
           policyErrors.push(
             ...collectManagedModelGovernanceWarnings(policySettings),
           )
+        }
+
+        // CC 2.1.299 (#097): when the remote source won, the local admin
+        // auth pins (MDM HKLM/plist → managed-settings.json) still apply
+        // ahead of it, per key (official composition spec @110685262 region).
+        if (policySettings && policyFromRemote) {
+          policySettings = applyLocalAuthPinPrecedence(policySettings)
         }
 
         // Merge the winning policy source into the settings chain

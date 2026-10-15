@@ -58,7 +58,7 @@ import { parseAutoCompactWindowInput, resolveAutoCompactWindowOverride, setSessi
 import { seedEarlyInput, stopCapturingEarlyInput } from './utils/earlyInput.js';
 import { EFFORT_LEVELS, getInitialEffortSetting, normalizeEffortKeyword, parseEffortCliFlag, parseEffortSessionInit } from './utils/effort.js';
 import { emitStartupEffortCapWarning } from './utils/effort/cap.js';
-import { enableUltracodeForSession } from './utils/effort/ultracode.js';
+import { enableUltracodeForSession, isUltracodeSettingsFlag } from './utils/effort/ultracode.js';
 import { getInitialFastModeSetting, isFastModeEnabled, prefetchFastModeStatus, resolveFastModeStatusFromCache } from './utils/fastMode.js';
 import { applyConfigEnvironmentVariables } from './utils/managedEnv.js';
 import { createSystemMessage, createUserMessage } from './utils/messages.js';
@@ -114,7 +114,7 @@ import { setupClaudeInChrome, shouldAutoEnableClaudeInChrome, shouldEnableClaude
 import { getContextWindowForModel } from './utils/context.js';
 import { loadConversationForResume } from './utils/conversationRecovery.js';
 import { buildDeepLinkBanner } from './utils/deepLink/banner.js';
-import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace, isSafeMode } from './utils/envUtils.js';
+import { hasNodeOption, isBareMode, isEnvTruthy, isInProtectedNamespace, isSafeMode, safeModeExitHint } from './utils/envUtils.js';
 import { parseEnvInt } from './utils/envValidation.js';
 import { refreshExampleCommands } from './utils/exampleCommands.js';
 import type { FpsMetrics } from './utils/fpsTracker.js';
@@ -139,6 +139,7 @@ import { getPluginSeedDirs } from './utils/plugins/pluginDirectories.js';
 import { countFilesRoundedRg } from './utils/ripgrep.js';
 import { processSessionStartHooks, processSetupHooks } from './utils/sessionStart.js';
 import { cacheSessionTitle, getSessionIdFromLog, loadTranscriptFromFile, saveAgentSetting, saveMode, searchSessionsByCustomTitle, sessionIdExists } from './utils/sessionStorage.js';
+import { reportInvalidSettingsForAutomatedSession } from './utils/invalidSettingsReport.js';
 import { ensureMdmSettingsLoaded } from './utils/settings/mdm/settings.js';
 import { getInitialSettings, getManagedSettingsKeysForLogging, getSettingsForSource, getSettingsWithErrors } from './utils/settings/settings.js';
 import { resetSettingsCache } from './utils/settings/settingsCache.js';
@@ -1221,21 +1222,29 @@ async function run(): Promise<CommanderCommand> {
       process.env.CLAUDE_CODE_SAFE_MODE = '1';
     }
     if (isSafeMode()) {
+      // CC 2.1.299 (#085): the exit hint is bg-session-aware — background
+      // sessions can't drop the mode by restarting (the daemon re-runs the
+      // same command line), so they get the official "/stop + claude --resume"
+      // guidance instead (official Jg()/f(), v299 @214758800).
       // biome-ignore lint/suspicious/noConsole:: intentional user-facing guidance
-      console.warn(chalk.yellow('Safe mode enabled — plugins, bundled skills, and hooks are disabled. Restart without --safe-mode to restore full functionality.'));
+      console.warn(chalk.yellow(`Safe mode enabled — plugins, bundled skills, and hooks are disabled. To restore full functionality, ${safeModeExitHint()}.`));
     }
 
     // Official 2.1.283 `xzn` (Gap-139a, byte-verified):
     //   xzn(e) = Je().ultracode===!0 || NNe(e)==="ultracode"
-    // `--effort ultracode` enables ultracode session mode at startup. The
-    // settings-key half (`Je().ultracode===!0`) is NOT ported: OCC's
-    // isUltracodeEnabled() covers only the in-memory flag + env
-    // CLAUDE_CODE_ULTRACODE; `--settings '{"ultracode":true}'` has no
-    // consumer path today (silently no-ops, fail-closed) — staged, see
-    // docs/upstream-version-gap-occ139.md §3.7b. The
-    // session-effort plumbing below separately maps the keyword to 'xhigh'
+    // CC 2.1.299 (#115) closes the staged settings-key half (occ139 §3.7b):
+    // the official fix announced ultracode to scheduled tasks and other
+    // delivered headless turns "when `ultracode` is on in settings" by
+    // widening the ultra_effort_enter attachment gate to
+    // `isRegularUserPrompt||deliveredTurnStart` (v299 @227277261). OCC's
+    // src/query.ts already injects the reminders on every API-loop turn with
+    // no prompt-type gate, so the portable half here is consuming the
+    // `ultracode` settings key (schema entry in src/utils/settings/types.ts);
+    // once the session flag is on, cron-delivered prompts and teammate
+    // injections get the same announcement as interactive turns.
+    // The session-effort plumbing below separately maps the keyword to 'xhigh'
     // via parseEffortSessionInit (official kzn = oL ?? yct).
-    if (normalizeEffortKeyword((options as {
+    if (isUltracodeSettingsFlag(getInitialSettings()) || normalizeEffortKeyword((options as {
       effort?: string;
     }).effort) === 'ultracode') {
       enableUltracodeForSession();
@@ -2780,6 +2789,14 @@ async function run(): Promise<CommanderCommand> {
           onExit: () => gracefulShutdownSync(1)
         });
       }
+    } else {
+      // CC 2.1.299 (#076): automated sessions have no dialog, so invalid
+      // settings used to pass in total silence. Official `jR(outputFormat)`
+      // lists the file and the invalid entry on stderr for text-output runs
+      // (json/stream-json stay clean; every entry is debug-logged either
+      // way). See src/utils/invalidSettingsReport.ts for the byte-exact
+      // forensic record.
+      reportInvalidSettingsForAutomatedSession(outputFormat);
     }
 
     // Check quota status, fast mode, passes eligibility, and bootstrap data

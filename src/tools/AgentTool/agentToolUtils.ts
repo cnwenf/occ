@@ -21,6 +21,7 @@ import type {
   ToolUseContext,
 } from '../../Tool.js'
 import { toolMatchesName } from '../../Tool.js'
+import { SEND_MESSAGE_TOOL_NAME } from '../SendMessageTool/constants.js'
 import {
   completeAgentTask as completeAsyncAgent,
   createActivityDescriptionResolver,
@@ -39,6 +40,11 @@ import { asAgentId } from '../../types/ids.js'
 import type { Message as MessageType, ContentItem } from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
+import {
+  getMcpPrefix,
+  mcpInfoFromString,
+} from '../../services/mcp/mcpStringUtils.js'
+import { mcpAllowRuleReachesTool } from '../../utils/permissions/mcpRuleMatching.js'
 import { isInProtectedNamespace } from '../../utils/envUtils.js'
 import { AbortError, errorMessage } from '../../utils/errors.js'
 import type { CacheSafeParams } from '../../utils/forkedAgent.js'
@@ -203,6 +209,63 @@ export function resolveAgentTools(
       }
       // For main thread, filtering was skipped so Agent is in availableToolMap —
       // fall through to normal resolution below.
+    }
+
+    // CC 2.1.299 #158/#159 (official agent-tools branch @231360600): a
+    // server-wide MCP entry (`mcp__<server>` or `mcp__<server>__*`) takes ONLY
+    // the named server's tools — every candidate must pass the whole-name
+    // allow matcher (official lXe). A server whose normalized name contains
+    // `__` must be listed as `mcp__<whole name>__*` (second branch below).
+    const mcpEntry = mcpInfoFromString(toolName)
+    if (
+      mcpEntry !== null &&
+      mcpEntry.serverName !== '*' &&
+      (mcpEntry.toolName === undefined || mcpEntry.toolName === '*')
+    ) {
+      validTools.push(toolSpec)
+      let matchedAnyTool = false
+      for (const candidate of allowedAvailableTools) {
+        if (!mcpAllowRuleReachesTool(toolName, candidate)) {
+          continue
+        }
+        matchedAnyTool = true
+        if (!resolvedToolsSet.has(candidate)) {
+          resolved.push(candidate)
+          resolvedToolsSet.add(candidate)
+        }
+      }
+      if (!matchedAnyTool) {
+        // Byte-exact official warn (@231360600).
+        logForDebugging(
+          `Agent tools entry "${toolSpec}" takes no tool: no connected MCP server of that name has one.`,
+          { level: 'warn' },
+        )
+      }
+      continue
+    }
+    // Official second branch: `__*` entries are matched against the tool's
+    // WHOLE server name via getMcpPrefix (official zs(server,"")===`${pt}__`).
+    const wholeNamePrefix = toolName.endsWith('__*')
+      ? toolName.slice(0, -3)
+      : toolName
+    if (wholeNamePrefix !== toolName && mcpEntry !== null) {
+      const wholeNameTools = allowedAvailableTools.filter(
+        candidate =>
+          candidate.mcpInfo !== undefined &&
+          getMcpPrefix(candidate.mcpInfo.serverName) ===
+            `${wholeNamePrefix}__` &&
+          mcpAllowRuleReachesTool(`${wholeNamePrefix}__*`, candidate),
+      )
+      if (wholeNameTools.length > 0) {
+        validTools.push(toolSpec)
+        for (const candidate of wholeNameTools) {
+          if (!resolvedToolsSet.has(candidate)) {
+            resolved.push(candidate)
+            resolvedToolsSet.add(candidate)
+          }
+        }
+        continue
+      }
     }
 
     const tool = availableToolMap.get(toolName)
@@ -678,6 +741,12 @@ export async function runAsyncAgentLifecycle({
         durationMs: agentResult.totalDurationMs,
       },
       toolUseId: toolUseContext.toolUseId,
+      // 2.1.299 #149: reason gates — live owned background work (pt/WZr) +
+      // SendMessage continuation availability (V).
+      getAppState: () => toolUseContext.getAppState(),
+      callerCanContinueAgents: toolUseContext.options.tools.some(t =>
+        toolMatchesName(t, SEND_MESSAGE_TOOL_NAME),
+      ),
       ...worktreeResult,
     })
   } catch (error) {

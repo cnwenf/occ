@@ -10,6 +10,10 @@ import {
   handleOAuth401Error,
   isClaudeAISubscriber,
 } from './auth.js'
+import {
+  API_KEY_NOT_SENT_REASON,
+  sanitizeApiKeyForAnthropicOwnedEndpoint,
+} from './firstPartyEndpoint.js'
 import { getClaudeCodeUserAgent } from './userAgent.js'
 import { getWorkload } from './workloadContext.js'
 
@@ -82,13 +86,27 @@ export function getAuthHeaders(): AuthHeaders {
       },
     }
   }
-  // TODO: this will fail if the API key is being set to an LLM Gateway key
-  // should we try to query keychain / credentials for a valid Anthropic key?
+  // Official 2.1.299 chokepoint (anthropic-owned client `yr` @218212358):
+  //   le=Z.error??(te&&!f5(te)?"API key not sent: ANTHROPIC_BASE_URL is not
+  //   an Anthropic host":void 0); if(le&&s.auth!=="optional")return{ok:!1,...}
+  // A key configured for a third-party gateway (custom ANTHROPIC_BASE_URL)
+  // must never be attached to Anthropic-owned auxiliary requests; genuine
+  // first-party-shaped keys still pass. Callers treat `.error` as
+  // skip-request (growthbook init, feedback, usage, bootstrap) or fall
+  // through to a keyless send (1P event logging) — matching official
+  // per-site outcomes. The main inference client (services/api/client.ts)
+  // honors the gateway and does NOT use this function.
   const apiKey = getAnthropicApiKey()
   if (!apiKey) {
     return {
       headers: {},
       error: 'No API key available',
+    }
+  }
+  if (sanitizeApiKeyForAnthropicOwnedEndpoint(apiKey) === null) {
+    return {
+      headers: {},
+      error: API_KEY_NOT_SENT_REASON,
     }
   }
   return {

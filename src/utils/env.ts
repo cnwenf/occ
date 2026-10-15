@@ -12,13 +12,24 @@ type Platform = 'win32' | 'darwin' | 'linux'
 
 // Config and data paths
 export const getGlobalClaudeFile = memoize((): string => {
-  // Legacy fallback for backwards compatibility
-  if (
-    getFsImplementation().existsSync(
-      join(getClaudeConfigHomeDir(), '.config.json'),
-    )
-  ) {
-    return join(getClaudeConfigHomeDir(), '.config.json')
+  // Legacy fallback for backwards compatibility.
+  // CC 2.1.299 (#039): a 0-byte `.config.json` counts as ABSENT. The bwrap
+  // sandbox pre-creates 0-byte mount-point stubs at config-dir deny-write
+  // paths (sandbox-runtime mounts /dev/null over files that do not exist on
+  // the host) and the stubs survive the command. Official v299 documents the
+  // residue in the prompt text (@107002052: "0-byte placeholder files ... A
+  // 0-byte one belongs to the sandbox") and in the doctor diagnostic
+  // (@228225896: "0-byte read-only file where a settings file belongs ...").
+  // Honoring the stub here would shadow the legacy `.claude.json` (sign-in /
+  // MCP / trust state) and a later save would wipe it — fall through instead.
+  const configFile = join(getClaudeConfigHomeDir(), '.config.json')
+  const fs = getFsImplementation()
+  try {
+    if (fs.statSync(configFile).size > 0) {
+      return configFile
+    }
+  } catch {
+    // Missing or unstat-able — same as before (existsSync false), fall through
   }
 
   const filename = `.claude${fileSuffixForOauthConfig()}.json`

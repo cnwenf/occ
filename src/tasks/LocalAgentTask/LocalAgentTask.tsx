@@ -25,6 +25,7 @@ import { evictTaskOutput, getTaskOutputPath, initTaskOutputAsSymlink } from '../
 import { PANEL_GRACE_MS, registerTask, updateTaskState } from '../../utils/task/framework.js';
 import { emitTaskProgress } from '../../utils/task/sdkProgress.js';
 import type { TaskState } from '../types.js';
+import { buildNotificationNote, completedSummaryReason, hasLiveOwnedBackgroundWork, type UsageLimitDenialInfo } from './notificationReasons.js';
 export type ToolActivity = {
   toolName: string;
   input: Record<string, unknown>;
@@ -210,7 +211,10 @@ export function enqueueAgentNotification({
   usage,
   toolUseId,
   worktreePath,
-  worktreeBranch
+  worktreeBranch,
+  getAppState,
+  usageLimitDenial,
+  callerCanContinueAgents
 }: {
   taskId: string;
   description: string;
@@ -226,16 +230,39 @@ export function enqueueAgentNotification({
   toolUseId?: string;
   worktreePath?: string;
   worktreeBranch?: string;
+  /**
+   * 2.1.299 #149: full-state reader used to compute the official `pt` gate
+   * (`WZr` adaptation — does this completed background agent still own live
+   * shell/monitor/workflow tasks?). Optional: without it the gate stays false
+   * and the notification uses the default stop note.
+   */
+  getAppState?: () => AppState;
+  /**
+   * 2.1.299 #149: official `usageLimitDenial` (`S`) — set when the agent
+   * stopped because a usage limit rejected its requests. Surfaces the
+   * work-saved / limit-reset / how-to-continue note (official `Wn`).
+   */
+  usageLimitDenial?: UsageLimitDenialInfo;
+  /**
+   * 2.1.299 #149: official `callerCanContinueAgents` (`V`) — when explicitly
+   * false, the "send the agent a message (SendMessage)" continuation sentence
+   * is suppressed (the caller has no way to resume the agent).
+   */
+  callerCanContinueAgents?: boolean;
 }): void {
   // Atomically check and set notified flag to prevent duplicate notifications.
   // If the task was already marked as notified (e.g., by TaskStopTool), skip
   // enqueueing to avoid sending redundant messages to the model.
   let shouldEnqueue = false;
+  // 2.1.299 #149: capture the task fields the official gates read (`Be`) from
+  // the same atomic state pass that flips `notified`.
+  let capturedTask: LocalAgentTaskState | undefined;
   updateTaskState<LocalAgentTaskState>(taskId, setAppState, task => {
     if (task.notified) {
       return task;
     }
     shouldEnqueue = true;
+    capturedTask = task;
     return {
       ...task,
       notified: true
@@ -249,9 +276,23 @@ export function enqueueAgentNotification({
   // results may reference stale task output. The prompt suggestion text is
   // preserved; only the pre-computed response is discarded.
   abortSpeculation(setAppState);
-  const summary = status === 'completed' ? `Agent "${description}" completed` : status === 'failed' ? `Agent "${description}" failed: ${error || 'Unknown error'}` : `Agent "${description}" was stopped`;
+  // 2.1.299 #149 reason gates (official builder @227857400):
+  //   pt = s==="completed" && WZr(Be)          → waiting-on-background-work
+  //   nn = s==="completed" && fNe(Be) && pendingMessages.length > 0
+  // (OCC adaptations documented in ./notificationReasons.ts)
+  const waitingOnBackgroundWork = status === 'completed' && capturedTask !== undefined && getAppState !== undefined && hasLiveOwnedBackgroundWork(capturedTask, getAppState());
+  const hasLateMessages = status === 'completed' && (capturedTask?.pendingMessages.length ?? 0) > 0;
+  const summary = status === 'completed' ? `Agent "${description}" ${completedSummaryReason(waitingOnBackgroundWork)}` : status === 'failed' ? `Agent "${description}" failed: ${error || 'Unknown error'}` : `Agent "${description}" was stopped`;
   const outputPath = getTaskOutputPath(taskId);
   const toolUseIdLine = toolUseId ? `\n<${TOOL_USE_ID_TAG}>${toolUseId}</${TOOL_USE_ID_TAG}>` : '';
+  // Official body prefix: `\n<${v$}>${Yt}${nn}${Wn}</${v$}>` before the
+  // result/usage/worktree sections (v$ = "note").
+  const noteSection = buildNotificationNote({
+    waitingOnBackgroundWork,
+    hasLateMessages,
+    usageLimitDenial,
+    callerCanContinueAgents
+  });
   const resultSection = finalMessage ? `\n<result>${finalMessage}</result>` : '';
   const usageSection = usage ? `\n<usage><total_tokens>${usage.totalTokens}</total_tokens><tool_uses>${usage.toolUses}</tool_uses><duration_ms>${usage.durationMs}</duration_ms></usage>` : '';
   const worktreeSection = worktreePath ? `\n<${WORKTREE_TAG}><${WORKTREE_PATH_TAG}>${worktreePath}</${WORKTREE_PATH_TAG}>${worktreeBranch ? `<${WORKTREE_BRANCH_TAG}>${worktreeBranch}</${WORKTREE_BRANCH_TAG}>` : ''}</${WORKTREE_TAG}>` : '';
@@ -259,7 +300,7 @@ export function enqueueAgentNotification({
 <${TASK_ID_TAG}>${taskId}</${TASK_ID_TAG}>${toolUseIdLine}
 <${OUTPUT_FILE_TAG}>${outputPath}</${OUTPUT_FILE_TAG}>
 <${STATUS_TAG}>${status}</${STATUS_TAG}>
-<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${resultSection}${usageSection}${worktreeSection}
+<${SUMMARY_TAG}>${summary}</${SUMMARY_TAG}>${noteSection}${resultSection}${usageSection}${worktreeSection}
 </${TASK_NOTIFICATION_TAG}>`;
   enqueuePendingNotification({
     value: message,

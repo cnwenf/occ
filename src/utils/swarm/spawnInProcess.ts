@@ -40,6 +40,7 @@ import {
   registerAgent as registerPerfettoAgent,
   unregisterAgent as unregisterPerfettoAgent,
 } from '../telemetry/perfettoTracing.js'
+import { describeTeammatePrompt } from './describeTeammate.js'
 import { removeMemberByAgentId } from './teamHelpers.js'
 
 type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
@@ -152,7 +153,11 @@ export async function spawnInProcessTeammate(
     }
 
     // Create task state
-    const description = `${name}: ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`
+    // CC 2.1.299 #025: derive the description via redact-then-truncate
+    // (official `GQn`) so a teammate spawned without an explicit description
+    // never keeps a raw prompt fragment (potential credential) in the task
+    // description that is stored, displayed, and emitted to hooks.
+    const description = `${name}: ${describeTeammatePrompt(prompt)}`
 
     const taskState: InProcessTeammateTaskState = {
       ...createTaskStateBase(

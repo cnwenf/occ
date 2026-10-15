@@ -54,6 +54,14 @@ export interface WorkerRecord {
   id: string
   /** Exit code if known. */
   exitCode?: number
+  /**
+   * Whether this background session was spawned in safe mode
+   * (CLAUDE_CODE_SAFE_MODE / --safe-mode). CC 2.1.299 #101: persisted with
+   * the record and re-applied on every respawn path so a safe-mode session
+   * never silently leaves safe mode on wake/restart (official carry list
+   * `Cke` starts with CLAUDE_CODE_SAFE_MODE).
+   */
+  safeMode?: boolean
 }
 
 /** Lockfile contents at ~/.claude/daemon.lock. */

@@ -15,16 +15,21 @@ type Props = {
   autoUpdaterResult: AutoUpdaterResult | null;
   showSuccessMessage: boolean;
   verbose: boolean;
+  // Official v299 (#049): rendered BESIDE other status chrome (e.g. the
+  // fullscreen "/clear to save tokens" hint). undefined → no separator node
+  // (legacy standalone render); true → leading dim " ·"; false → empty Text.
+  withSeparator?: boolean;
 };
 export function AutoUpdaterWrapper(t0) {
-  const $ = _c(17);
+  const $ = _c(19);
   const {
     isUpdating,
     onChangeIsUpdating,
     onAutoUpdaterResult,
     autoUpdaterResult,
     showSuccessMessage,
-    verbose
+    verbose,
+    withSeparator
   } = t0;
   const [useNativeInstaller, setUseNativeInstaller] = React.useState(null);
   const [isPackageManager, setIsPackageManager] = React.useState(null);
@@ -57,34 +62,36 @@ export function AutoUpdaterWrapper(t0) {
   }
   if (isPackageManager) {
     let t3;
-    if ($[2] !== autoUpdaterResult || $[3] !== isUpdating || $[4] !== onAutoUpdaterResult || $[5] !== onChangeIsUpdating || $[6] !== showSuccessMessage || $[7] !== verbose) {
-      t3 = <PackageManagerAutoUpdater verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={showSuccessMessage} />;
+    if ($[2] !== autoUpdaterResult || $[3] !== isUpdating || $[4] !== onAutoUpdaterResult || $[5] !== onChangeIsUpdating || $[6] !== showSuccessMessage || $[7] !== verbose || $[8] !== withSeparator) {
+      t3 = <PackageManagerAutoUpdater verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={showSuccessMessage} withSeparator={withSeparator} />;
       $[2] = autoUpdaterResult;
       $[3] = isUpdating;
       $[4] = onAutoUpdaterResult;
       $[5] = onChangeIsUpdating;
       $[6] = showSuccessMessage;
       $[7] = verbose;
-      $[8] = t3;
+      $[8] = withSeparator;
+      $[9] = t3;
     } else {
-      t3 = $[8];
+      t3 = $[9];
     }
     return t3;
   }
   const Updater = useNativeInstaller ? NativeAutoUpdater : AutoUpdater;
   let t3;
-  if ($[9] !== Updater || $[10] !== autoUpdaterResult || $[11] !== isUpdating || $[12] !== onAutoUpdaterResult || $[13] !== onChangeIsUpdating || $[14] !== showSuccessMessage || $[15] !== verbose) {
-    t3 = <Updater verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={showSuccessMessage} />;
-    $[9] = Updater;
-    $[10] = autoUpdaterResult;
-    $[11] = isUpdating;
-    $[12] = onAutoUpdaterResult;
-    $[13] = onChangeIsUpdating;
-    $[14] = showSuccessMessage;
-    $[15] = verbose;
-    $[16] = t3;
+  if ($[10] !== Updater || $[11] !== autoUpdaterResult || $[12] !== isUpdating || $[13] !== onAutoUpdaterResult || $[14] !== onChangeIsUpdating || $[15] !== showSuccessMessage || $[16] !== verbose || $[17] !== withSeparator) {
+    t3 = <Updater verbose={verbose} onAutoUpdaterResult={onAutoUpdaterResult} autoUpdaterResult={autoUpdaterResult} isUpdating={isUpdating} onChangeIsUpdating={onChangeIsUpdating} showSuccessMessage={showSuccessMessage} withSeparator={withSeparator} />;
+    $[10] = Updater;
+    $[11] = autoUpdaterResult;
+    $[12] = isUpdating;
+    $[13] = onAutoUpdaterResult;
+    $[14] = onChangeIsUpdating;
+    $[15] = showSuccessMessage;
+    $[16] = verbose;
+    $[17] = withSeparator;
+    $[18] = t3;
   } else {
-    t3 = $[16];
+    t3 = $[18];
   }
   return t3;
 }

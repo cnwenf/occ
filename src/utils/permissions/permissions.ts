@@ -1,10 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import { APIUserAbortError } from '@anthropic-ai/sdk'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
-import {
-  getToolNameForPermissionCheck,
-  mcpInfoFromString,
-} from '../../services/mcp/mcpStringUtils.js'
+import { getToolNameForPermissionCheck } from '../../services/mcp/mcpStringUtils.js'
 import type { Tool, ToolPermissionContext, ToolUseContext } from '../../Tool.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { shouldUseSandbox } from '../../tools/BashTool/shouldUseSandbox.js'
@@ -22,6 +19,7 @@ import {
   SETTING_SOURCES,
 } from '../settings/constants.js'
 import { plural } from '../stringUtils.js'
+import { mcpRuleMatchesTool } from './mcpRuleMatching.js'
 import { permissionModeTitle } from './PermissionMode.js'
 import type {
   PermissionAskDecision,
@@ -284,17 +282,12 @@ function toolMatchesRule(
     return true
   }
 
-  // MCP server-level permission: rule "mcp__server1" matches tool "mcp__server1__tool1"
-  // Also supports wildcard: rule "mcp__server1__*" matches all tools from server1
-  const ruleInfo = mcpInfoFromString(rule.ruleValue.toolName)
-  const toolInfo = mcpInfoFromString(nameForRuleMatch)
-
-  return (
-    ruleInfo !== null &&
-    toolInfo !== null &&
-    (ruleInfo.toolName === undefined || ruleInfo.toolName === '*') &&
-    ruleInfo.serverName === toolInfo.serverName
-  )
+  // CC 2.1.299 #065 + #158 + #159 (official matcher S @219828700): MCP rules
+  // match against the WHOLE normalized server name — allow rules reach only
+  // the server they name (`mcp__a` no longer allows server `a__b` or `a_`),
+  // while deny/ask rules fail safe and also apply when the rule equals one of
+  // the tool's whole-name server candidates (`mcp__a__b` denies server `a__b`).
+  return mcpRuleMatchesTool(tool, rule)
 }
 
 /**

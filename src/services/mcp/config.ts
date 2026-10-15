@@ -61,7 +61,11 @@ import {
 } from './types.js'
 import { getProjectMcpServerStatus } from './utils.js'
 import { isReservedClaudeBrowserName } from './normalization.js'
-import { getMcpServerNameCollisionKey } from './mcpStringUtils.js'
+import {
+  getMcpServerNameCollisionKey,
+  isReservedPrototypeMcpServerName,
+} from './mcpStringUtils.js'
+import { readOwnOption } from '../../utils/plugins/optionKeySafety.js'
 
 /**
  * Get the path to the managed MCP configuration file
@@ -82,6 +86,13 @@ function addScopeToServers(
   }
   const scopedServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries(servers)) {
+    // CC 2.1.299 (#042): never copy a prototype-collision key — JSON.parse
+    // keeps a raw `__proto__` key as an own data property, and assigning it
+    // onto the fresh plain object would re-point that object's prototype
+    // instead of adding an entry.
+    if (isReservedPrototypeMcpServerName(name)) {
+      continue
+    }
     scopedServers[name] = { ...config, scope }
   }
   return scopedServers
@@ -654,6 +665,15 @@ export async function addMcpConfig(
     )
   }
 
+  // CC 2.1.299 (#042): binary `BW`: `if(EBe(e))throw …this name is reserved.`
+  // — EBe's first branch is the `mG` prototype-collision predicate. Without
+  // this, a name like `__proto__` passes the charset check (letters +
+  // underscores) and the later `mcpServers[name] = …` write re-points the
+  // target object's prototype instead of adding a server.
+  if (isReservedPrototypeMcpServerName(name)) {
+    throw new Error(`Cannot add MCP server "${name}": this name is reserved.`)
+  }
+
   // Block reserved server name "claude-in-chrome"
   if (isClaudeInChromeMCPServer(name)) {
     throw new Error(`Cannot add MCP server "${name}": this name is reserved.`)
@@ -719,25 +739,28 @@ export async function addMcpConfig(
     )
   }
 
-  // Check if server already exists in the target scope
+  // Check if server already exists in the target scope.
+  // CC 2.1.299 (#042): own-property reads — a server named `constructor`
+  // that is ABSENT must not read the inherited Object.prototype.constructor
+  // (truthy) and falsely report "already exists".
   switch (scope) {
     case 'project': {
       const { servers } = getProjectMcpConfigsFromCwd()
-      if (servers[name]) {
+      if (readOwnOption(servers, name)) {
         throw new Error(`MCP server ${name} already exists in .mcp.json`)
       }
       break
     }
     case 'user': {
       const globalConfig = getGlobalConfig()
-      if (globalConfig.mcpServers?.[name]) {
+      if (readOwnOption(globalConfig.mcpServers, name)) {
         throw new Error(`MCP server ${name} already exists in user config`)
       }
       break
     }
     case 'local': {
       const projectConfig = getCurrentProjectConfig()
-      if (projectConfig.mcpServers?.[name]) {
+      if (readOwnOption(projectConfig.mcpServers, name)) {
         throw new Error(`MCP server ${name} already exists in local config`)
       }
       break
@@ -815,7 +838,8 @@ export async function removeMcpConfig(
     case 'project': {
       const { servers: existingServers } = getProjectMcpConfigsFromCwd()
 
-      if (!existingServers[name]) {
+      // CC 2.1.299 (#042): own-property read (see addMcpConfig).
+      if (!readOwnOption(existingServers, name)) {
         throw new Error(`No MCP server found with name: ${name} in .mcp.json`)
       }
 
@@ -840,7 +864,8 @@ export async function removeMcpConfig(
 
     case 'user': {
       const config = getGlobalConfig()
-      if (!config.mcpServers?.[name]) {
+      // CC 2.1.299 (#042): own-property read (see addMcpConfig).
+      if (!readOwnOption(config.mcpServers, name)) {
         throw new Error(`No user-scoped MCP server found with name: ${name}`)
       }
       saveGlobalConfig(current => {
@@ -856,7 +881,8 @@ export async function removeMcpConfig(
     case 'local': {
       // Check if server exists before updating
       const config = getCurrentProjectConfig()
-      if (!config.mcpServers?.[name]) {
+      // CC 2.1.299 (#042): own-property read (see addMcpConfig).
+      if (!readOwnOption(config.mcpServers, name)) {
         throw new Error(`No project-local MCP server found with name: ${name}`)
       }
       saveCurrentProjectConfig(current => {
@@ -1081,25 +1107,33 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
 
   // When MCP is locked to plugin-only, only enterprise servers are reachable
   // by name. User/project/local servers are blocked — same as getClaudeCodeMcpConfigs().
+  // CC 2.1.299 (#042): own-property reads throughout — an absent
+  // `constructor`/`toString`-named server must resolve to null, never to the
+  // inherited Object.prototype member (truthy → a bogus ScopedMcpServerConfig
+  // flows into connectToServer and the frontmatter agent path).
   if (isRestrictedToPluginOnly('mcp')) {
-    return enterpriseServers[name] ?? null
+    return readOwnOption(enterpriseServers, name) ?? null
   }
 
   const { servers: userServers } = getMcpConfigsByScope('user')
   const { servers: projectServers } = getMcpConfigsByScope('project')
   const { servers: localServers } = getMcpConfigsByScope('local')
 
-  if (enterpriseServers[name]) {
-    return enterpriseServers[name]
+  const enterpriseServer = readOwnOption(enterpriseServers, name)
+  if (enterpriseServer) {
+    return enterpriseServer
   }
-  if (localServers[name]) {
-    return localServers[name]
+  const localServer = readOwnOption(localServers, name)
+  if (localServer) {
+    return localServer
   }
-  if (projectServers[name]) {
-    return projectServers[name]
+  const projectServer = readOwnOption(projectServers, name)
+  if (projectServer) {
+    return projectServer
   }
-  if (userServers[name]) {
-    return userServers[name]
+  const userServer = readOwnOption(userServers, name)
+  if (userServer) {
+    return userServer
   }
 
   return null
@@ -1350,6 +1384,24 @@ export function parseMcpConfig(params: {
   errors: ValidationError[]
 } {
   const { configObject, expandVars, scope, filePath } = params
+
+  // CC 2.1.299 (#032): an EMPTY config object (`{}` — no keys at all) is a
+  // VALID config with zero servers, not a schema failure. Official v299
+  // short-circuits a blank project .mcp.json to `{mcpServers:{}}` (valid,
+  // zero servers — `ast` @226018857, NEW in v299) and its write-back reader
+  // (`lCe` @226003329) parses `mcpServers` with `.default({})`; `{}` gets the
+  // same leniency here so `mcp list` / doctor / `/status` never report an
+  // empty .mcp.json as invalid. Objects WITH keys (e.g. the `{servers:...}`
+  // typo) still go through the strict schema validation below.
+  if (
+    configObject !== null &&
+    typeof configObject === 'object' &&
+    !Array.isArray(configObject) &&
+    Object.keys(configObject).length === 0
+  ) {
+    return { config: { mcpServers: {} }, errors: [] }
+  }
+
   const schemaResult = McpJsonConfigSchema().safeParse(configObject)
   if (!schemaResult.success) {
     return {
@@ -1502,6 +1554,17 @@ function readMcpConfigFileContents(params: {
         },
       ],
     }
+  }
+
+  // CC 2.1.299 (#032): official `ast` @226018857 short-circuits a BLANK
+  // project-scope .mcp.json (`if(s==="project"&&!w.trim())`) to a valid
+  // empty-server config with a byte-exact debug log, instead of failing it as
+  // invalid JSON. NEW in v299 (absent from v296). Non-project scopes keep the
+  // strict JSON path. This runs BEFORE safeParseJSON so an empty/whitespace
+  // file is not reported as "MCP config is not a valid JSON".
+  if (scope === 'project' && !configContent.trim()) {
+    logForDebugging(`MCP config is blank, read as no servers: ${filePath}`)
+    return { parsedJson: { mcpServers: {} } }
   }
 
   const parsedJson = safeParseJSON(configContent)
@@ -1724,21 +1787,34 @@ export function parseDynamicMcpConfig(params: {
 
   const rawServers = (configObject as { mcpServers: Record<string, unknown> })
     .mcpServers
-  // Binary `__proto__` guard: the raw object has an own `__proto__` key that
-  // zod's record parse dropped.
-  if (
-    Object.hasOwn(rawServers, '__proto__') &&
-    !Object.hasOwn(shapeResult.data.mcpServers, '__proto__')
-  ) {
+  // CC 2.1.299 (#042): binary `let Q=n.mcpServers; for(let _e of
+  // Object.keys(Q).filter(mG)) G(_e,O_e(_e),`Rename this server in your MCP
+  // config — "${_e}" cannot be used as a server name`,"reserved_name")` —
+  // the v296 `__proto__`-only guard generalized to the official `mG`
+  // prototype-collision predicate (`__proto__`, `__defineGetter__`,
+  // `__defineSetter__`, `__lookupGetter__`, `__lookupSetter__`). The filter
+  // runs on the RAW keys (Object.keys yields own keys; JSON.parse keeps a
+  // `__proto__` key as an inert own data property), because zod's record
+  // parse drops it. Message = binary `O_e(e)` (@225978509).
+  for (const name of Object.keys(rawServers).filter(
+    isReservedPrototypeMcpServerName,
+  )) {
     pushEntryError(
-      '__proto__',
-      '"__proto__" is a reserved MCP server name and was not loaded',
-      'Rename this server in your MCP config — "__proto__" cannot be used as a server name',
+      name,
+      `"${name}" is a reserved MCP server name and was not loaded`,
+      `Rename this server in your MCP config — "${name}" cannot be used as a server name`,
       'reserved_name',
     )
   }
 
   for (const [name, rawEntry] of Object.entries(shapeResult.data.mcpServers)) {
+    // CC 2.1.299 (#042): binary `if(mG(_e))continue` — defense-in-depth skip
+    // so a reserved name that survives the record parse is never assigned
+    // into validatedServers (a `validatedServers['__proto__'] = …` write
+    // would re-point the object's prototype).
+    if (isReservedPrototypeMcpServerName(name)) {
+      continue
+    }
     // Binary: type defaults to "stdio" when absent or not a string.
     const declaredType =
       rawEntry &&

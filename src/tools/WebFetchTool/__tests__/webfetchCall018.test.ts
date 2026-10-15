@@ -99,6 +99,9 @@ function makeContext(toolUseId?: string) {
     abortController: new AbortController(),
     options: { isNonInteractiveSession: false },
     toolUseId,
+    // CC 2.1.299 (#156): the call site reads the caller effort for the
+    // secondary-model apply query.
+    getAppState: () => ({ effortValue: undefined }),
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   } as any
 }

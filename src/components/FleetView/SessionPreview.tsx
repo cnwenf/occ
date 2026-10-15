@@ -13,6 +13,7 @@ import * as React from 'react'
 import { Box, Text } from '../../ink.js'
 import type { BackgroundTaskState } from '../../tasks/types.js'
 import type { DeepImmutable } from '../../types/utils.js'
+import { isSafeMode } from '../../utils/envUtils.js'
 import { formatNumber } from '../../utils/format.js'
 import { truncate } from '../../utils/truncate.js'
 import {
@@ -40,6 +41,20 @@ export function SessionPreview(props: Props): React.ReactNode {
   const label = jobLabel(task)
   const age = formatJobAge(task.startTime, task.endTime, now)
   const status = actionableStatus(task)
+  // CC 2.1.299 (#010): "Added a 'safe mode' line to the agents view peek
+  // panel for background sessions started with `--safe-mode`." Official peek
+  // gate (v299 ELF @234501483): `rt=!K&&kp(h.state.respawnFlags)` with
+  // `function kp(h){return h.includes("--safe-mode")}` (@234438281) — the
+  // session's respawn flags carry --safe-mode — and the row (@234504400
+  // region): `so>0&&<Box paddingLeft={2}><Text wrap="truncate">…rt&&<Text
+  // dimColor>safe mode</Text>, rt&&<Text dimColor>customizations are off
+  // </Text>…</Text></Box>` (items joined by the dim " · " separator). OCC
+  // adaptation: BackgroundTaskState carries no respawnFlags (Phase-1 reads
+  // in-process state; OCC spawns its fleet sessions inside this process), so
+  // the gate reduces to this process's own isSafeMode() — a safe-mode OCC
+  // shows the line for every peeked background session, matching "background
+  // sessions started with --safe-mode" for OCC's spawn model.
+  const safeMode = isSafeMode()
 
   return (
     <Box
@@ -56,6 +71,13 @@ export function SessionPreview(props: Props): React.ReactNode {
         <Text dimColor> · {age}</Text>
       </Box>
       <PeekBody task={task} />
+      {safeMode && (
+        <Box paddingLeft={2}>
+          <Text dimColor wrap="truncate">
+            safe mode · customizations are off
+          </Text>
+        </Box>
+      )}
     </Box>
   )
 }

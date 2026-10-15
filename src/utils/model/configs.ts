@@ -1,3 +1,7 @@
+import {
+  DEFAULT_IMAGE_LIMITS,
+  type ModelImageLimits,
+} from '../../constants/apiLimits.js'
 import type { ModelName } from './model.js'
 import type { APIProvider } from './providers.js'
 
@@ -309,3 +313,58 @@ export const CANONICAL_ID_TO_KEY: Record<CanonicalModelId, ModelKey> =
       ([key, cfg]) => [cfg.firstParty, key],
     ),
   ) as Record<CanonicalModelId, ModelKey>
+
+/**
+ * Official 2.1.299 model-catalog `image_limits` capability (#069 — image
+ * coordinate hint wrong for near-square large images).
+ *
+ * Byte-verified from the official 2.1.299 linux-x64 ELF baked catalog
+ * (v299 binary @215970300+; `maxImageTokens:4784` occurs exactly 11 times,
+ * `maxImageTokens:1568` has ZERO occurrences in the binary). The entries
+ * carrying `image_limits:{maxWidth:2576,maxHeight:2576,maxImageTokens:4784}`
+ * are exactly: claude-haiku-5-5, claude-sonnet-5, claude-sonnet-5-5,
+ * claude-opus-4-7, claude-opus-4-8, claude-opus-5, claude-opus-5-5,
+ * claude-fable-5, claude-fable-5-1, claude-mythos-5, claude-mythos-5-1.
+ * The mythos models are not in OCC's catalog, so they are omitted here.
+ * Every other official catalog entry (haiku-3-5/4-5, sonnet-3-5/3-7/4-0/4-5/
+ * 4-6, opus-4-0/4-1/4-5/4-6) has NO `image_limits` key at all — so they get
+ * no entry here either and resolve to DEFAULT_IMAGE_LIMITS (2000×2000 clamp,
+ * no token budget). Do NOT invent a 1568/1568/1568 default: the 1568 values
+ * in the binary are only the token-scaler's internal defaults (`Ae=ze=1568`),
+ * never a catalog entry.
+ */
+export const MODEL_IMAGE_LIMITS: Partial<
+  Record<CanonicalModelId, ModelImageLimits>
+> = {
+  'claude-haiku-5-5': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-sonnet-5': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-sonnet-5-5': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-opus-4-7': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-opus-4-8': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-opus-5': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-opus-5-5': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-fable-5': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+  'claude-fable-5-1': { maxWidth: 2576, maxHeight: 2576, maxImageTokens: 4784 },
+}
+
+/**
+ * Resolve the image display limits for a model id.
+ *
+ * Accepts a canonical first-party id or any provider-specific id from the
+ * catalog (bedrock `us.anthropic.<id>`, vertex `<id>@<date>`, mantle
+ * `anthropic.<id>`, …) — mirroring the official behavior where image_limits
+ * lives on the catalog entry that the provider ids map to. Unknown or
+ * omitted ids resolve to DEFAULT_IMAGE_LIMITS (2000×2000 clamp, no token
+ * budget), matching official catalog entries without an `image_limits` key.
+ */
+export function getImageLimitsForModel(modelId?: string): ModelImageLimits {
+  if (!modelId) return DEFAULT_IMAGE_LIMITS
+
+  const canonicalId = CANONICAL_ID_TO_KEY[modelId as CanonicalModelId]
+    ? (modelId as CanonicalModelId)
+    : (Object.values(ALL_MODEL_CONFIGS).find(cfg =>
+        (Object.values(cfg) as string[]).includes(modelId),
+      )?.firstParty as CanonicalModelId | undefined)
+
+  return (canonicalId && MODEL_IMAGE_LIMITS[canonicalId]) || DEFAULT_IMAGE_LIMITS
+}

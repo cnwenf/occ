@@ -6,6 +6,10 @@ import { getSessionId } from 'src/bootstrap/state.js'
 import { type BufferedWriter, createBufferedWriter } from './bufferedWriter.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import {
+  createDebugBacklogLimiter,
+  drainNonBlocking,
+} from './debugBacklog.js'
+import {
   type DebugFilter,
   parseDebugFilter,
   shouldShowDebugMessage,
@@ -135,6 +139,12 @@ export function getHasFormattedOutput(): boolean {
 let debugWriter: BufferedWriter | null = null
 let pendingWrite: Promise<void> = Promise.resolve()
 
+// CC 2.1.299 (#028): bounded backlog accounting for the async debug-log
+// append path (official class `Fn` backlog: 1 MiB cap, 10 s staleness,
+// drop-with-note, 5 s stuck detection). See debugBacklog.ts for the
+// byte-exact forensic record.
+const debugBacklog = createDebugBacklogLimiter()
+
 // Module-level so .bind captures only its explicit args, not the
 // writeFn closure's parent scope (Jarred, #22257).
 async function appendAsync(
@@ -206,8 +216,28 @@ function getDebugWriter(): BufferedWriter {
         // Buffered path (ants without --debug): flushes ~1/sec so chain
         // depth stays ~1. .bind over a closure so only the bound args are
         // retained, not this scope.
+        //
+        // CC 2.1.299 (#028): bound the in-flight backlog. When the sink stops
+        // accepting writes (dead disk/network mount), queued appends used to
+        // grow without limit; now payloads are dropped once the backlog is
+        // over 1 MiB and the oldest queued chunk has waited over 10 s
+        // (official `Fn` writeBatch drop rule, see debugBacklog.ts). A single
+        // WARN note marks the gap when writes resume.
+        if (debugBacklog.shouldDrop()) {
+          debugBacklog.recordDropped()
+          return
+        }
+        const payload = debugBacklog.takeDroppedNote() + content
+        if (payload === '') return
+        debugBacklog.accept(payload.length)
         pendingWrite = pendingWrite
-          .then(appendAsync.bind(null, needMkdir, dir, path, content))
+          .then(appendAsync.bind(null, needMkdir, dir, path, payload))
+          .then(
+            () => debugBacklog.settle(payload.length),
+            () => {
+              debugBacklog.settle(payload.length)
+            },
+          )
           .catch(noop)
       },
       flushIntervalMs: 1000,
@@ -215,16 +245,28 @@ function getDebugWriter(): BufferedWriter {
       immediateMode: isDebugMode(),
     })
     registerCleanup(async () => {
+      // Emit any pending dropped-note before the last flush so the log ends
+      // with an accurate gap marker (official flush() writes "" for this).
+      const note = debugBacklog.takeDroppedNote()
+      if (note !== '') debugWriter?.write(note)
       debugWriter?.dispose()
-      await pendingWrite
+      // CC 2.1.299 (#028): non-blocking drain — a stuck append (dead mount)
+      // must never hang exit (official `drained()`; v296 awaited the chain
+      // unconditionally).
+      await drainNonBlocking(pendingWrite, () => debugBacklog.isAppendStuck())
     })
   }
   return debugWriter
 }
 
 export async function flushDebugLogs(): Promise<void> {
+  // CC 2.1.299 (#028): flush any pending dropped-note first (official flush()
+  // does `this.write("")` which routes through the same takeDroppedNote path).
+  const note = debugBacklog.takeDroppedNote()
+  if (note !== '') debugWriter?.write(note)
   debugWriter?.flush()
-  await pendingWrite
+  // Non-blocking drain: never hang the caller on a stuck sink.
+  await drainNonBlocking(pendingWrite, () => debugBacklog.isAppendStuck())
 }
 
 export function logForDebugging(
@@ -247,7 +289,10 @@ export function logForDebugging(
   const timestamp = new Date().toISOString()
   const output = `${timestamp} [${level.toUpperCase()}] ${message.trim()}\n`
   if (isDebugToStdErr()) {
-    writeToStderr(output)
+    // CC 2.1.299 (#029): debug→stderr is droppable — official deps wiring
+    // `writeToStderr:(r)=>{Fj(r,{mayDrop:!0})}`. A parent that stops reading
+    // stderr can no longer grow memory without bound.
+    writeToStderr(output, { mayDrop: true })
     return
   }
 

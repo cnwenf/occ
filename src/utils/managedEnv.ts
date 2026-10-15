@@ -284,6 +284,11 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   'CLAUDE_CODE_MESSAGING_TOKEN',
   'CLAUDE_CODE_DISABLE_ADMIN_ENV_UNION',
   'CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT',
+  // CC 2.1.299 (#030): strict inline-shell-rm prompt opt-in — member of the
+  // official settings-env ignore set `W` (@218755559 in
+  // /tmp/cc-diff-299/v299/package/claude), so project/local settings may not
+  // set it (only user/managed/env).
+  'CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT',
   'CLAUDE_CODE_MANAGED_SETTINGS_PATH',
   'CLAUDE_CODE_TOASTY_THIMBLE',
   'CLAUDE_CODE_GENTLE_PARASOL',

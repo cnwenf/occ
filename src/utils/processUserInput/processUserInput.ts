@@ -39,6 +39,7 @@ import type { PastedContent } from '../config.js'
 import type { EffortValue } from '../effort.js'
 import { toArray } from '../generators.js'
 import {
+  type AggregatedHookResult,
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
 } from '../hooks.js'
@@ -152,6 +153,85 @@ export async function processUserInput({
 
   const appState = context.getAppState()
 
+  // CC 2.1.299 #167: UserPromptSubmit hooks must run BEFORE skill/custom
+  // slash-command expansion — expansion (getPromptForCommand) executes
+  // embedded ```! cmd``` shell blocks, so a blocking hook must be able to
+  // prevent them. Official v299 runs the hooks on its fork-dispatch path
+  // before expansion, with early returns for blocking/preventContinuation
+  // (@244494224 in the ELF). Only the expansion-risk path (prompt-type
+  // commands) is reordered; every other input keeps the legacy post-base
+  // pass below, unchanged.
+  const preExpansionHookMessages: AttachmentMessage[] = []
+  let ranHooksPreExpansion = false
+  if (
+    shouldRunHooksBeforeExpansion(
+      input,
+      mode,
+      context,
+      skipSlashCommands,
+      bridgeOrigin,
+    )
+  ) {
+    ranHooksPreExpansion = true
+    queryCheckpoint('query_hooks_start')
+    const inputMessage = getContentText(input) || ''
+    for await (const hookResult of executeUserPromptSubmitHooks(
+      inputMessage,
+      appState.toolPermissionContext.mode,
+      context,
+      context.requestPrompt,
+    )) {
+      if (hookResult.message?.type === 'progress') {
+        continue
+      }
+
+      // Blocking hook: surface the block and NEVER run the expansion —
+      // this is the whole point of the reorder (official fork-path shape:
+      // warning system message only, original prompt echoed).
+      if (hookResult.blockingError) {
+        const blockingMessage = getUserPromptSubmitHookBlockingMessage(
+          hookResult.blockingError,
+        )
+        queryCheckpoint('query_hooks_end')
+        return {
+          messages: [
+            createSystemMessage(
+              `${blockingMessage}\n\nOriginal prompt: ${input}`,
+              'warning',
+            ),
+          ],
+          shouldQuery: false,
+        }
+      }
+
+      // preventContinuation: stop before the expansion runs (official
+      // fork-path shape: stop message as user message + warning).
+      if (hookResult.preventContinuation) {
+        const message = hookResult.stopReason
+          ? `Operation stopped by hook: ${hookResult.stopReason}`
+          : 'Operation stopped by hook'
+        queryCheckpoint('query_hooks_end')
+        return {
+          messages: [
+            createUserMessage({ content: message }),
+            createSystemMessage(message, 'warning'),
+          ],
+          shouldQuery: false,
+        }
+      }
+
+      if (hookResult.sessionTitle) {
+        const title = hookResult.sessionTitle.trim()
+        if (title) {
+          await saveCustomTitle(getSessionId(), title, undefined, 'auto')
+        }
+      }
+
+      preExpansionHookMessages.push(...hookResultToMessages(hookResult))
+    }
+    queryCheckpoint('query_hooks_end')
+  }
+
   const result = await processUserInputBase(
     input,
     mode,
@@ -174,6 +254,14 @@ export async function processUserInput({
   queryCheckpoint('query_process_user_input_base_end')
 
   if (!result.shouldQuery) {
+    return result
+  }
+
+  // #167: hooks already ran before the expansion — append their collected
+  // context/success messages after the base messages (same relative order
+  // as the legacy pass) and skip the legacy loop.
+  if (ranHooksPreExpansion) {
+    result.messages.push(...preExpansionHookMessages)
     return result
   }
 
@@ -225,22 +313,6 @@ export async function processUserInput({
       return result
     }
 
-    // Collect additional contexts
-    if (
-      hookResult.additionalContexts &&
-      hookResult.additionalContexts.length > 0
-    ) {
-      result.messages.push(
-        createAttachmentMessage({
-          type: 'hook_additional_context',
-          content: hookResult.additionalContexts.map(applyTruncation),
-          hookName: 'UserPromptSubmit',
-          toolUseID: `hook-${randomUUID()}`,
-          hookEvent: 'UserPromptSubmit',
-        }),
-      )
-    }
-
     // 2.1.94: a UserPromptSubmit hook can set the session title via
     // hookSpecificOutput.sessionTitle (same effect as /rename).
     if (hookResult.sessionTitle) {
@@ -250,27 +322,9 @@ export async function processUserInput({
       }
     }
 
-    // TODO: Clean this up
-    if (hookResult.message) {
-      switch (hookResult.message.attachment.type) {
-        case 'hook_success':
-          if (!hookResult.message.attachment.content) {
-            // Skip if there is no content
-            break
-          }
-          result.messages.push({
-            ...hookResult.message,
-            attachment: {
-              ...hookResult.message.attachment,
-              content: applyTruncation(hookResult.message.attachment.content as string),
-            },
-          } as AttachmentMessage)
-          break
-        default:
-          result.messages.push(hookResult.message as AttachmentMessage)
-          break
-      }
-    }
+    // Additional contexts + hook_success/attachment messages (#167: shared
+    // with the pre-expansion pass via hookResultToMessages).
+    result.messages.push(...hookResultToMessages(hookResult))
   }
   queryCheckpoint('query_hooks_end')
 
@@ -278,6 +332,107 @@ export async function processUserInput({
   // so it resolves in the same frame as deferredMessages (no flicker gap).
   // Error paths are handled by handlePromptSubmit's finally block.
   return result
+}
+
+/**
+ * Convert the non-terminal outputs of a UserPromptSubmit hook result into
+ * attachment messages: additionalContexts plus the hook_success/default
+ * attachment passthrough. Shared by the legacy post-base pass and the #167
+ * pre-expansion pass so both interpret hook output identically.
+ */
+function hookResultToMessages(
+  hookResult: AggregatedHookResult,
+): AttachmentMessage[] {
+  const messages: AttachmentMessage[] = []
+
+  if (
+    hookResult.additionalContexts &&
+    hookResult.additionalContexts.length > 0
+  ) {
+    messages.push(
+      createAttachmentMessage({
+        type: 'hook_additional_context',
+        content: hookResult.additionalContexts.map(applyTruncation),
+        hookName: 'UserPromptSubmit',
+        toolUseID: `hook-${randomUUID()}`,
+        hookEvent: 'UserPromptSubmit',
+      }),
+    )
+  }
+
+  // TODO: Clean this up
+  if (hookResult.message) {
+    switch (hookResult.message.attachment.type) {
+      case 'hook_success':
+        if (!hookResult.message.attachment.content) {
+          // Skip if there is no content
+          break
+        }
+        messages.push({
+          ...hookResult.message,
+          attachment: {
+            ...hookResult.message.attachment,
+            content: applyTruncation(hookResult.message.attachment.content as string),
+          },
+        } as AttachmentMessage)
+        break
+      default:
+        messages.push(hookResult.message as AttachmentMessage)
+        break
+    }
+  }
+
+  return messages
+}
+
+/**
+ * #167 classifier: does this input take the expansion path (skill/custom
+ * slash command) whose getPromptForCommand can execute embedded ```! cmd```
+ * shell blocks? Only then must UserPromptSubmit hooks run BEFORE
+ * processUserInputBase. Mirrors the base function's inputString derivation
+ * and slash-dispatch gate (including the bridge-safe override), and resolves
+ * the command the same way processSlashCommand will.
+ */
+function shouldRunHooksBeforeExpansion(
+  input: string | Array<ContentBlockParam>,
+  mode: PromptInputMode,
+  context: ProcessUserInputContext,
+  skipSlashCommands?: boolean,
+  bridgeOrigin?: boolean,
+): boolean {
+  if (mode !== 'prompt') {
+    return false
+  }
+
+  let inputString: string | null = typeof input === 'string' ? input : null
+  if (inputString === null && Array.isArray(input) && input.length > 0) {
+    const lastBlock = input[input.length - 1]
+    if (lastBlock?.type === 'text') {
+      inputString = lastBlock.text
+    }
+  }
+  if (inputString === null || !inputString.startsWith('/')) {
+    return false
+  }
+
+  const parsed = parseSlashCommand(inputString)
+  if (!parsed) {
+    return false
+  }
+  const command = findCommand(parsed.commandName, context.options.commands)
+  if (!command) {
+    return false
+  }
+
+  // When skipSlashCommands is in effect the input is plain text (no
+  // expansion) unless the bridge-safe override re-enables dispatch.
+  if (skipSlashCommands && !(bridgeOrigin && isBridgeSafeCommand(command))) {
+    return false
+  }
+
+  // Only prompt-type commands expand content; local/local-jsx commands
+  // render UI and never execute embedded shell blocks.
+  return command.type === 'prompt'
 }
 
 const MAX_HOOK_OUTPUT_LENGTH = 10000

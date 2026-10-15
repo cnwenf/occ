@@ -31,8 +31,10 @@ import {
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
 import {
-  isLossyUtf8Decode,
+  classifyFileBytes,
   type LineEndingType,
+  type NotTextCategory,
+  preserveBomOnRewrite,
   readFileSyncWithMetadata,
 } from '../../utils/fileRead.js'
 import { formatFileSize } from '../../utils/format.js'
@@ -64,7 +66,7 @@ import {
   FileStateError,
   FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
   FILE_NOT_READ_MESSAGE,
-  FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+  fileNotTextRefusalMessage,
   FILE_STATE_CURRENT_NOTE,
   fileStateMatchesDisk,
   getGuardModel,
@@ -331,19 +333,15 @@ export const FileEditTool = buildTool({
     // instead of calling detectFileEncoding (which does its own sync readSync
     // and would fail with a wasted ENOENT when the file doesn't exist).
     let fileContent: string | null
-    // CC 2.1.296 #032 (official Re=IAo(Ze,ut)): set when the utf8-decoded
-    // bytes are not valid UTF-8; the refusal fires after the stale-read
-    // block, matching the official ordering.
-    let fileContentLossy = false
+    // CC 2.1.299 #126 (official validateInput @227797374 reads via A6r →
+    // Rgt): classifyFileBytes (official Rgt) derives encoding + notText from
+    // the same buffer; notText fires the refusal after the stale-read block,
+    // matching the official ordering.
+    let fileNotText: NotTextCategory | undefined
     try {
       const fileBuffer = await fs.readFileBytes(fullFilePath)
-      const encoding: BufferEncoding =
-        fileBuffer.length >= 2 &&
-        fileBuffer[0] === 0xff &&
-        fileBuffer[1] === 0xfe
-          ? 'utf16le'
-          : 'utf8'
-      fileContentLossy = isLossyUtf8Decode(fileBuffer, encoding)
+      const { encoding, notText } = classifyFileBytes(fileBuffer)
+      fileNotText = notText
       // Binary J9 shape: BOM-stripped + LF-normalized, the canonical form
       // readFileState stores, so stale-content comparisons line up.
       fileContent = normalizeForComparison(fileBuffer.toString(encoding))
@@ -512,14 +510,14 @@ export const FileEditTool = buildTool({
       }
     }
 
-    // CC 2.1.296 #032 (official validateInput @219762357): the non-UTF-8
+    // CC 2.1.299 #126 (official validateInput @227797374): the notText
     // refusal fires AFTER the stale-read block (Pe) and BEFORE old_string
-    // matching — `if(Re)return{result:!1,message:aen,errorCode:15}`. No
+    // matching — `if(Ae)return{result:!1,message:Zpt(Ae),errorCode:15}`. No
     // behavior field (unlike the stale-read ask).
-    if (fileContentLossy) {
+    if (fileNotText) {
       return {
         result: false,
-        message: FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+        message: fileNotTextRefusalMessage(fileNotText),
         errorCode: 15,
       }
     }
@@ -671,7 +669,7 @@ export const FileEditTool = buildTool({
       fileExists,
       encoding,
       lineEndings: endings,
-      lossyDecode,
+      notText,
     } = readFileForEdit(absoluteFilePath)
 
     // 2.1.228 call-time guard (binary C8b): throws FileStateError when the
@@ -695,12 +693,12 @@ export const FileEditTool = buildTool({
           ),
       })
 
-    // CC 2.1.296 #032 (official call yjr): after the call-time staleness
-    // guard ($n=kjr(...)), `if(on)throw new C8(aen)` — the lossy refusal is
-    // a FileStateError thrown BEFORE findActualString/patch/write, so a
-    // non-UTF-8 file is never re-encoded to UTF-8 with U+FFFD replacements.
-    if (lossyDecode) {
-      throw new FileStateError(FILE_NOT_VALID_UTF8_EDIT_MESSAGE)
+    // CC 2.1.299 #126 (official call @227800100): after the call-time
+    // staleness guard, `if(Nn)throw new H9(Zpt(Nn))` — the notText refusal
+    // is a FileStateError thrown BEFORE findActualString/patch/write, so a
+    // legacy-encoding / NUL / UTF-16BE file is never re-encoded on Edit.
+    if (notText) {
+      throw new FileStateError(fileNotTextRefusalMessage(notText))
     }
 
     // 3. Use findActualString to handle quote normalization
@@ -726,8 +724,18 @@ export const FileEditTool = buildTool({
     // 5. Ensure parent directory exists, then write to disk (binary order:
     // patch → mkdir → write; from the guard above the write itself stays
     // synchronous).
+    // CC 2.1.299 #126 (official `_n=V===""?UMr(zt,Xn):Xn`): BOM preservation
+    // applies ONLY on the empty-old_string whole-content replacement; string-
+    // replacement edits inherit the file's leading bytes (incl. any BOM)
+    // through originalFileContents. The official uses `_n` for the disk write
+    // and every downstream consumer.
+    const fileToWrite =
+      old_string === ''
+        ? preserveBomOnRewrite(originalFileContents, updatedFile)
+        : updatedFile
+
     await fs.mkdir(dirname(absoluteFilePath))
-    writeTextContent(absoluteFilePath, updatedFile, encoding, endings)
+    writeTextContent(absoluteFilePath, fileToWrite, encoding, endings)
 
     // Notify LSP servers about file modification (didChange) and save (didSave)
     const lspManager = getLspServerManager()
@@ -736,7 +744,7 @@ export const FileEditTool = buildTool({
       clearDeliveredDiagnosticsForFile(`file://${absoluteFilePath}`)
       // didChange: Content has been modified
       lspManager
-        .changeFile(absoluteFilePath, updatedFile)
+        .changeFile(absoluteFilePath, fileToWrite)
         .catch((err: Error) => {
           logForDebugging(
             `LSP: Failed to notify server of file change for ${absoluteFilePath}: ${err.message}`,
@@ -753,7 +761,7 @@ export const FileEditTool = buildTool({
     }
 
     // Notify VSCode about the file change for diff view
-    notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, updatedFile)
+    notifyVscodeFileUpdated(absoluteFilePath, originalFileContents, fileToWrite)
 
     // 6. Update read timestamp, to invalidate stale writes. Content stored in
     // the canonical J9 form (normalizeForComparison: BOM-stripped, LF-only) —
@@ -781,7 +789,7 @@ export const FileEditTool = buildTool({
       staleRecovered === true ||
       !priorTrustedAndCurrent
     readFileState.set(absoluteFilePath, {
-      content: normalizeForComparison(updatedFile),
+      content: normalizeForComparison(fileToWrite),
       timestamp: getFileModificationTime(absoluteFilePath),
       offset: undefined,
       limit: undefined,
@@ -881,7 +889,7 @@ function readFileForEdit(absoluteFilePath: string): {
   fileExists: boolean
   encoding: BufferEncoding
   lineEndings: LineEndingType
-  lossyDecode: boolean
+  notText?: NotTextCategory
 } {
   try {
     // eslint-disable-next-line custom-rules/no-sync-fs
@@ -891,7 +899,7 @@ function readFileForEdit(absoluteFilePath: string): {
       fileExists: true,
       encoding: meta.encoding,
       lineEndings: meta.lineEndings,
-      lossyDecode: meta.lossyDecode,
+      notText: meta.notText,
     }
   } catch (e) {
     if (isENOENT(e)) {
@@ -900,7 +908,6 @@ function readFileForEdit(absoluteFilePath: string): {
         fileExists: false,
         encoding: 'utf8',
         lineEndings: 'LF',
-        lossyDecode: false,
       }
     }
     throw e

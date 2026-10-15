@@ -44,6 +44,7 @@ import {
   TEAMMATE_COMMAND_ENV_VAR,
   TMUX_COMMAND,
 } from '../../utils/swarm/constants.js'
+import { describeTeammatePrompt } from '../../utils/swarm/describeTeammate.js'
 import { It2SetupPrompt } from '../../utils/swarm/It2SetupPrompt.js'
 import { startInProcessTeammate } from '../../utils/swarm/inProcessRunner.js'
 import {
@@ -812,8 +813,12 @@ async function handleSpawnSeparateWindow(
  * Register a background task entry for an out-of-process (tmux/iTerm2) teammate.
  * This makes tmux teammates visible in the background tasks pill and dialog,
  * matching how in-process teammates are tracked.
+ *
+ * Exported as a test seam (cf. resolveTeammateAgentDefinition /
+ * buildTeammateResolvedDefinition) so the CC 2.1.299 #025 derived-description
+ * redaction can be asserted at the spawn site.
  */
-function registerOutOfProcessTeammateTask(
+export function registerOutOfProcessTeammateTask(
   setAppState: (updater: (prev: AppState) => AppState) => void,
   {
     teammateId,
@@ -840,7 +845,11 @@ function registerOutOfProcessTeammateTask(
   },
 ): void {
   const taskId = generateTaskId('in_process_teammate')
-  const description = `${sanitizedName}: ${prompt.substring(0, 50)}${prompt.length > 50 ? '...' : ''}`
+  // CC 2.1.299 #025: derive the description via redact-then-truncate
+  // (official `GQn`) so a teammate spawned without an explicit description
+  // never keeps a raw prompt fragment (potential credential) in the task
+  // description that is stored, displayed, and emitted to hooks.
+  const description = `${sanitizedName}: ${describeTeammatePrompt(prompt)}`
 
   const abortController = new AbortController()
 

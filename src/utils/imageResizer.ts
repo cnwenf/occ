@@ -4,9 +4,12 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import {
   API_IMAGE_MAX_BASE64_SIZE,
+  DEFAULT_IMAGE_LIMITS,
   IMAGE_MAX_HEIGHT,
   IMAGE_MAX_WIDTH,
   IMAGE_TARGET_RAW_SIZE,
+  IMAGE_TOKEN_PATCH_SIZE,
+  type ModelImageLimits,
 } from '../constants/apiLimits.js'
 import { logEvent } from '../services/analytics/index.js'
 import {
@@ -18,6 +21,7 @@ import { logForDebugging } from './debug.js'
 import { errorMessage } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
+import { getImageLimitsForModel } from './model/configs.js'
 
 type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
 
@@ -148,6 +152,136 @@ export interface ResizeResult {
   dimensions?: ImageDimensions
 }
 
+// =============================================================================
+// Official 2.1.299 token-aware image display dimensions (#069)
+// =============================================================================
+
+/**
+ * Default dimension cap inside the token-budget scaler — official binary
+ * constants `Ae=1568, ze=1568` (s299 @23708400: `var Ae=1568,ze=1568,...;
+ * function q(e,n,r=Ae,o=ze){...}`). Only used as the scaler's internal
+ * default; the catalog never ships a 1568 image_limits entry.
+ */
+const TOKEN_SCALE_MAX_DIMENSION = 1568
+
+/**
+ * Estimate the image token count on the 28px patch grid.
+ * Official `fgt` (s299 @7008763):
+ *   var St=28; function fgt(e,n){if(e<=0||n<=0)return 0;
+ *     return Math.ceil(e/St)*Math.ceil(n/St)}
+ */
+export function estimateImageTokens(width: number, height: number): number {
+  if (width <= 0 || height <= 0) return 0
+  return (
+    Math.ceil(width / IMAGE_TOKEN_PATCH_SIZE) *
+    Math.ceil(height / IMAGE_TOKEN_PATCH_SIZE)
+  )
+}
+
+/**
+ * Binary-search the largest dimension pair that fits both a dimension cap
+ * and a token budget, preserving aspect ratio.
+ * Official `q` (s299 @23708400, byte-recovered):
+ *   function q(e,n,r=Ae,o=ze){
+ *     if(e<=r&&n<=r&&fgt(e,n)<=o)return[e,n];
+ *     if(n>e){let[m,h]=q(n,e,r,o);return[h,m]}
+ *     let u=e/n,a=1,s=e;
+ *     while(a+1<s){let m=a+s>>1,h=Math.max(Math.round(m/u),1);
+ *       if(m<=r&&fgt(m,h)<=o)a=m;else s=m}
+ *     return[a,Math.max(Math.round(a/u),1)]}
+ */
+export function scaleForTokenBudget(
+  width: number,
+  height: number,
+  maxWidth: number = TOKEN_SCALE_MAX_DIMENSION,
+  maxTokens: number = TOKEN_SCALE_MAX_DIMENSION,
+): [number, number] {
+  if (
+    width <= maxWidth &&
+    height <= maxWidth &&
+    estimateImageTokens(width, height) <= maxTokens
+  ) {
+    return [width, height]
+  }
+  if (height > width) {
+    const [swappedWidth, swappedHeight] = scaleForTokenBudget(
+      height,
+      width,
+      maxWidth,
+      maxTokens,
+    )
+    return [swappedHeight, swappedWidth]
+  }
+  const aspectRatio = width / height
+  let lo = 1
+  let hi = width
+  while (lo + 1 < hi) {
+    const mid = (lo + hi) >> 1
+    const midHeight = Math.max(Math.round(mid / aspectRatio), 1)
+    if (mid <= maxWidth && estimateImageTokens(mid, midHeight) <= maxTokens) {
+      lo = mid
+    } else {
+      hi = mid
+    }
+  }
+  return [lo, Math.max(Math.round(lo / aspectRatio), 1)]
+}
+
+/**
+ * Apply model image limits to original dimensions: maxWidth/maxHeight clamp
+ * FIRST, then token-budget scaling only when the model declares
+ * maxImageTokens. Official `Y` (299 binary @222905316 wrapper tail:
+ * `return r.maxImageTokens===void 0?[e,n]:q(e,n,1/0,r.maxImageTokens)`).
+ */
+export function applyImageLimits(
+  width: number,
+  height: number,
+  limits: ModelImageLimits,
+): [number, number] {
+  let clampedWidth = width
+  let clampedHeight = height
+  if (clampedWidth > limits.maxWidth) {
+    clampedHeight = Math.round(
+      (clampedHeight * limits.maxWidth) / clampedWidth,
+    )
+    clampedWidth = limits.maxWidth
+  }
+  if (clampedHeight > limits.maxHeight) {
+    clampedWidth = Math.round(
+      (clampedWidth * limits.maxHeight) / clampedHeight,
+    )
+    clampedHeight = limits.maxHeight
+  }
+  return limits.maxImageTokens === undefined
+    ? [clampedWidth, clampedHeight]
+    : scaleForTokenBudget(
+        clampedWidth,
+        clampedHeight,
+        Number.POSITIVE_INFINITY,
+        limits.maxImageTokens,
+      )
+}
+
+/**
+ * Resolve the image limits for the current main-loop model.
+ *
+ * The official resizer receives a limits options object built from the model
+ * catalog's `image_limits` entry. OCC's resizer call sites predate this
+ * feature and pass no limits, so the current model is resolved here. The
+ * model module is imported lazily to keep imageResizer's static module graph
+ * unchanged (utils/model pulls in auth/context/settings — a static import
+ * here would risk a load cycle via attachments). Any resolution failure
+ * falls back to the 2000×2000 defaults (official base limits `rD`).
+ */
+async function getCurrentImageLimits(): Promise<ModelImageLimits> {
+  try {
+    const { getMainLoopModel } = await import('./model/model.js')
+    return getImageLimitsForModel(getMainLoopModel())
+  } catch {
+    return DEFAULT_IMAGE_LIMITS
+  }
+}
+
 interface ImageCompressionContext {
   imageBuffer: Buffer
   metadata: { width?: number; height?: number; format?: string }
@@ -164,12 +298,20 @@ interface CompressedImageResult {
 
 /**
  * Extracted from FileReadTool's readImage function
- * Resizes image buffer to meet size and dimension constraints
+ * Resizes image buffer to meet size and dimension constraints.
+ *
+ * Official 2.1.299 (#069): display dimensions are computed through the
+ * model's `image_limits` (maxWidth/maxHeight clamp + maxImageTokens budget
+ * scaling) via `applyImageLimits` on every return path, so the coordinate
+ * hint stays correct for near-square large images. `limits` defaults to the
+ * current main-loop model's catalog entry (2000×2000 defaults when the model
+ * declares no image_limits).
  */
 export async function maybeResizeAndDownsampleImageBuffer(
   imageBuffer: Buffer,
   originalSize: number,
   ext: string,
+  limits?: ModelImageLimits,
 ): Promise<ResizeResult> {
   if (imageBuffer.length === 0) {
     // Empty buffer would fall through the catch block below (sharp throws
@@ -190,6 +332,15 @@ export async function maybeResizeAndDownsampleImageBuffer(
     // If dimensions aren't available from metadata
     if (!metadata.width || !metadata.height) {
       if (originalSize > IMAGE_TARGET_RAW_SIZE) {
+        // Official 2.1.299 telemetry on the dimensions-unknown byte-limit
+        // fallback (299 binary @222908065 region): `tengu_image_resize`
+        // with exactly these four fields.
+        logEvent('tengu_image_resize', {
+          over_byte_limit: true,
+          over_dimension_limit: false,
+          resized_for_tokens: false,
+          original_size_bytes: originalSize,
+        })
         // Create fresh sharp instance for compression
         const compressedBuffer = await sharp(imageBuffer)
           .jpeg({ quality: 80 })
@@ -204,30 +355,55 @@ export async function maybeResizeAndDownsampleImageBuffer(
     const originalWidth = metadata.width
     const originalHeight = metadata.height
 
-    // Calculate dimensions while maintaining aspect ratio
-    let width = originalWidth
-    let height = originalHeight
+    // Official 2.1.299 (#069): resolve per-model limits and compute display
+    // dimensions once through the limits pipeline — official
+    // `let[y,P]=Y(_,S,o),A=y!==_||P!==S` (299 binary @222908065).
+    const imageLimits = limits ?? (await getCurrentImageLimits())
+    const [displayWidth, displayHeight] = applyImageLimits(
+      originalWidth,
+      originalHeight,
+      imageLimits,
+    )
+    const resizedForLimits =
+      displayWidth !== originalWidth || displayHeight !== originalHeight
 
     // Check if the original file just works
-    if (
-      originalSize <= IMAGE_TARGET_RAW_SIZE &&
-      width <= IMAGE_MAX_WIDTH &&
-      height <= IMAGE_MAX_HEIGHT
-    ) {
+    // (official: `if(B<=o.targetRawSize&&!A)return{...,dimensions:...}`)
+    if (originalSize <= IMAGE_TARGET_RAW_SIZE && !resizedForLimits) {
       return {
         buffer: imageBuffer,
         mediaType: normalizedMediaType,
         dimensions: {
           originalWidth,
           originalHeight,
-          displayWidth: width,
-          displayHeight: height,
+          displayWidth,
+          displayHeight,
         },
       }
     }
 
-    const needsDimensionResize =
-      width > IMAGE_MAX_WIDTH || height > IMAGE_MAX_HEIGHT
+    // Official 2.1.299 tengu_image_resize telemetry — field set recovered
+    // byte-level from the 299 binary (@222908065).
+    logEvent('tengu_image_resize', {
+      over_byte_limit: originalSize > IMAGE_TARGET_RAW_SIZE,
+      over_dimension_limit:
+        originalWidth > imageLimits.maxWidth ||
+        originalHeight > imageLimits.maxHeight,
+      resized_for_tokens:
+        resizedForLimits &&
+        displayWidth < imageLimits.maxWidth &&
+        displayHeight < imageLimits.maxHeight,
+      original_size_bytes: originalSize,
+      original_width: originalWidth,
+      original_height: originalHeight,
+      target_width: displayWidth,
+      target_height: displayHeight,
+      max_width: imageLimits.maxWidth,
+      max_height: imageLimits.maxHeight,
+      max_image_tokens: imageLimits.maxImageTokens,
+    })
+
+    const needsDimensionResize = resizedForLimits
     const isPng = normalizedMediaType === 'png'
 
     // If dimensions are within limits but file is too large, try compression first
@@ -246,8 +422,8 @@ export async function maybeResizeAndDownsampleImageBuffer(
             dimensions: {
               originalWidth,
               originalHeight,
-              displayWidth: width,
-              displayHeight: height,
+              displayWidth,
+              displayHeight,
             },
           }
         }
@@ -265,8 +441,8 @@ export async function maybeResizeAndDownsampleImageBuffer(
             dimensions: {
               originalWidth,
               originalHeight,
-              displayWidth: width,
-              displayHeight: height,
+              displayWidth,
+              displayHeight,
             },
           }
         }
@@ -274,16 +450,11 @@ export async function maybeResizeAndDownsampleImageBuffer(
       // Quality reduction alone wasn't enough, fall through to resize
     }
 
-    // Constrain dimensions if needed
-    if (width > IMAGE_MAX_WIDTH) {
-      height = Math.round((height * IMAGE_MAX_WIDTH) / width)
-      width = IMAGE_MAX_WIDTH
-    }
-
-    if (height > IMAGE_MAX_HEIGHT) {
-      width = Math.round((width * IMAGE_MAX_HEIGHT) / height)
-      height = IMAGE_MAX_HEIGHT
-    }
+    // Display dimensions were already computed through applyImageLimits
+    // above (official `Y`: maxWidth/maxHeight clamp first, then
+    // token-budget scale) — physically resize to them.
+    const width = displayWidth
+    const height = displayHeight
 
     // IMPORTANT: Always create fresh sharp(imageBuffer) instances for each operation.
     // The native image-processor-napi module doesn't properly apply format conversions
@@ -444,6 +615,7 @@ export interface ImageBlockWithDimensions {
  */
 export async function maybeResizeAndDownsampleImageBlock(
   imageBlock: ImageBlockParam,
+  limits?: ModelImageLimits,
 ): Promise<ImageBlockWithDimensions> {
   // Only process base64 images
   if (imageBlock.source.type !== 'base64') {
@@ -463,6 +635,7 @@ export async function maybeResizeAndDownsampleImageBlock(
     imageBuffer,
     originalSize,
     ext,
+    limits,
   )
 
   // Return resized image block with dimension info

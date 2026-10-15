@@ -72,6 +72,31 @@
  *    over-block (P3, accepted): `x=rm $x -rf /` blocks even though bash
  *    expands `$x` with the PRE-command value (a prefix assignment never
  *    reaches its own command's expansion) — deny-in-all-modes direction.
+ *
+ * CC 2.1.299 (#030) inline-shell-rm prompt relaxation — official
+ * `vpo`/`Ele`/`wpo`/`KMt`/`Ale`/`ABe` (byte-verified @224224084 region in
+ * /tmp/cc-diff-299/v299/package/claude; ask sites now gate the UNCHECKED
+ * asks behind `Ele(n.budget.command, tt)`):
+ * - Default (relaxed): the unchecked asks (depth cap, unreadable constructs,
+ *   ANSI-C-quoted rm) only fire when the command/script carries real rm
+ *   evidence — `wpo` (`inlineShellRmContentDetected`, the deep normalized
+ *   rm-word detector incl. the `ABe` brace-expansion arm) or `KMt`
+ *   (`ansiCEscapeDetected`). A script matching only OCC's coarse
+ *   RM_VERB_RE prefilter without `wpo` evidence (e.g. `--rm` docker flags)
+ *   no longer blocks.
+ * - `CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT` (RAW truthiness, same
+ *   convention as the kill switch) restores the v296 always-prompt
+ *   behavior. Official statsig gate `k("tengu_pale_kestrel",!0)` defaults
+ *   true → relaxation is on whenever the env var is unset (OCC has no
+ *   statsig).
+ * - UNCHANGED (unconditional): confirmed-dangerous verdicts (detector /
+ *   runtime-target / literal-danger — official `st&&!pt` arm prompts
+ *   regardless) and the ANSI-C hex-escape bail (official keeps `||KMt(tt)`
+ *   OUTSIDE the `Ele` gate; OCC's extraction regex upgraded to the `KMt`
+ *   port — strict superset of the v296 `/\$'[^']*\\[xuUc0-7]/`).
+ * - The env var is a member of the official settings-env ignore set `W`
+ *   (@218755559) → registered in PROJECT_SCOPE_BLOCKED_ENV_KEYS
+ *   (managedEnv.ts) so project-scoped settings cannot set it.
  */
 
 // biome-ignore-all lint/suspicious/noTemplateCurlyInString: the official A4o message contains a literal bash `${NAME:?}` guard idiom, not a JS template placeholder.
@@ -99,6 +124,25 @@ import {
  */
 export const INLINE_SHELL_RM_KILL_SWITCH_ENV_VAR =
   'CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT'
+
+/**
+ * Official `vpo` strict opt-in (CC 2.1.299 #030). RAW truthiness (same
+ * convention as the kill switch): official gate @224225316 in
+ * /tmp/cc-diff-299/v299/package/claude —
+ *   `function vpo(){return!a.CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT&&k("tengu_pale_kestrel",!0)}`
+ *   `function Ele(...e){return!vpo()||e.some((n)=>wpo(n)||KMt(n))}`
+ * vpo() = relaxation active (strict env NOT set AND statsig gate on — the
+ * gate defaults true and OCC has no statsig, so it is treated as always on).
+ * With relaxation active, the "unchecked/unreadable" ask sites fire only when
+ * `Ele` finds real rm evidence (`wpo` deep content detector or `KMt` ANSI-C
+ * escape detector) in the command/script texts; strict mode (any non-empty
+ * env value) restores the v296 always-prompt behavior. The env var is TRUE-NEW
+ * in v299 (0 hits in v296) and a member of the official settings-env ignore
+ * set `W` (@218755559) → registered in managedEnv.ts
+ * PROJECT_SCOPE_BLOCKED_ENV_KEYS.
+ */
+export const INLINE_SHELL_RM_STRICT_PROMPT_ENV_VAR =
+  'CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT'
 
 /** Official `P4o` — inline-shell re-judgment recursion depth cap. */
 const MAX_INLINE_SHELL_DEPTH = 8
@@ -132,9 +176,6 @@ const UNREADABLE_CONSTRUCT_RE =
 /** Official `be()` unquoted-text taint marker (verbatim regex). */
 const UNREADABLE_UNQUOTED_RE =
   /\bprintf\b[^;&|\n]*\s-v|\b(?:unset|export|declare|typeset|local|readonly)\b[^;&|\n]*\$/
-
-/** Official ANSI-C escape bail `/\$'[^']*\\[xuUc0-7]/` (verbatim). */
-const ANSI_C_HEX_ESCAPE_RE = /\$'[^']*\\[xuUc0-7]/
 
 /** Official `${NAME:?}` guard idiom (the A4o text's own escape hatch). */
 const GUARDED_EXPANSION_RE = /^\$\{[A-Za-z_]\w*:\?/
@@ -278,6 +319,114 @@ export function inlineShellRmKillSwitchActive(): boolean {
   return Boolean(process.env[INLINE_SHELL_RM_KILL_SWITCH_ENV_VAR])
 }
 
+// ── CC 2.1.299 (#030) relaxed-prompt gate (official `vpo`/`Ele`/`wpo`/`KMt`) ──
+
+/**
+ * Official `vpo` strict half — RAW truthiness: any non-empty value (including
+ * "0") selects the strict always-prompt behavior, matching the official
+ * `!a.CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT` string check. The statsig
+ * gate `k("tengu_pale_kestrel",!0)` defaults true; OCC has no statsig, so the
+ * relaxation is on whenever the strict env var is unset.
+ */
+export function inlineShellRmStrictPromptActive(): boolean {
+  return Boolean(process.env[INLINE_SHELL_RM_STRICT_PROMPT_ENV_VAR])
+}
+
+/** Official `RMt` (verbatim): ANSI-C `$'…\x…'` escape regex. */
+const ANSI_C_ESCAPE_RE = /\$'(?:\\'|[^'])*\\[xuUc0-7]/
+
+/**
+ * Official `KMt` (verbatim, CC 2.1.299 #030 — replaces the v296 raw
+ * `/\$'[^']*\\[xuUc0-7]/` test with a strictly stronger one): checks the text
+ * and its line-continuation-joined form, each also with `''`/`"'` quote
+ * sequences normalized to a single `'`.
+ */
+export function ansiCEscapeDetected(text: string): boolean {
+  return [text, text.replace(/\\\n/g, '')].some(
+    variant =>
+      ANSI_C_ESCAPE_RE.test(variant) ||
+      ANSI_C_ESCAPE_RE.test(variant.replace(/'(?:\\'|"'")'/g, "'")),
+  )
+}
+
+/** Official `Ale` (verbatim): quote-aware whitespace tokenizer. */
+function matchShellTokens(text: string): string[] {
+  return (
+    text.match(/(?:[^\s'"\\]|\\[\s\S]|'[^']*'|"(?:[^"\\]|\\.)*")+/g) ?? []
+  )
+}
+
+/**
+ * Official `ABe` (verbatim; byte-identical to the v296 `Zcn`): true when a
+ * brace expansion (`{a,b}` / `{a..b}`) produces a word that IS `rm`/`rmdir`
+ * (optionally path-suffixed), e.g. `{rm,x} -rf /` or `foo/{../rm}`.
+ */
+function braceExpandsToRm(text: string): boolean {
+  const match = /^([^{]*)\{([^{}]*)\}(.*)$/s.exec(text.replace(/["'\\]/g, ''))
+  return (
+    match !== null &&
+    match[2]!
+      .split(/,|\.\./)
+      .some(part => /(?:^|\/)rm(?:dir)?$/i.test(`${match[1]}${part}${match[3]}`))
+  )
+}
+
+/**
+ * Official `wpo` (verbatim, CC 2.1.299 #030): deep rm-content detector.
+ * Normalizes the text — joins `\`-newline continuations, strips quotes/
+ * backslashes/`$`-before-quote, folds `${VAR:-default}` to its default,
+ * unescapes `\n\t\r`, and removes/blanks parameter expansions — then tests
+ * every variant for a standalone `rm`/`rmdir`/`rm.exe` word NOT preceded by
+ * a word char, `.` or `-` (so `--rm`, `.rm`, `confirm` don't count), plus the
+ * brace-expansion arm. This is the "does the script actually run rm" judgment
+ * that gates the unchecked ask in relaxed mode.
+ */
+export function inlineShellRmContentDetected(text: string): boolean {
+  const rmWordRe =
+    /(?:^|[^\w.-]|\$\{[^{}:-]*:?-)rm(?:dir)?(?:\.exe)?(?![\w.-])/i
+  const expansionRes = [
+    /\$[=~^]*(?:[A-Za-z_]\w*|[0-9]+|[@*#?!$-]|\{[^{}]*\})/g,
+    /\$(?:[0-9]+|[@*#?!$-]|\{[^{}]*\})/g,
+  ]
+  const stripDefaults = (t: string): string =>
+    t.replace(/\$\{[^{}:=?+-]*:?[-=?+]([^{}]*)\}/g, '$1')
+  const joined = text.replace(/\\\n/g, '')
+  const stripQuotes = (t: string): string => t.replace(/\$(?=['"])|['"\\]/g, '')
+  const variants = [
+    joined,
+    stripQuotes(joined),
+    stripQuotes(joined.replace(/\\[ntr]/g, ' ')),
+  ].flatMap(t => [t, stripDefaults(t)])
+  const expansionVariants = expansionRes.flatMap(re =>
+    [' ', ''].flatMap(replacement => [
+      stripQuotes(stripDefaults(joined).replace(re, replacement)),
+      ...variants.map(v => v.replace(re, replacement)),
+    ]),
+  )
+  return (
+    [...variants, ...expansionVariants].some(t => rmWordRe.test(t)) ||
+    [...matchShellTokens(joined), ...matchShellTokens(stripQuotes(joined))].some(
+      t => braceExpandsToRm(t.replace(/\.exe$/i, '')),
+    )
+  )
+}
+
+/**
+ * Official `Ele` (verbatim shape, CC 2.1.299 #030):
+ *   `function Ele(...e){return!vpo()||e.some((n)=>wpo(n)||KMt(n))}`
+ * True = the unchecked/unreadable ask still fires. Strict mode → always true
+ * (v296 behavior). Relaxed (default) → true only when some text carries real
+ * rm evidence (`wpo`) or an ANSI-C rm escape (`KMt`).
+ */
+export function shouldPromptForUncheckedInlineShellRm(
+  ...texts: readonly string[]
+): boolean {
+  return (
+    inlineShellRmStrictPromptActive() ||
+    texts.some(t => inlineShellRmContentDetected(t) || ansiCEscapeDetected(t))
+  )
+}
+
 // ── Extractor (official `C4o`) ──────────────────────────────────────────
 
 /**
@@ -362,7 +511,13 @@ function extractFromSegment(rawSegment: string): InlineShellScript | null {
   return {
     script,
     ansiCQuoted: /\$'/.test(rawSegment),
-    ansiCHexEscaped: ANSI_C_HEX_ESCAPE_RE.test(rawSegment),
+    // CC 2.1.299 (#030): official `KMt` port replaces the v296 raw
+    // `/\$'[^']*\\[xuUc0-7]/` test (strict superset — `RMt` also allows `\'`
+    // inside the quote, and `KMt` adds line-continuation-joined and
+    // quote-normalized variants). Still fires UNCONDITIONALLY at the ask
+    // site: official v299 `…&&Ele(n.budget.command,tt,…)||KMt(tt)` keeps
+    // `KMt(tt)` OUTSIDE the relaxed gate.
+    ansiCHexEscaped: ansiCEscapeDetected(rawSegment),
   }
 }
 
@@ -400,7 +555,7 @@ export function findDangerousInlineShellRm(
 ): InlineShellRmBlock | null {
   if (inlineShellRmKillSwitchActive()) return null
   for (const entry of extractInlineShellScripts(command)) {
-    const block = analyzeInlineShellScript(entry, 0)
+    const block = analyzeInlineShellScript(entry, 0, command)
     if (block !== null) return block
   }
   return null
@@ -409,19 +564,45 @@ export function findDangerousInlineShellRm(
 function analyzeInlineShellScript(
   entry: InlineShellScript,
   depth: number,
+  command: string,
 ): InlineShellRmBlock | null {
   const { script } = entry
   // Official ANSI-C bail: hex-escaped $'…' fires even without a visible rm;
   // a plain $'…' fires when an rm survives the \n\t\r unescape.
+  // CC 2.1.299 (#030): the hex-escape arm stays UNCONDITIONAL — official
+  // v299 keeps `||KMt(tt)` outside the `Ele` gate. The plain-ANSI-C-with-rm
+  // arm corresponds to the official non-simple ask site
+  // `Tle(tt.replace(/\\[ntr]/g,"\n"))&&Ele(n.budget.command,tt,…)` and is
+  // gated by the relaxed-mode evidence check.
   if (entry.ansiCHexEscaped) return uncheckedBlock()
-  if (entry.ansiCQuoted && RM_VERB_RE.test(script.replace(/\\[ntr]/g, '\n'))) {
+  if (
+    entry.ansiCQuoted &&
+    RM_VERB_RE.test(script.replace(/\\[ntr]/g, '\n')) &&
+    shouldPromptForUncheckedInlineShellRm(command, script)
+  ) {
     return uncheckedBlock()
   }
   if (!RM_VERB_RE.test(script)) return null
   // Official `P4o` depth cap: rm present but recursion exhausted → uue.
-  if (depth >= MAX_INLINE_SHELL_DEPTH) return uncheckedBlock()
+  // CC 2.1.299 (#030) site 1: `if(y>=Apo){if((Tle(Nn)||YMt(Nn))&&
+  // Ele(n.budget.command,tt))return Rle(!1,n.depth)}` — gated in relaxed
+  // mode unless real rm evidence survives.
+  if (
+    depth >= MAX_INLINE_SHELL_DEPTH &&
+    shouldPromptForUncheckedInlineShellRm(command, script)
+  ) {
+    return uncheckedBlock()
+  }
   // Official `be()` taint: unreadable constructs → Ze → uue.
-  if (isScriptUnreadable(script)) return uncheckedBlock()
+  // CC 2.1.299 (#030) sites 2/4: the unchecked arm is gated by
+  // `Ele(n.budget.command, tt)` — a script that is unreadable but carries no
+  // rm evidence (official `wpo`) no longer prompts by default.
+  if (
+    isScriptUnreadable(script) &&
+    shouldPromptForUncheckedInlineShellRm(command, script)
+  ) {
+    return uncheckedBlock()
+  }
   // Pass B: the existing OCC detectors re-judge the UNQUOTED script text.
   const detector = findCatastrophicSubstitutionBlock(script)
   if (detector !== null) return detectorBlock(detector)
@@ -431,7 +612,7 @@ function analyzeInlineShellScript(
   if (target !== null) return target
   // Nested `bash -c` inside the script (official ZYt recursion).
   for (const nested of extractInlineShellScripts(script)) {
-    const block = analyzeInlineShellScript(nested, depth + 1)
+    const block = analyzeInlineShellScript(nested, depth + 1, command)
     if (block !== null) return block
   }
   return null

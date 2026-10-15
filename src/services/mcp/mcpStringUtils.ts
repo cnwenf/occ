@@ -64,6 +64,42 @@ export function getMcpServerNameCollisionKey(
 }
 
 /**
+ * Official v299 prototype-collision reserved-name predicate — verbatim port of
+ * the binary `mG` (dd @215351978, v2.1.299 linux-x64 ELF):
+ *
+ *   function fa(e){return oo(`${po(e)}t`)===null}
+ *   function mG(e){return e in Object.prototype&&fa(e)}
+ *
+ * where `oo` = mcpInfoFromString and `po(e)` = `mcp__${vn(e)}__` =
+ * getMcpPrefix (vn = normalizeNameForMCP). A name is reserved when it exists
+ * on Object.prototype AND fails the tool-name round-trip — i.e. building
+ * `mcp__<name>__t` and parsing it back yields no server segment. This catches
+ * exactly the Object.prototype members whose `__`-delimited form collapses the
+ * server segment to "": `__proto__`, `__defineGetter__`, `__defineSetter__`,
+ * `__lookupGetter__`, `__lookupSetter__`.
+ *
+ * NOTE (forensic): `constructor`/`prototype` are NOT reserved under `mG` —
+ * they round-trip fine and the official v299 dynamic/file-config parse accepts
+ * them as ordinary server names (only the managedMcpServers parse `Ho` and the
+ * SDK `$.tool.register` path refuse them; OCC has no managedMcpServers key).
+ * The #042 fix for those names is own-property-safe by-name lookups instead.
+ *
+ * Used by the v299 `--mcp-config`/file parse filter
+ * (`Object.keys(raw).filter(mG)` → skipReason "reserved_name") and by the
+ * `mcp add` reserved-name refusal (binary `BW`'s `if(EBe(e))throw …`, whose
+ * first branch is `mG`).
+ */
+export function isReservedPrototypeMcpServerName(name: string): boolean {
+  if (typeof name !== 'string') {
+    return false
+  }
+  if (!(name in Object.prototype)) {
+    return false
+  }
+  return mcpInfoFromString(`${getMcpPrefix(name)}t`) === null
+}
+
+/**
  * Builds a fully qualified MCP tool name from server and tool names.
  * Inverse of mcpInfoFromString().
  * @param serverName Name of the MCP server (unnormalized)

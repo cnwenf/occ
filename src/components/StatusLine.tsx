@@ -29,6 +29,7 @@ import { getCurrentSessionTitle } from '../utils/sessionStorage.js';
 import { doesMostRecentAssistantMessageExceed200k, getCachedContextUsage } from '../utils/tokens.js';
 import { getCurrentWorktreeSession, getLinkedGitWorktreePath } from '../utils/worktree.js';
 import { isVimModeEnabled } from './PromptInput/utils.js';
+import { buildStatusLineRateLimits } from './statusLineRateLimits.js';
 export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   // Assistant mode: statusline fields (model, permission mode, cwd) reflect the
   // REPL/daemon process, not what the agent child is actually running. Hide it.
@@ -52,20 +53,9 @@ function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200k
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);
   const rawUtil = getRawUtilization();
-  const rateLimits: StatusLineCommandInput['rate_limits'] = {
-    ...(rawUtil.five_hour && {
-      five_hour: {
-        used_percentage: rawUtil.five_hour.utilization * 100,
-        resets_at: rawUtil.five_hour.resets_at
-      }
-    }),
-    ...(rawUtil.seven_day && {
-      seven_day: {
-        used_percentage: rawUtil.seven_day.utilization * 100,
-        resets_at: rawUtil.seven_day.resets_at
-      }
-    })
-  };
+  // CC 2.1.299 #060 (anthropics/claude-code#92238): used_percentage is clamped
+  // at 100 inside the builder (official v299 `ume` wrapper).
+  const rateLimits: StatusLineCommandInput['rate_limits'] = buildStatusLineRateLimits(rawUtil);
   return {
     ...createBaseHookInput(),
     ...(sessionName && {

@@ -16,6 +16,7 @@ import {
   handleOAuth401Error,
   hasProfileScope,
 } from './auth.js'
+import { sanitizeApiKeyForAnthropicOwnedEndpoint } from './firstPartyEndpoint.js'
 import { isInBundledMode } from './bundledMode.js'
 import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { logForDebugging } from './debug.js'
@@ -487,7 +488,15 @@ export async function prefetchFastModeStatus(): Promise<void> {
   // Service key OAuth sessions lack user:profile scope → endpoint 403s.
   // Resolve orgStatus from cache and bail before burning the throttle window.
   // API key auth is unaffected.
-  const apiKey = getAnthropicApiKey()
+  //
+  // Official 2.1.299 (`TPe` @~217810900): `let r=VS(),s=f5(r)` — the API key
+  // is sanitized with f5 before the penguin-mode request; a gateway key under
+  // a custom ANTHROPIC_BASE_URL becomes null and the request is skipped
+  // (org status falls back to the cache guess). Genuine sk-ant-shaped keys
+  // still pass. This closes the leak the provider-only gate above cannot
+  // catch (ANTHROPIC_BASE_URL gateway users are still provider
+  // 'firstParty').
+  const apiKey = sanitizeApiKeyForAnthropicOwnedEndpoint(getAnthropicApiKey())
   const hasUsableOAuth =
     getClaudeAIOAuthTokens()?.accessToken && hasProfileScope()
   if (!hasUsableOAuth && !apiKey) {

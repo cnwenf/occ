@@ -27,9 +27,9 @@ import {
   hasCronTasksSync,
   jitteredNextCronRunMs,
   markCronTasksFired,
-  oneShotJitteredNextCronRunMs,
   readCronTasks,
   removeCronTasks,
+  taskNextFireAt,
 } from './cronTasks.js'
 import {
   releaseSchedulerLock,
@@ -261,19 +261,14 @@ export function createCronScheduler(
         // set in-memory here. Without this, a daemon child despawning on
         // idle loses nextFireAt and the next spawn re-anchors from 10-day-
         // old createdAt → fires every task every cycle.
-        next = t.recurring
-          ? (jitteredNextCronRunMs(
-              t.cron,
-              t.lastFiredAt ?? t.createdAt,
-              t.id,
-              jitterCfg,
-            ) ?? Infinity)
-          : (oneShotJitteredNextCronRunMs(
-              t.cron,
-              t.createdAt,
-              t.id,
-              jitterCfg,
-            ) ?? Infinity)
+        //
+        // CC 2.1.299 (#102): official v299 calls the shared `Iat(task, cfg)`
+        // helper here (taskNextFireAt in cronTasks.ts — same anchors as the
+        // inline branch it replaces), and the underlying next-run walk is now
+        // DST-aware: a recurring cron's next-run skips the SECOND occurrence
+        // of a fall-back repeated hour instead of firing twice, and one-shot
+        // walks use absolute-epoch stepping.
+        next = taskNextFireAt(t, jitterCfg) ?? Infinity
         nextFireAt.set(t.id, next)
         logForDebugging(
           `[ScheduledTasks] scheduled ${t.id} for ${next === Infinity ? 'never' : new Date(next).toISOString()}`,

@@ -4,7 +4,10 @@ import {
   isSkillNameSafeToDisplay,
 } from '../../../commands.js'
 import type { Command } from '../../../types/command.js'
-import { buildUnknownSkillMessage } from '../SkillTool.js'
+import {
+  buildUnknownSkillMessage,
+  findUnprefixedSkillSuggestion,
+} from '../SkillTool.js'
 
 /**
  * Official Claude Code 2.1.269 (E52): "Unknown skill" names a plugin skill's
@@ -177,5 +180,77 @@ describe('2.1.269 E52: buildUnknownSkillMessage', () => {
         promptCommand('be\u2028ta:deploy'),
       ]),
     ).toBe('Unknown skill: deploy')
+  })
+})
+
+/**
+ * Official 2.1.299 (#144): a wrongly `anthropic-skills:`-prefixed invoke whose
+ * bare name is a listed skill now suggests that name \u2014
+ * `Unknown skill: ${a}. Did you mean ${z}?` (v299 @231568300\u2013231572600;
+ * `w=HR(a)` strips the 17-char prefix, gates `UG(w)&&!r1(w)` + `$Xt` command
+ * filter). Truly unknown names keep the bare message.
+ */
+describe('2.1.299 #144: anthropic-skills prefix-stripped suggestion', () => {
+  test('unknown "anthropic-skills:foo" with "foo" listed suggests foo', () => {
+    expect(
+      buildUnknownSkillMessage('anthropic-skills:foo', [
+        promptCommand('foo', 'user'),
+      ]),
+    ).toBe('Unknown skill: anthropic-skills:foo. Did you mean foo?')
+  })
+
+  test('truly unknown prefixed name keeps the bare message', () => {
+    expect(
+      buildUnknownSkillMessage('anthropic-skills:nope', [
+        promptCommand('foo', 'user'),
+      ]),
+    ).toBe('Unknown skill: anthropic-skills:nope')
+  })
+
+  test('unprefixed unknown name keeps the bare message (no w!==a case)', () => {
+    expect(findUnprefixedSkillSuggestion('foo', [promptCommand('foo')])).toBe(
+      undefined,
+    )
+    expect(buildUnknownSkillMessage('nope', [])).toBe('Unknown skill: nope')
+  })
+
+  test('disableModelInvocation candidates are not suggested ($Xt/he gate)', () => {
+    const cmd = {
+      ...promptCommand('foo', 'user'),
+      disableModelInvocation: true,
+    } as unknown as Command
+    expect(
+      buildUnknownSkillMessage('anthropic-skills:foo', [cmd]),
+    ).toBe('Unknown skill: anthropic-skills:foo')
+  })
+
+  test('MCP-sourced candidates are not suggested ($Xt mcp exclusion)', () => {
+    expect(
+      buildUnknownSkillMessage('anthropic-skills:foo', [
+        promptCommand('foo', 'mcp' as never),
+      ]),
+    ).toBe('Unknown skill: anthropic-skills:foo')
+  })
+
+  test('non-prompt commands are not suggested', () => {
+    expect(
+      buildUnknownSkillMessage('anthropic-skills:foo', [localCommand('foo')]),
+    ).toBe('Unknown skill: anthropic-skills:foo')
+  })
+
+  test('display-unsafe stripped name falls back to the bare message (UG gate)', () => {
+    expect(
+      buildUnknownSkillMessage('anthropic-skills:ba<d', [
+        promptCommand('ba<d', 'user'),
+      ]),
+    ).toBe('Unknown skill: anthropic-skills:ba<d')
+  })
+
+  test('suffix-match branch still wins for bare plugin names', () => {
+    expect(
+      buildUnknownSkillMessage('deploy', [promptCommand('myplugin:deploy')]),
+    ).toBe(
+      'Unknown skill: deploy. Did you mean myplugin:deploy? Invoke it by that full name.',
+    )
   })
 })

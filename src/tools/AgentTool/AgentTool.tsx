@@ -1094,6 +1094,10 @@ export const AgentTool = buildTool({
                       description,
                       status: 'completed',
                       setAppState: rootSetAppState,
+                      // 2.1.299 #149: reason gates — live owned background work
+                      // (pt/WZr) + SendMessage continuation availability (V).
+                      getAppState: () => toolUseContext.getAppState(),
+                      callerCanContinueAgents: toolUseContext.options.tools.some(t => toolMatchesName(t, SEND_MESSAGE_TOOL_NAME)),
                       finalMessage,
                       usage: {
                         totalTokens: getTokenCountFromTracker(tracker),

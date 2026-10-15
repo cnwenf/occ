@@ -17,7 +17,7 @@
  *   LSe -> redactSecretForDisplay   M4  -> redactJsonValue
  *   D6r -> redactKeyValue           OGt -> redactCredentialKeys
  *   wkn -> redactTranscriptJsonl    zr  -> redactJsonlLines
- *   $qt -> redactJsonStructural
+ *   $qt -> redactJsonStructural     re  -> truncateUtf16Prefix
  */
 
 export {
@@ -37,3 +37,8 @@ export {
   zr as redactJsonlLines,
   $qt as redactJsonStructural,
 } from './jsonlRedact.js'
+// UTF-16-safe prefix slicer (upstream `re` ≡ official 2.1.299 `ne`). Exposed
+// so redact-then-truncate consumers (e.g. the teammate task-description
+// derivation, official `GQn`) import from this barrel only, per the convention
+// above. Slice a prefix of at most n code units, never splitting a surrogate.
+export { re as truncateUtf16Prefix } from './textSlicing.js'

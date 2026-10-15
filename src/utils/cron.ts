@@ -101,25 +101,59 @@ export function parseCronExpression(expr: string): CronFields | null {
 }
 
 /**
+ * Official v299 helper `k` (CC 2.1.299 #102, byte-exact:
+ * `function k(e){let s=new Date(e.getTime());return s.setMinutes(s.getMinutes()),
+ * s.getTime()!==e.getTime()}` @223024556 region).
+ *
+ * Ambiguous-local-time detector: rebuilding the date from its own local
+ * fields (setMinutes with the SAME minute) re-resolves an ambiguous wall
+ * clock to the EARLIER UTC offset. The epoch therefore changes exactly when
+ * `d` is the SECOND occurrence of a DST fall-back repeated local time
+ * (e.g. 1:30 EST after 1:30 EDT). First occurrences and all unambiguous
+ * times round-trip unchanged.
+ */
+function isRepeatedLocalTime(d: Date): boolean {
+  const probe = new Date(d.getTime())
+  probe.setMinutes(probe.getMinutes())
+  return probe.getTime() !== d.getTime()
+}
+
+/**
  * Compute the next Date strictly after `from` that matches the cron fields,
- * using the process's local timezone. Walks forward minute-by-minute. Bounded
- * at 366 days; returns null if no match (impossible for valid cron, but
- * satisfies the type).
+ * using the process's local timezone. Bounded at 366 days; returns null if
+ * no match (impossible for valid cron, but satisfies the type) or if `from`
+ * is an Invalid Date.
  *
  * Standard cron semantics: when both dayOfMonth and dayOfWeek are constrained
  * (neither is the full range), a date matches if EITHER matches.
  *
- * DST: fixed-hour crons targeting a spring-forward gap (e.g. `30 2 * * *`
- * in a US timezone) skip the transition day — the gap hour never appears
- * in local time, so the hour-set check fails and the loop moves on.
- * Wildcard-hour crons (`30 * * * *`) fire at the first valid minute after
- * the gap. Fall-back repeats fire once (the step-forward logic jumps past
- * the second occurrence). This matches vixie-cron behavior.
+ * CC 2.1.299 (#102) — official v299 `yPt(fields, from, {oneShot})`
+ * (@223024523; v296 `kAt` had none of this and double/early-fired crons
+ * during the DST fall-back repeated hour):
+ * - The walk starts from ABSOLUTE epoch time (floor to minute + 60 000 ms),
+ *   never wall-clock setSeconds/setMinutes which re-resolve across a
+ *   transition.
+ * - Candidates in the SECOND occurrence of a repeated local hour are detected
+ *   via {@link isRepeatedLocalTime} and stepped past in absolute time. For
+ *   recurring crons they are never matched → a `30 1 * * *` task that fired
+ *   at 1:30 EDT does NOT fire again at 1:30 EST (the #102 double fire). For
+ *   `oneShot` a fully-matching second occurrence IS returned — a one-shot
+ *   pinned to a wall-clock time that hasn't fired during the first occurrence
+ *   still fires during the repeat.
+ * - `oneShot` also steps hour/minute mismatches in absolute time; recurring
+ *   keeps the wall-clock setHours/setMinutes jumps (fast path over long gaps).
+ *
+ * Spring-forward gaps: a fixed-hour cron targeting the gap (e.g. `30 2 * * *`
+ * on the transition day) skips to the next matching calendar day — the gap
+ * local time never appears. Wildcard-hour crons (`30 * * * *`) fire at the
+ * first valid minute after the gap.
  */
 export function computeNextCronRun(
   fields: CronFields,
   from: Date,
+  opts?: { oneShot?: boolean },
 ): Date | null {
+  const oneShot = opts?.oneShot ?? false
   const minuteSet = new Set(fields.minute)
   const hourSet = new Set(fields.hour)
   const domSet = new Set(fields.dayOfMonth)
@@ -129,14 +163,40 @@ export function computeNextCronRun(
   // Is the field wildcarded (full range)?
   const domWild = fields.dayOfMonth.length === 31
   const dowWild = fields.dayOfWeek.length === 7
+  // When both dom/dow are constrained, either match is sufficient (OR semantics)
+  const dayMatches = (d: Date): boolean =>
+    domWild && dowWild
+      ? true
+      : domWild
+        ? dowSet.has(d.getDay())
+        : dowWild
+          ? domSet.has(d.getDate())
+          : domSet.has(d.getDate()) || dowSet.has(d.getDay())
 
-  // Round up to the next whole minute (strictly after `from`)
-  const t = new Date(from.getTime())
-  t.setSeconds(0, 0)
-  t.setMinutes(t.getMinutes() + 1)
+  // Absolute-time start: floor to the minute boundary, then +1 minute of
+  // epoch time (official `new Date(Math.floor(s.getTime()/60000)*60000+60000)`).
+  const t = new Date(Math.floor(from.getTime() / 60000) * 60000 + 60000)
+  if (Number.isNaN(t.getTime())) return null
 
   const maxIter = 366 * 24 * 60
   for (let i = 0; i < maxIter; i++) {
+    if (isRepeatedLocalTime(t)) {
+      // Second occurrence of a DST-repeated local hour. One-shots may match
+      // it (user pinned that wall-clock time and it hasn't fired yet);
+      // recurring crons never match it — step past in absolute time.
+      if (
+        oneShot &&
+        monthSet.has(t.getMonth() + 1) &&
+        dayMatches(t) &&
+        hourSet.has(t.getHours()) &&
+        minuteSet.has(t.getMinutes())
+      ) {
+        return t
+      }
+      t.setTime(t.getTime() + 60000)
+      continue
+    }
+
     const month = t.getMonth() + 1
     if (!monthSet.has(month)) {
       // Jump to start of next month
@@ -145,32 +205,21 @@ export function computeNextCronRun(
       continue
     }
 
-    const dom = t.getDate()
-    const dow = t.getDay()
-    // When both dom/dow are constrained, either match is sufficient (OR semantics)
-    const dayMatches =
-      domWild && dowWild
-        ? true
-        : domWild
-          ? dowSet.has(dow)
-          : dowWild
-            ? domSet.has(dom)
-            : domSet.has(dom) || dowSet.has(dow)
-
-    if (!dayMatches) {
+    if (!dayMatches(t)) {
       // Jump to start of next day
       t.setDate(t.getDate() + 1)
       t.setHours(0, 0, 0, 0)
       continue
     }
 
-    if (!hourSet.has(t.getHours())) {
-      t.setHours(t.getHours() + 1, 0, 0, 0)
-      continue
-    }
-
-    if (!minuteSet.has(t.getMinutes())) {
-      t.setMinutes(t.getMinutes() + 1)
+    if (!hourSet.has(t.getHours()) || !minuteSet.has(t.getMinutes())) {
+      if (oneShot) {
+        t.setTime(t.getTime() + 60000)
+      } else if (!hourSet.has(t.getHours())) {
+        t.setHours(t.getHours() + 1, 0, 0, 0)
+      } else {
+        t.setMinutes(t.getMinutes() + 1)
+      }
       continue
     }
 

@@ -25,7 +25,10 @@ import {
   fileHistoryTrackEdit,
 } from '../../utils/fileHistory.js'
 import { logFileOperation } from '../../utils/fileOperationAnalytics.js'
-import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
+import {
+  preserveBomOnRewrite,
+  readFileSyncWithMetadata,
+} from '../../utils/fileRead.js'
 import {
   getFsImplementation,
   resolveWritePathDescriptor,
@@ -48,7 +51,7 @@ import {
   FileStateError,
   FILE_MODIFIED_SINCE_READ_VALIDATION_MESSAGE,
   FILE_NOT_READ_MESSAGE,
-  FILE_NOT_VALID_UTF8_WRITE_MESSAGE,
+  fileNotTextRefusalMessage,
   FILE_STATE_CURRENT_NOTE,
   fileStateMatchesDisk,
   fileStateMatchesNormalized,
@@ -621,16 +624,21 @@ export const FileWriteTool = buildTool({
       })
     }
 
-    // CC 2.1.296 #032 (official Write call Kto @216339393): after the
-    // call-time staleness guard (qto), `if(Je?.lossyDecode&&n.includes(
-    // "\uFFFD"))throw new C8(UTs)` — CONDITIONAL on both the disk file decoding
-    // lossily AND the incoming content carrying U+FFFD (what Read showed for
-    // undecodable bytes). Writing such content back would persist the
-    // replacement chars, destroying the original bytes. An intentional
-    // whole-file rewrite (no U+FFFD) or a clean UTF-8 disk file proceeds.
-    if (meta?.lossyDecode && content.includes('\uFFFD')) {
-      throw new FileStateError(FILE_NOT_VALID_UTF8_WRITE_MESSAGE)
+    // CC 2.1.299 #126 (official Write call @224562900): after the call-time
+    // staleness guard (QEo), `if(rt?.notText)throw new H9(Zpt(rt.notText))` —
+    // UNCONDITIONAL on the notText category (v296's "content holds U+FFFD"
+    // condition is gone in v299). Legacy-encoding / NUL / UTF-16BE files are
+    // refused so Write never silently converts a file's encoding.
+    if (meta?.notText) {
+      throw new FileStateError(fileNotTextRefusalMessage(meta.notText))
     }
+
+    // CC 2.1.299 #126 (official `n=UMr(st,n)` before kOe): when the old
+    // on-disk content started with a BOM and the new content does not, keep
+    // the BOM — Write must not silently drop it. The BOM-preserved value is
+    // what gets written AND what flows to LSP/VSCode/readFileState downstream
+    // (the official uses the same `n` for all of them).
+    const contentToWrite = preserveBomOnRewrite(meta?.content, content)
 
     // Ensure parent directory exists right before the write. The binary does
     // this after the guard; keep the write itself synchronous from here on
@@ -642,7 +650,7 @@ export const FileWriteTool = buildTool({
     // the old file's line endings (or sampled the repo via ripgrep for new
     // files), which silently corrupted e.g. bash scripts with \r on Linux when
     // overwriting a CRLF file or when binaries in cwd poisoned the repo sample.
-    writeTextContent(fullFilePath, content, meta?.encoding ?? 'utf8', 'LF')
+    writeTextContent(fullFilePath, contentToWrite, meta?.encoding ?? 'utf8', 'LF')
 
     // Notify LSP servers about file modification (didChange) and save (didSave)
     const lspManager = getLspServerManager()
@@ -650,7 +658,7 @@ export const FileWriteTool = buildTool({
       // Clear previously delivered diagnostics so new ones will be shown
       clearDeliveredDiagnosticsForFile(`file://${fullFilePath}`)
       // didChange: Content has been modified
-      lspManager.changeFile(fullFilePath, content).catch((err: Error) => {
+      lspManager.changeFile(fullFilePath, contentToWrite).catch((err: Error) => {
         logForDebugging(
           `LSP: Failed to notify server of file change for ${fullFilePath}: ${err.message}`,
         )
@@ -668,7 +676,7 @@ export const FileWriteTool = buildTool({
     const oldContent = meta?.content ?? null
 
     // Notify VSCode about the file change for diff view
-    notifyVscodeFileUpdated(fullFilePath, oldContent, content)
+    notifyVscodeFileUpdated(fullFilePath, oldContent, contentToWrite)
 
     // Update read timestamp, to invalidate stale writes. Content stored in
     // the canonical readFileState form (binary J9: BOM-stripped, LF-only).
@@ -685,7 +693,7 @@ export const FileWriteTool = buildTool({
       priorState !== undefined &&
       fileStateMatchesDisk(priorState, normalizeForComparison(oldContent ?? ''))
     readFileState.set(fullFilePath, {
-      content: normalizeForComparison(content),
+      content: normalizeForComparison(contentToWrite),
       timestamp: getFileModificationTime(fullFilePath),
       offset: undefined,
       limit: undefined,

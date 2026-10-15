@@ -21,6 +21,7 @@ import {
   SandboxViolationStore,
 } from '@anthropic-ai/sandbox-runtime'
 import {
+  existsSync,
   lstatSync,
   readdirSync,
   readlinkSync,
@@ -35,6 +36,7 @@ import { join, resolve, sep } from 'path'
 import {
   getAdditionalDirectoriesForClaudeMd,
   getCwdState,
+  getInlinePlugins,
   getOriginalCwd,
 } from '../../bootstrap/state.js'
 import { logForDebugging } from '../debug.js'
@@ -73,7 +75,13 @@ import {
 import { errorMessage, getErrnoCode } from '../errors.js'
 import { getClaudeTempDir } from '../permissions/filesystem.js'
 import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
+import { getPluginSeedDirs } from '../plugins/pluginDirectories.js'
 import { ripgrepCommand } from '../ripgrep.js'
+import {
+  getWindowsSideMountPoints,
+  isPathAtOrUnder,
+  type WslMountTableReader,
+} from './wslMounts.js'
 import {
   candidateUnderDeniedRead,
   getClaudeOwnReadDenyBaseline,
@@ -590,6 +598,24 @@ export function convertToSandboxRuntimeConfig(
   denyWrite.push(...bareGitRepo.denyWrite)
   bareGitRepoScrubPaths.push(...bareGitRepo.scrubPaths)
 
+  // CC 2.1.299 #027 (OCC hardening — official main-sandbox shape ambiguous):
+  // plugin code from --plugin-dir / --plugin-url (inline plugins) and from
+  // CLAUDE_CODE_PLUGIN_SEED_DIR is loaded and executed OUTSIDE the sandbox,
+  // so a sandboxed shell that can write into a plugin directory gets
+  // unsandboxed code execution on the next plugin reload. Forensics: the
+  // official v299 main-sandbox denyWrite builders expose no plugin-dir
+  // entries; only the official plugin-EVAL sandbox denies plugin dirs
+  // (`denyWrite:[..., ...await mn(D([...s.pluginDirsUnderTest, s.caseDir])),
+  // ...]` — realpath'd + deduped). Mirror that eval shape here for the main
+  // sandbox: deny both the literal dir and its realpath target, like the
+  // neighboring reconcileClaudeSymlinks entries do. See computePluginDirDenyPaths.
+  denyWrite.push(
+    ...computePluginDirDenyPaths([
+      ...getInlinePlugins(),
+      ...getPluginSeedDirs(),
+    ]),
+  )
+
   // If we detected a git worktree during initialize(), the main repo path is
   // cached in worktreeMainRepoPath. Git operations in a worktree need write
   // access to the main repo's .git directory for index.lock etc.
@@ -780,6 +806,13 @@ export function convertToSandboxRuntimeConfig(
     argv0,
   }
 
+  // CC 2.1.299 #034 (WSL2): exclude deny entries whose mount-point creation
+  // would land under a Windows-drive mount — bwrap cannot mkdir there
+  // ("Can't mkdir /mnt/c/Program Files/ClaudeCode"). On WSL this THROWS the
+  // official fail-closed refusal when the Windows-side mounts cannot be
+  // determined (mount table unreadable / no Windows mount recognized).
+  const effectiveDenyWrite = applyWslWindowsMountDenyFilter(denyWrite)
+
   return {
     network: {
       allowedDomains,
@@ -794,7 +827,7 @@ export function convertToSandboxRuntimeConfig(
       denyRead,
       allowRead,
       allowWrite,
-      denyWrite,
+      denyWrite: effectiveDenyWrite,
     },
     ignoreViolations: settings.sandbox?.ignoreViolations,
     enableWeakerNestedSandbox: settings.sandbox?.enableWeakerNestedSandbox,
@@ -875,6 +908,130 @@ export function reconcileClaudeSymlinks(dirs: string[]): string[] {
     }
   }
   return out
+}
+
+// ============================================================================
+// Plugin-directory deny computation (2.1.299 #027)
+// ============================================================================
+
+/**
+ * CC 2.1.299 #027: compute the sandbox denyWrite entries for plugin
+ * directories whose code is loaded and executed OUTSIDE the sandbox
+ * (--plugin-dir/--plugin-url inline plugins and CLAUDE_CODE_PLUGIN_SEED_DIR
+ * seed dirs). A sandboxed shell command that can write into one of these
+ * directories achieves unsandboxed code execution on the next plugin reload.
+ *
+ * Mirrors the official plugin-EVAL sandbox shape (`...await mn(D([...
+ * pluginDirsUnderTest, caseDir]))` — deduped + resolved): each directory is
+ * denied both as written (resolved absolute) and through its realpath target,
+ * like the neighboring reconcileClaudeSymlinks entries. Pure: no input
+ * mutation; callers push the result into denyWrite.
+ */
+export function computePluginDirDenyPaths(
+  pluginDirs: readonly string[],
+): string[] {
+  const out: string[] = []
+  const pushUnique = (path: string): void => {
+    if (!out.includes(path)) {
+      out.push(path)
+    }
+  }
+  for (const dir of pluginDirs) {
+    if (typeof dir !== 'string' || dir.trim() === '') {
+      continue
+    }
+    const resolved = resolve(dir)
+    pushUnique(resolved)
+    try {
+      // Deny the symlink-resolved target too — a --plugin-dir that is a
+      // symlink must not stay writable through its real location.
+      const target = realpathSync(resolved)
+      if (target !== resolved) {
+        logForDebugging(
+          `[Sandbox] plugin dir resolves through a symlink: ${resolved} -> ${target}`,
+        )
+      }
+      pushUnique(target)
+    } catch {
+      // Missing/unreadable plugin dir — the literal deny above stands
+      // (fail closed, same as reconcileClaudeSymlinks).
+    }
+  }
+  return out
+}
+
+// ============================================================================
+// WSL2 Windows-side mount guard (2.1.299 #034)
+// ============================================================================
+
+/** Test seam for the WSL guard (platform flag, mount-table reader, exists). */
+export interface WslMountGuardOverrides {
+  isWsl?: boolean
+  readMountTable?: WslMountTableReader
+  pathExists?: (path: string) => boolean
+}
+
+let wslMountGuardOverrides: WslMountGuardOverrides | undefined
+
+/** Test-only override of the WSL guard inputs (undefined restores prod). */
+export function _setWslMountGuardOverridesForTesting(
+  overrides: WslMountGuardOverrides | undefined,
+): void {
+  wslMountGuardOverrides = overrides
+}
+
+function isWslSandboxGuardActive(): boolean {
+  return wslMountGuardOverrides?.isWsl ?? getPlatform() === 'wsl'
+}
+
+/**
+ * CC 2.1.299 #034: the official fail-closed read (`Of`) — on WSL, return the
+ * Windows-side mount points from /proc/mounts or throw the official refusal
+ * ("A shell tool was granted, but … the run was refused."). No-op list on
+ * non-WSL platforms (the guard never runs there).
+ */
+export function getWslWindowsSideMountPoints(): string[] {
+  if (!isWslSandboxGuardActive()) {
+    return []
+  }
+  return getWindowsSideMountPoints(wslMountGuardOverrides?.readMountTable)
+}
+
+/**
+ * CC 2.1.299 #034: filter the denyWrite list so the runtime never has to
+ * create a mount point under a Windows-drive mount (bwrap "Can't mkdir
+ * /mnt/c/…"). A deny entry is dropped only when it does NOT exist on disk
+ * and sits at/under a Windows-side mount point — those are exactly the
+ * entries for which sandbox-runtime would ask bwrap to mkdir a /dev/null or
+ * empty-dir mount point on the Windows side. Existing entries are kept: the
+ * runtime ro-binds them in place (no mkdir), so denies that CAN be enforced
+ * still are. Throws the official refusal (via getWslWindowsSideMountPoints)
+ * when WSL is active and the Windows side cannot be determined.
+ */
+export function applyWslWindowsMountDenyFilter(denyWrite: string[]): string[] {
+  const windowsMountPoints = getWslWindowsSideMountPoints()
+  if (windowsMountPoints.length === 0) {
+    return denyWrite
+  }
+  const pathExists = wslMountGuardOverrides?.pathExists ?? existsSync
+  return denyWrite.filter((entry) => {
+    // Entries may still carry `~` or be relative (permission-rule pass-through
+    // in resolvePathPatternForSandbox); expand the same way before matching.
+    let candidate = entry
+    try {
+      candidate = expandPath(entry)
+    } catch {
+      // Unexpandable (e.g. null byte) — keep the raw entry; it matches
+      // nothing below and is kept (fail toward the pre-299 behavior only for
+      // entries that cannot even be expanded).
+    }
+    if (pathExists(candidate)) {
+      return true
+    }
+    return !windowsMountPoints.some((mountPoint) =>
+      isPathAtOrUnder(candidate, mountPoint),
+    )
+  })
 }
 
 // ============================================================================
@@ -1506,6 +1663,13 @@ async function wrapWithSandbox(
 ): Promise<string> {
   // If sandboxing is enabled, ensure initialization is complete
   if (isSandboxingEnabled()) {
+    // CC 2.1.299 #034: fail-closed WSL guard. initialize() swallows config
+    // conversion errors ("let sandboxing fail gracefully"), so this is the
+    // surfacing point for the official refusal: when the Windows-side mounts
+    // cannot be determined, the run is refused with the byte-exact official
+    // message as a thrown error (the tool call reports it as an error
+    // result). No-op on non-WSL platforms.
+    getWslWindowsSideMountPoints()
     if (initializationPromise) {
       await initializationPromise
     } else {
@@ -1602,10 +1766,19 @@ async function initialize(
 
       // Subscribe to settings changes to update sandbox config dynamically
       settingsSubscriptionCleanup = settingsChangeDetector.subscribe(() => {
-        const settings = getSettings_DEPRECATED()
-        const newConfig = convertToSandboxRuntimeConfig(settings)
-        BaseSandboxManager.updateConfig(newConfig)
-        logForDebugging('Sandbox configuration updated from settings change')
+        // CC 2.1.299 #034: a WSL refusal thrown by the config conversion must
+        // not crash the settings-change detector; the fail-closed enforcement
+        // point is per-command (wrapWithSandbox guard + refreshConfig).
+        try {
+          const settings = getSettings_DEPRECATED()
+          const newConfig = convertToSandboxRuntimeConfig(settings)
+          BaseSandboxManager.updateConfig(newConfig)
+          logForDebugging('Sandbox configuration updated from settings change')
+        } catch (error) {
+          logForDebugging(
+            `Sandbox configuration update skipped: ${errorMessage(error)}`,
+          )
+        }
       })
     } catch (error) {
       // Clear the promise on error so initialization can be retried

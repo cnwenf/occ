@@ -481,6 +481,29 @@ function detectTurnInterruption(
   }
 
   if (lastMessage.type === 'attachment') {
+    // CC 2.1.299 #128 (changelog: "Fixed cloud sessions and
+    // CLAUDE_CODE_RESUME_INTERRUPTED_TURN sometimes answering a finished turn
+    // again after a restart, when a tool ended the turn and a skill loaded in
+    // the same step"): the official v299 tail scan HOISTS the committed-turn
+    // backfill out of the tool-result guard — byte-diffed:
+    //   v296: if(he.type==="user"&&w$(he)){...let be=h$t(e,Y);
+    //          if(be!==void 0)return xce(be,r,n)}
+    //   v299: if(Se.type==="user"&&KB(Se)){...}
+    //         let Te=Eqt(e,_e);if(Te!==void 0)return xge(Te,r,n)
+    // so the backward scan through the trailing attachment cluster (incl. the
+    // invoked_skills row persisted when a skill loads in the same step as the
+    // terminal tool) reaches the underlying user tool_result row and
+    // classifies a terminal result as complete — xge → {kind:"none",
+    // because:"terminal_tool_result"}. Terminal beats ended_at_max_turns
+    // (official order: the KB/Eqt checks run before the `Q&&!n` max-turns
+    // return in the same scan). Gated on !hasDroppedTrailingToolUses to
+    // mirror xge's unresolved-responseId veto (OCC's threaded proxy).
+    if (
+      !hasDroppedTrailingToolUses &&
+      hasTerminalToolResultUnderTrailingAttachments(messages, lastMessageIdx)
+    ) {
+      return { kind: 'none' }
+    }
     // Official 2.1.285 (#54, V4o S-branch): backward-scan the trailing
     // attachment cluster for a max_turns_reached attachment persisted with
     // `exitCommitted===false` — the query loop hit the max-turns cap while
@@ -508,6 +531,33 @@ function detectTurnInterruption(
   }
 
   return { kind: 'none' }
+}
+
+/**
+ * CC 2.1.299 #128: does the trailing attachment cluster sit directly on top of
+ * a user tool_result row whose turn ended cleanly (terminal tool)? Walks
+ * backward from the attachment tail past system/progress/attachment rows
+ * (OCC persists skill-load `invoked_skills` rows as attachment messages) to
+ * the first turn-relevant row; only a tool_result user row can qualify — an
+ * assistant row or any other user row stops the look-through (the official
+ * `Eqt` backfill equivalent, scoped to the #128 same-step-skill-load shape:
+ * attachment(s) over the terminal step's results).
+ */
+function hasTerminalToolResultUnderTrailingAttachments(
+  messages: NormalizedMessage[],
+  lastMessageIdx: number,
+): boolean {
+  for (let i = lastMessageIdx; i >= 0; i--) {
+    const m = messages[i]!
+    if (m.type === 'system' || m.type === 'progress' || m.type === 'attachment') {
+      continue
+    }
+    if (m.type === 'user' && isToolUseResultMessage(m)) {
+      return isTerminalToolResult(m, messages, i)
+    }
+    return false
+  }
+  return false
 }
 
 /**
@@ -748,11 +798,11 @@ function applyResumeStalenessGates(
  * removed it). A transcript ending here means the turn COMPLETED, not that
  * it was killed mid-tool.
  *
- * Walks back to find the assistant tool_use that this result belongs to and
- * checks its name. The matching tool_use is typically the immediately
- * preceding relevant message (filterUnresolvedToolUses has already dropped
- * unpaired ones), but we walk just in case system/progress noise is
- * interleaved.
+ * Walks back to find the assistant tool_use each tool_result block belongs to
+ * and checks its name (ANY terminal block in the row ends the turn — #128).
+ * The matching tool_use is typically the immediately preceding relevant
+ * message (filterUnresolvedToolUses has already dropped unpaired ones), but
+ * we walk just in case system/progress noise is interleaved.
  */
 function isTerminalToolResult(
   result: NormalizedUserMessage,
@@ -761,10 +811,31 @@ function isTerminalToolResult(
 ): boolean {
   const content = result.message.content
   if (!Array.isArray(content)) return false
-  const block = content[0]
-  if (block?.type !== 'tool_result') return false
-  const toolUseId = block.tool_use_id
+  // CC 2.1.299 #128: scan EVERY tool_result block, not just content[0]. When
+  // a Skill loads in the same assistant step as the turn-ending tool, the
+  // skill's result can be ordered first in the same user row and previously
+  // masked the terminal result → the finished turn was re-answered on resume.
+  // The official keeps its content[0] scan (`Aqt` ≡ v296 `S$t`, byte-diffed)
+  // and compensates multi-block rows via the row-level `toolEndsTurn` stamp
+  // consumed by the `Eqt`/`wTt` backfill; OCC has no endsTurn plumbing (see
+  // QueryEngine.ts classifyTurnEndingToolResultRow), so the all-block scan is
+  // the faithful OCC equivalent.
+  return content.some(
+    block =>
+      block?.type === 'tool_result' &&
+      isTerminalToolUseId(block.tool_use_id, messages, resultIdx),
+  )
+}
 
+/**
+ * Walks back from the tool_result row to the assistant tool_use with this id
+ * and reports whether its name is one of the turn-ending (brief-family) tools.
+ */
+function isTerminalToolUseId(
+  toolUseId: string,
+  messages: NormalizedMessage[],
+  resultIdx: number,
+): boolean {
   for (let i = resultIdx - 1; i >= 0; i--) {
     const msg = messages[i]!
     if (msg.type !== 'assistant') continue

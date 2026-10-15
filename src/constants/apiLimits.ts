@@ -42,6 +42,42 @@ export const IMAGE_TARGET_RAW_SIZE = (API_IMAGE_MAX_BASE64_SIZE * 3) / 4 // 3.75
 export const IMAGE_MAX_WIDTH = 2000
 export const IMAGE_MAX_HEIGHT = 2000
 
+/**
+ * Square patch side (px) used by the official 2.1.299 image-token estimator.
+ * Byte-verified from the official 2.1.299 linux-x64 ELF (s299 @7008763):
+ *   var St=28; function fgt(e,n){if(e<=0||n<=0)return 0;
+ *     return Math.ceil(e/St)*Math.ceil(n/St)}
+ */
+export const IMAGE_TOKEN_PATCH_SIZE = 28
+
+/**
+ * Per-model image display limits — the official 2.1.299 `image_limits`
+ * catalog capability (`maxImageTokens` has zero occurrences in the 2.1.296
+ * binary; it is new in 2.1.299).
+ *
+ * When `maxImageTokens` is set, images are additionally scaled so the
+ * estimated token count (28px-patch grid) fits the budget — this fixes the
+ * coordinate hint for near-square large images (#069). When absent, only the
+ * maxWidth/maxHeight clamp applies (official wrapper @222905316:
+ * `return r.maxImageTokens===void 0?[e,n]:q(e,n,1/0,r.maxImageTokens)`).
+ */
+export interface ModelImageLimits {
+  maxWidth: number
+  maxHeight: number
+  maxImageTokens?: number
+}
+
+/**
+ * Default limits when the current model declares no `image_limits` catalog
+ * entry. Matches the official 2.1.299 base limits object (s299 @7008763:
+ * `rD={maxWidth:2000,maxHeight:2000,maxBase64Size:5242880,
+ * targetRawSize:3932160}`) — the size fields map to the OCC constants above.
+ */
+export const DEFAULT_IMAGE_LIMITS: ModelImageLimits = {
+  maxWidth: IMAGE_MAX_WIDTH,
+  maxHeight: IMAGE_MAX_HEIGHT,
+}
+
 // =============================================================================
 // PDF LIMITS
 // =============================================================================

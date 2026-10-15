@@ -12,6 +12,7 @@ import { isAutoUpdaterDisabled } from '../utils/config.js';
 import { installLatest } from '../utils/nativeInstaller/index.js';
 import { gt } from '../utils/semver.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
+import { UpdaterSeparator } from './UpdaterSeparator.js';
 
 /**
  * Categorize error messages for analytics
@@ -47,6 +48,9 @@ type Props = {
   autoUpdaterResult: AutoUpdaterResult | null;
   showSuccessMessage: boolean;
   verbose: boolean;
+  // Official v299 (#049): undefined → no separator node; true → leading
+  // dim " ·" so the notice renders BESIDE other status chrome.
+  withSeparator?: boolean;
 };
 export function NativeAutoUpdater({
   isUpdating,
@@ -54,7 +58,8 @@ export function NativeAutoUpdater({
   onAutoUpdaterResult,
   autoUpdaterResult,
   showSuccessMessage,
-  verbose
+  verbose,
+  withSeparator
 }: Props): React.ReactNode {
   const [versions, setVersions] = useState<{
     current?: string | null;
@@ -171,6 +176,7 @@ export function NativeAutoUpdater({
     return null;
   }
   return <Box flexDirection="row" gap={1}>
+      <UpdaterSeparator withSeparator={withSeparator} />
       {verbose && <Text dimColor wrap="truncate">
           current: {versions.current} &middot; {channel}: {versions.latest}
         </Text>}

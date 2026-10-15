@@ -60,7 +60,12 @@ import {
   parseSlashCommandToolsFromFrontmatter,
 } from '../utils/markdownConfigLoader.js'
 import { parseUserSpecifiedModel } from '../utils/model/model.js'
-import { validateFrontmatterName } from '../utils/nameSafety.js'
+import {
+  isCommandNameShown,
+  isSkillNameOffered,
+  validateFrontmatterName,
+  warnNameNotShown,
+} from '../utils/nameSafety.js'
 import { gateAllowedToolsAtLoad } from '../utils/permissions/frontmatterGrants.js'
 import {
   filterRefusedReservedNames,
@@ -542,7 +547,16 @@ export function createSkillCommand({
   metadata: Record<string, unknown> | undefined
   background: boolean | undefined
   contentHash: string | undefined
-}): Command {
+}): Command | null {
+  // CC 2.1.299 #154 (security) — official skill-registration gate (r8t
+  // @227121024): `if(!sj(qn)){wI(qn,"is not offered");return}`. A skill name
+  // holding hidden, direction-changing or blank-like characters, `<`/`>`, or
+  // over 256 chars is not offered at all (the loader drops it with a
+  // deduplicated [names] warning).
+  if (!isSkillNameOffered(skillName)) {
+    warnNameNotShown(skillName, 'is not offered')
+    return null
+  }
   // CC 2.1.282 (official loader closure Xn/mo): under the managed lock
   // (allowManagedPermissionRulesOnly), frontmatter allowed-tools from
   // untrusted sources are scrubbed at load time — byte-identical warn, once
@@ -553,7 +567,7 @@ export function createSkillCommand({
     source,
     allowedTools,
   })
-  return {
+  const command = {
     type: 'prompt',
     name: skillName,
     description,
@@ -674,6 +688,20 @@ export function createSkillCommand({
       return [{ type: 'text', text: finalContent }]
     },
   } satisfies Command
+  // CC 2.1.299 #154 (security) — official display-name gate (r8t @227123544):
+  //   if(!k6(ln.replace(/&[lg]t;/g,"<")))wI(ln,`is not shown for ${qn}`),Bgr(Xn)
+  // where ln = displayName||skillName. A display alias that fails the shown-
+  // name rules is not shown: official Bgr strips userFacingName (and records
+  // it in shedAliases — OCC's Command type has no shedAliases, so stripping
+  // the alias is the full observable effect), and getCommandName() then falls
+  // back to cmd.name. The skill itself stays registered under its (already
+  // sj-validated) internal name.
+  const userFacing = displayName || skillName
+  if (!isCommandNameShown(userFacing.replace(/&[lg]t;/g, '<'))) {
+    warnNameNotShown(userFacing, `is not shown for ${skillName}`)
+    command.userFacingName = undefined
+  }
+  return command
 }
 
 /**
@@ -747,17 +775,22 @@ async function loadSkillsFromSkillsDir(
           return null
         }
 
+        const skill = createSkillCommand({
+          ...parsed,
+          skillName,
+          markdownContent,
+          contentHash,
+          source,
+          baseDir: skillDirPath,
+          loadedFrom: 'skills',
+          paths,
+        })
+        // CC 2.1.299 #154: a refused skill name is not offered at all.
+        if (!skill) {
+          return null
+        }
         return {
-          skill: createSkillCommand({
-            ...parsed,
-            skillName,
-            markdownContent,
-            contentHash,
-            source,
-            baseDir: skillDirPath,
-            loadedFrom: 'skills',
-            paths,
-          }),
+          skill,
           filePath: skillFilePath,
         }
       } catch (error) {
@@ -904,18 +937,23 @@ async function loadSkillsFromCommandsDir(
           .update(content)
           .digest('hex')
 
+        const skill = createSkillCommand({
+          ...parsed,
+          skillName: cmdName,
+          displayName: undefined,
+          markdownContent: content,
+          contentHash,
+          source,
+          baseDir: skillDirectory,
+          loadedFrom: 'commands_DEPRECATED',
+          paths: undefined,
+        })
+        // CC 2.1.299 #154: a refused command name is not offered at all.
+        if (!skill) {
+          continue
+        }
         skills.push({
-          skill: createSkillCommand({
-            ...parsed,
-            skillName: cmdName,
-            displayName: undefined,
-            markdownContent: content,
-            contentHash,
-            source,
-            baseDir: skillDirectory,
-            loadedFrom: 'commands_DEPRECATED',
-            paths: undefined,
-          }),
+          skill,
           filePath,
         })
       } catch (error) {

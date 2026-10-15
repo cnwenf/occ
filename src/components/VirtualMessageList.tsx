@@ -7,8 +7,10 @@ import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
 import type { DOMElement } from '../ink/dom.js';
 import type { MatchPosition } from '../ink/render-to-screen.js';
 import { Box } from '../ink.js';
+import instances from '../ink/instances.js';
 import type { RenderableMessage } from '../types/message.js';
 import { TextHoverColorContext } from './design-system/ThemedText.js';
+import { createDeferredCollapseCoordinator, type DeferredCollapseCoordinator } from './deferredRowCollapse.js';
 import { ScrollChromeContext } from './FullscreenLayout.js';
 
 // Rows of breathing room above the target when we scrollTo.
@@ -175,7 +177,10 @@ type VirtualItemProps = {
   expanded: boolean | undefined;
   hovered: boolean;
   clickable: boolean;
-  onClickK: (msg: RenderableMessage, cellIsBlank: boolean) => void;
+  // Official v299 (#031): 2-arg → 4-arg. The list-level handler needs the
+  // itemKey (pending-collapse Map key) and the row's expanded state AT CLICK
+  // TIME (wasExpanded) to decide expand-now vs defer-collapse.
+  onClickK: (itemKey: string, msg: RenderableMessage, cellIsBlank: boolean, wasExpanded: boolean | undefined) => void;
   onEnterK: (k: string) => void;
   onLeaveK: (k: string) => void;
   renderItem: (msg: RenderableMessage, idx: number) => React.ReactNode;
@@ -195,7 +200,7 @@ type VirtualItemProps = {
 // STALE closure on bail (wrong selection highlight, stale verbose). Including
 // renderItem in the comparator defeats memo since it's fresh each render.
 function VirtualItem(t0) {
-  const $ = _c(30);
+  const $ = _c(32);
   const {
     itemKey: k,
     msg,
@@ -221,68 +226,70 @@ function VirtualItem(t0) {
   const t2 = expanded ? "userMessageBackgroundHover" : undefined;
   const t3 = expanded ? 1 : undefined;
   let t4;
-  if ($[3] !== clickable || $[4] !== msg || $[5] !== onClickK) {
-    t4 = clickable ? e => onClickK(msg, e.cellIsBlank) : undefined;
+  if ($[3] !== clickable || $[4] !== expanded || $[5] !== k || $[6] !== msg || $[7] !== onClickK) {
+    t4 = clickable ? e => onClickK(k, msg, e.cellIsBlank, expanded) : undefined;
     $[3] = clickable;
-    $[4] = msg;
-    $[5] = onClickK;
-    $[6] = t4;
+    $[4] = expanded;
+    $[5] = k;
+    $[6] = msg;
+    $[7] = onClickK;
+    $[8] = t4;
   } else {
-    t4 = $[6];
+    t4 = $[8];
   }
   let t5;
-  if ($[7] !== clickable || $[8] !== k || $[9] !== onEnterK) {
+  if ($[9] !== clickable || $[10] !== k || $[11] !== onEnterK) {
     t5 = clickable ? () => onEnterK(k) : undefined;
-    $[7] = clickable;
-    $[8] = k;
-    $[9] = onEnterK;
-    $[10] = t5;
+    $[9] = clickable;
+    $[10] = k;
+    $[11] = onEnterK;
+    $[12] = t5;
   } else {
-    t5 = $[10];
+    t5 = $[12];
   }
   let t6;
-  if ($[11] !== clickable || $[12] !== k || $[13] !== onLeaveK) {
+  if ($[13] !== clickable || $[14] !== k || $[15] !== onLeaveK) {
     t6 = clickable ? () => onLeaveK(k) : undefined;
-    $[11] = clickable;
-    $[12] = k;
-    $[13] = onLeaveK;
-    $[14] = t6;
+    $[13] = clickable;
+    $[14] = k;
+    $[15] = onLeaveK;
+    $[16] = t6;
   } else {
-    t6 = $[14];
+    t6 = $[16];
   }
   const t7 = hovered && !expanded ? "text" : undefined;
   let t8;
-  if ($[15] !== idx || $[16] !== msg || $[17] !== renderItem) {
+  if ($[17] !== idx || $[18] !== msg || $[19] !== renderItem) {
     t8 = renderItem(msg, idx);
-    $[15] = idx;
-    $[16] = msg;
-    $[17] = renderItem;
-    $[18] = t8;
+    $[17] = idx;
+    $[18] = msg;
+    $[19] = renderItem;
+    $[20] = t8;
   } else {
-    t8 = $[18];
+    t8 = $[20];
   }
   let t9;
-  if ($[19] !== t7 || $[20] !== t8) {
+  if ($[21] !== t7 || $[22] !== t8) {
     t9 = <TextHoverColorContext.Provider value={t7}>{t8}</TextHoverColorContext.Provider>;
-    $[19] = t7;
-    $[20] = t8;
-    $[21] = t9;
+    $[21] = t7;
+    $[22] = t8;
+    $[23] = t9;
   } else {
-    t9 = $[21];
+    t9 = $[23];
   }
   let t10;
-  if ($[22] !== t1 || $[23] !== t2 || $[24] !== t3 || $[25] !== t4 || $[26] !== t5 || $[27] !== t6 || $[28] !== t9) {
+  if ($[24] !== t1 || $[25] !== t2 || $[26] !== t3 || $[27] !== t4 || $[28] !== t5 || $[29] !== t6 || $[30] !== t9) {
     t10 = <Box ref={t1} flexDirection="column" backgroundColor={t2} paddingBottom={t3} onClick={t4} onMouseEnter={t5} onMouseLeave={t6}>{t9}</Box>;
-    $[22] = t1;
-    $[23] = t2;
-    $[24] = t3;
-    $[25] = t4;
-    $[26] = t5;
-    $[27] = t6;
-    $[28] = t9;
-    $[29] = t10;
+    $[24] = t1;
+    $[25] = t2;
+    $[26] = t3;
+    $[27] = t4;
+    $[28] = t5;
+    $[29] = t6;
+    $[30] = t9;
+    $[31] = t10;
   } else {
-    t10 = $[29];
+    t10 = $[31];
   }
   return t10;
 }
@@ -838,15 +845,43 @@ export function VirtualMessageList({
   // unchanged items, only ~25 fresh items pay createElement cost.
   const handlersRef = useRef({
     onItemClick,
-    setHoveredKey
+    setHoveredKey,
+    isItemExpanded
   });
   handlersRef.current = {
     onItemClick,
-    setHoveredKey
+    setHoveredKey,
+    isItemExpanded
   };
-  const onClickK = useCallback((msg: RenderableMessage, cellIsBlank: boolean) => {
+  // Official v299 (#031): deferred-collapse coordinator — a double-click
+  // word-select inside an expanded row must not collapse it. Created once;
+  // reads live callbacks through handlersRef so it never goes stale.
+  const collapseRef = useRef<DeferredCollapseCoordinator<RenderableMessage> | null>(null);
+  if (collapseRef.current === null) {
+    collapseRef.current = createDeferredCollapseCoordinator<RenderableMessage>({
+      getSelectionSignal: () => {
+        const ink = instances.get(process.stdout);
+        if (!ink) return undefined;
+        return {
+          hasTextSelection: () => ink.hasTextSelection(),
+          isDragging: () => ink.selection.isDragging,
+          subscribeToSelectionChange: cb => ink.subscribeToSelectionChange(cb)
+        };
+      },
+      isStillExpanded: (_itemKey, msg) => handlersRef.current.isItemExpanded?.(msg) ?? false,
+      commitToggle: (_itemKey, msg) => handlersRef.current.onItemClick?.(msg)
+    });
+  }
+  // Unmount cancels all pending collapses (official: cleanup calls every
+  // pending resolver with false — no commit after teardown).
+  useEffect(() => {
+    const coordinator = collapseRef.current;
+    return () => coordinator?.cancelAll();
+  }, []);
+  const onClickK = useCallback((itemKey: string, msg: RenderableMessage, cellIsBlank: boolean, wasExpanded: boolean | undefined) => {
     const h = handlersRef.current;
-    if (!cellIsBlank && h.onItemClick) h.onItemClick(msg);
+    if (cellIsBlank || !h.onItemClick) return;
+    collapseRef.current?.handleClick(itemKey, msg, wasExpanded);
   }, []);
   const onEnterK = useCallback((k: string) => {
     handlersRef.current.setHoveredKey(k);

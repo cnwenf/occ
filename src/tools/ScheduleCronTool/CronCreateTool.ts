@@ -3,15 +3,18 @@ import { setScheduledTasksEnabled } from '../../bootstrap/state.js'
 import type { ValidationResult } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { cronToHuman, parseCronExpression } from '../../utils/cron.js'
+import { getCronJitterConfig } from '../../utils/cronJitterConfig.js'
 import {
   addCronTask,
   getCronFilePath,
   listAllCronTasks,
   nextCronRunMs,
+  taskNextFireAt,
 } from '../../utils/cronTasks.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { semanticBoolean } from '../../utils/semanticBoolean.js'
 import { getTeammateContext } from '../../utils/teammateContext.js'
+import { nextRunSentence } from './nextRunDisplay.js'
 import {
   buildCronCreateDescription,
   buildCronCreatePrompt,
@@ -48,6 +51,13 @@ const outputSchema = lazySchema(() =>
     humanSchedule: z.string(),
     recurring: z.boolean(),
     durable: z.boolean().optional(),
+    // Official 2.1.299 (#074) `MLn` describe, byte-exact (v299 @223044643).
+    nextFireAt: z
+      .number()
+      .optional()
+      .describe(
+        "Epoch ms of the job's next run, the scheduler's per-job offset included",
+      ),
   }),
 )
 type OutputSchema = ReturnType<typeof outputSchema>
@@ -118,12 +128,23 @@ export const CronCreateTool = buildTool({
     // Kill switch forces session-only; schema stays stable so the model sees
     // no validation errors when the gate flips mid-session.
     const effectiveDurable = durable && isDurableCronEnabled()
+    // Official 2.1.299 (#074): one `Date.now()` anchor feeds BOTH the stored
+    // task and the reported nextFireAt (v299 @248822700:
+    // `a=Date.now(),i=await Pat(r,n,t,s,…,a),l=Iat({id:i,cron:r,createdAt:a,
+    // recurring:t},Yq())`) so the report matches the scheduler's first-sight
+    // computation exactly.
+    const createdAt = Date.now()
     const id = await addCronTask(
       cron,
       prompt,
       recurring,
       effectiveDurable,
       getTeammateContext()?.agentId,
+      createdAt,
+    )
+    const nextFireAt = taskNextFireAt(
+      { id, cron, createdAt, recurring },
+      getCronJitterConfig(),
     )
     // Enable the scheduler so the task fires in this session. The
     // useScheduledTasks hook polls this flag and will start watching
@@ -137,19 +158,24 @@ export const CronCreateTool = buildTool({
         humanSchedule: cronToHuman(cron),
         recurring,
         durable: effectiveDurable,
+        ...(nextFireAt !== null && { nextFireAt }),
       },
     }
   },
   mapToolResultToToolResultBlockParam(output, toolUseID) {
+    // Official 2.1.299 (#074) result text, byte-exact (v299 @248823000):
+    // `t=e.nextFireAt===void 0?"":` Next run: ${Vke(Oat(e.nextFireAt))}.``
+    // `Scheduled recurring job ${e.id} (${e.humanSchedule}).${t} ${n}. …`
     const where = output.durable
       ? 'Persisted to .claude/scheduled_tasks.json'
       : 'Session-only (not written to disk, dies when Claude exits)'
+    const nextRun = nextRunSentence(output.nextFireAt)
     return {
       tool_use_id: toolUseID,
       type: 'tool_result',
       content: output.recurring
-        ? `Scheduled recurring job ${output.id} (${output.humanSchedule}). ${where}. Auto-expires after ${DEFAULT_MAX_AGE_DAYS} days. Use CronDelete to cancel sooner.`
-        : `Scheduled one-shot task ${output.id} (${output.humanSchedule}). ${where}. It will fire once then auto-delete.`,
+        ? `Scheduled recurring job ${output.id} (${output.humanSchedule}).${nextRun} ${where}. Auto-expires after ${DEFAULT_MAX_AGE_DAYS} days. Use CronDelete to cancel sooner.`
+        : `Scheduled one-shot task ${output.id} (${output.humanSchedule}).${nextRun} ${where}. It will fire once then auto-delete.`,
     }
   },
   renderToolUseMessage: renderCreateToolUseMessage,

@@ -113,8 +113,12 @@ describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
     // disable attachments) +
     // CLAUDE_CODE_WORKFLOW_SUBAGENT_MODEL (CC 2.1.296 #003; official `obr`
     // scrubber set @211233225 gains it — project scope must not be able to
-    // set the workflow subagent model) = 117.
-    expect(blocklist.size).toBe(117)
+    // set the workflow subagent model) +
+    // CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT (CC 2.1.299 #030; kill-switch
+    // for the relaxed inline-shell rm prompting — project scope must not be
+    // able to toggle a security kill-switch, same precedent as
+    // CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT) = 118.
+    expect(blocklist.size).toBe(118)
     expect(blocklist.has('CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT')).toBe(
       true,
     )

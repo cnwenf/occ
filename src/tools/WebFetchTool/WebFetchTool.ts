@@ -361,6 +361,11 @@ To complete your request, I need to fetch content from the redirected URL. Pleas
     } else {
       // (4) secondary_model — official passes
       // `contentLead:H>0?\`The content below is one part of a longer page: it starts ${H} characters into the page's ${Ut.length}.\n\`:""`
+      // CC 2.1.299 (#156): official also passes `helperEffortFor:h.helperEffortFor`
+      // (@225776749) — the caller's effort when the apply model is the caller's
+      // model family. OCC passes the caller model + session effort (the same
+      // values WebSearchTool uses) and utils.ts applies the official `nen`
+      // family-match decision.
       result = await applyPromptToMarkdown(
         prompt,
         sliced,
@@ -368,6 +373,10 @@ To complete your request, I need to fetch content from the redirected URL. Pleas
         isNonInteractiveSession,
         isPreapproved,
         offset > 0 ? makeContentLead(offset, content.length) : '',
+        {
+          callerModel: context.options.mainLoopModel,
+          callerEffortValue: context.getAppState().effortValue,
+        },
       )
       // Official coverage note: `Ln=Ut.length-Rn.length`, `Eo=Ln+zJn(Rn).length`
       // (zJn = surrogate-safe head cap at $Tn=100_000); appended when

@@ -88,6 +88,25 @@ export function areBackgroundTasksDisabled(): boolean {
 }
 
 /**
+ * CC 2.1.299 (#001): `CLAUDE_CODE_DISABLE_FILE_MENTIONS` — @-mentioned files
+ * are passed to the model as PATHS (an `at_mention_reference` block) instead
+ * of being read and attached as contents.
+ *
+ * Official v299 resolver gate (@227272610, offsets into
+ * /tmp/cc-diff-299/v299/package/claude):
+ *   `Ydn()||a.CLAUDE_CODE_DISABLE_FILE_MENTIONS ? TGr(e,n) : RGr(e,be,…)`
+ * `Ydn()` reads the host `disableFileMentions()` launch option — OCC has no
+ * such launch option, so the env var is the only gate here. The env var is
+ * TRUE-NEW in v299 (0 hits in v296; v296 gated the sync paths-only variant
+ * `mLr` on the launch option alone) and is a member of the official
+ * subprocess/bg-session env passthrough set `N1r` (@228916621) — OCC has no
+ * N1r counterpart list, so registration is this gate function only.
+ */
+export function isFileMentionsDisabled(): boolean {
+  return isEnvTruthy(process.env.CLAUDE_CODE_DISABLE_FILE_MENTIONS)
+}
+
+/**
  * --safe-mode / CLAUDE_CODE_SAFE_MODE — disables all plugins, bundled skills,
  * and hook execution for troubleshooting ("is a plugin/hook causing my
  * problem?"). Prints restart-without-safe-mode guidance on startup.
@@ -102,6 +121,64 @@ export function isSafeMode(): boolean {
     isEnvTruthy(process.env.CLAUDE_CODE_SAFE_MODE) ||
     process.argv.includes('--safe-mode')
   )
+}
+
+/**
+ * CC 2.1.299 (#085): mode-exit hint helpers, byte-verified from the v299 ELF
+ * (offsets into /tmp/cc-diff-299/v299/package/claude):
+ *
+ *   @214758800 region (envUtils chunk):
+ *     `function i(e){let n=process.argv.indexOf("--");
+ *       return(n===-1?process.argv:process.argv.slice(0,n)).includes(e)}`
+ *     `function f(e){return process.env.CLAUDE_CODE_SESSION_KIND==="bg"?
+ *       "run /stop, then claude --resume from your shell":`restart without ${e}`}`
+ *     `function Jg(){return i("--safe-mode")?f("--safe-mode"):
+ *       "unset CLAUDE_CODE_SAFE_MODE"}`
+ *     `function vht(){return i("--bare")?f("--bare"):"unset CLAUDE_CODE_SIMPLE"}`
+ *
+ * vs v296 (@207257780): `Ng(){return i("--safe-mode")?"restart without
+ * --safe-mode":"unset CLAUDE_CODE_SAFE_MODE"}` — the 2.1.299 fix routes the
+ * restart text through `f`, so BACKGROUND sessions (where a restart re-runs the
+ * same command line and keeps the mode) are told to `/stop` + `claude --resume`
+ * from a shell instead.
+ *
+ * OCC adaptation: official consumers of `vht()` are the hooks-disabled reason
+ * resolver, the /hooks menu `bareMode.exitHint`, and the bare-mode /login
+ * notice — none of those surfaces exist in OCC today, so `bareModeExitHint`
+ * currently has no in-tree consumer; it is kept byte-exact for parity.
+ * `safeModeExitHint` is wired into the startup safe-mode warning (main.tsx).
+ */
+export function isBackgroundSessionKind(): boolean {
+  return process.env.CLAUDE_CODE_SESSION_KIND === 'bg'
+}
+
+/** Official `i`: flag present in process.argv before any `--` separator. */
+export function wasFlagPassedOnCli(flag: string): boolean {
+  const separatorIndex = process.argv.indexOf('--')
+  const argv =
+    separatorIndex === -1 ? process.argv : process.argv.slice(0, separatorIndex)
+  return argv.includes(flag)
+}
+
+/** Official `f`: bg-session-aware restart hint for a mode flag. */
+export function restartHintForFlag(flag: string): string {
+  return isBackgroundSessionKind()
+    ? 'run /stop, then claude --resume from your shell'
+    : `restart without ${flag}`
+}
+
+/** Official `Jg`: how to leave safe mode. */
+export function safeModeExitHint(): string {
+  return wasFlagPassedOnCli('--safe-mode')
+    ? restartHintForFlag('--safe-mode')
+    : 'unset CLAUDE_CODE_SAFE_MODE'
+}
+
+/** Official `vht`: how to leave bare mode. */
+export function bareModeExitHint(): string {
+  return wasFlagPassedOnCli('--bare')
+    ? restartHintForFlag('--bare')
+    : 'unset CLAUDE_CODE_SIMPLE'
 }
 
 /**

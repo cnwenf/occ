@@ -14,7 +14,7 @@ import { KeybindingSetup } from '../../keybindings/KeybindingProviderSetup.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { clearMcpClientConfig, clearServerTokensFromLocalStorage, getMcpClientConfig, performMCPOAuthFlow, readClientSecret, revokeServerTokens, saveMcpClientSecret } from '../../services/mcp/auth.js';
 import { connectToServer, getMcpServerConnectionBatchSize, removeMcpAuthCacheEntry } from '../../services/mcp/client.js';
-import { addMcpConfig, getAllMcpConfigs, getClaudeCodeMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
+import { addMcpConfig, filterMcpServersByPolicy, getAllMcpConfigs, getClaudeCodeMcpConfigs, getMcpConfigByName, getMcpConfigsByScope, removeMcpConfig } from '../../services/mcp/config.js';
 import type { ConfigScope, ScopedMcpServerConfig } from '../../services/mcp/types.js';
 import { mcpServerNotFoundMessage, mcpServerNotFoundMessageWithPending, sanitizeMcpCliText } from '../../services/mcp/cliMessages.js';
 import { getDisplayConfig, getDisplayServers, redactMcpErrorDetail, sanitizeConfigForDisplay } from '../../services/mcp/redaction.js';
@@ -22,6 +22,7 @@ import { describeMcpConfigFilePath, ensureConfigScope, getScopeLabel, mcpServerH
 import { partitionMcpServersByName } from '../../services/mcp/normalization.js';
 import { AppStateProvider } from '../../state/AppState.js';
 import { getCurrentProjectConfig, getGlobalConfig, saveCurrentProjectConfig } from '../../utils/config.js';
+import { readOwnOption } from '../../utils/plugins/optionKeySafety.js';
 import { logForDebugging } from '../../utils/debug.js';
 import { errorMessage, isFsInaccessible } from '../../utils/errors.js';
 import { gracefulShutdown } from '../../utils/gracefulShutdown.js';
@@ -30,8 +31,28 @@ import { getPlatform } from '../../utils/platform.js';
 import { writeToStderr } from '../../utils/process.js';
 import { cliError, cliOk } from '../exit.js';
 import { promptForCallbackUrlWithRetry } from '../mcpOAuthPrompt.js';
+/**
+ * CC 2.1.299 (#081): the status label rendered for a policy-blocked server —
+ * official `Ze` (@254597341) gates on a skip reason BEFORE connecting
+ * (`let d=Ec(u,o);if(d)return{status:...}`) and renders
+ * `${te.cross} ${E_(d,u,o).error}` where `E_` (@233435694 region) maps a
+ * managed-policy reason to `{error:a7,errorCode:"POLICY_BLOCKED"}` with
+ * `a7="Blocked by enterprise managed policy"` (@222853870). v296's health
+ * check (`Qe` @247893650) called connectToServer unconditionally — starting
+ * policy-blocked servers was the bug v299 fixed.
+ */
+const MCP_POLICY_BLOCKED_LABEL = '✗ Blocked by enterprise managed policy';
+
 async function checkMcpServerHealth(name: string, server: ScopedMcpServerConfig): Promise<string> {
   try {
+    // CC 2.1.299 (#081): enterprise-policy gate BEFORE any connect/start —
+    // a policy-blocked server is REPORTED blocked, never spawned (official
+    // `Ze` gates via `Ec` before `connectToServer`). filterMcpServersByPolicy
+    // is the same helper print.ts uses (#080); it exempts sdk-type servers.
+    const { blocked } = filterMcpServersByPolicy({ [name]: server });
+    if (blocked.length > 0) {
+      return MCP_POLICY_BLOCKED_LABEL;
+    }
     const result = await connectToServer(name, server);
     // CC 2.1.218 #5: surface the binary's exact health-check status label
     // (✓ Connected / ! Needs authentication / - Not configured / ✗ Failed
@@ -155,13 +176,16 @@ export async function mcpRemoveHandler(name: string, options: {
     const {
       servers: projectServers
     } = getMcpConfigsByScope('project');
-    const mcpJsonExists = !!projectServers[name];
+    // CC 2.1.299 (#042): own-property reads — `occ mcp remove constructor`
+    // with no such server must report not-found, not read the inherited
+    // Object.prototype.constructor (truthy) and claim it exists everywhere.
+    const mcpJsonExists = readOwnOption(projectServers, name) !== undefined;
 
     // Count how many scopes contain this server
     const scopes: Array<Exclude<ConfigScope, 'dynamic'>> = [];
-    if (projectConfig.mcpServers?.[name]) scopes.push('local');
+    if (readOwnOption(projectConfig.mcpServers, name)) scopes.push('local');
     if (mcpJsonExists) scopes.push('project');
-    if (globalConfig.mcpServers?.[name]) scopes.push('user');
+    if (readOwnOption(globalConfig.mcpServers, name)) scopes.push('user');
     if (scopes.length === 0) {
       // CC 2.1.285 (item 8): official v285 remove handler ends in
       // `si(iQn(o,U(M)))` — M = local-config + raw .mcp.json + user-config
@@ -229,7 +253,7 @@ export async function mcpListHandler(): Promise<void> {
       name,
       status
     } of results) {
-      const server = displayConfigs[name];
+      const server = readOwnOption(displayConfigs, name);
       if (!server) continue;
       // CC 2.1.285 (item 7): official v285 row builder `Fe` gained a ws branch
       // (`if(o.type==="ws")return`${f}: ${o.url} (WS) - ${a}`;` — the string
@@ -310,10 +334,13 @@ export async function mcpGetHandler(name: string): Promise<void> {
   // either.
   const { servers: localServers } = await getClaudeCodeMcpConfigs();
   let servers = localServers;
-  let server = servers[name] ?? null;
+  // CC 2.1.299 (#042): own-property read — `occ mcp get constructor` with no
+  // such server must print not-found, not read the inherited
+  // Object.prototype.constructor and crash rendering it as a server config.
+  let server = readOwnOption(servers, name) ?? null;
   if (!server || !MCP_FILE_BACKED_SCOPES.has(server.scope)) {
     ({ servers } = await getAllMcpConfigs());
-    server = servers[name] ?? null;
+    server = readOwnOption(servers, name) ?? null;
   }
   if (!server) {
     // CC 2.1.285 (item 8): official v285 get handler ends in

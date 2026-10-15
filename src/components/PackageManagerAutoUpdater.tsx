@@ -10,6 +10,7 @@ import { isEnvTruthy } from '../utils/envUtils.js';
 import { getPackageManager, type PackageManager } from '../utils/nativeInstaller/packageManagers.js';
 import { gt, gte } from '../utils/semver.js';
 import { getInitialSettings } from '../utils/settings/settings.js';
+import { UpdaterSeparator } from './UpdaterSeparator.js';
 type Props = {
   isUpdating: boolean;
   onChangeIsUpdating: (isUpdating: boolean) => void;
@@ -17,11 +18,15 @@ type Props = {
   autoUpdaterResult: AutoUpdaterResult | null;
   showSuccessMessage: boolean;
   verbose: boolean;
+  // Official v299 (#049): undefined → no separator node; true → leading
+  // dim " ·" so the notice renders BESIDE other status chrome.
+  withSeparator?: boolean;
 };
 export function PackageManagerAutoUpdater(t0) {
-  const $ = _c(10);
+  const $ = _c(13);
   const {
-    verbose
+    verbose,
+    withSeparator
   } = t0;
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [packageManager, setPackageManager] = useState("unknown");
@@ -83,30 +88,39 @@ export function PackageManagerAutoUpdater(t0) {
     return null;
   }
   const updateCommand = packageManager === "homebrew" ? "brew upgrade claude-code" : packageManager === "winget" ? "winget upgrade Anthropic.ClaudeCode" : packageManager === "apk" ? "apk upgrade claude-code" : "your package manager update command";
-  let t4;
-  if ($[3] !== verbose) {
-    t4 = verbose && <Text dimColor={true} wrap="truncate">currentVersion: {MACRO.VERSION}</Text>;
-    $[3] = verbose;
-    $[4] = t4;
+  let tsep;
+  if ($[3] !== withSeparator) {
+    tsep = <UpdaterSeparator withSeparator={withSeparator} />;
+    $[3] = withSeparator;
+    $[4] = tsep;
   } else {
-    t4 = $[4];
+    tsep = $[4];
+  }
+  let t4;
+  if ($[5] !== verbose) {
+    t4 = verbose && <Text dimColor={true} wrap="truncate">currentVersion: {MACRO.VERSION}</Text>;
+    $[5] = verbose;
+    $[6] = t4;
+  } else {
+    t4 = $[6];
   }
   let t5;
-  if ($[5] !== updateCommand) {
+  if ($[7] !== updateCommand) {
     t5 = <Text color="warning" wrap="truncate">Update available! Run: <Text bold={true}>{updateCommand}</Text></Text>;
-    $[5] = updateCommand;
-    $[6] = t5;
+    $[7] = updateCommand;
+    $[8] = t5;
   } else {
-    t5 = $[6];
+    t5 = $[8];
   }
   let t6;
-  if ($[7] !== t4 || $[8] !== t5) {
-    t6 = <>{t4}{t5}</>;
-    $[7] = t4;
-    $[8] = t5;
-    $[9] = t6;
+  if ($[9] !== t4 || $[10] !== t5 || $[11] !== tsep) {
+    t6 = <>{tsep}{t4}{t5}</>;
+    $[9] = t4;
+    $[10] = t5;
+    $[11] = tsep;
+    $[12] = t6;
   } else {
-    t6 = $[9];
+    t6 = $[12];
   }
   return t6;
 }

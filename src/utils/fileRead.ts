@@ -18,6 +18,90 @@ import { getFsImplementation, safeResolvePath } from './fsOperations.js'
 
 export type LineEndingType = 'CRLF' | 'LF'
 
+/**
+ * CC 2.1.299 #126 — official notText categories (vA keys @216803634):
+ * - `not_utf8`: bytes are not valid UTF-8 (legacy encodings such as
+ *   Windows-1252 / Shift-JIS / GBK, or binary).
+ * - `nul`: NUL bytes in the first 8 KB (binary data, UTF-16/UTF-32 without a
+ *   BOM, or text with embedded NULs).
+ * - `utf16be`: file starts FE FF — UTF-16 big-endian, which the tools cannot
+ *   write.
+ * Edit/Write refuse these files (FileStateError with the official Zpt
+ * message); Read attaches the official nHs notice instead of refusing.
+ */
+export type NotTextCategory = 'not_utf8' | 'nul' | 'utf16be'
+
+/** Official `f` — BOM-sniff sample size (rae runs on the first 4096 bytes). */
+const ENCODING_SNIFF_BYTES = 4096
+
+/** Official `b` — NUL-scan window (zMo checks the first 8000 bytes). */
+const NUL_SCAN_BYTES = 8000
+
+/**
+ * Official `rae` (@215108500) — pure BOM sniff on an already-read head slice:
+ * FF FE → utf16le; everything else (incl. EF BB BF and empty) → utf8.
+ */
+export function detectEncodingFromBytes(head: Buffer): BufferEncoding {
+  if (head.byteLength === 0) return 'utf8'
+  if (head.byteLength >= 2 && head[0] === 255 && head[1] === 254) {
+    return 'utf16le'
+  }
+  return 'utf8'
+}
+
+/**
+ * Official `Rgt` (@215109534) — classify a whole-file buffer:
+ *
+ *   function Rgt(n){let e=rae(n.subarray(0,f));if(e!=="utf8")return{encoding:e};
+ *     if(n.byteLength>=2&&n[0]===254&&n[1]===255)return{encoding:e,notText:"utf16be"};
+ *     if(zMo(n))return{encoding:e,notText:"nul"};
+ *     return p(n)?{encoding:e}:{encoding:e,notText:"not_utf8"}}
+ *
+ * `p` is Buffer.isUtf8, `zMo(n)` is `n.subarray(0,b).includes(0)`. UTF-16LE
+ * (BOM-detected) content is never flagged — the tools read and write it
+ * behind its BOM.
+ */
+export function classifyFileBytes(buffer: Buffer): {
+  encoding: BufferEncoding
+  notText?: NotTextCategory
+} {
+  const encoding = detectEncodingFromBytes(
+    buffer.subarray(0, ENCODING_SNIFF_BYTES),
+  )
+  if (encoding !== 'utf8') return { encoding }
+  if (
+    buffer.byteLength >= 2 &&
+    buffer[0] === 254 &&
+    buffer[1] === 255
+  ) {
+    return { encoding, notText: 'utf16be' }
+  }
+  if (buffer.subarray(0, NUL_SCAN_BYTES).includes(0)) {
+    return { encoding, notText: 'nul' }
+  }
+  return isUtf8(buffer) ? { encoding } : { encoding, notText: 'not_utf8' }
+}
+
+/**
+ * Official `UMr` (@215111300 region) — BOM preservation on rewrite:
+ *
+ *   function UMr(n,e){return e!==""&&n?.charCodeAt(0)===65279&&
+ *     e.charCodeAt(0)!==65279?`\uFEFF${e}`:e}
+ *
+ * When the old on-disk content started with a BOM and the new content does
+ * not, re-prefix the BOM so Write/Edit never silently drop it.
+ */
+export function preserveBomOnRewrite(
+  oldContent: string | null | undefined,
+  newContent: string,
+): string {
+  return newContent !== '' &&
+    oldContent?.charCodeAt(0) === 0xfeff &&
+    newContent.charCodeAt(0) !== 0xfeff
+    ? `\uFEFF${newContent}`
+    : newContent
+}
+
 export function detectEncodingForResolvedPath(
   resolvedPath: string,
 ): BufferEncoding {
@@ -92,6 +176,8 @@ export function readFileSyncWithMetadata(filePath: string): {
   encoding: BufferEncoding
   lineEndings: LineEndingType
   lossyDecode: boolean
+  /** CC 2.1.299 #126 — official `notText` from Rgt (classifyFileBytes). */
+  notText?: NotTextCategory
 } {
   const fs = getFsImplementation()
   const { resolvedPath, isSymlink } = safeResolvePath(fs, filePath)
@@ -105,8 +191,11 @@ export function readFileSyncWithMetadata(filePath: string): {
   // same buffer — mirroring `{content,encoding,lineEndings,...IAo(i,s)&&
   // {lossyDecode:!0}}`. Reading a string directly would discard the bytes
   // needed by isUtf8.
+  // CC 2.1.299 #126 (official sEe @215110800): the same single buffer also
+  // feeds Rgt → `{encoding, notText}`; notText rides along
+  // (`...s&&{notText:s}`) for the Edit/Write refusal gates.
   const bytes = fs.readFileBytesSync(resolvedPath)
-  const encoding = detectEncodingForResolvedPath(resolvedPath)
+  const { encoding, notText } = classifyFileBytes(bytes)
   const raw = bytes.toString(encoding)
   // Detect line endings from the raw head before CRLF normalization erases
   // the distinction. 4096 code units is ≥ detectLineEndings's 4096-byte
@@ -117,6 +206,7 @@ export function readFileSyncWithMetadata(filePath: string): {
     encoding,
     lineEndings,
     lossyDecode: isLossyUtf8Decode(bytes, encoding),
+    ...(notText ? { notText } : {}),
   }
 }
 

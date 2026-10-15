@@ -9,6 +9,7 @@ import { z } from 'zod'
 import { getOauthConfig, OAUTH_BETA_HEADER } from '../../constants/oauth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { sanitizeApiKeyForAnthropicOwnedEndpoint } from '../../utils/firstPartyEndpoint.js'
 import { withOAuth401Retry } from '../../utils/http.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
@@ -53,7 +54,14 @@ async function fetchBootstrapAPI(): Promise<BootstrapResponse | null> {
 
   // OAuth preferred (requires user:profile scope — service-key OAuth tokens
   // lack it and would 403). Fall back to API key auth for console users.
-  const apiKey = getAnthropicApiKey()
+  //
+  // Official 2.1.299 (anthropic-owned client `yr` @218212358): the x-api-key
+  // header is stripped and the request skipped as "no-auth" when
+  // `f5(key)===null` — i.e. a key configured for a third-party gateway
+  // (custom ANTHROPIC_BASE_URL) is never sent to api.anthropic.com. Genuine
+  // sk-ant-shaped keys still pass; the OAuth branch is unaffected (official
+  // `LZ` attaches Bearer independently of the base URL).
+  const apiKey = sanitizeApiKeyForAnthropicOwnedEndpoint(getAnthropicApiKey())
   const hasUsableOAuth =
     getClaudeAIOAuthTokens()?.accessToken && hasProfileScope()
   if (!hasUsableOAuth && !apiKey) {

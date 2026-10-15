@@ -1,5 +1,6 @@
 import { c as _c } from "react/compiler-runtime";
 import React from 'react';
+import { formatSandboxSaveResult } from '../../commands/sandbox-toggle/sandboxSaveFailure.js';
 import { Box, color, Link, Text, useTheme } from '../../ink.js';
 import { useKeybindings } from '../../keybindings/useKeybinding.js';
 import type { CommandResultDisplay } from '../../types/command.js';
@@ -109,32 +110,37 @@ export function SandboxSettings(t0) {
   if ($[13] !== onComplete) {
     t10 = async function handleSelect(value) {
       const mode = value as SandboxMode;
-      bb33: switch (mode) {
+      // CC 2.1.299 (#040): report the save result honestly \u2014 the official v()
+      // formatter returns the success text only when `error` is null, else the
+      // "\u2717 Sandbox settings not changed: ..." message with the reason. The
+      // displayed mode derives from SandboxManager.isSandboxingEnabled()
+      // (settings-backed), so a failed save naturally does not flip the toggle.
+      switch (mode) {
         case "auto-allow":
           {
-            await SandboxManager.setSandboxSettings({
+            const result = await SandboxManager.setSandboxSettings({
               enabled: true,
               autoAllowBashIfSandboxed: true
             });
-            onComplete("\u2713 Sandbox enabled with auto-allow for bash commands");
-            break bb33;
+            onComplete(formatSandboxSaveResult(result, "\u2713 Sandbox enabled with auto-allow for bash commands"));
+            break;
           }
         case "regular":
           {
-            await SandboxManager.setSandboxSettings({
+            const result = await SandboxManager.setSandboxSettings({
               enabled: true,
               autoAllowBashIfSandboxed: false
             });
-            onComplete("\u2713 Sandbox enabled with regular bash permissions");
-            break bb33;
+            onComplete(formatSandboxSaveResult(result, "\u2713 Sandbox enabled with regular bash permissions"));
+            break;
           }
         case "disabled":
           {
-            await SandboxManager.setSandboxSettings({
+            const result = await SandboxManager.setSandboxSettings({
               enabled: false,
               autoAllowBashIfSandboxed: false
             });
-            onComplete("\u25CB Sandbox disabled");
+            onComplete(formatSandboxSaveResult(result, "\u25CB Sandbox disabled"));
           }
       }
     };

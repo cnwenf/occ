@@ -29,7 +29,14 @@ const LEGACY_TOOL_NAME_ALIASES: Record<string, string> = {
 }
 
 export function normalizeLegacyToolName(name: string): string {
-  return LEGACY_TOOL_NAME_ALIASES[name] ?? name
+  // CC 2.1.299 (#043): own-property read — an unguarded `ALIASES[name] ?? name`
+  // for a rule/tool named `constructor`/`toString`/`valueOf`/… returns the
+  // inherited Object.prototype member (a function, not nullish) instead of the
+  // name itself, corrupting rule matching into silent never-match
+  // (over-prompting) for those names.
+  return Object.hasOwn(LEGACY_TOOL_NAME_ALIASES, name)
+    ? LEGACY_TOOL_NAME_ALIASES[name]
+    : name
 }
 
 export function getLegacyToolNames(canonicalName: string): string[] {

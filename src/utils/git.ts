@@ -657,10 +657,27 @@ function isShallowClone(): Promise<boolean> {
 }
 
 /**
+ * Parse `git ls-files --others` stdout into file paths.
+ *
+ * Official 2.1.299 fix (#103 space-in-filename diff view bug): the whole
+ * stdout must NOT be trimmed — the first/last filename can legitimately
+ * start or end with spaces, and a whole-output `trim()` silently corrupted
+ * them. The official 2.1.299 consumer (ELF @221653400) splits the raw
+ * output and filters per-line: `i.split("\n").filter((T)=>T!==""&&...)`,
+ * with the per-line non-empty helper `function bxo(rr){return rr.trim()!==""}`
+ * (@17042895). Whitespace-only lines are dropped by the trim predicate;
+ * filenames with leading/trailing spaces are preserved exactly.
+ */
+export function parseUntrackedFileList(stdout: string): string[] {
+  return stdout.split('\n').filter(line => line.trim() !== '')
+}
+
+/**
  * Capture untracked files (git diff doesn't include them).
  * Respects size limits and skips binary files.
+ * Exported for tests (space-in-filename #103 fix verification).
  */
-async function captureUntrackedFiles(): Promise<
+export async function captureUntrackedFiles(): Promise<
   Array<{ path: string; content: string }>
 > {
   const { stdout, code } = await execFileNoThrow(
@@ -669,12 +686,11 @@ async function captureUntrackedFiles(): Promise<
     { preserveOutputOnError: false },
   )
 
-  const trimmed = stdout.trim()
-  if (code !== 0 || !trimmed) {
+  if (code !== 0) {
     return []
   }
 
-  const files = trimmed.split('\n').filter(Boolean)
+  const files = parseUntrackedFileList(stdout)
   const result: Array<{ path: string; content: string }> = []
   let totalSize = 0
 

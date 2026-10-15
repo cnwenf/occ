@@ -7,6 +7,7 @@ import { getPlatform } from '../../utils/platform.js';
 import { addToExcludedCommands, SandboxManager } from '../../utils/sandbox/sandbox-adapter.js';
 import { getSettings_DEPRECATED, getSettingsFilePathForSource } from '../../utils/settings/settings.js';
 import type { ThemeName } from '../../utils/theme.js';
+import { extractSandboxSaveError, formatSandboxSaveFailure } from './sandboxSaveFailure.js';
 export async function call(onDone: (result?: string) => void, _context: unknown, args?: string): Promise<React.ReactNode | null> {
   const settings = getSettings_DEPRECATED();
   const themeName: ThemeName = settings.theme as ThemeName || 'light';
@@ -67,6 +68,19 @@ export async function call(onDone: (result?: string) => void, _context: unknown,
       const result = addToExcludedCommands(cleanPattern);
       if (result.outcome === 'refused') {
         const message = color('error', themeName)(`Error: "${cleanPattern}" was not added to excluded commands — managed settings restrict sandbox.excludedCommands and user settings are disabled.`);
+        onDone(message);
+        return null;
+      }
+
+      // CC 2.1.299 (#040): a failed settings write must not print the success
+      // message. Consume the adapter result defensively — today
+      // addToExcludedCommands discards the write error (Promise/sync void
+      // shapes → success), and when the sandbox-adapter starts surfacing
+      // `{error}` this prints the official "✗ Sandbox settings not changed:
+      // ..." message instead.
+      const saveError = extractSandboxSaveError(result);
+      if (saveError !== null) {
+        const message = color('error', themeName)(formatSandboxSaveFailure(saveError));
         onDone(message);
         return null;
       }

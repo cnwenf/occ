@@ -8,7 +8,10 @@ import { resetSentSkillNames } from '../attachments.js'
 import { logForDebugging } from '../debug.js'
 import { getErrnoCode } from '../errors.js'
 import { logError } from '../log.js'
-import { loadInstalledPluginsFromDisk } from './installedPluginsManager.js'
+import {
+  clearInstalledPluginsCache,
+  loadInstalledPluginsFromDisk,
+} from './installedPluginsManager.js'
 import { clearPluginAgentCache } from './loadPluginAgents.js'
 import { clearPluginCommandCache } from './loadPluginCommands.js'
 import {
@@ -25,6 +28,14 @@ const CLEANUP_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
 export function clearAllPluginCaches(): void {
   clearPluginCache()
+  // CC 2.1.299 #082: /reload-plugins must see a plugin installed from another
+  // terminal moments earlier. installedPluginsManager memoizes
+  // installed_plugins.json for the process lifetime (both the disk-read cache
+  // and the session snapshot that loadAllPlugins reads via
+  // getInMemoryInstalledPlugins), so without this clear a freshly-installed
+  // plugin stays invisible until restart. Covers all refreshActivePlugins
+  // call sites (/reload-plugins, cli plugin handlers, PluginInstallationManager).
+  clearInstalledPluginsCache()
   clearPluginCommandCache()
   clearPluginAgentCache()
   clearPluginHookCache()

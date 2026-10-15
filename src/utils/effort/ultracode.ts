@@ -160,6 +160,31 @@ export function isUltracodeEnabled(): boolean {
 }
 
 /**
+ * CC 2.1.299 (#115): the settings-key half of the official startup gate
+ * `xzn(e) = Je().ultracode===!0 || NNe(e)==="ultracode"` (v299, byte-exact
+ * semantics; `Je()` is the merged-settings read). Pure helper — the caller
+ * (src/main.tsx session init) passes the settings object so this module stays
+ * self-contained (no settings-module import; same TDZ/cycle reason it does not
+ * import ../effort.ts). Strict `=== true`: the official gate is `ultracode===!0`.
+ *
+ * Consuming the key closes the staged occ139 §3.7b half — before this,
+ * `--settings '{"ultracode":true}'` had no consumer path, so ultracode was
+ * never announced to scheduled tasks and other delivered headless turns
+ * (official #115: the ultra_effort_enter attachment gate widened from
+ * `S?.isRegularUserPrompt` to `S?.isRegularUserPrompt||S?.deliveredTurnStart`,
+ * v299 @227277261 vs v296 @219245900). OCC's src/query.ts injects
+ * getUltracodeSystemReminders() on EVERY API-loop turn with no prompt-type
+ * gate, so once the session flag is on, delivered turns (cron prompts drained
+ * from the message queue, teammate injections) are announced automatically —
+ * reusing the same interactive announcement strings.
+ */
+export function isUltracodeSettingsFlag(
+  settings: { ultracode?: unknown } | null | undefined,
+): boolean {
+  return settings?.ultracode === true
+}
+
+/**
  * Enable ultracode for the session (session-scoped; never persisted by
  * interactive toggles, matching the binary). Also set effort to xhigh and
  * enable dynamic-workflow orchestration — the caller wires those via the

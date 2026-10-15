@@ -1,8 +1,14 @@
 import { execFileSync, spawn } from 'child_process'
-import { constants as fsConstants, readFileSync, unlinkSync } from 'fs'
+import {
+  constants as fsConstants,
+  readFileSync,
+  statSync,
+  unlinkSync,
+} from 'fs'
 import { type FileHandle, mkdir, open, realpath } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
-import { isAbsolute, resolve } from 'path'
+import { homedir } from 'os'
+import { isAbsolute, join, resolve } from 'path'
 import { join as posixJoin } from 'path/posix'
 import { logEvent } from 'src/services/analytics/index.js'
 import {
@@ -10,9 +16,11 @@ import {
   getSessionId,
   setCwdState,
 } from '../bootstrap/state.js'
+import { fileSuffixForOauthConfig } from '../constants/oauth.js'
 import { generateTaskId } from '../Task.js'
 import { pwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
+import { getClaudeConfigHomeDir } from './envUtils.js'
 import { errorMessage, isENOENT } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'
@@ -46,6 +54,40 @@ import { subprocessEnv } from './subprocessEnv.js'
 import { posixPathToWindowsPath } from './windowsPaths.js'
 
 const DEFAULT_TIMEOUT = 30 * 60 * 1000 // 30 minutes
+
+/**
+ * CC 2.1.299 (#039): remove 0-byte sandbox mount-point residue at the
+ * config-dir bind points. bwrap's deny-write list includes the config file
+ * paths; for ones that do not exist on the host, sandbox-runtime pre-creates
+ * a 0-byte stub (it mounts /dev/null over them) that survives the command —
+ * a 0-byte `.config.json` / `.claude.json` stub then shadows the real auth
+ * state on the next config read. Official v299 documents the residue class
+ * (prompt text @107002052: "A 0-byte one belongs to the sandbox"; doctor
+ * diagnostic @228225896, fix `rm <path>`). Runs AFTER the sandboxed command
+ * exits (the mount is gone), removes only regular files that are exactly
+ * 0 bytes — a file with content is the user's file and is never touched —
+ * and is best-effort: sync, no-op when absent, same contract as
+ * SandboxManager.cleanupAfterCommand().
+ */
+export function cleanupZeroByteConfigResidue(): void {
+  const candidates = [
+    join(getClaudeConfigHomeDir(), '.config.json'),
+    join(
+      process.env.CLAUDE_CONFIG_DIR || homedir(),
+      `.claude${fileSuffixForOauthConfig()}.json`,
+    ),
+  ]
+  for (const candidate of candidates) {
+    try {
+      const stat = statSync(candidate)
+      if (stat.isFile() && stat.size === 0) {
+        unlinkSync(candidate)
+      }
+    } catch {
+      // Absent or unstat-able — nothing to clean
+    }
+  }
+}
 
 export type ShellConfig = {
   provider: ShellProvider
@@ -394,6 +436,10 @@ export async function exec(
       // working tree in the same microtask.
       if (shouldUseSandbox) {
         SandboxManager.cleanupAfterCommand()
+        // CC 2.1.299 (#039): also remove the 0-byte stubs bwrap pre-created
+        // at the config-dir bind points, before any await (same sync
+        // contract as the cwd-ghost cleanup above).
+        cleanupZeroByteConfigResidue()
       }
       // Only foreground tasks update the cwd
       if (result && !preventCwdChanges && !result.backgroundTaskId) {

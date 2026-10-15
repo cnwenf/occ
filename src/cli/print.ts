@@ -149,6 +149,7 @@ import { CLI_BINARY_NAME } from 'src/constants/cli.js'
 import { buildBridgeConnectUrl } from 'src/bridge/bridgeStatusUtil.js'
 import { extractInboundMessageFields } from 'src/bridge/inboundMessages.js'
 import { resolveAndPrepend } from 'src/bridge/inboundAttachments.js'
+import { downsizeSdkInputImageBlocks } from 'src/cli/sdkInputImages.js'
 import type { CanUseToolFn } from 'src/hooks/useCanUseTool.js'
 import { hasPermissionsToUseTool } from 'src/utils/permissions/permissions.js'
 import { safeParseJSON } from 'src/utils/json.js'
@@ -156,7 +157,16 @@ import {
   outputSchema as permissionToolOutputSchema,
   permissionPromptToolResultToPermissionDecision,
 } from 'src/utils/permissions/PermissionPromptToolResultSchema.js'
-import { createAbortController } from 'src/utils/abortController.js'
+import {
+  createAbortController,
+  createChildAbortController,
+} from 'src/utils/abortController.js'
+import {
+  cancelAllPendingSideQuestions,
+  runTrackedSideQuestion,
+  SIDE_QUESTION_CANCELLED_MESSAGE,
+  SIDE_QUESTION_TIMEOUT_MESSAGE,
+} from 'src/commands/btw/sideQuestionLifecycle.js'
 import { createCombinedAbortSignal } from 'src/utils/combinedAbortSignal.js'
 import { generateSessionTitle } from 'src/utils/sessionTitle.js'
 import { buildSideQuestionFallbackParams } from 'src/utils/queryContext.js'
@@ -190,6 +200,10 @@ import {
   isBypassPermissionsModeDisabled,
   transitionPermissionMode,
 } from 'src/utils/permissions/permissionSetup.js'
+import {
+  checkAndDisableAutoModeIfNeeded,
+  resetAutoModeGateCheck,
+} from 'src/utils/permissions/bypassPermissionsKillswitch.js'
 import {
   tryGenerateSuggestion,
   logSuggestionOutcome,
@@ -440,13 +454,39 @@ function toBlocks(v: PromptValue): ContentBlockParam[] {
  * Join prompt values from multiple queued commands into one. Strings are
  * newline-joined; if any value is a block array, all values are normalized
  * to blocks and concatenated.
+ *
+ * Official 2.1.299 fix (#093): queued prompts sent as content blocks over
+ * `--input-format stream-json` used to run together without a line break
+ * when merged into one turn. Adjacent text blocks from different queued
+ * values are now joined with '\n' (matching the all-strings path); when a
+ * merge boundary is not text/text, a standalone '\n' text block separates
+ * the values. Input arrays/blocks are never mutated.
  */
 export function joinPromptValues(values: PromptValue[]): PromptValue {
   if (values.length === 1) return values[0]!
   if (values.every(v => typeof v === 'string')) {
     return values.join('\n')
   }
-  return values.flatMap(toBlocks)
+  const merged: ContentBlockParam[] = []
+  for (const value of values) {
+    const blocks = toBlocks(value)
+    if (blocks.length === 0) continue
+    if (merged.length > 0) {
+      const prev = merged[merged.length - 1]!
+      const next = blocks[0]!
+      if (prev.type === 'text' && next.type === 'text') {
+        merged[merged.length - 1] = {
+          type: 'text',
+          text: `${prev.text}\n${next.text}`,
+        }
+        merged.push(...blocks.slice(1))
+        continue
+      }
+      merged.push({ type: 'text', text: '\n' })
+    }
+    merged.push(...blocks)
+  }
+  return merged
 }
 
 /**
@@ -1204,6 +1244,13 @@ function runHeadlessStreaming(
       internal_events_pending: structuredIO.internalEventsPending,
       bg_tasks: bg,
     })
+  })
+
+  // Official v299 (#105): pending non-interactive /btw side questions are
+  // cancelled at session end — their SDK callers get a "Side question
+  // cancelled" error response instead of hanging forever.
+  registerCleanup(async () => {
+    cancelAllPendingSideQuestions()
   })
 
   // Wire the central onChangeAppState mode-diff hook to the SDK output stream.
@@ -3113,6 +3160,31 @@ function runHeadlessStreaming(
           notifySessionMetadataChanged({ model })
           injectModelSwitchBreadcrumbs(requestedModel, model)
 
+          // CC 2.1.299 #041 (changelog: "Fixed SDK and headless sessions
+          // staying in auto mode after the host switched to a model that
+          // doesn't support auto mode"): the official v299 set_model handler
+          // awaits an auto-mode re-verification after applying the model
+          // (`sd(), await hs()` before the success response). The sync
+          // isAutoModeGateEnabled() check only gates ENTERING auto mode; a
+          // mid-session set_model to a non-auto model previously left the
+          // headless session stuck in auto. Mirror the interactive kick-out
+          // (useKickOffCheckAndDisableAutoModeIfNeeded): reset the run-once
+          // flag and re-run the gate check. The downgrade lands via
+          // setAppState → onChangeAppState → notifyPermissionModeChanged →
+          // the system/status stream message; the notification is queued to
+          // appState.notifications exactly like the interactive path.
+          if (
+            !modelSupportsAutoMode(model) &&
+            getAppState().toolPermissionContext.mode === 'auto'
+          ) {
+            resetAutoModeGateCheck()
+            await checkAndDisableAutoModeIfNeeded(
+              getAppState().toolPermissionContext,
+              setAppState,
+              getAppState().fastMode,
+            )
+          }
+
           sendControlResponseSuccess(message)
         } else if (message.request.subtype === 'set_max_thinking_tokens') {
           if (message.request.max_thinking_tokens === null) {
@@ -3989,24 +4061,36 @@ function runHeadlessStreaming(
           // coordinator mode or memory-mechanics extras — acceptable, the
           // alternative is the side question failing entirely.
           const { question } = message.request
+          // Official v299 (#105 + #166): the run is lifecycle-tracked —
+          //   #105b: an identical question already in flight is ADOPTED
+          //          (dedupe), never run twice;
+          //   #166:  unanswered for 660000ms (11 min) → timeout, the fork is
+          //          aborted and the caller gets the official `_Ht` message;
+          //   #105a: session end cancels pending runs
+          //          (cancelAllPendingSideQuestions via registerCleanup).
           void (async () => {
-            try {
-              const saved = getLastCacheSafeParams()
-              const cacheSafeParams = saved
-                ? {
+            const outcome = await runTrackedSideQuestion({
+              question,
+              run: async lifecycleController => {
+                // Child controller: fresh (an inherited snapshot controller
+                // may already be aborted if the last turn was interrupted —
+                // the fork would die before sending a request; the controller
+                // is not part of the cache key, so swapping is safe) AND
+                // aborts with the lifecycle (timeout / session-end cancel).
+                const forkAbortController =
+                  createChildAbortController(lifecycleController)
+                const saved = getLastCacheSafeParams()
+                let cacheSafeParams
+                if (saved) {
+                  cacheSafeParams = {
                     ...saved,
-                    // If the last turn was interrupted, the snapshot holds an
-                    // already-aborted controller; createChildAbortController in
-                    // createSubagentContext would propagate it and the fork
-                    // would die before sending a request. The controller is
-                    // not part of the cache key — swapping in a fresh one is
-                    // safe. Same guard as generate_session_title above.
                     toolUseContext: {
                       ...saved.toolUseContext,
-                      abortController: createAbortController(),
+                      abortController: forkAbortController,
                     },
                   }
-                : await buildSideQuestionFallbackParams({
+                } else {
+                  const fallback = await buildSideQuestionFallbackParams({
                     tools: buildAllTools(getAppState()),
                     commands: currentCommands,
                     mcpClients: [
@@ -4023,13 +4107,39 @@ function runHeadlessStreaming(
                     thinkingConfig: options.thinkingConfig,
                     agents: currentAgents,
                   })
-              const result = await runSideQuestion({
-                question,
-                cacheSafeParams,
+                  cacheSafeParams = {
+                    ...fallback,
+                    toolUseContext: {
+                      ...fallback.toolUseContext,
+                      abortController: forkAbortController,
+                    },
+                  }
+                }
+                return runSideQuestion({
+                  question,
+                  cacheSafeParams,
+                })
+              },
+            })
+            if (outcome.type === 'answer') {
+              sendControlResponseSuccess(message, {
+                response: outcome.value.response,
               })
-              sendControlResponseSuccess(message, { response: result.response })
-            } catch (e) {
-              sendControlResponseError(message, errorMessage(e))
+            } else if (outcome.type === 'timeout') {
+              // Official: t(`side_question: no answer by the deadline, giving
+              // the run up ...`, {level:'error'}) then an error response
+              // carrying `_Ht`.
+              logForDebugging(
+                'side_question: no answer by the deadline, giving the run up',
+              )
+              sendControlResponseError(message, SIDE_QUESTION_TIMEOUT_MESSAGE)
+            } else if (outcome.type === 'cancelled') {
+              // Official: logEvent('tengu_sdk_side_question_cancelled') then
+              // an error response "Side question cancelled".
+              logEvent('tengu_sdk_side_question_cancelled', {})
+              sendControlResponseError(message, SIDE_QUESTION_CANCELLED_MESSAGE)
+            } else {
+              sendControlResponseError(message, errorMessage(outcome.error))
             }
           })()
         } else if (
@@ -4264,7 +4374,15 @@ function runHeadlessStreaming(
         mode: 'prompt' as const,
         // file_attachments rides the protobuf catchall from the web composer.
         // Same-ref no-op when absent (no 'file_attachments' key).
-        value: await resolveAndPrepend(message, message.message.content),
+        // CC 2.1.299 #068: resize base64 image blocks injected mid-session
+        // via stream-json input before they enter the conversation — the
+        // official fix for "images attached while Claude is working (VS Code,
+        // desktop app, SDK) being sent at full size". Pass-through for
+        // already-small images; non-image content untouched.
+        value: await resolveAndPrepend(
+          message,
+          await downsizeSdkInputImageBlocks(message.message.content),
+        ),
         uuid: message.uuid,
         priority: message.priority,
       })

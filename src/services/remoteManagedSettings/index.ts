@@ -24,6 +24,10 @@ import {
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
+  API_KEY_NOT_SENT_REASON,
+  sanitizeApiKeyForAnthropicOwnedEndpoint,
+} from '../../utils/firstPartyEndpoint.js'
+import {
   classifyAxiosError,
   getErrnoCode,
   isNonRetryableClientError,
@@ -179,6 +183,19 @@ function getRemoteSettingsAuthHeaders(): {
       skipRetrievingKeyFromApiKeyHelper: true,
     })
     if (apiKey) {
+      // Official 2.1.299 (`St` @232349772): the settings credential resolver
+      // runs the key through `f5` and refuses to attach a gateway key:
+      //   if(f5(s)===null)return t("Remote settings: API key not sent:
+      //   ANTHROPIC_BASE_URL is not an Anthropic host"),{headers:{},error:...}
+      // Defense-in-depth alongside the isRemoteManagedSettingsEligible()
+      // base-URL gate in syncCache.ts (#052).
+      if (sanitizeApiKeyForAnthropicOwnedEndpoint(apiKey) === null) {
+        logForDebugging(`Remote settings: ${API_KEY_NOT_SENT_REASON}`)
+        return {
+          headers: {},
+          error: `Remote settings: ${API_KEY_NOT_SENT_REASON}`,
+        }
+      }
       return {
         headers: {
           'x-api-key': apiKey,

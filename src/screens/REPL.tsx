@@ -51,6 +51,8 @@ import { useReplBridge } from '../hooks/useReplBridge.js';
 import { useWorkflowProgressPoller } from '../hooks/useWorkflowProgressPoller.js';
 import { useRemoteControlChannel } from '../hooks/useRemoteControlChannel.js';
 import { type Command, type CommandResultDisplay, type ResumeEntrypoint, getCommandName, isCommandEnabled } from '../commands.js';
+import { shouldKeepScrollPositionOnSubmit } from '../types/command.js';
+import { PROMPT_SUPPRESSION_MS, shouldReleaseSuppressedDialogs } from './promptSuppression.js';
 import type { PromptInputMode, QueuedCommand, VimMode } from '../types/textInputTypes.js';
 import { selectableUserMessagesFilter, messagesAfterAreOnlySynthetic } from '../components/MessageSelector.js';
 import { RewindMessageSelector } from '../components/RewindMessageSelector.js';
@@ -1063,8 +1065,8 @@ export function REPL({
   // This avoids stale closures when checking dialog state in timer callbacks
   const focusedInputDialogRef = React.useRef<ReturnType<typeof getFocusedInputDialog>>(undefined);
 
-  // How long after the last keystroke before deferred dialogs are shown
-  const PROMPT_SUPPRESSION_MS = 1500;
+  // How long after the last keystroke before deferred dialogs are shown —
+  // imported from ./promptSuppression.js (official v299 #091 release gate).
   // True when user is actively typing — defers interrupt dialogs so keystrokes
   // don't accidentally dismiss or answer a permission prompt the user hasn't read yet.
   const [isPromptInputActive, setIsPromptInputActive] = React.useState(false);
@@ -1450,9 +1452,26 @@ export function REPL({
 
   // Schedule a timeout to stop suppressing dialogs after the user stops typing.
   // Only manages the timeout — the immediate activation is handled by setInputValue above.
+  // Official v299 (#091 — ask withdrawal lifecycle): the release is gated. When
+  // the debounce fires while unsent draft text is still present, held dialogs
+  // must NOT be surfaced into the keystroke stream — the released dialog's
+  // Select would consume the next Enter the user meant for sending their
+  // message (accidental permission grant). The ask stays withdrawn until the
+  // draft is sent or cleared (setInputValue('') deactivates suppression
+  // immediately on that path).
   useEffect(() => {
     if (inputValue.trim().length === 0) return;
-    const timer = setTimeout(setIsPromptInputActive, PROMPT_SUPPRESSION_MS, false);
+    const timer = setTimeout(() => {
+      if (shouldReleaseSuppressedDialogs(inputValueRef.current)) {
+        setIsPromptInputActive(false);
+      } else {
+        // Standing request taken back unsent — ask_withdrawn equivalent
+        // (analytics stubbed in OCC; contract-surface parity).
+        logEvent('tengu_ask_withdrawn', {
+          reason: 'unsent_input_present' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+        });
+      }
+    }, PROMPT_SUPPRESSION_MS);
     return () => clearTimeout(timer);
   }, [inputValue]);
   const [inputMode, setInputMode] = useState<PromptInputMode>('prompt');
@@ -3389,7 +3408,13 @@ export function REPL({
   }) => {
     // Re-pin scroll to bottom on submit so the user always sees the new
     // exchange (matches OpenCode's auto-scroll behavior).
-    repinScroll();
+    // Official v299 (#033): local-jsx commands flagged keepsScrollPosition
+    // (e.g. /btw) skip the re-pin — asking a side question while scrolled up
+    // must not yank the transcript to the bottom. Mirrors the upstream guard
+    // `if(!Qo)Mt.repin(!1,"onSubmit")` (@35967253).
+    if (!shouldKeepScrollPositionOnSubmit(input, inputMode === 'bash', commands)) {
+      repinScroll();
+    }
 
     // Resume loop mode if paused
     if (feature('PROACTIVE') || feature('KAIROS')) {

@@ -67,6 +67,7 @@ import {
   logHeldBackRuleTelemetry,
   matchSkillRuleForPermission,
   skillDenyRuleMatches,
+  unqualifyAnthropicSkillsName,
 } from '../../utils/skills/reservedNames.js'
 import { parseFrontmatter } from '../../utils/frontmatterParser.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -127,6 +128,50 @@ async function getAllCommands(context: ToolUseContext): Promise<Command[]> {
 export type { SkillToolProgress as Progress } from '../../types/tools.js'
 
 /**
+ * Official 2.1.299 (#144): when the model wrongly qualifies a skill with the
+ * reserved `anthropic-skills:` prefix, the unknown-skill error suggests the
+ * listed bare name. Byte-verified from the v299 ELF (SkillTool chunk,
+ * @231568300–231572600 region):
+ *   `let F=zie(a,…,{maxEditDistance:2}),k=n.agentId===void 0,
+ *      O=F===void 0&&w!==a?le(h,k).find((_)=>_.name===w&&$Xt(_)):void 0,
+ *      U=O!==void 0&&UG(w)&&!r1(w)&&!he(O,n)&&gqe(O,{…})===null;
+ *    if(U)i("tengu_skill_tool_unprefixed_match",{});
+ *    let z=F??(U?w:void 0);
+ *    let P=z?`Unknown skill: ${a}. Did you mean ${z}?`:`Unknown skill: ${a}``
+ * where `w=HR(a)` strips the prefix (`HR(n){return n.startsWith("anthropic-skills:")?n.slice(17):n}`),
+ * `UG(e){return e.length>0&&kr(e)}` is the display-safety gate (@214784556),
+ * `r1(e){return lXt(e)!==void 0}` is the reserved-name gate (@220113459), and
+ * `$Xt(e){return!dyo(e)&&!(e.type==="prompt"&&(e.source==="memoryStore"||e.source==="mcp"))}`
+ * is the invokable-command filter (@221801245).
+ *
+ * Deviations (documented): OCC has no edit-distance suggester (`zie`), so the
+ * stripped-name exact match is the only suggestion source and is not gated on
+ * a fuzzy miss. The official `he(O,n)` (context-enablement) and `gqe(...)===null`
+ * (would-not-ask permission) gates are approximated by `!disableModelInvocation`
+ * and the MCP exclusion — the suggestion is display-only, and an actual invoke
+ * still passes through validateInput/checkPermissions. The official telemetry
+ * `tengu_skill_tool_unprefixed_match` is fired by the caller (validateInput).
+ */
+export function findUnprefixedSkillSuggestion(
+  name: string,
+  commands: Command[],
+): string | undefined {
+  const unprefixed = unqualifyAnthropicSkillsName(name)
+  if (unprefixed === name) return undefined
+  if (!isSkillNameSafeToDisplay(unprefixed)) return undefined
+  if (isReservedName(unprefixed)) return undefined
+  const candidate = commands.find(
+    c =>
+      c.name === unprefixed &&
+      c.type === 'prompt' &&
+      c.source !== 'mcp' &&
+      !c.isMcp &&
+      !c.disableModelInvocation,
+  )
+  return candidate === undefined ? undefined : unprefixed
+}
+
+/**
  * Official 2.1.269 (E52): "Unknown skill" message with plugin full-name
  * suggestions. Byte-verified from js269.txt (SkillTool validateInput,
  * offsets ~4253409 / ~4253800):
@@ -163,6 +208,14 @@ export function buildUnknownSkillMessage(
     return `Unknown skill: ${name}. Several skills match that name: ${match.candidates
       .map(c => c.name)
       .join(', ')} — invoke one by its full name.`
+  }
+  // Official 2.1.299 (#144): `anthropic-skills:`-prefixed miss whose bare name
+  // is a listed skill suggests that name — note the shorter official wording
+  // (no "Invoke it by that full name." tail; that belongs to the E52
+  // suffix-match branch above).
+  const unprefixed = findUnprefixedSkillSuggestion(name, commands)
+  if (unprefixed !== undefined) {
+    return `Unknown skill: ${name}. Did you mean ${unprefixed}?`
   }
   return `Unknown skill: ${name}`
 }
@@ -538,6 +591,13 @@ export const SkillTool: Tool<InputSchema, Output, Progress> = buildTool({
           candidate_count:
             match.kind === 'ambiguous' ? match.candidates.length : 1,
         })
+      }
+      // Official 2.1.299 (#144): `if(U)i("tengu_skill_tool_unprefixed_match",{})`
+      if (
+        findUnprefixedSkillSuggestion(normalizedCommandName, commands) !==
+        undefined
+      ) {
+        logEvent('tengu_skill_tool_unprefixed_match', {})
       }
       return {
         result: false,

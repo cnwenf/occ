@@ -88,6 +88,15 @@ export const fetchClaudeAIMcpConfigsIfEligible = memoize(
           'anthropic-version': '2023-06-01',
         },
         timeout: FETCH_TIMEOUT_MS,
+        // CC 2.1.299 #152 (SECURITY): the Bearer token must never ride a
+        // redirect to an attacker-influenced Location. Official v299 stops
+        // following redirects for Anthropic-hosted MCP endpoints (changelog:
+        // "Changed requests to claude.ai's connector proxy and to
+        // Anthropic-hosted MCP servers to no longer follow HTTP redirects");
+        // axios equivalent of the official `Ybn` cross-origin refuser /
+        // `redirect:"manual"` wrappers is maxRedirects: 0 (a 3xx surfaces as
+        // an error response instead of being followed).
+        maxRedirects: 0,
       })
 
       const configs: Record<string, ScopedMcpServerConfig> = {}

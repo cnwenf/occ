@@ -16,7 +16,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import { getClaudeConfigHomeDir } from '../utils/envUtils.js'
+import { getClaudeConfigHomeDir, isEnvTruthy } from '../utils/envUtils.js'
 import { getCwd } from '../utils/cwd.js'
 import { logEvent } from '../services/analytics/index.js'
 
@@ -159,6 +159,9 @@ export function writeDaemonStatus(): void {
       kind: r.kind,
       id: r.id,
       exitCode: r.exitCode,
+      // CC 2.1.299 #101: persist the session's safe-mode flag so a restarted
+      // supervisor / FleetView reader sees the same mode the session runs in.
+      safeMode: r.safeMode ?? false,
     }))
     writeFileSync(getDaemonStatusPath(), JSON.stringify(snapshot), { encoding: 'utf-8' })
   } catch {
@@ -242,6 +245,14 @@ export function spawnWorker(
   const cwd = canonicalizeWorkerCwd(opts?.cwd ?? getCwd())
   const entry = process.argv[1] ?? 'dist/cli.js'
 
+  // CC 2.1.299 #101: capture the session's safe-mode state at spawn time so
+  // respawn paths can restore it. The official carry list (`Cke`) starts with
+  // CLAUDE_CODE_SAFE_MODE; the effective env is the worker override if given,
+  // else the supervisor's env.
+  const safeMode = isEnvTruthy(
+    opts?.env?.CLAUDE_CODE_SAFE_MODE ?? process.env.CLAUDE_CODE_SAFE_MODE,
+  )
+
   // Stop any existing worker with this id first.
   const existing = registry.get(id)
   if (existing && isPidAlive(existing.pid)) {
@@ -276,6 +287,7 @@ export function spawnWorker(
     restart: (existing?.restart ?? 0),
     kind,
     id,
+    safeMode,
   }
   registry.set(id, record)
   children.set(id, child)
@@ -397,6 +409,19 @@ export async function sweepWorkers(config: DaemonJsonConfig): Promise<number> {
 }
 
 /**
+ * CC 2.1.299 #101: reconstruct the safe-mode env for a respawned worker from
+ * its recorded state. The official carry list re-applies CLAUDE_CODE_SAFE_MODE
+ * on restart; we mirror that by explicitly setting it to '1' or '0' so the
+ * respawned session's mode matches the ORIGINAL session, not the daemon's
+ * current env (which may have drifted). Returning an explicit '0' is important:
+ * without it, `spawnWorker`'s `...process.env` spread would leak a safe-mode
+ * daemon env into a session that was never safe-mode.
+ */
+function recordedSafeModeEnv(rec: WorkerRecord): Record<string, string> {
+  return { CLAUDE_CODE_SAFE_MODE: rec.safeMode ? '1' : '0' }
+}
+
+/**
  * eStale — respawn a stale worker. Bumps the restart counter and spawns a
  * fresh worker for the same kind. The old record is marked 'stalled'.
  *
@@ -411,7 +436,10 @@ export function eStale(rec: WorkerRecord, reason: 'prewarm' | 'pid_recycled' | '
     pid: rec.pid,
     restart: rec.restart,
   })
-  const fresh = spawnWorker(rec.kind, { cwd: rec.cwd })
+  const fresh = spawnWorker(rec.kind, {
+    cwd: rec.cwd,
+    env: recordedSafeModeEnv(rec),
+  })
   fresh.restart = rec.restart + 1
   registry.set(fresh.id, fresh)
 }
@@ -441,7 +469,12 @@ export function forceRespawnWorker(id: string): WorkerRecord | null {
       /* ignore */
     }
   }
-  const fresh = spawnWorker(rec.kind, { cwd: rec.cwd, id })
+  const fresh = spawnWorker(rec.kind, {
+    cwd: rec.cwd,
+    id,
+    // CC 2.1.299 #101: restore the recorded safe-mode state on restart.
+    env: recordedSafeModeEnv(rec),
+  })
   fresh.restart = rec.restart + 1
   registry.set(id, fresh)
   return fresh

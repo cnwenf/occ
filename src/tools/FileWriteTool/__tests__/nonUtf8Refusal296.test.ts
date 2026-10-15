@@ -19,6 +19,7 @@ import { FILE_WRITE_TOOL_NAME } from 'src/tools/FileWriteTool/prompt.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import {
   FILE_NOT_VALID_UTF8_WRITE_MESSAGE,
+  fileNotTextRefusalMessage,
   normalizeForComparison,
 } from 'src/utils/permissions/fileStateGuard.js'
 import { stashCheckTimeResolutions } from 'src/utils/permissions/symlinkResolutionStash.js'
@@ -43,8 +44,16 @@ if (typeof globalThis.MACRO === 'undefined') {
  */
 
 // Official UTs literal, byte-verified against the v296 ELF @101773960.
+// CC 2.1.299 #126: GONE from the v299 binary — the constant is kept in
+// fileStateGuard.ts only for legacy consumers; the Write path now refuses
+// unconditionally via Zpt (below).
 const OFFICIAL_UTS =
   'The file on disk is not valid UTF-8, and the new content holds U+FFFD, which is what Read shows for the bytes of that file it cannot decode. If the content came from Read, writing it destroys those characters. Nothing was written. Make the change with a shell command that reads and writes the file in its own encoding, or ask the user whether to convert the file to UTF-8 first.'
+
+// Official Zpt('not_utf8') literal, byte-verified against the v299 ELF
+// @216803634 — the v299 Write refusal message.
+const OFFICIAL_ZPT_NOT_UTF8 =
+  'File is not valid UTF-8: it uses a legacy encoding such as Windows-1252, Shift-JIS or GBK, or it is binary. These tools write UTF-8 (or UTF-16LE behind its byte-order mark) and never convert a file\'s encoding on their own, so nothing was written. If the file is text, make the change with a shell command that reads and writes it in its own encoding (iconv, or PowerShell Get-Content/Set-Content -Encoding), or ask the user whether to convert it to UTF-8 first. To replace the whole file with new UTF-8 text anyway, delete it first, then Write it.'
 
 const CP1252_CAFE = Buffer.from([0x63, 0x61, 0x66, 0xe9]) // "café" in Windows-1252
 
@@ -146,15 +155,19 @@ function seedRead(
 }
 
 describe('CC 2.1.296 #032 FileWriteTool U+FFFD destruction guard', () => {
-  test('refusal constant is byte-identical to official UTs', () => {
+  test('legacy refusal constant is byte-identical to official UTs', () => {
     expect(FILE_NOT_VALID_UTF8_WRITE_MESSAGE).toBe(OFFICIAL_UTS)
   })
 
-  test('lossy disk file + U+FFFD-bearing content → throws, nothing written', async () => {
+  test('v299 refusal message is byte-identical to official Zpt(not_utf8)', () => {
+    expect(fileNotTextRefusalMessage('not_utf8')).toBe(OFFICIAL_ZPT_NOT_UTF8)
+  })
+
+  test('lossy disk file + U+FFFD-bearing content → throws Zpt, nothing written', async () => {
     // Arrange — the round-trip data-loss scenario: Read showed 'caf�'
     // for the cp1252 bytes; the model edits around it and writes the
-    // replacement char back. Official: `if(Je?.lossyDecode&&n.includes(
-    // "�"))throw new C8(UTs)`.
+    // replacement char back. Official v299 @224562900:
+    // `if(rt?.notText)throw new H9(Zpt(rt.notText))` — unconditional.
     const ctx = makeContext()
     const filePath = join(tmpDir, 'cafe-cp1252.txt')
     await writeFile(filePath, CP1252_CAFE)
@@ -163,22 +176,29 @@ describe('CC 2.1.296 #032 FileWriteTool U+FFFD destruction guard', () => {
     // Act / Assert
     await expect(
       callWrite(ctx, filePath, 'caf� — edited'),
-    ).rejects.toThrow(OFFICIAL_UTS)
+    ).rejects.toThrow(OFFICIAL_ZPT_NOT_UTF8)
     expect(Buffer.compare(await readFile(filePath), CP1252_CAFE)).toBe(0)
   })
 
-  test('lossy disk file + content WITHOUT U+FFFD → proceeds (official conditional)', async () => {
-    // Arrange — an intentional whole-file rewrite (e.g. converting the file
-    // to UTF-8) is not destruction: the guard requires U+FFFD in content.
+  test('lossy disk file + content WITHOUT U+FFFD → v299 refuses unconditionally', async () => {
+    // Arrange — v296 allowed an intentional whole-file rewrite (no U+FFFD in
+    // content); v299 removed the conditional: any notText disk file refuses
+    // ("To replace the whole file with new UTF-8 text anyway, delete it
+    // first, then Write it.").
     const ctx = makeContext()
     const filePath = join(tmpDir, 'rewrite-cp1252.txt')
     await writeFile(filePath, CP1252_CAFE)
     seedRead(ctx, filePath, CP1252_CAFE)
 
-    // Act
-    await callWrite(ctx, filePath, 'café (now real UTF-8)')
+    // Act / Assert
+    await expect(
+      callWrite(ctx, filePath, 'café (now real UTF-8)'),
+    ).rejects.toThrow(OFFICIAL_ZPT_NOT_UTF8)
+    expect(Buffer.compare(await readFile(filePath), CP1252_CAFE)).toBe(0)
 
-    // Assert
+    // The official escape hatch: delete first, then Write succeeds.
+    await rm(filePath)
+    await callWrite(ctx, filePath, 'café (now real UTF-8)')
     expect(await readFile(filePath, 'utf8')).toBe('café (now real UTF-8)')
   })
 

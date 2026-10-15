@@ -218,9 +218,15 @@ function getEarlyWarningText(limits: ClaudeAILimits): string | null {
       return null
   }
 
-  // utilization and resetsAt should be defined since early warning is calculated with them
+  // utilization and resetsAt should be defined since early warning is calculated with them.
+  // Clamp at 100% (anthropics/claude-code#92238) except for overage/extra-usage,
+  // which the official binary intentionally leaves unclamped (can exceed the base limit).
   const used = limits.utilization
-    ? Math.floor(limits.utilization * 100)
+    ? Math.floor(
+        limits.rateLimitType === 'overage'
+          ? limits.utilization * 100
+          : Math.min(limits.utilization * 100, 100),
+      )
     : undefined
   const resetTime = limits.resetsAt
     ? formatResetTime(limits.resetsAt, true)

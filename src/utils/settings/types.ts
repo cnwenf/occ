@@ -1204,6 +1204,30 @@ export const SettingsSchema = lazySchema(() =>
         .optional()
         .catch(undefined)
         .describe('Per-model settings keyed by canonical model name.'),
+      // CC 2.1.299 (#115): the session-scoped `ultracode` settings key. The
+      // official schema entry (v299 @215529646, identical in v296 @208979371 —
+      // describe byte-exact, `—` em dash in the binary) sits between
+      // modelSettings and autoCompactWindow; OCC keeps its own key order but
+      // mirrors the position after modelSettings. Without this key the parse
+      // strips it (settings.ts `.strip()`) and strict validation rejects it
+      // (validation.ts `.strict()`), so `--settings '{"ultracode":true}'`
+      // silently no-oped — the staged occ139 §3.7b half of the official
+      // startup gate `xzn(e) = Je().ultracode===!0 || NNe(e)==="ultracode"`.
+      // The consumer is src/main.tsx (session init → enableUltracodeForSession),
+      // which makes the per-turn query.ts reminder injection announce ultracode
+      // to every turn, including scheduled tasks and delivered headless turns
+      // (the official #115 fix extended the ultra_effort_enter attachment gate
+      // from `isRegularUserPrompt` to `isRegularUserPrompt||deliveredTurnStart`,
+      // v299 @227277261; OCC's query.ts injection has no prompt-type gate).
+      ultracode: z
+        .boolean()
+        .optional()
+        .catch(undefined)
+        .describe(
+          'Enable ultracode for the session: standing dynamic-workflow orchestration at any effort level. ' +
+            'Session-scoped — typically provided via --settings or the apply_flag_settings control request; ' +
+            'interactive toggles never persist it. Requires workflows to be enabled and a model that supports ultracode.',
+        ),
       // 2.1.202: advisory guideline for dynamic workflow size (agent counts).
       // Not an enforced cap — injected into the workflow-generation prompt as a
       // hint for how many agents Claude should generally spawn.
@@ -1760,6 +1784,48 @@ export function isMcpServerUrlEntry(
   entry: AllowedMcpServerEntry | DeniedMcpServerEntry,
 ): entry is { serverUrl: string } {
   return 'serverUrl' in entry && entry.serverUrl !== undefined
+}
+
+/**
+ * CC 2.1.299 (#055): the settings keys whose single-string value is coerced
+ * to a one-element list before schema validation. Official v299 (`gb`
+ * @215649900, NEW in v299 — v296 has the key names only in the
+ * reset-choices command @247906270, no coercion).
+ */
+export const MCPJSON_SERVER_LIST_KEYS = [
+  'enabledMcpjsonServers',
+  'disabledMcpjsonServers',
+] as const
+
+/** Official `mb` pattern (@215649900): a coercible plain MCP server name. */
+export const MCPJSON_SERVER_NAME_PATTERN = /^[A-Za-z0-9_-]+$/
+
+/**
+ * Official `pOr` (@215649900), verbatim:
+ * `function pOr(e){if(!L(e))return;for(let n of gb){let r=e[n];if(typeof r==="string"&&mb.test(r))e[n]=[r]}}`
+ *
+ * Called by the official settings-validation entry `Tt` as
+ * `if(!r?.policySource)pOr(e)` — non-policy sources ONLY, before schema
+ * validation. The schema stays `z.array(z.string())`; a plain string like
+ * `"enabledMcpjsonServers": "my-server"` becomes `["my-server"]` instead of
+ * failing validation. Strings that don't match the name pattern (spaces,
+ * symbols, empty) are left untouched and rejected by the schema.
+ *
+ * In-place mutation is intentional (faithful to the official, which mutates
+ * the raw cloned object); callers must pass a freshly-cloned/private object.
+ * No-op for non-plain-object input.
+ */
+export function coerceMcpjsonServerStrings(data: unknown): void {
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    return
+  }
+  const record = data as Record<string, unknown>
+  for (const key of MCPJSON_SERVER_LIST_KEYS) {
+    const value = record[key]
+    if (typeof value === 'string' && MCPJSON_SERVER_NAME_PATTERN.test(value)) {
+      record[key] = [value]
+    }
+  }
 }
 
 /**

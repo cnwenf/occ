@@ -84,6 +84,7 @@ import { getMCPUserAgent } from '../../utils/http.js'
 import { maybeNotifyIDEConnected } from '../../utils/ide.js'
 import { maybeResizeAndDownsampleImageBuffer } from '../../utils/imageResizer.js'
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
+import { readOwnOption } from '../../utils/plugins/optionKeySafety.js'
 import {
   computePersistedLineStats,
   getBinaryBlobSavedMessage,
@@ -832,6 +833,37 @@ const MCP_STREAMABLE_HTTP_ACCEPT = 'application/json, text/event-stream'
  */
 const MAX_MCP_RESPONSE_BYTES = 16 * 1024 * 1024
 
+/**
+ * CC 2.1.299 #079 (anthropics/claude-code#99014): does this outbound POST body
+ * contain NO JSON-RPC request? A request has `method` AND a defined `id`; a
+ * notification has `method` but no `id`; a response has `result`/`error`.
+ * Mirrors the SDK's own `hasRequests` filter in
+ * StreamableHTTPClientTransport.send() (`messages.filter(msg => 'method' in
+ * msg && 'id' in msg && msg.id !== undefined).length > 0`): when a batch has
+ * zero requests, send() never consumes the response body as JSON-RPC — it only
+ * does `await response.text()` to release the connection. Such a body carries
+ * nothing the caller needs, so it must NOT be drained/capped.
+ */
+function postBodyHasNoRequests(body: unknown): boolean {
+  if (typeof body !== 'string' || body.length === 0) return false
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(body)
+  } catch {
+    return false
+  }
+  const messages = Array.isArray(parsed) ? parsed : [parsed]
+  if (messages.length === 0) return false
+  return !messages.some(
+    m =>
+      !!m &&
+      typeof m === 'object' &&
+      'method' in m &&
+      'id' in m &&
+      (m as { id?: unknown }).id !== undefined,
+  )
+}
+
 async function capMcpResponseBody(response: Response): Promise<Response> {
   const contentLength = parseInt(response.headers.get('content-length') ?? '', 10)
   if (Number.isFinite(contentLength) && contentLength > MAX_MCP_RESPONSE_BYTES) {
@@ -931,6 +963,24 @@ export function wrapFetchWithTimeout(
         signal: controller.signal,
       })
       cleanup()
+      // CC 2.1.299 #079 (anthropics/claude-code#99014): a NOTIFICATION (or
+      // response) POST carries no request id, so the SDK's send() never reads
+      // the reply body as JSON-RPC — it only `await response.text()`s to
+      // release the connection. The timeout was just cleared above, so if we
+      // drained such a body via capMcpResponseBody and the server never ends
+      // it, the read loop would hang forever (the reported 30s+ stall/fail).
+      // Cancel the body instead (cancel() resolves promptly even on a
+      // never-ending stream) and hand back an empty-body response. Requests
+      // (id'd messages) still go through capMcpResponseBody — their body is
+      // the JSON-RPC/SSE payload the SDK fully awaits.
+      if (postBodyHasNoRequests(init?.body)) {
+        await response.body?.cancel().catch(() => {})
+        return new Response(null, {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers,
+        })
+      }
       return capMcpResponseBody(response)
     } catch (error) {
       cleanup()
@@ -1108,7 +1158,12 @@ function scheduleHeadlessRemoteRedial(
       // holdoff window (e.g. URL rotation, header update) are picked up instead
       // of reconnecting with the stale serverRef captured at drop time.
       const { servers: latestServers } = await getAllMcpConfigs()
-      const latestRef = latestServers[name] ?? serverRef
+      // CC 2.1.299 #042-class hardening: own-property read only. A server
+      // named after an Object.prototype member (`constructor`, `toString`, …)
+      // that is ABSENT from the latest config must fall back to serverRef —
+      // a raw `latestServers[name]` index read would pick up the inherited
+      // prototype member (truthy) and redial with a bogus config object.
+      const latestRef = readOwnOption(latestServers, name) ?? serverRef
       const redial = await connectToServer(name, latestRef)
       if (redial.type !== 'connected') {
         // Don't leave a failed background dial in the memo cache — the next
@@ -1494,6 +1549,27 @@ export const connectToServer = memoize(
           fetch: wrapFetchWithTimeout(fetchWithAuth),
           requestInit: {
             ...proxyOptions,
+            // CC 2.1.299 #152 (SECURITY): never follow HTTP redirects for the
+            // claude.ai connector proxy / Anthropic-hosted MCP. Official
+            // changelog: "Changed requests to claude.ai's connector proxy and
+            // to Anthropic-hosted MCP servers to no longer follow HTTP
+            // redirects; redirects by a connector's own server are unaffected."
+            // Binary forensics (v299, new chunk exports {fle,qbn,Ybn} — v296
+            // has none): the official wraps the proxy fetch in a cross-origin
+            // redirect refuser (`Ybn(e)=(r)=>{if(!Uie(k1e(r),e))throw
+            // Error("Refused a redirect to another origin")}` — that string
+            // has 2 hits in v299, 0 in v296; also used as the axios
+            // `beforeRedirect` hook in OAuth token revocation) and applies
+            // header-carrying `fle` (forces `redirect:"manual"` + manual
+            // ≤5-hop follow) to the user-server fetches.
+            // OCC uses the SDK-honored requestInit path
+            // instead: StreamableHTTPClientTransport spreads `requestInit`
+            // into every fetch (streamableHttp.js:300/438), so redirect:
+            // 'manual' achieves the same no-follow guarantee for the trusted
+            // Anthropic endpoint. Plain user http/sse servers above are
+            // deliberately UNCHANGED — a connector's own server keeps
+            // following redirects (official parity).
+            redirect: 'manual',
             headers: {
               'User-Agent': getMCPUserAgent(),
               'X-Mcp-Client-Session-Id': getSessionId(),

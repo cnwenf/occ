@@ -227,14 +227,20 @@ async function main(): Promise<void> {
     // Fast-path for `claude ps|logs|attach|kill` and `--bg`/`--background`.
     // Session management against the ~/.claude/sessions/ registry. Flag
     // literals are inlined so bg.js only loads when actually dispatching.
+    // Official 2.1.299 (#111): `--bg`/`--background` only count in COMMAND
+    // position — a cheap includes() prefilter, then the position-aware
+    // scanner (stops at `--`, skips flag values) so a prompt or reply whose
+    // content is "--bg"/"--background" is delivered as text instead of being
+    // taken for the flag (which could start new sessions over and over).
     if (
         feature("BG_SESSIONS") &&
         (args[0] === "ps" ||
             args[0] === "logs" ||
             args[0] === "attach" ||
             args[0] === "kill" ||
-            args.includes("--bg") ||
-            args.includes("--background"))
+            ((args.includes("--bg") || args.includes("--background")) &&
+                (await import("../utils/argvBackgroundFlag.js"))
+                    .hasBackgroundFlag(args)))
     ) {
         profileCheckpoint("cli_bg_path");
         const { enableConfigs } = await import("../utils/config.js");

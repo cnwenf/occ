@@ -175,6 +175,13 @@ type LocalJSXCommand = {
    * This defers loading heavy dependencies until the command is invoked.
    */
   load: () => Promise<LocalJSXCommandModule>
+  /**
+   * Official v299 (#033): when true, submitting this command must NOT re-pin
+   * a scrolled-up transcript to the bottom (e.g. /btw asked while reading
+   * history). Upstream guard (PromptSubmitController.submit @35967253):
+   * `Io?.type==="local-jsx"&&Io.keepsScrollPosition===!0&&ao.startsWith("/")`.
+   */
+  keepsScrollPosition?: boolean
 }
 
 /**
@@ -239,4 +246,27 @@ export function getCommandName(cmd: CommandBase): string {
 /** Resolves whether the command is enabled, defaulting to true. */
 export function isCommandEnabled(cmd: CommandBase): boolean {
   return cmd.isEnabled?.() ?? true
+}
+
+/**
+ * Official v299 (#033): submitting a local-jsx command marked
+ * `keepsScrollPosition` (e.g. /btw) must not jump a scrolled-up transcript
+ * back to the bottom. Mirrors the upstream onSubmit guard (@35967253):
+ * resolve the slash command for "/"-prefixed input in non-bash mode, then
+ * `Io?.type==="local-jsx"&&Io.keepsScrollPosition===!0&&ao.startsWith("/")`
+ * — when it matches, the `repin(!1,"onSubmit")` call is skipped.
+ */
+export function shouldKeepScrollPositionOnSubmit(
+  input: string,
+  isBashMode: boolean,
+  commands: readonly Command[],
+): boolean {
+  if (isBashMode || !input.startsWith('/')) return false
+  const trimmed = input.trim()
+  const spaceIndex = trimmed.indexOf(' ')
+  const commandName = spaceIndex === -1 ? trimmed.slice(1) : trimmed.slice(1, spaceIndex)
+  const resolved = commands.find(
+    cmd => cmd.name === commandName || cmd.aliases?.includes(commandName) || getCommandName(cmd) === commandName,
+  )
+  return resolved?.type === 'local-jsx' && resolved.keepsScrollPosition === true
 }

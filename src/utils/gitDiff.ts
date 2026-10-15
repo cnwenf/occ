@@ -11,6 +11,7 @@ import {
   getGitDir,
   getIsGit,
   gitExe,
+  parseUntrackedFileList,
 } from './git.js'
 
 export type GitDiffStats = {
@@ -329,9 +330,14 @@ async function isInTransientGitState(): Promise<boolean> {
  * Fetch untracked file names (no content reading).
  * Returns file paths only - they'll be displayed with a note to stage them.
  *
+ * Official 2.1.299 fix (#103 space-in-filename diff view bug): no
+ * whole-output `stdout.trim()` — parsing goes through `parseUntrackedFileList`
+ * (per-line trim predicate, official `bxo`), so filenames with leading or
+ * trailing spaces survive intact. Exported for tests.
+ *
  * @param maxFiles Maximum number of untracked files to include
  */
-async function fetchUntrackedFiles(
+export async function fetchUntrackedFiles(
   maxFiles: number,
 ): Promise<Map<string, PerFileStats> | null> {
   // Get list of untracked files (excludes gitignored)
@@ -341,9 +347,9 @@ async function fetchUntrackedFiles(
     { timeout: GIT_TIMEOUT_MS, preserveOutputOnError: false },
   )
 
-  if (code !== 0 || !stdout.trim()) return null
+  if (code !== 0) return null
 
-  const untrackedPaths = stdout.trim().split('\n').filter(Boolean)
+  const untrackedPaths = parseUntrackedFileList(stdout)
   if (untrackedPaths.length === 0) return null
 
   const perFileStats = new Map<string, PerFileStats>()

@@ -39,7 +39,8 @@ function LimitBar(t0) {
   if (utilization === null) {
     return null;
   }
-  const usedText = `${Math.floor(utilization)}% used`;
+  // Clamp at 100% (anthropics/claude-code#92238); ProgressBar already clamps its ratio.
+  const usedText = `${Math.min(100, Math.floor(utilization))}% used`;
   let subtext;
   if (resets_at) {
     let t2;

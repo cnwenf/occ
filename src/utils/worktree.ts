@@ -26,6 +26,13 @@ import {
   resolveRef,
 } from './git/gitFilesystem.js'
 import {
+  bareLayoutRootMessage,
+  buildWorktreeBaseResolveFailureMessage,
+  classifyRevParseCause,
+  gitFilePointsToBareRepository,
+  worktreeBaseKindFor,
+} from './git/worktreeBaseResolve.js'
+import {
   findCanonicalGitRoot,
   findGitRoot,
   getBranch,
@@ -278,7 +285,7 @@ function worktreePathFor(repoRoot: string, slug: string): string {
  * prevents unconditionally running `git fetch` (which can hang waiting for credentials)
  * on every resume.
  */
-async function getOrCreateWorktree(
+export async function getOrCreateWorktree(
   repoRoot: string,
   slug: string,
   options?: { prNumber?: number },
@@ -298,6 +305,16 @@ async function getOrCreateWorktree(
       headCommit: existingHead,
       existed: true,
     }
+  }
+
+  // Official 2.1.299 (#147): a root whose `.git` is a file/symlink pointing at
+  // a BARE repository (linked worktree of a bare clone) can't sensibly host a
+  // nested worktree — fail with an explanatory message before any side effects.
+  // Official site: `if(fSe(e)===null&&aSs(e))throw ... git_worktree_create_bare_layout_root`
+  // (v299 @225552076); OCC runs the aSs bare-pointer check directly since
+  // resolveGitDir already gates the non-bare layout below.
+  if (await gitFilePointsToBareRepository(repoRoot)) {
+    throw new Error(bareLayoutRootMessage(repoRoot))
   }
 
   // New worktree: fetch base branch then add
@@ -364,18 +381,35 @@ async function getOrCreateWorktree(
 
   // For the fetch/PR-fetch paths we still need the SHA — the fs-only resolveRef
   // above only covers the "origin/<branch> already exists locally" case.
+  //
+  // Official 2.1.299 (#146): `rev-parse --verify --quiet` under LC_ALL=C, and
+  // a failure now explains HOW the lookup ended + likely reasons (official
+  // `DQt` @225547600, kind ternary @225554140). The message catalog lives in
+  // src/utils/git/worktreeBaseResolve.ts (byte-exact strings).
   if (!baseSha) {
-    const { stdout, code: shaCode } = await execFileNoThrowWithCwd(
+    const revParse = await execFileNoThrowWithCwd(
       gitExe(),
-      ['rev-parse', baseBranch],
-      { cwd: repoRoot },
+      ['rev-parse', '--verify', '--quiet', baseBranch],
+      { cwd: repoRoot, env: { ...process.env, LC_ALL: 'C' } },
     )
-    if (shaCode !== 0) {
+    const resolvedSha = revParse.stdout.trim()
+    if (revParse.code === 0 && resolvedSha !== '') {
+      baseSha = resolvedSha
+    } else {
+      // Official `be`: repo_confirmed = the .git entry resolves to a valid
+      // layout for this folder (OCC: resolveGitDir non-null).
+      const repoConfirmed = (await resolveGitDir(repoRoot)) !== null
+      const detail = buildWorktreeBaseResolveFailureMessage({
+        cause: classifyRevParseCause(revParse),
+        kind: worktreeBaseKindFor(baseBranch),
+        repoConfirmed,
+        stderrTrimmed: revParse.stderr.trim(),
+        stdoutTrimmed: resolvedSha,
+      })
       throw new Error(
-        `Failed to resolve base branch "${baseBranch}": git rev-parse failed`,
+        `Failed to resolve base branch "${baseBranch}": ${detail}`,
       )
     }
-    baseSha = stdout.trim()
   }
 
   const sparsePaths = getInitialSettings().worktree?.sparsePaths
@@ -875,6 +909,73 @@ export async function keepWorktree(): Promise<void> {
   }
 }
 
+/**
+ * CC 2.1.299 #113 — reftable-aware worktree cleanup helpers.
+ *
+ * Under git's `reftable` ref storage, per-worktree registration state lives in
+ * the shared reftable tables; hand-deleting files under `.git/worktrees/<id>`
+ * (or ref files) corrupts them. The official fix (v299 @221341800, `Kt`) only
+ * ever drops registrations through git-native means and treats a reftable
+ * anchor specially. OCC's cleanup is already git-native (`git worktree remove
+ * --force`), but under reftable a successful remove can still leave a stale
+ * `.git/worktrees/<id>` registration behind — the exact `--worktree` leak the
+ * official entry fixes. Detection = `<gitCommonDir>/reftable/` exists; the
+ * reftable-safe cleanup is `git worktree prune` (git drops the stale
+ * registration whole), never a manual file delete. Classic ref-storage repos
+ * keep their existing behavior (no extra prune).
+ */
+export function isReftableGitDir(gitCommonDir: string): boolean {
+  try {
+    return (
+      statSync(join(gitCommonDir, 'reftable'), { throwIfNoEntry: false })?.isDirectory() ===
+      true
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolve the git common dir for `cwd` and return it when the repo uses
+ * reftable ref storage; null for classic ref storage or non-repos.
+ */
+export async function getReftableCommonDir(cwd: string): Promise<string | null> {
+  const gitDir = await resolveGitDir(cwd)
+  if (!gitDir) {
+    return null
+  }
+  const commonDir = (await getCommonDir(gitDir)) ?? gitDir
+  return isReftableGitDir(commonDir) ? commonDir : null
+}
+
+/**
+ * Reftable-safe registration cleanup: when `cwd`'s repo uses reftable, run
+ * `git worktree prune` so git itself drops stale `.git/worktrees/<id>`
+ * registrations left behind by `git worktree remove`. No-ops (returns false)
+ * for classic ref storage. `exec` is injectable for tests.
+ */
+export async function pruneWorktreesIfReftable(
+  cwd: string,
+  exec: typeof execFileNoThrowWithCwd = execFileNoThrowWithCwd,
+): Promise<boolean> {
+  const reftableDir = await getReftableCommonDir(cwd)
+  if (!reftableDir) {
+    return false
+  }
+  const { code, stderr } = await exec(gitExe(), ['worktree', 'prune'], { cwd })
+  if (code !== 0) {
+    logForDebugging(
+      `reftable: 'git worktree prune' failed in ${cwd}: ${stderr}`,
+      { level: 'error' },
+    )
+  } else {
+    logForDebugging(
+      `reftable: pruned stale worktree registrations beneath ${reftableDir}`,
+    )
+  }
+  return true
+}
+
 export async function cleanupWorktree(): Promise<void> {
   if (!currentWorktreeSession) {
     return
@@ -916,6 +1017,10 @@ export async function cleanupWorktree(): Promise<void> {
         })
       } else {
         logForDebugging(`Removed linked worktree at: ${worktreePath}`)
+        // CC 2.1.299 #113: under reftable ref storage a successful remove can
+        // leave the `.git/worktrees/<id>` registration behind — let git drop
+        // it whole via prune (never hand-delete ref files).
+        await pruneWorktreesIfReftable(originalCwd)
       }
     }
 
@@ -1064,6 +1169,9 @@ export async function removeAgentWorktree(
     return false
   }
   logForDebugging(`Removed agent worktree at: ${worktreePath}`)
+
+  // CC 2.1.299 #113: reftable-safe registration cleanup (git-native prune).
+  await pruneWorktreesIfReftable(gitRoot)
 
   if (!worktreeBranch) {
     return true

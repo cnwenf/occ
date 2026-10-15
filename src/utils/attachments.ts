@@ -216,7 +216,7 @@ import {
   isThinkingMessage,
 } from './messages.js'
 import { isHumanTurn } from './messagePredicates.js'
-import { isEnvTruthy, isBareMode, getClaudeConfigHomeDir } from './envUtils.js'
+import { isEnvTruthy, isBareMode, getClaudeConfigHomeDir, isFileMentionsDisabled } from './envUtils.js'
 import { feature } from 'src/utils/featureFlags.js'
 /* eslint-disable @typescript-eslint/no-require-imports */
 const BRIEF_TOOL_NAME: string | null =
@@ -2374,6 +2374,30 @@ async function processAtMentionedFiles(
   const files = extractAtMentionedFiles(input)
   if (files.length === 0) return []
 
+  // CC 2.1.299 (#001): official resolver gate (@227272610 in
+  // /tmp/cc-diff-299/v299/package/claude):
+  //   `Ydn()||a.CLAUDE_CODE_DISABLE_FILE_MENTIONS ? TGr(e,n) : RGr(e,be,…)`
+  // In paths-only mode (`TGr`) files are NOT read for the model; unresolved
+  // mentions collapse into a single `at_mention_reference` attachment (v296
+  // `mLr` shape: `[{type:"at_mention_reference",mentions:n}]`), which the
+  // renderer turns into "The user @-mentioned <paths>. File contents are not
+  // attached automatically in this session: …read them with your file tools
+  // before responding." Official `TGr` also consults a pre-read content cache
+  // (`HEn.peek`) for already-loaded copies; OCC has no such cache, so every
+  // mention goes to the reference list. Display paths are computed at
+  // creation time (OCC convention — the renderer joins `mentions` verbatim).
+  if (isFileMentionsDisabled()) {
+    return [
+      {
+        type: 'at_mention_reference' as const,
+        mentions: files.map(file => {
+          const { filename } = parseAtMentionedFileLines(file)
+          return relative(getCwd(), expandPath(filename))
+        }),
+      },
+    ]
+  }
+
   const appState = toolUseContext.getAppState()
   const results = await Promise.all(
     files.map(async file => {
@@ -2441,6 +2465,9 @@ async function processAtMentionedFiles(
   )
   return results.filter(Boolean) as Attachment[]
 }
+
+/** Test-visible alias (convention: `safelyReadMemoryFileAsyncForTesting`). */
+export const processAtMentionedFilesForTesting = processAtMentionedFiles
 
 function processAgentMentions(
   input: string,

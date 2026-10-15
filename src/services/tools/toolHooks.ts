@@ -440,6 +440,47 @@ export async function resolveHookPermissionDecision(
   const interactionSatisfied =
     requiresInteraction && hookPermissionResult.updatedInput !== undefined
 
+  // CC 2.1.299 #122 (security) — official `Mur` (exported as
+  // `stripConfinedHookApproval`) @226848501 in the v299 ELF, byte-verified:
+  //   `while auto mode is on (also behind plan mode) a hook cannot approve ${tool}`
+  //   debug shape: `${name} permissionDecision=allow ignored: ${reason}`
+  //   telemetry:   `tengu_auto_mode_permission_request_allow_ignored` (new in
+  //                299 — 0 hits in the 2.1.296 strings dump)
+  //   stripping:   `if(e.permissionBehavior==="allow") … e.permissionBehavior=void 0`;
+  //                same for `e.permissionRequestResult?.behavior==="allow"`.
+  // Only 'allow' is stripped — deny/ask pass through untouched. The official
+  // also has confined-session / Projects / hosted-desktop arms; OCC has no
+  // such session types, so only the auto/plan arm is ported. Without this, a
+  // PreToolUse hook's permissionDecision:"allow" silently executes writes in
+  // plan/auto mode via the rule-check-null path below (the plan_mode_floor at
+  // permissions.ts only guards the classifier-allow path, never hook allows).
+  // updatedInput survives the strip (official only clears the behavior), so
+  // the call re-enters the normal permission pipeline with the hook's input.
+  if (hookBehavior === 'allow') {
+    const permissionMode =
+      toolUseContext.getAppState().toolPermissionContext.mode
+    if (permissionMode === 'plan' || permissionMode === 'auto') {
+      const reason = `while auto mode is on (also behind plan mode) a hook cannot approve ${tool.name}`
+      const hookName =
+        hookPermissionResult.decisionReason?.type === 'hook' &&
+        hookPermissionResult.decisionReason.hookName
+          ? hookPermissionResult.decisionReason.hookName
+          : `PreToolUse:${tool.name}`
+      logEvent('tengu_auto_mode_permission_request_allow_ignored', {})
+      logForDebugging(`${hookName} permissionDecision=allow ignored: ${reason}`)
+      return {
+        decision: await canUseTool(
+          tool,
+          hookInput,
+          toolUseContext,
+          assistantMessage,
+          toolUseID,
+        ),
+        input: hookInput,
+      }
+    }
+  }
+
   // Hook allow + requireCanUseTool → still need permission pipeline
   if (
     hookBehavior === 'allow' &&

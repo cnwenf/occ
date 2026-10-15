@@ -202,6 +202,7 @@ export async function addCronTask(
   recurring: boolean,
   durable: boolean,
   agentId?: string,
+  createdAt: number = Date.now(),
 ): Promise<string> {
   // Short ID — 8 hex chars is plenty for MAX_JOBS=50, avoids slice/prefix
   // juggling between the tool layer (shows short IDs) and disk.
@@ -210,7 +211,7 @@ export async function addCronTask(
     id,
     cron,
     prompt,
-    createdAt: Date.now(),
+    createdAt,
     ...(recurring ? { recurring: true } : {}),
   }
   if (!durable) {
@@ -303,11 +304,20 @@ export async function listAllCronTasks(dir?: string): Promise<CronTask[]> {
 /**
  * Next fire time in epoch ms for a cron string, strictly after `fromMs`.
  * Returns null if invalid or no match in the next 366 days.
+ *
+ * CC 2.1.299 (#102): official v299 `MJt(cron, fromMs, opts)` threads the
+ * `{oneShot}` option through to computeNextCronRun — one-shot walks use
+ * absolute-epoch stepping and may match the second occurrence of a DST
+ * fall-back repeated hour; recurring walks skip it (no double fire).
  */
-export function nextCronRunMs(cron: string, fromMs: number): number | null {
+export function nextCronRunMs(
+  cron: string,
+  fromMs: number,
+  opts?: { oneShot?: boolean },
+): number | null {
   const fields = parseCronExpression(cron)
   if (!fields) return null
-  const next = computeNextCronRun(fields, new Date(fromMs))
+  const next = computeNextCronRun(fields, new Date(fromMs), opts)
   return next ? next.getTime() : null
 }
 
@@ -429,7 +439,11 @@ export function oneShotJitteredNextCronRunMs(
   taskId: string,
   cfg: CronJitterConfig = DEFAULT_CRON_JITTER_CONFIG,
 ): number | null {
-  const t1 = nextCronRunMs(cron, fromMs)
+  // CC 2.1.299 (#102): official `uuo` computes t1 with `{oneShot:!0}` —
+  // absolute-epoch stepping, and the second occurrence of a DST fall-back
+  // repeated hour IS a valid fire target for a one-shot pinned to that
+  // wall-clock time (v296 used the recurring walk here).
+  const t1 = nextCronRunMs(cron, fromMs, { oneShot: true })
   if (t1 === null) return null
   // Cron resolution is 1 minute → computed times always have :00 seconds,
   // so a minute-field check is sufficient to identify the hot marks.
@@ -450,6 +464,29 @@ export function oneShotJitteredNextCronRunMs(
 }
 
 /**
+ * Official 2.1.299 (#074) `Iat` (v299 ELF @223031264, byte-exact semantics):
+ *   `function Iat(e,s){return e.recurring?
+ *      HJt(e.cron,e.lastFiredAt??e.createdAt,e.id,s):
+ *      uuo(e.cron,e.createdAt,e.id,s)}`
+ * The next fire time for a task, computed exactly the way the scheduler's
+ * first-sight anchor does (see cronScheduler.ts check()) — per-task jitter
+ * offset included, so CronCreate/CronList can REPORT the actual next run.
+ */
+export function taskNextFireAt(
+  task: Pick<CronTask, 'id' | 'cron' | 'createdAt' | 'recurring' | 'lastFiredAt'>,
+  cfg: CronJitterConfig = DEFAULT_CRON_JITTER_CONFIG,
+): number | null {
+  return task.recurring
+    ? jitteredNextCronRunMs(
+        task.cron,
+        task.lastFiredAt ?? task.createdAt,
+        task.id,
+        cfg,
+      )
+    : oneShotJitteredNextCronRunMs(task.cron, task.createdAt, task.id, cfg)
+}
+
+/**
  * A task is "missed" when its next scheduled run (computed from createdAt)
  * is in the past. Surfaced to the user at startup. Works for both one-shot
  * and recurring tasks — a recurring task whose window passed while Claude
@@ -457,7 +494,11 @@ export function oneShotJitteredNextCronRunMs(
  */
 export function findMissedTasks(tasks: CronTask[], nowMs: number): CronTask[] {
   return tasks.filter(t => {
-    const next = nextCronRunMs(t.cron, t.createdAt)
+    // CC 2.1.299 (#102): official `Vys` computes the anchor with
+    // `{oneShot:!n.recurring}` so each task kind uses its own DST semantics
+    // (recurring skips the repeated-hour second occurrence; one-shot can
+    // match it) when deciding whether the window already passed.
+    const next = nextCronRunMs(t.cron, t.createdAt, { oneShot: !t.recurring })
     return next !== null && next < nowMs
   })
 }

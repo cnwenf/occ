@@ -61,6 +61,7 @@ import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
 import { REPL_TOOL_NAME } from '../../tools/REPLTool/constants.js'
 import { checkEditWouldApply } from '../../tools/FileEditTool/utils.js'
 import { getFileModificationTime } from '../file.js'
+import type { NotTextCategory } from '../fileRead.js'
 import type { FileState } from '../fileStateCache.js'
 import { getPathsForPermissionCheck } from '../fsOperations.js'
 import { getCanonicalName } from '../model/model.js'
@@ -115,9 +116,59 @@ export const FILE_NOT_VALID_UTF8_EDIT_MESSAGE =
  * when the disk file decodes lossily AND the incoming content carries U+FFFD
  * (the replacement char Read showed for undecodable bytes) — writing it back
  * would destroy those characters.
+ *
+ * NOTE (CC 2.1.299 #126): the official v299 binary no longer contains this
+ * message (0 grep hits) — Edit/Write refusals moved to the category-based
+ * Zpt system below. This constant is kept ONLY because NotebookEditTool
+ * still consumes it (that tool's port is out of the WP10 scope).
  */
 export const FILE_NOT_VALID_UTF8_WRITE_MESSAGE =
   'The file on disk is not valid UTF-8, and the new content holds U+FFFD, which is what Read shows for the bytes of that file it cannot decode. If the content came from Read, writing it destroys those characters. Nothing was written. Make the change with a shell command that reads and writes the file in its own encoding, or ask the user whether to convert the file to UTF-8 first.'
+
+// ---------------------------------------------------------------------------
+// CC 2.1.299 #126 — official notText message system (vA/Zpt/nHs, byte-exact
+// from v299 @216803634 / @216804364). Edit/Write refuse any file whose bytes
+// classify as notText (unconditionally — the v296 "content holds U+FFFD"
+// condition is gone); Read attaches the nHs notice instead of refusing.
+//
+//   vA={not_utf8:"is not valid UTF-8: it uses a legacy encoding such as
+//       Windows-1252, Shift-JIS or GBK, or it is binary",
+//       nul:"has NUL bytes in its first 8 KB: binary data, UTF-16/UTF-32
+//       without a byte-order mark, or text with embedded NULs",
+//       utf16be:"is UTF-16 big-endian (it starts FE FF), which these tools
+//       cannot write"};
+//   function Zpt(e){return`File ${vA[e]}. These tools write UTF-8 ...`}
+//   function nHs(e){let s=e==="not_utf8"?" Its undecodable bytes show above
+//       as U+FFFD.":"";return`[This file ${vA[e]}.${s} Edit and Write will
+//       refuse it: ...]`}
+// ---------------------------------------------------------------------------
+
+/** Official vA — per-category reason fragments. */
+const NOT_TEXT_REASONS: Record<NotTextCategory, string> = {
+  not_utf8:
+    'is not valid UTF-8: it uses a legacy encoding such as Windows-1252, Shift-JIS or GBK, or it is binary',
+  nul: 'has NUL bytes in its first 8 KB: binary data, UTF-16/UTF-32 without a byte-order mark, or text with embedded NULs',
+  utf16be:
+    'is UTF-16 big-endian (it starts FE FF), which these tools cannot write',
+}
+
+/** Official Zpt — the Edit/Write refusal message (thrown as FileStateError). */
+export function fileNotTextRefusalMessage(category: NotTextCategory): string {
+  return `File ${NOT_TEXT_REASONS[category]}. These tools write UTF-8 (or UTF-16LE behind its byte-order mark) and never convert a file's encoding on their own, so nothing was written. If the file is text, make the change with a shell command that reads and writes it in its own encoding (iconv, or PowerShell Get-Content/Set-Content -Encoding), or ask the user whether to convert it to UTF-8 first. To replace the whole file with new UTF-8 text anyway, delete it first, then Write it.`
+}
+
+/**
+ * Official nHs — the notice Read APPENDS after the file content (via the
+ * BTn WeakMap / fWr joiner). The not_utf8 category carries one extra
+ * sentence about the U+FFFD replacement chars shown above.
+ */
+export function fileNotTextReadNotice(category: NotTextCategory): string {
+  const replacementNote =
+    category === 'not_utf8'
+      ? ' Its undecodable bytes show above as U+FFFD.'
+      : ''
+  return `[This file ${NOT_TEXT_REASONS[category]}.${replacementNote} Edit and Write will refuse it: change it with a shell command that keeps its encoding, or ask the user whether to convert it to UTF-8.]`
+}
 
 /** YMe */
 export class FileStateError extends Error {

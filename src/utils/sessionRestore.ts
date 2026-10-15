@@ -13,6 +13,7 @@ import { clearSystemPromptSections } from '../constants/systemPromptSections.js'
 import { restoreCostStateForSession } from '../cost-tracker.js'
 import type { AppState } from '../state/AppState.js'
 import type { AgentColorName } from '../tools/AgentTool/agentColorManager.js'
+import { rebuildAgentNameRegistryFromTranscript } from '../tools/AgentTool/agentNameRehydration.js'
 import {
   type AgentDefinition,
   type AgentDefinitionsResult,
@@ -146,6 +147,24 @@ export function restoreSessionStateFromLog(
         todos: { ...prev.todos, [agentId]: todos },
       }))
     }
+  }
+
+  // CC 2.1.299 (#124): rebuild the SendMessage name → agent-ID registry
+  // from the resumed transcript so subagents can again be found by name
+  // after a resume. Official print.ts caller:
+  //   s($e => { let At = t_n(zn, $e.agentNameRegistry)
+  //             return At === null ? $e : { ...$e, agentNameRegistry: At } })
+  // Documented limit: names given before the last compaction still need the
+  // agent ID (the reconstruction is transcript-based).
+  if (result.messages && result.messages.length > 0) {
+    const messages = result.messages
+    setAppState(prev => {
+      const rebuilt = rebuildAgentNameRegistryFromTranscript(
+        messages,
+        prev.agentNameRegistry,
+      )
+      return rebuilt === null ? prev : { ...prev, agentNameRegistry: rebuilt }
+    })
   }
 }
 
@@ -564,6 +583,15 @@ export async function processResumedConversation(
     ? { ...context.initialState, toolPermissionContext: planRestoredContext }
     : context.initialState
 
+  // CC 2.1.299 (#124): CLI restart + `--resume`/`--continue` — rebuild the
+  // SendMessage name → agent-ID registry from the resumed transcript (the
+  // interactive/headless resume paths get the same rebuild through
+  // restoreSessionStateFromLog above). Null → keep the fresh empty registry.
+  const rebuiltAgentNameRegistry = rebuildAgentNameRegistryFromTranscript(
+    result.messages,
+    resumedInitialState.agentNameRegistry,
+  )
+
   return {
     messages: result.messages,
     fileHistorySnapshots: result.fileHistorySnapshots,
@@ -578,6 +606,9 @@ export async function processResumedConversation(
       ...(resumedAgentType && { agent: resumedAgentType }),
       ...(restoredAttribution && { attribution: restoredAttribution }),
       ...(standaloneAgentContext && { standaloneAgentContext }),
+      ...(rebuiltAgentNameRegistry && {
+        agentNameRegistry: rebuiltAgentNameRegistry,
+      }),
       agentDefinitions: refreshedAgentDefs,
     },
   }

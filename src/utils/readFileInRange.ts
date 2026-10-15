@@ -50,6 +50,7 @@
 import { createReadStream, fstat } from 'fs'
 import { stat as fsStat, readFile } from 'fs/promises'
 import { StringDecoder } from 'string_decoder'
+import { classifyFileBytes, type NotTextCategory } from './fileRead.js'
 import { formatFileSize } from './format.js'
 
 const FAST_PATH_MAX_SIZE = 10 * 1024 * 1024 // 10 MB
@@ -63,6 +64,13 @@ export type ReadFileRangeResult = {
   mtimeMs: number
   /** true when output was clipped to maxBytes under truncate mode */
   truncatedByBytes?: boolean
+  /**
+   * CC 2.1.299 #126 — official fast-path `...G&&{notText:G}` (Rgt result).
+   * Set when the bytes classify as legacy-encoding / NUL-bearing / UTF-16BE;
+   * Read attaches the nHs notice for these. The streaming path never
+   * classifies (the official $0 has no Rgt), so it never sets this.
+   */
+  notText?: NotTextCategory
 }
 
 export class FileTooLargeError extends Error {
@@ -141,15 +149,21 @@ export async function readFileInRange(
       throw new FileTooLargeError(stats.size, maxBytes)
     }
 
-    const text = await readFile(filePath, { encoding: 'utf8', signal })
-    return readFileInRangeFast(
-      text,
+    // CC 2.1.299 #126 (official fast path @222155100): read the raw Buffer,
+    // classify with Rgt (`{encoding,notText}`), decode with the DETECTED
+    // encoding — UTF-16LE+BOM now decodes correctly instead of garbling.
+    const buffer = await readFile(filePath, { signal })
+    const { encoding, notText } = classifyFileBytes(buffer)
+    const result = readFileInRangeFast(
+      buffer.toString(encoding),
       stats.mtimeMs,
+      stats.size,
       offset,
       maxLines,
       truncateOnByteLimit ? maxBytes : undefined,
       maxSelectedBytes,
     )
+    return notText ? { ...result, notText } : result
   }
 
   return readFileInRangeStreaming(
@@ -170,6 +184,7 @@ export async function readFileInRange(
 function readFileInRangeFast(
   raw: string,
   mtimeMs: number,
+  sizeBytes: number,
   offset: number,
   maxLines: number | undefined,
   truncateAtBytes: number | undefined,
@@ -177,8 +192,12 @@ function readFileInRangeFast(
 ): ReadFileRangeResult {
   const endLine = maxLines !== undefined ? offset + maxLines : Infinity
 
-  // Strip BOM.
-  const text = raw.charCodeAt(0) === 0xfeff ? raw.slice(1) : raw
+  // Strip BOM. CC 2.1.299 #126 (official Ilo @222155516):
+  // `let w=e.charCodeAt(0)===65279;if(w)n-=3;let R=w?e.slice(1):e` —
+  // totalBytes is the stat size, decremented by 3 when a BOM is present.
+  const hasBom = raw.charCodeAt(0) === 0xfeff
+  const text = hasBom ? raw.slice(1) : raw
+  const totalBytes = hasBom ? sizeBytes - 3 : sizeBytes
 
   // Split lines, strip \r, select range.
   const selectedLines: string[] = []
@@ -234,7 +253,7 @@ function readFileInRangeFast(
     content,
     lineCount: selectedLines.length,
     totalLines: lineIndex,
-    totalBytes: Buffer.byteLength(text, 'utf8'),
+    totalBytes,
     readBytes: Buffer.byteLength(content, 'utf8'),
     mtimeMs,
     ...(truncatedByBytes ? { truncatedByBytes: true } : {}),

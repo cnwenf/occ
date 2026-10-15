@@ -73,6 +73,7 @@ import {
   isPDFSupported,
   parsePDFPageRange,
 } from '../../utils/pdfUtils.js'
+import { fileNotTextReadNotice } from '../../utils/permissions/fileStateGuard.js'
 import {
   checkReadPermissionForTool,
   matchingRuleForInput,
@@ -231,6 +232,21 @@ const partialViewNotices = new WeakMap<object, string>()
 
 function partialViewNoticePrefix(data: object): string {
   return partialViewNotices.get(data) ?? ''
+}
+
+/**
+ * CC 2.1.299 #126 — official BTn WeakMap (@227168072). When the fast-path
+ * read classified the bytes as notText, the Read result carries the nHs
+ * notice, APPENDED after the content (official
+ * `fWr(e)=[BTn.get(e),$Tn.get(e)].filter(...).map(n=>`\n\n${n}`).join("")`).
+ * Same identity-keyed side-channel as partialViewNotices — keeps the notice
+ * out of the SDK output schema while delivering it to the model.
+ */
+const notTextNotices = new WeakMap<object, string>()
+
+function notTextNoticeSuffix(data: object): string {
+  const notice = notTextNotices.get(data)
+  return notice === undefined ? '' : `\n\n${notice}`
 }
 
 /**
@@ -1080,14 +1096,16 @@ export const FileReadTool = buildTool({
             formatFileLines(data.file) +
             (shouldIncludeFileReadMitigation()
               ? CYBER_RISK_MITIGATION_REMINDER
-              : '')
+              : '') +
+            notTextNoticeSuffix(data)
         } else if (data.file.numLines >= 1 && data.file.totalLines > 1) {
           // Case 2: the range has ≥1 line but content is empty (blank lines).
           // Show a single line-numbered empty line: jxn("", startLine, "\t").
           content =
             partialViewNoticePrefix(data) +
             memoryFileFreshnessPrefix(data) +
-            `${data.file.startLine}\t`
+            `${data.file.startLine}\t` +
+            notTextNoticeSuffix(data)
         } else if (data.file.numLines >= 1 || data.file.totalLines === 0) {
           // Case 3: empty file (0 bytes → numLines≥1 via final fragment, or
           // totalLines===0). Previously reported "shorter than offset" for
@@ -1639,8 +1657,15 @@ async function callInner(
             allowLarge?.raised?.maxSizeBytes ?? 0,
           ),
         }
-  const { content, lineCount, totalLines, totalBytes, readBytes, mtimeMs } =
-    await readFileInRange(
+  const {
+    content,
+    lineCount,
+    totalLines,
+    totalBytes,
+    readBytes,
+    mtimeMs,
+    notText,
+  } = await readFileInRange(
       resolvedFilePath,
       lineOffset,
       limit,
@@ -1751,6 +1776,12 @@ async function callInner(
   }
   if (paged && partialNotice !== undefined) {
     partialViewNotices.set(data, partialNotice)
+  }
+  // CC 2.1.299 #126 (official `if(rt.notText!==void 0)BTn.set(fo,nHs(rt.notText))`):
+  // the notText notice rides on the data object and is APPENDED to the
+  // model-facing content by the mapper (official fWr joiner).
+  if (notText !== undefined) {
+    notTextNotices.set(data, fileNotTextReadNotice(notText))
   }
   if (isAutoMemFile(fullFilePath)) {
     memoryFileMtimes.set(data, mtimeMs)

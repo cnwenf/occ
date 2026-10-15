@@ -19,6 +19,7 @@ import { FILE_EDIT_TOOL_NAME } from 'src/tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from 'src/tools/FileReadTool/prompt.js'
 import {
   FILE_NOT_VALID_UTF8_EDIT_MESSAGE,
+  fileNotTextRefusalMessage,
   FILE_NOT_VALID_UTF8_WRITE_MESSAGE,
   normalizeForComparison,
 } from 'src/utils/permissions/fileStateGuard.js'
@@ -53,8 +54,16 @@ if (typeof globalThis.MACRO === 'undefined') {
  */
 
 // Official aen literal, byte-verified against the v296 ELF @101773572.
+// CC 2.1.299 #126: GONE from the v299 binary (0 grep hits) — the constant is
+// kept in fileStateGuard.ts only for NotebookEditTool (out of WP10 scope).
 const OFFICIAL_AEN =
   'File is not valid UTF-8. It may use a legacy encoding such as Windows-1252, Shift-JIS or GBK, or be binary. This tool saves the whole file as UTF-8, which would replace every byte it cannot decode with U+FFFD. Nothing was written. Make the change with a shell command that reads and writes the file in its own encoding, or ask the user whether to convert the file to UTF-8 first.'
+
+// Official Zpt('not_utf8') literal, byte-verified against the v299 ELF
+// @216803634 — the v299 Edit refusal message (validateInput errorCode 15
+// and call-time FileStateError alike).
+const OFFICIAL_ZPT_NOT_UTF8 =
+  'File is not valid UTF-8: it uses a legacy encoding such as Windows-1252, Shift-JIS or GBK, or it is binary. These tools write UTF-8 (or UTF-16LE behind its byte-order mark) and never convert a file\'s encoding on their own, so nothing was written. If the file is text, make the change with a shell command that reads and writes it in its own encoding (iconv, or PowerShell Get-Content/Set-Content -Encoding), or ask the user whether to convert it to UTF-8 first. To replace the whole file with new UTF-8 text anyway, delete it first, then Write it.'
 
 const CP1252_CAFE = Buffer.from([0x63, 0x61, 0x66, 0xe9]) // "café" in Windows-1252
 
@@ -142,8 +151,12 @@ afterEach(async () => {
 })
 
 describe('CC 2.1.296 #032 FileEditTool non-UTF-8 refusal', () => {
-  test('refusal constant is byte-identical to official aen', () => {
+  test('legacy refusal constant is byte-identical to official aen (NotebookEditTool consumer)', () => {
     expect(FILE_NOT_VALID_UTF8_EDIT_MESSAGE).toBe(OFFICIAL_AEN)
+  })
+
+  test('v299 refusal message is byte-identical to official Zpt(not_utf8)', () => {
+    expect(fileNotTextRefusalMessage('not_utf8')).toBe(OFFICIAL_ZPT_NOT_UTF8)
   })
 
   test('validateInput refuses a Windows-1252 file with errorCode 15 and NO behavior field', async () => {
@@ -170,7 +183,7 @@ describe('CC 2.1.296 #032 FileEditTool non-UTF-8 refusal', () => {
     // behavior field (unlike the stale-read ask).
     expect(result).toEqual({
       result: false,
-      message: OFFICIAL_AEN,
+      message: OFFICIAL_ZPT_NOT_UTF8,
       errorCode: 15,
     })
     expect('behavior' in result).toBe(false)
@@ -272,7 +285,7 @@ describe('CC 2.1.296 #032 FileEditTool non-UTF-8 refusal', () => {
         undefined as never,
         { uuid: 'msg_edit032' } as never,
       ),
-    ).rejects.toThrow(OFFICIAL_AEN)
+    ).rejects.toThrow(OFFICIAL_ZPT_NOT_UTF8)
 
     // Nothing was written — the raw cp1252 byte survives.
     expect(Buffer.compare(await readFile(filePath), CP1252_CAFE)).toBe(0)
@@ -317,7 +330,7 @@ describe('CC 2.1.296 #032 FileEditTool non-UTF-8 refusal', () => {
   // new_string, so the refusal is the Edit aen message (errorCode 15) — NOT
   // the Write-path UTs message — and nothing is written. Pins guard
   // separation: the U+FFFD-content check belongs to FileWriteTool only.
-  test('lossy disk + U+FFFD-bearing new_string → Edit aen refusal (errorCode 15), never the Write UTs message, nothing written', async () => {
+  test('lossy disk + U+FFFD-bearing new_string → Edit Zpt refusal (errorCode 15), never the Write UTs message, nothing written', async () => {
     // Arrange — cp1252 bytes on disk; new_string holds U+FFFD from a lossy
     // Read round-trip ('caf�' is what Read shows for 0x63 0x61 0x66 0xE9).
     const ctx = makeContext()
@@ -340,10 +353,10 @@ describe('CC 2.1.296 #032 FileEditTool non-UTF-8 refusal', () => {
     // bytes untouched.
     expect(result).toEqual({
       result: false,
-      message: OFFICIAL_AEN,
+      message: OFFICIAL_ZPT_NOT_UTF8,
       errorCode: 15,
     })
-    expect(result.message).toBe(FILE_NOT_VALID_UTF8_EDIT_MESSAGE)
+    expect(result.message).toBe(fileNotTextRefusalMessage('not_utf8'))
     expect(result.message).not.toBe(FILE_NOT_VALID_UTF8_WRITE_MESSAGE)
     expect('behavior' in result).toBe(false)
     expect(Buffer.compare(await readFile(filePath), CP1252_CAFE)).toBe(0)
