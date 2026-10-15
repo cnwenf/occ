@@ -32,6 +32,7 @@
  *   WIt = aggregateAutoCompactWindow   iV  = getCanonicalName
  *   Dw  = resolveAutoCompactWindow     Mqr = buildAutoCompactWindowPatch
  *   XEo = resolveAutoCompactWindowOverride
+ *   TAn = chosenWindowExceedsAutoWindow (2.1.300 #10 warning gate)
  *
  * The official additionally resolves server-driven windows ("experiment" /
  * "clientdata" sources via the bootstrap `auto_compact_windows` cache), an
@@ -302,6 +303,42 @@ export function resolveAutoCompactWindow(
   }
 
   return { window: contextWindow, configured: contextWindow, source: 'auto' }
+}
+
+/**
+ * CC 2.1.300 changelog #10 — port of the official warning gate `TAn`
+ * (byte-verified from the v300 linux-x64 ELF @239116220, offsets into
+ * /tmp/cc-diff-300/v300/package/claude):
+ *
+ *   `function TAn(e,o){return Math.min(e.contextWindow,o)>Hno(e).window}`
+ *
+ * The v300 `/autocompact` describe builder gates the "Overriding auto may
+ * result in high token usage…" warning behind `cCt(u)&&TAn(r,s)`
+ * (@239116094; `cCt` = source is env/settings @225878936, `s` = the chosen
+ * window) — v299 warned on ANY override (@237779900: `if(dTt(t))…`), so
+ * choosing a SMALLER window than auto wrongly warned about high token usage.
+ *
+ * @param model          the model whose auto window is resolved
+ * @param contextWindow  the model's context window (official `e.contextWindow`)
+ * @param chosenWindow   the user-chosen window (official `o`)
+ * @returns true only when the capped chosen window EXCEEDS the auto window
+ *
+ * DIVERGENCE (documented): the official `Hno` (@225877589) resolves the auto
+ * window through model-default/experiment/clientdata/unknown-model branches —
+ * all Anthropic-backend-bound and staged in OCC (file header) — and IGNORES
+ * the env override. OCC's `Hno` analog is `resolveAutoCompactWindow(model,
+ * contextWindow, undefined)` (env → auto), so a CLAUDE_CODE_AUTO_COMPACT_
+ * WINDOW value participates in the comparison until the staged branches land.
+ */
+export function chosenWindowExceedsAutoWindow(
+  model: string,
+  contextWindow: number,
+  chosenWindow: number,
+): boolean {
+  return (
+    Math.min(contextWindow, chosenWindow) >
+    resolveAutoCompactWindow(model, contextWindow, undefined).window
+  )
 }
 
 /**

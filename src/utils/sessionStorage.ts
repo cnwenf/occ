@@ -939,7 +939,10 @@ class Project {
    * the SDK cannot touch (last-prompt, agent-*, mode, pr-link) have no
    * external-writer concern — their caches are authoritative.
    */
-  reAppendSessionMetadata(skipTitleRefresh = false): void {
+  reAppendSessionMetadata(
+    skipTitleRefresh = false,
+    sealTornTail = false,
+  ): void {
     if (!this.sessionFile) return
     const sessionId = getSessionId() as UUID
     if (!sessionId) return
@@ -948,6 +951,16 @@ class Project {
     // LITE_READ_BUF_SIZE window readLiteMetadata uses. Empty string on
     // failure → extract returns null → cache is the only source of truth.
     const tail = readFileTailSync(this.sessionFile)
+
+    // CC 2.1.300 #22 — official v300 4th param `s` (@224821077):
+    //   `let h=gdo(this.sessionFile);
+    //    if(s&&h!==""&&!h.endsWith("\n"))this.sealTornTailOnNextAppend(…)`
+    // On resume-adopt, a crash-truncated last line gets a sealing "\n"
+    // BEFORE any blind append can glue a fresh entry onto it. OCC seals
+    // eagerly here (no pending-marker machinery — see sealTornTailSync).
+    if (sealTornTail && tail !== '' && !tail.endsWith('\n')) {
+      sealTornTailSync(this.sessionFile)
+    }
 
     // Absorb any fresher SDK-written title/tag into our cache. If the SDK
     // wrote while we had the session open, our cache is stale — the tail
@@ -1842,7 +1855,11 @@ export async function resetSessionFilePointer() {
 export function adoptResumedSessionFile(): void {
   const project = getProject()
   project.sessionFile = getTranscriptPath()
-  project.reAppendSessionMetadata(true)
+  // CC 2.1.300 #22 — the official resume-adopt caller passes the new
+  // torn-tail seal flag: `reAppendSessionMetadata(true, …, s=true)` so a
+  // crash-truncated last line is sealed before the first post-resume
+  // append (v300 @224821077).
+  project.reAppendSessionMetadata(true, true)
 }
 
 /**
@@ -3372,6 +3389,36 @@ function readFileTailSync(fullPath: string): string {
         // closeSync can throw; swallow to preserve return '' contract
       }
     }
+  }
+}
+
+/**
+ * CC 2.1.300 changelog #22 — sync torn-tail sealer. Port of the official
+ * `sealTornTailSync` append step (byte-verified from the v300 linux-x64 ELF
+ * @224817300 region, offsets into /tmp/cc-diff-300/v300/package/claude):
+ *
+ *   `sealTornTailSync(e){if(this.tornTailToSeal!==e)return;if(xa())return;
+ *     let n;try{n=g6(e,O_WRONLY|O_APPEND)}catch{return}try{let{size:r}=
+ *     vLe(n);if(r>0)fwt(n,"\n",void 0)}finally{p6(n)}this.tornTailToSeal=null}`
+ *
+ * Appends a single sealing "\n" so a crash-truncated last line cannot glue
+ * onto the next blind append (which would make the new entry unparseable and
+ * lose it). All errors are swallowed (official catch → return).
+ *
+ * DIVERGENCES (documented):
+ * 1. OCC has no `tornTailToSeal` pending-marker machinery, so the seal fires
+ *    EAGERLY at adopt time — the caller guards with the official v300
+ *    condition (`h!=="" && !h.endsWith("\n")` on the `gdo` tail read, which
+ *    is `readFileTailSync` here) and this protects BOTH blind-append paths
+ *    (the async write queue and `appendEntryToFile`).
+ * 2. The official `if(xa())return` guard is an unresolvable minified symbol —
+ *    not ported.
+ */
+function sealTornTailSync(fullPath: string): void {
+  try {
+    getFsImplementation().appendFileSync(fullPath, '\n', { mode: 0o600 })
+  } catch {
+    // Official swallows open/append errors (catch → return).
   }
 }
 /* eslint-enable custom-rules/no-sync-fs */

@@ -645,8 +645,11 @@ describe('Gap-288 #79 — /autocompact command', () => {
     expect(value).toContain(
       'The auto setting picks a window tuned for your model and is strongly recommended for the best cost and performance.',
     )
-    // env/settings source → the override warning line is present.
-    expect(value).toContain(
+    // CC 2.1.300 #10: the warning is now gated behind the official `TAn`
+    // (chosenWindowExceedsAutoWindow) — a SMALLER-than-auto settings window
+    // (150k on a 200k-context model) no longer warns about high token usage.
+    // Pre-300 this asserted toContain; see autoCompactWindowWarnGate300.test.ts.
+    expect(value).not.toContain(
       'Overriding auto may result in high token usage, especially when resuming long sessions.',
     )
   })

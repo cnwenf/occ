@@ -43,6 +43,7 @@ import type { ToolUseContext } from '../../Tool.js'
 import {
   aggregateAutoCompactWindow,
   buildAutoCompactWindowPatch,
+  chosenWindowExceedsAutoWindow,
   ENV_WINDOW_KEY,
   getSessionAutoCompactWindow,
   parseAutoCompactWindowInput,
@@ -96,7 +97,15 @@ function describeCurrentWindow(model: string): string {
   lines.push(
     'The auto setting picks a window tuned for your model and is strongly recommended for the best cost and performance.',
   )
-  if (source === 'env' || source === 'settings') {
+  // CC 2.1.300 #10: official gate `if(cCt(u)&&TAn(r,s))` (@239116094) — warn
+  // only when the chosen window EXCEEDS the model's auto window (v299 warned
+  // on any override, so picking a SMALLER window wrongly warned about high
+  // token usage). `cCt` = source is env/settings (@225878936); `TAn` =
+  // chosenWindowExceedsAutoWindow (@239116220).
+  if (
+    (source === 'env' || source === 'settings') &&
+    chosenWindowExceedsAutoWindow(model, contextWindow, configured)
+  ) {
     lines.push(
       'Overriding auto may result in high token usage, especially when resuming long sessions.',
     )

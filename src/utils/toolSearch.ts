@@ -396,6 +396,16 @@ async function calculateDeferredToolDescriptionChars(
  * @param getToolPermissionContext Function to get tool permission context
  * @param agents Array of agent definitions
  * @param source Optional identifier for the caller (for debugging)
+ * @param autoHeld CC 2.1.300 #18 — official 7th param `S` (byte-verified
+ *   from the v300 ELF @227142200: `async function Lfr(e,n,r,s,h,y,S=!1)`).
+ *   TRUE when the conversation already declared ToolSearch (official query
+ *   caller @227824350 passes `Q.recordedToolDescriptions?.has(Ci)` with
+ *   `Ci="ToolSearch"` @219935042). In 'tst-auto' mode the flag short-circuits
+ *   the threshold recompute with reason `auto_held` (v300: 2 hits @107850108
+ *   & @227142599; v299: 0) so tool search cannot flip OFF mid-conversation —
+ *   e.g. when MCP servers reconnect after resume and the deferred-tool token
+ *   count momentarily drops below the threshold. The compact caller passes no
+ *   hold (@227627600 region, 6 args) — compaction may legitimately re-decide.
  * @returns true if tool search should be enabled for this request
  */
 export async function isToolSearchEnabled(
@@ -404,6 +414,7 @@ export async function isToolSearchEnabled(
   getToolPermissionContext: () => Promise<ToolPermissionContext>,
   agents: AgentDefinition[],
   source?: string,
+  autoHeld = false,
 ): Promise<boolean> {
   const mcpToolCount = count(tools, t => t.isMcp)
 
@@ -458,6 +469,19 @@ export async function isToolSearchEnabled(
       return true
 
     case 'tst-auto': {
+      // CC 2.1.300 #18 — official hold check FIRST inside the auto branch
+      // (@227142517, byte-verified): `if(S)return t("Auto tool search
+      // enabled: this conversation already declared ToolSearch"),
+      // H(!0,V,"auto_held"),!0` — note the debug line carries NO
+      // `[source:]` suffix (unlike the threshold branches below).
+      if (autoHeld) {
+        logForDebugging(
+          'Auto tool search enabled: this conversation already declared ToolSearch',
+        )
+        logModeDecision(true, mode, 'auto_held')
+        return true
+      }
+
       const { enabled, debugDescription, metrics } = await checkAutoThreshold(
         tools,
         getToolPermissionContext,
