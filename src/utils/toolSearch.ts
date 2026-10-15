@@ -513,6 +513,45 @@ export async function isToolSearchEnabled(
 }
 
 /**
+ * CC 2.1.300 #18 — conversation-scoped "ToolSearch declared" latch.
+ *
+ * Official hold flag (byte-verified): the query caller passes
+ * `Q.recordedToolDescriptions?.has(Ci)` as the 7th arg `S` of `Lfr`
+ * (@227824350/@227824419), where `Ci="ToolSearch"` (@219935042).
+ * `recordedToolDescriptions` is the per-conversation Map of tool
+ * descriptions actually sent to the API, recorded during tool-IR build
+ * (`H1t(st,ir,{...,recorded:Q.recordedToolDescriptions,...})` in the
+ * @227828656 region) — so once ToolSearch's description has gone out on
+ * the wire, the auto-mode hold sticks for the rest of the conversation
+ * (`auto_held` @227142599, new in v300; v299 has zero hits).
+ *
+ * Documented deviation: OCC has no recordedToolDescriptions ledger (#46
+ * stays STAGED — name-memo only), so this module-level boolean mirrors the
+ * per-conversation Map's `has("ToolSearch")` semantics. Per-process ≈
+ * conversation lifetime — same deviation class as the module-level
+ * refusedToolSchemas map (#36). Reset on /clear and resume via
+ * clearSessionCaches (official per-conversation Q is fresh after process
+ * restart; w3n @239179269 clears conversation-scoped API state on
+ * transcript_cleared).
+ */
+let toolSearchDeclared = false
+
+/** Arm the hold — call when ToolSearch's description actually goes out on the wire. */
+export function noteToolSearchDeclared(): void {
+  toolSearchDeclared = true
+}
+
+/** Official `Q.recordedToolDescriptions?.has(Ci)` — read by the query call site. */
+export function isToolSearchDeclared(): boolean {
+  return toolSearchDeclared
+}
+
+/** Conversation reset (/clear, resume) — official Q is per-conversation. */
+export function resetToolSearchDeclared(): void {
+  toolSearchDeclared = false
+}
+
+/**
  * Check if an object is a tool_reference block.
  * tool_reference is a beta feature not in the SDK types, so we need runtime checks.
  */

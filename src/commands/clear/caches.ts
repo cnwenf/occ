@@ -140,6 +140,20 @@ export function clearSessionCaches(
   void import('../../tools/ToolSearchTool/ToolSearchTool.js').then(
     ({ clearToolSearchDescriptionCache }) => clearToolSearchDescriptionCache(),
   )
+  // CC 2.1.300 #18: reset the conversation-scoped ToolSearch-declared latch
+  // (official Q.recordedToolDescriptions is per-conversation — a fresh
+  // conversation after /clear or resume must re-run the tst-auto threshold
+  // instead of taking the `auto_held` path).
+  void import('../../utils/toolSearch.js').then(({ resetToolSearchDeclared }) =>
+    resetToolSearchDeclared(),
+  )
+  // CC 2.1.300 #36: official w3n clears the conversation-scoped
+  // refused-tool-schema map on transcript_cleared (@239179269), so a new
+  // conversation re-sends full input schemas instead of the {type:"object"}
+  // replacements the previous conversation latched.
+  void import('../../services/api/refusedToolSchemas.js').then(
+    ({ clearRefusedToolSchemas }) => clearRefusedToolSchemas(),
+  )
   // Clear agent definitions cache (accumulates per-cwd via EnterWorktreeTool)
   void import('../../tools/AgentTool/loadAgentsDir.js').then(
     ({ clearAgentDefinitionsCache }) => clearAgentDefinitionsCache(),

@@ -196,7 +196,9 @@ import {
 import {
   extractDiscoveredToolNames,
   isDeferredToolsDeltaEnabled,
+  isToolSearchDeclared,
   isToolSearchEnabled,
+  noteToolSearchDeclared,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import {
@@ -1805,12 +1807,18 @@ async function* queryModel(
 
   // Check if tool search is enabled (checks mode, model support, and threshold for auto mode)
   // This is async because it may need to calculate MCP tool description sizes for TstAuto mode
+  // CC 2.1.300 #18: 6th arg is the official conversation-scoped hold —
+  // `Q.recordedToolDescriptions?.has(Ci)` @227824350 (Ci="ToolSearch"
+  // @219935042). Once this conversation has sent ToolSearch's description,
+  // tst-auto stays enabled (`auto_held` @227142599) without re-running the
+  // threshold. Mirrored via the toolSearch.ts latch (documented deviation).
   let useToolSearch = await isToolSearchEnabled(
     options.model,
     tools,
     options.getToolPermissionContext,
     options.agents,
     'query',
+    isToolSearchDeclared(),
   )
 
   // Precompute once — isDeferredTool does 2 GrowthBook lookups per call
@@ -1853,6 +1861,13 @@ async function* queryModel(
       // Only include deferred tools that have been discovered
       return discoveredToolNames.has(tool.name)
     })
+    // CC 2.1.300 #18: ToolSearch's description goes out on the wire with
+    // this request (isToolSearchEnabled already gated on the tool being
+    // available, and the filter above always keeps it). The official
+    // records it into Q.recordedToolDescriptions during tool-IR build
+    // (H1t @227828656 region); arm the OCC latch so subsequent requests in
+    // this conversation take the `auto_held` path.
+    noteToolSearchDeclared()
   } else {
     filteredTools = tools.filter(
       t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),

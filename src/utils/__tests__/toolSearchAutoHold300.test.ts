@@ -21,13 +21,17 @@
  * OCC symbol map: Lfr = isToolSearchEnabled, S = autoHeld (new optional 6th
  * param), Blr = checkAutoThreshold, H = inner logModeDecision.
  *
- * NOTE (reported, not made — claude.ts is owned by another agent this run):
- * the official query call site threads the hold flag from the conversation
- * state. OCC's analog change at src/services/api/claude.ts:1790 is to pass a
- * 6th argument, e.g.
- *   `extractDiscoveredToolNames(messages).has(TOOL_SEARCH_TOOL_NAME)`
- * (both symbols are already imported in claude.ts). This test suite covers
- * the toolSearch.ts side of the contract only.
+ * NOTE (call-site wiring — landed after this suite was written): the official
+ * query call site threads the hold flag from conversation state
+ * (`Q.recordedToolDescriptions?.has(Ci)`). OCC's claude.ts now passes
+ * `isToolSearchDeclared()` as the 6th argument and arms the latch with
+ * `noteToolSearchDeclared()` when ToolSearch's description goes out on the
+ * wire. The initially-sketched `extractDiscoveredToolNames(messages).has(
+ * TOOL_SEARCH_TOOL_NAME)` source was REJECTED — OCC's extractor only collects
+ * tool_reference block names, so ToolSearch itself essentially never appears
+ * and the hold would never arm. Latch semantics + /clear-resume reset wiring:
+ * toolSearchDeclaredLatch300.test.ts. This suite covers the toolSearch.ts
+ * side of the contract only.
  *
  * Analytics seam per OCC-97 (snapshot real exports, override narrowly,
  * restore in afterAll) — pattern: sessionStorage.parallelTRRecovery286.test.ts.
