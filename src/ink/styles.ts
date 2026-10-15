@@ -45,6 +45,16 @@ export type Color = RGBColor | HexColor | Ansi256Color | AnsiColor
 export type TextStyles = {
   readonly color?: Color
   readonly backgroundColor?: Color
+  /**
+   * CC 2.1.300 changelog #47 (official `Dc` Text props @231403881): when
+   * equal to `color` and the color is "whitish" (renders indistinguishable
+   * from white/black at the current chalk level), the painter adds SGR-2 dim
+   * so themed secondary text stays distinguishable under the dark ANSI theme
+   * and on 16-color terminals. Set automatically by the themed-Text wrapper —
+   * callers do not pass it manually (the official removed the standalone
+   * caller prop in v300 @235309350).
+   */
+  readonly faintInk?: Color
   readonly dim?: boolean
   readonly bold?: boolean
   readonly italic?: boolean

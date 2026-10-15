@@ -14,6 +14,17 @@ type BaseProps = {
   readonly backgroundColor?: Color;
 
   /**
+   * CC 2.1.300 changelog #47 (official `Dc` @231403881): themed-dim escape
+   * hatch. When equal to `color` and the color is "whitish" (renders
+   * indistinguishable from white/black at the current chalk level), the
+   * painter adds SGR-2 dim so secondary text stays distinguishable under the
+   * dark ANSI theme and on 16-color terminals. Set automatically by
+   * ThemedText — callers do not pass it manually (the official v300 wrapper
+   * removed the standalone caller prop @235309350).
+   */
+  readonly faintInk?: Color;
+
+  /**
    * Make the text italic.
    */
   readonly italic?: boolean;
@@ -36,7 +47,7 @@ type BaseProps = {
   /**
    * This property tells Ink to wrap or truncate text if its width is larger than container.
    * If `wrap` is passed (by default), Ink will wrap text and split it into multiple lines.
-   * If `truncate-*` is passed, Ink will truncate text instead, which will result in one line of text with the rest cut off.
+   * If `truncate-*` is passed, Ink will truncate text instead, what will result in one line of text with the rest cut off.
    */
   readonly wrap?: Styles['textWrap'];
   readonly children?: ReactNode;
@@ -120,10 +131,11 @@ const memoizedStylesForWrap: Record<NonNullable<Styles['textWrap']>, Styles> = {
  * This component can display text, and change its style to make it colorful, bold, underline, italic or strikethrough.
  */
 export default function Text(t0) {
-  const $ = _c(29);
+  const $ = _c(32);
   const {
     color,
     backgroundColor,
+    faintInk,
     bold,
     dim,
     italic: t1,
@@ -162,68 +174,78 @@ export default function Text(t0) {
     t7 = $[3];
   }
   let t8;
-  if ($[4] !== dim) {
-    t8 = dim && {
-      dim
+  if ($[4] !== faintInk) {
+    t8 = faintInk && {
+      faintInk
     };
-    $[4] = dim;
+    $[4] = faintInk;
     $[5] = t8;
   } else {
     t8 = $[5];
   }
   let t9;
-  if ($[6] !== bold) {
-    t9 = bold && {
-      bold
+  if ($[6] !== dim) {
+    t9 = dim && {
+      dim
     };
-    $[6] = bold;
+    $[6] = dim;
     $[7] = t9;
   } else {
     t9 = $[7];
   }
   let t10;
-  if ($[8] !== italic) {
-    t10 = italic && {
-      italic
+  if ($[8] !== bold) {
+    t10 = bold && {
+      bold
     };
-    $[8] = italic;
+    $[8] = bold;
     $[9] = t10;
   } else {
     t10 = $[9];
   }
   let t11;
-  if ($[10] !== underline) {
-    t11 = underline && {
-      underline
+  if ($[10] !== italic) {
+    t11 = italic && {
+      italic
     };
-    $[10] = underline;
+    $[10] = italic;
     $[11] = t11;
   } else {
     t11 = $[11];
   }
   let t12;
-  if ($[12] !== strikethrough) {
-    t12 = strikethrough && {
-      strikethrough
+  if ($[12] !== underline) {
+    t12 = underline && {
+      underline
     };
-    $[12] = strikethrough;
+    $[12] = underline;
     $[13] = t12;
   } else {
     t12 = $[13];
   }
   let t13;
-  if ($[14] !== inverse) {
-    t13 = inverse && {
-      inverse
+  if ($[14] !== strikethrough) {
+    t13 = strikethrough && {
+      strikethrough
     };
-    $[14] = inverse;
+    $[14] = strikethrough;
     $[15] = t13;
   } else {
     t13 = $[15];
   }
   let t14;
-  if ($[16] !== t10 || $[17] !== t11 || $[18] !== t12 || $[19] !== t13 || $[20] !== t6 || $[21] !== t7 || $[22] !== t8 || $[23] !== t9) {
-    t14 = {
+  if ($[16] !== inverse) {
+    t14 = inverse && {
+      inverse
+    };
+    $[16] = inverse;
+    $[17] = t14;
+  } else {
+    t14 = $[17];
+  }
+  let t15;
+  if ($[18] !== t11 || $[19] !== t12 || $[20] !== t13 || $[21] !== t14 || $[22] !== t6 || $[23] !== t7 || $[24] !== t8 || $[25] !== t9 || $[26] !== t10) {
+    t15 = {
       ...t6,
       ...t7,
       ...t8,
@@ -231,31 +253,33 @@ export default function Text(t0) {
       ...t10,
       ...t11,
       ...t12,
-      ...t13
+      ...t13,
+      ...t14
     };
-    $[16] = t10;
-    $[17] = t11;
-    $[18] = t12;
-    $[19] = t13;
-    $[20] = t6;
-    $[21] = t7;
-    $[22] = t8;
-    $[23] = t9;
-    $[24] = t14;
+    $[18] = t11;
+    $[19] = t12;
+    $[20] = t13;
+    $[21] = t14;
+    $[22] = t6;
+    $[23] = t7;
+    $[24] = t8;
+    $[25] = t9;
+    $[26] = t10;
+    $[27] = t15;
   } else {
-    t14 = $[24];
+    t15 = $[27];
   }
-  const textStyles = t14;
-  const t15 = memoizedStylesForWrap[wrap];
-  let t16;
-  if ($[25] !== children || $[26] !== t15 || $[27] !== textStyles) {
-    t16 = <ink-text style={t15} textStyles={textStyles}>{children}</ink-text>;
-    $[25] = children;
-    $[26] = t15;
-    $[27] = textStyles;
-    $[28] = t16;
+  const textStyles = t15;
+  const t16 = memoizedStylesForWrap[wrap];
+  let t17;
+  if ($[28] !== children || $[29] !== t16 || $[30] !== textStyles) {
+    t17 = <ink-text style={t16} textStyles={textStyles}>{children}</ink-text>;
+    $[28] = children;
+    $[29] = t16;
+    $[30] = textStyles;
+    $[31] = t17;
   } else {
-    t16 = $[28];
+    t17 = $[31];
   }
-  return t16;
+  return t17;
 }

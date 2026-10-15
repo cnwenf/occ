@@ -169,6 +169,55 @@ export const colorize = (
 }
 
 /**
+ * Whitish-color detector — port of the official v300 class `f` (singleton `M`)
+ * @219913150 in the 2.1.300 linux-x64 ELF (identical in v299):
+ *
+ *   class f{generation=-1;level=-1;byColor=new Map;has(r){let i=vOe();
+ *     if(i!==this.generation||he.level!==this.level)this.generation=i,
+ *       this.level=he.level,this.byColor.clear();
+ *     let e=this.byColor.get(r);
+ *     if(e===void 0){let n=jue(" ",r,"foreground");
+ *       e=he.level>0&&(n===he.white(" ")||n===he.black(" ")),
+ *       this.byColor.set(r,e)}
+ *     return e}}
+ *
+ * A color is "whitish" when chalk is color-capable (level > 0) and the
+ * color's rendered form is indistinguishable from white or black — i.e. the
+ * themed color alone cannot express "dim" (dark ANSI theme: inactive
+ * 'ansi:white' vs text 'ansi:whiteBright' collapse on 16-color terminals).
+ *
+ * The official memoizes against (`vOe()` = chalk-proxy level generation
+ * @217575255, chalk.level); OCC's chalk has no generation counter, so the
+ * cache revalidates on chalk.level alone — `colorize` output depends only on
+ * the color string and the level.
+ */
+class WhitishColorDetector {
+  private level = -1
+  private readonly byColor = new Map<string, boolean>()
+
+  has(color: string | undefined): boolean {
+    if (!color) {
+      return false
+    }
+    if (chalk.level !== this.level) {
+      this.level = chalk.level
+      this.byColor.clear()
+    }
+    let cached = this.byColor.get(color)
+    if (cached === undefined) {
+      const rendered = colorize(' ', color, 'foreground')
+      cached =
+        chalk.level > 0 &&
+        (rendered === chalk.white(' ') || rendered === chalk.black(' '))
+      this.byColor.set(color, cached)
+    }
+    return cached
+  }
+}
+
+const whitishColors = new WhitishColorDetector()
+
+/**
  * Apply TextStyles to a string using chalk.
  * This is the inverse of parsing ANSI codes - we generate them from structured styles.
  * Theme resolution happens at component layer, not here.
@@ -208,6 +257,24 @@ export function applyTextStyles(text: string, styles: TextStyles): string {
   }
 
   if (styles.dim) {
+    result = chalk.dim(result)
+  }
+
+  // CC 2.1.300 changelog #47 — official v300 `h6e` @219912500 (sole delta vs
+  // v299 `F4e` @218792200: the two new `!backgroundColor && !inverse`
+  // guards), byte-verified:
+  //   if(i.faintInk&&i.faintInk===i.color&&!i.bold&&!i.dim
+  //      &&!i.backgroundColor&&!i.inverse&&M.has(i.color))e=he.dim(e);
+  // Applied after bold/dim, before the color passes below.
+  if (
+    styles.faintInk &&
+    styles.faintInk === styles.color &&
+    !styles.bold &&
+    !styles.dim &&
+    !styles.backgroundColor &&
+    !styles.inverse &&
+    whitishColors.has(styles.color)
+  ) {
     result = chalk.dim(result)
   }
 

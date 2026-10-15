@@ -76,9 +76,25 @@ function resolveColor(color: keyof Theme | Color | undefined, theme: Theme): Col
 /**
  * Theme-aware Text component that resolves theme color keys to raw colors.
  * This wraps the base Text component with theme resolution.
+ *
+ * CC 2.1.300 changelog #47 — official v300 wrapper @235309350/235309900
+ * (byte-verified): the standalone caller `faintInk` prop was removed (v299
+ * @234021584: `G=I&&T&&!_?j:void 0` required callers to opt in) and is now
+ * computed automatically for ALL dimColor text:
+ *   A=f===void 0?!1:f          (dimColor)
+ *   W=Ae(Wet)                  (useContext — the sole provider `pE` @245282095
+ *                               sets `hovered && !expanded`, a message-row
+ *                               HOVER context, byte-identical in v299 as `$7e`)
+ *   L=A&&!W?_.inactive:Y(d,_)  (resolvedColor)
+ *   const G=A&&!W?D:void 0     (faintInk)
+ * Under the dark ANSI theme (inactive 'ansi:white' vs text 'ansi:whiteBright')
+ * dim text was indistinguishable on 16-color terminals; faintInk lets the
+ * painter add SGR-2 (applyTextStyles whitish branch). OCC's hover analog is
+ * TextHoverColorContext: when it recolors uncolored text the dim path is
+ * inactive, so faintInk stays undefined (mirrors `!W`).
  */
 export default function ThemedText(t0) {
-  const $ = _c(10);
+  const $ = _c(11);
   const {
     color,
     backgroundColor,
@@ -101,11 +117,15 @@ export default function ThemedText(t0) {
   const [themeName] = useTheme();
   const theme = getTheme(themeName);
   const hoverColor = useContext(TextHoverColorContext);
-  const resolvedColor = !color && hoverColor ? resolveColor(hoverColor, theme) : dimColor ? theme.inactive as Color : resolveColor(color, theme);
+  const isHoverOverride = !color && Boolean(hoverColor);
+  const resolvedColor = isHoverOverride ? resolveColor(hoverColor, theme) : dimColor ? theme.inactive as Color : resolveColor(color, theme);
+  // Official v300: `const G=A&&!W?D:void 0` — dimColor && !hovered → the
+  // resolved (inactive) color, else undefined. Callers never pass faintInk.
+  const faintInk = dimColor && !isHoverOverride ? resolvedColor : undefined;
   const resolvedBackgroundColor = backgroundColor ? theme[backgroundColor] as Color : undefined;
   let t8;
-  if ($[0] !== bold || $[1] !== children || $[2] !== inverse || $[3] !== italic || $[4] !== resolvedBackgroundColor || $[5] !== resolvedColor || $[6] !== strikethrough || $[7] !== underline || $[8] !== wrap) {
-    t8 = <Text color={resolvedColor} backgroundColor={resolvedBackgroundColor} bold={bold} italic={italic} underline={underline} strikethrough={strikethrough} inverse={inverse} wrap={wrap}>{children}</Text>;
+  if ($[0] !== bold || $[1] !== children || $[2] !== inverse || $[3] !== italic || $[4] !== resolvedBackgroundColor || $[5] !== resolvedColor || $[6] !== strikethrough || $[7] !== underline || $[8] !== wrap || $[9] !== faintInk) {
+    t8 = <Text color={resolvedColor} backgroundColor={resolvedBackgroundColor} faintInk={faintInk} bold={bold} italic={italic} underline={underline} strikethrough={strikethrough} inverse={inverse} wrap={wrap}>{children}</Text>;
     $[0] = bold;
     $[1] = children;
     $[2] = inverse;
@@ -115,9 +135,10 @@ export default function ThemedText(t0) {
     $[6] = strikethrough;
     $[7] = underline;
     $[8] = wrap;
-    $[9] = t8;
+    $[9] = faintInk;
+    $[10] = t8;
   } else {
-    t8 = $[9];
+    t8 = $[10];
   }
   return t8;
 }
