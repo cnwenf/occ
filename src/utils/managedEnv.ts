@@ -4,6 +4,7 @@ import { getGlobalConfig } from './config.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import {
+  isHostManagedTlsOrProxyVar,
   isProviderManagedEnvVar,
   SAFE_ENV_VARS,
 } from './managedEnvConstants.js'
@@ -57,6 +58,76 @@ function withoutHostManagedProviderVars(
     if (!isProviderManagedEnvVar(key)) {
       out[key] = value
     }
+  }
+  return out
+}
+
+/**
+ * One-time-per-(source, key) warning state for host-managed TLS/proxy drops
+ * (CC 2.1.300 #55, binary warned-set `i` threaded through `b`/`L`).
+ * `filterSettingsEnv` runs several times per session, so the Set keeps a single
+ * ignored key from warning on every pass.
+ */
+const hostTlsProxyDropWarned = new Set<string>()
+
+/**
+ * CC 2.1.300 (#55) binary warning emitter `L(e,n,r,i)` @219874060 — reports a
+ * settings env key dropped because the host owns the session's TLS/proxy
+ * channel. Byte-exact against the v300 ELF: the desktop-host arm (`i=true`)
+ * uses the "re-point the TLS/proxy channel" text; the plain managed-by-host arm
+ * uses the "provider routing is managed by the host" text.
+ */
+function warnHostManagedTlsProxyVarIgnored(
+  key: string,
+  source: SettingSource | 'globalConfig',
+  desktopHost: boolean,
+): void {
+  const dedupeKey = `${source}:${key}`
+  if (hostTlsProxyDropWarned.has(dedupeKey)) return
+  hostTlsProxyDropWarned.add(dedupeKey)
+  const rendered = formatEnvKeyName(key)
+  logForDiagnosticsNoPII(
+    'warn',
+    desktopHost
+      ? `Ignoring ${rendered} from ${source} — repo-committed settings can't re-point the TLS/proxy channel of a session whose credential comes from the host. Set it in ~/.claude/settings.json or managed settings instead.`
+      : `Ignoring ${rendered} from ${source} — this session's provider routing is managed by the host (CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST or a host-auth-callback marker), so settings-sourced provider/auth configuration does not apply.`,
+  )
+}
+
+/**
+ * CC 2.1.300 (#55) binary filter arm inside `b(e,n,r,i)` @219874600:
+ *   if (r.managedByHostFlag && (!r.desktopHost || oJe(n)) && (Vln(s) || iJe(s)))
+ *     { L(i, s, n, r.desktopHost); continue }
+ *
+ * When the host owns the session credential
+ * (CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST), strip CA-bundle / tool-proxy / git-TLS
+ * / git-config vars (e.g. SSL_CERT_FILE) from settings-sourced env so a
+ * repo-committed or user settings file can't re-point the TLS/proxy channel of
+ * a host-authenticated session. Under Claude Desktop the strip narrows to
+ * PROJECT-scoped settings only (`oJe(n)`); a plain managed-by-host CLI session
+ * strips from every source. Git repo-location vars (GIT_DIR, …) are kept — see
+ * isHostManagedTlsOrProxyVar.
+ */
+function withoutHostManagedTlsProxyVars(
+  env: Record<string, string> | undefined,
+  source: SettingSource | 'globalConfig',
+): Record<string, string> {
+  if (!env) return {}
+  if (!isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
+    return env
+  }
+  const desktopHost = process.env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'
+  // Under Claude Desktop only project-scoped settings are stripped.
+  if (desktopHost && !PROJECT_SCOPED_SOURCES.has(source)) {
+    return env
+  }
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(env)) {
+    if (isHostManagedTlsOrProxyVar(key)) {
+      warnHostManagedTlsProxyVarIgnored(key, source, desktopHost)
+      continue
+    }
+    out[key] = value
   }
   return out
 }
@@ -543,24 +614,27 @@ function filterProjectScopeBlockedKeys(
 /**
  * Compose the strip filters applied to every settings-sourced env object.
  * Order mirrors the official binary pipeline: project-scope blocklist →
- * SSH-tunnel strip → host-managed-provider strip → host spawn-env strip.
- * The source name is threaded down to the last filter so the 2.1.281 "already
- * sets it" warning can name the settings file the key came from.
+ * SSH-tunnel strip → host-managed-provider strip → host-managed TLS/proxy strip
+ * (CC 2.1.300 #55) → host spawn-env strip. The source name is threaded down to
+ * the filters that warn so the message can name the settings file it came from.
  */
 function filterSettingsEnv(
   env: Record<string, string> | undefined,
   source: SettingSource | 'globalConfig',
 ): Record<string, string> {
   const filtered = withoutCcdSpawnEnvKeys(
-    withoutHostManagedProviderVars(
-      withoutSSHTunnelVars(
-        filterProjectScopeBlockedKeys(
-          env,
-          source,
-          projectScopeDropWarned,
-          envAboveProjectSettings,
+    withoutHostManagedTlsProxyVars(
+      withoutHostManagedProviderVars(
+        withoutSSHTunnelVars(
+          filterProjectScopeBlockedKeys(
+            env,
+            source,
+            projectScopeDropWarned,
+            envAboveProjectSettings,
+          ),
         ),
       ),
+      source,
     ),
     source,
   )
@@ -951,6 +1025,7 @@ export function applyConfigEnvironmentVariables(): void {
 export function _resetManagedEnvForTesting(): void {
   projectScopeDropWarned.clear()
   hostSpawnEnvDropWarned.clear()
+  hostTlsProxyDropWarned.clear()
   otelDominanceDropWarned = new Set<string>()
   ccdSpawnEnvKeys = undefined
   preSettingsEnvSnapshot = undefined

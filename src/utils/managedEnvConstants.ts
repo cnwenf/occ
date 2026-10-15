@@ -77,6 +77,180 @@ export function isProviderManagedEnvVar(key: string): boolean {
 }
 
 /**
+ * CC 2.1.300 (#55) — "Changed CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST sessions to
+ * ignore CA-bundle, tool-proxy, git TLS and git config variables like
+ * SSL_CERT_FILE in settings; under Claude Desktop, only in project settings."
+ *
+ * Official v300 filter fn `b(e,n,r,i)` @219874600 strips a settings env var
+ * when `r.managedByHostFlag && (!r.desktopHost || oJe(n)) && (Vln(s) || iJe(s))`
+ * (docs/gap-research-300/triage-T3.md ## 55). The two predicate arms:
+ *
+ *   Vln(s) = Tl.has(s.toUpperCase())                     // proxy set (9 vars)
+ *   iJe(s) = Ky.has(s.toUpperCase()) || vDr(s)           // mTLS/auth ∪ Pl ∪ git regexes
+ *   vDr(s) = Pl.includes(upper) || l5n.test(s) || mQe.test(s)
+ *   Pl     = dedup([...pte, ...Gme, ...CYn.upper, ...vl, ...(pJ∖fQe)])
+ *            .filter(x => x≠NODE_EXTRA_CA_CERTS && x≠JAVA_TOOL_OPTIONS && x∉Tl)
+ *   Ky     = Set(CLAUDE_CODE_CLIENT_CERT, CLAUDE_CODE_CLIENT_KEY,
+ *            CLAUDE_CODE_CLIENT_KEY_PASSPHRASE, NODE_EXTRA_CA_CERTS,
+ *            NODE_TLS_REJECT_UNAUTHORIZED, CLAUDE_CODE_OAUTH_SCOPES, ...Pl)
+ *   l5n    = /^GIT_(?:SSL|PROXY)_/i
+ *   mQe    = /^GIT_CONFIG_(KEY|VALUE)_\d+$/i
+ *
+ * Every list member below is byte-verified against the v300 ELF: Tl @216530205,
+ * pte(TYn∪AYn)/Gme/vl @216530140 + @216517650, CYn @216520764, fQe/pJ
+ * @216276040. JAVA_TOOL_OPTIONS is a CYn member that the official Pl filter
+ * explicitly DROPS, so it is NOT stripped. NODE_EXTRA_CA_CERTS is filtered out
+ * of Pl but re-included via the Ky base, so it IS stripped.
+ *
+ * NOTE: the git repo-location vars (fQe) are intentionally KEPT — they say
+ * *where* the repo is (GIT_DIR, GIT_WORK_TREE, …), not *how* to establish TLS,
+ * so a host-managed session still needs them to locate the checkout.
+ */
+
+// Tl — the proxy arm `Vln`. @216530205
+const HOST_MANAGED_PROXY_VARS = new Set([
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'CLAUDE_CODE_HTTP_PROXY',
+  'CLAUDE_CODE_HTTPS_PROXY',
+  'NPM_CONFIG_PROXY',
+  'NPM_CONFIG_HTTP_PROXY',
+  'NPM_CONFIG_HTTPS_PROXY',
+])
+
+// Ky base — the mTLS/auth vars stripped independent of Pl. @216530140
+const HOST_MANAGED_MTLS_AUTH_VARS = [
+  'CLAUDE_CODE_CLIENT_CERT',
+  'CLAUDE_CODE_CLIENT_KEY',
+  'CLAUDE_CODE_CLIENT_KEY_PASSPHRASE',
+  'NODE_EXTRA_CA_CERTS',
+  'NODE_TLS_REJECT_UNAUTHORIZED',
+  'CLAUDE_CODE_OAUTH_SCOPES',
+]
+
+// pte = TYn(6) ∪ AYn(8) — CA-bundle vars. @216530140 / @216517650
+const HOST_MANAGED_CA_BUNDLE_VARS = [
+  // TYn
+  'SSL_CERT_FILE',
+  'NODE_EXTRA_CA_CERTS',
+  'REQUESTS_CA_BUNDLE',
+  'CURL_CA_BUNDLE',
+  'CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE',
+  'HTTPLIB2_CA_CERTS',
+  // AYn
+  'AWS_CA_BUNDLE',
+  'DENO_CERT',
+  'CARGO_HTTP_CAINFO',
+  'PIP_CERT',
+  'GIT_SSL_CAINFO',
+  'GRPC_DEFAULT_SSL_ROOTS_FILE_PATH',
+  'NIX_SSL_CERT_FILE',
+  'HEX_CACERTS_PATH',
+]
+
+// Gme — native-TLS CA-store switches. @216530140
+const HOST_MANAGED_NATIVE_TLS_VARS = ['UV_NATIVE_TLS', 'DENO_TLS_CA_STORE']
+
+// CYn — per-tool proxy vars (uppercased for membership). @216520764
+const HOST_MANAGED_TOOL_PROXY_VARS = [
+  'YARN_HTTP_PROXY',
+  'YARN_HTTPS_PROXY',
+  'NPM_CONFIG_PROXY',
+  'NPM_CONFIG_HTTPS_PROXY',
+  'NPM_CONFIG_NOPROXY',
+  'GLOBAL_AGENT_HTTP_PROXY',
+  'GLOBAL_AGENT_HTTPS_PROXY',
+  'GLOBAL_AGENT_NO_PROXY',
+  'DOCKER_HTTP_PROXY',
+  'DOCKER_HTTPS_PROXY',
+  'ELECTRON_GET_USE_PROXY',
+  'CLOUDSDK_PROXY_TYPE',
+  'CLOUDSDK_PROXY_ADDRESS',
+  'CLOUDSDK_PROXY_PORT',
+  'CLOUDSDK_PROXY_USERNAME',
+  'CLOUDSDK_PROXY_PASSWORD',
+  'FSSPEC_GCS',
+  'JAVA_TOOL_OPTIONS',
+]
+
+// vl — extra SSL/proxy vars. @216276040
+const HOST_MANAGED_SSL_EXTRA_VARS = ['SSL_CERT_FILE', 'SSL_CERT_DIR', 'ALL_PROXY']
+
+// fQe — git repo-location vars. KEPT (excluded from the strip). @216276040
+export const GIT_REPO_LOCATION_VARS = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_COMMON_DIR',
+  'GIT_INDEX_FILE',
+  'GIT_CEILING_DIRECTORIES',
+  'GIT_DISCOVERY_ACROSS_FILESYSTEM',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_SHALLOW_FILE',
+  'GIT_NAMESPACE',
+  'GIT_IMPLICIT_WORK_TREE',
+  'GIT_REFERENCE_BACKEND',
+]
+
+// pJ∖fQe — the git-config vars (pJ minus the repo-location fQe). @216276040
+const HOST_MANAGED_GIT_CONFIG_VARS = [
+  'GIT_CONFIG_COUNT',
+  'GIT_CONFIG_PARAMETERS',
+  'GIT_CONFIG_GLOBAL',
+  'GIT_CONFIG_SYSTEM',
+  'GIT_CONFIG',
+]
+
+// l5n / mQe — git TLS/proxy + indexed git-config regexes. @216530140
+const GIT_TLS_OR_PROXY_REGEX = /^GIT_(?:SSL|PROXY)_/i
+const GIT_INDEXED_CONFIG_REGEX = /^GIT_CONFIG_(KEY|VALUE)_\d+$/i
+
+// Pl — the deduped CA/native-TLS/tool-proxy/SSL/git-config list, after the
+// official filter drops NODE_EXTRA_CA_CERTS, JAVA_TOOL_OPTIONS, and Tl members.
+const HOST_MANAGED_PL_VARS: ReadonlySet<string> = (() => {
+  const pl = new Set<string>()
+  for (const raw of [
+    ...HOST_MANAGED_CA_BUNDLE_VARS,
+    ...HOST_MANAGED_NATIVE_TLS_VARS,
+    ...HOST_MANAGED_TOOL_PROXY_VARS,
+    ...HOST_MANAGED_SSL_EXTRA_VARS,
+    ...HOST_MANAGED_GIT_CONFIG_VARS,
+  ]) {
+    const upper = raw.toUpperCase()
+    if (upper === 'NODE_EXTRA_CA_CERTS') continue
+    if (upper === 'JAVA_TOOL_OPTIONS') continue
+    if (HOST_MANAGED_PROXY_VARS.has(upper)) continue
+    pl.add(upper)
+  }
+  return pl
+})()
+
+// Ky — the explicit mTLS/auth base ∪ Pl.
+const HOST_MANAGED_KY_VARS: ReadonlySet<string> = new Set([
+  ...HOST_MANAGED_MTLS_AUTH_VARS,
+  ...HOST_MANAGED_PL_VARS,
+])
+
+/**
+ * True when `key` is a TLS/proxy/CA/git-config var that a host-managed session
+ * must ignore from settings (official `Vln(s) || iJe(s)`). Case-insensitive on
+ * the set arms; the git regexes test the raw key (also case-insensitive).
+ */
+export function isHostManagedTlsOrProxyVar(key: string): boolean {
+  const upper = key.toUpperCase()
+  // Vln arm — proxy set.
+  if (HOST_MANAGED_PROXY_VARS.has(upper)) return true
+  // iJe arm — Ky (mTLS/auth ∪ Pl).
+  if (HOST_MANAGED_KY_VARS.has(upper)) return true
+  // vDr regex arms — git TLS/proxy + indexed git-config.
+  if (GIT_TLS_OR_PROXY_REGEX.test(key)) return true
+  if (GIT_INDEXED_CONFIG_REGEX.test(key)) return true
+  return false
+}
+
+/**
  * Dangerous shell settings that can execute arbitrary shell code
  */
 export const DANGEROUS_SHELL_SETTINGS = [

@@ -1439,6 +1439,77 @@ async function maybeRemoveApiKeyFromMacOSKeychain(): Promise<void> {
   }
 }
 
+/**
+ * CC 2.1.300 (#19) — "Fixed a login refused by `forceLoginOrgUUID` leaving the
+ * refused organization's token stored, or live after `/login`."
+ *
+ * Official v300 validates the org pin BEFORE persisting login credentials
+ * (outcome-typed validator: `refused` / `permitted{verified}` / `not_checked`;
+ * credentials snapshotted, token obtained, persistence only on `permitted`,
+ * snapshot restored on `refused`). v299 persisted-then-validated — the bug.
+ *
+ * OCC constraint: `saveOAuthTokensIfNeeded` is SYNC (its return value is
+ * consumed synchronously by the CLI login handler), while the authoritative
+ * session-start validator `validateForceLoginOrg` is ASYNC (network profile
+ * fetch). So OCC runs a SYNC org-pin check against the org info already present
+ * on the token (profile / tokenAccount / cached account) and REFUSES the write
+ * on a definitive mismatch, recording the refusal in this latch.
+ * `validateForceLoginOrg` consumes the latch so a refused login surfaces the
+ * real org-pin error instead of falling through its `!tokens` branch to a false
+ * `{valid:true}` ("Login successful") after the pre-save logout wiped storage.
+ * When the token carries no org info, the sync check defers (not_checked) and
+ * the async network validator remains authoritative.
+ */
+let pendingOrgPinRefusal: OrgValidationResult | null = null
+
+/** Test-only peek at the pending org-pin refusal latch (CC 2.1.300 #19). */
+export function _peekPendingOrgPinRefusalForTesting(): OrgValidationResult | null {
+  return pendingOrgPinRefusal
+}
+
+/** Test-only reset of the pending org-pin refusal latch (CC 2.1.300 #19). */
+export function _resetPendingOrgPinRefusalForTesting(): void {
+  pendingOrgPinRefusal = null
+}
+
+/** The org-pin mismatch message (shared by the sync save-time refusal and the
+ * async network-verified mismatch in validateForceLoginOrg — byte-identical). */
+function orgPinMismatchMessage(
+  tokenOrgUuid: string,
+  requiredOrgUuid: string,
+): string {
+  return (
+    `Your authentication token belongs to organization ${tokenOrgUuid},\n` +
+    `but this machine requires organization ${requiredOrgUuid}.\n\n` +
+    `Please log in with the correct organization: occ auth login`
+  )
+}
+
+/**
+ * SYNC org-pin check for the login-credential save (CC 2.1.300 #19). Returns a
+ * `refused` result when a `forceLoginOrgUUID` pin definitively mismatches the
+ * token's org; `null` for permitted / not_checked (no pin, or no org info to
+ * compare synchronously — the async network validator stays authoritative).
+ */
+function checkOrgPinForTokenSave(
+  tokens: OAuthTokens,
+): { valid: false; message: string; reason: string } | null {
+  const requiredOrgUuid =
+    getSettingsForSource('policySettings')?.forceLoginOrgUUID
+  if (!requiredOrgUuid) return null
+  const tokenOrgUuid =
+    tokens?.profile?.organization?.uuid ??
+    tokens?.tokenAccount?.organizationUuid ??
+    getOauthAccountInfo()?.organizationUuid
+  if (!tokenOrgUuid) return null
+  if (tokenOrgUuid === requiredOrgUuid) return null
+  return {
+    valid: false,
+    reason: 'org_pin_mismatch',
+    message: orgPinMismatchMessage(tokenOrgUuid, requiredOrgUuid),
+  }
+}
+
 // Function to store OAuth tokens in secure storage
 export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
   success: boolean
@@ -1454,6 +1525,20 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
   if (!tokens.refreshToken || !tokens.expiresAt) {
     logEvent('tengu_oauth_tokens_inference_only', {})
     return { success: true }
+  }
+
+  // CC 2.1.300 (#19): validate the org pin BEFORE persisting. A token refused
+  // by forceLoginOrgUUID must never be written (v299 persisted-then-validated,
+  // leaving the refused org's token stored / live after /login). Each save
+  // starts from a clean latch; a definitive mismatch records the refusal for
+  // validateForceLoginOrg and skips the write so the prior credentials survive
+  // untouched (the official snapshot-restore intent). Telemetry on the refusal
+  // is STAGED — OCC does not invent an unverified event name.
+  pendingOrgPinRefusal = null
+  const orgPinRefusal = checkOrgPinForTokenSave(tokens)
+  if (orgPinRefusal) {
+    pendingOrgPinRefusal = orgPinRefusal
+    return { success: false, warning: orgPinRefusal.message }
   }
 
   const secureStorage = getSecureStorage()
@@ -2633,6 +2718,19 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
   const providerGate = await validateProviderAllowed()
   if (providerGate) return providerGate
 
+  // CC 2.1.300 (#19): surface a login-time org-pin refusal recorded by
+  // saveOAuthTokensIfNeeded, consumed exactly once. This runs BEFORE the
+  // unix-socket / auth-enabled / org-pin / `!tokens` branches so a refused
+  // login can't fall through `!tokens` (storage wiped by the pre-save logout)
+  // to a false {valid:true} "Login successful". The latch is only ever set on
+  // the claude.ai login path, where isAnthropicAuthEnabled() holds, so
+  // consuming it here is semantically safe.
+  if (pendingOrgPinRefusal) {
+    const refusal = pendingOrgPinRefusal
+    pendingOrgPinRefusal = null
+    return refusal
+  }
+
   // `claude ssh` remote: real auth lives on the local machine and is injected
   // by the proxy. The placeholder token can't be validated against the profile
   // endpoint. The local side already ran this check before establishing the session.
@@ -2704,10 +2802,7 @@ export async function validateForceLoginOrg(): Promise<OrgValidationResult> {
 
   return {
     valid: false,
-    message:
-      `Your authentication token belongs to organization ${tokenOrgUuid},\n` +
-      `but this machine requires organization ${requiredOrgUuid}.\n\n` +
-      `Please log in with the correct organization: occ auth login`,
+    message: orgPinMismatchMessage(tokenOrgUuid, requiredOrgUuid),
   }
 }
 
