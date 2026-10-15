@@ -585,6 +585,15 @@ export interface IDEExtensionInstallationStatus {
   error: string | null
   installedVersion: string | null
   ideType: IdeType | null
+  /**
+   * True when the extension was already present before this run's install
+   * attempt. Official v300 `O6r` @228445620: `let r=await D6r(n),s=r!==null`
+   * — captured BEFORE the conditional `--force --install-extension` launch,
+   * then returned as `{installedVersion:r,previouslyInstalled:s}`. The
+   * official failure statuses (`P6r` catch + orchestrator catch fallback)
+   * OMIT the field, so it is optional here.
+   */
+  previouslyInstalled?: boolean
 }
 
 export async function maybeInstallIDEExtension(
@@ -592,7 +601,8 @@ export async function maybeInstallIDEExtension(
 ): Promise<IDEExtensionInstallationStatus | null> {
   try {
     // Install/update the extension
-    const installedVersion = await installIDEExtension(ideType)
+    const { installedVersion, previouslyInstalled } =
+      await installIDEExtension(ideType)
     // Only track successful installations
     logEvent('tengu_ext_installed', {})
 
@@ -606,6 +616,7 @@ export async function maybeInstallIDEExtension(
       error: null,
       installedVersion,
       ideType: ideType,
+      previouslyInstalled,
     }
   } catch (error) {
     logEvent('tengu_ext_install_error', {})
@@ -876,15 +887,33 @@ export async function isIDEExtensionInstalled(
   return false
 }
 
-async function installIDEExtension(ideType: IdeType): Promise<string | null> {
+// Official v300 `O6r` @228445620:
+//   let r=await D6r(n),s=r!==null;if(!r||pM(r,qxn())){await X(500);
+//     let h=await ct(n,["--force","--install-extension","anthropic.claude-code"],
+//     {env:Ttt()});if(h.code!==0)throw …;r=qxn()}
+//   return{installedVersion:r,previouslyInstalled:s}
+// … tail: return{installedVersion:null,previouslyInstalled:!1}
+async function installIDEExtension(ideType: IdeType): Promise<{
+  installedVersion: string | null
+  previouslyInstalled: boolean
+}> {
   if (isVSCodeIde(ideType)) {
     const command = await getVSCodeIDECommand(ideType)
 
     if (command) {
       if (process.env.USER_TYPE === 'ant') {
-        return await installFromArtifactory(command)
+        // OCC legacy Anthropic-internal branch; official v300 `O6r` has no
+        // artifactory path, so there is no binary evidence for its
+        // previouslyInstalled semantics — conservatively report false.
+        const installedVersion = await installFromArtifactory(command)
+        return { installedVersion, previouslyInstalled: false }
       }
       let version = await getInstalledVSCodeExtensionVersion(command)
+      // Capture the pre-install presence flag BEFORE the conditional install
+      // launch (official `s=r!==null`) — the single-launch fix (2.1.300 #34)
+      // replaces the v299 orchestrator's separate `isIDEExtensionInstalled`
+      // pre-check spawn with this in-installer flag.
+      const previouslyInstalled = version !== null
       // If it's not installed or the version is older than the one we have bundled,
       if (!version || lt(version, getClaudeCodeVersion())) {
         // `code` may crash when invoked too quickly in succession
@@ -901,13 +930,13 @@ async function installIDEExtension(ideType: IdeType): Promise<string | null> {
         }
         version = getClaudeCodeVersion()
       }
-      return version
+      return { installedVersion: version, previouslyInstalled }
     }
   }
   // No automatic installation for JetBrains IDEs as it is not supported in native
   // builds. We show a prominent notice for them to download from the marketplace
   // instead.
-  return null
+  return { installedVersion: null, previouslyInstalled: false }
 }
 
 function getInstallationEnv(): NodeJS.ProcessEnv | undefined {
@@ -915,10 +944,14 @@ function getInstallationEnv(): NodeJS.ProcessEnv | undefined {
   // the `code` command and actually launch the UI.
   // Make this error out if this happens by clearing the DISPLAY
   // environment variable.
+  // Official v300 `Ttt` @228446120 (byte-verified; also present in v299
+  // `pZe`): `{...process.env,DISPLAY:"",WAYLAND_DISPLAY:""}` — Wayland
+  // sessions ignore DISPLAY, so the GUI-launch guard must clear both.
   if (getPlatform() === 'linux') {
     return {
       ...process.env,
       DISPLAY: '',
+      WAYLAND_DISPLAY: '',
     }
   }
   return undefined
@@ -1304,34 +1337,37 @@ export async function initializeIdeIntegration(
     const ideType = ideToInstallExtension ?? getTerminalIdeType()
     if (ideType) {
       if (isVSCodeIde(ideType)) {
-        void isIDEExtensionInstalled(ideType).then(async isAlreadyInstalled => {
-          void maybeInstallIDEExtension(ideType)
-            .catch(error => {
-              const ideInstallationStatus: IDEExtensionInstallationStatus = {
-                installed: false,
-                error: error.message || 'Installation failed',
-                installedVersion: null,
-                ideType: ideType,
-              }
-              return ideInstallationStatus
-            })
-            .then(status => {
-              onInstallationComplete(status)
+        // Official v300 `Eio` @228451039 (2.1.300 #34): single editor-CLI
+        // launch — the v299 `isIDEExtensionInstalled` pre-check wrapper (a
+        // second spawn used only to gate onboarding) is gone; the installer
+        // itself reports `previouslyInstalled`, and onboarding is gated on
+        // `H?.installed===!0&&!H.previouslyInstalled&&!vgr()`.
+        void maybeInstallIDEExtension(ideType)
+          .catch(error => {
+            const ideInstallationStatus: IDEExtensionInstallationStatus = {
+              installed: false,
+              error: error.message || 'Installation failed',
+              installedVersion: null,
+              ideType: ideType,
+            }
+            return ideInstallationStatus
+          })
+          .then(status => {
+            onInstallationComplete(status)
 
-              if (status?.installed) {
-                // If we installed and don't yet have an IDE, search again.
-                void findAvailableIDE().then(onIdeDetected)
-              }
+            if (status?.installed) {
+              // If we installed and don't yet have an IDE, search again.
+              void findAvailableIDE().then(onIdeDetected)
+            }
 
-              if (
-                !isAlreadyInstalled &&
-                status?.installed === true &&
-                !ideOnboardingDialog().hasIdeOnboardingDialogBeenShown()
-              ) {
-                onShowIdeOnboarding()
-              }
-            })
-        })
+            if (
+              status?.installed === true &&
+              !status.previouslyInstalled &&
+              !ideOnboardingDialog().hasIdeOnboardingDialogBeenShown()
+            ) {
+              onShowIdeOnboarding()
+            }
+          })
       } else if (isJetBrainsIde(ideType)) {
         // Always check installation to populate the sync cache used by status notices
         void isIDEExtensionInstalled(ideType).then(async installed => {
