@@ -142,19 +142,22 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
         60_000,
       );
       expect(res.code).toBe(0);
-      expect(res.stdout).toContain("Issue created:");
-      // Extract issue URL and close it.
-      const urlMatch = res.stdout.match(/Issue created: (https:\/\/github\.com\/cnwenf\/occ\/issues\/\d+)/);
+      // Live-model wording varies ("Issue created:", "Issue created
+      // successfully ✅", ...) — assert the stable facts: the phrase and the
+      // issue URL anywhere in the output.
+      expect(res.stdout).toMatch(/Issue created/);
+      // Extract issue URL and close it. Hard-assert the URL so a wording
+      // change can never silently skip the cleanup step and leave the issue
+      // open (happened with #509).
+      const urlMatch = res.stdout.match(/https:\/\/github\.com\/cnwenf\/occ\/issues\/(\d+)/);
+      expect(urlMatch).not.toBeNull();
       if (urlMatch) {
-        const issueUrl = urlMatch[1];
-        const issueNum = issueUrl.match(/\/issues\/(\d+)/)?.[1];
-        if (issueNum) {
-          // Close the issue to avoid spam.
-          const { execFileSync } = await import("node:child_process");
-          try {
-            execFileSync("gh", ["issue", "close", issueNum, "--repo", "cnwenf/occ", "--comment", "e2e test — auto-closed"], { timeout: 15_000 });
-          } catch {}
-        }
+        const issueNum = urlMatch[1];
+        // Close the issue to avoid spam.
+        const { execFileSync } = await import("node:child_process");
+        try {
+          execFileSync("gh", ["issue", "close", issueNum, "--repo", "cnwenf/occ", "--comment", "e2e test — auto-closed"], { timeout: 15_000 });
+        } catch {}
       }
     } finally {
       cleanup();
