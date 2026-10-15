@@ -725,6 +725,11 @@ export function logAPISuccessAndDuration({
     output_tokens: String(usage.output_tokens),
     cache_read_tokens: String(usage.cache_read_input_tokens),
     cache_creation_tokens: String(usage.cache_creation_input_tokens),
+    // CC 2.1.300 (#2): split cache writes by lifetime. Official builder:
+    // cache_creation_5m_tokens:usage.cache_creation?.ephemeral_5m_input_tokens??0
+    // cache_creation_1h_tokens:usage.cache_creation?.ephemeral_1h_input_tokens??0
+    cache_creation_5m_tokens: String(usage.cache_creation?.ephemeral_5m_input_tokens ?? 0),
+    cache_creation_1h_tokens: String(usage.cache_creation?.ephemeral_1h_input_tokens ?? 0),
     cost_usd: String(costUSD),
     duration_ms: String(durationMs),
     speed: fastMode ? 'fast' : 'normal',
