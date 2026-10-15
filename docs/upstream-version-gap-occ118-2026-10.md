@@ -107,13 +107,152 @@ Advisory (T1): OCC's fs-only `isInTransientGitState` (gitDiff.ts:308, commitAttr
 
 ## 3. PORT implementation record
 
-<!-- PORT_RECORD -->
+**All 21 PORT entries landed** on branch `agent/occ/8045b9c7` (12 commits, `a935bb3`…`06752f8`, each pushed). Commit map: `a935bb3` #2 · `1a6f0d6` #5/#31/#63 · `2f522c8` #43 · `e23dd27` #34 · `3efc5a8` #47 · `879f13e` #10/#18-util/#22 · `f36d50d` #36/#59 · `527db54` #41/#66 · `9d5217c` #18-wiring (+ #36 /clear fold-in) · `703833a` #28/#65 · `d052571` #24/#29/#33 · `06752f8` #19/#55. Per-item records with binary evidence and documented deviations follow (numeric order).
 
 ### #2 — OTel `api_request` cache-write lifetime split ✅ LANDED (commit `a935bb3`)
 
 - **Evidence:** v300 ELF `api_request` builder @227727872 (`dd` excerpt): `...cache_creation_tokens:w.cache_creation_input_tokens,cache_creation_5m_tokens:w.cache_creation?.ephemeral_5m_input_tokens??0,cache_creation_1h_tokens:w.cache_creation?.ephemeral_1h_input_tokens??0,...`; v299 builder @226508395 has zero `cache_creation_5m/1h` hits. Field names also in v300 OTel attribute table @107102784.
 - **Change:** `src/services/api/logging.ts` `logAPISuccessAndDuration` emit site — added `cache_creation_5m_tokens: String(usage.cache_creation?.ephemeral_5m_input_tokens ?? 0)` and `cache_creation_1h_tokens: String(usage.cache_creation?.ephemeral_1h_input_tokens ?? 0)` after `cache_creation_tokens`, preserving OCC's String()-wrapped attribute convention (value semantics identical to official `??0`).
 - **Tests:** `src/utils/__tests__/apiRequestCacheSplit300.test.ts` (TDD: RED 0/3 → GREEN 3/3) — full split, missing `cache_creation` → "0"/"0", partial 5m-only → 1h "0"; pre-existing attrs untouched. OTel-adjacent regression files (atMentionOtelCap293, doctorOtelHeaders275, otelHeadersHelperFailure275) all pass.
+
+### #5 — advisor enabled on AWS provider ✅ LANDED (commit `1a6f0d6`)
+
+- **Evidence:** official gate `_It` @222993478 = `firstParty||wD`, `wD` @216213859 = `anthropicAws||anthropicGoogleCloud`.
+- **Change:** `src/utils/advisor.ts` `isAdvisorEnabled` — strict firstParty gate widened to `firstParty||anthropic_aws`.
+- **Deviation:** OCC folds googleCloud into firstParty per `providers.ts` (no separate anthropicGoogleCloud provider surface) — the official `wD` arm is fully covered by the union.
+- **Tests:** advisorAws300 (7).
+
+### #10 — `/autocompact` warn gate ✅ LANDED (commit `879f13e`)
+
+- **Evidence:** v300 `TAn` = `chosenWindowExceedsAutoWindow` @239116220; warn call site `cCt(u)&&TAn(r,s)` @239116094. v299 gate was source-only (`cCt` @225878936).
+- **Change:** NEW `src/utils/autoCompactWindow.ts` `chosenWindowExceedsAutoWindow`; autocompact-noninteractive high-token-usage warning now fires only when the chosen window exceeds the auto window — smaller-than-auto overrides no longer warn.
+- **Deviation:** official source-gate `cCt` is env-aware; OCC mirror uses the existing env check (documented in-code as the `Hno` analog).
+- **Tests:** autoCompactWindowWarnGate300 (8), 1 pre-existing assertion flipped to the new behavior (288 suite green).
+
+### #18 — tool-search auto hold (conversation latch) ✅ LANDED (commits `879f13e` util + `9d5217c` wiring)
+
+- **Evidence:** `Lfr` (= `isToolSearchEnabled`) grows 7th param `S=!1` @227142200; `auto_held` reason token v299:0 → v300:2 (@107850108, @227142599); debug line `Auto tool search enabled: this conversation already declared ToolSearch` @227142517 (no `[source:]` suffix); query caller passes `Q.recordedToolDescriptions?.has(Ci)` @227824350 with `Ci="ToolSearch"` @219935042; recording via `H1t` @227828656 region + lazy-names latch variant @227825300; conversation reset `w3n` @239179269.
+- **Change:** (a) `toolSearch.ts` — `autoHeld` 6th OCC param; `tst-auto` short-circuits with reason `auto_held` before the threshold recompute. (b) `claude.ts` query path passes `isToolSearchDeclared()`; `noteToolSearchDeclared()` armed when the filtered-tools branch sends ToolSearch's description on the wire. (c) `commands/clear/caches.ts` — `resetToolSearchDeclared()` wired into `clearSessionCaches` (/clear + resume) per `w3n`.
+- **Deviations:** module-level boolean latch instead of a `recordedToolDescriptions` ledger (#46 STAGED — per-process ≈ conversation lifetime, same class as #36's module map); the initially-sketched `extractDiscoveredToolNames(messages).has(TOOL_SEARCH_TOOL_NAME)` source was REJECTED (OCC's extractor only collects tool_reference names → the hold would never arm); compact caller keeps 6 args (official 6-arg compact site — no hold).
+- **Tests:** toolSearchAutoHold300 (8), toolSearchDeclaredLatch300 (5 — latch semantics + behavioral clearSessionCaches reset incl. #36's map returning to identity-apply).
+
+### #19 — org-pin login refusal BEFORE persist ✅ LANDED (commit `06752f8`)
+
+- **Evidence:** v300 validates the org pin before persisting credentials and restores the snapshot on `refused` @242589299; v299 persisted-then-validated (OCC `auth.ts` saved unconditionally).
+- **Change:** `src/utils/auth.ts` — `checkOrgPinForTokenSave` (sync check against on-token org info: `profile.organization.uuid ?? tokenAccount.organizationUuid ?? cached oauth account`); `saveOAuthTokensIfNeeded` refuses the write on definitive mismatch (prior credentials survive untouched) and records the refusal in the `pendingOrgPinRefusal` latch; `validateForceLoginOrg` consumes the latch once AFTER providerGate but BEFORE the unix-socket/auth-enabled/org-pin/`!tokens` branches — a refused login surfaces the real org-pin error instead of a false `{valid:true}`; mismatch message byte-shared between sync refusal and the async network-verified path.
+- **Deviations:** official is an async outcome-typed validator (refused/permitted{verified}/not_checked) with snapshot-restore; OCC's `saveOAuthTokensIfNeeded` is SYNC → sync check defers (`not_checked`) when the token carries no org info, leaving the async network validator authoritative; refusal telemetry STAGED (no invented event name).
+- **Tests:** orgPinLoginRefusal300 (7); 8 regression suites 0 fail (saveOAuthTokensTransient281, oauthLoginExpiry, oauthUnusableTokenRecheck286, oauthEnvToken401Precedence, authPinLocalPrecedence299, …).
+
+### #22 — resume torn-tail seal ✅ LANDED (commit `879f13e`)
+
+- **Evidence:** `sealTornTailOnNextAppend` @224821077; official tail guard `gdo` `h!==""&&!h.endsWith("\n")`.
+- **Change:** `sessionStorage.ts` — `reAppendSessionMetadata(skipTitleRefresh, sealTornTail)` + `sealTornTailSync`; `adoptResumedSessionFile` passes the flag so a crash-truncated last transcript line is sealed before the first post-resume blind append.
+- **Deviations (in-code):** eager-seal at adopt time (official seals on next append); `xa()` guard not ported (OCC append path differs structurally).
+- **Tests:** sessionStorageTornTailSeal300 (3).
+
+### #24 — plugin WorktreeCreate hooks run with `--worktree` ✅ LANDED (commit `d052571`)
+
+- **Evidence:** v300 gates worktree create behind `BHn()` hook dispatch @226762623; OCC created the worktree BEFORE `loadPluginHooks()`.
+- **Change:** `setup.ts` — awaits `loadPluginHooks()` + `setupPluginHookHotReload()` BEFORE `hasWorktreeCreateHook()`/`createWorktreeForSession()`; `skipPluginPrefetch` hoisted above the worktree block; idempotent with the late prefetch (lodash-memoize + hotReloadSubscribed).
+- **Deviation:** `--tmux` startup path NOT covered — matches official scope.
+- **Tests:** setupWorktreeHooks300 (1).
+
+### #28 — agent-hook model refusal fallback ✅ LANDED (commit `703833a`)
+
+- **Evidence:** executor head @227965350; retry block @227967400; log string `was refused, running the agent hook on` @107695561/@227967610; `AIr` alias-resolve @219020138; `ORe` refusal detector @229228103 (`isApiErrorMessage` + `apiErrorStatus∈[400,403,404]` + `!resendCannotCure`); fallback env gate `kG` @219010844.
+- **Change:** `execAgentHook.ts` — `resolveAgentHookModel` (alias check on normalized string, parse on ORIGINAL value; only when `hook.model` explicit); refusal captured from the FIRST assistant message only; retry on callerModel BEFORE the max-turns branch, gated by `!signal.aborted` and `CLAUDE_CODE_NO_MODEL_FALLBACK`; returns `{...inner, hook}` preserving original hook identity.
+- **Deviations:** OCC assistant messages lack `apiErrorStatus`/`resendCannotCure` → dual-path detector falls back to SDK error category (`invalid_request`/`authentication_failed`); official `UIe` deniedModels redirect never existed in OCC; `execPromptHook.ts` NOT changed — v300 judge @227953260 identical to v299 (AIr has zero judge occurrences).
+- **Tests:** agentHookModelRefusalFallback300 (13); hookJudgment294 32, hooksFailClosed288 22, permissionRequestAgentHook280 3 green.
+
+### #29 — peeled worktree start-point + watcher reset ✅ LANDED (commit `d052571`)
+
+- **Evidence:** v300 add-argv `Q.push("--no-track","-B",h,s,H)` with `H=${K}^{commit}` @226752420; `Hen` HEAD resolver @226745624.
+- **Change:** `worktree.ts` start-point is the PEELED base SHA (`${baseSha}^{commit}`), never the ref name — DWIM can no longer pick a same-named tag/branch object; `rev-parse --verify --quiet HEAD` (cwd = fromCwd ?? repoRoot, `LC_ALL:'C'`). `setup.ts` calls `resetGitFileWatcher()` after the worktree chdir/`setProjectRoot` so the session's first git status names the new branch (gitFilesystem.ts doc updated — first production caller).
+- **Deviation:** `--no-track` itself stays unported — pre-existing OCC add-argv divergence, out of #29 scope.
+- **Tests:** worktreeStartPoint300 (3), setupWorktreeBranchReset300 (1); worktreeCreateErrors299 29/29, worktreeReftable299 7 green.
+
+### #31 — scratchpad absolute-path sentence ✅ LANDED (commit `1a6f0d6`)
+
+- **Evidence:** v300-only sentence @224570825 (277 bytes, md5-verified byte-for-byte; v299 zero hits).
+- **Change:** `prompts.ts` `getScratchpadInstructions` appends the sentence verbatim.
+- **Tests:** scratchpadAbsPath300 (2).
+
+### #33 — `--worktree` inside a bare-repo worktree, fetch-fail HEAD from cwd ✅ LANDED (commit `d052571`)
+
+- **Evidence:** fetch-fail fallback resolves HEAD from the CURRENT checkout (`Hen` @226745624, cwd = fromCwd); byte-exact warn string @226752150 (em-dash U+2014): `[worktree] fetch of origin/${defaultBranch} failed — basing worktree on local HEAD`.
+- **Change:** `worktree.ts` options widened `{prNumber?, fromCwd?}`; fetch-fail branch bases on `HEAD` with the fromCwd resolver; `setup.ts` captures the launch dir pre-chdir (`worktreeFromCwd`) and forwards it. Unresolvable HEAD falls through to the shared repoRoot rev-parse, preserving the 2.1.299 #146 head_fallback catalog.
+- **Deviation:** EnterWorktreeTool.ts:171 (only other caller) stays on the old signature — backward-compatible by optional param.
+- **Tests:** covered by worktreeStartPoint300 + setupWorktreeHooks300; regressions contextWorktree035 5, ultrareviewLaunch 4, clear-cost-reset 3 green.
+
+### #34 — single editor-CLI launch for IDE extension check ✅ LANDED (commit `e23dd27`)
+
+- **Evidence:** official `O6r` @228445620 returns `{installedVersion, previouslyInstalled}`; single-launch call site `Eio` @228451039; `WAYLAND_DISPLAY:''` env @228446120.
+- **Change:** `ide.ts` — `installIDEExtension` returns the official shape; `initializeIdeIntegration` drops the `isIDEExtensionInstalled` pre-check wrapper (one launch, not two); onboarding gated `installed && !previouslyInstalled && !dialogShown` (official order); `getInstallationEnv` gains `WAYLAND_DISPLAY:''` (closes a pre-existing divergence).
+- **Deviation:** JetBrains branch unchanged (official ant-branch surface not present in OCC).
+- **Tests:** ideExtensionSingleLaunch300 (5 — fake code/cursor/windsurf shims on PATH counting spawns).
+
+### #36 — MCP tool-schema 400 heal ✅ LANDED (commit `f36d50d` + `9d5217c` /clear wiring)
+
+- **Evidence:** classifier regex `/\btools\.(\d+)\.(?:custom\.)?input_schema\b/` @2929387/@107537522; `AGe`/`W1t` @225850721 (cap `lFo`=8); mcp gate `Kg` @222761037; resolver wiring @227866518; conversation reset `w3n` @239179269.
+- **Change:** NEW `src/services/api/refusedToolSchemas.ts` — conversation-scoped map, `hashInputSchema` (j1t), `isMcpToolRefForSchemaRefusal` (Kg), `applyRefusedToolSchemas` (W1t, identity-apply when empty), `createToolSchemaRefusedResolver` (AGe, cap 8), `clearRefusedToolSchemas` (w3n); `errorUtils.ts` `extractRefusedToolSchemaIndex`; `withRetry.ts` 4th no-budget heal hook after retryContext1mBetaRefused; `claude.ts` surgical wiring (3 retry sites + executeNonStreamingRequest). Refused MCP tool re-sent as `{type:"object"}` for the rest of the conversation. `/clear`+resume reset wired via `clearSessionCaches` (commit `9d5217c`).
+- **Deviations:** module-level map (no Gte context object); official persisted 7-day latch NOT ported (config schema outside cluster); `custom_ca` handling simplified.
+- **Tests:** toolSchemaRefused300 (24); all 39 pre-existing src/services/api suites green; toolSearchDeclaredLatch300 covers the /clear wiring.
+
+### #41 — background bash anti-poll prompt clauses ✅ LANDED (commit `527db54`)
+
+- **Evidence:** official gate `Vbr` @223329653; `qpr` assembly `[H,V,be].filter(Boolean).join(' ')` with K-gate @228323847; strings byte-verified @228323540/@225820817 (`do not poll` v299:9 → v300:11).
+- **Change:** BashTool `prompt.ts` — `backgroundCompletionNoticeEnabled()` gate + gated anti-poll clauses in the background Bash prompt/description; `BashTool.tsx` qpr-style assembly.
+- **Deviations:** OCC gate mirror = `!getIsNonInteractiveSession()` (official `we()` unresolvable in binary — documented); official s/h/S K-arms STAGED (no OCC counterpart).
+- **Tests:** backgroundAntiPoll300 (9); bashPromptPlainLanguage288 25, bashTimeoutBackgroundInfo 6 green.
+
+### #43 — daemon `stop --any` honest force-kill reporting ✅ LANDED (commit `2f522c8`)
+
+- **Evidence:** official flow @111238330–@111240268 (SIGTERM → wait → SIGKILL → re-check); NEW strings `force-killing it (SIGKILL)`, `daemon_stop_still_running`.
+- **Change:** `lockfile.ts` `displaceHolder` returns immutable `{displaced, survived, unverified, eperm, isInit, holder}` after SIGTERM-grace → SIGKILL → settle → liveness recheck; pid-1 guard (never signals init); lockfile kept in every failure case; unverifiable holder never signalled (fail-safe). `daemon.ts` `stop --any` routes through `reportStopAnyResult` — survived/unverified/EPERM/pid-1 each print the byte-verified official message and exit 1 with analytics keys `daemon_stop_still_running` / `_holder_unverified` / `_holder_is_init` / `daemon_stop_failed`; success prunes dead pids from daemon-status.json (#44 fold-in).
+- **Deviations (8, documented in-code):** OCC's analytics stub receives the official key names without the official metadata envelope; settle window and grace timings use OCC constants where the official minified values were unresolvable; pid-1 check added as OCC hardening (official re-check implies it); remaining deltas annotated at each branch in lockfile.ts/daemon.ts.
+- **Tests:** displaceHolderLiveness300 (9), displaceHolderRealProc300 (2 — real SIGTERM-trapping bash holders), daemonStopAny300 (7); displaceHolderStaleLockfile updated (1 pinned expectation was the exact pre-300 behavior this entry fixes) 5/5.
+
+### #47 — dim text faint under dark ANSI theme / 16-color terminals ✅ LANDED (commit `3efc5a8`)
+
+- **Evidence:** v300 applicator `h6e` @219912500 (`chalk.dim` when `faintInk===color && !bold && !dim && !backgroundColor && !inverse`); `WhitishColorDetector` singleton @219913150 (memoized, revalidated on chalk.level); auto-faintInk wrapper @235309900 (`A&&!W?D:void 0`); `Dc` spread order @231403881.
+- **Change:** `styles.ts` `TextStyles.faintInk` (additive); `colorize.ts` WhitishColorDetector + faintInk branch in `applyTextStyles`; `Text.tsx` prop threading with official spread order; `ThemedText.tsx` auto-computes faintInk for dimColor spans.
+- **Triage correction (byte-verified):** official `W` = message-row hover context (`Wet=Kt(!1)` @235309263, provider `pE` @245282095), NOT a whitish-theme flag — OCC maps `!W` to `isHoverOverride` (hover recolor not overriding).
+- **Tests:** faintInkDim300 (14 — full guard matrix + cache revalidation + threading), themedTextFaintInk300 (6 — dark-ansi level-1: dim span SGR-2+37 vs normal SGR-97, the changelog bug); ansiBoldDim295 4, tabsNoColorCursor281 5, stdoutBackpressure275 32, textNormalization289 63 green.
+
+### #55 — host-managed TLS/proxy env strip ✅ LANDED (commit `06752f8`)
+
+- **Evidence:** official filter `b(e,n,r,i)` @219874600; strip set @216531261; warn emitter `L` @219874060; component lists — `Tl` proxy @216530205 (9 vars), `Ky` mTLS/auth base @216530140 (6), `Pl` = dedup(`pte` CA-bundles ∪ `Gme` native-TLS ∪ `CYn` tool-proxy @216520764 ∪ `vl` ∪ `pJ∖fQe` git-config @216276040) dropping NODE_EXTRA_CA_CERTS/JAVA_TOOL_OPTIONS/Tl-members; regex arms `l5n` `/^GIT_(?:SSL|PROXY)_/i`, `mQe` `/^GIT_CONFIG_(KEY|VALUE)_\d+$/i`.
+- **Change:** `managedEnvConstants.ts` — full byte-verified `HOST_MANAGED_*` catalog + `isHostManagedTlsOrProxyVar` (git repo-location vars `fQe` intentionally KEPT). `managedEnv.ts` — `withoutHostManagedTlsProxyVars` wired into `filterSettingsEnv` (gate `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`; order: project blocklist → SSH-tunnel → host-managed-provider → **host-managed TLS/proxy** → host spawn-env); one-time-per-(source,key) byte-exact warnings (desktop/plain arms).
+- **Deviation:** desktop host (`CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'`) narrows the strip to PROJECT-scoped settings only (official `oJe(n)` arm).
+- **Tests:** managedHostTlsProxyStrip300 (12, 81 expects); managedEnv281 9, managedReadDenial285 24, allowedProviders285 38 green.
+
+### #59 — gzip request bodies (default-on) ✅ LANDED (commit `f36d50d`)
+
+- **Evidence:** host allowlist `vMt` @216214637/@219895347 region (min 4096B); padding `bNt` @219216120; flags `tengu_gzip_request_bodies`/`tengu_atomic_ocean` REMOVED in v300 → default-on.
+- **Change:** NEW `src/services/api/gzipRequestBody.ts` — tri-state `CLAUDE_CODE_GZIP_REQUEST_BODIES` (0 opt-out), bad-json rejection latch, `classifyGzipRejection` (400/403/415 + anthropic/bad-json sniff), `padRequestBodyForGzip` (bNt); `client.ts` `buildFetch` gzips large string bodies to allowlisted hosts and re-sends the identity body once on rejection (latch off process-wide).
+- **Deviation:** Bun's gzip API exposes no compress-level knob (official level unrecoverable) — default level used.
+- **Tests:** gzipRequestBody300 (16).
+
+### #63 — SandboxSettings option labels ✅ LANDED (commit `1a6f0d6`)
+
+- **Evidence:** v300 builder @257304200 — labels `Sandbox commands, with auto-allow` / `Sandbox commands, with regular permissions`; `Sandbox BashTool` = 0 hits in v300.
+- **Change:** `SandboxSettings.tsx` option labels updated to the v300 wording (both sites :62/:74).
+- **Deviation:** official `isAutoAllowSupported` sub-gate not ported — OCC's sandbox surface has no auto-allow capability flag; labels mirror the official strings unconditionally (matches observable output on OCC's surface).
+- **Tests:** sandboxSettingsLabels300 (4).
+
+### #65 — hook `updatedInput` validated like the model's own input ✅ LANDED (commit `703833a`)
+
+- **Evidence:** `aHe` @225233300, `ykr` @227296608, `cEe` @218734593, chokepoint deny block @227310550, `tengu_hook_rewrite_checked` @225233892 (NEW in v300), `zfr` loop head @227259000, `xCt` permission-request variant caller @228137483; `The tool input from the model was valid` 1→5 sites.
+- **Change:** NEW `src/utils/permissions/hookUpdatedInputValidation.ts` (faithful port: deep unknown-key strip, schema-issue finder with unrecognized_keys ignored, shown-key merge/exemption, `__artifact` reserved-key deny, xCt variant); `toolHooks.ts` runPreToolUseHooks loop head validates `result.updatedInput` via `tool.validateInput` (deny → yield+continue; abort → yield stop; allow/ask/passthrough carry the CLEANED input); `permissions.ts` allow branch runs `checkPermissionRequestUpdatedInput` (`runPermissionRequestHooksForHeadlessAgent` exported as test seam); `toolExecution.ts` chokepoint @:1277 follows the BINARY (ykr tolerates unknown keys — strip lives at hook sites): real schema issues deny with the official message (em-dash included), OTel `tool_permission_updated_input_invalid`, `tengu_tool_use_error` PERMISSION_UPDATED_INPUT, `<tool_use_error>` tool_result.
+- **Deviations (documented in-code):** `HOOK_REWRITE_ENFORCED=true` constant (official gate defaults on via `tengu_glimmering_newt {safe:!0}`); interactive PermissionRequest site covered by the chokepoint backstop instead of a dedicated inline check; `UIe` deniedModels redirect never existed in OCC; gateway branch dead.
+- **Tests:** hookUpdatedInputValidation300 (27), permissionRequestUpdatedInput300 (8), permissionUpdatedInputChokepoint300 (5); autoModeHookAllowStripped299 9 green.
+
+### #66 — remote-control `--sandbox/--no-sandbox` removal (dormant) ✅ LANDED (commit `527db54`)
+
+- **Evidence:** dedicated error branch @241543023 (`is not supported … The flag had no effect and was removed.` + settings hint @222586160); NEW hint string @109346400.
+- **Change:** `bridgeMain.ts` — flags now rejected with the official error text; `sessionRunner.ts` — dead `CLAUDE_CODE_FORCE_SANDBOX` env wiring removed (zero remaining consumers).
+- **Deviations:** parse-level alignment only (BRIDGE_MODE ∉ allowlist — dormant surface, bundled with this round's bridge touch per triage plan); error text occ-branded per existing precedent.
+- **Tests:** remoteControlSandboxFlags300 (6); bridgePolicyRefusal286 23 green.
 
 ## 4. e2e / A/B acceptance
 
