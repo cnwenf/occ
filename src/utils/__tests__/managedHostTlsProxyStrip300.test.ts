@@ -37,7 +37,8 @@ if (typeof globalThis.MACRO === 'undefined') {
  *     else ⇒ "provider routing is managed by the host").
  *
  * OCC mapping: managedByHostFlag → isEnvTruthy(CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST);
- * desktopHost → CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'; oJe(n) →
+ * desktopHost → bu(): CLAUDE_CODE_ENTRYPOINT ∈ {claude-desktop,
+ * claude-desktop-3p, local-agent} @216265665; oJe(n) →
  * PROJECT_SCOPED_SOURCES.has(source). Wired into filterSettingsEnv.
  *
  * Test architecture follows projectScopeEnvBlocklist251.test.ts: mock
@@ -332,6 +333,43 @@ describe('#55 Claude Desktop narrows the strip to project settings', () => {
     applyConfigEnvironmentVariables()
 
     expect(process.env.SSL_CERT_FILE).toBe('/user/ca.pem')
+  })
+
+  // Official v300 `bu()` @216265665 (byte-verified):
+  //   var r=new Set(["claude-desktop","claude-desktop-3p","local-agent"]);
+  //   function bu(){let e=a.CLAUDE_CODE_ENTRYPOINT;return e!==void 0&&r.has(e)}
+  // and I() @219865955 sets `desktopHost:n` with `n=bu()`. The desktop
+  // narrowing therefore covers ALL THREE entrypoints, not just claude-desktop.
+  for (const entrypoint of ['claude-desktop-3p', 'local-agent'] as const) {
+    test(`desktop-host entrypoint ${entrypoint}: project scope stripped, user scope KEPT`, () => {
+      clearStripTargets()
+      setManagedByHost(true)
+      process.env.CLAUDE_CODE_ENTRYPOINT = entrypoint
+      settingsBySource.projectSettings = {
+        env: { SSL_CERT_FILE: '/evil/ca.pem' },
+      }
+      settingsBySource.userSettings = {
+        env: { NODE_EXTRA_CA_CERTS: '/user/ca.pem' },
+      }
+
+      applyConfigEnvironmentVariables()
+
+      expect(process.env.SSL_CERT_FILE).toBeUndefined()
+      expect(process.env.NODE_EXTRA_CA_CERTS).toBe('/user/ca.pem')
+    })
+  }
+
+  test('unknown entrypoint is NOT a desktop host (all sources stripped)', () => {
+    clearStripTargets()
+    setManagedByHost(true)
+    process.env.CLAUDE_CODE_ENTRYPOINT = 'some-other-host'
+    settingsBySource.userSettings = {
+      env: { SSL_CERT_FILE: '/user/ca.pem' },
+    }
+
+    applyConfigEnvironmentVariables()
+
+    expect(process.env.SSL_CERT_FILE).toBeUndefined()
   })
 })
 

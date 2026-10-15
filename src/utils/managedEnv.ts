@@ -108,6 +108,20 @@ function warnHostManagedTlsProxyVarIgnored(
  * strips from every source. Git repo-location vars (GIT_DIR, …) are kept — see
  * isHostManagedTlsOrProxyVar.
  */
+/**
+ * Official v300 desktop-host predicate @216265665 (byte-verified):
+ *   var r = new Set(["claude-desktop","claude-desktop-3p","local-agent"]);
+ *   function bu(){let e=a.CLAUDE_CODE_ENTRYPOINT;return e!==void 0&&r.has(e)}
+ * and `I()` @219865955 sets `desktopHost: n` with `n = bu()`. The #55 strip
+ * narrowing (project-scope only) therefore applies to all three host
+ * entrypoints, not just `claude-desktop`.
+ */
+const DESKTOP_HOST_ENTRYPOINTS: ReadonlySet<string> = new Set([
+  'claude-desktop',
+  'claude-desktop-3p',
+  'local-agent',
+])
+
 function withoutHostManagedTlsProxyVars(
   env: Record<string, string> | undefined,
   source: SettingSource | 'globalConfig',
@@ -116,7 +130,8 @@ function withoutHostManagedTlsProxyVars(
   if (!isEnvTruthy(process.env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST)) {
     return env
   }
-  const desktopHost = process.env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'
+  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+  const desktopHost = entrypoint !== undefined && DESKTOP_HOST_ENTRYPOINTS.has(entrypoint)
   // Under Claude Desktop only project-scoped settings are stripped.
   if (desktopHost && !PROJECT_SCOPED_SOURCES.has(source)) {
     return env
