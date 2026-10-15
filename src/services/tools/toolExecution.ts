@@ -3,6 +3,7 @@ import type {
   ToolResultBlockParam,
   ToolUseBlock,
 } from '@anthropic-ai/sdk/resources/index.mjs'
+import { z } from 'zod/v4'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
@@ -93,6 +94,12 @@ import {
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { Stream } from '../../utils/stream.js'
 import { logOTelEvent } from '../../utils/telemetry/events.js'
+import { hashContent } from '../../utils/hash.js'
+// CC 2.1.300 #65 — permission-handler updatedInput chokepoint (official ykr/cEe).
+import {
+  findPermissionUpdatedInputSchemaIssues,
+  isEmptyPlainObject,
+} from '../../utils/permissions/hookUpdatedInputValidation.js'
 import {
   addToolContentEvent,
   endToolBlockedOnUserSpan,
@@ -1270,7 +1277,85 @@ async function checkPermissionsAndCallTool(
 
   // Use the updated input from permissions if provided
   // (Don't overwrite if undefined - processedInput may have been modified by passthrough hooks)
-  if (permissionDecision.updatedInput !== undefined) {
+  // CC 2.1.300 (#65) — official chokepoint (@227310550, byte-verified):
+  // `go.updatedInput!==void 0&&!cEe(go.updatedInput)` gates a `ykr` schema
+  // parse that IGNORES `unrecognized_keys` issues (unknown keys are tolerated
+  // here — the deep strip lives in `aHe` at the hook sites). Real schema
+  // issues DENY the call with the official `us` message (em-dash included)
+  // instead of letting the tool receive invalid input.
+  if (
+    permissionDecision.updatedInput !== undefined &&
+    !isEmptyPlainObject(permissionDecision.updatedInput)
+  ) {
+    const updatedInputIssues = findPermissionUpdatedInputSchemaIssues(
+      tool.inputSchema as unknown as z.ZodType,
+      permissionDecision.updatedInput,
+    )
+    if (updatedInputIssues !== null) {
+      const updatedInputErrorMessage = `The permission handler returned updatedInput for ${tool.name} that failed schema validation: ${formatZodValidationError(tool.name, new z.ZodError(updatedInputIssues))}\nThis is a configuration issue in your canUseTool callback, PermissionRequest hook, or permission-prompt tool — updatedInput must satisfy the tool's input schema. The tool input from the model was valid.`
+      const issueCodes = [
+        ...new Set(updatedInputIssues.map(issue => String(issue.code))),
+      ]
+      endToolBlockedOnUserSpan(
+        'reject',
+        'permission_updated_input_invalid',
+      )
+      endToolSpan()
+      logForDebugging(
+        `Permission handler updatedInput for ${tool.name} failed schema validation (${issueCodes.join(',')})`,
+        { level: 'warn' },
+      )
+      void logOTelEvent('tool_permission_updated_input_invalid', {
+        tool_name: tool.name,
+        message_id: messageId,
+      })
+      logEvent('tengu_tool_use_error', {
+        error:
+          'InputValidationError' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        errorCode:
+          'PERMISSION_UPDATED_INPUT' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        zodIssueCodes:
+          issueCodes.join(',') as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        errorDetailsHash:
+          hashContent(updatedInputErrorMessage) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        messageID:
+          messageId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        toolName: sanitizeToolNameForAnalytics(tool.name),
+        isMcp: tool.isMcp ?? false,
+
+        queryChainId: toolUseContext.queryTracking
+          ?.chainId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        queryDepth: toolUseContext.queryTracking?.depth,
+        ...(mcpServerType && {
+          mcpServerType:
+            mcpServerType as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        }),
+        ...(mcpServerBaseUrl && {
+          mcpServerBaseUrl:
+            mcpServerBaseUrl as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        }),
+        ...(requestId && {
+          requestId:
+            requestId as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        }),
+        ...mcpToolDetailsForAnalytics(tool.name, mcpServerType, mcpServerBaseUrl),
+      })
+      resultingMessages.push({
+        message: createUserMessage({
+          content: [
+            {
+              type: 'tool_result',
+              content: `<tool_use_error>${updatedInputErrorMessage}</tool_use_error>`,
+              is_error: true,
+              tool_use_id: toolUseID,
+            },
+          ],
+          toolUseResult: `InputValidationError: permission handler updatedInput failed schema for ${tool.name}`,
+          sourceToolAssistantUUID: assistantMessage.uuid,
+        }),
+      })
+      return resultingMessages
+    }
     processedInput = permissionDecision.updatedInput
   }
 

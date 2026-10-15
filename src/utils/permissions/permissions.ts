@@ -92,6 +92,8 @@ import {
 import { isInProtectedNamespace } from '../envUtils.js'
 import { executePermissionRequestHooks } from '../hooks.js'
 import { computeAutoModeAllowRuleToolName } from './allowRuleHint.js'
+// CC 2.1.300 #65 — hook updatedInput validation (official xCt/aHe port).
+import { checkPermissionRequestUpdatedInput } from './hookUpdatedInputValidation.js'
 // CC 2.1.288 #65 — auto mode classifier overflow now compacts (pending
 // registry, deny+compact arm strings, tengu_merry_popcorn gate).
 import {
@@ -465,8 +467,10 @@ export function getRuleListForToolName(
  *
  * Returns a PermissionDecision if a hook made a decision, or null if no
  * hook provided a decision (caller should proceed to auto-deny).
+ *
+ * Exported as a test seam (precedent: stripConfinedHookApproval).
  */
-async function runPermissionRequestHooksForHeadlessAgent(
+export async function runPermissionRequestHooksForHeadlessAgent(
   tool: Tool,
   input: { [key: string]: unknown },
   toolUseID: string,
@@ -489,7 +493,23 @@ async function runPermissionRequestHooksForHeadlessAgent(
       }
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
-        const finalInput = decision.updatedInput ?? input
+        // CC 2.1.300 (#65) — official xCt caller (@228137483, byte-verified):
+        // `let Q=await xCt(n,V.updatedInput,r,(be)=>n.validateInput?.(be,
+        //  {...h,toolUseId:s}));if(Q.deny!==void 0)return Q.deny;
+        //  let ye=Q.input,Se=ye??r;`
+        // The hook's updatedInput is validated like Claude's own input:
+        // unknown keys are dropped, and input the tool rejects denies the call.
+        const checked = await checkPermissionRequestUpdatedInput(
+          tool,
+          decision.updatedInput as Record<string, unknown> | undefined,
+          input,
+          async updated =>
+            tool.validateInput?.(updated, { ...context, toolUseId: toolUseID }),
+        )
+        if (checked.deny !== undefined) {
+          return checked.deny
+        }
+        const finalInput = checked.input ?? input
         // Persist permission updates if provided
         if (decision.updatedPermissions?.length) {
           persistPermissionUpdates(decision.updatedPermissions as any)

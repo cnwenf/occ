@@ -19,6 +19,7 @@ import type {
 import type { PermissionDecision } from '../../types/permissions.js'
 import { createAttachmentMessage } from '../../utils/attachments.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { isAbortError } from '../../utils/errors.js'
 import {
   executePostToolHooks,
   executePostToolUseFailureHooks,
@@ -32,6 +33,7 @@ import {
   type PermissionDecisionReason,
   type PermissionResult,
 } from '../../utils/permissions/PermissionResult.js'
+import { checkHookUpdatedInput } from '../../utils/permissions/hookUpdatedInputValidation.js'
 import { checkRuleBasedPermissions } from '../../utils/permissions/permissions.js'
 import { formatError } from '../../utils/toolErrors.js'
 import { isMcpTool } from '../mcp/utils.js'
@@ -613,6 +615,49 @@ export async function* runPreToolUseHooks(
         if (result.message) {
           yield { type: 'message', message: { message: result.message as AttachmentMessage | ProgressMessage<HookProgress> } }
         }
+        // CC 2.1.300 (#65) — official zfr loop head (@227259000, byte-verified):
+        // `let Oe=Ae.updatedInput;if(Oe!==void 0){let We=await aHe(n,Oe,{event:
+        //  "PreToolUse",source:Ae.hookSource,applies:Ae.permissionBehavior!==
+        //  "deny"&&Ae.permissionBehavior!=="defer",validate:H})…}` with
+        // `H=(K)=>n.validateInput?.(K,{...e,toolUseId:s})`. The hook's rewrite
+        // is validated like Claude's own input BEFORE any consumer sees it:
+        // unknown keys are dropped, and a rewrite the schema/tool rejects
+        // denies the call (deny → yield + continue; cancel → yield stop).
+        let validatedUpdatedInput = result.updatedInput
+        if (result.updatedInput !== undefined) {
+          try {
+            const check = await checkHookUpdatedInput(
+              tool,
+              result.updatedInput as Record<string, unknown>,
+              {
+                event: 'PreToolUse',
+                source: result.hookSource,
+                applies:
+                  result.permissionBehavior !== 'deny' &&
+                  result.permissionBehavior !== 'defer',
+                validate: async updated =>
+                  tool.validateInput?.(updated, {
+                    ...toolUseContext,
+                    toolUseId: toolUseID,
+                  }),
+              },
+            )
+            if (!check.ok) {
+              yield {
+                type: 'hookPermissionResult',
+                hookPermissionResult: check.deny,
+              }
+              continue
+            }
+            validatedUpdatedInput = check.input
+          } catch (validationError) {
+            if (isAbortError(validationError)) {
+              yield { type: 'stop' }
+              return
+            }
+            throw validationError
+          }
+        }
         if (result.blockingError) {
           const denialMessage = getPreToolHookBlockingMessage(
             `PreToolUse:${tool.name}`,
@@ -657,7 +702,7 @@ export async function* runPreToolUseHooks(
               type: 'hookPermissionResult',
               hookPermissionResult: {
                 behavior: 'allow',
-                updatedInput: result.updatedInput,
+                updatedInput: validatedUpdatedInput,
                 decisionReason,
               },
             }
@@ -666,7 +711,7 @@ export async function* runPreToolUseHooks(
               type: 'hookPermissionResult',
               hookPermissionResult: {
                 behavior: 'ask',
-                updatedInput: result.updatedInput,
+                updatedInput: validatedUpdatedInput,
                 message:
                   result.hookPermissionDecisionReason ||
                   `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`,
@@ -704,10 +749,11 @@ export async function* runPreToolUseHooks(
 
         // Yield updatedInput for passthrough case (no permission decision)
         // This allows hooks to modify input while letting normal permission flow continue
+        // CC 2.1.300 (#65): yields the CLEANED input (official `Oe=We.input`).
         if (result.updatedInput && result.permissionBehavior === undefined) {
           yield {
             type: 'hookUpdatedInput',
-            updatedInput: result.updatedInput,
+            updatedInput: validatedUpdatedInput as Record<string, unknown>,
           }
         }
 

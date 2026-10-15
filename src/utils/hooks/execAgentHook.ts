@@ -13,10 +13,12 @@ import { createAbortController } from '../abortController.js'
 import { createAttachmentMessage } from '../attachments.js'
 import { createCombinedAbortSignal } from '../combinedAbortSignal.js'
 import { logForDebugging } from '../debug.js'
+import { isEnvTruthy } from '../envUtils.js'
 import { errorMessage } from '../errors.js'
 import type { HookResult } from '../hooks.js'
 import { createUserMessage, handleMessageFromStream } from '../messages.js'
-import { getSmallFastModel } from '../model/model.js'
+import { isModelAlias } from '../model/aliases.js'
+import { getSmallFastModel, parseUserSpecifiedModel } from '../model/model.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { getAgentTranscriptPath, getTranscriptPath } from '../sessionStorage.js'
 import type { AgentHook } from '../settings/types.js'
@@ -30,6 +32,50 @@ import {
   registerStructuredOutputEnforcement,
 } from './hookHelpers.js'
 import { clearSessionHooks } from './sessionHooks.js'
+
+/**
+ * CC 2.1.300 (#28) — official `AIr` (@219020138, byte-verified):
+ * `function AIr(e){return jme(e.toLowerCase().trim())?Ot(e):e}` — an alias
+ * check on the normalized string, but parseUserSpecifiedModel receives the
+ * ORIGINAL value. Only applied when hook.model is explicitly set (official
+ * `qt=e.model===void 0?Ut:AIr(Ut)` @227965400).
+ */
+function resolveAgentHookModel(model: string): string {
+  return isModelAlias(model.toLowerCase().trim())
+    ? parseUserSpecifiedModel(model)
+    : model
+}
+
+/**
+ * CC 2.1.300 (#28) — official refusal detector `ORe` (@229228103,
+ * byte-verified):
+ * `e.isApiErrorMessage===!0&&[400,403,404].includes(e.apiErrorStatus??0)&&!e.resendCannotCure`
+ *
+ * OCC deviation (documented): OCC assistant messages carry no
+ * `apiErrorStatus`/`resendCannotCure` envelope fields, so when the official
+ * status field is absent the detector falls back to OCC's SDK error category
+ * (`invalid_request` maps to 400/404, `authentication_failed` to 401/403 —
+ * 401 is a harmless over-inclusion: a real 401 also cannot succeed on the
+ * caller model, and the retry is then simply refused again).
+ */
+function isModelRefusalMessage(message: unknown): boolean {
+  const candidate = message as {
+    isApiErrorMessage?: boolean
+    apiErrorStatus?: number
+    resendCannotCure?: boolean
+    error?: string
+  }
+  if (candidate?.isApiErrorMessage !== true || candidate.resendCannotCure) {
+    return false
+  }
+  if (typeof candidate.apiErrorStatus === 'number') {
+    return [400, 403, 404].includes(candidate.apiErrorStatus)
+  }
+  return (
+    candidate.error === 'invalid_request' ||
+    candidate.error === 'authentication_failed'
+  )
+}
 
 /**
  * Execute an agent-based hook using a multi-turn LLM query
@@ -126,7 +172,19 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool, alwa
 ${HOOK_JUDGMENT_GUIDANCE}`,
       ])
 
-      const model = hook.model ?? getSmallFastModel()
+      // CC 2.1.300 (#28) — official executor head (@227965400, byte-verified):
+      // `Ut=UIe(e.model??Ov()),qt=e.model===void 0?Ut:AIr(Ut),Wt=oc(y),
+      //  tn=e.model===void 0&&Ie()==="gateway"&&…?Wt:qt`
+      // Aliases resolve ONLY for an explicit hook.model; the caller model
+      // (`Wt`) is the retry target. OCC deviations: `UIe` (deniedModels
+      // redirect) was never ported (no OCC surface); the gateway branch is
+      // dead in OCC (getAPIProvider never returns 'gateway').
+      const configuredModel = hook.model ?? getSmallFastModel()
+      const model =
+        hook.model === undefined
+          ? configuredModel
+          : resolveAgentHookModel(configuredModel)
+      const callerModel = toolUseContext.options.mainLoopModel
       const MAX_AGENT_TURNS = 50
 
       // Create unique agentId for this hook agent
@@ -173,6 +231,9 @@ ${HOOK_JUDGMENT_GUIDANCE}`,
       let structuredOutputResult: { ok: boolean; reason?: string } | null = null
       let turnCount = 0
       let hitMaxTurns = false
+      // CC 2.1.300 (#28): official captures the refusal verdict from the
+      // FIRST assistant message only (`if($n===0)Xn=ORe(_n)` @227966xxx).
+      let modelRefused = false
 
       // Use query() for multi-turn execution
       for await (const message of query({
@@ -206,6 +267,9 @@ ${HOOK_JUDGMENT_GUIDANCE}`,
 
         // Count assistant turns
         if (message.type === 'assistant') {
+          if (turnCount === 0) {
+            modelRefused = isModelRefusalMessage(message)
+          }
           turnCount++
 
           // Check if we've hit the turn limit
@@ -245,6 +309,40 @@ ${HOOK_JUDGMENT_GUIDANCE}`,
 
       // Check if we got a result
       if (!structuredOutputResult) {
+        // CC 2.1.300 (#28) — official retry block (@227967400, byte-verified):
+        // `if(Xn&&tn!==Wt&&e.model!==Wt&&!h.aborted&&!kG())
+        //    return t(\`Hooks: ${tn} was refused, running the agent hook on ${Wt}\`),
+        //      {...await jZe({...e,model:Wt},n,r,s,h,y,S,w),hook:e}`
+        // — an unavailable model falls back to the CALLER's model instead of
+        // allowing the action; the retry precedes the max-turns branch and the
+        // ORIGINAL hook object is preserved on the returned result. `kG`
+        // (@219010844) is the CLAUDE_CODE_NO_MODEL_FALLBACK env tripwire.
+        if (
+          modelRefused &&
+          model !== callerModel &&
+          hook.model !== callerModel &&
+          !signal.aborted &&
+          !isEnvTruthy(process.env.CLAUDE_CODE_NO_MODEL_FALLBACK)
+        ) {
+          logForDebugging(
+            `Hooks: ${model} was refused, running the agent hook on ${callerModel}`,
+          )
+          return {
+            ...(await execAgentHook(
+              { ...hook, model: callerModel },
+              hookName,
+              hookEvent,
+              jsonInput,
+              signal,
+              toolUseContext,
+              toolUseID,
+              _messages,
+              agentName,
+            )),
+            hook,
+          }
+        }
+
         // If we hit max turns, just log and return cancelled (no UI message)
         if (hitMaxTurns) {
           logForDebugging(
