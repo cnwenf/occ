@@ -288,7 +288,7 @@ function worktreePathFor(repoRoot: string, slug: string): string {
 export async function getOrCreateWorktree(
   repoRoot: string,
   slug: string,
-  options?: { prNumber?: number },
+  options?: { prNumber?: number; fromCwd?: string },
 ): Promise<WorktreeCreateResult> {
   const worktreePath = worktreePathFor(repoRoot, slug)
   const worktreeBranch = worktreeBranchName(slug)
@@ -375,7 +375,35 @@ export async function getOrCreateWorktree(
         ['fetch', 'origin', defaultBranch],
         fetchOpts,
       )
-      baseBranch = fetchCode === 0 ? originRef : 'HEAD'
+      if (fetchCode === 0) {
+        baseBranch = originRef
+      } else {
+        // Official 2.1.300 (#33): the fetch of origin/<default> failed — base
+        // the worktree on the CURRENT checkout's local HEAD, not the canonical
+        // repoRoot's. Official `Hen` @226745624 resolves HEAD with
+        // `cwd = fromCwd ?? repoRoot`; fromCwd is the directory the user
+        // launched from, which in a worktree of a bare repository can have a
+        // different HEAD than the main repoRoot. The warn string is byte-exact
+        // (v300 @226752150, em-dash U+2014).
+        baseBranch = 'HEAD'
+        logForDebugging(
+          `[worktree] fetch of origin/${defaultBranch} failed — basing worktree on local HEAD`,
+          { level: 'warn' },
+        )
+        const headCwd = options?.fromCwd ?? repoRoot
+        const headRevParse = await execFileNoThrowWithCwd(
+          gitExe(),
+          ['rev-parse', '--verify', '--quiet', 'HEAD'],
+          { cwd: headCwd, env: { ...process.env, LC_ALL: 'C' } },
+        )
+        const headSha = headRevParse.stdout.trim()
+        if (headRevParse.code === 0 && headSha !== '') {
+          baseSha = headSha
+        }
+        // If HEAD can't be resolved from fromCwd, baseSha stays null and the
+        // shared rev-parse below retries `HEAD` at repoRoot — preserving the
+        // 2.1.299 (#146) head_fallback failure-catalog path.
+      }
     }
   }
 
@@ -419,7 +447,19 @@ export async function getOrCreateWorktree(
   }
   // -B (not -b): reset any orphan branch left behind by a removed worktree dir.
   // Saves a `git branch -D` subprocess (~15ms spawn overhead) on every create.
-  addArgs.push('-B', worktreeBranch, worktreePath, baseBranch)
+  // Official 2.1.300 (#29): the start-point is the PEELED base SHA
+  // (`${sha}^{commit}` — v300 add-argv @226752420), never the ref NAME: when
+  // a tag or branch is named like a commit ID, git's DWIM start-point
+  // resolution could pick the wrong object and the --worktree session would
+  // start from an unintended commit. (baseSha is always non-null here — the
+  // resolution block above either sets it or throws; the ternary only narrows
+  // the type for TS.)
+  addArgs.push(
+    '-B',
+    worktreeBranch,
+    worktreePath,
+    baseSha ? `${baseSha}^{commit}` : baseBranch,
+  )
 
   const { code: createCode, stderr: createStderr } =
     await execFileNoThrowWithCwd(gitExe(), addArgs, { cwd: repoRoot })
@@ -798,11 +838,19 @@ export async function killTmuxSession(sessionName: string): Promise<boolean> {
   return code === 0
 }
 
+/**
+ * Create (or resume) the session worktree. `options.fromCwd` is the directory
+ * the user launched from, BEFORE any canonical-repo chdir — official 2.1.300
+ * (#33) bases the fetch-failure fallback on that checkout's HEAD (`Hen`
+ * @226745624: `cwd = fromCwd ?? repoRoot`), which matters when launching from
+ * a linked worktree of a bare repository whose origin default branch can't be
+ * fetched. Forwarded verbatim to getOrCreateWorktree().
+ */
 export async function createWorktreeForSession(
   sessionId: string,
   slug: string,
   tmuxSessionName?: string,
-  options?: { prNumber?: number },
+  options?: { prNumber?: number; fromCwd?: string },
 ): Promise<WorktreeSession> {
   // Must run before the hook branch below — hooks receive the raw slug as an
   // argument, and the git branch builds a path from it via path.join.

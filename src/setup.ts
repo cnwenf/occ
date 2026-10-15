@@ -32,6 +32,7 @@ import { envDynamic } from './utils/envDynamic.js'
 import { isBareMode, isEnvTruthy } from './utils/envUtils.js'
 import { errorMessage } from './utils/errors.js'
 import { findCanonicalGitRoot, findGitRoot, getIsGit } from './utils/git.js'
+import { resetGitFileWatcher } from './utils/git/gitFilesystem.js'
 import { initializeFileChangedWatcher } from './utils/hooks/fileChangedWatcher.js'
 import {
   captureHooksConfigSnapshot,
@@ -171,9 +172,48 @@ export async function setup(
   // Initialize FileChanged hook watcher — sync, reads hook config snapshot
   initializeFileChangedWatcher(cwd)
 
+  // When CLAUDE_CODE_SYNC_PLUGIN_INSTALL is set, skip all plugin prefetch.
+  // The sync install path in print.ts calls refreshPluginState() after
+  // installing, which reloads commands, hooks, and agents. Prefetching here
+  // races with the install (concurrent copyPluginToVersionedCache / cachePlugin
+  // on the same directories), and the hot-reload handler fires clearPluginCache()
+  // mid-install when policySettings arrives.
+  // Hoisted above the --worktree block: official 2.1.300 (#24) needs the flag
+  // BEFORE worktree creation to decide whether plugin hooks must be awaited
+  // first — they used to load only in the late fire-and-forget prefetch below,
+  // AFTER createWorktreeForSession() had already consulted the hook table.
+  const skipPluginPrefetch =
+    (getIsNonInteractiveSession() &&
+      isEnvTruthy(process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL)) ||
+    // --bare: loadPluginHooks → loadAllPlugins is filesystem work that's
+    // wasted when executeHooks early-returns under --bare anyway.
+    isBareMode()
+
   // Handle worktree creation if requested
   // IMPORTANT: this must be called befiore getCommands(), otherwise /eject won't be available.
   if (worktreeEnabled) {
+    // Official 2.1.300 (#24): await the plugin-hook load BEFORE the worktree
+    // subsystem consults it (hasWorktreeCreateHook / createWorktreeForSession),
+    // so plugin-provided WorktreeCreate/WorktreeRemove hooks actually run for
+    // sessions started with --worktree. loadPluginHooks is lodash-memoized and
+    // setupPluginHookHotReload has a hotReloadSubscribed guard, so this early
+    // await is idempotent with the late prefetch block below. (--tmux startup
+    // is explicitly NOT covered by the official fix — "not yet with --tmux".)
+    if (!skipPluginPrefetch) {
+      const { loadPluginHooks, setupPluginHookHotReload } = await import(
+        './utils/plugins/loadPluginHooks.js'
+      )
+      await loadPluginHooks()
+      setupPluginHookHotReload()
+    }
+
+    // Official 2.1.300 (#33): capture the launch directory BEFORE any
+    // canonical-repo chdir below — when origin's default branch can't be
+    // fetched, the new worktree is based on THIS checkout's HEAD, not the main
+    // repository's (official `Hen` @226745624: `cwd = fromCwd ?? repoRoot`).
+    // Fixes --worktree failing inside a worktree of a bare repository.
+    const worktreeFromCwd = getCwd()
+
     // Mirrors bridgeMain.ts: hook-configured sessions can proceed without git
     // so createWorktreeForSession() can delegate to the hook (non-git VCS).
     const hasHook = hasWorktreeCreateHook()
@@ -234,7 +274,12 @@ export async function setup(
         getSessionId(),
         slug,
         tmuxSessionName,
-        worktreePRNumber ? { prNumber: worktreePRNumber } : undefined,
+        {
+          ...(worktreePRNumber ? { prNumber: worktreePRNumber } : {}),
+          // Official 2.1.300 (#33): the launch checkout, so the fetch-failure
+          // fallback bases on THIS checkout's HEAD (captured pre-chdir above).
+          fromCwd: worktreeFromCwd,
+        },
       )
     } catch (error) {
       process.stderr.write(
@@ -275,6 +320,12 @@ export async function setup(
     // cron/etc. should resolve here. (EnterWorktreeTool mid-session does NOT
     // touch projectRoot — that's a throwaway worktree, project stays stable.)
     setProjectRoot(getCwd())
+    // Official 2.1.300 (#29): the GitFileWatcher lazily pinned its gitDir (and
+    // cached the branch) against the ORIGINAL checkout on first access — before
+    // the chdir above. Without a reset, the session's first git status names a
+    // branch other than the new worktree's. Reset so the next read re-resolves
+    // gitDir from the worktree cwd and re-reads its HEAD.
+    resetGitFileWatcher()
     saveWorktreeState(worktreeSession)
     // Clear memory files cache since originalCwd has changed
     clearMemoryFileCaches()
@@ -306,18 +357,9 @@ export async function setup(
   profileCheckpoint('setup_before_prefetch')
   // Pre-fetch promises - only items needed before render
   logForDiagnosticsNoPII('info', 'setup_prefetch_starting')
-  // When CLAUDE_CODE_SYNC_PLUGIN_INSTALL is set, skip all plugin prefetch.
-  // The sync install path in print.ts calls refreshPluginState() after
-  // installing, which reloads commands, hooks, and agents. Prefetching here
-  // races with the install (concurrent copyPluginToVersionedCache / cachePlugin
-  // on the same directories), and the hot-reload handler fires clearPluginCache()
-  // mid-install when policySettings arrives.
-  const skipPluginPrefetch =
-    (getIsNonInteractiveSession() &&
-      isEnvTruthy(process.env.CLAUDE_CODE_SYNC_PLUGIN_INSTALL)) ||
-    // --bare: loadPluginHooks → loadAllPlugins is filesystem work that's
-    // wasted when executeHooks early-returns under --bare anyway.
-    isBareMode()
+  // skipPluginPrefetch was computed above (hoisted before the --worktree block
+  // so official 2.1.300 #24 can await the plugin-hook load before worktree
+  // creation). Reused here for the late command/hook prefetch.
   if (!skipPluginPrefetch) {
     void getCommands(getProjectRoot())
   }

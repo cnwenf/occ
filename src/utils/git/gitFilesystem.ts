@@ -581,7 +581,14 @@ export function getCachedDefaultBranch(): Promise<string> {
   return gitWatcher.get('defaultBranch', computeDefaultBranch)
 }
 
-/** Reset the git file watcher state. For testing only. */
+/**
+ * Reset the git file watcher state — unpins the cached gitDir/commonDir, clears
+ * the branch/status/defaultBranch cache, and stops the fs watchers so the next
+ * read re-resolves against the current cwd. Production caller: setup.ts invokes
+ * this after the `--worktree` chdir (official 2.1.300 #29) so the session's
+ * first git status names the new worktree's branch instead of the pre-chdir
+ * checkout's. Also used by tests.
+ */
 export function resetGitFileWatcher(): void {
   gitWatcher.reset()
 }
