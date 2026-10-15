@@ -135,7 +135,7 @@ Security-priority entries named by Leader — coverage: sandbox `--plugin-dir` w
 | 107 | Fixed sandbox `denyRead` and `allowRead` globs with braces, parentheses or backslashes in a folder's name being read differently by Claude Code's s... | **PORT-C** | SECURITY: sandbox denyRead/allowRead globs w/ braces/parens/backslashes read differently by settings checks vs sandbox |
 | 108 | Fixed sandbox glob `allowRead` and `allowWrite` entries not being re-checked when the directory they start from is replaced by a symlink | **PORT-C** | SECURITY: sandbox allowRead/allowWrite globs not re-checked when start dir replaced by symlink (TOCTOU) |
 | 109 | Fixed worktree-isolated sessions accepting some awk programs the isolation guard should refuse | **STAGED** | worktree isolation accepting some awk programs — OCC worktree-isolation surface check |
-| 110 | Fixed `claude mcp add <name> -- <command> --background` being started as a background session | **PORT-A** | mcp add <name> -- <cmd> --background misparsed as bg session |
+| 110 | Fixed `claude mcp add <name> -- <command> --background` being started as a background session | **NO-OP** | OCC structurally immune (enablePositionalOptions + `--` passthrough) — verified live: server added with `--background` as a command arg, no bg-session leak. See §3 |
 | 111 | Fixed a prompt or reply of `--bg` or `--background` to a background session being taken for the flag, which could start new sessions over and over ... | **STAGED** | --bg/--background prompt text taken as flag — OCC --bg redirects to daemon; semantics differ; verify |
 | 112 | Fixed a custom slash command's embedded shell line running twice when a newer message interrupted the command while its prompt was being checked | **STAGED** | custom slash command embedded shell line double-run on interrupt — portable; long-tail |
 | 113 | Fixed `--worktree` sessions leaving a folder behind in `.git/worktrees` in repositories using git's reftable ref storage | **STAGED** | --worktree reftable .git/worktrees leftover |
@@ -256,7 +256,17 @@ Security-priority entries named by Leader — coverage: sandbox `--plugin-dir` w
 - Investigation: `getMcpConfigByName` (config.ts:1103) DOES use unsafe bracket-truthiness (`enterpriseServers[name]`, `localServers[name]`, `projectServers[name]`, `userServers[name]`) over plain `{}` containers, so `getMcpConfigByName('constructor')` returns a phantom truthy `Object.prototype.constructor`. BUT tracing its callers shows they are reconnect / CLI / telemetry / agent-spec paths — NOT the auto/bypass permission gate that decides whether to prompt. So this site is a real latent prototype-read bug but is NOT confirmed as the #43 symptom site.
 - #42 (commit 0da14ee) already hardened the 6 existence guards in the server-add/config-merge path via `hasMcpServerEntry` (`Object.hasOwn`). The #43 permission-prompt site is elsewhere and requires deeper v299 forensics to locate faithfully — STAGED per the "never invent" discipline rather than guessed. A safe, in-scope hardening candidate for the next run: route `getMcpConfigByName`'s 4 lookups through `Object.hasOwn` (defense-in-depth; independent of whether it is THE #43 site).
 
-**#110 STAGED (pending)** — `claude mcp add <name> -- <command> --background` misparsed as a background session; needs arg-parser forensics (not yet started).
+**#110 NO-OP (already-aligned; empirical evidence)** — `claude mcp add <name> -- <command> --background` misparsed as a bg session.
+- Official changelog 2.1.299 line 110: "Fixed `claude mcp add <name> -- <command> --background` being started as a background session." In official Claude, `--background` is a real bg-session flag, so the token after `--` leaked into the top-level parser and started a bg session instead of adding the server.
+- OCC is **structurally immune** (verified by running the live dev CLI, not guessed):
+  - `occ mcp add testsrv -- node foo.js --background` → `Added stdio MCP server testsrv with command: node foo.js --background` (exit 0). The `--background` after `--` is captured as a command arg, NOT as a session flag.
+  - `occ mcp add srv3 -- mycmd --bg` → `Added stdio MCP server srv3 with command: mycmd --bg` (exit 0). Same for the `--bg` alias.
+  - `occ mcp add testsrv2 --background -- node foo.js` (--background BEFORE `--`) → `error: unknown option '--background'` — the `add` subcommand rejects it; it does NOT bubble up to start a bg session.
+  - `occ --background` (top-level, alone) → prints the OCC daemon-redirect message + exit 1 (the intended OCC-21 Gap-2b behavior; OCC has no real bg-session flag).
+- Root cause of the immunity: the Commander program (`main.tsx:963`) and the `mcp` command (`main.tsx:4415`) both call `.enablePositionalOptions()`, and `add <name> <commandOrUrl> [args...]` relies on Commander's native `--` end-of-options handling, so everything after `--` becomes positional args and the root `--bg/--background` option (`main.tsx:1137`) never sees it. No code change required — recorded as a verified no-op like the 2.1.223 workflow `import()` case.
+- Test server entries written to `~/.claude.json` during the probes were cleaned up (2 removed).
+
+**Cluster A status:** #32 ✓ · #42 ✓ · #43 STAGED (forensics) · #55 ✓ · #65 ✓ · #110 NO-OP ✓ · #158 ✓ — 5 landed, 1 no-op, 1 staged. Cluster A closed pending #43 forensics. Next: Cluster C (sandbox).
 
 
 
