@@ -48,16 +48,51 @@ export function clampTimeoutMs(
   return Math.min(requested || defaultMs, maxMs)
 }
 
+/**
+ * CC 2.1.300 #41 — OCC mirror of the official background-completion-notice
+ * gate `Vbr()` (v300 ELF @223329653, byte-verified):
+ *   function Vbr(){return pse()&&!pW()}
+ *   function pse(){return!wh().backgroundCompletionNoticeDisabled}  @223329591
+ *   pW(e=we()) @216270987: `e&&!t&&!jy()` with
+ *     t=Pp()&&!claudecode (desktop-family host entrypoints, S() @216266464),
+ *     jy()=claude-vscode entrypoint @216270893.
+ * Derivation for OCC:
+ * - `pse()` reads a host-runtime capability registry (`wh()`, class `mxr`
+ *   @221326201) that OCC does not have — no host can disable the notice, so
+ *   this arm is constant-true.
+ * - `Pp()`/`jy()` gate on desktop/vscode entrypoints OCC does not ship — both
+ *   arms are constant-false, collapsing `pW(e=we())` to `we()`.
+ * - `we()` is unresolvable from binary strings alone (10 candidate defs; the
+ *   embedded JS is one blob past ~113M with no chunk markers). The observable
+ *   contract is used instead: a completion notice only exists when a later
+ *   turn can receive it — cf. the official reapedAtFinalResponse text "…no
+ *   notification can follow that…" — and the #41 changelog targets the
+ *   interactive CLI. OCC mirror: !getIsNonInteractiveSession().
+ * The gate feeds BOTH the description append (@225820817) and the K-gated
+ * result-message clauses (@228322900 region) — same single call site shape as
+ * official (Vbr used by both builders).
+ */
+export function backgroundCompletionNoticeEnabled(): boolean {
+  return !getIsNonInteractiveSession()
+}
+
 function getBackgroundUsageNote(): string | null {
   // CC 2.1.286 (item 57/--bare): central gate (official yl() @202370763 —
   // bare mode now also disables background tasks).
   if (areBackgroundTasksDisabled()) {
     return null
   }
+  // CC 2.1.300 #41: official description builder @225820817 (v299: 0 hits —
+  // byte-verified): if(Vbr())be+=" You will be notified when it exits — do
+  // not poll its output file while waiting."; appended to the
+  // run_in_background bullet (em-dash verbatim).
+  const antiPollNote = backgroundCompletionNoticeEnabled()
+    ? ' You will be notified when it exits — do not poll its output file while waiting.'
+    : ''
   // 2.1.285 #85: official smt() (@203853400) ends with `${Fan()}` — the
   // background-deadline usage sentence (empty string when the capability is
   // off, so the pre-285 text is unchanged in that case).
-  return `You can use the \`run_in_background\` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter.${backgroundTimeoutUsageNote()}`
+  return `You can use the \`run_in_background\` parameter to run the command in the background. Only use this if you don't need the result immediately and are OK being notified when the command completes later. You do not need to check the output right away - you'll be notified when it finishes. You do not need to use '&' at the end of the command when using this parameter.${backgroundTimeoutUsageNote()}${antiPollNote}`
 }
 
 function getCommitAndPRInstructions(): string {

@@ -1865,7 +1865,6 @@ function parseCapacityValue(raw: string | undefined): number | string {
 
 export function parseArgs(args: string[]): ParsedArgs {
   let verbose = false
-  let sandbox = false
   let debugFile: string | undefined
   let sessionTimeoutMs: number | undefined
   let permissionMode: string | undefined
@@ -1883,10 +1882,27 @@ export function parseArgs(args: string[]): ParsedArgs {
       help = true
     } else if (arg === '--verbose' || arg === '-v') {
       verbose = true
-    } else if (arg === '--sandbox') {
-      sandbox = true
-    } else if (arg === '--no-sandbox') {
-      sandbox = false
+    } else if (arg === '--sandbox' || arg === '--no-sandbox') {
+      // CC 2.1.300 #66: "Removed the `--sandbox` and `--no-sandbox` flags
+      // from `claude remote-control`." Official v300 RC parseArgs `ko()`
+      // @241543023 has a DEDICATED error branch (byte-verified; v299 `hs`
+      // @240274100 accepted the flags instead):
+      //   else if(C==="--sandbox"||C==="--no-sandbox")return U(
+      //     `${C} is not supported by claude remote-control. The flag had no
+      //      effect and was removed. ${C==="--sandbox"?ion:"Remove it from
+      //      the command."}`)
+      // with ion="To sandbox sessions, set sandbox.enabled to true in
+      // settings." @222586160. Branding deviation (documented): OCC's
+      // unknown-arg error below already reads "occ remote-control", so the
+      // official "claude remote-control" becomes "occ remote-control"; the
+      // hint sentences are verbatim official.
+      return makeError(
+        `${arg} is not supported by occ remote-control. The flag had no effect and was removed. ${
+          arg === '--sandbox'
+            ? 'To sandbox sessions, set sandbox.enabled to true in settings.'
+            : 'Remove it from the command.'
+        }`,
+      )
     } else if (arg === '--debug-file' && i + 1 < args.length) {
       debugFile = resolve(args[++i]!)
     } else if (arg.startsWith('--debug-file=')) {
@@ -1983,7 +1999,11 @@ export function parseArgs(args: string[]): ParsedArgs {
 
   return {
     verbose,
-    sandbox,
+    // CC 2.1.300 #66: --sandbox/--no-sandbox were removed from
+    // remote-control — the field stays (BridgeConfig requires it,
+    // src/bridge/types.ts is out of this change's file cluster) but is now
+    // constant false; nothing can set it to true anymore.
+    sandbox: false,
     debugFile,
     sessionTimeoutMs,
     permissionMode,
@@ -1999,7 +2019,7 @@ export function parseArgs(args: string[]): ParsedArgs {
   function makeError(error: string): ParsedArgs {
     return {
       verbose,
-      sandbox,
+      sandbox: false,
       debugFile,
       sessionTimeoutMs,
       permissionMode,
@@ -2703,7 +2723,6 @@ export async function bridgeMain(args: string[]): Promise<void> {
     scriptArgs: spawnScriptArgs(),
     env: process.env,
     verbose,
-    sandbox,
     debugFile,
     permissionMode,
     onDebug: logForDebugging,
@@ -3058,7 +3077,6 @@ export async function runBridgeHeadless(
     scriptArgs: spawnScriptArgs(),
     env: process.env,
     verbose: false,
-    sandbox: opts.sandbox,
     permissionMode: opts.permissionMode,
     onDebug: log,
   })

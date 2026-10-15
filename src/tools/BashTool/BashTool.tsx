@@ -49,7 +49,7 @@ import {
 import { bashToolHasPermission, commandHasAnyCd, matchWildcardPattern, permissionRuleExtractPrefix } from './bashPermissions.js';
 import { type BashReadTriggerContext, recordBashReadFiles } from './bashReadCommands.js';
 import { interpretCommandResult } from './commandSemantics.js';
-import { clampTimeoutMs, getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
+import { backgroundCompletionNoticeEnabled, clampTimeoutMs, getDefaultTimeoutMs, getMaxTimeoutMs, getSimplePrompt } from './prompt.js';
 import { checkReadOnlyConstraints } from './readOnlyValidation.js';
 import { parseSedEditCommand } from './sedEditParser.js';
 import { shouldUseSandbox } from './shouldUseSandbox.js';
@@ -749,7 +749,11 @@ export const BashTool = buildTool({
       if (assistantAutoBackgrounded) {
         backgroundInfo = `Command exceeded the assistant-mode blocking budget (${ASSISTANT_BLOCKING_BUDGET_MS / 1000}s) and was moved to the background with ID: ${backgroundTaskId}. It is still running — you will be notified when it completes. Output is being written to: ${outputPath}. In assistant mode, delegate long-running work to a subagent or use run_in_background to keep this conversation responsive.`;
       } else if (backgroundedByUser) {
-        backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`;
+        // CC 2.1.300 #41: official v300 H (manual) gains a trailing period
+        // (`…Output is being written to: ${n}.` @228322900 region,
+        // byte-verified); V and be are `r?void 0:…` — the manual variant
+        // gets NO notice/interim clauses, so nothing else is appended.
+        backgroundInfo = `Command was manually backgrounded by user with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}.`;
       } else if (timedOutAfterMs !== undefined) {
         // 2.1.210 #26: when a command hits its timeout and is auto-backgrounded,
         // tell the model the timeout value + where to find interim output. Mirrors
@@ -762,7 +766,36 @@ export const BashTool = buildTool({
         //   Mi="Read")
         backgroundInfo = `Command did not complete within its ${Math.max(1, Math.round(timedOutAfterMs / 1000))}s timeout and was moved to the background (ID: ${backgroundTaskId}). Output is being written to: ${outputPath}. You will be notified when it completes. To check interim output, use Read on that file path.`;
       } else {
-        backgroundInfo = `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}`;
+        // CC 2.1.300 #41: rebuilt as the official v300 `qpr` K-gated
+        // assembly `[H, V, Se, be].filter(Boolean).join(" ")` (@228322900
+        // region, byte-verified; v299 `_dr` @227098700 had NO K-gate):
+        //   K=!r&&!s&&!h&&y===void 0&&!S&&Vbr()
+        // In this generic branch r (backgroundedByUser) and y
+        // (timedOutAfterMs) are already excluded by the branch chain;
+        // s/h/S (backgroundedToDeliverMessage / backgroundedByTurnAbort /
+        // reapedAtFinalResponse) have no OCC counterpart and stay staged —
+        // so K collapses to Vbr() = backgroundCompletionNoticeEnabled().
+        // Se (background-deadline clause) is a pre-existing v299-era drift
+        // in OCC and out of scope for #41.
+        //   V = K ? "You will be notified when it completes — do not poll
+        //           that file or sleep while waiting."   (@228323540)
+        //       : "You will be notified when it completes."
+        //   be = K ? "Read the file only if the user asks for progress, or
+        //             if you need a line it prints before you can go on,
+        //             such as a server's ready line or port."  (@228323847)
+        //        : "To check interim output, use Read on that file path."
+        const noticeEnabled = backgroundCompletionNoticeEnabled();
+        const notice = noticeEnabled
+          ? 'You will be notified when it completes — do not poll that file or sleep while waiting.'
+          : 'You will be notified when it completes.';
+        const readHint = noticeEnabled
+          ? "Read the file only if the user asks for progress, or if you need a line it prints before you can go on, such as a server's ready line or port."
+          : 'To check interim output, use Read on that file path.';
+        backgroundInfo = [
+          `Command running in background with ID: ${backgroundTaskId}. Output is being written to: ${outputPath}.`,
+          notice,
+          readHint,
+        ].filter(Boolean).join(' ');
       }
     }
     return {

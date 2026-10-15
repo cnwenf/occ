@@ -54,7 +54,6 @@ type SessionSpawnerDeps = {
   scriptArgs: string[]
   env: NodeJS.ProcessEnv
   verbose: boolean
-  sandbox: boolean
   debugFile?: string
   permissionMode?: string
   onDebug: (msg: string) => void
@@ -309,7 +308,6 @@ export function createSessionSpawner(deps: SessionSpawnerDeps): SessionSpawner {
         // the session access token for inference instead.
         CLAUDE_CODE_OAUTH_TOKEN: undefined,
         CLAUDE_CODE_ENVIRONMENT_KIND: 'bridge',
-        ...(deps.sandbox && { CLAUDE_CODE_FORCE_SANDBOX: '1' }),
         CLAUDE_CODE_SESSION_ACCESS_TOKEN: opts.accessToken,
         // v1: HybridTransport (WS reads + POST writes) to Session-Ingress.
         // Harmless in v2 mode — transportUtils checks CLAUDE_CODE_USE_CCR_V2 first.
