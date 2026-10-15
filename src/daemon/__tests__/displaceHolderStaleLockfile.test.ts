@@ -104,7 +104,14 @@ describe('CC 2.1.216 #11 — daemon stop --any stale-lockfile guard', () => {
   test('does NOT kill when getProcessStartMs is unresolvable (fail-safe)', async () => {
     // Lockfile says pid=88888 started at T=2000. The pid is alive but we
     // can't determine its start time (e.g. platform without `ps`).
-    // Must fail SAFE — no kill, just clear the lockfile.
+    // Must fail SAFE — no kill signal sent.
+    //
+    // CC 2.1.300 #43 update: this case is now reported as `unverified`
+    // instead of a silent success — the official stop flow never claims
+    // "stopped" while an unverifiable holder may still be running, and the
+    // lockfile is kept ("so it was not signalled … delete that file"
+    // message family, v300 @111239436/@104541844). The no-kill fail-safe
+    // guard this test pins is unchanged.
     writeLockfile(88888, 2000)
     mockIsPidAlive = () => true
     mockGetProcessStartMs = () => null
@@ -112,8 +119,9 @@ describe('CC 2.1.216 #11 — daemon stop --any stale-lockfile guard', () => {
     const res = await displaceHolder()
 
     expect(killCalls.length).toBe(0)
-    expect(res.displaced).toBe(true)
-    expect(existsSync(getDaemonLockfilePath())).toBe(false)
+    expect(res.displaced).toBe(false)
+    expect(res.unverified).toBe(true)
+    expect(existsSync(getDaemonLockfilePath())).toBe(true)
   })
 
   test('does NOT kill a dead PID (already gone)', async () => {

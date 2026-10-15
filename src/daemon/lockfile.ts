@@ -203,61 +203,156 @@ export async function updateLockfileRemoteControl(
 /**
  * Displace the current holder (used by `claude daemon stop --any`).
  *
- * Sends SIGTERM to the holder's supervisor pid, waits briefly, escalates to
- * SIGKILL if still alive. Returns a description of the holder for reporting.
+ * CC 2.1.300 #43: the official stop flow is SIGTERM → wait → SIGKILL →
+ * liveness RE-CHECK — success is claimed only once the holder is really
+ * gone (binary @111238330-@111240268). The result therefore distinguishes:
+ *   - displaced:  holder gone (or was already dead / pid recycled), lock cleared
+ *   - survived:   holder is STILL alive after SIGKILL ("outlives SIGKILL")
+ *   - unverified: holder alive but its identity could not be verified, so it
+ *                 was not signalled at all (fail-safe; official "could not be
+ *                 verified as the daemon, so it was not signalled" family) —
+ *                 or, combined with survived, alive after SIGKILL with an
+ *                 unreadable identity (official variant-2 message)
+ *   - eperm:      holder belongs to another user (EPERM) — not signalable
+ *   - isInit:     holder pid is 1 — this command never signals pid 1
+ * The lockfile is kept in every failure case: the holder still owns it.
  */
-export async function displaceHolder(): Promise<{
-  displaced: boolean
-  holder: LockfileContents | null
-}> {
+
+/** How long to wait for a graceful SIGTERM exit before escalating. */
+const SIGTERM_GRACE_MS = 5000
+/** Settle window after SIGKILL before the liveness re-check. */
+const SIGKILL_SETTLE_MS = 300
+/** Liveness poll interval during the SIGTERM grace window. */
+const LIVENESS_POLL_MS = 200
+/** Tolerance when comparing recorded vs actual process start times. */
+const PROC_START_TOLERANCE_MS = 2000
+
+/** Immutable outcome of a `displaceHolder()` attempt. */
+export interface DisplaceHolderResult {
+  readonly displaced: boolean
+  readonly survived: boolean
+  readonly unverified: boolean
+  readonly eperm: boolean
+  readonly isInit: boolean
+  readonly holder: LockfileContents | null
+}
+
+/** Test-tunable timing overrides; production uses the constants above. */
+export interface DisplaceHolderOptions {
+  readonly sigtermGraceMs?: number
+  readonly sigkillSettleMs?: number
+}
+
+function displaceResult(
+  outcome: Partial<Omit<DisplaceHolderResult, 'holder'>>,
+  holder: LockfileContents | null,
+): DisplaceHolderResult {
+  return {
+    displaced: false,
+    survived: false,
+    unverified: false,
+    eperm: false,
+    isInit: false,
+    ...outcome,
+    holder,
+  }
+}
+
+function startMsMatches(actual: number | null, recorded: number): boolean {
+  return actual !== null && Math.abs(actual - recorded) < PROC_START_TOLERANCE_MS
+}
+
+function isEperm(err: unknown): boolean {
+  return (err as { code?: string } | null)?.code === 'EPERM'
+}
+
+export async function displaceHolder(
+  opts: DisplaceHolderOptions = {},
+): Promise<DisplaceHolderResult> {
+  const sigtermGraceMs = opts.sigtermGraceMs ?? SIGTERM_GRACE_MS
+  const sigkillSettleMs = opts.sigkillSettleMs ?? SIGKILL_SETTLE_MS
   const existing = await readLockfile()
   if (!existing) {
-    return { displaced: false, holder: null }
+    return displaceResult({}, null)
   }
 
-  const holderStartMs = getProcessStartMs(existing.supervisorPid)
-  const startMatches =
-    holderStartMs !== null && Math.abs(holderStartMs - existing.supervisorProcStart) < 2000
+  const pid = existing.supervisorPid
+  const identity = {
+    supervisorPid: pid,
+    supervisorProcStart: existing.supervisorProcStart,
+  }
 
-  if (!isPidAlive(existing.supervisorPid) || !startMatches) {
-    // Already gone — just clear the lockfile.
-    await releaseLockfile({
-      supervisorPid: existing.supervisorPid,
-      supervisorProcStart: existing.supervisorProcStart,
-    }).catch(() => {})
-    return { displaced: true, holder: existing }
+  // Never signal pid 1 (official `daemon_stop_holder_is_init` guard).
+  if (pid === 1) {
+    return displaceResult({ isInit: true }, existing)
+  }
+
+  // Already gone — just clear the lockfile.
+  if (!isPidAlive(pid)) {
+    await releaseLockfile(identity).catch(() => {})
+    return displaceResult({ displaced: true }, existing)
+  }
+
+  // Alive: verify identity via process start time before signalling.
+  const holderStartMs = getProcessStartMs(pid)
+  if (holderStartMs === null) {
+    // Unverifiable liveness/identity — fail safe: do NOT signal, do NOT
+    // claim success, keep the lockfile (CC 2.1.300 #43).
+    return displaceResult({ unverified: true }, existing)
+  }
+  if (!startMsMatches(holderStartMs, existing.supervisorProcStart)) {
+    // Pid was recycled by an unrelated process — our holder is gone.
+    await releaseLockfile(identity).catch(() => {})
+    return displaceResult({ displaced: true }, existing)
   }
 
   // SIGTERM the holder supervisor.
   try {
-    process.kill(existing.supervisorPid, 'SIGTERM')
-  } catch {
-    /* already dead */
-  }
-
-  // Wait up to ~5s for graceful exit.
-  const deadline = Date.now() + 5000
-  while (Date.now() < deadline) {
-    if (!isPidAlive(existing.supervisorPid)) break
-    await new Promise(r => setTimeout(r, 200))
-  }
-
-  // Escalate to SIGKILL if still alive.
-  if (isPidAlive(existing.supervisorPid)) {
-    try {
-      process.kill(existing.supervisorPid, 'SIGKILL')
-    } catch {
-      /* ignore */
+    process.kill(pid, 'SIGTERM')
+  } catch (err: unknown) {
+    if (isEperm(err)) {
+      // Foreign-user holder — official: "it belongs to another user, so
+      // this account cannot signal it … No sessions were ended."
+      return displaceResult({ eperm: true }, existing)
     }
-    await new Promise(r => setTimeout(r, 300))
+    // ESRCH — died between the liveness check and the signal; fall through
+    // to the cleanup below.
   }
 
-  await releaseLockfile({
-    supervisorPid: existing.supervisorPid,
-    supervisorProcStart: existing.supervisorProcStart,
-  }).catch(() => {})
+  // Wait for graceful exit.
+  const deadline = Date.now() + sigtermGraceMs
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) break
+    await new Promise(r => setTimeout(r, LIVENESS_POLL_MS))
+  }
 
-  return { displaced: true, holder: existing }
+  // Escalate to SIGKILL if still alive — and SAY SO (official note
+  // "… is still running; force-killing it (SIGKILL)" @111238440).
+  if (isPidAlive(pid)) {
+    console.error(`note: the daemon (pid=${pid}) is still running; force-killing it (SIGKILL)`)
+    try {
+      process.kill(pid, 'SIGKILL')
+    } catch (err: unknown) {
+      if (isEperm(err)) {
+        return displaceResult({ eperm: true }, existing)
+      }
+      /* ESRCH — killed by someone else / just exited; re-check below. */
+    }
+    await new Promise(r => setTimeout(r, sigkillSettleMs))
+
+    // CC 2.1.300 #43: re-check liveness after SIGKILL instead of assuming
+    // displacement (process.ts ensureZombieKill pattern).
+    if (isPidAlive(pid)) {
+      const startAfterKill = getProcessStartMs(pid)
+      return displaceResult(
+        { survived: true, unverified: !startMsMatches(startAfterKill, existing.supervisorProcStart) },
+        existing,
+      )
+    }
+  }
+
+  await releaseLockfile(identity).catch(() => {})
+  return displaceResult({ displaced: true }, existing)
 }
 
 /**

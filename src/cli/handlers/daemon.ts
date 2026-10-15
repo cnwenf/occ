@@ -28,13 +28,25 @@ import {
   daemonInstall,
   daemonRestart,
   daemonUninstall,
-  displaceAny,
   getDaemonColdStart,
   runSupervisor,
   stopExistingSupervisor,
 } from '../../daemon/supervisor.js'
-import { readLockfile, lockfileMtime } from '../../daemon/lockfile.js'
-import { getDaemonJsonPath, listWorkers, getWorker, settleWorker } from '../../daemon/workerRegistry.js'
+import {
+  readLockfile,
+  lockfileMtime,
+  displaceHolder,
+  getDaemonLockfilePath,
+  type DisplaceHolderResult,
+} from '../../daemon/lockfile.js'
+import {
+  getDaemonJsonPath,
+  getDaemonStatusPath,
+  listWorkers,
+  getWorker,
+  readDaemonStatus,
+  settleWorker,
+} from '../../daemon/workerRegistry.js'
 import type { ScheduledTask } from '../../daemon/types.js'
 import { isPidAlive } from '../../daemon/process.js'
 
@@ -46,6 +58,133 @@ function daemonLogPath(): string {
 /** ~/.claude/daemon.scheduled.status.json — scheduled-task status snapshot. */
 function scheduledStatusPath(): string {
   return join(getClaudeConfigHomeDir(), 'daemon.scheduled.status.json')
+}
+
+/**
+ * CC 2.1.300 #43 — `daemon stop --any` failure messages.
+ *
+ * Byte-verified against the official v300 binary (@111238330-@111240708;
+ * all NEW in v300 unless noted): the official stop flow re-checks liveness
+ * after SIGKILL and reports honestly with exit 1 when the holder is still
+ * there. OCC adaptations: label "daemon" (official `of()` branch),
+ * `claude`→`occ` renames, "Claude Code started with" → "OCC started with",
+ * single `…/occ daemon …` example, and the unverified variant omits the
+ * official "Ns after SIGTERM" claim because OCC's fail-safe never signals an
+ * unverifiable holder (uses the official "so it was not signalled" @104541844
+ * wording instead).
+ */
+
+/** Holder verified-alive after SIGKILL — official variant 1 (@111238886). */
+function stopAnyStillRunningMessage(pid: number): string {
+  return (
+    `the daemon was not stopped: pid=${pid} is still running ` +
+    'after SIGKILL. A process that outlives SIGKILL is usually waiting inside the operating system, ' +
+    'for example on a network drive that stopped answering, and exits by itself once that wait ends. ' +
+    'Until then, `occ agents` and `occ --bg` cannot start a new daemon. ' +
+    '`occ daemon status` says "not running" once it has gone; if it never goes, restart the computer.'
+  )
+}
+
+/** Alive after SIGKILL but identity unreadable — official variant 2 (@111239232). */
+function stopAnyUnverifiedAfterSigkillMessage(pid: number): string {
+  return (
+    `the daemon was not stopped: pid=${pid} is still running ` +
+    'after SIGKILL, and could no longer be verified as the daemon. It should exit shortly. ' +
+    'If `occ agents` or `occ --bg` still cannot start a new daemon in a minute, restart the computer.'
+  )
+}
+
+/** Alive but unverifiable before any signal — official variant 3 (@111239622/@111239722), adapted. */
+function stopAnyUnverifiedNoSignalMessage(pid: number): string {
+  return (
+    `the daemon was not stopped: pid=${pid} is still running ` +
+    'but could not be verified as the daemon, so it was not signalled. ' +
+    'While it runs, `occ agents` and `occ --bg` may not be able to start a new daemon. ' +
+    'Re-run `occ daemon stop --any`. If that does not stop it, run `ps -ww -o args= -p ' +
+    `${pid}\`: if that shows OCC started with "daemon" (for example \`…/occ daemon …\`), ` +
+    `stop it with \`kill -9 ${pid}\`. If it shows anything else, another program probably ` +
+    'has that pid: leave it alone, and if `occ agents` or `occ --bg` still cannot start a ' +
+    `new daemon, delete ${getDaemonLockfilePath()}.`
+  )
+}
+
+/** Foreign-user holder — official (@111238507/@111238596). */
+function stopAnyEpermMessage(pid: number): string {
+  return (
+    `could not stop the daemon (pid=${pid}): it belongs to another user, so this account ` +
+    'cannot signal it. Stop it from that account. No sessions were ended.'
+  )
+}
+
+/** Holder pid is 1 — official (@111240315/@111240364). */
+function stopAnyHolderIsInitMessage(pid: number): string {
+  return (
+    `the daemon was not stopped: pid=${pid} is holding ${getDaemonLockfilePath()} ` +
+    "and this command never signals pid 1. If that is a container's entrypoint, stop the " +
+    'container; if not, delete that file.'
+  )
+}
+
+/**
+ * Entry-44 fold-in (CC 2.1.300): SIGKILL displacement bypasses the
+ * supervisor's shutdown path (stopAllWorkers → writeDaemonStatus), so
+ * ~/.claude/daemon-status.json can keep listing killed sessions as running.
+ * After a successful displace, prune records whose pid is dead. Best-effort.
+ */
+function refreshDaemonStatusAfterDisplace(): void {
+  try {
+    const records = readDaemonStatus()
+    const live = records.filter(r => isPidAlive(r.pid))
+    if (live.length !== records.length) {
+      writeFileSync(getDaemonStatusPath(), JSON.stringify(live), { encoding: 'utf-8' })
+    }
+  } catch {
+    // Status file is best-effort — never crash the stop path over it.
+  }
+}
+
+/**
+ * Report a `stop --any` displacement result the official way: success only
+ * when the holder is really gone; every stuck/unverifiable/foreign case
+ * prints why and sets exit 1 (analytics keys recorded at the call sites,
+ * mirroring the official even though OCC's analytics are stubbed).
+ */
+function reportStopAnyResult(res: DisplaceHolderResult): void {
+  const pid = res.holder?.supervisorPid
+  if (res.holder && res.isInit) {
+    console.error(stopAnyHolderIsInitMessage(pid!))
+    logEvent('daemon_stop_holder_is_init', { pid: pid as any })
+    process.exitCode = 1
+    return
+  }
+  if (res.holder && res.eperm) {
+    console.error(stopAnyEpermMessage(pid!))
+    logEvent('daemon_stop_failed', { pid: pid as any })
+    process.exitCode = 1
+    return
+  }
+  if (res.holder && res.survived) {
+    console.error(
+      res.unverified ? stopAnyUnverifiedAfterSigkillMessage(pid!) : stopAnyStillRunningMessage(pid!),
+    )
+    logEvent('daemon_stop_still_running', { pid: pid as any })
+    process.exitCode = 1
+    return
+  }
+  if (res.holder && res.unverified) {
+    console.error(stopAnyUnverifiedNoSignalMessage(pid!))
+    logEvent('daemon_stop_holder_unverified', { pid: pid as any })
+    process.exitCode = 1
+    return
+  }
+  if (res.displaced && res.holder) {
+    console.log(`Stopped background sessions held by pid=${res.holder.supervisorPid}.`)
+    refreshDaemonStatusAfterDisplace()
+    return
+  }
+  if (!res.holder) {
+    console.log('No background sessions found.')
+  }
 }
 
 /** Print usage for `claude daemon`. */
@@ -83,14 +222,10 @@ export async function daemonSubcommand(
     case 'stop': {
       const any = args.includes('--any') || args.includes('-a')
       if (any) {
-        const res = await displaceAny()
-        if (res.displaced && res.holder) {
-          console.log(
-            `Stopped background sessions held by pid=${res.holder.supervisorPid}.`,
-          )
-        } else if (!res.holder) {
-          console.log('No background sessions found.')
-        }
+        // CC 2.1.300 #43: honest reporting — waits, force-kills, re-checks
+        // liveness, and exits 1 with the official message family when the
+        // holder is still there (no more "Stopped …" over a live service).
+        reportStopAnyResult(await displaceHolder())
       } else {
         const res = await stopExistingSupervisor()
         if (res.holder && !res.stopped) {
