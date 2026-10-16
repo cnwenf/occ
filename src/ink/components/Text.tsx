@@ -47,7 +47,7 @@ type BaseProps = {
   /**
    * This property tells Ink to wrap or truncate text if its width is larger than container.
    * If `wrap` is passed (by default), Ink will wrap text and split it into multiple lines.
-   * If `truncate-*` is passed, Ink will truncate text instead, what will result in one line of text with the rest cut off.
+   * If `truncate-*` is passed, Ink will truncate text instead, which will result in one line of text with the rest cut off.
    */
   readonly wrap?: Styles['textWrap'];
   readonly children?: ReactNode;

@@ -58,6 +58,8 @@ afterAll(() => {
 
 const {
   shouldGzipRequestBody,
+  classifyGzipRejection,
+  classifyGzipResendOutcome,
   latchGzipRequestBodyOff,
   resetGzipRequestBodyLatch,
   isGzipRequestBodyLatchedOff,
@@ -387,5 +389,126 @@ describe('buildFetch gzip wiring (official @220216119 + a_o fallback)', () => {
     })
     expect(calls[0].init.body).toBe(body)
     expect(calls[0].init.headers.get('content-encoding')).toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Direct classifier coverage (official `h(e)` = classifyGzipRejection,
+// `X(e)` = classifyGzipResendOutcome). The buildFetch tests above only
+// exercise the non_anthropic_rejection 400 + invalid_json_at_origin paths
+// end-to-end; these tests pin EVERY arm: the 403/415 status gate, the
+// anthropic-like pass-through (request-id `req_` prefix OR cf-ray), and the
+// resend outcomes same_rejection / api_response / not_api_response.
+// ---------------------------------------------------------------------------
+
+/** Response builder — keeps the arm matrix below terse. */
+function res(
+  status: number,
+  body = '',
+  headers: Record<string, string> = {},
+): Response {
+  return new Response(body, { status, headers })
+}
+
+const ANTHROPIC_HEADERS = { 'request-id': 'req_gzip1' }
+const CLOUDFLARE_HEADERS = { 'cf-ray': '8f3a2b1c0d9e-IAD' }
+
+const BAD_JSON_ENVELOPE = JSON.stringify({
+  type: 'error',
+  error: {
+    type: 'invalid_request_error',
+    message: 'The request body is not valid JSON',
+  },
+})
+
+describe('classifyGzipRejection (official h(e) — status gate + W + V arms)', () => {
+  test('ok responses are never rejections', async () => {
+    expect(await classifyGzipRejection(res(200, '{}', ANTHROPIC_HEADERS))).toBeNull()
+  })
+
+  test('statuses outside 400/403/415 are never rejections (official h status gate)', async () => {
+    // A non-anthropic 500/404 is an intermediary error, NOT a gzip rejection.
+    expect(await classifyGzipRejection(res(500, 'gateway blew up'))).toBeNull()
+    expect(await classifyGzipRejection(res(404, 'not found'))).toBeNull()
+    expect(await classifyGzipRejection(res(429, 'slow down'))).toBeNull()
+  })
+
+  test('403 without request-id/cf-ray → non_anthropic_rejection (the 403 arm)', async () => {
+    expect(
+      await classifyGzipRejection(res(403, 'Forbidden by intermediary')),
+    ).toBe('non_anthropic_rejection')
+  })
+
+  test('415 without request-id/cf-ray → non_anthropic_rejection (the 415 arm)', async () => {
+    expect(
+      await classifyGzipRejection(res(415, 'Unsupported Media Type')),
+    ).toBe('non_anthropic_rejection')
+  })
+
+  test('anthropic-like 403/415 pass through (null) — real API rejections are not gzip rejections', async () => {
+    expect(await classifyGzipRejection(res(403, 'org not allowed', ANTHROPIC_HEADERS))).toBeNull()
+    expect(await classifyGzipRejection(res(415, 'nope', CLOUDFLARE_HEADERS))).toBeNull()
+  })
+
+  test('anthropic-like 400 with the bad-JSON envelope → invalid_json_at_origin (official V)', async () => {
+    expect(
+      await classifyGzipRejection(res(400, BAD_JSON_ENVELOPE, ANTHROPIC_HEADERS)),
+    ).toBe('invalid_json_at_origin')
+  })
+
+  test('anthropic-like 400 with raw "bad json: unexpected EOF" → invalid_json_at_origin', async () => {
+    expect(
+      await classifyGzipRejection(
+        res(400, 'bad json: unexpected EOF', { 'request-id': 'req_gzip2' }),
+      ),
+    ).toBe('invalid_json_at_origin')
+  })
+
+  test('anthropic-like 400 with an unrelated message → null (pass-through)', async () => {
+    expect(
+      await classifyGzipRejection(
+        res(400, JSON.stringify({ type: 'error', error: { message: 'prompt is too long' } }), ANTHROPIC_HEADERS),
+      ),
+    ).toBeNull()
+  })
+
+  test('non-anthropic 400 wins as non_anthropic_rejection even with a bad-json body (W checked before V)', async () => {
+    expect(
+      await classifyGzipRejection(res(400, BAD_JSON_ENVELOPE)),
+    ).toBe('non_anthropic_rejection')
+  })
+})
+
+describe('classifyGzipResendOutcome (official X(e) — retryOutcome telemetry)', () => {
+  test('the uncompressed re-send rejected the same way → same_rejection', async () => {
+    // Any classifyGzipRejection hit counts — e.g. the intermediary 403 again,
+    // or the origin still failing to parse the (now identity) body.
+    expect(
+      await classifyGzipResendOutcome(res(403, 'Forbidden by intermediary')),
+    ).toBe('same_rejection')
+    expect(
+      await classifyGzipResendOutcome(res(400, BAD_JSON_ENVELOPE, ANTHROPIC_HEADERS)),
+    ).toBe('same_rejection')
+  })
+
+  test('a real API response (request-id req_…) → api_response', async () => {
+    expect(
+      await classifyGzipResendOutcome(res(200, '{"ok":true}', ANTHROPIC_HEADERS)),
+    ).toBe('api_response')
+    // Even an API 400 (non-gzip) is an api_response — the resend reached the API.
+    expect(
+      await classifyGzipResendOutcome(res(400, 'prompt is too long', { 'request-id': 'req_real400' })),
+    ).toBe('api_response')
+  })
+
+  test('non-API bodies (HTML error page / garbage, no request-id) → not_api_response', async () => {
+    expect(
+      await classifyGzipResendOutcome(
+        res(502, '<html><body>Bad Gateway</body></html>'),
+      ),
+    ).toBe('not_api_response')
+    expect(
+      await classifyGzipResendOutcome(res(200, '\x00\x01garbage')),
+    ).toBe('not_api_response')
   })
 })
