@@ -11,7 +11,7 @@ export type Props = VimTextInputProps & {
   highlights?: TextHighlight[];
 };
 export default function VimTextInput(props) {
-  const $ = _c(42);
+  const $ = _c(48);
   const [theme] = useTheme();
   const isTerminalFocused = useTerminalFocus();
   useClipboardImageHint(isTerminalFocused, !!props.onImagePaste);
@@ -116,7 +116,8 @@ export default function VimTextInput(props) {
   const vimInputState = useVimInput(t16);
   const {
     mode,
-    setMode
+    setMode,
+    isCommandPending
   } = vimInputState;
   let t17;
   let t18;
@@ -137,6 +138,40 @@ export default function VimTextInput(props) {
     t18 = $[33];
   }
   React.useEffect(t17, t18);
+  // CC 2.1.301 (occ160 WP-D): official VimTextInput editing-state report
+  // effect (@243843500 region, byte-verbatim):
+  //   let{onEditingStateChange:H}=t,f=t.focus!==!1,E=c!=="NORMAL"||b;
+  //   return Jt(()=>{if(!H||!f)return;H({mode:c,takesEscape:E}),()=>H(null)},
+  //     [H,f,c,E])
+  // Reports {mode, takesEscape} while focused; takesEscape is true in any
+  // non-NORMAL mode OR while a NORMAL-mode command is pending, so the host
+  // (AskUserQuestion free-text option) leaves Escape to the vim input.
+  const t20 = props.onEditingStateChange;
+  const t21 = props.focus !== false;
+  const t22 = mode !== "NORMAL" || isCommandPending;
+  let t23;
+  let t24;
+  if ($[42] !== t20 || $[43] !== t21 || $[44] !== mode || $[45] !== t22) {
+    t23 = () => {
+      if (!t20 || !t21) return;
+      t20({
+        mode,
+        takesEscape: t22
+      });
+      return () => t20(null);
+    };
+    t24 = [t20, t21, mode, t22];
+    $[42] = t20;
+    $[43] = t21;
+    $[44] = mode;
+    $[45] = t22;
+    $[46] = t23;
+    $[47] = t24;
+  } else {
+    t23 = $[46];
+    t24 = $[47];
+  }
+  React.useEffect(t23, t24);
   let t19;
   if ($[34] !== isTerminalFocused || $[35] !== props || $[36] !== vimInputState) {
     t19 = <Box flexDirection="column"><BaseTextInput inputState={vimInputState} terminalFocus={isTerminalFocused} highlights={props.highlights} {...props} /></Box>;

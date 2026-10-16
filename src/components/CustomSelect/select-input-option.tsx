@@ -2,16 +2,52 @@ import { c as _c } from "react/compiler-runtime";
 import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 // eslint-disable-next-line custom-rules/prefer-use-keybindings -- UP arrow exit not in Attachments bindings
 import { Box, Text, useInput } from '../../ink.js';
+import type { KeyboardEvent } from '../../ink/events/keyboard-event.js';
 import { useKeybinding, useKeybindings } from '../../keybindings/useKeybinding.js';
+import type { VimEditingState } from '../../types/textInputTypes.js';
 import type { PastedContent } from '../../utils/config.js';
 import { getImageFromClipboard } from '../../utils/imagePaste.js';
 import type { ImageDimensions } from '../../utils/imageResizer.js';
+import VimTextInput from '../VimTextInput.js';
 import { ClickableImageRef } from '../ClickableImageRef.js';
 import { ConfigurableShortcutHint } from '../ConfigurableShortcutHint.js';
 import { Byline } from '../design-system/Byline.js';
 import TextInput from '../TextInput.js';
 import type { OptionWithDescription } from './select.js';
 import { SelectOption } from './select-option.js';
+
+/**
+ * CC 2.1.301 (occ160 WP-D): official `Do` bare-escape check (@243853550
+ * region, byte-verbatim): `function Do(t){return t?.name==="escape"&&!t.ctrl
+ * &&!t.meta}`. OCC's KeyboardEvent exposes the key name as `.key`.
+ */
+function isBareEscape(event: KeyboardEvent | null | undefined): boolean {
+  return event?.key === 'escape' && !event.ctrl && !event.meta;
+}
+
+/**
+ * CC 2.1.301 (occ160 WP-D): official `ll` stop handler (@243848646 region,
+ * byte-verbatim): `function ll(t){if(Do(t))t.stopImmediatePropagation()}`.
+ * Attached as the option Box's onKeyDown when the vim input takes Escape
+ * (official `je=Te?.takesEscape?ll:void 0`) so a bare Esc does not bubble to
+ * ancestor key handlers while vim owns the Esc key.
+ */
+function stopBareEscapePropagation(event: KeyboardEvent): void {
+  if (isBareEscape(event)) {
+    event.stopImmediatePropagation();
+  }
+}
+
+/**
+ * CC 2.1.301 (occ160 WP-D): prop surface for the swappable input component.
+ * `onEditingStateChange` only exists on VimTextInput's props; TextInput
+ * silently ignores it (it is never passed when vimEditing is undefined). The
+ * intersection keeps both call-site variants type-safe under one JSX element.
+ */
+type SwappableInputProps = React.ComponentProps<typeof TextInput> & {
+  onEditingStateChange?: (state: VimEditingState | null) => void;
+};
+
 type Props<T> = {
   option: Extract<OptionWithDescription<T>, {
     type: 'input';
@@ -80,7 +116,7 @@ type Props<T> = {
   onClick?: (event: import('../../ink/events/click-event.js').ClickEvent) => void;
 };
 export function SelectInputOption(t0) {
-  const $ = _c(101);
+  const $ = _c(102);
   const {
     option,
     isFocused,
@@ -120,6 +156,13 @@ export function SelectInputOption(t0) {
   }
   const imageAttachments = t4;
   const showLabel = showLabelProp || option.showLabelWithValue === true;
+  // CC 2.1.301 (occ160 WP-D): official `cAe` vim-input swap (@243843500
+  // region, byte-verbatim): `let{vimEditing:Te}=o,We=Te?Ywt:Or` — when the
+  // option carries vimEditing, render the vim text input; otherwise the
+  // plain one. `je=Te?.takesEscape?ll:void 0` arms the Box onKeyDown guard.
+  const vimEditing = option.vimEditing;
+  const InputComponent = (vimEditing ? VimTextInput : TextInput) as React.ComponentType<SwappableInputProps>;
+  const t39 = vimEditing?.takesEscape ? stopBareEscapePropagation : undefined;
   const [cursorOffset, setCursorOffset] = useState(inputValue.length);
   const isUserEditing = useRef(false);
   let t5;
@@ -380,7 +423,7 @@ export function SelectInputOption(t0) {
   }
   let t32;
   if ($[59] !== cursorOffset || $[60] !== imagesSelected || $[61] !== inputValue || $[62] !== isFocused || $[63] !== onExit || $[64] !== onImagePaste || $[65] !== onInputChange || $[66] !== onSubmit || $[67] !== option || $[68] !== showLabel) {
-    t32 = showLabel ? <><Text color={isFocused ? "suggestion" : undefined}>{option.label}</Text>{isFocused ? <><Text color="suggestion">{option.labelValueSeparator ?? ", "}</Text><TextInput value={inputValue} onChange={value => {
+    t32 = showLabel ? <><Text color={isFocused ? "suggestion" : undefined}>{option.label}</Text>{isFocused ? <><Text color="suggestion">{option.labelValueSeparator ?? ", "}</Text><InputComponent value={inputValue} onEditingStateChange={vimEditing?.onStateChange} onChange={value => {
           isUserEditing.current = true;
           onInputChange(value);
           option.onChange(value);
@@ -392,7 +435,7 @@ export function SelectInputOption(t0) {
           onInputChange(newValue);
           option.onChange(newValue);
           setCursorOffset(before.length + pastedText.length);
-        }} /></> : inputValue && <Text>{option.labelValueSeparator ?? ", "}{inputValue}</Text>}</> : isFocused ? <TextInput value={inputValue} onChange={value_0 => {
+        }} /></> : inputValue && <Text>{option.labelValueSeparator ?? ", "}{inputValue}</Text>}</> : isFocused ? <InputComponent value={inputValue} onEditingStateChange={vimEditing?.onStateChange} onChange={value_0 => {
       isUserEditing.current = true;
       onInputChange(value_0);
       option.onChange(value_0);
@@ -476,12 +519,16 @@ export function SelectInputOption(t0) {
     t37 = $[94];
   }
   let t38;
-  if ($[95] !== t34 || $[96] !== t35 || $[97] !== t36 || $[98] !== t37) {
-    t38 = <Box flexDirection="column" flexShrink={0}>{t34}{t35}{t36}{t37}</Box>;
+  // CC 2.1.301 (occ160 WP-D): official outer Box gains `onKeyDown:je`
+  // (@243844694 region): `On=r(s,{flexDirection:"column",flexShrink:0,
+  // onKeyDown:je,children:[_,dn,gt,Qe]})`.
+  if ($[95] !== t34 || $[96] !== t35 || $[97] !== t36 || $[98] !== t37 || $[101] !== t39) {
+    t38 = <Box flexDirection="column" flexShrink={0} onKeyDown={t39}>{t34}{t35}{t36}{t37}</Box>;
     $[95] = t34;
     $[96] = t35;
     $[97] = t36;
     $[98] = t37;
+    $[101] = t39;
     $[99] = t38;
   } else {
     t38 = $[99];

@@ -12,6 +12,7 @@ import {
   isSessionPersistenceDisabled,
 } from '../bootstrap/state.js'
 import instances from '../ink/instances.js'
+import { printsUnknownSequences } from '../ink/terminal.js'
 import {
   DISABLE_KITTY_KEYBOARD,
   DISABLE_MODIFY_OTHER_KEYS,
@@ -111,8 +112,15 @@ function cleanupTerminalModes(): void {
     inst?.detachForShutdown()
     // Disable extended key reporting — always send both since terminals
     // silently ignore whichever they don't implement
-    writeSync(1, DISABLE_MODIFY_OTHER_KEYS)
-    writeSync(1, DISABLE_KITTY_KEYBOARD)
+    // CC 2.1.301 (occ160 WP-H): EXCEPT VTE < 0.53, which prints unknown
+    // `CSI >`/`CSI <` sequences as literal text — the stray `>4m` before
+    // the shell prompt at exit. Official exit cleanup
+    // (`vre()=o0e()+pvt+lvt()`, helpers @231683280) emits "" for both
+    // sequences when `b6()` (printsUnknownSequences) is true.
+    if (!printsUnknownSequences()) {
+      writeSync(1, DISABLE_MODIFY_OTHER_KEYS)
+      writeSync(1, DISABLE_KITTY_KEYBOARD)
+    }
     // Disable focus events (DECSET 1004)
     writeSync(1, DFE)
     // Disable bracketed paste mode

@@ -69,6 +69,16 @@ export function executeOperatorMotion(
     return
   }
 
+  // CC 2.1.301 (occ160 WP-D): official `q` executeOperatorMotion (@236318544,
+  // byte-verbatim): `if(e==="%"&&s.equals(n.cursor))return;` — positioned
+  // AFTER the linewise branch and BEFORE the zero-width branch. `%` with no
+  // matching bracket (or count!==1 → resolveMotion no-op) is a silent no-op:
+  // it must NOT fall into the zero-width branch (which would clear the
+  // register / enter INSERT for `c`) nor into getOperatorRange (from===to
+  // would clear the register). "%" is inclusive, so the zero-width branch
+  // would not catch it anyway — this guard is the official early return.
+  if (motion === '%' && target.equals(ctx.cursor)) return
+
   // v281 `ht`: zero-width branch — replaces the bare `target.equals` return.
   if (target.equals(ctx.cursor) && !isInclusiveMotion(motion)) {
     const isCwEnd =
@@ -676,9 +686,14 @@ function getOperatorRange(
       wordEnd = wordCursor
     }
     to = cursor.measuredText.nextOffset(wordEnd.offset)
+    // CC 2.1.301 (occ160 WP-D): official `cn` getOperatorRange (@236324215,
+    // byte-verbatim): v300 `pi` had `ir(C)&&d.offset<=h.offset`; v301 adds
+    // `(r==="%"||t.offset<=e.offset)` — `%` extends the range inclusively
+    // even on a BACKWARD jump (closer→opener), so `d%` from `)` deletes the
+    // whole pair. All other inclusive motions (e/E/$) stay forward-only.
   } else if (
     isInclusiveMotion(motion) &&
-    cursor.offset <= target.offset &&
+    (motion === '%' || cursor.offset <= target.offset) &&
     cursor.text[to] !== '\n'
   ) {
     to = cursor.measuredText.nextOffset(to)

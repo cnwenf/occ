@@ -74,6 +74,7 @@ const {
   isModelFallbackDisabled,
   isModelFromEnvDefault,
   isModelUserExplicit,
+  modelFamilyStem,
   modelTier,
   olderSameTierFirstPartyIds,
   previousModelOfSameTier,
@@ -117,11 +118,17 @@ afterEach(() => {
 })
 
 describe('2.1.286 item-B — catalog walk (binary Bu/Dm/CCo)', () => {
-  test('modelTier by catalog-key prefix', () => {
+  test('modelTier by family stem (Nm) — sonnet/opus/haiku only', () => {
     expect(modelTier('opus5')).toBe('opus')
     expect(modelTier('sonnet45')).toBe('sonnet')
     expect(modelTier('haiku45')).toBe('haiku')
+    // CC 2.1.301 (occ160 WP-G): Lc still returns undefined for fable — the
+    // fable retry comes from family-stem grouping in the ladder walk, not a
+    // new tier.
     expect(modelTier('fable51')).toBeUndefined()
+    expect(modelFamilyStem('fable51')).toBe('fable')
+    expect(modelFamilyStem('sonnet55')).toBe('sonnet')
+    expect(modelFamilyStem('opus5')).toBe('opus')
   })
 
   test('catalogKeyForModel resolves ids and dated ids', () => {
@@ -141,7 +148,13 @@ describe('2.1.286 item-B — catalog walk (binary Bu/Dm/CCo)', () => {
       'claude-opus-4-20250514',
     ])
     expect(olderSameTierFirstPartyIds('claude-opus-4-20250514')).toEqual([])
-    expect(olderSameTierFirstPartyIds('claude-fable-5-1')).toEqual([])
+    // CC 2.1.301 (occ160 WP-G, binary tks @224339603): grouping switched from
+    // tier (pa → undefined for fable → []) to family stem (Nm), so fable51 now
+    // ladders to fable5 — "retries once on the previous Fable model".
+    expect(olderSameTierFirstPartyIds('claude-fable-5-1')).toEqual([
+      'claude-fable-5',
+    ])
+    expect(olderSameTierFirstPartyIds('claude-fable-5')).toEqual([])
   })
 })
 
@@ -166,8 +179,16 @@ describe('2.1.286 item-B — previousModelOfSameTier (binary oPr)', () => {
     )
   })
 
-  test('fable tier has no ladder (Bu → undefined)', () => {
-    expect(previousModelOfSameTier('claude-fable-5-1')).toBeUndefined()
+  test('CC 2.1.301 (occ160 WP-G): fable-5-1 → fable-5 (previous Fable model)', () => {
+    // The 301 fix: fable/best alias (→ claude-fable-5-1) now ladders to the
+    // previous Fable model when the newest one is refused. Family-stem grouping
+    // (Nm) makes fable5+fable51 one group; the [1m]-free fable-5-1 candidate
+    // passes the window/allow checks, so the retry target is claude-fable-5.
+    expect(previousModelOfSameTier('claude-fable-5-1')).toBe('claude-fable-5')
+  })
+
+  test('the oldest fable model has no previous (fable-5 → undefined)', () => {
+    expect(previousModelOfSameTier('claude-fable-5')).toBeUndefined()
   })
 
   test('the oldest model of a tier has no previous', () => {

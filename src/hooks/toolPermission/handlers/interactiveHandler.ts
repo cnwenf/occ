@@ -225,7 +225,24 @@ function handleInteractivePermission(
         }
         channelUnsubscribe?.()
         ctx.removeFromQueue()
-        ctx.logDecision({ decision: 'accept', source: 'config' })
+        // CC 2.1.301 (occ160 WP-C): official recheck accept (@248296194) —
+        //   s.logDecision({decision:"accept",source:"config",
+        //     decisionReason:A.decisionReason,
+        //     modeAtRecheck:le(s.toolUseContext).mode,surface:Brn(...)})
+        // `A` is the fresh hasPermissionsToUseTool result (OCC:
+        // freshResult). modeAtRecheck is NEW in 301 (300 @245689674 passed
+        // only `surface`) and captures the mode at recheck time — the
+        // recheck fires precisely because the mode may have changed
+        // mid-prompt, so the ctx-captured mode can be stale. The official
+        // `surface` field is a pre-existing OCC gap (never ported for either
+        // 300 or 301), unchanged here.
+        ctx.logDecision({
+          decision: 'accept',
+          source: 'config',
+          decisionReason: freshResult.decisionReason,
+          modeAtRecheck: ctx.toolUseContext.getAppState()
+            .toolPermissionContext.mode,
+        })
         resolveOnce(ctx.buildAllow(freshResult.updatedInput ?? ctx.input))
       }
     },

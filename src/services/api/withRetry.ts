@@ -510,7 +510,17 @@ export async function* withRetry<T>(
   // ModelCallRetries has no capacityWait field, so the budget is
   // per-withRetry-call (same fallback the official takes when no ledger is
   // threaded — `??{spentMs:0}`).
-  const capacityWait = { spentMs: 0 }
+  // CC 2.1.301 (occ160 WP-A): the ledger gained a second field — official
+  // `V=r.modelCallRetries?.capacityWait??{spentMs:0,usageLimitSpentMs:0}`
+  // (@228688688; the modelCallRetries literal @228711516 also initializes
+  // `capacityWait:{spentMs:0,usageLimitSpentMs:0}`). usageLimitSpentMs
+  // accumulates the heartbeat chunks slept while waiting out a usage-limit
+  // rejection (429 + anthropic-ratelimit-unified-status==="rejected", the
+  // official per-attempt `Vr` flag) and
+  // CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS caps THAT subtotal.
+  // The per-withRetry-call DEVIATION above applies unchanged (OCC's
+  // ModelCallRetries still has no capacityWait field).
+  const capacityWait = { spentMs: 0, usageLimitSpentMs: 0 }
   // 2.1.208 (#15): count 401s caused by a failed apiKeyHelper so the real
   // error surfaces within 3 attempts instead of silently retrying up to
   // DEFAULT_MAX_RETRIES (10) and showing a generic 401. Mirrors the binary's
@@ -1246,6 +1256,16 @@ export async function* withRetry<T>(
       // initialized to Kt (persistent); OCC's `persistent` covers that role,
       // so this flag tracks the OTHER way yn gets set: a watchdog-capped wait.
       let watchdogLongWait = false
+      // CC 2.1.301 (occ160 WP-A): official per-attempt `Vr=null`
+      // (@228699313 region: `let er=Tet(cn),ir,ns=So,Vr=null`). Set to true
+      // (official `Vr=cn`) when THIS attempt's error is a usage-limit
+      // rejection (429 + unified-status==="rejected" + a non-null unified
+      // reset delay) — the heartbeat accounting below then charges the slept
+      // chunks to capacityWait.usageLimitSpentMs as well
+      // (`if(V.spentMs+=Us,Vr)V.usageLimitSpentMs+=Us` @228701537). Official
+      // also feeds Vr to `r.onQuotaWindowWait?.(Vr,...)` — OCC has no
+      // onQuotaWindowWait surface (that consumer predates 301), N/A here.
+      let usageLimitWait = false
       if (persistent && error instanceof APIError && error.status === 429) {
         persistentAttempt++
         // Window-based limits (e.g. 5hr Max/Pro) include a reset timestamp.
@@ -1331,6 +1351,101 @@ export async function* withRetry<T>(
               })
               throw new CannotRetryError(error, retryContext)
             }
+            // CC 2.1.301 (occ160 WP-A): usage-limit early-end — official,
+            // inside the watchdog capacity branch (@228699313; v300
+            // @227784421 only set `Wr=Kt` here, v301 inserts the budget
+            // block before `Vr=cn`):
+            //   `let Zn=null;
+            //    if(cn instanceof Pt&&cn.status===429){
+            //      if(Zn=nKr(cn,h),Zn!==null&&cn.headers?.get?.(
+            //          "anthropic-ratelimit-unified-status")==="rejected"){
+            //        let hr=(a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS
+            //          ??1/0)-V.usageLimitSpentMs;
+            //        if(Zn>hr){
+            //          let Kr=cn.headers?.get(esn),
+            //            Us=Kr==="allowed"||Kr==="allowed_warning";
+            //          if(hr<=0||!Us&&cn.headers?.get(g9e)!=="fetch_error")
+            //            throw m("api_request",
+            //              "api_request_usage_limit_wait_too_long"),new Rc(cn,y);
+            //          Zn=Us?Math.min(hr,G$(K,null,pvn,r.random)):hr}
+            //        Vr=cn}}
+            //    ir=Math.min(Zn??G$(K,er,pvn,r.random),mvn),ir=Math.min(ir,Mr)`
+            // (esn="anthropic-ratelimit-unified-overage-status" @221076197,
+            //  g9e="anthropic-ratelimit-unified-overage-disabled-reason"
+            //  @221076246, pvn=300000 / mvn=21600000 @228686263 — the same
+            //  values as OCC's PERSISTENT_MAX_BACKOFF_MS /
+            //  PERSISTENT_RESET_CAP_MS; nKr = the UNCAPPED unified-reset
+            //  reader @228707043 → getUnifiedResetDelayMsUncapped below).
+            // Semantics: an unattended (watchdog) session whose usage limit
+            // resets FARTHER away than the remaining usage-limit budget ends
+            // the request instead of waiting — UNLESS the account can pay
+            // overage (overage-status allowed/allowed_warning → wait a
+            // 5-min-capped backoff clamped to the remaining budget) or the
+            // overage check itself failed for a transient fetch_error (→
+            // wait exactly the remaining budget). Zn/G$/K mapping per the
+            // existing 295/296 port shape: K ≡ attempt + persistentAttempt,
+            // G$ ≡ getRetryDelay, and the `Zn??backoff` base-delay selection
+            // keeps OCC's existing getRetryDelay call above (the final
+            // `Math.min(ir,Mr)` is OCC's budgetRemainingMs clamp below).
+            if (error instanceof APIError && error.status === 429) {
+              const usageLimitResetDelayMs =
+                getUnifiedResetDelayMsUncapped(error)
+              if (
+                usageLimitResetDelayMs !== null &&
+                error.headers?.get?.('anthropic-ratelimit-unified-status') ===
+                  'rejected'
+              ) {
+                const usageBudgetRemainingMs =
+                  (getRetryWatchdogMaxUsageLimitWaitMs() ??
+                    Number.POSITIVE_INFINITY) -
+                  capacityWait.usageLimitSpentMs
+                if (usageLimitResetDelayMs > usageBudgetRemainingMs) {
+                  const overageStatus = error.headers?.get?.(
+                    'anthropic-ratelimit-unified-overage-status',
+                  )
+                  const overageUsable =
+                    overageStatus === 'allowed' ||
+                    overageStatus === 'allowed_warning'
+                  if (
+                    usageBudgetRemainingMs <= 0 ||
+                    (!overageUsable &&
+                      error.headers?.get?.(
+                        'anthropic-ratelimit-unified-overage-disabled-reason',
+                      ) !== 'fetch_error')
+                  ) {
+                    logEvent('api_request', {
+                      reason:
+                        'api_request_usage_limit_wait_too_long' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+                    })
+                    throw new CannotRetryError(error, retryContext)
+                  }
+                  // Official `Zn=Us?Math.min(hr,G$(K,null,pvn,r.random)):hr`
+                  // — usable overage waits a backoff (5-min cap, NO
+                  // retry-after) clamped to the remaining usage budget;
+                  // the fetch_error case waits the full remaining budget.
+                  // The outer Math.min is the official `Math.min(...,mvn)`
+                  // 6h cap (applied to the WHOLE delay in v301 — v300
+                  // capped only the backoff alternative).
+                  delayMs = Math.min(
+                    overageUsable
+                      ? Math.min(
+                          usageBudgetRemainingMs,
+                          getRetryDelay(
+                            attempt + persistentAttempt,
+                            null,
+                            PERSISTENT_MAX_BACKOFF_MS,
+                          ),
+                        )
+                      : usageBudgetRemainingMs,
+                    PERSISTENT_RESET_CAP_MS,
+                  )
+                }
+                // Official `Vr=cn` — set whenever this attempt is a
+                // usage-limit rejection, whether or not the early-end path
+                // fired (Zn<=hr waits also charge usageLimitSpentMs).
+                usageLimitWait = true
+              }
+            }
             delayMs = Math.min(delayMs, budgetRemainingMs)
           }
         } else if (
@@ -1406,8 +1521,18 @@ export async function* withRetry<T>(
           //   `if(no)V.spentMs+=Cr?Math.min(Io,Math.round(h.monotonicNow()-po)):Io`
           // (Io=chunk, Cr=early-wake flag). OCC's sleep has no early-wake
           // path (only abort, which throws), so every chunk counts in full.
+          // CC 2.1.301 (occ160 WP-A): official @228701537 —
+          //   `if(So){let Us=Kr?Math.min(Zn,Math.round(h.monotonicNow()-hr)):Zn;
+          //     if(V.spentMs+=Us,Vr)V.usageLimitSpentMs+=Us}`
+          // — the slept chunk is ALSO charged to the usage-limit subtotal
+          // when this attempt's error was a usage-limit rejection (Vr ≡
+          // usageLimitWait). Same no-early-wake simplification: OCC charges
+          // the full chunk to both.
           if (watchdogRetryable) {
             capacityWait.spentMs += chunk
+            if (usageLimitWait) {
+              capacityWait.usageLimitSpentMs += chunk
+            }
           }
           remaining -= chunk
         }
@@ -1568,12 +1693,19 @@ export function getOverloadedRetryMaxDelayMs(): number | undefined {
 //   `let Eo=(a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS??1/0)-V.spentMs;
 //    if(Eo<=0)throw m("api_request",
 //      "api_request_capacity_wait_exhausted"),new Zc(nn,y)`).
-// NOTE (official `===undefined` condition, @217930511):
+// NOTE (official `===undefined` condition, 2.1.295 @217930511):
 //   `FK()&&a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS===void 0
 //     ?"skipped_retry_watchdog":null`
 // belongs to the rewind_limit_question gate (tU) — OCC has no
 // rewind_limit_question surface (grep 0 hits), so there is nothing to
 // port there; recorded here for traceability.
+// CC 2.1.301 (occ160 WP-A): that gate (now `nN()` @243133750) checks BOTH
+// watchdog env vars —
+//   `o6()&&a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS===void 0
+//     &&a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS===void 0
+//     ?"skipped_retry_watchdog":null`
+// — still N/A for OCC (no rewind_limit_question surface); recorded for
+// traceability.
 const RETRY_WATCHDOG_MAX_WAIT_MIN_MS = 1
 
 // dataflow-007 (occ153 review): the digits-only fail-open below is the
@@ -1622,6 +1754,81 @@ export function getRetryWatchdogMaxWaitMs(): number | undefined {
   // Digits-only but below the min (e.g. '0', '-5') — same fail-open, same
   // one-time warning: the operator set a value that is being ignored.
   warnIgnoredRetryWatchdogMaxWait(raw)
+  return undefined
+}
+
+// CC 2.1.301 (occ160 WP-A): env registry descriptor for the retry-watchdog
+// USAGE-LIMIT-wait budget — `$U=H.int({min:1,digitsOnly:!0})` (@216719076,
+// byte-verified IDENTICAL in shape to zU/MAX_WAIT_MS right beside it),
+// export map @216688553:
+//   `CLAUDE_CODE_RETRY_WATCHDOG:()=>QU,
+//    CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS:()=>$U,
+//    CLAUDE_CODE_RETRY_WATCHDOG_MAX_WAIT_MS:()=>zU`.
+// A digits-only integer >= 1 is honored; anything else (unset, non-numeric,
+// < 1) yields undefined so the official `??1/0` (Infinity — uncapped,
+// pre-301 behavior) applies. Caps the SUBTOTAL of watchdog capacity-wait
+// time spent waiting out usage-limit rejections specifically (429 +
+// anthropic-ratelimit-unified-status==="rejected"), tracked as
+// capacityWait.usageLimitSpentMs; when the unified reset is farther away
+// than the remaining subtotal budget the request ENDS
+// (api_request_usage_limit_wait_too_long) instead of waiting — official
+// @228699313:
+//   `let hr=(a.CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS??1/0)
+//      -V.usageLimitSpentMs;
+//    if(Zn>hr){...throw m("api_request",
+//      "api_request_usage_limit_wait_too_long"),new Rc(cn,y)...}`.
+const RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MIN_MS = 1
+
+// Same warn-once convention as the MAX_WAIT_MS getter above
+// (dataflow-007): the digits-only fail-open is the official semantics and
+// stays UNCHANGED, but a non-empty value we cannot honor warns once per
+// distinct offending value so the misconfiguration is discoverable.
+const ignoredRetryWatchdogMaxUsageLimitWaitWarned = new Set<string>()
+
+/** Test-only: clear the warn-once dedupe set (cf. clearFastModeCooldown). */
+export function resetIgnoredRetryWatchdogMaxUsageLimitWaitWarnedForTesting(): void {
+  ignoredRetryWatchdogMaxUsageLimitWaitWarned.clear()
+}
+
+function warnIgnoredRetryWatchdogMaxUsageLimitWait(raw: string): void {
+  // An empty value is equivalent to unset (official `??1/0`) — stay silent.
+  if (
+    raw.trim() === '' ||
+    ignoredRetryWatchdogMaxUsageLimitWaitWarned.has(raw)
+  ) {
+    return
+  }
+  ignoredRetryWatchdogMaxUsageLimitWaitWarned.add(raw)
+  logForDebugging(
+    `CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS='${raw}' is not a ` +
+      `digits-only integer >= ${RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MIN_MS} ` +
+      `— ignoring it; the usage-limit-wait budget stays uncapped (Infinity).`,
+    { level: 'warn' },
+  )
+}
+
+export function getRetryWatchdogMaxUsageLimitWaitMs(): number | undefined {
+  const raw = process.env.CLAUDE_CODE_RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MS
+  if (raw === undefined) {
+    return undefined
+  }
+  // digitsOnly (official `H.int` parse — same parser convention as
+  // getRetryWatchdogMaxWaitMs above): reject anything that is not an
+  // integer literal (1e3 / 6_000 / 1,000 / 150.5 all fail).
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    warnIgnoredRetryWatchdogMaxUsageLimitWait(raw)
+    return undefined
+  }
+  const parsed = parseEnvInt(raw)
+  if (
+    parsed !== undefined &&
+    parsed >= RETRY_WATCHDOG_MAX_USAGE_LIMIT_WAIT_MIN_MS
+  ) {
+    return parsed
+  }
+  // Digits-only but below the min (e.g. '0', '-5') — same fail-open, same
+  // one-time warning: the operator set a value that is being ignored.
+  warnIgnoredRetryWatchdogMaxUsageLimitWait(raw)
   return undefined
 }
 
@@ -2187,4 +2394,26 @@ function getRateLimitResetDelayMs(error: APIError): number | null {
   const delayMs = resetUnixSec * 1000 - Date.now()
   if (delayMs <= 0) return null
   return Math.min(delayMs, PERSISTENT_RESET_CAP_MS)
+}
+
+// CC 2.1.301 (occ160 WP-A): the UNCAPPED unified-reset reader — byte mirror
+// of the official nKr (@228707043):
+//   `function nKr(e,n){let r=e.headers?.get?.("anthropic-ratelimit-unified-reset");
+//     if(!r)return null;let s=Number(r);if(!Number.isFinite(s))return null;
+//     let h=Math.round(s*1000-n.now());return h>0?h:null}`
+// The watchdog usage-limit early-end branch compares this RAW value against
+// the remaining usage-limit budget (`if(Zn>hr)` @228699313) BEFORE any 6h
+// cap — getRateLimitResetDelayMs above pre-caps at PERSISTENT_RESET_CAP_MS,
+// which would skew that comparison for resets farther than 6h away, so the
+// watchdog branch uses this helper instead. (The official caps the FINAL
+// delay with `Math.min(...,mvn)` afterwards — OCC's branch does the same.)
+// Deliberately does NOT touch getRateLimitResetDelayMs: its capped shape is
+// the existing persistent-429 behavior.
+function getUnifiedResetDelayMsUncapped(error: APIError): number | null {
+  const resetHeader = error.headers?.get?.('anthropic-ratelimit-unified-reset')
+  if (!resetHeader) return null
+  const resetUnixSec = Number(resetHeader)
+  if (!Number.isFinite(resetUnixSec)) return null
+  const delayMs = Math.round(resetUnixSec * 1000 - Date.now())
+  return delayMs > 0 ? delayMs : null
 }

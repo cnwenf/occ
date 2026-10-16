@@ -110,6 +110,11 @@ const MODE_PREFIX_LENGTH = 1
 export function useVimInput(props: UseVimInputProps): VimInputState {
   const vimStateRef = React.useRef<VimState>(createInitialVimState())
   const [mode, setMode] = useState<VimMode>('INSERT')
+  // CC 2.1.301 (occ160 WP-D): official hook state `[zt,ot]=y(!1)` — true
+  // while a NORMAL/VISUAL multi-key command is mid-parse. Reported to the
+  // host via `isCommandPending` so the AskUserQuestion free-text field can
+  // keep Escape for "cancel pending command" instead of closing the field.
+  const [isCommandPending, setIsCommandPending] = useState(false)
 
   const persistentRef = React.useRef<PersistentState>(
     createInitialPersistentState(),
@@ -728,15 +733,35 @@ export function useVimInput(props: UseVimInputProps): VimInputState {
         vimStateRef.current = { mode: 'NORMAL', command: { type: 'idle' } }
       }
       setMode(newMode)
+      // CC 2.1.301 (occ160 WP-D): official external setMode `K(a),ot(!1),o?.(a)`
+      // — an externally-driven mode switch clears any pending command.
+      setIsCommandPending(false)
       onModeChange?.(newMode)
     },
     [onModeChange, textInput],
   )
 
+  /**
+   * CC 2.1.301 (occ160 WP-D): official `en` pending-report wrapper
+   * (@236349172 region, byte-verbatim):
+   *   `function en(a,f){tn(a,f);let l=b.current;
+   *     ot(l.mode!=="INSERT"&&l.command.type!=="idle")}`
+   * Runs the real keypress handler, then re-derives isCommandPending from
+   * the authoritative vim state ref.
+   */
+  function handleVimInputWithPendingReport(rawInput: string, key: Key): void {
+    handleVimInput(rawInput, key)
+    const state = vimStateRef.current
+    setIsCommandPending(
+      state.mode !== 'INSERT' && state.command.type !== 'idle',
+    )
+  }
+
   return {
     ...textInput,
-    onInput: handleVimInput,
+    onInput: handleVimInputWithPendingReport,
     mode,
     setMode: setModeExternal,
+    isCommandPending,
   }
 }

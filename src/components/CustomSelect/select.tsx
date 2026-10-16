@@ -4,6 +4,7 @@ import React, { type ReactNode, useEffect, useRef, useState } from 'react';
 import { useDeclaredCursor } from '../../ink/hooks/use-declared-cursor.js';
 import { stringWidth } from '../../ink/stringWidth.js';
 import { Ansi, Box, Text } from '../../ink.js';
+import type { VimEditingState } from '../../types/textInputTypes.js';
 import { count } from '../../utils/array.js';
 import type { PastedContent } from '../../utils/config.js';
 import type { ImageDimensions } from '../../utils/imageResizer.js';
@@ -39,6 +40,18 @@ export type OptionWithDescription<T = string> = (BaseOption<T> & {
   onChange: (value: string) => void;
   placeholder?: string;
   initialValue?: string;
+  /**
+   * CC 2.1.301 (occ160 WP-D): official input-option prop `vimEditing`
+   * (@243848175/@249840191; v301-only, zero hits in v300). When set, the
+   * option renders the vim text input instead of the plain one, `takesEscape`
+   * (live from the vim input's editing-state report) suppresses the
+   * select:cancel binding for bare Esc, and the option's Box stops bare-Esc
+   * propagation (official `je=Te?.takesEscape?ll:void 0` + `ll`/`Do`).
+   */
+  vimEditing?: {
+    takesEscape: boolean;
+    onStateChange: (state: VimEditingState | null) => void;
+  };
   /**
    * Controls behavior when submitting with empty input:
    * - true: calls onChange (treats empty as valid submission)

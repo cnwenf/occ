@@ -253,6 +253,31 @@ export type VimTextInputProps = BaseTextInputProps & {
    * Binary: `B.command.type==="idle"&&j.key==="?"&&l){l(),j.preventDefault();return}`
    */
   readonly onToggleHelp?: () => void
+
+  /**
+   * CC 2.1.301 (occ160 WP-D): official VimTextInput `onEditingStateChange`
+   * prop (@243843500 region, byte-verbatim effect:
+   *   `let{onEditingStateChange:H}=t,f=t.focus!==!1,E=c!=="NORMAL"||b;
+   *    return Jt(()=>{if(!H||!f)return;H({mode:c,takesEscape:E}),()=>H(null)},
+   *    [H,f,c,E])`).
+   * Reports `{mode, takesEscape}` whenever mode/command-pending state
+   * changes while focused; reports `null` on unmount / focus loss. Consumed
+   * by the AskUserQuestion free-text option (select:cancel guard + footer
+   * mode pill).
+   */
+  readonly onEditingStateChange?: (state: VimEditingState | null) => void
+}
+
+/**
+ * CC 2.1.301 (occ160 WP-D): official vim editing-state report shape
+ * (`H({mode:c,takesEscape:E})` @243843500 region). `takesEscape` is true
+ * when the vim input — not the surrounding select — should own the Escape
+ * key: any mode other than NORMAL, or NORMAL with a pending multi-key
+ * command (`isCommandPending`), where Esc must cancel the command first.
+ */
+export type VimEditingState = {
+  mode: VimMode
+  takesEscape: boolean
 }
 
 /**
@@ -296,6 +321,15 @@ export type TextInputState = BaseInputState
 export type VimInputState = BaseInputState & {
   mode: VimMode
   setMode: (mode: VimMode) => void
+  /**
+   * CC 2.1.301 (occ160 WP-D): official hook exports `isCommandPending`
+   * (`{mode:c,setMode:u,cancelPendingRemap:g,forgetColumn:d,isCommandPending:b}=m`)
+   * — true while a NORMAL/VISUAL multi-key command is mid-parse (e.g. after
+   * `d` awaiting its motion). Drives `takesEscape` in the editing-state
+   * report: Esc must cancel the pending command instead of leaving the
+   * field. Updated by the `en` keypress wrapper, reset by external setMode.
+   */
+  isCommandPending: boolean
 }
 
 /**

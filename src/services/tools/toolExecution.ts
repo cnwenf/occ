@@ -29,6 +29,10 @@ import {
 } from '../../hooks/toolPermission/permissionLogging.js'
 import { mapPermissionDecisionToTelemetry } from '../../hooks/toolPermission/permissionDecisionMapper.js'
 import { isSdkPermissionAbort } from '../../hooks/toolPermission/sdkPermissionTelemetry.js'
+import {
+  buildClassifierToolDecisionFields,
+  permissionModeToExternal,
+} from '../../hooks/toolPermission/classifierDecisionTelemetry.js'
 import type { CanUseToolFn } from '../../hooks/useCanUseTool.js'
 import type { ToolDurationEntry } from '../api/gatewayHints.js'
 import {
@@ -1095,6 +1099,25 @@ async function checkPermissionsAndCallTool(
     void logOTelEvent('tool_decision', {
       decision: mappedDecision.decision,
       source: mappedDecision.source,
+      // CC 2.1.301 (occ160 WP-C): official dispatch-fallback emit
+      // (@228218908; the 300 counterpart @227307285 is identical minus these
+      // two additions) gained:
+      //   ...Qr==="config"&&So.behavior!=="ask"&&u9e(ss,So.decisionReason)
+      //   permission_mode:Fl(no)   with no=le(Gt).mode (the `permissionMode`
+      //     captured above — same expression OCC already uses for the
+      //     slow-permission-decision log)
+      // The `behavior!=="ask"` gate (absent at the interactive site) keeps
+      // classifier fields off ask-derived 'reject' telemetry: an ask whose
+      // decisionReason is a classifier pending-check must not masquerade as
+      // a classifier block.
+      ...(mappedDecision.source === 'config' &&
+      permissionDecision.behavior !== 'ask'
+        ? buildClassifierToolDecisionFields(
+            mappedDecision.decision,
+            permissionDecision.decisionReason,
+          )
+        : undefined),
+      permission_mode: permissionModeToExternal(permissionMode),
       tool_name: sanitizeToolNameForAnalytics(tool.name),
     })
 
