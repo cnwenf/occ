@@ -362,6 +362,96 @@ export function parseMultipleKeypresses(
   return [keys, newState]
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.301 #22 — escape-then-key re-split helpers (byte-faithful ports).
+//
+// STAGED / NOT YET WIRED. These are the pure parse-layer building blocks the
+// official read loop uses to recover from the "ESC + key merged in one slow
+// read" case that leaves vim stuck in INSERT. Wiring the FULL fix also needs
+// three sites outside this change's file ownership:
+//   • App.tsx read loop — mark `readLate`/`soloKeypress` on the solo late read
+//     and re-queue `splitEscapeThenKey(sequence)` when the vim handler swallows
+//     the merged key. Official read loop (v301 @231955506):
+//       …else if(n.props.dispatchKeyboardEvent(A,{soloKeypress:R}))
+//          Dt.flushSyncWork(), mb(n, cy(A.sequence ?? ""), !0, void 0)
+//     i.e. dispatch returns true (swallowed) → `mb` re-queues `cy(sequence)`.
+//   • input-event.ts parseKey — thread `sequence`/`readLate`/`readAsEscapeThenKey`
+//     onto the ink Key so the vim handler can consult them.
+//   • useVimInput.ts — the swallow-guard: in INSERT, when `readLate` and
+//     `isEscapeThenKeySequence(sequence)` and `readAsEscapeThenKey()`, prevent
+//     default (the read loop then re-queues the split). Wiring this guard
+//     WITHOUT the read-loop re-queue above would DROP the keypress — a
+//     regression — so it is intentionally NOT wired here.
+// Landing the pure helpers + tests now means the read-layer owner has the
+// validated, byte-verbatim primitives to wire against.
+// ---------------------------------------------------------------------------
+
+/**
+ * ESC + a single printable char that is NOT a longer-sequence introducer
+ * (`[` CSI, `]` OSC, `P` DCS, `_` APC, `\` ST). Official `An` (v301 @236341832),
+ * byte-verbatim: `/^\x1b(?![[\]P_\\])[\x21-\x7e]$/`.
+ */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: intentional control-char matcher (official CC 2.1.301 #22 `An`)
+export const ESCAPE_THEN_KEY_RE = /^\x1b(?![[\]P_\\])[\x21-\x7e]$/
+
+/**
+ * True for a multi-char sequence starting with ESC. Official `Jc`
+ * (v301 @231885357), byte-verbatim: `n.length>1 && n.startsWith(bR)` where
+ * `bR` is `"\x1B"`. `cy`'s only gate — a merged `\x1b<key>` is escape-prefixed
+ * multi-char. (The narrower `An` gate is applied by the vim guard, not here.)
+ */
+export function isEscapePrefixedMultiChar(
+  sequence: string | undefined,
+): boolean {
+  return !!sequence && sequence.length > 1 && sequence.startsWith('\x1b')
+}
+
+/**
+ * True when `sequence` is exactly ESC + one printable non-introducer char
+ * (official `An.test`, v301 @236341832). This is the shape a slow solo read
+ * merges and the vim guard must re-split.
+ */
+export function isEscapeThenKeySequence(sequence: string | undefined): boolean {
+  return !!sequence && ESCAPE_THEN_KEY_RE.test(sequence)
+}
+
+/**
+ * Re-split a merged escape sequence into its constituent keypresses by
+ * re-parsing `[ESC, rest]` independently. Official `cy` (v301 @231885408),
+ * byte-faithful:
+ *   cy(n){if(!Jc(n))return[];return[bR,n.slice(1)].flatMap((u)=>{
+ *     let[f,m]=Ia({...Bc},u);return f.concat(Ia(m,null)[0])})}
+ * where `Ia` = parseMultipleKeypresses and `Bc` = INITIAL_STATE. Each part is
+ * parsed from a fresh state then flushed (a lone ESC buffers incomplete, so the
+ * flush emits it as an `escape` key). The result is filtered to keypresses —
+ * an ESC+printable re-split only ever yields keys (never mouse/response) — so
+ * the return type is the narrower `ParsedKey[]` the read loop re-queues.
+ */
+export function splitEscapeThenKey(sequence: string | undefined): ParsedKey[] {
+  if (!isEscapePrefixedMultiChar(sequence)) return []
+  const seq = sequence as string
+  return ['\x1b', seq.slice(1)].flatMap(part => {
+    const [keys, state] = parseMultipleKeypresses({ ...INITIAL_STATE }, part)
+    const [flushed] = parseMultipleKeypresses(state, null)
+    return keys
+      .concat(flushed)
+      .filter((k): k is ParsedKey => k.kind === 'key')
+  })
+}
+
+/**
+ * Official `readAsEscapeThenKey()` method body (v301 @231961993), ported as a
+ * pure function over OCC's plain-object ParsedKey:
+ *   `this.#e = this.soloKeypress !== void 0 && Jc(this.sequence)`
+ * Note the `!== undefined` check on `soloKeypress` (a solo read marked
+ * `false` still counts) — NOT truthiness. `sequence` is the key's own sequence.
+ */
+export function readAsEscapeThenKey(key: ParsedKey): boolean {
+  return (
+    key.soloKeypress !== undefined && isEscapePrefixedMultiChar(key.sequence)
+  )
+}
+
 const keyName: Record<string, string> = {
   /* xterm/gnome ESC O letter */
   OP: 'f1',
@@ -614,6 +704,18 @@ export type ParsedKey = {
   raw: string | undefined
   code?: string
   isPasted: boolean
+  /**
+   * CC 2.1.301 #22 (official keypress fields — STAGED, see the helper block
+   * below). `soloKeypress` is set by the read loop when this key was read as a
+   * solo/late keypress (the slow-machine case where ESC and the following key
+   * land in one read and the tokenizer merges them). `readLate` marks the same
+   * read-timing. The parse layer leaves both unset/false — the read layer
+   * (App.tsx, outside this change's ownership) is what populates them.
+   * `readAsEscapeThenKey` consults `soloKeypress` + `sequence` to decide whether
+   * a merged `\x1b<key>` should be re-split into Escape-then-key.
+   */
+  soloKeypress?: boolean
+  readLate?: boolean
 }
 
 /** A terminal response sequence (DECRPM, DA1, OSC reply, etc.) parsed

@@ -315,6 +315,17 @@ export type PermissionDecisionReason =
       type: 'hook'
       hookName: string
       hookSource?: string
+      /**
+       * CC 2.1.301 #30 — the plugin/skill id of the hook entry that produced
+       * this ask/deny (official decision-reason @228172787:
+       * `hookSource:Re.hookSource,hookPluginId:Re.hookPluginId`; yielded from
+       * the matched hook's `pluginId` @229018962:
+       * `...Vs?.pluginId!==void 0&&{hookPluginId:Vs.pluginId}`). New in v301
+       * (v300 has zero `hookPluginId` occurrences). NOT rendered in the
+       * permission prompt — the official render site is byte-identical
+       * v300↔v301 and shows `hookSource` only.
+       */
+      hookPluginId?: string
       reason?: string
     }
   | {
@@ -343,6 +354,15 @@ export type PermissionDecisionReason =
        * The call was not judged unsafe — it was not reviewed at all.
        */
       noVerdict?: boolean
+      /**
+       * CC 2.1.301 #5/#6: set `true` on the auto-mode classifier ALLOW path
+       * (official setter @229058924: `...yd.decisionReason,classifierAllowed:!0`).
+       * The `u9e` OTel verdict mapper (@227797014) emits
+       * `classifier_verdict:"allow"` only when this is exactly `true`.
+       * Dormant in OCC until the classifier allow path (utils/permissions/
+       * permissions.ts) sets it — ported for forward-compatible parity.
+       */
+      classifierAllowed?: boolean
     }
   | {
       type: 'workingDir'

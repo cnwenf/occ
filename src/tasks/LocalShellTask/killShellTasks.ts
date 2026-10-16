@@ -8,7 +8,7 @@ import type { AgentId } from '../../types/ids.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { logError } from '../../utils/log.js'
 import { dequeueAllMatching } from '../../utils/messageQueueManager.js'
-import { evictTaskOutput } from '../../utils/task/diskOutput.js'
+import { appendTaskTrailer, evictTaskOutput } from '../../utils/task/diskOutput.js'
 import { updateTaskState } from '../../utils/task/framework.js'
 import type { ShellStopCause } from './backgroundDeadline.js'
 import { isLocalShellTask } from './guards.js'
@@ -26,6 +26,13 @@ export function killTask(
   setAppState: SetAppStateFn,
   stopCause?: ShellStopCause,
 ): void {
+  // CC 2.1.301 #39: killed tasks must close their output file with the
+  // "\n[killed]\n" trailer (official bWn: `if(n==="killed")
+  // i.appendTrailer("\n[killed]\n","killed")`). updateTaskState's updater
+  // runs synchronously, so this flag tells us whether a kill actually
+  // happened — a no-op kill (task already terminal / unknown id) must not
+  // create a spurious output file.
+  let didKill = false
   updateTaskState(taskId, setAppState, task => {
     if ((task as any).status !== 'running' || !isLocalShellTask(task)) {
       return task
@@ -52,6 +59,7 @@ export function killTask(
       clearTimeout(task.cleanupTimeoutId)
     }
 
+    didKill = true
     return {
       ...task,
       status: 'killed',
@@ -63,6 +71,10 @@ export function killTask(
       ...(stopCause !== undefined ? { stopCause } : {}),
     }
   })
+  if (didKill) {
+    // Trailer BEFORE eviction so it lands in the file readers see.
+    appendTaskTrailer(taskId, 'killed')
+  }
   void evictTaskOutput(taskId)
 }
 

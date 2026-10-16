@@ -188,7 +188,7 @@ import type { ContentBlockParam, ImageBlockParam } from '@anthropic-ai/sdk/resou
 import type { ProcessUserInputContext } from '../utils/processUserInput/processUserInput.js';
 import type { PastedContent } from '../utils/config.js';
 import { copyPlanForFork, copyPlanForResume, getPlanSlug, setPlanSlug } from '../utils/plans.js';
-import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript } from '../utils/sessionStorage.js';
+import { clearSessionMetadata, resetSessionFilePointer, adoptResumedSessionFile, removeTranscriptMessage, restoreSessionMetadata, getCurrentSessionTitle, isEphemeralToolProgress, isLoggableMessage, saveWorktreeState, getAgentTranscript, getTranscriptPath } from '../utils/sessionStorage.js';
 import { deserializeMessages } from '../utils/conversationRecovery.js';
 import { extractReadFilesFromMessages, extractBashToolsFromMessages } from '../utils/queryHelpers.js';
 import { resetMicrocompactState } from '../services/compact/microCompact.js';
@@ -305,7 +305,8 @@ import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type M
 import { shouldConfirmLeftArrowDiscard } from '../components/messageActionsLeftArrowGate.js';
 import { setClipboard } from '../ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
-import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
+import { createAttachmentMessage, getQueuedCommandAttachments, resyncSentSkillNamesAfterRewind } from '../utils/attachments.js';
+import { CompactSummaryContext, applySavedInGuard, conversationSummarizedDetail, findCompactSummaryInfo } from '../components/messages/CompactBoundaryMessage.js';
 import { findGoalToRestore, setGoal, isGoalActive } from "../commands/goal/goalState.js";
 import { addSessionHook } from "../utils/hooks/sessionHooks.js";
 import { FleetViewScreen } from '../components/FleetView/FleetViewScreen.js';
@@ -3941,6 +3942,13 @@ export function REPL({
       rewindToMessageIndex: messageIndex
     });
     setMessages(prev.slice(0, messageIndex));
+    // CC 2.1.301 #27 (official @249031065: `NXt(Ne,L)` over the removed
+    // messages): un-record any skill_listing attachments that were just
+    // rewound away so the next turn re-lists those skills to the model.
+    // The official also calls evictRewoundFileTracking here — OCC has no
+    // rewound-file tracking to evict. agentKey defaults to '' (main thread),
+    // matching the filter's `toolUseContext.agentId ?? ''` convention.
+    resyncSentSkillNamesAfterRewind(prev.slice(messageIndex));
     // Careful, this has to happen after setMessages
     setConversationId(randomUUID());
     // Reset cached microcompact state so stale pinned cache edits
@@ -4733,6 +4741,22 @@ export function REPL({
   });
   // Auto-exit viewing mode when teammate completes or errors
   useTeammateViewAutoExit();
+  // CC 2.1.301 #28 — scan the live message list for a leading compact boundary
+  // and the summary that follows it, then apply the provider-side savedIn guard
+  // (parsed transcript path must equal the CURRENT session's transcript, so a
+  // resumed/forked session never claims a foreign file holds "earlier
+  // messages"). Threaded to CompactBoundaryMessage via CompactSummaryContext.
+  // Official: `ii=tc?null:F7n(d)` + `savedIn: nc===jA?nc:void 0` @247932600.
+  // getTranscriptPath() is wrapped because it can throw before session init.
+  const compactSummaryInfo = useMemo(() => {
+    let currentTranscriptPath: string | null = null;
+    try {
+      currentTranscriptPath = getTranscriptPath();
+    } catch {
+      currentTranscriptPath = null;
+    }
+    return applySavedInGuard(findCompactSummaryInfo(messages), currentTranscriptPath);
+  }, [messages]);
   if (screen === 'transcript') {
     // Virtual scroll replaces the 30-message cap: everything is scrollable
     // and memory is bounded by the viewport. Without it, wrapping transcript
@@ -4746,7 +4770,9 @@ export function REPL({
     // CC 2.1.275 ITEM O — official @216028109 wraps the transcript area in
     // the stream store provider so sent-but-unreceived prompts render gray.
     const transcriptMessagesElement = <AwaitingModelContext.Provider value={promptsAwaitingModelStore}>
-      <Messages messages={transcriptMessages} tools={tools} commands={commands} verbose={true} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={inProgressToolUseIDs} isMessageSelectorVisible={false} conversationId={conversationId} screen={screen} agentDefinitions={agentDefinitions} streamingToolUses={transcriptStreamingToolUses} showAllInTranscript={showAllInTranscript} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hidePastThinking={true} streamingThinking={streamingThinking} scrollRef={transcriptScrollRef} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} disableRenderCap={dumpMode} />
+      <CompactSummaryContext.Provider value={compactSummaryInfo}>
+        <Messages messages={transcriptMessages} tools={tools} commands={commands} verbose={true} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={inProgressToolUseIDs} isMessageSelectorVisible={false} conversationId={conversationId} screen={screen} agentDefinitions={agentDefinitions} streamingToolUses={transcriptStreamingToolUses} showAllInTranscript={showAllInTranscript} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hidePastThinking={true} streamingThinking={streamingThinking} scrollRef={transcriptScrollRef} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} disableRenderCap={dumpMode} />
+      </CompactSummaryContext.Provider>
     </AwaitingModelContext.Provider>;
     const transcriptToolJSX = toolJSX && <Box flexDirection="column" width="100%">
         {toolJSX.jsx}
@@ -4919,7 +4945,9 @@ export function REPL({
               {/* CC 2.1.275 ITEM O — official @216028109 wraps the main
                   transcript area in the awaiting-model store provider. */}
               <AwaitingModelContext.Provider value={promptsAwaitingModelStore}>
+              <CompactSummaryContext.Provider value={compactSummaryInfo}>
               <Messages messages={displayedMessages} tools={tools} commands={commands} verbose={verbose} toolJSX={toolJSX} toolUseConfirmQueue={toolUseConfirmQueue} inProgressToolUseIDs={viewedTeammateTask ? viewedTeammateTask.inProgressToolUseIDs ?? new Set() : inProgressToolUseIDs} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={conversationId} screen={screen} streamingToolUses={streamingToolUses} showAllInTranscript={showAllInTranscript} agentDefinitions={agentDefinitions} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hasStreamingText={isLoading && !viewedAgentTask && hasStreamingText} showStreamingText={showStreamingText} isBriefOnly={viewedAgentTask ? false : isBriefOnly} unseenDivider={viewedAgentTask ? undefined : unseenDivider} scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined} trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined} cursor={cursor} setCursor={setCursor} cursorNavRef={cursorNavRef} />
+              </CompactSummaryContext.Provider>
               </AwaitingModelContext.Provider>
               <AwsAuthStatusBox />
               {/* Hide the processing placeholder while a modal is showing —
@@ -5348,11 +5376,18 @@ export function REPL({
               }
             }
 
-            // Show notification with ctrl+o hint
+            // Show notification with ctrl+o hint. CC 2.1.301 #28 (official
+            // @249035600: `dGr(H.getSnapshot(), _t.boundaryMarker.uuid, …)`):
+            // the detail is now summary-aware — the setMessages wrapper above
+            // updates messagesRef synchronously, so scanning it here mirrors
+            // the official's store snapshot. Non-fullscreen resets the list to
+            // [boundary, …] → scan matches → "(ctrl+o for the summary)";
+            // fullscreen 'from' keeps scrollback → history is loaded → the
+            // original "(ctrl+o for history)" offer is retained.
             const historyShortcut = getShortcutDisplay('app:toggleTranscript', 'Global', 'ctrl+o');
             addNotification({
               key: 'summarize-ctrl-o-hint',
-              text: `Conversation summarized (${historyShortcut} for history)`,
+              text: `Conversation summarized${conversationSummarizedDetail(messagesRef.current, result.boundaryMarker.uuid, historyShortcut)}`,
               priority: 'medium',
               timeoutMs: 8000
             });

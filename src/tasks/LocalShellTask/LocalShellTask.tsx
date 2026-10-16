@@ -14,7 +14,7 @@ import { tailFile } from '../../utils/fsOperations.js';
 import { logError } from '../../utils/log.js';
 import { enqueuePendingNotification } from '../../utils/messageQueueManager.js';
 import type { ShellCommand } from '../../utils/ShellCommand.js';
-import { evictTaskOutput, getTaskOutputPath } from '../../utils/task/diskOutput.js';
+import { appendTaskTrailer, evictTaskOutput, getTaskOutputPath } from '../../utils/task/diskOutput.js';
 import { registerTask, updateTaskState } from '../../utils/task/framework.js';
 import { escapeXml } from '../../utils/xml.js';
 import { backgroundAgentTask, isLocalAgentTask } from '../LocalAgentTask/LocalAgentTask.js';
@@ -460,6 +460,12 @@ export async function spawnShellTask(input: LocalShellSpawnInput & {
     // 2.1.285 #85: official grn invokes mrn's release closure with the
     // terminal outcome (settled telemetry + clearTimeout).
     releaseBackgroundDeadline?.(wasKilled ? 'killed' : classified.status);
+    // CC 2.1.301 #39 (official bWn @222257169): natural-exit closing line —
+    // BEFORE eviction so readers see it. The killed path's "[killed]" trailer
+    // is appended in killShellTasks.ts (skip here to avoid a double trailer).
+    if (!wasKilled) {
+      appendTaskTrailer(taskId, { exitCode: result.code });
+    }
     void evictTaskOutput(taskId);
   });
   return {
@@ -598,6 +604,12 @@ function backgroundTask(taskId: string, getAppState: () => AppState, setAppState
       enqueueShellNotification(taskId, description, classified.status, result.code, setAppState, toolUseId, kind, agentId, classified.exitNote);
     }
     releaseBackgroundDeadline?.(wasKilled ? 'killed' : classified.status);
+    // CC 2.1.301 #39 (official bWn @222257169): natural-exit closing line,
+    // appended BEFORE eviction; the killed path's trailer lives in
+    // killShellTasks.ts, so skip here to avoid a double trailer.
+    if (!wasKilled) {
+      appendTaskTrailer(taskId, { exitCode: result.code });
+    }
     void evictTaskOutput(taskId);
   });
   return true;
@@ -712,6 +724,12 @@ export function backgroundExistingForegroundTask(taskId: string, shellCommand: S
     const finalStatus = wasKilled ? 'killed' : classified.status;
     enqueueShellNotification(taskId, description, finalStatus, result.code, setAppState, toolUseId, undefined, agentId, classified.exitNote);
     releaseBackgroundDeadline?.(finalStatus);
+    // CC 2.1.301 #39 (official bWn @222257169): natural-exit closing line,
+    // appended BEFORE eviction; the killed path's trailer lives in
+    // killShellTasks.ts, so skip here to avoid a double trailer.
+    if (!wasKilled) {
+      appendTaskTrailer(taskId, { exitCode: result.code });
+    }
     void evictTaskOutput(taskId);
   });
   return true;

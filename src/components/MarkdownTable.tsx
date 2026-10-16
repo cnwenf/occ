@@ -269,6 +269,28 @@ export function MarkdownTable({
     const separator = '─'.repeat(separatorWidth);
     // Small indent for wrapped lines (just 2 spaces)
     const wrapIndent = '  ';
+    // CC 2.1.301 changelog #25 — official v301 `z()` @244452938 adds a
+    // zero-body-row branch (absent from v300 @241995529), byte-verified:
+    //   if(x.length===0)return{kind:"vertical",headers:[],
+    //     rows:[o.header.map((M)=>k(M.tokens))],truncatedCount:c};
+    // A header-only table renders ONE keyless row of the header texts
+    // instead of nothing. Keyless cell path per the official vertical
+    // renderer @244454200: label '' → first-line width a-1, bare value
+    // lines (no bold `label:`), empty cells skipped (`if(!g&&!C){return}`),
+    // no separators (single row), and truncatedCount is always 0 when
+    // there are no body rows.
+    if (displayRows.length === 0) {
+      const keylessFirstLineWidth = Math.max(terminalWidth - 1, 10);
+      for (const headerCell of token.header) {
+        const value = formatCell(headerCell.tokens).trimEnd().replace(/\n+/g, ' ').replace(/\s+/g, ' ').trim();
+        if (!value) continue;
+        for (const line_1 of wrapText(value, keylessFirstLineWidth)) {
+          if (!line_1.trim()) continue;
+          lines_2.push(line_1);
+        }
+      }
+      return lines_2.join('\n');
+    }
     displayRows.forEach((row_2, rowIndex) => {
       if (rowIndex > 0) {
         lines_2.push(separator);

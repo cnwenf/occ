@@ -20,9 +20,22 @@
  *   // sync and grapheme are DECRPM responses or undefined if unsupported
  */
 
+import { logForDebugging } from '../utils/debug.js'
+import { env } from '../utils/env.js'
 import type { TerminalResponse } from './parse-keypress.js'
+import { printsUnknownSequences } from './terminal.js'
 import { csi } from './termio/csi.js'
 import { osc, OSC } from './termio/osc.js'
+
+/** CC 2.1.301 changelog #15 (OCC-119) — debug-log helper for gated probes.
+ *  Embeds the official capability source string @231673843 (OCC has no
+ *  capability record to attach it to). Querier-local: the occ160 main-line
+ *  `terminal.ts` gate is `printsUnknownSequences()` (official `b6()`
+ *  accessor @224563183) and this reason string is only consumed by the
+ *  send()-level debug log below. */
+export function vteSequenceBugSkipSource(terminal: string | undefined): string {
+  return `env: terminal=${terminal}, VTE before 0.53 (shows the query as text)`
+}
 
 /** A terminal query: an outbound request sequence paired with a matcher
  *  that recognizes the expected inbound response. Built by `decrqm()`,
@@ -32,6 +45,15 @@ export type TerminalQuery<T extends TerminalResponse = TerminalResponse> = {
   request: string
   /** Recognizes the expected response in the inbound stream */
   match: (r: TerminalResponse) => r is T
+  /** CC 2.1.301 changelog #15 — marks a CSI >-family probe that VTE < 0.53
+   *  prints as stray text instead of parsing (official gated batch
+   *  @231942639: XTVERSION / kitty-keyboard query / DECRQM). `send()`
+   *  resolves such queries with undefined WITHOUT writing when
+   *  `printsUnknownSequences()` is true. Untagged builders (DA1/DA2 —
+   *  universal since VT100, and the official keeps the DA1 `flush()`
+   *  sentinel unconditional — plus cursorPosition/oscColor/osc52Read) fire
+   *  as before. The tag string doubles as the debug-log probe name. */
+  vteEchoedProbe?: string
 }
 
 type DecrpmResponse = Extract<TerminalResponse, { type: 'decrpm' }>
@@ -50,6 +72,7 @@ export function decrqm(mode: number): TerminalQuery<DecrpmResponse> {
   return {
     request: csi(`?${mode}$p`),
     match: (r): r is DecrpmResponse => r.type === 'decrpm' && r.mode === mode,
+    vteEchoedProbe: 'decrqm',
   }
 }
 
@@ -77,6 +100,7 @@ export function kittyKeyboard(): TerminalQuery<KittyResponse> {
   return {
     request: csi('?u'),
     match: (r): r is KittyResponse => r.type === 'kittyKeyboard',
+    vteEchoedProbe: 'kittyKeyboard',
   }
 }
 
@@ -127,6 +151,7 @@ export function xtversion(): TerminalQuery<XtversionResponse> {
   return {
     request: csi('>0q'),
     match: (r): r is XtversionResponse => r.type === 'xtversion',
+    vteEchoedProbe: 'xtversion',
   }
 }
 
@@ -171,7 +196,22 @@ export class TerminalQuerier {
    */
   isInputAttached = true
 
-  constructor(private stdout: NodeJS.WriteStream) {}
+  /**
+   * @param stdout write target for outbound query sequences.
+   * @param skipVteEchoedProbes CC 2.1.301 changelog #15 gate predicate —
+   *   defaults to `printsUnknownSequences` (official `b6()` accessor
+   *   @224563183 — re-reads proc.env at call time, deliberately not
+   *   memoized).
+   *   The official gates at the batch call sites (@231942639:
+   *   `R=!b6()` → `R?n.send(Q5o()):Promise.resolve(void 0)`); OCC gates
+   *   inside send() so every caller of a tagged builder is covered.
+   *   Injectable for tests; the optional param keeps existing one-arg
+   *   construction (`new TerminalQuerier(stdout)`) source-compatible.
+   */
+  constructor(
+    private stdout: NodeJS.WriteStream,
+    private readonly skipVteEchoedProbes: () => boolean = printsUnknownSequences,
+  ) {}
 
   /**
    * Number of callers still owed a resolution (queries + sentinels).
@@ -220,6 +260,19 @@ export class TerminalQuerier {
   send<T extends TerminalResponse>(
     query: TerminalQuery<T>,
   ): Promise<T | undefined> {
+    // CC 2.1.301 changelog #15 — resolve gated probes without writing so
+    // old VTE (< 0.53) never sees (and prints as stray text) the query.
+    // XTVERSION logs the official v301-only debug string @231943157;
+    // other tagged probes embed the official capability source string
+    // @231673843 (OCC has no capability record to attach it to).
+    if (query.vteEchoedProbe !== undefined && this.skipVteEchoedProbes()) {
+      logForDebugging(
+        query.vteEchoedProbe === 'xtversion'
+          ? 'XTVERSION: not asked (VTE before 0.53 would show the query as text)'
+          : `${query.vteEchoedProbe}: not asked (${vteSequenceBugSkipSource(env.terminal ?? undefined)})`,
+      )
+      return Promise.resolve(undefined)
+    }
     return new Promise(resolve => {
       this.queue.push({
         kind: 'query',

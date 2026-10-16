@@ -695,6 +695,15 @@ export async function* runPreToolUseHooks(
             type: 'hook',
             hookName: `PreToolUse:${tool.name}`,
             hookSource: result.hookSource,
+            // CC 2.1.301 #30 — thread the owning plugin/skill id (official
+            // decision-reason @228172787: `hookSource:Re.hookSource,
+            // hookPluginId:Re.hookPluginId`; hook-result yield @229018962:
+            // `...Vs?.pluginId!==void 0&&{hookPluginId:Vs.pluginId}`). The
+            // aggregated hook result does not yet carry `hookPluginId` in OCC
+            // (src/utils/hooks.ts is out of scope this round); read it
+            // defensively so the field flows as soon as the hook layer yields
+            // it — `MatchedHook` already has `pluginId?: string` (hooks.ts:2653).
+            hookPluginId: (result as { hookPluginId?: string }).hookPluginId,
             reason: result.hookPermissionDecisionReason,
           }
           if (result.permissionBehavior === 'allow') {

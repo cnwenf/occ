@@ -536,6 +536,24 @@ export async function gracefulShutdown(
     })
   }
 
+  // CC 2.1.301 (#18): official `MU` (byte-verified @220443640):
+  //   `async function MU({waitForOAuthRefresh:r=!0}={}){
+  //      if(r)await e6n();
+  //      try{let{flushAnalyticsSinks:e}=await import(…);await e()}catch{}}`
+  // Await the in-flight OAuth token refresh BEFORE flushing analytics, so an
+  // exit that races a credential refresh can't flush ahead of it / drop it.
+  // waitForPendingOAuthRefresh (≡ e6n) resolves immediately when no refresh
+  // is in flight and swallows rejections; no internal timeout — the outer
+  // shutdown failsafe bounds the wait, exactly as in the official.
+  // Deferred import: a static auth.ts import here would perturb the Bun
+  // module-init order of the auth↔api/errors cycle (see occ119 ledger §3).
+  try {
+    const { waitForPendingOAuthRefresh } = await import('./auth.js')
+    await waitForPendingOAuthRefresh()
+  } catch {
+    // Ignore — exit must never fail because of the refresh wait.
+  }
+
   // Flush analytics — capped at 500ms. Previously unbounded: the 1P exporter
   // awaits all pending axios POSTs (10s each), eating the full failsafe budget.
   // Lost analytics on slow networks are acceptable; a hanging exit is not.

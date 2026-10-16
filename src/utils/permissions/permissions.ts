@@ -1194,6 +1194,13 @@ export const hasPermissionsToUseTool = async (
           classifier: 'auto-mode',
           reason: classifierResult.reason,
           category: classifierResult.category,
+          // CC 2.1.301 #5 — official setter @229058924 stamps
+          // `classifierAllowed:true` on the decision reason when the
+          // classifier ran and produced an allow verdict; the OTel
+          // config-sourced emit (u9e) reads it to report `allowed` vs
+          // `blocked_without_feedback`. Guaranteed non-unavailable here:
+          // the unavailable and shouldBlock branches return earlier.
+          classifierAllowed: true,
         },
       }
     }

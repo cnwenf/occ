@@ -3,6 +3,7 @@ import { refreshAndGetAwsCredentials } from '../auth.js'
 import { getAWSRegion, isEnvTruthy } from '../envUtils.js'
 import { logError } from '../log.js'
 import { getAWSClientProxyConfig } from '../proxy.js'
+import { getAPIProvider } from './providers.js'
 
 export const getBedrockInferenceProfiles = memoize(async function (): Promise<
   string[]
@@ -154,6 +155,15 @@ export async function createBedrockRuntimeClient() {
 export const getInferenceProfileBackingModel = memoize(async function (
   profileId: string,
 ): Promise<string | null> {
+  // CC 2.1.301 (#17): official binary @219458692 (byte-verified):
+  //   `if(xe()!=="bedrock")return Promise.resolve(null)`
+  // as the FIRST statement of the memoized resolver — defense-in-depth so the
+  // cost-calculation path never constructs a Bedrock client or calls the AWS
+  // GetInferenceProfile API when the session's provider is not bedrock, even
+  // if a caller forgets its own guard. Behavior-neutral for bedrock sessions.
+  if (getAPIProvider() !== 'bedrock') {
+    return null
+  }
   try {
     const [client, { GetInferenceProfileCommand }] = await Promise.all([
       createBedrockClient(),

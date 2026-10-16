@@ -675,6 +675,10 @@ export type AggregatedHookResult = {
   impossible?: boolean
   hookPermissionDecisionReason?: string
   hookSource?: string
+  // CC 2.1.301 #30 — official yield @229018962:
+  // `...Vs?.pluginId!==void 0&&{hookPluginId:Vs.pluginId}` — the owning
+  // plugin id of the matched hook, threaded into PermissionDecisionReason.
+  hookPluginId?: string
   permissionBehavior?: PermissionResult['behavior'] | 'defer'
   additionalContexts?: string[]
   initialUserMessage?: string
@@ -4796,6 +4800,17 @@ async function* executeHooks({
         permissionBehavior,
         hookPermissionDecisionReason: result.hookPermissionDecisionReason,
         hookSource: matchingHooks.find(m => m.hook === result.hook)?.hookSource,
+        // CC 2.1.301 #30 — official yield @229018962 spreads
+        // `...Vs?.pluginId!==void 0&&{hookPluginId:Vs.pluginId}` where `Vs`
+        // is the matched-hook record; mirror by looking the pluginId up from
+        // the same match (omitted when undefined, like the official spread).
+        ...(matchingHooks.find(m => m.hook === result.hook)?.pluginId !==
+        undefined
+          ? {
+              hookPluginId: matchingHooks.find(m => m.hook === result.hook)
+                ?.pluginId,
+            }
+          : {}),
         updatedInput,
       }
     }

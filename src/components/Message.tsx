@@ -11,7 +11,6 @@ import { type ConnectorTextBlock, isConnectorTextBlock } from '../types/connecto
 import type { AssistantMessage, AttachmentMessage as AttachmentMessageType, CollapsedReadSearchGroup as CollapsedReadSearchGroupType, GroupedToolUseMessage as GroupedToolUseMessageType, NormalizedUserMessage, ProgressMessage, SystemMessage } from '../types/message.js';
 import { type AdvisorBlock, isAdvisorBlock } from '../utils/advisor.js';
 import { getToolUseIdsFromCollapsedGroup } from '../utils/collapseReadSearch.js';
-import { isFullscreenEnvEnabled } from '../utils/fullscreen.js';
 import { logError } from '../utils/log.js';
 import type { buildMessageLookups } from '../utils/messages.js';
 import { CompactSummary } from './CompactSummary.js';
@@ -243,17 +242,16 @@ function MessageImpl(t0) {
     case "system":
       {
         if (message.subtype === "compact_boundary") {
-          if (isFullscreenEnvEnabled()) {
-            return null;
-          }
-          let t2;
-          if ($[64] === Symbol.for("react.memo_cache_sentinel")) {
-            t2 = <CompactBoundaryMessage />;
-            $[64] = t2;
-          } else {
-            t2 = $[64];
-          }
-          return t2;
+          // CC 2.1.301 #28 — official renders the compact-boundary row in ALL
+          // envs including fullscreen (row data `Zm` @247543300 + fullscreen
+          // gate `Jm` @247543200 live INSIDE CompactBoundaryMessage), and
+          // passes the boundary message so the uuid-match against the
+          // compact-summary scan can gate the ctrl+o offer. The old
+          // fullscreen early-return and the prop-less memoized `$[64]`
+          // element are therefore both gone. Deliberately NOT memoized into
+          // a `$` slot: `$[64]+` are shared with the later switch cases
+          // (same pattern as the InterruptedBySendNow provider above).
+          return <CompactBoundaryMessage message={message as import('../types/message.js').SystemCompactBoundaryMessage} />;
         }
         if (message.subtype === "microcompact_boundary") {
           return null;

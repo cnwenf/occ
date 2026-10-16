@@ -253,6 +253,44 @@ export function getOauthOrgNotAllowedErrorMessage(): string {
     : OAUTH_ORG_NOT_ALLOWED_ERROR_MESSAGE
 }
 
+// CC 2.1.301 (#9): official class `wG` (byte-verified @226803700 region):
+//   `class wG extends Error{constructor(){super("OAuth access token could not
+//    be refreshed: the disk that holds the Claude Code config directory, or
+//    the disk quota on it, is full; delete files you no longer need on that
+//    disk and try again");this.name="OAuthRefreshDiskFullError"}}`
+// Thrown by the OAuth refresh path (src/utils/auth.ts) when lock acquisition
+// or the refresh itself fails with ENOSPC/EDQUOT (official classifier `TGo`
+// @216477455, producer "lock_disk_full" @219775178, throw site @228690043:
+// `throw m("api_request","api_request_oauth_refresh_disk_full"),
+//  new Rc(new wG,y)`). A plain (non-APIError) throw inside withRetry is
+// auto-wrapped in CannotRetryError by its non-retryable guard — exactly the
+// official `new Rc(new wG,y)` — and getAssistantMessageFromError below maps
+// the unwrapped instance to the disk-full message arm so the user never sees
+// the misleading "OAuth token revoked · Please run /login".
+export class OAuthRefreshDiskFullError extends Error {
+  constructor() {
+    super(
+      'OAuth access token could not be refreshed: the disk that holds the Claude Code config directory, or the disk quota on it, is full; delete files you no longer need on that disk and try again',
+    )
+    this.name = 'OAuthRefreshDiskFullError'
+  }
+}
+
+/**
+ * CC 2.1.301 (#9): official mapper arm @226834409 (byte-verified) —
+ * `we()` ≡ getIsNonInteractiveSession(); the interactive arm is `OUo`
+ * (@106575564, separators are U+00B7 MIDDLE DOT, byte \xB7 verified).
+ * NEVER paraphrase.
+ * DEVIATION: the official also spreads `oauthRefreshDiskFull:!0` onto the
+ * assistant message; OCC's AssistantMessage taxonomy has no such field and
+ * nothing consumes it, so it is not ported.
+ */
+export function getOAuthRefreshDiskFullErrorMessage(): string {
+  return getIsNonInteractiveSession()
+    ? 'Failed to refresh OAuth token: the disk that holds the Claude Code config directory (~/.claude by default), or your disk quota on it, is full. Delete files you no longer need on that disk and retry; signing in again won\'t help'
+    : 'Could not refresh your login: the disk that holds the Claude Code config directory (~/.claude by default), or your disk quota on it, is full · Delete files you no longer need on that disk, then try again · Signing in again won\'t help'
+}
+
 /**
  * Check if we're in CCR (Claude Code Remote) mode.
  * In CCR mode, auth is handled via JWTs provided by the infrastructure,
@@ -911,6 +949,21 @@ export function getAssistantMessageFromError(
       content: isExternalSource
         ? INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL
         : INVALID_API_KEY_ERROR_MESSAGE,
+    })
+  }
+
+  // CC 2.1.301 (#9): official mapper arm @226834409 — placed BEFORE the
+  // token-revoked arm (official order: `if(e instanceof wG)` precedes
+  // `Hte(e)`) so a disk-full refresh failure surfaces the actionable
+  // disk-full message, never the misleading "OAuth token revoked · Please
+  // run /login". Error code 'invalid_request' is byte-verified from the
+  // binary (`Ms({error:"invalid_request",…})`); it also mirrors the OCC
+  // org-disabled precedent below ('authentication_failed' would trigger
+  // VS Code's showLogin(), but re-login can't fix a full disk).
+  if (error instanceof OAuthRefreshDiskFullError) {
+    return createAssistantAPIErrorMessage({
+      error: 'invalid_request',
+      content: getOAuthRefreshDiskFullErrorMessage(),
     })
   }
 

@@ -60,7 +60,7 @@ import {
   isEnvTruthy,
   isRunningOnHomespace,
 } from './envUtils.js'
-import { errorMessage } from './errors.js'
+import { errorMessage, getErrnoCode } from './errors.js'
 import { execSyncWithDefaults_DEPRECATED } from './execFileNoThrow.js'
 import * as lockfile from './lockfile.js'
 import { logError } from './log.js'
@@ -1984,6 +1984,71 @@ export async function getClaudeAIOAuthTokensAsync(): Promise<OAuthTokens | null>
 // In-flight promise for deduplicating concurrent calls
 let pendingRefreshCheck: Promise<boolean> | null = null
 
+/**
+ * CC 2.1.301 (#18): official `e6n` (byte-verified @220443640 region):
+ *   `async function MU({waitForOAuthRefresh:r=!0}={}){if(r)await e6n();
+ *    try{let{flushAnalyticsSinks:e}=await import(…);await e()}catch{}}`
+ *   with `e6n(){try{await t.wait?.()}catch{}}` — awaits the singleton
+ * in-flight OAuth refresh BEFORE the analytics flush on the graceful-shutdown
+ * path so a mid-refresh exit can't flush analytics ahead of the credential
+ * write / drop the refresh. Resolves immediately when no refresh is in
+ * flight; rejections are swallowed so exit never fails or hangs on it (the
+ * shutdown failsafe bounds the wait — no internal timeout, same as official).
+ */
+export async function waitForPendingOAuthRefresh(): Promise<void> {
+  try {
+    await pendingRefreshCheck
+  } catch {
+    // Official e6n swallows — exit must never fail because of the refresh.
+  }
+}
+
+/** Test-only: swap the in-flight refresh singleton (cf. _peekPendingOrgPinRefusalForTesting). */
+export function _setPendingRefreshCheckForTesting(
+  promise: Promise<boolean> | null,
+): void {
+  pendingRefreshCheck = promise
+}
+
+/**
+ * CC 2.1.301 (#9): official classifier `TGo` @216477455 (byte-verified):
+ *   `function TGo(n){let e=E(n);return e==="ENOSPC"||e==="EDQUOT"}`
+ * — error-CODE based. OCC adds the message-includes fallback from its own
+ * ENOSPC precedent (NativeAutoUpdater.tsx:33-34) for errors that lost their
+ * `.code` crossing a boundary (both patterns match the same errno family).
+ */
+export function isDiskFullOAuthRefreshError(error: unknown): boolean {
+  const code = getErrnoCode(error)
+  if (code === 'ENOSPC' || code === 'EDQUOT') {
+    return true
+  }
+  // Message fallback ONLY for Error instances — a raw string is not an error
+  // (official `E(n)` extracts the errno code and yields nothing for those).
+  return (
+    error instanceof Error &&
+    (error.message.includes('ENOSPC') || error.message.includes('EDQUOT'))
+  )
+}
+
+/**
+ * CC 2.1.301 (#9): construct the official `wG` OAuthRefreshDiskFullError.
+ * The class lives in src/services/api/errors.ts, which imports THIS module
+ * (errors.ts:24) — a static import back would close an auth↔errors cycle
+ * that perturbs module-init order and breaks unrelated top-level requires
+ * (observed: permissions.ts's load-time `require('../autoModeDenials.js')`
+ * received a partial namespace, silently disabling the 2.1.218 #27
+ * dangerous-rm auto-deny). Every throw site is inside an async function, so
+ * the class is fetched via dynamic import at call time — the module cache
+ * guarantees the SAME class identity, so `instanceof OAuthRefreshDiskFullError`
+ * checks (errors.ts mapper arm) still match.
+ */
+async function createOAuthRefreshDiskFullError(): Promise<Error> {
+  const { OAuthRefreshDiskFullError } = await import(
+    'src/services/api/errors.js'
+  )
+  return new OAuthRefreshDiskFullError()
+}
+
 export function checkAndRefreshOAuthTokenIfNeeded(
   retryCount = 0,
   force = false,
@@ -2043,7 +2108,24 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
 
   // Tokens are still expired, try to acquire lock and refresh
   const claudeDir = getClaudeConfigHomeDir()
-  await mkdir(claudeDir, { recursive: true })
+  try {
+    await mkdir(claudeDir, { recursive: true })
+  } catch (mkdirErr) {
+    // CC 2.1.301 (#9): official classifies the config-dir mkdir together with
+    // the lock acquisition (producer @219775178 `TGo(te)?"lock_disk_full":
+    // "lock_error"`). A disk-full mkdir surfaces the actionable
+    // OAuthRefreshDiskFullError; any other mkdir error keeps the pre-301 raw
+    // propagation.
+    if (isDiskFullOAuthRefreshError(mkdirErr)) {
+      logError(mkdirErr)
+      logEvent('api_request', {
+        reason:
+          'api_request_oauth_refresh_disk_full' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+      throw await createOAuthRefreshDiskFullError()
+    }
+    throw mkdirErr
+  }
 
   let release
   try {
@@ -2074,6 +2156,21 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
         err,
       ) as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
     })
+    // CC 2.1.301 (#9): official producer @219775178 classifies this catch —
+    // `TGo(te)?"lock_disk_full":"lock_error"` — and the throw site @228690043
+    // raises `m("api_request","api_request_oauth_refresh_disk_full"),
+    // new Rc(new wG,y)` for the disk-full kind. The plain (non-APIError)
+    // throw is auto-wrapped in CannotRetryError (≡ official Rc) by withRetry's
+    // non-retryable guard. The official Bqr predicate (auth-error kind &&
+    // logged-in) is satisfied here by construction: this path only runs when
+    // an expired refresh token exists (logged in) and the refresh failed.
+    if (isDiskFullOAuthRefreshError(err)) {
+      logEvent('api_request', {
+        reason:
+          'api_request_oauth_refresh_disk_full' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+      throw await createOAuthRefreshDiskFullError()
+    }
     return false
   }
   try {
@@ -2109,6 +2206,21 @@ async function checkAndRefreshOAuthTokenIfNeededImpl(
 
     getClaudeAIOAuthTokens.cache?.clear?.()
     clearKeychainCache()
+    // CC 2.1.301 (#9): if the refresh itself failed because the disk / quota
+    // holding the config dir is full (ENOSPC/EDQUOT — official `TGo`), surface
+    // the actionable OAuthRefreshDiskFullError instead of a bare `false` that
+    // downstream reads as a revoked token. The plain (non-APIError) throw is
+    // auto-wrapped in CannotRetryError by withRetry's non-retryable guard
+    // (≡ official `new Rc(new wG,y)`); the finally below still releases the
+    // lock. Checked BEFORE race-recovery so a stale non-expired token can't
+    // mask the disk-full condition.
+    if (isDiskFullOAuthRefreshError(error)) {
+      logEvent('api_request', {
+        reason:
+          'api_request_oauth_refresh_disk_full' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+      })
+      throw await createOAuthRefreshDiskFullError()
+    }
     const currentTokens = await getClaudeAIOAuthTokensAsync()
     if (currentTokens && !isOAuthTokenExpired(currentTokens.expiresAt)) {
       logEvent('tengu_oauth_token_refresh_race_recovered', {})

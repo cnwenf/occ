@@ -9,10 +9,13 @@ import {
 } from 'fs/promises'
 import { join } from 'path'
 import { getSessionId } from '../../bootstrap/state.js'
+import { logForDebugging } from '../debug.js'
 import { getErrnoCode } from '../errors.js'
 import { readFileRange, tailFile } from '../fsOperations.js'
 import { logError } from '../log.js'
 import { getProjectTempDir } from '../permissions/filesystem.js'
+import { getPlatform } from '../platform.js'
+import { sleep } from '../sleep.js'
 
 // SECURITY: O_NOFOLLOW prevents following symlinks when opening task output files.
 // Without this, an attacker in the sandbox could create symlinks in the tasks directory
@@ -57,6 +60,20 @@ const DISK_EXHAUSTION_ERRNOS = new Set([
   'ENFILE',
   'EMFILE',
 ])
+
+/**
+ * Trailer kinds for the closing line appended to a stopped background task's
+ * output file (2.1.301 #39; official `_Wn.appendTrailer(text, kind)`).
+ */
+export type TaskOutputTrailerKind = 'killed' | 'exited'
+
+/**
+ * Backoff schedule (ms) for retrying a trailer write whose file is busy
+ * (Windows EBUSY — antivirus/indexer/lock contention). Verbatim from the
+ * 2.1.301 binary (`tt`); sums to TRAILER_RETRY_TOTAL_MS (`G` = 3150).
+ */
+const TRAILER_RETRY_DELAYS_MS = [50, 100, 200, 400, 800, 1600]
+const TRAILER_RETRY_TOTAL_MS = 3150
 
 /**
  * Get the task output directory for this session.
@@ -138,6 +155,15 @@ export class DiskTaskOutput {
   #seenFailureKeys = new Set<string>()
   /** True once output has been lost (dropped or unwritable) — the file is incomplete. */
   #lostOutput = false
+  /**
+   * Pending trailer kind (official `#s`). Set by appendTrailer, cleared when
+   * the queue is spliced into a write buffer, on cancel, and when a final
+   * drain failure drops the queue. Gates the Windows EBUSY retry loop and
+   * classifies a lost closing line in #handleFinalDrainFailure.
+   */
+  #trailerKind: TaskOutputTrailerKind | null = null
+  /** Abort controller for the Windows EBUSY trailer retry loop (official `#a`). */
+  #retryAbort: AbortController | null = null
   #flushPromise: Promise<void> | null = null
   #flushResolve: (() => void) | null = null
 
@@ -169,6 +195,19 @@ export class DiskTaskOutput {
     }
   }
 
+  /**
+   * Append the closing line (trailer) of a stopped task, recording its kind
+   * so the drain-failure path can classify a lost trailer (2.1.301 #39;
+   * official `appendTrailer(e,n){if(!this.#o)this.#s=n;this.append(e)}` —
+   * the kind is only recorded when the disk cap hasn't been hit).
+   */
+  appendTrailer(text: string, kind: TaskOutputTrailerKind): void {
+    if (!this.#capped) {
+      this.#trailerKind = kind
+    }
+    this.append(text)
+  }
+
   flush(): Promise<void> {
     return this.#flushPromise ?? Promise.resolve()
   }
@@ -189,6 +228,11 @@ export class DiskTaskOutput {
     this.#cancelCount += 1
     this.#queue.length = 0
     this.#unwrittenChars = 0
+    // Official cancel(): also clears the pending trailer kind and aborts the
+    // EBUSY retry loop so a cancelled writer exits its backoff promptly.
+    this.#trailerKind = null
+    this.#retryAbort?.abort()
+    this.#retryAbort = null
   }
 
   async #drainAllChunks(): Promise<void> {
@@ -258,6 +302,10 @@ export class DiskTaskOutput {
     // The queue is now empty — the spliced content is in flight to disk;
     // #drain's write-level catch accounts for it again if the write fails.
     this.#unwrittenChars = 0
+    // Official #y: the trailer is now in the write buffer, so the pending
+    // trailer kind no longer gates retries (only a still-queued trailer —
+    // e.g. an open() failure before any splice — keeps the EBUSY backoff).
+    this.#trailerKind = null
 
     let totalLength = 0
     for (const str of queue) {
@@ -286,6 +334,15 @@ export class DiskTaskOutput {
       // errno, log once per kind+errno, and — if the unwritten queue has
       // grown past MAX_UNWRITTEN_CHARS_BEFORE_DROP — discard it in favor of
       // the omission marker so memory cannot grow unbounded (2.1.247 fix).
+      //
+      // 2.1.301 #39: a Windows EBUSY failure while a trailer (closing line
+      // of a stopped shell) is pending gets a dedicated backoff-retry loop
+      // instead of the single retry — the file is transiently busy (official
+      // #O EBUSY branch, delays tt=[50,100,200,400,800,1600], 3150ms total).
+      if (this.#pendingTrailerKindForRetry(e) !== null) {
+        await this.#retryTrailerAfterEbusy()
+        return
+      }
       if (!this.#failing) {
         this.#failing = true
         logError(new Error(`Task output drain failed (will retry once): ${e}`))
@@ -295,7 +352,7 @@ export class DiskTaskOutput {
           await this.#drainAllChunks()
           this.#clearFailureState()
         } catch (e2) {
-          this.#handleFinalDrainFailure(e2)
+          this.#handleFinalDrainFailure(e2, null)
         }
       }
     } finally {
@@ -312,19 +369,94 @@ export class DiskTaskOutput {
     this.#seenFailureKeys.clear()
   }
 
-  #handleFinalDrainFailure(e: unknown): void {
+  /**
+   * Official #g: returns the pending trailer kind when this failure is a
+   * Windows EBUSY (file transiently busy), else null. Gates both the EBUSY
+   * backoff-retry loop and the trailer-kind classification of a final failure.
+   */
+  #pendingTrailerKindForRetry(e: unknown): TaskOutputTrailerKind | null {
+    return getPlatform() === 'windows' && getErrnoCode(e) === 'EBUSY'
+      ? this.#trailerKind
+      : null
+  }
+
+  /**
+   * Official #O EBUSY branch: retry the drain with the backoff schedule
+   * tt=[50,100,200,400,800,1600] (3150ms total), abortable via cancel().
+   * Gives up to #handleFinalDrainFailure with the trailer kind when the file
+   * stays busy or a non-EBUSY failure takes over.
+   */
+  async #retryTrailerAfterEbusy(): Promise<void> {
+    if (!this.#failing) {
+      this.#failing = true
+      logForDebugging(
+        `Task output closing line delayed: its file is busy (EBUSY); trying again for up to ${TRAILER_RETRY_TOTAL_MS} ms`,
+      )
+    }
+    for (const [attempt, delayMs] of TRAILER_RETRY_DELAYS_MS.entries()) {
+      this.#retryAbort ??= new AbortController()
+      // sleep resolves silently on abort (cancel()) — the queue-empty check
+      // right after is the abort/cancel exit.
+      await sleep(delayMs, this.#retryAbort.signal)
+      if (this.#queue.length === 0) {
+        return
+      }
+      const cancelCount = this.#cancelCount
+      try {
+        await this.#drainAllChunks()
+        this.#clearFailureState()
+        return
+      } catch (e2) {
+        // cancel() raced the attempt and already dropped the queued data.
+        if (this.#queue.length === 0 && this.#cancelCount !== cancelCount) {
+          return
+        }
+        const kind = this.#pendingTrailerKindForRetry(e2)
+        if (kind === null || attempt === TRAILER_RETRY_DELAYS_MS.length - 1) {
+          this.#handleFinalDrainFailure(e2, kind)
+          return
+        }
+      }
+    }
+  }
+
+  #handleFinalDrainFailure(
+    e: unknown,
+    trailerKind: TaskOutputTrailerKind | null,
+  ): void {
     const code = getErrnoCode(e)
     const kind =
       code !== undefined && DISK_EXHAUSTION_ERRNOS.has(code)
         ? 'exhaustion'
-        : 'unexpected'
+        : (trailerKind ?? 'unexpected')
     const failureKey = `${kind}:${code ?? 'no errno'}`
     if (!this.#seenFailureKeys.has(failureKey)) {
       this.#seenFailureKeys.add(failureKey)
-      if (kind === 'exhaustion') {
-        logError(new Error(`Task output drain retry failed (${code}): ${e}`))
-      } else {
-        logError(e)
+      // Official #k switch — per-kind logs. `exited` is a warn-level debug
+      // line; `killed` is an error-level wrapped report (official `l(Qe(e,…))`).
+      switch (kind) {
+        case 'exhaustion':
+          logError(new Error(`Task output drain retry failed (${code}): ${e}`))
+          break
+        case 'exited':
+          logForDebugging(
+            `Task output closing line not written (EBUSY): the file was still busy after ${TRAILER_RETRY_TOTAL_MS} ms`,
+            { level: 'warn' },
+          )
+          break
+        case 'killed':
+          logError(
+            Object.assign(
+              new Error(
+                `closing line of a stopped shell command not written: output file still busy after ${TRAILER_RETRY_TOTAL_MS} ms`,
+              ),
+              { cause: e },
+            ),
+          )
+          break
+        default:
+          logError(e)
+          break
       }
     }
     if (this.#unwrittenChars > MAX_UNWRITTEN_CHARS_BEFORE_DROP) {
@@ -337,6 +469,8 @@ export class DiskTaskOutput {
       this.#queue.length = 0
       this.#queue.push(OUTPUT_OMITTED_MARKER)
       this.#unwrittenChars = OUTPUT_OMITTED_MARKER.length
+      // Official #k drop branch also clears the pending trailer kind.
+      this.#trailerKind = null
     }
   }
 }
@@ -392,6 +526,34 @@ function logTaskOutputFailure(context: string, e: unknown): void {
  */
 export function appendTaskOutput(taskId: string, content: string): void {
   getOrCreateOutput(taskId).append(content)
+}
+
+/**
+ * Trailer spec for a stopped shell task (official `bWn`'s second argument):
+ * the literal 'killed', or the natural exit's code (nullish → "unknown").
+ */
+export type ShellTaskTrailer = 'killed' | { exitCode?: number | null }
+
+/**
+ * Append the official closing-line trailer to a stopped task's output file
+ * (2.1.301 #39; official `bWn` @222257169, strings byte-identical):
+ *   killed → "\n[killed]\n"
+ *   exited → `\n[exited with code ${exitCode ?? 'unknown'}]\n`
+ * Call BEFORE evictTaskOutput so the trailer lands in the file readers see.
+ */
+export function appendTaskTrailer(
+  taskId: string,
+  trailer: ShellTaskTrailer,
+): void {
+  const output = getOrCreateOutput(taskId)
+  if (trailer === 'killed') {
+    output.appendTrailer('\n[killed]\n', 'killed')
+  } else {
+    output.appendTrailer(
+      `\n[exited with code ${trailer.exitCode ?? 'unknown'}]\n`,
+      'exited',
+    )
+  }
 }
 
 /**

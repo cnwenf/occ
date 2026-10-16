@@ -260,20 +260,24 @@ export function applyTextStyles(text: string, styles: TextStyles): string {
     result = chalk.dim(result)
   }
 
-  // CC 2.1.300 changelog #47 — official v300 `h6e` @219912500 (sole delta vs
-  // v299 `F4e` @218792200: the two new `!backgroundColor && !inverse`
-  // guards), byte-verified:
-  //   if(i.faintInk&&i.faintInk===i.color&&!i.bold&&!i.dim
-  //      &&!i.backgroundColor&&!i.inverse&&M.has(i.color))e=he.dim(e);
-  // Applied after bold/dim, before the color passes below.
+  // CC 2.1.301 changelog #33 — official v301 `o5e` @220863168 (v300 `h6e`
+  // @219912500 was identical except the bg clause was the plain
+  // `!i.backgroundColor` guard), byte-verified:
+  //   if(e.faintInk&&e.faintInk===e.color&&!e.bold&&!e.dim&&!e.inverse
+  //      &&B.has(e.color)&&(!e.backgroundColor||B.has(e.backgroundColor)))
+  //     i=he.dim(i);
+  // The bg clause widened: a *whitish* (tracker-known) background — e.g. a
+  // selection highlight rendered from the palette — no longer suppresses the
+  // faint; only non-tracked backgrounds (RGB/truecolor) still do. Applied
+  // after bold/dim, before the color passes below.
   if (
     styles.faintInk &&
     styles.faintInk === styles.color &&
     !styles.bold &&
     !styles.dim &&
-    !styles.backgroundColor &&
     !styles.inverse &&
-    whitishColors.has(styles.color)
+    whitishColors.has(styles.color) &&
+    (!styles.backgroundColor || whitishColors.has(styles.backgroundColor))
   ) {
     result = chalk.dim(result)
   }

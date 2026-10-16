@@ -3184,6 +3184,83 @@ export function suppressNextSkillListing(): void {
 }
 let suppressNext = false
 
+/**
+ * CC 2.1.301 changelog #27 — "Fixed skills no longer being listed to the model
+ * after using /rewind". Port of the official reconcile function `NXt`
+ * (v301 binary @229467265, byte-verified):
+ *
+ *   function NXt(e,n){let r=kAe.of(n);for(let s of e){
+ *     if(s.type!=="attachment")continue;
+ *     if(s.attachment.type==="skill_listing"){
+ *       if(r.suppressNext=!1,!s.attachment.names){
+ *         r.sentSkillNames.delete(""),r.resumeSeedNames=null;continue}
+ *       for(let h of s.attachment.names)
+ *         r.sentSkillNames.get("")?.delete(h),r.resumeSeedNames?.delete(h)}}}
+ *
+ * Called from REPL rewindConversationTo with the SLICED-OFF (removed)
+ * messages: every removed skill_listing must be un-recorded from the dedup
+ * map so the next turn re-lists those skills to the model. A full listing
+ * (no `names`) resets the agent's entire entry; a delta listing (official
+ * writer shape carries `names`) deletes only the listed names. suppressNext
+ * is cleared whenever a skill_listing removal is seen — a pending resume
+ * suppression must not survive the rewind of the listing it suppressed.
+ *
+ * OCC adaptations vs the official per-session `DIn` state class:
+ * - OCC's dedup state is this module-scope Map keyed by agentId ('' = main
+ *   thread), so the official's hardcoded `""` key becomes the `agentKey`
+ *   parameter (REPL passes nothing → main thread, matching the existing
+ *   filter's `toolUseContext.agentId ?? ''` convention).
+ * - OCC has no `resumeSeedNames` — deleting the map entry is the equivalent
+ *   unwind (the resume seed lives in the same Set here).
+ * - OCC's own skill_listing attachments never carry `names` (they hold
+ *   {type, content, skillCount, isInitial}), so live removals always take
+ *   the full-reset branch; the names branch is kept for forward-compat with
+ *   the official delta-listing writer shape and hardened with Array.isArray
+ *   (the official for-of would throw on a truthy non-iterable).
+ */
+export function resyncSentSkillNamesAfterRewind(
+  removedMessages: ReadonlyArray<{ type?: unknown; attachment?: unknown } | null | undefined>,
+  agentKey = '',
+): void {
+  for (const message of removedMessages) {
+    if (message?.type !== 'attachment') continue
+    const attachment = message.attachment as { type?: unknown; names?: unknown } | undefined
+    if (attachment?.type !== 'skill_listing') continue
+    suppressNext = false
+    const names = attachment.names
+    if (!names) {
+      // Official: falsy names = full listing → reset the agent's entry.
+      sentSkillNames.delete(agentKey)
+      continue
+    }
+    if (Array.isArray(names)) {
+      const sent = sentSkillNames.get(agentKey)
+      if (sent) {
+        for (const name of names) sent.delete(name)
+      }
+    }
+    // Truthy non-array `names` (transcript hardening): the official for-of
+    // would iterate any iterable (or throw on a non-iterable); OCC ignores
+    // the payload — never a full reset, since the listing was a delta.
+  }
+}
+
+// Test-only accessors for the module-scope dedup state above. The live
+// producer (getSkillListingAttachments) is dead under NODE_ENV==='test', so
+// unit tests seed/read the map directly (mirrors the official per-session
+// state which tests could construct; OCC's module state cannot be).
+export function seedSentSkillNamesForTest(agentKey: string, names: Iterable<string>): void {
+  sentSkillNames.set(agentKey, new Set(names))
+}
+
+export function getSentSkillNamesForTest(agentKey: string): ReadonlySet<string> | undefined {
+  return sentSkillNames.get(agentKey)
+}
+
+export function isNextSkillListingSuppressedForTest(): boolean {
+  return suppressNext
+}
+
 // When skill-search is enabled and the filtered (bundled + MCP) listing exceeds
 // this count, fall back to bundled-only. Protects MCP-heavy users (100+ servers)
 // from truncation while keeping the turn-0 guarantee for typical setups.

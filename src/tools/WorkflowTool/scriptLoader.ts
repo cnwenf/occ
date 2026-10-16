@@ -33,6 +33,17 @@
  *   f_r  -> isReadAutoAllowedForPath (fileStateGuard, 2.1.228 port)
  *   Ast  -> loadScriptGated (TOCTOU-hardened reader)
  *   cm   -> WORKFLOW_SCRIPT_MAX_BYTES (524288)
+ *
+ * CC 2.1.301 #32 (official changelog: "Fixed workflow scripts asking for
+ * permission or being refused when read, edited or re-run after a Bash `cd`
+ * in the same session"): the resolve base for a relative scriptPath is the
+ * cd-immune session base — binary `No(le(),e)` → `No(de(),e)` (No =
+ * path.resolve) in both the validateInput-time gate (srr→Psr) and the TOCTOU
+ * loader (LEn→$Tn); error text unchanged. v300 resolved against the
+ * cd-tracked cwd, so after a Bash `cd` the same scriptPath resolved elsewhere
+ * → permission ask/refusal. OCC mapping: getCwd() (cd-tracked) →
+ * getOriginalCwd() (session base), including validateScriptPath's previously
+ * implicit process.cwd() base.
  */
 import {
   closeSync,
@@ -51,7 +62,7 @@ import { toolMatchesName } from '../../Tool.js'
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js'
 import { REPL_TOOL_NAME } from '../REPLTool/constants.js'
 import { isENOENT } from '../../utils/errors.js'
-import { getCwd } from '../../utils/cwd.js'
+import { getOriginalCwd } from '../../bootstrap/state.js'
 import {
   containsNtNamespacePath,
   isAutomountPath,
@@ -143,7 +154,11 @@ export function validateScriptPath(scriptPath: string): string {
   if (!scriptPath || typeof scriptPath !== 'string') {
     throw new WorkflowScriptError('workflow scriptPath must be a non-empty string')
   }
-  const resolved = isAbsolute(scriptPath) ? scriptPath : resolve(scriptPath)
+  // CC 2.1.301 #32: relative paths resolve against the cd-immune session
+  // base (getOriginalCwd), never the implicit process.cwd().
+  const resolved = isAbsolute(scriptPath)
+    ? scriptPath
+    : resolve(getOriginalCwd(), scriptPath)
   // Network UNC prefix (\\ or //), NT-namespace device paths, or automount
   // paths are not allowed — the resolved path is checked for automount too.
   const violation = getNetworkPathViolation(scriptPath, resolved)
@@ -203,7 +218,9 @@ export function checkScriptPathReadable(
   if (!scriptPath || typeof scriptPath !== 'string') {
     return 'workflow scriptPath must be a non-empty string'
   }
-  const resolved = resolve(getCwd(), scriptPath)
+  // CC 2.1.301 #32 (binary Psr, `No(le(),e)` → `No(de(),e)`): resolve against
+  // the session base so a Bash `cd` cannot move the gate's target.
+  const resolved = resolve(getOriginalCwd(), scriptPath)
   const violation = getNetworkPathViolation(scriptPath, resolved)
   if (violation !== null) {
     return violation
@@ -241,7 +258,9 @@ export function loadScriptGated(
   if (gateError !== null) {
     return { error: gateError }
   }
-  const resolved = resolve(getCwd(), scriptPath)
+  // CC 2.1.301 #32 (binary $Tn, `No(le(),e)` → `No(de(),e)`): same base swap
+  // in the TOCTOU loader — gate and reader must agree on the resolved path.
+  const resolved = resolve(getOriginalCwd(), scriptPath)
   const isWindows = process.platform === 'win32'
   const openFlags =
     fsConstants.O_RDONLY | (isWindows ? 0 : fsConstants.O_NONBLOCK)

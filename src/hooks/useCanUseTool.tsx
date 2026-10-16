@@ -45,7 +45,10 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
           }
           ctx.logDecision({
             decision: "accept",
-            source: "config"
+            source: "config",
+            // CC 2.1.301 #5: the official passes `n.decisionReason` at the
+            // config-sourced accept emit (u9e classifier-verdict attrs).
+            decisionReason: result.decisionReason
           });
           resolve(ctx.buildAllow(result.updatedInput ?? input, {
             decisionReason: result.decisionReason
@@ -72,7 +75,9 @@ function useCanUseTool(setToolUseConfirmQueue, setToolPermissionContext) {
                 toolUseID
               }, {
                 decision: "reject",
-                source: "config"
+                source: "config",
+                // CC 2.1.301 #5: symmetric with the accept emit above.
+                decisionReason: result.decisionReason
               });
               if (feature("TRANSCRIPT_CLASSIFIER") && result.decisionReason?.type === "classifier" && result.decisionReason.classifier === "auto-mode") {
                 recordAutoModeDenial({

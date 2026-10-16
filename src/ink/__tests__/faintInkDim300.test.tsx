@@ -182,6 +182,112 @@ describe('CC 2.1.300 #47: applyTextStyles faintInk branch (official h6e @2199125
   })
 })
 
+describe('CC 2.1.301 #33: faintInk background clause widened to whitish backgrounds (official o5e @220863168)', () => {
+  // v300 guard was `!backgroundColor` — ANY background suppressed the faint.
+  // v301 relaxes it to `(!backgroundColor || B.has(backgroundColor))`: a
+  // *whitish* (tracker-known, e.g. selection-highlight palette) background no
+  // longer suppresses faint, while RGB/truecolor backgrounds (which the
+  // tracker never reports as whitish — they render differently from
+  // chalk.white/black) still suppress it.
+  test('whitish background (ansi:white) now APPLIES faintInk dimming', () => {
+    const styles: TextStyles = {
+      color: 'ansi:white',
+      faintInk: 'ansi:white',
+      backgroundColor: 'ansi:white',
+    } as TextStyles
+    const out = withChalkLevel(3, () => applyTextStyles('x', styles))
+    // Official order: he.dim(e) → foreground colorize → background colorize
+    const expected = withChalkLevel(3, () =>
+      chalk.bgWhite(chalk.white(chalk.dim('x'))),
+    )
+    expect(out).toContain(SGR2)
+    expect(out).toBe(expected)
+  })
+
+  test('whitish background different from foreground (ansi:black bg) also applies faint', () => {
+    const styles: TextStyles = {
+      color: 'ansi:white',
+      faintInk: 'ansi:white',
+      backgroundColor: 'ansi:black',
+    } as TextStyles
+    const out = withChalkLevel(3, () => applyTextStyles('x', styles))
+    const expected = withChalkLevel(3, () =>
+      chalk.bgBlack(chalk.white(chalk.dim('x'))),
+    )
+    expect(out).toContain(SGR2)
+    expect(out).toBe(expected)
+  })
+
+  test('RGB background (non-tracked, e.g. search/selection highlight) still suppresses faint', () => {
+    const styles: TextStyles = {
+      color: 'ansi:white',
+      faintInk: 'ansi:white',
+      backgroundColor: 'rgb(58, 58, 58)',
+    } as TextStyles
+    const out = withChalkLevel(3, () => applyTextStyles('x', styles))
+    const expected = withChalkLevel(3, () =>
+      chalk.bgRgb(58, 58, 58)(chalk.white('x')),
+    )
+    expect(out).not.toContain(SGR2)
+    expect(out).toBe(expected)
+  })
+
+  test('hex background (non-tracked) still suppresses faint', () => {
+    const styles: TextStyles = {
+      color: 'ansi:white',
+      faintInk: 'ansi:white',
+      backgroundColor: '#333333',
+    } as TextStyles
+    const out = withChalkLevel(3, () => applyTextStyles('x', styles))
+    expect(out).not.toContain(SGR2)
+  })
+
+  test('non-whitish ANSI background still suppresses faint (v300 behavior retained)', () => {
+    const styles: TextStyles = {
+      color: 'ansi:white',
+      faintInk: 'ansi:white',
+      backgroundColor: 'ansi:red',
+    } as TextStyles
+    const out = withChalkLevel(3, () => applyTextStyles('x', styles))
+    const expected = withChalkLevel(3, () => chalk.bgRed(chalk.white('x')))
+    expect(out).not.toContain(SGR2)
+    expect(out).toBe(expected)
+  })
+
+  test('no background — v301 clause degrades to the v300 truth (faint applied)', () => {
+    const styles: TextStyles = {
+      color: 'ansi:white',
+      faintInk: 'ansi:white',
+    } as TextStyles
+    const out = withChalkLevel(3, () => applyTextStyles('x', styles))
+    const expected = withChalkLevel(3, () => chalk.white(chalk.dim('x')))
+    expect(out).toContain(SGR2)
+    expect(out).toBe(expected)
+  })
+
+  test('bold/dim/inverse guards still win over a whitish background', () => {
+    const base = {
+      color: 'ansi:white',
+      faintInk: 'ansi:white',
+      backgroundColor: 'ansi:white',
+    }
+    for (const override of [
+      { bold: true },
+      { dim: true },
+      { inverse: true },
+    ] as const) {
+      const styles = { ...base, ...override } as TextStyles
+      const out = withChalkLevel(3, () => applyTextStyles('x', styles))
+      // Exactly the guard's own dim at most (dim:true case), never the
+      // faintInk branch's extra dim.
+      expect(out.split(SGR2).length - 1).toBeLessThanOrEqual(1)
+      if ('bold' in override || 'inverse' in override) {
+        expect(out).not.toContain(SGR2)
+      }
+    }
+  })
+})
+
 describe('CC 2.1.300 #47: Text component threads faintInk (official Dc @231403881)', () => {
   test('Text with faintInk === color renders SGR 2 in the frame', async () => {
     const saved = chalk.level
