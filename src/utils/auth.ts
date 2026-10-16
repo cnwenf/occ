@@ -25,7 +25,11 @@ import {
   shouldUseClaudeAIAuth,
 } from '../services/oauth/client.js'
 import { getOauthProfileFromOauthToken } from '../services/oauth/getOauthProfile.js'
-import type { OAuthTokens, SubscriptionType } from '../services/oauth/types.js'
+import type {
+  OAuthProfileResponse,
+  OAuthTokens,
+  SubscriptionType,
+} from '../services/oauth/types.js'
 import {
   getApiKeyFromFileDescriptor,
   getOAuthTokenFromFileDescriptor,
@@ -1491,16 +1495,15 @@ function orgPinMismatchMessage(
  * token's org; `null` for permitted / not_checked (no pin, or no org info to
  * compare synchronously — the async network validator stays authoritative).
  */
-function checkOrgPinForTokenSave(
-  tokens: OAuthTokens,
-): { valid: false; message: string; reason: string } | null {
-  const requiredOrgUuid =
-    getSettingsForSource('policySettings')?.forceLoginOrgUUID
+type OrgPinRefusal = { valid: false; message: string; reason: string }
+
+/** Shared decision core for the two sync org-pin checks: refuse ONLY on a
+ * definitive mismatch (pin present, token-side org uuid present, unequal). */
+function resolveOrgPinRefusal(
+  tokenOrgUuid: string | undefined,
+  requiredOrgUuid: string | undefined,
+): OrgPinRefusal | null {
   if (!requiredOrgUuid) return null
-  const tokenOrgUuid =
-    tokens?.profile?.organization?.uuid ??
-    tokens?.tokenAccount?.organizationUuid ??
-    getOauthAccountInfo()?.organizationUuid
   if (!tokenOrgUuid) return null
   if (tokenOrgUuid === requiredOrgUuid) return null
   return {
@@ -1508,6 +1511,57 @@ function checkOrgPinForTokenSave(
     reason: 'org_pin_mismatch',
     message: orgPinMismatchMessage(tokenOrgUuid, requiredOrgUuid),
   }
+}
+
+function checkOrgPinForTokenSave(tokens: OAuthTokens): OrgPinRefusal | null {
+  const requiredOrgUuid =
+    getSettingsForSource('policySettings')?.forceLoginOrgUUID
+  const tokenOrgUuid =
+    tokens?.profile?.organization?.uuid ??
+    tokens?.tokenAccount?.organizationUuid ??
+    getOauthAccountInfo()?.organizationUuid
+  return resolveOrgPinRefusal(tokenOrgUuid, requiredOrgUuid)
+}
+
+/**
+ * SYNC org-pin PRE-CHECK for `installOAuthTokens` (CC 2.1.300 #19, P1-2).
+ *
+ * Official v300 validates the org pin BEFORE any credential mutation: the
+ * outcome-typed validator `O1e` (@219129901) runs before the persist fn `FGe`
+ * (@242172197, containing logout `mre` → account store `lsn` → token save
+ * `WIr`), and on `refused` `FGe` never executes (@242589186 login flow:
+ * `h=await O1e(p); if(h.outcome==="refused"){…await R(…)}` — no `FGe` call).
+ * `O1e` resolves the token org from the (network-fetched) profile ONLY — it
+ * never consults the cached `oauthAccount` record, so this pre-check mirrors
+ * that: org comes from the resolved login profile / token metadata, never from
+ * `getOauthAccountInfo()`.
+ *
+ * Running the check before the install mutation window keeps a refused org
+ * traceless: prior credentials are never logged out, and the refused org's
+ * account record is never written to `globalConfig.oauthAccount` (which would
+ * otherwise poison {@link checkOrgPinForTokenSave}'s cached-account fallback
+ * for LATER saves). On refusal the `pendingOrgPinRefusal` latch is recorded so
+ * `validateForceLoginOrg` (called by the login handlers right after the
+ * install) surfaces the real org-pin error. The latch is NOT reset here —
+ * permitted installs clear it via `saveOAuthTokensIfNeeded`'s reset-on-entry.
+ *
+ * Returns the refusal on a definitive mismatch; `null` for permitted /
+ * not_checked (no synchronous org evidence — deferral stays with the async
+ * network validator, the adjudicated OCC semantics).
+ */
+export function checkOrgPinForLoginInstall(
+  tokens: OAuthTokens,
+  profile: OAuthProfileResponse | null | undefined,
+): OrgPinRefusal | null {
+  const requiredOrgUuid =
+    getSettingsForSource('policySettings')?.forceLoginOrgUUID
+  const tokenOrgUuid =
+    profile?.organization?.uuid ?? tokens?.tokenAccount?.organizationUuid
+  const refusal = resolveOrgPinRefusal(tokenOrgUuid, requiredOrgUuid)
+  if (refusal) {
+    pendingOrgPinRefusal = refusal
+  }
+  return refusal
 }
 
 // Function to store OAuth tokens in secure storage
@@ -1531,8 +1585,13 @@ export function saveOAuthTokensIfNeeded(tokens: OAuthTokens): {
   // by forceLoginOrgUUID must never be written (v299 persisted-then-validated,
   // leaving the refused org's token stored / live after /login). Each save
   // starts from a clean latch; a definitive mismatch records the refusal for
-  // validateForceLoginOrg and skips the write so the prior credentials survive
-  // untouched (the official snapshot-restore intent). Telemetry on the refusal
+  // validateForceLoginOrg and skips the write — nothing above has touched
+  // storage, so the prior credentials genuinely survive this skipped save.
+  // The installOAuthTokens path additionally pre-checks the pin BEFORE its
+  // performLogout/storeOAuthAccountInfo mutation window
+  // (checkOrgPinForLoginInstall), matching the official validate-before-persist
+  // order (O1e runs before FGe; on refusal FGe never executes); this in-save
+  // check is the safety net for every other caller. Telemetry on the refusal
   // is STAGED — OCC does not invent an unverified event name.
   pendingOrgPinRefusal = null
   const orgPinRefusal = checkOrgPinForTokenSave(tokens)

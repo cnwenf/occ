@@ -21,6 +21,7 @@ import { getOauthProfileFromOauthToken } from '../../services/oauth/getOauthProf
 import { OAuthService } from '../../services/oauth/index.js'
 import type { OAuthTokens } from '../../services/oauth/types.js'
 import {
+  checkOrgPinForLoginInstall,
   clearOAuthTokenCache,
   getClaudeAIOAuthTokens,
   getAnthropicApiKeyWithSource,
@@ -153,12 +154,47 @@ export type OAuthTokenInstallResult = {
 export async function installOAuthTokens(
   tokens: OAuthTokens,
 ): Promise<OAuthTokenInstallResult> {
+  // Reuse pre-fetched profile if available, otherwise fetch fresh. Resolved
+  // BEFORE the mutation window below so the org-pin pre-check sees the same
+  // profile storeOAuthAccountInfo would persist.
+  const profile =
+    tokens.profile ?? (await getOauthProfileFromOauthToken(tokens.accessToken))
+
+  // CC 2.1.300 (#19, P1-2): validate the org pin BEFORE the mutation window
+  // (performLogout → storeOAuthAccountInfo → saveOAuthTokensIfNeeded).
+  // Official v300 runs the outcome-typed validator (`O1e`) before the persist
+  // fn (`FGe` — logout + account store + token save); on `refused` the persist
+  // fn never executes, so a refused org leaves NO trace: prior credentials are
+  // never logged out, and the refused org's account record never reaches
+  // globalConfig.oauthAccount (where it would poison checkOrgPinForTokenSave's
+  // cached-account fallback for LATER saves). The refusal is recorded in the
+  // pendingOrgPinRefusal latch — the login handlers call validateForceLoginOrg
+  // right after this and surface the org-pin error from it. The refused token
+  // also skips the post-save tail (roles / API key / first-token-date),
+  // matching the official early-exit before `FGe`. (v299 persisted-then-
+  // validated and nothing rolled the logout/account-store back — the bug.)
+  const orgPinRefusal = checkOrgPinForLoginInstall(tokens, profile)
+  if (orgPinRefusal) {
+    // Nothing was mutated: prior credentials survive untouched, so sessionAuth
+    // reports what the session still authenticates with (same classification
+    // as the official vDe return tail).
+    const survivingTokens = getClaudeAIOAuthTokens()
+    return {
+      storage: {
+        success: false,
+        backendName: getSecureStorage().name,
+        sessionAuth: resolveLoginSessionAuth({
+          storageSuccess: false,
+          newAccessToken: tokens.accessToken,
+          sessionAccessToken: survivingTokens?.accessToken ?? null,
+        }),
+      },
+    }
+  }
+
   // Clear old state before saving new credentials
   await performLogout({ clearOnboarding: false })
 
-  // Reuse pre-fetched profile if available, otherwise fetch fresh
-  const profile =
-    tokens.profile ?? (await getOauthProfileFromOauthToken(tokens.accessToken))
   if (profile) {
     storeOAuthAccountInfo({
       accountUuid: profile.account.uuid,
