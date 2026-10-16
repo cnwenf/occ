@@ -39,6 +39,7 @@
  */
 
 import { tryParseShellCommand } from './bash/shellQuote.js'
+import { MalformedCommandError } from './errors.js'
 import { escapeRegExp } from './stringUtils.js'
 
 // 2.1.233 binary sCt sentinel chars — Unicode noncharacters used as in-band
@@ -47,6 +48,31 @@ import { escapeRegExp } from './stringUtils.js'
 const SHIELDED_DOLLAR = '\uFFFF' // binary vLr — stands in for a literal $
 const VALUE_BOUNDARY = '\uFFFE' // binary Ckn — wraps each substituted value
 const SENTINEL_REPLACEMENT = '\uFFFD' // binary replacement for forged sentinels
+
+// CC 2.1.301 (occ160 WP-E): official expansion-budget + named-arg caps, NEW
+// in the 2.1.301 binary `bNe` (v301 @226104224; byte-verified ABSENT from the
+// 2.1.300 `MLe` @225198782). Binary constants `var _pr=4e6,mSo=64,gSo=64`
+// (@226103760):
+// - MAX_EXPANSION_TOTAL_CHARS (`_pr`) — running cap on template length +
+//   every substituted value length. Exceeding it throws the binary's `nT`
+//   (@216473037 `class nT extends Error{}`) with the message below; `nT`
+//   maps to `tool_malformed_command` in the official tool-error classifier
+//   (@228188773), so OCC throws its MalformedCommandError equivalent. This
+//   is the 2.1.301 fix "skills, commands and hooks using very large amounts
+//   of memory when their arguments fill many placeholders" — the shared
+//   chokepoint covers skills, commands AND hooks (addArgumentsToPrompt).
+// - MAX_NAMED_ARGS (`mSo`) — only the FIRST 64 declared argument names (in
+//   frontmatter declaration order, applied before the longest-first sort)
+//   are substituted (binary `.slice(0,mSo)` @226104790).
+// - MAX_ARG_NAME_LENGTH (`gSo`) — names longer than 64 chars are SKIPPED
+//   entirely (binary filter `Q.name.length<=gSo` @226104774 — not
+//   truncated). Together with MAX_NAMED_ARGS this is the 2.1.301 fix
+//   "skills and commands with very many or very long argument names stalling
+//   for seconds when invoked" — the escape-pass alternation regex and the
+//   per-name global replace passes are now bounded to <=64 short names.
+const MAX_EXPANSION_TOTAL_CHARS = 4_000_000
+const MAX_NAMED_ARGS = 64
+const MAX_ARG_NAME_LENGTH = 64
 
 /**
  * Parse an arguments string into an array of individual arguments.
@@ -134,11 +160,16 @@ export function generateProgressiveArgumentHint(
  * @param content - The content containing placeholders
  * @param args - The raw arguments string (may be undefined/null)
  * @param appendIfNoPlaceholder - If true and no placeholders matched, appends "ARGUMENTS: {args}" to content
- * @param argumentNames - Optional array of named arguments (e.g., ["foo", "bar"]) that map to indexed positions
+ * @param argumentNames - Optional array of named arguments (e.g., ["foo", "bar"]) that map to indexed positions.
+ *   CC 2.1.301 (occ160 WP-E): only the first 64 valid names, each up to 64
+ *   characters, are filled in (official binary `bNe` caps `mSo=64,gSo=64`).
  * @param valueTransform - Optional 5th-param transform applied to each
  *   substituted value (official sCt param `o`). Runs after sentinel
  *   sanitization and before `$` shielding, on the appended-args path too.
  * @returns The content with placeholders substituted
+ * @throws MalformedCommandError CC 2.1.301 (occ160 WP-E): when the template
+ *   plus all substituted values exceed 4,000,000 characters (official `_pr`
+ *   expansion budget; binary `nT` → `tool_malformed_command`).
  */
 export function substituteArguments(
   content: string,
@@ -158,6 +189,11 @@ export function substituteArguments(
     .replaceAll(SHIELDED_DOLLAR, SENTINEL_REPLACEMENT)
     .replaceAll(VALUE_BOUNDARY, SENTINEL_REPLACEMENT)
 
+  // CC 2.1.301 (occ160 WP-E): binary `let y=e.length` (@226104380) — running
+  // expansion budget: sanitized template length + every substituted value's
+  // (post-transform) length. Checked inside insertValue below.
+  let totalLength = work.length
+
   // binary `i` — wrap a substituted value: sanitize, run the optional 5th-param
   // transform (official order: transform sees the sanitized value), shield every
   // inner `$` so later substitution passes cannot re-expand it (the 2.1.233 fix),
@@ -167,6 +203,19 @@ export function substituteArguments(
       .replaceAll(SHIELDED_DOLLAR, SENTINEL_REPLACEMENT)
       .replaceAll(VALUE_BOUNDARY, SENTINEL_REPLACEMENT)
     const transformed = valueTransform ? valueTransform(sanitized) : sanitized
+    // CC 2.1.301 (occ160 WP-E): official budget check inside binary `S`
+    // (@226104400): `if(y+=ke.length, y>_pr) throw new nT(...)` — the memory
+    // fix for "skills, commands and hooks using very large amounts of memory
+    // when their arguments fill many placeholders". nT maps to
+    // tool_malformed_command (@228188773) → MalformedCommandError here.
+    totalLength += transformed.length
+    if (totalLength > MAX_EXPANSION_TOTAL_CHARS) {
+      throw new MalformedCommandError(
+        `This skill, command or hook and the arguments filled into it add up to more than ${MAX_EXPANSION_TOTAL_CHARS.toLocaleString(
+          'en-US',
+        )} characters. Use shorter arguments or fewer placeholders such as $ARGUMENTS.`,
+      )
+    }
     return (
       VALUE_BOUNDARY +
       transformed.replaceAll('$', SHIELDED_DOLLAR) +
@@ -176,10 +225,21 @@ export function substituteArguments(
 
   const parsedArgs = parseArguments(args)
 
-  // binary `a` — named arguments mapped to positions, longest name first
+  // binary `a` — named arguments mapped to positions, longest name first.
+  // CC 2.1.301 (occ160 WP-E): official cap chain (@226104740)
+  // `.filter((Q)=>Boolean(Q.name)&&Q.name.length<=gSo).slice(0,mSo).sort(...)`
+  // — names over 64 chars are SKIPPED (not truncated), and only the FIRST 64
+  // surviving names (frontmatter declaration order, slice BEFORE the
+  // longest-first sort) are substituted. This bounds the escape-pass
+  // alternation regex and the per-name replace passes (the "stalling for
+  // seconds" fix). The positional index `i` still maps into the ORIGINAL
+  // argumentNames order, so a skipped long name never shifts later names.
   const namedArgs = argumentNames
     .map((name, index) => ({ name, index }))
-    .filter(entry => Boolean(entry.name))
+    .filter(
+      entry => Boolean(entry.name) && entry.name.length <= MAX_ARG_NAME_LENGTH,
+    )
+    .slice(0, MAX_NAMED_ARGS)
     .sort((left, right) => right.name.length - left.name.length)
 
   // binary escape pass — shield the `\$` escape sequence only when it is not

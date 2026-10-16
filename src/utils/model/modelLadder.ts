@@ -5,6 +5,17 @@
  * refuses the model your default or a model alias resolves to: Claude Code
  * now retries once on the previous model of the same tier."
  *
+ * CC 2.1.301 (occ160 WP-G) refinement — official changelog: "Fixed the
+ * `fable` (and `best`) model alias erroring on the Anthropic API when the
+ * newest Fable model is not available to your organization: Claude Code now
+ * retries once on the previous Fable model." The ladder's grouping key moved
+ * from the sonnet/opus/haiku-only TIER (`Bu`/`pa`, undefined for fable → no
+ * predecessor → no retry) to the FAMILY STEM (`Nm`, @224337624) so fable5 and
+ * fable51 group together. `previousModelOfSameTier`/`accessFallbackForChain`
+ * are structurally unchanged (binary `Iyo` @224340156 ≡ `mmo`; `GBn` chain
+ * guard intact); only `olderSameTierFirstPartyIds` (`tks` @224339603) and the
+ * `modelTier` helper (`Lc` @224337667, now via `Nm`) changed. See those fns.
+ *
  * When the API refuses the resolved model (404 `model:` not-found / 403
  * `model:` permission-denied) at the TAIL of the refusal-retry chain, and the
  * model was NOT explicitly chosen by the user (CLI/settings) and did NOT come
@@ -53,14 +64,35 @@ import {
 import { stripTrailing1mTag } from './modelOptions.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
 
-/** Binary `Bu(e)` — tier by catalog-key prefix (fable/other → undefined). */
+/**
+ * CC 2.1.301 (occ160 WP-G): official `Nm(e){return e.replace(/\d+$/,"")}`
+ * (@224337624) — a catalog key's FAMILY STEM: the key with its trailing
+ * digits stripped. `fable5`/`fable51` → `fable`, `sonnet55` → `sonnet`,
+ * `opus5` → `opus`. This is the grouping key the 2.1.301 fable-fallback fix
+ * switches the model ladder to: previously the ladder grouped by the
+ * sonnet/opus/haiku-only tier (binary `pa`/`Bu`), so `fable51` had no
+ * same-group predecessor and the newest-Fable alias could not retry on the
+ * previous Fable model.
+ */
+export function modelFamilyStem(catalogKey: string): string {
+  return catalogKey.replace(/\d+$/, '')
+}
+
+/**
+ * Binary `Lc(e){let n=Nm(e);return n==="sonnet"||n==="opus"||n==="haiku"?n:
+ * void 0}` (@224337667) — CC 2.1.301 (occ160 WP-G) reimplementation of the
+ * old `Bu`/`pa` prefix check via the family stem `Nm`. Behaviorally identical
+ * to the pre-301 prefix form for every catalog key (each key is
+ * `<family><digits>`, so stem ≡ startsWith-prefix for all three tiers);
+ * fable/other families still return undefined.
+ */
 export function modelTier(
   catalogKey: string,
 ): 'sonnet' | 'opus' | 'haiku' | undefined {
-  if (catalogKey.startsWith('sonnet')) return 'sonnet'
-  if (catalogKey.startsWith('opus')) return 'opus'
-  if (catalogKey.startsWith('haiku')) return 'haiku'
-  return undefined
+  const stem = modelFamilyStem(catalogKey)
+  return stem === 'sonnet' || stem === 'opus' || stem === 'haiku'
+    ? (stem as 'sonnet' | 'opus' | 'haiku')
+    : undefined
 }
 
 /**
@@ -89,25 +121,40 @@ export function catalogKeyForModel(model: string): ModelKey | undefined {
 }
 
 /**
- * Binary `CCo(e)` (= Dm→Bu→gNe→map): older same-tier catalog entries'
- * firstParty ids, walking the chronological key list BACKWARDS from the
- * model's own key (so nearest-older first).
+ * Binary `tks(e)` (@224339603) — CC 2.1.301 (occ160 WP-G): older same-FAMILY
+ * catalog entries' firstParty ids, nearest-older first.
+ *
+ * CC 2.1.301 changelog: "Fixed the `fable` (and `best`) model alias erroring
+ * on the Anthropic API when the newest Fable model is not available to your
+ * organization: Claude Code now retries once on the previous Fable model."
+ *
+ * The 300→301 delta is exactly this function. v300's `dSs(e)` (@223431739)
+ * grouped by TIER (`pa`, sonnet/opus/haiku only) and returned `[]` whenever
+ * the tier was undefined — so `fable51` had no same-group predecessor and the
+ * fable/best alias (→ claude-fable-5-1) could never ladder to claude-fable-5.
+ * v301 regroups by the FAMILY STEM `Nm` (@224337624):
+ *   tks(e){let n=Hc(e);if(!n)return[];let r=Nm(n);
+ *     return Do.slice(0,Do.indexOf(n)).filter((s)=>Nm(s)===r).reverse()
+ *       .map((s)=>jo[s].firstParty)}
+ * It now only bails when the model has NO catalog key (not when its family is
+ * a non-tier one), then collects every older key with the same stem. For
+ * sonnet/opus/haiku the stem ≡ the tier, so those results are unchanged from
+ * v300; for fable it yields `claude-fable-5-1` → [`claude-fable-5`], which
+ * `previousModelOfSameTier` (binary `Iyo` @224340156, structurally unchanged)
+ * turns into the single "retry once on the previous Fable model" fallback.
  */
 export function olderSameTierFirstPartyIds(model: string): string[] {
   const key = catalogKeyForModel(model)
-  const tier = key === undefined ? undefined : modelTier(key)
-  if (key === undefined || tier === undefined) {
+  if (key === undefined) {
     return []
   }
+  const stem = modelFamilyStem(key)
   const keys = catalogKeysChronological()
-  const startIndex = keys.indexOf(key)
-  const older: string[] = []
-  for (let i = startIndex - 1; i >= 0; i--) {
-    if (modelTier(keys[i]) === tier) {
-      older.push(ALL_MODEL_CONFIGS[keys[i]].firstParty)
-    }
-  }
-  return older
+  return keys
+    .slice(0, keys.indexOf(key))
+    .filter(candidate => modelFamilyStem(candidate) === stem)
+    .reverse()
+    .map(candidate => ALL_MODEL_CONFIGS[candidate].firstParty)
 }
 
 /**
@@ -156,9 +203,12 @@ function isSkippedLadderCandidate(candidate: string, current: string): boolean {
 }
 
 /**
- * Binary `oPr(e)` — THE FIX. The previous model of the same tier, suffix
- * preserving, cut at the first deprecated/remapped entry. Returns undefined
- * when the ladder is gated off or no eligible older model exists.
+ * Binary `oPr(e)` (v286) / `Iyo(e)` (@224340156, v301 — structurally
+ * identical, tengu_nifty_finch gate @224340193): THE FIX. The previous model
+ * of the same family (tier for sonnet/opus/haiku, stem for others since
+ * CC 2.1.301), suffix preserving, cut at the first deprecated/remapped entry.
+ * Returns undefined when the ladder is gated off or no eligible older model
+ * exists.
  */
 export function previousModelOfSameTier(model: string): string | undefined {
   if (

@@ -173,6 +173,127 @@ export function supportsExtendedKeys(): boolean {
   return EXTENDED_KEYS_TERMINALS.includes(env.terminal ?? '')
 }
 
+// -- CC 2.1.301 (occ160 WP-H): VTE < 0.53 unknown-sequence printing bug --
+//
+// VTE before 0.53 (e.g. MATE Terminal on RHEL 8 ships 0.52) does not silently
+// ignore unrecognized `CSI >` private sequences — it prints them as literal
+// text. Two strays were user-visible: the XTVERSION probe (`CSI > 0 q`)
+// showed as `>0q` covering the folder-trust prompt at startup, and the
+// modifyOtherKeys reset (`CSI > 4 m`) showed as `>4m` before the shell
+// prompt at exit. Official 2.1.301 adds
+// TerminalCapabilities.hasUnknownSequencePrintingBug (@220859789) exposed via
+// the b6()/printsUnknownSequences accessor (@224563183), and gates (a) the
+// startup XTVERSION send (@231943057: `R=!b6()`), (b) every extended-keys
+// OFF sequence (@231683280: `lvt(){return b6()?"":CSI>4m}`,
+// `o0e(){return !b6()&&…?CSI<u:""}`, wired through the mode registry's
+// `off` getters @231688928 and the exit cleanup `vre()=o0e()+pvt+lvt()`),
+// and (c) capability resolution — programStatus/extendedKeys/kittyKeyboard
+// report `settled:!1` with source "VTE before 0.53 (shows the query as
+// text)" (@104825940/@231674646). Zero call sites exist in 2.1.300.
+
+/** VTE encodes VTE_VERSION as major*10000 + minor*100 (+ patch); the
+ *  unknown-sequence printing bug was fixed in VTE 0.53 → 5300.
+ *  Official literal @220859907. */
+const VTE_PRINT_BUG_FIXED_VERSION = 5300
+
+/** Injectable detection context (same pure-predicate pattern as the
+ *  OCC-113 VteOsc52GuardContext in termio/osc.ts): every signal is a
+ *  parameter so tests don't mutate memoized/frozen module state. */
+export interface SequencePrintingBugContext {
+  /** Detected terminal flavor (env.terminal), e.g. 'vte-based' or
+   *  'gnome-terminal'. Official passes `a.terminal` (env.terminal). */
+  terminal: string | undefined
+  env: {
+    // Index signature so `process.env` (NodeJS.ProcessEnv) is directly
+    // assignable; the named keys below document the signals the official
+    // detection reads.
+    [key: string]: string | undefined
+    VTE_VERSION?: string
+    TERM?: string
+    TMUX?: string
+    STY?: string
+    ZELLIJ?: string
+    XTERM_VERSION?: string
+    ALACRITTY_WINDOW_ID?: string
+    ALACRITTY_LOG?: string
+    KITTY_WINDOW_ID?: string
+    WEZTERM_PANE?: string
+    INSIDE_EMACS?: string
+    VIM_TERMINAL?: string
+    NVIM?: string
+  }
+}
+
+/** Official `g(r){return(r??"").trim()!==""}` (helper inside
+ *  isVteBasedTerminal, @220859789 region). */
+function isEnvSet(value: string | undefined): boolean {
+  return (value ?? '').trim() !== ''
+}
+
+/**
+ * Official `isVteBasedTerminal(name)` (@220859789): VTE_VERSION set
+ * (non-empty after trim), flavor is vte-based/gnome-terminal, TERM starts
+ * with "xterm", and none of the escape-hatch vars that prove a different
+ * terminal is really driving the pty. Unlike the OCC-113 OSC 52 guard, this
+ * conjunction additionally excludes ZELLIJ (official checks `=== void 0` —
+ * ANY defined value counts as inside Zellij, even empty) and the embedded
+ * pty owners INSIDE_EMACS / VIM_TERMINAL / NVIM, which forward VTE_VERSION
+ * but parse sequences themselves.
+ */
+export function isVteBasedTerminal(ctx: SequencePrintingBugContext): boolean {
+  return (
+    isEnvSet(ctx.env.VTE_VERSION) &&
+    (ctx.terminal === 'vte-based' || ctx.terminal === 'gnome-terminal') &&
+    (ctx.env.TERM ?? '').trim().startsWith('xterm') &&
+    !isEnvSet(ctx.env.TMUX) &&
+    !isEnvSet(ctx.env.STY) &&
+    ctx.env.ZELLIJ === undefined &&
+    !isEnvSet(ctx.env.XTERM_VERSION) &&
+    !isEnvSet(ctx.env.ALACRITTY_WINDOW_ID) &&
+    !isEnvSet(ctx.env.ALACRITTY_LOG) &&
+    !isEnvSet(ctx.env.KITTY_WINDOW_ID) &&
+    !isEnvSet(ctx.env.WEZTERM_PANE) &&
+    !isEnvSet(ctx.env.INSIDE_EMACS) &&
+    !isEnvSet(ctx.env.VIM_TERMINAL) &&
+    !isEnvSet(ctx.env.NVIM)
+  )
+}
+
+/**
+ * Official `hasUnknownSequencePrintingBug(name)` (@220859789, threshold
+ * 5300 @220859907): a VTE-based terminal running VTE < 0.53. An unparseable
+ * VTE_VERSION (parseInt → NaN) fails the `<` comparison — identical to the
+ * official Number.parseInt path.
+ */
+export function hasUnknownSequencePrintingBug(
+  ctx: SequencePrintingBugContext,
+): boolean {
+  return (
+    isVteBasedTerminal(ctx) &&
+    Number.parseInt(ctx.env.VTE_VERSION ?? '', 10) <
+      VTE_PRINT_BUG_FIXED_VERSION
+  )
+}
+
+/**
+ * Official `b6()` accessor (@224563183):
+ * `pu()?.printsUnknownSequences ?? RE.hasUnknownSequencePrintingBug(a.terminal)`.
+ *
+ * DEVIATION NOTE: official consults `pu()` first — the attach-caps override
+ * a remote-control daemon sends in its handshake (zod schema @225269828,
+ * `printsUnknownSequences:M().optional()`). OCC has no attach-caps protocol,
+ * so env-based detection is the only source.
+ *
+ * Deliberately NOT memoized: the official re-reads proc.env on every call
+ * and terminal flavor/env are fixtures in tests.
+ */
+export function printsUnknownSequences(): boolean {
+  return hasUnknownSequencePrintingBug({
+    terminal: env.terminal,
+    env: process.env,
+  })
+}
+
 /** True if the terminal scrolls the viewport when it receives cursor-up
  *  sequences that reach above the visible area. On Windows, conhost's
  *  SetConsoleCursorPosition follows the cursor into scrollback

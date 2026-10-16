@@ -37,7 +37,7 @@ import { CellWidth, CharPool, cellAt, createScreen, HyperlinkPool, isEmptyCellAt
 import { applySearchHighlight } from './searchHighlight.js';
 import { applySelectionOverlay, captureScrolledRows, clearSelection, createSelectionState, extendSelection, type FocusMove, findPlainTextUrlAt, getSelectedText, hasSelection, moveFocus, type SelectionState, selectLineAt, selectWordAt, shiftAnchor, shiftSelection, shiftSelectionForFollow, startSelection, updateSelection } from './selection.js';
 import { FRAME_HOLD_RETRY_MS, StdoutBackpressureMonitor, TELEMETRY_MIN_DURATION_MS, shouldEnableStdoutBackpressure, type BackpressureEpisodeEnd } from './stdout-backpressure.js';
-import { SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
+import { printsUnknownSequences, SYNC_OUTPUT_SUPPORTED, supportsExtendedKeys, type Terminal, writeDiffToTerminal } from './terminal.js';
 import type { TerminalQuerier } from './terminal-querier.js';
 import { CURSOR_HOME, cursorMove, cursorPosition, DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, ERASE_SCREEN } from './termio/csi.js';
 import { DBP, DFE, DISABLE_MOUSE_TRACKING, ENABLE_MOUSE_TRACKING, ENTER_ALT_SCREEN, EXIT_ALT_SCREEN, HIDE_CURSOR, SHOW_CURSOR } from './termio/dec.js';
@@ -514,7 +514,10 @@ export default class Ink {
     // Disable extended key reporting first — editors that don't speak
     // CSI-u (e.g. nano) show "Unknown sequence" for every Ctrl-<key> if
     // kitty/modifyOtherKeys stays active. exitAlternateScreen re-enables.
-    DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS + (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + (
+    // CC 2.1.301 (occ160 WP-H): gated per official mode-registry `off`
+    // getter (`extendedKeys.off = lvt()+o0e()`, @231688928/@231683280) —
+    // VTE < 0.53 would print `<u`/`>4m` as literal text.
+    (printsUnknownSequences() ? '' : DISABLE_KITTY_KEYBOARD + DISABLE_MODIFY_OTHER_KEYS) + (this.altScreenMouseTracking ? DISABLE_MOUSE_TRACKING : '') + (
     // disable mouse (no-op if off)
     this.altScreenActive ? '' : '\x1b[?1049h') +
     // enter alt (already in alt if fullscreen)
@@ -2044,8 +2047,14 @@ export default class Ink {
       // Drain stdin so in-flight mouse events don't leak to the shell
       this.drainStdin();
       // Disable extended key reporting (both kitty and modifyOtherKeys)
-      writeSync(1, DISABLE_MODIFY_OTHER_KEYS);
-      writeSync(1, DISABLE_KITTY_KEYBOARD);
+      // CC 2.1.301 (occ160 WP-H): official exit cleanup
+      // (`vre()=o0e()+pvt+lvt()`, helpers @231683280) emits "" for
+      // CSI >4m / CSI <u on VTE < 0.53 — un-gated they leak a stray `>4m`
+      // before the shell prompt at exit.
+      if (!printsUnknownSequences()) {
+        writeSync(1, DISABLE_MODIFY_OTHER_KEYS);
+        writeSync(1, DISABLE_KITTY_KEYBOARD);
+      }
       // Disable focus events (DECSET 1004)
       writeSync(1, DFE);
       // Disable bracketed paste mode

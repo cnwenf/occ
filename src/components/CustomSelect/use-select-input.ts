@@ -149,6 +149,30 @@ export const useSelectInput = <T>({
 
     if (state.onCancel) {
       handlers['select:cancel'] = () => {
+        // CC 2.1.301 (occ160 WP-D): official select:cancel guard (@243850000
+        // region, byte-verbatim):
+        //   f["select:cancel"]=()=>{let E=i.getFocusedValue(),
+        //     C=a.find(O=>O.value===E);
+        //     if(C?.type==="input"&&C.vimEditing?.takesEscape&&
+        //        Do(W?.singleKeyEvent()??null))return!1;
+        //     i.onCancel()}
+        // When the focused option is a vim-editing input that currently owns
+        // Escape (INSERT/VISUAL mode or a pending NORMAL command), do NOT
+        // cancel the select — Esc belongs to the vim input (exit mode /
+        // cancel command) instead of discarding the typed answer.
+        // DIVERGENCE: OCC keybinding handlers receive no key event, so the
+        // official `Do(...singleKeyEvent())` bare-escape sub-check cannot be
+        // evaluated here; it is subsumed because OCC's `select:cancel`
+        // resolves only from the escape binding (defaultBindings.ts:386).
+        const focusedOption = options.find(
+          opt => opt.value === state.focusedValue,
+        )
+        if (
+          focusedOption?.type === 'input' &&
+          focusedOption.vimEditing?.takesEscape
+        ) {
+          return
+        }
         state.onCancel!()
       }
     }

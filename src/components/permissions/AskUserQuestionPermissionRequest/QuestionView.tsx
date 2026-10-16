@@ -5,6 +5,7 @@ import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
 import { Box, Text } from '../../../ink.js';
 import { useAppState } from '../../../state/AppState.js';
 import type { Question, QuestionOption } from '../../../tools/AskUserQuestionTool/AskUserQuestionTool.js';
+import type { VimEditingState } from '../../../types/textInputTypes.js';
 import type { PastedContent } from '../../../utils/config.js';
 import { getExternalEditor } from '../../../utils/editor.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';
@@ -13,6 +14,7 @@ import { editPromptInEditor } from '../../../utils/promptEditor.js';
 import { type OptionWithDescription, Select, SelectMulti } from '../../CustomSelect/index.js';
 import { Divider } from '../../design-system/Divider.js';
 import { FilePathLink } from '../../FilePathLink.js';
+import { isVimModeEnabled } from '../../PromptInput/utils.js';
 import { PermissionRequestTitle } from '../PermissionRequestTitle.js';
 import { PreviewQuestionView } from './PreviewQuestionView.js';
 import { QuestionNavigationBar } from './QuestionNavigationBar.js';
@@ -41,7 +43,7 @@ type Props = {
   onRemoveImage?: (id: number) => void;
 };
 export function QuestionView(t0) {
-  const $ = _c(114);
+  const $ = _c(121);
   const {
     question,
     questions,
@@ -70,6 +72,28 @@ export function QuestionView(t0) {
   const [isFooterFocused, setIsFooterFocused] = useState(false);
   const [footerIndex, setFooterIndex] = useState(0);
   const [isOtherFocused, setIsOtherFocused] = useState(false);
+  // CC 2.1.301 (occ160 WP-D): official QuestionView vim wiring (@249838390
+  // region, byte-verbatim): `Ao=Tf()` (isVimModeEnabled), `[go,ko]=y(null)`
+  // (editing-state store), `No=go?.takesEscape??!1`, and the Hr memo
+  // `if(Uo[17]!==Ao||Uo[18]!==No)Hr=Ao?{takesEscape:No,onStateChange:ko}:void 0`.
+  // The Other free-text option gets vimEditing=Hr so its input renders in vim
+  // NORMAL mode, Esc exits INSERT→NORMAL first, and only NORMAL-idle Esc
+  // cancels the question.
+  const isVimEnabled = isVimModeEnabled();
+  const [vimEditingState, setVimEditingState] = useState<VimEditingState | null>(null);
+  const takesEscape = vimEditingState?.takesEscape ?? false;
+  let vimEditing;
+  if ($[114] !== isVimEnabled || $[115] !== takesEscape) {
+    vimEditing = isVimEnabled ? {
+      takesEscape: takesEscape,
+      onStateChange: setVimEditingState
+    } : undefined;
+    $[114] = isVimEnabled;
+    $[115] = takesEscape;
+    $[116] = vimEditing;
+  } else {
+    vimEditing = $[116];
+  }
   let t2;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
     const editor = getExternalEditor();
@@ -162,7 +186,7 @@ export function QuestionView(t0) {
   let handleOpenEditor;
   let questionText;
   let t7;
-  if ($[12] !== onUpdateQuestionState || $[13] !== question || $[14] !== questionStates) {
+  if ($[12] !== onUpdateQuestionState || $[13] !== question || $[14] !== questionStates || $[117] !== vimEditing) {
     const textOptions = question.options.map(_temp2);
     questionText = question.question;
     const questionState = questionStates[questionText];
@@ -202,18 +226,25 @@ export function QuestionView(t0) {
       t11 = $[25];
     }
     let t12;
-    if ($[26] !== t10 || $[27] !== t11 || $[28] !== t9) {
+    // CC 2.1.301 (occ160 WP-D): official xr memo deps include Hr
+    // (`if(Uo[25]!==Hr||Uo[26]!==rr||Uo[27]!==On||Uo[28]!==ur)`). OCC's t12
+    // memo is nested inside the outer options memo, so vimEditing is a dep of
+    // BOTH (outer $[117], inner $[118]) — otherwise a mode flip would leave
+    // the cached otherOption carrying a stale takesEscape.
+    if ($[26] !== t10 || $[27] !== t11 || $[28] !== t9 || $[118] !== vimEditing) {
       t12 = {
         type: "input" as const,
         value: "__other__",
         label: "Other",
         placeholder: t9,
         initialValue: t10,
+        vimEditing: vimEditing,
         onChange: t11
       };
       $[26] = t10;
       $[27] = t11;
       $[28] = t9;
+      $[118] = vimEditing;
       $[29] = t12;
     } else {
       t12 = $[29];
@@ -223,6 +254,7 @@ export function QuestionView(t0) {
     $[12] = onUpdateQuestionState;
     $[13] = question;
     $[14] = questionStates;
+    $[117] = vimEditing;
     $[15] = handleOpenEditor;
     $[16] = questionText;
     $[17] = t7;
@@ -404,10 +436,21 @@ export function QuestionView(t0) {
     t22 = $[97];
   }
   let t23;
-  if ($[98] !== t21 || $[99] !== t22) {
-    t23 = <Box marginTop={1}><Text color="inactive" dimColor={true}>Enter to select ·{" "}{t21}{t22}{" "}· Esc to cancel</Text></Box>;
+  // CC 2.1.301 (occ160 WP-D): official footer hint line (@249844000 region,
+  // byte-verbatim children):
+  //   [go&&go.mode!=="NORMAL"&&r(n,{children:["-- ",go.mode," --"]}),
+  //    e(K,{chord:"enter",action:"select"}), ...,
+  //    !No&&e(K,{chord:"escape",action:"cancel"})]
+  // → a "-- MODE --" pill leads the hints while the free-text vim input is
+  // in a non-NORMAL mode, and the Esc-to-cancel hint is hidden while the vim
+  // input takes Escape (No/takesEscape). OCC's footer is plain text (no
+  // KeyHint component), so the pill/gate are rendered inline.
+  if ($[98] !== t21 || $[99] !== t22 || $[119] !== vimEditingState || $[120] !== takesEscape) {
+    t23 = <Box marginTop={1}><Text color="inactive" dimColor={true}>{vimEditingState && vimEditingState.mode !== "NORMAL" ? `-- ${vimEditingState.mode} -- · ` : ""}Enter to select ·{" "}{t21}{t22}{takesEscape ? "" : <>{" "}· Esc to cancel</>}</Text></Box>;
     $[98] = t21;
     $[99] = t22;
+    $[119] = vimEditingState;
+    $[120] = takesEscape;
     $[100] = t23;
   } else {
     t23 = $[100];

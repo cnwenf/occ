@@ -12,7 +12,7 @@ import instances from '../instances.js';
 import { INITIAL_STATE, type ParsedInput, type ParsedKey, type ParsedMouse, parseMultipleKeypresses } from '../parse-keypress.js';
 import reconciler from '../reconciler.js';
 import { finishSelection, hasSelection, type SelectionState, startSelection } from '../selection.js';
-import { isXtermJs, setXtversionName, supportsExtendedKeys } from '../terminal.js';
+import { isXtermJs, printsUnknownSequences, setXtversionName, supportsExtendedKeys } from '../terminal.js';
 import { getTerminalFocused, setTerminalFocused } from '../terminal-focus-state.js';
 import { TerminalQuerier, xtversion } from '../terminal-querier.js';
 import { DISABLE_KITTY_KEYBOARD, DISABLE_MODIFY_OTHER_KEYS, ENABLE_KITTY_KEYBOARD, ENABLE_MODIFY_OTHER_KEYS, FOCUS_IN, FOCUS_OUT } from '../termio/csi.js';
@@ -273,6 +273,14 @@ export default class App extends PureComponent<Props, State> {
         // init sequence completes — avoids interleaving with alt-screen/mouse
         // tracking enable writes that may happen in the same render cycle.
         setImmediate(() => {
+          // CC 2.1.301 (occ160 WP-H): official gates this send with
+          // `R=!b6()` (@231943057) — VTE < 0.53 prints the query as literal
+          // text, so `>0q` lands on screen covering the folder-trust prompt.
+          // Official log text for the skipped branch:
+          if (printsUnknownSequences()) {
+            logForDebugging('XTVERSION: not asked (VTE before 0.53 would show the query as text)');
+            return;
+          }
           void Promise.all([this.querier.send(xtversion()), this.querier.flush()]).then(([r]) => {
             if (r) {
               setXtversionName(r.name);
@@ -289,8 +297,15 @@ export default class App extends PureComponent<Props, State> {
 
     // Disable raw mode only when no components left that are using it
     if (--this.rawModeEnabledCount === 0) {
-      this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
-      this.props.stdout.write(DISABLE_KITTY_KEYBOARD);
+      // CC 2.1.301 (occ160 WP-H): official gates the extended-keys OFF
+      // sequences (`lvt()` → CSI >4m, `o0e()` → CSI <u, @231683280) behind
+      // !b6() — VTE < 0.53 prints them as literal text. There is also
+      // nothing to reset on such terminals: the enable side never fired
+      // (supportsExtendedKeys() excludes VTE flavors).
+      if (!printsUnknownSequences()) {
+        this.props.stdout.write(DISABLE_MODIFY_OTHER_KEYS);
+        this.props.stdout.write(DISABLE_KITTY_KEYBOARD);
+      }
       // Disable terminal focus reporting (DECSET 1004)
       this.props.stdout.write(DFE);
       // Disable bracketed paste mode

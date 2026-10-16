@@ -226,6 +226,10 @@ export const SIMPLE_MOTIONS = new Set([
   '0',
   '^',
   '$', // Line positions
+  // CC 2.1.301 (occ160 WP-D): official `dt` SIMPLE_MOTIONS gains "%" — jump
+  // to matching bracket (@236316959 region: new Set(["h","l"," ","\b","j",
+  // "k","w","b","e","W","B","E","0","^","$","%"])).
+  '%',
 ])
 
 export const FIND_KEYS = new Set(['f', 'F', 't', 'T'])

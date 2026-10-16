@@ -11,6 +11,7 @@ import { getCwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { parseEnvInt } from './envValidation.js'
 import { isEnvDefinedFalsy } from './envUtils.js'
+import { AbortError } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { findExecutable } from './findExecutable.js'
 import { logError } from './log.js'
@@ -236,6 +237,20 @@ function isEagainError(stderr: string): boolean {
   )
 }
 
+// CC 2.1.301 (occ160 WP-B): binary `Yse=new Set(["SIGHUP","SIGINT","SIGPIPE"])`
+// (@223100653 in the v301 ELF). A kill by one of these signals — or an error
+// carrying neither code nor signal — is an EXTERNAL kill / unmodeled signal
+// (binary `Z = w.code===void 0 && (w.signal===void 0 || Yse.has(w.signal))`),
+// NOT an unexpected ripgrep exit; it keeps its pre-2.1.301 behavior (log +
+// resolve with whatever partial results were read). Runtime note: Bun's
+// node:child_process shim delivers `code: null` (not undefined) for
+// signal-killed children, so on Bun the Z arm only catches errors constructed
+// without a code field — the official binary runs on the same runtime and
+// behaves identically (byte-faithful `=== undefined` port; a signal-killed
+// search with zero results rejects as an abnormal exit, which matches the
+// changelog's intent — the search failed, it is not a "no matches" result).
+const EXTERNAL_KILL_SIGNALS = new Set(['SIGHUP', 'SIGINT', 'SIGPIPE'])
+
 /**
  * Custom error class for ripgrep timeouts.
  * This allows callers to distinguish between "no matches" and "timed out".
@@ -248,6 +263,69 @@ export class RipgrepTimeoutError extends Error {
     super(message)
     this.name = 'RipgrepTimeoutError'
   }
+}
+
+/**
+ * CC 2.1.301 (occ160 WP-B): ripgrep exited with an UNEXPECTED code — not 0
+ * (success), not 1 (no matches), not 2 (usage/target error), not ABORT_ERR,
+ * not a timeout signal (SIGTERM/SIGKILL), not a buffer overflow, not a
+ * spawn-resource errno, not an external kill (SIGHUP/SIGINT/SIGPIPE) — and
+ * produced ZERO result lines, so nothing was read. 2.1.300 resolved `[]` for
+ * this shape and Grep/Glob misreported it as "No matches found" / "No files
+ * found"; the official 2.1.301 fix rejects with the verbatim message below
+ * instead (changelog: "Fixed Grep and Glob reporting no matches when the
+ * search program failed unexpectedly before returning any results").
+ *
+ * Byte-verified against the v301 linux-x64 ELF (absent from v300 — 0 hits
+ * for both the class name and the message there):
+ *   @108889808  message string table entry (verbatim, ends "…leave out.")
+ *   @108890200  telemetry label "ripgrep unexpected exit with no results"
+ *   @108890248  class name `RipgrepAbnormalExitError` (string table)
+ *   @223101247  `class FU extends x{constructor(){super('The search failed…',
+ *               "ripgrep unexpected exit with no results");
+ *               this.name="RipgrepAbnormalExitError"}}`
+ *   @223117565  throw site inside the shared ripgrep result handler (both
+ *               Grep and Glob go through it with `rejectOnInputError`)
+ *
+ * Naming caution: the official 2.1.301 string table lists this message right
+ * after `RipgrepOutputError`, but the code site proves the pairing —
+ * `RipgrepOutputError` (binary `p_`, output-collection failure) is
+ * PRE-EXISTING and unchanged in 301; the NEW class is
+ * `RipgrepAbnormalExitError`. The official extends the telemetry base class
+ * `x` (message + label); OCC drops the label second-arg per the existing port
+ * convention (SearchPatternError / RipgrepTargetUnreadableError).
+ */
+export class RipgrepAbnormalExitError extends Error {
+  constructor() {
+    super(
+      'The search failed, so this is not a "no matches" result: matches may exist. What happened to the search program (ripgrep) is not known, and no results were read. Run the search once more. If it fails again, tell the user that searches are failing. Do not run a recursive search in the shell instead (for example grep -r, find or rg): it can reach what this tool is set to leave out.',
+    )
+    this.name = 'RipgrepAbnormalExitError'
+  }
+}
+
+/**
+ * CC 2.1.301 (occ160 WP-B): binary `IU` (@223100962) — the rejection the new
+ * unexpected-exit arm uses when the caller's abort signal fired concurrently
+ * with the failure: `e.aborted && e.reason?.name!=="TimeoutError"` → the
+ * binary's `qe` (plain AbortError, @216473104); otherwise the standard timeout
+ * error with empty partial results. Exported for tests only; module-private
+ * in the binary. The pre-existing OCC timeout arm (isTimeout && no lines) is
+ * intentionally left untouched — the binary did not change it in 301 (v300's
+ * inline logic was merely refactored into `IU`).
+ */
+export function abortedSearchRejection(abortSignal: AbortSignal): Error {
+  if (
+    abortSignal.aborted &&
+    (abortSignal.reason as { name?: string } | undefined)?.name !==
+      'TimeoutError'
+  ) {
+    return new AbortError()
+  }
+  return new RipgrepTimeoutError(
+    `Ripgrep search timed out after ${getPlatform() === 'wsl' ? 60 : 20} seconds. The search may have matched files but did not complete in time. Try searching a more specific path or pattern.`,
+    [],
+  )
 }
 
 // 2.1.208 #14b: ripgrep exit code 2 with a pattern-parse-error stderr means
@@ -909,8 +987,62 @@ export async function ripGrep(
       // code 2 = ripgrep usage error (already handled); ABORT_ERR = caller
       // explicitly aborted (not an error, just a cancellation — interactive
       // callers may abort on every keystroke-after-debounce).
+      //
+      // CC 2.1.301 (occ160 WP-B): the official splits this gate into a MODELED
+      // arm (binary `q||K||Z||le||AU(R)` → "rg failed …" error log) and an
+      // UNMODELED arm (telemetry "ripgrep unexpected exit (signal or unmodeled
+      // code)" + — NEW in 2.1.301 — a rejection when the failure produced
+      // zero results). v300 only logged telemetry here and fell through to
+      // `resolve([])`, so Grep/Glob reported "No matches found" / "No files
+      // found" for a search program that died unexpectedly before returning
+      // anything. Throw site @223117565 (v301 ELF), byte-verbatim:
+      //   let pe = re.length===0 && s?.rejectOnInputError && w.code!=="ECHILD"
+      //     ? (r.aborted ? IU(r) : new FU)   // FU = RipgrepAbnormalExitError
+      //     : void 0;
+      //   if (l(wGo(Qe(U(w),"ripgrep unexpected exit (signal or unmodeled
+      //     code)"), …)), pe!==void 0) { y(pe); return }
+      // OCC has a single error-capture path (logError), so both arms keep
+      // logging via logError — the only behavior change is the new rejection.
       if (error.code !== 2 && error.code !== 'ABORT_ERR') {
-        logError(error)
+        // binary `Z` — external kill (SIGHUP/SIGINT/SIGPIPE) or an error with
+        // neither code nor signal: not an unexpected-exit shape.
+        const isExternalKillOrUnmodeledSignal =
+          error.code === undefined &&
+          (error.signal === undefined ||
+            EXTERNAL_KILL_SIGNALS.has(error.signal))
+        // binary `le = UU.has(E(w)??"")` — spawn-resource errno (rejected
+        // below by RipgrepSpawnResourceError.from, unchanged).
+        const isSpawnResourceErrno = RIPGREP_SPAWN_RESOURCE_ERRNOS.has(
+          extractErrnoCode(error) ?? '',
+        )
+        if (
+          isTimeout ||
+          isBufferOverflow ||
+          isExternalKillOrUnmodeledSignal ||
+          isSpawnResourceErrno ||
+          isEagainError(stderr)
+        ) {
+          logError(error)
+        } else {
+          // Unexpected exit with no results → error, not silent "no matches".
+          // Gated on rejectOnInputError, so callers that intentionally pass
+          // none keep their `[]` semantics (binary `s?.rejectOnInputError`).
+          // ECHILD exemption (binary `w.code!=="ECHILD"`): a lost-child race
+          // is not a ripgrep failure. Abort race → binary `IU` arm.
+          const abnormalExitRejection =
+            lines.length === 0 &&
+            options?.rejectOnInputError &&
+            error.code !== 'ECHILD'
+              ? abortSignal.aborted
+                ? abortedSearchRejection(abortSignal)
+                : new RipgrepAbnormalExitError()
+              : undefined
+          logError(error)
+          if (abnormalExitRejection !== undefined) {
+            reject(abnormalExitRejection)
+            return
+          }
+        }
       }
 
       // CC 2.1.292 C1 dispatch order (byte-verified @208905300–208907900):

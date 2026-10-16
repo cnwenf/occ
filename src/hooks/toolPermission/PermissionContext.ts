@@ -103,6 +103,14 @@ function createPermissionContext(
   queueOps?: PermissionQueueOps,
 ) {
   const messageId = assistantMessage.message.id
+  // CC 2.1.301 (occ160 WP-C): the official createPermissionContext (OVt
+  // @248276644) captures the effective permission mode ONCE at context
+  // creation — `let _=le(n).mode` — exposes it on the frozen ctx
+  // (`permissionMode:_`), and threads it into every Pfs call via the
+  // logDecision wrapper (`Pfs({...,permissionMode:_},...)`). 301 uses it as
+  // the tool_decision `permission_mode` value (unless an accept carries the
+  // fresher modeAtRecheck).
+  const permissionMode = toolUseContext.getAppState().toolPermissionContext.mode
   const ctx = {
     tool,
     input,
@@ -110,6 +118,7 @@ function createPermissionContext(
     assistantMessage,
     messageId,
     toolUseID,
+    permissionMode,
     logDecision(
       args: PermissionDecisionArgs,
       opts?: {
@@ -124,6 +133,7 @@ function createPermissionContext(
           toolUseContext,
           messageId,
           toolUseID,
+          permissionMode,
         },
         args,
         opts?.permissionPromptStartTimeMs,
@@ -200,7 +210,12 @@ function createPermissionContext(
               }
             }
             logPermissionDecision(
-              { tool, input, toolUseContext, messageId, toolUseID },
+              // CC 2.1.301 (occ160 WP-C): thread the captured permissionMode
+              // (official OVt ctx @248276644). The {type:'classifier'} source
+              // stringifies to 'classifier' (not 'config'), so the official
+              // u9e gate (V==="config") correctly skips the classifier fields
+              // here — permission_mode still applies.
+              { tool, input, toolUseContext, messageId, toolUseID, permissionMode },
               { decision: 'accept', source: { type: 'classifier' } },
               undefined,
             )

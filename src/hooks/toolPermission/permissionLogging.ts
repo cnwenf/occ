@@ -13,6 +13,14 @@ import { getLanguageName } from '../../utils/cliHighlight.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
 import { logOTelEvent } from '../../utils/telemetry/events.js'
 import type {
+  PermissionDecisionReason,
+  PermissionMode,
+} from '../../types/permissions.js'
+import {
+  buildClassifierToolDecisionFields,
+  permissionModeToExternal,
+} from './classifierDecisionTelemetry.js'
+import type {
   PermissionApprovalSource,
   PermissionRejectionSource,
 } from './PermissionContext.js'
@@ -23,12 +31,55 @@ type PermissionLogContext = {
   toolUseContext: ToolUseContext
   messageId: string
   toolUseID: string
+  /**
+   * CC 2.1.301 (occ160 WP-C): the official Pfs ctx destructures
+   * `permissionMode:H` (@227800703) — captured ONCE at permission-context
+   * creation by the official wrapper (OVt @248276644:
+   * `let _=le(n).mode; ... Pfs({...,permissionMode:_},...)`; pre-existing in
+   * 300's Qds @226891992 for span attributes, new in 301 as the
+   * `permission_mode` telemetry source). Optional here: OCC callers outside
+   * this WP's file cluster (src/hooks/useCanUseTool.tsx) don't pass it yet,
+   * so logPermissionDecision falls back to the effective app-state mode at
+   * emit time (same value source as the official dispatch-fallback site's
+   * `no=le(Gt).mode`).
+   */
+  permissionMode?: PermissionMode
 }
 
 // Discriminated union: 'accept' pairs with approval sources, 'reject' with rejection sources
 type PermissionDecisionArgs =
-  | { decision: 'accept'; source: PermissionApprovalSource | 'config' }
-  | { decision: 'reject'; source: PermissionRejectionSource | 'config' }
+  | {
+      decision: 'accept'
+      source: PermissionApprovalSource | 'config'
+      /**
+       * CC 2.1.301 (occ160 WP-C): official config-source accept records
+       * gained `decisionReason` — the main allow path (@250192611:
+       * `logDecision({decision:"accept",source:"config",decisionReason:
+       * no.decisionReason,surface:...})`) and the recheck accept path
+       * (@248296194). Consumed by u9e to derive classifier_verdict.
+       */
+      decisionReason?: PermissionDecisionReason
+      /**
+       * CC 2.1.301 (occ160 WP-C): NEW in 301 (300 binary: 0 hits; 301: 3) —
+       * set ONLY on the permission-recheck accept path (@248296273:
+       * `modeAtRecheck:le(s.toolUseContext).mode`). The emit expression
+       * prefers it over the ctx-captured mode:
+       * `Fl(n.decision==="accept"&&n.modeAtRecheck||H)` — the recheck fires
+       * precisely because the mode may have changed mid-prompt, so the
+       * captured mode can be stale.
+       */
+      modeAtRecheck?: PermissionMode
+    }
+  | {
+      decision: 'reject'
+      source: PermissionRejectionSource | 'config'
+      /**
+       * CC 2.1.301 (occ160 WP-C): official deny-config record gained
+       * `decisionReason` (@250193828; the 300 counterpart @247867132 was
+       * bare `{decision:"reject",source:"config"}`).
+       */
+      decisionReason?: PermissionDecisionReason
+    }
 
 const CODE_EDITING_TOOLS = ['Edit', 'Write', 'NotebookEdit']
 
@@ -243,9 +294,34 @@ function logPermissionDecision(
     timestamp: Date.now(),
   })
 
+  // CC 2.1.301 (occ160 WP-C): official Pfs (@227800703) gained exactly two
+  // additions vs 300's Qds (@226891992):
+  //   let be=V==="config"?u9e(K,n.decisionReason):void 0   → spread into emit
+  //   permission_mode:Fl(n.decision==="accept"&&n.modeAtRecheck||H)
+  // The classifier fields (classifier_verdict / classifier_category) let
+  // auto-mode classifier decisions be told apart from permission-rule
+  // decisions — both surface as source:"config". Gate on the RAW source
+  // (`source === 'config'`), matching the official `V==="config"` check on
+  // the pre-stringification value.
+  const classifierFields =
+    source === 'config'
+      ? buildClassifierToolDecisionFields(decision, args.decisionReason)
+      : undefined
+  // Official: Fl(n.decision==="accept"&&n.modeAtRecheck||H). H is the
+  // ctx-captured mode (OVt @248276644); OCC callers that don't pass it yet
+  // fall back to the effective app-state mode (optional-chained so a minimal
+  // ToolUseContext without getAppState can't crash the emit — undefined then
+  // maps to "default", exactly the official Ft(e)??Kl.default fallback).
+  const modeForTelemetry =
+    (args.decision === 'accept' && args.modeAtRecheck) ||
+    ctx.permissionMode ||
+    toolUseContext.getAppState?.().toolPermissionContext?.mode
+
   void logOTelEvent('tool_decision', {
     decision,
     source: sourceString,
+    ...classifierFields,
+    permission_mode: permissionModeToExternal(modeForTelemetry),
     tool_name: sanitizeToolNameForAnalytics(tool.name),
   })
 }
