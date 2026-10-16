@@ -33,13 +33,22 @@
  *   Dw  = resolveAutoCompactWindow     Mqr = buildAutoCompactWindowPatch
  *   XEo = resolveAutoCompactWindowOverride
  *   TAn = chosenWindowExceedsAutoWindow (2.1.300 #10 warning gate)
+ *   Hno = resolveModelAutoWindow       (2.1.300 #10 model auto window)
+ *   AGt = MODEL_WINDOW_DEFAULTS        kge = KGE_MODEL_TABLE_DEFAULT
+ *   TG  = TG_MODEL_DEFAULT_WINDOW      z$o = resolveModelDefaultWindowConfigured
+ *   C0e = resolveWindowTableEntry      gPt = applyTierToWindowLeaf
+ *   Bp+oh = isAutoCompactWindowTuningEnabled   q$o = is1mCatalogWindowSuppressed
+ *   Rr  = resolveSubscriptionTierContext (staged → undefined)
  *
  * The official additionally resolves server-driven windows ("experiment" /
- * "clientdata" sources via the bootstrap `auto_compact_windows` cache), an
- * "unknown-model" default window, and a "model-default" table — all are
- * Anthropic-backend-bound and stay staged (see
+ * "clientdata" sources via the bootstrap `auto_compact_windows` cache) and an
+ * "unknown-model" default window — Anthropic-backend-bound and staged (see
+ * the `resolveModelAutoWindow` docblock and
  * docs/upstream-version-gap-occ58.md / docs/gap-research-288).
  */
+import { getGlobalConfig } from './config.js'
+import { is1mContextDisabled } from './context.js'
+import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { getEnabledSettingSources } from './settings/constants.js'
 import { getSettingsForSource } from './settings/settings.js'
@@ -306,9 +315,283 @@ export function resolveAutoCompactWindow(
 }
 
 /**
+ * CC 2.1.300 changelog #10 — port of the official model auto-window resolver
+ * `Hno` (byte-verified from the v300 linux-x64 ELF @225877589, offsets into
+ * /tmp/cc-fix-300/package/claude). This is the DENOMINATOR of the official
+ * warn gate `TAn`: `Math.min(e.contextWindow,o) > Hno(e).window`.
+ *
+ * CRITICAL: the official `Hno` NEVER reads CLAUDE_CODE_AUTO_COMPACT_WINDOW
+ * (no env symbol in the byte-recovered body) — neither do this port. The
+ * env/settings override participates only in the NUMERATOR (the user's
+ * chosen window), which is what makes the v300 gate meaningful.
+ *
+ * PORTED (statically recoverable) branches, in official order:
+ * 1. The `TG` model-default arm's statically-decidable predicate parts:
+ *    `s<1e6` and `q$o` (@225876899:
+ *    `function q$o(e,n){if(!uI())return!1;return e||n!==void 0&&n>TG}`,
+ *    `uI` = env CLAUDE_CODE_DISABLE_1M_CONTEXT @219025737 → OCC
+ *    is1mContextDisabled). Its data inputs (`unclampedButBilledPast200k`
+ *    billing history, `native1mInCatalog`/`declared` from the model catalog
+ *    via `MGt`→`pRo`, and `fRo` @219027322 = `gBt()&&yv()===void 0&&
+ *    bv(e,n)>TG` auth/tier+catalog chain) have NO OCC equivalents — staged
+ *    as undefined/false below, so the arm is shape-faithful but inert until
+ *    a model catalog lands.
+ * 2. The `z$o` model-default table arm (@225876788:
+ *    `function z$o(e){if(!Bp())return;if(!Object.hasOwn(AGt,e))return;
+ *    return C0e(AGt[e])}`) with `AGt` (@225876600:
+ *    `var kge=1e6,AGt={"claude-sonnet-5":{surfaces:{remote_cowork:
+ *    {default:500000},"local-agent":{default:500000}},default:kge}}`),
+ *    `C0e` entrypoint-surface resolution (@225168460) and `gPt` tier
+ *    lookup (@225168388: `function gPt(e,n){if(n&&Object.hasOwn(e,n))
+ *    return e[n];return e.default}`). `Bp` (@220257629:
+ *    `function Bp(){if(oh())return!1;return Es("autoCompactEnabled",!0)
+ *    .value}`) with `oh` (@220257543: `Boolean($e(process.env.
+ *    DISABLE_COMPACT)||a.DISABLE_AUTO_COMPACT)`).
+ * 3. The final auto fallback `{window:s,configured:s,source:"auto"}`.
+ *
+ * STAGED (Anthropic-backend-bound; each documented at its skip point):
+ * - clientdata arm — `e.clientDataAutoCompactWindow` comes from the
+ *   bootstrap server-driven cache (`cho`/`Y0s`/`X0s` rowan_thicket
+ *   plumbing); OCC has no such cache → `w` is always
+ *   `{window:null,replacesDefault:false}` (arm cannot fire; the
+ *   replacesDefault=false value keeps the z$o arm unsuppressed).
+ * - experiment arm — `qGe` = `PGt(e.canonical)??G$o(e)` (experiment/
+ *   growthbook plumbing); OCC has no experiment store → undefined.
+ * - native1mHere arm — `e.native1mHere` is a catalog/bootstrap field OCC
+ *   model descriptors do not carry.
+ * - unknown-model arm — `IGt(e,S)` consumes catalog fields
+ *   (`recognized`, `optIn1mHonored`, `d1e`) OCC lacks.
+ * - `Rr` tier context inside C0e/gPt — `Rr` (@219110899) resolves the
+ *   account subscription type ("max"/"pro"/"team") from OAuth account
+ *   state; OCC carries no subscription state → staged undefined, and
+ *   `gPt` collapses to `leaf.default` exactly as the official does for a
+ *   falsy tier (`n&&Object.hasOwn(e,n)` guard).
+ */
+export type ModelAutoWindowInput = {
+  readonly model: string
+  readonly contextWindow: number
+  readonly canonical: string
+}
+
+export type ResolvedModelAutoWindow = {
+  readonly window: number
+  readonly configured: number
+  readonly source:
+    | 'clientdata'
+    | 'experiment'
+    | 'model-default'
+    | 'unknown-model'
+    | 'auto'
+}
+
+/** Official `TG` (byte-verified @219025550: `var v9e=200000,TG=200000,…`). */
+export const TG_MODEL_DEFAULT_WINDOW = 200_000
+
+/** Official `kge` (byte-verified @225876612: `var kge=1e6,…`). */
+export const KGE_MODEL_TABLE_DEFAULT = 1_000_000
+
+/** Official AGt surface default (byte-verified @225876625: `{default:500000}`). */
+const SURFACE_DEFAULT_WINDOW = 500_000
+
+/** A `gPt`-shaped leaf: `.default` plus optional per-subscription-tier keys. */
+type WindowTableLeaf = {
+  readonly default?: number
+  readonly [tier: string]: number | undefined
+}
+
+/** A `C0e`-shaped AGt entry: a bare number, or `{surfaces?, default?}`. */
+type WindowTableEntry =
+  | number
+  | {
+      readonly surfaces?: Record<string, WindowTableLeaf>
+      readonly default?: number
+    }
+
+/**
+ * Official `AGt` (byte-verified @225876600) — the static per-model default
+ * window table keyed by CANONICAL model name.
+ */
+const MODEL_WINDOW_DEFAULTS: Record<string, WindowTableEntry> = {
+  'claude-sonnet-5': {
+    surfaces: {
+      remote_cowork: { default: SURFACE_DEFAULT_WINDOW },
+      'local-agent': { default: SURFACE_DEFAULT_WINDOW },
+    },
+    default: KGE_MODEL_TABLE_DEFAULT,
+  },
+}
+
+/**
+ * Official `Bp` (@220257629) + `oh` (@220257543). OCC analogs: the env
+ * truthy parse `$e` = isEnvTruthy (the same helper services/compact/
+ * autoCompact.ts uses for these two vars); `Es("autoCompactEnabled",!0)
+ * .value` = getGlobalConfig().autoCompactEnabled (boolean, default true —
+ * config.ts; the `!== false` keeps the official default-true semantics for
+ * a missing/loosely-typed config value).
+ */
+function isAutoCompactWindowTuningEnabled(): boolean {
+  if (
+    isEnvTruthy(process.env.DISABLE_COMPACT) ||
+    isEnvTruthy(process.env.DISABLE_AUTO_COMPACT)
+  ) {
+    return false
+  }
+  return getGlobalConfig().autoCompactEnabled !== false
+}
+
+/**
+ * Official `Rr` (@219110899) — subscription-tier resolver, STAGED: it reads
+ * OAuth account state (`Mn()` / `$E()` → "max"/"pro"/"team"); OCC carries no
+ * subscription state, so the tier context is undefined and `gPt` returns the
+ * leaf `.default` (byte-faithful for a falsy tier).
+ */
+function resolveSubscriptionTierContext(): string | undefined {
+  return undefined
+}
+
+/**
+ * Official `gPt` (byte-verified @225168388):
+ *   `function gPt(e,n){if(n&&Object.hasOwn(e,n))return e[n];return e.default}`
+ */
+function applyTierToWindowLeaf(
+  leaf: WindowTableLeaf,
+  tier: string | undefined,
+): number | undefined {
+  if (tier && Object.hasOwn(leaf, tier)) {
+    return leaf[tier]
+  }
+  return leaf.default
+}
+
+/**
+ * Official `C0e` (byte-verified @225168460): number → as-is; object →
+ * entrypoint-surface leaf first (CLAUDE_CODE_ENTRYPOINT is a key of
+ * `surfaces`), then the table-level rest; each leaf through `gPt` with the
+ * (staged) `Rr()` tier context.
+ */
+function resolveWindowTableEntry(
+  entry: WindowTableEntry,
+): number | undefined {
+  if (typeof entry === 'number') {
+    return entry
+  }
+  if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) {
+    return undefined
+  }
+  const { surfaces, ...rest } = entry
+  const tier = resolveSubscriptionTierContext()
+  const entrypoint = process.env.CLAUDE_CODE_ENTRYPOINT
+  const surfaceEntry =
+    entrypoint && surfaces && Object.hasOwn(surfaces, entrypoint)
+      ? surfaces[entrypoint]
+      : undefined
+  if (surfaceEntry) {
+    const value = applyTierToWindowLeaf(surfaceEntry, tier)
+    if (value !== undefined) {
+      return value
+    }
+  }
+  return applyTierToWindowLeaf(rest, tier)
+}
+
+/**
+ * Official `z$o` (byte-verified @225876788):
+ *   `function z$o(e){if(!Bp())return;if(!Object.hasOwn(AGt,e))return;
+ *    return C0e(AGt[e])}`
+ * (`e` is the CANONICAL model name.)
+ */
+function resolveModelDefaultWindowConfigured(
+  canonical: string,
+): number | undefined {
+  if (!isAutoCompactWindowTuningEnabled()) {
+    return undefined
+  }
+  if (!Object.hasOwn(MODEL_WINDOW_DEFAULTS, canonical)) {
+    return undefined
+  }
+  return resolveWindowTableEntry(MODEL_WINDOW_DEFAULTS[canonical])
+}
+
+/**
+ * Official `q$o` (byte-verified @225876899):
+ *   `function q$o(e,n){if(!uI())return!1;return e||n!==void 0&&n>TG}`
+ * (`uI` @219025737 = env CLAUDE_CODE_DISABLE_1M_CONTEXT → OCC
+ * is1mContextDisabled). Both data inputs are backend catalog values OCC
+ * does not carry — callers stage them as undefined.
+ */
+function is1mCatalogWindowSuppressed(
+  native1mInCatalog: boolean | undefined,
+  declaredWindow: number | undefined,
+): boolean {
+  if (!is1mContextDisabled()) {
+    return false
+  }
+  return Boolean(
+    native1mInCatalog ||
+      (declaredWindow !== undefined &&
+        declaredWindow > TG_MODEL_DEFAULT_WINDOW),
+  )
+}
+
+/** Port of the official `Hno` static subset — see the big docblock above. */
+export function resolveModelAutoWindow(
+  input: ModelAutoWindowInput,
+): ResolvedModelAutoWindow {
+  const { contextWindow, canonical } = input
+
+  // STAGED clientdata arm: `w = Bp() ? e.clientDataAutoCompactWindow :
+  // {window:null,replacesDefault:!1}` — OCC has no bootstrap cache, so
+  // w.window===null (arm inert) and w.replacesDefault===false (z$o arm
+  // unsuppressed).
+  const clientDataReplacesDefault = false
+
+  // STAGED experiment arm: `qGe(e)` = `PGt(e.canonical)??G$o(e)` — no
+  // experiment store in OCC → undefined.
+
+  // TG arm (@225877589 third branch). Staged data inputs (no OCC model
+  // descriptor carries them): unclampedButBilledPast200k (billing history),
+  // native1mInCatalog/declaredWindow (catalog via MGt→pRo), fRo (auth/tier
+  // backend chain gBt/yv/bv → staged false). Shape-faithful, inert in OCC.
+  const unclampedButBilledPast200k: boolean | undefined = undefined
+  const native1mInCatalog: boolean | undefined = undefined
+  const declaredWindow: number | undefined = undefined
+  if (
+    contextWindow < KGE_MODEL_TABLE_DEFAULT &&
+    (unclampedButBilledPast200k === true ||
+      is1mCatalogWindowSuppressed(native1mInCatalog, declaredWindow))
+  ) {
+    return {
+      window: Math.min(contextWindow, TG_MODEL_DEFAULT_WINDOW),
+      configured: TG_MODEL_DEFAULT_WINDOW,
+      source: 'model-default',
+    }
+  }
+
+  // z$o model-default table arm: `K = w.replacesDefault ? void 0 : z$o(h)`.
+  const modelDefault = clientDataReplacesDefault
+    ? undefined
+    : resolveModelDefaultWindowConfigured(canonical)
+  if (modelDefault !== undefined) {
+    return {
+      window: Math.min(contextWindow, modelDefault),
+      configured: modelDefault,
+      source: 'model-default',
+    }
+  }
+
+  // STAGED native1mHere arm (`s>=kge && !w.replacesDefault && Bp() &&
+  // e.native1mHere`) and STAGED unknown-model arm (`Bp() &&
+  // !CLAUDE_CODE_DISABLE_UNKNOWN_MODEL_WINDOW_ENFORCEMENT && IGt(e,S)`) —
+  // both consume backend catalog fields OCC lacks.
+
+  // Final auto fallback: `{window:s,configured:s,source:"auto"}`.
+  return { window: contextWindow, configured: contextWindow, source: 'auto' }
+}
+
+/**
  * CC 2.1.300 changelog #10 — port of the official warning gate `TAn`
  * (byte-verified from the v300 linux-x64 ELF @239116220, offsets into
- * /tmp/cc-diff-300/v300/package/claude):
+ * /tmp/cc-fix-300/package/claude):
  *
  *   `function TAn(e,o){return Math.min(e.contextWindow,o)>Hno(e).window}`
  *
@@ -321,23 +604,27 @@ export function resolveAutoCompactWindow(
  * @param model          the model whose auto window is resolved
  * @param contextWindow  the model's context window (official `e.contextWindow`)
  * @param chosenWindow   the user-chosen window (official `o`)
- * @returns true only when the capped chosen window EXCEEDS the auto window
+ * @returns true only when the capped chosen window EXCEEDS the model's auto
+ *          window (`Hno(e).window` — canonicalized via getCanonicalName for
+ *          the AGt table lookup, mirroring the official `e.canonical`)
  *
- * DIVERGENCE (documented): the official `Hno` (@225877589) resolves the auto
- * window through model-default/experiment/clientdata/unknown-model branches —
- * all Anthropic-backend-bound and staged in OCC (file header) — and IGNORES
- * the env override. OCC's `Hno` analog is `resolveAutoCompactWindow(model,
- * contextWindow, undefined)` (env → auto), so a CLAUDE_CODE_AUTO_COMPACT_
- * WINDOW value participates in the comparison until the staged branches land.
+ * ALIGNMENT (2.1.300 P1-1 fix): the denominator is `resolveModelAutoWindow`
+ * (the official `Hno` static subset), which IGNORES
+ * CLAUDE_CODE_AUTO_COMPACT_WINDOW exactly like the official. The previous
+ * OCC denominator `resolveAutoCompactWindow(model, ctx, undefined)` was
+ * env-aware, so with the env var set the denominator collapsed to the chosen
+ * value and without it the auto branch returned ctx ≥ min(ctx, chosen) —
+ * the warning branch was structurally dead under every reachable config.
  */
 export function chosenWindowExceedsAutoWindow(
   model: string,
   contextWindow: number,
   chosenWindow: number,
 ): boolean {
+  const canonical = getCanonicalName(model)
   return (
     Math.min(contextWindow, chosenWindow) >
-    resolveAutoCompactWindow(model, contextWindow, undefined).window
+    resolveModelAutoWindow({ model, contextWindow, canonical }).window
   )
 }
 
