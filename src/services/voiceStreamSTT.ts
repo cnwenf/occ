@@ -15,7 +15,7 @@ import type { ClientRequest, IncomingMessage } from 'http'
 import WebSocket from 'ws'
 import { getOauthConfig } from '../constants/oauth.js'
 import {
-  checkAndRefreshOAuthTokenIfNeeded,
+  checkAndRefreshOAuthTokenIfNeededBestEffort,
   getClaudeAIOAuthTokens,
   isAnthropicAuthEnabled,
 } from '../utils/auth.js'
@@ -112,8 +112,13 @@ export async function connectVoiceStream(
   callbacks: VoiceStreamCallbacks,
   options?: { language?: string; keyterms?: string[] },
 ): Promise<VoiceStreamConnection | null> {
-  // Ensure OAuth token is fresh before connecting
-  await checkAndRefreshOAuthTokenIfNeeded()
+  // Ensure OAuth token is fresh before connecting.
+  // CC 2.1.301 (#9) P2 guard: connectVoiceStream is invoked fire-and-forget by
+  // the push-to-talk UI, so the 301 disk-full throw would become an unhandled
+  // rejection here. The best-effort variant degrades ONLY that throw to the
+  // pre-301 `false` semantics — proceed with the on-disk token; the token
+  // check below and the WS auth handshake remain the failure surfaces.
+  await checkAndRefreshOAuthTokenIfNeededBestEffort('[voice_stream]')
 
   const tokens = getClaudeAIOAuthTokens()
   if (!tokens?.accessToken) {

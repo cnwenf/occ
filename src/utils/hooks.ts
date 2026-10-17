@@ -4796,20 +4796,19 @@ async function* executeHooks({
           `Hook ${hookEvent} (${getHookDisplayText(result.hook)}) modified tool input keys: [${Object.keys(updatedInput).join(', ')}]`,
         )
       }
+      // Single lookup for both the hookSource and the #30 pluginId spread
+      // below (was 3x the same `matchingHooks.find` in this yield).
+      const matchedHookRecord = matchingHooks.find(m => m.hook === result.hook)
       yield {
         permissionBehavior,
         hookPermissionDecisionReason: result.hookPermissionDecisionReason,
-        hookSource: matchingHooks.find(m => m.hook === result.hook)?.hookSource,
+        hookSource: matchedHookRecord?.hookSource,
         // CC 2.1.301 #30 — official yield @229018962 spreads
         // `...Vs?.pluginId!==void 0&&{hookPluginId:Vs.pluginId}` where `Vs`
         // is the matched-hook record; mirror by looking the pluginId up from
         // the same match (omitted when undefined, like the official spread).
-        ...(matchingHooks.find(m => m.hook === result.hook)?.pluginId !==
-        undefined
-          ? {
-              hookPluginId: matchingHooks.find(m => m.hook === result.hook)
-                ?.pluginId,
-            }
+        ...(matchedHookRecord?.pluginId !== undefined
+          ? { hookPluginId: matchedHookRecord.pluginId }
           : {}),
         updatedInput,
       }

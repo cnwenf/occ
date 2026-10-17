@@ -7,7 +7,7 @@ import { isPolicyAllowed } from '../../services/policyLimits/index.js'
 import type { ToolUseContext } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import {
-  checkAndRefreshOAuthTokenIfNeeded,
+  checkAndRefreshOAuthTokenIfNeededBestEffort,
   getClaudeAIOAuthTokens,
 } from '../../utils/auth.js'
 import { lazySchema } from '../../utils/lazySchema.js'
@@ -76,7 +76,10 @@ export const RemoteTriggerTool = buildTool({
     return PROMPT
   },
   async call(input: Input, context: ToolUseContext) {
-    await checkAndRefreshOAuthTokenIfNeeded()
+    // CC 2.1.301 (#9) P2 guard: degrade the disk-full refresh throw to the
+    // pre-301 `false` semantics — proceed with the on-disk token; the
+    // accessToken check below and the API's 401 remain the failure surfaces.
+    await checkAndRefreshOAuthTokenIfNeededBestEffort('[remote_trigger]')
     const accessToken = getClaudeAIOAuthTokens()?.accessToken
     if (!accessToken) {
       throw new Error(

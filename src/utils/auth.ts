@@ -2031,6 +2031,24 @@ export function isDiskFullOAuthRefreshError(error: unknown): boolean {
 }
 
 /**
+ * CC 2.1.301 (#9) P2 guard helper — true when `error` is the thrown
+ * OAuthRefreshDiskFullError surfaced by checkAndRefreshOAuthTokenIfNeeded's
+ * disk-full throw sites. Raw (un-awaited / busy) call sites use this to
+ * degrade JUST that throw to the pre-301 `resolve(false)` semantics; every
+ * other error keeps its original propagation.
+ *
+ * Deliberately `name`-based, NOT `instanceof` against a statically imported
+ * class: the class lives in src/services/api/errors.ts, which imports THIS
+ * module — the same cycle createOAuthRefreshDiskFullError() below defers.
+ * The constructor pins `this.name` (errors.ts), so the name check matches
+ * the deferred-import class identity without any new module edge (callers
+ * already import auth.js).
+ */
+export function isOAuthRefreshDiskFullErrorInstance(error: unknown): boolean {
+  return error instanceof Error && error.name === 'OAuthRefreshDiskFullError'
+}
+
+/**
  * CC 2.1.301 (#9): construct the official `wG` OAuthRefreshDiskFullError.
  * The class lives in src/services/api/errors.ts, which imports THIS module
  * (errors.ts:24) — a static import back would close an auth↔errors cycle
@@ -2067,6 +2085,37 @@ export function checkAndRefreshOAuthTokenIfNeeded(
   }
 
   return checkAndRefreshOAuthTokenIfNeededImpl(retryCount, force)
+}
+
+/**
+ * CC 2.1.301 (#9) P2 guard — best-effort variant for the raw/busy call sites
+ * that pre-date the disk-full throw and have no catch of their own (voice
+ * stream connect, MCP claudeai-proxy per-request fetch wrapper, remote-trigger
+ * tool, bridge session resume). On those surfaces the OAuthRefreshDiskFullError
+ * would surface as an unhandled rejection / mass connector failure, so this
+ * wrapper degrades ONLY that error to the pre-301 `resolve(false)` semantics:
+ * proceed with the on-disk token and let the downstream auth surface (WS
+ * handshake, HTTP 401 retry path, accessToken check) report the failure as it
+ * did before 301. Every other error propagates unchanged (pre-301 behavior).
+ *
+ * Do NOT use this on the API request path (services/api/claude.ts) — the
+ * mapper there unwraps OAuthRefreshDiskFullError into the actionable
+ * user-facing message, which is the whole point of the 301 throw.
+ */
+export async function checkAndRefreshOAuthTokenIfNeededBestEffort(
+  context: string,
+): Promise<boolean> {
+  try {
+    return await checkAndRefreshOAuthTokenIfNeeded()
+  } catch (err) {
+    if (!isOAuthRefreshDiskFullErrorInstance(err)) {
+      throw err
+    }
+    logForDebugging(
+      `${context}: OAuth refresh check degraded to pre-301 false semantics (config-dir disk full); proceeding with the on-disk token`,
+    )
+    return false
+  }
 }
 
 async function checkAndRefreshOAuthTokenIfNeededImpl(

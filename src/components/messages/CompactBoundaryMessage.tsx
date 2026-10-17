@@ -295,9 +295,9 @@ export function CompactBoundaryMessage({ message }: CompactBoundaryMessageProps)
         : null,
     )
     // OCC adaptation: the official `Ne` row renderer was not recoverable from
-    // the binary; render Zm's data shape as a minimal dim row (this branch is
-    // dormant until Message.tsx stops returning null for fullscreen
-    // compact_boundary — tracked as an out-of-scope one-liner).
+    // the binary; render Zm's data shape as a minimal dim row. LIVE since
+    // 2.1.301 #28: Message.tsx no longer early-returns null for fullscreen
+    // compact_boundary, so the fullscreen row renders through this branch.
     return (
       <Box marginY={1} flexDirection="column">
         <Text dimColor={true}>

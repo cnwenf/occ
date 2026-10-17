@@ -68,7 +68,7 @@ import { createAbortController } from '../../utils/abortController.js'
 import { count } from '../../utils/array.js'
 import { parseEnvInt } from '../../utils/envValidation.js'
 import {
-  checkAndRefreshOAuthTokenIfNeeded,
+  checkAndRefreshOAuthTokenIfNeededBestEffort,
   getClaudeAIOAuthTokens,
   handleOAuth401Error,
 } from '../../utils/auth.js'
@@ -682,7 +682,13 @@ function handleRemoteAuthFailure(
 export function createClaudeAiProxyFetch(innerFetch: FetchLike): FetchLike {
   return async (url, init) => {
     const doRequest = async () => {
-      await checkAndRefreshOAuthTokenIfNeeded()
+      // CC 2.1.301 (#9) P2 guard: this wrapper runs on EVERY claudeai-proxy
+      // connector request (dozens of servers in parallel), so the 301
+      // disk-full throw would mass-reject them with no catch in between.
+      // Degrade ONLY that throw to the pre-301 `false` semantics — proceed
+      // with the on-disk token; the 401 retry path below (handleOAuth401Error,
+      // already .catch-guarded) remains the failure surface.
+      await checkAndRefreshOAuthTokenIfNeededBestEffort('[mcp claudeai-proxy]')
       const currentTokens = getClaudeAIOAuthTokens()
       if (!currentTokens) {
         throw new Error('No claude.ai OAuth token available')

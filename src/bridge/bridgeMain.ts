@@ -2242,8 +2242,11 @@ export async function bridgeMain(args: string[]): Promise<void> {
   }
 
   // Resolve auth
-  const { clearOAuthTokenCache, checkAndRefreshOAuthTokenIfNeeded } =
-    await import('../utils/auth.js')
+  const {
+    clearOAuthTokenCache,
+    checkAndRefreshOAuthTokenIfNeeded,
+    checkAndRefreshOAuthTokenIfNeededBestEffort,
+  } = await import('../utils/auth.js')
   const { getBridgeAccessToken, getBridgeBaseUrl } = await import(
     './bridgeConfig.js'
   )
@@ -2523,7 +2526,10 @@ export async function bridgeMain(args: string[]): Promise<void> {
     // Proactively refresh the OAuth token — getBridgeSession uses raw axios
     // without the withOAuthRetry 401-refresh logic. An expired-but-present
     // token would otherwise produce a misleading "not found" error.
-    await checkAndRefreshOAuthTokenIfNeeded()
+    // CC 2.1.301 (#9) P2 guard: degrade the disk-full refresh throw to the
+    // pre-301 `false` semantics so a full config dir can't abort bridge
+    // startup ahead of the session-level error handling.
+    await checkAndRefreshOAuthTokenIfNeededBestEffort('[bridge session-resume]')
     clearOAuthTokenCache()
     const { getBridgeSession } = await import('./createSession.js')
     const session = await getBridgeSession(resumeSessionId, {
