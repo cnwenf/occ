@@ -6,11 +6,19 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from 'src/services/analytics/index.js'
-import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
+import {
+  extractMcpToolDetails,
+  extractSkillName,
+  isToolDetailsLoggingEnabled,
+  sanitizeToolNameForAnalytics,
+} from 'src/services/analytics/metadata.js'
 import { getCodeEditToolDecisionCounter } from '../../bootstrap/state.js'
 import type { Tool as ToolType, ToolUseContext } from '../../Tool.js'
+import type { BashToolInput } from '../../tools/BashTool/BashTool.js'
+import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
 import { getLanguageName } from '../../utils/cliHighlight.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-adapter.js'
+import { jsonStringify } from '../../utils/slowOperations.js'
 import { logOTelEvent } from '../../utils/telemetry/events.js'
 import type {
   PermissionDecisionReason,
@@ -226,6 +234,99 @@ function logRejectionEvent(
   })
 }
 
+/**
+ * CC 2.1.302 #14B — official `w0r` (v302 @237506975) ≡ `PDr` (v301
+ * @220029703), byte-identical across both versions:
+ *
+ *   function w0r(e){let n=!e?"builtin":eu(e)?"sdk_host_builtin_mcp":"mcp";
+ *     return{tool_source:c(n)}}
+ *   eu(e){return e?.serverType==="sdk"&&Bu()}   // Bu(){return f()&&!n().childSession}
+ *
+ * `c` is the official telemetry string-attribute wrapper — identity in OCC
+ * (logOTelEvent takes plain strings; see classifierDecisionTelemetry.ts).
+ *
+ * The middle `sdk_host_builtin_mcp` branch needs an SDK-hosted builtin MCP.
+ * BOTH official discriminants reference surfaces OCC lacks: mcpInfo.serverType
+ * (OCC's mcpInfo — Tool.ts:553 — is {serverName, toolName}, no serverType; the
+ * McpAuthTool divergence notes confirm OCC never stamps it) and the SDK-host
+ * runtime check `Bu()=!childSession` (backgroundDeadline.ts documents OCC has
+ * no childSession/claudecode host-context flags). The branch is therefore
+ * STRUCTURALLY PRESENT BUT DORMANT: every real OCC mcpInfo maps to 'mcp', and
+ * it activates automatically should OCC ever gain serverType==='sdk'.
+ */
+function buildToolSourceAttribute(tool: ToolType): {
+  tool_source: 'builtin' | 'sdk_host_builtin_mcp' | 'mcp'
+} {
+  const mcpInfo = tool.mcpInfo
+  if (!mcpInfo) {
+    return { tool_source: 'builtin' }
+  }
+  // Official eu(e): e?.serverType==="sdk"&&Bu(). OCC has no Bu() surface, so
+  // the serverType field is the sole (dormant) discriminant — see above.
+  const isSdkHostBuiltin =
+    (mcpInfo as { serverType?: string }).serverType === 'sdk'
+  return { tool_source: isSdkHostBuiltin ? 'sdk_host_builtin_mcp' : 'mcp' }
+}
+
+/**
+ * CC 2.1.302 #14B — the tool_decision `tool_parameters` extractor, official
+ * `F5n` equivalent (`Te=F5n(s.name,h,s.mcpInfo)`), gated by
+ * OTEL_LOG_TOOL_DETAILS (parameters can carry sensitive command / MCP-server
+ * content, so they're opt-in only).
+ *
+ * DRY: this reuses the SAME exported sub-helpers as the tool_result extractor
+ * at toolExecution.ts:1386-1420 (isToolDetailsLoggingEnabled,
+ * extractMcpToolDetails, extractSkillName) and mirrors its Bash branch
+ * byte-faithfully. NOTE: toolExecution.ts still INLINES its own copy of this
+ * block — it sits outside this WP's file cluster, so its owner should adopt
+ * this exported helper to retire the duplicate (tracked in the port report).
+ *
+ * Returns {} when the gate is off or nothing is extractable; the emit site
+ * includes the key only when non-empty (official
+ * `...Object.keys(Te).length>0&&{tool_parameters:_(Te)}`).
+ */
+function buildToolParametersForTelemetry(
+  tool: ToolType,
+  input: unknown,
+): Record<string, unknown> {
+  if (!isToolDetailsLoggingEnabled()) {
+    return {}
+  }
+  const toolParameters: Record<string, unknown> = {}
+  if (
+    tool.name === BASH_TOOL_NAME &&
+    typeof input === 'object' &&
+    input !== null &&
+    'command' in input
+  ) {
+    const bashInput = input as BashToolInput
+    const commandParts = bashInput.command.trim().split(/\s+/)
+    const bashCommand = commandParts[0] || ''
+    toolParameters.bash_command = bashCommand
+    toolParameters.full_command = bashInput.command
+    if (bashInput.timeout !== undefined) {
+      toolParameters.timeout = bashInput.timeout
+    }
+    if (bashInput.description !== undefined) {
+      toolParameters.description = bashInput.description
+    }
+    if ('dangerouslyDisableSandbox' in bashInput) {
+      toolParameters.dangerouslyDisableSandbox =
+        bashInput.dangerouslyDisableSandbox
+    }
+  }
+  const mcpDetails = extractMcpToolDetails(tool.name)
+  if (mcpDetails) {
+    toolParameters.mcp_server_name = mcpDetails.serverName
+    toolParameters.mcp_tool_name = mcpDetails.mcpToolName
+  }
+  const skillName = extractSkillName(tool.name, input)
+  if (skillName) {
+    toolParameters.skill_name = skillName
+  }
+  return toolParameters
+}
+
 // Single entry point for all permission decision logging. Called by permission
 // handlers after every approve/reject. Fans out to: analytics events, OTel
 // telemetry, code-edit OTel counters, and toolUseContext decision storage.
@@ -317,14 +418,43 @@ function logPermissionDecision(
     ctx.permissionMode ||
     toolUseContext.getAppState?.().toolPermissionContext?.mode
 
+  // CC 2.1.302 changelog #14 part B — the emitted attribute object is REORDERED
+  // so the core identifiers come FIRST and the truncatable tail (classifier
+  // verdict/category + permission_mode) comes LAST. A low
+  // OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT then evicts the tail instead of the
+  // identifiers. Key order in this object literal IS the OTel log-record wire
+  // order — that IS the fix.
+  //   v301 (@227800703): {decision,source,...be,permission_mode,tool_name,
+  //     tool_use_id,...PDr(mcpInfo),...(params&&{tool_parameters})}
+  //   v302 (@245156620): {decision,source,tool_name,tool_use_id,...w0r(mcpInfo),
+  //     ...(params&&{tool_parameters}),...be,permission_mode}
+  // OCC also never emitted tool_use_id / tool_source / tool_parameters (a
+  // pre-existing gap vs BOTH official versions) — this closes it: tool_use_id
+  // from the in-scope ctx, tool_source via w0r, tool_parameters via the
+  // details-gated F5n extractor (included only when non-empty).
+  // Part A (server-side classifier_category fLs bracket-prefix fallback) is
+  // N-A: OCC has no server-side/arbiter classifier (client-side yoloClassifier
+  // already emits a structured category) — nothing to port.
+  const toolParameters = buildToolParametersForTelemetry(tool, input)
   void logOTelEvent('tool_decision', {
     decision,
     source: sourceString,
+    tool_name: sanitizeToolNameForAnalytics(tool.name),
+    tool_use_id: toolUseID,
+    ...buildToolSourceAttribute(tool),
+    ...(Object.keys(toolParameters).length > 0 && {
+      tool_parameters: jsonStringify(toolParameters),
+    }),
     ...classifierFields,
     permission_mode: permissionModeToExternal(modeForTelemetry),
-    tool_name: sanitizeToolNameForAnalytics(tool.name),
   })
 }
 
-export { isCodeEditingTool, buildCodeEditToolAttributes, logPermissionDecision }
+export {
+  isCodeEditingTool,
+  buildCodeEditToolAttributes,
+  buildToolSourceAttribute,
+  buildToolParametersForTelemetry,
+  logPermissionDecision,
+}
 export type { PermissionLogContext, PermissionDecisionArgs }

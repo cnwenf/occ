@@ -62,6 +62,20 @@ const VALID_WORKTREE_SLUG_SEGMENT = /^[a-zA-Z0-9._-]+$/
 const MAX_WORKTREE_SLUG_LENGTH = 64
 
 /**
+ * Graceful "not in a git repository" decline. Shared by the fs-level gitRoot
+ * check (createWorktreeForSession) and the rev-parse-stderr `no_repo`
+ * classification (official 2.1.302 #23 — git ≥2.56 emits `fatal: gitfile does
+ * not point to a valid repository` for a stray `.git` FILE whose gitdir target
+ * doesn't exist; the official `pGt` predicate classifies it as no-repo →
+ * decline gracefully like a plain non-repo dir, never a hard base-resolve
+ * refusal). getOrCreateWorktree is only reached when no WorktreeCreate hook
+ * is configured, so the hook guidance is always accurate here.
+ */
+const NOT_IN_GIT_REPO_WORKTREE_MESSAGE =
+  'Cannot create a worktree: not in a git repository and no WorktreeCreate hooks are configured. ' +
+  'Configure WorktreeCreate/WorktreeRemove hooks in settings.json to use worktree isolation with other VCS systems.'
+
+/**
  * Validates a worktree slug to prevent path traversal and directory escape.
  *
  * The slug is joined into `.claude/worktrees/<slug>` via path.join, which
@@ -424,11 +438,19 @@ export async function getOrCreateWorktree(
     if (revParse.code === 0 && resolvedSha !== '') {
       baseSha = resolvedSha
     } else {
+      const cause = classifyRevParseCause(revParse)
+      // Official 2.1.302 (#23): no-repo stderr ("not a git repository" / git
+      // ≥2.56 "gitfile does not point to a valid repository") → treat the dir
+      // as not-a-repo and decline gracefully, instead of the 2.1.299 (#146)
+      // base-resolve hard-error refusal the v301 classifier produced.
+      if (cause === 'no_repo') {
+        throw new Error(NOT_IN_GIT_REPO_WORKTREE_MESSAGE)
+      }
       // Official `be`: repo_confirmed = the .git entry resolves to a valid
       // layout for this folder (OCC: resolveGitDir non-null).
       const repoConfirmed = (await resolveGitDir(repoRoot)) !== null
       const detail = buildWorktreeBaseResolveFailureMessage({
-        cause: classifyRevParseCause(revParse),
+        cause,
         kind: worktreeBaseKindFor(baseBranch),
         repoConfirmed,
         stderrTrimmed: revParse.stderr.trim(),
@@ -877,10 +899,7 @@ export async function createWorktreeForSession(
     // Fall back to git worktree
     const gitRoot = findGitRoot(getCwd())
     if (!gitRoot) {
-      throw new Error(
-        'Cannot create a worktree: not in a git repository and no WorktreeCreate hooks are configured. ' +
-          'Configure WorktreeCreate/WorktreeRemove hooks in settings.json to use worktree isolation with other VCS systems.',
-      )
+      throw new Error(NOT_IN_GIT_REPO_WORKTREE_MESSAGE)
     }
 
     const originalBranch = await getBranch()

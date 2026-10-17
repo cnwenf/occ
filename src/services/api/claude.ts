@@ -1073,6 +1073,38 @@ export function getApiForceIdleTimeout(): number | undefined {
 }
 
 /**
+ * CC 2.1.302 (#19): shared response-site producer for the per-turn
+ * usage-credits billing flag. Extracts quota status from the response headers
+ * (updating the limits store) and records the per-turn
+ * `queryTracking.billedToUsageCredits` flag from `overageInUse`.
+ *
+ * Official shape at BOTH sites — non-streaming @246082900-region and streaming
+ * @246195751:
+ *   `let ft=ePo(headers, model, bigInputCond, now, _, storageV5);
+ *    if(ft&&e.queryTracking)e.queryTracking.billedToUsageCredits=ft.overageInUse===!0`
+ *
+ * `ePo` (@238522075) IS the store extraction
+ * (`se.extractQuotaStatusFromHeaders(...)`), so OCC's
+ * `extractQuotaStatusFromHeaders` return value is `ft`. The official producer
+ * takes extra args (model, big-input condition, timestamp, storage) that feed
+ * its richer overage computation; OCC's limits parse derives `overageInUse`
+ * directly from the `anthropic-ratelimit-unified-overage-in-use` header (the
+ * only input to `O=e.get(Kr)==="true"` in the binary's `Jl` @238506000-region),
+ * so those extra args carry no additional signal here. `ft` is undefined when
+ * rate-limit processing is skipped (non-subscriber), matching the official
+ * `if(ft&&…)` guard.
+ */
+export function recordBilledToUsageCredits(
+  headers: globalThis.Headers,
+  queryTracking?: QueryChainTracking,
+): void {
+  const extracted = extractQuotaStatusFromHeaders(headers)
+  if (extracted && queryTracking) {
+    queryTracking.billedToUsageCredits = extracted.overageInUse === true
+  }
+}
+
+/**
  * Helper generator for non-streaming API requests.
  * Encapsulates the common pattern of creating a withRetry generator,
  * iterating to yield system messages, and returning the final BetaMessage.
@@ -1088,6 +1120,14 @@ export async function* executeNonStreamingRequest(
      * query-loop-derived `W` (@205395827 / @205399719).
      */
     promptId?: string
+    /**
+     * CC 2.1.302 (#19): the per-query tracking object whose
+     * `billedToUsageCredits` flag is recorded from this response's headers
+     * (official non-streaming producer reads `e.queryTracking`,
+     * @246082900-region). Both fallback call sites thread the query loop's
+     * `options.queryTracking`.
+     */
+    queryTracking?: QueryChainTracking
   },
   retryOptions: {
     model: string
@@ -1192,19 +1232,32 @@ export async function* executeNonStreamingRequest(
           gatewayHintWireValues?.prevToolDurationsForWire,
         )
         // biome-ignore lint/plugin: non-streaming API call
-        return await anthropic.beta.messages.create(
-          {
-            ...adjustedParams,
-            model: normalizeModelStringForAPI(adjustedParams.model),
-          },
-          {
-            signal: retryOptions.signal,
-            timeout: fallbackTimeoutMs,
-            ...(Object.keys(hintHeaders).length > 0
-              ? { headers: hintHeaders }
-              : {}),
-          },
+        const { data: message, response } = await anthropic.beta.messages
+          .create(
+            {
+              ...adjustedParams,
+              model: normalizeModelStringForAPI(adjustedParams.model),
+            },
+            {
+              signal: retryOptions.signal,
+              timeout: fallbackTimeoutMs,
+              ...(Object.keys(hintHeaders).length > 0
+                ? { headers: hintHeaders }
+                : {}),
+            },
+          )
+          .withResponse()
+        // CC 2.1.302 (#19) non-streaming response-site producer (official
+        // @246082900-region): `let Et=tt.response?.headers; if(Et){let ft=
+        // ePo(Et,...);if(ft&&e.queryTracking)e.queryTracking.
+        // billedToUsageCredits=ft.overageInUse===!0}` — the limits-store
+        // extraction piggybacked on the response headers, recording the
+        // per-turn usage-credits billing flag.
+        recordBilledToUsageCredits(
+          response.headers,
+          clientOptions.queryTracking,
         )
+        return message
       } catch (err) {
         // User aborts are not errors — re-throw immediately without logging
         if (err instanceof APIUserAbortError) throw err
@@ -3565,7 +3618,10 @@ async function* queryModel(
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
       const resp = streamResponse as unknown as Response | undefined
       if (resp) {
-        extractQuotaStatusFromHeaders(resp.headers)
+        // CC 2.1.302 (#19) streaming response-site producer (official
+        // @246195751): `let ft=ePo(...);if(ft&&e.queryTracking)
+        // e.queryTracking.billedToUsageCredits=ft.overageInUse===!0`
+        recordBilledToUsageCredits(resp.headers, options.queryTracking)
         // Store headers for gateway detection
         responseHeaders = resp.headers
       }
@@ -3885,7 +3941,14 @@ async function* queryModel(
       // is placed at the same point (immediately before the fallback request).
       yield* flushStreamCloseLocal()
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource, promptId },
+        {
+          model: options.model,
+          source: options.querySource,
+          promptId,
+          // CC 2.1.302 (#19): non-streaming producer records the per-turn
+          // usage-credits flag on this turn's queryTracking.
+          queryTracking: options.queryTracking,
+        },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
@@ -4013,7 +4076,14 @@ async function* queryModel(
       try {
         // Fall back to non-streaming mode
         const result = yield* executeNonStreamingRequest(
-          { model: options.model, source: options.querySource, promptId },
+          {
+            model: options.model,
+            source: options.querySource,
+            promptId,
+            // CC 2.1.302 (#19): non-streaming producer records the per-turn
+            // usage-credits flag on this turn's queryTracking.
+            queryTracking: options.queryTracking,
+          },
           {
             model: options.model,
             fallbackModel: options.fallbackModel,

@@ -103,7 +103,8 @@ import {
   ROUGH_LENGTH_TOKEN_RATIO,
   selectAllowLargeMessage,
 } from './allowLarge.js'
-import { getDefaultFileReadingLimits } from './limits.js'
+import { readImageBytesCapped } from './imageRead.js'
+import { getDefaultFileReadingLimits, MAX_IMAGE_READ_BYTES } from './limits.js'
 import {
   DESCRIPTION,
   FILE_READ_TOOL_NAME,
@@ -1851,10 +1852,13 @@ export async function readImageWithTokenBudget(
   maxTokens: number = getDefaultFileReadingLimits().maxTokens,
   maxBytes?: number,
 ): Promise<ImageResult> {
-  // Read file ONCE — capped to maxBytes to avoid OOM on huge files
-  const imageBuffer = await getFsImplementation().readFileBytes(
+  // Read file ONCE — capped to the 128 MiB image limit (CC 2.1.302 #06).
+  // Regular files over the cap are refused by stat (never read into memory);
+  // pipes/devices named like an image are read in 64 KiB chunks and refused
+  // past the cap. Port of the official `qXr`/`oOn` limiter.
+  const imageBuffer = await readImageBytesCapped(
     filePath,
-    maxBytes,
+    maxBytes ?? MAX_IMAGE_READ_BYTES,
   )
   const originalSize = imageBuffer.length
 

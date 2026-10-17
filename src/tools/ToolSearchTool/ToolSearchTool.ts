@@ -10,12 +10,22 @@ import {
   findToolByName,
   type Tool,
   type ToolDef,
+  type ToolResult,
   type Tools,
 } from '../../Tool.js'
+import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
 import { lazySchema } from '../../utils/lazySchema.js'
+import { createUserMessage } from '../../utils/messages.js'
 import { escapeRegExp } from '../../utils/stringUtils.js'
-import { isToolSearchEnabledOptimistic } from '../../utils/toolSearch.js'
+import {
+  extractDiscoveredToolNames,
+  isToolSearchEnabledOptimistic,
+} from '../../utils/toolSearch.js'
+import {
+  getToolUseIDFromParentMessage,
+  tagMessagesWithToolUseID,
+} from '../utils.js'
 import { getPrompt, isDeferredTool, TOOL_SEARCH_TOOL_NAME } from './prompt.js'
 
 export const inputSchema = lazySchema(() =>
@@ -105,14 +115,87 @@ export function clearToolSearchDescriptionCache(): void {
 }
 
 /**
+ * CC 2.1.302 #08 — the loaded-tool name set (official `be` =
+ * `ke.definedByValue` @244204xxx: tool names already defined by value in
+ * this conversation). OCC's wire filter (claude.ts) sends non-deferred
+ * tools always, and deferred tools once discovered via tool_reference
+ * blocks in message history — extractDiscoveredToolNames also reads the
+ * compact-boundary preCompactDiscoveredTools carry, so this set survives
+ * compaction (the "or after compaction" half of the official changelog).
+ */
+function getLoadedToolNames(tools: Tools, messages: Message[]): Set<string> {
+  const discovered = extractDiscoveredToolNames(messages ?? [])
+  const loaded = new Set<string>()
+  for (const tool of tools) {
+    if (!isDeferredTool(tool) || discovered.has(tool.name)) {
+      loaded.add(tool.name)
+    }
+  }
+  return loaded
+}
+
+/**
+ * CC 2.1.302 #08 — official `Kt` analogue (@244203400 region):
+ * `Kt=(Un)=>{if(be===void 0||be.size===0)return[];
+ *  let so=LX([],Z5(De),Un);
+ *  return so.length>0&&so.every((Jn)=>be.has(Jn.name))?so.map((Jn)=>Jn.name):[]}`
+ * Resolves the requested name against the live tool pool (name or alias,
+ * via findToolByName — OCC's resolver); returns the canonical name ONLY
+ * when every resolved tool is already loaded, otherwise [] so the name
+ * flows to the normal search path.
+ */
+function getAlreadyLoadedNames(
+  requested: string,
+  tools: Tools,
+  loadedNames: Set<string>,
+): string[] {
+  if (loadedNames.size === 0) {
+    return []
+  }
+  const resolved = findToolByName(tools, requested)
+  return resolved !== undefined && loadedNames.has(resolved.name)
+    ? [resolved.name]
+    : []
+}
+
+/**
+ * CC 2.1.302 #08 — official `Yt` analogue: builds the isMeta note appended
+ * to newMessages when already-loaded tools were requested. Verbatim v302
+ * text (@244204xxx). Wrapped via tagMessagesWithToolUseID following the
+ * SkillTool precedent (SkillTool.ts:1017-1063). Empty names → no messages,
+ * so the result carries no newMessages key (identity wrap, like Yt).
+ */
+function buildAlreadyLoadedNote(
+  names: string[],
+  toolUseID: string | undefined,
+): ToolResult<Output>['newMessages'] {
+  if (names.length === 0) {
+    return undefined
+  }
+  return tagMessagesWithToolUseID(
+    [
+      createUserMessage({
+        content: `Already available in this conversation: ${names.join(', ')}. Call ${names.length === 1 ? 'it' : 'them'} directly; no search is needed.`,
+        isMeta: true,
+      }),
+    ],
+    toolUseID,
+  )
+}
+
+/**
  * Build the search result output structure.
+ * CC 2.1.302 #08: carries optional newMessages through (Tool.ts ToolResult
+ * already supports the field); the key is omitted when there is no note so
+ * the normal-path shape is unchanged.
  */
 function buildSearchResult(
   matches: string[],
   query: string,
   totalDeferredTools: number,
   pendingMcpServers?: string[],
-): { data: Output } {
+  newMessages?: ToolResult<Output>['newMessages'],
+): ToolResult<Output> {
   return {
     data: {
       matches,
@@ -122,6 +205,7 @@ function buildSearchResult(
         ? { pending_mcp_servers: pendingMcpServers }
         : {}),
     },
+    ...(newMessages && newMessages.length > 0 ? { newMessages } : {}),
   }
 }
 
@@ -191,14 +275,17 @@ async function searchToolsWithKeywords(
 ): Promise<string[]> {
   const queryLower = query.toLowerCase().trim()
 
-  // Fast path: if query matches a tool name exactly, return it directly.
-  // Handles models using a bare tool name instead of select: prefix (seen
-  // from subagents/post-compaction). Checks deferred first, then falls back
-  // to the full tool set — selecting an already-loaded tool is a harmless
-  // no-op that lets the model proceed without retry churn.
-  const exactMatch =
-    deferredTools.find(t => t.name.toLowerCase() === queryLower) ??
-    tools.find(t => t.name.toLowerCase() === queryLower)
+  // Fast path: if query matches a DEFERRED tool name exactly, return it
+  // directly. Handles models using a bare tool name instead of select:
+  // prefix (seen from subagents/post-compaction).
+  // CC 2.1.302 #08: the pool searched here is the deferred pool only —
+  // the old `?? tools.find(...)` fallback re-emitted already-loaded tools
+  // (the previous "harmless no-op" comment described exactly the bug the
+  // official fixed): the re-emission re-added the tool to the wire tools
+  // array, mutating the system-prompt tools block and busting the prompt
+  // cache. Loaded exact-name hits now short-circuit in call() with the
+  // isMeta "Already available" note (official Gn/Kn path).
+  const exactMatch = deferredTools.find(t => t.name.toLowerCase() === queryLower)
   if (exactMatch) {
     return [exactMatch.name]
   }
@@ -325,11 +412,23 @@ export const ToolSearchTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  async call(input, { options: { tools }, getAppState }) {
+  async call(
+    input,
+    { options: { tools }, getAppState, messages },
+    _canUseTool,
+    parentMessage,
+  ) {
     const { query, max_results = 5 } = input
 
     const deferredTools = tools.filter(isDeferredTool)
     maybeInvalidateCache(deferredTools)
+
+    // CC 2.1.302 #08 — the loaded set (official `be`) + the tool-use id for
+    // tagging the isMeta note messages (SkillTool convention).
+    const loadedNames = getLoadedToolNames(tools, messages ?? [])
+    const toolUseID = parentMessage
+      ? getToolUseIDFromParentMessage(parentMessage, TOOL_SEARCH_TOOL_NAME)
+      : undefined
 
     // Check for MCP servers still connecting
     function getPendingServerNames(): string[] | undefined {
@@ -357,9 +456,15 @@ export const ToolSearchTool = buildTool({
 
     // Check for select: prefix — direct tool selection.
     // Supports comma-separated multi-select: `select:A,B,C`.
-    // If a name isn't in the deferred set but IS in the full tool set,
-    // we still return it — the tool is already loaded, so "selecting" it
-    // is a harmless no-op that lets the model proceed without retry churn.
+    // CC 2.1.302 #08 — official split semantics: each requested name maps
+    // through `[Go,Kt(Go)]` into loaded (note) vs to-search. ALL loaded →
+    // empty matches + isMeta note; the tools array is NOT touched (the old
+    // `?? findToolByName(tools)` re-emission of already-loaded tools was
+    // exactly the prompt-cache-miss bug the official fixed — re-adding a
+    // loaded tool mutates the system-prompt tools block). Mixed selects
+    // still resolve the to-search subset from the deferred pool, and every
+    // select-path result is wrapped with the note for the loaded subset
+    // (official `yn=Yt(Jn)`).
     const selectMatch = query.match(/^select:(.+)$/i)
     if (selectMatch) {
       const requested = selectMatch[1]!
@@ -367,18 +472,42 @@ export const ToolSearchTool = buildTool({
         .map(s => s.trim())
         .filter(Boolean)
 
+      const perName = requested.map(
+        name => [name, getAlreadyLoadedNames(name, tools, loadedNames)] as const,
+      )
+      const alreadyLoaded = [
+        ...new Set(perName.flatMap(([, loaded]) => loaded)),
+      ]
+      const toSearch = perName.flatMap(([name, loaded]) =>
+        loaded.length === 0 ? [name] : [],
+      )
+
+      if (alreadyLoaded.length > 0 && toSearch.length === 0) {
+        logForDebugging(
+          `ToolSearchTool: select of already-loaded ${alreadyLoaded.join(', ')}`,
+        )
+        logSearchOutcome([], 'select')
+        return buildSearchResult(
+          [],
+          query,
+          deferredTools.length,
+          undefined,
+          buildAlreadyLoadedNote(alreadyLoaded, toolUseID),
+        )
+      }
+
       const found: string[] = []
       const missing: string[] = []
-      for (const toolName of requested) {
-        const tool =
-          findToolByName(deferredTools, toolName) ??
-          findToolByName(tools, toolName)
+      for (const toolName of toSearch) {
+        const tool = findToolByName(deferredTools, toolName)
         if (tool) {
           if (!found.includes(tool.name)) found.push(tool.name)
         } else {
           missing.push(toolName)
         }
       }
+
+      const loadedNote = buildAlreadyLoadedNote(alreadyLoaded, toolUseID)
 
       if (found.length === 0) {
         logForDebugging(
@@ -391,6 +520,7 @@ export const ToolSearchTool = buildTool({
           query,
           deferredTools.length,
           pendingServers,
+          loadedNote,
         )
       }
 
@@ -402,8 +532,60 @@ export const ToolSearchTool = buildTool({
         logForDebugging(`ToolSearchTool: selected ${found.join(', ')}`)
       }
       logSearchOutcome(found, 'select')
-      return buildSearchResult(found, query, deferredTools.length)
+      return buildSearchResult(
+        found,
+        query,
+        deferredTools.length,
+        undefined,
+        loadedNote,
+      )
     }
+
+    // CC 2.1.302 #08 — keyword path, official Gn/Kn short-circuit:
+    // `Gn=Z5(De).find((Un)=>Un.name.toLowerCase()===tn.toLowerCase())?.name,
+    //  Kn=Gn===void 0?[]:Kt(Gn);
+    //  if(Kn.length>0) return t("ToolSearchTool: keyword query names
+    //  already-loaded …"), zt([],"keyword"), Yt(Kn)(await ot(MD([],_e,ze.length,[])))`
+    // An exact-name pool hit on an already-loaded tool returns empty
+    // matches + the isMeta note instead of re-emitting the tool.
+    const queryTrimmed = query.trim()
+    const exactPoolHit = tools.find(
+      t => t.name.toLowerCase() === queryTrimmed.toLowerCase(),
+    )?.name
+    const exactHitLoaded =
+      exactPoolHit === undefined
+        ? []
+        : getAlreadyLoadedNames(exactPoolHit, tools, loadedNames)
+    if (exactHitLoaded.length > 0) {
+      logForDebugging(
+        `ToolSearchTool: keyword query names already-loaded ${exactHitLoaded.join(', ')}`,
+      )
+      logSearchOutcome([], 'keyword')
+      return buildSearchResult(
+        [],
+        query,
+        deferredTools.length,
+        undefined,
+        buildAlreadyLoadedNote(exactHitLoaded, toolUseID),
+      )
+    }
+
+    // Partial overlap (official `dn=Yt(...)`): when the raw query resolves
+    // (name/alias) to already-loaded tools without an exact primary-name
+    // hit, the normal result is wrapped with the note for the loaded
+    // subset. OCC's resolver is findToolByName (exact name or alias), so
+    // this yields at most one name — mirroring official LX semantics with
+    // OCC's resolver.
+    const partialLoadedNames =
+      exactPoolHit !== undefined || loadedNames.size === 0
+        ? []
+        : (() => {
+            const resolved = findToolByName(tools, queryTrimmed)
+            return resolved !== undefined && loadedNames.has(resolved.name)
+              ? [resolved.name]
+              : []
+          })()
+    const keywordNote = buildAlreadyLoadedNote(partialLoadedNames, toolUseID)
 
     // Keyword search
     const matches = await searchToolsWithKeywords(
@@ -427,10 +609,17 @@ export const ToolSearchTool = buildTool({
         query,
         deferredTools.length,
         pendingServers,
+        keywordNote,
       )
     }
 
-    return buildSearchResult(matches, query, deferredTools.length)
+    return buildSearchResult(
+      matches,
+      query,
+      deferredTools.length,
+      undefined,
+      keywordNote,
+    )
   },
   renderToolUseMessage() {
     return null

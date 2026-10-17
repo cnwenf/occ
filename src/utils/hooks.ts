@@ -138,6 +138,10 @@ import {
   applyOnFailureBlockOutcome,
   applyOnFailureBlockRaw,
 } from './hooks/onFailureBlock.js'
+import {
+  isPromptOrAgentHook,
+  mergeHookGeneratorsWithPromptAgentCap,
+} from './hooks/promptAgentConcurrencyCap302.js'
 import { logForDebugging } from './debug.js'
 import { stripHintTagLines } from './claudeCodeHints.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
@@ -168,7 +172,6 @@ import {
   PERSISTED_OUTPUT_TAG,
   PERSISTED_OUTPUT_CLOSING_TAG,
 } from './toolResultStorage.js'
-import { all } from './generators.js'
 import { findToolByName, type Tools, type ToolUseContext } from '../Tool.js'
 import { execPromptHook } from './hooks/execPromptHook.js'
 import { capHookString, HOOK_STRING_CAP } from './hooks/hookHelpers.js'
@@ -4557,8 +4560,19 @@ async function* executeHooks({
   // PermissionResult['behavior'] union, so widen the aggregated type.
   let permissionBehavior: (PermissionResult['behavior'] | 'defer') | undefined
 
-  // Run all hooks in parallel and wait for all to complete
-  for await (const rawResult of all(hookPromises)) {
+  // Run all hooks in parallel and wait for all to complete.
+  // CC 2.1.302 (#035): official call site @246372863 —
+  //   let Lr=ZRn(Mo,(Eo)=>Iee(Kn[Eo].hook)); for await(let Eo of ...Lr...)
+  // prompt/agent hook generators merge through the concurrency-capped merge
+  // (cap 12, staggered starts); every other hook type merges uncapped as
+  // before; ≤1 prompt/agent hook keeps the plain v301 merge. OCC has no
+  // "hook-dispatch-hold" keepalive analogue, so the official's wave-scaled
+  // hold (`Fr=lnt(...)`, `nCn(Lr,Fr)` wrapper) has no landing site here.
+  const mergedHookResults = mergeHookGeneratorsWithPromptAgentCap(
+    hookPromises,
+    hookIndex => isPromptOrAgentHook(matchingHooks[hookIndex]!.hook),
+  )
+  for await (const rawResult of mergedHookResults) {
     // CC 2.1.295 (official K_t): the onFailure:"block" conversion runs in the
     // consumer loop BEFORE the outcome tally, so a converted failure counts
     // as 'blocking'. `signal` is the parent abort signal (official `y`,

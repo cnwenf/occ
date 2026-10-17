@@ -18,6 +18,19 @@
  * #147 — a worktree root whose `.git` is a FILE or SYMLINK pointing at a BARE
  * repository now fails with an explanatory message (official throw inside
  * `MYe` @225552076, detection helper `aSs` @221606923).
+ *
+ * Official Claude Code 2.1.302 (#23) — git ≥2.56 emits `fatal: gitfile does
+ * not point to a valid repository` when a stray `.git` FILE's gitdir target
+ * doesn't exist. Official v301 classified that stderr as "error" → worktree
+ * create/resume refused; v302 extended the shared no-repo predicate (v301
+ * `GWt` → v302 `pGt` @243939195):
+ *
+ *   function pGt(e){return/not a git repository/i.test(e)||/gitfile does not point to a valid repository/i.test(e)}
+ *
+ * so BOTH messages classify as no-repo → the worktree paths decline gracefully
+ * (same class as "not a git repository") instead of hard-erroring. Ported here
+ * as `isNoRepoGitStderr` + the `no_repo` cause in `classifyRevParseCause`.
+ * No git-version check — the official has none; the stderr text is the signal.
  */
 
 import { lstat, readFile, readlink } from 'fs/promises'
@@ -34,7 +47,28 @@ export type RevParseCause =
   | 'name_missing'
   | 'exit_1_with_output'
   | 'git_refused'
+  | 'no_repo'
   | 'other_exit'
+
+/**
+ * Official v302 `pGt` (@243939195), byte-exact predicate — the shared no-repo
+ * classifier for git stderr on worktree paths:
+ *
+ *   /not a git repository/i.test(e) ||
+ *   /gitfile does not point to a valid repository/i.test(e)
+ *
+ * The second regex is the 2.1.302 (#23) addition: git ≥2.56 says `fatal:
+ * gitfile does not point to a valid repository` when a `.git` FILE's gitdir
+ * target doesn't exist (older git says `fatal: not a git repository: <path>`
+ * for the same layout). Both mean "this directory is not a repo" — proceed /
+ * decline gracefully, never a hard refusal.
+ */
+export function isNoRepoGitStderr(stderr: string): boolean {
+  return (
+    /not a git repository/i.test(stderr) ||
+    /gitfile does not point to a valid repository/i.test(stderr)
+  )
+}
 
 // Official message fragments (v299 @225547600 region), byte-exact:
 const REV_PARSE_OUTPUT_NOT_SHOWN =
@@ -132,6 +166,12 @@ export function pickDisplayStderrLine(stderrTrimmed: string): string {
  * Cause classification for a failed `git rev-parse --verify --quiet <base>`.
  * Mirrors the official `Se` ternary chain; see the header comment for the
  * timed_out/not_completed adaptation to OCC's exec wrapper.
+ *
+ * Official 2.1.302 (#23): the no-repo stderr predicate (`pGt`) is checked
+ * FIRST — `if(pGt(n.stderr))return"no-repo"` — so "not a git repository" AND
+ * git ≥2.56's "gitfile does not point to a valid repository" both classify as
+ * `no_repo` (decline gracefully) instead of falling through to `git_refused`
+ * (hard error).
  */
 export function classifyRevParseCause(result: {
   stdout: string
@@ -139,6 +179,9 @@ export function classifyRevParseCause(result: {
   code: number
   error?: string
 }): RevParseCause {
+  if (isNoRepoGitStderr(result.stderr)) {
+    return 'no_repo'
+  }
   const errorText = result.error ?? ''
   if (errorText.includes('timed out')) {
     return 'timed_out'
@@ -163,6 +206,12 @@ export function classifyRevParseCause(result: {
 /**
  * Official `Xe` message from `DQt` (v299 @225547600), byte-exact per cause /
  * kind. `repoConfirmed` = the official `be === "yes"` (`.git` layout resolved).
+ *
+ * Note: the `no_repo` cause (2.1.302 #23) never reaches this catalog — the
+ * worktree call site intercepts it and declines with the not-in-a-git-repo
+ * message instead (the official treats no-repo as proceed/decline, not as a
+ * base-resolve failure). If called defensively with `no_repo`, it falls into
+ * the generic quoted-stderr branch below.
  */
 export function buildWorktreeBaseResolveFailureMessage(params: {
   cause: RevParseCause

@@ -1,5 +1,7 @@
 /**
- * Filesystem-based git state reading — avoids spawning git subprocesses.
+ * Filesystem-based git state reading — avoids spawning git subprocesses
+ * (one narrow exception: the CC 2.1.302 #10 reftable fallback resolves refs
+ * via `git show-ref`, because reftable refs are not fs-readable).
  *
  * Covers: resolving .git directories (including worktrees/submodules),
  * parsing HEAD, resolving refs via loose files and packed-refs,
@@ -18,7 +20,8 @@ import { join, resolve } from 'path'
 import { waitForScrollIdle } from '../../bootstrap/state.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { getCwd } from '../cwd.js'
-import { findGitRoot } from '../git.js'
+import { execFileNoThrowWithCwd } from '../execFileNoThrow.js'
+import { findGitRoot, gitExe } from '../git.js'
 import { parseGitConfigValue } from './gitConfigParser.js'
 
 // ---------------------------------------------------------------------------
@@ -131,6 +134,96 @@ export function isValidGitSha(s: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
+// CC 2.1.302 #10 — reftable ref-storage detection + git-subprocess fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * Under git's `reftable` ref storage (git >= 2.46; the default when
+ * `init.refStorage=reftable`, e.g. git >= 2.56 installs), the classic
+ * `<gitDir>/HEAD` file holds a fixed sentinel so files-backend readers do not
+ * mis-parse the real HEAD, and refs live in `<gitDir>/reftable/` tables
+ * instead of loose files / packed-refs. Official v302 `ar` constant
+ * (@235159663, `ubt` detector) — git's own reftable backend writes this same
+ * `refs/heads/.invalid` placeholder.
+ */
+const REFTABLE_HEAD_SENTINEL = 'ref: refs/heads/.invalid'
+
+/** Timeout for the show-ref fallback subprocess (local, read-only git call). */
+const SHOW_REF_TIMEOUT_MS = 5_000
+
+/**
+ * Detect reftable ref storage for a gitdir. Never throws; any fs error falls
+ * through to `false` (classic files-backend assumed — zero behavior change).
+ *
+ * Checks, in order:
+ *   1. Official primary check (v302 `ubt`): `<gitDir>/HEAD` trims to exactly
+ *      the `ref: refs/heads/.invalid` sentinel.
+ *   2. In-repo precedent (`isReftableGitDir` in src/utils/worktree.ts, CC
+ *      2.1.299 #113): the `<gitDir>/reftable/` directory exists.
+ */
+export async function usesReftableRefStorage(gitDir: string): Promise<boolean> {
+  try {
+    const head = (await readFile(join(gitDir, 'HEAD'), 'utf-8')).trim()
+    if (head === REFTABLE_HEAD_SENTINEL) {
+      return true
+    }
+  } catch {
+    // No/unreadable HEAD file — still check the reftable/ directory below.
+  }
+  try {
+    return (await stat(join(gitDir, 'reftable'))).isDirectory()
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Resolve a ref through a git subprocess — the reftable branch of official
+ * v302 `M4` (@235158155):
+ * `git --git-dir=<gitDir> show-ref --verify --hash --end-of-options <ref>`.
+ *
+ * Guards (official M4 shape, mapped onto OCC helpers):
+ *   - the ref must be exactly `HEAD`, or start with `refs/` and pass
+ *     `isSafeRefName` (OCC's equivalent of the official `fE` allowlist) —
+ *     anything else returns null without spawning;
+ *   - `--end-of-options` plus the name allowlist block argument injection
+ *     from a tampered gitdir;
+ *   - stdout must be a full 40/64-hex sha (official `$2` validation).
+ *
+ * Returns null on every failure mode and never throws (official M4 contract).
+ */
+async function resolveRefViaShowRef(
+  gitDir: string,
+  ref: string,
+): Promise<string | null> {
+  if (ref !== 'HEAD' && (!ref.startsWith('refs/') || !isSafeRefName(ref))) {
+    return null
+  }
+  try {
+    const { code, stdout } = await execFileNoThrowWithCwd(
+      gitExe(),
+      [
+        '--git-dir',
+        gitDir,
+        'show-ref',
+        '--verify',
+        '--hash',
+        '--end-of-options',
+        ref,
+      ],
+      { cwd: resolve(gitDir, '..'), timeout: SHOW_REF_TIMEOUT_MS },
+    )
+    if (code !== 0) {
+      return null
+    }
+    const sha = stdout.trim()
+    return isValidGitSha(sha) ? sha : null
+  } catch {
+    return null
+  }
+}
+
+// ---------------------------------------------------------------------------
 // readGitHead — parse .git/HEAD
 // ---------------------------------------------------------------------------
 
@@ -188,8 +281,12 @@ export async function readGitHead(
 
 /**
  * Resolve a git ref (e.g. `refs/heads/main`) to a commit SHA.
- * Checks loose ref files first, then falls back to packed-refs.
- * Follows symrefs (e.g. `ref: refs/remotes/origin/main`).
+ *
+ * CC 2.1.302 #10: reftable gitdirs (sentinel HEAD / `reftable/` dir) resolve
+ * through a `git show-ref` subprocess first (official v302 `M4` ordering).
+ * Classic files-backend gitdirs check loose ref files first, then fall back
+ * to packed-refs, then to the commondir. Follows symrefs (e.g.
+ * `ref: refs/remotes/origin/main`).
  *
  * For worktrees, refs live in the common gitdir (pointed to by the
  * `commondir` file), not the worktree-specific gitdir. We check the
@@ -204,6 +301,14 @@ export async function resolveRef(
   gitDir: string,
   ref: string,
 ): Promise<string | null> {
+  // CC 2.1.302 #10 (official M4 ordering): reftable check FIRST → show-ref
+  // subprocess. Under reftable, loose ref files and packed-refs do not exist,
+  // so the fs path can only ever return null. Classic ref storage keeps the
+  // pure-fs path below byte-for-byte unchanged (zero behavior change).
+  if (await usesReftableRefStorage(gitDir)) {
+    return resolveRefViaShowRef(gitDir, ref)
+  }
+
   const result = await resolveRefInDir(gitDir, ref)
   if (result) {
     return result
@@ -601,6 +706,13 @@ export async function getHeadForDir(cwd: string): Promise<string | null> {
   const gitDir = await resolveGitDir(cwd)
   if (!gitDir) {
     return null
+  }
+  // CC 2.1.302 #10: under reftable the `<gitDir>/HEAD` file is the
+  // `refs/heads/.invalid` sentinel — resolving it as a branch name can only
+  // fail, so ask git itself (official M4 allows n="HEAD"; exit != 0 → null,
+  // same as the official null-on-failure contract).
+  if (await usesReftableRefStorage(gitDir)) {
+    return resolveRefViaShowRef(gitDir, 'HEAD')
   }
   const head = await readGitHead(gitDir)
   if (!head) {
