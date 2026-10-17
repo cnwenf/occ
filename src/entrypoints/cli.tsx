@@ -179,8 +179,29 @@ async function main(): Promise<void> {
         const { getBridgeDisabledReason, checkBridgeMinVersion } =
             await import("../bridge/bridgeEnabled.js");
         const { BRIDGE_LOGIN_ERROR } = await import("../bridge/types.js");
-        const { bridgeMain } = await import("../bridge/bridgeMain.js");
+        const { bridgeMain, parseArgs: parseBridgeArgs } = await import(
+            "../bridge/bridgeMain.js"
+        );
         const { exitWithError } = await import("../utils/process.js");
+
+        // CC 2.1.302 #16: "Fixed `claude remote-control --help` not printing
+        // its usage and exiting when not signed in." Official v302 reorders
+        // the remote-control command setup so the Commander helpOption/usage
+        // path runs BEFORE the auth-state gate (byte-verified v302
+        // @117867900: helpOption/argParser/hideHelp machinery co-located
+        // with auth_failed/stale_tunnel_credential codes, help first).
+        // bridgeMain already prints help pre-auth (`parsed.help →
+        // printHelp() → return` at bridgeMain.ts:2130-2135, ahead of its own
+        // token check at :2254), so delegate `--help`/`-h` straight to it —
+        // using bridgeMain's OWN parseArgs so `--name --help` keeps its
+        // value-consumption semantics (help flag NOT set when eaten as a
+        // value). Help needs no auth; the gate chain below still guards the
+        // actual session start.
+        const bridgeArgs = args.slice(1);
+        if (parseBridgeArgs(bridgeArgs).help) {
+            await bridgeMain(bridgeArgs);
+            return;
+        }
 
         // Auth check must come before the GrowthBook gate check — without auth,
         // GrowthBook has no user context and would return a stale/default false.

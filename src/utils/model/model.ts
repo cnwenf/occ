@@ -36,7 +36,7 @@ import {
 import { checkOpus1mAccess } from './check1mAccess.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
 import { isModelAllowed } from './modelAllowlist.js'
-import { type ModelAlias, isModelAlias } from './aliases.js'
+import { MODEL_ALIASES, type ModelAlias, isModelAlias } from './aliases.js'
 import { capitalize } from '../stringUtils.js'
 
 export type ModelShortName = string
@@ -1008,6 +1008,43 @@ export function parseUserSpecifiedModel(
     return dedup1mSuffix(modelInputTrimmed)
   }
   return modelInputTrimmed
+}
+
+// CC 2.1.302 changelog #07 — the bare alias set for the official `Xge`
+// membership test (v302 @237166167, byte-verified):
+//   function dFt(e){return Xge(e.toLowerCase().trim())?Ot(e):e}
+// `sU` (official) = fable/opusplan/sonnet/haiku/opus/best — exactly the
+// switch arms of parseUserSpecifiedModel. OCC derives the same set from
+// MODEL_ALIASES with the `[1m]` tag stripped (MODEL_ALIASES additionally
+// carries the sonnet[1m]/opus[1m]/opusplan[1m] spellings, which the official
+// raw-string membership test does NOT accept — 'opus[1m]' passes through
+// untouched, matching dFt).
+const BARE_MODEL_ALIASES: ReadonlySet<string> = new Set(
+  MODEL_ALIASES.map((alias) => alias.replace(/\[1m]$/i, '')),
+)
+
+/** Official `Xge` — membership test against the bare alias set `sU`. */
+function isKnownModelAlias(candidate: string): boolean {
+  return BARE_MODEL_ALIASES.has(candidate)
+}
+
+/**
+ * CC 2.1.302 changelog #07 — official `dFt` (byte-verified v302 @237166167):
+ * alias-conditional normalization of a possibly-RAW user specifier before it
+ * becomes a settings key (modelSettings[...] derivation for /autocompact).
+ *
+ * Bare aliases (`opus`, `sonnet`, …) resolve through parseUserSpecifiedModel
+ * (≡ official `Ot`); concrete model strings — including gateway-prefixed
+ * names like `anthropic/claude-opus-4-1` — are returned UNCHANGED (identity,
+ * no trim / case folding), so they never pass through the alias switch or the
+ * legacy-Opus remap. v301 ran the parser unconditionally inside the key
+ * builder, which remapped a gateway-prefixed Opus 4/4.1 to the default Opus
+ * and saved the setting under the wrong model.
+ */
+export function normalizeModelSpecifier(modelInput: string): string {
+  return isKnownModelAlias(modelInput.toLowerCase().trim())
+    ? parseUserSpecifiedModel(modelInput)
+    : modelInput
 }
 
 /**

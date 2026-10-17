@@ -574,6 +574,19 @@ export type GlobalConfig = {
   // undefined = use default (see getRemoteControlAtStartup() for precedence)
   remoteControlAtStartup?: boolean
 
+  // CC 2.1.302 (#31): fork-subagent kill flag — official `Hf().forkSubagentDisabled`
+  // (byte-verified in the v302 `qcn` gate). Checked after the coordinator gate
+  // and BEFORE the CLAUDE_CODE_FORK_SUBAGENT env parse, so it beats env=1.
+  forkSubagentDisabled?: boolean
+  // CC 2.1.302 (#31): fork-gate source override — official
+  // `e.forkSubagentEnabledSource` in the Ro() config. When set, returned
+  // verbatim by getForkSubagentSource() (after the coordinator /
+  // forkSubagentDisabled / env=0 checks). The official writes the computed
+  // source back into this key as a cache; OCC honors explicit values only and
+  // computes fresh on every call (no write-back — divergence documented in
+  // src/tools/AgentTool/forkSubagent.ts).
+  forkSubagentEnabledSource?: 'disabled' | 'env' | 'default'
+
   // Cached extra usage disabled reason from the last API response
   // undefined = no cache, null = extra usage enabled, string = disabled reason.
   cachedExtraUsageDisabledReason?: string | null
@@ -692,6 +705,8 @@ export const GLOBAL_CONFIG_KEYS = [
   'prStatusFooterEnabled',
   'remoteControlAtStartup',
   'remoteDialogSeen',
+  'forkSubagentDisabled',
+  'forkSubagentEnabledSource',
 ] as const
 
 export type GlobalConfigKey = (typeof GLOBAL_CONFIG_KEYS)[number]
@@ -1435,6 +1450,21 @@ export function enableConfigs(): void {
   logForDiagnosticsNoPII('info', 'enable_configs_completed', {
     duration_ms: Date.now() - startTime,
   })
+}
+
+/**
+ * Whether `getConfig`/`getGlobalConfig` can be read WITHOUT throwing right
+ * now. Mirrors the gate in `getConfig` below (`!configReadingAllowed &&
+ * NODE_ENV !== 'test'` ⇒ throw). Callers whose evaluation can be forced at
+ * module-init time (e.g. anything reachable from a tool's `get inputSchema()`
+ * getter — `buildTool`'s object spread invokes getters while modules are
+ * still initializing, and the `-p` path evaluates tool modules before
+ * `enableConfigs()` runs) must consult this and degrade gracefully instead of
+ * reading config unconditionally. CC 2.1.302 #31 regression: the fork-gate
+ * resolver started reading config and crashed every `-p` run at startup.
+ */
+export function isConfigReadingAllowed(): boolean {
+  return configReadingAllowed || process.env.NODE_ENV === 'test'
 }
 
 /**

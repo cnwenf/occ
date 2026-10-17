@@ -52,7 +52,7 @@ import { agentToolResultSchema, classifyHandoffIfNeeded, emitTaskProgress, extra
 import { frameHandbackContentIfEnabled, frameHandbackIfEnabled } from './subagentHandback.js';
 import { GENERAL_PURPOSE_AGENT } from './built-in/generalPurposeAgent.js';
 import { AGENT_TOOL_NAME, LEGACY_AGENT_TOOL_NAME, ONE_SHOT_BUILTIN_AGENT_TYPES } from './constants.js';
-import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild } from './forkSubagent.js';
+import { buildForkedMessages, buildWorktreeNotice, FORK_AGENT, isForkSubagentEnabled, isInForkChild, isSubagentsForcedBackground } from './forkSubagent.js';
 import type { AgentDefinition } from './loadAgentsDir.js';
 import { filterAgentsByMcpRequirements, hasRequiredMcpServers, isBuiltInAgent } from './loadAgentsDir.js';
 import { getPrompt } from './prompt.js';
@@ -125,6 +125,14 @@ export const inputSchema = lazySchema(() => {
     cwd: true
   });
 
+  // CC 2.1.302 (#32): official v302 schema builder @251052579:
+  // `e=lgt()||vat(), h=e?n.omit({run_in_background:!0}):...` — the fork term
+  // swapped from v301's `zoe()` (fork-enabled) to `vat()`
+  // (isSubagentsForcedBackground): omit the param only when subagents are
+  // FORCED into the background (terminal-class surfaces, or
+  // CLAUDE_CODE_FORK_SUBAGENT=1 anywhere). Plain `-p`/SDK with default-on
+  // fork keeps the param offered so nested Agent calls can run foreground.
+  //
   // GrowthBook-in-lazySchema is acceptable here (unlike subagent_type, which
   // was removed in 906da6c723): the divergence window is one-session-per-
   // gate-flip via _CACHED_MAY_BE_STALE disk read, and worst case is either
@@ -132,7 +140,7 @@ export const inputSchema = lazySchema(() => {
   // by forceAsync) or "schema hides a param that would've worked" (gate
   // flips off mid-session: everything still runs async via memoized
   // forceAsync). No Zod rejection, no crash — unlike required→optional.
-  const backgroundGated = isBackgroundTasksDisabled || isForkSubagentEnabled() ? schema.omit({
+  const backgroundGated = isBackgroundTasksDisabled || isSubagentsForcedBackground() ? schema.omit({
     run_in_background: true
   }) : schema;
 
@@ -605,9 +613,14 @@ export const AgentTool = buildTool({
     // dependency issues during test module loading.
     const isCoordinator = feature('COORDINATOR_MODE') ? isEnvTruthy(process.env.CLAUDE_CODE_COORDINATOR_MODE) : false;
 
-    // Fork subagent experiment: force ALL spawns async for a unified
-    // <task-notification> interaction model (not just fork spawns — all of them).
-    const forceAsync = isForkSubagentEnabled();
+    // CC 2.1.302 (#32): forced-background predicate (official `vat()`) —
+    // replaces v301's raw fork-enabled gate (`zoe()`). Terminal-class
+    // surfaces (and CLAUDE_CODE_FORK_SUBAGENT=1 anywhere) force ALL
+    // main-conversation subagents async for the unified <task-notification>
+    // interaction model; plain `-p`/SDK with default-on fork leaves the
+    // model's run_in_background choice in charge, so a subagent's own Agent
+    // calls run in the foreground by default.
+    const forceAsync = isSubagentsForcedBackground();
 
     // Assistant mode: force all agents async. Synchronous subagents hold the
     // main loop's turn open until they complete — the daemon's inputQueue

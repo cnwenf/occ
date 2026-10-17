@@ -92,6 +92,16 @@ import type { Theme, ThemeName } from './utils/theme.js'
 export type QueryChainTracking = {
   chainId: string
   depth: number
+  /**
+   * CC 2.1.302 (#19): recorded at BOTH response sites (streaming and
+   * non-streaming) after the reply is received — the official producer sets
+   * `e.queryTracking.billedToUsageCredits = ft.overageInUse === !0` where `ft`
+   * is the header extraction (@246082900-region non-streaming / @246195751
+   * streaming). The prompt-suggestion gate prefers this per-turn flag over the
+   * current limits state (official caller:
+   * `f=x(p,o.toolUseContext.queryTracking?.billedToUsageCredits)`).
+   */
+  billedToUsageCredits?: boolean
 }
 
 export type ValidationResult =

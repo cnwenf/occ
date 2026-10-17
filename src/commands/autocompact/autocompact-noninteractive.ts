@@ -54,7 +54,10 @@ import {
 import { getGlobalConfig } from '../../utils/config.js'
 import { getContextWindowForModel } from '../../utils/context.js'
 import { formatTokens } from '../../utils/format.js'
-import { getCanonicalName } from '../../utils/model/model.js'
+import {
+  getCanonicalName,
+  normalizeModelSpecifier,
+} from '../../utils/model/model.js'
 import { updateSettingsForSource } from '../../utils/settings/settings.js'
 
 /**
@@ -72,7 +75,11 @@ const SOURCE_LABELS: Record<string, string> = {
 
 /** Port of the official `w` current-state description builder. */
 function describeCurrentWindow(model: string): string {
-  const settingsKey = getCanonicalName(model)
+  // CC 2.1.302 #07: alias-conditional normalize (official dFt) BEFORE
+  // canonicalize — a raw specifier ('opus') resolves first so the displayed
+  // key matches the setter's; concrete models (incl. gateway-prefixed like
+  // 'anthropic/claude-opus-4-1') pass through untouched.
+  const settingsKey = getCanonicalName(normalizeModelSpecifier(model))
   const contextWindow = getContextWindowForModel(model, getSdkBetas())
   const { window, configured, source } = resolveAutoCompactWindow(
     model,
@@ -115,7 +122,10 @@ function describeCurrentWindow(model: string): string {
 
 /** Port of the official `nPt` setter. `raw` arrives pre-trimmed (official Kcs). */
 async function setWindow(raw: string, model: string): Promise<string> {
-  const settingsKey = getCanonicalName(model)
+  // CC 2.1.302 #07: alias-conditional normalize (official dFt) BEFORE
+  // canonicalize — same key derivation as the Mqr writer below, so the
+  // reported settingsKey matches the persisted modelSettings key.
+  const settingsKey = getCanonicalName(normalizeModelSpecifier(model))
   const contextWindow = getContextWindowForModel(model, getSdkBetas())
 
   // Official env guard: `if(Dw(o,void 0).source==="env")return"..."`.

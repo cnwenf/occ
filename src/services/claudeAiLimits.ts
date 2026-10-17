@@ -133,6 +133,16 @@ export type ClaudeAILimits = {
   overageDisabledReason?: OverageDisabledReason
   isUsingOverage?: boolean
   surpassedThreshold?: number
+  /**
+   * CC 2.1.302 (#19): true when the reply was billed to usage credits
+   * (overage actually consumed). Official v302 header parse (binary
+   * @238390300-region): `Kr="anthropic-ratelimit-unified-overage-in-use"`,
+   * `O=e.get(Kr)==="true"`, `te={…O&&{overageInUse:O}…}` — set only when the
+   * header is exactly "true", absent otherwise. The prompt-suggestion gate
+   * reads it as the fallback for the per-turn
+   * `queryTracking.billedToUsageCredits` flag.
+   */
+  overageInUse?: boolean
 }
 
 // Exported for testing only
@@ -403,6 +413,13 @@ function computeNewLimitsFromHeaders(
     'anthropic-ratelimit-unified-overage-disabled-reason',
   ) as OverageDisabledReason | null
 
+  // CC 2.1.302 (#19): usage-credits billing flag. Official v302 limits parse
+  // (binary @238390300-region): `Kr="anthropic-ratelimit-unified-overage-in-use"`
+  // and `O=e.get(Kr)==="true"` — exactly the string "true", spread onto the
+  // limits object only when truthy (`...O&&{overageInUse:O}`).
+  const overageInUse =
+    headers.get('anthropic-ratelimit-unified-overage-in-use') === 'true'
+
   // Determine if we're using overage (standard limits rejected but overage allowed)
   const isUsingOverage =
     status === 'rejected' &&
@@ -417,7 +434,10 @@ function computeNewLimitsFromHeaders(
       unifiedRateLimitFallbackAvailable,
     )
     if (earlyWarning) {
-      return earlyWarning
+      // Official includes overageInUse on the base limits object regardless of
+      // which branch builds it (`te={...,...O&&{overageInUse:O},...}`), so the
+      // early-warning return must carry the flag too.
+      return overageInUse ? { ...earlyWarning, overageInUse } : earlyWarning
     }
     // No early warning threshold surpassed
     finalStatus = 'allowed'
@@ -432,6 +452,7 @@ function computeNewLimitsFromHeaders(
     ...(overageResetsAt && { overageResetsAt }),
     ...(overageDisabledReason && { overageDisabledReason }),
     isUsingOverage,
+    ...(overageInUse && { overageInUse }),
   }
 }
 
@@ -451,9 +472,19 @@ function cacheExtraUsageDisabledReason(headers: globalThis.Headers): void {
   }
 }
 
+/**
+ * Extract quota status from response headers and update the limits state.
+ *
+ * CC 2.1.302 (#19): returns the extracted limits (or undefined when rate-limit
+ * processing is skipped) — the official v302 producer `ePo` is this same store
+ * extraction (`function ePo(...){return se.extractQuotaStatusFromHeaders(...)}`
+ * @238522075) and BOTH response sites consume its return value:
+ * `if(ft&&e.queryTracking)e.queryTracking.billedToUsageCredits=ft.overageInUse===!0`
+ * (@246082900-region non-streaming / @246195751 streaming).
+ */
 export function extractQuotaStatusFromHeaders(
   headers: globalThis.Headers,
-): void {
+): ClaudeAILimits | undefined {
   // Check if we need to process rate limits
   const isSubscriber = isClaudeAISubscriber()
 
@@ -468,7 +499,7 @@ export function extractQuotaStatusFromHeaders(
       }
       emitStatusChange(defaultLimits)
     }
-    return
+    return undefined
   }
 
   // Process headers (applies mocks from /mock-limits command if active)
@@ -482,6 +513,7 @@ export function extractQuotaStatusFromHeaders(
   if (!isEqual(currentLimits, newLimits)) {
     emitStatusChange(newLimits)
   }
+  return newLimits
 }
 
 export function extractQuotaStatusFromError(error: APIError): void {

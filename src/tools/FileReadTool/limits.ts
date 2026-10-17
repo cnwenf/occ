@@ -19,6 +19,21 @@ import { MAX_OUTPUT_SIZE } from 'src/utils/file.js'
 export const DEFAULT_MAX_OUTPUT_TOKENS = 25000
 
 /**
+ * CC 2.1.302 #06 — hard byte cap on image sources read by the Read tool.
+ *
+ * Official evidence (v302 linux-x64 ELF, read-only forensics): `cB = S_o` =
+ * 134217728 (128 MiB), chunk `zXr = 65536` (64 KiB). Before this cap the image
+ * branch read an image file of ANY size — or a pipe/device named like an image
+ * — entirely into memory (a DoS footgun). Now regular files over the cap are
+ * refused by stat (no read), and non-regular sources are read in 64 KiB chunks
+ * with a running total that refuses past the cap. See `./imageRead.ts`.
+ */
+export const MAX_IMAGE_READ_BYTES = 134217728
+
+/** Chunk size for reading non-regular (pipe/device) image sources. */
+export const IMAGE_READ_CHUNK_BYTES = 65536
+
+/**
  * Env var override for max output tokens. Returns undefined when unset/invalid
  * so the caller can fall through to the next precedence tier.
  */

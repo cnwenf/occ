@@ -1500,8 +1500,39 @@ export function _resetClassifierPinIgnoreWarnLatch(): void {
 }
 
 /**
+ * CC 2.1.302 #01: official `loggedPolicySkips` analogue — warn-once keys for
+ * classifier-model ladder skips. Currently only holds `env:shadowed` (env
+ * `CLAUDE_CODE_AUTO_MODE_MODEL` shadowed by a config-supplied model). The
+ * official Set also carries org-policy vetting skips (`a_e`); OCC has no
+ * policy/safeguards surface, so those keys never land here.
+ */
+const classifierPolicySkipLogs = new Set<string>()
+
+/** @internal reset the 302 warn-once Set for tests. */
+export function _resetClassifierPolicySkipLogs(): void {
+  classifierPolicySkipLogs.clear()
+}
+
+/**
  * Get the model for the classifier.
- * Ant-only env var takes precedence, then GrowthBook JSON config override.
+ *
+ * CC 2.1.302 #01 — official v302 ladder (`HYe` @244374771, byte-verified):
+ *   1. server config: GrowthBook `tengu_auto_mode_config` →
+ *      `modelByMainModel` (wildcard-prefix matcher `RYt`) → `model`
+ *   2. env `CLAUDE_CODE_AUTO_MODE_MODEL` — used only if config did not set
+ *      one; when shadowed, warn-once "env:shadowed" via a `loggedPolicySkips`
+ *      Set (no ant gate — applies to all users)
+ *   3. `externalSonnet5Probe`
+ *   4. built-in default
+ * Org-policy vetting (`a_e`: policy `wte` / safeguards `WMo`) can veto the
+ * chosen model in the official.
+ *
+ * OCC divergence: GrowthBook is stubbed (no remote server config), so the
+ * config slot is OCC's local `tengu_auto_mode_config` feature-value source;
+ * OCC has no `modelByMainModel` table, no `externalSonnet5Probe`, and no
+ * org-policy vetting/arbiter path (N-A per triage) — the existing tail
+ * (external Sonnet 5 default → subagent/main-loop fallback) is unchanged.
+ *
  * 2.1.210 #27: for external (non-firstParty) sessions, defaults to Sonnet 5
  * (1M) via `getClassifierSonnet5Default` — "validated on first request +
  * pinned". `ANTHROPIC_DEFAULT_SONNET_MODEL` overrides for external sessions
@@ -1514,17 +1545,28 @@ export function _resetClassifierPinIgnoreWarnLatch(): void {
  * @internal exported for tests (2.1.288 #76) — not part of the public API.
  */
 export function getClassifierModel(): string {
-  if (process.env.USER_TYPE === 'ant') {
-    const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
-    if (envModel) return envModel
-  }
   const config = getFeatureValue_CACHED_MAY_BE_STALE(
     'tengu_auto_mode_config',
     {} as AutoModeConfig,
   )
+  const envModel = process.env.CLAUDE_CODE_AUTO_MODE_MODEL
   if (config?.model) {
+    // 302 #01: config wins over env (v301 OCC ranked the ant-gated env read
+    // ABOVE config — inverted vs official). Warn once when the env is set but
+    // shadowed; message is the official `HYe` string byte-for-byte.
+    if (envModel && !classifierPolicySkipLogs.has('env:shadowed')) {
+      classifierPolicySkipLogs.add('env:shadowed')
+      logForDebugging(
+        `Auto mode classifier: ignoring CLAUDE_CODE_AUTO_MODE_MODEL=${envModel} because a server-configured classifier model (${config.model}) takes priority; using that model instead`,
+        { level: 'warn' },
+      )
+    }
     return config.model
   }
+  // 302 #01: env applies to ALL users when config supplies no model — the
+  // official `HYe` reads `a.CLAUDE_CODE_AUTO_MODE_MODEL` with no USER_TYPE
+  // gate.
+  if (envModel) return envModel
   // 2.1.210 #27: external (non-firstParty) sessions default the classifier to
   // Sonnet 5 (1M context) — mirrors official `jdh`. Checked BEFORE the
   // subagent-model/main-loop fallback so external providers get Sonnet 5 even

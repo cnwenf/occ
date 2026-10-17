@@ -11,7 +11,9 @@ import type {
   AssistantMessage,
   Message as MessageType,
 } from '../../types/message.js'
+import { getGlobalConfig, isConfigReadingAllowed } from '../../utils/config.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import { createUserMessage } from '../../utils/messages.js'
 import {
   type AutoCompactWindowOverride,
@@ -30,20 +32,127 @@ import {
  * - `subagent_type` becomes optional on the Agent tool schema
  * - Omitting `subagent_type` triggers an implicit fork: the child inherits
  *   the parent's full conversation context and system prompt
- * - All agent spawns run in the background (async) for a unified
- *   `<task-notification>` interaction model
+ * - Main-conversation subagents are forced into the background on
+ *   terminal-class surfaces (see isSubagentsForcedBackground); in plain
+ *   `-p`/SDK with default-on fork the model may still choose via
+ *   `run_in_background` and nested Agent calls default to the foreground
  * - `/fork <directive>` slash command is available
  *
  * Mutually exclusive with coordinator mode — coordinator already owns the
  * orchestration role and has its own delegation model.
  */
-export function isForkSubagentEnabled(): boolean {
-  if (feature('FORK_SUBAGENT')) {
-    if (isCoordinatorMode()) return false
-    if (getIsNonInteractiveSession()) return false
-    return true
+
+/**
+ * Where the fork-gate decision came from — mirrors the official v302 `qcn`
+ * source union ('disabled' | 'env' | 'default').
+ */
+export type ForkSubagentSource = 'disabled' | 'env' | 'default'
+
+/**
+ * CC 2.1.302 (#31): source-aware fork-gate resolver — port of the official
+ * v302 `qcn` (byte-verified; see docs/gap-research-302/triage-T2.md §#31):
+ *
+ *   function qcn(){let e=Ro();
+ *     if(Q3e())return"disabled";                                   // coordinator / mcp-serve
+ *     if(Hf().forkSubagentDisabled)return"disabled";               // config kill flag
+ *     if(a.CLAUDE_CODE_FORK_SUBAGENT===!1)return"disabled";        // env=0 → off
+ *     if(e.forkSubagentEnabledSource!==void 0)return e.forkSubagentEnabledSource;
+ *     if(a.CLAUDE_CODE_FORK_SUBAGENT!==!0&&we()&&ir(Qcr,!1))return"disabled";  // remote kill-switch
+ *     let n=a.CLAUDE_CODE_FORK_SUBAGENT===!0?"env":"default";      // non-interactive now DEFAULTS ON
+ *     return e.forkSubagentEnabledSource=n,...,n}
+ *
+ * The v301 `if(we())return"disabled"` (non-interactive ⇒ off) is GONE:
+ * `claude -p` / Agent SDK now default ON, same as the terminal.
+ *
+ * Documented OCC divergences:
+ * - Remote kill-switch (`tengu_federated_ullman` via GrowthBook `ir(Qcr,!1)`):
+ *   N/A — OCC's GrowthBook is an empty stub returning false. The official
+ *   default with the kill-switch OFF is enabled, so skipping the check is
+ *   byte-equivalent in default behavior.
+ * - Base gate: OCC keeps the FORK_SUBAGENT feature-flag term
+ *   (`env truthy || feature('FORK_SUBAGENT')`). FORK_SUBAGENT is NOT in
+ *   FEATURE_ALLOWLIST, so in live builds fork is reachable only via the env
+ *   var — the official v302 has no flag term and defaults ON unconditionally.
+ * - `forkSubagentEnabledSource` write-back cache: the official stores the
+ *   computed source back into config; OCC honors an explicitly-set config
+ *   value only and computes fresh on every call (no config mutation).
+ * - Env parsing follows OCC's isEnvTruthy/isEnvDefinedFalsy convention
+ *   (official bool-parses the env then compares ===!0 / ===!1): '0'/'false'
+ *   ⇒ disabled, unset (or unparseable) ⇒ fall through to the base gate.
+ *
+ * Precedence (official qcn order):
+ *   1. coordinator session                     → 'disabled'
+ *   2. config forkSubagentDisabled             → 'disabled'
+ *   3. env CLAUDE_CODE_FORK_SUBAGENT=0/false   → 'disabled'
+ *   4. config forkSubagentEnabledSource (set)  → that source verbatim
+ *   5. [remote kill-switch — N/A in OCC]
+ *   6. env truthy → 'env'; else feature flag → 'default'; else 'disabled'
+ *
+ * `claude mcp serve` never offers fork: OCC's mcp entrypoint registers only
+ * the /review command (src/entrypoints/mcp.ts MCP_COMMANDS), so the Agent
+ * tool — and with it the fork path — is unreachable from mcp serve.
+ */
+export function getForkSubagentSource(): ForkSubagentSource {
+  // 1. Coordinator never offers fork (official Q3e()).
+  if (isCoordinatorMode()) return 'disabled'
+  // OCC-specific config-availability guard (no official analogue — upstream
+  // config is always readable). This resolver is reachable at MODULE-EVAL
+  // time: buildTool()'s object spread invokes AgentTool's `get inputSchema()`
+  // getter, whose effort-describe (AgentTool.tsx:99) calls
+  // isForkSubagentEnabled() while tool modules initialize — and the `-p` path
+  // evaluates that graph before enableConfigs() runs, where getGlobalConfig()
+  // throws "Config accessed before allowed" (crashed every -p run when #31
+  // landed). In the pre-enable window the config terms (2/4) are treated as
+  // unset — env/coordinator/flag terms still decide, matching the pre-302
+  // module-eval behavior; once configs are enabled the official precedence
+  // below applies verbatim.
+  const config = isConfigReadingAllowed() ? getGlobalConfig() : undefined
+  // 2. Config kill flag (official Hf().forkSubagentDisabled) — beats env=1.
+  if (config?.forkSubagentDisabled) return 'disabled'
+  // 3. CLAUDE_CODE_FORK_SUBAGENT=0 turns fork off (official env===!1).
+  const envVar = process.env.CLAUDE_CODE_FORK_SUBAGENT
+  if (isEnvDefinedFalsy(envVar)) return 'disabled'
+  // 4. Explicit config source override honored verbatim (official
+  //    e.forkSubagentEnabledSource!==void 0).
+  if (config?.forkSubagentEnabledSource !== undefined) {
+    return config.forkSubagentEnabledSource
   }
-  return false
+  // 5. Remote kill-switch — N/A in OCC (GrowthBook stubbed; official default
+  //    with the kill-switch OFF is enabled).
+  // 6. Base gate: env truthy ⇒ 'env'; else FORK_SUBAGENT flag ⇒ 'default'.
+  if (isEnvTruthy(envVar)) return 'env'
+  if (feature('FORK_SUBAGENT')) return 'default'
+  return 'disabled'
+}
+
+/** Fork enabled — official `mse()` = `qcn()!=="disabled"`. */
+export function isForkSubagentEnabled(): boolean {
+  return getForkSubagentSource() !== 'disabled'
+}
+
+/**
+ * CC 2.1.302 (#32): forced-background predicate — port of the official v302
+ * `vat()` (byte-verified):
+ *
+ *   function vat(){if(!mse())return!1;return qcn()==="env"||!uL()}
+ *
+ * where `uL(e=we())` is the non-interactive-surface check EXCLUDING
+ * vscode-child sessions. OCC has no vscode-child surface, so `uL` maps
+ * directly to getIsNonInteractiveSession() (documented divergence).
+ *
+ * TRUE ⇒ the Agent tool omits `run_in_background` and every main-conversation
+ * subagent is forced async (terminal parity; also anywhere with
+ * CLAUDE_CODE_FORK_SUBAGENT=1). FALSE with the gate enabled (plain `-p`/SDK
+ * default-on) ⇒ the param stays offered and a subagent's own Agent calls run
+ * in the foreground by default.
+ *
+ * Consumed by AgentTool.tsx's schema-omit gate (official `lgt()||vat()`) and
+ * by call()'s forceAsync.
+ */
+export function isSubagentsForcedBackground(): boolean {
+  const source = getForkSubagentSource()
+  if (source === 'disabled') return false
+  return source === 'env' || !getIsNonInteractiveSession()
 }
 
 /** Synthetic agent type name used for analytics when the fork path fires. */

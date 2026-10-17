@@ -103,8 +103,26 @@ export function abortPromptSuggestion(): void {
 /**
  * Returns a suppression reason if suggestions should not be generated,
  * or null if generation is allowed. Shared by main and pipelined paths.
+ *
+ * CC 2.1.302 (#19): optional `billedToUsageCredits` — the per-turn flag
+ * recorded on queryTracking at the response sites. Official v302 gate
+ * `x(e,n)` (@251518600-region):
+ *   `{let{status:t,overageInUse:o}=ha(),s=…;
+ *     if(t!=="allowed"&&!s)return"rate_limit";
+ *     if((n??o===!0)&&!(N0()||zU()||Cte()&&TLr()===null&&GE()===null))
+ *       return"usage_credits"}
+ *    return null`
+ * — the per-turn recorded flag is preferred; the limits-state `overageInUse`
+ * is the fallback. The five official override predicates (N0/zU/Cte/TLr/GE)
+ * were NOT resolvable from the minified binary; per port discipline they are
+ * conservatively mapped to OCC's existing internal-user exemption
+ * (`USER_TYPE === 'ant'`) — the safe reading from evidence being that they
+ * exempt internal/first-party-entitled contexts.
  */
-export function getSuggestionSuppressReason(appState: AppState): string | null {
+export function getSuggestionSuppressReason(
+  appState: AppState,
+  billedToUsageCredits?: boolean,
+): string | null {
   if (!appState.promptSuggestionEnabled) return 'disabled'
   if (appState.pendingWorkerRequest || appState.pendingSandboxRequest)
     return 'pending_permission'
@@ -115,6 +133,14 @@ export function getSuggestionSuppressReason(appState: AppState): string | null {
     currentLimits.status !== 'allowed'
   )
     return 'rate_limit'
+  // CC 2.1.302 (#19): skip suggestions after a reply billed to usage credits
+  // (official order: rate_limit is checked first). Internal ('ant') users are
+  // exempt — conservative mapping of the five unresolved official predicates.
+  if (
+    (billedToUsageCredits ?? currentLimits.overageInUse === true) &&
+    process.env.USER_TYPE !== 'ant'
+  )
+    return 'usage_credits'
   return null
 }
 
@@ -128,6 +154,12 @@ export async function tryGenerateSuggestion(
   getAppState: () => AppState,
   cacheSafeParams: CacheSafeParams,
   source?: 'cli' | 'sdk',
+  // CC 2.1.302 (#19): the per-turn usage-credits billing flag recorded on
+  // queryTracking at the response sites. Official caller threads
+  // `o.toolUseContext.queryTracking?.billedToUsageCredits` into the gate; the
+  // SDK push path has no queryTracking and leaves it undefined (the gate then
+  // falls back to the limits-state `overageInUse`).
+  billedToUsageCredits?: boolean,
 ): Promise<{
   suggestion: string
   promptId: PromptVariant
@@ -156,7 +188,10 @@ export async function tryGenerateSuggestion(
   }
 
   const appState = getAppState()
-  const suppressReason = getSuggestionSuppressReason(appState)
+  const suppressReason = getSuggestionSuppressReason(
+    appState,
+    billedToUsageCredits,
+  )
   if (suppressReason) {
     logSuggestionSuppressed(suppressReason, undefined, undefined, source)
     return null
@@ -197,6 +232,9 @@ export async function executePromptSuggestion(
       context.toolUseContext.getAppState,
       cacheSafeParams,
       'cli',
+      // CC 2.1.302 (#19): prefer the per-turn recorded flag from queryTracking
+      // (official `o.toolUseContext.queryTracking?.billedToUsageCredits`).
+      context.toolUseContext.queryTracking?.billedToUsageCredits,
     )
     if (!result) return
 

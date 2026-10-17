@@ -351,7 +351,12 @@ async function generatePipelinedSuggestion(
 ): Promise<void> {
   try {
     const appState = context.toolUseContext.getAppState()
-    const suppressReason = getSuggestionSuppressReason(appState)
+    // CC 2.1.302 (#19): pass the per-turn recorded usage-credits flag so the
+    // pipelined path shares the main path's skip-after-credits-billed gate.
+    const suppressReason = getSuggestionSuppressReason(
+      appState,
+      context.toolUseContext.queryTracking?.billedToUsageCredits,
+    )
     if (suppressReason) {
       logSuggestionSuppressed(`pipeline_${suppressReason}`)
       return

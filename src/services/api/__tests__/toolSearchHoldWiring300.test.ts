@@ -69,6 +69,20 @@ mock.module(VCR_MODULE_PATH, () => ({
     _messages: unknown,
     f: () => AsyncGenerator<never, void>,
   ) => f(),
+  // CI-parity fix (OCC-120, inherited OCC-118 debt): the control test's
+  // count_tokens probe routes through withTokenCountVCR → withFixture, whose
+  // CI branch THROWS "Fixture missing" when process.env.CI is truthy and
+  // VCR_RECORD is unset (fixtures root = per-test tmpdir, never committed).
+  // Locally (CI unset) the same call RECORDS instead → test passed everywhere
+  // except GitHub runners, where the throw degraded to the haiku fallback,
+  // which ate the responder queue and hung the main query until the bun test
+  // timeout (the exact runner-only failure profile). Pass-through makes the
+  // wrapper env-independent: the probe reaches the fetch mock on every env.
+  withTokenCountVCR: (
+    _messages: unknown,
+    _tools: unknown,
+    f: () => Promise<number | null>,
+  ) => f(),
 }))
 
 // Require AFTER the mock so claude.ts binds the mocked VCR wrappers.

@@ -49,7 +49,7 @@
 import { getGlobalConfig } from './config.js'
 import { is1mContextDisabled } from './context.js'
 import { isEnvTruthy } from './envUtils.js'
-import { getCanonicalName } from './model/model.js'
+import { getCanonicalName, normalizeModelSpecifier } from './model/model.js'
 import { getEnabledSettingSources } from './settings/constants.js'
 import { getSettingsForSource } from './settings/settings.js'
 import type { SettingsJson } from './settings/types.js'
@@ -224,7 +224,11 @@ export function aggregateAutoCompactWindow(): AutoCompactWindowAggregate {
       if (value === undefined) {
         continue
       }
-      const canonicalKey = getCanonicalName(key)
+      // CC 2.1.302 #07: alias-conditional normalize (official dFt) BEFORE
+      // canonicalize — a bare 'opus' settings key resolves to the concrete
+      // default Opus; a concrete (incl. gateway-prefixed) key passes through
+      // untouched.
+      const canonicalKey = getCanonicalName(normalizeModelSpecifier(key))
       if (key === canonicalKey || !Object.hasOwn(perModel, canonicalKey)) {
         perModel[canonicalKey] = value
       }
@@ -288,7 +292,10 @@ export function resolveAutoCompactWindow(
     }
   }
 
-  const settingsKey = getCanonicalName(model)
+  // CC 2.1.302 #07: alias-conditional normalize (official dFt) BEFORE
+  // canonicalize — a raw specifier ('opus') resolves first; concrete model
+  // strings are identity here, so resolved-model callers are unaffected.
+  const settingsKey = getCanonicalName(normalizeModelSpecifier(model))
   // Official: `H = typeof n!=="object" ? n : Object.hasOwn(n.byModel,key)
   //   ? n.byModel[key] : n.default`
   let configured: AutoCompactWindowValue | undefined
@@ -621,7 +628,10 @@ export function chosenWindowExceedsAutoWindow(
   contextWindow: number,
   chosenWindow: number,
 ): boolean {
-  const canonical = getCanonicalName(model)
+  // CC 2.1.302 #07: alias-conditional normalize (official dFt) BEFORE
+  // canonicalize — the AGt table lookup key must match the writer's key when
+  // the model arrives as a raw specifier.
+  const canonical = getCanonicalName(normalizeModelSpecifier(model))
   return (
     Math.min(contextWindow, chosenWindow) >
     resolveModelAutoWindow({ model, contextWindow, canonical }).window
@@ -646,7 +656,14 @@ export function buildAutoCompactWindowPatch(
   perModelValue: AutoCompactWindowValue,
   topLevelValue: number | undefined,
 ): SettingsJson {
-  const settingsKey = getCanonicalName(model)
+  // CC 2.1.302 #07: alias-conditional normalize (official dFt) BEFORE
+  // canonicalize (official v302 key builder = Ke ∘ dFt) — a raw 'opus'
+  // specifier resolves to the concrete default Opus instead of leaking the
+  // literal alias as the settings key; a gateway-prefixed concrete name
+  // (anthropic/claude-opus-4-1) passes through untouched and keys under its
+  // own canonical name. The Object.prototype guard below is kept as-is
+  // (≡ official ETo/Mqr).
+  const settingsKey = getCanonicalName(normalizeModelSpecifier(model))
   if (Object.hasOwn(Object.prototype, settingsKey)) {
     return { autoCompactWindow: topLevelValue }
   }
