@@ -151,5 +151,5 @@ Live-model environment (ANTHROPIC_BASE_URL gateway, model `glm-5.2`; the `[claud
 ## 7. Merge / release record
 
 - **Release:** OCC `2.1.388` (package.json 2.1.387→2.1.388; CHANGELOG.md new `## 2.1.388 - 2026-10-18` section + header "Now tracking" chain updated; README 4 Tracks sites → `2.1.302 (partial)` — badge, What-is-OCC paragraph, Capability-parity table row, Status section). **Tag: NONE** (unchanged policy — post security-review/acceptance).
-- **Branch/commit:** `agent/occ/e7e15363` — triage commit `b2aafe61` (docs) + implementation commit `feat(2.1.302): OCC-120 round …` → merged `--no-ff` to `main`, pushed origin.
-- **CI:** <!-- FILL after push: run id + totals -->
+- **Branch/commit:** `agent/occ/e7e15363` — triage commit `b2aafe61` (docs) + implementation commit `b6136a44` (`feat(2.1.302): OCC-120 round …`, pre-commit biome hook passed) → merged `--no-ff` to `main` as `46a4f17f` (plumbing merge — `main` was checked out in another session's worktree), pushed `origin/main` `5e145208..46a4f17f`.
+- **CI (observed on the `46a4f17f` push):** GitHub Actions run **39067458258** → `ci` job **success** — **Total: 12613 pass / 0 fail / 339 skip**. **FIRST GREEN since the inherited debt** — the §2 `toolSearchHoldWiring300` `withTokenCountVCR` fix cleared the runner-only failure (prior run on `f0f0060b`: 12463/1/339), and `argumentSubstitutionCaps301` passes on CI's bun 1.4.2 as adjudicated. Net +150 CI-visible passing tests vs the `f0f0060b` run, zero failures. Publish step: known OCC-151 npm E404 debt (owner-side, unrelated to tests).
