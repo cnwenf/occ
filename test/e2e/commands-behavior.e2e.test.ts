@@ -142,15 +142,11 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
         60_000,
       );
       expect(res.code).toBe(0);
-      // Live-model wording varies ("Issue created:", "Issue created
-      // successfully ✅", ...) — assert the stable facts: the phrase and the
-      // issue URL anywhere in the output.
-      expect(res.stdout).toMatch(/Issue created/);
-      // Extract issue URL and close it. Hard-assert the URL so a wording
-      // change can never silently skip the cleanup step and leave the issue
-      // open (happened with #509).
+      // Cleanup FIRST: extract the issue URL and close it BEFORE any wording
+      // assertion, so a wording drift can never skip the close and leave the
+      // issue open (happened with #509, and again with #523-#525 when the
+      // model said "Issue filed" instead of "Issue created").
       const urlMatch = res.stdout.match(/https:\/\/github\.com\/cnwenf\/occ\/issues\/(\d+)/);
-      expect(urlMatch).not.toBeNull();
       if (urlMatch) {
         const issueNum = urlMatch[1];
         // Close the issue to avoid spam.
@@ -159,6 +155,12 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
           execFileSync("gh", ["issue", "close", issueNum, "--repo", "cnwenf/occ", "--comment", "e2e test — auto-closed"], { timeout: 15_000 });
         } catch {}
       }
+      // Live-model wording varies ("Issue created:", "Issue filed ✅", ...) —
+      // assert the stable facts: a created/filed phrase and the issue URL
+      // anywhere in the output. Hard-assert the URL so a wording change can
+      // never silently skip the cleanup step above.
+      expect(res.stdout).toMatch(/Issue (created|filed)/i);
+      expect(urlMatch).not.toBeNull();
     } finally {
       cleanup();
     }

@@ -12,6 +12,7 @@ import {
   type ToolDef,
   type ToolResult,
   type Tools,
+  toolMatchesName,
 } from '../../Tool.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -139,10 +140,14 @@ function getLoadedToolNames(tools: Tools, messages: Message[]): Set<string> {
  * `Kt=(Un)=>{if(be===void 0||be.size===0)return[];
  *  let so=LX([],Z5(De),Un);
  *  return so.length>0&&so.every((Jn)=>be.has(Jn.name))?so.map((Jn)=>Jn.name):[]}`
- * Resolves the requested name against the live tool pool (name or alias,
- * via findToolByName — OCC's resolver); returns the canonical name ONLY
- * when every resolved tool is already loaded, otherwise [] so the name
- * flows to the normal search path.
+ * v302 semantics are ALL-MATCH: `LX` collects every pool entry whose
+ * name/alias matches the requested name (a name can collide across the
+ * pool), and the canonical names are returned ONLY when EVERY match is
+ * already loaded — otherwise [] so the name flows to the normal search
+ * path. A single-find short-circuit mis-fires "no search is needed" when
+ * one colliding match is loaded and another is still deferred. OCC's
+ * match predicate is toolMatchesName (primary name or alias) — the same
+ * predicate findToolByName short-circuits on.
  */
 function getAlreadyLoadedNames(
   requested: string,
@@ -152,9 +157,9 @@ function getAlreadyLoadedNames(
   if (loadedNames.size === 0) {
     return []
   }
-  const resolved = findToolByName(tools, requested)
-  return resolved !== undefined && loadedNames.has(resolved.name)
-    ? [resolved.name]
+  const matches = tools.filter(t => toolMatchesName(t, requested))
+  return matches.length > 0 && matches.every(t => loadedNames.has(t.name))
+    ? matches.map(t => t.name)
     : []
 }
 
@@ -573,18 +578,13 @@ export const ToolSearchTool = buildTool({
     // Partial overlap (official `dn=Yt(...)`): when the raw query resolves
     // (name/alias) to already-loaded tools without an exact primary-name
     // hit, the normal result is wrapped with the note for the loaded
-    // subset. OCC's resolver is findToolByName (exact name or alias), so
-    // this yields at most one name — mirroring official LX semantics with
-    // OCC's resolver.
+    // subset. Routed through getAlreadyLoadedNames so this path carries
+    // the same v302 ALL-MATCH `Kt` semantics as the select path — a
+    // colliding alias with any still-deferred match yields no note.
     const partialLoadedNames =
-      exactPoolHit !== undefined || loadedNames.size === 0
+      exactPoolHit !== undefined
         ? []
-        : (() => {
-            const resolved = findToolByName(tools, queryTrimmed)
-            return resolved !== undefined && loadedNames.has(resolved.name)
-              ? [resolved.name]
-              : []
-          })()
+        : getAlreadyLoadedNames(queryTrimmed, tools, loadedNames)
     const keywordNote = buildAlreadyLoadedNote(partialLoadedNames, toolUseID)
 
     // Keyword search

@@ -49,6 +49,18 @@ import {
 export type ForkSubagentSource = 'disabled' | 'env' | 'default'
 
 /**
+ * Legal runtime values for the config `forkSubagentEnabledSource` override —
+ * same union as ForkSubagentSource. Used by the OCC-hardening runtime enum
+ * validation in getForkSubagentSource() step 4 (official v302 has no such
+ * check — see the divergence note below).
+ */
+const FORK_SUBAGENT_SOURCES: readonly ForkSubagentSource[] = [
+  'disabled',
+  'env',
+  'default',
+]
+
+/**
  * CC 2.1.302 (#31): source-aware fork-gate resolver — port of the official
  * v302 `qcn` (byte-verified; see docs/gap-research-302/triage-T2.md §#31):
  *
@@ -79,12 +91,19 @@ export type ForkSubagentSource = 'disabled' | 'env' | 'default'
  * - Env parsing follows OCC's isEnvTruthy/isEnvDefinedFalsy convention
  *   (official bool-parses the env then compares ===!0 / ===!1): '0'/'false'
  *   ⇒ disabled, unset (or unparseable) ⇒ fall through to the base gate.
+ * - OCC HARDENING (beyond official — NOT an alignment fix): the stored
+ *   `forkSubagentEnabledSource` is runtime-validated against the
+ *   FORK_SUBAGENT_SOURCES enum set before it is honored. Official v302
+ *   returns the stored value verbatim with no runtime check; OCC ignores an
+ *   illegal value (corrupt or hand-edited config), logs a debug warning, and
+ *   falls through to the documented default base-gate resolution below.
  *
  * Precedence (official qcn order):
  *   1. coordinator session                     → 'disabled'
  *   2. config forkSubagentDisabled             → 'disabled'
  *   3. env CLAUDE_CODE_FORK_SUBAGENT=0/false   → 'disabled'
- *   4. config forkSubagentEnabledSource (set)  → that source verbatim
+ *   4. config forkSubagentEnabledSource (set + legal enum) → that source
+ *      verbatim; illegal value → OCC-hardening fall-through to step 6
  *   5. [remote kill-switch — N/A in OCC]
  *   6. env truthy → 'env'; else feature flag → 'default'; else 'disabled'
  *
@@ -114,8 +133,24 @@ export function getForkSubagentSource(): ForkSubagentSource {
   if (isEnvDefinedFalsy(envVar)) return 'disabled'
   // 4. Explicit config source override honored verbatim (official
   //    e.forkSubagentEnabledSource!==void 0).
+  //    OCC HARDENING beyond official v302 (official returns the stored value
+  //    verbatim with NO runtime check): validate the stored value against
+  //    the ForkSubagentSource enum set first. An illegal value (corrupt or
+  //    hand-edited config) is ignored — debug-logged here and resolution
+  //    falls through to the documented default base gate (step 6) — so an
+  //    illegal string can never surface as the fork-gate source.
   if (config?.forkSubagentEnabledSource !== undefined) {
-    return config.forkSubagentEnabledSource
+    if (FORK_SUBAGENT_SOURCES.includes(config.forkSubagentEnabledSource)) {
+      return config.forkSubagentEnabledSource
+    }
+    logForDebugging(
+      `Ignoring invalid config forkSubagentEnabledSource ${JSON.stringify(
+        config.forkSubagentEnabledSource,
+      )} — not one of ${FORK_SUBAGENT_SOURCES.join(
+        ' | ',
+      )}; falling back to default fork-gate resolution`,
+      { level: 'warn' },
+    )
   }
   // 5. Remote kill-switch — N/A in OCC (GrowthBook stubbed; official default
   //    with the kill-switch OFF is enabled).
