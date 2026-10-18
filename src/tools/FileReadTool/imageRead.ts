@@ -180,18 +180,19 @@ export async function readImageBytesFromHandle(
  * `fs/promises.open`, bypassing the fs seam that sibling FileReadTool code
  * paths use (`FileReadTool.ts` routes stat/read through
  * `getFsImplementation()`), so test/custom fs implementations were silently
- * ignored for image reads. `FsOperations` does not declare `open` (the
- * built-in `NodeFsOperations` has none), so the seam is probed structurally:
- * when the active implementation provides `open` it is used; otherwise this
- * falls back to `fs/promises.open`. Behavior is otherwise identical — same
- * `'r'` flag, same FileHandle usage.
+ * ignored for image reads.
+ *
+ * OCC-121 P3 carryover fix (contract-1 seam evenness): `FsOperations` now
+ * DECLARES the optional `open?(path, mode)` member and the built-in
+ * `NodeFsOperations` implements it, so the stock path routes through the seam
+ * by contract instead of by undeclared structural probe. The bare
+ * `fs/promises.open` fallback stays for seam implementations that do not
+ * provide `open` (it is optional): documented, pinned by
+ * imageReadSeam302.test.ts. Behavior is otherwise identical — same `'r'`
+ * flag, same FileHandle usage.
  */
 async function openForImageRead(filePath: string): Promise<ReadableHandle> {
-  const impl = getFsImplementation() as ReturnType<
-    typeof getFsImplementation
-  > & {
-    open?: (path: string, mode: string) => Promise<unknown>
-  }
+  const impl = getFsImplementation()
   if (typeof impl.open === 'function') {
     return (await impl.open(filePath, 'r')) as ReadableHandle
   }

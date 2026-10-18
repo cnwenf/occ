@@ -38,6 +38,26 @@ mock.module('src/utils/featureFlags.js', () => ({
     name in flagOverrides ? flagOverrides[name] : realFeature(name),
 }))
 
+// OCC-121 P3 carryover fix (finding #3): pin the WARN OUTPUT side of the
+// illegal-enum branch too. The behavior side (fall-through resolution) was
+// already pinned below, but deleting the whole `logForDebugging(...)` block in
+// forkSubagent.ts step 4 kept 7/7 green — the output side was unpinned.
+// Spread-real mock registered BEFORE the module under test is imported;
+// restored in afterAll. Mutation: delete the logForDebugging block → the
+// warn-pin tests go RED.
+const actualDebug = { ...(await import('src/utils/debug.js')) }
+const debugCalls: Array<{ message: string; level?: string }> = []
+
+mock.module('src/utils/debug.js', () => ({
+  ...actualDebug,
+  logForDebugging: (
+    message: string,
+    { level }: { level?: string } = { level: 'debug' },
+  ) => {
+    debugCalls.push({ message, level })
+  },
+}))
+
 const { getForkSubagentSource } = await import('../forkSubagent.js')
 const { resetStateForTests } = await import('../../../bootstrap/state.js')
 const { getGlobalConfig } = await import('../../../utils/config.js')
@@ -58,6 +78,7 @@ function testConfig(): Record<string, unknown> {
 
 beforeEach(() => {
   flagOverrides = {}
+  debugCalls.length = 0
   delete process.env[FORK_ENV]
   delete testConfig().forkSubagentDisabled
   delete testConfig().forkSubagentEnabledSource
@@ -69,6 +90,7 @@ afterEach(() => {
   delete testConfig().forkSubagentEnabledSource
   delete process.env[FORK_ENV]
   flagOverrides = {}
+  debugCalls.length = 0
 })
 
 afterAll(() => {
@@ -78,6 +100,7 @@ afterAll(() => {
   if (savedNodeEnv === undefined) process.env.NODE_ENV = 'test'
   else process.env.NODE_ENV = savedNodeEnv
   mock.module('src/utils/featureFlags.js', () => actualFeatureFlags)
+  mock.module('src/utils/debug.js', () => actualDebug)
   resetStateForTests()
 })
 
@@ -121,4 +144,37 @@ describe('OCC hardening (finding ⑥) — forkSubagentEnabledSource runtime enum
     // Act / Assert
     expect(getForkSubagentSource()).toBe('default')
   })
+})
+
+// OCC-121 P3 carryover fix (finding #3): the warn OUTPUT side of the
+// illegal-enum branch. Would-fail pin: delete the logForDebugging(...) block
+// in forkSubagent.ts step 4 and the two warn tests below go RED (the
+// behavior-side pins above stay green — that was the gap).
+describe('OCC hardening (finding #3 output pin) — illegal forkSubagentEnabledSource warns via logForDebugging', () => {
+  test("illegal stored source 'auto' emits exactly one level='warn' debug log naming the value and the legal enum set", () => {
+    // Arrange
+    testConfig().forkSubagentEnabledSource = 'auto'
+    // Act
+    expect(getForkSubagentSource()).toBe('disabled')
+    // Assert — output side
+    const warns = debugCalls.filter(c => c.level === 'warn')
+    expect(warns.length).toBe(1)
+    expect(warns[0].message).toContain(
+      'Ignoring invalid config forkSubagentEnabledSource',
+    )
+    expect(warns[0].message).toContain('"auto"')
+    expect(warns[0].message).toContain('disabled | env | default')
+  })
+
+  test.each(['disabled', 'env', 'default'] as const)(
+    "legal stored source '%s' does not warn",
+    source => {
+      // Arrange
+      testConfig().forkSubagentEnabledSource = source
+      // Act
+      expect(getForkSubagentSource()).toBe(source)
+      // Assert — the official-verbatim path is silent
+      expect(debugCalls.filter(c => c.level === 'warn').length).toBe(0)
+    },
+  )
 })

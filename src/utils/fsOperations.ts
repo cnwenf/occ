@@ -123,6 +123,16 @@ export type FsOperations = {
   /** Reads raw file bytes as Buffer asynchronously.
    *  When maxBytes is set, only reads up to that many bytes. */
   readFileBytes(path: string, maxBytes?: number): Promise<Buffer>
+  /** Opens a file and resolves a handle for handle-based readers (e.g. the
+   *  CC 2.1.302 #06 capped image reader in FileReadTool/imageRead.ts, which
+   *  needs stat+read+close on one handle). OPTIONAL seam member (OCC-121 P3
+   *  carryover fix, contract-1-imageRead-seam-uneven-closure): declared here
+   *  so custom/test fs implementations can see and implement it; consumers
+   *  must still handle implementations without `open` — the documented
+   *  fallback is bare `fs/promises.open` (real-fs reads), pinned by
+   *  imageReadSeam302.test.ts. Returns `unknown` so the type does not leak
+   *  `fs/promises.FileHandle` into structural implementations. */
+  open?(path: string, mode: string): Promise<unknown>
 }
 
 /**
@@ -939,6 +949,15 @@ export const NodeFsOperations: FsOperations = {
     } finally {
       await handle.close()
     }
+  },
+
+  // OCC-121 P3 carryover fix (contract-1): the stock implementation now
+  // provides the optional `open` seam member, so handle-based readers
+  // (imageRead's capped reader) route through the seam by default instead of
+  // relying on an undeclared structural probe. Behavior is identical to the
+  // previous bare `fs/promises.open` fallback — same function, same args.
+  open(fsPath: string, mode: string) {
+    return open(fsPath, mode)
   },
 }
 

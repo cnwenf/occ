@@ -1,5 +1,4 @@
 import type { Base64ImageSource } from '@anthropic-ai/sdk/resources/index.mjs'
-import { readdir, readFile as readFileAsync } from 'fs/promises'
 import * as path from 'path'
 import { posix, win32 } from 'path'
 import { z } from 'zod/v4'
@@ -1427,12 +1426,23 @@ async function callInner(
       // const binding: keeps the success-variant narrowing valid inside the
       // image-mapping closure below (`let extractResult` would lose it).
       const extractedPages = extractResult.data
-      const entries = await readdir(extractedPages.file.outputDir)
-      const imageFiles = entries.filter(f => f.endsWith('.jpg')).sort()
+      // OCC-121 P3 carryover fix (contract-1 seam evenness): the page-image
+      // mapping previously used bare fs/promises readdir/readFile, bypassing
+      // the getFsImplementation() seam every other read path in this file
+      // uses (stat at :1302, readFileBytes at :1471, image reads via
+      // readImageBytesCapped). Test/custom fs implementations were silently
+      // ignored here. The seam's readdir returns Dirent[] (withFileTypes),
+      // hence the .map(d => d.name) to keep the string-based filter/sort.
+      const fsImpl = getFsImplementation()
+      const entries = await fsImpl.readdir(extractedPages.file.outputDir)
+      const imageFiles = entries
+        .map(d => d.name)
+        .filter(f => f.endsWith('.jpg'))
+        .sort()
       const imageBlocks = await Promise.all(
         imageFiles.map(async f => {
           const imgPath = path.join(extractedPages.file.outputDir, f)
-          const imgBuffer = await readFileAsync(imgPath)
+          const imgBuffer = await fsImpl.readFileBytes(imgPath)
           const resized = await maybeResizeAndDownsampleImageBuffer(
             imgBuffer,
             imgBuffer.length,

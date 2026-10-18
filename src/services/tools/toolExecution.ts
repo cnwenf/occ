@@ -25,6 +25,8 @@ import {
 } from '../../bootstrap/state.js'
 import {
   buildCodeEditToolAttributes,
+  buildToolParametersForTelemetry,
+  buildToolSourceAttribute,
   isCodeEditingTool,
 } from '../../hooks/toolPermission/permissionLogging.js'
 import { mapPermissionDecisionToTelemetry } from '../../hooks/toolPermission/permissionDecisionMapper.js'
@@ -1096,20 +1098,40 @@ async function checkPermissionsAndCallTool(
   // logging, so we need to emit both the generic event and the code-edit
   // counter here)
   if (!toolUseContext.toolDecisions?.has(toolUseID)) {
+    // CC 2.1.302 #14B (OCC-121 self-acceptance fix — the port had only
+    // landed at the interactive site permissionLogging.ts:439): the official
+    // v302 dispatch-fallback emit (ELF @245575922, dd-verified byte-wise)
+    // is REORDERED and EXTENDED to the same shape as the interactive site:
+    //   {decision:as, source:Fs, tool_name:In(e.name), tool_use_id:n,
+    //    ...w0r(e.mcpInfo),
+    //    ...Object.keys($i).length>0&&{tool_parameters:_($i)},
+    //    ...Fs==="config"&&yo.behavior!=="ask"&&H8e(as,yo.decisionReason),
+    //    permission_mode:jl(Jn)}
+    //   with $i=F5n(e.name,gt,e.mcpInfo) — the details-gated parameter
+    //   extractor OCC exports as buildToolParametersForTelemetry.
+    // Core identifiers come FIRST so a low
+    // OTEL_LOGRECORD_ATTRIBUTE_COUNT_LIMIT evicts the truncatable tail
+    // (classifier verdict/category + permission_mode) instead of them. Key
+    // order in this object literal IS the OTel log-record wire order.
+    // This matters most in headless `-p`/SDK mode, where the fallback is the
+    // ONLY tool_decision emit (the interactive permission-logging path is
+    // bypassed). The v301 shape emitted here before (occ160 WP-C:
+    // {decision, source, ...classifier, permission_mode, tool_name}) lacked
+    // tool_use_id / tool_source / tool_parameters entirely.
+    // The `behavior!=="ask"` gate on the classifier spread (kept from the
+    // v301 port, official-verbatim) keeps classifier fields off ask-derived
+    // 'reject' telemetry: an ask whose decisionReason is a classifier
+    // pending-check must not masquerade as a classifier block.
+    const toolParameters = buildToolParametersForTelemetry(tool, processedInput)
     void logOTelEvent('tool_decision', {
       decision: mappedDecision.decision,
       source: mappedDecision.source,
-      // CC 2.1.301 (occ160 WP-C): official dispatch-fallback emit
-      // (@228218908; the 300 counterpart @227307285 is identical minus these
-      // two additions) gained:
-      //   ...Qr==="config"&&So.behavior!=="ask"&&u9e(ss,So.decisionReason)
-      //   permission_mode:Fl(no)   with no=le(Gt).mode (the `permissionMode`
-      //     captured above — same expression OCC already uses for the
-      //     slow-permission-decision log)
-      // The `behavior!=="ask"` gate (absent at the interactive site) keeps
-      // classifier fields off ask-derived 'reject' telemetry: an ask whose
-      // decisionReason is a classifier pending-check must not masquerade as
-      // a classifier block.
+      tool_name: sanitizeToolNameForAnalytics(tool.name),
+      tool_use_id: toolUseID,
+      ...buildToolSourceAttribute(tool),
+      ...(Object.keys(toolParameters).length > 0 && {
+        tool_parameters: jsonStringify(toolParameters),
+      }),
       ...(mappedDecision.source === 'config' &&
       permissionDecision.behavior !== 'ask'
         ? buildClassifierToolDecisionFields(
@@ -1118,7 +1140,6 @@ async function checkPermissionsAndCallTool(
           )
         : undefined),
       permission_mode: permissionModeToExternal(permissionMode),
-      tool_name: sanitizeToolNameForAnalytics(tool.name),
     })
 
     // Increment code-edit tool decision counter for headless mode

@@ -141,11 +141,14 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
         { OCC_CWD: dir },
         60_000,
       );
-      expect(res.code).toBe(0);
-      // Cleanup FIRST: extract the issue URL and close it BEFORE any wording
-      // assertion, so a wording drift can never skip the close and leave the
-      // issue open (happened with #509, and again with #523-#525 when the
-      // model said "Issue filed" instead of "Issue created").
+      // OCC-121 P3 carryover fix (e2e cleanup-first): the exit-code assertion
+      // used to run BEFORE the close block below — a nonzero code (e.g. the
+      // run timing out AFTER the issue was already created) threw here and
+      // skipped the close, leaving a dangling issue. ALL assertions now run
+      // strictly after cleanup, same rationale as the wording-assertion move
+      // (#509 / #523-#525).
+      // Cleanup FIRST: extract the issue URL and close it BEFORE any
+      // assertion, so no assertion failure can ever skip the close.
       const urlMatch = res.stdout.match(/https:\/\/github\.com\/cnwenf\/occ\/issues\/(\d+)/);
       if (urlMatch) {
         const issueNum = urlMatch[1];
@@ -158,7 +161,9 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
       // Live-model wording varies ("Issue created:", "Issue filed ✅", ...) —
       // assert the stable facts: a created/filed phrase and the issue URL
       // anywhere in the output. Hard-assert the URL so a wording change can
-      // never silently skip the cleanup step above.
+      // never silently skip the cleanup step above. Exit code is asserted
+      // here too (post-cleanup, per the OCC-121 ordering fix).
+      expect(res.code).toBe(0);
       expect(res.stdout).toMatch(/Issue (created|filed)/i);
       expect(urlMatch).not.toBeNull();
     } finally {

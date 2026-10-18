@@ -1,4 +1,7 @@
-import { afterEach, describe, expect, test } from 'bun:test'
+import { afterAll, afterEach, describe, expect, test } from 'bun:test'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import {
   getFsImplementation,
@@ -182,5 +185,76 @@ describe('#9: the FileHandle is closed on the oversized-read error path', () => 
 
     expect(Buffer.compare(bytes, payload)).toBe(0)
     expect(closeCalls()).toBe(1)
+  })
+})
+
+
+// ---------------------------------------------------------------------------
+// OCC-121 P3 carryover fix (contract-1 seam evenness): two contract pins for
+// the `open?` seam member now DECLARED on FsOperations and IMPLEMENTED on the
+// stock NodeFsOperations.
+// ---------------------------------------------------------------------------
+
+const PNG_MAGIC = Buffer.from('89504e470d0a1a0a', 'hex')
+let occ121TmpDir: string | null = null
+
+async function realTempPng(): Promise<{ path: string; bytes: Buffer }> {
+  if (occ121TmpDir === null) {
+    occ121TmpDir = await mkdtemp(join(tmpdir(), 'occ-img-seam-302-'))
+  }
+  const filePath = join(occ121TmpDir, `img-${Date.now()}-${Math.random().toString(36).slice(2)}.png`)
+  await writeFile(filePath, PNG_MAGIC)
+  return { path: filePath, bytes: PNG_MAGIC }
+}
+
+afterAll(async () => {
+  if (occ121TmpDir !== null) {
+    await rm(occ121TmpDir, { recursive: true, force: true }).catch(() => {})
+  }
+})
+
+describe('OCC-121 contract-1: the stock NodeFsOperations provides the declared open seam member', () => {
+  test('stock open exists, opens real files, and image reads route through it', async () => {
+    // Arrange — recording wrapper around the STOCK impl's own open. The
+    // delegation (`stock.open!(...)`) is the pin: if `open` is removed from
+    // NodeFsOperations, stock.open is undefined and this call throws.
+    const { path: realPath, bytes } = await realTempPng()
+    const stock = getFsImplementation()
+    expect(typeof stock.open).toBe('function')
+    const openCalls: Array<{ path: string; mode: string }> = []
+    setFsImplementation({
+      ...stock,
+      open: async (p: string, m: string) => {
+        openCalls.push({ path: p, mode: m })
+        return (await stock.open!(p, m)) as ReadableHandle
+      },
+    } as unknown as Fs)
+
+    // Act
+    const read = await readImageBytesCapped(realPath)
+
+    // Assert — stock open served the real bytes through the seam.
+    expect(openCalls).toEqual([{ path: realPath, mode: 'r' }])
+    expect(Buffer.compare(read, bytes)).toBe(0)
+  })
+})
+
+describe('OCC-121 contract-1: seam implementations WITHOUT open fall back to bare fs open (documented optional-member contract)', () => {
+  test('a compliant impl lacking open still reads real image bytes via the fallback', async () => {
+    // Arrange — strip `open` from a copy of the stock impl (models a
+    // third-party/test FsOperations predating the declared member).
+    const { path: realPath, bytes } = await realTempPng()
+    const { open: _removed, ...withoutOpen } = getFsImplementation()
+    void _removed
+    setFsImplementation(withoutOpen as unknown as Fs)
+
+    // Act — must NOT throw; the fallback branch in openForImageRead opens
+    // the real file with bare fs/promises.open.
+    // Mutation: deleting the no-open fallback (making the seam member
+    // mandatory at the call site) turns this into a TypeError → RED.
+    const read = await readImageBytesCapped(realPath)
+
+    // Assert
+    expect(Buffer.compare(read, bytes)).toBe(0)
   })
 })

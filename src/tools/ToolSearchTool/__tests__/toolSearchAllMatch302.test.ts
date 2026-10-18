@@ -185,6 +185,55 @@ describe('CC 2.1.302 #08 — getAlreadyLoadedNames all-match (Kt every(loaded)) 
     expect(result.newMessages).toBeUndefined()
   })
 
+  // OCC-121 P3 carryover fix (finding #5): collision fixture for the THIRD
+  // getAlreadyLoadedNames call site — the exact-primary-name keyword
+  // short-circuit (`exactPoolHit`). The select path and the keyword
+  // partial-overlap (alias) path were pinned above, but the exact-name
+  // short-circuit had no collision pin: a single-find regression there
+  // (find instead of filter+every) would mis-fire "no search is needed"
+  // when the query is a loaded tool's primary name AND a still-deferred
+  // twin's alias. Mutation: replace getAlreadyLoadedNames's filter+every
+  // with a single find → the first test below goes RED.
+  test('keyword exact-primary-name hit colliding with a deferred twin alias does NOT short-circuit — search proceeds', async () => {
+    const tools: Tools = [
+      fakeTool('Deploy'), // loaded (non-deferred), primary name = query
+      fakeTool('DeployProd', { shouldDefer: true, aliases: ['Deploy'] }),
+    ]
+
+    const result = await callSearch('Deploy', tools)
+
+    // Single-find regression shape: matches [] + "Already available in this
+    // conversation: Deploy. … no search is needed." — the deferred alias
+    // twin would be silently swallowed. All-match v302: not every match is
+    // loaded → the exact-name short-circuit does NOT fire and the keyword
+    // search surfaces the deferred twin.
+    expect(result.data.matches).toEqual(['DeployProd'])
+    expect(result.newMessages).toBeUndefined()
+    expect('newMessages' in result).toBe(false)
+  })
+
+  test('keyword exact-primary-name collision where ALL matches are loaded short-circuits with every canonical name', async () => {
+    // Positive control for the same call site: both pool matches loaded →
+    // official `so.map((Jn)=>Jn.name)` note lists every canonical name.
+    const tools: Tools = [
+      fakeTool('Deploy'),
+      {
+        ...fakeTool('DeployProd', {
+          shouldDefer: true,
+          aliases: ['Deploy'],
+        }),
+        alwaysLoad: true,
+      } as unknown as Tool,
+    ]
+
+    const result = await callSearch('Deploy', tools)
+
+    expect(result.data.matches).toEqual([])
+    expect(noteText(result)).toBe(
+      'Already available in this conversation: Deploy, DeployProd. Call them directly; no search is needed.',
+    )
+  })
+
   test('keyword partial overlap without collision keeps the single-name note', async () => {
     // Control: unique alias, sole match loaded → note still fires (the
     // all-match change must not regress the non-collision partial path).

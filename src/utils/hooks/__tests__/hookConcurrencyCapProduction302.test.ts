@@ -37,6 +37,7 @@ import type { HooksSettings } from '../../settings/types.js'
 const actualSnapshotModule = await import('../hooksConfigSnapshot.js')
 const actualConfigModule = await import('../../config.js')
 const actualExecPromptModule = await import('../execPromptHook.js')
+const actualExecAgentModule = await import('../execAgentHook.js')
 const actualAnalyticsModule = await import('../../../services/analytics/index.js')
 
 let mockedHooksConfig: HooksSettings | null = null
@@ -99,8 +100,35 @@ mock.module('../execPromptHook.js', () => ({
   },
 }))
 
+// OCC-121 P3 carryover fix (finding #4): the gated AGENT-hook executor —
+// same tracker/gates as the prompt arm, keyed by hook.prompt ('a0'…'a12').
+// Drives the agent arm of isPromptOrAgentHook through the REAL production
+// pipeline (executeStopHooks → executeHooks → merge-with-cap → dispatch →
+// execAgentHook). Mutation: narrowing the call-site predicate to prompt-only
+// (`h => h.type === 'prompt'`) uncaps the agent arm → maxLive 13 → RED.
+mock.module('../execAgentHook.js', () => ({
+  ...actualExecAgentModule,
+  execAgentHook: async (
+    hook: { type: string; prompt?: string },
+    ...rest: unknown[]
+  ) => {
+    const tag = hook.prompt ?? '?'
+    const index = Number(tag.slice(1))
+    tracker.live++
+    if (tracker.live > tracker.maxLive) {
+      tracker.maxLive = tracker.live
+    }
+    tracker.starts.push(tag)
+    await gates[index]?.promise
+    tracker.live--
+    void rest
+    return { outcome: 'success' as const, hook } as never
+  },
+}))
+
 afterAll(() => {
   mock.module('../hooksConfigSnapshot.js', () => ({ ...actualSnapshotModule }))
+  mock.module('../execAgentHook.js', () => ({ ...actualExecAgentModule }))
   mock.module('../../config.js', () => ({ ...actualConfigModule }))
   mock.module('../execPromptHook.js', () => ({ ...actualExecPromptModule }))
   mock.module('../../../services/analytics/index.js', () => ({
@@ -108,7 +136,7 @@ afterAll(() => {
   }))
 })
 
-const { executePreToolHooks } = await import('../../hooks.js')
+const { executePreToolHooks, executeStopHooks } = await import('../../hooks.js')
 
 const PROMPT_TAGS = Array.from({ length: 13 }, (_, i) => `p${i}`)
 
@@ -127,6 +155,20 @@ function thirteenPromptHooksConfig(): HooksSettings {
       {
         matcher: '*',
         hooks: PROMPT_TAGS.map(tag => ({ type: 'prompt', prompt: tag })),
+      },
+    ],
+  } as HooksSettings
+}
+
+const AGENT_TAGS = Array.from({ length: 13 }, (_, i) => `a${i}`)
+
+/** 13 user agent hooks on Stop (OCC-121 P3 finding #4 — agent arm). */
+function thirteenAgentHooksConfig(): HooksSettings {
+  return {
+    Stop: [
+      {
+        matcher: '*',
+        hooks: AGENT_TAGS.map(tag => ({ type: 'agent', prompt: tag })),
       },
     ],
   } as HooksSettings
@@ -202,5 +244,63 @@ describe('CC 2.1.302 #035 production wiring: executePreToolHooks caps prompt-hoo
         (r as { message?: { type?: string } }).message?.type === 'progress',
     ).length
     expect(progressCount).toBe(13)
+  })
+})
+
+// OCC-121 P3 carryover fix (finding #4): the agent arm of the cap through the
+// real exec pipeline. The unit suite pins isPromptOrAgentHook({type:'agent'})
+// === true, but before this block no production fixture drove an agent hook
+// through executeHooks → merge-with-cap → execAgentHook, so a predicate
+// narrowed to prompt-only at the call site stayed green. Stop is used as the
+// carrier event because executeStopHooks is the production entry that passes
+// the conversation context (toolUseContext + messages) agent hooks require.
+describe('CC 2.1.302 #035 production wiring (agent arm): executeStopHooks caps agent-hook concurrency at 12', () => {
+  test('13 matched agent hooks through the real pipeline: max live concurrency is exactly 12, the 13th waits its turn', async () => {
+    // Arrange — production entry point, real executeHooks, real merge call
+    // site; only the hook config source and the agent executor are seams.
+    mockedHooksConfig = thirteenAgentHooksConfig()
+
+    // Act — drive the production generator WITHOUT awaiting; the merge cap
+    // decides how many execAgentHook calls are live at once. messages=[] is
+    // truthy so the agent dispatch guard passes; Stop never throws the
+    // PermissionRequest agent-hook error.
+    const collected: unknown[] = []
+    const done = (async () => {
+      for await (const result of executeStopHooks(
+        undefined,
+        undefined,
+        undefined,
+        false,
+        undefined,
+        fakeToolUseContext(),
+        [],
+      )) {
+        collected.push(result)
+      }
+    })()
+
+    await flush()
+    // Assert — exactly the official cap is live; a12 has NOT started.
+    // (Mutation: call-site predicate → prompt-only ⇒ uncapped agent arm ⇒
+    // all 13 live here ⇒ these assertions fail.)
+    expect(tracker.maxLive).toBe(12)
+    expect(tracker.live).toBe(12)
+    expect(tracker.starts).toEqual(AGENT_TAGS.slice(0, 12))
+
+    // Finish the first hook → a12 takes its slot, concurrency stays at 12.
+    gates[0]!.open()
+    await flush()
+    expect(tracker.starts).toEqual(AGENT_TAGS)
+    expect(tracker.live).toBe(12)
+    expect(tracker.maxLive).toBe(12)
+
+    // Release the rest; the pipeline completes and every hook ran.
+    for (const gate of gates) {
+      gate.open()
+    }
+    await done
+    expect(tracker.maxLive).toBe(12)
+    expect(tracker.starts).toEqual(AGENT_TAGS)
+    void collected
   })
 })
