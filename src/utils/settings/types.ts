@@ -782,6 +782,20 @@ export const SettingsSchema = lazySchema(() =>
             .describe(
               'Re-run the status line command every N seconds in addition to event-driven updates',
             ),
+          // claude-code 2.1.302 (occ162-01): suppress the built-in vim mode
+          // indicator below the prompt. Byte-verified official schema
+          // (linux-x64 ELF md5 39885c1377a0f0d922b73bf8653a6c3f @234708166):
+          // `hideVimModeIndicator:M().optional().describe("Hide the built-in
+          // `-- INSERT --` / `-- VISUAL --` indicator below the prompt. Use
+          // this when your status line script renders `vim.mode` itself.")`,
+          // positioned right after refreshInterval; M() = z.boolean()
+          // (cross-checked via `alwaysThinkingEnabled:()=>M().optional()`).
+          hideVimModeIndicator: z
+            .boolean()
+            .optional()
+            .describe(
+              'Hide the built-in `-- INSERT --` / `-- VISUAL --` indicator below the prompt. Use this when your status line script renders `vim.mode` itself.',
+            ),
         })
         .optional()
         .describe('Custom status line display configuration'),

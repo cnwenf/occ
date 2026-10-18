@@ -11,7 +11,6 @@ import figures from 'figures';
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { VimMode, PromptInputMode } from '../../types/textInputTypes.js';
 import type { ToolPermissionContext } from '../../Tool.js';
-import { isVimModeEnabled } from './utils.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { isDefaultMode, permissionModeIndicator, permissionModeSymbol, getModeColor } from '../../utils/permissions/PermissionMode.js';
 import type { PermissionMode } from '../../types/permissions.js';
@@ -56,6 +55,12 @@ type Props = {
     key?: string;
   };
   vimMode: VimMode | undefined;
+  /**
+   * Official 2.1.302 `_e` — the `statusLine.hideVimModeIndicator` setting,
+   * read by the footer parent as `er?.hideVimModeIndicator??!1`
+   * (byte-verified @267046486) and passed down as a boolean prop.
+   */
+  hideVimModeIndicator?: boolean;
   mode: PromptInputMode;
   toolPermissionContext: ToolPermissionContext;
   suppressHint: boolean;
@@ -158,11 +163,47 @@ export function shouldRenderShortcutsHint(input: {
 }): boolean {
   return input.partsCount === 0 && !input.hasTasksPart && !input.hasActiveModePart && input.showHint;
 }
+/**
+ * Official 2.1.302 vim-indicator gate (occ162-01; byte-verified in the
+ * md5-verified linux-x64 ELF, `grep -aboF '!=="NORMAL"'` @267020535):
+ *
+ *   `let Pr=ve!==void 0&&!_e&&ve!=="NORMAL"&&!Et`
+ *
+ * - `ve` = vimMode — `void 0` when vim is disabled (OCC mirrors this:
+ *   PromptInput passes `isVimModeEnabled() ? vimMode : undefined`), so the
+ *   defined-check IS the vim-enabled check;
+ * - `_e` = `statusLine.hideVimModeIndicator` setting (default `false`);
+ * - `Et` = active history search (ctrl-r) — dual suppression.
+ *
+ * The pill renders for EVERY non-NORMAL mode — INSERT **and** VISUAL /
+ * VISUAL LINE — not INSERT-only (OCC's pre-fix gate was
+ * `isVimModeEnabled() && vimMode === "INSERT" && !isSearching`).
+ */
+export function shouldRenderVimIndicator(input: {
+  vimMode: VimMode | undefined;
+  hideVimModeIndicator: boolean;
+  isSearching: boolean;
+}): boolean {
+  return input.vimMode !== undefined && !input.hideVimModeIndicator && input.vimMode !== 'NORMAL' && !input.isSearching;
+}
+/**
+ * Official pill composition (same renderer, @267020585):
+ *
+ *   `ns=Pr?e(s,{flexShrink:0,children:r(n,{dimColor:!0,
+ *        children:["-- ",ve," --"]})},"vim-indicator"):null`
+ *
+ * plus the width term `` eo-(Pr?ie(`-- ${ve} --`)+1:0) `` — the text is the
+ * composed template `-- ${vimMode} --` (e.g. `-- INSERT --`, `-- VISUAL --`).
+ */
+export function vimIndicatorText(vimMode: VimMode): string {
+  return `-- ${vimMode} --`;
+}
 export function PromptInputFooterLeftSide(t0) {
-  const $ = _c(27);
+  const $ = _c(29);
   const {
     exitMessage,
     vimMode,
+    hideVimModeIndicator = false,
     mode,
     toolPermissionContext,
     suppressHint,
@@ -200,11 +241,17 @@ export function PromptInputFooterLeftSide(t0) {
     return t1;
   }
   let t1;
-  if ($[3] !== isSearching || $[4] !== vimMode) {
-    t1 = isVimModeEnabled() && vimMode === "INSERT" && !isSearching;
+  if ($[3] !== isSearching || $[4] !== vimMode || $[27] !== hideVimModeIndicator) {
+    // Official 2.1.302 `Pr` gate — see shouldRenderVimIndicator (occ162-01).
+    t1 = shouldRenderVimIndicator({
+      vimMode,
+      hideVimModeIndicator,
+      isSearching
+    });
     $[3] = isSearching;
     $[4] = vimMode;
     $[5] = t1;
+    $[27] = hideVimModeIndicator;
   } else {
     t1 = $[5];
   }
@@ -221,10 +268,14 @@ export function PromptInputFooterLeftSide(t0) {
     t2 = $[10];
   }
   let t3;
-  if ($[11] !== showVim) {
-    t3 = showVim ? <Text dimColor={true} key="vim-insert">-- INSERT --</Text> : null;
+  if ($[11] !== showVim || $[28] !== vimMode) {
+    // Official pill: `children:["-- ",ve," --"]`, key "vim-indicator"
+    // (byte-verified @267020585) — renders the ACTIVE mode, so VISUAL shows
+    // `-- VISUAL --` (occ162-01; pre-fix OCC hardcoded `-- INSERT --`).
+    t3 = showVim ? <Text dimColor={true} key="vim-indicator">{vimIndicatorText(vimMode!)}</Text> : null;
     $[11] = showVim;
     $[12] = t3;
+    $[28] = vimMode;
   } else {
     t3 = $[12];
   }
