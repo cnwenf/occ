@@ -138,8 +138,10 @@ export const inputSchema = lazySchema(() => {
   // gate-flip via _CACHED_MAY_BE_STALE disk read, and worst case is either
   // "schema shows a no-op param" (gate flips on mid-session: param ignored
   // by forceAsync) or "schema hides a param that would've worked" (gate
-  // flips off mid-session: everything still runs async via memoized
-  // forceAsync). No Zod rejection, no crash — unlike required→optional.
+  // flips off mid-session: run_in_background stays hidden, but forceAsync is
+  // NOT memoized — call() recomputes it from the live gate on every
+  // invocation, so calls follow the flipped gate rather than the stale
+  // schema-time value). No Zod rejection, no crash — unlike required→optional.
   const backgroundGated = isBackgroundTasksDisabled || isSubagentsForcedBackground() ? schema.omit({
     run_in_background: true
   }) : schema;

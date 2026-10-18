@@ -290,7 +290,9 @@ export async function readGitHead(
  *
  * For worktrees, refs live in the common gitdir (pointed to by the
  * `commondir` file), not the worktree-specific gitdir. We check the
- * worktree gitdir first, then fall back to the common dir.
+ * worktree gitdir first, then fall back to the common dir — re-checking
+ * reftable there, since the store lives in $GIT_COMMON_DIR/reftable
+ * (gitreftable(5)) even though the per-worktree gitdir looks classic.
  *
  * Packed-refs format (per packed-backend.c):
  *   - Header: `# pack-refs with: <traits>\n`
@@ -314,9 +316,19 @@ export async function resolveRef(
     return result
   }
 
-  // For worktrees: try the common gitdir where shared refs live
+  // For worktrees: try the common gitdir where shared refs live.
+  // gitreftable(5): "the reftable store lives in $GIT_COMMON_DIR/reftable" —
+  // a LINKED worktree's per-worktree gitdir carries no `reftable/` dir (and
+  // may hold a classic-looking HEAD, e.g. the real `ref: refs/heads/<branch>`
+  // that `git worktree add` wrote), so the reftable check above can miss.
+  // Re-run detection against the common dir before the fs-only read, else
+  // every ref (and HEAD's branch) resolves to null inside linked worktrees
+  // of a reftable repo. Classic common dirs keep the pure-fs fallback.
   const commonDir = await getCommonDir(gitDir)
   if (commonDir && commonDir !== gitDir) {
+    if (await usesReftableRefStorage(commonDir)) {
+      return resolveRefViaShowRef(commonDir, ref)
+    }
     return resolveRefInDir(commonDir, ref)
   }
 

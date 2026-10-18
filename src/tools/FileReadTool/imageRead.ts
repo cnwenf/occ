@@ -20,6 +20,7 @@
  */
 import { open } from 'fs/promises'
 
+import { getFsImplementation } from '../../utils/fsOperations.js'
 import { IMAGE_READ_CHUNK_BYTES, MAX_IMAGE_READ_BYTES } from './limits.js'
 
 /**
@@ -173,6 +174,31 @@ export async function readImageBytesFromHandle(
 }
 
 /**
+ * Open `filePath` for reading through the active `getFsImplementation()` seam.
+ *
+ * Fix #4 (acceptance review): this module previously called bare
+ * `fs/promises.open`, bypassing the fs seam that sibling FileReadTool code
+ * paths use (`FileReadTool.ts` routes stat/read through
+ * `getFsImplementation()`), so test/custom fs implementations were silently
+ * ignored for image reads. `FsOperations` does not declare `open` (the
+ * built-in `NodeFsOperations` has none), so the seam is probed structurally:
+ * when the active implementation provides `open` it is used; otherwise this
+ * falls back to `fs/promises.open`. Behavior is otherwise identical — same
+ * `'r'` flag, same FileHandle usage.
+ */
+async function openForImageRead(filePath: string): Promise<ReadableHandle> {
+  const impl = getFsImplementation() as ReturnType<
+    typeof getFsImplementation
+  > & {
+    open?: (path: string, mode: string) => Promise<unknown>
+  }
+  if (typeof impl.open === 'function') {
+    return (await impl.open(filePath, 'r')) as ReadableHandle
+  }
+  return (await open(filePath, 'r')) as unknown as ReadableHandle
+}
+
+/**
  * Open `filePath` and read it as a capped image source. Port of the official
  * `qXr` string-path/undefined-maxBytes branch (opens RDONLY, defers to the
  * chunked reader). The handle is always closed.
@@ -181,14 +207,13 @@ export async function readImageBytesCapped(
   filePath: string,
   maxBytes: number = MAX_IMAGE_READ_BYTES,
 ): Promise<Buffer> {
-  const handle = await open(filePath, 'r')
+  const handle = await openForImageRead(filePath)
   try {
-    return await readImageBytesFromHandle(
-      handle as unknown as ReadableHandle,
-      filePath,
-      maxBytes,
-    )
+    return await readImageBytesFromHandle(handle, filePath, maxBytes)
   } finally {
+    // Fix #9 (acceptance review): the close must run on the error path too —
+    // an oversized read throws from readImageBytesFromHandle, and without
+    // this finally-block the handle (fd) leaks silently.
     await handle.close()
   }
 }
