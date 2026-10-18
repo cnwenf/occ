@@ -1,6 +1,6 @@
 # Upstream Version Gap — OCC-121 Round (2026-10): Strict Self-Acceptance (official flat at 2.1.302)
 
-> Status: **COMPLETE** — official latest unchanged (2.1.302 → 2.1.302, no new gap); strict self-acceptance executed per the issue's「版本追齐后的自验收」clause. 12 PORT items re-verified on real artifacts (**11 PASS / 1 FAIL**); the single FAIL (#14B headless fallback site) fixed + mutation-verified + dist-probed this round (**Gap-121a**); 8 P3 residuals from OCC-120 dispositioned (**5 fixed, 3 carried with reasons**); REPL/headless/official consistency swept. Build green, per-file-isolated suite green, merged to main, release **v2.1.390**.
+> Status: **COMPLETE** — official latest unchanged (2.1.302 → 2.1.302, no new gap); strict self-acceptance executed per the issue's「版本追齐后的自验收」clause. 12 PORT items re-verified on real artifacts (**11 PASS / 1 FAIL**); the single FAIL (#14B headless fallback site) fixed + mutation-verified + dist-probed this round (**Gap-121a**); 8 P3 residuals from OCC-120 dispositioned (**5 fixed, 3 carried with reasons**); REPL/headless/official consistency swept. Build green; local per-file-isolated suite fully triaged (957 OK / 5 fail — all adjudicated version-skew / flake / pre-existing-env, §7); merged to main, release **v2.1.390**.
 > Prior-round ledger: [upstream-version-gap-occ120-2026-10.md](./upstream-version-gap-occ120-2026-10.md)
 > Skill discipline: `upstream-tracking` + `aligning-with-official-binary`. Official ELF **never executed** — `strings` / `grep -aboF` / bounded `dd` only.
 
@@ -81,7 +81,13 @@ Security carry-over (acceptance ledger item 7, not part of the 8): the 3 CLEARED
 
 ## 7. Test / build / merge / release status
 
-- Affected suites: 26 pass (toolDecisionFallbackOtel302 + toolDecisionOtelFields302 + toolDecisionTelemetry288), FileReadTool/hooks/ToolSearch/AgentTool touched suites green; full per-file-isolated suite (`scripts/ci-test.sh`) green — see CI run on main.
+- Affected suites: 26 pass (toolDecisionFallbackOtel302 + toolDecisionOtelFields302 + toolDecisionTelemetry288), FileReadTool/hooks/ToolSearch/AgentTool touched suites green.
+- Full per-file-isolated suite (`scripts/ci-test.sh`, local bun 1.3.14): **957 files OK / 5 FAIL**, every failure triaged and none attributable to this round's code:
+  - `occ-versioning` + `repl-welcome-visual` (4) + `workflow-permission-dialog-ctrl-g` binary-parse smoke — **version-skew artifact**: the ci-test run straddled the 2.1.389→2.1.390 package.json bump while `dist/cli.js` was still 2.1.389; version-string assertions (`--version`, welcome box) read package.json. After `bun run build` at 2.1.390, all three files re-run **green** (occ-versioning pass; 25 pass / 0 fail across welcome-visual + ctrl-g).
+  - `commands-behavior` (1) — live-model e2e flake during the batch run; standalone re-run **16 pass / 0 fail**. Same environmental category as §5 item 2.
+  - `argumentSubstitutionCaps301` (1: "_pr=4,000,000 budget covers named-arg values") — deterministic local-env failure: **reproduces identically on the clean main checkout** (11 pass / 1 fail), pre-existing under local bun 1.3.14; CI pins bun 1.4.2 and was green at the 2.1.389 baseline. Not introduced this round.
+  - `repl-welcome-visual` under `CI=true` (the CI gate) → 8 skip — the tmux/visual category is CI-gated, so CI never saw these failures either way.
+  - Authoritative gate: the CI run on main post-merge (fresh dist built after the bump, CI=true gating, bun 1.4.2).
 - Build: `bun run build` green, dist/cli.js 30.32 MB, MACRO.VERSION injected.
 - e2e: REPL tmux smoke (boot/round-trip/`/status`/exit) + headless probes (§3) green on the rebuilt artifact; `/feedback` e2e A/B adjudicated as live-model flake (§5 item 2).
 - Merge: `p3-fixes-occ121` → main; release **v2.1.390** (package.json + CHANGELOG + README wording, Tracks unchanged at CC 2.1.302 honest-partial); tags/releases count verified post-publish.
