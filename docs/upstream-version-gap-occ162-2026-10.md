@@ -42,28 +42,108 @@ Official `@anthropic-ai/claude-code-linux-x64@2.1.302` re-downloaded: tarball 12
 | #06 | `-p` model Reads real 130MB PNG | refusal surfaced **verbatim through full production path**: `File is too large to read as an image (the limit is 128MB): /tmp/occ162-image-probe/big.png. If it is an image, resize it or export a smaller copy, then read that.` EXIT=0 ✓ |
 | #16 | signed-out `occ remote-control --help` | **F-1 observation**: prints TOP-LEVEL Commander help, EXIT=0 — the #16 fix lives inside `feature("BRIDGE_MODE")` which is NOT allowlisted → structurally correct but production-dormant (same class as #29). No regression (pre-#16 behavior identical); OCC ships no `remote-control` subcommand by design. Recorded, no action. |
 
-## 2A. NEW FINDING (this run) — official 2.1.302 footer mode-indicator surface drift (candidate GAP occ162-01)
+## 2A. Footer-surface candidate — REFUTED by live A/B; vim-indicator GAP occ162-01 confirmed instead
 
-Official 2.1.302 ELF contains **zero** occurrences (direct `grep -aboF` on the binary, not just strings-dump): `(shift+tab to cycle)`, `shift+tab to cycle`, `manual mode on`, `← for agents`, `to cycle)`. OCC renders all of these today (`PromptInputFooterLeftSide.tsx:130` chip suffix; `manualModeCycleHint108` pins; occ156 recorded official **2.1.296** live footers byte-identical WITH the suffix + `← for agents`). So the official footer surface changed somewhere in (2.1.296, 2.1.302] and no intermediate ledger (occ158/occ160/occ119-suppl/occ120) recorded it. Official 2.1.302 mode labels present: `auto mode on`, `plan mode on`, `accept edits on` (+ dialog label array `X=[{label:"default"...},{label:"accept edits on"...},{label:"plan mode on"...},{label:"auto mode on"...}]` with `confirm:cycleMode` demo component). Consequence for carryover: **occ156-01 (`← for agents` footer hint missing in OCC) premise may be void** — official itself no longer ships the hint. Live A/B (official ELF vs OCC dist, tmux S-Tab cycle, isolated HOMEs) in progress — verdict + severity in §5.
+### 2A.1 Candidate "footer mode-indicator surface drift" — REFUTED (methodology lesson)
+
+Mid-round strings-grep of the official 2.1.302 ELF showed **zero** literal hits for `(shift+tab to cycle)` / `manual mode on` / `← for agents`, suggesting the official footer surface had been redesigned. **Live tmux A/B refuted this**: official 2.1.302 (md5-verified ELF, isolated clean HOME) renders `⏵⏵ auto mode on (shift+tab to cycle)`, `⏸ manual mode on · ? for shortcuts`, `⏵⏵ accept edits on (shift+tab to cycle)`, `⏸ plan mode on (shift+tab to cycle)` — all four **byte-identical** to OCC's renders (§4.1). The suffix/labels are **composed dynamically** (keybinding label interpolation, same class as vim's `` `-- ${ve} --` ``), so the literals never appear in the binary. **Lesson recorded: byte-absence of a UI literal in the ELF ≠ render-time absence; for composed strings, live A/B is the final arbiter.**
+
+`← for agents` (occ156-01): absent from ALL official 2.1.302 live footer states AND from OCC — but the render component **still exists** in the official binary verbatim (`{dimColor:!0,children:[kW," for agents"]}`), gated at 2.1.302 by a component-level `!C` early-return and an idle-branch `L?null:` (full formula extracted this run; identifiers `C`/`L`/`le`/`Mt`/`De` not yet decompiled). occ156's 2.1.296 live A/B saw the hint; this run's 2.1.302 session (isolated HOME, tmux 200-col, no fleet activity) did not → **display is conditional** (gate changed or env-dependent). **occ156-01 remains STAGED, untouched** — component + port recipe still valid; a future WP must decompile the gate identifiers before porting. NOT voided (earlier mid-round suspicion corrected).
+
+### 2A.2 GAP occ162-01 (P3, new this run) — vim indicator surface: `-- VISUAL --` pill + `hideVimModeIndicator` setting
+
+- **Official 2.1.302 footer gate (verbatim from binary)**: `Pr = ve!==void 0 && !_e && ve!=="NORMAL" && !Et` and the pill is composed `` `-- ${ve} --` `` — i.e. the indicator renders for **every non-NORMAL vim mode** (INSERT *and* VISUAL), suppressed by `_e` = the `hideVimModeIndicator` setting or by active history-search (`Et`).
+- **Official setting (verbatim)**: `statusLine` schema contains `hideVimModeIndicator` with describe text `Hide the built-in `-- INSERT --` / `-- VISUAL --` indicator below the prompt. Use this when your status line script renders `vim.mode` itself.` — placed right after `refreshInterval`.
+- **OCC现状**: `PromptInputFooterLeftSide.tsx:204` gate is `isVimModeEnabled() && vimMode === "INSERT" && !isSearching` → renders `-- INSERT --` only; **no `-- VISUAL --` pill** (live-confirmed: `v` + `ll` in NORMAL → selection engine works, footer stays bare). OCC settings `statusLine` schema (`types.ts:770-787`) = type/command/padding/refreshInterval — **no `hideVimModeIndicator`**.
+- **Aligned neighbors (verified, no gap)**: OCC statusline JSON input DOES carry `vim:{mode:...}` (`StatusLine.tsx:106-107`) matching official `"vim": { // Optional, only present when vim mode is enabled`; NORMAL-mode has no pill on either side (official describe text names only INSERT/VISUAL); `/vim` slash command absent on both sides (official removed 2.1.92, pinned `removed-commands.test.ts`; official's `vim:"config"` category-map entry is legacy taxonomy, no command descriptor strings exist).
+- **Introduction version of `hideVimModeIndicator`**: not recoverable from the 2.1.302 binary (embedded changelog window doesn't cover it; not in any prior ledger) → introduction point **CAND**; the gap-vs-2.1.302 itself is byte-confirmed.
+- **Disposition**: P3 cosmetic-surface, not a regression (OCC never rendered the VISUAL pill). Per this round's rules → **ledger + Leader adjudication, not self-fixed**. Suggested slice if Leader greenlights: widen the footer gate to `vimMode !== "NORMAL"` (matching official `Pr`) + add `hideVimModeIndicator` to the statusLine schema as the suppression gate + pins.
 
 **Security note (uvx channel):** PyPI `claude-code` is a **0.0.1 placeholder/squatted package** (PyPI JSON: only release = 0.0.1) — NOT Anthropic's distribution (official channel = npm `@anthropic-ai/claude-code`). `uvx claude-code@2.1.302` → unresolvable; running unpinned `uvx claude-code` would execute an unofficial binary with gateway credentials in env — **declined**. Official-side interaction forensics this round run the md5-verified official npm ELF under an isolated clean HOME (no host `~/.claude*` exposure), per the Leader's uvx-clause override of never-execute (interaction evidence only, no sensitive data).
 
-## 3. Self-acceptance ② — acceptance-fix ×12 findings re-verification
+## 3. Self-acceptance ② — acceptance-fix ×12 findings re-verification (commit `9e4812f1`)
 
-(TBD)
+All 12 findings re-verified this run — pins executed explicitly under `CI=true`, **both orders** (leak-pair discipline):
 
-## 4. Self-acceptance ③ — core trunk spot-checks
+| # | Finding | Pin(s) / verification | Result |
+|---|---|---|---|
+| ① | hook ≤12 concurrency cap wired to production | `hookConcurrencyCapProduction302` (mutation-verified: cap constant + predicate `type==='prompt'\|\|type==='agent'`) | ✓ |
+| ② | usage-credits streaming call site | `usageCreditsStreamingSite302` | ✓ |
+| ③ | ToolSearch all-match semantics | `toolSearchAllMatch302` | ✓ |
+| ④⑧⑨ | image-read seam (128MB cap path) | `imageReadSeam302` + live probe #06 (§2.4: verbatim refusal through full production path) | ✓ |
+| ⑤ | reftable worktree common-dir | `reftableWorktreeCommonDir` (+ `reftableFallback302`) — 21 pass / 0 fail / 51 expect both orders | ✓ |
+| ⑥ | fork-subagent source validation | `forkSubagentSourceValidation302` + live probe #31 (§2.4) | ✓ |
+| ⑦ | `vat()` forced-background recompute (AgentTool comment fix) | source-verified: `AgentTool.tsx:131/145` — `isSubagentsForcedBackground()` recomputed per call, not captured at import | ✓ |
+| ⑩ | ToolSearch compact boundary | `toolSearchCompactBoundary302` | ✓ |
+| ⑪ | usage-credits forwarding production | `usageCreditsForwardingProduction302` | ✓ |
+| ⑫ | auto-compact window alias pins | `autoCompactWindowAliasPins302` | ✓ |
 
-(TBD)
+Pin totals (8 test files, ①②③④⑧⑨⑥⑩⑪⑫): **37 pass / 0 fail / 76 expect, both orders**. Plus ⑤ pair: **21 / 0 / 51, both orders**. ⑦ has no dedicated pin (comment-level fix) — source cross-check recorded above. **No acceptance-fix regression found.**
 
-## 5. Carryover dispositions
+## 4. Self-acceptance ③ — core trunk spot-checks (live tmux REPL + `-p` stream-json, official 2.1.302 as control)
 
-(TBD)
+A/B harness: OCC `dist/cli.js` (v2.1.389) vs md5-verified official 2.1.302 ELF, each under isolated clean HOME (`/tmp/occ162-ab/home-occ` / `home-official`), tmux 200-col panes, real API gateway, no sensitive data fed to the official side.
+
+### 4.1 S-Tab mode cycle — 4/4 byte-MATCH (boot default = known STAGED divergence only)
+
+Captured footers per S-Tab state (`occ-state0..5.txt` / `off-state0..5.txt`):
+
+| State | OCC render | Official 2.1.302 render | Verdict |
+|---|---|---|---|
+| boot | `⏸ manual mode on · ? for shortcuts` (OCC boots MANUAL) | `⏵⏵ auto mode on (shift+tab to cycle)` (official boots AUTO) | boot-default divergence = **occ156-03 STAGED-BY-LEADER**, untouched |
+| manual | `⏸ manual mode on · ? for shortcuts` | identical | **byte-MATCH** |
+| accept edits | `⏵⏵ accept edits on (shift+tab to cycle)` | identical | **byte-MATCH** |
+| plan | `⏸ plan mode on (shift+tab to cycle)` | identical | **byte-MATCH** |
+| auto | `⏵⏵ auto mode on (shift+tab to cycle)` | identical | **byte-MATCH** |
+| cycle wrap | state4≡state0, state5≡state1 (full loop) | same wrap behavior | MATCH |
+
+This also refuted the mid-round "official footer surface drifted" strings-grep candidate — see §2A.1 methodology lesson.
+
+### 4.2 Interrupted turn + `--continue` resume — byte-MATCH
+
+- Escape mid-turn on a long generation → OCC renders interrupt UX identical in shape to official; `InterruptedByUser.tsx:10` returns `"What should Claude do instead?"` — byte-identical to official 2.1.302 `function Ya(){return"What should Claude do instead?"}` (verified in extracted strings).
+- `occ --continue` after the interrupted session: transcript replayed, and the follow-up answer demonstrated context awareness of the interrupted request ("Your previous request was…") — resume path intact.
+
+### 4.3 `-p` stream-json envelope — core contract intact (extended field-set = occ156 drift-2 STAGED, re-verified)
+
+Live `--output-format stream-json` capture (`streamjson.jsonl`): `system/init` → `assistant` ×2 → `result`.
+
+- init raw key order (OCC live): `type,subtype,cwd,session_id,tools,mcp_servers,model,permissionMode,slash_commands,apiKeySource,claude_code_version,output_style,agents,skills,plugins,uuid,fast_mode_state`.
+- Official 2.1.302 init composition extracted verbatim from binary this run — full envelope superset: `…,betas,…,[terminal_slash_commands],…,[plugin_errors],[plugin_warnings],[capabilities],[mcp_server_errors],analytics_disabled,product_feedback_disabled,…,[memory_paths],[scratchpad_path],[original_cwd],[additional_directories],[worker_epoch],[messaging_socket_path],…,[footer_indicator]`. OCC's narrower field-set = **occ156 drift-2, STAGED — carried, re-verified live this round** (OCC emits `betas` via `getSdkBetas()` but undefined→dropped in JSON; `mcp_server_errors` present-when-nonempty per binary `tAr` filter).
+- result envelope keys (OCC live): `duration_api_ms,duration_ms,fast_mode_state,is_error,modelUsage,num_turns,permission_denials,result,session_id,stop_reason,subtype,total_cost_usd,usage,uuid` — core SDK contract fields all present and correctly typed.
+
+### 4.4 Vim surface — aligned except GAP occ162-01 (§2A.2)
+
+- `-- INSERT --` indicator: renders on both sides when vim enabled + INSERT mode ✓ (official pill `` `-- ${ve} --` `` composed dynamically — see §2A.1 lesson).
+- NORMAL mode: **no pill on either side** ✓ (official gate `ve!=="NORMAL"`).
+- `%` motion (official 2.1.301 changelog, embedded in the 2.1.302 binary): live-verified via tmux cursor telemetry — input `ab(cd)ef`, cursor at x=4 (on `(`), `%` → x=7 (on `)`) ✓. Unit pin `percentMotion301` (occ160 WP-D P5 PORT-landed).
+- `v`/`V` visual selection engine works (occ160 WP-D P7); the missing piece is the *footer pill* only — recorded as GAP occ162-01 (§2A.2), P3, Leader adjudication.
+- statusline JSON input carries `vim:{mode:…}` (`StatusLine.tsx:106-107`) ✓ matches official contract.
+- `/vim` slash command: absent on both sides (official removed 2.1.92; `removed-commands.test.ts` pins; editor toggle via `/config editor=vim|normal` — live-verified through the config dialog AND the `-p` shorthand `Set editor mode to vim`).
+- official settings key `statusLine.hideVimModeIndicator`: **missing from OCC schema** → part of occ162-01 (§2A.2).
+
+## 5. Carryover dispositions (this round's rulings)
+
+Re-review trigger check: official `stable = 2.1.292` — the STAGED re-review trigger (`stable ≥ 2.1.296`) is **NOT fired** → default disposition is carry-as-is. Statuses were changed ONLY where new byte/live evidence this round demands it (none did — no STAGED item flipped).
+
+| Item | Prior status | This round's evidence | Disposition |
+|---|---|---|---|
+| occ156-01 (`← for agents` footer hint) | STAGED (recorded vs official 2.1.296 live) | Component **still present verbatim** in official 2.1.302 binary (`{dimColor:!0,children:[kW," for agents"]}`) but conditionally gated (component-level `!C` early-return + idle-branch `L?null:`); live 2.1.302 session (isolated HOME, tmux 200-col, no fleet activity) renders NO hint in any mode | **STAGED — carried, NOT voided.** Conditionality note added (§2A.1); gate identifiers `C`/`L`/`le`/`Mt`/`De` must be decompiled by the porting WP before landing |
+| occ156-03 (official auto-mode default + announcement) | **STAGED-BY-LEADER** (ruling `b16f18f6`) | Boot-default divergence re-confirmed live (§4.1: official boots AUTO, OCC boots MANUAL) | **Untouched** — Leader-owned; re-review trigger not fired |
+| occ157-03 | **STAGED-BY-LEADER** | — | **Untouched** — Leader-owned |
+| occ156-04 | STAGED | no new evidence | carried as-is |
+| occ156-05 (ThemePicker numbering) | STAGED (P3) | live re-verified this round — still divergent | **STAGED — carried** (P3, Leader adjudication backlog) |
+| occ156-10 / drift-2 (init envelope field-set) | STAGED | Live re-verified (§4.3): OCC init = 17-key core contract; official 2.1.302 composition extracted verbatim — full superset incl. `analytics_disabled`/`product_feedback_disabled`/`memory_paths`/`scratchpad_path`/`footer_indicator` etc. | **STAGED — carried, re-verified** (no regression; field-set gap unchanged) |
+| occ160 STAGED ×19 (incl. WP-D P6 parse-keypress timing gate) | STAGED | WP-D P5 (`%` motion) + P7 (visual selection) live re-verified ✓ (§4.4); P6 timing gate not re-examined (no new evidence) | **STAGED ×19 — carried as-is** |
+| occ154 ×28 families | STAGED (carried per occ156 §7.3) | no re-review trigger | **carried as-is per occ156 §7.3** |
+| **occ162-01 (NEW this round)** — vim `-- VISUAL --` pill + `statusLine.hideVimModeIndicator` | n/a | Byte-confirmed gap vs 2.1.302 (§2A.2): official gate `ve!=="NORMAL"` + setting describe text verbatim; OCC gate INSERT-only, setting absent | **NEW → pending Leader adjudication** (P3 cosmetic, not a regression; per round rules: ledger-recorded, NOT self-fixed) |
+
+No CAND item was promoted to CONFIRMED without byte evidence; no CONFIRMED item was demoted. The only mid-round status-suspicion (occ156-01 "premise voided") was **caught by binary re-check before recording** and corrected to STAGED-with-conditionality-note.
 
 ## 6. Full suite + e2e record
 
-(TBD)
+(TBD — filled after `bash scripts/ci-test.sh` + `bash test/e2e/run.sh`)
 
 ## 7. Merge / handoff record
 
-(TBD)
+(TBD — filled after merge to main + CI green)
