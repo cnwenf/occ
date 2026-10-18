@@ -274,16 +274,20 @@ function buildToolSourceAttribute(tool: ToolType): {
  * OTEL_LOG_TOOL_DETAILS (parameters can carry sensitive command / MCP-server
  * content, so they're opt-in only).
  *
- * DRY: this reuses the SAME exported sub-helpers as the tool_result extractor
- * at toolExecution.ts:1386-1420 (isToolDetailsLoggingEnabled,
- * extractMcpToolDetails, extractSkillName) and mirrors its Bash branch
- * byte-faithfully. NOTE: toolExecution.ts still INLINES its own copy of this
- * block — it sits outside this WP's file cluster, so its owner should adopt
- * this exported helper to retire the duplicate (tracked in the port report).
+ * DRY (OCC-122 P3-1): this exported helper is the SINGLE implementation for
+ * BOTH OTel parameter sites — the interactive tool_decision emit below, the
+ * headless dispatch-fallback tool_decision emit in toolExecution.ts
+ * (checkPermissionsAndCallTool; adopted in OCC-121 Gap-121a), and the
+ * tool_result emit in toolExecution.ts (adopted in OCC-122, retiring the
+ * byte-identical inline copy that previously lived there). All three share
+ * the same sub-helpers (isToolDetailsLoggingEnabled, extractMcpToolDetails,
+ * extractSkillName) through this one function, so the sites cannot drift.
  *
  * Returns {} when the gate is off or nothing is extractable; the emit site
  * includes the key only when non-empty (official
- * `...Object.keys(Te).length>0&&{tool_parameters:_(Te)}`).
+ * `...Object.keys(Te).length>0&&{tool_parameters:_(Te)}`). The returned
+ * object is fresh per call and mutable — the tool_result site enriches it
+ * post-call with git_commit_id / git_branch before emitting.
  */
 function buildToolParametersForTelemetry(
   tool: ToolType,

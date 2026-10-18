@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
-import { runOcc, tempDir } from "./helpers";
+import { extractAndCloseFeedbackIssue, runOcc, tempDir } from "./helpers";
 
 /**
  * Slash-command behavior e2e: drives the BUILT `dist/cli.js` in `-p` mode and
@@ -136,28 +136,30 @@ describe.skipIf(!!process.env.CI)("slash command behavior (e2e, real model)", ()
   test("/feedback <text> — creates a GitHub issue (then closes it)", async () => {
     const { dir, cleanup } = tempDir();
     try {
+      // OCC-122 P3-5 (timeout budget): the runOcc budget was 60s against a 90s
+      // test timeout. A model round-trip + `gh issue create` that lands near
+      // the 60s mark could SIGKILL the run AFTER the issue was created but
+      // BEFORE the URL reached stdout — cleanup-first cannot close what it
+      // cannot see. 75s keeps a ≥15s margin for the close + assertions inside
+      // the 90s envelope, shrinking (not eliminating — see the gap doc) that
+      // leak window.
       const res = await runOcc(
         ["-p", "/feedback e2e test issue — will be closed automatically", "--dangerously-skip-permissions"],
         { OCC_CWD: dir },
-        60_000,
+        75_000,
       );
       // OCC-121 P3 carryover fix (e2e cleanup-first): the exit-code assertion
-      // used to run BEFORE the close block below — a nonzero code (e.g. the
-      // run timing out AFTER the issue was already created) threw here and
-      // skipped the close, leaving a dangling issue. ALL assertions now run
-      // strictly after cleanup, same rationale as the wording-assertion move
+      // used to run BEFORE the close block — a nonzero code (e.g. the run
+      // timing out AFTER the issue was already created) threw here and skipped
+      // the close, leaving a dangling issue. ALL assertions now run strictly
+      // after cleanup, same rationale as the wording-assertion move
       // (#509 / #523-#525).
-      // Cleanup FIRST: extract the issue URL and close it BEFORE any
-      // assertion, so no assertion failure can ever skip the close.
-      const urlMatch = res.stdout.match(/https:\/\/github\.com\/cnwenf\/occ\/issues\/(\d+)/);
-      if (urlMatch) {
-        const issueNum = urlMatch[1];
-        // Close the issue to avoid spam.
-        const { execFileSync } = await import("node:child_process");
-        try {
-          execFileSync("gh", ["issue", "close", issueNum, "--repo", "cnwenf/occ", "--comment", "e2e test — auto-closed"], { timeout: 15_000 });
-        } catch {}
-      }
+      // OCC-122 P3-4: the cleanup-first logic now lives in a pure helper
+      // (extractAndCloseFeedbackIssue, test/e2e/helpers.ts) that closes the
+      // issue BEFORE returning the URL match — structurally enforcing the
+      // ordering and giving it a CI-runnable unit backstop
+      // (helpersFeedbackCleanup.test.ts); this file is skipIf(CI).
+      const urlMatch = extractAndCloseFeedbackIssue(res.stdout);
       // Live-model wording varies ("Issue created:", "Issue filed ✅", ...) —
       // assert the stable facts: a created/filed phrase and the issue URL
       // anywhere in the output. Hard-assert the URL so a wording change can

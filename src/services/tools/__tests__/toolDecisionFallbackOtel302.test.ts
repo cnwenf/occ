@@ -122,11 +122,17 @@ function disableToolDetails(): void {
 function makeFakeTool(opts: {
   name: string
   mcpInfo?: { serverName: string; toolName: string }
+  /**
+   * OCC-122 P3-3: override for personas whose input must survive schema
+   * parsing (z.object({}) STRIPS unknown keys, so a Bash fixture carrying
+   * `command` needs a schema that keeps it).
+   */
+  inputSchema?: z.ZodType<unknown>
 }): Tool {
   return {
     name: opts.name,
     mcpInfo: opts.mcpInfo,
-    inputSchema: z.object({}),
+    inputSchema: opts.inputSchema ?? z.object({}),
     async call() {
       return { data: { ok: true } }
     },
@@ -163,8 +169,9 @@ async function drive(
   tool: Tool,
   toolUseID: string,
   canUseTool: (ctx: ToolUseContext) => unknown,
+  input: Record<string, unknown> = {},
 ): Promise<void> {
-  const toolUse = { type: 'tool_use', id: toolUseID, name: tool.name, input: {} }
+  const toolUse = { type: 'tool_use', id: toolUseID, name: tool.name, input }
   const assistantMessage = {
     uuid: 'a-fb302-1',
     requestId: undefined,
@@ -192,6 +199,12 @@ function blockReason(category?: string): PermissionDecisionReason {
 
 function toolDecisionAttrs(): Record<string, string | undefined> {
   const events = otelCalls.filter(c => c.name === 'tool_decision')
+  expect(events).toHaveLength(1)
+  return events[0].attrs
+}
+
+function toolResultAttrs(): Record<string, string | undefined> {
+  const events = otelCalls.filter(c => c.name === 'tool_result')
   expect(events).toHaveLength(1)
   return events[0].attrs
 }
@@ -325,5 +338,124 @@ describe('CC 2.1.302 #14B fallback wiring — ask gate on the classifier spread'
     expect(attrs.tool_use_id).toBe('tu_fb302_ask')
     expect(attrs.tool_source).toBe('builtin')
     expect(Object.keys(attrs).at(-1)).toBe('permission_mode')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Section C — OCC-122 P3-3: Bash persona through the fallback emit, and the
+// P3-1 DRY pin (tool_result reuses buildToolParametersForTelemetry, so the
+// Bash-branch fields ride BOTH OTel events off ONE implementation).
+// Mutation-verified: breaking the Bash branch inside
+// buildToolParametersForTelemetry (permissionLogging.ts) turns the
+// tool_parameters assertions below RED for tool_decision AND tool_result.
+// ---------------------------------------------------------------------------
+
+describe('CC 2.1.302 #14B fallback wiring — Bash tool_parameters (OCC-122 P3-3 + P3-1 DRY pin)', () => {
+  // Schema keeps `command`/`timeout`/`description` (z.object({}) strips them).
+  // Plain (non-strict) object mirrors the minimum the dispatch path parses.
+  const bashSchema = z.object({
+    command: z.string(),
+    timeout: z.number().optional(),
+    description: z.string().optional(),
+  }) as unknown as z.ZodType<unknown>
+
+  const BASH_INPUT = {
+    command: 'git status --short',
+    timeout: 30000,
+    description: 'check working tree',
+  }
+
+  test('Bash + details ON: fallback tool_decision pins the Bash-branch fields (bash_command/full_command/timeout/description)', async () => {
+    enableToolDetails('1')
+    const tool = makeFakeTool({ name: 'Bash', inputSchema: bashSchema })
+    const ctx = makeContext(tool)
+    await drive(
+      ctx,
+      tool,
+      'tu_fb302_bash',
+      () => ({
+        behavior: 'allow',
+        updatedInput: BASH_INPUT,
+        decisionReason: { type: 'rule', rule: { source: 'session' } },
+      }),
+      BASH_INPUT,
+    )
+    const attrs = toolDecisionAttrs()
+    expect(attrs.tool_name).toBe('Bash')
+    expect(attrs.tool_source).toBe('builtin')
+    // v302 identifiers-first order holds for the Bash persona too:
+    // tool_parameters sits after tool_source, before permission_mode.
+    const keys = Object.keys(attrs)
+    expect(keys.indexOf('tool_parameters')).toBeGreaterThan(
+      keys.indexOf('tool_source'),
+    )
+    expect(keys.at(-1)).toBe('permission_mode')
+    const params = JSON.parse(attrs.tool_parameters ?? '{}') as Record<
+      string,
+      unknown
+    >
+    expect(params.bash_command).toBe('git')
+    expect(params.full_command).toBe('git status --short')
+    expect(params.timeout).toBe(30000)
+    expect(params.description).toBe('check working tree')
+    // Builtin Bash: no MCP/skill keys leak into the Bash branch output.
+    expect(params.mcp_server_name).toBeUndefined()
+    expect(params.mcp_tool_name).toBeUndefined()
+    expect(params.skill_name).toBeUndefined()
+    // dangerouslyDisableSandbox is only set when present in the input.
+    expect(params.dangerouslyDisableSandbox).toBeUndefined()
+  })
+
+  test('Bash + details ON: tool_result carries the SAME extractor output (P3-1 DRY — one helper feeds both events)', async () => {
+    enableToolDetails('1')
+    const tool = makeFakeTool({ name: 'Bash', inputSchema: bashSchema })
+    const ctx = makeContext(tool)
+    await drive(
+      ctx,
+      tool,
+      'tu_fb302_bash_result',
+      () => ({
+        behavior: 'allow',
+        updatedInput: BASH_INPUT,
+        decisionReason: { type: 'rule', rule: { source: 'session' } },
+      }),
+      BASH_INPUT,
+    )
+    const decisionParams = JSON.parse(
+      toolDecisionAttrs().tool_parameters ?? '{}',
+    ) as Record<string, unknown>
+    const resultAttrs = toolResultAttrs()
+    expect(resultAttrs.success).toBe('true')
+    const resultParams = JSON.parse(resultAttrs.tool_parameters ?? '{}') as Record<
+      string,
+      unknown
+    >
+    expect(resultParams.bash_command).toBe('git')
+    expect(resultParams.full_command).toBe('git status --short')
+    expect(resultParams.timeout).toBe(30000)
+    expect(resultParams.description).toBe('check working tree')
+    // The two events must agree field-for-field — they share ONE
+    // implementation (buildToolParametersForTelemetry) after the P3-1 fix.
+    // A re-inlined drifting copy in toolExecution.ts fails this assertion.
+    expect(resultParams).toEqual(decisionParams)
+  })
+
+  test('Bash + details OFF: neither tool_decision nor tool_result carries tool_parameters (shared F5n gate)', async () => {
+    disableToolDetails()
+    const tool = makeFakeTool({ name: 'Bash', inputSchema: bashSchema })
+    const ctx = makeContext(tool)
+    await drive(
+      ctx,
+      tool,
+      'tu_fb302_bash_nodetails',
+      () => ({
+        behavior: 'allow',
+        updatedInput: BASH_INPUT,
+        decisionReason: { type: 'rule', rule: { source: 'session' } },
+      }),
+      BASH_INPUT,
+    )
+    expect(Object.keys(toolDecisionAttrs())).not.toContain('tool_parameters')
+    expect(Object.keys(toolResultAttrs())).not.toContain('tool_parameters')
   })
 })
