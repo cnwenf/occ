@@ -142,7 +142,33 @@ No CAND item was promoted to CONFIRMED without byte evidence; no CONFIRMED item 
 
 ## 6. Full suite + e2e record
 
-(TBD — filled after `bash scripts/ci-test.sh` + `bash test/e2e/run.sh`)
+### 6.1 Unit suite (host, `CI=true bash scripts/ci-test.sh`)
+
+**12657 pass / 0 fail / 119 skip — 1140 files checked, 0 failed, exit 0.** Hard bar (≥11087 pass / 0 fail) satisfied with wide margin. Per-file isolation + same-worker leak-pair both-orders runs all OK (incl. `autoDefaultNudge296 ↔ autoDefaultNudge296Merge` 23 pass both orders). Targeted pins from §2/§3 (PORT ×12: 174/0/413; acceptance-fix: 37/0/76 + ⑤-pair 21/0/51) were additionally run in BOTH orders — all green. This round's branch delta vs `v2.1.389` is **docs-only** (1 file, +149 lines), so no tests were added or removed — the total is exactly the tag baseline; any different count cited in kickoff references is attributable to harness mode (per-file isolation vs single `bun test` invocation), not to this round.
+
+### 6.2 e2e root run (`bash test/e2e/run.sh`, as specified — fidelity record)
+
+**667 pass / 1 skip / 72 fail / 12 errors** (2468 expects, 158 files, 913s). Structural, matching occ150 §236 (658/73/12, all environment-attributed): `run.sh` runs the one-shot container **as root**, and OCC refuses `--dangerously-skip-permissions` for root ("--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons", manually probed: exit 1) → the whole real-model/skip-permissions cluster fails uniformly (~750ms, exit 1), plus the tmux cluster. Not a product signal — recorded because the round rules name `run.sh` explicitly; the canonical gate is the non-root flow below (per the Dockerfile's own documentation: "Default USER is left unset so the one-shot run.sh flow still runs as root (unchanged); runner.sh opts in via --user occ").
+
+### 6.3 e2e non-root run (`runner.sh` → `docker exec occ-e2e-runner`, canonical)
+
+**724 pass / 1 skip / 15 fail / 7 errors** (2631 expects, 158 files, 902s). Root-guard cluster flipped as expected: every tmux test that failed under root (auto-default-nudge ×2, trust-gate ×2, hljs injection, goal panel) **passes** as `occ` user, and 13/14 `real-coding` real-model tests pass with genuine gateway calls (FileEdit 10.1s, Bash 7.5s, multi-file 35.2s — real latencies, not stubs). Image freshness verified before the run (image Created `2026-10-19T02:33:42+08:00`; ledger-file md5 inside image == host; dist byte-delta = BUILD_TIME macro only; container TZ = UTC, hence "Oct 18" mtimes).
+
+### 6.4 Residual classification (8 test-level fails + 7 file-level load errors — ALL environment-attributed)
+
+| # | Residual | Class (occ150 §236 taxonomy where applicable) | Evidence |
+|---|----------|-----------------------------------------------|----------|
+| 1 | OCC-82 effort-cap REPL tmux ⑤⑥ (×2, 30s timeout on `waitForText('shift+tab')`) | **ANTHROPIC_API_KEY 未转发** | `replHomeWith()` seeds `customApiKeyResponses.approved` ONLY when the TEST-PROCESS env carries `ANTHROPIC_API_KEY` ≥20 chars; container gets BASE_URL/AUTH_TOKEN/MODEL only → child REPL gets fallback key `occ-effort-cap-key` with an empty approval list → API-key-approval dialog blocks boot → footer never renders. ① passes (no mock-endpoint env). **Isolated re-run proof**: `docker exec -e ANTHROPIC_API_KEY=occ-effort-cap-key-12345 occ-e2e-runner bun test …effort-cap…` → **7 pass / 0 fail / 40 expect (20.5s)**. Not a flake, not a product defect. |
+| 2 | `/feedback <text>` creates+closes GitHub issue (60s timeout) | GitHub API/credentials absent in container | Sibling `/feedback (no args)` (model-only) PASSES; issue-create path needs `gh` auth + GitHub reachability, neither seeded in the image. |
+| 3 | 2.1.108 prompt-cache TTL env vars | **ANTHROPIC_API_KEY 未转发** | Source-level `bun -e` import chain throws `ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env var is required` at `src/utils/auth.ts:292` (`getAnthropicApiKeyWithSource ← isClaudeAISubscriber ← resolvePromptCacheTtl ← should1hCacheTTL`); run.sh/runner.sh forward AUTH_TOKEN, not API_KEY. |
+| 4 | `occ update argv` ×2 | **只读挂载 module-not-found** | `Cannot find module '../../src/commands/update/update.ts'` — test dir mounted RO at `/test/e2e` while repo is baked at `/occ`, so `../../src/...` resolves to nonexistent `/src/...`. |
+| 5 | PTY interactive-resume ×1 | Container PTY restriction | `errno: -1, code: "EPERM"` at pty spawn (`resume-command-name.e2e.test.ts:140`), 0.40s — spawn-level denial for `occ` user in the container, not a product path. |
+| 6 | `--append-system-prompt` followed (real model) | Model variance (gateway) | exit 0, stdout `"4\n"` without `XYZ_OCC_TOKEN` — gateway model (qwen3.8-max) ignored the appended instruction; the other 13/14 real-model tests in the same file pass with real calls. |
+| 7 | 7 file-level load errors | **只读挂载 module-not-found** | 8 test files hit the same RO-mount relative-import failure (bun tallies 7 errors; the two named `occ update argv` fails share the cause): `loadSkillsDir.js` (version-2.1.303-skill-shell-marker-escape), `react` pkg (wake-logout-real-call-2.1.211), `thinkingOnlyNudge.js` (version-2.1.283), `update.ts` (occ-update-argv), `package.json` (occ-versioning, workflow-permission-dialog-ctrl-g), `browser.js` (webbrowser), `argumentSubstitution.js` (version-2.1.163-skill-dollar-escape). |
+
+### 6.5 Zero-regression argument + verdict
+
+`git diff v2.1.389..HEAD --stat` = **docs-only (1 file, +149)** — nothing in this round's branch can be the cause of any residual. Every residual maps to a documented occ150 §236 environment class (root-guard → skip-permissions; tmux-in-container; ANTHROPIC_API_KEY 未转发; 只读挂载 module-not-found) or a container-inherent limit (GitHub creds, PTY EPERM, gateway model variance). Per occ104 discipline the gate is *classify every residual against the clean-baseline A/B, not zero-fail* — and the one cluster that needed an isolated re-run to exclude flake-under-load (OCC-82 ⑤⑥) was proven green with the env fix. **Test-authenticity gate: PASS** (unit 12657/0/119 exit 0; e2e canonical non-root 724/15/7 fully environment-attributed; leak-pairs both-orders green; official-binary artifacts in /tmp deleted after use per round rules).
 
 ## 7. Merge / handoff record
 
