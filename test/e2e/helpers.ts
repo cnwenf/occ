@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -120,4 +120,50 @@ export function seedFile(dir: string, relPath: string, content: string): string 
   if (parent && !existsSync(parent)) mkdirSync(parent, { recursive: true });
   writeFileSync(abs, content);
   return abs;
+}
+
+// ---------------------------------------------------------------------------
+// /feedback e2e cleanup (OCC-122 P3-4: extracted from the live e2e test body
+// so the cleanup-first invariant has a CI backstop — the e2e file itself is
+// describe.skipIf(!!process.env.CI), so logic living only inside the test body
+// was never exercised in CI. This pure helper + its unit test
+// (helpersFeedbackCleanup.test.ts, CI-runnable, injected closeFn — no gh, no
+// live model) pins the ordering: the GitHub issue is closed BEFORE the caller
+// receives the URL match, so no assertion in the caller can skip the close.
+// ---------------------------------------------------------------------------
+
+/** Matches the cnwenf/occ issue URL that a successful /feedback run prints. */
+export const FEEDBACK_ISSUE_URL_RE =
+  /https:\/\/github\.com\/cnwenf\/occ\/issues\/(\d+)/;
+
+/** Default close implementation: real `gh issue close` (live e2e only). */
+function ghCloseFeedbackIssue(issueNum: string): void {
+  execFileSync(
+    "gh",
+    ["issue", "close", issueNum, "--repo", "cnwenf/occ", "--comment", "e2e test — auto-closed"],
+    { timeout: 15_000 },
+  );
+}
+
+/**
+ * Cleanup-first contract: when `stdout` contains a feedback issue URL, close
+ * the issue (best-effort — a close failure never propagates) BEFORE returning
+ * the match to the caller. Returns the URL match (or null when no URL was
+ * printed — nothing to close). Callers assert on the returned match strictly
+ * AFTER this function returns, so the close can never be skipped by a failing
+ * assertion (OCC-121 ordering fix, now structurally enforced).
+ */
+export function extractAndCloseFeedbackIssue(
+  stdout: string,
+  closeFn: (issueNum: string) => void = ghCloseFeedbackIssue,
+): RegExpMatchArray | null {
+  const urlMatch = stdout.match(FEEDBACK_ISSUE_URL_RE);
+  if (urlMatch) {
+    try {
+      closeFn(urlMatch[1]);
+    } catch {
+      // Best-effort: a failed close must not mask the test's own assertions.
+    }
+  }
+  return urlMatch;
 }

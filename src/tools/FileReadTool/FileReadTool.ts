@@ -1428,11 +1428,24 @@ async function callInner(
       const extractedPages = extractResult.data
       // OCC-121 P3 carryover fix (contract-1 seam evenness): the page-image
       // mapping previously used bare fs/promises readdir/readFile, bypassing
-      // the getFsImplementation() seam every other read path in this file
-      // uses (stat at :1302, readFileBytes at :1471, image reads via
-      // readImageBytesCapped). Test/custom fs implementations were silently
-      // ignored here. The seam's readdir returns Dirent[] (withFileTypes),
-      // hence the .map(d => d.name) to keep the string-based filter/sort.
+      // the getFsImplementation() seam. It now reads through the seam like the
+      // other seam-routed paths in this file (the stat calls in call() and the
+      // PDF branch below, plus image reads via readImageBytesCapped — which
+      // opens through the seam's optional open? member). The seam's readdir
+      // returns Dirent[] (withFileTypes), hence the .map(d => d.name) to keep
+      // the string-based filter/sort.
+      //
+      // OCC-122 P3-2 scope note (the previous wording of this comment
+      // overstated coverage and cited stale line anchors): the MAIN TEXT read
+      // path below (readFileInRange) is NOT seam-routed — that utility does
+      // offset/stream reads (createReadStream + fstat + StringDecoder) via
+      // bare fs/fs-promises, primitives the FsOperations contract does not
+      // expose, and it is shared with src/utils/attachments.ts. Routing it
+      // through the seam would require widening the contract (stream/range
+      // primitives) and touching a second caller — deliberately out of scope
+      // for this fix; recorded in docs/upstream-version-gap-occ122-2026-10.md.
+      // Custom/test fs implementations therefore affect the PDF page-image,
+      // stat, and image-byte paths, but not main-text extraction.
       const fsImpl = getFsImplementation()
       const entries = await fsImpl.readdir(extractedPages.file.outputDir)
       const imageFiles = entries

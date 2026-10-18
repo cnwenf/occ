@@ -9,8 +9,6 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import {
-  extractMcpToolDetails,
-  extractSkillName,
   extractToolInputForTelemetry,
   getFileExtensionForAnalytics,
   getFileExtensionsFromBashCommand,
@@ -1406,39 +1404,16 @@ async function checkPermissionsAndCallTool(
   // Prepare tool parameters for logging in tool_result event.
   // Gated by OTEL_LOG_TOOL_DETAILS — tool parameters can contain sensitive
   // content (bash commands, MCP server names, etc.) so they're opt-in only.
+  // OCC-122 P3-1 (DRY): this used to INLINE a byte-identical copy of the
+  // details-gated extractor; it now reuses the SAME exported helper
+  // (buildToolParametersForTelemetry ≡ official F5n) that the fallback
+  // tool_decision emit site above already adopted in OCC-121 Gap-121a. One
+  // implementation feeds both OTel events, so the two can no longer drift.
+  // The returned object stays mutable: the post-call git enrichment below
+  // (git_commit_id / git_branch) writes into it before the tool_result emit.
   const telemetryToolInput = extractToolInputForTelemetry(processedInput)
-  let toolParameters: Record<string, unknown> = {}
-  if (isToolDetailsLoggingEnabled()) {
-    if (tool.name === BASH_TOOL_NAME && 'command' in processedInput) {
-      const bashInput = processedInput as BashToolInput
-      const commandParts = bashInput.command.trim().split(/\s+/)
-      const bashCommand = commandParts[0] || ''
-
-      toolParameters = {
-        bash_command: bashCommand,
-        full_command: bashInput.command,
-        ...(bashInput.timeout !== undefined && {
-          timeout: bashInput.timeout,
-        }),
-        ...(bashInput.description !== undefined && {
-          description: bashInput.description,
-        }),
-        ...('dangerouslyDisableSandbox' in bashInput && {
-          dangerouslyDisableSandbox: bashInput.dangerouslyDisableSandbox,
-        }),
-      }
-    }
-
-    const mcpDetails = extractMcpToolDetails(tool.name)
-    if (mcpDetails) {
-      toolParameters.mcp_server_name = mcpDetails.serverName
-      toolParameters.mcp_tool_name = mcpDetails.mcpToolName
-    }
-    const skillName = extractSkillName(tool.name, processedInput)
-    if (skillName) {
-      toolParameters.skill_name = skillName
-    }
-  }
+  const toolParameters: Record<string, unknown> =
+    buildToolParametersForTelemetry(tool, processedInput)
 
   const decisionInfo = toolUseContext.toolDecisions?.get(toolUseID)
   // CC 2.1.288 #31: both fallbacks use the Aho-computed pair (`mo.decision` /
