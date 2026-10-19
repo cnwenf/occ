@@ -102,4 +102,17 @@ code: `docs/gap-research-303/triage-T1.md` §2, extracts in
 
 ## §5 Release record
 
-( filled during release )
+| Item | Value |
+|---|---|
+| Release version | **2.1.392** (package.json bump + `## 2.1.392 - 2026-10-20` CHANGELOG section) |
+| Feature commit | `d3c1708a` — "feat(2.1.303): port CA root-certificate deny-list + expired system-cert filter" (8 files, +1092/−13) |
+| Release commit | `d4b7347e` — "chore(release): 2.1.392" |
+| Merge to main | `110fd2cd` — `--no-ff` merge of `agent/occ-leader/9d1f7043` into `main` (created via `git commit-tree` plumbing: local `main` ref is pinned by another worktree; pushed `d0ad9ccb..110fd2cd`) |
+| Tag | `v2.1.392` → `110fd2cd`, pushed 2026-10-19T19:05Z |
+| publish.yml run | [39307993939](https://github.com/cnwenf/occ/actions/runs/39307993939) — Build/verify/version steps **green**; **npm Publish step failed with E404** (`'@cnwenf/occ@2.1.392' is not in this registry`) — the known **OCC-151** blocker (NPM_TOKEN expired ~2026-10-03; human-only rotation; npm `latest` stuck at 2.1.367 since then). Not a defect of this round; identical failure on v2.1.368…v2.1.391. |
+| GitHub Release | CI skipped its "Create GitHub Release" step (job aborted at npm publish), so the release was created manually with the same generated-notes format as v2.1.391: https://github.com/cnwenf/occ/releases/tag/v2.1.392 — marked **Latest** |
+| Releases == tags | **191 == 191** ✓ (`gh api releases` count vs `git tag` count) |
+| Residual branches | `gh api repos/cnwenf/occ/branches` → only `main` ✓ (agent branch never pushed remotely; nothing to clean) |
+
+Tracked official alignment after this release: **2.1.303** (= official latest as of
+2026-10-20). Next round baseline: OCC main `110fd2cd` + this ledger.
