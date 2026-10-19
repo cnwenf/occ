@@ -105,6 +105,18 @@ export function filterExpiredCertificates(certificates: string[]): string[] {
 }
 
 /**
+ * claude-code 2.1.303 (`D`, dd-verified @233,826,026: `D(e)=[...new Set(e)]`)
+ * — dedupe the final certificate list. The trust sources overlap in practice:
+ * system stores commonly re-ship Mozilla roots that are also in the bundled
+ * store, and NODE_EXTRA_CA_CERTS may re-add a root the store already holds.
+ * The official loader returns `D([...store, ...extra])`; order is preserved,
+ * exact-duplicate PEM strings collapse to the first occurrence.
+ */
+export function dedupeCerts(certs: readonly string[]): string[] {
+  return [...new Set(certs)]
+}
+
+/**
  * Dedup set for the NODE_EXTRA_CA_CERTS console warnings (official
  * `warnedExtraCerts` field on the CA-store class) — module-scoped so warnings
  * dedup across cache invalidations within the process, like the official.
@@ -231,7 +243,9 @@ export const getCACertificates = memoize((): string[] | undefined => {
     }
   }
 
-  return [...storeCerts, ...extraCerts]
+  // claude-code 2.1.303 (`Xn` tail): `y = D([...store, ...extra])` — the
+  // final list is deduped (trust sources overlap in practice).
+  return dedupeCerts([...storeCerts, ...extraCerts])
 })
 
 /**
