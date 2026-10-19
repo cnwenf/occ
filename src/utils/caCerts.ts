@@ -2,6 +2,12 @@ import memoize from 'lodash-es/memoize.js'
 import { logForDebugging } from './debug.js'
 import { hasNodeOption } from './envUtils.js'
 import { getFsImplementation } from './fsOperations.js'
+import {
+  collectBlockedBundledRoots,
+  dropBlockedCertificates,
+  resolveTrustedCertificates,
+  type CaCertEntry,
+} from './caDenyList.js'
 
 /**
  * Load CA certificates for TLS connections.
@@ -16,6 +22,12 @@ import { getFsImplementation } from './fsOperations.js'
  * (default stores = ["bundled", "system"]) so enterprise TLS proxies work
  * without extra setup. Set `CLAUDE_CODE_CERT_STORE=bundled` to use only the
  * bundled Mozilla CAs, or `=system` for OS-only, or `bundled,system` (default).
+ *
+ * claude-code 2.1.303: system-store certs are filtered for expiry, and every
+ * trust source (bundled/system/NODE_EXTRA_CA_CERTS) is passed through the
+ * CLI's root-certificate deny list (see caDenyList.ts). When the system CA API
+ * is unavailable the loader now falls back to bundled roots instead of
+ * deferring to the runtime.
  *
  * Memoized for performance. Call clearCACertsCache() to invalidate after
  * environment variable changes (e.g., after trust dialog applies settings.json).
@@ -59,6 +71,46 @@ export function resolveCertStores(): string[] {
   return [...DEFAULT_CERT_STORES]
 }
 
+/**
+ * claude-code 2.1.303 (`Mn`) — drop expired certificates from the system
+ * store. Unparseable certs and certs with an unparseable `validTo` are kept
+ * (official behavior: fail open per-cert, the deny list is the fail-closed
+ * layer).
+ */
+export function filterExpiredCertificates(certificates: string[]): string[] {
+  /* eslint-disable @typescript-eslint/no-require-imports */
+  const { X509Certificate } = require('node:crypto') as typeof import('node:crypto')
+  /* eslint-enable @typescript-eslint/no-require-imports */
+  const now = Date.now()
+  let droppedCount = 0
+  const kept = certificates.filter((pem) => {
+    try {
+      const cert = new X509Certificate(pem)
+      const validTo = new Date(cert.validTo).getTime()
+      if (Number.isNaN(validTo) || validTo > now) {
+        return true
+      }
+      droppedCount++
+      return false
+    } catch {
+      return true
+    }
+  })
+  if (droppedCount > 0) {
+    logForDebugging(
+      `CA certs: Dropped ${droppedCount} expired certificate(s) from system store`,
+    )
+  }
+  return kept
+}
+
+/**
+ * Dedup set for the NODE_EXTRA_CA_CERTS console warnings (official
+ * `warnedExtraCerts` field on the CA-store class) — module-scoped so warnings
+ * dedup across cache invalidations within the process, like the official.
+ */
+const warnedExtraCerts = new Set<string>()
+
 export const getCACertificates = memoize((): string[] | undefined => {
   const stores = resolveCertStores()
   const useBundled = stores.includes('bundled')
@@ -71,6 +123,7 @@ export const getCACertificates = memoize((): string[] | undefined => {
 
   // Under Node.js (not Bun) with no extra certs and no explicit
   // CLAUDE_CODE_CERT_STORE, defer to the runtime's native handling.
+  // (OCC dev fast-path; the shipped build is Bun where the filter always runs.)
   if (
     typeof Bun === 'undefined' &&
     !extraCertsPath &&
@@ -89,17 +142,26 @@ export const getCACertificates = memoize((): string[] | undefined => {
     tls as typeof tls & { getCACertificates?: (type: string) => string[] }
   ).getCACertificates
 
+  // claude-code 2.1.303: no longer returns here — falls through with an empty
+  // entry list so resolveTrustedCertificates() falls back to the (deny-list
+  // filtered) bundled roots.
   if (!useBundled && useSystem && !getCACerts) {
     logForDebugging(
-      'CA certs: stores=system but system CA API unavailable, deferring to runtime',
+      'CA certs: stores=system but system CA API unavailable, using bundled roots',
     )
-    return undefined
   }
 
-  const certs: string[] = []
+  const entries: CaCertEntry[] = []
+  const pushEntries = (source: string, pems: readonly string[]): void => {
+    for (const pem of pems) {
+      entries.push({ pem, source })
+    }
+  }
+  let extraCerts: string[] = []
+  let appendedExtra = false
 
   if (useBundled) {
-    certs.push(...tls.rootCertificates)
+    pushEntries('bundled', tls.rootCertificates)
     logForDebugging(
       `CA certs: Loaded ${tls.rootCertificates.length} bundled root certificates`,
     )
@@ -109,9 +171,10 @@ export const getCACertificates = memoize((): string[] | undefined => {
     try {
       const systemCAs = getCACerts?.('system')
       if (systemCAs && systemCAs.length > 0) {
-        certs.push(...systemCAs)
+        const validSystemCAs = filterExpiredCertificates(systemCAs)
+        pushEntries('system', validSystemCAs)
         logForDebugging(
-          `CA certs: Loaded ${systemCAs.length} system CA certificates`,
+          `CA certs: Loaded ${validSystemCAs.length} system CA certificates`,
         )
       } else {
         logForDebugging(
@@ -119,7 +182,7 @@ export const getCACertificates = memoize((): string[] | undefined => {
         )
         // Fall back to bundled root certs if bundled wasn't already included.
         if (!useBundled) {
-          certs.push(...tls.rootCertificates)
+          pushEntries('bundled', tls.rootCertificates)
         }
       }
     } catch (error) {
@@ -128,20 +191,37 @@ export const getCACertificates = memoize((): string[] | undefined => {
         { level: 'error' },
       )
       if (!useBundled) {
-        certs.push(...tls.rootCertificates)
+        pushEntries('bundled', tls.rootCertificates)
       }
     }
   }
 
-  // Append extra certs from file
+  // claude-code 2.1.303: deny-list filtering of the store entries, with the
+  // bundled-only retry + throw when nothing is left to trust.
+  const blockedRoots = collectBlockedBundledRoots(tls.rootCertificates)
+  const storeCerts = resolveTrustedCertificates(
+    entries,
+    tls.rootCertificates,
+    blockedRoots,
+    warnedExtraCerts,
+  )
+
+  // Append extra certs from file (deny-list filtered per 2.1.303)
   if (extraCertsPath) {
     try {
-      const extraCert = getFsImplementation().readFileSync(extraCertsPath, {
+      const extraContent = getFsImplementation().readFileSync(extraCertsPath, {
         encoding: 'utf8',
       })
-      certs.push(extraCert)
+      extraCerts = dropBlockedCertificates(
+        [{ pem: extraContent, source: 'NODE_EXTRA_CA_CERTS' }],
+        blockedRoots,
+        warnedExtraCerts,
+      )
+      appendedExtra = extraCerts.length > 0
       logForDebugging(
-        `CA certs: Appended extra certificates from NODE_EXTRA_CA_CERTS (${extraCertsPath})`,
+        appendedExtra
+          ? `CA certs: Appended extra certificates from NODE_EXTRA_CA_CERTS (${extraCertsPath})`
+          : `CA certs: Nothing from NODE_EXTRA_CA_CERTS (${extraCertsPath}) is left to append`,
       )
     } catch (error) {
       logForDebugging(
@@ -151,7 +231,7 @@ export const getCACertificates = memoize((): string[] | undefined => {
     }
   }
 
-  return certs.length > 0 ? certs : undefined
+  return [...storeCerts, ...extraCerts]
 })
 
 /**
