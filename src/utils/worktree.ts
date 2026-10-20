@@ -1757,3 +1757,265 @@ export async function execIntoTmuxWorktree(args: string[]): Promise<{
 
   return { handled: true }
 }
+
+// ---------------------------------------------------------------------------
+// Official 2.1.304 #30 — worktree-exit "at stake" subsystem
+//
+// Changelog: "Fixed `claude --worktree` removing the worktree and its branch
+// without asking at exit when HEAD was detached or on another branch, which
+// could lose commits."
+//
+// The pre-304 guard counted `rev-list --count <originalHeadCommit>..HEAD` —
+// commits reachable from HEAD. When HEAD was detached or moved to another
+// branch, commits made on the worktree's OWN branch (refs/heads/<worktreeBranch>)
+// were invisible to that count → 0 → silent removal deleted them. The official
+// fix classifies HEAD (symbolic-ref) and counts at-stake commits on the
+// worktree branch ref instead. Ported verbatim from the official 304 symbols
+// `wV` / `QEn` / `G$r` / `nOt` / `tOt` (byte-recovered @249016065, see
+// docs/gap-research-304/research-R6-env-misc.md #30).
+// ---------------------------------------------------------------------------
+
+/** Official `wV` — count commits reachable from positiveRefs but not from
+ * negativeRefs. Returns null on git failure or non-numeric output (callers
+ * must treat null as "unknown" and fail closed). */
+export async function countCommitsOnRefs(
+  worktreePath: string,
+  positiveRefs: string[],
+  negativeRefs: string[],
+): Promise<number | null> {
+  const result = await execFileNoThrowWithCwd(
+    gitExe(),
+    [
+      'rev-list',
+      '--count',
+      ...positiveRefs,
+      ...negativeRefs.map(ref => `^${ref}`),
+      '--',
+    ],
+    { cwd: worktreePath },
+  )
+  const out = result.stdout.trim()
+  return result.code === 0 && /^\d+$/.test(out) ? Number(out) : null
+}
+
+/** Official `QEn` — true iff `refs/heads/<branch>` does not exist
+ * (for-each-ref with --count=1 exits 0 with empty stdout AND stderr). */
+export async function branchMissing(
+  worktreePath: string,
+  branch: string,
+): Promise<boolean> {
+  const result = await execFileNoThrowWithCwd(
+    gitExe(),
+    [
+      'for-each-ref',
+      '--count=1',
+      '--format=%(refname)',
+      `refs/heads/${branch}`,
+    ],
+    { cwd: worktreePath },
+  )
+  return (
+    result.code === 0 &&
+    result.stdout.trim() === '' &&
+    result.stderr.trim() === ''
+  )
+}
+
+/**
+ * Official `G$r` HEAD classification (2.1.304 #30):
+ * - `its_branch`       — HEAD is on the worktree's own branch
+ * - `another_branch`   — HEAD is on a different branch (carries its name)
+ * - `like_its_branch`  — HEAD is on a branch whose name compares equal to the
+ *                        worktree branch under normalization (fail-closed:
+ *                        commits stays null)
+ * - `detached`         — HEAD is detached (`symbolic-ref -q` exits 1, silent)
+ * - `unreadable`       — any other symbolic-ref outcome (fail-closed: null)
+ * `null` is returned when no classification is possible at all (hook-based
+ * worktrees, or no worktreeBranch recorded).
+ */
+export type WorktreeHeadClassification =
+  | { head: 'its_branch'; commits: number | null }
+  | { head: 'another_branch'; branch: string; commits: number | null }
+  | { head: 'like_its_branch'; commits: null }
+  | { head: 'detached'; commits: number | null }
+  | { head: 'unreadable'; commits: null }
+
+/**
+ * The official compares `hh(S)===hh(n)` for the like_its_branch case; `hh` is
+ * a minified branch-name normalizer that could not be recovered from the
+ * binary. DEVIATION: case-insensitive comparison — the fail-closed direction
+ * (like_its_branch yields commits:null → dialog asks, tool refuses).
+ */
+function normalizeBranchNameForComparison(branch: string): string {
+  return branch.toLowerCase()
+}
+
+/** Official `G$r` — classify where the worktree HEAD points relative to the
+ * branch the session created, counting at-stake commits on the worktree
+ * branch ref (`refs/heads/<worktreeBranch>`), NOT on HEAD. */
+export async function classifyWorktreeHead({
+  worktreePath,
+  worktreeBranch,
+  originalHeadCommit,
+  hookBased,
+}: {
+  worktreePath: string
+  worktreeBranch?: string
+  originalHeadCommit?: string
+  hookBased?: boolean
+}): Promise<WorktreeHeadClassification | null> {
+  if (hookBased || !worktreeBranch) {
+    return null
+  }
+  const itsBranchRef = `refs/heads/${worktreeBranch}`
+  const symbolic = await execFileNoThrowWithCwd(
+    gitExe(),
+    ['symbolic-ref', '-q', 'HEAD'],
+    { cwd: worktreePath },
+  )
+  const [, headBranch] =
+    /^refs\/heads\/(.+)$/.exec(symbolic.stdout.replace(/\r?\n$/, '')) ?? []
+  // `git symbolic-ref -q HEAD` exits 1 with no output on a detached HEAD.
+  // (Official checks `exitCode===1`; OCC's exec wrapper field is `code`.)
+  const isDetached =
+    symbolic.code === 1 &&
+    symbolic.stdout.trim() === '' &&
+    symbolic.stderr.trim() === ''
+  if (headBranch === undefined && !isDetached) {
+    return { head: 'unreadable', commits: null }
+  }
+  if (
+    headBranch !== undefined &&
+    headBranch !== worktreeBranch &&
+    normalizeBranchNameForComparison(headBranch) ===
+      normalizeBranchNameForComparison(worktreeBranch)
+  ) {
+    return { head: 'like_its_branch', commits: null }
+  }
+  const baseline = originalHeadCommit
+  if (headBranch === worktreeBranch) {
+    return {
+      head: 'its_branch',
+      commits: baseline
+        ? await countCommitsOnRefs(worktreePath, [itsBranchRef], [baseline])
+        : null,
+    }
+  }
+  if (headBranch !== undefined) {
+    // HEAD moved to another branch: count commits on OUR branch that the
+    // other branch and the baseline both lack. If our branch is gone
+    // entirely, nothing can be lost through it → 0.
+    const commits = baseline
+      ? (await countCommitsOnRefs(
+          worktreePath,
+          [itsBranchRef],
+          [`refs/heads/${headBranch}`, baseline],
+        )) ?? ((await branchMissing(worktreePath, worktreeBranch)) ? 0 : null)
+      : null
+    return { head: 'another_branch', branch: headBranch, commits }
+  }
+  // Detached HEAD: count commits on our branch OR at HEAD beyond the
+  // baseline. If our branch is gone, only the detached HEAD can hold work.
+  return {
+    head: 'detached',
+    commits: baseline
+      ? (await countCommitsOnRefs(
+          worktreePath,
+          [itsBranchRef, 'HEAD'],
+          [baseline],
+        )) ??
+        ((await branchMissing(worktreePath, worktreeBranch))
+          ? await countCommitsOnRefs(worktreePath, ['HEAD'], [baseline])
+          : null)
+      : null,
+  }
+}
+
+/**
+ * Full at-stake picture for a worktree exit (official `nOt` result union):
+ * the classification above, plus
+ * - `not_read`    — no classification was possible; commits came from the
+ *                   legacy HEAD rev-list fallback (or are null)
+ * - `onKeptBranch` — the worktree moved to another branch AND the worktree's
+ *   own branch has 0 unbacked commits, but the branch it moved to holds
+ *   commits the session's starting commit lacks. Removal keeps that branch,
+ *   so nothing is lost — but the user may still be working there, so never
+ *   auto-remove / auto-accept (official refinement in `nOt`).
+ */
+export type WorktreeExitAtStake =
+  | WorktreeHeadClassification
+  | { head: 'not_read'; commits: number | null }
+  | {
+      head: 'another_branch'
+      branch: string
+      commits: 0
+      onKeptBranch: number | null
+    }
+
+/** Official `nOt` — entry point. Gate: official
+ * `ui('tengu_wary_ladle', {safe:!0})` is default-ON; OCC's `feature()`
+ * returns false for unregistered flags, so the gate is hardcoded ON here
+ * (same precedent as tengu_bright_lake in
+ * src/tools/BashTool/destructiveCommandWarning.ts). */
+export async function computeWorktreeExitAtStake(
+  session: Pick<
+    WorktreeSession,
+    'worktreePath' | 'worktreeBranch' | 'originalHeadCommit' | 'hookBased'
+  >,
+): Promise<WorktreeExitAtStake> {
+  const { worktreePath, originalHeadCommit } = session
+  const classification = await classifyWorktreeHead(session)
+  if (classification === null) {
+    return {
+      head: 'not_read',
+      commits: originalHeadCommit
+        ? await countCommitsOnRefs(worktreePath, ['HEAD'], [originalHeadCommit])
+        : null,
+    }
+  }
+  if (
+    classification.head !== 'another_branch' ||
+    classification.commits !== 0
+  ) {
+    return classification
+  }
+  // Refinement: the worktree's own branch is clean, but HEAD sits on another
+  // branch — count what THAT branch holds beyond the session baseline. 0 →
+  // plain another_branch (auto-remove allowed); >0 or unknown (null) →
+  // onKeptBranch (never auto-remove).
+  const commitsOnKeptBranch = originalHeadCommit
+    ? (await countCommitsOnRefs(
+        worktreePath,
+        [`refs/heads/${classification.branch}`],
+        [originalHeadCommit],
+      )) ?? null
+    : null
+  return commitsOnKeptBranch === 0
+    ? classification
+    : {
+        head: classification.head,
+        branch: classification.branch,
+        commits: 0,
+        onKeptBranch: commitsOnKeptBranch,
+      }
+}
+
+/** Official `tOt` — human phrasing for where at-stake commits live.
+ * `otherBranchName` is the branch HEAD moved to (another_branch case). */
+export function formatAtStakePhrase(
+  atStake: WorktreeExitAtStake,
+  branchName: string,
+  otherBranchName: string,
+): string {
+  switch (atStake.head) {
+    case 'another_branch':
+    case 'like_its_branch':
+      return `on ${branchName} that ${otherBranchName} doesn't have`
+    case 'detached':
+      return `on ${branchName} or at the detached HEAD`
+    case 'its_branch':
+    case 'unreadable':
+    case 'not_read':
+      return `on ${branchName}`
+  }
+}

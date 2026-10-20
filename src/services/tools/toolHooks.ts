@@ -597,6 +597,26 @@ export async function* runPreToolUseHooks(
   | { type: 'stop' }
 > {
   const hookStartTime = Date.now()
+  // CC 2.1.304 #34 — `deniedBefore` tracker analog. The official fix
+  // (ver outer catch @249269330–249269950) records the aggregated deny
+  // reason so a later timeout PREPENDS it instead of replacing it:
+  // `$e=xe.deniedBefore?`${xe.deniedBefore}\n\n`:""` … `stopReason:Ee??$e+zVr`.
+  // OCC's per-hook yield pipeline has the same symptom by last-wins
+  // overwrite (toolExecution.ts `case 'hookPermissionResult'`): a fast real
+  // deny (reason R) is yielded first, then an SDK-callback-timeout deny
+  // ~60 s later overwrites R. Track the last REAL deny message produced in
+  // this run and prepend it to any later callback-timeout deny / timeout
+  // stopReason (official prepend semantics).
+  let lastDenyReason: string | undefined
+  // CC 2.1.304 #34 — the SAME aggregated callback-timeout result also
+  // re-announces the deny through hooks.ts's aggregated permissionBehavior
+  // yield (hooks.ts:4840 region), which carries no reason of its own. Cache
+  // the merged deny message produced for the result's blockingError yield so
+  // the re-announcement repeats it verbatim — under the last-wins consumer,
+  // the FINAL deny yield is what survives, and it must keep the official
+  // `${R}\n\n${timeoutText}` form (not the generic "Hook X denied this
+  // tool" fallback).
+  let lastCallbackTimeoutDenyMessage: string | undefined
   try {
     const appState = toolUseContext.getAppState()
 
@@ -643,6 +663,11 @@ export async function* runPreToolUseHooks(
               },
             )
             if (!check.ok) {
+              // CC 2.1.304 #34: a hook-input-validation deny is a REAL deny —
+              // track its reason so a later callback timeout prepends it.
+              if (check.deny.message) {
+                lastDenyReason = check.deny.message
+              }
               yield {
                 type: 'hookPermissionResult',
                 hookPermissionResult: check.deny,
@@ -663,15 +688,38 @@ export async function* runPreToolUseHooks(
             `PreToolUse:${tool.name}`,
             result.blockingError,
           )
+          // CC 2.1.304 #34 — changelog: "Fixed a PreToolUse hook's deny
+          // reason being replaced by a timeout error when an Agent SDK
+          // callback hook on the same tool call timed out." When this
+          // blockingError is a callback timeout (marked at the source,
+          // hooks.ts swallow path) and a real deny reason was already
+          // produced in this run, yield the official prepend form
+          // `${R}\n\n${timeoutText}` (official `$e+zVr`) instead of letting
+          // the timeout text overwrite R via the last-wins consumer.
+          // Timeout denies are NOT tracked themselves — that keeps
+          // "last REAL deny" semantics and avoids stacking multiple timeout
+          // texts when several callback hooks time out.
+          const mergedMessage =
+            result.callbackTimeout && lastDenyReason
+              ? `${lastDenyReason}\n\n${denialMessage}`
+              : denialMessage
+          if (result.callbackTimeout) {
+            // Cache for this result's aggregated permissionBehavior
+            // re-announcement (see lastCallbackTimeoutDenyMessage above);
+            // timeout denies never enter lastDenyReason.
+            lastCallbackTimeoutDenyMessage = mergedMessage
+          } else {
+            lastDenyReason = mergedMessage
+          }
           yield {
             type: 'hookPermissionResult',
             hookPermissionResult: {
               behavior: 'deny',
-              message: denialMessage,
+              message: mergedMessage,
               decisionReason: {
                 type: 'hook',
                 hookName: `PreToolUse:${tool.name}`,
-                reason: denialMessage,
+                reason: mergedMessage,
               },
             },
           }
@@ -738,13 +786,33 @@ export async function* runPreToolUseHooks(
             // at hooks.ts:884), and the generic "denies this tool" fallback
             // would hide WHY the call was blocked — leaving the model unable
             // to retry with a modified approach.
-            const denyMessage = result.blockingError
+            let denyMessage = result.blockingError
               ? getPreToolHookBlockingMessage(
                   `PreToolUse:${tool.name}`,
                   result.blockingError,
                 )
               : (result.hookPermissionDecisionReason ||
                 `Hook PreToolUse:${tool.name} ${getRuleBehaviorDescription(result.permissionBehavior)} this tool`)
+            // CC 2.1.304 #34: an explicit hook deny is a REAL deny — track it
+            // (this is the `deniedBefore` value the official records from the
+            // aggregated fold: `typeof S.deny==="string"`).
+            if (result.callbackTimeout) {
+              // #34 — this is the aggregated permissionBehavior
+              // RE-ANNOUNCEMENT of a callback-timeout result (marked at the
+              // hooks.ts:4840 yield). It carries no reason of its own, so
+              // repeat the merged deny already produced for the same result's
+              // blockingError yield — the last-wins consumer keeps THIS final
+              // deny, and it must stay in the official `${R}\n\n${timeout}`
+              // form instead of the generic fallback. Never tracked as a real
+              // deny (avoids stacking across multiple timeouts).
+              denyMessage =
+                lastCallbackTimeoutDenyMessage ??
+                (lastDenyReason
+                  ? `${lastDenyReason}\n\n${denyMessage}`
+                  : denyMessage)
+            } else if (result.permissionBehavior === 'deny') {
+              lastDenyReason = denyMessage
+            }
             yield {
               type: 'hookPermissionResult',
               hookPermissionResult: {
@@ -853,7 +921,17 @@ export async function* runPreToolUseHooks(
     // timeout reason — not a bare stop that becomes "Error: undefined" and
     // makes unattended sessions interpret it as a user rejection and halt.
     if (!toolUseContext.abortController.signal.aborted) {
-      yield { type: 'stopReason', stopReason: PRE_TOOL_USE_HOOK_TIMEOUT_MESSAGE }
+      // CC 2.1.304 #34 — official outer-catch prepend (ver @249269381/
+      // 249269400): `let $e=xe.deniedBefore?`${xe.deniedBefore}\n\n`:""` …
+      // `yield{type:"stop",stopReason:Ee??$e+zVr}` where `zVr` is the
+      // timeout stop-reason constant (== PRE_TOOL_USE_HOOK_TIMEOUT_MESSAGE).
+      // A deny reason already produced in this run is PREPENDED to the
+      // timeout text instead of being lost.
+      const denyPrefix = lastDenyReason ? `${lastDenyReason}\n\n` : ''
+      yield {
+        type: 'stopReason',
+        stopReason: `${denyPrefix}${PRE_TOOL_USE_HOOK_TIMEOUT_MESSAGE}`,
+      }
     }
     yield { type: 'stop' }
     return

@@ -102,9 +102,24 @@ export function showCurrentEffort(appStateEffort: EffortValue | undefined, model
   const envOverride = getEffortEnvOverride();
   const effectiveValue = envOverride === null ? undefined : envOverride ?? appStateEffort;
   if (effectiveValue === undefined) {
+    // CC 2.1.304 (#33 — official `f6t`): the auto branch. `r = " · Ultracode on"`
+    // is appended while the ultracode session mode is on; `E = ", set by your
+    // organization"` is appended when the level came from an org policy. OCC has
+    // NO org policy registry (docs/upstream-version-gap-occ82.md §5.1/§5.5 —
+    // `Stt ≡ N`), so orgSuffix is always '' here; the template shape is kept
+    // faithful for when one lands. When nothing resolves, getDisplayedEffortLevel
+    // returns undefined and we print the BARE `Effort level: auto` (never a
+    // guessed level — that was the 303 bug this fixes).
     const level = getDisplayedEffortLevel(model, appStateEffort);
+    const ultracodeSuffix = isUltracodeEnabled() ? ' · Ultracode on' : '';
+    const orgSuffix = '';
+    if (level === undefined) {
+      return {
+        message: `Effort level: auto${ultracodeSuffix}`
+      };
+    }
     return {
-      message: `Effort level: auto (currently ${level})`
+      message: `Effort level: auto (currently ${level}${orgSuffix})${ultracodeSuffix}`
     };
   }
   // OCC-82 runtime-3 (official 2.1.267): the current-level display renders
@@ -173,8 +188,21 @@ function enableUltracode(model: string): EffortCommandResult {
   logEvent('tengu_effort_command', {
     effort: 'ultracode' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });
+  // CC 2.1.304 (#33): resolve the effort ultracode runs at (xhigh) through the
+  // display resolver. When `CLAUDE_CODE_EFFORT_LEVEL=auto`/unset the env wins
+  // and the resolution is undefined — the official
+  // `f = v(t.effort) ?? kWe(r,t.effort) ?? "auto"` then prints the verbatim
+  // "Effort stays auto." note. Otherwise the activation message already
+  // conveys the xhigh effort, so nothing is appended. (The concatenation onto
+  // the verbatim ULTRACODE_ACTIVATION_MESSAGE is OCC's composition — the
+  // research pins only the "Effort stays auto." literal + its trigger.)
+  const resolvedUltracodeEffort = getDisplayedEffortLevel(model, 'xhigh');
+  const message =
+    resolvedUltracodeEffort === undefined
+      ? `${ULTRACODE_ACTIVATION_MESSAGE} Effort stays auto.`
+      : ULTRACODE_ACTIVATION_MESSAGE;
   return {
-    message: ULTRACODE_ACTIVATION_MESSAGE,
+    message,
     effortUpdate: {
       value: 'xhigh'
     }

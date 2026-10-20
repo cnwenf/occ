@@ -24,7 +24,7 @@ import type {
   NormalizedUserMessage,
 } from '../types/message.js'
 import { PERMISSION_MODES } from '../types/permissions.js'
-import { suppressNextSkillListing, isMalformedAttachment } from './attachments.js'
+import { isMalformedAttachment } from './attachments.js'
 import {
   copyFileHistoryForResume,
   type FileHistorySnapshot,
@@ -960,13 +960,11 @@ export function restoreSkillStateFromMessages(messages: Message[]): void {
         }
       }
     }
-    // A prior process already injected the skills-available reminder — it's
-    // in the transcript the model is about to see. sentSkillNames is
-    // process-local, so without this every resume re-announces the same
-    // ~600 tokens. Fire-once latch; consumed on the first attachment pass.
-    if (message.attachment.type === 'skill_listing') {
-      suppressNextSkillListing()
-    }
+    // CC 2.1.304 #59/#31: no resume suppression needed here anymore. The
+    // skill-listing dedupe scans the actual message history, and the resumed
+    // transcript carries the prior process's skill_listing attachments — the
+    // scan sees them and won't re-announce unchanged skills (this subsumes
+    // the old suppressNextSkillListing() latch that fired here).
   }
 }
 

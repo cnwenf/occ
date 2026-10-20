@@ -11,3 +11,120 @@ index 6248f4a0ee5bc4289407ea8869562df2cfa069aa..971113fe126caf5e6faf7738110b1cdb
      ];
      // If seccomp filter is provided, use apply-seccomp to apply it
      if (seccompFilterPath) {
+diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
+index dcfef2cae71f72e2b50aab5806cbb1a8f9918f63..02eb695afed7b4734a077626c2ebd6809ea8d022 100644
+--- a/dist/sandbox/sandbox-utils.js
++++ b/dist/sandbox/sandbox-utils.js
+@@ -348,6 +348,59 @@ export function encodeSandboxedCommand(command) {
+ export function decodeSandboxedCommand(encodedCommand) {
+     return Buffer.from(encodedCommand, 'base64').toString('utf8');
+ }
++/**
++ * [OCC patch — CC 2.1.304 #9: backport of the sandbox-runtime 0.0.80 glob fix]
++ *
++ * Mirrors the official 0.0.80 `setRanges` validation semantics: a bracket
++ * group spells no set of characters when it is empty or contains a backwards
++ * range (`[user-id]`: `r-i`). Such groups must be read as literal text — the
++ * old replace-chain passed them through untouched and the resulting
++ * `new RegExp(...)` threw "Range out of order in character class", crashing
++ * Linux sandbox startup for the whole denyRead rule set.
++ *
++ * @param body - text between `[` and `]`, taken from the RAW pattern (before
++ * any regex escaping), with `\X` denoting a literal X
++ * @returns true when the body parses as a valid character set
++ */
++function spellsCharacterSet(body) {
++    if (body.length === 0) {
++        return false; // empty set: `[]` spells no characters
++    }
++    let i = 0;
++    while (i < body.length) {
++        let start;
++        if (body[i] === '\\') {
++            if (i + 1 >= body.length) {
++                return false; // trailing backslash: unparseable
++            }
++            start = body[i + 1];
++            i += 2;
++        }
++        else {
++            start = body[i];
++            i += 1;
++        }
++        if (body[i] === '-' && i + 1 < body.length) {
++            // Range member (`a-z`): a backwards range spells no set.
++            let end;
++            if (body[i + 1] === '\\') {
++                if (i + 2 >= body.length) {
++                    return false;
++                }
++                end = body[i + 2];
++                i += 3;
++            }
++            else {
++                end = body[i + 1];
++                i += 2;
++            }
++            if (start.charCodeAt(0) > end.charCodeAt(0)) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
+ /**
+  * Convert a glob pattern to a regular expression
+  *
+@@ -363,8 +416,23 @@ export function decodeSandboxedCommand(encodedCommand) {
+  * Exported for testing and shared between macOS sandbox profiles and Linux glob expansion.
+  */
+ export function globToRegex(globPattern) {
++    // [OCC patch — CC 2.1.304 #9 backport] Demote bracket groups that spell
++    // no valid character set to literal text BEFORE the replace chain below
++    // can hand them to `new RegExp`. Mirrors the official 0.0.80 tokenizer's
++    // brackets-are-text demotion + warn. The demoted rendering is stashed
++    // behind an inert placeholder so the glob-meta replacements (`*`/`?`)
++    // cannot rewrite the literal text, then restored at the end.
++    const literalSetSegments = [];
++    const demotedPattern = globPattern.replace(/\[([^\]]*)\]/g, (match, body) => {
++        if (spellsCharacterSet(body)) {
++            return match;
++        }
++        logForDebugging(`[Sandbox] The brackets in ${body} spell no set of characters, so they are read as text: ${globPattern}`);
++        literalSetSegments.push('\\[' + body.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]');
++        return `__LITERAL_SET_${literalSetSegments.length - 1}__`;
++    });
+     return ('^' +
+-        globPattern
++        demotedPattern
+             // Escape regex special characters (except glob chars * ? [ ])
+             .replace(/[.^$+{}()|\\]/g, '\\$&')
+             // Escape unclosed brackets (no matching ])
+@@ -377,7 +445,9 @@ export function globToRegex(globPattern) {
+             // Restore placeholders
+             .replace(/__GLOBSTAR_SLASH__/g, '(.*/)?') // **/ matches zero or more dirs
+             .replace(/__GLOBSTAR__/g, '.*') + // ** matches anything including /
+-        '$');
++        '$')
++        // [OCC patch] Restore demoted bracket groups as escaped literal text.
++        .replace(/__LITERAL_SET_(\d+)__/g, (_match, index) => literalSetSegments[Number(index)]);
+ }
+ /**
+  * Expand a glob pattern into concrete file paths.
+@@ -406,10 +476,15 @@ export function expandGlobPattern(globPath) {
+         return [];
+     }
+     // Build regex from the normalized glob pattern
+-    const regex = new RegExp(globToRegex(normalizedPattern));
++    // [OCC patch — CC 2.1.304 #9 backport] Constructed INSIDE the try/catch:
++    // an invalid pattern must not throw out of expandGlobPattern and crash
++    // Linux sandbox startup — it degrades to skip+warn via the existing catch
++    // below (official 0.0.80 behavior: unreadable patterns are skipped with
++    // an error entry instead of aborting the whole sandbox setup).
+     // List all entries recursively under the base directory
+     const results = [];
+     try {
++        const regex = new RegExp(globToRegex(normalizedPattern));
+         const entries = fs.readdirSync(baseDir, {
+             recursive: true,
+             withFileTypes: true,

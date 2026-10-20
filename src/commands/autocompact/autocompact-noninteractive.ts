@@ -42,6 +42,7 @@ import {
 import type { ToolUseContext } from '../../Tool.js'
 import {
   aggregateAutoCompactWindow,
+  buildAutoCompactWindowEnvWarning,
   buildAutoCompactWindowPatch,
   chosenWindowExceedsAutoWindow,
   ENV_WINDOW_KEY,
@@ -116,6 +117,14 @@ function describeCurrentWindow(model: string): string {
     lines.push(
       'Overriding auto may result in high token usage, especially when resuming long sessions.',
     )
+  }
+  // CC 2.1.304 #41: official display pushes the `XFe` env-warning line —
+  // `p=XFe(...);if(p!==null)u.push(p)` (@260148727 region). Warns when
+  // CLAUDE_CODE_AUTO_COMPACT_WINDOW is below_minimum / above_maximum /
+  // unusable (null when unset or in range).
+  const envWarning = buildAutoCompactWindowEnvWarning(process.env[ENV_WINDOW_KEY])
+  if (envWarning !== null) {
+    lines.push(envWarning)
   }
   return lines.join('\n')
 }

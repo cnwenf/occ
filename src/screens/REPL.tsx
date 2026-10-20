@@ -305,7 +305,7 @@ import { useMessageActions, MessageActionsKeybindings, MessageActionsBar, type M
 import { shouldConfirmLeftArrowDiscard } from '../components/messageActionsLeftArrowGate.js';
 import { setClipboard } from '../ink/termio/osc.js';
 import type { ScrollBoxHandle } from '../ink/components/ScrollBox.js';
-import { createAttachmentMessage, getQueuedCommandAttachments, resyncSentSkillNamesAfterRewind } from '../utils/attachments.js';
+import { createAttachmentMessage, getQueuedCommandAttachments } from '../utils/attachments.js';
 import { CompactSummaryContext, applySavedInGuard, conversationSummarizedDetail, findCompactSummaryInfo } from '../components/messages/CompactBoundaryMessage.js';
 import { findGoalToRestore, setGoal, isGoalActive } from "../commands/goal/goalState.js";
 import { addSessionHook } from "../utils/hooks/sessionHooks.js";
@@ -3942,13 +3942,11 @@ export function REPL({
       rewindToMessageIndex: messageIndex
     });
     setMessages(prev.slice(0, messageIndex));
-    // CC 2.1.301 #27 (official @249031065: `NXt(Ne,L)` over the removed
-    // messages): un-record any skill_listing attachments that were just
-    // rewound away so the next turn re-lists those skills to the model.
-    // The official also calls evictRewoundFileTracking here — OCC has no
-    // rewound-file tracking to evict. agentKey defaults to '' (main thread),
-    // matching the filter's `toolUseContext.agentId ?? ''` convention.
-    resyncSentSkillNamesAfterRewind(prev.slice(messageIndex));
+    // CC 2.1.304 #59/#31: no skill-listing resync needed here anymore. The
+    // dedupe scans the live message history, and the slice above already
+    // removed the rewound skill_listing attachments — the next turn's scan
+    // sees them gone and re-lists those skills (this subsumes the 2.1.301
+    // #27 resyncSentSkillNamesAfterRewind call that used to live here).
     // Careful, this has to happen after setMessages
     setConversationId(randomUUID());
     // Reset cached microcompact state so stale pinned cache edits

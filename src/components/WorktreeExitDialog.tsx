@@ -1,13 +1,14 @@
 import React, { useEffect, useState } from 'react';
 import type { CommandResultDisplay } from 'src/commands.js';
-import { logEvent } from 'src/services/analytics/index.js';
+import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from 'src/services/analytics/index.js';
 import { logForDebugging } from 'src/utils/debug.js';
 import { asSessionId } from '../types/ids.js';
 import { Box, Text } from '../ink.js';
 import { execFileNoThrow } from '../utils/execFileNoThrow.js';
 import { getPlansDirectory } from '../utils/plans.js';
 import { setCwd } from '../utils/Shell.js';
-import { cleanupWorktree, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../utils/worktree.js';
+import { cleanupWorktree, computeWorktreeExitAtStake, formatAtStakePhrase, getCurrentWorktreeSession, keepWorktree, killTmuxSession } from '../utils/worktree.js';
+import type { WorktreeExitAtStake } from '../utils/worktree.js';
 import { Select } from './CustomSelect/select.js';
 import { Dialog } from './design-system/Dialog.js';
 import { Spinner } from './Spinner.js';
@@ -21,6 +22,23 @@ function recordWorktreeExit(): void {
   (require('../utils/sessionStorage.js') as typeof import('../utils/sessionStorage.js')).saveWorktreeState(null);
   /* eslint-enable @typescript-eslint/no-require-imports */
 }
+// Official `Ww(h,R)` telemetry formatter (2.1.304 #30, vver @269337347):
+// commits (?? -1), head (only when classified — not 'not_read'), and
+// commits_on_kept_branch (only for the onKeptBranch refinement, ?? -1).
+// DEVIATION: the official also emits worktrees_inside when R!==0 — OCC has
+// no source for that count, so the field is omitted.
+function atStakeTelemetry(atStake: WorktreeExitAtStake | null, changedFiles: number) {
+  return {
+    commits: atStake?.commits ?? -1,
+    changed_files: changedFiles,
+    ...(atStake !== null && atStake.head !== 'not_read' ? {
+      head: atStake.head as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
+    } : {}),
+    ...(atStake !== null && 'onKeptBranch' in atStake ? {
+      commits_on_kept_branch: atStake.onKeptBranch ?? -1
+    } : {})
+  };
+}
 type Props = {
   onDone: (result?: string, options?: {
     display?: CommandResultDisplay;
@@ -33,10 +51,12 @@ export function WorktreeExitDialog({
 }: Props): React.ReactNode {
   const [status, setStatus] = useState<'loading' | 'asking' | 'keeping' | 'removing' | 'done'>('loading');
   const [changes, setChanges] = useState<string[]>([]);
-  // 2.1.301 #7: nullable commit count — null means the baseline is unknown
-  // (no originalHeadCommit on hook-created worktrees, or rev-list failed), so
-  // "clean" cannot be distinguished from "may hold unpushed commits".
-  const [commitCount, setCommitCount] = useState<number | null>(null);
+  // 2.1.304 #30 (official `Cn`): the at-stake classification replaces the
+  // bare nullable rev-list count (2.1.301 #7). `commits === null` still means
+  // the at-stake count is unknown (hook worktree, unreadable HEAD, failed
+  // git), so "clean" cannot be distinguished from "may hold unpushed commits".
+  const [atStake, setAtStake] = useState<WorktreeExitAtStake | null>(null);
+  const commitCount = atStake === null ? null : atStake.commits;
   // Official `Co` — the current session's title, surfaced in the hook-based
   // subtitle ("This session was named …"). Lazy-required below (cycle).
   const [sessionTitle, setSessionTitle] = useState<string | undefined>(undefined);
@@ -53,19 +73,16 @@ export function WorktreeExitDialog({
 
       // Check for commits to eject
       if (worktreeSession) {
-        // 2.1.301 #7: count unpushed commits only when a baseline exists, and
-        // treat a failed rev-list as UNKNOWN (null) instead of collapsing it
-        // to 0 (official: `xn=Pn===0?parseInt(Wn.trim())||0:null`). Hook-made
-        // worktrees carry no originalHeadCommit, so their count stays null.
-        let count: number | null = null;
-        if (worktreeSession.originalHeadCommit) {
-          const {
-            stdout: commitsStr,
-            code
-          } = await execFileNoThrow('git', ['rev-list', '--count', `${worktreeSession.originalHeadCommit}..HEAD`]);
-          count = code === 0 ? parseInt(commitsStr.trim()) || 0 : null;
-        }
-        setCommitCount(count);
+        // Official 2.1.304 #30 (`Cn`): classify HEAD and count at-stake
+        // commits on refs/heads/<worktreeBranch> (not HEAD) so a detached or
+        // moved-off HEAD can no longer hide branch commits from the guard.
+        // Hook worktrees carry no worktreeBranch/originalHeadCommit, so the
+        // classifier short-circuits to {head:'not_read', commits:null}
+        // without any git call — the 2.1.301 #7 hookForcedAsk behavior below
+        // is preserved.
+        const stake = await computeWorktreeExitAtStake(worktreeSession);
+        setAtStake(stake);
+        const count = stake.commits;
 
         // Lazy require — same cycle-breaking pattern as recordWorktreeExit
         // (sessionStorage → commands → exit → ExitFlow → here).
@@ -83,8 +100,13 @@ export function WorktreeExitDialog({
         // with an unknown commit baseline always asks — never silent removal.
         const hookForcedAsk = Boolean(worktreeSession.hookBased) && count === null;
 
-        // If no changes and no commits, clean up silently
-        if (changeLines.length === 0 && (count === 0 || hookForcedAsk)) {
+        // If no changes and no commits, clean up silently.
+        // Official 2.1.304 #30 guard (vver @269341114):
+        //   No.length===0 && (Cn.commits===0||pn) && !("onKeptBranch" in Cn)
+        // The onKeptBranch refinement means HEAD moved to another branch that
+        // holds commits the session baseline lacks — removal would keep that
+        // branch (nothing lost) but must never happen silently.
+        if (changeLines.length === 0 && (count === 0 || hookForcedAsk) && !('onKeptBranch' in stake)) {
           if (hookForcedAsk) {
             setStatus('asking');
             return;
@@ -133,10 +155,7 @@ export function WorktreeExitDialog({
     const hasTmux = Boolean(worktreeSession.tmuxSessionName);
     if (value === 'keep' || value === 'keep-with-tmux') {
       setStatus('keeping');
-      logEvent('tengu_worktree_kept', {
-        commits: commitCount ?? -1,
-        changed_files: changes.length
-      });
+      logEvent('tengu_worktree_kept', atStakeTelemetry(atStake, changes.length));
       await keepWorktree();
       process.chdir(worktreeSession.originalCwd);
       setCwd(worktreeSession.originalCwd);
@@ -150,10 +169,7 @@ export function WorktreeExitDialog({
       setStatus('done');
     } else if (value === 'keep-kill-tmux') {
       setStatus('keeping');
-      logEvent('tengu_worktree_kept', {
-        commits: commitCount ?? -1,
-        changed_files: changes.length
-      });
+      logEvent('tengu_worktree_kept', atStakeTelemetry(atStake, changes.length));
       if (worktreeSession.tmuxSessionName) {
         await killTmuxSession(worktreeSession.tmuxSessionName);
       }
@@ -166,10 +182,7 @@ export function WorktreeExitDialog({
       setStatus('done');
     } else if (value === 'remove' || value === 'remove-with-tmux') {
       setStatus('removing');
-      logEvent('tengu_worktree_removed', {
-        commits: commitCount ?? -1,
-        changed_files: changes.length
-      });
+      logEvent('tengu_worktree_removed', atStakeTelemetry(atStake, changes.length));
       if (worktreeSession.tmuxSessionName) {
         await killTmuxSession(worktreeSession.tmuxSessionName);
       }
@@ -222,6 +235,12 @@ export function WorktreeExitDialog({
   const branchName = worktreeSession.worktreeBranch;
   const hasUncommitted = changes.length > 0;
   const hasCommits = commitCount !== null && commitCount > 0;
+  // Official `tOt`-style at-stake phrase (2.1.304 #30): detached HEAD →
+  // "on <branch> or at the detached HEAD"; another-branch HEAD → "on <branch>
+  // that <other> doesn't have"; otherwise plain "on <branch>". (like_its_branch
+  // never reaches a counted branch below — its commits are always null.)
+  const otherBranchName = atStake !== null && atStake.head === 'another_branch' ? atStake.branch : 'the current HEAD';
+  const atStakePhrase = atStake === null ? `on ${branchName}` : formatAtStakePhrase(atStake, branchName, otherBranchName);
   let subtitle = '';
   if (commitCount === null) {
     // 2.1.301 #7 — official Kn kn===null branch (byte-verified v301 strings).
@@ -233,11 +252,11 @@ export function WorktreeExitDialog({
       subtitle = `${hasUncommitted ? `You have ${changes.length} uncommitted ${changes.length === 1 ? 'file' : 'files'}, and the ` : 'The '}branch ${branchName} may hold unpushed commits (commit baseline unavailable). The branch will be deleted if you remove.`;
     }
   } else if (hasUncommitted && hasCommits) {
-    subtitle = `You have ${changes.length} uncommitted ${changes.length === 1 ? 'file' : 'files'} and ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} on ${branchName}. All will be lost if you remove.`;
+    subtitle = `You have ${changes.length} uncommitted ${changes.length === 1 ? 'file' : 'files'} and ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} ${atStakePhrase}. All will be lost if you remove.`;
   } else if (hasUncommitted) {
     subtitle = `You have ${changes.length} uncommitted ${changes.length === 1 ? 'file' : 'files'}. These will be lost if you remove the worktree.`;
   } else if (hasCommits) {
-    subtitle = `You have ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} on ${branchName}. The branch will be deleted if you remove the worktree.`;
+    subtitle = `You have ${commitCount} ${commitCount === 1 ? 'commit' : 'commits'} ${atStakePhrase}. The branch will be deleted if you remove the worktree.`;
   } else {
     subtitle = 'You are working in a worktree. Keep it to continue working there, or remove it to clean up.';
   }
@@ -251,9 +270,12 @@ export function WorktreeExitDialog({
     void handleSelect('keep');
   }
   // Official Os/sr (2.1.301 #7): tr = count unknown-or-positive; sr = hook
-  // worktree with an unknown baseline and no uncommitted files. OCC has no
-  // submodule/moved-off surface, so the official Et!==null/nt!==null branches
-  // reduce to their Et===null && nt===null form here.
+  // worktree with an unknown baseline and no uncommitted files. 2.1.304 #30
+  // restores the detached/another-branch HEAD classification, so "unknown"
+  // now also covers unreadable and like_its_branch heads (commits:null); the
+  // onKeptBranch refinement is handled by the auto-remove guard above. OCC
+  // still has no submodule surface, so the official guard's remaining
+  // Et!==null/nt!==null terms stay reduced away here.
   const mayHoldUnpushed = commitCount === null || commitCount > 0;
   const hookUnknownState = Boolean(worktreeSession.hookBased) && commitCount === null && !hasUncommitted;
   const removeDescription = hasUncommitted || mayHoldUnpushed ? hookUnknownState ? 'Any unpushed commits in the worktree may be lost.' : 'All changes and commits will be lost.' : 'Clean up the worktree directory.';

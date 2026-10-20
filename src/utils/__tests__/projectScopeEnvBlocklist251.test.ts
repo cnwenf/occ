@@ -117,9 +117,16 @@ describe('CC 2.1.251 project-scope env blocklist (Gap-109d #1)', () => {
     // CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT (CC 2.1.299 #030; kill-switch
     // for the relaxed inline-shell rm prompting — project scope must not be
     // able to toggle a security kill-switch, same precedent as
-    // CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT) = 118.
-    expect(blocklist.size).toBe(118)
+    // CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT) +
+    // CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT (CC 2.1.304 #10; kill-switch
+    // for the mounted-drive `rm -r` safety prompt — official settings-env
+    // allowlist @240663587 lists it next to the inline-shell rm kill-switches;
+    // project scope must not be able to disable a security prompt) = 119.
+    expect(blocklist.size).toBe(119)
     expect(blocklist.has('CLAUDE_CODE_DISABLE_SUBSTITUTION_RM_PROMPT')).toBe(
+      true,
+    )
+    expect(blocklist.has('CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT')).toBe(
       true,
     )
     expect(blocklist.has('CLAUDE_CODE_DISABLE_WEB_FETCH')).toBe(true)

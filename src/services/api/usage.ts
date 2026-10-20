@@ -7,7 +7,7 @@ import {
   isClaudeAISubscriber,
 } from '../../utils/auth.js'
 import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
-import { formatNumber } from '../../utils/format.js'
+import { formatNumber, formatResetTime } from '../../utils/format.js'
 import { getAuthHeaders } from '../../utils/http.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { getClaudeCodeUserAgent } from '../../utils/userAgent.js'
@@ -73,6 +73,14 @@ export type FetchUtilizationResult = {
   seedFetchedAtMs?: number
   /** 2.1.208 #44: non-null when the seed was triggered by a rate-limit (429). */
   rateLimitedVia?: 'http_429' | null
+  /**
+   * CC 2.1.304 (#43 — official rate-limit memory store `heldUntilMs`): the
+   * wall-clock ms at which the rate-limit hold is expected to end, honored
+   * from the response's `Retry-After` (capped). Present only on 429/403 so
+   * `/usage` can render "rate limited until <HH:MM>" instead of the vague
+   * "try again in a moment". undefined → keep the vague text.
+   */
+  heldUntilMs?: number
 }
 
 // Module-level cache of the last successful utilization, used as the seeded
@@ -92,6 +100,102 @@ const PERSISTED_SEED_MAX_AGE_MS = 3_600_000
  * every successful fetch.
  */
 const PERSISTED_SEED_MIN_WRITE_INTERVAL_MS = 300_000
+
+/**
+ * CC 2.1.304 (#43): default rate-limit hold when the response carries no
+ * usable `Retry-After`. Official `Ft` in
+ * `untilMs = Date.now() + Math.min(retryAfterMs>0 ? retryAfterMs : Ft, Ke)`.
+ * 60s mirrors the "a moment" framing without over-promising.
+ */
+const RATE_LIMIT_DEFAULT_HOLD_MS = 60_000
+
+/**
+ * CC 2.1.304 (#43): upper bound on the recorded hold. Official `Ke` in the
+ * `Math.min(...)` above — a huge/absurd `Retry-After` never inflates the
+ * displayed "rate limited until" clock beyond this. 24h is a safe ceiling for
+ * a usage-endpoint hold.
+ */
+const RATE_LIMIT_MAX_HOLD_MS = 86_400_000
+
+/**
+ * CC 2.1.304 (#43): parse a `Retry-After` header into ms. Supports both the
+ * delta-seconds form (`120`) and the HTTP-date form. Returns null when the
+ * header is absent/unparseable or resolves to a non-positive delay (mirrors
+ * the official `retryAfterMs>0 ? …` guard — non-positive falls back to the
+ * default hold).
+ */
+function parseRetryAfterMs(rawRetryAfter: string | undefined): number | null {
+  if (!rawRetryAfter) return null
+  const trimmed = rawRetryAfter.trim()
+  if (trimmed === '') return null
+  const asSeconds = Number(trimmed)
+  if (Number.isFinite(asSeconds)) {
+    return asSeconds > 0 ? asSeconds * 1000 : null
+  }
+  const asDateMs = Date.parse(trimmed)
+  if (Number.isNaN(asDateMs)) return null
+  const deltaMs = asDateMs - Date.now()
+  return deltaMs > 0 ? deltaMs : null
+}
+
+/**
+ * CC 2.1.304 (#43): pull the `Retry-After` header off an axios-style error.
+ * Handles both a plain lowercased-headers object and an `AxiosHeaders`
+ * instance exposing `.get()`. Returns undefined when absent.
+ */
+function extractRetryAfterHeader(err: unknown): string | undefined {
+  const headers = (
+    err as {
+      response?: {
+        headers?:
+          | Record<string, unknown>
+          | { get?: (name: string) => unknown }
+      }
+    }
+  ).response?.headers
+  if (!headers) return undefined
+  const getter = (headers as { get?: (name: string) => unknown }).get
+  const raw =
+    typeof getter === 'function'
+      ? getter.call(headers, 'retry-after')
+      : (headers as Record<string, unknown>)['retry-after']
+  return raw === undefined || raw === null ? undefined : String(raw)
+}
+
+/**
+ * CC 2.1.304 (#43): compute the rate-limit hold deadline from an errored
+ * response. Official shape:
+ *   `untilMs = Date.now() + Math.min(retryAfterMs>0 ? retryAfterMs : Ft, Ke)`
+ * `retryAfterMs` is honored from the `Retry-After` header; `Ft` is the default
+ * hold; `Ke` is the cap. Returns the absolute wall-clock ms.
+ */
+export function computeRateLimitHeldUntilMs(
+  retryAfterHeader: string | undefined,
+): number {
+  const retryAfterMs = parseRetryAfterMs(retryAfterHeader)
+  const holdMs = Math.min(
+    retryAfterMs !== null ? retryAfterMs : RATE_LIMIT_DEFAULT_HOLD_MS,
+    RATE_LIMIT_MAX_HOLD_MS,
+  )
+  return Date.now() + holdMs
+}
+
+/**
+ * CC 2.1.304 (#43 — official `fo`): render the rate-limit line for `/usage`.
+ *   `o===void 0 ? "rate limited — try again in a moment"
+ *               : \`rate limited until ${vA(Math.ceil(o/60000)*60)}\``
+ * `vA` is the clock-time formatter over epoch SECONDS; OCC's `formatResetTime`
+ * takes exactly that. `Math.ceil(o/60000)*60` rounds the ms deadline UP to the
+ * minute then converts to seconds. When `heldUntilMs` is undefined the vague
+ * 303-era text is preserved verbatim.
+ */
+export function formatRateLimitedText(heldUntilMs: number | undefined): string {
+  if (heldUntilMs === undefined) {
+    return 'rate limited — try again in a moment'
+  }
+  const epochSeconds = Math.ceil(heldUntilMs / 60_000) * 60
+  return `rate limited until ${formatResetTime(epochSeconds)}`
+}
 
 /**
  * CC 2.1.208 #44: read the persisted usage seed from the global config.
@@ -185,7 +289,8 @@ export async function fetchUtilization(): Promise<Utilization | null> {
 /**
  * Rich fetch with status + seeded fallback (mirrors the official `sur()`).
  * Used by the interactive /usage panel to surface "Per-model breakdown
- * unavailable (rate limited — try again in a moment)" when rate-limited.
+ * unavailable (rate limited until <clock> / — try again in a moment)" when
+ * rate-limited (CC 2.1.304 #43: `heldUntilMs` drives the "until" form).
  */
 export async function fetchUtilizationWithStatus(): Promise<FetchUtilizationResult> {
   if (!isClaudeAISubscriber() || !hasProfileScope()) {
@@ -268,9 +373,19 @@ export async function fetchUtilizationWithStatus(): Promise<FetchUtilizationResu
     writePersistedUsageSeed(response.data, getOauthAccountInfo()?.accountUuid)
     return { status: 'ok', utilization: response.data }
   } catch (err) {
-    const isRateLimited =
-      (err as { response?: { status?: number } }).response?.status === 429
+    const errorStatus = (err as { response?: { status?: number } }).response
+      ?.status
+    const isRateLimited = errorStatus === 429
     const rateLimitedVia = isRateLimited ? ('http_429' as const) : null
+    // CC 2.1.304 (#43 — official rate-limit memory store): record WHEN the
+    // hold ends on 429/403 responses, honored from Retry-After (capped), so
+    // /usage can print "rate limited until <clock>" instead of the vague
+    // "try again in a moment". isRateLimited/rateLimitedVia keep their
+    // 429-only semantics (existing consumers gate on them).
+    const heldUntilMs =
+      errorStatus === 429 || errorStatus === 403
+        ? computeRateLimitHeldUntilMs(extractRetryAfterHeader(err))
+        : undefined
     // CC 2.1.208 #44: prefer the persisted seed (has fetchedAtMs for "as of")
     const persisted = readPersistedUsageSeed()
     if (persisted) {
@@ -281,6 +396,7 @@ export async function fetchUtilizationWithStatus(): Promise<FetchUtilizationResu
         seedSource: 'persisted',
         seedFetchedAtMs: persisted.fetchedAtMs,
         rateLimitedVia,
+        heldUntilMs,
       }
     }
     // Fall back to in-memory seed (no fetchedAtMs → treated as "headers" source)
@@ -291,6 +407,7 @@ export async function fetchUtilizationWithStatus(): Promise<FetchUtilizationResu
         isRateLimited,
         seedSource: 'headers',
         rateLimitedVia,
+        heldUntilMs,
       }
     }
     const responseBody = (err as { response?: { data?: unknown } }).response?.data
@@ -298,6 +415,7 @@ export async function fetchUtilizationWithStatus(): Promise<FetchUtilizationResu
       status: 'unavailable',
       isRateLimited,
       rateLimitedVia,
+      heldUntilMs,
       responseBody: responseBody ? jsonStringify(responseBody) : undefined,
     }
   }

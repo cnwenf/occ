@@ -7,7 +7,7 @@ import { getSubscriptionType } from 'src/utils/auth.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 import { Box, Text } from '../../ink.js';
 import { useKeybinding } from '../../keybindings/useKeybinding.js';
-import { type ExtraUsage, fetchUtilizationWithStatus, formatApiModelUsage, type RateLimit, type Utilization } from '../../services/api/usage.js';
+import { type ExtraUsage, fetchUtilizationWithStatus, formatApiModelUsage, formatRateLimitedText, type RateLimit, type Utilization } from '../../services/api/usage.js';
 import { formatRelativeTimeAgo, formatResetText } from '../../utils/format.js';
 import { logError } from '../../utils/log.js';
 import { jsonStringify } from '../../utils/slowOperations.js';
@@ -212,7 +212,9 @@ export function Usage(): React.ReactNode {
                 ? ` as of ${formatRelativeTimeAgo(new Date(result.seedFetchedAtMs))}`
                 : '';
               setBreakdownMessage(
-                `Showing last-known usage${asOf}${result.rateLimitedVia != null ? ' (rate limited \u2014 try again in a moment)' : ' (could not refresh)'}`,
+                // CC 2.1.304 (#43 \u2014 official `fo`): "rate limited until <clock>"
+                // when the hold deadline is known, else the old vague text.
+                `Showing last-known usage${asOf}${result.rateLimitedVia != null ? ` (${formatRateLimitedText(result.heldUntilMs)})` : ' (could not refresh)'}`,
               );
             } else {
               // headers source (or undefined for backward compat): overwrite
@@ -220,7 +222,7 @@ export function Usage(): React.ReactNode {
               setUtilization(result.utilization ?? null);
               setBreakdownMessage(
                 result.rateLimitedVia != null
-                  ? 'Per-model breakdown unavailable (rate limited \u2014 try again in a moment)'
+                  ? `Per-model breakdown unavailable (${formatRateLimitedText(result.heldUntilMs)})`
                   : 'Could not refresh usage data',
               );
             }
@@ -229,7 +231,9 @@ export function Usage(): React.ReactNode {
         case 'unavailable':
         default:
           if (result.isRateLimited) {
-            setError('Usage endpoint is rate limited. Please try again in a moment.');
+            // CC 2.1.304 (#43 — official "Usage endpoint is " + `fo`): name the
+            // hold end time when known, else the vague "try again in a moment".
+            setError(`Usage endpoint is ${formatRateLimitedText(result.heldUntilMs)}.`);
           } else {
             setError(result.responseBody ? `Failed to load usage data: ${result.responseBody}` : 'Failed to load usage data');
           }

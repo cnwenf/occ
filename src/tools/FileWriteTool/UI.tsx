@@ -1,7 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import type { ToolResultBlockParam } from '@anthropic-ai/sdk/resources/index.mjs';
 import type { StructuredPatchHunk } from 'diff';
-import { isAbsolute, relative, resolve } from 'path';
+import { isAbsolute, resolve } from 'path';
 import * as React from 'react';
 import { Suspense, use, useState } from 'react';
 import { MessageResponse } from 'src/components/MessageResponse.js';
@@ -59,7 +59,7 @@ function FileWriteToolCreatedMessage(t0) {
   }
   let t2;
   if ($[2] !== filePath || $[3] !== verbose) {
-    t2 = verbose ? filePath : relative(getCwd(), filePath);
+    t2 = verbose ? filePath : getDisplayPath(filePath);
     $[2] = filePath;
     $[3] = verbose;
     $[4] = t2;
@@ -390,7 +390,7 @@ export function renderToolResultMessage({
           const numLines = countLines(content);
           return <Text>
             Wrote <Text bold>{numLines}</Text> lines to{' '}
-            <Text bold>{relative(getCwd(), filePath)}</Text>
+            <Text bold>{getDisplayPath(filePath)}</Text>
           </Text>;
         }
         return <FileWriteToolCreatedMessage filePath={filePath} content={content} verbose={verbose} />;

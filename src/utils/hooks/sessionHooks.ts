@@ -217,17 +217,34 @@ function addHookToSession(
 
 /**
  * Remove a specific hook from the session
+ *
+ * CC 2.1.304 #39: the official removal call gained a skill-identity argument
+ * (`e.remove(n,I,D,{skillRoot:s})`) so a skill's `once: true` hook only
+ * unregisters ITS OWN copy — previously two skills declaring byte-identical
+ * hooks shared one removal, and skill A's once-hook firing also removed
+ * skill B's copy. When the optional `skillRoot` argument is PROVIDED (even
+ * as undefined, via the rest-tuple below), removal is scoped to matchers
+ * whose stored skillRoot matches (matchers store skillRoot via
+ * addSessionHook). When the argument is ABSENT, the pre-304 behavior is
+ * kept — remove the hook from ALL matchers of the event — for existing
+ * non-skill callers (e.g. the goal command's prompt-hook removal at
+ * src/commands/goal/index.tsx).
+ *
  * @param setAppState The function to update the app state
  * @param sessionId The session ID
  * @param event The hook event
  * @param hook The hook command to remove
+ * @param skillRootScope Optional skill identity to scope the removal to
  */
 export function removeSessionHook(
   setAppState: (updater: (prev: AppState) => AppState) => void,
   sessionId: string,
   event: HookEvent,
   hook: HookCommand,
+  ...skillRootScope: [skillRoot?: string]
 ): void {
+  const scopeToSkillRoot = skillRootScope.length > 0
+  const skillRoot = skillRootScope[0]
   setAppState(prev => {
     const store = prev.sessionHooks.get(sessionId)
     if (!store) {
@@ -236,11 +253,17 @@ export function removeSessionHook(
 
     const eventMatchers = store.hooks[event] || []
 
-    // Remove the hook from all matchers
+    // Remove the hook from all matchers (or, when skill-scoped, only from
+    // matchers belonging to the same skill — CC 2.1.304 #39)
     const updatedMatchers = eventMatchers
       .map(matcher => {
-        const updatedHooks = matcher.hooks.filter(
-          h => !isHookEqual(h.hook, hook),
+        const updatedHooks = matcher.hooks.filter(h =>
+          scopeToSkillRoot
+            ? !(
+                isHookEqual(h.hook, hook) &&
+                (matcher.skillRoot ?? undefined) === skillRoot
+              )
+            : !isHookEqual(h.hook, hook),
         )
 
         return updatedHooks.length > 0

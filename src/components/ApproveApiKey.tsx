@@ -1,6 +1,7 @@
 import { c as _c } from "react/compiler-runtime";
 import React from 'react';
 import { Text } from '../ink.js';
+import { refreshRemoteManagedSettings } from '../services/remoteManagedSettings/index.js';
 import { saveGlobalConfig } from '../utils/config.js';
 import { customApiKeyResponsesOf } from '../utils/customApiKeyResponses.js';
 import { Select } from './CustomSelect/index.js';
@@ -39,6 +40,11 @@ export function ApproveApiKey(t0) {
                 }
               };
             });
+            // CC 2.1.304 (#8): approving a custom API key changes the org
+            // policy that applies to this account — refetch the remote
+            // managed settings (fire-and-forget, mirrors the official
+            // approval branch calling its refresh after the config save).
+            void refreshRemoteManagedSettings();
             onDone(true);
             break;
           }

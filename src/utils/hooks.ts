@@ -667,6 +667,15 @@ export interface HookResult {
   sessionTitle?: string
   // 2.1.152: MessageDisplay hook replaces the on-screen delta (display-only).
   displayContent?: string
+  /**
+   * CC 2.1.304 #34 (official `deniedBefore` mechanism, adapted): set on the
+   * blockingError result synthesized when an SDK callback hook hits its
+   * per-hook callback timeout (2.1.210 #9 swallow path). Lets
+   * runPreToolUseHooks distinguish a timeout-derived deny from a REAL hook
+   * deny so a previously-issued deny reason is prepended to the timeout text
+   * instead of being overwritten by it (official `$e+zVr` prepend semantics).
+   */
+  callbackTimeout?: boolean
   hook: HookCommand | HookCallback | FunctionHook
 }
 
@@ -698,6 +707,11 @@ export type AggregatedHookResult = {
   sessionTitle?: string
   // 2.1.152: MessageDisplay hook replaces the on-screen delta (display-only).
   displayContent?: string
+  /**
+   * CC 2.1.304 #34: propagated from HookResult.callbackTimeout — marks the
+   * aggregated blockingError as an SDK-callback-timeout deny (see HookResult).
+   */
+  callbackTimeout?: boolean
 }
 
 /**
@@ -3717,6 +3731,11 @@ async function* executeHooks({
               command: 'callback',
             },
             outcome: 'blocking',
+            // CC 2.1.304 #34: mark this synthesized deny as a callback
+            // timeout so runPreToolUseHooks can prepend (not overwrite) an
+            // earlier real deny reason — official `deniedBefore`/`$e+zVr`
+            // prepend semantics, adapted to OCC's per-hook yield pipeline.
+            callbackTimeout: true,
             hook,
           }
         } else {
@@ -4617,6 +4636,11 @@ async function* executeHooks({
     if (result.blockingError) {
       yield {
         blockingError: result.blockingError,
+        // CC 2.1.304 #34: the callback-timeout marker must survive
+        // aggregation — this per-field yield would otherwise drop it and
+        // runPreToolUseHooks could no longer tell a timeout deny from a real
+        // hook deny (see HookResult.callbackTimeout).
+        ...(result.callbackTimeout ? { callbackTimeout: true } : {}),
       }
     }
 
@@ -4817,6 +4841,15 @@ async function* executeHooks({
         permissionBehavior,
         hookPermissionDecisionReason: result.hookPermissionDecisionReason,
         hookSource: matchedHookRecord?.hookSource,
+        // CC 2.1.304 #34 — propagate the callback-timeout marker onto the
+        // aggregated permissionBehavior yield too. When a timed-out callback
+        // result re-announces the (already-deny) aggregated behavior, this
+        // yield carries NO reason of its own; toolHooks.ts uses the marker to
+        // repeat the merged `${R}\n\n${timeoutText}` deny instead of a
+        // generic fallback (the last-wins consumer in toolExecution.ts keeps
+        // the FINAL deny yield, so the re-announcement must not clobber the
+        // merged one).
+        ...(result.callbackTimeout ? { callbackTimeout: true } : {}),
         // CC 2.1.301 #30 — official yield @229018962 spreads
         // `...Vs?.pluginId!==void 0&&{hookPluginId:Vs.pluginId}` where `Vs`
         // is the matched-hook record; mirror by looking the pluginId up from

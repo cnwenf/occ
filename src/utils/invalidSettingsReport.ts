@@ -56,9 +56,32 @@ import { logForDebugging } from './debug.js'
  * - Official `Ks` also strips invisible Unicode via the shared sanitizer;
  *   OCC applies the whitespace-collapse + truncation parts only (fields are
  *   our own validation strings).
+ *
+ * CC 2.1.304 (#49 — official `JC`, byte-verified @273485431 region):
+ * "Improved the `claude -p` invalid-settings warning: a file that did not
+ * load lists only what stopped it, and long lists are capped per file."
+ * - Grouping changed: `h=s.filter(w=>w.severity!=="warning")` — the
+ *   did-not-load block now lists ONLY the blocking entries themselves (the
+ *   303 shape listed ALL entries of the failed files);
+ *   `S=new Set(h.map(w=>w.file))`; `y=s.filter(w=>!S.has(w.file))`.
+ * - Formatter `YC` replaces `CC`: entries are grouped BY FILE (official
+ *   `Map.groupBy(e,h=>h.file)`; OCC uses a manual Map for target
+ *   compatibility), each file's group capped at `Zh`=10 lines, overflow
+ *   `  … and ${n} more in ${file}` (the 303 cap was per whole group with
+ *   `  … and ${n} more`).
+ * - Skipped-entries header shortened to `These settings entries were
+ *   skipped; the rest of each file is in effect:` (the long 303 text has 0
+ *   hits in the 304 binary).
+ * - Telemetry (`tengu_own_settings_validation_errors`,
+ *   not_loaded_file_count/skipped_entry_count), the per-entry debug log, the
+ *   json/stream-json stderr suppression, the inline-JSON file label and the
+ *   `Ks` sanitizer are all unchanged.
  */
 
-/** Official `wh` — max entries listed per group before "… and N more". */
+/**
+ * Official `wh` (303) / `Zh` (304) — since #49 the cap applies PER FILE
+ * group, overflow line `  … and N more in <file>`.
+ */
 export const MAX_REPORTED_ENTRIES_PER_GROUP = 10
 
 /** Official `lL` — max code units per rendered field. */
@@ -99,25 +122,47 @@ export function sanitizeSettingsField(value: unknown): string {
   return result
 }
 
-/** Official `qR`: indented entry lines with the inline-JSON file label. */
+/**
+ * Official `YC` (304): indented entry lines with the inline-JSON file label,
+ * GROUPED BY FILE. Each file's group is capped at
+ * `MAX_REPORTED_ENTRIES_PER_GROUP`(=10) lines; overflow renders
+ * `  … and N more in <file>`. The official uses `Map.groupBy(e,h=>h.file)`;
+ * OCC uses a manual Map for target compatibility (Map.groupBy is ES2024).
+ * Grouping is on the RENDERED label so the overflow `in <file>` matches the
+ * entry lines' label (only the single `--settings` flag path maps to the
+ * inline-JSON label, so label-grouping ≡ file-grouping).
+ */
 export function formatInvalidSettingsEntries(
   entries: ValidationError[],
   inlineSettingsPath: string | undefined = getFlagSettingsPath(),
 ): string {
-  const lines = entries.slice(0, MAX_REPORTED_ENTRIES_PER_GROUP).map(e => {
-    const fileLabel =
-      e.file !== undefined && e.file === inlineSettingsPath
-        ? '--settings (inline JSON)'
-        : (e.file ?? 'settings')
-    const [file, path, message] = [fileLabel, e.path, e.message].map(
-      sanitizeSettingsField,
-    )
-    return `  ${file}${path ? ` (${path})` : ''}: ${message}`
-  })
-  if (entries.length > MAX_REPORTED_ENTRIES_PER_GROUP) {
-    lines.push(
-      `  … and ${entries.length - MAX_REPORTED_ENTRIES_PER_GROUP} more`,
-    )
+  const fileLabel = (e: ValidationError): string =>
+    e.file !== undefined && e.file === inlineSettingsPath
+      ? '--settings (inline JSON)'
+      : (e.file ?? 'settings')
+
+  // Group by rendered file label, preserving first-seen order.
+  const groups = new Map<string, ValidationError[]>()
+  for (const e of entries) {
+    const label = fileLabel(e)
+    const bucket = groups.get(label)
+    if (bucket) bucket.push(e)
+    else groups.set(label, [e])
+  }
+
+  const lines: string[] = []
+  for (const [label, group] of groups) {
+    for (const e of group.slice(0, MAX_REPORTED_ENTRIES_PER_GROUP)) {
+      const [file, path, message] = [label, e.path, e.message].map(
+        sanitizeSettingsField,
+      )
+      lines.push(`  ${file}${path ? ` (${path})` : ''}: ${message}`)
+    }
+    if (group.length > MAX_REPORTED_ENTRIES_PER_GROUP) {
+      lines.push(
+        `  … and ${group.length - MAX_REPORTED_ENTRIES_PER_GROUP} more in ${label}`,
+      )
+    }
   }
   return lines.join('\n')
 }
@@ -156,10 +201,11 @@ export function reportInvalidSettingsForAutomatedSession(
   if (reportable.length === 0) {
     return
   }
-  const notLoadedFiles = new Set(
-    reportable.filter(e => e.severity !== 'warning').map(e => e.file),
-  )
-  const notLoadedEntries = reportable.filter(e => notLoadedFiles.has(e.file))
+  // CC 2.1.304 (#49 — official `JC`): the did-not-load block now lists ONLY
+  // the blocking (non-warning) entries themselves — "what stopped the file
+  // from loading" — not every entry of the failed files (the 303 shape).
+  const notLoadedEntries = reportable.filter(e => e.severity !== 'warning')
+  const notLoadedFiles = new Set(notLoadedEntries.map(e => e.file))
   const skippedEntries = reportable.filter(e => !notLoadedFiles.has(e.file))
 
   logInvalidSettingsSkipped(reportable)
@@ -181,8 +227,10 @@ export function reportInvalidSettingsForAutomatedSession(
     )
   }
   if (skippedEntries.length > 0) {
+    // CC 2.1.304 (#49): header shortened — the long 303 text has 0 hits in
+    // the 304 binary. Verbatim official string.
     blocks.push(
-      `These settings entries were skipped because this version of Claude Code can't apply them; the rest of each file is in effect:\n${formatInvalidSettingsEntries(skippedEntries, inlineSettingsPath)}`,
+      `These settings entries were skipped; the rest of each file is in effect:\n${formatInvalidSettingsEntries(skippedEntries, inlineSettingsPath)}`,
     )
   }
   if (blocks.length > 0) {

@@ -1,7 +1,8 @@
 import { c as _c } from "react/compiler-runtime";
-import { relative } from 'path';
 import * as React from 'react';
-import { getCwd } from 'src/utils/cwd.js';
+// CC 2.1.304 (#17): show out-of-cwd notebooks as ~/… or the full path (not
+// ../../…) in rejected-edit messages, via getDisplayPath (official `Fo`).
+import { getDisplayPath } from 'src/utils/file.js';
 import { Box, Text } from '../ink.js';
 import { HighlightedCode } from './HighlightedCode.js';
 import { MessageResponse } from './MessageResponse.js';
@@ -35,7 +36,7 @@ export function NotebookEditToolUseRejectedMessage(t0) {
   }
   let t3;
   if ($[2] !== notebook_path || $[3] !== verbose) {
-    t3 = verbose ? notebook_path : relative(getCwd(), notebook_path);
+    t3 = verbose ? notebook_path : getDisplayPath(notebook_path);
     $[2] = notebook_path;
     $[3] = verbose;
     $[4] = t3;

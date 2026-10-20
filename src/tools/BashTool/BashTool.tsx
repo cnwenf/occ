@@ -20,7 +20,8 @@ import { splitCommand_DEPRECATED, splitCommandWithOperators } from '../../utils/
 import { extractClaudeCodeHints } from '../../utils/claudeCodeHints.js';
 import { detectCodeIndexingFromCommand } from '../../utils/codeIndexing.js';
 import { areBackgroundTasksDisabled, isEnvTruthy } from '../../utils/envUtils.js';
-import { isENOENT, ShellError } from '../../utils/errors.js';
+import { errorMessage as getErrorMessage, isENOENT, ShellError } from '../../utils/errors.js';
+import { logForDebugging } from '../../utils/debug.js';
 import { detectFileEncoding, detectLineEndings, getFileModificationTime, writeTextContent } from '../../utils/file.js';
 import { fileHistoryEnabled, fileHistoryTrackEdit } from '../../utils/fileHistory.js';
 import { truncate } from '../../utils/format.js';
@@ -937,8 +938,18 @@ export const BashTool = buildTool({
           await copyFile(result.outputFilePath, dest);
         }
         persistedOutputPath = dest;
-      } catch {
-        // File may already be gone — stdout preview is sufficient
+      } catch (err) {
+        // CC 2.1.304 #35: official `Cwr.copyFailed` replaced the silent
+        // `catch {}` with a debug log. Official text (byte-verbatim, minus
+        // the ENOSPC/EDQUOT branch): OCC always KEEPS the temp output file
+        // (there is no dispose-time deletion — ShellCommand.ts only deletes
+        // the output-file-redundant case inline), so the official "Deleting
+        // it because the disk or quota is full." carve-out cannot apply. If
+        // a temp-file disposal is ever added, port the full official `Cwr`
+        // semantics: ENOSPC/EDQUOT → still delete, otherwise keep.
+        logForDebugging(
+          `Could not copy ${result.outputFilePath} to the session's tool-results folder (${getErrorMessage(err)}). Keeping it.`
+        );
       }
     }
     const commandType = input.command.split(' ')[0];

@@ -165,9 +165,8 @@ const {
   showCurrentEffort,
 } = await import('../../commands/effort/effort.js')
 const effortCommand = (await import('../../commands/effort/index.js')).default
-const { isUltracodeEnabled, resetUltracode } = await import(
-  '../effort/ultracode.js'
-)
+const { isUltracodeEnabled, resetUltracode, enableUltracodeForSession } =
+  await import('../effort/ultracode.js')
 
 // The new cap module (official N/Stt/Uhe/S9/lF/E/K/vur/Eur cluster). It does
 // not exist yet (RED); the guarded import keeps the failure an assertion in
@@ -679,6 +678,20 @@ describe('/effort command under a settings cap', () => {
     const result = executeEffort('ultracode')
     expect(result.effortUpdate?.value).toBe('xhigh')
     expect(isUltracodeEnabled()).toBe(true)
+    // CC 2.1.304 (#33): env unset + opus-4-7 resolves xhigh (a real level), so
+    // the activation message is NOT followed by the auto note.
+    expect(result.message).not.toContain('Effort stays auto.')
+  })
+
+  test('#33 ultracode under CLAUDE_CODE_EFFORT_LEVEL=auto appends "Effort stays auto." (official f = … ?? "auto")', () => {
+    // env=auto makes getEffortEnvOverride() return null → resolveConfiguredEffort
+    // returns undefined → getDisplayedEffortLevel(model,'xhigh') is undefined even
+    // though ultracode sets xhigh (env wins) → the verbatim auto note is printed.
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
+    const result = executeEffort('ultracode')
+    expect(result.message).toContain('Effort stays auto.')
+    expect(result.effortUpdate?.value).toBe('xhigh')
+    expect(isUltracodeEnabled()).toBe(true)
   })
 
   test('help text is cap-aware (official Jdt): allowed levels only, no ultracode line', async () => {
@@ -1147,5 +1160,51 @@ describe('I. display surfaces under a settings cap (runtime-3 — official kE/lF
     expect(getDisplayedEffortLevel('claude-sonnet-4-6', 'xhigh')).toBe('xhigh')
     expect(getEffortSuffix('claude-sonnet-4-6', 'xhigh')).toBe(' with xhigh effort')
     expect(getEffortSuffix('claude-sonnet-5', 'max')).toBe(' with max effort')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// J. CC 2.1.304 #33 — the display resolver no longer GUESSES a level
+//    (official `kWe` returns undefined; `/effort` status prints the official
+//    `f6t` auto-branch texts; the indicator chip hides — official `EE`).
+//    Verbatim strings under test:
+//      "Effort level: auto"
+//      "Effort level: auto (currently xhigh)"
+//      " · Ultracode on"  (suffix)
+//      "Effort stays auto."  (ultracode command, env-auto case)
+// ---------------------------------------------------------------------------
+
+describe('J. #33 auto-without-guessing display (CC 2.1.304 — official kWe/f6t)', () => {
+  test('showCurrentEffort prints the BARE "Effort level: auto" when nothing resolves (env=auto, no session level)', () => {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
+    const result = showCurrentEffort(undefined, 'claude-sonnet-5')
+    // The 303 bug printed a guessed "(currently high)" here — #33 forbids it.
+    expect(result.message).toBe('Effort level: auto')
+  })
+
+  test('showCurrentEffort prints the official "(currently X)" form when a level DOES resolve (env unset, opus-4-7 model default xhigh)', () => {
+    const result = showCurrentEffort(undefined, 'claude-opus-4-7')
+    expect(result.message).toBe('Effort level: auto (currently xhigh)')
+  })
+
+  test('getDisplayedEffortLevel returns undefined under env=auto even for a model with a default level (env wins → nothing to show)', () => {
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
+    expect(getDisplayedEffortLevel('claude-opus-4-7', undefined)).toBeUndefined()
+  })
+
+  test('the auto branch appends " · Ultracode on" while the ultracode session mode is on', () => {
+    enableUltracodeForSession()
+    expect(showCurrentEffort(undefined, 'claude-opus-4-7').message).toBe(
+      'Effort level: auto (currently xhigh) · Ultracode on'
+    )
+    process.env.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
+    expect(showCurrentEffort(undefined, 'claude-sonnet-5').message).toBe(
+      'Effort level: auto · Ultracode on'
+    )
+  })
+
+  test('an explicit session level keeps the non-auto "Current effort level:" form (unchanged by #33)', () => {
+    const result = showCurrentEffort('medium', 'claude-sonnet-5')
+    expect(result.message.startsWith('Current effort level: medium')).toBe(true)
   })
 })

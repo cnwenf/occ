@@ -1326,7 +1326,17 @@ async function callInner(
   if (IMAGE_EXTENSIONS.has(ext)) {
     // Images have their own size limits (token budget + compression) —
     // don't apply the text maxSizeBytes cap.
-    const data = await readImageWithTokenBudget(resolvedFilePath, maxTokens)
+    // CC 2.1.304 #32: thread the tool-context abort signal so an interrupt
+    // ends a Read blocked on an idle pipe/device named like an image
+    // (official call site passes `pdfRenderSignal ?? signal`; OCC's image
+    // branch has no pdfRenderSignal, so the plain context signal is the
+    // faithful equivalent).
+    const data = await readImageWithTokenBudget(
+      resolvedFilePath,
+      maxTokens,
+      undefined,
+      context.abortController.signal,
+    )
     context.nestedMemoryAttachmentTriggers?.add(fullFilePath)
 
     logFileOperation({
@@ -1866,22 +1876,34 @@ async function callInner(
  * Reads the file ONCE, then applies standard resize. If the result exceeds
  * the token limit, applies aggressive compression from the same buffer.
  *
+ * CC 2.1.304 #32: optional `signal` threads the caller's abort signal into
+ * the capped image reader, so an interrupt (Esc) ends a Read blocked on an
+ * idle pipe/device named like an image. Official equivalent: `q_o`'s new 7th
+ * param passed as `pdfRenderSignal ?? signal` at the Read-tool image-branch
+ * call site (@248585955). The attachments path (src/utils/attachments.ts)
+ * intentionally stays unthreaded — same as the official's background
+ * file-watch compression call site (@248745435, no signal).
+ *
  * @param filePath - Path to the image file
  * @param maxTokens - Maximum token budget for the image
+ * @param signal - Optional abort signal (tool-context interrupt)
  * @returns Image data with appropriate compression applied
  */
 export async function readImageWithTokenBudget(
   filePath: string,
   maxTokens: number = getDefaultFileReadingLimits().maxTokens,
   maxBytes?: number,
+  signal?: AbortSignal,
 ): Promise<ImageResult> {
   // Read file ONCE — capped to the 128 MiB image limit (CC 2.1.302 #06).
   // Regular files over the cap are refused by stat (never read into memory);
   // pipes/devices named like an image are read in 64 KiB chunks and refused
-  // past the cap. Port of the official `qXr`/`oOn` limiter.
+  // past the cap. Port of the official `qXr`/`oOn` limiter, with the
+  // CC 2.1.304 #32 abort threading on the chunked (non-regular) path.
   const imageBuffer = await readImageBytesCapped(
     filePath,
     maxBytes ?? MAX_IMAGE_READ_BYTES,
+    signal,
   )
   const originalSize = imageBuffer.length
 

@@ -16,6 +16,7 @@ import { permissionModeTitle, permissionModeFromString, toExternalPermissionMode
 import { getAutoModeEnabledState, hasAutoModeOptInAnySource, transitionPlanAutoMode } from '../../utils/permissions/permissionSetup.js';
 import { logError } from '../../utils/log.js';
 import { logEvent, type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 'src/services/analytics/index.js';
+import { refreshRemoteManagedSettings } from '../../services/remoteManagedSettings/index.js';
 import { isBridgeEnabled } from '../../bridge/bridgeEnabled.js';
 import { ThemePicker } from '../ThemePicker.js';
 import { useAppState, useSetAppState, useAppStateStore } from '../../state/AppState.js';
@@ -1099,6 +1100,11 @@ export function Config({
         };
       });
       setGlobalConfig(getGlobalConfig());
+      // CC 2.1.304 (#8): toggling the custom-API-key approval changes which
+      // org policy applies to this account — refetch the remote managed
+      // settings. Fire-and-forget, fired on BOTH on and off (mirrors the
+      // official toggle's post-save refresh).
+      void refreshRemoteManagedSettings();
     }
   }] : [])];
 

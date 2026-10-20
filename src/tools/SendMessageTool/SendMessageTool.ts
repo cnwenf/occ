@@ -32,6 +32,7 @@ import {
   isTeamLead,
   isTeammate,
 } from '../../utils/teammate.js'
+import { getTeammateContext } from '../../utils/teammateContext.js'
 import {
   createShutdownApprovedMessage,
   createShutdownRejectedMessage,
@@ -306,6 +307,18 @@ async function handleShutdownApproval(
   requestId: string,
   context: ToolUseContext,
 ): Promise<{ data: ResponseOutput }> {
+  // Official 2.1.304 #38: only a session actually running as a teammate may
+  // approve a shutdown request. Pre-fix, a main-session (or team-lead) model
+  // sending shutdown_response approve:true fell straight through to
+  // gracefulShutdown and killed the lead session itself. Fail closed with the
+  // official verbatim message (official guard: teammateContext undefined &&
+  // !isTeammate() → throw).
+  if (!getTeammateContext() && !isTeammate()) {
+    throw new Error(
+      'Only a teammate can approve a shutdown request, and this session is not running as one. Nothing was sent. To shut down a teammate, send that teammate a shutdown_request message. The teammate is the one that approves it.',
+    )
+  }
+
   const teamName = getTeamName()
   const agentId = getAgentId()
   const agentName = getAgentName() || 'teammate'

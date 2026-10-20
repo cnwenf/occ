@@ -24,7 +24,6 @@ import { runPostCompactCleanup } from '../../services/compact/postCompactCleanup
 import { resetAllLSPDiagnosticState } from '../../services/lsp/LSPDiagnosticRegistry.js'
 import { clearTrackedMagicDocs } from '../../services/MagicDocs/magicDocs.js'
 import { clearDynamicSkills } from '../../skills/loadSkillsDir.js'
-import { resetSentSkillNames } from '../../utils/attachments.js'
 import { clearCommandPrefixCaches } from '../../utils/bash/commands.js'
 import { resetGetMemoryFilesCache } from '../../utils/claudemd.js'
 import { clearRepositoryCaches } from '../../utils/detectRepository.js'
@@ -73,11 +72,10 @@ export function clearSessionCaches(
   // classifier approvals, speculative checks, and — for main-thread compacts — memory
   // files cache with load_reason 'compact').
   runPostCompactCleanup()
-  // Reset sent skill names so the skill listing is re-sent after /clear.
-  // runPostCompactCleanup intentionally does NOT reset this (post-compact
-  // re-injection costs ~4K tokens), but /clear wipes messages entirely so
-  // the model needs the full listing again.
-  resetSentSkillNames()
+  // CC 2.1.304 #59/#31: no resetSentSkillNames() here anymore. The skill
+  // listing dedupes by scanning the live message history; /clear wipes
+  // messages entirely, so the next turn's scan finds nothing and re-sends
+  // the full listing as `isInitial` naturally.
   // Override the memory cache reset with 'session_start': clearSessionCaches is called
   // from /clear and --resume/--continue, which are NOT compaction events. Without this,
   // the InstructionsLoaded hook would fire with load_reason 'compact' instead of

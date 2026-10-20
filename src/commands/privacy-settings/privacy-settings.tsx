@@ -11,13 +11,15 @@ export async function call(onDone: LocalJSXCommandOnDone): Promise<React.ReactNo
     return null;
   }
   const [settingsResult, configResult] = await Promise.all([getGroveSettings(), getGroveNoticeConfig()]);
-  // Hide dialog on API failure (after retry)
-  if (!settingsResult.success) {
+  // Hide dialog on API failure (after retry).
+  // Official 2.1.304 #28: BOTH fetches must succeed — a failed config fetch
+  // used to fall through and render the dialog with domainExcluded unknown.
+  if (!settingsResult.success || !configResult.success) {
     onDone(FALLBACK_MESSAGE);
     return null;
   }
   const settings = settingsResult.data;
-  const config = configResult.success ? configResult.data : null;
+  const config = configResult.data;
   async function onDoneWithDecision(decision: GroveDecision) {
     if (decision === 'escape' || decision === 'defer') {
       onDone('Privacy settings dialog dismissed', {
@@ -49,7 +51,7 @@ export async function call(onDone: LocalJSXCommandOnDone): Promise<React.ReactNo
   // Show privacy settings directly if the user has already accepted the
   // terms.
   if (settings.grove_enabled !== null) {
-    return <PrivacySettingsDialog settings={settings} domainExcluded={config?.domain_excluded} onDone={onDoneWithSettingsCheck}></PrivacySettingsDialog>;
+    return <PrivacySettingsDialog settings={settings} domainExcluded={config.domain_excluded} onDone={onDoneWithSettingsCheck}></PrivacySettingsDialog>;
   }
 
   // Show the GroveDialog for users who haven't accepted terms yet

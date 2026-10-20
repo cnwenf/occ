@@ -85,6 +85,7 @@ import {
   stripAdvisorBlocks,
   stripCallerFieldFromAssistantMessage,
   stripToolReferenceBlocksFromUserMessage,
+  wrapMessagesInSystemReminder,
 } from '../../utils/messages.js'
 import {
   getDefaultOpusModel,
@@ -198,7 +199,9 @@ import {
   isDeferredToolsDeltaEnabled,
   isToolSearchDeclared,
   isToolSearchEnabled,
+  isToolSearchRefuseRecoveryEnabled,
   noteToolSearchDeclared,
+  recordToolSearchRefused,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import {
@@ -296,6 +299,7 @@ import {
   createToolSchemaRefusedResolver,
   type SentToolSchemaEntry,
 } from './refusedToolSchemas.js'
+import { isAPIErrorBodyType } from './modelCallRetries.js'
 
 // Define a type that represents valid JSON values
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray
@@ -1165,6 +1169,17 @@ export async function* executeNonStreamingRequest(
      */
     retryContext1mBetaRefused?: (error: APIError) => boolean
     /**
+     * CC 2.1.304 (#22): the shared one-shot context_management beta 400 heal
+     * handler (official `Bgt`'s `dde` arm in the fatal-400 chain, verdict
+     * `retry:beta-rejected:context_management`) — wired into the sync
+     * onApiError chain too, so the non-streaming fallback gets the same
+     * handler instance as the streaming loop. Returns true when the 400 was
+     * healed and the request must be resent WITHOUT the
+     * `context-management-2025-06-27` beta (and hence without the gated
+     * `context_management` field).
+     */
+    retryContextManagementRefused?: (error: APIError) => boolean
+    /**
      * CC 2.1.300 (#36): the shared MCP tool input-schema refusal handler
      * (official `AGe`/`sut` @227866518) — the official wires the same
      * resolver instance into the sync onApiError chain too, so the
@@ -1174,6 +1189,18 @@ export async function* executeNonStreamingRequest(
      * `{type:"object"}` (official `W1t`).
      */
     retryToolSchemaRefused?: (error: APIError) => boolean
+    /**
+     * CC 2.1.304 (#58): the shared tool-search refuse-recovery handler
+     * (official `b6`/`tse`/`mZ` chain) — wired into the sync onApiError chain
+     * LAST (after every other heal handler), so only a 400/422 that no other
+     * recovery claimed reaches it (official `!Pw(Er)&&!vF(Er)` + `im===void 0`
+     * — "no other recovery took it"). Async: the un-defer rebuild re-runs
+     * `toolToAPISchema` for the dropped tools. Returns true when the refusal
+     * was eligible, the request was rebuilt WITHOUT tool search (deferred
+     * tools declared in full + critical_system_reminder prepended), and it
+     * must be re-sent once.
+     */
+    retryToolSearchRefused?: (error: APIError) => Promise<boolean>
   },
   paramsFromContext: (context: RetryContext) => BetaMessageStreamParams,
   onAttempt: (attempt: number, start: number, maxOutputTokens: number) => void,
@@ -1294,8 +1321,12 @@ export async function* executeNonStreamingRequest(
       retryAdvisorEntryRefused: retryOptions.retryAdvisorEntryRefused,
       // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
       retryContext1mBetaRefused: retryOptions.retryContext1mBetaRefused,
+      // CC 2.1.304 (#22): same-instance context_management beta heal handler.
+      retryContextManagementRefused: retryOptions.retryContextManagementRefused,
       // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
       retryToolSchemaRefused: retryOptions.retryToolSchemaRefused,
+      // CC 2.1.304 (#58): same-instance tool-search refuse-recovery handler.
+      retryToolSearchRefused: retryOptions.retryToolSearchRefused,
       // CC 2.1.285 (item-B2): official `I0t` passes `nonStreamingTimeoutMs:S`
       // (S = IOo() = this fallbackTimeoutMs) into the loop options so the retry
       // loop can cap timed-out re-sends via
@@ -2433,6 +2464,110 @@ async function* queryModel(
     }
   }
 
+  // CC 2.1.304 (#22): the context_management beta 400 heal state machine —
+  // official `M6t` heal-map arm for `dde` (name "context_management", header
+  // "context-management-2025-06-27", @246856307 byte-verified):
+  //   [dde,(e)=>e.includes("context_management: Extra inputs are not permitted")]
+  // The official 304 scanner (`BVe`/`Bgt`) strips the offending beta and
+  // resends with verdict `retry:beta-rejected:context_management`; OCC ports
+  // it as a bespoke handler mirroring retryContext1mBetaRefused (OCC has not
+  // ported the generic named-beta scanner — documented deviation). The
+  // scenario is an LLM gateway (custom ANTHROPIC_BASE_URL that still reports
+  // firstParty) rejecting the `context_management` request FIELD with
+  // "Extra inputs are not permitted". Dropping the header from the betas
+  // automatically omits the field on resend — paramsFromContext already gates
+  // the field on `betasParams.includes(CONTEXT_MANAGEMENT_BETA_HEADER)`.
+  // One-shot per request: idle→retrying on the first matching 400, spent on
+  // success (mark) or on a second 400 (surfaces the error).
+  let contextManagementHealState: 'idle' | 'retrying' | 'spent' = 'idle'
+  const isContextManagementHealActive = (): boolean =>
+    contextManagementHealState === 'retrying'
+
+  /**
+   * CC 2.1.304 (#22): official `Bgt` context_management arm — the fatal-400
+   * chain handler whose official verdict is `"retry:beta-rejected:context_management"`.
+   * Returns true when the 400 reads as the gateway rejecting the
+   * `context-management-2025-06-27` beta: the state machine latches
+   * (idle→retrying), paramsFromContext filters the header off the resend
+   * (and with it the gated `context_management` field), and withRetry retries
+   * without consuming budget. A second 400 while latched flips it to spent
+   * and returns false (at most ONE beta-stripped resend per request).
+   */
+  const retryContextManagementRefused = (error: APIError): boolean => {
+    if (error.status !== 400) {
+      return false
+    }
+    try {
+      // Official `uke` arm for `dde` (@246856307, byte-verified):
+      //   (e)=>e.includes("context_management: Extra inputs are not permitted")
+      const named = error.message.includes(
+        'context_management: Extra inputs are not permitted',
+      )
+      if (contextManagementHealState === 'spent') {
+        return false
+      }
+      if (contextManagementHealState !== 'idle') {
+        contextManagementHealState = 'spent'
+        logForDebugging(
+          `[betas] the resend without ${CONTEXT_MANAGEMENT_BETA_HEADER} also got an HTTP 400, so the backend is not recorded as rejecting it; it stays off for the remaining attempts of this request`,
+          { level: 'warn' },
+        )
+        return false
+      }
+      const betasCarriedContextManagement =
+        lastRequestBetas?.includes(CONTEXT_MANAGEMENT_BETA_HEADER) ?? false
+      if (!betasCarriedContextManagement || !named) {
+        return false
+      }
+      contextManagementHealState = 'retrying'
+      logForDebugging(
+        `[betas] an HTTP 400 reads as the backend rejecting ${CONTEXT_MANAGEMENT_BETA_HEADER}; resending once without it`,
+        { level: 'warn' },
+      )
+      return true
+    } catch (err) {
+      logForDebugging(
+        `[betas] context-management beta heal handler threw: ${String(err)}`,
+        { level: 'error' },
+      )
+      return false
+    }
+  }
+
+  /**
+   * CC 2.1.304 (#22): official `Bgt`'s success side — `Gn(Qs,uke(eo,Qs))`
+   * (mark spent) + `i("tengu_beta_400_healed",{beta,model,provider,status})`
+   * (@246856307). Called when a request succeeds after the heal (stream
+   * message_start / non-streaming success), alongside markContext1mBetaHealed.
+   * Filters the beta from the base beta list and logs tengu_beta_400_healed
+   * with the same shape as the context-1m mark ({beta,model,provider,
+   * status:400,unnamed:false} — the generic official scanner omits `unnamed`;
+   * OCC keeps the field for shape consistency with the 295 mark).
+   */
+  const markContextManagementBetaHealed = (): void => {
+    if (contextManagementHealState !== 'retrying') {
+      return
+    }
+    contextManagementHealState = 'spent'
+    try {
+      betas = betas.filter(b => b !== CONTEXT_MANAGEMENT_BETA_HEADER)
+      logEvent('tengu_beta_400_healed', {
+        beta:
+          CONTEXT_MANAGEMENT_BETA_HEADER as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        model:
+          options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        provider: getAPIProviderForStatsig(),
+        status: 400,
+        unnamed: false,
+      })
+    } catch (err) {
+      logForDebugging(
+        `[betas] context-management beta healed-mark threw: ${String(err)}`,
+        { level: 'error' },
+      )
+    }
+  }
+
   // CC 2.1.300 (#36): official `eut=new AGe(st)` (@227866518) — one resolver
   // per request over the conversation-scoped refusedToolSchemas map (official
   // `st.refusedToolSchemas`). The official resolve indexes `DB` — the exact
@@ -2460,8 +2595,17 @@ async function* queryModel(
     //   `let Zo=ct.filter((td)=>td!==YS||!SEe());
     //    if(!Zo.includes(YS)&&!SEe()&&uUn(Kn.model)!==null)Zo.push(YS)`
     const healActive = isContext1mHealActive()
+    // CC 2.1.304 (#22): official `Bgt` — `mt=mt.filter((Qs)=>!zr.has(Qs))`
+    // strips the offending beta(s) so the resend goes out without them. For
+    // context_management the strip happens here (per-attempt filter while the
+    // heal is latched); the gated `context_management` request FIELD then
+    // auto-omits below (`betasParams.includes(CONTEXT_MANAGEMENT_BETA_HEADER)`
+    // gate) — exactly the changelog's "resends the request without that field".
+    const contextManagementHealActive = isContextManagementHealActive()
     const betasParams = betas.filter(
-      b => b !== CONTEXT_1M_BETA_HEADER || !healActive,
+      b =>
+        (b !== CONTEXT_1M_BETA_HEADER || !healActive) &&
+        (b !== CONTEXT_MANAGEMENT_BETA_HEADER || !contextManagementHealActive),
     )
 
     // Append 1M beta dynamically for the Sonnet 1M experiment.
@@ -2805,6 +2949,129 @@ async function* queryModel(
     options.querySource,
   )
 
+  // CC 2.1.304 (#58): tool-search refuse-recovery — official `b6` (the
+  // eligibility gate), `tse` (the detector that un-defers the dropped tools
+  // and throws the `mZ` retry marker), and `ugn` (the re-run with
+  // `withoutToolSearch:!0`, prepending the critical_system_reminder), all
+  // byte-verified in docs/gap-research-304/research-R4-skills-hooks.md "#58".
+  // When a firstParty request sent through a CUSTOM ANTHROPIC_BASE_URL used
+  // tool search and the gateway answers HTTP 400/422 that NO other recovery
+  // claimed and that is not a billing_error, the request is rebuilt once
+  // WITHOUT tool search: every previously deferred tool is declared in full
+  // (official `for(let Er of HO)uer(lt,Er)`), the tool-search beta header is
+  // stripped, and the official critical_system_reminder is prepended. On the
+  // retry's success (first assistant chunk / message_start) the official
+  // records `toolSearchRefusedAt[key]=Date.now()` (DUs — 1-day window, warn
+  // log) and fires `tengu_beta_400_healed` {beta,model,provider,
+  // unclaimed:true}.
+  //
+  // Official `b6` gate → OCC mapping:
+  //   po (request used tool search)   → lastRequestBetas carried toolSearchHeader
+  //   zOe()                           → isToolSearchRefuseRecoveryEnabled()
+  //   eo instanceof Ot && (400||422)  → enforced by the withRetry chain gate
+  //   eo.type!=="billing_error"       → isAPIErrorBodyType(error,'billing_error')
+  //   !J.resumeIncompleteThinking     → OCC has no such surface (trivially true)
+  //   im===void 0 && !Pw(Er)&&!vF(Er) → chain position: this hook is wired
+  //     LAST in withRetry's fatal-400 chain, so it is only consulted after
+  //     every other recovery declined; the one-shot `toolSearchRecoveryDone`
+  //     latch mirrors the official `im` claimed-flag.
+  let toolSearchRecoveryDone = false
+  let pendingToolSearchRefusedHeal = false
+  const retryToolSearchRefused = async (error: APIError): Promise<boolean> => {
+    try {
+      const requestUsedToolSearch =
+        toolSearchHeader !== null &&
+        (lastRequestBetas?.includes(toolSearchHeader) ?? false)
+      if (
+        toolSearchRecoveryDone ||
+        !requestUsedToolSearch ||
+        !isToolSearchRefuseRecoveryEnabled() ||
+        (error.status !== 400 && error.status !== 422) ||
+        isAPIErrorBodyType(error, 'billing_error')
+      ) {
+        return false
+      }
+      toolSearchRecoveryDone = true
+      // Official `tse` warn text (byte-verified, level warn).
+      logForDebugging(
+        `[ToolSearch] HTTP ${error.status} that no other recovery took, for a request that used tool search (${toolSearchHeader}); making the call again without it...`,
+        { level: 'warn' },
+      )
+      // Un-defer the dropped tools (official `for(let Er of HO)uer(lt,Er)`):
+      // rebuild the full tool list — every deferred tool declared in full,
+      // ToolSearch itself removed — reusing the same schema builder options.
+      const undeferredTools = tools.filter(
+        t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),
+      )
+      const undeferredSchemas = await Promise.all(
+        undeferredTools.map(tool =>
+          toolToAPISchema(tool, {
+            getToolPermissionContext: options.getToolPermissionContext,
+            tools,
+            agents: options.agents,
+            allowedAgentTypes: options.allowedAgentTypes,
+            model: options.model,
+            deferLoading: false,
+          }),
+        ),
+      )
+      allTools = [...undeferredSchemas, ...extraToolSchemas]
+      useToolSearch = false
+      if (toolSearchHeader) {
+        betas = betas.filter(b => b !== toolSearchHeader)
+      }
+      // Prepend the official critical_system_reminder (verbatim content;
+      // rendered like the OCC attachment path — wrapMessagesInSystemReminder
+      // over an isMeta user message, messages.ts:4613-4617).
+      messagesForAPI = [
+        ...wrapMessagesInSystemReminder([
+          createUserMessage({
+            content: `${TOOL_SEARCH_TOOL_NAME} is no longer available. Tools listed earlier as deferred that are still available are declared in full: call them directly.`,
+            isMeta: true,
+          }),
+        ]),
+        ...messagesForAPI,
+      ]
+      pendingToolSearchRefusedHeal = true
+      return true
+    } catch (err) {
+      logForDebugging(
+        `[ToolSearch] refuse-recovery handler threw: ${String(err)}`,
+        { level: 'error' },
+      )
+      return false
+    }
+  }
+
+  /**
+   * CC 2.1.304 (#58): official success side of `ugn` — on the retry's first
+   * assistant chunk / message_start: `DUs(S.model,S.storageV5)` (record the
+   * refusal + official warn text) and
+   * `i("tengu_beta_400_healed",{beta,model,provider,unclaimed:!0})`.
+   */
+  const markToolSearchRefusedHealed = (): void => {
+    if (!pendingToolSearchRefusedHeal) {
+      return
+    }
+    pendingToolSearchRefusedHeal = false
+    try {
+      recordToolSearchRefused(options.model)
+      logEvent('tengu_beta_400_healed', {
+        beta:
+          toolSearchHeader as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        model:
+          options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        provider: getAPIProviderForStatsig(),
+        unclaimed: true,
+      })
+    } catch (err) {
+      logForDebugging(
+        `[ToolSearch] refused-heal mark threw: ${String(err)}`,
+        { level: 'error' },
+      )
+    }
+  }
+
   try {
     queryCheckpoint('query_client_creation_start')
     const generator = withRetry(
@@ -2936,9 +3203,16 @@ async function* queryModel(
         // before the thinking-binding handler (`fRe`) — both neighbor slots
         // collapse to "immediately after retryAdvisorEntryRefused" in OCC.
         retryContext1mBetaRefused,
+        // CC 2.1.304 (#22): official `Bgt`'s `dde` arm — context_management
+        // beta 400 heal (see handler creation above).
+        retryContextManagementRefused,
         // CC 2.1.300 (#36): official `AGe`/`sut` — MCP tool input-schema
         // refusal heal (see handler creation above).
         retryToolSchemaRefused,
+        // CC 2.1.304 (#58): official `b6`/`tse`/`mZ` — tool-search refuse
+        // recovery (see handler creation above). Wired LAST so it only sees a
+        // 400/422 that no other recovery claimed (official `!Pw(Er)&&!vF(Er)`).
+        retryToolSearchRefused,
       },
     )
 
@@ -3092,6 +3366,15 @@ async function* queryModel(
             // this attempt was a beta-stripped heal resend, mark the
             // context-1m beta spent and log tengu_beta_400_healed.
             markContext1mBetaHealed()
+            // CC 2.1.304 (#22): official `Bgt` context_management success mark
+            // — the stream opened cleanly, so if this attempt was a
+            // context_management beta-stripped heal resend, mark it spent and
+            // log tengu_beta_400_healed.
+            markContextManagementBetaHealed()
+            // CC 2.1.304 (#58): official `ugn` success mark — the tool-search
+            // refusal recovery's rebuilt request streamed cleanly, so record
+            // the refusal (1-day window) and log tengu_beta_400_healed.
+            markToolSearchRefusedHealed()
             partialMessage = part.message
             ttftMs = Date.now() - start
             usage = updateUsage(usage, part.message?.usage)
@@ -3960,8 +4243,12 @@ async function* queryModel(
           retryAdvisorEntryRefused,
           // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
           retryContext1mBetaRefused,
+          // CC 2.1.304 (#22): same-instance context_management heal handler.
+          retryContextManagementRefused,
           // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
           retryToolSchemaRefused,
+          // CC 2.1.304 (#58): same-instance tool-search refuse-recovery handler.
+          retryToolSearchRefused,
         },
         paramsFromContext,
         (attempt, _startTime, tokens) => {
@@ -3980,6 +4267,10 @@ async function* queryModel(
       // `_Ze(),iEe(),sEe(),Ztt(),uZe()`: the request answered, so a pending
       // beta-stripped heal is confirmed and tengu_beta_400_healed is logged.
       markContext1mBetaHealed()
+      // CC 2.1.304 (#22 / #58): same non-streaming success marks as the
+      // streaming message_start site.
+      markContextManagementBetaHealed()
+      markToolSearchRefusedHealed()
 
       const m: AssistantMessage = {
         message: {
@@ -4093,8 +4384,12 @@ async function* queryModel(
             retryAdvisorEntryRefused,
             // CC 2.1.295 (item-1): same-instance context-1m beta heal handler.
             retryContext1mBetaRefused,
+            // CC 2.1.304 (#22): same-instance context_management heal handler.
+            retryContextManagementRefused,
             // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
             retryToolSchemaRefused,
+            // CC 2.1.304 (#58): same-instance tool-search refuse-recovery handler.
+            retryToolSearchRefused,
           },
           paramsFromContext,
           (attempt, _startTime, tokens) => {
@@ -4111,6 +4406,10 @@ async function* queryModel(
         )
         // CC 2.1.295 (item-1): official non-streaming success mark (`Ztt()`).
         markContext1mBetaHealed()
+        // CC 2.1.304 (#22 / #58): same non-streaming success marks as the
+        // streaming message_start site.
+        markContextManagementBetaHealed()
+        markToolSearchRefusedHealed()
 
         const m: AssistantMessage = {
           message: {

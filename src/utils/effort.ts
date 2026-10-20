@@ -435,15 +435,29 @@ function resolveConfiguredEffort(
 
 /**
  * Resolve the effort level to show the user. Shows the configured effort
- * verbatim (no model-capability downgrade — Gap-97c), with the 'high'
- * fallback (what the API uses when no effort param is sent).
+ * verbatim (no model-capability downgrade — Gap-97c).
+ *
+ * CC 2.1.304 (#33 — official `kWe`): this NO LONGER guesses a level. When
+ * nothing resolves — env `CLAUDE_CODE_EFFORT_LEVEL` is `auto`/unset AND no
+ * session/settings level AND no model default — it returns `undefined` (the
+ * official drop of the `?? "high"` fallback). Callers handle undefined:
+ *   - the status chip HIDES (EffortIndicator, official `EE`),
+ *   - `/effort status` prints a bare `Effort level: auto` (official `f6t`),
+ *   - `/effort ultracode` prints `Effort stays auto.`.
+ * The REQUEST-building path is separate (`resolveAppliedEffort`) and unchanged:
+ * it already returns undefined when no effort param should be sent, and the
+ * 'high' default lives at the API layer (claude.ts omits effort → API default),
+ * never in this display guesser.
  * Single source of truth for the status bar and /effort output (CC-1088).
  */
 export function getDisplayedEffortLevel(
   model: string,
   appStateEffort: EffortValue | undefined,
-): EffortLevel {
-  const configured = resolveConfiguredEffort(model, appStateEffort) ?? 'high'
+): EffortLevel | undefined {
+  const configured = resolveConfiguredEffort(model, appStateEffort)
+  if (configured === undefined) {
+    return undefined
+  }
   return convertEffortValueToLevel(configured)
 }
 

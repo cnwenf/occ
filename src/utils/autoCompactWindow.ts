@@ -40,12 +40,24 @@
  *   Bp+oh = isAutoCompactWindowTuningEnabled   q$o = is1mCatalogWindowSuppressed
  *   Rr  = resolveSubscriptionTierContext (staged → undefined)
  *
+ * CC 2.1.304 changelog #41 (env k/M suffixes + warnings) symbol map:
+ *   j_e = parseAutoCompactWindowSize   yVe = parseAutoCompactWindowEnv
+ *   T4t = resolveAutoCompactWindowEnvTokens
+ *   E4t = buildAutoCompactWindowEnvMessage (verbatim strings)
+ *   XFe = buildAutoCompactWindowEnvWarning (msg-or-null)
+ *   ySs = warnAutoCompactWindowEnv       v4t = ENV_WARNING_SANITIZE_MAX (32)
+ *   gP  = AUTO_COMPACT_WINDOW_MIN        vN  = AUTO_COMPACT_WINDOW_MAX
+ *
  * The official additionally resolves server-driven windows ("experiment" /
  * "clientdata" sources via the bootstrap `auto_compact_windows` cache) and an
  * "unknown-model" default window — Anthropic-backend-bound and staged (see
  * the `resolveModelAutoWindow` docblock and
  * docs/upstream-version-gap-occ58.md / docs/gap-research-288).
  */
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from '../services/analytics/index.js'
 import { getGlobalConfig } from './config.js'
 import { is1mContextDisabled } from './context.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -190,6 +202,231 @@ export function parseAutoCompactWindowInput(
   return Math.round(tokens)
 }
 
+/* ----------------------------------------------------------------------
+ * CC 2.1.304 changelog #41 — CLAUDE_CODE_AUTO_COMPACT_WINDOW k/M suffixes
+ * + clamp-to-bounds + user-facing warnings. Everything below is byte-
+ * verified from the official 2.1.304 linux-x64 ELF (offsets in
+ * docs/gap-research-304/research-R3-session-api.md §#41):
+ *   j_e @246816065 (core parser), yVe (env parse = j_e bareThousands:false),
+ *   T4t @246816476 (env resolver/clamper), E4t @246817300 (warning
+ *   builder), XFe (msg-or-null), ySs @246816655 (emitter + telemetry
+ *   `compact_window_env`), v4t=32 (sanitize cap), gP=1e5 / vN=1e6.
+ * ---------------------------------------------------------------------- */
+
+/** Official `j_e` result shape (discriminated on `kind`). */
+export type AutoCompactWindowSizeParse =
+  | { kind: 'unusable' }
+  | { kind: 'below_minimum'; tokens: number }
+  | { kind: 'above_maximum' }
+  | { kind: 'in_range'; tokens: number; suffixed: boolean }
+
+/**
+ * Port of the official core size parser `j_e` (byte-verified @246816065):
+ *   `function j_e(e,{bareThousands:n}){let r=e.trim(),s=r.slice(-1).toLowerCase(),
+ *    h=s==="m"?1e6:s==="k"?1000:void 0,y=h===void 0?qc(r):parseFloat(r)*h,
+ *    w=n&&h===void 0&&y>=100&&y<=1000?y*1000:y;
+ *    if(Number.isNaN(w)||w<1)return{kind:"unusable"};
+ *    if(w<gP)return{kind:"below_minimum",tokens:Math.min(gP-1,Math.round(w))};
+ *    if(w>vN)return{kind:"above_maximum"};
+ *    return{kind:"in_range",tokens:Math.round(w),suffixed:h!==void 0}}`
+ * `qc` is the same bare-number integer parser as `xp` (OCC `parseBareNumber`:
+ * exponent → integer-only, comma-grouped stripped, parseInt fallback).
+ *
+ * `bareThousands: true` is the /autocompact flag variant (`wQt`: bare
+ * "200"→200000); the ENV variant (`yVe`) passes `bareThousands: false`, so a
+ * bare env "200" reads as 200 tokens → below_minimum → clamped to 100k.
+ */
+export function parseAutoCompactWindowSize(
+  raw: string,
+  { bareThousands }: { bareThousands: boolean },
+): AutoCompactWindowSizeParse {
+  const trimmed = raw.trim()
+  const suffix = trimmed.slice(-1).toLowerCase()
+  const multiplier =
+    suffix === 'm' ? 1_000_000 : suffix === 'k' ? 1000 : undefined
+  const parsed =
+    multiplier === undefined
+      ? parseBareNumber(trimmed)
+      : parseFloat(trimmed) * multiplier
+  const tokens =
+    bareThousands &&
+    multiplier === undefined &&
+    parsed >= 100 &&
+    parsed <= 1000
+      ? parsed * 1000
+      : parsed
+  if (Number.isNaN(tokens) || tokens < 1) {
+    return { kind: 'unusable' }
+  }
+  if (tokens < AUTO_COMPACT_WINDOW_MIN) {
+    return {
+      kind: 'below_minimum',
+      tokens: Math.min(AUTO_COMPACT_WINDOW_MIN - 1, Math.round(tokens)),
+    }
+  }
+  if (tokens > AUTO_COMPACT_WINDOW_MAX) {
+    return { kind: 'above_maximum' }
+  }
+  return { kind: 'in_range', tokens: Math.round(tokens), suffixed: multiplier !== undefined }
+}
+
+/** Official `yVe` (byte-verified): `yVe(e)=j_e(e,{bareThousands:!1})`. */
+export function parseAutoCompactWindowEnv(
+  raw: string,
+): AutoCompactWindowSizeParse {
+  return parseAutoCompactWindowSize(raw, { bareThousands: false })
+}
+
+/**
+ * Port of the official env resolver `T4t` (byte-verified @246816476):
+ *   `function T4t(e){if(e===void 0)return;let n=yVe(e);switch(n.kind){
+ *    case"in_range":return n.tokens;case"below_minimum":return gP;
+ *    case"above_maximum":return vN;case"unusable":return}}`
+ * in_range → as-is; below_minimum → clamp UP to 100k; above_maximum → clamp
+ * DOWN to 1M; unusable → undefined (env IGNORED, resolver falls through to
+ * settings/auto).
+ */
+export function resolveAutoCompactWindowEnvTokens(
+  rawEnv: string | undefined,
+): number | undefined {
+  if (rawEnv === undefined) {
+    return undefined
+  }
+  const parsed = parseAutoCompactWindowEnv(rawEnv)
+  switch (parsed.kind) {
+    case 'in_range':
+      return parsed.tokens
+    case 'below_minimum':
+      return AUTO_COMPACT_WINDOW_MIN
+    case 'above_maximum':
+      return AUTO_COMPACT_WINDOW_MAX
+    case 'unusable':
+      return undefined
+  }
+}
+
+/** Official `v4t=32` — the env-warning value sanitize cap. */
+const ENV_WARNING_SANITIZE_MAX = 32
+
+/**
+ * Official `I(e,n,r=n+"s")` (@191972157) — minimal pluralize helper (same
+ * shape as transcriptAdmission.ts `pluralizeForResumeWarn`).
+ */
+function pluralizeWindowToken(
+  count: number,
+  singular: string,
+  plural = `${singular}s`,
+): string {
+  return count === 1 ? singular : plural
+}
+
+/**
+ * Port of the official `E4t` warning builder (byte-verified @246817300).
+ * Returns the message for a parsed env value, or null when in_range (no
+ * warning). Official:
+ *   `s=\`CLAUDE_CODE_AUTO_COMPACT_WINDOW="${re(e,32).replace(/[^\w.,+ $%{}=;-]+/g,"?")}${e.length>32?"…":""}"\``
+ *   `h=\`${gP/1000}k\`` ("100k"); `y=\`${vN/1e6}M\`` ("1M")
+ *   `S=\`Set it to a size from ${h} to ${y}, such as 200k or 200000, or unset it.\``
+ *   below_minimum → `${s} reads as ${tokens.toLocaleString("en-US")} ${I(tokens,"token")}, so Claude Code treats it as the ${h} minimum. ${S}`
+ *   above_maximum → `${s} is too large, so Claude Code treats it as the ${y} maximum. ${S}`
+ *   unusable      → `${s} isn't a usable size, so Claude Code ignores it. ${S}`
+ * `re(e,32)` truncates the raw value to 32 chars BEFORE the char filter; the
+ * "…" suffix is appended when the ORIGINAL value is longer than 32.
+ */
+export function buildAutoCompactWindowEnvMessage(
+  rawEnv: string,
+  parsed: AutoCompactWindowSizeParse,
+): string | null {
+  if (parsed.kind === 'in_range') {
+    return null
+  }
+  const truncated =
+    rawEnv.length > ENV_WARNING_SANITIZE_MAX
+      ? rawEnv.slice(0, ENV_WARNING_SANITIZE_MAX)
+      : rawEnv
+  const sanitized = truncated.replace(/[^\w.,+ $%{}=;-]+/g, '?')
+  const ellipsis = rawEnv.length > ENV_WARNING_SANITIZE_MAX ? '…' : ''
+  const value = `${ENV_WINDOW_KEY}="${sanitized}${ellipsis}"`
+  const minLabel = `${AUTO_COMPACT_WINDOW_MIN / 1000}k`
+  const maxLabel = `${AUTO_COMPACT_WINDOW_MAX / 1e6}M`
+  const advice = `Set it to a size from ${minLabel} to ${maxLabel}, such as 200k or 200000, or unset it.`
+  switch (parsed.kind) {
+    case 'below_minimum':
+      return `${value} reads as ${parsed.tokens.toLocaleString('en-US')} ${pluralizeWindowToken(parsed.tokens, 'token')}, so Claude Code treats it as the ${minLabel} minimum. ${advice}`
+    case 'above_maximum':
+      return `${value} is too large, so Claude Code treats it as the ${maxLabel} maximum. ${advice}`
+    case 'unusable':
+      return `${value} isn't a usable size, so Claude Code ignores it. ${advice}`
+  }
+}
+
+/**
+ * Official `XFe` (msg-or-null convenience wrapper around `E4t`): parse the
+ * raw env value and return the warning message, or null when the value is
+ * in range. Callers: `/config` auto-compact-window display (official
+ * `p=XFe(...);if(p!==null)u.push(p)` @260148727 region) and the
+ * /autocompact non-interactive describe builder.
+ */
+export function buildAutoCompactWindowEnvWarning(
+  rawEnv: string | undefined,
+): string | null {
+  if (rawEnv === undefined) {
+    return null
+  }
+  return buildAutoCompactWindowEnvMessage(rawEnv, parseAutoCompactWindowEnv(rawEnv))
+}
+
+/**
+ * Port of the official startup emitter `ySs` (@246816655). Official wiring
+ * (@255784526):
+ *   `if(!Qt)ySs(a.CLAUDE_CODE_AUTO_COMPACT_WINDOW,{interactive:!L,
+ *    headless:(s)=>_ot(s,{key:"auto-compact-window-env",outputFormat:V,
+ *    debugLine:\`[autocompact] ${s}\`})})`
+ * Logs the `compact_window_env` telemetry event for the warn-worthy kinds
+ * (below_minimum/above_maximum/unusable — the kinds the official event
+ * enumerates), then surfaces the message: interactive → `[autocompact] <msg>`
+ * on stderr (OCC's startup-warning precedent, main.tsx `process.stderr.write`);
+ * headless → the provided callback (official `_ot` routes by outputFormat).
+ *
+ * `below_minimum_flag_accepts` records whether the /autocompact FLAG parser
+ * (`wQt` = bareThousands:true → OCC parseAutoCompactWindowInput) would accept
+ * the same raw value — the env "200" case warns (below_minimum) even though
+ * `/autocompact 200` is valid shorthand, and the flag distinguishes it.
+ *
+ * EXPORTED for main.tsx startup wiring (Leader applies the one-liner; see
+ * docs/gap-research-304/impl-WP5.md §Integration wiring).
+ */
+export function warnAutoCompactWindowEnv(
+  rawEnv: string | undefined,
+  options: {
+    interactive?: boolean
+    headless?: (message: string) => void
+  },
+): void {
+  if (rawEnv === undefined) {
+    return
+  }
+  const parsed = parseAutoCompactWindowEnv(rawEnv)
+  if (parsed.kind === 'in_range') {
+    return
+  }
+  logEvent('compact_window_env', {
+    kind: parsed.kind as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+    ...(parsed.kind === 'below_minimum' && {
+      below_minimum_flag_accepts: parseAutoCompactWindowInput(rawEnv) !== undefined,
+    }),
+  })
+  const message = buildAutoCompactWindowEnvMessage(rawEnv, parsed)
+  if (message === null) {
+    return
+  }
+  if (options.interactive) {
+    process.stderr.write(`[autocompact] ${message}\n`)
+  } else {
+    options.headless?.(message)
+  }
+}
+
 /**
  * Port of the official `WIt` aggregation (byte-verified from the 2.1.288 ELF
  * @216490426). Walks the enabled settings sources in priority order:
@@ -255,9 +492,6 @@ export function aggregateAutoCompactWindow(): AutoCompactWindowAggregate {
  * An explicit per-model "auto" therefore BLOCKS fallback to the default.
  * Final auto branch: `{window:ctx, configured:ctx, source:"auto"}` —
  * `configured` is always a number.
- *
- * DIVERGENCE (documented): env parsing keeps OCC's pre-existing
- * `parseInt > 0` semantics (official `JIe` validation not recovered).
  */
 export function resolveAutoCompactWindow(
   model: string,
@@ -280,15 +514,20 @@ export function resolveAutoCompactWindow(
     }
   }
 
-  const envRaw = process.env[ENV_WINDOW_KEY]
-  if (envRaw) {
-    const parsed = parseInt(envRaw, 10)
-    if (!isNaN(parsed) && parsed > 0) {
-      return {
-        window: Math.min(contextWindow, parsed),
-        configured: parsed,
-        source: 'env',
-      }
+  // CC 2.1.304 #41: official `Yb` env branch (@246820905) —
+  //   `let h=T4t(env);if(h!==void 0)return{window:Math.min(s,h),configured:h,source:"env"}`
+  // k/M suffixes are honored, below-minimum clamps UP to 100k, above-maximum
+  // clamps DOWN to 1M, and an unusable value is IGNORED (falls through to
+  // settings/auto). Replaces OCC's pre-304 `parseInt > 0` divergence (the
+  // "200k"→parseInt→200→window=min(ctx,200) bug).
+  const envTokens = resolveAutoCompactWindowEnvTokens(
+    process.env[ENV_WINDOW_KEY],
+  )
+  if (envTokens !== undefined) {
+    return {
+      window: Math.min(contextWindow, envTokens),
+      configured: envTokens,
+      source: 'env',
     }
   }
 

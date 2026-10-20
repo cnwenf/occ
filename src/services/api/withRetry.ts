@@ -342,6 +342,20 @@ interface RetryOptions {
    */
   retryContext1mBetaRefused?: (error: APIError) => boolean
   /**
+   * CC 2.1.304 (#22): when an HTTP 400 arrives on a request that carried the
+   * `context-management-2025-06-27` beta with the message
+   * `context_management: Extra inputs are not permitted` (official 304 heal-map
+   * arm for `dde` in `M6t`, verdict `retry:beta-rejected:context_management`
+   * @246856307), the retry loop calls this so claude.ts can latch its heal
+   * state machine and resend once WITHOUT the beta — the params builder
+   * filters the header while the latch is active, and the `context_management`
+   * request field auto-omits via its existing beta-presence gate (the
+   * changelog's "resends the request without that field"). Returns true when
+   * the request was healed and must be retried; one-shot per request — a
+   * second 400 flips the latch and returns false so the error surfaces.
+   */
+  retryContextManagementRefused?: (error: APIError) => boolean
+  /**
    * CC 2.1.300 (#36): when an HTTP 400 points at `tools.N.input_schema`
    * (official `AGe.resolve` regex @107537522 — the API rejected an MCP
    * tool's input schema), the retry loop calls this so claude.ts can record
@@ -354,6 +368,25 @@ interface RetryOptions {
    * loop. Retry token shape: `retry:tool-schema-refused-N` (@240729).
    */
   retryToolSchemaRefused?: (error: APIError) => boolean
+  /**
+   * CC 2.1.304 (#58): when an HTTP 400/422 that NO other recovery claimed
+   * arrives on a request that used tool search behind a custom
+   * `ANTHROPIC_BASE_URL` (official `b6` eligibility: `zOe()` — no
+   * `ENABLE_TOOL_SEARCH` override, firstParty, non-official base URL — plus
+   * status 400||422, not `billing_error`, not resume-incomplete-thinking), the
+   * retry loop calls this so claude.ts can re-declare the dropped tools in
+   * full, strip the tool-search beta, prepend the official
+   * critical_system_reminder and resend ONCE (official `tse`); on the retry's
+   * first assistant chunk the refusal window `toolSearchRefusedAt` is recorded
+   * (official `DUs`, 86_400_000 ms TTL) so subsequent requests for that
+   * endpoint+model skip tool search outright. Returns true when the request
+   * was rebuilt and must be retried; one-shot per request. Async because the
+   * un-defer rebuild awaits `toolToAPISchema` — wired LAST in the fatal-400
+   * chain (official `b6` requires no other recovery to have claimed the
+   * error), and it also answers 422, so the status gate is broader than the
+   * neighboring hooks.
+   */
+  retryToolSearchRefused?: (error: APIError) => Promise<boolean>
   /**
    * CC 2.1.285 (item-B2): per-attempt timeout (ms) of a NON-STREAMING fallback
    * request, set by executeNonStreamingRequest (official `I0t` passes
@@ -1003,6 +1036,26 @@ export async function* withRetry<T>(
         continue
       }
 
+      // CC 2.1.304 (#22): official `dde` heal-map arm in `M6t` — an HTTP 400
+      // whose message names `context_management: Extra inputs are not
+      // permitted` on a request carrying the `context-management-2025-06-27`
+      // beta means the backend rejects the field (verdict
+      // `retry:beta-rejected:context_management` @246856307). The claude.ts
+      // handler latches its one-shot state machine, the params builder
+      // filters the beta off the resend (the `context_management` field
+      // auto-omits via its beta-presence gate), and the loop retries without
+      // consuming budget — same contract as the context-1m hook above. A
+      // second 400 flips the latch to spent and the handler returns false,
+      // so the error surfaces on the normal non-retryable 400 path.
+      if (
+        error instanceof APIError &&
+        error.status === 400 &&
+        options.retryContextManagementRefused?.(error)
+      ) {
+        attempt--
+        continue
+      }
+
       // CC 2.1.300 (#36): official `AGe` heal wired via `sut` (@227866518) —
       // an HTTP 400 naming `tools.N.input_schema` means the API refused an
       // MCP tool's input schema. The claude.ts handler records the tool in
@@ -1016,6 +1069,30 @@ export async function* withRetry<T>(
         error instanceof APIError &&
         extractRefusedToolSchemaIndex(error) !== undefined &&
         options.retryToolSchemaRefused?.(error)
+      ) {
+        attempt--
+        continue
+      }
+
+      // CC 2.1.304 (#58): official `b6`/`tse`/`mZ` tool-search refuse
+      // recovery — wired LAST so it only sees 400/422s that NO other heal
+      // claimed (official eligibility requires `im===void 0 && !Pw(Er) &&
+      // !vF(Er)`, i.e. no prior recovery verdict; OCC expresses that as
+      // chain position). When a request that used tool search (beta header
+      // present) fails 400||422 behind a custom `ANTHROPIC_BASE_URL` with no
+      // explicit `ENABLE_TOOL_SEARCH` override and not a `billing_error`, the
+      // claude.ts handler un-defers the dropped tools, strips the beta,
+      // prepends the official critical_system_reminder and returns true to
+      // resend once without consuming budget; the first assistant chunk of
+      // the retry records `toolSearchRefusedAt` (86_400_000 ms window) so
+      // later requests for that endpoint+model skip tool search outright.
+      // One-shot per request (`toolSearchRecoveryDone` latch + the beta is
+      // gone from `betas`, so a second eligible error can't re-enter). Async
+      // handler: the un-defer rebuild awaits `toolToAPISchema`.
+      if (
+        error instanceof APIError &&
+        (error.status === 400 || error.status === 422) &&
+        (await options.retryToolSearchRefused?.(error))
       ) {
         attempt--
         continue

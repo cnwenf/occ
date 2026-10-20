@@ -1,6 +1,8 @@
+import { realpathSync } from 'fs'
 import { homedir } from 'os'
-import { isAbsolute, resolve } from 'path'
+import { isAbsolute, posix, resolve } from 'path'
 import type { z } from 'zod/v4'
+import { logEvent } from '../../services/analytics/index.js'
 import type { ToolPermissionContext } from '../../Tool.js'
 import type { Redirect, SimpleCommand } from '../../utils/bash/ast.js'
 import {
@@ -123,6 +125,189 @@ export function canonicalizePathCommandName(
   return base.toLowerCase().replace(/\.exe$/, '') === 'tee' ? 'tee' : cmd
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// CC 2.1.304 #10 — mounted-drive `rm -r` safety prompt.
+//
+// Official changelog: "Added a safety prompt when `rm -r` targets a mounted
+// drive (e.g. `/Volumes/Backup`), the folder holding mounted drives, or a
+// top-level folder of a drive; cannot be auto-allowed by permission rules.
+// Disable with CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT."
+//
+// Ported from the official 2.1.304 dangerous-rm analyzer `XG` deferred
+// mounted-drive arm (ver @246328119–246332549; forensics in
+// docs/gap-research-304/research-R2-bash-perms.md item #10). The official arm
+// is DEFERRED (`ke===void 0` gate + `return ke??passthrough`): it only fires
+// when no earlier arm (critical-path, workspace-dir/ancestor, glob-traversal)
+// produced a result. OCC's checkDangerousRemovalPaths only carries the
+// critical-path arm (which returns immediately), so "after the loop, before
+// the passthrough return" is the faithful deferred position here.
+// ─────────────────────────────────────────────────────────────────────────
+
+/**
+ * Official env kill-switch (ver env allowlist @240663587). Raw truthiness —
+ * deliberately NOT isEnvTruthy (mirrors the dangerousRmAutoDeny.ts:171 note):
+ * any non-empty value disables, even "0".
+ */
+export const MOUNTED_DRIVE_RM_KILL_SWITCH_ENV_VAR =
+  'CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT'
+
+/**
+ * Official `G$o` (NEW, ver constants region @246327485–246328400) —
+ * byte-verbatim. Covers: macOS `/Volumes` + `/System/Volumes` (mount root,
+ * one child, or top-level folder of a drive — ≤2 levels); Linux `/mnt/<name>`
+ * and WSL `/mnt/<letter>/<name>` (exactly); `/media`, `/run/media` and
+ * children ≤3 levels. Case-insensitive.
+ */
+export const MOUNTED_DRIVE_PATH_RE =
+  /^\/(?:system\/)?volumes(?:\/[^/]+){0,2}$|^\/mnt\/(?:[^/]+|[a-z]\/[^/]+)$|^\/(?:run\/)?media(?:\/[^/]+){0,3}$/i
+
+/**
+ * Official v304 NEW recursive-flag regex (prev=0/ver=1), byte-verbatim —
+ * `--r*` long flags and bundled short forms containing r/R (`-rf`, `-fr`).
+ */
+const RECURSIVE_FLAG_V304_RE = /^--r|^-[a-zA-Z]*[rR]/
+
+/**
+ * Official v304 dynamic-flag lead test, byte-verbatim: a bare
+ * `__CMDSUB__`/`__CMDSUB_OUTPUT__`/`__TRACKED_VAR__` placeholder token (or a
+ * `-`-leading token) can expand to a recursive flag at runtime.
+ */
+const DYNAMIC_FLAG_LEAD_V304_RE = /^(?:-|__(?:CMDSUB(?:_OUTPUT)?|TRACKED_VAR)__)/
+
+/**
+ * Official `_e` recursive-flag detector (v304): flags BEFORE the first `--`
+ * only. Static forms use the byte-verbatim regex above.
+ *
+ * OCC adaptation for the dynamic form: the official checks tokenized argv
+ * where `$(…)` runs are `__CMDSUB__` placeholders and tracked vars are
+ * `__TRACKED_VAR__` (`be.includes("__CMDSUB__")||wi(be)`). At this call site
+ * args arrive from shell-quote/AST argv UNtokenized — a substitution survives
+ * as raw `$`-bearing fragments (e.g. `-$(echo r)f` → `-$` + parens) and a
+ * tracked var as `$VAR` text. So the placeholder-inclusion test is widened to
+ * also accept a raw `$`/backtick expansion marker, keeping the official's
+ * three-part shape: no `/`, expansion-bearing, flag-or-placeholder lead.
+ * Fail-safe direction: an over-detected recursive flag only enables the
+ * mounted-drive ask, never an auto-allow.
+ */
+export function hasRecursiveRmFlagV304(args: readonly string[]): boolean {
+  const doubleDashIndex = args.indexOf('--')
+  const flagArgs =
+    doubleDashIndex === -1 ? args : args.slice(0, doubleDashIndex)
+  return flagArgs.some(
+    arg =>
+      RECURSIVE_FLAG_V304_RE.test(arg) ||
+      (!arg.includes('/') &&
+        DYNAMIC_FLAG_LEAD_V304_RE.test(arg) &&
+        (arg.includes('__CMDSUB__') ||
+          // The official inclusion test is `includes("__CMDSUB__")||wi(be)`
+          // (wi = tracked-var predicate). `__CMDSUB_OUTPUT__` does not contain
+          // the `__CMDSUB__` literal, so the official lead regex would make it
+          // dead unless `wi` covers it — ambiguous in the binary. OCC lists it
+          // explicitly: fail-safe direction (over-detection only enables the
+          // mounted-drive ask, never an auto-allow).
+          arg.includes('__CMDSUB_OUTPUT__') ||
+          arg.includes('__TRACKED_VAR__') ||
+          arg.includes('$') ||
+          arg.includes('`'))),
+  )
+}
+
+/**
+ * Official candidate test (verbatim semantics): the candidate must
+ * `startsWith("/")`, then the posix-normalized form with any trailing slash
+ * stripped (`L$o.normalize(Ve).replace(/(.)\/$/,"$1")`) is tested against
+ * `G$o`.
+ */
+function isMountedDriveCandidate(candidate: string): boolean {
+  if (!candidate.startsWith('/')) {
+    return false
+  }
+  const normalized = posix.normalize(candidate).replace(/(.)\/$/, '$1')
+  return MOUNTED_DRIVE_PATH_RE.test(normalized)
+}
+
+/**
+ * The official 2.1.304 mounted-drive arm. Returns the ask verdict, or null
+ * when the arm does not fire. Gate `GX()` (`tengu_bright_lake`, ver
+ * @246327485) is default-on (off only when the remote payload explicitly
+ * sets false) — always-on in OCC per the tengu_* porting convention (see the
+ * destructiveCommandWarning.ts:1416 note; GrowthBook is stubbed and returns
+ * the default).
+ */
+function checkMountedDriveRemoval(
+  command: 'rm' | 'rmdir',
+  args: readonly string[],
+  paths: readonly string[],
+  cwd: string,
+): PermissionResult | null {
+  // Official: `e==="rm"` — rm only, NOT rmdir.
+  if (command !== 'rm') {
+    return null
+  }
+  // Official: `!a.CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT` raw truthiness.
+  if (process.env[MOUNTED_DRIVE_RM_KILL_SWITCH_ENV_VAR]) {
+    return null
+  }
+  // Official: `(_e||Ie)` — recursive flag OR glob-collapsed target. OCC has
+  // no glob-fold (`Ie`) analog at this site, so only `_e` is checked.
+  if (!hasRecursiveRmFlagV304(args)) {
+    return null
+  }
+
+  for (const rawPath of paths) {
+    const cleanPath = expandTilde(rawPath.replace(/^['"]|['"]$/g, ''))
+    const absolutePath = isAbsolute(cleanPath)
+      ? cleanPath
+      : resolve(cwd, cleanPath)
+    // Official `Ge` = candidate absolute paths plus symlink-resolved
+    // variants. OCC addition (fail-safe direction, mirrors the official
+    // symlink-resolved variant): also test the realpath so a symlink inside
+    // the working dir pointing at a mounted drive cannot slip through. A
+    // relative target resolving against cwd into a mounted-drive path is an
+    // OCC adaptation — the official analyzer tests its glob-folded absolute
+    // candidates; asking on the resolved form can only over-prompt, never
+    // auto-allow.
+    const candidates = [cleanPath, absolutePath]
+    try {
+      const resolved = realpathSync(absolutePath)
+      if (resolved !== absolutePath) {
+        candidates.push(resolved)
+      }
+    } catch {
+      // Path does not exist (or is unreadable) — the literal forms are the
+      // only candidates. The arm is static; no fs existence requirement.
+    }
+    if (candidates.some(isMountedDriveCandidate)) {
+      // Official display: `rWe(Ee).replaceAll("__CMDSUB__","$(…)")` — the
+      // tokenized target rendered for the user. OCC's args are untokenized,
+      // so cleanPath IS the user-visible target; the replaceAll is kept for
+      // parity in case a tokenized view ever flows through.
+      const display = cleanPath.replaceAll('__CMDSUB__', '$(…)')
+      // Official shape classifier `yze` third value (NEW in v304) feeding
+      // `U0(e){OD("tengu_bash_dangerous_rm_shape",{shape:c(e)})}`.
+      logEvent('tengu_bash_dangerous_rm_shape', { shape: 'mounted_drive_path' })
+      return {
+        behavior: 'ask',
+        // Message: 3 paragraphs, byte-verbatim from the official 2.1.304
+        // binary (ver @246328119–246332549).
+        message: `Dangerous ${command} operation detected: '${display}'\n\nThis command would remove a mounted drive, the folder that holds mounted drives, or a file or folder at the top level of a drive. This requires explicit approval and cannot be auto-allowed by permission rules.\n\nIf you meant something deeper inside, name it by its full path.`,
+        decisionReason: {
+          type: 'safetyCheck',
+          // Official `jb(e, msg, `${YWt}${Ve}`)` with
+          // `YWt="on mounted drive path: "`.
+          reason: `Dangerous ${command} operation on mounted drive path: ${display}`,
+          classifierApprovable: false,
+          circuitBreaker: 'dangerousRemoval',
+        },
+        // Official `jb` builder: `suggestions:[]` — don't encourage saving
+        // dangerous commands as rules.
+        suggestions: [],
+      }
+    }
+  }
+  return null
+}
+
 /**
  * Checks if an rm/rmdir command targets dangerous paths that should always
  * require explicit user approval, even if allowlist rules exist.
@@ -172,6 +357,14 @@ function checkDangerousRemovalPaths(
         suggestions: [],
       }
     }
+  }
+
+  // CC 2.1.304 #10: deferred mounted-drive arm — official `ke===void 0`
+  // semantics: only reached when the critical-path arm above produced no
+  // result (it returns immediately when it fires).
+  const mountedDriveResult = checkMountedDriveRemoval(command, args, paths, cwd)
+  if (mountedDriveResult !== null) {
+    return mountedDriveResult
   }
 
   // No dangerous paths found

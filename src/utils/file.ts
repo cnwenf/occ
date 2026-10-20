@@ -153,6 +153,15 @@ export function getAbsoluteAndRelativePaths(path: string | undefined): {
 }
 
 export function getDisplayPath(filePath: string): string {
+  // Official 2.1.304 (changelog #17): a path containing a NUL byte is
+  // unsupported and cannot be rendered — hide it rather than emit a broken
+  // relative path. The 'Path hidden (unsupported characters)' literal exists
+  // verbatim in BOTH the official 303 and 304 binaries; 304 adds its *usage*
+  // here (helper `Fo`). Checked first so NUL never reaches path resolution.
+  if (filePath.includes('\0')) {
+    return 'Path hidden (unsupported characters)'
+  }
+
   // Use relative path if file is in the current working directory
   const { relativePath } = getAbsoluteAndRelativePaths(filePath)
   if (relativePath && !relativePath.startsWith('..')) {

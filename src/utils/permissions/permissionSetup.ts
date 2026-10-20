@@ -1561,10 +1561,20 @@ export function getAutoModeUnavailableReason(): AutoModeUnavailableReason | null
 export type AutoModeEnabledState = 'enabled' | 'disabled' | 'opt-in'
 
 // OCC: GrowthBook/Statsig is stubbed (no remote config), so the
-// tengu_auto_mode_config gate is always empty. The official 2.1.200 default
-// is 'opt-in' (Gwm="opt-in") — auto mode requires explicit opt-in via
-// CLAUDE_CODE_ENABLE_AUTO_MODE=1 or the settings dialog. Align with the
-// official default; users set CLAUDE_CODE_ENABLE_AUTO_MODE=1 to enable.
+// tengu_auto_mode_config gate is always empty and parseAutoModeEnabledState
+// falls through to this default on every call.
+//
+// CORRECTION (was stale): the official 303/304 parse-default is "enabled",
+// NOT "opt-in" — byte-verified @251169230 / @253857395
+// (`$e="enabled"` / `Ge="enabled"`; the unset-gate resolver returns
+// "enabled"). The earlier comment citing an official 2.1.200 'opt-in'
+// default (Gwm="opt-in") was wrong.
+//
+// OCC deliberately KEEPS 'opt-in' as a conservative local divergence: with
+// the stubbed gate always empty, 'opt-in' means auto mode requires explicit
+// opt-in via CLAUDE_CODE_ENABLE_AUTO_MODE=1 or the settings dialog rather
+// than being on by default. This is a product posture choice, not alignment
+// debt. See docs/gap-research-304/research-R1-auto-mode.md §5(d) + §6.
 const AUTO_MODE_ENABLED_DEFAULT: AutoModeEnabledState = 'opt-in'
 
 function parseAutoModeEnabledState(value: unknown): AutoModeEnabledState {

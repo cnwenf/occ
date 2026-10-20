@@ -46,6 +46,10 @@ export function getEffortNotificationText(
   }
   if (!modelSupportsEffort(model)) return undefined
   const level = getDisplayedEffortLevel(model, effortValue)
+  // CC 2.1.304 (#33 — official `EE`): when nothing resolves, HIDE the chip
+  // instead of rendering a guessed level. getDisplayedEffortLevel now returns
+  // undefined for the env-auto/unset + no-level case.
+  if (level === undefined) return undefined
   return `${effortLevelToSymbol(level)} ${level} · /effort`
 }
 

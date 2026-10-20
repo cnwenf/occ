@@ -38,8 +38,14 @@ export type GroveConfig = {
  * Result type that distinguishes between API failure and success.
  * - success: true means API call succeeded (data may still contain null fields)
  * - success: false means API call failed after retry
+ * - errorStatus (official 2.1.304 #27): the HTTP status of a failed Grove
+ *   config request when one was received. Lets fetchAndStoreGroveConfig
+ *   distinguish "server error answer" (re-stamp the cache) from "no answer"
+ *   (leave it alone) — official `v` HTTP-status error class equivalent.
  */
-export type ApiResult<T> = { success: true; data: T } | { success: false }
+export type ApiResult<T> =
+  | { success: true; data: T }
+  | { success: false; errorStatus?: number }
 
 /**
  * Get the current Grove settings for the user account.
@@ -71,6 +77,17 @@ export const getGroveSettings = memoize(
           },
         )
       })
+      // Official 2.1.304 #27 shape validation: a server answer without a
+      // boolean-or-null grove_enabled is treated as a failed request, never
+      // as `undefined` flowing into the toggle UI.
+      if (
+        typeof response.data?.grove_enabled !== 'boolean' &&
+        response.data?.grove_enabled !== null
+      ) {
+        throw new Error(
+          'Grove settings answer has no boolean or null grove_enabled',
+        )
+      }
       return { success: true, data: response.data }
     } catch (err) {
       logError(err)
@@ -108,9 +125,14 @@ export async function markGroveNoticeViewed(): Promise<void> {
     // This mutates grove_notice_viewed_at server-side — Grove.tsx:87 reads it
     // to decide whether to show the dialog. Without invalidation a same-session
     // remount would read stale viewed_at:null and re-show the dialog.
-    getGroveSettings.cache.clear?.()
+    // Official 2.1.304 #27: the clear runs in `finally`, so a failed POST also
+    // invalidates — the request may still have landed server-side (e.g. the
+    // retry wrapper gave up after a successful write), and stale memoized
+    // settings would mask that.
   } catch (err) {
     logError(err)
+  } finally {
+    getGroveSettings.cache.clear?.()
   }
 }
 
@@ -141,9 +163,12 @@ export async function updateGroveSettings(
     })
     // Invalidate memoized settings so the post-toggle confirmation
     // read in privacy-settings.tsx picks up the new value.
-    getGroveSettings.cache.clear?.()
+    // Official 2.1.304 #27: clear in `finally` — same rationale as
+    // markGroveNoticeViewed above (a failed PATCH may still have landed).
   } catch (err) {
     logError(err)
+  } finally {
+    getGroveSettings.cache.clear?.()
   }
 }
 
@@ -199,6 +224,27 @@ async function fetchAndStoreGroveConfig(accountId: string): Promise<void> {
   try {
     const result = await getGroveNoticeConfig()
     if (!result.success) {
+      // Official 2.1.304 #27 (`_`): when the server answered with an HTTP
+      // error (any status except 401 — that one re-auths instead) and we
+      // already have a cached grove_enabled answer for this account, re-stamp
+      // the entry with a fresh timestamp. The last known-good decision then
+      // survives another 24h window instead of expiring into an hourly
+      // refetch storm against an erroring endpoint.
+      if (result.errorStatus !== undefined && result.errorStatus !== 401) {
+        const existingEntry = getGlobalConfig().groveConfigCache?.[accountId]
+        if (existingEntry) {
+          saveGlobalConfig(current => ({
+            ...current,
+            groveConfigCache: {
+              ...current.groveConfigCache,
+              [accountId]: {
+                grove_enabled: existingEntry.grove_enabled,
+                timestamp: Date.now(),
+              },
+            },
+          }))
+        }
+      }
       return
     }
     const groveEnabled = result.data.grove_enabled
@@ -253,6 +299,15 @@ export const getGroveNoticeConfig = memoize(
         )
       })
 
+      // Official 2.1.304 #27 shape validation: a config answer without a
+      // boolean grove_enabled is a failed request, not a `success:true` with
+      // undefined data (which would flip every downstream check to falsy).
+      if (typeof response.data?.grove_enabled !== 'boolean') {
+        throw new Error(
+          'Grove notice config answer has no boolean grove_enabled',
+        )
+      }
+
       // Map the API response to the GroveConfig type
       const {
         grove_enabled,
@@ -272,7 +327,19 @@ export const getGroveNoticeConfig = memoize(
       }
     } catch (err) {
       logForDebugging(`Failed to fetch Grove notice config: ${err}`)
-      return { success: false }
+      // Official 2.1.304 #27: never memoize a failed lookup — clear the cache
+      // before returning so the next caller retries (and so a shape-validation
+      // throw above doesn't poison the session).
+      getGroveNoticeConfig.cache.clear?.()
+      // Official 2.1.304 #27: propagate the HTTP status (`v` error-class
+      // equivalent) — fetchAndStoreGroveConfig uses it to decide whether to
+      // re-stamp the cached grove_enabled answer.
+      const errorStatus = axios.isAxiosError(err)
+        ? err.response?.status
+        : undefined
+      return errorStatus !== undefined
+        ? { success: false, errorStatus }
+        : { success: false }
     }
   },
 )

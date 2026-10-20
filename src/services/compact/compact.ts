@@ -129,6 +129,7 @@ import {
   getCompactUserSummaryMessage,
   getPartialCompactPrompt,
 } from './prompt.js'
+import { getToolNamesUsed } from './toolNamesUsed.js'
 
 export const POST_COMPACT_MAX_FILES_TO_RESTORE = 5
 export const POST_COMPACT_TOKEN_BUDGET = 50_000
@@ -228,9 +229,11 @@ export function stripImagesFromMessages(messages: Message[]): Message[] {
 
 /**
  * Strip attachment types that are re-injected post-compaction anyway.
- * skill_discovery/skill_listing are re-surfaced by resetSentSkillNames()
- * + the next turn's discovery signal, so feeding them to the summarizer
- * wastes tokens and pollutes the summary with stale skill suggestions.
+ * skill_discovery is re-surfaced by the next turn's discovery signal, and
+ * skill_listing by the CC 2.1.304 #59 history-scan dedupe (compaction drops
+ * the prior listings from the context, so the scan finds none and re-sends
+ * the full listing as `isInitial`) — feeding them to the summarizer wastes
+ * tokens and pollutes the summary with stale skill suggestions.
  *
  * No-op when EXPERIMENTAL_SKILL_SEARCH is off (the attachment types
  * don't exist on external builds).
@@ -571,12 +574,14 @@ export async function compactConversation(
     context.readFileState.clear()
     context.loadedNestedMemoryPaths?.clear()
 
-    // Intentionally NOT resetting sentSkillNames: re-injecting the full
-    // skill_listing (~4K tokens) post-compact is pure cache_creation with
-    // marginal benefit. The model still has SkillTool in its schema and
-    // invoked_skills attachment (below) preserves used-skill content. Ants
-    // with EXPERIMENTAL_SKILL_SEARCH already skip re-injection via the
-    // early-return in getSkillListingAttachments.
+    // CC 2.1.304 #59 REVERSAL: OCC used to intentionally skip the
+    // post-compact skill_listing re-send (~4K tokens of cache_creation for
+    // marginal benefit, old pre-304 comment). Official 2.1.304 supersedes
+    // that: the listing dedupes by scanning the live history, compaction
+    // drops the prior skill_listing attachments, and the next turn's scan
+    // re-sends the full listing as `isInitial` — "Compaction re-sends skill
+    // list". invoked_skills attachment (below) still preserves used-skill
+    // content independently.
 
     // Run async attachment generation in parallel
     const [fileAttachments, asyncAgentAttachments] = await Promise.all([
@@ -667,6 +672,9 @@ export async function compactConversation(
           summary,
           suppressFollowUpQuestions,
           transcriptPath,
+          // CC 2.1.304 #6: names of tools called before this summary — extracted
+          // from the pre-compact messages the summary replaces (official HJ).
+          getToolNamesUsed(messages),
         ),
         isCompactSummary: true,
         isVisibleInTranscriptOnly: true,
@@ -998,8 +1006,8 @@ export async function partialCompactConversation(
     const preCompactReadFileState = cacheToObject(context.readFileState)
     context.readFileState.clear()
     context.loadedNestedMemoryPaths?.clear()
-    // Intentionally NOT resetting sentSkillNames — see compactConversation()
-    // for rationale (~4K tokens saved per compact event).
+    // CC 2.1.304 #59: skill_listing re-send is handled by the history-scan
+    // dedupe, not a reset — see compactConversation() for the reversal note.
 
     const [fileAttachments, asyncAgentAttachments] = await Promise.all([
       createPostCompactFileAttachments(
@@ -1109,7 +1117,14 @@ export async function partialCompactConversation(
     const transcriptPath = getTranscriptPath()
     const summaryMessages: UserMessage[] = [
       createUserMessage({
-        content: getCompactUserSummaryMessage(summary, false, transcriptPath),
+        content: getCompactUserSummaryMessage(
+          summary,
+          false,
+          transcriptPath,
+          // CC 2.1.304 #6: tools called before this summary — from the messages
+          // this partial compaction actually summarizes away (official HJ).
+          getToolNamesUsed(messagesToSummarize),
+        ),
         isCompactSummary: true,
         ...(messagesToKeep.length > 0
           ? {

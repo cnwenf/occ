@@ -1,9 +1,10 @@
 import { c as _c } from "react/compiler-runtime";
 import type { StructuredPatchHunk } from 'diff';
-import { relative } from 'path';
 import * as React from 'react';
 import { useTerminalSize } from 'src/hooks/useTerminalSize.js';
-import { getCwd } from 'src/utils/cwd.js';
+// CC 2.1.304 (#17): show out-of-cwd files as ~/… or the full path (not
+// ../../…) in rejected-edit messages, via getDisplayPath (official `Fo`).
+import { getDisplayPath } from 'src/utils/file.js';
 import { Box, Text } from '../ink.js';
 import { HighlightedCode } from './HighlightedCode.js';
 import { MessageResponse } from './MessageResponse.js';
@@ -46,7 +47,7 @@ export function FileEditToolUseRejectedMessage(t0) {
   }
   let t2;
   if ($[2] !== file_path || $[3] !== verbose) {
-    t2 = verbose ? file_path : relative(getCwd(), file_path);
+    t2 = verbose ? file_path : getDisplayPath(file_path);
     $[2] = file_path;
     $[3] = verbose;
     $[4] = t2;

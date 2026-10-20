@@ -1,5 +1,7 @@
 import { feature } from 'src/utils/featureFlags.js'
 import type { PartialCompactDirection } from '../../types/message.js'
+import { COMPACT_SUMMARY_HEADER } from './summaryHeader.js'
+import { renderToolsUsedBeforeSummary } from './toolNamesUsed.js'
 
 // Dead code elimination: conditional import for proactive mode
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -342,12 +344,20 @@ export function getCompactUserSummaryMessage(
   summary: string,
   suppressFollowUpQuestions?: boolean,
   transcriptPath?: string,
+  toolNamesUsed?: string[],
 ): string {
   const formattedSummary = formatCompactSummary(summary)
 
-  let baseSummary = `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.
+  // CC 2.1.304 #6: the official `GJ` composer injects the tools-used tag
+  // between the header and the (analysis-stripped) summary —
+  //   `${Uy(foreignArtifact)}${eXe}\n\n${Zan(n?.toolNamesUsed)}${r}`
+  // OCC has no foreignArtifact preamble, so COMPACT_SUMMARY_HEADER (the `eXe`
+  // equivalent, summaryHeader.ts) is the anchor that TOOLS_USED_TAG_RE matches.
+  // renderToolsUsedBeforeSummary ALWAYS emits the tag (empty when no names were
+  // collected), byte-faithful to the official `Zan` default `[]`.
+  let baseSummary = `${COMPACT_SUMMARY_HEADER}
 
-${formattedSummary}`
+${renderToolsUsedBeforeSummary(toolNamesUsed)}${formattedSummary}`
 
   if (transcriptPath) {
     baseSummary += `\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`

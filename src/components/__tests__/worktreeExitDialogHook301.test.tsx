@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
+import { afterAll, afterEach, beforeEach, expect, mock, test } from 'bun:test'
 import { PassThrough } from 'node:stream'
 import * as React from 'react'
 import stripAnsi from 'strip-ansi'
@@ -54,9 +54,15 @@ type MockSession = {
 }
 
 let mockSession: MockSession | null = null
-let mockSessionTitle: string | undefined 
+let mockSessionTitle: string | undefined
 let cleanupCalls = 0
 let keepCalls = 0
+
+// OCC-97 pattern: snapshot the real exports BEFORE mocking and restore them in
+// afterAll — Bun's mock.module crosses file boundaries in the same worker.
+const REAL_EXEC_SNAPSHOT = { ...REAL_EXEC_NS }
+const REAL_WORKTREE_SNAPSHOT = { ...REAL_WORKTREE_NS }
+const REAL_SESSION_SNAPSHOT = { ...REAL_SESSION_NS }
 
 /** Per-test git responders. */
 let gitStatusResult: { stdout: string; stderr: string; code: number } = {
@@ -69,9 +75,17 @@ let gitRevListResult: { stdout: string; stderr: string; code: number } = {
   stderr: '',
   code: 0,
 }
+// 2.1.304 #30: the at-stake classifier runs `symbolic-ref -q HEAD`, the
+// rev-list counts, and for-each-ref via execFileNoThrowWithCwd inside the
+// worktree path. Default: HEAD is on the session's own branch (its_branch).
+let gitSymbolicRefResult: { stdout: string; stderr: string; code: number } = {
+  stdout: 'refs/heads/claude/wt-301\n',
+  stderr: '',
+  code: 0,
+}
 
 await mock.module('../../utils/worktree.js', () => ({
-  ...REAL_WORKTREE_NS,
+  ...REAL_WORKTREE_SNAPSHOT,
   getCurrentWorktreeSession: () => mockSession,
   cleanupWorktree: async () => {
     cleanupCalls += 1
@@ -82,21 +96,43 @@ await mock.module('../../utils/worktree.js', () => ({
   killTmuxSession: async () => true,
 }))
 
-await mock.module('../../utils/execFileNoThrow.js', () => ({
-  ...REAL_EXEC_NS,
-  execFileNoThrow: async (_file: string, args: string[]) => {
-    if (args[0] === 'status') {
-      return { ...gitStatusResult, error: undefined }
-    }
-    if (args[0] === 'rev-list') {
-      return { ...gitRevListResult, error: undefined }
-    }
-    return { stdout: '', stderr: '', code: 0, error: undefined }
-  },
-}))
+function execFileNoThrowMock() {
+  return {
+    ...REAL_EXEC_SNAPSHOT,
+    execFileNoThrow: async (_file: string, args: string[]) => {
+      if (args[0] === 'status') {
+        return { ...gitStatusResult, error: undefined }
+      }
+      if (args[0] === 'rev-list') {
+        return { ...gitRevListResult, error: undefined }
+      }
+      return { stdout: '', stderr: '', code: 0, error: undefined }
+    },
+    execFileNoThrowWithCwd: async (_file: string, args: string[]) => {
+      if (args[0] === 'symbolic-ref') {
+        return { ...gitSymbolicRefResult, error: undefined }
+      }
+      if (args[0] === 'rev-list') {
+        return { ...gitRevListResult, error: undefined }
+      }
+      if (args[0] === 'for-each-ref') {
+        // Branch exists by default (branchMissing → false).
+        return {
+          stdout: 'refs/heads/claude/wt-301\n',
+          stderr: '',
+          code: 0,
+          error: undefined,
+        }
+      }
+      return { stdout: '', stderr: '', code: 0, error: undefined }
+    },
+  }
+}
+
+await mock.module('../../utils/execFileNoThrow.js', execFileNoThrowMock)
 
 await mock.module('../../utils/sessionStorage.js', () => ({
-  ...REAL_SESSION_NS,
+  ...REAL_SESSION_SNAPSHOT,
   getCurrentSessionTitle: () => mockSessionTitle,
   saveWorktreeState: () => {},
 }))
@@ -133,16 +169,12 @@ async function renderDialog(): Promise<RenderResult> {
   stdout.on('data', chunk => {
     output += chunk.toString()
   })
-  const stdin = new PassThrough() as unknown as NodeJS.ReadStream & {
-    isTTY: boolean
-    setRawMode: (e: boolean) => void
-    ref: () => void
-    unref: () => void
-  }
-  stdin.isTTY = true
-  stdin.setRawMode = () => {}
-  stdin.ref = () => {}
-  stdin.unref = () => {}
+  const stdin = new PassThrough() as unknown as NodeJS.ReadStream
+  const stdinStub = stdin as unknown as Record<string, unknown>
+  stdinStub.isTTY = true
+  stdinStub.setRawMode = () => {}
+  stdinStub.ref = () => {}
+  stdinStub.unref = () => {}
 
   const doneCalls: Array<string | undefined> = []
   const instance = await render(
@@ -186,10 +218,27 @@ beforeEach(() => {
   keepCalls = 0
   gitStatusResult = { stdout: '', stderr: '', code: 0 }
   gitRevListResult = { stdout: '0\n', stderr: '', code: 0 }
+  gitSymbolicRefResult = {
+    stdout: 'refs/heads/claude/wt-301\n',
+    stderr: '',
+    code: 0,
+  }
 })
 
 afterEach(() => {
   mock.restore()
+})
+
+afterAll(() => {
+  // Restore the real modules for every later test file in this worker
+  // (OCC-97: Bun's mock.module crosses file boundaries).
+  mock.module('../../utils/worktree.js', () => ({ ...REAL_WORKTREE_SNAPSHOT }))
+  mock.module('../../utils/execFileNoThrow.js', () => ({
+    ...REAL_EXEC_SNAPSHOT,
+  }))
+  mock.module('../../utils/sessionStorage.js', () => ({
+    ...REAL_SESSION_SNAPSHOT,
+  }))
 })
 
 // ---------------------------------------------------------------------------
@@ -252,7 +301,7 @@ test('hookBased: no rev-list query is attempted (hook worktrees carry no commit 
   mockSession = makeBaseSession({ hookBased: true })
   const gitCalls: string[][] = []
   await mock.module('../../utils/execFileNoThrow.js', () => ({
-    ...REAL_EXEC_NS,
+    ...execFileNoThrowMock(),
     execFileNoThrow: async (_file: string, args: string[]) => {
       gitCalls.push(args)
       if (args[0] === 'status') {
@@ -269,18 +318,7 @@ test('hookBased: no rev-list query is attempted (hook worktrees carry no commit 
   } finally {
     dialog.unmount()
     // Restore the shared fake for subsequent tests.
-    await mock.module('../../utils/execFileNoThrow.js', () => ({
-      ...REAL_EXEC_NS,
-      execFileNoThrow: async (_file: string, args: string[]) => {
-        if (args[0] === 'status') {
-          return { ...gitStatusResult, error: undefined }
-        }
-        if (args[0] === 'rev-list') {
-          return { ...gitRevListResult, error: undefined }
-        }
-        return { stdout: '', stderr: '', code: 0, error: undefined }
-      },
-    }))
+    await mock.module('../../utils/execFileNoThrow.js', execFileNoThrowMock)
   }
 })
 

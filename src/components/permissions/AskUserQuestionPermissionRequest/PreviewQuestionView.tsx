@@ -2,6 +2,7 @@ import figures from 'figures';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { useTerminalSize } from '../../../hooks/useTerminalSize.js';
 import type { KeyboardEvent } from '../../../ink/events/keyboard-event.js';
+import { stringWidth } from '../../../ink/stringWidth.js';
 import { Box, Text } from '../../../ink.js';
 import { useKeybinding, useKeybindings } from '../../../keybindings/useKeybinding.js';
 import { useAppState } from '../../../state/AppState.js';
@@ -237,6 +238,13 @@ export function PreviewQuestionView({
   } = useTerminalSize();
   const previewMaxWidth = columns - LEFT_PANEL_WIDTH - GAP;
 
+  // CC 2.1.304 (#36 — official `Ar=Math.max(1,rr-ae("Notes:")-1)`): the notes
+  // TextInput gets the REMAINING preview width (minus the rendered "Notes:"
+  // label and the row gap) instead of the old fixed 60 columns, which overflowed
+  // the panel and hid typed text behind "…" in terminals under ~100 columns
+  // (anthropics/claude-code#82768).
+  const notesInputColumns = Math.max(1, previewMaxWidth - stringWidth('Notes:') - 1);
+
   // Lines used within the content area that aren't preview content:
   // 1: marginTop on side-by-side box
   // 2: PreviewBox borders (top + bottom)
@@ -284,12 +292,14 @@ export function PreviewQuestionView({
             <Box flexDirection="column" flexGrow={1}>
               <PreviewBox content={previewContent || 'No preview available'} maxLines={previewMaxLines} minWidth={minContentWidth} maxWidth={previewMaxWidth} />
               <Box marginTop={1} flexDirection="row" gap={1}>
-                <Text color="suggestion">Notes:</Text>
+                <Box flexShrink={0}>
+                  <Text color="suggestion">Notes:</Text>
+                </Box>
                 {isInNotesInput ? <TextInput value={notesValue} placeholder="Add notes on this design…" onChange={value => {
                 onUpdateQuestionState(questionText, {
                   textInputValue: value
                 }, false);
-              }} onSubmit={handleNotesExit} onExit={handleNotesExit} focus={true} showCursor={true} columns={60} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} /> : <Text dimColor italic>
+              }} onSubmit={handleNotesExit} onExit={handleNotesExit} focus={true} showCursor={true} columns={notesInputColumns} maxVisibleLines={5} cursorOffset={cursorOffset} onChangeCursorOffset={setCursorOffset} disableEscapeDoublePress={true} /> : <Text dimColor italic>
                     {notesValue || 'press n to add notes'}
                   </Text>}
               </Box>

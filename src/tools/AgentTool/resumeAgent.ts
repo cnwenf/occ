@@ -20,6 +20,7 @@ import {
 import { getAgentModel } from '../../utils/model/agent.js'
 import { getQuerySourceForAgent } from '../../utils/promptCategory.js'
 import {
+  flushSessionStorage,
   getAgentTranscript,
   readAgentMetadata,
 } from '../../utils/sessionStorage.js'
@@ -85,6 +86,14 @@ export async function resumeAgentBackground({
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState
   const permissionMode = appState.toolPermissionContext.mode
+
+  // CC 2.1.304 #28: flush the session-storage write queue BEFORE reading the
+  // agent transcript back. The agent's sidechain tail writes are enqueued with
+  // a periodic (100ms) flush; a resume that fires within that window — before
+  // the timer ticks — would otherwise read a stale transcript off disk and drop
+  // the latest messages. The official fix awaits `flushSessionStorage()` ahead
+  // of the transcript read so the resumed conversation is complete.
+  await flushSessionStorage()
 
   const [transcript, meta] = await Promise.all([
     getAgentTranscript(asAgentId(agentId)),

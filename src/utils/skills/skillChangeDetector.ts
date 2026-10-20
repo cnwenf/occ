@@ -14,7 +14,6 @@ import {
   getSkillsPath,
   onDynamicSkillsLoaded,
 } from '../../skills/loadSkillsDir.js'
-import { resetSentSkillNames } from '../attachments.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from '../debug.js'
 import { getFsImplementation } from '../fsOperations.js'
@@ -273,7 +272,10 @@ function scheduleReload(changedPath: string): void {
     }
     clearSkillCaches()
     clearCommandsCache()
-    resetSentSkillNames()
+    // CC 2.1.304 #59/#31: no resetSentSkillNames() here anymore — the
+    // skill-listing dedupe scans message history and content digests, so a
+    // skill file change delta-sends only the skills whose digest changed
+    // (this was the point of the reset before; digests now do it precisely).
     skillsChanged.emit()
   }, testOverrides?.reloadDebounce ?? RELOAD_DEBOUNCE_MS)
 }

@@ -71,7 +71,7 @@ import {
   getImagePasteIds,
   isValidImagePaste,
 } from 'src/types/textInputTypes.js'
-import { randomUUID, type UUID } from 'crypto'
+import { createHash, randomUUID, type UUID } from 'crypto'
 import { getSettings_DEPRECATED } from './settings/settings.js'
 import { getSnippetForTwoFileDiff } from 'src/tools/FileEditTool/utils.js'
 import type {
@@ -646,6 +646,17 @@ export type Attachment =
       content: string
       skillCount: number
       isInitial: boolean
+      /**
+       * CC 2.1.304 #59/#31: parallel arrays — the names and per-name content
+       * digests (see computeSkillListingDigest) of the skills this listing
+       * announced. The next turn's history scan dedupes against them, so a
+       * skill is only re-sent when its name is new OR its digest changed.
+       * Optional for backward compat: pre-304 transcript rows carry neither
+       * (the scan treats a name with no digest as "sent, digest unknown" —
+       * matching the official `names:we=[],digests:Ee` destructure).
+       */
+      names?: string[]
+      digests?: string[]
     }
   | {
       type: 'skill_discovery'
@@ -1038,7 +1049,9 @@ export async function getAttachments(
     maybe('nested_memory', () => getNestedMemoryAttachments(context)),
     // relevant_memories moved to async prefetch (startRelevantMemoryPrefetch)
     maybe('dynamic_skill', () => getDynamicSkillAttachments(context)),
-    maybe('skill_listing', () => getSkillListingAttachments(context)),
+    maybe('skill_listing', () =>
+      getSkillListingAttachments(context, messages),
+    ),
     // Inter-turn skill discovery now runs via startSkillDiscoveryPrefetch
     // (query.ts, concurrent with the main turn). The blocking call that
     // previously lived here was the assistant_turn signal — 97% of those
@@ -3149,116 +3162,110 @@ async function getDynamicSkillAttachments(
   return attachments
 }
 
-// Track which skills have been sent to avoid re-sending. Keyed by agentId
-// (empty string = main thread) so subagents get their own turn-0 listing —
-// without per-agent scoping, the main thread populating this Set would cause
-// every subagent's filterToBundledAndMcp result to dedup to empty.
-const sentSkillNames = new Map<string, Set<string>>()
+/**
+ * CC 2.1.304 #59 + #31 — skill-listing dedupe via history scan + content
+ * digests. Port of the official vver generator `EDr`/digest `C8e`/`Ldt`
+ * (new_strings 41431028; s304 41175439, byte-verified in
+ * docs/gap-research-304/research-R4-skills-hooks.md):
+ *
+ *   function C8e(e){return nt(JSON.stringify([Ho(e),Ldt(e)])).slice(0,16)}
+ *   function Ldt(e){return e.whenToUse?`${e.description} - ${e.whenToUse}`:e.description}
+ *
+ * The message history the next request will carry is the single source of
+ * truth for what the model has already seen. This REPLACES the pre-304
+ * module-scope session state (`sentSkillNames` / `suppressNext` /
+ * `resetSentSkillNames` / `resyncSentSkillNamesAfterRewind`), which needed
+ * manual resets for resume, rewind, and plugin reload. The history scan
+ * subsumes all three: resume sees the transcript's listings, rewind removes
+ * them from history naturally, and plugin reload only delta-sends skills
+ * whose digest actually changed (fixes #31 — resumed/cloud sessions no
+ * longer re-send unchanged skills on startup plugin reloads).
+ *
+ * REVERSAL NOTE: OCC deliberately skipped the post-compaction skill-listing
+ * re-send before 2.1.304 (old comment: "NOT called on compact — post-compact
+ * re-injection costs ~4K tokens/event for marginal benefit"). Official 2.1.304
+ * supersedes that: compaction drops prior skill_listing attachments from the
+ * context, the scan finds none (map empty), and the full listing is re-sent
+ * as `isInitial` — changelog #59 "Compaction re-sends skill list".
+ *
+ * Per-agent scoping: callers pass the agent's own thread history (official
+ * passes `Ls(he)` = agent-local history), so a main-thread listing never
+ * dedupes a subagent's turn-0 listing.
+ */
 
-// Called when the skill set genuinely changes (plugin reload, skill file
-// change on disk) so new skills get announced. NOT called on compact —
-// post-compact re-injection costs ~4K tokens/event for marginal benefit.
-export function resetSentSkillNames(): void {
-  sentSkillNames.clear()
-  suppressNext = false
+/**
+ * Official digest `C8e` (s304 41175439, byte-verified):
+ * sha256(JSON.stringify([name, whenToUse ? `${description} - ${whenToUse}` : description])).slice(0,16).
+ * The description join mirrors getCommandDescription in
+ * src/tools/SkillTool/prompt.ts (official `Ldt`). Written into the
+ * skill_listing attachment and re-read by the history scan, so the format
+ * is transcript-persisted — do not change it.
+ */
+export function computeSkillListingDigest(
+  cmd: Pick<Command, 'name' | 'description' | 'whenToUse'>,
+): string {
+  const descriptionWithWhenToUse = cmd.whenToUse
+    ? `${cmd.description} - ${cmd.whenToUse}`
+    : cmd.description
+  return createHash('sha256')
+    .update(JSON.stringify([cmd.name, descriptionWithWhenToUse]))
+    .digest('hex')
+    .slice(0, 16)
 }
 
 /**
- * Suppress the next skill-listing injection. Called by conversationRecovery
- * on --resume when a skill_listing attachment already exists in the
- * transcript.
- *
- * `sentSkillNames` is module-scope — process-local. Each `claude -p` spawn
- * starts with an empty Map, so without this every resume re-injects the
- * full ~600-token listing even though it's already in the conversation from
- * the prior process. Shows up on every --resume; particularly loud for
- * daemons that respawn frequently.
- *
- * Trade-off: skills added between sessions won't be announced until the
- * next non-resume session. Acceptable — skill_listing was never meant to
- * cover cross-process deltas, and the agent can still call them (they're
- * in the Skill tool's runtime registry regardless).
+ * Scan message history for prior skill_listing attachments and collect, per
+ * skill name, the set of digests already announced. Official `EDr` scan:
+ * `for(let[xe,Ie]of we.entries())K.set(Ie,(K.get(Ie)??new Set).add(Ee?.[xe]))`.
+ * A name recorded with `undefined` (pre-304 listing without digests, or a
+ * names/digests length mismatch) means "sent, digest unknown" — the filter
+ * below treats it as already-sent, matching the official `!we?.has(void 0)`.
  */
-export function suppressNextSkillListing(): void {
-  suppressNext = true
-}
-let suppressNext = false
-
-/**
- * CC 2.1.301 changelog #27 — "Fixed skills no longer being listed to the model
- * after using /rewind". Port of the official reconcile function `NXt`
- * (v301 binary @229467265, byte-verified):
- *
- *   function NXt(e,n){let r=kAe.of(n);for(let s of e){
- *     if(s.type!=="attachment")continue;
- *     if(s.attachment.type==="skill_listing"){
- *       if(r.suppressNext=!1,!s.attachment.names){
- *         r.sentSkillNames.delete(""),r.resumeSeedNames=null;continue}
- *       for(let h of s.attachment.names)
- *         r.sentSkillNames.get("")?.delete(h),r.resumeSeedNames?.delete(h)}}}
- *
- * Called from REPL rewindConversationTo with the SLICED-OFF (removed)
- * messages: every removed skill_listing must be un-recorded from the dedup
- * map so the next turn re-lists those skills to the model. A full listing
- * (no `names`) resets the agent's entire entry; a delta listing (official
- * writer shape carries `names`) deletes only the listed names. suppressNext
- * is cleared whenever a skill_listing removal is seen — a pending resume
- * suppression must not survive the rewind of the listing it suppressed.
- *
- * OCC adaptations vs the official per-session `DIn` state class:
- * - OCC's dedup state is this module-scope Map keyed by agentId ('' = main
- *   thread), so the official's hardcoded `""` key becomes the `agentKey`
- *   parameter (REPL passes nothing → main thread, matching the existing
- *   filter's `toolUseContext.agentId ?? ''` convention).
- * - OCC has no `resumeSeedNames` — deleting the map entry is the equivalent
- *   unwind (the resume seed lives in the same Set here).
- * - OCC's own skill_listing attachments never carry `names` (they hold
- *   {type, content, skillCount, isInitial}), so live removals always take
- *   the full-reset branch; the names branch is kept for forward-compat with
- *   the official delta-listing writer shape and hardened with Array.isArray
- *   (the official for-of would throw on a truthy non-iterable).
- */
-export function resyncSentSkillNamesAfterRewind(
-  removedMessages: ReadonlyArray<{ type?: unknown; attachment?: unknown } | null | undefined>,
-  agentKey = '',
-): void {
-  for (const message of removedMessages) {
+export function collectSentSkillListings(
+  messages: ReadonlyArray<
+    { type?: unknown; attachment?: unknown } | null | undefined
+  >,
+): Map<string, Set<string | undefined>> {
+  const sent = new Map<string, Set<string | undefined>>()
+  for (const message of messages) {
     if (message?.type !== 'attachment') continue
-    const attachment = message.attachment as { type?: unknown; names?: unknown } | undefined
+    const attachment = message.attachment as
+      | { type?: unknown; names?: unknown; digests?: unknown }
+      | undefined
     if (attachment?.type !== 'skill_listing') continue
-    suppressNext = false
-    const names = attachment.names
-    if (!names) {
-      // Official: falsy names = full listing → reset the agent's entry.
-      sentSkillNames.delete(agentKey)
-      continue
+    // Official destructure defaults names to []; hardened with Array.isArray
+    // for transcript rows (a truthy non-array `names` is ignored, matching
+    // the pre-304 rewind-port hardening).
+    const names = Array.isArray(attachment.names) ? attachment.names : []
+    const digests = Array.isArray(attachment.digests)
+      ? attachment.digests
+      : undefined
+    for (const [index, name] of names.entries()) {
+      const known = sent.get(name) ?? new Set<string | undefined>()
+      known.add(digests?.[index] as string | undefined)
+      sent.set(name, known)
     }
-    if (Array.isArray(names)) {
-      const sent = sentSkillNames.get(agentKey)
-      if (sent) {
-        for (const name of names) sent.delete(name)
-      }
-    }
-    // Truthy non-array `names` (transcript hardening): the official for-of
-    // would iterate any iterable (or throw on a non-iterable); OCC ignores
-    // the payload — never a full reset, since the listing was a delta.
   }
+  return sent
 }
 
-// Test-only accessors for the module-scope dedup state above. The live
-// producer (getSkillListingAttachments) is dead under NODE_ENV==='test', so
-// unit tests seed/read the map directly (mirrors the official per-session
-// state which tests could construct; OCC's module state cannot be).
-export function seedSentSkillNamesForTest(agentKey: string, names: Iterable<string>): void {
-  sentSkillNames.set(agentKey, new Set(names))
-}
-
-export function getSentSkillNamesForTest(agentKey: string): ReadonlySet<string> | undefined {
-  return sentSkillNames.get(agentKey)
-}
-
-export function isNextSkillListingSuppressedForTest(): boolean {
-  return suppressNext
+/**
+ * Official `EDr` filter: keep skills whose name was never listed, or whose
+ * current digest was never listed for that name (`!we?.has(void 0)&&
+ * !we?.has(C8e(be))`). An `undefined` in the digest set (legacy listing
+ * without digests) suppresses re-sending — the model already saw the name.
+ */
+export function filterUnsentSkills(
+  commands: Command[],
+  sent: Map<string, Set<string | undefined>>,
+): Command[] {
+  return commands.filter(cmd => {
+    const knownDigests = sent.get(cmd.name)
+    return (
+      !knownDigests?.has(undefined) &&
+      !knownDigests?.has(computeSkillListingDigest(cmd))
+    )
+  })
 }
 
 // When skill-search is enabled and the filtered (bundled + MCP) listing exceeds
@@ -3284,8 +3291,19 @@ export function filterToBundledAndMcp(commands: Command[]): Command[] {
   return filtered
 }
 
+/**
+ * CC 2.1.304 #59 + #31 — rewritten from the pre-304 session-state dedupe to
+ * the official history-scan dedupe. `messages` is the agent-local history the
+ * next request will carry (all getAttachments callers pass the agent's own
+ * thread — official `EDr` passes `Ls(he)`); the scan of prior skill_listing
+ * attachments is the single source of truth for what the model has seen.
+ * Compaction drops those attachments from the context, so the scan finds an
+ * empty map and the full listing is re-sent as `isInitial` — official
+ * behavior, superseding OCC's pre-304 deliberate skip-resend-on-compact.
+ */
 async function getSkillListingAttachments(
   toolUseContext: ToolUseContext,
+  messages: Message[] | undefined,
 ): Promise<Attachment[]> {
   if (process.env.NODE_ENV === 'test') {
     return []
@@ -3322,41 +3340,26 @@ async function getSkillListingAttachments(
     allCommands = filterToBundledAndMcp(allCommands)
   }
 
-  const agentKey = toolUseContext.agentId ?? ''
-  let sent = sentSkillNames.get(agentKey)
-  if (!sent) {
-    sent = new Set()
-    sentSkillNames.set(agentKey, sent)
-  }
+  // History scan (official `EDr`): what has this agent's context already
+  // seen? Resume sees the transcript's listings; rewind removed them from
+  // history naturally; plugin reload only delta-sends changed digests.
+  const sent = collectSentSkillListings(messages ?? [])
 
-  // Resume path: prior process already injected a listing; it's in the
-  // transcript. Mark everything current as sent so only post-resume deltas
-  // (skills loaded later via /reload-plugins etc) get announced.
-  if (suppressNext) {
-    suppressNext = false
-    for (const cmd of allCommands) {
-      sent.add(cmd.name)
-    }
-    return []
-  }
-
-  // Find skills we haven't sent yet
-  const newSkills = allCommands.filter(cmd => !sent.has(cmd.name))
+  // Send only skills that are new to this context, or whose description /
+  // whenToUse digest changed since it was last listed (official `EDr`
+  // filter `!we?.has(void 0)&&!we?.has(C8e(be))`).
+  const newSkills = filterUnsentSkills(allCommands, sent)
 
   if (newSkills.length === 0) {
     return []
   }
 
-  // If no skills have been sent yet, this is the initial batch
+  // If the context has no prior listing at all, this is the initial batch
+  // (also true right after compaction — official 2.1.304 re-sends).
   const isInitial = sent.size === 0
 
-  // Mark as sent
-  for (const cmd of newSkills) {
-    sent.add(cmd.name)
-  }
-
   logForDebugging(
-    `Sending ${newSkills.length} skills via attachment (${isInitial ? 'initial' : 'dynamic'}, ${sent.size} total sent)`,
+    `Sending ${newSkills.length} skills via attachment (${isInitial ? 'initial' : 'dynamic'})`,
   )
 
   // Format within budget using existing logic
@@ -3372,6 +3375,11 @@ async function getSkillListingAttachments(
       content,
       skillCount: newSkills.length,
       isInitial,
+      // Parallel arrays consumed by the next turn's history scan (official
+      // writer shape `{names, digests}`; digest format is transcript-persisted
+      // — see computeSkillListingDigest).
+      names: newSkills.map(cmd => cmd.name),
+      digests: newSkills.map(cmd => computeSkillListingDigest(cmd)),
     },
   ]
 }
@@ -3955,9 +3963,10 @@ function pluralize(
  * including its quirks: a non-object non-null attachment with no string
  * `type` is invalid, `invoked_skills` entries only need to be non-null
  * objects (arrays pass), and `skill_listing` is valid when `names` is
- * absent/undefined (OCC's skill_listing shape has no `names` field — it
- * carries `content`/`skillCount`/`isInitial` — so OCC rows pass via that
- * branch, matching the official).
+ * absent/undefined (pre-2.1.304 OCC transcript rows carry only
+ * `content`/`skillCount`/`isInitial` and pass via that branch; since the
+ * 2.1.304 #59/#31 port the writer emits `names`/`digests`, which take the
+ * official Array-bounded branch below — matching the official).
  *
  * Distinct from `isMalformedAttachment` above (the 2.1.217 shallow guard,
  * kept unchanged for its existing external callers in messages.ts and

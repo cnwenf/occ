@@ -63,16 +63,19 @@ console.log(JSON.stringify({
 
   test("E26 usage.ts seeded-case message matches the binary exactly", async () => {
     const src = await Bun.file(`${REPO_ROOT}/src/services/api/usage.ts`).text();
-    // The seeded-case message is rendered in Usage.tsx, but the rate-limit
-    // detection lives in usage.ts. Verify the wording lives in the codebase.
-    // Usage.tsx is a React-Compiler-compiled artifact; the em-dash inside the
-    // seeded-case message is stored as a — escape (not a literal em-dash
-    // byte), so assert the wording on either side of the dash rather than the
-    // exact dash byte to stay robust to the compiled encoding.
+    // CC 2.1.304 (#43): the rate-limit tail moved out of Usage.tsx into the
+    // official `fo` formatter (formatRateLimitedText) in usage.ts — Usage.tsx
+    // now composes `Per-model breakdown unavailable (${fo(heldUntilMs)})`.
+    // Assert the template seam in Usage.tsx and the verbatim `fo` strings in
+    // usage.ts. The em-dash inside the vague text is stored as a —
+    // escape in some builds, so assert the wording on either side of the dash
+    // rather than the exact dash byte.
     const usageSrc = await Bun.file(`${REPO_ROOT}/src/components/Settings/Usage.tsx`).text();
-    expect(usageSrc).toContain("Per-model breakdown unavailable (rate limited");
-    expect(usageSrc).toContain("try again in a moment)");
+    expect(usageSrc).toContain("Per-model breakdown unavailable (");
+    expect(usageSrc).toContain("formatRateLimitedText");
     expect(usageSrc).toContain("Could not refresh usage data");
+    expect(src).toContain("rate limited — try again in a moment");
+    expect(src).toContain("rate limited until ");
   });
 
   test("E26 Usage.tsx renders per-model + cache-hit breakdown section", async () => {

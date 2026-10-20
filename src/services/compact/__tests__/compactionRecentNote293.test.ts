@@ -141,21 +141,25 @@ describe('2.1.293 #4 — application gate (vt=Ne.length>0?map(gJt):summaryMessag
 })
 
 describe('2.1.293 #4 — getCompactUserSummaryMessage: dead 292 branch deleted', () => {
-  test('signature has exactly 3 parameters (4th recentMessagesPreserved param gone)', () => {
-    expect(getCompactUserSummaryMessage.length).toBe(3)
+  test('signature has exactly 4 parameters (2.1.304 #6 adds toolNamesUsed as the 4th)', () => {
+    // 292→293 removed the old 4th `recentMessagesPreserved` param (down to 3);
+    // 2.1.304 #6 re-introduces a 4th param — `toolNamesUsed?: string[]` — for
+    // the <tools-used-before-summary> tag. Still no `recentMessagesPreserved`.
+    expect(getCompactUserSummaryMessage.length).toBe(4)
   })
 
   test('old 292 sentence is never emitted for ANY argument combination', () => {
-    const combos: Array<[string, boolean | undefined, string | undefined, ...boolean[]]> = [
+    const combos: Array<[string, boolean | undefined, string | undefined, string[]?]> = [
       ['summary text', undefined, undefined],
       ['summary text', true, undefined],
       ['summary text', false, undefined],
       ['summary text', undefined, '/tmp/transcript.jsonl'],
       ['summary text', true, '/tmp/transcript.jsonl'],
       ['summary text', false, '/tmp/transcript.jsonl'],
-      // Even a smuggled legacy 4th positional arg must not resurrect it
-      ['summary text', true, '/tmp/transcript.jsonl', true],
-      ['summary text', false, undefined, true],
+      // A 4th positional arg is now `toolNamesUsed` (2.1.304 #6), not the old
+      // `recentMessagesPreserved` boolean — it still must not resurrect 292.
+      ['summary text', true, '/tmp/transcript.jsonl', ['Bash', 'Read']],
+      ['summary text', false, undefined, []],
     ]
     for (const combo of combos) {
       const out = (getCompactUserSummaryMessage as (...a: unknown[]) => string)(...combo)

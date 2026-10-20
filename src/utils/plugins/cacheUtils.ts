@@ -4,7 +4,6 @@ import { clearCommandsCache } from '../../commands.js'
 import { clearAllOutputStylesCache } from '../../constants/outputStyles.js'
 import { clearAgentDefinitionsCache } from '../../tools/AgentTool/loadAgentsDir.js'
 import { clearPromptCache } from '../../tools/SkillTool/prompt.js'
-import { resetSentSkillNames } from '../attachments.js'
 import { logForDebugging } from '../debug.js'
 import { getErrnoCode } from '../errors.js'
 import { logError } from '../log.js'
@@ -57,7 +56,10 @@ export function clearAllCaches(): void {
   clearCommandsCache()
   clearAgentDefinitionsCache()
   clearPromptCache()
-  resetSentSkillNames()
+  // CC 2.1.304 #59/#31: no resetSentSkillNames() here anymore — after a
+  // plugin reload the skill-listing dedupe delta-sends exactly the skills
+  // whose content digest changed (or that are new), by scanning the message
+  // history instead of a process-local sent-names set.
 }
 
 /**

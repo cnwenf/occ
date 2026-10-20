@@ -76,11 +76,11 @@ export function runPostCompactCleanup(querySource?: QuerySource): void {
   clearSystemPromptSections()
   clearClassifierApprovals()
   clearSpeculativeChecks()
-  // Intentionally NOT calling resetSentSkillNames(): re-injecting the full
-  // skill_listing (~4K tokens) post-compact is pure cache_creation. The
-  // model still has SkillTool in schema, invoked_skills preserves used
-  // skills, and dynamic additions are handled by skillChangeDetector /
-  // cacheUtils resets. See compactConversation() for full rationale.
+  // CC 2.1.304 #59: nothing to reset here anymore — the skill-listing dedupe
+  // scans the live message history (sentSkillNames machinery deleted). The
+  // post-compact re-send happens naturally: compaction drops the prior
+  // skill_listing attachments, so the next turn's scan finds none and
+  // re-sends the full listing as `isInitial`. See compactConversation().
   clearBetaTracingState()
   if (feature('COMMIT_ATTRIBUTION')) {
     void import('../../utils/attributionHooks.js').then(m =>

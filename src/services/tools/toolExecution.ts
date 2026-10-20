@@ -952,6 +952,14 @@ async function checkPermissionsAndCallTool(
         }
         break
       case 'hookPermissionResult':
+        // CC 2.1.304 #34 (verified, no change needed): this consumer is
+        // last-wins with no early break on deny. That is safe because
+        // runPreToolUseHooks now MERGES the deny reason into the
+        // callback-timeout deny message itself (`${R}\n\n${timeoutText}`,
+        // official prepend semantics) — the last yield already carries the
+        // real reason, so the overwrite preserves it. Likewise the
+        // 'stopReason' path below receives the prefixed reason from
+        // runPreToolUseHooks' outer catch.
         hookPermissionResult = result.hookPermissionResult
         break
       case 'hookUpdatedInput':

@@ -6,6 +6,7 @@
  * loaded upfront.
  */
 
+import { createHash } from 'crypto'
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
@@ -31,9 +32,11 @@ import {
 } from './analyzeContext.js'
 import { count } from './array.js'
 import { getMergedBetas } from './betas.js'
+import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { getContextWindowForModel } from './context.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
+import { normalizeModelStringForAPI } from './model/model.js'
 import {
   getAPIProvider,
   isFirstPartyAnthropicBaseUrl,
@@ -239,6 +242,141 @@ function getUnsupportedToolReferencePatterns(): string[] {
   return DEFAULT_UNSUPPORTED_MODEL_PATTERNS
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.304 (#58): tool search ON by default behind a custom
+// ANTHROPIC_BASE_URL, with refuse-recovery. Port of the official vver module
+// (byte-verified in docs/gap-research-304/research-R4-skills-hooks.md "#58"):
+//   var h=86400000;
+//   function zOe(){return!a.ENABLE_TOOL_SEARCH&&!l()&&Pe()==="firstParty"&&!Ri()}
+//   function c(e){return S("sha256").update(`${a.ANTHROPIC_BASE_URL}\x00${Pn(e)}`)
+//     .digest("hex").slice(0,24)}
+//   function f(e){return typeof e==="number"&&Math.abs(Date.now()-e)<h}
+//   function d(e){return zOe()&&f(ue().toolSearchRefusedAt?.[c(e)])}
+//   function DUs(e,r){if(d(e))return;
+//     t(`[ToolSearch] the endpoint set in ANTHROPIC_BASE_URL refused a request
+//        for ${e} and answered it without tool search; ...`,{level:"warn"}),
+//     Ae((o)=>f(o.toolSearchRefusedAt?.[c(e)])?o
+//       :{...o,toolSearchRefusedAt:{...Cs(o.toolSearchRefusedAt,f),[c(e)]:Date.now()}},r)}
+// OCC mapping: `Pn` = normalizeModelStringForAPI; `ue()`/`Ae()` =
+// getGlobalConfig()/saveGlobalConfig() (same same-reference-skip updater
+// semantics); `Cs(map, f)` = pruneRefusedEntries below. The official `zOe()`
+// also checks `!l()` (a "force" override that consults ENABLE_TOOL_SEARCH and
+// a settings-level tool-search override `iWo()`); OCC has no `force` value and
+// no settings-level tool-search override, so `!process.env.ENABLE_TOOL_SEARCH`
+// covers it (documented deviation).
+// ---------------------------------------------------------------------------
+
+/** Official `h` — the refused window TTL: one day in ms. */
+const TOOL_SEARCH_REFUSED_TTL_MS = 86_400_000
+
+/**
+ * Official `zOe()` — whether the tool-search refuse-recovery (and the
+ * persisted refused window) applies: ENABLE_TOOL_SEARCH unset/empty (no
+ * explicit override), provider firstParty, and ANTHROPIC_BASE_URL is NOT a
+ * first-party Anthropic host (a custom proxy/gateway).
+ *
+ * Explicit ENABLE_TOOL_SEARCH semantics (official recipe #5):
+ *   - `=false` → getToolSearchMode() returns 'standard'; no tool search is
+ *     ever sent, so the refused request is skipped entirely (and this
+ *     predicate is false — recovery never runs).
+ *   - `=true` (or `auto`/`auto:N`) → the user asserts their proxy supports
+ *     tool_reference; tool search is always sent when otherwise eligible and
+ *     this predicate is false, turning the recovery off.
+ */
+export function isToolSearchRefuseRecoveryEnabled(): boolean {
+  return (
+    !process.env.ENABLE_TOOL_SEARCH &&
+    getAPIProvider() === 'firstParty' &&
+    !isFirstPartyAnthropicBaseUrl()
+  )
+}
+
+/** Official `c(e)` — persisted-config entry key for endpoint+model. */
+function toolSearchRefusedKey(model: string): string {
+  return createHash('sha256')
+    .update(
+      `${process.env.ANTHROPIC_BASE_URL}\0${normalizeModelStringForAPI(model)}`,
+    )
+    .digest('hex')
+    .slice(0, 24)
+}
+
+/** Official `f(e)` — is a recorded refusal timestamp still fresh? */
+function isRefusedAtFresh(refusedAt: unknown): boolean {
+  return (
+    typeof refusedAt === 'number' &&
+    Math.abs(Date.now() - refusedAt) < TOOL_SEARCH_REFUSED_TTL_MS
+  )
+}
+
+/** Official `Cs(map, f)` — prune expired entries when writing. */
+function pruneRefusedEntries(
+  refusedAt: Record<string, number> | undefined,
+): Record<string, number> {
+  const pruned: Record<string, number> = {}
+  for (const [key, ts] of Object.entries(refusedAt ?? {})) {
+    if (isRefusedAtFresh(ts)) {
+      pruned[key] = ts
+    }
+  }
+  return pruned
+}
+
+/**
+ * Official `d(e)` — the endpoint+model is inside the refused window, so
+ * tool search must be treated as unsupported there (Zae's `return!d(e)` arm
+ * routes this through modelSupportsToolReference → `model_unsupported`).
+ */
+export function isToolSearchRefused(model: string): boolean {
+  if (!isToolSearchRefuseRecoveryEnabled()) {
+    return false
+  }
+  try {
+    return isRefusedAtFresh(
+      getGlobalConfig().toolSearchRefusedAt?.[toolSearchRefusedKey(model)],
+    )
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Official `DUs(e, r)` — record that the endpoint refused a tool-search
+ * request for this model and answered it without tool search. No-op when the
+ * window is already fresh (official `if(d(e))return`); otherwise warn-logs
+ * the official text and writes `toolSearchRefusedAt[key]=Date.now()` through
+ * saveGlobalConfig, pruning expired entries (official `Cs`) in the same write.
+ */
+export function recordToolSearchRefused(model: string): void {
+  try {
+    if (isToolSearchRefused(model)) {
+      return
+    }
+    logForDebugging(
+      `[ToolSearch] the endpoint set in ANTHROPIC_BASE_URL refused a request for ${model} and answered it without tool search; tool search stays off there for a day. ENABLE_TOOL_SEARCH=false skips the refused request; =true always sends tool search and turns this recovery off.`,
+      { level: 'warn' },
+    )
+    const key = toolSearchRefusedKey(model)
+    saveGlobalConfig(config => {
+      if (isRefusedAtFresh(config.toolSearchRefusedAt?.[key])) {
+        return config
+      }
+      return {
+        ...config,
+        toolSearchRefusedAt: {
+          ...pruneRefusedEntries(config.toolSearchRefusedAt),
+          [key]: Date.now(),
+        },
+      }
+    })
+  } catch (err) {
+    logForDebugging(
+      `[ToolSearch] failed to record tool-search refusal: ${String(err)}`,
+      { level: 'error' },
+    )
+  }
+}
+
 /**
  * Check if a model supports tool_reference blocks (required for tool search).
  *
@@ -248,6 +386,12 @@ function getUnsupportedToolReferencePatterns(): string[] {
  *
  * Currently, Haiku models do NOT support tool_reference. This can be
  * updated via GrowthBook feature 'tengu_tool_search_unsupported_models'.
+ *
+ * CC 2.1.304 (#58): official `Zae` — the patterns check is unchanged but the
+ * final `return!0` became `return!d(e)`: an endpoint+model inside the
+ * persisted refused window is treated as unsupported (downstream gate reason
+ * `model_unsupported`), so a gateway that already refused tool search does
+ * not get asked again for a day.
  *
  * @param model The model name to check
  * @returns true if the model supports tool_reference, false otherwise
@@ -263,8 +407,9 @@ export function modelSupportsToolReference(model: string): boolean {
     }
   }
 
-  // New models are assumed to support tool_reference
-  return true
+  // CC 2.1.304 (#58): official `return!d(e)` — refused within the last day
+  // behind the current custom base URL counts as unsupported.
+  return !isToolSearchRefused(model)
 }
 
 /**
@@ -295,36 +440,18 @@ export function isToolSearchEnabledOptimistic(): boolean {
     return false
   }
 
-  // tool_reference is a beta content type that third-party API gateways
-  // (ANTHROPIC_BASE_URL proxies) typically don't support. When the provider
-  // is 'firstParty' but the base URL points elsewhere, the proxy will reject
-  // tool_reference blocks with a 400. Vertex/Bedrock/Foundry are unaffected —
-  // they have their own endpoints and beta headers.
-  // https://github.com/anthropics/claude-code/issues/30912
-  //
-  // HOWEVER: some proxies DO support tool_reference (LiteLLM passthrough,
-  // Cloudflare AI Gateway, corp gateways that forward beta headers). The
-  // blanket disable breaks defer_loading for those users — all MCP tools
-  // loaded into main context instead of on-demand (gh-31936 / CC-457,
-  // likely the real cause of CC-330 "v2.1.70 defer_loading regression").
-  // This gate only applies when ENABLE_TOOL_SEARCH is unset/empty (default
-  // behavior). Setting any non-empty value — 'true', 'auto', 'auto:N' —
-  // means the user is explicitly configuring tool search and asserts their
-  // setup supports it. The falsy check (rather than === undefined) aligns
-  // with getToolSearchMode(), which also treats "" as unset.
-  if (
-    !process.env.ENABLE_TOOL_SEARCH &&
-    getAPIProvider() === 'firstParty' &&
-    !isFirstPartyAnthropicBaseUrl()
-  ) {
-    if (!loggedOptimistic) {
-      loggedOptimistic = true
-      logForDebugging(
-        `[ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=${process.env.ANTHROPIC_BASE_URL} is not a first-party Anthropic host. Set ENABLE_TOOL_SEARCH=true (or auto / auto:N) if your proxy forwards tool_reference blocks.`,
-      )
-    }
-    return false
-  }
+  // CC 2.1.304 (#58): the vprev (303) optimistic-disable branch for a custom
+  // ANTHROPIC_BASE_URL (`!ENABLE_TOOL_SEARCH && firstParty &&
+  // !isFirstPartyAnthropicBaseUrl()` → return false, with the "is not a
+  // first-party Anthropic host" warn) was REMOVED by the official 304
+  // (binary string count: vprev=2 → vver=0). Tool search is now ON by default
+  // behind custom base URLs; a gateway that refuses it is handled by the
+  // refuse-recovery loop (isToolSearchRefuseRecoveryEnabled /
+  // recordToolSearchRefused below and the claude.ts retryToolSearchRefused
+  // handler) — the first 400/422 no other recovery claimed rebuilds the
+  // request without tool search and keeps it off for that endpoint+model for
+  // a day. ENABLE_TOOL_SEARCH=false skips the refused request entirely;
+  // =true always sends tool search and turns the recovery off.
 
   if (!loggedOptimistic) {
     loggedOptimistic = true

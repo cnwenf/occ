@@ -375,6 +375,15 @@ const PROJECT_SCOPE_BLOCKED_ENV_KEYS = new Set<string>([
   // /tmp/cc-diff-299/v299/package/claude), so project/local settings may not
   // set it (only user/managed/env).
   'CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT',
+  // CC 2.1.304 (#10): kill-switch for the mounted-drive `rm -r` safety prompt.
+  // Member of the official settings-env allowlist (ver @240663587:
+  // ..."CLAUDE_CODE_DISABLE_INLINE_SHELL_RM_PROMPT",
+  // "CLAUDE_CODE_STRICT_INLINE_SHELL_RM_PROMPT",
+  // "CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT",
+  // "CLAUDE_CODE_DISABLE_POWERSHELL_CMD_RM_DENY",...). Raw-truthiness
+  // kill-switch (mirrors CLAUDE_CODE_DISABLE_DANGEROUS_RM_TIMEOUT) — consumed
+  // by src/tools/BashTool/pathValidation.ts checkMountedDriveRemoval.
+  'CLAUDE_CODE_DISABLE_MOUNTED_DRIVE_RM_PROMPT',
   'CLAUDE_CODE_MANAGED_SETTINGS_PATH',
   'CLAUDE_CODE_TOASTY_THIMBLE',
   'CLAUDE_CODE_GENTLE_PARASOL',

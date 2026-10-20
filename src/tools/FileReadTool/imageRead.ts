@@ -20,6 +20,7 @@
  */
 import { open } from 'fs/promises'
 
+import { AbortError } from '../../utils/errors.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
 import { IMAGE_READ_CHUNK_BYTES, MAX_IMAGE_READ_BYTES } from './limits.js'
 
@@ -91,8 +92,59 @@ export function imageStreamTooLargeMessage(
 }
 
 /**
+ * CC 2.1.304 #32 — abort-race helper, faithful port of the official `$i`
+ * (@236274849): races a pending I/O promise against an AbortSignal.
+ *
+ * Official verbatim body:
+ *   function $i(t,r,e){let o=()=>{t.catch(()=>{})};if(r.aborted)throw o(),e();
+ *   let n=()=>{};try{return await Promise.race([t,new Promise((m,i)=>{
+ *   n=()=>i(e()),r.addEventListener("abort",n,{once:!0})})])}catch(m){throw
+ *   o(),m}finally{r.removeEventListener("abort",n)}}
+ *
+ * Key semantics preserved:
+ *   - pre-aborted signal → attach a no-op catch to the source promise (so its
+ *     later rejection cannot surface as an unhandled rejection) then throw the
+ *     caller-supplied error;
+ *   - abort listener registered with `{once: true}`, removed in `finally`;
+ *   - if the source promise itself rejects, a no-op catch is attached before
+ *     rethrowing (defensive: the race loser may still reject later).
+ */
+async function raceAbort<T>(
+  pending: Promise<T>,
+  signal: AbortSignal,
+  makeError: () => Error,
+): Promise<T> {
+  const swallowSourceRejection = () => {
+    pending.catch(() => {})
+  }
+  if (signal.aborted) {
+    swallowSourceRejection()
+    throw makeError()
+  }
+  let onAbort = () => {}
+  try {
+    return await Promise.race([
+      pending,
+      new Promise<T>((_resolve, reject) => {
+        onAbort = () => reject(makeError())
+        signal.addEventListener('abort', onAbort, { once: true })
+      }),
+    ])
+  } catch (error) {
+    swallowSourceRejection()
+    throw error
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
+/**
  * Read exactly `size` bytes from a regular-file handle (already known to be
  * within the cap). Returns a fresh buffer; the handle is not closed here.
+ *
+ * CC 2.1.304 #32: NOT signal-threaded — faithful to the official, which only
+ * threads the non-regular (pipe/device) chunked path (`Mbn`); the regular-file
+ * reader (`ik`/`Sk`) has no signal parameter in either binary.
  */
 async function readRegularFileBytes(
   handle: ReadableHandle,
@@ -113,17 +165,30 @@ async function readRegularFileBytes(
  * total exceeds `maxBytes`. Mirrors the official `oOn` non-regular branch:
  * allocates at most `maxBytes + 1` bytes total, so it never slurps an unbounded
  * stream into memory.
+ *
+ * CC 2.1.304 #32 — interrupt now ends a Read waiting on an idle pipe/device:
+ * optional `signal` aborts BOTH between chunks (top-of-iteration
+ * `if (signal?.aborted) throw new AbortError()`, official `Mbn`
+ * `if(r?.aborted)throw new Ye`) and DURING a pending read (each `handle.read`
+ * raced against the signal via `raceAbort`, official
+ * `await(r===void 0?H:$i(H,r,()=>new Ye))`). `signal === undefined` keeps the
+ * plain await — the official's unthreaded branch shape.
  */
 async function readNonRegularCapped(
   handle: ReadableHandle,
   displayPath: string,
   maxBytes: number,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const chunks: Buffer[] = []
   let current = Buffer.alloc(0)
   let currentOffset = 0
   let total = 0
   while (total <= maxBytes) {
+    // CC 2.1.304 #32: between-chunks abort check (official `if(r?.aborted)throw new Ye`).
+    if (signal?.aborted) {
+      throw new AbortError()
+    }
     if (currentOffset === current.length) {
       current = Buffer.allocUnsafe(
         Math.min(Math.max(total, IMAGE_READ_CHUNK_BYTES), maxBytes + 1 - total),
@@ -131,12 +196,17 @@ async function readNonRegularCapped(
       chunks.push(current)
       currentOffset = 0
     }
-    const { bytesRead } = await handle.read(
+    const pendingRead = handle.read(
       current,
       currentOffset,
       current.length - currentOffset,
       null,
     )
+    // CC 2.1.304 #32: during-read abort race (official
+    // `await(r===void 0?H:$i(H,r,()=>new Ye))`).
+    const { bytesRead } = await (signal === undefined
+      ? pendingRead
+      : raceAbort(pendingRead, signal, () => new AbortError()))
     if (bytesRead === 0) break
     currentOffset += bytesRead
     total += bytesRead
@@ -153,12 +223,17 @@ async function readNonRegularCapped(
 /**
  * Read image bytes from an already-open handle, enforcing the cap. Regular
  * files are stat-gated (refused over the cap without reading); non-regular
- * sources are read in chunks. Port of the official `oOn`.
+ * sources are read in chunks. Port of the official `oOn`/`Mbn`.
+ *
+ * CC 2.1.304 #32: `signal` is threaded into the non-regular chunked path only
+ * (official `Mbn(e,n,r)` third param; the regular-file branch is unthreaded in
+ * the official too).
  */
 export async function readImageBytesFromHandle(
   handle: ReadableHandle,
   displayPath: string,
   maxBytes: number = MAX_IMAGE_READ_BYTES,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const stats = await handle.stat()
   if (stats.isFile()) {
@@ -170,7 +245,7 @@ export async function readImageBytesFromHandle(
     }
     return readRegularFileBytes(handle, stats.size)
   }
-  return readNonRegularCapped(handle, displayPath, maxBytes)
+  return readNonRegularCapped(handle, displayPath, maxBytes, signal)
 }
 
 /**
@@ -201,16 +276,23 @@ async function openForImageRead(filePath: string): Promise<ReadableHandle> {
 
 /**
  * Open `filePath` and read it as a capped image source. Port of the official
- * `qXr` string-path/undefined-maxBytes branch (opens RDONLY, defers to the
- * chunked reader). The handle is always closed.
+ * `qXr`/`kAr` string-path/undefined-maxBytes branch (opens RDONLY, defers to
+ * the chunked reader). The handle is always closed.
+ *
+ * CC 2.1.304 #32: optional `signal` threads into the chunked reader
+ * (official `kAr(e,n,r)` → `Mbn(s,e,void 0)` passes void 0 for the
+ * string-path branch, but the Read-tool path arrives via
+ * `q_o(…, pdfRenderSignal??signal)` → `kAr(e,r,S)` and IS threaded; OCC's
+ * Read tool calls this function with the tool-context signal).
  */
 export async function readImageBytesCapped(
   filePath: string,
   maxBytes: number = MAX_IMAGE_READ_BYTES,
+  signal?: AbortSignal,
 ): Promise<Buffer> {
   const handle = await openForImageRead(filePath)
   try {
-    return await readImageBytesFromHandle(handle, filePath, maxBytes)
+    return await readImageBytesFromHandle(handle, filePath, maxBytes, signal)
   } finally {
     // Fix #9 (acceptance review): the close must run on the error path too —
     // an oversized read throws from readImageBytesFromHandle, and without

@@ -6,7 +6,10 @@ import {
   setProjectRoot,
 } from '../../bootstrap/state.js'
 import { clearSystemPromptSections } from '../../constants/systemPromptSections.js'
-import { logEvent } from '../../services/analytics/index.js'
+import {
+  type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+  logEvent,
+} from '../../services/analytics/index.js'
 import type { Tool } from '../../Tool.js'
 import { buildTool, type ToolDef } from '../../Tool.js'
 import { count } from '../../utils/array.js'
@@ -19,9 +22,12 @@ import { setCwd } from '../../utils/Shell.js'
 import { saveWorktreeState } from '../../utils/sessionStorage.js'
 import {
   cleanupWorktree,
+  computeWorktreeExitAtStake,
   getCurrentWorktreeSession,
   keepWorktree,
   killTmuxSession,
+  type WorktreeExitAtStake,
+  type WorktreeSession,
 } from '../../utils/worktree.js'
 import { EXIT_WORKTREE_TOOL_NAME } from './constants.js'
 import { getExitWorktreeToolPrompt } from './prompt.js'
@@ -62,6 +68,8 @@ export type Output = z.infer<OutputSchema>
 type ChangeSummary = {
   changedFiles: number
   commits: number
+  /** Official 2.1.304 #30 at-stake classification (`Cn`/`S`). */
+  atStake: WorktreeExitAtStake
 }
 
 /**
@@ -70,19 +78,27 @@ type ChangeSummary = {
  * (fail-closed). A silent 0/0 would let cleanupWorktree destroy real work.
  *
  * Null is returned when:
- * - git status or rev-list exit non-zero (lock file, corrupt index, bad ref)
+ * - git status exits non-zero (lock file, corrupt index)
  * - originalHeadCommit is undefined but git status succeeded — this is the
- *   hook-based-worktree-wrapping-git case (worktree.ts:525-532 doesn't set
+ *   hook-based-worktree-wrapping-git case (worktree.ts doesn't set
  *   originalHeadCommit). We can see the working tree is git, but cannot count
  *   commits without a baseline, so we cannot prove the branch is clean.
+ * - the 2.1.304 #30 at-stake classification could not produce a commit count
+ *   (unreadable/like_its_branch HEAD, or a failed rev-list) — commits:null.
+ *
+ * Official 2.1.304 #30: commits are counted on `refs/heads/<worktreeBranch>`
+ * (via the at-stake classifier), NOT on HEAD — a detached or moved-off HEAD
+ * no longer hides the worktree branch's commits from this gate.
  */
 async function countWorktreeChanges(
-  worktreePath: string,
-  originalHeadCommit: string | undefined,
+  session: Pick<
+    WorktreeSession,
+    'worktreePath' | 'worktreeBranch' | 'originalHeadCommit' | 'hookBased'
+  >,
 ): Promise<ChangeSummary | null> {
   const status = await execFileNoThrow('git', [
     '-C',
-    worktreePath,
+    session.worktreePath,
     'status',
     '--porcelain',
   ])
@@ -91,25 +107,38 @@ async function countWorktreeChanges(
   }
   const changedFiles = count(status.stdout.split('\n'), l => l.trim() !== '')
 
-  if (!originalHeadCommit) {
+  if (!session.originalHeadCommit) {
     // git status succeeded → this is a git repo, but without a baseline
     // commit we cannot count commits. Fail-closed rather than claim 0.
     return null
   }
 
-  const revList = await execFileNoThrow('git', [
-    '-C',
-    worktreePath,
-    'rev-list',
-    '--count',
-    `${originalHeadCommit}..HEAD`,
-  ])
-  if (revList.code !== 0) {
+  const atStake = await computeWorktreeExitAtStake(session)
+  if (atStake.commits === null) {
     return null
   }
-  const commits = parseInt(revList.stdout.trim(), 10) || 0
 
-  return { changedFiles, commits }
+  return { changedFiles, commits: atStake.commits, atStake }
+}
+
+/**
+ * Official `Ww` telemetry fields (2.1.304 #30, vver @269337347): `head` is
+ * emitted only when the HEAD was actually classified (not 'not_read');
+ * `commits_on_kept_branch` only when the onKeptBranch refinement fired
+ * (?? -1). DEVIATION: `worktrees_inside` omitted — no OCC source.
+ */
+function atStakeTelemetryFields(atStake: WorktreeExitAtStake | null) {
+  return {
+    ...(atStake !== null && atStake.head !== 'not_read'
+      ? {
+          head:
+            atStake.head as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
+        }
+      : {}),
+    ...(atStake !== null && 'onKeptBranch' in atStake
+      ? { commits_on_kept_branch: atStake.onKeptBranch ?? -1 }
+      : {}),
+  }
 }
 
 /**
@@ -188,15 +217,26 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     }
 
     if (input.action === 'remove' && !input.discard_changes) {
-      const summary = await countWorktreeChanges(
-        session.worktreePath,
-        session.originalHeadCommit,
-      )
+      const summary = await countWorktreeChanges(session)
       if (summary === null) {
         return {
           result: false,
           message: `Could not verify worktree state at ${session.worktreePath}. Refusing to remove without explicit confirmation. Re-invoke with discard_changes: true to proceed — or use action: "keep" to preserve the worktree.`,
           errorCode: 3,
+        }
+      }
+      // Official 2.1.304 #30 (vver @254108820): the worktree moved to another
+      // branch holding commits the session baseline lacks. Removal keeps that
+      // branch (no commit lost), but never proceed silently — refuse and let
+      // the model confirm with the user. Verbatim official message; the
+      // trailing confirm/re-invoke guidance is OCC's `${f} ${Dt}` equivalent
+      // (official placeholders unrecoverable from the report).
+      if ('onKeptBranch' in summary.atStake) {
+        const onKeptBranch = summary.atStake.onKeptBranch
+        return {
+          result: false,
+          message: `The worktree is now on another branch, which has ${onKeptBranch} ${onKeptBranch === 1 ? 'commit' : 'commits'} that this session's starting commit lacks. Removing the worktree keeps that branch, so no commit is lost, but the user may still be working there. Confirm with the user, then re-invoke with discard_changes: true — or use action: "keep" to preserve the worktree.`,
+          errorCode: 2,
         }
       }
       const { changedFiles, commits } = summary
@@ -233,13 +273,8 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     }
 
     // Capture before keepWorktree/cleanupWorktree null out currentWorktreeSession.
-    const {
-      originalCwd,
-      worktreePath,
-      worktreeBranch,
-      tmuxSessionName,
-      originalHeadCommit,
-    } = session
+    const { originalCwd, worktreePath, worktreeBranch, tmuxSessionName } =
+      session
 
     // --worktree startup calls setOriginalCwd(getCwd()) and
     // setProjectRoot(getCwd()) back-to-back right after setCwd(worktreePath)
@@ -253,10 +288,10 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
     // worktree state at validateInput time may not match now. Null (git
     // failure) falls back to 0/0; safety gating already happened in
     // validateInput, so this only affects analytics + messaging.
-    const { changedFiles, commits } = (await countWorktreeChanges(
-      worktreePath,
-      originalHeadCommit,
-    )) ?? { changedFiles: 0, commits: 0 }
+    const summary = await countWorktreeChanges(session)
+    const changedFiles = summary?.changedFiles ?? 0
+    const commits = summary?.commits ?? 0
+    const atStake = summary?.atStake ?? null
 
     if (input.action === 'keep') {
       await keepWorktree()
@@ -266,6 +301,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
         mid_session: true,
         commits,
         changed_files: changedFiles,
+        ...atStakeTelemetryFields(atStake),
       })
 
       const tmuxNote = tmuxSessionName
@@ -294,6 +330,7 @@ export const ExitWorktreeTool: Tool<InputSchema, Output> = buildTool({
       mid_session: true,
       commits,
       changed_files: changedFiles,
+      ...atStakeTelemetryFields(atStake),
     })
 
     const discardParts: string[] = []

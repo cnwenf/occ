@@ -1,12 +1,13 @@
 import { c as _c } from "react/compiler-runtime";
-import { relative } from 'path';
 import * as React from 'react';
 import { Suspense, use, useMemo } from 'react';
 import { Box, NoSelect, Text } from '../../../ink.js';
 import type { NotebookCellType, NotebookContent } from '../../../types/notebook.js';
 import { intersperse } from '../../../utils/array.js';
-import { getCwd } from '../../../utils/cwd.js';
 import { getPatchForDisplay } from '../../../utils/diff.js';
+// CC 2.1.304 (#17): show out-of-cwd notebooks as ~/… or the full path (not
+// ../../…) in the edit diff header, via getDisplayPath (official `Fo`).
+import { getDisplayPath } from '../../../utils/file.js';
 import { getFsImplementation } from '../../../utils/fsOperations.js';
 import { safeParseJSON } from '../../../utils/json.js';
 import { parseCellId } from '../../../utils/notebook.js';
@@ -151,16 +152,16 @@ function NotebookEditToolDiffInner(t0: InnerProps) {
   }
   const hunks = t3;
   let editTypeDescription;
-  bb2: switch (edit_mode) {
+  switch (edit_mode) {
     case "insert":
       {
         editTypeDescription = "Insert new cell";
-        break bb2;
+        break;
       }
     case "delete":
       {
         editTypeDescription = "Delete cell";
-        break bb2;
+        break;
       }
     default:
       {
@@ -169,7 +170,7 @@ function NotebookEditToolDiffInner(t0: InnerProps) {
   }
   let t4;
   if ($[11] !== notebook_path || $[12] !== verbose) {
-    t4 = verbose ? notebook_path : relative(getCwd(), notebook_path);
+    t4 = verbose ? notebook_path : getDisplayPath(notebook_path);
     $[11] = notebook_path;
     $[12] = verbose;
     $[13] = t4;

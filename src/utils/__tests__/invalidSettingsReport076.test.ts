@@ -15,6 +15,11 @@ import type { ValidationError } from '../settings/validation.js'
  * fails validation: text-output runs now list the file and the invalid entry
  * on stderr." Official v299-NEW `jR`/`qR`/`NR`/`$hn` (see
  * src/utils/invalidSettingsReport.ts for offsets + verbatim strings).
+ *
+ * CC 2.1.304 (#49): "Improved the `claude -p` invalid-settings warning" —
+ * official `JC`/`YC`. The did-not-load block lists ONLY the blocking
+ * (non-warning) entries; the entry formatter groups BY FILE with the 10-line
+ * cap per file (`  … and N more in <file>`); the skipped header is shortened.
  */
 
 function err(partial: Partial<ValidationError> & { path: string }): ValidationError {
@@ -81,7 +86,7 @@ describe('sanitizeSettingsField (official Ks maxCodeUnits:500)', () => {
   })
 })
 
-describe('formatInvalidSettingsEntries (official qR)', () => {
+describe('formatInvalidSettingsEntries (official qR 303 / YC 304)', () => {
   test('entry line is "  file (path): message"', () => {
     const out = formatInvalidSettingsEntries(
       [err({ file: '/home/u/.claude/settings.json', path: 'model', message: 'unknown model' })],
@@ -103,13 +108,50 @@ describe('formatInvalidSettingsEntries (official qR)', () => {
     expect(out).toBe('  --settings (inline JSON) (model): bad')
   })
 
-  test('more than 10 entries → first 10 plus "… and N more"', () => {
+  test('more than 10 entries in ONE file → first 10 plus "… and N more in <file>" (#49)', () => {
     const entries = Array.from({ length: 13 }, (_, i) =>
       err({ file: '/f.json', path: `k${i}`, message: `m${i}` }),
     )
     const lines = formatInvalidSettingsEntries(entries, undefined).split('\n')
     expect(lines).toHaveLength(MAX_REPORTED_ENTRIES_PER_GROUP + 1)
-    expect(lines[10]).toBe('  … and 3 more')
+    expect(lines[10]).toBe('  … and 3 more in /f.json')
+  })
+
+  test('#49 grouping: the cap applies PER FILE — two overflowing files each get their own overflow line', () => {
+    const entries = [
+      ...Array.from({ length: 12 }, (_, i) =>
+        err({ file: '/a.json', path: `a${i}`, message: `ma${i}` }),
+      ),
+      ...Array.from({ length: 11 }, (_, i) =>
+        err({ file: '/b.json', path: `b${i}`, message: `mb${i}` }),
+      ),
+    ]
+    const lines = formatInvalidSettingsEntries(entries, undefined).split('\n')
+    // 10 for /a.json + overflow + 10 for /b.json + overflow
+    expect(lines).toHaveLength(22)
+    expect(lines[10]).toBe('  … and 2 more in /a.json')
+    expect(lines[21]).toBe('  … and 1 more in /b.json')
+    // First-seen file order is preserved; no interleaving.
+    expect(lines.slice(0, 10).every(l => l.startsWith('  /a.json '))).toBe(true)
+    expect(lines.slice(11, 21).every(l => l.startsWith('  /b.json '))).toBe(true)
+  })
+
+  test('#49 grouping: entries at or under the cap get NO overflow line', () => {
+    const entries = Array.from({ length: MAX_REPORTED_ENTRIES_PER_GROUP }, (_, i) =>
+      err({ file: '/f.json', path: `k${i}`, message: `m${i}` }),
+    )
+    const lines = formatInvalidSettingsEntries(entries, undefined).split('\n')
+    expect(lines).toHaveLength(MAX_REPORTED_ENTRIES_PER_GROUP)
+    expect(lines.some(l => l.includes('more in'))).toBe(false)
+  })
+
+  test('#49 grouping: inline-JSON label overflow line renders the label, not the temp path', () => {
+    const entries = Array.from({ length: 11 }, (_, i) =>
+      err({ file: '/tmp/claude-settings-abc.json', path: `k${i}`, message: `m${i}` }),
+    )
+    const out = formatInvalidSettingsEntries(entries, '/tmp/claude-settings-abc.json')
+    expect(out.endsWith('  … and 1 more in --settings (inline JSON)')).toBe(true)
+    expect(out.includes('/tmp/claude-settings-abc.json')).toBe(false)
   })
 })
 
@@ -146,19 +188,21 @@ describe('reportInvalidSettingsForAutomatedSession (official jR)', () => {
     )
   })
 
-  test('warning-only file entries land in the skipped-entry block', () => {
+  test('warning-only file entries land in the skipped-entry block (#49 shortened header)', () => {
     const written = run(
       [err({ file: '/b.json', path: 'env.Y', message: 'ignored', severity: 'warning' })],
       undefined,
     )
     expect(written).toHaveLength(1)
     expect(written[0]).toBe(
-      "These settings entries were skipped because this version of Claude Code can't apply them; the rest of each file is in effect:\n" +
+      // CC 2.1.304 (#49): header shortened — the long 303 text has 0 hits in
+      // the 304 binary.
+      'These settings entries were skipped; the rest of each file is in effect:\n' +
         '  /b.json (env.Y): ignored\n',
     )
   })
 
-  test('mixed severities: hard-error file pulls ALL its entries into the not-loaded group', () => {
+  test('#49 mixed severities: the not-loaded block lists ONLY the blocking entries themselves', () => {
     const written = run(
       [
         err({ file: '/a.json', path: 'hooks.X', message: 'hard' }),
@@ -170,8 +214,12 @@ describe('reportInvalidSettingsForAutomatedSession (official jR)', () => {
     expect(written).toHaveLength(1)
     const [block1, block2] = (written[0] ?? '').split('\nThese settings entries')
     expect(block1).toContain('These settings files did not load')
+    // 304: only the non-warning entry that stopped the file from loading is
+    // listed — the same file's warning entry is in NEITHER block (the file
+    // didn't load, so its warnings aren't "skipped entries").
     expect(block1).toContain('  /a.json (hooks.X): hard')
-    expect(block1).toContain('  /a.json (env.Z): soft')
+    expect(block1).not.toContain('(env.Z)')
+    expect(written[0]).not.toContain('(env.Z)')
     expect(block2).toContain('  /b.json (env.Y): only-warning')
     // Blocks are joined with '\n' and the whole write ends with '\n'.
     expect(written[0]?.endsWith('\n')).toBe(true)

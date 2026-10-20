@@ -69,9 +69,12 @@ describe("Gap-97c: display shows the configured effort verbatim", () => {
     expect(getDisplayedEffortLevel("claude-sonnet-4-6", "low")).toBe("low");
   });
 
-  test("getDisplayedEffortLevel falls back to high when nothing is configured", () => {
+  test("getDisplayedEffortLevel returns undefined when nothing is configured (CC 2.1.304 #33)", () => {
     delete process.env.CLAUDE_CODE_EFFORT_LEVEL;
-    expect(getDisplayedEffortLevel("claude-sonnet-4-6", undefined)).toBe("high");
+    // 2.1.304 #33 (official `kWe`): no more guessing 'high'. With env unset and
+    // no session/settings/model-default level, the display resolver returns
+    // undefined so the chip hides and /effort prints a bare "Effort level: auto".
+    expect(getDisplayedEffortLevel("claude-sonnet-4-6", undefined)).toBeUndefined();
   });
 
   test("getEffortSuffix shows the configured level verbatim", () => {

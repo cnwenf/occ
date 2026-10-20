@@ -3,6 +3,7 @@ import * as React from 'react';
 import { BLACK_CIRCLE } from '../constants/figures.js';
 import { Box, Text } from '../ink.js';
 import type { Screen } from '../screens/REPL.js';
+import { stripToolsUsedTagForTranscript } from '../services/compact/toolNamesUsed.js';
 import type { NormalizedUserMessage } from '../types/message.js';
 import { getUserMessageText } from '../utils/messages.js';
 import { ConfigurableShortcutHint } from './ConfigurableShortcutHint.js';
@@ -26,7 +27,11 @@ export function CompactSummary(t0) {
   } else {
     t1 = $[1];
   }
-  const textContent = t1;
+  // CC 2.1.304 #6: in the transcript view (Ctrl+O) the raw
+  // `<tools-used-before-summary>` XML tag is rewritten to a readable
+  // "Tools called before this summary: …" line (official `jEs`); the prompt
+  // view never renders textContent, so the raw tag stays model-facing only.
+  const textContent = isTranscriptMode ? stripToolsUsedTagForTranscript(t1) : t1;
   const metadata = message.summarizeMetadata;
   if (metadata) {
     let t2;

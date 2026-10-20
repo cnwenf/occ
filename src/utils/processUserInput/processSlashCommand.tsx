@@ -28,7 +28,7 @@ import { extractResultText, prepareForkedCommandContext } from '../forkedAgent.j
 import { getFsImplementation } from '../fsOperations.js';
 import { isFullscreenEnvEnabled } from '../fullscreen.js';
 import { toArray } from '../generators.js';
-import { registerSkillHooks } from '../hooks/registerSkillHooks.js';
+import { registerSkillHooks, SKILL_HOOKS_KEPT_OUT_NOTICE, type SkillHooksUnfitReason } from '../hooks/registerSkillHooks.js';
 import { logError } from '../log.js';
 import { enqueuePendingNotification } from '../messageQueueManager.js';
 import { createCommandInputMessage, createSyntheticUserCaveatMessage, createSystemMessage, createUserInterruptionMessage, createUserMessage, formatCommandInputTags, isCompactBoundaryMessage, isSystemLocalCommandMessage, normalizeMessages, prepareUserContent } from '../messages.js';
@@ -994,9 +994,24 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
   // user skills still load and reach this point — block hook REGISTRATION here
   // where source is known. Mirrors the agent frontmatter gate in runAgent.ts.
   const hooksAllowedForThisSkill = !isRestrictedToPluginOnly('hooks') || isSourceAdminTrusted(command.source);
+  // CC 2.1.304 #61 (official `ae=e.hooks!==void 0&&!N`): the skill declares
+  // hooks but the plugins-only org policy kept them out. Together with the
+  // #60 bounds-unfit reason (`w` below) this strips allowed-tools and appends
+  // the model-facing kt notice — the hooks may have been what enforced safety
+  // around those tools. (Official also has an MCP-skill verification path
+  // `ge` that strips on failure; OCC has no such path.)
+  const hooksKeptOutByPolicy = command.hooks !== undefined && !hooksAllowedForThisSkill;
+  // CC 2.1.304 #60: registerSkillHooks now bounds-checks the skill's ask
+  // against the per-source ledger (1024 hooks / 16384 matcher chars) and
+  // returns the unfit reason ('characters' | 'count') having registered
+  // NOTHING; undefined when the hooks fit and were registered.
+  let hooksUnfitReason: SkillHooksUnfitReason | undefined;
   if (command.hooks && hooksAllowedForThisSkill) {
     const sessionId = getSessionId();
-    registerSkillHooks(context.setAppState, sessionId, command.hooks, command.name, command.type === 'prompt' ? command.skillRoot : undefined);
+    hooksUnfitReason = registerSkillHooks(context.setAppState, sessionId, command.hooks, command.name, command.type === 'prompt' ? command.skillRoot : undefined, {
+      sourceKind: command.source,
+      pluginId: command.pluginInfo?.pluginManifest.name
+    });
   }
 
   // Record skill invocation for compaction preservation, scoped by agent context.
@@ -1007,7 +1022,12 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
   const skillAgentId = getAgentContext()?.agentId ?? null;
   addInvokedSkill(command.name, skillPath, skillContent, skillAgentId);
   const metadata = formatCommandLoadingMetadata(command, args);
-  const additionalAllowedTools = parseToolListFromCLI(command.allowedTools ?? []);
+  // CC 2.1.304 #61 (official `O=ge!==void 0||w!==void 0||ae?[]:Hu(r)`): when
+  // the skill's hooks were kept out — bounds-unfit (#60) or org plugins-only
+  // policy — its allowed-tools grant NOTHING. Pre-304 the tools were still
+  // granted even though the hooks that were supposed to police them never
+  // registered. (Official `v` preload flag has no OCC analogue on this path.)
+  const additionalAllowedTools = hooksUnfitReason !== undefined || hooksKeptOutByPolicy ? [] : parseToolListFromCLI(command.allowedTools ?? []);
 
   // 2.1.202: skip re-appending a skill's instructions when the same skill
   // (by name + content hash of the rendered body) is already loaded this
@@ -1056,10 +1076,17 @@ async function getMessagesForPromptSlashCommand(command: CommandBase & PromptCom
     : alreadyLoaded
       ? [createUserMessage({ content: `Skill "/${command.name}" is already loaded in this conversation; its instructions were not re-appended.`, isMeta: true })]
       : [];
+  // CC 2.1.304 #61 (official `...w!==void 0||ae&&!v?[Re({content:Ol(kt),isMeta:!0})]:[]`):
+  // when the declared hooks were kept out, tell the model — verbatim `kt`
+  // notice, isMeta user message alongside the skill body — that nothing is
+  // checking the tool calls the hooks would have guarded.
+  const hooksNoticeMessage = hooksUnfitReason !== undefined || hooksKeptOutByPolicy
+    ? [createUserMessage({ content: SKILL_HOOKS_KEPT_OUT_NOTICE, isMeta: true })]
+    : [];
   const messages = [createUserMessage({
     content: metadata,
     uuid
-  }), ...instructionMessage, ...attachmentMessages, createAttachmentMessage({
+  }), ...instructionMessage, ...hooksNoticeMessage, ...attachmentMessages, createAttachmentMessage({
     type: 'command_permissions',
     allowedTools: additionalAllowedTools,
     model: command.model

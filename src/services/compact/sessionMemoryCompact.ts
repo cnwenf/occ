@@ -43,6 +43,7 @@ import {
   applyPreservedMessagesNote,
   getCompactUserSummaryMessage,
 } from './prompt.js'
+import { getToolNamesUsed } from './toolNamesUsed.js'
 
 /**
  * Configuration for session memory compaction thresholds
@@ -468,6 +469,9 @@ function createCompactionResultFromSessionMemory(
     truncatedContent,
     true,
     transcriptPath,
+    // CC 2.1.304 #6: tools called before this summary — from the pre-compact
+    // messages this session-memory commit summarizes away (official HJ).
+    getToolNamesUsed(messages),
   )
 
   if (wasTruncated) {
