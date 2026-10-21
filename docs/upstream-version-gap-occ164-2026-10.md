@@ -68,7 +68,9 @@ No secrets, no new env surfaces, no permission-model changes. Immutability prese
 | e2e `occ-versioning` + `commands-alignment` | pass |
 | `bun run build` | green, `dist/cli.js` ~30.34 MB |
 
-Gate notes: repo-wide `bun test src` remains order-polluted at baseline (OCC-124 ledger §5) — per-suite isolated runs are the gate. `tsc` is not a gate (~1341 pre-existing errors). Fresh checkouts must `bun install` to re-apply the sandbox-runtime patch before running #11 tests.
+Gate notes: repo-wide `bun test src` remains order-polluted at baseline (OCC-124 ledger §5) — per-suite isolated runs are the gate. `tsc` is not a gate (~1341 pre-existing errors). Fresh checkouts must `bun install` to re-apply the sandbox-runtime patch before running #11 tests. Post-commit re-verification on `320127c1`: supplement suites 154/154, e2e 6/6 (after `bun run build` refreshed a stale 2.1.393 `dist/cli.js`), biome 0 errors in touched files (17 repo-wide errors all in files byte-identical to the `16daab66` baseline).
+
+Security review (synchronous security-reviewer subagent, static diff review + pure-function probes of `320127c1`): **PASS-WITH-NOTES** — 0 CRITICAL/HIGH/MEDIUM. ReDoS probes (100k-char pathological inputs → 0.33 ms; 200k-char branch names → 2.68 ms; 32-char guard confirmed before regex), terminal-injection adversarial probe (ESC/OSC, NUL, CR/LF, DEL, RLO, ZWJ/ZWSP, BOM, Mongolian vowel separator, NBSP/NNBSP, U+2800, soft hyphen, tag chars, lone surrogates — all flagged unsafe; every `atStake.branch` echo site gated), 20 malformed-env probes (no crash, no NaN leak into budget math). 2 LOW defense-in-depth notes (non-blocking, queued for a future round): `sessionTitle` echoes unsanitized at `WorktreeExitDialog.tsx:290,314` (local same-trust-domain data; central `\p{Cc}\p{Cf}` strip at the display boundary suggested), and `worktreeBranch` echoes ungated at six sites (unreachable for unsafe chars today — slug-validated `worktree-<slug>` generation + hook sessions carry none — but the safety rests on the upstream invariant).
 
 ## 5. Release
 
