@@ -67,7 +67,7 @@ let mockSession: MockSession | null = null
 let cleanupCalls = 0
 let keepCalls = 0
 /** OCC-164: official gate term `wo` — a named session blocks silent removal. */
-let mockSessionTitle: string | undefined = undefined
+let mockSessionTitle: string | undefined 
 
 let gitStatusResult: GitResult = { stdout: '', stderr: '', code: 0 }
 /** Per-test responders for the at-stake classifier's git commands. */
