@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from 'child_process'
+import { type ChildProcess, execFileSync, spawn } from 'child_process'
 import {
   constants as fsConstants,
   readFileSync,
@@ -21,7 +21,7 @@ import { generateTaskId } from '../Task.js'
 import { pwd } from './cwd.js'
 import { logForDebugging } from './debug.js'
 import { getClaudeConfigHomeDir } from './envUtils.js'
-import { errorMessage, isENOENT } from './errors.js'
+import { errorMessage, getErrnoCode, isENOENT } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'
 import {
@@ -54,6 +54,39 @@ import { subprocessEnv } from './subprocessEnv.js'
 import { posixPathToWindowsPath } from './windowsPaths.js'
 
 const DEFAULT_TIMEOUT = 30 * 60 * 1000 // 30 minutes
+
+/**
+ * CC 2.1.306 (#P5): errno names for disk/fd exhaustion. Verbatim from the
+ * official v306 binary (`O_e=new Set(["ENOSPC","EDQUOT","ENFILE","EMFILE"])`
+ * @237500817, defined adjacent to the disk-full predicate `FSn`).
+ */
+export const DISK_EXHAUSTION_ERRNOS = new Set([
+  'ENOSPC',
+  'EDQUOT',
+  'ENFILE',
+  'EMFILE',
+])
+
+/**
+ * CC 2.1.306 (#P5): true when the error's errno name means the disk is full.
+ * Official predicate, verbatim (v306@237500817):
+ *   `function FSn(n){let e=E(n);return e==="ENOSPC"||e==="EDQUOT"}`
+ * — purely errno-code based (no message fallback).
+ */
+export function isDiskFullError(error: unknown): boolean {
+  const code = getErrnoCode(error)
+  return code === 'ENOSPC' || code === 'EDQUOT'
+}
+
+/**
+ * CC 2.1.306 (#P5): official disk-full start-failure message (verbatim from
+ * v306@249973898; `errName` is the errno name, e.g. `ENOSPC`). Returned when
+ * the file that captures command output could not be created because the disk
+ * is full — the command never started.
+ */
+export function formatDiskFullStartError(errName: string): string {
+  return `The command was not started: this computer's disk is full (${errName}), so the file that captures command output could not be created. Nothing ran. If this is the user's own computer, tell them before deleting anything to make room.`
+}
 
 /**
  * CC 2.1.299 (#039): remove 0-byte sandbox mount-point residue at the
@@ -345,21 +378,27 @@ export async function exec(
   // SECURITY: O_NOFOLLOW prevents symlink-following attacks from the sandbox.
   // On Windows, use string flags — numeric flags can produce EINVAL through libuv.
   let outputHandle: FileHandle | undefined
-  if (!usePipeMode) {
-    const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0
-    outputHandle = await open(
-      taskOutput.path,
-      process.platform === 'win32'
-        ? 'w'
-        : fsConstants.O_WRONLY |
-            fsConstants.O_CREAT |
-            fsConstants.O_APPEND |
-            O_NOFOLLOW,
-    )
-  }
+  let childProcess: ChildProcess | undefined
 
   try {
-    const childProcess = spawn(spawnBinary, shellArgs, {
+    // CC 2.1.306 (#P5): the output-capture file is opened INSIDE the try so a
+    // disk-full failure reaches the catch below — the official structure has
+    // the open inside the try and reports ENOSPC/EDQUOT here as "the command
+    // was not started" (v306@249973898 guard `Fa===void 0&&FSn(cs)`).
+    if (!usePipeMode) {
+      const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0
+      outputHandle = await open(
+        taskOutput.path,
+        process.platform === 'win32'
+          ? 'w'
+          : fsConstants.O_WRONLY |
+              fsConstants.O_CREAT |
+              fsConstants.O_APPEND |
+              O_NOFOLLOW,
+      )
+    }
+
+    childProcess = spawn(spawnBinary, shellArgs, {
       env: {
         ...subprocessEnv(),
         SHELL: shellType === 'bash' ? binShell : undefined,
@@ -514,6 +553,18 @@ export async function exec(
       return createAbortedCommand(undefined, {
         code: 126, // Standard Unix code for execution errors
         stderr: e2bigMessage,
+      })
+    }
+
+    // CC 2.1.306 (#P5): disk full before the command started — the official
+    // guard is `Fa===void 0&&FSn(cs)` (child process never spawned; the
+    // output-capture-file open sits inside the try before spawn, so its
+    // ENOSPC/EDQUOT lands here — v306@249973898). Branch sits after the e2big
+    // branch and before the raw passthrough; message is verbatim official copy.
+    if (childProcess === undefined && isDiskFullError(error)) {
+      return createAbortedCommand(undefined, {
+        code: 126, // Standard Unix code for execution errors
+        stderr: formatDiskFullStartError(getErrnoCode(error) ?? 'ENOSPC'),
       })
     }
 

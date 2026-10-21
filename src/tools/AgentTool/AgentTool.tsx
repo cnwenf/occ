@@ -41,7 +41,7 @@ import { isInProcessTeammate } from '../../utils/teammateContext.js';
 import { teleportToRemote } from '../../utils/teleport.js';
 import { getAssistantMessageContentLength } from '../../utils/tokens.js';
 import { createAgentId } from '../../utils/uuid.js';
-import { createAgentWorktree, hasWorktreeChanges, removeAgentWorktree } from '../../utils/worktree.js';
+import { createAgentWorktree, removeAgentWorktree, shouldRemoveUnchangedAgentWorktree } from '../../utils/worktree.js';
 import { BASH_TOOL_NAME } from '../BashTool/toolName.js';
 import { BackgroundHint } from '../BashTool/UI.js';
 import { FILE_READ_TOOL_NAME } from '../FileReadTool/prompt.js';
@@ -770,19 +770,21 @@ export const AgentTool = buildTool({
           worktreePath
         };
       }
-      if (headCommit) {
-        const changed = await hasWorktreeChanges(worktreePath, headCommit);
-        if (!changed) {
-          await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot);
-          // Clear worktreePath from metadata so resume doesn't try to use
-          // a deleted directory. Fire-and-forget to match runAgent's
-          // writeAgentMetadata handling.
-          void writeAgentMetadata(asAgentId(earlyAgentId), {
-            agentType: selectedAgent.agentType,
-            description
-          }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`));
-          return {};
-        }
+      // CC 2.1.306 (#P8) "unchanged 必清": previously this whole block was
+      // gated on `headCommit` being present, so any path that failed to record
+      // a creation baseline leaked the worktree. `shouldRemoveUnchangedAgentWorktree`
+      // falls back to an ephemeral-slug + status-clean probe when headCommit is
+      // missing (fail-closed otherwise).
+      if (await shouldRemoveUnchangedAgentWorktree({ worktreePath, headCommit })) {
+        await removeAgentWorktree(worktreePath, worktreeBranch, gitRoot);
+        // Clear worktreePath from metadata so resume doesn't try to use
+        // a deleted directory. Fire-and-forget to match runAgent's
+        // writeAgentMetadata handling.
+        void writeAgentMetadata(asAgentId(earlyAgentId), {
+          agentType: selectedAgent.agentType,
+          description
+        }).catch(_err => logForDebugging(`Failed to clear worktree metadata: ${_err}`));
+        return {};
       }
       logForDebugging(`Agent worktree has changes, keeping: ${worktreePath}`);
       return {

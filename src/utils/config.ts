@@ -597,13 +597,10 @@ export type GlobalConfig = {
   // Speculation configuration (ant-only)
   speculationEnabled?: boolean // Whether speculation is enabled (default: true)
 
-  // CC 2.1.304 (#58): tool-search refuse-recovery window (official
-  // `toolSearchRefusedAt`, byte-verified persisted-config key: vprev=0 /
-  // vver=2). Map from sha256(`${ANTHROPIC_BASE_URL}\0${normalizedModel}`)
-  // .slice(0,24) → Date.now() at which that endpoint+model refused a
-  // tool-search request and was answered without it. Entries older than
-  // 86_400_000 ms (official `h`) are expired and pruned on the next write.
-  toolSearchRefusedAt?: Record<string, number>
+  // CC 2.1.306 (research-api.md #1): the v304 `toolSearchRefusedAt` persisted
+  // refuse-recovery window is REMOVED — the official 2.1.306 binary has ZERO
+  // `toolSearchRefusedAt` string hits (v304: 6). v306 recovery is per-request
+  // and one-shot via the retry run's rebuilt state (see src/utils/toolSearch.ts).
 
   // Client data for server-side experiments (fetched during bootstrap).
   clientDataCache?: Record<string, unknown> | null

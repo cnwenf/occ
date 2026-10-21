@@ -63,6 +63,7 @@ import {
   createUserInterruptionMessage,
   normalizeMessagesForAPI,
   createSystemMessage,
+  createModelFallbackSystemMessage,
   createAssistantAPIErrorMessage,
   getMessagesAfterCompactBoundary,
   createToolUseSummaryMessage,
@@ -1147,12 +1148,25 @@ async function* queryLoop(
               queryDepth: queryTracking.depth,
             })
 
-            // Yield system message about fallback — use 'warning' level so
-            // users see the notification without needing verbose mode
-            yield createSystemMessage(
-              `Switched to ${renderModelName(nextFallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
-              'warning',
-            )
+            // CC 2.1.306 (#P7): official v304@254434741 yields the model
+            // change event FIRST, then the STRUCTURED model_fallback system
+            // message (`{type:"system",subtype:"model_fallback",content,
+            // level:"warning",trigger,originalModel,fallbackModel,isMeta:!1,
+            // timestamp,uuid}`). The structured fields — not just the text —
+            // are what the subagent finalize scan (official `iu`,
+            // v306@255040600) matches on to prepend the "This agent switched
+            // to <model>" harness notice; the previous bare informational
+            // message lost that signal. 'warning' level keeps the notice
+            // visible without verbose mode. `query_model_change` has no OCC
+            // consumer surface yet (QueryEngine's dispatch switch ignores
+            // unknown types) — yielded for official stream-shape parity.
+            yield { type: 'query_model_change', toModel: nextFallbackModel }
+            yield createModelFallbackSystemMessage({
+              content: `Switched to ${renderModelName(nextFallbackModel)} due to high demand for ${renderModelName(innerError.originalModel)}`,
+              trigger: innerError.trigger,
+              originalModel: innerError.originalModel,
+              fallbackModel: nextFallbackModel,
+            })
 
             continue
           }

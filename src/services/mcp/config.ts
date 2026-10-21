@@ -44,7 +44,7 @@ import {
 } from '../analytics/index.js'
 import { fetchClaudeAIMcpConfigsIfEligible } from './claudeai.js'
 import { expandEnvVarsInString } from './envExpansion.js'
-import { registerAuthoredUnexpandedConfig } from './redaction.js'
+import { hasEnvVarRefs, registerAuthoredUnexpandedConfig } from './redaction.js'
 import {
   type ConfigScope,
   type McpHTTPServerConfig,
@@ -426,19 +426,82 @@ function isMcpServerDenied(
 }
 
 /**
+ * Official 2.1.306 (#P9) `${VAR}` scan for the org-delivered allowedMcpServers
+ * exemption. v304 scanned EVERY field of a managed-mcp.json entry (including
+ * `env`), so even stdio servers whose only `${VAR}` lived in `env` had to be
+ * allowlisted. v306 narrows the scan to command, args, url and header values —
+ * an entry whose `${VAR}` references live only in `env` counts as
+ * org-delivered and is allowed without being listed. The predicate itself is
+ * string-less in the official policy module; the field set is the one named in
+ * the official v306 allowedMcpServers describe text ("...entries with no
+ * ${VAR} in their command, args, url or header values...").
+ *
+ * Runs over the AUTHORED (unexpanded) config — expanded values no longer
+ * contain the `${...}` markers to find.
+ */
+function authoredConfigHasEnvVarInCheckedFields(
+  config: McpServerConfig,
+): boolean {
+  const values: string[] = []
+  if ('command' in config && typeof config.command === 'string') {
+    values.push(config.command)
+  }
+  if ('args' in config && Array.isArray(config.args)) {
+    for (const arg of config.args) {
+      if (typeof arg === 'string') {
+        values.push(arg)
+      }
+    }
+  }
+  if ('url' in config && typeof config.url === 'string') {
+    values.push(config.url)
+  }
+  if (
+    'headers' in config &&
+    config.headers !== undefined &&
+    typeof config.headers === 'object'
+  ) {
+    for (const header of Object.values(config.headers)) {
+      if (typeof header === 'string') {
+        values.push(header)
+      }
+    }
+  }
+  // env is deliberately NOT scanned (v306 narrowing, see header comment).
+  return values.some(value => hasEnvVarRefs(value))
+}
+
+/**
  * Check if an MCP server is allowed by enterprise policy
  * Checks name-based, command-based, and URL-based restrictions
  * @param serverName The name of the server to check
  * @param config Optional server config for command/URL-based matching
+ * @param authoredConfig Optional UNEXPANDED server config, passed only for
+ *   org-delivered (managed-mcp.json) entries. When present and its
+ *   command/args/url/headers hold no `${VAR}`, the entry is allowed without
+ *   being listed in the allowlist (official 2.1.306 #P9). Denylist still has
+ *   absolute precedence — this exemption never bypasses `isMcpServerDenied`.
  * @returns true if allowed, false if blocked by policy
  */
 export function isMcpServerAllowedByPolicy(
   serverName: string,
   config?: McpServerConfig,
+  authoredConfig?: McpServerConfig,
 ): boolean {
   // Denylist takes absolute precedence
   if (isMcpServerDenied(serverName, config)) {
     return false
+  }
+
+  // Official 2.1.306 (#P9): servers the organization itself delivers
+  // (managed-mcp.json entries with no ${VAR} in their command, args, url or
+  // header values) are allowed without being listed. Entries WITH ${VAR} in
+  // any of those fields fall through to the allowlist matching below.
+  if (
+    authoredConfig !== undefined &&
+    !authoredConfigHasEnvVarInCheckedFields(authoredConfig)
+  ) {
+    return true
   }
 
   const settings = getMcpAllowlistSettings()
@@ -1186,11 +1249,25 @@ export async function getClaudeCodeMcpConfigs(
   // If an enterprise mcp config exists, do not use any others; this has exclusive control over all MCP servers
   // (enterprise customers often do not want their users to be able to add their own MCP servers).
   if (doesEnterpriseMcpConfigExist()) {
+    // Official 2.1.306 (#P9): re-parse the enterprise file WITHOUT expansion
+    // (official `fu(scope,{expandVars:!1})`) so the ${VAR} scan in
+    // isMcpServerAllowedByPolicy sees the AUTHORED values — expanded values
+    // no longer contain the `${...}` markers.
+    const { servers: authoredEnterpriseServers } = getMcpConfigsByScope(
+      'enterprise',
+      { expandVars: false },
+    )
     // Apply policy filtering to enterprise servers
     const filtered: Record<string, ScopedMcpServerConfig> = {}
 
     for (const [name, serverConfig] of Object.entries(enterpriseServers)) {
-      if (!isMcpServerAllowedByPolicy(name, serverConfig)) {
+      if (
+        !isMcpServerAllowedByPolicy(
+          name,
+          serverConfig,
+          readOwnOption(authoredEnterpriseServers, name),
+        )
+      ) {
         continue
       }
       filtered[name] = serverConfig

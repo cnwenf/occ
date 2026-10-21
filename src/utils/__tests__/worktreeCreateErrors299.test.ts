@@ -188,7 +188,9 @@ describe('2.1.299 #146: failure message catalog (byte-exact official strings)', 
         kind: 'origin_default',
       }),
     ).toBe(
-      `the fetch from origin succeeded, but git rev-parse returned no commit for this ref afterwards (for example in a single-branch clone of another branch, or a bare clone without a fetch refspec). ${BASE_REF_HEAD_HINT} ${MAY_NOT_BE_WORKING_MORE}`,
+      // v306 (#P8): phrase changed from `returned no commit for this ref`
+      // to `found no such ref afterwards` (default commandLabel rev-parse).
+      `the fetch from origin succeeded, but git rev-parse found no such ref afterwards (for example in a single-branch clone of another branch, or a bare clone without a fetch refspec). ${BASE_REF_HEAD_HINT} ${MAY_NOT_BE_WORKING_MORE}`,
     )
   })
 
@@ -344,8 +346,11 @@ describe('2.1.299 #146/#147: getOrCreateWorktree integration (real git)', () => 
     }
     // The fetch only succeeds when upstream has the cached default branch —
     // initRepoWithCommit above guarantees that. Assert the origin_default text.
+    // v306 (#P8): the fetch-success path resolves the FULL ref via
+    // `git show-ref --verify --hash refs/remotes/origin/<branch>` (exactRef),
+    // so the catalog names show-ref and uses the new phrase.
     expect(message).toBe(
-      `Failed to resolve base branch "origin/${defaultBranch}": the fetch from origin succeeded, but git rev-parse returned no commit for this ref afterwards (for example in a single-branch clone of another branch, or a bare clone without a fetch refspec). ${BASE_REF_HEAD_HINT} ${MAY_NOT_BE_WORKING_MORE}`,
+      `Failed to resolve base branch "origin/${defaultBranch}": the fetch from origin succeeded, but git show-ref found no such ref afterwards (for example in a single-branch clone of another branch, or a bare clone without a fetch refspec). ${BASE_REF_HEAD_HINT} ${MAY_NOT_BE_WORKING_MORE}`,
     )
   })
 

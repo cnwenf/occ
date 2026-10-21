@@ -37,7 +37,11 @@ import {
   updateProgressFromMessage,
 } from '../../tasks/LocalAgentTask/LocalAgentTask.js'
 import { asAgentId } from '../../types/ids.js'
-import type { Message as MessageType, ContentItem } from '../../types/message.js'
+import type {
+  Message as MessageType,
+  ContentItem,
+  SystemModelFallbackMessage,
+} from '../../types/message.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { logForDebugging } from '../../utils/debug.js'
 import {
@@ -53,6 +57,11 @@ import {
   extractTextContent,
   getLastAssistantMessage,
 } from '../../utils/messages.js'
+import {
+  normalizeModelSpecifier,
+  normalizeModelStringForAPI,
+  renderModelName,
+} from '../../utils/model/model.js'
 import { sanitizeSubagentOutput, sanitizeLastAssistantOutput, sanitizeLastAssistantOutputWithFindings, reportFlaggedSubagentOutput } from './subagentOutputSanitizer.js'
 import { frameHandbackIfEnabled } from './subagentHandback.js'
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
@@ -351,6 +360,85 @@ export function countToolUses(messages: MessageType[]): number {
   return count
 }
 
+/**
+ * CC 2.1.306 (#P7): official `k4` (v306@241937594) — normalized model
+ * equality: `Wm(Dt(e))===Wm(Dt(n))`, where `Dt` resolves aliases and
+ * lowercases (v306@240941147) and `Wm` canonicalizes + strips the `[1m]`
+ * suffix (`C1t` re-appends `` `${s}[1m]` `` to its output, v306@240936550).
+ * OCC equivalents: normalizeModelSpecifier (alias resolution) then
+ * normalizeModelStringForAPI (suffix strip), lowercased like `Dt`.
+ */
+function modelsEqualForFallbackScan(a: string, b: string): boolean {
+  const normalize = (model: string): string =>
+    normalizeModelStringForAPI(normalizeModelSpecifier(model)).toLowerCase()
+  return normalize(a) === normalize(b)
+}
+
+/**
+ * CC 2.1.306 (#P7): official `iu` (v306@255040600, verbatim semantics) —
+ * reverse-scan the agent's messages tracking the FINAL assistant model
+ * (skipping `isVirtual` / `isApiErrorMessage` placeholders). Bail out
+ * (undefined) when an assistant model is non-string or diverges from the
+ * final model (the tail is not uniformly one model). Return the
+ * `model_fallback` system message whose `fallbackModel` equals the final
+ * model AND differs from its `originalModel` — i.e. the switch that produced
+ * the model the agent actually finished on.
+ */
+export function findAgentModelFallbackMessage(
+  messages: MessageType[],
+): SystemModelFallbackMessage | undefined {
+  let finalModel: string | undefined
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i]!
+    if (
+      message.type === 'assistant' &&
+      (message.isVirtual === true || message.isApiErrorMessage === true)
+    ) {
+      continue
+    }
+    if (message.type === 'assistant') {
+      const model = message.message?.model
+      if (typeof model !== 'string') {
+        return undefined
+      }
+      finalModel ??= model
+      if (!modelsEqualForFallbackScan(model, finalModel)) {
+        return undefined
+      }
+    } else if (
+      finalModel !== undefined &&
+      message.type === 'system' &&
+      message.subtype === 'model_fallback'
+    ) {
+      const fallback = message as unknown as SystemModelFallbackMessage
+      if (
+        typeof fallback.fallbackModel !== 'string' ||
+        typeof fallback.originalModel !== 'string'
+      ) {
+        continue
+      }
+      if (
+        modelsEqualForFallbackScan(finalModel, fallback.fallbackModel) &&
+        !modelsEqualForFallbackScan(fallback.fallbackModel, fallback.originalModel)
+      ) {
+        return fallback
+      }
+    }
+  }
+  return undefined
+}
+
+/**
+ * CC 2.1.306 (#P7): the verbatim harness-notice text from the official
+ * finalize (`smr`, v306@255043853):
+ * `` `⚠ This agent switched to ${qo(Ce.fallbackModel)} because its earlier
+ * model could not be used.\n` `` (`qo` = renderModelName). Pushed into the
+ * harness-notes list BEFORE the report content.
+ */
+export function formatAgentModelFallbackNotice(fallbackModel: string): string {
+  return `⚠ This agent switched to ${renderModelName(fallbackModel)} because its earlier model could not be used.\n`
+}
+
 export function finalizeAgentTool(
   agentMessages: MessageType[],
   agentId: string,
@@ -391,6 +479,24 @@ export function finalizeAgentTool(
         content = textBlocks
         break
       }
+    }
+  }
+
+  // CC 2.1.306 (#P7): official finalize (`smr`, v306@255043600) — when the
+  // agent produced real output (`ae.length>0`) and ended on a fallback model
+  // (`iu` match), prepend the harness notice so the parent doesn't attribute
+  // the work to the unusable original model. Official pushes it into the
+  // harness-notes list `te`, which precedes the report content
+  // (`At=[...te,...xe,...ke]`). The official prior-notice branch (`X` from
+  // `Nit`, a `model_refusal_fallback` message) has no OCC surface — refusal
+  // fallback is not ported — so only the `iu` else-branch applies.
+  if (content.length > 0) {
+    const modelFallback = findAgentModelFallbackMessage(agentMessages)
+    if (modelFallback !== undefined) {
+      content = [
+        { type: 'text', text: formatAgentModelFallbackNotice(modelFallback.fallbackModel) },
+        ...content,
+      ]
     }
   }
 

@@ -196,12 +196,18 @@ import {
 } from 'src/utils/thinking.js'
 import {
   extractDiscoveredToolNames,
+  isAnonymousToolSearchRefuseRecoveryEligible,
   isDeferredToolsDeltaEnabled,
+  isToolSearchBetaRefusalNamed,
   isToolSearchDeclared,
   isToolSearchEnabled,
-  isToolSearchRefuseRecoveryEnabled,
+  markToolSearchBetaHealed,
   noteToolSearchDeclared,
-  recordToolSearchRefused,
+  throwToolSearchRefused,
+  TOOL_SEARCH_REFUSED_DESCRIPTION_ANONYMOUS,
+  TOOL_SEARCH_REFUSED_DESCRIPTION_NAMED,
+  TOOL_SEARCH_REFUSED_REMINDER,
+  ToolSearchRefusedError,
 } from 'src/utils/toolSearch.js'
 import { API_MAX_MEDIA_PER_REQUEST } from '../../constants/apiLimits.js'
 import {
@@ -299,7 +305,6 @@ import {
   createToolSchemaRefusedResolver,
   type SentToolSchemaEntry,
 } from './refusedToolSchemas.js'
-import { isAPIErrorBodyType } from './modelCallRetries.js'
 
 // Define a type that represents valid JSON values
 type JsonValue = string | number | boolean | null | JsonObject | JsonArray
@@ -1190,15 +1195,20 @@ export async function* executeNonStreamingRequest(
      */
     retryToolSchemaRefused?: (error: APIError) => boolean
     /**
-     * CC 2.1.304 (#58): the shared tool-search refuse-recovery handler
-     * (official `b6`/`tse`/`mZ` chain) — wired into the sync onApiError chain
-     * LAST (after every other heal handler), so only a 400/422 that no other
-     * recovery claimed reaches it (official `!Pw(Er)&&!vF(Er)` + `im===void 0`
-     * — "no other recovery took it"). Async: the un-defer rebuild re-runs
-     * `toolToAPISchema` for the dropped tools. Returns true when the refusal
-     * was eligible, the request was rebuilt WITHOUT tool search (deferred
-     * tools declared in full + critical_system_reminder prepended), and it
-     * must be re-sent once.
+     * CC 2.1.306 (research-api.md #1/#2): the shared tool-search
+     * refuse-recovery handler (official `Rse` named path + `N6`/`Ese`
+     * anonymous path) — wired into the sync onApiError chain LAST (after
+     * every other heal handler), matching the official chain position: N6
+     * sits last and its `!Fw&&!UF` conjuncts ARE "no other recovery took
+     * it". Async: the un-defer rebuild re-runs `toolToAPISchema` for the
+     * dropped tools. Returns true when the refusal was eligible (the L6
+     * request-state gate plus either a named tool-search-beta refusal or an
+     * anonymous 400/422 non-billing refusal passing the defer_loading /
+     * isTrueFirstParty guard), the request was rebuilt WITHOUT tool search
+     * (deferred tools declared in full + beta header stripped +
+     * critical_system_reminder prepended), and it must be re-sent once.
+     * One-shot per request: the rebuilt retry no longer declares tool
+     * search, so L6 fails for any second refusal.
      */
     retryToolSearchRefused?: (error: APIError) => Promise<boolean>
   },
@@ -1325,7 +1335,7 @@ export async function* executeNonStreamingRequest(
       retryContextManagementRefused: retryOptions.retryContextManagementRefused,
       // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
       retryToolSchemaRefused: retryOptions.retryToolSchemaRefused,
-      // CC 2.1.304 (#58): same-instance tool-search refuse-recovery handler.
+      // CC 2.1.306 (#1/#2): same-instance tool-search refuse-recovery handler.
       retryToolSearchRefused: retryOptions.retryToolSearchRefused,
       // CC 2.1.285 (item-B2): official `I0t` passes `nonStreamingTimeoutMs:S`
       // (S = IOo() = this fallbackTimeoutMs) into the loop options so the retry
@@ -2949,57 +2959,89 @@ async function* queryModel(
     options.querySource,
   )
 
-  // CC 2.1.304 (#58): tool-search refuse-recovery — official `b6` (the
-  // eligibility gate), `tse` (the detector that un-defers the dropped tools
-  // and throws the `mZ` retry marker), and `ugn` (the re-run with
-  // `withoutToolSearch:!0`, prepending the critical_system_reminder), all
-  // byte-verified in docs/gap-research-304/research-R4-skills-hooks.md "#58".
-  // When a firstParty request sent through a CUSTOM ANTHROPIC_BASE_URL used
-  // tool search and the gateway answers HTTP 400/422 that NO other recovery
-  // claimed and that is not a billing_error, the request is rebuilt once
-  // WITHOUT tool search: every previously deferred tool is declared in full
-  // (official `for(let Er of HO)uer(lt,Er)`), the tool-search beta header is
-  // stripped, and the official critical_system_reminder is prepended. On the
-  // retry's success (first assistant chunk / message_start) the official
-  // records `toolSearchRefusedAt[key]=Date.now()` (DUs — 1-day window, warn
-  // log) and fires `tengu_beta_400_healed` {beta,model,provider,
-  // unclaimed:true}.
+  // CC 2.1.306 (research-api.md #1/#2): tool-search refuse-recovery state
+  // machine — the FINAL v306 form, byte-verified from the official 2.1.306
+  // ELF (@249522800). Replaces the v304 `b6`/`tse`/`ugn` port: the persisted
+  // `toolSearchRefusedAt` 1-day window and the `zOe` custom-base-URL
+  // eligibility gate are GONE (zero v306 binary string hits), and recovery is
+  // per-request and one-shot.
   //
-  // Official `b6` gate → OCC mapping:
-  //   po (request used tool search)   → lastRequestBetas carried toolSearchHeader
-  //   zOe()                           → isToolSearchRefuseRecoveryEnabled()
-  //   eo instanceof Ot && (400||422)  → enforced by the withRetry chain gate
-  //   eo.type!=="billing_error"       → isAPIErrorBodyType(error,'billing_error')
-  //   !J.resumeIncompleteThinking     → OCC has no such surface (trivially true)
-  //   im===void 0 && !Pw(Er)&&!vF(Er) → chain position: this hook is wired
-  //     LAST in withRetry's fatal-400 chain, so it is only consulted after
-  //     every other recovery declined; the one-shot `toolSearchRecoveryDone`
-  //     latch mirrors the official `im` claimed-flag.
-  let toolSearchRecoveryDone = false
-  let pendingToolSearchRefusedHeal = false
+  // Official pieces → this handler (predicates live in src/utils/toolSearch.ts):
+  //   L6=(to)=>Xo!==void 0&&Xp===void 0&&to instanceof Ht
+  //            &&!Q.resumeIncompleteThinking
+  //     Xo (request declared tool search) → toolSearchHeader !== null and
+  //       lastRequestBetas carried it
+  //     Xp (partial message received)     → partialMessage === undefined
+  //     Ht                                → error instanceof APIError
+  //     resumeIncompleteThinking          → no OCC surface (trivially true)
+  //   Rse (NAMED path): Er!==null && L6(to) && iSe(to,Er) → EF with
+  //     "refusing the tool search beta" — the endpoint's refusal names the
+  //     tool-search beta header as the thing it refused.
+  //   N6 (ANONYMOUS path): Ese(to) → EF with "that no other recovery took,
+  //     on a request that declared deferred tools" — L6 plus status 400/422,
+  //     not billing_error, and the defer_loading message guard unless
+  //     isTrueFirstParty() (official Jmn).
+  //   EF → throwToolSearchRefused: the verbatim warn + throw
+  //     ToolSearchRefusedError (official UZ). Thrown and caught immediately
+  //     here — OCC does the rebuild inline (no generator boundary like the
+  //     official pgn wrapper), reading declaredToolSearch back off the error
+  //     to gate the reminder.
+  //   One-shot: NO explicit latch (v304's toolSearchRecoveryDone is dropped).
+  //     The official one-shot is structural — `mo` rebuilds the retry request
+  //     with `Q.toolSearchRefusal!==void 0`, so tool search is no longer
+  //     declared; here the retry run rebuilds allTools/betas with
+  //     useToolSearch=false, so requestDeclaredToolSearch is false and L6
+  //     fails for any second refusal.
+  //   Chain-position equivalence: this hook is wired LAST in withRetry's
+  //     fatal-400 chain — the official N6 sits LAST in the onApiError chain,
+  //     and its `!Fw&&!UF` conjuncts ARE "every other recovery declined"
+  //     (see the toolSearch.ts section header).
+  let pendingToolSearchHealRefusal: APIError | undefined
   const retryToolSearchRefused = async (error: APIError): Promise<boolean> => {
     try {
-      const requestUsedToolSearch =
+      // Official L6 — the request-scoped conjuncts.
+      const requestDeclaredToolSearch =
         toolSearchHeader !== null &&
         (lastRequestBetas?.includes(toolSearchHeader) ?? false)
       if (
-        toolSearchRecoveryDone ||
-        !requestUsedToolSearch ||
-        !isToolSearchRefuseRecoveryEnabled() ||
-        (error.status !== 400 && error.status !== 422) ||
-        isAPIErrorBodyType(error, 'billing_error')
+        !requestDeclaredToolSearch ||
+        partialMessage !== undefined ||
+        !(error instanceof APIError)
       ) {
         return false
       }
-      toolSearchRecoveryDone = true
-      // Official `tse` warn text (byte-verified, level warn).
-      logForDebugging(
-        `[ToolSearch] HTTP ${error.status} that no other recovery took, for a request that used tool search (${toolSearchHeader}); making the call again without it...`,
-        { level: 'warn' },
-      )
-      // Un-defer the dropped tools (official `for(let Er of HO)uer(lt,Er)`):
-      // rebuild the full tool list — every deferred tool declared in full,
-      // ToolSearch itself removed — reusing the same schema builder options.
+      // Official Rse (named path) first, then N6 via Ese (anonymous path).
+      let refusalDescription: string | null = null
+      if (
+        toolSearchHeader !== null &&
+        isToolSearchBetaRefusalNamed(error, toolSearchHeader)
+      ) {
+        refusalDescription = TOOL_SEARCH_REFUSED_DESCRIPTION_NAMED
+      } else if (isAnonymousToolSearchRefuseRecoveryEligible(error)) {
+        refusalDescription = TOOL_SEARCH_REFUSED_DESCRIPTION_ANONYMOUS
+      }
+      if (refusalDescription === null) {
+        return false
+      }
+      // Official EF: verbatim warn + throw UZ; caught immediately —
+      // declaredToolSearch (official `mo`) gates the reminder below.
+      let declaredToolSearch = false
+      try {
+        throwToolSearchRefused(
+          error,
+          toolSearchHeader,
+          refusalDescription,
+          requestDeclaredToolSearch,
+        )
+      } catch (refused) {
+        if (!(refused instanceof ToolSearchRefusedError)) {
+          throw refused
+        }
+        declaredToolSearch = refused.declaredToolSearch
+      }
+      // Rebuild the request WITHOUT tool search (official `mo` retry-run
+      // rebuild): every previously deferred tool declared in full, the
+      // ToolSearch tool itself removed, and the beta header stripped.
       const undeferredTools = tools.filter(
         t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),
       )
@@ -3020,19 +3062,25 @@ async function* queryModel(
       if (toolSearchHeader) {
         betas = betas.filter(b => b !== toolSearchHeader)
       }
-      // Prepend the official critical_system_reminder (verbatim content;
-      // rendered like the OCC attachment path — wrapMessagesInSystemReminder
-      // over an isMeta user message, messages.ts:4613-4617).
-      messagesForAPI = [
-        ...wrapMessagesInSystemReminder([
-          createUserMessage({
-            content: `${TOOL_SEARCH_TOOL_NAME} is no longer available. Tools listed earlier as deferred that are still available are declared in full: call them directly.`,
-            isMeta: true,
-          }),
-        ]),
-        ...messagesForAPI,
-      ]
-      pendingToolSearchRefusedHeal = true
+      // Official pgn prepends the critical_system_reminder ONLY when the
+      // refused request declared tool search (verbatim content). OCC
+      // prepends wire-side only — the official also injects it into the UI
+      // transcript via `yield*H(...)`, which lives in src/query.ts territory
+      // (out of scope for this port; documented deviation).
+      if (declaredToolSearch) {
+        messagesForAPI = [
+          ...wrapMessagesInSystemReminder([
+            createUserMessage({
+              content: TOOL_SEARCH_REFUSED_REMINDER,
+              isMeta: true,
+            }),
+          ]),
+          ...messagesForAPI,
+        ]
+      }
+      // Official `Q.toolSearchRefusal = UZ.refusal` capture — feeds the
+      // success-side heal (hLe) below.
+      pendingToolSearchHealRefusal = error
       return true
     } catch (err) {
       logForDebugging(
@@ -3044,32 +3092,19 @@ async function* queryModel(
   }
 
   /**
-   * CC 2.1.304 (#58): official success side of `ugn` — on the retry's first
-   * assistant chunk / message_start: `DUs(S.model,S.storageV5)` (record the
-   * refusal + official warn text) and
-   * `i("tengu_beta_400_healed",{beta,model,provider,unclaimed:!0})`.
+   * CC 2.1.306: official `hLe` success side — on the retry run's first
+   * assistant chunk / message_start: the named-check debug log +
+   * `tengu_beta_400_healed` {beta,model,provider,status,unnamed:!jr}. The
+   * official `Cse` one-shot latch and `Q.toolSearchRefusal` read map to this
+   * closure's capture-and-clear of pendingToolSearchHealRefusal.
    */
   const markToolSearchRefusedHealed = (): void => {
-    if (!pendingToolSearchRefusedHeal) {
+    const refusal = pendingToolSearchHealRefusal
+    if (refusal === undefined) {
       return
     }
-    pendingToolSearchRefusedHeal = false
-    try {
-      recordToolSearchRefused(options.model)
-      logEvent('tengu_beta_400_healed', {
-        beta:
-          toolSearchHeader as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        model:
-          options.model as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
-        provider: getAPIProviderForStatsig(),
-        unclaimed: true,
-      })
-    } catch (err) {
-      logForDebugging(
-        `[ToolSearch] refused-heal mark threw: ${String(err)}`,
-        { level: 'error' },
-      )
-    }
+    pendingToolSearchHealRefusal = undefined
+    markToolSearchBetaHealed(refusal, options.model)
   }
 
   try {
@@ -3088,6 +3123,12 @@ async function* queryModel(
         attemptNumber = attempt
         isFastModeRequest = context.fastMode ?? false
         start = Date.now()
+        // CC 2.1.306 (research-api.md #1): official per-retry reset `Xp=void 0`
+        // — the partial-message flag (L6's second conjunct in the tool-search
+        // refuse-recovery gate) is per-ATTEMPT state, so a retry run starts
+        // with "no partial message received" even if a previous attempt's
+        // consumption set it.
+        partialMessage = undefined
         attemptStartTimes.push(start)
         // Client has been created by withRetry's getClient() call. This fires
         // once per attempt; on retries the client is usually cached (withRetry
@@ -3209,9 +3250,11 @@ async function* queryModel(
         // CC 2.1.300 (#36): official `AGe`/`sut` — MCP tool input-schema
         // refusal heal (see handler creation above).
         retryToolSchemaRefused,
-        // CC 2.1.304 (#58): official `b6`/`tse`/`mZ` — tool-search refuse
-        // recovery (see handler creation above). Wired LAST so it only sees a
-        // 400/422 that no other recovery claimed (official `!Pw(Er)&&!vF(Er)`).
+        // CC 2.1.306 (research-api.md #1/#2): official `Rse` (named path) +
+        // `N6`/`Ese` (anonymous path) — tool-search refuse recovery (see
+        // handler creation above). Wired LAST: the official N6 sits last in
+        // the onApiError chain, and its `!Fw&&!UF` conjuncts ARE "every other
+        // recovery declined".
         retryToolSearchRefused,
       },
     )
@@ -3371,9 +3414,10 @@ async function* queryModel(
             // context_management beta-stripped heal resend, mark it spent and
             // log tengu_beta_400_healed.
             markContextManagementBetaHealed()
-            // CC 2.1.304 (#58): official `ugn` success mark — the tool-search
-            // refusal recovery's rebuilt request streamed cleanly, so record
-            // the refusal (1-day window) and log tengu_beta_400_healed.
+            // CC 2.1.306 (research-api.md #1): official `hLe` success mark —
+            // the request rebuilt WITHOUT tool search streamed cleanly, so
+            // run the heal check (named-refusal debug log) and log
+            // tengu_beta_400_healed {beta,model,provider,status,unnamed}.
             markToolSearchRefusedHealed()
             partialMessage = part.message
             ttftMs = Date.now() - start
@@ -4247,7 +4291,7 @@ async function* queryModel(
           retryContextManagementRefused,
           // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
           retryToolSchemaRefused,
-          // CC 2.1.304 (#58): same-instance tool-search refuse-recovery handler.
+          // CC 2.1.306 (#1/#2): same-instance tool-search refuse-recovery handler.
           retryToolSearchRefused,
         },
         paramsFromContext,
@@ -4267,8 +4311,8 @@ async function* queryModel(
       // `_Ze(),iEe(),sEe(),Ztt(),uZe()`: the request answered, so a pending
       // beta-stripped heal is confirmed and tengu_beta_400_healed is logged.
       markContext1mBetaHealed()
-      // CC 2.1.304 (#22 / #58): same non-streaming success marks as the
-      // streaming message_start site.
+      // CC 2.1.304 (#22) / CC 2.1.306 (#1): same non-streaming success marks as
+      // the streaming message_start site.
       markContextManagementBetaHealed()
       markToolSearchRefusedHealed()
 
@@ -4388,7 +4432,7 @@ async function* queryModel(
             retryContextManagementRefused,
             // CC 2.1.300 (#36): same-instance tool-schema refusal handler.
             retryToolSchemaRefused,
-            // CC 2.1.304 (#58): same-instance tool-search refuse-recovery handler.
+            // CC 2.1.306 (#1/#2): same-instance tool-search refuse-recovery handler.
             retryToolSearchRefused,
           },
           paramsFromContext,
@@ -4406,8 +4450,8 @@ async function* queryModel(
         )
         // CC 2.1.295 (item-1): official non-streaming success mark (`Ztt()`).
         markContext1mBetaHealed()
-        // CC 2.1.304 (#22 / #58): same non-streaming success marks as the
-        // streaming message_start site.
+        // CC 2.1.304 (#22) / CC 2.1.306 (#1): same non-streaming success marks
+        // as the streaming message_start site.
         markContextManagementBetaHealed()
         markToolSearchRefusedHealed()
 

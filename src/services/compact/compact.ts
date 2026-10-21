@@ -320,6 +320,26 @@ export function truncateHeadForPTLRetry(
   return sliced
 }
 
+/**
+ * Official 2.1.306 (#P10): true when the message set about to be summarized
+ * already contains a prior compact summary — i.e. this compaction re-summarizes
+ * an earlier summary, so the oldest original messages have been squeezed out.
+ * The official binary carries the dual-flag mechanism (`isCompactSummary` /
+ * `repeatsCompactSummary`, counts 14=14 across v304/v306); the v306 fix is a
+ * string-less in-place change extending the flag to the cloud/teammate
+ * compaction paths. Mirrors the official withholding predicate's flag reads
+ * (`e.isCompactSummary===!0||e.repeatsCompactSummary===!0`).
+ */
+export function inputRepeatsCompactSummary(
+  messages: readonly Message[],
+): boolean {
+  return messages.some(
+    m =>
+      m.type === 'user' &&
+      (m.isCompactSummary === true || m.repeatsCompactSummary === true),
+  )
+}
+
 export const ERROR_MESSAGE_PROMPT_TOO_LONG =
   'Conversation too long. Press esc twice to go up a few messages and try again.'
 export const ERROR_MESSAGE_USER_ABORT = 'API Error: Request was aborted.'
@@ -677,6 +697,12 @@ export async function compactConversation(
           getToolNamesUsed(messages),
         ),
         isCompactSummary: true,
+        // Official 2.1.306 (#P10): this summary repeats earlier summarized
+        // content when the input already held a prior compact summary
+        // (re-compaction) or the PTL retry dropped the oldest messages.
+        ...(ptlAttempts > 0 || inputRepeatsCompactSummary(messages)
+          ? { repeatsCompactSummary: true as const }
+          : {}),
         isVisibleInTranscriptOnly: true,
       }),
     ]
@@ -1126,6 +1152,11 @@ export async function partialCompactConversation(
           getToolNamesUsed(messagesToSummarize),
         ),
         isCompactSummary: true,
+        // Official 2.1.306 (#P10): same repeat marking as the full path —
+        // prior summary inside the summarized set, or PTL head-truncation.
+        ...(ptlAttempts > 0 || inputRepeatsCompactSummary(messagesToSummarize)
+          ? { repeatsCompactSummary: true as const }
+          : {}),
         ...(messagesToKeep.length > 0
           ? {
               summarizeMetadata: {

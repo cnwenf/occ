@@ -536,9 +536,16 @@ export const SettingsSchema = lazySchema(() =>
         .array(AllowedMcpServerEntrySchema())
         .optional()
         .describe(
-          'Enterprise allowlist of MCP servers that can be used. ' +
-            'Applies to all scopes including enterprise servers from managed-mcp.json. ' +
-            'If undefined, all servers are allowed. If empty array, no servers are allowed. ' +
+          // Official 2.1.306 (#P9) describe text, byte-exact minus the
+          // `managedMcpServers, and ` trim (OCC has no managedMcpServers
+          // settings key — the org-delivered surface here is managed-mcp.json).
+          'Enterprise allowlist of the MCP servers users may use. ' +
+            'Governs servers users add (user, project and local config, --mcp-config, agent frontmatter, plugins, claude.ai connectors); ' +
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: official v306 describe text carries the literal MCP ${VAR} syntax
+            'servers the organization itself delivers (managed-mcp.json entries with no ${VAR} in their command, args, url or header values) are allowed without being listed; ' +
+            // biome-ignore lint/suspicious/noTemplateCurlyInString: official v306 describe text carries the literal MCP ${VAR} syntax
+            'a managed-mcp.json entry with ${VAR} in any of those must match this list. ' +
+            'If undefined, all servers are allowed. If empty array, users can use no servers of their own. ' +
             'Denylist takes precedence - if a server is on both lists, it is denied.',
         ),
       // Enterprise denylist of MCP servers

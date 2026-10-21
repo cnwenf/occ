@@ -32,6 +32,7 @@ import {
   gitFilePointsToBareRepository,
   worktreeBaseKindFor,
 } from './git/worktreeBaseResolve.js'
+import type { WorktreeBaseKind } from './git/worktreeBaseResolve.js'
 import {
   findCanonicalGitRoot,
   findGitRoot,
@@ -294,6 +295,94 @@ function worktreePathFor(repoRoot: string, slug: string): string {
 }
 
 /**
+ * Official v306 `yot` (@250451600), the shared worktree-base ref resolver:
+ *
+ *   async function yot({base:e,kind:n,failure:r,cwd:s,root:h,exactRef:y}){
+ *     let S=hc(h,{LC_ALL:"C"}),w=y===!0?"show-ref":"rev-parse",
+ *     {stdout:H,stderr:q,code:K,exitCode:Q,timedOut:Se}=await ut(...,
+ *       y===!0?[...Tn,"show-ref","--verify","--hash",e]
+ *             :[...Tn,"rev-parse","--verify","--quiet",e],{cwd:s,env:S}),
+ *     be=H.trim();
+ *     if(K===0&&be!=="")return be;
+ *     ... ve = y===!0 && Q===128 && we===`fatal: '${e}' - not a valid ref` ...
+ *     throw Je(Error(`${r}: ${dt}`),`worktree base not resolved (base=${n},
+ *       cause=${Te}, repo_confirmed=${Pe})`)
+ *   }
+ *
+ * exactRef resolves a FULL ref name (`refs/remotes/origin/<branch>`) with
+ * `git show-ref --verify --hash` — never the abbrev name, which in a bare-repo
+ * layout can resolve against the local HEAD or fail outright (the v304 defect
+ * this port fixes). Older git answers a missing ref to `show-ref --verify`
+ * with exit 128 + `fatal: '<ref>' - not a valid ref` instead of exit 1 +
+ * empty output; the official `ve` detection maps BOTH shapes to the
+ * `name_missing` cause.
+ *
+ * Returns the resolved commit-ish string on success; THROWS
+ * `<failure>: <detail>` on any failure (official semantics — callers do not
+ * get a null return). The detail comes from the shared v299/v306 catalog in
+ * src/utils/git/worktreeBaseResolve.ts.
+ *
+ * OCC deviations (documented): the exec wrapper reports `{stdout, stderr,
+ * code, error?}` without separate `exitCode`/`timedOut` fields, so cause
+ * classification reuses `classifyRevParseCause` (same approximation as the
+ * 2.1.299 #146 port); the official `Je` error annotation text is emitted
+ * byte-exact via `logForDebugging`; and the v302 (#23) `no_repo` intercept is
+ * preserved —
+ * no-repo stderr declines with the not-in-a-git-repo message instead of the
+ * hard base-resolve refusal (OCC has no separate pre-resolve root rejection).
+ */
+export async function resolveGitRef(params: {
+  base: string
+  kind: WorktreeBaseKind
+  failure: string
+  cwd: string
+  root: string
+  exactRef?: boolean
+}): Promise<string> {
+  const { base, kind, failure, cwd, root } = params
+  const exactRef = params.exactRef === true
+  const commandLabel = exactRef ? 'show-ref' : 'rev-parse'
+  const args = exactRef
+    ? ['show-ref', '--verify', '--hash', base]
+    : ['rev-parse', '--verify', '--quiet', base]
+  const result = await execFileNoThrowWithCwd(gitExe(), args, {
+    cwd,
+    env: { ...process.env, LC_ALL: 'C' },
+  })
+  const stdoutTrimmed = result.stdout.trim()
+  if (result.code === 0 && stdoutTrimmed !== '') {
+    return stdoutTrimmed
+  }
+  const stderrTrimmed = result.stderr.trim()
+  // Official `ve`: exactRef ∧ exit 128 ∧ canonical not-a-valid-ref stderr.
+  const isNotAValidRef =
+    exactRef &&
+    result.code === 128 &&
+    stderrTrimmed === `fatal: '${base}' - not a valid ref`
+  const cause = isNotAValidRef ? 'name_missing' : classifyRevParseCause(result)
+  if (cause === 'no_repo') {
+    throw new Error(NOT_IN_GIT_REPO_WORKTREE_MESSAGE)
+  }
+  // Official `Pe`: repo_confirmed = the .git layout resolves for this root.
+  const repoConfirmed = (await resolveGitDir(root)) !== null
+  const detail = buildWorktreeBaseResolveFailureMessage({
+    cause,
+    kind,
+    repoConfirmed,
+    stderrTrimmed,
+    stdoutTrimmed,
+    commandLabel,
+  })
+  // Official `Je` annotation, byte-exact (v306 dump @41593385 & @58462996):
+  // `worktree base not resolved (base=${n}, cause=${Te}, repo_confirmed=${Pe})`
+  logForDebugging(
+    `worktree base not resolved (base=${kind}, cause=${cause}, repo_confirmed=${repoConfirmed ? 'yes' : 'no'})`,
+    { level: 'warn' },
+  )
+  throw new Error(`${failure}: ${detail}`)
+}
+
+/**
  * Creates a new git worktree for the given slug, or resumes it if it already exists.
  * Named worktrees reuse the same path across invocations, so the existence check
  * prevents unconditionally running `git fetch` (which can hang waiting for credentials)
@@ -391,6 +480,22 @@ export async function getOrCreateWorktree(
       )
       if (fetchCode === 0) {
         baseBranch = originRef
+        // Official v306 (#P8) fetch-success call site (@250461300):
+        //   H=Ye, q=await yot({base:`refs/remotes/${Ye}`,exactRef:!0,
+        //     kind:"origin_default",
+        //     failure:`Failed to resolve base branch "${Ye}"`,cwd:e,root:e})
+        // The FULL ref is resolved with `show-ref --verify --hash` right here
+        // (throwing on failure) — NOT via the shared abbrev rev-parse below,
+        // which in a bare-repo layout resolves `origin/<branch>` against the
+        // local HEAD or fails outright (wrong start point / leak).
+        baseSha = await resolveGitRef({
+          base: `refs/remotes/${originRef}`,
+          kind: 'origin_default',
+          failure: `Failed to resolve base branch "${originRef}"`,
+          cwd: repoRoot,
+          root: repoRoot,
+          exactRef: true,
+        })
       } else {
         // Official 2.1.300 (#33): the fetch of origin/<default> failed — base
         // the worktree on the CURRENT checkout's local HEAD, not the canonical
@@ -421,45 +526,23 @@ export async function getOrCreateWorktree(
     }
   }
 
-  // For the fetch/PR-fetch paths we still need the SHA — the fs-only resolveRef
-  // above only covers the "origin/<branch> already exists locally" case.
+  // For the PR-fetch path (FETCH_HEAD) and the fetch-failure head fallback
+  // (HEAD) we still need the SHA — the fs-only resolveRef above only covers
+  // the "origin/<branch> already exists locally" case, and the v306
+  // fetch-success exact-ref resolution above sets baseSha directly.
   //
-  // Official 2.1.299 (#146): `rev-parse --verify --quiet` under LC_ALL=C, and
-  // a failure now explains HOW the lookup ended + likely reasons (official
-  // `DQt` @225547600, kind ternary @225554140). The message catalog lives in
-  // src/utils/git/worktreeBaseResolve.ts (byte-exact strings).
+  // Official 2.1.299 (#146) + v306 shared resolver: the official runs the
+  // remaining bases through `yot` WITHOUT exactRef (`rev-parse --verify
+  // --quiet` under LC_ALL=C); failure explains HOW the lookup ended + likely
+  // reasons via the catalog in src/utils/git/worktreeBaseResolve.ts.
   if (!baseSha) {
-    const revParse = await execFileNoThrowWithCwd(
-      gitExe(),
-      ['rev-parse', '--verify', '--quiet', baseBranch],
-      { cwd: repoRoot, env: { ...process.env, LC_ALL: 'C' } },
-    )
-    const resolvedSha = revParse.stdout.trim()
-    if (revParse.code === 0 && resolvedSha !== '') {
-      baseSha = resolvedSha
-    } else {
-      const cause = classifyRevParseCause(revParse)
-      // Official 2.1.302 (#23): no-repo stderr ("not a git repository" / git
-      // ≥2.56 "gitfile does not point to a valid repository") → treat the dir
-      // as not-a-repo and decline gracefully, instead of the 2.1.299 (#146)
-      // base-resolve hard-error refusal the v301 classifier produced.
-      if (cause === 'no_repo') {
-        throw new Error(NOT_IN_GIT_REPO_WORKTREE_MESSAGE)
-      }
-      // Official `be`: repo_confirmed = the .git entry resolves to a valid
-      // layout for this folder (OCC: resolveGitDir non-null).
-      const repoConfirmed = (await resolveGitDir(repoRoot)) !== null
-      const detail = buildWorktreeBaseResolveFailureMessage({
-        cause,
-        kind: worktreeBaseKindFor(baseBranch),
-        repoConfirmed,
-        stderrTrimmed: revParse.stderr.trim(),
-        stdoutTrimmed: resolvedSha,
-      })
-      throw new Error(
-        `Failed to resolve base branch "${baseBranch}": ${detail}`,
-      )
-    }
+    baseSha = await resolveGitRef({
+      base: baseBranch,
+      kind: worktreeBaseKindFor(baseBranch),
+      failure: `Failed to resolve base branch "${baseBranch}"`,
+      cwd: repoRoot,
+      root: repoRoot,
+    })
   }
 
   const sparsePaths = getInitialSettings().worktree?.sparsePaths
@@ -470,18 +553,14 @@ export async function getOrCreateWorktree(
   // -B (not -b): reset any orphan branch left behind by a removed worktree dir.
   // Saves a `git branch -D` subprocess (~15ms spawn overhead) on every create.
   // Official 2.1.300 (#29): the start-point is the PEELED base SHA
-  // (`${sha}^{commit}` — v300 add-argv @226752420), never the ref NAME: when
-  // a tag or branch is named like a commit ID, git's DWIM start-point
-  // resolution could pick the wrong object and the --worktree session would
-  // start from an unintended commit. (baseSha is always non-null here — the
-  // resolution block above either sets it or throws; the ternary only narrows
-  // the type for TS.)
-  addArgs.push(
-    '-B',
-    worktreeBranch,
-    worktreePath,
-    baseSha ? `${baseSha}^{commit}` : baseBranch,
-  )
+  // (`${sha}^{commit}`), never the ref NAME: when a tag or branch is named
+  // like a commit ID, git's DWIM start-point resolution could pick the wrong
+  // object and the --worktree session would start from an unintended commit.
+  // Official v306 (#P8) makes the peel UNCONDITIONAL (@250462300):
+  //   let Se=`${q}^{commit}`;Q.push("--no-track",...,Se)
+  // — baseSha is guaranteed non-null here: every resolution path above either
+  // sets it or throws (resolveGitRef never returns falsy).
+  addArgs.push('-B', worktreeBranch, worktreePath, `${baseSha}^{commit}`)
 
   const { code: createCode, stderr: createStderr } =
     await execFileNoThrowWithCwd(gitExe(), addArgs, { cwd: repoRoot })
@@ -1281,6 +1360,16 @@ const EPHEMERAL_WORKTREE_PATTERNS = [
 ]
 
 /**
+ * True when a worktree path's final segment matches one of the ephemeral
+ * (machine-generated) slug patterns — the same gate `cleanupStaleAgentWorktrees`
+ * uses, applied to a full path via its basename.
+ */
+export function isEphemeralWorktreePath(worktreePath: string): boolean {
+  const slug = basename(worktreePath)
+  return EPHEMERAL_WORKTREE_PATTERNS.some(p => p.test(slug))
+}
+
+/**
  * Remove stale agent/workflow worktrees older than cutoffDate.
  *
  * Safety:
@@ -1410,6 +1499,53 @@ export async function hasWorktreeChanges(
   }
 
   return false
+}
+
+/**
+ * `git status --porcelain` cleanliness probe (fail-closed): true only when
+ * git succeeds AND reports no entries. Used by the v306 cleanup fallback,
+ * which has no headCommit baseline to run the rev-list comparison against.
+ */
+export async function isWorktreeStatusClean(
+  worktreePath: string,
+): Promise<boolean> {
+  const { code, stdout } = await execFileNoThrowWithCwd(
+    gitExe(),
+    ['status', '--porcelain'],
+    { cwd: worktreePath },
+  )
+  return code === 0 && stdout.trim().length === 0
+}
+
+/**
+ * CC 2.1.306 (#P8) cleanup decision for an agent worktree, "unchanged 必清":
+ *
+ * - headCommit present → the existing fail-closed `hasWorktreeChanges` probe
+ *   (status + rev-list against the creation baseline) decides.
+ * - headCommit MISSING → previously the whole cleanup was skipped and the
+ *   worktree leaked (official changelog: agent worktrees "sometimes not
+ *   being cleaned up"). Fallback: remove anyway when the path is an
+ *   EPHEMERAL machine-generated slug (never a user-named worktree) AND the
+ *   working tree is status-clean. Any git failure → keep (fail-closed).
+ *
+ * Part 2 of the official fix has no independent code change (the official
+ * cleanup bytes are identical v304↔v306) — the leak's root cause is the
+ * bare-repo base-resolution defect fixed by `resolveGitRef`, which left
+ * headCommit unset/misresolved; this fallback covers the residual cases
+ * (e.g. hook-less resume paths that never recorded a baseline).
+ */
+export async function shouldRemoveUnchangedAgentWorktree(params: {
+  worktreePath: string
+  headCommit?: string
+}): Promise<boolean> {
+  const { worktreePath, headCommit } = params
+  if (headCommit) {
+    return !(await hasWorktreeChanges(worktreePath, headCommit))
+  }
+  if (!isEphemeralWorktreePath(worktreePath)) {
+    return false
+  }
+  return isWorktreeStatusClean(worktreePath)
 }
 
 /**

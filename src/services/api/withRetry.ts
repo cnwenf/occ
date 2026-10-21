@@ -225,6 +225,15 @@ function shouldRetry529(querySource: QuerySource | undefined): boolean {
 const PERSISTENT_MAX_BACKOFF_MS = 5 * 60 * 1000
 const PERSISTENT_RESET_CAP_MS = 6 * 60 * 60 * 1000
 const HEARTBEAT_INTERVAL_MS = 30_000
+// CC 2.1.305 (research-api.md item 3): the v306 watchdog constants block
+// @249448960 — `Afr=60000,wmn=300000,TQe=21600000,M_o=30000` — maps 1:1 onto
+// RETRY_AFTER_TOO_LONG_THRESHOLD_MS / PERSISTENT_MAX_BACKOFF_MS /
+// PERSISTENT_RESET_CAP_MS / HEARTBEAT_INTERVAL_MS above (all byte-identical
+// values). The ONE new derived constant is the usage-limit recheck backoff
+// cap: official `Lo=xN(1+Q,null,TQe/2,r.random,fs)` @249463477 — the recheck
+// schedule's base (fs, the env value) doubles per completed round (Q) and is
+// capped at TQe/2 = 3h.
+const USAGE_LIMIT_RECHECK_BACKOFF_CAP_MS = PERSISTENT_RESET_CAP_MS / 2
 
 // 2.1.281 (#022): binary constants block @202407030 —
 // `Ipo=1,Opo=60000,Dpo=300000,TRe=21600000,Nlr=30000` (Dpo/TRe/Nlr are the
@@ -369,22 +378,28 @@ interface RetryOptions {
    */
   retryToolSchemaRefused?: (error: APIError) => boolean
   /**
-   * CC 2.1.304 (#58): when an HTTP 400/422 that NO other recovery claimed
-   * arrives on a request that used tool search behind a custom
-   * `ANTHROPIC_BASE_URL` (official `b6` eligibility: `zOe()` — no
-   * `ENABLE_TOOL_SEARCH` override, firstParty, non-official base URL — plus
-   * status 400||422, not `billing_error`, not resume-incomplete-thinking), the
+   * CC 2.1.306 (research-api.md #1/#2): the tool-search refuse-recovery hook
+   * (official `Rse` named path + `N6`/`Ese` anonymous path, @249522800).
+   * When an HTTP 400/422 arrives on a request that DECLARED tool search and
+   * no partial message has been received yet (official `L6`), and the error
+   * either NAMES the tool-search beta header as refused (`iSe`) or is an
+   * anonymous 400/422 non-billing refusal passing the `defer_loading`
+   * message guard unless truly first-party (`Ese` with official `Jmn`), the
    * retry loop calls this so claude.ts can re-declare the dropped tools in
    * full, strip the tool-search beta, prepend the official
-   * critical_system_reminder and resend ONCE (official `tse`); on the retry's
-   * first assistant chunk the refusal window `toolSearchRefusedAt` is recorded
-   * (official `DUs`, 86_400_000 ms TTL) so subsequent requests for that
-   * endpoint+model skip tool search outright. Returns true when the request
-   * was rebuilt and must be retried; one-shot per request. Async because the
-   * un-defer rebuild awaits `toolToAPISchema` — wired LAST in the fatal-400
-   * chain (official `b6` requires no other recovery to have claimed the
-   * error), and it also answers 422, so the status gate is broader than the
-   * neighboring hooks.
+   * critical_system_reminder and resend ONCE (official `EF`/`pgn`); on the
+   * retry's success the official `hLe` heal mark fires
+   * (`tengu_beta_400_healed` {beta,model,provider,status,unnamed}). The v304
+   * persisted `toolSearchRefusedAt` 1-day window and the `zOe`
+   * custom-base-URL eligibility gate are GONE in v306 (zero binary string
+   * hits) — recovery is per-request and one-shot: the rebuilt retry no
+   * longer declares tool search, so `L6` fails for any second refusal.
+   * Returns true when the request was rebuilt and must be retried. Async
+   * because the un-defer rebuild awaits `toolToAPISchema` — wired LAST in
+   * the fatal-400 chain, matching the official chain position: `N6` sits
+   * last and its `!Fw&&!UF` conjuncts ARE "no other recovery took it". It
+   * also answers 422, so the status gate is broader than the neighboring
+   * hooks.
    */
   retryToolSearchRefused?: (error: APIError) => Promise<boolean>
   /**
@@ -470,6 +485,42 @@ interface RetryOptions {
    * hooks below are therefore no-ops until the query engine wires the ledger.
    */
   modelCallRetries?: ModelCallRetries
+  /**
+   * CC 2.1.305 (research-api.md item 3): the official optional
+   * `r.isUsageLimitLifted(ps)` dependency (@249463400 region — `ps` is the
+   * usage-limit 429 APIError itself, `ps=on` @249462443). While a watchdog
+   * session waits out a usage-limit rejection, the wait loop periodically
+   * asks this probe whether the limit has ALREADY lifted (e.g. the quota
+   * window rolled over early); a `true` result ends the wait immediately and
+   * retries instead of sleeping until the server-advertised reset. The probe
+   * interval is CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS (the
+   * official `fs`), backing off exponentially per completed round
+   * (`Lo=xN(1+Q,null,TQe/2,r.random,fs)`); a throwing probe is caught,
+   * logged, and treated as not-lifted (official `catch(jo){l(jo)}`).
+   *
+   * OPTIONAL / STAGED: when absent (together with an unset env) the recheck
+   * interval resolves to `undefined` → the official `Lo=fs===void 0?1/0:0`
+   * (Infinity countdown) → the probe branch is never reached and the 2.1.301
+   * watchdog behavior is byte-for-byte unchanged.
+   */
+  isUsageLimitLifted?: (error: APIError) => Promise<boolean>
+  /**
+   * CC 2.1.305 (research-api.md item 3): the official optional
+   * `r.subscribeRetryWake(cb)` dependency (@249463400 region, used by both
+   * `Tmn` — the wake-able heartbeat sleep — and the recheck probe's
+   * `Ga=r.subscribeRetryWake?.(()=>{ji=!0})` interrupt). Registers a callback
+   * fired when an external retry-wake signal arrives (official: a credential
+   * refresh / quota-lift push); returns the unsubscribe function. A wake
+   * DURING a heartbeat chunk ends the wait early (`if(Qs)break`) and charges
+   * only the elapsed time; a wake DURING a recheck probe ends the wait even
+   * when the probe returned false (`if(Se=cs,cs||ji)break`).
+   *
+   * OPTIONAL / STAGED: when absent, `sleepWithRetryWake` degrades to the
+   * official `Tmn` fast path (`if(!n.subscribeRetryWake)return await
+   * Y(e,n.signal,{abortError:LZ,clock:r}),!1`) — a plain abort-throwing
+   * sleep — and the 2.1.301 behavior is unchanged.
+   */
+  subscribeRetryWake?: (onWake: () => void) => () => void
 }
 
 export class CannotRetryError extends Error {
@@ -554,6 +605,19 @@ export async function* withRetry<T>(
   // The per-withRetry-call DEVIATION above applies unchanged (OCC's
   // ModelCallRetries still has no capacityWait field).
   const capacityWait = { spentMs: 0, usageLimitSpentMs: 0 }
+  // CC 2.1.305 (research-api.md item 3): official generator-level `Q=0,Se=!1`
+  // declared immediately beside the capacity ledger (@249451413:
+  // `...K=r.modelCallRetries?.capacityWait??{spentMs:0,usageLimitSpentMs:0},
+  //   Q=0,Se=!1,be=0,...`) — both persist ACROSS attempts:
+  // - usageLimitRecheckRounds (Q): completed usage-limit recheck rounds;
+  //   feeds the recheck backoff `xN(1+Q,null,TQe/2,r.random,fs)` so each
+  //   round's interval doubles (capped at 3h).
+  // - lastRecheckLifted (Se): latched `true` when a recheck probe saw the
+  //   limit lifted; the NEXT usage-limit wait's setup consumes it via the
+  //   official `if(ps&&Se)Q++,Se=!1` (a lifted-then-broken wait counts as a
+  //   completed round).
+  let usageLimitRecheckRounds = 0
+  let lastRecheckLifted = false
   // 2.1.208 (#15): count 401s caused by a failed apiKeyHelper so the real
   // error surfaces within 3 attempts instead of silently retrying up to
   // DEFAULT_MAX_RETRIES (10) and showing a generic 401. Mirrors the binary's
@@ -1074,21 +1138,28 @@ export async function* withRetry<T>(
         continue
       }
 
-      // CC 2.1.304 (#58): official `b6`/`tse`/`mZ` tool-search refuse
-      // recovery — wired LAST so it only sees 400/422s that NO other heal
-      // claimed (official eligibility requires `im===void 0 && !Pw(Er) &&
-      // !vF(Er)`, i.e. no prior recovery verdict; OCC expresses that as
-      // chain position). When a request that used tool search (beta header
-      // present) fails 400||422 behind a custom `ANTHROPIC_BASE_URL` with no
-      // explicit `ENABLE_TOOL_SEARCH` override and not a `billing_error`, the
-      // claude.ts handler un-defers the dropped tools, strips the beta,
-      // prepends the official critical_system_reminder and returns true to
-      // resend once without consuming budget; the first assistant chunk of
-      // the retry records `toolSearchRefusedAt` (86_400_000 ms window) so
-      // later requests for that endpoint+model skip tool search outright.
-      // One-shot per request (`toolSearchRecoveryDone` latch + the beta is
-      // gone from `betas`, so a second eligible error can't re-enter). Async
-      // handler: the un-defer rebuild awaits `toolToAPISchema`.
+      // CC 2.1.306 (research-api.md #1/#2): official `Rse` (named) +
+      // `N6`/`Ese` (anonymous) tool-search refuse recovery — wired LAST so
+      // it only sees 400/422s that NO other heal claimed (the official `N6`
+      // sits last in the onApiError chain and its `!Fw&&!UF` conjuncts ARE
+      // "no other recovery took it"; OCC expresses that as chain position).
+      // When a request that DECLARED tool search (L6: beta header present,
+      // no partial message yet) is refused — either by an error naming the
+      // tool-search beta header (`iSe`), or anonymously by a 400||422
+      // non-`billing_error` that mentions `defer_loading` (guard waived when
+      // isTrueFirstParty(), official `Jmn`) — the claude.ts handler un-defers
+      // the dropped tools, strips the beta, prepends the official
+      // critical_system_reminder and returns true to resend once without
+      // consuming budget; the retry's success fires the official `hLe` heal
+      // mark (tengu_beta_400_healed). Per-request one-shot, structurally:
+      // the rebuilt retry no longer declares tool search, so L6 fails for a
+      // second refusal (no explicit latch — v306 removed both the v304
+      // `toolSearchRecoveryDone` equivalent and the persisted
+      // `toolSearchRefusedAt` window; zero v306 binary string hits). The
+      // 400||422 prefilter stays (documented): the official named path has
+      // no status gate, but named beta refusals arrive as 400/422 and the
+      // anonymous path requires exactly those statuses. Async handler: the
+      // un-defer rebuild awaits `toolToAPISchema`.
       if (
         error instanceof APIError &&
         (error.status === 400 || error.status === 422) &&
@@ -1334,15 +1405,18 @@ export async function* withRetry<T>(
       // so this flag tracks the OTHER way yn gets set: a watchdog-capped wait.
       let watchdogLongWait = false
       // CC 2.1.301 (occ160 WP-A): official per-attempt `Vr=null`
-      // (@228699313 region: `let er=Tet(cn),ir,ns=So,Vr=null`). Set to true
-      // (official `Vr=cn`) when THIS attempt's error is a usage-limit
-      // rejection (429 + unified-status==="rejected" + a non-null unified
-      // reset delay) — the heartbeat accounting below then charges the slept
-      // chunks to capacityWait.usageLimitSpentMs as well
-      // (`if(V.spentMs+=Us,Vr)V.usageLimitSpentMs+=Us` @228701537). Official
-      // also feeds Vr to `r.onQuotaWindowWait?.(Vr,...)` — OCC has no
+      // (@228699313 region: `let er=Tet(cn),ir,ns=So,Vr=null`).
+      // CC 2.1.305 (research-api.md item 3): v306 renames/retypes this to
+      // `ps=null` with `ps=on` (@249462443) — it holds the usage-limit 429
+      // APIError ITSELF (not a boolean) because the recheck probe consumes
+      // it: `r.isUsageLimitLifted(ps)`. Set when THIS attempt's error is a
+      // usage-limit rejection (429 + unified-status==="rejected" + a non-null
+      // unified reset delay) — the heartbeat accounting below then charges
+      // the slept chunks to capacityWait.usageLimitSpentMs as well
+      // (`if(K.spentMs+=ji,ps)K.usageLimitSpentMs+=ji` @249463400). Official
+      // also feeds ps to `r.onQuotaWindowWait?.(ps,...)` — OCC has no
       // onQuotaWindowWait surface (that consumer predates 301), N/A here.
-      let usageLimitWait = false
+      let usageLimitWaitError: APIError | null = null
       if (persistent && error instanceof APIError && error.status === 429) {
         persistentAttempt++
         // Window-based limits (e.g. 5hr Max/Pro) include a reset timestamp.
@@ -1517,10 +1591,11 @@ export async function* withRetry<T>(
                     PERSISTENT_RESET_CAP_MS,
                   )
                 }
-                // Official `Vr=cn` — set whenever this attempt is a
-                // usage-limit rejection, whether or not the early-end path
-                // fired (Zn<=hr waits also charge usageLimitSpentMs).
-                usageLimitWait = true
+                // Official `ps=on` (@249462443) — set whenever this attempt
+                // is a usage-limit rejection, whether or not the early-end
+                // path fired (Zn<=hr waits also charge usageLimitSpentMs and
+                // enable the recheck probe).
+                usageLimitWaitError = error
               }
             }
             delayMs = Math.min(delayMs, budgetRemainingMs)
@@ -1576,59 +1651,173 @@ export async function* withRetry<T>(
         })
       }
 
-      if (heartbeatWait) {
-        // Chunk long sleeps so the host sees periodic stdout activity and
-        // does not mark the session idle. Each yield surfaces as
-        // {type:'system', subtype:'api_retry'} on stdout via QueryEngine.
-        let remaining = delayMs
-        while (remaining > 0) {
-          if (options.signal?.aborted) throw new APIUserAbortError()
-          if (error instanceof APIError) {
-            yield createSystemAPIErrorMessage(
-              error,
-              remaining,
-              reportedAttempt,
-              maxRetries,
-            )
-          }
-          const chunk = Math.min(remaining, HEARTBEAT_INTERVAL_MS)
-          await sleep(chunk, options.signal, { abortError })
-          // CC 2.1.295 (item-3): official spentMs accounting inside the
-          // heartbeat-chunked capacity sleep —
-          //   `if(no)V.spentMs+=Cr?Math.min(Io,Math.round(h.monotonicNow()-po)):Io`
-          // (Io=chunk, Cr=early-wake flag). OCC's sleep has no early-wake
-          // path (only abort, which throws), so every chunk counts in full.
-          // CC 2.1.301 (occ160 WP-A): official @228701537 —
-          //   `if(So){let Us=Kr?Math.min(Zn,Math.round(h.monotonicNow()-hr)):Zn;
-          //     if(V.spentMs+=Us,Vr)V.usageLimitSpentMs+=Us}`
-          // — the slept chunk is ALSO charged to the usage-limit subtotal
-          // when this attempt's error was a usage-limit rejection (Vr ≡
-          // usageLimitWait). Same no-early-wake simplification: OCC charges
-          // the full chunk to both.
-          if (watchdogRetryable) {
-            capacityWait.spentMs += chunk
-            if (usageLimitWait) {
-              capacityWait.usageLimitSpentMs += chunk
-            }
-          }
-          remaining -= chunk
-        }
-        // 2.1.281 (#022): official tail `if(Kt)gt--` replaces the v280 clamp
-        // `if(_t>=s)_t=s` — persistent waits no longer consume retry budget.
-        // The clamp left attempt pinned at maxRetries+1, so the first
-        // non-transient error (5xx) after long 429/529 waits tripped the
-        // retry-exhausted gate. The for-loop's attempt++ cancels this
-        // decrement, freezing the counter across persistent waits; backoff
-        // still uses the separate persistentAttempt counter which keeps
-        // growing to the 5-min cap (and feeds gt+M for later non-persistent
-        // backoff, see the delay computation above).
-        if (persistent) attempt--
-      } else {
-        if (error instanceof APIError) {
-          yield createSystemAPIErrorMessage(error, delayMs, attempt, maxRetries)
-        }
-        await sleep(delayMs, options.signal, { abortError })
+      // CC 2.1.305 (research-api.md item 3): the wait is now the official
+      // v306 unified chunk loop (@249463400, verbatim shape):
+      //   `let Gr=Vo?M_o:ns,...,fs=ps&&r.isUsageLimitLifted?
+      //      a.CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS:void 0;
+      //    if(ps&&Se)Q++,Se=!1;
+      //    let Lo=fs===void 0?1/0:0,Ur=0,us=ns;
+      //    while(us>0){
+      //      if(fs!==void 0&&Lo<=0)Lo=xN(1+Q,null,TQe/2,r.random,fs);
+      //      if(Vo&&r.signal?.aborted)throw new yu;
+      //      ...per-chunk retry yield...
+      //      let sr=Math.min(us,Gr),Vs=Math.min(sr,Ur);Ur=0;
+      //      let Rs=h.monotonicNow(),Qs=await Tmn(sr-Vs,r);
+      //      if(Ro){let ji=Qs?Math.min(sr,Vs+Math.round(h.monotonicNow()-Rs)):sr;
+      //        if(K.spentMs+=ji,ps)K.usageLimitSpentMs+=ji}
+      //      if(Qs)break;
+      //      if(us-=sr,Lo-=sr,Lo<=0&&us>Gr&&ps&&r.isUsageLimitLifted){
+      //        let ji=!1,Ga=r.subscribeRetryWake?.(()=>{ji=!0}),
+      //          Fa=h.monotonicNow(),cs=!1;
+      //        try{cs=await r.isUsageLimitLifted(ps)}catch(jo){l(jo)}
+      //        finally{Ga?.()}
+      //        if(Se=cs,cs||ji)break;
+      //        Ur=Math.max(0,Math.round(h.monotonicNow()-Fa))}}`
+      // Mapping: Gr→sliceMs (M_o=HEARTBEAT_INTERVAL_MS when heartbeat, else
+      // the full delay — one iteration, identical to the pre-305 non-
+      // heartbeat yield+sleep), ns→delayMs, ps→usageLimitWaitError (the 429
+      // error itself), Ro→watchdogRetryable, K→capacityWait, xN→getRetryDelay
+      // (OCC's getRetryDelay uses global Math.random — no injected random,
+      // existing OCC convention), Tmn→sleepWithRetryWake, h.monotonicNow()→
+      // monotonicNowMs(), l(jo)→logError.
+      // The official onRetryStatus/sV per-chunk surfaces and the
+      // onQuotaWindowWait `using` cleanup have no OCC equivalent (N/A, same
+      // as the 301 port); OCC's per-chunk yield stays
+      // createSystemAPIErrorMessage. The official tail `if(Ro||kr)dn--`
+      // (attempt give-back widened from persistent-only) is NOT ported —
+      // OCC keeps `if (persistent) attempt--` so the 301-round watchdog
+      // exhaustion behavior stays unchanged (deviation recorded in the
+      // round's research report follow-up).
+      const sliceMs = heartbeatWait ? HEARTBEAT_INTERVAL_MS : delayMs
+      // Official `fs` — the recheck interval, only when THIS wait is a
+      // usage-limit wait AND the probe dependency exists. Absent either →
+      // undefined → `Lo=1/0` → the recheck branch is unreachable and the
+      // 2.1.301 behavior is byte-for-byte preserved.
+      const recheckBaseMs =
+        usageLimitWaitError !== null && options.isUsageLimitLifted
+          ? getRetryWatchdogUsageLimitRecheckMs()
+          : undefined
+      // Official `if(ps&&Se)Q++,Se=!1` — a previous wait that ended because
+      // the probe saw the limit lifted counts as a completed round: the next
+      // usage-limit wait's recheck schedule backs off one doubling.
+      if (usageLimitWaitError !== null && lastRecheckLifted) {
+        usageLimitRecheckRounds++
+        lastRecheckLifted = false
       }
+      let recheckCountdownMs =
+        recheckBaseMs === undefined ? Number.POSITIVE_INFINITY : 0
+      // Official `Ur` — wall time spent inside a recheck probe, credited
+      // against the next chunk's sleep (the probe is not dead time).
+      let recheckCreditMs = 0
+      let remaining = delayMs
+      while (remaining > 0) {
+        // Official `if(fs!==void 0&&Lo<=0)Lo=xN(1+Q,null,TQe/2,r.random,fs)`
+        // — (re)schedule the next probe: base fs doubled per completed round
+        // (Q), proportional jitter, capped at TQe/2 (3h).
+        if (recheckBaseMs !== undefined && recheckCountdownMs <= 0) {
+          recheckCountdownMs = getRetryDelay(
+            1 + usageLimitRecheckRounds,
+            null,
+            USAGE_LIMIT_RECHECK_BACKOFF_CAP_MS,
+            recheckBaseMs,
+          )
+        }
+        // Official `if(Vo&&r.signal?.aborted)throw new yu` — the top-of-chunk
+        // abort check only runs in slice (heartbeat) mode; the non-heartbeat
+        // path keeps its pre-305 shape (yield, then sleepWithRetryWake's
+        // abortError throws for an already-aborted signal).
+        if (heartbeatWait && options.signal?.aborted) {
+          throw new APIUserAbortError()
+        }
+        if (error instanceof APIError) {
+          // Chunk long sleeps so the host sees periodic stdout activity and
+          // does not mark the session idle. Each yield surfaces as
+          // {type:'system', subtype:'api_retry'} on stdout via QueryEngine.
+          yield createSystemAPIErrorMessage(
+            error,
+            remaining,
+            reportedAttempt,
+            maxRetries,
+          )
+        }
+        const chunk = Math.min(remaining, sliceMs)
+        // Official `Vs=Math.min(sr,Ur);Ur=0;let Rs=h.monotonicNow(),
+        //   Qs=await Tmn(sr-Vs,r)` — subtract the probe credit, then sleep
+        // (wake-able when subscribeRetryWake is wired).
+        const credit = Math.min(chunk, recheckCreditMs)
+        recheckCreditMs = 0
+        const sleepStartedAt = monotonicNowMs()
+        const woken = await sleepWithRetryWake(chunk - credit, options)
+        // CC 2.1.295 (item-3) / CC 2.1.301 (occ160 WP-A) accounting, upgraded
+        // to the official v306 wake-aware shape:
+        //   `if(Ro){let ji=Qs?Math.min(sr,Vs+Math.round(h.monotonicNow()-Rs)):sr;
+        //     if(K.spentMs+=ji,ps)K.usageLimitSpentMs+=ji}`
+        // An early wake charges only the elapsed time (plus the credit); a
+        // completed chunk charges in full. Without subscribeRetryWake,
+        // sleepWithRetryWake always returns false → the full chunk is
+        // charged, exactly as the 295/301 ports did.
+        if (watchdogRetryable) {
+          const chargedMs = woken
+            ? Math.min(
+                chunk,
+                credit + Math.round(monotonicNowMs() - sleepStartedAt),
+              )
+            : chunk
+          capacityWait.spentMs += chargedMs
+          if (usageLimitWaitError !== null) {
+            capacityWait.usageLimitSpentMs += chargedMs
+          }
+        }
+        // Official `if(Qs)break` — a retry-wake during the sleep ends the
+        // wait early; the attempt retries immediately.
+        if (woken) break
+        remaining -= chunk
+        // Official recheck probe (@249463400): when the countdown expires
+        // mid-wait (with more than one slice left), ask whether the usage
+        // limit already lifted. A wake subscription races the probe
+        // (`Ga=r.subscribeRetryWake?.(()=>{ji=!0})`); a throw is caught and
+        // logged (`catch(jo){l(jo)}`) and treated as not-lifted; the result
+        // latches Se (`if(Se=cs,...)`) for the next wait's Q++; lifted or
+        // woken → break; otherwise the probe's wall time becomes the next
+        // chunk's credit (Ur).
+        recheckCountdownMs -= chunk
+        if (
+          recheckCountdownMs <= 0 &&
+          remaining > sliceMs &&
+          usageLimitWaitError !== null &&
+          options.isUsageLimitLifted
+        ) {
+          let wokenDuringRecheck = false
+          const unsubscribeWake = options.subscribeRetryWake?.(() => {
+            wokenDuringRecheck = true
+          })
+          const recheckStartedAt = monotonicNowMs()
+          let lifted = false
+          try {
+            lifted = await options.isUsageLimitLifted(usageLimitWaitError)
+          } catch (recheckError) {
+            logError(recheckError as Error)
+          } finally {
+            unsubscribeWake?.()
+          }
+          lastRecheckLifted = lifted
+          if (lifted || wokenDuringRecheck) break
+          recheckCreditMs = Math.max(
+            0,
+            Math.round(monotonicNowMs() - recheckStartedAt),
+          )
+        }
+      }
+      // 2.1.281 (#022): official tail `if(Kt)gt--` replaces the v280 clamp
+      // `if(_t>=s)_t=s` — persistent waits no longer consume retry budget.
+      // The clamp left attempt pinned at maxRetries+1, so the first
+      // non-transient error (5xx) after long 429/529 waits tripped the
+      // retry-exhausted gate. The for-loop's attempt++ cancels this
+      // decrement, freezing the counter across persistent waits; backoff
+      // still uses the separate persistentAttempt counter which keeps
+      // growing to the 5-min cap (and feeds gt+M for later non-persistent
+      // backoff, see the delay computation above).
+      if (persistent) attempt--
     }
   }
 
@@ -1644,6 +1833,71 @@ function getRetryAfter(error: unknown): string | null {
       ((error as APIError).headers as Headers)?.get?.('retry-after')) ??
     null
   )
+}
+
+/**
+ * Official `h.monotonicNow()` (@249463400) — a monotonic millisecond clock
+ * for wake/recheck duration accounting. OCC convention (cf.
+ * src/utils/permissions/settingsFileLinks.ts): performance.now().
+ */
+function monotonicNowMs(): number {
+  return performance.now()
+}
+
+/**
+ * CC 2.1.305 (research-api.md item 3): official `Tmn` (@249463400,
+ * verbatim shape):
+ *   `async function Tmn(e,n){let r=n.clock??uc;
+ *     if(!n.subscribeRetryWake)return await Y(e,n.signal,{abortError:LZ,clock:r}),!1;
+ *     if(n.signal?.aborted)throw LZ();
+ *     let s=!1,h=new AbortController,
+ *       y=n.subscribeRetryWake(()=>{s=!0,h.abort()}),S=()=>h.abort();
+ *     n.signal?.addEventListener("abort",S,{once:!0});
+ *     try{if(await Y(e,h.signal,{clock:r}),n.signal?.aborted)throw LZ();
+ *       return s}
+ *     finally{y(),n.signal?.removeEventListener("abort",S)}}`
+ * Sleeps for `ms`, returning whether a retry-wake fired early. Key
+ * semantics, all byte-level from the official:
+ * - absent subscribeRetryWake → plain abortError sleep, always `false`
+ *   (2.1.301 behavior preserved exactly);
+ * - wake path: an internal AbortController races the caller signal; the
+ *   sleep is called WITHOUT abortError so a wake-abort RESOLVES (OCC's
+ *   sleep resolves silently on abort by default);
+ * - after the sleep resolves, a caller-abort still throws (the official
+ *   re-checks `n.signal?.aborted` → `throw LZ()`), otherwise the woken
+ *   flag is returned.
+ */
+async function sleepWithRetryWake(
+  ms: number,
+  options: RetryOptions,
+): Promise<boolean> {
+  if (!options.subscribeRetryWake) {
+    await sleep(ms, options.signal, { abortError })
+    return false
+  }
+  if (options.signal?.aborted) {
+    throw abortError()
+  }
+  let woken = false
+  const wakeController = new AbortController()
+  const unsubscribe = options.subscribeRetryWake(() => {
+    woken = true
+    wakeController.abort()
+  })
+  const forwardAbort = () => wakeController.abort()
+  options.signal?.addEventListener('abort', forwardAbort, { once: true })
+  try {
+    // No abortError here: a wake-abort must RESOLVE so the woken flag can
+    // be returned (official `await Y(e,h.signal,{clock:r})`).
+    await sleep(ms, wakeController.signal)
+    if (options.signal?.aborted) {
+      throw abortError()
+    }
+    return woken
+  } finally {
+    unsubscribe()
+    options.signal?.removeEventListener('abort', forwardAbort)
+  }
 }
 
 // 2.1.281 (#023): aligned byte-for-byte with the official uU (@200159276,
@@ -1906,6 +2160,71 @@ export function getRetryWatchdogMaxUsageLimitWaitMs(): number | undefined {
   // Digits-only but below the min (e.g. '0', '-5') — same fail-open, same
   // one-time warning: the operator set a value that is being ignored.
   warnIgnoredRetryWatchdogMaxUsageLimitWait(raw)
+  return undefined
+}
+
+// CC 2.1.305 (research-api.md item 3): env registry descriptor for the
+// usage-limit recheck interval — `cx=H.int({min:60000,max:10800000,
+// digitsOnly:!0})` (@238022068, byte-verified), export map @237991422
+// `CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS:()=>cx`, consumed at
+// the watchdog wait loop (@249463885):
+//   `fs=ps&&r.isUsageLimitLifted?
+//     a.CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS:void 0`
+// A digits-only integer within [60000, 10800000] (1min–3h) is honored;
+// anything else (unset, non-numeric, out of range) yields undefined so
+// `fs=void 0` → `Lo=1/0` → the recheck probe never runs (2.1.301 behavior).
+// NOTE: even a valid value is inert until a caller wires the
+// `isUsageLimitLifted` option (OCC ships none yet — STAGED dependency).
+const RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MIN_MS = 60000
+const RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MAX_MS = 10800000
+
+// Same warn-once convention as the sibling getters above (dataflow-007).
+const ignoredRetryWatchdogUsageLimitRecheckWarned = new Set<string>()
+
+/** Test-only: clear the warn-once dedupe set (cf. clearFastModeCooldown). */
+export function resetIgnoredRetryWatchdogUsageLimitRecheckWarnedForTesting(): void {
+  ignoredRetryWatchdogUsageLimitRecheckWarned.clear()
+}
+
+function warnIgnoredRetryWatchdogUsageLimitRecheck(raw: string): void {
+  // An empty value is equivalent to unset — stay silent.
+  if (
+    raw.trim() === '' ||
+    ignoredRetryWatchdogUsageLimitRecheckWarned.has(raw)
+  ) {
+    return
+  }
+  ignoredRetryWatchdogUsageLimitRecheckWarned.add(raw)
+  logForDebugging(
+    `CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS='${raw}' is not a ` +
+      `digits-only integer within [${RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MIN_MS}, ` +
+      `${RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MAX_MS}] — ignoring it; the ` +
+      `usage-limit recheck stays disabled.`,
+    { level: 'warn' },
+  )
+}
+
+export function getRetryWatchdogUsageLimitRecheckMs(): number | undefined {
+  const raw = process.env.CLAUDE_CODE_RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MS
+  if (raw === undefined) {
+    return undefined
+  }
+  // digitsOnly (official `H.int` parse — same parser convention as the
+  // sibling getters): reject anything that is not an integer literal
+  // (5e3 / 6_000 / 1,000 / 90.5 all fail).
+  if (!/^[+-]?\d+$/.test(raw.trim())) {
+    warnIgnoredRetryWatchdogUsageLimitRecheck(raw)
+    return undefined
+  }
+  const parsed = parseEnvInt(raw)
+  if (
+    parsed !== undefined &&
+    parsed >= RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MIN_MS &&
+    parsed <= RETRY_WATCHDOG_USAGE_LIMIT_RECHECK_MAX_MS
+  ) {
+    return parsed
+  }
+  warnIgnoredRetryWatchdogUsageLimitRecheck(raw)
   return undefined
 }
 

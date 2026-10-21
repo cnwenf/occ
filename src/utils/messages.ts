@@ -66,6 +66,7 @@ import type {
   SystemMessage,
   SystemMessageLevel,
   SystemMicrocompactBoundaryMessage,
+  SystemModelFallbackMessage,
   SystemPermissionRetryMessage,
   SystemScheduledTaskFireMessage,
   SystemStopHookSummaryMessage,
@@ -658,6 +659,7 @@ export function createUserMessage({
   isVisibleInTranscriptOnly,
   isVirtual,
   isCompactSummary,
+  repeatsCompactSummary,
   summarizeMetadata,
   toolUseResult,
   mcpMeta,
@@ -674,6 +676,12 @@ export function createUserMessage({
   isVisibleInTranscriptOnly?: true
   isVirtual?: true
   isCompactSummary?: true
+  /**
+   * Official 2.1.306 (#P10): set alongside isCompactSummary when this
+   * summary repeats earlier summarized content (re-compaction or PTL
+   * head-truncation). See Message.repeatsCompactSummary.
+   */
+  repeatsCompactSummary?: true
   toolUseResult?: unknown // Matches tool's `Output` type
   /** MCP protocol metadata to pass through to SDK consumers (never sent to model) */
   mcpMeta?: {
@@ -711,6 +719,7 @@ export function createUserMessage({
     isVisibleInTranscriptOnly,
     isVirtual,
     isCompactSummary,
+    repeatsCompactSummary,
     summarizeMetadata,
     uuid: (uuid as UUID | undefined) || randomUUID(),
     timestamp: timestamp ?? new Date().toISOString(),
@@ -5137,6 +5146,36 @@ export function createSystemMessage(
     toolUseID,
     level,
     ...(preventContinuation && { preventContinuation }),
+  }
+}
+
+/**
+ * CC 2.1.306 (#P7): structured model-fallback system message. Official
+ * v304@254434741 yields
+ * `{type:"system",subtype:"model_fallback",content:pf(...),level:"warning",
+ * trigger,originalModel,fallbackModel,isMeta:!1,timestamp,uuid}` when the
+ * fallback chain advances — the structured fields (not just the text) are
+ * what the subagent finalize scan (official `iu`, v306@255040600) matches on
+ * to decide whether the agent result needs the "switched to <model>" harness
+ * notice. Field order mirrors the official literal.
+ */
+export function createModelFallbackSystemMessage(params: {
+  content: string
+  trigger: string
+  originalModel: string
+  fallbackModel: string
+}): SystemModelFallbackMessage {
+  return {
+    type: 'system',
+    subtype: 'model_fallback',
+    content: params.content,
+    level: 'warning',
+    trigger: params.trigger,
+    originalModel: params.originalModel,
+    fallbackModel: params.fallbackModel,
+    isMeta: false,
+    timestamp: new Date().toISOString(),
+    uuid: randomUUID(),
   }
 }
 

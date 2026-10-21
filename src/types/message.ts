@@ -35,6 +35,19 @@ export type Message = {
   uuid: UUID
   isMeta?: boolean
   isCompactSummary?: boolean
+  /**
+   * Official 2.1.306 (#P10): marks a compact-summary user message whose
+   * input already contained a prior compact summary (re-compaction — the
+   * oldest original messages have been squeezed out) or was head-truncated
+   * by the prompt-too-long retry. Persisted to JSONL under the same field
+   * name (`repeatsCompactSummary` counts 14=14 across the v304/v306
+   * binaries — the flag predates v306; the v306 fix extended setting /
+   * passing it through to the cloud-session and teammate compaction paths,
+   * string-less in-place logic). The official withholding predicate reads
+   * it verbatim: `e.isCompactSummary===!0||e.repeatsCompactSummary===!0||
+   * can(s?.content)`.
+   */
+  repeatsCompactSummary?: boolean
   toolUseResult?: unknown
   isVisibleInTranscriptOnly?: boolean
   /**
@@ -113,6 +126,23 @@ export type SystemInformationalMessage = Message & { type: 'system' }
 export type SystemMemorySavedMessage = Message & { type: 'system' }
 export type SystemMessageLevel = string
 export type SystemMicrocompactBoundaryMessage = Message & { type: 'system' }
+/**
+ * CC 2.1.306 (#P7): structured model-fallback system message (official
+ * v304@254434741 shape `{type:"system",subtype:"model_fallback",content,
+ * level:"warning",trigger,originalModel,fallbackModel,isMeta:!1,timestamp,
+ * uuid}`). The subagent finalize scan (official `iu`, v306@255040600)
+ * matches on `subtype` + `fallbackModel` + `originalModel` to decide whether
+ * the agent's result needs the "switched to <model>" harness notice.
+ */
+export type SystemModelFallbackMessage = Message & {
+  type: 'system'
+  subtype: 'model_fallback'
+  content: string
+  level: SystemMessageLevel
+  trigger: string
+  originalModel: string
+  fallbackModel: string
+}
 export type SystemPermissionRetryMessage = Message & { type: 'system' }
 export type SystemScheduledTaskFireMessage = Message & { type: 'system' }
 

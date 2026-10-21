@@ -2009,25 +2009,7 @@ function runHeadlessStreaming(
   // updateSdkMcp.
   async function applyPluginMcpDiff(): Promise<void> {
     const { servers: newConfigs } = await getAllMcpConfigs()
-    const supportedConfigs: Record<string, McpServerConfigForProcessTransport> =
-      {}
-    for (const [name, config] of Object.entries(newConfigs)) {
-      const type = config.type
-      if (
-        type === undefined ||
-        type === 'stdio' ||
-        type === 'sse' ||
-        type === 'http' ||
-        type === 'sdk'
-      ) {
-        supportedConfigs[name] = config as McpServerConfigForProcessTransport
-      }
-    }
-    for (const [name, config] of Object.entries(sdkMcpConfigs)) {
-      if (config.type === 'sdk' && !(name in supportedConfigs)) {
-        supportedConfigs[name] = config as unknown as McpServerConfigForProcessTransport
-      }
-    }
+    const supportedConfigs = mergeSupportedMcpConfigs(newConfigs, sdkMcpConfigs)
     const { response, sdkServersChanged } =
       await applyMcpServerChanges(supportedConfigs)
     if (sdkServersChanged) {
@@ -5666,6 +5648,47 @@ function toScopedConfig(
   // (it excludes IDE-specific types like sse-ide and ws-ide)
   // Adding scope makes it a valid ScopedMcpServerConfig
   return { ...config, scope: 'dynamic' } as ScopedMcpServerConfig
+}
+
+/**
+ * CC 2.1.306: build the desired-state server map for applyMcpServerChanges
+ * from freshly-loaded settings configs plus SDK/cloud-registered servers
+ * (mcp_set_servers). Only process-transport-supported types are kept.
+ *
+ * Precedence (official 2.1.306 changelog: "servers provided via
+ * setMcpServers can no longer be replaced by a same-named server from user
+ * settings mid-session"): SDK-registered servers WIN name conflicts — the
+ * sdk loop runs last and assigns unconditionally, so a settings/plugin
+ * reload cannot evict an SDK-provided server by declaring the same name.
+ * The previous guard (`!(name in supportedConfigs)`) let the settings entry
+ * win, and handleMcpSetServers then REMOVED the SDK server (its name left
+ * the sdk desired-state set) and connected the settings one instead.
+ */
+export function mergeSupportedMcpConfigs(
+  newConfigs: Record<string, ScopedMcpServerConfig>,
+  sdkMcpConfigs: Record<string, McpSdkServerConfig>,
+): Record<string, McpServerConfigForProcessTransport> {
+  const supportedConfigs: Record<string, McpServerConfigForProcessTransport> =
+    {}
+  for (const [name, config] of Object.entries(newConfigs)) {
+    const type = config.type
+    if (
+      type === undefined ||
+      type === 'stdio' ||
+      type === 'sse' ||
+      type === 'http' ||
+      type === 'sdk'
+    ) {
+      supportedConfigs[name] = config as McpServerConfigForProcessTransport
+    }
+  }
+  for (const [name, config] of Object.entries(sdkMcpConfigs)) {
+    if (config.type === 'sdk') {
+      supportedConfigs[name] =
+        config as unknown as McpServerConfigForProcessTransport
+    }
+  }
+  return supportedConfigs
 }
 
 /**

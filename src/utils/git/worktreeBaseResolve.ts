@@ -31,6 +31,17 @@
  * (same class as "not a git repository") instead of hard-erroring. Ported here
  * as `isNoRepoGitStderr` + the `no_repo` cause in `classifyRevParseCause`.
  * No git-version check — the official has none; the stderr text is the signal.
+ *
+ * Official Claude Code 2.1.306 (#P8) — the resolver (official `yot`
+ * @250451600) parameterizes the command word in every catalog message:
+ * `w = exactRef===!0 ? "show-ref" : "rev-parse"`, so the detail texts read
+ * `git ${w} succeeded but printed no commit id.` / `git ${w} timed out.` /
+ * `git ${w} failed, and its output is not shown.` / `git ${w} failed (git
+ * said …).` — and the origin_default `name_missing` phrase CHANGED from the
+ * v299 `returned no commit for this ref` to `found no such ref afterwards`
+ * (v304 has the old phrase ×2, v306 the new one ×2, old one ×0). Ported here
+ * as the optional `commandLabel` parameter (default `'rev-parse'` keeps every
+ * pre-306 caller's strings byte-identical).
  */
 
 import { lstat, readFile, readlink } from 'fs/promises'
@@ -39,6 +50,12 @@ import { sliceHead } from '../truncateMiddle.js'
 import { parseGitConfigValue } from './gitConfigParser.js'
 
 export type WorktreeBaseKind = 'head_fallback' | 'fetch_head' | 'origin_default'
+
+/**
+ * Official v306 `w` (@250451652): `w = exactRef===!0 ? "show-ref" :
+ * "rev-parse"` — the resolver command named in every failure-catalog message.
+ */
+export type WorktreeResolveCommandLabel = 'rev-parse' | 'show-ref'
 
 export type RevParseCause =
   | 'empty_answer'
@@ -70,9 +87,12 @@ export function isNoRepoGitStderr(stderr: string): boolean {
   )
 }
 
-// Official message fragments (v299 @225547600 region), byte-exact:
-const REV_PARSE_OUTPUT_NOT_SHOWN =
-  'git rev-parse failed, and its output is not shown.'
+// Official message fragments (v299 @225547600 region; v306 @250452500 region
+// parameterizes the command word), byte-exact:
+/** Official v306 `Ge`: `git ${w} failed, and its output is not shown.` */
+function gitOutputNotShown(commandLabel: WorktreeResolveCommandLabel): string {
+  return `git ${commandLabel} failed, and its output is not shown.`
+}
 const GIT_THAT_CC_RUNS =
   'the git that Claude Code runs (which may not be the one in your shell)'
 const MAY_NOT_BE_WORKING_WHICH = `or that ${GIT_THAT_CC_RUNS} is not working. Running git status in this repository may show which.`
@@ -219,13 +239,16 @@ export function buildWorktreeBaseResolveFailureMessage(params: {
   repoConfirmed: boolean
   stderrTrimmed: string
   stdoutTrimmed: string
+  /** Official v306 `w` — the resolver command named in the detail text. */
+  commandLabel?: WorktreeResolveCommandLabel
 }): string {
   const { cause, kind, repoConfirmed, stderrTrimmed, stdoutTrimmed } = params
+  const commandLabel = params.commandLabel ?? 'rev-parse'
   if (cause === 'empty_answer') {
-    return 'git rev-parse succeeded but printed no commit id.'
+    return `git ${commandLabel} succeeded but printed no commit id.`
   }
   if (cause === 'timed_out') {
-    return 'git rev-parse timed out.'
+    return `git ${commandLabel} timed out.`
   }
   if (cause === 'not_completed') {
     return 'git failed to start, or was stopped before it finished.'
@@ -234,13 +257,14 @@ export function buildWorktreeBaseResolveFailureMessage(params: {
     return REPO_UNCONFIRMED
   }
   if (cause === 'exit_1_with_output') {
+    const outputNotShown = gitOutputNotShown(commandLabel)
     if (kind === 'origin_default') {
-      return `${REV_PARSE_OUTPUT_NOT_SHOWN} The fetch from origin succeeded, so it may be that this repository has no such ref afterwards (for example a single-branch clone of another branch, or a bare clone without a fetch refspec), ${MAY_NOT_BE_WORKING_WHICH} ${BASE_REF_HEAD_HINT}`
+      return `${outputNotShown} The fetch from origin succeeded, so it may be that this repository has no such ref afterwards (for example a single-branch clone of another branch, or a bare clone without a fetch refspec), ${MAY_NOT_BE_WORKING_WHICH} ${BASE_REF_HEAD_HINT}`
     }
     if (kind === 'fetch_head') {
-      return `${REV_PARSE_OUTPUT_NOT_SHOWN} The fetch of the PR/MR succeeded, so it may be that FETCH_HEAD names no commit afterwards, ${MAY_NOT_BE_WORKING_WHICH}`
+      return `${outputNotShown} The fetch of the PR/MR succeeded, so it may be that FETCH_HEAD names no commit afterwards, ${MAY_NOT_BE_WORKING_WHICH}`
     }
-    return `${REV_PARSE_OUTPUT_NOT_SHOWN} It may be that HEAD does not point to a commit (for example a new repository, or a branch without a commit yet), ${MAY_NOT_BE_WORKING_WHICH}`
+    return `${outputNotShown} It may be that HEAD does not point to a commit (for example a new repository, or a branch without a commit yet), ${MAY_NOT_BE_WORKING_WHICH}`
   }
   if (cause !== 'name_missing') {
     // git_refused / other_exit — quote the most diagnostic stderr line.
@@ -250,10 +274,12 @@ export function buildWorktreeBaseResolveFailureMessage(params: {
       (stderrTrimmed === '' && stdoutTrimmed === ''
         ? 'nothing'
         : 'nothing that can be shown here')
-    return `git rev-parse failed (git said ${said}).`
+    return `git ${commandLabel} failed (git said ${said}).`
   }
   if (kind === 'origin_default') {
-    return `the fetch from origin succeeded, but git rev-parse returned no commit for this ref afterwards (for example in a single-branch clone of another branch, or a bare clone without a fetch refspec). ${BASE_REF_HEAD_HINT} ${MAY_NOT_BE_WORKING_MORE}`
+    // v306 phrase: `git ${w} found no such ref afterwards` (was v299
+    // `git rev-parse returned no commit for this ref afterwards`).
+    return `the fetch from origin succeeded, but git ${commandLabel} found no such ref afterwards (for example in a single-branch clone of another branch, or a bare clone without a fetch refspec). ${BASE_REF_HEAD_HINT} ${MAY_NOT_BE_WORKING_MORE}`
   }
   if (kind === 'fetch_head') {
     return `the fetch of the PR/MR succeeded, but git rev-parse returned no commit for FETCH_HEAD afterwards. ${MAY_NOT_BE_WORKING_MORE}`

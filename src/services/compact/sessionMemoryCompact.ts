@@ -37,6 +37,7 @@ import {
   buildPostCompactMessages,
   type CompactionResult,
   createPlanAttachmentIfNeeded,
+  inputRepeatsCompactSummary,
 } from './compact.js'
 import { estimateMessageTokens } from './microCompact.js'
 import {
@@ -488,6 +489,12 @@ function createCompactionResultFromSessionMemory(
       createUserMessage({
         content: summaryContent,
         isCompactSummary: true,
+        // Official 2.1.306 (#P10): this session-memory commit summarizes away
+        // messages that already include a prior compact summary → the new
+        // summary repeats earlier summarized content.
+        ...(inputRepeatsCompactSummary(messages)
+          ? { repeatsCompactSummary: true as const }
+          : {}),
         isVisibleInTranscriptOnly: true,
       }),
     ],

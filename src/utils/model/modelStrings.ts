@@ -21,6 +21,7 @@ import {
   type CanonicalModelId,
   type ModelKey,
 } from './configs.js'
+import { modelIdsEqualAnyContext } from './modelDescriptors.js'
 import { type APIProvider, getAPIProvider } from './providers.js'
 
 /**
@@ -151,6 +152,15 @@ function applyModelOverrides(ms: ModelStrings): ModelStrings {
  * first-party model ID. If the input doesn't match any current override value,
  * it is returned unchanged. Safe to call during module init (no-ops if settings
  * aren't loaded yet).
+ *
+ * CC 2.1.305 (official `Ja` @240936093, replacing v304 `fi` @239678714):
+ * the VALUE-side match is now always the normalized `CA(s,n)` comparison
+ * (case-insensitive + `[1m]`-suffix-insensitive) instead of strict `h===n` —
+ * this is the fix for /effort and /autocompact silently not applying when the
+ * settings modelOverrides value differs from the requested model name only by
+ * case or a `[1m]` tag. The KEY-side validation (`QS`/`sw` → the
+ * CANONICAL_ID_TO_KEY lookup in applyModelOverrides) is unchanged across
+ * v304→v306, so this function only swaps the matcher.
  */
 export function resolveOverriddenModel(modelId: string): string {
   let overrides: Record<string, string> | undefined
@@ -163,7 +173,7 @@ export function resolveOverriddenModel(modelId: string): string {
     return modelId
   }
   for (const [canonicalId, override] of Object.entries(overrides)) {
-    if (override === modelId) {
+    if (modelIdsEqualAnyContext(override, modelId)) {
       return canonicalId
     }
   }

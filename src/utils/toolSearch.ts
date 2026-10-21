@@ -6,13 +6,14 @@
  * loaded upfront.
  */
 
-import { createHash } from 'crypto'
+import { APIError } from '@anthropic-ai/sdk'
 import memoize from 'lodash-es/memoize.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from '../services/analytics/growthbook.js'
 import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../services/analytics/index.js'
+import { isAPIErrorBodyType } from '../services/api/modelCallRetries.js'
 import type { Tool } from '../Tool.js'
 import {
   type ToolPermissionContext,
@@ -31,16 +32,13 @@ import {
   TOOL_TOKEN_COUNT_OVERHEAD,
 } from './analyzeContext.js'
 import { count } from './array.js'
-import { getMergedBetas } from './betas.js'
-import { getGlobalConfig, saveGlobalConfig } from './config.js'
+import { getAnthropicApiKey, getAuthTokenSource } from './auth.js'
+import { getMergedBetas, getToolSearchBetaHeader } from './betas.js'
 import { getContextWindowForModel } from './context.js'
 import { logForDebugging } from './debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
-import { normalizeModelStringForAPI } from './model/model.js'
-import {
-  getAPIProvider,
-  isFirstPartyAnthropicBaseUrl,
-} from './model/providers.js'
+import { logError } from './log.js'
+import { getAPIProvider, getAPIProviderForStatsig } from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
 import { zodToJsonSchema } from './zodToJsonSchema.js'
 
@@ -243,137 +241,415 @@ function getUnsupportedToolReferencePatterns(): string[] {
 }
 
 // ---------------------------------------------------------------------------
-// CC 2.1.304 (#58): tool search ON by default behind a custom
-// ANTHROPIC_BASE_URL, with refuse-recovery. Port of the official vver module
-// (byte-verified in docs/gap-research-304/research-R4-skills-hooks.md "#58"):
-//   var h=86400000;
-//   function zOe(){return!a.ENABLE_TOOL_SEARCH&&!l()&&Pe()==="firstParty"&&!Ri()}
-//   function c(e){return S("sha256").update(`${a.ANTHROPIC_BASE_URL}\x00${Pn(e)}`)
-//     .digest("hex").slice(0,24)}
-//   function f(e){return typeof e==="number"&&Math.abs(Date.now()-e)<h}
-//   function d(e){return zOe()&&f(ue().toolSearchRefusedAt?.[c(e)])}
-//   function DUs(e,r){if(d(e))return;
-//     t(`[ToolSearch] the endpoint set in ANTHROPIC_BASE_URL refused a request
-//        for ${e} and answered it without tool search; ...`,{level:"warn"}),
-//     Ae((o)=>f(o.toolSearchRefusedAt?.[c(e)])?o
-//       :{...o,toolSearchRefusedAt:{...Cs(o.toolSearchRefusedAt,f),[c(e)]:Date.now()}},r)}
-// OCC mapping: `Pn` = normalizeModelStringForAPI; `ue()`/`Ae()` =
-// getGlobalConfig()/saveGlobalConfig() (same same-reference-skip updater
-// semantics); `Cs(map, f)` = pruneRefusedEntries below. The official `zOe()`
-// also checks `!l()` (a "force" override that consults ENABLE_TOOL_SEARCH and
-// a settings-level tool-search override `iWo()`); OCC has no `force` value and
-// no settings-level tool-search override, so `!process.env.ENABLE_TOOL_SEARCH`
-// covers it (documented deviation).
+// CC 2.1.306 (research-api.md #1/#2): tool-search refuse-recovery state
+// machine — the FINAL v306 form, byte-verified from the official 2.1.306
+// ELF (state machine @249522800; iSe cluster @248312563; Jmn @249494776;
+// vf/Ff @238694176; sH/Cde @240979705/@240985860; MM/ch @245259380;
+// _Eo @245260463; Nnn/eOs @245262243; nSe/GVe @248309267; GB @248317786;
+// oM @248318728; vt @240811864; AA @238693262).
+//
+// The v304 form is REMOVED: the persisted `toolSearchRefusedAt` 1-day
+// window (official `c`/`f`/`d`/`DUs`, `h`=86400000) and the custom-base-URL
+// eligibility gate `zOe` have ZERO `toolSearchRefusedAt` string hits in the
+// v306 binary (v304: 6). v306 recovery is per-request and one-shot via the
+// retry run's rebuilt state (no persistence, no window, no `zOe`).
+//
+// Official pieces (minified → OCC):
+//   UZ  → ToolSearchRefusedError   (the retry marker EF throws)
+//   EF  → throwToolSearchRefused   (verbatim warn + throw)
+//   Jmn → isTrueFirstParty
+//   iSe/TQ/e5t/Mv/eOs/Nnn/MM/nSe/GB/oM/_Eo
+//       → the isToolSearchBetaRefusalNamed classifier family
+//   Ese (message-side conjuncts)
+//       → isAnonymousToolSearchRefuseRecoveryEligible
+//   L6 + Rse (named path) + N6 (anonymous path) orchestration
+//       → the claude.ts retryToolSearchRefused handler (request-scoped
+//         closure state Xo/Xp lives there)
+//   hLe (body) → markToolSearchBetaHealed (the Cse one-shot latch and the
+//         Q.toolSearchRefusal capture live in the claude.ts closure)
+//   z_t() → getToolSearchBetaHeader() (betas.ts — the same 1P/3P header
+//         split: jy()=aY()&&!u1() → advanced-tool-use-2025-11-20, else
+//         tool-search-tool-2025-10-19)
+//
+// Chain-position equivalence: official wires Rse mid-chain and N6 LAST in
+// the onApiError chain `ggt??fgt??hgt??igt??DO??Xj??OLe??xse??F6??N6` — the
+// last position IS the official `!Fw(_r)&&!UF(_r)` expression (Fw/UF are the
+// big ORs of every other recovery classifier; each maps to an earlier OCC
+// withRetry handler or has no OCC surface). OCC keeps its single withRetry
+// handler wired LAST (v304 shape), running the named check (Rse) first and
+// the anonymous check (N6/Ese) second; the named tool-search-beta refusal
+// texts match none of OCC's earlier handlers, so the ordering is
+// behaviorally equivalent (documented deviation).
 // ---------------------------------------------------------------------------
 
-/** Official `h` — the refused window TTL: one day in ms. */
-const TOOL_SEARCH_REFUSED_TTL_MS = 86_400_000
-
 /**
- * Official `zOe()` — whether the tool-search refuse-recovery (and the
- * persisted refused window) applies: ENABLE_TOOL_SEARCH unset/empty (no
- * explicit override), provider firstParty, and ANTHROPIC_BASE_URL is NOT a
- * first-party Anthropic host (a custom proxy/gateway).
- *
- * Explicit ENABLE_TOOL_SEARCH semantics (official recipe #5):
- *   - `=false` → getToolSearchMode() returns 'standard'; no tool search is
- *     ever sent, so the refused request is skipped entirely (and this
- *     predicate is false — recovery never runs).
- *   - `=true` (or `auto`/`auto:N`) → the user asserts their proxy supports
- *     tool_reference; tool search is always sent when otherwise eligible and
- *     this predicate is false, turning the recovery off.
+ * Official `UZ` — the retry marker thrown by `EF` (throwToolSearchRefused).
+ * The official `pgn` wrapper catches it and re-runs the API call with the
+ * refusal captured (`Q.toolSearchRefusal = UZ.refusal`), which both feeds the
+ * success-side heal (`hLe`) and makes the retry run one-shot (the official
+ * rebuild gate `mo` requires `Q.toolSearchRefusal===void 0` — a second
+ * refusal on the rebuilt request never re-enters recovery).
  */
-export function isToolSearchRefuseRecoveryEnabled(): boolean {
-  return (
-    !process.env.ENABLE_TOOL_SEARCH &&
-    getAPIProvider() === 'firstParty' &&
-    !isFirstPartyAnthropicBaseUrl()
-  )
-}
+export class ToolSearchRefusedError extends Error {
+  /** The HTTP error that triggered the recovery (official `UZ.refusal`). */
+  readonly refusal: APIError
+  /** Official `declaredToolSearch` — the refused request declared tool search. */
+  readonly declaredToolSearch: boolean
 
-/** Official `c(e)` — persisted-config entry key for endpoint+model. */
-function toolSearchRefusedKey(model: string): string {
-  return createHash('sha256')
-    .update(
-      `${process.env.ANTHROPIC_BASE_URL}\0${normalizeModelStringForAPI(model)}`,
-    )
-    .digest('hex')
-    .slice(0, 24)
-}
-
-/** Official `f(e)` — is a recorded refusal timestamp still fresh? */
-function isRefusedAtFresh(refusedAt: unknown): boolean {
-  return (
-    typeof refusedAt === 'number' &&
-    Math.abs(Date.now() - refusedAt) < TOOL_SEARCH_REFUSED_TTL_MS
-  )
-}
-
-/** Official `Cs(map, f)` — prune expired entries when writing. */
-function pruneRefusedEntries(
-  refusedAt: Record<string, number> | undefined,
-): Record<string, number> {
-  const pruned: Record<string, number> = {}
-  for (const [key, ts] of Object.entries(refusedAt ?? {})) {
-    if (isRefusedAtFresh(ts)) {
-      pruned[key] = ts
-    }
+  constructor(refusal: APIError, declaredToolSearch: boolean) {
+    super('tool search refused', { cause: refusal })
+    this.refusal = refusal
+    this.declaredToolSearch = declaredToolSearch
   }
-  return pruned
+}
+
+/** Official `ch` — capability-rejected marker prefix inside API error text. */
+const CAPABILITY_REJECTED_PREFIX = 'capability_rejected: '
+
+/**
+ * Official `MM` — does `message` contain `capability_rejected: ${token}` as a
+ * whole token (the next character, if any, must not continue an identifier)?
+ */
+function findsCapabilityRejectedToken(message: string, token: string): boolean {
+  const needle = `${CAPABILITY_REJECTED_PREFIX}${token}`
+  let from = 0
+  for (;;) {
+    const at = message.indexOf(needle, from)
+    if (at === -1) {
+      return false
+    }
+    const after = message[at + needle.length]
+    if (after === undefined || !/[A-Za-z0-9_:.-]/.test(after)) {
+      return true
+    }
+    from = at + 1
+  }
 }
 
 /**
- * Official `d(e)` — the endpoint+model is inside the refused window, so
- * tool search must be treated as unsupported there (Zae's `return!d(e)` arm
- * routes this through modelSupportsToolReference → `model_unsupported`).
+ * Official `nSe` — the first line of the error's human-readable message,
+ * preferring the structured body message and falling back to the flat
+ * `.message` with any leading `NNN ` status prefix stripped.
  */
-export function isToolSearchRefused(model: string): boolean {
-  if (!isToolSearchRefuseRecoveryEnabled()) {
+function getApiErrorFirstLine(error: APIError): string {
+  const body = error.error as { error?: { message?: unknown } } | undefined
+  const nested = body?.error?.message
+  const text =
+    typeof nested === 'string' ? nested : error.message.replace(/^\d{3} /, '')
+  const newlineAt = text.indexOf('\n')
+  return newlineAt === -1 ? text : text.slice(0, newlineAt)
+}
+
+/** Official `Nnn` — plain substring mention of the beta header. */
+function mentionsBetaHeader(message: string, header: string): boolean {
+  return message.includes(header) && /anthropic[-_]beta/.test(message)
+}
+
+/**
+ * Official `eOs` — the message names the beta header either directly (`Nnn`)
+ * or through a `capability_rejected: beta_header:<h>` token.
+ */
+function namesBetaRejected(message: string, header: string): boolean {
+  return (
+    mentionsBetaHeader(message, header) ||
+    findsCapabilityRejectedToken(message, `beta_header:${header}`)
+  )
+}
+
+/**
+ * Official `e5t` — the "Unexpected value(s) `x`, `y` for the
+ * `anthropic[-_]beta` header" first-line shape: the listed values include the
+ * header, or the flat message carries the `beta_header:<h>` capability token.
+ */
+function namesBetaInUnexpectedValuesLine(
+  error: APIError,
+  header: string,
+): boolean {
+  const listed =
+    /^Unexpected value\(s\) ((?:`[^`]+`(?:, )?)+) for the `anthropic[-_]beta`/.exec(
+      getApiErrorFirstLine(error),
+    )?.[1]
+  return (
+    listed?.includes(`\`${header}\``) === true ||
+    findsCapabilityRejectedToken(error.message, `beta_header:${header}`)
+  )
+}
+
+/**
+ * Official `GB` — conversation-binding refusals (400s about messages not
+ * created in this conversation / bound to a different one) look superficially
+ * similar but are unrelated to the beta; excluded from tool-search recovery.
+ */
+function isConversationBindingRefusal(error: APIError): boolean {
+  if (error.status !== 400) {
     return false
   }
+  const lower = error.message.toLowerCase()
+  return (
+    lower.includes('not created in this conversation') ||
+    lower.includes('bound to a different conversation')
+  )
+}
+
+/** Official `_Eo` — thinking / redacted_thinking signature-problem texts. */
+function mentionsThinkingSignatureProblem(message: string): boolean {
+  const lower = message.toLowerCase().replaceAll('`', '')
+  if (lower.includes('signature in thinking block')) {
+    return true
+  }
+  if (lower.includes('invalid data in redacted_thinking block')) {
+    return true
+  }
+  if (lower.includes('thinking.signature') && lower.includes('field required')) {
+    return true
+  }
+  return (
+    (lower.includes('thinking block') || lower.includes('redacted_thinking')) &&
+    (lower.includes('cannot be modified') || lower.includes('invalid signature'))
+  )
+}
+
+/** Official `oM` — thinking-signature refusals are excluded from recovery. */
+function isThinkingSignatureRefusal(error: APIError): boolean {
+  if (error.status !== 400) {
+    return false
+  }
+  return (
+    mentionsThinkingSignatureProblem(error.message) ||
+    findsCapabilityRejectedToken(error.message, 'thinking_signature')
+  )
+}
+
+/**
+ * Official `iSe`/`TQ` (@248312563) — does this error NAME the tool-search
+ * beta header as the thing it refused? An APIError whose message names the
+ * header (the "Unexpected value(s) ..." first line via `e5t`, or — for
+ * status 400 — the `Mv`/`eOs` mention-or-token path), and which is not a
+ * conversation-binding (`GB`) or thinking-signature (`oM`) refusal.
+ *
+ * Official `TQ` also consults the per-beta `Z6t` classifier map; the v306
+ * binary has NO tool-search entry in that map (its keys are
+ * context_management / evict_on_complete / thinking-display records), so for
+ * the tool-search header the lookup reduces to `e5t` — ported without the map
+ * (documented). The official `n.header===null` guard is kept: callers pass
+ * the request-scoped `toolSearchHeader`, which is null when tool search was
+ * not declared.
+ */
+export function isToolSearchBetaRefusalNamed(
+  error: unknown,
+  betaHeader: string | null,
+): boolean {
+  if (!(error instanceof APIError) || betaHeader === null) {
+    return false
+  }
+  if (isConversationBindingRefusal(error) || isThinkingSignatureRefusal(error)) {
+    return false
+  }
+  return (
+    namesBetaInUnexpectedValuesLine(error, betaHeader) ||
+    (error.status === 400 && namesBetaRejected(error.message, betaHeader))
+  )
+}
+
+/**
+ * Official `vf`/`Ff` (@238694176, RAW form) — ANTHROPIC_BASE_URL unset, or
+ * pointing at exactly the production first-party host. Deliberately NOT
+ * providers.ts `isFirstPartyAnthropicBaseUrl`: that one ports the official
+ * `Mi`/`Xo` variant (ant-internal assume-flag + api-staging superset), while
+ * `Jmn` calls raw `vf` (documented deviation from the obvious mapping).
+ */
+function isRawFirstPartyBaseUrl(): boolean {
+  const baseUrl = process.env.ANTHROPIC_BASE_URL
+  if (!baseUrl) {
+    return true
+  }
   try {
-    return isRefusedAtFresh(
-      getGlobalConfig().toolSearchRefusedAt?.[toolSearchRefusedKey(model)],
-    )
+    return ['api.anthropic.com'].includes(new URL(baseUrl).host)
   } catch {
     return false
   }
 }
 
 /**
- * Official `DUs(e, r)` — record that the endpoint refused a tool-search
- * request for this model and answered it without tool search. No-op when the
- * window is already fresh (official `if(d(e))return`); otherwise warn-logs
- * the official text and writes `toolSearchRefusedAt[key]=Date.now()` through
- * saveGlobalConfig, pruning expired entries (official `Cs`) in the same write.
+ * Official `sH` (= `Cde()===null && ac()`, @240979705/@240985860) — signed in
+ * as a claude.ai subscriber with no API key. Approximation (documented): OCC
+ * has no OIDC profile-auth subsystem (`nv`/`Jet`/`OBr`), so `Cde()` maps to
+ * getAnthropicApiKey() and `ac()` to the auth-token source being the claude.ai
+ * subscriber OAuth form. Fail-closed via isTrueFirstParty's try/catch:
+ * getAnthropicApiKey() THROWS in CI/test mode with no credential configured,
+ * and the official `Jmn` catch → log + false absorbs that identically.
  */
-export function recordToolSearchRefused(model: string): void {
+function isSubscriberOauthForm(): boolean {
+  return (
+    getAnthropicApiKey() === null && getAuthTokenSource().source === 'claude.ai'
+  )
+}
+
+/**
+ * Official `Jmn` (@249494776) — "true first party": firstParty provider, no
+ * ANTHROPIC_UNIX_SOCKET, raw first-party base URL, and not subscriber OAuth.
+ * Gates the anonymous-refusal `defer_loading` message guard (Ese's
+ * `!Jmn()||/\bdefer_loading\b/.test(to.message)` arm): on a genuine
+ * first-party connection any refused 400/422 is trusted as the tool-search
+ * refusal even when the message never mentions `defer_loading`; behind a
+ * proxy the message must name the deferred-tools mechanism, so an arbitrary
+ * gateway 400 does not trigger a false recovery.
+ */
+export function isTrueFirstParty(): boolean {
   try {
-    if (isToolSearchRefused(model)) {
-      return
+    return (
+      getAPIProvider() === 'firstParty' &&
+      process.env.ANTHROPIC_UNIX_SOCKET === undefined &&
+      isRawFirstPartyBaseUrl() &&
+      !isSubscriberOauthForm()
+    )
+  } catch (error) {
+    logError(error as Error)
+    return false
+  }
+}
+
+/**
+ * Official `Ese` message-side conjuncts — is this error eligible for the
+ * ANONYMOUS refuse-recovery path (`N6`)? Official full form (@249522800):
+ *
+ *   `Ese=(to)=>{let _r=GVe(to);return L6(to)
+ *     &&(!Jmn()||/\bdefer_loading\b/.test(to.message))
+ *     &&(to.status===400||to.status===422)
+ *     &&to.type!=="billing_error"&&!Fw(_r)&&!UF(_r)}`
+ *
+ * Port decisions (documented):
+ * - `L6` (the request-scoped conjuncts: tool search was declared on the
+ *   request, no partial message received yet, error is an APIError, no
+ *   resume-incomplete-thinking) is enforced by the caller in claude.ts, where
+ *   the request-scoped closure state lives.
+ * - `GVe` (422→400 rewrite) feeds ONLY `Fw`/`UF` — the big ORs of every
+ *   OTHER recovery classifier. In OCC those are the earlier `retry*Refused`
+ *   handlers in withRetry's fatal-400 chain, which have already declined by
+ *   the time this predicate is consulted (chain-position equivalence, see the
+ *   section header), so the rewrite has nothing left to act on and is omitted.
+ * - `to.type!=="billing_error"` uses OCC's isAPIErrorBodyType (superset of
+ *   the official `.type` read: also covers nested body + message shapes).
+ */
+export function isAnonymousToolSearchRefuseRecoveryEligible(
+  error: APIError,
+): boolean {
+  return (
+    (!isTrueFirstParty() || /\bdefer_loading\b/.test(error.message)) &&
+    (error.status === 400 || error.status === 422) &&
+    !isAPIErrorBodyType(error, 'billing_error')
+  )
+}
+
+/**
+ * Official `EF` (@249522800) — the verbatim warn, then throw the retry
+ * marker. Official warn text (copied byte-for-byte from the v306 binary):
+ *
+ *   `[ToolSearch] HTTP ${status} ${description}${header?` (${header})`:''};
+ *    sending the request again without deferred tools.
+ *    ENABLE_TOOL_SEARCH=false avoids the refused request`
+ *   (+ a trailing `. Dropped first and now allowed again: ...` clause when
+ *    the sticky-dropped-tools list `PO` is non-empty)
+ *
+ * The official also un-drops sticky-dropped tools (`for(let ni of PO)Jvt(dt,ni)`)
+ * and flushes deferred-tool state (`if(gLe)a9o()`); OCC has neither subsystem
+ * and `PO` is always empty, so the warn clause never renders and the
+ * loop/flush are omitted (documented).
+ *
+ * The two official `description` values:
+ * - named path (`Rse`): `refusing the tool search beta`
+ * - anonymous path (`N6`): `that no other recovery took, on a request that
+ *   declared deferred tools`
+ */
+export function throwToolSearchRefused(
+  error: APIError,
+  betaHeader: string | null,
+  refusalDescription: string,
+  declaredToolSearch: boolean,
+): never {
+  logForDebugging(
+    `[ToolSearch] HTTP ${error.status} ${refusalDescription}${
+      betaHeader ? ` (${betaHeader})` : ''
+    }; sending the request again without deferred tools. ENABLE_TOOL_SEARCH=false avoids the refused request`,
+    { level: 'warn' },
+  )
+  throw new ToolSearchRefusedError(error, declaredToolSearch)
+}
+
+/** Official `Rse`'s refusal description (named path), verbatim. */
+export const TOOL_SEARCH_REFUSED_DESCRIPTION_NAMED =
+  'refusing the tool search beta'
+
+/** Official `N6`'s refusal description (anonymous path), verbatim. */
+export const TOOL_SEARCH_REFUSED_DESCRIPTION_ANONYMOUS =
+  'that no other recovery took, on a request that declared deferred tools'
+
+/**
+ * The system-reminder content the official `pgn` wrapper prepends to the
+ * conversation when the refused request had declared tool search
+ * (`${Pi}` = "ToolSearch" @242035159; text verbatim from the v306 binary).
+ */
+export const TOOL_SEARCH_REFUSED_REMINDER = `${TOOL_SEARCH_TOOL_NAME} is no longer available. Tools listed earlier as deferred that are still available are declared in full: call them directly.`
+
+/** Official `LI` (@240811864) — plain conforming model-id shape. */
+const BETA_HEAL_MODEL_PATTERN = /^[A-Za-z0-9._:[\]-]{1,100}$/
+
+/** Official `UI` — model id with `@YYYYMMDD` snapshot suffix (optional `[Nm]`). */
+const BETA_HEAL_MODEL_SNAPSHOT_PATTERN =
+  /^[A-Za-z0-9._:[\]-]{1,91}@\d{8}(\[\d{1,3}[mM]\])?$/
+
+/**
+ * Official `vt` — telemetry model sanitizer: conforming ids pass through
+ * (`Pn` is identity for strings), everything else is reported as the literal
+ * 'nonconforming' (`b("nonconforming")` — same mapping as fileStateGuard.ts
+ * `getModelBucket`'s `Pn`/`b` precedent).
+ */
+function sanitizeModelForBetaHealTelemetry(
+  model: string | null | undefined,
+): string | undefined {
+  if (model == null) {
+    return undefined
+  }
+  return BETA_HEAL_MODEL_PATTERN.test(model) ||
+    BETA_HEAL_MODEL_SNAPSHOT_PATTERN.test(model)
+    ? model
+    : 'nonconforming'
+}
+
+/**
+ * Official `hLe` body (@249522800) — success-side heal mark. Called after the
+ * retry run that was sent WITHOUT the tool-search beta answers successfully.
+ *
+ * The official reads `Q.toolSearchRefusal` (the captured `UZ.refusal`) behind
+ * the `Cse` one-shot latch; in OCC both live in the claude.ts handler closure,
+ * and this function is the per-call body (the caller enforces the latch).
+ * Official named branch `bn(_r,TQ(to,_r))` (re-arm the sticky beta drop so
+ * the header is never sent again) and `bg(dt,_r)` have no OCC surface — the
+ * drop already happened inline in the same retry run — so only the anonymous
+ * debug log and the telemetry event remain (documented). `Ode([_r.header])`
+ * reduces to the header string itself for the known tool-search betas.
+ */
+export function markToolSearchBetaHealed(
+  refusal: APIError,
+  model: string,
+): void {
+  try {
+    const header = getToolSearchBetaHeader()
+    const named = isToolSearchBetaRefusalNamed(refusal, header)
+    if (!named) {
+      logForDebugging(
+        '[ToolSearch] the endpoint answered the request sent without tool search, so this conversation goes on without it',
+      )
     }
-    logForDebugging(
-      `[ToolSearch] the endpoint set in ANTHROPIC_BASE_URL refused a request for ${model} and answered it without tool search; tool search stays off there for a day. ENABLE_TOOL_SEARCH=false skips the refused request; =true always sends tool search and turns this recovery off.`,
-      { level: 'warn' },
-    )
-    const key = toolSearchRefusedKey(model)
-    saveGlobalConfig(config => {
-      if (isRefusedAtFresh(config.toolSearchRefusedAt?.[key])) {
-        return config
-      }
-      return {
-        ...config,
-        toolSearchRefusedAt: {
-          ...pruneRefusedEntries(config.toolSearchRefusedAt),
-          [key]: Date.now(),
-        },
-      }
+    logEvent('tengu_beta_400_healed', {
+      beta: header,
+      model: sanitizeModelForBetaHealTelemetry(model),
+      provider: getAPIProviderForStatsig(),
+      status: refusal.status,
+      unnamed: !named,
     })
-  } catch (err) {
-    logForDebugging(
-      `[ToolSearch] failed to record tool-search refusal: ${String(err)}`,
-      { level: 'error' },
-    )
+  } catch (error) {
+    logError(error as Error)
   }
 }
 
@@ -387,11 +663,11 @@ export function recordToolSearchRefused(model: string): void {
  * Currently, Haiku models do NOT support tool_reference. This can be
  * updated via GrowthBook feature 'tengu_tool_search_unsupported_models'.
  *
- * CC 2.1.304 (#58): official `Zae` — the patterns check is unchanged but the
- * final `return!0` became `return!d(e)`: an endpoint+model inside the
- * persisted refused window is treated as unsupported (downstream gate reason
- * `model_unsupported`), so a gateway that already refused tool search does
- * not get asked again for a day.
+ * CC 2.1.306 (research-api.md #1): back to the official v306 `Zae` form —
+ * `return!0` after the patterns check. The v304 `return!d(e)` arm (persisted
+ * refused window) is gone: the v306 binary has ZERO `toolSearchRefusedAt`
+ * string hits (v304: 6), and recovery is now per-request/one-shot via the
+ * retry run's rebuilt state, not via model support.
  *
  * @param model The model name to check
  * @returns true if the model supports tool_reference, false otherwise
@@ -407,9 +683,7 @@ export function modelSupportsToolReference(model: string): boolean {
     }
   }
 
-  // CC 2.1.304 (#58): official `return!d(e)` — refused within the last day
-  // behind the current custom base URL counts as unsupported.
-  return !isToolSearchRefused(model)
+  return true
 }
 
 /**
@@ -444,14 +718,17 @@ export function isToolSearchEnabledOptimistic(): boolean {
   // ANTHROPIC_BASE_URL (`!ENABLE_TOOL_SEARCH && firstParty &&
   // !isFirstPartyAnthropicBaseUrl()` → return false, with the "is not a
   // first-party Anthropic host" warn) was REMOVED by the official 304
-  // (binary string count: vprev=2 → vver=0). Tool search is now ON by default
-  // behind custom base URLs; a gateway that refuses it is handled by the
-  // refuse-recovery loop (isToolSearchRefuseRecoveryEnabled /
-  // recordToolSearchRefused below and the claude.ts retryToolSearchRefused
-  // handler) — the first 400/422 no other recovery claimed rebuilds the
-  // request without tool search and keeps it off for that endpoint+model for
-  // a day. ENABLE_TOOL_SEARCH=false skips the refused request entirely;
-  // =true always sends tool search and turns the recovery off.
+  // (binary string count: vprev=2 → vver=0) and stays removed in 306. Tool
+  // search is ON by default behind custom base URLs; an endpoint that refuses
+  // it is handled by the v306 refuse-recovery state machine (this module's
+  // isToolSearchBetaRefusalNamed / isAnonymousToolSearchRefuseRecoveryEligible
+  // + the claude.ts retryToolSearchRefused handler): the refused request is
+  // rebuilt and retried once WITHOUT tool search, for that request only —
+  // v306 removed the v304 persisted 1-day window (toolSearchRefusedAt has
+  // ZERO v306 binary string hits) and the ENABLE_TOOL_SEARCH / custom-base-URL
+  // eligibility gate (`zOe`). ENABLE_TOOL_SEARCH=false still skips tool
+  // search entirely (standard mode); =true always sends it when eligible —
+  // and the recovery now runs in BOTH cases.
 
   if (!loggedOptimistic) {
     loggedOptimistic = true
