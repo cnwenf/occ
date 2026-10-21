@@ -17,6 +17,26 @@ import { afterAll, describe, expect, mock, test } from 'bun:test'
 const OFFICIAL_MESSAGE =
   'Usage credit requests are turned off for your organization.'
 
+// OCC-97 hardening (see usageNoninteractive299.test.ts): Bun's mock.module
+// registry is shared across test files in one worker and mock.restore() does
+// NOT unregister module mocks. The original narrow full-replacement mocks here
+// (e.g. auth.js → { getSubscriptionType } only) leaked into later files and
+// broke their link-time imports (`SyntaxError: Export named
+// 'isClaudeAISubscriber' not found`). Fix: capture the real modules first and
+// re-register them (superset) in afterAll.
+const actualAdminRequests = await import(
+  '../../../services/api/adminRequests.js'
+)
+const actualOverageCreditGrant = await import(
+  '../../../services/api/overageCreditGrant.js'
+)
+const actualApiUsage = await import('../../../services/api/usage.js')
+const actualAuth = await import('../../../utils/auth.js')
+const actualBilling = await import('../../../utils/billing.js')
+const actualConfig = await import('../../../utils/config.js')
+const actualBrowser = await import('../../../utils/browser.js')
+const actualLog = await import('../../../utils/log.js')
+
 // Full-replacement mocks: usage-credits-core imports only the named exports
 // stubbed here, so no real network/config module graph is loaded.
 mock.module('../../../services/api/adminRequests.js', () => ({
@@ -54,6 +74,21 @@ mock.module('../../../utils/log.js', () => ({
 const { runUsageCredits } = await import('../usage-credits-core.js')
 
 afterAll(() => {
+  // Re-register the real modules (superset) rather than relying on
+  // mock.restore(): later test files in the same worker resolve these module
+  // paths and need the full export sets at link time.
+  mock.module('../../../services/api/adminRequests.js', () => ({
+    ...actualAdminRequests,
+  }))
+  mock.module('../../../services/api/overageCreditGrant.js', () => ({
+    ...actualOverageCreditGrant,
+  }))
+  mock.module('../../../services/api/usage.js', () => ({ ...actualApiUsage }))
+  mock.module('../../../utils/auth.js', () => ({ ...actualAuth }))
+  mock.module('../../../utils/billing.js', () => ({ ...actualBilling }))
+  mock.module('../../../utils/config.js', () => ({ ...actualConfig }))
+  mock.module('../../../utils/browser.js', () => ({ ...actualBrowser }))
+  mock.module('../../../utils/log.js', () => ({ ...actualLog }))
   mock.restore()
 })
 

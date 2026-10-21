@@ -961,6 +961,8 @@ export function getManagedSettingsKeysForLogging(
       'excludedCommands',
       'autoAllowBashIfSandboxed',
       'enableWeakerNestedSandbox',
+      // CC 2.1.305: trusted-tier sandbox key (official Xi list @238365501).
+      'allowNestedUserNamespaces',
       'enableWeakerNetworkIsolation',
       'allowAppleEvents',
       'ripgrep',

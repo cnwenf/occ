@@ -150,6 +150,15 @@ export function validatePermissionRule(
   suggestion?: string
   examples?: string[]
   warning?: string
+  /**
+   * CC 2.1.305 — one-line security notice for the startup `securityWarnings`
+   * channel (rendered as `<Behavior> rule <notice>` rows under the banner).
+   * Binary-verified gating (v306 `rLe` @238393000): the wildcard-before-
+   * subcommand and mid-pattern-`:*` notices fire for ALLOW rules only; the
+   * mixes-`*`-with-trailing-`:*` and file-rule notices fire for NON-allow
+   * rules only (a deny/ask rule that never matches restricts nothing).
+   */
+  securityNotice?: string
 } {
   // Empty rule check
   if (!rule || rule.trim() === '') {
@@ -276,6 +285,9 @@ export function validatePermissionRule(
         return {
           valid: true,
           warning: `${permissionRuleValueToString(parsed)} has a wildcard before the rest of the command, so it also matches any options inserted at that position and approves them without a prompt.${gitNote} Replace that * with the exact value you mean, or only use * after the subcommand${gitExample}.`,
+          // CC 2.1.305 securityNotice — byte-verified (v306 binary; inside the
+          // allow-only gate, unconditional property of that return).
+          securityNotice: `${permissionRuleValueToString(parsed)} allows any option at its * · use an exact value`,
         }
       }
     }
@@ -306,6 +318,11 @@ export function validatePermissionRule(
         return {
           valid: true,
           warning: `${permissionRuleValueToString(parsed)} mixes * with the trailing :* prefix syntax, so it is matched as a literal prefix (the * is not expanded) and ${fate}.${advice}`,
+          // CC 2.1.305 securityNotice — byte-verified spread gate
+          // `...n!=="allow"&&{securityNotice:...}` (v306 binary).
+          ...(behavior !== 'allow' && {
+            securityNotice: `${permissionRuleValueToString(parsed)} reads its * literally${suggested.endsWith(':*') ? '' : ` · use ${permissionRuleValueToString({ toolName: parsed.toolName, ruleContent: suggested })}`}`,
+          }),
         }
       }
     } else if (content.includes(':*') && !content.endsWith(':*')) {
@@ -316,6 +333,11 @@ export function validatePermissionRule(
       return {
         valid: true,
         warning: `${permissionRuleValueToString(parsed)} has a :* that is not at the end, so it is matched as a * wildcard (the : is literal), not as the trailing :* prefix syntax. ${advice}`,
+        // CC 2.1.305 securityNotice — byte-verified spread gate
+        // `...n==="allow"&&{securityNotice:...}` (v306 binary).
+        ...(behavior === 'allow' && {
+          securityNotice: `${permissionRuleValueToString(parsed)} reads its :* as a wildcard · use an exact value`,
+        }),
       }
     }
 
@@ -391,6 +413,12 @@ export function validatePermissionRule(
       return {
         valid: true,
         warning: `${permissionRuleValueToString(parsed)} is not matched by file permission checks \u2014 only ${replacement}(path) rules are. Use ${permissionRuleValueToString({ toolName: replacement, ruleContent: parsed.ruleContent })} instead (${replacement} rules cover all file-${replacement === 'Edit' ? 'editing' : 'reading'} tools).`,
+        // CC 2.1.305 securityNotice \u2014 byte-verified spread gate
+        // `...n!=="allow"&&{securityNotice:...}` (v306 binary): a deny/ask
+        // rule under a never-matched tool name restricts nothing.
+        ...(behavior !== 'allow' && {
+          securityNotice: `${permissionRuleValueToString(parsed)} never matches \u00b7 use ${permissionRuleValueToString({ toolName: replacement, ruleContent: parsed.ruleContent })}`,
+        }),
       }
     }
   }

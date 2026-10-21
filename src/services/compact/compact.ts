@@ -695,6 +695,10 @@ export async function compactConversation(
           // CC 2.1.304 #6: names of tools called before this summary — extracted
           // from the pre-compact messages the summary replaces (official HJ).
           getToolNamesUsed(messages),
+          // CC 2.1.305 (binary v306 @249154327, byte-verified): official passes
+          // `headTruncated:Wt>0` (Wt = PTL head-truncation retry count) so the
+          // summary message tells Claude the oldest rounds were dropped.
+          ptlAttempts > 0,
         ),
         isCompactSummary: true,
         // Official 2.1.306 (#P10): this summary repeats earlier summarized
@@ -1150,6 +1154,9 @@ export async function partialCompactConversation(
           // CC 2.1.304 #6: tools called before this summary — from the messages
           // this partial compaction actually summarizes away (official HJ).
           getToolNamesUsed(messagesToSummarize),
+          // CC 2.1.305 (binary v306 @249154327, byte-verified): PTL head
+          // truncations on the partial path also set `headTruncated:Wt>0`.
+          ptlAttempts > 0,
         ),
         isCompactSummary: true,
         // Official 2.1.306 (#P10): same repeat marking as the full path —

@@ -175,6 +175,12 @@ export const RESTRICTIVE_ENTRIES: readonly RestrictiveEntry[] = [
   { path: ['sandbox', 'enableWeakerNestedSandbox'], restrictive: false },
   { path: ['sandbox', 'enableWeakerNetworkIsolation'], restrictive: false },
   { path: ['sandbox', 'allowAppleEvents'], restrictive: false },
+  // CC 2.1.305 (official Xe table @238346103): `{path:["sandbox",
+  // "allowNestedUserNamespaces"],restrictive:!1}` — sits between
+  // allowAppleEvents and network.allowManagedDomainsOnly upstream.
+  // restrictive:false = the fail-closed reading is `false` (nested user
+  // namespaces blocked); an invalid managed value substitutes false.
+  { path: ['sandbox', 'allowNestedUserNamespaces'], restrictive: false },
   { path: ['sandbox', 'network', 'allowManagedDomainsOnly'], restrictive: true },
   { path: ['sandbox', 'network', 'strictAllowlist'], restrictive: true },
   { path: ['sandbox', 'network', 'allowAllUnixSockets'], restrictive: false },

@@ -556,6 +556,12 @@ export type Props = {
   initialTools: Tool[];
   // Initial messages to populate the REPL with
   initialMessages?: MessageType[];
+  // CC 2.1.305 — permission rules that restrict nothing surface as warning
+  // rows immediately under the banner (official `security-warnings` registry
+  // entry: `isActive: m => m.securityWarnings.length > 0`, rows rendered with
+  // `status:"warning"`). OCC renders them as seeded system messages via the
+  // existing createSystemMessage(text, 'warning') surface.
+  securityWarnings?: string[];
   // Deferred hook messages promise — REPL renders immediately and injects
   // hook messages when they resolve. Awaited before the first API call.
   pendingHookMessages?: Promise<HookResultMessage[]>;
@@ -607,6 +613,7 @@ export function REPL({
   debug,
   initialTools,
   initialMessages,
+  securityWarnings,
   pendingHookMessages,
   initialFileHistorySnapshots,
   initialContentReplacements,
@@ -1270,7 +1277,18 @@ export function REPL({
     registerLeaderToolUseConfirmQueue(setToolUseConfirmQueue);
     return () => unregisterLeaderToolUseConfirmQueue();
   }, [setToolUseConfirmQueue]);
-  const [messages, rawSetMessages] = useState<MessageType[]>(initialMessages ?? []);
+  const [messages, rawSetMessages] = useState<MessageType[]>(() => {
+    // CC 2.1.305 — securityWarnings rows render under the banner as
+    // `status:"warning"` system messages (official registry entry gated on
+    // `securityWarnings.length > 0`).
+    if (!securityWarnings || securityWarnings.length === 0) {
+      return initialMessages ?? [];
+    }
+    return [
+      ...securityWarnings.map(warning => createSystemMessage(warning, 'warning')),
+      ...(initialMessages ?? []),
+    ];
+  });
   const messagesRef = useRef(messages);
   // Stores the willowMode variant that was shown (or false if no hint shown).
   // Captured at hint_shown time so hint_converted telemetry reports the same

@@ -1,22 +1,27 @@
 /**
  * CC 2.1.299 (#017): "Added `/usage` warnings for max effort, workflows,
  * always-on context and large tool results."
+ * CC 2.1.305 (/usage item): "each warning is now a one-line fix that names
+ * its source" — the v299 behavior-template rows are REPLACED by the
+ * recommendation rows built in usageRecommendations.ts.
  *
- * Byte-exact port of the official behavior-warning catalog + formatters.
- * Forensics (v299 ELF, /tmp/cc-diff-299 — offsets into package/claude):
- *   - Catalog `S` @237017933: 9 keys. v296's catalog (@228835711) had only
- *     5 (cache_miss, long_context, subagent_heavy, high_parallel, cron) —
- *     the 4 new keys (max_effort, workflow, always_on_context,
- *     large_tool_results) ARE the #017 delta.
- *   - `AKr=10` @236999598 (v296 `Djr=10` @228817688) — a behavior is only
- *     shown when it accounts for >=10% of weighted usage cost.
- *   - Window formatter `d(s,e)`: header `${s} · ${reqs} · ${sessions}`
- *     ("·" = U+00B7), behavior rows indented 2 spaces, then the Top lists.
- *   - Top-list formatter `m(s,e,n)`: `g=8` cap, `, +N more` overflow.
- *   - `formatBehaviors` (`_`): heading `y`, disclaimer, then the non-null
- *     "Last 24h" / "Last 7d" windows joined by a blank line; null when
- *     both windows render nothing.
+ * Forensics (v306 ELF, /tmp/cc-diff-306 — offsets into package/claude):
+ *   - v306 text formatter module @261447620, exports `{G as call, S as
+ *     formatBehaviors, v as formatRateLimits}`. `S` (=formatBehaviors):
+ *     `[heading, "Approximate · sessions on this machine only · shares
+ *     overlap", "", windows.join("\n\n")].join("\n")` — the long v299
+ *     disclaimer is GONE (0 hits in v306).
+ *   - `h(label, window)` (=formatWindow): header
+ *     `${label} · ${requests} · ${sessions}`, then recommendation rows
+ *     `  ${String(pct).padStart(2)}%  ${title}${detail ? ` · ${detail}` : ""}`,
+ *     then the Top lists. The v299 BEHAVIOR_WARNING_TEMPLATES strings
+ *     (">100k-token cache miss" etc.) have 0 hits in v306 (3 in v304) —
+ *     officially deleted, so they are removed here too.
+ *   - `m(label, entries, prefix)` (=formatTopList): unchanged from v299 —
+ *     `g=8` cap, `, +N more` overflow.
+ *   - Heading `y` ("What's contributing to your limits usage?") unchanged.
  */
+import type { UsageRecommendation } from './usageRecommendations.js'
 
 /**
  * Official `I(count, noun)` — singular/plural helper. Inlined (identical to
@@ -28,7 +33,8 @@ function pluralize(count: number, noun: string): string {
   return count === 1 ? noun : `${noun}s`
 }
 
-/** Behavior keys, in the official catalog's declaration order (S @237017933). */
+/** Behavior keys, in the official catalog's declaration order (S @237017933
+ * in v299; still the accumulator key set in v306). */
 export const BEHAVIOR_KEYS = [
   'cache_miss',
   'long_context',
@@ -43,41 +49,21 @@ export const BEHAVIOR_KEYS = [
 
 export type BehaviorKey = (typeof BEHAVIOR_KEYS)[number]
 
-/** Official `S` @237017933 — byte-exact warning templates keyed by behavior. */
-export const BEHAVIOR_WARNING_TEMPLATES: Record<
-  BehaviorKey,
-  (pct: number) => string
-> = {
-  cache_miss: (s) => `${s}% of your usage hit a >100k-token cache miss`,
-  long_context: (s) => `${s}% of your usage was at >150k context`,
-  subagent_heavy: (s) =>
-    `${s}% of your usage came from subagent-heavy sessions`,
-  high_parallel: (s) =>
-    `${s}% of your usage was while 4+ sessions ran in parallel`,
-  cron: (s) => `${s}% of your usage came from sessions active for 8+ hours`,
-  // The four keys new in 2.1.299 (#017):
-  max_effort: (s) => `${s}% of your usage was at max effort`,
-  workflow: (s) => `${s}% of your usage came from workflows`,
-  always_on_context: (s) =>
-    `${s}% of your usage went to always-on context over 40k tokens`,
-  large_tool_results: (s) =>
-    `${s}% of your usage went to tool results over 10k tokens`,
-}
-
 /** Official `y` — the behaviors section heading. */
 export const LIMITS_USAGE_HEADING = "What's contributing to your limits usage?"
 
-/** Official disclaimer line inside `_` (formatBehaviors). */
+/** Official v306 disclaimer line inside `S` (formatBehaviors) — verbatim.
+ * Replaces the long v299 disclaimer (deleted upstream in v305). */
 export const BEHAVIORS_DISCLAIMER =
-  'Approximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.'
+  'Approximate · sessions on this machine only · shares overlap'
 
-/** Official `AKr=10` @236999598 — minimum pct for a behavior to be shown. */
+/** Official `P$e=10` — minimum pct for a behavior to be shown. */
 export const BEHAVIOR_PCT_THRESHOLD = 10
 
-/** Official `g=8` — cap on entries per Top list before `+N more`. */
+/** Official `g=8` (`y` in the v306 formatter module) — Top-list cap. */
 export const TOP_LIST_CAP = 8
 
-/** Official behavior pct payload (output of `h`, input of `d`). */
+/** Official behavior pct payload (v306: + the recommendation rows). */
 export interface BehaviorWindowPcts {
   request_count: number
   session_count: number
@@ -86,6 +72,8 @@ export interface BehaviorWindowPcts {
   skills: Array<{ name: string; pct: number }>
   plugins: Array<{ name: string; pct: number }>
   mcp_servers: Array<{ name: string; pct: number }>
+  /** CC 2.1.305: official `e.recommendations ?? []` rows. */
+  recommendations?: UsageRecommendation[]
 }
 
 /** Official `m(s,e,n)` — `Top <label>: name pct%, ...` with `, +N more`. */
@@ -103,31 +91,32 @@ export function formatTopList(
   return `${label}: ${shown}${overflow > 0 ? `, +${overflow} more` : ''}`
 }
 
-/** Official `d(s,e)` — one time window's rendered block, or null. */
+/** Official v306 `h(a,e)` — one time window's rendered block, or null. */
 export function formatWindow(
   label: string,
   window: BehaviorWindowPcts,
 ): string | null {
-  const behaviors = window.behaviors.filter(
-    (r) => r.pct >= BEHAVIOR_PCT_THRESHOLD,
-  )
+  const recommendations = window.recommendations ?? []
   const topLists = [
     formatTopList('Top skills', window.skills, (r) => `/${r}`),
     formatTopList('Top subagents', window.agents),
     formatTopList('Top plugins', window.plugins),
     formatTopList('Top MCP servers', window.mcp_servers),
   ].filter((r) => r !== null)
-  if (behaviors.length === 0 && topLists.length === 0) return null
+  if (recommendations.length === 0 && topLists.length === 0) return null
   const requests = `${window.request_count} ${pluralize(window.request_count, 'request')}`
   const sessions = `${window.session_count} ${pluralize(window.session_count, 'session')}`
   return [
     `${label} · ${requests} · ${sessions}`,
-    ...behaviors.map((r) => `  ${BEHAVIOR_WARNING_TEMPLATES[r.key](r.pct)}`),
+    ...recommendations.map(
+      (r) =>
+        `  ${String(r.pct).padStart(2)}%  ${r.title}${r.detail ? ` · ${r.detail}` : ''}`,
+    ),
     ...topLists.map((r) => `  ${r}`),
   ].join('\n')
 }
 
-/** Official `_` (formatBehaviors) — the whole section, or null. */
+/** Official `S` (formatBehaviors) — the whole section, or null. */
 export function formatBehaviors(data: {
   day: BehaviorWindowPcts
   week: BehaviorWindowPcts

@@ -2452,6 +2452,18 @@ export async function bridgeMain(args: string[]): Promise<void> {
     spawnMode = multiSessionEnabled ? 'same-dir' : 'single-session'
     spawnModeSource = 'gate_default'
   }
+  // CC 2.1.305 (binary claude @131013750 / new305.txt, byte-verified): a
+  // spawn mode persisted for this folder is now surfaced at startup —
+  // `if(gt==="saved"&&nt)console.log(`Spawn mode: ${Re} (saved for this
+  // folder${process.stdin.isTTY===!0?"; press w to change":""})`)` where
+  // gt=spawnModeSource, Re=spawnMode, nt=worktreeAvailable
+  // (hasWorktreeCreateHook()||findGitRoot(dir)!==null). Printed immediately
+  // after the precedence block, matching the official placement.
+  if (spawnModeSource === 'saved' && worktreeAvailable) {
+    console.log(
+      `Spawn mode: ${spawnMode} (saved for this folder${process.stdin.isTTY === true ? '; press w to change' : ''})`,
+    )
+  }
   const maxSessions =
     spawnMode === 'single-session'
       ? 1
@@ -2781,10 +2793,16 @@ export async function bridgeMain(args: string[]): Promise<void> {
         spawn_mode:
           newMode as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
       })
+      // CC 2.1.305 (binary claude @131021234 / new305.txt, byte-verified):
+      // official appends the persistence confirmation `. Saved for this
+      // folder; w switches back.` to both toggle messages —
+      // `je.logStatus(`Spawn mode: ${S==="worktree"?"worktree (new sessions
+      // get isolated git worktrees)":"same-dir (new sessions share the
+      // current directory)"}. Saved for this folder; w switches back.`)`.
       logger.logStatus(
         newMode === 'worktree'
-          ? 'Spawn mode: worktree (new sessions get isolated git worktrees)'
-          : 'Spawn mode: same-dir (new sessions share the current directory)',
+          ? 'Spawn mode: worktree (new sessions get isolated git worktrees). Saved for this folder; w switches back.'
+          : 'Spawn mode: same-dir (new sessions share the current directory). Saved for this folder; w switches back.',
       )
       logger.setSpawnModeDisplay(newMode)
       logger.refreshDisplay()

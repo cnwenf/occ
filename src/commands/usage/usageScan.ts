@@ -49,11 +49,33 @@
  *   - One file walk serves both windows (records kept at the week cutoff,
  *     day accumulation filtered in-memory) — same result as the official's
  *     per-window cutoffs, half the IO.
+ *
+ * CC 2.1.305 (/usage one-line fixes): this file additionally ports the
+ * official v305 evidence collector (`ee`/`ne`/`oe`/`re`/`te`/`end`, v306
+ * binary @256635621 region), the `ie` finalize peakParallel field, and the
+ * `wYe` window orchestrator (`computeUsageWindows`) feeding the
+ * recommendation catalog in usageRecommendations.ts.
  */
 
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, sep } from 'node:path'
 import { getClaudeConfigHomeDir } from '../../utils/envUtils.js'
+import {
+  ATTACHMENT_PARSE_CAP,
+  buildUsageRecommendations,
+  createEvidenceWindow,
+  extractBashDetail,
+  isUsageFixesEnabled,
+  LARGE_RESULT_CANDIDATE_CAP,
+  sanitizeEvidencePath,
+  sanitizeToolName,
+  TOOL_USE_MAP_CAP,
+  type AlwaysOnParts,
+  type RecommendationWindow,
+  type UsageEffortState,
+  type UsageEvidenceWindow,
+  type UsageRecommendation,
+} from './usageRecommendations.js'
 import {
   BEHAVIOR_KEYS,
   BEHAVIOR_PCT_THRESHOLD,
@@ -325,10 +347,13 @@ export function accumulateRequest(acc: WindowAccumulator, record: ScanRecord): v
   acc.buckets.set(bucketKey, bucket)
 }
 
-interface WindowSummary {
+export interface WindowSummary {
   totalCost: number
   requestCount: number
   sessionCount: number
+  /** CC 2.1.305: official `ie` finalize output — max distinct sessions in
+   * any 5-min bucket (feeds the high_parallel recommendation detail). */
+  peakParallel: number
   behaviors: Array<{ key: BehaviorKey; cost: number; count: number }>
   byAgent: Map<string, number>
   bySkill: Map<string, number>
@@ -340,7 +365,11 @@ interface WindowSummary {
 export function finalizeWindow(acc: WindowAccumulator): WindowSummary {
   let parallelCost = 0
   let parallelCount = 0
+  let peakParallel = 0
   for (const bucket of acc.buckets.values()) {
+    // Official `ie`: peakParallel is the max bucket session count (not
+    // restricted to >=Ge buckets).
+    peakParallel = Math.max(peakParallel, bucket.sids.size)
     if (bucket.sids.size >= PARALLEL_MIN_SESSIONS) {
       parallelCost += bucket.cost
       parallelCount += bucket.count
@@ -381,6 +410,7 @@ export function finalizeWindow(acc: WindowAccumulator): WindowSummary {
     totalCost: acc.totalCost,
     requestCount: acc.requestCount,
     sessionCount: acc.sessions.size,
+    peakParallel,
     behaviors,
     byAgent: acc.byAgent,
     bySkill: acc.bySkill,
@@ -421,6 +451,21 @@ export function toBehaviorPcts(summary: WindowSummary): BehaviorWindowPcts {
     skills: attributionPcts(summary.bySkill, summary.totalCost),
     plugins: attributionPcts(summary.byPlugin, summary.totalCost),
     mcp_servers: attributionPcts(summary.byMcp, summary.totalCost),
+  }
+}
+
+/** CC 2.1.305: window summary → the input shape EYe reads. */
+export function toRecommendationWindow(
+  summary: WindowSummary,
+): RecommendationWindow {
+  return {
+    totalCost: summary.totalCost,
+    peakParallel: summary.peakParallel,
+    behaviors: summary.behaviors,
+    agents: attributionPcts(summary.byAgent, summary.totalCost),
+    skills: attributionPcts(summary.bySkill, summary.totalCost),
+    plugins: attributionPcts(summary.byPlugin, summary.totalCost),
+    mcpServers: attributionPcts(summary.byMcp, summary.totalCost),
   }
 }
 
@@ -519,6 +564,365 @@ export function applyUserLine(state: ScanState, line: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// CC 2.1.305 evidence collector (official `ee`/`ne`/`oe`/`re`/`te`, v306
+// binary @256635621 region). Feeds the "names its source" recommendations:
+// which CLAUDE.md fills the context, which tool returns oversized results,
+// how many workflow agents ran and where.
+//
+// OCC adaptation: the official handlers scan RAW BYTES for markers
+// ('"attachment":{"type":"', '"type":"assistant"', '"type":"tool_result"',
+// '"toolUseResult":', '"tool_use_id":"', '"file_path":"', '"command":"',
+// '"cwd":"'); this port keeps the same marker GATES (cheap substring checks
+// before any parse) and then JSON.parses, matching the existing
+// parseAssistantRecord/applyUserLine adaptation style. Token divisors are
+// the official ones: attachment lines /4, tool-result spans /2.5 ($3t uses
+// the same /2.5 > 1e4 gate as isLargeToolResult).
+// ---------------------------------------------------------------------------
+
+/** Official large-result candidate (pushed per user line, capped at K=100). */
+export interface LargeResultCandidate {
+  tool: string
+  detail?: string
+  /** Index into collector.records of the record the result PRECEDES. */
+  recordIndex: number
+  /** Raw span tokens (pre-attribution). */
+  tokens: number
+  /** Tokens actually stamped on that record (set by finalizeFileEvidence). */
+  attributedTokens: number
+}
+
+/** Official `ee(r)` per-file evidence state (kRt accumulator + file bits). */
+export interface FileEvidenceCollector {
+  /** Official `l` — cwd of the file's first assistant line ('' = official A). */
+  project: string
+  /** Official `d` — attachment lines only count before the first assistant. */
+  sawAssistantLine: boolean
+  /** Official `oe` map: tool_use id → {tool, detail} (cap z=64, FIFO). */
+  toolUses: Map<string, { tool: string; detail?: string }>
+  /** Official `r={memory,skills,mcp,agents}` always-on attachment parts. */
+  parts: AlwaysOnParts
+  largestFile: { path: string; tokens: number } | undefined
+  /** ALL assistant records in file order (recordIndex arithmetic base). */
+  records: ScanRecord[]
+  largeResults: LargeResultCandidate[]
+}
+
+export function createFileEvidenceCollector(): FileEvidenceCollector {
+  return {
+    project: '',
+    sawAssistantLine: false,
+    toolUses: new Map(),
+    parts: { memory: 0, skills: 0, mcp: 0, agents: 0 },
+    largestFile: undefined,
+    records: [],
+    largeResults: [],
+  }
+}
+
+/** Official `Z=Set["User","Project","Local"]` — CLAUDE.md-family files. */
+const MEMORY_FILE_TYPES = new Set(['User', 'Project', 'Local'])
+
+function extractCwd(line: string): string {
+  try {
+    const parsed = JSON.parse(line)
+    return sanitizeEvidencePath(parsed?.cwd) ?? ''
+  } catch {
+    return ''
+  }
+}
+
+/** Official `re` detail extraction (JSON adaptation: parsed tool input). */
+function extractToolDetail(
+  tool: string,
+  input: Record<string, unknown> | undefined,
+): string | undefined {
+  if (tool === 'Read') return sanitizeEvidencePath(input?.file_path)
+  if (tool === 'Bash' && typeof input?.command === 'string') {
+    return extractBashDetail(input.command)
+  }
+  return undefined
+}
+
+/**
+ * Official assistant-line branch of `ee.line` + `oe`: capture cwd once,
+ * collect tool_use id→{tool,detail} (cap 64, FIFO evict).
+ */
+export function noteAssistantEvidence(
+  collector: FileEvidenceCollector,
+  record: ScanRecord,
+  line: string,
+): void {
+  collector.records.push(record)
+  if (!collector.sawAssistantLine) {
+    collector.sawAssistantLine = true
+    if (collector.project === '') collector.project = extractCwd(line)
+  }
+  let parsed: Record<string, any>
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return
+  }
+  const content = parsed?.message?.content
+  if (!Array.isArray(content)) return
+  for (const block of content) {
+    if (block?.type !== 'tool_use' || typeof block.id !== 'string') continue
+    if (collector.toolUses.has(block.id)) continue
+    const tool = sanitizeToolName(String(block.name ?? '')) ?? ''
+    const detail = extractToolDetail(
+      tool,
+      typeof block.input === 'object' && block.input !== null
+        ? block.input
+        : undefined,
+    )
+    collector.toolUses.set(block.id, {
+      tool,
+      ...(detail !== undefined ? { detail } : {}),
+    })
+    if (collector.toolUses.size > TOOL_USE_MAP_CAP) {
+      const oldest = collector.toolUses.keys().next().value
+      if (oldest !== undefined) collector.toolUses.delete(oldest)
+    }
+  }
+}
+
+/**
+ * Official `ne(h,s,r)` — attachment lines (only before the first assistant
+ * line, parse cap D=1e6 bytes): tokens = round(lineBytes/4), routed to the
+ * always-on part buckets; 'instructions' attachments also track the largest
+ * CLAUDE.md-family file.
+ */
+export function applyAttachmentEvidence(
+  collector: FileEvidenceCollector,
+  line: string,
+): void {
+  if (Buffer.byteLength(line) > ATTACHMENT_PARSE_CAP) return
+  let parsed: Record<string, any>
+  try {
+    parsed = JSON.parse(line)
+  } catch {
+    return
+  }
+  const attachment = parsed?.attachment
+  if (!attachment || typeof attachment.type !== 'string') return
+  const tokens = Math.round(Buffer.byteLength(line) / 4)
+  switch (attachment.type) {
+    case 'skill_listing':
+      collector.parts.skills += tokens
+      break
+    case 'deferred_tools_delta':
+    case 'mcp_instructions_delta':
+      collector.parts.mcp += tokens
+      break
+    case 'agent_listing_delta':
+      collector.parts.agents += tokens
+      break
+    case 'instructions': {
+      collector.parts.memory += tokens
+      const files = Array.isArray(attachment.files) ? attachment.files : []
+      for (const file of files) {
+        if (!file || !MEMORY_FILE_TYPES.has(String(file.type))) continue
+        const content =
+          typeof file.content === 'string'
+            ? file.content
+            : typeof file.text === 'string'
+              ? file.text
+              : undefined
+        // Official path field name not recovered from the binary; both
+        // spellings are accepted (fail-safe: no path → no largestFile).
+        const path = sanitizeEvidencePath(file.path ?? file.filePath)
+        if (content === undefined || path === undefined) continue
+        const fileTokens = Math.round(content.length / 4)
+        if (
+          !collector.largestFile ||
+          fileTokens > collector.largestFile.tokens
+        ) {
+          collector.largestFile = { path, tokens: fileTokens }
+        }
+      }
+      break
+    }
+    default:
+      break
+  }
+}
+
+/**
+ * Official user-line tool_result candidate branch: gate on the raw markers,
+ * measure the span from '"type":"tool_result"' to '"toolUseResult":' (or
+ * EOL), require $3t(span) (>10k tokens at /2.5), resolve the tool via the
+ * first '"tool_use_id":"' lookup, cap at K=100 candidates per file.
+ */
+export function noteLargeResultCandidate(
+  collector: FileEvidenceCollector,
+  line: string,
+): void {
+  if (collector.largeResults.length >= LARGE_RESULT_CANDIDATE_CAP) return
+  const start = line.indexOf('"type":"tool_result"')
+  if (start < 0) return
+  const span = line.slice(start)
+  const cut = span.indexOf('"toolUseResult":')
+  const spanLength = cut < 0 ? span.length : cut
+  if (!isLargeToolResult(spanLength)) return
+  const idMatch = /"tool_use_id":"([^"]+)"/.exec(span)
+  const entry = idMatch ? collector.toolUses.get(idMatch[1]) : undefined
+  // Official `if(g&&$3t(m))` — no known tool_use → no candidate.
+  if (!entry) return
+  collector.largeResults.push({
+    tool: entry.tool,
+    ...(entry.detail !== undefined ? { detail: entry.detail } : {}),
+    recordIndex: collector.records.length,
+    tokens: Math.round(spanLength / BYTES_PER_TOKEN),
+    attributedTokens: 0,
+  })
+}
+
+/** Official user-line branch of `ee.line` (attachment + tool_result). */
+export function noteUserEvidenceLine(
+  collector: FileEvidenceCollector,
+  line: string,
+): void {
+  if (
+    !collector.sawAssistantLine &&
+    line.includes('"attachment"')
+  ) {
+    applyAttachmentEvidence(collector, line)
+  }
+  if (line.includes('"type":"user"')) {
+    noteLargeResultCandidate(collector, line)
+  }
+}
+
+/**
+ * Official `end(s)`: re-stamp each candidate's tokens from the
+ * largeToolResultTokens delta of the record it precedes; drop candidates
+ * the state machine never attributed.
+ */
+export function finalizeFileEvidence(
+  collector: FileEvidenceCollector,
+): LargeResultCandidate[] {
+  const kept: LargeResultCandidate[] = []
+  for (const candidate of collector.largeResults) {
+    const current =
+      collector.records[candidate.recordIndex]?.largeToolResultTokens ?? 0
+    const previous =
+      collector.records[candidate.recordIndex - 1]?.largeToolResultTokens ?? 0
+    const delta = current - previous
+    if (delta > 0) {
+      kept.push({
+        ...candidate,
+        attributedTokens: Math.min(candidate.tokens, delta),
+      })
+    }
+  }
+  return kept
+}
+
+/** One window's evidence target (official `wYe`: day first, own seen Set). */
+export interface EvidenceWindowTarget {
+  evidence: UsageEvidenceWindow
+  sinceMs: number
+  seen: Set<string>
+}
+
+/** Official `U(e,t,n,r)` — accumulate per-project behavior cost. */
+export function addProjectCost(
+  evidence: UsageEvidenceWindow,
+  behaviorKey: string,
+  project: string,
+  cost: number,
+): void {
+  const costs = evidence.projects.get(behaviorKey) ?? new Map<string, number>()
+  costs.set(project, (costs.get(project) ?? 0) + cost)
+  evidence.projects.set(behaviorKey, costs)
+}
+
+/** Official `te({window,sinceMs,seen},r,i,a,d)` — one file → one window. */
+export function attributeWindowEvidence(
+  collector: FileEvidenceCollector,
+  candidates: LargeResultCandidate[],
+  target: EvidenceWindowTarget,
+): void {
+  const { evidence, sinceMs, seen } = target
+  let workflowFile = false
+  let largeCost = 0
+  const hitCounts = candidates.map(() => 0)
+  collector.records.forEach((record, index) => {
+    if (record.ts < sinceMs) return
+    if (record.uuid !== '' && seen.has(record.uuid)) return
+    if (record.uuid !== '') seen.add(record.uuid)
+    const cost = weightedCost(record)
+    const contextTokens = record.cached + record.cacheCreate + record.uncached
+    const inputCost = cost - record.output * 50 * record.modelTier
+    if (record.isWorkflow) {
+      workflowFile = true
+      addProjectCost(evidence, 'workflow', collector.project, cost)
+    }
+    if (record.alwaysOnTokens > 0) {
+      addProjectCost(
+        evidence,
+        'always_on_context',
+        collector.project,
+        inputCost * Math.min(1, record.alwaysOnTokens / contextTokens),
+      )
+      const previous = evidence.alwaysOnStarts.get(collector.project)
+      if (!previous || previous.ts < record.ts) {
+        evidence.alwaysOnStarts.set(collector.project, {
+          ts: record.ts,
+          tokens: record.alwaysOnTokens,
+          parts: { ...collector.parts },
+          ...(collector.largestFile
+            ? { largestFile: collector.largestFile }
+            : {}),
+        })
+      }
+    }
+    if (record.largeToolResultTokens > 0) {
+      largeCost +=
+        inputCost * Math.min(1, record.largeToolResultTokens / contextTokens)
+      candidates.forEach((candidate, j) => {
+        if (candidate.recordIndex <= index) hitCounts[j]++
+      })
+    }
+  })
+  if (workflowFile) evidence.workflowAgents++
+  const weights = candidates.map(
+    (candidate, j) => candidate.attributedTokens * hitCounts[j],
+  )
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0)
+  if (totalWeight === 0) return
+  candidates.forEach((candidate, j) => {
+    if (weights[j] === 0) return
+    const key = `${collector.project}\u0000${candidate.tool}\u0000${candidate.detail ?? ''}`
+    const existing = evidence.largeResults.get(key) ?? {
+      tool: candidate.tool,
+      ...(candidate.detail !== undefined ? { detail: candidate.detail } : {}),
+      project: collector.project,
+      tokens: 0,
+      count: 0,
+      cost: 0,
+    }
+    evidence.largeResults.set(key, {
+      ...existing,
+      tokens: Math.max(existing.tokens, candidate.attributedTokens),
+      count: existing.count + 1,
+      cost: existing.cost + (largeCost * weights[j]) / totalWeight,
+    })
+  })
+}
+
+/** Official `end(s)` + per-window `te` fan-out for one file. */
+export function attributeFileEvidence(
+  collector: FileEvidenceCollector,
+  targets: EvidenceWindowTarget[],
+): void {
+  const candidates = finalizeFileEvidence(collector)
+  for (const target of targets) {
+    attributeWindowEvidence(collector, candidates, target)
+  }
+}
+
 /** Official `zt` — list .jsonl transcripts: projects/* plus each session's
  * subagents/ tree, recursively. */
 export async function listTranscriptFiles(projectsDir: string): Promise<string[]> {
@@ -568,10 +972,14 @@ async function walkJsonl(dir: string, files: string[]): Promise<void> {
   }
 }
 
-/** Official `Qt`+`be`+`Zt` — scan one file into records at/after cutoff. */
+/** Official `Qt`+`be`+`Zt` — scan one file into records at/after cutoff.
+ * CC 2.1.305: optional evidence collector threads through every line (the
+ * collector sees ALL records, including pre-cutoff ones — recordIndex/delta
+ * arithmetic depends on the full file order). */
 export async function scanTranscriptFile(
   filePath: string,
   cutoff: number,
+  evidence?: FileEvidenceCollector,
 ): Promise<ScanRecord[]> {
   let info
   try {
@@ -593,10 +1001,12 @@ export async function scanTranscriptFile(
     const record = parseAssistantRecord(line, filePath)
     if (record !== null) {
       applyRequestRecord(state, record)
+      if (evidence) noteAssistantEvidence(evidence, record, line)
       if (record.ts >= cutoff) records.push(record)
       continue
     }
     applyUserLine(state, line)
+    if (evidence) noteUserEvidenceLine(evidence, line)
   }
   return records
 }
@@ -628,5 +1038,69 @@ export async function computeUsageBehaviors(
   return {
     day: toBehaviorPcts(finalizeWindow(dayAcc)),
     week: toBehaviorPcts(finalizeWindow(weekAcc)),
+  }
+}
+
+/** CC 2.1.305: one window's pct payload + its one-line recommendations. */
+export interface UsageWindowResult {
+  pcts: BehaviorWindowPcts
+  recommendations: UsageRecommendation[]
+}
+
+/**
+ * Official `wYe(e)` @256635621 region — the v305 window orchestrator: one
+ * file walk feeding both pct windows AND (when the fix gate is on) the
+ * per-window evidence accumulators that let recommendations name their
+ * source. Day target first, each window with its own seen-uuid Set.
+ */
+export async function computeUsageWindows(
+  effortState: UsageEffortState,
+  now: number = Date.now(),
+  projectsDir: string = defaultProjectsDir(),
+): Promise<{ day: UsageWindowResult; week: UsageWindowResult } | null> {
+  const weekCutoff = now - WEEK_WINDOW_MS
+  const dayCutoff = now - DAY_WINDOW_MS
+  const fixesEnabled = isUsageFixesEnabled()
+  const files = await listTranscriptFiles(projectsDir)
+  const dayAcc = createWindowAccumulator()
+  const weekAcc = createWindowAccumulator()
+  const dayTarget: EvidenceWindowTarget = {
+    evidence: createEvidenceWindow(),
+    sinceMs: dayCutoff,
+    seen: new Set(),
+  }
+  const weekTarget: EvidenceWindowTarget = {
+    evidence: createEvidenceWindow(),
+    sinceMs: weekCutoff,
+    seen: new Set(),
+  }
+  let sawAny = false
+  for (const file of files) {
+    const collector = fixesEnabled ? createFileEvidenceCollector() : undefined
+    const records = await scanTranscriptFile(file, weekCutoff, collector)
+    for (const record of records) {
+      sawAny = true
+      accumulateRequest(weekAcc, record)
+      if (record.ts >= dayCutoff) accumulateRequest(dayAcc, record)
+    }
+    if (collector) attributeFileEvidence(collector, [dayTarget, weekTarget])
+  }
+  if (!sawAny) return null
+  const build = (
+    summary: WindowSummary,
+    target: EvidenceWindowTarget,
+  ): UsageWindowResult => ({
+    pcts: toBehaviorPcts(summary),
+    recommendations: fixesEnabled
+      ? buildUsageRecommendations(
+          toRecommendationWindow(summary),
+          target.evidence,
+          effortState,
+        )
+      : [],
+  })
+  return {
+    day: build(finalizeWindow(dayAcc), dayTarget),
+    week: build(finalizeWindow(weekAcc), weekTarget),
   }
 }

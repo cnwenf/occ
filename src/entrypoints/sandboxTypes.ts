@@ -176,6 +176,22 @@ export const SandboxSettingsSchema = lazySchema(() =>
       filesystem: SandboxFilesystemConfigSchema(),
       ignoreViolations: z.record(z.string(), z.array(z.string())).optional(),
       enableWeakerNestedSandbox: z.boolean().optional(),
+      // CC 2.1.305 (v306 binary @238321756): describe text byte-verified
+      // against the official ELF, including the **Removes code-execution
+      // isolation** markdown, the em-dashes, and the trusted-tier note. The
+      // official's `${je}` interpolant is the literal "project settings
+      // (.claude/settings.json and .claude/settings.local.json)" string
+      // (@129034724 region), substituted inline here.
+      allowNestedUserNamespaces: z
+        .boolean()
+        .optional()
+        .describe(
+          "Linux/WSL only: Let sandboxed commands create user namespaces of their own, which the sandbox refuses by default. Needed by tools that sandbox themselves that way, such as Chromium's and Electron's sandbox, rootless podman or buildah, a nested bubblewrap, and `unshare`. " +
+            '**Removes code-execution isolation** — in any folder a hostile command may write, it can then bypass filesystem.denyWrite, filesystem.denyRead, credentials.files entries and the paths the sandbox always write-protects (such as .claude/settings.json, git hooks and git config), ' +
+            'and so plant code that later runs outside the sandbox; while autoAllowBashIfSandboxed is on, the command that plants it needs no approval. Default: false. ' +
+            'Only honored from user, managed/policy, or CLI (--settings) settings — ' +
+            'true from project settings (.claude/settings.json and .claude/settings.local.json) is ignored (false there still applies).',
+        ),
       enableWeakerNetworkIsolation: z
         .boolean()
         .optional()

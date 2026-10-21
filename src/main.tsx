@@ -131,6 +131,7 @@ import { normalizeFallbackModels } from './utils/model/fallbackModel.js';
 import { ensureModelStringsInitialized } from './utils/model/modelStrings.js';
 import { PERMISSION_MODES, PERMISSION_MODES_CLI_CHOICES, normalizePermissionModeInput } from './utils/permissions/PermissionMode.js';
 import { checkAndDisableBypassPermissions, getAutoModeEnabledStateIfCached, initializeToolPermissionContext, initialPermissionModeFromCLI, isDefaultPermissionModeAuto, parseToolListFromCLI, removeDangerousPermissions, stripDangerousPermissionsForAutoMode, verifyAutoModeGateAccess } from './utils/permissions/permissionSetup.js';
+import { routeStartupPermissionWarnings } from './utils/permissions/startupSecurityWarnings.js';
 import { cleanupOrphanedPluginVersionsInBackground } from './utils/plugins/cacheUtils.js';
 import { initializeVersionedPlugins } from './utils/plugins/installedPluginsManager.js';
 import { getManagedPluginNames } from './utils/plugins/managedPlugins.js';
@@ -2120,6 +2121,7 @@ async function run(): Promise<CommanderCommand> {
     let toolPermissionContext = initResult.toolPermissionContext;
     const {
       warnings,
+      securityWarnings,
       dangerousPermissions,
       overlyBroadBashPermissions
     } = initResult;
@@ -2135,10 +2137,18 @@ async function run(): Promise<CommanderCommand> {
       toolPermissionContext = stripDangerousPermissionsForAutoMode(toolPermissionContext);
     }
 
-    // Print any warnings from initialization
-    warnings.forEach(warning => {
-      // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.error(warning);
+    // CC 2.1.305 — startup warning routing (official emission gate @257152404
+    // + `cz` @257109508, byte-verified): interactive TTY warnings move from
+    // raw stderr above the logo to the debug log; headless print-text keeps
+    // the yellow stderr writer; json/stream-json/bg keeps `[permissions] `-
+    // prefixed debug-log lines. The returned rows (deduped, single-line,
+    // non-json/bg branch only) render as warning rows under the banner.
+    const securityWarningRows = routeStartupPermissionWarnings({
+      warnings,
+      securityWarnings,
+      isNonInteractiveSession,
+      outputFormat,
+      sessionKind: process.env.CLAUDE_CODE_SESSION_KIND
     });
     void assertMinVersion();
 
@@ -4263,7 +4273,8 @@ async function run(): Promise<CommanderCommand> {
           initialFileHistorySnapshots: resumeData.fileHistorySnapshots,
           initialContentReplacements: resumeData.contentReplacements,
           initialAgentName: resumeData.agentName,
-          initialAgentColor: resumeData.agentColor
+          initialAgentColor: resumeData.agentColor,
+          securityWarnings: securityWarningRows
         }, renderAndRun);
       } else {
         // Show interactive selector (includes same-repo worktrees)
@@ -4276,7 +4287,8 @@ async function run(): Promise<CommanderCommand> {
           ...sessionConfig,
           initialSearchQuery: searchTerm,
           forkSession: options.forkSession,
-          filterByPr
+          filterByPr,
+          securityWarnings: securityWarningRows
         });
       }
     } else {
@@ -4324,7 +4336,8 @@ async function run(): Promise<CommanderCommand> {
       }, {
         ...sessionConfig,
         initialMessages,
-        pendingHookMessages
+        pendingHookMessages,
+        securityWarnings: securityWarningRows
       }, renderAndRun);
     }
   }).version(`OCC ${MACRO.VERSION}`, '-v, --version', 'Output the version number');

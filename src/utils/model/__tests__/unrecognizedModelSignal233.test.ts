@@ -19,7 +19,16 @@ import {
 // module (and model.ts) load — mirrors the official `zo`/`vHr` reverse lookup
 // where a modelOverrides value silences the signal. Keep every real export
 // and only override resolveOverriddenModel.
+//
+// OCC-97 leak class: snapshot the real exports BEFORE installing the mock and
+// restore them in afterAll — mock.module registrations leak across test files
+// in the same worker, and mock.module mutates the imported namespace IN PLACE
+// (spreading the mutated namespace on restore would re-install the stub for
+// every later file, e.g. modelOverridesNormalizedMatch305 which needs the real
+// resolveOverriddenModel).
 import * as realModelStrings from '../modelStrings.js'
+
+const actualModelStringsExports = { ...realModelStrings }
 
 mock.module('../modelStrings.js', () => ({
   ...realModelStrings,
@@ -69,6 +78,9 @@ afterEach(() => {
 
 afterAll(() => {
   resetUnrecognizedModelSignalForTesting()
+  mock.module('../modelStrings.js', () => ({
+    ...actualModelStringsExports,
+  }))
 })
 
 describe('2.1.233 — isModelRecognized', () => {

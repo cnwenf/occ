@@ -8,6 +8,7 @@ import {
   applyUserLine,
   attributionPcts,
   computeUsageBehaviors,
+  computeUsageWindows,
   createScanState,
   createWindowAccumulator,
   finalizeWindow,
@@ -509,12 +510,38 @@ describe('#017 — file scan + orchestrator (official Qt/zt/ZGt)', () => {
     // Both records are inside the last 24h as well.
     expect(behaviors?.day.request_count).toBe(2)
 
-    const section = formatBehaviors(behaviors!)
+    // CC 2.1.305: the v299 prose templates (">100k-token cache miss" etc.)
+    // are officially deleted (3 hits in v304, 0 in v306) — the rendered
+    // section now carries recommendation rows instead. Drive it through
+    // computeUsageWindows (official wYe), which attaches recommendations.
+    const windows = await computeUsageWindows(
+      {
+        isEffortBelowMaxSaved: false,
+        effortBelowMax: undefined,
+        isEffortSwitchFree: false,
+        isUltracodeOn: false,
+      },
+      NOW,
+      dir,
+    )
+    expect(windows).not.toBeNull()
+    const section = formatBehaviors({
+      day: {
+        ...windows!.day.pcts,
+        recommendations: windows!.day.recommendations,
+      },
+      week: {
+        ...windows!.week.pcts,
+        recommendations: windows!.week.recommendations,
+      },
+    })
     expect(section).toContain("What's contributing to your limits usage?")
     expect(section).toContain('Last 24h · 2 requests · 2 sessions')
     expect(section).toContain('Last 7d · 2 requests · 2 sessions')
-    expect(section).toContain('  50% of your usage was at max effort')
-    expect(section).toContain('  50% of your usage came from workflows')
+    expect(section).toContain('  50%  Save max effort for hard tasks')
+    expect(section).toContain(
+      '  50%  Save workflows for big tasks · 1 agent ran',
+    )
   })
 
   test('an empty projects dir → null (no section rendered)', async () => {

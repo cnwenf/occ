@@ -345,6 +345,7 @@ export function getCompactUserSummaryMessage(
   suppressFollowUpQuestions?: boolean,
   transcriptPath?: string,
   toolNamesUsed?: string[],
+  headTruncated?: boolean,
 ): string {
   const formattedSummary = formatCompactSummary(summary)
 
@@ -361,6 +362,16 @@ ${renderToolsUsedBeforeSummary(toolNamesUsed)}${formattedSummary}`
 
   if (transcriptPath) {
     baseSummary += `\n\nIf you need specific details from before compaction (like exact code snippets, error messages, or content you generated), read the full transcript at: ${transcriptPath}`
+  }
+
+  // CC 2.1.305 (binary v306 composer `EZ` @249154327, byte-verified):
+  //   `if(n?.headTruncated)h+=\`\n\nNote: the earliest part of the conversation was too large to include and is NOT covered by this summary${n.transcriptPath&&!ee()?" (the full transcript mentioned above still has it)":""}. If the task turns out to depend on something from that part, say so plainly rather than guessing at it.\``
+  // Placement matches official: appended after the transcriptPath line and
+  // before the suppressFollowUpQuestions continuation. OCC has no
+  // RC-withheld-summary gate (`ee()`), so the parenthetical condition reduces
+  // to the same `transcriptPath` guard that gates the line above it.
+  if (headTruncated) {
+    baseSummary += `\n\nNote: the earliest part of the conversation was too large to include and is NOT covered by this summary${transcriptPath ? ' (the full transcript mentioned above still has it)' : ''}. If the task turns out to depend on something from that part, say so plainly rather than guessing at it.`
   }
 
   if (suppressFollowUpQuestions) {

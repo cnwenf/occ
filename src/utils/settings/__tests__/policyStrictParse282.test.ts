@@ -600,6 +600,9 @@ describe('2.1.283 sandbox per-field fail-closed (bespoke jo rebuild)', () => {
         allowManagedReadPathsOnly: true,
       },
       enableWeakerNestedSandbox: false,
+      // CC 2.1.305: restrictive:false lock → the synthesized skeleton blocks
+      // nested user namespaces fail-closed.
+      allowNestedUserNamespaces: false,
       enableWeakerNetworkIsolation: false,
       allowAppleEvents: false,
     })
@@ -607,7 +610,9 @@ describe('2.1.283 sandbox per-field fail-closed (bespoke jo rebuild)', () => {
     expect('enabled' in sandbox).toBe(false)
     expect('failIfUnavailable' in sandbox).toBe(false)
     expect(errors[0]?.message).toBe(
-      '"sandbox" was present but not an object; treating its locks as their restrictive values (autoAllowBashIfSandboxed, allowUnsandboxedCommands, network, filesystem, enableWeakerNestedSandbox, enableWeakerNetworkIsolation, allowAppleEvents) until it is fixed.',
+      // CC 2.1.305: the lock list gains allowNestedUserNamespaces (official Xe
+      // table row {path:["sandbox","allowNestedUserNamespaces"],restrictive:!1}).
+      '"sandbox" was present but not an object; treating its locks as their restrictive values (autoAllowBashIfSandboxed, allowUnsandboxedCommands, network, filesystem, enableWeakerNestedSandbox, allowNestedUserNamespaces, enableWeakerNetworkIsolation, allowAppleEvents) until it is fixed.',
     )
     expect(errors[0]?.substituted).toBe(true)
     // onlySubstitutes tail: the skeleton is this source's only policy content.

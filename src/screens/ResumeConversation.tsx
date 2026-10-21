@@ -67,6 +67,9 @@ type Props = {
   filterByPr?: boolean | number | string;
   thinkingConfig: ThinkingConfig;
   onTurnComplete?: (messages: Message[]) => void | Promise<void>;
+  // CC 2.1.305 — startup permission securityWarnings rows. Threaded so the
+  // --resume chooser path renders the same banner rows as launchRepl sites.
+  securityWarnings?: string[];
 };
 export function ResumeConversation({
   commands,
@@ -86,7 +89,8 @@ export function ResumeConversation({
   taskListId,
   filterByPr,
   thinkingConfig,
-  onTurnComplete
+  onTurnComplete,
+  securityWarnings
 }: Props): React.ReactNode {
   const {
     rows
@@ -307,7 +311,7 @@ export function ResumeConversation({
     return <CrossProjectMessage command={crossProjectCommand} />;
   }
   if (resumeData) {
-    return <REPL debug={debug} commands={commands} initialTools={initialTools} initialMessages={resumeData.messages} initialFileHistorySnapshots={resumeData.fileHistorySnapshots} initialContentReplacements={resumeData.contentReplacements} initialAgentName={resumeData.agentName} initialAgentColor={resumeData.agentColor} mcpClients={mcpClients} dynamicMcpConfig={dynamicMcpConfig} strictMcpConfig={strictMcpConfig} systemPrompt={systemPrompt} appendSystemPrompt={appendSystemPrompt} mainThreadAgentDefinition={resumeData.mainThreadAgentDefinition} autoConnectIdeFlag={autoConnectIdeFlag} disableSlashCommands={disableSlashCommands} taskListId={taskListId} thinkingConfig={thinkingConfig} onTurnComplete={onTurnComplete} />;
+    return <REPL debug={debug} commands={commands} initialTools={initialTools} initialMessages={resumeData.messages} initialFileHistorySnapshots={resumeData.fileHistorySnapshots} initialContentReplacements={resumeData.contentReplacements} initialAgentName={resumeData.agentName} initialAgentColor={resumeData.agentColor} mcpClients={mcpClients} dynamicMcpConfig={dynamicMcpConfig} strictMcpConfig={strictMcpConfig} systemPrompt={systemPrompt} appendSystemPrompt={appendSystemPrompt} mainThreadAgentDefinition={resumeData.mainThreadAgentDefinition} autoConnectIdeFlag={autoConnectIdeFlag} disableSlashCommands={disableSlashCommands} taskListId={taskListId} thinkingConfig={thinkingConfig} onTurnComplete={onTurnComplete} securityWarnings={securityWarnings} />;
   }
   if (loading) {
     return <Box>

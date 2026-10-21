@@ -61,6 +61,7 @@ import {
 } from '../../utils/model/workflowSubagentModel.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
+import { errorMessage } from '../../utils/errors.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 
 /** Lifetime cap on total agent() calls across a workflow. Runaway backstop. */
@@ -756,7 +757,21 @@ export function createPrimitives(ctx: WorkflowRuntimeContext): {
     if (ctx.journal) {
       await ctx.journal
         .appendResult(key, agentId.slice(0, 16), result, agentTokens)
-        .catch(() => {})
+        .catch((e: unknown) => {
+          // CC 2.1.305 (binary claude @260784887, byte-verified): a failed
+          // journal save is no longer silent — official
+          // `t(`workflow journal: did not save an agent() result, so a
+          // resumed run will re-run from this call: ${cHe(He).msg}`,
+          // {level:"warn"})` (novel s305 string; 0 hits in s304). The agent
+          // result is still returned either way; a resumed run simply re-runs
+          // from this call. Official also detaches the journal writer (St());
+          // OCC's WorkflowJournal has no detach API, so the warn is the
+          // portable half of the fix.
+          logForDebugging(
+            `workflow journal: did not save an agent() result, so a resumed run will re-run from this call: ${errorMessage(e)}`,
+            { level: 'warn' },
+          )
+        })
     }
 
     // Increment agent count.

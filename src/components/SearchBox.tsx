@@ -35,6 +35,14 @@ export function SearchBox(t0) {
   // and `paddingX:ge?1:0` with ge=false under SR \u2192 borderStyle undefined, paddingX 0.
   // OCC's `borderless` prop is the equivalent of official `!ge`, so SR folds into it.
   const srEnabled = isScreenReaderEnabled();
+  // CC 2.1.305 (binary claude @258374354, byte-verified): under a screen
+  // reader the default ⌕ prefix (official A2o="⌕") becomes "Search:" when
+  // the query is non-empty and nothing when it's empty — official
+  // `ce=L&&V===A2o?d?"Search:":null:V` with L=ot()=isScreenReaderEnabled,
+  // V=prefix, d=query. v304 rendered the symbol unconditionally, which
+  // VoiceOver read as "telephone recorder". A caller-supplied non-⌕ prefix is
+  // kept verbatim (official `:V` arm).
+  const effectivePrefix = srEnabled && prefix === "\u2315" ? query ? "Search:" : null : prefix;
   const effectiveBorderless = borderless || srEnabled;
   const t4 = effectiveBorderless ? undefined : "round";
   const t5 = isFocused ? "suggestion" : undefined;
@@ -51,7 +59,13 @@ export function SearchBox(t0) {
   // gated on SR so non-SR cursor behavior is unchanged \u2014 SearchBox previously
   // declared nothing, and useDeclaredCursor's node-guarded inactive clear never
   // clobbers a sibling input's declaration.
-  const cursorColumn = stringWidth(prefix) + 1 + stringWidth(query.slice(0, offset));
+  // CC 2.1.305 (binary claude @258374354, byte-verified): the caret column
+  // follows the effective prefix — official `Ye=ce===null?0:ce.length+1`
+  // added to the in-query cursor offset (`X=uo(_,Ye+me)`). A null prefix
+  // (SR + empty query) leaves the caret at its raw query position.
+  // stringWidth keeps OCC's display-cell convention ("Search:" is ASCII, so
+  // cell width === official .length for the SR prefix).
+  const cursorColumn = effectivePrefix === null ? stringWidth(query.slice(0, offset)) : stringWidth(effectivePrefix) + 1 + stringWidth(query.slice(0, offset));
   const cursorRef = useDeclaredCursor({
     line: 0,
     column: cursorColumn,
@@ -70,9 +84,14 @@ export function SearchBox(t0) {
     t9 = $[5];
   }
   let t10;
-  if ($[6] !== prefix || $[7] !== t8 || $[8] !== t9) {
-    t10 = <Text dimColor={t8}>{prefix}{" "}{t9}</Text>;
-    $[6] = prefix;
+  // CC 2.1.305 (binary claude @258374354, byte-verified): official renders
+  // `Oe=ce===null?d:`${ce} ${d}`` — a null effective prefix (SR + empty
+  // query) drops both the symbol and the separator space; otherwise the
+  // effective prefix ("Search:" under SR, else the raw prefix) is followed by
+  // one space and the query/placeholder.
+  if ($[6] !== effectivePrefix || $[7] !== t8 || $[8] !== t9) {
+    t10 = effectivePrefix === null ? <Text dimColor={t8}>{t9}</Text> : <Text dimColor={t8}>{effectivePrefix}{" "}{t9}</Text>;
+    $[6] = effectivePrefix;
     $[7] = t8;
     $[8] = t9;
     $[9] = t10;

@@ -28,6 +28,19 @@ import { screenReader, isScreenReaderEnabled } from '../../utils/screenReader.js
  *     `active` mirrors official `J && !ue` (box focused), gated on SR so
  *     non-SR cursor behavior is unchanged.
  *
+ * v2.1.305 extension (official `MS` @258374354, byte-verified): under SR the
+ * default ⌕ prefix (official A2o) becomes "Search:" when the query is
+ * non-empty and nothing when it's empty —
+ *   `ce=L&&V===A2o?d?"Search:":null:V`
+ *   `Oe=ce===null?d:`${ce} ${d}``  (rendered text)
+ *   `Ye=ce===null?0:ce.length+1`   (caret column offset)
+ * v304 rendered ⌕ unconditionally; VoiceOver read it as "telephone
+ * recorder". The SR-on expectations below are the v305 shapes ("Search:"
+ * prefix, caret columns shifted by width("Search:")+1 = 8; null prefix +
+ * raw query caret for the empty-query case). Non-SR behavior is unchanged
+ * (⌕ + space, caret = width(⌕)+1+query cells — but nothing is declared
+ * since `active` stays false).
+ *
  * Two render surfaces are exercised:
  *   - Borderless layout: the SR flat-render serializer output (screen-reader
  *     users see the flat serialization, not the SYNC-framed screen buffer).
@@ -141,7 +154,9 @@ describe('v2.1.287 Item 1b: SearchBox borderless layout under screen reader', ()
 
     // Assert — prefix + query survive; the round border is gone
     // (official borderStyle:ge?"round":void 0 → undefined under SR).
-    expect(out).toContain('⌕')
+    // CC 2.1.305: under SR the default ⌕ becomes "Search:" (query non-empty).
+    expect(out).toContain('Search:')
+    expect(out).not.toContain('⌕')
     expect(out).toContain('ab')
     for (const ch of BORDER_CHARS) {
       expect(out).not.toContain(ch)
@@ -186,7 +201,9 @@ describe('v2.1.287 Item 1b: SearchBox cursor declaration under screen reader', (
 
   test('declares the caret at end-of-query when SR on and focused', async () => {
     // Arrange — query "ab", caret after both chars (offset 2).
-    // column = width("⌕")1 + space1 + width("ab")2 = 4; single text row → line 0.
+    // CC 2.1.305 (official Ye=ce===null?0:ce.length+1): the SR prefix is
+    // "Search:" → column = width("Search:")7 + space1 + width("ab")2 = 10;
+    // single text row → line 0.
     setSR(true)
     const calls: SpyCall[] = []
 
@@ -200,13 +217,13 @@ describe('v2.1.287 Item 1b: SearchBox cursor declaration under screen reader', (
     // Assert
     const decls = activeDecls(calls)
     expect(decls.length).toBeGreaterThan(0)
-    expect(decls[0].relativeX).toBe(4)
+    expect(decls[0].relativeX).toBe(10)
     expect(decls[0].relativeY).toBe(0)
     expect(decls[0].node).toBeTruthy()
   })
 
   test('declares caret at start-of-query (offset 0) as prefix + space width', async () => {
-    // Arrange — caret before any query char: column = width("⌕")1 + space1 = 2.
+    // Arrange — caret before any query char: column = width("Search:")7 + space1 = 8.
     setSR(true)
     const calls: SpyCall[] = []
 
@@ -220,12 +237,12 @@ describe('v2.1.287 Item 1b: SearchBox cursor declaration under screen reader', (
     // Assert
     const decls = activeDecls(calls)
     expect(decls.length).toBeGreaterThan(0)
-    expect(decls[0].relativeX).toBe(2)
+    expect(decls[0].relativeX).toBe(8)
     expect(decls[0].relativeY).toBe(0)
   })
 
   test('declares caret mid-query at the correct cell offset', async () => {
-    // Arrange — caret after "a" (offset 1): column = 1 + 1 + width("a")1 = 3.
+    // Arrange — caret after "a" (offset 1): column = 7 + 1 + width("a")1 = 9.
     setSR(true)
     const calls: SpyCall[] = []
 
@@ -239,13 +256,13 @@ describe('v2.1.287 Item 1b: SearchBox cursor declaration under screen reader', (
     // Assert
     const decls = activeDecls(calls)
     expect(decls.length).toBeGreaterThan(0)
-    expect(decls[0].relativeX).toBe(3)
+    expect(decls[0].relativeX).toBe(9)
   })
 
   test('declares caret using display cells, not char offsets (CJK width 2)', async () => {
     // Arrange — query "日本", caret after "日" (offset 1). "日" is 2 cells, so
-    // column = width("⌕")1 + space1 + width("日")2 = 4. A char-offset bug
-    // would yield 3. OCC's declared-cursor column is cell-based (stringWidth).
+    // column = width("Search:")7 + space1 + width("日")2 = 10. A char-offset bug
+    // would yield 9. OCC's declared-cursor column is cell-based (stringWidth).
     setSR(true)
     const calls: SpyCall[] = []
 
@@ -259,7 +276,7 @@ describe('v2.1.287 Item 1b: SearchBox cursor declaration under screen reader', (
     // Assert
     const decls = activeDecls(calls)
     expect(decls.length).toBeGreaterThan(0)
-    expect(decls[0].relativeX).toBe(4)
+    expect(decls[0].relativeX).toBe(10)
   })
 
   test('declares nothing when SR on but box is NOT focused', async () => {
@@ -295,5 +312,75 @@ describe('v2.1.287 Item 1b: SearchBox cursor declaration under screen reader', (
     // Assert
     expect(calls.length).toBeGreaterThan(0)
     expect(activeDecls(calls).length).toBe(0)
+  })
+})
+
+describe('v2.1.305: SearchBox SR prefix swap (⌕ → "Search:" / null)', () => {
+  beforeEach(() => setSR(false))
+  afterEach(() => setSR(false))
+
+  test('SR on + empty query renders no prefix at all (official null arm)', async () => {
+    // Arrange — official `ce=L&&V===A2o?d?"Search:":null:V`: empty query d
+    // under SR → ce=null → `Oe=ce===null?d:...` renders the raw query
+    // (placeholder when unfocused) with no prefix and no separator space.
+    setSR(true)
+
+    // Act
+    const out = await renderSrStripped(
+      <SearchBox query="" isFocused={true} isTerminalFocused={false} />,
+    )
+
+    // Assert
+    expect(out).not.toContain('Search:')
+    expect(out).not.toContain('⌕')
+    expect(out).toContain('Search…')
+  })
+
+  test('SR on + empty query declares caret column 0 (official Ye=ce===null?0:...)', async () => {
+    // Arrange — null prefix → caret column offset 0, plus raw query offset 0.
+    setSR(true)
+    const calls: SpyCall[] = []
+
+    // Act
+    await renderToStringIsolated(
+      <CursorSpy calls={calls}>
+        <SearchBox query="" isFocused={true} isTerminalFocused={true} cursorOffset={0} />
+      </CursorSpy>,
+    )
+
+    // Assert
+    const decls = activeDecls(calls)
+    expect(decls.length).toBeGreaterThan(0)
+    expect(decls[0].relativeX).toBe(0)
+    expect(decls[0].relativeY).toBe(0)
+  })
+
+  test('SR off renders the default ⌕ prefix unchanged', async () => {
+    // Arrange — non-SR users keep the v304 layout: ⌕ + space + query.
+    setSR(false)
+
+    // Act
+    const out = await renderToStringIsolated(<SearchBox {...focusedProps} />)
+
+    // Assert
+    expect(out).toContain('⌕')
+    expect(out).not.toContain('Search:')
+    expect(out).toContain('ab')
+  })
+
+  test('SR on with a caller-supplied non-default prefix keeps it verbatim', async () => {
+    // Arrange — official `:V` arm: the swap only applies to the default A2o
+    // ("⌕"); an explicit prefix survives untouched under SR.
+    setSR(true)
+
+    // Act
+    const out = await renderSrStripped(
+      <SearchBox {...focusedProps} prefix=">" />,
+    )
+
+    // Assert
+    expect(out).toContain('>')
+    expect(out).not.toContain('Search:')
+    expect(out).toContain('ab')
   })
 })

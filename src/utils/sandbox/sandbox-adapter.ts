@@ -413,6 +413,37 @@ function computeTrustedNetworkAllowances(
 }
 
 /**
+ * Official `Mp` (CC 2.1.305 builtConfig glue @244325168):
+ * `function Mp(e,n){return e===!1?!1:my(n)}` — the merged value `false` wins
+ * outright ("false there still applies"); otherwise the first DEFINED value
+ * across the trusted tiers only (`my` @244270329 walks `gy()` = policy →
+ * --settings → user), so a project/local-tier `true` is never honored
+ * ("Only honored from user, managed/policy, or CLI (--settings) settings").
+ *
+ * Why the trusted-tier scan is required here (verified, not assumed): OCC's
+ * settings merge is a plain deep merge (settingsMergeCustomizer only dedupes
+ * arrays) in ascending priority order user → project → local → flag → policy,
+ * so a project-tier `sandbox.allowNestedUserNamespaces: true` SURVIVES into
+ * the merged settings — and even overrides a user-tier `false`. The
+ * policyLocks `restrictive: false` entry governs the managed-settings
+ * fail-closed parse (invalid managed values substitute `false`); it does not
+ * filter untrusted tiers at merge time. A plain merged read would therefore
+ * let .claude/settings.json opt the project into nested user namespaces —
+ * exactly what the official describe text forbids.
+ */
+function falseStickyTrustedSandboxBoolean(
+  mergedValue: boolean | undefined,
+  field: 'allowNestedUserNamespaces',
+): boolean | undefined {
+  if (mergedValue === false) return false
+  for (const s of getTrustedSettingsSources()) {
+    const value = s?.sandbox?.[field]
+    if (value !== undefined) return value
+  }
+  return undefined
+}
+
+/**
  * Convert Claude Code settings format to SandboxRuntimeConfig format
  * (Function exported for testing)
  *
@@ -831,6 +862,17 @@ export function convertToSandboxRuntimeConfig(
     },
     ignoreViolations: settings.sandbox?.ignoreViolations,
     enableWeakerNestedSandbox: settings.sandbox?.enableWeakerNestedSandbox,
+    // CC 2.1.305 (official builtConfig passthrough @244386980):
+    // `allowNestedUserNamespaces: Pu()&&c8() ? false : Mp(merged, Z=>Z.allowNestedUserNamespaces)`.
+    // Mp = false-sticky trusted-tier read (see falseStickyTrustedSandboxBoolean
+    // above for why the merged read alone is NOT safe on OCC). The official's
+    // `Pu()&&c8()` force-false leg (subprocess env-scrub mode with the
+    // scrub-sandbox latch set) has no OCC equivalent — OCC ships no
+    // scrub-sandbox latch — so it is deliberately not ported.
+    allowNestedUserNamespaces: falseStickyTrustedSandboxBoolean(
+      settings.sandbox?.allowNestedUserNamespaces,
+      'allowNestedUserNamespaces',
+    ),
     enableWeakerNetworkIsolation:
       settings.sandbox?.enableWeakerNetworkIsolation,
     ripgrep: ripgrepConfig,

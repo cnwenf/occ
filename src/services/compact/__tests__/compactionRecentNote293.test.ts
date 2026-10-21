@@ -141,11 +141,14 @@ describe('2.1.293 #4 — application gate (vt=Ne.length>0?map(gJt):summaryMessag
 })
 
 describe('2.1.293 #4 — getCompactUserSummaryMessage: dead 292 branch deleted', () => {
-  test('signature has exactly 4 parameters (2.1.304 #6 adds toolNamesUsed as the 4th)', () => {
+  test('signature has exactly 5 parameters (2.1.304 #6 adds toolNamesUsed as the 4th; 2.1.305 adds headTruncated as the 5th)', () => {
     // 292→293 removed the old 4th `recentMessagesPreserved` param (down to 3);
     // 2.1.304 #6 re-introduces a 4th param — `toolNamesUsed?: string[]` — for
-    // the <tools-used-before-summary> tag. Still no `recentMessagesPreserved`.
-    expect(getCompactUserSummaryMessage.length).toBe(4)
+    // the <tools-used-before-summary> tag; CC 2.1.305 (binary v306 composer
+    // `EZ` @249154327) adds a 5th — `headTruncated?: boolean` — for the
+    // "earliest part … NOT covered by this summary" note. Still no
+    // `recentMessagesPreserved`.
+    expect(getCompactUserSummaryMessage.length).toBe(5)
   })
 
   test('old 292 sentence is never emitted for ANY argument combination', () => {

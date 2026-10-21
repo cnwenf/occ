@@ -275,7 +275,9 @@ describe('2.1.283 sandbox skeleton + null-removal + tail', () => {
     expect(errors).toHaveLength(2)
     expect(errors[0]?.path).toBe('sandbox')
     expect(errors[0]?.message).toBe(
-      '"sandbox" was present but not an object; treating its locks as their restrictive values (autoAllowBashIfSandboxed, allowUnsandboxedCommands, network, filesystem, enableWeakerNestedSandbox, enableWeakerNetworkIsolation, allowAppleEvents) until it is fixed.',
+      // CC 2.1.305: the lock list gains allowNestedUserNamespaces (official Xe
+      // table row {path:["sandbox","allowNestedUserNamespaces"],restrictive:!1}).
+      '"sandbox" was present but not an object; treating its locks as their restrictive values (autoAllowBashIfSandboxed, allowUnsandboxedCommands, network, filesystem, enableWeakerNestedSandbox, allowNestedUserNamespaces, enableWeakerNetworkIsolation, allowAppleEvents) until it is fixed.',
     )
     expect(errors[0]?.substituted).toBe(true)
     expect(errors[1]?.path).toBe('sandbox')
@@ -295,6 +297,9 @@ describe('2.1.283 sandbox skeleton + null-removal + tail', () => {
         allowManagedReadPathsOnly: true,
       },
       enableWeakerNestedSandbox: false,
+      // CC 2.1.305: restrictive:false lock → the synthesized skeleton blocks
+      // nested user namespaces fail-closed.
+      allowNestedUserNamespaces: false,
       enableWeakerNetworkIsolation: false,
       allowAppleEvents: false,
     })

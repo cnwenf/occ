@@ -81,7 +81,7 @@ import { setAutoModeActive } from '../../utils/permissions/autoModeState.js';
 import { cyclePermissionMode, getNextPermissionMode } from '../../utils/permissions/getNextPermissionMode.js';
 import { permissionModeIndicator } from '../../utils/permissions/PermissionMode.js';
 import { transitionPermissionMode } from '../../utils/permissions/permissionSetup.js';
-import { pushScreenReaderAnnouncement } from '../../utils/screenReader.js';
+import { isScreenReaderEnabled, pushScreenReaderAnnouncement } from '../../utils/screenReader.js';
 import { getPlatform } from '../../utils/platform.js';
 import type { ProcessUserInputContext } from '../../utils/processUserInput/processUserInput.js';
 import { editPromptInEditor } from '../../utils/promptEditor.js';
@@ -2478,6 +2478,23 @@ function PromptInput({
       selectFooterItem(null);
     }} />;
   }
+  // CC 2.1.305 (binary o4t @257777212, byte-verified): the official gates the
+  // segmented per-char highlight renderer on screen readers —
+  // `if(V&&V.length>0&&!W&&!ne)` with ne=ot()=isScreenReaderEnabled (v304 had
+  // no `!ne`) — and its SR fallthrough renders the plain full input value in a
+  // single Text: `Re=W?...:e(n,{"aria-preserve-whitespace":!0,children:e(Xo,
+  // {children:u})})`. The per-char segmentation (`f.text.split("").map(...)`
+  // shimmer) made screen readers announce "spaces inside words". OCC applies
+  // the gate at the highlights source so both the TextInput and VimTextInput
+  // paths fall through to BaseTextInput's plain `<Ansi>{renderedValue}</Ansi>`
+  // render — structurally the official fallthrough. Deviation: OCC's ink fork
+  // has no `aria-preserve-whitespace` Text attribute (0 hits in src/ink and
+  // packages/@ant), so that attribute alone is dropped. The official also
+  // hides the placeholder under SR (`hidePlaceholderText:m||ne`, m =
+  // isVoiceRecording); OCC threads the SR half via a conditional spread since
+  // BaseTextInputProps doesn't declare the key (TextInput/VimTextInput forward
+  // it to BaseTextInput's renderPlaceholder through {...props}).
+  const srEnabled = isScreenReaderEnabled();
   const baseProps: BaseTextInputProps = {
     multiline: true,
     onSubmit,
@@ -2519,7 +2536,13 @@ function PromptInput({
         setPastedContents(previousState.pastedContents);
       }
     } : undefined,
-    highlights: combinedHighlights,
+    // CC 2.1.305 (binary o4t @257777212, byte-verified): under a screen
+    // reader the highlight array never reaches the segmented renderer (see
+    // the srEnabled block above); the plain fallthrough renders the value.
+    highlights: srEnabled ? undefined : combinedHighlights,
+    ...(srEnabled ? {
+      hidePlaceholderText: true
+    } : {}),
     inlineGhostText,
     inputFilter: lazySpaceInputFilter,
     // 2.1.273: a mode char typed at the start switches modes only when the

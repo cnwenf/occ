@@ -29,7 +29,11 @@ import {
   type PermissionMode,
   permissionModeFromString,
 } from './PermissionMode.js'
-import { applyPermissionRulesToPermissionContext } from './permissions.js'
+import {
+  applyPermissionRulesToPermissionContext,
+  getAskRules,
+  getDenyRules,
+} from './permissions.js'
 import { loadAllPermissionRulesFromDisk } from './permissionsLoader.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -54,16 +58,26 @@ import {
 } from '../../services/analytics/index.js'
 import { AGENT_TOOL_NAME } from '../../tools/AgentTool/constants.js'
 import { BASH_TOOL_NAME } from '../../tools/BashTool/toolName.js'
+import { FILE_EDIT_TOOL_NAME } from '../../tools/FileEditTool/constants.js'
 import { FILE_READ_TOOL_NAME } from '../../tools/FileReadTool/prompt.js'
+import { FILE_WRITE_TOOL_NAME } from '../../tools/FileWriteTool/prompt.js'
+import { GLOB_TOOL_NAME } from '../../tools/GlobTool/prompt.js'
+import { GREP_TOOL_NAME } from '../../tools/GrepTool/prompt.js'
+import { NOTEBOOK_EDIT_TOOL_NAME } from '../../tools/NotebookEditTool/constants.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { POWERSHELL_TOOL_NAME } from '../../tools/PowerShellTool/toolName.js'
-import { getToolsForDefaultPreset, parseToolPreset } from '../../tools.js'
+import {
+  getAllBaseTools,
+  getToolsForDefaultPreset,
+  parseToolPreset,
+} from '../../tools.js'
 import {
   getFsImplementation,
   safeResolvePath,
 } from '../../utils/fsOperations.js'
 import { modelSupportsAutoMode } from '../betas.js'
 import { logForDebugging } from '../debug.js'
+import { capitalize } from '../stringUtils.js'
 import { gracefulShutdown } from '../gracefulShutdown.js'
 import { getMainLoopModel } from '../model/model.js'
 import { validatePermissionRule } from '../settings/permissionValidation.js'
@@ -83,6 +97,7 @@ import {
 } from './PermissionUpdate.js'
 import type { PermissionUpdateDestination } from './PermissionUpdateSchema.js'
 import {
+  getLegacyToolNames,
   normalizeLegacyToolName,
   permissionRuleValueFromString,
   permissionRuleValueToString,
@@ -356,6 +371,178 @@ export function collectPermissionRuleStartupWarnings(
     }
   }
   return warnings
+}
+
+/**
+ * CC 2.1.305 `securityWarnings` channel — companion to
+ * collectPermissionRuleStartupWarnings for the validator loop (official v306
+ * binary @255201900, byte-verified): the S-row push is nested INSIDE the
+ * `T.valid && T.warning` guard —
+ * `if(A.push(...),T.securityNotice!==void 0)S.push(`${Da(l.ruleBehavior)} rule ${T.securityNotice}`)`
+ * (Da ≡ capitalize). Rules skipped for A-rows are skipped for S-rows too.
+ */
+export function collectPermissionRuleSecurityNotices(
+  rules: PermissionRule[],
+): string[] {
+  const rows: string[] = []
+  for (const rule of rules) {
+    if (shouldSkipPermissionRuleStartupWarning(rule)) continue
+    const result = validatePermissionRule(
+      permissionRuleValueToString(rule.ruleValue),
+      rule.ruleBehavior,
+    )
+    if (result.valid && result.warning && result.securityNotice !== undefined) {
+      rows.push(
+        `${capitalize(rule.ruleBehavior)} rule ${result.securityNotice}`,
+      )
+    }
+  }
+  return rows
+}
+
+/**
+ * CC 2.1.305 — official permission-setup FIRST loop (v306 binary @255200695,
+ * byte-verified). Iterates the deny+ask rules of the built permission context
+ * (`[...Xd(v),...Fm(v)]` ≡ [...getDenyRules, ...getAskRules]) and flags rules
+ * that restrict nothing:
+ *  - a rule naming an upstream-removed tool → debug-log note only (no rows),
+ *  - a rule whose content targets the tool's rule-content field as a raw
+ *    string (`Glob(path:…)`, `Bash(command:…)`) → "never matches" A+S rows,
+ *  - a rule naming no known tool → "matches no tool" A+S rows.
+ * Only session/toolsNarrowing sources are skipped — unlike the validator
+ * loop, identifier-colon content is exactly what this loop flags.
+ */
+
+/**
+ * Official `CPe` (@248253597) — upstream-removed tool names. Divergence:
+ * 'TaskOutput' is deliberately EXCLUDED because it is a live OCC tool
+ * (getAllBaseTools ships TaskOutputTool, and the AgentOutputTool/
+ * BashOutputTool legacy aliases normalize to it at parse time) — keeping it
+ * would misfire the removed-tool note on working OCC rules.
+ * AgentOutputTool/BashOutputTool are kept for parity even though parse-time
+ * normalization means they never reach this loop as-is.
+ */
+const REMOVED_UPSTREAM_TOOL_NAMES = new Set([
+  'Frame',
+  'FrameRead',
+  'TeamCreate',
+  'TeamDelete',
+  'SuggestBackgroundPR',
+  'AutofixPr',
+  'AgentOutputTool',
+  'BashOutputTool',
+  'AgentOutput',
+  'BashOutput',
+])
+
+/**
+ * Official `ve` map (@255200695): rule-content field per tool — the explicit
+ * `[Bash→command, PowerShell→command, Glob→path, Grep→path]` entries plus
+ * each base tool's self-defined `ruleContentField` (binary-verified owners:
+ * Write/Read/Edit → file_path, NotebookEdit → notebook_path). LSP (filePath)
+ * and SendFile (files) are omitted — neither tool ships in OCC.
+ */
+const RULE_CONTENT_FIELDS = new Map<string, string>([
+  [BASH_TOOL_NAME, 'command'],
+  [POWERSHELL_TOOL_NAME, 'command'],
+  [GLOB_TOOL_NAME, 'path'],
+  [GREP_TOOL_NAME, 'path'],
+  [FILE_WRITE_TOOL_NAME, 'file_path'],
+  [FILE_READ_TOOL_NAME, 'file_path'],
+  [FILE_EDIT_TOOL_NAME, 'file_path'],
+  [NOTEBOOK_EDIT_TOOL_NAME, 'notebook_path'],
+])
+
+export type PermissionRuleSecurityWarningCollection = {
+  warnings: string[]
+  securityWarnings: string[]
+}
+
+export function collectPermissionRuleSecurityWarnings(
+  context: ToolPermissionContext,
+): PermissionRuleSecurityWarningCollection {
+  const warnings: string[] = []
+  const securityWarnings: string[] = []
+  // Official `Ce` — known tool names: base tools (`r()`) plus the
+  // Bash/PowerShell/Glob/Grep padding (`Pe` @255192932; Glob/Grep are
+  // stripped from getAllBaseTools when embedded search tools are present).
+  const knownToolNames = new Set([
+    ...getAllBaseTools().map(tool => tool.name),
+    BASH_TOOL_NAME,
+    POWERSHELL_TOOL_NAME,
+    GLOB_TOOL_NAME,
+    GREP_TOOL_NAME,
+  ])
+  for (const rule of [...getDenyRules(context), ...getAskRules(context)]) {
+    // The official compares against the context source union, which also
+    // includes 'toolsNarrowing' (OCC's PermissionRuleSource lacks it).
+    const source = rule.source as string
+    if (source === 'toolsNarrowing' || source === 'session') continue
+    const { toolName, ruleContent } = rule.ruleValue
+    if (REMOVED_UPSTREAM_TOOL_NAMES.has(toolName)) {
+      // Official: `t(...)` — debug-log note only, never a visible row.
+      logForDebugging(
+        `Permission ${rule.ruleBehavior} rule names a removed tool: ${toolName}`,
+      )
+      continue
+    }
+    // Official known-tool gate: `Sk(P)||P.includes("_")||wce(P).length>0||Ce.has(P)`
+    // (Sk ≡ includes('*'), wce ≡ getLegacyToolNames).
+    if (
+      toolName.includes('*') ||
+      toolName.includes('_') ||
+      getLegacyToolNames(toolName).length > 0 ||
+      knownToolNames.has(toolName)
+    ) {
+      const ruleContentField = RULE_CONTENT_FIELDS.get(toolName)
+      if (ruleContentField !== undefined && ruleContent !== undefined) {
+        const colonIndex = ruleContent.indexOf(':')
+        if (
+          colonIndex > 0 &&
+          ruleContent.slice(0, colonIndex).trim() === ruleContentField
+        ) {
+          const ruleDisplay = permissionRuleValueToString(rule.ruleValue)
+          const base = `Permission ${rule.ruleBehavior} rule "${ruleDisplay}" targets ${ruleContentField} as a raw string and will not match`
+          // Official `Be` suffix chain: Grep → "."; Glob → Read advice;
+          // Write/NotebookEdit → Edit advice; else the tool's own matcher.
+          const advice =
+            toolName === GREP_TOOL_NAME
+              ? '.'
+              : toolName === GLOB_TOOL_NAME
+                ? ` — use ${FILE_READ_TOOL_NAME}(…) to match file-read paths.`
+                : toolName === FILE_WRITE_TOOL_NAME ||
+                    toolName === NOTEBOOK_EDIT_TOOL_NAME
+                  ? ` — use ${FILE_EDIT_TOOL_NAME}(…) to match file-write paths.`
+                  : ` — use ${toolName}(…) for ${toolName}'s own matcher.`
+          warnings.push(base + advice)
+          // Official S-row: Grep gets no `· use` tail.
+          securityWarnings.push(
+            `${capitalize(rule.ruleBehavior)} rule ${ruleDisplay} never matches${
+              toolName === GREP_TOOL_NAME
+                ? ''
+                : ` · use ${
+                    toolName === GLOB_TOOL_NAME
+                      ? FILE_READ_TOOL_NAME
+                      : toolName === FILE_WRITE_TOOL_NAME ||
+                          toolName === NOTEBOOK_EDIT_TOOL_NAME
+                        ? FILE_EDIT_TOOL_NAME
+                        : toolName
+                  }(…)`
+            }`,
+          )
+        }
+      }
+      continue
+    }
+    const ruleDisplay = permissionRuleValueToString(rule.ruleValue)
+    warnings.push(
+      `Permission ${rule.ruleBehavior} rule "${ruleDisplay}" matches no known tool — check for typos.`,
+    )
+    securityWarnings.push(
+      `${capitalize(rule.ruleBehavior)} rule ${ruleDisplay} matches no tool · check for typos`,
+    )
+  }
+  return { warnings, securityWarnings }
 }
 
 export type DangerousPermissionInfo = {
@@ -1000,6 +1187,7 @@ export async function initializeToolPermissionContext({
 }): Promise<{
   toolPermissionContext: ToolPermissionContext
   warnings: string[]
+  securityWarnings: string[]
   dangerousPermissions: DangerousPermissionInfo[]
   overlyBroadBashPermissions: DangerousPermissionInfo[]
 }> {
@@ -1034,6 +1222,9 @@ export async function initializeToolPermissionContext({
   }
 
   const warnings: string[] = []
+  // CC 2.1.305 `securityWarnings` channel (official `S` array) — one-line rows
+  // for permission rules that restrict nothing, rendered under the banner.
+  const securityWarnings: string[] = []
   const additionalWorkingDirectories = new Map<
     string,
     AdditionalWorkingDirectory
@@ -1194,6 +1385,16 @@ export async function initializeToolPermissionContext({
     rulesFromDisk,
   )
 
+  // CC 2.1.305 — official FIRST loop (@255200695): runs over the built
+  // context's deny+ask rules right after construction (before the
+  // additional-directories updates, which never add rules). Emits the
+  // removed-tool debug note plus the never-matches / matches-no-tool A+S rows.
+  const firstLoopRows = collectPermissionRuleSecurityWarnings(
+    toolPermissionContext,
+  )
+  warnings.push(...firstLoopRows.warnings)
+  securityWarnings.push(...firstLoopRows.securityWarnings)
+
   // Add directories from settings and --add-dir
   const allAdditionalDirectories = [
     ...(settings.permissions?.additionalDirectories || []),
@@ -1239,25 +1440,27 @@ export async function initializeToolPermissionContext({
   // param rules) and the source label chain live in
   // collectPermissionRuleStartupWarnings; each rule is validated WITH its
   // behavior so advice text is behavior-correct.
+  // CC 2.1.305: collectPermissionRuleSecurityNotices mirrors the same loop
+  // for the `securityWarnings` channel (`${capitalize(behavior)} rule
+  // ${securityNotice}` rows, byte-verified against the official v306 loop).
+  const cliAllowRules: PermissionRule[] = parsedAllowedToolsCli.map(ruleStr => ({
+    source: 'cliArg' as const,
+    ruleBehavior: 'allow' as const,
+    ruleValue: permissionRuleValueFromString(ruleStr),
+  }))
+  const cliDenyRules: PermissionRule[] = parsedDisallowedToolsCli.map(
+    ruleStr => ({
+      source: 'cliArg' as const,
+      ruleBehavior: 'deny' as const,
+      ruleValue: permissionRuleValueFromString(ruleStr),
+    }),
+  )
   warnings.push(...collectPermissionRuleStartupWarnings(rulesFromDisk))
-  warnings.push(
-    ...collectPermissionRuleStartupWarnings(
-      parsedAllowedToolsCli.map(ruleStr => ({
-        source: 'cliArg' as const,
-        ruleBehavior: 'allow' as const,
-        ruleValue: permissionRuleValueFromString(ruleStr),
-      })),
-    ),
-  )
-  warnings.push(
-    ...collectPermissionRuleStartupWarnings(
-      parsedDisallowedToolsCli.map(ruleStr => ({
-        source: 'cliArg' as const,
-        ruleBehavior: 'deny' as const,
-        ruleValue: permissionRuleValueFromString(ruleStr),
-      })),
-    ),
-  )
+  warnings.push(...collectPermissionRuleStartupWarnings(cliAllowRules))
+  warnings.push(...collectPermissionRuleStartupWarnings(cliDenyRules))
+  securityWarnings.push(...collectPermissionRuleSecurityNotices(rulesFromDisk))
+  securityWarnings.push(...collectPermissionRuleSecurityNotices(cliAllowRules))
+  securityWarnings.push(...collectPermissionRuleSecurityNotices(cliDenyRules))
 
   // CC 2.1.295 #037 — freeze the positive `--tools` launch list onto the
   // context (official: `...Y!==void 0&&{toolsKeptByLaunchList:Object.freeze([...Y])}`
@@ -1273,6 +1476,7 @@ export async function initializeToolPermissionContext({
   return {
     toolPermissionContext: contextWithLaunchList,
     warnings,
+    securityWarnings,
     dangerousPermissions,
     overlyBroadBashPermissions,
   }
