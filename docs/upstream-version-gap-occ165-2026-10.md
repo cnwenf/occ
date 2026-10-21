@@ -1,6 +1,6 @@
 # Upstream Version Gap — OCC-165 Round (2026-10): claude-code 2.1.304 → 2.1.306
 
-> Status: **IN PROGRESS** — §1 baseline · §2 triage · §3 implementation · §4 tests · §5 release.
+> Status: **COMPLETE** — §1 baseline · §2 triage · §3 implementation · §4 tests · §5 release.
 > Prior-round ledgers: [upstream-version-gap-occ164-2026-10.md](./upstream-version-gap-occ164-2026-10.md) (2.1.304 supplement, released v2.1.395), [upstream-version-gap-occ163-2026-10.md](./upstream-version-gap-occ163-2026-10.md).
 > Skill discipline: `upstream-tracking` + `aligning-with-official-binary`. Official ELF **never executed** — `strings` / `grep -aboF` / bounded `dd` only.
 
@@ -107,6 +107,10 @@ Deviation ledgers: API cluster 20 documented deviations (all in code comments; c
 
 Gate notes: repo-wide `bun test src` remains order-polluted at baseline — per-suite isolated runs are the gate; `tsc` not a gate (~1341 pre-existing errors).
 
-## 5. Release
+## 5. Release (record)
 
-_(filled at release time — see follow-up docs commit)_
+- Merged fast-forward to main (`23e1edb5..0cf5e125`): implementation commit `d1f53314` (30 files, +2,362/−768) + release commit `0cf5e125` — `package.json` 2.1.395 → **2.1.396**, CHANGELOG `## 2.1.396 - 2026-10-22` (intro clause chained on top of the OCC-164 supplement round), tracked-version pointer 2.1.304 → **2.1.306**.
+- Tag **v2.1.396** on `0cf5e125`, pushed. Build green post-bump (`dist/cli.js` 30.35 MB, `OCC 2.1.396`); e2e `occ-versioning` + `commands-alignment` re-verified 6/6 on the fresh build.
+- npm publish → **E404** as expected — NPM_TOKEN expired ~2026-10-03 (OCC-151, human-only debt; npm `latest` stays 2.1.367). Publish workflow run `39687476659` failed in 25 s at `npm publish --access public`; single attempt, no retry loop.
+- GitHub Release `v2.1.396` created manually per v2.1.392/393/394/395 precedent (minimal full-changelog-compare body): https://github.com/cnwenf/occ/releases/tag/v2.1.396. releases==tags invariant re-verified: **195==195**.
+- Branch hygiene: remote heads = `main` only (the round branch `agent/occ-leader/5431779b` was never pushed — merged via `git push origin HEAD:main`). Main-branch CI run `39687473759` was still in_progress at release time (external GitHub Actions — reported pending, not waited on).
