@@ -4,7 +4,7 @@ import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS, logEvent } from '../../services/analytics/index.js';
 import { useAppState, useSetAppState } from '../../state/AppState.js';
 import type { LocalJSXCommandOnDone } from '../../types/command.js';
-import { type EffortValue, getDisplayedEffortLevel, getEffortEnvOverride, getEffortValueDescription, isEffortLevel, modelSupportsXhighEffort, toPersistableEffort } from '../../utils/effort.js';
+import { type EffortValue, getEffortEnvOverride, getEffortValueDescription, getSentEffortLevel, isEffortLevel, modelSupportsXhighEffort, toPersistableEffort } from '../../utils/effort.js';
 import { clampEffortToCap, buildEffortArgumentHint, formatEffortValidOptions, getAllowedEffortLevels, isEffortLevelAllowed, isUltracodeAvailableForModel } from '../../utils/effort/cap.js';
 import { disableUltracodeForSession, enableUltracodeForSession, isUltracodeEnabled, ULTRACODE_ACTIVATION_MESSAGE } from '../../utils/effort/ultracode.js';
 import { getMainLoopModel } from '../../utils/model/model.js';
@@ -101,17 +101,23 @@ function setEffortValue(effortValue: EffortValue): EffortCommandResult {
 export function showCurrentEffort(appStateEffort: EffortValue | undefined, model: string): EffortCommandResult {
   const envOverride = getEffortEnvOverride();
   const effectiveValue = envOverride === null ? undefined : envOverride ?? appStateEffort;
+  // Official `f6t` (v2.1.304, byte-verified): `let r=Eg(n,t)?" · Ultracode on":""`
+  // is appended to BOTH branches — the bare-auto / auto-(currently) messages
+  // AND the configured `Current effort level:` message.
+  const ultracodeSuffix = isUltracodeEnabled() ? ' · Ultracode on' : '';
   if (effectiveValue === undefined) {
-    // CC 2.1.304 (#33 — official `f6t`): the auto branch. `r = " · Ultracode on"`
-    // is appended while the ultracode session mode is on; `E = ", set by your
-    // organization"` is appended when the level came from an org policy. OCC has
-    // NO org policy registry (docs/upstream-version-gap-occ82.md §5.1/§5.5 —
-    // `Stt ≡ N`), so orgSuffix is always '' here; the template shape is kept
-    // faithful for when one lands. When nothing resolves, getDisplayedEffortLevel
-    // returns undefined and we print the BARE `Effort level: auto` (never a
-    // guessed level — that was the 303 bug this fixes).
-    const level = getDisplayedEffortLevel(model, appStateEffort);
-    const ultracodeSuffix = isUltracodeEnabled() ? ' · Ultracode on' : '';
+    // CC 2.1.304 (#33/#35 — official `f6t` auto branch): the level is resolved
+    // through the SENT resolver `kWe` (=getSentEffortLevel), NOT a configured
+    // guesser — v303's `oR` fabricated `??"high"`; v304 dropped the guess:
+    //   `let o=kWe(t,e);if(o===void 0)return{message:`Effort level: auto${r}`}`
+    //   else `Effort level: auto (currently ${e4(o)}${E})${r}`
+    // `E = ", set by your organization"` is appended when the level came from
+    // an org policy. OCC has NO org policy registry
+    // (docs/upstream-version-gap-occ82.md §5.1/§5.5 — `Stt ≡ N`), so orgSuffix
+    // is always '' here; the template shape is kept faithful for when one
+    // lands. v304 also dropped the org suffix's third term (`bw(t,e)!==void 0`
+    // — the guesser check); with no registry both reduce to '' anyway.
+    const level = getSentEffortLevel(model, appStateEffort);
     const orgSuffix = '';
     if (level === undefined) {
       return {
@@ -129,7 +135,7 @@ export function showCurrentEffort(appStateEffort: EffortValue | undefined, model
   const clamped = clampEffortToCap(effectiveValue, model);
   const description = getEffortValueDescription(clamped);
   return {
-    message: `Current effort level: ${clamped} (${description})`
+    message: `Current effort level: ${clamped} (${description})${ultracodeSuffix}`
   };
 }
 function unsetEffortLevel(): EffortCommandResult {
@@ -188,15 +194,18 @@ function enableUltracode(model: string): EffortCommandResult {
   logEvent('tengu_effort_command', {
     effort: 'ultracode' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS
   });
-  // CC 2.1.304 (#33): resolve the effort ultracode runs at (xhigh) through the
-  // display resolver. When `CLAUDE_CODE_EFFORT_LEVEL=auto`/unset the env wins
-  // and the resolution is undefined — the official
-  // `f = v(t.effort) ?? kWe(r,t.effort) ?? "auto"` then prints the verbatim
-  // "Effort stays auto." note. Otherwise the activation message already
-  // conveys the xhigh effort, so nothing is appended. (The concatenation onto
-  // the verbatim ULTRACODE_ACTIVATION_MESSAGE is OCC's composition — the
-  // research pins only the "Effort stays auto." literal + its trigger.)
-  const resolvedUltracodeEffort = getDisplayedEffortLevel(model, 'xhigh');
+  // CC 2.1.304 (#33/#35): the official ultracode toggle resolves the "Effort
+  // stays ${f}" note through the SENT resolver — byte-verified v304 `D`:
+  // `let f=v(t.effort)??kWe(r,t.effort)??"auto"` (v303's `k` had no `??"auto"`
+  // fallback and could print "Effort stays undefined."). OCC's K3 envelope
+  // composes conditionally instead: when `CLAUDE_CODE_EFFORT_LEVEL=auto`/unset
+  // the env wins and getSentEffortLevel(≡kWe) is undefined → print the verbatim
+  // "Effort stays auto." note; otherwise the activation message already conveys
+  // the xhigh effort OCC's ultracode sets, so nothing is appended. (Official
+  // ultracode does NOT change the effort value — effortUpdate:{ultracode:e} —
+  // while OCC's K3 sets xhigh; documented divergence, so mirroring official's
+  // always-append would be semantically wrong here.)
+  const resolvedUltracodeEffort = getSentEffortLevel(model, 'xhigh');
   const message =
     resolvedUltracodeEffort === undefined
       ? `${ULTRACODE_ACTIVATION_MESSAGE} Effort stays auto.`

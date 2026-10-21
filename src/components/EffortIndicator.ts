@@ -12,7 +12,7 @@ import {
 import {
   type EffortLevel,
   type EffortValue,
-  getDisplayedEffortLevel,
+  getSentEffortLevel,
   modelSupportsEffort,
 } from '../utils/effort.js'
 import {
@@ -45,10 +45,19 @@ export function getEffortNotificationText(
     return themeColor('effortUltra', themeName)('ultracode')
   }
   if (!modelSupportsEffort(model)) return undefined
-  const level = getDisplayedEffortLevel(model, effortValue)
-  // CC 2.1.304 (#33 — official `EE`): when nothing resolves, HIDE the chip
-  // instead of rendering a guessed level. getDisplayedEffortLevel now returns
-  // undefined for the env-auto/unset + no-level case.
+  // CC 2.1.304 #35: official indicator resolver EE switched from the display
+  // guesser (oR — v303: `bw(...)??"high"`, fabricating a level that was never
+  // sent) to the SENT resolver (kWe):
+  //   `function EE(h,R,L){return L?void 0:kWe(R,h)}`
+  // and the renderer Mne bails on a falsy level (`if(!h)return;`). So when no
+  // effort parameter is sent (env auto/unset, no settings cap, no model
+  // default) the prompt indicator disappears instead of showing a guessed
+  // level. (v304's EE also dropped v303's internal `Gb` model-support gate —
+  // official relies on ek's internal `Nh` gate instead. OCC reduction: OCC's
+  // resolveAppliedEffort has no internal support gate, so the
+  // modelSupportsEffort gate above stays at the call site — same observable
+  // outcome.)
+  const level = getSentEffortLevel(model, effortValue)
   if (level === undefined) return undefined
   return `${effortLevelToSymbol(level)} ${level} · /effort`
 }

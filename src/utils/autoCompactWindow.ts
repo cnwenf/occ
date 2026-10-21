@@ -144,27 +144,56 @@ export type ResolvedAutoCompactWindow = {
   source: 'env' | 'settings' | 'auto'
 }
 
-// Official `ZHh` (byte-verified): exponent notation must parse to an INTEGER.
-const EXPONENT_NOTATION_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/
-// Official `W9l` shape (leading pattern byte-verified; grouped-thousands
-// layout inferred): comma-separated thousands, e.g. "1,000,000".
-const COMMA_SEPARATED_RE = /^[+-]?\d{1,3}(,\d{3})+$/
-
 /**
- * Port of the official bare-number parser `xp` = `eRh(t) ?? parseInt(t, 10)`:
- * exponent notation must yield an integer; comma-grouped numbers are
- * stripped and parseInt'ed; everything else falls through to parseInt
- * (so "200.5" -> 200, matching the official leading-integer semantics).
+ * CC 2.1.304 #43 (OCC-164 supplement) — bare-number helpers, BYTE-VERIFIED
+ * from the v2.1.304 ELF (@236431990–236432800; the pre-304 port had the
+ * grouped-thousands layout INFERRED — 304 exposes the real regexes `m`/`E`/`c`
+ * and the `u3o`/`qc` pair):
+ *
+ *   var m=/^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/,
+ *       E=/^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/,
+ *       c=/[_,\u00A0\u202F ]/g;
+ *   function u3o(e){if(e.length<=32){if(m.test(e)){let n=Number(e);
+ *     return Number.isInteger(n)?n:NaN}
+ *     if(E.test(e))return parseInt(e.replace(c,""),10)}return}
+ *   function qc(e){let n=String(e).trim();return u3o(n)??parseInt(n,10)}
+ *
+ * Grouped thousands accept a CONSISTENT separator (backreference `\1`) from
+ * `_`, `,`, U+00A0 NBSP, U+202F NNBSP, or a plain space — but only up to 32
+ * chars (longer strings fall straight to parseInt, matching the official).
+ * Both the env parser (`yVe`→`j_e`→`qc`) and the /autocompact flag parser
+ * (`wQt`→`j_e`→`qc`) share this helper.
  */
+// Official `m` VERBATIM — exponent notation must parse to an INTEGER.
+const EXPONENT_NOTATION_RE = /^[+-]?(\d+(\.\d*)?|\.\d+)[eE][+-]?\d+$/
+// Official `E` VERBATIM — grouped thousands with one consistent separator.
+const GROUPED_THOUSANDS_RE =
+  /^[+-]?\d{1,3}([_,\u00A0\u202F ])\d{3}(?:\1\d{3})*$/
+// Official `c` VERBATIM — strips the grouped-thousands separator.
+const THOUSANDS_SEPARATOR_RE = /[_,\u00A0\u202F ]/g
+/** Official `u3o` length guard (`e.length<=32`). */
+const BARE_NUMBER_MAX_LENGTH = 32
+
+/** Official `u3o` @236432633 VERBATIM. */
+function parseStructuredNumber(value: string): number | undefined {
+  if (value.length <= BARE_NUMBER_MAX_LENGTH) {
+    if (EXPONENT_NOTATION_RE.test(value)) {
+      const parsed = Number(value)
+      // NaN is intentional: a non-integer exponent form must NOT fall
+      // through to parseInt (`u3o(n)??parseInt` — NaN is not nullish).
+      return Number.isInteger(parsed) ? parsed : NaN
+    }
+    if (GROUPED_THOUSANDS_RE.test(value)) {
+      return parseInt(value.replace(THOUSANDS_SEPARATOR_RE, ''), 10)
+    }
+  }
+  return undefined
+}
+
+/** Official `qc` @236432785 VERBATIM. */
 function parseBareNumber(raw: string): number {
-  if (EXPONENT_NOTATION_RE.test(raw)) {
-    const value = Number(raw)
-    return Number.isInteger(value) ? value : NaN
-  }
-  if (COMMA_SEPARATED_RE.test(raw)) {
-    return parseInt(raw.replace(/,/g, ''), 10)
-  }
-  return parseInt(raw, 10)
+  const trimmed = String(raw).trim()
+  return parseStructuredNumber(trimmed) ?? parseInt(trimmed, 10)
 }
 
 /**

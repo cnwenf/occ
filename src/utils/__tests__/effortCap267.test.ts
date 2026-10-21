@@ -684,9 +684,10 @@ describe('/effort command under a settings cap', () => {
   })
 
   test('#33 ultracode under CLAUDE_CODE_EFFORT_LEVEL=auto appends "Effort stays auto." (official f = … ?? "auto")', () => {
-    // env=auto makes getEffortEnvOverride() return null → resolveConfiguredEffort
-    // returns undefined → getDisplayedEffortLevel(model,'xhigh') is undefined even
-    // though ultracode sets xhigh (env wins) → the verbatim auto note is printed.
+    // env=auto makes getEffortEnvOverride() return null → with no settings cap
+    // resolveAppliedEffort's gate returns undefined → getSentEffortLevel
+    // (official kWe) is undefined even though ultracode sets xhigh (env wins)
+    // → the verbatim auto note is printed (official D's `??"auto"` fallback).
     process.env.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
     const result = executeEffort('ultracode')
     expect(result.message).toContain('Effort stays auto.')

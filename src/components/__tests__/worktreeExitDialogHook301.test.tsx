@@ -342,7 +342,7 @@ test('non-hook clean worktree with 0 unpushed commits: silent removal unchanged'
   }
 })
 
-test('non-hook worktree with failed rev-list: asks with the baseline-unavailable copy', async () => {
+test('non-hook worktree with failed rev-list: asks with the counted-baseline copy', async () => {
   mockSession = makeBaseSession({
     worktreeBranch: 'claude/wt-301',
     originalHeadCommit: 'abc123',
@@ -353,8 +353,12 @@ test('non-hook worktree with failed rev-list: asks with the baseline-unavailable
   const dialog = await renderDialog()
   try {
     await waitFor(() => dialog.text().includes('Exiting worktree session'))
+    // OCC-164: official v304 conditional — the session HAS a commit baseline
+    // (originalHeadCommit), so the unreadable-HEAD copy is "commits that
+    // could not be counted"; "(commit baseline unavailable)" only renders
+    // when originalHeadCommit is absent.
     expect(dialog.text()).toContain(
-      'The branch claude/wt-301 may hold unpushed commits (commit baseline unavailable). The branch will be deleted if you remove.',
+      'The branch claude/wt-301 may hold commits that could not be counted. The branch will be deleted if you remove.',
     )
     // Pre-301 OCC would have silently removed here (parseInt('')||0 → 0).
     expect(cleanupCalls).toBe(0)

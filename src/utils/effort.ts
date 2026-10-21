@@ -4,6 +4,10 @@ import { getInitialSettings } from './settings/settings.js'
 import { isProSubscriber, isMaxSubscriber, isTeamSubscriber } from './auth.js'
 import { getFeatureValue_CACHED_MAY_BE_STALE } from 'src/services/analytics/growthbook.js'
 import { getAPIProvider } from './model/providers.js'
+// ANT-ONLY: the official file imports these for the USER_TYPE=ant branches in
+// modelSupportsEffort/getDefaultEffortForModel; the import was missing in OCC
+// (latent ReferenceError on the ant path — surfaced by the 2.1.304 #35 tests).
+import { getAntModelOverrideConfig, resolveAntModel } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { isEnvTruthy } from './envUtils.js'
 import { clampEffortToCap, clampEffortValue, getSettingsEffortCap } from './effort/cap.js'
@@ -396,6 +400,53 @@ export function resolveAppliedEffort(
 }
 
 /**
+ * CC 2.1.304 #35: the effort level ACTUALLY SENT to the API, normalized for
+ * display — official `kWe` @240619154 (v2.1.304 linux-x64 ELF):
+ *
+ *   `function kWe(e,n,r){let s=ek(e,n,{turnEffort:r});return s===void 0?void 0:Q0(s)}`
+ *   `function Q0(e){if(typeof e==="string")return VS(e)?e:"high";return"high"}`
+ *
+ * `ek` = resolveAppliedEffort (ported above); `VS` = isEffortLevel. Returns
+ * undefined exactly when no effort parameter is sent (env auto/unset with no
+ * settings cap and no model default).
+ *
+ * The 2.1.303→2.1.304 delta (byte-verified this round, OCC-164): v303's
+ * display resolver was ALREADY applied-based but GUESSED a fallback —
+ * `function oR(e,n,r){let s=bw(e,n,{turnEffort:r})??"high";return O0(s)}`
+ * @238103283 — so an env-auto session with nothing sent still rendered a
+ * fabricated level. v304 dropped the `??"high"` (oR→kWe) at all three
+ * display surfaces: the /effort status line (f6t), the prompt chip (EE —
+ * which also lost its v303 `Gb`/modelSupportsEffort gate), and the ultracode
+ * toggle ("Effort stays ${f}" — f = v??kWe??"auto"). OCC's prior #33 round
+ * wired the bare-auto guard onto getDisplayedEffortLevel, whose configured
+ * base (resolveConfiguredEffort) matches NEITHER official resolver — both
+ * official versions are applied/ek-based. This function is the faithful kWe;
+ * the three surfaces now call it.
+ *
+ * Note Q0 differs from convertEffortValueToLevel: NO ant numeric buckets —
+ * any non-string (numeric) value normalizes straight to 'high', byte-faithful
+ * to the official normalizer.
+ */
+export function getSentEffortLevel(
+  model: string,
+  appStateEffortValue: EffortValue | undefined,
+): EffortLevel | undefined {
+  const applied = resolveAppliedEffort(model, appStateEffortValue)
+  if (applied === undefined) {
+    return undefined
+  }
+  return normalizeSentEffortLevel(applied)
+}
+
+/** Official Q0 @240619154 (v2.1.304) — byte-faithful normalizer. */
+function normalizeSentEffortLevel(value: EffortValue): EffortLevel {
+  if (typeof value === 'string') {
+    return isEffortLevel(value) ? value : 'high'
+  }
+  return 'high'
+}
+
+/**
  * Resolve the user's configured effort WITHOUT model-capability downgrades:
  *   env CLAUDE_CODE_EFFORT_LEVEL → appState.effortValue → model default
  *
@@ -435,20 +486,19 @@ function resolveConfiguredEffort(
 
 /**
  * Resolve the effort level to show the user. Shows the configured effort
- * verbatim (no model-capability downgrade — Gap-97c).
+ * verbatim (no model-capability downgrade — Gap-97c), cap-clamped (OCC-82).
  *
- * CC 2.1.304 (#33 — official `kWe`): this NO LONGER guesses a level. When
- * nothing resolves — env `CLAUDE_CODE_EFFORT_LEVEL` is `auto`/unset AND no
- * session/settings level AND no model default — it returns `undefined` (the
- * official drop of the `?? "high"` fallback). Callers handle undefined:
- *   - the status chip HIDES (EffortIndicator, official `EE`),
- *   - `/effort status` prints a bare `Effort level: auto` (official `f6t`),
- *   - `/effort ultracode` prints `Effort stays auto.`.
- * The REQUEST-building path is separate (`resolveAppliedEffort`) and unchanged:
- * it already returns undefined when no effort param should be sent, and the
- * 'high' default lives at the API layer (claude.ts omits effort → API default),
- * never in this display guesser.
- * Single source of truth for the status bar and /effort output (CC-1088).
+ * NOT an official symbol: this is OCC's configured-display resolver
+ * (resolveConfiguredEffort + convertEffortValueToLevel). The official
+ * 2.1.304 display surfaces (chip / status / ultracode note) all use the
+ * SENT resolver `kWe` ≡ getSentEffortLevel — see its docblock for the
+ * byte-verified v303(oR)→v304(kWe) delta. Since OCC-164 no production UI
+ * caller remains; the export is kept for the configured-display contract
+ * pinned by effortCap267/effortGap97 and for future welcome-suffix reuse.
+ *
+ * Undefined exactly when nothing is configured (env `auto`/unset AND no
+ * session/settings level AND no model default) — the CC 2.1.304 #33 bare-auto
+ * guard this function gained earlier remains its documented contract.
  */
 export function getDisplayedEffortLevel(
   model: string,

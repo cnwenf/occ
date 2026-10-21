@@ -1821,6 +1821,40 @@ export async function branchMissing(
   )
 }
 
+/** Official `t8t` (@247137662). */
+const DEFAULT_IGNORABLE_RE = /\p{Default_Ignorable_Code_Point}/gu
+
+/** Official `dtn`/`Yt` (@243657122) — hidden/control/surrogate chars. */
+const HIDDEN_NAME_RE =
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\p{Default_Ignorable_Code_Point}⠀]|(?! )\p{Zs}/u
+const SURROGATE_NAME_RE = /\p{Cs}/u
+
+/**
+ * Official `hh` (@247137742) — Unicode casefold used to detect a
+ * differently-encoded/cased checkout of the worktree's own branch
+ * (`like_its_branch`), byte-faithful.
+ */
+export function foldBranchName(name: string): string {
+  return name
+    .replace(DEFAULT_IGNORABLE_RE, '')
+    .normalize('NFKD')
+    .toLowerCase()
+    .toUpperCase()
+    .toLowerCase()
+    .replace(/i̇/g, 'i')
+    .replace(/ς/g, 'σ')
+    .normalize('NFC')
+}
+
+/**
+ * Official `fve` (@243657174) — whether a branch name must not be echoed
+ * into dialog copy (hidden or control characters); callers fall back to
+ * "another branch".
+ */
+export function isDisplayUnsafeBranchName(branch: string): boolean {
+  return HIDDEN_NAME_RE.test(branch) || SURROGATE_NAME_RE.test(branch)
+}
+
 /**
  * Official `G$r` HEAD classification (2.1.304 #30):
  * - `its_branch`       — HEAD is on the worktree's own branch
@@ -1841,13 +1875,17 @@ export type WorktreeHeadClassification =
   | { head: 'unreadable'; commits: null }
 
 /**
- * The official compares `hh(S)===hh(n)` for the like_its_branch case; `hh` is
- * a minified branch-name normalizer that could not be recovered from the
- * binary. DEVIATION: case-insensitive comparison — the fail-closed direction
- * (like_its_branch yields commits:null → dialog asks, tool refuses).
+ * OCC-164 supplement: WP7 deviation #1 RESOLVED — the official `hh` normalizer
+ * WAS recovered from the v304 binary (@247137742, byte-verified; ported above
+ * as foldBranchName): a full Unicode casefold (strip DEFAULT_IGNORABLE, NFKD,
+ * toLowerCase→toUpperCase→toLowerCase, dotted-i and final-sigma fixups, NFC).
+ * The prior case-insensitive lowercase comparison was the documented fail-closed
+ * stand-in; like_its_branch detection now matches the official `hh(S)===hh(n)`
+ * byte-for-byte (still fail-closed: like_its_branch yields commits:null →
+ * dialog asks, tool refuses).
  */
 function normalizeBranchNameForComparison(branch: string): string {
-  return branch.toLowerCase()
+  return foldBranchName(branch)
 }
 
 /** Official `G$r` — classify where the worktree HEAD points relative to the

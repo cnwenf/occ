@@ -250,6 +250,71 @@ describe('2.1.304 #41 parseAutoCompactWindowSize (official `j_e` port)', () => {
       kind: 'above_maximum',
     })
   })
+
+  // -------------------------------------------------------------------------
+  // OCC-164 supplement — the byte-verified `qc`/`u3o` bare-number helpers
+  // (@236431990–236432800). The pre-supplement port had the grouped-thousands
+  // layout INFERRED (comma-only, no length guard); 304 exposes the real
+  // regexes `m`/`E`/`c` and the `u3o` 32-char guard.
+  // -------------------------------------------------------------------------
+
+  test('exponent notation parses via qc when it yields an integer (official `m`)', () => {
+    expect(parseAutoCompactWindowEnv('1e5')).toEqual({
+      kind: 'in_range',
+      tokens: 100_000,
+      suffixed: false,
+    })
+    expect(parseAutoCompactWindowEnv('1e6')).toEqual({
+      kind: 'in_range',
+      tokens: 1_000_000,
+      suffixed: false,
+    })
+    // Integer-valued exponent form parses (Number('1.5e2')=150 is an integer).
+    expect(parseAutoCompactWindowEnv('1.5e2')).toEqual({
+      kind: 'below_minimum',
+      tokens: 150,
+    })
+    // Non-integer exponent form → u3o returns NaN (not nullish) → unusable.
+    expect(parseAutoCompactWindowEnv('1.5e-2')).toEqual({ kind: 'unusable' })
+  })
+
+  test('grouped thousands: consistent separator (_, comma, space, NBSP, NNBSP) within 32 chars (official `E`/`c`)', () => {
+    for (const raw of [
+      '1_000_000',
+      '1,000,000',
+      '1 000 000',
+      '1\u00A0000\u00A0000',
+      '1\u202F000\u202F000',
+    ]) {
+      expect(parseAutoCompactWindowEnv(raw)).toEqual({
+        kind: 'in_range',
+        tokens: 1_000_000,
+        suffixed: false,
+      })
+    }
+    // Mixed separators fail the backreference → parseInt leading digits only.
+    expect(parseAutoCompactWindowEnv('1,000_000')).toEqual({
+      kind: 'below_minimum',
+      tokens: 1,
+    })
+  })
+
+  test('u3o 32-char guard: longer strings skip the structured forms and fall to parseInt', () => {
+    // 33 chars, comma-grouped shape → E is not consulted (length guard) →
+    // parseInt stops at the first comma → 1.
+    const long = `1,000,000,000,000,000,000,000,000` // 33 chars
+    expect(long.length).toBe(33)
+    expect(parseAutoCompactWindowEnv(long)).toEqual({
+      kind: 'below_minimum',
+      tokens: 1,
+    })
+    // 31 chars stays inside the guard and parses via `E`.
+    const inside = '111,111,111,111,111,111,111,111' // 31 chars
+    expect(inside.length).toBe(31)
+    expect(parseAutoCompactWindowEnv(inside)).toEqual({
+      kind: 'above_maximum',
+    })
+  })
 })
 
 // ---------------------------------------------------------------------------

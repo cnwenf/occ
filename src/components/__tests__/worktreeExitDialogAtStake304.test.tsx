@@ -27,6 +27,13 @@ import { render } from '../../ink.js'
  * - its_branch clean → silent removal unchanged
  * - unreadable HEAD → ASKS (fail-closed)
  *
+ * OCC-164 supplement scenarios (official v304 dialog strings byte-verified
+ * @269339500–269348100): session-title gate (`!wo`), the another_branch
+ * silent-removal "Branch … is kept." message (+ the official `fve`
+ * display-unsafe-name fallback), the detached "They may be lost" subtitle
+ * variant, and the "commits that could not be counted" / "(commit baseline
+ * unavailable)" conditional.
+ *
  * Same render harness as worktreeExitDialogHook301.test.tsx; git execution is
  * mocked at BOTH exec seams (execFileNoThrow for `git status`,
  * execFileNoThrowWithCwd for the at-stake classifier).
@@ -59,6 +66,8 @@ type GitResult = { stdout: string; stderr: string; code: number }
 let mockSession: MockSession | null = null
 let cleanupCalls = 0
 let keepCalls = 0
+/** OCC-164: official gate term `wo` — a named session blocks silent removal. */
+let mockSessionTitle: string | undefined = undefined
 
 let gitStatusResult: GitResult = { stdout: '', stderr: '', code: 0 }
 /** Per-test responders for the at-stake classifier's git commands. */
@@ -114,7 +123,7 @@ await mock.module('../../utils/execFileNoThrow.js', () => ({
 
 await mock.module('../../utils/sessionStorage.js', () => ({
   ...REAL_SESSION_SNAPSHOT,
-  getCurrentSessionTitle: () => undefined,
+  getCurrentSessionTitle: () => mockSessionTitle,
   saveWorktreeState: () => {},
 }))
 
@@ -197,6 +206,7 @@ beforeEach(() => {
   mockSession = null
   cleanupCalls = 0
   keepCalls = 0
+  mockSessionTitle = undefined
   gitStatusResult = { stdout: '', stderr: '', code: 0 }
   symbolicRefResult = { stdout: `refs/heads/${BRANCH}\n`, stderr: '', code: 0 }
   revListImpl = () => ({ stdout: '0\n', stderr: '', code: 0 })
@@ -235,9 +245,12 @@ test('detached HEAD holding branch commits: ASKS with the official tOt detached 
   try {
     await waitFor(() => dialog.text().includes('Exiting worktree session'))
 
-    // Assert
+    // Assert — official v304 detached commits-only subtitle (@269346618
+    // region): "…or at the detached HEAD. They may be lost if you remove the
+    // worktree." (a detached HEAD loses no branch, so "The branch will be
+    // deleted" became "may be lost").
     expect(dialog.text()).toContain(
-      `You have 3 commits on ${BRANCH} or at the detached HEAD. The branch will be deleted if you remove the worktree.`,
+      `You have 3 commits on ${BRANCH} or at the detached HEAD. They may be lost if you remove the worktree.`,
     )
     expect(cleanupCalls).toBe(0)
     expect(dialog.doneCalls.length).toBe(0)
@@ -257,9 +270,13 @@ test('HEAD on another branch holding branch commits: ASKS with the "that <other>
   try {
     await waitFor(() => dialog.text().includes('Exiting worktree session'))
 
-    // Assert
+    // Assert — official v304 another_branch subtitle (@269346618 region): the
+    // tOt other-branch argument is the official `Pr` display ("branch
+    // feature-x"), the named-branch conditional renders "Branch <jr> will be
+    // deleted", and the kept-branch suffix is appended (@269347664:
+    // ` The worktree is now on ${er}, which is kept either way.`).
     expect(dialog.text()).toContain(
-      `You have 2 commits on ${BRANCH} that feature-x doesn't have. The branch will be deleted if you remove the worktree.`,
+      `You have 2 commits on ${BRANCH} that branch feature-x doesn't have. Branch ${BRANCH} will be deleted if you remove the worktree. The worktree is now on branch feature-x, which is kept either way.`,
     )
     expect(cleanupCalls).toBe(0)
     expect(dialog.doneCalls.length).toBe(0)
@@ -310,9 +327,34 @@ test('its_branch clean: silent removal unchanged', async () => {
   }
 })
 
-test('unreadable HEAD: ASKS with the baseline-unavailable copy (fail-closed)', async () => {
-  // Arrange — symbolic-ref fails with an unexpected signature (code 128).
+test('unreadable HEAD with a commit baseline: ASKS with the "commits that could not be counted" copy (fail-closed)', async () => {
+  // Arrange — symbolic-ref fails with an unexpected signature (code 128);
+  // the session DOES carry originalHeadCommit, so official v304's conditional
+  // (`ro.originalHeadCommit?"commits that could not be counted":"unpushed
+  // commits (commit baseline unavailable)"`) picks the counted copy.
   mockSession = makeSession()
+  symbolicRefResult = { stdout: '', stderr: 'fatal: not a git repo', code: 128 }
+
+  // Act
+  const dialog = await renderDialog()
+  try {
+    await waitFor(() => dialog.text().includes('Exiting worktree session'))
+
+    // Assert
+    expect(dialog.text()).toContain(
+      `The branch ${BRANCH} may hold commits that could not be counted. The branch will be deleted if you remove.`,
+    )
+    expect(cleanupCalls).toBe(0)
+    expect(dialog.doneCalls.length).toBe(0)
+  } finally {
+    dialog.unmount()
+  }
+})
+
+test('unreadable HEAD without a commit baseline: ASKS with the "(commit baseline unavailable)" copy', async () => {
+  // Arrange — same failure, but the session recorded no originalHeadCommit
+  // (the other arm of the official v304 conditional).
+  mockSession = makeSession({ originalHeadCommit: undefined })
   symbolicRefResult = { stdout: '', stderr: 'fatal: not a git repo', code: 128 }
 
   // Act
@@ -326,6 +368,80 @@ test('unreadable HEAD: ASKS with the baseline-unavailable copy (fail-closed)', a
     )
     expect(cleanupCalls).toBe(0)
     expect(dialog.doneCalls.length).toBe(0)
+  } finally {
+    dialog.unmount()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// OCC-164 supplement — official v304 dialog strings the parallel OCC-124
+// round did not carry (gate `!wo`, another_branch silent-removal message,
+// `fve` display-unsafe-name fallback, session-title subtitle branch).
+// ---------------------------------------------------------------------------
+
+test('session title blocks silent removal (official gate term `!wo`) and gets its own subtitle', async () => {
+  // Arrange — otherwise-clean its_branch worktree that v304-parallel main
+  // removed silently; the named session must force the ask.
+  mockSession = makeSession()
+  mockSessionTitle = 'my-session'
+
+  // Act
+  const dialog = await renderDialog()
+  try {
+    await waitFor(() => dialog.text().includes('Exiting worktree session'))
+
+    // Assert — official `else if(wo)` subtitle branch (@269346618 region).
+    expect(dialog.text()).toContain(
+      'This session was named "my-session". Keep the worktree to resume it later, or remove it to clean up.',
+    )
+    expect(cleanupCalls).toBe(0)
+    expect(dialog.doneCalls.length).toBe(0)
+  } finally {
+    dialog.unmount()
+  }
+})
+
+test('another_branch clean silent removal announces the kept branch', async () => {
+  // Arrange — HEAD moved to feature-x, own branch clean (0 commits), kept
+  // branch holds nothing beyond it (no onKeptBranch refinement), no title →
+  // official silent path still fires, with the v304 removedMessage variant
+  // (@269341114 region: `Branch ${Cn.branch} is kept.`).
+  mockSession = makeSession()
+  symbolicRefResult = { stdout: 'refs/heads/feature-x\n', stderr: '', code: 0 }
+  revListImpl = () => ({ stdout: '0\n', stderr: '', code: 0 })
+
+  // Act
+  const dialog = await renderDialog()
+  try {
+    await waitFor(() => dialog.doneCalls.length > 0)
+
+    // Assert
+    expect(cleanupCalls).toBe(1)
+    expect(dialog.doneCalls[0]).toBe('Worktree removed. Branch feature-x is kept.')
+    expect(dialog.text()).not.toContain('Exiting worktree session')
+  } finally {
+    dialog.unmount()
+  }
+})
+
+test('display-unsafe kept branch name is never echoed (official `fve` @243657174)', async () => {
+  // Arrange — the branch HEAD moved to contains a control character; the
+  // official sanitizer swaps the name for "The branch that it was on".
+  mockSession = makeSession()
+  symbolicRefResult = { stdout: 'refs/heads/badname\n', stderr: '', code: 0 }
+  revListImpl = () => ({ stdout: '0\n', stderr: '', code: 0 })
+
+  // Act
+  const dialog = await renderDialog()
+  try {
+    await waitFor(() => dialog.doneCalls.length > 0)
+
+    // Assert
+    expect(cleanupCalls).toBe(1)
+    expect(dialog.doneCalls[0]).toBe(
+      'Worktree removed. The branch that it was on is kept.',
+    )
+    expect(dialog.doneCalls[0]).not.toContain('bad')
   } finally {
     dialog.unmount()
   }

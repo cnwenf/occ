@@ -3,14 +3,18 @@ import { getEffortNotificationText } from '../EffortIndicator.js'
 import { resetUltracode } from '../../utils/effort/ultracode.js'
 
 /**
- * CC 2.1.304 #33 (official `EE`) — the effort indicator chip must HIDE when
- * the display resolver has nothing to show, instead of rendering the 303-era
- * guessed "high" chip.
+ * CC 2.1.304 #33/#35 (official `EE`) — the effort indicator chip must HIDE
+ * when nothing is sent, instead of rendering the 303-era guessed "high" chip.
+ * OCC-164: the chip now resolves through the SENT resolver `kWe` ≡
+ * getSentEffortLevel (resolveAppliedEffort + normalizeSentEffortLevel),
+ * matching official v304 EE — no longer the configured display resolver.
  *
- * The hidden case is fully deterministic without settings mocks: env=auto
- * makes getEffortEnvOverride() return null, and resolveConfiguredEffort
- * short-circuits to undefined BEFORE any settings/cap read — so real user
- * settings cannot interfere.
+ * The hidden case is deterministic without settings mocks when no effort cap
+ * is configured on this machine: env=auto makes getEffortEnvOverride() return
+ * null, and resolveAppliedEffort's gate (`envOverride === null &&
+ * !hasSettingsCap`) short-circuits to undefined. Under a real settings cap
+ * the applied resolver can materialize a level (official `ek` semantics) —
+ * the same cap-sensitivity class the positive-control test below notes.
  */
 
 const SAVED_ENV_KEYS = [
@@ -40,8 +44,9 @@ beforeEach(() => {
 describe('#33 effort indicator chip hides instead of guessing (CC 2.1.304 official EE)', () => {
   test('env=auto + no session level → chip hidden (undefined), even on an effort model', () => {
     process.env.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
-    // modelSupportsEffort('claude-sonnet-5') is true, so the gate that hides
-    // the chip here is the #33 undefined-level check, not the model check.
+    // modelSupportsEffort('claude-sonnet-5') is true, so the chip hides via
+    // the SENT resolver (getSentEffortLevel → resolveAppliedEffort's
+    // env-auto/no-cap gate returning undefined), not the model-support gate.
     expect(getEffortNotificationText(undefined, 'claude-sonnet-5')).toBeUndefined()
   })
 
@@ -57,9 +62,13 @@ describe('#33 effort indicator chip hides instead of guessing (CC 2.1.304 offici
 
   test('an explicit session level renders the chip regardless of env-auto hiding logic', () => {
     process.env.CLAUDE_CODE_EFFORT_LEVEL = 'auto'
-    // appState effort is passed explicitly — the env-auto override still wins
-    // in the resolver (null → undefined), so the chip hides. This pins that
-    // the hide is driven by the RESOLVER, not by the effortValue argument.
+    // appState effort is passed explicitly — with no settings cap on this
+    // machine the env-auto override still wins in the SENT resolver
+    // (resolveAppliedEffort's `envOverride === null && !hasSettingsCap` gate →
+    // undefined), so the chip hides. This pins that the hide is driven by the
+    // RESOLVER, not by the effortValue argument. (Under a real settings cap
+    // the applied resolver would materialize 'medium' — official `ek`
+    // semantics — same cap-sensitivity class as the positive control above.)
     expect(getEffortNotificationText('medium', 'claude-sonnet-5')).toBeUndefined()
   })
 
