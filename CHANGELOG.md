@@ -2,6 +2,8 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.398 - 2026-10-22 (acceptance hard-check #6 — README Tracks badge sync to 2.1.306 after v2.1.397: badge/正文/表格/页脚 refreshed from stale 2.1.302, adding the missing 2.1.303 (OCC-163/123) and 2.1.304 (OCC-124/164) chain entries plus the 2.1.306 head (OCC-165/125); doc-only, no functional change)
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
