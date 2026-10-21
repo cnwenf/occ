@@ -115,11 +115,15 @@ the 2.1.396-based build:
 ## 4. Release record
 
 - Version: **2.1.397** (bump from 2.1.396; CHANGELOG `## 2.1.397 - 2026-10-22`)
-- Merged to main; tag `v2.1.397` pushed → publish.yml npm publish **E404
-  expected** (NPM_TOKEN expired ~2026-10-03, OCC-151 human-only debt; npm
-  `latest` stays 2.1.367). GitHub Release created manually per
-  v2.1.392–396 precedent. releases==tags invariant verified via
-  `gh api repos/cnwenf/occ/releases` (196==196).
+- Commits: supplement `ddb0cdbb` + release `604a47ab`, pushed to main
+  (fast-forward `34d1d793..604a47ab`).
+- Tag `v2.1.397` pushed → publish.yml run 39694300404 **failed with npm E404
+  as expected** (NPM_TOKEN expired ~2026-10-03, OCC-151 human-only debt; npm
+  `latest` stays 2.1.367).
+- GitHub Release created manually per v2.1.392–396 precedent:
+  https://github.com/cnwenf/occ/releases/tag/v2.1.397
+- releases==tags invariant verified via `gh api repos/cnwenf/occ/releases`:
+  **196==196**.
 
 ## 5. Review record (code-reviewer + security-reviewer subagents)
 
