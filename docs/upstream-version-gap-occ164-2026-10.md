@@ -72,9 +72,10 @@ Gate notes: repo-wide `bun test src` remains order-polluted at baseline (OCC-124
 
 Security review (synchronous security-reviewer subagent, static diff review + pure-function probes of `320127c1`): **PASS-WITH-NOTES** — 0 CRITICAL/HIGH/MEDIUM. ReDoS probes (100k-char pathological inputs → 0.33 ms; 200k-char branch names → 2.68 ms; 32-char guard confirmed before regex), terminal-injection adversarial probe (ESC/OSC, NUL, CR/LF, DEL, RLO, ZWJ/ZWSP, BOM, Mongolian vowel separator, NBSP/NNBSP, U+2800, soft hyphen, tag chars, lone surrogates — all flagged unsafe; every `atStake.branch` echo site gated), 20 malformed-env probes (no crash, no NaN leak into budget math). 2 LOW defense-in-depth notes (non-blocking, queued for a future round): `sessionTitle` echoes unsanitized at `WorktreeExitDialog.tsx:290,314` (local same-trust-domain data; central `\p{Cc}\p{Cf}` strip at the display boundary suggested), and `worktreeBranch` echoes ungated at six sites (unreachable for unsafe chars today — slug-validated `worktree-<slug>` generation + hook sessions carry none — but the safety rests on the upstream invariant).
 
-## 5. Release
+## 5. Release (record)
 
-- Merged to main; `package.json` 2.1.394 → **2.1.395**; CHANGELOG `## 2.1.395 - 2026-10-21`; tag **v2.1.395**.
-- npm publish expected **E404** — NPM_TOKEN expired ~2026-10-03 (OCC-151, human-only debt; npm `latest` stays 2.1.367).
-- GitHub Release created manually per v2.1.392/393/394 precedent; releases==tags invariant re-verified.
-- `parked/occ164-wip` retained until the merge is confirmed, then deleted (its byte-verified content is fully landed or documented-staged above).
+- Merged fast-forward to main (`16daab66..6131467d`); release commit `79d47426` — `package.json` 2.1.394 → **2.1.395**, CHANGELOG `## 2.1.395 - 2026-10-21` (intro clause chained on top of the OCC-124 round). A tiny pre-release lint commit `7f59a83d` dropped the useless `= undefined` initialization flagged by the pre-commit biome warning (9/9 suite re-verified).
+- Tag **v2.1.395** on `79d47426`, pushed. Build green post-bump (`dist/cli.js` 30.34 MB, MACRO.VERSION=2.1.395, `OCC 2.1.395`); e2e `occ-versioning` + `commands-alignment` 6/6 on the fresh build.
+- npm publish → **E404** as expected — NPM_TOKEN expired ~2026-10-03 (OCC-151, human-only debt; npm `latest` stays 2.1.367). Single attempt, no retry loop.
+- GitHub Release `v2.1.395` created manually per v2.1.392/393/394 precedent (minimal full-changelog-compare body); releases==tags invariant re-verified: **194==194**.
+- `parked/occ164-wip` deleted after merge confirmation (`c83e1810`; its byte-verified content is fully landed or documented-staged in §2 above — the generalized `Bgt`/`BVe` detector remains the staged follow-up candidate).
