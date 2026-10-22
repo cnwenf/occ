@@ -195,6 +195,26 @@ function dropNonStringTextBlocks(message: Message): Message | null {
 }
 
 /**
+ * OCC-126 / OCC-128 (P3): true only for the EXACT legacy seeded security
+ * banner-row template shapes persisted by v2.1.397/v2.1.398
+ * (`collectPermissionRuleSecurityWarnings` S-rows, single-line after the
+ * `formatSecurityWarningRow` sanitize):
+ *   - `${capitalize(behavior)} rule ${display} never matches` (Grep, no tail)
+ *   - `${capitalize(behavior)} rule ${display} never matches · use ${tool}(…)`
+ *   - `${capitalize(behavior)} rule ${display} matches no tool · check for typos`
+ * The old bare `^(Allow|Deny|Ask) rule ` prefix guard was too wide — any
+ * future legitimate warning-level system message starting with that prefix
+ * would be silently dropped on resume. The tail anchors below pin the full
+ * template shape instead.
+ */
+const LEGACY_SEEDED_SECURITY_ROW_PATTERN =
+  /^(?:Allow|Deny|Ask) rule .+?(?: never matches(?: · use [^ ·]+\(…\))?| matches no tool · check for typos)$/
+
+export function isLegacySeededSecurityBannerRow(content: string): boolean {
+  return LEGACY_SEEDED_SECURITY_ROW_PATTERN.test(content)
+}
+
+/**
  * Deserializes messages from a log file into the format expected by the REPL.
  * Filters unresolved tool uses, orphaned thinking messages, and appends a
  * synthetic assistant sentinel when the last message is from the user.
@@ -258,11 +278,18 @@ export function deserializeMessagesWithInterruptDetection(
     // which recordTranscript persisted. The rows reflect the permission rules
     // AT RECORD TIME — after a rule fix they are stale, and alongside the
     // re-rendered banner (official `security-warnings` registry entry) they
-    // double up. Drop them at the resume choke point. The row templates all
-    // start with `${capitalize(ruleBehavior)} rule ` (securityWarnings305:
-    // "Allow rule …" / "Deny rule …" / "Ask rule …"); no other OCC
-    // warning-level system message uses that prefix. Post-fix transcripts
-    // never contain these rows (banner rows are transient JSX).
+    // double up. Drop them at the resume choke point.
+    // OCC-128 (P3): the guard matches the FULL legacy S-row template shapes
+    // (securityWarnings305 `collectPermissionRuleSecurityWarnings`), not the
+    // bare `${capitalize(ruleBehavior)} rule ` prefix — a future legitimate
+    // warning-level system message starting with "Deny rule …" must survive.
+    // Seeded rows were sanitized single lines (formatSecurityWarningRow ≡ Zo:
+    // control-char runs collapsed to one space, trimmed), so the lazy `.+?`
+    // display span cannot run past a newline and the two tail anchors are:
+    //   "… never matches" (Grep S-row, no tail) | "… never matches · use X(…)"
+    //   "… matches no tool · check for typos"
+    // Post-fix transcripts never contain these rows (banner rows are
+    // transient JSX).
     let legacySecurityRowDropCount = 0
     const legacySecurityStrippedMessages = sanitizedMessages.filter(message => {
       const isLegacySecurityRow =
@@ -270,7 +297,7 @@ export function deserializeMessagesWithInterruptDetection(
         message.subtype === 'informational' &&
         message.level === 'warning' &&
         typeof message.content === 'string' &&
-        /^(Allow|Deny|Ask) rule /.test(message.content)
+        isLegacySeededSecurityBannerRow(message.content)
       if (isLegacySecurityRow) {
         legacySecurityRowDropCount += 1
       }

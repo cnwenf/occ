@@ -189,6 +189,51 @@ describe('OCC-126 legacy transcript strip (v2.1.397/398 seeded rows)', () => {
     ).toBe(true)
   })
 
+  test('OCC-128 P3: legitimate warnings that merely START with the legacy prefix survive (predicate is full-template, not prefix-wide)', async () => {
+    ;({ deserializeMessages } = await import('../conversationRecovery.js'))
+    // The old `/^(Allow|Deny|Ask) rule /` prefix guard silently dropped any
+    // future warning-level system message beginning with "Deny rule " —
+    // e.g. a hypothetical enforcement notice. Only the exact v2.1.397/398
+    // seeded-row TEMPLATE SHAPES ("… never matches[ · use X(…)]" /
+    // "… matches no tool · check for typos") may be stripped.
+    const legitimate = createSystemMessage(
+      'Deny rule X will be enforced from next run',
+      'warning',
+    )
+    const messages = deserializeMessages([legitimate, userRow] as never[])
+    expect(
+      messages.some(
+        m =>
+          m.type === 'system' &&
+          (m as { content?: string }).content ===
+            'Deny rule X will be enforced from next run',
+      ),
+    ).toBe(true)
+  })
+
+  test('OCC-128 P3: both full legacy template shapes are still stripped after the predicate tightening', async () => {
+    ;({ deserializeMessages } = await import('../conversationRecovery.js'))
+    const shapes = [
+      'Allow rule Bash(command:*) never matches', // Grep-style S-row: no " · use" tail
+      'Deny rule Glob(path:src/**) never matches · use Read(…)', // Glob S-row
+      'Ask rule Write(file_path:/x) never matches · use Edit(…)', // Write/NotebookEdit S-row
+      'Allow rule Foo(bar) matches no tool · check for typos', // unknown-tool S-row
+    ]
+    const legacy = [
+      ...shapes.map(shape => createSystemMessage(shape, 'warning')),
+      userRow,
+    ] as never[]
+    const messages = deserializeMessages(legacy)
+    for (const shape of shapes) {
+      expect(
+        messages.some(
+          m => m.type === 'system' && (m as { content?: string }).content === shape,
+        ),
+      ).toBe(false)
+    }
+    expect(messages.some(m => m.type === 'user')).toBe(true)
+  })
+
   test('non-warning-level and non-system rows starting with "Deny rule " survive', async () => {
     ;({ deserializeMessages } = await import('../conversationRecovery.js'))
     const infoLevel = {
