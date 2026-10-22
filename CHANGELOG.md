@@ -2,6 +2,14 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.400 - 2026-10-22 (OCC-128 — OCC-126 验收 code-review 确认的 3 项发现修复：/resume catastrophic strip 覆盖两个 legacy seed 家族 + 渲染路径 guard 测试 + WP3 文档 deviation #6 修正)
+
+- `/resume` 的 legacy seeded security-warning 清除谓词加宽为完整模板形状：同时覆盖 **first-loop**（`collectPermissionRuleSecurityWarnings` → `never matches[ · use X(…)]` / `matches no tool · check for typos`）和 **validator-loop**（`collectPermissionRuleSecurityNotices` → `allows any option at its * · use an exact value` / `reads its * literally[ · use X]` / `reads its :* as a wildcard · use an exact value`）两个 producer 家族，且含 `X(:*)` 无尾形态与真实 rule content 尾；round-1 只锚 first-loop 家族导致 validator-loop 行在 /resume 重新浮现的 P2 已修复（`LEGACY_SEEDED_SECURITY_ROW_PATTERN` @ `src/utils/conversationRecovery.ts:224`）；非 seeded 合法警告（如 `Deny rule X will be enforced from next run`）仍然存活
+- 可见 banner 渲染路径新增非 e2e guard 测试 `src/components/__tests__/securityWarningsBannerRenderPath306.test.ts`：锁定 REPL.tsx 两个 `<Messages>` 站点都透传 `securityWarnings`、Messages.tsx LogoHeader memo `$[3]` 守卫及回写、StatusNotices 调用点——mutation 协议验证删任一守卫 `bun test` 即红
+- `src/utils/__tests__/securityWarningsBanner306.test.ts` 新增 validator-loop 家族 5 条真实模板形状剥离用例（字面量逐字节来自真实 producer 输出）与 survive 边界
+- `docs/gap-research-306/impl-WP3.md` Deviation #6 修正：`launchResumeChooser` **已接线**（`main.tsx` resumeProps 传 `securityWarnings`、`ResumeConversation.tsx:316` 渲染），删除过期的"未穿线"陈述；Deviation #3 同步更新为覆盖两个家族（first-loop + validator-loop）的 strip 声明
+- Tests: `securityWarningsBanner306.test.ts` 12 pass / 37 expect，`securityWarningsBannerRenderPath306.test.ts` 4 pass，tmux 真实模型 e2e 1-pass/12-expect（fresh=1/resume=1 exactly-once、absent-after-fix、OCC126PONG round-trip）
+
 ## 2.1.399 - 2026-10-22 (OCC-126 — startup securityWarnings banner rows realigned to the official 2.1.305/306 banner-notice registry: never seeded as messages, never persisted to the transcript, /resume renders no duplicate or stale rows)
 
 - Startup permission-rule security warnings (e.g. `Deny rule Glob(path:src/**) never matches · use Read(…)`) now render exactly like official Claude Code 2.1.305/306: as transient banner rows under the logo via the status-notice registry (`security-warnings` entry, byte-verified `X_`/`k0`/`Nc` port, positioned between `both-auth-methods` and `jetbrains-plugin-install`) — they are no longer seeded into the REPL messages list, so they never land in the session transcript
