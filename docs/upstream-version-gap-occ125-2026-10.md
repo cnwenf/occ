@@ -163,3 +163,35 @@ Tracked (not fixed this round):
 - Whole-dir test order pollution (11 suites) — long-standing; isolated-suite
   gating remains the discipline.
 - npm publish blocked on OCC-151 (human: rotate NPM_TOKEN).
+
+## 7. Acceptance record — independent review (2026-10-22, post-release)
+
+OCC 验收员 re-ran code-reviewer + security-reviewer independently on the shipped
+delta (`git diff ddb0cdbb^..ddb0cdbb`, 59 files +7732/−191). Both verdicts:
+**WARN, no CRITICAL/HIGH.** No secrets, no injection, no new attack surface.
+
+Independent-confirmed clean: startup 3-mode warning routing, sanitizeWarningText
+(Cc/Cf strip — no ESSeq/terminal-injection bypass), permissionValidation
+securityNotice gating, compaction headTruncated threading, workflow journal warn,
+occ-versioning REPO_ROOT fix, sandbox tier-merge
+(`falseStickyTrustedSandboxBoolean`). Byte-verified via the vendored
+apply-seccomp binaries (0.0.44 has 0× SRT_ALLOW_NESTED_USERNS, 0.0.81 does).
+
+**NEW MEDIUM (not in the round's own review): REPL securityWarnings seeded as
+persistent transcript system messages, not the official banner-registry entry.**
+`src/screens/REPL.tsx:1281-1295` prepends `createSystemMessage(w,'warning')` into
+the messages lazy initializer; `isLoggableMessage` passes system msgs
+(`sessionStorage.ts:5338`) so the rows persist to the transcript; resume sites
+(`src/main.tsx:4291/4340`) re-seed fresh `securityWarnings` on top → stale rows
+re-render after a rule is fixed, doubled once persisted+re-seeded. Official uses
+an ephemeral `{id:"security-warnings",tier:"warning",isActive:…}` banner-registry
+entry (impl-WP3.md:67 admits the "per task, YAGNI" deviation). Impact limited to
+display (`normalizeMessagesForAPI` strips system msgs → never reaches model).
+FIX filed as OCC-126 to the programmer: implement a non-transcript banner state
+(or dedupe-on-seed / exclude from recordTranscript).
+
+security-reviewer's HIGH is the known security-M1 (§5/§6): forward-compat gap,
+**not a regression** (pre-diff exposure unchanged on the helper path; diff strictly
+adds the `--disable-userns` leg). Release record corrected by acceptance:
+releases==tags is **197==197** after the v2.1.398 README-badge fix-forward
+(§4's 196==196 was captured before it), symmetric set diff empty.
