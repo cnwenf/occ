@@ -51,10 +51,11 @@ import type { JumpHandle } from './VirtualMessageList.js';
 // and pegs CPU at 100%. Memo on agentDefinitions so a new messages array
 // doesn't invalidate the logo subtree. LogoV2/StatusNotices internally
 // subscribe to useAppState/useSettings for their own updates.
-const LogoHeader = React.memo(function LogoHeader(t0: { agentDefinitions: AgentDefinitionsResult }) {
-  const $ = _c(3);
+const LogoHeader = React.memo(function LogoHeader(t0: { agentDefinitions: AgentDefinitionsResult; securityWarnings?: string[] }) {
+  const $ = _c(4);
   const {
-    agentDefinitions
+    agentDefinitions,
+    securityWarnings
   } = t0;
   let t1;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
@@ -64,10 +65,13 @@ const LogoHeader = React.memo(function LogoHeader(t0: { agentDefinitions: AgentD
     t1 = $[0];
   }
   let t2;
-  if ($[1] !== agentDefinitions) {
-    t2 = <OffscreenFreeze><Box flexDirection="column" gap={1}>{t1}<React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense></Box></OffscreenFreeze>;
+  // OCC-126: securityWarnings joins the memo key — it is a static per-session
+  // array (stable identity from the REPL prop), so the cache stays effective.
+  if ($[1] !== agentDefinitions || $[3] !== securityWarnings) {
+    t2 = <OffscreenFreeze><Box flexDirection="column" gap={1}>{t1}<React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} securityWarnings={securityWarnings} /></React.Suspense></Box></OffscreenFreeze>;
     $[1] = agentDefinitions;
     $[2] = t2;
+    $[3] = securityWarnings;
   } else {
     t2 = $[2];
   }
@@ -221,6 +225,12 @@ type Props = {
   streamingToolUses: StreamingToolUse[];
   showAllInTranscript?: boolean;
   agentDefinitions?: AgentDefinitionsResult;
+  /**
+   * OCC-126 (CC 2.1.305/306): startup security-warning rows, rendered by the
+   * LogoHeader → StatusNotices banner registry (official `security-warnings`
+   * entry) — never seeded into messages, never persisted to the transcript.
+   */
+  securityWarnings?: string[];
   onOpenRateLimitOptions?: () => void;
   /** Hide the logo/header - used for subagent zoom view */
   hideLogo?: boolean;
@@ -360,6 +370,7 @@ const MessagesImpl = ({
   streamingToolUses,
   showAllInTranscript = false,
   agentDefinitions,
+  securityWarnings,
   onOpenRateLimitOptions,
   hideLogo = false,
   isLoading,
@@ -685,7 +696,7 @@ const MessagesImpl = ({
   }, [tools, lookups_0]);
   return <>
       {/* Logo */}
-      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} />}
+      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} securityWarnings={securityWarnings} />}
 
       {/* Truncation indicator */}
       {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={columns} />}

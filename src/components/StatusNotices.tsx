@@ -8,6 +8,11 @@ import { getGlobalConfig } from '../utils/config.js';
 import { getActiveNotices, type StatusNoticeContext } from '../utils/statusNoticeDefinitions.js';
 type Props = {
   agentDefinitions?: AgentDefinitionsResult;
+  // OCC-126 (CC 2.1.305/306): startup security-warning rows for the official
+  // `security-warnings` banner-registry entry (fed from the REPL
+  // securityWarnings prop; the official reads appState
+  // setupIssues.securityWarnings — OCC has no such store slice).
+  securityWarnings?: string[];
 };
 
 /**
@@ -18,7 +23,8 @@ type Props = {
 export function StatusNotices(t0) {
   const $ = _c(4);
   const {
-    agentDefinitions
+    agentDefinitions,
+    securityWarnings
   } = t0 === undefined ? {} : t0;
   const t1 = getGlobalConfig();
   let t2;
@@ -31,7 +37,8 @@ export function StatusNotices(t0) {
   const context = {
     config: t1,
     agentDefinitions,
-    memoryFiles: use(t2) as any
+    memoryFiles: use(t2) as any,
+    securityWarnings: securityWarnings ?? []
   };
   const activeNotices = getActiveNotices(context);
   if (activeNotices.length === 0) {

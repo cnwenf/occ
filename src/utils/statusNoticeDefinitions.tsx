@@ -71,6 +71,12 @@ export type StatusNoticeContext = {
   config: ReturnType<typeof getGlobalConfig>;
   agentDefinitions?: AgentDefinitionsResult;
   memoryFiles: MemoryFileInfo[];
+  // OCC-126 (CC 2.1.305/306): startup permission-rule security rows. The
+  // official banner registry reads them from appState
+  // `setupIssues.securityWarnings` (string[]); OCC feeds them as a prop chain
+  // REPL → Messages → LogoHeader → StatusNotices (static per session, so no
+  // store slice is warranted). Undefined = no warnings.
+  securityWarnings?: string[];
 };
 export type StatusNoticeDefinition = {
   id: string;
@@ -213,6 +219,34 @@ const bothAuthMethodsNotice: StatusNoticeDefinition = {
       </Box>;
   }
 };
+// OCC-126 (CC 2.1.305/306): official `security-warnings` banner-registry
+// entry (v306 binary strings, byte-verified — `X_`):
+//   X_={id:"security-warnings",tier:"warning",type:"warning",
+//       isActive:(m)=>m.securityWarnings.length>0,
+//       render:(m)=>e(Q,{children:m.securityWarnings.map((h)=>
+//         e(Nc,{status:"warning",children:h},h))})}
+// In the official `k0` registry order it sits after both-auth-methods (`H_`)
+// — OCC keeps that relative order (before the jetbrains entry). `Nc` is the
+// same shared notice-line component OCC ported as `NoticeLine` (official
+// 2.1.278 `Jm` — the v306 large-memory-files entry renders through `Nc`
+// too); `Q` is the Fragment wrapper; the map key is the warning text itself.
+// Because these rows are banner-registry JSX (never messages), they never
+// reach recordTranscript and /resume re-renders them from CURRENT state —
+// no stale/duplicate rows (the OCC-126 defect fixed here).
+const securityWarningsNotice: StatusNoticeDefinition = {
+  id: 'security-warnings',
+  type: 'warning',
+  isActive: ctx => (ctx.securityWarnings ?? []).length > 0,
+  render: ctx => (
+    <>
+      {(ctx.securityWarnings ?? []).map(warning => (
+        <NoticeLine key={warning} status="warning">
+          {warning}
+        </NoticeLine>
+      ))}
+    </>
+  )
+};
 const largeAgentDescriptionsNotice: StatusNoticeDefinition = {
   id: 'large-agent-descriptions',
   type: 'warning',
@@ -270,7 +304,7 @@ const jetbrainsPluginNotice: StatusNoticeDefinition = {
 };
 
 // All notice definitions
-export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFilesNotice, largeAgentDescriptionsNotice, claudeAiSubscriberExternalTokenNotice, apiKeyConflictNotice, bothAuthMethodsNotice, jetbrainsPluginNotice];
+export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFilesNotice, largeAgentDescriptionsNotice, claudeAiSubscriberExternalTokenNotice, apiKeyConflictNotice, bothAuthMethodsNotice, securityWarningsNotice, jetbrainsPluginNotice];
 
 // Helper functions for external use
 export function getActiveNotices(context: StatusNoticeContext): StatusNoticeDefinition[] {

@@ -67,8 +67,10 @@ type Props = {
   filterByPr?: boolean | number | string;
   thinkingConfig: ThinkingConfig;
   onTurnComplete?: (messages: Message[]) => void | Promise<void>;
-  // CC 2.1.305 — startup permission securityWarnings rows. Threaded so the
-  // --resume chooser path renders the same banner rows as launchRepl sites.
+  // CC 2.1.305/306 — startup permission securityWarnings rows. Threaded so
+  // the --resume path renders the same banner-registry rows (official
+  // `security-warnings` entry, transient JSX — never seeded into messages /
+  // never persisted to the transcript) as launchRepl sites.
   securityWarnings?: string[];
 };
 export function ResumeConversation({
