@@ -234,6 +234,40 @@ describe('OCC-126 legacy transcript strip (v2.1.397/398 seeded rows)', () => {
     expect(messages.some(m => m.type === 'user')).toBe(true)
   })
 
+  test('OCC-128 P2 (review round 2): validator-loop (Loop-2) legacy rows are stripped too — the seeded channel merged BOTH producer families', async () => {
+    ;({ deserializeMessages } = await import('../conversationRecovery.js'))
+    // v2.1.397/398 seeded the whole `securityWarnings` array, which
+    // permissionSetup composes from collectPermissionRuleSecurityWarnings
+    // (first loop) AND collectPermissionRuleSecurityNotices (validator
+    // loop). The validator rows embed real rule content in the use-tail
+    // (`… · use Edit(src/**)`) or carry notice-only tails (`allows any
+    // option at its * …`), so a first-loop-only predicate lets them
+    // resurface on resume — the exact OCC-126 symptom. Shapes below are the
+    // real rows pinned by securityWarnings305.test.ts (:232/:241/:250) plus
+    // the two remaining validator templates (permissionValidation.ts
+    // :290/:324/:339/:420).
+    const loop2Shapes = [
+      'Deny rule Write(src/**) never matches · use Edit(src/**)',
+      'Allow rule Bash(git * main) allows any option at its * · use an exact value',
+      'Ask rule Bash(npm * run:*) reads its * literally · use Bash(npm * run*)',
+      'Deny rule Bash(npm * :*:*) reads its * literally',
+      'Allow rule Bash(npm run:*build) reads its :* as a wildcard · use an exact value',
+    ]
+    const legacy = [
+      ...loop2Shapes.map(shape => createSystemMessage(shape, 'warning')),
+      userRow,
+    ] as never[]
+    const messages = deserializeMessages(legacy)
+    for (const shape of loop2Shapes) {
+      expect(
+        messages.some(
+          m => m.type === 'system' && (m as { content?: string }).content === shape,
+        ),
+      ).toBe(false)
+    }
+    expect(messages.some(m => m.type === 'user')).toBe(true)
+  })
+
   test('non-warning-level and non-system rows starting with "Deny rule " survive', async () => {
     ;({ deserializeMessages } = await import('../conversationRecovery.js'))
     const infoLevel = {

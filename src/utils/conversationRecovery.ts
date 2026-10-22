@@ -195,20 +195,34 @@ function dropNonStringTextBlocks(message: Message): Message | null {
 }
 
 /**
- * OCC-126 / OCC-128 (P3): true only for the EXACT legacy seeded security
- * banner-row template shapes persisted by v2.1.397/v2.1.398
- * (`collectPermissionRuleSecurityWarnings` S-rows, single-line after the
- * `formatSecurityWarningRow` sanitize):
+ * OCC-126 / OCC-128: true only for the EXACT legacy seeded security
+ * banner-row template shapes persisted by v2.1.397/v2.1.398. The seeded
+ * `securityWarnings` array merged BOTH producer families (single-line after
+ * the `formatSecurityWarningRow` sanitize):
+ *
+ * First loop (`collectPermissionRuleSecurityWarnings` S-rows):
  *   - `${capitalize(behavior)} rule ${display} never matches` (Grep, no tail)
  *   - `${capitalize(behavior)} rule ${display} never matches · use ${tool}(…)`
  *   - `${capitalize(behavior)} rule ${display} matches no tool · check for typos`
+ *
+ * Validator loop (`collectPermissionRuleSecurityNotices` rows —
+ * `${capitalize(behavior)} rule ${securityNotice}`, templates byte-verified
+ * in `permissionValidation.ts`; the use-tails embed REAL rule content, not
+ * the literal `…`):
+ *   - `… allows any option at its * · use an exact value`
+ *   - `… reads its * literally[ · use ${tool}(${suggested})]`
+ *   - `… reads its :* as a wildcard · use an exact value`
+ *   - `… never matches · use ${tool}(${ruleContent})`
+ *
  * The old bare `^(Allow|Deny|Ask) rule ` prefix guard was too wide — any
  * future legitimate warning-level system message starting with that prefix
  * would be silently dropped on resume. The tail anchors below pin the full
- * template shape instead.
+ * template shapes instead. (A first-loop-only tightening — OCC-128 round 1 —
+ * was too NARROW: the validator family escaped the strip and re-surfaced on
+ * resume. Review round 2 P2.)
  */
 const LEGACY_SEEDED_SECURITY_ROW_PATTERN =
-  /^(?:Allow|Deny|Ask) rule .+?(?: never matches(?: · use [^ ·]+\(…\))?| matches no tool · check for typos)$/
+  /^(?:Allow|Deny|Ask) rule .+?(?: never matches(?: · use .+)?| matches no tool · check for typos| allows any option at its \* · use an exact value| reads its \* literally(?: · use .+)?| reads its :\* as a wildcard · use an exact value)$/
 
 export function isLegacySeededSecurityBannerRow(content: string): boolean {
   return LEGACY_SEEDED_SECURITY_ROW_PATTERN.test(content)
@@ -279,15 +293,20 @@ export function deserializeMessagesWithInterruptDetection(
     // AT RECORD TIME — after a rule fix they are stale, and alongside the
     // re-rendered banner (official `security-warnings` registry entry) they
     // double up. Drop them at the resume choke point.
-    // OCC-128 (P3): the guard matches the FULL legacy S-row template shapes
-    // (securityWarnings305 `collectPermissionRuleSecurityWarnings`), not the
-    // bare `${capitalize(ruleBehavior)} rule ` prefix — a future legitimate
+    // OCC-128: the guard matches the FULL legacy template shapes of BOTH
+    // seeded producer families — first-loop S-rows
+    // (`collectPermissionRuleSecurityWarnings`, securityWarnings305) AND
+    // validator-loop notices (`collectPermissionRuleSecurityNotices`, whose
+    // use-tails embed real rule content) — not the bare
+    // `${capitalize(ruleBehavior)} rule ` prefix: a future legitimate
     // warning-level system message starting with "Deny rule …" must survive.
     // Seeded rows were sanitized single lines (formatSecurityWarningRow ≡ Zo:
     // control-char runs collapsed to one space, trimmed), so the lazy `.+?`
-    // display span cannot run past a newline and the two tail anchors are:
-    //   "… never matches" (Grep S-row, no tail) | "… never matches · use X(…)"
-    //   "… matches no tool · check for typos"
+    // display span cannot run past a newline. Tail anchors (see
+    // LEGACY_SEEDED_SECURITY_ROW_PATTERN for the full list):
+    //   "… never matches[ · use X]" | "… matches no tool · check for typos"
+    //   "… allows any option at its * · use an exact value"
+    //   "… reads its * literally[ · use X]" | "… reads its :* as a wildcard …"
     // Post-fix transcripts never contain these rows (banner rows are
     // transient JSX).
     let legacySecurityRowDropCount = 0
