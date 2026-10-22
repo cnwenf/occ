@@ -556,11 +556,13 @@ export type Props = {
   initialTools: Tool[];
   // Initial messages to populate the REPL with
   initialMessages?: MessageType[];
-  // CC 2.1.305 — permission rules that restrict nothing surface as warning
+  // CC 2.1.305/306 — permission rules that restrict nothing surface as warning
   // rows immediately under the banner (official `security-warnings` registry
-  // entry: `isActive: m => m.securityWarnings.length > 0`, rows rendered with
-  // `status:"warning"`). OCC renders them as seeded system messages via the
-  // existing createSystemMessage(text, 'warning') surface.
+  // entry X_: `isActive: m => m.securityWarnings.length > 0`, rows rendered
+  // with `status:"warning"`). OCC-126: fed to <Messages …> → LogoHeader →
+  // StatusNotices (the banner registry) — they are transient JSX, never
+  // messages, so they never reach recordTranscript and /resume re-renders
+  // them from current state (no stale/duplicate rows).
   securityWarnings?: string[];
   // Deferred hook messages promise — REPL renders immediately and injects
   // hook messages when they resolve. Awaited before the first API call.
@@ -1277,18 +1279,7 @@ export function REPL({
     registerLeaderToolUseConfirmQueue(setToolUseConfirmQueue);
     return () => unregisterLeaderToolUseConfirmQueue();
   }, [setToolUseConfirmQueue]);
-  const [messages, rawSetMessages] = useState<MessageType[]>(() => {
-    // CC 2.1.305 — securityWarnings rows render under the banner as
-    // `status:"warning"` system messages (official registry entry gated on
-    // `securityWarnings.length > 0`).
-    if (!securityWarnings || securityWarnings.length === 0) {
-      return initialMessages ?? [];
-    }
-    return [
-      ...securityWarnings.map(warning => createSystemMessage(warning, 'warning')),
-      ...(initialMessages ?? []),
-    ];
-  });
+  const [messages, rawSetMessages] = useState<MessageType[]>(() => initialMessages ?? []);
   const messagesRef = useRef(messages);
   // Stores the willowMode variant that was shown (or false if no hint shown).
   // Captured at hint_shown time so hint_converted telemetry reports the same
@@ -4787,7 +4778,7 @@ export function REPL({
     // the stream store provider so sent-but-unreceived prompts render gray.
     const transcriptMessagesElement = <AwaitingModelContext.Provider value={promptsAwaitingModelStore}>
       <CompactSummaryContext.Provider value={compactSummaryInfo}>
-        <Messages messages={transcriptMessages} tools={tools} commands={commands} verbose={true} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={inProgressToolUseIDs} isMessageSelectorVisible={false} conversationId={conversationId} screen={screen} agentDefinitions={agentDefinitions} streamingToolUses={transcriptStreamingToolUses} showAllInTranscript={showAllInTranscript} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hidePastThinking={true} streamingThinking={streamingThinking} scrollRef={transcriptScrollRef} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} disableRenderCap={dumpMode} />
+        <Messages messages={transcriptMessages} tools={tools} commands={commands} verbose={true} toolJSX={null} toolUseConfirmQueue={[]} inProgressToolUseIDs={inProgressToolUseIDs} isMessageSelectorVisible={false} conversationId={conversationId} screen={screen} agentDefinitions={agentDefinitions} securityWarnings={securityWarnings} streamingToolUses={transcriptStreamingToolUses} showAllInTranscript={showAllInTranscript} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hidePastThinking={true} streamingThinking={streamingThinking} scrollRef={transcriptScrollRef} jumpRef={jumpRef} onSearchMatchesChange={onSearchMatchesChange} scanElement={scanElement} setPositions={setPositions} disableRenderCap={dumpMode} />
       </CompactSummaryContext.Provider>
     </AwaitingModelContext.Provider>;
     const transcriptToolJSX = toolJSX && <Box flexDirection="column" width="100%">
@@ -4962,7 +4953,7 @@ export function REPL({
                   transcript area in the awaiting-model store provider. */}
               <AwaitingModelContext.Provider value={promptsAwaitingModelStore}>
               <CompactSummaryContext.Provider value={compactSummaryInfo}>
-              <Messages messages={displayedMessages} tools={tools} commands={commands} verbose={verbose} toolJSX={toolJSX} toolUseConfirmQueue={toolUseConfirmQueue} inProgressToolUseIDs={viewedTeammateTask ? viewedTeammateTask.inProgressToolUseIDs ?? new Set() : inProgressToolUseIDs} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={conversationId} screen={screen} streamingToolUses={streamingToolUses} showAllInTranscript={showAllInTranscript} agentDefinitions={agentDefinitions} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hasStreamingText={isLoading && !viewedAgentTask && hasStreamingText} showStreamingText={showStreamingText} isBriefOnly={viewedAgentTask ? false : isBriefOnly} unseenDivider={viewedAgentTask ? undefined : unseenDivider} scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined} trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined} cursor={cursor} setCursor={setCursor} cursorNavRef={cursorNavRef} />
+              <Messages messages={displayedMessages} tools={tools} commands={commands} verbose={verbose} toolJSX={toolJSX} toolUseConfirmQueue={toolUseConfirmQueue} inProgressToolUseIDs={viewedTeammateTask ? viewedTeammateTask.inProgressToolUseIDs ?? new Set() : inProgressToolUseIDs} isMessageSelectorVisible={isMessageSelectorVisible} conversationId={conversationId} screen={screen} streamingToolUses={streamingToolUses} showAllInTranscript={showAllInTranscript} agentDefinitions={agentDefinitions} securityWarnings={securityWarnings} onOpenRateLimitOptions={handleOpenRateLimitOptions} isLoading={isLoading} hasStreamingText={isLoading && !viewedAgentTask && hasStreamingText} showStreamingText={showStreamingText} isBriefOnly={viewedAgentTask ? false : isBriefOnly} unseenDivider={viewedAgentTask ? undefined : unseenDivider} scrollRef={isFullscreenEnvEnabled() ? scrollRef : undefined} trackStickyPrompt={isFullscreenEnvEnabled() ? true : undefined} cursor={cursor} setCursor={setCursor} cursorNavRef={cursorNavRef} />
               </CompactSummaryContext.Provider>
               </AwaitingModelContext.Provider>
               <AwsAuthStatusBox />

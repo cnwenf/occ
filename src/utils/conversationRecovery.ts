@@ -252,10 +252,41 @@ export function deserializeMessagesWithInterruptDetection(
     // saved history holds an assistant message stored as a plain string.
     const sanitizedMessages = sanitizeResumedRows(nonStringStrippedMessages)
 
+    // OCC-126 (legacy strip): v2.1.397/v2.1.398 seeded the startup security
+    // banner rows into the messages list as createSystemMessage(row,
+    // 'warning') (type:'system', subtype:'informational', level:'warning'),
+    // which recordTranscript persisted. The rows reflect the permission rules
+    // AT RECORD TIME — after a rule fix they are stale, and alongside the
+    // re-rendered banner (official `security-warnings` registry entry) they
+    // double up. Drop them at the resume choke point. The row templates all
+    // start with `${capitalize(ruleBehavior)} rule ` (securityWarnings305:
+    // "Allow rule …" / "Deny rule …" / "Ask rule …"); no other OCC
+    // warning-level system message uses that prefix. Post-fix transcripts
+    // never contain these rows (banner rows are transient JSX).
+    let legacySecurityRowDropCount = 0
+    const legacySecurityStrippedMessages = sanitizedMessages.filter(message => {
+      const isLegacySecurityRow =
+        message.type === 'system' &&
+        message.subtype === 'informational' &&
+        message.level === 'warning' &&
+        typeof message.content === 'string' &&
+        /^(Allow|Deny|Ask) rule /.test(message.content)
+      if (isLegacySecurityRow) {
+        legacySecurityRowDropCount += 1
+      }
+      return !isLegacySecurityRow
+    })
+    if (legacySecurityRowDropCount > 0) {
+      logForDebugging(
+        `deserializeMessages: dropped ${legacySecurityRowDropCount} legacy seeded security-banner row(s) — persisted by v2.1.397/398 message seeding (OCC-126)`,
+        { level: 'warn' },
+      )
+    }
+
     // Strip invalid permissionMode values from deserialized user messages.
     // The field is unvalidated JSON from disk and may contain modes from a different build.
     const validModes = new Set<string>(PERMISSION_MODES)
-    for (const msg of sanitizedMessages) {
+    for (const msg of legacySecurityStrippedMessages) {
       if (
         msg.type === 'user' &&
         msg.permissionMode !== undefined &&
@@ -274,7 +305,7 @@ export function deserializeMessagesWithInterruptDetection(
     const {
       messages: filteredToolUsesRaw,
       trailingUnresolvedToolUseIds,
-    } = filterUnresolvedToolUsesDetailed(sanitizedMessages)
+    } = filterUnresolvedToolUsesDetailed(legacySecurityStrippedMessages)
     const filteredToolUses = filteredToolUsesRaw as NormalizedMessage[]
 
     // Filter out orphaned thinking-only assistant messages that can cause API errors
@@ -328,7 +359,7 @@ export function deserializeMessagesWithInterruptDetection(
     internalState = applyResumeStalenessGates(
       internalState,
       hasDroppedTrailingToolUses
-        ? (sanitizedMessages as NormalizedMessage[])
+        ? (legacySecurityStrippedMessages as NormalizedMessage[])
         : filteredMessages,
     )
 
