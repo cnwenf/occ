@@ -2,6 +2,14 @@
 
 All notable changes to **OCC** (the independent open-source Claude Code–style coding agent) are documented in this file.
 
+## 2.1.399 - 2026-10-22 (OCC-126 — startup securityWarnings banner rows realigned to the official 2.1.305/306 banner-notice registry: never seeded as messages, never persisted to the transcript, /resume renders no duplicate or stale rows)
+
+- Startup permission-rule security warnings (e.g. `Deny rule Glob(path:src/**) never matches · use Read(…)`) now render exactly like official Claude Code 2.1.305/306: as transient banner rows under the logo via the status-notice registry (`security-warnings` entry, byte-verified `X_`/`k0`/`Nc` port, positioned between `both-auth-methods` and `jetbrains-plugin-install`) — they are no longer seeded into the REPL messages list, so they never land in the session transcript
+- `/resume` no longer shows duplicate warning rows (persisted row + re-seeded row) or stale residue after a broken permission rule is fixed — the banner re-renders from current startup state on every launch
+- Transcripts recorded by v2.1.397/398 (which did persist the seeded rows) resume clean: `deserializeMessages` strips legacy `system/informational/warning` rows matching `^(Allow|Deny|Ask) rule ` at the resume choke point, with a debug-log note per drop
+- Tests: `securityWarningsBanner306.test.ts` (registry entry, isActive gate, official ordering, legacy strip, structural guard), `securityWarningsBannerContainer306.test.tsx` (real Ink reconciler render), `test/e2e/security-warnings-banner-306.e2e.test.ts` (tmux e2e: fresh-start banner / transcript clean / resume exactly-once / fixed-rule no-stale, real model round-trip)
+- `docs/gap-research-306/impl-WP3.md` deviations #3 rewritten: the "no registry, YAGNI" premise retracted; banner-registry feed documented
+
 ## 2.1.398 - 2026-10-22 (acceptance hard-check #6 — README Tracks badge sync to 2.1.306 after v2.1.397: badge/正文/表格/页脚 refreshed from stale 2.1.302, adding the missing 2.1.303 (OCC-163/123) and 2.1.304 (OCC-124/164) chain entries plus the 2.1.306 head (OCC-165/125); doc-only, no functional change)
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
