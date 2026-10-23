@@ -18,11 +18,18 @@
  *    display length (official `re` = displaySanitize.ts
  *    `truncateToDisplayLength`).
  *
- * NOT wired into a tool-result renderer yet: the official call site lives in
- * the print/SDK result path (src/cli/print.ts), which is off-limits for this
- * change set (concurrent edits). The renderer is implemented + exported +
- * unit-tested here so the wiring is a one-line import for whoever owns that
- * file. (Documented deviation.)
+ * WIRING (F-01): the official's two `z_` call sites both live in the CCR
+ * mcp_call / staged-SDK relay subsystem (@276618538 + @276620665), which OCC
+ * has NOT ported. OCC wires the renderer at its live equivalent — the
+ * fetchToolsForClient tool wrapper's NON-retried McpSessionExpiredError
+ * rethrow (client.ts `McpSessionRecoveryTextError`), which toolExecution.ts
+ * surfaces verbatim as the isError tool_result text via `formatError`
+ * (= error.message). `namesMcpCall:false` mirrors official site 1 (no
+ * `.slice(0,2000)` cap — the `Jt` sanitizer bounds length internally). The
+ * official `session_expired_no_retry` counter stays unwired with the unported
+ * relay (the wrapper keeps its own may_have_run_no_retry /
+ * session_retry_exhausted events). The `Jt` sanitizer is LIVE through the
+ * renderer. (Documented deviation.)
  */
 import { truncateToDisplayLength } from './displaySanitize.js'
 

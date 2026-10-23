@@ -69,6 +69,21 @@ function writeManagedMcpJson(mcpServers: Record<string, unknown>): void {
 // first parse so the enterprise-exclusive branch is live for every test.
 writeManagedMcpJson({})
 
+// OCC-97 cross-file leak, second vector: getManagedFilePath is memoized in
+// managedPath.ts — a SHARED module that even the cache-busted config.js
+// instance below resolves to. In combined runs an earlier suite's preload can
+// seed that memo under the default env (USER_TYPE unset → '/etc/claude-code')
+// before the env wiring above exists, and lodash memoize never re-reads the
+// override — doesEnterpriseMcpConfigExist then pins false and the enterprise
+// branch dies (zero servers). Clear both path memos after the env wiring so
+// the first call re-memoizes under the override; afterAll clears again to
+// un-pin for later files.
+const { getManagedFilePath, getManagedSettingsDropInDir } = await import(
+  '../../../utils/settings/managedPath.js'
+)
+getManagedFilePath.cache.clear()
+getManagedSettingsDropInDir.cache.clear()
+
 // OCC-97: Bun's mock.module leaks across test files in the same worker.
 // Spread the real module, override only what this test drives, restore after.
 const actualSettings = await import('../../../utils/settings/settings.js')
@@ -80,8 +95,15 @@ mock.module('../../../utils/settings/settings.js', () => ({
   getInitialSettings: () => currentSettings,
 }))
 
+// OCC-97 cross-file mock leak: a src/cli/handlers MCP suite `mock.module`s
+// config.js (with an empty `getClaudeCodeMcpConfigs`) at its top level, and Bun
+// evaluates every test file's top level before any afterAll restore — so a plain
+// top-level import here binds that leaked fake and #P9 sees zero servers. The
+// cache-busted query specifier pulls a genuine config.js instance no sibling
+// mock intercepts (same remedy mcpGetDynamicScope285 uses); its internal
+// settings.js import still resolves to THIS file's settings mock below.
 const { getClaudeCodeMcpConfigs, isMcpServerAllowedByPolicy } = await import(
-  '../config.js'
+  '../config.js?occ-p9-real'
 )
 
 afterAll(() => {
@@ -95,6 +117,10 @@ afterAll(() => {
       process.env[key] = value
     }
   }
+  // Un-pin the shared managed-path memos (seeded under this suite's override)
+  // so later files re-memoize under the restored env.
+  getManagedFilePath.cache.clear()
+  getManagedSettingsDropInDir.cache.clear()
   rmSync(managedDir, { recursive: true, force: true })
   rmSync(configDir, { recursive: true, force: true })
 })

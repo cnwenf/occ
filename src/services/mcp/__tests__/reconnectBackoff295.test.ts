@@ -1,4 +1,13 @@
 import { describe, expect, test } from 'bun:test'
+// OCC-97 cross-file mock leak: the src/cli/handlers MCP suites each
+// `mock.module('../client.js')` at their top level (with a `connectToServer`
+// fake that has no `.cache`), and Bun evaluates every test file's top level
+// before any afterAll restore runs — so a plain top-level import here binds
+// that leaked fake and the `.cache` assertions below crash. The cache-busted
+// query specifier pulls a genuine, self-consistent client.js instance no
+// sibling mock intercepts (same remedy mcpGetDynamicScope285 uses for
+// config.js); this suite is self-contained (imports only ../client + ../types),
+// so the fresh instance reproduces its clean standalone environment.
 import {
   computeReconnectHoldoffMs,
   connectToServer,
@@ -10,7 +19,7 @@ import {
   _activeHeadlessRedialsForTesting,
   _scheduleHeadlessRemoteRedialForTesting,
   getServerCacheKey,
-} from '../client'
+} from '../client?occ-rb295-real'
 import type { ScopedMcpServerConfig } from '../types'
 
 /**

@@ -6,6 +6,7 @@ import {
   makeAppStateTaskRegistry,
   mcpBackgroundedMessage,
 } from './autoBackground.js'
+import { renderSessionRecoveryResultText } from './sessionRecoveryText.js'
 import { createCappedStderrAccumulator } from './stderrCap.js'
 import type {
   Base64ImageSource,
@@ -257,6 +258,36 @@ export class McpSessionExpiredError extends TelemetrySafeError_I_VERIFIED_THIS_I
     // Unreachable (the switch is exhaustive over SessionExpiryKind) —
     // lint-satisfying tail return; the official getter has no default.
     return false
+  }
+}
+
+/**
+ * 2.1.307 F-01 — the wrapper's live substitute for the official `z_` render
+ * sites. Officially, `z_({serverName,error,namesMcpCall,detail})` is invoked
+ * at exactly two places (linux ELF @276618538 staged-SDK relay + @276620665
+ * mcp_call dispatch), both inside the CCR mcp_call / staged-SDK relay
+ * subsystem, which OCC has NOT ported. OCC's live equivalent of the relay's
+ * `{isError:!0,content:[{type:"text",text:z_({...})}]}` production point is
+ * the tool wrapper's NON-retried session-expiry rethrow: toolExecution.ts
+ * catches it and surfaces `formatError(error)` (= error.message) verbatim as
+ * the isError tool_result text.
+ *
+ * This subclass rewrites `message` to the rendered `z_` text while
+ * preserving `instanceof McpSessionExpiredError`, `expiryKind`, `mayHaveRun`
+ * and the 'MCP session expired' telemetryMessage. The raw per-kind class
+ * messages above stay byte-pinned and untouched. Shape mirrors official
+ * site 1 (`namesMcpCall:!1`, no `.slice(0,2000)` cap — the `Jt` sanitizer
+ * inside `z_` bounds length at 4096/1024).
+ */
+export class McpSessionRecoveryTextError extends McpSessionExpiredError {
+  constructor(serverName: string, original: McpSessionExpiredError) {
+    super(serverName, original.expiryKind)
+    this.message = renderSessionRecoveryResultText({
+      serverName,
+      error: original,
+      namesMcpCall: false,
+      detail: original.message,
+    })
   }
 }
 
@@ -1431,13 +1462,19 @@ export function bumpMcpReconnectEpoch(): void {
 const dialGenerations = new Map<string, number>()
 
 /**
- * Official `X0n` — the suspend-redial loop. Runs `dial()` once, then redials
- * while the result is a failed CONNECT_SUSPENDED, under the cap of
- * `MAX_CONNECT_SUSPEND_REDIALS`, the dial is still current, and the reconnect
- * epoch has not changed. At the cap with the dial still current, calls
- * `onFinalSuspendedFailure` (official `r()` → `$o` failure-cache write).
- * Counters g/f("mcp_connect_suspend_redial", …) map to logEvent (OCC has no
- * counter infra).
+ * Official `X0n` — the suspend-redial loop (@278908920, verbatim:
+ * `async function X0n(e,n,r){let s=Dr(),a=await e(),c=0;while(c<z&&a.type===
+ * "failed"&&a.errorCode===Hie&&n()&&Dr()===s)...if(c===0)return a;...else if(
+ * f("mcp_connect_suspend_redial","slept_again"),c===z&&n())r();return a}`).
+ * Runs `dial()` once, then redials while the result is a failed
+ * CONNECT_SUSPENDED, under the cap of `MAX_CONNECT_SUSPEND_REDIALS`, the dial
+ * is still current, and the reconnect epoch has not changed. At the cap with
+ * the dial still current, calls `onFinalSuspendedFailure` — the official
+ * `r()` is `$o(n,s,h)`, a plugin-source connection-state notification ONLY
+ * (`if((r.type==="stdio"||r.type===void 0)&&r.pluginSource!==void 0)fo(...)`);
+ * it does NOT touch the memoize cache, and the official `X0n` tail has NO
+ * cache eviction. Counters g/f("mcp_connect_suspend_redial", …) map to
+ * logEvent (OCC has no counter infra).
  */
 export async function connectWithSuspendRedial<
   T extends { type: string; name?: string; errorCode?: string },
@@ -2768,15 +2805,20 @@ async function dialMcpServer(
 }
 
 /**
- * 2.1.307 B2 — dial with the official suspend-redial wrapper (`X0n` via the
- * official memoize wrap `(e,r,[n,s,,h])=>X0n(e,r,()=>$o(n,s,h))`).
+ * 2.1.307 B2/F-10 — dial with the official suspend-redial wrapper (`X0n` via
+ * the official memoize wrap `(e,r,[n,s,,h])=>X0n(e,r,()=>$o(n,s,h))`
+ * @279092166/@279462930). The official cap-reached callback `$o` is a
+ * plugin-source connection-state notification only — unported (OCC has no
+ * plugin connection-state subscriber), so the third argument is a no-op.
  *
- * The official failure-cache write `$o` is SKIPPED for CONNECT_SUSPENDED
- * (`if(le!==Hie)$o(e,r,s)`) unless the redial cap was reached (X0n's `r()`
- * callback). OCC adaptation: lodash `memoize` caches the promise
- * synchronously at call time, so a suspended failure that did not reach the
- * cap is evicted from the memo cache here — the next caller dials fresh —
- * while a cap-reached failure stays cached (onFinalSuspendedFailure = `$o`).
+ * F-10: the official `X0n` tail performs NO memoize-cache eviction, and
+ * neither does this wrapper. An earlier OCC-only tail delete fired exactly
+ * when the dial was ABANDONED (generation superseded or epoch bumped mid-
+ * loop) — i.e. precisely when a NEWER dial may already be memoized under the
+ * same key, which the delete would wrongly evict. Abandoned suspended
+ * failures now resolve only inside their orphaned promise; cached failures
+ * are evicted solely by the explicit clearServerCache / onclose paths (both
+ * pair `cache.delete(key)` with `bumpMcpReconnectEpoch()`).
  */
 async function dialWithSuspendRedial(
   name: string,
@@ -2786,24 +2828,14 @@ async function dialWithSuspendRedial(
   const key = getServerCacheKey(name, serverRef)
   const generation = (dialGenerations.get(key) ?? 0) + 1
   dialGenerations.set(key, generation)
-  let persistedFinalFailure = false
-  const result = await connectWithSuspendRedial(
+  return connectWithSuspendRedial(
     () => dialMcpServer(name, serverRef, serverStats),
     // Official currency check `n()` — this dial is current until a newer dial
     // for the same server key supersedes it.
     () => dialGenerations.get(key) === generation,
-    () => {
-      persistedFinalFailure = true
-    },
+    // Official `$o`: plugin-source notification only — unported, no-op.
+    () => {},
   )
-  if (
-    !persistedFinalFailure &&
-    result.type === 'failed' &&
-    result.errorCode === CONNECT_SUSPENDED
-  ) {
-    connectToServer.cache.delete(key)
-  }
-  return result
 }
 
 export const connectToServer = memoize(
@@ -3386,6 +3418,18 @@ export const fetchToolsForClient = memoizeWithLRU(
                         `McpError ${error.code}`,
                       )
                     }
+                  }
+                  // 2.1.307 F-01: a NON-retried session expiry surfaces as the
+                  // official `z_` rendered text (relay-site substitute — see
+                  // McpSessionRecoveryTextError). The may_have_run_no_retry /
+                  // session_retry_exhausted events above already fired; the
+                  // official session_expired_no_retry counter belongs to the
+                  // unported CCR relay sites and is deliberately NOT emitted
+                  // here (no double telemetry). McpSessionExpiredError extends
+                  // TelemetrySafeError, so the wrap branch above never runs
+                  // for it — this is the only transform on the rethrow path.
+                  if (error instanceof McpSessionExpiredError) {
+                    throw new McpSessionRecoveryTextError(client.name, error)
                   }
                   throw error
                 }

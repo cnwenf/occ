@@ -11,12 +11,21 @@ import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
  * Module-level port of the official minified SDK tool-relist state:
  * - `inFlightSdkRefreshes` = official `Ge` counter (incremented around every
  *   updateSdkMcp body and around each kept-previous relist attempt).
- * - `keptPreviousServers` = official `vs` (kept-previous server set) merged
- *   with `ka` (kept-attempt tracking). The official keeps two sets because
- *   its `Vi` redial loop deletes from `vs` before re-invoking `Ki`; OCC's
- *   updateSdkMcp has no redial loop, so one set carries both roles. The
- *   observable contract is unchanged: first failure → kept_previous,
- *   repeated failure → gave_up + cleared, success → cleared.
+ * - `keptPreviousServers` = official `vs` — the PENDING set that `qs()`
+ *   iterates (@276495245 region). The official `Vi` relist loop consumes it
+ *   per cycle (`for(let mt of[...vs]){...vs.delete(mt),Ge++;try{await Ki(qt)...}`
+ *   @276501515); OCC has no `Vi` loop, so `sdkToolRelistSuccess` performs the
+ *   consumption (mirroring the official disable path's `vs.delete(I),ka.delete(I)`
+ *   @276504004).
+ * - `keptAttemptServers` = official `ka` — the per-cycle consumption set the
+ *   kept-previous branch probes (@276495801 region):
+ *   `if(ka.delete(I.name)){f("mcp_sdk_tools_refresh","gave_up");return}
+ *    f("mcp_sdk_tools_refresh","kept_previous"),ka.add(I.name),vs.add(I.name)`.
+ *   gave_up consumes ONLY `ka`; the name STAYS in `vs`, so the pending gate
+ *   remains ARMED and successive failures alternate kept_previous/gave_up.
+ *   (F-02: an earlier single-set collapse wrongly disarmed the gate on
+ *   gave_up — a server that failed its list_changed relist twice was never
+ *   re-checked at later turn starts.)
  * - `sdkToolRelistPending()` = official `qs` (@45784973):
  *   `Ge>0 || [...vs].some(name => configured && connected)`.
  * - `sdkUpdateWaitBudgetMs()` = official `dWe` (@19314170):
@@ -42,8 +51,15 @@ import { logForDiagnosticsNoPII } from 'src/utils/diagLogs.js'
 /** Official `Ge`: number of updateSdkMcp / kept-relist attempts in flight. */
 let inFlightSdkRefreshes = 0
 
-/** Official `vs` (+`ka`): servers whose last list_changed refresh failed. */
+/** Official `vs`: servers whose relist is still PENDING (qs() iterates this). */
 const keptPreviousServers = new Set<string>()
+
+/**
+ * Official `ka`: servers whose CURRENT kept-previous cycle has been consumed.
+ * gave_up deletes from here ONLY — `vs` retains the name so the gate stays
+ * armed for the next cycle.
+ */
+const keptAttemptServers = new Set<string>()
 
 /**
  * Official `qs` consults `Object.hasOwn(P, name)` (sdkMcpConfigs) and
@@ -91,15 +107,19 @@ export function sdkToolRelistPending(): boolean {
 }
 
 /**
- * Official `Ki` kept-previous branch (@45785250):
+ * Official `Ki` kept-previous branch (@45785250 / @276495801):
  * `if(ka.delete(I.name)){f("mcp_sdk_tools_refresh","gave_up");return}
  *  f("mcp_sdk_tools_refresh","kept_previous"),ka.add(I.name),vs.add(I.name)`
- * (ka/vs collapsed into keptPreviousServers — see module header).
+ *
+ * F-02: gave_up consumes ONLY `ka` (keptAttemptServers). The name STAYS in
+ * `vs` (keptPreviousServers), so `qs()`/sdkToolRelistPending() remains armed
+ * and successive failures alternate kept_previous/gave_up until a success
+ * (sdkToolRelistSuccess) clears both sets.
  */
 export function sdkToolRelistKeptFailure(serverName: string): void {
   // Fixed protocol strings from the official counter allowlist — never user
   // data, verified not code or filepaths (listPagination.ts precedent).
-  if (keptPreviousServers.delete(serverName)) {
+  if (keptAttemptServers.delete(serverName)) {
     logEvent('tengu_mcp_sdk_tools_refresh', {
       action:
         'gave_up' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -110,15 +130,21 @@ export function sdkToolRelistKeptFailure(serverName: string): void {
     action:
       'kept_previous' as AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   })
+  keptAttemptServers.add(serverName)
   keptPreviousServers.add(serverName)
 }
 
 /**
  * Official `Ki` success path: `ka.delete(I.name), g("mcp_sdk_tools_refresh")`
- * — clears the kept mark (the counter-clear `g()` has no OCC equivalent; see
- * module header). Also mirrors `Vi`'s post-setup relist `vs.delete(mt)`.
+ * (@276496000 region) — clears the per-cycle kept mark (the counter-clear
+ * `g()` has no OCC equivalent; see module header). Because OCC has no `Vi`
+ * relist loop, this ALSO folds in the official `vs` consumption that `Vi`
+ * performs per cycle (`vs.delete(mt)` @276501515) and that the disable path
+ * pairs with ka (`vs.delete(I),ka.delete(I)` @276504004) — a successful
+ * relist disarms the pending gate.
  */
 export function sdkToolRelistSuccess(serverName: string): void {
+  keptAttemptServers.delete(serverName)
   keptPreviousServers.delete(serverName)
 }
 
@@ -217,5 +243,6 @@ export function sdkToolRelistJoin(
 export function resetSdkToolRelistForTesting(): void {
   inFlightSdkRefreshes = 0
   keptPreviousServers.clear()
+  keptAttemptServers.clear()
   serverRegistry = undefined
 }

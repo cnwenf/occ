@@ -244,8 +244,12 @@ describe('kept-previous bookkeeping (official Ki failure branch @45785250)', () 
     expect(sdkToolRelistPending()).toBe(true)
   })
 
-  test('repeated failure counts gave_up and clears the kept mark', () => {
-    // Arrange
+  test('repeated failure counts gave_up but the pending gate STAYS ARMED (F-02)', () => {
+    // Arrange — official Ki kept-previous branch (@276495801 region):
+    // `if(...,ka.delete(I.name)){f("mcp_sdk_tools_refresh","gave_up");return}
+    //  f("mcp_sdk_tools_refresh","kept_previous"),ka.add(I.name),vs.add(I.name)`
+    // gave_up consumes ONLY ka; the name STAYS in vs, and qs() iterates vs —
+    // so the turn-start gate must remain armed for the next relist cycle.
     setSdkServerRegistry({ isConfigured: () => true, isConnected: () => true })
     sdkToolRelistKeptFailure('srv')
     events.length = 0
@@ -260,7 +264,65 @@ describe('kept-previous bookkeeping (official Ki failure branch @45785250)', () 
         metadata: { action: 'gave_up' },
       },
     ])
+    expect(sdkToolRelistPending()).toBe(true)
+  })
+
+  test('successive failures alternate kept_previous / gave_up while the gate stays armed (F-02)', () => {
+    // Arrange — because gave_up only consumes ka, the official alternates on
+    // every consecutive failure: kept_previous, gave_up, kept_previous, ...
+    // (a permanent disarm — the F-02 bug — would emit gave_up never again
+    // and drop pending to false).
+    setSdkServerRegistry({ isConfigured: () => true, isConnected: () => true })
+
+    // Act & Assert — cycle 1: kept_previous.
+    sdkToolRelistKeptFailure('srv')
+    expect(events.map(e => e.metadata.action)).toEqual(['kept_previous'])
+    expect(sdkToolRelistPending()).toBe(true)
+
+    // Act & Assert — cycle 2: gave_up, still armed.
+    events.length = 0
+    sdkToolRelistKeptFailure('srv')
+    expect(events.map(e => e.metadata.action)).toEqual(['gave_up'])
+    expect(sdkToolRelistPending()).toBe(true)
+
+    // Act & Assert — cycle 3: ka was consumed by gave_up, so this is a fresh
+    // kept_previous, still armed.
+    events.length = 0
+    sdkToolRelistKeptFailure('srv')
+    expect(events.map(e => e.metadata.action)).toEqual(['kept_previous'])
+    expect(sdkToolRelistPending()).toBe(true)
+
+    // Act & Assert — cycle 4: gave_up again.
+    events.length = 0
+    sdkToolRelistKeptFailure('srv')
+    expect(events.map(e => e.metadata.action)).toEqual(['gave_up'])
+    expect(sdkToolRelistPending()).toBe(true)
+  })
+
+  test('success after gave_up clears BOTH sets: gate disarmed and the cycle restarts at kept_previous (F-02)', () => {
+    // Arrange — official success consumes ka in Ki (`ka.delete(I.name),
+    // g("mcp_sdk_tools_refresh")` @276496000 region) and vs in the Vi
+    // relist loop / disable path (`vs.delete(mt)` @276501515,
+    // `vs.delete(I),ka.delete(I)` @276504004). OCC folds both consumptions
+    // into sdkToolRelistSuccess (no Vi loop).
+    setSdkServerRegistry({ isConfigured: () => true, isConnected: () => true })
+    sdkToolRelistKeptFailure('srv')
+    sdkToolRelistKeptFailure('srv') // gave_up; vs retains 'srv'
+    events.length = 0
+
+    // Act
+    sdkToolRelistSuccess('srv')
+
+    // Assert — gate disarmed.
     expect(sdkToolRelistPending()).toBe(false)
+    expect(events).toEqual([])
+
+    // Act — a NEW failure after the success starts a fresh ka cycle.
+    sdkToolRelistKeptFailure('srv')
+
+    // Assert — kept_previous (not gave_up: the success cleared ka too).
+    expect(events.map(e => e.metadata.action)).toEqual(['kept_previous'])
+    expect(sdkToolRelistPending()).toBe(true)
   })
 
   test('a later success clears the kept mark without counter telemetry', () => {

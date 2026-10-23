@@ -8,13 +8,23 @@
  *   - `Y0n` classifier: gap = wall−awake > 1000 AND gate
  *     `k("tengu_mcp_connect_suspend_redial", !0)` → verbatim message
  *     `MCP server "<name>" connection timed out. Your computer went to sleep or its clock changed while connecting.`
- *   - `X0n` redial loop: while redials<10 && failed && errorCode===CONNECT_SUSPENDED
- *     && isCurrentDial() && epoch unchanged → log verbatim
+ *   - `X0n` redial loop (@278908920, byte-verified): while redials<10 &&
+ *     failed && errorCode===CONNECT_SUSPENDED && isCurrentDial() && epoch
+ *     unchanged → log verbatim
  *     `Connecting again after a sleep or a clock change (<c> of at most 10)`
- *     and dial again; at cap with currency → persist the failure (official `$o`).
+ *     and dial again; at cap with currency → the `r()` callback fires. The
+ *     tail has NO memo-cache eviction — X0n just returns the result.
+ *   - official memoize wiring @279092166 / @279462930:
+ *     `q0n(dialFn, keyFn, () => Ho().connections,
+ *      (e,r,[n,s,,h]) => X0n(e, r, () => $o(n,s,h)))` where `$o` is a
+ *     PLUGIN-SOURCE notification only:
+ *     `function $o(e,r,n){if((r.type==="stdio"||r.type===void 0)&&
+ *      r.pluginSource!==void 0)fo(e,Nq(r),void 0,n)}` — unported in OCC.
  *   - failure path @279090513: CONNECT_TIMEOUT + gap → errorCode CONNECT_SUSPENDED
- *     + suspended message; telemetry reason:"suspended"; failure NOT written to
- *     the connection cache unless the cap was reached.
+ *     + suspended message; telemetry reason:"suspended". F-10: the memoized
+ *     entry is NEVER evicted by the redial tail (official alignment) — an
+ *     abandoned suspended failure stays memoized until an explicit
+ *     clearServerCache / onclose (which pair cache.delete + epoch bump).
  *
  * Repo mock.module template: snapshot actuals BEFORE mocking, isolated
  * cache-busting specifier for client.js, heal + restore in afterAll.
@@ -325,7 +335,7 @@ describe('2.1.307 B2 connectWithSuspendRedial', () => {
 // ---------------------------------------------------------------------------
 
 describe('2.1.307 B2 connectToServer suspended path', () => {
-  test('classifies a sleep-collapsed connect timeout as CONNECT_SUSPENDED and evicts the failure from the cache', async () => {
+  test('classifies a sleep-collapsed connect timeout as CONNECT_SUSPENDED and keeps the abandoned failure memoized (F-10: official X0n has no tail eviction)', async () => {
     // Arrange — a stdio server that never completes the MCP handshake times
     // out fast; Date.now advances 1500ms per call so the wall/awake gap blows
     // past the 1000ms threshold while performance.now stays real.
@@ -359,17 +369,20 @@ describe('2.1.307 B2 connectToServer suspended path', () => {
       // Act
       const result = await promise
 
-      // Assert — verbatim suspended message + errorCode; the memo cache must
-      // NOT retain the sleep-collapsed failure (next caller redials fresh).
+      // Assert — verbatim suspended message + errorCode. F-10 (official
+      // alignment): X0n's tail performs NO cache eviction, so the abandoned
+      // suspended failure STAYS memoized; recovery is the explicit
+      // clearServerCache / onclose path (which pairs delete + epoch bump).
       expect(result.type).toBe('failed')
       expect(result.errorCode).toBe(CONNECT_SUSPENDED)
       expect(result.error).toBe(
         `MCP server "${name}" connection timed out. Your computer went to sleep or its clock changed while connecting.`,
       )
       expect(connectToServer.cache.has(getServerCacheKey(name, config))).toBe(
-        false,
+        true,
       )
     } finally {
+      connectToServer.cache.delete(getServerCacheKey(name, config))
       nowSpy.mockRestore()
       if (!hadMacro) {
         delete globalWithMacro.MACRO
@@ -381,4 +394,124 @@ describe('2.1.307 B2 connectToServer suspended path', () => {
       }
     }
   }, 30_000)
+
+  test('F-10 regression: an abandoned redial tail must NOT evict a newer dial memoized under the same key', async () => {
+    // Arrange — dial A suspends in flight. Before A settles, an external
+    // cache-clear (clearServerCache / onclose pair: delete + epoch bump)
+    // abandons A's loop and a NEWER dial B re-memoizes under the same key.
+    // The pre-F-10 tail (`connectToServer.cache.delete(key)` on any
+    // non-persisted suspended failure) then evicted B — the bug. The official
+    // X0n tail has no delete, so B must survive.
+    const previousTimeout = process.env.MCP_TIMEOUT
+    process.env.MCP_TIMEOUT = '40'
+    const globalWithMacro = globalThis as { MACRO?: { VERSION?: string } }
+    const hadMacro = 'MACRO' in globalWithMacro
+    globalWithMacro.MACRO ??= { VERSION: '2.1.307-test' }
+    const name = 'susp-successor-307'
+    const config = {
+      type: 'stdio',
+      command: 'sleep',
+      args: ['30'],
+      scope: 'user',
+    } as never
+    const key = getServerCacheKey(name, config)
+    let fakeNow = Date.now()
+    const nowSpy = spyOn(Date, 'now').mockImplementation(() => {
+      const value = fakeNow
+      fakeNow += 1500
+      return value
+    })
+
+    // Dial A: memoized synchronously; startEpoch + generation captured
+    // before the first await, so the bump below abandons its loop.
+    const promiseA = connectToServer(name, config)
+    // Interleave: delete + bump (what clearServerCache/onclose do), then the
+    // successor B settles into the cache while A is still dialing.
+    connectToServer.cache.delete(key)
+    bumpMcpReconnectEpoch()
+    const fakeB = {
+      type: 'connected',
+      name,
+      capabilities: { tools: {} },
+      config,
+      client: {},
+      cleanup: async () => {},
+    } as never
+    connectToServer.cache.set(key, Promise.resolve(fakeB))
+
+    try {
+      // Act — A's dial fails suspended (~40ms), its loop sees the changed
+      // epoch and exits, and the abandoned tail runs against the cache.
+      const resultA = await promiseA
+
+      // Assert — A reports the suspended failure, and B's memoized entry
+      // SURVIVES A's tail (the pre-fix delete evicted it here).
+      expect(resultA.type).toBe('failed')
+      expect(resultA.errorCode).toBe(CONNECT_SUSPENDED)
+      expect(connectToServer.cache.has(key)).toBe(true)
+      expect(await connectToServer(name, config)).toBe(fakeB)
+    } finally {
+      connectToServer.cache.delete(key)
+      nowSpy.mockRestore()
+      if (!hadMacro) {
+        delete globalWithMacro.MACRO
+      }
+      if (previousTimeout === undefined) {
+        delete process.env.MCP_TIMEOUT
+      } else {
+        process.env.MCP_TIMEOUT = previousTimeout
+      }
+    }
+  }, 30_000)
+
+  test('F-10 control: a cap-reached suspended failure with no interleave stays memoized and is not re-dialed', async () => {
+    // Arrange — no epoch bump, no successor: the loop redials to the cap
+    // (11 real spawns), `redials===cap && isCurrentDial()` → the official
+    // `r()` callback path. Both pre- and post-fix keep the entry cached
+    // (persistedFinalFailure suppressed the old delete); this pins that the
+    // F-10 removal did not change the controlled interleave.
+    const previousTimeout = process.env.MCP_TIMEOUT
+    process.env.MCP_TIMEOUT = '40'
+    const globalWithMacro = globalThis as { MACRO?: { VERSION?: string } }
+    const hadMacro = 'MACRO' in globalWithMacro
+    globalWithMacro.MACRO ??= { VERSION: '2.1.307-test' }
+    const name = 'susp-control-307'
+    const config = {
+      type: 'stdio',
+      command: 'sleep',
+      args: ['30'],
+      scope: 'user',
+    } as never
+    const key = getServerCacheKey(name, config)
+    let fakeNow = Date.now()
+    const nowSpy = spyOn(Date, 'now').mockImplementation(() => {
+      const value = fakeNow
+      fakeNow += 1500
+      return value
+    })
+
+    try {
+      // Act
+      const promise = connectToServer(name, config)
+      const result = await promise
+
+      // Assert — suspended failure, memoized, and the next call reuses the
+      // memoized promise instead of re-dialing.
+      expect(result.type).toBe('failed')
+      expect(result.errorCode).toBe(CONNECT_SUSPENDED)
+      expect(connectToServer.cache.has(key)).toBe(true)
+      expect(await connectToServer(name, config)).toBe(result)
+    } finally {
+      connectToServer.cache.delete(key)
+      nowSpy.mockRestore()
+      if (!hadMacro) {
+        delete globalWithMacro.MACRO
+      }
+      if (previousTimeout === undefined) {
+        delete process.env.MCP_TIMEOUT
+      } else {
+        process.env.MCP_TIMEOUT = previousTimeout
+      }
+    }
+  }, 60_000)
 })
